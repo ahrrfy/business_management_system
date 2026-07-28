@@ -1,7 +1,7 @@
 // شاشة الهدايا والمجانيات — G-م١ الوارد (استلام مجّانيّ من مورّد، صفر تكلفة) + G-م٢ الصادر (منح للعميل،
 // GIFT_OUT + حوكمة SOD: فوق العتبة/غير المدير ⇒ اعتماد مدير آخر). القراءة/الكتابة خلف مفتاح `gifts`.
 import { useRef, useState } from "react";
-import { ArrowDownToLine, ArrowUpFromLine, Check, Gift, Plus, Trash2 } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, Check, Gift, Plus, Printer, Trash2 } from "lucide-react";
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import SupplierPicker from "@/components/voucher/SupplierPicker";
 import CustomerPicker from "@/components/CustomerPicker";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
+import { printGiftVoucherA4 } from "@/lib/printing/giftVoucher";
 
 type Mode = "list" | "in" | "out";
 type DirFilter = "ALL" | "IN" | "OUT" | "PENDING";
@@ -109,6 +110,23 @@ export default function GiftsHub() {
     },
     onError: (e) => notify.err(e),
   });
+
+  async function printGift(giftId: number) {
+    try {
+      const g = await utils.gifts.get.fetch({ giftId });
+      await printGiftVoucherA4({
+        giftNumber: g.giftNumber,
+        direction: g.direction,
+        createdAt: g.createdAt ? new Date(g.createdAt as unknown as string).toISOString().slice(0, 10) : "",
+        giftType: g.giftType,
+        reason: g.reason,
+        partyName: g.partyName,
+        lines: g.lines.map((l) => ({ productName: l.productName, sku: l.sku, unit: l.unitName, quantity: Number(l.quantity) })),
+      });
+    } catch (e) {
+      notify.err(e);
+    }
+  }
 
   function addLine(l: InvoiceLine) {
     setLines((prev) => {
@@ -236,17 +254,22 @@ export default function GiftsHub() {
                       <td className="px-3 py-2">{STATUS_AR[r.status] ?? r.status}</td>
                       <td className="px-3 py-2 text-end">{r.estimatedValue ?? "—"}</td>
                       <td className="px-3 py-2 text-end">
-                        {r.direction === "OUT" && r.status === "PENDING_APPROVAL" && canApprove ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={approve.isPending}
-                            onClick={() => approve.mutate({ giftId: Number(r.id) })}
-                          >
-                            <Check aria-hidden className="me-1 size-3.5" />
-                            اعتماد
+                        <div className="flex justify-end gap-1">
+                          {r.direction === "OUT" && r.status === "PENDING_APPROVAL" && canApprove ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={approve.isPending}
+                              onClick={() => approve.mutate({ giftId: Number(r.id) })}
+                            >
+                              <Check aria-hidden className="me-1 size-3.5" />
+                              اعتماد
+                            </Button>
+                          ) : null}
+                          <Button size="sm" variant="ghost" onClick={() => printGift(Number(r.id))} aria-label="طباعة السند">
+                            <Printer aria-hidden className="size-4" />
                           </Button>
-                        ) : null}
+                        </div>
                       </td>
                     </tr>
                   ))

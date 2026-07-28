@@ -4,7 +4,7 @@ import { isDupEntry } from "@shared/errorMap.ar";
 import { canSeeCost } from "@shared/permissions";
 import { positiveMoneyString } from "../lib/schemas";
 import { receiveInboundGift } from "../services/gifts/inbound";
-import { listGifts } from "../services/gifts/list";
+import { getGiftVoucher, listGifts } from "../services/gifts/list";
 import { approveGift, createOutboundGift } from "../services/gifts/outbound";
 import { branchScopedProcedure, requireModule, router } from "../trpc";
 
@@ -45,6 +45,17 @@ export const giftsRouter = router({
         { scopedBranchId },
         { ...(input ?? {}), branchId: elevated ? input?.branchId : undefined, redactCost: !canSeeCost(ctx.user.role) },
       );
+    }),
+
+  // تفاصيل سند هدية للطباعة (رأس + أطراف + أسطر بأسماء المنتجات، بلا تكلفة) — بعزل الفرع (نمط consignments.get).
+  get: giftsRead
+    .input(z.object({ giftId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const scopedBranchId = elevated ? null : Number(ctx.user.branchId);
+      const gift = await getGiftVoucher({ scopedBranchId }, input.giftId);
+      if (!gift) throw new TRPCError({ code: "NOT_FOUND", message: "سند الهدية غير موجود" });
+      return gift;
     }),
 
   receiveInbound: giftsWrite

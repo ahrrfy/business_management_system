@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { receiveInboundGift } from "../gifts/inbound";
-import { listGifts } from "../gifts/list";
+import { getGiftVoucher, listGifts } from "../gifts/list";
 import { approveGift, createOutboundGift } from "../gifts/outbound";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
@@ -183,6 +183,22 @@ describe("G-م١ الهدايا الواردة", () => {
     expect(b.giftVoucherId).toBe(a.giftVoucherId); // replay — نفس السند
     expect(await stockOf(1)).toBe(15); // رُفع مرّة واحدة (10+5) لا 20
     expect(await countRows(s.giftVouchers)).toBe(1);
+  });
+
+  it("getGiftVoucher: تفاصيل الطباعة (رأس + طرف + أسطر بأسماء المنتجات، بلا تكلفة) + عزل الفرع", async () => {
+    const res = await receiveInboundGift({ branchId: 1, supplierId: 1, giftType: "عيّنة", lines: [{ variantId: 1, productUnitId: 1, quantity: 3 }] }, actor);
+    const gv = await getGiftVoucher({ scopedBranchId: 1 }, res.giftVoucherId);
+    expect(gv).toBeTruthy();
+    expect(gv!.giftNumber).toBe(res.giftNumber);
+    expect(gv!.direction).toBe("IN");
+    expect(gv!.partyName).toBe("مورد"); // اسم المورّد للوارد
+    expect(gv!.lines.length).toBe(1);
+    expect(gv!.lines[0].productName).toBe("ورق");
+    expect(gv!.lines[0].unitName).toBe("قطعة");
+    expect(Number(gv!.lines[0].baseQuantity)).toBe(3);
+    expect("totalCost" in (gv as Record<string, unknown>)).toBe(false); // لا تكلفة في حمولة الطباعة
+    // عزل الفرع: فرعٌ آخر لا يرى السند.
+    expect(await getGiftVoucher({ scopedBranchId: 2 }, res.giftVoucherId)).toBeNull();
   });
 });
 
