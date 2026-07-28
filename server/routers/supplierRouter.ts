@@ -12,6 +12,7 @@ import {
   updateSupplier,
 } from "../services/supplierService";
 import { managerProcedure, protectedProcedure, router, suppliersManagerProcedure, suppliersReadProcedure } from "../trpc";
+import { getSupplierSummary } from "../services/supplierOperationsService";
 
 /**
  * الموردون — شريحة كاملة.
@@ -19,6 +20,17 @@ import { managerProcedure, protectedProcedure, router, suppliersManagerProcedure
  * البريد محتفظ به للتوافق فقط (لا يُعرض في النموذج). الواجهة لا ترسله ⇒ يبقى ما هو مخزّن.
  */
 export const supplierRouter = router({
+  /** ملخص مالي تشغيلي لكل النتائج المطابقة — محصور بالمدير لأن الأرصدة حساسة. */
+  summary: managerProcedure
+    .input(
+      z.object({
+        q: z.string().max(200).optional(),
+        includeInactive: z.boolean().default(false),
+        kind: z.enum(["REGULAR", "CONSIGNOR"]).optional(),
+      }).optional(),
+    )
+    .query(({ input }) => getSupplierSummary(input ?? {})),
+
   /** قائمة بسيطة سريعة — لشاشة المشتريات والقوائم (مدير/أدمن فقط). */
   list: suppliersReadProcedure.query(async ({ ctx }) => {
     const { rows } = await listSuppliers({ includeInactive: false, limit: 500 });

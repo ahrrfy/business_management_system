@@ -21,9 +21,23 @@ import { customerBarcodeSet } from "../services/barcodeService";
 import { maskCustomerSensitive } from "../lib/redact";
 import { positiveMoneyString } from "../lib/schemas";
 import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, managerProcedure, router } from "../trpc";
+import { getCustomerOperations } from "../services/customerOperationsService";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"]);
+const operationsInput = z.object({
+  q: z.string().max(200).optional(),
+  customerType: customerType.optional(),
+  priceTier: priceTier.optional(),
+  includeInactive: z.boolean().default(false),
+  balance: z.enum(["RECEIVABLE", "CREDIT", "ZERO"]).optional(),
+  collection: z.enum(["OVERDUE", "PROMISE_DUE", "PROMISE_FUTURE", "NO_FOLLOWUP"]).optional(),
+  credit: z.enum(["CASH_ONLY", "NEAR_LIMIT", "OVER_LIMIT", "UNLIMITED"]).optional(),
+  inactivityDays: z.union([z.literal(30), z.literal(60), z.literal(90)]).optional(),
+  sort: z.enum(["NAME", "BALANCE_DESC", "OLDEST_DUE", "LAST_PURCHASE"]).optional(),
+  limit: z.number().int().positive().max(500).default(50),
+  offset: z.number().int().min(0).default(0),
+});
 
 /**
  * العملاء — شريحة كاملة:
@@ -36,6 +50,14 @@ const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "ح
  *  - smartSearch: بحث مع إحصاءات (عدد طلبات/آخر طلب) لمكوّن `SmartCustomerInput`.
  */
 export const customerRouter = router({
+  /**
+   * مركز العملاء والتحصيل: صفوف تشغيلية + ملخص جميع النتائج المطابقة.
+   * محصور بالمدير لأن الحمولة تجمع الذمم والحدود الائتمانية ومؤشرات المخاطر.
+   */
+  operations: managerProcedure
+    .input(operationsInput.optional())
+    .query(({ input }) => getCustomerOperations(input ?? {})),
+
   /** قائمة بسيطة سريعة — يحتاجها الكاشير وأوامر الشغل والبيع الآجل. */
   list: customersReadProcedure.query(async ({ ctx }) => {
     const { rows } = await listCustomers({ includeInactive: false, limit: 500 });
