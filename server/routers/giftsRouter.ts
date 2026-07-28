@@ -53,6 +53,7 @@ export const giftsRouter = router({
         supplierRef: z.string().max(64).nullish(),
         estimatedValue: positiveMoneyString.nullish(),
         notes: z.string().max(500).nullish(),
+        sellable: z.boolean().optional(), // false = استخدام داخليّ/عيّنة (لا يدخل مخزون البيع)
         lines: z.array(inboundLineSchema).min(1),
       }),
     )

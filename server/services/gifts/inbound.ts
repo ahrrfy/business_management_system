@@ -24,6 +24,7 @@ export interface ReceiveInboundGiftInput {
   supplierRef?: string | null;
   estimatedValue?: string | null;
   notes?: string | null;
+  sellable?: boolean | null; // false = استخدام داخليّ/عيّنة (لا يدخل مخزون البيع، لا يخفّف WAVG) — G-م١ب
   lines: InboundGiftLineInput[];
 }
 export interface ReceiveInboundGiftResult {
@@ -64,24 +65,8 @@ export async function receiveInboundGift(input: ReceiveInboundGiftInput, actor: 
       });
     }
 
+    const sellable = input.sellable !== false; // افتراضي true؛ false = استخدام داخليّ/عيّنة
     const variantIds = Array.from(new Set(converted.map((c) => c.variantId))).sort((a, b) => a - b);
-
-    // قفل صفوف الرصيد للمتغيّرات المعنيّة قبل قراءة الـSUM (يتسلسل مع أي بيع/شراء متزامن — نمط purchaseService).
-    await tx.select({ id: branchStock.id }).from(branchStock).where(inArray(branchStock.variantId, variantIds)).for("update");
-    // إجمالي المخزون لكل صنف عبر كل الفروع (WAVG صفة عالمية للصنف ⇒ الوزن بالإجمالي).
-    const stockRows = await tx
-      .select({ variantId: branchStock.variantId, totalQty: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)` })
-      .from(branchStock)
-      .where(inArray(branchStock.variantId, variantIds))
-      .groupBy(branchStock.variantId);
-    const stockMap = new Map<number, string>(stockRows.map((r) => [Number(r.variantId), String(r.totalQty)]));
-    // قفل صفوف المتغيّرات وقراءة تكلفتها (ترتيب تصاعديّ حتميّ).
-    const variantRows = await tx
-      .select({ id: productVariants.id, cost: productVariants.costPrice })
-      .from(productVariants)
-      .where(inArray(productVariants.id, variantIds))
-      .for("update");
-    const costMap = new Map<number, string>(variantRows.map((v) => [Number(v.id), String(v.cost ?? "0")]));
 
     // رأس السند (الوارد مُستلَم فوراً بلا اعتماد — status=DELIVERED؛ totalCost=0 دائماً).
     const giftNumber = await nextGiftNumber(tx, input.branchId);
@@ -92,7 +77,7 @@ export async function receiveInboundGift(input: ReceiveInboundGiftInput, actor: 
       supplierId: input.supplierId ?? null,
       giftType: input.giftType?.trim() || null,
       reason: input.reason?.trim() || null,
-      sellable: true, // G-م١: القابل للبيع فقط (الاستخدام الداخلي/العيّنة sellable=false مؤجَّل — G-م١ب)
+      sellable,
       supplierRef: input.supplierRef?.trim() || null,
       estimatedValue: input.estimatedValue ? round2(money(input.estimatedValue)).toFixed(2) : null,
       status: "DELIVERED",
@@ -102,29 +87,49 @@ export async function receiveInboundGift(input: ReceiveInboundGiftInput, actor: 
     });
     const giftVoucherId = extractInsertId(insHead);
 
-    // كمية كل صنف (قد تتكرّر عبر أسطر بوحدات مختلفة) لحساب المتوسّط المخفَّف مرّة واحدة.
-    const qtyByVariant = new Map<number, number>();
-    for (const c of converted) qtyByVariant.set(c.variantId, (qtyByVariant.get(c.variantId) ?? 0) + c.baseQuantity);
+    // القابل للبيع فقط يدخل مخزون البيع ويخفّف WAVG. غير القابل للبيع (استخدام داخليّ/عيّنة) يُوثَّق
+    // بالسند وأسطره فقط — بلا حركة مخزون ولا مسّ WAVG (لا يُضخّم مخزون البيع ولا يخفّف كلفته).
+    if (sellable) {
+      // قفل صفوف الرصيد للمتغيّرات المعنيّة قبل قراءة الـSUM (يتسلسل مع أي بيع/شراء متزامن — نمط purchaseService).
+      await tx.select({ id: branchStock.id }).from(branchStock).where(inArray(branchStock.variantId, variantIds)).for("update");
+      // إجمالي المخزون لكل صنف عبر كل الفروع (WAVG صفة عالمية للصنف ⇒ الوزن بالإجمالي).
+      const stockRows = await tx
+        .select({ variantId: branchStock.variantId, totalQty: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)` })
+        .from(branchStock)
+        .where(inArray(branchStock.variantId, variantIds))
+        .groupBy(branchStock.variantId);
+      const stockMap = new Map<number, string>(stockRows.map((r) => [Number(r.variantId), String(r.totalQty)]));
+      // قفل صفوف المتغيّرات وقراءة تكلفتها (ترتيب تصاعديّ حتميّ).
+      const variantRows = await tx
+        .select({ id: productVariants.id, cost: productVariants.costPrice })
+        .from(productVariants)
+        .where(inArray(productVariants.id, variantIds))
+        .for("update");
+      const costMap = new Map<number, string>(variantRows.map((v) => [Number(v.id), String(v.cost ?? "0")]));
 
-    for (const variantId of variantIds) {
-      const freeQty = qtyByVariant.get(variantId)!;
-      const existingRaw = money(stockMap.get(variantId) ?? "0");
-      const existingQty = existingRaw.lt(0) ? money(0) : existingRaw; // الرصيد السالب (وضع الافتتاح) لا يرفع المتوسّط
-      const oldCost = money(costMap.get(variantId) ?? "0");
-      const denom = existingQty.plus(freeQty);
-      // تخفيف WAVG: المجّاني يضيف قيمةً صفراً ⇒ المتوسّط الجديد = القيمة القديمة ÷ الكمية بعد الإضافة.
-      // لا مخزون قائم أو تكلفة قديمة صفر ⇒ يبقى صفراً (كل المخزون مجّانيّ الآن).
-      const newCost = denom.lte(0) || oldCost.lte(0) ? round2(money(0)) : round2(existingQty.times(oldCost).dividedBy(denom));
-      await applyMovement(tx, {
-        variantId,
-        branchId: input.branchId,
-        baseQuantity: freeQty,
-        movementType: "IN",
-        referenceType: "GIFT_IN",
-        referenceId: giftVoucherId,
-        createdBy: actor.userId,
-      });
-      await tx.update(productVariants).set({ costPrice: newCost.toFixed(2) }).where(eq(productVariants.id, variantId));
+      // كمية كل صنف (قد تتكرّر عبر أسطر بوحدات مختلفة) لحساب المتوسّط المخفَّف مرّة واحدة.
+      const qtyByVariant = new Map<number, number>();
+      for (const c of converted) qtyByVariant.set(c.variantId, (qtyByVariant.get(c.variantId) ?? 0) + c.baseQuantity);
+
+      for (const variantId of variantIds) {
+        const freeQty = qtyByVariant.get(variantId)!;
+        const existingRaw = money(stockMap.get(variantId) ?? "0");
+        const existingQty = existingRaw.lt(0) ? money(0) : existingRaw; // الرصيد السالب (وضع الافتتاح) لا يرفع المتوسّط
+        const oldCost = money(costMap.get(variantId) ?? "0");
+        const denom = existingQty.plus(freeQty);
+        // تخفيف WAVG: المجّاني يضيف قيمةً صفراً ⇒ المتوسّط الجديد = القيمة القديمة ÷ الكمية بعد الإضافة.
+        const newCost = denom.lte(0) || oldCost.lte(0) ? round2(money(0)) : round2(existingQty.times(oldCost).dividedBy(denom));
+        await applyMovement(tx, {
+          variantId,
+          branchId: input.branchId,
+          baseQuantity: freeQty,
+          movementType: "IN",
+          referenceType: "GIFT_IN",
+          referenceId: giftVoucherId,
+          createdBy: actor.userId,
+        });
+        await tx.update(productVariants).set({ costPrice: newCost.toFixed(2) }).where(eq(productVariants.id, variantId));
+      }
     }
 
     // أسطر السند (لقطة تكلفة صفر — الوارد المجّاني بلا تكلفة).

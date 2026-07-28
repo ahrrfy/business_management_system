@@ -124,6 +124,25 @@ describe("G-م١ الهدايا الواردة", () => {
     expect(await costOf(1)).toBe("0.00");
   });
 
+  it("غير قابل للبيع (استخدام داخليّ/عيّنة) ⇒ يُوثَّق بلا رفع مخزون ولا مسّ WAVG", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 10 });
+    const res = await receiveInboundGift(
+      { branchId: 1, sellable: false, giftType: "حامل عرض", lines: [{ variantId: 1, productUnitId: 1, quantity: 4 }] },
+      actor,
+    );
+    // لا رفع مخزون البيع ولا تخفيف WAVG (يبقيان كما هما).
+    expect(await stockOf(1)).toBe(10);
+    expect(await costOf(1)).toBe("100.00");
+    expect(await countRows(s.inventoryMovements)).toBe(0);
+    // لكنّ السند موثَّق (sellable=false) بأسطره للتتبّع.
+    const gv = (await db().select().from(s.giftVouchers).where(eq(s.giftVouchers.id, res.giftVoucherId)))[0];
+    expect(gv.direction).toBe("IN");
+    expect(Boolean(gv.sellable)).toBe(false);
+    const lines = await db().select().from(s.giftVoucherLines).where(eq(s.giftVoucherLines.giftVoucherId, res.giftVoucherId));
+    expect(lines.length).toBe(1);
+    expect(Number(lines[0].baseQuantity)).toBe(4);
+  });
+
   it("تحويل الوحدة (درزن) ⇒ كمية الأساس صحيحة", async () => {
     await receiveInboundGift({ branchId: 1, lines: [{ variantId: 1, productUnitId: 2, quantity: 1 }] }, actor); // 1 درزن = 12
     expect(await stockOf(1)).toBe(12);

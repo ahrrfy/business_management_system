@@ -51,6 +51,7 @@ export default function GiftsHub() {
   const [supplierRef, setSupplierRef] = useState(""); // وارد
   const [estimatedValue, setEstimatedValue] = useState(""); // وارد
   const [notes, setNotes] = useState("");
+  const [sellable, setSellable] = useState(true); // وارد: قابل للبيع؟ (false = استخدام داخليّ/عيّنة)
   const [lines, setLines] = useState<GiftLine[]>([]);
   const keyRef = useRef(1);
 
@@ -64,6 +65,7 @@ export default function GiftsHub() {
     setSupplierRef("");
     setEstimatedValue("");
     setNotes("");
+    setSellable(true);
     setLines([]);
     setFormBranchId(null);
   }
@@ -119,6 +121,7 @@ export default function GiftsHub() {
       supplierRef: supplierRef.trim() || undefined,
       estimatedValue: estimatedValue.trim() || undefined,
       notes: notes.trim() || undefined,
+      sellable,
       lines: linePayload(),
     });
   }
@@ -299,6 +302,14 @@ export default function GiftsHub() {
               <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={255} />
             </div>
           </div>
+
+          {mode === "in" ? (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={sellable} onChange={(e) => setSellable(e.target.checked)} className="size-4" />
+              <span>قابل للبيع (يدخل مخزون البيع ويخفّف متوسّط الكلفة)</span>
+              {!sellable ? <span className="text-muted-foreground">— للاستخدام الداخليّ/عيّنة: يُوثَّق بلا رفع مخزون</span> : null}
+            </label>
+          ) : null}
 
           <div className="space-y-2">
             <Label>الأصناف *</Label>
