@@ -813,6 +813,13 @@
       "when": 1785542400000,
       "tag": "0116_gifts",
       "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "5",
+      "when": 1785628800000,
+      "tag": "0117_reservations",
+      "breakpoints": true
     }
   ]
 }

@@ -35,6 +35,8 @@ interface NormalizedRow {
   unitName: string;
   conversionFactor: string;
   stockBase: number;
+  reservedBase: number; // المحجوز النشط (الحجوزات) — 0 في جانب الشراء
+  availableBase: number; // المتاح للبيع (ATP) = stockBase − reservedBase
   /** Sale price (sale side) OR cost (purchase side) — already in the unit, decimal string. */
   price: string;
   /** Cost in base unit (purchase side carries this; sale side gets it null when hidden). */
@@ -93,6 +95,8 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
         unitName: r.unitName,
         conversionFactor: r.conversionFactor,
         stockBase: r.stockBase ?? 0,
+        reservedBase: 0, // الشراء لا يعنيه المحجوز
+        availableBase: r.stockBase ?? 0,
         price: r.costPriceBase, // purchase price defaults to last cost (base)
         costBase: r.costPriceBase,
       }));
@@ -107,6 +111,8 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       unitName: r.unitName,
       conversionFactor: r.conversionFactor,
       stockBase: r.stockBase ?? 0,
+      reservedBase: r.reservedBase ?? 0,
+      availableBase: r.availableBase ?? (r.stockBase ?? 0),
       price: r.price ?? "0",
       costBase: "0", // cashier should not see cost; pages may pass showCost=false in the table
     }));
@@ -187,6 +193,8 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
               unitName: row.unitName,
               conversionFactor: row.conversionFactor,
               stockBase: row.stockBase ?? 0,
+              reservedBase: row.reservedBase ?? 0,
+              availableBase: row.availableBase ?? (row.stockBase ?? 0),
               price: row.price ?? "0",
               costBase: "0",
             });
@@ -272,7 +280,13 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                     <span>•</span>
                     <span>{p.unitName}</span>
                     <span>•</span>
-                    <span className={stockBadgeColor(p.stockBase)}>مخزون: {fmtNum(p.stockBase)}</span>
+                    <span className={stockBadgeColor(p.availableBase)}>متاح: {fmtNum(p.availableBase)}</span>
+                    {p.reservedBase > 0 && (
+                      <>
+                        <span>•</span>
+                        <span className="text-amber-600">محجوز: {fmtNum(p.reservedBase)}</span>
+                      </>
+                    )}
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-col items-end justify-center">

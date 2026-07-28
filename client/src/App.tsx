@@ -76,6 +76,7 @@ const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
 // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
 const TasksHub = lazy(() => import("@/pages/TasksHub"));
+const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
 const TaskDetail = lazy(() => import("@/pages/TaskDetail"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
@@ -322,6 +323,14 @@ export default function App() {
         <Shell>
           <RequireRole roles={["admin","manager","accountant","cashier","warehouse","print_operator","sales_rep","auditor","user"]} module="tasks" level="READ">
             <TaskDetail />
+          </RequireRole>
+        </Shell>
+      </Route>
+      {/* الحجوزات (R-م٣): الأدوار = قوالب reservations≥READ (admin/manager/accountant/cashier/warehouse/sales_rep/auditor). */}
+      <Route path="/reservations">
+        <Shell>
+          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","sales_rep","auditor"]} module="reservations" level="READ">
+            <ReservationsHub />
           </RequireRole>
         </Shell>
       </Route>
