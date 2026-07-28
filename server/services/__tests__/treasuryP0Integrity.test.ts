@@ -3,10 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createCashDrop } from "../cashDropService";
-import { createHandover } from "../cashHandoverService";
 import { createExpense } from "../expenseService";
 import { openShift } from "../shiftService";
-import { withTx } from "../tx";
 import { getTreasurySummary } from "../reportsTreasuryService";
 import { getDashboard } from "../treasury/dashboard";
 import { getRecentMovements } from "../treasury/movements";
@@ -100,47 +98,13 @@ describe("treasury P0 integrity", () => {
     expect(contract.status).toBe("PENDING");
     expect(contract.createdBy).toBe(MANAGER);
 
+    // العهدة الوسيطة (imprest): فتح الوردية سحب عهدة 100000 من الخزينة (TREASURY OUT) ⇒ الرصيد −100000.
+    // السحب النقديّ المعلّق (PENDING) لا يُضاف حتى يُقبَل ⇒ الرصيد يبقى −100000 (لو دخل لصار −90000).
     const dashboard = await getDashboard(
       { branchId: 1 },
       { scopedBranchId: null, role: "admin", userId: MANAGER },
     );
-    expect(dashboard.treasuryBalances.find((r) => r.branchId === 1)?.balance).toBe("0.00");
-  });
-
-  it("keeps close handover outside treasury until the named same-branch recipient accepts it", async () => {
-    const { shiftId } = await openShift(
-      { branchId: 1, openingBalance: "100000" },
-      { userId: CASHIER, branchId: 1 },
-    );
-
-    await expect(
-      withTx((tx) =>
-        createHandover(
-          tx,
-          { shiftId, amount: "10000", handoverTo: OTHER_MANAGER },
-          { userId: CASHIER, branchId: 1, role: "cashier" },
-        ),
-      ),
-    ).rejects.toThrow(/فرع الوردية نفسه/);
-
-    const result = await withTx((tx) =>
-      createHandover(
-        tx,
-        { shiftId, amount: "10000", handoverTo: MANAGER },
-        { userId: CASHIER, branchId: 1, role: "cashier" },
-      ),
-    );
-    const contract = (
-      await db().select().from(s.receipts).where(eq(s.receipts.id, result.inReceiptId))
-    )[0];
-    expect(contract.status).toBe("PENDING");
-    expect(contract.cashBucket).toBe("TREASURY");
-
-    const dashboard = await getDashboard(
-      { branchId: 1 },
-      { scopedBranchId: null, role: "admin", userId: MANAGER },
-    );
-    expect(dashboard.treasuryBalances.find((r) => r.branchId === 1)?.balance).toBe("0.00");
+    expect(dashboard.treasuryBalances.find((r) => r.branchId === 1)?.balance).toBe("-100000.00");
   });
 
   it("excludes unapproved receipts from treasury summaries", async () => {

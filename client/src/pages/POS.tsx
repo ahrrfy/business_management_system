@@ -3,7 +3,6 @@
  * تصميم Odoo 19-style مع multi-tab، حاسبة ذكية، مسح باركود آني، وإدارة وردية كاملة.
  */
 import CustomerPicker from "@/components/CustomerPicker";
-import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue } from "@/components/pos/ShiftHandoverSection";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
 import { clearCartDraft } from "@/lib/cartDraft";
 import { newClientRequestId } from "@/lib/countQueue";
@@ -17,7 +16,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
-import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, isOfflineSaleEnabled, readOutboxSummary, subscribeOutbox } from "@/lib/offline/outbox";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, readOutboxSummary, subscribeOutbox } from "@/lib/offline/outbox";
 import { getOfflineProfile, saveOfflineProfile } from "@/lib/offline/pinLock";
 import { getMeta, setMeta } from "@/lib/offline/db";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
@@ -28,7 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, RefreshCw, Zap, ChevronDown } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
-import { CashCounter } from "@/components/CashCounter";
+import { MoneyInput } from "@/components/form/MoneyInput";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -902,7 +901,7 @@ export default function POS() {
     }
   }
 
-  function submitSale(approval?: { email: string; password: string }) {
+  async function submitSale(approval?: { email: string; password: string }) {
     setSaleError(null);
     if (!shift || !cart.length) return;
     // تدقيق ١٧/٧: «0» صريح في حقل المقبوض كان يُسجّل البيع مدفوعاً نقداً بالكامل (isCredit=false ⇒
@@ -923,10 +922,12 @@ export default function POS() {
     // §٩: التقريب النقدي IQD يُحسب على الخادم للبيع النقدي الكامل (يُسجَّل ADJUST لفرق التقريب).
     // نرسل المبلغ غير المقرّب؛ الخادم يقرّبه ويُسجّل النقد المستلم = الإجمالي المقرّب.
     saleCtxRef.current = captureSaleCtx();
+    const deviceId = await getDeviceCode().catch(() => undefined);
     const cashFull = activeTab.method === "CASH" && !isCredit;
     const payAmount = isCredit ? money(paid) : money(total);
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
+      deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
@@ -937,7 +938,7 @@ export default function POS() {
     });
   }
 
-  function quickPay() {
+  async function quickPay() {
     setSaleError(null);
     if (!shift || !cart.length) return;
     // ش٣ أوفلاين: الدفع السريع نقدي كامل بطبيعته ⇒ مؤهَّل للالتقاط المحلي مباشرة.
@@ -947,9 +948,11 @@ export default function POS() {
     }
     // §٩: quickPay دائماً CASH كامل ⇒ الخادم يقرّب لفئة IQD (لا تقريب على العميل في مبلغ الدفع).
     saleCtxRef.current = captureSaleCtx();
+    const deviceId = await getDeviceCode().catch(() => undefined);
     const payAmount = money(total);
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId, cashRoundIQD: true,
+      deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
@@ -962,6 +965,16 @@ export default function POS() {
   const openShift = trpc.shifts.open.useMutation({
     onSuccess: async (res) => {
       await shiftQ.refetch();
+      // العهدة الوسيطة: تحذيرٌ لينٌ إن سحبت العهدة الخزينة إلى العجز (الضابط التعويضي لقرار «الفتح مسموح
+      // مع تحذير»). الرصيد يظهر للمرتفعين فقط (محجوبٌ عن الكاشير خادمياً ⇒ null).
+      if (res.treasuryWarning) {
+        notify.warn(
+          "تنبيه: عجز الخزينة",
+          res.treasuryBalanceAfter != null
+            ? `عهدة الافتتاح فاقت رصيد الخزينة — الرصيد الآن ${fmt(Number(res.treasuryBalanceAfter))} د.ع. موّل الخزينة.`
+            : "عهدة الافتتاح فاقت رصيد الخزينة (عجز). أبلغ المدير لتمويل الخزينة.",
+        );
+      }
       void printShiftOpen({
         shiftId:        res.shiftId,
         openingBalance: Number(opening || 0),
@@ -2158,10 +2171,8 @@ interface ShiftCloseDialogProps {
 function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches }: ShiftCloseDialogProps) {
   const modalRef = useModalFocus<HTMLDivElement>();
   const [counted, setCounted] = useState("");
-  const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
-  const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
+  const [countEntered, setCountEntered] = useState(false);
   const utils = trpc.useUtils();
-  const recipientsQ = trpc.shifts.handoverRecipients.useQuery(undefined, { enabled: !!shift });
 
   // ش٤ أوفلاين — حارس الطابور: إغلاق الوردية وثمة مبيعات غير مُزامنة يترك نقداً في الدرج بلا
   // فواتير في Z ⇒ محجوب افتراضياً؛ المدير/الأدمن يتجاوز بإقرار صريح (تُرحَّل لاحقاً وتدخل
@@ -2223,14 +2234,15 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   // الإغلاق يحسب المُزامَن فقط، والفرق يُفسَّر لاحقاً بقسم «مُزامنة لاحقاً» في التقرير).
   const expectedD   = report != null ? openingD.plus(cashInD).minus(cashOutD).plus(D(outboxQueued.total)) : null;
   const countedD    = counted ? D(counted) : null;
-  const diffD       = expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
+  // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
+  const isElevatedRole = me?.role === "admin" || me?.role === "manager";
+  const showExpected = isElevatedRole || countEntered;
+  const diffD       = showExpected && expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
   const hasVariance = diffD != null && diffD.abs().gt("0.005");
   // متغيّرات عددية للعرض ولتفادي تغييرات JSX الأكبر
   const cashIn      = cashInD.toNumber();
   const cashOut     = cashOutD.toNumber();
   const openingBal  = openingD.toNumber();
-  const expectedNum = expectedD?.toNumber() ?? null;
-  const countedNum  = countedD?.toNumber() ?? null;
   const diff        = diffD?.toNumber() ?? null;
 
   return (
@@ -2255,7 +2267,9 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               ...(outboxQueued.count > 0
                 ? [["مبيعات غير مُزامنة (نقدها بالدرج)", `${outboxQueued.count} فاتورة · ${fmt(outboxQueued.total)} د.ع`] as [string, string]]
                 : []),
-              ...(report != null ? [["النقد المتوقع بالصندوق", `${fmt(openingBal + cashIn - cashOut + outboxQueued.total)} د.ع`] as [string, string]] : []),
+              ...(report != null && showExpected
+                ? [["النقد المتوقع بالصندوق", `${fmt(openingBal + cashIn - cashOut + outboxQueued.total)} د.ع`] as [string, string]]
+                : []),
             ] as [string, string][]).map(([l, v]) => (
               <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "8px 0", borderBottom: `1px solid ${C.border}` }}>
                 <span style={{ color: C.mutedFg }}>{l}</span>
@@ -2274,15 +2288,29 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               </div>
             ))}
 
-            {/* Counted cash: denomination evidence prevents a typed number from becoming unexplained money. */}
-            <div style={{ marginTop: 16 }}>
-              <CashCounter
-                value={closeCounts}
-                onChange={(counts, total) => {
-                  setCloseCounts(counts);
-                  setCounted(total);
+            <div
+              style={{ marginTop: 16 }}
+              onBlur={() => setCountEntered(counted.trim() !== "")}
+            >
+              <label htmlFor="pos-counted-cash" style={{ display: "block", marginBottom: 6, fontSize: 13, fontWeight: 800, color: C.fg }}>
+                النقد المعدود (د.ع)
+              </label>
+              <MoneyInput
+                id="pos-counted-cash"
+                value={counted}
+                onChange={(value) => {
+                  setCounted(value);
+                  setCountEntered(false);
                 }}
+                placeholder="0"
+                ariaLabel="النقد المعدود عند إغلاق الوردية"
+                className="h-12 text-center text-lg font-extrabold"
               />
+              {!showExpected && (
+                <div style={{ marginTop: 6, fontSize: 12, color: C.mutedFg }}>
+                  أدخل ما عددته فعلياً في الصندوق لتظهر نتيجة المطابقة.
+                </div>
+              )}
               {diff !== null && (
                 <div style={{ marginTop: 7, fontSize: 14, fontWeight: 700, color: diff >= 0 ? C.success : C.danger, display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
                   <span>الفرق: {diff >= 0 ? "+" : ""}{fmt(diff)} د.ع</span>
@@ -2304,14 +2332,11 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               </div>
             )}
 
-            {/* تسليم نقد الدرج للخزينة (treasury-stage2) — اختياريّ، بيد مديرٍ مستلِم. */}
-            <ShiftHandoverSection
-              C={C}
-              recipients={recipientsQ.data ?? []}
-              value={handover}
-              onChange={setHandover}
-              loading={recipientsQ.isLoading}
-            />
+            {/* العهدة الوسيطة (imprest، ٢٨/٧/٢٦): يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق
+                (drawer→0) — لا اختيار مستلِم. الوردية التالية تبدأ بعهدةٍ جديدة تُسحَب من الخزينة. */}
+            <div style={{ marginTop: 14, padding: "10px 12px", background: C.muted, border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 12.5, color: C.mutedFg }}>
+              يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق (تسليمٌ كامل). الوردية التالية تبدأ بعهدةٍ جديدة من الخزينة.
+            </div>
 
             {/* ش٤ أوفلاين: لا مصدر مالي قبل ترحيل الفاتورة، لذلك لا يوجد تجاوز للإغلاق. */}
             {outboxQueued.count > 0 && (
@@ -2334,14 +2359,12 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 إلغاء
               </button>
               <button
-                disabled={!counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover)}
+                disabled={!counted || closeShift.isPending || closeBlocked || hasVariance}
                 onClick={() => shift && closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
-                  countedBreakdown: closeCounts,
-                  handover: buildHandoverPayload(handover),
                 })}
-                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
+                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked || hasVariance ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked || hasVariance ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked || hasVariance ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
                 {closeShift.isPending ? "جارٍ الإغلاق…" : closeBlocked ? "أكمل المزامنة أولاً" : hasVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}
               </button>
             </div>

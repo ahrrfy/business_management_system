@@ -37,6 +37,7 @@ import { nextInvoiceNumber } from "../numbering";
 import { getUnitPrice, tryGetUnitPrice, resolveTier, type PriceTier } from "../pricing";
 import { type Actor, requireDb, withTx } from "../tx";
 import { flowNotify } from "../whatsapp";
+import { userNameSnapshot } from "../userSnapshot";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
 
 export async function createSale(input: CreateSaleInput, actor: Actor): Promise<CreateSaleResult> {
@@ -473,6 +474,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     // 8. Invoice header.
     const invoiceNumber = await nextInvoiceNumber(tx, input.branchId);
     const status = computeInvoiceStatus(toDbMoney(effectiveTotalD), toDbMoney(paidNow));
+    const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
     const insRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: input.sourceType,
@@ -504,6 +506,8 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       originatedOffline: !!input.offlineCapture,
       offlineReceiptNumber: input.offlineCapture?.offlineReceiptNumber ?? null,
       capturedAt: input.offlineCapture?.capturedAt ?? null,
+      salespersonNameSnapshot,
+      posDeviceId: input.offlineCapture?.deviceId ?? input.deviceId ?? null,
       createdBy: actor.userId,
     });
     const invoiceId = extractInsertId(insRes);

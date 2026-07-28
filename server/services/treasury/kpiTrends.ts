@@ -45,6 +45,7 @@ async function fetchDailySparkline(
       FROM receipts r
       WHERE r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED' AND r.direction = 'IN'
         AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
         ${branchFilter}
         ${bucketFilter}
       GROUP BY DATE(r.createdAt) ORDER BY day ASC
@@ -55,6 +56,7 @@ async function fetchDailySparkline(
       FROM receipts r
       WHERE r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED' AND r.direction = 'OUT'
         AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
         ${branchFilter}
         ${bucketFilter}
       GROUP BY DATE(r.createdAt) ORDER BY day ASC
@@ -118,6 +120,7 @@ export async function getKpiTrends(
       FROM receipts r
       WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
         AND DATE(r.createdAt) = CURDATE()
+        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
         ${branchFilterR} ${bucketFilterR}
     `),
   );
@@ -127,6 +130,7 @@ export async function getKpiTrends(
       FROM receipts r
       WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
         AND DATE(r.createdAt) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
         ${branchFilterR} ${bucketFilterR}
     `),
   );

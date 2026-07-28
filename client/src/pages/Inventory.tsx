@@ -276,7 +276,7 @@ export default function Inventory() {
               {rows.map((r) => {
                 const isEditing = editing === r.variantId;
                 return (
-                  <tr key={r.variantId} className={`border-t ${r.isLow ? "bg-amber-50/50" : ""}`}>
+                  <tr key={r.variantId} className={`border-t ${r.isLow ? "bg-[var(--sem-warn-bg)]" : ""}`}>
                     <td className="p-2 font-medium">{r.productName}</td>
                     <td className="p-2 text-xs">
                       {variantLabel(r)} <span className="text-muted-foreground font-mono" dir="ltr">({r.sku})</span>

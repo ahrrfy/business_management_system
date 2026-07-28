@@ -77,6 +77,7 @@ export interface InvoicePrintData {
   /** الرقم الضريبي **للشركة** (من إعدادات النظام) — يُطبع في «معلومات ضريبية» بجانب رقم العميل. */
   companyTaxId?: string | null;
   paymentMethod?: string | null;
+  salespersonName?: string | null;
   notes?: string | null;
   items: {
     productName: string;
@@ -124,6 +125,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     customerAddress: d.customerAddress,
     customerPhone: d.customerPhone,
     paymentMethod: d.paymentMethod,
+    salesRep: d.salespersonName,
     items: d.items.map((it) => ({
       productName: it.productName,
       unitName: it.unitName,
@@ -824,6 +826,8 @@ export interface ReceiptBrowserData {
     total: string | number;
   }[];
   subtotal: string | number;
+  /** خصم الفاتورة الكلي، إن وُجد. */
+  discount?: string | number | null;
   tax?: string | number | null;
   total: string | number;
   paid?: string | number | null;
@@ -885,6 +889,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
   <div style="font-size:10.5px;">
     <div style="display:flex;justify-content:space-between;"><span>المجموع:</span><span>${fmt(d.subtotal)}</span></div>
+    ${Number(d.discount ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;"><span>الخصم:</span><span>-${fmt(d.discount)}</span></div>` : ''}
     ${Number(d.tax ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;"><span>الضريبة:</span><span>${fmt(d.tax)}</span></div>` : ''}
     <div style="display:flex;justify-content:space-between;font-weight:900;font-size:14px;margin:1.5mm 0;
       padding:1.5mm 0;border-top:1px solid #000;border-bottom:1px solid #000;">

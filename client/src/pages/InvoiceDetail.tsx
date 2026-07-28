@@ -12,6 +12,8 @@ import { buildInvoiceMessage } from "@/lib/whatsapp";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { confirm } from "@/lib/confirm";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
+import { printReceipt } from "@/lib/printing/print";
+import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { allocateLineTax } from "@/components/invoice";
 import { D, fmt, round2 } from "@/lib/money";
 import { cn } from "@/lib/utils";
@@ -20,6 +22,8 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { useEffect, useState } from "react";
 import { Link, useParams } from "wouter";
 import { Paperclip } from "lucide-react";
+import { Printer } from "lucide-react";
+import { notify } from "@/lib/notify";
 
 const STATUS: Record<string, string> = {
   PENDING: "معلّقة",
@@ -100,6 +104,7 @@ export default function InvoiceDetail() {
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
+  const [printingReceipt, setPrintingReceipt] = useState(false);
   // idempotency: مفتاح ثابت لكل دفعة (يتجدّد بعد النجاح) ⇒ نقرة مزدوجة لا تُسجّل دفعتين.
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
 
@@ -141,6 +146,25 @@ export default function InvoiceDetail() {
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "sales", "FULL", ["cashier", "manager"]);
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
+
+  async function reprintThermal() {
+    if (printingReceipt) return;
+    setPrintingReceipt(true);
+    try {
+      const result = await printReceipt(invoiceToReceipt(data));
+      if (result.via === "server") {
+        notify.ok("تمت إعادة الطباعة", `أُرسلت الفاتورة ${data.invoiceNumber} إلى طابعة الكاشير`);
+      } else if (result.via === "thermal") {
+        notify.ok("تمت إعادة الطباعة الحرارية", `أُرسلت الفاتورة ${data.invoiceNumber} إلى الطابعة المربوطة`);
+      } else {
+        notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة الحرارية البديلة");
+      }
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setPrintingReceipt(false);
+    }
+  }
 
   async function submit() {
     setError("");
@@ -205,6 +229,14 @@ export default function InvoiceDetail() {
               remaining: remaining.toFixed(2),
             })}
           />
+          <Button
+            size="sm"
+            disabled={printingReceipt}
+            onClick={() => void reprintThermal()}
+          >
+            <Printer aria-hidden className="size-4" />
+            {printingReceipt ? "جارٍ إعادة الطباعة…" : "إعادة طباعة حرارية"}
+          </Button>
           <Button variant="outline" size="sm" onClick={async () => {
             // توزيع ضريبة الفاتورة على السطور لعمود «الضريبة» في A4 (نفس خوارزمية شاشة التحرير:
             // آخر سطر يمتصّ فرق التقريب ⇒ Σ الحصص = data.taxAmount بلا انجراف).
@@ -218,6 +250,7 @@ export default function InvoiceDetail() {
               invoiceNumber: data.invoiceNumber,
               invoiceDate: data.invoiceDate,
               customerName: data.customerName,
+              salespersonName: data.salespersonName,
               companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
               subtotal: data.subtotal,
               discountAmount: data.discountAmount,
@@ -254,6 +287,9 @@ export default function InvoiceDetail() {
             <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
               <Field label="المصدر">{SOURCE[data.sourceType] ?? data.sourceType}</Field>
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
+              <Field label="موظف المبيعات">{data.salespersonName ?? "—"}</Field>
+              <Field label="الوردية">{data.shiftId ? `#${data.shiftId} — ${data.shiftType ?? "—"}` : "—"}</Field>
+              <Field label="محطة البيع"><span dir="ltr" className="font-mono text-xs">{data.deviceId ?? "—"}</span></Field>
               <Field label="التاريخ">{fmtDate(data.invoiceDate)}</Field>
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
               {data.customerId && (
@@ -289,8 +325,42 @@ export default function InvoiceDetail() {
               <div className="whitespace-pre-wrap">{data.notes}</div>
             </div>
           )}
+          {data.status === "CANCELLED" && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+              ألغيت بواسطة: <strong>{data.cancelledByName ?? "غير موثّق"}</strong>
+              {data.cancelledAt ? ` — ${fmtDateTime(data.cancelledAt)}` : ""}
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      {(data.returns ?? []).length > 0 && (
+        <Card>
+          <CardHeader className="pb-3"><CardTitle className="text-base">سجل المرتجعات ومنفّذها</CardTitle></CardHeader>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">التاريخ</th>
+                    <th className="px-3 py-2 font-medium">منفّذ المرتجع</th>
+                    <th className="px-3 py-2 font-medium text-right">القيمة</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.returns.map((r) => (
+                    <tr key={r.id} className="border-t">
+                      <td className="px-3 py-2" dir="ltr">{fmtDateTime(r.createdAt)}</td>
+                      <td className="px-3 py-2">{r.performedByName ?? "غير موثّق"}</td>
+                      <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(D(r.amount).abs().toString())}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">البنود</CardTitle></CardHeader>

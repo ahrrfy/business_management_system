@@ -806,6 +806,48 @@
       "when": 1785456000000,
       "tag": "0115_chart_of_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "5",
+      "when": 1785542400000,
+      "tag": "0116_gifts",
+      "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "5",
+      "when": 1785628800000,
+      "tag": "0117_reservations",
+      "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "5",
+      "when": 1785715200000,
+      "tag": "0118_invoice_sales_audit",
+      "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "5",
+      "when": 1785801600000,
+      "tag": "0119_gift_campaigns",
+      "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "5",
+      "when": 1785888000000,
+      "tag": "0120_shift_treasury_float",
+      "breakpoints": true
+    },
+    {
+      "idx": 121,
+      "version": "5",
+      "when": 1785974400000,
+      "tag": "0121_storefront_sale_units",
+      "breakpoints": true
     }
   ]
 }

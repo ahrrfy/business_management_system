@@ -27,6 +27,7 @@ export interface VariantEditUnit {
   unitName: string;
   conversionFactor: string;
   isBaseUnit: boolean;
+  isStoreSaleUnit: boolean;
   retail: string; // سعر المفرد (RETAIL) — فارغ إن لم يُعرَّف
   wholesale: string; // سعر الجملة (WHOLESALE)
   government: string; // سعر الحكومي (GOVERNMENT) — يجب أن يُعاد إرساله عند الحفظ وإلّا حُذف (upsert يمسح ثم يُدرِج)
@@ -150,7 +151,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       isBundle: !!p.isBundle,
       isActive: !!p.isActive,
       ...consignFields,
-      unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }],
+      unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, retail: "", wholesale: "", government: "" }],
       variants: [],
       images,
     };
@@ -203,6 +204,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     // «12.0000» ⇒ «12»: يمنع رفض assertValidUnitFactors عند حفظٍ لا يلمس حقل المعامل (إصلاح حاصر).
     conversionFactor: normalizeFactor(u.conversionFactor),
     isBaseUnit: !!u.isBaseUnit,
+    isStoreSaleUnit: !!u.isStoreSaleUnit,
     retail: priceOf(Number(u.id), "RETAIL"),
     wholesale: priceOf(Number(u.id), "WHOLESALE"),
     government: priceOf(Number(u.id), "GOVERNMENT"),
@@ -221,7 +223,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     isBundle: !!p.isBundle,
     isActive: !!p.isActive,
     ...consignFields,
-    unitTemplate: unitTemplate.length ? unitTemplate : [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }],
+    unitTemplate: unitTemplate.length ? unitTemplate : [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, retail: "", wholesale: "", government: "" }],
     variants: variantRows,
     images,
   };
@@ -233,6 +235,7 @@ export interface UpdateUnitTemplate {
   unitName: string;
   conversionFactor: string;
   isBaseUnit: boolean;
+  isStoreSaleUnit?: boolean;
   prices: Array<{ priceTier: PriceTier; price: string }>;
 }
 
@@ -364,7 +367,14 @@ async function upsertVariantUnits(
       unitId = Number(match.id);
       await tx
         .update(productUnits)
-        .set({ unitName: name, conversionFactor: t.isBaseUnit ? "1" : t.conversionFactor, barcode, isBaseUnit: t.isBaseUnit, isActive: true })
+        .set({
+          unitName: name,
+          conversionFactor: t.isBaseUnit ? "1" : t.conversionFactor,
+          barcode,
+          isBaseUnit: t.isBaseUnit,
+          isStoreSaleUnit: t.isStoreSaleUnit ?? t.isBaseUnit,
+          isActive: true,
+        })
         .where(eq(productUnits.id, unitId));
       await tx.delete(productPrices).where(eq(productPrices.productUnitId, unitId));
     } else {
@@ -374,6 +384,7 @@ async function upsertVariantUnits(
         conversionFactor: t.isBaseUnit ? "1" : t.conversionFactor,
         barcode,
         isBaseUnit: t.isBaseUnit,
+        isStoreSaleUnit: t.isStoreSaleUnit ?? t.isBaseUnit,
       });
       unitId = extractInsertId(res);
       inserted.push({ unitId, barcode });

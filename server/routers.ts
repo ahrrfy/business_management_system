@@ -11,6 +11,7 @@ import { shiftRouter } from "./routers/shiftRouter";
 import { catalogRouter } from "./routers/catalogRouter";
 import { supplierRouter } from "./routers/supplierRouter";
 import { consignmentRouter } from "./routers/consignmentRouter";
+import { giftsRouter } from "./routers/giftsRouter";
 import { branchRouter } from "./routers/branchRouter";
 import { workOrderRouter } from "./routers/workOrderRouter";
 import { customerRouter } from "./routers/customerRouter";
@@ -67,6 +68,7 @@ import { printPricingRouter } from "./routers/printPricingRouter";
 import { tasksRouter } from "./routers/tasksRouter";
 import { contactsRouter } from "./routers/contactsRouter";
 import { broadcastsRouter } from "./routers/broadcastsRouter";
+import { reservationsRouter } from "./routers/reservationsRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -88,6 +90,7 @@ export const appRouter = router({
   catalog: catalogRouter,
   suppliers: supplierRouter,
   consignments: consignmentRouter,
+  gifts: giftsRouter,
   branches: branchRouter,
   workOrders: workOrderRouter,
   customers: customerRouter,
@@ -164,6 +167,8 @@ export const appRouter = router({
   // يعيد استعمال مفتاح صلاحيات «campaigns» القائم (campaignsManagerProcedure/campaignsReadProcedure)
   // — لا مفتاح جديد. لا واجهة مستهلكة بعد (T5.3).
   broadcasts: broadcastsRouter,
+  // الحجوزات (R-م٣، ٢٧/٧/٢٦): حجز ناعم للعملاء (ATP = رصيد فعليّ − محجوز) — لا يمسّ المخزون الفعلي.
+  reservations: reservationsRouter,
 });
 
 export type AppRouter = typeof appRouter;

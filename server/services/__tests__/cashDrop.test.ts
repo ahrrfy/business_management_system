@@ -219,7 +219,8 @@ describe("createCashDrop — تكامل تقرير إقفال اليوم", () =>
     const res = await getDayCloseReconciliation({ date: DATE, branchId: 1 });
     const line = res.shifts.find((x) => x.shiftId === shiftId)!;
     expect(line.cashDrops).toBe("40000.00");
-    expect(line.handoversCash).toBe("0.00"); // ليس تسليم إغلاق
+    // العهدة الوسيطة: الإغلاق يعيد كامل المعدود (110000) للخزينة تلقائياً (CH-، منفصلٌ عن دلو cashDrops).
+    expect(line.handoversCash).toBe("110000.00");
     expect(line.expected).toBe("110000.00"); // 100000 + 50000 − 40000
     expect(line.counted).toBe("110000.00");
     expect(line.drift).toBe("0.00");

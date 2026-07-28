@@ -37,6 +37,7 @@ const SupplierEdit = lazy(() => import("@/pages/SupplierEdit"));
 // وتُسطّح الشريط الجانبي إلى مَدخل واحد لكل وحدة. المسارات القَديمة للقوائم تُعيد التوجيه.
 const CrmHub = lazy(() => import("@/pages/CrmHub"));
 const SuppliersHub = lazy(() => import("@/pages/SuppliersHub"));
+const GiftsHub = lazy(() => import("@/pages/GiftsHub"));
 const InventoryHub = lazy(() => import("@/pages/InventoryHub"));
 const TreasuryHub = lazy(() => import("@/pages/TreasuryHub"));
 const CardAccount = lazy(() => import("@/pages/CardAccount"));
@@ -75,6 +76,7 @@ const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
 // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
 const TasksHub = lazy(() => import("@/pages/TasksHub"));
+const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
 const TaskDetail = lazy(() => import("@/pages/TaskDetail"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
@@ -324,6 +326,14 @@ export default function App() {
           </RequireRole>
         </Shell>
       </Route>
+      {/* الحجوزات (R-م٣): الأدوار = قوالب reservations≥READ (admin/manager/accountant/cashier/warehouse/sales_rep/auditor). */}
+      <Route path="/reservations">
+        <Shell>
+          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","sales_rep","auditor"]} module="reservations" level="READ">
+            <ReservationsHub />
+          </RequireRole>
+        </Shell>
+      </Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
       <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>
@@ -424,6 +434,7 @@ export default function App() {
       <Route path="/ar-aging"><Redirect to="/crm?tab=aging" /></Route>
       <Route path="/customers-statement"><RedirectKeepQuery to="/crm?tab=statement" /></Route>
       <Route path="/suppliers"><Shell><SuppliersHub /></Shell></Route>
+      <Route path="/gifts"><Shell><RequireRole roles={["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"]} module="gifts" level="READ"><GiftsHub /></RequireRole></Shell></Route>
       <Route path="/suppliers/new"><Shell><SupplierNew /></Shell></Route>
       <Route path="/suppliers/:id/edit"><Shell><SupplierEdit /></Shell></Route>
       {/* أُدمجت في وحدة الموردين (SuppliersHub) — إعادة توجيه تَحفظ الروابط القديمة */}

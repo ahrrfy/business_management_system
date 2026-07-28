@@ -19,8 +19,7 @@ import { Link } from "wouter";
 import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { notify } from "@/lib/notify";
-import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue } from "@/components/pos/ShiftHandoverSection";
-import { CashCounter } from "@/components/CashCounter";
+import { MoneyInput } from "@/components/form/MoneyInput";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
@@ -306,6 +305,15 @@ export default function PrintPOS() {
   const openShift = trpc.shifts.open.useMutation({
     onSuccess: async (res) => {
       await shiftQ.refetch();
+      // العهدة الوسيطة: تحذيرٌ لينٌ عند عجز الخزينة (الضابط التعويضي لقرار «الفتح مسموح مع تحذير»).
+      if (res.treasuryWarning) {
+        notify.warn(
+          "تنبيه: عجز الخزينة",
+          res.treasuryBalanceAfter != null
+            ? `عهدة الافتتاح فاقت رصيد الخزينة — الرصيد الآن ${fmt(Number(res.treasuryBalanceAfter))} د.ع. موّل الخزينة.`
+            : "عهدة الافتتاح فاقت رصيد الخزينة (عجز). أبلغ المدير لتمويل الخزينة.",
+        );
+      }
       await printDoc({
         kind: "opening", title: SHOP, subtitle: "بيان الرصيد الافتتاحي — قسم الطباعة",
         meta: [`وردية #${res.shiftId}`, fmtDateTime(new Date())],
@@ -455,7 +463,7 @@ export default function PrintPOS() {
       </div>
 
       {receipt && <ReceiptOverlay C={C} r={receipt} onDismiss={() => setReceipt(null)} onPrint={() => printReceipt(brandedReceipt(receipt))} />}
-      {shifting && <ShiftCloseDialog C={C} shift={shift} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
+      {shifting && <ShiftCloseDialog C={C} shift={shift} isElevatedRole={isElevatedRole} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
       {creditPrompt && (
         <CreditApprovalDialog C={C} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
           isPending={sale.isPending} onApprove={() => submit(false, { email: mgrEmail, password: mgrPwd })} onCancel={() => setCreditPrompt(null)} />
@@ -920,14 +928,12 @@ function Bar({ C, c, k, v, copyTitle }: { C: C; c: string; k: string; v: number;
 }
 
 // ─── ShiftCloseDialog (نقد ومبيعات فقط — بلا كلفة) ───────────────────────────
-function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNullable<ShiftData>; onClose: () => void; onClosed: () => void }) {
+function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: C; shift: NonNullable<ShiftData>; isElevatedRole: boolean; onClose: () => void; onClosed: () => void }) {
   const [counted, setCounted] = useState("");
-  const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
-  const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
+  const [countEntered, setCountEntered] = useState(false);
   const utils = trpc.useUtils();
   const reportQ = trpc.shifts.report.useQuery({ shiftId: shift.id });
   const report = reportQ.data;
-  const recipientsQ = trpc.shifts.handoverRecipients.useQuery();
 
   const closeShift = trpc.shifts.close.useMutation({
     onSuccess: async (r) => {
@@ -956,7 +962,9 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
   const cashOut = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "OUT").reduce((s, p) => s.plus(D(p.total)), D(0));
   const openingBal = D(shift.openingBalance ?? 0).toNumber();
   const expected = report != null ? D(shift.openingBalance ?? 0).plus(cashIn).minus(cashOut).toNumber() : null;
-  const diff = expected != null && counted ? Number(counted) - expected : null;
+  // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
+  const showExpected = isElevatedRole || countEntered;
+  const diff = showExpected && expected != null && counted ? Number(counted) - expected : null;
   const hasVariance = diff != null && Math.abs(diff) >= 0.01;
 
   return (
@@ -968,21 +976,36 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
           <div style={{ padding: "24px 0", textAlign: "center", color: C.mutedFg }}>جارٍ تحميل التقرير…</div>
         ) : (
           <>
-            {([["عدد الفواتير", `${report?.invoiceCount ?? 0} فاتورة`], ["إجمالي المبيعات", `${fmt(Number(report?.salesTotal ?? 0))} د.ع`], ["الرصيد الافتتاحي", `${fmt(openingBal)} د.ع`], ...(expected != null ? [["النقد المتوقع بالصندوق", `${fmt(expected)} د.ع`] as [string, string]] : [])] as [string, string][]).map(([l, v]) => (
+            {([["عدد الفواتير", `${report?.invoiceCount ?? 0} فاتورة`], ["إجمالي المبيعات", `${fmt(Number(report?.salesTotal ?? 0))} د.ع`], ["الرصيد الافتتاحي", `${fmt(openingBal)} د.ع`], ...(expected != null && showExpected ? [["النقد المتوقع بالصندوق", `${fmt(expected)} د.ع`] as [string, string]] : [])] as [string, string][]).map(([l, v]) => (
               <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "7px 0", borderBottom: `1px solid ${C.border}` }}><span style={{ color: C.mutedFg }}>{l}</span><span style={{ fontWeight: 700, color: C.fg }}>{v}</span></div>
             ))}
             {(report?.payments ?? []).filter((p) => Number(p.total) > 0).length > 0 && <div style={{ margin: "10px 0 4px", fontSize: 12, color: C.mutedFg, fontWeight: 700 }}>تفصيل طرق الدفع:</div>}
             {(report?.payments ?? []).filter((p) => Number(p.total) > 0).map((p) => (
               <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", borderBottom: `1px dashed ${C.border}` }}><span style={{ color: C.mutedFg }}>{p.method} {p.direction === "IN" ? "وارد" : "صادر"} ({p.count})</span><span style={{ fontWeight: 600, color: p.direction === "OUT" ? C.danger : C.fg }}>{fmt(Number(p.total))} د.ع</span></div>
             ))}
-            <div style={{ marginTop: 16 }}>
-              <CashCounter
-                value={closeCounts}
-                onChange={(counts, total) => {
-                  setCloseCounts(counts);
-                  setCounted(total);
+            <div
+              style={{ marginTop: 16 }}
+              onBlur={() => setCountEntered(counted.trim() !== "")}
+            >
+              <label htmlFor="print-counted-cash" style={{ display: "block", marginBottom: 6, fontSize: 13, fontWeight: 800, color: C.fg }}>
+                النقد المعدود (د.ع)
+              </label>
+              <MoneyInput
+                id="print-counted-cash"
+                value={counted}
+                onChange={(value) => {
+                  setCounted(value);
+                  setCountEntered(false);
                 }}
+                placeholder="0"
+                ariaLabel="النقد المعدود عند إغلاق وردية الطباعة"
+                className="h-12 text-center text-lg font-extrabold"
               />
+              {!showExpected && (
+                <div style={{ marginTop: 6, fontSize: 12, color: C.mutedFg }}>
+                  أدخل ما عددته فعلياً في الصندوق لتظهر نتيجة المطابقة.
+                </div>
+              )}
               {diff !== null && (
                 <div style={{ marginTop: 7, fontSize: 14, fontWeight: 700, color: diff >= 0 ? C.success : C.danger, display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
                   <span>الفرق: {diff >= 0 ? "+" : ""}{fmt(diff)} د.ع</span>
@@ -1002,23 +1025,18 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
                 </div>
               </div>
             )}
-            <ShiftHandoverSection
-              C={C}
-              recipients={recipientsQ.data ?? []}
-              value={handover}
-              onChange={setHandover}
-              loading={recipientsQ.isLoading}
-            />
+            {/* العهدة الوسيطة (imprest، ٢٨/٧/٢٦): يعود كامل النقد المعدود للخزينة تلقائياً عند الإغلاق. */}
+            <div style={{ marginTop: 14, padding: "10px 12px", background: C.muted, border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 12.5, color: C.mutedFg }}>
+              يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق (تسليمٌ كامل). الوردية التالية تبدأ بعهدةٍ جديدة من الخزينة.
+            </div>
             <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
               <button onClick={onClose} style={{ flex: 1, height: 46, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: C.fg }}>إلغاء</button>
-              <button disabled={!counted || closeShift.isPending || hasVariance || handoverIncomplete(handover)}
+              <button disabled={!counted || closeShift.isPending || hasVariance}
                 onClick={() => closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
-                  countedBreakdown: closeCounts,
-                  handover: buildHandoverPayload(handover),
                 })}
-                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? C.muted : C.danger, color: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>{closeShift.isPending ? "جارٍ الإغلاق…" : hasVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}</button>
+                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || hasVariance ? C.muted : C.danger, color: !counted || closeShift.isPending || hasVariance ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || hasVariance ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>{closeShift.isPending ? "جارٍ الإغلاق…" : hasVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}</button>
             </div>
           </>
         )}

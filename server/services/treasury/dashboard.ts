@@ -142,6 +142,10 @@ export async function getDashboard(
 
   // ── (د) مقبوضات/مصروفات اليوم (مجموع كل طرق الدفع) ──
   const branchFilterRaw = effectiveBranch != null ? sql`AND branchId = ${effectiveBranch}` : sql``;
+  // العهدة الوسيطة (imprest): استبعاد إيصالات الحركة الداخلية من «مقبوضات اليوم» — CH- (تسليم/إرجاع
+  // درج→خزينة)، CD- (سحب)، SF- (عهدة خزينة→درج)، CT- (تحويل بين فروع)، TF- (تمويل رأس مال)،
+  // CANCEL- (إلغاء تحويل). ليست قبضاً خارجياً؛ لولا استبعادها لحُسب نقد المبيعات مرّتين (بيع DRAWER IN
+  // ثم إرجاع TREASURY IN) كل إغلاق. أرصدة الدرج/الخزينة تبقى صحيحة (تُحسب من استعلاماتها الخاصّة).
   const todayReceipts = rowsOf(
     await db.execute(sql`
       SELECT CAST(COALESCE(SUM(amount), 0) AS CHAR) AS total
@@ -150,6 +154,7 @@ export async function getDashboard(
         AND receiptStatus = 'COMPLETED'
         AND receiptApprovalStatus = 'APPROVED'
         AND DATE(createdAt) = CURDATE()
+        AND COALESCE(referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
         ${branchFilterRaw}
     `),
   );

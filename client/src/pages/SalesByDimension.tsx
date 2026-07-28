@@ -30,7 +30,7 @@ const selectCls =
 export default function SalesByDimension() {
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
-  const [dimension, setDimension] = useState<Dimension>("customer");
+  const [dimension, setDimension] = useState<Dimension>("cashier");
 
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.salesByDimension.useQuery({
@@ -44,10 +44,18 @@ export default function SalesByDimension() {
   const totals = q.data?.totals;
   // المحصَّل/المتبقّي خاصيّتا فاتورة — لا معنى لهما في بُعد الصنف (الخادم يعيدهما صفرين).
   const showPaidCols = dimension !== "product";
+  const showSalesAuditCols = dimension !== "product";
 
   const kpis: KpiItem[] = totals
     ? [
-        { label: "إجمالي الإيراد", value: fmtAr(totals.revenue), tone: "info" },
+        { label: "إجمالي المبيعات", value: fmtAr(totals.grossSales), tone: "info" },
+        ...(showSalesAuditCols
+          ? [
+              { label: "الخصومات", value: fmtAr(totals.discounts), tone: "warning" as const },
+              { label: "المرتجعات", value: fmtAr(totals.returns), tone: "warning" as const },
+              { label: "صافي المبيعات", value: fmtAr(totals.netSales), tone: "positive" as const },
+            ]
+          : []),
         // بند 9 (٧/٧): الربح والهامش كانا في ردّ الخادم بلا عرض — سؤال «أين نكسب؟» صار مرئياً.
         { label: "الربح", value: fmtAr(totals.profit), tone: Number(totals.profit) < 0 ? "warning" : "positive" },
         { label: "الهامش", value: `${totals.marginPct}%`, tone: "info" },
@@ -76,12 +84,34 @@ export default function SalesByDimension() {
         cell: ({ row }) => <span dir="ltr" className="tabular-nums">{row.original.invoices}</span>,
       },
       {
-        id: "revenue",
-        header: "الإيراد",
-        accessorFn: (r) => Number(r.revenue),
-        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.revenue)}</span>,
+        id: "grossSales",
+        header: showSalesAuditCols ? "إجمالي المبيعات" : "الإيراد",
+        accessorFn: (r) => Number(showSalesAuditCols ? r.grossSales : r.revenue),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(showSalesAuditCols ? row.original.grossSales : row.original.revenue)}</span>,
       },
     ];
+    if (showSalesAuditCols) {
+      base.push(
+        {
+          id: "discounts",
+          header: "الخصومات",
+          accessorFn: (r) => Number(r.discounts),
+          cell: ({ row }) => <span dir="ltr" className="tabular-nums text-[var(--sem-warning)]">{fmtAr(row.original.discounts)}</span>,
+        },
+        {
+          id: "returns",
+          header: "المرتجعات",
+          accessorFn: (r) => Number(r.returns),
+          cell: ({ row }) => <span dir="ltr" className="tabular-nums text-destructive">{fmtAr(row.original.returns)}</span>,
+        },
+        {
+          id: "netSales",
+          header: "صافي المبيعات",
+          accessorFn: (r) => Number(r.netSales),
+          cell: ({ row }) => <span dir="ltr" className="tabular-nums font-medium text-money-positive">{fmtAr(row.original.netSales)}</span>,
+        },
+      );
+    }
     if (showPaidCols) {
       base.push(
         {
@@ -130,7 +160,7 @@ export default function SalesByDimension() {
       },
     );
     return base;
-  }, [showPaidCols, dimLabel]);
+  }, [showPaidCols, showSalesAuditCols, dimLabel]);
 
   function onExport() {
     exportRows(rows, {
@@ -138,7 +168,14 @@ export default function SalesByDimension() {
       columns: [
         { key: "label", header: dimLabel },
         { key: "invoices", header: "عدد الفواتير", map: (r) => r.invoices },
-        { key: "revenue", header: "الإيراد", map: (r) => Number(r.revenue) },
+        { key: "grossSales", header: showSalesAuditCols ? "إجمالي المبيعات" : "الإيراد", map: (r) => Number(showSalesAuditCols ? r.grossSales : r.revenue) },
+        ...(showSalesAuditCols
+          ? [
+              { key: "discounts", header: "الخصومات", map: (r: Row) => Number(r.discounts) },
+              { key: "returns", header: "المرتجعات", map: (r: Row) => Number(r.returns) },
+              { key: "netSales", header: "صافي المبيعات", map: (r: Row) => Number(r.netSales) },
+            ]
+          : []),
         ...(showPaidCols
           ? [
               { key: "paid", header: "المحصّل", map: (r: Row) => Number(r.paid) },
@@ -163,7 +200,14 @@ export default function SalesByDimension() {
       columns: [
         { key: "label", label: dimLabel },
         { key: "invoices", label: "عدد الفواتير", align: "left" },
-        { key: "revenue", label: "الإيراد", align: "left" },
+        { key: "grossSales", label: showSalesAuditCols ? "إجمالي المبيعات" : "الإيراد", align: "left" },
+        ...(showSalesAuditCols
+          ? [
+              { key: "discounts", label: "الخصومات", align: "left" as const },
+              { key: "returns", label: "المرتجعات", align: "left" as const },
+              { key: "netSales", label: "صافي المبيعات", align: "left" as const },
+            ]
+          : []),
         ...(showPaidCols
           ? [
               { key: "paid", label: "المحصّل", align: "left" as const },
@@ -177,7 +221,10 @@ export default function SalesByDimension() {
       rows: rows.map((r) => ({
         label: r.label,
         invoices: String(r.invoices),
-        revenue: fmtAr(r.revenue),
+        grossSales: fmtAr(showSalesAuditCols ? r.grossSales : r.revenue),
+        discounts: fmtAr(r.discounts),
+        returns: fmtAr(r.returns),
+        netSales: fmtAr(r.netSales),
         paid: fmtAr(r.paid),
         unpaid: fmtAr(r.unpaid),
         cost: fmtAr(r.cost),
@@ -193,7 +240,13 @@ export default function SalesByDimension() {
                 ]
               : []),
             { label: "الربح", value: fmtAr(totals.profit) },
-            { label: "إجمالي الإيراد", value: fmtAr(totals.revenue), large: true, bold: true },
+            ...(showSalesAuditCols
+              ? [
+                  { label: "الخصومات", value: fmtAr(totals.discounts) },
+                  { label: "المرتجعات", value: fmtAr(totals.returns) },
+                ]
+              : []),
+            { label: showSalesAuditCols ? "صافي المبيعات" : "إجمالي الإيراد", value: fmtAr(showSalesAuditCols ? totals.netSales : totals.revenue), large: true, bold: true },
           ]
         : undefined,
     });
@@ -202,7 +255,7 @@ export default function SalesByDimension() {
   return (
     <ReportShell
       title="المبيعات حسب بُعد"
-      description="تجميع المبيعات على محور مختار (عميل/فرع/طريقة دفع/كاشير/صنف) مع التكلفة والربح والهامش."
+      description="أداء موظفي المبيعات أو أي محور آخر: الفواتير والخصومات والمرتجعات وصافي المبيعات والتكلفة والربح."
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}

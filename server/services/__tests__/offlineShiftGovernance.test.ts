@@ -112,7 +112,9 @@ describe("getShiftReport — منع الترحيل الأوفلايني بعد �
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     expect(await db().select().from(s.invoices)).toHaveLength(0);
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    // العهدة الوسيطة: الإغلاق أنشأ إيصالَي الإرجاع التلقائيّ (CH- درج OUT + خزينة IN)؛ الترحيل
+    // الأوفلاينيّ المرفوض لم يكتب شيئاً (rollback ذرّيّ) ⇒ يبقى العدد 2 لا يزيد.
+    expect(await db().select().from(s.receipts)).toHaveLength(2);
     const report = await getShiftReport(1);
     expect(report).not.toBeNull();
     expect(report!.lateSyncedCount).toBe(0);

@@ -21,10 +21,12 @@ pnpm db:push                      # هجرة المخطط
 pnpm seed                         # admin + فرعان + منتجات عيّنة (idempotent)
 pnpm dev                          # http://localhost:3000
 pnpm check                        # فحص الأنواع (tsc)
+pnpm test:db:init                 # تهيئة قاعدة الاختبار طازجةً (يلزم مرّةً بعد تغيّر المخطط)
 pnpm test                         # اختبارات (vitest) ضد قاعدة erp_test
 ```
 - دخول: `admin@alroya.local` / `Admin@12345` (من `.env`). الإعدادات في `.env` (مُستثنى من git).
 - **علل بيئية محسومة:** `tsx watch` معطوب على هذا الجهاز → أمر `dev` يستخدم `node --watch-path=./server ... --import tsx`. Docker Desktop ينهار بعلّة «Inference manager» → عند الحاجة: أوقف كل عمليات docker ثم أعد التشغيل. الكوكي `sameSite:"lax"` ليعمل على localhost.
+- **قاعدة الاختبار المحلّية (erp-test-db@3310، MySQL 8.4.9):** `pnpm test`/`pre-commit` يفترضان مخطّطاً مُهيَّأً بالحاليّ؛ لكن `db:push` **التزايديّ** على قاعدة منجرفة يفشل على 8.4 (`ER_DROP_INDEX_FK`) فتتجمّد القاعدة وتسقط الاختبارات بـ«Unknown column» لا علاقة لها بالكود. الحلّ: **`pnpm test:db:init`** (إسقاط+إنشاء طازج ثم `db:push` + `ci-apply-extra-migrations` — نفس مسار CI) بدل الـpush التزايديّ. حرّاسه ترفض 3306 (مرآة الإنتاج) وأيّ اسم بلا «test». التفصيل والجذر (اسم FK تلقائيّ >٦٤ محرفاً كان يُفشل `db:push` الطازج على 8.4): [`docs/local-test-db.md`](docs/local-test-db.md).
 
 ## ٤. القاعدة الحاكمة (Definition of Done) — لا تُكسَر
 > **اكتمال أي وحدة = خلفية (API) + واجهة (شاشة) + فحص (`pnpm check`) + تحقّق (اختبار/جولة بصرية) = ١٠٠٪.**

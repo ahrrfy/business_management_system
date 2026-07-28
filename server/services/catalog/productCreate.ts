@@ -74,6 +74,7 @@ export interface CreateProductInput {
       conversionFactor: string;
       barcode?: string | null;
       isBaseUnit?: boolean;
+      isStoreSaleUnit?: boolean;
       prices?: Array<{ priceTier: PriceTier; price: string }>;
       // باركودات بديلة تُدرَج مع الوحدة في نفس المعاملة الذرّية.
       barcodeAliases?: Array<{ barcode: string; note?: string | null }>;
@@ -268,6 +269,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
           conversionFactor: u.conversionFactor,
           barcode: u.barcode ?? null,
           isBaseUnit: u.isBaseUnit ?? false,
+          isStoreSaleUnit: u.isStoreSaleUnit ?? u.isBaseUnit ?? false,
         });
         const productUnitId = extractInsertId(uRes);
         // print-catalog: وحدة أساس متغيّر البَند الأوّل = مخرَج الوصفة.

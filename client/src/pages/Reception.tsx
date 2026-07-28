@@ -42,9 +42,8 @@ import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
 import { fmtDate } from "@/lib/date";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue, type PosTokens } from "@/components/pos/ShiftHandoverSection";
 import { cn } from "@/lib/utils";
-import { CashCounter } from "@/components/CashCounter";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import {
   getServerBridgeStatus,
   isPaired,
@@ -59,17 +58,6 @@ import {
   type ReceiptBrowserData,
   type WorkOrderReceiptData,
 } from "@/lib/printing/print";
-
-// رموز قسم تسليم النقد بمتغيّرات النظام الدلالية (الاستقبال shadcn لا يستعمل رموز الكاشير C).
-const HANDOVER_TOKENS: PosTokens = {
-  card: "var(--card)",
-  border: "var(--border)",
-  muted: "var(--muted)",
-  mutedFg: "var(--muted-foreground)",
-  fg: "var(--foreground)",
-  primary: "var(--primary)",
-  danger: "var(--destructive)",
-};
 
 /**
  * شاشة الاستقبال — نقطة بيع هجينة لخدمة العملاء.
@@ -165,12 +153,9 @@ export default function Reception() {
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" });
   const shift = shiftQ.data ?? null;
   const [opening, setOpening] = useState("0");
-  const [openCounts, setOpenCounts] = useState<Record<number, number>>({});
   const [closing, setClosing] = useState(false);
   const [counted, setCounted] = useState("");
-  const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
-  const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
-  const recipientsQ = trpc.shifts.handoverRecipients.useQuery(undefined, { enabled: closing });
+  const [countEntered, setCountEntered] = useState(false);
   const branchName = useMemo(
     () => (branchesQ.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
     [branchesQ.data, branchId],
@@ -179,6 +164,15 @@ export default function Reception() {
   const openShiftM = trpc.shifts.open.useMutation({
     onSuccess: async (res) => {
       await shiftQ.refetch();
+      // العهدة الوسيطة: تحذيرٌ لينٌ عند عجز الخزينة (الضابط التعويضي لقرار «الفتح مسموح مع تحذير»).
+      if (res.treasuryWarning) {
+        notify.warn(
+          "تنبيه: عجز الخزينة",
+          res.treasuryBalanceAfter != null
+            ? `عهدة الافتتاح فاقت رصيد الخزينة — الرصيد الآن ${fmt(Number(res.treasuryBalanceAfter))} د.ع. موّل الخزينة.`
+            : "عهدة الافتتاح فاقت رصيد الخزينة (عجز). أبلغ المدير لتمويل الخزينة.",
+        );
+      }
       void printShiftOpen({
         shiftId: res.shiftId,
         openingBalance: Number(opening || 0),
@@ -218,8 +212,7 @@ export default function Reception() {
       });
       setClosing(false);
       setCounted("");
-      setCloseCounts({});
-      setHandover(emptyHandover);
+      setCountEntered(false);
       await utils.shifts.current.invalidate();
     },
     onError: (e) => notify.err(e),
@@ -859,15 +852,6 @@ export default function Reception() {
             onChange={(e) => setOpening(e.target.value)}
             className="mb-3 h-12 text-end text-lg font-extrabold tabular-nums"
           />
-          <div className="mb-4">
-            <CashCounter
-              value={openCounts}
-              onChange={(counts, total) => {
-                setOpenCounts(counts);
-                setOpening(total);
-              }}
-            />
-          </div>
           <Button
             className="h-12 w-full text-base font-bold"
             disabled={openShiftM.isPending || needsBranchChoice}
@@ -889,7 +873,9 @@ export default function Reception() {
     .filter((p) => p.method === "CASH" && p.direction === "OUT")
     .reduce((s, p) => s + Number(p.total), 0);
   const recExpected = Number(shift.openingBalance ?? 0) + recCashIn - recCashOut;
-  const recDiff = counted ? Number(counted) - recExpected : null;
+  // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
+  const showRecExpected = isElevatedRole || countEntered;
+  const recDiff = showRecExpected && counted ? Number(counted) - recExpected : null;
   const hasRecVariance = recDiff != null && Math.abs(recDiff) >= 0.01;
 
   return (
@@ -918,7 +904,9 @@ export default function Reception() {
                     ["عدد الفواتير", `${reportQ.data?.invoiceCount ?? 0}`],
                     ["إجمالي المبيعات", `${fmt(Number(reportQ.data?.salesTotal ?? 0))} د.ع`],
                     ["الرصيد الافتتاحي", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
-                    ["النقد المتوقَّع بالصندوق", `${fmt(recExpected)} د.ع`],
+                    ...(showRecExpected
+                      ? [["النقد المتوقَّع بالصندوق", `${fmt(recExpected)} د.ع`] as [string, string]]
+                      : []),
                   ] as [string, string][]
                 ).map(([l, v]) => (
                   <div key={l} className="flex justify-between border-b py-2 text-sm">
@@ -926,14 +914,29 @@ export default function Reception() {
                     <span className="font-bold tabular-nums" dir="ltr">{v}</span>
                   </div>
                 ))}
-                <div className="my-4">
-                  <CashCounter
-                    value={closeCounts}
-                    onChange={(counts, total) => {
-                      setCloseCounts(counts);
-                      setCounted(total);
+                <div
+                  className="my-4 space-y-1.5"
+                  onBlur={() => setCountEntered(counted.trim() !== "")}
+                >
+                  <label htmlFor="rec-counted-cash" className="block text-sm font-bold">
+                    النقد المعدود (د.ع)
+                  </label>
+                  <MoneyInput
+                    id="rec-counted-cash"
+                    value={counted}
+                    onChange={(value) => {
+                      setCounted(value);
+                      setCountEntered(false);
                     }}
+                    placeholder="0"
+                    ariaLabel="النقد المعدود عند إغلاق الوردية"
+                    className="h-12 text-center text-lg font-extrabold"
                   />
+                  {!showRecExpected && (
+                    <p className="text-xs text-muted-foreground">
+                      أدخل ما عددته فعلياً في الصندوق لتظهر نتيجة المطابقة.
+                    </p>
+                  )}
                 </div>
                 {recDiff !== null && (
                   <div
@@ -962,25 +965,20 @@ export default function Reception() {
                     </p>
                   </div>
                 )}
-                <ShiftHandoverSection
-                  C={HANDOVER_TOKENS}
-                  recipients={recipientsQ.data ?? []}
-                  value={handover}
-                  onChange={setHandover}
-                  loading={recipientsQ.isLoading}
-                />
+                {/* العهدة الوسيطة (imprest، ٢٨/٧/٢٦): يعود كامل النقد المعدود للخزينة تلقائياً عند الإغلاق. */}
+                <div className="mt-3.5 rounded-lg border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
+                  يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق (تسليمٌ كامل). الوردية التالية تبدأ بعهدةٍ جديدة من الخزينة.
+                </div>
                 <div className="mt-5 flex gap-2.5">
                   <Button variant="outline" className="flex-1" onClick={() => setClosing(false)}>
                     إلغاء
                   </Button>
                   <Button
                     className="flex-1"
-                    disabled={!counted || closeShiftM.isPending || hasRecVariance || handoverIncomplete(handover)}
+                    disabled={!counted || closeShiftM.isPending || hasRecVariance}
                     onClick={() => closeShiftM.mutate({
                       shiftId: shift.id,
                       countedCash: counted,
-                      countedBreakdown: closeCounts,
-                      handover: buildHandoverPayload(handover),
                     })}
                   >
                     {closeShiftM.isPending ? "جارٍ الإغلاق…" : hasRecVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}

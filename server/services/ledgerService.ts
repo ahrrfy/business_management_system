@@ -19,6 +19,9 @@ export type EntryType =
   | "CASH_HANDOVER"     // تسليم وردية → خزينة (نقل بين دلوَين داخل نفس الفرع)
   | "CASH_TRANSFER_OUT" // تحويل نقدي بين الفروع — الإرسال
   | "CASH_TRANSFER_IN"  // تحويل نقدي بين الفروع — الاستلام
+  // العهدة الوسيطة (imprest، ٢٨/٧/٢٦): حركات نقد لا تَمسّ revenue/cost (تُستثنى من الإيراد).
+  | "SHIFT_FLOAT_OUT"   // عهدة افتتاح وردية: سحبٌ من الخزينة → درج الكاشير (خزينة−، درج+ ضمنيّ)
+  | "TREASURY_FUNDING"  // تمويل الخزينة (إيداع رأس مال / رصيد افتتاحيّ للخزينة): مصدر خارجيّ → الخزينة
   // delivery-cod: عهدة جهة التوصيل (COD). DISPATCH/REMIT حركات عهدة (revenue=cost=0، تُستثنى من الإيراد).
   | "DELIVERY_DISPATCH" // إيقاف COD على عهدة الجهة عند الإرسال (+float)
   | "DELIVERY_REMIT"    // خفض العهدة عند التوريد/التسوية/الإرجاع (−float)
@@ -30,7 +33,10 @@ export type EntryType =
   | "EXCHANGE_FX_BUY" // شراء دولار: تحويل دينار→دولار داخل الصيرفة (يُحدّث WAVG)
   | "EXCHANGE_SETTLE" // تسديد ذمّة مورد عبر الصيرفة (يخفض المحفظة ودين المورد)
   | "EXCHANGE_FEE" // عمولة الصيرفة (مصروف P&L، cost=amount)
-  | "EXCHANGE_FX_DIFF"; // فرق صرف محقَّق عند التسديد (amount موقَّع، معزول عن إيراد البيع)
+  | "EXCHANGE_FX_DIFF" // فرق صرف محقَّق عند التسديد (amount موقَّع، معزول عن إيراد البيع)
+  // gifts (G-م٢، ٢٧/٧): هدية صادرة للعميل — صرف مخزون كمصروف ترويجيّ بالكلفة (revenue=0, profit=-cost)،
+  // بلا invoiceId ⇒ خارج وعاء العمولة تلقائياً. مُضاف لـ P&L bucket «هدايا وترويج» (فخّ §٦ #1).
+  | "GIFT_OUT";
 
 export interface EntryInput {
   entryType: EntryType;
@@ -51,6 +57,8 @@ export interface EntryInput {
   notes?: string;
   /** حارس بنيوي ضدّ التكرار (مثل «SALE:<invoiceId>») ⇒ ER_DUP_ENTRY عند قيد مزدوج. فارغ للقيود المتكرّرة مشروعاً. */
   dedupeKey?: string | null;
+  createdBy?: number | null;
+  createdByNameSnapshot?: string | null;
 }
 
 /** Insert one ledger entry. RETURN entries carry negative values by convention.
@@ -76,6 +84,8 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
     amount: toDbMoney(e.amount ?? 0),
     entryDate,
     notes: e.notes,
+    createdBy: e.createdBy ?? null,
+    createdByNameSnapshot: e.createdByNameSnapshot ?? null,
   });
 }
 

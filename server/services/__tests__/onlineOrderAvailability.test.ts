@@ -27,7 +27,7 @@ beforeEach(async () => {
   ]);
   await d.insert(s.products).values({ id: 1, name: "Store item", showInStore: true });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "STORE-1", costPrice: "1.00" });
-  await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "piece", isBaseUnit: true });
+  await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "piece", isBaseUnit: true, isStoreSaleUnit: true });
   await d.insert(s.productPrices).values({ productUnitId: 1, priceTier: "RETAIL", price: "1000.00" });
   await d.insert(s.branchStock).values([
     { variantId: 1, branchId: 1, quantity: 3 },
@@ -45,6 +45,11 @@ describe("createOnlineOrder availability guards", () => {
 
   it("rejects a product hidden from the storefront", async () => {
     await db().update(s.products).set({ showInStore: false }).where(eq(s.products.id, 1));
+    await expect(createOnlineOrder({ ...baseOrder, lines: [{ productUnitId: 1, quantity: 1 }] })).rejects.toThrow();
+  });
+
+  it("rejects a unit that the manager did not enable for storefront sales", async () => {
+    await db().update(s.productUnits).set({ isStoreSaleUnit: false }).where(eq(s.productUnits.id, 1));
     await expect(createOnlineOrder({ ...baseOrder, lines: [{ productUnitId: 1, quantity: 1 }] })).rejects.toThrow();
   });
 
