@@ -56,8 +56,11 @@
 pnpm test:db:init
 pnpm test
 
-# قاعدة شريحة/جلسة مخصّصة:
-TEST_DATABASE_URL=mysql://root:pw@127.0.0.1:3310/erp_myslice_test pnpm test:db:init
+# قاعدة شريحة/جلسة مخصّصة: صدّر المتغيّر كي يسري على الأمرين معاً (init ثمّ test) — لو
+# قُيّد بالسطر الأوّل فقط، لعاد `pnpm test` إلى .env/erp_test فبطلت العزلة:
+export TEST_DATABASE_URL=mysql://root:pw@127.0.0.1:3310/erp_myslice_test
+pnpm test:db:init
+pnpm test
 ```
 
 ### متى تشغّله
