@@ -14,7 +14,10 @@ import {
   getRecentMovements,
   listMyPendingTreasuryReceipts,
 } from "../services/treasuryService";
-import { branchScopedProcedure, requireModule, router } from "../trpc";
+import { fundTreasury } from "../services/treasuryFundingService";
+import { logAudit } from "../services/auditService";
+import { retryOnDup } from "../lib/retryDup";
+import { branchScopedProcedure, managerBranchScopedProcedure, requireModule, router } from "../trpc";
 
 const periodEnum = z.enum(["today", "yesterday", "week", "month"]);
 
@@ -154,5 +157,54 @@ export const treasuryRouter = router({
         role: ctx.user.role,
         userId: ctx.user.id,
       });
+    }),
+
+  /**
+   * تمويل الخزينة (إيداع رأس مال / رصيد افتتاحيّ) — العهدة الوسيطة (imprest، ٢٨/٧/٢٦).
+   * البوّابة الوحيدة لضخّ نقدٍ خارجيّ في الخزينة كي تُموَّل عهد الورديات. admin (أيّ فرع) أو
+   * manager (فرعه فقط). idempotent (نقرٌ مزدوج لا يضاعف).
+   * البوّابة الموحّدة: managerBranchScopedProcedure + requireModule("treasury","FULL") ⇒ يحترم منع
+   * الوحدة الصريح (permissionsOverride treasury=NONE) كسائر نقاط الخزينة، لا اسم الدور الخام وحده.
+   * retryOnDup: ترقيم TF- يحرّر GET_LOCK قبل الالتزام ⇒ تمويلان متزامنان قد يحسبان نفس الرقم؛ القيد
+   * الفريد (dedupeKey) يرفض الثاني فنعيد المحاولة (fundTreasury ذرّيّ داخل withTx، والمفتاح المكرّر يعود idempotent).
+   */
+  fundTreasury: managerBranchScopedProcedure
+    .use(requireModule("treasury", "FULL"))
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "المبلغ مبلغ غير سالب"),
+        description: z.string().min(1, "التبرير مطلوب").max(500),
+        notes: z.string().max(500).nullish(),
+        clientRequestId: z.string().min(1).max(64),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await retryOnDup(() => fundTreasury(
+        {
+          branchId: input.branchId,
+          amount: input.amount,
+          description: input.description,
+          notes: input.notes ?? null,
+          clientRequestId: input.clientRequestId,
+        },
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+          role: ctx.user.role,
+        },
+      ));
+      await logAudit(ctx, {
+        action: "treasury.fund",
+        entityType: "receipt",
+        entityId: res.receiptId,
+        newValue: {
+          referenceNumber: res.referenceNumber,
+          amount: input.amount,
+          branchId: input.branchId,
+          treasuryBalanceAfter: res.treasuryBalanceAfter,
+        },
+      });
+      return res;
     }),
 });

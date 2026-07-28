@@ -112,9 +112,9 @@ describe("getDayCloseReconciliation — التفكيك والثوابت", () => 
     await insertReceipt({ shiftId, branchId: 1, direction: "OUT", amount: "15000.00", voucherNumber: "PV-1-20260722-00001" });
     await insertReceipt({ shiftId, branchId: 1, direction: "OUT", amount: "2000.00", description: "صرف متفرّق" });
 
-    // إغلاق + تسليم 30000 للخزينة. المتوقَّع (قبل التسليم) = 100000 + 78000 − 27000 = 151000.
+    // إغلاق: يعود كامل المعدود (151000) للخزينة تلقائياً. المتوقَّع (قبل الإرجاع) = 100000 + 78000 − 27000 = 151000.
     await closeShift(
-      { shiftId, countedCash: "151000", handover: { amount: "30000", handoverTo: MANAGER1 } },
+      { shiftId, countedCash: "151000" },
       { userId: CASHIER1, branchId: 1, role: "cashier" },
     );
 
@@ -130,7 +130,7 @@ describe("getDayCloseReconciliation — التفكيك والثوابت", () => 
     expect(l.expensesCash).toBe("15000.00");
     expect(l.otherOut).toBe("2000.00");
     expect(l.operatingOut).toBe("27000.00");
-    expect(l.handoversCash).toBe("30000.00");
+    expect(l.handoversCash).toBe("151000.00"); // العهدة الوسيطة: يعود كامل المعدود للخزينة تلقائياً
 
     // I4: ثوابت الجمع
     expect(Number(l.salesCash) + Number(l.collectionsCash) + Number(l.otherIn)).toBe(Number(l.cashIn));
@@ -145,8 +145,8 @@ describe("getDayCloseReconciliation — التفكيك والثوابت", () => 
     expect(l.counted).toBe("151000.00");
     expect(l.drift).toBe("0.00");
     expect(l.drift).toBe(l.storedVariance);
-    // المتبقّي بعد التسليم = 151000 − 30000
-    expect(l.retainedInDrawer).toBe("121000.00");
+    // العهدة الوسيطة: الدرج يُفرَّغ كاملاً عند الإغلاق ⇒ المتبقّي صفر
+    expect(l.retainedInDrawer).toBe("0.00");
 
     const res = await report(1);
     expect(res.balancedCount).toBe(1);
@@ -157,16 +157,16 @@ describe("getDayCloseReconciliation — التفكيك والثوابت", () => 
     // درجٌ افتتاحيّ فقط، ثم إغلاق بتسليم 40000 والمعدود = الافتتاحيّ كاملاً (بلا حركة).
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     await closeShift(
-      { shiftId, countedCash: "100000", handover: { amount: "40000", handoverTo: MANAGER1 } },
+      { shiftId, countedCash: "100000" },
       { userId: CASHIER1, branchId: 1, role: "cashier" },
     );
 
     const l = line(await report(1), shiftId);
-    expect(l.expected).toBe("100000.00");     // ليس 60000 — التسليم لا يُطرَح
+    expect(l.expected).toBe("100000.00");     // الإرجاع لا يُطرَح من المتوقَّع
     expect(l.counted).toBe("100000.00");
     expect(l.drift).toBe("0.00");              // مطابق — لا فائض وهميّ +40000
-    expect(l.handoversCash).toBe("40000.00");
-    expect(l.retainedInDrawer).toBe("60000.00");
+    expect(l.handoversCash).toBe("100000.00"); // العهدة الوسيطة: يعود كامل المعدود للخزينة
+    expect(l.retainedInDrawer).toBe("0.00");
     expect(l.expected).toBe(l.storedExpectedCash);
   });
 });
