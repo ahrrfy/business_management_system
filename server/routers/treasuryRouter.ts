@@ -16,6 +16,7 @@ import {
 } from "../services/treasuryService";
 import { fundTreasury } from "../services/treasuryFundingService";
 import { logAudit } from "../services/auditService";
+import { retryOnDup } from "../lib/retryDup";
 import { branchScopedProcedure, managerBranchScopedProcedure, requireModule, router } from "../trpc";
 
 const periodEnum = z.enum(["today", "yesterday", "week", "month"]);
@@ -161,9 +162,14 @@ export const treasuryRouter = router({
   /**
    * تمويل الخزينة (إيداع رأس مال / رصيد افتتاحيّ) — العهدة الوسيطة (imprest، ٢٨/٧/٢٦).
    * البوّابة الوحيدة لضخّ نقدٍ خارجيّ في الخزينة كي تُموَّل عهد الورديات. admin (أيّ فرع) أو
-   * manager (فرعه فقط، مفروضٌ بـmanagerBranchScopedProcedure). idempotent (نقرٌ مزدوج لا يضاعف).
+   * manager (فرعه فقط). idempotent (نقرٌ مزدوج لا يضاعف).
+   * البوّابة الموحّدة: managerBranchScopedProcedure + requireModule("treasury","FULL") ⇒ يحترم منع
+   * الوحدة الصريح (permissionsOverride treasury=NONE) كسائر نقاط الخزينة، لا اسم الدور الخام وحده.
+   * retryOnDup: ترقيم TF- يحرّر GET_LOCK قبل الالتزام ⇒ تمويلان متزامنان قد يحسبان نفس الرقم؛ القيد
+   * الفريد (dedupeKey) يرفض الثاني فنعيد المحاولة (fundTreasury ذرّيّ داخل withTx، والمفتاح المكرّر يعود idempotent).
    */
   fundTreasury: managerBranchScopedProcedure
+    .use(requireModule("treasury", "FULL"))
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -174,7 +180,7 @@ export const treasuryRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await fundTreasury(
+      const res = await retryOnDup(() => fundTreasury(
         {
           branchId: input.branchId,
           amount: input.amount,
@@ -187,7 +193,7 @@ export const treasuryRouter = router({
           branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
           role: ctx.user.role,
         },
-      );
+      ));
       await logAudit(ctx, {
         action: "treasury.fund",
         entityType: "receipt",

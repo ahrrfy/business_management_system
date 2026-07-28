@@ -255,3 +255,39 @@ describe("imprest — الثابت الجوهريّ (منع ازدواج Codex +
     expect(d2.drawer).toBe("25000.00");
   });
 });
+
+describe("imprest — إصلاحات المراجعة العدائية (انحدار)", () => {
+  it("countedBreakdown فارغ {} = غياب كشف لا كشفٌ مجموعه صفر: إغلاق بمعدود مكتوب موجب ينجح", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, { userId: CASHIER1, branchId: 1 });
+    await sellCash(shiftId, 1, "30000.00");
+    const res = await closeShift(
+      { shiftId, countedCash: "30000", countedBreakdown: {}, enforceCashGovernance: true },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
+    expect(res.reconciliationStatus).toBe("MATCHED");
+    expect(res.variance).toBe("0.00");
+  });
+
+  it("«مقبوضات اليوم» تستبعد الحركة الداخلية (CH-/SF-/TF-) — لا ازدواج لنقد المبيعات", async () => {
+    await fundTreasury({ branchId: 1, amount: "500000", description: "رأس مال", clientRequestId: "f" }, { userId: MANAGER1, branchId: 1, role: "manager" });
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    await sellCash(shiftId, 1, "351000.00");
+    await closeShift({ shiftId, countedCash: "451000", enforceCashGovernance: true }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    const d = await getDashboard({ branchId: 1 }, { scopedBranchId: null, role: "admin", userId: ADMIN });
+    // القبض الخارجيّ الحقيقيّ = المبيعات 351000 فقط (لا التمويل TF-، لا الإرجاع CH-، لا العهدة SF-).
+    expect(d.todayReceiptsTotal).toBe("351000.00");
+  });
+
+  it("ترقيم CH- يتجاهل مرجعاً مسموماً بلاحقةٍ غير رقمية (لا تصادم يعطّل الإغلاق)", async () => {
+    const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "1.00", paymentMethod: "CASH", cashBucket: "TREASURY",
+      referenceNumber: `CH-1-${ymd}-XYZ`, status: "COMPLETED", partyType: "OTHER", createdBy: MANAGER1,
+    });
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, { userId: CASHIER1, branchId: 1 });
+    await sellCash(shiftId, 1, "5000.00");
+    const res = await closeShift({ shiftId, countedCash: "5000", enforceCashGovernance: true }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    // اللاحقة غير الرقمية XYZ تُتجاهَل ⇒ يبدأ التسلسل من 0001 (لا CH-…-NaN وتصادم dedupe).
+    expect(res.treasuryReturn!.handoverNumber).toMatch(/^CH-1-\d{8}-0001$/);
+  });
+});

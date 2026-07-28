@@ -31,7 +31,9 @@ function validateCountedBreakdown(
   breakdown: Record<string, number> | null | undefined,
   countedCash: ReturnType<typeof money>,
 ) {
-  if (!breakdown) return null;
+  // كائنٌ فارغ {} = غياب كشفٍ لا كشفٌ مجموعه صفر: المسار الافتراضي الجديد (كتابة المعدود مباشرةً)
+  // قد يمرّر {} فلا يجوز معاملته ككشف فئات حقيقيّ (وإلّا رُفض أيّ معدود موجب بـ«مجموع الفئات 0 ≠ المعدود»).
+  if (!breakdown || Object.keys(breakdown).length === 0) return null;
   let total = money("0");
   for (const [rawDenomination, rawCount] of Object.entries(breakdown)) {
     const denomination = Number(rawDenomination);
@@ -353,7 +355,10 @@ export async function getShiftReport(shiftId: number) {
       count: sql<number>`COUNT(*)`,
     })
     .from(receipts)
-    .where(eq(receipts.shiftId, shiftId))
+    // العهدة الوسيطة: إيصال الإرجاع التلقائيّ (CH- OUT بكامل المعدود) يُكتب على الوردية عند الإغلاق
+    // لكنه تفريغ الدرج للخزينة لا صرفٌ تشغيليّ — استبعاده من تفكيك Z كي لا يظهر «نقدي صادر» متضخماً
+    // ويختلّ ثابت المطابقة (الافتتاحيّ + الوارد − الصادر = المعدود). computeExpectedCash يسبقه فلا يتأثّر.
+    .where(and(eq(receipts.shiftId, shiftId), sql`(${receipts.referenceNumber} IS NULL OR ${receipts.referenceNumber} NOT LIKE 'CH-%')`))
     .groupBy(receipts.paymentMethod, receipts.direction);
 
   const inv = (

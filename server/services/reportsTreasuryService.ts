@@ -73,6 +73,9 @@ export async function getTreasurySummary(opts: {
       WHERE r.receiptStatus = 'COMPLETED'
         AND r.receiptApprovalStatus = 'APPROVED'
         AND DATE(r.createdAt) >= ${opts.from} AND DATE(r.createdAt) <= ${opts.to}
+        -- العهدة الوسيطة: استبعاد الحركة الداخلية (CH-/CD-/SF-/CT-/TF-/CANCEL-) من totalIn/totalOut
+        -- (نقلٌ بين الدلاء/الفروع أو رأس مال، لا قبض/صرف تشغيليّ ⇒ يمنع ازدواج نقد المبيعات).
+        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
         ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}
       GROUP BY r.direction, r.paymentMethod
     `),

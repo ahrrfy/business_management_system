@@ -125,7 +125,9 @@ export const shiftRouter = router({
           treasuryWarning: res.treasuryWarning,
         },
       });
-      return res;
+      // رصيد الخزينة مكتومٌ عن الكاشير (نمط hideTreasury في اللوحة) — نحجب المبلغ عن غير المرتفعين
+      // ونُبقي treasuryWarning (boolean) كي تُظهر شاشته تنبيهاً عاماً دون كشف رقم خزنة الفرع.
+      return elevated ? res : { ...res, treasuryBalanceAfter: null };
     }),
 
   close: treasuryCashierProcedure

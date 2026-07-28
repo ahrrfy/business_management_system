@@ -8,7 +8,7 @@
 // cash drop (createCashDrop، معلَّق بقبول SOD). أرقام CH-... موحّدة بين المسارين.
 
 import { TRPCError } from "@trpc/server";
-import { desc, like, sql } from "drizzle-orm";
+import { like, sql } from "drizzle-orm";
 import { receipts } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -32,15 +32,22 @@ async function nextHandoverNumber(tx: Tx, branchId: number): Promise<string> {
     throw new Error(`handover numbering lock timeout for ${lockName}`);
   }
   try {
+    // نأخذ أعلى **لاحقة رقمية بحتة** لا أعلى id: مرجعٌ حرّ (دفعة مورّد/سند) أُدخِل كـ«CH-فرع-تاريخ-ABC»
+    // قد يحمل id أعلى ولاحقةً غير رقمية ⇒ parseInt=NaN ⇒ «CH-…-NaN» وتصادم dedupe يعطّل كلّ إغلاقٍ تالٍ
+    // (retryOnDup تُعيد نفس الرقم المسموم فتفشل). نتجاهل غير الرقميّ — نمط nextDropNumber المُصلَح.
     const rows = await tx
       .select({ n: receipts.referenceNumber })
       .from(receipts)
-      .where(like(receipts.referenceNumber, `${prefix}%`))
-      .orderBy(desc(receipts.id))
-      .limit(1);
-    const last = rows[0]?.n;
-    const seq = last ? parseInt(String(last).slice(prefix.length), 10) + 1 : 1;
-    return prefix + String(seq).padStart(4, "0");
+      .where(like(receipts.referenceNumber, `${prefix}%`));
+    let maxSeq = 0;
+    for (const r of rows) {
+      const suffix = String(r.n ?? "").slice(prefix.length);
+      if (/^\d+$/.test(suffix)) {
+        const n = parseInt(suffix, 10);
+        if (n > maxSeq) maxSeq = n;
+      }
+    }
+    return prefix + String(maxSeq + 1).padStart(4, "0");
   } finally {
     await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
   }

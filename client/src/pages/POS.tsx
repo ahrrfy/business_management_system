@@ -965,6 +965,16 @@ export default function POS() {
   const openShift = trpc.shifts.open.useMutation({
     onSuccess: async (res) => {
       await shiftQ.refetch();
+      // العهدة الوسيطة: تحذيرٌ لينٌ إن سحبت العهدة الخزينة إلى العجز (الضابط التعويضي لقرار «الفتح مسموح
+      // مع تحذير»). الرصيد يظهر للمرتفعين فقط (محجوبٌ عن الكاشير خادمياً ⇒ null).
+      if (res.treasuryWarning) {
+        notify.warn(
+          "تنبيه: عجز الخزينة",
+          res.treasuryBalanceAfter != null
+            ? `عهدة الافتتاح فاقت رصيد الخزينة — الرصيد الآن ${fmt(Number(res.treasuryBalanceAfter))} د.ع. موّل الخزينة.`
+            : "عهدة الافتتاح فاقت رصيد الخزينة (عجز). أبلغ المدير لتمويل الخزينة.",
+        );
+      }
       void printShiftOpen({
         shiftId:        res.shiftId,
         openingBalance: Number(opening || 0),

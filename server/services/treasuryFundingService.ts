@@ -10,7 +10,7 @@
 // اعتمادٍ ثنائيّ (maker-checker) لاحقاً إن أراد المالك ضبطاً أشدّ ضدّ «تمويلٍ وهميّ يُخفي عجزاً».
 
 import { TRPCError } from "@trpc/server";
-import { desc, eq, like, sql } from "drizzle-orm";
+import { eq, like, sql } from "drizzle-orm";
 import { branches, receipts } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -45,15 +45,21 @@ async function nextFundingNumber(tx: Tx, branchId: number): Promise<string> {
     throw new Error(`treasury funding numbering lock timeout for ${lockName}`);
   }
   try {
+    // أعلى لاحقة رقمية بحتة لا أعلى id (مرجعٌ حرّ يطابق البادئة بلاحقةٍ غير رقمية يسمّم parseInt ⇒
+    // «TF-…-NaN» وتصادم dedupe). نمط nextDropNumber المُصلَح.
     const rows = await tx
       .select({ n: receipts.referenceNumber })
       .from(receipts)
-      .where(like(receipts.referenceNumber, `${prefix}%`))
-      .orderBy(desc(receipts.id))
-      .limit(1);
-    const last = rows[0]?.n;
-    const seq = last ? parseInt(String(last).slice(prefix.length), 10) + 1 : 1;
-    return prefix + String(seq).padStart(4, "0");
+      .where(like(receipts.referenceNumber, `${prefix}%`));
+    let maxSeq = 0;
+    for (const r of rows) {
+      const suffix = String(r.n ?? "").slice(prefix.length);
+      if (/^\d+$/.test(suffix)) {
+        const n = parseInt(suffix, 10);
+        if (n > maxSeq) maxSeq = n;
+      }
+    }
+    return prefix + String(maxSeq + 1).padStart(4, "0");
   } finally {
     await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
   }
