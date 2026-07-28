@@ -20,7 +20,7 @@ import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptI
 import { CopyButton } from "@/components/CopyButton";
 import { notify } from "@/lib/notify";
 import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue } from "@/components/pos/ShiftHandoverSection";
-import { CashCounter } from "@/components/CashCounter";
+import { MoneyInput } from "@/components/form/MoneyInput";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
@@ -455,7 +455,7 @@ export default function PrintPOS() {
       </div>
 
       {receipt && <ReceiptOverlay C={C} r={receipt} onDismiss={() => setReceipt(null)} onPrint={() => printReceipt(brandedReceipt(receipt))} />}
-      {shifting && <ShiftCloseDialog C={C} shift={shift} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
+      {shifting && <ShiftCloseDialog C={C} shift={shift} isElevatedRole={isElevatedRole} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
       {creditPrompt && (
         <CreditApprovalDialog C={C} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
           isPending={sale.isPending} onApprove={() => submit(false, { email: mgrEmail, password: mgrPwd })} onCancel={() => setCreditPrompt(null)} />
@@ -920,9 +920,9 @@ function Bar({ C, c, k, v, copyTitle }: { C: C; c: string; k: string; v: number;
 }
 
 // ─── ShiftCloseDialog (نقد ومبيعات فقط — بلا كلفة) ───────────────────────────
-function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNullable<ShiftData>; onClose: () => void; onClosed: () => void }) {
+function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: C; shift: NonNullable<ShiftData>; isElevatedRole: boolean; onClose: () => void; onClosed: () => void }) {
   const [counted, setCounted] = useState("");
-  const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
+  const [countEntered, setCountEntered] = useState(false);
   const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
   const utils = trpc.useUtils();
   const reportQ = trpc.shifts.report.useQuery({ shiftId: shift.id });
@@ -956,7 +956,9 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
   const cashOut = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "OUT").reduce((s, p) => s.plus(D(p.total)), D(0));
   const openingBal = D(shift.openingBalance ?? 0).toNumber();
   const expected = report != null ? D(shift.openingBalance ?? 0).plus(cashIn).minus(cashOut).toNumber() : null;
-  const diff = expected != null && counted ? Number(counted) - expected : null;
+  // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
+  const showExpected = isElevatedRole || countEntered;
+  const diff = showExpected && expected != null && counted ? Number(counted) - expected : null;
   const hasVariance = diff != null && Math.abs(diff) >= 0.01;
 
   return (
@@ -968,21 +970,36 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
           <div style={{ padding: "24px 0", textAlign: "center", color: C.mutedFg }}>جارٍ تحميل التقرير…</div>
         ) : (
           <>
-            {([["عدد الفواتير", `${report?.invoiceCount ?? 0} فاتورة`], ["إجمالي المبيعات", `${fmt(Number(report?.salesTotal ?? 0))} د.ع`], ["الرصيد الافتتاحي", `${fmt(openingBal)} د.ع`], ...(expected != null ? [["النقد المتوقع بالصندوق", `${fmt(expected)} د.ع`] as [string, string]] : [])] as [string, string][]).map(([l, v]) => (
+            {([["عدد الفواتير", `${report?.invoiceCount ?? 0} فاتورة`], ["إجمالي المبيعات", `${fmt(Number(report?.salesTotal ?? 0))} د.ع`], ["الرصيد الافتتاحي", `${fmt(openingBal)} د.ع`], ...(expected != null && showExpected ? [["النقد المتوقع بالصندوق", `${fmt(expected)} د.ع`] as [string, string]] : [])] as [string, string][]).map(([l, v]) => (
               <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "7px 0", borderBottom: `1px solid ${C.border}` }}><span style={{ color: C.mutedFg }}>{l}</span><span style={{ fontWeight: 700, color: C.fg }}>{v}</span></div>
             ))}
             {(report?.payments ?? []).filter((p) => Number(p.total) > 0).length > 0 && <div style={{ margin: "10px 0 4px", fontSize: 12, color: C.mutedFg, fontWeight: 700 }}>تفصيل طرق الدفع:</div>}
             {(report?.payments ?? []).filter((p) => Number(p.total) > 0).map((p) => (
               <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", borderBottom: `1px dashed ${C.border}` }}><span style={{ color: C.mutedFg }}>{p.method} {p.direction === "IN" ? "وارد" : "صادر"} ({p.count})</span><span style={{ fontWeight: 600, color: p.direction === "OUT" ? C.danger : C.fg }}>{fmt(Number(p.total))} د.ع</span></div>
             ))}
-            <div style={{ marginTop: 16 }}>
-              <CashCounter
-                value={closeCounts}
-                onChange={(counts, total) => {
-                  setCloseCounts(counts);
-                  setCounted(total);
+            <div
+              style={{ marginTop: 16 }}
+              onBlur={() => setCountEntered(counted.trim() !== "")}
+            >
+              <label htmlFor="print-counted-cash" style={{ display: "block", marginBottom: 6, fontSize: 13, fontWeight: 800, color: C.fg }}>
+                النقد المعدود (د.ع)
+              </label>
+              <MoneyInput
+                id="print-counted-cash"
+                value={counted}
+                onChange={(value) => {
+                  setCounted(value);
+                  setCountEntered(false);
                 }}
+                placeholder="0"
+                ariaLabel="النقد المعدود عند إغلاق وردية الطباعة"
+                className="h-12 text-center text-lg font-extrabold"
               />
+              {!showExpected && (
+                <div style={{ marginTop: 6, fontSize: 12, color: C.mutedFg }}>
+                  أدخل ما عددته فعلياً في الصندوق لتظهر نتيجة المطابقة.
+                </div>
+              )}
               {diff !== null && (
                 <div style={{ marginTop: 7, fontSize: 14, fontWeight: 700, color: diff >= 0 ? C.success : C.danger, display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
                   <span>الفرق: {diff >= 0 ? "+" : ""}{fmt(diff)} د.ع</span>
@@ -1015,7 +1032,6 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
                 onClick={() => closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
-                  countedBreakdown: closeCounts,
                   handover: buildHandoverPayload(handover),
                 })}
                 style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? C.muted : C.danger, color: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>{closeShift.isPending ? "جارٍ الإغلاق…" : hasVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}</button>
