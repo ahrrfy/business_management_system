@@ -6,6 +6,7 @@ import { positiveMoneyString } from "../lib/schemas";
 import { receiveInboundGift } from "../services/gifts/inbound";
 import { getGiftVoucher, listGifts } from "../services/gifts/list";
 import { approveGift, createOutboundGift } from "../services/gifts/outbound";
+import { recordPurchaseBonusGift } from "../services/gifts/purchaseBonus";
 import { giftsReport } from "../services/gifts/reports";
 import { branchScopedProcedure, reportViewerProcedure, requireModule, router } from "../trpc";
 
@@ -135,5 +136,25 @@ export const giftsRouter = router({
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role };
       return approveGift(input.giftId, actor);
+    }),
+
+  // بونص «اشترِ واحصل» (G-م٦): تسجيل الكمية المجّانية المرافقة لأمر شراء كسند هدية وارد للمورّد نفسه.
+  receivePurchaseBonus: giftsWrite
+    .input(
+      z.object({
+        purchaseOrderId: z.number().int().positive(),
+        bonusLines: z.array(z.object({ variantId: z.number().int().positive(), freeBaseQuantity: z.number().int().positive() })).min(1),
+        clientRequestId: z.string().max(80).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role };
+      const attempt = () => recordPurchaseBonusGift(input, actor);
+      try {
+        return await attempt();
+      } catch (e) {
+        if (isDupEntry(e)) return await attempt();
+        throw e;
+      }
     }),
 });

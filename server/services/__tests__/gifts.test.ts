@@ -8,6 +8,7 @@ import { receiveInboundGift } from "../gifts/inbound";
 import { getGiftVoucher, listGifts } from "../gifts/list";
 import { approveGift, createOutboundGift } from "../gifts/outbound";
 import { giftsReport } from "../gifts/reports";
+import { recordPurchaseBonusGift } from "../gifts/purchaseBonus";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 
@@ -21,7 +22,7 @@ async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const t of [
-    "giftVoucherLines", "giftVouchers", "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements",
+    "giftVoucherLines", "giftVouchers", "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "purchaseOrders",
     "branchStock", "productPrices", "productUnits", "productVariants", "products", "suppliers", "customers", "branches", "users",
   ]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
@@ -324,5 +325,30 @@ describe("G-م٤ تقارير الهدايا", () => {
     expect(Number(rep.byCustomer[0].customerId)).toBe(1);
     // حسب النوع: «مجاملة» بعددٍ 2.
     expect(Number(rep.byType.find((x) => x.giftType === "مجاملة")?.count)).toBe(2);
+  });
+});
+
+describe("G-م٦ بونص أمر الشراء (اشترِ واحصل)", () => {
+  const seedPO = () =>
+    db().insert(s.purchaseOrders).values({ id: 1, poNumber: "PO-1", supplierId: 1, branchId: 1, subtotal: "500", total: "500", status: "CONFIRMED" });
+
+  it("recordPurchaseBonusGift يسجّل الكمية المجّانية سند هدية وارد للمورّد نفسه (صفر تكلفة)", async () => {
+    await seedPO();
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
+    const res = await recordPurchaseBonusGift({ purchaseOrderId: 1, bonusLines: [{ variantId: 1, freeBaseQuantity: 12 }] }, actor);
+    expect(res?.giftNumber).toMatch(/^GFT-1-/);
+    expect(await stockOf(1)).toBe(112); // 100 + 12 مجاناً
+    expect(await countRows(s.accountingEntries)).toBe(0); // صفر قيد (وارد مجّانيّ)
+    const gv = (await db().select().from(s.giftVouchers))[0];
+    expect(gv.direction).toBe("IN");
+    expect(Number(gv.supplierId)).toBe(1); // المورّد من أمر الشراء نفسه
+    expect(gv.giftType).toBe("بونص شراء");
+  });
+
+  it("بلا كمية مجّانية موجبة ⇒ null (لا سند)", async () => {
+    await seedPO();
+    const res = await recordPurchaseBonusGift({ purchaseOrderId: 1, bonusLines: [{ variantId: 1, freeBaseQuantity: 0 }] }, actor);
+    expect(res).toBeNull();
+    expect(await countRows(s.giftVouchers)).toBe(0);
   });
 });
