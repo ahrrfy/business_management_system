@@ -120,6 +120,9 @@ export const shiftRouter = router({
           openingBalance: input.openingBalance,
           branchId: actorBranchId,
           shiftType: input.shiftType,
+          // العهدة الوسيطة: أثر سحب العهدة من الخزينة + علم العجز (خزينة سالبة).
+          treasuryBalanceAfter: res.treasuryBalanceAfter,
+          treasuryWarning: res.treasuryWarning,
         },
       });
       return res;
@@ -133,14 +136,8 @@ export const shiftRouter = router({
         countedCash: z.string().regex(/^\d+(\.\d{1,2})?$/, "النقد المعدود مبلغ غير سالب"),
         // treasury-stage2: snapshot عدّاد الفئات (اختياري).
         countedBreakdown: z.record(z.string(), z.number().int().min(0).max(10000)).nullish(),
-        // treasury-stage2: تسليم نقد للخزينة (اختياري).
-        handover: z
-          .object({
-            amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح"),
-            handoverTo: z.number().int().positive(),
-            notes: z.string().max(500).nullish(),
-          })
-          .nullish(),
+        // العهدة الوسيطة (imprest، ٢٨/٧/٢٦): لا تسليم يدويّ عند الإغلاق — يعود كامل المعدود للخزينة
+        // تلقائياً (settleShiftReturnTx). أُزيل حقل handover؛ أيّ إرسال قديم منه يُهمَل (zod يُجرّده).
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -177,12 +174,9 @@ export const shiftRouter = router({
           varianceReasonCode: res.varianceReasonCode,
           varianceReason: res.varianceReason,
           requiresManagerReview: res.requiresManagerReview,
-          handover: res.handover
-            ? {
-                handoverNumber: res.handover.handoverNumber,
-                amount: input.handover?.amount ?? null,
-                handoverTo: input.handover?.handoverTo ?? null,
-              }
+          // العهدة الوسيطة: إرجاع كامل النقد للخزينة تلقائياً عند الإغلاق (المبلغ = المعدود).
+          treasuryReturn: res.treasuryReturn
+            ? { handoverNumber: res.treasuryReturn.handoverNumber, amount: res.countedCash }
             : null,
         },
       });

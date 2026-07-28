@@ -70,16 +70,16 @@ describe("ورديات مستقلّة — الخدمة (openShift/closeShift)", 
   });
 
   it("الوردية التالية تبدأ بعهدتها الخاصّة بمعزلٍ عن متبقّي السابقة — لا قرن ولا حظر", async () => {
-    // A: تُفتَح بـ500، تُغلَق بمعدود 500 وتسليم 200 ⇒ متبقّي درجها 300 (لا يُقرَن بالتالية).
+    // A: تُفتَح بـ500، تُغلَق بمعدود 500؛ يعود كامل نقدها للخزينة (درجها ⇒ صفر) بلا قرنٍ بالتالية.
     const a = await openShift(
       { branchId: 1, openingBalance: "500", shiftType: "RETAIL" },
       { userId: CASHIER1, branchId: 1 },
     );
     await closeShift(
-      { shiftId: a.shiftId, countedCash: "500", handover: { amount: "200", handoverTo: MANAGER1 } },
+      { shiftId: a.shiftId, countedCash: "500" }, // العهدة الوسيطة: يعود كامل المعدود (500) للخزينة تلقائياً
       { userId: CASHIER1, branchId: 1, role: "cashier" },
     );
-    // B: تبدأ بعهدةٍ جديدة 100000 ≠ 300 ⇒ تُقبَل دائماً (لا PRECONDITION_FAILED).
+    // B: تبدأ بعهدةٍ جديدة 100000 (مستقلّة تماماً عن السابقة) ⇒ تُقبَل دائماً (لا PRECONDITION_FAILED).
     const b = await openShift(
       { branchId: 1, openingBalance: "100000", shiftType: "RETAIL" },
       { userId: CASHIER2, branchId: 1 },
@@ -137,13 +137,13 @@ describe("ورديات مستقلّة — الخدمة (openShift/closeShift)", 
 
 describe("ورديات مستقلّة — الراوتر (open + التدقيق)", () => {
   it("open (راوتر) بعهدةٍ مختلفة عن متبقّي السابقة ⇒ يُقبَل ويُسجَّل فتح الوردية", async () => {
-    // A تُغلَق بمتبقٍّ 300.
+    // A تُغلَق، ويُفرَّغ كامل نقدها للخزينة (لا متبقٍّ في الدرج).
     const a = await openShift(
       { branchId: 1, openingBalance: "500", shiftType: "RETAIL" },
       { userId: CASHIER1, branchId: 1 },
     );
     await closeShift(
-      { shiftId: a.shiftId, countedCash: "500", handover: { amount: "200", handoverTo: MANAGER1 } },
+      { shiftId: a.shiftId, countedCash: "500" }, // العهدة الوسيطة: يعود كامل المعدود (500) للخزينة تلقائياً
       { userId: CASHIER1, branchId: 1, role: "cashier" },
     );
     const caller = appRouter.createCaller(makeCtx({ id: CASHIER2, role: "cashier", branchId: 1, name: "كاشير٢" }));

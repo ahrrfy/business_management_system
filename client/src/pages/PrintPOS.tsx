@@ -19,7 +19,6 @@ import { Link } from "wouter";
 import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { notify } from "@/lib/notify";
-import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue } from "@/components/pos/ShiftHandoverSection";
 import { MoneyInput } from "@/components/form/MoneyInput";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -923,11 +922,9 @@ function Bar({ C, c, k, v, copyTitle }: { C: C; c: string; k: string; v: number;
 function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: C; shift: NonNullable<ShiftData>; isElevatedRole: boolean; onClose: () => void; onClosed: () => void }) {
   const [counted, setCounted] = useState("");
   const [countEntered, setCountEntered] = useState(false);
-  const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
   const utils = trpc.useUtils();
   const reportQ = trpc.shifts.report.useQuery({ shiftId: shift.id });
   const report = reportQ.data;
-  const recipientsQ = trpc.shifts.handoverRecipients.useQuery();
 
   const closeShift = trpc.shifts.close.useMutation({
     onSuccess: async (r) => {
@@ -1019,22 +1016,18 @@ function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: 
                 </div>
               </div>
             )}
-            <ShiftHandoverSection
-              C={C}
-              recipients={recipientsQ.data ?? []}
-              value={handover}
-              onChange={setHandover}
-              loading={recipientsQ.isLoading}
-            />
+            {/* العهدة الوسيطة (imprest، ٢٨/٧/٢٦): يعود كامل النقد المعدود للخزينة تلقائياً عند الإغلاق. */}
+            <div style={{ marginTop: 14, padding: "10px 12px", background: C.muted, border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 12.5, color: C.mutedFg }}>
+              يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق (تسليمٌ كامل). الوردية التالية تبدأ بعهدةٍ جديدة من الخزينة.
+            </div>
             <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
               <button onClick={onClose} style={{ flex: 1, height: 46, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: C.fg }}>إلغاء</button>
-              <button disabled={!counted || closeShift.isPending || hasVariance || handoverIncomplete(handover)}
+              <button disabled={!counted || closeShift.isPending || hasVariance}
                 onClick={() => closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
-                  handover: buildHandoverPayload(handover),
                 })}
-                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? C.muted : C.danger, color: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>{closeShift.isPending ? "جارٍ الإغلاق…" : hasVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}</button>
+                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || hasVariance ? C.muted : C.danger, color: !counted || closeShift.isPending || hasVariance ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || hasVariance ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>{closeShift.isPending ? "جارٍ الإغلاق…" : hasVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}</button>
             </div>
           </>
         )}

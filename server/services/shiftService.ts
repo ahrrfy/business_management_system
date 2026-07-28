@@ -7,6 +7,8 @@ import type { Tx } from "../db";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { postEntry } from "./ledgerService";
+import { getTreasuryBalance } from "./cashTransferService";
 import {
   IQD_DENOMINATIONS,
   MATERIAL_SHIFT_VARIANCE_IQD,
@@ -110,12 +112,53 @@ export async function openShift(
         openingDiscrepancyReason: null,
       });
       const shiftId = extractInsertId(res);
+
+      // العهدة الوسيطة (imprest، قرار المالك ٢٨/٧/٢٦؛ إصلاح Codex P1 على #377): عهدة الافتتاح تُسحَب
+      // فعلياً من **الخزينة** إلى الدرج ⇒ نُسجّل حركة خزينة صريحة (TREASURY OUT) وإلّا فُكَّت لوحة الخزينة
+      // (الدرج يزيد بلا نقصان مقابل في الخزينة ⇒ ازدواج وهميّ). جانب الدرج ضمنيّ في اللوحة (Σ openingBalance
+      // للورديات المفتوحة) فلا نُنشئ إيصال DRAWER IN (وإلّا احتُسِب مرّتين). إن نقصت الخزينة عن العهدة
+      // يصير رصيدها سالباً (يُعرَض كتحذيرٍ للمدير ليموّلها) — **لا حظر** (قرار المالك: عدم حبس الكاشير).
+      let treasuryBalanceAfter: string | null = null;
+      let treasuryWarning = false;
+      const opening = money(input.openingBalance);
+      if (opening.gt(0)) {
+        const treasuryBefore = await getTreasuryBalance(tx, input.branchId);
+        const after = treasuryBefore.minus(opening);
+        treasuryBalanceAfter = toDbMoney(after);
+        treasuryWarning = after.isNegative();
+        const outRes = await tx.insert(receipts).values({
+          branchId: input.branchId,
+          shiftId: null, // حركة خزينة (لا درج) ⇒ خارج computeExpectedCash لأيّ وردية
+          direction: "OUT",
+          amount: toDbMoney(opening),
+          paymentMethod: "CASH",
+          cashBucket: "TREASURY",
+          referenceNumber: `SF-${input.branchId}-${shiftId}`, // فريد بنيوياً: عهدة واحدة لكل وردية
+          status: "COMPLETED",
+          partyType: "OTHER",
+          description: `عهدة افتتاح وردية #${shiftId} (سحب من الخزينة)`,
+          createdBy: actor.userId,
+        });
+        const outReceiptId = extractInsertId(outRes);
+        // قيد SHIFT_FLOAT_OUT (نقلٌ خزينة→درج، revenue/cost=0). dedupeKey فريد لكل وردية.
+        await postEntry(tx, {
+          entryType: "SHIFT_FLOAT_OUT",
+          branchId: input.branchId,
+          receiptId: outReceiptId,
+          amount: opening,
+          dedupeKey: `SHIFT_FLOAT:${shiftId}`,
+        });
+      }
+
       return {
         shiftId,
         expectedOpening: null as string | null,
         hasDiscrepancy: false,
         difference: null as string | null,
         discrepancyReason: null as string | null,
+        // العهدة الوسيطة: رصيد الخزينة بعد سحب العهدة + علم العجز (للتحذير اللين في الواجهة).
+        treasuryBalanceAfter,
+        treasuryWarning,
       };
     } catch (e: any) {
       if (isDupEntry(e)) {
@@ -150,8 +193,9 @@ async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: stri
  * سياسة #14 — ملكية/فرع: الكاشير يُغلق ورديته نفسها فقط؛ المدير يُغلق أي وردية في فرعه
  * (لمعالجة الوردية المنسيّة)؛ admin مرور حر.
  *
- * treasury-stage2: حقول اختيارية لـcountedBreakdown (snapshot عدّاد الفئات) و handover
- * (تسليم نقد للخزينة بـcashHandoverService — يَنشئ receipts + قيد CASH_HANDOVER في نفس tx).
+ * العهدة الوسيطة (imprest، قرار المالك ٢٨/٧/٢٦): عند الإغلاق يعود **كامل** النقد المعدود إلى الخزينة
+ * تلقائياً (settleShiftReturnTx داخل نفس الـtx) ⇒ الدرج يُفرَّغ (closingDrawerCash=0). countedBreakdown
+ * اختياري (snapshot عدّاد الفئات). لا يقبل هذا الطور تسليماً جزئياً/يدوياً من العميل — الإرجاع كامل وحتميّ.
  */
 export async function closeShift(
   input: {
@@ -164,7 +208,6 @@ export async function closeShift(
     managerApprovedByUserId?: number | null;
     /** تضبطها بوابة API. تُترك اختيارية لتوافق مهام الصيانة/الاختبارات الداخلية القديمة. */
     enforceCashGovernance?: boolean;
-    handover?: { amount: string; handoverTo: number; notes?: string | null } | null;
   },
   actor: Actor & { role?: string },
 ) {
@@ -204,7 +247,7 @@ export async function closeShift(
         varianceReasonCode: sh.varianceReasonCode,
         varianceReason: sh.varianceReason,
         requiresManagerReview: money(sh.variance ?? "0").abs().gte(MATERIAL_SHIFT_VARIANCE_IQD),
-        handover: null,
+        treasuryReturn: null,
         alreadyClosed: true as const,
       };
     }
@@ -234,36 +277,24 @@ export async function closeShift(
       });
     }
 
-    // treasury-stage2: تسليم اختياري للخزينة قبل التعيين CLOSED — يَكتب receipts داخل
-    // الـtx الحالية بـcashHandoverService. يَفشل إن handover.amount > counted (تَحقّق داخلي).
-    let handoverResult: { handoverNumber: string; outReceiptId: number; inReceiptId: number } | null = null;
-    if (input.handover && input.handover.amount) {
-      const handoverAmount = money(input.handover.amount);
-      if (handoverAmount.gt(counted)) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `لا يمكن تسليم أكثر من المعدود (${counted.toFixed(2)} < ${handoverAmount.toFixed(2)})`,
-        });
-      }
+    // العهدة الوسيطة (imprest، قرار المالك ٢٨/٧/٢٦): يعود **كامل** النقد المعدود إلى الخزينة تلقائياً
+    // (drawer→0) — لا تسليم جزئيّ/يدويّ. هذا يُبقي لوحة الخزينة متّسقة مع سحب العهدة عند الفتح: صافي
+    // أثر الخزينة للوردية = المعدود − عهدة الافتتاح = المبيعات النقدية − المدفوعات النقدية. يُنفَّذ **بعد**
+    // computeExpectedCash أعلاه (إيصال الإرجاع OUT بـshiftId هذا لا يدخل حساب المتوقَّع لأنه بعده).
+    let treasuryReturn: { handoverNumber: string; outReceiptId: number; inReceiptId: number } | null = null;
+    if (counted.gt(0)) {
       // استيراد كسول لتجنّب حلقة (cashHandover → ledger → period).
-      const { createHandover } = await import("./cashHandoverService");
-      handoverResult = await createHandover(
+      const { settleShiftReturnTx } = await import("./cashHandoverService");
+      treasuryReturn = await settleShiftReturnTx(
         tx,
-        {
-          shiftId: input.shiftId,
-          amount: input.handover.amount,
-          handoverTo: input.handover.handoverTo,
-          notes: input.handover.notes ?? null,
-        },
+        { shiftId: input.shiftId, branchId: Number(sh.branchId), amount: toDbMoney(counted) },
         { ...actor, role: actor.role ?? "cashier" },
       );
     }
 
-    // ①ج المتبقّي في الدرج بعد الإغلاق = المعدود − المُسلَّم للخزينة عند الإغلاق ⇒ «الرصيد الافتتاحيّ
-    // المتوقَّع» للوردية التالية لنفس (الفرع×النوع). cash drop منتصف الوردية غادر الدرج قبل العدّ فلا
-    // يُطرَح ثانيةً (سبق أن نقص المعدود). handover ≤ counted مضمونٌ أعلاه ⇒ المتبقّي ≥ 0.
-    const handoverAmount = input.handover?.amount ? money(input.handover.amount) : money("0");
-    const closingDrawerCash = counted.minus(handoverAmount);
+    // الدرج يُفرَّغ كاملاً للخزينة عند الإغلاق ⇒ المتبقّي دائماً صفر (ورديات مستقلّة: التالية تسحب عهدةً
+    // جديدة من الخزينة لا من متبقّي السابقة). العمود يبقى للتوافق ولإعادة طباعة Z-report.
+    const closingDrawerCash = money("0");
 
     await tx
       .update(shifts)
@@ -302,7 +333,7 @@ export async function closeShift(
       varianceReasonCode: hasVariance ? reasonCode : null,
       varianceReason: hasVariance ? reason : null,
       requiresManagerReview: isMaterialVariance,
-      handover: handoverResult,
+      treasuryReturn,
     };
   });
 }

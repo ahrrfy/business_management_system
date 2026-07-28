@@ -1,23 +1,20 @@
-// خدمة تسليم وردية → خزينة (treasury-stage2).
+// خدمة إرجاع نقد الوردية → الخزينة عند الإغلاق (العهدة الوسيطة / imprest، قرار المالك ٢٨/٧/٢٦).
 // نمط: نقل بين دلوَي DRAWER → TREASURY داخل نفس الفرع. لا يَمسّ AR/AP.
-// تُستدعى من داخل withTx لـcloseShift (لا nested tx).
-// القيد المحاسبي CASH_HANDOVER لا يَدخل تقارير الإيراد (revenue=cost=0).
+// تُستدعى من داخل withTx لـcloseShift (لا nested tx). القيد CASH_HANDOVER لا يَدخل الإيراد (revenue=cost=0).
+//
+// تاريخيّاً حَوى هذا الملف createHandover (تسليم SOD اختياريّ معلَّق يقبله مديرٌ آخر) الذي كان يُستدعى من
+// closeShift. أُزيل مع اعتماد النموذج التلقائيّ: يعود **كامل** نقد الدرج إلى الخزينة فوراً عند الإغلاق بلا
+// اختيار مستلِمٍ ولا قبول معلَّق (settleShiftReturnTx). التسليم اليدويّ للخزينة أثناء الوردية يُغطّيه
+// cash drop (createCashDrop، معلَّق بقبول SOD). أرقام CH-... موحّدة بين المسارين.
 
 import { TRPCError } from "@trpc/server";
-import { desc, eq, like, sql } from "drizzle-orm";
-import { receipts, shifts, users } from "../../drizzle/schema";
+import { desc, like, sql } from "drizzle-orm";
+import { receipts } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
 import type { Actor } from "./tx";
-
-export interface HandoverInput {
-  shiftId: number;
-  amount: string; // > 0
-  handoverTo: number; // userId المستلِم (admin/manager)
-  notes?: string | null;
-}
 
 export interface HandoverResult {
   handoverNumber: string;
@@ -50,71 +47,30 @@ async function nextHandoverNumber(tx: Tx, branchId: number): Promise<string> {
 }
 
 /**
- * إنشاء سند تسليم نقد من الكاشير إلى الخزينة الإدارية داخل نفس الفرع.
- * يَستهلك tx مُمرَّرة من closeShift (نفس المعاملة لضمان الذرّية الكاملة).
+ * إرجاع كامل نقد الدرج المعدود إلى الخزينة عند إغلاق الوردية — **تلقائيّ فوريّ** (قرار المالك ٢٨/٧/٢٦،
+ * نموذج العهدة الوسيطة/imprest). كل وردية تُغلق بتسليم درجها **كاملاً** للخزينة (drawer→0)، والوردية
+ * التالية تسحب عهدةً جديدة من الخزينة عند فتحها (openShift ⇒ TREASURY OUT). هذا يُصلح فكّ لوحة الخزينة
+ * الذي كشفه Codex على #377: بلا حركة خزينة عند الفتح/الإغلاق يُحسَب نقد العهدة مرّتين (ازدواج) أو يتبخّر.
+ *
+ * الإرجاع يدخل رصيد الخزينة **فوراً** (status=COMPLETED) بلا خطوة قبول — قرار المالك «تلقائيّ فوريّ»
+ * (يُسقط ضبط الحيازة لصالح البساطة، ويتجنّب قفل فرعٍ بمديرٍ واحد). المعدود = المتوقَّع دائماً (closeShift
+ * يحظر الإغلاق بأيّ فرق عبر enforceCashGovernance) ⇒ لا يستطيع الكاشير تضخيم الخزينة بعدٍّ زائد. يُستدعى
+ * من closeShift داخل نفس الـtx **بعد** computeExpectedCash (وإلّا طُرح إيصال الإرجاع OUT من المتوقَّع).
  */
-export async function createHandover(
+export async function settleShiftReturnTx(
   tx: Tx,
-  input: HandoverInput,
+  input: { shiftId: number; branchId: number; amount: string; notes?: string | null },
   actor: Actor,
 ): Promise<HandoverResult> {
-  // 1. تحقّق من الوردية (OPEN + ضمن المعاملة).
-  const sh = (await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).limit(1))[0];
-  if (!sh) throw new TRPCError({ code: "NOT_FOUND", message: "الوردية غير موجودة" });
-  if (sh.status !== "OPEN") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية مغلقة بالفعل — لا يمكن تسليم نقد منها" });
-  }
-
-  // 2. تحقّق من المستلِم: موجود + نشط + دوره admin/manager.
-  const recipient = (
-    await tx.select().from(users).where(eq(users.id, input.handoverTo)).limit(1)
-  )[0];
-  if (!recipient || !recipient.isActive) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "المستلِم غير موجود أو معطّل" });
-  }
-  if (recipient.role !== "admin" && recipient.role !== "manager") {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "مستلِم النقد يَجب أن يَكون مديراً أو إدارياً (admin/manager) — لا كاشير",
-    });
-  }
-  if (Number(recipient.id) === Number(actor.userId)) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "لا يجوز أن يكون مُسلِّم النقد هو المستلم نفسه",
-    });
-  }
-
-  // 3. الفاعل: الكاشير صاحب الوردية، أو admin/manager في نفس الفرع.
-  const branchId = Number(sh.branchId);
-  if (recipient.branchId == null || Number(recipient.branchId) !== branchId) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "مستلِم النقد يجب أن يكون من فرع الوردية نفسه",
-    });
-  }
-  if (actor.role !== "admin") {
-    if (actor.role === "manager") {
-      if (Number(actor.branchId) !== branchId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك تسليم نقد من وردية فرع آخر" });
-      }
-    } else {
-      if (Number(sh.userId) !== actor.userId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك تسليم نقد من وردية موظّف آخر" });
-      }
-    }
-  }
-
-  // 4. المبلغ موجب.
   const amount = money(input.amount);
   if (amount.isZero() || amount.isNegative()) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يَجب أن يَكون موجباً" });
+    // درجٌ فارغ عند الإغلاق (كل النقد خرج بـcash drop مثلاً) ⇒ لا شيء يُرجَع — لا يُستدعى أصلاً من closeShift.
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد نقد لإرجاعه للخزينة" });
   }
-
-  // 5. توليد رقم السند CH-... (idempotent على مستوى الفرع/اليوم).
+  const branchId = input.branchId;
   const handoverNumber = await nextHandoverNumber(tx, branchId);
 
-  // 6. receipt #1: OUT من DRAWER (الوردية).
+  // receipt #1: OUT من DRAWER (الوردية المُغلَقة) — سجلّ تفريغ الدرج.
   const outRes = await tx.insert(receipts).values({
     branchId,
     shiftId: input.shiftId,
@@ -125,13 +81,13 @@ export async function createHandover(
     referenceNumber: handoverNumber,
     status: "COMPLETED",
     partyType: "OTHER",
-    description: `تسليم وردية #${input.shiftId} للخزينة (المستلِم: ${recipient.name ?? recipient.id})${input.notes ? " — " + input.notes : ""}`,
+    description: `إرجاع كامل نقد وردية #${input.shiftId} إلى الخزينة (تسليم تلقائيّ عند الإغلاق)${input.notes ? " — " + input.notes : ""}`,
     createdBy: actor.userId,
   });
   const outReceiptId = extractInsertId(outRes);
 
-  // 7. عقد استلام معلّق: لا يدخل رصيد TREASURY قبل قبول المستلم بهويته.
-  // اختيار المستلم من طرف المُسلِّم لا يثبت انتقال الحيازة.
+  // receipt #2: IN إلى TREASURY — **مكتمل فوراً** (لا قبول SOD معلّق؛ قرار المالك «تلقائيّ فوريّ»).
+  // COMPLETED + APPROVED (الافتراضي) ⇒ يدخل رصيد الخزينة مباشرةً في getDashboard/getTreasuryBalance.
   const inRes = await tx.insert(receipts).values({
     branchId,
     shiftId: null,
@@ -140,14 +96,14 @@ export async function createHandover(
     paymentMethod: "CASH",
     cashBucket: "TREASURY",
     referenceNumber: handoverNumber,
-    status: "PENDING",
+    status: "COMPLETED",
     partyType: "OTHER",
-    description: `استلام من وردية #${input.shiftId} (المُسلِّم: ${actor.userId})${input.notes ? " — " + input.notes : ""}`,
-    createdBy: input.handoverTo, // المستلِم هو من ينسب إليه إيصال الاستلام
+    description: `استلام إرجاع وردية #${input.shiftId} في الخزينة (تلقائيّ)`,
+    createdBy: actor.userId,
   });
   const inReceiptId = extractInsertId(inRes);
 
-  // 8. قيد محاسبي CASH_HANDOVER واحد (لا يَمسّ revenue/cost).
+  // قيد CASH_HANDOVER واحد (نقلٌ بين دلوَين، revenue/cost=0).
   await postEntry(tx, {
     entryType: "CASH_HANDOVER",
     branchId,

@@ -3,7 +3,6 @@
  * تصميم Odoo 19-style مع multi-tab، حاسبة ذكية، مسح باركود آني، وإدارة وردية كاملة.
  */
 import CustomerPicker from "@/components/CustomerPicker";
-import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue } from "@/components/pos/ShiftHandoverSection";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
 import { clearCartDraft } from "@/lib/cartDraft";
 import { newClientRequestId } from "@/lib/countQueue";
@@ -2163,9 +2162,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const modalRef = useModalFocus<HTMLDivElement>();
   const [counted, setCounted] = useState("");
   const [countEntered, setCountEntered] = useState(false);
-  const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
   const utils = trpc.useUtils();
-  const recipientsQ = trpc.shifts.handoverRecipients.useQuery(undefined, { enabled: !!shift });
 
   // ش٤ أوفلاين — حارس الطابور: إغلاق الوردية وثمة مبيعات غير مُزامنة يترك نقداً في الدرج بلا
   // فواتير في Z ⇒ محجوب افتراضياً؛ المدير/الأدمن يتجاوز بإقرار صريح (تُرحَّل لاحقاً وتدخل
@@ -2325,14 +2322,11 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               </div>
             )}
 
-            {/* تسليم نقد الدرج للخزينة (treasury-stage2) — اختياريّ، بيد مديرٍ مستلِم. */}
-            <ShiftHandoverSection
-              C={C}
-              recipients={recipientsQ.data ?? []}
-              value={handover}
-              onChange={setHandover}
-              loading={recipientsQ.isLoading}
-            />
+            {/* العهدة الوسيطة (imprest، ٢٨/٧/٢٦): يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق
+                (drawer→0) — لا اختيار مستلِم. الوردية التالية تبدأ بعهدةٍ جديدة تُسحَب من الخزينة. */}
+            <div style={{ marginTop: 14, padding: "10px 12px", background: C.muted, border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 12.5, color: C.mutedFg }}>
+              يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق (تسليمٌ كامل). الوردية التالية تبدأ بعهدةٍ جديدة من الخزينة.
+            </div>
 
             {/* ش٤ أوفلاين: لا مصدر مالي قبل ترحيل الفاتورة، لذلك لا يوجد تجاوز للإغلاق. */}
             {outboxQueued.count > 0 && (
@@ -2355,13 +2349,12 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 إلغاء
               </button>
               <button
-                disabled={!counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover)}
+                disabled={!counted || closeShift.isPending || closeBlocked || hasVariance}
                 onClick={() => shift && closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
-                  handover: buildHandoverPayload(handover),
                 })}
-                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
+                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked || hasVariance ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked || hasVariance ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked || hasVariance ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
                 {closeShift.isPending ? "جارٍ الإغلاق…" : closeBlocked ? "أكمل المزامنة أولاً" : hasVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}
               </button>
             </div>
