@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { storefrontCatalog, storefrontCategories, storefrontProduct } from "../storefrontService";
@@ -28,9 +29,9 @@ beforeEach(async () => {
     { id: 3, productId: 3, sku: "HIDDEN", costPrice: "1.00" },
   ]);
   await d.insert(s.productUnits).values([
-    { id: 1, variantId: 1, unitName: "piece", isBaseUnit: true },
-    { id: 2, variantId: 2, unitName: "piece", isBaseUnit: true },
-    { id: 3, variantId: 3, unitName: "piece", isBaseUnit: true },
+    { id: 1, variantId: 1, unitName: "piece", isBaseUnit: true, isStoreSaleUnit: true },
+    { id: 2, variantId: 2, unitName: "piece", isBaseUnit: true, isStoreSaleUnit: true },
+    { id: 3, variantId: 3, unitName: "piece", isBaseUnit: true, isStoreSaleUnit: true },
   ]);
   await d.insert(s.productPrices).values([
     { productUnitId: 1, priceTier: "RETAIL", price: "1000.00" },
@@ -58,6 +59,28 @@ describe("storefront availability", () => {
     const product = await storefrontProduct(2, 1);
     expect(product?.inStock).toBe(false);
   });
+
+  it("separates the inventory base unit from the units sold in the store", async () => {
+    const d = db();
+    await d.update(s.productUnits).set({ isStoreSaleUnit: false }).where(eq(s.productUnits.id, 1));
+    await d.insert(s.productUnits).values([
+      { id: 20, variantId: 1, unitName: "ream", conversionFactor: "500", isStoreSaleUnit: true },
+      { id: 21, variantId: 1, unitName: "carton", conversionFactor: "2500", isStoreSaleUnit: true },
+    ]);
+    await d.insert(s.productPrices).values([
+      { productUnitId: 20, priceTier: "RETAIL", price: "5000.00" },
+      { productUnitId: 21, priceTier: "RETAIL", price: "24000.00" },
+    ]);
+    await d.update(s.branchStock).set({ quantity: 1000 }).where(eq(s.branchStock.variantId, 1));
+
+    const product = await storefrontProduct(1, 1);
+    expect(product?.unitName).toBe("ream");
+    expect(product?.storeUnits?.map((u) => [u.unitName, u.inStock])).toEqual([
+      ["ream", true],
+      ["carton", false],
+    ]);
+    expect(product?.storeUnits?.some((u) => u.unitName === "piece")).toBe(false);
+  });
 });
 
 describe("storefront color swatches", () => {
@@ -71,9 +94,9 @@ describe("storefront color swatches", () => {
       { id: 12, productId: 4, sku: "C-BLU", color: "أزرق", costPrice: "1.00" },
     ]);
     await d.insert(s.productUnits).values([
-      { id: 10, variantId: 10, unitName: "piece", isBaseUnit: true },
-      { id: 11, variantId: 11, unitName: "piece", isBaseUnit: true },
-      { id: 12, variantId: 12, unitName: "piece", isBaseUnit: true },
+      { id: 10, variantId: 10, unitName: "piece", isBaseUnit: true, isStoreSaleUnit: true },
+      { id: 11, variantId: 11, unitName: "piece", isBaseUnit: true, isStoreSaleUnit: true },
+      { id: 12, variantId: 12, unitName: "piece", isBaseUnit: true, isStoreSaleUnit: true },
     ]);
     await d.insert(s.productPrices).values([
       { productUnitId: 10, priceTier: "RETAIL", price: "1000.00" },

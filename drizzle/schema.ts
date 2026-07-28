@@ -542,6 +542,8 @@ export const productUnits = mysqlTable(
     conversionFactor: decimal("conversionFactor", { precision: 15, scale: 4 }).default("1").notNull(),
     barcode: varchar("barcode", { length: 64 }).unique(),
     isBaseUnit: boolean("isBaseUnit").default(false).notNull(),
+    // قناة البيع مستقلة عن وحدة المخزون: قد يكون الأساس «ورقة» بينما المتجر يبيع «بند/كارتون».
+    isStoreSaleUnit: boolean("isStoreSaleUnit").default(false).notNull(),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },

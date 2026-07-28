@@ -195,6 +195,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
             variantId: productVariants.id,
             conversionFactor: productUnits.conversionFactor,
             unitActive: productUnits.isActive,
+            unitAvailableInStore: productUnits.isStoreSaleUnit,
             variantActive: productVariants.isActive,
             productActive: products.isActive,
             showInStore: products.showInStore,
@@ -223,6 +224,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
         row.isService ||
         !row.variantActive ||
         !row.unitActive ||
+        !row.unitAvailableInStore ||
         row.price == null
       ) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "أحد المنتجات لم يعُد متاحاً — حدّث السلة" });

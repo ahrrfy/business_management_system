@@ -212,6 +212,7 @@ export interface ClientUnit {
   name: string;
   factor: string;
   isBase: boolean;
+  sellInStore: boolean;
   retail: string;
   wholesale: string;
   /** سعر الحكومي (GOVERNMENT) — اختياري؛ يجب إعادة إرساله عند التعديل وإلّا حُذف (upsert يمسح ثم يُدرِج). */
