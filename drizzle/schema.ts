@@ -4549,6 +4549,29 @@ export type InsertAccount = typeof accounts.$inferInsert;
 // + الصادر (OUT: قيد GIFT_OUT، revenue=0 profit=-cost، بلا invoiceId، حوكمة SOD فوق العتبة).
 // جدول واحد بعمود `direction` يخدم الاتجاهين (نمط receipts.direction).
 // ============================================================
+
+// حملات الهدايا (G-م٧، هجرة 0117): تصنيف + ميزانيّة اختياريّة تُفرَض بقفل تسلسليّ عند كل هدية صادرة مرتبطة.
+// تُعرَّف قبل giftVouchers (التي تشير إليها) — نمط الإحالة الخلفية المُثبَت في هذا الملف.
+export const giftCampaigns = mysqlTable(
+  "giftCampaigns",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 120 }).notNull(),
+    reason: varchar("reason", { length: 255 }),
+    startDate: date("startDate"),
+    endDate: date("endDate"),
+    budgetCost: decimal("budgetCost", { precision: 15, scale: 2 }),
+    status: mysqlEnum("status", ["ACTIVE", "CLOSED"]).default("ACTIVE").notNull(),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    uqName: unique("uq_gift_campaign_name").on(t.name),
+  })
+);
+export type GiftCampaign = typeof giftCampaigns.$inferSelect;
+export type InsertGiftCampaign = typeof giftCampaigns.$inferInsert;
+
 export const giftVouchers = mysqlTable(
   "giftVouchers",
   {
@@ -4559,6 +4582,8 @@ export const giftVouchers = mysqlTable(
     // العميل (للصادر) / المورّد (للوارد) — أحدهما حسب الاتجاه.
     customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
     supplierId: bigint("supplierId", { mode: "number" }).references(() => suppliers.id),
+    // ربط حملة تسويقية اختياريّ (G-م٧، هجرة 0117) — للصادر دلالياً؛ ميزانيّة الحملة تُفرَض بقفل تسلسليّ.
+    campaignId: bigint("campaignId", { mode: "number" }).references(() => giftCampaigns.id),
     giftType: varchar("giftType", { length: 32 }),
     reason: varchar("reason", { length: 255 }),
     // قابل للبيع؟ الوارد للاستخدام الداخلي/العيّنة = false (مؤجَّل التنفيذ لـ G-م١ب — يبقى العمود للتوسعة).
@@ -4580,6 +4605,7 @@ export const giftVouchers = mysqlTable(
     customerIdx: index("idx_gift_customer").on(t.customerId),
     supplierIdx: index("idx_gift_supplier").on(t.supplierId),
     createdIdx: index("idx_gift_created").on(t.createdAt),
+    campaignIdx: index("idx_gift_campaign").on(t.campaignId),
   })
 );
 export type GiftVoucher = typeof giftVouchers.$inferSelect;
