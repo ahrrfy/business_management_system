@@ -169,13 +169,13 @@ export default function APAging() {
 
       <Card>
         <CardContent className="pt-6 grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
-          <Bucket label="0–30 يوم" value={totals.d0_30} color="bg-emerald-50 text-emerald-700" />
-          <Bucket label="31–60 يوم" value={totals.d31_60} color="bg-amber-50 text-amber-700" />
-          <Bucket label="61–90 يوم" value={totals.d61_90} color="bg-orange-50 text-orange-700" />
-          <Bucket label="أكثر من 90" value={totals.d91p} color="bg-rose-50 text-rose-700" />
+          <Bucket label="0–30 يوم" value={totals.d0_30} color="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" />
+          <Bucket label="31–60 يوم" value={totals.d31_60} color="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" />
+          <Bucket label="61–90 يوم" value={totals.d61_90} color="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" />
+          <Bucket label="أكثر من 90" value={totals.d91p} color="bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]" />
           <Bucket label="إجمالي غير المدفوع" value={totals.unpaidTotal} color="bg-muted" emphasis />
           <Bucket label="غير مفوتر/افتتاحي" value={totals.unbilled} color="bg-[var(--sem-info-bg)] text-[var(--sem-info)]" />
-          <Bucket label="إجمالي ما لهم علينا" value={totals.currentBalance} color="bg-rose-50 text-rose-800" emphasis />
+          <Bucket label="إجمالي ما لهم علينا" value={totals.currentBalance} color="bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]" emphasis />
         </CardContent>
       </Card>
 
