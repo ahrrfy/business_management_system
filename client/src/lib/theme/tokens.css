@@ -162,6 +162,139 @@
   --pos-branch-bord: #1f6feb;
 }
 
+/*
+ * Dark-mode compatibility for legacy semantic Tailwind colours.
+ *
+ * A number of older screens still use light-only `*-50`/`*-100` surfaces
+ * (especially warning rows).  In dark mode those surfaces become large pale
+ * blocks and the accompanying `*-700` text loses contrast.  Keep explicit
+ * `dark:*` classes authoritative (their specificity is higher), while giving
+ * light-only status utilities a safe token-backed dark rendering everywhere.
+ *
+ * Exact class-token selectors deliberately do not match `hover:*` utilities.
+ */
+@layer utilities {
+  html.dark :where(
+    [class~="bg-amber-50"], [class~="bg-amber-50/20"], [class~="bg-amber-50/30"],
+    [class~="bg-amber-50/40"], [class~="bg-amber-50/50"], [class~="bg-amber-50/60"],
+    [class~="bg-amber-100"], [class~="bg-yellow-50"], [class~="bg-yellow-100"],
+    [class~="bg-orange-50"], [class~="bg-orange-100"]
+  ) {
+    background-color: color-mix(in oklch, var(--sem-warn) 14%, transparent);
+  }
+  html.dark :where(
+    [class~="text-amber-600"], [class~="text-amber-700"], [class~="text-amber-800"], [class~="text-amber-900"],
+    [class~="text-yellow-600"], [class~="text-yellow-700"], [class~="text-yellow-800"], [class~="text-yellow-900"],
+    [class~="text-orange-600"], [class~="text-orange-700"], [class~="text-orange-800"], [class~="text-orange-900"]
+  ) {
+    color: var(--sem-warn);
+  }
+  html.dark :where(
+    [class~="border-amber-200"], [class~="border-amber-300"], [class~="border-amber-400"],
+    [class~="border-yellow-200"], [class~="border-yellow-300"], [class~="border-yellow-400"],
+    [class~="border-orange-200"], [class~="border-orange-300"], [class~="border-orange-400"]
+  ) {
+    border-color: color-mix(in oklch, var(--sem-warn) 42%, transparent);
+  }
+
+  html.dark :where(
+    [class~="bg-red-50"], [class~="bg-red-50/20"], [class~="bg-red-50/30"],
+    [class~="bg-red-50/40"], [class~="bg-red-50/50"], [class~="bg-red-50/60"], [class~="bg-red-100"],
+    [class~="bg-rose-50"], [class~="bg-rose-50/20"], [class~="bg-rose-50/30"],
+    [class~="bg-rose-50/40"], [class~="bg-rose-50/50"], [class~="bg-rose-50/60"], [class~="bg-rose-100"],
+    [class~="bg-pink-50"], [class~="bg-pink-100"]
+  ) {
+    background-color: color-mix(in oklch, var(--sem-neg) 14%, transparent);
+  }
+  html.dark :where(
+    [class~="text-red-600"], [class~="text-red-700"], [class~="text-red-800"], [class~="text-red-900"],
+    [class~="text-rose-600"], [class~="text-rose-700"], [class~="text-rose-800"], [class~="text-rose-900"],
+    [class~="text-pink-600"], [class~="text-pink-700"], [class~="text-pink-800"], [class~="text-pink-900"]
+  ) {
+    color: var(--sem-neg);
+  }
+  html.dark :where(
+    [class~="border-red-200"], [class~="border-red-300"], [class~="border-red-400"],
+    [class~="border-rose-200"], [class~="border-rose-300"], [class~="border-rose-400"],
+    [class~="border-pink-200"], [class~="border-pink-300"], [class~="border-pink-400"]
+  ) {
+    border-color: color-mix(in oklch, var(--sem-neg) 42%, transparent);
+  }
+
+  html.dark :where(
+    [class~="bg-emerald-50"], [class~="bg-emerald-50/20"], [class~="bg-emerald-50/30"],
+    [class~="bg-emerald-50/40"], [class~="bg-emerald-50/50"], [class~="bg-emerald-50/60"],
+    [class~="bg-emerald-100"], [class~="bg-green-50"], [class~="bg-green-100"],
+    [class~="bg-lime-50"], [class~="bg-lime-100"]
+  ) {
+    background-color: color-mix(in oklch, var(--sem-pos) 14%, transparent);
+  }
+  html.dark :where(
+    [class~="text-emerald-600"], [class~="text-emerald-700"], [class~="text-emerald-800"], [class~="text-emerald-900"],
+    [class~="text-green-600"], [class~="text-green-700"], [class~="text-green-800"], [class~="text-green-900"],
+    [class~="text-lime-600"], [class~="text-lime-700"], [class~="text-lime-800"], [class~="text-lime-900"]
+  ) {
+    color: var(--sem-pos);
+  }
+  html.dark :where(
+    [class~="border-emerald-200"], [class~="border-emerald-300"], [class~="border-emerald-400"],
+    [class~="border-green-200"], [class~="border-green-300"], [class~="border-green-400"],
+    [class~="border-lime-200"], [class~="border-lime-300"], [class~="border-lime-400"]
+  ) {
+    border-color: color-mix(in oklch, var(--sem-pos) 42%, transparent);
+  }
+
+  html.dark :where(
+    [class~="bg-sky-50"], [class~="bg-sky-50/30"], [class~="bg-sky-50/40"],
+    [class~="bg-sky-50/50"], [class~="bg-sky-50/60"], [class~="bg-sky-100"],
+    [class~="bg-blue-50"], [class~="bg-blue-100"], [class~="bg-cyan-50"], [class~="bg-cyan-100"],
+    [class~="bg-teal-50"], [class~="bg-teal-100"]
+  ) {
+    background-color: color-mix(in oklch, var(--sem-info) 14%, transparent);
+  }
+  html.dark :where(
+    [class~="text-sky-600"], [class~="text-sky-700"], [class~="text-sky-800"], [class~="text-sky-900"],
+    [class~="text-blue-600"], [class~="text-blue-700"], [class~="text-blue-800"], [class~="text-blue-900"],
+    [class~="text-cyan-600"], [class~="text-cyan-700"], [class~="text-cyan-800"], [class~="text-cyan-900"],
+    [class~="text-teal-600"], [class~="text-teal-700"], [class~="text-teal-800"], [class~="text-teal-900"]
+  ) {
+    color: var(--sem-info);
+  }
+  html.dark :where(
+    [class~="border-sky-200"], [class~="border-sky-300"], [class~="border-sky-400"],
+    [class~="border-blue-200"], [class~="border-blue-300"], [class~="border-blue-400"],
+    [class~="border-cyan-200"], [class~="border-cyan-300"], [class~="border-cyan-400"],
+    [class~="border-teal-200"], [class~="border-teal-300"], [class~="border-teal-400"]
+  ) {
+    border-color: color-mix(in oklch, var(--sem-info) 42%, transparent);
+  }
+
+  html.dark :where(
+    [class~="bg-violet-50"], [class~="bg-violet-50/30"], [class~="bg-violet-50/40"],
+    [class~="bg-violet-50/50"], [class~="bg-violet-50/60"], [class~="bg-violet-100"],
+    [class~="bg-purple-50"], [class~="bg-purple-100"], [class~="bg-fuchsia-50"], [class~="bg-fuchsia-100"],
+    [class~="bg-indigo-50"], [class~="bg-indigo-100"]
+  ) {
+    background-color: color-mix(in oklch, var(--chart-check) 14%, transparent);
+  }
+  html.dark :where(
+    [class~="text-violet-600"], [class~="text-violet-700"], [class~="text-violet-800"], [class~="text-violet-900"],
+    [class~="text-purple-600"], [class~="text-purple-700"], [class~="text-purple-800"], [class~="text-purple-900"],
+    [class~="text-fuchsia-600"], [class~="text-fuchsia-700"], [class~="text-fuchsia-800"], [class~="text-fuchsia-900"],
+    [class~="text-indigo-600"], [class~="text-indigo-700"], [class~="text-indigo-800"], [class~="text-indigo-900"]
+  ) {
+    color: var(--chart-check);
+  }
+  html.dark :where(
+    [class~="border-violet-200"], [class~="border-violet-300"], [class~="border-violet-400"],
+    [class~="border-purple-200"], [class~="border-purple-300"], [class~="border-purple-400"],
+    [class~="border-fuchsia-200"], [class~="border-fuchsia-300"], [class~="border-fuchsia-400"],
+    [class~="border-indigo-200"], [class~="border-indigo-300"], [class~="border-indigo-400"]
+  ) {
+    border-color: color-mix(in oklch, var(--chart-check) 42%, transparent);
+  }
+}
+
 @layer utilities {
   .text-money-positive { color: var(--money-positive); }
   .text-money-negative { color: var(--money-negative); }
