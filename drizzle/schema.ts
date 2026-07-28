@@ -16,6 +16,7 @@ import {
   index,
   unique,
   primaryKey,
+  foreignKey,
 } from "drizzle-orm/mysql-core";
 
 /**
@@ -656,14 +657,21 @@ export const invoiceItemBundleComponents = mysqlTable(
   "invoiceItemBundleComponents",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    invoiceItemId: bigint("invoiceItemId", { mode: "number" }).notNull().references(() => invoiceItems.id, { onDelete: "cascade" }),
-    componentVariantId: bigint("componentVariantId", { mode: "number" }).notNull().references(() => productVariants.id, { onDelete: "restrict" }),
+    invoiceItemId: bigint("invoiceItemId", { mode: "number" }).notNull(),
+    componentVariantId: bigint("componentVariantId", { mode: "number" }).notNull(),
     componentBaseQuantity: int("componentBaseQuantity").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
     itemIdx: index("idx_iibc_item").on(table.invoiceItemId),
     componentIdx: index("idx_iibc_component").on(table.componentVariantId),
+    // مفاتيح أجنبية بأسماء صريحة قصيرة (تطابق migration 0060). الاسم التلقائيّ الذي يولّده
+    // drizzle-kit من الأعمدة (`invoiceItemBundleComponents_componentVariantId_productVariants_id_fk`
+    // = ٦٨ محرفاً) يتجاوز حدّ مُعرّفات MySQL (٦٤) ⇒ `db:push` يفشل على قاعدة فارغة بـ
+    // ER_TOO_LONG_IDENT (يظهر على MySQL 8.4؛ CI على 8.0 كان يمرّره). الأسماء الصريحة تُبقي
+    // db:push (قواعد الاختبار) متطابقاً مع مسار الهجرات (الإنتاج) على كلّ إصدارات MySQL 8.x.
+    itemFk: foreignKey({ columns: [table.invoiceItemId], foreignColumns: [invoiceItems.id], name: "fk_iibc_item" }).onDelete("cascade"),
+    componentFk: foreignKey({ columns: [table.componentVariantId], foreignColumns: [productVariants.id], name: "fk_iibc_component" }).onDelete("restrict"),
   })
 );
 
