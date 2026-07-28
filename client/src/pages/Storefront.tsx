@@ -952,7 +952,7 @@ export default function Storefront() {
               const card = (
                 <div
                   key={p.productId}
-                  className={`store-product-card flex flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 transition dark:bg-slate-900 dark:ring-slate-800 ${
+                  className={`store-product-card flex h-full flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 transition dark:bg-slate-900 dark:ring-slate-800 ${
                     p.inStock ? "hover:shadow-md hover:ring-emerald-200 dark:hover:ring-emerald-500/30" : "opacity-70"
                   }`}
                 >
@@ -975,7 +975,9 @@ export default function Storefront() {
                     )}
                   </button>
                   <div className="flex flex-1 flex-col gap-1 p-2.5">
-                    {p.brand && <span className="truncate text-[10px] font-medium text-slate-400">{p.brand}</span>}
+                    <span className="min-h-[0.9rem] truncate text-[10px] font-medium leading-[0.9rem] text-slate-400">
+                      {p.brand ?? ""}
+                    </span>
                     <button onClick={() => setSelectedId(p.productId)} className="text-right">
                       <span className="line-clamp-2 min-h-[2.4em] text-xs font-bold leading-tight text-slate-800 dark:text-slate-100">
                         {p.productName}
@@ -987,7 +989,9 @@ export default function Storefront() {
                       </span>
                       {onSale && <span className="text-[11px] text-slate-400 line-through">{money(p.price)}</span>}
                     </div>
-                    <ColorSwatches colors={p.colors} />
+                    <div className="flex min-h-3 items-center">
+                      <ColorSwatches colors={p.colors} />
+                    </div>
                     <div className="flex min-h-[0.9rem] flex-wrap items-center gap-x-2 text-[10px] leading-none">
                       {p.stockLeft != null && <span className="font-bold text-amber-600 dark:text-amber-400">بقي {p.stockLeft} فقط</span>}
                       {p.soldCount >= 10 ? (
@@ -999,7 +1003,7 @@ export default function Storefront() {
                     <button
                       onClick={() => addToCart(p)}
                       disabled={!p.inStock}
-                      className="store-primary-action store-mobile-action mt-1 flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-2 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
+                      className="store-primary-action store-mobile-action mt-auto flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-2 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
                     >
                       <Plus aria-hidden className="size-3.5" />
                       {p.inStock ? "أضف للسلة" : "غير متوفّر"}
