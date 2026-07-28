@@ -4,17 +4,48 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { openSearch } from "@/lib/searchEvents";
+import { usePrinterConnection } from "@/hooks/usePrinterConnection";
 import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, Gift, DollarSign, CreditCard,
-  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, CalendarClock, Landmark,
+  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, CalendarClock, Landmark, Check,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useRef, useState } from "react";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { ROLE_LABEL } from "@/pages/Users";
+
+/**
+ * ربط الطابعة الحرارية — متاحٌ من الشريط العلوي في كل شاشة (لا الكاشير فقط)، كي تُربط مرّةً
+ * واحدة وتُستعمَل تلقائياً في كل مكان تُطبَع فيه (فواتير/سندات/أوامر شغل/إيصال وردية) — الإذن
+ * والاتصال (thermal.ts) عالميّان بالفعل داخل الجلسة. لا تظهر على /pos (خارج AppLayout بتصميمه
+ * الخاص بملء الشاشة) — تلك الشاشة تملك زرّها المستقلّ في شاشة فتح الوردية نفسها.
+ */
+function PrinterStatusButton({
+  printerReady, connect, supported,
+}: { printerReady: boolean; connect: () => void; supported: boolean }) {
+  if (!supported) return null;
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      onClick={connect}
+      aria-label={printerReady ? "الطابعة الحرارية مربوطة" : "ربط طابعة حرارية"}
+      title={printerReady
+        ? "الطابعة الحرارية مربوطة (تلقائياً في كل شاشة) — اضغط لتبديلها"
+        : "اربط طابعة حرارية — تُستعمل تلقائياً بعدها في كل شاشات الطباعة"}
+      className={cn("relative", printerReady && "text-emerald-600 dark:text-emerald-500")}
+    >
+      <Printer className="size-5" aria-hidden />
+      {printerReady && (
+        <Check className="absolute bottom-1.5 left-1.5 size-3 rounded-full bg-background" aria-hidden strokeWidth={3.5} />
+      )}
+    </Button>
+  );
+}
 
 type NavLink = RoleGate & { href: string; label: string; icon: LucideIcon };
 
@@ -83,6 +114,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const [loc, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
+  const printer = usePrinterConnection();
   const logout = trpc.auth.logout.useMutation({
     onSuccess: async () => {
       await utils.auth.me.invalidate();
@@ -227,9 +259,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen flex flex-col lg:flex-row bg-muted/30" dir="rtl">
       {/* الشريط الجانبي — سطح المكتب (≥lg) */}
       <aside className="hidden lg:flex w-64 shrink-0 flex-col app-sidebar">
-        <div className="sb-header px-4 py-4 flex items-center justify-between gap-2">
+        <div className="sb-header px-4 py-4 flex items-center justify-between gap-1">
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
-          <ThemeToggle />
+          <div className="flex items-center gap-0.5">
+            <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
+            <ThemeToggle />
+          </div>
         </div>
         {sidebarInner}
       </aside>
@@ -249,7 +284,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             </button>
           </SheetTrigger>
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
-          <ThemeToggle />
+          <div className="flex items-center gap-0.5">
+            <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
+            <ThemeToggle />
+          </div>
         </header>
 
         <SheetContent side="right" dir="rtl" className="app-sidebar w-72 p-0">
