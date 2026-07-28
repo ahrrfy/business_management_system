@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { canSeeCost } from "@shared/permissions";
 import { positiveMoneyString } from "../lib/schemas";
 import { receiveInboundGift } from "../services/gifts/inbound";
 import { listGifts } from "../services/gifts/list";
@@ -40,7 +41,10 @@ export const giftsRouter = router({
     .query(({ input, ctx }) => {
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
       const scopedBranchId = elevated ? null : Number(ctx.user.branchId);
-      return listGifts({ scopedBranchId }, { ...(input ?? {}), branchId: elevated ? input?.branchId : undefined });
+      return listGifts(
+        { scopedBranchId },
+        { ...(input ?? {}), branchId: elevated ? input?.branchId : undefined, redactCost: !canSeeCost(ctx.user.role) },
+      );
     }),
 
   receiveInbound: giftsWrite
@@ -54,6 +58,7 @@ export const giftsRouter = router({
         estimatedValue: positiveMoneyString.nullish(),
         notes: z.string().max(500).nullish(),
         sellable: z.boolean().optional(), // false = استخدام داخليّ/عيّنة (لا يدخل مخزون البيع)
+        clientRequestId: z.string().max(64).nullish(),
         lines: z.array(inboundLineSchema).min(1),
       }),
     )
@@ -82,6 +87,7 @@ export const giftsRouter = router({
         giftType: z.string().max(32).nullish(),
         reason: z.string().max(255).nullish(),
         notes: z.string().max(500).nullish(),
+        clientRequestId: z.string().max(64).nullish(),
         lines: z.array(inboundLineSchema).min(1),
       }),
     )
@@ -91,12 +97,15 @@ export const giftsRouter = router({
       if (branchId == null) throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد الفرع للهدية" });
       const actor = { userId: ctx.user.id, branchId, role: ctx.user.role };
       const attempt = () => createOutboundGift({ ...input, branchId }, actor);
+      let r;
       try {
-        return await attempt();
+        r = await attempt();
       } catch (e) {
-        if (isDupEntry(e)) return await attempt();
-        throw e;
+        if (isDupEntry(e)) r = await attempt();
+        else throw e;
       }
+      // حجب التكلفة عمّن لا يراها (تدقيق Codex P1) — المُنشئ غير مرئيّ الكلفة لا يتلقّى totalCost.
+      return canSeeCost(ctx.user.role) ? r : { ...r, totalCost: null };
     }),
 
   // اعتماد هدية صادرة معلَّقة (مدير آخر، SOD-04). الخدمة تفرض دور المدير + عزل الفرع + منع اعتماد الذات.

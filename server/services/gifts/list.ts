@@ -13,6 +13,7 @@ export interface GiftListFilter {
   branchId?: number;
   q?: string;
   limit?: number;
+  redactCost?: boolean; // true ⇒ حجب totalCost من الحمولة (لمن لا يرى التكلفة — تدقيق Codex P1)
 }
 
 export async function listGifts(scope: GiftListScope, filter: GiftListFilter = {}) {
@@ -27,7 +28,7 @@ export async function listGifts(scope: GiftListScope, filter: GiftListFilter = {
     const q = `%${filter.q}%`;
     conds.push(or(like(giftVouchers.giftNumber, q), like(giftVouchers.reason, q), like(giftVouchers.supplierRef, q)));
   }
-  return db
+  const rows = await db
     .select({
       id: giftVouchers.id,
       giftNumber: giftVouchers.giftNumber,
@@ -52,4 +53,6 @@ export async function listGifts(scope: GiftListScope, filter: GiftListFilter = {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(giftVouchers.id))
     .limit(Math.min(filter.limit ?? 100, 200));
+  // حجب التكلفة (تدقيق Codex P1): من لا يرى التكلفة لا يتلقّى totalCost في حمولة الشبكة (وإن أخفته الشاشة).
+  return filter.redactCost ? rows.map((r) => ({ ...r, totalCost: null as string | null })) : rows;
 }

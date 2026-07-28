@@ -25,6 +25,7 @@ import {
   expenses,
   financialPeriods,
   fixedAssets,
+  giftVoucherLines,
   importBatches,
   inventoryMovements,
   invoiceItemBundleComponents,
@@ -234,6 +235,7 @@ export async function getProductUsage(productId: number, conn?: any): Promise<Us
       ]),
     ],
     ["expenseStockItems", "أصناف مصروف مخزون", countRows(db, expenseStockItems, vCond(expenseStockItems.variantId))],
+    ["giftLines", "أسطر سندات هدايا", countRows(db, giftVoucherLines, vCond(giftVoucherLines.variantId))],
     ["contractPrices", "أسعار تعاقدية لعملاء", countRows(db, customerContractPrices, uCond(customerContractPrices.productUnitId))],
     [
       "bundleComponent",

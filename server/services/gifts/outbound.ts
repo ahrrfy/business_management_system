@@ -8,10 +8,11 @@ import { branches, customers, giftVoucherLines, giftVouchers, productVariants } 
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { applyMovement, convertToBaseQuantity, isBundleVariant, isServiceVariant } from "../inventoryService";
+import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
 import { money, round2 } from "../money";
 import { withTx, type Actor } from "../tx";
-import { nextGiftNumber } from "./helpers";
+import { ensureAndLockBranchStock, nextGiftNumber } from "./helpers";
 
 /** عتبة تكلفة الهدية الصادرة قبل إلزام اعتماد مدير آخر (د.ع). قابلة للضبط لاحقاً عبر الإعدادات. */
 export const GIFT_APPROVAL_THRESHOLD = "50000";
@@ -28,6 +29,7 @@ export interface CreateOutboundGiftInput {
   giftType?: string | null;
   reason?: string | null;
   notes?: string | null;
+  clientRequestId?: string | null; // حماية من الازدواج (إعادة إرسالٍ بعد فقد الردّ ⇒ لا خصم/قيد مزدوج)
   lines: OutboundGiftLineInput[];
 }
 export interface OutboundGiftResult {
@@ -121,8 +123,23 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
     }
 
+    // حماية الازدواج (تدقيق Codex P1): إعادة إرسالٍ بنفس clientRequestId ⇒ تُعاد نتيجة السند الأصليّ
+    // بلا خصمٍ ولا قيدٍ ثانٍ (auto-post) ولا سندٍ معلَّقٍ مكرَّر. القيد الفريد يُفشِل السباق المتزامن.
+    const replayId = await findIdempotentRefId(tx, "gifts.outbound", input.clientRequestId);
+    if (replayId) {
+      const ex = (await tx
+        .select({ n: giftVouchers.giftNumber, st: giftVouchers.status, tc: giftVouchers.totalCost })
+        .from(giftVouchers)
+        .where(eq(giftVouchers.id, replayId))
+        .limit(1))[0];
+      const status = (ex?.st === "PENDING_APPROVAL" ? "PENDING_APPROVAL" : "DELIVERED") as "PENDING_APPROVAL" | "DELIVERED";
+      return { giftVoucherId: replayId, giftNumber: ex?.n ?? "", status, totalCost: String(ex?.tc ?? "0"), pending: status === "PENDING_APPROVAL" };
+    }
+
     const converted = await convertLines(tx, input.lines);
     const variantIds = Array.from(new Set(converted.map((c) => c.variantId))).sort((a, b) => a - b);
+    // قفل branchStock قبل productVariants (توحيد الترتيب مع الوارد/الشراء ⇒ لا deadlock — تدقيق Codex P1).
+    await ensureAndLockBranchStock(tx, variantIds, input.branchId);
     const costMap = await lockCosts(tx, variantIds);
 
     // تكلفة كل سطر (WAVG لكل وحدة أساس × كمية الأساس) + الإجمالي + تجميع الكمية لكل صنف.
@@ -160,6 +177,7 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
       approvedAt: needsApproval ? null : new Date(),
     });
     const giftVoucherId = extractInsertId(insHead);
+    if (input.clientRequestId) await recordIdempotencyKey(tx, "gifts.outbound", input.clientRequestId, giftVoucherId);
 
     for (const c of perLine) {
       await tx.insert(giftVoucherLines).values({
@@ -218,6 +236,8 @@ export async function approveGift(giftId: number, actor: Actor): Promise<Approve
     const lineRows = await tx.select().from(giftVoucherLines).where(eq(giftVoucherLines.giftVoucherId, giftId));
     if (!lineRows.length) throw new TRPCError({ code: "BAD_REQUEST", message: "سند الهدية بلا أسطر" });
     const variantIds = Array.from(new Set(lineRows.map((l) => Number(l.variantId)))).sort((a, b) => a - b);
+    // قفل branchStock قبل productVariants (توحيد الترتيب — تدقيق Codex P1).
+    await ensureAndLockBranchStock(tx, variantIds, Number(gift.branchId));
     const costMap = await lockCosts(tx, variantIds);
 
     // إعادة فحص التكلفة تحت القفل (WAVG قد تتغيّر) + تحديث لقطات كل سطر بمعرّفه + تجميع الكمية.

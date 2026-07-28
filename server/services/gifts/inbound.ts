@@ -6,9 +6,10 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { branches, branchStock, giftVoucherLines, giftVouchers, productVariants, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { applyMovement, convertToBaseQuantity, isBundleVariant, isServiceVariant } from "../inventoryService";
+import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { money, round2 } from "../money";
 import { withTx, type Actor } from "../tx";
-import { nextGiftNumber } from "./helpers";
+import { ensureAndLockBranchStock, nextGiftNumber } from "./helpers";
 
 export interface InboundGiftLineInput {
   variantId: number;
@@ -25,6 +26,7 @@ export interface ReceiveInboundGiftInput {
   estimatedValue?: string | null;
   notes?: string | null;
   sellable?: boolean | null; // false = استخدام داخليّ/عيّنة (لا يدخل مخزون البيع، لا يخفّف WAVG) — G-م١ب
+  clientRequestId?: string | null; // حماية من الازدواج: إعادة إرسالٍ بعد فقد الردّ لا تُنشئ سنداً ثانياً
   lines: InboundGiftLineInput[];
 }
 export interface ReceiveInboundGiftResult {
@@ -44,6 +46,14 @@ export async function receiveInboundGift(input: ReceiveInboundGiftInput, actor: 
     if (input.supplierId != null) {
       const s = (await tx.select({ id: suppliers.id }).from(suppliers).where(eq(suppliers.id, input.supplierId)).limit(1))[0];
       if (!s) throw new TRPCError({ code: "NOT_FOUND", message: "المورّد غير موجود" });
+    }
+
+    // حماية الازدواج (تدقيق Codex P1): إعادة إرسالٍ بنفس clientRequestId بعد فقد الردّ ⇒ تُعاد نتيجة السند
+    // الأصليّ بلا رفع مخزونٍ ثانٍ. القيد الفريد على (operation, clientRequestId) يُفشِل السباق المتزامن.
+    const replayId = await findIdempotentRefId(tx, "gifts.inbound", input.clientRequestId);
+    if (replayId) {
+      const ex = (await tx.select({ n: giftVouchers.giftNumber }).from(giftVouchers).where(eq(giftVouchers.id, replayId)).limit(1))[0];
+      return { giftVoucherId: replayId, giftNumber: ex?.n ?? "" };
     }
 
     // حوّل كل سطر لوحدة الأساس + امنع البكج/الخدميّ (لا رصيد branchStock ذاتيّ لهما).
@@ -86,12 +96,13 @@ export async function receiveInboundGift(input: ReceiveInboundGiftInput, actor: 
       createdBy: actor.userId,
     });
     const giftVoucherId = extractInsertId(insHead);
+    if (input.clientRequestId) await recordIdempotencyKey(tx, "gifts.inbound", input.clientRequestId, giftVoucherId);
 
     // القابل للبيع فقط يدخل مخزون البيع ويخفّف WAVG. غير القابل للبيع (استخدام داخليّ/عيّنة) يُوثَّق
     // بالسند وأسطره فقط — بلا حركة مخزون ولا مسّ WAVG (لا يُضخّم مخزون البيع ولا يخفّف كلفته).
     if (sellable) {
-      // قفل صفوف الرصيد للمتغيّرات المعنيّة قبل قراءة الـSUM (يتسلسل مع أي بيع/شراء متزامن — نمط purchaseService).
-      await tx.select({ id: branchStock.id }).from(branchStock).where(inArray(branchStock.variantId, variantIds)).for("update");
+      // ضمان صفّ الرصيد + قفله قبل قراءة الـSUM (يمنع سباق المتغيّر الجديد + يوحّد ترتيب القفل — تدقيق Codex P1).
+      await ensureAndLockBranchStock(tx, variantIds, input.branchId);
       // إجمالي المخزون لكل صنف عبر كل الفروع (WAVG صفة عالمية للصنف ⇒ الوزن بالإجمالي).
       const stockRows = await tx
         .select({ variantId: branchStock.variantId, totalQty: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)` })

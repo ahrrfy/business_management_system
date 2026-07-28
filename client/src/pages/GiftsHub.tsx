@@ -16,7 +16,7 @@ import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
 
 type Mode = "list" | "in" | "out";
-type DirFilter = "ALL" | "IN" | "OUT";
+type DirFilter = "ALL" | "IN" | "OUT" | "PENDING";
 type GiftLine = { key: number; variantId: number; productUnitId: number; label: string; unit: string; quantity: string };
 
 const STATUS_AR: Record<string, string> = {
@@ -54,8 +54,16 @@ export default function GiftsHub() {
   const [sellable, setSellable] = useState(true); // وارد: قابل للبيع؟ (false = استخدام داخليّ/عيّنة)
   const [lines, setLines] = useState<GiftLine[]>([]);
   const keyRef = useRef(1);
+  // مفتاح حماية الازدواج — يُولَّد لكل فتح نموذجٍ جديد؛ إعادة الإرسال بنفسه لا تُنشئ سنداً ثانياً (Codex P1).
+  const [reqId, setReqId] = useState("");
 
-  const list = trpc.gifts.list.useQuery(dirFilter === "ALL" ? {} : { direction: dirFilter });
+  const list = trpc.gifts.list.useQuery(
+    dirFilter === "PENDING"
+      ? { status: "PENDING_APPROVAL" as const }
+      : dirFilter === "ALL"
+        ? {}
+        : { direction: dirFilter as "IN" | "OUT" },
+  );
 
   function resetForm() {
     setSupplierId(null);
@@ -73,6 +81,11 @@ export default function GiftsHub() {
     resetForm();
     setMode("list");
     utils.gifts.list.invalidate();
+  }
+  function openForm(m: "in" | "out") {
+    resetForm();
+    setReqId(crypto.randomUUID()); // مفتاح idempotency جديد لكل عملية إنشاء
+    setMode(m);
   }
 
   const inbound = trpc.gifts.receiveInbound.useMutation({
@@ -122,6 +135,7 @@ export default function GiftsHub() {
       estimatedValue: estimatedValue.trim() || undefined,
       notes: notes.trim() || undefined,
       sellable,
+      clientRequestId: reqId,
       lines: linePayload(),
     });
   }
@@ -133,6 +147,7 @@ export default function GiftsHub() {
       giftType: giftType.trim() || undefined,
       reason: reason.trim() || undefined,
       notes: notes.trim() || undefined,
+      clientRequestId: reqId,
       lines: linePayload(),
     });
   }
@@ -148,11 +163,11 @@ export default function GiftsHub() {
           mode === "list" ? (
             canWrite ? (
               <div className="flex gap-2">
-                <Button size="sm" onClick={() => setMode("in")}>
+                <Button size="sm" onClick={() => openForm("in")}>
                   <ArrowDownToLine aria-hidden className="me-1 size-4" />
                   استلام وارد
                 </Button>
-                <Button size="sm" variant="secondary" onClick={() => setMode("out")}>
+                <Button size="sm" variant="secondary" onClick={() => openForm("out")}>
                   <ArrowUpFromLine aria-hidden className="me-1 size-4" />
                   منح هدية صادرة
                 </Button>
@@ -173,6 +188,7 @@ export default function GiftsHub() {
               ["ALL", "الكل"],
               ["IN", "واردة"],
               ["OUT", "صادرة"],
+              ["PENDING", "بانتظار الاعتماد"],
             ] as [DirFilter, string][]).map(([k, lbl]) => (
               <Button key={k} size="sm" variant={dirFilter === k ? "default" : "outline"} onClick={() => setDirFilter(k)}>
                 {lbl}

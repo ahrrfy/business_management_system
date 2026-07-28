@@ -174,6 +174,16 @@ describe("G-م١ الهدايا الواردة", () => {
     const other = await listGifts({ scopedBranchId: 2 });
     expect(other.length).toBe(0);
   });
+
+  it("idempotency: نفس clientRequestId ⇒ سند وارد واحد (لا رفع مخزون مزدوج)", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 10 });
+    const rid = "req-inb-dup";
+    const a = await receiveInboundGift({ branchId: 1, clientRequestId: rid, lines: [{ variantId: 1, productUnitId: 1, quantity: 5 }] }, actor);
+    const b = await receiveInboundGift({ branchId: 1, clientRequestId: rid, lines: [{ variantId: 1, productUnitId: 1, quantity: 5 }] }, actor);
+    expect(b.giftVoucherId).toBe(a.giftVoucherId); // replay — نفس السند
+    expect(await stockOf(1)).toBe(15); // رُفع مرّة واحدة (10+5) لا 20
+    expect(await countRows(s.giftVouchers)).toBe(1);
+  });
 });
 
 describe("G-م٢ الهدايا الصادرة", () => {
@@ -248,5 +258,25 @@ describe("G-م٢ الهدايا الصادرة", () => {
     const res = await createOutboundGift({ branchId: 1, customerId: 1, lines: [{ variantId: 1, productUnitId: 1, quantity: 600 }] }, actor);
     expect(res.status).toBe("DELIVERED");
     expect(await stockOf(1)).toBe(400);
+  });
+
+  it("idempotency: نفس clientRequestId ⇒ سند صادر واحد (لا خصم/قيد مزدوج)", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
+    const rid = "req-out-dup";
+    const a = await createOutboundGift({ branchId: 1, customerId: 1, clientRequestId: rid, lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] }, actor);
+    const b = await createOutboundGift({ branchId: 1, customerId: 1, clientRequestId: rid, lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] }, actor);
+    expect(b.giftVoucherId).toBe(a.giftVoucherId);
+    expect(await stockOf(1)).toBe(90); // خُصم مرّة واحدة (100-10)
+    expect((await ledger()).length).toBe(1); // قيد GIFT_OUT واحد لا اثنان
+    expect(await countRows(s.giftVouchers)).toBe(1);
+  });
+
+  it("حجب التكلفة (redactCost) ⇒ totalCost = null في القائمة", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
+    await createOutboundGift({ branchId: 1, customerId: 1, lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] }, actor); // admin ⇒ totalCost=1000
+    const visible = await listGifts({ scopedBranchId: 1 }, {});
+    expect(visible[0].totalCost).toBe("1000.00");
+    const redacted = await listGifts({ scopedBranchId: 1 }, { redactCost: true });
+    expect(redacted[0].totalCost).toBeNull();
   });
 });

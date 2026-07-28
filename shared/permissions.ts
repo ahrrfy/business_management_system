@@ -111,7 +111,10 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "READ", settings: "READ",
   },
   accountant: {
-    gifts: "FULL",
+    // READ لا FULL (تدقيق Codex P1): إنشاء الهدية يحتاج بحث منتجات (catalog.posList/forPurchase) وهو
+    // خلف products≥READ، والمحاسب products=NONE ⇒ نموذج الإنشاء يفشل. المحاسب يراجع الهدايا (READ)؛
+    // الإنشاء عمليّ (مخزن/مدير، وكلّهم products≥READ). الأثر الماليّ (GIFT_OUT/WAVG) تلقائيّ يراه بالتقارير.
+    gifts: "READ",
     crm: "READ", campaigns: "READ", collections: "FULL",
     store: "READ",
     assets: "READ",
