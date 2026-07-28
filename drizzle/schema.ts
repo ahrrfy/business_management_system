@@ -1351,6 +1351,8 @@ export const receipts = mysqlTable(
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
     // ربط إيصال العربون بأمر الشغل قبل وجود فاتورة؛ يُربَط بالفاتورة عند التسليم.
     workOrderId: bigint("workOrderId", { mode: "number" }),
+    // ربط إيصال عربون الحجز قبل وجود فاتورة (نمط workOrderId، الحجوزات ٢٧/٧): يُربَط بالفاتورة عند التحويل.
+    reservationId: bigint("reservationId", { mode: "number" }),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     shiftId: bigint("shiftId", { mode: "number" }).references(() => shifts.id),
     direction: mysqlEnum("direction", ["IN", "OUT"]).default("IN").notNull(),
@@ -1392,6 +1394,7 @@ export const receipts = mysqlTable(
   (table) => ({
     invoiceIdx: index("idx_receipt_invoice").on(table.invoiceId),
     workOrderIdx: index("idx_receipt_wo").on(table.workOrderId),
+    reservationIdx: index("idx_receipt_reservation").on(table.reservationId),
     branchIdx: index("idx_receipt_branch").on(table.branchId),
     dateIdx: index("idx_receipt_date").on(table.createdAt),
     voucherIdx: index("idx_receipt_voucher").on(table.voucherNumber),
@@ -4515,6 +4518,113 @@ export const waBroadcastRecipients = mysqlTable(
 export type WaBroadcastRecipient = typeof waBroadcastRecipients.$inferSelect;
 export type InsertWaBroadcastRecipient = typeof waBroadcastRecipients.$inferInsert;
 
+/* ═══════════════════════ الحجوزات (Reservations — R-م٣، ٢٧/٧/٢٦) ═══════════════════════
+ * حجز ناعم (soft reservation، نمط ATP العالمي SAP/Odoo): لا يمسّ branchStock.quantity إطلاقاً.
+ * المتاح للبيع (ATP) = branchStock.quantity − reservationStock.reservedBase.
+ * دورة الحياة: ACTIVE → (PARTIALLY_FULFILLED) → FULFILLED | EXPIRED | CANCELLED | RELEASED — بلا حذف.
+ * قرارات المالك (٢٧/٧): إنفاذ ناعم (تحذير لا منع عند البيع) · عربون اختياري مسترد كامل · الهاتف إلزامي.
+ * الوثيقة الحاكمة: docs/gifts-reservations-design-2026-07-27.md. */
+export const reservations = mysqlTable(
+  "reservations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    reservationNumber: varchar("reservationNumber", { length: 40 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    contactName: varchar("contactName", { length: 200 }),
+    // الهاتف إلزاميّ (قرار المالك): وسيلة الاستدعاء وقت الحضور + تذكير الانتهاء.
+    contactPhone: varchar("contactPhone", { length: 32 }).notNull(),
+    channel: mysqlEnum("reservationChannel", ["PHONE", "WALK_IN", "WHATSAPP", "STORE"]).default("PHONE").notNull(),
+    status: mysqlEnum("reservationStatus", [
+      "ACTIVE", "PARTIALLY_FULFILLED", "FULFILLED", "EXPIRED", "CANCELLED", "RELEASED",
+    ]).default("ACTIVE").notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    // عربون الحجز (R-م٥): إيصال IN مربوط قبل الفاتورة (نمط workOrders.deposit). NULL حتى يُدفع.
+    depositReceiptId: bigint("depositReceiptId", { mode: "number" }),
+    // الفاتورة المنفِّذة عند التحويل لبيع (R-م٤). NULL حتى التحويل الكامل.
+    fulfilledInvoiceId: bigint("fulfilledInvoiceId", { mode: "number" }).references(() => invoices.id),
+    notes: text("notes"),
+    createdBy: int("createdBy").references(() => users.id),
+    releasedBy: int("releasedBy").references(() => users.id),
+    cancelReason: varchar("cancelReason", { length: 300 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    numberUq: unique("uq_reservation_number").on(t.reservationNumber),
+    branchStatusIdx: index("idx_reservation_branch_status").on(t.branchId, t.status),
+    customerIdx: index("idx_reservation_customer").on(t.customerId),
+    phoneIdx: index("idx_reservation_phone").on(t.contactPhone),
+    // كنّاس الانتهاء التلقائي: مسح (status ∧ expiresAt) بلا full scan.
+    expiresIdx: index("idx_reservation_expires").on(t.status, t.expiresAt),
+  })
+);
+export type Reservation = typeof reservations.$inferSelect;
+export type InsertReservation = typeof reservations.$inferInsert;
+
+/** بنود الحجز — بوحدة الأساس دائماً (منع حجز «درزن» ثم بيع القطع مفردةً). fulfilledBase للتنفيذ الجزئي. */
+export const reservationLines = mysqlTable(
+  "reservationLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    reservationId: bigint("reservationId", { mode: "number" }).notNull().references(() => reservations.id, { onDelete: "cascade" }),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).notNull().references(() => productUnits.id),
+    baseQuantity: int("baseQuantity").notNull(),
+    fulfilledBase: int("fulfilledBase").default(0).notNull(),
+    // سعر مرجعيّ وقت الحجز (عرض فقط — السعر النهائي يُحسَب عند البيع).
+    quotedUnitPrice: decimal("quotedUnitPrice", { precision: 15, scale: 2 }),
+  },
+  (t) => ({
+    reservationIdx: index("idx_reservation_line_res").on(t.reservationId),
+    variantIdx: index("idx_reservation_line_variant").on(t.variantId),
+  })
+);
+export type ReservationLine = typeof reservationLines.$inferSelect;
+export type InsertReservationLine = typeof reservationLines.$inferInsert;
+
+/** سجلّ أحداث الحجز — تسلسليّ بلا حذف (حجز/تمديد/تنفيذ/إلغاء/انتهاء/تحرير/عربون/استرداد). */
+export const reservationEvents = mysqlTable(
+  "reservationEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    reservationId: bigint("reservationId", { mode: "number" }).notNull().references(() => reservations.id, { onDelete: "cascade" }),
+    eventType: mysqlEnum("reservationEventType", [
+      "CREATE", "EXTEND", "PARTIAL_FULFILL", "FULFILL", "CANCEL", "EXPIRE", "RELEASE", "DEPOSIT", "REFUND", "SYSTEM",
+    ]).notNull(),
+    fromStatus: varchar("fromStatus", { length: 24 }),
+    toStatus: varchar("toStatus", { length: 24 }),
+    note: text("note"),
+    userId: int("userId").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    resIdx: index("idx_reservation_events_res").on(t.reservationId, t.createdAt),
+  })
+);
+export type ReservationEvent = typeof reservationEvents.$inferSelect;
+export type InsertReservationEvent = typeof reservationEvents.$inferInsert;
+
+/* المحجوز المجمّع لكل (صنف×فرع) — نمط branchStock نفسه (للأداء والتزامن، أفضل من SUM لحظيّ).
+ * ثابت حرج: reservedBase = Σ(baseQuantity − fulfilledBase) للحجوزات النشطة (ACTIVE/PARTIALLY_FULFILLED).
+ * يُحدَّث نسبياً (reservedBase ± delta) تحت قفل .for("update") مع كل تغيّر حجز — كما applyMovement مع branchStock. */
+export const reservationStock = mysqlTable(
+  "reservationStock",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id, { onDelete: "cascade" }),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    reservedBase: int("reservedBase").default(0).notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    variantBranchUq: unique("uq_reservation_stock_variant_branch").on(t.variantId, t.branchId),
+    branchIdx: index("idx_reservation_stock_branch").on(t.branchId),
+  })
+);
+export type ReservationStock = typeof reservationStock.$inferSelect;
+export type InsertReservationStock = typeof reservationStock.$inferInsert;
+
 /**
  * شجرة الحسابات (Chart of Accounts) — أساس الدفتر المزدوج (P0، قرار المالك ٢٧/٧). جدولٌ **إضافيّ** لا
  * يمسّ أيّ دفترٍ قائم. كل حساب يحمل `systemRole` يربطه بالمفهوم القائم في النظام (ذمم العملاء↔customers،
@@ -4550,7 +4660,7 @@ export type InsertAccount = typeof accounts.$inferInsert;
 // جدول واحد بعمود `direction` يخدم الاتجاهين (نمط receipts.direction).
 // ============================================================
 
-// حملات الهدايا (G-م٧، هجرة 0117): تصنيف + ميزانيّة اختياريّة تُفرَض بقفل تسلسليّ عند كل هدية صادرة مرتبطة.
+// حملات الهدايا (G-م٧، هجرة 0118): تصنيف + ميزانيّة اختياريّة تُفرَض بقفل تسلسليّ عند كل هدية صادرة مرتبطة.
 // تُعرَّف قبل giftVouchers (التي تشير إليها) — نمط الإحالة الخلفية المُثبَت في هذا الملف.
 export const giftCampaigns = mysqlTable(
   "giftCampaigns",
@@ -4582,7 +4692,7 @@ export const giftVouchers = mysqlTable(
     // العميل (للصادر) / المورّد (للوارد) — أحدهما حسب الاتجاه.
     customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
     supplierId: bigint("supplierId", { mode: "number" }).references(() => suppliers.id),
-    // ربط حملة تسويقية اختياريّ (G-م٧، هجرة 0117) — للصادر دلالياً؛ ميزانيّة الحملة تُفرَض بقفل تسلسليّ.
+    // ربط حملة تسويقية اختياريّ (G-م٧، هجرة 0118) — للصادر دلالياً؛ ميزانيّة الحملة تُفرَض بقفل تسلسليّ.
     campaignId: bigint("campaignId", { mode: "number" }).references(() => giftCampaigns.id),
     giftType: varchar("giftType", { length: 32 }),
     reason: varchar("reason", { length: 255 }),
