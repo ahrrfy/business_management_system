@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { useClipboard } from "@/hooks/useClipboard";
 import { formatZReportAsText } from "@/lib/copy/formatters";
 import { fmtDateTime } from "@/lib/date";
@@ -13,7 +15,7 @@ import { notify } from "@/lib/notify";
 import { printShiftClose } from "@/lib/printing/print";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { Copy, Printer } from "lucide-react";
+import { Check, Copy, Lock, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 
 /* ═══════════ سجلّ الورديات + إعادة طباعة Z-report ═══════════
@@ -46,9 +48,15 @@ export default function Shifts() {
   const [page, setPage] = useState(0);
   const [printing, setPrinting] = useState<number | null>(null);
   const [copying, setCopying] = useState<number | null>(null);
+  const [closingShiftId, setClosingShiftId] = useState<number | null>(null);
+  const [closeCounted, setCloseCounted] = useState("");
   const { copy } = useClipboard({ successMessage: "نُسِخ تقرير Z" });
 
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  // إدارة أي وردية مفتوحة عن بُعد (كاشير نسي إغلاقها) — بنفس صلاحيات closeShift الخادمية
+  // (admin أي فرع، manager فرعه فقط)؛ الكاشير لا يرى الزرّ أصلاً (والخادم يرفضه لو حاول).
+  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
   const branches = trpc.branches.list.useQuery();
   const list = trpc.shifts.list.useQuery({
     branchId: branchId ? Number(branchId) : undefined,
@@ -77,6 +85,39 @@ export default function Shifts() {
     if (d.lt(0)) return "text-money-negative";
     return "text-foreground";
   };
+
+  // إغلاق وردية عن بُعد (نسيها كاشيرها مفتوحة) — نفس منطق نوافذ POS/الاستقبال/الطباعة:
+  // المتوقع = الافتتاحي + نقد وارد − نقد صادر، ولا يُقبل إغلاقٌ بفرق (نفس حوكمة closeShift الخادمية).
+  const closingRow = rows.find((r) => r.id === closingShiftId) ?? null;
+  const closeReportQ = trpc.shifts.report.useQuery(
+    { shiftId: closingShiftId ?? 0 },
+    { enabled: closingShiftId != null },
+  );
+  const closeExpected = closeReportQ.data
+    ? (() => {
+        const p = closeReportQ.data!.payments ?? [];
+        const cashIn = p.filter((x) => x.method === "CASH" && x.direction === "IN").reduce((s, x) => s.plus(D(x.total)), D(0));
+        const cashOut = p.filter((x) => x.method === "CASH" && x.direction === "OUT").reduce((s, x) => s.plus(D(x.total)), D(0));
+        return D(closeReportQ.data!.shift.openingBalance ?? 0).plus(cashIn).minus(cashOut);
+      })()
+    : null;
+  const closeDiff = closeExpected != null && closeCounted ? D(closeCounted).minus(closeExpected) : null;
+  const closeHasVariance = closeDiff != null && closeDiff.abs().gt("0.005");
+
+  const closeShiftM = trpc.shifts.close.useMutation({
+    onSuccess: async () => {
+      notify.ok("أُغلقت الوردية");
+      setClosingShiftId(null);
+      setCloseCounted("");
+      await utils.shifts.list.invalidate();
+    },
+    onError: (e) => notify.errBig(e),
+  });
+
+  function openCloseDialog(shiftId: number) {
+    setCloseCounted("");
+    setClosingShiftId(shiftId);
+  }
 
   async function reprintZ(shiftId: number) {
     setPrinting(shiftId);
@@ -301,6 +342,13 @@ export default function Shifts() {
                           disabled: copying === r.id,
                           onSelect: () => void copyZ(r.id),
                         },
+                        {
+                          key: "close",
+                          label: "إغلاق",
+                          icon: Lock,
+                          hidden: r.status !== "OPEN" || !isElevated,
+                          onSelect: () => openCloseDialog(r.id),
+                        },
                       ]}
                     />
                   </td>
@@ -330,6 +378,64 @@ export default function Shifts() {
           <Button variant="outline" size="sm" disabled={(page + 1) * PAGE >= total} onClick={() => setPage((p) => p + 1)}>التالي</Button>
         </div>
       </div>
+
+      {/* إغلاق وردية عن بُعد (admin/manager) — لموظّف نسي إغلاق ورديته. نفس حوكمة نوافذ POS/
+          الاستقبال/الطباعة تماماً: لا إغلاق بفرق (closeShift الخادمية ترفضه دون استثناء). */}
+      <Dialog open={closingShiftId != null} onOpenChange={(open) => { if (!open) { setClosingShiftId(null); setCloseCounted(""); } }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>إغلاق وردية #{closingShiftId} — {closingRow?.userName ?? ""}</DialogTitle>
+          </DialogHeader>
+          {closeReportQ.isLoading ? (
+            <LoadingState />
+          ) : (
+            <>
+              {([
+                ["عدد الفواتير", `${closeReportQ.data?.invoiceCount ?? 0}`],
+                ["إجمالي المبيعات", `${fmt(Number(closeReportQ.data?.salesTotal ?? 0))} د.ع`],
+                ["الرصيد الافتتاحي", `${fmt(Number(closeReportQ.data?.shift.openingBalance ?? 0))} د.ع`],
+                ...(closeExpected != null ? [["النقد المتوقّع بالصندوق", `${fmt(closeExpected.toNumber())} د.ع`] as [string, string]] : []),
+              ] as [string, string][]).map(([l, v]) => (
+                <div key={l} className="flex justify-between border-b py-2 text-sm">
+                  <span className="text-muted-foreground">{l}</span>
+                  <span className="font-bold tabular-nums" dir="ltr">{v}</span>
+                </div>
+              ))}
+              <div className="space-y-1.5">
+                <label htmlFor="close-counted-cash" className="block text-sm font-bold">النقد المعدود (د.ع)</label>
+                <MoneyInput
+                  id="close-counted-cash"
+                  value={closeCounted}
+                  onChange={setCloseCounted}
+                  placeholder="0"
+                  ariaLabel="النقد المعدود عند إغلاق الوردية"
+                  className="h-11 text-center text-lg font-extrabold"
+                />
+              </div>
+              {closeDiff != null && (
+                <div className={`flex items-center gap-1 text-sm font-bold ${closeDiff.gte(0) ? "text-emerald-600" : "text-destructive"}`}>
+                  <span>الفرق: {closeDiff.gte(0) ? "+" : ""}{fmt(closeDiff.toNumber())} د.ع</span>
+                  {closeDiff.isZero() && <Check aria-hidden className="size-3.5" />}
+                </div>
+              )}
+              {closeHasVariance && (
+                <div className="rounded-xl border border-destructive/60 bg-destructive/10 p-3 text-xs font-bold text-destructive">
+                  لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الافتتاحي مضافاً إليه صافي المبيعات النقدية المسجّلة. راجع الفواتير والمرتجعات لهذه الوردية أولاً.
+                </div>
+              )}
+            </>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setClosingShiftId(null)}>إلغاء</Button>
+            <Button
+              disabled={!closeCounted || closeShiftM.isPending || closeHasVariance || closeExpected == null}
+              onClick={() => closingShiftId != null && closeShiftM.mutate({ shiftId: closingShiftId, countedCash: closeCounted })}
+            >
+              {closeShiftM.isPending ? "جارٍ الإغلاق…" : "إغلاق"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
