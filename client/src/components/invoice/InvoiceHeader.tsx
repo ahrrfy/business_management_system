@@ -155,11 +155,14 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
             </Select>
           </FieldGroup>
 
-          <FieldGroup label={isSale ? "العميل" : "المورد"} icon={isSale ? User : Factory} required>
+          {/* المرتجع (بيع/شراء) يُستمَدّ عميله/مورّده من الفاتورة المرجعية عند التحميل، وقد يكون
+              نقدياً (بلا عميل) أصلاً — فليس حقلاً إلزامياً هنا كما في فاتورة بيع/شراء جديدة. */}
+          <FieldGroup label={isSale ? "العميل" : "المورد"} icon={isSale ? User : Factory} required={!isReturn}>
             <EntityPicker
               type={invoiceType}
               selectedId={state.entityId}
               onSelect={(id) => dispatch({ type: "SET_ENTITY", id })}
+              placeholder={isReturn ? `نقدي — بلا ${isSale ? "عميل" : "مورّد"} (اختياري)` : undefined}
             />
           </FieldGroup>
         </HeaderSection>

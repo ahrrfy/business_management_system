@@ -34,7 +34,10 @@ import {
 import { AlertTriangle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -121,8 +124,27 @@ export default function SalesReturnNew() {
   const [restock, setRestock] = useState(true);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
-  // البحث في قائمة الفواتير الأخيرة لاستخراج id من رقم — لا توجد invoices.byNumber.
-  const salesList = trpc.sales.list.useQuery({ limit: 200 });
+  // بحث حيّ (رقم الفاتورة المرجعية) — خادميّ عبر sales.list({q}) (رقم الفاتورة LIKE أو اسم
+  // العميل)، لا يقتصر على آخر ٢٠٠ فاتورة محمَّلة مسبقاً كما كان (كانت فاتورة أقدم "غير موجودة").
+  const [refOpen, setRefOpen] = useState(false);
+  const [resolvingRef, setResolvingRef] = useState(false);
+  const refBoxRef = useRef<HTMLDivElement>(null);
+  const debouncedRefQuery = useDebouncedValue(state.refInvoice.trim(), 250);
+  const refSearchQ = trpc.sales.list.useQuery(
+    { q: debouncedRefQuery, limit: 8 },
+    { enabled: refOpen && debouncedRefQuery.length >= 2 }
+  );
+  const refSuggestions = (refSearchQ.data ?? []).filter(
+    (inv) => inv.status !== "CANCELLED" && inv.status !== "RETURNED"
+  );
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (refBoxRef.current && !refBoxRef.current.contains(e.target as Node)) setRefOpen(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
 
   // تفاصيل الفاتورة المصدر — تُفعَّل فقط حين نعرف id.
   const refDetail = trpc.returns.getInvoice.useQuery(
@@ -197,20 +219,33 @@ export default function SalesReturnNew() {
     }
   }, [refDetail.data, sourceInvoiceId]);
 
-  /** يحلّ رقم الفاتورة المُدخَل إلى id باستخدام sales.list (لا byNumber في الخادم بعد). */
-  function lookupReference() {
+  /** يحلّ رقم الفاتورة المُدخَل إلى id عبر بحث خادميّ فوريّ (sales.list — لا byNumber بعد)،
+   *  بلا القيد القديم (آخر ٢٠٠ فاتورة محمَّلة سلفاً). يُستعمَل من زرّ "تحميل البنود"/Enter؛
+   *  الاختيار من القائمة المنسدلة الحيّة (refSuggestions) أسرع ولا يحتاج تطابقاً تاماً. */
+  async function lookupReference() {
     const num = state.refInvoice.trim();
     if (!num) {
       notify.err("أدخل رقم الفاتورة المرجعية أولاً.");
       return;
     }
-    const list = salesList.data ?? [];
-    const match = list.find((inv) => inv.invoiceNumber === num);
-    if (!match) {
-      notify.err(`لم تُعثَر على فاتورة بالرقم «${num}» ضمن آخر ${list.length} فاتورة.`);
-      return;
+    setResolvingRef(true);
+    try {
+      const matches = await utils.sales.list.fetch({ q: num, limit: 5 });
+      const exact = matches.find((inv) => inv.invoiceNumber === num);
+      const target = exact ?? (matches.length === 1 ? matches[0] : null);
+      if (!target) {
+        notify.err(
+          matches.length > 1
+            ? `أكثر من فاتورة تطابق «${num}» — اختر من القائمة المنسدلة تحت الحقل.`
+            : `لم تُعثَر على فاتورة بالرقم «${num}».`
+        );
+        return;
+      }
+      setSourceInvoiceId(Number(target.id));
+      setRefOpen(false);
+    } finally {
+      setResolvingRef(false);
     }
-    setSourceInvoiceId(Number(match.id));
   }
 
   // إرسال المرتجع — يبني payload وفق ما يتوقّعه trpc.returns.create.
@@ -367,20 +402,71 @@ export default function SalesReturnNew() {
       {/* رأس المحرّر — يحتوي حقل «رقم الفاتورة المرجعية» تلقائياً لـ SALE_RETURN. */}
       <InvoiceHeader state={state} dispatch={dispatch} invoiceType="SALE_RETURN" />
 
-      {/* شريط أدوات المرجع — زر تحميل البنود. */}
+      {/* شريط أدوات المرجع — بحث حيّ برقم الفاتورة (جزئي) أو اسم العميل + زر تحميل البنود. */}
       <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-xl border bg-card px-4 py-2.5 text-sm">
         <span className="font-semibold text-muted-foreground">المرجع:</span>
-        <span className="font-mono" dir="ltr">
-          {state.refInvoice || <span className="text-muted-foreground">— غير محدّد —</span>}
-        </span>
+        <div ref={refBoxRef} className="relative w-64">
+          <Input
+            ref={searchRef}
+            dir="ltr"
+            value={state.refInvoice}
+            onChange={(e) => {
+              dispatch({ type: "SET_FIELD", field: "refInvoice", value: e.target.value });
+              setRefOpen(true);
+            }}
+            onFocus={() => setRefOpen(true)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void lookupReference();
+              } else if (e.key === "Escape") {
+                setRefOpen(false);
+              }
+            }}
+            placeholder="اكتب رقم الفاتورة أو جزءاً منه…"
+            className="h-9 font-mono"
+          />
+          {refOpen && debouncedRefQuery.length >= 2 && (
+            <div
+              role="listbox"
+              className="absolute inset-x-0 top-[calc(100%+4px)] z-50 max-h-64 overflow-y-auto rounded-xl border bg-card shadow-xl"
+            >
+              {refSearchQ.isFetching && (
+                <div className="px-3 py-3 text-center text-xs text-muted-foreground">جارٍ البحث…</div>
+              )}
+              {!refSearchQ.isFetching && refSuggestions.length === 0 && (
+                <div className="px-3 py-3 text-center text-xs text-muted-foreground">لا فواتير مطابقة</div>
+              )}
+              {refSuggestions.map((inv) => (
+                <div
+                  key={inv.id}
+                  role="option"
+                  aria-selected={Number(inv.id) === sourceInvoiceId}
+                  onClick={() => {
+                    dispatch({ type: "SET_FIELD", field: "refInvoice", value: inv.invoiceNumber });
+                    setSourceInvoiceId(Number(inv.id));
+                    setRefOpen(false);
+                  }}
+                  className="cursor-pointer border-b px-3 py-2 text-xs last:border-b-0 hover:bg-muted"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono font-bold text-foreground" dir="ltr">{inv.invoiceNumber}</span>
+                    <span className="shrink-0 text-muted-foreground" dir="ltr">{fmt(inv.total)} د.ع</span>
+                  </div>
+                  <div className="text-muted-foreground">{inv.customerName ?? "نقدي"} · {fmtDate(inv.invoiceDate)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         <Button
           type="button"
           size="sm"
           variant="outline"
-          disabled={!state.refInvoice.trim() || salesList.isLoading || refDetail.isFetching}
-          onClick={lookupReference}
+          disabled={!state.refInvoice.trim() || resolvingRef || refDetail.isFetching}
+          onClick={() => void lookupReference()}
         >
-          {refDetail.isFetching ? "جارٍ التحميل…" : hasRefLoaded ? "إعادة تحميل" : "تحميل البنود"}
+          {resolvingRef || refDetail.isFetching ? "جارٍ التحميل…" : hasRefLoaded ? "إعادة تحميل" : "تحميل البنود"}
         </Button>
         {hasRefLoaded && refDetail.data && (
           <>
