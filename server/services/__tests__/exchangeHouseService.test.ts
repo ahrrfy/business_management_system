@@ -4,7 +4,7 @@
  *  2) إيداع (الخزينة ↓ عبر receipt OUT، محفظة الدينار ↑) — نقل أصل.
  *  3) شراء دولار (WAVG: متوسط كلفة مرجّح صحيح، دينار↓ دولار↑).
  *  4) تسديد مورد بالدولار: محفظة الدولار ↓ + دين المورد ↓ + فرق صرف محقَّق + عمولة مصروف،
- *     **والخزينة لا تتأثّر** (لا receipt جديد) — أهمّ ثابت محاسبي.
+ *     **والخزينة لا تتأثّر** (سند EXCHANGE غير خزيني) — أهمّ ثابت محاسبي.
  *  5) منع المكشوف منعاً قطعياً؛ لا يمكن لأي تأكيد أن يخلق نقداً غير موجود.
  *  6) كشف الحساب + المطابقة.
  */
@@ -185,6 +185,8 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     );
     // فرق الصرف = 1,300,000 − (900×1400=1,260,000) = +40,000 (مكسب).
     expect(res.fxDiff).toBe("40000.00");
+    expect(res.receiptId).toBeTypeOf("number");
+    expect(res.voucherNumber).toMatch(/^PV-1-\d{8}-\d{5}$/);
 
     const h = await getExchangeHouse(id);
     expect(h?.balanceUsd).toBe("90.00"); // 1000 − (900 + 10)
@@ -196,6 +198,13 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
 
     // ⭐ الخزينة لم تتغيّر بالتسديد (النقد غادر عند الإيداع) — لا ازدواج خصم نقد.
     expect(await treasuryBalance(1)).toBe(treasuryBefore);
+    const [voucher] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(res.receiptId)));
+    expect(voucher).toMatchObject({ paymentMethod: "EXCHANGE", direction: "OUT", amount: "1300000.00", partyType: "SUPPLIER", partyId: 1, referenceNumber: res.txnNumber, status: "COMPLETED" });
+    expect(voucher.signatureHash).toMatch(/^[a-f0-9]{64}$/);
+    const [txn] = await db().select().from(s.exchangeTransactions).where(eq(s.exchangeTransactions.id, res.txnId));
+    expect(Number(txn.receiptId)).toBe(res.receiptId);
+    const [settleEntry] = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.dedupeKey, `EXSET:${res.txnNumber}`));
+    expect(Number(settleEntry.receiptId)).toBe(res.receiptId);
 
     // القيود: تسديد + فرق صرف + عمولة (10×1400=14,000).
     expect(await ledgerAmount("EXCHANGE_SETTLE", id)).toBe("1300000.00");
@@ -530,6 +539,10 @@ describe("reverseExchangeTransaction — عكس عملية صيرفة (تدقي�
     expect(Number(house!.usdCostRate)).toBe(1400); // الصرف لا يمسّ المعدّل
     const stmt = await getExchangeStatement({ exchangeHouseId: id });
     expect(stmt?.summary.totalSettledIqd).toBe("0.00"); // المعكوسة مُستثناة من الإجماليات
+    const [voucher] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(st.receiptId)));
+    expect(voucher.status).toBe("REVERSED");
+    const exchangeReceipts = await db().select().from(s.receipts).where(eq(s.receipts.paymentMethod, "EXCHANGE"));
+    expect(exchangeReceipts).toHaveLength(1);
   });
 
   it("عكس إيداع دينار يعيد النقد للخزينة بإيصال تعويضيّ", async () => {

@@ -869,6 +869,13 @@
       "when": 1786233600000,
       "tag": "0124_owner_flag",
       "breakpoints": true
+    },
+    {
+      "idx": 125,
+      "version": "5",
+      "when": 1786320000000,
+      "tag": "0125_exchange_settlement_vouchers",
+      "breakpoints": true
     }
   ]
 }

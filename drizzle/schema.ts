@@ -1392,7 +1392,8 @@ export const receipts = mysqlTable(
     direction: mysqlEnum("direction", ["IN", "OUT"]).default("IN").notNull(),
     // 0018: DB-level CHECK (amount >= 0) أُضيف في migration 0018 (المبلغ موجب؛ الاتجاه من `direction`).
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
-    paymentMethod: mysqlEnum("paymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).notNull(),
+    // EXCHANGE: سند صرف مُنشأ حصراً من تسديد المورد عبر الصيرفة؛ لا يمسّ الخزينة.
+    paymentMethod: mysqlEnum("paymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "EXCHANGE"]).notNull(),
     /**
      * cash-treasury-mode (تدقيق ١٧/٦): فصل النقد إلى دلوَين دلالياً.
      *  - DRAWER: نقد درج كاشير ⇒ يَخصم/يُضيف إلى Z-report عبر shiftId.

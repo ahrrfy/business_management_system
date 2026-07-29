@@ -29,7 +29,7 @@ const selectCls =
 const TYPE_LABEL: Record<string, string> = { IN: "قبض", OUT: "صرف" };
 const PARTY_LABEL: Record<string, string> = { CUSTOMER: "عميل", SUPPLIER: "مورّد", OTHER: "أخرى" };
 const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صكّ", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صكّ", TRANSFER: "تحويل", WALLET: "محفظة", EXCHANGE: "صيرفة",
 };
 const APPROVAL_LABEL: Record<string, string> = {
   APPROVED: "مُعتمَد",
@@ -48,7 +48,7 @@ export default function Vouchers() {
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "treasury", "FULL", ["manager", "accountant"]);
   const [voucherType, setVoucherType] = useState<"" | "RECEIPT" | "PAYMENT">("");
   const [partyType, setPartyType] = useState<"" | "CUSTOMER" | "SUPPLIER" | "OTHER">("");
-  const [paymentMethod, setPaymentMethod] = useState<"" | "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">("");
+  const [paymentMethod, setPaymentMethod] = useState<"" | "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "EXCHANGE">("");
   const [approvalStatus, setApprovalStatus] = useState<"" | "APPROVED" | "PENDING_APPROVAL" | "REJECTED">("");
   const [voucherCategoryId, setVoucherCategoryId] = useState<"" | number>("");
   const [from, setFrom] = useState("");
@@ -318,6 +318,7 @@ export default function Vouchers() {
               <option value="CHECK">صكّ</option>
               <option value="TRANSFER">تحويل</option>
               <option value="WALLET">محفظة</option>
+              <option value="EXCHANGE">صيرفة</option>
             </select>
           </div>
           <div className="space-y-1">
@@ -530,7 +531,7 @@ export default function Vouchers() {
                               key: "cancel",
                               label: "إلغاء السند",
                               variant: "destructive",
-                              hidden: !canManage || r.status === "REVERSED",
+                              hidden: !canManage || r.status === "REVERSED" || r.paymentMethod === "EXCHANGE",
                               disabled: cancelMut.isPending,
                               onSelect: () => void cancelVoucher(r),
                             },

@@ -145,11 +145,14 @@ export async function reverseExchangeTransaction(
       }
     }
 
-    // ٣) عكس الإيصال الخزينيّ (إيداع/سحب دينار): إيصالٌ تعويضيّ معاكس (shiftId=null ⇒ لا يمسّ درجاً).
+    // ٣) سند تسديد الصيرفة لا يمسّ الخزينة: نعكس حالته فقط. إيصال الإيداع/السحب الخزيني وحده يُعوّض.
     if (txn.receiptId != null) {
       const [orig] = await tx.select().from(receipts).where(eq(receipts.id, Number(txn.receiptId))).for("update").limit(1);
       if (orig && orig.status === "COMPLETED") {
-        await tx.insert(receipts).values({
+        if (txn.type === "SETTLE" && orig.paymentMethod === "EXCHANGE") {
+          await tx.update(receipts).set({ status: "REVERSED" }).where(eq(receipts.id, Number(orig.id)));
+        } else {
+          await tx.insert(receipts).values({
           branchId: orig.branchId,
           shiftId: null,
           cashBucket: "TREASURY",
@@ -161,7 +164,8 @@ export async function reverseExchangeTransaction(
           referenceNumber: `REV-EX-${txn.txnNumber}`,
           description: `عكس عملية صيرفة ${txn.txnNumber}`,
           createdBy: actor.userId,
-        });
+          });
+        }
       }
     }
 

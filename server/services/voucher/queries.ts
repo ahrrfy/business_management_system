@@ -1,6 +1,6 @@
 // قراءات السندات: القائمة المفلترة، سند منفرد موسَّع، والسندات الأخيرة لنفس الطرف (تحذير الازدواج).
 import { and, desc, eq, gte, isNotNull, lt, ne } from "drizzle-orm";
-import { customers, invoices, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
+import { customers, exchangeHouses, exchangeTransactions, invoices, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { localDayStart, localNextDayStart } from "../dateRange";
 import type { PartyType, PaymentMethod } from "./types";
@@ -69,9 +69,13 @@ export async function listVouchers(input: ListVouchersInput = {}) {
       // attachment-upload (٥/٧): ربط الفاتورة — رقم الفاتورة للعرض (بلا استعلام إضافي بالواجهة).
       invoiceId: receipts.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
+      exchangeHouseId: exchangeTransactions.exchangeHouseId,
+      exchangeHouseName: exchangeHouses.name,
     })
     .from(receipts)
     .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
+    .leftJoin(exchangeTransactions, eq(exchangeTransactions.receiptId, receipts.id))
+    .leftJoin(exchangeHouses, eq(exchangeHouses.id, exchangeTransactions.exchangeHouseId))
     .where(and(...wheres))
     .orderBy(desc(receipts.id))
     .limit(input.limit ?? 100)
@@ -90,6 +94,8 @@ export async function getVoucher(receiptId: number) {
   let categoryName: string | null = null;
   let partyName: string | null = null;
   let invoiceNumber: string | null = null;
+  let exchangeHouseId: number | null = null;
+  let exchangeHouseName: string | null = null;
   if (r.createdBy != null) {
     const u = (await db.select({ name: users.name }).from(users).where(eq(users.id, Number(r.createdBy))).limit(1))[0];
     createdByName = u?.name ?? null;
@@ -117,7 +123,14 @@ export async function getVoucher(receiptId: number) {
       .from(invoices).where(eq(invoices.id, Number(r.invoiceId))).limit(1))[0];
     invoiceNumber = inv?.invoiceNumber ?? null;
   }
-  return { ...r, createdByName, approvedByName, categoryName, partyName, invoiceNumber };
+  if (r.paymentMethod === "EXCHANGE") {
+    const source = (await db.select({ id: exchangeHouses.id, name: exchangeHouses.name })
+      .from(exchangeTransactions).innerJoin(exchangeHouses, eq(exchangeHouses.id, exchangeTransactions.exchangeHouseId))
+      .where(eq(exchangeTransactions.receiptId, receiptId)).limit(1))[0];
+    exchangeHouseId = source ? Number(source.id) : null;
+    exchangeHouseName = source?.name ?? null;
+  }
+  return { ...r, createdByName, approvedByName, categoryName, partyName, invoiceNumber, exchangeHouseId, exchangeHouseName };
 }
 
 /** يَجلب السندات الأخيرة لنفس الطرف خلال نافذة أيام محدّدة — للتحذير من الازدواج (دفعة مكرّرة).
