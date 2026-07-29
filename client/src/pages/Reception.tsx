@@ -852,6 +852,24 @@ export default function Reception() {
             onChange={(e) => setOpening(e.target.value)}
             className="mb-3 h-12 text-end text-lg font-extrabold tabular-nums"
           />
+          {/* اربط الطابعة الحرارية هنا **قبل** فتح الوردية كي يُطبَع إيصال الافتتاح صامتاً فوراً
+              بدل نافذة طباعة المتصفّح (كانت لا تظهر إلا بعد فتح الوردية داخل رأس الشاشة الرئيسية). */}
+          {isWebUsbSupported() && !bridge.enabled && (
+            <button
+              type="button"
+              onClick={() => void connectPrinter()}
+              title={printerReady ? "الطابعة الحرارية مربوطة — اضغط لتبديلها" : "اربط طابعة حرارية كي يُطبع إيصال فتح الوردية عليها مباشرة"}
+              className={cn(
+                "mb-3 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg border text-xs font-bold transition-colors hover:bg-muted/60",
+                printerReady ? "border-[var(--money-positive)] text-money-positive" : "text-muted-foreground",
+              )}
+            >
+              <Printer aria-hidden className="size-3.5" />
+              {printerReady
+                ? <>الطابعة الحرارية مربوطة <Check aria-hidden className="size-3.5" strokeWidth={3} /></>
+                : "اربط الطابعة الحرارية لطباعة إيصال الوردية"}
+            </button>
+          )}
           <Button
             className="h-12 w-full text-base font-bold"
             disabled={openShiftM.isPending || needsBranchChoice}
