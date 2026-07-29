@@ -451,6 +451,9 @@ describe("exchange-house — تكامل التقارير والمطابقة (إ�
   it("تسديد بالدينار: تباين المسحوب والمُسوّى مرفوض، والتساوي يُخزّن المُسوّى", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
+    await db().update(s.suppliers)
+      .set({ currentBalanceUsd: "500.00" })
+      .where(eq(s.suppliers.id, 1));
     await expect(
       settleSupplierViaExchange(
         { exchangeHouseId: id, branchId: 1, supplierId: 1, currency: "IQD", walletAmount: "1000000", settledIqd: "900000" },
@@ -463,6 +466,16 @@ describe("exchange-house — تكامل التقارير والمطابقة (إ�
     );
     const st = await getExchangeStatement({ exchangeHouseId: id });
     expect(st?.summary.totalSettledIqd).toBe("1000000.00"); // iqdAmount = المُسوّى لا المسحوب
+    const [supplier, house, txn] = await Promise.all([
+      db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)).then((r) => r[0]),
+      getExchangeHouse(id),
+      db().select().from(s.exchangeTransactions).where(eq(s.exchangeTransactions.exchangeHouseId, id)).then((r) => r.find((t) => t.type === "SETTLE")),
+    ]);
+    expect(supplier.currentBalance).toBe("1000000.00");
+    expect(supplier.currentBalanceUsd).toBe("500.00"); // تسديد الدينار لا يلمس حساب الدولار
+    expect(house?.balanceIqd).toBe("1000000.00");
+    expect(house?.balanceUsd).toBe("0.00");
+    expect(txn?.settledUsd).toBe("0.00");
   });
 });
 
