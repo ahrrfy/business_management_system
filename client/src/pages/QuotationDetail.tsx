@@ -1,7 +1,8 @@
 import { Button } from "@/components/ui/button";
+import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { DocumentWhatsAppDialog } from "@/components/DocumentWhatsAppDialog";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatQuotationAsWhatsApp } from "@/lib/copy/formatters";
@@ -17,7 +18,7 @@ import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { Link, useParams } from "wouter";
+import { Link, useParams, useSearch } from "wouter";
 
 const STATUS: Record<string, string> = {
   DRAFT: "مسودّة",
@@ -67,6 +68,7 @@ function SummaryRow({ label, value, strong }: { label: string; value: string; st
 
 export default function QuotationDetail() {
   const params = useParams();
+  const search = useSearch();
   const quotationId = Number(params.id);
   const utils = trpc.useUtils();
   const q = trpc.quotations.get.useQuery({ quotationId }, { enabled: Number.isFinite(quotationId) });
@@ -137,6 +139,7 @@ export default function QuotationDetail() {
 
   return (
     <div className="space-y-4 max-w-4xl">
+      {new URLSearchParams(search).get("print") === "1" && <AutoPrintOnce onPrint={printQuote} />}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">عرض سعر</h1>
         <Link href="/quotations" className="text-sm text-muted-foreground">← رجوع للعروض</Link>
@@ -342,8 +345,14 @@ export default function QuotationDetail() {
             notes: data.notes,
           })}
         />
-        <WhatsAppShare
-          message={buildQuotationMessage({
+        <DocumentWhatsAppDialog
+          kind="QUOTATION"
+          documentId={quotationId}
+          documentNumber={data.quoteNumber}
+          customerName={data.customerName}
+          defaultPhone={data.customerPhone}
+          autoOpen={new URLSearchParams(search).get("share") === "1"}
+          fallbackMessage={buildQuotationMessage({
             quoteNumber: data.quoteNumber,
             quoteDate: data.quoteDate ? String(data.quoteDate) : undefined,
             validUntil: data.validUntil ? String(data.validUntil) : undefined,

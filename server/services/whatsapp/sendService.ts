@@ -10,7 +10,7 @@
  *
  * sendMediaByLink غير مبنيّة عمداً (YAGNI — غير مطلوبة في هذه الشريحة).
  */
-import { graphFetch, type GraphIntegration } from "./graph";
+import { graphBaseUrl, graphFetch, GRAPH_VERSION, type GraphIntegration } from "./graph";
 
 export type GraphErrorClassification = "retryable" | "permanent" | "pauseworthy";
 
@@ -33,6 +33,12 @@ export interface SendFailure {
   detail: string;
 }
 export type SendResult = SendSuccess | SendFailure;
+
+export interface MediaUploadSuccess {
+  ok: true;
+  mediaId: string;
+}
+export type MediaUploadResult = MediaUploadSuccess | SendFailure;
 
 // ── تصنيف الأخطاء + خريطة الرسائل العربية ───────────────────────────────────
 
@@ -114,6 +120,128 @@ async function postMessage(
   }
   const info = classifyGraphError(res.status, res.body);
   return { ok: false, classification: info.classification, code: info.code, detail: info.detail };
+}
+
+/** رفع ملف إلى استضافة Meta المؤقتة وإرجاع media_id صالح للإرسال. */
+export async function uploadMedia(
+  integration: GraphIntegration,
+  bytes: Uint8Array,
+  mimeType: string,
+  filename: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<MediaUploadResult> {
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", mimeType);
+  const fileBytes = new Uint8Array(bytes.byteLength);
+  fileBytes.set(bytes);
+  form.append("file", new Blob([fileBytes.buffer], { type: mimeType }), filename);
+
+  let response: Response;
+  try {
+    response = await fetchImpl(
+      `${graphBaseUrl(integration)}/${GRAPH_VERSION}/${integration.phoneNumberId}/media`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${integration.accessToken}`,
+          Accept: "application/json",
+        },
+        body: form,
+      },
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      classification: "retryable",
+      code: null,
+      detail: error instanceof Error ? error.message : "تعذّر رفع ملف PDF إلى واتساب.",
+    };
+  }
+
+  let body: unknown = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  if (!response.ok) {
+    const info = classifyGraphError(response.status, body);
+    return { ok: false, classification: info.classification, code: info.code, detail: info.detail };
+  }
+  const mediaId = (body as { id?: unknown } | null)?.id;
+  if (typeof mediaId !== "string" || !mediaId) {
+    return {
+      ok: false,
+      classification: "permanent",
+      code: null,
+      detail: "استجابة رفع PDF من واتساب لا تحتوي media_id.",
+    };
+  }
+  return { ok: true, mediaId };
+}
+
+export async function sendDocumentByMediaId(
+  integration: GraphIntegration,
+  to: string,
+  mediaId: string,
+  filename: string,
+  caption?: string | null,
+  fetchImpl?: typeof fetch,
+): Promise<SendResult> {
+  return postMessage(
+    integration,
+    {
+      messaging_product: "whatsapp",
+      to: toWaId(to),
+      type: "document",
+      document: {
+        id: mediaId,
+        filename,
+        ...(caption?.trim() ? { caption: caption.trim() } : {}),
+      },
+    },
+    fetchImpl,
+  );
+}
+
+/** قالب Utility ذو رأس DOCUMENT لاستخدامه خارج نافذة المحادثة الحرة. */
+export async function sendDocumentTemplate(
+  integration: GraphIntegration,
+  to: string,
+  templateName: string,
+  langCode: string,
+  mediaId: string,
+  filename: string,
+  bodyParams: string[],
+  fetchImpl?: typeof fetch,
+): Promise<SendResult> {
+  const components: Array<Record<string, unknown>> = [
+    {
+      type: "header",
+      parameters: [{ type: "document", document: { id: mediaId, filename } }],
+    },
+  ];
+  if (bodyParams.length > 0) {
+    components.push({
+      type: "body",
+      parameters: bodyParams.map((text) => ({ type: "text", text })),
+    });
+  }
+  return postMessage(
+    integration,
+    {
+      messaging_product: "whatsapp",
+      to: toWaId(to),
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: langCode },
+        components,
+      },
+    },
+    fetchImpl,
+  );
 }
 
 /** ردّ حرّ ضمن نافذة ٢٤ ساعة (نصّ عادي) — فحص النافذة مسؤولية المستدعي (outboxService). */

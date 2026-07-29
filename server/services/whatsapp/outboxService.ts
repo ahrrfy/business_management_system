@@ -37,17 +37,30 @@ import { getDb, type DB, type Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { logger } from "../../logger";
 import { decryptSecret } from "../cryptoService";
+import {
+  generateOfficialDocumentPdf,
+  type OfficialDocumentPdfData,
+} from "../officialDocumentPdf";
 import { requireDb, withTx } from "../tx";
 import type { GraphIntegration } from "./graph";
 import { fetchInboundMedia } from "./mediaService";
 import {
   GRAPH_ERROR_AR,
+  sendDocumentByMediaId,
+  sendDocumentTemplate,
   sendInteractiveButtons,
   sendSessionText,
   sendTemplate,
+  uploadMedia,
   type GraphErrorClassification,
   type SendResult,
 } from "./sendService";
+
+interface OutgoingPdfPayload {
+  pdfData: OfficialDocumentPdfData;
+  filename: string;
+  caption?: string | null;
+}
 
 export interface EnqueueOutboxInput {
   dedupeKey: string;
@@ -285,7 +298,11 @@ async function finalizeSendSuccess(row: WaOutbox, wamid: string): Promise<void> 
   const bodyText =
     row.kind === "TEMPLATE"
       ? `قالب: ${row.templateName ?? ""}`
-      : String((row.payloadJson as { text?: string } | null)?.text ?? "");
+      : row.kind === "MEDIA"
+        ? String((row.payloadJson as { document?: { caption?: string; filename?: string } } | null)?.document?.caption
+          ?? (row.payloadJson as { document?: { filename?: string } } | null)?.document?.filename
+          ?? "مستند PDF")
+        : String((row.payloadJson as { text?: string } | null)?.text ?? "");
   await withTx(async (tx) => {
     await tx.update(waOutbox).set({ status: "SENT", wamid, lastError: null }).where(eq(waOutbox.id, row.id));
     if (row.conversationId != null) {
@@ -371,11 +388,6 @@ async function processClaimedRow(row: WaOutbox): Promise<void> {
     }
   }
 
-  if (row.kind === "MEDIA") {
-    await applyFailure(row, "permanent", "إرسال الوسائط الصادر غير مدعوم بعد.");
-    return;
-  }
-
   if (row.kind === "MEDIA_FETCH") {
     const result = await fetchInboundMedia(row, graphIntegration);
     if (result.ok) {
@@ -383,6 +395,64 @@ async function processClaimedRow(row: WaOutbox): Promise<void> {
     } else {
       await applyFailure(row, result.permanent ? "permanent" : "retryable", result.detail);
     }
+    return;
+  }
+
+  // PDF document media: render the immutable payload snapshot, upload it to
+  // Meta, then send either a free-window document or a DOCUMENT-header
+  // utility template.
+  const documentPayload =
+    (row.payloadJson as { document?: OutgoingPdfPayload } | null)?.document ?? null;
+  if ((row.kind === "MEDIA" || row.kind === "TEMPLATE") && documentPayload) {
+    let bytes: Uint8Array;
+    try {
+      bytes = await generateOfficialDocumentPdf(documentPayload.pdfData);
+    } catch (error) {
+      await applyFailure(
+        row,
+        "permanent",
+        error instanceof Error ? `تعذّر إنشاء ملف PDF: ${error.message}` : "تعذّر إنشاء ملف PDF.",
+      );
+      return;
+    }
+    const uploaded = await uploadMedia(
+      graphIntegration,
+      bytes,
+      "application/pdf",
+      documentPayload.filename,
+    );
+    if (!uploaded.ok) {
+      await applyFailure(row, uploaded.classification, uploaded.detail, uploaded.code);
+      return;
+    }
+    const sendResult =
+      row.kind === "MEDIA"
+        ? await sendDocumentByMediaId(
+          graphIntegration,
+          row.toPhoneE164 ?? "",
+          uploaded.mediaId,
+          documentPayload.filename,
+          documentPayload.caption,
+        )
+        : await sendDocumentTemplate(
+          graphIntegration,
+          row.toPhoneE164 ?? "",
+          row.templateName ?? "",
+          row.templateLang ?? "ar",
+          uploaded.mediaId,
+          documentPayload.filename,
+          (row.payloadJson as { bodyParams?: string[] }).bodyParams ?? [],
+        );
+    if (sendResult.ok) {
+      await finalizeSendSuccess(row, sendResult.wamid);
+    } else {
+      await applyFailure(row, sendResult.classification, sendResult.detail, sendResult.code);
+    }
+    return;
+  }
+
+  if (row.kind === "MEDIA") {
+    await applyFailure(row, "permanent", "حمولة الوسائط الصادرة غير صالحة.");
     return;
   }
 

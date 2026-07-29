@@ -77,6 +77,7 @@ export interface InvoiceState {
 export type InvoiceAction =
   | { type: "REPLACE_STATE"; state: InvoiceState }
   | { type: "SET_FIELD"; field: keyof Omit<InvoiceState, "items">; value: InvoiceState[keyof Omit<InvoiceState, "items">] }
+  | { type: "SET_TIER_PRICES"; tier: PriceTier; pricesByUnitId: Record<number, string> }
   | { type: "SET_ENTITY"; id: number | null }
   | { type: "ADD_ITEM"; item: InvoiceLine }
   | { type: "ADD_ITEMS"; items: InvoiceLine[] }

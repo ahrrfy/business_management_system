@@ -9,13 +9,14 @@
  * فوق بياناتٍ مقتطعة»). الآن: `search` خادميّ (q + limit) لا يُطلَق إلا عند فتح القائمة،
  * و`get` لاسم/رصيد المختار (فقد يكون خارج نتائج البحث الحالية).
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fmtNum } from "./totals";
 import { BalanceBadge, getBalanceDirection } from "@/components/BalanceBadge";
 import { TIER_OPTIONS, type EntityRow, type InvoiceType } from "./types";
@@ -44,15 +45,6 @@ export function EntityPicker({ type, selectedId, onSelect, placeholder, clearLab
 
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, []);
 
   // البحث خادميّ (يطال كل السجلّات لا أوّل ٥٠٠) ولا يُطلَق إلا والقائمة مفتوحة ⇒ لا تحميل
   // عند الإقلاع. debounce ليكتب المستخدم بلا طلبٍ لكل حرف. الاسم يُطابَق مطبَّعاً عربياً
@@ -86,23 +78,30 @@ export function EntityPicker({ type, selectedId, onSelect, placeholder, clearLab
   const balance = selected?.currentBalance ? Number(selected.currentBalance) : 0;
 
   return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        className={cn(
-          "flex h-9 w-full items-center justify-between gap-2 rounded-lg border px-3 text-sm transition",
-          "outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          selected
-            ? "border-primary bg-primary/10 font-bold text-primary"
-            : "border-input bg-background font-medium text-muted-foreground hover:border-input/80"
-        )}
-      >
-        <span className="truncate">{selected ? selected.name : (placeholder ?? `— اختر ${entityLabel} —`)}</span>
-        <ChevronDown aria-hidden className="size-3.5 shrink-0" />
-      </button>
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) setQ("");
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          className={cn(
+            "flex h-9 w-full items-center justify-between gap-2 rounded-lg border px-3 text-sm transition",
+            "outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            selected
+              ? "border-primary bg-primary/10 font-bold text-primary"
+              : "border-input bg-background font-medium text-muted-foreground hover:border-input/80"
+          )}
+        >
+          <span className="truncate">{selected ? selected.name : (placeholder ?? `— اختر ${entityLabel} —`)}</span>
+          <ChevronDown aria-hidden className="size-3.5 shrink-0" />
+        </button>
+      </PopoverTrigger>
 
       {selected && (
         <div className="mt-1 flex items-center justify-between px-1">
@@ -115,11 +114,13 @@ export function EntityPicker({ type, selectedId, onSelect, placeholder, clearLab
         </div>
       )}
 
-      {open && (
-        <div
-          role="listbox"
-          className="absolute inset-x-0 top-[calc(100%+4px)] z-50 overflow-hidden rounded-xl border bg-card shadow-xl"
-        >
+      <PopoverContent
+        role="listbox"
+        align="start"
+        sideOffset={4}
+        collisionPadding={12}
+        className="z-[80] w-[var(--radix-popover-trigger-width)] overflow-hidden rounded-xl p-0 shadow-xl"
+      >
           <div className="p-2">
             <Input
               autoFocus
@@ -196,8 +197,7 @@ export function EntityPicker({ type, selectedId, onSelect, placeholder, clearLab
               </Button>
             </div>
           )}
-        </div>
-      )}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }

@@ -17,6 +17,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { D } from "@/lib/money";
 import { PageHeader } from "@/components/PageHeader";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 
 import {
   InvoiceHeader,
@@ -131,6 +132,8 @@ export default function QuotationNew() {
 
   const [bulkOpen, setBulkOpen] = useState(false);
   const [savedQuotationId, setSavedQuotationId] = useState<number | null>(null);
+  const printAfterSaveRef = useRef(false);
+  const shareAfterSaveRef = useRef(false);
 
   // RBAC: عرض السعر سياق مبيعات — لا تكلفة افتراضياً للكاشير. الافتراضي false (إخفاء التكلفة).
   const showCost = false;
@@ -141,9 +144,18 @@ export default function QuotationNew() {
       notify.ok("تم حفظ عرض السعر");
       const id = (r as { quotationId: number }).quotationId;
       setSavedQuotationId(id);
-      navigate(`/quotations/${id}`);
+      const printAfterSave = printAfterSaveRef.current;
+      const shareAfterSave = shareAfterSaveRef.current;
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
+      navigate(`/quotations/${id}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`);
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      releaseReservedPrintWindow();
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
+      notify.err(e);
+    },
   });
 
   const update = trpc.quotations.update.useMutation({
@@ -153,9 +165,18 @@ export default function QuotationNew() {
         utils.quotations.get.invalidate({ quotationId: result.quotationId }),
       ]);
       notify.ok("تم تحديث مسودة عرض السعر");
-      navigate(`/quotations/${result.quotationId}`);
+      const printAfterSave = printAfterSaveRef.current;
+      const shareAfterSave = shareAfterSaveRef.current;
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
+      navigate(`/quotations/${result.quotationId}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`);
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      releaseReservedPrintWindow();
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
+      notify.err(e);
+    },
   });
 
   const convert = trpc.quotations.convert.useMutation({
@@ -212,6 +233,9 @@ export default function QuotationNew() {
   function handleSubmit() {
     const err = validate();
     if (err) {
+      releaseReservedPrintWindow();
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
       notify.warn(err);
       return;
     }
@@ -255,24 +279,36 @@ export default function QuotationNew() {
   function handleAction(action: InvoiceActionKind) {
     switch (action) {
       case "save":
+        releaseReservedPrintWindow();
+        printAfterSaveRef.current = false;
+        shareAfterSaveRef.current = false;
         handleSubmit();
         break;
       case "draft":
+        releaseReservedPrintWindow();
+        printAfterSaveRef.current = false;
+        shareAfterSaveRef.current = false;
         // لا حفظ جزئي في الراوتر حالياً — نحفظ ونضع الحالة SENT لاحقاً عبر setStatus إن لزم.
         handleSubmit();
         break;
       case "print":
-        // اطبع بعد الحفظ (إن لم يُحفظ نطبع المعاينة الحالية مباشرة).
-        if (!savedQuotationId) {
-          handleSubmit();
-        }
-        window.print();
+        reservePrintWindow();
+        printAfterSaveRef.current = true;
+        shareAfterSaveRef.current = false;
+        handleSubmit();
         break;
       case "send":
-        notify.info("الإرسال عبر البريد/الواتساب لم يُفعّل بعد.");
+        releaseReservedPrintWindow();
+        printAfterSaveRef.current = false;
+        shareAfterSaveRef.current = true;
+        handleSubmit();
         break;
       case "pdf":
-        window.print();
+        // قالب A4 المعتمد يتيح اختيار "Save as PDF" من حوار الطباعة.
+        reservePrintWindow();
+        printAfterSaveRef.current = true;
+        shareAfterSaveRef.current = false;
+        handleSubmit();
         break;
       case "convert":
         handleConvert();
@@ -306,13 +342,19 @@ export default function QuotationNew() {
       // F4: حفظ.
       if (e.key === "F4") {
         e.preventDefault();
+        releaseReservedPrintWindow();
+        printAfterSaveRef.current = false;
+        shareAfterSaveRef.current = false;
         handleSubmit();
         return;
       }
       // F9: طباعة.
       if (e.key === "F9") {
         e.preventDefault();
-        window.print();
+        reservePrintWindow();
+        printAfterSaveRef.current = true;
+        shareAfterSaveRef.current = false;
+        handleSubmit();
         return;
       }
       // F12: تفريغ كامل وإعادة تهيئة.

@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
-import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { DocumentWhatsAppDialog } from "@/components/DocumentWhatsAppDialog";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatInvoiceAsWhatsApp } from "@/lib/copy/formatters";
@@ -20,7 +21,7 @@ import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useEffect, useState } from "react";
-import { Link, useParams } from "wouter";
+import { Link, useParams, useSearch } from "wouter";
 import { Paperclip } from "lucide-react";
 import { Printer } from "lucide-react";
 import { notify } from "@/lib/notify";
@@ -94,6 +95,7 @@ function SummaryRow({
 
 export default function InvoiceDetail() {
   const params = useParams();
+  const search = useSearch();
   const invoiceId = Number(params.id);
   const utils = trpc.useUtils();
   const inv = trpc.sales.get.useQuery({ invoiceId }, { enabled: Number.isFinite(invoiceId) });
@@ -185,14 +187,53 @@ export default function InvoiceDetail() {
     pay.mutate({ invoiceId, amount: amt.toFixed(2), method: payMethod, clientRequestId });
   }
 
+  async function printApprovedA4() {
+    // توزيع ضريبة الفاتورة على السطور لعمود «الضريبة» في القالب الرسمي.
+    const afterDisc = round2(D(data.subtotal).minus(D(data.discountAmount ?? "0"))).toFixed(2);
+    const shares = allocateLineTax(
+      data.items.map((it) => ({ total: String(it.total) })),
+      String(data.taxAmount ?? "0"),
+      afterDisc,
+    );
+    await printInvoiceA4({
+      invoiceNumber: data.invoiceNumber,
+      invoiceDate: data.invoiceDate,
+      customerName: data.customerName,
+      salespersonName: data.salespersonName,
+      companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
+      subtotal: data.subtotal,
+      discountAmount: data.discountAmount,
+      taxAmount: data.taxAmount,
+      taxRate: Number(data.taxRatePercent ?? 0),
+      total: data.total,
+      paidAmount: data.paidAmount,
+      items: data.items.map((it, i) => ({
+        productName: it.productName ?? "",
+        unitName: it.unitName,
+        quantity: it.quantity,
+        unitPrice: it.unitPrice,
+        total: it.total,
+        taxAmount: shares[i] ?? "0",
+      })),
+    });
+  }
+
   return (
     <div className="space-y-4 max-w-4xl">
+      {new URLSearchParams(search).get("print") === "1" && (
+        <AutoPrintOnce onPrint={() => void printApprovedA4()} />
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">تفاصيل الفاتورة</h1>
         <div className="flex flex-wrap items-center gap-2">
-          <WhatsAppShare
-            phone={data.customerPhone}
-            message={buildInvoiceMessage({
+          <DocumentWhatsAppDialog
+            kind="INVOICE"
+            documentId={invoiceId}
+            documentNumber={data.invoiceNumber}
+            customerName={data.customerName}
+            defaultPhone={data.customerPhone}
+            autoOpen={new URLSearchParams(search).get("share") === "1"}
+            fallbackMessage={buildInvoiceMessage({
               invoiceNumber: data.invoiceNumber,
               invoiceDate: String(data.invoiceDate),
               customerName: data.customerName,
@@ -237,37 +278,9 @@ export default function InvoiceDetail() {
             <Printer aria-hidden className="size-4" />
             {printingReceipt ? "جارٍ إعادة الطباعة…" : "إعادة طباعة حرارية"}
           </Button>
-          <Button variant="outline" size="sm" onClick={async () => {
-            // توزيع ضريبة الفاتورة على السطور لعمود «الضريبة» في A4 (نفس خوارزمية شاشة التحرير:
-            // آخر سطر يمتصّ فرق التقريب ⇒ Σ الحصص = data.taxAmount بلا انجراف).
-            const afterDisc = round2(D(data.subtotal).minus(D(data.discountAmount ?? "0"))).toFixed(2);
-            const shares = allocateLineTax(
-              data.items.map((it) => ({ total: String(it.total) })),
-              String(data.taxAmount ?? "0"),
-              afterDisc,
-            );
-            printInvoiceA4({
-              invoiceNumber: data.invoiceNumber,
-              invoiceDate: data.invoiceDate,
-              customerName: data.customerName,
-              salespersonName: data.salespersonName,
-              companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
-              subtotal: data.subtotal,
-              discountAmount: data.discountAmount,
-              taxAmount: data.taxAmount,
-              taxRate: Number(data.taxRatePercent ?? 0),
-              total: data.total,
-              paidAmount: data.paidAmount,
-              items: data.items.map((it, i) => ({
-                productName: it.productName ?? "",
-                unitName: it.unitName,
-                quantity: it.quantity,
-                unitPrice: it.unitPrice,
-                total: it.total,
-                taxAmount: shares[i] ?? "0",
-              })),
-            });
-          }}>طباعة A4 / حفظ PDF</Button>
+          <Button variant="outline" size="sm" onClick={() => void printApprovedA4()}>
+            طباعة A4 / حفظ PDF
+          </Button>
           <Link href="/invoices" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمبيعات</Link>
         </div>
       </div>
