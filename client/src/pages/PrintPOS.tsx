@@ -763,10 +763,10 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
                 <div key={c.uid} onClick={() => setSelUid(c.uid)}
                   style={{ borderRadius: 11, border: `1.5px solid ${sel ? C.primary : C.border}`, background: sel ? C.primarySoft : C.card, padding: "9px 11px", cursor: "pointer" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
-                    <div style={{ fontSize: 14, fontWeight: 800, color: C.fg, lineHeight: 1.3, display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ fontSize: 19, fontWeight: 800, color: C.fg, lineHeight: 1.3, display: "flex", alignItems: "center", gap: 6 }}>
                       {(() => { const SIcon = serviceIcon(c.svc.sku); return <SIcon aria-hidden size={16} />; })()}
                       {c.svc.productName}
-                      <span style={{ fontSize: 11, color: C.mutedFg, fontWeight: 500 }}>/ {c.svc.unitName}</span>
+                      <span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 500 }}>/ {c.svc.unitName}</span>
                     </div>
                     <button onClick={(e) => { e.stopPropagation(); removeRow(c.uid); }} aria-label="حذف السطر" style={{ width: 34, height: 34, flexShrink: 0, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={15} /></button>
                   </div>

@@ -1198,10 +1198,10 @@ export default function Reception() {
                             >
                               {isCustom ? "تخصيص" : "جاهز"}
                             </span>
-                            <span className="text-sm font-bold">
+                            <span className="text-lg font-extrabold">
                               {isCustom ? l.custom!.title : l.row.productName}
                             </span>
-                            <span className="text-[10px] text-muted-foreground" dir="ltr">{l.row.sku}</span>
+                            <span className="text-xs text-muted-foreground" dir="ltr">{l.row.sku}</span>
                             {!isCustom && stock.isOut && (
                               <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">
                                 نافذ — لا مخزون

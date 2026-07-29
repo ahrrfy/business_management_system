@@ -1689,9 +1689,9 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                   onMouseLeave={(e) => { e.currentTarget.style.background = rowBg; }}
                 >
                   <td style={{ ...TD, color: C.mutedFg, fontWeight: 600, borderInlineStart: `4px solid ${accent}` }}>{i + 1}</td>
-                  <td style={{ ...TD, textAlign: "right", fontWeight: 600, color: C.fg }}>
+                  <td style={{ ...TD, textAlign: "right", fontWeight: 800, fontSize: 19, lineHeight: 1.35, color: C.fg }}>
                     {c.row.productName}
-                    <span style={{ fontSize: 11, color: C.mutedFg, fontWeight: 400, marginRight: 5 }}>{c.row.sku}</span>
+                    <span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 500, marginRight: 5 }}>{c.row.sku}</span>
                     {c.disc != null && c.disc > 0 && (
                       <span style={{ fontSize: 11, color: C.danger, fontWeight: 700, marginRight: 4 }}>−{c.disc}%</span>
                     )}
