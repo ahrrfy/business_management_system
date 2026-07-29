@@ -73,6 +73,8 @@ export default function UserEdit() {
   const utils = trpc.useUtils();
   const userId = Number(params?.id ?? 0);
 
+  const me = trpc.auth.me.useQuery();
+  const meIsOwner = !!(me.data as any)?.isOwner;
   const detail = trpc.users.get.useQuery({ userId }, { enabled: userId > 0 });
   const usage = trpc.users.usage.useQuery({ userId }, { enabled: userId > 0 });
   const branches = trpc.branches.list.useQuery();
@@ -91,6 +93,7 @@ export default function UserEdit() {
   const [jobTitle, setJobTitle] = useState("");
   const [hiredAt, setHiredAt] = useState("");
   const [permsOverride, setPermsOverride] = useState<PermissionMap>({});
+  const [isOwner, setIsOwner] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -114,6 +117,7 @@ export default function UserEdit() {
       setJobTitle((u as { jobTitle?: string | null }).jobTitle ?? "");
       setHiredAt(toDateInput((u as { hiredAt?: unknown }).hiredAt));
       setPermsOverride(((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {});
+      setIsOwner(!!(u as { isOwner?: boolean }).isOwner);
       setLoaded(true);
     }
   }, [detail.data, loaded]);
@@ -236,6 +240,8 @@ export default function UserEdit() {
       phone: phone.trim() || null,
       jobTitle: jobTitle.trim() || null,
       hiredAt: hiredAt || null,
+      // isOwner: يُرسَل فقط إن كان المستخدم الحالي مالكاً (وإلا يتجاهله الخادم بحارس FORBIDDEN).
+      ...(meIsOwner ? { isOwner } : {}),
       permissionsOverride: override,
     });
   }
@@ -399,6 +405,25 @@ export default function UserEdit() {
               {(branches.data ?? []).map((b) => <option key={Number(b.id)} value={String(b.id)}>{b.name}</option>)}
             </select>
           </div>
+          {/* مالك النظام (isOwner): يظهر فقط للمالك الحالي (حارس تصعيد الصلاحيات). المالك يتجاوز
+              كل اعتماد ثنائي على السندات ويحتفظ بدور admin. */}
+          {meIsOwner && (
+            <div className="space-y-1 md:col-span-2">
+              <Label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  className="size-4"
+                  checked={isOwner}
+                  onChange={(e) => setIsOwner(e.target.checked)}
+                  disabled={userId === (me.data?.id as number | undefined) && isOwner}
+                />
+                <span>مالك النظام <span className="text-[11px] text-amber-800 bg-amber-100 rounded px-1.5 py-0.5 mr-1">صلاحيات خاصة</span></span>
+              </Label>
+              <p className="text-[11px] text-muted-foreground">
+                يتجاوز كل اعتماد ثنائي على السندات (Maker-Checker + العتبات). لا يمكنك سحب الصفة عن نفسك.
+              </p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
