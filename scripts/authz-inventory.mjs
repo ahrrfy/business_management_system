@@ -38,7 +38,6 @@ const PROCEDURES = {
   cashierProcedure:           { authority: "raw-role",    module: null,          level: null,   roles: ["cashier", "manager"],                      branch: "required" },
   warehouseProcedure:         { authority: "raw-role",    module: null,          level: null,   roles: ["warehouse", "manager"],                    branch: "required" },
   reportViewerProcedure:      { authority: "module-gate", module: "reports",     level: "READ", roles: ["manager", "accountant", "auditor"],        branch: "asserted" },
-  reportsProcedure:           { authority: "module-gate", module: "reports",     level: "READ", roles: ["manager", "accountant", "auditor"],        branch: "asserted" },
   posCashierProcedure:        { authority: "module-gate", module: "pos",         level: "FULL", roles: ["cashier", "manager"],                      branch: "required" },
   salesReadProcedure:         { authority: "module-map",  module: "sales",       level: "READ", roles: [],                                          branch: "scoped" },
   salesCashierProcedure:      { authority: "module-gate", module: "sales",       level: "FULL", roles: ["cashier", "manager"],                      branch: "required" },
@@ -312,13 +311,34 @@ function scanTrpcFile(file) {
   // نلتقط **بوّابات المنع** بالدور داخل المعالِج فقط (مسار الرفض)، لا اصطلاح رفع النطاق
   // (`ctx.user.role === "admin"` لتوسيع البيانات — قرار نطاقٍ مُمثَّلٌ أصلاً، ليس بوّابةً تمنع).
   // أنماط المنع: `!== "role"` · `!SET.has(ctx.user.role)` · `assertElevated(...)` · `NOT_ADMIN_ERR_MSG`.
+  // نلتقط **بوّابات المنع** بالدور داخل المعالِج فقط (مسار الرفض)، ونستبعد صراحةً:
+  //  - اصطلاح رفع النطاق `ctx.user.role === "admin"` (قرار نطاقٍ لا بوّابة).
+  //  - اصطلاح **عزل الفرع/IDOR** `role !== "admin" && ...branchId...` (مكافئ requireOwnBranch،
+  //    يعفي admin ويضيّق بالفرع — ليس بوّابةً «admin فقط»). مراجعة review-module A3.
+  // نميّز كلَّ مطابقة `!== "admin"` بجوارها القريب: إن حوى `branchId`/`branch` فهي حارس فرعٍ يُتجاهل.
+  const nearBranch = (body, idx) => /branch/i.test(body.slice(Math.max(0, idx - 60), idx + 60));
   out.sort((a, b) => a.line - b.line);
   for (let i = 0; i < out.length; i++) {
     const start = out[i].line - 1;
     const end = Math.min(i + 1 < out.length ? out[i + 1].line - 1 : lines.length, start + 160);
     const body = lines.slice(start, end).join("\n");
-    const denyAdmin = /ctx\.user\.role\s*!==\s*["']admin["']/.test(body) || /\bNOT_ADMIN_ERR_MSG\b/.test(body);
-    const denyRoleNe = [...body.matchAll(/ctx\.user\.role\s*!==\s*["']([a-z_]+)["']/g)].map((x) => x[1]).filter((r) => r !== "admin");
+
+    // (A4) وحدة مُطبَّقة inline على النقطة: `name: baseProc.use(requireModule("mod","LEVEL"))`.
+    // scanLocalGates لا يراها (تُطابق `const NAME=` فقط) وحلّ البوّابة يُفتاح باسم الإجراء الأساس.
+    // نقرأ سطور الإعلان (حتى .query/.mutation) ونُلحق module/level بالبوّابة المحلولة.
+    const declEnd = Math.min(out[i].endLine ?? out[i].line, start + 12);
+    const decl = lines.slice(start, declEnd).join("\n");
+    const inlineMod = decl.match(/\.use\(\s*requireModule\(\s*["']([^"']+)["']\s*,\s*["'](FULL|READ)["']/);
+    if (inlineMod && out[i].gate) {
+      out[i].gate = { ...out[i].gate, module: inlineMod[1], level: inlineMod[2], inlineModule: true };
+    }
+
+    // (A3) بوّابات المنع بالدور — مع استبعاد حرّاس الفرع.
+    const adminHits = [...body.matchAll(/ctx\.user\.role\s*!==\s*["']admin["']/g)];
+    const denyAdmin = adminHits.some((m) => !nearBranch(body, m.index)) || /\bNOT_ADMIN_ERR_MSG\b/.test(body);
+    const denyRoleNe = [...body.matchAll(/ctx\.user\.role\s*!==\s*["']([a-z_]+)["']/g)]
+      .filter((m) => m[1] !== "admin" && !nearBranch(body, m.index))
+      .map((m) => m[1]);
     const denyRoleSet = /![A-Z_]+\.has\(\s*ctx\.user\.role\s*\)/.test(body);      // !RECON_WRITERS.has(ctx.user.role)
     const denyElevated = /\bassertElevated\s*\(/.test(body);
     const roles = Array.from(new Set(denyRoleNe));
@@ -380,11 +400,24 @@ function flagsOf(ep, meta) {
  */
 function classifyExpress(file, path, method) {
   const f = file.replace(/\\/g, "/");
+  const G = method === "GET";
   if (f.endsWith("backupRoutes.ts")) return { authority: "admin", roles: "admin", sensitivity: "HIGH", note: "كوكي+CSRF، أدمن — تنزيل نسخة كاملة" };
-  if (f.endsWith("printRoute.ts")) return { authority: "raw-role", roles: "admin|manager|open-shift", sensitivity: /raw|test/.test(path) ? "HIGH" : "MEDIUM", note: "مصادقة + (أدمن/مدير أو وردية مفتوحة)" };
+  if (f.endsWith("printRoute.ts")) {
+    // A5: GET /status مصادقةٌ فقط؛ POST /raw،/test بوّابة (أدمن/مدير أو وردية مفتوحة).
+    if (G) return { authority: "none", roles: "session", sensitivity: "LOW", note: "مصادقة فقط — حالة الجسر" };
+    return { authority: "raw-role", roles: "admin|manager|open-shift", sensitivity: "HIGH", note: "طباعة خام — أدمن/مدير أو وردية مفتوحة" };
+  }
   if (f.endsWith("waMedia.ts")) return { authority: "none", roles: "session", sensitivity: "HIGH", note: "جلسة مستخدم — وسائط محادثات (PII)" };
-  if (f.endsWith("channelWebhooks.ts")) return { authority: "hmac", roles: "integration", sensitivity: "MEDIUM", note: "توقيع HMAC — Principal تكامل" };
-  if (f.endsWith("imageRoute.ts")) return { authority: "mixed", roles: "public|kiosk", sensitivity: "LOW", note: "عام/كشك — صور منتجات/بنرات" };
+  if (f.endsWith("channelWebhooks.ts")) {
+    // A5: GET = تحقّق verify-token + echo hub.challenge (بلا HMAC، بلا كتابة)؛ POST = HMAC.
+    if (G) return { authority: "public", roles: "verify-token", sensitivity: "LOW", note: "تحقّق webhook (challenge) — لا HMAC ولا كتابة" };
+    return { authority: "hmac", roles: "integration", sensitivity: "MEDIUM", note: "توقيع HMAC — Principal تكامل (كتابة صندوق وارد)" };
+  }
+  if (f.endsWith("imageRoute.ts")) {
+    // A5: /kiosk-product محروسٌ بجهاز الكشك ويكشف كتالوجاً مخفيّاً عن المتجر (showInStore) ⇒ حساسية أعلى.
+    if (path.includes("kiosk")) return { authority: "device", roles: "kiosk", sensitivity: "MEDIUM", note: "جهاز كشك — يتجاوز showInStore (كتالوج مخفيّ)" };
+    return { authority: "public", roles: "public", sensitivity: "LOW", note: "صور عامّة (بنر/منتج)" };
+  }
   if (f.endsWith("wellKnown.ts")) return { authority: "public", roles: "public", sensitivity: "LOW", note: "عامّ بالتصميم" };
   if (path === "/healthz") return { authority: "public", roles: "public", sensitivity: "LOW", note: "فحص صحّة عامّ" };
   if (f.endsWith("index.ts")) return { authority: "mount", roles: "", sensitivity: "", note: "نقطة تركيب (tenancy/csrf middleware)" };
@@ -552,14 +585,21 @@ console.log(JSON.stringify(summary, null, 2));
 // ─────────────────────────── وضع الحارس (--check) ───────────────────────────
 // (P1) الحارس الموعود في docs/authz/07-threat-model.md (T-12) يمنع **إعادة إدخال** raw-role gate أو
 // نقطة غير مسجَّلة — لا مجرّد كتابة بلا بوّابة. لذا يفشل على أيٍّ من:
-//   WRITE_WITHOUT_MODULE_GATE (دائماً) · RAW_ROLE_GATE · ADMIN_ONLY على كتابة · PROCEDURE_UNKNOWN/UNRESOLVED
+//   WRITE_WITHOUT_MODULE_GATE · READ_WITHOUT_MODULE_GATE · RAW_ROLE_GATE · ADMIN_ONLY(كتابة) · PROCEDURE_UNKNOWN/UNRESOLVED
 // مع **قاعدة أساس صريحة** (authz-baseline.json) تُغرّب الحالة القائمة، فلا يفشل إلّا على المستجدّ.
 // توليد الأساس أول مرّة: `node scripts/authz-inventory.mjs --write-baseline`.
 if (process.argv.includes("--check") || process.argv.includes("--write-baseline")) {
   const BASELINE = join(OUT_DIR, "authz-baseline.json");
-  const key = (e) => `${e.router}.${e.name}`;
+  // (A1 — مراجعة review-module) المفتاح يشمل الموضع الفريد `loc`: أسماء الراوترات مشتقّة من الملف،
+  // فتتصادم أوراقٌ متطابقة عبر تصديرات/راوترات-فرعية متعددة في الملف نفسه (voucherRouter.create ×2،
+  // storeAdminRouter.list ×6…). المفتاح `router.name` وحده كان يُغرّب انحداراً على شقيقٍ مُصادِم؛
+  // ضمّ `@loc` يجعل كل نقطة مُغرَّبةً بذاتها فلا يُخفي بعضُها بعضاً.
+  const key = (e) => `${e.router}.${e.name}@${e.loc}`;
+  // (A2 — مراجعة review-module) قراءةٌ فقدت بوّابة وحدتها (هبوطٌ إلى protected/public) انحدارُ تسريبٍ
+  // حقيقيّ (خطّ CLAUDE.md §٦ الأحمر، حادثة #285) — تدخل الحارس كالكتابة تماماً.
   const isViolation = (e) =>
     e.flags.includes("WRITE_WITHOUT_MODULE_GATE") ||
+    e.flags.includes("READ_WITHOUT_MODULE_GATE") ||
     e.flags.includes("PROCEDURE_UNKNOWN") ||
     e.flags.includes("PROCEDURE_UNRESOLVED") ||
     e.flags.includes("RAW_ROLE_GATE") ||

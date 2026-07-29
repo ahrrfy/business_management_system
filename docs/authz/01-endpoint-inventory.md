@@ -26,9 +26,9 @@
 | `platform` | 5 | مدير المنصّة (حدّ ثقة منفصل) |
 
 **قراءة الرقم:** 130 نقطة على مستوى **البوّابة** (72 admin + 58 raw-role) تُحسم بـ**اسم الدور** —
-هذا ما تستهدفه بوابة القبول §25.4 («صفر قرار أعمال يعتمد اسم الدور»). ويُضاف إليها **23 نقطة** تحكم
-بالدور **داخل جسم المعالِج** (`HANDLER_ROLE_CHECK`)؛ فإجمالي النقاط ذات القرار المعتمِد على اسم الدور
-أعلى من 130، وكلّها تدخل نطاق §25.4.
+هذا ما تستهدفه بوابة القبول §25.4 («صفر قرار أعمال يعتمد اسم الدور»). ويُضاف إليها **5 نقاط** تحكم
+بالدور **منعاً داخل جسم المعالِج** (`HANDLER_ROLE_CHECK`، بعد استبعاد حرّاس الفرع)؛ فإجمالي النقاط ذات
+القرار المعتمِد على اسم الدور أعلى قليلاً من 130، وكلّها تدخل نطاق §25.4.
 
 ## 1.3 الأعلام الحرجة
 
@@ -36,23 +36,23 @@
 |---|---|---|
 | `LOCAL_GATE` | **119** (18%) | بوّابة مُعرَّفة **داخل ملف الراوتر** بإضافة middleware فعليّ (`.use(...)`) لا في `server/trpc.ts` ⇒ سلطة لامركزية. **لا تشمل** الأسماء المستعارة المجرَّدة (`const x = centralProcedure;`) — تلك ترث بوّابتها المركزية ولا تُعدّ لامركزية. |
 | `NO_BRANCH_SCOPE` | **115** | نقاط ببوّابة وحدة (`module-map`) بلا أي بُعد فرع. الرقم الأشمل: **292 نقطة (44%)** بلا بُعد فرع في بوّابتها إطلاقاً — انظر 1.3.1. |
-| `ADMIN_ONLY` | **92** | سلطة `admin` مطلقة بلا حبيبة: **72** بوّابةً (`adminProcedure`) + **19** قيدَ admin **داخل جسم المعالِج** (رفضٌ إن لم يكن admin) + مسار Express واحد (`/api/backups/download`). |
+| `ADMIN_ONLY` | **75** | سلطة `admin` مطلقة بلا حبيبة (عدّ tRPC): **72** بوّابةً (`adminProcedure`) + **3** قيدَ admin **داخل جسم المعالِج** (رفضٌ إن لم يكن admin). مسار Express الإداريّ (`/api/backups/download`) يُعدّ في صفوف Express لا في عدّ tRPC. |
 | `SENSITIVE_ACTION` | 76 | فعل مالي/خارجي حسّاس (إلغاء/اعتماد/عكس/حذف/تصدير/إرسال). |
-| `RAW_ROLE_GATE` | **69** | حكمٌ باسم الدور: **58** سلطتها الأساسية اسم الدور + **8** **مركّبة** (`cashierProcedure` + `requireModule`) + **3** قيدَ دورٍ **داخل المعالِج**. |
-| `HANDLER_ROLE_CHECK` | **23** | قيد **منعٍ** بالدور داخل جسم المعالِج (لا في البوّابة): `role !== …` أو `!SET.has(ctx.user.role)` أو `assertElevated(…)`. مصدر سلطةٍ لا تراه قراءة البوّابات وحدها. |
+| `RAW_ROLE_GATE` | **68** | حكمٌ باسم الدور: **58** سلطتها الأساسية اسم الدور + **8** **مركّبة** (`cashierProcedure` + `requireModule`) + **2** قيدَ دورٍ **داخل المعالِج** (مجموعة/`assertElevated`). |
+| `HANDLER_ROLE_CHECK` | **5** | قيد **منعٍ** بالدور داخل جسم المعالِج (لا في البوّابة): `role !== …` أو `!SET.has(ctx.user.role)` أو `assertElevated(…)`. مصدر سلطةٍ لا تراه قراءة البوّابات وحدها. |
 | `UNAUTHENTICATED` | 32 | `publicProcedure` (منها 15 mutation). |
 | `READ_WITHOUT_MODULE_GATE` | 30 | قراءة بلا استشارة خريطة الصلاحيات. |
 | `WRITE_WITHOUT_MODULE_GATE` | 23 | كتابة بلا بوّابة وحدة. |
 
-> **تصحيحات دقّة (مراجعتا Codex على PR #405):**
-> - `LOCAL_GATE` كان 163 لأنه احتسب الأسماء المستعارة المجرَّدة (44 منها في `reportsRouter` = أسماء
->   لـ`reportViewerProcedure` المركزية) — الصحيح **119**.
-> - `RAW_ROLE_GATE` رُفع من 58 إلى 66 (البوّابات المركّبة `channelsWrite`) ثم إلى **69** بعد التقاط
->   قيود الدور داخل المعالِجات.
-> - أُضيف مسحٌ لجسم المعالِج (`HANDLER_ROLE_CHECK`) يلتقط بوّابات المنع بالدور التي لا تظهر في تعريف
->   البوّابة (مثل `cardAccount.createReconciliation`، `reservations.extend`، `employee.createWithAccount`).
->   قُصِر على **مسار الرفض** (`!==` / `!has` / `assertElevated`) دون اصطلاح رفع النطاق (`=== "admin"`
->   لتوسيع البيانات) كي لا تُوسَم نقاطُ النطاق زوراً «admin فقط».
+> **تصحيحات دقّة (مراجعتا Codex + مراجعة review-module على PR #405):**
+> - `LOCAL_GATE` كان 163 لأنه احتسب الأسماء المستعارة المجرَّدة (44 منها في `reportsRouter`) — الصحيح **119**.
+> - `HANDLER_ROLE_CHECK` (مسحُ جسم المعالِج) يلتقط بوّابات المنع بالدور التي لا تظهر في تعريف البوّابة
+>   (`cardAccount.createReconciliation`، `reservations.extend`، `employee.createWithAccount`،
+>   `arReminders.queue/history`). قُصِر على **مسار الرفض** واستُبعد منه لاحقاً **اصطلاحُ عزل الفرع**
+>   (`role !== "admin" && …branchId…` ≈ `requireOwnBranch`) — كان أوّلاً يضخّم العدد إلى 23 ويسم ~18
+>   حارسَ فرعٍ زوراً «admin فقط»؛ العدد الصحيح بعد الاستبعاد **5**، وبه هبطت `ADMIN_ONLY` من 92 إلى **75**
+>   و`RAW_ROLE_GATE` إلى **68**.
+> - وحدةٌ مُطبَّقة inline على النقطة (`fundTreasury`، `updateLegalSettings`) صارت تُلتقَط وتُنسَب لوحدتها.
 
 ### البوّابات اللامركزية (119 نقطة عبر 14 راوتراً)
 
@@ -147,13 +147,14 @@ const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
 
 | المسار | المصادقة الحالية | التفويض الحالي |
 |---|---|---|
-| `GET /api/print/status` | كوكي الجلسة | مصادقة فقط |
-| `POST /api/print/raw` | كوكي الجلسة | **raw-role**: admin/manager يمرّان؛ غيرهما يلزمه وردية مفتوحة (`printRoute.ts:29`) |
-| `POST /api/print/test` | كوكي الجلسة | كما أعلاه |
-| `GET /api/img/banner/:id/:slot` · `/product/:id` · `/kiosk-product/:id` | عام/كشك | `mixed` — عام أو مصادَق بجهاز كشك |
+| `GET /api/print/status` | كوكي الجلسة | مصادقة فقط (`none/session`) — لا بوّابة دور |
+| `POST /api/print/raw` · `POST /api/print/test` | كوكي الجلسة | **raw-role**: admin/manager يمرّان؛ غيرهما يلزمه وردية مفتوحة (`printRoute.ts:29`). البوّابة على POST فقط. |
+| `GET /api/img/banner/:id/:slot` · `/product/:id` | — | `public` — صور عامّة |
+| `GET /api/img/kiosk-product/:id` | جهاز كشك | `device` — يتجاوز `showInStore` (كتالوج مخفيّ) — حساسية أعلى من العامّة |
 | `GET /api/backups/download` | كوكي + CSRF | `admin` — **تصدير بيانات كاملة** (حسّاس عالٍ) |
 | `GET /api/wa/media/:messageId` | جلسة مستخدم | `session` — وسائط محادثات (PII، حسّاس عالٍ) |
-| `GET/POST /api/webhooks/whatsapp` · `/instagram` · `/store` | HMAC | `hmac` — Principal تكامل |
+| `POST /api/webhooks/whatsapp` · `/instagram` · `/store` | HMAC | `hmac` — Principal تكامل (كتابة صندوق وارد) |
+| `GET /api/webhooks/whatsapp` · `/instagram` | verify-token | `public` — تحقّق challenge فقط (لا HMAC ولا كتابة) |
 | `GET /.well-known/assetlinks.json` · `GET /healthz` | — | `public` — عامّ بالتصميم |
 
 **تحديث (مراجعة Codex على PR #405):** صار الجرد يسجّل **السلطة الفعليّة لكل مسار Express** في الـCSV

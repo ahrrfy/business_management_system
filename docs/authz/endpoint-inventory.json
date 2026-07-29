@@ -20,10 +20,10 @@
       "HIGH": 76
     },
     "byModule": {
-      "(none)": 188,
-      "hr": 68,
+      "(none)": 186,
+      "hr": 69,
       "reports": 56,
-      "treasury": 50,
+      "treasury": 51,
       "products": 45,
       "store": 36,
       "inventory": 35,
@@ -48,13 +48,13 @@
     "flagCounts": {
       "LOCAL_GATE": 119,
       "NO_BRANCH_SCOPE": 115,
-      "ADMIN_ONLY": 92,
       "SENSITIVE_ACTION": 76,
-      "RAW_ROLE_GATE": 69,
+      "ADMIN_ONLY": 75,
+      "RAW_ROLE_GATE": 68,
       "UNAUTHENTICATED": 32,
       "READ_WITHOUT_MODULE_GATE": 30,
-      "HANDLER_ROLE_CHECK": 23,
-      "WRITE_WITHOUT_MODULE_GATE": 23
+      "WRITE_WITHOUT_MODULE_GATE": 23,
+      "HANDLER_ROLE_CHECK": 5
     },
     "expressRoutes": 15,
     "expressMounts": 10,
@@ -1395,11 +1395,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "READ",
-      "roles": "manager|accountant|admin",
+      "roles": "manager|accountant",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/cashTransfersRouter.ts:101"
     },
     {
@@ -1429,11 +1429,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "FULL",
-      "roles": "manager|accountant|admin",
+      "roles": "manager|accountant",
       "branch": "required",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: send",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY|SENSITIVE_ACTION",
+      "flags": "SENSITIVE_ACTION",
       "loc": "server/routers/cashTransfersRouter.ts:20"
     },
     {
@@ -4948,11 +4948,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "FULL",
-      "roles": "manager|accountant|admin",
+      "roles": "manager|accountant",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/installmentRouter.ts:39"
     },
     {
@@ -5016,11 +5016,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "FULL",
-      "roles": "manager|accountant|admin",
+      "roles": "manager|accountant",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/installmentRouter.ts:92"
     },
     {
@@ -5339,11 +5339,11 @@
       "authority": "module-map",
       "module": "inventory",
       "level": "READ",
-      "roles": "admin",
+      "roles": "",
       "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/inventoryRouter.ts:342"
     },
     {
@@ -5390,11 +5390,11 @@
       "authority": "module-map",
       "module": "inventory",
       "level": "READ",
-      "roles": "admin",
+      "roles": "",
       "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/inventoryRouter.ts:602"
     },
     {
@@ -6238,8 +6238,8 @@
       "kind": "mutation",
       "procedure": "managerProcedure",
       "authority": "raw-role",
-      "module": "",
-      "level": "",
+      "module": "hr",
+      "level": "FULL",
       "roles": "manager",
       "branch": "none",
       "sensitivity": "MEDIUM",
@@ -7056,11 +7056,11 @@
       "authority": "module-map",
       "module": "campaigns",
       "level": "READ",
-      "roles": "admin",
+      "roles": "",
       "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/promotionsV2Router.ts:156"
     },
     {
@@ -7073,11 +7073,11 @@
       "authority": "module-gate",
       "module": "campaigns",
       "level": "FULL",
-      "roles": "manager|admin",
+      "roles": "manager",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/promotionsV2Router.ts:69"
     },
     {
@@ -7090,11 +7090,11 @@
       "authority": "module-gate",
       "module": "campaigns",
       "level": "FULL",
-      "roles": "manager|admin",
+      "roles": "manager",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/promotionsV2Router.ts:138"
     },
     {
@@ -7107,11 +7107,11 @@
       "authority": "module-map",
       "module": "campaigns",
       "level": "READ",
-      "roles": "admin",
+      "roles": "",
       "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/promotionsV2Router.ts:57"
     },
     {
@@ -7362,11 +7362,11 @@
       "authority": "module-gate",
       "module": "sales",
       "level": "FULL",
-      "roles": "manager|admin",
+      "roles": "manager",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/quotationRouter.ts:165"
     },
     {
@@ -7430,11 +7430,11 @@
       "authority": "module-gate",
       "module": "sales",
       "level": "FULL",
-      "roles": "manager|admin",
+      "roles": "manager",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/quotationRouter.ts:149"
     },
     {
@@ -7447,11 +7447,11 @@
       "authority": "module-gate",
       "module": "sales",
       "level": "FULL",
-      "roles": "manager|admin",
+      "roles": "manager",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/quotationRouter.ts:101"
     },
     {
@@ -8586,11 +8586,11 @@
       "authority": "module-gate",
       "module": "sales",
       "level": "FULL",
-      "roles": "manager|admin",
+      "roles": "manager",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/returnRouter.ts:78"
     },
     {
@@ -10624,8 +10624,8 @@
       "kind": "mutation",
       "procedure": "managerBranchScopedProcedure",
       "authority": "raw-role",
-      "module": "",
-      "level": "",
+      "module": "treasury",
+      "level": "FULL",
       "roles": "manager",
       "branch": "asserted",
       "sensitivity": "MEDIUM",
@@ -10694,11 +10694,11 @@
       "authority": "module-map",
       "module": "treasury",
       "level": "READ",
-      "roles": "manager",
+      "roles": "",
       "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE|HANDLER_ROLE_CHECK|RAW_ROLE_GATE",
+      "flags": "LOCAL_GATE",
       "loc": "server/routers/treasuryRouter.ts:141"
     },
     {
@@ -11136,11 +11136,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "READ",
-      "roles": "manager|accountant|admin",
+      "roles": "manager|accountant",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/voucherRouter.ts:189"
     },
     {
@@ -11153,11 +11153,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "READ",
-      "roles": "manager|accountant|admin",
+      "roles": "manager|accountant",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/voucherRouter.ts:161"
     },
     {
@@ -11204,11 +11204,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "READ",
-      "roles": "manager|accountant|admin",
+      "roles": "manager|accountant",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "flags": "",
       "loc": "server/routers/voucherRouter.ts:200"
     },
     {
@@ -11510,8 +11510,8 @@
       "line": 50,
       "authority": "raw-role",
       "roles": "admin|manager|open-shift",
-      "sensitivity": "MEDIUM",
-      "note": "مصادقة + (أدمن/مدير أو وردية مفتوحة)"
+      "sensitivity": "HIGH",
+      "note": "طباعة خام — أدمن/مدير أو وردية مفتوحة"
     },
     {
       "surface": "express",
@@ -11522,7 +11522,7 @@
       "authority": "raw-role",
       "roles": "admin|manager|open-shift",
       "sensitivity": "HIGH",
-      "note": "مصادقة + (أدمن/مدير أو وردية مفتوحة)"
+      "note": "طباعة خام — أدمن/مدير أو وردية مفتوحة"
     },
     {
       "surface": "express",
@@ -11533,7 +11533,7 @@
       "authority": "raw-role",
       "roles": "admin|manager|open-shift",
       "sensitivity": "HIGH",
-      "note": "مصادقة + (أدمن/مدير أو وردية مفتوحة)"
+      "note": "طباعة خام — أدمن/مدير أو وردية مفتوحة"
     },
     {
       "surface": "express",
@@ -11541,10 +11541,10 @@
       "path": "/banner/:id/:slot",
       "file": "server/imageRoute.ts",
       "line": 172,
-      "authority": "mixed",
-      "roles": "public|kiosk",
+      "authority": "public",
+      "roles": "public",
       "sensitivity": "LOW",
-      "note": "عام/كشك — صور منتجات/بنرات"
+      "note": "صور عامّة (بنر/منتج)"
     },
     {
       "surface": "express",
@@ -11552,10 +11552,10 @@
       "path": "/product/:id",
       "file": "server/imageRoute.ts",
       "line": 214,
-      "authority": "mixed",
-      "roles": "public|kiosk",
+      "authority": "public",
+      "roles": "public",
       "sensitivity": "LOW",
-      "note": "عام/كشك — صور منتجات/بنرات"
+      "note": "صور عامّة (بنر/منتج)"
     },
     {
       "surface": "express",
@@ -11563,10 +11563,10 @@
       "path": "/kiosk-product/:id",
       "file": "server/imageRoute.ts",
       "line": 254,
-      "authority": "mixed",
-      "roles": "public|kiosk",
-      "sensitivity": "LOW",
-      "note": "عام/كشك — صور منتجات/بنرات"
+      "authority": "device",
+      "roles": "kiosk",
+      "sensitivity": "MEDIUM",
+      "note": "جهاز كشك — يتجاوز showInStore (كتالوج مخفيّ)"
     },
     {
       "surface": "express",
@@ -11588,7 +11588,7 @@
       "authority": "hmac",
       "roles": "integration",
       "sensitivity": "MEDIUM",
-      "note": "توقيع HMAC — Principal تكامل"
+      "note": "توقيع HMAC — Principal تكامل (كتابة صندوق وارد)"
     },
     {
       "surface": "express",
@@ -11599,7 +11599,7 @@
       "authority": "hmac",
       "roles": "integration",
       "sensitivity": "MEDIUM",
-      "note": "توقيع HMAC — Principal تكامل"
+      "note": "توقيع HMAC — Principal تكامل (كتابة صندوق وارد)"
     },
     {
       "surface": "express",
@@ -11610,7 +11610,7 @@
       "authority": "hmac",
       "roles": "integration",
       "sensitivity": "MEDIUM",
-      "note": "توقيع HMAC — Principal تكامل"
+      "note": "توقيع HMAC — Principal تكامل (كتابة صندوق وارد)"
     },
     {
       "surface": "express",
@@ -11621,7 +11621,7 @@
       "authority": "hmac",
       "roles": "integration",
       "sensitivity": "MEDIUM",
-      "note": "توقيع HMAC — Principal تكامل"
+      "note": "توقيع HMAC — Principal تكامل (كتابة صندوق وارد)"
     },
     {
       "surface": "express",
@@ -11632,7 +11632,7 @@
       "authority": "hmac",
       "roles": "integration",
       "sensitivity": "MEDIUM",
-      "note": "توقيع HMAC — Principal تكامل"
+      "note": "توقيع HMAC — Principal تكامل (كتابة صندوق وارد)"
     },
     {
       "surface": "express",
