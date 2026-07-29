@@ -413,7 +413,7 @@ export default function Shifts() {
                 />
               </div>
               {closeDiff != null && (
-                <div className={`flex items-center gap-1 text-sm font-bold ${closeDiff.gte(0) ? "text-emerald-600" : "text-destructive"}`}>
+                <div className={`flex items-center gap-1 text-sm font-bold ${varianceCls(closeDiff.toFixed(2))}`}>
                   <span>الفرق: {closeDiff.gte(0) ? "+" : ""}{fmt(closeDiff.toNumber())} د.ع</span>
                   {closeDiff.isZero() && <Check aria-hidden className="size-3.5" />}
                 </div>
