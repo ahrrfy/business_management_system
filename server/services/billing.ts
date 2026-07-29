@@ -66,6 +66,9 @@ export function computeInvoiceTotals(i: InvoiceTotalsInput): InvoiceTotals {
   if (rawTax.lt(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الضريبة لا يصحّ أن تكون سالبة" });
   }
+  if (rawTax.gt(100)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الضريبة يجب أن تكون بين ٠ و١٠٠" });
+  }
   const discount = clampMoney(rawDiscount, subtotal);
   const taxable = subtotal.minus(discount);
   const tax = round2(taxable.times(rawTax).dividedBy(100));

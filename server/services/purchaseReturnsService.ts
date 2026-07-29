@@ -228,8 +228,18 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       });
     }
 
-    const returnedTotal = round2(sumMoney(work.map((w) => w.lineTotal.toFixed(2))));
-    const returnedUsd = round2(sumMoney(work.map((w) => w.usdTotal.toFixed(2))));
+    const returnedNet = round2(sumMoney(work.map((w) => w.lineTotal.toFixed(2))));
+    // المرتجع المرجعي يرث نسبة ضريبة أمر الشراء؛ لا نسمح بإنشاء نسبة جديدة في المرتجع.
+    // المرتجع غير المرجعي يبقى بلا ضريبة لغياب مستند أصل يمكن تدقيقه.
+    const returnedTax = refPo
+      ? round2(returnedNet.times(money(refPo.taxRatePercent ?? "0")).dividedBy(100))
+      : new Decimal(0);
+    const returnedTotal = round2(returnedNet.plus(returnedTax));
+    const returnedUsdNet = round2(sumMoney(work.map((w) => w.usdTotal.toFixed(2))));
+    const returnedUsdTax = refPo?.agreedCurrency === "USD"
+      ? round2(returnedUsdNet.times(money(refPo.taxRatePercent ?? "0")).dividedBy(100))
+      : new Decimal(0);
+    const returnedUsd = round2(returnedUsdNet.plus(returnedUsdTax));
 
     // قيد دفتر RETURN — الاتفاقية: قيم سالبة. cost سالب (تكلفة عُكست)، amount سالب.
     await postEntry(tx, {
@@ -237,7 +247,8 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       branchId: input.branchId,
       purchaseOrderId: input.purchaseOrderRefId ?? null,
       supplierId: input.supplierId,
-      cost: returnedTotal.neg(),
+      cost: returnedNet.neg(),
+      taxAmount: returnedTax.neg(),
       amount: returnedTotal.neg(),
       notes: input.reason ?? undefined,
     });

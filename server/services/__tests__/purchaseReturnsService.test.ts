@@ -60,12 +60,12 @@ async function stockOf(variantId: number, branchId: number): Promise<number> {
   return rows[0]?.q ?? 0;
 }
 
-async function receivePurchaseOf100(paymentAmount?: string) {
+async function receivePurchaseOf100(paymentAmount?: string, taxRatePercent = "0") {
   const po = await createPurchaseOrder(
     {
       supplierId: 1,
       branchId: 1,
-      taxRatePercent: "0",
+      taxRatePercent,
       status: "CONFIRMED",
       items: [{ variantId: 1, productUnitId: 1, quantity: "100", unitPrice: "5.00" }],
     },
@@ -91,6 +91,30 @@ beforeEach(async () => {
 });
 
 describe("مرتجع المشتريات", () => {
+  it("المرتجع المرجعي يرث ضريبة أمر الشراء ويعكس صافي المخزون والضريبة كلّاً على حدة", async () => {
+    const poId = await receivePurchaseOf100(undefined, "10");
+    const result = await createPurchaseReturn(
+      {
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderRefId: poId,
+        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" }],
+        settlement: "CREDIT",
+      },
+      actor,
+    );
+
+    expect(result.returnedTotal).toBe("55.00");
+    const entry = (
+      await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "RETURN"))
+    )[0];
+    expect(entry.cost).toBe("-50.00");
+    expect(entry.taxAmount).toBe("-5.00");
+    expect(entry.amount).toBe("-55.00");
+    const supplier = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    expect(supplier.currentBalance).toBe("495.00");
+  });
+
   it("إرجاع جزئي (CREDIT): المخزون ينقص + قيد RETURN سالب + AP تنخفض، بلا receipt", async () => {
     await receivePurchaseOf100();
     expect(await stockOf(1, 1)).toBe(100);

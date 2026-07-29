@@ -1005,6 +1005,9 @@ export const invoices = mysqlTable(
     // (cashRoundingAdjustment موقَّع عمداً ⇒ مُستثنى.)
     subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
     taxAmount: decimal("taxAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    // لقطة نسبة الضريبة وقت إصدار الفاتورة. لا تُشتقّ من المبلغ لاحقاً لأن التقريب
+    // والفواتير التاريخية قد يجعلان الاشتقاق غير دقيق.
+    taxRatePercent: decimal("taxRatePercent", { precision: 5, scale: 2 }).default("0").notNull(),
     discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),
     costTotal: decimal("costTotal", { precision: 15, scale: 2 }).default("0").notNull(),
@@ -1318,6 +1321,7 @@ export const quotations = mysqlTable(
     validUntil: date("validUntil"),
     subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
     taxAmount: decimal("taxAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    taxRatePercent: decimal("taxRatePercent", { precision: 5, scale: 2 }).default("0").notNull(),
     discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),
     status: mysqlEnum("quoteStatus", ["DRAFT", "SENT", "ACCEPTED", "REJECTED", "CONVERTED", "EXPIRED"]).default("DRAFT").notNull(),
@@ -1870,6 +1874,7 @@ export const purchaseOrders = mysqlTable(
     expectedDeliveryDate: date("expectedDeliveryDate"),
     subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
     taxAmount: decimal("taxAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    taxRatePercent: decimal("taxRatePercent", { precision: 5, scale: 2 }).default("0").notNull(),
     // landed-cost (0098): تكلفة الشحن/الكمرك الكلّية — تُوزَّع على البنود بنسبة القيمة وتُرسمَل في
     // تكلفة المخزون (WAVG) عند الاستلام، وتُضاف إلى ذمّة المورّد. total = subtotal + tax + شحن + كمرك.
     shippingCost: decimal("shippingCost", { precision: 15, scale: 2 }).default("0").notNull(),

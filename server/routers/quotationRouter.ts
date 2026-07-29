@@ -6,10 +6,11 @@ import {
   getQuotation,
   listQuotations,
   setQuotationStatus,
+  updateQuotation,
 } from "../services/quotationService";
 import { logAudit } from "../services/auditService";
 import { router, salesManagerProcedure, salesReadProcedure } from "../trpc";
-import { positiveMoneyString } from "../lib/schemas";
+import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString } from "../lib/schemas";
 import { retryOnDup } from "../lib/retryDup";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -56,9 +57,9 @@ export const quotationRouter = router({
         branchId: z.number().int().positive(),
         customerId: z.number().int().positive().nullish(),
         priceTier: tier.nullish(),
-        validUntil: z.string().nullish(),
-        invoiceDiscount: z.string().nullish(),
-        taxRatePercent: z.string().nullish(),
+        validUntil: ymd.nullish(),
+        invoiceDiscount: nonNegMoneyString.nullish(),
+        taxRatePercent: percentString.nullish(),
         notes: z.string().nullish(),
         // idempotency (F3): مفتاح ثابت من الواجهة يمنع إنشاء عرضين عند النقر المزدوج/إعادة الشبكة.
         clientRequestId: z.string().min(1).max(80).optional(),
@@ -67,10 +68,10 @@ export const quotationRouter = router({
             z.object({
               variantId: z.number().int().positive(),
               productUnitId: z.number().int().positive(),
-              quantity: z.string(),
-              unitPriceOverride: z.string().nullish(),
-              discountPercent: z.string().nullish(),
-              discountAmount: z.string().nullish(),
+              quantity: positiveQtyString,
+              unitPriceOverride: nonNegMoneyString.nullish(),
+              discountPercent: percentString.nullish(),
+              discountAmount: nonNegMoneyString.nullish(),
             })
           )
           .min(1),
@@ -94,6 +95,52 @@ export const quotationRouter = router({
       if (!(res as { idempotentReplay?: boolean }).idempotentReplay) {
         await logAudit(ctx, { action: "quotation.create", entityType: "quotation", entityId: (res as { quotationId?: number })?.quotationId, newValue: { lines: input.lines.length, customerId: input.customerId } });
       }
+      return res;
+    }),
+
+  update: salesManagerProcedure
+    .input(
+      z.object({
+        quotationId: z.number().int().positive(),
+        customerId: z.number().int().positive().nullish(),
+        priceTier: tier.nullish(),
+        validUntil: ymd.nullish(),
+        invoiceDiscount: nonNegMoneyString.nullish(),
+        taxRatePercent: percentString.nullish(),
+        notes: z.string().nullish(),
+        lines: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              productUnitId: z.number().int().positive(),
+              quantity: positiveQtyString,
+              unitPriceOverride: nonNegMoneyString.nullish(),
+              discountPercent: percentString.nullish(),
+              discountAmount: nonNegMoneyString.nullish(),
+            }),
+          )
+          .min(1),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.branchId == null && ctx.user.role !== "admin") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const before = await getQuotation(input.quotationId);
+      const res = await updateQuotation(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "quotation.update",
+        entityType: "quotation",
+        entityId: input.quotationId,
+        oldValue: before
+          ? { customerId: before.customerId, total: before.total, taxAmount: before.taxAmount, status: before.status }
+          : null,
+        newValue: { customerId: input.customerId, total: res.total, lines: input.lines.length },
+      });
       return res;
     }),
 

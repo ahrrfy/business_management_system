@@ -49,6 +49,9 @@ export function createInitialState(type: InvoiceType, branchId = 1): InvoiceStat
 
 export function invoiceReducer(state: InvoiceState, action: InvoiceAction): InvoiceState {
   switch (action.type) {
+    case "REPLACE_STATE":
+      return action.state;
+
     case "SET_FIELD":
       return { ...state, [action.field]: action.value } as InvoiceState;
 

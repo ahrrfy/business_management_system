@@ -489,6 +489,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       dueDate: input.dueDate ? new Date(input.dueDate) : null,
       subtotal: totals.subtotal,
       taxAmount: totals.taxAmount,
+      taxRatePercent: round2(money(input.taxRatePercent ?? "0")).toFixed(2),
       discountAmount: totals.discountAmount,
       total: toDbMoney(effectiveTotalD),
       costTotal,

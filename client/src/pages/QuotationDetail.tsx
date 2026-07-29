@@ -10,6 +10,7 @@ import { fmtDate } from "@/lib/date";
 import { buildQuotationMessage } from "@/lib/whatsapp";
 import { D, fmt, round2 } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { allocateLineTax } from "@/components/invoice";
 import { cn } from "@/lib/utils";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
@@ -105,22 +106,31 @@ export default function QuotationDetail() {
   const hasTax = D(data.taxAmount ?? "0").gt(0);
 
   function printQuote() {
+    const taxableBase = round2(D(data.subtotal).minus(D(data.discountAmount ?? "0"))).toFixed(2);
+    const taxShares = allocateLineTax(
+      data.items.map((it) => ({ total: String(it.total) })),
+      String(data.taxAmount ?? "0"),
+      taxableBase,
+    );
     printQuotation({
       quoteNumber: data.quoteNumber,
       quoteDate: data.quoteDate ? String(data.quoteDate).slice(0, 10) : undefined,
       validUntil: data.validUntil ? String(data.validUntil).slice(0, 10) : undefined,
       customerName: data.customerName,
       notes: data.notes,
-      items: data.items.map((it) => ({
+      items: data.items.map((it, index) => ({
         productName: it.productName ?? "",
         variantName: it.variantName,
         unitName: it.unitName,
         quantity: it.quantity,
         unitPrice: it.unitPrice,
+        taxAmount: taxShares[index] ?? "0",
         total: it.total,
       })),
       subtotal: data.subtotal,
+      discountAmount: data.discountAmount,
       taxAmount: data.taxAmount,
+      taxRate: Number(data.taxRatePercent ?? 0),
       total: data.total,
     });
   }
@@ -157,7 +167,8 @@ export default function QuotationDetail() {
 
             <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="المجموع" value={data.subtotal} />
-              {hasTax && <SummaryRow label="الضريبة" value={data.taxAmount} />}
+              {D(data.discountAmount ?? "0").gt(0) && <SummaryRow label="الخصم" value={data.discountAmount} />}
+              {hasTax && <SummaryRow label={`الضريبة (${data.taxRatePercent ?? "0"}٪)`} value={data.taxAmount} />}
               <div className="border-t pt-2.5">
                 <SummaryRow label="الإجمالي" value={data.total} strong />
               </div>
@@ -244,6 +255,11 @@ export default function QuotationDetail() {
       {done && <p className="text-sm text-emerald-600">{done}</p>}
 
       <div className="flex gap-2 flex-wrap">
+        {data.status === "DRAFT" && canManage && (
+          <Button asChild>
+            <Link href={`/quotations/${quotationId}/edit`}>تعديل المسودة</Link>
+          </Button>
+        )}
         {data.status === "DRAFT" && canManage && (
           <Button
             variant="outline"

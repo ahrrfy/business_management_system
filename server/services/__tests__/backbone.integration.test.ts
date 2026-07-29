@@ -9,7 +9,7 @@ import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { closeShift, openShift as openShiftSvc } from "../shiftService";
 import { assignBarcode, createProduct, getProductForEdit, lookupByBarcode, updateProduct } from "../catalogService";
-import { convertQuotation, createQuotation, setQuotationStatus } from "../quotationService";
+import { convertQuotation, createQuotation, setQuotationStatus, updateQuotation } from "../quotationService";
 import {
   cancelWorkOrder,
   createWorkOrder,
@@ -727,6 +727,51 @@ describe("الكتالوج: إسناد الباركود (ملصقات)", () => {
 });
 
 describe("عروض الأسعار (Quotations)", () => {
+  it("تعديل المسودة ذرّي ويحفظ نسبة الضريبة، ثم يُقفل بعد الإرسال", async () => {
+    await setStock(1, 1, 24);
+    await db().insert(s.customers).values({ id: 1, name: "عميل تعديل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    const quote = await createQuotation(
+      {
+        branchId: 1,
+        customerId: 1,
+        taxRatePercent: "0",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1", unitPriceOverride: "100.00" }],
+      },
+      actor,
+    );
+
+    await expect(convertQuotation({ quotationId: quote.quotationId }, actor)).rejects.toThrow("قبل قبوله");
+
+    const updated = await updateQuotation(
+      {
+        quotationId: quote.quotationId,
+        customerId: 1,
+        taxRatePercent: "10",
+        invoiceDiscount: "10",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "2", unitPriceOverride: "100.00" }],
+      },
+      { ...actor, role: "admin" },
+    );
+    expect(updated.total).toBe("209.00");
+    const row = (await db().select().from(s.quotations).where(eq(s.quotations.id, quote.quotationId)))[0];
+    expect(row.taxRatePercent).toBe("10.00");
+    expect(row.taxAmount).toBe("19.00");
+    expect(await db().select().from(s.quotationItems).where(eq(s.quotationItems.quotationId, quote.quotationId))).toHaveLength(1);
+
+    await setQuotationStatus(quote.quotationId, "SENT", { ...actor, role: "admin" });
+    await expect(
+      updateQuotation(
+        {
+          quotationId: quote.quotationId,
+          customerId: 1,
+          taxRatePercent: "0",
+          lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        },
+        { ...actor, role: "admin" },
+      ),
+    ).rejects.toThrow("بعد إرساله");
+  });
+
   it("إنشاء عرض لا يمسّ المخزون ولا الدفتر؛ التحويل يُنشئ فاتورة بالأسعار المعروضة ويخصم المخزون", async () => {
     await setStock(1, 1, 24);
     await db().insert(s.customers).values({ id: 1, name: "عميل عرض", defaultPriceTier: "RETAIL", currentBalance: "0" });

@@ -495,6 +495,7 @@ export const saleRouter = router({
           dueDate: invoices.dueDate,
           subtotal: invoices.subtotal,
           taxAmount: invoices.taxAmount,
+          taxRatePercent: invoices.taxRatePercent,
           discountAmount: invoices.discountAmount,
           total: invoices.total,
           costTotal: invoices.costTotal,

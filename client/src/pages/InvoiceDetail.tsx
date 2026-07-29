@@ -255,6 +255,7 @@ export default function InvoiceDetail() {
               subtotal: data.subtotal,
               discountAmount: data.discountAmount,
               taxAmount: data.taxAmount,
+              taxRate: Number(data.taxRatePercent ?? 0),
               total: data.total,
               paidAmount: data.paidAmount,
               items: data.items.map((it, i) => ({
@@ -306,7 +307,7 @@ export default function InvoiceDetail() {
             <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="قبل الضريبة" value={data.subtotal} />
               {hasDiscount && <SummaryRow label="الخصم" value={data.discountAmount} />}
-              {hasTax && <SummaryRow label="الضريبة" value={data.taxAmount} />}
+              {hasTax && <SummaryRow label={`الضريبة (${data.taxRatePercent ?? "0"}٪)`} value={data.taxAmount} />}
               <div className="border-t pt-2.5">
                 <SummaryRow label="الإجمالي" value={data.total} strong />
               </div>
