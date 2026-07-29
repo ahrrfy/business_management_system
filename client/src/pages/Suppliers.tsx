@@ -197,7 +197,7 @@ export default function Suppliers() {
                 fetchAllPaged<Row>(
                   (offset, lim) =>
                     utils.suppliers.search
-                      .fetch({ q: q.trim() || undefined, includeInactive, limit: lim, offset })
+                      .fetch({ q: q.trim() || undefined, includeInactive, kind: kind || undefined, limit: lim, offset })
                       .then((r) => ({ rows: r.rows, total: r.total })),
                   { pageSize: 500 },
                 ),

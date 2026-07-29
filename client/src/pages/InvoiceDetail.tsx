@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,6 +14,7 @@ import { buildInvoiceMessage } from "@/lib/whatsapp";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { confirm } from "@/lib/confirm";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
+import { printWarehouseSlipV2 } from "@/lib/printing/printTemplatesV2";
 import { printReceipt } from "@/lib/printing/print";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { allocateLineTax } from "@/components/invoice";
@@ -22,8 +24,7 @@ import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useEffect, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
-import { Paperclip } from "lucide-react";
-import { Printer } from "lucide-react";
+import { ChevronDown, FileText, Package, Paperclip, Printer } from "lucide-react";
 import { notify } from "@/lib/notify";
 
 const STATUS: Record<string, string> = {
@@ -218,6 +219,22 @@ export default function InvoiceDetail() {
     });
   }
 
+  function printWarehouseSlip() {
+    printWarehouseSlipV2({
+      invoiceNumber: data.invoiceNumber,
+      invoiceDate: data.invoiceDate,
+      customerName: data.customerName,
+      customerPhone: data.customerPhone,
+      salesRep: data.salespersonName,
+      items: data.items.map((it) => ({
+        productName: it.productName ?? "",
+        unitName: it.unitName,
+        quantity: it.quantity,
+      })),
+      notes: data.notes,
+    });
+  }
+
   return (
     <div className="space-y-4 max-w-4xl">
       {new URLSearchParams(search).get("print") === "1" && (
@@ -278,9 +295,25 @@ export default function InvoiceDetail() {
             <Printer aria-hidden className="size-4" />
             {printingReceipt ? "جارٍ إعادة الطباعة…" : "إعادة طباعة حرارية"}
           </Button>
-          <Button variant="outline" size="sm" onClick={() => void printApprovedA4()}>
-            طباعة A4 / حفظ PDF
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                <Printer aria-hidden className="size-4" />
+                طباعة A4
+                <ChevronDown aria-hidden className="size-3 ms-1 opacity-60" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => void printApprovedA4()}>
+                <FileText aria-hidden className="size-4" />
+                فاتورة الزبون
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => printWarehouseSlip()}>
+                <Package aria-hidden className="size-4" />
+                سند تجهيز مخزني
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Link href="/invoices" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمبيعات</Link>
         </div>
       </div>

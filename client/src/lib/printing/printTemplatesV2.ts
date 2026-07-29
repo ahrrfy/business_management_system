@@ -949,3 +949,90 @@ export function printVoucherV2(d: VoucherV2Data): boolean {
   const body = `${pageBodyOpen()}${header}${cards}${descBox}${amountBar}${tafqit}${sig}${attachmentBlock}${pageBodyClose()}${customFooter}`;
   return openPrintWindow(wrapA4Doc(`${title} ${d.voucherNumber}`, body));
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ١١. سند تجهيز مخزني — A4 (بدون أسعار/مبالغ)
+// ═════════════════════════════════════════════════════════════════════════════
+
+export interface WarehouseSlipV2Data {
+  invoiceNumber: string;
+  invoiceDate?: string | Date | null;
+
+  customerName?: string | null;
+  customerPhone?: string | null;
+
+  salesRep?: string | null;
+  branchName?: string | null;
+
+  items: {
+    productName: string;
+    unitName?: string | null;
+    quantity: string | number;
+  }[];
+
+  notes?: string | null;
+  settings?: CompanySettings;
+}
+
+export function printWarehouseSlipV2(d: WarehouseSlipV2Data): boolean {
+  const date = fmtDate(d.invoiceDate);
+
+  const header = pageHeader({
+    title: 'سند تجهيز مخزني',
+    fields: [
+      { label: 'مرجع الفاتورة', value: d.invoiceNumber },
+      { label: 'التاريخ', value: date },
+    ],
+  }, d.settings);
+
+  const cards = infoCards([
+    {
+      title: 'معلومات التسليم',
+      variant: 'green',
+      fields: [
+        { label: 'العميل', value: d.customerName ?? 'عميل نقدي' },
+        ...(d.customerPhone ? [{ label: 'الهاتف', value: d.customerPhone }] : []),
+      ],
+    },
+    {
+      title: 'بيانات التجهيز',
+      variant: 'gray',
+      fields: [
+        ...(d.salesRep ? [{ label: 'البائع', value: d.salesRep }] : []),
+        ...(d.branchName ? [{ label: 'الفرع', value: d.branchName }] : []),
+      ],
+    },
+  ]);
+
+  const cols: DocTableCol[] = [
+    { key: 'seq', label: '#', width: 36 },
+    { key: 'name', label: 'الصنف' },
+    { key: 'unit', label: 'الوحدة', width: 70 },
+    { key: 'qty', label: 'الكمية', width: 60, emphasize: true },
+    { key: 'check', label: 'تم', width: 40 },
+  ];
+  const rows = d.items.map((it, i) => ({
+    seq: String(i + 1),
+    name: it.productName,
+    unit: it.unitName ?? '',
+    qty: fmtQty(it.quantity),
+    check: '□',
+  }));
+  const table = docTableV2(cols, rows);
+
+  const notesBlock = d.notes
+    ? `<div style="margin:12px 0;padding:8px 12px;border:1px solid ${B.border};border-radius:6px;font-size:11px;color:${B.text}">
+        <b>ملاحظات:</b> ${esc(d.notes)}
+      </div>`
+    : '';
+
+  const sig = signaturesBlock({
+    items: [
+      { kind: 'sig', label: 'المُجهِّز (المخزن)' },
+      { kind: 'sig', label: 'المُستلِم' },
+    ],
+  });
+
+  const body = `${pageBodyOpen()}${header}${cards}${table}${notesBlock}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
+  return openPrintWindow(wrapA4Doc(`سند تجهيز ${d.invoiceNumber}`, body));
+}

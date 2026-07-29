@@ -6,9 +6,10 @@ import { exportRows } from "@/lib/export";
 import { fmtDate } from "@/lib/date";
 import { printSalesReportV2 } from "@/lib/printing/printTemplatesV2";
 import { D, fmtAr } from "@/lib/money";
+import { canSeeCost } from "@shared/permissions";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "wouter";
 
 type ReportRow = RouterOutputs["reports"]["salesReport"]["rows"][number];
@@ -139,6 +140,8 @@ export default function SalesReport() {
   const [topBy, setTopBy] = useState<"revenue" | "qty">("revenue");
   const [sinceDays, setSinceDays] = useState(90);
 
+  const me = trpc.auth.me.useQuery();
+  const showCost = me.data ? canSeeCost(me.data.role) : true;
   const branches = trpc.branches.list.useQuery();
   // فلتر الفواتير — مُستخرَج ليُعاد استعماله في التصدير الكامل (جمع كل الصفحات عبر cursor).
   const invoiceFilters = {
@@ -306,6 +309,7 @@ export default function SalesReport() {
           branchLabel={branchId === "" ? "الكل" : branches.data?.find((b) => b.id === Number(branchId))?.name ?? "—"}
           filters={invoiceFilters}
           truncated={invoiceQ.data?.nextCursor != null}
+          showCost={showCost}
         />
       )}
       {tab === "top" && (
@@ -315,6 +319,7 @@ export default function SalesReport() {
           by={topBy}
           from={from}
           to={to}
+          showCost={showCost}
         />
       )}
       {tab === "slow" && (
@@ -330,6 +335,7 @@ export default function SalesReport() {
           isLoading={catQ.isLoading}
           from={from}
           to={to}
+          showCost={showCost}
         />
       )}
     </div>
@@ -347,6 +353,7 @@ function InvoicesTab({
   branchLabel,
   filters,
   truncated,
+  showCost,
 }: {
   rows: ReportRow[];
   totals: RouterOutputs["reports"]["salesReport"]["totals"] | undefined;
@@ -361,6 +368,7 @@ function InvoicesTab({
     sourceTypes?: ("POS" | "ONLINE" | "ORDER" | "WORKORDER")[];
   };
   truncated: boolean;
+  showCost: boolean;
 }) {
   const utils = trpc.useUtils();
   const [exporting, setExporting] = useState(false);
@@ -482,11 +490,11 @@ function InvoicesTab({
                       { key: "sourceType", header: "النوع", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
                       { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
                       { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
-                      {
-                        key: "costTotal",
+                      ...(showCost ? [{
+                        key: "costTotal" as const,
                         header: "التكلفة",
-                        map: (r) => Number(r.costTotal),
-                      },
+                        map: (r: ReportRow) => Number(r.costTotal),
+                      }] : []),
                       { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
                     ],
                   });
@@ -545,22 +553,30 @@ const topColumns: ColumnDef<TopRow, unknown>[] = [
   },
 ];
 
+const COST_KEYS_TOP = new Set(["cost", "profit", "marginPct"]);
+
 function TopProductsTab({
   rows,
   isLoading,
   by,
   from,
   to,
+  showCost,
 }: {
   rows: TopRow[];
   isLoading: boolean;
   by: "revenue" | "qty";
   from: string;
   to: string;
+  showCost: boolean;
 }) {
+  const cols = useMemo(
+    () => showCost ? topColumns : topColumns.filter((c) => !COST_KEYS_TOP.has((c as { accessorKey?: string }).accessorKey ?? "")),
+    [showCost],
+  );
   return (
     <DataTable
-      columns={topColumns}
+      columns={cols}
       data={rows}
       searchPlaceholder="بحث في المنتجات…"
       loading={isLoading}
@@ -578,9 +594,11 @@ function TopProductsTab({
                 { key: "categoryName", header: "الفئة", map: (r) => r.categoryName ?? "" },
                 { key: "qtySold", header: "الكمية المباعة", map: (r) => Number(r.qtySold) },
                 { key: "revenue", header: "الإيراد", map: (r) => Number(r.revenue) },
-                { key: "cost", header: "التكلفة", map: (r) => Number(r.cost) },
-                { key: "profit", header: "الربح", map: (r) => Number(r.profit) },
-                { key: "marginPct", header: "هامش %", map: (r) => Number(r.marginPct) },
+                ...(showCost ? [
+                  { key: "cost" as const, header: "التكلفة", map: (r: TopRow) => Number(r.cost) },
+                  { key: "profit" as const, header: "الربح", map: (r: TopRow) => Number(r.profit) },
+                  { key: "marginPct" as const, header: "هامش %", map: (r: TopRow) => Number(r.marginPct) },
+                ] : []),
                 { key: "invoicesCount", header: "عدد الفواتير" },
               ],
             })
@@ -703,20 +721,28 @@ const catColumns: ColumnDef<CatRow, unknown>[] = [
   },
 ];
 
+const COST_KEYS_CAT = new Set(["cost", "profit", "marginPct"]);
+
 function CategoryProfitTab({
   rows,
   isLoading,
   from,
   to,
+  showCost,
 }: {
   rows: CatRow[];
   isLoading: boolean;
   from: string;
   to: string;
+  showCost: boolean;
 }) {
+  const cols = useMemo(
+    () => showCost ? catColumns : catColumns.filter((c) => !COST_KEYS_CAT.has((c as { accessorKey?: string }).accessorKey ?? "")),
+    [showCost],
+  );
   return (
     <DataTable
-      columns={catColumns}
+      columns={cols}
       data={rows}
       searchPlaceholder="بحث في الفئات…"
       loading={isLoading}
@@ -732,9 +758,11 @@ function CategoryProfitTab({
               columns: [
                 { key: "categoryName", header: "الفئة" },
                 { key: "revenue", header: "الإيراد", map: (r) => Number(r.revenue) },
-                { key: "cost", header: "التكلفة", map: (r) => Number(r.cost) },
-                { key: "profit", header: "الربح", map: (r) => Number(r.profit) },
-                { key: "marginPct", header: "هامش %", map: (r) => Number(r.marginPct) },
+                ...(showCost ? [
+                  { key: "cost" as const, header: "التكلفة", map: (r: CatRow) => Number(r.cost) },
+                  { key: "profit" as const, header: "الربح", map: (r: CatRow) => Number(r.profit) },
+                  { key: "marginPct" as const, header: "هامش %", map: (r: CatRow) => Number(r.marginPct) },
+                ] : []),
                 { key: "itemsCount", header: "عدد البنود" },
               ],
             })
