@@ -1,11 +1,28 @@
-ALTER TABLE `invoices`
-  ADD COLUMN `taxRatePercent` decimal(5,2) NOT NULL DEFAULT '0.00' AFTER `taxAmount`;
+-- MySQL commits ALTER TABLE immediately. Keep these additions idempotent so a
+-- deployment can safely resume when a later data-backfill statement fails.
+SET @sql = (SELECT IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'invoices' AND COLUMN_NAME = 'taxRatePercent') = 0,
+  'ALTER TABLE `invoices` ADD COLUMN `taxRatePercent` decimal(5,2) NOT NULL DEFAULT ''0.00'' AFTER `taxAmount`',
+  'SELECT 1'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+--> statement-breakpoint
 
-ALTER TABLE `quotations`
-  ADD COLUMN `taxRatePercent` decimal(5,2) NOT NULL DEFAULT '0.00' AFTER `taxAmount`;
+SET @sql = (SELECT IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'quotations' AND COLUMN_NAME = 'taxRatePercent') = 0,
+  'ALTER TABLE `quotations` ADD COLUMN `taxRatePercent` decimal(5,2) NOT NULL DEFAULT ''0.00'' AFTER `taxAmount`',
+  'SELECT 1'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+--> statement-breakpoint
 
-ALTER TABLE `purchaseOrders`
-  ADD COLUMN `taxRatePercent` decimal(5,2) NOT NULL DEFAULT '0.00' AFTER `taxAmount`;
+SET @sql = (SELECT IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'purchaseOrders' AND COLUMN_NAME = 'taxRatePercent') = 0,
+  'ALTER TABLE `purchaseOrders` ADD COLUMN `taxRatePercent` decimal(5,2) NOT NULL DEFAULT ''0.00'' AFTER `taxAmount`',
+  'SELECT 1'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+--> statement-breakpoint
 
 UPDATE `invoices`
 SET `taxRatePercent` = CASE
@@ -32,6 +49,6 @@ END;
 -- المورد بالدولار شاملاً الضريبة، مثل total الديناري (الشحن/الكمرك يبقيان ديناريين منفصلين).
 UPDATE `purchaseOrders`
 SET `usdTotal` = ROUND(`usdTotal` * (1 + (`taxRatePercent` / 100)), 2)
-WHERE `agreedCurrency` = 'USD'
+WHERE `poCurrency` = 'USD'
   AND `usdTotal` IS NOT NULL
   AND `taxRatePercent` > 0;
