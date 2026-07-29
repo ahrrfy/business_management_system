@@ -1,4 +1,5 @@
 import { balanceOptionText } from "@/components/BalanceBadge";
+import { allocateLineTax } from "@/components/invoice";
 import { CopyInline } from "@/components/CopyButton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,7 +11,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { D, fmt, positiveDiff } from "@/lib/money";
+import { D, fmt, positiveDiff, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplatesV2";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -101,6 +102,11 @@ export default function Purchases() {
       const d = await utils.purchases.get.fetch({ purchaseOrderId });
       if (!d) { notify.err("تعذّر جلب أمر الشراء"); return; }
       const remaining = positiveDiff(d.total, d.paidAmount);
+      const taxShares = allocateLineTax(
+        d.items.map((it) => ({ total: String(it.total ?? "0") })),
+        String(d.taxAmount ?? "0"),
+        round2(D(d.subtotal ?? "0")).toFixed(2),
+      );
       const statusColor =
         d.status === "RECEIVED" ? "#0D6B52" : d.status === "CANCELLED" ? "#8A1F11" : "#92400E";
       printPurchaseInvoiceV2({
@@ -109,15 +115,17 @@ export default function Purchases() {
         statusLabel: PO_STATUS[d.status] ?? d.status,
         statusColor,
         supplierName: d.supplierName,
-        items: d.items.map((it) => ({
+        items: d.items.map((it, index) => ({
           productName: it.productName ?? "",
           unitName: it.unitName,
           quantity: it.quantity,
           unitPrice: it.unitPrice,
+          taxAmount: taxShares[index] ?? "0",
           total: it.total,
         })),
         subtotal: d.subtotal ?? "0",
         taxAmount: d.taxAmount ?? "0",
+        taxRate: Number(d.taxRatePercent ?? 0),
         total: d.total ?? "0",
         paidAmount: d.paidAmount ?? "0",
         remainingAmount: remaining.toFixed(2),

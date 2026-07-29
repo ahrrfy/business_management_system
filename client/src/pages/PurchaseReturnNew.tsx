@@ -133,6 +133,8 @@ export default function PurchaseReturnNew() {
       // — تعيين المورد والفرع من المرجع (الخادم يتحقّق منها لاحقاً)
       dispatch({ type: "SET_ENTITY", id: Number(po.supplierId) });
       dispatch({ type: "SET_FIELD", field: "branchId", value: Number(po.branchId) });
+      dispatch({ type: "SET_FIELD", field: "taxEnabled", value: D(po.taxAmount ?? "0").gt(0) });
+      dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: po.taxRatePercent ?? "0" });
 
       // — بنود ⇒ خطوط السلة: نأخذ المُستلَم كحدّ أعلى للإرجاع، نتجاهل البنود غير المُستلَمة.
       const lines: InvoiceLine[] = (po.items ?? [])

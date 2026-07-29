@@ -319,6 +319,7 @@ export const purchaseRouter = router({
           orderDate: purchaseOrders.orderDate,
           subtotal: purchaseOrders.subtotal,
           taxAmount: purchaseOrders.taxAmount,
+          taxRatePercent: purchaseOrders.taxRatePercent,
           // landed-cost: الشحن/الكمرك المُرسمَلان — للعرض في شاشة الاستلام/التفاصيل (تكلفة ⇒ محجوبة عن غير المدير).
           shippingCost: purchaseOrders.shippingCost,
           customsCost: purchaseOrders.customsCost,
@@ -365,7 +366,7 @@ export const purchaseRouter = router({
       .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
     // حجب التكلفة عن غير المدير — نمط saleRouter.get:371. usdTotal/agreedRate تكلفة أيضاً (بعملة أخرى).
     if (!canSeeCostForUser(ctx.user)) {
-      const poMasked = { ...po, subtotal: null, taxAmount: null, shippingCost: null, customsCost: null, total: null, paidAmount: null, usdTotal: null, paidUsd: null, returnedUsd: null, agreedRate: null };
+      const poMasked = { ...po, subtotal: null, taxAmount: null, taxRatePercent: null, shippingCost: null, customsCost: null, total: null, paidAmount: null, usdTotal: null, paidUsd: null, returnedUsd: null, agreedRate: null };
       // نحن داخل فرع «لا يرى التكلفة» (قرار canSeeCostForUser الكامل: يحترم المنح/الدور المخصّص) ⇒ نحجب
       // بنود التكلفة **بلا شرط**. (كان maskCostFields يُعيد التقييم بالدور الخام فيكشف بنود دورٍ مخصّص
       // أساسه manager بـreports=NONE — تناقضٌ مع حجب الرأس؛ تدقيق ٢٥/٧، M2.)

@@ -9,7 +9,7 @@
  * - اختصارات F2/F4/F9/F12/Esc.
  */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useParams } from "wouter";
 import { AlertTriangle } from "lucide-react";
 
 import { trpc } from "@/lib/trpc";
@@ -37,8 +37,15 @@ const INVOICE_TYPE = "QUOTATION" as const;
 
 export default function QuotationNew() {
   const [, navigate] = useLocation();
+  const params = useParams<{ id?: string }>();
+  const editQuotationId = params.id ? Number(params.id) : null;
+  const isEdit = Number.isInteger(editQuotationId) && Number(editQuotationId) > 0;
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
+  const editQuery = trpc.quotations.get.useQuery(
+    { quotationId: isEdit ? Number(editQuotationId) : 1 },
+    { enabled: isEdit },
+  );
 
   // مصدر الفرع الافتراضي (يأتي مع جلسة المستخدم). نُعيد تهيئة الحالة عند تحميله أول مرة.
   const defaultBranchId = me.data?.branchId ?? 1;
@@ -49,6 +56,54 @@ export default function QuotationNew() {
     () => createInitialState(INVOICE_TYPE, defaultBranchId)
   );
 
+  const taxDefaultsAppliedRef = useRef(false);
+  const editHydratedRef = useRef(false);
+  useEffect(() => {
+    const quotation = editQuery.data;
+    if (!isEdit || !quotation || editHydratedRef.current) return;
+    if (quotation.status !== "DRAFT") {
+      notify.warn("لا يمكن تعديل عرض السعر بعد إرساله — أنشئ نسخة جديدة.");
+      navigate(`/quotations/${quotation.id}`);
+      return;
+    }
+    dispatch({
+      type: "REPLACE_STATE",
+      state: {
+        ...createInitialState(INVOICE_TYPE, Number(quotation.branchId)),
+        invoiceNumber: quotation.quoteNumber,
+        date: quotation.quoteDate ? String(quotation.quoteDate).slice(0, 10) : "",
+        entityId: quotation.customerId ? Number(quotation.customerId) : null,
+        branchId: Number(quotation.branchId),
+        tier: quotation.priceTier,
+        validUntil: quotation.validUntil ? String(quotation.validUntil).slice(0, 10) : "",
+        notes: quotation.notes ?? "",
+        globalDiscount: quotation.discountAmount ?? "0",
+        globalDiscountType: "amount",
+        taxEnabled: D(quotation.taxRatePercent ?? "0").gt(0),
+        taxRatePercent: quotation.taxRatePercent ?? "0",
+        items: quotation.items.map((item) => ({
+          productId: Number(item.productId),
+          variantId: Number(item.variantId),
+          productUnitId: Number(item.productUnitId),
+          name: [item.productName, item.variantName].filter(Boolean).join(" — "),
+          sku: item.sku ?? "",
+          barcode: item.barcode ?? null,
+          unit: item.unitName ?? "",
+          qty: Number(item.quantity),
+          conversionFactor: item.conversionFactor ?? "1",
+          stockBase: 0,
+          price: item.unitPrice,
+          costBase: "0",
+          discount: item.discountAmount ?? "0",
+          discountType: "amount",
+          note: "",
+        })),
+      },
+    });
+    editHydratedRef.current = true;
+    taxDefaultsAppliedRef.current = true;
+  }, [editQuery.data, isEdit, navigate]);
+
   // مزامنة فرع المستخدم مرة واحدة (إن وصل لاحقاً)؛ لا نطمس اختياره اليدوي بعد ذلك.
   const syncedBranch = useRef(false);
   useEffect(() => {
@@ -58,6 +113,17 @@ export default function QuotationNew() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.data?.branchId]);
+
+  // إعدادات الضريبة الافتراضية تُطبّق مرة واحدة على العرض الجديد، ثم يبقى القرار
+  // بيد المستخدم ولا نطمس اختياره عند إعادة جلب الإعدادات.
+  const taxSettingsQuery = trpc.system.getTaxSettings.useQuery();
+  useEffect(() => {
+    if (!isEdit && !taxDefaultsAppliedRef.current && taxSettingsQuery.data) {
+      dispatch({ type: "SET_FIELD", field: "taxEnabled", value: taxSettingsQuery.data.enabledByDefault });
+      dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: taxSettingsQuery.data.defaultTaxRatePercent });
+      taxDefaultsAppliedRef.current = true;
+    }
+  }, [isEdit, taxSettingsQuery.data]);
 
   // idempotency (F3): مفتاح ثابت لكل محاولة إنشاء يُرسَل ضمن الحمولة ⇒ النقر المزدوج/إعادة
   // الشبكة لا تُنشئ عرضين (الراوتر/الخدمة يُعيدان الأول). يُجدَّد بعد كل حفظ ناجح/تفريغ.
@@ -76,6 +142,18 @@ export default function QuotationNew() {
       const id = (r as { quotationId: number }).quotationId;
       setSavedQuotationId(id);
       navigate(`/quotations/${id}`);
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  const update = trpc.quotations.update.useMutation({
+    onSuccess: async (result) => {
+      await Promise.all([
+        utils.quotations.list.invalidate(),
+        utils.quotations.get.invalidate({ quotationId: result.quotationId }),
+      ]);
+      notify.ok("تم تحديث مسودة عرض السعر");
+      navigate(`/quotations/${result.quotationId}`);
     },
     onError: (e) => notify.err(e),
   });
@@ -137,7 +215,13 @@ export default function QuotationNew() {
       notify.warn(err);
       return;
     }
-    create.mutate(buildPayload());
+    const payload = buildPayload();
+    if (isEdit) {
+      const { branchId: _branchId, clientRequestId: _clientRequestId, ...editable } = payload;
+      update.mutate({ quotationId: Number(editQuotationId), ...editable });
+    } else {
+      create.mutate(payload);
+    }
   }
 
   async function handleConvert() {
@@ -158,6 +242,11 @@ export default function QuotationNew() {
   }
 
   function handleReset() {
+    if (isEdit) {
+      editHydratedRef.current = false;
+      void editQuery.refetch();
+      return;
+    }
     dispatch({ type: "RESET", invoiceType: INVOICE_TYPE });
     setClientRequestId(crypto.randomUUID());
     setSavedQuotationId(null);
@@ -246,7 +335,7 @@ export default function QuotationNew() {
   }, [state, bulkOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const typeInfo = INVOICE_TYPES[INVOICE_TYPE];
-  const isSaving = create.isPending || convert.isPending;
+  const isSaving = create.isPending || update.isPending || convert.isPending;
 
   // مؤشّر اختياري: إن لم يكن هناك سعر صالح في أي بند، نبيّن للمستخدم.
   const hasZeroPriceLine = useMemo(
@@ -254,12 +343,19 @@ export default function QuotationNew() {
     [state.items]
   );
 
+  if (isEdit && editQuery.isLoading) {
+    return <div className="p-10 text-center text-muted-foreground">جارٍ تحميل مسودة عرض السعر…</div>;
+  }
+  if (isEdit && !editQuery.data) {
+    return <div className="p-10 text-center text-muted-foreground">عرض السعر غير موجود.</div>;
+  }
+
   return (
     <div className="flex h-full flex-col gap-3">
       {/* شريط العنوان */}
       <PageHeader
         icon={(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
-        title={`${typeInfo.label} جديد`}
+        title={isEdit ? `تعديل ${typeInfo.label}` : `${typeInfo.label} جديد`}
         actions={
           <Link
             href="/quotations"
@@ -306,7 +402,7 @@ export default function QuotationNew() {
         </div>
 
         <aside className="flex w-80 shrink-0 flex-col gap-2">
-          <TotalsPanel items={state.items} state={state} dispatch={dispatch} />
+          <TotalsPanel items={state.items} state={state} dispatch={dispatch} showTaxToggle />
           <ActionButtons
             invoiceType={INVOICE_TYPE}
             items={state.items}

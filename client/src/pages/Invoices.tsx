@@ -117,6 +117,7 @@ export default function Invoices() {
         subtotal: d.subtotal,
         discountAmount: d.discountAmount,
         taxAmount: d.taxAmount,
+        taxRate: Number(d.taxRatePercent ?? 0),
         total: d.total,
         paidAmount: d.paidAmount,
         items: d.items.map((it, i) => ({

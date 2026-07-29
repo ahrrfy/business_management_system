@@ -14,7 +14,7 @@ import { escLike } from "../lib/sqlLike";
 import { computeInvoiceTotals, computeLineTotal } from "./billing";
 import { localDayStart, localNextDayStart } from "./dateRange";
 import { convertToBaseQuantity } from "./inventoryService";
-import { money, toDateStr } from "./money";
+import { money, round2, toDateStr } from "./money";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
 import { createSale } from "./saleService";
 import { getOpenShift } from "./shiftService";
@@ -44,6 +44,10 @@ export interface CreateQuotationInput {
   notes?: string | null;
   /** idempotency (F3): نفس المفتاح يُعيد عرض الإنشاء الأول (النقر المزدوج لا يُنشئ عرضين). */
   clientRequestId?: string | null;
+}
+
+export interface UpdateQuotationInput extends Omit<CreateQuotationInput, "branchId" | "clientRequestId"> {
+  quotationId: number;
 }
 
 async function nextQuoteNumber(tx: Tx, branchId: number): Promise<string> {
@@ -136,6 +140,7 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor)
       validUntil: input.validUntil ? new Date(input.validUntil) : null,
       subtotal: totals.subtotal,
       taxAmount: totals.taxAmount,
+      taxRatePercent: round2(money(input.taxRatePercent ?? "0")).toFixed(2),
       discountAmount: totals.discountAmount,
       total: totals.total,
       status: "DRAFT",
@@ -161,6 +166,102 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor)
       await recordIdempotencyKey(tx, "quotation.create", input.clientRequestId, quotationId);
     }
     return { quotationId, quoteNumber, total: totals.total };
+  });
+}
+
+/** يعدّل مسودة عرض سعر ذرّياً. العروض المرسلة/المقبولة تبقى لقطة التزام لا تُطمس. */
+export async function updateQuotation(input: UpdateQuotationInput, actor: Actor & { role?: string }) {
+  return withTx(async (tx) => {
+    if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر بلا أصناف" });
+
+    const current = (
+      await tx.select().from(quotations).where(eq(quotations.id, input.quotationId)).for("update").limit(1)
+    )[0];
+    if (!current) throw new TRPCError({ code: "NOT_FOUND", message: "عرض السعر غير موجود" });
+    assertQuotationBranchStrict(current, actor);
+    if (current.status !== "DRAFT") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعديل عرض السعر بعد إرساله — أنشئ نسخة جديدة" });
+    }
+
+    let customerTier: PriceTier | null = null;
+    if (input.customerId) {
+      const customer = (await tx.select().from(customers).where(eq(customers.id, input.customerId)).limit(1))[0];
+      if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+      customerTier = customer.defaultPriceTier as PriceTier;
+    }
+    const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
+
+    const computed: Array<{
+      variantId: number;
+      productUnitId: number;
+      baseQuantity: number;
+      unitPrice: string;
+      quantity: string;
+      discountAmount: string;
+      total: string;
+    }> = [];
+    for (const line of input.lines) {
+      const { baseQuantity } = await convertToBaseQuantity(
+        tx,
+        line.productUnitId,
+        line.quantity,
+        line.variantId,
+      );
+      const unitPrice =
+        line.unitPriceOverride != null && line.unitPriceOverride !== ""
+          ? money(line.unitPriceOverride)
+          : await getUnitPrice(tx, line.productUnitId, tier);
+      const result = computeLineTotal({
+        unitPrice,
+        quantity: money(line.quantity),
+        discountPercent: line.discountPercent,
+        discountAmount: line.discountAmount,
+      });
+      computed.push({
+        variantId: line.variantId,
+        productUnitId: line.productUnitId,
+        baseQuantity,
+        unitPrice: result.unitPrice,
+        quantity: result.quantity,
+        discountAmount: result.discountAmount,
+        total: result.total,
+      });
+    }
+
+    const totals = computeInvoiceTotals({
+      lineTotals: computed.map((line) => line.total),
+      invoiceDiscount: input.invoiceDiscount,
+      taxRatePercent: input.taxRatePercent,
+    });
+
+    await tx
+      .update(quotations)
+      .set({
+        customerId: input.customerId ?? null,
+        priceTier: tier,
+        validUntil: input.validUntil ? new Date(input.validUntil) : null,
+        subtotal: totals.subtotal,
+        taxAmount: totals.taxAmount,
+        taxRatePercent: round2(money(input.taxRatePercent ?? "0")).toFixed(2),
+        discountAmount: totals.discountAmount,
+        total: totals.total,
+        notes: input.notes ?? null,
+      })
+      .where(eq(quotations.id, input.quotationId));
+
+    await tx.delete(quotationItems).where(eq(quotationItems.quotationId, input.quotationId));
+    await tx.insert(quotationItems).values(
+      computed.map((line) => ({
+        quotationId: input.quotationId,
+        ...line,
+      })),
+    );
+
+    return {
+      quotationId: input.quotationId,
+      quoteNumber: current.quoteNumber,
+      total: totals.total,
+    };
   });
 }
 
@@ -226,8 +327,8 @@ export async function convertQuotation(input: ConvertQuotationInput, actor: Acto
     const inv = (await db.select().from(quotations).where(eq(quotations.id, input.quotationId)).limit(1))[0];
     return { quotationId: input.quotationId, invoiceId: Number(q.convertedInvoiceId), alreadyConverted: true, status: inv.status };
   }
-  if (q.status === "REJECTED" || q.status === "EXPIRED") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تحويل عرض مرفوض أو منتهٍ" });
+  if (q.status !== "ACCEPTED") {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تحويل عرض السعر قبل قبوله" });
   }
   if (q.validUntil && toDateStr(new Date(q.validUntil as any)) < toDateStr()) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر منتهي الصلاحية" });
@@ -237,15 +338,10 @@ export async function convertQuotation(input: ConvertQuotationInput, actor: Acto
   if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر بلا بنود" });
 
   // (تدقيق ١٧/٧) التحويل كان يُسقط خصومات الأسطر وخصم الفاتورة والضريبة ⇒ إجمالي الفاتورة ≠ إجمالي
-  // العرض الملتزَم به. نُعيد بناء نفس مدخلات computeInvoiceTotals: خصم كل بند (it.discountAmount)،
-  // وخصم الفاتورة (q.discountAmount)، ونسبة الضريبة المشتقّة من taxAmount المخزَّن (السوق 0% افتراضاً
-  // فالمشتقّ null). الاشتقاق دقيق: rate = taxAmount ÷ (subtotal − invoiceDiscount) × 100 ⇒
-  // computeInvoiceTotals يعيد نفس taxAmount المخزَّن بالضبط (round2 مستقرّ).
+  // العرض الملتزَم به. نعيد نفس مدخلات الحساب ونمرّر لقطة النسبة المحفوظة بدلاً من
+  // اشتقاقها من مبلغ الضريبة؛ الاشتقاق يفقد الدقة مع التقريب والفواتير التاريخية.
   const invoiceDiscount = q.discountAmount ?? "0";
-  const taxAmt = money(q.taxAmount ?? "0");
-  const taxableBase = money(q.subtotal ?? "0").minus(money(invoiceDiscount));
-  const taxRatePercent =
-    taxAmt.gt(0) && taxableBase.gt(0) ? taxAmt.div(taxableBase).times(100).toString() : null;
+  const taxRatePercent = q.taxRatePercent ?? "0";
 
   // وردية مفتوحة للدفع النقدي (تدقيق ١٧/٧): createSale يرفض CASH بلا shiftId. نحلّ وردية المُحوِّل
   // المفتوحة على فرع العرض؛ إن غابت نرفض برسالة واضحة بدل PRECONDITION_FAILED الغامض.
@@ -367,6 +463,7 @@ export async function getQuotation(quotationId: number) {
         validUntil: quotations.validUntil,
         subtotal: quotations.subtotal,
         taxAmount: quotations.taxAmount,
+        taxRatePercent: quotations.taxRatePercent,
         discountAmount: quotations.discountAmount,
         total: quotations.total,
         status: quotations.status,
@@ -383,6 +480,7 @@ export async function getQuotation(quotationId: number) {
     .select({
       id: quotationItems.id,
       variantId: quotationItems.variantId,
+      productId: productVariants.productId,
       productUnitId: quotationItems.productUnitId,
       quantity: quotationItems.quantity,
       baseQuantity: quotationItems.baseQuantity,
@@ -393,6 +491,8 @@ export async function getQuotation(quotationId: number) {
       sku: productVariants.sku,
       variantName: productVariants.variantName,
       unitName: productUnits.unitName,
+      conversionFactor: productUnits.conversionFactor,
+      barcode: productUnits.barcode,
     })
     .from(quotationItems)
     .leftJoin(productVariants, eq(quotationItems.variantId, productVariants.id))

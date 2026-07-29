@@ -491,6 +491,7 @@ export interface QuotationV2Data {
   }[];
 
   subtotal: string | number;
+  discountAmount?: string | number | null;
   taxAmount?: string | number | null;
   taxRate?: number | null;
   total: string | number;
@@ -550,12 +551,13 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
   const totals = totalsBox({
     lines: [
       { label: 'المجموع الفرعي', value: fmtIQD(d.subtotal) },
-      ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, 0), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
+      ...(Number(d.discountAmount ?? 0) > 0 ? [{ label: 'الخصم', value: fmtIQD(d.discountAmount), color: B.orange, sign: '−' as const }] : []),
+      ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, d.discountAmount), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
     ],
     grandTotal: { label: 'الإجمالي', value: fmtIQD(d.total) },
   });
 
-  const termsText = d.terms ?? 'الأسعار لا تشمل التوصيل خارج بغداد · العرض صالح حتى التاريخ أعلاه فقط · الأسعار قابلة للتعديل بعد انتهاء الصلاحية · يبدأ التنفيذ بعد استلام دفعة مقدَّمة 50٪.';
+  const termsText = d.terms ?? 'العرض صالح حتى التاريخ الموضح أعلاه · الأسعار قابلة للتعديل بعد انتهاء الصلاحية · يبدأ التنفيذ بعد اعتماد العرض وفق شروط الدفع المتفق عليها.';
   const termsBox = `<div style="margin-top:14px;padding:10px 14px;border:1px solid ${B.border};border-inline-start:3px solid ${B.ink};border-radius:4px;background:${B.bgWarm}">
     <div style="font-size:10.25px;font-weight:800;color:${B.ink};margin-bottom:4px">الشروط والأحكام</div>
     <div style="font-size:10.75px;color:#000;line-height:1.7">${esc(termsText)}</div>
@@ -568,7 +570,7 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
     </div>
     <div style="text-align:center;width:220px">
       <div style="height:22px"></div>
-      <div style="border-top:1px solid ${B.ink};padding-top:5px;font-size:10.25px;color:#000;font-weight:600">الممثل التجاري — مكتبة العربية</div>
+      <div style="border-top:1px solid ${B.ink};padding-top:5px;font-size:10.25px;color:#000;font-weight:600">الممثل التجاري</div>
     </div>
   </div>`;
 

@@ -118,10 +118,11 @@ export default function PurchaseNew() {
     const sourceSubtotal = D(totals.subtotal);
     const rate = state.currency === "USD" ? safeMoney(state.agreedRate) : D(1);
     const goodsIqd = round2(sourceSubtotal.times(rate));
-    const grand = round2(goodsIqd.plus(sum));
+    const taxIqd = round2(D(totals.totalTax).times(rate));
+    const grand = round2(goodsIqd.plus(taxIqd).plus(sum));
     const uplift = goodsIqd.gt(0) ? goodsIqd.plus(sum).dividedBy(goodsIqd) : D(1);
-    return { sum, goodsIqd, grand, uplift, rate, hasLanded: sum.gt(0), hasBase: goodsIqd.gt(0) };
-  }, [shippingCost, customsCost, totals.subtotal, state.currency, state.agreedRate]);
+    return { sum, goodsIqd, taxIqd, grand, uplift, rate, hasLanded: sum.gt(0), hasBase: goodsIqd.gt(0) };
+  }, [shippingCost, customsCost, totals.subtotal, totals.totalTax, state.currency, state.agreedRate]);
 
   function validate(): string | null {
     if (!state.entityId) return "اختر المورد قبل الحفظ.";
@@ -155,8 +156,7 @@ export default function PurchaseNew() {
     create.mutate({
       supplierId: state.entityId!,
       branchId: state.branchId,
-      // الضريبة في العراق 0% افتراضياً — لا حقل ضريبة في الواجهة الجديدة، نعتمد الافتراضي.
-      taxRatePercent: "0",
+      taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
       status: "CONFIRMED",
       // IDEMPOTENCY (تدقيق ٢/٧): كان المفتاح يُولَّد ويُعلَّق في DOM مخفيّ فقط ولا يُرسَل ⇒ النقر
       // المزدوج يُنشئ أمرَي شراء. الآن نمرّره في الحمولة فيَحرس الخادم من الازدواج.
@@ -164,7 +164,8 @@ export default function PurchaseNew() {
       notes: state.notes.trim() || undefined,
       // USD: أسعار البنود نفسها بالدولار، والخادم يحوّلها إلى التكلفة الدينارية بسعر التثبيت.
       agreedCurrency: state.currency,
-      usdTotal: state.currency === "USD" ? round2(D(totals.subtotal)).toFixed(2) : undefined,
+      // فاتورة المورد بالدولار تشمل الضريبة أيضاً؛ الشحن/الكمرك أدناه مسجّلان بالدينار منفصلين.
+      usdTotal: state.currency === "USD" ? round2(D(totals.grandTotal)).toFixed(2) : undefined,
       agreedRate: state.currency === "USD" ? safeMoney(state.agreedRate).toFixed(4) : undefined,
       // landed-cost: الشحن/الكمرك (تُرسَل فقط إن كانت موجبة — الخادم يوزّعها بنسبة القيمة ويُرسمِلها).
       // safeMoney: قيمة وسيطة غير مكتملة («.») ⇒ صفر بدل رمي D() الخام أثناء الحفظ.
@@ -386,6 +387,7 @@ export default function PurchaseNew() {
             showOtherExpenses={false}
             showDiscount={false}
             showPayment={false}
+            showTaxToggle
             overrideGrandTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}
           />
           {state.currency === "USD" && landed.rate.gt(0) && (

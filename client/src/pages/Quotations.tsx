@@ -7,9 +7,10 @@ import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
-import { fmt } from "@/lib/money";
+import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printQuotation } from "@/lib/printing/printTemplates";
+import { allocateLineTax } from "@/components/invoice";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -73,22 +74,31 @@ export default function Quotations() {
     try {
       const d = await utils.quotations.get.fetch({ quotationId });
       if (!d) { notify.err("تعذّر جلب عرض السعر"); return; }
+      const taxableBase = round2(D(d.subtotal).minus(D(d.discountAmount ?? "0"))).toFixed(2);
+      const taxShares = allocateLineTax(
+        d.items.map((it) => ({ total: String(it.total) })),
+        String(d.taxAmount ?? "0"),
+        taxableBase,
+      );
       printQuotation({
         quoteNumber: d.quoteNumber,
         quoteDate: d.quoteDate ? String(d.quoteDate).slice(0, 10) : undefined,
         validUntil: d.validUntil ? String(d.validUntil).slice(0, 10) : undefined,
         customerName: d.customerName,
         notes: d.notes,
-        items: d.items.map((it) => ({
+        items: d.items.map((it, index) => ({
           productName: it.productName ?? "",
           variantName: it.variantName,
           unitName: it.unitName,
           quantity: it.quantity,
           unitPrice: it.unitPrice,
+          taxAmount: taxShares[index] ?? "0",
           total: it.total,
         })),
         subtotal: d.subtotal,
+        discountAmount: d.discountAmount,
         taxAmount: d.taxAmount,
+        taxRate: Number(d.taxRatePercent ?? 0),
         total: d.total,
       });
     } catch (e) {
@@ -170,6 +180,12 @@ export default function Quotations() {
                       mode="auto"
                       actions={[
                         { key: "open", label: "فتح", href: `/quotations/${qr.id}` },
+                        {
+                          key: "edit",
+                          label: "تعديل",
+                          href: `/quotations/${qr.id}/edit`,
+                          hidden: qr.status !== "DRAFT" || !canManage,
+                        },
                         { key: "print", label: "طباعة", onSelect: () => void printQuote(qr.id) },
                         {
                           key: "send",

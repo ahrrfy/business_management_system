@@ -190,11 +190,14 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     let usdTotalVal: Decimal | null = null;
     let agreedRateVal: Decimal | null = null;
     if (agreedCurrency === "USD") {
-      usdTotalVal = explicitUsdRate ? round2(sumMoney(usdLineNets)) : money(input.usdTotal ?? 0);
+      const usdGoods = round2(sumMoney(usdLineNets));
+      const usdTax = round2(usdGoods.times(taxRate).dividedBy(100));
+      const expectedUsdInvoiceTotal = round2(usdGoods.plus(usdTax));
+      usdTotalVal = explicitUsdRate ? expectedUsdInvoiceTotal : money(input.usdTotal ?? 0);
       if (usdTotalVal.lte(0)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ بالدولار (فاتورة المورد) يجب أن يكون موجباً" });
       }
-      if (explicitUsdRate && input.usdTotal != null && !round2(input.usdTotal).eq(usdTotalVal)) {
+      if (explicitUsdRate && input.usdTotal != null && !round2(input.usdTotal).eq(expectedUsdInvoiceTotal)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "إجمالي فاتورة المورد بالدولار لا يطابق مجموع البنود" });
       }
       agreedRateVal = explicitUsdRate ?? total.dividedBy(usdTotalVal);
@@ -218,6 +221,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       branchId: input.branchId,
       subtotal: subtotal.toFixed(2),
       taxAmount: tax.toFixed(2),
+      taxRatePercent: taxRate.toFixed(2),
       shippingCost: shippingCost.toFixed(2),
       customsCost: customsCost.toFixed(2),
       total: total.toFixed(2),

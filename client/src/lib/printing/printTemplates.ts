@@ -170,10 +170,13 @@ export interface QuotationPrintData {
     unitName?: string | null;
     quantity: string | number;
     unitPrice: string | number;
+    taxAmount?: string | number | null;
     total: string | number;
   }[];
   subtotal: string | number;
+  discountAmount?: string | number | null;
   taxAmount?: string | number | null;
+  taxRate?: number | null;
   total: string | number;
 }
 
@@ -194,10 +197,13 @@ export function printQuotation(d: QuotationPrintData): void {
       unitName: it.unitName ?? null,
       quantity: it.quantity,
       unitPrice: it.unitPrice,
+      taxAmount: it.taxAmount ?? null,
       total: it.total,
     })),
     subtotal: d.subtotal,
+    discountAmount: d.discountAmount ?? null,
     taxAmount: d.taxAmount ?? null,
+    taxRate: d.taxRate ?? null,
     total: d.total,
     terms: d.notes ?? null,
     settings: COMPANY_SETTINGS,

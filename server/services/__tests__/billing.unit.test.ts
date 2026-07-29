@@ -52,6 +52,11 @@ describe("computeInvoiceTotals", () => {
     expect(t.taxAmount).toBe("0.00");
     expect(t.total).toBe("100.00");
   });
+  it("rejects a tax rate above 100%", () => {
+    expect(() => computeInvoiceTotals({ lineTotals: ["100.00"], taxRatePercent: "100.01" })).toThrow(
+      "بين ٠ و١٠٠",
+    );
+  });
 });
 
 describe("computeInvoiceCost (COGS)", () => {
