@@ -89,12 +89,13 @@ describe("F5 حافّة (ب) — كشف العميل يتّزن مع السند 
   });
 
   it("(ب-٢) سند معلّق PENDING_APPROVAL (لم يمسّ الرصيد) ⇒ لا يُحتسَب في المُرحَّل", async () => {
+    // العتبة تُطبَّق على الصرف (OUT) فقط — نستعمل PAYMENT لتوليد سند معلّق.
     const prev = process.env.VOUCHER_APPROVAL_THRESHOLD_IQD;
     process.env.VOUCHER_APPROVAL_THRESHOLD_IQD = "10"; // 50 ≥ 10 ⇒ يحتاج اعتماد ⇒ PENDING
     try {
       const v = await createVoucher(
         {
-          voucherType: "RECEIPT",
+          voucherType: "PAYMENT",
           branchId: 1,
           amount: "50.00",
           paymentMethod: "CASH",
