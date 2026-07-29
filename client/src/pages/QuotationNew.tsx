@@ -388,6 +388,24 @@ export default function QuotationNew() {
   if (isEdit && editQuery.isLoading) {
     return <div className="p-10 text-center text-muted-foreground">جارٍ تحميل مسودة عرض السعر…</div>;
   }
+  if (isEdit && editQuery.isError) {
+    return (
+      <div className="flex min-h-64 flex-col items-center justify-center gap-3 p-10 text-center">
+        <AlertTriangle aria-hidden className="size-8 text-destructive" />
+        <p className="font-semibold text-foreground">تعذر تحميل عرض السعر.</p>
+        <p className="max-w-lg text-sm text-muted-foreground">
+          حدث خطأ أثناء جلب بيانات العرض. أعد المحاولة، وإن استمر الخطأ تواصل مع مسؤول النظام.
+        </p>
+        <button
+          type="button"
+          className="rounded-md border bg-card px-4 py-2 text-sm font-semibold hover:bg-muted"
+          onClick={() => void editQuery.refetch()}
+        >
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
   if (isEdit && !editQuery.data) {
     return <div className="p-10 text-center text-muted-foreground">عرض السعر غير موجود.</div>;
   }

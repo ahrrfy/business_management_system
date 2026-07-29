@@ -56,6 +56,8 @@ jobs:
         run: pnpm check:money-schemas
       - name: حارِس الفرع الافتراضي الصامت
         run: pnpm check:branch
+      - name: حارِس سجل الهجرات وترقيمها
+        run: pnpm check:migrations
       - name: حارِس الإجراءات اليتيمة (DoD)
         run: pnpm check:orphans
       - name: حارِس حدود اليوم المحلية (TZ #٧)

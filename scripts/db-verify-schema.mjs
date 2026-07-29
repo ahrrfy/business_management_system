@@ -113,6 +113,7 @@ try {
     ["accountingEntries", "exchangeHouseId"], // 0037
     ["purchaseOrders", "poCurrency"], ["purchaseOrders", "usdTotal"], ["purchaseOrders", "agreedRate"], // 0038
     ["promotions", "campaignId"], ["promotions", "promotionApplicationMode"], // 0076 CRM
+    ["invoices", "taxRatePercent"], ["quotations", "taxRatePercent"], ["purchaseOrders", "taxRatePercent"], // 0123
   ];
   const missingCritTables = CRITICAL_TABLES.filter((t) => !actual[t]);
   const missingCritCols = CRITICAL_COLUMNS.filter(([t, c]) => !actual[t] || !actual[t].has(c)).map(([t, c]) => `${t}.${c}`);
