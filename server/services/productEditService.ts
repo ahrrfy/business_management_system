@@ -14,6 +14,7 @@ import { branchStock, productImages, productPrices, productUnits, productVariant
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
+import { assertConsignmentValid } from "./catalog/productCreate";
 import { postCostRevaluation } from "./costRevaluation";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
 import { toDbMoney } from "./money";
@@ -277,6 +278,8 @@ export interface UpdateProductVariantsInput {
   isCustomizable?: boolean;
   isService?: boolean;
   isActive?: boolean;
+  isConsignment?: boolean;
+  consignorId?: number | null;
   unitTemplate: UpdateUnitTemplate[];
   variants: UpdateVariantRow[];
   /** صور المنتج العامّة (variantId=NULL). `undefined` ⇒ لا تُمَسّ؛ مصفوفة (ولو فارغة) ⇒ يُعاد التوفيق:
@@ -464,6 +467,31 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
 
     await assertEditUniqueness(tx, input);
 
+    // تغيير وسم الأمانة أو المودِع: يشترط رصيداً صفرياً عبر كل الفروع.
+    const wantConsign = input.isConsignment;
+    const wantConsignor = input.consignorId;
+    const wasConsign = !!p.isConsignment;
+    const wasConsignor = p.consignorId != null ? Number(p.consignorId) : null;
+    const consignmentChanged = wantConsign !== undefined && !!wantConsign !== wasConsign;
+    const consignorChanged = wantConsignor !== undefined && (wantConsignor ?? null) !== wasConsignor;
+    if (consignmentChanged || consignorChanged) {
+      const stockRows = await tx
+        .select({ qty: branchStock.quantity })
+        .from(branchStock)
+        .innerJoin(productVariants, eq(branchStock.variantId, productVariants.id))
+        .where(eq(productVariants.productId, input.productId));
+      const totalStock = stockRows.reduce((s, r) => s + (r.qty || 0), 0);
+      if (totalStock !== 0)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تغيير وسم الأمانة أو المودِع والرصيد غير صفري — صفِّر المخزون أولاً" });
+      if (wantConsign) {
+        await assertConsignmentValid(
+          tx,
+          { isConsignment: true, consignorId: wantConsignor, isService: input.isService ?? !!p.isService, isBundle: !!p.isBundle },
+          input.variants.map((v) => v.costPrice),
+        );
+      }
+    }
+
     const name = composeName(input, p.name);
     if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب" });
 
@@ -479,6 +507,8 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,
         isService: input.isService ?? !!p.isService,
         ...(input.isActive != null ? { isActive: input.isActive } : {}),
+        ...(wantConsign !== undefined ? { isConsignment: wantConsign } : {}),
+        ...(wantConsignor !== undefined ? { consignorId: wantConsignor ?? null } : {}),
       })
       .where(eq(products.id, input.productId));
 

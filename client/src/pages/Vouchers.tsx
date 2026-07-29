@@ -15,6 +15,7 @@ import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printVoucherReceipt, printVoucherA4, type VoucherPrintData } from "@/lib/printing/voucherPrint";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { CheckCircle2, XCircle, Paperclip, ShieldQuestion, Link2 } from "lucide-react";
@@ -42,6 +43,9 @@ function shortHash(h?: string | null): string {
 
 export default function Vouchers() {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const canManage = me.data &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "treasury", "FULL", ["manager", "accountant"]);
   const [voucherType, setVoucherType] = useState<"" | "RECEIPT" | "PAYMENT">("");
   const [partyType, setPartyType] = useState<"" | "CUSTOMER" | "SUPPLIER" | "OTHER">("");
   const [paymentMethod, setPaymentMethod] = useState<"" | "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">("");
@@ -504,7 +508,7 @@ export default function Vouchers() {
                             {
                               key: "approve",
                               label: "اعتماد السند",
-                              hidden: r.approvalStatus !== "PENDING_APPROVAL",
+                              hidden: !canManage || r.approvalStatus !== "PENDING_APPROVAL",
                               disabled: approveMut.isPending,
                               onSelect: () => void approveVoucher(r),
                             },
@@ -512,7 +516,7 @@ export default function Vouchers() {
                               key: "reject",
                               label: "رفض السند",
                               variant: "destructive",
-                              hidden: r.approvalStatus !== "PENDING_APPROVAL",
+                              hidden: !canManage || r.approvalStatus !== "PENDING_APPROVAL",
                               disabled: rejectMut.isPending,
                               onSelect: () => void rejectVoucher(r),
                             },
@@ -526,7 +530,7 @@ export default function Vouchers() {
                               key: "cancel",
                               label: "إلغاء السند",
                               variant: "destructive",
-                              hidden: r.status === "REVERSED",
+                              hidden: !canManage || r.status === "REVERSED",
                               disabled: cancelMut.isPending,
                               onSelect: () => void cancelVoucher(r),
                             },

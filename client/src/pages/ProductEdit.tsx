@@ -6,7 +6,7 @@ import { NumberInput } from "@/components/form/NumberInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { AlertCircle, CheckCircle2, Handshake, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import {
@@ -28,6 +28,7 @@ import { ColorDot, Field, MarginBadge } from "@/components/product/variantBits";
 import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
 import { VariantsTable } from "@/components/product/VariantsTable";
 import { NameAssistant } from "@/components/product/NameAssistant";
+import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { type ImageItem } from "@/components/form/ImageUploader";
 import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
 import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productImages";
@@ -76,6 +77,7 @@ export default function ProductEdit() {
   const [isCustomizable, setIsCustomizable] = useState(false);
   const [isService, setIsService] = useState(false);
   const [isActive, setIsActive] = useState(true);
+  const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
 
   const [units, setUnits] = useState<ClientUnit[]>([]);
   const unitSeq = useRef(1);
@@ -112,6 +114,7 @@ export default function ProductEdit() {
     setIsCustomizable(d.isCustomizable);
     setIsService(d.isService);
     setIsActive(d.isActive);
+    setConsignment({ isConsignment: d.isConsignment, consignorId: d.consignorId, consignorName: d.consignorName });
 
     // قالب الوحدات بمعرّفات محلّية.
     const tmpl: ClientUnit[] = d.unitTemplate.map((u, i) => ({
@@ -305,6 +308,7 @@ export default function ProductEdit() {
   function validateLocal(): string | null {
     if (!composedName && !originalName.trim()) return "اسم المنتج مطلوب (نوع/ماركة/موديل).";
     if (!costPrice.trim()) return "سعر التكلفة المشترك مطلوب.";
+    if (consignment.isConsignment && !consignment.consignorId) return "صنف الأمانة يلزمه مودِع — اختر المودِع.";
     if (units.some((u) => !u.name.trim())) return "كل وحدة في القالب تحتاج اسماً.";
     // اسم الوحدة مفتاح مطابقة في مسار الحفظ (unitBarcodes[u.name.trim()]) ⇒ وحدتان بنفس الاسم تتصادمان
     // فيُطمَس باركود/سعر إحداهما (والخادم assertEditUniqueness يرفض لاحقاً) — نمسكه هنا برسالةٍ أوضح وأبكر
@@ -350,6 +354,8 @@ export default function ProductEdit() {
       isCustomizable,
       isService,
       isActive,
+      isConsignment: consignment.isConsignment,
+      consignorId: consignment.consignorId,
       unitTemplate,
       variants: variants.map((v) => {
         const unitBarcodes: Record<string, string> = {};
@@ -444,15 +450,14 @@ export default function ProductEdit() {
         }
       />
 
-      {/* بضاعة الأمانة (٢٠/٧): وسم للعرض فقط — يُدار وقت الإنشاء، ولا يُغيَّر في التعديل (نمط قفل §٥-ك). */}
-      {product.data?.isConsignment && (
-        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          <Handshake aria-hidden className="mt-0.5 size-4 shrink-0 text-amber-600" />
-          <div>
-            <b>بضاعة أمانة</b> — المودِع: {product.data.consignorName ?? `#${product.data.consignorId}`}.
-            خانة «سعر التكلفة» أدناه هي <b>حصة المودِع</b> (المبلغ المستحقّ له عند البيع). لتغيير المودِع أو الوسم: صفِّر الرصيد ثم أعِد الإنشاء.
-          </div>
-        </div>
+      {/* بضاعة الأمانة: مفتاح تفعيل — مقفل إن كان الرصيد غير صفري. */}
+      {!product.data?.isService && !product.data?.isBundle && (
+        <ConsignmentField
+          value={consignment}
+          onChange={setConsignment}
+          disabled={variants.reduce((sum, v) => sum + Object.values(v.stockByBranch).reduce((s, q) => s + (parseInt(q) || 0), 0), 0) > 0}
+          disabledHint="لا يمكن تغيير وسم الأمانة والرصيد غير صفري — صفِّر المخزون أولاً."
+        />
       )}
 
       {/* اسم مركّب + معاينة */}

@@ -384,6 +384,8 @@ export const catalogRouter = router({
         categoryId: z.number().int().positive().nullish(),
         isCustomizable: z.boolean().optional(),
         isActive: z.boolean().optional(),
+        isConsignment: z.boolean().optional(),
+        consignorId: z.number().int().positive().nullish(),
         unitTemplate: z.array(updateUnitTemplateSchema).min(1),
         variants: z.array(editVariantSchema).min(1),
         // product-image-edit: صور المنتج العامّة (variantId=NULL). غياب الحقل ⇒ لا تُمَسّ؛ مصفوفة ⇒ توفيق.

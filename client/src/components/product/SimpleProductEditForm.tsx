@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { AlertCircle, CheckCircle2, Handshake, Layers, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Layers, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
 import { trpc } from "@/lib/trpc";
+import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { NameAssistant } from "@/components/product/NameAssistant";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeState, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
@@ -62,6 +63,7 @@ export default function SimpleProductEditForm({
   const [isActive, setIsActive] = useState(true);
   // صور المنتج العامّة (مشتركة) — تُحمَّل من الخادم وتُحفَظ بمطابقة المعرّف (lib/productImages).
   const [images, setImages] = useState<ImageItem[]>([]);
+  const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
 
   const unitSeq = useRef(1);
   const [units, setUnits] = useState<EditUnit[]>([]);
@@ -111,6 +113,7 @@ export default function SimpleProductEditForm({
     unitSeq.current = tmpl.length + 1;
     setUnits(tmpl.length ? tmpl : [{ id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, barcode: "", retail: "", wholesale: "", government: "" }]);
     setImages(hydrateProductImages(d.images));
+    setConsignment({ isConsignment: !!d.isConsignment, consignorId: d.consignorId ? Number(d.consignorId) : null, consignorName: d.consignorName });
     setHydrated(true);
   }, [product.data, hydrated]);
 
@@ -192,9 +195,14 @@ export default function SimpleProductEditForm({
     if (!costPrice.trim()) return "سعر التكلفة مطلوب.";
     if (units.some((u) => !u.name.trim())) return "كل وحدة تحتاج اسماً.";
     if (units.filter((u) => u.isBase).length !== 1) return "حدّد وحدة أساس واحدة فقط.";
+    if (units.some((u) => !u.isBase && !(Number(u.factor.trim()) > 1)))
+      return "معامل التحويل يجب أن يكون أكبر من ١ للوحدة غير الأساس.";
+    const unitNames = units.map((u) => u.name.trim().toLowerCase());
+    if (new Set(unitNames).size !== unitNames.length) return "اسم وحدة مكرّر — لكل وحدة اسم فريد.";
     const codes = units.map((u) => u.barcode.trim()).filter(Boolean);
     const dup = codes.find((c, i) => codes.indexOf(c) !== i);
     if (dup) return `باركود مكرّر داخل النموذج: ${dup} — لكل وحدة باركود فريد.`;
+    if (consignment.isConsignment && !consignment.consignorId) return "صنف الأمانة يلزمه مودِع — اختر المودِع.";
     return null;
   }
 
@@ -244,6 +252,8 @@ export default function SimpleProductEditForm({
       modelName: modelName.trim() || null,
       description: description.trim() || null,
       categoryId: categoryId === "" ? null : Number(categoryId),
+      isConsignment: consignment.isConsignment,
+      consignorId: consignment.consignorId,
       isCustomizable,
       isActive,
       unitTemplate,
@@ -288,15 +298,13 @@ export default function SimpleProductEditForm({
         }
       />
 
-      {/* بضاعة الأمانة (٢٠/٧): وسم للعرض فقط — يُدار وقت الإنشاء ولا يُغيَّر في التعديل. */}
-      {product.data?.isConsignment && (
-        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          <Handshake aria-hidden className="mt-0.5 size-4 shrink-0 text-amber-600" />
-          <div>
-            <b>بضاعة أمانة</b> — المودِع: {product.data.consignorName ?? `#${product.data.consignorId}`}.
-            خانة «سعر التكلفة» أدناه هي <b>حصة المودِع</b> المستحقّة عند البيع.
-          </div>
-        </div>
+      {!product.data?.isService && !product.data?.isBundle && (
+        <ConsignmentField
+          value={consignment}
+          onChange={setConsignment}
+          disabled={totalStock !== 0}
+          disabledHint="لا يمكن تغيير وسم الأمانة والرصيد غير صفري — صفِّر المخزون أولاً."
+        />
       )}
 
       {/* ── بيانات المنتج ── */}
