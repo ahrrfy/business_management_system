@@ -377,6 +377,7 @@ export interface CustomerStmtPrintData {
   totalDebit: string | number;
   totalCredit: string | number;
   openingBalance?: string | number | null;
+  currentBalance?: string | number | null;
   closingBalance: string | number;
 }
 
@@ -390,6 +391,7 @@ export function printCustomerStmt(d: CustomerStmtPrintData): void {
     partyPhone: d.customerPhone,
     periodLabel,
     openingBalance: d.openingBalance ?? 0,
+    currentBalance: d.currentBalance ?? null,
     transactionsCount: d.transactions.length,
     transactions: d.transactions.map((t) => {
       const { label, color } = inferStatementTypeLabel(t.description, t.debit);
@@ -494,6 +496,7 @@ export interface SupplierStmtPrintData {
   totalDebit: string | number;
   totalCredit: string | number;
   openingBalance?: string | number | null;
+  currentBalance?: string | number | null;
   closingBalance: string | number;
 }
 
@@ -511,6 +514,7 @@ export function printSupplierStmt(d: SupplierStmtPrintData): void {
     partyPhone: d.supplierPhone,
     periodLabel,
     openingBalance: Number(d.openingBalance ?? 0),
+    currentBalance: d.currentBalance ?? null,
     transactionsCount: d.transactions.length,
     transactions: d.transactions.map((t) => {
       // ملاحظة: للمورّد الدائن هو ما يزيد الذمة (اتجاه معاكس للعميل) — نمرّر debit كإشارة fallback

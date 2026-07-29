@@ -189,6 +189,7 @@ export default function SupplierStatement() {
       // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
       totalDebit: ledger.totalDebit, totalCredit: ledger.totalCredit,
       openingBalance: from ? d.summary.openingBalance : undefined,
+      currentBalance: d.summary.currentBalance,
       closingBalance: ledger.closingBalance,
     });
   };

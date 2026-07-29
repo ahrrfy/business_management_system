@@ -176,6 +176,7 @@ export default function CustomerStatement() {
       // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
       totalDebit: totDebit, totalCredit: totCredit,
       openingBalance: from ? d.summary.openingBalance : undefined,
+      currentBalance: d.summary.currentBalance,
       // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
       closingBalance: from ? closingBalance : d.summary.currentBalance,
     });
