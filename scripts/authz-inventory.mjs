@@ -183,10 +183,16 @@ function walk(dir, acc = []) {
 
 /**
  * يلتقط **بوّابات محلّية** مُعرَّفة داخل ملف الراوتر نفسه (لا في server/trpc.ts) — نمط شائع جداً:
- *   const hrRead  = protectedProcedure.use(requireModule("hr", "READ"));
- *   const assetWrite = protectedProcedure.use(requireModule("assets", "FULL"));
- *   const auditReadProcedure = protectedProcedure.use(({ctx}) => { if (ctx.user.role !== "admin") ... })
- * كل واحدة مصدر سلطة إضافي خارج السجلّ المركزي ⇒ تُعلَّم LOCAL_GATE في الجرد.
+ *   const hrRead  = protectedProcedure.use(requireModule("hr", "READ"));            ← بوّابة محلّية حقيقية
+ *   const channelsWrite = cashierProcedure.use(requireModule("channels", "FULL")); ← مركّبة: دور + وحدة
+ *   const reportsProcedure = reportViewerProcedure;                                 ← اسم مستعار فقط (لا LOCAL_GATE)
+ *
+ * تمييزان حاسمان (تصحيح مراجعة Codex على PR #405):
+ *  (P2) **الاسم المستعار المجرَّد** (بلا `.use(...)`) ليس بوّابة لامركزية — يرث بوّابته المركزية كاملةً
+ *       ولا يُعلَّم LOCAL_GATE، وإلّا انتفخ عدّاد «السلطة اللامركزية» زوراً.
+ *  (P1) **البوّابة المركّبة** (أساسٌ مُقيَّد بالدور + `requireModule`) تحمل **مصدرَي سلطة**: الدور المورَّث
+ *       من الأساس + الوحدة المُضافة. لا يجوز أن يبتلع تصنيفُ الوحدة قيدَ الدور — نُبقي RAW_ROLE_GATE
+ *       (أو ADMIN_ONLY) للأساس مع تسجيل الوحدة.
  */
 function scanLocalGates(src) {
   const gates = {};
@@ -199,22 +205,41 @@ function scanLocalGates(src) {
     // استبعاد الراوترات الفرعية (`const ordersRouter = router({...})`) — ليست بوّابات.
     if (/^router\s*\(/.test(rhs.trim()) || /Router$/.test(name)) continue;
     const base = (rhs.match(/([A-Za-z0-9_]*Procedure)\b/) || [])[1] ?? null;
+    const inherited = PROCEDURES[base] ?? gates[base] ?? null;
+    const addsMiddleware = /\.use\s*\(/.test(rhs);
+
+    // (P2) اسمٌ مستعار مجرَّد: `const x = someProcedure;` بلا `.use` ⇒ هو البوّابة نفسها، لا بوّابةٌ
+    // جديدة. يرث كل شيء ولا يُعلَّم LOCAL_GATE (وإلّا نُسبت لامركزيةٌ لبوّابةٍ مركزية).
+    if (!addsMiddleware) {
+      gates[name] = inherited
+        ? { ...inherited, local: false, base }
+        : { authority: "none", module: null, level: null, roles: [], branch: false, local: false, base };
+      continue;
+    }
+
     const mod = rhs.match(/requireModule\(\s*["']([^"']+)["']\s*,\s*["'](FULL|READ)["']/);
     const roleGate = rhs.match(/ctx\.user\.role\s*!==\s*["']([a-z_]+)["']/g);
     const requireRole = rhs.match(/requireRole\(([^)]*)\)/);
-    const inherited = PROCEDURES[base] ?? null;
+    // (P1) الأساس مُقيَّد بالدور (raw-role) أو admin ⇒ البوّابة مركّبة: يبقى قيد الدور المورَّث فاعلاً
+    // فوق قيد الوحدة المُضاف. نحفظ العلَم كي لا تختفي 130 نقطة سلطة-الدور من الجرد والترحيل.
+    const inheritsRoleAuthority = inherited?.authority === "raw-role" || inherited?.authority === "admin";
+    const localRoles = roleGate
+      ? Array.from(new Set(roleGate.map((r) => r.match(/["']([a-z_]+)["']/)[1])))
+      : requireRole
+        ? Array.from(requireRole[1].matchAll(/["']([a-z_]+)["']/g)).map((x) => x[1])
+        : null;
+
     gates[name] = {
-      authority: mod ? "module-map" : roleGate ? "raw-role" : requireRole ? "raw-role" : (inherited?.authority ?? "none"),
+      authority: mod ? "module-map" : localRoles ? "raw-role" : (inherited?.authority ?? "none"),
       module: mod ? mod[1] : inherited?.module ?? null,
       level: mod ? mod[2] : inherited?.level ?? null,
-      roles: roleGate
-        ? Array.from(new Set(roleGate.map((r) => r.match(/["']([a-z_]+)["']/)[1])))
-        : requireRole
-          ? Array.from(requireRole[1].matchAll(/["']([a-z_]+)["']/g)).map((x) => x[1])
-          : inherited?.roles ?? [],
+      roles: localRoles ?? inherited?.roles ?? [],
       branch: inherited?.branch ?? false,
       local: true,
       base,
+      // مصدر سلطة الدور المورَّث (raw-role/admin من الأساس) يبقى مسجَّلاً حتى مع requireModule.
+      inheritsRoleAuthority: !!(inheritsRoleAuthority && mod),
+      inheritedAuthority: inheritsRoleAuthority ? inherited.authority : null,
     };
   }
   return gates;
@@ -300,6 +325,9 @@ function flagsOf(ep, meta) {
     if (meta.authority === "none" && ep.kind === "query") f.push("READ_WITHOUT_MODULE_GATE");
     if (meta.authority === "raw-role") f.push("RAW_ROLE_GATE");
     if (meta.authority === "admin") f.push("ADMIN_ONLY");
+    // (P1) بوّابة مركّبة (module + أساس مُقيَّد بالدور): قيد الدور المورَّث يبقى فاعلاً ⇒ نُبقي علَمه.
+    if (meta.inheritsRoleAuthority && meta.inheritedAuthority === "raw-role") f.push("RAW_ROLE_GATE");
+    if (meta.inheritsRoleAuthority && meta.inheritedAuthority === "admin") f.push("ADMIN_ONLY");
     if (meta.authority === "module-map" && meta.branch === false) f.push("NO_BRANCH_SCOPE");
     if (meta.authority === "unknown") f.push("PROCEDURE_UNRESOLVED");
     if (meta.local) f.push("LOCAL_GATE");
@@ -412,8 +440,42 @@ function tallyFlags(rows) {
 mkdirSync(OUT_DIR, { recursive: true });
 
 const cols = ["surface", "router", "name", "proposedPermission", "kind", "procedure", "authority", "module", "level", "roles", "branch", "sensitivity", "sensitivityWhy", "flags", "loc"];
+
+// (P1) صفوف tRPC + **كل** الأسطح الأخرى (Express + المهام) في نفس CSV — الوثيقة تدّعي تغطيتها،
+// فلا تُترك في JSON وحده. أعمدة موحّدة؛ الحقول غير المنطبقة فارغة.
+const csvRows = endpoints.map((e) => e);
+for (const r of express) {
+  csvRows.push({
+    surface: r.surface,
+    router: "(express)",
+    name: `${r.method} ${r.path}`,
+    proposedPermission: "",
+    kind: r.surface === "express-mount" ? "mount" : "route",
+    procedure: r.method,
+    authority: "express",
+    module: "", level: "", roles: "", branch: "",
+    sensitivity: "", sensitivityWhy: "",
+    flags: "EXPRESS_SURFACE",
+    loc: `${r.file}:${r.line}`,
+  });
+}
+for (const j of jobs) {
+  csvRows.push({
+    surface: "job",
+    router: "(scheduled)",
+    name: j.kind,
+    proposedPermission: "",
+    kind: j.kind,
+    procedure: j.kind,
+    authority: "none",
+    module: "", level: "", roles: "", branch: "",
+    sensitivity: "", sensitivityWhy: "",
+    flags: "JOB_NO_PRINCIPAL",
+    loc: `${j.file}:${j.line}`,
+  });
+}
 const csv = [cols.join(",")]
-  .concat(endpoints.map((e) => cols.map((c) => `"${String(e[c] ?? "").replace(/"/g, '""')}"`).join(",")))
+  .concat(csvRows.map((e) => cols.map((c) => `"${String(e[c] ?? "").replace(/"/g, '""')}"`).join(",")))
   .join("\n");
 writeFileSync(join(OUT_DIR, "endpoint-inventory.csv"), "﻿" + csv, "utf8");
 writeFileSync(
@@ -424,11 +486,38 @@ writeFileSync(
 
 console.log(JSON.stringify(summary, null, 2));
 
-if (process.argv.includes("--check")) {
-  const bad = endpoints.filter((e) => e.flags.includes("WRITE_WITHOUT_MODULE_GATE"));
-  if (bad.length) {
-    console.error(`\n✖ ${bad.length} نقطة كتابة بلا بوّابة وحدة:`);
-    for (const b of bad.slice(0, 50)) console.error(`  - ${b.router}.${b.name} (${b.procedure}) ${b.loc}`);
+// ─────────────────────────── وضع الحارس (--check) ───────────────────────────
+// (P1) الحارس الموعود في docs/authz/07-threat-model.md (T-12) يمنع **إعادة إدخال** raw-role gate أو
+// نقطة غير مسجَّلة — لا مجرّد كتابة بلا بوّابة. لذا يفشل على أيٍّ من:
+//   WRITE_WITHOUT_MODULE_GATE (دائماً) · RAW_ROLE_GATE · ADMIN_ONLY على كتابة · PROCEDURE_UNKNOWN/UNRESOLVED
+// مع **قاعدة أساس صريحة** (authz-baseline.json) تُغرّب الحالة القائمة، فلا يفشل إلّا على المستجدّ.
+// توليد الأساس أول مرّة: `node scripts/authz-inventory.mjs --write-baseline`.
+if (process.argv.includes("--check") || process.argv.includes("--write-baseline")) {
+  const BASELINE = join(OUT_DIR, "authz-baseline.json");
+  const key = (e) => `${e.router}.${e.name}`;
+  const isViolation = (e) =>
+    e.flags.includes("WRITE_WITHOUT_MODULE_GATE") ||
+    e.flags.includes("PROCEDURE_UNKNOWN") ||
+    e.flags.includes("PROCEDURE_UNRESOLVED") ||
+    e.flags.includes("RAW_ROLE_GATE") ||
+    (e.flags.includes("ADMIN_ONLY") && e.kind === WRITE_KIND);
+  const flagged = endpoints.filter(isViolation);
+
+  if (process.argv.includes("--write-baseline")) {
+    writeFileSync(BASELINE, JSON.stringify({ generated: "static", keys: flagged.map(key).sort() }, null, 2), "utf8");
+    console.error(`\n✔ كُتب الأساس: ${flagged.length} نقطة معروفة في ${relative(ROOT, BASELINE)}`);
+    process.exit(0);
+  }
+
+  const baseline = new Set(existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, "utf8")).keys : []);
+  const novel = flagged.filter((e) => !baseline.has(key(e)));
+  if (novel.length) {
+    console.error(`\n✖ ${novel.length} نقطة سلطة مستجدّة خارج الأساس (raw-role / بلا بوّابة / غير مسجَّلة):`);
+    for (const b of novel.slice(0, 50)) {
+      console.error(`  - ${key(b)} [${b.flags.split("|").filter((x) => /RAW_ROLE|WITHOUT_MODULE|UNKNOWN|UNRESOLVED|ADMIN_ONLY/.test(x)).join(",")}] ${b.loc}`);
+    }
+    console.error(`\nإن كانت مقصودة: راجعها ثم أعِد توليد الأساس بـ --write-baseline (قرار واعٍ موثَّق).`);
     process.exit(1);
   }
+  console.error(`\n✔ لا نقطة سلطة مستجدّة خارج الأساس (${baseline.size} نقطة مُغرَّبة).`);
 }

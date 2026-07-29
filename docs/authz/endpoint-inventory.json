@@ -46,11 +46,11 @@
       "pos": 2
     },
     "flagCounts": {
-      "LOCAL_GATE": 163,
+      "LOCAL_GATE": 119,
       "NO_BRANCH_SCOPE": 115,
       "SENSITIVE_ACTION": 76,
       "ADMIN_ONLY": 72,
-      "RAW_ROLE_GATE": 58,
+      "RAW_ROLE_GATE": 66,
       "UNAUTHENTICATED": 32,
       "READ_WITHOUT_MODULE_GATE": 30,
       "WRITE_WITHOUT_MODULE_GATE": 23
@@ -2554,7 +2554,7 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "LOCAL_GATE",
+      "flags": "RAW_ROLE_GATE|LOCAL_GATE",
       "loc": "server/routers/conversationRouter.ts:363"
     },
     {
@@ -2571,7 +2571,7 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "LOCAL_GATE",
+      "flags": "RAW_ROLE_GATE|LOCAL_GATE",
       "loc": "server/routers/conversationRouter.ts:443"
     },
     {
@@ -2605,7 +2605,7 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "LOCAL_GATE",
+      "flags": "RAW_ROLE_GATE|LOCAL_GATE",
       "loc": "server/routers/conversationRouter.ts:434"
     },
     {
@@ -2639,7 +2639,7 @@
       "branch": "required",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: send",
-      "flags": "LOCAL_GATE|SENSITIVE_ACTION",
+      "flags": "RAW_ROLE_GATE|LOCAL_GATE|SENSITIVE_ACTION",
       "loc": "server/routers/conversationRouter.ts:393"
     },
     {
@@ -2656,7 +2656,7 @@
       "branch": "required",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: send",
-      "flags": "LOCAL_GATE|SENSITIVE_ACTION",
+      "flags": "RAW_ROLE_GATE|LOCAL_GATE|SENSITIVE_ACTION",
       "loc": "server/routers/conversationRouter.ts:255"
     },
     {
@@ -2673,7 +2673,7 @@
       "branch": "required",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: send",
-      "flags": "LOCAL_GATE|SENSITIVE_ACTION",
+      "flags": "RAW_ROLE_GATE|LOCAL_GATE|SENSITIVE_ACTION",
       "loc": "server/routers/conversationRouter.ts:312"
     },
     {
@@ -2690,7 +2690,7 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "LOCAL_GATE",
+      "flags": "RAW_ROLE_GATE|LOCAL_GATE",
       "loc": "server/routers/conversationRouter.ts:454"
     },
     {
@@ -2707,7 +2707,7 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "LOCAL_GATE",
+      "flags": "RAW_ROLE_GATE|LOCAL_GATE",
       "loc": "server/routers/conversationRouter.ts:223"
     },
     {
@@ -7705,7 +7705,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:621"
     },
     {
@@ -7722,7 +7722,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:93"
     },
     {
@@ -7739,7 +7739,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:174"
     },
     {
@@ -7756,7 +7756,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:76"
     },
     {
@@ -7773,7 +7773,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:580"
     },
     {
@@ -7790,7 +7790,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:513"
     },
     {
@@ -7807,7 +7807,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:651"
     },
     {
@@ -7824,7 +7824,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:740"
     },
     {
@@ -7841,7 +7841,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:101"
     },
     {
@@ -7858,7 +7858,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:161"
     },
     {
@@ -7875,7 +7875,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:149"
     },
     {
@@ -7909,7 +7909,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:679"
     },
     {
@@ -7926,7 +7926,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:109"
     },
     {
@@ -7943,7 +7943,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:637"
     },
     {
@@ -7960,7 +7960,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:505"
     },
     {
@@ -7977,7 +7977,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:472"
     },
     {
@@ -7994,7 +7994,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:588"
     },
     {
@@ -8011,7 +8011,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:604"
     },
     {
@@ -8028,7 +8028,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:84"
     },
     {
@@ -8045,7 +8045,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:548"
     },
     {
@@ -8062,7 +8062,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:118"
     },
     {
@@ -8079,7 +8079,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:687"
     },
     {
@@ -8096,7 +8096,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:447"
     },
     {
@@ -8113,7 +8113,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:428"
     },
     {
@@ -8130,7 +8130,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:567"
     },
     {
@@ -8147,7 +8147,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:559"
     },
     {
@@ -8181,7 +8181,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:126"
     },
     {
@@ -8198,7 +8198,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:534"
     },
     {
@@ -8215,7 +8215,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:521"
     },
     {
@@ -8232,7 +8232,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:211"
     },
     {
@@ -8249,7 +8249,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:411"
     },
     {
@@ -8266,7 +8266,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:596"
     },
     {
@@ -8283,7 +8283,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:134"
     },
     {
@@ -8300,7 +8300,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:194"
     },
     {
@@ -8317,7 +8317,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:181"
     },
     {
@@ -8334,7 +8334,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:392"
     },
     {
@@ -8351,7 +8351,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:629"
     },
     {
@@ -8368,7 +8368,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:762"
     },
     {
@@ -8385,7 +8385,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:780"
     },
     {
@@ -8402,7 +8402,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:771"
     },
     {
@@ -8419,7 +8419,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:753"
     },
     {
@@ -8436,7 +8436,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:142"
     },
     {
@@ -8453,7 +8453,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:700"
     },
     {
@@ -8470,7 +8470,7 @@
       "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "",
       "loc": "server/routers/reportsRouter.ts:728"
     },
     {
