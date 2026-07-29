@@ -861,7 +861,7 @@ export default function Reception() {
               title={printerReady ? "الطابعة الحرارية مربوطة — اضغط لتبديلها" : "اربط طابعة حرارية كي يُطبع إيصال فتح الوردية عليها مباشرة"}
               className={cn(
                 "mb-3 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg border text-xs font-bold transition-colors hover:bg-muted/60",
-                printerReady ? "border-emerald-500 text-emerald-600" : "text-muted-foreground",
+                printerReady ? "border-[var(--money-positive)] text-money-positive" : "text-muted-foreground",
               )}
             >
               <Printer aria-hidden className="size-3.5" />

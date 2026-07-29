@@ -37,7 +37,7 @@ function PrinterStatusButton({
       title={printerReady
         ? "الطابعة الحرارية مربوطة (تلقائياً في كل شاشة) — اضغط لتبديلها"
         : "اربط طابعة حرارية — تُستعمل تلقائياً بعدها في كل شاشات الطباعة"}
-      className={cn("relative", printerReady && "text-emerald-600 dark:text-emerald-500")}
+      className={cn("relative", printerReady && "text-money-positive")}
     >
       <Printer className="size-5" aria-hidden />
       {printerReady && (
