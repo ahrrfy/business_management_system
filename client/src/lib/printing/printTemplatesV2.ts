@@ -692,6 +692,7 @@ export interface StatementV2Data {
 
   periodLabel: string;
   openingBalance: string | number;
+  currentBalance?: string | number | null;
   transactionsCount: number;
 
   transactions: {
@@ -739,7 +740,8 @@ export function printStatementV2(d: StatementV2Data): boolean {
       title: 'ملخّص الحساب',
       variant: 'gray',
       fields: [
-        { label: 'الرصيد الافتتاحي', value: fmtIQD(d.openingBalance) },
+        { label: 'الرصيد السابق', value: fmtIQD(d.openingBalance) },
+        ...(d.currentBalance != null ? [{ label: 'الرصيد الحالي', value: fmtIQD(d.currentBalance) }] : []),
         { label: 'عدد الحركات', value: String(d.transactionsCount) },
       ],
     },
@@ -748,7 +750,7 @@ export function printStatementV2(d: StatementV2Data): boolean {
   // بناء الجدول يدوياً: كل حركة = صفّان (قيم + تفاصيل).
   const cols: DocTableCol[] = [
     { key: 'date', label: 'التاريخ', width: 74 },
-    { key: 'ref', label: 'المرجع', width: 104 },
+    { key: 'ref', label: 'المرجع', width: 130 },
     { key: 'desc', label: 'البيان' },
     { key: 'debit', label: 'مدين', width: 84, color: B.alert },
     { key: 'credit', label: 'دائن', width: 84, color: B.green },
