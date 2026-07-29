@@ -126,6 +126,7 @@ export const userRouter = router({
         phone: z.string().max(20).nullish(),
         jobTitle: z.string().max(120).nullish(),
         hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+        isOwner: z.boolean().optional(),
         permissionsOverride: PERM_OVERRIDE,
       })
     )
@@ -134,7 +135,7 @@ export const userRouter = router({
       // ترقية مستخدم لدور أعلى أو منحه FULL على وحدة عبر override يَمرّ بلا أَثَر فروقات. الآن نَلتقط
       // قبل/بعد كاملاً (مع override) ⇒ تَدقيق فعلي للأذونات.
       const before = await getUser(input.userId);
-      const res = await updateUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await updateUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, isOwner: !!(ctx.user as any).isOwner });
       await logAudit(ctx, {
         action: "user.update",
         entityType: "user",
@@ -147,6 +148,7 @@ export const userRouter = router({
               role: before.role,
               branchId: before.branchId,
               customRoleId: (before as { customRoleId?: number | null }).customRoleId ?? null,
+              isOwner: !!(before as { isOwner?: boolean }).isOwner,
               permissionsOverride: (before as { permissionsOverride?: unknown }).permissionsOverride ?? null,
             }
           : null,
@@ -157,6 +159,7 @@ export const userRouter = router({
           role: input.role,
           branchId: input.branchId,
           customRoleId: input.customRoleId,
+          isOwner: input.isOwner,
           permissionsOverride: input.permissionsOverride,
         },
       });

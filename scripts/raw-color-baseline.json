@@ -72,6 +72,7 @@
   "client/src/pages/Transfers.tsx": 3,
   "client/src/pages/TransfersLog.tsx": 9,
   "client/src/pages/TreasuryTransfers.tsx": 9,
+  "client/src/pages/UserEdit.tsx": 2,
   "client/src/pages/Users.tsx": 11,
   "client/src/pages/VoucherCategories.tsx": 8,
   "client/src/pages/Vouchers.tsx": 16,
