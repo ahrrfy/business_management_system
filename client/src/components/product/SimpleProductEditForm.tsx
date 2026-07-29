@@ -18,6 +18,7 @@ import { NameAssistant } from "@/components/product/NameAssistant";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeState, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
+import { CategoryOptionList } from "@/lib/categoryTree";
 
 /**
  * SimpleProductEditForm — تحرير «سلعة بسيطة» (متغيّر واحد بلا لون/قياس) بنفس نظافة شاشة الإضافة.
@@ -324,7 +325,7 @@ export default function SimpleProductEditForm({
               className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
             >
               <option value="">— بلا فئة —</option>
-              {(categoriesQ.data ?? []).map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+              <CategoryOptionList categories={categoriesQ.data ?? []} />
             </select>
           </Field>
           <Field label="رمز المنتج (SKU)" required className="md:col-span-2">

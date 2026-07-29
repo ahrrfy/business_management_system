@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Field, MarginBadge } from "@/components/product/variantBits";
 import { trpc } from "@/lib/trpc";
 import { toArabicDigits } from "@/lib/variants";
+import { CategoryOptionList } from "@/lib/categoryTree";
 
 /**
  * ServiceForm — تعريف «خِدمة» (لا مخزون) من شاشة إضافة المنتج وتوجيهها لنقطة بيع الطباعة.
@@ -159,9 +160,7 @@ export default function ServiceForm() {
               className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
             >
               <option value="">— بلا فئة —</option>
-              {(categoriesQ.data ?? []).map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
+              <CategoryOptionList categories={categoriesQ.data ?? []} />
             </select>
           </Field>
           <Field label="الوحدة" required hint="ورقة / صورة / نسخة / خدمة…">

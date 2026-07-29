@@ -470,14 +470,14 @@ export const catalogRouter = router({
       return res;
     }),
 
-  /** قائمة الفئات (لمنتقي الفئة في شاشات المنتج ونطاق الجرد «حسب الفئة»). */
+  /** قائمة الفئات (لمنتقي الفئة في شاشات المنتج ونطاق الجرد «حسب الفئة»). parentId لتجميعها شجرياً في الواجهة. */
   categories: productsReadProcedure.query(async () => {
     const db = getDb();
     if (!db) return [];
     return db
-      .select({ id: categories.id, name: categories.name })
+      .select({ id: categories.id, name: categories.name, parentId: categories.parentId })
       .from(categories)
-      .orderBy(asc(categories.name));
+      .orderBy(asc(categories.sortOrder), asc(categories.name));
   }),
 
   /* ============================ إدارة الفئات (categories CRUD + دمج + نقل) ============================ */
@@ -486,10 +486,17 @@ export const catalogRouter = router({
   categoriesAdmin: productsManagerProcedure.query(() => listCategoriesAdmin()),
 
   createCategory: productsManagerProcedure
-    .input(z.object({ name: z.string().min(1).max(255), description: z.string().max(1000).nullish() }))
+    .input(
+      z.object({
+        name: z.string().min(1).max(255),
+        description: z.string().max(1000).nullish(),
+        // أقسام فرعية (٢٩/٧): parentId اختياري — إن حُدِّد يجب أن يكون فئة رئيسية (لا فئة فرعية أخرى).
+        parentId: z.number().int().positive().nullish(),
+      })
+    )
     .mutation(async ({ input, ctx }) => {
       const res = await createCategory(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "category.create", entityType: "category", entityId: res.id, newValue: { name: res.name } });
+      await logAudit(ctx, { action: "category.create", entityType: "category", entityId: res.id, newValue: { name: res.name, parentId: input.parentId ?? null } });
       return res;
     }),
 
@@ -500,6 +507,8 @@ export const catalogRouter = router({
         name: z.string().min(1).max(255).optional(),
         description: z.string().max(1000).nullish(),
         isActive: z.boolean().optional(),
+        // أقسام فرعية: undefined=بلا تغيير، null=ترقية لفئة رئيسية، رقم=نقل تحت تلك الفئة الرئيسية.
+        parentId: z.number().int().positive().nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -508,7 +517,7 @@ export const catalogRouter = router({
         action: "category.update",
         entityType: "category",
         entityId: input.id,
-        newValue: { name: input.name, description: input.description, isActive: input.isActive },
+        newValue: { name: input.name, description: input.description, isActive: input.isActive, parentId: input.parentId },
       });
       return res;
     }),

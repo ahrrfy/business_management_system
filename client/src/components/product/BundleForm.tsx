@@ -15,6 +15,7 @@ import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeState, genEan13, onlyDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
+import { CategoryOptionList } from "@/lib/categoryTree";
 
 /**
  * BundleForm — إنشاء «بكج (باندل)»: منتج مركّب من عدّة منتجات بسيطة يُباع كوحدة بباركود وسعر مستقل.
@@ -353,9 +354,7 @@ export default function BundleForm() {
               onChange={(e) => setCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
             >
               <option value="">— بلا فئة —</option>
-              {(categoriesQ.data ?? []).map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
+              <CategoryOptionList categories={categoriesQ.data ?? []} />
             </select>
           </Field>
           <Field label="التفعيل">
@@ -408,9 +407,7 @@ export default function BundleForm() {
                 aria-label="فلترة بالفئة"
               >
                 <option value="">— كل الفئات —</option>
-                {(categoriesQ.data ?? []).map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
+                <CategoryOptionList categories={categoriesQ.data ?? []} />
               </select>
               <Button
                 type="button"
@@ -658,9 +655,7 @@ export default function BundleForm() {
                 aria-label="فلترة بالفئة"
               >
                 <option value="">— كل الفئات —</option>
-                {(categoriesQ.data ?? []).map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
+                <CategoryOptionList categories={categoriesQ.data ?? []} />
               </select>
             </div>
             <div className="max-h-80 overflow-auto rounded-md border bg-popover">

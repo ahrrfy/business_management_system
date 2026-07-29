@@ -37,6 +37,7 @@ import BundleRecipeCard from "@/components/product/BundleRecipeCard";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { CategoryOptionList } from "@/lib/categoryTree";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 
@@ -492,7 +493,7 @@ export default function ProductEdit() {
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
               >
                 <option value="">— بلا فئة —</option>
-                {(categoriesQ.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                <CategoryOptionList categories={categoriesQ.data ?? []} />
               </select>
             </Field>
             <Field label="بادئة SKU (للمتغيّرات الجديدة)" className="md:col-span-2"><Input value={baseSku} onChange={(e) => setBaseSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PG-G2" /></Field>

@@ -67,9 +67,16 @@ export async function listProductsAdmin(input: ListProductsAdminInput): Promise<
   }
   const search = buildCatalogSearchWhere(input.q);
   if (search) conds.push(search);
-  // فلترة بالفئة: 0 ⇒ «بلا فئة» (NULL)، رقم موجب ⇒ تلك الفئة.
+  // فلترة بالفئة: 0 ⇒ «بلا فئة» (NULL)، رقم موجب ⇒ تلك الفئة + فئاتها الفرعية (أقسام، ٢٩/٧) —
+  // اختيار فئة رئيسية من شاشة المنتجات يُظهر منتجاتها المباشرة ومنتجات كل أقسامها الفرعية معاً.
   if (input.categoryId != null) {
-    conds.push(input.categoryId === 0 ? isNull(products.categoryId) : eq(products.categoryId, input.categoryId));
+    if (input.categoryId === 0) {
+      conds.push(isNull(products.categoryId));
+    } else {
+      const children = await db.select({ id: categories.id }).from(categories).where(eq(categories.parentId, input.categoryId));
+      const ids = [input.categoryId, ...children.map((c) => Number(c.id))];
+      conds.push(ids.length > 1 ? inArray(products.categoryId, ids) : eq(products.categoryId, input.categoryId));
+    }
   }
   const where = conds.length ? and(...conds) : undefined;
 

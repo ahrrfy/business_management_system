@@ -11,6 +11,7 @@ import { Field } from "@/components/product/variantBits";
 import { PageHeader } from "@/components/PageHeader";
 import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
+import { CategoryOptionList } from "@/lib/categoryTree";
 
 type ChangeType = "INCREASE_PERCENT" | "DECREASE_PERCENT" | "INCREASE_AMOUNT" | "DECREASE_AMOUNT" | "SET_MARGIN";
 type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT" | "";
@@ -133,9 +134,7 @@ export default function PriceWaves() {
               className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
             >
               <option value="">جميع الفئات</option>
-              {(categoriesQ.data ?? []).map((c: any) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
+              <CategoryOptionList categories={categoriesQ.data ?? []} />
             </select>
           </Field>
           <Field label="بحث في الاسم/SKU">

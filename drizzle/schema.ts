@@ -427,16 +427,26 @@ export type ConsignmentNoteLine = typeof consignmentNoteLines.$inferSelect;
 
 /* ============================ المنتجات والمتغيرات والوحدات والأسعار ============================ */
 
-export const categories = mysqlTable("categories", {
-  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-  name: varchar("name", { length: 255 }).notNull().unique(),
-  description: text("description"),
-  isActive: boolean("isActive").default(true),
-  // لوحة hPanel للمتجر (١٢/٧، هجرة 0071): ترتيب عرض القسم في المتجر + إظهار/إخفاؤه من واجهة الزبون.
-  sortOrder: int("sortOrder").default(0).notNull(),
-  showInStore: boolean("showInStore").default(true).notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+export const categories = mysqlTable(
+  "categories",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 255 }).notNull().unique(),
+    description: text("description"),
+    isActive: boolean("isActive").default(true),
+    // لوحة hPanel للمتجر (١٢/٧، هجرة 0071): ترتيب عرض القسم في المتجر + إظهار/إخفاؤه من واجهة الزبون.
+    sortOrder: int("sortOrder").default(0).notNull(),
+    showInStore: boolean("showInStore").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    // أقسام فرعية (٢٩/٧، هجرة 0122): مرجع ذاتي بلا قيد FK (نمط accounts.parentId — تفادي علّة
+    // اسم قيد FK الذاتي التلقائي >٦٤ محرفاً على MySQL 8.4، راجع ذاكرة db-push-broken-mysql84).
+    // عمق مقيَّد بمستويين فقط (فئة رئيسية ← فئة فرعية) — يُفرض خدمياً في categoryService، لا هنا.
+    parentId: bigint("parentId", { mode: "number" }),
+  },
+  (table) => ({
+    parentIdx: index("idx_category_parent").on(table.parentId),
+  }),
+);
 
 export type Category = typeof categories.$inferSelect;
 export type InsertCategory = typeof categories.$inferInsert;
