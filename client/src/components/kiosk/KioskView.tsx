@@ -9,7 +9,7 @@
  * البيانات آمنة للزبون (kioskRouter): بلا تكلفة ولا كمية مخزون.
  */
 import "@/pages/PriceChecker.css";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import QRCode from "qrcode";
 import { trpc } from "@/lib/trpc";
@@ -144,16 +144,41 @@ function PriceBlock({ p, priceScale }: { p: KProduct; priceScale: number }) {
   );
 }
 
-// ── البنر المتحرك ─────────────────────────────────────────────────────────────
-function Banner({ products, rotateSec, priceScale, paused }: { products: KProduct[]; rotateSec: number; priceScale: number; paused: boolean }) {
+// ── خلط Fisher-Yates (نسخة جديدة — لا يطال المصدر) ─────────────────────────
+function fisherYates(arr: KProduct[]): KProduct[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+// ── البنر المتحرك — خلط مستمر بلا تكرار ─────────────────────────────────────
+function Banner({ products: source, rotateSec, priceScale, paused }: { products: KProduct[]; rotateSec: number; priceScale: number; paused: boolean }) {
+  const [display, setDisplay] = useState<KProduct[]>([]);
   const [idx, setIdx] = useState(0);
-  const n = products.length;
+  const n = display.length;
   const rotateMs = Math.max(2, rotateSec) * 1000;
 
-  useEffect(() => { if (idx >= n) setIdx(0); }, [n, idx]);
+  // خلط أوّلي عند تغيّر البيانات المصدرية (تحميل أوّل أو إعادة جلب كل ٥ دقائق)
+  useEffect(() => {
+    setDisplay(source.length > 1 ? fisherYates(source) : source);
+    setIdx(0);
+  }, [source]);
+
+  // دوران مع إعادة خلط عند إتمام دورة كاملة — كل منتج يُعرض قبل أي تكرار
   useEffect(() => {
     if (paused || n <= 1) return;
-    const id = setInterval(() => setIdx((i) => (i + 1) % n), rotateMs);
+    const id = setInterval(() => {
+      setIdx(prev => {
+        if (prev + 1 >= n) {
+          setDisplay(d => d.length > 1 ? fisherYates(d) : d);
+          return 0;
+        }
+        return prev + 1;
+      });
+    }, rotateMs);
     return () => clearInterval(id);
   }, [paused, n, rotateMs]);
 
@@ -171,7 +196,7 @@ function Banner({ products, rotateSec, priceScale, paused }: { products: KProduc
   return (
     <div className="banner">
       <div className="slides">
-        {products.map((p, i) => (
+        {display.map((p, i) => (
           <div key={p.productId} className={"slide" + (i === idx ? " is-active" : "")} aria-hidden={i !== idx}>
             <div className="slide-media"><KioskImage p={p} defer={!isNearActive(i, idx, n)} /></div>
             <div className="slide-info">
@@ -184,7 +209,7 @@ function Banner({ products, rotateSec, priceScale, paused }: { products: KProduc
       </div>
       {n > 1 && (
         <div className="banner-progress">
-          <div className="counter"><b>{String(idx + 1).padStart(2, "0")}</b> / {String(n).padStart(2, "0")}</div>
+          <div className="counter"><b>{idx + 1}</b> / {n}</div>
           <div className="track">
             <span
               className="fill"
@@ -273,39 +298,18 @@ export default function KioskView({
     });
   }, []);
 
-  // مستخدم النظام والفروع — وضع الموظّف فقط (مُعطّلة في وضع الجهاز كي لا تُطلق 401).
-  const me = trpc.auth.me.useQuery(undefined, { enabled: !isDevice });
-  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: !isDevice });
+  // الفروع — وضع الموظّف فقط (عامة بلا مصادقة). لا حاجة لـauth.me — قارئ الأسعار يعمل بلا دخول.
+  const branchesQ = trpc.kiosk.publicBranches.useQuery(undefined, { enabled: !isDevice });
   const branches = branchesQ.data ?? [];
-  const staffBranchId = settings.branchId ?? me.data?.branchId ?? branches[0]?.id ?? null;
+  const staffBranchId = settings.branchId ?? branches[0]?.id ?? null;
   const branchName = isDevice ? (deviceBranchName ?? "—") : (branches.find((b) => b.id === staffBranchId)?.name ?? "—");
 
-  // البنر: الموظّف يرسل branchId؛ الجهاز يعتمد كوكيه (الفرع مفروض خادمياً) فلا يرسل branchId.
-  // limit=500 (كل الكتالوج): يعرض البنر كامل المنتجات النشطة غير الخدمية، لا عيّنة ٤٠.
+  // البنر: كامل الكتالوج بلا سقف. الخلط يتمّ داخل مكوّن Banner عند كل دورة عرض كاملة.
   const bannerQ = trpc.kiosk.banner.useQuery(
-    isDevice ? { limit: 500 } : { branchId: staffBranchId ?? 0, limit: 500 },
+    isDevice ? {} : { branchId: staffBranchId ?? 0 },
     { enabled: isDevice || staffBranchId != null, refetchInterval: 5 * 60 * 1000, refetchOnWindowFocus: false }
   );
-
-  // خلط عشوائي (Fisher-Yates) عند كل جلب ناجح: react-query يُعيد نفس مرجع `data` بلا تغيير
-  // إن لم يحدث fetch، وبمرجع جديد عند كل استجابة (كل ٥ دقائق) ⇒ useMemo يُعيد خلطها فقط
-  // عند حدوث جلب فعلي. النتيجة: كل ٥ دقائق يرى الزبون ترتيباً مختلفاً بدل «أبجدي ممل» ثابت.
-  // ذوات الصور تبقى في المقدّمة (الخادم يُرتّبها أولاً)، ثمّ الخلط داخل كل مجموعة.
-  const products = useMemo<KProduct[]>(() => {
-    const data = (bannerQ.data ?? []) as KProduct[];
-    if (data.length <= 1) return data;
-    const withImg: KProduct[] = [];
-    const noImg: KProduct[] = [];
-    for (const p of data) (p.imageUrl ? withImg : noImg).push(p);
-    const shuffle = (arr: KProduct[]) => {
-      for (let i = arr.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [arr[i], arr[j]] = [arr[j], arr[i]];
-      }
-      return arr;
-    };
-    return [...shuffle(withImg), ...shuffle(noImg)];
-  }, [bannerQ.data]);
+  const products = (bannerQ.data ?? []) as KProduct[];
 
   // ── محرّك المسح ──
   const utils = trpc.useUtils();

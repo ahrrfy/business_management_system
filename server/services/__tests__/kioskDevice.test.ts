@@ -189,7 +189,7 @@ describe("kiosk: عزل توكن الجهاز عن جلسة المستخدم", (
 
 describe("kiosk: أمان بيانات الزبون (بلا تكلفة/مخزون)", () => {
   it("البنر يُعيد سعر المفرد بلا أي حقل تكلفة/كمية", async () => {
-    const rows = await kioskBanner(1, 40);
+    const rows = await kioskBanner(1);
     expect(rows.length).toBeGreaterThan(0);
     const p = rows[0] as any;
     expect(p.price).toBe("500.00");
@@ -211,7 +211,7 @@ describe("kiosk: أمان بيانات الزبون (بلا تكلفة/مخزو�
   it("البنر (وضع المعرض): الفرع 2 يرى نفس الكتالوج حتى بلا مخزون خاصّ به", async () => {
     // بعد قرار المالك ٨/٧: البنر يعرض كل منتج بسعر مفرد بغضّ النظر عن مخزون الفرع
     // (شرط `branchStock > 0` مؤجَّل حتى يكتمل إدخال المخزون التدريجي).
-    const rows = await kioskBanner(2, 40);
+    const rows = await kioskBanner(2);
     expect(rows.length).toBeGreaterThan(0);
     // ولا يزال آمناً بيانياً — بلا أي حقل تكلفة/كمية.
     const p = rows[0] as any;
