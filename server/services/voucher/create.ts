@@ -160,7 +160,14 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
     }
 
     const voucherNumber = await nextVoucherNumber(tx, input.voucherType, input.branchId);
-    const needsApproval = forcePendingApproval || amount.toNumber() >= getApprovalThreshold();
+    // مالك النظام (isOwner) يتجاوز كل اعتماد ثنائي — هو الجهة النهائية.
+    // عتبة Maker-Checker على الصرف (OUT) فقط — القبض (IN) مال داخل للشركة،
+    // خطره أدنى بكثير من الصرف ولا يستوجب تعليقاً بعتبة المبلغ.
+    // forcePendingApproval يبقى فعّالاً (أمانة + OTHER) لأنه يغطّي حالات خاصة لا عتبة مبلغ.
+    const needsApproval = !actor.isOwner && (
+      forcePendingApproval ||
+      (direction === "OUT" && amount.toNumber() >= getApprovalThreshold())
+    );
 
     // shiftId + cashBucket — سياسة الخزينة الإدارية vs درج الكاشير (تدقيق ١٧/٦).
     //  - PENDING_APPROVAL: لا نَقفل وردية ولا نُحدّد دلواً (لا تأثير على الصندوق حتى الاعتماد).

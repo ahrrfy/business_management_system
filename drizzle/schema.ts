@@ -80,6 +80,7 @@ export const users = mysqlTable(
     // المصادقة الثنائية TOTP (RFC 6238) — السرّ base32 مشفَّر AES-256-GCM عبر cryptoService
     // (صيغة v1:iv:tag:ct). وجود سرّ مع totpEnabledAt=null ⇒ تسجيل معلّق لم يُؤكَّد برمز بعد
     // (لا يُفرض عند الدخول). totpLastUsedStep = آخر خطوة زمنية قُبل رمزها (منع replay ±1).
+    isOwner: boolean("isOwner").default(false).notNull(),
     totpSecretEncrypted: varchar("totpSecretEncrypted", { length: 255 }),
     totpEnabledAt: timestamp("totpEnabledAt"),
     totpLastUsedStep: bigint("totpLastUsedStep", { mode: "number" }),

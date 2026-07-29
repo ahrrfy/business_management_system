@@ -131,7 +131,7 @@ export default function Account() {
                 كان يظهر «كاشير» فيبدو حصر نقطة البيع في قسمٍ واحد غير منطقي لصاحب الحساب. */}
             <div>
               {me.data
-                ? (me.data.customRoleLabel ?? ROLE_LABEL[me.data.role] ?? me.data.role)
+                ? ((me.data as any).isOwner ? "مالك النظام" : (me.data.customRoleLabel ?? ROLE_LABEL[me.data.role] ?? me.data.role))
                 : "—"}
               {me.data && me.data.customRoleLabel ? (
                 <span className="text-muted-foreground text-xs"> (الفئة: {ROLE_LABEL[me.data.role] ?? me.data.role})</span>

@@ -862,6 +862,13 @@
       "when": 1786147200000,
       "tag": "0123_document_tax_rate_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "5",
+      "when": 1786233600000,
+      "tag": "0124_owner_flag",
+      "breakpoints": true
     }
   ]
 }
