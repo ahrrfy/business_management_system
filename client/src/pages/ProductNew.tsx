@@ -17,6 +17,7 @@ import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
+import { CategoryOptionList } from "@/lib/categoryTree";
 import {
   clampInt,
   deriveSku,
@@ -540,9 +541,7 @@ export default function ProductNew() {
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
               >
                 <option value="">— بلا فئة —</option>
-                {(categoriesQ.data ?? []).map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
+                <CategoryOptionList categories={categoriesQ.data ?? []} />
               </select>
             </Field>
             <Field label="رمز المنتج (SKU الأساس)" hint="تُشتقّ منه أكواد المتغيّرات تلقائياً." className="md:col-span-2">

@@ -1,5 +1,7 @@
 // شاشة إدارة الفئات/التصنيفات — قائمة بعدد المنتجات لكل فئة + إضافة/تعديل/حذف (مع إعادة تخصيص
-// منتجات الفئة المحذوفة) + دمج عدّة فئات في واحدة. نقل منتجات محدّدة بين الفئات يتمّ من شاشة المنتجات
+// منتجات الفئة المحذوفة) + دمج عدّة فئات في واحدة. أقسام فرعية (٢٩/٧): كل فئة رئيسية قد تحوي
+// فئات فرعية (مستويان فقط) — تُدار من نفس الشاشة (زرّ «+ قسم فرعي» على صفّ الفئة الرئيسية)،
+// وتُعرض متداخلة تحت أبيها. نقل منتجات محدّدة بين الفئات يتمّ من شاشة المنتجات
 // (تحديد + «نقل إلى فئة»). كل العمليات عبر catalog.* (managerProcedure) وتُحدِّث القوائم تلقائياً.
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -21,8 +23,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { notify } from "@/lib/notify";
 import { matchQuery } from "@/components/search/filter";
+import { CategoryOptionList } from "@/lib/categoryTree";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { Plus, Search } from "lucide-react";
+import { CornerDownLeft, Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
 type CategoryRow = RouterOutputs["catalog"]["categoriesAdmin"][number];
@@ -35,12 +38,34 @@ export default function Categories() {
   const rows = list.data ?? [];
   const sel = useRowSelection<number>();
 
-  // بحث نصّي فوري (تصفية على العميل — القائمة كاملة محمّلة) على الاسم/الوصف.
+  const childrenOf = (parentId: number) => rows.filter((r) => r.parentId === parentId);
+
+  // بحث نصّي فوري (تصفية على العميل — القائمة كاملة محمّلة) على الاسم/الوصف. فئة فرعية مطابقة
+  // تُظهر أباها للسياق، وفئة رئيسية مطابقة تُظهر كل فرعياتها (لا الفرعيات المطابقة فقط).
   const [query, setQuery] = useState("");
-  const filtered = useMemo(
-    () => rows.filter((c) => matchQuery(query, [c.name, c.description])),
-    [rows, query],
-  );
+  const filtered = useMemo(() => {
+    const q = query.trim();
+    if (!q) return rows;
+    const matched = rows.filter((c) => matchQuery(q, [c.name, c.description]));
+    const keepIds = new Set<number>();
+    for (const m of matched) {
+      keepIds.add(m.id);
+      if (m.parentId != null) keepIds.add(m.parentId);
+      else for (const ch of childrenOf(m.id)) keepIds.add(ch.id);
+    }
+    return rows.filter((c) => keepIds.has(c.id));
+  }, [rows, query]);
+
+  // صفوف مرتَّبة شجرياً: كل فئة رئيسية تليها فرعياتها مباشرةً (للعرض المتداخل فقط).
+  const orderedRows = useMemo(() => {
+    const tops = filtered.filter((c) => c.parentId == null);
+    const out: CategoryRow[] = [];
+    for (const top of tops) {
+      out.push(top);
+      out.push(...filtered.filter((c) => c.parentId === top.id));
+    }
+    return out;
+  }, [filtered]);
 
   // ── نموذج الإضافة/التعديل ──
   const [formOpen, setFormOpen] = useState(false);
@@ -48,6 +73,7 @@ export default function Categories() {
   const [fName, setFName] = useState("");
   const [fDesc, setFDesc] = useState("");
   const [fActive, setFActive] = useState(true);
+  const [fParentId, setFParentId] = useState<number | "">("");
 
   // ── حوار الحذف (مع إعادة تخصيص) ──
   const [delTarget, setDelTarget] = useState<CategoryRow | null>(null);
@@ -89,16 +115,33 @@ export default function Categories() {
     onError: (e) => notify.err(e),
   });
 
-  function openAdd() { setEditId(null); setFName(""); setFDesc(""); setFActive(true); setFormOpen(true); }
-  function openEdit(c: CategoryRow) { setEditId(c.id); setFName(c.name); setFDesc(c.description ?? ""); setFActive(c.isActive); setFormOpen(true); }
+  function openAdd(parentId?: number) {
+    setEditId(null);
+    setFName("");
+    setFDesc("");
+    setFActive(true);
+    setFParentId(parentId ?? "");
+    setFormOpen(true);
+  }
+  function openEdit(c: CategoryRow) {
+    setEditId(c.id);
+    setFName(c.name);
+    setFDesc(c.description ?? "");
+    setFActive(c.isActive);
+    setFParentId(c.parentId ?? "");
+    setFormOpen(true);
+  }
+  const editHasChildren = editId != null && childrenOf(editId).length > 0;
   function submitForm() {
     const name = fName.trim();
     if (!name) { notify.err("اسم الفئة مطلوب"); return; }
-    if (editId == null) createMut.mutate({ name, description: fDesc.trim() || null });
-    else updateMut.mutate({ id: editId, name, description: fDesc.trim() || null, isActive: fActive });
+    const parentId = fParentId === "" ? null : Number(fParentId);
+    if (editId == null) createMut.mutate({ name, description: fDesc.trim() || null, parentId });
+    else updateMut.mutate({ id: editId, name, description: fDesc.trim() || null, isActive: fActive, parentId });
   }
 
   function openDelete(c: CategoryRow) { setDelTarget(c); setReassignTo(null); }
+  const delChildrenCount = delTarget ? childrenOf(delTarget.id).length : 0;
   function confirmDelete() {
     if (!delTarget) return;
     deleteMut.mutate({ id: delTarget.id, reassignToId: reassignTo });
@@ -126,11 +169,13 @@ export default function Categories() {
         title="الفئات والتصنيفات"
         description={
           <>
-            نظّم منتجاتك في فئات. تستطيع إضافة فئة، تعديلها، دمج عدّة فئات في واحدة، أو حذفها مع نقل منتجاتها.
-            لنقل منتجات محدّدة بين الفئات: افتح <span className="font-medium">المنتجات</span>، حدّدها، ثم «نقل إلى فئة».
+            نظّم منتجاتك في فئات، وقسّم كل فئة إلى أقسام فرعية عند الحاجة (مستوى واحد إضافي — مثال:
+            «الملازم المدرسية» ← «ملازم الصف السادس»). تستطيع إضافة فئة، تعديلها، دمج عدّة فئات من
+            نفس المستوى في واحدة، أو حذفها مع نقل منتجاتها. لنقل منتجات محدّدة بين الفئات: افتح{" "}
+            <span className="font-medium">المنتجات</span>، حدّدها، ثم «نقل إلى فئة».
           </>
         }
-        actions={<Button size="sm" onClick={openAdd}><Plus className="size-4" /> إضافة فئة</Button>}
+        actions={<Button size="sm" onClick={() => openAdd()}><Plus className="size-4" /> إضافة فئة</Button>}
       />
 
       <Card>
@@ -170,36 +215,69 @@ export default function Categories() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((c) => (
-                <tr key={c.id} className={`border-t ${c.isActive ? "" : "opacity-60"}`}>
-                  <td className="p-2">
-                    <input
-                      type="checkbox"
-                      className="size-4"
-                      aria-label={`تحديد ${c.name}`}
-                      checked={sel.isSelected(c.id)}
-                      onChange={() => sel.toggle(c.id)}
-                    />
-                  </td>
-                  <td className="p-2 font-medium">{c.name}</td>
-                  <td className="p-2 text-muted-foreground">{c.description || "—"}</td>
-                  <td className="p-2 text-center tabular-nums">{num(c.productCount)}</td>
-                  <td className="p-2 text-center">
-                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${c.isActive ? "badge-status-active" : "badge-status-cancelled"}`}>
-                      {c.isActive ? "مفعّلة" : "معطّلة"}
-                    </span>
-                  </td>
-                  <td className="p-2 text-center">
-                    <RowActions
-                      actions={[
-                        { key: "edit", label: "تعديل", onSelect: () => openEdit(c) },
-                        { key: "products", label: "عرض منتجاتها", href: `/products?category=${c.id}`, hidden: c.productCount === 0 },
-                        { key: "delete", label: "حذف", variant: "destructive", onSelect: () => openDelete(c) },
-                      ]}
-                    />
-                  </td>
-                </tr>
-              ))}
+              {orderedRows.map((c) => {
+                const isChild = c.parentId != null;
+                const kids = isChild ? [] : childrenOf(c.id);
+                return (
+                  <tr key={c.id} className={`border-t ${c.isActive ? "" : "opacity-60"} ${isChild ? "bg-muted/20" : ""}`}>
+                    <td className="p-2">
+                      <input
+                        type="checkbox"
+                        className="size-4"
+                        aria-label={`تحديد ${c.name}`}
+                        checked={sel.isSelected(c.id)}
+                        onChange={() => sel.toggle(c.id)}
+                      />
+                    </td>
+                    <td className="p-2 font-medium">
+                      <span className="inline-flex items-center gap-1.5">
+                        {isChild && <CornerDownLeft aria-hidden className="size-3.5 text-muted-foreground shrink-0" />}
+                        {c.name}
+                        {!isChild && kids.length > 0 && (
+                          <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                            {num(kids.length)} فرعية
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                    <td className="p-2 text-muted-foreground">{c.description || "—"}</td>
+                    <td className="p-2 text-center tabular-nums">
+                      {!isChild && kids.length > 0 ? (
+                        <>
+                          <span className="font-medium">{num(c.productCountWithChildren)}</span>
+                          {c.productCount > 0 && (
+                            <span className="text-xs text-muted-foreground"> ({num(c.productCount)} مباشرة)</span>
+                          )}
+                        </>
+                      ) : (
+                        num(c.productCount)
+                      )}
+                    </td>
+                    <td className="p-2 text-center">
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${c.isActive ? "badge-status-active" : "badge-status-cancelled"}`}>
+                        {c.isActive ? "مفعّلة" : "معطّلة"}
+                      </span>
+                    </td>
+                    <td className="p-2 text-center">
+                      <RowActions
+                        actions={[
+                          { key: "edit", label: "تعديل", onSelect: () => openEdit(c) },
+                          { key: "addChild", label: "+ قسم فرعي", onSelect: () => openAdd(c.id), hidden: isChild },
+                          {
+                            key: "products",
+                            label: "عرض منتجاتها",
+                            // /products هو Redirect ثابت لـ/inventory?tab=products يُسقِط أي querystring
+                            // أصلي (App.tsx) — الرابط المباشر لتبويب المخزون يحافظ على فلتر الفئة.
+                            href: `/inventory?tab=products&category=${c.id}`,
+                            hidden: c.productCount === 0 && (isChild || kids.length === 0),
+                          },
+                          { key: "delete", label: "حذف", variant: "destructive", onSelect: () => openDelete(c) },
+                        ]}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
               {list.isLoading && (
                 <tr><td colSpan={6}><LoadingState /></td></tr>
               )}
@@ -222,11 +300,13 @@ export default function Categories() {
         }
       />
 
-      {/* نموذج إضافة/تعديل فئة */}
+      {/* نموذج إضافة/تعديل فئة (أو قسم فرعي) */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editId == null ? "إضافة فئة" : "تعديل فئة"}</DialogTitle>
+            <DialogTitle>
+              {editId == null ? (fParentId === "" ? "إضافة فئة" : "إضافة قسم فرعي") : "تعديل فئة"}
+            </DialogTitle>
             <DialogDescription>اسم الفئة فريد. الوصف اختياري.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -237,6 +317,27 @@ export default function Categories() {
             <div className="space-y-1">
               <label className="text-sm font-medium">الوصف (اختياري)</label>
               <Textarea rows={2} value={fDesc} onChange={(e) => setFDesc(e.target.value)} placeholder="وصف مختصر…" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">الفئة الرئيسية (اختياري)</label>
+              <select
+                value={fParentId === "" ? "" : String(fParentId)}
+                onChange={(e) => setFParentId(e.target.value === "" ? "" : Number(e.target.value))}
+                disabled={editHasChildren}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm disabled:opacity-50"
+              >
+                <option value="">— فئة رئيسية (بلا أب) —</option>
+                {rows.filter((r) => r.parentId == null && r.id !== editId).map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+              {editHasChildren ? (
+                <p className="text-xs text-muted-foreground">
+                  هذه الفئة تحوي فئات فرعية، فلا يمكن أن تصبح فرعيةً لأخرى.
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">اتركها فارغة لتبقى فئة رئيسية، أو اختر فئة لتصبح قسماً فرعياً منها.</p>
+              )}
             </div>
             {editId != null && (
               <label className="flex items-center gap-2 text-sm">
@@ -260,12 +361,14 @@ export default function Categories() {
           <DialogHeader>
             <DialogTitle>حذف الفئة «{delTarget?.name}»</DialogTitle>
             <DialogDescription>
-              {delTarget && delTarget.productCount > 0
-                ? `هذه الفئة تحوي ${num(delTarget.productCount)} منتجاً. اختر فئة لنقلها إليها قبل الحذف (أو اتركها «بلا فئة»).`
-                : "لا منتجات في هذه الفئة. سيُحذف التصنيف نهائياً."}
+              {delChildrenCount > 0
+                ? `هذه الفئة تحوي ${num(delChildrenCount)} فئة فرعية. احذفها أو انقلها إلى فئة أخرى أولاً.`
+                : delTarget && delTarget.productCount > 0
+                  ? `هذه الفئة تحوي ${num(delTarget.productCount)} منتجاً. اختر فئة لنقلها إليها قبل الحذف (أو اتركها «بلا فئة»).`
+                  : "لا منتجات في هذه الفئة. سيُحذف التصنيف نهائياً."}
             </DialogDescription>
           </DialogHeader>
-          {delTarget && delTarget.productCount > 0 && (
+          {delChildrenCount === 0 && delTarget && delTarget.productCount > 0 && (
             <div className="space-y-1">
               <label className="text-sm font-medium">نقل المنتجات إلى</label>
               <select
@@ -274,13 +377,13 @@ export default function Categories() {
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
               >
                 <option value="">— بلا فئة —</option>
-                {rows.filter((r) => r.id !== delTarget.id).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                <CategoryOptionList categories={rows.filter((r) => r.id !== delTarget.id)} />
               </select>
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setDelTarget(null)}>إلغاء</Button>
-            <Button variant="destructive" size="sm" onClick={confirmDelete} disabled={deleteMut.isPending}>
+            <Button variant="destructive" size="sm" onClick={confirmDelete} disabled={deleteMut.isPending || delChildrenCount > 0}>
               {deleteMut.isPending ? "جارٍ الحذف…" : "حذف الفئة"}
             </Button>
           </DialogFooter>

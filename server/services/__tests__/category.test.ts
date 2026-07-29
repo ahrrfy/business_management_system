@@ -14,6 +14,7 @@ import {
   reassignProducts,
   updateCategory,
 } from "../categoryService";
+import { listProductsAdmin } from "../catalog/adminList";
 
 const actor = { userId: 1, branchId: 1 };
 
@@ -204,6 +205,102 @@ describe("mergeCategories", () => {
 
   it("رفض: الفئة الهدف غير موجودة ⇒ NOT_FOUND", async () => {
     await expect(mergeCategories({ sourceIds: [1], targetId: 999999 }, actor)).rejects.toThrow(/الفئة الهدف غير موجودة/);
+  });
+});
+
+describe("أقسام فرعية — createCategory(parentId)", () => {
+  it("إنشاء فئة فرعية تحت فئة رئيسية موجودة", async () => {
+    const r = await createCategory({ name: "أدوات هدايا صغيرة", parentId: 2 }, actor);
+    const row = (await db().select().from(s.categories).where(eq(s.categories.id, r.id)))[0];
+    expect(Number(row.parentId)).toBe(2);
+  });
+
+  it("رفض: الفئة الرئيسية المحدَّدة غير موجودة ⇒ BAD_REQUEST", async () => {
+    await expect(createCategory({ name: "س", parentId: 999999 }, actor)).rejects.toThrow(/الفئة الرئيسية المحدَّدة غير موجودة/);
+  });
+
+  it("رفض: عمق أكثر من مستويين (فئة فرعية تحت فئة فرعية أخرى)", async () => {
+    const child = await createCategory({ name: "فرعية أولى", parentId: 1 }, actor);
+    await expect(createCategory({ name: "فرعية من فرعية", parentId: child.id }, actor)).rejects.toThrow(/الحدّ الأقصى مستويان/);
+  });
+
+  it("productCountWithChildren يجمع منتجات الفئة الرئيسية + كل فئاتها الفرعية، وproductCount يبقى مباشراً فقط", async () => {
+    const child = await createCategory({ name: "فرعية بمنتج", parentId: 1 }, actor);
+    await db().update(s.products).set({ categoryId: child.id }).where(eq(s.products.id, 1)); // «دفتر» ينتقل للفرعية
+    const rows = await listCategoriesAdmin();
+    const top = rows.find((r) => r.id === 1)!;
+    const kid = rows.find((r) => r.id === child.id)!;
+    expect(kid.productCount).toBe(1);
+    expect(kid.productCountWithChildren).toBe(1);
+    // الفئة ١ كانت ٣ مباشرة (دفتر+قلم+معطّل)؛ بعد نقل «دفتر» ⇒ مباشر=٢، شامل الفرعيات=٣.
+    expect(top.productCount).toBe(2);
+    expect(top.productCountWithChildren).toBe(3);
+  });
+});
+
+describe("أقسام فرعية — updateCategory(parentId)", () => {
+  it("نقل فئة رئيسية لتصبح فرعية تحت أخرى", async () => {
+    await updateCategory({ id: 1, parentId: 2 }, actor);
+    const row = (await db().select().from(s.categories).where(eq(s.categories.id, 1)))[0];
+    expect(Number(row.parentId)).toBe(2);
+  });
+
+  it("ترقية فئة فرعية إلى رئيسية (parentId: null)", async () => {
+    const child = await createCategory({ name: "فرعية للترقية", parentId: 1 }, actor);
+    await updateCategory({ id: child.id, parentId: null }, actor);
+    const row = (await db().select().from(s.categories).where(eq(s.categories.id, child.id)))[0];
+    expect(row.parentId).toBeNull();
+  });
+
+  it("رفض: جعل فئة تحوي فئات فرعية، فرعيةً لأخرى", async () => {
+    await createCategory({ name: "فرعية تحت ١", parentId: 1 }, actor);
+    await expect(updateCategory({ id: 1, parentId: 2 }, actor)).rejects.toThrow(/تحوي فئات فرعية/);
+  });
+
+  it("رفض: عمق أكثر من مستويين عبر التعديل", async () => {
+    const child1 = await createCategory({ name: "فرعية ١", parentId: 1 }, actor);
+    const child2 = await createCategory({ name: "فرعية ٢", parentId: 2 }, actor);
+    await expect(updateCategory({ id: child2.id, parentId: child1.id }, actor)).rejects.toThrow(/الحدّ الأقصى مستويان/);
+  });
+
+  it("رفض: فئة أباً لنفسها", async () => {
+    await expect(updateCategory({ id: 1, parentId: 1 }, actor)).rejects.toThrow(/أباً لنفسها/);
+  });
+});
+
+describe("أقسام فرعية — حذف/دمج فئة تحوي فرعيات ممنوع", () => {
+  it("رفض حذف فئة رئيسية لها فئة فرعية ⇒ BAD_REQUEST، ولا شيء يتغيّر", async () => {
+    await createCategory({ name: "فرعية تمنع الحذف", parentId: 1 }, actor);
+    await expect(deleteCategory({ id: 1 }, actor)).rejects.toThrow(/تحوي فئات فرعية/);
+    const cats = await db().select().from(s.categories).where(eq(s.categories.id, 1));
+    expect(cats).toHaveLength(1);
+  });
+
+  it("حذف فئة فرعية (بلا فرعيات خاصة بها) يعمل كأي فئة عادية", async () => {
+    const child = await createCategory({ name: "فرعية للحذف", parentId: 1 }, actor);
+    const r = await deleteCategory({ id: child.id }, actor);
+    expect(r.id).toBe(child.id);
+  });
+
+  it("رفض دمج فئة مصدر لها فئة فرعية ⇒ BAD_REQUEST", async () => {
+    await createCategory({ name: "فرعية تمنع الدمج", parentId: 1 }, actor);
+    await expect(mergeCategories({ sourceIds: [1], targetId: 2 }, actor)).rejects.toThrow(/تحوي فئات فرعية/);
+  });
+});
+
+describe("أقسام فرعية — listProductsAdmin(categoryId) يشمل الفرعيات", () => {
+  it("فلترة بمعرّف الفئة الرئيسية تُرجع منتجاتها المباشرة + منتجات كل فئاتها الفرعية", async () => {
+    const child = await createCategory({ name: "فرعية للفلترة", parentId: 1 }, actor);
+    await db().update(s.products).set({ categoryId: child.id }).where(eq(s.products.id, 2)); // «قلم» ينتقل للفرعية
+
+    const byParent = await listProductsAdmin({ branchId: 1, categoryId: 1, includeInactive: true });
+    const names = byParent.rows.map((r) => r.productName);
+    expect(names).toContain("دفتر"); // بقي مباشرةً في الفئة ١
+    expect(names).toContain("منتج معطّل"); // بقي مباشرةً في الفئة ١
+    expect(names).toContain("قلم"); // انتقل للفرعية — يظهر عبر الأب أيضاً
+
+    const byChildOnly = await listProductsAdmin({ branchId: 1, categoryId: child.id, includeInactive: true });
+    expect(byChildOnly.rows.map((r) => r.productName)).toEqual(["قلم"]);
   });
 });
 

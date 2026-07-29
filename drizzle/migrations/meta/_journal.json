@@ -848,6 +848,13 @@
       "when": 1785974400000,
       "tag": "0121_storefront_sale_units",
       "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "5",
+      "when": 1786060800000,
+      "tag": "0122_category_subcategories",
+      "breakpoints": true
     }
   ]
 }

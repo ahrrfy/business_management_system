@@ -17,6 +17,7 @@ import { UnitBarcodeAliases, type LocalAlias } from "@/components/product/UnitBa
 import { NameAssistant } from "@/components/product/NameAssistant";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { cn } from "@/lib/utils";
+import { CategoryOptionList } from "@/lib/categoryTree";
 
 /**
  * SimpleProductForm — إضافة «سلعة بسيطة» بلا ألوان/قياسات: منتجٌ واحد (متغيّر واحد) بعدّة وحدات.
@@ -343,9 +344,7 @@ export default function SimpleProductForm() {
               className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
             >
               <option value="">— بلا فئة —</option>
-              {(categoriesQ.data ?? []).map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
+              <CategoryOptionList categories={categoriesQ.data ?? []} />
             </select>
           </Field>
           <Field label="رمز المنتج (SKU)" hint="يُولَّد تلقائياً وفريداً إن تُرك فارغاً." className="md:col-span-2">

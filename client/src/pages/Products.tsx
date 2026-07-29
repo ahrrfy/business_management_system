@@ -30,6 +30,7 @@ import { fmtAr } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { CategoryOptionList } from "@/lib/categoryTree";
 import { useEffect, useState } from "react";
 
 type Row = RouterOutputs["catalog"]["adminList"]["rows"][number];
@@ -221,7 +222,7 @@ export default function Products() {
                   >
                     <option value="">كل الفئات</option>
                     <option value="0">— بلا فئة —</option>
-                    {(categoriesQ.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    <CategoryOptionList categories={categoriesQ.data ?? []} />
                   </select>
                 </label>
                 <label className="flex items-center gap-2 h-8 text-sm">
@@ -431,7 +432,7 @@ export default function Products() {
               className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
             >
               <option value="">— بلا فئة —</option>
-              {(categoriesQ.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              <CategoryOptionList categories={categoriesQ.data ?? []} />
             </select>
           </div>
           <DialogFooter>
