@@ -38,6 +38,7 @@ const SupplierEdit = lazy(() => import("@/pages/SupplierEdit"));
 const CrmHub = lazy(() => import("@/pages/CrmHub"));
 const SuppliersHub = lazy(() => import("@/pages/SuppliersHub"));
 const GiftsHub = lazy(() => import("@/pages/GiftsHub"));
+const DigitalCardsHub = lazy(() => import("@/pages/DigitalCardsHub"));
 const InventoryHub = lazy(() => import("@/pages/InventoryHub"));
 const TreasuryHub = lazy(() => import("@/pages/TreasuryHub"));
 const CardAccount = lazy(() => import("@/pages/CardAccount"));
@@ -434,6 +435,9 @@ export default function App() {
       <Route path="/customers-statement"><RedirectKeepQuery to="/crm?tab=statement" /></Route>
       <Route path="/suppliers"><Shell><SuppliersHub /></Shell></Route>
       <Route path="/gifts"><Shell><RequireRole roles={["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"]} module="gifts" level="READ"><GiftsHub /></RequireRole></Shell></Route>
+      <Route path="/digital-cards"><Shell><RequireRole roles={["admin", "manager", "accountant", "auditor"]} module="digital_cards" level="READ"><DigitalCardsHub /></RequireRole></Shell></Route>
+      {/* المسار المُسمّى في وثيقة التصميم §٧.٢ — تبويبٌ داخل محور البطاقات */}
+      <Route path="/digital-cards/pricing"><RedirectKeepQuery to="/digital-cards?tab=pricing" /></Route>
       <Route path="/suppliers/new"><Shell><SupplierNew /></Shell></Route>
       <Route path="/suppliers/:id/edit"><Shell><SupplierEdit /></Shell></Route>
       {/* أُدمجت في وحدة الموردين (SuppliersHub) — إعادة توجيه تَحفظ الروابط القديمة */}

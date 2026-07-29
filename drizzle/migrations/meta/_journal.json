@@ -862,6 +862,27 @@
       "when": 1786147200000,
       "tag": "0123_document_tax_rate_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 125,
+      "version": "5",
+      "when": 1786320000000,
+      "tag": "0125_digital_cards_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 126,
+      "version": "5",
+      "when": 1786406400000,
+      "tag": "0126_digital_price_batch_uniqueness",
+      "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "5",
+      "when": 1786492800000,
+      "tag": "0127_digital_intent_reference_uniqueness",
+      "breakpoints": true
     }
   ]
 }

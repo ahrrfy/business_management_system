@@ -77,6 +77,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "commissions",  label: "الأهداف والعمولات",   description: "خطط العمولات، الأهداف الشهرية، احتساب واعتماد عمولات البائعين" },
   { key: "consignments", label: "بضاعة الأمانة",        description: "المودِعون، سندات الإيداع/السحب/الاستبدال، كشوف التسوية — بضاعة برسم البيع" },
   { key: "reservations", label: "الحجوزات",            description: "حجز منتجات للعملاء (استعلام توفّر + حجز بمدّة انتهاء) — حجز ناعم لا يمسّ المخزون الفعلي، يخصم المتاح فقط" },
+  { key: "digital_cards", label: "البطاقات الرقمية والاشتراكات", description: "مزوّدو البطاقات والاشتراكات الرقمية، المحافظ، العروض، التسعير والبيع" },
   { key: "gifts",        label: "الهدايا والمجانيات",   description: "الوارد المجّاني من الموردين (صفر تكلفة) والصادر للعملاء (مصروف ترويجيّ بحوكمة اعتماد)" },
   { key: "courier",      label: "توصيلاتي (المندوب)",  description: "شاشة المندوب الذاتية: طلباتي، تأكيد التسليم والتحصيل، عهدتي" },
   { key: "users",        label: "المستخدمون",         description: "إدارة المستخدمين والصلاحيات" },
@@ -87,6 +88,7 @@ export type PermissionMap = Record<string, AccessLevel>;
 
 export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   admin: {
+    digital_cards: "FULL",
     reservations: "FULL",
     gifts: "FULL",
     crm: "FULL", campaigns: "FULL", collections: "FULL", store: "FULL",
@@ -100,6 +102,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "FULL", settings: "FULL",
   },
   manager: {
+    digital_cards: "FULL",
     reservations: "FULL",
     gifts: "FULL",
     crm: "FULL", campaigns: "FULL", collections: "FULL",
@@ -114,6 +117,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "READ", settings: "READ",
   },
   accountant: {
+    digital_cards: "FULL",
     reservations: "READ",
     // READ لا FULL (تدقيق Codex P1): إنشاء الهدية يحتاج بحث منتجات (catalog.posList/forPurchase) وهو
     // خلف products≥READ، والمحاسب products=NONE ⇒ نموذج الإنشاء يفشل. المحاسب يراجع الهدايا (READ)؛
@@ -134,6 +138,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   cashier: {
+    digital_cards: "READ",
     reservations: "FULL",
     gifts: "NONE",
     crm: "FULL", campaigns: "READ", collections: "READ",
@@ -154,6 +159,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   warehouse: {
+    digital_cards: "NONE",
     reservations: "READ",
     gifts: "FULL",
     crm: "READ", campaigns: "NONE", collections: "NONE",
@@ -173,6 +179,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   purchasing: {
+    digital_cards: "NONE",
     reservations: "NONE",
     gifts: "READ",
     crm: "NONE", campaigns: "NONE", collections: "NONE",
@@ -187,6 +194,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   print_operator: {
+    digital_cards: "NONE",
     reservations: "NONE",
     gifts: "NONE",
     crm: "READ", campaigns: "READ", collections: "NONE",
@@ -201,6 +209,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   sales_rep: {
+    digital_cards: "NONE",
     reservations: "FULL",
     gifts: "NONE",
     crm: "FULL", campaigns: "READ", collections: "READ",
@@ -217,6 +226,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   auditor: {
+    digital_cards: "READ",
     reservations: "READ",
     gifts: "READ",
     crm: "READ", campaigns: "READ", collections: "READ",
@@ -231,6 +241,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "READ", settings: "READ",
   },
   user: {
+    digital_cards: "NONE",
     reservations: "NONE",
     gifts: "NONE",
     crm: "READ", campaigns: "NONE", collections: "NONE",
@@ -244,6 +255,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   courier: {
+    digital_cards: "NONE",
     crm: "NONE", campaigns: "NONE", collections: "NONE",
     // مندوب توصيل ذاتي الخدمة: يرى «توصيلاتي» فقط (courier=FULL). كل الوحدات الأخرى NONE —
     // بياناته (اسم/هاتف/عنوان الزبون + COD) تأتي من نقاط courier الذاتية لا من وحدات العملاء/المبيعات.
