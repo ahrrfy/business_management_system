@@ -50,7 +50,14 @@ const selectCls =
  *  فجوة صدق الدور (٢٤/٧): «كاشير طباعة» كان يظهر «كاشير» فيبدو سلوك النظام غير منطقي.
  *  hasOverride: تخصيص فردي (permissionsOverride) بلا دور مخصّص ⇒ لاحقة «مُخصَّص» — الشكوى نفسها
  *  تتكرر حرفياً لو حُصر الحساب بالمصفوفة اليدوية بدل دور مخصّص وظلّت شارته «كاشير» مجرّدة. */
-export function RoleBadge({ role, customRoleLabel, hasOverride }: { role: string; customRoleLabel?: string | null; hasOverride?: boolean }) {
+export function RoleBadge({ role, customRoleLabel, hasOverride, isOwner }: { role: string; customRoleLabel?: string | null; hasOverride?: boolean; isOwner?: boolean }) {
+  if (isOwner) {
+    return (
+      <span className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-amber-200 text-amber-900">
+        مالك النظام
+      </span>
+    );
+  }
   const colors: Record<string, string> = {
     admin:          "bg-red-100 text-red-700",
     manager:        "bg-purple-100 text-purple-700",
@@ -229,6 +236,7 @@ export default function Users() {
                         role={u.role}
                         customRoleLabel={u.customRoleLabel}
                         hasOverride={Object.keys((u.permissionsOverride as Record<string, string> | null) ?? {}).length > 0}
+                        isOwner={!!(u as any).isOwner}
                       />
                     </td>
                     <td className="p-2"><StationBadge station={(u as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation} /></td>

@@ -26,4 +26,4 @@ export async function withTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
  * على مستوى الخدمة (مثل productionService.assertProductionBranch، عزل الفروع لغير
  * admin، حجب التكلفة عن الكاشير) تَعتمد عليه — تَمريره من ctx.user.role إلزامي عملياً.
  */
-export type Actor = { userId: number; branchId: number; role?: string };
+export type Actor = { userId: number; branchId: number; role?: string; isOwner?: boolean };

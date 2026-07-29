@@ -68,6 +68,7 @@ async function seed() {
       name: "المدير العام",
       passwordHash: hashPassword(password),
       role: "admin",
+      isOwner: true,
       loginMethod: "local",
       branchId: mainBranch ? Number(mainBranch.id) : null,
       // AUTH-02: حدّ الإبطال أقدم بثانيتين من الإنشاء كي لا يُرفَض دخولٌ في نفس الثانية

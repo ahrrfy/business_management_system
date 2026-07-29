@@ -237,7 +237,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 loc === "/account" ? "opacity-80" : "sb-sub",
               )}>
                 {/* تسمية الدور الحقيقية بالعربية (الدور المخصّص أولاً) — كان يعرض المفتاح الخام «cashier». */}
-                حسابي{me.data?.role ? ` · ${me.data.customRoleLabel ?? ROLE_LABEL[me.data.role] ?? me.data.role}` : ""}
+                حسابي{me.data?.role ? ` · ${(me.data as any).isOwner ? "مالك النظام" : (me.data.customRoleLabel ?? ROLE_LABEL[me.data.role] ?? me.data.role)}` : ""}
               </div>
             </div>
             <ChevronLeft className="size-4 shrink-0 opacity-60" aria-hidden />

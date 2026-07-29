@@ -1,6 +1,6 @@
 // شيخوخة الذمم الدائنة (AP) + كشف حساب مورد.
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
-import { accountingEntries, purchaseOrders, suppliers } from "../../../drizzle/schema";
+import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
 import { nextDayStr, type StatementPeriod } from "./shared";
@@ -106,6 +106,11 @@ export interface SupplierStatementPayment {
   amount: string;
   entryDate: Date;
   notes: string | null;
+  voucherNumber: string | null;
+  paymentMethod: string | null;
+  referenceNumber: string | null;
+  exchangeHouseId: number | null;
+  exchangeHouseName: string | null;
 }
 
 export interface SupplierStatementResult {
@@ -258,8 +263,16 @@ export async function getSupplierStatement(
       amount: accountingEntries.amount,
       entryDate: accountingEntries.entryDate,
       notes: accountingEntries.notes,
+      voucherNumber: receipts.voucherNumber,
+      paymentMethod: receipts.paymentMethod,
+      referenceNumber: receipts.referenceNumber,
+      exchangeHouseId: exchangeTransactions.exchangeHouseId,
+      exchangeHouseName: exchangeHouses.name,
     })
     .from(accountingEntries)
+    .leftJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
+    .leftJoin(exchangeTransactions, eq(exchangeTransactions.receiptId, receipts.id))
+    .leftJoin(exchangeHouses, eq(exchangeHouses.id, exchangeTransactions.exchangeHouseId))
     .where(and(...payConds))
     .orderBy(asc(accountingEntries.entryDate), asc(accountingEntries.id));
 
@@ -297,6 +310,11 @@ export async function getSupplierStatement(
       amount: String(p.amount),
       entryDate: p.entryDate as Date,
       notes: p.notes,
+      voucherNumber: p.voucherNumber,
+      paymentMethod: p.paymentMethod,
+      referenceNumber: p.referenceNumber,
+      exchangeHouseId: p.exchangeHouseId ? Number(p.exchangeHouseId) : null,
+      exchangeHouseName: p.exchangeHouseName,
     })),
     summary: {
       totalPurchases: toDbMoney(totalPurchases),

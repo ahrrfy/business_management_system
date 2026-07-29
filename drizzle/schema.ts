@@ -80,6 +80,7 @@ export const users = mysqlTable(
     // المصادقة الثنائية TOTP (RFC 6238) — السرّ base32 مشفَّر AES-256-GCM عبر cryptoService
     // (صيغة v1:iv:tag:ct). وجود سرّ مع totpEnabledAt=null ⇒ تسجيل معلّق لم يُؤكَّد برمز بعد
     // (لا يُفرض عند الدخول). totpLastUsedStep = آخر خطوة زمنية قُبل رمزها (منع replay ±1).
+    isOwner: boolean("isOwner").default(false).notNull(),
     totpSecretEncrypted: varchar("totpSecretEncrypted", { length: 255 }),
     totpEnabledAt: timestamp("totpEnabledAt"),
     totpLastUsedStep: bigint("totpLastUsedStep", { mode: "number" }),
@@ -1391,7 +1392,8 @@ export const receipts = mysqlTable(
     direction: mysqlEnum("direction", ["IN", "OUT"]).default("IN").notNull(),
     // 0018: DB-level CHECK (amount >= 0) أُضيف في migration 0018 (المبلغ موجب؛ الاتجاه من `direction`).
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
-    paymentMethod: mysqlEnum("paymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).notNull(),
+    // EXCHANGE: سند صرف مُنشأ حصراً من تسديد المورد عبر الصيرفة؛ لا يمسّ الخزينة.
+    paymentMethod: mysqlEnum("paymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "EXCHANGE"]).notNull(),
     /**
      * cash-treasury-mode (تدقيق ١٧/٦): فصل النقد إلى دلوَين دلالياً.
      *  - DRAWER: نقد درج كاشير ⇒ يَخصم/يُضيف إلى Z-report عبر shiftId.
@@ -4952,7 +4954,7 @@ export const digitalPriceBatches = mysqlTable(
     publishedBy: int("publishedBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     publishedAt: timestamp("publishedAt"),
-    // عمودان مولَّدان STORED + فهرسان فريدان (هجرة 0126، تُطبَّق عبر ci-apply-extra-migrations):
+    // عمودان مولَّدان STORED + فهرسان فريدان (هجرة 0127، تُطبَّق عبر ci-apply-extra-migrations):
     // draftKey يحمل NULL خارج DRAFT وpublishedKey خارج PUBLISHED، وفهرس MySQL الفريد يقبل تكرار
     // NULL ⇒ «مسودّة واحدة لكل (فرع×مزوّد×تاريخ)» و«منشورة واحدة سارية لكل (فرع×مزوّد)».
     // drizzle لا يَلمسهما (read-only من JS) — مُعرَّفان هنا للأنواع فقط، نمط products.searchNorm.
@@ -5125,7 +5127,7 @@ export const digitalSaleIntentItems = mysqlTable(
     intentId: bigint("intentId", { mode: "number" }).notNull().references(() => digitalSaleIntents.id),
     lineKey: varchar("lineKey", { length: 64 }).notNull(),
     offeringId: bigint("offeringId", { mode: "number" }).notNull().references(() => digitalOfferings.id),
-    // ش٧ (هجرة 0127): المزوّد مُنزَّل على البند — القيد الفريد «مرجع واحد لكل مزوّد» يحتاجه في
+    // ش٧ (هجرة 0128): المزوّد مُنزَّل على البند — القيد الفريد «مرجع واحد لكل مزوّد» يحتاجه في
     // الصفّ نفسه. ثابتٌ بعد الإنشاء (مشتقٌّ من digitalOfferings.providerId لحظة الإعداد).
     providerId: bigint("providerId", { mode: "number" }).notNull().default(0),
     priceVersionId: bigint("priceVersionId", { mode: "number" }).notNull(),
@@ -5141,7 +5143,7 @@ export const digitalSaleIntentItems = mysqlTable(
     studentPhoneSnapshot: varchar("studentPhoneSnapshot", { length: 20 }),
     guardianPhoneSnapshot: varchar("guardianPhoneSnapshot", { length: 20 }),
     studentAddressSnapshot: text("studentAddressSnapshot"),
-    // عمود مولَّد STORED + فهرس فريد (هجرة 0127، تُطبَّق عبر ci-apply-extra-migrations):
+    // عمود مولَّد STORED + فهرس فريد (هجرة 0128، تُطبَّق عبر ci-apply-extra-migrations):
     // NULL ما لم يوجد مرجع ⇒ الفهرس الفريد يقبل تكرار NULL، فينحصر المنع على البنود ذات المرجع.
     // drizzle لا يَلمسه (read-only من JS) — مُعرَّف هنا للأنواع فقط، نمط products.searchNorm.
     refKey: varchar("refKey", { length: 160 }),

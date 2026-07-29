@@ -49,6 +49,12 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
     if (r.status !== "COMPLETED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء سند غير مكتمل" });
     }
+    if (r.paymentMethod === "EXCHANGE") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "هذا السند مرتبط بعملية صيرفة؛ اعكس العملية من وحدة الصيرفة كي يُستعاد رصيد المورد والصيرفة معاً",
+      });
+    }
     if (actor.role !== "admin" && r.createdBy != null && Number(r.createdBy) === actor.userId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز إلغاء سند أنشأته بنفسك — يلزم مدير آخر (فصل المهام)." });
     }

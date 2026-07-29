@@ -211,7 +211,7 @@ describe("payLine — سند قبض حقيقي بالمسار الموحَّد",
     expect(recs).toHaveLength(1);
   });
 
-  it("Maker-Checker: مبلغ ≥ عتبة الاعتماد ⇒ السند PENDING_APPROVAL والقسط يبقى PENDING بلا أثر مالي", async () => {
+  it("قسط كبير (فوق عتبة الصرف) — القبض يمرّ فوراً لأن العتبة على الصرف OUT فقط", async () => {
     const { planId } = await createPlan(
       {
         customerId: 1,
@@ -226,20 +226,20 @@ describe("payLine — سند قبض حقيقي بالمسار الموحَّد",
       { lineId: plan.lines[0].id, attachmentUrl: "https://example.com/receipt.jpg" },
       actor,
     );
-    expect(res.status).toBe("PENDING_APPROVAL");
+    expect(res.status).toBe("PAID");
+    expect(res.planCompleted).toBe(true);
 
-    // لا قيد ولا حركة ذمّة — فقط صفّ receipt معلَّق.
-    const ents = await db().select().from(s.accountingEntries);
-    expect(ents).toHaveLength(0);
-    expect(await customerBalance()).toBe("900000.00");
+    const ents = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_IN"));
+    expect(ents).toHaveLength(1);
+    expect(ents[0].amount).toBe("1500000.00");
+    expect(await customerBalance()).toBe("-600000.00"); // 900000 − 1500000
 
     const after = await getPlan(planId);
-    expect(after.lines[0].status).toBe("PENDING");
-    expect(after.lines[0].note).toMatch(/بانتظار اعتماد/);
-    expect(after.status).toBe("ACTIVE");
+    expect(after.lines[0].status).toBe("PAID");
+    expect(after.status).toBe("COMPLETED");
 
     const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, res.receiptId)))[0];
-    expect(rc.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(rc.approvalStatus).toBe("APPROVED");
   });
 });
 
@@ -454,8 +454,7 @@ describe("bounceCheck", () => {
   // الثابت (Codex P1): ارتداد قسطٍ سنده ما يزال PENDING_APPROVAL (Maker-Checker، فوق العتبة) يجب ألّا
   // يُيتّم مفتاح idempotency — وإلّا لو اعتُمد السند لاحقاً + أُعيد السداد ⇒ تحصيلٌ مزدوج. حذف المفتاح
   // مشروطٌ بعكسِ تحصيلٍ نافذ (reversed) فقط؛ هنا reversed=false فيبقى المفتاح ويُعيد السداد السندَ نفسه.
-  it("ارتداد قسطٍ سنده PENDING_APPROVAL (فوق العتبة) يُبقي مفتاح idempotency ⇒ لا سند ثانٍ ولا تحصيل مزدوج", async () => {
-    // قسط شيك فوق عتبة الاعتماد ⇒ السند PENDING_APPROVAL والقسط يبقى PENDING (لا أثر ماليّ بعد).
+  it("ارتداد شيك كبير (فوق عتبة الصرف) — القبض يمرّ فوراً والارتداد عكسٌ ماليّ حقيقي", async () => {
     const { planId } = await createPlan(
       {
         customerId: 1,
@@ -468,34 +467,20 @@ describe("bounceCheck", () => {
     const checkLine = (await getPlan(planId)).lines[0];
 
     const pay = await payLine({ lineId: checkLine.id, attachmentUrl: "https://example.com/r.jpg" }, actor);
-    expect(pay.status).toBe("PENDING_APPROVAL");
-    expect(await customerBalance()).toBe("900000.00"); // لا أثر ماليّ حتى الاعتماد
+    expect(pay.status).toBe("PAID");
+    expect(await customerBalance()).toBe("-600000.00"); // 900000 − 1500000
 
-    // المفتاح سُجِّل مشيراً للسند المعلَّق (createVoucher يسجّله حتى للسند PENDING_APPROVAL).
     const keyBefore = (
       await db().select().from(s.idempotencyKeys).where(eq(s.idempotencyKeys.clientRequestId, `instpay-${checkLine.id}`))
     )[0];
     expect(keyBefore).toBeTruthy();
     expect(Number(keyBefore.refId)).toBe(pay.receiptId);
 
-    // ارتداد القسط PENDING (لا عكس ماليّ — reversed=false).
-    const b = await bounceCheck({ lineId: checkLine.id, note: "ارتدّ قبل الاعتماد" }, actor);
-    expect(b.reversed).toBe(false);
+    // ارتداد شيك مسدَّد ⇒ عكس ماليّ حقيقي (reversed=true).
+    const b = await bounceCheck({ lineId: checkLine.id, note: "ارتدّ من المصرف" }, actor);
+    expect(b.reversed).toBe(true);
     expect((await getPlan(planId)).lines[0].status).toBe("BOUNCED");
-    expect(await customerBalance()).toBe("900000.00");
-
-    // ✅ الثابت: المفتاح ما يزال موجوداً ويشير لنفس السند المعلَّق (لم يُيتَّم).
-    const keyAfter = (
-      await db().select().from(s.idempotencyKeys).where(eq(s.idempotencyKeys.clientRequestId, `instpay-${checkLine.id}`))
-    )[0];
-    expect(keyAfter).toBeTruthy();
-    expect(Number(keyAfter.refId)).toBe(pay.receiptId);
-
-    // إعادة السداد تُعيد السند المعلَّق نفسه (replay) لا سنداً ثانياً ⇒ لا ازدواج.
-    const pay2 = await payLine({ lineId: checkLine.id, attachmentUrl: "https://example.com/r.jpg" }, actor);
-    expect(pay2.status).toBe("PENDING_APPROVAL");
-    expect(pay2.receiptId).toBe(pay.receiptId); // نفس السند — لا جديد
-    expect(await db().select().from(s.receipts)).toHaveLength(1); // سند واحد فقط في النظام
+    expect(await customerBalance()).toBe("900000.00"); // عاد للأصل بعد العكس
   });
 });
 

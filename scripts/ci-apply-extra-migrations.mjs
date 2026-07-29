@@ -67,10 +67,10 @@ const EXTRA_MIGRATIONS = [
   // ٢٩/٧/٢٦: البطاقات الرقمية ش٤ — عمودان مولَّدان STORED + فهرسان فريدان على digitalPriceBatches
   // (مسودّة واحدة لكل فرع×مزوّد×تاريخ، ومنشورة واحدة سارية لكل فرع×مزوّد). drizzle-kit لا يُمثّل
   // GENERATED columns ⇒ يلزم تطبيقها هنا وإلا سقط حارسا التفرّد في الاختبارات وعلى CI.
-  "drizzle/migrations/0126_digital_price_batch_uniqueness.sql",
+  "drizzle/migrations/0127_digital_price_batch_uniqueness.sql",
   // ٢٩/٧/٢٦: البطاقات الرقمية ش٧ — providerId على بند النيّة + عمود refKey مولَّد + فهرس فريد
   // يمنع تكرار مرجع التنفيذ لدى المزوّد نفسه (نقرتان متزامنتان بنفس الرقم = كرتٌ يُسجَّل مرّتين).
-  "drizzle/migrations/0127_digital_intent_reference_uniqueness.sql",
+  "drizzle/migrations/0128_digital_intent_reference_uniqueness.sql",
 ];
 
 const url = process.env.DATABASE_URL;

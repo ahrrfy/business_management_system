@@ -189,6 +189,7 @@ export default function SupplierStatement() {
       // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
       totalDebit: ledger.totalDebit, totalCredit: ledger.totalCredit,
       openingBalance: from ? d.summary.openingBalance : undefined,
+      currentBalance: d.summary.currentBalance,
       closingBalance: ledger.closingBalance,
     });
   };
@@ -341,7 +342,7 @@ export default function SupplierStatement() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
-                    <th className="p-2">أمر الشراء</th>
+                    <th className="p-2">السند / المرجع</th>
                     <th className="p-2">التاريخ</th>
                     <th className="p-2">الاستحقاق</th>
                     <th className="p-2 text-right">الإجمالي</th>
@@ -411,7 +412,17 @@ export default function SupplierStatement() {
                     <tr key={p.id} className="border-t">
                       <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(p.entryDate)}</td>
                       <td className="p-2">
-                        {p.purchaseOrderId ? (
+                        {p.voucherNumber ? (
+                          <div>
+                            <CopyInline value={p.voucherNumber} />
+                            {p.paymentMethod === "EXCHANGE" && (
+                              <div className="text-[10px] text-muted-foreground">
+                                صيرفة{p.exchangeHouseName ? `: ${p.exchangeHouseName}` : ""}
+                                {p.referenceNumber ? ` · ${p.referenceNumber}` : ""}
+                              </div>
+                            )}
+                          </div>
+                        ) : p.purchaseOrderId ? (
                           <CopyInline value={p.purchaseOrderId} />
                         ) : (
                           // دفعة بلا أمر شراء (سند صرف مستقل للمورد) — وسمها يمنع الالتباس.
