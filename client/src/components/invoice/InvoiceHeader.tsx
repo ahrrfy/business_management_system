@@ -14,11 +14,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
+import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
-import type { Dispatch } from "react";
+import { useRef, useState, type Dispatch } from "react";
 import {
   FileText, Hash, Calendar, Building, User, Factory, Wallet, Tag,
-  ClipboardList, Clock, DollarSign, UserCheck, Pin, CalendarDays, NotebookPen,
+  ClipboardList, Clock, DollarSign, UserCheck, Pin, CalendarDays, NotebookPen, Loader2,
   type LucideIcon,
 } from "lucide-react";
 import { EntityPicker } from "./EntityPicker";
@@ -99,6 +100,71 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
   const isReturn = invoiceType === "SALE_RETURN" || invoiceType === "PURCHASE_RETURN";
 
   const branches = trpc.branches.list.useQuery();
+  const utils = trpc.useUtils();
+  const latestStateRef = useRef(state);
+  latestStateRef.current = state;
+  const tierRequestRef = useRef(0);
+  const [isRepricing, setIsRepricing] = useState(false);
+
+  /**
+   * Reprice the current cart in one server round-trip when the tier changes.
+   * Keep the tier and all line prices atomic so totals never render against a
+   * new tier while still carrying the previous tier's prices.
+   */
+  async function changePriceTier(nextTier: PriceTier) {
+    if (nextTier === latestStateRef.current.tier) return;
+
+    // Returns must retain the source invoice prices. Automatic repricing is
+    // intentionally limited to new sales invoices and quotations.
+    if (invoiceType !== "SALE" && invoiceType !== "QUOTATION") {
+      dispatch({ type: "SET_FIELD", field: "tier", value: nextTier });
+      return;
+    }
+
+    const requestId = ++tierRequestRef.current;
+    setIsRepricing(true);
+
+    try {
+      // A product can be added while the request is in flight. If that happens,
+      // repeat with the latest cart before committing the tier atomically.
+      for (;;) {
+        const snapshot = latestStateRef.current;
+        const unitIds = Array.from(new Set(snapshot.items.map((item) => item.productUnitId))).sort((a, b) => a - b);
+
+        if (unitIds.length === 0) {
+          dispatch({ type: "SET_FIELD", field: "tier", value: nextTier });
+          return;
+        }
+
+        const rows = await utils.catalog.byUnitIds.fetch({
+          branchId: snapshot.branchId,
+          tier: nextTier,
+          productUnitIds: unitIds,
+        });
+        if (requestId !== tierRequestRef.current) return;
+
+        const current = latestStateRef.current;
+        const currentUnitIds = Array.from(new Set(current.items.map((item) => item.productUnitId))).sort((a, b) => a - b);
+        const cartChanged =
+          current.branchId !== snapshot.branchId ||
+          currentUnitIds.length !== unitIds.length ||
+          currentUnitIds.some((id, index) => id !== unitIds[index]);
+        if (cartChanged) continue;
+
+        const pricesByUnitId: Record<number, string> = {};
+        for (const row of rows) pricesByUnitId[row.productUnitId] = row.price ?? "0";
+
+        dispatch({ type: "SET_TIER_PRICES", tier: nextTier, pricesByUnitId });
+        return;
+      }
+    } catch (error) {
+      if (requestId === tierRequestRef.current) {
+        notify.err(error, "تعذّر تطبيق فئة السعر الجديدة على المنتجات. بقيت الفئة والأسعار السابقة دون تغيير.");
+      }
+    } finally {
+      if (requestId === tierRequestRef.current) setIsRepricing(false);
+    }
+  }
 
   return (
     <section className="overflow-hidden rounded-xl border bg-card shadow-sm">
@@ -172,9 +238,13 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
             <FieldGroup label="فئة السعر" icon={Tag}>
               <Select
                 value={state.tier}
-                onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "tier", value: v as PriceTier })}
+                disabled={isRepricing}
+                onValueChange={(v) => void changePriceTier(v as PriceTier)}
               >
-                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-busy={isRepricing}>
+                  {isRepricing && <Loader2 aria-hidden className="size-3.5 animate-spin" />}
+                  <SelectValue />
+                </SelectTrigger>
                 <SelectContent>
                   {TIER_OPTIONS.map((t) => (
                     <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>

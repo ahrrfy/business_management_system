@@ -58,6 +58,26 @@ ${CAIRO_FONT}
   <div class="page-inset"></div>
   ${bodyContent}
 </div>
+<script>
+  (function () {
+    var images = Array.from(document.images).map(function (image) {
+      return image.complete
+        ? Promise.resolve()
+        : new Promise(function (resolve) {
+            image.addEventListener('load', resolve, { once: true });
+            image.addEventListener('error', resolve, { once: true });
+          });
+    });
+    var fonts = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
+    Promise.all([fonts].concat(images)).then(function () {
+      window.setTimeout(function () {
+        window.focus();
+        window.print();
+      }, 100);
+    });
+    window.addEventListener('afterprint', function () { window.close(); }, { once: true });
+  })();
+</script>
 </body></html>`;
 }
 

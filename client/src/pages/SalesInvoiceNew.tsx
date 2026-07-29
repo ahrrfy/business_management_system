@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { AlertTriangle, Lock } from "lucide-react";
 import {
   Dialog,
@@ -132,6 +133,8 @@ export default function SalesInvoiceNew() {
 
   // idempotency: مفتاح ثابت لكل محاولة إنشاء (يُجدَّد بعد كل حفظ ناجح / RESET).
   const [clientRequestId, setClientRequestId] = useState<string>(() => crypto.randomUUID());
+  const printAfterSaveRef = useRef(false);
+  const shareAfterSaveRef = useRef(false);
 
   const [bulkOpen, setBulkOpen] = useState(false);
 
@@ -173,7 +176,11 @@ export default function SalesInvoiceNew() {
       setCreditPrompt(null);
       setMgrEmail("");
       setMgrPwd("");
-      navigate(`/invoices/${id}`);
+      const printAfterSave = printAfterSaveRef.current;
+      const shareAfterSave = shareAfterSaveRef.current;
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
+      navigate(`/invoices/${id}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`);
     },
     onError: (e) => {
       // تجاوز حدّ الائتمان أو بيع بأقل من التكلفة ⇒ افتح حوار موافقة المدير بدل إظهار خطأ فقط.
@@ -186,6 +193,9 @@ export default function SalesInvoiceNew() {
         setCreditPrompt(e.message);
         return;
       }
+      releaseReservedPrintWindow();
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
       notify.err(e);
     },
   });
@@ -271,16 +281,25 @@ export default function SalesInvoiceNew() {
     try {
       err = validate();
     } catch {
+      releaseReservedPrintWindow();
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
       notify.warn("قيمة مالية غير صالحة — صحّح حقول المبالغ قبل الحفظ.");
       return;
     }
     if (err) {
+      releaseReservedPrintWindow();
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
       notify.warn(err);
       return;
     }
     try {
       create.mutate(buildPayload(approval));
     } catch {
+      releaseReservedPrintWindow();
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
       notify.warn("قيمة مالية غير صالحة — صحّح حقول المبالغ قبل الحفظ.");
     }
   }
@@ -301,20 +320,46 @@ export default function SalesInvoiceNew() {
     handleSubmit({ email: mgrEmail.trim(), password: mgrPwd });
   }
 
+  function closeApprovalPrompt() {
+    setCreditPrompt(null);
+    if (printAfterSaveRef.current) {
+      releaseReservedPrintWindow();
+      printAfterSaveRef.current = false;
+    }
+    shareAfterSaveRef.current = false;
+  }
+
   function handleAction(action: InvoiceActionKind) {
     switch (action) {
       case "save":
-      case "print": // الطباعة تتم من صفحة الفاتورة بعد الحفظ (qr + قالب A4 معتمد).
+        releaseReservedPrintWindow();
+        printAfterSaveRef.current = false;
+        shareAfterSaveRef.current = false;
+        handleSubmit();
+        return;
+      case "print":
+        reservePrintWindow();
+        printAfterSaveRef.current = true;
+        shareAfterSaveRef.current = false;
         handleSubmit();
         return;
       case "draft":
         notify.info("لا مسوّدة لفاتورة البيع — استخدم «عرض سعر» للمسوّدات القابلة للتحويل.");
         return;
       case "send":
-        notify.info("الإرسال عبر واتساب متاح من صفحة الفاتورة بعد الحفظ.");
+        releaseReservedPrintWindow();
+        printAfterSaveRef.current = false;
+        shareAfterSaveRef.current = true;
+        handleSubmit();
         return;
       case "pdf":
-        notify.info("صدِّر PDF من صفحة الفاتورة بعد الحفظ.");
+        // Use the same approved A4 document template as "save and print".
+        // The browser's print dialog can then save that isolated document as
+        // PDF; the invoice editor page itself is never printed.
+        reservePrintWindow();
+        printAfterSaveRef.current = true;
+        shareAfterSaveRef.current = false;
+        handleSubmit();
         return;
       case "convert":
         notify.info("التحويل متاح من عرض السعر فقط.");
@@ -338,7 +383,7 @@ export default function SalesInvoiceNew() {
     const onKey = (e: KeyboardEvent) => {
       // أثناء فتح حوار الموافقة: Esc يغلقه فقط.
       if (creditPrompt) {
-        if (e.key === "Escape") setCreditPrompt(null);
+        if (e.key === "Escape") closeApprovalPrompt();
         return;
       }
       if (e.key === "F2") {
@@ -350,12 +395,22 @@ export default function SalesInvoiceNew() {
       }
       if (e.key === "F4") {
         e.preventDefault();
-        if (!create.isPending) handleSubmit();
+        if (!create.isPending) {
+          releaseReservedPrintWindow();
+          printAfterSaveRef.current = false;
+          shareAfterSaveRef.current = false;
+          handleSubmit();
+        }
         return;
       }
       if (e.key === "F9") {
         e.preventDefault();
-        window.print();
+        if (!create.isPending) {
+          reservePrintWindow();
+          printAfterSaveRef.current = true;
+          shareAfterSaveRef.current = false;
+          handleSubmit();
+        }
         return;
       }
       if (e.key === "F12") {
@@ -473,7 +528,7 @@ export default function SalesInvoiceNew() {
       <ShortcutsBar />
 
       {/* حوار موافقة المدير (تجاوز حدّ الائتمان / بيع بأقل من التكلفة) */}
-      <Dialog open={!!creditPrompt} onOpenChange={(o) => { if (!o) setCreditPrompt(null); }}>
+      <Dialog open={!!creditPrompt} onOpenChange={(o) => { if (!o) closeApprovalPrompt(); }}>
         <DialogContent dir="rtl" className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-destructive">
@@ -509,7 +564,7 @@ export default function SalesInvoiceNew() {
             </div>
           </div>
           <DialogFooter className="gap-2 sm:gap-2">
-            <Button type="button" variant="outline" onClick={() => setCreditPrompt(null)}>
+            <Button type="button" variant="outline" onClick={closeApprovalPrompt}>
               إلغاء
             </Button>
             <Button

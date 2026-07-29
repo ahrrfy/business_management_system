@@ -55,6 +55,16 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
     case "SET_FIELD":
       return { ...state, [action.field]: action.value } as InvoiceState;
 
+    case "SET_TIER_PRICES":
+      return {
+        ...state,
+        tier: action.tier,
+        items: state.items.map((item) => {
+          const price = action.pricesByUnitId[item.productUnitId];
+          return price === undefined ? item : { ...item, price };
+        }),
+      };
+
     case "SET_ENTITY":
       return { ...state, entityId: action.id };
 
