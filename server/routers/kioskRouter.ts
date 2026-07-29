@@ -1,9 +1,9 @@
 /**
  * kioskRouter — شاشة «قارئ الأسعار» للزبون (الكشك) + إدارة الأجهزة الخارجية.
  *
- * طبقتان من المصادقة:
- *  ① القراءات (banner/lookup) عبر `kioskReadProcedure`: تقبل **إمّا** مستخدم نظام مسجَّل
- *     (الشاشة داخل التطبيق /price-checker) **أو** كوكي جهاز كشك (KIOSK_COOKIE_NAME).
+ * ثلاث طبقات وصول:
+ *  ① القراءات (banner/lookup) عبر `kioskReadProcedure`: تقبل مستخدم نظام مسجَّل **أو** كوكي جهاز كشك
+ *     **أو** وصولاً عاماً بلا مصادقة (قارئ الأسعار — branchId من المدخل إلزامي).
  *     عند الجهاز: الفرع **مفروض من القاعدة** (resolveKioskDevice) ⇒ يتجاهل أي branchId من العميل (لا IDOR).
  *  ② دخول/خروج الجهاز (deviceLogin/deviceMe/deviceLogout) publicProcedure: الهوية كوكي الجهاز.
  *  ③ إدارة الأجهزة (devices.*) adminProcedure: إنشاء/تدوير/إلغاء/حذف — الرمز الخام يُعرض مرّة واحدة.
@@ -12,6 +12,9 @@
  */
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { asc, eq } from "drizzle-orm";
+import { branches } from "../../drizzle/schema";
+import { getDb } from "../db";
 import { getSessionCookieOptions } from "../cookies";
 import { KIOSK_COOKIE_NAME, KIOSK_TOKEN_TTL_MS, signKioskSession } from "../auth/kioskSession";
 import { logAudit } from "../services/auditService";
@@ -29,17 +32,19 @@ import { adminProcedure, middleware, publicProcedure, router } from "../trpc";
 
 /**
  * وسيط القراءة: يُمرّر المستخدم المسجَّل كما هو (deviceBranchId=null ⇒ يُستعمل branchId من المدخل)،
- * أو يحلّ جهاز الكشك من الكوكي فيفرض فرعه. غير المُصرَّح (لا مستخدم ولا جهاز) ⇒ UNAUTHORIZED.
+ * أو يحلّ جهاز الكشك من الكوكي فيفرض فرعه، أو يسمح بالوصول العام (بلا مصادقة — قارئ الأسعار)
+ * حيث يجب أن يُرسل العميل branchId صراحةً.
  */
 const kioskRead = middleware(async ({ ctx, next }) => {
   if (ctx.user) {
     return next({ ctx: { ...ctx, deviceBranchId: null as number | null } });
   }
   const device = await resolveKioskDevice(ctx.req);
-  if (!device) {
-    throw new TRPCError({ code: "UNAUTHORIZED", message: "جهاز الكشك غير مُصرَّح أو انتهت صلاحيته." });
+  if (device) {
+    return next({ ctx: { ...ctx, deviceBranchId: device.branchId as number | null } });
   }
-  return next({ ctx: { ...ctx, deviceBranchId: device.branchId as number | null } });
+  // وصول عام (قارئ الأسعار بلا دخول) — branchId من المدخل إلزامي
+  return next({ ctx: { ...ctx, deviceBranchId: null as number | null } });
 });
 const kioskReadProcedure = publicProcedure.use(kioskRead);
 
@@ -55,10 +60,21 @@ function effectiveBranchId(deviceBranchId: number | null, inputBranchId?: number
 const deviceIdInput = z.object({ id: z.number().int().positive() });
 
 export const kioskRouter = router({
-  /** منتجات البنر المتوفّرة في الفرع (سعر المفرد + صورة). */
+  /** قائمة الفروع النشطة (عامة — لقارئ الأسعار بلا دخول). أسماء ومعرّفات فقط. */
+  publicBranches: publicProcedure.query(async () => {
+    const db = getDb();
+    if (!db) return [];
+    return db
+      .select({ id: branches.id, name: branches.name })
+      .from(branches)
+      .where(eq(branches.isActive, true))
+      .orderBy(asc(branches.id));
+  }),
+
+  /** منتجات البنر المتوفّرة في الفرع (كامل الكتالوج — بلا سقف). */
   banner: kioskReadProcedure
-    .input(z.object({ branchId: z.number().int().positive().optional(), limit: z.number().int().min(1).max(500).default(500) }))
-    .query(({ input, ctx }) => kioskBanner(effectiveBranchId(ctx.deviceBranchId, input.branchId), input.limit)),
+    .input(z.object({ branchId: z.number().int().positive().optional() }))
+    .query(({ input, ctx }) => kioskBanner(effectiveBranchId(ctx.deviceBranchId, input.branchId))),
 
   /** بحث سعر بالباركود (المسح). يعيد null إن لم يُعرَف الباركود. */
   lookup: kioskReadProcedure

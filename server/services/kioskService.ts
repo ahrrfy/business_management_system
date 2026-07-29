@@ -100,25 +100,16 @@ function toKioskProduct(r: any): KioskProduct {
  * بنر الجذب (وضع «معرض تسويقي»): كل منتج بوحدة أساس فعّالة وسعر مفرد صريح — صفّ لكل منتج
  * مع الصورة، مرتّبة: ذوات الصور أولاً ثم أبجدياً. لا تُعيد الكمية.
  *
- * **قرار المالك (٨/٧):** حُذف شرط «مخزون الفرع > 0» ليعرض البنر الكتالوج فوراً بينما يُدخَل
- * المخزون تدريجياً بعد مسح ٥/٧. يقبل هذا التنازل احتمال ظهور منتج قد لا يكون على الرفّ؛
- * لكنّ مسح الباركود يبقى دقيقاً (`kioskLookup` لا يشترط المخزون أصلاً — الزبون يعرف السعر عند المسح).
- *
- * **ملاحظة نطاق الفرع:** بحذف شرط المخزون، `branchId` لم يعُد يُقيّد الكتالوج (كتالوج المنتجات
- * مشترك بين الفروع في هذا النشاط). يبقى المعامل جزءاً من التوقيع لتوافق النداء الحالي — ولإعادة
- * تفعيل الشرط لاحقاً بإضافة `gt(branchStock.quantity, 0)` سطراً واحداً بعد إدخال المخزون.
+ * يُعيد **كامل الكتالوج** بلا سقف — البيانات الوصفية خفيفة (~٢٠٠ ب/منتج)، والصور تُحمَّل
+ * بنافذة ٣ شرائح في العميل (isNearActive). الخلط يتمّ عميلياً عند كل دورة عرض كاملة.
  */
-export async function kioskBanner(branchId: number, limit = 500): Promise<KioskProduct[]> {
+export async function kioskBanner(branchId: number): Promise<KioskProduct[]> {
   const db = getDb();
   if (!db) return [];
-  // سقف ٥٠٠: يستوعب كتالوج مكتبة نموذجي كاملاً، ويحمي من كوارث الأداء إن نما إلى آلاف.
-  const cap = Math.min(Math.max(limit, 1), 500);
   const rows = await kioskSelect(db, branchId)
     .where(and(activeOnly, eq(productUnits.isBaseUnit, true), sql`${productPrices.price} is not null`))
-    .orderBy(desc(sql`${productImages.url} is not null`), asc(products.name))
-    .limit(cap * 2); // فائض لاستيعاب إزالة التكرار
+    .orderBy(desc(sql`${productImages.url} is not null`), asc(products.name));
 
-  // منتج واحد لكل بطاقة (متغيّرات متعدّدة لنفس المنتج تُختصر لأول ظهور).
   const seen = new Set<number>();
   const out: KioskProduct[] = [];
   for (const r of rows) {
@@ -126,7 +117,6 @@ export async function kioskBanner(branchId: number, limit = 500): Promise<KioskP
     if (seen.has(pid)) continue;
     seen.add(pid);
     out.push(toKioskProduct(r));
-    if (out.length >= cap) break;
   }
   return out;
 }
