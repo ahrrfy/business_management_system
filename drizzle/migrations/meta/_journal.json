@@ -855,6 +855,13 @@
       "when": 1786060800000,
       "tag": "0122_category_subcategories",
       "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "5",
+      "when": 1786147200000,
+      "tag": "0123_document_tax_rate_snapshots",
+      "breakpoints": true
     }
   ]
 }
