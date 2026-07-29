@@ -87,6 +87,19 @@ export function StudentDetailsDialog({
     { enabled: open && guardianPhone.trim().length >= 6 },
   );
 
+  // §٨.٤-٢: هاتف الطالب المُدخَل يدوياً قد يخصّ ملفّاً قائماً — الفحص هنا يمنع ازدواج الملفّات
+  // قبل الإضافة للسلة. الخادم لا يدمج تلقائياً عند الالتباس، فالقرار يبقى للكاشير.
+  const [phoneProbe, setPhoneProbe] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setPhoneProbe(studentPhone.trim()), 350);
+    return () => clearTimeout(t);
+  }, [studentPhone]);
+
+  const resolved = trpc.digitalCards.students.resolveByPhone.useQuery(
+    { studentPhone: phoneProbe },
+    { enabled: open && customerId == null && phoneProbe.length >= 8 },
+  );
+
   /** هل انحرفت الحقول عن الملفّ المرتبط؟ عندها فقط يُطرح خيار «تحديث الملفّ / لهذه الفاتورة فقط». */
   const dirty = useMemo(() => {
     if (!linked) return false;
@@ -234,6 +247,22 @@ export function StudentDetailsDialog({
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               <label style={labelStyle} htmlFor="st-phone">هاتف الطالب</label>
               <input id="st-phone" ref={phoneRef} value={studentPhone} onChange={(e) => setStudentPhone(e.target.value)} onKeyDown={(e) => onFieldKey(e, guardianRef)} style={fieldStyle} dir="ltr" placeholder="07xxxxxxxxx" />
+              {customerId == null && resolved.data?.kind === "LINK" && (
+                <button
+                  onClick={() => { setSearchBy("student"); setSearchTerm(studentPhone.trim()); }}
+                  style={{ textAlign: "start", fontSize: 12, color: "#241900", background: C.amber, borderRadius: 6, padding: "5px 8px", fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit" }}
+                >
+                  هذا الهاتف مسجَّل لملفٍّ قائم — اضغط لعرضه بدل إنشاء ملفّ ثانٍ.
+                </button>
+              )}
+              {customerId == null && resolved.data?.kind === "AMBIGUOUS" && (
+                <button
+                  onClick={() => { setSearchBy("student"); setSearchTerm(studentPhone.trim()); }}
+                  style={{ textAlign: "start", fontSize: 12, color: "#241900", background: C.amber, borderRadius: 6, padding: "5px 8px", fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit" }}
+                >
+                  {resolved.data.candidates.length} ملفّات تحمل هذا الهاتف — اضغط لتختار الصحيح بنفسك.
+                </button>
+              )}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               <label style={labelStyle} htmlFor="st-guardian">هاتف ولي الأمر</label>

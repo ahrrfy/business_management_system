@@ -70,6 +70,7 @@ export function DigitalCardsPickerDialog({
   useEffect(() => {
     if (open) {
       setQ(""); setDebouncedQ(""); setConfirming(null); setAwaitingStudent(null);
+      setReporting(null); setReportShare(""); setReportNotes("");
       setTimeout(() => searchRef.current?.focus(), 40);
     }
   }, [open]);
@@ -81,6 +82,19 @@ export function DigitalCardsPickerDialog({
 
   const utils = trpc.useUtils();
   const [picking, setPicking] = useState(false);
+
+  // بلاغ «سعر الجهاز مختلف» (§٧.٥): الكاشير يرى شاشة جهاز المزوّد فيلاحظ تغيّر الحصة قبل المدير.
+  // البلاغ **لا يغيّر سعراً** — يفتح قراراً لدى المدير في تبويب «أسعار اليوم».
+  const [reporting, setReporting] = useState<PosCard | null>(null);
+  const [reportShare, setReportShare] = useState("");
+  const [reportNotes, setReportNotes] = useState("");
+  const reportMut = trpc.digitalCards.pricing.reportMismatch.useMutation({
+    onSuccess: () => {
+      setReporting(null); setReportShare(""); setReportNotes("");
+      notify.ok("أُرسل البلاغ للمدير", "السعر الحاليّ لم يتغيّر — البيع يستمرّ به حتى يُعتمد.");
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const cards = list.data ?? [];
   // قائمة المزوّدين تُبنى من نتيجة «كل المزوّدين» كي لا تختفي الأزرار بمجرّد التصفية بأحدهم.
@@ -123,9 +137,13 @@ export function DigitalCardsPickerDialog({
       role="dialog"
       aria-modal="true"
       aria-label="الكروت والاشتراكات"
-      onClick={(e) => { if (e.target === e.currentTarget && !confirming) onClose(); }}
+      onClick={(e) => { if (e.target === e.currentTarget && !confirming && !reporting) onClose(); }}
       onKeyDown={(e) => {
-        if (e.key === "Escape") { e.stopPropagation(); if (confirming) setConfirming(null); else onClose(); }
+        if (e.key !== "Escape") return;
+        e.stopPropagation();
+        if (reporting) setReporting(null);
+        else if (confirming) setConfirming(null);
+        else onClose();
       }}
       style={{
         position: "fixed", inset: 0, background: C.overlay, zIndex: 60,
@@ -299,6 +317,12 @@ export function DigitalCardsPickerDialog({
                 اشتراك تعليمي — ستُطلب بيانات الطالب قبل إتمام البيع.
               </span>
             )}
+            <button
+              onClick={() => { setReporting(confirming); setConfirming(null); }}
+              style={{ alignSelf: "flex-start", border: "none", background: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: C.primary, textDecoration: "underline" }}
+            >
+              سعر الجهاز مختلف؟ أبلِغ المدير
+            </button>
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={() => setConfirming(null)}
@@ -313,6 +337,68 @@ export function DigitalCardsPickerDialog({
                 style={{ flex: 1, height: 46, borderRadius: 10, border: "none", background: picking ? C.muted : C.primary, color: picking ? C.mutedFg : C.primaryFg, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: picking ? "not-allowed" : "pointer" }}
               >
                 {picking ? "جارٍ الإضافة…" : "إضافة للسلة"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* بلاغ تغيّر سعر المزوّد — يفتح قراراً لدى المدير ولا يمسّ السعر النافذ. */}
+      {reporting && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{ position: "fixed", inset: 0, background: C.overlay, zIndex: 61, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+        >
+          <div style={{ width: "min(420px, 100%)", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 14, padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+            <span style={{ fontSize: 16, fontWeight: 800, color: C.fg }}>بلاغ تغيّر سعر المزوّد</span>
+            <span style={{ fontSize: 13, color: C.mutedFg, lineHeight: 1.6 }}>
+              {reporting.name} — أدخِل المبلغ الذي يخصمه <strong>جهاز المزوّد</strong> فعلاً الآن. البلاغ لا يغيّر
+              سعر البيع؛ يراه المدير في «أسعار اليوم» فيعتمده أو يرفضه.
+            </span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <label style={{ fontSize: 13, fontWeight: 700, color: C.fg }} htmlFor="dc-report-share">حصة المزوّد على الجهاز</label>
+              <input
+                id="dc-report-share"
+                value={reportShare}
+                onChange={(e) => setReportShare(e.target.value.replace(/[^\d.]/g, ""))}
+                inputMode="decimal"
+                dir="ltr"
+                autoFocus
+                style={{ width: "100%", height: 46, padding: "0 12px", borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.card, color: C.fg, fontSize: 16, fontFamily: "inherit", outline: "none" }}
+              />
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <label style={{ fontSize: 13, fontWeight: 700, color: C.fg }} htmlFor="dc-report-notes">ملاحظة (اختياري)</label>
+              <input
+                id="dc-report-notes"
+                value={reportNotes}
+                onChange={(e) => setReportNotes(e.target.value)}
+                dir="auto"
+                style={{ width: "100%", height: 46, padding: "0 12px", borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.card, color: C.fg, fontSize: 15, fontFamily: "inherit", outline: "none" }}
+              />
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => { setReporting(null); setReportShare(""); setReportNotes(""); }}
+                style={{ flex: 1, height: 46, borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 15, fontWeight: 700, cursor: "pointer" }}
+              >
+                إلغاء
+              </button>
+              <button
+                disabled={reportMut.isPending}
+                onClick={() => {
+                  if (!reporting) return;
+                  if (!reportShare || Number(reportShare) <= 0) return notify.err("أدخِل المبلغ الظاهر على الجهاز");
+                  reportMut.mutate({
+                    branchId,
+                    offeringId: reporting.offeringId,
+                    reportedProviderShare: reportShare,
+                    notes: reportNotes.trim() || null,
+                  });
+                }}
+                style={{ flex: 1, height: 46, borderRadius: 10, border: "none", background: reportMut.isPending ? C.muted : C.primary, color: reportMut.isPending ? C.mutedFg : C.primaryFg, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: reportMut.isPending ? "not-allowed" : "pointer" }}
+              >
+                {reportMut.isPending ? "جارٍ الإرسال…" : "إرسال البلاغ"}
               </button>
             </div>
           </div>

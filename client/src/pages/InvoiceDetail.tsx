@@ -21,7 +21,8 @@ import { allocateLineTax } from "@/components/invoice";
 import { D, fmt, round2 } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { InvoiceDigitalCards } from "@/components/digitalCards/InvoiceDigitalCards";
 import { useEffect, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
 import { ChevronDown, FileText, Package, Paperclip, Printer } from "lucide-react";
@@ -138,6 +139,16 @@ export default function InvoiceDetail() {
   // بـ403 — بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const me = trpc.auth.me.useQuery();
 
+  // ش١٠: لقطات الكروت الرقمية للفاتورة — بدونها تفقد **إعادة** الطباعة مراجع الكروت وبيانات
+  // الطالب التي طُبعت أوّل مرّة (الإيصال الأصلي يأخذها من ردّ `finalize`). محجوبة خلف صلاحية
+  // الوحدة بنفس دالة الخادم فلا يُطلق مَن لا يملكها نداءً يعود بـ403.
+  const canReadDigital = !!me.data?.role &&
+    hasModuleAccess(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "digital_cards", "READ");
+  const digitalPrint = trpc.digitalCards.sales.printDetails.useQuery(
+    { invoiceId },
+    { enabled: Number.isFinite(invoiceId) && canReadDigital, retry: false },
+  );
+
   if (inv.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
   if (!inv.data) return <div className="p-10 text-center text-muted-foreground">الفاتورة غير موجودة.</div>;
   const data = inv.data;
@@ -154,7 +165,10 @@ export default function InvoiceDetail() {
     if (printingReceipt) return;
     setPrintingReceipt(true);
     try {
-      const result = await printReceipt(invoiceToReceipt(data));
+      const result = await printReceipt({
+        ...invoiceToReceipt(data),
+        digitalDetails: digitalPrint.data?.length ? digitalPrint.data : null,
+      });
       if (result.via === "server") {
         notify.ok("تمت إعادة الطباعة", `أُرسلت الفاتورة ${data.invoiceNumber} إلى طابعة الكاشير`);
       } else if (result.via === "thermal") {
@@ -457,6 +471,9 @@ export default function InvoiceDetail() {
           </div>
         </CardContent>
       </Card>
+
+      {/* ش١٢: الكروت الرقمية ومسار عكسها — لا تُعرض إن لم تكن الفاتورة تحوي كروتاً. */}
+      <InvoiceDigitalCards invoiceId={invoiceId} />
 
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">سجل الدفعات</CardTitle></CardHeader>

@@ -11,7 +11,7 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
-import { CopyPlus, Send, Save, TriangleAlert } from "lucide-react";
+import { CopyPlus, Send, Save, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
@@ -122,6 +122,10 @@ export default function DigitalPricing() {
     onSuccess: () => { invalidate(); notify.ok("رُفض البلاغ — لم يتغيّر أيّ سعر"); },
     onError: (e) => notify.err(e),
   });
+  const cancelMut = trpc.digitalCards.pricing.cancelDraft.useMutation({
+    onSuccess: () => { invalidate(); notify.ok("أُلغيت المسودّة", "الأسعار النافذة لم تتغيّر."); },
+    onError: (e) => notify.err(e),
+  });
 
   function filledLines() {
     return Object.entries(shares)
@@ -155,8 +159,21 @@ export default function DigitalPricing() {
     publishMut.mutate({ ...scope, lines });
   }
 
+  const draftBatchId = sheet.data?.batch?.id ?? null;
+
+  async function cancelDraft() {
+    if (draftBatchId == null) return;
+    if (!(await confirm({
+      variant: "danger",
+      title: "إلغاء المسودّة",
+      description: "ستُحذف الحصص المحفوظة لهذا اليوم ويعود الكشف فارغاً. الأسعار النافذة في الكاشير لا تتأثّر. متابعة؟",
+      confirmText: "إلغاء المسودّة",
+    }))) return;
+    cancelMut.mutate({ batchId: draftBatchId });
+  }
+
   const rows = sheet.data?.rows ?? [];
-  const busy = saveMut.isPending || publishMut.isPending || copyMut.isPending;
+  const busy = saveMut.isPending || publishMut.isPending || copyMut.isPending || cancelMut.isPending;
   const openReports = reports.data ?? [];
 
   return (
@@ -278,6 +295,11 @@ export default function DigitalPricing() {
             {sheet.data?.batch ? " — مسودّة محفوظة" : ""}
           </span>
           <div className="flex gap-2">
+            {draftBatchId != null && (
+              <Button variant="outline" size="sm" disabled={busy} onClick={() => void cancelDraft()}>
+                <Trash2 className="size-4" /> إلغاء المسودّة
+              </Button>
+            )}
             <Button variant="outline" size="sm" disabled={!scopeReady || busy} onClick={saveDraft}>
               <Save className="size-4" /> حفظ مسودّة
             </Button>
