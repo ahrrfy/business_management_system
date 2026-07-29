@@ -55,7 +55,7 @@ server/services/voucher/create.ts:163-167
 | بوابة الجرد | `countPortalRouter` — 5 نقاط `publicProcedure` بينها `submit`/`finish` | رمز جلسة عدّ مستقل |
 | واجهة المتجر | `storefrontRouter.createOrder` `publicProcedure` | لا هوية — زبون مجهول يُنشئ طلباً |
 | webhooks القنوات | `server/routes/channelWebhooks.ts` (whatsapp/instagram/store) | HMAC |
-| المهام المجدولة | 5 مهام (`morningPushScheduler`, `outboxSweeper`, `reservations/lifecycle`, …) | **بلا هوية إطلاقاً** |
+| المهام المجدولة | 5 مهام (`morningPushScheduler`, `outboxSweeper`, `hrDevices/bridge` + كنّاسا ذاكرة) | **بلا هوية إطلاقاً** |
 
 المهام المجدولة تنتهك §20.3 («ممنوع أن تنفذ المهمة الخلفية بسلطة غير محددة») **اليوم**.
 

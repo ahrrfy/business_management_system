@@ -48,11 +48,12 @@
     "flagCounts": {
       "LOCAL_GATE": 119,
       "NO_BRANCH_SCOPE": 115,
+      "ADMIN_ONLY": 92,
       "SENSITIVE_ACTION": 76,
-      "ADMIN_ONLY": 72,
-      "RAW_ROLE_GATE": 66,
+      "RAW_ROLE_GATE": 69,
       "UNAUTHENTICATED": 32,
       "READ_WITHOUT_MODULE_GATE": 30,
+      "HANDLER_ROLE_CHECK": 23,
       "WRITE_WITHOUT_MODULE_GATE": 23
     },
     "expressRoutes": 15,
@@ -221,11 +222,11 @@
       "authority": "module-gate",
       "module": "collections",
       "level": "FULL",
-      "roles": "manager|accountant",
+      "roles": "manager|accountant|admin",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/arRemindersRouter.ts:98"
     },
     {
@@ -272,11 +273,11 @@
       "authority": "module-gate",
       "module": "collections",
       "level": "FULL",
-      "roles": "manager|accountant",
+      "roles": "manager|accountant|admin",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/arRemindersRouter.ts:82"
     },
     {
@@ -1309,11 +1310,11 @@
       "authority": "module-gate",
       "module": "reports",
       "level": "READ",
-      "roles": "manager|accountant|auditor",
+      "roles": "manager|accountant|auditor|role-check",
       "branch": "asserted",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|RAW_ROLE_GATE",
       "loc": "server/routers/cardAccountRouter.ts:57"
     },
     {
@@ -1394,11 +1395,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "READ",
-      "roles": "manager|accountant",
+      "roles": "manager|accountant|admin",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/cashTransfersRouter.ts:101"
     },
     {
@@ -1428,11 +1429,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "FULL",
-      "roles": "manager|accountant",
+      "roles": "manager|accountant|admin",
       "branch": "required",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: send",
-      "flags": "SENSITIVE_ACTION",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY|SENSITIVE_ACTION",
       "loc": "server/routers/cashTransfersRouter.ts:20"
     },
     {
@@ -3791,11 +3792,11 @@
       "authority": "module-map",
       "module": "hr",
       "level": "FULL",
-      "roles": "",
+      "roles": "admin",
       "branch": "none",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/employeeRouter.ts:136"
     },
     {
@@ -4947,11 +4948,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "FULL",
-      "roles": "manager|accountant",
+      "roles": "manager|accountant|admin",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/installmentRouter.ts:39"
     },
     {
@@ -5015,11 +5016,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "FULL",
-      "roles": "manager|accountant",
+      "roles": "manager|accountant|admin",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/installmentRouter.ts:92"
     },
     {
@@ -5338,11 +5339,11 @@
       "authority": "module-map",
       "module": "inventory",
       "level": "READ",
-      "roles": "",
+      "roles": "admin",
       "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/inventoryRouter.ts:342"
     },
     {
@@ -5389,11 +5390,11 @@
       "authority": "module-map",
       "module": "inventory",
       "level": "READ",
-      "roles": "",
+      "roles": "admin",
       "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/inventoryRouter.ts:602"
     },
     {
@@ -7055,11 +7056,11 @@
       "authority": "module-map",
       "module": "campaigns",
       "level": "READ",
-      "roles": "",
+      "roles": "admin",
       "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/promotionsV2Router.ts:156"
     },
     {
@@ -7072,11 +7073,11 @@
       "authority": "module-gate",
       "module": "campaigns",
       "level": "FULL",
-      "roles": "manager",
+      "roles": "manager|admin",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/promotionsV2Router.ts:69"
     },
     {
@@ -7089,11 +7090,11 @@
       "authority": "module-gate",
       "module": "campaigns",
       "level": "FULL",
-      "roles": "manager",
+      "roles": "manager|admin",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/promotionsV2Router.ts:138"
     },
     {
@@ -7106,11 +7107,11 @@
       "authority": "module-map",
       "module": "campaigns",
       "level": "READ",
-      "roles": "",
+      "roles": "admin",
       "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/promotionsV2Router.ts:57"
     },
     {
@@ -7361,11 +7362,11 @@
       "authority": "module-gate",
       "module": "sales",
       "level": "FULL",
-      "roles": "manager",
+      "roles": "manager|admin",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/quotationRouter.ts:165"
     },
     {
@@ -7429,11 +7430,11 @@
       "authority": "module-gate",
       "module": "sales",
       "level": "FULL",
-      "roles": "manager",
+      "roles": "manager|admin",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/quotationRouter.ts:149"
     },
     {
@@ -7446,11 +7447,11 @@
       "authority": "module-gate",
       "module": "sales",
       "level": "FULL",
-      "roles": "manager",
+      "roles": "manager|admin",
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/quotationRouter.ts:101"
     },
     {
@@ -8534,11 +8535,11 @@
       "authority": "module-map",
       "module": "reservations",
       "level": "FULL",
-      "roles": "",
+      "roles": "role-check",
       "branch": "scoped",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "LOCAL_GATE",
+      "flags": "LOCAL_GATE|HANDLER_ROLE_CHECK|RAW_ROLE_GATE",
       "loc": "server/routers/reservationsRouter.ts:89"
     },
     {
@@ -8585,11 +8586,11 @@
       "authority": "module-gate",
       "module": "sales",
       "level": "FULL",
-      "roles": "manager",
+      "roles": "manager|admin",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/returnRouter.ts:78"
     },
     {
@@ -10693,11 +10694,11 @@
       "authority": "module-map",
       "module": "treasury",
       "level": "READ",
-      "roles": "",
+      "roles": "manager",
       "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "LOCAL_GATE",
+      "flags": "LOCAL_GATE|HANDLER_ROLE_CHECK|RAW_ROLE_GATE",
       "loc": "server/routers/treasuryRouter.ts:141"
     },
     {
@@ -11135,11 +11136,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "READ",
-      "roles": "manager|accountant",
+      "roles": "manager|accountant|admin",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/voucherRouter.ts:189"
     },
     {
@@ -11152,11 +11153,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "READ",
-      "roles": "manager|accountant",
+      "roles": "manager|accountant|admin",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/voucherRouter.ts:161"
     },
     {
@@ -11203,11 +11204,11 @@
       "authority": "module-gate",
       "module": "treasury",
       "level": "READ",
-      "roles": "manager|accountant",
+      "roles": "manager|accountant|admin",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
+      "flags": "HANDLER_ROLE_CHECK|ADMIN_ONLY",
       "loc": "server/routers/voucherRouter.ts:200"
     },
     {
@@ -11506,175 +11507,275 @@
       "method": "GET",
       "path": "/status",
       "file": "server/printRoute.ts",
-      "line": 50
+      "line": 50,
+      "authority": "raw-role",
+      "roles": "admin|manager|open-shift",
+      "sensitivity": "MEDIUM",
+      "note": "مصادقة + (أدمن/مدير أو وردية مفتوحة)"
     },
     {
       "surface": "express",
       "method": "POST",
       "path": "/raw",
       "file": "server/printRoute.ts",
-      "line": 57
+      "line": 57,
+      "authority": "raw-role",
+      "roles": "admin|manager|open-shift",
+      "sensitivity": "HIGH",
+      "note": "مصادقة + (أدمن/مدير أو وردية مفتوحة)"
     },
     {
       "surface": "express",
       "method": "POST",
       "path": "/test",
       "file": "server/printRoute.ts",
-      "line": 91
+      "line": 91,
+      "authority": "raw-role",
+      "roles": "admin|manager|open-shift",
+      "sensitivity": "HIGH",
+      "note": "مصادقة + (أدمن/مدير أو وردية مفتوحة)"
     },
     {
       "surface": "express",
       "method": "GET",
       "path": "/banner/:id/:slot",
       "file": "server/imageRoute.ts",
-      "line": 172
+      "line": 172,
+      "authority": "mixed",
+      "roles": "public|kiosk",
+      "sensitivity": "LOW",
+      "note": "عام/كشك — صور منتجات/بنرات"
     },
     {
       "surface": "express",
       "method": "GET",
       "path": "/product/:id",
       "file": "server/imageRoute.ts",
-      "line": 214
+      "line": 214,
+      "authority": "mixed",
+      "roles": "public|kiosk",
+      "sensitivity": "LOW",
+      "note": "عام/كشك — صور منتجات/بنرات"
     },
     {
       "surface": "express",
       "method": "GET",
       "path": "/kiosk-product/:id",
       "file": "server/imageRoute.ts",
-      "line": 254
+      "line": 254,
+      "authority": "mixed",
+      "roles": "public|kiosk",
+      "sensitivity": "LOW",
+      "note": "عام/كشك — صور منتجات/بنرات"
     },
     {
       "surface": "express",
       "method": "GET",
       "path": "/download",
       "file": "server/backupRoutes.ts",
-      "line": 13
+      "line": 13,
+      "authority": "admin",
+      "roles": "admin",
+      "sensitivity": "HIGH",
+      "note": "كوكي+CSRF، أدمن — تنزيل نسخة كاملة"
     },
     {
       "surface": "express",
       "method": "GET",
       "path": "/whatsapp",
       "file": "server/routes/channelWebhooks.ts",
-      "line": 144
+      "line": 144,
+      "authority": "hmac",
+      "roles": "integration",
+      "sensitivity": "MEDIUM",
+      "note": "توقيع HMAC — Principal تكامل"
     },
     {
       "surface": "express",
       "method": "POST",
       "path": "/whatsapp",
       "file": "server/routes/channelWebhooks.ts",
-      "line": 172
+      "line": 172,
+      "authority": "hmac",
+      "roles": "integration",
+      "sensitivity": "MEDIUM",
+      "note": "توقيع HMAC — Principal تكامل"
     },
     {
       "surface": "express",
       "method": "GET",
       "path": "/instagram",
       "file": "server/routes/channelWebhooks.ts",
-      "line": 202
+      "line": 202,
+      "authority": "hmac",
+      "roles": "integration",
+      "sensitivity": "MEDIUM",
+      "note": "توقيع HMAC — Principal تكامل"
     },
     {
       "surface": "express",
       "method": "POST",
       "path": "/instagram",
       "file": "server/routes/channelWebhooks.ts",
-      "line": 210
+      "line": 210,
+      "authority": "hmac",
+      "roles": "integration",
+      "sensitivity": "MEDIUM",
+      "note": "توقيع HMAC — Principal تكامل"
     },
     {
       "surface": "express",
       "method": "POST",
       "path": "/store",
       "file": "server/routes/channelWebhooks.ts",
-      "line": 240
+      "line": 240,
+      "authority": "hmac",
+      "roles": "integration",
+      "sensitivity": "MEDIUM",
+      "note": "توقيع HMAC — Principal تكامل"
     },
     {
       "surface": "express",
       "method": "GET",
       "path": "/:messageId",
       "file": "server/routes/waMedia.ts",
-      "line": 47
+      "line": 47,
+      "authority": "none",
+      "roles": "session",
+      "sensitivity": "HIGH",
+      "note": "جلسة مستخدم — وسائط محادثات (PII)"
     },
     {
       "surface": "express",
       "method": "GET",
       "path": "/.well-known/assetlinks.json",
       "file": "server/wellKnown.ts",
-      "line": 21
+      "line": 21,
+      "authority": "public",
+      "roles": "public",
+      "sensitivity": "LOW",
+      "note": "عامّ بالتصميم"
     },
     {
       "surface": "express",
       "method": "GET",
       "path": "/healthz",
       "file": "server/index.ts",
-      "line": 155
+      "line": 155,
+      "authority": "public",
+      "roles": "public",
+      "sensitivity": "LOW",
+      "note": "فحص صحّة عامّ"
     },
     {
       "surface": "express-mount",
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 284
+      "line": 284,
+      "authority": "mount",
+      "roles": "",
+      "sensitivity": "",
+      "note": "نقطة تركيب (tenancy/csrf middleware)"
     },
     {
       "surface": "express-mount",
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 292
+      "line": 292,
+      "authority": "mount",
+      "roles": "",
+      "sensitivity": "",
+      "note": "نقطة تركيب (tenancy/csrf middleware)"
     },
     {
       "surface": "express-mount",
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 325
+      "line": 325,
+      "authority": "mount",
+      "roles": "",
+      "sensitivity": "",
+      "note": "نقطة تركيب (tenancy/csrf middleware)"
     },
     {
       "surface": "express-mount",
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 328
+      "line": 328,
+      "authority": "mount",
+      "roles": "",
+      "sensitivity": "",
+      "note": "نقطة تركيب (tenancy/csrf middleware)"
     },
     {
       "surface": "express-mount",
       "method": "MOUNT",
       "path": "/api/print",
       "file": "server/index.ts",
-      "line": 333
+      "line": 333,
+      "authority": "mount",
+      "roles": "",
+      "sensitivity": "",
+      "note": "نقطة تركيب (tenancy/csrf middleware)"
     },
     {
       "surface": "express-mount",
       "method": "MOUNT",
       "path": "/api/img",
       "file": "server/index.ts",
-      "line": 339
+      "line": 339,
+      "authority": "mount",
+      "roles": "",
+      "sensitivity": "",
+      "note": "نقطة تركيب (tenancy/csrf middleware)"
     },
     {
       "surface": "express-mount",
       "method": "MOUNT",
       "path": "/api/backups",
       "file": "server/index.ts",
-      "line": 344
+      "line": 344,
+      "authority": "mount",
+      "roles": "",
+      "sensitivity": "",
+      "note": "نقطة تركيب (tenancy/csrf middleware)"
     },
     {
       "surface": "express-mount",
       "method": "MOUNT",
       "path": "/api/wa/media",
       "file": "server/index.ts",
-      "line": 348
+      "line": 348,
+      "authority": "mount",
+      "roles": "",
+      "sensitivity": "",
+      "note": "نقطة تركيب (tenancy/csrf middleware)"
     },
     {
       "surface": "express-mount",
       "method": "MOUNT",
       "path": "/api/webhooks",
       "file": "server/index.ts",
-      "line": 355
+      "line": 355,
+      "authority": "mount",
+      "roles": "",
+      "sensitivity": "",
+      "note": "نقطة تركيب (tenancy/csrf middleware)"
     },
     {
       "surface": "express-mount",
       "method": "MOUNT",
       "path": "/api/webhooks/company/:companyCode",
       "file": "server/index.ts",
-      "line": 356
+      "line": 356,
+      "authority": "mount",
+      "roles": "",
+      "sensitivity": "",
+      "note": "نقطة تركيب (tenancy/csrf middleware)"
     }
   ],
   "jobs": [

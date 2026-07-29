@@ -304,6 +304,34 @@ function scanTrpcFile(file) {
     }
   }
   flush("unknown", lines.length);
+
+  // (P1 — مراجعة Codex ٢) فحصٌ لجسم المعالِج: بعضُ النقاط تحكم بالدور **داخل** الـhandler لا في
+  // البوّابة (مثل `if (!RECON_WRITERS.has(ctx.user.role)) throw` أو `assertElevated(ctx.user.role)`
+  // أو `ctx.user.role !== "admin"`). المسح المعتمِد على البوّابة وحده يُعميها. نمسح شريحة كل نقطة
+  // (من سطرها حتى بداية التالية) عن أنماط قرار الدور ونسجّلها مصدرَ سلطةٍ إضافياً.
+  // نلتقط **بوّابات المنع** بالدور داخل المعالِج فقط (مسار الرفض)، لا اصطلاح رفع النطاق
+  // (`ctx.user.role === "admin"` لتوسيع البيانات — قرار نطاقٍ مُمثَّلٌ أصلاً، ليس بوّابةً تمنع).
+  // أنماط المنع: `!== "role"` · `!SET.has(ctx.user.role)` · `assertElevated(...)` · `NOT_ADMIN_ERR_MSG`.
+  out.sort((a, b) => a.line - b.line);
+  for (let i = 0; i < out.length; i++) {
+    const start = out[i].line - 1;
+    const end = Math.min(i + 1 < out.length ? out[i + 1].line - 1 : lines.length, start + 160);
+    const body = lines.slice(start, end).join("\n");
+    const denyAdmin = /ctx\.user\.role\s*!==\s*["']admin["']/.test(body) || /\bNOT_ADMIN_ERR_MSG\b/.test(body);
+    const denyRoleNe = [...body.matchAll(/ctx\.user\.role\s*!==\s*["']([a-z_]+)["']/g)].map((x) => x[1]).filter((r) => r !== "admin");
+    const denyRoleSet = /![A-Z_]+\.has\(\s*ctx\.user\.role\s*\)/.test(body);      // !RECON_WRITERS.has(ctx.user.role)
+    const denyElevated = /\bassertElevated\s*\(/.test(body);
+    const roles = Array.from(new Set(denyRoleNe));
+    const hasHandlerGate = denyAdmin || denyRoleSet || denyElevated || roles.length > 0;
+    if (hasHandlerGate) {
+      out[i].handlerGate = {
+        admin: denyAdmin && roles.length === 0 && !denyRoleSet && !denyElevated,
+        roles,
+        // قيد دورٍ بلا تعداد صريح في الشريحة (مجموعة/دالّة تحكم) — نعلّمه raw-role عاماً للمراجعة.
+        opaque: denyRoleSet || denyElevated,
+      };
+    }
+  }
   return out;
 }
 
@@ -332,6 +360,12 @@ function flagsOf(ep, meta) {
     if (meta.authority === "unknown") f.push("PROCEDURE_UNRESOLVED");
     if (meta.local) f.push("LOCAL_GATE");
   }
+  // (P1 — مراجعة Codex ٢) قيد دورٍ داخل جسم المعالِج: مصدر سلطةٍ إضافيّ فوق البوّابة.
+  if (ep.handlerGate) {
+    f.push("HANDLER_ROLE_CHECK");
+    if (ep.handlerGate.admin && !f.includes("ADMIN_ONLY")) f.push("ADMIN_ONLY");
+    if ((ep.handlerGate.roles.length || ep.handlerGate.opaque) && !f.includes("RAW_ROLE_GATE")) f.push("RAW_ROLE_GATE");
+  }
   if (ep.procedure === "publicProcedure") f.push("UNAUTHENTICATED");
   const s = sensitivityOf(ep);
   if (s.level === "HIGH") f.push("SENSITIVE_ACTION");
@@ -339,6 +373,23 @@ function flagsOf(ep, meta) {
 }
 
 /* ─────────────────────────── مسح Express + المهام ─────────────────────────── */
+
+/**
+ * (P1 — مراجعة Codex ٢) تصنيف السلطة الفعليّة لكل مسار Express حسب ملفه — مشتقٌّ يدوياً من قراءة
+ * المصدر (لا سلطة اصطناعية موحّدة). المفتاح: بادئة الملف. القيمة: {authority, roles, sensitivity, note}.
+ */
+function classifyExpress(file, path, method) {
+  const f = file.replace(/\\/g, "/");
+  if (f.endsWith("backupRoutes.ts")) return { authority: "admin", roles: "admin", sensitivity: "HIGH", note: "كوكي+CSRF، أدمن — تنزيل نسخة كاملة" };
+  if (f.endsWith("printRoute.ts")) return { authority: "raw-role", roles: "admin|manager|open-shift", sensitivity: /raw|test/.test(path) ? "HIGH" : "MEDIUM", note: "مصادقة + (أدمن/مدير أو وردية مفتوحة)" };
+  if (f.endsWith("waMedia.ts")) return { authority: "none", roles: "session", sensitivity: "HIGH", note: "جلسة مستخدم — وسائط محادثات (PII)" };
+  if (f.endsWith("channelWebhooks.ts")) return { authority: "hmac", roles: "integration", sensitivity: "MEDIUM", note: "توقيع HMAC — Principal تكامل" };
+  if (f.endsWith("imageRoute.ts")) return { authority: "mixed", roles: "public|kiosk", sensitivity: "LOW", note: "عام/كشك — صور منتجات/بنرات" };
+  if (f.endsWith("wellKnown.ts")) return { authority: "public", roles: "public", sensitivity: "LOW", note: "عامّ بالتصميم" };
+  if (path === "/healthz") return { authority: "public", roles: "public", sensitivity: "LOW", note: "فحص صحّة عامّ" };
+  if (f.endsWith("index.ts")) return { authority: "mount", roles: "", sensitivity: "", note: "نقطة تركيب (tenancy/csrf middleware)" };
+  return { authority: "unknown", roles: "", sensitivity: "", note: "" };
+}
 
 function scanExpress() {
   const rows = [];
@@ -353,9 +404,9 @@ function scanExpress() {
     const lines = readFileSync(p, "utf8").split(/\r?\n/);
     lines.forEach((l, i) => {
       const m = l.match(/\b(?:r|app|router)\.(get|post|put|patch|delete)\s*\(\s*["'`]([^"'`]+)["'`]/);
-      if (m) rows.push({ surface: "express", method: m[1].toUpperCase(), path: m[2], file: rel, line: i + 1 });
+      if (m) rows.push({ surface: "express", method: m[1].toUpperCase(), path: m[2], file: rel, line: i + 1, ...classifyExpress(rel, m[2], m[1]) });
       const mount = l.match(/app\.use\(\s*["'`](\/api\/[^"'`]*)["'`]/);
-      if (mount) rows.push({ surface: "express-mount", method: "MOUNT", path: mount[1], file: rel, line: i + 1 });
+      if (mount) rows.push({ surface: "express-mount", method: "MOUNT", path: mount[1], file: rel, line: i + 1, ...classifyExpress(rel, mount[1], "MOUNT") });
     });
   }
   return rows;
@@ -386,6 +437,10 @@ for (const f of trpcFiles) {
   for (const ep of scanTrpcFile(f)) {
     const meta = ep.gate;
     const s = sensitivityOf(ep);
+    // دمج أدوار قيد المعالِج (إن وُجد) مع أدوار البوّابة — كلاهما مصدرُ سلطة فعليّ.
+    const gateRoles = meta?.roles ?? [];
+    const handlerRoles = ep.handlerGate ? [...ep.handlerGate.roles, ...(ep.handlerGate.admin ? ["admin"] : []), ...(ep.handlerGate.opaque ? ["role-check"] : [])] : [];
+    const roles = Array.from(new Set([...gateRoles, ...handlerRoles]));
     endpoints.push({
       surface: "trpc",
       router: routerName,
@@ -396,7 +451,7 @@ for (const f of trpcFiles) {
       authority: meta?.authority ?? "unknown",
       module: meta?.module ?? "",
       level: meta?.level ?? "",
-      roles: (meta?.roles ?? []).join("|"),
+      roles: roles.join("|"),
       branch: meta?.branch === false ? "none" : String(meta?.branch ?? "unknown"),
       sensitivity: s.level,
       sensitivityWhy: s.why,
@@ -445,6 +500,11 @@ const cols = ["surface", "router", "name", "proposedPermission", "kind", "proced
 // فلا تُترك في JSON وحده. أعمدة موحّدة؛ الحقول غير المنطبقة فارغة.
 const csvRows = endpoints.map((e) => e);
 for (const r of express) {
+  const eflags = ["EXPRESS_SURFACE"];
+  if (r.authority === "admin") eflags.push("ADMIN_ONLY");
+  if (r.authority === "raw-role") eflags.push("RAW_ROLE_GATE");
+  if (r.authority === "public" || r.authority === "mixed") eflags.push("UNAUTHENTICATED");
+  if (r.sensitivity === "HIGH") eflags.push("SENSITIVE_ACTION");
   csvRows.push({
     surface: r.surface,
     router: "(express)",
@@ -452,10 +512,13 @@ for (const r of express) {
     proposedPermission: "",
     kind: r.surface === "express-mount" ? "mount" : "route",
     procedure: r.method,
-    authority: "express",
-    module: "", level: "", roles: "", branch: "",
-    sensitivity: "", sensitivityWhy: "",
-    flags: "EXPRESS_SURFACE",
+    authority: r.authority,          // (P1) السلطة الفعليّة لكل مسار لا ثابتٌ اصطناعيّ
+    module: "", level: "",
+    roles: r.roles ?? "",
+    branch: "",
+    sensitivity: r.sensitivity ?? "",
+    sensitivityWhy: r.note ?? "",
+    flags: eflags.join("|"),
     loc: `${r.file}:${r.line}`,
   });
 }

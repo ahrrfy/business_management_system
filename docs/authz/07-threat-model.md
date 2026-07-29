@@ -117,7 +117,7 @@ flowchart LR
 
 | البند | الوصف |
 |---|---|
-| **المسار** | `outboxSweeper` يرسل واتساب فعلياً؛ `reservations/lifecycle` يغيّر حالات؛ `hrDevices/bridge` يكتب حضوراً — بلا Principal. |
+| **المسار** | `outboxSweeper` يرسل واتساب فعلياً؛ `morningPushScheduler` يرسل Push؛ `hrDevices/bridge` يكتب حضوراً — ثلاثٌ من خمس مهام ذات أثر، بلا Principal. |
 | **الأثر** | خطأ منطقيّ أو حقن بيانات يتحوّل إلى أثر خارجيّ بلا فاعل قابل للنسبة أو الإيقاف. |
 | **العلاج** | Principal «حساب خدمة» بمالك وغرض ونطاق (§11.8) + kill switch لكلٍّ. Kill Switch موجود لواتساب — يُعمَّم. |
 
