@@ -18,7 +18,8 @@ import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
-const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+const creatableMethod = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+const reportableMethod = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "EXCHANGE"]);
 const voucherType = z.enum(["RECEIPT", "PAYMENT"]);
 const approvalStatus = z.enum(["APPROVED", "PENDING_APPROVAL", "REJECTED"]);
 const moneyStr = z
@@ -39,7 +40,7 @@ export const voucherRouter = router({
         voucherType,
         branchId: z.number().int().positive(),
         amount: moneyStr,
-        paymentMethod: method,
+        paymentMethod: creatableMethod,
         partyType,
         partyId: z.number().int().positive().nullish(),
         description: z.string().min(1, "الوصف مطلوب").max(500),
@@ -169,7 +170,7 @@ export const voucherRouter = router({
           status: z.enum(["COMPLETED", "REVERSED"]).optional(),
           approvalStatus: approvalStatus.optional(),
           voucherCategoryId: z.number().int().positive().optional(),
-          paymentMethod: method.optional(),
+          paymentMethod: reportableMethod.optional(),
           from: ymd.optional(),
           to: ymd.optional(),
           limit: z.number().int().positive().max(500).default(100),

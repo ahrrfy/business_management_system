@@ -2,12 +2,13 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
-import { exchangeHouses, exchangeTransactions, purchaseOrders, suppliers } from "../../../drizzle/schema";
+import { exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustExchangeBalanceIqd, adjustExchangeBalanceUsd, adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
-import { money, round2, toDbMoney } from "../money";
+import { money, round2, toDateStr, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
+import { computeSignature, nextVoucherNumber } from "../voucher/helpers";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
 
 export interface SettleSupplierInput {
@@ -36,13 +37,16 @@ export interface SettleSupplierInput {
 export async function settleSupplierViaExchange(
   input: SettleSupplierInput,
   actor: Actor,
-): Promise<{ txnId: number; txnNumber: string; fxDiff: string }> {
+): Promise<{ txnId: number; txnNumber: string; fxDiff: string; receiptId: number | null; voucherNumber: string | null }> {
   return withTx(async (tx) => {
     if (input.clientRequestId) {
       const existing = await findIdempotentRefId(tx, "exchange.settle", input.clientRequestId);
       if (existing != null) {
         const t = (await tx.select().from(exchangeTransactions).where(eq(exchangeTransactions.id, existing)).limit(1))[0];
-        return { txnId: existing, txnNumber: t?.txnNumber ?? "", fxDiff: t?.fxDiff ?? "0.00" };
+        const receipt = t?.receiptId
+          ? (await tx.select().from(receipts).where(eq(receipts.id, Number(t.receiptId))).limit(1))[0]
+          : null;
+        return { txnId: existing, txnNumber: t?.txnNumber ?? "", fxDiff: t?.fxDiff ?? "0.00", receiptId: receipt ? Number(receipt.id) : null, voucherNumber: receipt?.voucherNumber ?? null };
       }
     }
     const walletAmount = round2(input.walletAmount);
@@ -181,16 +185,37 @@ export async function settleSupplierViaExchange(
     });
     const txnId = extractInsertId(txRes);
 
-    // قيد التسديد (0/0/0 — حركة إطفاء ذمّة، مُستثناة من الإيراد).
+    // سند الصرف والقيد وعملية الصيرفة في transaction واحدة: إما أن تُحفظ الأطراف كلها أو لا شيء.
+    const voucherNumber = await nextVoucherNumber(tx, "PAYMENT", input.branchId);
+    const voucherDate = toDateStr();
+    const description = `تسديد مورد «${supplier.name}» عبر صيرفة «${house.name}»`;
+    const receiptRes = await tx.insert(receipts).values({
+      branchId: input.branchId, shiftId: null, cashBucket: null, direction: "OUT",
+      amount: toDbMoney(settledIqd), paymentMethod: "EXCHANGE", referenceNumber: txnNumber,
+      status: "COMPLETED", voucherNumber, partyType: "SUPPLIER", partyId: input.supplierId,
+      description, voucherDate: new Date(`${voucherDate}T00:00:00.000Z`),
+      approvalStatus: "APPROVED", approvedBy: actor.userId, approvedAt: new Date(), createdBy: actor.userId,
+    });
+    const receiptId = extractInsertId(receiptRes);
+    const signatureHash = computeSignature({
+      id: receiptId, amount: toDbMoney(settledIqd), partyType: "SUPPLIER", partyId: input.supplierId,
+      paymentMethod: "EXCHANGE", voucherDate, voucherNumber, createdBy: actor.userId,
+      approvedBy: actor.userId, branchId: input.branchId,
+    });
+    await tx.update(receipts).set({ signatureHash }).where(eq(receipts.id, receiptId));
+    await tx.update(exchangeTransactions).set({ receiptId }).where(eq(exchangeTransactions.id, txnId));
+
+    // قيد التسديد (حركة إطفاء ذمّة، مُستثناة من الإيراد) مربوط بالسند.
     await postEntry(tx, {
       entryType: "EXCHANGE_SETTLE",
       branchId: input.branchId,
+      receiptId,
       purchaseOrderId: purchaseOrder ? Number(purchaseOrder.id) : null,
       exchangeHouseId: input.exchangeHouseId,
       supplierId: input.supplierId,
       amount: settledIqd,
       dedupeKey: `EXSET:${txnNumber}`,
-      notes: `تسديد مورد «${supplier.name}» عبر الصيرفة`,
+      notes: description,
     });
 
     // فرق الصرف المحقَّق (amount موقَّع، معزول عن إيراد البيع).
@@ -226,6 +251,6 @@ export async function settleSupplierViaExchange(
     if (input.clientRequestId) {
       await recordIdempotencyKey(tx, "exchange.settle", input.clientRequestId, txnId);
     }
-    return { txnId, txnNumber, fxDiff: toDbMoney(fxDiff) };
+    return { txnId, txnNumber, fxDiff: toDbMoney(fxDiff), receiptId, voucherNumber };
   });
 }

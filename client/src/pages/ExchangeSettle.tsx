@@ -83,12 +83,15 @@ export default function ExchangeSettle() {
   const settle = trpc.exchange.settle.useMutation({
     onSuccess: (r) => {
       const fx = D(r.fxDiff);
-      notify.ok(fx.isZero() ? "تمّ التسديد" : `تمّ التسديد — ${fx.isPositive() ? "مكسب" : "خسارة"} صرف ${fmtAr(fx.abs().toFixed(2))} د.ع`);
+      const voucher = r.voucherNumber ? ` وإنشاء سند الصرف ${r.voucherNumber}` : "";
+      notify.ok(fx.isZero() ? `تمّ التسديد${voucher}` : `تمّ التسديد${voucher} — ${fx.isPositive() ? "مكسب" : "خسارة"} صرف ${fmtAr(fx.abs().toFixed(2))} د.ع`);
       reset();
       void utils.exchange.list.invalidate();
       // دين المورد المعروض هنا من suppliers.list — بلا إبطالٍ يبقى «دين المورد الحالي» قديماً
       // على الشاشة بعد التسديد فيُغري بتسديدٍ مزدوج بالخطأ.
       void utils.suppliers.list.invalidate();
+      void utils.reports.supplierStatement.invalidate();
+      void utils.vouchers.list.invalidate();
     },
     onError: (e: any) => {
       if (e?.data?.code === "PRECONDITION_FAILED") { setWarn(e.message); return; }
