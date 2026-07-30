@@ -81,6 +81,16 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0131_drop_dead_reversal_pending.sql",
   // ٣٠/٧/٢٦: ردّ الخسارة باعتمادٍ ثانٍ — توسيع enum بحالة LOSS_REFUND_PENDING + أعمدة الأثر.
   "drizzle/migrations/0132_loss_refund_sod.sql",
+  // ٣٠/٧/٢٦: priceSanity L1.8 — قيود CHECK على productVariants.costPrice و productUnits.conversionFactor.
+  // drizzle-kit db:push على MySQL 8 لا يُمثّل CHECK constraints موثوقاً في كل الحالات ⇒ نطبّقه هنا
+  // idempotently كدفاع نهائيّ ضدّ حادثة SINARLINE-class (تكلفة كارثيّة عبر الاستيراد/seed/db:push العاري).
+  "drizzle/migrations/0133_price_sanity_ceilings.sql",
+  // ٣٠/٧/٢٦: priceSanity L2.2 — جدول استثناءات لوحة تدقيق الكتالوج (catalogAnomalyOverrides).
+  // drizzle-kit لا يُمثّله (لأنه ليس ضمن schema.ts؛ إبقاؤه هنا حرّاً من دورة drizzle-kit generate).
+  "drizzle/migrations/0134_catalog_anomaly_overrides.sql",
+  // ٣٠/٧/٢٦: priceSanity L3 — جدول أثر التغيّرات على التكلفة/السعر + Trigger BEFORE UPDATE.
+  // drizzle-kit لا يُمثّل Triggers ⇒ يجب أن يُطبَّق يدوياً هنا. idempotent (DROP TRIGGER IF EXISTS).
+  "drizzle/migrations/0135_price_anomaly_log.sql",
 ];
 
 const url = process.env.DATABASE_URL;

@@ -4,6 +4,8 @@ import { AlertCircle, Plus, Printer, ShoppingCart, Users, X } from "lucide-react
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
+import { NumberInput } from "@/components/form/NumberInput";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Field, MarginBadge } from "@/components/product/variantBits";
@@ -216,16 +218,16 @@ export default function ServiceForm() {
         </CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Field label="سعر المفرد (د.ع)" required hint="السعر الافتراضي للبيع.">
-            <Input value={retail} onChange={(e) => setRetail(e.target.value)} dir="ltr" placeholder="250" inputMode="numeric" />
+            <MoneyInput value={retail} onChange={setRetail} placeholder="250" ariaLabel="سعر المفرد" />
           </Field>
           <Field label="سعر الجملة (اختياري)">
-            <Input value={wholesale} onChange={(e) => setWholesale(e.target.value)} dir="ltr" placeholder="—" inputMode="numeric" />
+            <MoneyInput value={wholesale} onChange={setWholesale} placeholder="—" ariaLabel="سعر الجملة" />
           </Field>
           <Field label="سعر الحكومي (اختياري)">
-            <Input value={government} onChange={(e) => setGovernment(e.target.value)} dir="ltr" placeholder="—" inputMode="numeric" />
+            <MoneyInput value={government} onChange={setGovernment} placeholder="—" ariaLabel="سعر الحكومي" />
           </Field>
           <Field label="تكلفة مباشرة (اختياري)" hint="كلفة لا تأتي من مادة مخزنية (عمالة/تشغيل).">
-            <Input value={directCost} onChange={(e) => setDirectCost(e.target.value)} dir="ltr" placeholder="0" inputMode="numeric" />
+            <MoneyInput value={directCost} onChange={setDirectCost} placeholder="0" ariaLabel="تكلفة مباشرة" />
           </Field>
           <div className="col-span-2 md:col-span-4 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground border-t pt-3">
             <span>كلفة المواد المُقدَّرة: <b className="text-foreground" dir="ltr">{toArabicDigits(Math.round(materialsCost))}</b> د.ع</span>
@@ -278,13 +280,13 @@ export default function ServiceForm() {
                     ))}
                   </select>
                   <div className="md:col-span-3 flex items-center gap-1.5">
-                    <Input
+                    <NumberInput
                       className="h-8 text-sm"
-                      dir="ltr"
-                      inputMode="decimal"
+                      decimals={4}
                       value={l.qty}
-                      onChange={(e) => patchLine(l.key, { qty: e.target.value })}
+                      onChange={(val) => patchLine(l.key, { qty: val })}
                       placeholder="1"
+                      ariaLabel="كمية المادة الخام"
                     />
                     {m && <span className="text-[11px] text-muted-foreground whitespace-nowrap">{m.unitName}</span>}
                   </div>

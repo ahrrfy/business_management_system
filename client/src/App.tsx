@@ -102,6 +102,7 @@ const ARReminders = lazy(() => import("@/pages/ARReminders"));
 const APReminders = lazy(() => import("@/pages/APReminders"));
 const ProfitabilityReport = lazy(() => import("@/pages/ProfitabilityReport"));
 const InventoryOpsReport = lazy(() => import("@/pages/InventoryOpsReport"));
+const CatalogAnomalies = lazy(() => import("@/pages/CatalogAnomalies"));
 const ProfitLoss = lazy(() => import("@/pages/ProfitLoss"));
 const GeneralLedger = lazy(() => import("@/pages/GeneralLedger"));
 const TrialBalance = lazy(() => import("@/pages/TrialBalance"));
@@ -380,6 +381,7 @@ export default function App() {
           reportViewerProcedure)، وقوائم الأدوار وُسِّعت لتطابق SECTION_ROLES في مركز التقارير
           (المحاسب/المدقّق كانا مصدودَين واجهياً رغم سماح الخادم — تحقيق ٦/٧). */}
       <Route path="/reports/credit-exposure"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CreditExposureReport /></RequireRole></Shell></Route>
+      <Route path="/reports/catalog-anomalies"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="catalogAnomalies"><CatalogAnomalies /></RequireRole></Shell></Route>
       <Route path="/reports/profit-loss"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ProfitLoss /></RequireRole></Shell></Route>
       <Route path="/reports/general-ledger"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><GeneralLedger /></RequireRole></Shell></Route>
       <Route path="/reports/trial-balance"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><TrialBalance /></RequireRole></Shell></Route>

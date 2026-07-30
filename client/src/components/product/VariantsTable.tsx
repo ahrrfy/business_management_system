@@ -7,10 +7,11 @@ import { useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
+import { NumberInput } from "@/components/form/NumberInput";
 import { Switch } from "@/components/ui/switch";
 import {
   barcodeState,
-  onlyDigits,
   toArabicDigits,
   variantStockTotal,
   type BarcodeState,
@@ -189,7 +190,7 @@ function VariantRow({
   const colorAtFocus = useRef("");
   const fullName = [baseName, v.color, v.size].filter(Boolean).join(" ");
   const setBc = (uid: number, val: string) => patch({ unitBarcodes: { ...v.unitBarcodes, [uid]: val } });
-  const setStock = (bid: number, val: string) => patch({ stockByBranch: { ...v.stockByBranch, [bid]: onlyDigits(val) } });
+  const setStock = (bid: number, val: string) => patch({ stockByBranch: { ...v.stockByBranch, [bid]: val } });
   const skuBad = skuDup(v.sku);
 
   return (
@@ -243,24 +244,32 @@ function VariantRow({
           );
         })}
         <td className="px-2 py-2">
-          <Input
-            value={v.stockByBranch[branchId] || (stockEditable ? "" : "0")}
-            onChange={(e) => stockEditable && setStock(branchId, e.target.value)}
-            readOnly={!stockEditable}
-            title={stockEditable ? "" : "الرصيد الحالي — يُدار عبر شاشات الجرد/الحركات"}
-            dir="ltr"
-            inputMode="numeric"
-            className={cn("h-8 text-xs w-16 text-center", !stockEditable && "bg-muted/40 text-muted-foreground cursor-default")}
-            placeholder="0"
-          />
+          {stockEditable ? (
+            <NumberInput
+              value={v.stockByBranch[branchId] || ""}
+              onChange={(val) => setStock(branchId, val)}
+              className="h-8 text-xs w-16 text-center"
+              placeholder="0"
+              ariaLabel="المخزون الافتتاحي للفرع"
+            />
+          ) : (
+            <Input
+              value={v.stockByBranch[branchId] || "0"}
+              readOnly
+              title="الرصيد الحالي — يُدار عبر شاشات الجرد/الحركات"
+              dir="ltr"
+              inputMode="numeric"
+              className="h-8 text-xs w-16 text-center bg-muted/40 text-muted-foreground cursor-default"
+              placeholder="0"
+            />
+          )}
         </td>
         <td className="px-2 py-2">
-          <Input
+          <NumberInput
             value={v.minStock}
-            onChange={(e) => patch({ minStock: onlyDigits(e.target.value) })}
-            dir="ltr"
-            inputMode="numeric"
+            onChange={(val) => patch({ minStock: val })}
             className="h-8 text-xs w-16 text-center"
+            ariaLabel="الحد الأدنى للمخزون"
           />
         </td>
         <td className="px-3 py-2">
@@ -358,24 +367,32 @@ function VariantRow({
                 <div className="flex flex-wrap gap-3">
                   {branches.map((b) => (
                     <Field key={b.id} label={b.name}>
-                      <Input
-                        value={v.stockByBranch[b.id] || (stockEditable ? "" : "0")}
-                        onChange={(e) => stockEditable && setStock(b.id, e.target.value)}
-                        readOnly={!stockEditable}
-                        dir="ltr"
-                        inputMode="numeric"
-                        className={cn("h-8 text-xs w-24 text-center", !stockEditable && "bg-muted/40 text-muted-foreground cursor-default")}
-                        placeholder="0"
-                      />
+                      {stockEditable ? (
+                        <NumberInput
+                          value={v.stockByBranch[b.id] || ""}
+                          onChange={(val) => setStock(b.id, val)}
+                          className="h-8 text-xs w-24 text-center"
+                          placeholder="0"
+                          ariaLabel={`مخزون افتتاحي — ${b.name}`}
+                        />
+                      ) : (
+                        <Input
+                          value={v.stockByBranch[b.id] || "0"}
+                          readOnly
+                          dir="ltr"
+                          inputMode="numeric"
+                          className="h-8 text-xs w-24 text-center bg-muted/40 text-muted-foreground cursor-default"
+                          placeholder="0"
+                        />
+                      )}
                     </Field>
                   ))}
                   <Field label="نقطة إعادة الطلب" hint="يقترح الشراء عند بلوغها.">
-                    <Input
+                    <NumberInput
                       value={v.reorderPoint}
-                      onChange={(e) => patch({ reorderPoint: onlyDigits(e.target.value) })}
-                      dir="ltr"
-                      inputMode="numeric"
+                      onChange={(val) => patch({ reorderPoint: val })}
                       className="h-8 text-xs w-24 text-center"
+                      ariaLabel="نقطة إعادة الطلب"
                     />
                   </Field>
                   <div className="self-end text-xs text-muted-foreground pb-2">
@@ -393,10 +410,10 @@ function VariantRow({
                 {v.priceOverride ? (
                   <div className="flex gap-2">
                     <Field label="تكلفة">
-                      <Input value={v.costPrice} onChange={(e) => patch({ costPrice: e.target.value })} dir="ltr" className="h-8 text-xs w-24" placeholder="—" />
+                      <MoneyInput value={v.costPrice} onChange={(val) => patch({ costPrice: val })} className="h-8 text-xs w-24" placeholder="—" ariaLabel="تكلفة المتغيّر (سعر خاص)" />
                     </Field>
                     <Field label="بيع (المفرد)">
-                      <Input value={v.retail} onChange={(e) => patch({ retail: e.target.value })} dir="ltr" className="h-8 text-xs w-24" placeholder="—" />
+                      <MoneyInput value={v.retail} onChange={(val) => patch({ retail: val })} className="h-8 text-xs w-24" placeholder="—" ariaLabel="سعر بيع المتغيّر (سعر خاص)" />
                     </Field>
                   </div>
                 ) : (

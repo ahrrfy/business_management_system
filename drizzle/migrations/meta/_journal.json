@@ -925,6 +925,27 @@
       "when": 1787097600000,
       "tag": "0132_loss_refund_sod",
       "breakpoints": true
+    },
+    {
+      "idx": 133,
+      "version": "5",
+      "when": 1787184000000,
+      "tag": "0133_price_sanity_ceilings",
+      "breakpoints": true
+    },
+    {
+      "idx": 134,
+      "version": "5",
+      "when": 1787184100000,
+      "tag": "0134_catalog_anomaly_overrides",
+      "breakpoints": true
+    },
+    {
+      "idx": 135,
+      "version": "5",
+      "when": 1787184200000,
+      "tag": "0135_price_anomaly_log",
+      "breakpoints": true
     }
   ]
 }

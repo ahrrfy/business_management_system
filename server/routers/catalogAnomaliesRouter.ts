@@ -1,0 +1,251 @@
+/**
+ * catalogAnomaliesRouter.ts — راوتر لوحة تدقيق شذوذ الكتالوج (L2).
+ *
+ * ثلاث نقاط:
+ *   - `list`         (READ): يُشغّل ست عدسات (L1-L6) على `productVariants`، يُطبِّق استثناءات المستخدم،
+ *                    ويعيد الصفوف مصنَّفةً حسب الحدّة.
+ *   - `markIntentional` (WRITE, manager): يُعلَّم صفٌّ بأنه «قصديّ» بتبريرٍ إلزاميّ + مدّة اختيارية.
+ *   - `markIgnored`     (WRITE, manager): يُعلَّم صفٌّ «تجاهل نهائيّاً» (whitelist دائم بتبرير).
+ *   - `clearOverride`   (WRITE, manager): يُلغي استثناءً (يُعيد المتغيّر لمجال الكشف الطبيعيّ).
+ *
+ * السياسة: كل الكتابات تُسجَّل في `auditLog` (نمط بقيّة المشروع). القراءة مقيّدة بمنح صريح
+ * ⇒ الكاشير محجوب حتى لو منح المدير له `products=READ`.
+ */
+import { z } from "zod";
+import { sql } from "drizzle-orm";
+import { getDb } from "../db";
+import { catalogAnomaliesReadProcedure, catalogAnomaliesManagerProcedure, router } from "../trpc";
+import { detectAll } from "../services/catalogAnomalies/detectors";
+import { logAudit } from "../services/auditService";
+
+const codeSchema = z.enum(["L1", "L2", "L3", "L4", "L5", "L6"]);
+
+export const catalogAnomaliesRouter = router({
+  /**
+   * قائمة الشذوذ الكاملة (L1-L6) — يُطبَّق استثناءات المستخدم لاحقاً (LEFT JOIN مع catalogAnomalyOverrides).
+   * `includeOverridden=true` يُعيدها في القائمة (للتاريخ/المراجعة)؛ الافتراضي `false` (الطابور النشط).
+   */
+  list: catalogAnomaliesReadProcedure
+    .input(
+      z.object({
+        includeOverridden: z.boolean().default(false),
+        codes: z.array(codeSchema).optional(),
+        severities: z.array(z.enum(["blocker", "warning", "info"])).optional(),
+        limitPerLens: z.number().int().positive().max(500).default(200),
+      })
+    )
+    .query(async ({ input }) => {
+      const d = getDb();
+      if (!d) return { findings: [], counts: { blocker: 0, warning: 0, info: 0 }, overriddenCount: 0 };
+      // ١) شغّل الكواشف الست.
+      let findings = await detectAll(d, input.limitPerLens);
+      // ٢) فلترة اختيارية بالعدسة/الحدّة.
+      if (input.codes && input.codes.length > 0) {
+        const codeSet = new Set(input.codes);
+        findings = findings.filter((f) => codeSet.has(f.code));
+      }
+      if (input.severities && input.severities.length > 0) {
+        const sevSet = new Set(input.severities);
+        findings = findings.filter((f) => sevSet.has(f.severity));
+      }
+      // ٣) اقرأ استثناءات المستخدم (LEFT JOIN منطقيّ في التطبيق لتفادي N+1).
+      const variantIds = findings.map((f) => f.variantId);
+      let overrides: Array<{ variantId: number; code: string; kind: string; excludeUntil: Date | string | null }> = [];
+      if (variantIds.length > 0) {
+        const rows = await d.execute(sql`
+          SELECT variantId, code, kind, excludeUntil
+          FROM catalogAnomalyOverrides
+          WHERE variantId IN (${sql.join(variantIds.map((id) => sql`${id}`), sql`, `)})
+            AND (excludeUntil IS NULL OR excludeUntil >= CURDATE())
+        `);
+        overrides = (rows as unknown as [Array<{ variantId: number; code: string; kind: string; excludeUntil: Date | string | null }>, unknown])[0];
+      }
+      const overrideMap = new Map<string, { kind: string; excludeUntil: Date | string | null }>();
+      for (const o of overrides) {
+        overrideMap.set(`${o.variantId}:${o.code}`, { kind: o.kind, excludeUntil: o.excludeUntil });
+      }
+      // ٤) طبّق الاستثناءات: القصديّ/المتجاهَل يُستبعد من الطابور النشط إن لم يُطلَب.
+      let overriddenCount = 0;
+      const active = findings.filter((f) => {
+        const ov = overrideMap.get(`${f.variantId}:${f.code}`);
+        if (!ov) return true;
+        overriddenCount++;
+        return input.includeOverridden;
+      });
+      // ٥) الفرز: blocker → warning → info، وضمن كلٍّ بالنسبة تنازلياً.
+      const sevOrder: Record<string, number> = { blocker: 0, warning: 1, info: 2 };
+      active.sort((a, b) => {
+        const so = sevOrder[a.severity] - sevOrder[b.severity];
+        if (so !== 0) return so;
+        const ar = Number(a.metrics.ratio ?? 0);
+        const br = Number(b.metrics.ratio ?? 0);
+        return br - ar;
+      });
+      // ٦) عدّاد الحدّة.
+      const counts = { blocker: 0, warning: 0, info: 0 };
+      for (const f of active) counts[f.severity]++;
+      // ٧) دُلّ على override في كل صف (للعرض في «قصديّ» tab).
+      const withOverride = active.map((f) => {
+        const ov = overrideMap.get(`${f.variantId}:${f.code}`);
+        return { ...f, override: ov ? { kind: ov.kind, excludeUntil: ov.excludeUntil } : null };
+      });
+      return { findings: withOverride, counts, overriddenCount };
+    }),
+
+  /** يُعلَّم صفٌّ كـ«قصديّ» (تصفية، عرض ترويجيّ، مذكّرة سنة قديمة، …). */
+  markIntentional: catalogAnomaliesManagerProcedure
+    .input(
+      z.object({
+        variantId: z.number().int().positive(),
+        code: codeSchema,
+        justification: z.string().min(10).max(500),
+        excludeUntil: z.string().nullish(), // ISO date "YYYY-MM-DD"
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const d = getDb();
+      if (!d) return { ok: false };
+      const excludeUntil = input.excludeUntil ? new Date(input.excludeUntil) : null;
+      // upsert: ON DUPLICATE KEY (variantId, code).
+      await d.execute(sql`
+        INSERT INTO catalogAnomalyOverrides (variantId, code, kind, justification, excludeUntil, createdBy)
+        VALUES (${input.variantId}, ${input.code}, 'INTENTIONAL', ${input.justification}, ${excludeUntil}, ${ctx.user.id})
+        ON DUPLICATE KEY UPDATE
+          kind = 'INTENTIONAL',
+          justification = VALUES(justification),
+          excludeUntil = VALUES(excludeUntil),
+          createdBy = VALUES(createdBy)
+      `);
+      await logAudit(ctx, {
+        action: "catalogAnomaly.markIntentional",
+        entityType: "productVariant",
+        entityId: input.variantId,
+        newValue: { code: input.code, justification: input.justification, excludeUntil: input.excludeUntil ?? null },
+      });
+      return { ok: true };
+    }),
+
+  /** يُعلَّم صفٌّ «تجاهل نهائيّاً» (whitelist دائم). */
+  markIgnored: catalogAnomaliesManagerProcedure
+    .input(
+      z.object({
+        variantId: z.number().int().positive(),
+        code: codeSchema,
+        justification: z.string().min(10).max(500),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const d = getDb();
+      if (!d) return { ok: false };
+      await d.execute(sql`
+        INSERT INTO catalogAnomalyOverrides (variantId, code, kind, justification, excludeUntil, createdBy)
+        VALUES (${input.variantId}, ${input.code}, 'IGNORED', ${input.justification}, NULL, ${ctx.user.id})
+        ON DUPLICATE KEY UPDATE
+          kind = 'IGNORED',
+          justification = VALUES(justification),
+          excludeUntil = NULL,
+          createdBy = VALUES(createdBy)
+      `);
+      await logAudit(ctx, {
+        action: "catalogAnomaly.markIgnored",
+        entityType: "productVariant",
+        entityId: input.variantId,
+        newValue: { code: input.code, justification: input.justification },
+      });
+      return { ok: true };
+    }),
+
+  /** إلغاء استثناء (يعيد الصفّ للمجال النشط). */
+  clearOverride: catalogAnomaliesManagerProcedure
+    .input(z.object({ variantId: z.number().int().positive(), code: codeSchema }))
+    .mutation(async ({ input, ctx }) => {
+      const d = getDb();
+      if (!d) return { ok: false };
+      await d.execute(sql`
+        DELETE FROM catalogAnomalyOverrides WHERE variantId = ${input.variantId} AND code = ${input.code}
+      `);
+      await logAudit(ctx, {
+        action: "catalogAnomaly.clearOverride",
+        entityType: "productVariant",
+        entityId: input.variantId,
+        oldValue: { code: input.code },
+      });
+      return { ok: true };
+    }),
+
+  /**
+   * **L3.4:** سجلّ تغيّرات التكلفة/السعر — يقرأ من `priceAnomalyLog` الذي يمتلئ آلياً بـTrigger.
+   * فلترة اختيارية: severity ≥ threshold، أيام أخيرة، متغيّر معيّن.
+   */
+  changeLog: catalogAnomaliesReadProcedure
+    .input(
+      z.object({
+        minSeverity: z.enum(["info", "warning", "blocker", "catastrophic"]).default("warning"),
+        days: z.number().int().positive().max(365).default(30),
+        variantId: z.number().int().positive().nullish(),
+        limit: z.number().int().positive().max(500).default(100),
+      })
+    )
+    .query(async ({ input }) => {
+      const d = getDb();
+      if (!d) return [];
+      // ترتيب الحدّة: catastrophic > blocker > warning > info
+      const sevRank: Record<string, number> = { info: 0, warning: 1, blocker: 2, catastrophic: 3 };
+      const minRank = sevRank[input.minSeverity];
+      const includedSevs: string[] = Object.entries(sevRank).filter(([, r]) => r >= minRank).map(([s]) => s);
+      const rows = await d.execute(sql`
+        SELECT pal.id, pal.variantId, pal.changeKind, pal.oldValue, pal.newValue, pal.severity,
+               pal.reason, pal.actorUserId, u.name AS actorName, pal.reverted, pal.revertedAt, pal.createdAt,
+               v.sku, p.name AS productName
+        FROM priceAnomalyLog pal
+        LEFT JOIN productVariants v ON v.id = pal.variantId
+        LEFT JOIN products p ON p.id = v.productId
+        LEFT JOIN users u ON u.id = pal.actorUserId
+        WHERE pal.severity IN (${sql.join(includedSevs.map((s) => sql`${s}`), sql`, `)})
+          AND pal.createdAt >= DATE_SUB(CURDATE(), INTERVAL ${input.days} DAY)
+          ${input.variantId ? sql`AND pal.variantId = ${input.variantId}` : sql``}
+        ORDER BY pal.createdAt DESC
+        LIMIT ${input.limit}
+      `);
+      return (rows as unknown as [Array<{ id: number; variantId: number; changeKind: string; oldValue: string; newValue: string; severity: string; reason: string | null; actorUserId: number | null; actorName: string | null; reverted: number; revertedAt: Date | string | null; createdAt: Date; sku: string | null; productName: string | null }>, unknown])[0];
+    }),
+
+  /**
+   * **L3.5:** استعادة قيمة سابقة من `priceAnomalyLog` — يُطبَّق UPDATE على `productVariants.costPrice`
+   * إلى `oldValue`، ويعلَّم صفّ السجلّ `reverted=TRUE`. الحدود:
+   *  - يعمل خلال ٣٠ يوماً من التغيير فقط.
+   *  - لا يعمل إن كان الصفّ مُعاداً مسبقاً.
+   */
+  revertChange: catalogAnomaliesManagerProcedure
+    .input(z.object({ logId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const d = getDb();
+      if (!d) throw new Error("DB unavailable");
+      const rows = await d.execute(sql`
+        SELECT id, variantId, changeKind, oldValue, newValue, reverted, createdAt
+        FROM priceAnomalyLog WHERE id = ${input.logId}
+      `);
+      const row = (rows as unknown as [Array<{ id: number; variantId: number; changeKind: string; oldValue: string; newValue: string; reverted: number; createdAt: Date }>, unknown])[0][0];
+      if (!row) throw new Error("سجلّ الأثر غير موجود");
+      if (row.reverted) throw new Error("هذا التغيير مُعادٌ مسبقاً");
+      const ageDays = (Date.now() - new Date(row.createdAt).getTime()) / (1000 * 60 * 60 * 24);
+      if (ageDays > 30) throw new Error("انقضت مهلة الاستعادة (٣٠ يوماً)");
+      if (row.changeKind !== "cost") throw new Error("الاستعادة تدعم حالياً تكلفة فقط (L3 توسعة قادمة)");
+      // نطبّق قيمة الاستعادة. Trigger سيلتقط هذا التغيير كسجلٍّ جديد (منطقيّاً).
+      await d.execute(sql`
+        UPDATE productVariants SET costPrice = ${row.oldValue} WHERE id = ${row.variantId}
+      `);
+      // نُعلّم الصفّ الأصليّ محفوظاً كي لا يُستعاد مجدداً.
+      await d.execute(sql`
+        UPDATE priceAnomalyLog SET reverted = TRUE, revertedAt = NOW() WHERE id = ${input.logId}
+      `);
+      await logAudit(ctx, {
+        action: "catalogAnomaly.revertCostChange",
+        entityType: "productVariant",
+        entityId: row.variantId,
+        oldValue: { costPrice: row.newValue },
+        newValue: { costPrice: row.oldValue, revertedLogId: input.logId },
+      });
+      return { ok: true };
+    }),
+});

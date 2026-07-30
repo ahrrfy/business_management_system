@@ -106,6 +106,7 @@ const SECTIONS: Section[] = [
       { title: "تقييم المخزون", desc: "كمية × كلفة بالفرع/الفئة", href: "/reports/inventory-valuation", icon: Wallet, gate: "manager", status: "ready" },
       { title: "حالة المخزون وإعادة الطلب", desc: "منخفض/نفد مقابل حدّ الطلب", href: "/reports/stock-status", icon: AlertTriangle, gate: "manager", status: "ready" },
       { title: "المخزون التشغيلي (قرارات)", desc: "إعادة طلب · راكد · خطر نفاد · فروقات جرد · السوالب (وضع الافتتاح)", href: "/reports/inventory-ops", icon: ClipboardList, gate: "manager", status: "ready" },
+      { title: "تدقيق شذوذ الكتالوج", desc: "٦ عدسات تكشف بيانات مغلوطة (تكلفة/سعر/معامل)، مع أفعال إصلاح/قصديّ/تجاهل", href: "/reports/catalog-anomalies", icon: AlertTriangle, gate: "manager", status: "ready" },
       { title: "بطاقة المنتج (Kardex)", desc: "حركة منتج زمنياً بالرصيد الحالي", href: "/reports/item-ledger", icon: FolderOpen, gate: "manager", status: "ready" },
       { title: "تحليل ABC", desc: "تصنيف المنتجات بالقيمة (باريتو)", href: "/reports/abc", icon: ListOrdered, gate: "manager", status: "ready" },
     ],

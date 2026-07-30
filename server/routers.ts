@@ -9,6 +9,7 @@ import { returnRouter } from "./routers/returnRouter";
 import { purchaseReturnsRouter } from "./routers/purchaseReturns";
 import { shiftRouter } from "./routers/shiftRouter";
 import { catalogRouter } from "./routers/catalogRouter";
+import { catalogAnomaliesRouter } from "./routers/catalogAnomaliesRouter";
 import { supplierRouter } from "./routers/supplierRouter";
 import { consignmentRouter } from "./routers/consignmentRouter";
 import { digitalCardsRouter } from "./routers/digitalCardsRouter";
@@ -90,6 +91,7 @@ export const appRouter = router({
   purchaseReturns: purchaseReturnsRouter,
   shifts: shiftRouter,
   catalog: catalogRouter,
+  catalogAnomalies: catalogAnomaliesRouter,
   suppliers: supplierRouter,
   consignments: consignmentRouter,
   digitalCards: digitalCardsRouter,

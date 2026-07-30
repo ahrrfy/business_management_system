@@ -1,6 +1,7 @@
-import { useRef, useState, type ChangeEvent, type FocusEvent } from "react";
+import { useRef, useState, type ChangeEvent, type FocusEvent, type ClipboardEvent } from "react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { toNormalizedNumber } from "@shared/numberNormalize";
 
 /**
  * حقل مبلغ بفواصل آلاف حيّة أثناء الكتابة (١٬٢٣٤٬٥٦٧) — القيمة الخام (بلا فواصل) هي ما
@@ -19,6 +20,12 @@ export interface MoneyInputProps {
   decimals?: number;
   className?: string;
   ariaLabel?: string;
+  /**
+   * حدود متوقّعة (ماليّة) — إن أُعطيت وكانت القيمة خارجها، يُلوَّن الحدّ كهرمانيّاً مع تلميحٍ
+   * إعلاميّ عبر `title`. **لا يمنع الحفظ** — المنع من مسؤولية `priceSanity`. مفيد لتنبيه بصريّ
+   * حين تبتعد قيمة عن نطاق "معيار الفئة" لكن دون حجب.
+   */
+  expectedRange?: { min?: number; max?: number };
 }
 
 /** يُبقي فقط أرقاماً + نقطة عشرية واحدة + إشارة سالبة بادئة واحدة (إن سُمح بها)، ويحدّ المنازل العشرية. */
@@ -92,6 +99,7 @@ export function MoneyInput({
   decimals = 2,
   className,
   ariaLabel,
+  expectedRange,
 }: MoneyInputProps) {
   const ref = useRef<HTMLInputElement>(null);
   const [focused, setFocused] = useState(false);
@@ -99,6 +107,26 @@ export function MoneyInput({
   // خارج التركيز: نشذّب الأصفار العشرية الزائدة للعرض ⇒ «500.00» تظهر «500»، «3000.50» تظهر «3,000.5».
   const rawForDisplay = focused ? (value ?? "") : stripTrailingZeros(value ?? "");
   const display = groupThousands(rawForDisplay);
+
+  // فحص «حدود متوقّعة»: بصريٌّ فقط. `null` عند غياب value أو خارج المدى (لا يُلوَّن الحدّ).
+  const outOfRange = (() => {
+    if (!expectedRange) return false;
+    const v = value ?? "";
+    if (v === "" || v === "-") return false;
+    const n = Number(v);
+    if (!Number.isFinite(n)) return false;
+    if (expectedRange.min != null && n < expectedRange.min) return true;
+    if (expectedRange.max != null && n > expectedRange.max) return true;
+    return false;
+  })();
+
+  const outOfRangeTitle = outOfRange
+    ? `القيمة خارج النطاق المتوقّع${
+        expectedRange?.min != null || expectedRange?.max != null
+          ? ` (${expectedRange?.min ?? "—"} … ${expectedRange?.max ?? "—"})`
+          : ""
+      } — راجعها.`
+    : undefined;
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     const el = e.target;
@@ -116,6 +144,22 @@ export function MoneyInput({
     });
   };
 
+  const handlePaste = (e: ClipboardEvent<HTMLInputElement>) => {
+    // تطبيع اللصق: أرقام هندية/فارسية، فاصلة عربية «٫»، فواصل ألوف أوروبية «1.162,50»، رموز عملة «د.ع».
+    // نقاوم فقط اللصق المُلتبس الذي يشبه «1.162.500» — المطبِّع يُرجع القيمة كما هي بشكلها الأمريكيّ ⇒
+    // المستخدم يراها ويصلح يدوياً إن أراد.
+    const pasted = e.clipboardData.getData("text");
+    if (!pasted) return;
+    const normalized = toNormalizedNumber(pasted);
+    // إن كان التطبيع أنتج قيمةً مختلفة عمّا لُصق، نستعملها بدلاً من السلوك الافتراضي. وإلا نترك المتصفّح
+    // يلصق طبيعياً (يمرّ عبر handleChange → sanitizeRaw كالمعتاد).
+    if (normalized !== pasted) {
+      e.preventDefault();
+      const cleaned = sanitizeRaw(normalized, allowNegative, decimals);
+      onChange(cleaned);
+    }
+  };
+
   const handleBlur = (_e: FocusEvent<HTMLInputElement>) => {
     setFocused(false);
     // نُطبّع القيمة الخام نفسها فور فقد التركيز — كي لا تُرسَل «500.00» للخادم/الحفظ.
@@ -129,6 +173,7 @@ export function MoneyInput({
       ref={ref}
       value={display}
       onChange={handleChange}
+      onPaste={handlePaste}
       onFocus={() => setFocused(true)}
       onBlur={handleBlur}
       dir="ltr"
@@ -136,7 +181,12 @@ export function MoneyInput({
       placeholder={placeholder}
       disabled={disabled}
       aria-label={ariaLabel}
-      className={cn("tabular-nums", className)}
+      title={outOfRangeTitle}
+      className={cn(
+        "tabular-nums",
+        outOfRange && "border-amber-500 focus-visible:ring-amber-500/40",
+        className,
+      )}
     />
   );
 }

@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { MoneyCoach } from "@/components/form/MoneyCoach";
 import { NumberInput } from "@/components/form/NumberInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
@@ -18,6 +19,7 @@ import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import { CategoryOptionList } from "@/lib/categoryTree";
+import { checkVariantSanity } from "@shared/priceSanity";
 import {
   clampInt,
   deriveSku,
@@ -53,6 +55,38 @@ import { Link, useLocation } from "wouter";
  * المسح: تركيز خلية باركود يجعل ماسح HID يكتب فيها مباشرةً (لا حاجة لربط خاص)؛
  * زر «المسح» بجانب كل خلية يولّد EAN-13 صالحاً لمن يطبع باركوده ذاتياً.
  */
+
+/**
+ * **priceSanity L1.5 (٣٠/٧):** مرافقٌ حيّ أسفل حقل التكلفة في «إضافة منتج». لا زرّ «آخر شراء»
+ * لأنّ المنتج ما زال جديداً بلا تاريخ شراء.
+ */
+function NewProductCostCoach({
+  costPrice, baseRetail, categoryId, brand, productType,
+}: {
+  costPrice: string;
+  baseRetail: string;
+  categoryId: number | null;
+  brand: string;
+  productType: string;
+}) {
+  const statsQ = trpc.catalog.categoryStats.useQuery(
+    { categoryId, brand: brand.trim() || null, productType: productType.trim() || null },
+    { enabled: categoryId != null || !!brand.trim() || !!productType.trim(), staleTime: 5 * 60 * 1000 }
+  );
+  return (
+    <MoneyCoach
+      className="mt-1"
+      cost={costPrice.trim()}
+      retail={baseRetail.trim()}
+      categoryStats={statsQ.data ? {
+        minCost: statsQ.data.minCost ?? undefined,
+        maxCost: statsQ.data.maxCost ?? undefined,
+        medianCost: statsQ.data.medianCost ?? undefined,
+        n: statsQ.data.n ?? 0,
+      } : undefined}
+    />
+  );
+}
 
 export default function ProductNew() {
   const [, navigate] = useLocation();
@@ -314,6 +348,24 @@ export default function ProductNew() {
     // بضاعة الأمانة: التلازم يُتحقَّق خادمياً أيضاً، لكن رسالة أبكر أوضح للمستخدم.
     if (consignment.isConsignment && !consignment.consignorId)
       return "صنف الأمانة يلزمه مودِع — اختر المودِع أو أطفئ «بضاعة أمانة».";
+    // حرّاس عقلانية الأسعار — يمنع «حادثة SINARLINE ٣٠/٧» (تكلفة أُدخلت 16162 بينما البيع 2000 ⇒
+    // «بيع تحت التكلفة» يوقف كل فاتورة تحوي الصنف). المصدر: shared/priceSanity.ts (يُشارَك خادمياً).
+    for (const v of variants) {
+      const overrideCost = v.priceOverride && v.costPrice.trim() ? v.costPrice.trim() : costPrice.trim();
+      const unitPricings = units.map((u) => ({
+        unitName: u.name.trim() || (u.isBase ? "الأساس" : "وحدة"),
+        conversionFactor: u.isBase ? 1 : Number((u.factor ?? "").trim()) || 1,
+        retail: u.isBase && v.priceOverride && v.retail.trim() ? v.retail.trim() : (u.retail || null),
+        wholesale: u.wholesale || null,
+        government: u.government || null,
+      }));
+      const issues = checkVariantSanity(overrideCost, unitPricings);
+      const blocker = issues.find((i) => i.level === "blocker");
+      if (blocker) {
+        const label = v.color || v.sku || "متغيّر";
+        return `[${label}] ${blocker.message}`;
+      }
+    }
     return null;
   }
 
@@ -595,6 +647,13 @@ export default function ProductNew() {
             hint={consignment.isConsignment ? "المبلغ الذي يستحقه المودِع عند بيع القطعة." : "سعر شراء موحّد لكل الألوان."}
           >
             <MoneyInput id="product-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
+            <NewProductCostCoach
+              costPrice={costPrice}
+              baseRetail={units.find((u) => u.isBase)?.retail ?? ""}
+              categoryId={categoryId === "" ? null : Number(categoryId)}
+              brand={brand}
+              productType={productType}
+            />
           </Field>
           <Field label="الحد الأدنى الافتراضي" hint="يُطبَّق على المتغيّرات الجديدة.">
             <Input value={defaultMin} onChange={(e) => setDefaultMin(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" />

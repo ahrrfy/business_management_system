@@ -79,6 +79,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "reservations", label: "الحجوزات",            description: "حجز منتجات للعملاء (استعلام توفّر + حجز بمدّة انتهاء) — حجز ناعم لا يمسّ المخزون الفعلي، يخصم المتاح فقط" },
   { key: "digital_cards", label: "البطاقات الرقمية والاشتراكات", description: "مزوّدو البطاقات والاشتراكات الرقمية، المحافظ، العروض، التسعير والبيع" },
   { key: "gifts",        label: "الهدايا والمجانيات",   description: "الوارد المجّاني من الموردين (صفر تكلفة) والصادر للعملاء (مصروف ترويجيّ بحوكمة اعتماد)" },
+  { key: "catalogAnomalies", label: "تدقيق الكتالوج",   description: "لوحة كشف شذوذ التكلفة/السعر/المعامل — يفحص وجود بيانات مغلوطة (SINARLINE-class) بعست عدسات (L1-L6)" },
   { key: "courier",      label: "توصيلاتي (المندوب)",  description: "شاشة المندوب الذاتية: طلباتي، تأكيد التسليم والتحصيل، عهدتي" },
   { key: "users",        label: "المستخدمون",         description: "إدارة المستخدمين والصلاحيات" },
   { key: "settings",     label: "الإعدادات",          description: "إعدادات النظام والفروع" },
@@ -100,6 +101,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     tasks: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "FULL", settings: "FULL",
+    catalogAnomalies: "FULL",
   },
   manager: {
     digital_cards: "FULL",
@@ -115,6 +117,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     tasks: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "READ", settings: "READ",
+    catalogAnomalies: "FULL",
   },
   accountant: {
     digital_cards: "FULL",
@@ -136,6 +139,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     tasks: "READ",
     customers: "READ", suppliers: "READ", products: "NONE", expenses: "FULL", reports: "FULL",
     users: "NONE", settings: "NONE",
+    catalogAnomalies: "READ",
   },
   cashier: {
     digital_cards: "READ",
@@ -239,6 +243,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     tasks: "READ",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "READ", reports: "READ",
     users: "READ", settings: "READ",
+    catalogAnomalies: "READ",
   },
   user: {
     digital_cards: "NONE",
