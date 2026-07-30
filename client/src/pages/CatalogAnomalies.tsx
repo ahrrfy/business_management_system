@@ -221,7 +221,98 @@ export default function CatalogAnomalies() {
           isPending={markIntentional.isPending || markIgnored.isPending}
         />
       )}
+
+      {/* L3: سجلّ تغيّرات التكلفة الأخيرة + استعادة */}
+      <CostChangeLogSection canWrite={canWrite} />
     </div>
+  );
+}
+
+/**
+ * **L3.4/L3.5:** سجلّ تغيّرات التكلفة الأخيرة — يستهلك `changeLog` و`revertChange` من الراوتر.
+ * كل صفٍّ يعرض قبل/بعد + نسبة + الفاعل + الوقت، مع زرّ استعادة (للـmanager) خلال ٣٠ يوماً.
+ */
+function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
+  const [minSeverity, setMinSeverity] = useState<"info" | "warning" | "blocker" | "catastrophic">("warning");
+  const [days, setDays] = useState(30);
+  const utils = trpc.useUtils();
+  const logQ = trpc.catalogAnomalies.changeLog.useQuery({ minSeverity, days, limit: 50 }, { staleTime: 60 * 1000 });
+  const revert = trpc.catalogAnomalies.revertChange.useMutation({
+    onSuccess: () => {
+      utils.catalogAnomalies.changeLog.invalidate();
+      utils.catalogAnomalies.list.invalidate();
+    },
+  });
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
+        <CardTitle className="text-base">سجلّ تغيّرات التكلفة (Trigger BEFORE UPDATE)</CardTitle>
+        <div className="flex items-center gap-2">
+          <select value={minSeverity} onChange={(e) => setMinSeverity(e.target.value as typeof minSeverity)} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
+            <option value="info">إخبار فأعلى</option>
+            <option value="warning">تحذير فأعلى</option>
+            <option value="blocker">حاجز فأعلى</option>
+            <option value="catastrophic">كارثيّ فقط</option>
+          </select>
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
+            <option value={7}>٧ أيام</option>
+            <option value={30}>٣٠ يوماً</option>
+            <option value={90}>٩٠ يوماً</option>
+          </select>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {logQ.isLoading ? <LoadingState /> : (logQ.data ?? []).length === 0 ? (
+          <p className="text-xs text-muted-foreground text-center py-4">لا تغيّرات مسجّلة في هذه النافذة.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-xs text-muted-foreground border-b">
+                <tr>
+                  <th className="text-start p-2">الوقت</th>
+                  <th className="text-start p-2">المنتج</th>
+                  <th className="text-start p-2">قبل → بعد</th>
+                  <th className="text-start p-2">الحدّة</th>
+                  <th className="text-start p-2">الفاعل</th>
+                  <th className="text-start p-2">الحالة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(logQ.data ?? []).map((row) => {
+                  const oldV = Number(row.oldValue);
+                  const newV = Number(row.newValue);
+                  const ratio = oldV > 0 ? newV / oldV : 0;
+                  return (
+                    <tr key={row.id} className="border-b hover:bg-muted/30">
+                      <td className="p-2 text-xs tabular-nums" dir="ltr">{new Date(row.createdAt).toLocaleString("ar-IQ")}</td>
+                      <td className="p-2 max-w-xs truncate" title={row.productName ?? ""}>{row.productName ?? `vid=${row.variantId}`} <span className="text-[10px] text-muted-foreground">{row.sku ?? ""}</span></td>
+                      <td className="p-2 text-xs tabular-nums" dir="ltr">
+                        {oldV.toLocaleString("en-US")} → {newV.toLocaleString("en-US")} <span className="text-muted-foreground">({ratio.toFixed(2)}×)</span>
+                      </td>
+                      <td className="p-2 text-xs">{row.severity}</td>
+                      <td className="p-2 text-xs text-muted-foreground">{row.actorName ?? "—"}</td>
+                      <td className="p-2 text-xs">
+                        {row.reverted ? (
+                          <Badge variant="secondary" className="text-[10px]">مستعادٌ سابقاً</Badge>
+                        ) : canWrite ? (
+                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => {
+                            if (confirm(`استعادة التكلفة إلى ${oldV.toLocaleString("en-US")} د.ع؟`)) revert.mutate({ logId: row.id });
+                          }}>
+                            <RotateCcw className="size-3 me-1" aria-hidden /> استعادة
+                          </Button>
+                        ) : (
+                          <span className="text-muted-foreground">نشط</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
