@@ -33,6 +33,81 @@ import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { computeSellPrice, type PricingMode } from "./pricingCalc";
 
+/* ────────── «التغيير الكبير» (§٧.١) ────────── */
+
+/**
+ * عتبة التغيير الكبير في **حصة المزوّد** نسبةً إلى السعر النافذ — قرار المالك ٣٠/٧/٢٦.
+ * تجاوزُها في بطاقةٍ واحدة يوقف نشر الدُفعة كلّها على اعتماد مديرٍ آخر.
+ */
+export const BIG_CHANGE_THRESHOLD_PERCENT = 50;
+
+export interface BigChangeLine {
+  offeringId: number;
+  name: string;
+  currentShare: string;
+  newShare: string;
+  /** نسبة التغيّر المطلقة بالمئة، مقرّبة لخانتين. */
+  changePercent: string;
+}
+
+/**
+ * يقارن الحصص المقترحة بالسعر **النافذ** (لا بالمسودّة السابقة).
+ *
+ * حالتان حدّيتان مقصودتان:
+ *  • **لا سعر نافذ** (بطاقة جديدة/أوّل تسعير) ⇒ ليست تغييراً كبيراً؛ لا أساس للنسبة،
+ *    ولو عُدّت كبيرةً لاحتاج كلُّ تسعيرٍ أوّل اعتماداً ثانياً بلا معنى.
+ *  • **الحصة النافذة صفر** وجديدُها موجب ⇒ تُعدّ كبيرة: النسبة غير محسوبة (قسمة على صفر)
+ *    والتغيّر مادّيّ، فالتحفّظ أسلم من تمريره صامتاً.
+ */
+function detectBigChanges(
+  offerings: { offeringId: number; name: string }[],
+  currentShareByOffering: Map<number, string>,
+  newShareByOffering: Map<number, string>,
+): BigChangeLine[] {
+  const out: BigChangeLine[] = [];
+  for (const o of offerings) {
+    const next = newShareByOffering.get(o.offeringId);
+    if (next == null) continue;
+    const current = currentShareByOffering.get(o.offeringId);
+    if (current == null) continue; // بلا سعر نافذ ⇒ لا أساس للمقارنة
+
+    const cur = money(current);
+    const nxt = money(next);
+    if (cur.eq(nxt)) continue;
+
+    if (cur.isZero()) {
+      out.push({
+        offeringId: o.offeringId, name: o.name,
+        currentShare: toDbMoney(cur), newShare: toDbMoney(nxt), changePercent: "100.00",
+      });
+      continue;
+    }
+    const pct = nxt.minus(cur).abs().div(cur).mul(100);
+    if (pct.gte(BIG_CHANGE_THRESHOLD_PERCENT)) {
+      out.push({
+        offeringId: o.offeringId, name: o.name,
+        currentShare: toDbMoney(cur), newShare: toDbMoney(nxt),
+        changePercent: pct.toFixed(2),
+      });
+    }
+  }
+  return out;
+}
+
+/** الحصص النافذة حالياً لبطاقات الفرع — أساس مقارنة «التغيير الكبير». */
+async function currentSharesFor(runner: DB | Tx, branchId: number, offeringIds: number[]) {
+  if (!offeringIds.length) return new Map<number, string>();
+  const rows = await runner
+    .select({
+      offeringId: digitalCurrentPrices.offeringId,
+      providerShare: digitalPriceVersions.providerShare,
+    })
+    .from(digitalCurrentPrices)
+    .innerJoin(digitalPriceVersions, eq(digitalCurrentPrices.priceVersionId, digitalPriceVersions.id))
+    .where(and(eq(digitalCurrentPrices.branchId, branchId), inArray(digitalCurrentPrices.offeringId, offeringIds)));
+  return new Map(rows.map((r) => [Number(r.offeringId), r.providerShare]));
+}
+
 /* ────────── الأنواع ────────── */
 
 export interface SheetScope {
@@ -241,12 +316,30 @@ export async function getMorningSheet(db: DB, scope: SheetScope) {
     };
   });
 
+  // §٧.١: التغييرات الكبيرة في المسودّة الحالية + حالة اعتمادها — تُحسب هنا كي يرى المدير
+  // البوّابة **قبل** أن يصطدم بها عند النشر، ويعرف مَن اعتمد إن اعتُمدت.
+  const bigChanges = draftBatch
+    ? detectBigChanges(
+        offerings,
+        new Map(current.map((c) => [Number(c.offeringId), c.providerShare])),
+        new Map(draftLines.map((l) => [Number(l.offeringId), l.providerShare])),
+      )
+    : [];
+
   return {
     batch: draftBatch
-      ? { id: draftBatch.id, status: draftBatch.status, businessDate: draftBatch.businessDate }
+      ? {
+          id: draftBatch.id,
+          status: draftBatch.status,
+          businessDate: draftBatch.businessDate,
+          createdBy: Number(draftBatch.createdBy),
+          bigChangeApprovedBy: draftBatch.bigChangeApprovedBy != null ? Number(draftBatch.bigChangeApprovedBy) : null,
+        }
       : null,
     rows,
     missingCount: rows.filter((r) => r.status === "NEEDS_INPUT").length,
+    bigChanges,
+    bigChangeThresholdPercent: BIG_CHANGE_THRESHOLD_PERCENT,
   };
 }
 
@@ -378,6 +471,32 @@ async function writeDraftLines(
   const rulesById = new Map(offerings.map((o) => [o.offeringId, o]));
   const now = new Date();
 
+  // §٧.١: يُبطَل اعتماد «التغيير الكبير» عند تغيّر الحصص **فعلاً** — لا عند كل كتابة.
+  //
+  // وُضع هنا (المسار الوحيد الذي يعدّل السطور) لا في `saveDraft` وحده، وإلا التفّ عليه
+  // `copyPrevious`: يُعتمَد سعرٌ ثمّ تُستبدَل السطور ويُنشَر غيرُ المعتمَد.
+  //
+  // وشُرِط بالتغيّر الفعليّ لأن نقطة النهاية `pricing.publish` تحفظ ثمّ تنشر في المعاملة
+  // نفسها؛ فمسحٌ غير مشروط كان يُبطل الاعتماد لحظةَ استعماله ⇒ نشرٌ مستحيل (أمسكته الجولة
+  // البصرية). إعادةُ حفظٍ مطابقة ليست تعديلاً. المقارنة بـdecimal لا بالنصّ ("20000" = "20000.00").
+  const existing = await tx
+    .select({ offeringId: digitalPriceVersions.offeringId, providerShare: digitalPriceVersions.providerShare })
+    .from(digitalPriceVersions)
+    .where(eq(digitalPriceVersions.batchId, batchId));
+  const existingByOffering = new Map(existing.map((e) => [Number(e.offeringId), e.providerShare]));
+  const sharesChanged =
+    lines.length !== existing.length ||
+    lines.some((l) => {
+      const prev = existingByOffering.get(l.offeringId);
+      return prev == null || !money(prev).eq(money(l.providerShare));
+    });
+  if (sharesChanged) {
+    await tx
+      .update(digitalPriceBatches)
+      .set({ bigChangeApprovedBy: null, bigChangeApprovedAt: null })
+      .where(eq(digitalPriceBatches.id, batchId));
+  }
+
   // ترتيب حتميّ بـofferingId ⇒ لا deadlock عند تزامن حفظَين على الدُفعة نفسها.
   const ordered = [...lines].sort((a, b) => a.offeringId - b.offeringId);
 
@@ -414,6 +533,63 @@ async function writeDraftLines(
       });
   }
   return ordered.length;
+}
+
+/**
+ * اعتماد «التغيير الكبير» (§٧.١) — مديرٌ **آخر** يُجيز نشر دُفعةٍ فيها بطاقة تغيّرت حصتها ≥٥٠٪.
+ *
+ * لا يَنشر بذاته: يضع السِمة فقط، والنشر يبقى فعلاً منفصلاً. ويُعيد قائمة ما اعتُمد كي
+ * يوقّع المعتمِد على أرقامٍ رآها، لا على «تغييرٍ كبير» مجهول.
+ */
+export async function approveBigChange(
+  tx: Tx,
+  input: { batchId: number },
+  actor: Actor,
+): Promise<{ batchId: number; approved: BigChangeLine[] }> {
+  const batch = await lockBatch(tx, input.batchId);
+  if (batch.status !== "DRAFT") {
+    throw new TRPCError({ code: "CONFLICT", message: "الاعتماد يخصّ مسودّةً فقط" });
+  }
+  if (Number(batch.createdBy) === actor.userId && actor.role !== "admin") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "لا تعتمد تغييراً كبيراً في مسودّةٍ أنشأتَها — يلزم مديرٌ آخر",
+    });
+  }
+
+  const branchId = Number(batch.branchId);
+  const providerId = Number(batch.providerId);
+  const offerings = await activeOfferings(tx, branchId, providerId);
+  const draftLines = await tx
+    .select({ offeringId: digitalPriceVersions.offeringId, providerShare: digitalPriceVersions.providerShare })
+    .from(digitalPriceVersions)
+    .where(eq(digitalPriceVersions.batchId, input.batchId));
+
+  const currentShares = await currentSharesFor(tx, branchId, offerings.map((o) => o.offeringId));
+  const bigChanges = detectBigChanges(
+    offerings,
+    currentShares,
+    new Map(draftLines.map((l) => [Number(l.offeringId), l.providerShare])),
+  );
+  if (bigChanges.length === 0) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا تغييرات كبيرة في هذه المسودّة — انشرها مباشرةً بلا اعتمادٍ ثانٍ",
+    });
+  }
+
+  await tx
+    .update(digitalPriceBatches)
+    .set({ bigChangeApprovedBy: actor.userId, bigChangeApprovedAt: new Date() })
+    .where(eq(digitalPriceBatches.id, input.batchId));
+
+  await auditLog(tx, actor, "digitalCards.pricing.bigChangeApproved", input.batchId, {
+    branchId, providerId, requestedBy: batch.createdBy,
+    thresholdPercent: BIG_CHANGE_THRESHOLD_PERCENT,
+    lines: bigChanges,
+  });
+
+  return { batchId: input.batchId, approved: bigChanges };
 }
 
 export async function saveDraft(
@@ -497,6 +673,34 @@ export async function publish(
     offeringId: o.offeringId,
     ...priceFor(o, shareByOffering.get(o.offeringId)!, true),
   }));
+
+  // ٦-ب (§٧.١): بوّابة «التغيير الكبير» — تُحسب من **الحصص المُعاد حسابها** لا من مُدخل العميل،
+  // وتحت قفل الدُفعة نفسه الذي يمسكه `saveDraft` ⇒ لا نافذة بين الاعتماد والنشر.
+  const currentShares = await currentSharesFor(tx, branchId, offerings.map((o) => o.offeringId));
+  const bigChanges = detectBigChanges(
+    offerings,
+    currentShares,
+    new Map(priced.map((p) => [p.offeringId, p.providerShare])),
+  );
+  if (bigChanges.length > 0) {
+    const approvedBy = batch.bigChangeApprovedBy != null ? Number(batch.bigChangeApprovedBy) : null;
+    if (approvedBy == null) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message:
+          `${bigChanges.length} بطاقة تغيّرت حصتها ≥${BIG_CHANGE_THRESHOLD_PERCENT}% عن السعر النافذ ` +
+          `(${bigChanges.slice(0, 3).map((b) => `${b.name}: ${b.changePercent}%`).join("، ")}` +
+          `${bigChanges.length > 3 ? "…" : ""}) — يلزم اعتماد مديرٍ آخر قبل النشر.`,
+      });
+    }
+    // فصل المهام: المعتمِد ≠ مُنشئ المسودّة. admin مُستثنى للتصحيح الإداريّ.
+    if (approvedBy === Number(batch.createdBy) && actor.role !== "admin") {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "اعتماد التغيير الكبير جاء من مُنشئ المسودّة نفسه — يلزم مديرٌ آخر",
+      });
+    }
+  }
 
   // ٧: تثبيت النسخ (تصير غير قابلة للتعديل بمجرّد صيرورة الدُفعة PUBLISHED).
   for (const p of priced) {

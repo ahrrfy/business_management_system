@@ -486,6 +486,13 @@ const pricingRouter = router({
       withTx((tx) => pricingService.cancelDraft(tx, input, actorOf(ctx))),
     ),
 
+  /** §٧.١: اعتماد مديرٍ آخر لتغييرٍ ≥٥٠٪ في حصة المزوّد — يُجيز النشر ولا يَنشر. */
+  approveBigChange: digitalCardsManagerProcedure
+    .input(z.object({ batchId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => pricingService.approveBigChange(tx, input, actorOf(ctx))),
+    ),
+
   /** بلاغ الكاشير «السعر لدى الجهاز مختلف» — لا يغيّر سعراً بذاته (§٧.٥). */
   reportMismatch: digitalCardsPosProcedure
     .input(

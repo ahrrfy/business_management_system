@@ -4955,6 +4955,10 @@ export const digitalPriceBatches = mysqlTable(
     publishedBy: int("publishedBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     publishedAt: timestamp("publishedAt"),
+    // §٧.١ (هجرة 0130): اعتماد مديرٍ ثانٍ حين تتغيّر حصةُ بطاقةٍ ≥٥٠٪ عن السعر النافذ.
+    // يُمسَح في `saveDraft` عند أيّ تعديل ⇒ لا يُعتمَد سعرٌ ثمّ يُنشَر غيره.
+    bigChangeApprovedBy: int("bigChangeApprovedBy").references(() => users.id),
+    bigChangeApprovedAt: timestamp("bigChangeApprovedAt"),
     // عمودان مولَّدان STORED + فهرسان فريدان (هجرة 0127، تُطبَّق عبر ci-apply-extra-migrations):
     // draftKey يحمل NULL خارج DRAFT وpublishedKey خارج PUBLISHED، وفهرس MySQL الفريد يقبل تكرار
     // NULL ⇒ «مسودّة واحدة لكل (فرع×مزوّد×تاريخ)» و«منشورة واحدة سارية لكل (فرع×مزوّد)».
