@@ -4,7 +4,9 @@
 import { eq, sql } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
+import type { TrpcContext } from "../../context";
 import { getDb } from "../../db";
+import { appRouter } from "../../routers";
 import { deleteProduct, listForPos, listProductsAdmin, setProductActive } from "../catalogService";
 import { getProductUsage } from "../entityUsage";
 import { ensureProductSearchNormFixture } from "./__searchNormFixture__";
@@ -27,23 +29,34 @@ async function seed() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.products).values([
-    { id: 1, name: "قلم جاف أزرق فاخر" },
+    {
+      id: 1,
+      name: "قلم جاف أزرق فاخر",
+      productType: "قرطاسية",
+      brand: "TestBrand",
+      modelName: "B-1",
+      description: "وصف كامل للتصدير",
+      isCustomizable: true,
+      isFeatured: true,
+    },
     { id: 2, name: "مكتبة خشبية صغيرة" },
     { id: 3, name: "منتج ناقص بلا وحدات" },
     { id: 4, name: "منتج معطّل", isActive: false },
   ]);
   await d.insert(s.productVariants).values([
-    { id: 1, productId: 1, sku: "PEN-BLUE", costPrice: "0.00" },
+    { id: 1, productId: 1, sku: "PEN-BLUE", color: "أزرق", colorHex: "#0000FF", costPrice: "125.00", minStock: 5, reorderPoint: 10, seasonTarget: 20 },
     { id: 2, productId: 2, sku: "SHELF-S", costPrice: "0.00" },
     { id: 4, productId: 4, sku: "OFF-1", costPrice: "0.00" },
   ]);
   await d.insert(s.productUnits).values([
-    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "6291041500213" },
+    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, barcode: "6291041500213" },
     { id: 2, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "6291041500220" },
     { id: 4, variantId: 4, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
   ]);
   await d.insert(s.productPrices).values([
     { productUnitId: 1, priceTier: "RETAIL", price: "500.00" },
+    { productUnitId: 1, priceTier: "WHOLESALE", price: "400.00" },
+    { productUnitId: 1, priceTier: "GOVERNMENT", price: "450.00" },
     { productUnitId: 2, priceTier: "RETAIL", price: "15000.00" },
     { productUnitId: 4, priceTier: "RETAIL", price: "1000.00" },
   ]);
@@ -56,6 +69,15 @@ const names = (rows: Array<{ productName: string }>) => rows.map((r) => r.produc
 const rowKey = (r: { productId: number; variantId: number | null; productUnitId: number | null }) =>
   `${r.productId}-${r.variantId ?? 0}-${r.productUnitId ?? 0}`;
 
+function caller(role: string) {
+  const ctx: TrpcContext = {
+    req: { headers: {} } as unknown as TrpcContext["req"],
+    res: {} as unknown as TrpcContext["res"],
+    user: { id: 1, role, branchId: 1, name: "t", email: "t@t", isActive: true } as unknown as TrpcContext["user"],
+  };
+  return appRouter.createCaller(ctx);
+}
+
 describe("listProductsAdmin — LEFT JOIN يُظهر المنتجات الناقصة", () => {
   it("منتج بلا متغيّرات/وحدات يظهر في قائمة الإدارة (NULL) ولا يظهر في POS", async () => {
     const { rows } = await listProductsAdmin({ branchId: 1 });
@@ -67,6 +89,47 @@ describe("listProductsAdmin — LEFT JOIN يُظهر المنتجات الناق
 
     const pos = await listForPos(1, "RETAIL");
     expect(names(pos)).not.toContain("منتج ناقص بلا وحدات");
+  });
+});
+
+describe("adminList — حجب التكلفة وسعر الجملة خادمياً", () => {
+  it("الخدمة تحجب الحقلين افتراضياً وتعيدهما فقط بطلب داخلي صريح", async () => {
+    const hidden = (await listProductsAdmin({ branchId: 1 })).rows.find((r) => r.productId === 1);
+    expect(hidden).toMatchObject({ baseCostPrice: null, costPrice: null, wholesalePrice: null, governmentPrice: null });
+
+    const visible = (
+      await listProductsAdmin({ branchId: 1 }, { includeSensitivePrices: true })
+    ).rows.find((r) => r.productId === 1);
+    expect(visible).toMatchObject({
+      productType: "قرطاسية",
+      brand: "TestBrand",
+      modelName: "B-1",
+      description: "وصف كامل للتصدير",
+      isCustomizable: true,
+      isFeatured: true,
+      color: "أزرق",
+      colorHex: "#0000FF",
+      minStock: 5,
+      reorderPoint: 10,
+      seasonTarget: 20,
+      isStoreSaleUnit: true,
+      baseCostPrice: "125.00",
+      costPrice: "125.00",
+      wholesalePrice: "400.00",
+      governmentPrice: "450.00",
+    });
+  });
+
+  it("الـAPI يعيد القيم للمالك والمدير فقط ويحجبها عن بقية الحسابات", async () => {
+    for (const role of ["admin", "manager"]) {
+      const row = (await caller(role).catalog.adminList({ branchId: 1 })).rows.find((r) => r.productId === 1);
+      expect(row).toMatchObject({ baseCostPrice: "125.00", costPrice: "125.00", wholesalePrice: "400.00", governmentPrice: "450.00" });
+    }
+    const cashierRow = (await caller("cashier").catalog.adminList({ branchId: 1 })).rows.find((r) => r.productId === 1);
+    expect(cashierRow).toMatchObject({ baseCostPrice: null, costPrice: null, wholesalePrice: null, governmentPrice: null });
+
+    // المحاسب لا يملك وحدة المنتجات أصلاً؛ لا نوسّع وصوله لأجل العمودين.
+    await expect(caller("accountant").catalog.adminList({ branchId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });
 

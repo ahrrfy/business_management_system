@@ -4,7 +4,13 @@
  */
 import CustomerPicker from "@/components/CustomerPicker";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
-import { clearCartDraft } from "@/lib/cartDraft";
+import {
+  discardLegacyPosDrafts,
+  loadPosTabsDraft,
+  posTabsDraftKey,
+  savePosTabsDraft,
+  type PosDraftScope,
+} from "@/lib/cartDraft";
 import { newClientRequestId } from "@/lib/countQueue";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
@@ -321,7 +327,7 @@ export default function POS() {
 
   // ش٥ — إقلاع دون اتصال: هوية الجهاز وورديته من آخر جلسة أونلاين معلومة (ملف الجهاز +
   // كاش آخر وردية مفتوحة) ⇒ الكاشير يواصل البيع بعد إعادة تشغيل الجهاز والقطع مستمر.
-  const [offlineBoot, setOfflineBoot] = useState<{ branchId: number | null; shiftId: number | null; name: string | null } | null>(null);
+  const [offlineBoot, setOfflineBoot] = useState<{ userId: number | null; branchId: number | null; shiftId: number | null; name: string | null } | null>(null);
   useEffect(() => {
     if (me.data) { setOfflineBoot(null); return; }
     void (async () => {
@@ -331,7 +337,7 @@ export default function POS() {
         const raw = await getMeta("lastOpenShift");
         if (raw) cachedShiftId = Number((JSON.parse(raw) as { id?: number }).id) || null;
       } catch { /* كاش تالف ⇒ بلا وردية بديلة */ }
-      setOfflineBoot({ branchId: profile?.branchId ?? null, shiftId: cachedShiftId, name: profile?.name ?? null });
+      setOfflineBoot({ userId: profile?.userId ?? null, branchId: profile?.branchId ?? null, shiftId: cachedShiftId, name: profile?.name ?? null });
     })();
   }, [me.data]);
 
@@ -408,7 +414,7 @@ export default function POS() {
   const [printerReady,   setPrinterReady]   = useState(isPaired());
   const [bridge,         setBridge]         = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
   const [showCustPicker, setShowCustPicker] = useState(false);
-  const [draftRestored,  setDraftRestored]  = useState(false);
+  const [restoredDraftKey, setRestoredDraftKey] = useState<string | null>(null);
 
   // تحت 1024px (اللوحي/الأصغر) تُكدَّس لوحتا الكاشير عمودياً بدل الصفّ الأفقي ذي العرض الثابت.
   const stacked = useMediaQuery("(max-width: 1023px)");
@@ -474,34 +480,45 @@ export default function POS() {
     });
   }
 
-  // ── Cart draft (multi-tab: saved directly to localStorage) ───────────────
-  const DRAFT_KEY = `alroya.posTabs.b${branchId}`;
-  useEffect(() => {
-    if (draftRestored) return;
-    try {
-      const raw = localStorage.getItem(DRAFT_KEY);
-      if (raw) {
-        const d = JSON.parse(raw) as { tabs: POSTab[]; activeId: number };
-        if (Array.isArray(d.tabs) && d.tabs.length) {
-          // مسوّدة قديمة قد تفتقر clientRequestId ⇒ نملؤه كي يبقى مفتاح idempotency لكل تبويب صالحاً.
-          setTabs(d.tabs.map((t) => ({ ...t, clientRequestId: t.clientRequestId ?? newClientRequestId() })));
-          setActiveId(d.activeId);
-        }
-      }
-    } catch { /* ignore */ }
-    setDraftRestored(true);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchId, draftRestored]);
+  // ── Cart draft — عزل صريح بالفرع + المستخدم + الوردية ───────────────────
+  const draftScope: PosDraftScope | null = shift?.id && (me.data?.id ?? offlineBoot?.userId)
+    ? { branchId, userId: (me.data?.id ?? offlineBoot!.userId)!, shiftId: shift.id }
+    : null;
+  const DRAFT_KEY = draftScope ? posTabsDraftKey(draftScope) : null;
 
   useEffect(() => {
-    if (!draftRestored) return;
-    try {
-      const hasCarts = tabs.some((t) => t.cart.length > 0);
-      if (hasCarts) localStorage.setItem(DRAFT_KEY, JSON.stringify({ tabs, activeId }));
-      else localStorage.removeItem(DRAFT_KEY);
-    } catch { /* ignore */ }
+    if (!draftScope || !DRAFT_KEY) {
+      // إغلاق الوردية/تبديل الهوية يزيل الفاتورة من الذاكرة فوراً؛ لا تنتظر فتح
+      // الوردية التالية كي تُصفّر حالة React القديمة.
+      if (restoredDraftKey !== null) {
+        setTabs([createTab(1, "طلب 1")]);
+        setActiveId(1);
+        setRestoredDraftKey(null);
+      }
+      return;
+    }
+    if (restoredDraftKey === DRAFT_KEY) return;
+
+    // الصيغ الفرعية القديمة مجهولة المالك، ولذلك تُتلف ولا تُهاجر إلى النطاق الجديد.
+    discardLegacyPosDrafts(localStorage, branchId);
+    const saved = loadPosTabsDraft<POSTab>(localStorage, draftScope);
+    if (saved) {
+      setTabs(saved.tabs.map((t) => ({ ...t, clientRequestId: t.clientRequestId ?? newClientRequestId() })));
+      setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
+    } else {
+      setTabs([createTab(1, "طلب 1")]);
+      setActiveId(1);
+    }
+    setRestoredDraftKey(DRAFT_KEY);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabs, activeId, branchId, draftRestored]);
+  }, [DRAFT_KEY]);
+
+  useEffect(() => {
+    // لا تحفظ حالة الوردية السابقة تحت مفتاح الوردية الجديدة أثناء رسم الانتقال.
+    if (!draftScope || !DRAFT_KEY || restoredDraftKey !== DRAFT_KEY) return;
+    savePosTabsDraft(localStorage, draftScope, tabs, activeId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs, activeId, DRAFT_KEY, restoredDraftKey]);
 
   // ── Derived ───────────────────────────────────────────────────────────────
   // S5 (٢٩/٦): العميل المختار = قراءة فورية من القائمة المحمَّلة (الشائع ≤٥٠٠ ⇒ بلا وميض تسعير)،
@@ -886,7 +903,6 @@ export default function POS() {
       const alignedRec: Receipt = { ...rec, total: serverTotal };
       setReceipt(alignedRec);
       setLastInv({ num: r.invoiceNumber, total: serverTotal });
-      clearCartDraft(branchId);
       notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
       patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
@@ -1077,7 +1093,6 @@ export default function POS() {
     };
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: ctx.total });
-    clearCartDraft(branchId);
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
     patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
     const printed = await printReceipt(buildBrandedReceipt(rec));
