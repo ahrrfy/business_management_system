@@ -36,7 +36,14 @@ export type EntryType =
   | "EXCHANGE_FX_DIFF" // فرق صرف محقَّق عند التسديد (amount موقَّع، معزول عن إيراد البيع)
   // gifts (G-م٢، ٢٧/٧): هدية صادرة للعميل — صرف مخزون كمصروف ترويجيّ بالكلفة (revenue=0, profit=-cost)،
   // بلا invoiceId ⇒ خارج وعاء العمولة تلقائياً. مُضاف لـ P&L bucket «هدايا وترويج» (فخّ §٦ #1).
-  | "GIFT_OUT";
+  | "GIFT_OUT"
+  // البطاقات الرقمية (§٥.١٢، ٢٩/٧): حركات **أصل** على أرصدتنا لدى مزوّدي الكروت —
+  // revenue = cost = profit = 0 دائماً، ولا تدخل تقارير الإيراد ولا المصروف.
+  | "DIGITAL_WALLET_DEPOSIT"
+  | "DIGITAL_WALLET_WITHDRAWAL"
+  | "DIGITAL_WALLET_CONSUMPTION"
+  | "DIGITAL_WALLET_REVERSAL"
+  | "DIGITAL_WALLET_ADJUSTMENT";
 
 export interface EntryInput {
   entryType: EntryType;
@@ -48,6 +55,8 @@ export interface EntryInput {
   supplierId?: number | null;
   deliveryPartyId?: number | null;
   exchangeHouseId?: number | null;
+  /** البطاقات الرقمية (§٥.١٢): محفظة المزوّد لقيود حركة الأصل (DIGITAL_WALLET_*) — بصفر أثر P&L. */
+  digitalWalletId?: number | null;
   revenue?: Decimal;
   cost?: Decimal;
   profit?: Decimal;
@@ -77,6 +86,7 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
     supplierId: e.supplierId ?? null,
     deliveryPartyId: e.deliveryPartyId ?? null,
     exchangeHouseId: e.exchangeHouseId ?? null,
+    digitalWalletId: e.digitalWalletId ?? null,
     revenue: toDbMoney(e.revenue ?? 0),
     cost: toDbMoney(e.cost ?? 0),
     profit: toDbMoney(e.profit ?? 0),

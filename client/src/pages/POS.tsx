@@ -20,6 +20,10 @@ import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, get
 import { getOfflineProfile, saveOfflineProfile } from "@/lib/offline/pinLock";
 import { getMeta, setMeta } from "@/lib/offline/db";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
+import { DigitalCardsPickerDialog, type ConfirmedCard } from "@/components/pos/DigitalCardsPickerDialog";
+import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
+import type { StudentSnapshot } from "@/components/pos/StudentDetailsDialog";
+import type { DigitalReceiptDetail } from "@/lib/printing/digitalReceiptLines";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
@@ -36,6 +40,21 @@ type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 type NumMode = "QTY" | "DISC" | "PAY";
 type PosRow = RouterOutputs["catalog"]["posList"][number];
 
+/** وسم سطر بطاقة رقمية (ش٥). كل مثيل مستقلّ حتى لو تكرّرت الفئة نفسها في السلة. */
+type DigitalLineMeta = {
+  offeringId: number;
+  priceVersionId: number;
+  /** مفتاح السطر (UUID) — مرجع التنفيذ الخارجيّ المستقلّ لهذا الكرت بعينه. */
+  lineKey: string;
+  /** هوية عدديّة محليّة للسلة فقط (سالبة كي لا تصطدم بـproductUnitId). */
+  lineId: number;
+  offeringType: string;
+  providerName: string;
+  requiresStudentData: boolean;
+  /** لقطة بيانات الطالب (ش٦) — تُثبَّت داخل معاملة البيع لاحقاً، لا عند الإضافة للسلة. */
+  student?: StudentSnapshot;
+};
+
 type CartItem = {
   row: PosRow;
   /** لقطة السعر/العرض التلقائي قبل تطبيق كوبون، لاستعادتها عند تغيّر السلة أو إزالة الكوبون. */
@@ -43,7 +62,13 @@ type CartItem = {
   qty: number;
   disc?: number;      // خصم % (0–100)
   origPrice?: number; // السعر الأصلي قبل الخصم
+  digital?: DigitalLineMeta;
 };
+
+/** هوية السطر داخل السلة: البطاقة الرقمية بمعرّفها المستقلّ، وغيرها بـproductUnitId (السلوك القديم). */
+function lineIdOf(c: CartItem): number {
+  return c.digital?.lineId ?? c.row.productUnitId;
+}
 
 type POSTab = {
   id: number;
@@ -77,6 +102,8 @@ type Receipt = {
   credit: number;
   method: string;
   isCredit: boolean;
+  /** ش١٠: لقطات الكروت الرقمية من الخادم (اسم الكرت/المرجع/بيانات الطالب) — بلا أرقام داخلية. */
+  digitalDetails?: DigitalReceiptDetail[] | null;
 };
 
 // ─── Colour Tokens — مَربوطة بـtokens.css لِتَتنفّس مع .dark بِلا MutationObserver ─
@@ -268,6 +295,8 @@ function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     change: r.isCredit || r.change <= 0 ? null : r.change,
     credit: r.isCredit ? r.credit : null,
     paymentMethod: r.method,
+    // ش١٠: تفاصيل الكروت تأتي من الخادم بعد التثبيت (§١٢.٣) — لا من حالة React قبل الحفظ.
+    digitalDetails: r.digitalDetails ?? null,
   };
 }
 
@@ -578,17 +607,166 @@ export default function POS() {
   function changeQty(id: number, qty: number) {
     if (activeTab.couponCode) clearAppliedCoupon();
     if (qty <= 0) {
-      setCart((prev) => prev.filter((c) => c.row.productUnitId !== id));
+      setCart((prev) => prev.filter((c) => lineIdOf(c) !== id));
       if (activeTab.selId === id) setSelId(null);
     } else {
-      setCart((prev) => prev.map((c) => c.row.productUnitId === id ? { ...c, qty } : c));
+      // §٨.٦: كمّية الكرت الرقميّ ثابتة عند ١ — الزيادة تكون بإضافة بطاقة أخرى (مرجع تنفيذ مستقلّ).
+      setCart((prev) => prev.map((c) => (lineIdOf(c) === id && !c.digital ? { ...c, qty } : c)));
     }
   }
 
   function removeRow(id: number) {
     if (activeTab.couponCode) clearAppliedCoupon();
-    setCart((prev) => prev.filter((c) => c.row.productUnitId !== id));
+    setCart((prev) => prev.filter((c) => lineIdOf(c) !== id));
     if (activeTab.selId === id) setSelId(null);
+  }
+
+  // ── البطاقات الرقمية (ش٥) ─────────────────────────────────────────────────
+  const [cardsOpen, setCardsOpen] = useState(false);
+  /** النيّة قيد التنفيذ الخارجيّ (ش٧) — تُفتح بها نافذة خطوات إصدار الكروت. */
+  const [fulfillIntentId, setFulfillIntentId] = useState<number | null>(null);
+
+  const digitalLines = cart.filter((c) => c.digital);
+
+  /** بصمة سلّة الكروت: تربط النيّة بمحتواها فيُرفض إعادة استعمال المفتاح بسلّةٍ أخرى. */
+  function digitalCartFingerprint(): string {
+    const basis = digitalLines
+      .map((c) => `${c.digital!.lineKey}:${c.digital!.offeringId}:${c.digital!.priceVersionId}:${c.row.price}`)
+      .sort()
+      .join("|");
+    let h = 0;
+    for (let i = 0; i < basis.length; i++) h = (Math.imul(31, h) + basis.charCodeAt(i)) | 0;
+    return `dc${(h >>> 0).toString(16)}${basis.length.toString(16)}`;
+  }
+
+  const prepareIntent = trpc.digitalCards.sales.prepare.useMutation({
+    onSuccess: (r) => setFulfillIntentId(r.intentId),
+    onError: (e) => notify.err(e),
+  });
+
+  /** ش٨: التثبيت المالي — الفاتورة والقبض والتسوية والتفاصيل في معاملة خادمية واحدة. */
+  const finalizeSale = trpc.digitalCards.sales.finalize.useMutation({
+    onSuccess: (r) => {
+      const now = new Date();
+      // §١٢.٣: الإيصال يُبنى من استجابة الخادم (السعر والمرجع وبيانات الطالب) لا من حالة React.
+      const rec: Receipt = {
+        invoiceNumber: r.invoiceNumber,
+        invoiceId: r.invoiceId,
+        date: fmtDate(now),
+        printDate: fmtDate(now),
+        printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+        cashierName: me.data?.name ?? undefined,
+        lines: [],
+        total: Number(r.total),
+        received: Number(r.total),
+        change: 0,
+        credit: 0,
+        method: activeTab.method,
+        isCredit: false,
+        digitalDetails: r.printDetails,
+      };
+      setFulfillIntentId(null);
+      setCart([]);
+      setSelId(null);
+      setPayInput("");
+      // مفتاح جديد للتبويب: الفاتورة التالية عمليةٌ مستقلّة (نفس اصطلاح البيع العادي).
+      patchActive({ clientRequestId: crypto.randomUUID(), couponCode: null, couponLabel: null });
+      setReceipt(rec);
+      notify.ok(`تمّت الفاتورة ${r.invoiceNumber}`, `الإجمالي ${r.total} د.ع — سُجِّلت الكروت وتسوية المزوّد.`);
+      void utils.shifts.current.invalidate();
+      void printReceipt(buildBrandedReceipt(rec)).catch(() => {
+        notify.warn("تعذّرت الطباعة التلقائية", "الفاتورة محفوظة — أعِد الطباعة من شاشة الفواتير.");
+      });
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  /** يبدأ مسار البيع الرقميّ: تحقّقٌ خادميّ + حجز رصيد، **قبل** لمس جهاز المزوّد. */
+  function startDigitalFulfillment() {
+    if (!shift) return;
+    if (offline) {
+      notify.errBig("لا بيع رقميّ دون اتصال", "الكروت تحتاج الخادم للتحقّق من السعر والتنفيذ.");
+      return;
+    }
+    if (activeTab.method !== "CASH" && activeTab.method !== "CARD") {
+      notify.err("البيع الرقميّ نقداً أو ببطاقة فقط");
+      return;
+    }
+    prepareIntent.mutate({
+      clientRequestId: activeTab.clientRequestId,
+      branchId,
+      shiftId: shift.id,
+      paymentMethod: activeTab.method,
+      cartFingerprint: digitalCartFingerprint(),
+      lines: digitalLines.map((c) => ({
+        lineKey: c.digital!.lineKey,
+        offeringId: c.digital!.offeringId,
+        priceVersionId: c.digital!.priceVersionId,
+        expectedSellPrice: String(c.row.price ?? "0"),
+        student: c.digital!.student ?? null,
+      })),
+    });
+  }
+
+  /** يُضيف **مثيلاً مستقلاً** دائماً — لا دمج مع سطر موجود من الفئة نفسها (§٨.٣). */
+  function addDigitalCard(card: ConfirmedCard, student?: StudentSnapshot) {
+    if (receipt) setReceipt(null);
+    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null });
+    // المعرّف يُشتقّ من **السلة نفسها** لا من عدّاد في ref: السلة تبقى عبر إعادة تركيب الصفحة
+    // (تبديل مسار/تبويب) بينما الـref يعود للصفر ⇒ تصادم مفاتيح React. أقلّ معرّف ناقص واحد.
+    const lineId = Math.min(0, ...cart.map((c) => c.digital?.lineId ?? 0)) - 1;
+    const row: PosRow = {
+      productId: card.productId,
+      productName: card.name,
+      variantId: card.variantId,
+      variantName: null,
+      color: null,
+      colorHex: null,
+      size: null,
+      // سطر السلة يعرض الـSKU بجانب الاسم؛ الكرت الرقميّ بلا SKU مفيد ⇒ فراغ بدل رمز داخليّ.
+      sku: "",
+      productUnitId: card.productUnitId,
+      unitName: "بطاقة",
+      conversionFactor: "1.0000",
+      barcode: null,
+      isBaseUnit: true,
+      price: card.sellPrice,
+      // خدمة بلا مخزون: الأصفار تُبقي حسابات المخزون في الواجهة محايدةً تماماً.
+      stockBase: 0,
+      reservedBase: 0,
+      availableBase: 0,
+      openedAt: null,
+      isService: true,
+      isCustomizable: false,
+      isPrintService: false,
+      isContractPrice: false,
+      isBundle: false,
+      isConsignment: false,
+      // لا عروض ولا كوبونات على الكرت الرقميّ — سعره سعر اليوم المنشور حصراً.
+      promotionId: null,
+      promotionName: null,
+      promotionDiscountForUnit: "0.00",
+      promotionEffectivePrice: null,
+    };
+    setCart((raw) => [
+      ...resetCouponItems(raw),
+      {
+        row,
+        qty: 1,
+        digital: {
+          offeringId: card.offeringId,
+          priceVersionId: card.priceVersionId,
+          lineKey: crypto.randomUUID(),
+          lineId,
+          offeringType: card.offeringType,
+          providerName: card.providerName,
+          requiresStudentData: card.requiresStudentData,
+          student,
+        },
+      },
+    ]);
+    setSelId(lineId);
+    setSearch(""); setShowDrop(false);
   }
 
   // ── Barcode ───────────────────────────────────────────────────────────────
@@ -633,7 +811,8 @@ export default function POS() {
       if (!selId) return;
       setCart((prev) =>
         prev.map((c) => {
-          if (c.row.productUnitId !== selId) return c;
+          // §٨.٦: لا كمّية ولا خصم يدويّ على كرت رقميّ من لوحة الأرقام.
+          if (lineIdOf(c) !== selId || c.digital) return c;
           let s = String(c.qty);
           if (k === "⌫") s = s.length > 1 ? s.slice(0, -1) : "1";
           else if (k === "C") s = "1";
@@ -645,7 +824,7 @@ export default function POS() {
       if (!selId) return;
       setCart((prev) =>
         prev.map((c) => {
-          if (c.row.productUnitId !== selId) return c;
+          if (lineIdOf(c) !== selId || c.digital) return c;
           const base = c.origPrice ?? Number(c.row.price ?? 0);
           let s = c.disc != null ? String(c.disc) : "";
           if (k === "⌫") s = s.slice(0, -1);
@@ -833,6 +1012,12 @@ export default function POS() {
   // الاتصال عبر offline.replaySale (idempotent — لا ازدواج حتى مع بيعٍ نصف-ناجح قبل القطع).
   async function captureOfflineSale() {
     if (!shift || !cart.length) return;
+    // البطاقات الرقمية ش٥: البيع الرقميّ **محظور أوفلاين** (مسألة مؤجَّلة صراحةً في §٢٤ من وثيقة
+    // التصميم) — السعر والتنفيذ الخارجيّ واستهلاك المحفظة كلّها تحتاج الخادم لحظةَ البيع.
+    if (cart.some((c) => c.digital)) {
+      notify.errBig("لا بيع رقميّ دون اتصال", "الكروت والاشتراكات تحتاج الخادم للتحقّق من السعر والتنفيذ. أزِلها من السلة.");
+      return;
+    }
     // ش٥ — بوابة التجربة (قرار مالك): الالتقاط معطَّل افتراضياً ويُفعَّل لكل جهاز على حدة.
     if (!(await isOfflineSaleEnabled())) {
       notify.errBig(
@@ -904,6 +1089,19 @@ export default function POS() {
   async function submitSale(approval?: { email: string; password: string }) {
     setSaleError(null);
     if (!shift || !cart.length) return;
+    // ش٥: البطاقة تُضاف للسلة بلا أثر ماليّ. مسار البيع الرقميّ (نية التنفيذ الخارجيّ ثم التثبيت
+    // الذرّي) هو شريحةٌ لاحقة؛ حتى ذلك الحين **يُمنع** تمرير كرت رقميّ عبر مسار البيع العادي —
+    // وإلا بِيع كرتٌ بلا استهلاك محفظة ولا ذمّة مزوّد (ثقبٌ ماليّ صامت).
+    if (cart.some((c) => c.digital)) {
+      // ش٧: الكرت الرقميّ لا يمرّ عبر مسار البيع العادي إطلاقاً — له مسارُ نيّةٍ وتنفيذٍ خارجيّ.
+      // سلّة مختلطة (كروت + بضاعة) غير مدعومة بعد ⇒ رفضٌ صريح بدل بيعٍ ناقص.
+      if (cart.some((c) => !c.digital)) {
+        notify.err("لا تُخلط الكروت مع بضاعة في فاتورة واحدة — أتمّها في فاتورتين.");
+        return;
+      }
+      startDigitalFulfillment();
+      return;
+    }
     // تدقيق ١٧/٧: «0» صريح في حقل المقبوض كان يُسجّل البيع مدفوعاً نقداً بالكامل (isCredit=false ⇒
     // payAmount=total) بلا قبض فعليّ ⇒ عجز درج عند Z-report. ارفضه صراحةً بدل الإسقاط الصامت.
     if (activeTab.payInput.trim() !== "" && D(activeTab.payInput).eq(0)) {
@@ -941,6 +1139,16 @@ export default function POS() {
   async function quickPay() {
     setSaleError(null);
     if (!shift || !cart.length) return;
+    if (cart.some((c) => c.digital)) {
+      // ش٧: الكرت الرقميّ لا يمرّ عبر مسار البيع العادي إطلاقاً — له مسارُ نيّةٍ وتنفيذٍ خارجيّ.
+      // سلّة مختلطة (كروت + بضاعة) غير مدعومة بعد ⇒ رفضٌ صريح بدل بيعٍ ناقص.
+      if (cart.some((c) => !c.digital)) {
+        notify.err("لا تُخلط الكروت مع بضاعة في فاتورة واحدة — أتمّها في فاتورتين.");
+        return;
+      }
+      startDigitalFulfillment();
+      return;
+    }
     // ش٣ أوفلاين: الدفع السريع نقدي كامل بطبيعته ⇒ مؤهَّل للالتقاط المحلي مباشرة.
     if (offline) {
       void captureOfflineSale();
@@ -994,8 +1202,12 @@ export default function POS() {
       if (receipt)      { if (e.key === "Escape" || e.key === "Enter") setReceipt(null); return; }
       if (shifting)     { if (e.key === "Escape") setShifting(false); return; }
       if (cashDropping) { if (e.key === "Escape") setCashDropping(false); return; }
+      // نافذة البطاقات مفتوحة: Escape تُغلقها وتتكفّل هي بمفاتيحها (لا تصل الاختصارات العامة).
+      if (cardsOpen) { if (e.key === "Escape") setCardsOpen(false); return; }
       switch (e.key) {
         case "F2":  e.preventDefault(); searchRef.current?.focus(); break;
+        // §٨.٧: مفتاح فتح شبكة الكروت. F4 محجوز للدفع وF9 للطباعة وF12 للتفريغ ⇒ F3.
+        case "F3":  e.preventDefault(); if (!offline) setCardsOpen(true); break;
         case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSale(); break;
         case "F9":  e.preventDefault(); if (receipt) printReceipt(buildBrandedReceipt(receipt)); break;
         case "F12": e.preventDefault();
@@ -1017,7 +1229,7 @@ export default function POS() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, sale.isPending, receipt, creditPrompt, shifting, cashDropping]);
+  }, [cart, sale.isPending, receipt, creditPrompt, shifting, cashDropping, cardsOpen, offline]);
 
   const connectPrinter = async () => {
     try { await pairPrinter(); setPrinterReady(true); notify.ok("تم ربط الطابعة"); }
@@ -1146,6 +1358,34 @@ export default function POS() {
         bridgeEnabled={bridge.enabled}
         bridgeDesc={bridge.description}
         onTestPrint={testServerPrint}
+        onOpenCards={() => setCardsOpen(true)}
+        cardsDisabled={offline}
+      />
+
+      {/* شبكة البطاقات الرقمية (ش٥) — لا أثر ماليّ عند الإضافة، فقط سطرٌ في السلة بسعر الخادم. */}
+      <DigitalCardsPickerDialog
+        open={cardsOpen}
+        branchId={branchId}
+        offline={offline}
+        onClose={() => setCardsOpen(false)}
+        onPick={addDigitalCard}
+      />
+
+      {/* خطوات التنفيذ الخارجيّ (ش٧) — كل كرت يُسجَّل نجاحه لحظةَ إصداره. */}
+      <DigitalFulfillmentDialog
+        intentId={fulfillIntentId}
+        onClose={() => setFulfillIntentId(null)}
+        onAllExecuted={(intentId) => {
+          // كل الكروت صدرت ⇒ التثبيت المالي فوراً. المفتاح نفسه يجعل إعادة الإرسال تُعيد
+          // الفاتورة ذاتها بدل إنشاء ثانية (idempotency على مستوى الخادم).
+          if (finalizeSale.isPending) return;
+          finalizeSale.mutate({
+            intentId,
+            clientRequestId: activeTab.clientRequestId,
+            paymentAmount: String(total),
+            paymentMethod: activeTab.method === "CARD" ? "CARD" : "CASH",
+          });
+        }}
       />
 
       {/* Tab Bar */}
@@ -1279,9 +1519,12 @@ interface POSHeaderProps {
   bridgeEnabled: boolean;
   bridgeDesc: string;
   onTestPrint: () => void;
+  /** فتح شبكة «الكروت والاشتراكات» (ش٥) — معطَّل أثناء الانقطاع (البيع الرقميّ أونلاين حصراً). */
+  onOpenCards: () => void;
+  cardsDisabled: boolean;
 }
 
-function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, onCashDrop, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint }: POSHeaderProps) {
+function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, onCashDrop, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint, onOpenCards, cardsDisabled }: POSHeaderProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function h(e: MouseEvent) {
@@ -1307,6 +1550,23 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
       </div>
 
       <div style={{ width: 1, height: 28, background: C.border, flexShrink: 0 }} />
+
+      {/* الكروت والاشتراكات (ش٥) — مدخل نافذة البطاقات الرقمية داخل نفس نقطة البيع والوردية */}
+      <button
+        onClick={onOpenCards}
+        disabled={cardsDisabled}
+        title={cardsDisabled ? "البيع الرقميّ يحتاج اتصالاً بالخادم" : "الكروت والاشتراكات (F3)"}
+        style={{
+          height: 50, padding: "0 14px", borderRadius: 10, flexShrink: 0, fontFamily: "inherit",
+          fontSize: 14, fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 7,
+          border: `1.5px solid ${cardsDisabled ? C.border : C.primary}`,
+          background: cardsDisabled ? C.muted : C.primarySoft,
+          color: cardsDisabled ? C.mutedFg : C.fg,
+          cursor: cardsDisabled ? "not-allowed" : "pointer",
+        }}
+      >
+        <CreditCard aria-hidden size={18} /> الكروت والاشتراكات
+      </button>
 
       {/* Search with smart scan */}
       <div ref={wrapRef} style={{ flex: 1, maxWidth: 560, position: "relative" }}>
@@ -1687,7 +1947,8 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
             )}
             {cart.map((c, i) => {
               const ep       = effectivePrice(c);
-              const selected = selId === c.row.productUnitId;
+              const lineId   = lineIdOf(c);
+              const selected = selId === lineId;
               // تمييز بصري + نصّ قبل محاولة الدفع (المنطق المُجمَّع للصنف في stockState أعلاه).
               const { isOut, isShort, availInUnit } = stockState(c);
               // «وضع الافتتاح»: الصنف غير المُفتتَح (openedAt فارغ) يُباع نقداً بالسالب — وسم كهرماني
@@ -1696,8 +1957,8 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
               const rowBg  = selected ? C.primarySoft : openingSellable ? C.amberSoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : "transparent";
               const accent = openingSellable ? C.amber : isOut ? C.danger : isShort ? C.amber : "transparent";
               return (
-                <tr key={c.row.productUnitId}
-                  onClick={() => { setSelId(c.row.productUnitId); setNumMode("QTY"); }}
+                <tr key={lineId}
+                  onClick={() => { setSelId(lineId); setNumMode("QTY"); }}
                   style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: rowBg, transition: "background .08s" }}
                   onMouseEnter={(e) => { e.currentTarget.style.background = selected ? C.primarySoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : C.muted; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = rowBg; }}
@@ -1708,6 +1969,15 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                     <span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 500, marginRight: 5 }}>{c.row.sku}</span>
                     {c.disc != null && c.disc > 0 && (
                       <span style={{ fontSize: 11, color: C.danger, fontWeight: 700, marginRight: 4 }}>−{c.disc}%</span>
+                    )}
+                    {c.digital && (
+                      // §٨.٦: شارة السطر — «كرت رقمي»، أو «تعليمي — اسم الطالب» حين تُلتقط بياناته.
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: C.primaryFg, background: C.primary, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                        <CreditCard aria-hidden size={12} />
+                        {c.digital.student
+                          ? `تعليمي — ${c.digital.student.studentName}`
+                          : c.digital.requiresStudentData ? "اشتراك تعليمي" : "كرت رقمي"}
+                      </span>
                     )}
                     {openingSellable && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
@@ -1744,18 +2014,23 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                     {c.row.isService ? "∞" : fmt(availInUnit)}
                   </td>
                   <td style={{ ...TD, padding: "6px 6px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
-                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.row.productUnitId, c.qty - 1); }}
-                        style={{ width: 44, height: 44, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 22, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>−</button>
-                      <span style={{ minWidth: 40, textAlign: "center", fontWeight: 800, fontSize: 15, direction: "ltr", color: C.fg }}>{c.qty}</span>
-                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.row.productUnitId, c.qty + 1); }}
-                        title={isOut || isShort ? "الزيادة تتجاوز المخزون المتاح" : undefined}
-                        style={{ width: 44, height: 44, border: `1.5px solid ${isOut || isShort ? accent : C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 22, color: isOut || isShort ? accent : C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
-                    </div>
+                    {c.digital ? (
+                      // §٨.٦: كمّية الكرت الرقميّ ثابتة — لا أزرار زيادة/نقصان؛ الزيادة بإضافة بطاقة أخرى.
+                      <div style={{ textAlign: "center", fontWeight: 800, fontSize: 15, direction: "ltr", color: C.mutedFg }} title="لزيادة العدد أضِف بطاقة أخرى — كل كرت له مرجع تنفيذ مستقلّ">1</div>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
+                        <button onClick={(e) => { e.stopPropagation(); changeQty(lineId, c.qty - 1); }}
+                          style={{ width: 44, height: 44, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 22, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>−</button>
+                        <span style={{ minWidth: 40, textAlign: "center", fontWeight: 800, fontSize: 15, direction: "ltr", color: C.fg }}>{c.qty}</span>
+                        <button onClick={(e) => { e.stopPropagation(); changeQty(lineId, c.qty + 1); }}
+                          title={isOut || isShort ? "الزيادة تتجاوز المخزون المتاح" : undefined}
+                          style={{ width: 44, height: 44, border: `1.5px solid ${isOut || isShort ? accent : C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 22, color: isOut || isShort ? accent : C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+                      </div>
+                    )}
                   </td>
                   <td style={{ ...TD, direction: "ltr", fontWeight: 800, fontSize: 14.5, color: C.fg }}>{fmt(itemTotal(c))}</td>
                   <td style={{ ...TD, padding: "6px" }}>
-                    <button onClick={(e) => { e.stopPropagation(); removeRow(c.row.productUnitId); }}
+                    <button onClick={(e) => { e.stopPropagation(); removeRow(lineId); }}
                       aria-label="حذف السطر"
                       style={{ width: 44, height: 44, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={18} /></button>
                   </td>

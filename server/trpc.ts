@@ -337,3 +337,16 @@ export const treasuryCashierProcedure = moduleProcedure(["cashier", "manager"], 
 // (بلا مدخل employeeId) داخل راوتر الوحدة، اتّساقاً مع عزل scopedOwnerId.
 export const commissionsManagerProcedure = moduleProcedure(["manager"], "commissions", "FULL");
 export const commissionsReadProcedure = protectedProcedure.use(requireModule("commissions", "READ"));
+
+// ─── البطاقات الرقمية والاشتراكات «digital_cards» ────────────────────────────
+// قالب الوحدة يمنح الكاشير READ **لأجل شبكة بطاقات نقطة البيع** (pos.* — بلا تكلفة ولا هامش
+// ولا رصيد محفظة)، لا لأجل شاشة الإعداد. لذلك بوّابتان مختلفتان للقراءة:
+//   • Pos: requireModule العاري (أي حامل digital_cards≥READ، الكاشير منهم).
+//   • AdminRead: قائمة manager/accountant/auditor عبر البوّابة الموحّدة ⇒ الكاشير محجوب
+//     (قالبه READ لا يضعه في القائمة، ولا يعبُر إلا بمنح **صريح** — قرار أدمن واعٍ).
+// الكتابة (إنشاء/تعديل مزوّد أو محفظة أو بطاقة، ونشر السعر) مديرية حصراً — §١١ من وثيقة التصميم.
+export const digitalCardsPosProcedure = branchScopedProcedure.use(requireModule("digital_cards", "READ"));
+export const digitalCardsAdminReadProcedure = branchScopedProcedure.use(
+  requireModuleGate(["manager", "accountant", "auditor"], "digital_cards", "READ")
+);
+export const digitalCardsManagerProcedure = moduleProcedure(["manager"], "digital_cards", "FULL");

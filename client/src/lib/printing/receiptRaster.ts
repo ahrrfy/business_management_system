@@ -10,6 +10,7 @@ import { imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
 import { CO, RECEIPT_PHONES, fmt, logoUrl } from "./brand";
 import type { ReceiptBrowserData } from "./printTemplates";
+import { buildDigitalBlocks } from "./digitalReceiptLines";
 
 const W = 576; // 80مم @ 203dpi — عرض الطباعة الفعلي للطابعات الحرارية
 const PAD = 12;
@@ -127,8 +128,10 @@ export async function receiptToCanvas(
   if (typeof document === "undefined") return null;
   await ensureFonts();
 
-  // تقدير سخي للارتفاع ثم قصّ للمستعمل فعلياً بعد الرسم
-  const estH = 1400 + d.items.length * 96;
+  // تقدير سخي للارتفاع ثم قصّ للمستعمل فعلياً بعد الرسم.
+  // ش١٠: تفاصيل الكروت تُضاف للتقدير وإلا قُصَّ الإيصال قبلها (عنوانٌ ٣٠px + ٥ أسطر × ٢٥px + هامش).
+  const digitalRows = (d.digitalDetails ?? []).length;
+  const estH = 1400 + d.items.length * 96 + digitalRows * 190;
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = estH;
@@ -232,6 +235,31 @@ export async function receiptToCanvas(
       ctx.textAlign = "right";
       ctx.fillText(lines[1], COL_NAME_R, y);
       y += 28;
+    }
+  }
+
+  // ───── ٤-ب) تفاصيل الكروت الرقمية (ش١٠) ─────
+  // نفس الأسطر التي يبنيها قالب المتصفّح (`digitalReceiptLines`) — مصدرٌ واحد فلا ينحرف المساران.
+  // لا حصة مزوّد ولا ربح ولا رصيد محفظة: النوع نفسه لا يحملها (§١٢.٢).
+  const digitalBlocks = buildDigitalBlocks(d.digitalDetails, { maskPhones: d.maskPhones });
+  if (digitalBlocks.length) {
+    y += 2;
+    dashedLine(ctx, y);
+    y += 30;
+    for (const block of digitalBlocks) {
+      ctx.font = "700 20px Cairo, sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText(block.lineName, W - PAD, y);
+      y += 26;
+      for (const row of block.rows) {
+        ctx.font = "600 19px Cairo, sans-serif";
+        ctx.textAlign = "right";
+        ctx.fillText(`${row.label}:`, W - PAD, y);
+        ctx.textAlign = "left";
+        ctx.fillText(row.value, PAD, y);
+        y += 25;
+      }
+      y += 4;
     }
   }
 

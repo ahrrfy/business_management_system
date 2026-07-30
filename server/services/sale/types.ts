@@ -16,6 +16,14 @@ export interface SaleLineInput {
    *  إن طابق ⇒ يُخزَّن `promotionId` + `promotionDiscount` على invoiceItem. إن لم يطابق ⇒ لا نُخزّن
    *  (نعامل الخصم كيدوي) — لا نرفض لتفادي فشل بيع بعد تعديل عرض بين العرض والحفظ. */
   promotionId?: number | null;
+  /**
+   * **تصدير داخليّ بحت — لا يقبله أيّ راوتر ولا يصل من العميل إطلاقاً** (نمط `offlineCapture`).
+   * تكلفة الوحدة المفروضة خادمياً لهذا السطر، تتجاوز `productVariants.costPrice`.
+   *
+   * مستهلكها الوحيد اليوم: تثبيت البيع الرقميّ (§١٠.٣) — تكلفة الكرت هي «حصة المزوّد» المقروءة
+   * من نيّةٍ **مقفولة** في القاعدة، لا من الشاشة. بدونها يُسجَّل الكرت بتكلفة صفر فينتفخ الربح.
+   */
+  unitCostOverride?: string | null;
 }
 
 export interface CreateSaleInput {

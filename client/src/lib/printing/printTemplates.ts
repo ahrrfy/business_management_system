@@ -29,6 +29,7 @@ export type {
 } from './printTemplatesV2';
 import { qrCodeSvg } from './qr';
 import { code128Svg } from './barcode';
+import { buildDigitalBlocks, type DigitalReceiptDetail } from './digitalReceiptLines';
 import { type LabelRenderItem, type LabelRenderOpts } from './labelRaster';
 import { getLabelSize, type LabelSize } from './labelSize';
 import { labelDocHtml } from './labelDesign';
@@ -846,6 +847,10 @@ export interface ReceiptBrowserData {
   credit?: string | number | null;
   /** طريقة الدفع كنصّ جاهز للعرض (نقدي/بطاقة/تحويل/محفظة/صك) — تظهر في كتلة الإجماليات */
   paymentMethod?: string | null;
+  /** البطاقات الرقمية (ش١٠): تفاصيل كل كرت — بلا أيّ حقلٍ ماليّ داخليّ (§١٢.٢). */
+  digitalDetails?: DigitalReceiptDetail[] | null;
+  /** إخفاء وسط أرقام الهواتف في النسخة المطبوعة (افتراضياً مُفعَّل). */
+  maskPhones?: boolean;
 }
 
 export function printBrowserReceipt(d: ReceiptBrowserData): void {
@@ -868,6 +873,20 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     <td style="padding:1mm 0;font-weight:600;">${esc(p.l)}</td>
     <td style="padding:1mm 0;text-align:left;direction:ltr;font-weight:700;letter-spacing:0.3px;">${esc(p.n)}</td>
   </tr>`).join('');
+
+  // البطاقات الرقمية (ش١٠): كتلة تفاصيل تحت جدول الأصناف — نفس الأسطر التي يرسمها المسار الحراريّ.
+  const digitalBlocks = buildDigitalBlocks(d.digitalDetails, { maskPhones: d.maskPhones });
+  const digitalHtml = digitalBlocks.length
+    ? `<div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>` +
+      digitalBlocks.map(b => `
+        <div style="font-size:10px;margin-bottom:1.5mm;">
+          <div style="font-weight:700;margin-bottom:0.5mm;">${esc(b.lineName)}</div>
+          ${b.rows.map(r => `<div style="display:flex;justify-content:space-between;gap:2mm;">
+            <span style="color:#444;">${esc(r.label)}</span>
+            <span style="font-weight:600;direction:${/هاتف|مرجع/.test(r.label) ? 'ltr' : 'rtl'};">${esc(r.value)}</span>
+          </div>`).join('')}
+        </div>`).join('')
+    : '';
 
   const body = `
   <div style="text-align:center;margin-bottom:2mm;">
@@ -896,6 +915,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     </tr></thead>
     <tbody>${itemRows}</tbody>
   </table>
+  ${digitalHtml}
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
   <div style="font-size:10.5px;">
     <div style="display:flex;justify-content:space-between;"><span>المجموع:</span><span>${fmt(d.subtotal)}</span></div>

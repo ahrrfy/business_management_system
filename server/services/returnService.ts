@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
+import { accountingEntries, customers, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
@@ -130,6 +130,26 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
 
     const items = await tx.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, input.invoiceId));
     const itemById = new Map(items.map((i) => [Number(i.id), i]));
+
+    // البطاقات الرقمية ش١٢: **حظر المرتجع العام** على أي بندٍ رقميّ. الكرت صدر من جهاز المزوّد
+    // وقد يكون استُهلك؛ إعادته ليست إعادةَ بضاعة إلى الرفّ بل عكسٌ ماليّ يحتاج تأكيد المزوّد
+    // (أو تحميل الخسارة على المكتبة). المسار الوحيد: digitalCards.reversal بقرارٍ إداريّ.
+    const digitalRows = await tx
+      .select({ invoiceItemId: digitalSaleDetails.invoiceItemId })
+      .from(digitalSaleDetails)
+      .where(eq(digitalSaleDetails.invoiceId, input.invoiceId));
+    if (digitalRows.length) {
+      const digitalItemIds = new Set(digitalRows.map((r) => Number(r.invoiceItemId)));
+      const blocked = input.lines.filter((l) => digitalItemIds.has(l.invoiceItemId));
+      if (blocked.length) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "لا يُرجَع كرتٌ رقميّ بالمرتجع العادي — استعمل «عكس بيع الكروت» بقرار المدير " +
+            "(الكرت صدر من جهاز المزوّد ولا يعود للمخزون).",
+        });
+      }
+    }
 
     const work = input.lines.map((l) => {
       const item = itemById.get(l.invoiceItemId);
