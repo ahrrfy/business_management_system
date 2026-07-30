@@ -3,6 +3,7 @@
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { RowActions } from "@/components/list/RowActions";
 import { Button } from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -295,14 +296,30 @@ export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow |
                   <td className="p-2 text-muted-foreground">{r.notes || "—"}</td>
                   <td className="p-2 text-center">
                     {r.status === "PENDING_APPROVAL" ? (
-                      <div className="flex justify-center gap-2">
-                        <Button size="sm" disabled={approve.isPending} onClick={() => approve.mutate({ transactionId: r.id })}>
-                          اعتماد
-                        </Button>
-                        <Button size="sm" variant="outline" disabled={reject.isPending} onClick={() => reject.mutate({ transactionId: r.id })}>
-                          رفض
-                        </Button>
-                      </div>
+                      <RowActions
+                        mode="inline"
+                        actions={[
+                          {
+                            key: "approve",
+                            kind: "approve",
+                            label: "اعتماد",
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                            disabled: approve.isPending,
+                            disabledReason: "جارٍ اعتماد الحركة",
+                            onSelect: () => approve.mutate({ transactionId: r.id }),
+                          },
+                          {
+                            key: "reject",
+                            kind: "reverse",
+                            label: "رفض",
+                            variant: "destructive",
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                            disabled: reject.isPending,
+                            disabledReason: "جارٍ رفض الحركة",
+                            onSelect: () => reject.mutate({ transactionId: r.id }),
+                          },
+                        ]}
+                      />
                     ) : "—"}
                   </td>
                 </tr>

@@ -4,7 +4,7 @@
 //     exportSpec={{ filename: "العملاء", rows, columns: [...] }}
 //     onImport={() => setImportOpen(true)} add={{ href: "/customers/new", label: "عميل جديد" }} />
 import * as React from "react";
-import { FileSpreadsheet, Loader2, Plus, Printer, Search, Upload } from "lucide-react";
+import { FileSpreadsheet, Loader2, Plus, Printer, RefreshCcw, Search, SlidersHorizontal, Upload, X } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,13 +39,26 @@ export type ListToolbarProps<T> = {
   title?: React.ReactNode;
   count?: number;
   loading?: boolean;
-  search?: { value: string; onChange: (v: string) => void; placeholder?: string };
+  search?: {
+    value: string;
+    onChange: (v: string) => void;
+    placeholder?: string;
+    ariaLabel?: string;
+  };
   filters?: React.ReactNode;
+  /** عدد الفلاتر المفعّلة حالياً، من دون حقل البحث. */
+  activeFilterCount?: number;
+  /** عند تمريرها يظهر إجراء موحّد لمسح البحث والفلاتر النشطة. */
+  onResetFilters?: () => void;
   exportSpec?: ExportSpec<T>;
   onImport?: () => void;
   importLabel?: string;
   onPrint?: () => void;
   printLabel?: string;
+  printDisabled?: boolean;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+  refreshLabel?: string;
   add?: AddSpec;
   children?: React.ReactNode;
 };
@@ -56,11 +69,17 @@ export function ListToolbar<T>({
   loading,
   search,
   filters,
+  activeFilterCount = 0,
+  onResetFilters,
   exportSpec,
   onImport,
   importLabel = "استيراد",
   onPrint,
   printLabel = "طباعة",
+  printDisabled = false,
+  onRefresh,
+  refreshing = false,
+  refreshLabel = "تحديث",
   add,
   children,
 }: ListToolbarProps<T>) {
@@ -105,25 +124,48 @@ export function ListToolbar<T>({
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-end gap-2">
         {search && (
-          <div className="relative">
+          <div className="relative min-w-48 flex-1 sm:flex-none">
             <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
+              type="search"
               value={search.value}
               onChange={(e) => search.onChange(e.target.value)}
               placeholder={search.placeholder ?? "بحث…"}
-              className="h-8 w-44 pr-8"
+              aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
+              className="h-8 w-full pr-8 sm:w-56"
             />
           </div>
         )}
 
         {filters}
 
+        {activeFilterCount > 0 && (
+          <span className="inline-flex h-8 items-center gap-1 rounded-md bg-primary/10 px-2.5 text-xs font-semibold text-primary">
+            <SlidersHorizontal aria-hidden className="size-3.5" />
+            {activeFilterCount.toLocaleString("ar-IQ-u-nu-latn")} فلاتر
+          </span>
+        )}
+
+        {onResetFilters && (activeFilterCount > 0 || Boolean(search?.value.trim())) && (
+          <Button variant="ghost" size="sm" onClick={onResetFilters} className="text-muted-foreground">
+            <X aria-hidden className="size-4" />
+            مسح الفلاتر
+          </Button>
+        )}
+
         {onImport && (
           <Button variant="outline" size="sm" onClick={onImport}>
             <Upload className="size-4" />
             {importLabel}
+          </Button>
+        )}
+
+        {onRefresh && (
+          <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}>
+            <RefreshCcw aria-hidden className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
+            {refreshing ? "جارٍ التحديث…" : refreshLabel}
           </Button>
         )}
 
@@ -158,7 +200,7 @@ export function ListToolbar<T>({
           ))}
 
         {onPrint && (
-          <Button variant="outline" size="sm" onClick={onPrint}>
+          <Button variant="outline" size="sm" onClick={onPrint} disabled={printDisabled}>
             <Printer className="size-4" />
             {printLabel}
           </Button>

@@ -18,7 +18,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { MyPerformanceCard } from "@/components/account/MyPerformanceCard";
 import { notify } from "@/lib/notify";
 import { isPushSupported, getPermissionState, subscribeToPush, unsubscribeFromPushBrowser } from "@/lib/push";
-import { ROLE_LABEL } from "./Users";
+import { ROLE_LABEL } from "@/lib/roles";
 
 export default function Account() {
   const [location, navigate] = useLocation();

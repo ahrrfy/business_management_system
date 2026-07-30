@@ -2,7 +2,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { ROLE_OPTIONS } from "@/pages/Users";
+import { ROLE_OPTIONS } from "@/lib/roles";
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 

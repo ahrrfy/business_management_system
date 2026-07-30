@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { RowActions } from "@/components/list/RowActions";
 import { fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { fmt, fmtInt } from "@/lib/money";
@@ -124,7 +125,18 @@ export default function Production() {
                     </span>
                   </td>
                   <td className="p-2 text-xs whitespace-nowrap">{fmtDateTime(r.createdAt)}</td>
-                  <td className="p-2 text-center"><Link href={`/production/${Number(r.id)}`} className="text-primary text-sm">فتح</Link></td>
+                  <td className="p-2 text-center">
+                    <RowActions
+                      mode="inline"
+                      actions={[{
+                        key: "view",
+                        kind: "view",
+                        label: "فتح",
+                        href: `/production/${Number(r.id)}`,
+                        gate: { roles: ["manager"], module: "inventory", level: "FULL" },
+                      }]}
+                    />
+                  </td>
                 </tr>
               ))}
               {!list.isLoading && filtered.length === 0 && (

@@ -13,6 +13,7 @@ import { D, fmtAr } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { selectCls, type ExchangeRow } from "@/components/exchange/shared";
+import { RowActions } from "@/components/list";
 
 const TYPE_AR: Record<string, string> = {
   DEPOSIT: "إيداع",
@@ -100,14 +101,20 @@ export default function ExchangeStatement() {
           if (t.status === "REVERSED") return <span className="text-xs text-money-negative">معكوسة</span>;
           if (t.type === "OPENING") return <span className="text-muted-foreground">—</span>;
           return (
-            <button
-              type="button"
-              onClick={() => doReverse(t.id, t.txnNumber)}
-              disabled={reverseMut.isPending}
-              className="inline-flex items-center gap-1 text-xs text-money-negative hover:underline disabled:opacity-50"
-            >
-              <Undo2 aria-hidden className="size-3" /> عكس
-            </button>
+            <RowActions
+              mode="inline"
+              actions={[{
+                key: "reverse",
+                kind: "reverse",
+                label: "عكس",
+                icon: Undo2,
+                variant: "destructive",
+                disabled: reverseMut.isPending,
+                disabledReason: "توجد عملية عكس قيد التنفيذ",
+                onSelect: () => void doReverse(t.id, t.txnNumber),
+                gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+              }]}
+            />
           );
         },
       },

@@ -8,6 +8,7 @@ import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, Check, ClipboardList } from "lucide-react";
 import { Link } from "wouter";
+import { RowActions } from "@/components/list";
 
 /* ═══════════ شاشة تدقيق التوافق المالي (admin فقط) ═══════════
    تستهلك reports.reconcile (adminProcedure) لكشف الانجراف الصامت بين
@@ -214,11 +215,16 @@ function DriftSection({
                   </td>
                   {link && (
                     <td className="p-2 text-center">
-                      <Link href={link(r.id)}>
-                        <Button variant="outline" size="sm">
-                          {linkLabel}
-                        </Button>
-                      </Link>
+                      <RowActions
+                        mode="inline"
+                        actions={[{
+                          key: "open",
+                          kind: "view",
+                          label: linkLabel,
+                          href: link(r.id),
+                          gate: { adminOnly: true },
+                        }]}
+                      />
                     </td>
                   )}
                 </tr>

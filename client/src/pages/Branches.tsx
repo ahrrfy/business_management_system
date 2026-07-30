@@ -13,7 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { RowActions } from "@/components/list";
+import { ListToolbar, RowActions } from "@/components/list";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
@@ -21,7 +21,7 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Plus } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 type BranchRow = RouterOutputs["branches"]["adminList"][number];
 type BranchType = "MAIN" | "SALES";
@@ -32,6 +32,11 @@ export default function Branches() {
   const utils = trpc.useUtils();
   const list = trpc.branches.adminList.useQuery();
   const rows = list.data ?? [];
+  const [query, setQuery] = useState("");
+  const visibleRows = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("ar");
+    return q ? rows.filter((b) => [b.name, b.code, b.address, b.phone, TYPE_LABEL[b.type]].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
+  }, [rows, query]);
 
   const [formOpen, setFormOpen] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
@@ -100,8 +105,28 @@ export default function Branches() {
       />
 
       <Card>
-        <CardHeader className="text-sm text-muted-foreground">
-          {list.isLoading ? "" : `${rows.length} فرع`}
+        <CardHeader>
+          <ListToolbar
+            title="قائمة الفروع"
+            count={visibleRows.length}
+            loading={list.isLoading}
+            search={{ value: query, onChange: setQuery, placeholder: "اسم الفرع، الرمز، العنوان أو الهاتف…" }}
+            onResetFilters={() => setQuery("")}
+            onRefresh={() => void list.refetch()}
+            refreshing={list.isFetching}
+            onPrint={() => window.print()}
+            exportSpec={{
+              filename: "الفروع",
+              rows: visibleRows,
+              formats: ["xlsx", "csv"],
+              columns: [
+                { key: "name", header: "الاسم" }, { key: "code", header: "الرمز" },
+                { key: "type", header: "النوع", map: (b) => TYPE_LABEL[b.type] ?? b.type },
+                { key: "address", header: "العنوان" }, { key: "phone", header: "الهاتف" },
+                { key: "isActive", header: "الحالة", map: (b) => b.isActive ? "مفعّل" : "معطّل" },
+              ],
+            }}
+          />
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
@@ -118,7 +143,7 @@ export default function Branches() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((b) => (
+                {visibleRows.map((b) => (
                   <tr key={b.id} className={`border-t ${b.isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{b.name}</td>
                     <td className="p-2 font-mono text-xs" dir="ltr">{b.code}</td>
@@ -133,13 +158,22 @@ export default function Branches() {
                     <td className="p-2 text-center">
                       <RowActions
                         actions={[
-                          { key: "edit", label: "تعديل", onSelect: () => openEdit(b) },
+                          {
+                            key: "edit",
+                            kind: "edit",
+                            label: "تعديل",
+                            onSelect: () => openEdit(b),
+                            gate: { adminOnly: true },
+                          },
                           {
                             key: "toggle",
+                            kind: "approve",
                             label: b.isActive ? "تعطيل" : "تفعيل",
                             variant: b.isActive ? "destructive" : "default",
                             disabled: setActive.isPending,
+                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
                             onSelect: () => void toggle(b),
+                            gate: { adminOnly: true },
                           },
                         ]}
                       />
@@ -149,7 +183,7 @@ export default function Branches() {
                 {list.isLoading && (
                   <tr><td colSpan={7}><LoadingState /></td></tr>
                 )}
-                {!list.isLoading && rows.length === 0 && (
+                {!list.isLoading && visibleRows.length === 0 && (
                   <TableEmptyRow colSpan={7} message="لا فروع بعد — أضِف أوّل فرع." />
                 )}
               </tbody>

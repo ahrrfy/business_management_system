@@ -14,6 +14,7 @@ import { fmtDate } from "@/lib/date";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
+import { RowActions } from "@/components/list";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -228,9 +229,16 @@ export default function APAging() {
                   <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.currentBalance)}</td>
                   <td className="p-2 text-xs" dir="ltr">{r.oldestPoDate ?? "—"}</td>
                   <td className="p-2 text-center">
-                    <Link href={`/suppliers-statement?id=${r.supplierId}`}>
-                      <Button variant="outline" size="sm">كشف الحساب</Button>
-                    </Link>
+                    <RowActions
+                      mode="inline"
+                      actions={[{
+                        key: "statement",
+                        kind: "view",
+                        label: "كشف الحساب",
+                        href: `/suppliers-statement?id=${r.supplierId}`,
+                        gate: { module: "suppliers", level: "READ" },
+                      }]}
+                    />
                   </td>
                 </tr>
               ))}

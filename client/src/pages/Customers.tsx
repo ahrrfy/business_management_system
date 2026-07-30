@@ -588,27 +588,72 @@ export default function Customers() {
                       {/* ٣ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
                       <RowActions
                         actions={[
-                          { key: "edit", label: "تعديل", href: `/customers/${id}/edit` },
+                          {
+                            key: "edit",
+                            kind: "edit",
+                            label: "تعديل",
+                            href: `/customers/${id}/edit`,
+                            gate: { roles: ["manager"], module: "crm", level: "FULL" },
+                          },
                           // كشف الحساب يقرأ ?id= من URL (نمط CustomerStatement)
-                          { key: "stmt", label: "كشف حساب", href: `/customers-statement?id=${id}` },
-                          { key: "receipt", label: "تسجيل دفعة", href: `/vouchers/receipt/new?customerId=${id}`, hidden: !isElevated },
-                          { key: "follow", label: "تسجيل متابعة", hidden: !isElevated, onSelect: () => setFollowTarget(c) },
-                          { key: "notes", label: "سجل المتابعة", href: `/crm?tab=followups&id=${id}` },
-                          { key: "reminder", label: "تذكير واتساب", href: "/ar-reminders", hidden: !isElevated },
+                          {
+                            key: "stmt",
+                            kind: "view",
+                            label: "كشف حساب",
+                            href: `/customers-statement?id=${id}`,
+                            gate: { module: "crm", level: "READ" },
+                          },
+                          {
+                            key: "receipt",
+                            kind: "pay",
+                            label: "تسجيل دفعة",
+                            href: `/vouchers/receipt/new?customerId=${id}`,
+                            hidden: !isElevated,
+                            gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                          },
+                          {
+                            key: "follow",
+                            kind: "create",
+                            label: "تسجيل متابعة",
+                            hidden: !isElevated,
+                            onSelect: () => setFollowTarget(c),
+                            gate: { roles: ["manager"], module: "crm", level: "FULL" },
+                          },
+                          {
+                            key: "notes",
+                            kind: "view",
+                            label: "سجل المتابعة",
+                            href: `/crm?tab=followups&id=${id}`,
+                            gate: { module: "crm", level: "READ" },
+                          },
+                          {
+                            key: "reminder",
+                            kind: "create",
+                            label: "تذكير واتساب",
+                            href: "/ar-reminders",
+                            hidden: !isElevated,
+                            gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
+                          },
                           {
                             key: "toggle",
+                            kind: "approve",
                             label: isActive ? "تعطيل" : "تفعيل",
                             variant: isActive ? "destructive" : "default",
                             disabled: deactivate.isPending || activate.isPending,
+                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
                             onSelect: () => void toggle(id, isActive, c.name ?? ""),
+                            gate: { roles: ["manager"], module: "crm", level: "FULL" },
                           },
                           {
                             key: "delete",
+                            kind: "delete",
                             label: "حذف نهائي",
                             variant: "destructive",
                             disabled: del.isPending,
+                            disabledReason: "توجد عملية حذف قيد التنفيذ",
                             hidden: !isElevated,
                             onSelect: () => void remove(id, c.name ?? ""),
+                            gate: { managerOnly: true },
                           },
                         ]}
                       />

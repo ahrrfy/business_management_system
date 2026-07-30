@@ -170,7 +170,7 @@ export const voucherRouter = router({
           status: z.enum(["COMPLETED", "REVERSED"]).optional(),
           approvalStatus: approvalStatus.optional(),
           voucherCategoryId: z.number().int().positive().optional(),
-          paymentMethod: reportableMethod.optional(),
+          paymentMethod: reportableMethod.optional(), q: z.string().trim().max(100).optional(),
           from: ymd.optional(),
           to: ymd.optional(),
           limit: z.number().int().positive().max(500).default(100),

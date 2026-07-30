@@ -8,6 +8,7 @@
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { RowActions } from "@/components/list/RowActions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
@@ -192,46 +193,54 @@ export default function DigitalReview() {
                       )}
                     </td>
                     <td className="p-2 text-center">
-                      {r.status === "WRITEOFF_PENDING" ? (
-                        // المعتمِد ≠ الطالب يفرضه الخادم؛ الواجهة تُعطّل الزرّ لطالبه فلا يصطدم بـ403.
-                        <div className="flex justify-center gap-2">
-                          <Button
-                            size="sm"
-                            disabled={approveMut.isPending || isOwnRequest(r.writeoffRequestedBy)}
-                            title={isOwnRequest(r.writeoffRequestedBy) ? "لا تعتمد شطباً طلبتَه بنفسك — يلزم مديرٌ آخر" : undefined}
-                            onClick={() => void approveWriteoff(r.id, r.reservedAmount)}
-                          >
-                            اعتماد الشطب
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={rejectMut.isPending || isOwnRequest(r.writeoffRequestedBy)}
-                            onClick={() => rejectMut.mutate({ intentId: r.id })}
-                          >
-                            رفض
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="flex justify-center gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={requestMut.isPending}
-                            onClick={() => setRequesting(r)}
-                          >
-                            <FileMinus2 className="size-4" /> طلب شطب
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={cancelMut.isPending}
-                            onClick={() => void cancelIntent(r.id, r.reservedAmount, Number(r.successCount))}
-                          >
-                            إلغاء النيّة
-                          </Button>
-                        </div>
-                      )}
+                      <RowActions
+                        mode="menu"
+                        actions={[
+                          {
+                            key: "approve-writeoff",
+                            kind: "approve",
+                            label: "اعتماد الشطب",
+                            hidden: r.status !== "WRITEOFF_PENDING",
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                            disabled: approveMut.isPending || isOwnRequest(r.writeoffRequestedBy),
+                            disabledReason: isOwnRequest(r.writeoffRequestedBy) ? "لا تعتمد شطباً طلبتَه بنفسك — يلزم مدير آخر" : "جارٍ اعتماد الشطب",
+                            onSelect: () => void approveWriteoff(r.id, r.reservedAmount),
+                          },
+                          {
+                            key: "reject-writeoff",
+                            kind: "reverse",
+                            label: "رفض الشطب",
+                            variant: "destructive",
+                            hidden: r.status !== "WRITEOFF_PENDING",
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                            disabled: rejectMut.isPending || isOwnRequest(r.writeoffRequestedBy),
+                            disabledReason: isOwnRequest(r.writeoffRequestedBy) ? "لا ترفض طلباً أنشأته بنفسك — يلزم مدير آخر" : "جارٍ رفض الشطب",
+                            onSelect: () => rejectMut.mutate({ intentId: r.id }),
+                          },
+                          {
+                            key: "request-writeoff",
+                            kind: "create",
+                            label: "طلب شطب",
+                            icon: FileMinus2,
+                            hidden: r.status === "WRITEOFF_PENDING",
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                            disabled: requestMut.isPending,
+                            disabledReason: "جارٍ إنشاء طلب الشطب",
+                            onSelect: () => setRequesting(r),
+                          },
+                          {
+                            key: "cancel-intent",
+                            kind: "delete",
+                            label: "إلغاء النيّة",
+                            variant: "destructive",
+                            hidden: r.status === "WRITEOFF_PENDING",
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                            disabled: cancelMut.isPending,
+                            disabledReason: "جارٍ إلغاء النيّة",
+                            onSelect: () => void cancelIntent(r.id, r.reservedAmount, Number(r.successCount)),
+                          },
+                        ]}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -273,9 +282,17 @@ export default function DigitalReview() {
                     <td className="p-2 tabular-nums">{fmtAr(v.actualBalance)}</td>
                     <td className="p-2 tabular-nums font-medium text-destructive">{fmtAr(v.variance)}</td>
                     <td className="p-2 text-center">
-                      <Button size="sm" variant="outline" onClick={() => setResolving(v)}>
-                        <Link2 className="size-4" /> ربط بتعديل معتمَد
-                      </Button>
+                      <RowActions
+                        mode="inline"
+                        actions={[{
+                          key: "resolve",
+                          kind: "edit",
+                          label: "ربط بتعديل معتمَد",
+                          icon: Link2,
+                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          onSelect: () => setResolving(v),
+                        }]}
+                      />
                     </td>
                   </tr>
                 ))}

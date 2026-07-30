@@ -18,6 +18,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { fmt } from "@/lib/money";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
+import { RowActions } from "@/components/list";
 
 type ContactKind = "customer" | "supplier" | "delivery" | "wa_unlinked";
 type PartyKind = "customer" | "supplier";
@@ -174,18 +175,33 @@ export default function ContactsBank() {
                             </TableCell>
                             <TableCell className="text-center">
                               {kind === "customer" || kind === "supplier" ? (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={(e) => { e.stopPropagation(); setSelected({ kind, id: r.id }); }}
-                                >
-                                  <Eye aria-hidden className="size-3.5" /> عرض ٣٦٠
-                                </Button>
+                                <div onClick={(e) => e.stopPropagation()}>
+                                  <RowActions
+                                    mode="inline"
+                                    actions={[{
+                                      key: "view-360",
+                                      kind: "view",
+                                      label: "عرض ٣٦٠",
+                                      icon: Eye,
+                                      onSelect: () => setSelected({ kind, id: r.id }),
+                                      gate: kind === "supplier"
+                                        ? { module: "suppliers", level: "READ" }
+                                        : { module: "crm", level: "READ" },
+                                    }]}
+                                  />
+                                </div>
                               ) : kind === "wa_unlinked" ? (
-                                <Button type="button" size="sm" variant="ghost" onClick={() => navigate("/crm?tab=inbox")}>
-                                  <Link2 aria-hidden className="size-3.5" /> فتح في الوارد
-                                </Button>
+                                <RowActions
+                                  mode="inline"
+                                  actions={[{
+                                    key: "open-inbox",
+                                    kind: "view",
+                                    label: "فتح في الوارد",
+                                    icon: Link2,
+                                    onSelect: () => navigate("/crm?tab=inbox"),
+                                    gate: { module: "campaigns", level: "READ" },
+                                  }]}
+                                />
                               ) : (
                                 <span className="text-xs text-muted-foreground">—</span>
                               )}

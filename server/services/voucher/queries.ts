@@ -1,7 +1,8 @@
 // قراءات السندات: القائمة المفلترة، سند منفرد موسَّع، والسندات الأخيرة لنفس الطرف (تحذير الازدواج).
-import { and, desc, eq, gte, isNotNull, lt, ne } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, lt, ne, or, sql } from "drizzle-orm";
 import { customers, exchangeHouses, exchangeTransactions, invoices, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { escLike } from "../../lib/sqlLike";
 import { localDayStart, localNextDayStart } from "../dateRange";
 import type { PartyType, PaymentMethod } from "./types";
 
@@ -16,6 +17,8 @@ export interface ListVouchersInput {
   approvalStatus?: "APPROVED" | "PENDING_APPROVAL" | "REJECTED";
   voucherCategoryId?: number;
   paymentMethod?: PaymentMethod;
+  /** بحث في رقم السند/الوصف/الطرف/المرجع/الصك/الفاتورة المرتبطة. */
+  q?: string;
   /** فترة على createdAt (YYYY-MM-DD) — «إلى» شاملاً عبر نصف مفتوح [from, to+يوم). */
   from?: string;
   to?: string;
@@ -35,6 +38,17 @@ export async function listVouchers(input: ListVouchersInput = {}) {
   if (input.approvalStatus) wheres.push(eq(receipts.approvalStatus, input.approvalStatus));
   if (input.voucherCategoryId) wheres.push(eq(receipts.voucherCategoryId, input.voucherCategoryId));
   if (input.paymentMethod) wheres.push(eq(receipts.paymentMethod, input.paymentMethod));
+  if (input.q?.trim()) {
+    const like = `%${escLike(input.q.trim())}%`;
+    wheres.push(or(
+      sql`coalesce(${receipts.voucherNumber}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${receipts.description}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${receipts.counterpartyName}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${receipts.referenceNumber}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${receipts.checkNumber}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${invoices.invoiceNumber}, '') LIKE ${like} ESCAPE '!'`,
+    ));
+  }
   if (input.from) wheres.push(gte(receipts.createdAt, localDayStart(input.from)));
   if (input.to) wheres.push(lt(receipts.createdAt, localNextDayStart(input.to)));
 

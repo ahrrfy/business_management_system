@@ -235,10 +235,19 @@ export default function ContractPrices() {
                             actions={[
                               {
                                 key: "toggle",
+                                kind: "approve",
                                 label: r.isActive ? "تعطيل" : "تفعيل",
                                 onSelect: () => setActive.mutate({ id: r.id, isActive: !r.isActive }),
+                                gate: { roles: ["manager"], module: "crm", level: "FULL" },
                               },
-                              { key: "remove", label: "حذف", variant: "destructive", onSelect: () => void onRemove(r) },
+                              {
+                                key: "remove",
+                                kind: "delete",
+                                label: "حذف",
+                                variant: "destructive",
+                                onSelect: () => void onRemove(r),
+                                gate: { roles: ["manager"], module: "crm", level: "FULL" },
+                              },
                             ]}
                           />
                         </td>

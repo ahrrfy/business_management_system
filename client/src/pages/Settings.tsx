@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { RowActions } from "@/components/list/RowActions";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { DangerConfirmDialog } from "@/components/DangerConfirmDialog";
@@ -270,13 +271,27 @@ export default function Settings() {
                       <TableCell className="text-left tabular-nums">{fmtKb(b.sizeKb)}</TableCell>
                       <TableCell className="text-left tabular-nums" dir="ltr">{fmtDateTime(b.createdAt)}</TableCell>
                       <TableCell className="text-center whitespace-nowrap">
-                        <Button size="sm" variant="ghost" onClick={() => downloadBackup(b.name)} className="inline-flex items-center gap-1"><Download aria-hidden className="size-4" />تنزيل</Button>
-                        <Button size="sm" variant="ghost" className="text-[var(--stock-low)] inline-flex items-center gap-1" onClick={() => setDanger({ kind: "restore-server", name: b.name })}><RotateCcw aria-hidden className="size-4" />استعادة</Button>
-                        <Button size="sm" variant="ghost" className="text-destructive inline-flex items-center gap-1"
-                          onClick={async () => {
-                            if (!(await confirmDelete({ description: `حذف النسخة الاحتياطية «${b.name}»؟ لا يمكن التراجع إلا باستعادة نسخة أخرى.` }))) return;
-                            deleteBackup.mutate({ name: b.name });
-                          }}><Trash2 aria-hidden className="size-4" />حذف</Button>
+                        <RowActions
+                          mode="menu"
+                          actions={[
+                            { key: "download", kind: "export", label: "تنزيل", icon: Download, gate: { adminOnly: true }, onSelect: () => downloadBackup(b.name) },
+                            { key: "restore", kind: "reverse", label: "استعادة", icon: RotateCcw, gate: { adminOnly: true }, onSelect: () => setDanger({ kind: "restore-server", name: b.name }) },
+                            {
+                              key: "delete",
+                              kind: "delete",
+                              label: "حذف",
+                              icon: Trash2,
+                              variant: "destructive",
+                              gate: { adminOnly: true },
+                              disabled: deleteBackup.isPending,
+                              disabledReason: "جارٍ حذف النسخة",
+                              onSelect: async () => {
+                                if (!(await confirmDelete({ description: `حذف النسخة الاحتياطية «${b.name}»؟ لا يمكن التراجع إلا باستعادة نسخة أخرى.` }))) return;
+                                deleteBackup.mutate({ name: b.name });
+                              },
+                            },
+                          ]}
+                        />
                       </TableCell>
                     </TableRow>
                   ))}

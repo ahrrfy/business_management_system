@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
+import { ROLE_LABEL, ROLE_OPTIONS } from "@/lib/roles";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link, useSearch } from "wouter";
@@ -24,24 +25,6 @@ function StationBadge({ station }: { station?: PosStation | "MULTI" | "NONE" }) 
   const label = station === "MULTI" ? "متعدّد الأقسام" : POS_STATION_LABEL[station];
   return <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${cls[station]}`}>{label}</span>;
 }
-
-export const ROLE_OPTIONS = [
-  { value: "admin",          label: "مدير النظام" },
-  { value: "manager",        label: "مدير فرع" },
-  { value: "accountant",     label: "محاسب" },
-  { value: "cashier",        label: "كاشير" },
-  { value: "warehouse",      label: "أمين مخزن" },
-  { value: "purchasing",     label: "مسؤول مشتريات" },
-  { value: "print_operator", label: "فني مطبعة" },
-  { value: "sales_rep",      label: "مندوب مبيعات" },
-  { value: "auditor",        label: "مدقّق" },
-  { value: "courier",        label: "مندوب توصيل" },
-  { value: "user",           label: "مستخدم عام" },
-] as const;
-
-export const ROLE_LABEL: Record<string, string> = Object.fromEntries(
-  ROLE_OPTIONS.map((o) => [o.value, o.label]),
-);
 
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -250,14 +233,29 @@ export default function Users() {
                     <td className="p-2 text-center">
                       <RowActions
                         actions={[
-                          { key: "edit", label: "تعديل", href: `/users/${id}/edit` },
-                          { key: "reset", label: "إعادة تعيين كلمة المرور", href: `/users/${id}/edit` },
+                          {
+                            key: "edit",
+                            kind: "edit",
+                            label: "تعديل",
+                            href: `/users/${id}/edit`,
+                            gate: { adminOnly: true },
+                          },
+                          {
+                            key: "reset",
+                            kind: "edit",
+                            label: "إعادة تعيين كلمة المرور",
+                            href: `/users/${id}/edit`,
+                            gate: { adminOnly: true },
+                          },
                           {
                             key: "toggle",
+                            kind: "approve",
                             label: isActive ? "تعطيل" : "تفعيل",
                             variant: isActive ? "destructive" : "default",
                             disabled: setActive.isPending,
+                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
                             onSelect: () => void toggle(id, isActive, u.name ?? "", u.email ?? ""),
+                            gate: { adminOnly: true },
                           },
                         ]}
                       />

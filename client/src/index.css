@@ -147,8 +147,31 @@
     font-family: "Cairo", system-ui, -apple-system, sans-serif;
     direction: rtl;
   }
+  /*
+   * Native selects are still used by legacy forms across the application.
+   * On Chromium/Windows the closed control inherited the dark foreground, but
+   * its OS popup could keep a white background.  Styling the popup rows
+   * explicitly prevents light-on-light options while those forms are migrated
+   * to the design-system Select/entity pickers.
+   */
+  select {
+    color: var(--foreground);
+    background-color: var(--background);
+  }
+  select option,
+  select optgroup {
+    color: var(--popover-foreground);
+    background-color: var(--popover);
+  }
+  select option:checked {
+    color: var(--accent-foreground);
+    background-color: var(--accent);
+  }
   .dark body {
     scrollbar-color: #30363d #010409;
+  }
+  .dark select {
+    color-scheme: dark;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),

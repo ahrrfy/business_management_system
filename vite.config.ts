@@ -131,6 +131,27 @@ export default defineConfig({
           if (id.includes("node_modules/lucide-react")) return "icons";
           // حزمة Excel ضخمة (~936KB) ومطلوبة فقط عند التصدير ⇒ افصلها كي لا تُثقل أي صفحة أخرى.
           if (id.includes("node_modules/exceljs")) return "exceljs";
+          // مكتبات البنية المشتركة تتغير بوتيرة أبطأ من شيفرة النظام. فصلها يقلل
+          // حجم الحزمة الأساسية ويحافظ على كاش المتصفح عند نشر تعديلات الشاشات.
+          if (
+            id.includes("/node_modules/react/") ||
+            id.includes("/node_modules/react-dom/") ||
+            id.includes("/node_modules/scheduler/") ||
+            id.includes("/node_modules/wouter/")
+          ) return "framework";
+          if (
+            id.includes("/node_modules/@tanstack/") ||
+            id.includes("/node_modules/@trpc/") ||
+            id.includes("/node_modules/superjson/")
+          ) return "data-client";
+          if (
+            id.includes("/node_modules/@radix-ui/") ||
+            id.includes("/node_modules/@floating-ui/") ||
+            id.includes("/node_modules/cmdk/") ||
+            id.includes("/node_modules/vaul/")
+          ) return "ui-vendor";
+          if (id.includes("/node_modules/@sentry/")) return "observability";
+          if (id.includes("/node_modules/dexie/")) return "offline-store";
         },
       },
     },
