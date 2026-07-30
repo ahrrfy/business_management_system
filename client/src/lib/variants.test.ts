@@ -6,6 +6,7 @@ import {
   incEan13,
   deriveSku,
   barcodeState,
+  barcodeInfo,
   marginPercent,
   toArabicDigits,
   onlyDigits,
@@ -119,6 +120,82 @@ describe("barcodeState", () => {
   it("المحجوز في القاعدة يسبق فحص خانة التحقّق", () => {
     // باركود غير صالح لكنه محجوز ⇒ نُظهر «محجوز» (الأهمّ للحفظ).
     expect(barcodeState("0000000000000", { countInForm: 1, takenInDb: true })).toBe("takenInDb");
+  });
+});
+
+describe("barcodeInfo — تشخيص متعدّد الترميزات (يحلّ رسالة «invalid» الكاذبة على غير EAN-13)", () => {
+  const opts = { countInForm: 1, takenInDb: false };
+
+  it("EAN-13 معياريّ ⇒ ok مع بادج «EAN-13»", () => {
+    const r = barcodeInfo("4006381333931", opts);
+    expect(r.severity).toBe("ok");
+    expect(r.symbology.kind).toBe("EAN-13");
+    expect(r.symbology.label).toBe("EAN-13");
+  });
+
+  it("UPC-A ١٢ رقماً ⇒ info مع بادج «UPC-A» — لا يُوسَم «غير صالح» كما في السلوك القديم", () => {
+    const r = barcodeInfo("036000291452", opts);
+    expect(r.severity).toBe("info");
+    expect(r.symbology.kind).toBe("UPC-A");
+    expect(r.state).toBe("valid"); // النموذج يحفظه (ليس حاصراً)
+  });
+
+  it("EAN-8 صحيح ⇒ info لا invalid", () => {
+    const r = barcodeInfo("96385074", opts);
+    expect(r.severity).toBe("info");
+    expect(r.symbology.kind).toBe("EAN-8");
+    expect(r.state).toBe("valid");
+  });
+
+  it("ITF-14 كرتون شحن ⇒ info", () => {
+    const r = barcodeInfo("10012345678902", opts);
+    expect(r.severity).toBe("info");
+    expect(r.symbology.kind).toBe("ITF-14");
+  });
+
+  it("ISBN-13 (978-*) ⇒ ok — يُميَّز كنشرٍ", () => {
+    const r = barcodeInfo("9780134685991", opts);
+    expect(r.symbology.kind).toBe("ISBN-13");
+    expect(r.symbology.label).toBe("ISBN");
+  });
+
+  it("EAN-13-INTERNAL نطاق 20-29 ⇒ ok مع بادج «داخلي (EAN-13)»", () => {
+    const code = genEan13("200");
+    const r = barcodeInfo(code, opts);
+    expect(r.severity).toBe("ok");
+    expect(r.symbology.kind).toBe("EAN-13-INTERNAL");
+  });
+
+  it("Code128 نصّ (اسم دفعة) ⇒ info بلا تخويف", () => {
+    const r = barcodeInfo("Item#42_batch-b", opts);
+    expect(r.severity).toBe("info");
+    expect(r.symbology.kind).toBe("Code128");
+    expect(r.state).toBe("valid");
+  });
+
+  it("EAN-13 بخانة تحقّق فاسدة ⇒ warn (يُقبل مع بادج) — قرار المالك", () => {
+    const r = barcodeInfo("4006381333930", opts);
+    expect(r.severity).toBe("warn");
+    expect(r.symbology.kind).toBe("EAN-13");
+    expect(r.symbology.valid).toBe(false);
+  });
+
+  it("المكرّر في النموذج ⇒ blocker يسبق نوع الترميز", () => {
+    const r = barcodeInfo("4006381333931", { countInForm: 2, takenInDb: false });
+    expect(r.severity).toBe("blocker");
+    expect(r.state).toBe("dupInForm");
+  });
+
+  it("المحجوز في القاعدة ⇒ blocker يسبق نوع الترميز", () => {
+    const r = barcodeInfo("4006381333931", { countInForm: 1, takenInDb: true });
+    expect(r.severity).toBe("blocker");
+    expect(r.state).toBe("takenInDb");
+  });
+
+  it("الفارغ ⇒ info بلا رسالة", () => {
+    const r = barcodeInfo("", { countInForm: 0, takenInDb: false });
+    expect(r.state).toBe("empty");
+    expect(r.message).toBe("");
   });
 });
 

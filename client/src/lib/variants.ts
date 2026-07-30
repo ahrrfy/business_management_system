@@ -7,6 +7,9 @@
  */
 
 import { colorSkuCode, skuToken } from "@shared/colorBank";
+import { detectSymbology, type SymbologyResult, type SymbologyKind } from "@shared/barcodeSymbology";
+
+export { detectSymbology, type SymbologyResult, type SymbologyKind };
 
 /* ============================ EAN-13 ============================ */
 
@@ -23,8 +26,12 @@ export function isValidEan13(code: string): boolean {
   return +code[12] === ean13CheckDigit(code.slice(0, 12));
 }
 
-/** يولّد EAN-13 صالحاً ببادئة معطاة (افتراضي 621 — مجال داخليّ). */
-export function genEan13(prefix = "621"): string {
+/**
+ * يولّد EAN-13 صالحاً ببادئة معطاة.
+ * الافتراضي "200" = النطاق المعياريّ GS1 (20-29) المخصَّص للاستخدام الداخلي داخل المؤسّسة —
+ * صفر تصادم مع أيّ مصنِّع مسجَّل في العالم (قرار المالك ٣٠/٧: استبدلنا 621 لأنها فعلياً نطاق GS1-Egypt).
+ */
+export function genEan13(prefix = "200"): string {
   let body = (prefix || "").replace(/\D/g, "");
   while (body.length < 12) body += Math.floor(Math.random() * 10);
   body = body.slice(0, 12);
@@ -37,7 +44,8 @@ export function genEan13(prefix = "621"): string {
  * فالحساب بـNumber آمن ويُغني عن BigInt (غير المتاح على هدف TS الحالي).
  */
 export function incEan13(code: string): string {
-  const base = /^\d{13}$/.test(code || "") ? code.slice(0, 12) : "621000000000";
+  // بادئة الاحتياط "200000000000" في النطاق المعياريّ GS1 الداخلي (20-29).
+  const base = /^\d{13}$/.test(code || "") ? code.slice(0, 12) : "200000000000";
   const next = String(Number(base) + 1).padStart(12, "0").slice(-12);
   return next + ean13CheckDigit(next);
 }
@@ -76,6 +84,9 @@ export type BarcodeState = "empty" | "valid" | "invalid" | "dupInForm" | "takenI
 /**
  * يصنّف خلية باركود: فارغ ⇐ محجوز في القاعدة ⇐ مكرّر داخل النموذج ⇐ خانة تحقّق خاطئة ⇐ صالح.
  * الترتيب مقصود: «محجوز/مكرّر» أهمّ من «خانة تحقّق» لأنهما يمنعان الحفظ فعلاً.
+ *
+ * ⚠️ توافق للخلف: هذه الدالة تفحص EAN-13 حصراً. الشاشات الجديدة تستعمل `barcodeInfo` أدناه
+ * التي تكشف كل الترميزات (Code128/UPC-A/EAN-8/ITF-14/ISBN/GS1-128…) وترسل رسالة صادقة.
  */
 export function barcodeState(
   code: string,
@@ -86,6 +97,96 @@ export function barcodeState(
   if (opts.countInForm > 1) return "dupInForm";
   if (!isValidEan13(code)) return "invalid";
   return "valid";
+}
+
+/* ============================ معلومات الباركود مع نوع الترميز ============================ */
+
+/**
+ * نتيجة شاملة لخانة الباركود: تُدمج حالة التفرّد (محجوز/مكرّر) مع نوع الترميز المكتشف.
+ *
+ * لماذا فُصلت عن `barcodeState`:
+ *   `barcodeState` القديمة تفترض EAN-13 حصراً ⇒ رسالة «invalid» مضلّلة لأنواع أخرى صحيحة
+ *   (Code128 داخلي، UPC-A ١٢ رقماً، EAN-8، ITF-14…). هذه الدالة تكشف النوع الفعلي
+ *   وتعطي رسالة صادقة + بادج للعرض. الشاشات الحديثة تستعملها بدلاً من `barcodeState`.
+ */
+export interface BarcodeInfo {
+  /** حالة التفرّد (تسبق نوع الترميز في الأهمّية — المكرّر يمنع الحفظ). */
+  state: BarcodeState;
+  /** نتيجة كشف نوع الترميز — تعطي الـkind واللابل والصلاحية والسبب. */
+  symbology: SymbologyResult;
+  /** رسالة صادقة للعرض: تصف الحالة بدقّة بلا تخويف كاذب. */
+  message: string;
+  /** درجة الخطورة للعرض: `blocker` يمنع الحفظ، `warn` يعرض تحذيراً، `info` معلومة، `ok` صالح. */
+  severity: "ok" | "info" | "warn" | "blocker";
+}
+
+/**
+ * تحليل شامل لخانة باركود: يجمع حالة التفرّد مع كشف نوع الترميز، ويعطي رسالة صادقة.
+ *
+ * قواعد الشدّة:
+ *   `blocker` (يمنع الحفظ): محجوز في DB، أو مكرّر داخل النموذج.
+ *   `warn`  (تحذير غير مانع): كشف نوع معياريّ لكن خانة التحقّق فاسدة (يُقبل بقرار المالك).
+ *   `info`  (تنبيه معلوماتي): نوع صحيح غير EAN-13 (Code128 / UPC-A / ISBN / داخلي…).
+ *   `ok`    (صالح تماماً): EAN-13 معياريّ صحيح.
+ */
+export function barcodeInfo(
+  code: string,
+  opts: { countInForm: number; takenInDb: boolean }
+): BarcodeInfo {
+  const symbology = detectSymbology(code);
+  const state = barcodeState(code, opts);
+
+  // (١) حالات التفرّد تسبق كلّ شيء — بلا اعتبار للترميز.
+  if (state === "empty") {
+    return { state, symbology, message: "", severity: "info" };
+  }
+  if (state === "takenInDb") {
+    return { state, symbology, message: "باركود مُستخدَم في منتج آخر — غيّره قبل الحفظ.", severity: "blocker" };
+  }
+  if (state === "dupInForm") {
+    return { state, symbology, message: "باركود مكرّر داخل النموذج.", severity: "blocker" };
+  }
+
+  // (٢) صادق التشخيص بحسب النوع المكتشف.
+  switch (symbology.kind) {
+    case "EAN-13":
+      return symbology.valid
+        ? { state: "valid", symbology, message: "باركود EAN-13 صالح.", severity: "ok" }
+        : {
+            state,
+            symbology,
+            message: "خانة تحقّق EAN-13 لا تطابق — يُقبل مع ذلك (ترميز غير قياسيّ).",
+            severity: "warn",
+          };
+    case "EAN-13-INTERNAL":
+      return { state: "valid", symbology, message: "باركود داخليّ صالح (نطاق EAN-13 المخصَّص للاستخدام الداخلي).", severity: "ok" };
+    case "ISBN-13":
+      return { state: "valid", symbology, message: "رقم ISBN صالح — منتج نشر (كتاب).", severity: "ok" };
+    case "UPC-A":
+      return symbology.valid
+        ? { state: "valid", symbology, message: "باركود UPC-A صالح (١٢ رقماً — قياسيّ في الأسواق الأمريكية).", severity: "info" }
+        : { state, symbology, message: "UPC-A: خانة التحقّق لا تطابق — يُقبل مع ذلك.", severity: "warn" };
+    case "EAN-8":
+      return symbology.valid
+        ? { state: "valid", symbology, message: "باركود EAN-8 صالح (٨ أرقام — للمنتجات الصغيرة).", severity: "info" }
+        : { state, symbology, message: "EAN-8: خانة التحقّق لا تطابق — يُقبل مع ذلك.", severity: "warn" };
+    case "ITF-14":
+      return symbology.valid
+        ? { state: "valid", symbology, message: "باركود ITF-14 صالح (كرتون شحن).", severity: "info" }
+        : { state, symbology, message: "ITF-14: خانة التحقّق لا تطابق — يُقبل مع ذلك.", severity: "warn" };
+    case "INTERNAL":
+      return { state: "valid", symbology, message: "رمز داخليّ (بادئة ALR) — صالح.", severity: "info" };
+    case "GS1-128":
+      return { state: "valid", symbology, message: "GS1-128 — سيُطبع بترميزه القياسيّ.", severity: "info" };
+    case "Code39":
+      return { state: "valid", symbology, message: "Code39 — سيُطبع بترميزه.", severity: "info" };
+    case "Code128":
+      return { state: "valid", symbology, message: "Code128 — سيُطبع بترميز يتّسع لكلّ ASCII.", severity: "info" };
+    case "unknown":
+      return { state: "invalid", symbology, message: "نصّ يحتوي محارف غير قابلة للطباعة — لا يُطبع.", severity: "warn" };
+    default:
+      return { state, symbology, message: "", severity: "info" };
+  }
 }
 
 /* ============================ الهامش (عرضيّ فقط) ============================ */
