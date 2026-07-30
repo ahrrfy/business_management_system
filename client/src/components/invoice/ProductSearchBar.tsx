@@ -114,7 +114,10 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       reservedBase: r.reservedBase ?? 0,
       availableBase: r.availableBase ?? (r.stockBase ?? 0),
       price: r.price ?? "0",
-      costBase: "0", // cashier should not see cost; pages may pass showCost=false in the table
+      // التكلفة تصل من الخادم (`catalog.posList`) للمستخدم المخوَّل برؤيتها (مدير/أدمن)، ويُحجب
+      // إلى null لغير المخوَّلين (كاشير) في `catalogRouter.redactPosCost` قبل الإرسال ⇒ لا تسرب.
+      // شاشات المبيعات المتقدّمة (`SalesInvoiceNew`) تعرض عمود «التكلفة» و«الهامش٪» بهذه القيمة.
+      costBase: r.costPriceBase ?? "0",
     }));
   }, [isPurchase, posQ.data, purQ.data, query]);
 

@@ -17,7 +17,7 @@ import {
 } from "../services/categoryService";
 import { logAudit } from "../services/auditService";
 import { getProductUsage } from "../services/entityUsage";
-import { productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
+import { canSeeCostForUser, productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { checkVariantSanity, classifySeverity, type UnitPricing } from "../../shared/priceSanity";
 
@@ -35,6 +35,22 @@ function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, 
     throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
   }
   return Number(ctx.user.branchId);
+}
+
+/**
+ * حجب `costPriceBase` من صفوف نتائج POS (بحث/باركود/معرّفات) لغير المخوَّلين برؤية التكلفة.
+ * التكلفة تُحمَل دائماً في الاستعلام كي تصل لشاشات المبيعات المتقدّمة (مدير/أدمن) عبر شريط
+ * البحث الموحَّد؛ الحجب هنا في نقطة الخروج (نمط `redact.ts`) فلا تتسرّب عبر شبكة tRPC إلى
+ * الكاشير. `canSeeCostForUser` يحترم القوالب والمنح الصريحة على السواء (`server/trpc.ts:190`).
+ */
+function redactPosCost<T extends { costPriceBase?: string | null }>(rows: T[], user: { role: string; permissionsOverride?: unknown }): T[] {
+  if (canSeeCostForUser(user)) return rows;
+  return rows.map((r) => ({ ...r, costPriceBase: null }));
+}
+function redactPosCostOne<T extends { costPriceBase?: string | null }>(row: T | null, user: { role: string; permissionsOverride?: unknown }): T | null {
+  if (row == null) return row;
+  if (canSeeCostForUser(user)) return row;
+  return { ...row, costPriceBase: null };
 }
 
 const priceSchema = z.object({ priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]), price: z.string() });
@@ -158,7 +174,10 @@ export const catalogRouter = router({
   posList: productsReadProcedure
     // بند 12ب (٧/٧): customerId اختياري — عميل بسعر تعاقدي نشط يرى سعره بدل سعر الفئة (isContractPrice).
     .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
-    .query(({ input, ctx }) => listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, customerId: input.customerId ?? undefined })),
+    .query(async ({ input, ctx }) => {
+      const rows = await listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, customerId: input.customerId ?? undefined });
+      return redactPosCost(rows, ctx.user);
+    }),
 
   // شاشة الملصقات (١٦/٧): إعادة تسعير قائمة الطباعة عند تبديل فئة السعر — استعلامٌ واحد
   // على نفس خطّ الكاشير (فئة/تعاقديّ/بكج/عروض) ⇒ سعر الملصق = سعر الكاشير دائماً.
@@ -170,7 +189,10 @@ export const catalogRouter = router({
         productUnitIds: z.array(z.number().int().positive()).max(500),
       })
     )
-    .query(({ input, ctx }) => listByUnitIds(input.productUnitIds, scopeBranch(ctx, input.branchId), input.tier)),
+    .query(async ({ input, ctx }) => {
+      const rows = await listByUnitIds(input.productUnitIds, scopeBranch(ctx, input.branchId), input.tier);
+      return redactPosCost(rows, ctx.user);
+    }),
 
   // شاشة الملصقات: «أضِف كلّ ألوان/وحدات المنتج» — كلّ صفوف (متغيّر × وحدة) لمنتجٍ واحد.
   byProductIds: productsReadProcedure
@@ -181,7 +203,10 @@ export const catalogRouter = router({
         productIds: z.array(z.number().int().positive()).max(50),
       })
     )
-    .query(({ input, ctx }) => listByProductIds(input.productIds, scopeBranch(ctx, input.branchId), input.tier)),
+    .query(async ({ input, ctx }) => {
+      const rows = await listByProductIds(input.productIds, scopeBranch(ctx, input.branchId), input.tier);
+      return redactPosCost(rows, ctx.user);
+    }),
 
   // قائمة إدارة المنتجات: LEFT JOIN يُظهر حتى المنتجات الناقصة (بلا متغيّرات/وحدات) +
   // تقسيم صفحات خادمي. protectedProcedure لأن /products متاحة لكل الأدوار والمخرَج بلا تكلفة.
@@ -235,7 +260,10 @@ export const catalogRouter = router({
 
   byBarcode: productsReadProcedure
     .input(z.object({ barcode: z.string().min(1), branchId: z.number().int().positive(), tier, customerId: z.number().int().positive().nullish() }))
-    .query(({ input, ctx }) => lookupByBarcode(input.barcode, scopeBranch(ctx, input.branchId), input.tier, input.customerId ?? undefined)),
+    .query(async ({ input, ctx }) => {
+      const row = await lookupByBarcode(input.barcode, scopeBranch(ctx, input.branchId), input.tier, input.customerId ?? undefined);
+      return redactPosCostOne(row, ctx.user);
+    }),
 
   // product-variants: تحقّق مسبق من تكرار الباركود قبل الحفظ — `productUnits.barcode` فريد (UNIQUE)
   // فالحفظ يفشل عند التكرار؛ هذا يُظهر تحذيراً لحظياً بأي منتج يحجز الباركود (بدل رحلة حفظ فاشلة).

@@ -134,3 +134,25 @@ describe("البحث الذكي — أمان الأنماط وحواف", () => {
     expect(row?.productName).toBe("قلم جاف أزرق فاخر");
   });
 });
+
+// «التكلفة الصفريّة» (٣٠/٧): كانت PosRow بلا حقل تكلفة ⇒ ProductSearchBar يُثبِّت "0" ⇒ عمود
+// «التكلفة» في SalesInvoiceNew يظهر 0 دائماً حتى للمدير. الخدمة تحمل التكلفة الآن؛ الحجب
+// خارجيّ في الراوتر (redactPosCost) عبر canSeeCostForUser.
+describe("حمْل التكلفة في PosRow (شاشة المبيعات المتقدّمة)", () => {
+  it("listForPos يعيد costPriceBase من productVariants.costPrice", async () => {
+    const d = db();
+    await d.execute(sql`UPDATE productVariants SET costPrice = '350.00' WHERE id = 1`);
+    const rows = await listForPos(1, "RETAIL", "ازرق");
+    const pen = rows.find((r) => r.productName === "قلم جاف أزرق فاخر");
+    expect(pen).toBeDefined();
+    expect(pen!.costPriceBase).toBe("350.00");
+  });
+
+  it("lookupByBarcode يعيد costPriceBase أيضاً", async () => {
+    const d = db();
+    await d.execute(sql`UPDATE productVariants SET costPrice = '420.00' WHERE id = 2`);
+    const row = await lookupByBarcode("6291041500220", 1, "RETAIL");
+    expect(row).not.toBeNull();
+    expect(row!.costPriceBase).toBe("420.00");
+  });
+});
