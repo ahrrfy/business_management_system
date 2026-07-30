@@ -12803,27 +12803,27 @@
   "jobs": [
     {
       "kind": "interval",
-      "file": "server\\routers\\authRouter.ts",
+      "file": "server/routers/authRouter.ts",
       "line": 59
     },
     {
       "kind": "interval",
-      "file": "server\\routers\\saleRouter.ts",
+      "file": "server/routers/saleRouter.ts",
       "line": 43
     },
     {
       "kind": "interval",
-      "file": "server\\services\\hrDevices\\bridge.ts",
+      "file": "server/services/hrDevices/bridge.ts",
       "line": 60
     },
     {
       "kind": "cron",
-      "file": "server\\services\\morningPushScheduler.ts",
+      "file": "server/services/morningPushScheduler.ts",
       "line": 164
     },
     {
       "kind": "cron",
-      "file": "server\\services\\whatsapp\\outboxSweeper.ts",
+      "file": "server/services/whatsapp/outboxSweeper.ts",
       "line": 89
     }
   ]

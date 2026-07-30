@@ -428,7 +428,7 @@ function classifyExpress(file, path, method) {
   return { authority: "unknown", roles: "", sensitivity: "", note: "" };
 }
 
-function scanExpress() {
+function scanExpress(root) {
   const rows = [];
   const files = [
     "server/printRoute.ts", "server/imageRoute.ts", "server/backupRoutes.ts",
@@ -436,7 +436,7 @@ function scanExpress() {
     "server/index.ts",
   ];
   for (const rel of files) {
-    const p = join(ROOT, rel);
+    const p = join(root, rel);
     if (!existsSync(p)) continue;
     const lines = readFileSync(p, "utf8").split(/\r?\n/);
     lines.forEach((l, i) => {
@@ -449,74 +449,98 @@ function scanExpress() {
   return rows;
 }
 
-function scanJobs() {
+function scanJobs(root) {
   const rows = [];
-  for (const f of walk(join(ROOT, "server"))) {
+  const base = join(root, "server");
+  if (!existsSync(base)) return rows;
+  for (const f of walk(base)) {
     const lines = readFileSync(f, "utf8").split(/\r?\n/);
     lines.forEach((l, i) => {
-      if (/cron\.schedule\s*\(/.test(l)) rows.push({ kind: "cron", file: relative(ROOT, f), line: i + 1 });
-      else if (/setInterval\s*\(/.test(l)) rows.push({ kind: "interval", file: relative(ROOT, f), line: i + 1 });
+      if (/cron\.schedule\s*\(/.test(l)) rows.push({ kind: "cron", file: relative(root, f).replace(/\\/g, "/"), line: i + 1 });
+      else if (/setInterval\s*\(/.test(l)) rows.push({ kind: "interval", file: relative(root, f).replace(/\\/g, "/"), line: i + 1 });
     });
   }
   return rows;
 }
 
-/* ─────────────────────────── التنفيذ ─────────────────────────── */
+/* ─────────────────────────── حساب الجرد لجذرٍ مّا ─────────────────────────── */
 
-const trpcFiles = [
-  ...walk(join(ROOT, "server", "routers")),
-  join(ROOT, "server", "routers.ts"),
-].filter(existsSync);
+/** يمسح شجرة `server/` تحت `root` ويُعيد الجرد الكامل — يقبل أي checkout (head أو base) بلا كتابة. */
+function computeInventory(root) {
+  const trpcFiles = [
+    ...walk(join(root, "server", "routers")),
+    join(root, "server", "routers.ts"),
+  ].filter(existsSync);
 
-const endpoints = [];
-for (const f of trpcFiles) {
-  const routerName = relative(ROOT, f).replace(/\\/g, "/").replace(/^server\/routers\//, "").replace(/\.ts$/, "");
-  for (const ep of scanTrpcFile(f)) {
-    const meta = ep.gate;
-    const s = sensitivityOf(ep);
-    // دمج أدوار قيد المعالِج (إن وُجد) مع أدوار البوّابة — كلاهما مصدرُ سلطة فعليّ.
-    const gateRoles = meta?.roles ?? [];
-    const handlerRoles = ep.handlerGate ? [...ep.handlerGate.roles, ...(ep.handlerGate.admin ? ["admin"] : []), ...(ep.handlerGate.opaque ? ["role-check"] : [])] : [];
-    const roles = Array.from(new Set([...gateRoles, ...handlerRoles]));
-    endpoints.push({
-      surface: "trpc",
-      router: routerName,
-      proposedPermission: proposePermission(routerName, ep.name, meta?.module ?? null),
-      name: ep.name,
-      kind: ep.kind,
-      procedure: ep.procedure,
-      authority: meta?.authority ?? "unknown",
-      module: meta?.module ?? "",
-      level: meta?.level ?? "",
-      roles: roles.join("|"),
-      branch: meta?.branch === false ? "none" : String(meta?.branch ?? "unknown"),
-      sensitivity: s.level,
-      sensitivityWhy: s.why,
-      flags: flagsOf(ep, meta).join("|"),
-      loc: `${relative(ROOT, ep.file).replace(/\\/g, "/")}:${ep.line}`,
-    });
+  const endpoints = [];
+  for (const f of trpcFiles) {
+    const routerName = relative(root, f).replace(/\\/g, "/").replace(/^server\/routers\//, "").replace(/\.ts$/, "");
+    for (const ep of scanTrpcFile(f)) {
+      const meta = ep.gate;
+      const s = sensitivityOf(ep);
+      const gateRoles = meta?.roles ?? [];
+      const handlerRoles = ep.handlerGate ? [...ep.handlerGate.roles, ...(ep.handlerGate.admin ? ["admin"] : []), ...(ep.handlerGate.opaque ? ["role-check"] : [])] : [];
+      const roles = Array.from(new Set([...gateRoles, ...handlerRoles]));
+      endpoints.push({
+        surface: "trpc",
+        router: routerName,
+        proposedPermission: proposePermission(routerName, ep.name, meta?.module ?? null),
+        name: ep.name,
+        kind: ep.kind,
+        procedure: ep.procedure,
+        authority: meta?.authority ?? "unknown",
+        module: meta?.module ?? "",
+        level: meta?.level ?? "",
+        roles: roles.join("|"),
+        branch: meta?.branch === false ? "none" : String(meta?.branch ?? "unknown"),
+        sensitivity: s.level,
+        sensitivityWhy: s.why,
+        flags: flagsOf(ep, meta).join("|"),
+        loc: `${relative(root, ep.file).replace(/\\/g, "/")}:${ep.line}`,
+      });
+    }
   }
+  endpoints.sort((a, b) => (a.router + a.name).localeCompare(b.router + b.name));
+
+  const express = scanExpress(root);
+  const jobs = scanJobs(root);
+  const summary = {
+    generatedFrom: "static scan (read-only)",
+    trpcTotal: endpoints.length,
+    byKind: tally(endpoints, (e) => e.kind),
+    byAuthority: tally(endpoints, (e) => e.authority),
+    bySensitivity: tally(endpoints, (e) => e.sensitivity),
+    byModule: tally(endpoints, (e) => e.module || "(none)"),
+    flagCounts: tallyFlags(endpoints),
+    expressRoutes: express.filter((r) => r.surface === "express").length,
+    expressMounts: express.filter((r) => r.surface === "express-mount").length,
+    jobs: jobs.length,
+    routerFiles: trpcFiles.length,
+    proposedPermissions: new Set(endpoints.map((e) => e.proposedPermission)).size,
+    proposedDomains: tally(endpoints, (e) => e.proposedPermission.split(".")[0]),
+  };
+  return { endpoints, express, jobs, summary };
 }
-endpoints.sort((a, b) => (a.router + a.name).localeCompare(b.router + b.name));
 
-const express = scanExpress();
-const jobs = scanJobs();
+/* ─────────────────── تعريف الانتهاك + بصمته (مشترك: static + diff) ─────────────────── */
 
-const summary = {
-  generatedFrom: "static scan (read-only)",
-  trpcTotal: endpoints.length,
-  byKind: tally(endpoints, (e) => e.kind),
-  byAuthority: tally(endpoints, (e) => e.authority),
-  bySensitivity: tally(endpoints, (e) => e.sensitivity),
-  byModule: tally(endpoints, (e) => e.module || "(none)"),
-  flagCounts: tallyFlags(endpoints),
-  expressRoutes: express.filter((r) => r.surface === "express").length,
-  expressMounts: express.filter((r) => r.surface === "express-mount").length,
-  jobs: jobs.length,
-  routerFiles: trpcFiles.length,
-  proposedPermissions: new Set(endpoints.map((e) => e.proposedPermission)).size,
-  proposedDomains: tally(endpoints, (e) => e.proposedPermission.split(".")[0]),
-};
+/** انحدارُ سلطةٍ حقيقيّ: raw-role أو بلا بوّابة وحدة (قراءةً/كتابةً) أو admin على كتابة.
+ *  PROCEDURE_UNKNOWN مُستبعَدٌ عمداً (انجراف الجدول اليدويّ، لا انحدار). */
+function isViolation(e) {
+  return (
+    e.flags.includes("WRITE_WITHOUT_MODULE_GATE") ||
+    e.flags.includes("READ_WITHOUT_MODULE_GATE") ||
+    e.flags.includes("RAW_ROLE_GATE") ||
+    (e.flags.includes("ADMIN_ONLY") && e.kind === WRITE_KIND)
+  );
+}
+
+/** بصمة انتهاكٍ **مستقلّة عن رقم السطر** (يتغيّر بين base وhead) — للمقارنة بالأساس المتحرّك:
+ *  الراوتر + الاسم + النوع + أعلام الانتهاك المرتّبة. تغيُّر البوّابة يغيّر الأعلام ⇒ بصمة جديدة. */
+function violationSig(e) {
+  const vflags = e.flags.split("|").filter((f) => /RAW_ROLE_GATE|WITHOUT_MODULE_GATE|ADMIN_ONLY/.test(f)).sort().join(",");
+  return `${e.router}.${e.name}.${e.kind}|${vflags}`;
+}
 
 function tally(rows, fn) {
   const m = {};
@@ -528,6 +552,29 @@ function tallyFlags(rows) {
   for (const r of rows) for (const f of r.flags.split("|").filter(Boolean)) m[f] = (m[f] ?? 0) + 1;
   return Object.fromEntries(Object.entries(m).sort((a, b) => b[1] - a[1]));
 }
+
+function argVal(name) {
+  const i = process.argv.indexOf(name);
+  return i >= 0 ? process.argv[i + 1] : undefined;
+}
+
+/* ─────────── وضع «بصمات الانتهاك» (يستهلكه حارس merge-base) ───────────
+ * `--emit-violations [--root <dir>]` يمسح جذراً مّا (head أو checkout الأساس) ويطبع بصمات الانتهاك
+ * JSON على stdout **بلا كتابة أي ملف**. حارس authz-guard-diff.mjs يستدعيه مرّتين (head/base) ويفرّق. */
+if (process.argv.includes("--emit-violations")) {
+  const root = argVal("--root") || ROOT;
+  const { endpoints } = computeInventory(root);
+  const items = endpoints.filter(isViolation).map((e) => ({
+    sig: violationSig(e),
+    loc: e.loc,
+    flags: e.flags.split("|").filter((f) => /RAW_ROLE_GATE|WITHOUT_MODULE_GATE|ADMIN_ONLY/.test(f)).join(","),
+  }));
+  process.stdout.write(JSON.stringify({ root, count: items.length, items }));
+  process.exit(0);
+}
+
+// ─── الوضع الافتراضي: مسح الجذر الحاليّ + كتابة الجرد + الحارس الساكن (--check) ───
+const { endpoints, express, jobs, summary } = computeInventory(ROOT);
 
 mkdirSync(OUT_DIR, { recursive: true });
 
@@ -599,13 +646,7 @@ if (process.argv.includes("--check") || process.argv.includes("--write-baseline"
   // storeAdminRouter.list ×6…). المفتاح `router.name` وحده كان يُغرّب انحداراً على شقيقٍ مُصادِم؛
   // ضمّ `@loc` يجعل كل نقطة مُغرَّبةً بذاتها فلا يُخفي بعضُها بعضاً.
   const key = (e) => `${e.router}.${e.name}@${e.loc}`;
-  // (A2 — مراجعة review-module) قراءةٌ فقدت بوّابة وحدتها (هبوطٌ إلى protected/public) انحدارُ تسريبٍ
-  // حقيقيّ (خطّ CLAUDE.md §٦ الأحمر، حادثة #285) — تدخل الحارس كالكتابة تماماً.
-  const isViolation = (e) =>
-    e.flags.includes("WRITE_WITHOUT_MODULE_GATE") ||
-    e.flags.includes("READ_WITHOUT_MODULE_GATE") ||
-    e.flags.includes("RAW_ROLE_GATE") ||
-    (e.flags.includes("ADMIN_ONLY") && e.kind === WRITE_KIND);
+  // isViolation مشتركةٌ الآن (معرّفة أعلى): raw-role/بلا بوّابة وحدة قراءةً أو كتابةً/admin-كتابة.
   const flagged = endpoints.filter(isViolation);
 
   // PROCEDURE_UNKNOWN/UNRESOLVED = بوّابةٌ **لا يعرفها** جدول PROCEDURES اليدويّ (لا انحدار أمنيّ بذاته).

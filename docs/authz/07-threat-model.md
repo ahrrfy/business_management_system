@@ -156,7 +156,7 @@ flowchart LR
 | البند | الوصف |
 |---|---|
 | **المسار** | مطوّر يضيف `managerProcedure` أو `ctx.user.role === "admin"` في نقطة جديدة. |
-| **العلاج** | §25.26: حارس CI يمنع raw-role gates ونقاط غير مسجّلة. **مُفعَّل**: `pnpm check:authz` (`scripts/authz-inventory.mjs --check`) خطوةٌ في `.github/workflows/ci.yml` على كل PR/push، يفشل على المستجدّ خارج `authz-baseline.json`. |
+| **العلاج** | §25.26: حارس CI يمنع raw-role gates. **مُفعَّل** كوظيفة `authz-guard` مستقلّة في `.github/workflows/ci.yml` (`node scripts/authz-guard-diff.mjs`) — **مقارنة قاعدة الدمج**: يفشل فقط على انتهاكٍ **يُدخِله الـPR** مقابل `origin/<base>`، فلا يتأثّر بانجراف `main` (بديلٌ ساكن `--check` عند غياب مرجع الأساس). |
 
 ## 7.4 مصفوفة المخاطر
 
