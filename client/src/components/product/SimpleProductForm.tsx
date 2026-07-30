@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { AlertCircle, Package, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -14,7 +15,7 @@ import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { barcodeState, clampInt, genEan13, toArabicDigits } from "@/lib/variants";
+import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { UnitBarcodeAliases, type LocalAlias } from "@/components/product/UnitBarcodeAliases";
 import { NameAssistant } from "@/components/product/NameAssistant";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
@@ -421,35 +422,37 @@ export default function SimpleProductForm() {
             const factor = u.isBase ? 1 : parseFloat(u.factor) || 1;
             const uCost = unitCost * factor;
             const code = u.barcode.trim();
-            const st = barcodeState(code, {
+            const info = barcodeInfo(code, {
               countInForm: codeCountInForm(code),
               takenInDb: takenInDb.has(code),
             });
+            const st = info.state;
+            // إطار الحقل يعكس شدّة الحالة (a11y — لا نكتفي بـaria-invalid): حاصر أحمر، تحذير كهرماني، ok أخضر، معلومة زرقاء.
             const bcCls =
-              st === "takenInDb" || st === "dupInForm"
+              info.severity === "blocker"
                 ? "border-amber-500 ring-1 ring-amber-500"
-                : st === "invalid"
+                : info.severity === "warn"
                   ? "border-amber-500"
-                  : st === "valid"
+                  : info.severity === "ok"
                     ? "border-emerald-500/60"
-                    : "";
-            const bcTitle =
-              st === "takenInDb"
-                ? "باركود مُستخدَم في منتج آخر — غيّره قبل الحفظ."
-                : st === "dupInForm"
-                  ? "باركود مكرّر داخل النموذج."
-                  : st === "invalid"
-                    ? "خانة تحقّق EAN-13 غير مطابقة — يُقبل مع ذلك (قد يكون كود Code128 داخليّاً)."
-                    : st === "valid"
-                      ? "باركود EAN-13 صالح."
+                    : info.severity === "info"
+                      ? "border-blue-500/40"
                       : "";
-            // لون نصّ حالة الباركود المرئيّ (a11y — لا نكتفي بلون الحدّ وaria): أحمر للحاصر، كهرماني للتحذير، أخضر للصالح.
+            const bcTitle = info.message;
             const bcHelpColor =
-              st === "takenInDb" || st === "dupInForm"
+              info.severity === "blocker"
                 ? "text-red-600 dark:text-red-400"
-                : st === "invalid"
+                : info.severity === "warn"
                   ? "text-amber-600 dark:text-amber-400"
-                  : "text-emerald-600 dark:text-emerald-400";
+                  : info.severity === "ok"
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-blue-600 dark:text-blue-400";
+            // بادج نوع الترميز — يُعرض عند وجود باركود (يكشف EAN-13/UPC-A/EAN-8/ITF-14/ISBN/Code128/داخلي…).
+            const symBadgeVariant =
+              info.severity === "blocker" ? "destructive"
+              : info.severity === "warn" ? "outline"
+              : info.severity === "ok" ? "default"
+              : "secondary";
             return (
               <div key={u.id} className="rounded-lg border bg-muted/20 p-3 space-y-2">
                 {/* هوية الوحدة: الاسم + المعامل + وحدة الأساس + الحذف — شبكة محاذاة واحدة */}
@@ -509,10 +512,15 @@ export default function SimpleProductForm() {
                       placeholder="باركود الوحدة (اختياري)…"
                       title={bcTitle}
                       aria-label="باركود الوحدة"
-                      aria-invalid={st === "takenInDb" || st === "dupInForm"}
+                      aria-invalid={info.severity === "blocker"}
                       aria-describedby={bcTitle ? `simple-bc-help-${u.id}` : undefined}
                     />
-                    <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("621") })} title="توليد باركود EAN-13 صالح" />
+                    <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("200") })} title="توليد باركود EAN-13 داخليّ (نطاق GS1 المخصَّص للاستخدام الداخلي)" />
+                    {info.symbology.label && (
+                      <Badge variant={symBadgeVariant} className="text-[10px] whitespace-nowrap px-1.5 py-0" title={`نوع الترميز: ${info.symbology.label}`}>
+                        {info.symbology.label}
+                      </Badge>
+                    )}
                     <UnitBarcodeAliases
                       unitName={u.name || "قطعة"}
                       localAliases={u.aliases}

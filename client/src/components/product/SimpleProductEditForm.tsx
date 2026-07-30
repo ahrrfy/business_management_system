@@ -18,8 +18,9 @@ import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
 import { trpc } from "@/lib/trpc";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { NameAssistant } from "@/components/product/NameAssistant";
+import { Badge } from "@/components/ui/badge";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { barcodeState, clampInt, genEan13, toArabicDigits } from "@/lib/variants";
+import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
 import { checkVariantSanity } from "@shared/priceSanity";
@@ -427,20 +428,27 @@ export default function SimpleProductEditForm({
             const factor = u.isBase ? 1 : parseFloat(u.factor) || 1;
             const uCost = unitCost * factor;
             const code = u.barcode.trim();
-            const st = barcodeState(code, { countInForm: units.filter((x) => x.barcode.trim() === code).length, takenInDb: takenInDb.has(code) });
-            const bcCls = st === "takenInDb" || st === "dupInForm" ? "border-amber-500 ring-1 ring-amber-500" : st === "invalid" ? "border-amber-500" : st === "valid" ? "border-emerald-500/60" : "";
-            const bcTitle =
-              st === "takenInDb" ? "باركود مُستخدَم في منتج آخر — غيّره قبل الحفظ."
-                : st === "dupInForm" ? "باركود مكرّر داخل النموذج."
-                  : st === "invalid" ? "خانة تحقّق EAN-13 غير مطابقة — يُقبل مع ذلك (قد يكون كود Code128 داخليّاً)."
-                    : st === "valid" ? "باركود EAN-13 صالح." : "";
-            // لون نصّ حالة الباركود المرئيّ (a11y): أحمر للحاصر، كهرماني للتحذير، أخضر للصالح.
+            const info = barcodeInfo(code, {
+              countInForm: units.filter((x) => x.barcode.trim() === code).length,
+              takenInDb: takenInDb.has(code),
+            });
+            const bcCls =
+              info.severity === "blocker" ? "border-amber-500 ring-1 ring-amber-500"
+              : info.severity === "warn"    ? "border-amber-500"
+              : info.severity === "ok"      ? "border-emerald-500/60"
+              : info.severity === "info"    ? "border-blue-500/40"
+              : "";
+            const bcTitle = info.message;
             const bcHelpColor =
-              st === "takenInDb" || st === "dupInForm"
-                ? "text-red-600 dark:text-red-400"
-                : st === "invalid"
-                  ? "text-amber-600 dark:text-amber-400"
-                  : "text-emerald-600 dark:text-emerald-400";
+              info.severity === "blocker" ? "text-red-600 dark:text-red-400"
+              : info.severity === "warn"    ? "text-amber-600 dark:text-amber-400"
+              : info.severity === "ok"      ? "text-emerald-600 dark:text-emerald-400"
+              : "text-blue-600 dark:text-blue-400";
+            const symBadgeVariant =
+              info.severity === "blocker" ? "destructive"
+              : info.severity === "warn"    ? "outline"
+              : info.severity === "ok"      ? "default"
+              : "secondary";
             return (
               <div key={u.id} className="rounded-lg border bg-muted/20 p-3 space-y-2">
                 {/* هوية الوحدة: الاسم + المعامل + وحدة الأساس + الحذف — شبكة محاذاة واحدة */}
@@ -499,10 +507,15 @@ export default function SimpleProductEditForm({
                       placeholder="باركود الوحدة (اختياري)…"
                       title={bcTitle}
                       aria-label="باركود الوحدة"
-                      aria-invalid={st === "takenInDb" || st === "dupInForm"}
+                      aria-invalid={info.severity === "blocker"}
                       aria-describedby={bcTitle ? `simpleedit-bc-help-${u.id}` : undefined}
                     />
-                    <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("621") })} title="توليد باركود EAN-13 صالح" />
+                    <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("200") })} title="توليد باركود EAN-13 داخليّ (نطاق GS1 المخصَّص للاستخدام الداخلي)" />
+                    {info.symbology.label && (
+                      <Badge variant={symBadgeVariant} className="text-[10px] whitespace-nowrap px-1.5 py-0" title={`نوع الترميز: ${info.symbology.label}`}>
+                        {info.symbology.label}
+                      </Badge>
+                    )}
                     <UnitBarcodeAliases variantId={variantId.current} unitName={u.name} />
                   </div>
                   <MoneyInput ariaLabel="سعر المفرد" className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" />

@@ -312,11 +312,11 @@ export default function ProductEdit() {
       id.startsWith(DB_PREFIX) ? vs.map((v) => (v.id === id ? { ...v, isActive: false } : v)) : vs.filter((v) => v.id !== id)
     );
   const onScan = (vid: string, uid: number) =>
-    setVariants((vs) => vs.map((v) => (v.id === vid ? { ...v, unitBarcodes: { ...v.unitBarcodes, [uid]: genEan13("621") } } : v)));
+    setVariants((vs) => vs.map((v) => (v.id === vid ? { ...v, unitBarcodes: { ...v.unitBarcodes, [uid]: genEan13("200") } } : v)));
 
   const bulkMin = (val: string) => setVariants((vs) => vs.map((v) => ({ ...v, minStock: val })));
   const bulkSeq = (uid: number, start: string) => {
-    let code = isValidEan13(start) ? start : genEan13("621");
+    let code = isValidEan13(start) ? start : genEan13("200");
     setVariants((vs) =>
       vs.map((v) => {
         if (v.unitBarcodes[uid]) return v;

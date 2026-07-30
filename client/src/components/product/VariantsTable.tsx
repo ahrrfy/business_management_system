@@ -11,10 +11,11 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { NumberInput } from "@/components/form/NumberInput";
 import { Switch } from "@/components/ui/switch";
 import {
-  barcodeState,
+  barcodeInfo,
+  onlyDigits,
   toArabicDigits,
   variantStockTotal,
-  type BarcodeState,
+  type BarcodeInfo,
   type ClientUnit,
   type ClientVariant,
 } from "@/lib/variants";
@@ -27,14 +28,24 @@ interface Branch {
   name: string;
 }
 
-/** ترجمة حالة الباركود إلى صنف بصريّ + تلميح. */
-const BC_STYLE: Record<BarcodeState, { cls: string; title: string }> = {
-  empty: { cls: "", title: "" },
-  valid: { cls: "border-emerald-500/60", title: "باركود EAN-13 صالح" },
-  invalid: { cls: "border-destructive ring-1 ring-destructive", title: "خانة تحقّق EAN-13 غير صحيحة" },
-  dupInForm: { cls: "border-amber-500 ring-1 ring-amber-500", title: "باركود مكرّر داخل النموذج" },
-  takenInDb: { cls: "border-amber-500 ring-1 ring-amber-500", title: "باركود مُستخدَم في منتج آخر" },
-};
+/**
+ * ترجمة `barcodeInfo` إلى صنف بصريّ + تلميح صادق.
+ * الشدّة (severity) تحدّد اللون؛ الرسالة تُذكر نوع الترميز الفعليّ (Code128/UPC-A/EAN-8/…)
+ * بدل ادّعاء «EAN-13 غير صحيح» على باركود مصنّعي شرعيّ من عائلة أخرى.
+ */
+function cellStyle(info: BarcodeInfo): { cls: string; title: string } {
+  const cls =
+    info.severity === "blocker" ? "border-destructive ring-1 ring-destructive"
+    : info.severity === "warn"    ? "border-amber-500 ring-1 ring-amber-500"
+    : info.severity === "ok"      ? "border-emerald-500/60"
+    : info.severity === "info"    ? "border-blue-500/40"
+    : "";
+  // التلميح: نوع الترميز + الرسالة (يظهر عند التحويم على خلية صغيرة لا تسع بادج).
+  const title = info.symbology.label
+    ? `[${info.symbology.label}] ${info.message}`.trim()
+    : info.message;
+  return { cls, title };
+}
 
 export function VariantsTable({
   variants,
@@ -90,8 +101,8 @@ export function VariantsTable({
     }
     return { bcCount: bc, skuCount: sku };
   }, [variants, units]);
-  const cellState = (code: string): BarcodeState =>
-    barcodeState(code, { countInForm: bcCount[code] || 0, takenInDb: takenInDb.has(code) });
+  const cellInfo = (code: string): BarcodeInfo =>
+    barcodeInfo(code, { countInForm: bcCount[code] || 0, takenInDb: takenInDb.has(code) });
 
   const branch = branches.find((b) => b.id === branchId);
 
@@ -136,7 +147,7 @@ export function VariantsTable({
               branchId={branchId}
               costPrice={costPrice}
               baseName={baseName}
-              cellState={cellState}
+              cellInfo={cellInfo}
               skuDup={(sku) => (skuCount[sku] || 0) > 1}
               patch={(patch) => patchVariant(v.id, patch)}
               remove={() => removeVariant(v.id)}
@@ -160,7 +171,7 @@ function VariantRow({
   branchId,
   costPrice,
   baseName,
-  cellState,
+  cellInfo,
   skuDup,
   patch,
   remove,
@@ -176,7 +187,7 @@ function VariantRow({
   branchId: number;
   costPrice: string;
   baseName: string;
-  cellState: (code: string) => BarcodeState;
+  cellInfo: (code: string) => BarcodeInfo;
   skuDup: (sku: string) => boolean;
   patch: (patch: Partial<ClientVariant>) => void;
   remove: () => void;
@@ -226,7 +237,8 @@ function VariantRow({
         </td>
         {units.map((u) => {
           const code = v.unitBarcodes[u.id] || "";
-          const st = BC_STYLE[cellState(code)];
+          const info = cellInfo(code);
+          const st = cellStyle(info);
           return (
             <td key={u.id} className="px-2 py-2">
               <div className="flex items-center gap-1">
@@ -236,8 +248,18 @@ function VariantRow({
                   dir="ltr"
                   placeholder={`باركود ${u.name || ""}`.trim()}
                   title={st.title}
+                  aria-invalid={info.severity === "blocker"}
                   className={cn("h-8 font-mono text-xs w-32", st.cls)}
                 />
+                {code && info.symbology.label && (
+                  <Badge
+                    variant={info.severity === "blocker" ? "destructive" : info.severity === "warn" ? "outline" : info.severity === "ok" ? "default" : "secondary"}
+                    className="text-[9px] whitespace-nowrap px-1 py-0 leading-tight"
+                    title={`نوع الترميز المكتشف: ${info.symbology.label}`}
+                  >
+                    {info.symbology.label}
+                  </Badge>
+                )}
                 <ScanButton onClick={() => onScan(u.id)} />
               </div>
             </td>

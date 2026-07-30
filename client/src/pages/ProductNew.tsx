@@ -296,14 +296,14 @@ export default function ProductNew() {
   const commitColorRename = (oldColor: string, newColor: string) =>
     setColors((cs) => syncColorChipsOnRename(cs, oldColor, newColor, variants.map((v) => v.color)));
   const onScan = (vid: string, uid: number) =>
-    setVariants((vs) => vs.map((v) => (v.id === vid ? { ...v, unitBarcodes: { ...v.unitBarcodes, [uid]: genEan13("621") } } : v)));
+    setVariants((vs) => vs.map((v) => (v.id === vid ? { ...v, unitBarcodes: { ...v.unitBarcodes, [uid]: genEan13("200") } } : v)));
 
   /* ── أدوات الجملة ── */
   const bulkMin = (val: string) => setVariants((vs) => vs.map((v) => ({ ...v, minStock: val })));
   const bulkStock = (val: string) =>
     setVariants((vs) => vs.map((v) => ({ ...v, stockByBranch: { ...v.stockByBranch, [branchId]: val } })));
   const bulkSeq = (uid: number, start: string) => {
-    let code = isValidEan13(start) ? start : genEan13("621");
+    let code = isValidEan13(start) ? start : genEan13("200");
     setVariants((vs) =>
       vs.map((v) => {
         if (v.unitBarcodes[uid]) return v;
