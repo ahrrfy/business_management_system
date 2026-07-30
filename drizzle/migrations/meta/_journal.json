@@ -904,6 +904,13 @@
       "when": 1786838400000,
       "tag": "0129_digital_intent_writeoff",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "5",
+      "when": 1786924800000,
+      "tag": "0130_digital_price_big_change_approval",
+      "breakpoints": true
     }
   ]
 }
