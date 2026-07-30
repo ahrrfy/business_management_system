@@ -43,10 +43,19 @@ export default function DigitalReview() {
   });
 
   const cancelMut = trpc.digitalCards.sales.cancelIntent.useMutation({
-    onSuccess: () => {
+    // الخادم يقرّر المصير ولا يُحرَّر حجزُ نيّةٍ صدر كرتها أبداً (المال مستحقّ للمزوّد فعلاً).
+    // نعرض ما حدث **حقيقةً** لا ما تمنّيناه — رسالةُ نجاحٍ كاذبة على شاشةٍ مالية أسوأ من لا رسالة.
+    onSuccess: (r) => {
       void utils.digitalCards.sales.needsReview.invalidate();
       void utils.digitalCards.wallets.list.invalidate();
-      notify.ok("أُلغيت النيّة وحُرّر حجزها");
+      if (r.outcome === "CANCELLED") {
+        notify.ok("أُلغيت النيّة وحُرّر حجزها");
+      } else {
+        notify.warn(
+          "النيّة تبقى تحت المراجعة",
+          "صدر كرتٌ من هذه النيّة فعلاً، فحجز المحفظة لا يُحرَّر — قيمته مستحقّة للمزوّد. عالِجها بتثبيت البيع أو بتسوية مع المزوّد.",
+        );
+      }
     },
     onError: (e) => notify.err(e),
   });
@@ -60,11 +69,17 @@ export default function DigitalReview() {
     sweepMut.mutate();
   }
 
-  async function cancelIntent(id: number, expected: string) {
+  /**
+   * `reserved` = حصص المزوّد المحجوزة (لا سعر البيع). الحجز **لا يُحرَّر** ما دام كرتٌ صدر —
+   * فلا يَعِد النصّ بما لن يقع؛ يشرح الشرط ويترك القرار للخادم.
+   */
+  async function cancelIntent(id: number, reserved: string, issued: number) {
     if (!(await confirm({
       variant: "danger",
-      title: "إلغاء النيّة وتحرير الحجز",
-      description: `سيعود ${fmtAr(expected)} من المحجوز إلى الرصيد المتاح. افعل هذا فقط بعد التأكّد أن الكرت لم يُسلَّم للعميل — وإلا ضاعت قيمته على المكتبة بلا أثر.`,
+      title: "إلغاء النيّة",
+      description: issued > 0
+        ? `صدر ${issued} كرتاً من هذه النيّة، فحجز المحفظة (${fmtAr(reserved)}) يبقى كما هو — قيمته مستحقّة للمزوّد ولا تعود بالإلغاء. الإلغاء هنا يُثبّت أنها روجعت فقط. متابعة؟`
+        : `سيعود ${fmtAr(reserved)} من رصيد المحفظة المحجوز إلى المتاح. افعل هذا فقط بعد التأكّد أن الكرت لم يُسلَّم للعميل.`,
       confirmText: "إلغاء النيّة",
     }))) return;
     cancelMut.mutate({ intentId: id, reason: "مراجعة إشرافية: الكرت لم يُسلَّم" });
@@ -97,7 +112,8 @@ export default function DigitalReview() {
                 <tr>
                   <th className="p-2 text-start">النيّة</th>
                   <th className="p-2 text-start">الفرع</th>
-                  <th className="p-2 text-start">المبلغ المتوقَّع</th>
+                  <th className="p-2 text-start">قيمة البيع</th>
+                  <th className="p-2 text-start">المحجوز</th>
                   <th className="p-2 text-start">صدر / الإجمالي</th>
                   <th className="p-2 text-start">أُنشئت</th>
                   <th className="p-2 text-center">إجراء</th>
@@ -108,7 +124,8 @@ export default function DigitalReview() {
                   <tr key={r.id} className="border-t">
                     <td className="p-2 font-mono text-xs" dir="ltr">#{r.id}</td>
                     <td className="p-2 text-muted-foreground">{r.branchName}</td>
-                    <td className="p-2 tabular-nums font-medium">{fmtAr(r.expectedTotal)}</td>
+                    <td className="p-2 tabular-nums text-muted-foreground">{fmtAr(r.expectedTotal)}</td>
+                    <td className="p-2 tabular-nums font-medium">{fmtAr(r.reservedAmount)}</td>
                     <td className="p-2 tabular-nums">
                       {Number(r.successCount)} / {Number(r.itemCount)}
                     </td>
@@ -118,16 +135,16 @@ export default function DigitalReview() {
                         size="sm"
                         variant="outline"
                         disabled={cancelMut.isPending}
-                        onClick={() => void cancelIntent(r.id, r.expectedTotal)}
+                        onClick={() => void cancelIntent(r.id, r.reservedAmount, Number(r.successCount))}
                       >
-                        إلغاء وتحرير الحجز
+                        إلغاء النيّة
                       </Button>
                     </td>
                   </tr>
                 ))}
-                {needsReview.isLoading && <tr><td colSpan={6}><LoadingState /></td></tr>}
+                {needsReview.isLoading && <tr><td colSpan={7}><LoadingState /></td></tr>}
                 {!needsReview.isLoading && queue.length === 0 && (
-                  <TableEmptyRow colSpan={6} message="لا شيء للمراجعة — كل الكروت الصادرة مثبّتة بفواتيرها." />
+                  <TableEmptyRow colSpan={7} message="لا شيء للمراجعة — كل الكروت الصادرة مثبّتة بفواتيرها." />
                 )}
               </tbody>
             </table>

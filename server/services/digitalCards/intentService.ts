@@ -569,6 +569,15 @@ export async function listNeedsReview(db: DB, filters: { branchId?: number | nul
         SELECT COUNT(*) FROM digitalSaleIntentItems i
         WHERE i.intentId = digitalSaleIntents.id AND i.fulfillmentStatus = 'SUCCESS'
       )`,
+      /**
+       * المحجوز فعلاً = مجموع حصص المزوّد النشطة، **لا** `expectedTotal` (سعر البيع).
+       * الفرق بينهما هو الهامش؛ عرضُ سعر البيع مكان المحجوز يوهم المدير بأن الإلغاء
+       * يعيد مبلغاً أكبر ممّا يعيده فعلاً (جولة بصرية ٣٠/٧).
+       */
+      reservedAmount: sql<string>`COALESCE((
+        SELECT SUM(r.amount) FROM digitalWalletReservations r
+        WHERE r.intentId = digitalSaleIntents.id AND r.status = 'ACTIVE'
+      ), 0)`,
       itemCount: sql<number>`(
         SELECT COUNT(*) FROM digitalSaleIntentItems i WHERE i.intentId = digitalSaleIntents.id
       )`,
