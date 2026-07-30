@@ -33,10 +33,12 @@ const LENS_LABELS: Record<LensCode, string> = {
   L6: "L6 · تكلفة وحدة > سعرها",
 };
 
+// توكنز دلالية (tokens.css) بدل الألوان الخام — يتوافق مع حارس check-no-raw-status-colors:
+//   blocker → sem-neg (أحمر)  ·  warning → sem-warn (كهرمانيّ)  ·  info → sem-info (أزرق)
 const SEVERITY_BADGE: Record<Severity, { className: string; label: string; icon: React.ReactNode }> = {
-  blocker: { className: "bg-red-100 text-red-700 border-red-300 dark:bg-red-950 dark:text-red-300", label: "حاجز", icon: <XCircle className="size-3" aria-hidden /> },
-  warning: { className: "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-950 dark:text-amber-300", label: "تحذير", icon: <AlertTriangle className="size-3" aria-hidden /> },
-  info: { className: "bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-950 dark:text-blue-300", label: "إخبار", icon: <CheckCircle2 className="size-3" aria-hidden /> },
+  blocker: { className: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] border-[var(--sem-neg)]/30", label: "حاجز", icon: <XCircle className="size-3" aria-hidden /> },
+  warning: { className: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30", label: "تحذير", icon: <AlertTriangle className="size-3" aria-hidden /> },
+  info: { className: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30", label: "إخبار", icon: <CheckCircle2 className="size-3" aria-hidden /> },
 };
 
 export default function CatalogAnomalies() {
@@ -88,9 +90,9 @@ export default function CatalogAnomalies() {
       {/* بطاقات الملخّص */}
       {listQ.data && (
         <div className="grid grid-cols-4 gap-3">
-          <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">حاجز</div><div className="text-2xl font-bold text-red-600 tabular-nums">{listQ.data.counts.blocker}</div></CardContent></Card>
-          <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">تحذير</div><div className="text-2xl font-bold text-amber-600 tabular-nums">{listQ.data.counts.warning}</div></CardContent></Card>
-          <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">إخبار</div><div className="text-2xl font-bold text-blue-600 tabular-nums">{listQ.data.counts.info}</div></CardContent></Card>
+          <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">حاجز</div><div className="text-2xl font-bold text-[var(--sem-neg)] tabular-nums">{listQ.data.counts.blocker}</div></CardContent></Card>
+          <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">تحذير</div><div className="text-2xl font-bold text-[var(--sem-warn)] tabular-nums">{listQ.data.counts.warning}</div></CardContent></Card>
+          <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">إخبار</div><div className="text-2xl font-bold text-[var(--sem-info)] tabular-nums">{listQ.data.counts.info}</div></CardContent></Card>
           <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">مستثنى</div><div className="text-2xl font-bold text-muted-foreground tabular-nums">{listQ.data.overriddenCount}</div></CardContent></Card>
         </div>
       )}
@@ -129,7 +131,7 @@ export default function CatalogAnomalies() {
         <CardContent>
           {listQ.isLoading ? <LoadingState /> : filtered.length === 0 ? (
             <div className="text-center py-8 text-sm text-muted-foreground">
-              <CheckCircle2 className="size-8 mx-auto mb-2 text-emerald-500" aria-hidden />
+              <CheckCircle2 className="size-8 mx-auto mb-2 text-[var(--sem-pos)]" aria-hidden />
               لا شذوذ — جميع المتغيّرات ضمن الحدود المعقولة أو مستثناة.
             </div>
           ) : (
@@ -341,7 +343,7 @@ function MarkOverrideDialog({
         </DialogHeader>
         <div className="space-y-3">
           <div>
-            <label className="text-xs font-medium">التبرير <span className="text-red-500">*</span> (≥ ١٠ محارف)</label>
+            <label className="text-xs font-medium">التبرير <span className="text-[var(--sem-neg)]">*</span> (≥ ١٠ محارف)</label>
             <Textarea
               value={justification}
               onChange={(e) => setJustification(e.target.value)}
