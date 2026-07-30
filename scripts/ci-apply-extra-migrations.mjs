@@ -79,6 +79,8 @@ const EXTRA_MIGRATIONS = [
   // نفس سبب 0129: db:push لا يُمثّل تغيّر enum موثوقاً. الملف يحمل حارس SIGNAL يُفشل الهجرة
   // إن وُجد صفٌّ يحمل القيمة بدل أن يُتلفه صامتاً بـ''.
   "drizzle/migrations/0131_drop_dead_reversal_pending.sql",
+  // ٣٠/٧/٢٦: ردّ الخسارة باعتمادٍ ثانٍ — توسيع enum بحالة LOSS_REFUND_PENDING + أعمدة الأثر.
+  "drizzle/migrations/0132_loss_refund_sod.sql",
 ];
 
 const url = process.env.DATABASE_URL;

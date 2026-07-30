@@ -5187,15 +5187,22 @@ export const digitalSaleDetails = mysqlTable(
     providerShareSnapshot: decimal("providerShareSnapshot", { precision: 15, scale: 2 }).notNull(),
     profitSnapshot: decimal("profitSnapshot", { precision: 15, scale: 2 }).notNull(),
     providerReference: varchar("providerReference", { length: 120 }),
-    // ثلاث حالات نهائية لا رابع (هجرة 0131 حذفت `REVERSAL_PENDING` الميّتة): الكرت صادر،
-    // أو عُكس والمزوّد أعاد الحصة، أو رُدّ ثمنه والحصة خسارةٌ على المكتبة.
-    fulfillmentStatus: mysqlEnum("fulfillmentStatus", ["ISSUED", "REVERSED", "LOSS_REFUND"]).default("ISSUED").notNull(),
+    // الكرت صادر · أو ردُّ خسارةٍ **طُلب وينتظر مديراً ثانياً** (هجرة 0132) · أو عُكس والمزوّد
+    // أعاد الحصة · أو رُدّ ثمنه فعلاً والحصة خسارةٌ على المكتبة.
+    // (0131 كانت قد حذفت `REVERSAL_PENDING` لأن لا كود يكتبها؛ هذه تُعيد حالةً معلّقة **مع** كودها.)
+    fulfillmentStatus: mysqlEnum("fulfillmentStatus", ["ISSUED", "LOSS_REFUND_PENDING", "REVERSED", "LOSS_REFUND"]).default("ISSUED").notNull(),
     studentCustomerId: bigint("studentCustomerId", { mode: "number" }).references(() => customers.id),
     studentNameSnapshot: varchar("studentNameSnapshot", { length: 255 }),
     studentPhoneSnapshot: varchar("studentPhoneSnapshot", { length: 20 }),
     guardianPhoneSnapshot: varchar("guardianPhoneSnapshot", { length: 20 }),
     studentAddressSnapshot: text("studentAddressSnapshot"),
     walletTransactionId: bigint("walletTransactionId", { mode: "number" }),
+    // أثر ردّ الخسارة (هجرة 0132): مَن طلب ولماذا، ومَن اعتمد ومتى — أساس فحص SOD (طالب ≠ معتمِد).
+    lossRefundRequestedBy: int("lossRefundRequestedBy").references(() => users.id),
+    lossRefundRequestedAt: timestamp("lossRefundRequestedAt"),
+    lossRefundReason: varchar("lossRefundReason", { length: 300 }),
+    lossRefundApprovedBy: int("lossRefundApprovedBy").references(() => users.id),
+    lossRefundApprovedAt: timestamp("lossRefundApprovedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (t) => ({
