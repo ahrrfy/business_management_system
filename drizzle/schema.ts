@@ -5187,7 +5187,9 @@ export const digitalSaleDetails = mysqlTable(
     providerShareSnapshot: decimal("providerShareSnapshot", { precision: 15, scale: 2 }).notNull(),
     profitSnapshot: decimal("profitSnapshot", { precision: 15, scale: 2 }).notNull(),
     providerReference: varchar("providerReference", { length: 120 }),
-    fulfillmentStatus: mysqlEnum("fulfillmentStatus", ["ISSUED", "REVERSAL_PENDING", "REVERSED", "LOSS_REFUND"]).default("ISSUED").notNull(),
+    // ثلاث حالات نهائية لا رابع (هجرة 0131 حذفت `REVERSAL_PENDING` الميّتة): الكرت صادر،
+    // أو عُكس والمزوّد أعاد الحصة، أو رُدّ ثمنه والحصة خسارةٌ على المكتبة.
+    fulfillmentStatus: mysqlEnum("fulfillmentStatus", ["ISSUED", "REVERSED", "LOSS_REFUND"]).default("ISSUED").notNull(),
     studentCustomerId: bigint("studentCustomerId", { mode: "number" }).references(() => customers.id),
     studentNameSnapshot: varchar("studentNameSnapshot", { length: 255 }),
     studentPhoneSnapshot: varchar("studentPhoneSnapshot", { length: 20 }),
