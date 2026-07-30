@@ -158,7 +158,14 @@ export const catalogRouter = router({
         offset: z.number().int().min(0).default(0),
       })
     )
-    .query(({ input, ctx }) => listProductsAdmin({ ...input, branchId: scopeBranch(ctx, input.branchId) })),
+    .query(({ input, ctx }) =>
+      listProductsAdmin(
+        { ...input, branchId: scopeBranch(ctx, input.branchId) },
+        // قرار المالك: هذان الحقلان لهذه القائمة حصراً للمالك (admin) ومدير الفرع.
+        // لا نعتمد على إخفاء الواجهة؛ الخدمة تعيد null لكل دور آخر.
+        { includeSensitivePrices: ctx.user.role === "admin" || ctx.user.role === "manager" },
+      )
+    ),
 
   // تفعيل/تعطيل منتج — مدير فأعلى (يغيّر ما يراه الكاشير في البيع).
   setProductActive: productsManagerProcedure
