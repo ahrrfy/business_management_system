@@ -11,3 +11,4 @@ export * as finalizeService from "./finalizeService";
 export * as walletOpsService from "./walletOpsService";
 export * as dashboardService from "./dashboardService";
 export * as reversalService from "./reversalService";
+export * as writeoffService from "./writeoffService";

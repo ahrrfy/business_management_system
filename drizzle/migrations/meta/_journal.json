@@ -897,6 +897,13 @@
       "when": 1786752000000,
       "tag": "0128_digital_intent_reference_uniqueness",
       "breakpoints": true
+    },
+    {
+      "idx": 129,
+      "version": "5",
+      "when": 1786838400000,
+      "tag": "0129_digital_intent_writeoff",
+      "breakpoints": true
     }
   ]
 }

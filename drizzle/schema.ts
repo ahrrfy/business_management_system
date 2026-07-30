@@ -1522,7 +1522,7 @@ export const accountingEntries = mysqlTable(
     // DISPATCH/REMIT حركات عهدة لا تَمسّ revenue/cost (تُستثنى من تقارير الإيراد، كـCASH_*).
     // exchange-house (٣٠/٦): قيود الصيرفة — DEPOSIT/WITHDRAW/FX_BUY/SETTLE حركات أصل (revenue=cost=profit=0)؛
     // EXCHANGE_FEE = عمولة (مصروف P&L)؛ EXCHANGE_FX_DIFF = فرق صرف محقَّق (amount موقَّع، معزول عن إيراد البيع).
-    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN", "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF", "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF", "GIFT_OUT", "SHIFT_FLOAT_OUT", "TREASURY_FUNDING", "DIGITAL_WALLET_DEPOSIT", "DIGITAL_WALLET_WITHDRAWAL", "DIGITAL_WALLET_CONSUMPTION", "DIGITAL_WALLET_REVERSAL", "DIGITAL_WALLET_ADJUSTMENT"]).notNull(),
+    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN", "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF", "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF", "GIFT_OUT", "SHIFT_FLOAT_OUT", "TREASURY_FUNDING", "DIGITAL_WALLET_DEPOSIT", "DIGITAL_WALLET_WITHDRAWAL", "DIGITAL_WALLET_CONSUMPTION", "DIGITAL_WALLET_REVERSAL", "DIGITAL_WALLET_ADJUSTMENT", "DIGITAL_WRITEOFF"]).notNull(),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
     // F1 (تدقيق ٢/٧): أُضيف FK ⇒ purchaseOrderId يشير لأمر شراء موجود (تكامل مرجعيّ). الهجرة 0040.
@@ -4856,7 +4856,8 @@ export const digitalWalletTransactions = mysqlTable(
     transactionNumber: varchar("transactionNumber", { length: 40 }).notNull().unique("uq_dwt_number"),
     walletId: bigint("walletId", { mode: "number" }).notNull().references(() => digitalWallets.id),
     branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
-    type: mysqlEnum("type", ["OPENING", "DEPOSIT", "SALE_CONSUMPTION", "SALE_REVERSAL", "WITHDRAWAL", "ADJUSTMENT"]).notNull(),
+    // WRITEOFF (هجرة 0129): خصم شطب نيّةٍ عالقة — يخفض الرصيد كما خفضه جهاز المزوّد فعلاً.
+    type: mysqlEnum("type", ["OPENING", "DEPOSIT", "SALE_CONSUMPTION", "SALE_REVERSAL", "WITHDRAWAL", "ADJUSTMENT", "WRITEOFF"]).notNull(),
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
     direction: mysqlEnum("direction", ["IN", "OUT"]).notNull(),
     balanceAfter: decimal("balanceAfter", { precision: 15, scale: 2 }).notNull(),
@@ -5077,12 +5078,19 @@ export const digitalSaleIntents = mysqlTable(
     branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
     shiftId: bigint("shiftId", { mode: "number" }).notNull().references(() => shifts.id),
     createdBy: int("createdBy").notNull().references(() => users.id),
-    status: mysqlEnum("status", ["PREPARED", "EXECUTING", "EXECUTED", "FINALIZED", "CANCELLED", "EXPIRED", "NEEDS_REVIEW"]).default("PREPARED").notNull(),
+    // WRITEOFF_PENDING/WRITTEN_OFF (هجرة 0129): مسار إنهاء النيّة العالقة بشطبٍ باعتمادٍ ثنائيّ.
+    status: mysqlEnum("status", ["PREPARED", "EXECUTING", "EXECUTED", "FINALIZED", "CANCELLED", "EXPIRED", "NEEDS_REVIEW", "WRITEOFF_PENDING", "WRITTEN_OFF"]).default("PREPARED").notNull(),
     cartFingerprint: varchar("cartFingerprint", { length: 64 }).notNull(),
     paymentMethod: varchar("paymentMethod", { length: 20 }).notNull(),
     expectedTotal: decimal("expectedTotal", { precision: 15, scale: 2 }).notNull(),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id).unique("uq_dsi_invoice"),
     expiresAt: timestamp("expiresAt").notNull(),
+    // أثر الشطب (هجرة 0129): مَن طلب ولماذا، ومَن اعتمد ومتى — أساس فحص SOD (طالب ≠ معتمِد).
+    writeoffRequestedBy: int("writeoffRequestedBy").references(() => users.id),
+    writeoffRequestedAt: timestamp("writeoffRequestedAt"),
+    writeoffReason: varchar("writeoffReason", { length: 300 }),
+    writeoffApprovedBy: int("writeoffApprovedBy").references(() => users.id),
+    writeoffApprovedAt: timestamp("writeoffApprovedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

@@ -10,6 +10,7 @@ import {
   offeringService,
   posCardsService,
   reversalService,
+  writeoffService,
   pricingService,
   providerService,
   studentService,
@@ -684,6 +685,26 @@ const salesRouter = router({
   expireStale: digitalCardsManagerProcedure.mutation(async () =>
     withTx((tx) => intentService.expireStaleIntents(tx)),
   ),
+
+  /* شطب النيّة العالقة (هجرة 0129): الطلب بلا أثرٍ ماليّ، وكلّ الأثر في الاعتماد
+   * الذي يفرض SOD (طالب ≠ معتمِد). الثلاثة مديريّة. */
+  requestWriteoff: digitalCardsManagerProcedure
+    .input(z.object({ intentId: z.number().int().positive(), reason: z.string().min(3).max(300) }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => writeoffService.requestWriteoff(tx, input, actorOf(ctx))),
+    ),
+
+  approveWriteoff: digitalCardsManagerProcedure
+    .input(z.object({ intentId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => writeoffService.approveWriteoff(tx, input, actorOf(ctx))),
+    ),
+
+  rejectWriteoff: digitalCardsManagerProcedure
+    .input(z.object({ intentId: z.number().int().positive(), reason: z.string().max(300).nullish() }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => writeoffService.rejectWriteoff(tx, input, actorOf(ctx))),
+    ),
 
   /** التثبيت المالي (ش٨): الفاتورة والقبض والتسوية والتفاصيل في معاملة واحدة — أو لا شيء. */
   finalize: digitalCardsPosProcedure
