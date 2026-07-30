@@ -36,12 +36,17 @@ import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
 import { getUnitPrice, tryGetUnitPrice, resolveTier, type PriceTier } from "../pricing";
 import { type Actor, requireDb, withTx } from "../tx";
+import type { Tx } from "../../db";
 import { flowNotify } from "../whatsapp";
 import { userNameSnapshot } from "../userSnapshot";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
 
-export async function createSale(input: CreateSaleInput, actor: Actor): Promise<CreateSaleResult> {
-  const result = await withTx(async (tx) => {
+/**
+ * نواة البيع الذرّية — تعمل داخل معاملة موجودة.
+ * تصدير داخلي فقط: يستعمله `createSale` (المغلّف) و`digitalCards.sales.finalize` (تركيب).
+ * لا يُعرَض عبر الراوتر مباشرة.
+ */
+export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Actor): Promise<CreateSaleResult> {
     // 1. Idempotency: replay the existing invoice for a repeated clientRequestId.
     //    SALES-04 (تدقيق ٢٣/٦/٢٦): البصمة كانت قاصرة على branchId ⇒ كاشير يُعيد استعمال المفتاح
     //    على بيع مختلف فيستلم فاتورة بيعٍ سابق ولا يُسجَّل البيع الجديد ⇒ منفذ سرقة نقد. الحلّ على
@@ -312,9 +317,13 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       // bundles: تكلفة البكج محسوبة لحظياً من مجموع مكوّناته (لا `productVariants.costPrice`
       // لأن البكج نفسه بلا WAVG — تكلفته صافي مجموع مكوّناته الحيّ لحظة البيع، قرار مالك ٧/٧).
       const kind = kindByVariant.get(l.variantId) ?? "STOCKED";
-      const unitCost = kind === "BUNDLE"
-        ? snapshotUnitCost(bundleUnitCosts.get(l.variantId) ?? "0")
-        : snapshotUnitCost(v.costPrice);
+      // §١٠.٣ (البطاقات الرقمية): تكلفة مفروضة خادمياً تتقدّم على `costPrice` — تُملأ حصراً من
+      // نيّةٍ مقفولة في القاعدة (حصة المزوّد)، ولا يقبلها راوتر. راجع `SaleLineInput.unitCostOverride`.
+      const unitCost = l.unitCostOverride != null
+        ? snapshotUnitCost(l.unitCostOverride)
+        : kind === "BUNDLE"
+          ? snapshotUnitCost(bundleUnitCosts.get(l.variantId) ?? "0")
+          : snapshotUnitCost(v.costPrice);
       const lineRes = computeLineTotal({
         unitPrice,
         quantity: money(l.quantity),
@@ -761,7 +770,10 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       priceOverride: belowCost || manualDiscountGateTriggered,
       ...(negativeDips.length ? { negativeDips } : {}),
     };
-  });
+}
+
+export async function createSale(input: CreateSaleInput, actor: Actor): Promise<CreateSaleResult> {
+  const result = await withTx(async (tx) => createSaleInTx(tx, input, actor));
 
   // إشعار الشكر (T4.2، خلف مفتاح flowPurchaseThanks) — خارج معاملة البيع تماماً وبعد نجاحها فقط.
   // ⚠️ لا يمسّ ذرّية البيع أبداً: يعمل بعد الالتزام (commit) لا داخله، ومحمي بغلاف دفاعيّ هنا فوق

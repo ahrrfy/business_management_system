@@ -37,6 +37,7 @@ const MANAGER_ONLY: Gate[] = [
   { name: "productsManager", module: "products", level: "FULL", allowed: ["manager"] },
   { name: "commissionsManager", module: "commissions", level: "FULL", allowed: ["manager"] },
   { name: "workordersManager", module: "workorders", level: "FULL", allowed: ["manager"] },
+  { name: "digitalCardsManager", module: "digital_cards", level: "FULL", allowed: ["manager"] },
 ];
 
 /** بوّابات أقسام POS — الأساس الذي يقوم عليه الفصل بين كاشير التجزئة والطباعة. */
@@ -103,6 +104,27 @@ describe("تكافؤ RBAC — المسار «خارج القائمة» (المن
     // القالبيّون الماليّون يمرّون بلا منح.
     for (const role of ["manager", "accountant", "auditor"]) {
       expect(decide(reportGate, role, null), `${role} قالبيّ`).toBe(true);
+    }
+  });
+
+  // البطاقات الرقمية: قالب الكاشير digital_cards=READ يخدم شبكة بطاقات نقطة البيع (بلا تكلفة)،
+  // بينما شاشة الإعداد تكشف الهوامش وأرصدة المحافظ ⇒ بوّابتان مختلفتان على الوحدة نفسها.
+  it("الكاشير يمرّ بوّابة نقطة البيع للبطاقات ويُرفَض على القراءة الإدارية (الهوامش/الأرصدة)", () => {
+    const posGate: Gate = { name: "digitalCardsPos", module: "digital_cards", level: "READ", allowed: ALL_ROLES };
+    const adminReadGate: Gate = {
+      name: "digitalCardsAdminRead", module: "digital_cards", level: "READ",
+      allowed: ["manager", "accountant", "auditor"],
+    };
+    expect(decide(posGate, "cashier", null), "كاشير × شبكة البطاقات").toBe(true);
+    expect(decide(adminReadGate, "cashier", null), "كاشير × القراءة الإدارية").toBe(false);
+    // المنح الصريح وحده يفتح الإدارية لدور خارج القائمة (قرار أدمن واعٍ).
+    expect(decide(adminReadGate, "cashier", { digital_cards: "READ" })).toBe(true);
+    for (const role of ["manager", "accountant", "auditor"]) {
+      expect(decide(adminReadGate, role, null), `${role} قالبيّ`).toBe(true);
+    }
+    for (const role of ["warehouse", "purchasing", "sales_rep", "user"]) {
+      expect(decide(posGate, role, null), `${role} × شبكة البطاقات`).toBe(false);
+      expect(decide(adminReadGate, role, null), `${role} × القراءة الإدارية`).toBe(false);
     }
   });
 });

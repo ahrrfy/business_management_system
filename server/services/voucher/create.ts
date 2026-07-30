@@ -20,6 +20,12 @@ import type { VoucherInput, VoucherResult } from "./types";
  */
 export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {
   return withTx(async (tx) => {
+    if (input.paymentMethod === "EXCHANGE") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "سند الصيرفة يُنشأ حصراً من شاشة «تسديد مورد عبر الصيرفة» لضمان تحريك الطرفين ذرّياً",
+      });
+    }
     if (!input.clientRequestId?.trim()) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح idempotency إلزامي لإنشاء السند" });
     }

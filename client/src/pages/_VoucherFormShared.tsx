@@ -127,7 +127,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   }, [amount]);
   const approvalThreshold = thresholds.data?.approval ?? 1_000_000;
   const attachmentThreshold = thresholds.data?.attachment ?? 250_000;
-  const needsApproval = amountNum > 0 && amountNum >= approvalThreshold;
+  const isOwner = !!(me.data as any)?.isOwner;
+  const needsApproval = !isOwner && direction === "OUT" && amountNum > 0 && amountNum >= approvalThreshold;
   const needsAttachment = amountNum > 0 && amountNum >= attachmentThreshold;
 
   // السندات الأخيرة لنفس الطَرف (تَحذير الازدواج).

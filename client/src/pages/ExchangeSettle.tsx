@@ -68,16 +68,30 @@ export default function ExchangeSettle() {
     } catch { return null; }
   }, [walletAmount, settledUsd, currency, house, selectedPo]);
 
-  const reset = () => { setWalletAmount(""); setSettledIqd(""); setSettledUsd(""); setCommission(""); setRate(""); setWarn(null); };
+  const resetAmounts = () => {
+    setWalletAmount("");
+    setSettledIqd("");
+    setSettledUsd("");
+    setCommission("");
+    setRate("");
+    setWarn(null);
+  };
+  const reset = () => {
+    resetAmounts();
+    setPurchaseOrderId(0);
+  };
   const settle = trpc.exchange.settle.useMutation({
     onSuccess: (r) => {
       const fx = D(r.fxDiff);
-      notify.ok(fx.isZero() ? "تمّ التسديد" : `تمّ التسديد — ${fx.isPositive() ? "مكسب" : "خسارة"} صرف ${fmtAr(fx.abs().toFixed(2))} د.ع`);
+      const voucher = r.voucherNumber ? ` وإنشاء سند الصرف ${r.voucherNumber}` : "";
+      notify.ok(fx.isZero() ? `تمّ التسديد${voucher}` : `تمّ التسديد${voucher} — ${fx.isPositive() ? "مكسب" : "خسارة"} صرف ${fmtAr(fx.abs().toFixed(2))} د.ع`);
       reset();
       void utils.exchange.list.invalidate();
       // دين المورد المعروض هنا من suppliers.list — بلا إبطالٍ يبقى «دين المورد الحالي» قديماً
       // على الشاشة بعد التسديد فيُغري بتسديدٍ مزدوج بالخطأ.
       void utils.suppliers.list.invalidate();
+      void utils.reports.supplierStatement.invalidate();
+      void utils.vouchers.list.invalidate();
     },
     onError: (e: any) => {
       if (e?.data?.code === "PRECONDITION_FAILED") { setWarn(e.message); return; }
@@ -88,27 +102,31 @@ export default function ExchangeSettle() {
   const doSettle = (confirmNegative = false) => {
     if (!houseId) { notify.err("اختر صيرفة"); return; }
     if (!supplierId) { notify.err("اختر مورّداً"); return; }
-    if (!purchaseOrderId || !selectedPo) { notify.err("اختر فاتورة شراء دولارية"); return; }
     if (!effBranch) { notify.err("اختر الفرع"); return; }
     if (!isMoneyStr(walletAmount)) { notify.err("أدخل مبلغ السحب من المحفظة"); return; }
-    if (!isMoneyStr(settledUsd)) { notify.err("أدخل مبلغ الدولار الواصل للمورد"); return; }
-    const remainingUsd = D(selectedPo.usdTotal ?? 0).minus(D(selectedPo.paidUsd ?? 0)).minus(D(selectedPo.returnedUsd ?? 0));
-    if (D(settledUsd).gt(remainingUsd)) { notify.err("مبلغ الدولار يتجاوز المتبقي على الفاتورة"); return; }
-    if (currency === "USD" && !D(walletAmount).eq(D(settledUsd))) {
-      notify.err("المسحوب من محفظة الدولار يجب أن يساوي الدولار الواصل للمورد"); return;
+    if (currency === "USD") {
+      if (!purchaseOrderId || !selectedPo) { notify.err("اختر فاتورة شراء دولارية"); return; }
+      if (!isMoneyStr(settledUsd)) { notify.err("أدخل مبلغ الدولار الواصل للمورد"); return; }
+      const remainingUsd = D(selectedPo.usdTotal ?? 0).minus(D(selectedPo.paidUsd ?? 0)).minus(D(selectedPo.returnedUsd ?? 0));
+      if (D(settledUsd).gt(remainingUsd)) { notify.err("مبلغ الدولار يتجاوز المتبقي على الفاتورة"); return; }
+      if (!D(walletAmount).eq(D(settledUsd))) {
+        notify.err("المسحوب من محفظة الدولار يجب أن يساوي الدولار الواصل للمورد"); return;
+      }
     }
-    const effSettledIqd = D(settledUsd).times(D(selectedPo.agreedRate ?? 0)).toFixed(2);
+    const effSettledIqd = currency === "IQD"
+      ? walletAmount
+      : D(settledUsd).times(D(selectedPo?.agreedRate ?? 0)).toFixed(2);
     if (commission && !isMoneyStr(commission)) { notify.err("عمولة غير صالحة"); return; }
     if (currency === "USD" && rate && !isRateStr(rate)) { notify.err("سعر صرف غير صالح"); return; }
     settle.mutate({
       exchangeHouseId: houseId,
       branchId: effBranch,
       supplierId,
-      purchaseOrderId,
+      purchaseOrderId: currency === "USD" ? purchaseOrderId : undefined,
       currency,
       walletAmount,
       settledIqd: effSettledIqd,
-      settledUsd,
+      settledUsd: currency === "USD" ? settledUsd : undefined,
       commission: commission || undefined,
       exchangeRate: currency === "USD" ? (rate || undefined) : undefined,
       confirmNegative,
@@ -130,7 +148,7 @@ export default function ExchangeSettle() {
             صلاحيتك على الخزينة قراءة فقط — تنفيذ التسديد يتطلّب صلاحية كاملة على وحدة الخزينة.
           </div>
         )}
-        <div className="grid gap-4 sm:grid-cols-4">
+        <div className={`grid gap-4 ${currency === "USD" ? "sm:grid-cols-4" : "sm:grid-cols-3"}`}>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الصيرفة</label>
             <select className={`${selectCls} w-full`} value={houseId} onChange={(e) => setHouseId(Number(e.target.value))}>
@@ -148,16 +166,18 @@ export default function ExchangeSettle() {
               {supRows.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </div>
-          <div>
-            <label className="text-xs text-muted-foreground mb-1 block">فاتورة الشراء الدولارية</label>
-            <select className={`${selectCls} w-full`} value={purchaseOrderId} onChange={(e) => setPurchaseOrderId(Number(e.target.value))}>
-              <option value={0}>— اختر —</option>
-              {usdOrders.map((p) => {
-                const rem = D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0)).minus(D(p.returnedUsd ?? 0)).toFixed(2);
-                return <option key={p.id} value={p.id}>{p.poNumber} — متبقي {rem}$</option>;
-              })}
-            </select>
-          </div>
+          {currency === "USD" && (
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">فاتورة الشراء الدولارية</label>
+              <select className={`${selectCls} w-full`} value={purchaseOrderId} onChange={(e) => setPurchaseOrderId(Number(e.target.value))}>
+                <option value={0}>— اختر —</option>
+                {usdOrders.map((p) => {
+                  const rem = D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0)).minus(D(p.returnedUsd ?? 0)).toFixed(2);
+                  return <option key={p.id} value={p.id}>{p.poNumber} — متبقي {rem}$</option>;
+                })}
+              </select>
+            </div>
+          )}
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الفرع</label>
             <select className={`${selectCls} w-full`} value={effBranch} onChange={(e) => setBranchId(Number(e.target.value))} disabled={!isAdmin}>
@@ -181,7 +201,11 @@ export default function ExchangeSettle() {
 
         <div className="flex gap-1 rounded-md border bg-background p-0.5 w-fit">
           {(["USD", "IQD"] as const).map((c) => (
-            <button key={c} onClick={() => setCurrency(c)}
+            <button key={c} onClick={() => {
+              if (c === currency) return;
+              setCurrency(c);
+              reset();
+            }}
               className={currency === c ? "px-4 py-1.5 rounded-sm bg-primary text-primary-foreground text-sm" : "px-4 py-1.5 rounded-sm text-muted-foreground hover:text-foreground text-sm"}>
               {c === "USD" ? "بالدولار" : "بالدينار"}
             </button>
@@ -189,25 +213,29 @@ export default function ExchangeSettle() {
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <label className="text-xs text-muted-foreground mb-1 block">الدولار الواصل للمورد ($)</label>
-            <MoneyInput value={settledUsd} onChange={(v) => {
-              setSettledUsd(v);
-              if (currency === "USD") setWalletAmount(v);
-              if (selectedPo?.agreedRate && v) {
-                try {
-                  setSettledIqd(D(v).times(D(selectedPo.agreedRate)).toFixed(2));
-                } catch {
-                  setSettledIqd("");
+          {currency === "USD" && (
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">الدولار الواصل للمورد ($)</label>
+              <MoneyInput value={settledUsd} onChange={(v) => {
+                setSettledUsd(v);
+                setWalletAmount(v);
+                if (selectedPo?.agreedRate && v) {
+                  try {
+                    setSettledIqd(D(v).times(D(selectedPo.agreedRate)).toFixed(2));
+                  } catch {
+                    setSettledIqd("");
+                  }
                 }
-              }
-            }} placeholder="0.00" />
-          </div>
+              }} placeholder="0.00" />
+            </div>
+          )}
           <div>
-            <label className="text-xs text-muted-foreground mb-1 block">المسحوب من المحفظة ({currency === "USD" ? "$" : "د.ع"})</label>
+            <label className="text-xs text-muted-foreground mb-1 block">
+              {currency === "USD" ? "المسحوب من محفظة الدولار ($)" : "المبلغ الواصل للمورد والمسحوب من محفظة الدينار (د.ع)"}
+            </label>
             <MoneyInput value={walletAmount} onChange={setWalletAmount} placeholder="0.00" />
           </div>
-          {selectedPo && (
+          {currency === "USD" && selectedPo && (
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">القيمة الدفترية المُطفأة (د.ع)</label>
               <MoneyInput value={settledIqd} onChange={() => {}} placeholder="0.00" />

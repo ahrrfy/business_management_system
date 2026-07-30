@@ -1392,7 +1392,8 @@ export const receipts = mysqlTable(
     direction: mysqlEnum("direction", ["IN", "OUT"]).default("IN").notNull(),
     // 0018: DB-level CHECK (amount >= 0) أُضيف في migration 0018 (المبلغ موجب؛ الاتجاه من `direction`).
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
-    paymentMethod: mysqlEnum("paymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).notNull(),
+    // EXCHANGE: سند صرف مُنشأ حصراً من تسديد المورد عبر الصيرفة؛ لا يمسّ الخزينة.
+    paymentMethod: mysqlEnum("paymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "EXCHANGE"]).notNull(),
     /**
      * cash-treasury-mode (تدقيق ١٧/٦): فصل النقد إلى دلوَين دلالياً.
      *  - DRAWER: نقد درج كاشير ⇒ يَخصم/يُضيف إلى Z-report عبر shiftId.
@@ -1521,7 +1522,7 @@ export const accountingEntries = mysqlTable(
     // DISPATCH/REMIT حركات عهدة لا تَمسّ revenue/cost (تُستثنى من تقارير الإيراد، كـCASH_*).
     // exchange-house (٣٠/٦): قيود الصيرفة — DEPOSIT/WITHDRAW/FX_BUY/SETTLE حركات أصل (revenue=cost=profit=0)؛
     // EXCHANGE_FEE = عمولة (مصروف P&L)؛ EXCHANGE_FX_DIFF = فرق صرف محقَّق (amount موقَّع، معزول عن إيراد البيع).
-    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN", "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF", "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF", "GIFT_OUT", "SHIFT_FLOAT_OUT", "TREASURY_FUNDING"]).notNull(),
+    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN", "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF", "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF", "GIFT_OUT", "SHIFT_FLOAT_OUT", "TREASURY_FUNDING", "DIGITAL_WALLET_DEPOSIT", "DIGITAL_WALLET_WITHDRAWAL", "DIGITAL_WALLET_CONSUMPTION", "DIGITAL_WALLET_REVERSAL", "DIGITAL_WALLET_ADJUSTMENT"]).notNull(),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
     // F1 (تدقيق ٢/٧): أُضيف FK ⇒ purchaseOrderId يشير لأمر شراء موجود (تكامل مرجعيّ). الهجرة 0040.
@@ -1534,6 +1535,8 @@ export const accountingEntries = mysqlTable(
     deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
     // exchange-house: طرف الصيرفة لقيود EXCHANGE_*. F1 (تدقيق ٢/٧): أُضيف FK ⇒ يشير لصيرفة موجودة. الهجرة 0040.
     exchangeHouseId: bigint("exchangeHouseId", { mode: "number" }).references(() => exchangeHouses.id),
+    // digital-cards: طرف المحفظة الرقمية لقيود DIGITAL_WALLET_*.
+    digitalWalletId: bigint("digitalWalletId", { mode: "number" }),
     revenue: decimal("revenue", { precision: 15, scale: 2 }).default("0").notNull(),
     cost: decimal("cost", { precision: 15, scale: 2 }).default("0").notNull(),
     profit: decimal("profit", { precision: 15, scale: 2 }).default("0").notNull(),
@@ -1569,6 +1572,8 @@ export const accountingEntries = mysqlTable(
     // commissions (٦/٧/٢٦): كنسة محرّك العمولات الشهرية شركةً كاملةً — entryType IN (SALE,RETURN)
     // بنطاق شهر على entryDate بلا فرع ⇒ idx_entry_branch_type_date (يبدأ بالفرع) لا يخدمها. هجرة 0051.
     typeDateIdx: index("idx_entry_type_date").on(table.entryType, table.entryDate),
+    // digital-cards: كشف حساب المحفظة الرقمية بالتاريخ.
+    digitalWalletDateIdx: index("idx_entry_digital_wallet_date").on(table.digitalWalletId, table.entryDate),
   })
 );
 
@@ -4782,3 +4787,436 @@ export const giftVoucherLines = mysqlTable(
 );
 export type GiftVoucherLine = typeof giftVoucherLines.$inferSelect;
 export type InsertGiftVoucherLine = typeof giftVoucherLines.$inferInsert;
+
+/* ==== البطاقات الرقمية والاشتراكات ==== */
+
+/**
+ * مزوّدو البطاقات الرقمية والاشتراكات (اتصالات، بطاقات عالمية، تعليمية…).
+ * كل مزوّد مرتبط بمورّد واحد (supplier) في المنظومة.
+ */
+export const digitalProviders = mysqlTable(
+  "digitalProviders",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    supplierId: bigint("supplierId", { mode: "number" }).notNull().references(() => suppliers.id).unique("uq_digital_provider_supplier"),
+    providerType: mysqlEnum("providerType", ["TELECOM", "GLOBAL_CARDS", "EDUCATIONAL", "OTHER"]).notNull(),
+    settlementMode: mysqlEnum("settlementMode", ["PREPAID", "POSTPAID"]).notNull(),
+    recognitionMode: mysqlEnum("recognitionMode", ["PRINCIPAL_GROSS"]).notNull(),
+    referencePolicy: mysqlEnum("referencePolicy", ["REQUIRED", "OPTIONAL", "NONE"]).notNull(),
+    settlementCycle: mysqlEnum("settlementCycle", ["DAILY", "WEEKLY", "BIWEEKLY", "MONTHLY", "ON_DEMAND"]).notNull(),
+    lowBalanceThreshold: decimal("lowBalanceThreshold", { precision: 15, scale: 2 }).default("0").notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    notes: text("notes"),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    supplierIdx: index("idx_dprovider_supplier").on(t.supplierId),
+  })
+);
+export type DigitalProvider = typeof digitalProviders.$inferSelect;
+export type InsertDigitalProvider = typeof digitalProviders.$inferInsert;
+
+/**
+ * محافظ رقمية: رصيد مسبق الدفع لدى مزوّد × فرع.
+ * الرصيد يُحدَّث ذرّياً عبر حركات digitalWalletTransactions.
+ */
+export const digitalWallets = mysqlTable(
+  "digitalWallets",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    providerId: bigint("providerId", { mode: "number" }).notNull().references(() => digitalProviders.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    code: varchar("code", { length: 40 }).notNull(),
+    name: varchar("name", { length: 120 }).notNull(),
+    currency: mysqlEnum("currency", ["IQD"]).notNull(),
+    currentBalance: decimal("currentBalance", { precision: 15, scale: 2 }).default("0").notNull(),
+    reservedBalance: decimal("reservedBalance", { precision: 15, scale: 2 }).default("0").notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    providerBranchCodeUq: unique("uq_wallet_provider_branch_code").on(t.providerId, t.branchId, t.code),
+    branchIdx: index("idx_wallet_branch").on(t.branchId),
+  })
+);
+export type DigitalWallet = typeof digitalWallets.$inferSelect;
+export type InsertDigitalWallet = typeof digitalWallets.$inferInsert;
+
+/**
+ * حركات المحفظة الرقمية: إيداع / سحب / استهلاك بيع / عكس / تسوية.
+ * كل حركة تُغيّر الرصيد تحت قفل ذرّي.
+ */
+export const digitalWalletTransactions = mysqlTable(
+  "digitalWalletTransactions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    transactionNumber: varchar("transactionNumber", { length: 40 }).notNull().unique("uq_dwt_number"),
+    walletId: bigint("walletId", { mode: "number" }).notNull().references(() => digitalWallets.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    type: mysqlEnum("type", ["OPENING", "DEPOSIT", "SALE_CONSUMPTION", "SALE_REVERSAL", "WITHDRAWAL", "ADJUSTMENT"]).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    direction: mysqlEnum("direction", ["IN", "OUT"]).notNull(),
+    balanceAfter: decimal("balanceAfter", { precision: 15, scale: 2 }).notNull(),
+    invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
+    invoiceItemId: bigint("invoiceItemId", { mode: "number" }).references(() => invoiceItems.id),
+    receiptId: bigint("receiptId", { mode: "number" }).references(() => receipts.id),
+    status: mysqlEnum("status", ["ACTIVE", "PENDING_APPROVAL", "REVERSED"]).default("ACTIVE").notNull(),
+    clientRequestId: varchar("clientRequestId", { length: 80 }),
+    notes: text("notes"),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    approvedBy: int("approvedBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    approvedAt: timestamp("approvedAt"),
+  },
+  (t) => ({
+    walletIdx: index("idx_dwt_wallet").on(t.walletId),
+    walletClientUq: unique("uq_dwt_wallet_client").on(t.walletId, t.clientRequestId),
+  })
+);
+export type DigitalWalletTransaction = typeof digitalWalletTransactions.$inferSelect;
+export type InsertDigitalWalletTransaction = typeof digitalWalletTransactions.$inferInsert;
+
+/**
+ * عروض رقمية: ربط مزوّد بمنتج/متغيّر/وحدة مع إعدادات التسعير والهامش.
+ */
+export const digitalOfferings = mysqlTable(
+  "digitalOfferings",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    providerId: bigint("providerId", { mode: "number" }).notNull().references(() => digitalProviders.id),
+    productId: bigint("productId", { mode: "number" }).notNull().references(() => products.id),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id).unique("uq_doffering_variant"),
+    productUnitId: bigint("productUnitId", { mode: "number" }).notNull().references(() => productUnits.id).unique("uq_doffering_unit"),
+    offeringType: mysqlEnum("offeringType", ["TELECOM_CARD", "GLOBAL_CARD", "EDUCATIONAL_SUBSCRIPTION", "OTHER"]).notNull(),
+    requiresStudentData: boolean("requiresStudentData").default(false).notNull(),
+    faceValue: decimal("faceValue", { precision: 15, scale: 2 }),
+    faceCurrency: varchar("faceCurrency", { length: 3 }),
+    pricingMode: mysqlEnum("pricingMode", ["FIXED_MARGIN", "PERCENT_MARGIN", "FIXED_PLUS_PERCENT", "FIXED_SELL_PRICE"]).notNull(),
+    fixedMargin: decimal("fixedMargin", { precision: 15, scale: 2 }).default("0").notNull(),
+    marginPercent: decimal("marginPercent", { precision: 5, scale: 2 }).default("0").notNull(),
+    minimumMargin: decimal("minimumMargin", { precision: 15, scale: 2 }).default("0").notNull(),
+    roundingStep: decimal("roundingStep", { precision: 15, scale: 2 }).default("250").notNull(),
+    priceValidityHours: int("priceValidityHours"),
+    cardColorToken: varchar("cardColorToken", { length: 30 }),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    providerIdx: index("idx_doffering_provider").on(t.providerId),
+  })
+);
+export type DigitalOffering = typeof digitalOfferings.$inferSelect;
+export type InsertDigitalOffering = typeof digitalOfferings.$inferInsert;
+
+/**
+ * ربط عرض رقمي بفرع (تفعيل/ترتيب عرض/مفضّلة + محفظة اختيارية).
+ * مفتاح أساسي مركّب (offeringId, branchId).
+ */
+export const digitalOfferingBranches = mysqlTable(
+  "digitalOfferingBranches",
+  {
+    offeringId: bigint("offeringId", { mode: "number" }).notNull().references(() => digitalOfferings.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    walletId: bigint("walletId", { mode: "number" }).references(() => digitalWallets.id),
+    isActive: boolean("isActive").default(true).notNull(),
+    isFavorite: boolean("isFavorite").default(false).notNull(),
+    displayOrder: int("displayOrder").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.offeringId, t.branchId], name: "pk_doffering_branch" }),
+    branchIdx: index("idx_dob_branch").on(t.branchId),
+  })
+);
+export type DigitalOfferingBranch = typeof digitalOfferingBranches.$inferSelect;
+export type InsertDigitalOfferingBranch = typeof digitalOfferingBranches.$inferInsert;
+
+/**
+ * دُفعات أسعار العروض الرقمية: مسودة → منشورة → مُلغاة.
+ * copiedFromBatchId: مرجع ذاتي بلا قيد FK (نمط categories.parentId).
+ */
+export const digitalPriceBatches = mysqlTable(
+  "digitalPriceBatches",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    providerId: bigint("providerId", { mode: "number" }).notNull().references(() => digitalProviders.id),
+    businessDate: date("businessDate", { mode: "string" }).notNull(),
+    status: mysqlEnum("status", ["DRAFT", "PUBLISHED", "SUPERSEDED", "CANCELLED"]).default("DRAFT").notNull(),
+    // مرجع ذاتي — الدُفعة المنسوخة منها (بلا FK بنيوي، نمط parentId).
+    copiedFromBatchId: bigint("copiedFromBatchId", { mode: "number" }),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    publishedBy: int("publishedBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    publishedAt: timestamp("publishedAt"),
+    // عمودان مولَّدان STORED + فهرسان فريدان (هجرة 0127، تُطبَّق عبر ci-apply-extra-migrations):
+    // draftKey يحمل NULL خارج DRAFT وpublishedKey خارج PUBLISHED، وفهرس MySQL الفريد يقبل تكرار
+    // NULL ⇒ «مسودّة واحدة لكل (فرع×مزوّد×تاريخ)» و«منشورة واحدة سارية لكل (فرع×مزوّد)».
+    // drizzle لا يَلمسهما (read-only من JS) — مُعرَّفان هنا للأنواع فقط، نمط products.searchNorm.
+    draftKey: varchar("draftKey", { length: 80 }),
+    publishedKey: varchar("publishedKey", { length: 80 }),
+  },
+  (t) => ({
+    branchProviderIdx: index("idx_dpbatch_branch_provider").on(t.branchId, t.providerId),
+    statusIdx: index("idx_dpbatch_status").on(t.status),
+  })
+);
+export type DigitalPriceBatch = typeof digitalPriceBatches.$inferSelect;
+export type InsertDigitalPriceBatch = typeof digitalPriceBatches.$inferInsert;
+
+/**
+ * نسخ أسعار العروض الرقمية داخل دُفعة. كل نسخة = عرض × فرع × تاريخ سريان.
+ */
+export const digitalPriceVersions = mysqlTable(
+  "digitalPriceVersions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    batchId: bigint("batchId", { mode: "number" }).notNull().references(() => digitalPriceBatches.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    offeringId: bigint("offeringId", { mode: "number" }).notNull().references(() => digitalOfferings.id),
+    providerShare: decimal("providerShare", { precision: 15, scale: 2 }).notNull(),
+    sellPrice: decimal("sellPrice", { precision: 15, scale: 2 }).notNull(),
+    marginAmount: decimal("marginAmount", { precision: 15, scale: 2 }).notNull(),
+    validFrom: timestamp("validFrom").notNull(),
+    validUntil: timestamp("validUntil"),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    batchOfferingUq: unique("uq_dpv_batch_offering").on(t.batchId, t.offeringId),
+    offeringIdx: index("idx_dpv_offering").on(t.offeringId),
+    branchIdx: index("idx_dpv_branch").on(t.branchId),
+  })
+);
+export type DigitalPriceVersion = typeof digitalPriceVersions.$inferSelect;
+export type InsertDigitalPriceVersion = typeof digitalPriceVersions.$inferInsert;
+
+/**
+ * السعر الحالي الساري لكل عرض × فرع (مؤشّر مادّيّ — صفّ واحد لكل زوج).
+ * مفتاح أساسي مركّب (branchId, offeringId).
+ */
+export const digitalCurrentPrices = mysqlTable(
+  "digitalCurrentPrices",
+  {
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    offeringId: bigint("offeringId", { mode: "number" }).notNull().references(() => digitalOfferings.id),
+    priceVersionId: bigint("priceVersionId", { mode: "number" }).notNull().references(() => digitalPriceVersions.id),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.branchId, t.offeringId], name: "pk_dcurrent_price" }),
+  })
+);
+export type DigitalCurrentPrice = typeof digitalCurrentPrices.$inferSelect;
+export type InsertDigitalCurrentPrice = typeof digitalCurrentPrices.$inferInsert;
+
+/**
+ * بلاغات تغيّر سعر المزوّد — يسجّلها الكاشير ويعالجها المدير.
+ */
+export const digitalPriceChangeReports = mysqlTable(
+  "digitalPriceChangeReports",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    offeringId: bigint("offeringId", { mode: "number" }).notNull().references(() => digitalOfferings.id),
+    providerId: bigint("providerId", { mode: "number" }).notNull().references(() => digitalProviders.id),
+    currentPriceVersionId: bigint("currentPriceVersionId", { mode: "number" }).notNull(),
+    reportedProviderShare: decimal("reportedProviderShare", { precision: 15, scale: 2 }).notNull(),
+    status: mysqlEnum("status", ["OPEN", "APPROVED", "REJECTED", "RESOLVED"]).default("OPEN").notNull(),
+    reportedBy: int("reportedBy").notNull().references(() => users.id),
+    resolvedBy: int("resolvedBy").references(() => users.id),
+    resolutionPriceVersionId: bigint("resolutionPriceVersionId", { mode: "number" }),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    resolvedAt: timestamp("resolvedAt"),
+  },
+  (t) => ({
+    statusIdx: index("idx_dpcr_status").on(t.status),
+    providerIdx: index("idx_dpcr_provider").on(t.providerId),
+    fkCurrPv: foreignKey({ columns: [t.currentPriceVersionId], foreignColumns: [digitalPriceVersions.id], name: "fk_dpcr_curr_pv" }),
+    fkResPv: foreignKey({ columns: [t.resolutionPriceVersionId], foreignColumns: [digitalPriceVersions.id], name: "fk_dpcr_res_pv" }),
+  })
+);
+export type DigitalPriceChangeReport = typeof digitalPriceChangeReports.$inferSelect;
+export type InsertDigitalPriceChangeReport = typeof digitalPriceChangeReports.$inferInsert;
+
+/**
+ * ملفّات الطلاب: بيانات طالب مرتبطة بعميل (للاشتراكات التعليمية).
+ */
+export const studentProfiles = mysqlTable(
+  "studentProfiles",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id).unique("uq_student_customer"),
+    studentPhone: varchar("studentPhone", { length: 20 }).notNull().unique("uq_student_phone"),
+    guardianPhone: varchar("guardianPhone", { length: 20 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    guardianIdx: index("idx_student_guardian").on(t.guardianPhone),
+  })
+);
+export type StudentProfile = typeof studentProfiles.$inferSelect;
+export type InsertStudentProfile = typeof studentProfiles.$inferInsert;
+
+/**
+ * نيّات بيع رقمية (سلة مُحضَّرة): دورة حياة PREPARED → EXECUTING → EXECUTED → FINALIZED.
+ * تُلغى تلقائياً عند انقضاء expiresAt.
+ */
+export const digitalSaleIntents = mysqlTable(
+  "digitalSaleIntents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    clientRequestId: varchar("clientRequestId", { length: 80 }).notNull().unique("uq_dsi_client_request"),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    shiftId: bigint("shiftId", { mode: "number" }).notNull().references(() => shifts.id),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    status: mysqlEnum("status", ["PREPARED", "EXECUTING", "EXECUTED", "FINALIZED", "CANCELLED", "EXPIRED", "NEEDS_REVIEW"]).default("PREPARED").notNull(),
+    cartFingerprint: varchar("cartFingerprint", { length: 64 }).notNull(),
+    paymentMethod: varchar("paymentMethod", { length: 20 }).notNull(),
+    expectedTotal: decimal("expectedTotal", { precision: 15, scale: 2 }).notNull(),
+    invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id).unique("uq_dsi_invoice"),
+    expiresAt: timestamp("expiresAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    statusIdx: index("idx_dsi_status").on(t.status),
+    branchIdx: index("idx_dsi_branch").on(t.branchId),
+  })
+);
+export type DigitalSaleIntent = typeof digitalSaleIntents.$inferSelect;
+export type InsertDigitalSaleIntent = typeof digitalSaleIntents.$inferInsert;
+
+/**
+ * حجوزات أرصدة المحفظة الرقمية: تُحجَز عند إعداد النيّة وتُستهلَك/تُطلَق عند التنفيذ/الإلغاء.
+ */
+export const digitalWalletReservations = mysqlTable(
+  "digitalWalletReservations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    walletId: bigint("walletId", { mode: "number" }).notNull().references(() => digitalWallets.id),
+    intentId: bigint("intentId", { mode: "number" }).notNull().references(() => digitalSaleIntents.id),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    status: mysqlEnum("status", ["ACTIVE", "CONSUMED", "RELEASED"]).default("ACTIVE").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    consumedAt: timestamp("consumedAt"),
+    releasedAt: timestamp("releasedAt"),
+  },
+  (t) => ({
+    walletIntentUq: unique("uq_dwr_wallet_intent").on(t.walletId, t.intentId),
+    intentIdx: index("idx_dwr_intent").on(t.intentId),
+  })
+);
+export type DigitalWalletReservation = typeof digitalWalletReservations.$inferSelect;
+export type InsertDigitalWalletReservation = typeof digitalWalletReservations.$inferInsert;
+
+/**
+ * بنود نيّة البيع الرقمية: كل بند = عرض رقمي بلقطات سعر وحالة تنفيذ.
+ */
+export const digitalSaleIntentItems = mysqlTable(
+  "digitalSaleIntentItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    intentId: bigint("intentId", { mode: "number" }).notNull().references(() => digitalSaleIntents.id),
+    lineKey: varchar("lineKey", { length: 64 }).notNull(),
+    offeringId: bigint("offeringId", { mode: "number" }).notNull().references(() => digitalOfferings.id),
+    // ش٧ (هجرة 0128): المزوّد مُنزَّل على البند — القيد الفريد «مرجع واحد لكل مزوّد» يحتاجه في
+    // الصفّ نفسه. ثابتٌ بعد الإنشاء (مشتقٌّ من digitalOfferings.providerId لحظة الإعداد).
+    providerId: bigint("providerId", { mode: "number" }).notNull().default(0),
+    priceVersionId: bigint("priceVersionId", { mode: "number" }).notNull(),
+    sellPriceSnapshot: decimal("sellPriceSnapshot", { precision: 15, scale: 2 }).notNull(),
+    providerShareSnapshot: decimal("providerShareSnapshot", { precision: 15, scale: 2 }).notNull(),
+    marginSnapshot: decimal("marginSnapshot", { precision: 15, scale: 2 }).notNull(),
+    fulfillmentStatus: mysqlEnum("fulfillmentStatus", ["PENDING", "SUCCESS", "FAILED", "UNKNOWN"]).default("PENDING").notNull(),
+    providerReference: varchar("providerReference", { length: 120 }),
+    confirmedBy: int("confirmedBy").references(() => users.id),
+    confirmedAt: timestamp("confirmedAt"),
+    studentCustomerId: bigint("studentCustomerId", { mode: "number" }).references(() => customers.id),
+    studentNameSnapshot: varchar("studentNameSnapshot", { length: 255 }),
+    studentPhoneSnapshot: varchar("studentPhoneSnapshot", { length: 20 }),
+    guardianPhoneSnapshot: varchar("guardianPhoneSnapshot", { length: 20 }),
+    studentAddressSnapshot: text("studentAddressSnapshot"),
+    // عمود مولَّد STORED + فهرس فريد (هجرة 0128، تُطبَّق عبر ci-apply-extra-migrations):
+    // NULL ما لم يوجد مرجع ⇒ الفهرس الفريد يقبل تكرار NULL، فينحصر المنع على البنود ذات المرجع.
+    // drizzle لا يَلمسه (read-only من JS) — مُعرَّف هنا للأنواع فقط، نمط products.searchNorm.
+    refKey: varchar("refKey", { length: 160 }),
+  },
+  (t) => ({
+    intentLineUq: unique("uq_dsii_intent_line").on(t.intentId, t.lineKey),
+    offeringIdx: index("idx_dsii_offering").on(t.offeringId),
+    fkPv: foreignKey({ columns: [t.priceVersionId], foreignColumns: [digitalPriceVersions.id], name: "fk_dsii_pv" }),
+  })
+);
+export type DigitalSaleIntentItem = typeof digitalSaleIntentItems.$inferSelect;
+export type InsertDigitalSaleIntentItem = typeof digitalSaleIntentItems.$inferInsert;
+
+/**
+ * تفاصيل البيع الرقمي: لقطة كاملة لبيانات كل بند رقمي مُباع (مرتبط ببند الفاتورة).
+ */
+export const digitalSaleDetails = mysqlTable(
+  "digitalSaleDetails",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    invoiceId: bigint("invoiceId", { mode: "number" }).notNull().references(() => invoices.id),
+    invoiceItemId: bigint("invoiceItemId", { mode: "number" }).notNull().references(() => invoiceItems.id).unique("uq_dsd_invoice_item"),
+    intentItemId: bigint("intentItemId", { mode: "number" }).notNull().references(() => digitalSaleIntentItems.id).unique("uq_dsd_intent_item"),
+    offeringId: bigint("offeringId", { mode: "number" }).notNull().references(() => digitalOfferings.id),
+    providerId: bigint("providerId", { mode: "number" }).notNull().references(() => digitalProviders.id),
+    priceVersionId: bigint("priceVersionId", { mode: "number" }).notNull().references(() => digitalPriceVersions.id),
+    settlementModeSnapshot: mysqlEnum("settlementModeSnapshot", ["PREPAID", "POSTPAID"]).notNull(),
+    sellPriceSnapshot: decimal("sellPriceSnapshot", { precision: 15, scale: 2 }).notNull(),
+    providerShareSnapshot: decimal("providerShareSnapshot", { precision: 15, scale: 2 }).notNull(),
+    profitSnapshot: decimal("profitSnapshot", { precision: 15, scale: 2 }).notNull(),
+    providerReference: varchar("providerReference", { length: 120 }),
+    fulfillmentStatus: mysqlEnum("fulfillmentStatus", ["ISSUED", "REVERSAL_PENDING", "REVERSED", "LOSS_REFUND"]).default("ISSUED").notNull(),
+    studentCustomerId: bigint("studentCustomerId", { mode: "number" }).references(() => customers.id),
+    studentNameSnapshot: varchar("studentNameSnapshot", { length: 255 }),
+    studentPhoneSnapshot: varchar("studentPhoneSnapshot", { length: 20 }),
+    guardianPhoneSnapshot: varchar("guardianPhoneSnapshot", { length: 20 }),
+    studentAddressSnapshot: text("studentAddressSnapshot"),
+    walletTransactionId: bigint("walletTransactionId", { mode: "number" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    invoiceIdx: index("idx_dsd_invoice").on(t.invoiceId),
+    providerIdx: index("idx_dsd_provider").on(t.providerId),
+    fkWalletTx: foreignKey({ columns: [t.walletTransactionId], foreignColumns: [digitalWalletTransactions.id], name: "fk_dsd_wallet_tx" }),
+  })
+);
+export type DigitalSaleDetail = typeof digitalSaleDetails.$inferSelect;
+export type InsertDigitalSaleDetail = typeof digitalSaleDetails.$inferInsert;
+
+/**
+ * مطابقة أرصدة المحفظة الرقمية: مقارنة الرصيد المتوقّع بالفعلي لكل محفظة × يوم.
+ */
+export const digitalWalletReconciliations = mysqlTable(
+  "digitalWalletReconciliations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    walletId: bigint("walletId", { mode: "number" }).notNull().references(() => digitalWallets.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    businessDate: date("businessDate", { mode: "string" }).notNull(),
+    expectedBalance: decimal("expectedBalance", { precision: 15, scale: 2 }).notNull(),
+    actualBalance: decimal("actualBalance", { precision: 15, scale: 2 }).notNull(),
+    variance: decimal("variance", { precision: 15, scale: 2 }).notNull(),
+    status: mysqlEnum("status", ["MATCHED", "VARIANCE_OPEN", "RESOLVED"]).default("MATCHED").notNull(),
+    countedBy: int("countedBy").notNull().references(() => users.id),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    reviewedAt: timestamp("reviewedAt"),
+  },
+  (t) => ({
+    walletDateUq: unique("uq_dwrecon_wallet_date").on(t.walletId, t.businessDate),
+    branchIdx: index("idx_dwrecon_branch").on(t.branchId),
+  })
+);
+export type DigitalWalletReconciliation = typeof digitalWalletReconciliations.$inferSelect;
+export type InsertDigitalWalletReconciliation = typeof digitalWalletReconciliations.$inferInsert;

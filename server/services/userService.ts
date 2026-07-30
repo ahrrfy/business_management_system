@@ -63,6 +63,7 @@ export interface UpdateUserInput {
   phone?: string | null;
   jobTitle?: string | null;
   hiredAt?: string | null;
+  isOwner?: boolean;
   permissionsOverride?: Record<string, "FULL" | "READ" | "NONE"> | null;
 }
 
@@ -86,6 +87,7 @@ const SAFE_COLUMNS = {
   customRoleId: users.customRoleId,
   branchId: users.branchId,
   isActive: users.isActive,
+  isOwner: users.isOwner,
   jobTitle: users.jobTitle,
   hiredAt: users.hiredAt,
   permissionsOverride: users.permissionsOverride,
@@ -263,6 +265,19 @@ export async function updateUser(input: UpdateUserInput, actor: Actor) {
     if (input.jobTitle !== undefined) patch.jobTitle = input.jobTitle?.trim() || null;
     if (input.hiredAt !== undefined) patch.hiredAt = input.hiredAt ? new Date(input.hiredAt) : null;
     if (input.permissionsOverride !== undefined) patch.permissionsOverride = input.permissionsOverride ?? null;
+
+    // مالك النظام (isOwner): حارسان أمنيان لمنع تصعيد الصلاحيات وقفل الحساب:
+    //  1) فقط مالك حالي يمنح/يسحب الصفة (وإلا لأمكن لأدمن عادي أن يرفع نفسه لمالك).
+    //  2) لا تسحب الصفة عن نفسك (يمنع فقدان مالك النظام صفته بالخطأ ⇒ قفل الاعتماد على السندات).
+    if (input.isOwner !== undefined && !!input.isOwner !== !!(existing as { isOwner?: boolean }).isOwner) {
+      if (!actor.isOwner) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "فقط مالك النظام يمكنه منح/سحب صفة المالك." });
+      }
+      if (input.userId === actor.userId && !input.isOwner) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكنك سحب صفة المالك عن نفسك." });
+      }
+      patch.isOwner = !!input.isOwner;
+    }
 
     // إسناد الدور (مبني أو مخصّص). نحسب الوجهة ثم نطبّق الحُرّاس إن تغيّر فعلاً.
     let nextRole: Role | undefined;
