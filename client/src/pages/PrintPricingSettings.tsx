@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
+import { RowActions } from "@/components/list/RowActions";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
@@ -220,9 +221,18 @@ function FacePricesSection({
                     <td className="p-2">{COLOR_MODE_AR[r.colorMode]}</td>
                     <td className="p-2 tabular-nums">{formatIqd(r.pricePerFace)}</td>
                     <td className="p-2 text-center">
-                      <Button size="sm" variant="ghost" onClick={() => void remove(r.id, `${sizeLabel(r.paperSize)} / ${COLOR_MODE_AR[r.colorMode]}`)} title="حذف">
-                        <Trash2 aria-hidden className="size-3.5 text-rose-600" />
-                      </Button>
+                      <RowActions
+                        mode="inline"
+                        actions={[{
+                          key: "delete",
+                          kind: "delete",
+                          label: "حذف",
+                          icon: Trash2,
+                          variant: "destructive",
+                          gate: { managerOnly: true },
+                          onSelect: () => void remove(r.id, `${sizeLabel(r.paperSize)} / ${COLOR_MODE_AR[r.colorMode]}`),
+                        }]}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -346,14 +356,21 @@ function ManagedListSection({
                     <td className="p-2 tabular-nums">{formatIqd(r.money)}</td>
                     <td className="p-2 text-center text-xs">{r.isActive ? "فعّال" : "معطّل"}</td>
                     <td className="p-2 text-center">
-                      <div className="flex justify-center gap-1">
-                        <Button size="sm" variant="ghost" onClick={() => startEdit(r)} title="تعديل">
-                          <Edit3 aria-hidden className="size-3.5" />
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => onUpdate({ id: r.id, isActive: !r.isActive })} disabled={busy}>
-                          {r.isActive ? "تعطيل" : "تفعيل"}
-                        </Button>
-                      </div>
+                      <RowActions
+                        mode="inline"
+                        actions={[
+                          { key: "edit", kind: "edit", label: "تعديل", icon: Edit3, gate: { managerOnly: true }, onSelect: () => startEdit(r) },
+                          {
+                            key: "toggle",
+                            kind: "approve",
+                            label: r.isActive ? "تعطيل" : "تفعيل",
+                            gate: { managerOnly: true },
+                            disabled: busy,
+                            disabledReason: "جارٍ تحديث الإعداد",
+                            onSelect: () => onUpdate({ id: r.id, isActive: !r.isActive }),
+                          },
+                        ]}
+                      />
                     </td>
                   </tr>
                 ))}

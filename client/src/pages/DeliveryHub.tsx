@@ -16,6 +16,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { printDoc } from "@/lib/printing/print";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
+import { RowActions } from "@/components/list";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 
 /**
@@ -178,17 +179,27 @@ function DispatchTab() {
                     <td className="p-3 text-left tabular-nums text-emerald-600" dir="ltr">{Number(o.deposit ?? 0) > 0 ? fmt(o.deposit) : "—"}</td>
                     <td className="p-3 text-left font-bold tabular-nums" dir="ltr">{fmt(String(cod))}</td>
                     <td className="p-3 text-center">
-                      <div className="inline-flex items-center gap-1.5">
-                        <Button size="sm" variant="outline" title="طباعة ملصق الشحن للطرد" onClick={() => void printReadyOrderLabel(o)}>
-                          <Printer aria-hidden className="size-3.5" /> ملصق
-                        </Button>
-                        {/* #26A: التسليم بعقد الخادم (cashier/manager) — accountant/auditor يصلان /delivery قراءةً فقط. */}
-                        {canDispatch ? (
-                          <Button size="sm" onClick={() => setTarget(o)}>تسليم لمندوب</Button>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">عرض فقط</span>
-                        )}
-                      </div>
+                      <RowActions
+                        mode="inline"
+                        actions={[
+                          {
+                            key: "label",
+                            kind: "print",
+                            label: "ملصق",
+                            icon: Printer,
+                            onSelect: () => void printReadyOrderLabel(o),
+                            gate: { module: "store", level: "READ" },
+                          },
+                          {
+                            key: "dispatch",
+                            kind: "approve",
+                            label: "تسليم لمندوب",
+                            hidden: !canDispatch,
+                            onSelect: () => setTarget(o),
+                            gate: { roles: ["cashier", "manager"] },
+                          },
+                        ]}
+                      />
                     </td>
                   </tr>
                 );

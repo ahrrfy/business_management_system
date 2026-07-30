@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { fmtDateTime } from "@/lib/date";
+import { RowActions } from "@/components/list";
 
 const COMPANY_NAME = "المكتبة العربية للطباعة والقرطاسية";
 
@@ -521,37 +522,39 @@ function QueueTab({
                       {row.lastReminderAt ? fmtDateTime(row.lastReminderAt) : "—"}
                     </TableCell>
                     <TableCell className="text-center whitespace-nowrap">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={!row.phone || sendingId === row.customerId}
-                        onClick={() => onSend(row)}
-                        className="me-1 inline-flex items-center gap-1"
-                        title={!row.phone ? "لا رقم هاتف مسجَّل" : "فتح واتساب مع الرسالة جاهزة + تسجيل الإرسال"}
-                      >
-                        <Send className="size-3.5" aria-hidden />
-                        أرسل
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={!row.phone || sendingViaApiId === row.customerId}
-                        onClick={() => onSendViaApi(row)}
-                        className="me-1 inline-flex items-center gap-1"
-                        title="إرسال تلقائي بقالب Meta معتمَد (خلف مفتاح الأتمتة في إعدادات المركز)"
-                      >
-                        <Bot className="size-3.5" aria-hidden />
-                        أرسل عبر API
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => onSkip(row)}
-                        className="inline-flex items-center gap-1 text-muted-foreground"
-                      >
-                        <SkipForward className="size-3.5" aria-hidden />
-                        تخطَّ
-                      </Button>
+                      <RowActions
+                        mode="menu"
+                        actions={[
+                          {
+                            key: "send",
+                            kind: "other",
+                            label: "أرسل",
+                            icon: Send,
+                            disabled: !row.phone || sendingId === row.customerId,
+                            disabledReason: !row.phone ? "لا رقم هاتف مسجّل" : "الإرسال قيد التنفيذ",
+                            onSelect: () => onSend(row),
+                            gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
+                          },
+                          {
+                            key: "send-api",
+                            kind: "other",
+                            label: "أرسل عبر API",
+                            icon: Bot,
+                            disabled: !row.phone || sendingViaApiId === row.customerId,
+                            disabledReason: !row.phone ? "لا رقم هاتف مسجّل" : "الإرسال قيد التنفيذ",
+                            onSelect: () => onSendViaApi(row),
+                            gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
+                          },
+                          {
+                            key: "skip",
+                            kind: "approve",
+                            label: "تخطَّ",
+                            icon: SkipForward,
+                            onSelect: () => onSkip(row),
+                            gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
+                          },
+                        ]}
+                      />
                     </TableCell>
                   </TableRow>
                 ))

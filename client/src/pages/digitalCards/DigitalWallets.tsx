@@ -2,7 +2,7 @@
 // الإيداع والسحب والتسوية ليست هنا (شريحة لاحقة) — هذه الشاشة تُعرّف المحفظة وتعرض رصيدها.
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
-import { RowActions } from "@/components/list";
+import { ListToolbar, RowActions } from "@/components/list";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -20,7 +20,7 @@ import { notify } from "@/lib/notify";
 import { D, fmtAr } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { AlertTriangle, Plus } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   WalletAdjustDialog, WalletMoveDialog, WalletReconcileDialog, WalletStatementDialog,
 } from "./WalletOpsDialogs";
@@ -35,6 +35,11 @@ export default function DigitalWallets() {
   const providers = trpc.digitalCards.providers.list.useQuery();
   const branches = trpc.branches.list.useQuery();
   const rows = list.data ?? [];
+  const [query, setQuery] = useState("");
+  const visibleRows = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("ar");
+    return q ? rows.filter((w) => [w.name, w.code, w.providerName, w.branchName].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
+  }, [rows, query]);
 
   // المحافظ للمزوّدين مسبقي الدفع فقط — الخادم يرفض غيرهم، والواجهة لا تعرضهم أصلاً.
   const prepaidProviders = (providers.data ?? []).filter((p) => p.settlementMode === "PREPAID" && p.isActive);
@@ -149,8 +154,29 @@ export default function DigitalWallets() {
       )}
 
       <Card>
-        <CardHeader className="text-sm text-muted-foreground">
-          {list.isLoading ? "" : `${rows.length} محفظة`}
+        <CardHeader>
+          <ListToolbar
+            title="قائمة المحافظ"
+            count={visibleRows.length}
+            loading={list.isLoading}
+            search={{ value: query, onChange: setQuery, placeholder: "المحفظة، الرمز، المزوّد أو الفرع…" }}
+            onResetFilters={() => setQuery("")}
+            onRefresh={() => { void list.refetch(); void lowBalance.refetch(); }}
+            refreshing={list.isFetching || lowBalance.isFetching}
+            onPrint={() => window.print()}
+            exportSpec={{
+              filename: "محافظ-المزودين",
+              rows: visibleRows,
+              formats: ["xlsx", "csv"],
+              columns: [
+                { key: "name", header: "المحفظة" }, { key: "code", header: "الرمز" },
+                { key: "providerName", header: "المزوّد" }, { key: "branchName", header: "الفرع" },
+                { key: "currentBalance", header: "الرصيد", money: true },
+                { key: "reservedBalance", header: "المحجوز", money: true },
+                { key: "isActive", header: "الحالة", map: (w) => w.isActive ? "مفعّلة" : "معطّلة" },
+              ],
+            }}
+          />
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
@@ -169,7 +195,7 @@ export default function DigitalWallets() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((w) => (
+                {visibleRows.map((w) => (
                   <tr key={w.id} className={`border-t ${w.isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{w.name}</td>
                     <td className="p-2 font-mono text-xs" dir="ltr">{w.code}</td>
@@ -188,18 +214,57 @@ export default function DigitalWallets() {
                     <td className="p-2 text-center">
                       <RowActions
                         actions={[
-                          { key: "deposit", label: "إيداع رصيد", onSelect: () => setMoving({ wallet: w, mode: "deposit" }) },
-                          { key: "withdraw", label: "سحب رصيد", onSelect: () => setMoving({ wallet: w, mode: "withdraw" }) },
-                          { key: "statement", label: "كشف الحساب", onSelect: () => setViewing(w) },
-                          { key: "reconcile", label: "مطابقة يومية", onSelect: () => setReconciling(w) },
-                          { key: "adjust", label: "طلب تعديل رصيد", onSelect: () => setAdjusting(w) },
-                          { key: "edit", label: "تعديل البيانات", onSelect: () => openEdit(w) },
+                          {
+                            key: "deposit",
+                            kind: "pay",
+                            label: "إيداع رصيد",
+                            onSelect: () => setMoving({ wallet: w, mode: "deposit" }),
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          },
+                          {
+                            key: "withdraw",
+                            kind: "pay",
+                            label: "سحب رصيد",
+                            onSelect: () => setMoving({ wallet: w, mode: "withdraw" }),
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          },
+                          {
+                            key: "statement",
+                            kind: "view",
+                            label: "كشف الحساب",
+                            onSelect: () => setViewing(w),
+                            gate: { roles: ["manager", "accountant", "auditor"], module: "digital_cards", level: "READ" },
+                          },
+                          {
+                            key: "reconcile",
+                            kind: "approve",
+                            label: "مطابقة يومية",
+                            onSelect: () => setReconciling(w),
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          },
+                          {
+                            key: "adjust",
+                            kind: "approve",
+                            label: "طلب تعديل رصيد",
+                            onSelect: () => setAdjusting(w),
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          },
+                          {
+                            key: "edit",
+                            kind: "edit",
+                            label: "تعديل البيانات",
+                            onSelect: () => openEdit(w),
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          },
                           {
                             key: "toggle",
+                            kind: "approve",
                             label: w.isActive ? "تعطيل" : "تفعيل",
                             variant: w.isActive ? "destructive" : "default",
                             disabled: toggleMut.isPending,
+                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
                             onSelect: () => void toggle(w),
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },
                         ]}
                       />
@@ -207,7 +272,7 @@ export default function DigitalWallets() {
                   </tr>
                 ))}
                 {list.isLoading && <tr><td colSpan={9}><LoadingState /></td></tr>}
-                {!list.isLoading && rows.length === 0 && (
+                {!list.isLoading && visibleRows.length === 0 && (
                   <TableEmptyRow colSpan={9} message="لا محافظ بعد — أضِف محفظة لكل جهاز مزوّد في كل فرع." />
                 )}
               </tbody>

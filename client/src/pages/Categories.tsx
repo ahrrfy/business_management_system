@@ -261,17 +261,39 @@ export default function Categories() {
                     <td className="p-2 text-center">
                       <RowActions
                         actions={[
-                          { key: "edit", label: "تعديل", onSelect: () => openEdit(c) },
-                          { key: "addChild", label: "+ قسم فرعي", onSelect: () => openAdd(c.id), hidden: isChild },
+                          {
+                            key: "edit",
+                            kind: "edit",
+                            label: "تعديل",
+                            onSelect: () => openEdit(c),
+                            gate: { roles: ["manager"], module: "products", level: "FULL" },
+                          },
+                          {
+                            key: "addChild",
+                            kind: "create",
+                            label: "+ قسم فرعي",
+                            onSelect: () => openAdd(c.id),
+                            hidden: isChild,
+                            gate: { roles: ["manager"], module: "products", level: "FULL" },
+                          },
                           {
                             key: "products",
+                            kind: "view",
                             label: "عرض منتجاتها",
                             // /products هو Redirect ثابت لـ/inventory?tab=products يُسقِط أي querystring
                             // أصلي (App.tsx) — الرابط المباشر لتبويب المخزون يحافظ على فلتر الفئة.
                             href: `/inventory?tab=products&category=${c.id}`,
                             hidden: c.productCount === 0 && (isChild || kids.length === 0),
+                            gate: { module: "products", level: "READ" },
                           },
-                          { key: "delete", label: "حذف", variant: "destructive", onSelect: () => openDelete(c) },
+                          {
+                            key: "delete",
+                            kind: "delete",
+                            label: "حذف",
+                            variant: "destructive",
+                            onSelect: () => openDelete(c),
+                            gate: { roles: ["manager"], module: "products", level: "FULL" },
+                          },
                         ]}
                       />
                     </td>

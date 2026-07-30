@@ -1,4 +1,4 @@
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
@@ -13,8 +13,10 @@ import { fmtDateTime } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printShiftClose } from "@/lib/printing/print";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Check, Copy, Lock, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -32,6 +34,11 @@ const STATUS_CLS: Record<string, string> = {
   OPEN: "badge-status-pending",
   CLOSED: "badge-status-active",
 };
+const SHIFT_TYPE_LABEL: Record<string, string> = {
+  RETAIL: "تجزئة",
+  RECEPTION: "استقبال",
+  PRINT_SERVICES: "خدمات طباعة",
+};
 
 const fmtDT = (d: string | number | Date | null | undefined) =>
   fmtDateTime(d);
@@ -40,8 +47,12 @@ const fmtDT = (d: string | number | Date | null | undefined) =>
 type Row = RouterOutputs["shifts"]["list"]["rows"][number];
 
 export default function Shifts() {
+  const [query, setQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(query.trim(), 250);
   const [branchId, setBranchId] = useState<number | "">("");
   const [status, setStatus] = useState<"" | "OPEN" | "CLOSED">("");
+  const [shiftType, setShiftType] = useState<"" | "RETAIL" | "RECEPTION" | "PRINT_SERVICES">("");
+  const [varianceState, setVarianceState] = useState<"" | "WITH_VARIANCE" | "MATCHED" | "UNRECONCILED">("");
   // فلتر الفترة خادمي (openedAt) — أسماء dateFrom/dateTo لتفادي تصادم from/to الترقيم أدناه.
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -61,6 +72,9 @@ export default function Shifts() {
   const list = trpc.shifts.list.useQuery({
     branchId: branchId ? Number(branchId) : undefined,
     status: status || undefined,
+    shiftType: shiftType || undefined,
+    varianceState: varianceState || undefined,
+    q: debouncedQuery || undefined,
     from: dateFrom || undefined,
     to: dateTo || undefined,
     limit: PAGE,
@@ -218,7 +232,72 @@ export default function Shifts() {
     }
   }
 
-  const anyFilter = branchId !== "" || status !== "" || dateFrom !== "" || dateTo !== "";
+  const activeFilterCount = [branchId, status, shiftType, varianceState, dateFrom, dateTo]
+    .filter((value) => value !== "").length;
+  const anyFilter = query.trim() !== "" || activeFilterCount > 0;
+
+  function resetFilters() {
+    setQuery("");
+    setBranchId("");
+    setStatus("");
+    setShiftType("");
+    setVarianceState("");
+    setDateFrom("");
+    setDateTo("");
+    setPage(0);
+  }
+
+  function printVisibleShifts() {
+    const filterLabels = [
+      query.trim() ? `بحث: ${query.trim()}` : null,
+      status ? `الحالة: ${STATUS_LABEL[status]}` : null,
+      shiftType ? `النوع: ${SHIFT_TYPE_LABEL[shiftType]}` : null,
+      varianceState === "WITH_VARIANCE"
+        ? "المطابقة: بفرق نقدي"
+        : varianceState === "MATCHED"
+          ? "المطابقة: مطابقة"
+          : varianceState === "UNRECONCILED"
+            ? "المطابقة: غير محسوبة"
+            : null,
+    ].filter(Boolean).join(" · ");
+
+    const opened = printReportDoc({
+      title: "سجلّ الورديات",
+      headerExtra: [
+        { label: "الفرع", value: branchId ? branchName(Number(branchId)) : "كل الفروع" },
+        {
+          label: "الفترة",
+          value: dateFrom || dateTo ? `${dateFrom || "البداية"} — ${dateTo || "اليوم"}` : "كل الفترات",
+        },
+        { label: "نطاق الطباعة", value: total === 0 ? "لا نتائج" : `${from}–${to} من ${total}` },
+        ...(filterLabels ? [{ label: "الفلاتر", value: filterLabels }] : []),
+      ],
+      note: "تطبع هذه النسخة الصفحة المعروضة المطابقة للفلاتر. استخدم تصدير Excel للحصول على جميع الصفوف المطابقة.",
+      columns: [
+        { key: "id", label: "#" },
+        { key: "employee", label: "الموظف" },
+        { key: "type", label: "النوع" },
+        { key: "branch", label: "الفرع" },
+        { key: "opened", label: "فُتحت" },
+        { key: "closed", label: "أُغلقت" },
+        { key: "expected", label: "المتوقع", align: "left" },
+        { key: "variance", label: "الفرق", align: "left" },
+        { key: "status", label: "الحالة" },
+      ],
+      rows: rows.map((row) => ({
+        id: String(row.id),
+        employee: row.userName ?? `#${row.userId}`,
+        type: SHIFT_TYPE_LABEL[row.shiftType] ?? row.shiftType,
+        branch: branchName(row.branchId),
+        opened: fmtDT(row.openedAt),
+        closed: fmtDT(row.closedAt),
+        expected: row.expectedCash != null ? fmt(row.expectedCash) : "—",
+        variance: row.variance != null ? fmt(row.variance) : "—",
+        status: STATUS_LABEL[row.status] ?? row.status,
+      })),
+    });
+    if (!opened) notify.err("حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
+  }
   const from = total === 0 ? 0 : page * PAGE + 1;
   const to = Math.min((page + 1) * PAGE, total);
 
@@ -235,21 +314,86 @@ export default function Shifts() {
             title="الورديات"
             count={total}
             loading={list.isLoading}
+            search={{
+              value: query,
+              onChange: (value) => setFilter(setQuery, value),
+              placeholder: "اسم الموظف أو رقم الوردية…",
+              ariaLabel: "البحث في الورديات باسم الموظف أو رقم الوردية",
+            }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetFilters}
+            onRefresh={() => void list.refetch()}
+            refreshing={list.isFetching}
+            onPrint={printVisibleShifts}
+            printLabel="طباعة القائمة"
+            printDisabled={rows.length === 0}
             filters={
               <>
-                <select className={selectCls} value={status} onChange={(e) => setFilter(setStatus, e.target.value as "" | "OPEN" | "CLOSED")}>
-                  <option value="">— كل الحالات —</option>
-                  <option value="OPEN">مفتوحة</option>
-                  <option value="CLOSED">مغلقة</option>
-                </select>
-                <select className={selectCls} value={branchId} onChange={(e) => setFilter(setBranchId, e.target.value ? Number(e.target.value) : "")}>
-                  <option value="">— كل الفروع —</option>
-                  {(branches.data ?? []).map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-                <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => setFilter(setDateFrom, e.target.value)} title="من تاريخ" />
-                <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => setFilter(setDateTo, e.target.value)} title="إلى تاريخ" />
+                <FilterField label="الحالة">
+                  <select className={selectCls} value={status} onChange={(e) => setFilter(setStatus, e.target.value as "" | "OPEN" | "CLOSED")}>
+                    <option value="">الكل</option>
+                    <option value="OPEN">مفتوحة</option>
+                    <option value="CLOSED">مغلقة</option>
+                  </select>
+                </FilterField>
+                <FilterField label="نوع الوردية">
+                  <select
+                    className={selectCls}
+                    value={shiftType}
+                    onChange={(e) => setFilter(setShiftType, e.target.value as "" | "RETAIL" | "RECEPTION" | "PRINT_SERVICES")}
+                  >
+                    <option value="">الكل</option>
+                    <option value="RETAIL">تجزئة</option>
+                    <option value="RECEPTION">استقبال</option>
+                    <option value="PRINT_SERVICES">خدمات طباعة</option>
+                  </select>
+                </FilterField>
+                <FilterField label="المطابقة النقدية">
+                  <select
+                    className={selectCls}
+                    value={varianceState}
+                    onChange={(e) => setFilter(setVarianceState, e.target.value as "" | "WITH_VARIANCE" | "MATCHED" | "UNRECONCILED")}
+                  >
+                    <option value="">الكل</option>
+                    <option value="WITH_VARIANCE">بفرق نقدي</option>
+                    <option value="MATCHED">مطابقة</option>
+                    <option value="UNRECONCILED">غير محسوبة</option>
+                  </select>
+                </FilterField>
+                <FilterField label="الفرع">
+                  <select className={selectCls} value={branchId} onChange={(e) => setFilter(setBranchId, e.target.value ? Number(e.target.value) : "")}>
+                    <option value="">كل الفروع</option>
+                    {(branches.data ?? []).map((b) => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
+                </FilterField>
+                <FilterField label="من تاريخ">
+                  <Input
+                    type="date"
+                    dir="ltr"
+                    className="h-8 w-36"
+                    value={dateFrom}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setFilter(setDateFrom, value);
+                      if (value && dateTo && value > dateTo) setDateTo(value);
+                    }}
+                  />
+                </FilterField>
+                <FilterField label="إلى تاريخ">
+                  <Input
+                    type="date"
+                    dir="ltr"
+                    className="h-8 w-36"
+                    value={dateTo}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setFilter(setDateTo, value);
+                      if (value && dateFrom && value < dateFrom) setDateFrom(value);
+                    }}
+                  />
+                </FilterField>
               </>
             }
             exportSpec={{
@@ -263,6 +407,9 @@ export default function Shifts() {
                       .fetch({
                         branchId: branchId ? Number(branchId) : undefined,
                         status: status || undefined,
+                        shiftType: shiftType || undefined,
+                        varianceState: varianceState || undefined,
+                        q: debouncedQuery || undefined,
                         from: dateFrom || undefined,
                         to: dateTo || undefined,
                         limit,
@@ -275,6 +422,7 @@ export default function Shifts() {
                 { key: "id", header: "رقم الوردية" },
                 { key: "userName", header: "الموظف", map: (r) => r.userName ?? `#${r.userId}` },
                 { key: "branch", header: "الفرع", map: (r) => branchName(r.branchId) },
+                { key: "shiftType", header: "نوع الوردية", map: (r) => SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType },
                 { key: "openedAt", header: "فُتحت", map: (r) => fmtDT(r.openedAt) },
                 { key: "closedAt", header: "أُغلقت", map: (r) => fmtDT(r.closedAt) },
                 { key: "openingBalance", header: "الافتتاحي", map: (r) => Number(r.openingBalance ?? 0) },
@@ -294,6 +442,7 @@ export default function Shifts() {
                 <th className="p-2">#</th>
                 <th className="p-2">الموظف</th>
                 <th className="p-2">الفرع</th>
+                <th className="p-2">النوع</th>
                 <th className="p-2">فُتحت</th>
                 <th className="p-2">أُغلقت</th>
                 <th className="p-2 text-right">الافتتاحي</th>
@@ -310,6 +459,7 @@ export default function Shifts() {
                   <td className="p-2 tabular-nums" dir="ltr">{r.id}</td>
                   <td className="p-2 font-medium">{r.userName ?? `#${r.userId}`}</td>
                   <td className="p-2">{branchName(r.branchId)}</td>
+                  <td className="p-2 whitespace-nowrap text-xs">{SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType}</td>
                   <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDT(r.openedAt)}</td>
                   <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDT(r.closedAt)}</td>
                   <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.openingBalance)}</td>
@@ -330,24 +480,32 @@ export default function Shifts() {
                       actions={[
                         {
                           key: "zreport",
+                          kind: "print",
                           label: printing === r.id ? "جارٍ…" : "Z-report",
                           icon: Printer,
                           disabled: printing === r.id,
+                          disabledReason: "التقرير قيد التحضير",
                           onSelect: () => void reprintZ(r.id),
+                          gate: { module: "treasury", level: "READ" },
                         },
                         {
                           key: "copy",
+                          kind: "export",
                           label: copying === r.id ? "جارٍ…" : "نسخ",
                           icon: Copy,
                           disabled: copying === r.id,
+                          disabledReason: "الملخص قيد التحضير",
                           onSelect: () => void copyZ(r.id),
+                          gate: { module: "treasury", level: "READ" },
                         },
                         {
                           key: "close",
+                          kind: "reverse",
                           label: "إغلاق",
                           icon: Lock,
                           hidden: r.status !== "OPEN" || !isElevated,
                           onSelect: () => openCloseDialog(r.id),
+                          gate: { roles: ["cashier", "manager"], module: "treasury", level: "READ" },
                         },
                       ]}
                     />
@@ -356,12 +514,12 @@ export default function Shifts() {
               ))}
               {!list.isLoading && rows.length === 0 && (
                 <TableEmptyRow
-                  colSpan={11}
+                  colSpan={12}
                   message={total === 0 && !anyFilter ? "لا ورديات بعد. تُفتح الورديات من نقطة البيع." : "لا ورديات مطابقة. غيّر الفلتر."}
                 />
               )}
               {list.isLoading && (
-                <tr><td colSpan={11}><LoadingState /></td></tr>
+                <tr><td colSpan={12}><LoadingState /></td></tr>
               )}
             </tbody>
           </table>

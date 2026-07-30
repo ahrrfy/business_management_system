@@ -173,9 +173,11 @@ export default function SalesReturns() {
                       actions={[
                         {
                           key: "invoice",
+                          kind: "view",
                           label: "عرض الفاتورة الأصلية",
                           href: `/invoices/${r.invoiceId}`,
                           hidden: !r.invoiceId,
+                          gate: { module: "sales", level: "READ" },
                         },
                       ]}
                     />

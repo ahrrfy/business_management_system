@@ -178,15 +178,19 @@ export default function PurchaseReturns() {
                       actions={[
                         {
                           key: "po",
+                          kind: "view",
                           label: "فتح أمر الشراء",
                           href: `/purchases/${r.purchaseOrderId}/receive`,
                           hidden: r.purchaseOrderId == null,
+                          gate: { module: "purchases", level: "READ" },
                         },
                         {
                           key: "stmt",
+                          kind: "view",
                           label: "كشف حساب المورد",
                           href: `/suppliers-statement?id=${r.supplierId}`,
                           hidden: r.supplierId == null,
+                          gate: { module: "suppliers", level: "READ" },
                         },
                       ]}
                     />

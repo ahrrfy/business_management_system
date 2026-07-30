@@ -12,6 +12,8 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { RowActions } from "@/components/list/RowActions";
+import { ListToolbar } from "@/components/list/ListToolbar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
@@ -48,6 +50,7 @@ function EmpCell({ name, color, photoUrl }: { name: string; color?: string | nul
 
 export default function Promotions() {
   const [tab, setTab] = useState("promotions");
+  const [query, setQuery] = useState("");
   const utils = trpc.useUtils();
 
   const promotions = trpc.promotions.listPromotions.useQuery();
@@ -125,6 +128,14 @@ export default function Promotions() {
 
   const promoRows = promotions.data ?? [];
   const termRows = terminations.data ?? [];
+  const filteredPromos = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("ar");
+    return q ? promoRows.filter((p) => [p.employeeName, p.fromTitle, p.toTitle, p.reason, promoStatusLabel(p.status)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : promoRows;
+  }, [promoRows, query]);
+  const filteredTerms = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("ar");
+    return q ? termRows.filter((t) => [t.employeeName, t.terminationType, t.reason, termStatusLabel(t.status)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : termRows;
+  }, [termRows, query]);
 
   return (
     <div className="space-y-4">
@@ -149,6 +160,29 @@ export default function Promotions() {
         {/* ===== الترقيات ===== */}
         <TabsContent value="promotions">
           <Card>
+            <CardHeader>
+              <ListToolbar
+                title="سجل الترقيات"
+                count={filteredPromos.length}
+                loading={promotions.isLoading}
+                search={{ value: query, onChange: setQuery, placeholder: "الموظف، المسمّى، السبب أو الحالة…" }}
+                onResetFilters={() => setQuery("")}
+                onRefresh={() => void promotions.refetch()}
+                refreshing={promotions.isFetching}
+                onPrint={() => window.print()}
+                exportSpec={{
+                  filename: "ترقيات-الموظفين",
+                  rows: filteredPromos,
+                  formats: ["xlsx", "csv"],
+                  columns: [
+                    { key: "employeeName", header: "الموظف" }, { key: "fromTitle", header: "من مسمّى" },
+                    { key: "toTitle", header: "إلى مسمّى" }, { key: "fromSalary", header: "الراتب السابق", money: true },
+                    { key: "toSalary", header: "الراتب الجديد", money: true }, { key: "effectiveDate", header: "التاريخ" },
+                    { key: "reason", header: "السبب" }, { key: "status", header: "الحالة", map: (p) => promoStatusLabel(p.status) },
+                  ],
+                }}
+              />
+            </CardHeader>
             <CardContent className="p-0">
               <ScrollTableShell bordered={false}>
                 <table className="w-full text-sm">
@@ -165,7 +199,7 @@ export default function Promotions() {
                     </tr>
                   </thead>
                   <tbody>
-                    {promoRows.map((p) => (
+                    {filteredPromos.map((p) => (
                       <tr key={p.id} className="border-t hover:bg-accent/40">
                         <td className="p-2"><EmpCell name={p.employeeName} color={p.colorTag} photoUrl={p.photoUrl} /></td>
                         <td className="p-2 text-xs text-muted-foreground">{p.fromTitle ?? "—"}</td>
@@ -178,13 +212,22 @@ export default function Promotions() {
                         <td className="p-2 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${promoStatusCls[p.status] ?? "bg-muted text-muted-foreground"}`}>{promoStatusLabel(p.status)}</span></td>
                         <td className="p-2 text-center">
                           {p.status === "pending" ? (
-                            <Button size="sm" variant="outline" className="h-7 text-emerald-600" disabled={approvePromo.isPending} onClick={async () => {
-                              if (!(await confirm({ variant: "warning", title: "اعتماد الترقية", description: `اعتماد ترقية «${p.employeeName}» إلى «${p.toTitle}» يحدّث بيانات الموظف المالية. متابعة؟`, confirmText: "اعتماد" }))) return;
-                              approvePromo.mutate({ id: p.id });
-                            }}>اعتماد</Button>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
-                          )}
+                            <RowActions
+                              mode="inline"
+                              actions={[{
+                                key: "approve",
+                                kind: "approve",
+                                label: "اعتماد",
+                                gate: { module: "hr", level: "FULL" },
+                                disabled: approvePromo.isPending,
+                                disabledReason: "جارٍ اعتماد الترقية",
+                                onSelect: async () => {
+                                  if (!(await confirm({ variant: "warning", title: "اعتماد الترقية", description: `اعتماد ترقية «${p.employeeName}» إلى «${p.toTitle}» يحدّث بيانات الموظف المالية. متابعة؟`, confirmText: "اعتماد" }))) return;
+                                  approvePromo.mutate({ id: p.id });
+                                },
+                              }]}
+                            />
+                          ) : <span className="text-xs text-muted-foreground">—</span>}
                         </td>
                       </tr>
                     ))}
@@ -194,7 +237,7 @@ export default function Promotions() {
                     {promotions.isError && (
                       <tr><td colSpan={8}><ErrorState message="تعذّر تحميل الترقيات." onRetry={() => promotions.refetch()} /></td></tr>
                     )}
-                    {!promotions.isLoading && !promotions.isError && promoRows.length === 0 && (
+                    {!promotions.isLoading && !promotions.isError && filteredPromos.length === 0 && (
                       <TableEmptyRow colSpan={8} message="لا ترقيات مسجّلة بعد." />
                     )}
                   </tbody>
@@ -217,6 +260,28 @@ export default function Promotions() {
             </CardContent></Card>
           ) : (
             <Card>
+              <CardHeader>
+                <ListToolbar
+                  title="سجل إنهاء الخدمات"
+                  count={filteredTerms.length}
+                  loading={terminations.isLoading}
+                  search={{ value: query, onChange: setQuery, placeholder: "الموظف، نوع الإنهاء، السبب أو الحالة…" }}
+                  onResetFilters={() => setQuery("")}
+                  onRefresh={() => void terminations.refetch()}
+                  refreshing={terminations.isFetching}
+                  onPrint={() => window.print()}
+                  exportSpec={{
+                    filename: "إنهاء-الخدمات",
+                    rows: filteredTerms,
+                    formats: ["xlsx", "csv"],
+                    columns: [
+                      { key: "employeeName", header: "الموظف" }, { key: "terminationType", header: "نوع الإنهاء" },
+                      { key: "lastDay", header: "آخر يوم" }, { key: "settlement", header: "التسوية", money: true },
+                      { key: "reason", header: "السبب" }, { key: "status", header: "الحالة", map: (t) => termStatusLabel(t.status) },
+                    ],
+                  }}
+                />
+              </CardHeader>
               <CardContent className="p-0">
                 <ScrollTableShell bordered={false}>
                   <table className="w-full text-sm">
@@ -232,7 +297,7 @@ export default function Promotions() {
                       </tr>
                     </thead>
                     <tbody>
-                      {termRows.map((t) => (
+                      {filteredTerms.map((t) => (
                         <tr key={t.id} className="border-t hover:bg-accent/40">
                           <td className="p-2"><EmpCell name={t.employeeName} color={t.colorTag} photoUrl={t.photoUrl} /></td>
                           <td className="p-2 text-[13px]">{t.terminationType}</td>
@@ -242,13 +307,22 @@ export default function Promotions() {
                           <td className="p-2 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${termStatusCls[t.status] ?? "bg-muted text-muted-foreground"}`}>{termStatusLabel(t.status)}</span></td>
                           <td className="p-2 text-center">
                             {t.status === "pending" ? (
-                              <Button size="sm" variant="outline" className="h-7" disabled={completeTerm.isPending} onClick={async () => {
-                                if (!(await confirm({ variant: "danger", title: "إكمال إنهاء الخدمة", description: `إنهاء خدمة «${t.employeeName}» نهائي، سيُستثنى الموظف من المسيّرات. اكتب «إنهاء الخدمة» للتأكيد.`, confirmText: "إنهاء الخدمة", requireText: "إنهاء الخدمة" }))) return;
-                                completeTerm.mutate({ id: t.id });
-                              }}>إكمال</Button>
-                            ) : (
-                              <span className="text-xs text-muted-foreground">—</span>
-                            )}
+                              <RowActions
+                                mode="inline"
+                                actions={[{
+                                  key: "complete",
+                                  kind: "approve",
+                                  label: "إكمال",
+                                  gate: { module: "hr", level: "FULL" },
+                                  disabled: completeTerm.isPending,
+                                  disabledReason: "جارٍ إكمال إنهاء الخدمة",
+                                  onSelect: async () => {
+                                    if (!(await confirm({ variant: "danger", title: "إكمال إنهاء الخدمة", description: `إنهاء خدمة «${t.employeeName}» نهائي، سيُستثنى الموظف من المسيّرات. اكتب «إنهاء الخدمة» للتأكيد.`, confirmText: "إنهاء الخدمة", requireText: "إنهاء الخدمة" }))) return;
+                                    completeTerm.mutate({ id: t.id });
+                                  },
+                                }]}
+                              />
+                            ) : <span className="text-xs text-muted-foreground">—</span>}
                           </td>
                         </tr>
                       ))}

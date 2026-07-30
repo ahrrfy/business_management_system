@@ -285,15 +285,19 @@ export default function Expenses() {
                       actions={[
                         {
                           key: "print",
+                          kind: "print",
                           label: "طباعة إيصال صرف",
                           onSelect: () => void printExpenseReceipt(r),
+                          gate: { module: "expenses", level: "READ" },
                         },
                         {
                           key: "cancel",
+                          kind: "reverse",
                           label: "إلغاء",
                           variant: "destructive",
                           hidden: r.status !== "ACTIVE" || !canCancel, // لا حذف صلب — الإلغاء يعكس الصندوق؛ الزرّ للمدير (مرآة الخادم)
                           disabled: cancel.isPending,
+                          disabledReason: "توجد عملية إلغاء قيد التنفيذ",
                           onSelect: () => void (async () => {
                             if (!(await confirm({
                               variant: "warning",
@@ -306,6 +310,7 @@ export default function Expenses() {
                             }))) return;
                             cancel.mutate({ expenseId: Number(r.id) });
                           })(),
+                          gate: { roles: ["manager"], module: "expenses", level: "FULL" },
                         },
                       ]}
                     />

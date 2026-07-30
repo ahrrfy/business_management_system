@@ -11,6 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { RowActions } from "@/components/list/RowActions";
+import { ListToolbar } from "@/components/list/ListToolbar";
 import { ErrorState, LoadingState, TableEmptyRow } from "@/components/PageState";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -117,6 +119,11 @@ export default function HrDevices() {
   });
 
   const devices = list.data ?? [];
+  const [query, setQuery] = useState("");
+  const visibleDevices = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("ar");
+    return q ? devices.filter((d) => [d.name, d.serialNumber, d.branchName, d.location, d.model, d.status].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : devices;
+  }, [devices, query]);
   const total = devices.length;
   const connectedEver = devices.filter((d) => d.lastHandshakeAt).length;
   const pct = total > 0 ? Math.round((connectedEver / total) * 100) : 0;
@@ -261,7 +268,27 @@ export default function HrDevices() {
       {/* جدول الأجهزة */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">الأجهزة ({total})</CardTitle>
+          <ListToolbar
+            title="أجهزة الحضور"
+            count={visibleDevices.length}
+            loading={list.isLoading}
+            search={{ value: query, onChange: setQuery, placeholder: "الجهاز، التسلسل، الفرع، الموقع أو الطراز…" }}
+            onResetFilters={() => setQuery("")}
+            onRefresh={() => void refresh()}
+            refreshing={list.isFetching || bridge.isFetching}
+            onPrint={() => window.print()}
+            exportSpec={{
+              filename: "أجهزة-الحضور",
+              rows: visibleDevices,
+              formats: ["xlsx", "csv"],
+              columns: [
+                { key: "name", header: "الجهاز" }, { key: "serialNumber", header: "الرقم التسلسلي" },
+                { key: "branchName", header: "الفرع" }, { key: "location", header: "الموقع" },
+                { key: "model", header: "الطراز" }, { key: "status", header: "الحالة" },
+                { key: "lastSeenAt", header: "آخر إشارة" }, { key: "recordsCount", header: "السجلات" },
+              ],
+            }}
+          />
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
@@ -278,7 +305,7 @@ export default function HrDevices() {
                 </tr>
               </thead>
               <tbody>
-                {devices.map((d) => {
+                {visibleDevices.map((d) => {
                   const online = d.status === "online";
                   return (
                     <tr key={d.id} className="border-t hover:bg-accent/50 transition">
@@ -336,56 +363,17 @@ export default function HrDevices() {
                         )}
                       </td>
                       <td className="p-2 text-left">
-                        <div className="flex items-center gap-1 justify-end flex-wrap">
-                          {!d.enabled && (
-                            <Button
-                              size="sm"
-                              disabled={approve.isPending}
-                              onClick={() => approve.mutate({ id: d.id })}
-                            >
-                              <BadgeCheck className="size-3.5" /> اعتماد
-                            </Button>
-                          )}
-                          {d.enabled && (
-                            <>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                title="ربط مستخدمي الجهاز بالموظفين"
-                                onClick={() => setMapDeviceId(d.id)}
-                              >
-                                <Link2 className="size-3.5" /> الربط
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                title="سحب كل سجل الجهاز التاريخي"
-                                disabled={command.isPending}
-                                onClick={() => command.mutate({ deviceId: d.id, cmd: "getalllog" })}
-                              >
-                                <DownloadCloud className="size-3.5" /> سحب السجل
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                title="سحب قائمة المستخدمين وقوالبهم"
-                                disabled={command.isPending}
-                                onClick={() => command.mutate({ deviceId: d.id, cmd: "getuserlist" })}
-                              >
-                                <Users className="size-3.5" /> المستخدمون
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                title="مزامنة ساعة الجهاز مع الخادم"
-                                disabled={command.isPending}
-                                onClick={() => command.mutate({ deviceId: d.id, cmd: "settime" })}
-                              >
-                                <Clock3 className="size-3.5" /> الوقت
-                              </Button>
-                            </>
-                          )}
-                        </div>
+                        <RowActions
+                          mode="menu"
+                          align="start"
+                          actions={[
+                            { key: "approve", kind: "approve", label: "اعتماد", icon: BadgeCheck, hidden: d.enabled, gate: { module: "hr", level: "FULL" }, disabled: approve.isPending, disabledReason: "جارٍ اعتماد الجهاز", onSelect: () => approve.mutate({ id: d.id }) },
+                            { key: "map", kind: "edit", label: "ربط المستخدمين بالموظفين", icon: Link2, hidden: !d.enabled, gate: { module: "hr", level: "FULL" }, onSelect: () => setMapDeviceId(d.id) },
+                            { key: "logs", kind: "export", label: "سحب السجل", icon: DownloadCloud, hidden: !d.enabled, gate: { module: "hr", level: "FULL" }, disabled: command.isPending, disabledReason: "الجهاز ينفّذ أمراً آخر", onSelect: () => command.mutate({ deviceId: d.id, cmd: "getalllog" }) },
+                            { key: "users", kind: "export", label: "سحب المستخدمين", icon: Users, hidden: !d.enabled, gate: { module: "hr", level: "FULL" }, disabled: command.isPending, disabledReason: "الجهاز ينفّذ أمراً آخر", onSelect: () => command.mutate({ deviceId: d.id, cmd: "getuserlist" }) },
+                            { key: "time", kind: "edit", label: "مزامنة الوقت", icon: Clock3, hidden: !d.enabled, gate: { module: "hr", level: "FULL" }, disabled: command.isPending, disabledReason: "الجهاز ينفّذ أمراً آخر", onSelect: () => command.mutate({ deviceId: d.id, cmd: "settime" }) },
+                          ]}
+                        />
                       </td>
                     </tr>
                   );
@@ -397,7 +385,7 @@ export default function HrDevices() {
                     </td>
                   </tr>
                 )}
-                {!list.isLoading && !list.isError && devices.length === 0 && (
+                {!list.isLoading && !list.isError && visibleDevices.length === 0 && (
                   <TableEmptyRow
                     colSpan={7}
                     message="لا أجهزة بعد. أضف جهازاً برقمه التسلسلي، أو وجّهه لخادمك وسيظهر هنا بانتظار الاعتماد."

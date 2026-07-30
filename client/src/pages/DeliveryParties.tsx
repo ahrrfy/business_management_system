@@ -15,6 +15,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { printDeliveryPartyStmt } from "@/lib/printing/printTemplates";
+import { RowActions } from "@/components/list";
 
 type Party = RouterOutputs["delivery"]["listParties"][number];
 
@@ -124,11 +125,39 @@ export default function DeliveryParties() {
                       <td className="p-3 text-center">{ageBadge(ageDays(p.oldestOutstanding))}</td>
                       <td className="p-3 text-center">{p.isActive ? <Badge variant="secondary">نشط</Badge> : <Badge variant="outline">معطّل</Badge>}</td>
                       <td className="p-3 text-center">
-                        <div className="inline-flex gap-1.5">
-                          <Button size="sm" variant="ghost" onClick={() => printStatement(p)}>كشف</Button>
-                          {canSettle && <Button size="sm" variant="outline" onClick={() => setSettleFor(p)} disabled={bal <= 0}>تسوية</Button>}
-                          {isManager && <Button size="sm" variant="outline" className="text-destructive" onClick={() => setWriteOffFor(p)} disabled={bal <= 0}>شطب</Button>}
-                        </div>
+                        <RowActions
+                          mode="menu"
+                          actions={[
+                            {
+                              key: "statement",
+                              kind: "print",
+                              label: "كشف",
+                              onSelect: () => printStatement(p),
+                              gate: { module: "store", level: "READ" },
+                            },
+                            {
+                              key: "settle",
+                              kind: "pay",
+                              label: "تسوية",
+                              hidden: !canSettle,
+                              disabled: bal <= 0,
+                              disabledReason: "لا يوجد رصيد قابل للتسوية",
+                              onSelect: () => setSettleFor(p),
+                              gate: { roles: ["cashier", "manager"] },
+                            },
+                            {
+                              key: "write-off",
+                              kind: "reverse",
+                              label: "شطب",
+                              variant: "destructive",
+                              hidden: !isManager,
+                              disabled: bal <= 0,
+                              disabledReason: "لا يوجد عجز قابل للشطب",
+                              onSelect: () => setWriteOffFor(p),
+                              gate: { managerOnly: true },
+                            },
+                          ]}
+                        />
                       </td>
                     </tr>
                   );

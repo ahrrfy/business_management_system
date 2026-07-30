@@ -18,7 +18,7 @@ import {
 } from "@/lib/permissionsModel";
 import { trpc } from "@/lib/trpc";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ROLE_OPTIONS } from "@/pages/Users";
+import { ROLE_OPTIONS } from "@/lib/roles";
 import { EffectiveAccessForAssignment } from "@/components/form/EffectiveAccessPreview";
 import { AlertTriangle, Check, Zap } from "lucide-react";
 

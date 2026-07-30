@@ -31,6 +31,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { RowActions } from "@/components/list";
 import {
   Dialog,
   DialogContent,
@@ -272,9 +273,17 @@ function DueSoonSection({ rows, isLoading, onPay }: { rows: DueRow[]; isLoading:
                     )}
                   </TableCell>
                   <TableCell className="text-center">
-                    <Button size="sm" variant="outline" className="gap-1" onClick={() => onPay(r)}>
-                      <CircleDollarSign className="size-3.5" aria-hidden /> سداد
-                    </Button>
+                    <RowActions
+                      mode="inline"
+                      actions={[{
+                        key: "pay",
+                        kind: "pay",
+                        label: "سداد",
+                        icon: CircleDollarSign,
+                        onSelect: () => onPay(r),
+                        gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                      }]}
+                    />
                   </TableCell>
                 </TableRow>
               ))}
@@ -782,16 +791,30 @@ function PlanDetailDialog({
                         {l.note ?? ""}
                       </TableCell>
                       <TableCell className="text-center whitespace-nowrap">
-                        {p.status === "ACTIVE" && (l.status === "PENDING" || l.status === "BOUNCED") && (
-                          <Button size="sm" variant="outline" className="me-1 gap-1" onClick={() => onPay(l)}>
-                            <CircleDollarSign className="size-3.5" aria-hidden /> سداد
-                          </Button>
-                        )}
-                        {p.status !== "CANCELLED" && l.kind === "CHECK" && (l.status === "PENDING" || l.status === "PAID") && (
-                          <Button size="sm" variant="ghost" className="gap-1 text-destructive" onClick={() => setBounceTarget(l)}>
-                            <Undo2 className="size-3.5" aria-hidden /> ارتجاع
-                          </Button>
-                        )}
+                        <RowActions
+                          mode="inline"
+                          actions={[
+                            {
+                              key: "pay",
+                              kind: "pay",
+                              label: "سداد",
+                              icon: CircleDollarSign,
+                              hidden: p.status !== "ACTIVE" || (l.status !== "PENDING" && l.status !== "BOUNCED"),
+                              onSelect: () => onPay(l),
+                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                            },
+                            {
+                              key: "bounce",
+                              kind: "reverse",
+                              label: "ارتجاع",
+                              icon: Undo2,
+                              variant: "destructive",
+                              hidden: p.status === "CANCELLED" || l.kind !== "CHECK" || (l.status !== "PENDING" && l.status !== "PAID"),
+                              onSelect: () => setBounceTarget(l),
+                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                            },
+                          ]}
+                        />
                       </TableCell>
                     </TableRow>
                   ))}

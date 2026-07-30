@@ -422,9 +422,16 @@ export default function Products() {
                       {/* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً */}
                       <RowActions
                         actions={[
-                          { key: "edit", label: "تعديل", href: `/products/${r.productId}/edit` },
+                          {
+                            key: "edit",
+                            kind: "edit",
+                            label: "تعديل",
+                            href: `/products/${r.productId}/edit`,
+                            gate: { roles: ["manager"], module: "products", level: "FULL" },
+                          },
                           {
                             key: "label",
+                            kind: "print",
                             label: "طباعة ملصق باركود",
                             hidden: !r.barcode, // بلا باركود = لا ملصق (Code128 يحتاج قيمة)
                             onSelect: () =>
@@ -436,26 +443,34 @@ export default function Products() {
                                   barcode: r.barcode ?? "",
                                 },
                               ]),
+                            gate: { module: "products", level: "READ" },
                           },
                           {
                             key: "moves",
+                            kind: "view",
                             label: "حركات المنتج",
                             hidden: !r.sku,
                             // شاشة الحركات تقرأ ?q= من URL (نمط CustomerStatement) فتفتح مفلترة على SKU.
                             href: `/inventory-movements?q=${encodeURIComponent(r.sku ?? "")}`,
+                            gate: { module: "inventory", level: "READ" },
                           },
                           {
                             key: "toggle",
+                            kind: "approve",
                             label: r.productIsActive ? "تعطيل" : "تفعيل",
                             variant: r.productIsActive ? "destructive" : "default",
                             disabled: setActive.isPending,
+                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
                             onSelect: () => void toggle(r.productId, r.productIsActive, r.productName),
+                            gate: { roles: ["manager"], module: "products", level: "FULL" },
                           },
                           {
                             key: "delete",
+                            kind: "delete",
                             label: "حذف نهائي",
                             variant: "destructive",
                             onSelect: () => setDeleteFor({ productId: r.productId, name: r.productName }),
+                            gate: { roles: ["manager"], module: "products", level: "FULL" },
                           },
                         ]}
                       />

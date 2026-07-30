@@ -15,10 +15,11 @@ import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printVoucherReceipt, printVoucherA4, type VoucherPrintData } from "@/lib/printing/voucherPrint";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
-import { CheckCircle2, XCircle, Paperclip, ShieldQuestion, Link2 } from "lucide-react";
+import { CheckCircle2, XCircle, Paperclip, ShieldQuestion, Link2, X } from "lucide-react";
 
 type VoucherRow = RouterOutputs["vouchers"]["list"][number];
 
@@ -54,6 +55,7 @@ export default function Vouchers() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [q, setQ] = useState("");
+  const debouncedQ = useDebouncedValue(q.trim(), 250);
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
   const limit = 100;
@@ -67,10 +69,11 @@ export default function Vouchers() {
       paymentMethod: paymentMethod || undefined,
       approvalStatus: approvalStatus || undefined,
       voucherCategoryId: voucherCategoryId === "" ? undefined : Number(voucherCategoryId),
+      q: debouncedQ || undefined,
       from: from || undefined,
       to: to || undefined,
     }),
-    [voucherType, partyType, paymentMethod, approvalStatus, voucherCategoryId, from, to],
+    [voucherType, partyType, paymentMethod, approvalStatus, voucherCategoryId, debouncedQ, from, to],
   );
 
   const input = useMemo(
@@ -137,16 +140,8 @@ export default function Vouchers() {
     cancelMut.mutate({ receiptId: Number(r.id) });
   }
 
-  // فلتر بحث محلّي (وصف/رقم السند/اسم المُستفيد).
-  const rows = useMemo(() => {
-    if (!q.trim()) return all;
-    const needle = q.trim().toLowerCase();
-    return all.filter((r) =>
-      String(r.voucherNumber ?? "").toLowerCase().includes(needle) ||
-      String(r.description ?? "").toLowerCase().includes(needle) ||
-      String(r.counterpartyName ?? "").toLowerCase().includes(needle),
-    );
-  }, [all, q]);
+  // البحث جزء من استعلام الخادم، لذلك تشمل النتائج كل السندات لا الصفحة الحالية فقط.
+  const rows = all;
 
   // المَجاميع تَستثني الملغاة و«بانتظار الاعتماد» (لم يُسجَّل أَثَر مالي بَعد).
   const totals = useMemo(() => {
@@ -180,16 +175,7 @@ export default function Vouchers() {
             .then((arr) => ({ rows: (arr ?? []) as VoucherRow[] })),
         { pageSize: 200 },
       );
-      const needle = q.trim().toLowerCase();
-      const exportData = needle
-        ? fetched.filter(
-            (r) =>
-              String(r.voucherNumber ?? "").toLowerCase().includes(needle) ||
-              String(r.description ?? "").toLowerCase().includes(needle) ||
-              String(r.counterpartyName ?? "").toLowerCase().includes(needle),
-          )
-        : fetched;
-      exportRows(exportData, {
+      exportRows(fetched, {
         filename: "السندات",
         columns: [
           { key: "voucherNumber", header: "رقم السند" },
@@ -269,6 +255,28 @@ export default function Vouchers() {
   const statementHref = (r: VoucherRow) =>
     r.partyType === "CUSTOMER" ? `/customers-statement?id=${r.partyId}` : `/suppliers-statement?id=${r.partyId}`;
 
+  const activeFilterCount = [
+    voucherType,
+    partyType,
+    paymentMethod,
+    approvalStatus,
+    voucherCategoryId,
+    from,
+    to,
+  ].filter((value) => value !== "").length;
+
+  function resetFilters() {
+    setVoucherType("");
+    setPartyType("");
+    setPaymentMethod("");
+    setApprovalStatus("");
+    setVoucherCategoryId("");
+    setFrom("");
+    setTo("");
+    setQ("");
+    setPage(0);
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -290,7 +298,22 @@ export default function Vouchers() {
       />
 
       <Card>
-        <CardHeader><CardTitle className="text-base">فلاتر</CardTitle></CardHeader>
+        <CardHeader className="flex-row items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-base">فلاتر</CardTitle>
+            {activeFilterCount > 0 && (
+              <span className="rounded-md bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
+                {activeFilterCount.toLocaleString("ar-IQ-u-nu-latn")} فلاتر
+              </span>
+            )}
+          </div>
+          {(activeFilterCount > 0 || q.trim()) && (
+            <Button variant="ghost" size="sm" onClick={resetFilters} className="text-muted-foreground">
+              <X aria-hidden className="size-4" />
+              مسح الفلاتر
+            </Button>
+          )}
+        </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-3 items-end">
           <div className="space-y-1">
             <Label>النوع</Label>
@@ -349,7 +372,12 @@ export default function Vouchers() {
           </div>
           <div className="space-y-1 md:col-span-4 lg:col-span-7">
             <Label>بحث (رقم/وصف/اسم مُستفيد)</Label>
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="مثال: راتب، RV-1-…، أحمد محمد" />
+            <Input
+              type="search"
+              value={q}
+              onChange={(e) => { setQ(e.target.value); setPage(0); }}
+              placeholder="رقم السند، الوصف، المستفيد، المرجع أو رقم الفاتورة…"
+            />
           </div>
         </CardContent>
       </Card>
@@ -504,36 +532,59 @@ export default function Vouchers() {
                         <RowActions
                           mode="auto"
                           actions={[
-                            { key: "print-thermal", label: "طباعة حرارية", onSelect: () => void printVoucher(r, "thermal") },
-                            { key: "print-a4", label: "طباعة A4 (PDF)", onSelect: () => void printVoucher(r, "a4") },
+                            {
+                              key: "print-thermal",
+                              kind: "print",
+                              label: "طباعة حرارية",
+                              onSelect: () => void printVoucher(r, "thermal"),
+                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "READ" },
+                            },
+                            {
+                              key: "print-a4",
+                              kind: "print",
+                              label: "طباعة A4 (PDF)",
+                              onSelect: () => void printVoucher(r, "a4"),
+                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "READ" },
+                            },
                             {
                               key: "approve",
+                              kind: "approve",
                               label: "اعتماد السند",
                               hidden: !canManage || r.approvalStatus !== "PENDING_APPROVAL",
                               disabled: approveMut.isPending,
+                              disabledReason: "توجد عملية اعتماد قيد التنفيذ",
                               onSelect: () => void approveVoucher(r),
+                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
                             {
                               key: "reject",
+                              kind: "reverse",
                               label: "رفض السند",
                               variant: "destructive",
                               hidden: !canManage || r.approvalStatus !== "PENDING_APPROVAL",
                               disabled: rejectMut.isPending,
+                              disabledReason: "توجد عملية رفض قيد التنفيذ",
                               onSelect: () => void rejectVoucher(r),
+                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
                             {
                               key: "stmt",
+                              kind: "view",
                               label: "كشف حساب الطرف",
                               href: statementHref(r),
                               hidden: r.partyType === "OTHER" || r.partyType == null || r.partyId == null,
+                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "READ" },
                             },
                             {
                               key: "cancel",
+                              kind: "reverse",
                               label: "إلغاء السند",
                               variant: "destructive",
                               hidden: !canManage || r.status === "REVERSED" || r.paymentMethod === "EXCHANGE",
                               disabled: cancelMut.isPending,
+                              disabledReason: "توجد عملية إلغاء قيد التنفيذ",
                               onSelect: () => void cancelVoucher(r),
+                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
                           ]}
                         />

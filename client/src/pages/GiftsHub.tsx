@@ -1,9 +1,11 @@
 // شاشة الهدايا والمجانيات — G-م١ الوارد (استلام مجّانيّ من مورّد، صفر تكلفة) + G-م٢ الصادر (منح للعميل،
 // GIFT_OUT + حوكمة SOD: فوق العتبة/غير المدير ⇒ اعتماد مدير آخر). القراءة/الكتابة خلف مفتاح `gifts`.
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, Megaphone, MessageCircle, Plus, Printer, Trash2, X } from "lucide-react";
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
+import { RowActions } from "@/components/list/RowActions";
+import { ListToolbar } from "@/components/list/ListToolbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -277,6 +279,11 @@ export default function GiftsHub() {
   }
 
   const rows = list.data ?? [];
+  const [query, setQuery] = useState("");
+  const visibleRows = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("ar");
+    return q ? rows.filter((r) => [r.giftNumber, r.supplierName, r.customerName, STATUS_AR[r.status], r.direction === "IN" ? "وارد" : "صادر"].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
+  }, [rows, query]);
 
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4">
@@ -321,8 +328,30 @@ export default function GiftsHub() {
 
       {mode === "list" ? (
         <>
-          <div className="flex gap-2">
-            {([
+          <ListToolbar
+            title="سندات الهدايا"
+            count={visibleRows.length}
+            loading={list.isLoading}
+            search={{ value: query, onChange: setQuery, placeholder: "رقم السند، الطرف، الاتجاه أو الحالة…" }}
+            activeFilterCount={dirFilter === "ALL" ? 0 : 1}
+            onResetFilters={() => { setQuery(""); setDirFilter("ALL"); }}
+            onRefresh={() => void list.refetch()}
+            refreshing={list.isFetching}
+            onPrint={() => window.print()}
+            exportSpec={{
+              filename: "سندات-الهدايا",
+              rows: visibleRows,
+              formats: ["xlsx", "csv"],
+              columns: [
+                { key: "giftNumber", header: "رقم السند" },
+                { key: "direction", header: "الاتجاه", map: (r) => r.direction === "IN" ? "وارد" : "صادر" },
+                { key: "createdAt", header: "التاريخ" },
+                { key: "party", header: "الطرف", map: (r) => r.supplierName ?? r.customerName ?? "" },
+                { key: "status", header: "الحالة", map: (r) => STATUS_AR[r.status] ?? r.status },
+                { key: "estimatedValue", header: "القيمة التقديرية", money: true },
+              ],
+            }}
+            filters={<div className="flex gap-2">{([
               ["ALL", "الكل"],
               ["IN", "واردة"],
               ["OUT", "صادرة"],
@@ -332,7 +361,8 @@ export default function GiftsHub() {
                 {lbl}
               </Button>
             ))}
-          </div>
+            </div>}
+          />
 
           <div className="overflow-x-auto rounded-lg border">
             <table className="w-full text-sm">
@@ -354,14 +384,14 @@ export default function GiftsHub() {
                       جارٍ التحميل…
                     </td>
                   </tr>
-                ) : rows.length === 0 ? (
+                ) : visibleRows.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="py-8 text-center text-muted-foreground">
                       لا توجد سندات هدايا بعد.
                     </td>
                   </tr>
                 ) : (
-                  rows.map((r) => (
+                  visibleRows.map((r) => (
                     <tr key={r.id} className="border-t">
                       <td className="px-3 py-2 font-medium">{r.giftNumber}</td>
                       <td className="px-3 py-2">
@@ -374,27 +404,25 @@ export default function GiftsHub() {
                       <td className="px-3 py-2">{STATUS_AR[r.status] ?? r.status}</td>
                       <td className="px-3 py-2 text-end">{r.estimatedValue ?? "—"}</td>
                       <td className="px-3 py-2 text-end">
-                        <div className="flex justify-end gap-1">
-                          {r.direction === "OUT" && r.status === "PENDING_APPROVAL" && canApprove ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={approve.isPending}
-                              onClick={() => approve.mutate({ giftId: Number(r.id) })}
-                            >
-                              <Check aria-hidden className="me-1 size-3.5" />
-                              اعتماد
-                            </Button>
-                          ) : null}
-                          <Button size="sm" variant="ghost" onClick={() => printGift(Number(r.id))} aria-label="طباعة السند">
-                            <Printer aria-hidden className="size-4" />
-                          </Button>
-                          {r.supplierName || r.customerName ? (
-                            <Button size="sm" variant="ghost" onClick={() => shareGift(Number(r.id))} aria-label="إشعار واتساب">
-                              <MessageCircle aria-hidden className="size-4" />
-                            </Button>
-                          ) : null}
-                        </div>
+                        <RowActions
+                          mode="auto"
+                          align="start"
+                          actions={[
+                            {
+                              key: "approve",
+                              kind: "approve",
+                              label: "اعتماد",
+                              icon: Check,
+                              hidden: r.direction !== "OUT" || r.status !== "PENDING_APPROVAL" || !canApprove,
+                              gate: { roles: ["manager"], module: "gifts", level: "FULL" },
+                              disabled: approve.isPending,
+                              disabledReason: "جارٍ اعتماد السند",
+                              onSelect: () => approve.mutate({ giftId: Number(r.id) }),
+                            },
+                            { key: "print", kind: "print", label: "طباعة السند", icon: Printer, gate: { module: "gifts", level: "READ" }, onSelect: () => printGift(Number(r.id)) },
+                            { key: "share", kind: "other", label: "إشعار واتساب", icon: MessageCircle, hidden: !r.supplierName && !r.customerName, gate: { module: "gifts", level: "READ" }, onSelect: () => shareGift(Number(r.id)) },
+                          ]}
+                        />
                       </td>
                     </tr>
                   ))
@@ -500,12 +528,21 @@ export default function GiftsHub() {
                       </td>
                       {elevated ? (
                         <td className="px-3 py-2 text-end">
-                          {c.status === "ACTIVE" ? (
-                            <Button size="sm" variant="ghost" disabled={closeCampaign.isPending} onClick={() => closeCampaign.mutate({ campaignId: Number(c.id) })}>
-                              <X aria-hidden className="me-1 size-3.5" />
-                              إغلاق
-                            </Button>
-                          ) : null}
+                          <RowActions
+                            mode="inline"
+                            align="start"
+                            actions={[{
+                              key: "close",
+                              kind: "edit",
+                              label: "إغلاق",
+                              icon: X,
+                              hidden: c.status !== "ACTIVE",
+                              gate: { roles: ["manager"], module: "gifts", level: "FULL" },
+                              disabled: closeCampaign.isPending,
+                              disabledReason: "جارٍ إغلاق الحملة",
+                              onSelect: () => closeCampaign.mutate({ campaignId: Number(c.id) }),
+                            }]}
+                          />
                         </td>
                       ) : null}
                     </tr>

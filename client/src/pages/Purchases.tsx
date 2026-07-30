@@ -242,31 +242,48 @@ export default function Purchases() {
                         actions={[
                           {
                             key: "receive",
+                            kind: terminal ? "view" : "approve",
                             label: terminal ? "عرض" : "استلام",
                             href: `/purchases/${p.id}/receive`,
+                            gate: terminal
+                              ? { module: "purchases", level: "READ" }
+                              : { roles: ["warehouse", "manager", "purchasing"], module: "purchases", level: "FULL" },
                           },
-                          { key: "print", label: "طباعة أمر الشراء", onSelect: () => void printOrder(p.id) },
+                          {
+                            key: "print",
+                            kind: "print",
+                            label: "طباعة أمر الشراء",
+                            onSelect: () => void printOrder(p.id),
+                            gate: { module: "purchases", level: "READ" },
+                          },
                           {
                             key: "stmt",
+                            kind: "view",
                             label: "كشف حساب المورد",
                             href: `/suppliers-statement?id=${p.supplierId}`,
                             hidden: p.supplierId == null,
+                            gate: { module: "suppliers", level: "READ" },
                           },
                           {
                             key: "preturn",
+                            kind: "reverse",
                             label: "مرتجع شراء",
                             href: "/purchase-returns/new",
                             // الإرجاع للمورد ممكن فقط بعد استلام البضاعة فعلياً.
                             hidden: p.status !== "RECEIVED",
+                            gate: { roles: ["manager", "purchasing"], module: "purchases", level: "FULL" },
                           },
                           {
                             key: "cancel",
+                            kind: "reverse",
                             label: "إلغاء الأمر",
                             variant: "destructive",
                             // الحارس النهائي خادمي (يرفض المستلَم جزئياً) — رسالته العربية تظهر عبر notify.err.
                             hidden: p.status === "RECEIVED" || p.status === "CANCELLED",
                             disabled: cancelMut.isPending,
+                            disabledReason: "توجد عملية إلغاء قيد التنفيذ",
                             onSelect: () => void cancelOrder({ id: p.id, poNumber: p.poNumber, total: String(p.total ?? "0") }),
+                            gate: { roles: ["manager", "purchasing"], module: "purchases", level: "FULL" },
                           },
                         ]}
                       />

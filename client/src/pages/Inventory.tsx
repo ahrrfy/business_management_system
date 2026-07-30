@@ -328,22 +328,34 @@ export default function Inventory() {
                           actions={[
                             {
                               key: "stocktake",
+                              kind: "create",
                               label: "جلسة جرد للمنتج",
                               hidden: !canAdjust,
                               href: `/stocktakes/new?variants=${r.variantId}&name=${encodeURIComponent(`جرد تحقّق — ${r.productName}`)}`,
+                              gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" },
                             },
                             {
                               key: "adjust",
+                              kind: "edit",
                               label: "تسوية مباشرة (مدير)",
                               hidden: !canInlineAdjust,
                               onSelect: () => startAdjust(r),
+                              gate: { roles: ["manager"], module: "inventory", level: "FULL" },
                             },
-                            { key: "transfer", label: "تحويل بين الفروع", href: "/transfers" },
+                            {
+                              key: "transfer",
+                              kind: "create",
+                              label: "تحويل بين الفروع",
+                              href: "/transfers",
+                              gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" },
+                            },
                             {
                               key: "moves",
+                              kind: "view",
                               label: "حركات المنتج",
                               // شاشة الحركات تقرأ ?q= من URL فتفتح مفلترة على SKU
                               href: `/inventory-movements?q=${encodeURIComponent(r.sku)}`,
+                              gate: { module: "inventory", level: "READ" },
                             },
                           ]}
                         />

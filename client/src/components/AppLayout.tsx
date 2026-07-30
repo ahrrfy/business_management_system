@@ -15,7 +15,7 @@ import {
 import { Link, useLocation } from "wouter";
 import { useEffect, useRef, useState } from "react";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
-import { ROLE_LABEL } from "@/pages/Users";
+import { ROLE_LABEL } from "@/lib/roles";
 
 /**
  * ربط الطابعة الحرارية — متاحٌ من الشريط العلوي في كل شاشة (لا الكاشير فقط)، كي تُربط مرّةً

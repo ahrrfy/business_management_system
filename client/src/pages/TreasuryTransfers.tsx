@@ -11,6 +11,7 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { ArrowDownLeft, ArrowUpRight, Send, Check, X, Plus, ArrowRight } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { RowActions } from "@/components/list";
 
 type Tab = "outgoing" | "incoming" | "all";
 type Status = "" | "IN_TRANSIT" | "RECEIVED" | "CANCELLED";
@@ -156,26 +157,28 @@ export default function TreasuryTransfers() {
           const r = row.original;
           if (r.status !== "IN_TRANSIT") return <span className="text-muted-foreground">—</span>;
           return (
-            <div className="flex gap-1">
-              <Button
-                size="sm"
-                variant="default"
-                className="h-7 gap-1"
-                onClick={() => setReceivingId(r.id)}
-              >
-                <Check className="h-3 w-3" />
-                استلام
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 gap-1"
-                onClick={() => setCancellingId(r.id)}
-              >
-                <X className="h-3 w-3" />
-                إلغاء
-              </Button>
-            </div>
+            <RowActions
+              mode="inline"
+              actions={[
+                {
+                  key: "receive",
+                  kind: "approve",
+                  label: "استلام",
+                  icon: Check,
+                  onSelect: () => setReceivingId(r.id),
+                  gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                },
+                {
+                  key: "cancel",
+                  kind: "reverse",
+                  label: "إلغاء",
+                  icon: X,
+                  variant: "destructive",
+                  onSelect: () => setCancellingId(r.id),
+                  gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                },
+              ]}
+            />
           );
         },
       },

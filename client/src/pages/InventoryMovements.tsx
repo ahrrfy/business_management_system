@@ -552,6 +552,7 @@ export default function InventoryMovements() {
                         actions={[
                           {
                             key: "ref",
+                            kind: "view",
                             label: "فتح المرجع",
                             hidden: !r.referenceId ||
                               (r.referenceType !== "INVOICE" && r.referenceType !== "PURCHASE_ORDER"),
@@ -559,6 +560,9 @@ export default function InventoryMovements() {
                               r.referenceType === "INVOICE"
                                 ? `/invoices/${r.referenceId}`
                                 : `/purchases/${r.referenceId}/receive`,
+                            gate: r.referenceType === "INVOICE"
+                              ? { module: "sales", level: "READ" }
+                              : { module: "purchases", level: "READ" },
                           },
                         ]}
                       />
