@@ -918,6 +918,13 @@
       "when": 1787011200000,
       "tag": "0131_drop_dead_reversal_pending",
       "breakpoints": true
+    },
+    {
+      "idx": 132,
+      "version": "5",
+      "when": 1787097600000,
+      "tag": "0132_loss_refund_sod",
+      "breakpoints": true
     }
   ]
 }
