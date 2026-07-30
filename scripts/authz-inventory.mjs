@@ -11,7 +11,7 @@
  *
  * الاستعمال:  node scripts/authz-inventory.mjs [--check]
  *   --check : يفشل بخروج 1 إن وُجدت نقطة tRPC على publicProcedure/protectedProcedure بلا بوّابة
- *             وحدة — يُستعمل لاحقاً كحارس CI (§24.1). لا يُفعَّل في CI قبل اعتماد الكتالوج.
+ *             وحدة/دور خام مستجدّ (§24.1، T-12). **مُفعَّل في CI** عبر `pnpm check:authz`.
  */
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from "node:fs";
 import { join, relative, dirname } from "node:path";
