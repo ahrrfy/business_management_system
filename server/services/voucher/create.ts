@@ -158,9 +158,6 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       if (!input.counterpartyName?.trim()) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "اسم الطرف المقابل إلزامي لسندات «أخرى»" });
       }
-      if (input.voucherType === "RECEIPT" && !input.referenceNumber?.trim()) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع المصدر إلزامي لسندات «أخرى» (عقد/وصل/قرار/مستند مؤيد)" });
-      }
       // قبض OTHER يخلق نقداً من مصدر خارجي مجهول وقابل للتجزئة؛ لذلك يخضع دائماً إلى Maker‑Checker.
       if (input.voucherType === "RECEIPT") forcePendingApproval = true;
     }
