@@ -35,7 +35,8 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, RefreshCw, Zap, ChevronDown } from "lucide-react";
+import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, Zap, ChevronDown, Send, Wallet } from "lucide-react";
+import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
 import { CopyButton } from "@/components/CopyButton";
 import { MoneyInput } from "@/components/form/MoneyInput";
 
@@ -107,6 +108,8 @@ type Receipt = {
   change: number;
   credit: number;
   method: string;
+  /** كود الطريقة الخام (CASH/CARD/TRANSFER/WALLET) — للشارة الملوّنة والحفظ الأوفلاين. */
+  methodCode?: string;
   isCredit: boolean;
   /** ش١٠: لقطات الكروت الرقمية من الخادم (اسم الكرت/المرجع/بيانات الطالب) — بلا أرقام داخلية. */
   digitalDetails?: DigitalReceiptDetail[] | null;
@@ -146,9 +149,7 @@ type C = typeof POS_COLORS;
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
-const METHOD_LABEL: Record<PaymentMethod, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
-};
+// METHOD_LABEL انتقل إلى lib/paymentMethod.ts — مصدر واحد مع Invoices/InvoiceDetail/حوار الوردية.
 const QUICK_AMTS = [5000, 10000, 25000, 50000, 100000];
 const SHOP = "الرؤية العربية";
 const SCAN_MS = 80;
@@ -873,7 +874,7 @@ export default function POS() {
     tabId: number;
     lines: Receipt["lines"];
     total: number; received: number; change: number; credit: number;
-    isCredit: boolean; method: string;
+    isCredit: boolean; method: string; methodCode?: string;
     customerName?: string; cashierName?: string;
   } | null>(null);
 
@@ -894,7 +895,7 @@ export default function POS() {
         lines: ctx.lines,
         total: ctx.total, received: ctx.received, change: ctx.change,
         credit: ctx.credit, isCredit: ctx.isCredit,
-        method: ctx.method,
+        method: ctx.method, methodCode: ctx.methodCode,
       };
       // #2 (تدقيق التثبيت): إن رجع الخادم total (المُقرَّب المخزَّن فعلاً) نستعمله في الإيصال
       // كمصدر حقيقة أخير — يُغطّي أي انحراف تقريب مستقبليّ بين العميل والخادم (roundCashIQD مشتركة
@@ -1016,7 +1017,8 @@ export default function POS() {
       change:   round2(finalChangeD).toNumber(),
       credit:   round2(finalCreditD).toNumber(),
       isCredit,
-      method: METHOD_LABEL[activeTab.method],
+      method: paymentMethodLabel(activeTab.method),
+      methodCode: activeTab.method,
       customerName: selectedCustomer?.name,
       cashierName: me.data?.name ?? offlineBoot?.name ?? undefined,
     };
@@ -1089,7 +1091,7 @@ export default function POS() {
       lines: ctx.lines,
       total: ctx.total, received: ctx.received, change: ctx.change,
       credit: ctx.credit, isCredit: ctx.isCredit,
-      method: ctx.method,
+      method: ctx.method, methodCode: ctx.methodCode,
     };
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: ctx.total });
@@ -2244,21 +2246,24 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         )}
       </div>
 
-      {/* Payment method */}
+      {/* Payment method — ٤ أزرار صريحة متساوية: نقرة واحدة = طريقة واحدة، لا تبديل ضمني.
+          كان زر «أخرى» يبدّل بين TRANSFER/WALLET بنقرة ⇒ كاشير يضغطه ظنّاً أنّه «تحويل» وهو «محفظة»
+          (أو العكس) فيُحفظ في السجل خطأً. البنية الصريحة تُلغي مصدر الخطأ البشريّ.
+          الترتيب واللقب مركزيّان في `lib/paymentMethod.ts` ⇒ مصدر حقيقة واحد مع باقي الشاشات. */}
       <div style={{ padding: "4px 11px 3px", flexShrink: 0 }}>
         <div style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 700, marginBottom: 4 }}>طريقة الدفع</div>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
           <button style={payMethodStyle(method === "CASH")}     onClick={() => setMethod("CASH")}>
-            <Banknote aria-hidden size={22} />نقداً
+            <Banknote aria-hidden size={22} />نقدي
           </button>
           <button style={payMethodStyle(method === "CARD")}     onClick={() => setMethod("CARD")}>
             <CreditCard aria-hidden size={22} />بطاقة
           </button>
-          <button
-            style={{ ...payMethodStyle(method === "TRANSFER" || method === "WALLET"), minHeight: 50, fontSize: 12 }}
-            onClick={() => setMethod(method === "TRANSFER" ? "WALLET" : "TRANSFER")}>
-            <RefreshCw aria-hidden size={18} />
-            {method === "TRANSFER" ? "تحويل" : method === "WALLET" ? "محفظة" : "أخرى"}
+          <button style={payMethodStyle(method === "TRANSFER")} onClick={() => setMethod("TRANSFER")}>
+            <Send aria-hidden size={22} />تحويل
+          </button>
+          <button style={payMethodStyle(method === "WALLET")}   onClick={() => setMethod("WALLET")}>
+            <Wallet aria-hidden size={22} />محفظة
           </button>
         </div>
       </div>
@@ -2429,10 +2434,13 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
           </div>
         )}
 
-        <div style={{ marginBottom: 20, fontSize: 13.5, color: C.mutedFg }}>
-          طريقة الدفع: <strong style={{ color: C.fg }}>{receipt.method}</strong>
-          &nbsp;·&nbsp; {receipt.lines.length} منتج
-          {receipt.customerName && <>&nbsp;·&nbsp; <strong style={{ color: C.fg }}>{receipt.customerName}</strong></>}
+        <div style={{ marginBottom: 20, fontSize: 13.5, color: C.mutedFg, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, flexWrap: "wrap" }}>
+          <span>طريقة الدفع:</span>
+          <span className={`inline-block rounded-full px-3 py-1 text-sm font-bold ${paymentMethodClass(receipt.methodCode)}`}>
+            {receipt.method}
+          </span>
+          <span>·</span><span>{receipt.lines.length} منتج</span>
+          {receipt.customerName && <><span>·</span><strong style={{ color: C.fg }}>{receipt.customerName}</strong></>}
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
@@ -2581,16 +2589,29 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               </div>
             ))}
 
-            {/* Payment breakdown */}
+            {/* Payment breakdown — كل طريقة بلقب عربيّ + شارة ملوّنة، ليَفهَم الكاشير أنّ مبيعات
+                البطاقة/التحويل/المحفظة لا تدخل نقد الدرج المتوقّع (الخادم يحسبه CASH+DRAWER فقط).
+                هذا يزيل حَيرة «لماذا الفرق؟» — الفرق ليس عجزاً، البطاقة لا تُقاس بعدّ النقد. */}
             {(report?.payments ?? []).filter((p) => Number(p.total) > 0).length > 0 && (
               <div style={{ margin: "10px 0 4px", fontSize: 12, color: C.mutedFg, fontWeight: 700 }}>تفصيل طرق الدفع:</div>
             )}
             {(report?.payments ?? []).filter((p) => Number(p.total) > 0).map((p) => (
-              <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", borderBottom: `1px dashed ${C.border}` }}>
-                <span style={{ color: C.mutedFg }}>{p.method} {p.direction === "IN" ? "وارد" : "صادر"} ({p.count})</span>
-                <span style={{ fontWeight: 600, color: p.direction === "OUT" ? C.danger : C.fg }}>{fmt(Number(p.total))} د.ع</span>
+              <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "5px 0", borderBottom: `1px dashed ${C.border}` }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(p.method)}`}>
+                    {paymentMethodLabel(p.method)}
+                  </span>
+                  <span style={{ color: C.mutedFg }}>{p.direction === "IN" ? "وارد" : "صادر"} ({p.count})</span>
+                </span>
+                <span style={{ fontWeight: 700, color: p.direction === "OUT" ? C.danger : C.fg, direction: "ltr" }}>{fmt(Number(p.total))} د.ع</span>
               </div>
             ))}
+            {/* تلميح تعليميّ للكاشير: يظهر فقط عند وجود مبيعات غير نقدية — يزيل حَيرة «العجز الوهميّ». */}
+            {(report?.payments ?? []).some((p) => p.direction === "IN" && p.method !== "CASH" && Number(p.total) > 0) && (
+              <div style={{ marginTop: 8, padding: "8px 10px", background: "oklch(0.65 0.15 240 / .08)", border: "1px solid oklch(0.65 0.15 240 / .25)", borderRadius: 7, fontSize: 11.5, color: C.mutedFg, lineHeight: 1.55 }}>
+                <strong style={{ color: C.fg }}>ملاحظة:</strong> مبيعات البطاقة/التحويل/المحفظة لا تدخل عدّ نقد الدرج. عدّ النقد الفعليّ فقط — النظام يعلم بها ولن يُظهر عجزاً بسببها.
+              </div>
+            )}
 
             <div
               style={{ marginTop: 16 }}
