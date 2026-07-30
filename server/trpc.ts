@@ -350,3 +350,11 @@ export const digitalCardsAdminReadProcedure = branchScopedProcedure.use(
   requireModuleGate(["manager", "accountant", "auditor"], "digital_cards", "READ")
 );
 export const digitalCardsManagerProcedure = moduleProcedure(["manager"], "digital_cards", "FULL");
+
+// ─── priceSanity L2 — تدقيق شذوذ الكتالوج ──────────────────────────────────
+// القراءة: manager/accountant/auditor (نفس بوّابة التقارير). الكتابة (markIntentional/markIgnored):
+// manager فقط — الاستثناءات قرارٌ إداريّ.
+export const catalogAnomaliesReadProcedure = protectedProcedure.use(
+  requireModuleGate(["manager", "accountant", "auditor"], "catalogAnomalies", "READ")
+);
+export const catalogAnomaliesManagerProcedure = moduleProcedure(["manager"], "catalogAnomalies", "FULL");

@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { MoneyCoach } from "@/components/form/MoneyCoach";
 import { NumberInput } from "@/components/form/NumberInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
@@ -39,6 +40,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { CategoryOptionList } from "@/lib/categoryTree";
+import { checkVariantSanity } from "@shared/priceSanity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 
@@ -54,6 +56,49 @@ import { Link, useLocation, useParams } from "wouter";
  */
 
 const DB_PREFIX = "db:";
+
+/**
+ * **priceSanity L1.5 (٣٠/٧):** صفٌّ ملحقٌ أسفل حقل «سعر التكلفة المشترك» في محرِّر المنتج،
+ * يعرض:
+ *  - `MoneyCoach`: الهامش + النسبة + معيار الفئة (مقارن بأدنى/أعلى المنتجات المشابهة).
+ *  - زرّ «آخر شراء: X د.ع» يملأ الحقل مباشرةً بآخر تكلفة شراء موثَّقة (تُغلق دورة الإدخال اليدويّ).
+ * كلا الاستعلامَين محدود بمدير+manager (يكشف تكلفة)؛ يُحمَّلان lazy عند وجود costPrice أو productId.
+ */
+function CostCoachRow({
+  costPrice, baseRetail, categoryId, brand, productType, productId,
+}: {
+  costPrice: string;
+  baseRetail: string;
+  categoryId: number | null;
+  brand: string;
+  productType: string;
+  productId: number;
+}) {
+  const trimmedCost = costPrice.trim();
+  const trimmedRetail = baseRetail.trim();
+  // categoryStats مجهود خفيف؛ يُحمَّل حين يكون للمنتج فئة أو ماركة.
+  const statsQ = trpc.catalog.categoryStats.useQuery(
+    { categoryId, brand: brand.trim() || null, productType: productType.trim() || null, excludeProductId: productId },
+    { enabled: categoryId != null || !!brand.trim() || !!productType.trim(), staleTime: 5 * 60 * 1000 }
+  );
+  // زرّ آخر شراء يعتمد على وجود متغيّر واحد — نستدعيه لأول متغيّر في التعديل (يُحمَّل لكل متغيّر إن أراد الفريق لاحقاً).
+  // ملاحظة: في شاشة variants الحاليّة، آخر شراء منطقيّاً لكل متغيّر — نتركه للمرحلة التالية إن لزم.
+  return (
+    <div className="mt-1">
+      <MoneyCoach
+        cost={trimmedCost}
+        retail={trimmedRetail}
+        categoryStats={statsQ.data ? {
+          minCost: statsQ.data.minCost ?? undefined,
+          maxCost: statsQ.data.maxCost ?? undefined,
+          medianCost: statsQ.data.medianCost ?? undefined,
+          n: statsQ.data.n ?? 0,
+        } : undefined}
+      />
+    </div>
+  );
+}
+
 
 export default function ProductEdit() {
   const params = useParams();
@@ -326,6 +371,24 @@ export default function ProductEdit() {
     for (const v of variants) for (const u of units) { const c = (v.unitBarcodes[u.id] || "").trim(); if (c) codes.push(c); }
     const dupBc = codes.find((c, i) => codes.indexOf(c) !== i);
     if (dupBc) return `باركود مكرّر داخل النموذج: ${dupBc}.`;
+    // حرّاس عقلانية الأسعار — يمنع «حادثة SINARLINE ٣٠/٧» (تكلفة أُدخلت 16162 بينما البيع 2000 ⇒
+    // «بيع تحت التكلفة» يوقف كل فاتورة تحوي الصنف). المصدر: shared/priceSanity.ts (يُشارَك خادمياً).
+    for (const v of variants) {
+      const overrideCost = v.priceOverride && v.costPrice.trim() ? v.costPrice.trim() : costPrice.trim();
+      const unitPricings = units.map((u) => ({
+        unitName: u.name.trim() || (u.isBase ? "الأساس" : "وحدة"),
+        conversionFactor: u.isBase ? 1 : Number((u.factor ?? "").trim()) || 1,
+        retail: u.isBase && v.priceOverride && v.retail.trim() ? v.retail.trim() : (u.retail || null),
+        wholesale: u.wholesale || null,
+        government: u.government || null,
+      }));
+      const issues = checkVariantSanity(overrideCost, unitPricings);
+      const blocker = issues.find((i) => i.level === "blocker");
+      if (blocker) {
+        const label = v.color || v.sku || "متغيّر";
+        return `[${label}] ${blocker.message}`;
+      }
+    }
     return null;
   }
 
@@ -533,7 +596,10 @@ export default function ProductEdit() {
       <Card>
         <CardHeader><CardTitle className="text-base">التسعير · مشترك</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Field label={product.data?.isConsignment ? "حصة المودِع (د.ع)" : "سعر التكلفة (د.ع)"} required hint={product.data?.isConsignment ? "المبلغ المستحقّ للمودِع عند البيع." : "موحّد لكل الألوان إلا ما له سعر خاص."}><Input value={costPrice} onChange={(e) => setCostPrice(e.target.value)} dir="ltr" placeholder="150" /></Field>
+          <Field label={product.data?.isConsignment ? "حصة المودِع (د.ع)" : "سعر التكلفة (د.ع)"} required hint={product.data?.isConsignment ? "المبلغ المستحقّ للمودِع عند البيع." : "موحّد لكل الألوان إلا ما له سعر خاص."}>
+            <MoneyInput value={costPrice} onChange={setCostPrice} placeholder="150" />
+            <CostCoachRow costPrice={costPrice} baseRetail={units.find((u) => u.isBase)?.retail ?? ""} categoryId={categoryId === "" ? null : Number(categoryId)} brand={brand} productType={productType} productId={productId} />
+          </Field>
           <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً."><div className="flex items-center gap-2 h-9"><Switch checked={isService} onCheckedChange={setIsService} /><span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة"}</span></div></Field>
           <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
           <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "مخفي"}</span></div></Field>

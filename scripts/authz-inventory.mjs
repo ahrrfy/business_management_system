@@ -89,6 +89,10 @@ const PROCEDURES = {
   digitalCardsManagerProcedure:  { authority: "module-gate", module: "digital_cards", level: "FULL", roles: ["manager"],                            branch: "required" },
   digitalCardsPosProcedure:      { authority: "module-map",  module: "digital_cards", level: "READ", roles: [],                                     branch: "scoped" },
   digitalCardsAdminReadProcedure:{ authority: "module-gate", module: "digital_cards", level: "READ", roles: ["manager", "accountant", "auditor"],   branch: "scoped" },
+  // priceSanity L2 — تدقيق شذوذ الكتالوج (٣٠/٧/٢٦). قراءة: manager/accountant/auditor (نمط
+  // digitalCardsAdminRead)، كتابة: manager فقط (الاستثناءات قرارٌ إداريّ).
+  catalogAnomaliesReadProcedure: { authority: "module-gate", module: "catalogAnomalies", level: "READ", roles: ["manager", "accountant", "auditor"], branch: false },
+  catalogAnomaliesManagerProcedure:{ authority: "module-gate", module: "catalogAnomalies", level: "FULL", roles: ["manager"],                        branch: "required" },
   // بوّابات مُعرَّفة **خارج** server/trpc.ts (سلطة موزّعة — انظر §30.10 Legacy Mapping):
   auditReadProcedure:         { authority: "raw-role",    module: null,          level: null,   roles: ["admin", "auditor"],                        branch: false, local: "server/routers/auditRouter.ts:9" },
   kioskReadProcedure:         { authority: "none",        module: null,          level: null,   roles: [],                                          branch: "device", local: "server/routers/kioskRouter.ts:49" },
@@ -109,6 +113,7 @@ const MODULE_DOMAIN = {
   sales: "sales", pos: "sales", workorders: "workorders", crm: "crm", campaigns: "marketing",
   collections: "ar", treasury: "treasury", expenses: "treasury", purchases: "purchasing",
   suppliers: "purchasing", inventory: "inventory", consignments: "consignment", products: "catalog",
+  catalogAnomalies: "catalog",
   reports: "reports", store: "store", courier: "delivery", tasks: "tasks", channels: "channels",
   hr: "hr", commissions: "commissions", assets: "assets", gifts: "gifts", reservations: "reservations",
   users: "iam", settings: "admin",
