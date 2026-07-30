@@ -75,6 +75,10 @@ const EXTRA_MIGRATIONS = [
   // + أعمدة أثر الشطب. db:push لا يُمثّل توسيع enum موثوقاً (نظير 0068/0105) ⇒ يلزم تطبيقه
   // هنا وإلا سقطت اختبارات الشطب على CI بـ«Data truncated for column».
   "drizzle/migrations/0129_digital_intent_writeoff.sql",
+  // ٣٠/٧/٢٦: تقليص enum — حذف `REVERSAL_PENDING` الميّتة من digitalSaleDetails.fulfillmentStatus.
+  // نفس سبب 0129: db:push لا يُمثّل تغيّر enum موثوقاً. الملف يحمل حارس SIGNAL يُفشل الهجرة
+  // إن وُجد صفٌّ يحمل القيمة بدل أن يُتلفه صامتاً بـ''.
+  "drizzle/migrations/0131_drop_dead_reversal_pending.sql",
 ];
 
 const url = process.env.DATABASE_URL;
