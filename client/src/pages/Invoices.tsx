@@ -23,6 +23,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
 
 type Row = RouterOutputs["sales"]["list"][number];
 
@@ -114,6 +115,7 @@ export default function Invoices() {
         customerName: d.customerName,
         salespersonName: d.salespersonName,
         companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
+        paymentMethod: paymentMethodLabel(d.paymentMethod),
         subtotal: d.subtotal,
         discountAmount: d.discountAmount,
         taxAmount: d.taxAmount,
@@ -222,6 +224,7 @@ export default function Invoices() {
           { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },
           { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
           { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
+          { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentMethodLabel(r.paymentMethod) },
           { key: "status", header: "الحالة" },
         ],
       });
@@ -250,6 +253,14 @@ export default function Invoices() {
     },
     { accessorKey: "total", header: "الإجمالي", cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span> },
     { accessorKey: "paidAmount", header: "المدفوع", cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span> },
+    {
+      accessorKey: "paymentMethod", header: "طريقة الدفع",
+      cell: (c) => {
+        const m = c.getValue() as string | null;
+        if (!m) return <span className="text-muted-foreground">—</span>;
+        return <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(m)}`}>{paymentMethodLabel(m)}</span>;
+      },
+    },
     {
       accessorKey: "status", header: "الحالة",
       cell: (c) => {
@@ -289,7 +300,7 @@ export default function Invoices() {
   // الصُفوف المُحَدَّدة + تَجهيز نَصّ TSV ومُلَخَّص واتساب لِزِرّ «نَسخ المُحَدَّد كَـ».
   // الفِكرة: TSV لِلَّصق في Excel، ومُلَخَّص نَصّي مُكَثَّف لِواتساب الإدارة.
   const TSV_HEADERS = useMemo(
-    () => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "موظف المبيعات", "الوردية", "محطة البيع", "الإجمالي", "المدفوع", "الحالة"],
+    () => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "موظف المبيعات", "الوردية", "محطة البيع", "الإجمالي", "المدفوع", "طريقة الدفع", "الحالة"],
     [],
   );
   const selectedRows = useMemo(() => data.filter((r) => sel.isSelected(r.id)), [data, sel]);
@@ -305,6 +316,7 @@ export default function Invoices() {
       "محطة البيع": r.deviceId ?? "",
       "الإجمالي": Number(r.total),
       "المدفوع": Number(r.paidAmount),
+      "طريقة الدفع": paymentMethodLabel(r.paymentMethod),
       "الحالة": STATUS[r.status] ?? r.status,
     }));
     return formatTableAsTSV(TSV_HEADERS, rows);
