@@ -58,36 +58,49 @@ function runStaticFallback(reason) {
 }
 
 // ── حلّ مرجع الأساس (base) ─────────────────────────────────────────────
+// (مراجعة review-module #5) الأساس = **قاعدة الدمج** `merge-base(HEAD, baseRef)` لا رأس origin/main
+// الحيّ: HEAD (في CI = عقدة الدمج) يحوي الأساسَ المدموج فعلاً، فقاعدةُ الدمج تعطي **بالضبط** محتوى
+// main الموجود في HEAD — ثابتةٌ (sha محدَّد) لا تتأثّر بتقدّم origin/main بين إنشاء مرجع الدمج والجلب
+// (يزيل السباق الذي يُنتج إيجابيّات كاذبة). عند التعذّر: baseRef مباشرةً، ثمّ سقوطٌ رشيق.
 const baseRef = process.env.BASE_REF || "origin/main";
-let baseSha;
+let refSha;
 try {
-  baseSha = git("rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`);
+  refSha = git("rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`);
 } catch {
-  // قد لا يكون المرجع مجلوباً (checkout ضحل) — حاول جلبه.
+  // قد لا يكون المرجع مجلوباً (checkout ضحل) — حاول جلبه (عمقٌ كافٍ لحساب قاعدة الدمج).
   try {
-    git("fetch", "--no-tags", "--depth=1", "origin", baseRef.replace(/^origin\//, ""));
-    baseSha = git("rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}");
+    git("fetch", "--no-tags", "--depth=200", "origin", baseRef.replace(/^origin\//, ""));
+    refSha = git("rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}");
   } catch { /* يسقط أدناه */ }
 }
-if (!baseSha) runStaticFallback(`تعذّر حلّ مرجع الأساس "${baseRef}"`);
+if (!refSha) runStaticFallback(`تعذّر حلّ مرجع الأساس "${baseRef}"`);
 
-// ── تجهيز شجرة الأساس في worktree مؤقّت خارج المستودع ──────────────────
+let baseSha;
+try {
+  baseSha = git("merge-base", "HEAD", refSha); // قاعدة الدمج الفعليّة (ثابتة، بلا سباق)
+} catch {
+  baseSha = refSha; // إن تعذّرت (تاريخٌ ضحل جداً) استعمل الرأس المحلول
+}
+
+// ── تجهيز شجرة الأساس في worktree مؤقّت + مسح head — الكلّ داخل try/finally ──
+// (مراجعة review-module #6) فشلُ مسح head أو الأساس **يجب** أن ينظّف الـworktree دائماً (finally)
+// وإلّا تسرّب وعطّل التشغيلة التالية (git worktree add يفشل على مسارٍ/قفلٍ باقٍ). وأيّ فشلٍ ⇒ سقوطٌ
+// رشيق لا انهيار.
 const tmp = mkdtempSync(join(tmpdir(), "authz-base-"));
-let baseItems;
+let baseItems, headItems, diffError;
 try {
   git("worktree", "add", "--detach", "--force", tmp, baseSha);
   baseItems = violationsAt(tmp);
+  headItems = violationsAt(REPO);
 } catch (e) {
+  diffError = e; // لا تُنهِ العملية هنا: دع finally ينظّف ثمّ اسقط رشيقاً بعده.
+} finally {
   try { git("worktree", "remove", "--force", tmp); } catch {}
   try { rmSync(tmp, { recursive: true, force: true }); } catch {}
-  runStaticFallback(`تعذّر تجهيز شجرة الأساس (${(e && e.message ? e.message : e).toString().slice(0, 120)})`);
+  try { git("worktree", "prune"); } catch {}
 }
-
-const headItems = violationsAt(REPO);
-
-// نظّف الـworktree المؤقّت
-try { git("worktree", "remove", "--force", tmp); } catch {}
-try { rmSync(tmp, { recursive: true, force: true }); } catch {}
+// السقوط الرشيق **بعد** التنظيف (runStaticFallback يستدعي process.exit فيتخطّى finally لو نودي داخله).
+if (diffError) runStaticFallback(`تعذّر حساب الفرق (${(diffError.message || diffError).toString().slice(0, 160)})`);
 
 // ── الفرق: انتهاكاتٌ يُدخِلها الـhead ولا وجود لها (بنفس العدد) في الأساس ──
 const baseSet = multiset(baseItems);

@@ -524,8 +524,10 @@ function computeInventory(root) {
 
 /* ─────────────────── تعريف الانتهاك + بصمته (مشترك: static + diff) ─────────────────── */
 
-/** انحدارُ سلطةٍ حقيقيّ: raw-role أو بلا بوّابة وحدة (قراءةً/كتابةً) أو admin على كتابة.
- *  PROCEDURE_UNKNOWN مُستبعَدٌ عمداً (انجراف الجدول اليدويّ، لا انحدار). */
+/** انحدارُ سلطةٍ حقيقيّ للحارس الساكن (`--check`): raw-role أو بلا بوّابة وحدة (قراءةً/كتابةً) أو
+ *  admin على كتابة. PROCEDURE_UNKNOWN مُستبعَدٌ عمداً هنا (انجراف الجدول اليدويّ يُفشل الحارس الساكن
+ *  على كودٍ خارج الـPR). حارس الدمج (diff) يستعمل `emitPredicate` الأوسع الذي **يشمل** المستجدّ من
+ *  UNKNOWN لأنّ مقارنة الأساس تُلغي انجراف main أصلاً (مراجعة review-module #2). */
 function isViolation(e) {
   return (
     e.flags.includes("WRITE_WITHOUT_MODULE_GATE") ||
@@ -535,11 +537,22 @@ function isViolation(e) {
   );
 }
 
-/** بصمة انتهاكٍ **مستقلّة عن رقم السطر** (يتغيّر بين base وhead) — للمقارنة بالأساس المتحرّك:
- *  الراوتر + الاسم + النوع + أعلام الانتهاك المرتّبة. تغيُّر البوّابة يغيّر الأعلام ⇒ بصمة جديدة. */
+/** المُصدَّر لحارس الدمج: الانتهاكات + **المستجدّ من UNKNOWN**. الأخير آمنٌ في مسار الفرق (base يحوي
+ *  unknowns الخاصّة بـmain ⇒ يُطرح) لكنه يمسك إجراءً غير مسجَّلٍ **يُدخِله الـPR** (مراجعة #2). */
+function isEmittable(e) {
+  return isViolation(e) || e.flags.includes("PROCEDURE_UNKNOWN") || e.flags.includes("PROCEDURE_UNRESOLVED");
+}
+
+/**
+ * بصمة انتهاكٍ **مستقلّة عن رقم السطر** (يتغيّر بين base وhead) للمقارنة بالأساس المتحرّك.
+ * تشمل (مراجعة review-module #1، #4): الراوتر/الاسم/النوع + أعلام الانتهاك + **مجموعة الأدوار الممنوحة**
+ * (كي يُكشف خفضُ بوّابةٍ خشنة manager→cashier — كلاهما RAW_ROLE_GATE فلا يكفي العلَم) + **بُعد الفرع**
+ * (كي يُكشف إسقاط عزل الفرع scoped→none). أيُّ تغيُّرٍ في هذه ⇒ بصمةٌ جديدة ⇒ يظهر مستجدّاً في الفرق.
+ */
 function violationSig(e) {
-  const vflags = e.flags.split("|").filter((f) => /RAW_ROLE_GATE|WITHOUT_MODULE_GATE|ADMIN_ONLY/.test(f)).sort().join(",");
-  return `${e.router}.${e.name}.${e.kind}|${vflags}`;
+  const vflags = e.flags.split("|").filter((f) => /RAW_ROLE_GATE|WITHOUT_MODULE_GATE|ADMIN_ONLY|PROCEDURE_UNKNOWN|PROCEDURE_UNRESOLVED/.test(f)).sort().join(",");
+  const roles = (e.roles || "").split("|").filter(Boolean).sort().join(",");
+  return `${e.router}.${e.name}.${e.kind}|${vflags}|r=${roles}|b=${e.branch}`;
 }
 
 function tally(rows, fn) {
@@ -564,10 +577,10 @@ function argVal(name) {
 if (process.argv.includes("--emit-violations")) {
   const root = argVal("--root") || ROOT;
   const { endpoints } = computeInventory(root);
-  const items = endpoints.filter(isViolation).map((e) => ({
+  const items = endpoints.filter(isEmittable).map((e) => ({
     sig: violationSig(e),
     loc: e.loc,
-    flags: e.flags.split("|").filter((f) => /RAW_ROLE_GATE|WITHOUT_MODULE_GATE|ADMIN_ONLY/.test(f)).join(","),
+    flags: e.flags.split("|").filter((f) => /RAW_ROLE_GATE|WITHOUT_MODULE_GATE|ADMIN_ONLY|PROCEDURE_UNKNOWN|PROCEDURE_UNRESOLVED/.test(f)).join(","),
   }));
   process.stdout.write(JSON.stringify({ root, count: items.length, items }));
   process.exit(0);
