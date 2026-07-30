@@ -24,6 +24,7 @@ import { useLocation } from "wouter";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 type Row = RouterOutputs["sales"]["list"][number];
 
@@ -70,6 +71,17 @@ export default function Invoices() {
   const taxSettings = trpc.system.getTaxSettings.useQuery();
   const me = trpc.auth.me.useQuery();
   const salespeople = trpc.sales.salespeople.useQuery();
+
+  // بوّابة «+ فاتورة جديدة» — تطابق حارس المسار حرفياً (App.tsx:277 sales:FULL على admin/manager/cashier)
+  // وتحترم `permissionsOverride` بكلا الاتجاهين: قالبٌ مسموحٌ مُنِح `sales=NONE` ⇒ يُخفى؛ ودورٌ آخر
+  // مُنِح `sales:FULL` صراحةً ⇒ يظهر. الفحص الأمنيّ يبقى خادميّاً بأي حال (RequireRole + راوتر البيع).
+  const canCreateSale = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
+    "sales",
+    "FULL",
+    ["admin", "manager", "cashier"],
+  );
 
   // مدخلات الفلترة المشتركة (بلا limit/offset) — للقائمة وللمجاميع وللتصدير الشامل ⇒ الثلاثة
   // ترى نفس المجموعة حتماً (لا تصدير يخالف ما على الشاشة).
@@ -429,6 +441,16 @@ export default function Invoices() {
         serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total }}
         toolbar={
           <>
+            {/* «+ فاتورة جديدة» — مدخل مرئي لشاشة `/sales/new` (الفاتورة المتقدّمة: آجل/أقساط/خصم إجماليّ/ضريبة).
+                يطابق حارس المسار حرفياً ([App.tsx:277](): RequireRole sales:FULL على admin/manager/cashier)
+                عبر `moduleAccessAllowed` — فيحترم `permissionsOverride` بكلا الاتجاهين: قالبٌ مسموح لكن
+                منحُه `sales=NONE` لا يعود يرى الزرّ (كان يقود لشاشة ممنوعة)، ودورٌ آخر مُنِح `sales:FULL`
+                صراحةً يراه (مطابقٌ لما ينفّذه الخادم فعلاً — الفحص الأمنيّ الحقيقيّ خادميّ بأي حال). */}
+            {canCreateSale && (
+              <Button size="sm" onClick={() => navigate("/sales/new")}>
+                + فاتورة جديدة
+              </Button>
+            )}
             {(me.data?.role === "admin" || me.data?.role === "manager") && (
               <Button variant="outline" size="sm" onClick={() => navigate("/reports/sales-by-dimension")}>
                 تقرير الموظفين
