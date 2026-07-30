@@ -43,7 +43,11 @@ export type EntryType =
   | "DIGITAL_WALLET_WITHDRAWAL"
   | "DIGITAL_WALLET_CONSUMPTION"
   | "DIGITAL_WALLET_REVERSAL"
-  | "DIGITAL_WALLET_ADJUSTMENT";
+  | "DIGITAL_WALLET_ADJUSTMENT"
+  // شطب نيّةٍ عالقة (٣٠/٧/٢٦، هجرة 0129): كرتٌ صدر ولم يُبَع ⇒ دفعنا الحصة بلا مقابل.
+  // **ليس** حركة أصلٍ صفرية كإخوته أعلاه، بل مصروفٌ بلا نقد على نمط `DELIVERY_WRITEOFF`:
+  // revenue=0، cost=الحصة، profit=−الحصة. وبلا invoiceId ⇒ خارج وعاء العمولة تلقائياً.
+  | "DIGITAL_WRITEOFF";
 
 export interface EntryInput {
   entryType: EntryType;

@@ -71,6 +71,10 @@ const EXTRA_MIGRATIONS = [
   // ٢٩/٧/٢٦: البطاقات الرقمية ش٧ — providerId على بند النيّة + عمود refKey مولَّد + فهرس فريد
   // يمنع تكرار مرجع التنفيذ لدى المزوّد نفسه (نقرتان متزامنتان بنفس الرقم = كرتٌ يُسجَّل مرّتين).
   "drizzle/migrations/0128_digital_intent_reference_uniqueness.sql",
+  // ٣٠/٧/٢٦: شطب النيّة العالقة — توسيع ثلاثة enums (entryType/intent.status/walletTx.type)
+  // + أعمدة أثر الشطب. db:push لا يُمثّل توسيع enum موثوقاً (نظير 0068/0105) ⇒ يلزم تطبيقه
+  // هنا وإلا سقطت اختبارات الشطب على CI بـ«Data truncated for column».
+  "drizzle/migrations/0129_digital_intent_writeoff.sql",
 ];
 
 const url = process.env.DATABASE_URL;

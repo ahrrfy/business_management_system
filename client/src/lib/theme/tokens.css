@@ -310,4 +310,7 @@
   .badge-status-active { color: var(--status-active); background: color-mix(in oklch, var(--status-active) 15%, transparent); }
   .badge-status-done { color: var(--status-done); background: color-mix(in oklch, var(--status-done) 15%, transparent); }
   .badge-status-cancelled { color: var(--status-cancelled); background: color-mix(in oklch, var(--status-cancelled) 15%, transparent); }
+  /* حالةٌ محايدة لا تحمل حكماً (مُرحَّل/صادر/تحت المراجعة) — كانت تُستعمل في شاشات البطاقات
+     الرقمية بلا تعريف فتُعرَض شارةً بلا خلفية ولا لون (جولة بصرية ٣٠/٧). */
+  .badge-status-neutral { color: var(--muted-foreground); background: color-mix(in oklch, var(--muted-foreground) 12%, transparent); }
 }
