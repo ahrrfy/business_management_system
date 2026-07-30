@@ -296,7 +296,7 @@ DIGITAL:WOFF:<intent>          شطب نيّة عالقة
 | **0128** | `providerId` على بند النيّة + `refKey` مولَّد + فهرس فريد | **نعم** (GENERATED) |
 | **0129** | حالتا الشطب + ٥ أعمدة أثر + `WRITEOFF` + `DIGITAL_WRITEOFF` | **نعم** (توسيع enum) |
 | **0130** | عمودا اعتماد التغيير الكبير + FK | لا |
-| **0131** | حذف `REVERSAL_PENDING` الميّتة من `fulfillmentStatus` (بحارس SIGNAL) | **نعم** (تغيّر enum) |
+| **0131** | حذف `REVERSAL_PENDING` الميّتة من `fulfillmentStatus` (بحارس يُوقِف إن وُجد صفٌّ يحملها) | **نعم** (تغيّر enum) |
 
 > **قاعدة:** أيّ عمود مولَّد أو توسيع enum **يجب** إدراجه في `scripts/ci-apply-extra-migrations.mjs` —
 > `db:push` لا يُمثّلهما موثوقاً على قواعد CI.
