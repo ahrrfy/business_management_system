@@ -429,6 +429,14 @@ export default function Invoices() {
         serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total }}
         toolbar={
           <>
+            {/* «+ فاتورة جديدة» — مدخل مرئي لشاشة `/sales/new` (الفاتورة المتقدّمة: آجل/أقساط/خصم إجماليّ/ضريبة).
+                نفس قائمة الأدوار المسموح بها في المسار (App.tsx:277 RequireRole sales:FULL) ⇒ لا زرّ يقود
+                إلى رفض من الخادم. الشاشة كانت مخفيةً بلا مدخل UI فتُكتَشف فقط عبر تخمين URL أو «نسخ لفاتورة». */}
+            {(me.data?.role === "admin" || me.data?.role === "manager" || me.data?.role === "cashier") && (
+              <Button size="sm" onClick={() => navigate("/sales/new")}>
+                + فاتورة جديدة
+              </Button>
+            )}
             {(me.data?.role === "admin" || me.data?.role === "manager") && (
               <Button variant="outline" size="sm" onClick={() => navigate("/reports/sales-by-dimension")}>
                 تقرير الموظفين
