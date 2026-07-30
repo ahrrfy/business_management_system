@@ -91,7 +91,8 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
       conversionFactor: r.conversionFactor,
       stockBase: r.stockBase ?? 0,
       price: r.price ?? "0",
-      costBase: "0",
+      // التكلفة من الخادم للمخوَّل برؤيتها (مدير/أدمن)، وnull لغيره (كاشير) — الحجب في الراوتر.
+      costBase: r.costPriceBase ?? "0",
     }));
   }, [isPurchase, posQ.data, purQ.data]);
 

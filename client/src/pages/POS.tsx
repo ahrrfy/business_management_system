@@ -747,6 +747,9 @@ export default function POS() {
       promotionName: null,
       promotionDiscountForUnit: "0.00",
       promotionEffectivePrice: null,
+      // الكاشير لا يرى التكلفة (يُحجب خادمياً عبر redactPosCost في الحقيقيّ) — الكرت الرقميّ
+      // خدمة بلا تكلفة صنف؛ null متّسق مع نتائج البحث المُحجَبة.
+      costPriceBase: null,
     };
     setCart((raw) => [
       ...resetCouponItems(raw),
