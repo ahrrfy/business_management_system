@@ -695,6 +695,29 @@ export async function payRun(id: number, actor: Actor) {
         dedupeKey: await nextDedupeKey(tx, `PAYROLL:${id}:${Number(it.employeeId)}`),
         notes: `راتب — مسيّر ${run.period}`,
       });
+
+      /*
+       * استقطاع السلفة: أجرٌ **مكتسَبٌ فعلاً** لم يخرج نقداً الآن لأن نقده خرج سلفاً.
+       * بلا هذا القيد يُعترَف مصروفُ الرواتب بالصافي وحده، بينما سندُ السلفة الأصلي
+       * (PAYMENT_OUT بمفتاح غير PAYROLL) لا يدخل قائمة الدخل أبداً ⇒ يختفي المبلغ من
+       * المصروف نهائياً والربحُ مضخَّمٌ به دائماً (موظفٌ بأجر ١م وسلفة ٣٠٠ألف كان يُسجَّل
+       * مصروفُه ٧٠٠ألف فقط). قيدٌ **بلا إيصال** ⇒ يرفع المصروف ولا يمسّ الخزينة
+       * (النقد خرج وقت المنح فعلاً). المفتاح ضمن نطاق PAYROLL% فيدخل قائمة الدخل،
+       * ويُعكَس مع بقية قيود المسيّر عند إلغاء الدفع (PAYROLL-REV).
+       */
+      const advanceRecovered = money(it.advanceDeduction ?? 0);
+      if (advanceRecovered.gt(0)) {
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: empBranchId,
+          receiptId: null,
+          amount: advanceRecovered,
+          revenue: new Decimal(0),
+          entryDate,
+          dedupeKey: await nextDedupeKey(tx, `PAYROLL:${id}:${Number(it.employeeId)}:ADV`),
+          notes: `استرداد سلفة من الراتب — مسيّر ${run.period} (أجرٌ مكتسَب، نقدُه خرج عند المنح)`,
+        });
+      }
     }
 
     // advances (بند 12ج): إنقاص أرصدة السلف بمقدار advanceDeduction المصروف فعلاً —
@@ -804,6 +827,22 @@ export async function cancelRun(id: number, actor: Actor & { enforceCashReturnEv
         dedupeKey: await nextDedupeKey(tx, `PAYROLL-REV:${id}:${Number(it.employeeId)}`),
         notes: `عكس راتب — مسيّر ${run.period}`,
       });
+
+      // مرآةُ قيد استرداد السلفة (بلا إيصال — لم يخرج نقدٌ عنده فلا يعود عنده). بدونها
+      // يبقى مصروفُ السلفة في قائمة الدخل بعد عكس المسيّر ⇒ مصروفٌ بلا مسيّر.
+      const advanceRecovered = money(it.advanceDeduction ?? 0);
+      if (advanceRecovered.gt(0)) {
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: empBranchId,
+          receiptId: null,
+          amount: advanceRecovered.neg(),
+          revenue: new Decimal(0),
+          entryDate,
+          dedupeKey: await nextDedupeKey(tx, `PAYROLL-REV:${id}:${Number(it.employeeId)}:ADV`),
+          notes: `عكس استرداد سلفة — مسيّر ${run.period}`,
+        });
+      }
     }
     // عكس مسيّر مدفوع لا يستعيد أرصدة السلف (remaining) — قرار موثَّق: التسوية وقعت على راتبٍ صُرف،
     // وإعادة الدفع اللاحقة لا تخصمها ثانيةً (isFirstPay). الاستعادة تحدث عند **حذف** المسيّر فقط
