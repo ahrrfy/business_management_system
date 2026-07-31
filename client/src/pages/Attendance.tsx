@@ -15,7 +15,7 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { Clock, Fingerprint, PenLine, Wallet } from "lucide-react";
+import { Clock, Fingerprint, Moon, PenLine, TriangleAlert, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 
@@ -71,6 +71,8 @@ export default function Attendance() {
   const [employeeId, setEmployeeId] = useState("");
   const [period, setPeriod] = useState(currentMonth());
   const [source, setSource] = useState("");
+  // طابور التصحيح: أيام ينقصها إغلاق (نُسيت بصمة الخروج) — تُصحَّح قبل إغلاق الشهر.
+  const [reviewOnly, setReviewOnly] = useState(false);
   const [query, setQuery] = useState("");
 
   const [open, setOpen] = useState(false);
@@ -85,8 +87,9 @@ export default function Attendance() {
       employeeId: employeeId ? Number(employeeId) : undefined,
       period: period || undefined,
       source: (source || undefined) as "fingerprint" | "manual" | undefined,
+      needsReviewOnly: reviewOnly || undefined,
     }),
-    [employeeId, period, source],
+    [employeeId, period, source, reviewOnly],
   );
 
   // البحث خادميّ الآن (اسم/تاريخ/يوم): كان يُصفّي الصفوف المُحمَّلة وحدها (سقف ٣٠٠) ⇒ يقول
@@ -162,6 +165,8 @@ export default function Attendance() {
         <StatCard label="إدخالات يدوية" value={manualCount.toLocaleString("en-US")} sub="تحتاج توثيقاً" accent="var(--stock-low, #d97706)" icon={<PenLine className="size-5" />} />
       </div>
 
+      <NightShiftSettingsCard />
+
       {/* سجل الحضور */}
       <Card>
         <CardHeader>
@@ -184,6 +189,10 @@ export default function Attendance() {
                   <option value="fingerprint">بصمة</option>
                   <option value="manual">يدوي</option>
                 </select>
+                <label className="flex items-center gap-2 h-8 text-sm">
+                  <input type="checkbox" className="size-4" checked={reviewOnly} onChange={(e) => setReviewOnly(e.target.checked)} />
+                  <span className="text-muted-foreground">يحتاج تصحيح فقط</span>
+                </label>
               </>
             }
             exportSpec={{
@@ -232,12 +241,22 @@ export default function Attendance() {
                 {rows.map((r) => {
                   const weekend = r.dayName === "الجمعة" || r.dayName === "السبت";
                   return (
-                    <tr key={r.id} className="border-t hover:bg-accent/40">
+                    <tr key={r.id} className={`border-t hover:bg-accent/40 ${r.needsReview ? "bg-amber-500/5" : ""}`}>
                       <td className="p-2.5">
                         <button onClick={() => navigate(`/hr/employees/${r.employeeId}`)} className="flex items-center gap-2 hover:text-primary">
                           <EmpAvatar name={r.employeeName} color={r.colorTag} photoUrl={r.photoUrl} sizePx={28} />
                           <span className="text-[13px] font-medium">{r.employeeName}</span>
                         </button>
+                        {/* يومٌ ينقصه إغلاق: لا يُخمَّن أجره — يُصحَّح يدوياً قبل إغلاق الشهر. */}
+                        {r.needsReview && (
+                          <div
+                            className="mt-1 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400"
+                            title={r.reviewReason ?? "ينقص تسجيل خروج"}
+                          >
+                            <TriangleAlert aria-hidden className="size-3" />
+                            يحتاج تصحيح
+                          </div>
+                        )}
                       </td>
                       <td className="p-2.5 text-[13px]">{r.dayName}</td>
                       <td className="p-2.5 text-center text-xs tabular-nums" dir="ltr">{r.attendanceDate}</td>
@@ -335,5 +354,75 @@ export default function Attendance() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/**
+ * إعداد الوردية الليلية العابرة منتصف الليل — **معطَّل افتراضياً** بقرار المالك
+ * (يحدث نادراً في المطبعة). بلا تفعيله تُسجَّل وردية 22:00→06:00 يومين ببصمة واحدة
+ * لكلٍّ ⇒ صفر ساعات وصفر أجر لليلة عمل كاملة؛ ومع تفعيله تُغلق بصمةُ الفجر وردية أمس.
+ * تغييره لا يُعيد حساب الماضي (مسيّرات سابقة قد تكون بُنيت على الأرقام القديمة).
+ */
+function NightShiftSettingsCard() {
+  const utils = trpc.useUtils();
+  const q = trpc.attendance.settings.useQuery();
+  const [open, setOpen] = useState(false);
+  const save = trpc.attendance.updateSettings.useMutation({
+    onSuccess: async () => { notify.ok("حُفظت إعدادات احتساب الحضور"); await utils.attendance.settings.invalidate(); setOpen(false); },
+    onError: (e) => notify.err(e),
+  });
+  const s = q.data;
+  const [enabled, setEnabled] = useState(false);
+  const [cutoff, setCutoff] = useState(8);
+  useEffect(() => {
+    if (open && s) { setEnabled(!!s.nightShiftEnabled); setCutoff(Number(s.nightShiftCutoffHour ?? 8)); }
+  }, [open, s]);
+
+  return (
+    <Card>
+      <CardContent className="p-3 flex items-center justify-between gap-3 flex-wrap text-sm">
+        <div className="flex items-center gap-2">
+          <Moon aria-hidden className="size-4 text-muted-foreground" />
+          <span>الورديات الليلية العابرة منتصف الليل:</span>
+          <span className={s?.nightShiftEnabled ? "font-medium text-[var(--status-active,#16a34a)]" : "text-muted-foreground"}>
+            {q.isLoading ? "…" : s?.nightShiftEnabled ? `مفعَّلة (حتى ${s.nightShiftCutoffHour}:00 صباحاً)` : "معطَّلة"}
+          </span>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => setOpen(true)}>تعديل</Button>
+      </CardContent>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>احتساب الورديات الليلية</DialogTitle></DialogHeader>
+          <div className="space-y-3 text-sm">
+            <label className="flex items-start gap-2">
+              <input type="checkbox" className="size-4 mt-0.5" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+              <span>
+                <span className="font-medium">اعتبر بصمة الفجر إغلاقاً لوردية أمس</span>
+                <span className="block text-xs text-muted-foreground mt-0.5">
+                  بدونها تُسجَّل وردية 22:00 ← 06:00 يومين ببصمة واحدة لكلٍّ، فتُحتسب صفر ساعات وصفر أجر لليلة عمل كاملة.
+                </span>
+              </span>
+            </label>
+            <div className="space-y-1">
+              <Label htmlFor="ns-cutoff">ساعة الفصل (صباحاً)</Label>
+              <Input id="ns-cutoff" type="number" min={1} max={12} dir="ltr" value={cutoff} disabled={!enabled} onChange={(e) => setCutoff(Number(e.target.value))} />
+              <p className="text-xs text-muted-foreground">
+                أيّ بصمة قبل هذه الساعة تُغلق وردية اليوم السابق إن كانت مفتوحة. بعدها تُعدّ بدايةَ يومٍ جديد.
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground border-t pt-2">
+              التغيير لا يُعيد حساب أيام مسجَّلة سابقاً — يسري على ما يصل بعده.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
+            <Button disabled={save.isPending} onClick={() => save.mutate({ nightShiftEnabled: enabled, nightShiftCutoffHour: cutoff })}>
+              {save.isPending ? "جارٍ الحفظ…" : "حفظ"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
   );
 }

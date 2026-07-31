@@ -7,7 +7,7 @@
  * ========================================================================== */
 import { and, desc, eq, getTableColumns, inArray, like, or, sql, type SQL } from "drizzle-orm";
 import { DAY_RATES_DEFAULT, WEEK_DAYS, fullEmployeeName } from "@shared/hr";
-import { attendance, employees, payrollRuns } from "../../drizzle/schema";
+import { attendance, employees, hrAttendanceSettings, payrollRuns } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
@@ -44,6 +44,8 @@ export interface AttendanceFilters {
   source?: string;
   /** بحث نصّي: اسم الموظف (رباعيّ) أو التاريخ أو اسم اليوم العربي. */
   q?: string;
+  /** أيام ينقصها إغلاق فقط — طابور التصحيح قبل إغلاق الشهر (0137). */
+  needsReviewOnly?: boolean;
 }
 
 /**
@@ -56,6 +58,7 @@ function buildAttendanceConds(filters?: AttendanceFilters): SQL[] {
   if (filters?.employeeId) conds.push(eq(attendance.employeeId, filters.employeeId));
   if (filters?.period) conds.push(like(attendance.attendanceDate, `${filters.period}%`));
   if (filters?.source) conds.push(eq(attendance.source, filters.source));
+  if (filters?.needsReviewOnly) conds.push(eq(attendance.needsReview, true));
   const q = filters?.q?.trim();
   if (q) {
     const pat = `%${escLike(q)}%`;
@@ -181,6 +184,41 @@ export async function formOptions() {
   return rows.map((e) => ({ id: e.id, name: fullEmployeeName(e) }));
 }
 
+/* ─────────────────── إعدادات احتساب الحضور (صفّ مفرد) ─────────────────── */
+
+/** يقرأ الإعدادات ويُنشئ الصفّ المفرد بقيمه الافتراضية عند غيابه (لا حالة ضمنية). */
+export async function getAttendanceSettings() {
+  const db = requireDb();
+  const [row] = await db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
+  if (row) return row;
+  return { id: 1, nightShiftEnabled: false, nightShiftCutoffHour: 8, updatedBy: null, updatedAt: new Date() };
+}
+
+/**
+ * تحديث إعدادات الاحتساب. تغيير الوردية الليلية **لا يعيد حساب الماضي** — الأيام
+ * المطويّة تبقى كما هي؛ ما يصل بعد التغيير يُحتسب بالسياسة الجديدة (وأيّ يوم يُعاد
+ * طيّه بوصول بصمة متأخرة يُعاد حسابه كاملاً بها). عدم إعادة الحساب مقصود: مسيّرات
+ * سابقة قد تكون بُنيت على الأرقام القديمة.
+ */
+export async function updateAttendanceSettings(
+  input: { nightShiftEnabled: boolean; nightShiftCutoffHour: number },
+  actorUserId: number,
+) {
+  if (!Number.isInteger(input.nightShiftCutoffHour) || input.nightShiftCutoffHour < 1 || input.nightShiftCutoffHour > 12) {
+    throw new Error("ساعة الفصل يجب أن تكون بين ١ و١٢ صباحاً");
+  }
+  return withTx(async (tx) => {
+    await tx
+      .insert(hrAttendanceSettings)
+      .values({ id: 1, nightShiftEnabled: input.nightShiftEnabled, nightShiftCutoffHour: input.nightShiftCutoffHour, updatedBy: actorUserId })
+      .onDuplicateKeyUpdate({
+        set: { nightShiftEnabled: input.nightShiftEnabled, nightShiftCutoffHour: input.nightShiftCutoffHour, updatedBy: actorUserId },
+      });
+    const [row] = await tx.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
+    return row!;
+  });
+}
+
 export interface RecordAttendanceInput {
   employeeId: number;
   attendanceDate: string; // YYYY-MM-DD
@@ -190,6 +228,9 @@ export interface RecordAttendanceInput {
   status?: "PRESENT" | "ABSENT" | "LATE" | "LEAVE";
   source?: string;
   notes?: string | null;
+  /** يومٌ ينقصه إغلاق — يضعه الطيّ التلقائي. الإدخال/التصحيح اليدوي يُطفئه دائماً. */
+  needsReview?: boolean;
+  reviewReason?: string | null;
 }
 
 /** يُحوّل وقت "HH:MM" في يوم الحضور إلى Date لعمود timestamp (أو null).
@@ -254,6 +295,9 @@ export async function recordAttendance(input: RecordAttendanceInput) {
       hourlyRate: toDbMoney(rate),
       amount: toDbMoney(amount),
       source: input.source ?? "manual",
+      // التصحيح اليدوي هو الحسم: مديرٌ أدخل اليوم صراحةً ⇒ لم يعد ناقصاً مهما قال الطيّ.
+      needsReview: (input.source ?? "manual") === "manual" ? false : !!input.needsReview,
+      reviewReason: (input.source ?? "manual") === "manual" ? null : input.reviewReason?.slice(0, 120) ?? null,
     } as const;
 
     const [existing] = await tx

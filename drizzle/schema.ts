@@ -2203,11 +2203,19 @@ export const attendance = mysqlTable(
     hourlyRate: decimal("hourlyRate", { precision: 15, scale: 2 }),
     amount: decimal("amount", { precision: 15, scale: 2 }),
     source: varchar("source", { length: 20 }).default("fingerprint"), // fingerprint | manual
+    /**
+     * يومٌ ينقصه إغلاق (عدد بصمات فرديّ) — 0137. لا يُخمَّن أجره ولا يمرّ صامتاً بصفر ساعات:
+     * يُوسَم ليصحّحه المدير يدوياً قبل إغلاق الشهر. التصحيح اليدوي يُطفئ الوسم.
+     */
+    needsReview: boolean("needsReview").default(false).notNull(),
+    reviewReason: varchar("reviewReason", { length: 120 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
     employeeIdx: index("idx_att_employee").on(table.employeeId),
     dateIdx: index("idx_att_date").on(table.attendanceDate),
+    // طابور التصحيح: الأيام الناقصة قليلة وسط آلاف الصفوف ⇒ فهرس جزئيّ المعنى على العلم+التاريخ.
+    reviewIdx: index("idx_att_review").on(table.needsReview, table.attendanceDate),
     // مفتاح فريد ليوم/موظف: يضمن سجلّ حضور واحد لكل (موظف، تاريخ) فيمنع ازدواج
     // الصفوف الذي يضاعف ساعات/مبالغ مسيّر الرواتب (تكامل مالي). يدعم UPSERT الخدمة.
     employeeDateUq: unique("uq_att_employee_date").on(table.employeeId, table.attendanceDate),
@@ -3147,6 +3155,21 @@ export type JobApplicant = typeof jobApplicants.$inferSelect;
 export type InsertJobApplicant = typeof jobApplicants.$inferInsert;
 
 /* أجهزة البصمة (الموارد البشرية) + شاشة الهجرة من المزوّد المدفوع إلى خادم الرؤية. */
+/**
+ * إعدادات احتساب الحضور (صفّ مفرد id=1) — 0137.
+ * الوردية الليلية العابرة منتصف الليل نادرة في المطبعة (قرار مالك) ⇒ **معطَّلة افتراضياً**:
+ * تفعيلها يجعل بصمة الفجر تُغلق وردية أمس بدل أن تفتح يوماً جديداً بصفر ساعات.
+ */
+export const hrAttendanceSettings = mysqlTable("hrAttendanceSettings", {
+  id: int("id").primaryKey().default(1),
+  nightShiftEnabled: boolean("nightShiftEnabled").default(false).notNull(),
+  /** بصمةٌ قبل هذه الساعة في يومٍ تالٍ تُعدّ إغلاقاً لوردية أمس (0-23). */
+  nightShiftCutoffHour: int("nightShiftCutoffHour").default(8).notNull(),
+  updatedBy: int("updatedBy").references(() => users.id),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type HrAttendanceSettings = typeof hrAttendanceSettings.$inferSelect;
+
 export const hrFingerprintDevices = mysqlTable(
   "hrFingerprintDevices",
   {

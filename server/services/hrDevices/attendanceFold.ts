@@ -14,15 +14,38 @@
  *     والحلقة تستنزف كل المعلَّق دفعةً بعد دفعة (لا سقف يترك بقيةً غير مطويّة).
  * ========================================================================== */
 import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
-import { attendance, employees, hrAttendancePunches } from "../../../drizzle/schema";
+import { attendance, employees, hrAttendancePunches, hrAttendanceSettings } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
 import { logger } from "../../logger";
 import { recordAttendance } from "../attendanceService";
-import { round2 } from "../money";
+import { computeDayHours, DEFAULT_NIGHT_SHIFT, type NightShiftOptions } from "./dayHours";
 
-/** "YYYY-MM-DD HH:MM:SS" → ميلي ثانية (لاحقة Z ثابتة: فرق توقيتَي حائط لا يتأثر بالمنطقة). */
-function wallMs(s: string): number {
-  return new Date(`${s.replace(" ", "T")}Z`).getTime();
+/** إزاحة تاريخ نصّي بأيام (UTC نقيّ — لا انزياح منطقة زمنية). */
+function shiftDate(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** بصمات (موظف × يوم) مرتّبة — مصدر واحد يستعمله اليوم وجاراه في الوردية الليلية. */
+async function punchTimesOf(employeeId: number, date: string): Promise<string[]> {
+  const rows = await requireDb()
+    .select({ punchAt: hrAttendancePunches.punchAt })
+    .from(hrAttendancePunches)
+    .where(and(eq(hrAttendancePunches.employeeId, employeeId), sql`${hrAttendancePunches.punchAt} LIKE ${date + "%"}`))
+    .orderBy(asc(hrAttendancePunches.punchAt));
+  return rows.map((r) => String(r.punchAt));
+}
+
+/** إعدادات الاحتساب (صفّ مفرد) — الغياب = الافتراضي المعطَّل، فلا تفشل الوحدة قبل الهجرة/البذر. */
+async function loadNightShift(): Promise<NightShiftOptions> {
+  try {
+    const [row] = await requireDb().select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
+    if (!row) return DEFAULT_NIGHT_SHIFT;
+    return { enabled: !!row.nightShiftEnabled, cutoffHour: Number(row.nightShiftCutoffHour ?? 8) };
+  } catch {
+    return DEFAULT_NIGHT_SHIFT;
+  }
 }
 
 let folding = false;
@@ -47,6 +70,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
     .orderBy(asc(hrAttendancePunches.punchAt))
     .limit(5000);
   if (pending.length === 0) return { days: 0, parked: 0, processedAny: false };
+  const night = await loadNightShift();
 
   // تجميع (موظف × يوم) — punchAt نص "YYYY-MM-DD HH:MM:SS" فاليوم = أول ١٠ خانات.
   const groups = new Map<string, { employeeId: number; date: string; ids: number[] }>();
@@ -83,30 +107,34 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
     }
 
     // كل بصمات اليوم (معالجة وغير معالجة) — إعادة حساب اليوم كاملاً عند كل وصول جديد.
-    const dayPunches = await db
-      .select({ punchAt: hrAttendancePunches.punchAt })
-      .from(hrAttendancePunches)
-      .where(
-        and(
-          eq(hrAttendancePunches.employeeId, g.employeeId),
-          sql`${hrAttendancePunches.punchAt} LIKE ${g.date + "%"}`
-        )
-      )
-      .orderBy(asc(hrAttendancePunches.punchAt));
-    const times = dayPunches.map((r) => String(r.punchAt));
-    const first = times[0];
-    const last = times[times.length - 1];
-    const hours = times.length > 1 ? round2((wallMs(last) - wallMs(first)) / 3_600_000).toString() : "0";
+    // ومعها يوما الجوار حين تُفعَّل الوردية الليلية: الإسناد حتميّ يُستنتَج من الجيران
+    // لا من حالةٍ مخزَّنة، فيعطي النتيجة نفسها مهما تكرّر الطيّ.
+    const times = await punchTimesOf(g.employeeId, g.date);
+    const [prevTimes, nextTimes] = night.enabled
+      ? await Promise.all([punchTimesOf(g.employeeId, shiftDate(g.date, -1)), punchTimesOf(g.employeeId, shiftDate(g.date, 1))])
+      : [[], []];
+    const day = computeDayHours(times, prevTimes, nextTimes, night);
+    if (day.usedCount === 0) {
+      // كل بصمات اليوم مملوكة لوردية أمس ⇒ لا يوم هنا. توسَم معالَجةً كي لا تدور أبداً.
+      await db
+        .update(hrAttendancePunches)
+        .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "أُسندت لوردية اليوم السابق" })
+        .where(inArray(hrAttendancePunches.id, g.ids));
+      parked++;
+      continue;
+    }
     try {
       await recordAttendance({
         employeeId: g.employeeId,
         attendanceDate: g.date,
-        hours,
-        checkIn: first.slice(11, 16),
-        checkOut: times.length > 1 ? last.slice(11, 16) : null,
+        hours: day.hours,
+        checkIn: day.checkIn,
+        checkOut: day.checkOut,
         status: "PRESENT",
         source: "fingerprint",
         notes: null,
+        needsReview: day.needsReview,
+        reviewReason: day.reviewReason,
       });
       await db
         .update(hrAttendancePunches)

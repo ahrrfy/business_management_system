@@ -953,6 +953,13 @@
       "when": 1787270600000,
       "tag": "0136_hr_device_link_governance",
       "breakpoints": true
+    },
+    {
+      "idx": 137,
+      "version": "5",
+      "when": 1787357000000,
+      "tag": "0137_attendance_pairing_and_review",
+      "breakpoints": true
     }
   ]
 }
