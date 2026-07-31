@@ -242,7 +242,7 @@ export default function Attendance() {
                 {rows.map((r) => {
                   const weekend = r.dayName === "الجمعة" || r.dayName === "السبت";
                   return (
-                    <tr key={r.id} className={`border-t hover:bg-accent/40 ${r.needsReview ? "bg-amber-500/5" : ""}`}>
+                    <tr key={r.id} className={`border-t hover:bg-accent/40 ${r.needsReview ? "bg-[var(--sem-warn-bg)]/50" : ""}`}>
                       <td className="p-2.5">
                         <button onClick={() => navigate(`/hr/employees/${r.employeeId}`)} className="flex items-center gap-2 hover:text-primary">
                           <EmpAvatar name={r.employeeName} color={r.colorTag} photoUrl={r.photoUrl} sizePx={28} />
@@ -251,7 +251,7 @@ export default function Attendance() {
                         {/* يومٌ ينقصه إغلاق: لا يُخمَّن أجره — يُصحَّح يدوياً قبل إغلاق الشهر. */}
                         {r.needsReview && (
                           <div
-                            className="mt-1 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400"
+                            className="mt-1 inline-flex items-center gap-1 rounded-full border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] text-[var(--sem-warn)]"
                             title={r.reviewReason ?? "ينقص تسجيل خروج"}
                           >
                             <TriangleAlert aria-hidden className="size-3" />

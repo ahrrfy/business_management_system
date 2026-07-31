@@ -238,8 +238,8 @@ export default function EmployeeDetail() {
             <div className="space-y-1"><Label htmlFor="tdate">تاريخ آخر يوم عمل</Label><Input id="tdate" type="date" dir="ltr" value={tDate} onChange={(ev) => setTDate(ev.target.value)} /></div>
             <div className="space-y-1"><Label htmlFor="treason">السبب</Label><Textarea id="treason" rows={2} value={tReason} onChange={(ev) => setTReason(ev.target.value)} placeholder="انتهاء عقد / استقالة / …" /></div>
             {(e.userId || (e.deviceLinks ?? []).length > 0) && (
-              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs space-y-1">
-                <div className="font-medium text-amber-800 dark:text-amber-300">سيُنفَّذ تلقائياً مع الفصل:</div>
+              <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs space-y-1">
+                <div className="font-medium text-[var(--sem-warn)]">سيُنفَّذ تلقائياً مع الفصل:</div>
                 <ul className="list-disc ps-4 space-y-0.5 text-muted-foreground">
                   {e.userId && <li>تعطيل حساب دخوله للنظام وإنهاء جلساته المفتوحة فوراً.</li>}
                   {(e.deviceLinks ?? []).length > 0 && (

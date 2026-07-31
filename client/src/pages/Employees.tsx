@@ -133,7 +133,7 @@ export default function Employees() {
                             {/* بلا ربطٍ بجهاز الحضور لا تصل بصماته لسجل الحضور أصلاً — يُكتشف يوم الراتب بصفر ساعات. */}
                             {e.employmentStatus === "active" && !e.deviceLinked && (
                               <span
-                                className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-normal text-amber-700 dark:text-amber-400"
+                                className="inline-flex items-center gap-1 rounded-full border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] text-[var(--sem-warn)] font-normal"
                                 title="لم يُربط برقم على جهاز الحضور — بصماته لن تُحتسب في الحضور ولا في الراتب"
                               >
                                 <Fingerprint aria-hidden className="size-3" />

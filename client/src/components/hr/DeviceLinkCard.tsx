@@ -95,7 +95,7 @@ export function DeviceLinkCard({
   const noLinks = links.length === 0;
 
   return (
-    <Card className={noLinks && !isTerminated ? "border-amber-500/50" : undefined}>
+    <Card className={noLinks && !isTerminated ? "border-[var(--sem-warn)]/50" : undefined}>
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
           <Fingerprint aria-hidden className="size-4" />
@@ -104,10 +104,10 @@ export function DeviceLinkCard({
       </CardHeader>
       <CardContent className="space-y-3">
         {noLinks ? (
-          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
-            <TriangleAlert aria-hidden className="size-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm">
+            <TriangleAlert aria-hidden className="size-4 mt-0.5 shrink-0 text-[var(--sem-warn)]" />
             <div>
-              <div className="font-medium text-amber-800 dark:text-amber-300">هذا الموظف غير مربوط بأي جهاز حضور</div>
+              <div className="font-medium text-[var(--sem-warn)]">هذا الموظف غير مربوط بأي جهاز حضور</div>
               <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
                 الجهاز يرسل رقماً داخلياً لا اسماً. بلا ربطٍ بين رقمه في الجهاز وهذا الموظف، تُخزَّن بصماته
                 ولا تتحوّل إلى ساعات حضور ولا تدخل مسيّر الرواتب — ويظهر بصفر ساعات.
