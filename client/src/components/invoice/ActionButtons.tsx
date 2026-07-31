@@ -4,7 +4,7 @@
  *
  * The page wires `onAction` to real tRPC mutations (e.g. sale.create, quotation.convert).
  */
-import { Check, ClipboardList, FilePen, FileText, Printer, RefreshCw, Send, Undo2, Zap } from "lucide-react";
+import { Check, ClipboardList, ClipboardPaste, FilePen, FileText, Printer, RefreshCw, Send, Undo2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { INVOICE_TYPES, type InvoiceLine, type InvoiceType } from "./types";
@@ -17,6 +17,7 @@ export type InvoiceActionKind =
   | "pdf"
   | "convert"
   | "duplicate"
+  | "paste"
   | "return";
 
 export interface ActionButtonsProps {
@@ -25,9 +26,10 @@ export interface ActionButtonsProps {
   onAction: (action: InvoiceActionKind) => void;
   /** Disable the primary save (e.g. while a mutation is in flight). */
   saving?: boolean;
+  pasteAvailable?: boolean;
 }
 
-export function ActionButtons({ invoiceType, items, onAction, saving }: ActionButtonsProps) {
+export function ActionButtons({ invoiceType, items, onAction, saving, pasteAvailable = false }: ActionButtonsProps) {
   const typeInfo = INVOICE_TYPES[invoiceType];
   const isQuote = invoiceType === "QUOTATION";
   const hasItems = items.length > 0;
@@ -101,9 +103,25 @@ export function ActionButtons({ invoiceType, items, onAction, saving }: ActionBu
       )}
 
       <div className="flex gap-1.5 border-t border-dashed pt-2">
-        <Button type="button" variant="outline" onClick={() => onAction("duplicate")} className="h-9 flex-1 text-xs">
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!hasItems}
+          onClick={() => onAction("duplicate")}
+          className="h-9 flex-1 text-xs"
+        >
           <ClipboardList aria-hidden className="size-3.5" /> نسخ
         </Button>
+        {pasteAvailable && (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onAction("paste")}
+            className="h-9 flex-1 border-primary/40 bg-primary/10 text-xs text-primary hover:bg-primary/20"
+          >
+            <ClipboardPaste aria-hidden className="size-3.5" /> لصق
+          </Button>
+        )}
         <Button
           type="button"
           variant="outline"
