@@ -4,6 +4,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { DocumentWhatsAppDialog } from "@/components/DocumentWhatsAppDialog";
@@ -535,7 +536,7 @@ export default function InvoiceDetail() {
           <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
             <div className="space-y-1">
               <Label>المبلغ (المتبقّي: <CopyInline value={remaining.toFixed(2)} display={fmt(remaining.toFixed(2))} mono={false} />)</Label>
-              <Input dir="ltr" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
+              <MoneyInput value={payAmount} onChange={setPayAmount} ariaLabel="مبلغ الدفعة" />
             </div>
             <div className="space-y-1">
               <Label>طريقة الدفع</Label>

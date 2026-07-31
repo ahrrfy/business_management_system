@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { confirm } from "@/lib/confirm";
@@ -339,7 +340,7 @@ export default function WorkOrderDetail() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
               <div className="space-y-1">
                 <Label>المبلغ المدفوع الآن (الافتراضي = المستحق)</Label>
-                <Input dir="ltr" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="الرصيد المستحق" />
+                <MoneyInput value={payAmount} onChange={setPayAmount} placeholder="الرصيد المستحق" ariaLabel="مبلغ الدفعة" />
               </div>
               <div className="space-y-1">
                 <Label>طريقة الدفع</Label>

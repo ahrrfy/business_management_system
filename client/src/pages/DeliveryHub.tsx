@@ -5,6 +5,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Badge } from "@/components/ui/badge";
 import { CashCounter } from "@/components/CashCounter";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -286,7 +287,7 @@ function DispatchDialog({ order, parties, pending, onClose, onConfirm }: {
           </div>
           <div>
             <label className="mb-1.5 block text-sm font-bold">أجرة التوصيل (د.ع)</label>
-            <Input dir="ltr" inputMode="decimal" value={fee} onChange={(e) => setFee(e.target.value)} className="h-11 text-end tabular-nums" />
+            <MoneyInput value={fee} onChange={setFee} className="h-11 text-end tabular-nums" ariaLabel="أجرة التوصيل" />
           </div>
         </div>
         <div className="mb-4 space-y-1 rounded-md border bg-muted/30 p-3 text-sm">

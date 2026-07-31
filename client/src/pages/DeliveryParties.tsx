@@ -6,6 +6,8 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Badge } from "@/components/ui/badge";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
@@ -206,9 +208,9 @@ function CreatePartyDialog({ onClose, onDone }: { onClose: () => void; onDone: (
       <label className="mb-1.5 block text-sm font-bold">الاسم</label>
       <Input value={name} onChange={(e) => setName(e.target.value)} className="mb-3 h-11" />
       <label className="mb-1.5 block text-sm font-bold">الهاتف</label>
-      <Input dir="ltr" value={phone} onChange={(e) => setPhone(e.target.value)} className="mb-3 h-11 text-end" />
+      <IntlPhoneInput value={phone} onChange={setPhone} className="mb-3" ariaLabel="هاتف جهة التوصيل" />
       <label className="mb-1.5 block text-sm font-bold">أجرة توصيل افتراضية (د.ع)</label>
-      <Input dir="ltr" inputMode="decimal" value={defaultFee} onChange={(e) => setDefaultFee(e.target.value)} className="mb-3 h-11 text-end tabular-nums" />
+      <MoneyInput value={defaultFee} onChange={setDefaultFee} className="mb-3 h-11 text-end tabular-nums" ariaLabel="الأجرة الافتراضية" />
       {partyType === "INDIVIDUAL" && (
         <>
           <label className="mb-1.5 block text-sm font-bold">حساب الدخول للمندوب (اختياري)</label>
@@ -239,7 +241,7 @@ function SettleDialog({ party, onClose, onDone }: { party: Party; onClose: () =>
     <Modal title={`تسوية عهدة «${party.name}»`} onClose={onClose}>
       <p className="mb-3 text-sm text-muted-foreground">العهدة الحالية: <span dir="ltr" className="font-bold tabular-nums">{fmt(party.currentBalance)} د.ع</span>. يدفع المندوب نقداً (يدخل درج وردية مفتوحة).</p>
       <label className="mb-1.5 block text-sm font-bold">المبلغ المُسدَّد (د.ع)</label>
-      <Input dir="ltr" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className="mb-4 h-11 text-end text-lg font-bold tabular-nums" />
+      <MoneyInput value={amount} onChange={setAmount} className="mb-4 h-11 text-end text-lg font-bold tabular-nums" ariaLabel="مبلغ التسديد" />
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
         <Button className="flex-1" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0} onClick={() => m.mutate({ partyId: party.id, amount, clientRequestId: reqId })}>{m.isPending ? "جارٍ…" : "تسجيل التسوية"}</Button>
@@ -262,7 +264,7 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
     <Modal title={`شطب عجز «${party.name}»`} onClose={onClose}>
       <p className="mb-3 text-sm text-destructive">إبراء دَين غير قابل للتحصيل — يُقيَّد خسارةً. (مدير فقط)</p>
       <label className="mb-1.5 block text-sm font-bold">المبلغ المشطوب (د.ع)</label>
-      <Input dir="ltr" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className="mb-3 h-11 text-end text-lg font-bold tabular-nums" />
+      <MoneyInput value={amount} onChange={setAmount} className="mb-3 h-11 text-end text-lg font-bold tabular-nums" ariaLabel="مبلغ التعديل" allowNegative />
       <label className="mb-1.5 block text-sm font-bold">السبب</label>
       <Input value={reason} onChange={(e) => setReason(e.target.value)} className="mb-4 h-11" placeholder="سبب الشطب (٣ أحرف فأكثر)" />
       <div className="flex gap-2.5">

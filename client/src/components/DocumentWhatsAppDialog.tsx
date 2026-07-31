@@ -11,6 +11,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -185,12 +186,11 @@ export function DocumentWhatsAppDialog({
 
           <div className="space-y-1.5">
             <Label htmlFor={`wa-phone-${kind}-${documentId}`}>رقم واتساب العميل</Label>
-            <Input
+            <IntlPhoneInput
               id={`wa-phone-${kind}-${documentId}`}
-              dir="ltr"
               value={phone}
-              onChange={(event) => setPhone(event.target.value)}
-              placeholder="+9647701234567"
+              onChange={setPhone}
+              ariaLabel="رقم واتساب العميل"
             />
           </div>
 

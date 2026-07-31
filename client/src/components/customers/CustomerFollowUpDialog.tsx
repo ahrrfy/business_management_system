@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -107,7 +108,7 @@ export function CustomerFollowUpDialog({
           </div>
           <div className="space-y-1">
             <Label htmlFor="follow-amount">المبلغ المرتبط</Label>
-            <Input id="follow-amount" inputMode="decimal" dir="ltr" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />
+            <MoneyInput id="follow-amount" value={amount} onChange={setAmount} ariaLabel="مبلغ المتابعة" />
           </div>
           <div className="space-y-1">
             <Label htmlFor="follow-date">تاريخ المتابعة/الوعد</Label>

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -339,7 +340,7 @@ export default function AssetDetail() {
               <div className="space-y-1"><Label htmlFor="maintType">النوع *</Label><Input id="maintType" value={mType} onChange={(e) => setMType(e.target.value)} placeholder="صيانة دورية / استبدال قطعة" /></div>
               <div className="space-y-1"><Label>التاريخ</Label><Input type="date" dir="ltr" value={mDate} onChange={(e) => setMDate(e.target.value)} /></div>
               <div className="space-y-1"><Label>المزوّد</Label><Input value={mVendor} onChange={(e) => setMVendor(e.target.value)} /></div>
-              <div className="space-y-1"><Label htmlFor="maintCost">التكلفة (د.ع)</Label><Input id="maintCost" dir="ltr" inputMode="decimal" value={mCost} onChange={(e) => setMCost(e.target.value)} placeholder="0" /></div>
+              <div className="space-y-1"><Label htmlFor="maintCost">التكلفة (د.ع)</Label><MoneyInput id="maintCost" value={mCost} onChange={setMCost} decimals={0} /></div>
             </div>
             <div className="space-y-1"><Label>ملاحظات</Label><Textarea rows={2} value={mNote} onChange={(e) => setMNote(e.target.value)} /></div>
           </div>
@@ -379,7 +380,7 @@ export default function AssetDetail() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1"><Label>التاريخ</Label><Input type="date" dir="ltr" value={dDate} onChange={(e) => setDDate(e.target.value)} /></div>
-              {dKind === "disposed" && <div className="space-y-1"><Label htmlFor="disposeValue">العائد (د.ع)</Label><Input id="disposeValue" dir="ltr" inputMode="decimal" value={dValue} onChange={(e) => setDValue(e.target.value)} placeholder="0" /></div>}
+              {dKind === "disposed" && <div className="space-y-1"><Label htmlFor="disposeValue">العائد (د.ع)</Label><MoneyInput id="disposeValue" value={dValue} onChange={setDValue} decimals={0} /></div>}
             </div>
             <div className="space-y-1"><Label>السبب</Label><Textarea rows={2} value={dReason} onChange={(e) => setDReason(e.target.value)} /></div>
             {dKind === "disposed" && dValue.trim() && Number.isFinite(Number(dValue)) && (

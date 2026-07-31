@@ -6,6 +6,8 @@ import { useEffect, useState } from "react";
 import { Loader2, Megaphone, Phone, Power, Save, Truck } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { MoneyInput } from "@/components/form/MoneyInput";
 
 export default function StoreSettingsPanel() {
   const utils = trpc.useUtils();
@@ -59,12 +61,12 @@ export default function StoreSettingsPanel() {
 
       <label className="block text-sm">
         <span className="mb-1 flex items-center gap-1.5 font-medium text-muted-foreground"><Phone aria-hidden className="size-4" /> رقم واتساب المتجر (اختياري)</span>
-        <input value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} dir="ltr" placeholder="+9647XXXXXXXXX" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-left outline-none focus:ring-2 focus:ring-primary/30" />
+        <IntlPhoneInput value={form.whatsappNumber} onChange={(whatsappNumber) => setForm({ ...form, whatsappNumber })} ariaLabel="رقم واتساب المتجر" />
       </label>
 
       <label className="block text-sm">
         <span className="mb-1 flex items-center gap-1.5 font-medium text-muted-foreground"><Truck aria-hidden className="size-4" /> عتبة التوصيل المجاني بالدينار (اختياري)</span>
-        <input value={form.freeShippingThreshold} onChange={(e) => setForm({ ...form, freeShippingThreshold: e.target.value.replace(/[^\d.]/g, "") })} inputMode="numeric" dir="ltr" placeholder="مثال: 50000 (اتركه فارغاً للتعطيل)" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-left outline-none focus:ring-2 focus:ring-primary/30" />
+        <MoneyInput value={form.freeShippingThreshold} onChange={(freeShippingThreshold) => setForm({ ...form, freeShippingThreshold })} decimals={0} placeholder="مثال: 50,000 (اتركه فارغاً للتعطيل)" ariaLabel="حد الشحن المجاني" />
         <span className="mt-1 block text-xs text-muted-foreground">إن بلغ طلب الزبون هذا المبلغ ⇒ توصيل مجاني (يرفع متوسط قيمة الطلب).</span>
       </label>
 

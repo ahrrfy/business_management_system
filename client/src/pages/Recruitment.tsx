@@ -18,6 +18,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ErrorState } from "@/components/PageState";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { Input } from "@/components/ui/input";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -430,7 +431,7 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
           </div>
           <div className="space-y-1.5">
             <Label>الهاتف</Label>
-            <Input value={phone} onChange={(e) => setPhone(e.target.value)} dir="ltr" placeholder="07XX ..." />
+            <IntlPhoneInput value={phone} onChange={setPhone} ariaLabel="هاتف المرشح" />
           </div>
           <div className="space-y-1.5">
             <Label>الوظيفة المتقدّم لها</Label>

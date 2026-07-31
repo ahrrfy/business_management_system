@@ -9,6 +9,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -399,14 +400,23 @@ export default function CommissionPlans() {
                   {fTiers.map((t, i) => (
                     <div key={i} className="grid grid-cols-[2rem_1fr_1fr_1fr_2.25rem] items-center gap-2">
                       <span className="text-center text-xs font-medium text-muted-foreground tabular-nums">{i + 1}</span>
-                      <Input
-                        value={t.threshold}
-                        onChange={(e) => setTier(i, "threshold", e.target.value)}
-                        dir="ltr"
-                        inputMode="decimal"
-                        className="tabular-nums"
-                        aria-label={`حدّ المستوى ${i + 1}`}
-                      />
+                      {fMode === "AMOUNT_SLAB" ? (
+                        <MoneyInput
+                          value={t.threshold}
+                          onChange={(value) => setTier(i, "threshold", value)}
+                          className="tabular-nums"
+                          ariaLabel={`مبلغ حدّ المستوى ${i + 1}`}
+                        />
+                      ) : (
+                        <Input
+                          value={t.threshold}
+                          onChange={(e) => setTier(i, "threshold", e.target.value)}
+                          dir="ltr"
+                          inputMode="decimal"
+                          className="tabular-nums"
+                          aria-label={`حدّ المستوى ${i + 1}`}
+                        />
+                      )}
                       <Input
                         value={t.ratePct}
                         onChange={(e) => setTier(i, "ratePct", e.target.value)}
@@ -416,13 +426,11 @@ export default function CommissionPlans() {
                         placeholder="2"
                         aria-label={`نسبة المستوى ${i + 1}`}
                       />
-                      <Input
+                      <MoneyInput
                         value={t.fixedBonus}
-                        onChange={(e) => setTier(i, "fixedBonus", e.target.value)}
-                        dir="ltr"
-                        inputMode="decimal"
+                        onChange={(value) => setTier(i, "fixedBonus", value)}
                         className="tabular-nums"
-                        aria-label={`مكافأة المستوى ${i + 1}`}
+                        ariaLabel={`مكافأة المستوى ${i + 1}`}
                       />
                       <Button
                         size="icon"

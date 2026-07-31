@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -335,7 +336,7 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label htmlFor="res-phone">هاتف العميل *</Label>
-              <Input id="res-phone" dir="ltr" placeholder="07XXXXXXXXX" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} />
+              <IntlPhoneInput id="res-phone" value={contactPhone} onChange={setContactPhone} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="res-name">اسم العميل</Label>

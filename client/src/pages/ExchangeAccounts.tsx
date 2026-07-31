@@ -5,6 +5,7 @@ import { Building2, Plus, Pencil, Power, DollarSign } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { DataTable } from "@/components/data-table/DataTable";
 import { PageHeader } from "@/components/PageHeader";
@@ -213,7 +214,7 @@ function ExchangeFormDialog({
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الهاتف</label>
-            <Input value={phone} onChange={(e) => setPhone(e.target.value)} dir="ltr" placeholder="+9647…" />
+            <IntlPhoneInput value={phone} onChange={setPhone} ariaLabel="رقم هاتف جهة الصرافة" />
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الرمز القديم (اختياري)</label>

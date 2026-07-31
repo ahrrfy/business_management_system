@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { DataTable } from "@/components/data-table/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { fmtDateTime } from "@/lib/date";
@@ -425,14 +426,11 @@ function SendDialog({
 
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">المبلغ (د.ع)</label>
-            <Input
-              type="text"
-              inputMode="decimal"
+            <MoneyInput
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onChange={setAmount}
               placeholder="0.00"
               className="tabular-nums"
-              dir="ltr"
             />
           </div>
 

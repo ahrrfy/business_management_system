@@ -5,6 +5,7 @@
 import type { Dispatch } from "react";
 import { Calculator, CreditCard, Lock, Package, Percent, Truck } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
@@ -82,10 +83,9 @@ export function TotalsPanel({
         <div className={cn(rowCls, "border-b border-dashed pb-2")}>
           <div className="flex items-center gap-2">
             <span className={labelCls}>خصم إجمالي</span>
-            <Input
-              dir="ltr"
+            <MoneyInput
               value={state.globalDiscount}
-              onChange={(e) => dispatch({ type: "SET_FIELD", field: "globalDiscount", value: e.target.value })}
+              onChange={(value) => dispatch({ type: "SET_FIELD", field: "globalDiscount", value })}
               className="h-7 w-14 text-center text-xs font-bold"
               aria-label="مبلغ الخصم الإجمالي"
             />
@@ -154,10 +154,9 @@ export function TotalsPanel({
             <span className={cn(labelCls, "inline-flex items-center gap-1.5")}>
               <Truck aria-hidden className="size-4" /> مصاريف شحن
             </span>
-            <Input
-              dir="ltr"
+            <MoneyInput
               value={state.shipping || ""}
-              onChange={(e) => dispatch({ type: "SET_FIELD", field: "shipping", value: e.target.value })}
+              onChange={(value) => dispatch({ type: "SET_FIELD", field: "shipping", value })}
               placeholder="0"
               className="h-7 w-24 text-center text-xs font-bold"
             />
@@ -170,10 +169,9 @@ export function TotalsPanel({
             <span className={cn(labelCls, "inline-flex items-center gap-1.5")}>
               <Package aria-hidden className="size-4" /> مصاريف أخرى
             </span>
-            <Input
-              dir="ltr"
+            <MoneyInput
               value={state.otherExpenses || ""}
-              onChange={(e) => dispatch({ type: "SET_FIELD", field: "otherExpenses", value: e.target.value })}
+              onChange={(value) => dispatch({ type: "SET_FIELD", field: "otherExpenses", value })}
               placeholder="0"
               className="h-7 w-24 text-center text-xs font-bold"
             />
@@ -237,11 +235,10 @@ export function TotalsPanel({
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <span className="shrink-0 text-xs font-semibold text-muted-foreground">المدفوع:</span>
               <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                <Input
-                  dir="ltr"
+                <MoneyInput
                   value={state.paidAmount || ""}
                   placeholder={String(effectiveGrandTotal)}
-                  onChange={(e) => dispatch({ type: "SET_FIELD", field: "paidAmount", value: e.target.value })}
+                  onChange={(value) => dispatch({ type: "SET_FIELD", field: "paidAmount", value })}
                   className="h-9 min-w-0 flex-1 text-center text-sm font-extrabold"
                 />
                 <Button

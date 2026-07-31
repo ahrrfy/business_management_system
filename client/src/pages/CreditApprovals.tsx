@@ -5,6 +5,7 @@
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
@@ -81,12 +82,12 @@ export default function CreditApprovalsPage() {
 
               <div className="grid gap-2">
                 <label className="text-sm font-medium">السقف (د.ع)</label>
-                <input
-                  type="text"
+                <MoneyInput
                   value={maxAmount}
-                  onChange={(e) => setMaxAmount(e.target.value)}
-                  placeholder="مثل: 500000"
-                  className="h-9 px-3 rounded-md border bg-transparent text-sm"
+                  onChange={setMaxAmount}
+                  placeholder="مثل: 500,000"
+                  decimals={0}
+                  ariaLabel="الحد الائتماني الأقصى"
                 />
               </div>
               <div className="grid gap-2">

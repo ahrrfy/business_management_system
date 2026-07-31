@@ -1,6 +1,7 @@
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Label } from "@/components/ui/label";
 import { D } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -208,7 +209,7 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
               <Input id="cp-newName" placeholder="مثلاً: أحمد محمد" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
             </LabeledField>
             <LabeledField id="cp-newPhone" label="الهاتف">
-              <Input id="cp-newPhone" dir="ltr" placeholder="07XXXXXXXXX" value={phone} onChange={(e) => setPhone(e.target.value)} />
+              <IntlPhoneInput id="cp-newPhone" value={phone} onChange={setPhone} />
             </LabeledField>
             <LabeledField id="cp-newTier" label="فئة السعر">
               <select id="cp-newTier" className={selectCls} value={tier} onChange={(e) => setTier(e.target.value as Tier)}>

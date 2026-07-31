@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -226,7 +227,7 @@ export default function Branches() {
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium">الهاتف (اختياري)</label>
-              <Input value={fPhone} onChange={(e) => setFPhone(e.target.value)} placeholder="07xxxxxxxxx" dir="ltr" />
+              <IntlPhoneInput value={fPhone} onChange={setFPhone} ariaLabel="هاتف الفرع" />
             </div>
           </div>
           <DialogFooter>

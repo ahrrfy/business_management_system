@@ -5,6 +5,7 @@ import { OpenShiftsPanel } from "@/components/treasury/OpenShiftsPanel";
 import { PaymentMethodDonut } from "@/components/treasury/PaymentMethodDonut";
 import { TreasuryKpiCard } from "@/components/treasury/TreasuryKpiCard";
 import { Button } from "@/components/ui/button";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { DataTable } from "@/components/data-table/DataTable";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
@@ -573,9 +574,8 @@ export default function Treasury() {
               </div>
               <div>
                 <label className="mb-1 block text-xs text-muted-foreground">المبلغ (د.ع)</label>
-                <input dir="ltr" inputMode="decimal" value={fundAmount} placeholder="0"
-                  onChange={(e) => setFundAmount(e.target.value.replace(/[^\d.]/g, ""))}
-                  className={selectCls + " w-full text-right font-bold"} />
+                <MoneyInput value={fundAmount} onChange={setFundAmount} placeholder="0"
+                  className={selectCls + " w-full text-right font-bold"} ariaLabel="مبلغ تمويل الخزينة" />
               </div>
               <div>
                 <label className="mb-1 block text-xs text-muted-foreground">التبرير / المصدر (إلزامي)</label>

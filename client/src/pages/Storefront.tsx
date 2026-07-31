@@ -411,11 +411,11 @@ export default function Storefront() {
 
   // تتبّع الطلب العلنيّ — نموذجٌ برقم الطلب + الهاتف يستدعي storefront.trackOrder عند الطلب.
   const utils = trpc.useUtils();
-  const [trackForm, setTrackForm] = useState<{ orderNumber: string; phone: string }>({ orderNumber: "", phone: "" });
+  const [trackForm, setTrackForm] = useState<{ orderNumber: string; phone: string }>({ orderNumber: "", phone: "+964" });
   const [trackResult, setTrackResult] = useState<TrackData | null>(null);
   const [trackState, setTrackState] = useState<"idle" | "loading" | "notfound" | "error">("idle");
   const openTrack = (orderNumber = "") => {
-    setTrackForm({ orderNumber, phone: "" });
+    setTrackForm({ orderNumber, phone: "+964" });
     setTrackResult(null);
     setTrackState("idle");
     setPanel("track");
@@ -423,7 +423,7 @@ export default function Storefront() {
   const doTrack = async () => {
     const orderNumber = trackForm.orderNumber.trim();
     const phone = trackForm.phone.trim();
-    if (!orderNumber || !phone) return;
+    if (!orderNumber || phone.replace(/\D/g, "").length <= 3) return;
     setTrackState("loading");
     setTrackResult(null);
     try {
@@ -1342,7 +1342,7 @@ export default function Storefront() {
               <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="اسمك" autoComplete="name" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
             </Field>
             <Field icon={<Phone aria-hidden className="size-4" />} label="رقم الهاتف">
-              <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} inputMode="tel" autoComplete="tel" placeholder="+964 7XX XXX XXXX" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
+              <input value={form.phone} onChange={(e) => setForm({ ...form, phone: `+964 ${e.target.value.replace(/\D/g, "").replace(/^964/, "").replace(/^0+/, "")}` })} inputMode="tel" autoComplete="tel" placeholder="+964 7XX XXX XXXX" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
             </Field>
             <div className="rounded-2xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
               <label className="mb-1 block text-xs font-bold text-slate-500">المحافظة</label>
@@ -1462,14 +1462,14 @@ export default function Storefront() {
                   dir="ltr"
                   inputMode="tel"
                   value={trackForm.phone}
-                  onChange={(e) => setTrackForm((f) => ({ ...f, phone: e.target.value }))}
-                  placeholder="07XXXXXXXXX"
+                  onChange={(e) => setTrackForm((f) => ({ ...f, phone: `+964${e.target.value.replace(/\D/g, "").replace(/^964/, "").replace(/^0+/, "")}` }))}
+                  placeholder="+9647XXXXXXXXX"
                   className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 />
               </div>
               <button
                 onClick={doTrack}
-                disabled={!trackForm.orderNumber.trim() || !trackForm.phone.trim() || trackState === "loading"}
+                disabled={!trackForm.orderNumber.trim() || trackForm.phone.replace(/\D/g, "").length <= 3 || trackState === "loading"}
                 className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-3 text-sm font-extrabold text-white transition hover:bg-emerald-700 disabled:opacity-50"
               >
                 {trackState === "loading" ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Search aria-hidden className="size-4" />}
