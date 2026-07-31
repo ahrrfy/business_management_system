@@ -34,7 +34,7 @@ const TABS: HubTab[] = [
   { value: "advances", label: "سلف الموظفين", gate: HR_GATE, Component: EmployeeAdvances },
   { value: "commission-plans", label: "خطط العمولات", gate: COMMISSIONS_GATE, Component: CommissionPlans },
   { value: "commission-targets", label: "الأهداف الشهرية", gate: COMMISSIONS_GATE, Component: CommissionTargets },
-  { value: "commission-runs", label: "تشغيلات العمولة", gate: COMMISSIONS_GATE, Component: CommissionRuns },
+  { value: "commission-runs", label: "احتساب العمولات", gate: COMMISSIONS_GATE, Component: CommissionRuns },
   { value: "leaves", label: "الإجازات", gate: HR_GATE, Component: Leaves },
   { value: "promotions", label: "الترقيات", gate: HR_GATE, Component: Promotions },
   { value: "recruitment", label: "التوظيف", gate: HR_GATE, Component: Recruitment },
