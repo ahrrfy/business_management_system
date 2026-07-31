@@ -659,11 +659,29 @@ console.log(JSON.stringify(summary, null, 2));
 // توليد الأساس أول مرّة: `node scripts/authz-inventory.mjs --write-baseline`.
 if (process.argv.includes("--check") || process.argv.includes("--write-baseline")) {
   const BASELINE = join(OUT_DIR, "authz-baseline.json");
-  // (A1 — مراجعة review-module) المفتاح يشمل الموضع الفريد `loc`: أسماء الراوترات مشتقّة من الملف،
-  // فتتصادم أوراقٌ متطابقة عبر تصديرات/راوترات-فرعية متعددة في الملف نفسه (voucherRouter.create ×2،
+  // (A1 — مراجعة review-module) المفتاح يشمل **الملف**: أسماء الراوترات مشتقّة منه، فتتصادم أوراقٌ
+  // متطابقة عبر تصديرات/راوترات-فرعية متعددة في الملف نفسه (voucherRouter.create ×2،
   // storeAdminRouter.list ×6…). المفتاح `router.name` وحده كان يُغرّب انحداراً على شقيقٍ مُصادِم؛
-  // ضمّ `@loc` يجعل كل نقطة مُغرَّبةً بذاتها فلا يُخفي بعضُها بعضاً.
-  const key = (e) => `${e.router}.${e.name}@${e.loc}`;
+  // ضمّ الملف + **ترتيب الشقيق** يجعل كل نقطة مُغرَّبةً بذاتها فلا يُخفي بعضُها بعضاً.
+  //
+  // (A1-b — إصلاح انجراف الأساس، ٣١/٧/٢٦) كان المفتاح يضمّ `loc` **برقم السطر**، فأيُّ تحريرٍ أعلى
+  // نقطةٍ مُغرَّبة يزيح سطرها ⇒ تظهر «مستجدّةً» زوراً بلا أيّ تغيير سلطة، ويحمرّ `pnpm check:guards`
+  // على `main` نظيفاً. حدث فعلاً: #425 أضاف `previewScopeCount` فأزاح **٢٠** نقطة في
+  // `stocktakeRouter.ts` (البوّابات بايتاً ببايت كما هي — `raw-role` ثابتٌ عند ٥٨). الأساس يُغرّب
+  // **هويّة** النقطة لا **موضعها** ⇒ نُسقط رقم السطر ونُبقي الملف + ترتيب الشقيق (`#n` للثاني فصاعداً).
+  // انزياحُ الترتيب يبقى مكشوفاً (إدخال شقيقٍ مُصادِم فوق آخر = تغييرٌ بنيويّ يستحقّ المراجعة).
+  const keyOf = new Map();
+  {
+    // `endpoints` مرتَّبةٌ ثباتاً بـ(router+name)، وداخل الملف الواحد بترتيب السطر ⇒ الترتيب حتميّ.
+    const seen = new Map();
+    for (const e of endpoints) {
+      const base = `${e.router}.${e.name}@${e.loc.replace(/:\d+$/, "")}`;
+      const n = (seen.get(base) ?? 0) + 1;
+      seen.set(base, n);
+      keyOf.set(e, n > 1 ? `${base}#${n}` : base);
+    }
+  }
+  const key = (e) => keyOf.get(e) ?? `${e.router}.${e.name}@${e.loc.replace(/:\d+$/, "")}`;
   // isViolation مشتركةٌ الآن (معرّفة أعلى): raw-role/بلا بوّابة وحدة قراءةً أو كتابةً/admin-كتابة.
   const flagged = endpoints.filter(isViolation);
 
