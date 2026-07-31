@@ -15,7 +15,7 @@
 //     يُحسب بعد الاعتماد ويُحفظ ⇒ أي تَلاعب لاحق بـDB قابل للكشف.
 //   - voucherCategoryId: اختياري مَوصى به للسندات OTHER (إيجار/راتب/خدمات/…) للتجميع في التَقارير.
 //   - referenceNumber إلزامي لـTRANSFER؛ cardLastFour إلزامي لـCARD.
-//   - attachmentUrl إلزامي فوق VOUCHER_ATTACHMENT_THRESHOLD.
+//   - attachmentUrl **اختياريّ دائماً** (٣١/٧: أُلغي إلزام المُرفق من النظام كله بقرار المالك).
 //
 // الذرّية: كلّها داخل withTx ⇒ rollback كامل عند أي خطأ.
 //
@@ -25,7 +25,7 @@
 //
 // خريطة الوحدات:
 //   types       — عقد السندات (PaymentMethod/PartyType داخليان، الباقي عام).
-//   thresholds  — عتبات الاعتماد وإلزام المُرفق.
+//   thresholds  — عَتبة الاعتماد (Maker-Checker).
 //   helpers     — البصمة/الترقيم/حلّ الدور/ملكية الفرع/التحقّق من الفئة — داخلية.
 //   create      — إنشاء سند (Maker-Checker + idempotency).
 //   approval    — اعتماد/رفض سند مُعلَّق (SOD-04).
@@ -33,7 +33,7 @@
 //   queries     — القائمة + سند منفرد + الأخيرة لنفس الطرف.
 
 export type { VoucherInput, VoucherResult } from "./voucher/types";
-export { getApprovalThreshold, getAttachmentThreshold } from "./voucher/thresholds";
+export { getApprovalThreshold } from "./voucher/thresholds";
 export { createVoucher } from "./voucher/create";
 export type { ApproveVoucherResult, RejectVoucherResult } from "./voucher/approval";
 export { approveVoucher, rejectVoucher } from "./voucher/approval";

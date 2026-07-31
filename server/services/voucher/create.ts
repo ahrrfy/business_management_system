@@ -8,7 +8,7 @@ import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledg
 import { money, toDateStr, toDbMoney } from "../money";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
-import { getApprovalThreshold, getAttachmentThreshold } from "./thresholds";
+import { getApprovalThreshold } from "./thresholds";
 import { computeSignature, nextVoucherNumber, validateCategory } from "./helpers";
 import type { VoucherInput, VoucherResult } from "./types";
 
@@ -95,12 +95,8 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
     if (input.paymentMethod === "CHECK" && !input.checkNumber?.trim()) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "رقم الصكّ إلزامي لطريقة الدفع «صكّ»" });
     }
-    if (amount.toNumber() >= getAttachmentThreshold() && !input.attachmentUrl?.trim()) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `المُرفق إلزامي للمبالغ ${getAttachmentThreshold().toLocaleString("ar-IQ-u-nu-latn")} د.ع فما فوق (إيصال/فاتورة/صورة المُستند الأصلي)`,
-      });
-    }
+    // المُرفق **اختياريّ دائماً** (٣١/٧، قرار المالك: لا مُرفق إلزامي في النظام كله) — أُلغيت عَتبة
+    // إلزام المُرفق التي كانت تَرفض السندات ≥ ٢٥٠.٠٠٠ د.ع بلا attachmentUrl.
     // attachment-upload (٥/٧): المُرفق إمّا data URL صورة مضغوطة (رفع من الواجهة الجديدة) أو رابط/مَسار
     // نصّي كما كان سابقاً (اختبارات vouchers-pro القائمة تُرسل روابط https:// عادية عمداً — تبقى صالحة).
     // لا فرض صيغة صورة هنا؛ الطباعة/العرض يُميّزان data:image بأنفسهما (voucherPrint.ts، Vouchers.tsx).

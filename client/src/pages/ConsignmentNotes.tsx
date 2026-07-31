@@ -114,7 +114,8 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
   // بعد حفظ سحب/استبدال: عرض بطاقة إشعار المودِع بواتساب (ضابط SOD تعويضيّ) قبل العودة للقائمة.
   const [postSave, setPostSave] = useState<{ message: string; phone: string | null } | null>(null);
   const clientRequestId = useMemo(() => crypto.randomUUID(), []);
-  const needsAttachment = noteType !== "DEPOSIT";
+  // سحب/استبدال ⇒ بطاقة إشعار المودِع بواتساب بعد الحفظ. (المُرفق اختياريّ لكل الأنواع — ٣١/٧.)
+  const isWithdrawal = noteType !== "DEPOSIT";
 
   useEffect(() => { const t = setTimeout(() => setDebounced(q.trim()), 300); return () => clearTimeout(t); }, [q]);
   const consignorSearch = trpc.suppliers.search.useQuery({ q: debounced || undefined, kind: "CONSIGNOR", limit: 15 }, { enabled: !consignorId });
@@ -127,7 +128,7 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
     onSuccess: (res) => {
       notify.ok("تم حفظ السند");
       // السحب/الاستبدال: أظهر بطاقة إشعار المودِع بواتساب لحظياً (لا تُغلق النموذج فوراً).
-      if (needsAttachment) {
+      if (isWithdrawal) {
         const message = buildConsignmentWithdrawMessage({
           noteNumber: res.noteNumber ?? "",
           noteType: noteType as "WITHDRAW" | "EXCHANGE",
@@ -152,11 +153,10 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
     if (create.isPending) return;
     if (!consignorId) return notify.err("اختر المودِع");
     if (!lines.length) return notify.err("أضف صنفاً واحداً على الأقل");
-    if (needsAttachment && !images[0]) return notify.err("سند السحب/الاستبدال يلزمه صورة السند الموقَّع");
     create.mutate({
       noteType, consignorId, branchId, clientRequestId,
       notes: notes.trim() || null,
-      attachmentUrl: needsAttachment ? (images[0]?.url || images[0]?.dataUrl || null) : null,
+      attachmentUrl: images[0]?.url || images[0]?.dataUrl || null,
       lines: lines.map((l) => ({ lineDirection: l.direction, variantId: l.variantId, productUnitId: l.productUnitId, quantity: l.quantity })),
     });
   }
@@ -273,12 +273,10 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
         <Card>
           <CardHeader className="pb-3"><CardTitle className="text-base">التوثيق</CardTitle></CardHeader>
           <CardContent className="space-y-3">
-            {needsAttachment && (
-              <div className="space-y-1">
-                <Label>صورة السند الموقَّع <span className="text-destructive">*</span></Label>
-                <ImageUploader value={images} onChange={setImages} maxItems={1} singlePrimary={false} hint="إلزاميّ للسحب/الاستبدال — صورة السند بتوقيع المودِع." />
-              </div>
-            )}
+            <div className="space-y-1">
+              <Label>صورة السند الموقَّع (اختياري)</Label>
+              <ImageUploader value={images} onChange={setImages} maxItems={1} singlePrimary={false} hint="صورة السند بتوقيع المودِع — اختيارية، موصى بها للسحب/الاستبدال." />
+            </div>
             <div className="space-y-1">
               <Label htmlFor="notes">ملاحظات</Label>
               <Textarea id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />

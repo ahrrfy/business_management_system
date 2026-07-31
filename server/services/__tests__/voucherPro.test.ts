@@ -98,17 +98,19 @@ describe("vouchers-pro: تَحقّقات إلزامية", () => {
     }, adminActor)).rejects.toThrow(/الصكّ/);
   });
 
-  it("مبلغ ≥ عَتبة المُرفق بلا attachmentUrl يُرفض", async () => {
-    // الافتراضي ٢٥٠.٠٠٠ — نُجرّب ٣٠٠.٠٠٠
-    await expect(createVoucher({
+  it("لا مُرفق إلزامي: مبلغ كبير بلا attachmentUrl ⇒ يَنجح (٣١/٧ — أُلغيت عَتبة المُرفق)", async () => {
+    // كان يُرفض سابقاً عند ≥ ٢٥٠.٠٠٠ — الآن المُرفق اختياريّ في النظام كله.
+    const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "300000.00",
       paymentMethod: "CASH", partyType: "OTHER",
       description: "إيجار شهر مايو",
       voucherCategoryId: 1,
-    }, adminActor)).rejects.toThrow(/المُرفق/);
+    }, adminActor);
+    expect(r.voucherNumber).toMatch(/^PV-/);
+    expect(r.approvalStatus).toBe("APPROVED");
   });
 
-  it("مبلغ ≥ عَتبة المُرفق مع attachmentUrl ⇒ يَنجح", async () => {
+  it("مبلغ كبير مع attachmentUrl ⇒ يَنجح", async () => {
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "300000.00",
       paymentMethod: "CASH", partyType: "OTHER",

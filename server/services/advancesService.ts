@@ -29,11 +29,12 @@ import { extractInsertId } from "../lib/insertId";
 import { recordIdempotencyKey } from "./idempotency";
 import { money, round2, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
-import { cancelVoucher, createVoucher, getApprovalThreshold, getAttachmentThreshold } from "./voucherService";
+import { cancelVoucher, createVoucher, getApprovalThreshold } from "./voucherService";
 
-/** عتبتا السندات (اعتماد ثنائي + إلزام مُرفق) — تُعرَض للواجهة عبر بوّابة hr (بوّابة الخزينة لا تلزم هنا). */
+/** عَتبة السندات (اعتماد ثنائي) — تُعرَض للواجهة عبر بوّابة hr (بوّابة الخزينة لا تلزم هنا).
+ *  لا عَتبة مُرفق: المُرفق اختياريّ دائماً (٣١/٧). */
 export function advanceThresholds() {
-  return { approval: getApprovalThreshold(), attachment: getAttachmentThreshold() };
+  return { approval: getApprovalThreshold() };
 }
 
 /* ─────────────────────────── قراءة ─────────────────────────── */
@@ -100,7 +101,7 @@ export interface GrantAdvanceInput {
   amount: string;
   monthlyDeduction?: string | null;
   note?: string | null;
-  /** مُرفق سند الصرف (صورة data URL أو رابط) — إلزامي خادمياً للمبالغ ≥ عتبة المُرفق (vouchers-pro). */
+  /** مُرفق سند الصرف (صورة data URL أو رابط) — اختياريّ دائماً (لا إلزام مُرفق في النظام). */
   attachmentUrl?: string | null;
   /** idempotency (تدقيق ١٧/٧): إعادة إرسال بنفس المفتاح ⇒ لا سند/صرف ثانٍ (منع الصرف النقدي المزدوج). */
   clientRequestId: string;
@@ -225,7 +226,7 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
       referenceNumber: `EMP-ADV-${input.employeeId}-${input.clientRequestId}`,
       description: `سلفة موظف — ${empName}${input.note?.trim() ? ` — ${input.note.trim()}` : ""}`,
       voucherCategoryId: await payrollCategoryId(),
-      // عتبة المُرفق (vouchers-pro) تسري على سند السلفة كأي سند صرف — createVoucher يفرضها.
+      // المُرفق اختياريّ (٣١/٧: أُلغيت عتبة إلزام المُرفق من النظام كله).
       attachmentUrl: input.attachmentUrl?.trim() || null,
       // حراسة رجل النقد نفسه، لا صف السلفة اللاحق فقط.
       clientRequestId: `ADVANCE:${input.clientRequestId}`,

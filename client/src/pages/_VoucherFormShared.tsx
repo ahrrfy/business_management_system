@@ -126,10 +126,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     return Number.isFinite(v) ? v : 0;
   }, [amount]);
   const approvalThreshold = thresholds.data?.approval ?? 1_000_000;
-  const attachmentThreshold = thresholds.data?.attachment ?? 250_000;
   const isOwner = !!(me.data as any)?.isOwner;
   const needsApproval = !isOwner && direction === "OUT" && amountNum > 0 && amountNum >= approvalThreshold;
-  const needsAttachment = amountNum > 0 && amountNum >= attachmentThreshold;
+  // لا عَتبة مُرفق: المُرفق اختياريّ دائماً (٣١/٧، قرار المالك).
 
   // السندات الأخيرة لنفس الطَرف (تَحذير الازدواج).
   const partyKeyForRecent = useMemo(() => {
@@ -250,9 +249,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     if (method === "CHECK" && !checkNumber.trim()) {
       return "رقم الصكّ إلزامي لطريقة الدفع «صكّ».";
     }
-    if (needsAttachment && !attachmentUrl.trim()) {
-      return `المُرفق إلزامي للمبالغ ≥ ${fmt(attachmentThreshold)} د.ع (إيصال/فاتورة/صورة المُستند).`;
-    }
     return "";
   }
 
@@ -366,20 +362,12 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 ariaLabel="مبلغ السند بالدينار"
                 className="text-right"
               />
-              {(needsApproval || needsAttachment) && amountNum > 0 && (
+              {needsApproval && amountNum > 0 && (
                 <div className="text-[11px] space-y-0.5 mt-1">
-                  {needsApproval && (
-                    <p className="text-orange-700 flex items-center gap-1">
-                      <ShieldQuestion aria-hidden className="size-3" />
-                      يَحتاج اعتماد مدير ثانٍ (Maker-Checker، عَتبة {fmt(approvalThreshold)} د.ع).
-                    </p>
-                  )}
-                  {needsAttachment && (
-                    <p className="text-amber-700 flex items-center gap-1">
-                      <Info aria-hidden className="size-3" />
-                      المُرفق إلزامي (عَتبة {fmt(attachmentThreshold)} د.ع).
-                    </p>
-                  )}
+                  <p className="text-orange-700 flex items-center gap-1">
+                    <ShieldQuestion aria-hidden className="size-3" />
+                    يَحتاج اعتماد مدير ثانٍ (Maker-Checker، عَتبة {fmt(approvalThreshold)} د.ع).
+                  </p>
                 </div>
               )}
             </div>
@@ -605,9 +593,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           <CardHeader><CardTitle className="text-base">المُرفقات والمُلاحظات الداخلية</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label>
-                مُرفَق السند {needsAttachment ? "*" : "(اختياري)"}
-              </Label>
+              <Label>مُرفَق السند (اختياري)</Label>
               <ImageUploader
                 value={attachmentImages}
                 onChange={setAttachmentImages}

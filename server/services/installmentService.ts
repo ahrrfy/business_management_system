@@ -61,7 +61,7 @@ export interface PayLineInput {
   /** الافتراضي: CHECK لقسط شيك، CASH لغيره. */
   paymentMethod?: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | null;
   note?: string | null;
-  /** مُرفق السند (createVoucher يُلزِمه للمبالغ ≥ عتبة المُرفق). */
+  /** مُرفق السند (اختياريّ دائماً — لا إلزام مُرفق في النظام). */
   attachmentUrl?: string | null;
 }
 

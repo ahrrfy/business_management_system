@@ -174,7 +174,7 @@ export const payrollRouter = router({
     .input(z.object({ employeeId: z.number().int().positive() }))
     .query(({ input }) => adv.employeeBalance(input.employeeId)),
 
-  /** عتبتا السندات (اعتماد/مُرفق) لواجهة المنح — بوّابة hr (بوّابة الخزينة لا تلزم للاطلاع على العتبتين). */
+  /** عَتبة السندات (اعتماد) لواجهة المنح — بوّابة hr (بوّابة الخزينة لا تلزم للاطلاع عليها). */
   advanceThresholds: hrRead.query(() => adv.advanceThresholds()),
 
   advanceGrant: hrWrite
@@ -185,7 +185,7 @@ export const payrollRouter = router({
         amount: moneyStr,
         monthlyDeduction: moneyStr.nullish(),
         note: z.string().trim().max(255).nullish(),
-        // مُرفق سند الصرف (صورة مضغوطة data URL أو رابط) — نفس سقف voucherRouter.
+        // مُرفق سند الصرف (صورة مضغوطة data URL أو رابط) — اختياريّ، نفس سقف voucherRouter.
         attachmentUrl: z.string().max(4_000_000).nullish(),
         // idempotency (تدقيق ١٧/٧): منع صرف نقدي مزدوج عند إعادة الإرسال.
         clientRequestId: z.string().trim().min(1).max(64),

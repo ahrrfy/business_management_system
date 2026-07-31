@@ -65,7 +65,7 @@ async function seedBase() {
 const ymd = (offsetDays: number) => new Date(Date.now() + offsetDays * 86_400_000).toISOString().slice(0, 10);
 
 /** خطة قياسية: إجمالي 90000، دفعة أولى 10000، قسطان نقدي (30000) + شيك (50000).
- *  المبالغ دون عتبة المُرفق (250 ألف) عمداً — اختبار المُرفق/الاعتماد له خطة مخصّصة. */
+ *  المُرفق اختياريّ دائماً (٣١/٧) — اختبار الاعتماد (Maker-Checker) له خطة مخصّصة. */
 async function seedPlan(over: Partial<Parameters<typeof createPlan>[0]> = {}) {
   return createPlan(
     {
