@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { CommissionGuide } from "@/components/commissions/CommissionGuide";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
@@ -100,7 +101,7 @@ export default function CommissionRuns() {
 
   const compute = trpc.commissions.runs.compute.useMutation({
     onSuccess: async (r) => {
-      notify.ok(r.recomputed ? "أُعيد احتساب التشغيلة" : "احتُسبت التشغيلة (مسودة)");
+      notify.ok(r.recomputed ? "أُعيد احتساب كشف الشهر" : "احتُسب كشف عمولات الشهر (مسودة)");
       setComputeOpen(false);
       setSelectedId(r.runId);
       await refresh();
@@ -109,11 +110,11 @@ export default function CommissionRuns() {
   });
   const approve = trpc.commissions.runs.approve.useMutation({
     onSuccess: async (r) => {
-      notify.ok("اعتُمدت التشغيلة");
+      notify.ok("اعتُمد كشف العمولات");
       if (r.requiresPayrollRegeneration) {
         notify.errBig(
-          "مسيّر الرواتب لهذا الشهر مسودة قائمة",
-          "أعد توليد المسيّر من تبويب «الرواتب» كي يلتقط بند العمولة (احذف المسودة ثم ولّدها مجدداً).",
+          "مسيّر رواتب هذا الشهر ما يزال مسودة",
+          "أعد توليد المسيّر من تبويب «الرواتب» كي يظهر فيه بند العمولة (احذف المسودة ثم ولّدها مجدداً).",
         );
       }
       await refresh();
@@ -121,7 +122,7 @@ export default function CommissionRuns() {
     onError: (e) => notify.err(e),
   });
   const unapprove = trpc.commissions.runs.unapprove.useMutation({
-    onSuccess: async () => { notify.ok("أُلغي الاعتماد — عادت مسودةً"); await refresh(); },
+    onSuccess: async () => { notify.ok("أُلغي الاعتماد — عاد الكشف مسودةً"); await refresh(); },
     onError: (e) => notify.err(e),
   });
   const remove = trpc.commissions.runs.remove.useMutation({
@@ -189,21 +190,21 @@ export default function CommissionRuns() {
   function exportExcel() {
     if (!run) return;
     exportRows(lines, {
-      filename: `تشغيلة-العمولة-${run.period}`,
-      title: `تشغيلة عمولات ${run.period} — ${STATUS_LABEL[run.status]}`,
+      filename: `عمولات-${run.period}`,
+      title: `كشف عمولات ${run.period} — ${STATUS_LABEL[run.status]}`,
       columns: [
         { key: "employeeName", header: "الموظف" },
         { key: "planName", header: "الخطة" },
         { key: "baseSales", header: "المبيعات", money: true },
         { key: "baseReturns", header: "المرتجعات", money: true },
-        { key: "carryIn", header: "مرحَّل سابق", money: true },
-        { key: "effectiveBase", header: "القاعدة الفعلية", money: true },
+        { key: "carryIn", header: "مرحَّل من السابق", money: true },
+        { key: "effectiveBase", header: "المبلغ المحتسَب عليه", money: true },
         { key: "targetAmount", header: "الهدف", money: true },
-        { key: "achievementPct", header: "الإنجاز ٪" },
+        { key: "achievementPct", header: "نسبة التحقيق ٪" },
         { key: "ratePct", header: "النسبة ٪" },
-        { key: "fixedBonus", header: "المكافأة", money: true },
+        { key: "fixedBonus", header: "مكافأة ثابتة", money: true },
         { key: "commissionAmount", header: "العمولة", money: true },
-        { key: "carryOut", header: "مرحَّل لاحق", money: true },
+        { key: "carryOut", header: "يُرحَّل للقادم", money: true },
       ],
     });
   }
@@ -211,20 +212,20 @@ export default function CommissionRuns() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="تشغيلات العمولة"
-        description="احتساب شهري آلي من دفتر المبيعات: صافي مبيعات كل بائع (بعد المرتجعات، بالإسناد الذكي لأوامر الشغل) تُطبَّق عليه شريحة خطته، والسالب يُرحَّل. الاعتماد بفصل مهام، والصرف عبر مسيّر الرواتب."
+        title="احتساب العمولات الشهري"
+        description="في نهاية كل شهر يجمع النظام مبيعات كل بائع من الفواتير، يطرح مرتجعاته، ثم يطبّق خطته ويخرج عمولته. يبدأ الكشف «مسودة» قابلة للتعديل، ويعتمده شخص غير الذي احتسبه، ثم يُصرَف بنداً في مسيّر رواتب الشهر نفسه."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
             <select
               className={selectCls}
               value={effectiveId != null ? String(effectiveId) : ""}
               onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : null)}
-              aria-label="التشغيلة"
+              aria-label="كشف الشهر"
             >
-              {runs.length === 0 && <option value="">لا تشغيلات</option>}
+              {runs.length === 0 && <option value="">لا كشوف بعد</option>}
               {runs.map((r) => (
                 <option key={r.id} value={String(r.id)}>
-                  تشغيلة {r.period} — {STATUS_LABEL[r.status]}
+                  عمولات {r.period} — {STATUS_LABEL[r.status]}
                 </option>
               ))}
             </select>
@@ -237,20 +238,22 @@ export default function CommissionRuns() {
         }
       />
 
+      <CommissionGuide />
+
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label="صافي قاعدة الشهر" value={iqd(stats.netBase)} sub="مبيعات − مرتجعات (د.ع)" icon={<Wallet className="size-4" />} />
-        <StatCard label="إجمالي العمولات" value={iqd(stats.commission)} sub="د.ع مستحقة" accent="var(--status-done, #059669)" icon={<Check className="size-4" />} />
-        <StatCard label="حقّقوا الهدف" value={`${stats.reached}/${stats.withTarget}`} sub="موظف بلغ 100%" accent="var(--status-active, #2563eb)" icon={<TrendingUp className="size-4" />} />
-        <StatCard label="مرحَّل سالب" value={iqd(stats.carryNeg)} sub="يُخصم من الأشهر القادمة" accent="var(--money-negative, #dc2626)" icon={<Undo2 className="size-4" />} />
+        <StatCard label="المبيعات المحتسَبة" value={iqd(stats.netBase)} sub="المبيعات بعد خصم المرتجعات (د.ع)" icon={<Wallet className="size-4" />} />
+        <StatCard label="إجمالي العمولات" value={iqd(stats.commission)} sub="د.ع مستحقة للموظفين" accent="var(--status-done, #059669)" icon={<Check className="size-4" />} />
+        <StatCard label="حقّقوا هدفهم" value={`${stats.reached}/${stats.withTarget}`} sub="موظف بلغ 100% من هدفه" accent="var(--status-active, #2563eb)" icon={<TrendingUp className="size-4" />} />
+        <StatCard label="يُرحَّل للشهر القادم" value={iqd(stats.carryNeg)} sub="سالب يُخصم من عمولة الشهر القادم" accent="var(--money-negative, #dc2626)" icon={<Undo2 className="size-4" />} />
       </div>
 
       {run && (
         <div className="flex items-center gap-2 flex-wrap">
           <StatusBadge status={run.status} />
-          <span className="text-sm text-muted-foreground">تشغيلة {run.period} — {run.employeeCount} موظف</span>
+          <span className="text-sm text-muted-foreground">عمولات {run.period} — {run.employeeCount} موظف</span>
           {run.payrollRunId != null && (
             <Link href="/hr?tab=payroll" className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary hover:underline">
-              <Link2 className="size-3" aria-hidden /> التقطها مسيّر الرواتب {run.period}
+              <Link2 className="size-3" aria-hidden /> أُدرجت في مسيّر رواتب {run.period}
             </Link>
           )}
           <div className="flex-1" />
@@ -264,7 +267,7 @@ export default function CommissionRuns() {
                 size="sm"
                 disabled={busy}
                 onClick={async () => {
-                  if (!(await confirm({ variant: "warning", title: `إعادة احتساب تشغيلة ${run.period}`, description: "تُستبدل كل الأسطر بأرقام الدفتر والخطط والأهداف الحالية. متابعة؟", confirmText: "إعادة الاحتساب" }))) return;
+                  if (!(await confirm({ variant: "warning", title: `إعادة احتساب عمولات ${run.period}`, description: "ستُستبدل كل الأسطر بأرقام المبيعات والخطط والأهداف كما هي الآن. متابعة؟", confirmText: "إعادة الاحتساب" }))) return;
                   compute.mutate({ period: run.period });
                 }}
               >
@@ -274,7 +277,7 @@ export default function CommissionRuns() {
                 size="sm"
                 disabled={busy}
                 onClick={async () => {
-                  if (!(await confirm({ variant: "warning", title: `اعتماد تشغيلة ${run.period}`, description: `سيُقفل التعديل وتصبح جاهزة ليلتقطها مسيّر رواتب ${run.period} (إجمالي العمولات ${iqd(run.totalCommission)} د.ع). يشترط النظام معتمِداً غير مَن احتسبها (فصل مهام).`, confirmText: "اعتماد" }))) return;
+                  if (!(await confirm({ variant: "warning", title: `اعتماد عمولات ${run.period}`, description: `سيُقفل التعديل ويصبح الكشف جاهزاً للإدراج في مسيّر رواتب ${run.period} (إجمالي العمولات ${iqd(run.totalCommission)} د.ع). يشترط النظام أن يعتمده شخص غير الذي احتسبه.`, confirmText: "اعتماد" }))) return;
                   approve.mutate({ id: Number(run.id) });
                 }}
               >
@@ -286,7 +289,7 @@ export default function CommissionRuns() {
                 className="text-destructive"
                 disabled={busy}
                 onClick={async () => {
-                  if (!(await confirmDelete({ description: `حذف مسودة تشغيلة ${run.period} وكل أسطرها (${run.employeeCount} موظف)؟` }))) return;
+                  if (!(await confirmDelete({ description: `حذف مسودة عمولات ${run.period} وكل أسطرها (${run.employeeCount} موظف)؟` }))) return;
                   remove.mutate({ id: Number(run.id) });
                 }}
               >
@@ -301,7 +304,7 @@ export default function CommissionRuns() {
               className="text-destructive"
               disabled={busy}
               onClick={async () => {
-                if (!(await confirm({ variant: "danger", title: `إلغاء اعتماد تشغيلة ${run.period}`, description: "تعود مسودةً قابلة لإعادة الاحتساب. ممنوع إن التقطها مسيّر أو وُجد شهر أحدث.", confirmText: "إلغاء الاعتماد" }))) return;
+                if (!(await confirm({ variant: "danger", title: `إلغاء اعتماد عمولات ${run.period}`, description: "يعود الكشف مسودةً قابلة لإعادة الاحتساب. ممنوع إن أُدرج في مسيّر رواتب أو وُجد كشف لشهر أحدث.", confirmText: "إلغاء الاعتماد" }))) return;
                 unapprove.mutate({ id: Number(run.id) });
               }}
             >
@@ -313,23 +316,25 @@ export default function CommissionRuns() {
 
       <Card>
         <CardHeader>
-          <CardTitle>{run ? `أسطر تشغيلة ${run.period} — ${lines.length} موظف` : "تشغيلات العمولة"}</CardTitle>
+          <CardTitle>{run ? `عمولات ${run.period} — ${lines.length} موظف` : "احتساب العمولات الشهري"}</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
-                  <th className="p-2.5">الموظف</th>
+                  <th className="p-2.5 text-start">الموظف</th>
                   <th className="p-2.5 text-right">المبيعات</th>
                   <th className="p-2.5 text-right">المرتجعات</th>
-                  <th className="p-2.5 text-right">مرحَّل سابق</th>
-                  <th className="p-2.5 text-right">القاعدة الفعلية</th>
-                  <th className="p-2.5 text-right">الهدف</th>
-                  <th className="p-2.5">الإنجاز</th>
-                  <th className="p-2.5 text-center">الشريحة</th>
-                  <th className="p-2.5 text-right">العمولة</th>
-                  <th className="p-2.5 text-right">مرحَّل لاحق</th>
+                  {/* بلا whitespace-nowrap: تسميات مفهومة تُلَفّ على سطرين أفضل من ترويسة
+                      مختصرة غامضة أو من جدول يتجاوز عرض الشاشة. */}
+                  <th className="p-2.5 text-right">مرحَّل من السابق</th>
+                  <th className="p-2.5 text-right">المبلغ المحتسَب عليه</th>
+                  <th className="p-2.5 text-right">هدفه</th>
+                  <th className="p-2.5">نسبة التحقيق</th>
+                  <th className="p-2.5 text-center">المستوى المطبَّق</th>
+                  <th className="p-2.5 text-right">عمولته</th>
+                  <th className="p-2.5 text-right">يُرحَّل للقادم</th>
                   <th className="p-2.5 text-center"></th>
                 </tr>
               </thead>
@@ -341,9 +346,15 @@ export default function CommissionRuns() {
                       <td className="p-2.5">
                         <div className="flex items-center gap-2.5">
                           <EmpAvatar name={l.employeeName} color={l.colorTag} photoUrl={l.photoUrl} sizePx={32} />
-                          <div>
-                            <div className="font-medium text-[13px]">{l.employeeName}</div>
-                            <div className="text-[11px] text-muted-foreground">{l.planName ?? detail.planName ?? "—"}</div>
+                          <div className="min-w-0">
+                            <div className="font-medium text-[13px] whitespace-nowrap">{l.employeeName}</div>
+                            {/* اسم الخطة قد يطول — يُقصّ بدل توسيع العمود ودفع الجدول خارج الشاشة. */}
+                            <div
+                              className="max-w-[11rem] truncate text-[11px] text-muted-foreground"
+                              title={l.planName ?? detail.planName ?? undefined}
+                            >
+                              {l.planName ?? detail.planName ?? "—"}
+                            </div>
                           </div>
                         </div>
                       </td>
@@ -402,7 +413,7 @@ export default function CommissionRuns() {
                   <tr><td colSpan={11}><LoadingState /></td></tr>
                 )}
                 {!runQ.isLoading && lines.length === 0 && (
-                  <TableEmptyRow colSpan={11} message={runs.length === 0 ? "لا تشغيلات بعد. احتسب شهراً للبدء." : "لا أسطر في هذه التشغيلة."} />
+                  <TableEmptyRow colSpan={11} message={runs.length === 0 ? "لا كشوف عمولات بعد — اضغط «احتساب شهر» للبدء." : "لا أسطر في كشف هذا الشهر."} />
                 )}
               </tbody>
             </table>
@@ -414,10 +425,11 @@ export default function CommissionRuns() {
       <Dialog open={computeOpen} onOpenChange={(o) => !o && setComputeOpen(false)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>احتساب تشغيلة عمولات</DialogTitle>
+            <DialogTitle>احتساب عمولات شهر</DialogTitle>
             <DialogDescription>
-              القاعدة = صافي فواتير كل بائع (بعد الخصم) − مرتجعات الشهر (تتبع البائع الأصلي) ± المرحَّل السابق.
-              فاتورة أمر الشغل تُنسَب لمنشئ أمر الشغل. الوعاء السالب يُرحَّل للشهر التالي.
+              لكل بائع: صافي فواتيره (بعد الخصم) ناقص مرتجعات الشهر — والمرتجع يُخصم من البائع الأصلي لا من غيره —
+              ثمّ يُضاف المرحَّل من الشهر السابق. فاتورة أمر الشغل تُحسب لمن أنشأ أمر الشغل لا لمن سلّمه.
+              وإن خرج المجموع سالباً رُحِّل إلى الشهر التالي.
             </DialogDescription>
           </DialogHeader>
           <div className="py-2 flex justify-center">
@@ -450,20 +462,23 @@ export default function CommissionRuns() {
             return (
               <div className="space-y-2 py-1">
                 {row("الخطة", d.planName ?? detailLine.planName ?? "—")}
-                {row("قيود البيع / المرتجع", `${d.saleEntryCount ?? 0} / ${d.returnEntryCount ?? 0}`)}
+                {row("عدد فواتير البيع / المرتجع", `${d.saleEntryCount ?? 0} / ${d.returnEntryCount ?? 0}`)}
                 {row("المبيعات", iqd(detailLine.baseSales))}
                 {row("المرتجعات", `−${iqd(detailLine.baseReturns)}`, "text-money-negative")}
-                {row("مرحَّل سابق", iqd(detailLine.carryIn))}
-                <div className="border-t pt-2">{row("القاعدة الفعلية", iqd(detailLine.effectiveBase), "font-bold")}</div>
-                {detailLine.targetAmount != null && row("الهدف", iqd(detailLine.targetAmount))}
-                {detailLine.achievementPct != null && row("نسبة الإنجاز", `${Number(detailLine.achievementPct)}%`)}
+                {row("مرحَّل من الشهر السابق", iqd(detailLine.carryIn))}
+                <div className="border-t pt-2">{row("المبلغ المحتسَب عليه", iqd(detailLine.effectiveBase), "font-bold")}</div>
+                {detailLine.targetAmount != null && row("هدفه الشهري", iqd(detailLine.targetAmount))}
+                {detailLine.achievementPct != null && row("نسبة تحقيق الهدف", `${Number(detailLine.achievementPct)}%`)}
                 {d.noTarget && (
-                  <p className="text-xs text-destructive">لا هدف لهذا الشهر — خطة «نسبة تحقيق الهدف» بلا هدف تعطي صفراً. حدّد الهدف من «الأهداف الشهرية» ثم أعد الاحتساب.</p>
+                  <p className="text-xs text-destructive">لا هدف محدَّداً لهذا الشهر — وخطة «حسب نسبة تحقيق الهدف» بلا هدف تعطي صفراً. حدّد هدفه من تبويب «الأهداف الشهرية» ثم أعد الاحتساب.</p>
                 )}
-                {row("الشريحة المطبَّقة", detailLine.tierIndex != null ? `من ${d.tierThreshold ?? "?"} ← ${Number(detailLine.ratePct)}%` : "لم تُبلغ أي شريحة")}
-                {D(detailLine.fixedBonus).gt(0) && row("مكافأة مقطوعة", `+${iqd(detailLine.fixedBonus)}`, "text-money-positive")}
+                {row(
+                  "المستوى المطبَّق",
+                  detailLine.tierIndex != null ? `من ${d.tierThreshold ?? "?"} ← ${Number(detailLine.ratePct)}%` : "لم يبلغ أي مستوى",
+                )}
+                {D(detailLine.fixedBonus).gt(0) && row("مكافأة ثابتة", `+${iqd(detailLine.fixedBonus)}`, "text-money-positive")}
                 <div className="border-t pt-2">{row("العمولة المستحقّة", iqd(detailLine.commissionAmount), "font-bold text-money-positive")}</div>
-                {!D(detailLine.carryOut).isZero() && row("مرحَّل للشهر التالي", iqd(detailLine.carryOut), "text-money-negative")}
+                {!D(detailLine.carryOut).isZero() && row("يُرحَّل للشهر القادم", iqd(detailLine.carryOut), "text-money-negative")}
               </div>
             );
           })()}

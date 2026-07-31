@@ -66,9 +66,9 @@ export default function CommissionLeaderboard() {
         { key: "planName", header: "الخطة" },
         { key: "sales", header: "المبيعات", money: true },
         { key: "returns", header: "المرتجعات", money: true },
-        { key: "effectiveBase", header: "القاعدة الفعلية", money: true },
+        { key: "effectiveBase", header: "المبلغ المحتسَب عليه", money: true },
         { key: "target", header: "الهدف", money: true },
-        { key: "achievementPct", header: "الإنجاز ٪" },
+        { key: "achievementPct", header: "نسبة التحقيق ٪" },
         { key: "projectedCommission", header: "العمولة المتوقّعة", money: true },
       ],
     });
@@ -78,7 +78,7 @@ export default function CommissionLeaderboard() {
     <div className="space-y-4">
       <PageHeader
         title="لوحة الإنجاز"
-        description="ترتيب البائعين بصافي المبيعات الحيّ (بعد المرتجعات والمرحَّل) مقابل أهدافهم الشهرية. العمولة هنا تقديرية — الصرف من تشغيلة معتمدة فقط."
+        description="ترتيب البائعين بمبيعاتهم المحتسَبة حتى هذه اللحظة (بعد المرتجعات والمرحَّل) مقابل أهدافهم الشهرية. أرقام العمولة هنا تقديرية للمتابعة فقط — لا يُصرَف شيء إلا من كشف شهري معتمد."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
             <MonthPicker value={period} onChange={setPeriod} ariaLabel="شهر اللوحة" />
@@ -104,9 +104,9 @@ export default function CommissionLeaderboard() {
           icon={<Crown className="size-4" />}
         />
         <StatCard
-          label="حقّقوا الهدف"
+          label="حقّقوا هدفهم"
           value={totals ? `${totals.reached}/${totals.withTarget}` : "—"}
-          sub="موظف بلغ 100%"
+          sub="موظف بلغ 100% من هدفه"
           accent="var(--status-done, #059669)"
           icon={<Wallet className="size-4" />}
         />
@@ -129,13 +129,13 @@ export default function CommissionLeaderboard() {
               <thead className="bg-muted/50">
                 <tr>
                   <th className="p-2.5 text-center w-10">#</th>
-                  <th className="p-2.5">الموظف</th>
-                  <th className="p-2.5">الفرع</th>
+                  <th className="p-2.5 text-start">الموظف</th>
+                  <th className="p-2.5 text-start">الفرع</th>
                   <th className="p-2.5 text-right">المبيعات</th>
                   <th className="p-2.5 text-right">المرتجعات</th>
-                  <th className="p-2.5 text-right">القاعدة الفعلية</th>
-                  <th className="p-2.5 text-right">الهدف</th>
-                  <th className="p-2.5">الإنجاز</th>
+                  <th className="p-2.5 text-right">المبلغ المحتسَب عليه</th>
+                  <th className="p-2.5 text-right">هدفه</th>
+                  <th className="p-2.5">نسبة التحقيق</th>
                   <th className="p-2.5 text-right">العمولة المتوقّعة</th>
                 </tr>
               </thead>
@@ -148,10 +148,10 @@ export default function CommissionLeaderboard() {
                       </span>
                     </td>
                     <td className="p-2.5">
-                      <div className="font-medium">{r.employeeName}</div>
-                      <div className="text-[11px] text-muted-foreground">{r.planName}</div>
+                      <div className="font-medium whitespace-nowrap">{r.employeeName}</div>
+                      <div className="max-w-[11rem] truncate text-[11px] text-muted-foreground" title={r.planName}>{r.planName}</div>
                     </td>
-                    <td className="p-2.5 text-muted-foreground">{r.branchName || "—"}</td>
+                    <td className="p-2.5 text-muted-foreground whitespace-nowrap">{r.branchName || "—"}</td>
                     <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(r.sales)}</td>
                     <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">
                       {Number(r.returns) > 0 ? `−${iqd(r.returns)}` : "—"}
@@ -168,7 +168,7 @@ export default function CommissionLeaderboard() {
                   <tr><td colSpan={9}><LoadingState /></td></tr>
                 )}
                 {!q.isLoading && rows.length === 0 && (
-                  <TableEmptyRow colSpan={9} message="لا بائعين بإسناد خطة فعّال لهذا الشهر — أسند الخطط من الموارد البشرية ← خطط العمولات." />
+                  <TableEmptyRow colSpan={9} message="لا بائعين مرتبطين بخطة فعّالة لهذا الشهر — اربطهم بالخطط من: الموارد البشرية ← خطط العمولات." />
                 )}
               </tbody>
             </table>

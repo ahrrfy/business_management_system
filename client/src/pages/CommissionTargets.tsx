@@ -9,6 +9,7 @@ import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { CommissionGuide } from "@/components/commissions/CommissionGuide";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { iqd } from "@/lib/hr/ui";
@@ -93,7 +94,7 @@ export default function CommissionTargets() {
     <div className="space-y-4">
       <PageHeader
         title="الأهداف الشهرية"
-        description="هدف صافي مبيعات شهري لكل موظف — تُقاس عليه شرائح خطط العمولات (نمط نسبة التحقيق). تفريغ الحقل يحذف الهدف."
+        description="حدّد لكل موظف مبلغ المبيعات المطلوب منه هذا الشهر. تُقاس عليه مستويات الخطط التي تحتسب «حسب نسبة تحقيق الهدف» — أمّا خطط «مبلغ المبيعات» فلا تحتاج هدفاً. اترك الحقل فارغاً لإلغاء هدف الموظف."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <MonthPicker value={period} onChange={changePeriod} ariaLabel="شهر الأهداف" />
@@ -117,19 +118,21 @@ export default function CommissionTargets() {
         }
       />
 
+      <CommissionGuide />
+
       <Card>
         <CardHeader className="text-sm text-muted-foreground">
-          {grid.isLoading ? "" : `${rows.length} موظفاً مؤهَّلاً — ${totalTargets} منهم له هدف لشهر ${period}`}
+          {grid.isLoading ? "" : `${rows.length} موظفاً — ${totalTargets} منهم له هدف محدَّد لشهر ${period}`}
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
-                  <th className="p-2">الموظف</th>
-                  <th className="p-2">الفرع</th>
-                  <th className="p-2 text-start">فعليّ الشهر السابق</th>
-                  <th className="p-2 text-start">هدف {period}</th>
+                  <th className="p-2 text-start">الموظف</th>
+                  <th className="p-2 text-start">الفرع</th>
+                  <th className="p-2 text-start whitespace-nowrap">ما باعه فعلاً الشهر الماضي</th>
+                  <th className="p-2 text-start whitespace-nowrap">هدفه لشهر {period} (د.ع)</th>
                 </tr>
               </thead>
               <tbody>
@@ -141,8 +144,8 @@ export default function CommissionTargets() {
                   return (
                     <tr key={r.employeeId} className={`border-t ${isDirty ? "bg-accent/40" : ""}`}>
                       <td className="p-2">
-                        <div className="font-medium">{r.employeeName}</div>
-                        <div className="text-xs text-muted-foreground">
+                        <div className="font-medium whitespace-nowrap">{r.employeeName}</div>
+                        <div className="text-xs text-muted-foreground whitespace-nowrap">
                           {r.position || "—"}
                           {r.employmentStatus === "leave" ? " · في إجازة" : ""}
                         </div>

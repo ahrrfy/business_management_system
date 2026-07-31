@@ -7,6 +7,12 @@ import { TrendingUp } from "lucide-react";
 
 const STATUS_LABEL: Record<string, string> = { draft: "قيد المراجعة", approved: "معتمدة" };
 
+/** شرح مختصر لكل رقم في البطاقة — الموظف لا يفتح شاشات العمولات فيحتاج المعنى هنا. */
+const HINTS = {
+  base: "مبيعاتي بعد خصم المرتجعات وما رُحِّل من الشهر السابق",
+  projected: "تقديرية للمتابعة — لا تُصرَف إلا بعد اعتماد كشف عمولات الشهر",
+} as const;
+
 export function MyPerformanceCard() {
   const status = trpc.commissions.performance.myStatus.useQuery(undefined, { staleTime: 60_000 });
   const d = status.data;
@@ -25,10 +31,11 @@ export function MyPerformanceCard() {
       <CardContent className="space-y-3 text-sm">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <div className="text-xs text-muted-foreground">صافي مبيعاتي هذا الشهر (بعد المرتجعات)</div>
+            <div className="text-xs text-muted-foreground">المبلغ المحتسَب لي هذا الشهر</div>
             <div className="text-2xl font-bold tabular-nums" dir="ltr">{iqd(d.effectiveBase)} <span className="text-xs font-normal">د.ع</span></div>
+            <div className="text-[11px] text-muted-foreground">{HINTS.base}</div>
             {Number(d.carryIn) !== 0 && (
-              <div className="text-[11px] text-money-negative tabular-nums" dir="ltr">مرحَّل سابق: {iqd(d.carryIn)}</div>
+              <div className="text-[11px] text-money-negative tabular-nums" dir="ltr">مرحَّل من الشهر السابق: {iqd(d.carryIn)}</div>
             )}
             {Number(d.consignDeduction) > 0 && (
               <div className="text-[11px] text-amber-700 tabular-nums" dir="ltr">
@@ -59,7 +66,7 @@ export function MyPerformanceCard() {
 
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-accent/50 px-3 py-2">
           <span className="text-xs text-muted-foreground">
-            {d.settled ? `عمولة الشهر (${STATUS_LABEL[d.settled.status]})` : "عمولتي المتوقّعة (تقديرية — تُعتمد بتشغيلة الشهر)"}
+            {d.settled ? `عمولة الشهر (${STATUS_LABEL[d.settled.status]})` : `عمولتي المتوقّعة — ${HINTS.projected}`}
           </span>
           <span className="font-bold tabular-nums text-money-positive" dir="ltr">
             {iqd(d.settled ? d.settled.commissionAmount : d.projectedCommission)} د.ع
