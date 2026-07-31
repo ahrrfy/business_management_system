@@ -23,6 +23,7 @@
  * التوزيع على التكليفات: MANUAL وحده يُرسل variantIds صريحة (كتل متساوية محلياً)؛
  * FULL/MOVING/CATEGORY لا يرسلون variantIds إطلاقاً — الخادم يوزّع غير المُسنَد كتلاً متساوية على كل التكليفات.
  */
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -444,20 +445,17 @@ export default function StocktakeNew() {
               </div>
               <div className="space-y-1.5">
                 <Label>الفرع</Label>
-                <select
-                  className={selectCls}
-                  value={effectiveBranchId}
+                <AppSelect
+                  value={String(effectiveBranchId)}
                   disabled={isWarehouseOnly}
-                  onChange={(e) => {
-                    setBranchId(Number(e.target.value));
-                  }}
+                  onValueChange={(v) => setBranchId(Number(v))}
                 >
                   {branches.map((b) => (
                     <option key={b.id} value={b.id}>
                       {b.name}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
                 {isWarehouseOnly && (
                   <p className="text-[11px] text-muted-foreground">دور المخزن مُقيَّد بفرعه — يُطبَّق خادمياً.</p>
                 )}
@@ -498,15 +496,15 @@ export default function StocktakeNew() {
             {scopeType === "MOVING" && (
               <div className="space-y-1.5">
                 <Label>فترة الحركة</Label>
-                <select
-                  className={`${selectCls} max-w-xs`}
+                <AppSelect
+                  className="max-w-xs"
                   value={movingDays}
-                  onChange={(e) => setMovingDays(e.target.value)}
+                  onValueChange={setMovingDays}
                 >
                   <option value="7">آخر 7 أيام</option>
                   <option value="30">آخر 30 يوماً</option>
                   <option value="90">آخر 90 يوماً</option>
-                </select>
+                </AppSelect>
               </div>
             )}
 
@@ -700,20 +698,20 @@ export default function StocktakeNew() {
                     </div>
                     <div className="space-y-1.5">
                       <Label>طريقة الدخول</Label>
-                      <select
-                        className={`${selectCls} w-64`}
+                      <AppSelect
+                        className="w-64"
                         value={w.method}
-                        onChange={(e) =>
+                        onValueChange={(v) =>
                           setWorkers(
                             workers.map((x) =>
-                              x.key === w.key ? { ...x, method: e.target.value as Method, userId: "" } : x
+                              x.key === w.key ? { ...x, method: v as Method, userId: "" } : x
                             )
                           )
                         }
                       >
                         <option value="PIN">رابط خارجي + رمز PIN (بلا حساب)</option>
                         <option value="USER">حساب مستخدم داخل النظام</option>
-                      </select>
+                      </AppSelect>
                     </div>
                     <div className="space-y-1.5">
                       <Label>المنطقة (وصف مكاني)</Label>
@@ -749,11 +747,11 @@ export default function StocktakeNew() {
                   {w.method === "USER" && (
                     <div className="space-y-1.5">
                       <Label>حساب المستخدم</Label>
-                      <select
-                        className={`${selectCls} max-w-sm`}
+                      <AppSelect
+                        className="max-w-sm"
                         value={w.userId}
-                        onChange={(e) =>
-                          setWorkers(workers.map((x) => (x.key === w.key ? { ...x, userId: e.target.value } : x)))
+                        onValueChange={(v) =>
+                          setWorkers(workers.map((x) => (x.key === w.key ? { ...x, userId: v } : x)))
                         }
                       >
                         <option value="">— اختر حساباً —</option>
@@ -762,7 +760,7 @@ export default function StocktakeNew() {
                             {u.name} ({USER_ROLE_LABEL[u.role] ?? u.role})
                           </option>
                         ))}
-                      </select>
+                      </AppSelect>
                       {usersQ.isLoading ? (
                         <p className="text-[11px] text-muted-foreground">جارٍ تحميل الحسابات…</p>
                       ) : usersQ.isError ? (
