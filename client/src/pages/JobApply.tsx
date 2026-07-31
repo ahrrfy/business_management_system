@@ -493,7 +493,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
   const vacancy = target === "general" ? null : target;
   const [name, setName] = useState("");
   const [jobTitle, setJobTitle] = useState("");
-  const [phone, setPhone] = useState("");
+  const [phone, setPhone] = useState("+964");
   const [email, setEmail] = useState("");
   const [experience, setExperience] = useState("");
   const [education, setEducation] = useState("");
@@ -578,7 +578,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
               )}
               <div className="cj-field">
                 <label htmlFor="cj-phone">رقم الهاتف</label>
-                <input id="cj-phone" className="cj-input" style={{ direction: "ltr", textAlign: "right" }} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="07XX ..." inputMode="tel" autoComplete="tel" />
+                <input id="cj-phone" className="cj-input" style={{ direction: "ltr", textAlign: "right" }} value={phone} onChange={(e) => setPhone(`+964${e.target.value.replace(/\D/g, "").replace(/^964/, "").replace(/^0+/, "")}`)} placeholder="+9647XX..." inputMode="tel" autoComplete="tel" />
               </div>
               <div className="cj-field">
                 <label htmlFor="cj-email">البريد الإلكتروني</label>

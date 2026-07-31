@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
@@ -354,7 +355,7 @@ export default function Promotions() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1"><Label htmlFor="p-title">المسمّى الجديد</Label><Input id="p-title" value={pToTitle} onChange={(e) => setPToTitle(e.target.value)} placeholder="مثال: محاسبة أولى" /></div>
-              <div className="space-y-1"><Label htmlFor="p-salary">الراتب الجديد (د.ع)</Label><Input id="p-salary" dir="ltr" inputMode="numeric" value={pToSalary} onChange={(e) => setPToSalary(e.target.value)} placeholder="1100000" /></div>
+              <div className="space-y-1"><Label htmlFor="p-salary">الراتب الجديد (د.ع)</Label><MoneyInput id="p-salary" value={pToSalary} onChange={setPToSalary} decimals={0} placeholder="1,100,000" /></div>
             </div>
             <div className="space-y-1"><Label htmlFor="p-date">تاريخ النفاذ</Label><Input id="p-date" type="date" dir="ltr" value={pDate} onChange={(e) => setPDate(e.target.value)} /></div>
             <div className="space-y-1"><Label htmlFor="p-reason">سبب الترقية</Label><Textarea id="p-reason" rows={2} value={pReason} onChange={(e) => setPReason(e.target.value)} placeholder="أداء متميز، إكمال فترة تدريب…" /></div>
@@ -391,7 +392,7 @@ export default function Promotions() {
               </div>
               <div className="space-y-1"><Label htmlFor="t-lastday">آخر يوم عمل</Label><Input id="t-lastday" type="date" dir="ltr" value={tLastDay} onChange={(e) => setTLastDay(e.target.value)} /></div>
             </div>
-            <div className="space-y-1"><Label htmlFor="t-settle">التسوية النهائية للمستحقات (د.ع)</Label><Input id="t-settle" dir="ltr" inputMode="numeric" value={tSettlement} onChange={(e) => setTSettlement(e.target.value)} placeholder="رصيد إجازات + مكافأة نهاية خدمة" /></div>
+            <div className="space-y-1"><Label htmlFor="t-settle">التسوية النهائية للمستحقات (د.ع)</Label><MoneyInput id="t-settle" value={tSettlement} onChange={setTSettlement} decimals={0} placeholder="رصيد إجازات + مكافأة نهاية خدمة" /></div>
             <div className="space-y-1"><Label htmlFor="t-reason">السبب / ملاحظات</Label><Textarea id="t-reason" rows={2} value={tReason} onChange={(e) => setTReason(e.target.value)} /></div>
           </div>
           <DialogFooter>

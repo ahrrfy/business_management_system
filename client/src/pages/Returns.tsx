@@ -5,6 +5,7 @@ import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
@@ -353,7 +354,7 @@ export default function Returns() {
               </div>
               <div className="space-y-1">
                 <Label>مبلغ الاسترداد (اختياري)</Label>
-                <Input dir="ltr" value={refundAmount} onChange={(e) => setRefundAmount(e.target.value)} placeholder="0" />
+                <MoneyInput value={refundAmount} onChange={setRefundAmount} ariaLabel="مبلغ الاسترداد" />
               </div>
               <div className="space-y-1">
                 <Label>طريقة الاسترداد</Label>

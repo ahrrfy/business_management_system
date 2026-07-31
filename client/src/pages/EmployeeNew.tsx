@@ -2,6 +2,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import {
@@ -310,13 +312,13 @@ export default function EmployeeNew() {
       <Card>
         <CardHeader><CardTitle className="text-base">التواصل والعنوان</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="space-y-1"><Label htmlFor="phone">الهاتف</Label><Input id="phone" dir="ltr" value={form.phone} onChange={(e) => set({ phone: e.target.value })} placeholder="07XXXXXXXXX" /></div>
+          <div className="space-y-1"><Label htmlFor="phone">الهاتف</Label><IntlPhoneInput id="phone" value={form.phone} onChange={(phone) => set({ phone })} /></div>
           <div className="space-y-1"><Label htmlFor="email">البريد الإلكتروني</Label><Input id="email" dir="ltr" value={form.email} onChange={(e) => set({ email: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="gov">المحافظة</Label><Input id="gov" value={form.governorate} onChange={(e) => set({ governorate: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="dist">المنطقة</Label><Input id="dist" value={form.district} onChange={(e) => set({ district: e.target.value })} /></div>
           <div className="space-y-1 md:col-span-2"><Label htmlFor="land">أقرب نقطة دالة</Label><Input id="land" value={form.addressLandmark} onChange={(e) => set({ addressLandmark: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="ecn">اسم جهة الطوارئ</Label><Input id="ecn" value={form.emergencyContactName} onChange={(e) => set({ emergencyContactName: e.target.value })} /></div>
-          <div className="space-y-1"><Label htmlFor="ecp">هاتف الطوارئ</Label><Input id="ecp" dir="ltr" value={form.emergencyContactPhone} onChange={(e) => set({ emergencyContactPhone: e.target.value })} /></div>
+          <div className="space-y-1"><Label htmlFor="ecp">هاتف الطوارئ</Label><IntlPhoneInput id="ecp" value={form.emergencyContactPhone} onChange={(emergencyContactPhone) => set({ emergencyContactPhone })} /></div>
         </CardContent>
       </Card>
 
@@ -340,8 +342,8 @@ export default function EmployeeNew() {
 
           {form.payType === "monthly" ? (
             <>
-              <div className="space-y-1"><Label htmlFor="sal">الراتب الأساس (د.ع) *</Label><Input id="sal" dir="ltr" inputMode="decimal" value={form.salary} onChange={(e) => set({ salary: e.target.value })} placeholder="1000000" /></div>
-              <div className="space-y-1"><Label htmlFor="allw">البدلات (د.ع)</Label><Input id="allw" dir="ltr" inputMode="decimal" value={form.allowances} onChange={(e) => set({ allowances: e.target.value })} placeholder="0" /></div>
+              <div className="space-y-1"><Label htmlFor="sal">الراتب الأساس (د.ع) *</Label><MoneyInput id="sal" value={form.salary} onChange={(salary) => set({ salary })} decimals={0} placeholder="1,000,000" /></div>
+              <div className="space-y-1"><Label htmlFor="allw">البدلات (د.ع)</Label><MoneyInput id="allw" value={form.allowances} onChange={(allowances) => set({ allowances })} decimals={0} placeholder="0" /></div>
             </>
           ) : (
             <div className="md:col-span-3 space-y-1">

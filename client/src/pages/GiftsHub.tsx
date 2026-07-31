@@ -8,6 +8,7 @@ import { RowActions } from "@/components/list/RowActions";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
@@ -471,7 +472,7 @@ export default function GiftsHub() {
               </div>
               <div className="space-y-1">
                 <Label>الميزانيّة (اختياري)</Label>
-                <Input value={campBudget} onChange={(e) => setCampBudget(e.target.value)} inputMode="decimal" placeholder="بلا سقف" />
+                <MoneyInput value={campBudget} onChange={setCampBudget} placeholder="بلا سقف" ariaLabel="ميزانية الحملة" />
               </div>
               <div className="space-y-1">
                 <Label>تبدأ (اختياري)</Label>

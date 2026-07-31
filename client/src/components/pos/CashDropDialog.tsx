@@ -7,6 +7,7 @@ import { notify } from "@/lib/notify";
 import { D, round2 } from "@/lib/money";
 import { newClientRequestId } from "@/lib/countQueue";
 import type { PosTokens } from "@/components/pos/ShiftHandoverSection";
+import { MoneyInput } from "@/components/form/MoneyInput";
 
 export function CashDropDialog({
   C,
@@ -91,18 +92,12 @@ export function CashDropDialog({
         <div style={{ display: "grid", gap: 10 }}>
           <div>
             <label htmlFor="cd-amount" style={{ fontSize: 12, color: C.mutedFg, display: "block", marginBottom: 4 }}>المبلغ المسحوب (د.ع)</label>
-            <input
+            <MoneyInput
               id="cd-amount"
-              ref={amountRef}
+              inputRef={amountRef}
               value={amount}
-              onChange={(e) => {
-                const clean = e.target.value.replace(/[^\d.]/g, "");
-                const i = clean.indexOf(".");
-                setAmount(i === -1 ? clean : clean.slice(0, i + 1) + clean.slice(i + 1).replace(/\./g, ""));
-              }}
+              onChange={setAmount}
               onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-              dir="ltr"
-              inputMode="decimal"
               placeholder="0"
               disabled={drop.isPending}
               style={{ ...fieldBase, height: 44, fontSize: 17, fontWeight: 800, textAlign: "right" }}

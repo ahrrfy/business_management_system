@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { iqd } from "@/lib/assets/ui";
@@ -125,7 +126,7 @@ export default function AssetNew() {
             </select>
           </div>
           <div className="space-y-1"><Label>تاريخ الشراء *</Label><Input type="date" dir="ltr" value={form.purchaseDate} onChange={(e) => set({ purchaseDate: e.target.value })} /></div>
-          <div className="space-y-1"><Label>قيمة الشراء (د.ع) *</Label><Input dir="ltr" inputMode="decimal" value={form.purchaseValue} onChange={(e) => set({ purchaseValue: e.target.value })} placeholder="1850000" /></div>
+          <div className="space-y-1"><Label>قيمة الشراء (د.ع) *</Label><MoneyInput value={form.purchaseValue} onChange={(purchaseValue) => set({ purchaseValue })} decimals={0} placeholder="1,850,000" /></div>
           <div className="space-y-1"><Label>نهاية الكفالة</Label><Input type="date" dir="ltr" value={form.warrantyEnd} onChange={(e) => set({ warrantyEnd: e.target.value })} /></div>
         </CardContent>
       </Card>
@@ -140,7 +141,7 @@ export default function AssetNew() {
             </select>
           </div>
           <div className="space-y-1"><Label>العمر الإنتاجي (سنوات) *</Label><Input dir="ltr" inputMode="numeric" value={form.usefulLifeYears} onChange={(e) => set({ usefulLifeYears: e.target.value.replace(/\D/g, "") })} /></div>
-          <div className="space-y-1"><Label>القيمة التخريدية (د.ع)</Label><Input dir="ltr" inputMode="decimal" value={form.salvageValue} onChange={(e) => set({ salvageValue: e.target.value })} placeholder="0" /></div>
+          <div className="space-y-1"><Label>القيمة التخريدية (د.ع)</Label><MoneyInput value={form.salvageValue} onChange={(salvageValue) => set({ salvageValue })} decimals={0} placeholder="0" /></div>
           <div className="md:col-span-3 rounded-md border bg-muted/30 p-3 flex items-center justify-between">
             <span className="text-sm text-muted-foreground">القسط السنوي المُقدَّر ({DEPRECIATION_METHODS.find((m) => m.key === form.method)?.short})</span>
             <span className="text-lg font-bold tabular-nums" dir="ltr">{iqd(annual)} د.ع</span>

@@ -54,8 +54,8 @@ export function StudentDetailsDialog({
 }) {
   const [customerId, setCustomerId] = useState<number | null>(null);
   const [studentName, setStudentName] = useState("");
-  const [studentPhone, setStudentPhone] = useState("");
-  const [guardianPhone, setGuardianPhone] = useState("");
+  const [studentPhone, setStudentPhone] = useState("+964");
+  const [guardianPhone, setGuardianPhone] = useState("+964");
   const [address, setAddress] = useState("");
   /** اللقطة الأصلية للملفّ المختار — أساس تمييز «هل عُدِّل شيء؟». */
   const [linked, setLinked] = useState<StudentMatch | null>(null);
@@ -67,7 +67,7 @@ export function StudentDetailsDialog({
 
   useEffect(() => {
     if (!open) return;
-    setCustomerId(null); setStudentName(""); setStudentPhone(""); setGuardianPhone(""); setAddress("");
+    setCustomerId(null); setStudentName(""); setStudentPhone("+964"); setGuardianPhone("+964"); setAddress("");
     setLinked(null); setMode("UPDATE_PROFILE"); setSearchBy("student"); setSearchTerm(""); setDebounced("");
     setTimeout(() => nameRef.current?.focus(), 40);
   }, [open]);
@@ -134,8 +134,8 @@ export function StudentDetailsDialog({
     const gPhone = guardianPhone.trim();
     const addr = address.trim();
     if (!name) return notify.err("اسم الطالب مطلوب");
-    if (!sPhone) return notify.err("هاتف الطالب مطلوب");
-    if (!gPhone) return notify.err("هاتف ولي الأمر مطلوب");
+    if (sPhone.replace(/\D/g, "").length <= 3) return notify.err("هاتف الطالب مطلوب");
+    if (gPhone.replace(/\D/g, "").length <= 3) return notify.err("هاتف ولي الأمر مطلوب");
     if (!addr) return notify.err("عنوان الطالب مطلوب");
     onConfirm({
       customerId,
@@ -246,7 +246,7 @@ export function StudentDetailsDialog({
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               <label style={labelStyle} htmlFor="st-phone">هاتف الطالب</label>
-              <input id="st-phone" ref={phoneRef} value={studentPhone} onChange={(e) => setStudentPhone(e.target.value)} onKeyDown={(e) => onFieldKey(e, guardianRef)} style={fieldStyle} dir="ltr" placeholder="07xxxxxxxxx" />
+              <input id="st-phone" ref={phoneRef} value={studentPhone} onChange={(e) => setStudentPhone(`+964${e.target.value.replace(/\D/g, "").replace(/^964/, "").replace(/^0+/, "")}`)} onKeyDown={(e) => onFieldKey(e, guardianRef)} style={fieldStyle} dir="ltr" placeholder="+9647xxxxxxxxx" />
               {customerId == null && resolved.data?.kind === "LINK" && (
                 <button
                   onClick={() => { setSearchBy("student"); setSearchTerm(studentPhone.trim()); }}
@@ -266,7 +266,7 @@ export function StudentDetailsDialog({
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               <label style={labelStyle} htmlFor="st-guardian">هاتف ولي الأمر</label>
-              <input id="st-guardian" ref={guardianRef} value={guardianPhone} onChange={(e) => setGuardianPhone(e.target.value)} onKeyDown={(e) => onFieldKey(e, addressRef)} style={fieldStyle} dir="ltr" placeholder="07xxxxxxxxx" />
+              <input id="st-guardian" ref={guardianRef} value={guardianPhone} onChange={(e) => setGuardianPhone(`+964${e.target.value.replace(/\D/g, "").replace(/^964/, "").replace(/^0+/, "")}`)} onKeyDown={(e) => onFieldKey(e, addressRef)} style={fieldStyle} dir="ltr" placeholder="+9647xxxxxxxxx" />
               {(siblings.data?.count ?? 0) > 0 && (
                 <span style={{ fontSize: 12, color: C.mutedFg, display: "inline-flex", alignItems: "center", gap: 5 }}>
                   <Users aria-hidden size={13} /> لهذا الوليّ {siblings.data?.count} طالب مسجَّل — لا تُسجّل الإخوة في ملفٍّ واحد.

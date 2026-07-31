@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
@@ -636,11 +637,11 @@ export default function WorkOrderNew() {
                         </div>
                       </td>
                       <td className="px-2 py-1.5">
-                        <input
-                          dir="ltr"
+                        <MoneyInput
                           value={c.unitPrice}
-                          onChange={(e) => setPrice(c.key, e.target.value)}
+                          onChange={(value) => setPrice(c.key, value)}
                           className="w-full h-7 px-2 rounded border text-sm text-center"
+                          ariaLabel="سعر الوحدة"
                         />
                       </td>
                       <td className="px-2 py-1.5 text-center font-medium" dir="ltr">{fmt(D(c.unitPrice).times(c.quantity).toFixed(2))}</td>
@@ -658,7 +659,7 @@ export default function WorkOrderNew() {
           <div className="flex justify-between items-center text-sm pt-2">
             <div className="space-y-1">
               <Label htmlFor="disc" className="text-xs">خصم على السلّة (د.ع)</Label>
-              <Input id="disc" dir="ltr" className="h-8 w-32" value={discountAmount} onChange={(e) => setDiscountAmount(e.target.value)} placeholder="0" />
+              <MoneyInput id="disc" className="h-8 w-32" value={discountAmount} onChange={setDiscountAmount} ariaLabel="مبلغ الخصم" />
             </div>
             <div className="text-right">
               <div className="text-xs text-muted-foreground">إجمالي السلّة</div>
@@ -686,11 +687,11 @@ export default function WorkOrderNew() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="sp">سعر بيع الوحدة (د.ع)</Label>
-            <Input id="sp" dir="ltr" value={salePrice} onChange={(e) => setSalePrice(e.target.value)} placeholder="0" />
+            <MoneyInput id="sp" value={salePrice} onChange={setSalePrice} ariaLabel="سعر البيع" />
           </div>
           <div className="space-y-1">
             <Label htmlFor="lc">تكلفة العمل اليدوي (د.ع)</Label>
-            <Input id="lc" dir="ltr" value={laborCost} onChange={(e) => setLaborCost(e.target.value)} placeholder="0" />
+            <MoneyInput id="lc" value={laborCost} onChange={setLaborCost} ariaLabel="تكلفة العمل" />
             <p className="text-[11px] text-muted-foreground">للحساب الإداري فقط — لا تظهر للعميل.</p>
           </div>
           <div className="space-y-1">
@@ -775,7 +776,7 @@ export default function WorkOrderNew() {
               </div>
               <div className="space-y-1">
                 <Label htmlFor="dc">تكلفة خدمة التوصيل (د.ع)</Label>
-                <Input id="dc" dir="ltr" value={deliveryCost} onChange={(e) => setDeliveryCost(e.target.value)} placeholder="0" />
+                <MoneyInput id="dc" value={deliveryCost} onChange={setDeliveryCost} ariaLabel="تكلفة التوصيل" />
                 <p className="text-[11px] text-muted-foreground">تُضاف للإجمالي النهائي.</p>
               </div>
             </div>
@@ -807,7 +808,7 @@ export default function WorkOrderNew() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">
               <Label htmlFor="dep">عربون أمر التخصيص (د.ع)</Label>
-              <Input id="dep" dir="ltr" value={deposit} onChange={(e) => setDeposit(e.target.value)} placeholder="0" />
+              <MoneyInput id="dep" value={deposit} onChange={setDeposit} ariaLabel="العربون" />
               {customTotal.gt(0) && (
                 <div className="flex gap-1.5 pt-1">
                   {[

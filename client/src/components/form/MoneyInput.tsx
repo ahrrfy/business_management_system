@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent, type FocusEvent, type ClipboardEvent } from "react";
+import { useRef, useState, type ChangeEvent, type FocusEvent, type ClipboardEvent, type ComponentProps, type Ref } from "react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { toNormalizedNumber } from "@shared/numberNormalize";
@@ -8,7 +8,7 @@ import { toNormalizedNumber } from "@shared/numberNormalize";
  * يُرسَل عبر onChange (نظير `value`/`onChange` القياسيَّين)، فتبقى متوافقة مع zod moneyStr/signedMoneyStr
  * في الخادم (يرفض الفواصل). ⛔ لا تُرسل القيمة المعروضة (المنسَّقة) إلى أي mutation — أرسل `value` فقط.
  */
-export interface MoneyInputProps {
+export interface MoneyInputProps extends Omit<ComponentProps<"input">, "value" | "onChange" | "type" | "ref"> {
   id?: string;
   value: string;
   onChange: (raw: string) => void;
@@ -20,6 +20,8 @@ export interface MoneyInputProps {
   decimals?: number;
   className?: string;
   ariaLabel?: string;
+  /** مرجع مباشر للحقل للحالات التي تعتمد على التركيز البرمجي (مثل نقطة البيع). */
+  inputRef?: Ref<HTMLInputElement>;
   /**
    * حدود متوقّعة (ماليّة) — إن أُعطيت وكانت القيمة خارجها، يُلوَّن الحدّ كهرمانيّاً مع تلميحٍ
    * إعلاميّ عبر `title`. **لا يمنع الحفظ** — المنع من مسؤولية `priceSanity`. مفيد لتنبيه بصريّ
@@ -99,7 +101,12 @@ export function MoneyInput({
   decimals = 2,
   className,
   ariaLabel,
+  inputRef,
   expectedRange,
+  onKeyDown,
+  style,
+  autoFocus,
+  ...inputProps
 }: MoneyInputProps) {
   const ref = useRef<HTMLInputElement>(null);
   const [focused, setFocused] = useState(false);
@@ -170,7 +177,11 @@ export function MoneyInput({
   return (
     <Input
       id={id}
-      ref={ref}
+      ref={(node) => {
+        ref.current = node;
+        if (typeof inputRef === "function") inputRef(node);
+        else if (inputRef) inputRef.current = node;
+      }}
       value={display}
       onChange={handleChange}
       onPaste={handlePaste}
@@ -187,6 +198,10 @@ export function MoneyInput({
         outOfRange && "border-amber-500 focus-visible:ring-amber-500/40",
         className,
       )}
+      onKeyDown={onKeyDown}
+      style={style}
+      autoFocus={autoFocus}
+      {...inputProps}
     />
   );
 }
