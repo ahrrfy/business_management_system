@@ -20,6 +20,7 @@ import { D, fmtAr, round2, toBase } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import {
   ActionButtons,
   BulkPicker,
@@ -50,6 +51,7 @@ function safeMoney(v: string) {
 export default function PurchaseNew() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  const [pasteAvailable, setPasteAvailable] = useState(hasInvoiceTransfer);
 
   /* ─── server data ──────────────────────────────────────────────── */
   const me = trpc.auth.me.useQuery();
@@ -199,9 +201,27 @@ export default function PurchaseNew() {
         // اطبع المسوّدة الحالية (المتصفّح) — الطباعة المعتمدة من شاشة الاستلام.
         window.print();
         return;
+      case "duplicate":
+        if (!state.items.length) return notify.warn("لا توجد محتويات لنسخها.");
+        copyInvoiceItems(state.items);
+        dispatch({ type: "CLEAR_ITEMS" });
+        setPasteAvailable(true);
+        notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+        return;
+      case "paste": {
+        const items = takeInvoiceItems();
+        if (!items) {
+          setPasteAvailable(false);
+          notify.warn("لا توجد محتويات صالحة للصقها.");
+          return;
+        }
+        dispatch({ type: "ADD_ITEMS", items });
+        setPasteAvailable(false);
+        notify.ok("تم لصق محتويات الفاتورة.");
+        return;
+      }
       case "send":
       case "pdf":
-      case "duplicate":
       case "return":
         notify.info("هذا الإجراء سيُفعَّل لاحقاً.");
         return;
@@ -411,6 +431,7 @@ export default function PurchaseNew() {
             items={state.items}
             onAction={handleAction}
             saving={create.isPending}
+            pasteAvailable={pasteAvailable}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />
         </aside>

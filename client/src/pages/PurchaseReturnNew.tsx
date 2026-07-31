@@ -20,6 +20,7 @@ import { confirm } from "@/lib/confirm";
 import { D, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { PageHeader } from "@/components/PageHeader";
+import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import {
   ActionButtons,
   BulkPicker,
@@ -41,6 +42,7 @@ const TYPE = "PURCHASE_RETURN" as const;
 export default function PurchaseReturnNew() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  const [pasteAvailable, setPasteAvailable] = useState(hasInvoiceTransfer);
 
   // 1) ───── حالة عامة + هوية المستخدم ─────────────────────────────────────────
   const me = trpc.auth.me.useQuery();
@@ -284,9 +286,27 @@ export default function PurchaseReturnNew() {
       case "print":
         handlePrint();
         return;
+      case "duplicate":
+        if (!state.items.length) return toast.warning("لا توجد محتويات لنسخها.");
+        copyInvoiceItems(state.items);
+        dispatch({ type: "CLEAR_ITEMS" });
+        setPasteAvailable(true);
+        toast.success("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+        return;
+      case "paste": {
+        const items = takeInvoiceItems();
+        if (!items) {
+          setPasteAvailable(false);
+          toast.warning("لا توجد محتويات صالحة للصقها.");
+          return;
+        }
+        dispatch({ type: "ADD_ITEMS", items });
+        setPasteAvailable(false);
+        toast.success("تم لصق محتويات الفاتورة.");
+        return;
+      }
       case "send":
       case "pdf":
-      case "duplicate":
       case "convert":
         toast.info("سيُفعَّل لاحقاً.");
         return;
@@ -461,6 +481,7 @@ export default function PurchaseReturnNew() {
             invoiceType={TYPE}
             items={state.items}
             saving={mutation.isPending}
+            pasteAvailable={pasteAvailable}
             onAction={handleAction}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />

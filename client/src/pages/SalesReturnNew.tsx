@@ -41,6 +41,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 
 /** بيانات الأصل لكل بند تمّ تحميله من الفاتورة المرجعية. */
 interface RefMeta {
@@ -91,6 +92,7 @@ export function computeExpectedReturnTotal(
 export default function SalesReturnNew() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  const [pasteAvailable, setPasteAvailable] = useState(hasInvoiceTransfer);
 
   // الجلسة الحالية لمعرفة الفرع الافتراضي.
   const me = trpc.auth.me.useQuery();
@@ -564,12 +566,34 @@ export default function SalesReturnNew() {
                   break;
                 case "send":
                 case "convert":
-                case "duplicate":
                 case "return":
                   notify.info("هذا الإجراء غير متاح في مرتجع البيع.");
                   break;
+                case "duplicate":
+                  if (!state.items.length) {
+                    notify.warn("لا توجد محتويات لنسخها.");
+                    break;
+                  }
+                  copyInvoiceItems(state.items);
+                  dispatch({ type: "CLEAR_ITEMS" });
+                  setPasteAvailable(true);
+                  notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+                  break;
+                case "paste": {
+                  const items = takeInvoiceItems();
+                  if (!items) {
+                    setPasteAvailable(false);
+                    notify.warn("لا توجد محتويات صالحة للصقها.");
+                    break;
+                  }
+                  dispatch({ type: "ADD_ITEMS", items });
+                  setPasteAvailable(false);
+                  notify.ok("تم لصق المحتويات. اختر الفاتورة المرجعية قبل حفظ المرتجع.");
+                  break;
+                }
               }
             }}
+            pasteAvailable={pasteAvailable}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />
           <div className="rounded-xl border bg-muted/40 p-3 text-[11px] text-muted-foreground">

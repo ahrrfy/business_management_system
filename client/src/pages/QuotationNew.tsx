@@ -17,6 +17,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { D } from "@/lib/money";
 import { PageHeader } from "@/components/PageHeader";
+import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 
 import {
@@ -131,6 +132,7 @@ export default function QuotationNew() {
   const [clientRequestId, setClientRequestId] = useState<string>(() => crypto.randomUUID());
 
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [pasteAvailable, setPasteAvailable] = useState(() => !isEdit && hasInvoiceTransfer());
   const [savedQuotationId, setSavedQuotationId] = useState<number | null>(null);
   const printAfterSaveRef = useRef(false);
   const shareAfterSaveRef = useRef(false);
@@ -314,12 +316,24 @@ export default function QuotationNew() {
         handleConvert();
         break;
       case "duplicate":
-        // نسخ: نُعيد تعيين رقم المستند ومعرّف الطلب، مع الإبقاء على السلة.
-        dispatch({ type: "RESET", invoiceType: INVOICE_TYPE });
-        setClientRequestId(crypto.randomUUID());
-        setSavedQuotationId(null);
-        notify.info("تم تجهيز نسخة جديدة فارغة.");
+        if (!state.items.length) return notify.warn("لا توجد محتويات لنسخها.");
+        copyInvoiceItems(state.items);
+        dispatch({ type: "CLEAR_ITEMS" });
+        setPasteAvailable(true);
+        notify.ok("تم نسخ الأصناف وتفريغ عرض السعر. ستجد «لصق» في أي فاتورة تفتحها.");
         break;
+      case "paste": {
+        const items = takeInvoiceItems();
+        if (!items) {
+          setPasteAvailable(false);
+          notify.warn("لا توجد محتويات صالحة للصقها.");
+          break;
+        }
+        dispatch({ type: "ADD_ITEMS", items });
+        setPasteAvailable(false);
+        notify.ok("تم لصق محتويات الفاتورة.");
+        break;
+      }
       case "return":
         notify.info("المرتجع غير متاح من عرض السعر.");
         break;
@@ -467,6 +481,7 @@ export default function QuotationNew() {
             invoiceType={INVOICE_TYPE}
             items={state.items}
             saving={isSaving}
+            pasteAvailable={!isEdit && pasteAvailable}
             onAction={handleAction}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />

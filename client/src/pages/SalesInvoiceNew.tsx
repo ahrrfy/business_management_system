@@ -23,6 +23,7 @@ import { Link, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, round2, toBase } from "@/lib/money";
+import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -137,6 +138,7 @@ export default function SalesInvoiceNew() {
   const shareAfterSaveRef = useRef(false);
 
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [pasteAvailable, setPasteAvailable] = useState(hasInvoiceTransfer);
 
   // حوار موافقة المدير (يُفتح عند خطأ تجاوز حدّ الائتمان).
   const [creditPrompt, setCreditPrompt] = useState<string | null>(null);
@@ -365,9 +367,30 @@ export default function SalesInvoiceNew() {
         notify.info("التحويل متاح من عرض السعر فقط.");
         return;
       case "duplicate":
-        handleReset();
-        notify.info("تم تجهيز فاتورة جديدة فارغة.");
+        if (state.items.length === 0) {
+          notify.warn("لا توجد محتويات لنسخها.");
+          return;
+        }
+        // حافظة داخلية مؤقتة لنقل السلة بين محررات المستندات. لا نستخدم حافظة ويندوز
+        // لأنها لا تحفظ البنية والأسعار والخصومات، ولأن sessionStorage يبقي البيانات
+        // داخل جلسة النظام الحالية فقط.
+        copyInvoiceItems(state.items);
+        dispatch({ type: "CLEAR_ITEMS" });
+        setPasteAvailable(true);
+        notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
         return;
+      case "paste": {
+        const items = takeInvoiceItems();
+        if (!items) {
+          setPasteAvailable(false);
+          notify.warn("لا توجد محتويات صالحة للصقها.");
+          return;
+        }
+        dispatch({ type: "ADD_ITEMS", items });
+        setPasteAvailable(false);
+        notify.ok("تم لصق محتويات الفاتورة.");
+        return;
+      }
       case "return":
         navigate("/sales-returns/new");
         return;
@@ -519,6 +542,7 @@ export default function SalesInvoiceNew() {
             invoiceType={INVOICE_TYPE}
             items={state.items}
             saving={create.isPending}
+            pasteAvailable={pasteAvailable}
             onAction={handleAction}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />
