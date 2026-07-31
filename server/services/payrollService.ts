@@ -23,7 +23,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, getTableColumns, isNull, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
-import { accountingEntries, attendance, commissionRunLines, commissionRuns, employees, leaveRequests, payrollItems, payrollRuns, receipts } from "../../drizzle/schema";
+import { accountingEntries, attendance, commissionRunLines, commissionRuns, employees, hrAttendanceSettings, leaveRequests, payrollItems, payrollRuns, receipts } from "../../drizzle/schema";
 import { and, inArray } from "drizzle-orm";
 import type { Tx } from "../db";
 import { postEntry } from "./ledgerService";
@@ -33,6 +33,7 @@ import { extractInsertId } from "../lib/insertId";
 import { restoreAdvanceSettlementsTx, settleAdvancesOnPayTx, suggestDeductionsTx } from "./advancesService";
 import { applyDuePromotions } from "./promotionService";
 import { computeLegalComponents, getPayrollLegalSettings } from "./payrollLegalService";
+import { computeAttendancePay, daysBetween, type AttendancePayResult } from "./hr/attendancePay";
 
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -180,6 +181,17 @@ function nextDay(ymd: string): string {
   return new Date(Date.parse(`${ymd}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
 }
 
+/** يفرد فترات الإجازة إلى مجموعة تواريخ مقصوصة عند نافذة العمل (لنموذج الحضور). */
+function expandSpans(spans: Array<{ from: string; to: string }>, windowFrom: string, windowTo: string): Set<string> {
+  const out = new Set<string>();
+  for (const s of spans) {
+    const from = s.from > windowFrom ? s.from : windowFrom;
+    const to = s.to < windowTo ? s.to : windowTo;
+    for (const d of daysBetween(from, to)) out.add(d);
+  }
+  return out;
+}
+
 /* ─────────────────────────── توليد المسيّر ─────────────────────────── */
 
 export async function generatePayroll(period: string, actor: Actor) {
@@ -218,6 +230,8 @@ export async function generatePayroll(period: string, actor: Actor) {
         allowances: employees.allowances,
         hireDate: employees.hireDate,
         terminationDate: employees.terminationDate,
+        restDays: employees.restDays,
+        dailyHours: employees.dailyHours,
       })
       .from(employees)
       .where(
@@ -265,6 +279,8 @@ export async function generatePayroll(period: string, actor: Actor) {
           allowances: employees.allowances,
           hireDate: employees.hireDate,
           terminationDate: employees.terminationDate,
+          restDays: employees.restDays,
+          dailyHours: employees.dailyHours,
         })
         .from(employees)
         .where(inArray(employees.id, missingIds));
@@ -300,6 +316,53 @@ export async function generatePayroll(period: string, actor: Actor) {
     // التداخل يُحسب بالأيام التقويمية داخل حدود الشهر فقط ⇒ إجازة عابرة للشهور تُخصَم أيامها في شهرها.
     // (الموظف الساعيّ يُخصَم تلقائياً بغياب الحضور؛ الخصم أدناه للشهريّ حصراً.)
     const monthStart = `${p}-01`;
+
+    /*
+     * الأجر بالحضور (0138) — معطَّل افتراضياً. عند تفعيله يصير أجرُ الشهريّ محسوباً من
+     * ساعات حضوره الفعلية بسعر ساعته (راتبه ÷ ساعات دوامه)، بدل الراتب الثابت بالتناسب.
+     * نقرأ الإعداد + أيام الإجازات المعتمدة (مدفوعة/بلا راتب) + ساعات الحضور لكل يوم.
+     */
+    const [attSettings] = await tx.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
+    const attendancePayOn = !!attSettings?.attendancePayEnabled;
+    const defaultRestDays = Array.isArray(attSettings?.defaultRestDays) ? (attSettings!.defaultRestDays as string[]) : ["الجمعة"];
+    const defaultDailyHours = money(attSettings?.standardDailyHours ?? "8");
+    const payFrom = attSettings?.attendancePayFrom ? String(attSettings.attendancePayFrom) : null;
+
+    // ساعات الحضور لكل (موظف × يوم) — تُستعمل في نموذج الحضور فقط.
+    const dailyAttendance = new Map<number, Map<string, Decimal>>();
+    if (attendancePayOn) {
+      const rows = await tx
+        .select({ employeeId: attendance.employeeId, date: attendance.attendanceDate, hours: attendance.hours })
+        .from(attendance)
+        .where(sql`DATE_FORMAT(${attendance.attendanceDate}, '%Y-%m') = ${p} AND ${attendance.status} IN ('PRESENT', 'LATE')`);
+      for (const r of rows) {
+        const k = Number(r.employeeId);
+        const m = dailyAttendance.get(k) ?? new Map<string, Decimal>();
+        m.set(String(r.date).slice(0, 10), money(r.hours ?? 0));
+        dailyAttendance.set(k, m);
+      }
+    }
+
+    // أيام الإجازات المعتمدة **المدفوعة** (بلا راتب تُجلب أدناه مع الفترات).
+    const paidLeaveSpans = new Map<number, Array<{ from: string; to: string }>>();
+    if (attendancePayOn) {
+      const rows = await tx
+        .select({ employeeId: leaveRequests.employeeId, fromDate: leaveRequests.fromDate, toDate: leaveRequests.toDate })
+        .from(leaveRequests)
+        .where(
+          and(
+            eq(leaveRequests.paid, true),
+            eq(leaveRequests.status, "approved"),
+            sql`${leaveRequests.fromDate} <= LAST_DAY(${monthStart}) AND ${leaveRequests.toDate} >= ${monthStart}`,
+          ),
+        );
+      for (const r of rows) {
+        const k = Number(r.employeeId);
+        const arr = paidLeaveSpans.get(k) ?? [];
+        arr.push({ from: String(r.fromDate), to: String(r.toDate) });
+        paidLeaveSpans.set(k, arr);
+      }
+    }
     /*
      * تُجلب الفترات خاماً (لا SUM في SQL) لأن التقاطع الصحيح ليس مع حدود الشهر وحدها بل مع
      * **نافذة عمل الموظف** داخل الشهر. كان الخصم يُحسب على حدود الشهر فقط ⇒ ازدواج في شهر
@@ -350,6 +413,7 @@ export async function generatePayroll(period: string, actor: Actor) {
       createdBy: actor.userId,
     });
     const runId = extractInsertId(runRes);
+    const attendancePayByEmp = new Map<number, AttendancePayResult>();
 
     for (const e of emps) {
       const monthly = e.payType === "monthly";
@@ -372,6 +436,26 @@ export async function generatePayroll(period: string, actor: Actor) {
         // تسوية نهائية لمفصولٍ ذي عمولة مستحقة — لا راتب، عمولة فقط.
         gross = new Decimal(0);
         hours = null;
+      } else if (monthly && attendancePayOn) {
+        /*
+         * نموذج الحضور: الأجر = ساعات الحضور الفعلية × سعر ساعته (راتبه ÷ ساعات دوامه).
+         * الغياب بلا أجر، والإجازة المدفوعة يوم دوامٍ كامل، وبلا راتب لا تُحتسب —
+         * ولذلك لا يُطبَّق عليه خصمُ الإجازة القديم أدناه (وإلا خُصمت مرّتين).
+         */
+        const pay = computeAttendancePay({
+          salary: money(e.salary ?? 0),
+          employmentStart,
+          employmentEnd,
+          restDays: Array.isArray(e.restDays) ? (e.restDays as string[]) : defaultRestDays,
+          dailyHours: e.dailyHours != null ? money(e.dailyHours) : defaultDailyHours,
+          attendedHoursByDate: dailyAttendance.get(Number(e.id)) ?? new Map(),
+          paidLeaveDates: expandSpans(paidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
+          unpaidLeaveDates: expandSpans(unpaidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
+          payFrom,
+        });
+        attendancePayByEmp.set(Number(e.id), pay);
+        gross = round2(money(pay.basePay).plus(allowances));
+        hours = pay.payableHours;
       } else if (monthly) {
         gross = round2(money(e.salary ?? 0).times(employmentRatio).plus(allowances));
         hours = null;
@@ -387,8 +471,10 @@ export async function generatePayroll(period: string, actor: Actor) {
       // مقصوصاً عند gross (لا يتجاوز الأجر المكتسَب). يُطوى في deductions، ويُوثَّق في note للشفافية.
       // يُحسب **قبل** استقطاع السلفة كي يُقصّ الأخيرُ عند الأجر المتاح بعد الإجازة (انظر أدناه).
       // أيام الإجازة بلا راتب **داخل نافذة العمل** فقط — ما يقع خارجها استُبعد بالتناسب أصلاً.
+      // في نموذج الحضور الخصمُ مطبَّقٌ أصلاً داخل computeAttendancePay (يوم الإجازة بلا
+      // راتب لا يُحتسب ساعاته) ⇒ لا يُخصم هنا ثانيةً.
       const unpaidLeaveDays =
-        monthly && !zeroGross
+        monthly && !zeroGross && !attendancePayOn
           ? countDaysWithin(unpaidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd)
           : 0;
       const dailyRate = round2(money(e.salary ?? 0).div(30));
@@ -447,7 +533,18 @@ export async function generatePayroll(period: string, actor: Actor) {
       const net = computeNet(gross, overtime, commission, deductions);
       await tx.insert(payrollItems).values({
         runId,
-        note: leaveNote,
+        // شفافية الأجر بالحضور: الموظف يرى لماذا نقص أجرُه بالضبط (ساعات/أيام لا مبلغاً غامضاً).
+        note: (() => {
+          const ap = attendancePayByEmp.get(Number(e.id));
+          if (!ap) return leaveNote;
+          const parts = [
+            `أجر بالحضور: ${ap.payableHours} من ${ap.scheduledHours} ساعة × ${ap.hourlyRate} د.ع/ساعة`,
+          ];
+          if (ap.absentDays > 0) parts.push(`غياب ${ap.absentDays} يوم`);
+          if (ap.unpaidLeaveDays > 0) parts.push(`إجازة بلا راتب ${ap.unpaidLeaveDays} يوم`);
+          if (Number(ap.shortHours) > 0) parts.push(`نقص ${ap.shortHours} ساعة`);
+          return parts.join(" — ").slice(0, 255);
+        })(),
         employeeId: Number(e.id),
         payType: monthly ? "monthly" : "hourly",
         hours,

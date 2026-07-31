@@ -15,6 +15,7 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { WEEK_DAYS } from "@shared/hr";
 import { Clock, Fingerprint, Moon, PenLine, TriangleAlert, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -374,8 +375,18 @@ function NightShiftSettingsCard() {
   const s = q.data;
   const [enabled, setEnabled] = useState(false);
   const [cutoff, setCutoff] = useState(8);
+  const [payOn, setPayOn] = useState(false);
+  const [payFrom, setPayFrom] = useState("");
+  const [dailyHours, setDailyHours] = useState(8);
+  const [restDays, setRestDays] = useState<string[]>(["الجمعة"]);
   useEffect(() => {
-    if (open && s) { setEnabled(!!s.nightShiftEnabled); setCutoff(Number(s.nightShiftCutoffHour ?? 8)); }
+    if (!open || !s) return;
+    setEnabled(!!s.nightShiftEnabled);
+    setCutoff(Number(s.nightShiftCutoffHour ?? 8));
+    setPayOn(!!s.attendancePayEnabled);
+    setPayFrom(s.attendancePayFrom ? String(s.attendancePayFrom).slice(0, 10) : "");
+    setDailyHours(Number(s.standardDailyHours ?? 8));
+    setRestDays(Array.isArray(s.defaultRestDays) ? (s.defaultRestDays as string[]) : ["الجمعة"]);
   }, [open, s]);
 
   return (
@@ -383,9 +394,14 @@ function NightShiftSettingsCard() {
       <CardContent className="p-3 flex items-center justify-between gap-3 flex-wrap text-sm">
         <div className="flex items-center gap-2">
           <Moon aria-hidden className="size-4 text-muted-foreground" />
-          <span>الورديات الليلية العابرة منتصف الليل:</span>
-          <span className={s?.nightShiftEnabled ? "font-medium text-[var(--status-active,#16a34a)]" : "text-muted-foreground"}>
-            {q.isLoading ? "…" : s?.nightShiftEnabled ? `مفعَّلة (حتى ${s.nightShiftCutoffHour}:00 صباحاً)` : "معطَّلة"}
+          <span>الأجر بالحضور:</span>
+          <span className={s?.attendancePayEnabled ? "font-medium text-[var(--status-active,#16a34a)]" : "text-muted-foreground"}>
+            {q.isLoading ? "…" : s?.attendancePayEnabled ? `مفعَّل من ${String(s.attendancePayFrom ?? "").slice(0, 10)}` : "معطَّل"}
+          </span>
+          <span className="text-muted-foreground">·</span>
+          <span>الوردية الليلية:</span>
+          <span className={s?.nightShiftEnabled ? "font-medium" : "text-muted-foreground"}>
+            {q.isLoading ? "…" : s?.nightShiftEnabled ? `حتى ${s.nightShiftCutoffHour}:00` : "معطَّلة"}
           </span>
         </div>
         <Button variant="outline" size="sm" onClick={() => setOpen(true)}>تعديل</Button>
@@ -393,8 +409,52 @@ function NightShiftSettingsCard() {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>احتساب الورديات الليلية</DialogTitle></DialogHeader>
-          <div className="space-y-3 text-sm">
+          <DialogHeader><DialogTitle>إعدادات احتساب الحضور والأجر</DialogTitle></DialogHeader>
+          <div className="space-y-3 text-sm max-h-[70vh] overflow-y-auto">
+            <div className="rounded-md border p-3 space-y-2">
+              <label className="flex items-start gap-2">
+                <input type="checkbox" className="size-4 mt-0.5" checked={payOn} onChange={(e) => setPayOn(e.target.checked)} />
+                <span>
+                  <span className="font-medium">الأجر بالحضور (للموظفين الشهريّين)</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                    سعر ساعة الموظف = راتبه ÷ ساعات دوامه في الشهر، وأجرُه = ساعات حضوره الفعلية × ذلك السعر.
+                    الغياب بلا أجر، والإجازة المدفوعة يوم دوامٍ كامل، وبلا راتب لا تُحتسب.
+                  </span>
+                </span>
+              </label>
+              <div className="space-y-1">
+                <Label htmlFor="ap-from">يسري من تاريخ</Label>
+                <Input id="ap-from" type="date" dir="ltr" value={payFrom} disabled={!payOn} onChange={(e) => setPayFrom(e.target.value)} />
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  إلزاميّ: ما قبل هذا التاريخ يُعامَل دواماً مدفوعاً كاملاً. بدونه تُحتسب أشهرٌ سبقت تشغيل
+                  جهاز الحضور — ولا بيانات فيها — غياباً كاملاً فتُصفَّر رواتبها.
+                </p>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="ap-hours">ساعات الدوام اليومية (افتراضي)</Label>
+                <Input id="ap-hours" type="number" min={1} max={24} step="0.5" dir="ltr" value={dailyHours} disabled={!payOn} onChange={(e) => setDailyHours(Number(e.target.value))} />
+              </div>
+              <div className="space-y-1">
+                <Label>أيام الراحة الأسبوعية (افتراضي)</Label>
+                <div className="flex flex-wrap gap-2">
+                  {WEEK_DAYS.map((d) => (
+                    <label key={d} className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs">
+                      <input
+                        type="checkbox"
+                        className="size-3.5"
+                        disabled={!payOn}
+                        checked={restDays.includes(d)}
+                        onChange={(e) => setRestDays((prev) => (e.target.checked ? [...prev, d] : prev.filter((x) => x !== d)))}
+                      />
+                      {d}
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  يوم الراحة لا يُطالَب بحضورٍ فيه ولا يُخصَم. يمكن تخصيصه لكل موظف من بطاقته.
+                </p>
+              </div>
+            </div>
             <label className="flex items-start gap-2">
               <input type="checkbox" className="size-4 mt-0.5" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
               <span>
@@ -417,7 +477,7 @@ function NightShiftSettingsCard() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
-            <Button disabled={save.isPending} onClick={() => save.mutate({ nightShiftEnabled: enabled, nightShiftCutoffHour: cutoff })}>
+            <Button disabled={save.isPending} onClick={() => save.mutate({ nightShiftEnabled: enabled, nightShiftCutoffHour: cutoff, attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, standardDailyHours: dailyHours, defaultRestDays: restDays })}>
               {save.isPending ? "جارٍ الحفظ…" : "حفظ"}
             </Button>
           </DialogFooter>

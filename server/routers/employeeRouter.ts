@@ -75,6 +75,10 @@ const employeeInput = z.object({
   salary: moneyStrOpt,
   allowances: moneyStrOpt,
   dayRates: z.record(z.string(), z.number()).nullish(),
+  /** أيام الراحة الأسبوعية لهذا الموظف — تختلف بين الموظفين (0138). */
+  restDays: z.array(z.string().trim().min(1)).nullish(),
+  /** ساعات دوامه اليومية — null = الافتراضي العامّ. */
+  dailyHours: z.number().min(1).max(24).nullish(),
   hireDate: z.string().optional(),
   gender: z.string().trim().optional(),
   birthDate: z.string().optional(),

@@ -44,6 +44,10 @@ export const attendanceRouter = router({
       z.object({
         nightShiftEnabled: z.boolean(),
         nightShiftCutoffHour: z.number().int().min(1).max(12),
+        attendancePayEnabled: z.boolean().optional(),
+        attendancePayFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+        standardDailyHours: z.number().min(1).max(24).optional(),
+        defaultRestDays: z.array(z.string().trim().min(1)).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {

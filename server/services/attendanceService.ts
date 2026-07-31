@@ -191,7 +191,18 @@ export async function getAttendanceSettings() {
   const db = requireDb();
   const [row] = await db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
   if (row) return row;
-  return { id: 1, nightShiftEnabled: false, nightShiftCutoffHour: 8, updatedBy: null, updatedAt: new Date() };
+  // الافتراضي يطابق شكل الصفّ حرفياً (لا اتحاد أنواع في الواجهة) — الوحدة معطَّلة بالكامل.
+  return {
+    id: 1,
+    nightShiftEnabled: false,
+    nightShiftCutoffHour: 8,
+    attendancePayEnabled: false,
+    attendancePayFrom: null as string | null,
+    standardDailyHours: "8.00",
+    defaultRestDays: ["الجمعة"] as unknown,
+    updatedBy: null as number | null,
+    updatedAt: new Date(),
+  };
 }
 
 /**
@@ -201,19 +212,38 @@ export async function getAttendanceSettings() {
  * سابقة قد تكون بُنيت على الأرقام القديمة.
  */
 export async function updateAttendanceSettings(
-  input: { nightShiftEnabled: boolean; nightShiftCutoffHour: number },
+  input: {
+    nightShiftEnabled: boolean;
+    nightShiftCutoffHour: number;
+    attendancePayEnabled?: boolean;
+    attendancePayFrom?: string | null;
+    standardDailyHours?: number;
+    defaultRestDays?: string[] | null;
+  },
   actorUserId: number,
 ) {
   if (!Number.isInteger(input.nightShiftCutoffHour) || input.nightShiftCutoffHour < 1 || input.nightShiftCutoffHour > 12) {
     throw new Error("ساعة الفصل يجب أن تكون بين ١ و١٢ صباحاً");
   }
+  // تاريخ السريان شرطُ تفعيل: بدونه يُحتسب الغياب بأثرٍ رجعيّ على أشهرٍ بلا بيانات حضور
+  // أصلاً (ما قبل تشغيل الجهاز) فتُصفَّر رواتبها. الحارس بنيويّ لا تذكيرٌ في الواجهة.
+  if (input.attendancePayEnabled && !input.attendancePayFrom) {
+    throw new Error("حدّد «يسري من تاريخ» قبل تفعيل الأجر بالحضور — بدونه تُحتسب أشهرٌ سابقة بلا بيانات حضور غياباً كاملاً.");
+  }
+  const patch = {
+    nightShiftEnabled: input.nightShiftEnabled,
+    nightShiftCutoffHour: input.nightShiftCutoffHour,
+    ...(input.attendancePayEnabled !== undefined ? { attendancePayEnabled: input.attendancePayEnabled } : {}),
+    ...(input.attendancePayFrom !== undefined ? { attendancePayFrom: input.attendancePayFrom || null } : {}),
+    ...(input.standardDailyHours !== undefined ? { standardDailyHours: String(input.standardDailyHours) } : {}),
+    ...(input.defaultRestDays !== undefined ? { defaultRestDays: input.defaultRestDays } : {}),
+    updatedBy: actorUserId,
+  };
   return withTx(async (tx) => {
     await tx
       .insert(hrAttendanceSettings)
-      .values({ id: 1, nightShiftEnabled: input.nightShiftEnabled, nightShiftCutoffHour: input.nightShiftCutoffHour, updatedBy: actorUserId })
-      .onDuplicateKeyUpdate({
-        set: { nightShiftEnabled: input.nightShiftEnabled, nightShiftCutoffHour: input.nightShiftCutoffHour, updatedBy: actorUserId },
-      });
+      .values({ id: 1, ...patch })
+      .onDuplicateKeyUpdate({ set: patch });
     const [row] = await tx.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
     return row!;
   });

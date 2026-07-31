@@ -2146,6 +2146,15 @@ export const employees = mysqlTable(
     allowances: decimal("allowances", { precision: 15, scale: 2 }).default("0"),
     /** سعر الساعة لكل يوم لموظفي الساعة: {"الأحد":5000,...} (أجر اليوم = ساعات × سعر ذلك اليوم). */
     dayRates: json("dayRates"),
+    /**
+     * أيام الراحة الأسبوعية لهذا الموظف بأسماء الأيام العربية: ["الجمعة"] (0138).
+     * تختلف بين الموظفين (قرار مالك) ⇒ لكلٍّ جدولُه. يوم الراحة لا يُطالَب بحضورٍ فيه
+     * ولا يُخصَم — وبدونه كان تفعيلُ خصم الغياب يخصم أربعة أيام شهرياً من الجميع.
+     * null = يُستعمل الافتراضي العامّ في hrAttendanceSettings.
+     */
+    restDays: json("restDays"),
+    /** ساعات الدوام القياسية اليومية لهذا الموظف — null = الافتراضي العامّ (0138). */
+    dailyHours: decimal("dailyHours", { precision: 5, scale: 2 }),
     /** حالة التوظيف (مستقلة عن isActive للحذف الناعم). */
     employmentStatus: mysqlEnum("employmentStatus", ["active", "leave", "terminated"]).default("active").notNull(),
     gender: varchar("gender", { length: 10 }),
@@ -3165,6 +3174,19 @@ export const hrAttendanceSettings = mysqlTable("hrAttendanceSettings", {
   nightShiftEnabled: boolean("nightShiftEnabled").default(false).notNull(),
   /** بصمةٌ قبل هذه الساعة في يومٍ تالٍ تُعدّ إغلاقاً لوردية أمس (0-23). */
   nightShiftCutoffHour: int("nightShiftCutoffHour").default(8).notNull(),
+  /**
+   * الأجر بالحضور (0138) — قرار مالك: «الذي يحضر له راتب، والذي غاب لا راتب لغيابه»،
+   * والاحتساب **بالساعات**: سعر ساعة الشهريّ = راتبه ÷ ساعات دوامه في الشهر،
+   * وأجرُه = ساعات حضوره الفعلية × ذلك السعر.
+   * **معطَّل افتراضياً**: تفعيله بأثرٍ رجعيّ قبل تشغيل الجهاز يُظهر الجميع غائبين
+   * ويُصفّر رواتبهم — لذا يلزمه تاريخُ سريانٍ صريح ولا يُخصَم قبله إطلاقاً.
+   */
+  attendancePayEnabled: boolean("attendancePayEnabled").default(false).notNull(),
+  attendancePayFrom: date("attendancePayFrom", { mode: "string" }),
+  /** ساعات الدوام القياسية اليومية الافتراضية (يتجاوزها إعداد الموظف). */
+  standardDailyHours: decimal("standardDailyHours", { precision: 5, scale: 2 }).default("8.00").notNull(),
+  /** أيام الراحة الأسبوعية الافتراضية بأسماء الأيام العربية (يتجاوزها إعداد الموظف). */
+  defaultRestDays: json("defaultRestDays"),
   updatedBy: int("updatedBy").references(() => users.id),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
