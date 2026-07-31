@@ -33,7 +33,7 @@ import {
   requestStocktakeRecount,
   resolveStocktakeConflict,
 } from "../services/stocktakeService";
-import { adminProcedure, canSeeCostForUser, managerProcedure, router, warehouseProcedure } from "../trpc";
+import { adminProcedure, canSeeCostForUser, inventoryReadProcedure, managerProcedure, router, warehouseProcedure } from "../trpc";
 
 /** مبلغ نصي بنمط purchaseRouter — الأموال نصوص تمرّ عبر decimal.js (لا parseFloat). */
 const moneyStr = z.string().regex(/^\d{1,13}(\.\d{1,2})?$/, "قيمة مالية غير صالحة");
@@ -133,12 +133,16 @@ export const stocktakeRouter = router({
 
   /**
    * معاينة عدّاد النطاق للمعالج (Wizard) — يعكس منطق resolveScope حرفياً:
-   * FULL/MOVING/CATEGORY (MANUAL يُحسب في العميل من الاختيار). عزل الفرع مطابق لـcreate
-   * (warehouse يُجبَر على فرعه؛ مدير/أدمن يمرّرا branchId). قراءة صرفة بلا آثار جانبيّة.
+   * FULL/MOVING/CATEGORY (MANUAL يُحسب في العميل من الاختيار). قراءة صرفة بلا آثار جانبيّة.
    * يزيل التضليل الذي كان يعرض inventory.onHand.length (يعدّ صفوف branchStock السابقة فقط
    * فيُخفي الأصناف التي لم تُلامَس بحركة بعد — فارق قاتل في الجرد الافتتاحي).
+   *
+   * البوّابة: inventoryReadProcedure (branchScoped + requireModule("inventory","READ")) —
+   * الجرد جزء من وحدة المخزون فيرث نفس بوّابتها؛ العزل الفرعيّ يأتي من scopedBranchId تلقائياً
+   * (المدير/الأدمن null فيمرّ input.branchId؛ غيرهم مُجبَر على فرعه). أنظف من warehouseProcedure
+   * الخام (RAW_ROLE_GATE) الذي يفرضه حارس authz لكل endpoint مستجدّ.
    */
-  previewScopeCount: warehouseProcedure
+  previewScopeCount: inventoryReadProcedure
     .input(
       z.object({
         branchId: idNum,
@@ -149,8 +153,7 @@ export const stocktakeRouter = router({
       }),
     )
     .query(async ({ input, ctx }) => {
-      const restricted = restrictedBranchOf(ctx);
-      const branchId = restricted ?? input.branchId;
+      const branchId = ctx.scopedBranchId ?? input.branchId;
       return previewScope({
         branchId,
         sessionType: input.sessionType,
