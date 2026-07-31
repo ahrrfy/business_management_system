@@ -200,12 +200,38 @@ export async function createEmployee(input: EmployeeInput) {
   return getEmployee(id);
 }
 
-export async function updateEmployee(id: number, input: EmployeeInput) {
+/**
+ * تعديل بيانات الموظف. يُعيد `salaryChange` (قديم/جديد) ليُسجَّل في التدقيق — تغييرُ أجرٍ
+ * بلا أثرٍ يُسمّي القيمة القديمة كان يجعل قفزة `payrollRuns.totalNet` غير قابلة للتفسير.
+ *
+ * ⚠️ الأجر لا يُغيَّر من هنا لغير المدير: مسار الترقيات (`promotions`) يفرض فصل مهام
+ * (معتمِد ≠ مُنشئ) وتاريخ سريان وسجلّاً تاريخياً، وكان هذا النموذج بابَ التفافٍ كاملاً
+ * عليه — مديرُ فرعٍ مرتبطٌ بسجلّ موظف يرفع راتبه بنقرتين بلا معتمِدٍ ثانٍ.
+ */
+export async function updateEmployee(id: number, input: EmployeeInput, actor?: { userId: number; role: string }) {
   const db = requireDb();
   const [e] = await db.select().from(employees).where(eq(employees.id, id)).limit(1);
-  if (!e) throw new Error("الموظف غير موجود");
-  await db.update(employees).set(toValues(input)).where(eq(employees.id, id));
-  return getEmployee(id);
+  if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+
+  const next = toValues(input);
+  const salaryChanged = String(next.salary ?? "") !== String(e.salary ?? "");
+  const allowancesChanged = String(next.allowances ?? "") !== String(e.allowances ?? "");
+  if ((salaryChanged || allowancesChanged) && actor && actor.role !== "admin") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        "تغيير الأجر لا يتمّ من شاشة تعديل الموظف — استعمل «الترقيات» (تمرّ باعتماد مديرٍ آخر وتاريخ سريان وسجلّ تاريخيّ).",
+    });
+  }
+
+  await db.update(employees).set(next).where(eq(employees.id, id));
+  const updated = await getEmployee(id);
+  return {
+    ...updated!,
+    salaryChange: salaryChanged || allowancesChanged
+      ? { fromSalary: e.salary ?? null, toSalary: next.salary ?? null, fromAllowances: e.allowances ?? null, toAllowances: next.allowances ?? null }
+      : null,
+  };
 }
 
 /**

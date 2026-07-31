@@ -214,8 +214,17 @@ export const employeeRouter = router({
     .mutation(async ({ input, ctx }) => {
       const { id, ...rest } = input;
       try {
-        const e = await svc.updateEmployee(id, rest as svc.EmployeeInput);
-        await logAudit(ctx, { action: "employee.update", entityType: "employee", entityId: id, newValue: { name: e?.fullName } });
+        const e = await svc.updateEmployee(id, rest as svc.EmployeeInput, { userId: ctx.user.id, role: ctx.user.role });
+        // تغيير الأجر يُسجَّل بقيمتَيه (قبل/بعد) لا بالاسم وحده — وإلا صار تغييرُ أجرٍ بلا أثر.
+        await logAudit(ctx, {
+          action: "employee.update",
+          entityType: "employee",
+          entityId: id,
+          oldValue: e.salaryChange ? { salary: e.salaryChange.fromSalary, allowances: e.salaryChange.fromAllowances } : undefined,
+          newValue: e.salaryChange
+            ? { name: e.fullName, salary: e.salaryChange.toSalary, allowances: e.salaryChange.toAllowances }
+            : { name: e.fullName },
+        });
         return e;
       } catch (err: any) {
         // المفكّك المركزي يسمّي الحقل المتصادم فعلاً (بريد/رقم وطني/ربط حساب) بدل افتراض البريد.

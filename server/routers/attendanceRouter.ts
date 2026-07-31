@@ -104,6 +104,8 @@ export const attendanceRouter = router({
         status: input.status,
         source: "manual",
         notes: input.notes ?? null,
+        // فصل مهام: الساعات تتحوّل أجراً مباشرةً ⇒ لا يسجّل أحدٌ ساعات نفسه.
+        actor: { userId: ctx.user.id, role: ctx.user.role },
       });
       await logAudit(ctx, {
         action: "attendance.record",
