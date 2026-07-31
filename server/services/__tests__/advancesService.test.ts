@@ -187,18 +187,19 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
     const emp = await seedEmployee();
     const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "200000", monthlyDeduction: "100000" }, ACTOR);
 
-    await fullPayCycle("2026-06");
+    // شهورٌ ماضية: توليد مسيّر لشهرٍ لم يبدأ صار مرفوضاً (حارس الترقيات المؤجَّلة).
+    await fullPayCycle("2026-04");
     let [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
     expect(Number(row.remaining)).toBe(100000);
     expect(row.status).toBe("ACTIVE");
 
-    await fullPayCycle("2026-07");
+    await fullPayCycle("2026-05");
     [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
     expect(Number(row.remaining)).toBe(0);
     expect(row.status).toBe("SETTLED");
 
     // الشهر الثالث: لا استقطاع سلفة بعد التسوية.
-    const run3 = await generatePayroll("2026-08", ACTOR);
+    const run3 = await generatePayroll("2026-06", ACTOR);
     expect(Number(run3!.items[0].advanceDeduction)).toBe(0);
     expect(Number(run3!.items[0].net)).toBe(1000000);
   });
@@ -374,19 +375,24 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
 });
 
 describe("advancesService — الإلغاء وتعدّد السلف", () => {
-  it("الإلغاء متاح قبل أي خصم فقط ويُرفض بعده (والسند الأصلي لا يُعكَس آلياً)", async () => {
+  it("الإلغاء يشترط عكس سند الصرف أولاً، ويُرفض بعد أي خصم", async () => {
     const emp = await seedEmployee();
     const a1 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "100000" }, ACTOR);
+
+    // النقد خرج فعلاً ⇒ إلغاء السلفة وحده يمحو التزام السداد ويُبقي النقد بلا دَين.
+    await expect(cancelAdvance({ advanceId: Number(a1.id), reason: "خطأ إدخال" }, ACTOR)).rejects.toThrow(/سند صرفها ما زال سارياً/);
+    let [still] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(a1.id)));
+    expect(still.status).toBe("ACTIVE");
+
+    // بعد عكس السند (من شاشة السندات، بفصل مهامها) يُقبل الإلغاء.
+    await db().update(s.receipts).set({ status: "REVERSED" }).where(eq(s.receipts.id, Number(a1.receiptId)));
     const res = await cancelAdvance({ advanceId: Number(a1.id), reason: "خطأ إدخال" }, ACTOR);
     expect(res.status).toBe("CANCELLED");
-    expect(res.voucherNotice).toContain("لم يُعكَس");
-    // السند الأصلي باقٍ COMPLETED (شأن الخزينة).
-    const [r] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(a1.receiptId)));
-    expect(r.status).toBe("COMPLETED");
 
-    // سلفة خُصم منها ⇒ الإلغاء مرفوض.
+    // سلفة خُصم منها ⇒ الإلغاء مرفوض حتى لو عُكس سندها.
     const a2 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "200000", monthlyDeduction: "100000" }, ACTOR);
     await fullPayCycle("2026-06");
+    await db().update(s.receipts).set({ status: "REVERSED" }).where(eq(s.receipts.id, Number(a2.receiptId)));
     await expect(cancelAdvance({ advanceId: Number(a2.id), reason: "متأخر" }, ACTOR)).rejects.toThrow(/خُصم/);
   });
 
@@ -394,6 +400,8 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     const emp = await seedEmployee();
     const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "100000" }, ACTOR);
     const run = await generatePayroll("2026-06", ACTOR); // advanceDeduction=100000
+    // الإلغاء يشترط عكس السند أولاً (النقد يعود ثم يسقط الالتزام).
+    await db().update(s.receipts).set({ status: "REVERSED" }).where(eq(s.receipts.id, Number(adv.receiptId)));
     await cancelAdvance({ advanceId: Number(adv.id) }, ACTOR);
     await approveRun(run!.id, APPROVER);
     await expect(payRun(run!.id, APPROVER)).rejects.toThrow(/أرصدة السلف/);

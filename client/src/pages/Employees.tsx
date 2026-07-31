@@ -7,7 +7,7 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { EmpAvatar, EmploymentStatusBadge } from "@/lib/hr/ui";
 import { CopyInline } from "@/components/CopyButton";
 import { EMPLOYMENT_STATUSES, HR_DEPARTMENTS, employmentStatusLabel, fullEmployeeName, payTypeLabel } from "@shared/hr";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, Fingerprint } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 
@@ -101,6 +101,7 @@ export default function Employees() {
                 { key: "phone", header: "الهاتف", map: (r) => r.phone ?? "" },
                 { key: "hireDate", header: "تاريخ المباشرة", map: (r) => (r.hireDate ? String(r.hireDate) : "") },
                 { key: "employmentStatus", header: "الحالة", map: (r) => employmentStatusLabel(r.employmentStatus) },
+                { key: "deviceLinked", header: "مربوط بجهاز الحضور", map: (r) => (r.deviceLinked ? "نعم" : "لا") },
               ],
             }}
             add={{ href: "/hr/employees/new", label: "موظف جديد" }}
@@ -127,7 +128,19 @@ export default function Employees() {
                       <div className="flex items-center gap-2">
                         <EmpAvatar name={e.fullName} color={e.colorTag} photoUrl={e.photoUrl} sizePx={32} />
                         <div>
-                          <div className="font-medium">{e.fullName}</div>
+                          <div className="font-medium flex items-center gap-1.5">
+                            {e.fullName}
+                            {/* بلا ربطٍ بجهاز الحضور لا تصل بصماته لسجل الحضور أصلاً — يُكتشف يوم الراتب بصفر ساعات. */}
+                            {e.employmentStatus === "active" && !e.deviceLinked && (
+                              <span
+                                className="inline-flex items-center gap-1 rounded-full border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] text-[var(--sem-warn)] font-normal"
+                                title="لم يُربط برقم على جهاز الحضور — بصماته لن تُحتسب في الحضور ولا في الراتب"
+                              >
+                                <Fingerprint aria-hidden className="size-3" />
+                                غير مربوط
+                              </span>
+                            )}
+                          </div>
                           {e.position && <div className="text-xs text-muted-foreground">{e.position}</div>}
                         </div>
                       </div>

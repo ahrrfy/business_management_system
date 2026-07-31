@@ -31,7 +31,8 @@ export interface PayrollSummaryRow {
 
 export interface PayrollSummaryResult {
   rows: PayrollSummaryRow[];
-  totals: { runs: number; gross: string; net: string };
+  /** `net`/`gross` = كل المسيّرات المعروضة؛ و`*Paid` = المدفوعة فعلاً (ما خرج من الخزينة). */
+  totals: { runs: number; gross: string; net: string; paidRuns: number; grossPaid: string; netPaid: string };
 }
 
 /**
@@ -40,7 +41,7 @@ export interface PayrollSummaryResult {
  */
 export async function getPayrollSummary(opts: { period?: string } = {}): Promise<PayrollSummaryResult> {
   const db = getDb();
-  const empty: PayrollSummaryResult = { rows: [], totals: { runs: 0, gross: "0", net: "0" } };
+  const empty: PayrollSummaryResult = { rows: [], totals: { runs: 0, gross: "0", net: "0", paidRuns: 0, grossPaid: "0", netPaid: "0" } };
   if (!db) return empty;
 
   const periodCond = opts.period ? sql`WHERE pr.period = ${opts.period}` : sql``;
@@ -73,14 +74,32 @@ export async function getPayrollSummary(opts: { period?: string } = {}): Promise
 
   let gross = money(0);
   let net = money(0);
+  // «المدفوع» يعني ما خرج من الخزينة فعلاً: المسيّرات بحالة paid وحدها. جمعُ المسودّات
+  // وغير المدفوعة تحت هذه التسمية كان يُضاعف الرقم تقريباً في أوّل الشهر (مسيّرٌ مدفوع
+  // + مسيّرٌ وُلّد لتوّه) فيُطبَع على ورقة الشركة رقمٌ لم يُصرَف نصفُه.
+  let grossPaid = money(0);
+  let netPaid = money(0);
+  let paidRuns = 0;
   for (const r of raw) {
     gross = gross.add(money(r.gross ?? 0));
     net = net.add(money(r.net ?? 0));
+    if (String(r.status) === "paid") {
+      grossPaid = grossPaid.add(money(r.gross ?? 0));
+      netPaid = netPaid.add(money(r.net ?? 0));
+      paidRuns += 1;
+    }
   }
 
   return {
     rows,
-    totals: { runs: rows.length, gross: toDbMoney(gross), net: toDbMoney(net) },
+    totals: {
+      runs: rows.length,
+      gross: toDbMoney(gross),
+      net: toDbMoney(net),
+      paidRuns,
+      grossPaid: toDbMoney(grossPaid),
+      netPaid: toDbMoney(netPaid),
+    },
   };
 }
 
@@ -131,6 +150,7 @@ export async function getAttendanceReport(opts: {
         DATE_FORMAT(a.attendanceDate, '%Y-%m-%d') AS date,
         TRIM(CONCAT_WS(' ', e.firstName, e.fatherName, e.lastName)) AS employeeName,
         a.attendanceStatus AS status,
+        e.payType AS payType,
         CAST(COALESCE(a.hours, 0) AS CHAR) AS hours,
         CAST(COALESCE(a.amount, 0) AS CHAR) AS amount
       FROM attendance a
@@ -159,7 +179,13 @@ export async function getAttendanceReport(opts: {
   let absent = 0;
   for (const r of raw) {
     hours = hours.add(money(r.hours ?? 0));
-    amount = amount.add(money(r.amount ?? 0));
+    /*
+     * الأجر يُجمَع للموظف **الساعيّ** وحده. صفوف الحضور تحمل `amount` محسوباً من سعر
+     * الساعة لكل موظف يبصم — بمن فيهم الشهريّ الذي لا يُدفَع بالساعة إطلاقاً (المسيّر
+     * يتجاهل حضوره ويأخذ راتبه الثابت). فكان التقرير يُظهر «إجمالي أجر» يجمع مبالغ
+     * وهمية لا تُصرف، ورقمين متناقضين لأجر الشهر نفسه بين هذا التقرير والمسيّر.
+     */
+    if (String(r.payType) === "hourly") amount = amount.add(money(r.amount ?? 0));
     const key = String(r.status);
     if (key === "PRESENT" || key === "LATE") present += 1;
     else if (key === "ABSENT") absent += 1;

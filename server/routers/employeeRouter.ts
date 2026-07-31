@@ -75,6 +75,10 @@ const employeeInput = z.object({
   salary: moneyStrOpt,
   allowances: moneyStrOpt,
   dayRates: z.record(z.string(), z.number()).nullish(),
+  /** أيام الراحة الأسبوعية لهذا الموظف — تختلف بين الموظفين (0138). */
+  restDays: z.array(z.string().trim().min(1)).nullish(),
+  /** ساعات دوامه اليومية — null = الافتراضي العامّ. */
+  dailyHours: z.number().min(1).max(24).nullish(),
   hireDate: z.string().optional(),
   gender: z.string().trim().optional(),
   birthDate: z.string().optional(),
@@ -214,8 +218,17 @@ export const employeeRouter = router({
     .mutation(async ({ input, ctx }) => {
       const { id, ...rest } = input;
       try {
-        const e = await svc.updateEmployee(id, rest as svc.EmployeeInput);
-        await logAudit(ctx, { action: "employee.update", entityType: "employee", entityId: id, newValue: { name: e?.fullName } });
+        const e = await svc.updateEmployee(id, rest as svc.EmployeeInput, { userId: ctx.user.id, role: ctx.user.role });
+        // تغيير الأجر يُسجَّل بقيمتَيه (قبل/بعد) لا بالاسم وحده — وإلا صار تغييرُ أجرٍ بلا أثر.
+        await logAudit(ctx, {
+          action: "employee.update",
+          entityType: "employee",
+          entityId: id,
+          oldValue: e.salaryChange ? { salary: e.salaryChange.fromSalary, allowances: e.salaryChange.fromAllowances } : undefined,
+          newValue: e.salaryChange
+            ? { name: e.fullName, salary: e.salaryChange.toSalary, allowances: e.salaryChange.toAllowances }
+            : { name: e.fullName },
+        });
         return e;
       } catch (err: any) {
         // المفكّك المركزي يسمّي الحقل المتصادم فعلاً (بريد/رقم وطني/ربط حساب) بدل افتراض البريد.
@@ -234,8 +247,19 @@ export const employeeRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const e = await svc.setEmploymentStatus(input.id, input.status, { terminationDate: input.terminationDate, terminationReason: input.terminationReason });
-      await logAudit(ctx, { action: "employee.setStatus", entityType: "employee", entityId: input.id, newValue: { status: input.status } });
+      const e = await svc.setEmploymentStatus(input.id, input.status, {
+        terminationDate: input.terminationDate,
+        terminationReason: input.terminationReason,
+        actorUserId: ctx.user.id,
+      });
+      await logAudit(ctx, {
+        action: "employee.setStatus",
+        entityType: "employee",
+        entityId: input.id,
+        // الأثران الجانبيان للفصل يُسجَّلان صراحةً: تعطيلُ حسابٍ وتحريرُ ربطِ جهازٍ فعلان
+        // أمنيّان يجب أن يظهرا في التدقيق لا أن يُستنتَجا.
+        newValue: { status: input.status, userDisabled: e.userDisabled, deviceLinksReleased: e.deviceLinksReleased },
+      });
       return e;
     }),
 

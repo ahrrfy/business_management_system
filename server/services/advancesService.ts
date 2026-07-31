@@ -21,7 +21,7 @@
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import { advanceSettlements, branches, employeeAdvances, employees, idempotencyKeys, receipts, voucherCategories } from "../../drizzle/schema";
 import type { Tx } from "../db";
@@ -154,6 +154,32 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
   if (!emp.isActive || emp.employmentStatus === "terminated") {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُمنح سلفة لموظف معطَّل أو منتهي الخدمة" });
   }
+  /*
+   * فصل مهام: المانح ≠ المستفيد. المنح تحت العتبة يُنشئ سنداً معتمَداً فوراً والنقد يخرج
+   * في اللحظة نفسها — فبلا هذا الحارس يمنح صاحبُ hr=FULL نفسَه نقداً بفاعلٍ واحد،
+   * ويكرّرها يومياً فيتجاوز العتبة تقسيماً. طلبه لنفسه يمرّ عبر مديرٍ آخر.
+   */
+  if (emp.userId != null && Number(emp.userId) === Number(actor.userId)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "لا تمنح سلفةً لنفسك — فصل المهام يوجب أن يمنحها لك مستخدمٌ آخر.",
+    });
+  }
+  /*
+   * سقف تراكميّ على غير المسدَّد: العتبة تحرس السند الواحد لا المجموع، فثلاث سلفٍ متتالية
+   * تحت العتبة تُخرِج أضعافها بفاعلٍ واحد. المجموع القائم + الجديد يخضع لنفس العتبة.
+   */
+  const [openSum] = await db
+    .select({ total: sql<string>`COALESCE(SUM(${employeeAdvances.remaining}), 0)` })
+    .from(employeeAdvances)
+    .where(and(eq(employeeAdvances.employeeId, input.employeeId), eq(employeeAdvances.status, "ACTIVE")));
+  const outstanding = money(openSum?.total ?? "0");
+  if (outstanding.plus(amount).toNumber() >= threshold) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `مجموع سلف هذا الموظف غير المسدَّدة (${outstanding.toNumber().toLocaleString("ar-IQ-u-nu-latn")} د.ع) مع هذه السلفة يبلغ عتبة الاعتماد الثنائي — سدِّد القائم أو أصدر سند صرف من شاشة السندات ليمرّ بالاعتماد.`,
+    });
+  }
   if (emp.branchId != null && Number(emp.branchId) !== Number(input.branchId)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "فرع صرف السلفة يجب أن يطابق فرع الموظف" });
   }
@@ -270,9 +296,16 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
 /* ─────────────────────────── إلغاء سلفة ─────────────────────────── */
 
 /**
- * إلغاء سلفة — فقط قبل أي خصم (remaining == amount). لا يُعكَس سند الصرف الأصلي آلياً:
- * النقد خرج فعلاً، وإرجاعه للخزينة قرار خزينة يُنفَّذ بإلغاء السند من شاشة السندات
- * (بقواعد فصل المهام هناك). الرسالة المعادة تنبّه المستخدم لذلك.
+ * إلغاء سلفة — فقط قبل أي خصم (remaining == amount) **وبعد عكس سند صرفها**.
+ *
+ * ⚠️ لماذا يُشترط عكس السند أولاً (ثغرة حرجة كانت مفتوحة): إلغاء السلفة يمحو التزام
+ * السداد (لا تُخصم من الرواتب بعدها)، بينما النقد خرج فعلاً من الخزينة لحظة المنح.
+ * وبما أن المنح تحت العتبة يُنشئ سنداً **معتمَداً فوراً** بفاعلٍ واحد، كان بوسع مستخدمٍ
+ * واحد بصلاحية hr=FULL أن يمنح نفسه ٩٩٩٬٠٠٠ ثم يلغيها فيبقى النقد بلا دَينٍ ولا أثر.
+ * كان التنبيه نصّياً فقط (voucherNotice) ولا شيء يفرضه.
+ *
+ * الآن: عكس السند يُنفَّذ من شاشة السندات (حيث فصل المهام مفروض)، ثم تُلغى السلفة.
+ * الترتيب مقصود — النقد يعود أولاً، والالتزام يسقط بعده، فلا نافذة يسقط فيها الالتزام وحده.
  */
 export async function cancelAdvance(input: { advanceId: number; reason?: string | null }, actor: Actor) {
   return withTx(async (tx) => {
@@ -282,6 +315,22 @@ export async function cancelAdvance(input: { advanceId: number; reason?: string 
     if (!money(adv.remaining).eq(money(adv.amount))) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُلغى سلفة خُصم منها فعلاً — بقيّتها تُخصم من الرواتب القادمة حتى التسوية" });
     }
+    if (adv.receiptId != null) {
+      const [rc] = await tx
+        .select({ status: receipts.status, voucherNumber: receipts.voucherNumber, approvalStatus: receipts.approvalStatus })
+        .from(receipts)
+        .where(eq(receipts.id, Number(adv.receiptId)))
+        .for("update")
+        .limit(1);
+      // REVERSED = عُكس السند وعاد النقد. REJECTED = لم يُصرف أصلاً. ما عداهما ⇒ النقد بالخارج.
+      const cashReturned = rc == null || rc.status === "REVERSED" || rc.approvalStatus === "REJECTED";
+      if (!cashReturned) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `لا تُلغى السلفة وسند صرفها ما زال سارياً — النقد خرج من الخزينة، وإلغاء السلفة وحده يمحو التزام السداد. ألغِ السند ${rc.voucherNumber ?? ""} من شاشة السندات أولاً (يمرّ بفصل المهام) ثم أعد الإلغاء.`.trim(),
+        });
+      }
+    }
     const reason = input.reason?.trim();
     const note = [adv.note, reason ? `إلغاء: ${reason}` : "أُلغيت"].filter(Boolean).join(" — ").slice(0, 255);
     await tx.update(employeeAdvances).set({ status: "CANCELLED", note }).where(eq(employeeAdvances.id, input.advanceId));
@@ -290,8 +339,7 @@ export async function cancelAdvance(input: { advanceId: number; reason?: string 
       id: input.advanceId,
       status: "CANCELLED" as const,
       receiptId: adv.receiptId != null ? Number(adv.receiptId) : null,
-      // توثيق للمستخدم: السند الأصلي شأن الخزينة — لا يُعكَس آلياً.
-      voucherNotice: "أُلغيت السلفة. سند الصرف الأصلي لم يُعكَس آلياً — إن أُريد إرجاع النقد للخزينة ألغِ السند من شاشة السندات.",
+      voucherNotice: "أُلغيت السلفة بعد عكس سند صرفها — لا نقد خارج الخزينة بلا التزام.",
     };
   });
 }

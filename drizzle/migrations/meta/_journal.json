@@ -946,6 +946,27 @@
       "when": 1787184200000,
       "tag": "0135_price_anomaly_log",
       "breakpoints": true
+    },
+    {
+      "idx": 136,
+      "version": "5",
+      "when": 1787270600000,
+      "tag": "0136_hr_device_link_governance",
+      "breakpoints": true
+    },
+    {
+      "idx": 137,
+      "version": "5",
+      "when": 1787357000000,
+      "tag": "0137_attendance_pairing_and_review",
+      "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "5",
+      "when": 1787443400000,
+      "tag": "0138_attendance_based_pay",
+      "breakpoints": true
     }
   ]
 }

@@ -26,6 +26,8 @@ export const attendanceRouter = router({
           source: z.enum(["fingerprint", "manual"]).optional(),
           // بحث خادميّ (اسم/تاريخ/يوم) — كان محلّياً على الصفوف المُحمَّلة وحدها.
           q: z.string().trim().min(1).optional(),
+          // طابور التصحيح: أيام ينقصها إغلاق (بصمة خروج مفقودة) — تُصحَّح قبل إغلاق الشهر.
+          needsReviewOnly: z.boolean().optional(),
           // ترقيم خادميّ: كانت تُحمَّل كل السجلّات المطابقة دفعةً (وبلا شهر = كل التاريخ).
           limit: z.number().int().positive().max(500).default(50),
           offset: z.number().int().min(0).default(0),
@@ -33,6 +35,31 @@ export const attendanceRouter = router({
         .optional(),
     )
     .query(({ input }) => svc.listAttendance(input)),
+
+  /** إعدادات احتساب الحضور (الوردية الليلية) — قراءة بـhr/READ. */
+  settings: hrRead.query(() => svc.getAttendanceSettings()),
+
+  updateSettings: hrWrite
+    .input(
+      z.object({
+        nightShiftEnabled: z.boolean(),
+        nightShiftCutoffHour: z.number().int().min(1).max(12),
+        attendancePayEnabled: z.boolean().optional(),
+        attendancePayFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+        standardDailyHours: z.number().min(1).max(24).optional(),
+        defaultRestDays: z.array(z.string().trim().min(1)).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const row = await svc.updateAttendanceSettings(input, ctx.user.id);
+      await logAudit(ctx, {
+        action: "attendance.updateSettings",
+        entityType: "hrAttendanceSettings",
+        entityId: 1,
+        newValue: { nightShiftEnabled: input.nightShiftEnabled, nightShiftCutoffHour: input.nightShiftCutoffHour },
+      });
+      return row;
+    }),
 
   /** مؤشّرات الشاشة — مجاميع كل المطابق للفلتر (لا الصفحة). تُستدعى بلا q: البطاقات مؤشّر
    *  الشهر/الفلتر، والبحث يُصفّي الجدول وتذييله فقط (سلوك محفوظ). */
@@ -81,6 +108,8 @@ export const attendanceRouter = router({
         status: input.status,
         source: "manual",
         notes: input.notes ?? null,
+        // فصل مهام: الساعات تتحوّل أجراً مباشرةً ⇒ لا يسجّل أحدٌ ساعات نفسه.
+        actor: { userId: ctx.user.id, role: ctx.user.role },
       });
       await logAudit(ctx, {
         action: "attendance.record",

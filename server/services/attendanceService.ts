@@ -7,7 +7,7 @@
  * ========================================================================== */
 import { and, desc, eq, getTableColumns, inArray, like, or, sql, type SQL } from "drizzle-orm";
 import { DAY_RATES_DEFAULT, WEEK_DAYS, fullEmployeeName } from "@shared/hr";
-import { attendance, employees, payrollRuns } from "../../drizzle/schema";
+import { attendance, employees, hrAttendanceSettings, payrollRuns } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
@@ -44,6 +44,8 @@ export interface AttendanceFilters {
   source?: string;
   /** بحث نصّي: اسم الموظف (رباعيّ) أو التاريخ أو اسم اليوم العربي. */
   q?: string;
+  /** أيام ينقصها إغلاق فقط — طابور التصحيح قبل إغلاق الشهر (0137). */
+  needsReviewOnly?: boolean;
 }
 
 /**
@@ -56,6 +58,7 @@ function buildAttendanceConds(filters?: AttendanceFilters): SQL[] {
   if (filters?.employeeId) conds.push(eq(attendance.employeeId, filters.employeeId));
   if (filters?.period) conds.push(like(attendance.attendanceDate, `${filters.period}%`));
   if (filters?.source) conds.push(eq(attendance.source, filters.source));
+  if (filters?.needsReviewOnly) conds.push(eq(attendance.needsReview, true));
   const q = filters?.q?.trim();
   if (q) {
     const pat = `%${escLike(q)}%`;
@@ -181,6 +184,71 @@ export async function formOptions() {
   return rows.map((e) => ({ id: e.id, name: fullEmployeeName(e) }));
 }
 
+/* ─────────────────── إعدادات احتساب الحضور (صفّ مفرد) ─────────────────── */
+
+/** يقرأ الإعدادات ويُنشئ الصفّ المفرد بقيمه الافتراضية عند غيابه (لا حالة ضمنية). */
+export async function getAttendanceSettings() {
+  const db = requireDb();
+  const [row] = await db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
+  if (row) return row;
+  // الافتراضي يطابق شكل الصفّ حرفياً (لا اتحاد أنواع في الواجهة) — الوحدة معطَّلة بالكامل.
+  return {
+    id: 1,
+    nightShiftEnabled: false,
+    nightShiftCutoffHour: 8,
+    attendancePayEnabled: false,
+    attendancePayFrom: null as string | null,
+    standardDailyHours: "8.00",
+    defaultRestDays: ["الجمعة"] as unknown,
+    updatedBy: null as number | null,
+    updatedAt: new Date(),
+  };
+}
+
+/**
+ * تحديث إعدادات الاحتساب. تغيير الوردية الليلية **لا يعيد حساب الماضي** — الأيام
+ * المطويّة تبقى كما هي؛ ما يصل بعد التغيير يُحتسب بالسياسة الجديدة (وأيّ يوم يُعاد
+ * طيّه بوصول بصمة متأخرة يُعاد حسابه كاملاً بها). عدم إعادة الحساب مقصود: مسيّرات
+ * سابقة قد تكون بُنيت على الأرقام القديمة.
+ */
+export async function updateAttendanceSettings(
+  input: {
+    nightShiftEnabled: boolean;
+    nightShiftCutoffHour: number;
+    attendancePayEnabled?: boolean;
+    attendancePayFrom?: string | null;
+    standardDailyHours?: number;
+    defaultRestDays?: string[] | null;
+  },
+  actorUserId: number,
+) {
+  if (!Number.isInteger(input.nightShiftCutoffHour) || input.nightShiftCutoffHour < 1 || input.nightShiftCutoffHour > 12) {
+    throw new Error("ساعة الفصل يجب أن تكون بين ١ و١٢ صباحاً");
+  }
+  // تاريخ السريان شرطُ تفعيل: بدونه يُحتسب الغياب بأثرٍ رجعيّ على أشهرٍ بلا بيانات حضور
+  // أصلاً (ما قبل تشغيل الجهاز) فتُصفَّر رواتبها. الحارس بنيويّ لا تذكيرٌ في الواجهة.
+  if (input.attendancePayEnabled && !input.attendancePayFrom) {
+    throw new Error("حدّد «يسري من تاريخ» قبل تفعيل الأجر بالحضور — بدونه تُحتسب أشهرٌ سابقة بلا بيانات حضور غياباً كاملاً.");
+  }
+  const patch = {
+    nightShiftEnabled: input.nightShiftEnabled,
+    nightShiftCutoffHour: input.nightShiftCutoffHour,
+    ...(input.attendancePayEnabled !== undefined ? { attendancePayEnabled: input.attendancePayEnabled } : {}),
+    ...(input.attendancePayFrom !== undefined ? { attendancePayFrom: input.attendancePayFrom || null } : {}),
+    ...(input.standardDailyHours !== undefined ? { standardDailyHours: String(input.standardDailyHours) } : {}),
+    ...(input.defaultRestDays !== undefined ? { defaultRestDays: input.defaultRestDays } : {}),
+    updatedBy: actorUserId,
+  };
+  return withTx(async (tx) => {
+    await tx
+      .insert(hrAttendanceSettings)
+      .values({ id: 1, ...patch })
+      .onDuplicateKeyUpdate({ set: patch });
+    const [row] = await tx.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
+    return row!;
+  });
+}
+
 export interface RecordAttendanceInput {
   employeeId: number;
   attendanceDate: string; // YYYY-MM-DD
@@ -190,6 +258,11 @@ export interface RecordAttendanceInput {
   status?: "PRESENT" | "ABSENT" | "LATE" | "LEAVE";
   source?: string;
   notes?: string | null;
+  /** يومٌ ينقصه إغلاق — يضعه الطيّ التلقائي. الإدخال/التصحيح اليدوي يُطفئه دائماً. */
+  needsReview?: boolean;
+  reviewReason?: string | null;
+  /** فاعل الإدخال اليدوي — لفرض «لا يسجّل أحدٌ ساعات نفسه». الطيّ التلقائي يمرّره null. */
+  actor?: { userId: number; role: string } | null;
 }
 
 /** يُحوّل وقت "HH:MM" في يوم الحضور إلى Date لعمود timestamp (أو null).
@@ -214,6 +287,14 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     // لا يُسجَّل حضور لموظف منتهي الخدمة (الحضور بعد الإنهاء يولّد أجراً وهمياً عند توليد المسيّر).
     if (emp.employmentStatus === "terminated") {
       throw new Error("لا يمكن تسجيل حضور لموظف منتهي الخدمة");
+    }
+    /*
+     * فصل مهام على الإدخال اليدوي: ساعاتُ الموظف الساعيّ تتحوّل أجراً مباشرةً
+     * (amount = hours × سعر الساعة)، فتسجيلُ المرء ساعاتِ نفسه مسارُ زيادةِ أجرٍ بفاعلٍ واحد.
+     * الطيّ التلقائي من الجهاز لا يمرّر actor (لا فاعل بشريّ) فلا يتأثّر. admin مُستثنى للتصحيح الإداري.
+     */
+    if (input.actor && input.actor.role !== "admin" && emp.userId != null && Number(emp.userId) === Number(input.actor.userId)) {
+      throw new Error("لا تسجّل حضور نفسك — يلزم أن يُدخِله مستخدمٌ آخر (فصل المهام).");
     }
     // حارس المسيّر المُقفَل (تدقيق ١٧/٧): لا تسجيل/تعديل حضور لشهرٍ مسيّرُه معتمد/مدفوع — الحضور
     // أساسُ حساب المسيّر (ساعات/غياب/إجازة)، وتغييره بعد الاعتماد يُفسد مسيّراً مُلتزَماً مالياً
@@ -254,6 +335,9 @@ export async function recordAttendance(input: RecordAttendanceInput) {
       hourlyRate: toDbMoney(rate),
       amount: toDbMoney(amount),
       source: input.source ?? "manual",
+      // التصحيح اليدوي هو الحسم: مديرٌ أدخل اليوم صراحةً ⇒ لم يعد ناقصاً مهما قال الطيّ.
+      needsReview: (input.source ?? "manual") === "manual" ? false : !!input.needsReview,
+      reviewReason: (input.source ?? "manual") === "manual" ? null : input.reviewReason?.slice(0, 120) ?? null,
     } as const;
 
     const [existing] = await tx

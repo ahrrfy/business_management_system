@@ -200,7 +200,7 @@ describe("payrollService — pay posts ledger entries", () => {
 
   it("لا يُدفع مسيّر غير معتمد", async () => {
     await createEmployee({ firstName: "سارة", lastName: "الحسني", payType: "monthly", salary: "700000", allowances: "0" });
-    const run = await generatePayroll("2026-08", ACTOR);
+    const run = await generatePayroll("2026-01", ACTOR);
     await expect(payRun(run!.id, ACTOR)).rejects.toThrow();
   });
 
@@ -208,7 +208,7 @@ describe("payrollService — pay posts ledger entries", () => {
     // المُولِّد بفرع 1، لكن لكل موظف فرعه: ع→1، ب→2 ⇒ يجب أن يُنسَب قيد كلٍّ لفرعه.
     const e1 = await createEmployee({ firstName: "عقيل", lastName: "ت", payType: "monthly", salary: "500000", allowances: "0", branchId: 1 });
     const e2 = await createEmployee({ firstName: "براء", lastName: "ث", payType: "monthly", salary: "600000", allowances: "0", branchId: 2 });
-    const run = await generatePayroll("2026-12", ACTOR); // ACTOR.branchId = 1
+    const run = await generatePayroll("2026-02", ACTOR); // ACTOR.branchId = 1
     await approveRun(run!.id, APPROVER);
     await payRun(run!.id, APPROVER);
 
@@ -226,7 +226,7 @@ describe("payrollService — pay posts ledger entries", () => {
 
   it("عكس مسيّر مدفوع ثمّ إعادة دفعه يقيّد قيداً جديداً (:r1) بلا اصطدام بالمفتاح الفريد", async () => {
     await createEmployee({ firstName: "مصطفى", lastName: "الكناني", payType: "monthly", salary: "1000000", allowances: "0" });
-    const run = await generatePayroll("2026-10", ACTOR);
+    const run = await generatePayroll("2026-03", ACTOR);
     await approveRun(run!.id, APPROVER);
     await payRun(run!.id, APPROVER); // الدفع الأول: PAYROLL:<run>:<emp>
 
@@ -250,7 +250,7 @@ describe("payrollService — pay posts ledger entries", () => {
 describe("payrollService — فصل المهام (SOD-01/02)", () => {
   it("لا يجوز اعتماد مسيّر أنشأته بنفسك (مُعتمِد ≠ مُولِّد)", async () => {
     await createEmployee({ firstName: "حسن", lastName: "العامري", payType: "monthly", salary: "500000", allowances: "0" });
-    const run = await generatePayroll("2026-09", ACTOR); // أنشأه ACTOR (id 1)
+    const run = await generatePayroll("2026-04", ACTOR); // أنشأه ACTOR (id 1)
     await expect(approveRun(run!.id, ACTOR)).rejects.toThrow(); // اعتماد ذاتي مرفوض
     const approved = await approveRun(run!.id, APPROVER); // مُعتمِد آخر ينجح
     expect(approved!.status).toBe("approved");
@@ -259,7 +259,7 @@ describe("payrollService — فصل المهام (SOD-01/02)", () => {
 
   it("لا يجوز صرف مسيّر أنشأته بنفسك (دافع ≠ مُولِّد)", async () => {
     await createEmployee({ firstName: "عمّار", lastName: "الطائي", payType: "monthly", salary: "500000", allowances: "0" });
-    const run = await generatePayroll("2026-11", ACTOR);
+    const run = await generatePayroll("2026-05", ACTOR);
     await approveRun(run!.id, APPROVER);
     await expect(payRun(run!.id, ACTOR)).rejects.toThrow(); // صرف ذاتي مرفوض
     const paid = await payRun(run!.id, APPROVER);

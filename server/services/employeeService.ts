@@ -6,14 +6,15 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, getTableColumns, isNull, like, ne, or, sql } from "drizzle-orm";
 import { fullEmployeeName, type EmployeeEducation } from "@shared/hr";
-import { branches, employees, roles, users } from "../../drizzle/schema";
+import { branches, employees, hrDeviceUsers, roles, users } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { requireDb, withTx, type Actor } from "./tx";
 import { toDbMoney } from "./money";
 import { extractInsertId } from "../lib/insertId";
 import { escapeLike } from "../lib/sqlLike";
-import { createUserTx, type CreateUserInput } from "./userService";
+import { assertNotLastActiveAdmin, createUserTx, type CreateUserInput } from "./userService";
 import { getEmployeeUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
+import { listEmployeeDeviceLinks } from "./hrDeviceService";
 
 export interface EmployeeFilters {
   q?: string;
@@ -50,7 +51,13 @@ export async function listEmployees(filters?: EmployeeFilters) {
   const offset = filters?.offset ?? 0;
 
   const rows = await db
-    .select({ ...getTableColumns(employees), branchName: branches.name })
+    .select({
+      ...getTableColumns(employees),
+      branchName: branches.name,
+      // مربوط بجهاز حضور؟ EXISTS مترابط لا JOIN — الربط قد يتعدّد (جهازان) فالانضمام يُضاعف الصفوف.
+      // يُغذّي شارة «غير مربوط» في القائمة: بلا ربطٍ لا تصل بصماته أصلاً لسجل الحضور.
+      deviceLinked: sql<number>`EXISTS (SELECT 1 FROM ${hrDeviceUsers} WHERE ${hrDeviceUsers.employeeId} = ${employees.id})`,
+    })
     .from(employees)
     .leftJoin(branches, eq(employees.branchId, branches.id))
     .where(where)
@@ -59,7 +66,10 @@ export async function listEmployees(filters?: EmployeeFilters) {
     .offset(offset);
   const [{ count }] = await db.select({ count: sql<number>`count(*)` }).from(employees).where(where);
 
-  return { rows: rows.map((r) => ({ ...r, fullName: fullEmployeeName(r) })), total: Number(count) };
+  return {
+    rows: rows.map((r) => ({ ...r, fullName: fullEmployeeName(r), deviceLinked: Number(r.deviceLinked) === 1 })),
+    total: Number(count),
+  };
 }
 
 export async function getEmployee(id: number) {
@@ -88,7 +98,10 @@ export async function getEmployee(id: number) {
       .limit(1);
     if (u) linkedUser = u;
   }
-  return { ...e, fullName: fullEmployeeName(e), managerName, linkedUser };
+  // ربوط جهاز الحضور — تُعرَض وتُدار من بطاقة الموظف، ومصدر حقيقتها يبقى hrDeviceUsers
+  // (علاقة تحتمل جهازين للفرعين واستبدال جهازٍ تالف، لا حقلاً مكرَّراً على employees).
+  const deviceLinks = await listEmployeeDeviceLinks(id);
+  return { ...e, fullName: fullEmployeeName(e), managerName, linkedUser, deviceLinks };
 }
 
 /** خيارات النماذج: الفروع + المدراء المحتملون (موظفون على رأس العمل). */
@@ -121,6 +134,8 @@ export interface EmployeeInput {
   salary?: string | null;
   allowances?: string | null;
   dayRates?: Record<string, number> | null;
+  restDays?: string[] | null;
+  dailyHours?: number | null;
   hireDate?: string | null;
   gender?: string | null;
   birthDate?: string | null;
@@ -155,6 +170,8 @@ function toValues(input: EmployeeInput) {
     salary: input.salary != null && input.salary !== "" ? toDbMoney(input.salary) : null,
     allowances: toDbMoney(input.allowances ?? "0"),
     dayRates: input.dayRates ?? null,
+    restDays: input.restDays ?? null,
+    dailyHours: input.dailyHours != null ? String(input.dailyHours) : null,
     hireDate: input.hireDate || null,
     gender: input.gender?.trim() || null,
     birthDate: input.birthDate || null,
@@ -187,12 +204,38 @@ export async function createEmployee(input: EmployeeInput) {
   return getEmployee(id);
 }
 
-export async function updateEmployee(id: number, input: EmployeeInput) {
+/**
+ * تعديل بيانات الموظف. يُعيد `salaryChange` (قديم/جديد) ليُسجَّل في التدقيق — تغييرُ أجرٍ
+ * بلا أثرٍ يُسمّي القيمة القديمة كان يجعل قفزة `payrollRuns.totalNet` غير قابلة للتفسير.
+ *
+ * ⚠️ الأجر لا يُغيَّر من هنا لغير المدير: مسار الترقيات (`promotions`) يفرض فصل مهام
+ * (معتمِد ≠ مُنشئ) وتاريخ سريان وسجلّاً تاريخياً، وكان هذا النموذج بابَ التفافٍ كاملاً
+ * عليه — مديرُ فرعٍ مرتبطٌ بسجلّ موظف يرفع راتبه بنقرتين بلا معتمِدٍ ثانٍ.
+ */
+export async function updateEmployee(id: number, input: EmployeeInput, actor?: { userId: number; role: string }) {
   const db = requireDb();
   const [e] = await db.select().from(employees).where(eq(employees.id, id)).limit(1);
-  if (!e) throw new Error("الموظف غير موجود");
-  await db.update(employees).set(toValues(input)).where(eq(employees.id, id));
-  return getEmployee(id);
+  if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+
+  const next = toValues(input);
+  const salaryChanged = String(next.salary ?? "") !== String(e.salary ?? "");
+  const allowancesChanged = String(next.allowances ?? "") !== String(e.allowances ?? "");
+  if ((salaryChanged || allowancesChanged) && actor && actor.role !== "admin") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        "تغيير الأجر لا يتمّ من شاشة تعديل الموظف — استعمل «الترقيات» (تمرّ باعتماد مديرٍ آخر وتاريخ سريان وسجلّ تاريخيّ).",
+    });
+  }
+
+  await db.update(employees).set(next).where(eq(employees.id, id));
+  const updated = await getEmployee(id);
+  return {
+    ...updated!,
+    salaryChange: salaryChanged || allowancesChanged
+      ? { fromSalary: e.salary ?? null, toSalary: next.salary ?? null, fromAllowances: e.allowances ?? null, toAllowances: next.allowances ?? null }
+      : null,
+  };
 }
 
 /**
@@ -226,21 +269,63 @@ export async function deleteEmployee(id: number) {
 export async function setEmploymentStatus(
   id: number,
   status: "active" | "leave" | "terminated",
-  opts?: { terminationDate?: string; terminationReason?: string },
+  opts?: { terminationDate?: string; terminationReason?: string; actorUserId?: number },
 ) {
-  const db = requireDb();
-  const [e] = await db.select().from(employees).where(eq(employees.id, id)).limit(1);
-  if (!e) throw new Error("الموظف غير موجود");
-  await db
-    .update(employees)
-    .set({
-      employmentStatus: status,
-      isActive: status !== "terminated",
-      terminationDate: status === "terminated" ? opts?.terminationDate ?? null : null,
-      terminationReason: status === "terminated" ? opts?.terminationReason ?? null : null,
-    })
-    .where(eq(employees.id, id));
-  return getEmployee(id);
+  const actorUserId = opts?.actorUserId ?? null;
+  const effects = await withTx(async (tx) => {
+    const [e] = await tx.select().from(employees).where(eq(employees.id, id)).for("update").limit(1);
+    if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+    await tx
+      .update(employees)
+      .set({
+        employmentStatus: status,
+        isActive: status !== "terminated",
+        terminationDate: status === "terminated" ? opts?.terminationDate ?? null : null,
+        terminationReason: status === "terminated" ? opts?.terminationReason ?? null : null,
+      })
+      .where(eq(employees.id, id));
+
+    if (status !== "terminated") return { userDisabled: false, deviceLinksReleased: 0 };
+
+    /*
+     * إنهاء الخدمة يُغلق بابَي وصولٍ يبقيان مفتوحين لولا ذلك — ذرّياً مع تغيير الحالة:
+     *
+     * (١) حساب النظام: موظفٌ مفصول بحسابٍ فعّال يظلّ يدخل النظام ويبيع ويقبض من الغد.
+     *     sessionsValidFrom يُبطل جلساته القائمة فوراً (لا ينتظر انتهاء الكوكي).
+     *     الحساب يُعطَّل ولا يُحذف — سجلّاته المالية تبقى منسوبةً إليه.
+     *
+     * (٢) ربط جهاز الحضور: رقم الجهاز يُعاد استعماله لموظفٍ جديد (سلوك شائع في أجهزة
+     *     محدودة السعة). لو بقي الربط، صارت بصمات الموظف الجديد تُنسب للمفصول وتُطوى
+     *     إلى أيام حضور باسمه. تحرير الربط يترك الصفّ ورقمَه ونسخة قوالبه (تاريخٌ لا يُمحى)
+     *     ويصفّر employeeId فقط ⇒ البصمات الجديدة تدخل طابور المراجعة بدل الإسناد الخاطئ.
+     *     أيام الحضور المطويّة سابقاً لا تُمسّ.
+     */
+    let userDisabled = false;
+    if (e.userId) {
+      const [u] = await tx.select({ id: users.id, role: users.role, isActive: users.isActive }).from(users).where(eq(users.id, e.userId)).for("update").limit(1);
+      if (u?.isActive) {
+        // لا يُقفَل النظام على نفسه: آخر مدير نشط لا يُعطَّل (نفس حارس setUserActive)،
+        // ومَن ينهي خدمة سجلّه الشخصيّ لا يُطرَد من جلسته في منتصف العملية.
+        if (u.role === "admin") await assertNotLastActiveAdmin(tx, u.id);
+        if (actorUserId != null && Number(u.id) === Number(actorUserId)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "لا تُنهِ خدمة سجلّك الشخصيّ — سيُعطَّل حسابك وتخرج فوراً. اطلب من مديرٍ آخر تنفيذها.",
+          });
+        }
+        await tx.update(users).set({ isActive: false, sessionsValidFrom: new Date() }).where(eq(users.id, e.userId));
+        userDisabled = true;
+      }
+    }
+    const res = await tx
+      .update(hrDeviceUsers)
+      .set({ employeeId: null, effectiveFrom: null })
+      .where(eq(hrDeviceUsers.employeeId, id));
+    const deviceLinksReleased = Number((res as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
+    return { userDisabled, deviceLinksReleased };
+  });
+  const e = await getEmployee(id);
+  return { ...e!, ...effects };
 }
 
 /* ============================================================================

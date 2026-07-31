@@ -4,7 +4,7 @@
  * (serialNumber, enrollId, punchAt) يجعل إعادة الدفع من الجهاز بلا أثر (idempotent) —
  * الجهاز يعيد إرسال مخزونه بعد كل انقطاع، وهذا مرغوب لا خطأ.
  * ========================================================================== */
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { hrAttendancePunches, hrDeviceUsers } from "../../../drizzle/schema";
 import { requireDb, withTx } from "../tx";
 import { logger } from "../../logger";
@@ -39,10 +39,26 @@ export async function ingestPunches(
   // ربط enrollId → employeeId دفعة واحدة (مصدر الحقيقة: hrDeviceUsers).
   const enrollIds = Array.from(new Set(valid.map((p) => p.enrollId)));
   const users = await db
-    .select({ enrollId: hrDeviceUsers.enrollId, employeeId: hrDeviceUsers.employeeId })
+    .select({
+      enrollId: hrDeviceUsers.enrollId,
+      employeeId: hrDeviceUsers.employeeId,
+      effectiveFrom: hrDeviceUsers.effectiveFrom,
+    })
     .from(hrDeviceUsers)
     .where(and(eq(hrDeviceUsers.deviceId, device.id), inArray(hrDeviceUsers.enrollId, enrollIds)));
-  const empByEnroll = new Map(users.map((u) => [u.enrollId, u.employeeId]));
+  const linkByEnroll = new Map(users.map((u) => [u.enrollId, u]));
+
+  /**
+   * نسبة البصمة للموظف مشروطةٌ بسريان الربط: أرقام الأجهزة تُعاد استعمالها، فرقمٌ يخصّ اليوم
+   * موظفاً جديداً قد يحمل في ذاكرة الجهاز سجلّات موظفٍ سابق. سحب التاريخ (getalllog) كان
+   * ينسبها للاحق فتدخل راتبه. الأقدم من effectiveFrom تبقى بلا موظف (طابور المراجعة، لا تُرمى).
+   */
+  function resolveEmployee(enrollId: number, punchAt: string): number | null {
+    const link = linkByEnroll.get(enrollId);
+    if (!link?.employeeId) return null;
+    if (link.effectiveFrom && punchAt.slice(0, 10) < link.effectiveFrom) return null;
+    return link.employeeId;
+  }
 
   // إدراج مجزّأ مع no-op عند التكرار (نمط idempotency في §٥ — القيد يحسم لا الفحص المسبق).
   let lastPunchAt: string | null = null;
@@ -58,7 +74,7 @@ export async function ingestPunches(
           punchAt: p.punchAt,
           mode: p.mode?.slice(0, 12) ?? null,
           inOut: p.inOut?.slice(0, 8) ?? null,
-          employeeId: empByEnroll.get(p.enrollId) ?? null,
+          employeeId: resolveEmployee(p.enrollId, p.punchAt),
           raw: p.raw ?? null,
         }))
       )
@@ -113,37 +129,45 @@ export async function upsertDeviceUser(device: DeviceRow, u: RawDeviceUser): Pro
 }
 
 /**
- * ربط مستخدم جهاز بموظف: يُحدّث المرآة ثم يُلحق الربط بكل البصمات الخام غير المربوطة
+ * ربط مستخدم جهاز بموظف: يُحدّث المرآة ثم يُلحق الربط بالبصمات الخام غير المربوطة
  * لنفس (جهاز، enrollId) — فتدخل دورة الطيّ التالية تلقائياً (لا بصمة تضيع لتأخر الربط).
+ *
+ * `effectiveFrom` (اختياري، YYYY-MM-DD) يحدّ الإلحاق الرجعيّ: لا تُنسَب بصمةٌ أقدم منه.
+ * بدونه كان سحب تاريخ الجهاز ينسب حضور موظفٍ سابق حمل الرقم نفسه للموظف الحالي.
+ * يُملأ عادةً من تاريخ مباشرة الموظف؛ null = بلا حدّ (يُستعمل حين لا يُعرف التاريخ).
  */
 export async function mapDeviceUserToEmployee(
   deviceId: number,
   enrollId: number,
-  employeeId: number | null
+  employeeId: number | null,
+  effectiveFrom?: string | null
 ): Promise<number> {
   // ذرّي: تحديث الربط + إلحاقه بالبصمات السابقة معاً — وإلا مستخدمٌ مربوط وبصماته يتيمة عند فشل جزئي.
   return withTx(async (tx) => {
+    // فكّ الربط يمسح السريان أيضاً، وإلا بقي حدٌّ قديم يحكم ربطاً لاحقاً بموظف آخر بصمت.
+    const from = employeeId == null ? null : effectiveFrom || null;
     const [existing] = await tx
       .select({ id: hrDeviceUsers.id })
       .from(hrDeviceUsers)
       .where(and(eq(hrDeviceUsers.deviceId, deviceId), eq(hrDeviceUsers.enrollId, enrollId)))
       .limit(1);
     if (existing) {
-      await tx.update(hrDeviceUsers).set({ employeeId }).where(eq(hrDeviceUsers.id, existing.id));
+      await tx
+        .update(hrDeviceUsers)
+        .set({ employeeId, effectiveFrom: from })
+        .where(eq(hrDeviceUsers.id, existing.id));
     } else {
-      await tx.insert(hrDeviceUsers).values({ deviceId, enrollId, employeeId });
+      await tx.insert(hrDeviceUsers).values({ deviceId, enrollId, employeeId, effectiveFrom: from });
     }
     if (employeeId == null) return 0;
-    const res = await tx
-      .update(hrAttendancePunches)
-      .set({ employeeId })
-      .where(
-        and(
-          eq(hrAttendancePunches.deviceId, deviceId),
-          eq(hrAttendancePunches.enrollId, enrollId),
-          isNull(hrAttendancePunches.employeeId)
-        )
-      );
+    const conds = [
+      eq(hrAttendancePunches.deviceId, deviceId),
+      eq(hrAttendancePunches.enrollId, enrollId),
+      isNull(hrAttendancePunches.employeeId),
+    ];
+    // حدّ سارغابل على العمود النصّي مباشرةً (لا DATE(punchAt) — يمسح الجدول ويُعطّل الفهرس).
+    if (from) conds.push(gte(hrAttendancePunches.punchAt, `${from} 00:00:00`));
+    const res = await tx.update(hrAttendancePunches).set({ employeeId }).where(and(...conds));
     const affected = (res as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0;
     return Number(affected);
   });

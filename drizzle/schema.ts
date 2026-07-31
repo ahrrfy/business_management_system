@@ -2146,6 +2146,15 @@ export const employees = mysqlTable(
     allowances: decimal("allowances", { precision: 15, scale: 2 }).default("0"),
     /** سعر الساعة لكل يوم لموظفي الساعة: {"الأحد":5000,...} (أجر اليوم = ساعات × سعر ذلك اليوم). */
     dayRates: json("dayRates"),
+    /**
+     * أيام الراحة الأسبوعية لهذا الموظف بأسماء الأيام العربية: ["الجمعة"] (0138).
+     * تختلف بين الموظفين (قرار مالك) ⇒ لكلٍّ جدولُه. يوم الراحة لا يُطالَب بحضورٍ فيه
+     * ولا يُخصَم — وبدونه كان تفعيلُ خصم الغياب يخصم أربعة أيام شهرياً من الجميع.
+     * null = يُستعمل الافتراضي العامّ في hrAttendanceSettings.
+     */
+    restDays: json("restDays"),
+    /** ساعات الدوام القياسية اليومية لهذا الموظف — null = الافتراضي العامّ (0138). */
+    dailyHours: decimal("dailyHours", { precision: 5, scale: 2 }),
     /** حالة التوظيف (مستقلة عن isActive للحذف الناعم). */
     employmentStatus: mysqlEnum("employmentStatus", ["active", "leave", "terminated"]).default("active").notNull(),
     gender: varchar("gender", { length: 10 }),
@@ -2203,11 +2212,19 @@ export const attendance = mysqlTable(
     hourlyRate: decimal("hourlyRate", { precision: 15, scale: 2 }),
     amount: decimal("amount", { precision: 15, scale: 2 }),
     source: varchar("source", { length: 20 }).default("fingerprint"), // fingerprint | manual
+    /**
+     * يومٌ ينقصه إغلاق (عدد بصمات فرديّ) — 0137. لا يُخمَّن أجره ولا يمرّ صامتاً بصفر ساعات:
+     * يُوسَم ليصحّحه المدير يدوياً قبل إغلاق الشهر. التصحيح اليدوي يُطفئ الوسم.
+     */
+    needsReview: boolean("needsReview").default(false).notNull(),
+    reviewReason: varchar("reviewReason", { length: 120 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
     employeeIdx: index("idx_att_employee").on(table.employeeId),
     dateIdx: index("idx_att_date").on(table.attendanceDate),
+    // طابور التصحيح: الأيام الناقصة قليلة وسط آلاف الصفوف ⇒ فهرس جزئيّ المعنى على العلم+التاريخ.
+    reviewIdx: index("idx_att_review").on(table.needsReview, table.attendanceDate),
     // مفتاح فريد ليوم/موظف: يضمن سجلّ حضور واحد لكل (موظف، تاريخ) فيمنع ازدواج
     // الصفوف الذي يضاعف ساعات/مبالغ مسيّر الرواتب (تكامل مالي). يدعم UPSERT الخدمة.
     employeeDateUq: unique("uq_att_employee_date").on(table.employeeId, table.attendanceDate),
@@ -3147,6 +3164,34 @@ export type JobApplicant = typeof jobApplicants.$inferSelect;
 export type InsertJobApplicant = typeof jobApplicants.$inferInsert;
 
 /* أجهزة البصمة (الموارد البشرية) + شاشة الهجرة من المزوّد المدفوع إلى خادم الرؤية. */
+/**
+ * إعدادات احتساب الحضور (صفّ مفرد id=1) — 0137.
+ * الوردية الليلية العابرة منتصف الليل نادرة في المطبعة (قرار مالك) ⇒ **معطَّلة افتراضياً**:
+ * تفعيلها يجعل بصمة الفجر تُغلق وردية أمس بدل أن تفتح يوماً جديداً بصفر ساعات.
+ */
+export const hrAttendanceSettings = mysqlTable("hrAttendanceSettings", {
+  id: int("id").primaryKey().default(1),
+  nightShiftEnabled: boolean("nightShiftEnabled").default(false).notNull(),
+  /** بصمةٌ قبل هذه الساعة في يومٍ تالٍ تُعدّ إغلاقاً لوردية أمس (0-23). */
+  nightShiftCutoffHour: int("nightShiftCutoffHour").default(8).notNull(),
+  /**
+   * الأجر بالحضور (0138) — قرار مالك: «الذي يحضر له راتب، والذي غاب لا راتب لغيابه»،
+   * والاحتساب **بالساعات**: سعر ساعة الشهريّ = راتبه ÷ ساعات دوامه في الشهر،
+   * وأجرُه = ساعات حضوره الفعلية × ذلك السعر.
+   * **معطَّل افتراضياً**: تفعيله بأثرٍ رجعيّ قبل تشغيل الجهاز يُظهر الجميع غائبين
+   * ويُصفّر رواتبهم — لذا يلزمه تاريخُ سريانٍ صريح ولا يُخصَم قبله إطلاقاً.
+   */
+  attendancePayEnabled: boolean("attendancePayEnabled").default(false).notNull(),
+  attendancePayFrom: date("attendancePayFrom", { mode: "string" }),
+  /** ساعات الدوام القياسية اليومية الافتراضية (يتجاوزها إعداد الموظف). */
+  standardDailyHours: decimal("standardDailyHours", { precision: 5, scale: 2 }).default("8.00").notNull(),
+  /** أيام الراحة الأسبوعية الافتراضية بأسماء الأيام العربية (يتجاوزها إعداد الموظف). */
+  defaultRestDays: json("defaultRestDays"),
+  updatedBy: int("updatedBy").references(() => users.id),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type HrAttendanceSettings = typeof hrAttendanceSettings.$inferSelect;
+
 export const hrFingerprintDevices = mysqlTable(
   "hrFingerprintDevices",
   {
@@ -3251,12 +3296,23 @@ export const hrDeviceUsers = mysqlTable(
     backupData: json("backupData"),
     /** الموظف المربوط — التحويل بصمة→حضور يمرّ حصراً من هنا. */
     employeeId: bigint("employeeId", { mode: "number" }).references(() => employees.id),
+    /**
+     * سريان الربط: لا تُنسَب للموظف أيّ بصمة أقدم من هذا التاريخ (0136).
+     * ضروري لأن أرقام الأجهزة تُعاد استعمالها — رقم ٧ كان لموظف غادر ثم أُعطي لموظف جديد،
+     * وبلا هذا الحدّ كان سحب تاريخ الجهاز (getalllog) ينسب حضور السابق للاحق فيدخل راتبه.
+     * null = بلا حدّ (سلوك ما قبل 0136 — يُستعمل فقط حين لا يُعرف تاريخ المباشرة).
+     */
+    effectiveFrom: date("effectiveFrom", { mode: "string" }),
     syncedAt: timestamp("syncedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (t) => ({
     deviceEnrollUq: unique("uq_devuser_device_enroll").on(t.deviceId, t.enrollId),
+    // 0136: تقابل أحاديّ لكل جهاز — موظفٌ واحد لكل رقم (uq أعلاه) ورقمٌ واحد لكل موظف (هنا).
+    // بدونه يُربط الموظف برقمين على الجهاز نفسه ⇒ الطيّ يُنتج يومَي حضور منفصلين لنفس الشخص
+    // فتتضاعف ساعاته في مسيّر الرواتب. تعدّد NULL مسموح ⇒ صفوف غير مربوطة لا تتأثر.
+    deviceEmployeeUq: unique("uq_devuser_device_employee").on(t.deviceId, t.employeeId),
     employeeIdx: index("idx_devuser_employee").on(t.employeeId),
   })
 );
