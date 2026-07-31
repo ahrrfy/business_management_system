@@ -12,7 +12,7 @@ import { requireDb, withTx, type Actor } from "./tx";
 import { toDbMoney } from "./money";
 import { extractInsertId } from "../lib/insertId";
 import { escapeLike } from "../lib/sqlLike";
-import { createUserTx, type CreateUserInput } from "./userService";
+import { assertNotLastActiveAdmin, createUserTx, type CreateUserInput } from "./userService";
 import { getEmployeeUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
 import { listEmployeeDeviceLinks } from "./hrDeviceService";
 
@@ -239,21 +239,63 @@ export async function deleteEmployee(id: number) {
 export async function setEmploymentStatus(
   id: number,
   status: "active" | "leave" | "terminated",
-  opts?: { terminationDate?: string; terminationReason?: string },
+  opts?: { terminationDate?: string; terminationReason?: string; actorUserId?: number },
 ) {
-  const db = requireDb();
-  const [e] = await db.select().from(employees).where(eq(employees.id, id)).limit(1);
-  if (!e) throw new Error("الموظف غير موجود");
-  await db
-    .update(employees)
-    .set({
-      employmentStatus: status,
-      isActive: status !== "terminated",
-      terminationDate: status === "terminated" ? opts?.terminationDate ?? null : null,
-      terminationReason: status === "terminated" ? opts?.terminationReason ?? null : null,
-    })
-    .where(eq(employees.id, id));
-  return getEmployee(id);
+  const actorUserId = opts?.actorUserId ?? null;
+  const effects = await withTx(async (tx) => {
+    const [e] = await tx.select().from(employees).where(eq(employees.id, id)).for("update").limit(1);
+    if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+    await tx
+      .update(employees)
+      .set({
+        employmentStatus: status,
+        isActive: status !== "terminated",
+        terminationDate: status === "terminated" ? opts?.terminationDate ?? null : null,
+        terminationReason: status === "terminated" ? opts?.terminationReason ?? null : null,
+      })
+      .where(eq(employees.id, id));
+
+    if (status !== "terminated") return { userDisabled: false, deviceLinksReleased: 0 };
+
+    /*
+     * إنهاء الخدمة يُغلق بابَي وصولٍ يبقيان مفتوحين لولا ذلك — ذرّياً مع تغيير الحالة:
+     *
+     * (١) حساب النظام: موظفٌ مفصول بحسابٍ فعّال يظلّ يدخل النظام ويبيع ويقبض من الغد.
+     *     sessionsValidFrom يُبطل جلساته القائمة فوراً (لا ينتظر انتهاء الكوكي).
+     *     الحساب يُعطَّل ولا يُحذف — سجلّاته المالية تبقى منسوبةً إليه.
+     *
+     * (٢) ربط جهاز الحضور: رقم الجهاز يُعاد استعماله لموظفٍ جديد (سلوك شائع في أجهزة
+     *     محدودة السعة). لو بقي الربط، صارت بصمات الموظف الجديد تُنسب للمفصول وتُطوى
+     *     إلى أيام حضور باسمه. تحرير الربط يترك الصفّ ورقمَه ونسخة قوالبه (تاريخٌ لا يُمحى)
+     *     ويصفّر employeeId فقط ⇒ البصمات الجديدة تدخل طابور المراجعة بدل الإسناد الخاطئ.
+     *     أيام الحضور المطويّة سابقاً لا تُمسّ.
+     */
+    let userDisabled = false;
+    if (e.userId) {
+      const [u] = await tx.select({ id: users.id, role: users.role, isActive: users.isActive }).from(users).where(eq(users.id, e.userId)).for("update").limit(1);
+      if (u?.isActive) {
+        // لا يُقفَل النظام على نفسه: آخر مدير نشط لا يُعطَّل (نفس حارس setUserActive)،
+        // ومَن ينهي خدمة سجلّه الشخصيّ لا يُطرَد من جلسته في منتصف العملية.
+        if (u.role === "admin") await assertNotLastActiveAdmin(tx, u.id);
+        if (actorUserId != null && Number(u.id) === Number(actorUserId)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "لا تُنهِ خدمة سجلّك الشخصيّ — سيُعطَّل حسابك وتخرج فوراً. اطلب من مديرٍ آخر تنفيذها.",
+          });
+        }
+        await tx.update(users).set({ isActive: false, sessionsValidFrom: new Date() }).where(eq(users.id, e.userId));
+        userDisabled = true;
+      }
+    }
+    const res = await tx
+      .update(hrDeviceUsers)
+      .set({ employeeId: null, effectiveFrom: null })
+      .where(eq(hrDeviceUsers.employeeId, id));
+    const deviceLinksReleased = Number((res as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
+    return { userDisabled, deviceLinksReleased };
+  });
+  const e = await getEmployee(id);
+  return { ...e!, ...effects };
 }
 
 /* ============================================================================

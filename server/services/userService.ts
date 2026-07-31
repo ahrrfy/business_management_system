@@ -116,7 +116,7 @@ function assertPasswordPolicy(pw: string) {
   }
 }
 
-async function assertNotLastActiveAdmin(tx: any, excludeUserId: number) {
+export async function assertNotLastActiveAdmin(tx: any, excludeUserId: number) {
   const other = (
     await tx
       .select({ id: users.id })

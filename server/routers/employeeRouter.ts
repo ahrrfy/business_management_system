@@ -234,8 +234,19 @@ export const employeeRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const e = await svc.setEmploymentStatus(input.id, input.status, { terminationDate: input.terminationDate, terminationReason: input.terminationReason });
-      await logAudit(ctx, { action: "employee.setStatus", entityType: "employee", entityId: input.id, newValue: { status: input.status } });
+      const e = await svc.setEmploymentStatus(input.id, input.status, {
+        terminationDate: input.terminationDate,
+        terminationReason: input.terminationReason,
+        actorUserId: ctx.user.id,
+      });
+      await logAudit(ctx, {
+        action: "employee.setStatus",
+        entityType: "employee",
+        entityId: input.id,
+        // الأثران الجانبيان للفصل يُسجَّلان صراحةً: تعطيلُ حسابٍ وتحريرُ ربطِ جهازٍ فعلان
+        // أمنيّان يجب أن يظهرا في التدقيق لا أن يُستنتَجا.
+        newValue: { status: input.status, userDisabled: e.userDisabled, deviceLinksReleased: e.deviceLinksReleased },
+      });
       return e;
     }),
 

@@ -44,7 +44,15 @@ export default function EmployeeDetail() {
 
   const refresh = async () => { await Promise.all([utils.employees.get.invalidate({ id }), utils.employees.list.invalidate()]); };
   const setStatus = trpc.employees.setStatus.useMutation({
-    onSuccess: async () => { notify.ok("تم تحديث حالة التوظيف"); setOpenTerminate(false); setTReason(""); await refresh(); },
+    onSuccess: async (r) => {
+      // أثرا الفصل الأمنيّان يُصرَّح بهما بدل أن يمرّا صامتين.
+      const extra = [
+        r?.userDisabled ? "وعُطِّل حساب دخوله للنظام" : null,
+        r?.deviceLinksReleased ? `وحُرّر ربطه بجهاز الحضور (${r.deviceLinksReleased})` : null,
+      ].filter(Boolean).join(" ");
+      notify.ok(`تم تحديث حالة التوظيف${extra ? ` — ${extra}` : ""}`);
+      setOpenTerminate(false); setTReason(""); await refresh();
+    },
     onError: (e) => notify.err(e),
   });
   const del = trpc.employees.delete.useMutation({
@@ -229,6 +237,17 @@ export default function EmployeeDetail() {
           <div className="space-y-3">
             <div className="space-y-1"><Label htmlFor="tdate">تاريخ آخر يوم عمل</Label><Input id="tdate" type="date" dir="ltr" value={tDate} onChange={(ev) => setTDate(ev.target.value)} /></div>
             <div className="space-y-1"><Label htmlFor="treason">السبب</Label><Textarea id="treason" rows={2} value={tReason} onChange={(ev) => setTReason(ev.target.value)} placeholder="انتهاء عقد / استقالة / …" /></div>
+            {(e.userId || (e.deviceLinks ?? []).length > 0) && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs space-y-1">
+                <div className="font-medium text-amber-800 dark:text-amber-300">سيُنفَّذ تلقائياً مع الفصل:</div>
+                <ul className="list-disc ps-4 space-y-0.5 text-muted-foreground">
+                  {e.userId && <li>تعطيل حساب دخوله للنظام وإنهاء جلساته المفتوحة فوراً.</li>}
+                  {(e.deviceLinks ?? []).length > 0 && (
+                    <li>تحرير ربطه بجهاز الحضور — كي لا تُنسب إليه بصمات موظفٍ جديد يأخذ رقمه لاحقاً. أيام حضوره المسجّلة تبقى.</li>
+                  )}
+                </ul>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpenTerminate(false)}>إلغاء</Button>
