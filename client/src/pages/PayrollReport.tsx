@@ -38,7 +38,7 @@ export default function PayrollReport() {
     ? [
         { label: "عدد المسيّرات", value: totals.runs },
         { label: "إجمالي الرواتب", value: fmtAr(totals.gross), tone: "info" },
-        { label: "صافي المدفوع", value: fmtAr(totals.net), tone: "positive" },
+        { label: "صافي المدفوع فعلاً", value: fmtAr(totals.netPaid), tone: "positive", hint: `${totals.paidRuns} مسيّر مدفوع` },
       ]
     : [];
 
@@ -117,7 +117,8 @@ export default function PayrollReport() {
         ? [
             { label: "عدد المسيّرات", value: String(totals.runs) },
             { label: "إجمالي الرواتب", value: fmtAr(totals.gross) },
-            { label: "صافي المدفوع", value: fmtAr(totals.net), large: true, bold: true },
+            { label: "صافي المدفوع فعلاً", value: fmtAr(totals.netPaid), large: true, bold: true },
+            { label: "صافي كل المسيّرات المعروضة", value: fmtAr(totals.net) },
           ]
         : undefined,
     });

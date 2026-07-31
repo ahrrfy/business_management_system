@@ -6,9 +6,10 @@
  * مدفوعة بلا رصيد محدّد فلا خصم، و«بدون راتب» لا تمسّ أي رصيد. كل تغيير قرارٍ
  * (تحديث الحالة + خصم الرصيد) داخل معاملة ذرّية واحدة.
  * ========================================================================== */
-import { and, desc, eq, getTableColumns, gte, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gte, inArray, lte, ne, sql } from "drizzle-orm";
 import { fullEmployeeName, leaveTypeIsPaid } from "@shared/hr";
-import { employees, leaveRequests } from "../../drizzle/schema";
+import { employees, leaveRequests, payrollRuns } from "../../drizzle/schema";
+import type { Tx } from "../db";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
@@ -144,6 +145,33 @@ async function listLeavesByIds(id: number) {
  *   - "بدون راتب" (غير مدفوعة) → لا خصم
  * الرفض يضبط الحالة فقط بلا أي مساس بالرصيد.
  */
+/**
+ * حارس المسيّر المُقفَل — مرآةُ الحارس نفسه في `recordAttendance`.
+ * الإجازة مُدخَلٌ ماليّ في المسيّر (بلا راتب تُخصَم، والمدفوعة تستهلك رصيداً)، فاعتمادها
+ * أو إلغاؤها بعد اعتماد/دفع مسيّر شهرها يُغيّر أساس حسابٍ مُلتزَمٍ به مالياً بلا أن يُعاد.
+ * كان الحارس موجوداً على الحضور وغائباً هنا: إجازة «بلا راتب» تُعتمَد بأثرٍ رجعيّ بعد
+ * الدفع فلا تُخصَم **أبداً** — لا في مسيّرها (مقفل) ولا في التالي (شهرٌ آخر).
+ */
+async function assertNoLockedPayroll(tx: Tx, fromDate: string, toDate: string): Promise<void> {
+  const [locked] = await tx
+    .select({ period: payrollRuns.period, status: payrollRuns.status })
+    .from(payrollRuns)
+    .where(
+      and(
+        inArray(payrollRuns.status, ["approved", "paid"]),
+        // تداخل الشهر مع مدى الإجازة: أوّل الشهر ≤ نهاية الإجازة، وآخره ≥ بدايتها.
+        sql`CONCAT(${payrollRuns.period}, '-01') <= ${toDate}`,
+        sql`LAST_DAY(CONCAT(${payrollRuns.period}, '-01')) >= ${fromDate}`,
+      ),
+    )
+    .limit(1);
+  if (locked) {
+    throw new Error(
+      `مسيّر رواتب شهر ${locked.period} ${locked.status === "paid" ? "مدفوع" : "معتمَد"} ويتداخل مع مدّة الإجازة — ألغِ اعتماد المسيّر أولاً ليُعاد حسابه.`,
+    );
+  }
+}
+
 export async function decideLeave(
   id: number,
   decision: "approved" | "rejected",
@@ -153,6 +181,8 @@ export async function decideLeave(
     const [lv] = await tx.select().from(leaveRequests).where(eq(leaveRequests.id, id)).for("update").limit(1);
     if (!lv) throw new Error("طلب الإجازة غير موجود");
     if (lv.status !== "pending") throw new Error("لا يمكن البتّ إلا في طلب قيد الموافقة");
+    // الاعتماد وحده يُغيّر أساس المسيّر؛ الرفض لا أثر ماليّ له فيمرّ دائماً.
+    if (decision === "approved") await assertNoLockedPayroll(tx, String(lv.fromDate), String(lv.toDate));
 
     // HR-PAY-03 (فصل المهام): لا يجوز للمستخدم البتّ في إجازة موظفٍ مرتبطٍ بحسابه (موافقة ذاتية)
     // — يَكسر منح إجازةٍ مدفوعة لنفسه وخصم رصيده ذاتياً بلا مُقرِّر مستقلّ.
@@ -207,6 +237,21 @@ export async function cancelLeave(id: number, actor: { userId: number }) {
     const [lv] = await tx.select().from(leaveRequests).where(eq(leaveRequests.id, id)).for("update").limit(1);
     if (!lv) throw new Error("طلب الإجازة غير موجود");
     if (lv.status !== "approved") throw new Error("لا يُلغى إلا طلب إجازة موافق عليه");
+
+    /*
+     * فصل مهام على الإلغاء أيضاً — كان مفروضاً على البتّ (decideLeave) وغائباً هنا،
+     * فالمسار مفتوحٌ بالكامل: الموظف يأخذ إجازته المعتمَدة فعلاً ثم يُلغيها بنفسه بعد
+     * العودة فيستردّ رصيدها ويُسقط خصمها من الراتب — إجازةٌ أُخذت ولم تُحتسب.
+     */
+    const [reqEmp] = await tx
+      .select({ userId: employees.userId })
+      .from(employees)
+      .where(eq(employees.id, lv.employeeId))
+      .limit(1);
+    if (reqEmp?.userId != null && Number(reqEmp.userId) === actor.userId) {
+      throw new Error("لا يجوز إلغاء إجازتك بنفسك — يلزم مُقرِّر آخر (فصل المهام).");
+    }
+    await assertNoLockedPayroll(tx, String(lv.fromDate), String(lv.toDate));
 
     if (lv.paid && lv.leaveType === "سنوية") {
       await tx
