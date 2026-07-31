@@ -16,9 +16,30 @@ import {
   processPendingFolds,
 } from "../services/hrDevices";
 import { protectedProcedure, requireModule, router } from "../trpc";
+import { eq } from "drizzle-orm";
+import { employees } from "../../drizzle/schema";
+import { requireDb } from "../services/tx";
+import { isDupEntry, toArabicMessage } from "@shared/errorMap.ar";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
+
+/**
+ * سريان الربط: التاريخ الصريح إن أُعطي، وإلا تاريخ مباشرة الموظف.
+ * الحدّ الافتراضيّ هو الحارس الفعليّ — الجهاز يحمل عشرات آلاف السجلات التاريخية، وربطٌ
+ * بلا حدٍّ ينسب حضور من حمل الرقم قبله. غياب تاريخ المباشرة ⇒ null (بلا حدّ) والواجهة تُنبّه.
+ */
+async function resolveEffectiveFrom(employeeId: number, explicit?: string | null): Promise<string | null> {
+  if (explicit) return explicit;
+  const db = requireDb();
+  const [e] = await db
+    .select({ hireDate: employees.hireDate })
+    .from(employees)
+    .where(eq(employees.id, employeeId))
+    .limit(1);
+  if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+  return e.hireDate ?? null;
+}
 
 const deviceInput = z.object({
   name: z.string().trim().min(1, "اسم الجهاز مطلوب"),
@@ -85,26 +106,49 @@ export const hrDeviceRouter = router({
     .input(z.object({ deviceId: z.number().int().positive() }))
     .query(({ input }) => svc.listDeviceUsers(input.deviceId)),
 
-  /** ربط مستخدم جهاز بموظف — يلحق الربط بالبصمات الخام السابقة ويطويها فوراً. */
+  /**
+   * ربط مستخدم جهاز بموظف — يلحق الربط بالبصمات الخام السابقة ويطويها فوراً.
+   * `effectiveFrom` يحدّ الإلحاق الرجعيّ (لا تُنسَب بصمةٌ أقدم منه). غيابه ⇒ يُشتقّ من تاريخ
+   * مباشرة الموظف: أرقام الأجهزة تُعاد استعمالها، وسحب تاريخ الجهاز بلا حدٍّ كان ينسب
+   * حضور موظفٍ سابق حمل الرقم نفسه للموظف الحالي فيدخل احتساب راتبه.
+   */
   mapUser: hrWrite
     .input(
       z.object({
         deviceId: z.number().int().positive(),
         enrollId: z.number().int().min(0),
         employeeId: z.number().int().positive().nullable(),
+        effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const backfilled = await mapDeviceUserToEmployee(input.deviceId, input.enrollId, input.employeeId);
+      const from = input.employeeId == null ? null : await resolveEffectiveFrom(input.employeeId, input.effectiveFrom);
+      let backfilled: number;
+      try {
+        backfilled = await mapDeviceUserToEmployee(input.deviceId, input.enrollId, input.employeeId, from);
+      } catch (err) {
+        if (isDupEntry(err)) throw new TRPCError({ code: "CONFLICT", message: toArabicMessage({ cause: err }), cause: err });
+        throw err;
+      }
       if (input.employeeId != null) foldSoon();
       await logAudit(ctx, {
         action: "hrDevice.mapUser",
         entityType: "hrDeviceUser",
         entityId: input.enrollId,
-        newValue: { deviceId: input.deviceId, employeeId: input.employeeId, backfilled },
+        newValue: { deviceId: input.deviceId, employeeId: input.employeeId, effectiveFrom: from, backfilled },
       });
-      return { backfilled };
+      return { backfilled, effectiveFrom: from };
     }),
+
+  /** ربوط جهاز الحضور لموظف واحد — تُعرَض في بطاقة الموظف (الربط يُدار من حيث يُوظَّف). */
+  employeeLinks: hrRead
+    .input(z.object({ employeeId: z.number().int().positive() }))
+    .query(({ input }) => svc.listEmployeeDeviceLinks(input.employeeId)),
+
+  /** أرقام الجهاز غير المربوطة — قائمة الاختيار في حوار الربط ببطاقة الموظف. */
+  unlinkedDeviceUsers: hrRead
+    .input(z.object({ deviceId: z.number().int().positive() }))
+    .query(({ input }) => svc.listUnlinkedDeviceUsers(input.deviceId)),
 
   /** إرسال أمر للجهاز (قائمة بيضاء لكل بروتوكول) — يُدفع فوراً إن كان متصلاً وإلا عند نبضته. */
   enqueueCommand: hrWrite

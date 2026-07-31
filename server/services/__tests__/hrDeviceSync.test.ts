@@ -381,11 +381,14 @@ describe("الربط اللاحق (ج٧)", () => {
     let pend = await processPendingFolds();
     expect(pend.days).toBe(0); // غير مربوط — لا شيء يُطوى ولا شيء يضيع
     await upsertDeviceUser(dev, { enrollId: 55, name: "مجهول سابقاً" });
-    const backfilled = await mapDeviceUserToEmployee(10, 55, 1);
+    // موظف مخصّص لهذه الحالة: الموظف ١ مربوط أصلاً بالرقم ٧ في البذرة، و0136 يفرض
+    // رقماً واحداً لكل موظف على الجهاز الواحد (رقمان ⇒ يومَا حضور منفصلان وساعات مضاعفة).
+    await db().insert(s.employees).values({ id: 3, firstName: "كرار", lastName: "الساعدي", payType: "hourly", employmentStatus: "active" });
+    const backfilled = await mapDeviceUserToEmployee(10, 55, 3);
     expect(backfilled).toBe(2);
     pend = await processPendingFolds();
     expect(pend.days).toBe(1);
-    const [att] = await db().select().from(s.attendance).where(eq(s.attendance.employeeId, 1));
+    const [att] = await db().select().from(s.attendance).where(eq(s.attendance.employeeId, 3));
     expect(String(att.hours)).toBe("7.00");
   });
 });

@@ -3251,12 +3251,23 @@ export const hrDeviceUsers = mysqlTable(
     backupData: json("backupData"),
     /** الموظف المربوط — التحويل بصمة→حضور يمرّ حصراً من هنا. */
     employeeId: bigint("employeeId", { mode: "number" }).references(() => employees.id),
+    /**
+     * سريان الربط: لا تُنسَب للموظف أيّ بصمة أقدم من هذا التاريخ (0136).
+     * ضروري لأن أرقام الأجهزة تُعاد استعمالها — رقم ٧ كان لموظف غادر ثم أُعطي لموظف جديد،
+     * وبلا هذا الحدّ كان سحب تاريخ الجهاز (getalllog) ينسب حضور السابق للاحق فيدخل راتبه.
+     * null = بلا حدّ (سلوك ما قبل 0136 — يُستعمل فقط حين لا يُعرف تاريخ المباشرة).
+     */
+    effectiveFrom: date("effectiveFrom", { mode: "string" }),
     syncedAt: timestamp("syncedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (t) => ({
     deviceEnrollUq: unique("uq_devuser_device_enroll").on(t.deviceId, t.enrollId),
+    // 0136: تقابل أحاديّ لكل جهاز — موظفٌ واحد لكل رقم (uq أعلاه) ورقمٌ واحد لكل موظف (هنا).
+    // بدونه يُربط الموظف برقمين على الجهاز نفسه ⇒ الطيّ يُنتج يومَي حضور منفصلين لنفس الشخص
+    // فتتضاعف ساعاته في مسيّر الرواتب. تعدّد NULL مسموح ⇒ صفوف غير مربوطة لا تتأثر.
+    deviceEmployeeUq: unique("uq_devuser_device_employee").on(t.deviceId, t.employeeId),
     employeeIdx: index("idx_devuser_employee").on(t.employeeId),
   })
 );

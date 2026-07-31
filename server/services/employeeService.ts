@@ -6,7 +6,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, getTableColumns, isNull, like, ne, or, sql } from "drizzle-orm";
 import { fullEmployeeName, type EmployeeEducation } from "@shared/hr";
-import { branches, employees, roles, users } from "../../drizzle/schema";
+import { branches, employees, hrDeviceUsers, roles, users } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { requireDb, withTx, type Actor } from "./tx";
 import { toDbMoney } from "./money";
@@ -14,6 +14,7 @@ import { extractInsertId } from "../lib/insertId";
 import { escapeLike } from "../lib/sqlLike";
 import { createUserTx, type CreateUserInput } from "./userService";
 import { getEmployeeUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
+import { listEmployeeDeviceLinks } from "./hrDeviceService";
 
 export interface EmployeeFilters {
   q?: string;
@@ -50,7 +51,13 @@ export async function listEmployees(filters?: EmployeeFilters) {
   const offset = filters?.offset ?? 0;
 
   const rows = await db
-    .select({ ...getTableColumns(employees), branchName: branches.name })
+    .select({
+      ...getTableColumns(employees),
+      branchName: branches.name,
+      // مربوط بجهاز حضور؟ EXISTS مترابط لا JOIN — الربط قد يتعدّد (جهازان) فالانضمام يُضاعف الصفوف.
+      // يُغذّي شارة «غير مربوط» في القائمة: بلا ربطٍ لا تصل بصماته أصلاً لسجل الحضور.
+      deviceLinked: sql<number>`EXISTS (SELECT 1 FROM ${hrDeviceUsers} WHERE ${hrDeviceUsers.employeeId} = ${employees.id})`,
+    })
     .from(employees)
     .leftJoin(branches, eq(employees.branchId, branches.id))
     .where(where)
@@ -59,7 +66,10 @@ export async function listEmployees(filters?: EmployeeFilters) {
     .offset(offset);
   const [{ count }] = await db.select({ count: sql<number>`count(*)` }).from(employees).where(where);
 
-  return { rows: rows.map((r) => ({ ...r, fullName: fullEmployeeName(r) })), total: Number(count) };
+  return {
+    rows: rows.map((r) => ({ ...r, fullName: fullEmployeeName(r), deviceLinked: Number(r.deviceLinked) === 1 })),
+    total: Number(count),
+  };
 }
 
 export async function getEmployee(id: number) {
@@ -88,7 +98,10 @@ export async function getEmployee(id: number) {
       .limit(1);
     if (u) linkedUser = u;
   }
-  return { ...e, fullName: fullEmployeeName(e), managerName, linkedUser };
+  // ربوط جهاز الحضور — تُعرَض وتُدار من بطاقة الموظف، ومصدر حقيقتها يبقى hrDeviceUsers
+  // (علاقة تحتمل جهازين للفرعين واستبدال جهازٍ تالف، لا حقلاً مكرَّراً على employees).
+  const deviceLinks = await listEmployeeDeviceLinks(id);
+  return { ...e, fullName: fullEmployeeName(e), managerName, linkedUser, deviceLinks };
 }
 
 /** خيارات النماذج: الفروع + المدراء المحتملون (موظفون على رأس العمل). */

@@ -1,4 +1,5 @@
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
+import { DeviceLinkCard } from "@/components/hr/DeviceLinkCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -181,6 +182,9 @@ export default function EmployeeDetail() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* ربط جهاز الحضور — يُدار من بطاقة الموظف لا من شاشة الأجهزة وحدها */}
+      <DeviceLinkCard employeeId={id} employeeName={e.fullName} hireDate={e.hireDate} links={e.deviceLinks ?? []} isTerminated={isTerminated} onChanged={refresh} />
 
       {/* الوصول لحساب المستخدم المرتبط + الحذف النهائي */}
       <Card className="border-destructive/40">

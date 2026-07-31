@@ -213,6 +213,7 @@ export async function listDeviceUsers(deviceId: number) {
       isAdmin: hrDeviceUsers.isAdmin,
       cardNo: hrDeviceUsers.cardNo,
       employeeId: hrDeviceUsers.employeeId,
+      effectiveFrom: hrDeviceUsers.effectiveFrom,
       syncedAt: hrDeviceUsers.syncedAt,
       hasBackup: sql<number>`CASE WHEN ${hrDeviceUsers.backupData} IS NOT NULL THEN 1 ELSE 0 END`,
       firstName: employees.firstName,
@@ -225,6 +226,51 @@ export async function listDeviceUsers(deviceId: number) {
     .where(eq(hrDeviceUsers.deviceId, deviceId))
     .orderBy(hrDeviceUsers.enrollId);
   return rows.map((r) => ({ ...r, employeeName: r.firstName ? fullEmployeeName(r) : null }));
+}
+
+/**
+ * ربوط جهاز الحضور الخاصّة بموظف واحد — مقلوب listDeviceUsers، ليُدار الربط من بطاقة
+ * الموظف لا من شاشة الأجهزة وحدها. `hrDeviceUsers` يبقى مصدر الحقيقة الوحيد (لا حقل
+ * مكرَّر على employees): علاقةٌ تحتمل جهازين (فرعان) واستبدال جهازٍ تالف بلا فقد تاريخ.
+ * pendingPunches = بصماته الخام المعلَّقة بلا موظف على ذلك الجهاز/الرقم (طابور المراجعة).
+ */
+export async function listEmployeeDeviceLinks(employeeId: number) {
+  const db = requireDb();
+  return db
+    .select({
+      id: hrDeviceUsers.id,
+      deviceId: hrDeviceUsers.deviceId,
+      deviceName: hrFingerprintDevices.name,
+      deviceEnabled: hrFingerprintDevices.enabled,
+      branchName: branches.name,
+      enrollId: hrDeviceUsers.enrollId,
+      deviceUserName: hrDeviceUsers.name,
+      cardNo: hrDeviceUsers.cardNo,
+      effectiveFrom: hrDeviceUsers.effectiveFrom,
+      syncedAt: hrDeviceUsers.syncedAt,
+    })
+    .from(hrDeviceUsers)
+    .innerJoin(hrFingerprintDevices, eq(hrDeviceUsers.deviceId, hrFingerprintDevices.id))
+    .leftJoin(branches, eq(hrFingerprintDevices.branchId, branches.id))
+    .where(eq(hrDeviceUsers.employeeId, employeeId))
+    .orderBy(hrDeviceUsers.deviceId);
+}
+
+/**
+ * أرقام جهازٍ معيّن غير المربوطة بأي موظف — مصدر قائمة الاختيار في بطاقة الموظف.
+ * الجهاز يُبلّغ الاسم المكتوب فيه (senduser/getuserlist) فيظهر «٧ — أحمد» ويسهل التطابق.
+ */
+export async function listUnlinkedDeviceUsers(deviceId: number) {
+  const db = requireDb();
+  return db
+    .select({
+      enrollId: hrDeviceUsers.enrollId,
+      name: hrDeviceUsers.name,
+      cardNo: hrDeviceUsers.cardNo,
+    })
+    .from(hrDeviceUsers)
+    .where(and(eq(hrDeviceUsers.deviceId, deviceId), isNull(hrDeviceUsers.employeeId)))
+    .orderBy(hrDeviceUsers.enrollId);
 }
 
 /** آخر أوامر جهاز (الأحدث أولاً) مع اسم مُصدرها — تتبع صادق لا ادعاء. */
