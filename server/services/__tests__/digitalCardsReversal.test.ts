@@ -18,6 +18,9 @@ import {
 
 const actor = { userId: 1, branchId: 1, role: "cashier" };
 const mgr = { userId: 2, branchId: 1, role: "manager" };
+/** مديرٌ ثانٍ — ردّ الخسارة يشترط معتمِداً غير الطالب (SOD، هجرة 0132). */
+const mgr2 = { userId: 3, branchId: 1, role: "manager" };
+const adminUser = { userId: 4, branchId: 1, role: "admin" };
 const DATE = "2026-07-29";
 
 const TABLES = [
@@ -36,6 +39,8 @@ async function seedBase() {
   await db().insert(s.users).values([
     { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
     { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
+    { id: 3, openId: "u3", name: "مدير ثانٍ", role: "manager", loginMethod: "local" },
+    { id: 4, openId: "u4", name: "أدمن", role: "admin", loginMethod: "local" },
   ]);
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 }
@@ -245,9 +250,17 @@ describe("ش١٢ — ردّ الخسارة", () => {
     const [wAfterSale] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
 
     const ids3 = await detailIds(sale.invoiceId);
-    const res = await withTx((tx) => reversalService.lossRefund(tx, {
+    // الطلب أوّلاً — بلا أثرٍ ماليّ — ثمّ اعتماد مديرٍ آخر (SOD، هجرة 0132).
+    const req = await withTx((tx) => reversalService.requestLossRefund(tx, {
       invoiceId: sale.invoiceId, detailIds: ids3, reason: "المزوّد رفض الإلغاء",
     }, mgr));
+    expect(req.requested).toBe(1);
+    const netPending = await reversalService.netForInvoice(db(), sale.invoiceId);
+    expect(Number(netPending.profit)).not.toBe(-13400);   // لا خسارة قبل الاعتماد
+
+    const res = await withTx((tx) => reversalService.lossRefund(tx, {
+      invoiceId: sale.invoiceId, detailIds: ids3,
+    }, mgr2));
     expect(res.outcome).toBe("LOSS_REFUND");
     expect(res.loss).toBe("13400.00");
 
@@ -290,7 +303,7 @@ describe("ش١٢ — الحوكمة والذرّية", () => {
     await withTx((tx) => reversalService.approveReversal(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "أول" }, mgr));
     await expect(withTx((tx) => reversalService.approveReversal(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "ثانٍ" }, mgr)))
       .rejects.toThrow(/عولِج مسبقاً/);
-    await expect(withTx((tx) => reversalService.lossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "ثالث" }, mgr)))
+    await expect(withTx((tx) => reversalService.requestLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "ثالث" }, mgr)))
       .rejects.toThrow(/عولِج مسبقاً/);
   });
 
@@ -323,5 +336,99 @@ describe("ش١٢ — الحوكمة والذرّية", () => {
     const logs = await db().select().from(s.auditLogs)
       .where(eq(s.auditLogs.action, "digitalCards.reversal.approved"));
     expect(logs).toHaveLength(1);
+  });
+});
+
+/**
+ * ردّ الخسارة باعتمادٍ ثانٍ (هجرة 0132، قرار المالك ٣٠/٧/٢٦).
+ *
+ * L1 — الطلب **لا يمسّ مالاً**: لا استرداد ولا قيد ولا خسارة.
+ * L2 — SOD: لا يعتمد الطلبَ مَن قدّمه (admin مُستثنى)، وكذلك الرفض.
+ * L3 — لا يُعتمَد ردٌّ لم يُطلَب.
+ * L4 — الرفض يُعيد البند إلى ISSUED بلا أثرٍ ماليّ ويمسح أثر الطلب.
+ * L5 — **العكس المؤكَّد يبقى بفاعلٍ واحد** — صافيه صفر فلا خسارة تُعتمَد.
+ */
+describe("ش١٢ — ردّ الخسارة بفصل المهام", () => {
+  async function issued() {
+    const { providerId } = await mkProvider("آسياسيل", "PREPAID");
+    const walletId = await mkWallet(providerId, "1000000");
+    const o = await mkOffering(providerId, "كارت", walletId);
+    const priced = await publish(providerId, [{ offeringId: o, providerShare: "13400" }]);
+    const sale = await sell([{ offeringId: o, priced: priced.get(o)! }]);
+    return { sale, walletId, ids: await detailIds(sale.invoiceId) };
+  }
+
+  it("L1: الطلب يغيّر الحالة فقط — لا استرداد ولا قيد", async () => {
+    const { sale, ids } = await issued();
+    const receiptsBefore = (await db().select().from(s.receipts)).length;
+    const entriesBefore = (await db().select().from(s.accountingEntries)).length;
+
+    const r = await withTx((tx) => reversalService.requestLossRefund(tx, {
+      invoiceId: sale.invoiceId, detailIds: ids, reason: "المزوّد رفض الإلغاء",
+    }, mgr));
+    expect(r.requested).toBe(1);
+    expect(r.loss).toBe("13400.00");
+
+    expect((await db().select().from(s.receipts)).length).toBe(receiptsBefore);
+    expect((await db().select().from(s.accountingEntries)).length).toBe(entriesBefore);
+
+    const d = await reversalService.reversibleDetails(db(), sale.invoiceId);
+    expect(d[0].fulfillmentStatus).toBe("LOSS_REFUND_PENDING");
+    expect(Number(d[0].lossRefundRequestedBy)).toBe(mgr.userId);
+  });
+
+  it("L2: لا يعتمد الطلبَ مَن قدّمه، ويعتمده مديرٌ آخر", async () => {
+    const { sale, ids } = await issued();
+    await withTx((tx) => reversalService.requestLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "سبب" }, mgr));
+
+    await expect(withTx((tx) => reversalService.lossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids }, mgr)))
+      .rejects.toThrow(/مديرٌ آخر/);
+
+    const res = await withTx((tx) => reversalService.lossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids }, mgr2));
+    expect(res.loss).toBe("13400.00");
+    const net = await reversalService.netForInvoice(db(), sale.invoiceId);
+    expect(Number(net.profit)).toBe(-13400);
+  });
+
+  it("L2: الأدمن مُستثنى من SOD", async () => {
+    const { sale, ids } = await issued();
+    await withTx((tx) => reversalService.requestLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "سبب" }, adminUser));
+    await withTx((tx) => reversalService.lossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids }, adminUser));
+    const d = await reversalService.reversibleDetails(db(), sale.invoiceId);
+    expect(d[0].fulfillmentStatus).toBe("LOSS_REFUND");
+  });
+
+  it("L3: لا يُعتمَد ردٌّ لم يُطلَب", async () => {
+    const { sale, ids } = await issued();
+    await expect(withTx((tx) => reversalService.lossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids }, mgr2)))
+      .rejects.toThrow(/ليس عليه طلب ردّ خسارةٍ معلّق/);
+  });
+
+  it("L4: الرفض يُعيدها إلى ISSUED بلا أثرٍ ماليّ ويمسح أثر الطلب", async () => {
+    const { sale, ids } = await issued();
+    await withTx((tx) => reversalService.requestLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "سبب" }, mgr));
+    const receiptsBefore = (await db().select().from(s.receipts)).length;
+
+    await expect(withTx((tx) => reversalService.rejectLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids }, mgr)))
+      .rejects.toThrow(/مديرٌ آخر/);   // الرفض أيضاً محكومٌ بـSOD
+
+    await withTx((tx) => reversalService.rejectLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "غير مبرَّر" }, mgr2));
+
+    const d = await reversalService.reversibleDetails(db(), sale.invoiceId);
+    expect(d[0].fulfillmentStatus).toBe("ISSUED");
+    expect(d[0].lossRefundRequestedBy).toBeNull();
+    expect(d[0].lossRefundReason).toBeNull();
+    expect((await db().select().from(s.receipts)).length).toBe(receiptsBefore);
+  });
+
+  it("L5: العكس المؤكَّد يبقى بفاعلٍ واحد — صافيه صفر فلا خسارة تُعتمَد", async () => {
+    const { sale, ids } = await issued();
+    await withTx((tx) => reversalService.approveReversal(tx, {
+      invoiceId: sale.invoiceId, detailIds: ids, reason: "المزوّد أعاد الحصة",
+    }, mgr));
+    const net = await reversalService.netForInvoice(db(), sale.invoiceId);
+    expect(Number(net.revenue)).toBe(0);
+    expect(Number(net.cost)).toBe(0);
+    expect(Number(net.profit)).toBe(0);
   });
 });

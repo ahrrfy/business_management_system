@@ -10,7 +10,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { ROLE_OPTIONS } from "./Users";
+import { ROLE_OPTIONS } from "@/lib/roles";
 
 export default function UserNew() {
   const [, navigate] = useLocation();

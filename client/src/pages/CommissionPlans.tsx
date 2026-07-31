@@ -18,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { RowActions } from "@/components/list";
+import { ListToolbar, RowActions } from "@/components/list";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
@@ -30,7 +30,7 @@ import { iqd } from "@/lib/hr/ui";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Plus, Trash2, Users } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 type PlanRow = RouterOutputs["commissions"]["plans"]["list"][number];
 type BoardRow = RouterOutputs["commissions"]["plans"]["assignmentBoard"][number];
@@ -70,6 +70,11 @@ export default function CommissionPlans() {
   const utils = trpc.useUtils();
   const list = trpc.commissions.plans.list.useQuery();
   const rows = list.data ?? [];
+  const [query, setQuery] = useState("");
+  const visibleRows = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("ar");
+    return q ? rows.filter((p) => [p.name, p.notes, MODE_LABEL[p.tierMode], tierSummary(p)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
+  }, [rows, query]);
 
   // بوّابة عرض مطابقة للخادم: الكتابة commissionsManagerProcedure(["manager"],"commissions","FULL")
   // — نفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد. القراءة (accountant/auditor) بلا أزرار كتابة.
@@ -239,8 +244,30 @@ export default function CommissionPlans() {
       <CommissionGuide />
 
       <Card>
-        <CardHeader className="text-sm text-muted-foreground">
-          {list.isLoading ? "" : `${rows.length} خطة`}
+        <CardHeader>
+          <ListToolbar
+            title="خطط العمولات"
+            count={visibleRows.length}
+            loading={list.isLoading}
+            search={{ value: query, onChange: setQuery, placeholder: "اسم الخطة، طريقة الاحتساب، المستويات أو الملاحظات…" }}
+            onResetFilters={() => setQuery("")}
+            onRefresh={() => void list.refetch()}
+            refreshing={list.isFetching}
+            onPrint={() => window.print()}
+            exportSpec={{
+              filename: "خطط-العمولات",
+              rows: visibleRows,
+              formats: ["xlsx", "csv"],
+              columns: [
+                { key: "name", header: "الخطة" },
+                { key: "tierMode", header: "طريقة الاحتساب", map: (p) => MODE_LABEL[p.tierMode] },
+                { key: "tiers", header: "المستويات", map: (p) => tierSummary(p) },
+                { key: "openAssignments", header: "عدد الموظفين" },
+                { key: "notes", header: "الملاحظات" },
+                { key: "isActive", header: "الحالة", map: (p) => p.isActive ? "فعّالة" : "معطّلة" },
+              ],
+            }}
+          />
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
@@ -256,7 +283,7 @@ export default function CommissionPlans() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((p) => (
+                {visibleRows.map((p) => (
                   <tr key={p.id} className={`border-t ${p.isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">
                       {p.name}
@@ -274,13 +301,22 @@ export default function CommissionPlans() {
                       {canWrite && (
                         <RowActions
                           actions={[
-                            { key: "edit", label: "تعديل", onSelect: () => openEdit(p) },
+                            {
+                              key: "edit",
+                              kind: "edit",
+                              label: "تعديل",
+                              onSelect: () => openEdit(p),
+                              gate: { roles: ["manager"], module: "commissions", level: "FULL" },
+                            },
                             {
                               key: "toggle",
+                              kind: "approve",
                               label: p.isActive ? "تعطيل" : "تفعيل",
                               variant: p.isActive ? "destructive" : "default",
                               disabled: setActiveMut.isPending,
+                              disabledReason: "توجد عملية تحديث قيد التنفيذ",
                               onSelect: () => void toggleActive(p),
+                              gate: { roles: ["manager"], module: "commissions", level: "FULL" },
                             },
                           ]}
                         />
@@ -291,8 +327,15 @@ export default function CommissionPlans() {
                 {list.isLoading && (
                   <tr><td colSpan={6}><LoadingState /></td></tr>
                 )}
-                {!list.isLoading && rows.length === 0 && (
-                  <TableEmptyRow colSpan={6} message="لا خطط عمولات بعد — أنشئ أول خطة ثم اربط بها الموظفين." />
+                {!list.isLoading && visibleRows.length === 0 && (
+                  <TableEmptyRow
+                    colSpan={6}
+                    message={
+                      rows.length === 0
+                        ? "لا خطط عمولات بعد — أنشئ أول خطة ثم اربط بها الموظفين."
+                        : "لا خطة تطابق بحثك."
+                    }
+                  />
                 )}
               </tbody>
             </table>

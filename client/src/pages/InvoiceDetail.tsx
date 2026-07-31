@@ -27,6 +27,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
 import { ChevronDown, FileText, Package, Paperclip, Printer } from "lucide-react";
 import { notify } from "@/lib/notify";
+import { POS_METHODS as METHODS, paymentMethodClass, paymentMethodLabel } from "@/lib/paymentMethod";
 
 const STATUS: Record<string, string> = {
   PENDING: "معلّقة",
@@ -44,14 +45,8 @@ const STATUS_CLS: Record<string, string> = {
   CANCELLED: "bg-rose-100 text-rose-700",
 };
 const SOURCE: Record<string, string> = { POS: "نقطة بيع", ONLINE: "أونلاين", ORDER: "طلب", WORKORDER: "طلب خدمة" };
-const METHOD_LABEL: Record<string, string> = { CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة" };
+// METHOD_LABEL / METHODS → مستوردة من lib/paymentMethod.ts (مصدر واحد مع POS + Invoices + حوار الوردية).
 const PAY_STATUS: Record<string, string> = { COMPLETED: "مكتملة", PENDING: "معلّقة", FAILED: "فاشلة", CANCELLED: "ملغاة" };
-const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
-  { v: "CASH", label: "نقدي" },
-  { v: "TRANSFER", label: "تحويل" },
-  { v: "CARD", label: "بطاقة" },
-  { v: "WALLET", label: "محفظة" },
-];
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -189,7 +184,7 @@ export default function InvoiceDetail() {
     const amt = D(payAmount || "0");
     if (amt.lte(0)) return setError("أدخل مبلغاً موجباً.");
     if (amt.gt(remaining)) return setError(`المبلغ يتجاوز المتبقّي (${fmt(remaining.toFixed(2))}).`);
-    const methodLabel = METHOD_LABEL[payMethod] ?? payMethod;
+    const methodLabel = paymentMethodLabel(payMethod);
     if (
       !(await confirm({
         variant: "info",
@@ -216,6 +211,7 @@ export default function InvoiceDetail() {
       customerName: data.customerName,
       salespersonName: data.salespersonName,
       companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
+      paymentMethod: paymentMethodLabel(data.paymentMethod),
       subtotal: data.subtotal,
       discountAmount: data.discountAmount,
       taxAmount: data.taxAmount,
@@ -337,9 +333,17 @@ export default function InvoiceDetail() {
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center justify-between gap-2">
             <CopyInline value={data.invoiceNumber} />
-            <span className={`text-xs rounded-full px-2.5 py-0.5 font-medium ${STATUS_CLS[data.status] ?? "bg-muted"}`}>
-              {STATUS[data.status] ?? data.status}
-            </span>
+            <div className="flex items-center gap-2">
+              {data.paymentMethod && (
+                <span className={`text-xs rounded-full px-2.5 py-0.5 font-semibold ${paymentMethodClass(data.paymentMethod)}`}
+                  title="طريقة الدفع المسجّلة على هذه الفاتورة">
+                  {paymentMethodLabel(data.paymentMethod)}
+                </span>
+              )}
+              <span className={`text-xs rounded-full px-2.5 py-0.5 font-medium ${STATUS_CLS[data.status] ?? "bg-muted"}`}>
+                {STATUS[data.status] ?? data.status}
+              </span>
+            </div>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -502,7 +506,7 @@ export default function InvoiceDetail() {
                         {p.direction === "IN" ? "وارد" : "صادر"}
                       </span>
                     </td>
-                    <td className="px-3 py-2">{METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod}</td>
+                    <td className="px-3 py-2">{paymentMethodLabel(p.paymentMethod)}</td>
                     <td className="px-3 py-2 text-right tabular-nums"><CopyInline value={p.amount} display={fmt(p.amount)} /></td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">{PAY_STATUS[p.status] ?? p.status}</td>
                     <td className="px-3 py-2 text-xs">

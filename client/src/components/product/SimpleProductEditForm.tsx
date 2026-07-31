@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { MoneyCoach } from "@/components/form/MoneyCoach";
+import { NumberInput } from "@/components/form/NumberInput";
 import { type ImageItem } from "@/components/form/ImageUploader";
 import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
 import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productImages";
@@ -16,10 +18,12 @@ import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
 import { trpc } from "@/lib/trpc";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { NameAssistant } from "@/components/product/NameAssistant";
+import { Badge } from "@/components/ui/badge";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { barcodeState, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
+import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
+import { checkVariantSanity } from "@shared/priceSanity";
 
 /**
  * SimpleProductEditForm — تحرير «سلعة بسيطة» (متغيّر واحد بلا لون/قياس) بنفس نظافة شاشة الإضافة.
@@ -35,6 +39,60 @@ import { CategoryOptionList } from "@/lib/categoryTree";
  */
 
 type EditUnit = { id: number; name: string; factor: string; isBase: boolean; sellInStore: boolean; barcode: string; retail: string; wholesale: string; government: string };
+
+/**
+ * **priceSanity L1.5+L1.6 (٣٠/٧):** مرافقٌ حيّ + زرّ «آخر شراء» أسفل حقل التكلفة في «السلعة البسيطة».
+ * السلعة البسيطة لها متغيّرٌ واحد ⇒ زرّ آخر شراء ذو معنى مباشر (يملأ الحقل بنقرة).
+ */
+function SimpleEditCostCoach({
+  costPrice, baseRetail, categoryId, brand, productType, productId, variantId, onUseLastPurchase,
+}: {
+  costPrice: string;
+  baseRetail: string;
+  categoryId: number | null;
+  brand: string;
+  productType: string;
+  productId: number;
+  variantId: number | null;
+  onUseLastPurchase: (cost: string) => void;
+}) {
+  const statsQ = trpc.catalog.categoryStats.useQuery(
+    { categoryId, brand: brand.trim() || null, productType: productType.trim() || null, excludeProductId: productId },
+    { enabled: categoryId != null || !!brand.trim() || !!productType.trim(), staleTime: 5 * 60 * 1000 }
+  );
+  const lastPurchaseQ = trpc.catalog.lastPurchaseCost.useQuery(
+    { variantId: variantId ?? 0 },
+    { enabled: variantId != null && variantId > 0, staleTime: 60 * 1000 }
+  );
+  const daysAgo = lastPurchaseQ.data?.receivedAt
+    ? Math.floor((Date.now() - new Date(lastPurchaseQ.data.receivedAt).getTime()) / (1000 * 60 * 60 * 24))
+    : null;
+  return (
+    <div className="mt-1 space-y-1">
+      <MoneyCoach
+        cost={costPrice.trim()}
+        retail={baseRetail.trim()}
+        categoryStats={statsQ.data ? {
+          minCost: statsQ.data.minCost ?? undefined,
+          maxCost: statsQ.data.maxCost ?? undefined,
+          medianCost: statsQ.data.medianCost ?? undefined,
+          n: statsQ.data.n ?? 0,
+        } : undefined}
+      />
+      {lastPurchaseQ.data && (
+        <button
+          type="button"
+          onClick={() => onUseLastPurchase(lastPurchaseQ.data!.unitCost)}
+          className="text-[11px] text-primary hover:underline"
+          title={`من فاتورة الشراء #${lastPurchaseQ.data.purchaseOrderId}`}
+        >
+          استعمل آخر شراء: {Number(lastPurchaseQ.data.unitCost).toLocaleString("en-US")} د.ع
+          {daysAgo != null && daysAgo >= 0 && ` — منذ ${daysAgo} يوماً`}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export default function SimpleProductEditForm({
   productId,
@@ -203,6 +261,17 @@ export default function SimpleProductEditForm({
     const dup = codes.find((c, i) => codes.indexOf(c) !== i);
     if (dup) return `باركود مكرّر داخل النموذج: ${dup} — لكل وحدة باركود فريد.`;
     if (consignment.isConsignment && !consignment.consignorId) return "صنف الأمانة يلزمه مودِع — اختر المودِع.";
+    // حرّاس عقلانية الأسعار — يمنع «حادثة SINARLINE ٣٠/٧». المصدر: shared/priceSanity.ts.
+    const unitPricings = units.map((u) => ({
+      unitName: u.name.trim() || (u.isBase ? "الأساس" : "وحدة"),
+      conversionFactor: u.isBase ? 1 : Number((u.factor ?? "").trim()) || 1,
+      retail: u.retail || null,
+      wholesale: u.wholesale || null,
+      government: u.government || null,
+    }));
+    const issues = checkVariantSanity(costPrice, unitPricings);
+    const blocker = issues.find((i) => i.level === "blocker");
+    if (blocker) return blocker.message;
     return null;
   }
 
@@ -359,20 +428,27 @@ export default function SimpleProductEditForm({
             const factor = u.isBase ? 1 : parseFloat(u.factor) || 1;
             const uCost = unitCost * factor;
             const code = u.barcode.trim();
-            const st = barcodeState(code, { countInForm: units.filter((x) => x.barcode.trim() === code).length, takenInDb: takenInDb.has(code) });
-            const bcCls = st === "takenInDb" || st === "dupInForm" ? "border-amber-500 ring-1 ring-amber-500" : st === "invalid" ? "border-amber-500" : st === "valid" ? "border-emerald-500/60" : "";
-            const bcTitle =
-              st === "takenInDb" ? "باركود مُستخدَم في منتج آخر — غيّره قبل الحفظ."
-                : st === "dupInForm" ? "باركود مكرّر داخل النموذج."
-                  : st === "invalid" ? "خانة تحقّق EAN-13 غير مطابقة — يُقبل مع ذلك (قد يكون كود Code128 داخليّاً)."
-                    : st === "valid" ? "باركود EAN-13 صالح." : "";
-            // لون نصّ حالة الباركود المرئيّ (a11y): أحمر للحاصر، كهرماني للتحذير، أخضر للصالح.
+            const info = barcodeInfo(code, {
+              countInForm: units.filter((x) => x.barcode.trim() === code).length,
+              takenInDb: takenInDb.has(code),
+            });
+            const bcCls =
+              info.severity === "blocker" ? "border-amber-500 ring-1 ring-amber-500"
+              : info.severity === "warn"    ? "border-amber-500"
+              : info.severity === "ok"      ? "border-emerald-500/60"
+              : info.severity === "info"    ? "border-blue-500/40"
+              : "";
+            const bcTitle = info.message;
             const bcHelpColor =
-              st === "takenInDb" || st === "dupInForm"
-                ? "text-red-600 dark:text-red-400"
-                : st === "invalid"
-                  ? "text-amber-600 dark:text-amber-400"
-                  : "text-emerald-600 dark:text-emerald-400";
+              info.severity === "blocker" ? "text-red-600 dark:text-red-400"
+              : info.severity === "warn"    ? "text-amber-600 dark:text-amber-400"
+              : info.severity === "ok"      ? "text-emerald-600 dark:text-emerald-400"
+              : "text-blue-600 dark:text-blue-400";
+            const symBadgeVariant =
+              info.severity === "blocker" ? "destructive"
+              : info.severity === "warn"    ? "outline"
+              : info.severity === "ok"      ? "default"
+              : "secondary";
             return (
               <div key={u.id} className="rounded-lg border bg-muted/20 p-3 space-y-2">
                 {/* هوية الوحدة: الاسم + المعامل + وحدة الأساس + الحذف — شبكة محاذاة واحدة */}
@@ -387,16 +463,14 @@ export default function SimpleProductEditForm({
                   />
                   <div className="col-span-5 sm:col-span-3 flex items-center gap-1.5">
                     <span className="text-xs text-muted-foreground whitespace-nowrap">معامل ×</span>
-                    <Input
+                    <NumberInput
                       className="h-8 text-sm text-center"
-                      dir="ltr"
-                      inputMode="numeric"
                       disabled={u.isBase}
                       value={u.isBase ? "1" : u.factor}
-                      onChange={(e) => patchUnit(u.id, { factor: onlyDigits(e.target.value) })}
+                      onChange={(val) => patchUnit(u.id, { factor: val })}
                       placeholder="12"
-                      title="كم وحدة أساس في هذه الوحدة (درزن = ١٢)"
-                      aria-label="معامل التحويل"
+                      decimals={4}
+                      ariaLabel="معامل التحويل"
                     />
                   </div>
                   <label className="col-span-3 sm:col-span-2 flex items-center gap-1.5 text-xs cursor-pointer whitespace-nowrap">
@@ -433,10 +507,15 @@ export default function SimpleProductEditForm({
                       placeholder="باركود الوحدة (اختياري)…"
                       title={bcTitle}
                       aria-label="باركود الوحدة"
-                      aria-invalid={st === "takenInDb" || st === "dupInForm"}
+                      aria-invalid={info.severity === "blocker"}
                       aria-describedby={bcTitle ? `simpleedit-bc-help-${u.id}` : undefined}
                     />
-                    <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("621") })} title="توليد باركود EAN-13 صالح" />
+                    <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("200") })} title="توليد باركود EAN-13 داخليّ (نطاق GS1 المخصَّص للاستخدام الداخلي)" />
+                    {info.symbology.label && (
+                      <Badge variant={symBadgeVariant} className="text-[10px] whitespace-nowrap px-1.5 py-0" title={`نوع الترميز: ${info.symbology.label}`}>
+                        {info.symbology.label}
+                      </Badge>
+                    )}
                     <UnitBarcodeAliases variantId={variantId.current} unitName={u.name} />
                   </div>
                   <MoneyInput ariaLabel="سعر المفرد" className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" />
@@ -472,12 +551,22 @@ export default function SimpleProductEditForm({
             hint={product.data?.isConsignment ? "المبلغ المستحقّ للمودِع عند البيع." : "سعر الشراء الموحّد."}
           >
             <MoneyInput id="simpleedit-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
+            <SimpleEditCostCoach
+              costPrice={costPrice}
+              baseRetail={units.find((u) => u.isBase)?.retail ?? ""}
+              categoryId={categoryId === "" ? null : Number(categoryId)}
+              brand={brand}
+              productType={productType}
+              productId={productId}
+              variantId={variantId.current}
+              onUseLastPurchase={(cost) => setCostPrice(cost)}
+            />
           </Field>
           <Field label="الحد الأدنى" hint="ينبّه عند النزول عنه.">
-            <Input value={minStock} onChange={(e) => setMinStock(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" className="text-center" />
+            <NumberInput value={minStock} onChange={setMinStock} className="text-center" ariaLabel="الحد الأدنى" />
           </Field>
           <Field label="نقطة إعادة الطلب" hint="يقترح الشراء عند بلوغها.">
-            <Input value={reorderPoint} onChange={(e) => setReorderPoint(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" className="text-center" />
+            <NumberInput value={reorderPoint} onChange={setReorderPoint} className="text-center" ariaLabel="نقطة إعادة الطلب" />
           </Field>
           <Field label="قابل للتخصيص">
             <div className="flex items-center gap-2 h-9">

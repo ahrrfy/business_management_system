@@ -58,8 +58,17 @@ function assertManager(actor: Actor): void {
   }
 }
 
-/** يقفل بنود التفاصيل المطلوبة ويتحقّق أنها قابلة للعكس. */
-async function lockDetails(tx: Tx, invoiceId: number, detailIds: number[]) {
+/**
+ * يقفل بنود التفاصيل المطلوبة ويتحقّق أنها في الحالة المتوقَّعة.
+ * `expect` افتراضه `ISSUED` (نقطة البدء لكل مسار)؛ ويصير `LOSS_REFUND_PENDING` عند
+ * اعتماد/رفض ردّ الخسارة — فلا يُعتمَد بندٌ لم يُطلَب ردُّه.
+ */
+async function lockDetails(
+  tx: Tx,
+  invoiceId: number,
+  detailIds: number[],
+  expect: "ISSUED" | "LOSS_REFUND_PENDING" = "ISSUED",
+) {
   const rows = await tx
     .select()
     .from(digitalSaleDetails)
@@ -69,11 +78,13 @@ async function lockDetails(tx: Tx, invoiceId: number, detailIds: number[]) {
   if (rows.length !== detailIds.length) {
     throw new TRPCError({ code: "NOT_FOUND", message: "بعض بنود الكروت غير موجودة في هذه الفاتورة" });
   }
-  const already = rows.filter((r) => r.fulfillmentStatus !== "ISSUED");
-  if (already.length) {
+  const wrong = rows.filter((r) => r.fulfillmentStatus !== expect);
+  if (wrong.length) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: `${already.length} كرت عولِج مسبقاً (عُكس أو رُدَّ) — لا يُعكس مرّتين`,
+      message: expect === "ISSUED"
+        ? `${wrong.length} كرت عولِج مسبقاً أو ينتظر اعتماداً — لا يُعكس مرّتين`
+        : `${wrong.length} كرت ليس عليه طلب ردّ خسارةٍ معلّق`,
     });
   }
   return rows;
@@ -280,21 +291,95 @@ export async function approveReversal(
   return { invoiceId: input.invoiceId, reversed: details.length, refunded: toDbMoney(sell), outcome: "REVERSED" };
 }
 
-/* ────────── ردّ الخسارة ────────── */
+/* ────────── ردّ الخسارة — باعتمادٍ ثانٍ (SOD، قرار المالك ٣٠/٧/٢٦) ────────── */
 
 /**
- * المزوّد لم يُعِد الحصة، والإدارة قرّرت ردّ المال للزبون.
- * الإيراد يُعكَس والزبون يُسترَدّ، و**الحصة تبقى تكلفةً على المكتبة** ⇒ خسارةٌ ظاهرة في الدفاتر.
- * لا رصيد محفظةٍ يعود ولا ذمّة مزوّدٍ تنخفض — لأن المزوّد فعلاً لم يُعِد شيئاً.
+ * ① **طلب** ردّ الخسارة — بلا أيّ أثرٍ ماليّ.
+ *
+ * لماذا صار باعتمادٍ ثانٍ بينما `approveReversal` لم يَصِر: هذا يعترف **بخسارة** (الإيراد
+ * يزول والحصة تبقى تكلفةً على المكتبة) فهو ماديّاً من جنس شطب النيّة العالقة. أمّا العكس
+ * المؤكَّد فصافيه صفر — لا خسارة تُعتمَد، والزبون واقفٌ ينتظر استرداده.
  */
-export async function lossRefund(
+export async function requestLossRefund(
   tx: Tx,
   input: { invoiceId: number; detailIds: number[]; reason: string },
   actor: Actor,
-): Promise<{ invoiceId: number; reversed: number; refunded: string; loss: string; outcome: ReversalOutcome }> {
+): Promise<{ invoiceId: number; requested: number; refund: string; loss: string }> {
   assertManager(actor);
   const reason = input.reason.trim();
-  if (!reason) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب ردّ الخسارة مطلوب" });
+  if (reason.length < 3) throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب سبباً واضحاً لردّ الخسارة" });
+
+  const details = await lockDetails(tx, input.invoiceId, input.detailIds);
+  const sell = sumMoney(details.map((d) => d.sellPriceSnapshot));
+  const share = sumMoney(details.map((d) => d.providerShareSnapshot));
+
+  await tx
+    .update(digitalSaleDetails)
+    .set({
+      fulfillmentStatus: "LOSS_REFUND_PENDING",
+      lossRefundRequestedBy: actor.userId,
+      lossRefundRequestedAt: new Date(),
+      lossRefundReason: reason,
+    })
+    .where(inArray(digitalSaleDetails.id, details.map((d) => Number(d.id))));
+
+  await auditLog(tx, actor, "digitalCards.reversal.lossRefundRequested", input.invoiceId, {
+    details: details.length, refund: toDbMoney(sell), loss: toDbMoney(share), reason,
+  });
+
+  return {
+    invoiceId: input.invoiceId,
+    requested: details.length,
+    refund: toDbMoney(sell),
+    loss: toDbMoney(share),
+  };
+}
+
+/** ③ **رفض** الطلب — يُعيد البنود إلى `ISSUED` بلا أثرٍ ماليّ ويمسح أثر الطلب. */
+export async function rejectLossRefund(
+  tx: Tx,
+  input: { invoiceId: number; detailIds: number[]; reason?: string | null },
+  actor: Actor,
+): Promise<{ invoiceId: number; rejected: number }> {
+  assertManager(actor);
+  const details = await lockDetails(tx, input.invoiceId, input.detailIds, "LOSS_REFUND_PENDING");
+  const requesters = new Set(details.map((d) => Number(d.lossRefundRequestedBy)));
+  if (requesters.size === 1 && requesters.has(actor.userId) && actor.role !== "admin") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا يبتّ في الطلب من قدّمه — يلزم مديرٌ آخر" });
+  }
+
+  await tx
+    .update(digitalSaleDetails)
+    .set({
+      fulfillmentStatus: "ISSUED",
+      lossRefundRequestedBy: null,
+      lossRefundRequestedAt: null,
+      lossRefundReason: null,
+    })
+    .where(inArray(digitalSaleDetails.id, details.map((d) => Number(d.id))));
+
+  await auditLog(tx, actor, "digitalCards.reversal.lossRefundRejected", input.invoiceId, {
+    details: details.length,
+    requestedBy: Array.from(requesters),
+    rejectReason: input.reason ?? null,
+  });
+
+  return { invoiceId: input.invoiceId, rejected: details.length };
+}
+
+/**
+ * ② **اعتماد** ردّ الخسارة — هنا وحده يتحرّك المال، وداخل معاملة واحدة.
+ *
+ * المزوّد لم يُعِد الحصة، والإدارة قرّرت ردّ المال للزبون: الإيراد يُعكَس والزبون يُسترَدّ،
+ * و**الحصة تبقى تكلفةً على المكتبة** ⇒ خسارةٌ ظاهرة في الدفاتر. لا رصيد محفظةٍ يعود ولا
+ * ذمّة مزوّدٍ تنخفض — لأن المزوّد فعلاً لم يُعِد شيئاً.
+ */
+export async function lossRefund(
+  tx: Tx,
+  input: { invoiceId: number; detailIds: number[] },
+  actor: Actor,
+): Promise<{ invoiceId: number; reversed: number; refunded: string; loss: string; outcome: ReversalOutcome }> {
+  assertManager(actor);
 
   const [inv] = await tx
     .select({ id: invoices.id, branchId: invoices.branchId, customerId: invoices.customerId })
@@ -303,7 +388,14 @@ export async function lossRefund(
     .for("update");
   if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
 
-  const details = await lockDetails(tx, input.invoiceId, input.detailIds);
+  // البنود يجب أن تكون **معلّقة بطلبٍ سابق** — لا يُعتمَد ردٌّ لم يُطلَب.
+  const details = await lockDetails(tx, input.invoiceId, input.detailIds, "LOSS_REFUND_PENDING");
+  // فصل المهام: المُعتمِد ≠ الطالب. admin مُستثنى للتصحيح الإداريّ (اصطلاح الوحدة).
+  const requesters = new Set(details.map((d) => Number(d.lossRefundRequestedBy)));
+  if (requesters.size === 1 && requesters.has(actor.userId) && actor.role !== "admin") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا يعتمد ردّ الخسارة من طلبه — يلزم مديرٌ آخر" });
+  }
+  const reason = details[0]?.lossRefundReason ?? "";
   const sell = sumMoney(details.map((d) => d.sellPriceSnapshot));
   const share = sumMoney(details.map((d) => d.providerShareSnapshot));
 
@@ -323,13 +415,18 @@ export async function lossRefund(
 
   await tx
     .update(digitalSaleDetails)
-    .set({ fulfillmentStatus: "LOSS_REFUND" })
+    .set({
+      fulfillmentStatus: "LOSS_REFUND",
+      lossRefundApprovedBy: actor.userId,
+      lossRefundApprovedAt: new Date(),
+    })
     .where(inArray(digitalSaleDetails.id, details.map((d) => Number(d.id))));
 
   await auditLog(tx, actor, "digitalCards.reversal.lossRefund", input.invoiceId, {
     details: details.length,
     refunded: toDbMoney(sell),
     loss: toDbMoney(share),
+    requestedBy: Array.from(requesters),
     reason,
   });
 
@@ -355,6 +452,8 @@ export async function reversibleDetails(db: DB, invoiceId: number) {
       providerReference: digitalSaleDetails.providerReference,
       studentName: digitalSaleDetails.studentNameSnapshot,
       fulfillmentStatus: digitalSaleDetails.fulfillmentStatus,
+      lossRefundRequestedBy: digitalSaleDetails.lossRefundRequestedBy,
+      lossRefundReason: digitalSaleDetails.lossRefundReason,
     })
     .from(digitalSaleDetails)
     .where(eq(digitalSaleDetails.invoiceId, invoiceId))

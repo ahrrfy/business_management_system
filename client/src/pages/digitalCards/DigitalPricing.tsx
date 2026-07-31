@@ -11,7 +11,7 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
-import { CopyPlus, Send, Save, Trash2, TriangleAlert } from "lucide-react";
+import { CopyPlus, Send, Save, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
@@ -126,6 +126,13 @@ export default function DigitalPricing() {
     onSuccess: () => { invalidate(); notify.ok("أُلغيت المسودّة", "الأسعار النافذة لم تتغيّر."); },
     onError: (e) => notify.err(e),
   });
+  const approveBigMut = trpc.digitalCards.pricing.approveBigChange.useMutation({
+    onSuccess: (r) => {
+      invalidate();
+      notify.ok(`اعتُمد التغيير الكبير (${r.approved.length} بطاقة)`, "صار النشر متاحاً — أيّ تعديل لاحق يُبطل الاعتماد.");
+    },
+    onError: (e) => notify.err(e),
+  });
 
   function filledLines() {
     return Object.entries(shares)
@@ -175,6 +182,15 @@ export default function DigitalPricing() {
   const rows = sheet.data?.rows ?? [];
   const busy = saveMut.isPending || publishMut.isPending || copyMut.isPending || cancelMut.isPending;
   const openReports = reports.data ?? [];
+
+  // §٧.١: بوّابة التغيير الكبير — تُعرَض قبل النشر لا بعد ارتطامه.
+  const bigChanges = sheet.data?.bigChanges ?? [];
+  const threshold = sheet.data?.bigChangeThresholdPercent ?? 50;
+  const bigApprovedBy = sheet.data?.batch?.bigChangeApprovedBy ?? null;
+  const draftCreatedBy = sheet.data?.batch?.createdBy ?? null;
+  // مرآة حارس الخادم: لا يعتمد مُنشئ المسودّة (admin مُستثنى) ⇒ لا زرٌّ يعِد بما يُرفَض.
+  const canApproveBig = me.data?.role === "admin" || Number(me.data?.id) !== Number(draftCreatedBy);
+  const bigChangeBlocking = bigChanges.length > 0 && bigApprovedBy == null;
 
   return (
     <div className="space-y-4">
@@ -231,6 +247,61 @@ export default function DigitalPricing() {
           </div>
         </CardContent>
       </Card>
+
+      {bigChanges.length > 0 && (
+        <Card>
+          <CardHeader className="flex flex-row items-center gap-2 text-sm font-medium">
+            <TriangleAlert aria-hidden className="size-4" />
+            تغيير كبير في الحصة ({bigChanges.length}) — العتبة {threshold}%
+            {bigApprovedBy != null && (
+              <span className="ms-2 inline-block rounded-full px-2 py-0.5 text-xs badge-status-active">
+                مُعتمَد
+              </span>
+            )}
+          </CardHeader>
+          <CardContent className="space-y-3 p-0">
+            <ScrollTableShell bordered={false}>
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="p-2 text-start">البطاقة</th>
+                    <th className="p-2 text-start">الحصة النافذة</th>
+                    <th className="p-2 text-start">الحصة الجديدة</th>
+                    <th className="p-2 text-start">نسبة التغيّر</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bigChanges.map((b) => (
+                    <tr key={b.offeringId} className="border-t">
+                      <td className="p-2 font-medium">{b.name}</td>
+                      <td className="p-2 tabular-nums text-muted-foreground">{fmtAr(b.currentShare)}</td>
+                      <td className="p-2 tabular-nums font-medium">{fmtAr(b.newShare)}</td>
+                      <td className="p-2 tabular-nums text-destructive font-medium">{b.changePercent}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </ScrollTableShell>
+            <div className="flex flex-wrap items-center gap-3 px-4 pb-4 text-sm text-muted-foreground">
+              {bigApprovedBy != null ? (
+                <span>اعتُمد النشر. أيّ تعديل على المسودّة بعد الآن يُبطل الاعتماد ويعيد طلبه.</span>
+              ) : (
+                <>
+                  <span>النشر موقوفٌ حتى يعتمده مديرٌ آخر غير مُنشئ المسودّة.</span>
+                  <Button
+                    size="sm"
+                    disabled={!canApproveBig || approveBigMut.isPending || draftBatchId == null}
+                    title={!canApproveBig ? "لا تعتمد تغييراً في مسودّةٍ أنشأتَها — يلزم مديرٌ آخر" : undefined}
+                    onClick={() => draftBatchId != null && approveBigMut.mutate({ batchId: draftBatchId })}
+                  >
+                    <ShieldCheck className="size-4" /> اعتماد التغيير الكبير
+                  </Button>
+                </>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {openReports.length > 0 && (
         <Card>
@@ -303,7 +374,12 @@ export default function DigitalPricing() {
             <Button variant="outline" size="sm" disabled={!scopeReady || busy} onClick={saveDraft}>
               <Save className="size-4" /> حفظ مسودّة
             </Button>
-            <Button size="sm" disabled={!scopeReady || busy || rows.length === 0} onClick={() => void publish()}>
+            <Button
+              size="sm"
+              disabled={!scopeReady || busy || rows.length === 0 || bigChangeBlocking}
+              title={bigChangeBlocking ? `تغييرٌ ≥${threshold}% ينتظر اعتماد مديرٍ آخر` : undefined}
+              onClick={() => void publish()}
+            >
               <Send className="size-4" /> نشر الأسعار
             </Button>
           </div>

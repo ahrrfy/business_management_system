@@ -232,11 +232,20 @@ export default function Returns() {
                         actions={[
                           {
                             key: "pick",
+                            kind: "reverse",
                             label: isPicked ? "محدّدة" : "اختيار",
                             disabled: isPicked, // منع مسح الكميات المُدخَلة بنقرة سهو
+                            disabledReason: "الفاتورة محددة بالفعل",
                             onSelect: () => pick(id),
+                            gate: { roles: ["manager"], module: "sales", level: "FULL" },
                           },
-                          { key: "view", label: "عرض الفاتورة", href: `/invoices/${id}` },
+                          {
+                            key: "view",
+                            kind: "view",
+                            label: "عرض الفاتورة",
+                            href: `/invoices/${id}`,
+                            gate: { module: "sales", level: "READ" },
+                          },
                         ]}
                       />
                     </td>

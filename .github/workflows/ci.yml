@@ -68,3 +68,21 @@ jobs:
         run: pnpm test
       - name: بناء الإنتاج
         run: pnpm build
+
+  # حارس الصلاحيات (T-12) — **مقارنة قاعدة الدمج (merge-base)**، وظيفةٌ مستقلّة سريعة (node فقط، بلا
+  # قاعدة/تثبيت). يمسح شجرة الأساس (origin/<base>) وشجرة الـhead ويفشل فقط على انتهاكٍ **يُدخِله الـPR**
+  # (raw-role / بلا بوّابة وحدة قراءةً أو كتابةً / admin على كتابة). انتهاكاتُ main موجودةٌ في الأساس
+  # ⇒ لا تُحسَب، فلا يفشل الحارس على انجراف main. يحتاج التاريخ الكامل (fetch-depth: 0) لتجهيز الأساس.
+  authz-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: حارِس الصلاحيات (فرق قاعدة الدمج — raw-role/بلا بوّابة/admin-كتابة مستجدّ)
+        run: node scripts/authz-guard-diff.mjs
+        env:
+          BASE_REF: origin/${{ github.base_ref || 'main' }}

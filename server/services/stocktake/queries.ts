@@ -1,8 +1,11 @@
 // قراءات الجرد: القائمة، الترويسة، المتابعة الحية (بلا تسريب expectedQty/التكلفة)، والعدّادات.
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { escLike } from "../../lib/sqlLike";
 import {
   branches,
+  branchStock,
+  categories,
+  inventoryMovements,
   products,
   productUnits,
   productVariants,
@@ -13,7 +16,7 @@ import {
   users,
 } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
-import { assertBranchAccess, loadSessionHeader, type DbLike } from "./internal";
+import { assertBranchAccess, chunk, loadSessionHeader, type DbLike } from "./internal";
 
 const SCOPE_FALLBACK_LABEL: Record<string, string> = {
   FULL: "جرد شامل للفرع",
@@ -349,6 +352,167 @@ export async function monitorStocktakeSession(
       qty2: c.qty2,
       by2: c.by2,
     })),
+  };
+}
+
+/* ─────────── معاينة النطاق (Wizard الإنشاء) — تعكس منطق resolveScope حرفياً بلا كتابة. ─────────── */
+
+export interface PreviewScopeInput {
+  branchId: number;
+  sessionType: "NORMAL" | "OPENING";
+  scopeType: "FULL" | "MOVING" | "CATEGORY";
+  movingDays?: number;
+  categoryIds?: number[];
+}
+
+export interface PreviewScopeResult {
+  /** عدد المتغيّرات الفعليّ الذي ستنشأ به الجلسة (بعد استبعاد المُفتتَح في OPENING). */
+  variantCount: number;
+  /** عدد المنتجات الأمّ المميّزة ضمن هذا النطاق (لعرض «X منتج × Y متغيّر»). */
+  productCount: number;
+  /** OPENING فقط: عدد المتغيّرات المستبعَدة من النطاق لأنّها مُفتتَحة سلفاً (openedAt≠NULL). */
+  excludedOpened: number;
+  /** OPENING فقط: عدد الأصناف المستبعَدة لأنّها من بضاعة الأمانة (لا تُفتتَح إلا بسند إيداع). */
+  excludedConsignment: number;
+  /** OPENING فقط: عدد الأصناف المستبعَدة لأنّها بكج (تُجرَد عبر مكوّناتها). */
+  excludedBundle: number;
+}
+
+/**
+ * يعكس منطق `resolveScope` في create.ts للـFULL/MOVING/CATEGORY حرفياً بلا آثار جانبيّة.
+ * الغرض: العدّاد في معالج الإنشاء (Wizard) يعرض ما ستُنشأ به الجلسة فعلياً — لا `branchStock.length`
+ * (الذي يعدّ فقط ما له صفّ رصيد سابق في الفرع، فيُخفي كلّ الأصناف التي لم تُلامَس بحركة بعد ولا يعكس
+ * أبداً نطاق OPENING الحقيقيّ). دالة قراءة صرفة: بلا throw على CATEGORY فارغة (تُرجع 0).
+ */
+export async function previewScope(input: PreviewScopeInput): Promise<PreviewScopeResult> {
+  const db = requireDb();
+  const isOpening = input.sessionType === "OPENING";
+
+  // في OPENING نستبعد البكج والأمانة (كلاهما استبعاد تصميميّ من resolveScope + create.ts).
+  // في NORMAL نستبعد البكج فقط.
+  const notBundleCond = eq(products.isBundle, false);
+  const scopeCond = isOpening
+    ? and(notBundleCond, eq(products.isConsignment, false))!
+    : notBundleCond;
+
+  // (١) استعلام أصناف النطاق الخام (قبل استبعاد المُفتتَح لـOPENING).
+  let variantIds: number[] = [];
+  let productIds: number[] = [];
+
+  if (input.scopeType === "FULL") {
+    const rows = await db
+      .select({ id: productVariants.id, productId: productVariants.productId })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(and(eq(productVariants.isActive, true), eq(products.isActive, true), scopeCond));
+    variantIds = rows.map((r) => Number(r.id));
+    productIds = rows.map((r) => Number(r.productId));
+  } else if (input.scopeType === "MOVING") {
+    const days = input.movingDays ?? 30;
+    const since = new Date(Date.now() - days * 86_400_000);
+    const rows = await db
+      .selectDistinct({ id: inventoryMovements.variantId, productId: productVariants.productId })
+      .from(inventoryMovements)
+      .innerJoin(productVariants, eq(inventoryMovements.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(
+        and(
+          eq(inventoryMovements.branchId, input.branchId),
+          gte(inventoryMovements.createdAt, since),
+          eq(productVariants.isActive, true),
+          scopeCond,
+        ),
+      );
+    variantIds = rows.map((r) => Number(r.id));
+    productIds = rows.map((r) => Number(r.productId));
+  } else {
+    // CATEGORY
+    const catIds = (input.categoryIds ?? []).filter((n) => Number.isInteger(n) && n > 0);
+    if (!catIds.length) {
+      return { variantCount: 0, productCount: 0, excludedOpened: 0, excludedConsignment: 0, excludedBundle: 0 };
+    }
+    const rows = await db
+      .select({ id: productVariants.id, productId: productVariants.productId })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(
+        and(
+          inArray(products.categoryId, catIds),
+          eq(productVariants.isActive, true),
+          eq(products.isActive, true),
+          scopeCond,
+        ),
+      );
+    variantIds = rows.map((r) => Number(r.id));
+    productIds = rows.map((r) => Number(r.productId));
+  }
+
+  // (٢) OPENING: استبعاد المُفتتَح مسبقاً (openedAt≠NULL) — يطابق create.ts:290-315.
+  let excludedOpened = 0;
+  if (isOpening && variantIds.length) {
+    const openedSet = new Set<number>();
+    for (const part of chunk(variantIds)) {
+      const rows = await db
+        .select({ variantId: branchStock.variantId })
+        .from(branchStock)
+        .where(
+          and(
+            eq(branchStock.branchId, input.branchId),
+            inArray(branchStock.variantId, part),
+            isNotNull(branchStock.openedAt),
+          ),
+        );
+      for (const r of rows) openedSet.add(Number(r.variantId));
+    }
+    excludedOpened = openedSet.size;
+    if (excludedOpened) {
+      const filtered = variantIds.filter((v) => !openedSet.has(v));
+      // إعادة حساب productIds بعد الفلترة (نأخذ فقط productIds التي بقي لها متغيّر).
+      const keptSet = new Set(filtered);
+      productIds = productIds.filter((_, i) => keptSet.has(variantIds[i]));
+      variantIds = filtered;
+    }
+  }
+
+  // (٣) OPENING: عدّادات مقياس شفافيّة — كم استُبعد بسبب الأمانة/البكج؟ استعلام قصير ينفَّذ فقط
+  // عند OPENING لكيلا يُثقل الـwizard في NORMAL.
+  let excludedConsignment = 0;
+  let excludedBundle = 0;
+  if (isOpening) {
+    // نحسب من فضاء المرشّحات القبل-حصر (بلا isBundle/isConsignment) بنفس فلتر النطاق.
+    // للـFULL: كل متغيّر نشط لمنتج نشط بكج/أمانة.
+    if (input.scopeType === "FULL") {
+      const [rBundle] = await db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(productVariants)
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(and(eq(productVariants.isActive, true), eq(products.isActive, true), eq(products.isBundle, true)));
+      excludedBundle = Number(rBundle?.c ?? 0);
+      const [rCons] = await db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(productVariants)
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(
+          and(
+            eq(productVariants.isActive, true),
+            eq(products.isActive, true),
+            eq(products.isConsignment, true),
+            eq(products.isBundle, false),
+          ),
+        );
+      excludedConsignment = Number(rCons?.c ?? 0);
+    }
+    // للـCATEGORY/MOVING العدّاد مساوي 0 (الاستبعاد داخل الفلتر أصلاً — لا نحسب مسبَق-استبعاد
+    // مضلِّل عبر فضاءٍ أوسع). المفتاح: `excludedOpened` هو المؤشّر الأهمّ للمستخدم.
+  }
+
+  const uniqueProducts = new Set(productIds).size;
+  return {
+    variantCount: variantIds.length,
+    productCount: uniqueProducts,
+    excludedOpened,
+    excludedConsignment,
+    excludedBundle,
   };
 }
 

@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { EntityPicker } from "@/components/invoice/EntityPicker";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -53,7 +54,6 @@ const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent
 export default function DigitalProviders() {
   const utils = trpc.useUtils();
   const list = trpc.digitalCards.providers.list.useQuery();
-  const suppliers = trpc.suppliers.list.useQuery();
   const rows = list.data ?? [];
 
   const [formOpen, setFormOpen] = useState(false);
@@ -185,13 +185,22 @@ export default function DigitalProviders() {
                     <td className="p-2 text-center">
                       <RowActions
                         actions={[
-                          { key: "edit", label: "تعديل", onSelect: () => openEdit(p) },
+                          {
+                            key: "edit",
+                            kind: "edit",
+                            label: "تعديل",
+                            onSelect: () => openEdit(p),
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          },
                           {
                             key: "toggle",
+                            kind: "approve",
                             label: p.isActive ? "تعطيل" : "تفعيل",
                             variant: p.isActive ? "destructive" : "default",
                             disabled: toggleMut.isPending,
+                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
                             onSelect: () => void toggle(p),
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },
                         ]}
                       />
@@ -219,18 +228,14 @@ export default function DigitalProviders() {
           <div className="space-y-3">
             <div className="space-y-1">
               <label className="text-sm font-medium" htmlFor="dc-supplier">المورّد المرتبط</label>
-              <select
+              <EntityPicker
                 id="dc-supplier"
-                className={selectCls}
-                value={fSupplierId}
+                type="PURCHASE"
+                selectedId={fSupplierId ? Number(fSupplierId) : null}
                 disabled={editing}
-                onChange={(e) => setFSupplierId(e.target.value)}
-              >
-                <option value="">— اختر المورّد —</option>
-                {(suppliers.data ?? []).map((sup) => (
-                  <option key={sup.id} value={sup.id}>{sup.name}</option>
-                ))}
-              </select>
+                onSelect={(id) => setFSupplierId(id == null ? "" : String(id))}
+                placeholder="— ابحث واختر المورّد —"
+              />
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">

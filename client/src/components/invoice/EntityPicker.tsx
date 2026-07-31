@@ -28,6 +28,10 @@ export interface EntityPickerProps {
   type: InvoiceType;
   selectedId: number | null;
   onSelect: (id: number | null) => void;
+  /** يربط زرّ المنتقي بتسمية الحقل الخارجية. */
+  id?: string;
+  /** يمنع فتح المنتقي وتغيير القيمة، مع إبقاء اسم الكيان المختار مقروءاً. */
+  disabled?: boolean;
   /** نصّ الزرّ حين لا اختيار. الافتراضي «— اختر العميل/المورد —»؛ في سياق **الفلترة** مرّر
    *  «— كل العملاء —» ليدلّ على أن غياب الاختيار = بلا تضييق (لا «لم تختر بعد»). */
   placeholder?: string;
@@ -39,7 +43,7 @@ function isSaleSide(t: InvoiceType): boolean {
   return t === "SALE" || t === "QUOTATION" || t === "SALE_RETURN";
 }
 
-export function EntityPicker({ type, selectedId, onSelect, placeholder, clearLabel }: EntityPickerProps) {
+export function EntityPicker({ type, selectedId, onSelect, id, disabled = false, placeholder, clearLabel }: EntityPickerProps) {
   const isSale = isSaleSide(type);
   const entityLabel = isSale ? "العميل" : "المورد";
 
@@ -79,20 +83,24 @@ export function EntityPicker({ type, selectedId, onSelect, placeholder, clearLab
 
   return (
     <Popover
-      open={open}
+      open={disabled ? false : open}
       onOpenChange={(nextOpen) => {
+        if (disabled) return;
         setOpen(nextOpen);
         if (!nextOpen) setQ("");
       }}
     >
       <PopoverTrigger asChild>
         <button
+          id={id}
           type="button"
-          aria-expanded={open}
+          aria-expanded={!disabled && open}
           aria-haspopup="listbox"
+          disabled={disabled}
           className={cn(
             "flex h-9 w-full items-center justify-between gap-2 rounded-lg border px-3 text-sm transition",
             "outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "disabled:cursor-not-allowed disabled:opacity-60",
             selected
               ? "border-primary bg-primary/10 font-bold text-primary"
               : "border-input bg-background font-medium text-muted-foreground hover:border-input/80"
@@ -181,7 +189,7 @@ export function EntityPicker({ type, selectedId, onSelect, placeholder, clearLab
               );
             })}
           </div>
-          {selected && (
+          {selected && !disabled && (
             <div className="border-t p-2">
               <Button
                 type="button"

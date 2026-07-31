@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { fmtDateTime } from "@/lib/date";
+import { RowActions } from "@/components/list";
 
 function fmtAmount(v: string | number): string {
   return Number(v).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
@@ -443,37 +444,39 @@ function QueueTab({
                       {row.lastReminderAt ? fmtDateTime(row.lastReminderAt) : "—"}
                     </TableCell>
                     <TableCell className="text-center whitespace-nowrap">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={sendingId === row.supplierId}
-                        onClick={() => onSend(row)}
-                        className="me-1 inline-flex items-center gap-1"
-                        title="تسجيل متابعة داخلية — يُخفي المورد ٧ أيام"
-                      >
-                        <CheckCircle2 className="size-3.5" aria-hidden />
-                        تمّت المتابعة
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={!row.phone || sendingViaApiId === row.supplierId}
-                        onClick={() => onSendViaApi(row)}
-                        className="me-1 inline-flex items-center gap-1"
-                        title="إرسال تلقائي بقالب Meta معتمَد (خلف مفتاح الأتمتة في إعدادات المركز)"
-                      >
-                        <Bot className="size-3.5" aria-hidden />
-                        أرسل عبر API
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => onSkip(row)}
-                        className="inline-flex items-center gap-1 text-muted-foreground"
-                      >
-                        <SkipForward className="size-3.5" aria-hidden />
-                        أجّل
-                      </Button>
+                      <RowActions
+                        mode="menu"
+                        actions={[
+                          {
+                            key: "followed",
+                            kind: "approve",
+                            label: "تمّت المتابعة",
+                            icon: CheckCircle2,
+                            disabled: sendingId === row.supplierId,
+                            disabledReason: "توجد عملية تسجيل قيد التنفيذ",
+                            onSelect: () => onSend(row),
+                            gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL" },
+                          },
+                          {
+                            key: "send-api",
+                            kind: "other",
+                            label: "أرسل عبر API",
+                            icon: Bot,
+                            disabled: !row.phone || sendingViaApiId === row.supplierId,
+                            disabledReason: !row.phone ? "لا رقم هاتف مسجّل" : "الإرسال قيد التنفيذ",
+                            onSelect: () => onSendViaApi(row),
+                            gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL" },
+                          },
+                          {
+                            key: "skip",
+                            kind: "approve",
+                            label: "أجّل",
+                            icon: SkipForward,
+                            onSelect: () => onSkip(row),
+                            gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL" },
+                          },
+                        ]}
+                      />
                     </TableCell>
                   </TableRow>
                 ))

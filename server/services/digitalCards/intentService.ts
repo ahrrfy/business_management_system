@@ -551,9 +551,13 @@ export async function getIntent(db: DB, intentId: number) {
   return { intent, items };
 }
 
-/** طابور المراجعة: نيّات فيها كرتٌ صدر ولم تُثبَّت بفاتورة — لا تُترك بلا معالجة. */
+/**
+ * طابور المراجعة: نيّات فيها كرتٌ صدر ولم تُثبَّت بفاتورة — لا تُترك بلا معالجة.
+ * يشمل `WRITEOFF_PENDING` (هجرة 0129) كي يرى المعتمِد الطلبات المعلّقة في الطابور نفسه؛
+ * لو أُخفيت لاختفى الطلبُ عن كل شاشة وبقي الحجز مجمَّداً بلا أثرٍ مرئيّ.
+ */
 export async function listNeedsReview(db: DB, filters: { branchId?: number | null }) {
-  const conds = [eq(digitalSaleIntents.status, "NEEDS_REVIEW" as const)];
+  const conds = [inArray(digitalSaleIntents.status, ["NEEDS_REVIEW", "WRITEOFF_PENDING"] as const)];
   if (filters.branchId != null) conds.push(eq(digitalSaleIntents.branchId, filters.branchId));
 
   return db
@@ -565,10 +569,22 @@ export async function listNeedsReview(db: DB, filters: { branchId?: number | nul
       expectedTotal: digitalSaleIntents.expectedTotal,
       createdAt: digitalSaleIntents.createdAt,
       expiresAt: digitalSaleIntents.expiresAt,
+      status: digitalSaleIntents.status,
+      writeoffRequestedBy: digitalSaleIntents.writeoffRequestedBy,
+      writeoffReason: digitalSaleIntents.writeoffReason,
       successCount: sql<number>`(
         SELECT COUNT(*) FROM digitalSaleIntentItems i
         WHERE i.intentId = digitalSaleIntents.id AND i.fulfillmentStatus = 'SUCCESS'
       )`,
+      /**
+       * المحجوز فعلاً = مجموع حصص المزوّد النشطة، **لا** `expectedTotal` (سعر البيع).
+       * الفرق بينهما هو الهامش؛ عرضُ سعر البيع مكان المحجوز يوهم المدير بأن الإلغاء
+       * يعيد مبلغاً أكبر ممّا يعيده فعلاً (جولة بصرية ٣٠/٧).
+       */
+      reservedAmount: sql<string>`COALESCE((
+        SELECT SUM(r.amount) FROM digitalWalletReservations r
+        WHERE r.intentId = digitalSaleIntents.id AND r.status = 'ACTIVE'
+      ), 0)`,
       itemCount: sql<number>`(
         SELECT COUNT(*) FROM digitalSaleIntentItems i WHERE i.intentId = digitalSaleIntents.id
       )`,

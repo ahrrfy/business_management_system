@@ -17,7 +17,7 @@ import { Progress } from "@/components/ui/progress";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { ListToolbar } from "@/components/list";
+import { ListToolbar, RowActions } from "@/components/list";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt, fmtInt } from "@/lib/money";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -416,9 +416,18 @@ export default function Stocktakes() {
                         {s.approvedAt ? <p>اعتماد: {fmtDate(s.approvedAt)}</p> : null}
                       </td>
                       <td className="p-2.5 text-center">
-                        <Button asChild size="sm" variant={action.primary ? "default" : "outline"}>
-                          <Link href={action.href}>{action.label}</Link>
-                        </Button>
+                        <RowActions
+                          mode="inline"
+                          actions={[{
+                            key: "open",
+                            kind: action.primary ? "approve" : "view",
+                            label: action.label,
+                            href: action.href,
+                            gate: action.primary || (s.status === "APPROVED" && isManagerPlus)
+                              ? { roles: ["manager"] }
+                              : { roles: ["warehouse", "manager"] },
+                          }]}
+                        />
                       </td>
                     </tr>
                   );

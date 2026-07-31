@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
+import { escLike } from "../lib/sqlLike";
 import { z } from "zod";
 import { branches, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -23,6 +24,9 @@ export const shiftRouter = router({
         .object({
           branchId: z.number().int().positive().optional(),
           status: z.enum(["OPEN", "CLOSED"]).optional(),
+          shiftType: z.enum(["RETAIL", "RECEPTION", "PRINT_SERVICES"]).optional(),
+          varianceState: z.enum(["WITH_VARIANCE", "MATCHED", "UNRECONCILED"]).optional(),
+          q: z.string().trim().max(100).optional(),
           from: ymd.optional(),
           to: ymd.optional(),
           limit: z.number().int().positive().max(200).default(50),
@@ -40,6 +44,27 @@ export const shiftRouter = router({
       const effectiveBranchId = ctx.scopedBranchId ?? i.branchId;
       if (effectiveBranchId != null) conds.push(eq(shifts.branchId, effectiveBranchId));
       if (i.status) conds.push(eq(shifts.status, i.status));
+      if (i.shiftType) conds.push(eq(shifts.shiftType, i.shiftType));
+      if (i.varianceState === "WITH_VARIANCE") {
+        conds.push(sql`${shifts.variance} is not null and abs(${shifts.variance}) > 0.005`);
+      } else if (i.varianceState === "MATCHED") {
+        conds.push(sql`${shifts.variance} is not null and abs(${shifts.variance}) <= 0.005`);
+      } else if (i.varianceState === "UNRECONCILED") {
+        conds.push(isNull(shifts.variance));
+      }
+      if (i.q) {
+        const raw = i.q.trim();
+        const like = `%${escLike(raw)}%`;
+        const numeric = raw.match(/^#?(\d+)$/);
+        const shiftId = numeric ? Number(numeric[1]) : null;
+        const searchCond = shiftId != null && Number.isSafeInteger(shiftId) && shiftId > 0
+          ? or(
+              eq(shifts.id, shiftId),
+              sql`coalesce(${users.name}, '') LIKE ${like} ESCAPE '!'`,
+            )
+          : sql`coalesce(${users.name}, '') LIKE ${like} ESCAPE '!'`;
+        if (searchCond) conds.push(searchCond);
+      }
       // فلتر الفترة على openedAt (وقت فتح الوردية).
       // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
       if (i.from) conds.push(gte(shifts.openedAt, localDayStart(i.from)));
@@ -64,6 +89,7 @@ export const shiftRouter = router({
             countedCash: shifts.countedCash,
             variance: shifts.variance,
             status: shifts.status,
+            shiftType: shifts.shiftType,
             openedAt: shifts.openedAt,
             closedAt: shifts.closedAt,
           })

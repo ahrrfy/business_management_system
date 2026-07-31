@@ -897,6 +897,55 @@
       "when": 1786752000000,
       "tag": "0128_digital_intent_reference_uniqueness",
       "breakpoints": true
+    },
+    {
+      "idx": 129,
+      "version": "5",
+      "when": 1786838400000,
+      "tag": "0129_digital_intent_writeoff",
+      "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "5",
+      "when": 1786924800000,
+      "tag": "0130_digital_price_big_change_approval",
+      "breakpoints": true
+    },
+    {
+      "idx": 131,
+      "version": "5",
+      "when": 1787011200000,
+      "tag": "0131_drop_dead_reversal_pending",
+      "breakpoints": true
+    },
+    {
+      "idx": 132,
+      "version": "5",
+      "when": 1787097600000,
+      "tag": "0132_loss_refund_sod",
+      "breakpoints": true
+    },
+    {
+      "idx": 133,
+      "version": "5",
+      "when": 1787184000000,
+      "tag": "0133_price_sanity_ceilings",
+      "breakpoints": true
+    },
+    {
+      "idx": 134,
+      "version": "5",
+      "when": 1787184100000,
+      "tag": "0134_catalog_anomaly_overrides",
+      "breakpoints": true
+    },
+    {
+      "idx": 135,
+      "version": "5",
+      "when": 1787184200000,
+      "tag": "0135_price_anomaly_log",
+      "breakpoints": true
     }
   ]
 }

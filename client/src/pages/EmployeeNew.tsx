@@ -18,7 +18,7 @@ import {
 import { AlertCircle, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
-import { ROLE_OPTIONS } from "./Users";
+import { ROLE_OPTIONS } from "@/lib/roles";
 
 type AccountMode = "none" | "new" | "link";
 const roleLabelOf = (r: string) => ROLE_OPTIONS.find((o) => o.value === r)?.label ?? r;

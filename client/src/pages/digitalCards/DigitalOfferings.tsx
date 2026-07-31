@@ -3,7 +3,7 @@
 // في الكاشير قبل نشر سعر لها في شاشة أسعار اليوم.
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
-import { RowActions } from "@/components/list";
+import { ListToolbar, RowActions } from "@/components/list";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -22,7 +22,7 @@ import { notify } from "@/lib/notify";
 import { fmtAr } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Plus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type OfferingRow = RouterOutputs["digitalCards"]["offerings"]["list"][number];
 type OfferingType = OfferingRow["offeringType"];
@@ -49,6 +49,11 @@ export default function DigitalOfferings() {
   const providers = trpc.digitalCards.providers.list.useQuery();
   const branches = trpc.branches.list.useQuery();
   const rows = list.data ?? [];
+  const [query, setQuery] = useState("");
+  const visibleRows = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("ar");
+    return q ? rows.filter((o) => [o.productName, o.supplierName, OFFERING_TYPE[o.offeringType], PRICING_MODE[o.pricingMode]].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
+  }, [rows, query]);
 
   const activeProviders = (providers.data ?? []).filter((p) => p.isActive);
 
@@ -183,8 +188,30 @@ export default function DigitalOfferings() {
       )}
 
       <Card>
-        <CardHeader className="text-sm text-muted-foreground">
-          {list.isLoading ? "" : `${rows.length} بطاقة`}
+        <CardHeader>
+          <ListToolbar
+            title="قائمة البطاقات"
+            count={visibleRows.length}
+            loading={list.isLoading}
+            search={{ value: query, onChange: setQuery, placeholder: "البطاقة، المزوّد، النوع أو قاعدة التسعير…" }}
+            onResetFilters={() => setQuery("")}
+            onRefresh={() => void list.refetch()}
+            refreshing={list.isFetching}
+            onPrint={() => window.print()}
+            exportSpec={{
+              filename: "البطاقات-والاشتراكات",
+              rows: visibleRows,
+              formats: ["xlsx", "csv"],
+              columns: [
+                { key: "productName", header: "البطاقة" }, { key: "supplierName", header: "المزوّد" },
+                { key: "offeringType", header: "النوع", map: (o) => OFFERING_TYPE[o.offeringType] ?? o.offeringType },
+                { key: "faceValue", header: "القيمة الاسمية", money: true },
+                { key: "pricingMode", header: "قاعدة التسعير", map: (o) => PRICING_MODE[o.pricingMode] ?? o.pricingMode },
+                { key: "minimumMargin", header: "أقل هامش", money: true },
+                { key: "isActive", header: "الحالة", map: (o) => o.isActive ? "مفعّلة" : "معطّلة" },
+              ],
+            }}
+          />
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
@@ -203,7 +230,7 @@ export default function DigitalOfferings() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((o) => (
+                {visibleRows.map((o) => (
                   <tr key={o.id} className={`border-t ${o.isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{o.productName}</td>
                     <td className="p-2">{o.supplierName}</td>
@@ -220,13 +247,22 @@ export default function DigitalOfferings() {
                     <td className="p-2 text-center">
                       <RowActions
                         actions={[
-                          { key: "edit", label: "تعديل", onSelect: () => openEdit(o) },
+                          {
+                            key: "edit",
+                            kind: "edit",
+                            label: "تعديل",
+                            onSelect: () => openEdit(o),
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          },
                           {
                             key: "toggle",
+                            kind: "approve",
                             label: o.isActive ? "تعطيل" : "تفعيل",
                             variant: o.isActive ? "destructive" : "default",
                             disabled: toggleMut.isPending,
+                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
                             onSelect: () => void toggle(o),
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },
                         ]}
                       />
@@ -234,7 +270,7 @@ export default function DigitalOfferings() {
                   </tr>
                 ))}
                 {list.isLoading && <tr><td colSpan={9}><LoadingState /></td></tr>}
-                {!list.isLoading && rows.length === 0 && (
+                {!list.isLoading && visibleRows.length === 0 && (
                   <TableEmptyRow colSpan={9} message="لا بطاقات بعد — عرّف أوّل بطاقة لمزوّد مفعّل." />
                 )}
               </tbody>

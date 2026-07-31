@@ -17,7 +17,7 @@ import { describeUserAgent } from "@/lib/userAgent";
 import { AlertTriangle, Check, Monitor, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
-import { ROLE_OPTIONS, ROLE_LABEL } from "./Users";
+import { ROLE_LABEL, ROLE_OPTIONS } from "@/lib/roles";
 import { EffectiveAccessForAssignment } from "@/components/form/EffectiveAccessPreview";
 import { EffectivePermissionsPanel } from "@/components/form/EffectivePermissionsPanel";
 import {

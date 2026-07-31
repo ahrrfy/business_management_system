@@ -20,6 +20,7 @@ import {
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { confirm } from "@/lib/confirm";
 import { formatTableAsTSV } from "@/lib/copy/formatters";
+import { fmtDateTime } from "@/lib/date";
 import { PRODUCT_FIELDS } from "@/lib/importFields";
 import type { ProductImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
@@ -36,6 +37,7 @@ import { useEffect, useState } from "react";
 type Row = RouterOutputs["catalog"]["adminList"]["rows"][number];
 
 const limit = 50;
+const yesNo = (v: boolean | null | undefined) => (v == null ? "" : v ? "نعم" : "لا");
 
 /** مِفتاح فَريد لِكُل صَفّ (مُنتَج × مُتَغَيِّر × وَحدة). */
 function rowKey(r: Row): string {
@@ -90,21 +92,31 @@ export default function Products() {
     onError: (e) => notify.err(e),
   });
 
-  /** نَسخ المُحَدَّد كَ‍TSV (باركود/سِعر/مَخزون) — جاهِز لِلَصق في Excel. */
+  /** نَسخ المُحَدَّد كَ‍TSV — يضيف التكلفة والجملة للمالك/المدير فقط. */
   async function copySelectedAsTSV() {
     const picked = rows.filter((r) => sel.isSelected(rowKey(r)));
     if (picked.length === 0) return;
+    const headers = ["المنتج", "المتغيّر", "الوحدة", "الباركود", "بدائل الباركود", "السعر"];
+    if (isElevated) headers.push("التكلفة", "سعر الجملة");
+    headers.push("المخزون");
     const tsv = formatTableAsTSV(
-      ["المنتج", "المتغيّر", "الوحدة", "الباركود", "بدائل الباركود", "السعر", "المخزون"],
-      picked.map((r) => ({
-        "المنتج": r.productName,
-        "المتغيّر": r.variantName ?? r.color ?? r.sku ?? "",
-        "الوحدة": r.unitName ?? "",
-        "الباركود": r.barcode ?? "",
-        "بدائل الباركود": (r.barcodeAliases ?? []).join("، "),
-        "السعر": r.price != null ? String(r.price) : "",
-        "المخزون": r.stockBase ?? 0,
-      })),
+      headers,
+      picked.map((r) => {
+        const row: Record<string, string | number> = {
+          "المنتج": r.productName,
+          "المتغيّر": r.variantName ?? r.color ?? r.sku ?? "",
+          "الوحدة": r.unitName ?? "",
+          "الباركود": r.barcode ?? "",
+          "بدائل الباركود": (r.barcodeAliases ?? []).join("، "),
+          "السعر": r.price != null ? String(r.price) : "",
+        };
+        if (isElevated) {
+          row["التكلفة"] = r.costPrice ?? "";
+          row["سعر الجملة"] = r.wholesalePrice ?? "";
+        }
+        row["المخزون"] = r.stockBase ?? 0;
+        return row;
+      }),
     );
     try {
       await navigator.clipboard.writeText(tsv);
@@ -237,7 +249,8 @@ export default function Products() {
               </div>
             }
             exportSpec={{
-              filename: "المنتجات",
+              filename: "المنتجات-الشامل",
+              sheetName: "دليل المنتجات الشامل",
               rows,
               // تصدير شامل لكل النتائج المطابقة للفلاتر (لا الصفحة المعروضة فقط).
               // adminList يُعيد {rows,total} مع offset؛ سقف الخادم 500 ⇒ ~١٩ صفحة لـ٩٤١٣ صنفاً.
@@ -256,21 +269,67 @@ export default function Products() {
                       .then((r) => ({ rows: r.rows, total: r.total })),
                   { pageSize: 500 },
                 ),
-              // الترويسات مرآة حقول الاستيراد (labels/aliases في importFields.ts) ⇒ الملف المُصدَّر
-              // يُربط تلقائياً عند إعادة استيراده — ذهاب-إياب كامل (يشمل بدائل الباركود والبنية).
+              // ملف مسطّح شامل: كل صف = منتج × متغيّر × وحدة. يتضمن حقول الإدارة غير الظاهرة
+              // في الجدول، ويبقى متوافقاً مع حقول إعادة الاستيراد الأساسية.
               columns: [
+                { key: "productId", header: "معرّف المنتج" },
                 { key: "productName", header: "المنتج" },
+                { key: "productType", header: "نوع المنتج" },
+                { key: "brand", header: "الماركة" },
+                { key: "modelName", header: "الموديل" },
+                { key: "description", header: "الوصف" },
+                { key: "categoryId", header: "معرّف الفئة", map: (r) => r.categoryId ?? "" },
                 { key: "categoryName", header: "الفئة" },
+                { key: "parentProductId", header: "معرّف المنتج الأب", map: (r) => r.parentProductId ?? "" },
+                { key: "parentProductName", header: "المنتج الأب" },
+                { key: "isCustomizable", header: "قابل للتخصيص", map: (r) => yesNo(r.isCustomizable) },
+                { key: "isService", header: "منتج خدمي", map: (r) => yesNo(r.isService) },
+                { key: "showInReception", header: "يظهر في الاستقبال", map: (r) => yesNo(r.showInReception) },
+                { key: "isBundle", header: "بكج/حزمة", map: (r) => yesNo(r.isBundle) },
+                { key: "isConsignment", header: "بضاعة أمانة", map: (r) => yesNo(r.isConsignment) },
+                ...(isElevated
+                  ? [
+                      { key: "consignorId" as const, header: "معرّف المودِع", map: (r: Row) => r.consignorId ?? "" },
+                      { key: "consignorName" as const, header: "المودِع" },
+                    ]
+                  : []),
+                { key: "isFeatured", header: "مميّز في المتجر", map: (r) => yesNo(r.isFeatured) },
+                { key: "showInStore", header: "ظاهر في المتجر", map: (r) => yesNo(r.showInStore) },
+                { key: "productIsActive", header: "حالة المنتج", map: (r) => (r.productIsActive ? "مفعّل" : "معطّل") },
+                { key: "productCreatedAt", header: "إنشاء المنتج", map: (r) => fmtDateTime(r.productCreatedAt) },
+                { key: "productUpdatedAt", header: "آخر تحديث للمنتج", map: (r) => fmtDateTime(r.productUpdatedAt) },
+                { key: "variantId", header: "معرّف المتغيّر", map: (r) => r.variantId ?? "" },
                 { key: "sku", header: "SKU" },
                 { key: "variantName", header: "المتغيّر", map: (r) => r.variantName ?? r.color ?? r.sku ?? "" },
+                { key: "color", header: "اللون" },
+                { key: "colorHex", header: "رمز اللون" },
+                { key: "size", header: "القياس" },
+                { key: "minStock", header: "الحد الأدنى للمخزون", map: (r) => r.minStock ?? "" },
+                { key: "reorderPoint", header: "نقطة إعادة الطلب", map: (r) => r.reorderPoint ?? "" },
+                { key: "seasonTarget", header: "الهدف الموسمي", map: (r) => r.seasonTarget ?? "" },
+                { key: "variantIsActive", header: "حالة المتغيّر", map: (r) => r.variantIsActive == null ? "" : r.variantIsActive ? "مفعّل" : "معطّل" },
+                { key: "variantCreatedAt", header: "إنشاء المتغيّر", map: (r) => fmtDateTime(r.variantCreatedAt) },
+                { key: "variantUpdatedAt", header: "آخر تحديث للمتغيّر", map: (r) => fmtDateTime(r.variantUpdatedAt) },
+                { key: "productUnitId", header: "معرّف الوحدة", map: (r) => r.productUnitId ?? "" },
                 { key: "unitName", header: "الوحدة" },
                 { key: "conversionFactor", header: "معامل التحويل", map: (r) => r.conversionFactor ?? "" },
-                { key: "isBaseUnit", header: "وحدة الأساس", map: (r) => (r.isBaseUnit == null ? "" : r.isBaseUnit ? "نعم" : "لا") },
+                { key: "isBaseUnit", header: "وحدة الأساس", map: (r) => yesNo(r.isBaseUnit) },
+                { key: "isStoreSaleUnit", header: "وحدة بيع المتجر", map: (r) => yesNo(r.isStoreSaleUnit) },
+                { key: "unitIsActive", header: "حالة الوحدة", map: (r) => r.unitIsActive == null ? "" : r.unitIsActive ? "مفعّلة" : "معطّلة" },
+                { key: "unitCreatedAt", header: "إنشاء الوحدة", map: (r) => fmtDateTime(r.unitCreatedAt) },
                 { key: "barcode", header: "الباركود" },
                 { key: "barcodeAliases", header: "بدائل الباركود", map: (r) => (r.barcodeAliases ?? []).join("، ") },
-                { key: "price", header: "السعر مفرد", map: (r) => (r.price != null ? Number(r.price) : "") },
-                { key: "stockBase", header: "المخزون", map: (r) => Number(r.stockBase ?? 0) },
-                { key: "productIsActive", header: "نشط", map: (r) => (r.productIsActive ? "نعم" : "لا") },
+                { key: "price", header: "سعر المفرد", money: true, map: (r) => (r.price != null ? Number(r.price) : "") },
+                ...(isElevated
+                  ? [
+                      { key: "baseCostPrice" as const, header: "كلفة الوحدة", money: true, map: (r: Row) => r.baseCostPrice != null ? Number(r.baseCostPrice) : "" },
+                      { key: "costPrice" as const, header: "تكلفة وحدة الصف", money: true, map: (r: Row) => r.costPrice != null ? Number(r.costPrice) : "" },
+                      { key: "wholesalePrice" as const, header: "سعر الجملة", money: true, map: (r: Row) => r.wholesalePrice != null ? Number(r.wholesalePrice) : "" },
+                      { key: "governmentPrice" as const, header: "السعر الحكومي", money: true, map: (r: Row) => r.governmentPrice != null ? Number(r.governmentPrice) : "" },
+                    ]
+                  : []),
+                { key: "branchId", header: "معرّف فرع المخزون", map: () => branchId },
+                { key: "stockBase", header: "المخزون بوحدة الأساس", map: (r) => Number(r.stockBase ?? 0) },
               ],
             }}
             onImport={isElevated ? () => setImportOpen(true) : undefined}
@@ -298,6 +357,8 @@ export default function Products() {
                 <th className="p-2">الوحدة</th>
                 <th className="p-2">الباركود</th>
                 <th className="p-2 text-right">السعر (مفرد)</th>
+                {isElevated && <th className="p-2 text-right">التكلفة</th>}
+                {isElevated && <th className="p-2 text-right">سعر الجملة</th>}
                 <th className="p-2 text-right">المخزون</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
@@ -341,6 +402,16 @@ export default function Products() {
                     <td className="p-2 text-right tabular-nums" dir="ltr">
                       {fmtAr(r.price)}
                     </td>
+                    {isElevated && (
+                      <td className="p-2 text-right tabular-nums" dir="ltr">
+                        {fmtAr(r.costPrice)}
+                      </td>
+                    )}
+                    {isElevated && (
+                      <td className="p-2 text-right tabular-nums" dir="ltr">
+                        {fmtAr(r.wholesalePrice)}
+                      </td>
+                    )}
                     <td className="p-2 text-right tabular-nums" dir="ltr">{r.stockBase}</td>
                     <td className="p-2 text-center">
                       <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.productIsActive ? "badge-status-active" : "badge-stock-out"}`}>
@@ -351,9 +422,16 @@ export default function Products() {
                       {/* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً */}
                       <RowActions
                         actions={[
-                          { key: "edit", label: "تعديل", href: `/products/${r.productId}/edit` },
+                          {
+                            key: "edit",
+                            kind: "edit",
+                            label: "تعديل",
+                            href: `/products/${r.productId}/edit`,
+                            gate: { roles: ["manager"], module: "products", level: "FULL" },
+                          },
                           {
                             key: "label",
+                            kind: "print",
                             label: "طباعة ملصق باركود",
                             hidden: !r.barcode, // بلا باركود = لا ملصق (Code128 يحتاج قيمة)
                             onSelect: () =>
@@ -365,26 +443,34 @@ export default function Products() {
                                   barcode: r.barcode ?? "",
                                 },
                               ]),
+                            gate: { module: "products", level: "READ" },
                           },
                           {
                             key: "moves",
+                            kind: "view",
                             label: "حركات المنتج",
                             hidden: !r.sku,
                             // شاشة الحركات تقرأ ?q= من URL (نمط CustomerStatement) فتفتح مفلترة على SKU.
                             href: `/inventory-movements?q=${encodeURIComponent(r.sku ?? "")}`,
+                            gate: { module: "inventory", level: "READ" },
                           },
                           {
                             key: "toggle",
+                            kind: "approve",
                             label: r.productIsActive ? "تعطيل" : "تفعيل",
                             variant: r.productIsActive ? "destructive" : "default",
                             disabled: setActive.isPending,
+                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
                             onSelect: () => void toggle(r.productId, r.productIsActive, r.productName),
+                            gate: { roles: ["manager"], module: "products", level: "FULL" },
                           },
                           {
                             key: "delete",
+                            kind: "delete",
                             label: "حذف نهائي",
                             variant: "destructive",
                             onSelect: () => setDeleteFor({ productId: r.productId, name: r.productName }),
+                            gate: { roles: ["manager"], module: "products", level: "FULL" },
                           },
                         ]}
                       />
@@ -393,7 +479,7 @@ export default function Products() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <TableEmptyRow colSpan={10} message="لا منتجات مطابقة. غيّر البحث أو أضف منتجاً." />
+                <TableEmptyRow colSpan={isElevated ? 12 : 10} message="لا منتجات مطابقة. غيّر البحث أو أضف منتجاً." />
               )}
             </tbody>
           </table>

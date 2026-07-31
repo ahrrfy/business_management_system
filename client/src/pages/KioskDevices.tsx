@@ -18,7 +18,8 @@ import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
 import { internalUrl } from "@/lib/siteHosts";
 import { Download, X } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { ListToolbar, RowActions } from "@/components/list";
 
 type Reveal = { deviceId: number; label: string; branchName: string | null; rawToken: string };
 
@@ -37,6 +38,11 @@ export default function KioskDevices() {
   const branches = branchesQ.data ?? [];
   const devicesQ = trpc.kiosk.devices.list.useQuery();
   const devices = devicesQ.data ?? [];
+  const [query, setQuery] = useState("");
+  const visibleDevices = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("ar");
+    return q ? devices.filter((d) => [d.label, d.branchName, d.tokenPrefix].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : devices;
+  }, [devices, query]);
 
   const [branchId, setBranchId] = useState<number | "">("");
   const [label, setLabel] = useState("");
@@ -180,7 +186,29 @@ export default function KioskDevices() {
 
       {/* قائمة الأجهزة */}
       <Card>
-        <CardHeader><CardTitle className="text-base">الأجهزة المُسجَّلة ({devices.length})</CardTitle></CardHeader>
+        <CardHeader>
+          <ListToolbar
+            title="الأجهزة المسجّلة"
+            count={visibleDevices.length}
+            loading={devicesQ.isLoading}
+            search={{ value: query, onChange: setQuery, placeholder: "اسم الجهاز، الفرع أو بادئة الرمز…" }}
+            onResetFilters={() => setQuery("")}
+            onRefresh={() => void devicesQ.refetch()}
+            refreshing={devicesQ.isFetching}
+            onPrint={() => window.print()}
+            exportSpec={{
+              filename: "أجهزة-قارئ-الأسعار",
+              rows: visibleDevices,
+              formats: ["xlsx", "csv"],
+              columns: [
+                { key: "label", header: "الجهاز" }, { key: "branchName", header: "الفرع" },
+                { key: "tokenPrefix", header: "بادئة الرمز" },
+                { key: "isActive", header: "الحالة", map: (d) => d.isActive ? "مفعّل" : "ملغى" },
+                { key: "lastSeenAt", header: "آخر ظهور" },
+              ],
+            }}
+          />
+        </CardHeader>
         <CardContent>
           {devicesQ.isLoading ? (
             <LoadingState />
@@ -198,10 +226,10 @@ export default function KioskDevices() {
                   </tr>
                 </thead>
                 <tbody>
-                  {devices.length === 0 && (
+                  {visibleDevices.length === 0 && (
                     <TableEmptyRow colSpan={6} message="لا أجهزة بعد — أضف جهازاً أعلاه." />
                   )}
-                  {devices.map((d) => (
+                  {visibleDevices.map((d) => (
                     <tr key={d.id} className="border-b last:border-0">
                       <td className="py-2 px-2 font-medium">{d.label}</td>
                       <td className="py-2 px-2">{d.branchName ?? "—"}</td>
@@ -213,36 +241,46 @@ export default function KioskDevices() {
                       </td>
                       <td className="py-2 px-2 text-xs text-muted-foreground">{fmtDateTime(d.lastSeenAt)}</td>
                       <td className="py-2 px-2">
-                        <div className="flex flex-wrap gap-1.5">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={async () => {
-                              if (!(await confirm({ variant: "warning", title: "تدوير رمز الجهاز", description: `تدوير الرمز يُبطل الرمز القديم لجهاز «${d.label}». متابعة؟`, confirmText: "تدوير الرمز" }))) return;
-                              rotate.mutate({ id: d.id });
-                            }}
-                            disabled={rotate.isPending}
-                          >
-                            تدوير الرمز
-                          </Button>
-                          {d.isActive ? (
-                            <Button variant="outline" size="sm" onClick={() => setActive.mutate({ id: d.id, active: false })} disabled={setActive.isPending}>إلغاء</Button>
-                          ) : (
-                            <Button variant="outline" size="sm" onClick={() => setActive.mutate({ id: d.id, active: true })} disabled={setActive.isPending}>تفعيل</Button>
-                          )}
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-destructive"
-                            onClick={async () => {
-                              if (!(await confirmDelete({ description: `حذف الجهاز «${d.label}» نهائياً يلغي رمزه فوراً ويعطّل الشاشة.` }))) return;
-                              remove.mutate({ id: d.id });
-                            }}
-                            disabled={remove.isPending}
-                          >
-                            حذف
-                          </Button>
-                        </div>
+                        <RowActions
+                          mode="menu"
+                          actions={[
+                            {
+                              key: "rotate",
+                              kind: "approve",
+                              label: "تدوير الرمز",
+                              disabled: rotate.isPending,
+                              disabledReason: "توجد عملية تدوير قيد التنفيذ",
+                              onSelect: () => void (async () => {
+                                if (!(await confirm({ variant: "warning", title: "تدوير رمز الجهاز", description: `تدوير الرمز يُبطل الرمز القديم لجهاز «${d.label}». متابعة؟`, confirmText: "تدوير الرمز" }))) return;
+                                rotate.mutate({ id: d.id });
+                              })(),
+                              gate: { adminOnly: true },
+                            },
+                            {
+                              key: "toggle",
+                              kind: "approve",
+                              label: d.isActive ? "إلغاء" : "تفعيل",
+                              variant: d.isActive ? "destructive" : "default",
+                              disabled: setActive.isPending,
+                              disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                              onSelect: () => setActive.mutate({ id: d.id, active: !d.isActive }),
+                              gate: { adminOnly: true },
+                            },
+                            {
+                              key: "delete",
+                              kind: "delete",
+                              label: "حذف",
+                              variant: "destructive",
+                              disabled: remove.isPending,
+                              disabledReason: "توجد عملية حذف قيد التنفيذ",
+                              onSelect: () => void (async () => {
+                                if (!(await confirmDelete({ description: `حذف الجهاز «${d.label}» نهائياً يلغي رمزه فوراً ويعطّل الشاشة.` }))) return;
+                                remove.mutate({ id: d.id });
+                              })(),
+                              gate: { adminOnly: true },
+                            },
+                          ]}
+                        />
                       </td>
                     </tr>
                   ))}

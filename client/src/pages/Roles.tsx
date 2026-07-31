@@ -1,12 +1,15 @@
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { RowActions } from "@/components/list/RowActions";
+import { ListToolbar } from "@/components/list/ListToolbar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
 import { ROLES } from "@/lib/permissionsModel";
 import { trpc } from "@/lib/trpc";
 import { Link } from "wouter";
+import { useMemo, useState } from "react";
 
 const roleLabel = (key: string) => ROLES.find((r) => r.key === key)?.label ?? key;
 
@@ -19,6 +22,11 @@ export default function Roles() {
   const builtin = list.data?.builtin ?? [];
   const custom = list.data?.custom ?? [];
   const counts = list.data?.counts ?? {};
+  const [query, setQuery] = useState("");
+  const visibleCustom = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("ar");
+    return q ? custom.filter((r) => [r.label, r.description, roleLabel(r.baseRole)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : custom;
+  }, [custom, query]);
 
   async function doDelete(id: number, label: string, count: number) {
     if (count > 0) return;
@@ -36,7 +44,29 @@ export default function Roles() {
 
       {/* الأدوار المخصّصة */}
       <Card>
-        <CardHeader><CardTitle className="text-base">الأدوار المخصّصة</CardTitle></CardHeader>
+        <CardHeader>
+          <ListToolbar
+            title="الأدوار المخصّصة"
+            count={visibleCustom.length}
+            loading={list.isLoading}
+            search={{ value: query, onChange: setQuery, placeholder: "اسم الدور أو الفئة الأساسية…" }}
+            onResetFilters={() => setQuery("")}
+            onRefresh={() => void list.refetch()}
+            refreshing={list.isFetching}
+            onPrint={() => window.print()}
+            exportSpec={{
+              filename: "الأدوار-المخصصة",
+              rows: visibleCustom,
+              formats: ["xlsx", "csv"],
+              columns: [
+                { key: "label", header: "الدور" },
+                { key: "baseRole", header: "الفئة الأساسية", map: (r) => roleLabel(r.baseRole) },
+                { key: "description", header: "الوصف" },
+                { key: "isActive", header: "الحالة", map: (r) => r.isActive ? "مفعّل" : "معطّل" },
+              ],
+            }}
+          />
+        </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
@@ -50,7 +80,7 @@ export default function Roles() {
               </tr>
             </thead>
             <tbody>
-              {custom.map((r) => {
+              {visibleCustom.map((r) => {
                 const id = Number(r.id);
                 const count = counts[id] ?? 0;
                 const active = !!r.isActive;
@@ -78,24 +108,39 @@ export default function Roles() {
                       </span>
                     </td>
                     <td className="p-2">
-                      <div className="flex items-center justify-center gap-1">
-                        <Link href={`/roles/${id}/edit`}><Button variant="ghost" size="sm" className="h-7 text-xs">تعديل</Button></Link>
-                        <Button variant="ghost" size="sm" className="h-7 text-xs" disabled={setActive.isPending} onClick={async () => { if (!(await confirm({ variant: "warning", title: active ? "تعطيل الدور" : "تفعيل الدور", description: active ? "الأدوار المعطَّلة لا يمكن إسنادها لمستخدمين جدد. متابعة؟" : "تفعيل هذا الدور لإتاحته للإسناد. متابعة؟", confirmText: active ? "تعطيل" : "تفعيل" }))) return; setActive.mutate({ id, isActive: !active }); }}>
-                          {active ? "تعطيل" : "تفعيل"}
-                        </Button>
-                        <Button
-                          variant="ghost" size="sm"
-                          className="h-7 text-xs text-destructive disabled:opacity-40"
-                          disabled={count > 0 || remove.isPending}
-                          title={count > 0 ? "مُسنَد لمستخدمين — غيّر أدوارهم أولاً" : undefined}
-                          onClick={() => void doDelete(id, r.label, count)}
-                        >حذف</Button>
-                      </div>
+                      <RowActions
+                        mode="menu"
+                        actions={[
+                          { key: "edit", kind: "edit", label: "تعديل", href: `/roles/${id}/edit`, gate: { adminOnly: true } },
+                          {
+                            key: "toggle",
+                            kind: "approve",
+                            label: active ? "تعطيل" : "تفعيل",
+                            gate: { adminOnly: true },
+                            disabled: setActive.isPending,
+                            disabledReason: "جارٍ تحديث الدور",
+                            onSelect: async () => {
+                              if (!(await confirm({ variant: "warning", title: active ? "تعطيل الدور" : "تفعيل الدور", description: active ? "الأدوار المعطَّلة لا يمكن إسنادها لمستخدمين جدد. متابعة؟" : "تفعيل هذا الدور لإتاحته للإسناد. متابعة؟", confirmText: active ? "تعطيل" : "تفعيل" }))) return;
+                              setActive.mutate({ id, isActive: !active });
+                            },
+                          },
+                          {
+                            key: "delete",
+                            kind: "delete",
+                            label: "حذف",
+                            variant: "destructive",
+                            gate: { adminOnly: true },
+                            disabled: count > 0 || remove.isPending,
+                            disabledReason: count > 0 ? "مُسنَد لمستخدمين — غيّر أدوارهم أولاً" : "جارٍ حذف الدور",
+                            onSelect: () => void doDelete(id, r.label, count),
+                          },
+                        ]}
+                      />
                     </td>
                   </tr>
                 );
               })}
-              {!list.isLoading && custom.length === 0 && (
+              {!list.isLoading && visibleCustom.length === 0 && (
                 <TableEmptyRow colSpan={5} message="لا أدوار مخصّصة بعد — أضِف دوراً جديداً بصلاحيات حسب حاجتك." />
               )}
             </tbody>

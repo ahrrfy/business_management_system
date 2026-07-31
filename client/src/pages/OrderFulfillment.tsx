@@ -6,7 +6,7 @@
  * حقيقية + يُخصم المخزون + قيد دفتر عبر orders.dispatch) ← تُسلَّم. عزل الفرع خادمياً.
  * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, ClipboardList, Loader2, MessageCircle, Package, Printer, Store, Truck, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
@@ -17,6 +17,8 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { RowActions } from "@/components/list/RowActions";
+import { ListToolbar } from "@/components/list/ListToolbar";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
 
@@ -58,6 +60,7 @@ type OrderRow = { id: number; orderNumber: string; total: string; customerName: 
 
 export default function OrderFulfillment() {
   const [filter, setFilter] = useState<Status | null>(null);
+  const [query, setQuery] = useState("");
   const [printingId, setPrintingId] = useState<number | null>(null);
   const [dispatchTarget, setDispatchTarget] = useState<OrderRow | null>(null);
   const [cancelTarget, setCancelTarget] = useState<{ id: number; orderNumber: string } | null>(null);
@@ -92,6 +95,14 @@ export default function OrderFulfillment() {
 
   const counts = countsQ.data ?? {};
   const orders = listQ.data ?? [];
+  const visibleOrders = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase("ar");
+    if (!needle) return orders;
+    return orders.filter((order) =>
+      [order.orderNumber, order.customerName, order.customerPhone, order.governorate]
+        .some((value) => String(value ?? "").toLocaleLowerCase("ar").includes(needle)),
+    );
+  }, [orders, query]);
 
   async function advance(id: number, to: Status, label: string) {
     const ok = await confirm({ title: `${label}؟`, description: `الطلب رقم ${id}` });
@@ -149,20 +160,48 @@ export default function OrderFulfillment() {
         <StatCard label="سُلّم" value={counts.DELIVERED ?? 0} icon={Check} tone="positive" onClick={() => setFilter("DELIVERED")} />
       </div>
 
-      {/* فلاتر */}
-      <div className="flex flex-wrap gap-2">
-        {FILTERS.map((f) => (
-          <button
-            key={f.label}
-            onClick={() => setFilter(f.value)}
-            className={`rounded-full px-3.5 py-1.5 text-xs font-bold transition ${
-              filter === f.value ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
-      </div>
+      <ListToolbar
+        title="قائمة الطلبات"
+        count={visibleOrders.length}
+        loading={listQ.isLoading}
+        search={{ value: query, onChange: setQuery, placeholder: "رقم الطلب، الزبون، الهاتف أو المحافظة…" }}
+        activeFilterCount={filter ? 1 : 0}
+        onResetFilters={() => { setQuery(""); setFilter(null); }}
+        onRefresh={() => { void listQ.refetch(); void countsQ.refetch(); }}
+        refreshing={listQ.isFetching || countsQ.isFetching}
+        onPrint={() => window.print()}
+        printDisabled={visibleOrders.length === 0}
+        exportSpec={{
+          filename: "طلبات-المتجر",
+          sheetName: "الطلبات",
+          rows: visibleOrders,
+          formats: ["xlsx", "csv"],
+          columns: [
+            { key: "orderNumber", header: "رقم الطلب" },
+            { key: "customerName", header: "الزبون" },
+            { key: "customerPhone", header: "الهاتف" },
+            { key: "governorate", header: "المحافظة" },
+            { key: "itemCount", header: "عدد الأصناف" },
+            { key: "total", header: "الإجمالي", money: true },
+            { key: "status", header: "الحالة", map: (r) => STATUS_META[(r.status as Status) in STATUS_META ? r.status as Status : "PENDING"].label },
+          ],
+        }}
+        filters={
+          <div className="flex flex-wrap gap-1">
+            {FILTERS.map((f) => (
+              <button
+                key={f.label}
+                onClick={() => setFilter(f.value)}
+                className={`rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                  filter === f.value ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        }
+      />
 
       {/* الجدول */}
       <ScrollTableShell>
@@ -186,12 +225,12 @@ export default function OrderFulfillment() {
                   <Loader2 aria-hidden className="mx-auto size-6 animate-spin" />
                 </td>
               </tr>
-            ) : orders.length === 0 ? (
+            ) : visibleOrders.length === 0 ? (
               <tr>
                 <td colSpan={8} className="p-10 text-center text-muted-foreground">لا توجد طلبات</td>
               </tr>
             ) : (
-              orders.map((o) => {
+              visibleOrders.map((o) => {
                 const st = (o.status as Status) in STATUS_META ? (o.status as Status) : "PENDING";
                 const meta = STATUS_META[st];
                 // طلب SHIPPED مُسنَد لمندوب يُسلَّم ويُحصَّل عبر «توصيلاتي» (لا زر «تم التسليم» بلا تحصيل
@@ -214,55 +253,66 @@ export default function OrderFulfillment() {
                       )}
                     </td>
                     <td className="p-2">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <button
-                          onClick={() => printLabel(o.id)}
-                          disabled={isBusy}
-                          className="flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs font-bold transition hover:bg-accent disabled:opacity-50"
-                        >
-                          {printingId === o.id ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : <Printer aria-hidden className="size-3.5" />}
-                          الملصق
-                        </button>
-                        {o.customerPhone && (
-                          <button
-                            onClick={() => openWhatsApp(o.customerPhone, buildOnlineOrderFollowupMessage({ orderNumber: o.orderNumber, customerName: o.customerName, total: o.total, status: o.status }))}
-                            title="متابعة الزبون عبر واتساب"
-                            className="flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-50 px-2.5 py-1.5 text-xs font-bold text-emerald-700 transition hover:bg-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-400"
-                          >
-                            <MessageCircle aria-hidden className="size-3.5" /> واتساب
-                          </button>
-                        )}
-                        {canDispatch && (st === "CONFIRMED" || st === "PROCESSING") && (
-                          <button
-                            onClick={() => setDispatchTarget({ id: o.id, orderNumber: o.orderNumber, total: o.total, customerName: o.customerName })}
-                            disabled={isBusy || dispatchM.isPending}
-                            className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-xs font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
-                          >
-                            <Truck aria-hidden className="size-3.5" />
-                            إرسال لمندوب
-                          </button>
-                        )}
-                        {next && (
-                          <button
-                            onClick={() => advance(o.id, next.to, next.label)}
-                            disabled={isBusy}
-                            className="flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1.5 text-xs font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-                          >
-                            <Check aria-hidden className="size-3.5" />
-                            {next.label}
-                          </button>
-                        )}
-                        {(st === "PENDING" || st === "CONFIRMED" || st === "PROCESSING") && (
-                          <button
-                            onClick={() => setCancelTarget({ id: o.id, orderNumber: o.orderNumber })}
-                            disabled={isBusy}
-                            className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-rose-500 transition hover:bg-rose-50 disabled:opacity-50 dark:hover:bg-rose-500/10"
-                          >
-                            <X aria-hidden className="size-3.5" />
-                            إلغاء
-                          </button>
-                        )}
-                      </div>
+                      <RowActions
+                        mode="menu"
+                        actions={[
+                          {
+                            key: "print-label",
+                            kind: "print",
+                            label: printingId === o.id ? "جارٍ طباعة الملصق…" : "طباعة الملصق",
+                            icon: printingId === o.id ? Loader2 : Printer,
+                            gate: { module: "store", level: "READ" },
+                            disabled: isBusy,
+                            disabledReason: "هناك عملية جارية على الطلب",
+                            onSelect: () => printLabel(o.id),
+                          },
+                          {
+                            key: "whatsapp",
+                            kind: "other",
+                            label: "متابعة عبر واتساب",
+                            icon: MessageCircle,
+                            hidden: !o.customerPhone,
+                            gate: { module: "store", level: "READ" },
+                            onSelect: () => {
+                              if (o.customerPhone) openWhatsApp(o.customerPhone, buildOnlineOrderFollowupMessage({ orderNumber: o.orderNumber, customerName: o.customerName, total: o.total, status: o.status }));
+                            },
+                          },
+                          {
+                            key: "dispatch",
+                            kind: "approve",
+                            label: "إرسال لمندوب",
+                            icon: Truck,
+                            hidden: !canDispatch || (st !== "CONFIRMED" && st !== "PROCESSING"),
+                            gate: { roles: ["manager"], module: "store", level: "FULL" },
+                            disabled: isBusy || dispatchM.isPending,
+                            disabledReason: "هناك عملية جارية على الطلب",
+                            onSelect: () => setDispatchTarget({ id: o.id, orderNumber: o.orderNumber, total: o.total, customerName: o.customerName }),
+                          },
+                          {
+                            key: "advance",
+                            kind: "approve",
+                            label: next?.label ?? "تحديث الحالة",
+                            icon: Check,
+                            hidden: !next,
+                            gate: { module: "store", level: "FULL" },
+                            disabled: isBusy,
+                            disabledReason: "هناك عملية جارية على الطلب",
+                            onSelect: () => next && advance(o.id, next.to, next.label),
+                          },
+                          {
+                            key: "cancel",
+                            kind: "delete",
+                            label: "إلغاء الطلب",
+                            icon: X,
+                            variant: "destructive",
+                            hidden: st !== "PENDING" && st !== "CONFIRMED" && st !== "PROCESSING",
+                            gate: { module: "store", level: "FULL" },
+                            disabled: isBusy,
+                            disabledReason: "هناك عملية جارية على الطلب",
+                            onSelect: () => setCancelTarget({ id: o.id, orderNumber: o.orderNumber }),
+                          },
+                        ]}
+                      />
                     </td>
                   </tr>
                 );

@@ -14,9 +14,27 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { trpc } from "@/lib/trpc";
+import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import type { PermissionMap } from "@shared/permissions";
+
+export type RowActionKind =
+  | "view"
+  | "create"
+  | "edit"
+  | "print"
+  | "export"
+  | "duplicate"
+  | "pay"
+  | "approve"
+  | "reverse"
+  | "delete"
+  | "other";
 
 export type RowAction = {
   key: string;
+  /** الدلالة التشغيلية؛ تُستعمل في الجرد والحوكمة ولا تعتمد على صياغة العنوان. */
+  kind?: RowActionKind;
   label: React.ReactNode;
   icon?: React.ComponentType<{ className?: string }>;
   /** إجراء فوري (للحذف الخطِر: await confirm() داخله ثم mutate). */
@@ -25,7 +43,14 @@ export type RowAction = {
   href?: string;
   variant?: "default" | "destructive";
   disabled?: boolean;
+  /** سبب عدم الإتاحة المؤقتة (حالة السجل/تنفيذ جارٍ)، ويظهر كتلميح. */
+  disabledReason?: string;
   hidden?: boolean;
+  /**
+   * مرآة بوابة الخادم لهذا الإجراء. الواجهة تخفي غير المصرّح به لمنع الارتباك،
+   * لكن الإنفاذ الأمني يبقى إلزامياً في procedure الخادم.
+   */
+  gate?: RoleGate;
 };
 
 export type RowActionsProps = {
@@ -42,7 +67,12 @@ export function RowActions({
   label = "إجراءات",
   align = "end",
 }: RowActionsProps) {
-  const visible = actions.filter((a) => !a.hidden);
+  const me = trpc.auth.me.useQuery();
+  const role = me.data?.role;
+  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const visible = actions.filter(
+    (a) => !a.hidden && (!a.gate || (!me.isLoading && canSeeGate(a.gate, role, override))),
+  );
   if (visible.length === 0) return null;
   const useMenu = mode === "menu" || (mode === "auto" && visible.length > 2);
 
@@ -57,7 +87,7 @@ export function RowActions({
               {a.label}
             </>
           );
-          if (a.href) {
+          if (a.href && !a.disabled) {
             return (
               <Button key={a.key} asChild variant="outline" size="sm">
                 <Link href={a.href}>{inner}</Link>
@@ -71,6 +101,7 @@ export function RowActions({
               size="sm"
               disabled={a.disabled}
               onClick={a.onSelect}
+              title={a.disabled ? a.disabledReason : undefined}
               className={
                 a.variant === "destructive"
                   ? "text-destructive hover:text-destructive"
@@ -101,9 +132,9 @@ export function RowActions({
               {a.label}
             </>
           );
-          if (a.href) {
+          if (a.href && !a.disabled) {
             return (
-              <DropdownMenuItem key={a.key} asChild variant={a.variant} disabled={a.disabled}>
+              <DropdownMenuItem key={a.key} asChild variant={a.variant}>
                 <Link href={a.href}>{inner}</Link>
               </DropdownMenuItem>
             );
@@ -114,6 +145,7 @@ export function RowActions({
               variant={a.variant}
               disabled={a.disabled}
               onSelect={() => a.onSelect?.()}
+              title={a.disabled ? a.disabledReason : undefined}
             >
               {inner}
             </DropdownMenuItem>

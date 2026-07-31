@@ -13,6 +13,7 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmtAr } from "@/lib/money";
 import { BalanceTag, type ExchangeRow } from "@/components/exchange/shared";
+import { RowActions } from "@/components/list";
 
 export default function ExchangeAccounts() {
   const utils = trpc.useUtils();
@@ -79,22 +80,30 @@ export default function ExchangeAccounts() {
         header: "إجراء",
         id: "actions",
         cell: ({ row }) => (
-          <div className="flex gap-1">
-            <Button size="sm" variant="outline" className="h-7 gap-1" onClick={() => setEditing(row.original)}>
-              <Pencil className="h-3 w-3" />
-              تعديل
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 gap-1"
-              onClick={() => setActive.mutate({ id: row.original.id, isActive: !row.original.isActive })}
-              disabled={setActive.isPending}
-            >
-              <Power className="h-3 w-3" />
-              {row.original.isActive ? "تعطيل" : "تفعيل"}
-            </Button>
-          </div>
+          <RowActions
+            mode="inline"
+            actions={[
+              {
+                key: "edit",
+                kind: "edit",
+                label: "تعديل",
+                icon: Pencil,
+                onSelect: () => setEditing(row.original),
+                gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+              },
+              {
+                key: "toggle",
+                kind: "approve",
+                label: row.original.isActive ? "تعطيل" : "تفعيل",
+                icon: Power,
+                variant: row.original.isActive ? "destructive" : "default",
+                disabled: setActive.isPending,
+                disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                onSelect: () => setActive.mutate({ id: row.original.id, isActive: !row.original.isActive }),
+                gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+              },
+            ]}
+          />
         ),
       },
     ],

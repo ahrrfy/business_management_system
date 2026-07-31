@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { asc } from "drizzle-orm";
+import { asc, sql } from "drizzle-orm";
 import { categories } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { assignBarcode, checkBarcodesTaken, createProduct, deleteProduct, getProductForEdit, listByProductIds, listByUnitIds, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
@@ -17,8 +17,9 @@ import {
 } from "../services/categoryService";
 import { logAudit } from "../services/auditService";
 import { getProductUsage } from "../services/entityUsage";
-import { productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
+import { canSeeCostForUser, productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
+import { checkVariantSanity, classifySeverity, type UnitPricing } from "../../shared/priceSanity";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
 
@@ -34,6 +35,22 @@ function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, 
     throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
   }
   return Number(ctx.user.branchId);
+}
+
+/**
+ * حجب `costPriceBase` من صفوف نتائج POS (بحث/باركود/معرّفات) لغير المخوَّلين برؤية التكلفة.
+ * التكلفة تُحمَل دائماً في الاستعلام كي تصل لشاشات المبيعات المتقدّمة (مدير/أدمن) عبر شريط
+ * البحث الموحَّد؛ الحجب هنا في نقطة الخروج (نمط `redact.ts`) فلا تتسرّب عبر شبكة tRPC إلى
+ * الكاشير. `canSeeCostForUser` يحترم القوالب والمنح الصريحة على السواء (`server/trpc.ts:190`).
+ */
+function redactPosCost<T extends { costPriceBase?: string | null }>(rows: T[], user: { role: string; permissionsOverride?: unknown }): T[] {
+  if (canSeeCostForUser(user)) return rows;
+  return rows.map((r) => ({ ...r, costPriceBase: null }));
+}
+function redactPosCostOne<T extends { costPriceBase?: string | null }>(row: T | null, user: { role: string; permissionsOverride?: unknown }): T | null {
+  if (row == null) return row;
+  if (canSeeCostForUser(user)) return row;
+  return { ...row, costPriceBase: null };
 }
 
 const priceSchema = z.object({ priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]), price: z.string() });
@@ -90,6 +107,8 @@ const editVariantSchema = z.object({
   colorHex: z.string().regex(/^#[0-9a-fA-F]{6}$/, "لون غير صالح").nullish(),
   size: z.string().nullish(),
   costPrice: z.string(),
+  // priceSanity L1.7: سبب تغيير التكلفة (يُفرَض إن الشذوذ blocker/catastrophic خادمياً).
+  costChangeReason: z.string().max(500).nullish(),
   baseRetail: z.string().optional(),
   minStock: z.number().int().min(0).max(1_000_000).optional(),
   reorderPoint: z.number().int().min(0).max(1_000_000).optional(),
@@ -115,11 +134,50 @@ const editImageSchema = z.object({
   sortOrder: z.number().int().min(0).optional(),
 });
 
+/**
+ * حرّاس عقلانية على تكلفة/سعر/معامل — دفاعٌ في العمق ضدّ أيّ عميل يتجاوز حرّاس الواجهة
+ * (حادثة SINARLINE ٣٠/٧: تكلفة 16162 vs بيع 2000 ⇒ توقّف كاشير ساعات). يُطبَّق قبل استدعاء
+ * الخدمة في المسارات الثلاثة (createProduct/updateProduct/updateProductVariants) — يرمي
+ * TRPCError بـBAD_REQUEST بلا تعديل الحالة. المصدر مشترك: shared/priceSanity.ts.
+ *
+ * الاستعمال:
+ *   assertVariantSanityOrThrow(variantLabel, costPriceStr, unitsForCheck);
+ *   حيث unitsForCheck: صفيف {unitName, conversionFactor:number, retail?, wholesale?, government?}
+ */
+function assertVariantSanityOrThrow(variantLabel: string, costPrice: string, units: UnitPricing[]): void {
+  const issues = checkVariantSanity(costPrice, units);
+  const blocker = issues.find((i) => i.level === "blocker");
+  if (blocker) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `[${variantLabel}] ${blocker.message}` });
+  }
+}
+
+/**
+ * **priceSanity L1.7 (٣٠/٧):** حارس السبب الإلزاميّ. عند تغيير التكلفة بنسبة ≥ ٥× مقارنةً بالقيمة
+ * السابقة (blocker حسب `classifySeverity`)، يجب أن يمرَّر `costChangeReason` بمحارف ≥ ١٠.
+ * يمنع تغييرات صامتة كارثيّة (حالة SINARLINE) من الاستيراد أو استعادات المسودّات.
+ */
+function assertCostChangeReasonOrThrow(variantLabel: string, oldCost: string | number | null | undefined, newCost: string | number, reason: string | null | undefined): void {
+  const sev = classifySeverity(newCost, { oldCost: oldCost ?? null });
+  if (sev === "blocker" || sev === "catastrophic") {
+    const r = (reason ?? "").trim();
+    if (r.length < 10) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `[${variantLabel}] تغيير التكلفة كبير جداً (من ${oldCost ?? "؟"} إلى ${newCost}). يرجى إضافة سبب مكتوب (≥ ١٠ محارف) في حقل «سبب تغيير التكلفة».`,
+      });
+    }
+  }
+}
+
 export const catalogRouter = router({
   posList: productsReadProcedure
     // بند 12ب (٧/٧): customerId اختياري — عميل بسعر تعاقدي نشط يرى سعره بدل سعر الفئة (isContractPrice).
     .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
-    .query(({ input, ctx }) => listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, customerId: input.customerId ?? undefined })),
+    .query(async ({ input, ctx }) => {
+      const rows = await listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, customerId: input.customerId ?? undefined });
+      return redactPosCost(rows, ctx.user);
+    }),
 
   // شاشة الملصقات (١٦/٧): إعادة تسعير قائمة الطباعة عند تبديل فئة السعر — استعلامٌ واحد
   // على نفس خطّ الكاشير (فئة/تعاقديّ/بكج/عروض) ⇒ سعر الملصق = سعر الكاشير دائماً.
@@ -131,7 +189,10 @@ export const catalogRouter = router({
         productUnitIds: z.array(z.number().int().positive()).max(500),
       })
     )
-    .query(({ input, ctx }) => listByUnitIds(input.productUnitIds, scopeBranch(ctx, input.branchId), input.tier)),
+    .query(async ({ input, ctx }) => {
+      const rows = await listByUnitIds(input.productUnitIds, scopeBranch(ctx, input.branchId), input.tier);
+      return redactPosCost(rows, ctx.user);
+    }),
 
   // شاشة الملصقات: «أضِف كلّ ألوان/وحدات المنتج» — كلّ صفوف (متغيّر × وحدة) لمنتجٍ واحد.
   byProductIds: productsReadProcedure
@@ -142,7 +203,10 @@ export const catalogRouter = router({
         productIds: z.array(z.number().int().positive()).max(50),
       })
     )
-    .query(({ input, ctx }) => listByProductIds(input.productIds, scopeBranch(ctx, input.branchId), input.tier)),
+    .query(async ({ input, ctx }) => {
+      const rows = await listByProductIds(input.productIds, scopeBranch(ctx, input.branchId), input.tier);
+      return redactPosCost(rows, ctx.user);
+    }),
 
   // قائمة إدارة المنتجات: LEFT JOIN يُظهر حتى المنتجات الناقصة (بلا متغيّرات/وحدات) +
   // تقسيم صفحات خادمي. protectedProcedure لأن /products متاحة لكل الأدوار والمخرَج بلا تكلفة.
@@ -158,7 +222,14 @@ export const catalogRouter = router({
         offset: z.number().int().min(0).default(0),
       })
     )
-    .query(({ input, ctx }) => listProductsAdmin({ ...input, branchId: scopeBranch(ctx, input.branchId) })),
+    .query(({ input, ctx }) =>
+      listProductsAdmin(
+        { ...input, branchId: scopeBranch(ctx, input.branchId) },
+        // قرار المالك: هذان الحقلان لهذه القائمة حصراً للمالك (admin) ومدير الفرع.
+        // لا نعتمد على إخفاء الواجهة؛ الخدمة تعيد null لكل دور آخر.
+        { includeSensitivePrices: ctx.user.role === "admin" || ctx.user.role === "manager" },
+      )
+    ),
 
   // تفعيل/تعطيل منتج — مدير فأعلى (يغيّر ما يراه الكاشير في البيع).
   setProductActive: productsManagerProcedure
@@ -189,7 +260,10 @@ export const catalogRouter = router({
 
   byBarcode: productsReadProcedure
     .input(z.object({ barcode: z.string().min(1), branchId: z.number().int().positive(), tier, customerId: z.number().int().positive().nullish() }))
-    .query(({ input, ctx }) => lookupByBarcode(input.barcode, scopeBranch(ctx, input.branchId), input.tier, input.customerId ?? undefined)),
+    .query(async ({ input, ctx }) => {
+      const row = await lookupByBarcode(input.barcode, scopeBranch(ctx, input.branchId), input.tier, input.customerId ?? undefined);
+      return redactPosCostOne(row, ctx.user);
+    }),
 
   // product-variants: تحقّق مسبق من تكرار الباركود قبل الحفظ — `productUnits.barcode` فريد (UNIQUE)
   // فالحفظ يفشل عند التكرار؛ هذا يُظهر تحذيراً لحظياً بأي منتج يحجز الباركود (بدل رحلة حفظ فاشلة).
@@ -260,6 +334,18 @@ export const catalogRouter = router({
     .mutation(async ({ input, ctx }) => {
       for (const v of input.variants) assertValidImageDataUrl(v.image, 2_000_000, true);
       for (const img of input.images ?? []) assertValidImageDataUrl(img.url, 2_000_000, true);
+      // priceSanity (٣٠/٧): كل متغيّر يمرّ بحرّاس التكلفة/السعر/المعامل — يمنع القيم الفلكية (تكلفة
+      // > سعر البيع بـ٥×) خادمياً حتى لو تجاوزها العميل. البكج/الأمانة لا يُستثنيان (نفس البوّابة).
+      for (const v of input.variants) {
+        const pricings: UnitPricing[] = v.units.map((u) => ({
+          unitName: u.unitName,
+          conversionFactor: u.isBaseUnit ? 1 : Number(u.conversionFactor) || 0,
+          retail: u.prices?.find((p) => p.priceTier === "RETAIL")?.price ?? null,
+          wholesale: u.prices?.find((p) => p.priceTier === "WHOLESALE")?.price ?? null,
+          government: u.prices?.find((p) => p.priceTier === "GOVERNMENT")?.price ?? null,
+        }));
+        assertVariantSanityOrThrow(v.color || v.sku, v.costPrice, pricings);
+      }
       const res = await createProduct({ ...input, name: input.name ?? "" } as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, { action: "product.create", entityType: "product", entityId: (res as { productId?: number })?.productId, newValue: { name: input.name, brand: input.brand ?? null, modelName: input.modelName ?? null } });
       return res;
@@ -299,6 +385,8 @@ export const catalogRouter = router({
               color: z.string().nullish(),
               size: z.string().nullish(),
               costPrice: z.string(),
+              // priceSanity L1.7: سبب تغيير التكلفة (إلزاميّ خادمياً إن الشذوذ blocker/catastrophic).
+              costChangeReason: z.string().max(500).nullish(),
               units: z
                 .array(
                   z.object({
@@ -318,12 +406,30 @@ export const catalogRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // priceSanity (٣٠/٧): حرّاس تكلفة/سعر/معامل قبل الحفظ — انظر تعريف assertVariantSanityOrThrow.
+      for (const v of input.variants) {
+        const pricings: UnitPricing[] = v.units.map((u) => ({
+          unitName: u.unitName,
+          conversionFactor: u.isBaseUnit ? 1 : Number(u.conversionFactor) || 0,
+          retail: u.prices?.find((p) => p.priceTier === "RETAIL")?.price ?? null,
+          wholesale: u.prices?.find((p) => p.priceTier === "WHOLESALE")?.price ?? null,
+          government: u.prices?.find((p) => p.priceTier === "GOVERNMENT")?.price ?? null,
+        }));
+        assertVariantSanityOrThrow(v.color || v.sku, v.costPrice, pricings);
+      }
       // §٧ audit oldValue: لقطة سريعة قبل التحديث (للتدقيق الفروقات).
       // H6 (تدقيق ٢٣/٦/٢٦): كان السجلّ يَلتقط sku/costPrice فقط — أسعار البيع (priceTier × unit)
       // كانت تَتغيّر بلا أَثر تاريخي. سيناريو: موظّف يَخفض سعر صنف لزبون-شريك، يَبيع كميات، ثمّ
       // يُعيد السعر — كل البيوع تَبدو طبيعية وسجلّ التعديل لا يُظهر تَلاعب الأسعار. الآن نَلتقط
       // units (مع barcode + isBaseUnit) و prices (priceTier+price) في القبل والبعد ⇒ كَشف فروقي.
       const before = await getProductForEdit(input.productId);
+      // priceSanity L1.7: حارس السبب — إن تغيّرت التكلفة بنسبة ≥ ٥×، السبب المكتوب إلزاميّ.
+      for (const v of input.variants) {
+        const oldVariant = before?.variants.find((ov) => ov.id === v.id);
+        if (oldVariant) {
+          assertCostChangeReasonOrThrow(v.color || v.sku, oldVariant.costPrice, v.costPrice, v.costChangeReason);
+        }
+      }
       const oldVariantsSummary = before?.variants.map((v) => ({
         id: v.id,
         sku: v.sku,
@@ -351,6 +457,8 @@ export const catalogRouter = router({
             id: v.id,
             sku: v.sku,
             costPrice: v.costPrice,
+            // priceSanity L1.7: نلتقط سبب تغيير التكلفة في الأثر التدقيقي إن أُرسل.
+            costChangeReason: v.costChangeReason ?? null,
             units: v.units.map((u) => ({
               id: u.id ?? null,
               unitName: u.unitName,
@@ -397,7 +505,31 @@ export const catalogRouter = router({
       // صور المنتج الجديدة/المستبدَلة فقط تحمل بايتات (data URL) — نتحقّق منها كما في الإنشاء
       // (الصورة غير المتغيّرة تُرسَل بمعرّفها بلا url ⇒ تمرّ بلا فحص، assertValidImageDataUrl يقبل الفارغ).
       for (const img of input.images ?? []) assertValidImageDataUrl(img.url, 2_000_000, true);
+      // priceSanity (٣٠/٧): كل متغيّر يمرّ بحرّاس التكلفة/السعر/المعامل من قالب الوحدات المشترك
+      // (baseRetail يمرَّر عبر السطر ⇒ يتقدّم على المشترك للوحدة الأساس). المصدر: shared/priceSanity.
+      for (const v of input.variants) {
+        const pricings: UnitPricing[] = input.unitTemplate.map((u) => {
+          const priceOf = (tier: "RETAIL" | "WHOLESALE" | "GOVERNMENT") =>
+            u.prices.find((p) => p.priceTier === tier)?.price ?? null;
+          const retail = u.isBaseUnit && v.baseRetail ? v.baseRetail : priceOf("RETAIL");
+          return {
+            unitName: u.unitName,
+            conversionFactor: u.isBaseUnit ? 1 : Number(u.conversionFactor) || 0,
+            retail,
+            wholesale: priceOf("WHOLESALE"),
+            government: priceOf("GOVERNMENT"),
+          };
+        });
+        assertVariantSanityOrThrow(v.color || v.sku, v.costPrice, pricings);
+      }
       const before = await getProductForVariantEdit(input.productId);
+      // priceSanity L1.7: حارس السبب — إن تغيّرت التكلفة بنسبة ≥ ٥×، السبب المكتوب إلزاميّ.
+      for (const v of input.variants) {
+        const oldVariant = before?.variants.find((ov) => ov.id === v.id);
+        if (oldVariant) {
+          assertCostChangeReasonOrThrow(v.color || v.sku, oldVariant.costPrice, v.costPrice, v.costChangeReason);
+        }
+      }
       const res = await updateProductWithVariants(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
         action: "product.update",
@@ -419,6 +551,87 @@ export const catalogRouter = router({
       const res = await assignBarcode(input.productUnitId, input.barcode);
       await logAudit(ctx, { action: "product.assignBarcode", entityType: "productUnit", entityId: input.productUnitId, newValue: { barcode: input.barcode } });
       return res;
+    }),
+
+  /**
+   * **priceSanity L1.4 (٣٠/٧):** إحصاءات فئة/ماركة/نوع منتج — للمرافق الحيّ في `MoneyInput`.
+   * تعيد min/max/median للتكلفة على مستوى الفئة (والاختياريّ ماركة+نوع) للمقارنة البصريّة أثناء
+   * الكتابة. تحسب على المتغيّرات النشطة غير الأمانة فقط بتكلفة > 0.
+   */
+  categoryStats: productsManagerProcedure
+    .input(
+      z.object({
+        categoryId: z.number().int().positive().nullable(),
+        brand: z.string().max(80).nullish(),
+        productType: z.string().max(80).nullish(),
+        excludeProductId: z.number().int().positive().optional(),
+      })
+    )
+    .query(async ({ input }) => {
+      const d = getDb();
+      if (!d) return { n: 0, minCost: null, maxCost: null, medianCost: null };
+      // فلترة اختيارية: brand أو productType يضيفان دقّةً حين تكون الفئة عريضة.
+      const cats = [
+        input.categoryId != null ? sql`p.categoryId = ${input.categoryId}` : sql`p.categoryId IS NULL`,
+        sql`COALESCE(p.isActive, TRUE) = TRUE`,
+        sql`COALESCE(p.isConsignment, FALSE) = FALSE`,
+        sql`COALESCE(v.isActive, TRUE) = TRUE`,
+        sql`v.costPrice > 0`,
+      ];
+      if (input.excludeProductId) cats.push(sql`p.id <> ${input.excludeProductId}`);
+      if (input.brand && input.brand.trim()) cats.push(sql`p.brand = ${input.brand.trim()}`);
+      if (input.productType && input.productType.trim()) cats.push(sql`p.productType = ${input.productType.trim()}`);
+      const whereClause = sql.join(cats, sql` AND `);
+      // MySQL 8: نستعمل SUBSTRING_INDEX + GROUP_CONCAT للوسيط الرياضي، أو نأخذ العدد ونحسبه بـTS.
+      const rows = await d.execute(sql`
+        SELECT v.costPrice AS c
+        FROM productVariants v
+        JOIN products p ON p.id = v.productId
+        WHERE ${whereClause}
+        ORDER BY v.costPrice ASC
+      `);
+      // rows = [[{c: '150.00'}, ...], fields]
+      const list = (rows as unknown as [Array<{ c: string | number }>, unknown])[0]
+        .map((r) => Number(r.c))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      const n = list.length;
+      if (n === 0) return { n: 0, minCost: null, maxCost: null, medianCost: null };
+      const minCost = list[0];
+      const maxCost = list[n - 1];
+      const mid = Math.floor(n / 2);
+      const medianCost = n % 2 === 0 ? (list[mid - 1] + list[mid]) / 2 : list[mid];
+      return { n, minCost, maxCost, medianCost };
+    }),
+
+  /**
+   * **priceSanity L1.6 (٣٠/٧):** آخر تكلفة شراء لمتغيّر (من `purchaseOrderItems`). تُستعمَل لعرض
+   * زرّ «استعمل آخر شراء» في محرِّر المنتج ⇒ يُغلق دورة الخطأ اليدوي (الملاك يحفظون آخر تكلفة
+   * على الورقة/الذاكرة، والاستعمال هنا مباشرٌ من فاتورة موثَّقة). التكلفة **لكل وحدة الأساس**
+   * (total / baseQuantity) — كي تتّسق مع `productVariants.costPrice`.
+   */
+  lastPurchaseCost: productsManagerProcedure
+    .input(z.object({ variantId: z.number().int().positive() }))
+    .query(async ({ input }) => {
+      const d = getDb();
+      if (!d) return null;
+      const rows = await d.execute(sql`
+        SELECT poi.total AS total, poi.baseQuantity AS baseQty, poi.createdAt AS at, poi.purchaseOrderId AS poId
+        FROM purchaseOrderItems poi
+        WHERE poi.variantId = ${input.variantId} AND poi.baseQuantity > 0
+        ORDER BY poi.createdAt DESC
+        LIMIT 1
+      `);
+      const row = (rows as unknown as [Array<{ total: string | number; baseQty: number; at: Date; poId: number }>, unknown])[0][0];
+      if (!row) return null;
+      const total = Number(row.total);
+      const baseQty = Number(row.baseQty);
+      if (!Number.isFinite(total) || !Number.isFinite(baseQty) || baseQty <= 0) return null;
+      const unitCost = Math.round((total / baseQty) * 100) / 100;
+      return {
+        unitCost: String(unitCost),
+        receivedAt: row.at instanceof Date ? row.at.toISOString() : String(row.at),
+        purchaseOrderId: Number(row.poId),
+      };
     }),
 
   /** الباركودات البديلة لوحدة المنتج (aliases): نفس السلعة/التكلفة/السعر/المخزون بعدّة باركودات. */

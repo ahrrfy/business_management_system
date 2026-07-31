@@ -12,6 +12,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { openWhatsApp } from "@/lib/whatsapp";
+import { RowActions } from "@/components/list";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 
@@ -205,27 +206,28 @@ export default function CreditExposureReport() {
                       <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{r.creditLimit == null ? "—" : fmtAr(r.creditLimit)}</td>
                       <td className="p-2.5 text-right text-muted-foreground">{fmtDay(r.lastPaymentDate)}</td>
                       <td className="p-2.5 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <Link
-                            href={`/customers?tab=statement&id=${r.customerId}`}
-                            className="inline-flex size-8 items-center justify-center rounded-md border text-muted-foreground hover:bg-accent hover:text-foreground"
-                            title="كشف الحساب"
-                            aria-label="كشف الحساب"
-                          >
-                            <FileText className="size-4" aria-hidden />
-                          </Link>
-                          {r.phone && (
-                            <button
-                              type="button"
-                              onClick={() => openWhatsApp(r.phone, reminderMessage(r))}
-                              className="inline-flex size-8 items-center justify-center rounded-md border text-money-positive hover:bg-money-positive/10"
-                              title="تذكير واتساب"
-                              aria-label="تذكير واتساب"
-                            >
-                              <MessageCircle className="size-4" aria-hidden />
-                            </button>
-                          )}
-                        </div>
+                        <RowActions
+                          mode="inline"
+                          actions={[
+                            {
+                              key: "statement",
+                              kind: "view",
+                              label: "كشف الحساب",
+                              icon: FileText,
+                              href: `/customers?tab=statement&id=${r.customerId}`,
+                              gate: { module: "crm", level: "READ" },
+                            },
+                            {
+                              key: "whatsapp",
+                              kind: "other",
+                              label: "تذكير واتساب",
+                              icon: MessageCircle,
+                              hidden: !r.phone,
+                              onSelect: () => r.phone && openWhatsApp(r.phone, reminderMessage(r)),
+                              gate: { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" },
+                            },
+                          ]}
+                        />
                       </td>
                     </tr>
                   ))}

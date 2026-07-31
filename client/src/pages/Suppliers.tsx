@@ -270,25 +270,50 @@ export default function Suppliers() {
                       {/* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
                       <RowActions
                         actions={[
-                          { key: "edit", label: "تعديل", href: `/suppliers/${id}/edit`, hidden: !canWrite },
+                          {
+                            key: "edit",
+                            kind: "edit",
+                            label: "تعديل",
+                            href: `/suppliers/${id}/edit`,
+                            hidden: !canWrite,
+                            gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL" },
+                          },
                           // كشف الحساب يقرأ ?id= من URL (نمط SupplierStatement)
-                          { key: "stmt", label: "كشف حساب", href: `/suppliers-statement?id=${id}` },
-                          { key: "pay", label: "سند صرف له", href: "/vouchers/payment/new" },
+                          {
+                            key: "stmt",
+                            kind: "view",
+                            label: "كشف حساب",
+                            href: `/suppliers-statement?id=${id}`,
+                            gate: { module: "suppliers", level: "READ" },
+                          },
+                          {
+                            key: "pay",
+                            kind: "pay",
+                            label: "سند صرف له",
+                            href: "/vouchers/payment/new",
+                            gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                          },
                           {
                             key: "toggle",
+                            kind: "approve",
                             label: isActive ? "تعطيل" : "تفعيل",
                             variant: isActive ? "destructive" : "default",
                             disabled: deactivate.isPending || activate.isPending,
+                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
                             hidden: !canWrite,
                             onSelect: () => void toggle(id, isActive, s.name ?? ""),
+                            gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL" },
                           },
                           {
                             key: "delete",
+                            kind: "delete",
                             label: "حذف نهائي",
                             variant: "destructive",
                             disabled: del.isPending,
+                            disabledReason: "توجد عملية حذف قيد التنفيذ",
                             hidden: !canDelete,
                             onSelect: () => void remove(id, s.name ?? ""),
+                            gate: { managerOnly: true },
                           },
                         ]}
                       />

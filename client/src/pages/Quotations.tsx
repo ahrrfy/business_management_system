@@ -179,16 +179,31 @@ export default function Quotations() {
                     <RowActions
                       mode="auto"
                       actions={[
-                        { key: "open", label: "فتح", href: `/quotations/${qr.id}` },
+                        {
+                          key: "open",
+                          kind: "view",
+                          label: "فتح",
+                          href: `/quotations/${qr.id}`,
+                          gate: { module: "sales", level: "READ" },
+                        },
                         {
                           key: "edit",
+                          kind: "edit",
                           label: "تعديل",
                           href: `/quotations/${qr.id}/edit`,
                           hidden: qr.status !== "DRAFT" || !canManage,
+                          gate: { roles: ["manager"], module: "sales", level: "FULL" },
                         },
-                        { key: "print", label: "طباعة", onSelect: () => void printQuote(qr.id) },
+                        {
+                          key: "print",
+                          kind: "print",
+                          label: "طباعة",
+                          onSelect: () => void printQuote(qr.id),
+                          gate: { module: "sales", level: "READ" },
+                        },
                         {
                           key: "send",
+                          kind: "approve",
                           label: "وضع مُرسَل",
                           onSelect: async () => {
                             if (!(await confirm({
@@ -201,6 +216,8 @@ export default function Quotations() {
                           },
                           hidden: qr.status !== "DRAFT" || !canManage,
                           disabled: setStatusMut.isPending,
+                          disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                          gate: { roles: ["manager"], module: "sales", level: "FULL" },
                         },
                       ]}
                     />

@@ -41,6 +41,28 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
   --font-sans: "Cairo", system-ui, -apple-system, sans-serif;
+
+  /* Larger, heavier type tokens for clear Arabic text across every screen. */
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.25rem;
+  --text-sm: 0.9375rem;
+  --text-sm--line-height: 1.5rem;
+  --text-base: 1.0625rem;
+  --text-base--line-height: 1.75rem;
+  --text-lg: 1.1875rem;
+  --text-lg--line-height: 1.875rem;
+  --text-xl: 1.3125rem;
+  --text-xl--line-height: 2rem;
+  --text-2xl: 1.625rem;
+  --text-2xl--line-height: 2.25rem;
+  --text-3xl: 2rem;
+  --text-3xl--line-height: 2.5rem;
+  --text-4xl: 2.375rem;
+  --text-4xl--line-height: 2.75rem;
+  --font-weight-normal: 600;
+  --font-weight-medium: 700;
+  --font-weight-semibold: 700;
+  --font-weight-bold: 800;
 }
 
 :root {
@@ -145,10 +167,36 @@
   body {
     @apply bg-background text-foreground;
     font-family: "Cairo", system-ui, -apple-system, sans-serif;
+    font-size: var(--text-base);
+    font-weight: 600;
+    line-height: 1.75;
     direction: rtl;
+  }
+  /*
+   * Native selects are still used by legacy forms across the application.
+   * On Chromium/Windows the closed control inherited the dark foreground, but
+   * its OS popup could keep a white background.  Styling the popup rows
+   * explicitly prevents light-on-light options while those forms are migrated
+   * to the design-system Select/entity pickers.
+   */
+  select {
+    color: var(--foreground);
+    background-color: var(--background);
+  }
+  select option,
+  select optgroup {
+    color: var(--popover-foreground);
+    background-color: var(--popover);
+  }
+  select option:checked {
+    color: var(--accent-foreground);
+    background-color: var(--accent);
   }
   .dark body {
     scrollbar-color: #30363d #010409;
+  }
+  .dark select {
+    color-scheme: dark;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
@@ -189,6 +237,42 @@
   [data-slot="select-trigger"],
   select:not(:disabled) {
     min-height: 44px;
+  }
+}
+
+/* تحسين قوائم <select> المنسدلة الأصليّة على مستوى التطبيق كلّه (١٥١ ملفاً تستعملها).
+   المشكلة: Chromium يعرض popup الـ<select> كمكوّن نظام مضغوط بلا تنفّس؛ في RTL يظهر مقتطعاً ومربكاً.
+   الحلّ: Chromium 88+ يحترم padding/text-align/direction/min-height/font-* على <option>. باقي مظهر
+   الـpopup (الحدود/الظلّ/العرض) يبقى بيد النظام — لا يستطيع CSS تجاوزه إلا بـappearance:base-select
+   (تجريبيّ). هذا التحسين يعطي كل قوائم النظام أهدافاً مريحةً بلا مسّ ملف واحد.
+
+   لماذا لا نستبدل بمكوّن shadcn Select الآن؟ ١٥١ مستدعياً ⇒ شريحة كبيرة تُبنى تدريجياً في PRات
+   مستقلّة عبر <AppSelect> wrapper. هذه الشريحة قاعدة CSS دفاعيّة فوريّة الأثر. */
+select {
+  /* التنفّس على مستوى الحقل نفسه — لا يمسّ الـpopup لكن يجعل السهم بعيداً عن نصّ الخيار المحدَّد. */
+  padding-inline: 0.5rem;
+}
+option {
+  /* حشوة عموديّة/أفقيّة لكل خيار في popup الـ<select> — الفارق البصريّ الأكبر: من «متلاصق ومقتطع»
+     إلى «مقروء ومريح». Chromium/Firefox يحترمانها؛ Safari يتجاهلها لكن لا يكسر شيئاً. */
+  padding: 0.375rem 0.75rem;
+  min-height: 1.75rem;
+  line-height: 1.5;
+  /* اتّجاه صريح: التطبيق كلّه RTL لكن بعض الـpopups تفقد الاتجاه المرثوث في نافذة النظام؛
+     نصريّح به على كل <option> فيبقى المحاذاة صحيحة. */
+  direction: rtl;
+  text-align: start;
+}
+/* الخيار المعطَّل: خافت بصرياً — Chromium يعرضه بلون افتراضيّ رمادي لا يتّسق مع نظام الألوان. */
+option:disabled {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+/* أجهزة اللمس (كاشير/لوحي): أهداف أكبر داخل popup الـ<select> لتفادي أخطاء اللمس. */
+@media (pointer: coarse) {
+  option {
+    padding: 0.625rem 0.875rem;
+    min-height: 2.25rem;
   }
 }
 

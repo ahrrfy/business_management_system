@@ -23,6 +23,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 type Row = RouterOutputs["sales"]["list"][number];
 
@@ -70,6 +72,17 @@ export default function Invoices() {
   const me = trpc.auth.me.useQuery();
   const salespeople = trpc.sales.salespeople.useQuery();
 
+  // بوّابة «+ فاتورة جديدة» — تطابق حارس المسار حرفياً (App.tsx:277 sales:FULL على admin/manager/cashier)
+  // وتحترم `permissionsOverride` بكلا الاتجاهين: قالبٌ مسموحٌ مُنِح `sales=NONE` ⇒ يُخفى؛ ودورٌ آخر
+  // مُنِح `sales:FULL` صراحةً ⇒ يظهر. الفحص الأمنيّ يبقى خادميّاً بأي حال (RequireRole + راوتر البيع).
+  const canCreateSale = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
+    "sales",
+    "FULL",
+    ["admin", "manager", "cashier"],
+  );
+
   // مدخلات الفلترة المشتركة (بلا limit/offset) — للقائمة وللمجاميع وللتصدير الشامل ⇒ الثلاثة
   // ترى نفس المجموعة حتماً (لا تصدير يخالف ما على الشاشة).
   const filterInput = useMemo(
@@ -114,6 +127,7 @@ export default function Invoices() {
         customerName: d.customerName,
         salespersonName: d.salespersonName,
         companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
+        paymentMethod: paymentMethodLabel(d.paymentMethod),
         subtotal: d.subtotal,
         discountAmount: d.discountAmount,
         taxAmount: d.taxAmount,
@@ -222,6 +236,7 @@ export default function Invoices() {
           { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },
           { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
           { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
+          { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentMethodLabel(r.paymentMethod) },
           { key: "status", header: "الحالة" },
         ],
       });
@@ -251,6 +266,14 @@ export default function Invoices() {
     { accessorKey: "total", header: "الإجمالي", cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span> },
     { accessorKey: "paidAmount", header: "المدفوع", cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span> },
     {
+      accessorKey: "paymentMethod", header: "طريقة الدفع",
+      cell: (c) => {
+        const m = c.getValue() as string | null;
+        if (!m) return <span className="text-muted-foreground">—</span>;
+        return <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(m)}`}>{paymentMethodLabel(m)}</span>;
+      },
+    },
+    {
       accessorKey: "status", header: "الحالة",
       cell: (c) => {
         const s = c.getValue() as string;
@@ -268,17 +291,52 @@ export default function Invoices() {
           <RowActions
             mode="auto"
             actions={[
-              { key: "view", label: "عرض", href: `/invoices/${r.id}` },
+              {
+                key: "view",
+                kind: "view",
+                label: "عرض",
+                href: `/invoices/${r.id}`,
+                gate: { module: "sales", level: "READ" },
+              },
               {
                 key: "thermal-print",
+                kind: "print",
                 label: printingReceiptId === r.id ? "جارٍ إعادة الطباعة…" : "إعادة طباعة حرارية",
                 onSelect: () => void reprintThermal(r.id),
                 disabled: printingReceiptId != null,
+                disabledReason: "توجد عملية طباعة قيد التنفيذ",
+                gate: { module: "sales", level: "READ" },
               },
-              { key: "print", label: "طباعة A4", onSelect: () => void printA4(r.id) },
-              { key: "duplicate", label: "نسخ لفاتورة جديدة", onSelect: () => void duplicateInvoice(r.id) },
-              { key: "pay", label: "تسديد دفعة", href: `/invoices/${r.id}`, hidden: settled },
-              { key: "return", label: "إرجاع", href: `/returns?invoiceId=${r.id}`, hidden: !returnable },
+              {
+                key: "print",
+                kind: "print",
+                label: "طباعة A4",
+                onSelect: () => void printA4(r.id),
+                gate: { module: "sales", level: "READ" },
+              },
+              {
+                key: "duplicate",
+                kind: "duplicate",
+                label: "نسخ لفاتورة جديدة",
+                onSelect: () => void duplicateInvoice(r.id),
+                gate: { roles: ["cashier", "manager"], module: "sales", level: "FULL" },
+              },
+              {
+                key: "pay",
+                kind: "pay",
+                label: "تسديد دفعة",
+                href: `/invoices/${r.id}`,
+                hidden: settled,
+                gate: { roles: ["cashier", "manager"], module: "sales", level: "FULL" },
+              },
+              {
+                key: "return",
+                kind: "reverse",
+                label: "إرجاع",
+                href: `/returns?invoiceId=${r.id}`,
+                hidden: !returnable,
+                gate: { roles: ["manager"], module: "sales", level: "FULL" },
+              },
             ]}
           />
         );
@@ -289,7 +347,7 @@ export default function Invoices() {
   // الصُفوف المُحَدَّدة + تَجهيز نَصّ TSV ومُلَخَّص واتساب لِزِرّ «نَسخ المُحَدَّد كَـ».
   // الفِكرة: TSV لِلَّصق في Excel، ومُلَخَّص نَصّي مُكَثَّف لِواتساب الإدارة.
   const TSV_HEADERS = useMemo(
-    () => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "موظف المبيعات", "الوردية", "محطة البيع", "الإجمالي", "المدفوع", "الحالة"],
+    () => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "موظف المبيعات", "الوردية", "محطة البيع", "الإجمالي", "المدفوع", "طريقة الدفع", "الحالة"],
     [],
   );
   const selectedRows = useMemo(() => data.filter((r) => sel.isSelected(r.id)), [data, sel]);
@@ -305,6 +363,7 @@ export default function Invoices() {
       "محطة البيع": r.deviceId ?? "",
       "الإجمالي": Number(r.total),
       "المدفوع": Number(r.paidAmount),
+      "طريقة الدفع": paymentMethodLabel(r.paymentMethod),
       "الحالة": STATUS[r.status] ?? r.status,
     }));
     return formatTableAsTSV(TSV_HEADERS, rows);
@@ -382,6 +441,16 @@ export default function Invoices() {
         serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total }}
         toolbar={
           <>
+            {/* «+ فاتورة جديدة» — مدخل مرئي لشاشة `/sales/new` (الفاتورة المتقدّمة: آجل/أقساط/خصم إجماليّ/ضريبة).
+                يطابق حارس المسار حرفياً ([App.tsx:277](): RequireRole sales:FULL على admin/manager/cashier)
+                عبر `moduleAccessAllowed` — فيحترم `permissionsOverride` بكلا الاتجاهين: قالبٌ مسموح لكن
+                منحُه `sales=NONE` لا يعود يرى الزرّ (كان يقود لشاشة ممنوعة)، ودورٌ آخر مُنِح `sales:FULL`
+                صراحةً يراه (مطابقٌ لما ينفّذه الخادم فعلاً — الفحص الأمنيّ الحقيقيّ خادميّ بأي حال). */}
+            {canCreateSale && (
+              <Button size="sm" onClick={() => navigate("/sales/new")}>
+                + فاتورة جديدة
+              </Button>
+            )}
             {(me.data?.role === "admin" || me.data?.role === "manager") && (
               <Button variant="outline" size="sm" onClick={() => navigate("/reports/sales-by-dimension")}>
                 تقرير الموظفين

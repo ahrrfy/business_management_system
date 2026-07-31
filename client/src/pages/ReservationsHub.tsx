@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { RowActions } from "@/components/list/RowActions";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -183,23 +184,45 @@ export default function ReservationsHub() {
                       <TableCell><Badge variant={STATUS_VARIANT[st]}>{STATUS_LABEL[st] ?? st}</Badge></TableCell>
                       <TableCell className="text-xs" dir="ltr">{r.expiresAt ? fmtDateTime(r.expiresAt) : "—"}</TableCell>
                       <TableCell>
-                        <div className="flex gap-1">
-                          {canWrite && closeable && (
-                            <Button size="sm" variant="ghost" onClick={() => onConvert(r)} disabled={convert.isPending} title="تحويل إلى فاتورة">
-                              <ShoppingCart aria-hidden className="size-4" />
-                            </Button>
-                          )}
-                          {canWrite && closeable && (
-                            <Button size="sm" variant="ghost" onClick={() => onCancel(r)} disabled={cancel.isPending} title="إلغاء الحجز">
-                              <Trash2 aria-hidden className="size-4" />
-                            </Button>
-                          )}
-                          {canManage && closeable && (
-                            <Button size="sm" variant="ghost" onClick={() => onExtend(r)} disabled={extend.isPending} title="تمديد (مدير)">
-                              <Clock aria-hidden className="size-4" />
-                            </Button>
-                          )}
-                        </div>
+                        <RowActions
+                          mode="auto"
+                          actions={[
+                            {
+                              key: "convert",
+                              kind: "create",
+                              label: "تحويل إلى فاتورة",
+                              icon: ShoppingCart,
+                              hidden: !canWrite || !closeable,
+                              gate: { roles: ["cashier", "manager", "sales_rep"], module: "reservations", level: "FULL" },
+                              disabled: convert.isPending,
+                              disabledReason: "جارٍ تحويل الحجز",
+                              onSelect: () => onConvert(r),
+                            },
+                            {
+                              key: "cancel",
+                              kind: "delete",
+                              label: "إلغاء الحجز",
+                              icon: Trash2,
+                              variant: "destructive",
+                              hidden: !canWrite || !closeable,
+                              gate: { roles: ["cashier", "manager", "sales_rep"], module: "reservations", level: "FULL" },
+                              disabled: cancel.isPending,
+                              disabledReason: "جارٍ إلغاء الحجز",
+                              onSelect: () => onCancel(r),
+                            },
+                            {
+                              key: "extend",
+                              kind: "edit",
+                              label: "تمديد الحجز",
+                              icon: Clock,
+                              hidden: !canManage || !closeable,
+                              gate: { roles: ["manager"], module: "reservations", level: "FULL" },
+                              disabled: extend.isPending,
+                              disabledReason: "جارٍ تمديد الحجز",
+                              onSelect: () => onExtend(r),
+                            },
+                          ]}
+                        />
                       </TableCell>
                     </TableRow>
                   );

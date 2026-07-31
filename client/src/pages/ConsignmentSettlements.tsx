@@ -11,6 +11,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
 import { Link } from "wouter";
+import { RowActions } from "@/components/list";
 
 /** التاريخ المحلّيّ اليوم/أوّل الشهر بصيغة YYYY-MM-DD (افتراضات منتقي الفترة — يغيّرها المستخدم). */
 function ymd(d: Date): string {
@@ -99,13 +100,34 @@ export default function ConsignmentSettlements() {
                       <td className="p-2 text-center">{r.remainingQty} <span className="text-xs text-muted-foreground">({r.variantCount} صنف)</span></td>
                       <td className="p-2 text-start tabular-nums text-muted-foreground" dir="ltr">{fmt(r.remainingValueByShare)}</td>
                       <td className="p-2 text-center">
-                        <div className="flex items-center justify-center gap-2">
-                          <Button size="sm" variant="outline" disabled={owed <= 0 || settle.isPending} onClick={() => doSettle(r.consignorId, r.consignorName, r.owed)}>
-                            {owed > 0 ? "تسوية" : "لا مستحق"}
-                          </Button>
-                          <Button size="sm" variant="ghost" onClick={() => setStmtConsignor(r.consignorId)}>كشف تسوية</Button>
-                          <Link href={`/suppliers-statement?id=${r.consignorId}`} className="text-xs text-primary underline">كشف حساب</Link>
-                        </div>
+                        <RowActions
+                          mode="menu"
+                          actions={[
+                            {
+                              key: "settle",
+                              kind: "pay",
+                              label: owed > 0 ? "تسوية" : "لا مستحق",
+                              disabled: owed <= 0 || settle.isPending,
+                              disabledReason: owed <= 0 ? "لا يوجد مبلغ مستحق للتسوية" : "توجد عملية تسوية قيد التنفيذ",
+                              onSelect: () => void doSettle(r.consignorId, r.consignorName, r.owed),
+                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                            },
+                            {
+                              key: "settlement-statement",
+                              kind: "view",
+                              label: "كشف تسوية",
+                              onSelect: () => setStmtConsignor(r.consignorId),
+                              gate: { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" },
+                            },
+                            {
+                              key: "supplier-statement",
+                              kind: "view",
+                              label: "كشف حساب",
+                              href: `/suppliers-statement?id=${r.consignorId}`,
+                              gate: { module: "suppliers", level: "READ" },
+                            },
+                          ]}
+                        />
                       </td>
                     </tr>
                   );

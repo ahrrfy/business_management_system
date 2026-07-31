@@ -14,6 +14,8 @@ export default defineConfig({
       "client/src/lib/printing/labelItem.test.ts",
       "client/src/lib/printing/labelSize.test.ts",
       "client/src/lib/commissions/example.test.ts",
+      "client/src/lib/navVisibility.test.ts",
+      "client/src/lib/cartDraft.test.ts",
       "server/services/__tests__/couponService.test.ts",
       "server/services/__tests__/businessDay.test.ts",
       "server/services/__tests__/permissionParity.test.ts",

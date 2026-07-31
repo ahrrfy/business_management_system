@@ -4,7 +4,13 @@
  */
 import CustomerPicker from "@/components/CustomerPicker";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
-import { clearCartDraft } from "@/lib/cartDraft";
+import {
+  discardLegacyPosDrafts,
+  loadPosTabsDraft,
+  posTabsDraftKey,
+  savePosTabsDraft,
+  type PosDraftScope,
+} from "@/lib/cartDraft";
 import { newClientRequestId } from "@/lib/countQueue";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
@@ -29,7 +35,8 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, RefreshCw, Zap, ChevronDown } from "lucide-react";
+import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, Zap, ChevronDown, Send, Wallet } from "lucide-react";
+import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
 import { CopyButton } from "@/components/CopyButton";
 import { MoneyInput } from "@/components/form/MoneyInput";
 
@@ -101,6 +108,8 @@ type Receipt = {
   change: number;
   credit: number;
   method: string;
+  /** كود الطريقة الخام (CASH/CARD/TRANSFER/WALLET) — للشارة الملوّنة والحفظ الأوفلاين. */
+  methodCode?: string;
   isCredit: boolean;
   /** ش١٠: لقطات الكروت الرقمية من الخادم (اسم الكرت/المرجع/بيانات الطالب) — بلا أرقام داخلية. */
   digitalDetails?: DigitalReceiptDetail[] | null;
@@ -140,9 +149,7 @@ type C = typeof POS_COLORS;
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
-const METHOD_LABEL: Record<PaymentMethod, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
-};
+// METHOD_LABEL انتقل إلى lib/paymentMethod.ts — مصدر واحد مع Invoices/InvoiceDetail/حوار الوردية.
 const QUICK_AMTS = [5000, 10000, 25000, 50000, 100000];
 const SHOP = "الرؤية العربية";
 const SCAN_MS = 80;
@@ -321,7 +328,7 @@ export default function POS() {
 
   // ش٥ — إقلاع دون اتصال: هوية الجهاز وورديته من آخر جلسة أونلاين معلومة (ملف الجهاز +
   // كاش آخر وردية مفتوحة) ⇒ الكاشير يواصل البيع بعد إعادة تشغيل الجهاز والقطع مستمر.
-  const [offlineBoot, setOfflineBoot] = useState<{ branchId: number | null; shiftId: number | null; name: string | null } | null>(null);
+  const [offlineBoot, setOfflineBoot] = useState<{ userId: number | null; branchId: number | null; shiftId: number | null; name: string | null } | null>(null);
   useEffect(() => {
     if (me.data) { setOfflineBoot(null); return; }
     void (async () => {
@@ -331,7 +338,7 @@ export default function POS() {
         const raw = await getMeta("lastOpenShift");
         if (raw) cachedShiftId = Number((JSON.parse(raw) as { id?: number }).id) || null;
       } catch { /* كاش تالف ⇒ بلا وردية بديلة */ }
-      setOfflineBoot({ branchId: profile?.branchId ?? null, shiftId: cachedShiftId, name: profile?.name ?? null });
+      setOfflineBoot({ userId: profile?.userId ?? null, branchId: profile?.branchId ?? null, shiftId: cachedShiftId, name: profile?.name ?? null });
     })();
   }, [me.data]);
 
@@ -408,7 +415,7 @@ export default function POS() {
   const [printerReady,   setPrinterReady]   = useState(isPaired());
   const [bridge,         setBridge]         = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
   const [showCustPicker, setShowCustPicker] = useState(false);
-  const [draftRestored,  setDraftRestored]  = useState(false);
+  const [restoredDraftKey, setRestoredDraftKey] = useState<string | null>(null);
 
   // تحت 1024px (اللوحي/الأصغر) تُكدَّس لوحتا الكاشير عمودياً بدل الصفّ الأفقي ذي العرض الثابت.
   const stacked = useMediaQuery("(max-width: 1023px)");
@@ -474,34 +481,45 @@ export default function POS() {
     });
   }
 
-  // ── Cart draft (multi-tab: saved directly to localStorage) ───────────────
-  const DRAFT_KEY = `alroya.posTabs.b${branchId}`;
-  useEffect(() => {
-    if (draftRestored) return;
-    try {
-      const raw = localStorage.getItem(DRAFT_KEY);
-      if (raw) {
-        const d = JSON.parse(raw) as { tabs: POSTab[]; activeId: number };
-        if (Array.isArray(d.tabs) && d.tabs.length) {
-          // مسوّدة قديمة قد تفتقر clientRequestId ⇒ نملؤه كي يبقى مفتاح idempotency لكل تبويب صالحاً.
-          setTabs(d.tabs.map((t) => ({ ...t, clientRequestId: t.clientRequestId ?? newClientRequestId() })));
-          setActiveId(d.activeId);
-        }
-      }
-    } catch { /* ignore */ }
-    setDraftRestored(true);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchId, draftRestored]);
+  // ── Cart draft — عزل صريح بالفرع + المستخدم + الوردية ───────────────────
+  const draftScope: PosDraftScope | null = shift?.id && (me.data?.id ?? offlineBoot?.userId)
+    ? { branchId, userId: (me.data?.id ?? offlineBoot!.userId)!, shiftId: shift.id }
+    : null;
+  const DRAFT_KEY = draftScope ? posTabsDraftKey(draftScope) : null;
 
   useEffect(() => {
-    if (!draftRestored) return;
-    try {
-      const hasCarts = tabs.some((t) => t.cart.length > 0);
-      if (hasCarts) localStorage.setItem(DRAFT_KEY, JSON.stringify({ tabs, activeId }));
-      else localStorage.removeItem(DRAFT_KEY);
-    } catch { /* ignore */ }
+    if (!draftScope || !DRAFT_KEY) {
+      // إغلاق الوردية/تبديل الهوية يزيل الفاتورة من الذاكرة فوراً؛ لا تنتظر فتح
+      // الوردية التالية كي تُصفّر حالة React القديمة.
+      if (restoredDraftKey !== null) {
+        setTabs([createTab(1, "طلب 1")]);
+        setActiveId(1);
+        setRestoredDraftKey(null);
+      }
+      return;
+    }
+    if (restoredDraftKey === DRAFT_KEY) return;
+
+    // الصيغ الفرعية القديمة مجهولة المالك، ولذلك تُتلف ولا تُهاجر إلى النطاق الجديد.
+    discardLegacyPosDrafts(localStorage, branchId);
+    const saved = loadPosTabsDraft<POSTab>(localStorage, draftScope);
+    if (saved) {
+      setTabs(saved.tabs.map((t) => ({ ...t, clientRequestId: t.clientRequestId ?? newClientRequestId() })));
+      setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
+    } else {
+      setTabs([createTab(1, "طلب 1")]);
+      setActiveId(1);
+    }
+    setRestoredDraftKey(DRAFT_KEY);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabs, activeId, branchId, draftRestored]);
+  }, [DRAFT_KEY]);
+
+  useEffect(() => {
+    // لا تحفظ حالة الوردية السابقة تحت مفتاح الوردية الجديدة أثناء رسم الانتقال.
+    if (!draftScope || !DRAFT_KEY || restoredDraftKey !== DRAFT_KEY) return;
+    savePosTabsDraft(localStorage, draftScope, tabs, activeId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs, activeId, DRAFT_KEY, restoredDraftKey]);
 
   // ── Derived ───────────────────────────────────────────────────────────────
   // S5 (٢٩/٦): العميل المختار = قراءة فورية من القائمة المحمَّلة (الشائع ≤٥٠٠ ⇒ بلا وميض تسعير)،
@@ -747,6 +765,9 @@ export default function POS() {
       promotionName: null,
       promotionDiscountForUnit: "0.00",
       promotionEffectivePrice: null,
+      // الكاشير لا يرى التكلفة (يُحجب خادمياً عبر redactPosCost في الحقيقيّ) — الكرت الرقميّ
+      // خدمة بلا تكلفة صنف؛ null متّسق مع نتائج البحث المُحجَبة.
+      costPriceBase: null,
     };
     setCart((raw) => [
       ...resetCouponItems(raw),
@@ -856,7 +877,7 @@ export default function POS() {
     tabId: number;
     lines: Receipt["lines"];
     total: number; received: number; change: number; credit: number;
-    isCredit: boolean; method: string;
+    isCredit: boolean; method: string; methodCode?: string;
     customerName?: string; cashierName?: string;
   } | null>(null);
 
@@ -877,7 +898,7 @@ export default function POS() {
         lines: ctx.lines,
         total: ctx.total, received: ctx.received, change: ctx.change,
         credit: ctx.credit, isCredit: ctx.isCredit,
-        method: ctx.method,
+        method: ctx.method, methodCode: ctx.methodCode,
       };
       // #2 (تدقيق التثبيت): إن رجع الخادم total (المُقرَّب المخزَّن فعلاً) نستعمله في الإيصال
       // كمصدر حقيقة أخير — يُغطّي أي انحراف تقريب مستقبليّ بين العميل والخادم (roundCashIQD مشتركة
@@ -886,7 +907,6 @@ export default function POS() {
       const alignedRec: Receipt = { ...rec, total: serverTotal };
       setReceipt(alignedRec);
       setLastInv({ num: r.invoiceNumber, total: serverTotal });
-      clearCartDraft(branchId);
       notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
       patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
@@ -1000,7 +1020,8 @@ export default function POS() {
       change:   round2(finalChangeD).toNumber(),
       credit:   round2(finalCreditD).toNumber(),
       isCredit,
-      method: METHOD_LABEL[activeTab.method],
+      method: paymentMethodLabel(activeTab.method),
+      methodCode: activeTab.method,
       customerName: selectedCustomer?.name,
       cashierName: me.data?.name ?? offlineBoot?.name ?? undefined,
     };
@@ -1073,11 +1094,10 @@ export default function POS() {
       lines: ctx.lines,
       total: ctx.total, received: ctx.received, change: ctx.change,
       credit: ctx.credit, isCredit: ctx.isCredit,
-      method: ctx.method,
+      method: ctx.method, methodCode: ctx.methodCode,
     };
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: ctx.total });
-    clearCartDraft(branchId);
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
     patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
     const printed = await printReceipt(buildBrandedReceipt(rec));
@@ -2229,21 +2249,24 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         )}
       </div>
 
-      {/* Payment method */}
+      {/* Payment method — ٤ أزرار صريحة متساوية: نقرة واحدة = طريقة واحدة، لا تبديل ضمني.
+          كان زر «أخرى» يبدّل بين TRANSFER/WALLET بنقرة ⇒ كاشير يضغطه ظنّاً أنّه «تحويل» وهو «محفظة»
+          (أو العكس) فيُحفظ في السجل خطأً. البنية الصريحة تُلغي مصدر الخطأ البشريّ.
+          الترتيب واللقب مركزيّان في `lib/paymentMethod.ts` ⇒ مصدر حقيقة واحد مع باقي الشاشات. */}
       <div style={{ padding: "4px 11px 3px", flexShrink: 0 }}>
         <div style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 700, marginBottom: 4 }}>طريقة الدفع</div>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
           <button style={payMethodStyle(method === "CASH")}     onClick={() => setMethod("CASH")}>
-            <Banknote aria-hidden size={22} />نقداً
+            <Banknote aria-hidden size={22} />نقدي
           </button>
           <button style={payMethodStyle(method === "CARD")}     onClick={() => setMethod("CARD")}>
             <CreditCard aria-hidden size={22} />بطاقة
           </button>
-          <button
-            style={{ ...payMethodStyle(method === "TRANSFER" || method === "WALLET"), minHeight: 50, fontSize: 12 }}
-            onClick={() => setMethod(method === "TRANSFER" ? "WALLET" : "TRANSFER")}>
-            <RefreshCw aria-hidden size={18} />
-            {method === "TRANSFER" ? "تحويل" : method === "WALLET" ? "محفظة" : "أخرى"}
+          <button style={payMethodStyle(method === "TRANSFER")} onClick={() => setMethod("TRANSFER")}>
+            <Send aria-hidden size={22} />تحويل
+          </button>
+          <button style={payMethodStyle(method === "WALLET")}   onClick={() => setMethod("WALLET")}>
+            <Wallet aria-hidden size={22} />محفظة
           </button>
         </div>
       </div>
@@ -2414,10 +2437,13 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
           </div>
         )}
 
-        <div style={{ marginBottom: 20, fontSize: 13.5, color: C.mutedFg }}>
-          طريقة الدفع: <strong style={{ color: C.fg }}>{receipt.method}</strong>
-          &nbsp;·&nbsp; {receipt.lines.length} منتج
-          {receipt.customerName && <>&nbsp;·&nbsp; <strong style={{ color: C.fg }}>{receipt.customerName}</strong></>}
+        <div style={{ marginBottom: 20, fontSize: 13.5, color: C.mutedFg, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, flexWrap: "wrap" }}>
+          <span>طريقة الدفع:</span>
+          <span className={`inline-block rounded-full px-3 py-1 text-sm font-bold ${paymentMethodClass(receipt.methodCode)}`}>
+            {receipt.method}
+          </span>
+          <span>·</span><span>{receipt.lines.length} منتج</span>
+          {receipt.customerName && <><span>·</span><strong style={{ color: C.fg }}>{receipt.customerName}</strong></>}
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
@@ -2566,16 +2592,29 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               </div>
             ))}
 
-            {/* Payment breakdown */}
+            {/* Payment breakdown — كل طريقة بلقب عربيّ + شارة ملوّنة، ليَفهَم الكاشير أنّ مبيعات
+                البطاقة/التحويل/المحفظة لا تدخل نقد الدرج المتوقّع (الخادم يحسبه CASH+DRAWER فقط).
+                هذا يزيل حَيرة «لماذا الفرق؟» — الفرق ليس عجزاً، البطاقة لا تُقاس بعدّ النقد. */}
             {(report?.payments ?? []).filter((p) => Number(p.total) > 0).length > 0 && (
               <div style={{ margin: "10px 0 4px", fontSize: 12, color: C.mutedFg, fontWeight: 700 }}>تفصيل طرق الدفع:</div>
             )}
             {(report?.payments ?? []).filter((p) => Number(p.total) > 0).map((p) => (
-              <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", borderBottom: `1px dashed ${C.border}` }}>
-                <span style={{ color: C.mutedFg }}>{p.method} {p.direction === "IN" ? "وارد" : "صادر"} ({p.count})</span>
-                <span style={{ fontWeight: 600, color: p.direction === "OUT" ? C.danger : C.fg }}>{fmt(Number(p.total))} د.ع</span>
+              <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "5px 0", borderBottom: `1px dashed ${C.border}` }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(p.method)}`}>
+                    {paymentMethodLabel(p.method)}
+                  </span>
+                  <span style={{ color: C.mutedFg }}>{p.direction === "IN" ? "وارد" : "صادر"} ({p.count})</span>
+                </span>
+                <span style={{ fontWeight: 700, color: p.direction === "OUT" ? C.danger : C.fg, direction: "ltr" }}>{fmt(Number(p.total))} د.ع</span>
               </div>
             ))}
+            {/* تلميح تعليميّ للكاشير: يظهر فقط عند وجود مبيعات غير نقدية — يزيل حَيرة «العجز الوهميّ». */}
+            {(report?.payments ?? []).some((p) => p.direction === "IN" && p.method !== "CASH" && Number(p.total) > 0) && (
+              <div style={{ marginTop: 8, padding: "8px 10px", background: "oklch(0.65 0.15 240 / .08)", border: "1px solid oklch(0.65 0.15 240 / .25)", borderRadius: 7, fontSize: 11.5, color: C.mutedFg, lineHeight: 1.55 }}>
+                <strong style={{ color: C.fg }}>ملاحظة:</strong> مبيعات البطاقة/التحويل/المحفظة لا تدخل عدّ نقد الدرج. عدّ النقد الفعليّ فقط — النظام يعلم بها ولن يُظهر عجزاً بسببها.
+              </div>
+            )}
 
             <div
               style={{ marginTop: 16 }}

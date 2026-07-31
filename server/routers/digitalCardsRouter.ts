@@ -10,6 +10,7 @@ import {
   offeringService,
   posCardsService,
   reversalService,
+  writeoffService,
   pricingService,
   providerService,
   studentService,
@@ -485,6 +486,13 @@ const pricingRouter = router({
       withTx((tx) => pricingService.cancelDraft(tx, input, actorOf(ctx))),
     ),
 
+  /** §٧.١: اعتماد مديرٍ آخر لتغييرٍ ≥٥٠٪ في حصة المزوّد — يُجيز النشر ولا يَنشر. */
+  approveBigChange: digitalCardsManagerProcedure
+    .input(z.object({ batchId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => pricingService.approveBigChange(tx, input, actorOf(ctx))),
+    ),
+
   /** بلاغ الكاشير «السعر لدى الجهاز مختلف» — لا يغيّر سعراً بذاته (§٧.٥). */
   reportMismatch: digitalCardsPosProcedure
     .input(
@@ -685,6 +693,26 @@ const salesRouter = router({
     withTx((tx) => intentService.expireStaleIntents(tx)),
   ),
 
+  /* شطب النيّة العالقة (هجرة 0129): الطلب بلا أثرٍ ماليّ، وكلّ الأثر في الاعتماد
+   * الذي يفرض SOD (طالب ≠ معتمِد). الثلاثة مديريّة. */
+  requestWriteoff: digitalCardsManagerProcedure
+    .input(z.object({ intentId: z.number().int().positive(), reason: z.string().min(3).max(300) }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => writeoffService.requestWriteoff(tx, input, actorOf(ctx))),
+    ),
+
+  approveWriteoff: digitalCardsManagerProcedure
+    .input(z.object({ intentId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => writeoffService.approveWriteoff(tx, input, actorOf(ctx))),
+    ),
+
+  rejectWriteoff: digitalCardsManagerProcedure
+    .input(z.object({ intentId: z.number().int().positive(), reason: z.string().max(300).nullish() }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => writeoffService.rejectWriteoff(tx, input, actorOf(ctx))),
+    ),
+
   /** التثبيت المالي (ش٨): الفاتورة والقبض والتسوية والتفاصيل في معاملة واحدة — أو لا شيء. */
   finalize: digitalCardsPosProcedure
     .input(
@@ -782,7 +810,9 @@ const reversalRouter = router({
       withTx((tx) => reversalService.approveReversal(tx, input, actorOf(ctx))),
     ),
 
-  lossRefund: digitalCardsManagerProcedure
+  /* ردّ الخسارة باعتمادٍ ثانٍ (قرار المالك ٣٠/٧): الطلب بلا أثرٍ ماليّ، وكلّ الأثر في
+   * الاعتماد الذي يفرض SOD. العكس المؤكَّد يبقى فعلاً واحداً — صافيه صفر ولا خسارة فيه. */
+  requestLossRefund: digitalCardsManagerProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
@@ -791,7 +821,30 @@ const reversalRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) =>
+      withTx((tx) => reversalService.requestLossRefund(tx, input, actorOf(ctx))),
+    ),
+
+  lossRefund: digitalCardsManagerProcedure
+    .input(
+      z.object({
+        invoiceId: z.number().int().positive(),
+        detailIds: z.array(z.number().int().positive()).min(1).max(50),
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
       withTx((tx) => reversalService.lossRefund(tx, input, actorOf(ctx))),
+    ),
+
+  rejectLossRefund: digitalCardsManagerProcedure
+    .input(
+      z.object({
+        invoiceId: z.number().int().positive(),
+        detailIds: z.array(z.number().int().positive()).min(1).max(50),
+        reason: z.string().max(300).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => reversalService.rejectLossRefund(tx, input, actorOf(ctx))),
     ),
 });
 

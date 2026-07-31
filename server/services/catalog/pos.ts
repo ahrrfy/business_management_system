@@ -55,6 +55,14 @@ export interface PosRow {
   promotionName: string | null;
   promotionDiscountForUnit: string; // "0.00" لو لا عرض
   promotionEffectivePrice: string | null; // السعر بعد الخصم — null لو لا عرض (المستهلك يستعمل price)
+  /**
+   * تكلفة الوحدة الأساس (من `productVariants.costPrice`). يُحمَل دائماً في الحمولة كي تستعمله
+   * شاشات المبيعات المتقدّمة (`SalesInvoiceNew` — عمود «التكلفة» والهامش٪) عبر شريط البحث
+   * والإضافة المتعدّدة الموحَّدين مع مسار الشراء. الحجب يتمّ **في الراوتر** عبر
+   * `canSeeCostForUser` — يُستبدَل بـnull لغير المخوَّلين (كاشير) قبل الإرسال، فلا تتسرّب
+   * التكلفة عبر شبكة tRPC. القيمة بوحدة الأساس (لا مضروبة بمعامل التحويل) — نمط `PurchaseRow`.
+   */
+  costPriceBase: string | null;
 }
 
 function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number, tier: PriceTier) {
@@ -74,6 +82,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       barcode: productUnits.barcode,
       isBaseUnit: productUnits.isBaseUnit,
       price: productPrices.price,
+      costPriceBase: productVariants.costPrice,
       stockBase: branchStock.quantity,
       reservedBase: reservationStock.reservedBase,
       // «وضع الافتتاح» (ش٥): يتيح لواجهة POS تمييز الصنف غير المُفتتَح (يُباع نقداً بالسالب
@@ -123,6 +132,7 @@ function normalize(rows: any[]): PosRow[] {
     promotionName: null,
     promotionDiscountForUnit: "0.00",
     promotionEffectivePrice: null,
+    costPriceBase: r.costPriceBase ?? null,
   }));
 }
 

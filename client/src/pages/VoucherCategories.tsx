@@ -9,9 +9,10 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { Edit3, Plus } from "lucide-react";
+import { ListToolbar, RowActions } from "@/components/list";
 
 type Row = RouterOutputs["voucherCategories"]["list"][number];
 
@@ -24,6 +25,12 @@ export default function VoucherCategories() {
   const list = trpc.voucherCategories.list.useQuery({ includeInactive: true });
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin";
+  const [query, setQuery] = useState("");
+  const rows = list.data ?? [];
+  const visibleRows = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("ar");
+    return q ? rows.filter((r) => [r.name, r.description, DIR_LABEL[r.direction]].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
+  }, [rows, query]);
 
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Row | null>(null);
@@ -177,7 +184,29 @@ export default function VoucherCategories() {
       )}
 
       <Card>
-        <CardHeader><CardTitle className="text-base">القائمة</CardTitle></CardHeader>
+        <CardHeader>
+          <ListToolbar
+            title="فئات السندات"
+            count={visibleRows.length}
+            loading={list.isLoading}
+            search={{ value: query, onChange: setQuery, placeholder: "اسم الفئة، الاتجاه أو الوصف…" }}
+            onResetFilters={() => setQuery("")}
+            onRefresh={() => void list.refetch()}
+            refreshing={list.isFetching}
+            onPrint={() => window.print()}
+            exportSpec={{
+              filename: "فئات-السندات",
+              rows: visibleRows,
+              formats: ["xlsx", "csv"],
+              columns: [
+                { key: "id", header: "#" }, { key: "name", header: "الاسم" },
+                { key: "direction", header: "الاتجاه", map: (r) => DIR_LABEL[r.direction] ?? r.direction },
+                { key: "description", header: "الوصف" }, { key: "sortOrder", header: "الترتيب" },
+                { key: "isActive", header: "الحالة", map: (r) => r.isActive ? "نشطة" : "معطّلة" },
+              ],
+            }}
+          />
+        </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
@@ -197,7 +226,7 @@ export default function VoucherCategories() {
                 {list.isError && (
                   <tr><td colSpan={7}><ErrorState message={list.error?.message} onRetry={() => void list.refetch()} /></td></tr>
                 )}
-                {(list.data ?? []).map((r) => (
+                {visibleRows.map((r) => (
                   <tr key={Number(r.id)} className={`border-t ${r.isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 text-center text-xs text-muted-foreground">{Number(r.id)}</td>
                     <td className="p-2 font-medium">{r.name}</td>
@@ -215,24 +244,40 @@ export default function VoucherCategories() {
                     <td className="p-2 text-center text-xs">{r.isActive ? "نعم" : "لا"}</td>
                     {isAdmin && (
                       <td className="p-2 text-center">
-                        <div className="flex justify-center gap-1">
-                          <Button size="sm" variant="ghost" onClick={() => startEdit(r)} title="تَعديل">
-                            <Edit3 aria-hidden className="size-3.5" />
-                          </Button>
-                          <Button size="sm" variant="ghost" onClick={() => void toggleActive(r)}>
-                            {r.isActive ? "تَعطيل" : "تَفعيل"}
-                          </Button>
-                          {r.isActive && (
-                            <Button size="sm" variant="ghost" onClick={() => void doMerge(r)} title="دَمج في فئة أخرى">
-                              دَمج
-                            </Button>
-                          )}
-                        </div>
+                        <RowActions
+                          mode="menu"
+                          actions={[
+                            {
+                              key: "edit",
+                              kind: "edit",
+                              label: "تعديل",
+                              icon: Edit3,
+                              onSelect: () => startEdit(r),
+                              gate: { adminOnly: true },
+                            },
+                            {
+                              key: "toggle",
+                              kind: "approve",
+                              label: r.isActive ? "تعطيل" : "تفعيل",
+                              variant: r.isActive ? "destructive" : "default",
+                              onSelect: () => void toggleActive(r),
+                              gate: { adminOnly: true },
+                            },
+                            {
+                              key: "merge",
+                              kind: "reverse",
+                              label: "دمج",
+                              hidden: !r.isActive,
+                              onSelect: () => void doMerge(r),
+                              gate: { adminOnly: true },
+                            },
+                          ]}
+                        />
                       </td>
                     )}
                   </tr>
                 ))}
-                {!list.isLoading && (list.data ?? []).length === 0 && (
+                {!list.isLoading && visibleRows.length === 0 && (
                   <TableEmptyRow colSpan={7} message="لا فئات حتى الآن." />
                 )}
               </tbody>

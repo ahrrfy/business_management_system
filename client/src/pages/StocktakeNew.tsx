@@ -11,7 +11,11 @@
  * (تعديلها للمدير+ فقط — الخادم يتجاهلها لغيره)؛ العدّ المكرر VERIFY افتراضياً؛ البيع لا يتوقف.
  *
  * مصادر البيانات:
- *  - المنتجات (FULL/MANUAL): trpc.inventory.onHand (يحترم عزل الفرع خادمياً).
+ *  - عدّاد النطاق (FULL/MOVING/CATEGORY): trpc.stocktakes.previewScopeCount — يعكس ما ستُنشأ به
+ *    الجلسة فعلاً (نفس منطق resolveScope في create.ts). كان يعتمد onHand.length ⇒ يعدّ صفوف
+ *    branchStock السابقة فقط ⇒ يُخفي الأصناف التي لم تُلامَس بحركة بعد ⇒ فارقٌ قاتلٌ في الجرد
+ *    الافتتاحي (يعرض ٤٩٠ بدل الآلاف).
+ *  - منتقي MANUAL: trpc.inventory.onHand (يحترم عزل الفرع خادمياً) — يبقى للبحث.
  *  - المستخدمون (تكليف USER): trpc.stocktakes.assignableUsers — warehouseProcedure، قائمة منسدلة
  *    لكل الأدوار المخوّلة؛ الإدخال اليدوي لمعرّف الحساب يبقى بديلاً عند فشل التحميل.
  *  - الفئات (CATEGORY): trpc.catalog.categories — النطاق مفعَّل، والخادم يحلّ منتجات الفئات لحظة الإنشاء.
@@ -185,10 +189,13 @@ export default function StocktakeNew() {
     (branches[0]?.id ?? 0);
   const branchName = branches.find((b) => b.id === effectiveBranchId)?.name ?? "—";
 
-  /* منتجات الفرع (للنطاق الشامل وعدّاده + منتقي MANUAL) — بحث محلي فوق حمولة واحدة. */
+  /* منتجات الفرع — لمنتقي MANUAL فقط (بحث محلي فوق حمولة واحدة).
+     عدّاد النطاق نفسه لم يعد يعتمد onHand: كان يعدّ صفوف branchStock السابقة فقط ⇒ يُخفي
+     الأصناف التي لم تُلامَس بحركة بعد، وفارقٌ قاتلٌ في الجرد الافتتاحي. صار العدّاد يُحسب
+     خادمياً عبر `stocktakes.previewScopeCount` بنفس منطق resolveScope حرفياً. */
   const onHandQ = trpc.inventory.onHand.useQuery(
     { branchId: effectiveBranchId, limit: 1000 },
-    { enabled: effectiveBranchId > 0 && (scopeType === "FULL" || scopeType === "MANUAL") }
+    { enabled: effectiveBranchId > 0 && scopeType === "MANUAL" }
   );
   const onHand = onHandQ.data ?? [];
 
@@ -201,15 +208,36 @@ export default function StocktakeNew() {
   const usersQ = trpc.stocktakes.assignableUsers.useQuery(undefined, { enabled: wantsUser });
   const userOptions = usersQ.data ?? [];
 
-  /* عدّاد منتجات النطاق: FULL من onHand، MANUAL من الاختيار، MOVING يُحدَّد عند الإنشاء. */
+  /* عدّاد النطاق الحقيقي (يعكس ما سيُنشأ فعلاً عند الضغط على «إنشاء»):
+     FULL/MOVING/CATEGORY يُحسبان خادمياً؛ MANUAL يُحسب في العميل من الاختيار.
+     يستبعد المُفتتَح في OPENING، والبكج دائماً، والأمانة في OPENING فقط — مطابقة كاملة
+     لـcreate.ts:resolveScope. الشرط `enabled`: CATEGORY لا يُستدعى إلا بعد اختيار فئة (يوفّر
+     roundtrip فارغاً) — MANUAL محلي فيتخطّى الاستعلام. */
+  const previewCountQ = trpc.stocktakes.previewScopeCount.useQuery(
+    {
+      branchId: effectiveBranchId,
+      sessionType: isOpeningSession ? "OPENING" : "NORMAL",
+      scopeType: scopeType === "MANUAL" ? "FULL" : (scopeType as "FULL" | "MOVING" | "CATEGORY"),
+      movingDays: scopeType === "MOVING" ? Number(movingDays) || 30 : undefined,
+      categoryIds: scopeType === "CATEGORY" ? categoryIds : undefined,
+    },
+    {
+      enabled:
+        effectiveBranchId > 0 &&
+        scopeType !== "MANUAL" &&
+        (scopeType !== "CATEGORY" || categoryIds.length > 0),
+    },
+  );
+  const previewCount = previewCountQ.data ?? null;
+
   const scopeCount: number | null =
-    scopeType === "FULL"
-      ? onHandQ.isLoading
-        ? null
-        : onHand.length
-      : scopeType === "MANUAL"
-        ? manualIds.length
-        : null;
+    scopeType === "MANUAL"
+      ? manualIds.length
+      : scopeType === "CATEGORY" && categoryIds.length === 0
+        ? 0
+        : previewCountQ.isLoading
+          ? null
+          : (previewCount?.variantCount ?? null);
 
   /* قائمة المنتقي (MANUAL) مفلترة محلياً. */
   const pickList = useMemo(() => {
@@ -253,8 +281,13 @@ export default function StocktakeNew() {
       if (!effectiveBranchId) return "اختر الفرع.";
       if (scopeType === "CATEGORY" && categoryIds.length === 0) return "اختر فئة واحدة على الأقل.";
       if (scopeType === "MANUAL" && manualIds.length === 0) return "اختر منتجاً واحداً على الأقل.";
-      if (scopeType === "FULL" && !onHandQ.isLoading && onHand.length === 0)
-        return "لا منتجات في هذا الفرع — لا يمكن بدء جرد شامل.";
+      // فحص الفراغ الحقيقي: النطاق الفعليّ (previewCount) — لا onHand (الذي كان يمنع الجرد
+      // الافتتاحي المشروع عندما لم يكن للفرع أيّ رصيد سابق بعد).
+      if ((scopeType === "FULL" || scopeType === "MOVING") && previewCount && previewCount.variantCount === 0) {
+        return isOpeningSession
+          ? "لا شيء يُجرَد افتتاحياً — كلّ الأصناف مُفتتَحة سلفاً أو الكتالوج فارغ."
+          : "لا منتجات ضمن هذا النطاق — راجع النطاق أو الفرع.";
+      }
       return null;
     }
     if (step === 1) {
@@ -589,20 +622,51 @@ export default function StocktakeNew() {
               </div>
             )}
 
-            <div className="flex items-center justify-between rounded-lg bg-muted/60 px-4 py-2.5 text-sm">
-              <span className="font-semibold">منتجات ضمن النطاق:</span>
-              {scopeCount == null ? (
-                <span className="inline-block rounded-full border bg-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground">
-                  {scopeType === "MOVING" ? "تُحدَّد عند الإنشاء حسب الحركة الفعلية" : "جارٍ الحساب…"}
-                </span>
-              ) : (
-                <span
-                  className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                    scopeCount > 0 ? "badge-status-pending" : "badge-stock-out"
-                  }`}
-                >
-                  {nf(scopeCount)} منتجاً
-                </span>
+            <div className="space-y-2 rounded-lg bg-muted/60 px-4 py-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold">أصناف ضمن النطاق:</span>
+                {scopeCount == null ? (
+                  <span className="inline-block rounded-full border bg-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground">
+                    جارٍ الحساب…
+                  </span>
+                ) : (
+                  <span
+                    className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                      scopeCount > 0 ? "badge-status-pending" : "badge-stock-out"
+                    }`}
+                  >
+                    {nf(scopeCount)} صنفاً (متغيّراً)
+                  </span>
+                )}
+              </div>
+              {/* السطر الثاني: تفصيل المنتج/المتغيّر لتوضيح الحبيبة (خصوصاً في FULL) — يساعد المستخدم
+                  يفهم أن ١٤٥٣ منتجاً قد يعطي أكثر من ذلك بعدد المتغيّرات (لون/قياس). */}
+              {previewCount && previewCount.productCount > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {nf(previewCount.productCount)} منتجاً أمّاً × متوسّط {(
+                    previewCount.variantCount / Math.max(previewCount.productCount, 1)
+                  ).toFixed(1)} متغيّر لكل منتج
+                </p>
+              )}
+              {/* البدائل (باركودات إضافيّة تشير لنفس productUnit): لا تُعدّ منفصلةً لأنها تشترك
+                  في نفس صفّ المخزون مع الأصل — الجرد الشامل يشملها حكماً ضمن سلعتها. */}
+              {scopeType === "FULL" && (
+                <p className="text-xs text-muted-foreground">
+                  الباركودات البديلة تُجرَد ضمن سلعتها الأصليّة (مخزونها موحّد مع الأصل).
+                </p>
+              )}
+              {/* استبعاد OPENING: شفافيّة — لماذا العدد أقلّ من المتوقّع في الجرد الافتتاحي. */}
+              {isOpeningSession && previewCount && previewCount.excludedOpened > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  استُبعد {nf(previewCount.excludedOpened)} صنفاً مُفتتَحاً مسبقاً — يُجرَد جرداً دورياً لا افتتاحياً.
+                </p>
+              )}
+              {isOpeningSession && scopeType === "FULL" && previewCount && (previewCount.excludedBundle > 0 || previewCount.excludedConsignment > 0) && (
+                <p className="text-xs text-muted-foreground">
+                  استُبعد أيضاً: {previewCount.excludedBundle > 0 ? `${nf(previewCount.excludedBundle)} صنفاً بكجاً` : ""}
+                  {previewCount.excludedBundle > 0 && previewCount.excludedConsignment > 0 ? " · " : ""}
+                  {previewCount.excludedConsignment > 0 ? `${nf(previewCount.excludedConsignment)} صنف أمانة (يُفتتَح بسند إيداع)` : ""}.
+                </p>
               )}
             </div>
           </CardContent>
@@ -897,10 +961,12 @@ export default function StocktakeNew() {
                   k="النطاق"
                   v={
                     scopeType === "MOVING"
-                      ? `${SCOPE_TYPE_LABEL.MOVING} — آخر ${nf(Number(movingDays))} يوماً`
+                      ? `${SCOPE_TYPE_LABEL.MOVING} — آخر ${nf(Number(movingDays))} يوماً${
+                          scopeCount != null ? ` (${nf(scopeCount)} صنفاً)` : ""
+                        }`
                       : scopeCount == null
                         ? SCOPE_TYPE_LABEL[scopeType]
-                        : `${SCOPE_TYPE_LABEL[scopeType]} — ${nf(scopeCount)} منتجاً`
+                        : `${SCOPE_TYPE_LABEL[scopeType]} — ${nf(scopeCount)} صنفاً`
                   }
                 />
                 <SummaryRow k="عمّال الجرد" v={validWorkers.map((w) => w.name.trim()).join("، ") || "—"} />

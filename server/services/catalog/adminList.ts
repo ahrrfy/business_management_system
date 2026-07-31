@@ -1,7 +1,9 @@
 // قائمة إدارة المنتجات + تفعيل/تعطيل منتج.
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
-import { branchStock, categories, productPrices, productUnitBarcodes, productUnits, productVariants, products } from "../../../drizzle/schema";
+import { alias } from "drizzle-orm/mysql-core";
+import Decimal from "decimal.js";
+import { branchStock, categories, productPrices, productUnitBarcodes, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { getProductUsage, isFkBlocked, usageBlockMessage } from "../entityUsage";
 import { type Actor, withTx } from "../tx";
@@ -10,27 +12,61 @@ import { buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
 /**
  * صفّ شاشة إدارة المنتجات: حبيبة (متغيّر × وحدة) لكن عبر LEFT JOIN —
  * المنتج بلا متغيّرات/وحدات يظهر صفاً واحداً بأعمدة NULL (بخلاف POS الذي يخفيه).
- * لا يكشف التكلفة أبداً (الشاشة متاحة لكل الأدوار).
+ * حقول التكلفة والجملة ثابتة في العقد لكنها تبقى null ما لم يمنح الراوتر الرؤية صراحةً
+ * لحساب admin/manager. هذا يجعل الحجب خادمياً لا مجرد إخفاء أعمدة في الواجهة.
  */
 export interface AdminProductRow {
   productId: number;
   productName: string;
+  productType: string | null;
+  brand: string | null;
+  modelName: string | null;
+  description: string | null;
   productIsActive: boolean;
   categoryId: number | null;
   categoryName: string | null;
+  parentProductId: number | null;
+  parentProductName: string | null;
+  isCustomizable: boolean;
+  isService: boolean;
+  showInReception: boolean;
+  isBundle: boolean;
+  isConsignment: boolean;
+  consignorId: number | null;
+  consignorName: string | null;
+  isFeatured: boolean;
+  showInStore: boolean;
+  productCreatedAt: Date;
+  productUpdatedAt: Date;
   variantId: number | null;
   variantName: string | null;
   color: string | null;
+  colorHex: string | null;
   size: string | null;
   sku: string | null;
+  minStock: number | null;
+  reorderPoint: number | null;
+  seasonTarget: number | null;
   variantIsActive: boolean | null;
+  variantCreatedAt: Date | null;
+  variantUpdatedAt: Date | null;
   productUnitId: number | null;
   unitName: string | null;
   conversionFactor: string | null;
   barcode: string | null;
   isBaseUnit: boolean | null;
+  isStoreSaleUnit: boolean | null;
   unitIsActive: boolean | null;
+  unitCreatedAt: Date | null;
   price: string | null; // RETAIL — للعرض فقط
+  /** تكلفة وحدة الأساس كما هي مخزّنة؛ للتصدير/إعادة الاستيراد، null لغير المالك/المدير. */
+  baseCostPrice: string | null;
+  /** تكلفة وحدة الصف (تكلفة وحدة الأساس × معامل التحويل)؛ null لغير المالك/المدير. */
+  costPrice: string | null;
+  /** سعر الجملة لوحدة الصف؛ null لغير المالك/المدير أو عند عدم تعريفه. */
+  wholesalePrice: string | null;
+  /** السعر الحكومي لوحدة الصف؛ null لغير المالك/المدير أو عند عدم تعريفه. */
+  governmentPrice: string | null;
   stockBase: number;
   /** الباركودات البديلة للوحدة (productUnitBarcodes) — تظهر في التصدير وبجوار الباركود الأساسي. */
   barcodeAliases: string[];
@@ -50,9 +86,13 @@ export interface ListProductsAdminInput {
  * قائمة إدارة المنتجات: كل المنتجات (حتى الناقصة بلا وحدات/متغيّرات) مع بحث ذكي
  * وتقسيم صفحات خادمي + عدّ إجمالي — بديل عن posList (INNER JOIN + حدّ 500) في شاشة الإدارة.
  */
-export async function listProductsAdmin(input: ListProductsAdminInput): Promise<{ rows: AdminProductRow[]; total: number }> {
+export async function listProductsAdmin(
+  input: ListProductsAdminInput,
+  options: { includeSensitivePrices?: boolean } = {},
+): Promise<{ rows: AdminProductRow[]; total: number }> {
   const db = getDb();
   if (!db) return { rows: [], total: 0 };
+  const includeSensitivePrices = options.includeSensitivePrices === true;
   const limit = Math.min(Math.max(Math.trunc(input.limit ?? 50), 1), 500);
   const offset = Math.max(Math.trunc(input.offset ?? 0), 0);
 
@@ -85,35 +125,76 @@ export async function listProductsAdmin(input: ListProductsAdminInput): Promise<
     ? [...buildCatalogSearchOrder(input.q), asc(productVariants.id), asc(productUnits.id)]
     : [desc(products.id), asc(productVariants.id), asc(productUnits.id)];
 
+  const wholesalePrices = alias(productPrices, "adminWholesalePrices");
+  const governmentPrices = alias(productPrices, "adminGovernmentPrices");
+  const parentProducts = alias(products, "adminParentProducts");
   const rows = await db
     .select({
       productId: products.id,
       productName: products.name,
+      productType: products.productType,
+      brand: products.brand,
+      modelName: products.modelName,
+      description: products.description,
       productIsActive: products.isActive,
       categoryId: products.categoryId,
       categoryName: categories.name,
+      parentProductId: products.parentProductId,
+      parentProductName: parentProducts.name,
+      isCustomizable: products.isCustomizable,
+      isService: products.isService,
+      showInReception: products.showInReception,
+      isBundle: products.isBundle,
+      isConsignment: products.isConsignment,
+      consignorId: products.consignorId,
+      consignorName: suppliers.name,
+      isFeatured: products.isFeatured,
+      showInStore: products.showInStore,
+      productCreatedAt: products.createdAt,
+      productUpdatedAt: products.updatedAt,
       variantId: productVariants.id,
       variantName: productVariants.variantName,
       color: productVariants.color,
+      colorHex: productVariants.colorHex,
       size: productVariants.size,
       sku: productVariants.sku,
+      minStock: productVariants.minStock,
+      reorderPoint: productVariants.reorderPoint,
+      seasonTarget: productVariants.seasonTarget,
       variantIsActive: productVariants.isActive,
+      variantCreatedAt: productVariants.createdAt,
+      variantUpdatedAt: productVariants.updatedAt,
       productUnitId: productUnits.id,
       unitName: productUnits.unitName,
       conversionFactor: productUnits.conversionFactor,
       barcode: productUnits.barcode,
       isBaseUnit: productUnits.isBaseUnit,
+      isStoreSaleUnit: productUnits.isStoreSaleUnit,
       unitIsActive: productUnits.isActive,
+      unitCreatedAt: productUnits.createdAt,
       price: productPrices.price,
+      baseCostPrice: productVariants.costPrice,
+      wholesalePrice: wholesalePrices.price,
+      governmentPrice: governmentPrices.price,
       stockBase: branchStock.quantity,
     })
     .from(products)
     .leftJoin(categories, eq(categories.id, products.categoryId))
+    .leftJoin(parentProducts, eq(parentProducts.id, products.parentProductId))
+    .leftJoin(suppliers, eq(suppliers.id, products.consignorId))
     .leftJoin(productVariants, eq(productVariants.productId, products.id))
     .leftJoin(productUnits, eq(productUnits.variantId, productVariants.id))
     .leftJoin(
       productPrices,
       and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL"))
+    )
+    .leftJoin(
+      wholesalePrices,
+      and(eq(wholesalePrices.productUnitId, productUnits.id), eq(wholesalePrices.priceTier, "WHOLESALE"))
+    )
+    .leftJoin(
+      governmentPrices,
+      and(eq(governmentPrices.productUnitId, productUnits.id), eq(governmentPrices.priceTier, "GOVERNMENT"))
     )
     .leftJoin(
       branchStock,
@@ -158,22 +239,54 @@ export async function listProductsAdmin(input: ListProductsAdminInput): Promise<
     rows: rows.map((r) => ({
       productId: Number(r.productId),
       productName: r.productName,
+      productType: r.productType ?? null,
+      brand: r.brand ?? null,
+      modelName: r.modelName ?? null,
+      description: r.description ?? null,
       productIsActive: !!r.productIsActive,
       categoryId: r.categoryId != null ? Number(r.categoryId) : null,
       categoryName: r.categoryName ?? null,
+      parentProductId: r.parentProductId != null ? Number(r.parentProductId) : null,
+      parentProductName: r.parentProductName ?? null,
+      isCustomizable: !!r.isCustomizable,
+      isService: !!r.isService,
+      showInReception: !!r.showInReception,
+      isBundle: !!r.isBundle,
+      isConsignment: !!r.isConsignment,
+      consignorId: includeSensitivePrices && r.consignorId != null ? Number(r.consignorId) : null,
+      consignorName: includeSensitivePrices ? (r.consignorName ?? null) : null,
+      isFeatured: !!r.isFeatured,
+      showInStore: !!r.showInStore,
+      productCreatedAt: r.productCreatedAt,
+      productUpdatedAt: r.productUpdatedAt,
       variantId: r.variantId != null ? Number(r.variantId) : null,
       variantName: r.variantName ?? null,
       color: r.color ?? null,
+      colorHex: r.colorHex ?? null,
       size: r.size ?? null,
       sku: r.sku ?? null,
+      minStock: r.minStock ?? null,
+      reorderPoint: r.reorderPoint ?? null,
+      seasonTarget: r.seasonTarget ?? null,
       variantIsActive: r.variantIsActive != null ? !!r.variantIsActive : null,
+      variantCreatedAt: r.variantCreatedAt ?? null,
+      variantUpdatedAt: r.variantUpdatedAt ?? null,
       productUnitId: r.productUnitId != null ? Number(r.productUnitId) : null,
       unitName: r.unitName ?? null,
       conversionFactor: r.conversionFactor ?? null,
       barcode: r.barcode ?? null,
       isBaseUnit: r.isBaseUnit != null ? !!r.isBaseUnit : null,
+      isStoreSaleUnit: r.isStoreSaleUnit != null ? !!r.isStoreSaleUnit : null,
       unitIsActive: r.unitIsActive != null ? !!r.unitIsActive : null,
+      unitCreatedAt: r.unitCreatedAt ?? null,
       price: r.price ?? null,
+      baseCostPrice: includeSensitivePrices ? (r.baseCostPrice ?? null) : null,
+      costPrice:
+        includeSensitivePrices && r.baseCostPrice != null && r.conversionFactor != null
+          ? new Decimal(r.baseCostPrice).times(new Decimal(r.conversionFactor)).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)
+          : null,
+      wholesalePrice: includeSensitivePrices ? (r.wholesalePrice ?? null) : null,
+      governmentPrice: includeSensitivePrices ? (r.governmentPrice ?? null) : null,
       stockBase: r.stockBase ?? 0,
       barcodeAliases: r.productUnitId != null ? (aliasesByUnit.get(Number(r.productUnitId)) ?? []) : [],
     })),

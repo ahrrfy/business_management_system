@@ -8,6 +8,7 @@
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { RowActions } from "@/components/list/RowActions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
@@ -18,17 +19,27 @@ import { fmtDate } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { Brush, Link2, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { Input } from "@/components/ui/input";
+import { Brush, FileMinus2, Link2, TriangleAlert } from "lucide-react";
+import { useEffect, useState } from "react";
 
 type Reconciliation = RouterOutputs["digitalCards"]["wallets"]["reconciliations"][number];
+type QueueRow = RouterOutputs["digitalCards"]["sales"]["needsReview"][number];
 
 export default function DigitalReview() {
   const utils = trpc.useUtils();
 
+  const me = trpc.auth.me.useQuery();
   const needsReview = trpc.digitalCards.sales.needsReview.useQuery();
   const variances = trpc.digitalCards.wallets.reconciliations.useQuery({ status: "VARIANCE_OPEN" });
   const [resolving, setResolving] = useState<Reconciliation | null>(null);
+  const [requesting, setRequesting] = useState<QueueRow | null>(null);
+
+  /** الأدمن يتجاوز SOD للتصحيح الإداريّ — مرآةُ استثناء الخادم بالضبط. */
+  function isOwnRequest(requestedBy: number | null): boolean {
+    if (me.data?.role === "admin") return false;
+    return requestedBy != null && Number(requestedBy) === Number(me.data?.id);
+  }
 
   const sweepMut = trpc.digitalCards.sales.expireStale.useMutation({
     onSuccess: (r) => {
@@ -43,10 +54,48 @@ export default function DigitalReview() {
   });
 
   const cancelMut = trpc.digitalCards.sales.cancelIntent.useMutation({
-    onSuccess: () => {
+    // الخادم يقرّر المصير ولا يُحرَّر حجزُ نيّةٍ صدر كرتها أبداً (المال مستحقّ للمزوّد فعلاً).
+    // نعرض ما حدث **حقيقةً** لا ما تمنّيناه — رسالةُ نجاحٍ كاذبة على شاشةٍ مالية أسوأ من لا رسالة.
+    onSuccess: (r) => {
       void utils.digitalCards.sales.needsReview.invalidate();
       void utils.digitalCards.wallets.list.invalidate();
-      notify.ok("أُلغيت النيّة وحُرّر حجزها");
+      if (r.outcome === "CANCELLED") {
+        notify.ok("أُلغيت النيّة وحُرّر حجزها");
+      } else {
+        notify.warn(
+          "النيّة تبقى تحت المراجعة",
+          "صدر كرتٌ من هذه النيّة فعلاً، فحجز المحفظة لا يُحرَّر — قيمته مستحقّة للمزوّد. لإنهائها استعمل «طلب شطب».",
+        );
+      }
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  function refreshQueue() {
+    void utils.digitalCards.sales.needsReview.invalidate();
+    void utils.digitalCards.wallets.list.invalidate();
+  }
+
+  const requestMut = trpc.digitalCards.sales.requestWriteoff.useMutation({
+    onSuccess: (r) => {
+      refreshQueue();
+      notify.ok("سُجّل طلب الشطب", `${fmtAr(r.amount)} تنتظر اعتماد مديرٍ آخر — لم يتغيّر رصيدٌ بعد.`);
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  const approveMut = trpc.digitalCards.sales.approveWriteoff.useMutation({
+    onSuccess: (r) => {
+      refreshQueue();
+      notify.ok("اعتُمد الشطب", `خسارة ${fmtAr(r.loss)} سُجّلت في الدفاتر وأُنهي الحجز.`);
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  const rejectMut = trpc.digitalCards.sales.rejectWriteoff.useMutation({
+    onSuccess: () => {
+      refreshQueue();
+      notify.ok("رُفض طلب الشطب", "عادت النيّة إلى الطابور بلا أثرٍ ماليّ.");
     },
     onError: (e) => notify.err(e),
   });
@@ -60,14 +109,30 @@ export default function DigitalReview() {
     sweepMut.mutate();
   }
 
-  async function cancelIntent(id: number, expected: string) {
+  /**
+   * `reserved` = حصص المزوّد المحجوزة (لا سعر البيع). الحجز **لا يُحرَّر** ما دام كرتٌ صدر —
+   * فلا يَعِد النصّ بما لن يقع؛ يشرح الشرط ويترك القرار للخادم.
+   */
+  async function cancelIntent(id: number, reserved: string, issued: number) {
     if (!(await confirm({
       variant: "danger",
-      title: "إلغاء النيّة وتحرير الحجز",
-      description: `سيعود ${fmtAr(expected)} من المحجوز إلى الرصيد المتاح. افعل هذا فقط بعد التأكّد أن الكرت لم يُسلَّم للعميل — وإلا ضاعت قيمته على المكتبة بلا أثر.`,
+      title: "إلغاء النيّة",
+      description: issued > 0
+        ? `صدر ${issued} كرتاً من هذه النيّة، فحجز المحفظة (${fmtAr(reserved)}) يبقى كما هو — قيمته مستحقّة للمزوّد ولا تعود بالإلغاء. الإلغاء هنا يُثبّت أنها روجعت فقط. متابعة؟`
+        : `سيعود ${fmtAr(reserved)} من رصيد المحفظة المحجوز إلى المتاح. افعل هذا فقط بعد التأكّد أن الكرت لم يُسلَّم للعميل.`,
       confirmText: "إلغاء النيّة",
     }))) return;
     cancelMut.mutate({ intentId: id, reason: "مراجعة إشرافية: الكرت لم يُسلَّم" });
+  }
+
+  async function approveWriteoff(id: number, reserved: string) {
+    if (!(await confirm({
+      variant: "danger",
+      title: "اعتماد الشطب",
+      description: `ستُسجَّل خسارة ${fmtAr(reserved)} في الدفاتر: رصيد المحفظة ينزل بالحصة (أو ترتفع ذمّة المزوّد الآجل) وينتهي الحجز. لا يُعكَس هذا الإجراء. متابعة؟`,
+      confirmText: "اعتماد الشطب",
+    }))) return;
+    approveMut.mutate({ intentId: id });
   }
 
   const queue = needsReview.data ?? [];
@@ -97,9 +162,11 @@ export default function DigitalReview() {
                 <tr>
                   <th className="p-2 text-start">النيّة</th>
                   <th className="p-2 text-start">الفرع</th>
-                  <th className="p-2 text-start">المبلغ المتوقَّع</th>
+                  <th className="p-2 text-start">قيمة البيع</th>
+                  <th className="p-2 text-start">المحجوز</th>
                   <th className="p-2 text-start">صدر / الإجمالي</th>
                   <th className="p-2 text-start">أُنشئت</th>
+                  <th className="p-2 text-center">الحالة</th>
                   <th className="p-2 text-center">إجراء</th>
                 </tr>
               </thead>
@@ -108,26 +175,78 @@ export default function DigitalReview() {
                   <tr key={r.id} className="border-t">
                     <td className="p-2 font-mono text-xs" dir="ltr">#{r.id}</td>
                     <td className="p-2 text-muted-foreground">{r.branchName}</td>
-                    <td className="p-2 tabular-nums font-medium">{fmtAr(r.expectedTotal)}</td>
+                    <td className="p-2 tabular-nums text-muted-foreground">{fmtAr(r.expectedTotal)}</td>
+                    <td className="p-2 tabular-nums font-medium">{fmtAr(r.reservedAmount)}</td>
                     <td className="p-2 tabular-nums">
                       {Number(r.successCount)} / {Number(r.itemCount)}
                     </td>
                     <td className="p-2 text-muted-foreground">{fmtDate(r.createdAt)}</td>
                     <td className="p-2 text-center">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={cancelMut.isPending}
-                        onClick={() => void cancelIntent(r.id, r.expectedTotal)}
-                      >
-                        إلغاء وتحرير الحجز
-                      </Button>
+                      {r.status === "WRITEOFF_PENDING" ? (
+                        <span className="inline-block rounded-full px-2 py-0.5 text-xs badge-status-pending" title={r.writeoffReason ?? undefined}>
+                          شطبٌ بانتظار الاعتماد
+                        </span>
+                      ) : (
+                        <span className="inline-block rounded-full px-2 py-0.5 text-xs badge-status-neutral">
+                          تحت المراجعة
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-2 text-center">
+                      <RowActions
+                        mode="menu"
+                        actions={[
+                          {
+                            key: "approve-writeoff",
+                            kind: "approve",
+                            label: "اعتماد الشطب",
+                            hidden: r.status !== "WRITEOFF_PENDING",
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                            disabled: approveMut.isPending || isOwnRequest(r.writeoffRequestedBy),
+                            disabledReason: isOwnRequest(r.writeoffRequestedBy) ? "لا تعتمد شطباً طلبتَه بنفسك — يلزم مدير آخر" : "جارٍ اعتماد الشطب",
+                            onSelect: () => void approveWriteoff(r.id, r.reservedAmount),
+                          },
+                          {
+                            key: "reject-writeoff",
+                            kind: "reverse",
+                            label: "رفض الشطب",
+                            variant: "destructive",
+                            hidden: r.status !== "WRITEOFF_PENDING",
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                            disabled: rejectMut.isPending || isOwnRequest(r.writeoffRequestedBy),
+                            disabledReason: isOwnRequest(r.writeoffRequestedBy) ? "لا ترفض طلباً أنشأته بنفسك — يلزم مدير آخر" : "جارٍ رفض الشطب",
+                            onSelect: () => rejectMut.mutate({ intentId: r.id }),
+                          },
+                          {
+                            key: "request-writeoff",
+                            kind: "create",
+                            label: "طلب شطب",
+                            icon: FileMinus2,
+                            hidden: r.status === "WRITEOFF_PENDING",
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                            disabled: requestMut.isPending,
+                            disabledReason: "جارٍ إنشاء طلب الشطب",
+                            onSelect: () => setRequesting(r),
+                          },
+                          {
+                            key: "cancel-intent",
+                            kind: "delete",
+                            label: "إلغاء النيّة",
+                            variant: "destructive",
+                            hidden: r.status === "WRITEOFF_PENDING",
+                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                            disabled: cancelMut.isPending,
+                            disabledReason: "جارٍ إلغاء النيّة",
+                            onSelect: () => void cancelIntent(r.id, r.reservedAmount, Number(r.successCount)),
+                          },
+                        ]}
+                      />
                     </td>
                   </tr>
                 ))}
-                {needsReview.isLoading && <tr><td colSpan={6}><LoadingState /></td></tr>}
+                {needsReview.isLoading && <tr><td colSpan={8}><LoadingState /></td></tr>}
                 {!needsReview.isLoading && queue.length === 0 && (
-                  <TableEmptyRow colSpan={6} message="لا شيء للمراجعة — كل الكروت الصادرة مثبّتة بفواتيرها." />
+                  <TableEmptyRow colSpan={8} message="لا شيء للمراجعة — كل الكروت الصادرة مثبّتة بفواتيرها." />
                 )}
               </tbody>
             </table>
@@ -163,9 +282,17 @@ export default function DigitalReview() {
                     <td className="p-2 tabular-nums">{fmtAr(v.actualBalance)}</td>
                     <td className="p-2 tabular-nums font-medium text-destructive">{fmtAr(v.variance)}</td>
                     <td className="p-2 text-center">
-                      <Button size="sm" variant="outline" onClick={() => setResolving(v)}>
-                        <Link2 className="size-4" /> ربط بتعديل معتمَد
-                      </Button>
+                      <RowActions
+                        mode="inline"
+                        actions={[{
+                          key: "resolve",
+                          kind: "edit",
+                          label: "ربط بتعديل معتمَد",
+                          icon: Link2,
+                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          onSelect: () => setResolving(v),
+                        }]}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -179,8 +306,82 @@ export default function DigitalReview() {
         </CardContent>
       </Card>
 
+      <WriteoffRequestDialog
+        row={requesting}
+        pending={requestMut.isPending}
+        onClose={() => setRequesting(null)}
+        onSubmit={(reason) => {
+          if (!requesting) return;
+          requestMut.mutate({ intentId: requesting.id, reason });
+          setRequesting(null);
+        }}
+      />
+
       <ResolveVarianceDialog reconciliation={resolving} onClose={() => setResolving(null)} />
     </div>
+  );
+}
+
+/**
+ * طلب شطب نيّة عالقة — يجمع السبب الإلزاميّ. **لا يمسّ مالاً**: كلّ الأثر في الاعتماد
+ * الذي يقوم به مديرٌ آخر (SOD). النصّ يسمّي الخسارة برقمها كي لا يُوقَّع على مبلغٍ مجهول.
+ */
+function WriteoffRequestDialog({
+  row, pending, onClose, onSubmit,
+}: {
+  row: QueueRow | null;
+  pending: boolean;
+  onClose: () => void;
+  onSubmit: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+
+  // تصفير السبب مع كل فتحٍ لصفٍّ مختلف — وإلا سُرّب سببُ نيّةٍ إلى أخرى.
+  useEffect(() => { setReason(""); }, [row?.id]);
+
+  return (
+    <Dialog open={row != null} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>طلب شطب نيّة عالقة #{row?.id}</DialogTitle>
+          <DialogDescription>
+            الشطب اعترافٌ بخسارة: صدر الكرت من جهاز المزوّد ولم يُقبَض ثمنه. هذا الطلب
+            <strong> لا يغيّر أيّ رصيد</strong> — ينفّذه اعتمادُ مديرٍ آخر.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="rounded-md bg-muted p-3 text-sm">
+          الخسارة المتوقَّعة (حصة المزوّد):{" "}
+          <span className="font-bold tabular-nums">{fmtAr(row?.reservedAmount ?? "0")}</span>
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-sm font-medium" htmlFor="dcw-reason">سبب الشطب (إلزامي)</label>
+          <Input
+            id="dcw-reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="الكرت شُحن ولم يُسلَّم، الزبون غادر قبل الدفع…"
+            dir="auto"
+            autoFocus
+          />
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={onClose}>إلغاء</Button>
+          <Button
+            size="sm"
+            disabled={pending}
+            onClick={() => {
+              if (reason.trim().length < 3) return notify.err("اكتب سبباً واضحاً للشطب");
+              onSubmit(reason.trim());
+            }}
+          >
+            {pending ? "جارٍ الإرسال…" : "إرسال للاعتماد"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
