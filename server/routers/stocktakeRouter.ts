@@ -28,11 +28,12 @@ import {
   getStocktakeStats,
   listStocktakeSessions,
   monitorStocktakeSession,
+  previewScope,
   regenerateStocktakePin,
   requestStocktakeRecount,
   resolveStocktakeConflict,
 } from "../services/stocktakeService";
-import { adminProcedure, canSeeCostForUser, managerProcedure, router, warehouseProcedure } from "../trpc";
+import { adminProcedure, canSeeCostForUser, inventoryReadProcedure, managerProcedure, router, warehouseProcedure } from "../trpc";
 
 /** مبلغ نصي بنمط purchaseRouter — الأموال نصوص تمرّ عبر decimal.js (لا parseFloat). */
 const moneyStr = z.string().regex(/^\d{1,13}(\.\d{1,2})?$/, "قيمة مالية غير صالحة");
@@ -128,6 +129,38 @@ export const stocktakeRouter = router({
         },
       });
       return res;
+    }),
+
+  /**
+   * معاينة عدّاد النطاق للمعالج (Wizard) — يعكس منطق resolveScope حرفياً:
+   * FULL/MOVING/CATEGORY (MANUAL يُحسب في العميل من الاختيار). قراءة صرفة بلا آثار جانبيّة.
+   * يزيل التضليل الذي كان يعرض inventory.onHand.length (يعدّ صفوف branchStock السابقة فقط
+   * فيُخفي الأصناف التي لم تُلامَس بحركة بعد — فارق قاتل في الجرد الافتتاحي).
+   *
+   * البوّابة: inventoryReadProcedure (branchScoped + requireModule("inventory","READ")) —
+   * الجرد جزء من وحدة المخزون فيرث نفس بوّابتها؛ العزل الفرعيّ يأتي من scopedBranchId تلقائياً
+   * (المدير/الأدمن null فيمرّ input.branchId؛ غيرهم مُجبَر على فرعه). أنظف من warehouseProcedure
+   * الخام (RAW_ROLE_GATE) الذي يفرضه حارس authz لكل endpoint مستجدّ.
+   */
+  previewScopeCount: inventoryReadProcedure
+    .input(
+      z.object({
+        branchId: idNum,
+        sessionType: z.enum(["NORMAL", "OPENING"]).default("NORMAL"),
+        scopeType: z.enum(["FULL", "MOVING", "CATEGORY"]),
+        movingDays: z.number().int().positive().max(365).optional(),
+        categoryIds: z.array(idNum).optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = ctx.scopedBranchId ?? input.branchId;
+      return previewScope({
+        branchId,
+        sessionType: input.sessionType,
+        scopeType: input.scopeType,
+        movingDays: input.movingDays,
+        categoryIds: input.categoryIds,
+      });
     }),
 
   /* ─────────── القراءة ─────────── */
