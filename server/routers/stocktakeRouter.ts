@@ -28,6 +28,7 @@ import {
   getStocktakeStats,
   listStocktakeSessions,
   monitorStocktakeSession,
+  previewScope,
   regenerateStocktakePin,
   requestStocktakeRecount,
   resolveStocktakeConflict,
@@ -128,6 +129,35 @@ export const stocktakeRouter = router({
         },
       });
       return res;
+    }),
+
+  /**
+   * معاينة عدّاد النطاق للمعالج (Wizard) — يعكس منطق resolveScope حرفياً:
+   * FULL/MOVING/CATEGORY (MANUAL يُحسب في العميل من الاختيار). عزل الفرع مطابق لـcreate
+   * (warehouse يُجبَر على فرعه؛ مدير/أدمن يمرّرا branchId). قراءة صرفة بلا آثار جانبيّة.
+   * يزيل التضليل الذي كان يعرض inventory.onHand.length (يعدّ صفوف branchStock السابقة فقط
+   * فيُخفي الأصناف التي لم تُلامَس بحركة بعد — فارق قاتل في الجرد الافتتاحي).
+   */
+  previewScopeCount: warehouseProcedure
+    .input(
+      z.object({
+        branchId: idNum,
+        sessionType: z.enum(["NORMAL", "OPENING"]).default("NORMAL"),
+        scopeType: z.enum(["FULL", "MOVING", "CATEGORY"]),
+        movingDays: z.number().int().positive().max(365).optional(),
+        categoryIds: z.array(idNum).optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const restricted = restrictedBranchOf(ctx);
+      const branchId = restricted ?? input.branchId;
+      return previewScope({
+        branchId,
+        sessionType: input.sessionType,
+        scopeType: input.scopeType,
+        movingDays: input.movingDays,
+        categoryIds: input.categoryIds,
+      });
     }),
 
   /* ─────────── القراءة ─────────── */
