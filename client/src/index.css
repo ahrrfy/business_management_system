@@ -41,6 +41,28 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
   --font-sans: "Cairo", system-ui, -apple-system, sans-serif;
+
+  /* Larger, heavier type tokens for clear Arabic text across every screen. */
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.25rem;
+  --text-sm: 0.9375rem;
+  --text-sm--line-height: 1.5rem;
+  --text-base: 1.0625rem;
+  --text-base--line-height: 1.75rem;
+  --text-lg: 1.1875rem;
+  --text-lg--line-height: 1.875rem;
+  --text-xl: 1.3125rem;
+  --text-xl--line-height: 2rem;
+  --text-2xl: 1.625rem;
+  --text-2xl--line-height: 2.25rem;
+  --text-3xl: 2rem;
+  --text-3xl--line-height: 2.5rem;
+  --text-4xl: 2.375rem;
+  --text-4xl--line-height: 2.75rem;
+  --font-weight-normal: 600;
+  --font-weight-medium: 700;
+  --font-weight-semibold: 700;
+  --font-weight-bold: 800;
 }
 
 :root {
@@ -145,6 +167,9 @@
   body {
     @apply bg-background text-foreground;
     font-family: "Cairo", system-ui, -apple-system, sans-serif;
+    font-size: var(--text-base);
+    font-weight: 600;
+    line-height: 1.75;
     direction: rtl;
   }
   /*
