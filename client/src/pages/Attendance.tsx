@@ -464,11 +464,25 @@ function NightShiftSettingsCard() {
                   <span className="font-medium">صفر ساعة = يوم راحة.</span> وسعر الساعة هو أصل الحساب: أجر اليوم =
                   ساعاته المحتسَبة × سعره، والراتب المستحقّ = مجموع أيام الشهر. تركُ السعر فارغاً يشتقّه من حقل
                   راتب الموظف ÷ ساعات شهره. والساعات فوق المقرَّر اليوميّ تُحتسب <span className="font-medium">أوفر تايم</span> ببندٍ مستقلّ.
-                  مجموع الأسبوع: <span className="font-medium tabular-nums" dir="ltr">{WEEK_DAYS.reduce((t, d) => t + (Number(sched[d]) || 0), 0)}</span> ساعة.
+                  مجموع الأسبوع: <span className="font-medium tabular-nums" dir="ltr">{WEEK_DAYS.reduce((t, d) => t + (Number(sched[d]?.hours) || 0), 0)}</span> ساعة.
                   يمكن تخصيص جدولٍ لكل موظف من بطاقته.
                 </p>
               </div>
             </div>
+
+            {/* حارس الساعات غير المعقولة — يعمل دائماً، مستقلّاً عن تفعيل الأجر بالحضور. */}
+            <div className="rounded-md border p-3 space-y-1">
+              <Label htmlFor="max-daily">حارس الساعات — سقف اليوم الواحد</Label>
+              <Input id="max-daily" type="number" min={1} max={24} step="0.5" dir="ltr" value={maxDaily} onChange={(e) => setMaxDaily(Number(e.target.value))} />
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                يومٌ تتجاوز بصماتُه هذا السقف يُقصّ عنده ويُوسَم «يحتاج تصحيح» بدل أن يُدفَع كاملاً.
+                لا يوجد دوامٌ ١٦ أو ١٨ أو ٢٠ ساعة — مثلُه غالباً بصمةُ خروجٍ منسيّة أو خللٌ في ساعة
+                الجهاز، فيُدفَع أجرُ عملٍ لم يقع ويدخل الأوفر تايم فيُضاعَف. صحّح الأوقات من كشف
+                حضور الموظف ليُرفع الوسم.
+              </p>
+            </div>
+
+            <div className="rounded-md border p-3 space-y-2">
             <label className="flex items-start gap-2">
               <input type="checkbox" className="size-4 mt-0.5" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
               <span>
@@ -484,6 +498,7 @@ function NightShiftSettingsCard() {
               <p className="text-xs text-muted-foreground">
                 أيّ بصمة قبل هذه الساعة تُغلق وردية اليوم السابق إن كانت مفتوحة. بعدها تُعدّ بدايةَ يومٍ جديد.
               </p>
+            </div>
             </div>
             <p className="text-xs text-muted-foreground border-t pt-2">
               التغيير لا يُعيد حساب أيام مسجَّلة سابقاً — يسري على ما يصل بعده.

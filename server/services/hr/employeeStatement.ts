@@ -21,6 +21,18 @@ export interface EmployeeStatementInput {
   period: string;
 }
 
+/**
+ * وقت البصم كـ"HH:MM". عمودا checkIn/checkOut من نوع timestamp ⇒ يعيدهما السائق كـDate،
+ * فعرضُهما خاماً يُظهر تاريخاً كاملاً **بإزاحة منطقة زمنية** (08:00 المخزَّنة تظهر 11:00).
+ * نقرأ الساعة بتقويم UTC ثابت — البصمات توقيتُ حائطٍ محليّ لا لحظةٌ عالمية (§businessDay).
+ */
+function hhmm(v: unknown): string | null {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString().slice(11, 16);
+  const s = String(v);
+  return s.length >= 16 ? s.slice(11, 16) : s;
+}
+
 /** يفرد فترات الإجازة إلى تواريخ داخل نافذة. */
 function expand(spans: Array<{ from: string; to: string }>, from: string, to: string): Set<string> {
   const out = new Set<string>();
@@ -131,8 +143,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     const m = meta.get(d.date);
     return {
       ...d,
-      checkIn: m?.checkIn ?? null,
-      checkOut: m?.checkOut ?? null,
+      checkIn: hhmm(m?.checkIn),
+      checkOut: hhmm(m?.checkOut),
       source: m?.source ?? null,
       needsReview: !!m?.needsReview,
       reviewReason: m?.reviewReason ?? null,
