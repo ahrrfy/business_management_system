@@ -2147,14 +2147,17 @@ export const employees = mysqlTable(
     /** سعر الساعة لكل يوم لموظفي الساعة: {"الأحد":5000,...} (أجر اليوم = ساعات × سعر ذلك اليوم). */
     dayRates: json("dayRates"),
     /**
-     * أيام الراحة الأسبوعية لهذا الموظف بأسماء الأيام العربية: ["الجمعة"] (0138).
-     * تختلف بين الموظفين (قرار مالك) ⇒ لكلٍّ جدولُه. يوم الراحة لا يُطالَب بحضورٍ فيه
-     * ولا يُخصَم — وبدونه كان تفعيلُ خصم الغياب يخصم أربعة أيام شهرياً من الجميع.
-     * null = يُستعمل الافتراضي العامّ في hrAttendanceSettings.
+     * جدول الدوام الأسبوعيّ لهذا الموظف: ساعات كل يوم بأسماء الأيام العربية (0139)
+     *   {"الأحد":8,"الاثنين":8,"الثلاثاء":8,"الأربعاء":8,"الخميس":8,"الجمعة":4,"السبت":0}
+     *
+     * **صفر ساعة = يوم راحة** — فالمفهومان (الراحة والساعات) واحدٌ لا اثنان. استبدل
+     * `restDays`+`dailyHours` من 0138 لأن الواقع أغنى منهما: الجمعة عند المالك **يوم دوام
+     * بساعات أقلّ** يحدّدها، لا راحةً ولا يوماً كاملاً — وهو ما عجز النموذج القديم عن تمثيله.
+     *
+     * منه يُشتقّ مقام سعر الساعة: مجموع ساعات أيام الشهر وفق هذا الجدول.
+     * null = يُستعمل الجدول الافتراضي العامّ في hrAttendanceSettings.
      */
-    restDays: json("restDays"),
-    /** ساعات الدوام القياسية اليومية لهذا الموظف — null = الافتراضي العامّ (0138). */
-    dailyHours: decimal("dailyHours", { precision: 5, scale: 2 }),
+    workSchedule: json("workSchedule"),
     /** حالة التوظيف (مستقلة عن isActive للحذف الناعم). */
     employmentStatus: mysqlEnum("employmentStatus", ["active", "leave", "terminated"]).default("active").notNull(),
     gender: varchar("gender", { length: 10 }),
@@ -3175,6 +3178,12 @@ export const hrAttendanceSettings = mysqlTable("hrAttendanceSettings", {
   /** بصمةٌ قبل هذه الساعة في يومٍ تالٍ تُعدّ إغلاقاً لوردية أمس (0-23). */
   nightShiftCutoffHour: int("nightShiftCutoffHour").default(8).notNull(),
   /**
+   * سقف الساعات المعقولة لليوم (0139): «لا توجد ساعات عمل ٢٠ ولا ١٨ ولا حتى ١٦» (قرار
+   * المالك). يومٌ يتجاوزه يُقصّ عنده ويُوسَم «يحتاج تصحيح» — بصمةٌ منسيّة أو خللُ ساعةٍ
+   * في الجهاز يُنتج فترةً وهمية تُدفَع أجرَ عملٍ لم يقع.
+   */
+  maxDailyHours: decimal("maxDailyHours", { precision: 5, scale: 2 }).default("12.00").notNull(),
+  /**
    * الأجر بالحضور (0138) — قرار مالك: «الذي يحضر له راتب، والذي غاب لا راتب لغيابه»،
    * والاحتساب **بالساعات**: سعر ساعة الشهريّ = راتبه ÷ ساعات دوامه في الشهر،
    * وأجرُه = ساعات حضوره الفعلية × ذلك السعر.
@@ -3183,10 +3192,11 @@ export const hrAttendanceSettings = mysqlTable("hrAttendanceSettings", {
    */
   attendancePayEnabled: boolean("attendancePayEnabled").default(false).notNull(),
   attendancePayFrom: date("attendancePayFrom", { mode: "string" }),
-  /** ساعات الدوام القياسية اليومية الافتراضية (يتجاوزها إعداد الموظف). */
-  standardDailyHours: decimal("standardDailyHours", { precision: 5, scale: 2 }).default("8.00").notNull(),
-  /** أيام الراحة الأسبوعية الافتراضية بأسماء الأيام العربية (يتجاوزها إعداد الموظف). */
-  defaultRestDays: json("defaultRestDays"),
+  /**
+   * جدول الدوام الأسبوعيّ الافتراضي (0139): ساعات كل يوم، وصفرٌ = راحة.
+   * يتجاوزه `employees.workSchedule` لمن له جدولٌ خاصّ.
+   */
+  defaultWorkSchedule: json("defaultWorkSchedule"),
   updatedBy: int("updatedBy").references(() => users.id),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

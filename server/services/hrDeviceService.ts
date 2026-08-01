@@ -3,6 +3,7 @@
  * هجرة الأجهزة من المزوّد الخارجي المدفوع إلى خادم الرؤية العربية المملوك.
  * القراءة بصلاحية hr/READ والكتابة بـ hr/FULL (في الموجّه). الهجرة عملية ذرّية withTx.
  * ========================================================================== */
+import { TRPCError } from "@trpc/server";
 import { and, desc, eq, getTableColumns, isNull, sql, type SQL } from "drizzle-orm";
 import { HR_FINGERPRINT_TARGET } from "@shared/hr";
 import {
@@ -20,7 +21,14 @@ import { extractInsertId } from "../lib/insertId";
 import { onlineDeviceIds } from "./hrDevices/registry";
 import { resolveBridgeConfig } from "./hrDevices/types";
 
-/** قائمة الأجهزة مع اسم الفرع. الأحدث أولاً. */
+/**
+ * قائمة الأجهزة مع اسم الفرع. الأحدث أولاً.
+ *
+ * `usersCount`/`recordsCount` هما ما يقوله **الجهاز عن نفسه** (devInfo) — ثابتان لا يتحرّكان
+ * أثناء الرفع، فلا يصلحان مؤشّرَ تقدّم. لذا نُرفق العدّ الحقيقيّ من قاعدتنا:
+ * `receivedPunches` (ما استُلم فعلاً) و`pendingPunches` (بلا موظف ⇒ طابور المراجعة).
+ * بدونهما كان المستخدم يرى «61 / 36815» جامداً ويظنّ الاستيراد متوقّفاً وهو يعمل.
+ */
 export async function listDevices() {
   const db = requireDb();
   const rows = await db
@@ -28,7 +36,66 @@ export async function listDevices() {
     .from(hrFingerprintDevices)
     .leftJoin(branches, eq(hrFingerprintDevices.branchId, branches.id))
     .orderBy(desc(hrFingerprintDevices.id));
-  return rows;
+  if (rows.length === 0) return [];
+  const stats = await db
+    .select({
+      deviceId: hrAttendancePunches.deviceId,
+      received: sql<number>`COUNT(*)`,
+      pending: sql<number>`SUM(CASE WHEN ${hrAttendancePunches.employeeId} IS NULL THEN 1 ELSE 0 END)`,
+    })
+    .from(hrAttendancePunches)
+    .groupBy(hrAttendancePunches.deviceId);
+  const byDevice = new Map(stats.map((s) => [Number(s.deviceId), s]));
+  return rows.map((r) => {
+    const s = byDevice.get(Number(r.id));
+    return { ...r, receivedPunches: Number(s?.received ?? 0), pendingPunches: Number(s?.pending ?? 0) };
+  });
+}
+
+/**
+ * حذف جهاز — **للصفوف الوهمية فقط**: أيّ فحص HTTP على `/iclock/*` بسريال مجهول يُسجّل
+ * جهازاً تلقائياً معطَّلاً (بوّابة القبول)، فتتراكم صفوف مثل TEST/PING من اختبارات الاتصال.
+ * لم يكن ثمّة مسار حذف إطلاقاً فتبقى أبداً.
+ *
+ * ثلاثة شروط تجعله غير مدمّر بنيوياً: **غير معتمَد** (لم يُقبل منه شيء قط) + **بلا بصمات**
+ * + **بلا مستخدمين مرآة**. الجهاز الحقيقيّ يفشل أوّل شرط دائماً ⇒ يستحيل حذفه من هنا.
+ */
+export async function deleteDevice(id: number) {
+  return withTx(async (tx) => {
+    const [d] = await tx
+      .select({ id: hrFingerprintDevices.id, name: hrFingerprintDevices.name, enabled: hrFingerprintDevices.enabled, sn: hrFingerprintDevices.serialNumber })
+      .from(hrFingerprintDevices)
+      .where(eq(hrFingerprintDevices.id, id))
+      .for("update")
+      .limit(1);
+    if (!d) throw new TRPCError({ code: "NOT_FOUND", message: "الجهاز غير موجود" });
+    if (d.enabled) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يُحذف جهازٌ معتمَد — بصماته جزء من سجلّ الحضور. عطّله بدل حذفه.",
+      });
+    }
+    const [{ n: punches }] = await tx
+      .select({ n: sql<number>`COUNT(*)` })
+      .from(hrAttendancePunches)
+      .where(eq(hrAttendancePunches.deviceId, id));
+    if (Number(punches) > 0) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `لا يُحذف جهازٌ استُلمت منه بصمات (${punches}) — حذفه يُيتّم سجلّ حضور.`,
+      });
+    }
+    const [{ n: users }] = await tx
+      .select({ n: sql<number>`COUNT(*)` })
+      .from(hrDeviceUsers)
+      .where(eq(hrDeviceUsers.deviceId, id));
+    if (Number(users) > 0) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `لا يُحذف جهازٌ له مستخدمون مرتبطون (${users}).` });
+    }
+    await tx.delete(hrDeviceCommands).where(eq(hrDeviceCommands.deviceId, id));
+    await tx.delete(hrFingerprintDevices).where(eq(hrFingerprintDevices.id, id));
+    return { id, deleted: true, name: d.name, serialNumber: d.sn };
+  });
 }
 
 export async function getDevice(id: number) {

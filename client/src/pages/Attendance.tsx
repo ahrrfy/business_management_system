@@ -377,16 +377,21 @@ function NightShiftSettingsCard() {
   const [cutoff, setCutoff] = useState(8);
   const [payOn, setPayOn] = useState(false);
   const [payFrom, setPayFrom] = useState("");
-  const [dailyHours, setDailyHours] = useState(8);
-  const [restDays, setRestDays] = useState<string[]>(["الجمعة"]);
+  const [maxDaily, setMaxDaily] = useState(12);
+  // جدول أسبوعيّ: ساعات كل يوم، وصفرٌ = راحة (يوحّد المفهومين — الجمعة قد تكون قصيرة).
+  const [sched, setSched] = useState<Record<string, { hours: number; rate?: number | null }>>({});
   useEffect(() => {
     if (!open || !s) return;
     setEnabled(!!s.nightShiftEnabled);
     setCutoff(Number(s.nightShiftCutoffHour ?? 8));
     setPayOn(!!s.attendancePayEnabled);
     setPayFrom(s.attendancePayFrom ? String(s.attendancePayFrom).slice(0, 10) : "");
-    setDailyHours(Number(s.standardDailyHours ?? 8));
-    setRestDays(Array.isArray(s.defaultRestDays) ? (s.defaultRestDays as string[]) : ["الجمعة"]);
+    setMaxDaily(Number(s.maxDailyHours ?? 12));
+    setSched(
+      s.defaultWorkSchedule && typeof s.defaultWorkSchedule === "object"
+        ? ({ ...(s.defaultWorkSchedule as Record<string, { hours: number; rate?: number | null }>) })
+        : Object.fromEntries(WEEK_DAYS.map((d) => [d, { hours: d === "الجمعة" ? 0 : 8 }])),
+    );
   }, [open, s]);
 
   return (
@@ -431,30 +436,53 @@ function NightShiftSettingsCard() {
                 </p>
               </div>
               <div className="space-y-1">
-                <Label htmlFor="ap-hours">ساعات الدوام اليومية (افتراضي)</Label>
-                <Input id="ap-hours" type="number" min={1} max={24} step="0.5" dir="ltr" value={dailyHours} disabled={!payOn} onChange={(e) => setDailyHours(Number(e.target.value))} />
-              </div>
-              <div className="space-y-1">
-                <Label>أيام الراحة الأسبوعية (افتراضي)</Label>
-                <div className="flex flex-wrap gap-2">
+                <Label>جدول الدوام الأسبوعيّ (افتراضي)</Label>
+                <div className="rounded-md border divide-y">
+                  <div className="grid grid-cols-3 gap-2 bg-muted/50 px-2 py-1 text-[11px] font-medium">
+                    <span>اليوم</span><span className="text-center">ساعات الدوام</span><span className="text-center">سعر الساعة (د.ع)</span>
+                  </div>
                   {WEEK_DAYS.map((d) => (
-                    <label key={d} className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs">
-                      <input
-                        type="checkbox"
-                        className="size-3.5"
+                    <div key={d} className="grid grid-cols-3 gap-2 items-center px-2 py-1.5">
+                      <span className="text-xs">{d}</span>
+                      <Input
+                        type="number" min={0} max={24} step="0.5" dir="ltr" className="h-8 text-center"
                         disabled={!payOn}
-                        checked={restDays.includes(d)}
-                        onChange={(e) => setRestDays((prev) => (e.target.checked ? [...prev, d] : prev.filter((x) => x !== d)))}
+                        value={sched[d]?.hours ?? 0}
+                        onChange={(ev) => setSched((p) => ({ ...p, [d]: { ...(p[d] ?? {}), hours: Number(ev.target.value) } }))}
                       />
-                      {d}
-                    </label>
+                      <Input
+                        type="number" min={0} step="250" dir="ltr" className="h-8 text-center"
+                        placeholder="مُشتقّ من الراتب"
+                        disabled={!payOn || !(sched[d]?.hours > 0)}
+                        value={sched[d]?.rate ?? ""}
+                        onChange={(ev) => setSched((p) => ({ ...p, [d]: { ...(p[d] ?? { hours: 0 }), rate: ev.target.value === "" ? null : Number(ev.target.value) } }))}
+                      />
+                    </div>
                   ))}
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  يوم الراحة لا يُطالَب بحضورٍ فيه ولا يُخصَم. يمكن تخصيصه لكل موظف من بطاقته.
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  <span className="font-medium">صفر ساعة = يوم راحة.</span> وسعر الساعة هو أصل الحساب: أجر اليوم =
+                  ساعاته المحتسَبة × سعره، والراتب المستحقّ = مجموع أيام الشهر. تركُ السعر فارغاً يشتقّه من حقل
+                  راتب الموظف ÷ ساعات شهره. والساعات فوق المقرَّر اليوميّ تُحتسب <span className="font-medium">أوفر تايم</span> ببندٍ مستقلّ.
+                  مجموع الأسبوع: <span className="font-medium tabular-nums" dir="ltr">{WEEK_DAYS.reduce((t, d) => t + (Number(sched[d]?.hours) || 0), 0)}</span> ساعة.
+                  يمكن تخصيص جدولٍ لكل موظف من بطاقته.
                 </p>
               </div>
             </div>
+
+            {/* حارس الساعات غير المعقولة — يعمل دائماً، مستقلّاً عن تفعيل الأجر بالحضور. */}
+            <div className="rounded-md border p-3 space-y-1">
+              <Label htmlFor="max-daily">حارس الساعات — سقف اليوم الواحد</Label>
+              <Input id="max-daily" type="number" min={1} max={24} step="0.5" dir="ltr" value={maxDaily} onChange={(e) => setMaxDaily(Number(e.target.value))} />
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                يومٌ تتجاوز بصماتُه هذا السقف يُقصّ عنده ويُوسَم «يحتاج تصحيح» بدل أن يُدفَع كاملاً.
+                لا يوجد دوامٌ ١٦ أو ١٨ أو ٢٠ ساعة — مثلُه غالباً بصمةُ خروجٍ منسيّة أو خللٌ في ساعة
+                الجهاز، فيُدفَع أجرُ عملٍ لم يقع ويدخل الأوفر تايم فيُضاعَف. صحّح الأوقات من كشف
+                حضور الموظف ليُرفع الوسم.
+              </p>
+            </div>
+
+            <div className="rounded-md border p-3 space-y-2">
             <label className="flex items-start gap-2">
               <input type="checkbox" className="size-4 mt-0.5" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
               <span>
@@ -471,13 +499,14 @@ function NightShiftSettingsCard() {
                 أيّ بصمة قبل هذه الساعة تُغلق وردية اليوم السابق إن كانت مفتوحة. بعدها تُعدّ بدايةَ يومٍ جديد.
               </p>
             </div>
+            </div>
             <p className="text-xs text-muted-foreground border-t pt-2">
               التغيير لا يُعيد حساب أيام مسجَّلة سابقاً — يسري على ما يصل بعده.
             </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
-            <Button disabled={save.isPending} onClick={() => save.mutate({ nightShiftEnabled: enabled, nightShiftCutoffHour: cutoff, attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, standardDailyHours: dailyHours, defaultRestDays: restDays })}>
+            <Button disabled={save.isPending} onClick={() => save.mutate({ nightShiftEnabled: enabled, nightShiftCutoffHour: cutoff, attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, defaultWorkSchedule: sched, maxDailyHours: maxDaily })}>
               {save.isPending ? "جارٍ الحفظ…" : "حفظ"}
             </Button>
           </DialogFooter>

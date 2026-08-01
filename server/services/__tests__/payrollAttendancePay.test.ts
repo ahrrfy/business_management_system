@@ -25,12 +25,18 @@ const ADMIN = { userId: 1, branchId: 1, role: "admin" };
 const PERIOD = "2026-06"; // حزيران ٢٠٢٦: ٣٠ يوماً، ٤ جُمَع ⇒ ٢٦ يوم دوام × ٨ = ٢٠٨ ساعة
 
 /** يُفعّل النموذج بتاريخ سريان. */
-async function enableAttendancePay(from: string, restDays: string[] = ["الجمعة"]) {
+async function enableAttendancePay(from: string, schedule: Record<string, number> = SCHED) {
   await db()
     .insert(s.hrAttendanceSettings)
-    .values({ id: 1, attendancePayEnabled: true, attendancePayFrom: from, standardDailyHours: "8.00", defaultRestDays: restDays })
-    .onDuplicateKeyUpdate({ set: { attendancePayEnabled: true, attendancePayFrom: from, defaultRestDays: restDays } });
+    .values({ id: 1, attendancePayEnabled: true, attendancePayFrom: from, defaultWorkSchedule: schedule })
+    .onDuplicateKeyUpdate({ set: { attendancePayEnabled: true, attendancePayFrom: from, defaultWorkSchedule: schedule } });
 }
+
+/** جدول قياسيّ: ٨ ساعات عدا الجمعة راحة. */
+const SCHED: Record<string, { hours: number; rate?: number }> = {
+  الأحد: { hours: 8 }, الاثنين: { hours: 8 }, الثلاثاء: { hours: 8 },
+  الأربعاء: { hours: 8 }, الخميس: { hours: 8 }, الجمعة: { hours: 0 }, السبت: { hours: 8 },
+};
 
 /** يسجّل حضوراً ٨ ساعات لكل أيام الدوام في حزيران عدا المستثناة. */
 async function seedFullAttendance(employeeId: number, skip: string[] = [], restDays = ["الجمعة"]) {
@@ -101,7 +107,7 @@ describe("الأجر بالحضور في المسيّر", () => {
 
   it("ع٣) أيام راحة مختلفة للموظف نفسه (الجمعة والسبت) تُغيّر المقام ولا تُخصَم", async () => {
     await enableAttendancePay("2026-06-01");
-    await db().update(s.employees).set({ restDays: ["الجمعة", "السبت"] }).where(eq(s.employees.id, 1));
+    await db().update(s.employees).set({ workSchedule: { ...SCHED, السبت: { hours: 0 } } }).where(eq(s.employees.id, 1));
     await seedFullAttendance(1, [], ["الجمعة", "السبت"]);
 
     const run = await generatePayroll(PERIOD, ADMIN as never);

@@ -125,3 +125,50 @@ describe("الحتمية (ي٤)", () => {
     expect(Number(r.hours)).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe("حارس الساعات غير المعقولة (قرار المالك ٣١/٧)", () => {
+  it("يوم ٢٠ ساعة يُقصّ عند السقف ويُوسَم «يحتاج تصحيح»", () => {
+    // بصمة دخول 04:00 وخروج 00:00 التالي — فترة وهمية من خللٍ في الساعة.
+    const r = computeDayHours(["2026-07-05 04:00:00", "2026-07-05 23:59:00"], [], [], DEFAULT_NIGHT_SHIFT, 12);
+    expect(Number(r.hours)).toBe(12); // قُصّت من ١٩.٩٨
+    expect(r.needsReview).toBe(true);
+    expect(String(r.reviewReason)).toContain("غير معقولة");
+  });
+
+  it("١٦ ساعة تُمسَك أيضاً — لا دوام بهذا الطول", () => {
+    const r = computeDayHours(["2026-07-05 06:00:00", "2026-07-05 22:00:00"], [], [], DEFAULT_NIGHT_SHIFT, 12);
+    expect(Number(r.hours)).toBe(12);
+    expect(r.needsReview).toBe(true);
+  });
+
+  it("يومٌ طبيعيّ (٨ ساعات باستراحة) يمرّ بلا وسم", () => {
+    const r = computeDayHours(
+      ["2026-07-05 08:00:00", "2026-07-05 12:00:00", "2026-07-05 16:00:00", "2026-07-05 20:00:00"],
+      [], [], DEFAULT_NIGHT_SHIFT, 12,
+    );
+    expect(Number(r.hours)).toBe(8);
+    expect(r.needsReview).toBe(false);
+  });
+
+  it("يومٌ عند السقف تماماً لا يُوسَم (حدّ حادّ)", () => {
+    const r = computeDayHours(["2026-07-05 08:00:00", "2026-07-05 20:00:00"], [], [], DEFAULT_NIGHT_SHIFT, 12);
+    expect(Number(r.hours)).toBe(12);
+    expect(r.needsReview).toBe(false);
+  });
+
+  it("السقف قابل للضبط — ١٠ ساعات تُمسَك عند سقف ٩", () => {
+    const r = computeDayHours(["2026-07-05 08:00:00", "2026-07-05 18:00:00"], [], [], DEFAULT_NIGHT_SHIFT, 9);
+    expect(Number(r.hours)).toBe(9);
+    expect(r.needsReview).toBe(true);
+  });
+
+  it("بصمة ناقصة + ساعات غير معقولة ⇒ السببان معاً في الوسم", () => {
+    const r = computeDayHours(
+      ["2026-07-05 04:00:00", "2026-07-05 23:00:00", "2026-07-05 23:30:00"],
+      [], [], DEFAULT_NIGHT_SHIFT, 12,
+    );
+    expect(r.needsReview).toBe(true);
+    expect(String(r.reviewReason)).toContain("فرديّ");
+    expect(String(r.reviewReason)).toContain("غير معقولة");
+  });
+});

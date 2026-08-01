@@ -21,6 +21,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { D, round2 } from "@/lib/money";
 import { payrollStatusLabel, payTypeLabel } from "@shared/hr";
+import { printPayslip } from "@/lib/printing/printPayslip";
 import { AlarmClock, Banknote, Check, FileText, Minus, Plus, Printer, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -388,7 +389,17 @@ export default function Payroll() {
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setSlip(null)}>إغلاق</Button>
-            <Button onClick={() => window.print()}><Printer className="size-4" /> طباعة</Button>
+            <Button onClick={() => slip && run && printPayslip({
+              runId: run.id, period: run.period, statusLabel: payrollStatusLabel(run.status),
+              employeeName: slip.employeeName, employeeId: Number(slip.employeeId),
+              position: slip.position, department: slip.department, branchName: null,
+              payTypeLabel: payTypeLabel(slip.payType),
+              baseSalary: slip.payType === "monthly" ? round2(D(slip.gross).minus(D(slip.allowances))).toFixed(2) : null,
+              hours: slip.hours, gross: slip.gross, overtime: slip.overtime, commission: slip.commission,
+              deductions: slip.deductions, advanceDeduction: slip.advanceDeduction,
+              socialSecurityEmployee: slip.socialSecurityEmployee, incomeTax: slip.incomeTax,
+              net: slip.net, note: slip.note, paidAt: run.paidAt ? String(run.paidAt).slice(0, 10) : null,
+            })}><Printer className="size-4" /> طباعة كشف الراتب</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

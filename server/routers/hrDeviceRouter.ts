@@ -203,6 +203,20 @@ export const hrDeviceRouter = router({
       return d;
     }),
 
+  /** حذف صفّ جهازٍ وهميّ (سُجّل تلقائياً من فحص اتصال) — غير معتمَد وبلا بصمات وبلا مستخدمين. */
+  deleteDevice: hrWrite
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await svc.deleteDevice(input.id);
+      await logAudit(ctx, {
+        action: "hrDevice.delete",
+        entityType: "hrFingerprintDevice",
+        entityId: input.id,
+        oldValue: { name: res.name, serialNumber: res.serialNumber },
+      });
+      return res;
+    }),
+
   /** تشغيل الطيّ يدوياً (زر «معالجة الآن» — مفيد بعد ربط دفعة مستخدمين). */
   processFolds: hrWrite.mutation(async ({ ctx }) => {
     const res = await processPendingFolds();

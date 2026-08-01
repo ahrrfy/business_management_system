@@ -12,6 +12,7 @@ import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { money, round2, toDbMoney } from "./money";
+import { DEFAULT_WORK_SCHEDULE } from "./hr/attendancePay";
 
 /** اسم اليوم العربي من تاريخ "YYYY-MM-DD" (الأحد=0). يُحسب بتقويم UTC ثابت من مكوّنات السلسلة
  *  حتى لا تنزلق التسمية (ومعها سعر الساعة) بمنطقة الخادم الزمنية — تكامل مالي مستقلّ عن TZ. */
@@ -198,8 +199,8 @@ export async function getAttendanceSettings() {
     nightShiftCutoffHour: 8,
     attendancePayEnabled: false,
     attendancePayFrom: null as string | null,
-    standardDailyHours: "8.00",
-    defaultRestDays: ["الجمعة"] as unknown,
+    defaultWorkSchedule: DEFAULT_WORK_SCHEDULE as unknown,
+    maxDailyHours: "12.00",
     updatedBy: null as number | null,
     updatedAt: new Date(),
   };
@@ -217,8 +218,8 @@ export async function updateAttendanceSettings(
     nightShiftCutoffHour: number;
     attendancePayEnabled?: boolean;
     attendancePayFrom?: string | null;
-    standardDailyHours?: number;
-    defaultRestDays?: string[] | null;
+    defaultWorkSchedule?: Record<string, { hours: number; rate?: number | null }> | null;
+    maxDailyHours?: number;
   },
   actorUserId: number,
 ) {
@@ -235,8 +236,8 @@ export async function updateAttendanceSettings(
     nightShiftCutoffHour: input.nightShiftCutoffHour,
     ...(input.attendancePayEnabled !== undefined ? { attendancePayEnabled: input.attendancePayEnabled } : {}),
     ...(input.attendancePayFrom !== undefined ? { attendancePayFrom: input.attendancePayFrom || null } : {}),
-    ...(input.standardDailyHours !== undefined ? { standardDailyHours: String(input.standardDailyHours) } : {}),
-    ...(input.defaultRestDays !== undefined ? { defaultRestDays: input.defaultRestDays } : {}),
+    ...(input.defaultWorkSchedule !== undefined ? { defaultWorkSchedule: input.defaultWorkSchedule } : {}),
+    ...(input.maxDailyHours !== undefined ? { maxDailyHours: String(input.maxDailyHours) } : {}),
     updatedBy: actorUserId,
   };
   return withTx(async (tx) => {
