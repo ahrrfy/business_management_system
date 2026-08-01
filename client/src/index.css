@@ -489,3 +489,64 @@ option:disabled {
 @media (prefers-reduced-motion: reduce) {
   .app-sidebar .sb-item, .app-sidebar .sb-active { transition: none; }
 }
+
+/*
+ * طباعة صفحات النظام (القوائم والمسودات): أزرار الطباعة القديمة تستدعي
+ * window.print() في النافذة الحالية. من دون هذه القواعد كان المتصفح يطبع
+ * الشريط الجانبي والتنقّل أيضاً، وقد يبقي الجدول محبوساً داخل حاوية تمرير.
+ * قوالب الفواتير والإيصالات المخصصة تفتح نافذة مستقلة، لذلك لا تتأثر هنا.
+ */
+@media print {
+  @page { margin: 12mm; }
+
+  html,
+  body,
+  #root,
+  .app-shell {
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+
+  body {
+    color: #000 !important;
+    color-scheme: light;
+  }
+
+  /* التنقّل جزء من واجهة التشغيل، وليس من المستند المطبوع. */
+  .app-sidebar,
+  .app-shell > header,
+  [data-sonner-toaster] {
+    display: none !important;
+  }
+
+  .app-main {
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+
+  /* تبقى تسمية القائمة وعدد السجلات، وتُخفى أدوات التشغيل فقط. */
+  .list-toolbar-actions {
+    display: none !important;
+  }
+
+  /* لا نطبع فقط الصفوف المرئية داخل جدول قابل للتمرير. */
+  .print-table-shell {
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  .print-table-shell thead th {
+    position: static !important;
+  }
+
+  .app-main table {
+    width: 100% !important;
+  }
+
+  .app-main tr,
+  .app-main [data-slot="card"] {
+    break-inside: avoid;
+  }
+}

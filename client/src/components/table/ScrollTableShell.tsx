@@ -27,7 +27,7 @@ export function ScrollTableShell({
   return (
     <div
       className={cn(
-        "relative overflow-auto bg-card [scrollbar-gutter:stable]",
+        "print-table-shell relative overflow-auto bg-card [scrollbar-gutter:stable]",
         bordered && "rounded-md border",
         maxHeightClass,
         // ترويسة لاصقة: أي thead th داخل الحاوية يلتصق أعلى التمرير بخلفية معتمة فوق الصفوف.

@@ -124,7 +124,7 @@ export function ListToolbar<T>({
         )}
       </div>
 
-      <div className="flex flex-wrap items-end gap-2">
+      <div className="list-toolbar-actions flex flex-wrap items-end gap-2">
         {search && (
           <div className="relative min-w-48 flex-1 sm:flex-none">
             <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
