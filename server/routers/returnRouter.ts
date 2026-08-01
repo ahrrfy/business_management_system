@@ -92,6 +92,7 @@ export const returnRouter = router({
           taxAmount: invoices.taxAmount,
           total: invoices.total,
           paidAmount: invoices.paidAmount,
+          paymentMethod: invoices.paymentMethod,
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
@@ -154,6 +155,7 @@ export const returnRouter = router({
       taxAmount: inv.taxAmount,
       total: inv.total,
       paidAmount: inv.paidAmount,
+      paymentMethod: inv.paymentMethod,
       items,
     };
   }),
