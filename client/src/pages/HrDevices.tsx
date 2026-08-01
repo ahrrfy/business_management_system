@@ -14,6 +14,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { RowActions } from "@/components/list/RowActions";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { ErrorState, LoadingState, TableEmptyRow } from "@/components/PageState";
+import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { HR_FINGERPRINT_TARGET } from "@shared/hr";
@@ -28,6 +29,7 @@ import {
   Radio,
   ScanFace,
   Server,
+  Trash2,
   Users,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -95,6 +97,13 @@ export default function HrDevices() {
   const approve = trpc.hrDevices.approveDevice.useMutation({
     onSuccess: async () => {
       notify.ok("اعتُمد الجهاز — ستُقبل بصماته من الآن");
+      await refresh();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const del = trpc.hrDevices.deleteDevice.useMutation({
+    onSuccess: async (r) => {
+      notify.ok(`حُذف صفّ «${r.name}»`);
       await refresh();
     },
     onError: (e) => notify.err(e),
@@ -299,7 +308,8 @@ export default function HrDevices() {
                   <th className="p-2">الفرع / الموقع</th>
                   <th className="p-2 text-center">الحالة</th>
                   <th className="p-2 text-center">آخر إشارة</th>
-                  <th className="p-2 text-center">مستخدمون / سجلات</th>
+                  <th className="p-2 text-center">بصمات مستلَمة</th>
+                  <th className="p-2 text-center">يُبلّغ الجهاز</th>
                   <th className="p-2 text-center">على خادمك؟</th>
                   <th className="p-2 text-left">إجراءات</th>
                 </tr>
@@ -349,6 +359,15 @@ export default function HrDevices() {
                         </span>
                       </td>
                       <td className="p-2 text-center text-xs tabular-nums" dir="ltr">
+                        {/* العدّ الحقيقيّ من قاعدتنا — يتحرّك أثناء الرفع، بخلاف عدّادَي الجهاز الثابتين. */}
+                        <div className="font-medium">{(d.receivedPunches ?? 0).toLocaleString("en-US")}</div>
+                        {(d.pendingPunches ?? 0) > 0 && (
+                          <div className="text-[10px] text-[var(--sem-warn)]" dir="rtl">
+                            {(d.pendingPunches ?? 0).toLocaleString("en-US")} بلا موظف
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-2 text-center text-[11px] tabular-nums text-muted-foreground" dir="ltr">
                         {d.usersCount ?? 0} / {d.recordsCount ?? 0}
                       </td>
                       <td className="p-2 text-center">
@@ -372,6 +391,10 @@ export default function HrDevices() {
                             { key: "logs", kind: "export", label: "سحب السجل", icon: DownloadCloud, hidden: !d.enabled, gate: { module: "hr", level: "FULL" }, disabled: command.isPending, disabledReason: "الجهاز ينفّذ أمراً آخر", onSelect: () => command.mutate({ deviceId: d.id, cmd: "getalllog" }) },
                             { key: "users", kind: "export", label: "سحب المستخدمين", icon: Users, hidden: !d.enabled, gate: { module: "hr", level: "FULL" }, disabled: command.isPending, disabledReason: "الجهاز ينفّذ أمراً آخر", onSelect: () => command.mutate({ deviceId: d.id, cmd: "getuserlist" }) },
                             { key: "time", kind: "edit", label: "مزامنة الوقت", icon: Clock3, hidden: !d.enabled, gate: { module: "hr", level: "FULL" }, disabled: command.isPending, disabledReason: "الجهاز ينفّذ أمراً آخر", onSelect: () => command.mutate({ deviceId: d.id, cmd: "settime" }) },
+                            { key: "delete", kind: "delete", label: "حذف الصفّ", icon: Trash2, hidden: d.enabled, gate: { module: "hr", level: "FULL" }, disabled: del.isPending, disabledReason: "جارٍ الحذف", onSelect: () => void (async () => {
+                              if (!(await confirm({ variant: "danger", title: "حذف صفّ الجهاز", description: `حذف «${d.name}» (${d.serialNumber ?? "بلا سريال"}). متاح لأنّه غير معتمَد وبلا بصمات — صفوفٌ كهذه تنشأ تلقائياً من فحوص الاتصال.`, confirmText: "حذف" }))) return;
+                              del.mutate({ id: d.id });
+                            })() },
                           ]}
                         />
                       </td>
@@ -380,20 +403,20 @@ export default function HrDevices() {
                 })}
                 {list.isError && (
                   <tr>
-                    <td colSpan={7} className="p-0">
+                    <td colSpan={8} className="p-0">
                       <ErrorState message="تعذّر تحميل الأجهزة." onRetry={() => list.refetch()} />
                     </td>
                   </tr>
                 )}
                 {!list.isLoading && !list.isError && visibleDevices.length === 0 && (
                   <TableEmptyRow
-                    colSpan={7}
+                    colSpan={8}
                     message="لا أجهزة بعد. أضف جهازاً برقمه التسلسلي، أو وجّهه لخادمك وسيظهر هنا بانتظار الاعتماد."
                   />
                 )}
                 {list.isLoading && (
                   <tr>
-                    <td colSpan={7} className="p-0">
+                    <td colSpan={8} className="p-0">
                       <LoadingState />
                     </td>
                   </tr>
