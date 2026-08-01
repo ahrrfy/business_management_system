@@ -148,6 +148,7 @@ const SECTIONS: Section[] = [
     items: [
       { title: "ملخّص الرواتب", desc: "إجمالي/بدلات/خصومات/صافٍ بالفترة", href: "/reports/payroll", icon: Banknote, gate: "manager", status: "ready" },
       { title: "تقرير الحضور", desc: "بالموظف/الفترة + الساعات", href: "/reports/attendance", icon: Clock8, gate: "manager", status: "ready" },
+      { title: "الحضور الشهريّ (كل الموظفين)", desc: "ساعات · غياب · إضافيّ · المستحقّ", href: "/reports/attendance-monthly", icon: Clock8, gate: "manager", status: "ready" },
       { title: "أرصدة الإجازات", desc: "المستحقّ/المستخدَم/المتبقّي", href: "/reports/leaves", icon: Palmtree, gate: "manager", status: "ready" },
       { title: "الترقيات وإنهاء الخدمات", desc: "سجلّ التغييرات الوظيفية", href: "/reports/hr-changes", icon: TrendingUp, gate: "manager", status: "ready" },
       { title: "كادر الموظفين", desc: "دليل الموظفين مع تصدير", href: "/hr/employees", icon: User, gate: "manager", status: "ready" },

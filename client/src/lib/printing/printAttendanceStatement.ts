@@ -32,7 +32,7 @@ export interface StatementDay {
   overtimeHours: string;
   rate: string;
   amount: string;
-  state: "present" | "absent" | "paidLeave" | "unpaidLeave" | "beforeStart";
+  state: "present" | "absent" | "paidLeave" | "unpaidLeave" | "beforeStart" | "restWorked";
   checkIn?: string | null;
   checkOut?: string | null;
   needsReview?: boolean;
@@ -68,6 +68,7 @@ const STATE_LABEL: Record<StatementDay["state"], string> = {
   paidLeave: "إجازة مدفوعة",
   unpaidLeave: "إجازة بلا راتب",
   beforeStart: "قبل السريان",
+  restWorked: "عمل يوم راحة",
 };
 
 export function printAttendanceStatement(d: AttendanceStatementData, days: StatementDay[]): boolean {

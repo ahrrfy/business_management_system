@@ -322,10 +322,9 @@ export async function generatePayroll(period: string, actor: Actor) {
      */
     const [attSettings] = await tx.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
     const attendancePayOn = !!attSettings?.attendancePayEnabled;
-    const defaultSchedule =
-      attSettings?.defaultWorkSchedule && typeof attSettings.defaultWorkSchedule === "object"
-        ? (attSettings.defaultWorkSchedule as WorkSchedule)
-        : DEFAULT_WORK_SCHEDULE;
+    // الجدول العامّ أُلغي (0140): لكل موظف جدولُه، ومن لم يُضبط يقع على ثابت الكود.
+    const defaultSchedule = DEFAULT_WORK_SCHEDULE;
+    const maxDaily = Number(attSettings?.maxDailyHours ?? 12);
     const payFrom = attSettings?.attendancePayFrom ? String(attSettings.attendancePayFrom) : null;
 
     // ساعات الحضور لكل (موظف × يوم) — تُستعمل في نموذج الحضور فقط.
@@ -456,6 +455,7 @@ export async function generatePayroll(period: string, actor: Actor) {
           // حدّا الشهر — شرط منح تعويض الشهر القصير لمن عمله كاملاً.
           monthStart: periodStart,
           monthEnd: periodEndYmd,
+          maxDailyHours: maxDaily,
         });
         attendancePayByEmp.set(Number(e.id), pay);
         gross = round2(money(pay.basePay).plus(allowances));

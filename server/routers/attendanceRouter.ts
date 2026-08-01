@@ -8,6 +8,7 @@ import { logAudit } from "../services/auditService";
 import * as svc from "../services/attendanceService";
 import { getAttendanceReport } from "../services/reportsHrService";
 import { getEmployeeStatement } from "../services/hr/employeeStatement";
+import { getMonthlyAttendanceReport } from "../services/hr/monthlyAttendanceReport";
 import { protectedProcedure, requireModule, router } from "../trpc";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
@@ -43,13 +44,8 @@ export const attendanceRouter = router({
   updateSettings: hrWrite
     .input(
       z.object({
-        nightShiftEnabled: z.boolean(),
-        nightShiftCutoffHour: z.number().int().min(1).max(12),
         attendancePayEnabled: z.boolean().optional(),
         attendancePayFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
-        defaultWorkSchedule: z
-          .record(z.string(), z.object({ hours: z.number().min(0).max(24), rate: z.number().min(0).nullish() }))
-          .nullish(),
         maxDailyHours: z.number().min(1).max(24).optional(),
       }),
     )
@@ -59,7 +55,7 @@ export const attendanceRouter = router({
         action: "attendance.updateSettings",
         entityType: "hrAttendanceSettings",
         entityId: 1,
-        newValue: { nightShiftEnabled: input.nightShiftEnabled, nightShiftCutoffHour: input.nightShiftCutoffHour },
+        newValue: { attendancePayEnabled: input.attendancePayEnabled, attendancePayFrom: input.attendancePayFrom, maxDailyHours: input.maxDailyHours },
       });
       return row;
     }),
@@ -89,6 +85,14 @@ export const attendanceRouter = router({
   employeeStatement: hrRead
     .input(z.object({ employeeId: z.number().int().positive(), period: periodStr }))
     .query(({ input }) => getEmployeeStatement(input)),
+
+  /**
+   * تقرير الحضور الشهريّ لكل الموظفين — صفٌّ لكل موظف بالمجاميع.
+   * يُبنى بنواة المسيّر نفسها فلا ينحرف عن الكشف الفرديّ ولا عن المسيّر.
+   */
+  monthlyReport: hrRead
+    .input(z.object({ period: periodStr, branchId: z.number().int().positive().nullish() }))
+    .query(({ input }) => getMonthlyAttendanceReport({ period: input.period, branchId: input.branchId ?? null })),
 
   /** تقرير الحضور — سجلّات الحضور في نطاق تاريخ + ملخّص (بفلتر موظف اختياري). hr/READ. */
   report: hrRead
