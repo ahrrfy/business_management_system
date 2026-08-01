@@ -16,6 +16,7 @@ import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
 import { nextVoucherNumber } from "./voucher/helpers";
+import { wageProfileColumns, wageProfileOf, type WageProfile } from "./hr/wageProfile";
 
 /* ===== الترقيات ===== */
 
@@ -37,6 +38,9 @@ async function promotionRows(id?: number) {
       createdAt: employeePromotions.createdAt,
       approvedAt: employeePromotions.approvedAt,
       approvedBy: employeePromotions.approvedBy,
+      // حزمة الأجر (0143) — تُعرَض للمعتمِد ليرى ما سيتغيّر فعلاً قبل الاعتماد.
+      fromWage: employeePromotions.fromWage,
+      toWage: employeePromotions.toWage,
       firstName: employees.firstName,
       fatherName: employees.fatherName,
       grandfatherName: employees.grandfatherName,
@@ -54,14 +58,36 @@ export async function listPromotions() {
   return promotionRows();
 }
 
+/**
+ * رقعةُ حزمة الأجر المطلوبة (0143) — أيّ مجموعةٍ جزئية من الحقول الحاملة للأجر.
+ * ما لا يُمرَّر يُؤخذ من حالة الموظف وقت الإنشاء، فتُخزَّن **بصمةٌ هدفٌ كاملة**
+ * (`toWage`) لا رقعةٌ تحتاج دمجاً لاحقاً بحالةٍ قد تكون تغيّرت قبل الاعتماد.
+ */
+export interface WagePatchInput {
+  payType?: "monthly" | "hourly";
+  salary?: string | null;
+  allowances?: string | null;
+  attendanceExempt?: boolean;
+  dayRates?: Record<string, number> | null;
+  workSchedule?: Record<string, { hours: number; rate?: number | null }> | null;
+}
+
 export interface PromotionInput {
   employeeId: number;
-  toTitle: string;
+  /** يُترك فارغاً في تغييرٍ أجريٍّ بحت ⇒ يبقى المسمّى الحالي. */
+  toTitle?: string | null;
   fromTitle?: string | null;
   fromSalary?: string | null;
   toSalary?: string | null;
   effectiveDate: string;
   reason?: string | null;
+  /** حزمة الأجر الجديدة — غيابها يُبقي السلوك القديم (المسمّى والراتب وحدهما). */
+  wage?: WagePatchInput | null;
+}
+
+/** يحذف المفاتيح غير المُمرَّرة حتى لا يطمس الانتشارُ (`spread`) قيمةَ الموظف بـundefined. */
+function definedOnly<T extends object>(o: T): Partial<T> {
+  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
 export async function createPromotion(input: PromotionInput, actor: Actor) {
@@ -74,17 +100,35 @@ export async function createPromotion(input: PromotionInput, actor: Actor) {
       input.fromSalary != null && input.fromSalary !== ""
         ? toDbMoney(input.fromSalary)
         : emp.salary ?? null;
+
+    /*
+     * حزمة الأجر (0143): الرقعة تُدمَج فوق بصمة الموظف الحالية ثمّ تُطبَّع، فيُخزَّن الهدف
+     * كاملاً. `toSalary` يبقى عموداً مستقلاً (تعتمده الشاشة والتقرير والتصدير) ويُشتقّ
+     * من الحزمة عند وجودها ⇒ مصدرُ تطبيقٍ واحدٌ لا اثنان متعارضان.
+     */
+    const fromWage = wageProfileOf(emp);
+    const toWage = input.wage ? wageProfileOf({ ...emp, ...definedOnly(input.wage) }) : null;
+    const toSalary = toWage
+      ? toWage.salary
+      : input.toSalary != null && input.toSalary !== ""
+        ? toDbMoney(input.toSalary)
+        : null;
+
     const [res] = await tx.insert(employeePromotions).values({
       employeeId: input.employeeId,
       fromTitle,
-      toTitle: input.toTitle.trim(),
+      // مسمّى فارغ = «لا تغيير في المسمّى» (تغييرٌ أجريٌّ بحت) — والتطبيق يتخطّى عمود
+      // `position` حينها بدل أن يكتب فيه نصّاً بديلاً يصير مسمّى الموظف الفعليّ.
+      toTitle: input.toTitle?.trim() || emp.position?.trim() || "",
       fromSalary,
-      toSalary: input.toSalary != null && input.toSalary !== "" ? toDbMoney(input.toSalary) : null,
+      toSalary,
       effectiveDate: input.effectiveDate,
       reason: input.reason?.trim() || null,
       status: "pending",
       // SOD (تدقيق ١٧/٧): نُثبّت المُنشئ لفرض «المعتمِد ≠ المُنشئ» عند الاعتماد.
       createdBy: actor.userId,
+      fromWage: toWage ? fromWage : null,
+      toWage,
     });
     return extractInsertId(res);
   });
@@ -133,14 +177,36 @@ export async function approvePromotion(id: number, actor: Actor) {
       .set({ status: "approved", approvedAt: new Date(), approvedBy: actor.userId, appliedAt: due ? new Date() : null })
       .where(eq(employeePromotions.id, id));
 
-    if (due) {
-      const empPatch: { position: string; salary?: string } = { position: p.toTitle };
-      if (p.toSalary != null) empPatch.salary = toDbMoney(p.toSalary);
-      await tx.update(employees).set(empPatch).where(eq(employees.id, p.employeeId));
-    }
+    if (due) await applyPromotionToEmployee(tx, p);
 
     return id;
   });
+}
+
+/**
+ * تطبيق ترقيةٍ على سجلّ الموظف — نقطةُ الكتابة **الوحيدة** (الاعتماد الفوريّ والكنسة
+ * المؤجَّلة كلاهما يمرّ بها) فلا ينحرف مسارٌ عن الآخر.
+ *
+ * حزمة الأجر (0143) تتقدّم على `toSalary` حين وُجدت: هي البصمة الهدف كاملةً، وتشمل
+ * الراتب نفسه ⇒ لا كتابةَ راتبٍ مرّتين بمصدرين. والصفوف القديمة (toWage=NULL) تسلك
+ * المسار السابق حرفياً بلا أثرٍ رجعيّ.
+ */
+async function applyPromotionToEmployee(
+  tx: Tx,
+  p: { employeeId: number; toTitle: string; toSalary: string | null; toWage: unknown },
+): Promise<void> {
+  const empPatch: Record<string, unknown> = {};
+  // مسمّى فارغ ⇒ لا يُمسّ `position` (طلبُ أجرٍ بحت لموظفٍ بلا مسمّى مُسجَّل).
+  if (p.toTitle) empPatch.position = p.toTitle;
+  if (p.toWage && typeof p.toWage === "object") {
+    Object.assign(empPatch, wageProfileColumns(p.toWage as WageProfile));
+  } else if (p.toSalary != null) {
+    empPatch.salary = toDbMoney(p.toSalary);
+  }
+  // رقعةٌ فارغة تجعل drizzle يرمي «No values to set» — والحالة ممكنة (سجلٌّ قديم بلا
+  // مسمّى ولا راتب). لا شيء ليُطبَّق ⇒ تُختَم الترقية مطبَّقةً بلا كتابةٍ على الموظف.
+  if (Object.keys(empPatch).length === 0) return;
+  await tx.update(employees).set(empPatch).where(eq(employees.id, p.employeeId));
 }
 
 /**
@@ -160,9 +226,7 @@ export async function applyDuePromotions(tx: Tx, asOf: string): Promise<number> 
       ),
     );
   for (const p of due) {
-    const empPatch: { position: string; salary?: string } = { position: p.toTitle };
-    if (p.toSalary != null) empPatch.salary = toDbMoney(p.toSalary);
-    await tx.update(employees).set(empPatch).where(eq(employees.id, p.employeeId));
+    await applyPromotionToEmployee(tx, p);
     await tx.update(employeePromotions).set({ appliedAt: new Date() }).where(eq(employeePromotions.id, p.id));
   }
   return due.length;
