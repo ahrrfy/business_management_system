@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Label } from "@/components/ui/label";
-import { WagePackageFields, defaultWageSchedule, type WageDayValue } from "@/components/form/WagePackageFields";
+import { WagePackageFields, defaultWageSchedule, wageValueFromEmployee, type WageDayValue } from "@/components/form/WagePackageFields";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import {
   AccountFields, accountPermsPayload, emptyAccountValue, validateAccount, type AccountFieldsValue,
@@ -112,11 +112,12 @@ export default function EmployeeNew() {
       payType: (e.payType as "monthly" | "hourly") ?? "monthly", salary: e.salary != null ? String(e.salary) : "", allowances: e.allowances != null ? String(e.allowances) : "0",
       colorTag: e.colorTag ?? COLORS[0], annualLeaveBalance: String(e.annualLeaveBalance ?? 0), sickLeaveBalance: String(e.sickLeaveBalance ?? 0),
     }));
-    if (e.dayRates && typeof e.dayRates === "object") setDayRates({ ...DAY_RATES_DEFAULT, ...(e.dayRates as Record<string, number>) });
-    setExempt(!!e.attendanceExempt);
-    if (e.workSchedule && typeof e.workSchedule === "object") {
-      setSched({ ...(e.workSchedule as Record<string, WageDayValue>) });
-    }
+    // نفس المُطبِّع الذي تستعمله شاشة الترقيات: يقبل الشكل القديم (رقمٌ = ساعات) ويُكمل
+    // الأيام الناقصة راحةً — وإلا عُرض جدولٌ قديمٌ أصفاراً وأُرسل بشكلٍ يرفضه التحقّق.
+    const w = wageValueFromEmployee(e);
+    setDayRates(w.dayRates);
+    setExempt(w.attendanceExempt);
+    setSched(w.schedule);
     if (Array.isArray(e.education)) setEdu((e.education as EmployeeEducation[]).map((x, i) => ({ ...x, key: i + 1 })));
     if (e.photoUrl) setPhoto([{ dataUrl: e.photoUrl, isPrimary: true } as ImageItem]);
     setLoaded(true);

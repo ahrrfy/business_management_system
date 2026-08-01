@@ -23,6 +23,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { WagePackageFields, wageValueFromEmployee, type WagePackageValue } from "@/components/form/WagePackageFields";
 import { TERMINATION_TYPES } from "@shared/hr";
+import { describeWageDiff, type WageProfileShape } from "@shared/wageDiff";
 import { CheckCircle2, TrendingUp, UserMinus, Wallet } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -40,6 +41,28 @@ const termStatusCls: Record<string, string> = {
   pending: "badge-status-pending",
 };
 const termStatusLabel = (s: string) => (s === "completed" ? "مكتملة" : "قيد التنفيذ");
+
+/**
+ * تفصيل حزمة الأجر قبل/بعد — **شرطُ جدوى الاعتماد الثاني**: من يعتمد تغييراً أجرياً
+ * دون رؤية قيمه القديمة والجديدة يُوقّع على ما لم يره، فتصير البوّابة إجراءً شكلياً
+ * (مراجعة Codex P1 على PR #449 — كان الصفّ يعرض وسماً عامّاً «حزمة أجر» فحسب).
+ */
+function WageDiffList({ from, to }: { from: unknown; to: unknown }) {
+  const rows = describeWageDiff(from as WageProfileShape | null, to as WageProfileShape | null);
+  if (!rows.length) return null;
+  return (
+    <ul className="mt-1 space-y-0.5 text-[11px]">
+      {rows.map((r, i) => (
+        <li key={`${r.key}-${i}`} className="flex flex-wrap items-baseline justify-end gap-1">
+          <span className="text-muted-foreground">{r.label}:</span>
+          <span className="tabular-nums line-through text-muted-foreground" dir="auto">{r.before}</span>
+          <span aria-hidden>←</span>
+          <span className="tabular-nums font-medium text-money-positive" dir="auto">{r.after}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function EmpCell({ name, color, photoUrl }: { name: string; color?: string | null; photoUrl?: string | null }) {
   return (
@@ -239,9 +262,12 @@ export default function Promotions() {
                           {/* «الراتب لم يتغيّر» لا يعني «الأجر لم يتغيّر»: الجدول وأسعار الساعات
                               تُغيّر المدفوع فعلياً، فيلزم أن يراها المعتمِد قبل الاعتماد. */}
                           {p.toWage != null && (
-                            <span dir="rtl" className="mt-0.5 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
-                              <Wallet aria-hidden className="size-3" /> حزمة أجر (جدول/أسعار)
-                            </span>
+                            <div dir="rtl">
+                              <span className="mt-0.5 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
+                                <Wallet aria-hidden className="size-3" /> حزمة أجر
+                              </span>
+                              <WageDiffList from={p.fromWage} to={p.toWage} />
+                            </div>
                           )}
                         </td>
                         <td className="p-2 text-center text-xs tabular-nums" dir="ltr">{p.effectiveDate}</td>
@@ -259,10 +285,13 @@ export default function Promotions() {
                                 disabled: approvePromo.isPending,
                                 disabledReason: "جارٍ اعتماد الترقية",
                                 onSelect: async () => {
-                                  const wageNote = p.toWage != null
-                                    ? " وتُطبَّق حزمة الأجر كاملةً (الراتب والبدلات وجدول الدوام وأسعار الساعات والإعفاء من الحضور)."
+                                  // الحوار يسرد التغييرات بقيمها لا بوصفٍ عامّ — المعتمِد يقرّ ما يراه.
+                                  const diff = describeWageDiff(p.fromWage as WageProfileShape | null, p.toWage as WageProfileShape | null);
+                                  const wageNote = diff.length
+                                    ? `\n\nتغييرات حزمة الأجر:\n${diff.map((r) => `• ${r.label}: ${r.before} ← ${r.after}`).join("\n")}`
                                     : "";
-                                  if (!(await confirm({ variant: "warning", title: "اعتماد الترقية", description: `اعتماد ترقية «${p.employeeName}» إلى «${p.toTitle}» يحدّث بيانات الموظف المالية.${wageNote} متابعة؟`, confirmText: "اعتماد" }))) return;
+                                  const titleNote = p.toTitle ? ` إلى «${p.toTitle}»` : "";
+                                  if (!(await confirm({ variant: "warning", title: "اعتماد الترقية", description: `اعتماد طلب «${p.employeeName}»${titleNote} يحدّث بيانات الموظف المالية.${wageNote}`, confirmText: "اعتماد" }))) return;
                                   approvePromo.mutate({ id: p.id });
                                 },
                               }]}

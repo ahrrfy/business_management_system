@@ -30,25 +30,18 @@
  * التطبيع هنا معه — هذه النواة **مرآةُ** ما يُدفع، وانحرافُها يفتح ثغرةً صامتة.
  * ========================================================================== */
 import { DAY_RATES_DEFAULT, WEEK_DAYS } from "@shared/hr";
+import { WAGE_FIELD_LABELS, normalizeScheduleShape, type WageDayShape, type WageProfileShape } from "@shared/wageDiff";
 import { money } from "../money";
-import { DEFAULT_WORK_SCHEDULE, type WorkSchedule } from "./attendancePay";
+import { DEFAULT_WORK_SCHEDULE } from "./attendancePay";
 
 /** يومٌ مطبَّع: ساعاتُه (صفر = راحة) وسعرُ ساعته الصريح (null = يُشتقّ من الراتب). */
-export interface WageDay {
-  hours: number;
-  rate: number | null;
-}
+export type WageDay = WageDayShape;
 
-/** البصمة الأجرية: كلُّ ما يقرؤه محرّك الرواتب/الحضور ليحسب مبلغاً — ولا شيء سواه. */
-export interface WageProfile {
-  payType: string;
-  /** null = بلا راتب أساس مُسجَّل (الساعيّ) — يختلف دلالةً عن "0.00". */
-  salary: string | null;
-  allowances: string;
-  attendanceExempt: boolean;
-  dayRates: Record<string, number>;
-  workSchedule: Record<string, WageDay>;
-}
+/**
+ * البصمة الأجرية: كلُّ ما يقرؤه محرّك الرواتب/الحضور ليحسب مبلغاً — ولا شيء سواه.
+ * شكلُها مُعرَّفٌ في `@shared/wageDiff` ليصف العميلُ فرقَها بنفس التسميات (شاشة الاعتماد).
+ */
+export type WageProfile = WageProfileShape;
 
 /** الحقول الحاملة للأجر كما تصل من القاعدة أو من حمولة التعديل (أنواع متسامحة). */
 export interface WageBearingFields {
@@ -60,15 +53,7 @@ export interface WageBearingFields {
   workSchedule?: unknown;
 }
 
-/** تسميات عربية للحقول — تُستعمل في رسالة المنع وفي سجلّ التدقيق. */
-export const WAGE_FIELD_LABELS: Record<keyof WageProfile, string> = {
-  payType: "طريقة الأجر",
-  salary: "الراتب الأساس",
-  allowances: "البدلات",
-  attendanceExempt: "الإعفاء من الحضور (راتب ثابت)",
-  dayRates: "أسعار ساعات الأيام",
-  workSchedule: "جدول الدوام الأسبوعيّ (ساعات/أسعار)",
-};
+export { WAGE_FIELD_LABELS };
 
 /** رقمٌ منتهٍ أو null (يبتلع "" وNaN وInfinity الآتية من الواجهة). */
 function finite(v: unknown): number | null {
@@ -92,24 +77,11 @@ function normalizeDayRates(raw: unknown): Record<string, number> {
 }
 
 /**
- * جدول الدوام كما يقرؤه `payrollService`/`attendancePay.dayOf`: **احتياطٌ للكائن كلّه**
- * (`null` ⇒ `DEFAULT_WORK_SCHEDULE`)، ثمّ داخل الجدول الموجود **يومٌ ناقصٌ = راحة (صفر)**
- * لا ثمانيَ ساعاتٍ افتراضية. ويقبل الشكل القديم (رقمٌ = ساعات) كما يقبله المستهلك.
+ * جدول الدوام كما يقرؤه `payrollService`/`attendancePay.dayOf` — التطبيع نفسُه مشتركٌ
+ * مع محرّر الواجهة (`@shared/wageDiff`) فلا تنحرف قراءةُ شاشةٍ عن قراءة المحرّك.
  */
 function normalizeSchedule(raw: unknown): Record<string, WageDay> {
-  const sched = (raw && typeof raw === "object" ? raw : DEFAULT_WORK_SCHEDULE) as WorkSchedule;
-  const out: Record<string, WageDay> = {};
-  for (const d of WEEK_DAYS) {
-    const v = sched[d] as { hours?: unknown; rate?: unknown } | number | undefined;
-    const rawHours = typeof v === "number" ? finite(v) : finite(v?.hours);
-    const rawRate = typeof v === "number" ? null : finite(v?.rate);
-    out[d] = {
-      hours: rawHours != null && rawHours > 0 ? rawHours : 0,
-      // السعر غير الموجب لا يُستعمل مصدراً (يسقط للمُشتقّ) ⇒ يُطبَّع null فلا يُعدّ تغييراً.
-      rate: rawRate != null && rawRate > 0 ? rawRate : null,
-    };
-  }
-  return out;
+  return normalizeScheduleShape(raw, DEFAULT_WORK_SCHEDULE as Record<string, WageDay>);
 }
 
 /** يستخرج البصمة الأجرية المطبَّعة من صفّ موظف أو من حمولة تعديل. */

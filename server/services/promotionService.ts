@@ -108,6 +108,28 @@ export async function createPromotion(input: PromotionInput, actor: Actor) {
      */
     const fromWage = wageProfileOf(emp);
     const toWage = input.wage ? wageProfileOf({ ...emp, ...definedOnly(input.wage) }) : null;
+
+    /*
+     * حارس سعر الساعيّ المؤجَّل (مراجعة Codex P1 على PR #449): أجرُ الموظف الساعيّ
+     * **يُجمَّد في صفّ الحضور وقت تسجيله** (`recordAttendance` يكتب hourlyRate وamount)،
+     * والمسيّر يجمع تلك المبالغ المخزّنة. أمّا الترقيات المؤجَّلة فتُطبَّق داخل توليد
+     * المسيّر — أي **بعد** أن سُجّل حضورُ الشهر كلِّه بالسعر القديم. فتاريخُ سريانٍ
+     * مستقبليٌّ على أسعار الساعات كان يَعِد بزيادةٍ لا تصل: أيامُ الشهر تُدفع بالقديم
+     * والجديد يبدأ عملياً من الشهر التالي — خطأٌ صامتٌ في اتجاه بخس الأجر.
+     * (الراتب/البدلات/الجدول/الإعفاء تُحتسب وقت التوليد ⇒ التأجيل يعمل لها بصحّة.)
+     */
+    if (toWage && toWage.payType === "hourly" && input.effectiveDate > todayUtcDate()) {
+      const ratesChanged = JSON.stringify(fromWage.dayRates) !== JSON.stringify(toWage.dayRates);
+      if (ratesChanged || fromWage.payType !== toWage.payType) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "أسعار ساعات الموظف الساعيّ لا تقبل تاريخ سريانٍ مستقبليّ: أجرُ كلّ يومٍ يُثبَّت في سجلّ الحضور لحظة تسجيله، " +
+            "فالتأجيل يعني دفعَ الشهر كلِّه بالسعر القديم. اجعل تاريخ السريان اليوم أو أنشئ الطلب حين يحين موعده.",
+        });
+      }
+    }
+
     const toSalary = toWage
       ? toWage.salary
       : input.toSalary != null && input.toSalary !== ""
@@ -187,24 +209,35 @@ export async function approvePromotion(id: number, actor: Actor) {
  * تطبيق ترقيةٍ على سجلّ الموظف — نقطةُ الكتابة **الوحيدة** (الاعتماد الفوريّ والكنسة
  * المؤجَّلة كلاهما يمرّ بها) فلا ينحرف مسارٌ عن الآخر.
  *
- * حزمة الأجر (0143) تتقدّم على `toSalary` حين وُجدت: هي البصمة الهدف كاملةً، وتشمل
- * الراتب نفسه ⇒ لا كتابةَ راتبٍ مرّتين بمصدرين. والصفوف القديمة (toWage=NULL) تسلك
- * المسار السابق حرفياً بلا أثرٍ رجعيّ.
+ * ⚠️ **يُطبَّق ما تغيّر وحده، لا اللقطة كلّها** (مراجعة Codex P1 على PR #449): `toWage`
+ * لقطةٌ كاملةٌ للحالة **وقت الإنشاء**، فكتابتُها بحذافيرها تعني أن طلبَين معلَّقَين على
+ * نفس الموظف — أحدهما للراتب والآخر للجدول — يُلغي آخرُهما تطبيقاً ما اعتمده الأوّل
+ * صامتاً (فقدُ تحديث). المقارنة بـ`fromWage` تُبقي كلَّ طلبٍ محصوراً في الحقول التي
+ * قصدها صاحبُه، فيتراكب الطلبان بلا تدمير؛ وحين يتنازعان على نفس الحقل يفوز الأحدث
+ * تطبيقاً (وهو ترتيبٌ صار حتمياً — انظر `applyDuePromotions`).
+ * والمسمّى كذلك: يُكتَب فقط إن اختلف عن لقطته، وإلا أعاد طلبُ أجرٍ بحتٌ مسمّى قديماً.
+ *
+ * والصفوف القديمة (toWage=NULL) تسلك المسار السابق حرفياً بلا أثرٍ رجعيّ.
  */
 async function applyPromotionToEmployee(
   tx: Tx,
-  p: { employeeId: number; toTitle: string; toSalary: string | null; toWage: unknown },
+  p: { employeeId: number; fromTitle: string | null; toTitle: string; fromSalary: string | null; toSalary: string | null; fromWage: unknown; toWage: unknown },
 ): Promise<void> {
   const empPatch: Record<string, unknown> = {};
   // مسمّى فارغ ⇒ لا يُمسّ `position` (طلبُ أجرٍ بحت لموظفٍ بلا مسمّى مُسجَّل).
-  if (p.toTitle) empPatch.position = p.toTitle;
+  if (p.toTitle && p.toTitle !== (p.fromTitle ?? "")) empPatch.position = p.toTitle;
   if (p.toWage && typeof p.toWage === "object") {
-    Object.assign(empPatch, wageProfileColumns(p.toWage as WageProfile));
+    const to = wageProfileColumns(p.toWage as WageProfile);
+    // `fromWage` مكتوبٌ دائماً مع `toWage` (منذ 0143)؛ وغيابُه احتياطاً ⇒ تطبيقُ الكلّ.
+    const from = p.fromWage && typeof p.fromWage === "object" ? wageProfileColumns(p.fromWage as WageProfile) : null;
+    for (const key of Object.keys(to) as (keyof typeof to)[]) {
+      if (!from || JSON.stringify(to[key]) !== JSON.stringify(from[key])) empPatch[key] = to[key];
+    }
   } else if (p.toSalary != null) {
     empPatch.salary = toDbMoney(p.toSalary);
   }
-  // رقعةٌ فارغة تجعل drizzle يرمي «No values to set» — والحالة ممكنة (سجلٌّ قديم بلا
-  // مسمّى ولا راتب). لا شيء ليُطبَّق ⇒ تُختَم الترقية مطبَّقةً بلا كتابةٍ على الموظف.
+  // رقعةٌ فارغة تجعل drizzle يرمي «No values to set» — والحالة ممكنة (طلبٌ اعتُمد ولم
+  // يعُد يغيّر شيئاً). لا شيء ليُطبَّق ⇒ تُختَم الترقية مطبَّقةً بلا كتابةٍ على الموظف.
   if (Object.keys(empPatch).length === 0) return;
   await tx.update(employees).set(empPatch).where(eq(employees.id, p.employeeId));
 }
@@ -224,7 +257,10 @@ export async function applyDuePromotions(tx: Tx, asOf: string): Promise<number> 
         isNull(employeePromotions.appliedAt),
         lte(employeePromotions.effectiveDate, asOf),
       ),
-    );
+    )
+    // ترتيبٌ حتميّ (مراجعة Codex P1): عند تنازع طلبَين على نفس الحقل يفوز **الأحدث
+    // سرياناً ثمّ إنشاءً** — بلا ترتيبٍ كان الفائز رهنَ ترتيب المُحرّك للصفوف.
+    .orderBy(employeePromotions.effectiveDate, employeePromotions.id);
   for (const p of due) {
     await applyPromotionToEmployee(tx, p);
     await tx.update(employeePromotions).set({ appliedAt: new Date() }).where(eq(employeePromotions.id, p.id));

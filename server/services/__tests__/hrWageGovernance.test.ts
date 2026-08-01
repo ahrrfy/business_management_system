@@ -255,6 +255,71 @@ describe("الترقية تحمل حزمة الأجر كاملةً (ل٨)", () =
     expect(String(e.allowances)).toBe("0.00");
   });
 
+  /*
+   * ل٩) طلبان معلَّقان على نفس الموظف (مراجعة Codex P1): كلٌّ يحمل **لقطةً كاملة** وقت
+   * إنشائه، فتطبيقُ اللقطة بحذافيرها كان يجعل آخرَهما يمحو ما اعتمده الأوّل صامتاً.
+   * التطبيق صار محصوراً بما تغيّر فعلاً عن `fromWage` ⇒ يتراكبان بلا تدمير.
+   */
+  describe("ل٩) طلبان متزامنان لا يمحو أحدهما الآخر", () => {
+    it("طلبُ راتبٍ وطلبُ جدولٍ أُنشئا معاً ⇒ كلاهما يبقى بعد اعتمادهما", async () => {
+      const pSalary = await createPromotion(
+        { employeeId: 1, effectiveDate: "2026-01-01", wage: { salary: "1500000" } },
+        actorOf(MANAGER),
+      );
+      // أُنشئ **قبل** تطبيق الأوّل ⇒ لقطتُه تحمل الراتب القديم ٩٠٠ ألف.
+      const pSched = await createPromotion(
+        { employeeId: 1, effectiveDate: "2026-01-01", wage: { workSchedule: schedWith({ السبت: { hours: 0, rate: null } }) } },
+        actorOf(MANAGER),
+      );
+
+      await approvePromotion(pSalary!.id, actorOf(MANAGER2));
+      await approvePromotion(pSched!.id, actorOf(MANAGER2));
+
+      const [e] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
+      expect(String(e.salary)).toBe("1500000.00"); // لم يُرجِعه طلبُ الجدول
+      expect((e.workSchedule as Record<string, { hours: number }>).السبت.hours).toBe(0);
+    });
+
+    it("وطلبُ أجرٍ بحتٍ لا يُرجِع مسمّى غيّرته ترقيةٌ سبقته", async () => {
+      const pWage = await createPromotion(
+        { employeeId: 1, effectiveDate: "2026-01-01", wage: { allowances: "90000" } },
+        actorOf(MANAGER),
+      );
+      const pTitle = await createPromotion(
+        { employeeId: 1, toTitle: "مدير مالي", effectiveDate: "2026-01-01" },
+        actorOf(MANAGER),
+      );
+      await approvePromotion(pTitle!.id, actorOf(MANAGER2));
+      await approvePromotion(pWage!.id, actorOf(MANAGER2));
+
+      const [e] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
+      expect(e.position).toBe("مدير مالي"); // لقطةُ طلب الأجر كانت «محاسب»
+      expect(String(e.allowances)).toBe("90000.00");
+    });
+  });
+
+  /*
+   * ل١٠) سعرُ ساعة الساعيّ يُجمَّد في صفّ الحضور لحظة تسجيله، والترقيات المؤجَّلة تُطبَّق
+   * داخل توليد المسيّر — أي بعد تسجيل حضور الشهر كلِّه ⇒ تاريخُ سريانٍ مستقبليٌّ عليها
+   * وعدٌ لا يصل. يُرفض عند الإنشاء بدل أن يُدفع الشهر بالسعر القديم صامتاً.
+   */
+  it("ل١٠) أسعارُ الساعيّ ترفض تاريخ سريانٍ مستقبليّ", async () => {
+    await expect(
+      createPromotion(
+        { employeeId: 2, effectiveDate: "2099-01-01", wage: { dayRates: { ...DAY_RATES, الأحد: 8000 } } },
+        actorOf(MANAGER),
+      ),
+    ).rejects.toThrow(/سجلّ الحضور/);
+  });
+
+  it("ل١٠) وتقبله للشهريّ (الراتب/الجدول يُحتسبان وقت التوليد لا وقت التسجيل)", async () => {
+    const p = await createPromotion(
+      { employeeId: 1, effectiveDate: "2099-01-01", wage: { workSchedule: schedWith({ السبت: { hours: 0, rate: null } }) } },
+      actorOf(MANAGER),
+    );
+    expect(p!.status).toBe("pending");
+  });
+
   it("ل٨) والترقية القديمة (بلا حزمة) تبقى تُطبّق الراتب وحده — صفر أثرٍ رجعيّ", async () => {
     const p = await createPromotion(
       { employeeId: 1, toTitle: "محاسب أول", toSalary: "950000", effectiveDate: "2026-01-01" },

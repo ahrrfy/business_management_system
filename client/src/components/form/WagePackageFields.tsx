@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
 import { DAY_RATES_DEFAULT, WEEK_DAYS } from "@shared/hr";
+import { normalizeScheduleShape } from "@shared/wageDiff";
 
 /** يومٌ في الجدول: ساعاته (صفر = راحة) وسعرُ ساعته الصريح (فارغ = يُشتقّ من الراتب). */
 export interface WageDayValue {
@@ -34,7 +35,10 @@ export interface WagePackageValue {
 export const defaultWageSchedule = (): Record<string, WageDayValue> =>
   Object.fromEntries(WEEK_DAYS.map((d) => [d, { hours: d === "الجمعة" ? 0 : 8, rate: null }]));
 
-/** قيمُ البداية من صفّ موظف — نقطةُ التطبيع الوحيدة للشاشتين (نفس احتياطات الخادم). */
+/**
+ * قيمُ البداية من صفّ موظف — نقطةُ التطبيع الوحيدة للشاشتين، وتستعمل **نفس** مُطبِّع
+ * الخادم (`@shared/wageDiff`) فلا يُنتج اختلافُ قراءةٍ «تغييراً» وهمياً يرفضه الحارس.
+ */
 export function wageValueFromEmployee(e: {
   payType?: string | null;
   salary?: unknown;
@@ -50,11 +54,9 @@ export function wageValueFromEmployee(e: {
     attendanceExempt: !!e?.attendanceExempt,
     // أسعار الأيام: احتياطٌ لكل يومٍ على حدة (مطابقٌ لـattendanceService.rateForDay).
     dayRates: { ...DAY_RATES_DEFAULT, ...((e?.dayRates as Record<string, number>) ?? {}) },
-    // الجدول: احتياطٌ للكائن كلّه (مطابقٌ لـpayrollService) لا دمجٌ يومياً.
-    schedule:
-      e?.workSchedule && typeof e.workSchedule === "object"
-        ? { ...(e.workSchedule as Record<string, WageDayValue>) }
-        : defaultWageSchedule(),
+    // الجدول: احتياطٌ للكائن كلّه (مطابقٌ لـpayrollService) لا دمجٌ يومياً، مع قبول
+    // الشكل القديم (رقمٌ = ساعات) وإكمال الأيام الناقصة راحةً.
+    schedule: normalizeScheduleShape(e?.workSchedule, defaultWageSchedule()),
   };
 }
 
