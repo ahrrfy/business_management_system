@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, or, like } from "drizzle-orm";
-import { receipts } from "../../../drizzle/schema";
+import { alias } from "drizzle-orm/mysql-core";
+import { receipts, shifts, users } from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
 import { logAuditTx } from "../auditService";
 import { requireDb, withTx, type Actor } from "../tx";
@@ -13,6 +14,9 @@ export interface PendingTreasuryReceipt {
   description: string | null;
   createdAt: Date;
   source: "CASH_DROP" | "CASH_HANDOVER";
+  /** مالك الدرج الذي خرج منه النقد، لا الموظف المعيّن لاستلامه. */
+  sourceEmployeeName: string | null;
+  sourceShiftId: number | null;
 }
 
 type AuditContext = Pick<TrpcContext, "user" | "req">;
@@ -28,6 +32,10 @@ function contractSource(referenceNumber: string): PendingTreasuryReceipt["source
  * المرجع CD/CH + نقد وارد للخزينة + createdBy هو عقد الحيازة.
  */
 export async function listMyPendingTreasuryReceipts(actor: Actor): Promise<PendingTreasuryReceipt[]> {
+  // السند الوارد المعلّق يحمل createdBy للمستلم. أمّا مصدر النقد الحقيقي فهو
+  // السند الصادر المقابل (DRAWER) ثمّ صاحب الوردية المرتبطة به.
+  const sourceReceipt = alias(receipts, "pendingTreasurySourceReceipt");
+  const sourceEmployee = alias(users, "pendingTreasurySourceEmployee");
   const rows = await requireDb()
     .select({
       id: receipts.id,
@@ -36,8 +44,22 @@ export async function listMyPendingTreasuryReceipts(actor: Actor): Promise<Pendi
       referenceNumber: receipts.referenceNumber,
       description: receipts.description,
       createdAt: receipts.createdAt,
+      sourceShiftId: sourceReceipt.shiftId,
+      sourceEmployeeName: sourceEmployee.name,
     })
     .from(receipts)
+    .leftJoin(
+      sourceReceipt,
+      and(
+        eq(sourceReceipt.referenceNumber, receipts.referenceNumber),
+        eq(sourceReceipt.branchId, receipts.branchId),
+        eq(sourceReceipt.direction, "OUT"),
+        eq(sourceReceipt.paymentMethod, "CASH"),
+        eq(sourceReceipt.cashBucket, "DRAWER"),
+      ),
+    )
+    .leftJoin(shifts, eq(sourceReceipt.shiftId, shifts.id))
+    .leftJoin(sourceEmployee, eq(shifts.userId, sourceEmployee.id))
     .where(
       and(
         eq(receipts.createdBy, actor.userId),
@@ -63,6 +85,8 @@ export async function listMyPendingTreasuryReceipts(actor: Actor): Promise<Pendi
       description: row.description,
       createdAt: row.createdAt,
       source,
+      sourceEmployeeName: row.sourceEmployeeName,
+      sourceShiftId: row.sourceShiftId == null ? null : Number(row.sourceShiftId),
     }];
   });
 }
