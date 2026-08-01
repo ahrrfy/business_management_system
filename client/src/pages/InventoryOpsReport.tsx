@@ -144,14 +144,16 @@ export default function InventoryOpsReport() {
         columns: [
           { key: "productName", header: "المنتج" },
           { key: "variantLabel", header: "المتغيّر" },
+          { key: "categoryName", header: "الفئة", map: (r) => (r.categoryName as string) ?? "—" },
           { key: "qtyInStock", header: "الرصيد", map: (r) => Number(r.qtyInStock) },
+          { key: "costPrice", header: "تكلفة الوحدة", money: true, map: (r) => Number(r.costPrice) },
           { key: "stockValue", header: "قيمة المخزون", money: true, map: (r) => Number(r.stockValue) },
           { key: "daysSinceLastSale", header: "أيام بلا بيع", map: (r) => (r.daysSinceLastSale == null ? "لا بيع" : Number(r.daysSinceLastSale)) },
           { key: "lastSaleDate", header: "آخر بيع", map: (r) => (r.lastSaleDate as string) ?? "—" },
         ],
         printCols: [
           { key: "productName", label: "المنتج" }, { key: "variantLabel", label: "المتغيّر" },
-          { key: "qtyInStock", label: "الرصيد", align: "left" }, { key: "stockValue", label: "قيمة المخزون", align: "left" },
+          { key: "categoryName", label: "الفئة" }, { key: "qtyInStock", label: "الرصيد", align: "left" }, { key: "costPrice", label: "تكلفة الوحدة", align: "left" }, { key: "stockValue", label: "قيمة المخزون", align: "left" },
           { key: "days", label: "أيام بلا بيع", align: "left" }, { key: "lastSaleDate", label: "آخر بيع" },
         ],
       };
@@ -163,6 +165,7 @@ export default function InventoryOpsReport() {
         columns: [
           { key: "productName", header: "المنتج" },
           { key: "variantLabel", header: "المتغيّر" },
+          { key: "categoryName", header: "الفئة", map: (r) => (r.categoryName as string) ?? "—" },
           { key: "qtyInStock", header: "الرصيد", map: (r) => Number(r.qtyInStock) },
           { key: "threshold", header: "حدّ الطلب", map: (r) => Number(r.threshold) },
           { key: "qtySoldRecent", header: `مبيع ${riskDays}ي`, map: (r) => Number(r.qtySoldRecent) },
@@ -170,7 +173,7 @@ export default function InventoryOpsReport() {
         ],
         printCols: [
           { key: "productName", label: "المنتج" }, { key: "variantLabel", label: "المتغيّر" },
-          { key: "qtyInStock", label: "الرصيد", align: "left" }, { key: "threshold", label: "حدّ الطلب", align: "left" },
+          { key: "categoryName", label: "الفئة" }, { key: "qtyInStock", label: "الرصيد", align: "left" }, { key: "threshold", label: "حدّ الطلب", align: "left" },
           { key: "qtySoldRecent", label: "المبيع", align: "left" }, { key: "coverDays", label: "أيام تغطية", align: "left" },
         ],
       };
@@ -182,8 +185,10 @@ export default function InventoryOpsReport() {
         columns: [
           { key: "productName", header: "المنتج" },
           { key: "variantLabel", header: "المتغيّر" },
+          { key: "categoryName", header: "الفئة", map: (r) => (r.categoryName as string) ?? "—" },
           { key: "branchName", header: "الفرع", map: (r) => (r.branchName as string) ?? "" },
           { key: "quantity", header: "الرصيد", map: (r) => Number(r.quantity) },
+          { key: "costPrice", header: "تكلفة الوحدة", money: true, map: (r) => Number(r.costPrice) },
           { key: "negValue", header: "قيمة الانكشاف", money: true, map: (r) => Number(r.negValue) },
           { key: "opened", header: "الحالة", map: (r) => (r.opened ? "مُفتتَح (عجز بعد الافتتاح)" : "بانتظار الجرد الافتتاحي") },
           { key: "costMissing", header: "التكلفة", map: (r) => (r.costMissing ? "غير مُدخلة" : "مُدخلة") },
@@ -192,7 +197,7 @@ export default function InventoryOpsReport() {
         ],
         printCols: [
           { key: "productName", label: "المنتج" }, { key: "variantLabel", label: "المتغيّر" },
-          { key: "branchName", label: "الفرع" }, { key: "quantity", label: "الرصيد", align: "left" },
+          { key: "categoryName", label: "الفئة" }, { key: "branchName", label: "الفرع" }, { key: "quantity", label: "الرصيد", align: "left" }, { key: "costPrice", label: "تكلفة الوحدة", align: "left" },
           { key: "negValue", label: "قيمة الانكشاف", align: "left" }, { key: "openedLabel", label: "الحالة" },
           { key: "lastSaleDate", label: "آخر بيع" },
         ],
@@ -205,6 +210,7 @@ export default function InventoryOpsReport() {
         { key: "approvedDate", header: "التاريخ", map: (r) => (r.approvedDate as string) ?? "" },
         { key: "branchName", header: "الفرع", map: (r) => (r.branchName as string) ?? "" },
         { key: "approvedByName", header: "المعتمِد", map: (r) => (r.approvedByName as string) ?? "" },
+        { key: "sessionCode", header: "جلسة الجرد", map: (r) => (r.sessionCode as string) ?? "" },
         { key: "productName", header: "المنتج" },
         { key: "variantLabel", header: "المتغيّر" },
         { key: "diffQty", header: "الفرق", map: (r) => Number(r.diffQty) },
@@ -212,7 +218,7 @@ export default function InventoryOpsReport() {
         { key: "reason", header: "السبب" },
       ],
       printCols: [
-        { key: "approvedDate", label: "التاريخ" }, { key: "branchName", label: "الفرع" },
+        { key: "approvedDate", label: "التاريخ" }, { key: "branchName", label: "الفرع" }, { key: "sessionCode", label: "جلسة الجرد" },
         { key: "productName", label: "المنتج" }, { key: "diffQty", label: "الفرق", align: "left" },
         { key: "value", label: "القيمة", align: "left" }, { key: "reason", label: "السبب" },
       ],
@@ -248,7 +254,7 @@ export default function InventoryOpsReport() {
             : pc.key === "openedLabel" ? (r.opened ? "مُفتتَح" : "بانتظار الافتتاح")
             : (r as Record<string, unknown>)[pc.key];
           const v = raw == null ? "" : typeof raw === "number" ? fmtAr(raw) : String(raw);
-          o[pc.key] = ["quantity", "minStock", "qtyInStock", "threshold", "qtySoldRecent", "coverDays", "stockValue", "value", "diffQty", "negValue"].includes(pc.key)
+          o[pc.key] = ["quantity", "minStock", "qtyInStock", "threshold", "qtySoldRecent", "coverDays", "costPrice", "stockValue", "value", "diffQty", "negValue"].includes(pc.key)
             ? fmtAr(Number((r as Record<string, unknown>)[pc.key] ?? 0))
             : v;
         }
@@ -356,9 +362,9 @@ function ViewTable({
     const rows = negatives?.rows ?? [];
     return (
       <Table
-        head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفرع</Th><Th>الرصيد</Th><Th>قيمة الانكشاف</Th><Th>الحالة</Th><Th>آخر بيع</Th><Th>آخر شراء</Th></>}
+        head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفئة</Th><Th>الفرع</Th><Th>الرصيد</Th><Th>تكلفة الوحدة</Th><Th>قيمة الانكشاف</Th><Th>الحالة</Th><Th>آخر بيع</Th><Th>آخر شراء</Th></>}
         empty={!rows.length}
-        colSpan={8}
+        colSpan={10}
         emptyMsg="لا أرصدة سالبة في هذا النطاق — كل المبيع مغطّى بالمخزون."
       >
         {rows.map((r: any, i: number) => (
@@ -372,8 +378,10 @@ function ViewTable({
               )}
             </td>
             <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>
+            <td className="p-2.5 text-right text-muted-foreground">{r.categoryName ?? "—"}</td>
             <td className="p-2.5 text-right text-muted-foreground">{r.branchName}</td>
             <NumTd cls="text-money-negative font-bold">{fmtAr(r.quantity)}</NumTd>
+            <NumTd cls={r.costMissing ? "text-money-negative" : "text-muted-foreground"}>{r.costMissing ? "غير مُدخلة" : fmtAr(r.costPrice)}</NumTd>
             <NumTd cls="text-money-negative">{fmtAr(r.negValue)}</NumTd>
             <td className="p-2.5 text-right">
               <span
@@ -411,12 +419,14 @@ function ViewTable({
   if (view === "dead") {
     const rows = dead?.rows ?? [];
     return (
-      <Table head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الرصيد</Th><Th>قيمة المخزون</Th><Th>أيام بلا بيع</Th><Th>آخر بيع</Th></>} empty={!rows.length} colSpan={6} emptyMsg="لا مخزون راكد في هذا النطاق.">
+      <Table head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفئة</Th><Th>الرصيد</Th><Th>تكلفة الوحدة</Th><Th>قيمة المخزون</Th><Th>أيام بلا بيع</Th><Th>آخر بيع</Th></>} empty={!rows.length} colSpan={8} emptyMsg="لا مخزون راكد في هذا النطاق.">
         {rows.map((r: any) => (
           <tr key={r.variantId} className="border-b last:border-0 hover:bg-accent/40">
             <td className="p-2.5 text-right font-medium">{r.productName}</td>
             <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>
+            <td className="p-2.5 text-right text-muted-foreground">{r.categoryName ?? "—"}</td>
             <NumTd>{fmtInt(r.qtyInStock)}</NumTd>
+            <NumTd cls="text-muted-foreground">{fmtAr(r.costPrice)}</NumTd>
             <NumTd cls="text-money-negative">{fmtAr(r.stockValue)}</NumTd>
             <NumTd cls="text-stock-low">{r.daysSinceLastSale == null ? "لا بيع" : fmtAr(r.daysSinceLastSale)}</NumTd>
             <td className="p-2.5 text-right text-muted-foreground">{r.lastSaleDate ?? "—"}</td>
@@ -428,11 +438,12 @@ function ViewTable({
   if (view === "risk") {
     const rows = risk?.rows ?? [];
     return (
-      <Table head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الرصيد</Th><Th>حدّ الطلب</Th><Th>{`مبيع ${riskDays}ي`}</Th><Th>أيام تغطية</Th></>} empty={!rows.length} colSpan={6} emptyMsg="لا أصناف بخطر نفاد في هذا النطاق.">
+      <Table head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفئة</Th><Th>الرصيد</Th><Th>حدّ الطلب</Th><Th>{`مبيع ${riskDays}ي`}</Th><Th>أيام تغطية</Th></>} empty={!rows.length} colSpan={7} emptyMsg="لا أصناف بخطر نفاد في هذا النطاق.">
         {rows.map((r: any) => (
           <tr key={r.variantId} className="border-b last:border-0 hover:bg-accent/40">
             <td className="p-2.5 text-right font-medium">{r.productName}</td>
             <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>
+            <td className="p-2.5 text-right text-muted-foreground">{r.categoryName ?? "—"}</td>
             <NumTd cls="text-stock-low">{fmtInt(r.qtyInStock)}</NumTd>
             <NumTd cls="text-muted-foreground">{fmtInt(r.threshold)}</NumTd>
             <NumTd cls="text-money-positive">{fmtInt(r.qtySoldRecent)}</NumTd>
@@ -444,11 +455,12 @@ function ViewTable({
   }
   const rows = variance?.rows ?? [];
   return (
-    <Table head={<><Th>التاريخ</Th><Th>الفرع</Th><Th>المعتمِد</Th><Th>المنتج</Th><Th>الفرق</Th><Th>القيمة</Th><Th>السبب</Th></>} empty={!rows.length} colSpan={7} emptyMsg="لا فروقات جرد معتمدة في هذا النطاق.">
+    <Table head={<><Th>التاريخ</Th><Th>الفرع</Th><Th>جلسة الجرد</Th><Th>المعتمِد</Th><Th>المنتج</Th><Th>الفرق</Th><Th>القيمة</Th><Th>السبب</Th></>} empty={!rows.length} colSpan={8} emptyMsg="لا فروقات جرد معتمدة في هذا النطاق.">
       {rows.map((r: any, i: number) => (
         <tr key={`${r.sessionId}-${i}`} className="border-b last:border-0 hover:bg-accent/40">
           <td className="p-2.5 text-right text-muted-foreground">{r.approvedDate ?? "—"}</td>
           <td className="p-2.5 text-right text-muted-foreground">{r.branchName ?? "—"}</td>
+          <td className="p-2.5 text-right text-xs text-muted-foreground">{r.sessionCode || "—"}</td>
           <td className="p-2.5 text-right text-muted-foreground">{r.approvedByName ?? "—"}</td>
           <td className="p-2.5 text-right">{r.productName}<span className="text-xs text-muted-foreground"> · {r.variantLabel}</span></td>
           <NumTd cls={r.diffQty < 0 ? "text-money-negative" : "text-money-positive"}>{fmtAr(r.diffQty)}</NumTd>
