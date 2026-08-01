@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { z } from "zod";
-import { customers, invoices, suppliers } from "../../drizzle/schema";
+import { branches, customers, invoices, suppliers } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { maskBankFields } from "../lib/redact";
 import { getDb } from "../db";
@@ -281,7 +281,18 @@ export const reportsRouter = router({
           invoiceNumber: invoices.invoiceNumber,
           invoiceDate: invoices.invoiceDate,
           sourceType: invoices.sourceType,
+          sourceId: invoices.sourceId,
           status: invoices.status,
+          branchId: invoices.branchId,
+          branchName: branches.name,
+          shiftId: invoices.shiftId,
+          posDeviceId: invoices.posDeviceId,
+          salespersonName: invoices.salespersonNameSnapshot,
+          paymentMethod: invoices.paymentMethod,
+          priceTier: invoices.priceTier,
+          subtotal: invoices.subtotal,
+          discountAmount: invoices.discountAmount,
+          taxAmount: invoices.taxAmount,
           total: invoices.total,
           paidAmount: invoices.paidAmount,
           returnedTotal: invoices.returnedTotal,
@@ -290,6 +301,7 @@ export const reportsRouter = router({
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .leftJoin(branches, eq(invoices.branchId, branches.id))
         .where(where)
         // الترتيب الأساسي بالـid (desc) ليكون keyset cursor متّسقاً
         // (invoiceDate يبقى مرتبطاً بـid لأن الفواتير تُنشأ بالترتيب الزمني).
