@@ -383,12 +383,19 @@ export default function EmployeeNew() {
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  // نقطة بداية: الراتب ÷ مجموع ساعات شهرٍ نموذجيّ (٤.٣٤٥ أسبوعاً).
-                  const weekly = WEEK_DAYS.reduce((t, d) => t + (Number(sched[d]?.hours) || 0), 0);
-                  const monthly = weekly * 4.345;
+                  // المقام = ساعات أول ٣٠ يوماً من الشهر الجاري وفق جدوله (مطابق للنواة
+                  // الخادمية حرفياً). كان يستعمل متوسّط «٤٫٣٤٥ أسبوعاً» فينحرف حتى ٢٧ ألفاً
+                  // في شباط — والمالك يشترط «الراتب بالضبط دون نقصان ديناراً واحداً».
+                  const now = new Date();
+                  const first = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+                  let std = 0;
+                  for (let i = 0; i < 30; i++) {
+                    const d = new Date(first.getTime() + i * 86_400_000);
+                    std += Number(sched[WEEK_DAYS[d.getUTCDay()]]?.hours) || 0;
+                  }
                   const sal = Number(String(form.salary).replace(/[^\d.]/g, "")) || 0;
-                  if (!monthly || !sal) { setError("أدخل الراتب وساعات الأيام أولاً ليُحسب سعر الساعة."); return; }
-                  const r = Math.round(sal / monthly);
+                  if (!std || !sal) { setError("أدخل الراتب وساعات الأيام أولاً ليُحسب سعر الساعة."); return; }
+                  const r = Math.round((sal / std) * 100) / 100;
                   setSched((prev) => Object.fromEntries(
                     WEEK_DAYS.map((d) => [d, { hours: prev[d]?.hours ?? 0, rate: (prev[d]?.hours ?? 0) > 0 ? r : null }]),
                   ));
@@ -430,7 +437,10 @@ export default function EmployeeNew() {
               <span className="font-medium">صفر ساعة = يوم راحة.</span> وأجر اليوم = ساعاته المحتسَبة × سعره،
               والراتب المستحقّ = مجموع أيام الشهر تراكمياً. الساعات فوق المقرَّر اليوميّ تُحتسب
               <span className="font-medium"> أوفر تايم</span> ببندٍ مستقلّ بسعر اليوم نفسه.
-              تركُ السعر فارغاً يجعل النظام يشتقّه من الراتب — املأه لتكون القيمة صريحةً بيدك.
+              <span className="font-medium">تركُ السعر فارغاً هو الأدقّ:</span> يُحسب شهرياً من
+              (الراتب ÷ ساعات أول ٣٠ يوماً) فيطابق الراتب بالضبط دون نقصان دينار — وشهرُ ٣١ يوماً
+              يُدفع بيومه الإضافيّ، والشهر الأقصر (٢٨/٢٩) يُكمَّل إلى ٣٠. وتثبيتُ سعرٍ يدويّ
+              يجعل المجموع يتبع السعر لا الراتب.
             </p>
           </div>
         </CardContent>
