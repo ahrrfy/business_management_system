@@ -599,7 +599,9 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
     }
     const sortedVariantIds = Array.from(aggregated.keys()).sort((a, b) => a - b);
 
-    // «وضع الافتتاح» (ش٢ ١٩/٧): بيعٌ نقدي كامل من قناة POS يُسمح له بالنزول تحت الصفر للصنف
+    // «وضع الافتتاح» (ش٢ ١٩/٧): بيعٌ مسدّد بالكامل نقداً أو بالبطاقة من قناة POS
+    // يُسمح له بالنزول تحت الصفر للصنف. البطاقة سداد فوري كامل مثل النقد، لكن أثرها
+    // المالي يبقى في خزينة البطاقة ولا يدخل درج الكاشير.
     // **غير المُفتتَح** (openedAt IS NULL — يُفحص داخل applyMovement تحت القفل) حتى يُجرَد افتتاحياً.
     // شرطا الأمان الصنفيان (مراجعة عدائية ١٨/٧): تكلفة مُدخلة (>0) — سالبٌ بلا COGS = تسريب غير
     // قابل للكشف — وسقف كمية للسطر يصدّ خطأ الإدخال والاحتيال. قناة الأوفلاين (allowNegativeStock)
@@ -607,7 +609,7 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
     const openingBaseEligible =
       !input.allowNegativeStock &&
       (input.sourceType ?? "POS") === "POS" &&
-      input.payment?.method === "CASH" &&
+      (input.payment?.method === "CASH" || input.payment?.method === "CARD") &&
       unpaid.lte(0);
     const readOpeningWindow = async () => {
       const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
@@ -646,7 +648,7 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
           referenceType: "INVOICE",
           referenceId: invoiceId,
           createdBy: actor.userId,
-          notes: openingAllow ? "وضع الافتتاح — بيع نقدي مسموح بالسالب لصنف غير مُفتتَح" : undefined,
+          notes: openingAllow ? "وضع الافتتاح — بيع مسدّد بالكامل مسموح بالسالب لصنف غير مُفتتَح" : undefined,
           // أوفلاين (ش٣): البيع الملتقَط دون اتصال يُسجَّل ولو هبط الرصيد تحت الصفر — البضاعة
           // خرجت فعلاً (قرار مالك: سالب موسوم بـoriginatedOffline، يظهر في تقرير المراجعة).
           // **استثناء بضاعة الأمانة (§٥-ج، مرآة حارس وضع الافتتاح أعلاه):** لا بيع بالسالب لصنف
@@ -663,7 +665,7 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
           const win = openingWindow ?? (await readOpeningWindow());
           if (win) {
             const hint = !openingBaseEligible
-              ? "وضع الافتتاح فعّال، لكن البيع بالسالب للصنف غير المجرود يتطلّب بيعاً نقدياً مدفوعاً بالكامل من قناة البيع المباشر — الآجل والدفعة الجزئية وغير النقدي وقنوات الطلبات تبقى صارمة"
+              ? "وضع الافتتاح فعّال، لكن البيع بالسالب للصنف غير المجرود يتطلّب سداداً كاملاً نقداً أو بالبطاقة من قناة البيع المباشر — الآجل والدفعة الجزئية وطرق الدفع الأخرى وقنوات الطلبات تبقى صارمة"
               : qty > win.maxQty
                 ? `الكمية تتجاوز سقف السطر السالب في وضع الافتتاح (${win.maxQty} وحدة أساس)`
                 : !money(deductCosts.get(vid) ?? "0").gt(0)
