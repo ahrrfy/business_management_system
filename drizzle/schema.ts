@@ -3174,9 +3174,6 @@ export type InsertJobApplicant = typeof jobApplicants.$inferInsert;
  */
 export const hrAttendanceSettings = mysqlTable("hrAttendanceSettings", {
   id: int("id").primaryKey().default(1),
-  nightShiftEnabled: boolean("nightShiftEnabled").default(false).notNull(),
-  /** بصمةٌ قبل هذه الساعة في يومٍ تالٍ تُعدّ إغلاقاً لوردية أمس (0-23). */
-  nightShiftCutoffHour: int("nightShiftCutoffHour").default(8).notNull(),
   /**
    * سقف الساعات المعقولة لليوم (0139): «لا توجد ساعات عمل ٢٠ ولا ١٨ ولا حتى ١٦» (قرار
    * المالك). يومٌ يتجاوزه يُقصّ عنده ويُوسَم «يحتاج تصحيح» — بصمةٌ منسيّة أو خللُ ساعةٍ
@@ -3192,11 +3189,6 @@ export const hrAttendanceSettings = mysqlTable("hrAttendanceSettings", {
    */
   attendancePayEnabled: boolean("attendancePayEnabled").default(false).notNull(),
   attendancePayFrom: date("attendancePayFrom", { mode: "string" }),
-  /**
-   * جدول الدوام الأسبوعيّ الافتراضي (0139): ساعات كل يوم، وصفرٌ = راحة.
-   * يتجاوزه `employees.workSchedule` لمن له جدولٌ خاصّ.
-   */
-  defaultWorkSchedule: json("defaultWorkSchedule"),
   updatedBy: int("updatedBy").references(() => users.id),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

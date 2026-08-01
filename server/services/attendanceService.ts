@@ -12,7 +12,7 @@ import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { money, round2, toDbMoney } from "./money";
-import { DEFAULT_WORK_SCHEDULE } from "./hr/attendancePay";
+import { standardMonthlyHours, type WorkSchedule } from "./hr/attendancePay";
 
 /** اسم اليوم العربي من تاريخ "YYYY-MM-DD" (الأحد=0). يُحسب بتقويم UTC ثابت من مكوّنات السلسلة
  *  حتى لا تنزلق التسمية (ومعها سعر الساعة) بمنطقة الخادم الزمنية — تكامل مالي مستقلّ عن TZ. */
@@ -27,9 +27,30 @@ function toDateStr(d: unknown): string {
   return String(d ?? "");
 }
 
-/** سعر ساعة الموظف لتاريخ معيّن: جدول الموظف الخاص ثمّ الجدول الافتراضي للشركة. */
-function rateForDay(emp: { dayRates?: unknown }, dateStr: string): number {
+/**
+ * سعر ساعة الموظف لتاريخ معيّن — **من جدول دوامه الأسبوعيّ أوّلاً** (0139/0140).
+ *
+ * كان يقرأ من `dayRates` القديم ثمّ من `DAY_RATES_DEFAULT` الثابت في الكود، فظهر في سجلّ
+ * الحضور سعرٌ (٦٠٠٠ للسبت مثلاً) **لا علاقة له بما يُدخله المالك** — مصدرا حقيقةٍ متوازيان:
+ * السجلّ يكتب بالقديم والمسيّر يحسب بالجديد. الترتيب الآن:
+ *   ١) سعر اليوم الصريح في `workSchedule` (هو الأصل).
+ *   ٢) المُشتقّ من الراتب ÷ ساعات الشهر المعياريّ (٣٠ يوماً) — للشهريّ.
+ *   ٣) `dayRates` القديم — للساعيّ الذي لم يُضبط جدولُه بعد (توافقٌ خلفيّ).
+ */
+function rateForDay(
+  emp: { dayRates?: unknown; workSchedule?: unknown; salary?: unknown; payType?: string },
+  dateStr: string,
+): number {
   const day = arabicDayName(dateStr);
+  const sched = (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as WorkSchedule | null;
+  if (sched) {
+    const explicit = Number((sched[day] as { rate?: number } | undefined)?.rate ?? NaN);
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+    // مُشتقّ: الراتب ÷ ساعات ٣٠ يوماً وفق جدوله (نفس مقام المسيّر ⇒ لا انحراف).
+    const salary = Number(emp.salary ?? 0);
+    const std = standardMonthlyHours(sched, `${dateStr.slice(0, 7)}-01`);
+    if (salary > 0 && std.gt(0)) return salary / std.toNumber();
+  }
   const rates = (emp.dayRates && typeof emp.dayRates === "object" ? emp.dayRates : {}) as Record<string, number>;
   const r = rates[day];
   if (typeof r === "number" && Number.isFinite(r) && r >= 0) return r;
@@ -195,11 +216,8 @@ export async function getAttendanceSettings() {
   // الافتراضي يطابق شكل الصفّ حرفياً (لا اتحاد أنواع في الواجهة) — الوحدة معطَّلة بالكامل.
   return {
     id: 1,
-    nightShiftEnabled: false,
-    nightShiftCutoffHour: 8,
     attendancePayEnabled: false,
     attendancePayFrom: null as string | null,
-    defaultWorkSchedule: DEFAULT_WORK_SCHEDULE as unknown,
     maxDailyHours: "12.00",
     updatedBy: null as number | null,
     updatedAt: new Date(),
@@ -214,29 +232,20 @@ export async function getAttendanceSettings() {
  */
 export async function updateAttendanceSettings(
   input: {
-    nightShiftEnabled: boolean;
-    nightShiftCutoffHour: number;
     attendancePayEnabled?: boolean;
     attendancePayFrom?: string | null;
-    defaultWorkSchedule?: Record<string, { hours: number; rate?: number | null }> | null;
     maxDailyHours?: number;
   },
   actorUserId: number,
 ) {
-  if (!Number.isInteger(input.nightShiftCutoffHour) || input.nightShiftCutoffHour < 1 || input.nightShiftCutoffHour > 12) {
-    throw new Error("ساعة الفصل يجب أن تكون بين ١ و١٢ صباحاً");
-  }
   // تاريخ السريان شرطُ تفعيل: بدونه يُحتسب الغياب بأثرٍ رجعيّ على أشهرٍ بلا بيانات حضور
   // أصلاً (ما قبل تشغيل الجهاز) فتُصفَّر رواتبها. الحارس بنيويّ لا تذكيرٌ في الواجهة.
   if (input.attendancePayEnabled && !input.attendancePayFrom) {
     throw new Error("حدّد «يسري من تاريخ» قبل تفعيل الأجر بالحضور — بدونه تُحتسب أشهرٌ سابقة بلا بيانات حضور غياباً كاملاً.");
   }
   const patch = {
-    nightShiftEnabled: input.nightShiftEnabled,
-    nightShiftCutoffHour: input.nightShiftCutoffHour,
     ...(input.attendancePayEnabled !== undefined ? { attendancePayEnabled: input.attendancePayEnabled } : {}),
     ...(input.attendancePayFrom !== undefined ? { attendancePayFrom: input.attendancePayFrom || null } : {}),
-    ...(input.defaultWorkSchedule !== undefined ? { defaultWorkSchedule: input.defaultWorkSchedule } : {}),
     ...(input.maxDailyHours !== undefined ? { maxDailyHours: String(input.maxDailyHours) } : {}),
     updatedBy: actorUserId,
   };

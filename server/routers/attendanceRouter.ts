@@ -43,13 +43,8 @@ export const attendanceRouter = router({
   updateSettings: hrWrite
     .input(
       z.object({
-        nightShiftEnabled: z.boolean(),
-        nightShiftCutoffHour: z.number().int().min(1).max(12),
         attendancePayEnabled: z.boolean().optional(),
         attendancePayFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
-        defaultWorkSchedule: z
-          .record(z.string(), z.object({ hours: z.number().min(0).max(24), rate: z.number().min(0).nullish() }))
-          .nullish(),
         maxDailyHours: z.number().min(1).max(24).optional(),
       }),
     )
@@ -59,7 +54,7 @@ export const attendanceRouter = router({
         action: "attendance.updateSettings",
         entityType: "hrAttendanceSettings",
         entityId: 1,
-        newValue: { nightShiftEnabled: input.nightShiftEnabled, nightShiftCutoffHour: input.nightShiftCutoffHour },
+        newValue: { attendancePayEnabled: input.attendancePayEnabled, attendancePayFrom: input.attendancePayFrom, maxDailyHours: input.maxDailyHours },
       });
       return row;
     }),

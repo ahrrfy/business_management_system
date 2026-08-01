@@ -166,7 +166,7 @@ export default function Attendance() {
         <StatCard label="إدخالات يدوية" value={manualCount.toLocaleString("en-US")} sub="تحتاج توثيقاً" accent="var(--stock-low, #d97706)" icon={<PenLine className="size-5" />} />
       </div>
 
-      <NightShiftSettingsCard />
+      <AttendanceSettingsCard />
 
       {/* سجل الحضور */}
       <Card>
@@ -364,66 +364,66 @@ export default function Attendance() {
  * لكلٍّ ⇒ صفر ساعات وصفر أجر لليلة عمل كاملة؛ ومع تفعيله تُغلق بصمةُ الفجر وردية أمس.
  * تغييره لا يُعيد حساب الماضي (مسيّرات سابقة قد تكون بُنيت على الأرقام القديمة).
  */
-function NightShiftSettingsCard() {
+function AttendanceSettingsCard() {
   const utils = trpc.useUtils();
   const q = trpc.attendance.settings.useQuery();
   const [open, setOpen] = useState(false);
-  const save = trpc.attendance.updateSettings.useMutation({
-    onSuccess: async () => { notify.ok("حُفظت إعدادات احتساب الحضور"); await utils.attendance.settings.invalidate(); setOpen(false); },
-    onError: (e) => notify.err(e),
-  });
   const s = q.data;
-  const [enabled, setEnabled] = useState(false);
-  const [cutoff, setCutoff] = useState(8);
   const [payOn, setPayOn] = useState(false);
   const [payFrom, setPayFrom] = useState("");
   const [maxDaily, setMaxDaily] = useState(12);
-  // جدول أسبوعيّ: ساعات كل يوم، وصفرٌ = راحة (يوحّد المفهومين — الجمعة قد تكون قصيرة).
-  const [sched, setSched] = useState<Record<string, { hours: number; rate?: number | null }>>({});
+
   useEffect(() => {
     if (!open || !s) return;
-    setEnabled(!!s.nightShiftEnabled);
-    setCutoff(Number(s.nightShiftCutoffHour ?? 8));
     setPayOn(!!s.attendancePayEnabled);
     setPayFrom(s.attendancePayFrom ? String(s.attendancePayFrom).slice(0, 10) : "");
     setMaxDaily(Number(s.maxDailyHours ?? 12));
-    setSched(
-      s.defaultWorkSchedule && typeof s.defaultWorkSchedule === "object"
-        ? ({ ...(s.defaultWorkSchedule as Record<string, { hours: number; rate?: number | null }>) })
-        : Object.fromEntries(WEEK_DAYS.map((d) => [d, { hours: d === "الجمعة" ? 0 : 8 }])),
-    );
   }, [open, s]);
 
+  const save = trpc.attendance.updateSettings.useMutation({
+    onSuccess: async () => {
+      notify.ok("حُفظت إعدادات الاحتساب");
+      setOpen(false);
+      await utils.attendance.settings.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
   return (
-    <Card>
-      <CardContent className="p-3 flex items-center justify-between gap-3 flex-wrap text-sm">
-        <div className="flex items-center gap-2">
-          <Moon aria-hidden className="size-4 text-muted-foreground" />
-          <span>الأجر بالحضور:</span>
-          <span className={s?.attendancePayEnabled ? "font-medium text-[var(--status-active,#16a34a)]" : "text-muted-foreground"}>
-            {q.isLoading ? "…" : s?.attendancePayEnabled ? `مفعَّل من ${String(s.attendancePayFrom ?? "").slice(0, 10)}` : "معطَّل"}
-          </span>
-          <span className="text-muted-foreground">·</span>
-          <span>الوردية الليلية:</span>
-          <span className={s?.nightShiftEnabled ? "font-medium" : "text-muted-foreground"}>
-            {q.isLoading ? "…" : s?.nightShiftEnabled ? `حتى ${s.nightShiftCutoffHour}:00` : "معطَّلة"}
-          </span>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => setOpen(true)}>تعديل</Button>
-      </CardContent>
+    <>
+      <Card>
+        <CardContent className="p-3 flex items-center justify-between gap-3 flex-wrap text-sm">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Clock className="size-4 text-muted-foreground" />
+            <span>الأجر بالحضور:</span>
+            <span className={s?.attendancePayEnabled ? "font-medium text-[var(--status-active,#16a34a)]" : "text-muted-foreground"}>
+              {q.isLoading ? "…" : s?.attendancePayEnabled ? `مفعَّل من ${String(s.attendancePayFrom ?? "").slice(0, 10)}` : "معطَّل"}
+            </span>
+            <span className="text-muted-foreground">·</span>
+            <span>سقف اليوم:</span>
+            <span className="font-medium tabular-nums" dir="ltr">{q.isLoading ? "…" : `${Number(s?.maxDailyHours ?? 12)} ساعة`}</span>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setOpen(true)}>تعديل</Button>
+        </CardContent>
+      </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>إعدادات احتساب الحضور والأجر</DialogTitle></DialogHeader>
-          <div className="space-y-3 text-sm max-h-[70vh] overflow-y-auto">
+          <div className="space-y-3 text-sm">
+            <p className="text-xs text-muted-foreground rounded-md border p-2 leading-relaxed">
+              ساعات كل يوم وسعر ساعته تُضبط <span className="font-medium">في بطاقة كل موظف</span> — لا هنا،
+              فلكلٍّ جدولُه. هذه الشاشة للإعدادات العامّة التي لا تخصّ موظفاً بعينه.
+            </p>
+
             <div className="rounded-md border p-3 space-y-2">
               <label className="flex items-start gap-2">
                 <input type="checkbox" className="size-4 mt-0.5" checked={payOn} onChange={(e) => setPayOn(e.target.checked)} />
                 <span>
                   <span className="font-medium">الأجر بالحضور (للموظفين الشهريّين)</span>
                   <span className="block text-xs text-muted-foreground mt-0.5 leading-relaxed">
-                    سعر ساعة الموظف = راتبه ÷ ساعات دوامه في الشهر، وأجرُه = ساعات حضوره الفعلية × ذلك السعر.
-                    الغياب بلا أجر، والإجازة المدفوعة يوم دوامٍ كامل، وبلا راتب لا تُحتسب.
+                    أجر اليوم = ساعاته المحتسَبة × سعر ساعته، والمستحقّ = مجموع أيام الشهر. الغياب بلا أجر،
+                    والإجازة المدفوعة يوم دوامٍ كامل، والساعات فوق المقرَّر أوفر تايم.
                   </span>
                 </span>
               </label>
@@ -435,83 +435,30 @@ function NightShiftSettingsCard() {
                   جهاز الحضور — ولا بيانات فيها — غياباً كاملاً فتُصفَّر رواتبها.
                 </p>
               </div>
-              <div className="space-y-1">
-                <Label>جدول الدوام الأسبوعيّ (افتراضي)</Label>
-                <div className="rounded-md border divide-y">
-                  <div className="grid grid-cols-3 gap-2 bg-muted/50 px-2 py-1 text-[11px] font-medium">
-                    <span>اليوم</span><span className="text-center">ساعات الدوام</span><span className="text-center">سعر الساعة (د.ع)</span>
-                  </div>
-                  {WEEK_DAYS.map((d) => (
-                    <div key={d} className="grid grid-cols-3 gap-2 items-center px-2 py-1.5">
-                      <span className="text-xs">{d}</span>
-                      <Input
-                        type="number" min={0} max={24} step="0.5" dir="ltr" className="h-8 text-center"
-                        disabled={!payOn}
-                        value={sched[d]?.hours ?? 0}
-                        onChange={(ev) => setSched((p) => ({ ...p, [d]: { ...(p[d] ?? {}), hours: Number(ev.target.value) } }))}
-                      />
-                      <Input
-                        type="number" min={0} step="250" dir="ltr" className="h-8 text-center"
-                        placeholder="مُشتقّ من الراتب"
-                        disabled={!payOn || !(sched[d]?.hours > 0)}
-                        value={sched[d]?.rate ?? ""}
-                        onChange={(ev) => setSched((p) => ({ ...p, [d]: { ...(p[d] ?? { hours: 0 }), rate: ev.target.value === "" ? null : Number(ev.target.value) } }))}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  <span className="font-medium">صفر ساعة = يوم راحة.</span> وسعر الساعة هو أصل الحساب: أجر اليوم =
-                  ساعاته المحتسَبة × سعره، والراتب المستحقّ = مجموع أيام الشهر. تركُ السعر فارغاً يشتقّه من حقل
-                  راتب الموظف ÷ ساعات شهره. والساعات فوق المقرَّر اليوميّ تُحتسب <span className="font-medium">أوفر تايم</span> ببندٍ مستقلّ.
-                  مجموع الأسبوع: <span className="font-medium tabular-nums" dir="ltr">{WEEK_DAYS.reduce((t, d) => t + (Number(sched[d]?.hours) || 0), 0)}</span> ساعة.
-                  يمكن تخصيص جدولٍ لكل موظف من بطاقته.
-                </p>
-              </div>
             </div>
 
-            {/* حارس الساعات غير المعقولة — يعمل دائماً، مستقلّاً عن تفعيل الأجر بالحضور. */}
             <div className="rounded-md border p-3 space-y-1">
               <Label htmlFor="max-daily">حارس الساعات — سقف اليوم الواحد</Label>
               <Input id="max-daily" type="number" min={1} max={24} step="0.5" dir="ltr" value={maxDaily} onChange={(e) => setMaxDaily(Number(e.target.value))} />
               <p className="text-xs text-muted-foreground leading-relaxed">
-                يومٌ تتجاوز بصماتُه هذا السقف يُقصّ عنده ويُوسَم «يحتاج تصحيح» بدل أن يُدفَع كاملاً.
-                لا يوجد دوامٌ ١٦ أو ١٨ أو ٢٠ ساعة — مثلُه غالباً بصمةُ خروجٍ منسيّة أو خللٌ في ساعة
-                الجهاز، فيُدفَع أجرُ عملٍ لم يقع ويدخل الأوفر تايم فيُضاعَف. صحّح الأوقات من كشف
-                حضور الموظف ليُرفع الوسم.
+                يومٌ تتجاوز بصماتُه هذا السقف يُقصّ عنده ويُوسَم «يحتاج تصحيح». ومعه تعمل حرّاسٌ أخرى:
+                خروجٌ قبل دخول · بصمة مكرّرة بأقلّ من ٥ دقائق · يومٌ أقلّ من نصف المقرَّر · بصمة خروجٍ ناقصة.
+                كلُّها وسمٌ لا منع — القيمة تبقى وتظهر في طابور التصحيح.
               </p>
             </div>
 
-            <div className="rounded-md border p-3 space-y-2">
-            <label className="flex items-start gap-2">
-              <input type="checkbox" className="size-4 mt-0.5" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-              <span>
-                <span className="font-medium">اعتبر بصمة الفجر إغلاقاً لوردية أمس</span>
-                <span className="block text-xs text-muted-foreground mt-0.5">
-                  بدونها تُسجَّل وردية 22:00 ← 06:00 يومين ببصمة واحدة لكلٍّ، فتُحتسب صفر ساعات وصفر أجر لليلة عمل كاملة.
-                </span>
-              </span>
-            </label>
-            <div className="space-y-1">
-              <Label htmlFor="ns-cutoff">ساعة الفصل (صباحاً)</Label>
-              <Input id="ns-cutoff" type="number" min={1} max={12} dir="ltr" value={cutoff} disabled={!enabled} onChange={(e) => setCutoff(Number(e.target.value))} />
-              <p className="text-xs text-muted-foreground">
-                أيّ بصمة قبل هذه الساعة تُغلق وردية اليوم السابق إن كانت مفتوحة. بعدها تُعدّ بدايةَ يومٍ جديد.
-              </p>
-            </div>
-            </div>
             <p className="text-xs text-muted-foreground border-t pt-2">
               التغيير لا يُعيد حساب أيام مسجَّلة سابقاً — يسري على ما يصل بعده.
             </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
-            <Button disabled={save.isPending} onClick={() => save.mutate({ nightShiftEnabled: enabled, nightShiftCutoffHour: cutoff, attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, defaultWorkSchedule: sched, maxDailyHours: maxDaily })}>
+            <Button disabled={save.isPending} onClick={() => save.mutate({ attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, maxDailyHours: maxDaily })}>
               {save.isPending ? "جارٍ الحفظ…" : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </>
   );
 }

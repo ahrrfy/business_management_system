@@ -12,11 +12,6 @@
  *    فقط ويُوسَم «يحتاج تصحيح» ليصحّحه المدير يدوياً قبل إغلاق الشهر. لا أجر يُدفع
  *    على افتراض، ولا يوم يمرّ صامتاً بصفر ساعات كما كان.
  *
- * ٣) **الوردية الليلية العابرة منتصف الليل** مدعومة لكنها **معطَّلة افتراضياً**
- *    (تحدث نادراً في المطبعة): عند تفعيلها، بصمةُ الصباح الباكر (قبل ساعة الفصل)
- *    تُغلق وردية اليوم السابق بدل أن تفتح يوماً جديداً بصفر ساعات.
- *    الإسناد حتميّ وبلا حالة مخزَّنة: يوم D يسأل عن D−1 وD+1 فيصل للنتيجة نفسها
- *    مهما تكرّر الطيّ (وصول بصمة متأخرة يعيد حساب اليوم كاملاً — لا تراكم).
  * ========================================================================== */
 
 /** "YYYY-MM-DD HH:MM:SS" ⇒ ميلي ثانية. لاحقة Z ثابتة: فرق توقيتَي حائط لا يتأثر بالمنطقة. */
@@ -37,14 +32,11 @@ export function hourOf(s: string): number {
  */
 export const DEFAULT_MAX_DAILY_HOURS = 12;
 
-export interface NightShiftOptions {
-  /** هل تُغلق بصمةُ الصباح الباكر وردية اليوم السابق؟ (قرار مالك — معطَّل افتراضياً) */
-  enabled: boolean;
-  /** ساعة الفصل: بصمة قبلها في يومٍ تالٍ تُعدّ إغلاقاً لوردية أمس (افتراضياً 08:00). */
-  cutoffHour: number;
-}
-
-export const DEFAULT_NIGHT_SHIFT: NightShiftOptions = { enabled: false, cutoffHour: 8 };
+/**
+ * أقصر فترة تُحتسب (دقائق). مسحُ البطاقة مرّتين بثوانٍ يُنتج فترةً بلا معنى تمرّ صامتة —
+ * تُهمَل ويُوسَم اليوم ليراه المدير بدل أن تدخل الأجر كسراً وهمياً (قرار المالك ٣١/٧).
+ */
+export const MIN_SPAN_MINUTES = 5;
 
 export interface DayHoursResult {
   /** مجموع الفترات المكتملة بالساعات (منزلتان). */
@@ -69,33 +61,16 @@ function round2Str(n: number): string {
  * يحسب ساعات يومٍ واحد من بصماته.
  *
  * @param dayPunches   بصمات اليوم نفسه ("YYYY-MM-DD HH:MM:SS")، أيّ ترتيب.
- * @param prevDayPunches بصمات اليوم السابق (تُستعمل فقط للوردية الليلية لمعرفة إن كانت
- *                       أولى بصمات اليوم مملوكةً لأمس). مرّر [] إذا كانت معطَّلة.
- * @param nextDayPunches بصمات اليوم التالي (للبحث عن بصمة الإغلاق الليلي). مرّر [].
  */
 export function computeDayHours(
   dayPunches: string[],
-  prevDayPunches: string[] = [],
-  nextDayPunches: string[] = [],
-  night: NightShiftOptions = DEFAULT_NIGHT_SHIFT,
   maxDailyHours: number = DEFAULT_MAX_DAILY_HOURS,
+  /** ساعات اليوم المقرَّرة في جدول الموظف — تُفعّل حارس «أقلّ من النصف». */
+  scheduledHours?: number,
 ): DayHoursResult {
   const times = [...dayPunches].sort();
 
-  // (أ) هل أولى بصمات اليوم في الحقيقة إغلاقٌ لوردية أمس؟ نسأل أمس لا نُخزّن حالة.
-  //     الشرط: أمس عددها فرديّ (وردية مفتوحة) وبصمتنا قبل ساعة الفصل.
-  let working = times;
-  if (night.enabled && times.length > 0 && prevDayPunches.length % 2 === 1 && hourOf(times[0]) < night.cutoffHour) {
-    working = times.slice(1);
-  }
-
-  // (ب) هل ينقص يومَنا إغلاقٌ يقع فجر الغد؟
-  let borrowed: string | null = null;
-  if (night.enabled && working.length % 2 === 1 && nextDayPunches.length > 0) {
-    const nextFirst = [...nextDayPunches].sort()[0];
-    if (hourOf(nextFirst) < night.cutoffHour) borrowed = nextFirst;
-  }
-  const seq = borrowed ? [...working, borrowed] : working;
+  const seq = times;
 
   if (seq.length === 0) {
     return { hours: "0.00", checkIn: null, checkOut: null, needsReview: false, reviewReason: null, usedCount: 0 };
@@ -104,9 +79,17 @@ export function computeDayHours(
   // (ج) المزاوجة: (دخول←خروج) لكل زوج متتالٍ، وتُجمع الفترات ⇒ الاستراحات مطروحة ضمناً.
   let totalMs = 0;
   let lastPairedOut: string | null = null;
+  let badOrder = false; // خروجٌ قبل دخول — كان يُتجاهَل بصمت
+  let tinySpans = 0; // بصماتٌ مكرّرة بثوانٍ
   for (let i = 0; i + 1 < seq.length; i += 2) {
     const span = wallMs(seq[i + 1]) - wallMs(seq[i]);
-    if (span > 0) totalMs += span;
+    if (span < 0) {
+      badOrder = true;
+    } else if (span < MIN_SPAN_MINUTES * 60_000) {
+      tinySpans += 1; // تُهمَل ولا تدخل الأجر
+    } else {
+      totalMs += span;
+    }
     lastPairedOut = seq[i + 1];
   }
 
@@ -125,12 +108,18 @@ export function computeDayHours(
   if (implausible) {
     reasons.push(`ساعات غير معقولة (${round2Str(rawHours)} ساعة) — قُصّت عند سقف ${cap}؛ راجع أوقات البصمات`);
   }
+  if (badOrder) reasons.push("ترتيب أوقات خاطئ — خروجٌ قبل دخول");
+  if (tinySpans > 0) reasons.push(`${tinySpans} بصمة مكرّرة بأقلّ من ${MIN_SPAN_MINUTES} دقائق — أُهملت`);
+  // حدّ أدنى: يومٌ أقلّ من نصف المقرَّر غالباً بصمةٌ ناقصة لا دوامٌ قصير.
+  if (scheduledHours != null && scheduledHours > 0 && hours > 0 && hours < scheduledHours / 2) {
+    reasons.push(`ساعات أقلّ من نصف المقرَّر (${round2Str(hours)} من ${round2Str(scheduledHours)}) — تحقّق من البصمات`);
+  }
 
   return {
     hours: round2Str(hours),
     checkIn: seq[0].slice(11, 16),
     checkOut: lastPairedOut ? lastPairedOut.slice(11, 16) : null,
-    needsReview: dangling || implausible,
+    needsReview: reasons.length > 0,
     reviewReason: reasons.length ? reasons.join(" · ") : null,
     usedCount: seq.length,
   };

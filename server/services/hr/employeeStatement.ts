@@ -74,12 +74,13 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   if (!emp) return null;
 
   const [settings] = await db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
+  // جدول الموظف وحده — الجدول العامّ أُلغي (0140) لأنه صار مكرّراً بعد دخوله بطاقةَ كل موظف.
+  // من لم يُضبط جدولُه بعد يقع على الاحتياطيّ الثابت في الكود ويُنبَّه عليه في الشاشة.
   const schedule: WorkSchedule =
     emp.workSchedule && typeof emp.workSchedule === "object"
       ? (emp.workSchedule as WorkSchedule)
-      : settings?.defaultWorkSchedule && typeof settings.defaultWorkSchedule === "object"
-        ? (settings.defaultWorkSchedule as WorkSchedule)
-        : DEFAULT_WORK_SCHEDULE;
+      : DEFAULT_WORK_SCHEDULE;
+  const hasOwnSchedule = !!(emp.workSchedule && typeof emp.workSchedule === "object");
 
   // نافذة عمله داخل الشهر (تعيين/فصل في منتصفه).
   const employmentStart = emp.hireDate && emp.hireDate > monthStart ? String(emp.hireDate) : monthStart;
@@ -138,6 +139,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     payFrom: settings?.attendancePayFrom ? String(settings.attendancePayFrom) : null,
     monthStart,
     monthEnd,
+    maxDailyHours: Number(settings?.maxDailyHours ?? 12),
   });
 
   // نُثري كل يوم بأوقات البصم الفعلية ووسم المراجعة — وهو ما يريده المالك: «من ساعة إلى ساعة».
@@ -168,6 +170,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     to: employmentEnd,
     schedule,
     attendancePayEnabled: !!settings?.attendancePayEnabled,
+    hasOwnSchedule,
     totals: {
       scheduledHours: pay.scheduledHours,
       standardHours: pay.standardHours,
@@ -181,6 +184,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       absentDays: pay.absentDays,
       unpaidLeaveDays: pay.unpaidLeaveDays,
       shortHours: pay.shortHours,
+      restWorkedHours: pay.restWorkedHours,
       reviewDays: days.filter((d) => d.needsReview).length,
     },
     days,
