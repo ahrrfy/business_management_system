@@ -193,9 +193,15 @@ export default function Attendance() {
         <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs">
           <TriangleAlert aria-hidden className="size-4 mt-0.5 shrink-0 text-[var(--sem-warn)]" />
           <div className="flex-1 leading-relaxed">
-            <span className="font-medium text-[var(--sem-warn)]">{staleCount} صفّاً بسعرٍ مخزَّنٍ قديم</span> —
-            كُتب قبل ضبط جدول دوام الموظف أو قبل تعديل راتبه. الأعمدة تعرض سعر ملفّه الآن
-            (وهو ما سيُدفع)، والمخزَّن مشطوبٌ بجانبه. أعد الاحتساب ليتطابق السجلّ والمجاميع.
+            <span className="font-medium text-[var(--sem-warn)]">
+              {staleCount}{list.data?.staleScanCapped ? "+" : ""} صفّاً بسعرٍ مخزَّنٍ قديم
+            </span> —
+            كُتب قبل ضبط جدول دوام الموظف أو قبل تعديل راتبه (العدّ يشمل كل المطابق للفلتر
+            لا الصفحة المعروضة). الأعمدة تعرض سعر ملفّه الآن (وهو ما سيُدفع)، والمخزَّن مشطوبٌ
+            بجانبه. أعد الاحتساب ليتطابق السجلّ والمجاميع.
+            <span className="block mt-0.5 text-muted-foreground">
+              أشهرُ المسيّرات المُقفَلة مستثناة — لقطتُها هي ما صُرف فعلاً فتبقى كما هي.
+            </span>
           </div>
           <Button
             size="sm"

@@ -132,3 +132,88 @@ describe("سعر الساعة يُشتقّ من ملفّ الموظف لا من 
     expect(opts[0].payType).toBe("monthly");
   });
 });
+
+/* ───────────────── حصاد مراجعة Codex على #446 (أربع P1 وP2) ───────────────── */
+describe("صدق العدّاد والقفل والفصل", () => {
+  /** يزرع يوماً بلقطةٍ قديمة (٦٠٠٠) لموظف ١. */
+  async function seedStaleDay(date: string) {
+    await recordAttendance({ employeeId: 1, attendanceDate: date, hours: 7, source: "manual" });
+    await db().update(s.attendance).set({ hourlyRate: "6000.00", amount: "42000.00" })
+      .where(eq(s.attendance.attendanceDate, date));
+  }
+
+  it("ص٨) العدّاد يمسح كل المطابق لا الصفحة — لقطةٌ في صفحةٍ أقدم لا تختفي", async () => {
+    await seedStaleDay("2026-08-03"); // قديمة
+    await recordAttendance({ employeeId: 1, attendanceDate: "2026-08-20", hours: 7, source: "manual" }); // سليمة وأحدث
+
+    // صفحةٌ واحدة تُظهر الأحدث فقط (السليمة) — وكان العدّاد يقول صفراً فيختفي الزرّ.
+    const page = await listAttendance({ period: "2026-08", limit: 1, offset: 0 });
+    expect(page.rows).toHaveLength(1);
+    expect(page.rows[0].rateStale).toBe(false);
+    expect(page.staleCount).toBe(1); // مسحٌ كاملٌ يراها
+    expect(page.staleScanCapped).toBe(false);
+  });
+
+  it("ص٩) شهرٌ مسيّرُه مُقفَل: تبقى اللقطة هي المعروضة — لا يُعاد كتابة التاريخ", async () => {
+    await seedStaleDay("2026-08-03");
+    await db().insert(s.payrollRuns).values({
+      period: "2026-08", branchId: 1, status: "paid", employeeCount: 1,
+      totalGross: "0", totalOvertime: "0", totalDeductions: "0", totalNet: "0", createdBy: 1,
+    });
+
+    const list = await listAttendance({ period: "2026-08" });
+    const row = list.rows[0];
+    expect(row.periodLocked).toBe(true);
+    expect(Number(row.hourlyRate)).toBe(6000); // ما صُرف فعلاً هو المعروض
+    expect(Number(row.amount)).toBe(42000);
+    expect(row.rateStale).toBe(false); // ولا وسمَ إصلاحٍ لا يمكن تنفيذه
+    expect(list.staleCount).toBe(0);
+  });
+
+  it("ص١٠) مسيّر مسودّة يمنع إعادة الاحتساب (بنودُه بُنيت على المبالغ القديمة)", async () => {
+    await seedStaleDay("2026-08-03");
+    await db().insert(s.payrollRuns).values({
+      period: "2026-08", branchId: 1, status: "draft", employeeCount: 1,
+      totalGross: "0", totalOvertime: "0", totalDeductions: "0", totalNet: "0", createdBy: 1,
+    });
+    await expect(recomputeMonthRates({ period: "2026-08" })).rejects.toThrow(/مسودّة/);
+  });
+
+  it("ص١١) فصل مهام: لا يُعيد أحدٌ احتساب أجر نفسه (وadmin مُستثنى)", async () => {
+    await db().update(s.employees).set({ userId: 1 }).where(eq(s.employees.id, 1));
+    await seedStaleDay("2026-08-03");
+
+    await expect(
+      recomputeMonthRates({ period: "2026-08", actor: { userId: 1, role: "manager" } }),
+    ).rejects.toThrow(/أجر نفسك/);
+    // ولا شيء تغيّر — الرفض قبل أيّ كتابة.
+    const [before] = await db().select().from(s.attendance).where(eq(s.attendance.employeeId, 1));
+    expect(Number(before.hourlyRate)).toBe(6000);
+
+    const res = await recomputeMonthRates({ period: "2026-08", actor: { userId: 1, role: "admin" } });
+    expect(res.updated).toBe(1);
+  });
+
+  it("ص١٢) يومُ غياب بساعاتٍ موجبة يُعرَض بلا أجر ويُوسَم (لا كسبَ وهميّ)", async () => {
+    await db().insert(s.attendance).values({
+      employeeId: 1, attendanceDate: "2026-08-03", status: "ABSENT",
+      hours: "7.00", hourlyRate: "1905.00", amount: "13335.00", source: "manual",
+    });
+    const list = await listAttendance({ period: "2026-08" });
+    expect(Number(list.rows[0].amount)).toBe(0); // المسيّر يستبعده ⇒ فليقُل العرضُ ذلك
+    expect(list.rows[0].rateStale).toBe(true); // ومبلغُه المخزَّن يحتاج تصفيراً
+  });
+
+  it("ص١٣) الأجر يُضرب بالسعر الخام لا المُقرَّب — مطابقةً لما يُخزَّن (فرق الدينار)", async () => {
+    await db().insert(s.employees).values({
+      id: 3, firstName: "حدّيّ", lastName: "التقريب", payType: "monthly", salary: "100001",
+      employmentStatus: "active", isActive: true, branchId: 1, hireDate: "2025-01-01", workSchedule: null,
+    });
+    await recordAttendance({ employeeId: 3, attendanceDate: "2026-08-03", hours: 7.1, source: "manual" });
+
+    const [stored] = await db().select().from(s.attendance).where(eq(s.attendance.employeeId, 3));
+    const list = await listAttendance({ period: "2026-08", employeeId: 3 });
+    expect(Number(list.rows[0].amount)).toBe(Number(stored.amount)); // ٣٤١٤ لا ٣٤١٣
+    expect(list.rows[0].rateStale).toBe(false); // ولا وسمَ زائفاً من فرق تقريب
+  });
+});

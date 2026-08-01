@@ -153,7 +153,9 @@ export const attendanceRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await svc.recomputeMonthRates(input);
+      // فصل مهام: سعرُ الساعة قابلٌ للتعديل من بطاقة الموظف ⇒ «ارفع سعرك ثمّ أعد الاحتساب»
+      // مسارُ زيادةِ أجرٍ بفاعلٍ واحد لولا هذا التمرير (Codex P1).
+      const res = await svc.recomputeMonthRates({ ...input, actor: { userId: ctx.user.id, role: ctx.user.role } });
       await logAudit(ctx, {
         action: "attendance.recomputeRates",
         entityType: "attendance",
