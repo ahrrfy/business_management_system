@@ -148,17 +148,17 @@ export async function getPortalState(identity: PortalIdentity) {
     const counts = countsByVariant.get(vid) ?? [];
     // «معدود» = يوجد عدّ فعّال (FIRST/RECOUNT) من أي أحد — VERIFY وحده لا يقع إلا بعد FIRST.
     const counted = counts.some((c) => c.kind === "FIRST" || c.kind === "RECOUNT");
-    const isMine = Number(it.assignmentId) === myAssignmentId;
+    // The count list is deliberately shared. Field assignmentId is retained in
+    // storage for legacy rows, but no longer represents ownership of a product.
+    const isMine = true;
     const myCounts = counts.filter((c) => Number(c.assignmentId) === myAssignmentId);
     const myLast = myCounts.length ? myCounts[myCounts.length - 1] : null;
     const colleagueCounted = counts.some(
       (c) => (c.kind === "FIRST" || c.kind === "RECOUNT") && Number(c.assignmentId) !== myAssignmentId
     );
     if (counted) sessionCounted++;
-    if (isMine) {
-      mineTotal++;
-      if (counted) mineCounted++;
-    }
+    mineTotal++;
+    if (myCounts.some((c) => c.kind === "FIRST" || c.kind === "RECOUNT")) mineCounted++;
     return {
       variantId: vid,
       productName: it.productName,
@@ -173,12 +173,9 @@ export async function getPortalState(identity: PortalIdentity) {
       units: unitsByVariant.get(vid) ?? [],
     };
   });
-  // منطقتي أولاً ثم أصناف الزملاء (sort مستقر يحفظ ترتيب الإدراج داخل كل مجموعة).
-  items.sort((a, b) => Number(b.isMine) - Number(a.isMine));
-
-  // مهام إعادة العدّ المعلّقة على أصنافي — تظهر أعلى شاشة العامل.
+  // إعادة العدّ متاحة لأي عامل متصل؛ يوجّهه المشرف ميدانياً إلى الصنف المطلوب.
   const recountTasks = itemRows
-    .filter((it) => Number(it.assignmentId) === myAssignmentId && it.recountStatus === "PENDING")
+    .filter((it) => it.recountStatus === "PENDING")
     .map((it) => ({
       variantId: Number(it.variantId),
       productName: it.productName,

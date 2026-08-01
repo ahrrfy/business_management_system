@@ -18,6 +18,7 @@ import {
   COUNT_TOKEN_TTL_MS,
   finishAssignment,
   getPortalState,
+  pauseAssignment,
   resolvePortalIdentity,
   submitCount,
 } from "../services/countPortalService";
@@ -158,6 +159,19 @@ export const countPortalRouter = router({
       });
     }
     return { ok: res.ok, sessionMovedToReview: res.sessionMovedToReview };
+  }),
+
+  /** حفظ وإنهاء وردية: تبقى الجلسة COUNTING ويستأنف العامل لاحقاً من نفس التقدم. */
+  pause: publicProcedure.input(z.object({ sessionCode })).mutation(async ({ input, ctx }) => {
+    const identity = await resolvePortalIdentity(ctx, input.sessionCode);
+    const res = await pauseAssignment(identity);
+    await logAudit(ctx, {
+      action: "stocktake.pauseAssignment",
+      entityType: "stocktake",
+      entityId: identity.session.id,
+      newValue: { assignmentId: identity.assignment.id, countedByName: identity.countedByName },
+    });
+    return res;
   }),
 
   /** خروج: مسح كوكي البوابة (لا يمسّ كوكي جلسة النظام). */

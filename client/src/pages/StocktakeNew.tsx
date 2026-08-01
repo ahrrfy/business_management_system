@@ -260,21 +260,7 @@ export default function StocktakeNew() {
     return manualIds.filter((id) => !known.has(id));
   }, [onHand, manualIds]);
 
-  /* توزيع المنتجات على العمّال — لنطاق MANUAL فقط: كتل متتالية بالتساوي (بترتيب الاختيار).
-     FULL/MOVING/CATEGORY لا تُرسَل لهم variantIds إطلاقاً — الخادم يوزّع غير المُسنَد
-     كتلاً متساوية على كل التكليفات لحظة الإنشاء. */
   const validWorkers = workers.filter((w) => w.name.trim() !== "");
-  const distribution = useMemo<number[][] | null>(() => {
-    if (scopeType !== "MANUAL") return null;
-    const ids = manualIds;
-    const n = Math.max(validWorkers.length, 1);
-    const chunks: number[][] = Array.from({ length: n }, () => []);
-    const size = Math.ceil(ids.length / n) || 1;
-    ids.forEach((id, i) => {
-      chunks[Math.min(Math.floor(i / size), n - 1)].push(id);
-    });
-    return chunks;
-  }, [scopeType, manualIds, validWorkers.length]);
 
   /* ─── التحقق لكل خطوة ─── */
   const stepError = (): string | null => {
@@ -329,17 +315,11 @@ export default function StocktakeNew() {
       notify.warn(err);
       return;
     }
-    const assignments = validWorkers.map((w, i) => ({
+    const assignments = validWorkers.map((w) => ({
       name: w.name.trim(),
       method: w.method,
       userId: w.method === "USER" ? Number(w.userId) : undefined,
       zone: w.zone.trim() || undefined,
-      // التوزيع الصريح لنطاق MANUAL فقط (distribution = null لغيره)؛
-      // FULL/MOVING/CATEGORY: الخادم يوزّع غير المُسنَد كتلاً متساوية على كل التكليفات.
-      variantIds:
-        distribution && validWorkers.length > 1 && (distribution[i]?.length ?? 0) > 0
-          ? distribution[i]
-          : undefined,
     }));
 
     createMut.mutate({
@@ -681,7 +661,8 @@ export default function StocktakeNew() {
               الخارجي» يدخل برمز PIN دون حساب — مناسب للعمّال الموسميين.
             </p>
             {workers.map((w, idx) => {
-              const dist = distribution?.[validWorkers.findIndex((v) => v.key === w.key)] ?? null;
+              // Kept for the legacy badge markup below; no product allocation is computed.
+              const dist = null as number[] | null;
               return (
                 <div key={w.key} className="space-y-3 rounded-lg border p-4">
                   <div className="flex flex-wrap items-end gap-3">

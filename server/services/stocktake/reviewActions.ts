@@ -84,7 +84,7 @@ export async function requestStocktakeRecount(
     await tx
       .update(stocktakeAssignments)
       .set({ status: "ACTIVE", submittedAt: null })
-      .where(and(eq(stocktakeAssignments.id, Number(item.assignmentId)), eq(stocktakeAssignments.status, "SUBMITTED")));
+      .where(and(eq(stocktakeAssignments.sessionId, args.sessionId), eq(stocktakeAssignments.status, "SUBMITTED")));
     if (s.status === "REVIEW") {
       await tx
         .update(stocktakeSessions)
