@@ -65,8 +65,8 @@ const MODES: {
   },
   {
     v: "RECEPTION",
-    label: "استقبال أوامر شغل",
-    subtitle: "تصميم • أمر شغل • قنوات",
+    label: "خدمة الزبائن",
+    subtitle: "بيع • طلبات • حجوزات",
     Icon: Palette,
     activeCls: "border-violet-500 bg-violet-50 text-violet-700",
   },
