@@ -38,6 +38,13 @@ const SOURCE: Record<string, string> = {
   ORDER: "طلب",
   WORKORDER: "طلب خدمة",
 };
+const PAYMENT_METHOD: Record<string, string> = {
+  CASH: "نقدي",
+  CARD: "بطاقة",
+  CHECK: "صك",
+  TRANSFER: "تحويل",
+  WALLET: "محفظة",
+};
 
 const fmt = fmtAr;
 const invoiceRemaining = (r: Pick<ReportRow, "total" | "paidAmount" | "returnedTotal">) => {
@@ -62,7 +69,14 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
   {
     accessorKey: "invoiceDate",
     header: "التاريخ",
-    cell: (c) => fmtDate(c.getValue() as string),
+    cell: (c) => (
+      <div className="leading-tight">
+        <div>{fmtDate(c.getValue() as string)}</div>
+        <div className="mt-0.5 text-[10px] text-muted-foreground" dir="ltr">
+          {new Date(c.getValue() as string).toLocaleTimeString("ar-IQ-u-nu-latn", { hour: "2-digit", minute: "2-digit" })}
+        </div>
+      </div>
+    ),
   },
   {
     accessorKey: "customerName",
@@ -74,6 +88,30 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
     header: "المصدر",
     cell: (c) => SOURCE[c.getValue() as string] ?? (c.getValue() as string),
   },
+  { accessorKey: "branchName", header: "الفرع", cell: (c) => (c.getValue() as string) ?? "—" },
+  { accessorKey: "salespersonName", header: "الكاشير / البائع", cell: (c) => (c.getValue() as string) ?? "—" },
+  { accessorKey: "shiftId", header: "الوردية", cell: (c) => (c.getValue() as number | null) ?? "—" },
+  { accessorKey: "posDeviceId", header: "محطة البيع", cell: (c) => (c.getValue() as string) ?? "—" },
+  {
+    accessorKey: "paymentMethod",
+    header: "طريقة الدفع",
+    cell: (c) => PAYMENT_METHOD[c.getValue() as string] ?? (c.getValue() as string) ?? "آجل",
+  },
+  {
+    accessorKey: "subtotal",
+    header: "قبل الخصم",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
+  {
+    accessorKey: "discountAmount",
+    header: "الخصم",
+    cell: (c) => <span className="tabular-nums text-muted-foreground" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
+  {
+    accessorKey: "taxAmount",
+    header: "الضريبة",
+    cell: (c) => <span className="tabular-nums text-muted-foreground" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
   {
     accessorKey: "total",
     header: "الإجمالي",
@@ -82,6 +120,14 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
         {fmt(c.getValue() as string)}
       </span>
     ),
+  },
+  {
+    accessorKey: "returnedTotal",
+    header: "المرتجع",
+    cell: (c) => {
+      const value = c.getValue() as string;
+      return <span className={`tabular-nums ${D(value).gt(0) ? "text-money-negative font-medium" : "text-muted-foreground"}`} dir="ltr">{fmt(value)}</span>;
+    },
   },
   {
     accessorKey: "paidAmount",
@@ -118,7 +164,14 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
       );
     },
   },
+  {
+    accessorKey: "costTotal",
+    header: "التكلفة المسجلة",
+    cell: (c) => <span className="tabular-nums text-muted-foreground" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
 ];
+
+const INVOICE_COST_COLUMNS = new Set(["costTotal"]);
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -372,6 +425,10 @@ function InvoicesTab({
 }) {
   const utils = trpc.useUtils();
   const [exporting, setExporting] = useState(false);
+  const visibleInvoiceColumns = useMemo(
+    () => showCost ? invoiceColumns : invoiceColumns.filter((c) => !INVOICE_COST_COLUMNS.has(c.id ?? "")),
+    [showCost],
+  );
 
   // التصدير/الطباعة الكاملان: حين تتجاوز النتائج حدّ الصفحة (truncated) نجمع كل الصفحات عبر cursor
   // بدل تصدير أوّل ١٠٠٠ صفٍّ صامتاً (تدقيق ١٧/٧). سقف ٢٠٠ صفحة × ٥٠٠٠ = مليون صفّ حارس ضدّ حلقة لا تنتهي.
@@ -431,7 +488,7 @@ function InvoicesTab({
         </div>
       )}
       <DataTable
-        columns={invoiceColumns}
+        columns={visibleInvoiceColumns}
         data={rows}
         searchPlaceholder="بحث في التقرير…"
         loading={isLoading}
@@ -456,9 +513,18 @@ function InvoicesTab({
                     invoiceNumber: r.invoiceNumber,
                     date: fmtDate(r.invoiceDate),
                     customerName: r.customerName ?? "—",
+                    branchName: r.branchName ?? "—",
+                    salespersonName: r.salespersonName ?? "—",
+                    shiftId: r.shiftId,
+                    paymentMethod: PAYMENT_METHOD[r.paymentMethod ?? ""] ?? (r.paymentMethod ? r.paymentMethod : "آجل"),
+                    subtotal: r.subtotal,
+                    discount: r.discountAmount,
+                    tax: r.taxAmount,
                     total: r.total,
                     paid: r.paidAmount,
+                    returned: r.returnedTotal,
                     remaining: invoiceRemaining(r).toString(),
+                    cost: showCost ? r.costTotal : undefined,
                     status: STATUS[r.status] ?? r.status,
                     statusColor:
                       r.status === "PAID" ? "#0D6B52" : r.status === "PARTIALLY_PAID" ? "#92400E" : "#8A1F11",
@@ -488,12 +554,26 @@ function InvoicesTab({
                       },
                       { key: "customerName", header: "العميل" },
                       { key: "sourceType", header: "النوع", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
+                      { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
+                      { key: "salespersonName", header: "الكاشير / البائع", map: (r) => r.salespersonName ?? "" },
+                      { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
+                      { key: "posDeviceId", header: "محطة البيع", map: (r) => r.posDeviceId ?? "" },
+                      { key: "paymentMethod", header: "طريقة الدفع", map: (r) => PAYMENT_METHOD[r.paymentMethod ?? ""] ?? (r.paymentMethod ?? "آجل") },
+                      { key: "subtotal", header: "قبل الخصم", map: (r) => Number(r.subtotal) },
+                      { key: "discountAmount", header: "الخصم", map: (r) => Number(r.discountAmount) },
+                      { key: "taxAmount", header: "الضريبة", map: (r) => Number(r.taxAmount) },
                       { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
                       { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
+                      { key: "returnedTotal", header: "المرتجع", map: (r) => Number(r.returnedTotal) },
+                      { key: "remaining" as const, header: "المتبقي", map: (r: ReportRow) => invoiceRemaining(r).toNumber() },
                       ...(showCost ? [{
                         key: "costTotal" as const,
                         header: "التكلفة",
                         map: (r: ReportRow) => Number(r.costTotal),
+                      }, {
+                        key: "profit" as const,
+                        header: "الربح",
+                        map: (r: ReportRow) => D(r.total).minus(D(r.returnedTotal ?? "0")).minus(D(r.costTotal)).toNumber(),
                       }] : []),
                       { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
                     ],

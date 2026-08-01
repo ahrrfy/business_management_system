@@ -24,10 +24,19 @@ import {
   useReactTable,
   type ColumnDef,
   type SortingState,
+  type VisibilityState,
 } from "@tanstack/react-table";
 import { useMemo, useState } from "react";
-import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown } from "lucide-react";
+import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown, Columns3 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { CopyContextMenu } from "@/lib/copy/CopyContextMenu";
 import { TableSkeleton } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -130,6 +139,7 @@ export function DataTable<T, K = string>({
 }: DataTableProps<T, K>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [lastIndex, setLastIndex] = useState<number | null>(null);
 
   // مَع الترقيم الخادميّ: `data` صفحةٌ جاهزة ⇒ لا ترقيم ولا تصفية محلّيان (كلاهما يعمل على
@@ -139,8 +149,9 @@ export function DataTable<T, K = string>({
   const table = useReactTable({
     data,
     columns,
-    state: serverMode ? { sorting } : { sorting, globalFilter },
+    state: serverMode ? { sorting, columnVisibility } : { sorting, globalFilter, columnVisibility },
     onSortingChange: setSorting,
+    onColumnVisibilityChange: setColumnVisibility,
     ...(serverMode ? {} : { onGlobalFilterChange: setGlobalFilter }),
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -230,7 +241,7 @@ export function DataTable<T, K = string>({
 
   return (
     <div className="space-y-3">
-      {(showSearch || toolbar) && (
+      {(showSearch || toolbar || table.getAllLeafColumns().length > 5) && (
         <div className="flex items-center gap-2 justify-between flex-wrap">
           {showSearch ? (
             <Input
@@ -242,12 +253,38 @@ export function DataTable<T, K = string>({
               }
             />
           ) : <span />}
-          {toolbar}
+          <div className="flex flex-wrap items-center gap-2">
+            {table.getAllLeafColumns().length > 5 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" size="sm" className="gap-2">
+                    <Columns3 aria-hidden className="size-4" />
+                    الأعمدة
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="max-h-80 min-w-52 overflow-y-auto text-right">
+                  <DropdownMenuLabel>إظهار تفاصيل الجدول</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {table.getAllLeafColumns().map((column) => (
+                    <DropdownMenuCheckboxItem
+                      key={column.id}
+                      checked={column.getIsVisible()}
+                      onCheckedChange={(value) => column.toggleVisibility(Boolean(value))}
+                      onSelect={(event) => event.preventDefault()}
+                    >
+                      {columnHeaderText(column)}
+                    </DropdownMenuCheckboxItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            {toolbar}
+          </div>
         </div>
       )}
       <TableShell bounded={bounded} maxHeightClass={maxHeightClass}>
-        <table className="w-full text-sm">
-          <thead className="bg-muted/50">
+        <table className="w-max min-w-full border-separate border-spacing-0 text-sm">
+          <thead className="bg-muted">
             {table.getHeaderGroups().map((hg) => (
               <tr key={hg.id} className="text-right">
                 {selectionEnabled && (
@@ -270,7 +307,7 @@ export function DataTable<T, K = string>({
                   return (
                     <th
                       key={h.id}
-                      className={`p-2 ${sortable ? "cursor-pointer select-none hover:bg-muted" : ""}`}
+                      className={`border-b border-border/80 px-3 py-2.5 text-xs font-bold text-foreground whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:bg-muted/80" : ""}`}
                       aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
                       {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
                       onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
@@ -299,7 +336,7 @@ export function DataTable<T, K = string>({
                 <tr
                   key={row.id}
                   data-selected={isSelected || undefined}
-                  className={`border-t data-[selected=true]:bg-accent/60 ${selectionEnabled ? "cursor-default" : ""}`}
+                  className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${selectionEnabled ? "cursor-default" : ""}`}
                   onClick={(e) => {
                     if (!selectionEnabled) return;
                     // نَقرة الصَفّ تُغَيِّر التَحديد فَقَط لو: شِفت، أَو rowClickSelects.
@@ -333,7 +370,7 @@ export function DataTable<T, K = string>({
                     const cellVal = cellPrimitive(cell.getValue());
                     const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
                     return (
-                      <td key={cell.id} className="p-2">
+                      <td key={cell.id} className="border-b border-border/55 px-3 py-2.5 align-middle whitespace-nowrap">
                         <CopyContextMenu
                           value={cellVal}
                           rowHeaders={copyHeaders}

@@ -27,11 +27,12 @@ export function ScrollTableShell({
   return (
     <div
       className={cn(
-        "relative overflow-auto",
+        "relative overflow-auto bg-card [scrollbar-gutter:stable]",
         bordered && "rounded-md border",
         maxHeightClass,
         // ترويسة لاصقة: أي thead th داخل الحاوية يلتصق أعلى التمرير بخلفية معتمة فوق الصفوف.
-        "[&_thead_th]:sticky [&_thead_th]:top-0 [&_thead_th]:z-10 [&_thead_th]:bg-muted",
+        "[&_thead_th]:sticky [&_thead_th]:top-0 [&_thead_th]:z-10 [&_thead_th]:bg-muted [&_thead_th]:shadow-[0_1px_0_hsl(var(--border))]",
+        "[&_tbody_tr:nth-child(even)]:bg-muted/20 [&_tbody_tr]:transition-colors [&_tbody_tr:hover]:bg-accent/35",
         className,
       )}
     >
