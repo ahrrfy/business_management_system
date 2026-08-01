@@ -37,6 +37,7 @@ import { withTx, type Actor } from "./tx";
 import { consumeApproval, validateApproval } from "./creditApprovalService";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
+import type { Tx } from "../db";
 
 /** علامة نوع المنتج لخدمات الطباعة: لا مخزون ذاتي، والاستهلاك عبر وصفة المواد فقط.
  *  (مخزّنة في products.productType — لا تحتاج تغيير مخطّط.) */
@@ -58,7 +59,7 @@ export interface CreatePrintSaleInput {
   customerId?: number | null;
   priceTier?: PriceTier | null;
   lines: PrintSaleLineInput[];
-  payment?: { amount: string; method: PaymentMethod } | null;
+  payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
   clientRequestId?: string | null;
   notes?: string | null;
   /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق).
@@ -93,8 +94,7 @@ interface MaterialConsumption {
   unitCost: Decimal; // كلفة الوحدة الأساس (snapshot)
 }
 
-export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor): Promise<CreatePrintSaleResult> {
-  return withTx(async (tx) => {
+export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, actor: Actor): Promise<CreatePrintSaleResult> {
     // ١. Idempotency: أعِد الفاتورة القائمة لنفس clientRequestId (نقرة مزدوجة/إعادة إرسال).
     if (input.clientRequestId) {
       const existing = await tx
@@ -471,6 +471,7 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
         direction: "IN",
         amount: toDbMoney(paidNow),
         paymentMethod: input.payment!.method,
+        referenceNumber: input.payment!.reference?.trim() || null,
         status: "COMPLETED",
         createdBy: actor.userId,
       });
@@ -489,5 +490,9 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
     }
 
     return { invoiceId, invoiceNumber, total: toDbMoney(effectiveTotalD), status, priceOverride: belowCost };
-  });
+}
+
+/** Public wrapper for callers that need a standalone atomic print sale. */
+export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor): Promise<CreatePrintSaleResult> {
+  return withTx((tx) => createPrintSaleInTx(tx, input, actor));
 }
