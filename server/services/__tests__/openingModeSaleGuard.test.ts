@@ -152,7 +152,7 @@ describe("حارس البيع بالسالب المشروط — وضع الاف�
     expect(entry.profit).toBe("18.00");
   });
 
-  it("البيع الآجل (بلا دفعة) يُرفض برسالة مُثراة تشرح شرط النقدي الكامل", async () => {
+  it("البيع الآجل (بلا دفعة) يُرفض برسالة مُثراة تشرح شرط السداد الكامل", async () => {
     await enableOpeningMode();
     await db().insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: null });
     await expectConflict(
@@ -160,7 +160,7 @@ describe("حارس البيع بالسالب المشروط — وضع الاف�
         { branchId: 1, customerId: 1, sourceType: "POS", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }] },
         actor,
       ),
-      /نقدياً مدفوعاً بالكامل/,
+      /سداداً كاملاً نقداً أو بالبطاقة/,
     );
     expect(await stockOf(1)).toBe(0);
   });
@@ -173,19 +173,23 @@ describe("حارس البيع بالسالب المشروط — وضع الاف�
         { branchId: 1, customerId: 1, sourceType: "POS", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "5.00", method: "CASH" } },
         actor,
       ),
-      /نقدياً مدفوعاً بالكامل/,
+      /سداداً كاملاً نقداً أو بالبطاقة/,
     );
   });
 
-  it("الدفع غير النقدي (CARD كاملاً) يُرفض — الشرط CASH حصراً", async () => {
+  it("الدفع بالبطاقة كاملاً يُعد سداداً فورياً ويمرّ بالسالب دون إدخاله في درج النقد", async () => {
     await enableOpeningMode();
-    await expectConflict(
-      createSale(
-        { branchId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CARD" } },
-        actor,
-      ),
-      /نقدياً مدفوعاً بالكامل/,
+    const res = await createSale(
+      { branchId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CARD" } },
+      actor,
     );
+    expect(res.status).toBe("PAID");
+    expect(res.negativeDips).toEqual([{ variantId: 1, newQuantity: -2 }]);
+    expect(await stockOf(1)).toBe(-2);
+
+    const [receipt] = await db().select().from(s.receipts);
+    expect(receipt.paymentMethod).toBe("CARD");
+    expect(receipt.cashBucket).toBeNull();
   });
 
   it("قناة ORDER (تحويل عرض سعر) لا تستفيد من الوضع", async () => {
@@ -196,7 +200,7 @@ describe("حارس البيع بالسالب المشروط — وضع الاف�
         { branchId: 1, customerId: 1, sourceType: "ORDER", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
         actor,
       ),
-      /نقدياً مدفوعاً بالكامل/,
+      /سداداً كاملاً نقداً أو بالبطاقة/,
     );
   });
 
