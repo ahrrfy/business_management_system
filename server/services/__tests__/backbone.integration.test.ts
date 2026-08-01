@@ -526,6 +526,40 @@ describe("أوامر الشغل/المطبعة", () => {
 });
 
 describe("إدارة الورديات (Z-report)", () => {
+  it("بيع البطاقة لا يدخل النقد المتوقع", async () => {
+    await setStock(1, 1, 24);
+    const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "50.00" }, actor);
+
+    await createSale(
+      { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CARD" } },
+      actor
+    );
+    const afterCard = await closeShift({ shiftId, countedCash: "50.00" }, actor);
+    expect(afterCard.expectedCash).toBe("50.00");
+    expect(afterCard.variance).toBe("0.00");
+  });
+
+  it("المرتجع النقدي يطرح من النقد المتوقع للوردية", async () => {
+    await setStock(1, 1, 24);
+    const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "50.00" }, actor);
+    const sale = await createSale(
+      { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CASH" } },
+      actor
+    );
+    const [item] = await db().select({ id: s.invoiceItems.id, baseQuantity: s.invoiceItems.baseQuantity })
+      .from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+    await returnSale({
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: Number(item.baseQuantity) }],
+      refund: { amount: "120.00", method: "CASH" },
+      restock: true,
+    }, actor);
+
+    const closed = await closeShift({ shiftId, countedCash: "50.00" }, actor);
+    expect(closed.expectedCash).toBe("50.00");
+    expect(closed.variance).toBe("0.00");
+  });
+
   it("فتح برصيد افتتاحي → بيع نقدي → إغلاق: المتوقع والفروقات صحيحة", async () => {
     await setStock(1, 1, 24);
     const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "50.00" }, actor);

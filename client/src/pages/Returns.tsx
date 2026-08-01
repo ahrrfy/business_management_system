@@ -81,6 +81,38 @@ export default function Returns() {
     { enabled: !!selectedId },
   );
 
+  // Default the actual refund to the selected return value (capped by what was paid).
+  // Previously this legacy screen left it blank, so stock/ledger were reversed while no DRAWER OUT
+  // was recorded; the cashier then physically refunded cash and closing showed a fictitious shortage.
+  const suggestedRefund = useMemo(() => {
+    const inv = detail.data;
+    if (!inv) return "";
+    let gross = D(0);
+    for (const item of inv.items) {
+      const raw = (qty[item.invoiceItemId] ?? "").trim();
+      if (!/^\d+$/.test(raw)) continue;
+      const amount = D(raw);
+      if (!amount.gt(0) || !D(item.baseQuantity).gt(0)) continue;
+      gross = gross.plus(D(item.total).times(amount.div(item.baseQuantity)));
+    }
+    const subtotal = D(inv.subtotal);
+    const discountRatio = subtotal.gt(0) ? D(inv.discountAmount).div(subtotal) : D(0);
+    const taxable = subtotal.minus(inv.discountAmount);
+    const taxRate = taxable.gt(0) ? D(inv.taxAmount).div(taxable) : D(0);
+    const revenue = round2(gross.times(D(1).minus(discountRatio)));
+    const total = round2(revenue.plus(round2(revenue.times(taxRate))));
+    const paid = D(inv.paidAmount);
+    return (total.lte(paid) ? total : paid).toFixed(2);
+  }, [detail.data, qty]);
+
+  useEffect(() => {
+    setRefundAmount(suggestedRefund === "0.00" ? "" : suggestedRefund);
+    const originalMethod = detail.data?.paymentMethod;
+    if (originalMethod && METHODS.some((m) => m.v === originalMethod)) {
+      setRefundMethod(originalMethod as (typeof METHODS)[number]["v"]);
+    }
+  }, [suggestedRefund, detail.data?.paymentMethod]);
+
   function pick(id: number) {
     setSelectedId(id);
     setQty({});

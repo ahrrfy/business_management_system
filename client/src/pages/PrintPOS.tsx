@@ -265,13 +265,14 @@ export default function PrintPOS() {
     },
   });
 
-  function submit(forceCashFull: boolean, approval?: { email: string; password: string }) {
+  function submit(forceFullPayment: boolean, approval?: { email: string; password: string }) {
     if (!shift || !cart.length || sale.isPending) return;
     setMessage(null);
-    const method: PaymentMethod = forceCashFull ? "CASH" : tab.method;
+    // Quick pay means full payment, not a forced change of the selected method to CASH.
+    const method: PaymentMethod = tab.method;
     const cashTotal = method === "CASH" ? riqd(total) : total;
-    const paid = forceCashFull ? cashTotal : Number(tab.payInput || 0);
-    const isCredit = !forceCashFull && paid > 0 && paid < cashTotal;
+    const paid = forceFullPayment ? cashTotal : Number(tab.payInput || 0);
+    const isCredit = !forceFullPayment && paid > 0 && paid < cashTotal;
     if (isCredit && tab.customerId == null) {
       setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل." });
       return;
@@ -279,7 +280,7 @@ export default function PrintPOS() {
     const cashFull = method === "CASH" && !isCredit;
     const amount = isCredit ? paid.toFixed(2) : total.toFixed(2);
     // النقد المُسلَّم فعلاً: للدفع الكامل بلا إدخال = الإجمالي المقرّب (لا باقي)؛ ومع إدخالٍ صريح = المُدخَل.
-    const tendered = forceCashFull ? cashTotal : (tab.payInput === "" ? cashTotal : paid);
+    const tendered = forceFullPayment ? cashTotal : (tab.payInput === "" ? cashTotal : paid);
     pendingRef.current = {
       lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
       customerName: selectedCustomer?.name,
@@ -876,7 +877,7 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, numP
         <div style={{ display: "flex", gap: 7 }}>
           <button disabled={!cartLen || hasZeroLine || isPending} onClick={onQuickPay}
             style={{ width: 116, height: 52, background: cartLen && !hasZeroLine && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: cartLen && !hasZeroLine && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13.5, fontWeight: 900, cursor: cartLen && !hasZeroLine && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, touchAction: "manipulation" }}>
-            <Zap aria-hidden size={17} />دفع سريع
+            <Zap aria-hidden size={17} />دفع سريع ({METHOD_LABEL[method]})
           </button>
           <button disabled={!canPay || isPending} onClick={onPay}
             style={{ flex: 1, height: 52, background: canPay && !isPending ? C.success : C.muted, color: canPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 16, fontWeight: 900, cursor: canPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, touchAction: "manipulation" }}>

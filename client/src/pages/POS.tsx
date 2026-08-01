@@ -1179,12 +1179,14 @@ export default function POS() {
     const deviceId = await getDeviceCode().catch(() => undefined);
     const payAmount = money(total);
     sale.mutate({
-      branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId, cashRoundIQD: true,
+      branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
       deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
-      payment: { amount: payAmount, method: "CASH" },
+      // Quick pay means full payment; it must not silently replace CARD/TRANSFER/WALLET with CASH.
+      payment: { amount: payAmount, method: activeTab.method },
+      ...(activeTab.method === "CASH" ? { cashRoundIQD: true } : {}),
       ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),
     });
   }
@@ -2312,7 +2314,7 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
             boxShadow: cartLen && !isPending ? "0 4px 14px oklch(0.60 0.18 50 / .38)" : "none",
             transition: "all .1s",
           }}>
-          <Zap aria-hidden size={18} /> دفع سريع وطباعة — نقداً
+          <Zap aria-hidden size={18} /> دفع سريع وطباعة — {paymentMethodLabel(method)}
         </button>
         <div style={{ textAlign: "center", marginTop: 2, fontSize: 10, color: C.mutedFg }}>للأوقات المزدحمة — يتجاوز كل الخطوات</div>
       </div>

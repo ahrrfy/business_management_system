@@ -23,7 +23,10 @@ export async function getCashFlowSeries(
   const effectiveBranch = scope.scopedBranchId ?? input.branchId ?? null;
   const branchFilter = effectiveBranch != null ? sql`AND r.branchId = ${effectiveBranch}` : sql``;
   // الكاشير: DRAWER فقط ضمن السلسلة (لا تَسرّب TREASURY).
-  const bucketFilter = isCashier(scope.role) ? sql`AND (r.cashBucket = 'DRAWER' OR r.cashBucket IS NULL)` : sql``;
+  // NULL is canonical for non-cash methods too. Preserve only legacy CASH rows whose bucket is NULL.
+  const bucketFilter = isCashier(scope.role)
+    ? sql`AND (r.cashBucket = 'DRAWER' OR (r.cashBucket IS NULL AND r.paymentMethod = 'CASH'))`
+    : sql``;
 
   // SQL aggregate per-day. النتيجة قد تَفتقر أياماً بلا حركات — نَملأها بأصفار في JS.
   const rows = rowsOf(
