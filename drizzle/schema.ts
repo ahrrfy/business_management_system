@@ -3372,6 +3372,12 @@ export const employeePromotions = mysqlTable(
     // الموظف عن المؤجَّلة (effectiveDate مستقبليّ) التي تُطبَّق عند بلوغ تاريخها.
     createdBy: int("createdBy").references(() => users.id),
     appliedAt: timestamp("appliedAt"),
+    // حزمة الأجر (0143): البصمة الأجرية الكاملة قبل/بعد — الراتب والبدلات وجدول الدوام
+    // وأسعار الأيام والإعفاء وطريقة الأجر. كانت الترقية تحمل الراتب وحده، فبقيت بقيةُ
+    // الحقول الحاملة للأجر بلا مسارِ تغييرٍ مزدوج الاعتماد. `toWage` هو **الهدف كاملاً**
+    // لا رقعةً جزئية ⇒ تطبيقُه عند الاعتماد قطعيٌّ لا يحتاج دمجاً بحالةٍ تغيّرت بينهما.
+    fromWage: json("fromWage"),
+    toWage: json("toWage"),
   },
   (t) => ({ empIdx: index("idx_promo_emp").on(t.employeeId) })
 );
