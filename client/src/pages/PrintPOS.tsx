@@ -973,10 +973,8 @@ function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: 
     onError: (e) => notify.err(e),
   });
 
-  const cashIn = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "IN").reduce((s, p) => s.plus(D(p.total)), D(0));
-  const cashOut = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "OUT").reduce((s, p) => s.plus(D(p.total)), D(0));
   const openingBal = D(shift.openingBalance ?? 0).toNumber();
-  const expected = report != null ? D(shift.openingBalance ?? 0).plus(cashIn).minus(cashOut).toNumber() : null;
+  const expected = report != null ? D(report.expectedCash).toNumber() : null;
   // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
   const showExpected = isElevatedRole || countEntered;
   const diff = showExpected && expected != null && counted ? Number(counted) - expected : null;

@@ -792,7 +792,7 @@ export default function WorkOrders() {
                 { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
               ],
             })}><FileText aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تصدير Excel</button>
-          <Link href="/work-orders/new" className="wob-btn wob-btn-primary">＋ طلب خدمة جديد</Link>
+          <Link href="/pos?mode=RECEPTION" className="wob-btn wob-btn-primary">شاشة الاستقبال الموحدة</Link>
         </div>
       </div>
 
@@ -818,7 +818,7 @@ export default function WorkOrders() {
         {rows.isLoading ? (
           <div className="wob-empty-board">جارٍ التحميل…</div>
         ) : boardEmpty ? (
-          <div className="wob-empty-board">{anyFilter ? "لا طلبات مطابقة للبحث/الفلاتر الحالية." : "لا طلبات خدمة بعد. ابدأ بـ«طلب خدمة جديد»."}</div>
+          <div className="wob-empty-board">{anyFilter ? "لا طلبات مطابقة للبحث/الفلاتر الحالية." : "لا أوامر شغل بعد. تُنشأ الطلبات من شاشة الاستقبال الموحدة."}</div>
         ) : (
           <div className="wob-board">
             {COLUMNS.map((s) => {

@@ -1698,10 +1698,10 @@ export const workOrders = mysqlTable(
     // v3-add-screens: قناة الاستلام + معرّفها (handle).
     receptionChannel: mysqlEnum("receptionChannel", ["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE", "OTHER"]).default("WALK_IN"),
     channelHandle: varchar("channelHandle", { length: 120 }),
-    // v3-add-screens: أولوية، عربون، الدفع (نقدي/بطاقة) + المرجع + إيصال.
+    // v3-add-screens: أولوية، عربون، الدفع (نقدي/بطاقة/تحويل) + المرجع + إيصال.
     priority: mysqlEnum("woPriority", ["LOW", "NORMAL", "URGENT"]).default("NORMAL"),
     deposit: decimal("deposit", { precision: 15, scale: 2 }).default("0"),
-    paymentMethod: mysqlEnum("woPaymentMethod", ["CASH", "CARD"]).default("CASH"),
+    paymentMethod: mysqlEnum("woPaymentMethod", ["CASH", "CARD", "TRANSFER"]).default("CASH"),
     paymentReference: varchar("paymentReference", { length: 100 }),
     // v3-add-screens(100%): TEXT لاستيعاب data URLs (≥100KB) عند الترميز المضمَّن.
     paymentReceiptUrl: text("paymentReceiptUrl"),

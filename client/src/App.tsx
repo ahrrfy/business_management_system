@@ -74,7 +74,6 @@ const Returns = lazy(() => import("@/pages/Returns"));
 const SalesReturnNew = lazy(() => import("@/pages/SalesReturnNew"));
 const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
-const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
 // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
 const TasksHub = lazy(() => import("@/pages/TasksHub"));
 const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
@@ -305,7 +304,8 @@ export default function App() {
       <Route path="/inventory-movements"><RedirectKeepQuery to="/inventory?tab=movements" /></Route>
       <Route path="/transfers"><Redirect to="/inventory?tab=transfers" /></Route>
       <Route path="/work-orders"><Shell><PrintHub /></Shell></Route>
-      <Route path="/work-orders/new"><Shell><WorkOrderNew /></Shell></Route>
+      {/* إنشاء الخدمة دُمج في شاشة الاستقبال؛ الرابط القديم لا يفتح بوابة ثانية. */}
+      <Route path="/work-orders/new"><Redirect to="/pos?mode=RECEPTION" /></Route>
       {/* إعادة توجيه قَديمة: /work-orders/reception ⇒ /pos?mode=RECEPTION */}
       <Route path="/work-orders/reception"><Redirect to="/pos?mode=RECEPTION" /></Route>
       <Route path="/work-orders/station"><Redirect to="/work-orders?tab=station" /></Route>

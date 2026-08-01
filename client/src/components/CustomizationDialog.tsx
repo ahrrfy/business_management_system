@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Banknote, Check, FileText, Image as ImageIcon, Palette, Ruler, Truck, Layers } from "lucide-react";
+import { Banknote, Check, FileText, Image as ImageIcon, Palette, Ruler, Truck, Layers, UserRound, ReceiptText } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +23,9 @@ import { cn } from "@/lib/utils";
  */
 export type CustomizationData = {
   title: string;
+  unitPrice: string;
+  laborCost: string;
+  assignedTo: number | null;
   size: string;
   material: string;
   customizationText: string;
@@ -32,12 +35,16 @@ export type CustomizationData = {
   deliveryAddress: string;
   deliveryCost: string;
   designImages: ImageItem[];
+  paymentReceiptImages: ImageItem[];
   deposit: string;
 };
 
 export function emptyCustomization(productName: string, price: string): CustomizationData {
   return {
     title: productName,
+    unitPrice: price,
+    laborCost: "0",
+    assignedTo: null,
     size: "",
     material: "",
     customizationText: "",
@@ -47,6 +54,7 @@ export function emptyCustomization(productName: string, price: string): Customiz
     deliveryAddress: "",
     deliveryCost: "0",
     designImages: [],
+    paymentReceiptImages: [],
     deposit: price,
   };
 }
@@ -76,12 +84,15 @@ interface Props {
   open: boolean;
   productName: string;
   price: string;
+  quantity?: number;
   initial?: CustomizationData;
+  staff?: Array<{ id: number; name: string | null; role?: string | null }>;
+  canEditInternalCost?: boolean;
   onCancel: () => void;
   onSave: (data: CustomizationData) => void;
 }
 
-export function CustomizationDialog({ open, productName, price, initial, onCancel, onSave }: Props) {
+export function CustomizationDialog({ open, productName, price, quantity = 1, initial, staff = [], canEditInternalCost = false, onCancel, onSave }: Props) {
   const [data, setData] = useState<CustomizationData>(() => initial ?? emptyCustomization(productName, price));
   // لقطة القيمة الأساس عند الفتح — لكشف «تغييرات غير محفوظة» قبل الإغلاق بالخطأ.
   const baselineRef = useRef<string>("");
@@ -113,7 +124,7 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
     setData((d) => ({ ...d, [k]: v }));
 
   const today = new Date().toISOString().slice(0, 10);
-  const grandWithDelivery = D(price).plus(D(data.deliveryCost || 0));
+  const grandWithDelivery = D(data.unitPrice || 0).times(Math.max(1, quantity)).plus(D(data.deliveryCost || 0));
   const remaining = grandWithDelivery.minus(D(data.deposit || 0));
 
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -122,6 +133,18 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
     setSaveError(null);
     if (!data.title.trim()) {
       setSaveError("عنوان أمر الشغل مطلوب");
+      return;
+    }
+    if (D(data.unitPrice || 0).lte(0)) {
+      setSaveError("سعر بيع الخدمة يجب أن يكون أكبر من صفر");
+      return;
+    }
+    if (D(data.laborCost || 0).lt(0)) {
+      setSaveError("تكلفة العمل لا يمكن أن تكون سالبة");
+      return;
+    }
+    if (D(data.deliveryCost || 0).lt(0)) {
+      setSaveError("تكلفة التوصيل لا يمكن أن تكون سالبة");
       return;
     }
     // حارس عميل: deposit لا يَتجاوز الإجمالي (إصلاح عدائي ٢٣/٦/٢٦). الـmax على input تَحقّق HTML
@@ -143,8 +166,9 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
       <DialogContent dir="rtl" className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
+            <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٤</span>
             <Palette aria-hidden className="size-5 text-violet-600" />
-            تخصيص: {productName}
+            تفاصيل الخدمة وأمر الشغل: {productName}
           </DialogTitle>
         </DialogHeader>
 
@@ -159,6 +183,50 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
               placeholder="مثال: بنر افتتاح 3 متر"
               className="text-sm"
             />
+          </div>
+
+          {/* التسعير والمسؤول — جزء إداري من أمر الشغل، لا يظهر كتفاصيل فنية للعميل. */}
+          <div className={cn("grid grid-cols-1 gap-3", canEditInternalCost ? "sm:grid-cols-3" : "sm:grid-cols-2")}>
+            <div className="space-y-1.5">
+              <Label htmlFor="cz-price" className="text-xs">سعر بيع الوحدة *</Label>
+              <MoneyInput
+                id="cz-price"
+                value={data.unitPrice}
+                onChange={(v) => upd("unitPrice", v)}
+                ariaLabel="سعر بيع وحدة الخدمة"
+                className="text-sm"
+              />
+            </div>
+            {canEditInternalCost && (
+              <div className="space-y-1.5">
+                <Label htmlFor="cz-labor" className="text-xs">تكلفة العمل الداخلية</Label>
+                <MoneyInput
+                  id="cz-labor"
+                  value={data.laborCost}
+                  onChange={(v) => upd("laborCost", v)}
+                  ariaLabel="تكلفة العمل الداخلية"
+                  className="text-sm"
+                />
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="cz-assignee" className="inline-flex items-center gap-1 text-xs">
+                <UserRound aria-hidden className="size-3.5" /> المنفّذ المسؤول
+              </Label>
+              <select
+                id="cz-assignee"
+                value={data.assignedTo ?? ""}
+                onChange={(e) => upd("assignedTo", e.target.value ? Number(e.target.value) : null)}
+                className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs"
+              >
+                <option value="">غير مسند</option>
+                {staff.map((member) => (
+                  <option key={member.id} value={member.id}>
+                    {member.name ?? `موظف #${member.id}`}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {/* المقاس + الخامة */}
@@ -304,10 +372,24 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
             <ImageUploader value={data.designImages} onChange={(v) => upd("designImages", v)} maxItems={10} />
           </div>
 
+          <div className="space-y-1.5">
+            <Label className="text-xs flex items-center justify-between">
+              <span className="inline-flex items-center gap-1">
+                <ReceiptText aria-hidden className="size-3.5" /> مرفق إثبات الدفع
+              </span>
+              <span className="text-[10px] text-muted-foreground font-normal">اختياري — صورة واحدة</span>
+            </Label>
+            <ImageUploader
+              value={data.paymentReceiptImages}
+              onChange={(v) => upd("paymentReceiptImages", v)}
+              maxItems={1}
+            />
+          </div>
+
           {/* العربون والمتبقّي */}
           <div className="rounded-lg border bg-primary/5 p-3 space-y-2">
             <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">إجمالي الصنف{data.hasDelivery && " + التوصيل"}:</span>
+              <span className="text-muted-foreground">إجمالي البند ({quantity} × سعر الوحدة){data.hasDelivery && " + التوصيل"}:</span>
               <span className="font-bold tabular-nums" dir="ltr">{fmt(grandWithDelivery.toString())} د.ع</span>
             </div>
             <div className="space-y-1">

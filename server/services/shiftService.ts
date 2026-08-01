@@ -361,6 +361,22 @@ export async function getShiftReport(shiftId: number) {
     .where(and(eq(receipts.shiftId, shiftId), sql`(${receipts.referenceNumber} IS NULL OR ${receipts.referenceNumber} NOT LIKE 'CH-%')`))
     .groupBy(receipts.paymentMethod, receipts.direction);
 
+  // مصدر حقيقة واحد لرقم «النقد المتوقع» المعروض قبل الإغلاق: نفس معادلة closeShift ونفس فلتر
+  // DRAWER حصراً. الاعتماد على تجميع payments العام في الواجهة كان قد يُدخل سجلات TREASURY/قديمة
+  // ذات shiftId بالخطأ، فيعرض رقماً يختلف عما سيفرضه الخادم لحظة الإغلاق.
+  const expectedRows = await db
+    .select({
+      cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.paymentMethod} = 'CASH' THEN ${receipts.amount} ELSE 0 END), 0)`,
+      cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.paymentMethod} = 'CASH' THEN ${receipts.amount} ELSE 0 END), 0)`,
+    })
+    .from(receipts)
+    .where(and(eq(receipts.shiftId, shiftId), eq(receipts.cashBucket, "DRAWER")));
+  const expectedCash = sh.status === "CLOSED" && sh.expectedCash != null
+    ? money(sh.expectedCash)
+    : money(sh.openingBalance)
+        .plus(money(expectedRows[0]?.cashIn ?? "0"))
+        .minus(money(expectedRows[0]?.cashOut ?? "0"));
+
   const inv = (
     await db
       .select({ count: sql<number>`COUNT(*)`, total: sql<string>`COALESCE(SUM(${invoices.total}), 0)` })
@@ -391,6 +407,7 @@ export async function getShiftReport(shiftId: number) {
   return {
     shift: sh,
     payments,
+    expectedCash: toDbMoney(expectedCash),
     invoiceCount: Number(inv?.count ?? 0),
     salesTotal: inv?.total ?? "0.00",
     lateSyncedCount: lateSynced.count,

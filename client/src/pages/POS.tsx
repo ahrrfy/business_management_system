@@ -2542,14 +2542,11 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
     onError: (e) => notify.errBig(e),
   });
 
-  // النقد المتوقع = رصيد افتتاحي + كل CASH وارد (مبيعات) - كل CASH صادر (مصروفات).
-  // §٥: نجمع ونطرح بدقّة Decimal (Number + reduce + sub يتراكم عليه الانجراف على مئات الدفعات).
-  const cashInD     = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "IN" ).reduce((s, p) => s.plus(D(p.total)), D(0));
-  const cashOutD    = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "OUT").reduce((s, p) => s.plus(D(p.total)), D(0));
+  // النقد المتوقع يأتي من نفس مصدر حقيقة closeShift على الخادم (DRAWER حصراً).
   const openingD    = D(shift?.openingBalance ?? 0);
   // ش٤: النقد غير المُزامَن موجود فيزيائياً بالدرج ⇒ يدخل المتوقع المعروض للعدّ (الخادم عند
   // الإغلاق يحسب المُزامَن فقط، والفرق يُفسَّر لاحقاً بقسم «مُزامنة لاحقاً» في التقرير).
-  const expectedD   = report != null ? openingD.plus(cashInD).minus(cashOutD).plus(D(outboxQueued.total)) : null;
+  const expectedD   = report != null ? D(report.expectedCash).plus(D(outboxQueued.total)) : null;
   const countedD    = counted ? D(counted) : null;
   // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
   const isElevatedRole = me?.role === "admin" || me?.role === "manager";
@@ -2557,8 +2554,6 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const diffD       = showExpected && expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
   const hasVariance = diffD != null && diffD.abs().gt("0.005");
   // متغيّرات عددية للعرض ولتفادي تغييرات JSX الأكبر
-  const cashIn      = cashInD.toNumber();
-  const cashOut     = cashOutD.toNumber();
   const openingBal  = openingD.toNumber();
   const diff        = diffD?.toNumber() ?? null;
 
@@ -2585,7 +2580,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 ? [["مبيعات غير مُزامنة (نقدها بالدرج)", `${outboxQueued.count} فاتورة · ${fmt(outboxQueued.total)} د.ع`] as [string, string]]
                 : []),
               ...(report != null && showExpected
-                ? [["النقد المتوقع بالصندوق", `${fmt(openingBal + cashIn - cashOut + outboxQueued.total)} د.ع`] as [string, string]]
+                ? [["النقد المتوقع بالصندوق", `${fmt(expectedD?.toNumber() ?? 0)} د.ع`] as [string, string]]
                 : []),
             ] as [string, string][]).map(([l, v]) => (
               <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "8px 0", borderBottom: `1px solid ${C.border}` }}>

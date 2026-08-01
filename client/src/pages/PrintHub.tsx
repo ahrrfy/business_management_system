@@ -1,5 +1,5 @@
 // PrintHub — وحدة «المطبعة والإنتاج» بتبويبات (طابور المطبعة + محطة التنفيذ + الإنتاج + الوصفات).
-// مسارات الإنشاء/التفصيل (‎/work-orders/new، ‎/work-orders/:id، ‎/production/:id) تبقى مستقلّة.
+// الإنشاء يتم من شاشة الاستقبال الموحدة؛ مسارات التفصيل (‎/work-orders/:id، ‎/production/:id) تبقى مستقلّة.
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 
