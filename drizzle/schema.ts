@@ -2158,6 +2158,13 @@ export const employees = mysqlTable(
      * null = يُستعمل الجدول الافتراضي العامّ في hrAttendanceSettings.
      */
     workSchedule: json("workSchedule"),
+    /**
+     * إعفاءٌ من الحضور — راتبٌ ثابت (0141، قرار المالك ٣١/٧). للمُلّاك ولمن لا جهاز له.
+     * مع تفعيل الأجر بالحضور، غير المُعفى بلا بصمات يُحتسب شهراً كاملاً غياباً فيقبض صفراً.
+     * **صريح لا مُخمَّن**: الإعفاء التلقائيّ لمن لا بصمات له كان سيُعفي صامتاً موظفاً
+     * تعطّل جهازه فيقبض عن غيابٍ حقيقيّ. الإعفاء من الحضور وحده — الإجازات والسلف تبقى.
+     */
+    attendanceExempt: boolean("attendanceExempt").default(false).notNull(),
     /** حالة التوظيف (مستقلة عن isActive للحذف الناعم). */
     employmentStatus: mysqlEnum("employmentStatus", ["active", "leave", "terminated"]).default("active").notNull(),
     gender: varchar("gender", { length: 10 }),

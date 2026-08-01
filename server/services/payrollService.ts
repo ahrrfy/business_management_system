@@ -228,9 +228,14 @@ export async function generatePayroll(period: string, actor: Actor) {
         payType: employees.payType,
         salary: employees.salary,
         allowances: employees.allowances,
+        firstName: employees.firstName,
+        fatherName: employees.fatherName,
+        grandfatherName: employees.grandfatherName,
+        lastName: employees.lastName,
         hireDate: employees.hireDate,
         terminationDate: employees.terminationDate,
         workSchedule: employees.workSchedule,
+        attendanceExempt: employees.attendanceExempt,
       })
       .from(employees)
       .where(
@@ -276,9 +281,14 @@ export async function generatePayroll(period: string, actor: Actor) {
           payType: employees.payType,
           salary: employees.salary,
           allowances: employees.allowances,
+          firstName: employees.firstName,
+          fatherName: employees.fatherName,
+          grandfatherName: employees.grandfatherName,
+          lastName: employees.lastName,
           hireDate: employees.hireDate,
           terminationDate: employees.terminationDate,
           workSchedule: employees.workSchedule,
+          attendanceExempt: employees.attendanceExempt,
         })
         .from(employees)
         .where(inArray(employees.id, missingIds));
@@ -418,6 +428,12 @@ export async function generatePayroll(period: string, actor: Actor) {
       const monthly = e.payType === "monthly";
       const zeroGross = zeroGrossIds.has(Number(e.id));
       let autoOvertime = new Decimal(0);
+      /*
+       * هل يسلك هذا الموظف مسارَ الحضور؟ بوّابةٌ **لكل موظف** لا عامّة: المُعفى يبقى على
+       * المسار الثابت ولو كان الأجر بالحضور مفعَّلاً للشركة — ويلزمه خصمُ الإجازة القديم
+       * (قرار المالك: الإجازات تبقى تعمل للمُعفى). البوّابة العامّة كانت تُسقطه عنه.
+       */
+      const onAttendancePath = monthly && attendancePayOn && !e.attendanceExempt && !zeroGross;
       const periodStart = `${p}-01`;
       const employmentStart = e.hireDate && e.hireDate > periodStart ? e.hireDate : periodStart;
       const employmentEnd = e.terminationDate && e.terminationDate < periodEndYmd ? e.terminationDate : periodEndYmd;
@@ -436,7 +452,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         // تسوية نهائية لمفصولٍ ذي عمولة مستحقة — لا راتب، عمولة فقط.
         gross = new Decimal(0);
         hours = null;
-      } else if (monthly && attendancePayOn) {
+      } else if (onAttendancePath) {
         /*
          * نموذج الحضور: الأجر = ساعات الحضور الفعلية × سعر ساعته (راتبه ÷ ساعات دوامه).
          * الغياب بلا أجر، والإجازة المدفوعة يوم دوامٍ كامل، وبلا راتب لا تُحتسب —
@@ -457,6 +473,29 @@ export async function generatePayroll(period: string, actor: Actor) {
           monthEnd: periodEndYmd,
           maxDailyHours: maxDaily,
         });
+        /*
+         * حارس «صفر بصمات شهراً كاملاً» (قرار المالك ٣١/٧): لا أحد يغيب الشهر كلَّه ويبقى
+         * موظفاً — هذا ربطٌ ناقص بالجهاز أو جهازٌ معطَّل، لا غياب. والفرق بين الحالتين
+         * راتبٌ كامل، فالنظام يتوقّف ويسأل بدل أن يُصفّر صامتاً.
+         * المُعفى لا يبلغ هنا أصلاً (مساره الثابت أعلاه).
+         *
+         * ⚠️ الحارس يصطاد الصفرَ **غيرَ المفسَّر** وحده (Codex P1): مَن كانت كلُّ أيامه إجازةً
+         * بلا راتبٍ **معتمدة** صفرُه مقصودٌ وموثَّق (absentDays = 0) — فلو أوقفناه لَعطّل
+         * إجازةُ موظفٍ واحدٍ توليدَ مسيّر الشركة كلِّها. وكذلك مَن عمل يوم راحته فقط: له
+         * بصماتٌ فعلاً وأجرٌ يُدفع، فليس «بلا جهاز».
+         */
+        if (
+          Number(pay.payableHours) === 0 &&
+          Number(pay.restWorkedHours) === 0 &&
+          pay.absentDays > 0
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              `الموظف «${fullEmployeeName(e as never)}» بلا أي ساعة حضور في ${p} — وهذا غالباً ربطٌ ناقص بجهاز البصمة لا غياباً. ` +
+              `اربطه من بطاقته، أو أشّر «راتب ثابت — لا يخضع للحضور» إن كان بلا جهاز (كالمُلّاك)، ثم أعد التوليد.`,
+          });
+        }
         attendancePayByEmp.set(Number(e.id), pay);
         gross = round2(money(pay.basePay).plus(allowances));
         hours = pay.payableHours;
@@ -480,7 +519,7 @@ export async function generatePayroll(period: string, actor: Actor) {
       // في نموذج الحضور الخصمُ مطبَّقٌ أصلاً داخل computeAttendancePay (يوم الإجازة بلا
       // راتب لا يُحتسب ساعاته) ⇒ لا يُخصم هنا ثانيةً.
       const unpaidLeaveDays =
-        monthly && !zeroGross && !attendancePayOn
+        monthly && !zeroGross && !onAttendancePath
           ? countDaysWithin(unpaidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd)
           : 0;
       const dailyRate = round2(money(e.salary ?? 0).div(30));

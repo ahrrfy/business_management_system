@@ -981,6 +981,13 @@
       "when": 1787616200000,
       "tag": "0140_drop_night_shift_and_global_schedule",
       "breakpoints": true
+    },
+    {
+      "idx": 141,
+      "version": "5",
+      "when": 1787702600000,
+      "tag": "0141_attendance_exempt",
+      "breakpoints": true
     }
   ]
 }
