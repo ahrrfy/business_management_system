@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import {
   ArrowLeftRight,
+  ArrowRight,
   Banknote,
+  CalendarClock,
   Camera,
   Check,
   ClipboardList,
@@ -45,6 +47,11 @@ import { fmtDate } from "@/lib/date";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { Contact360Panel } from "@/components/contacts/Contact360Panel";
+import ReservationsHub from "@/pages/ReservationsHub";
+import Inbox from "@/pages/Inbox";
+import OrderFulfillment from "@/pages/OrderFulfillment";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   getServerBridgeStatus,
   isPaired,
@@ -79,6 +86,10 @@ const PAY_METHOD_LABEL: Record<PayMethod, string> = {
   CARD: "بطاقة",
   TRANSFER: "تحويل",
 };
+const RESERVATION_READ_ROLES = ["admin", "manager", "accountant", "cashier", "warehouse", "sales_rep", "auditor"] as const;
+const CHANNEL_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor", "warehouse", "print_operator"] as const;
+const STORE_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
+const CRM_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
 
 type CartLine = {
   key: string; // معرّف فريد للسطر (للأصناف المخصّصة المتعدّدة من نفس المنتج)
@@ -137,7 +148,45 @@ function buildStockState(cart: CartLine[]) {
 }
 
 export default function Reception() {
+  const [, navigate] = useLocation();
+  const pageSearch = useSearch();
   const me = trpc.auth.me.useQuery();
+  const reservationsRequested = useMemo(
+    () => new URLSearchParams(pageSearch).get("workspace") === "reservations",
+    [pageSearch],
+  );
+  const reservationPermissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const canReadReservations = me.data != null && moduleAccessAllowed(
+    me.data.role,
+    reservationPermissions,
+    "reservations",
+    "READ",
+    RESERVATION_READ_ROLES,
+  );
+  const canReadChannels = me.data != null && moduleAccessAllowed(
+    me.data.role, reservationPermissions, "channels", "READ", CHANNEL_READ_ROLES,
+  );
+  const canReadStoreOrders = me.data != null && moduleAccessAllowed(
+    me.data.role, reservationPermissions, "store", "READ", STORE_READ_ROLES,
+  );
+  const canReadCustomerContext = me.data != null && moduleAccessAllowed(
+    me.data.role, reservationPermissions, "crm", "READ", CRM_READ_ROLES,
+  );
+  const showReservations = reservationsRequested && canReadReservations;
+  const openReservations = useCallback(
+    () => navigate("/pos?mode=RECEPTION&workspace=reservations", { replace: true }),
+    [navigate],
+  );
+  const closeReservations = useCallback(
+    () => navigate("/pos?mode=RECEPTION", { replace: true }),
+    [navigate],
+  );
+
+  useEffect(() => {
+    if (!reservationsRequested || me.isLoading || canReadReservations) return;
+    notify.err("لا تملك صلاحية قراءة الحجوزات");
+    closeReservations();
+  }, [reservationsRequested, me.isLoading, canReadReservations, closeReservations]);
   // الأدمن/المدير بلا فرع مُسنَد: يختار الفرع صراحةً قبل فتح وردية الخدمة بدل الإسناد الصامت للفرع ١
   // (نمط POS/PrintPOS، #274 — الوردية تحمل الفرع والطلبات تتبعها). لا يمسّ مستخدماً له فرع (يبقى فرعه).
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
@@ -231,6 +280,8 @@ export default function Reception() {
   const [method, setMethod] = useState<PayMethod>("CASH");
   const [paymentReference, setPaymentReference] = useState(""); // P2 fix: مرجع البطاقة للعرابين
   const [showInbox, setShowInbox] = useState(false);
+  const [showStoreOrders, setShowStoreOrders] = useState(false);
+  const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
   const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
@@ -322,18 +373,7 @@ export default function Reception() {
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
 
   const hasCustom = cart.some(isCustomKind);
-  // TRANSFER غير مدعوم على workOrders (schema: CASH/CARD فقط). إصلاح P2: نعطّل التحويل عند وجود
-  // مخصّص بدل تحويله صامتاً لـCASH (كان يشوّه نوع الدفع المُسجَّل).
-  const transferDisabled = hasCustom;
   const needPaymentRef = method !== "CASH" && (expectedNowD.gt(0) || hasCustom);
-
-  // إذا أضيف أمر شغل بعد اختيار التحويل، لا نُبقِ طريقةً أصبحت معطّلة بصرياً في الحالة الداخلية.
-  useEffect(() => {
-    if (transferDisabled && method === "TRANSFER") {
-      setMethod("CASH");
-      setPaymentReference("");
-    }
-  }, [transferDisabled, method]);
 
   // ───── البحث ──────────────────────────────────────────────────────────────
   const debounced = useDebouncedValue(search, 180);
@@ -813,6 +853,17 @@ export default function Reception() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (showCustomization) return;
+      if (showReservations) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeReservations();
+        }
+        return;
+      }
+      if (showStoreOrders) {
+        if (e.key === "Escape") { e.preventDefault(); setShowStoreOrders(false); }
+        return;
+      }
       if (e.key === "F2") {
         e.preventDefault();
         searchRef.current?.focus();
@@ -826,7 +877,7 @@ export default function Reception() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showInbox, showDrop, showCustomization]);
+  }, [showInbox, showDrop, showCustomization, showReservations, showStoreOrders, closeReservations]);
 
   // اقتراح الكاشير: لا يبني الواجهة قبل توفّر الفرع.
   if (me.isLoading || shiftQ.isLoading) {
@@ -909,7 +960,27 @@ export default function Reception() {
   const hasRecVariance = recDiff != null && Math.abs(recDiff) >= 0.01;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-background" dir="rtl">
+    <div className="relative flex h-full flex-col overflow-hidden bg-background" dir="rtl">
+      {/* مساحة الحجوزات جزء من شاشة الاستقبال نفسها؛ تبقى السلة محفوظة خلفها عند الرجوع. */}
+      {showReservations && (
+        <div className="absolute inset-0 z-30 bg-background">
+          <ReservationsHub embedded fixedBranchId={branchId} onClose={closeReservations} />
+        </div>
+      )}
+      {showStoreOrders && (
+        <div className="absolute inset-0 z-30 overflow-y-auto bg-background p-4">
+          <div className="mb-3 flex items-center justify-between rounded-xl border bg-card p-3">
+            <div>
+              <h1 className="font-extrabold">طلبات المتجر الواردة</h1>
+              <p className="text-xs text-muted-foreground">تثبيت الطلب وتجهيزه وإرساله للمندوب من داخل محطة الاستقبال.</p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => setShowStoreOrders(false)}>
+              <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
+            </Button>
+          </div>
+          <OrderFulfillment />
+        </div>
+      )}
       {/* نافذة إغلاق وردية خدمة الزبائن (Z-report مستقلّ) */}
       {closing && (
         <div
@@ -1022,7 +1093,7 @@ export default function Reception() {
       {/* مناطق العمل المتسلسلة: العميل ← الإضافة ← السلة ← التفاصيل ← الدفع. */}
       <div className="flex-shrink-0 space-y-2 border-b bg-card px-4 py-2.5">
         <div className="flex items-center gap-1 overflow-x-auto text-[11px] font-bold text-muted-foreground" aria-label="تسلسل إنشاء الطلب">
-          {["العميل والقناة", "إضافة المنتجات والخدمات", "جدول السلة", "تفاصيل أمر الشغل", "الدفع والإتمام"].map((label, index) => (
+          {["العميل والقناة", "البيع والخدمة والحجز", "جدول السلة", "تفاصيل أمر الشغل", "الدفع والإتمام"].map((label, index) => (
             <div key={label} className="inline-flex shrink-0 items-center gap-1.5">
               <span className={cn(
                 "grid size-5 place-items-center rounded-full border text-[10px]",
@@ -1037,6 +1108,11 @@ export default function Reception() {
         <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/25 p-2">
           <span className="shrink-0 text-xs font-extrabold">١. العميل والقناة</span>
           <SmartCustomerInput value={customer} onChange={setCustomer} className="w-60" placeholder="عميل نقدي أو ابحث عن عميل" />
+          {customer.customerId && canReadCustomerContext && (
+            <Button size="sm" variant="outline" className="h-8" onClick={() => setCustomerContextId(customer.customerId)}>
+              بطاقة العميل ٣٦٠°
+            </Button>
+          )}
           <div className="flex flex-wrap gap-1">
             {(
               [
@@ -1072,7 +1148,7 @@ export default function Reception() {
         </div>
 
         <div className="flex items-center gap-3">
-        <span className="shrink-0 text-xs font-extrabold">٢. الإضافة</span>
+        <span className="shrink-0 text-xs font-extrabold">٢. الإضافة والحجز</span>
         <div className="relative max-w-[640px] flex-1">
           <Search aria-hidden className="pointer-events-none absolute inset-y-0 end-3 my-auto size-4 text-muted-foreground" />
           <input
@@ -1151,6 +1227,26 @@ export default function Reception() {
           <ClipboardList aria-hidden className="size-4" /> إضافة خدمة / أمر شغل
         </button>
 
+        {canReadReservations && (
+          <button
+            type="button"
+            onClick={openReservations}
+            className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 border-primary bg-primary/5 px-4 text-xs font-extrabold text-primary transition-colors hover:bg-primary/10"
+          >
+            <CalendarClock aria-hidden className="size-4" /> الحجوزات
+          </button>
+        )}
+
+        {canReadStoreOrders && (
+          <button
+            type="button"
+            onClick={() => setShowStoreOrders(true)}
+            className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-4 text-xs font-extrabold transition-colors hover:bg-muted/60"
+          >
+            <Package aria-hidden className="size-4" /> طلبات المتجر
+          </button>
+        )}
+
         <div className="ms-auto flex items-center gap-2">
           {bridge.enabled && (
             <button
@@ -1190,15 +1286,15 @@ export default function Reception() {
           <Button size="sm" variant="outline" onClick={() => setClosing(true)}>
             إغلاق الوردية
           </Button>
-          <button
-            type="button"
-            onClick={() => setShowInbox(true)}
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-card px-3 text-xs font-bold hover:bg-muted/60"
-          >
-            <MessageCircle aria-hidden className="size-4" />
-            الوارد
-            <span className="rounded-full bg-muted px-1.5 text-[10px] font-bold text-muted-foreground">قريباً</span>
-          </button>
+          {canReadChannels && (
+            <button
+              type="button"
+              onClick={() => setShowInbox(true)}
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-card px-3 text-xs font-bold hover:bg-muted/60"
+            >
+              <MessageCircle aria-hidden className="size-4" /> الوارد والقنوات
+            </button>
+          )}
         </div>
         </div>
       </div>
@@ -1553,21 +1649,17 @@ export default function Reception() {
             <div className="flex gap-1.5">
               {(
                 [
-                  { v: "CASH", label: "نقداً", Icon: Banknote, disabled: false },
-                  { v: "CARD", label: "بطاقة", Icon: CreditCard, disabled: false },
-                  { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight, disabled: transferDisabled },
+                  { v: "CASH", label: "نقداً", Icon: Banknote },
+                  { v: "CARD", label: "بطاقة", Icon: CreditCard },
+                  { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight },
                 ] as const
               ).map((p) => (
                 <button
                   key={p.v}
-                  onClick={() => !p.disabled && setMethod(p.v)}
-                  disabled={p.disabled}
-                  title={p.disabled ? "غير مدعوم لأوامر الشغل (CASH/CARD فقط)" : ""}
+                  onClick={() => setMethod(p.v)}
                   className={cn(
                     "flex flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border-2 py-2 text-xs font-extrabold transition-colors",
-                    p.disabled
-                      ? "bg-muted/30 text-muted-foreground opacity-50 cursor-not-allowed"
-                      : method === p.v
+                    method === p.v
                       ? "border-primary bg-primary text-primary-foreground"
                       : "bg-card hover:bg-muted",
                   )}
@@ -1669,66 +1761,28 @@ export default function Reception() {
         />
       )}
 
-      {/* ─── درج الوارد (Stub) ─── */}
+      {/* صندوق القنوات الحقيقي داخل محطة الاستقبال؛ يعود الموظف إلى السلة من دون فقد محتواها. */}
       {showInbox && (
-        <>
-          <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setShowInbox(false)} />
-          <aside className="fixed inset-y-0 end-0 z-50 flex w-[360px] max-w-[92vw] flex-col bg-card shadow-2xl">
-            <div className="flex items-center justify-between border-b p-4">
-              <div className="inline-flex items-center gap-2 font-extrabold">
-                <MessageCircle aria-hidden className="size-4" /> صندوق الوارد الموحّد
-              </div>
-              <button onClick={() => setShowInbox(false)} className="grid size-8 place-items-center rounded-md bg-muted hover:bg-muted/80" aria-label="إغلاق">
-                <X aria-hidden className="size-4" />
-              </button>
+        <div className="absolute inset-0 z-40 overflow-hidden bg-background p-4">
+          <div className="mb-3 flex items-center justify-between rounded-xl border bg-card p-3">
+            <div>
+              <h1 className="inline-flex items-center gap-2 font-extrabold"><MessageCircle aria-hidden className="size-4" /> صندوق الوارد الموحّد</h1>
+              <p className="text-xs text-muted-foreground">واتساب والاتصالات والقنوات المرتبطة بالعميل، داخل محطة خدمة الزبائن.</p>
             </div>
-            <div className="border-b bg-primary/5 p-3 text-xs leading-relaxed">
-              تكامل القنوات (واتساب Business / انستغرام / المتجر) <b>قيد التنفيذ</b> — هذه معاينة فقط.
-              عند الاكتمال، يُمكنك الردّ على العميل وتحويل محادثته إلى طلب خدمة من هنا مباشرة.
-            </div>
-            <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
-              <div>
-                <MessageCircle aria-hidden className="mx-auto size-10 opacity-40" />
-                <div className="mt-3 font-bold">لا محادثات بعد</div>
-                <div className="mt-1 text-xs">تظهر هنا تلقائياً عند ربط القنوات.</div>
-              </div>
-            </div>
-            <div className="border-t bg-muted/30 p-3">
-              <div className="text-[11px] text-muted-foreground">قناة الطلب الحالي</div>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {(
-                  [
-                    { v: "WALK_IN", label: "مباشر", Icon: Store },
-                    { v: "WHATSAPP", label: "واتساب", Icon: MessageCircle },
-                    { v: "INSTAGRAM", label: "انستغرام", Icon: Camera },
-                    { v: "TIKTOK", label: "تيك توك", Icon: Music },
-                    { v: "PHONE", label: "اتصال", Icon: Phone },
-                  ] as const
-                ).map((c) => (
-                  <button
-                    key={c.v}
-                    onClick={() => setChannel(c.v)}
-                    className={cn(
-                      "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-bold transition-colors",
-                      channel === c.v ? "border-primary bg-primary/10 text-primary" : "bg-card hover:bg-muted",
-                    )}
-                  >
-                    <c.Icon aria-hidden className="size-3.5" /> {c.label}
-                  </button>
-                ))}
-              </div>
-              {channel !== "WALK_IN" && (
-                <input
-                  value={channelHandle}
-                  onChange={(e) => setChannelHandle(e.target.value)}
-                  placeholder="معرّف القناة (رقم/يوزر)"
-                  className="mt-2 h-9 w-full rounded-md border bg-card px-2 text-xs"
-                  dir="ltr"
-                />
-              )}
-            </div>
-          </aside>
-        </>
+            <Button size="sm" variant="outline" onClick={() => setShowInbox(false)}>
+              <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
+            </Button>
+          </div>
+          <Inbox />
+        </div>
+      )}
+      {customerContextId != null && (
+        <Contact360Panel
+          kind="customer"
+          id={customerContextId}
+          onClose={() => setCustomerContextId(null)}
+          onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }}
+        />
       )}
     </div>
   );

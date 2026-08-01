@@ -13,7 +13,7 @@ import { adjustReservedStock } from "./stock";
 
 export interface ConvertReservationInput {
   reservationId: number;
-  payment?: { amount: string; method: PaymentMethod } | null;
+  payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
 }
 export interface ConvertReservationResult {
   reservationId: number;
@@ -25,6 +25,9 @@ export interface ConvertReservationResult {
 }
 
 export async function convertReservationToSale(input: ConvertReservationInput, actor: Actor): Promise<ConvertReservationResult> {
+  if (input.payment && input.payment.method !== "CASH" && !input.payment.reference?.trim()) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع الدفع غير النقدي مطلوب" });
+  }
   const db = requireDb();
   const res = (await db.select().from(reservations).where(eq(reservations.id, input.reservationId)).limit(1))[0];
   if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "الحجز غير موجود" });
