@@ -53,6 +53,9 @@ export default function EmployeeNew() {
   });
   const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
   const [dayRates, setDayRates] = useState<Record<string, number>>({ ...DAY_RATES_DEFAULT });
+  /** جدول الدوام الأسبوعيّ: ساعات كل يوم وسعر ساعته (0139). صفر ساعة = راحة. */
+  const [sched, setSched] = useState<Record<string, { hours: number; rate?: number | null }>>({});
+  const [schedOn, setSchedOn] = useState(false);
   const [photo, setPhoto] = useState<ImageItem[]>([]);
   const [edu, setEdu] = useState<EduRow[]>([]);
 
@@ -98,6 +101,10 @@ export default function EmployeeNew() {
       colorTag: e.colorTag ?? COLORS[0], annualLeaveBalance: String(e.annualLeaveBalance ?? 0), sickLeaveBalance: String(e.sickLeaveBalance ?? 0),
     }));
     if (e.dayRates && typeof e.dayRates === "object") setDayRates({ ...DAY_RATES_DEFAULT, ...(e.dayRates as Record<string, number>) });
+    if (e.workSchedule && typeof e.workSchedule === "object") {
+      setSched({ ...(e.workSchedule as Record<string, { hours: number; rate?: number | null }>) });
+      setSchedOn(true);
+    }
     if (Array.isArray(e.education)) setEdu((e.education as EmployeeEducation[]).map((x, i) => ({ ...x, key: i + 1 })));
     if (e.photoUrl) setPhoto([{ dataUrl: e.photoUrl, isPrimary: true } as ImageItem]);
     setLoaded(true);
@@ -182,6 +189,8 @@ export default function EmployeeNew() {
       salary: form.payType === "monthly" ? (form.salary.trim() || undefined) : undefined,
       allowances: form.payType === "monthly" ? (form.allowances.trim() || "0") : "0",
       dayRates: form.payType === "hourly" ? dayRates : undefined,
+      // جدولٌ خاصّ يتقدّم على الافتراضي العامّ؛ إطفاؤه ⇒ null فيرث العامّ.
+      workSchedule: schedOn ? sched : null,
       colorTag: form.colorTag || undefined, photoUrl: photoUrl || undefined,
       education: edu.length ? edu.map(({ key, ...e }) => ({ ...e, degree: e.degree, year: e.year ? Number(e.year) : undefined })) : undefined,
       annualLeaveBalance: Number(form.annualLeaveBalance || 0), sickLeaveBalance: Number(form.sickLeaveBalance || 0),
@@ -359,6 +368,64 @@ export default function EmployeeNew() {
               <p className="text-xs text-muted-foreground">أجر اليوم = ساعات العمل × سعر ساعة ذلك اليوم.</p>
             </div>
           )}
+
+          {/* جدول الدوام الأسبوعيّ الخاصّ بهذا الموظف (0139) — يتقدّم على الافتراضي العامّ. */}
+          <div className="md:col-span-3 space-y-2 border-t pt-3">
+            <label className="flex items-start gap-2">
+              <input type="checkbox" className="size-4 mt-0.5" checked={schedOn} onChange={(ev) => {
+                setSchedOn(ev.target.checked);
+                if (ev.target.checked && Object.keys(sched).length === 0) {
+                  setSched(Object.fromEntries(WEEK_DAYS.map((d) => [d, { hours: d === "الجمعة" ? 0 : 8 }])));
+                }
+              }} />
+              <span>
+                <span className="font-medium">جدول دوامٍ خاصّ بهذا الموظف</span>
+                <span className="block text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                  بلا تأشير يرث الجدول الافتراضي العامّ من إعدادات الحضور. أشِّر لتحديد ساعات
+                  كل يوم وسعر ساعته لهذا الموظف وحده.
+                </span>
+              </span>
+            </label>
+
+            {schedOn && (
+              <div className="rounded-md border divide-y">
+                <div className="grid grid-cols-3 gap-2 bg-muted/50 px-2 py-1 text-[11px] font-medium">
+                  <span>اليوم</span><span className="text-center">ساعات الدوام</span><span className="text-center">سعر الساعة (د.ع)</span>
+                </div>
+                {WEEK_DAYS.map((d) => (
+                  <div key={d} className="grid grid-cols-3 gap-2 items-center px-2 py-1.5">
+                    <span className="text-xs">{d}</span>
+                    <Input
+                      type="number" min={0} max={24} step="0.5" dir="ltr" className="h-8 text-center"
+                      value={sched[d]?.hours ?? 0}
+                      onChange={(ev) => setSched((prev) => ({ ...prev, [d]: { ...(prev[d] ?? {}), hours: Number(ev.target.value) } }))}
+                    />
+                    <Input
+                      type="number" min={0} step="250" dir="ltr" className="h-8 text-center"
+                      placeholder="مُشتقّ من الراتب"
+                      disabled={!(sched[d]?.hours > 0)}
+                      value={sched[d]?.rate ?? ""}
+                      onChange={(ev) => setSched((prev) => ({ ...prev, [d]: { ...(prev[d] ?? { hours: 0 }), rate: ev.target.value === "" ? null : Number(ev.target.value) } }))}
+                    />
+                  </div>
+                ))}
+                <div className="grid grid-cols-3 gap-2 px-2 py-1.5 text-[11px] bg-muted/30">
+                  <span className="font-medium">مجموع الأسبوع</span>
+                  <span className="text-center tabular-nums font-medium" dir="ltr">
+                    {WEEK_DAYS.reduce((t, d) => t + (Number(sched[d]?.hours) || 0), 0)} ساعة
+                  </span>
+                  <span />
+                </div>
+              </div>
+            )}
+            {schedOn && (
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                <span className="font-medium">صفر ساعة = يوم راحة.</span> وأجر اليوم = ساعاته المحتسَبة × سعره،
+                والراتب المستحقّ = مجموع أيام الشهر. تركُ السعر فارغاً يشتقّه من الراتب ÷ ساعات الشهر.
+                والساعات فوق المقرَّر تُحتسب أوفر تايم ببندٍ مستقلّ.
+              </p>
+            )}
+          </div>
         </CardContent>
       </Card>
 

@@ -7,6 +7,7 @@ import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/attendanceService";
 import { getAttendanceReport } from "../services/reportsHrService";
+import { getEmployeeStatement } from "../services/hr/employeeStatement";
 import { protectedProcedure, requireModule, router } from "../trpc";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
@@ -80,6 +81,14 @@ export const attendanceRouter = router({
   formOptions: hrRead.query(() => svc.formOptions()),
 
   monthSummary: hrRead.input(z.object({ period: periodStr })).query(({ input }) => svc.monthSummary(input.period)),
+
+  /**
+   * كشف حضور موظف — صفٌّ لكل يوم (من ← إلى، الساعات، سعر الساعة، أجر اليوم) + المجاميع.
+   * يبني على نواة المسيّر نفسها فلا ينحرف المعروض عن المدفوع. قراءة صرفة.
+   */
+  employeeStatement: hrRead
+    .input(z.object({ employeeId: z.number().int().positive(), period: periodStr }))
+    .query(({ input }) => getEmployeeStatement(input)),
 
   /** تقرير الحضور — سجلّات الحضور في نطاق تاريخ + ملخّص (بفلتر موظف اختياري). hr/READ. */
   report: hrRead

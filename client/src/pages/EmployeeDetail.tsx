@@ -1,5 +1,6 @@
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { DeviceLinkCard } from "@/components/hr/DeviceLinkCard";
+import { EmployeeStatementCard } from "@/components/hr/EmployeeStatementCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -190,6 +191,9 @@ export default function EmployeeDetail() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* كشف الحضور اليوميّ — من ساعة إلى ساعة، سعر الساعة وأجر اليوم (قرار المالك ٣١/٧) */}
+      <EmployeeStatementCard employeeId={id} phone={e.phone} />
 
       {/* ربط جهاز الحضور — يُدار من بطاقة الموظف لا من شاشة الأجهزة وحدها */}
       <DeviceLinkCard employeeId={id} employeeName={e.fullName} hireDate={e.hireDate} links={e.deviceLinks ?? []} isTerminated={isTerminated} onChanged={refresh} />
