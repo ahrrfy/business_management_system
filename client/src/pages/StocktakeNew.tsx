@@ -20,8 +20,7 @@
  *    لكل الأدوار المخوّلة؛ الإدخال اليدوي لمعرّف الحساب يبقى بديلاً عند فشل التحميل.
  *  - الفئات (CATEGORY): trpc.catalog.categories — النطاق مفعَّل، والخادم يحلّ منتجات الفئات لحظة الإنشاء.
  *
- * التوزيع على التكليفات: MANUAL وحده يُرسل variantIds صريحة (كتل متساوية محلياً)؛
- * FULL/MOVING/CATEGORY لا يرسلون variantIds إطلاقاً — الخادم يوزّع غير المُسنَد كتلاً متساوية على كل التكليفات.
+ * جميع العاملين يرون نطاق الجرد المشترك نفسه؛ المنطقة وصفٌ للتوجيه الميداني فقط.
  */
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
@@ -260,21 +259,7 @@ export default function StocktakeNew() {
     return manualIds.filter((id) => !known.has(id));
   }, [onHand, manualIds]);
 
-  /* توزيع المنتجات على العمّال — لنطاق MANUAL فقط: كتل متتالية بالتساوي (بترتيب الاختيار).
-     FULL/MOVING/CATEGORY لا تُرسَل لهم variantIds إطلاقاً — الخادم يوزّع غير المُسنَد
-     كتلاً متساوية على كل التكليفات لحظة الإنشاء. */
   const validWorkers = workers.filter((w) => w.name.trim() !== "");
-  const distribution = useMemo<number[][] | null>(() => {
-    if (scopeType !== "MANUAL") return null;
-    const ids = manualIds;
-    const n = Math.max(validWorkers.length, 1);
-    const chunks: number[][] = Array.from({ length: n }, () => []);
-    const size = Math.ceil(ids.length / n) || 1;
-    ids.forEach((id, i) => {
-      chunks[Math.min(Math.floor(i / size), n - 1)].push(id);
-    });
-    return chunks;
-  }, [scopeType, manualIds, validWorkers.length]);
 
   /* ─── التحقق لكل خطوة ─── */
   const stepError = (): string | null => {
@@ -329,17 +314,11 @@ export default function StocktakeNew() {
       notify.warn(err);
       return;
     }
-    const assignments = validWorkers.map((w, i) => ({
+    const assignments = validWorkers.map((w) => ({
       name: w.name.trim(),
       method: w.method,
       userId: w.method === "USER" ? Number(w.userId) : undefined,
       zone: w.zone.trim() || undefined,
-      // التوزيع الصريح لنطاق MANUAL فقط (distribution = null لغيره)؛
-      // FULL/MOVING/CATEGORY: الخادم يوزّع غير المُسنَد كتلاً متساوية على كل التكليفات.
-      variantIds:
-        distribution && validWorkers.length > 1 && (distribution[i]?.length ?? 0) > 0
-          ? distribution[i]
-          : undefined,
     }));
 
     createMut.mutate({
@@ -676,12 +655,10 @@ export default function StocktakeNew() {
         <Card>
           <CardContent className="space-y-4 p-5">
             <p className="text-sm text-muted-foreground">
-              قسّم النطاق بين العمّال — نطاقات «شامل / متحركة / فئة» يوزّعها الخادم كتلاً متساوية على كل
-              العمّال لحظة الإنشاء، و«منتجات مختارة» تُوزَّع هنا بالتساوي حسب ترتيب الاختيار. عامل «الرابط
-              الخارجي» يدخل برمز PIN دون حساب — مناسب للعمّال الموسميين.
+              لا تُقسَّم المنتجات على العاملين: كل عامل يرى النطاق نفسه، وتستخدم المنطقة لتوجيهه ميدانياً.
+              عامل «الرابط الخارجي» يدخل برمز PIN دون حساب — مناسب للعمّال الموسميين.
             </p>
             {workers.map((w, idx) => {
-              const dist = distribution?.[validWorkers.findIndex((v) => v.key === w.key)] ?? null;
               return (
                 <div key={w.key} className="space-y-3 rounded-lg border p-4">
                   <div className="flex flex-wrap items-end gap-3">
@@ -728,9 +705,7 @@ export default function StocktakeNew() {
                       <span className="inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold badge-status-pending">
                         {w.name.trim() === ""
                           ? "—"
-                          : dist
-                            ? `${nf(dist.length)} منتجاً`
-                            : "يُوزَّع بالتساوي عند الإنشاء"}
+                          : "يرى جميع المنتجات المشتركة"}
                       </span>
                       {workers.length > 1 && (
                         <Button

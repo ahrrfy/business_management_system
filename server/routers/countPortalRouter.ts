@@ -160,6 +160,7 @@ export const countPortalRouter = router({
     return { ok: res.ok, sessionMovedToReview: res.sessionMovedToReview };
   }),
 
+  /** حفظ وإنهاء وردية: تبقى الجلسة COUNTING ويستأنف العامل لاحقاً من نفس التقدم. */
   /** خروج: مسح كوكي البوابة (لا يمسّ كوكي جلسة النظام). */
   logout: publicProcedure.mutation(async ({ ctx }) => {
     ctx.res.clearCookie(COUNT_COOKIE_NAME, getSessionCookieOptions(ctx.req));
