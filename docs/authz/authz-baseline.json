@@ -36,7 +36,6 @@
     "countPortalRouter.auth@server/routers/countPortalRouter.ts",
     "countPortalRouter.finish@server/routers/countPortalRouter.ts",
     "countPortalRouter.logout@server/routers/countPortalRouter.ts",
-    "countPortalRouter.pause@server/routers/countPortalRouter.ts",
     "countPortalRouter.state@server/routers/countPortalRouter.ts",
     "countPortalRouter.submit@server/routers/countPortalRouter.ts",
     "creditApprovalRouter.create@server/routers/creditApprovalRouter.ts",

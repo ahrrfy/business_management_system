@@ -447,25 +447,17 @@ export default function CountPortal() {
 
   /* ── التسليم النهائي ── */
   const finishMut = trpc.count.finish.useMutation();
-  const pauseMut = trpc.count.pause.useMutation();
   const logoutMut = trpc.count.logout.useMutation();
   const doPause = useCallback(() => {
-    if (!online || queueCount > 0 || pauseMut.isPending) return;
-    pauseMut.mutate(
-      { sessionCode: code },
-      {
-        onSuccess: () => {
-          logoutMut.mutate(undefined, {
-            onSettled: () => {
-              setPhase("paused");
-              notify.ok("حُفظت العدّات وأنهيت الوردية", "يمكنك العودة لاحقاً وإكمال الجرد من نفس التقدم.");
-            },
-          });
-        },
-        onError: (e) => notify.err(e),
+    if (!online || queueCount > 0 || logoutMut.isPending) return;
+    logoutMut.mutate(undefined, {
+      onSuccess: () => {
+        setPhase("paused");
+        notify.ok("حُفظت العدّات وأنهيت الوردية", "يمكنك العودة لاحقاً وإكمال الجرد من نفس التقدم.");
       },
-    );
-  }, [code, logoutMut, online, pauseMut, queueCount]);
+      onError: (e) => notify.err(e),
+    });
+  }, [logoutMut, online, queueCount]);
   const doFinish = useCallback(async () => {
     if (!st) return;
     const zone = st.assignment.zone;
@@ -1003,16 +995,16 @@ export default function CountPortal() {
         {!submittedAssignment && (
           <button
             type="button"
-            disabled={!online || queueCount > 0 || pauseMut.isPending || logoutMut.isPending}
+            disabled={!online || queueCount > 0 || logoutMut.isPending}
             onClick={doPause}
             className={cn(
               "pointer-events-auto mb-2 h-10 w-full rounded-xl border text-sm font-bold transition-colors",
-              online && queueCount === 0 && !pauseMut.isPending && !logoutMut.isPending
+              online && queueCount === 0 && !logoutMut.isPending
                 ? "border-border bg-background text-foreground active:bg-muted"
                 : "cursor-not-allowed border-border bg-muted text-muted-foreground",
             )}
           >
-            {pauseMut.isPending || logoutMut.isPending ? "جارٍ حفظ الوردية…" : "حفظ وإنهاء الوردية — أكمل لاحقاً"}
+            {logoutMut.isPending ? "جارٍ حفظ الوردية…" : "حفظ وإنهاء الوردية — أكمل لاحقاً"}
           </button>
         )}
         {submittedAssignment ? (

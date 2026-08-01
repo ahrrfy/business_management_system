@@ -348,14 +348,11 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
   };
 }
 
-/** تحقّق التكليفات: USER يلزمه userId موجود وفعّال وغير مكرّر؛ أصناف التكليف ضمن النطاق وبلا ازدواج.
- *  يُعيد خريطة `variantId → فهرس التكليف` لما ادّعاه كل تكليف صراحةً. */
+/** تحقّق التكليفات: USER يلزمه userId موجود وفعّال وغير مكرّر.
+ *  قوائم variantIds القديمة مقبولة للتوافق فقط ولا تمنح ملكية للمنتجات. */
 async function validateAssignmentsInTx(
   tx: Tx,
   input: CreateStocktakeInput,
-  // Retained only so the obsolete code path below remains type-safe until the
-  // next schema cleanup; it is bypassed by the early return.
-  scopeSet: Set<number> = new Set<number>(),
 ): Promise<void> {
   const userIds = input.assignments.filter((a) => a.method === "USER").map((a) => a.userId);
   if (userIds.some((u) => !u)) {
@@ -374,22 +371,6 @@ async function validateAssignmentsInTx(
       if (!activeIds.has(u)) throw new TRPCError({ code: "BAD_REQUEST", message: "مستخدم التكليف غير موجود أو معطَّل" });
     }
   }
-  // Legacy payloads may still contain variantIds. Deliberately ignore them: product
-  // ownership would prevent the supervisor from directing workers in the field.
-  return;
-  const claimed = new Map<number, number>(); // variantId → فهرس التكليف
-  input.assignments.forEach((a, idx) => {
-    for (const v of a.variantIds ?? []) {
-      if (!scopeSet.has(v)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `تكليف «${a.name}» يتضمن صنفاً خارج نطاق الجلسة` });
-      }
-      if (claimed.has(v)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "صنف واحد مُكلَّف لأكثر من عامل — كل صنف لمنطقة واحدة" });
-      }
-      claimed.set(v, idx);
-    }
-  });
-  return;
 }
 
 /** لقطة الرصيد الدفتري + التكلفة لكل أصناف النطاق (دفعات inArray ≤1000 — لا فصم للجلسة). */
@@ -477,11 +458,8 @@ async function insertAssignments(
 }
 
 /**
- * توزيع الأصناف: المُدّعى لتكليفه يبقى له؛ وغير المُكلَّف بأي تكليف يُوزَّع كتلاً متتالية
- * متساوية (±1) على كل التكليفات بترتيب variantId تصاعدياً (تكليف واحد ⇒ يستلم الكل =
- * السلوك القديم نفسه). السبب: «الباقي للتكليف الأول» ينهار على جرد شامل حقيقي —
- * الواجهة ترسل ≤1000 معرّف للتكليفات بينما النطاق قد يبلغ آلاف الأصناف فيُغرَق الأول بها كلها.
- * يُدرج صفوف الأصناف على دفعات (≤1000) ويُعيد عدّاد أصناف كل تكليف.
+ * ينشئ قائمة نطاق مشتركة واحدة. assignmentId إلزام تقني في المخطط القديم فقط،
+ * ولا يقيّد رؤية العامل أو حقه في عدّ أي منتج. يُعاد حجم النطاق لكل عامل كمرجع.
  */
 async function distributeAndInsertItems(
   tx: Tx,

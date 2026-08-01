@@ -20,8 +20,7 @@
  *    لكل الأدوار المخوّلة؛ الإدخال اليدوي لمعرّف الحساب يبقى بديلاً عند فشل التحميل.
  *  - الفئات (CATEGORY): trpc.catalog.categories — النطاق مفعَّل، والخادم يحلّ منتجات الفئات لحظة الإنشاء.
  *
- * التوزيع على التكليفات: MANUAL وحده يُرسل variantIds صريحة (كتل متساوية محلياً)؛
- * FULL/MOVING/CATEGORY لا يرسلون variantIds إطلاقاً — الخادم يوزّع غير المُسنَد كتلاً متساوية على كل التكليفات.
+ * جميع العاملين يرون نطاق الجرد المشترك نفسه؛ المنطقة وصفٌ للتوجيه الميداني فقط.
  */
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
@@ -656,13 +655,10 @@ export default function StocktakeNew() {
         <Card>
           <CardContent className="space-y-4 p-5">
             <p className="text-sm text-muted-foreground">
-              قسّم النطاق بين العمّال — نطاقات «شامل / متحركة / فئة» يوزّعها الخادم كتلاً متساوية على كل
-              العمّال لحظة الإنشاء، و«منتجات مختارة» تُوزَّع هنا بالتساوي حسب ترتيب الاختيار. عامل «الرابط
-              الخارجي» يدخل برمز PIN دون حساب — مناسب للعمّال الموسميين.
+              لا تُقسَّم المنتجات على العاملين: كل عامل يرى النطاق نفسه، وتستخدم المنطقة لتوجيهه ميدانياً.
+              عامل «الرابط الخارجي» يدخل برمز PIN دون حساب — مناسب للعمّال الموسميين.
             </p>
             {workers.map((w, idx) => {
-              // Kept for the legacy badge markup below; no product allocation is computed.
-              const dist = null as number[] | null;
               return (
                 <div key={w.key} className="space-y-3 rounded-lg border p-4">
                   <div className="flex flex-wrap items-end gap-3">
@@ -709,9 +705,7 @@ export default function StocktakeNew() {
                       <span className="inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold badge-status-pending">
                         {w.name.trim() === ""
                           ? "—"
-                          : dist
-                            ? `${nf(dist.length)} منتجاً`
-                            : "يُوزَّع بالتساوي عند الإنشاء"}
+                          : "يرى جميع المنتجات المشتركة"}
                       </span>
                       {workers.length > 1 && (
                         <Button
