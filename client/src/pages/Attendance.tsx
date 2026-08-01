@@ -152,9 +152,14 @@ export default function Attendance() {
         title="الحضور والانصراف"
         description="نظام احتساب بالساعة — أجر اليوم = ساعات الحضور × سعر ساعة ذلك اليوم. المصدر: أجهزة البصمة."
         actions={
-          <Button asChild variant="outline" size="sm">
-            <Link href="/hr/devices"><Fingerprint className="size-4" /> أجهزة البصمة</Link>
-          </Button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button asChild variant="outline" size="sm">
+              <Link href="/reports/attendance-monthly"><Clock className="size-4" /> التقرير الشهريّ</Link>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <Link href="/hr/devices"><Fingerprint className="size-4" /> أجهزة البصمة</Link>
+            </Button>
+          </div>
         }
       />
 

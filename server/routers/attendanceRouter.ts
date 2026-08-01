@@ -8,6 +8,7 @@ import { logAudit } from "../services/auditService";
 import * as svc from "../services/attendanceService";
 import { getAttendanceReport } from "../services/reportsHrService";
 import { getEmployeeStatement } from "../services/hr/employeeStatement";
+import { getMonthlyAttendanceReport } from "../services/hr/monthlyAttendanceReport";
 import { protectedProcedure, requireModule, router } from "../trpc";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
@@ -84,6 +85,14 @@ export const attendanceRouter = router({
   employeeStatement: hrRead
     .input(z.object({ employeeId: z.number().int().positive(), period: periodStr }))
     .query(({ input }) => getEmployeeStatement(input)),
+
+  /**
+   * تقرير الحضور الشهريّ لكل الموظفين — صفٌّ لكل موظف بالمجاميع.
+   * يُبنى بنواة المسيّر نفسها فلا ينحرف عن الكشف الفرديّ ولا عن المسيّر.
+   */
+  monthlyReport: hrRead
+    .input(z.object({ period: periodStr, branchId: z.number().int().positive().nullish() }))
+    .query(({ input }) => getMonthlyAttendanceReport({ period: input.period, branchId: input.branchId ?? null })),
 
   /** تقرير الحضور — سجلّات الحضور في نطاق تاريخ + ملخّص (بفلتر موظف اختياري). hr/READ. */
   report: hrRead

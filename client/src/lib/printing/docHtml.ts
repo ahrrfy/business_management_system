@@ -25,7 +25,12 @@ export const SAFETY_INSET = 24;
  * غلاف HTML كامل لصفحة A4 بالتصميم المرجعي. المحتوى الوارد `body` = HTML شريحة‎ الصفحة
  * (تُنتج عبر `pageOpen()` … `pageClose()`) — نُبقي هذا الاسم للتوافق مع النداءات القائمة.
  */
-export function wrapA4Doc(title: string, bodyContent: string): string {
+export function wrapA4Doc(
+  title: string,
+  bodyContent: string,
+  /** `landscape` للتقارير عريضة الأعمدة (كشف الحضور الشهريّ) — الافتراضي عموديّ. */
+  opts?: { landscape?: boolean },
+): string {
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
 <title>${esc(title)}</title>
 ${CAIRO_FONT}
@@ -33,7 +38,7 @@ ${CAIRO_FONT}
   *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
   *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;color-adjust:exact !important}
   html,body{font-family:'Cairo',sans-serif;background:#fff;color:#000;direction:rtl}
-  @page{size:A4;margin:0}
+  @page{size:A4 ${opts?.landscape ? "landscape" : "portrait"};margin:0}
   body{margin:0;padding:0;font-family:'Cairo',sans-serif}
   .page{width:${PAGE_W}px;min-height:${PAGE_H}px;background:#fff;position:relative;
     margin:0 auto;font-family:'Cairo',sans-serif;color:#000;direction:rtl;font-size:11.5px;line-height:1.55;
