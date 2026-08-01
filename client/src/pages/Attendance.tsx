@@ -377,6 +377,7 @@ function NightShiftSettingsCard() {
   const [cutoff, setCutoff] = useState(8);
   const [payOn, setPayOn] = useState(false);
   const [payFrom, setPayFrom] = useState("");
+  const [maxDaily, setMaxDaily] = useState(12);
   // جدول أسبوعيّ: ساعات كل يوم، وصفرٌ = راحة (يوحّد المفهومين — الجمعة قد تكون قصيرة).
   const [sched, setSched] = useState<Record<string, { hours: number; rate?: number | null }>>({});
   useEffect(() => {
@@ -385,6 +386,7 @@ function NightShiftSettingsCard() {
     setCutoff(Number(s.nightShiftCutoffHour ?? 8));
     setPayOn(!!s.attendancePayEnabled);
     setPayFrom(s.attendancePayFrom ? String(s.attendancePayFrom).slice(0, 10) : "");
+    setMaxDaily(Number(s.maxDailyHours ?? 12));
     setSched(
       s.defaultWorkSchedule && typeof s.defaultWorkSchedule === "object"
         ? ({ ...(s.defaultWorkSchedule as Record<string, { hours: number; rate?: number | null }>) })
@@ -489,7 +491,7 @@ function NightShiftSettingsCard() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
-            <Button disabled={save.isPending} onClick={() => save.mutate({ nightShiftEnabled: enabled, nightShiftCutoffHour: cutoff, attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, defaultWorkSchedule: sched })}>
+            <Button disabled={save.isPending} onClick={() => save.mutate({ nightShiftEnabled: enabled, nightShiftCutoffHour: cutoff, attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, defaultWorkSchedule: sched, maxDailyHours: maxDaily })}>
               {save.isPending ? "جارٍ الحفظ…" : "حفظ"}
             </Button>
           </DialogFooter>

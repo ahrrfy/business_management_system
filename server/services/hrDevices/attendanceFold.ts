@@ -18,7 +18,7 @@ import { attendance, employees, hrAttendancePunches, hrAttendanceSettings } from
 import { requireDb } from "../tx";
 import { logger } from "../../logger";
 import { recordAttendance } from "../attendanceService";
-import { computeDayHours, DEFAULT_NIGHT_SHIFT, type NightShiftOptions } from "./dayHours";
+import { computeDayHours, DEFAULT_MAX_DAILY_HOURS, DEFAULT_NIGHT_SHIFT, type NightShiftOptions } from "./dayHours";
 
 /** إزاحة تاريخ نصّي بأيام (UTC نقيّ — لا انزياح منطقة زمنية). */
 function shiftDate(date: string, days: number): string {
@@ -38,13 +38,16 @@ async function punchTimesOf(employeeId: number, date: string): Promise<string[]>
 }
 
 /** إعدادات الاحتساب (صفّ مفرد) — الغياب = الافتراضي المعطَّل، فلا تفشل الوحدة قبل الهجرة/البذر. */
-async function loadNightShift(): Promise<NightShiftOptions> {
+async function loadFoldSettings(): Promise<{ night: NightShiftOptions; maxDailyHours: number }> {
   try {
     const [row] = await requireDb().select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
-    if (!row) return DEFAULT_NIGHT_SHIFT;
-    return { enabled: !!row.nightShiftEnabled, cutoffHour: Number(row.nightShiftCutoffHour ?? 8) };
+    if (!row) return { night: DEFAULT_NIGHT_SHIFT, maxDailyHours: DEFAULT_MAX_DAILY_HOURS };
+    return {
+      night: { enabled: !!row.nightShiftEnabled, cutoffHour: Number(row.nightShiftCutoffHour ?? 8) },
+      maxDailyHours: Number(row.maxDailyHours ?? DEFAULT_MAX_DAILY_HOURS),
+    };
   } catch {
-    return DEFAULT_NIGHT_SHIFT;
+    return { night: DEFAULT_NIGHT_SHIFT, maxDailyHours: DEFAULT_MAX_DAILY_HOURS };
   }
 }
 
@@ -70,7 +73,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
     .orderBy(asc(hrAttendancePunches.punchAt))
     .limit(5000);
   if (pending.length === 0) return { days: 0, parked: 0, processedAny: false };
-  const night = await loadNightShift();
+  const { night, maxDailyHours } = await loadFoldSettings();
 
   // تجميع (موظف × يوم) — punchAt نص "YYYY-MM-DD HH:MM:SS" فاليوم = أول ١٠ خانات.
   const groups = new Map<string, { employeeId: number; date: string; ids: number[] }>();
@@ -113,7 +116,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
     const [prevTimes, nextTimes] = night.enabled
       ? await Promise.all([punchTimesOf(g.employeeId, shiftDate(g.date, -1)), punchTimesOf(g.employeeId, shiftDate(g.date, 1))])
       : [[], []];
-    const day = computeDayHours(times, prevTimes, nextTimes, night);
+    const day = computeDayHours(times, prevTimes, nextTimes, night, maxDailyHours);
     if (day.usedCount === 0) {
       // كل بصمات اليوم مملوكة لوردية أمس ⇒ لا يوم هنا. توسَم معالَجةً كي لا تدور أبداً.
       await db

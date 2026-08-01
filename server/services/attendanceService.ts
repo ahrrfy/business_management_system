@@ -200,6 +200,7 @@ export async function getAttendanceSettings() {
     attendancePayEnabled: false,
     attendancePayFrom: null as string | null,
     defaultWorkSchedule: DEFAULT_WORK_SCHEDULE as unknown,
+    maxDailyHours: "12.00",
     updatedBy: null as number | null,
     updatedAt: new Date(),
   };
@@ -218,6 +219,7 @@ export async function updateAttendanceSettings(
     attendancePayEnabled?: boolean;
     attendancePayFrom?: string | null;
     defaultWorkSchedule?: Record<string, { hours: number; rate?: number | null }> | null;
+    maxDailyHours?: number;
   },
   actorUserId: number,
 ) {
@@ -235,6 +237,7 @@ export async function updateAttendanceSettings(
     ...(input.attendancePayEnabled !== undefined ? { attendancePayEnabled: input.attendancePayEnabled } : {}),
     ...(input.attendancePayFrom !== undefined ? { attendancePayFrom: input.attendancePayFrom || null } : {}),
     ...(input.defaultWorkSchedule !== undefined ? { defaultWorkSchedule: input.defaultWorkSchedule } : {}),
+    ...(input.maxDailyHours !== undefined ? { maxDailyHours: String(input.maxDailyHours) } : {}),
     updatedBy: actorUserId,
   };
   return withTx(async (tx) => {

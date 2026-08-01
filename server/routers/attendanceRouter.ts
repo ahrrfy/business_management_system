@@ -49,6 +49,7 @@ export const attendanceRouter = router({
         defaultWorkSchedule: z
           .record(z.string(), z.object({ hours: z.number().min(0).max(24), rate: z.number().min(0).nullish() }))
           .nullish(),
+        maxDailyHours: z.number().min(1).max(24).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {

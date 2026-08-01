@@ -27,3 +27,6 @@ ALTER TABLE `hrAttendanceSettings` ADD COLUMN `defaultWorkSchedule` json;
 ALTER TABLE `hrAttendanceSettings` DROP COLUMN `standardDailyHours`;
 --> statement-breakpoint
 ALTER TABLE `hrAttendanceSettings` DROP COLUMN `defaultRestDays`;
+--> statement-breakpoint
+-- حارس المعقولية: سقف ساعات اليوم الواحد (قرار المالك: لا ٢٠ ولا ١٨ ولا ١٦ ساعة عمل).
+ALTER TABLE `hrAttendanceSettings` ADD COLUMN `maxDailyHours` decimal(5,2) NOT NULL DEFAULT '12.00';

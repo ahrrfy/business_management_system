@@ -29,6 +29,14 @@ export function hourOf(s: string): number {
   return Number(s.slice(11, 13));
 }
 
+/**
+ * سقف الساعات المعقولة لليوم الواحد (قرار المالك ٣١/٧): «لا توجد ساعات عمل ٢٠ ولا ١٨ ولا
+ * حتى ١٦ — فالحارس يمسكها». يوم يتجاوز السقف يُقصّ عنده ويُوسَم «يحتاج تصحيح» ليراجعه
+ * المدير: بصمةٌ منسيّة أو خللٌ في ساعة الجهاز تُنتج فترةً وهمية تُدفَع أجرَ عملٍ لم يقع.
+ * القصّ لا التصفير: اليوم غالباً حقيقيّ وطويلٌ خطأً، فلا نُضيّع أجرَه كلَّه بانتظار المراجعة.
+ */
+export const DEFAULT_MAX_DAILY_HOURS = 12;
+
 export interface NightShiftOptions {
   /** هل تُغلق بصمةُ الصباح الباكر وردية اليوم السابق؟ (قرار مالك — معطَّل افتراضياً) */
   enabled: boolean;
@@ -70,6 +78,7 @@ export function computeDayHours(
   prevDayPunches: string[] = [],
   nextDayPunches: string[] = [],
   night: NightShiftOptions = DEFAULT_NIGHT_SHIFT,
+  maxDailyHours: number = DEFAULT_MAX_DAILY_HOURS,
 ): DayHoursResult {
   const times = [...dayPunches].sort();
 
@@ -102,16 +111,27 @@ export function computeDayHours(
   }
 
   const dangling = seq.length % 2 === 1;
+  const rawHours = totalMs / 3_600_000;
+
+  // (د) حارس المعقولية: يومٌ يتجاوز السقف يُقصّ ويُوسَم — لا يُدفَع أجرُ ساعاتٍ لم تقع.
+  const cap = Number.isFinite(maxDailyHours) && maxDailyHours > 0 ? maxDailyHours : DEFAULT_MAX_DAILY_HOURS;
+  const implausible = rawHours > cap;
+  const hours = implausible ? cap : rawHours;
+
+  const reasons: string[] = [];
+  if (dangling) {
+    reasons.push(seq.length === 1 ? "بصمة واحدة فقط — ينقص تسجيل الخروج" : "عدد البصمات فرديّ — ينقص تسجيل خروج");
+  }
+  if (implausible) {
+    reasons.push(`ساعات غير معقولة (${round2Str(rawHours)} ساعة) — قُصّت عند سقف ${cap}؛ راجع أوقات البصمات`);
+  }
+
   return {
-    hours: round2Str(totalMs / 3_600_000),
+    hours: round2Str(hours),
     checkIn: seq[0].slice(11, 16),
     checkOut: lastPairedOut ? lastPairedOut.slice(11, 16) : null,
-    needsReview: dangling,
-    reviewReason: dangling
-      ? seq.length === 1
-        ? "بصمة واحدة فقط — ينقص تسجيل الخروج"
-        : "عدد البصمات فرديّ — ينقص تسجيل خروج"
-      : null,
+    needsReview: dangling || implausible,
+    reviewReason: reasons.length ? reasons.join(" · ") : null,
     usedCount: seq.length,
   };
 }
