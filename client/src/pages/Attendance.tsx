@@ -378,7 +378,7 @@ function NightShiftSettingsCard() {
   const [payOn, setPayOn] = useState(false);
   const [payFrom, setPayFrom] = useState("");
   // جدول أسبوعيّ: ساعات كل يوم، وصفرٌ = راحة (يوحّد المفهومين — الجمعة قد تكون قصيرة).
-  const [sched, setSched] = useState<Record<string, number>>({});
+  const [sched, setSched] = useState<Record<string, { hours: number; rate?: number | null }>>({});
   useEffect(() => {
     if (!open || !s) return;
     setEnabled(!!s.nightShiftEnabled);
@@ -387,8 +387,8 @@ function NightShiftSettingsCard() {
     setPayFrom(s.attendancePayFrom ? String(s.attendancePayFrom).slice(0, 10) : "");
     setSched(
       s.defaultWorkSchedule && typeof s.defaultWorkSchedule === "object"
-        ? ({ ...(s.defaultWorkSchedule as Record<string, number>) })
-        : Object.fromEntries(WEEK_DAYS.map((d) => [d, d === "الجمعة" ? 0 : 8])),
+        ? ({ ...(s.defaultWorkSchedule as Record<string, { hours: number; rate?: number | null }>) })
+        : Object.fromEntries(WEEK_DAYS.map((d) => [d, { hours: d === "الجمعة" ? 0 : 8 }])),
     );
   }, [open, s]);
 
@@ -434,28 +434,34 @@ function NightShiftSettingsCard() {
                 </p>
               </div>
               <div className="space-y-1">
-                <Label>جدول الدوام الأسبوعيّ (افتراضي) — ساعات كل يوم</Label>
-                <div className="grid grid-cols-4 gap-2">
+                <Label>جدول الدوام الأسبوعيّ (افتراضي)</Label>
+                <div className="rounded-md border divide-y">
+                  <div className="grid grid-cols-3 gap-2 bg-muted/50 px-2 py-1 text-[11px] font-medium">
+                    <span>اليوم</span><span className="text-center">ساعات الدوام</span><span className="text-center">سعر الساعة (د.ع)</span>
+                  </div>
                   {WEEK_DAYS.map((d) => (
-                    <div key={d} className="rounded-md border p-1.5 text-center">
-                      <div className="text-[11px] text-muted-foreground mb-1">{d}</div>
+                    <div key={d} className="grid grid-cols-3 gap-2 items-center px-2 py-1.5">
+                      <span className="text-xs">{d}</span>
                       <Input
-                        type="number"
-                        min={0}
-                        max={24}
-                        step="0.5"
-                        dir="ltr"
-                        className="h-8 text-center"
+                        type="number" min={0} max={24} step="0.5" dir="ltr" className="h-8 text-center"
                         disabled={!payOn}
-                        value={sched[d] ?? 0}
-                        onChange={(ev) => setSched((prev) => ({ ...prev, [d]: Number(ev.target.value) }))}
+                        value={sched[d]?.hours ?? 0}
+                        onChange={(ev) => setSched((p) => ({ ...p, [d]: { ...(p[d] ?? {}), hours: Number(ev.target.value) } }))}
+                      />
+                      <Input
+                        type="number" min={0} step="250" dir="ltr" className="h-8 text-center"
+                        placeholder="مُشتقّ من الراتب"
+                        disabled={!payOn || !(sched[d]?.hours > 0)}
+                        value={sched[d]?.rate ?? ""}
+                        onChange={(ev) => setSched((p) => ({ ...p, [d]: { ...(p[d] ?? { hours: 0 }), rate: ev.target.value === "" ? null : Number(ev.target.value) } }))}
                       />
                     </div>
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  <span className="font-medium">صفر = يوم راحة</span> (لا يُطالَب بحضورٍ فيه ولا يُخصَم). ويومٌ بساعاتٍ
-                  أقلّ — كالجمعة — يُكتب بساعاته هو، فيُسهم في مقام سعر الساعة بقدره لا بيومٍ كامل.
+                  <span className="font-medium">صفر ساعة = يوم راحة.</span> وسعر الساعة هو أصل الحساب: أجر اليوم =
+                  ساعاته المحتسَبة × سعره، والراتب المستحقّ = مجموع أيام الشهر. تركُ السعر فارغاً يشتقّه من حقل
+                  راتب الموظف ÷ ساعات شهره. والساعات فوق المقرَّر اليوميّ تُحتسب <span className="font-medium">أوفر تايم</span> ببندٍ مستقلّ.
                   مجموع الأسبوع: <span className="font-medium tabular-nums" dir="ltr">{WEEK_DAYS.reduce((t, d) => t + (Number(sched[d]) || 0), 0)}</span> ساعة.
                   يمكن تخصيص جدولٍ لكل موظف من بطاقته.
                 </p>

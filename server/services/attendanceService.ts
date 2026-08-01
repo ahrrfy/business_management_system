@@ -217,7 +217,7 @@ export async function updateAttendanceSettings(
     nightShiftCutoffHour: number;
     attendancePayEnabled?: boolean;
     attendancePayFrom?: string | null;
-    defaultWorkSchedule?: Record<string, number> | null;
+    defaultWorkSchedule?: Record<string, { hours: number; rate?: number | null }> | null;
   },
   actorUserId: number,
 ) {

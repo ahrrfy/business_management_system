@@ -76,7 +76,9 @@ const employeeInput = z.object({
   allowances: moneyStrOpt,
   dayRates: z.record(z.string(), z.number()).nullish(),
   /** جدول دوامه الأسبوعيّ: ساعات كل يوم، وصفرٌ = راحة (0139). null = الافتراضي العامّ. */
-  workSchedule: z.record(z.string(), z.number().min(0).max(24)).nullish(),
+  workSchedule: z
+    .record(z.string(), z.object({ hours: z.number().min(0).max(24), rate: z.number().min(0).nullish() }))
+    .nullish(),
   hireDate: z.string().optional(),
   gender: z.string().trim().optional(),
   birthDate: z.string().optional(),

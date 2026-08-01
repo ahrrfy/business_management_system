@@ -46,7 +46,9 @@ export const attendanceRouter = router({
         nightShiftCutoffHour: z.number().int().min(1).max(12),
         attendancePayEnabled: z.boolean().optional(),
         attendancePayFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
-        defaultWorkSchedule: z.record(z.string(), z.number().min(0).max(24)).nullish(),
+        defaultWorkSchedule: z
+          .record(z.string(), z.object({ hours: z.number().min(0).max(24), rate: z.number().min(0).nullish() }))
+          .nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {

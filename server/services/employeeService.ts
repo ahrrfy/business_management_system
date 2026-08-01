@@ -134,7 +134,7 @@ export interface EmployeeInput {
   salary?: string | null;
   allowances?: string | null;
   dayRates?: Record<string, number> | null;
-  workSchedule?: Record<string, number> | null;
+  workSchedule?: Record<string, { hours: number; rate?: number | null }> | null;
   hireDate?: string | null;
   gender?: string | null;
   birthDate?: string | null;

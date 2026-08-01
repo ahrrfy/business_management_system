@@ -30,16 +30,16 @@ function base(over: Partial<Parameters<typeof computeAttendancePay>[0]> = {}) {
 }
 
 /** جدول أسبوعيّ: ثمانٍ لكل يوم عدا ما يُمرَّر (صفر = راحة). */
-function sched(over: Record<string, number> = { الجمعة: 0 }): WorkSchedule {
-  const base: WorkSchedule = { الأحد: 8, الاثنين: 8, الثلاثاء: 8, الأربعاء: 8, الخميس: 8, الجمعة: 8, السبت: 8 };
-  return { ...base, ...over };
+function sched(over: Record<string, number> = { الجمعة: 0 }, rate?: number): WorkSchedule {
+  const hours: Record<string, number> = { الأحد: 8, الاثنين: 8, الثلاثاء: 8, الأربعاء: 8, الخميس: 8, الجمعة: 8, السبت: 8, ...over };
+  return Object.fromEntries(Object.entries(hours).map(([d, h]) => [d, { hours: h, rate }])) as WorkSchedule;
 }
 
 /** حضورٌ كاملٌ بساعات الجدول لكل يوم دوام. */
 function fullAttendance(sc: WorkSchedule = sched()): Map<string, Decimal> {
   const m = new Map<string, Decimal>();
   for (const d of daysBetween("2026-07-01", "2026-07-31")) {
-    const h = sc[dayNameOf(d)] ?? 0;
+    const h = Number(sc[dayNameOf(d)]?.hours ?? 0);
     if (h > 0) m.set(d, D(h));
   }
   return m;
@@ -143,12 +143,38 @@ describe("تاريخ السريان (س٥)", () => {
 });
 
 describe("حدّ يوم العمل (س٦)", () => {
-  it("١٢ ساعة في يوم تُحتسب ٨ — الزيادة عملٌ إضافيّ ببندٍ مستقلّ", () => {
+  it("١٢ ساعة في يوم تُحتسب ٨ في الأساس و٤ أوفر تايم ببندٍ مستقلّ", () => {
     const att = fullAttendance();
     att.set("2026-07-06", D(12));
     const r = base({ attendedHoursByDate: att });
-    expect(r.payableHours).toBe("208.00"); // لا ٢١٢
+    expect(r.payableHours).toBe("208.00"); // الأساس لا يتضخّم
     expect(Number(r.basePay)).toBeCloseTo(900000, 0);
+    expect(r.overtimeHours).toBe("4.00");
+    // ٤ ساعات × سعر الساعة المُشتقّ (4326.92) ≈ 17,307
+    expect(Number(r.overtimePay)).toBeCloseTo(17307.69, 0);
+  });
+
+  it("سعر ساعةٍ صريح لكل يوم هو الأصل — والراتب = مجموع (ساعات × سعر يومها)", () => {
+    // قرار المالك: حقل الراتب مرجعيّ لا قيد. سعر ٤٥٠٠ لكل يوم دوام.
+    const sc = sched({ الجمعة: 0 }, 4500);
+    const r = base({ schedule: sc, attendedHoursByDate: fullAttendance(sc) });
+    expect(r.scheduledHours).toBe("208.00");
+    // 208 × 4500 = 936,000 — أكثر من حقل الراتب (900,000) وهو المقصود.
+    expect(Number(r.basePay)).toBeCloseTo(936000, 0);
+  });
+
+  it("تفصيل يوميّ: صفٌّ لكل يوم دوام بحالته وسعره وأجره", () => {
+    const att = fullAttendance();
+    att.delete("2026-07-06");
+    const r = base({ attendedHoursByDate: att });
+    expect(r.days.length).toBe(26);
+    const absent = r.days.find((x) => x.date === "2026-07-06");
+    expect(absent?.state).toBe("absent");
+    expect(absent?.amount).toBe("0.00");
+    const present = r.days.find((x) => x.date === "2026-07-07");
+    expect(present?.state).toBe("present");
+    expect(present?.countedHours).toBe("8.00");
+    expect(Number(present?.amount)).toBeGreaterThan(0);
   });
 });
 

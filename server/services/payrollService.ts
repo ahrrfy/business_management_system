@@ -33,7 +33,7 @@ import { extractInsertId } from "../lib/insertId";
 import { restoreAdvanceSettlementsTx, settleAdvancesOnPayTx, suggestDeductionsTx } from "./advancesService";
 import { applyDuePromotions } from "./promotionService";
 import { computeLegalComponents, getPayrollLegalSettings } from "./payrollLegalService";
-import { computeAttendancePay, daysBetween, DEFAULT_WORK_SCHEDULE, type AttendancePayResult } from "./hr/attendancePay";
+import { computeAttendancePay, daysBetween, DEFAULT_WORK_SCHEDULE, type AttendancePayResult, type WorkSchedule } from "./hr/attendancePay";
 
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -324,7 +324,7 @@ export async function generatePayroll(period: string, actor: Actor) {
     const attendancePayOn = !!attSettings?.attendancePayEnabled;
     const defaultSchedule =
       attSettings?.defaultWorkSchedule && typeof attSettings.defaultWorkSchedule === "object"
-        ? (attSettings.defaultWorkSchedule as Record<string, number>)
+        ? (attSettings.defaultWorkSchedule as WorkSchedule)
         : DEFAULT_WORK_SCHEDULE;
     const payFrom = attSettings?.attendancePayFrom ? String(attSettings.attendancePayFrom) : null;
 
@@ -418,6 +418,7 @@ export async function generatePayroll(period: string, actor: Actor) {
     for (const e of emps) {
       const monthly = e.payType === "monthly";
       const zeroGross = zeroGrossIds.has(Number(e.id));
+      let autoOvertime = new Decimal(0);
       const periodStart = `${p}-01`;
       const employmentStart = e.hireDate && e.hireDate > periodStart ? e.hireDate : periodStart;
       const employmentEnd = e.terminationDate && e.terminationDate < periodEndYmd ? e.terminationDate : periodEndYmd;
@@ -447,10 +448,7 @@ export async function generatePayroll(period: string, actor: Actor) {
           employmentStart,
           employmentEnd,
           // جدول الموظف الخاصّ يتقدّم على العامّ — والجمعة قد تكون قصيرةً لا راحة.
-          schedule:
-            e.workSchedule && typeof e.workSchedule === "object"
-              ? (e.workSchedule as Record<string, number>)
-              : defaultSchedule,
+          schedule: e.workSchedule && typeof e.workSchedule === "object" ? (e.workSchedule as WorkSchedule) : defaultSchedule,
           attendedHoursByDate: dailyAttendance.get(Number(e.id)) ?? new Map(),
           paidLeaveDates: expandSpans(paidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
           unpaidLeaveDates: expandSpans(unpaidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
@@ -459,6 +457,8 @@ export async function generatePayroll(period: string, actor: Actor) {
         attendancePayByEmp.set(Number(e.id), pay);
         gross = round2(money(pay.basePay).plus(allowances));
         hours = pay.payableHours;
+        // الساعات فوق المقرَّر اليوميّ تدخل بند «الإضافي» تلقائياً (قرار المالك) لا الأساس.
+        autoOvertime = money(pay.overtimePay);
       } else if (monthly) {
         gross = round2(money(e.salary ?? 0).times(employmentRatio).plus(allowances));
         hours = null;
@@ -467,7 +467,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         gross = round2(money(att?.amount ?? 0));
         hours = new Decimal(att?.hours ?? 0).toFixed(2);
       }
-      const overtime = new Decimal(0);
+      const overtime = autoOvertime;
       const commission = commissionByEmp.get(Number(e.id)) ?? new Decimal(0);
       // خصم الإجازة بلا راتب (الشهريّ فقط — الساعيّ يُخصَم بغياب الحضور): المعدّل اليوميّ = الراتب
       // الأساسيّ ÷ ٣٠ (قرار المالك؛ الشائع إقليمياً)، والخصم = المعدّل × أيام الإجازة غير المدفوعة،
