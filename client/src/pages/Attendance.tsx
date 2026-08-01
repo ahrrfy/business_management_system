@@ -377,16 +377,19 @@ function NightShiftSettingsCard() {
   const [cutoff, setCutoff] = useState(8);
   const [payOn, setPayOn] = useState(false);
   const [payFrom, setPayFrom] = useState("");
-  const [dailyHours, setDailyHours] = useState(8);
-  const [restDays, setRestDays] = useState<string[]>(["الجمعة"]);
+  // جدول أسبوعيّ: ساعات كل يوم، وصفرٌ = راحة (يوحّد المفهومين — الجمعة قد تكون قصيرة).
+  const [sched, setSched] = useState<Record<string, number>>({});
   useEffect(() => {
     if (!open || !s) return;
     setEnabled(!!s.nightShiftEnabled);
     setCutoff(Number(s.nightShiftCutoffHour ?? 8));
     setPayOn(!!s.attendancePayEnabled);
     setPayFrom(s.attendancePayFrom ? String(s.attendancePayFrom).slice(0, 10) : "");
-    setDailyHours(Number(s.standardDailyHours ?? 8));
-    setRestDays(Array.isArray(s.defaultRestDays) ? (s.defaultRestDays as string[]) : ["الجمعة"]);
+    setSched(
+      s.defaultWorkSchedule && typeof s.defaultWorkSchedule === "object"
+        ? ({ ...(s.defaultWorkSchedule as Record<string, number>) })
+        : Object.fromEntries(WEEK_DAYS.map((d) => [d, d === "الجمعة" ? 0 : 8])),
+    );
   }, [open, s]);
 
   return (
@@ -431,27 +434,30 @@ function NightShiftSettingsCard() {
                 </p>
               </div>
               <div className="space-y-1">
-                <Label htmlFor="ap-hours">ساعات الدوام اليومية (افتراضي)</Label>
-                <Input id="ap-hours" type="number" min={1} max={24} step="0.5" dir="ltr" value={dailyHours} disabled={!payOn} onChange={(e) => setDailyHours(Number(e.target.value))} />
-              </div>
-              <div className="space-y-1">
-                <Label>أيام الراحة الأسبوعية (افتراضي)</Label>
-                <div className="flex flex-wrap gap-2">
+                <Label>جدول الدوام الأسبوعيّ (افتراضي) — ساعات كل يوم</Label>
+                <div className="grid grid-cols-4 gap-2">
                   {WEEK_DAYS.map((d) => (
-                    <label key={d} className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs">
-                      <input
-                        type="checkbox"
-                        className="size-3.5"
+                    <div key={d} className="rounded-md border p-1.5 text-center">
+                      <div className="text-[11px] text-muted-foreground mb-1">{d}</div>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={24}
+                        step="0.5"
+                        dir="ltr"
+                        className="h-8 text-center"
                         disabled={!payOn}
-                        checked={restDays.includes(d)}
-                        onChange={(e) => setRestDays((prev) => (e.target.checked ? [...prev, d] : prev.filter((x) => x !== d)))}
+                        value={sched[d] ?? 0}
+                        onChange={(ev) => setSched((prev) => ({ ...prev, [d]: Number(ev.target.value) }))}
                       />
-                      {d}
-                    </label>
+                    </div>
                   ))}
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  يوم الراحة لا يُطالَب بحضورٍ فيه ولا يُخصَم. يمكن تخصيصه لكل موظف من بطاقته.
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  <span className="font-medium">صفر = يوم راحة</span> (لا يُطالَب بحضورٍ فيه ولا يُخصَم). ويومٌ بساعاتٍ
+                  أقلّ — كالجمعة — يُكتب بساعاته هو، فيُسهم في مقام سعر الساعة بقدره لا بيومٍ كامل.
+                  مجموع الأسبوع: <span className="font-medium tabular-nums" dir="ltr">{WEEK_DAYS.reduce((t, d) => t + (Number(sched[d]) || 0), 0)}</span> ساعة.
+                  يمكن تخصيص جدولٍ لكل موظف من بطاقته.
                 </p>
               </div>
             </div>
@@ -477,7 +483,7 @@ function NightShiftSettingsCard() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
-            <Button disabled={save.isPending} onClick={() => save.mutate({ nightShiftEnabled: enabled, nightShiftCutoffHour: cutoff, attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, standardDailyHours: dailyHours, defaultRestDays: restDays })}>
+            <Button disabled={save.isPending} onClick={() => save.mutate({ nightShiftEnabled: enabled, nightShiftCutoffHour: cutoff, attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, defaultWorkSchedule: sched })}>
               {save.isPending ? "جارٍ الحفظ…" : "حفظ"}
             </Button>
           </DialogFooter>

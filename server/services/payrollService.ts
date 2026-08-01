@@ -33,7 +33,7 @@ import { extractInsertId } from "../lib/insertId";
 import { restoreAdvanceSettlementsTx, settleAdvancesOnPayTx, suggestDeductionsTx } from "./advancesService";
 import { applyDuePromotions } from "./promotionService";
 import { computeLegalComponents, getPayrollLegalSettings } from "./payrollLegalService";
-import { computeAttendancePay, daysBetween, type AttendancePayResult } from "./hr/attendancePay";
+import { computeAttendancePay, daysBetween, DEFAULT_WORK_SCHEDULE, type AttendancePayResult } from "./hr/attendancePay";
 
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -230,8 +230,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         allowances: employees.allowances,
         hireDate: employees.hireDate,
         terminationDate: employees.terminationDate,
-        restDays: employees.restDays,
-        dailyHours: employees.dailyHours,
+        workSchedule: employees.workSchedule,
       })
       .from(employees)
       .where(
@@ -279,8 +278,7 @@ export async function generatePayroll(period: string, actor: Actor) {
           allowances: employees.allowances,
           hireDate: employees.hireDate,
           terminationDate: employees.terminationDate,
-          restDays: employees.restDays,
-          dailyHours: employees.dailyHours,
+          workSchedule: employees.workSchedule,
         })
         .from(employees)
         .where(inArray(employees.id, missingIds));
@@ -324,8 +322,10 @@ export async function generatePayroll(period: string, actor: Actor) {
      */
     const [attSettings] = await tx.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
     const attendancePayOn = !!attSettings?.attendancePayEnabled;
-    const defaultRestDays = Array.isArray(attSettings?.defaultRestDays) ? (attSettings!.defaultRestDays as string[]) : ["الجمعة"];
-    const defaultDailyHours = money(attSettings?.standardDailyHours ?? "8");
+    const defaultSchedule =
+      attSettings?.defaultWorkSchedule && typeof attSettings.defaultWorkSchedule === "object"
+        ? (attSettings.defaultWorkSchedule as Record<string, number>)
+        : DEFAULT_WORK_SCHEDULE;
     const payFrom = attSettings?.attendancePayFrom ? String(attSettings.attendancePayFrom) : null;
 
     // ساعات الحضور لكل (موظف × يوم) — تُستعمل في نموذج الحضور فقط.
@@ -446,8 +446,11 @@ export async function generatePayroll(period: string, actor: Actor) {
           salary: money(e.salary ?? 0),
           employmentStart,
           employmentEnd,
-          restDays: Array.isArray(e.restDays) ? (e.restDays as string[]) : defaultRestDays,
-          dailyHours: e.dailyHours != null ? money(e.dailyHours) : defaultDailyHours,
+          // جدول الموظف الخاصّ يتقدّم على العامّ — والجمعة قد تكون قصيرةً لا راحة.
+          schedule:
+            e.workSchedule && typeof e.workSchedule === "object"
+              ? (e.workSchedule as Record<string, number>)
+              : defaultSchedule,
           attendedHoursByDate: dailyAttendance.get(Number(e.id)) ?? new Map(),
           paidLeaveDates: expandSpans(paidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
           unpaidLeaveDates: expandSpans(unpaidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),

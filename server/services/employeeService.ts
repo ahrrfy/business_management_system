@@ -134,8 +134,7 @@ export interface EmployeeInput {
   salary?: string | null;
   allowances?: string | null;
   dayRates?: Record<string, number> | null;
-  restDays?: string[] | null;
-  dailyHours?: number | null;
+  workSchedule?: Record<string, number> | null;
   hireDate?: string | null;
   gender?: string | null;
   birthDate?: string | null;
@@ -170,8 +169,7 @@ function toValues(input: EmployeeInput) {
     salary: input.salary != null && input.salary !== "" ? toDbMoney(input.salary) : null,
     allowances: toDbMoney(input.allowances ?? "0"),
     dayRates: input.dayRates ?? null,
-    restDays: input.restDays ?? null,
-    dailyHours: input.dailyHours != null ? String(input.dailyHours) : null,
+    workSchedule: input.workSchedule ?? null,
     hireDate: input.hireDate || null,
     gender: input.gender?.trim() || null,
     birthDate: input.birthDate || null,

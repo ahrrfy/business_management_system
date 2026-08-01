@@ -10,7 +10,7 @@
 //   س٧) حضورٌ كاملٌ بلا غياب ⇒ الأجر = الراتب بالضبط (لا انحراف تقريب).
 import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
-import { computeAttendancePay, dayNameOf, daysBetween } from "../hr/attendancePay";
+import { computeAttendancePay, dayNameOf, daysBetween, type WorkSchedule } from "../hr/attendancePay";
 
 const D = (n: number | string) => new Decimal(n);
 
@@ -20,8 +20,7 @@ function base(over: Partial<Parameters<typeof computeAttendancePay>[0]> = {}) {
     salary: D(900000),
     employmentStart: "2026-07-01",
     employmentEnd: "2026-07-31",
-    restDays: ["الجمعة"],
-    dailyHours: D(8),
+    schedule: sched(),
     attendedHoursByDate: new Map(),
     paidLeaveDates: new Set(),
     unpaidLeaveDates: new Set(),
@@ -30,12 +29,18 @@ function base(over: Partial<Parameters<typeof computeAttendancePay>[0]> = {}) {
   });
 }
 
-/** حضورٌ كاملٌ ٨ ساعات لكل أيام الدوام. */
-function fullAttendance(restDays = ["الجمعة"], hours = 8): Map<string, Decimal> {
+/** جدول أسبوعيّ: ثمانٍ لكل يوم عدا ما يُمرَّر (صفر = راحة). */
+function sched(over: Record<string, number> = { الجمعة: 0 }): WorkSchedule {
+  const base: WorkSchedule = { الأحد: 8, الاثنين: 8, الثلاثاء: 8, الأربعاء: 8, الخميس: 8, الجمعة: 8, السبت: 8 };
+  return { ...base, ...over };
+}
+
+/** حضورٌ كاملٌ بساعات الجدول لكل يوم دوام. */
+function fullAttendance(sc: WorkSchedule = sched()): Map<string, Decimal> {
   const m = new Map<string, Decimal>();
-  const rest = new Set(restDays);
   for (const d of daysBetween("2026-07-01", "2026-07-31")) {
-    if (!rest.has(dayNameOf(d))) m.set(d, D(hours));
+    const h = sc[dayNameOf(d)] ?? 0;
+    if (h > 0) m.set(d, D(h));
   }
   return m;
 }
@@ -59,9 +64,9 @@ describe("سعر الساعة وأيام الدوام (س١، س٣)", () => {
     expect(r.hourlyRate).toBe("4326.92");
   });
 
-  it("س٣) راحة الجمعة والسبت تُقلّل أيام الدوام وترفع سعر الساعة", () => {
-    const rest = ["الجمعة", "السبت"];
-    const r = base({ restDays: rest, attendedHoursByDate: fullAttendance(rest) });
+  it("س٣) الجمعة والسبت صفراً يُقلّلان المقام ويرفعان سعر الساعة", () => {
+    const sc = sched({ الجمعة: 0, السبت: 0 });
+    const r = base({ schedule: sc, attendedHoursByDate: fullAttendance(sc) });
     expect(r.scheduledHours).toBe("176.00"); // 22 يوماً × 8
     expect(r.absentDays).toBe(0);
     expect(Number(r.basePay)).toBeCloseTo(900000, 0);

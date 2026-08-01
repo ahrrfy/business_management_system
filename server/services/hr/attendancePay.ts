@@ -7,9 +7,12 @@
  *     سعر ساعة الموظف الشهريّ = راتبه ÷ ساعات دوامه في الشهر
  *     أجرُه                    = ساعات حضوره الفعلية × ذلك السعر
  *
- * وساعات دوامه في الشهر = (أيام الدوام، أي أيام الشهر عدا أيام راحته) × ساعات دوامه اليومية.
- * أيام الراحة **تختلف بين الموظفين** (قرار مالك) ⇒ لكلٍّ جدولُه؛ ويوم الراحة لا يُطالَب
- * بحضورٍ فيه ولا يُخصَم — وبدون ذلك كان التفعيل يخصم أربعة أيام شهرياً من الجميع.
+ * وساعات دوامه في الشهر = **مجموع ساعات كل يومٍ وفق جدوله الأسبوعيّ**، لا (عدد الأيام ×
+ * رقم ثابت). الجدول يُعطي لكل يومٍ ساعاته و**صفرُ الساعات راحة** — فالمفهومان واحد:
+ *   {"الأحد":8,…,"الخميس":8,"الجمعة":4,"السبت":0}
+ * وهذا ما تطلّبه واقع المالك: «الجمعة لدينا دوام لساعات نحن نحدّدها» — يومُ دوامٍ قصير
+ * لا راحةٌ ولا يومٌ كامل. والجداول **تختلف بين الموظفين** ⇒ لكلٍّ جدولُه، وبدون ذلك كان
+ * التفعيل يخصم أيام العطل من الجميع.
  *
  * الإجازة ثلاثة أنواع: **مدفوعة** (تُحتسب ساعات دوامٍ كاملة)، **بلا راتب** (لا تُحتسب)،
  * و**من الرصيد** (مدفوعة تستهلك رصيداً — يخصّها leaveService).
@@ -44,16 +47,32 @@ export function daysBetween(from: string, to: string): string[] {
   return out;
 }
 
+/** جدول الدوام الأسبوعيّ: ساعات كل يوم بالاسم العربيّ. صفر (أو غياب المفتاح) = راحة. */
+export type WorkSchedule = Record<string, number>;
+
+/** الجدول الافتراضي حين لا يُضبط شيء: خمسة أيام بثمانٍ، والجمعة والسبت راحة. */
+export const DEFAULT_WORK_SCHEDULE: WorkSchedule = {
+  الأحد: 8, الاثنين: 8, الثلاثاء: 8, الأربعاء: 8, الخميس: 8, الجمعة: 0, السبت: 8,
+};
+
+/** ساعات يومٍ بعينه وفق الجدول (صفر = راحة، وغير الرقم الموجب يُعامَل صفراً). */
+export function hoursForDay(schedule: WorkSchedule, ymd: string): Decimal {
+  const v = schedule[dayNameOf(ymd)];
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? new Decimal(v) : new Decimal(0);
+}
+
 export interface AttendancePayInput {
   /** الراتب الأساس الشهريّ. */
   salary: Decimal;
   /** نافذة عمل الموظف داخل الشهر (تُقصّ بالتعيين/الفصل قبل الاستدعاء). */
   employmentStart: string;
   employmentEnd: string;
-  /** أيام الراحة الأسبوعية لهذا الموظف (أسماء عربية). */
-  restDays: string[];
-  /** ساعات الدوام القياسية اليومية. */
-  dailyHours: Decimal;
+  /**
+   * جدول الدوام الأسبوعيّ لهذا الموظف — ساعات كل يوم، وصفرٌ = راحة.
+   * حلّ محلّ (أيام الراحة + ساعة يومية واحدة): الجمعة قد تكون **يوم دوامٍ بساعاتٍ أقلّ**
+   * لا راحةً ولا يوماً كاملاً، وهو ما لم يستطع النموذج السابق تمثيله.
+   */
+  schedule: WorkSchedule;
   /** ساعات الحضور الفعلية لكل يوم (من سجل الحضور). الأيام الغائبة ببساطة غير موجودة. */
   attendedHoursByDate: Map<string, Decimal>;
   /** أيام إجازة **مدفوعة** معتمدة (تُحتسب ساعات دوامٍ كاملة). */
@@ -65,7 +84,7 @@ export interface AttendancePayInput {
 }
 
 export interface AttendancePayResult {
-  /** ساعات الدوام المقرَّرة في نافذة العمل = أيام الدوام × الساعات اليومية (مقام سعر الساعة). */
+  /** ساعات الدوام المقرَّرة في نافذة العمل = مجموع ساعات كل يومٍ وفق الجدول (مقام سعر الساعة). */
   scheduledHours: string;
   /** الساعات المستحقّة الأجر (حضورٌ فعليّ + إجازة مدفوعة + ما قبل السريان). */
   payableHours: string;
@@ -89,11 +108,13 @@ export interface AttendancePayResult {
  * يُحتسب الإضافيّ مرّتين.
  */
 export function computeAttendancePay(input: AttendancePayInput): AttendancePayResult {
-  const rest = new Set(input.restDays);
-  const workDays = daysBetween(input.employmentStart, input.employmentEnd).filter((d) => !rest.has(dayNameOf(d)));
+  // أيام الدوام = ما له ساعاتٌ موجبة في الجدول؛ وصفرُ الساعات راحةٌ لا تُطالَب ولا تُخصَم.
+  const allDays = daysBetween(input.employmentStart, input.employmentEnd);
+  const workDays = allDays.filter((d) => hoursForDay(input.schedule, d).gt(0));
 
-  const daily = input.dailyHours;
-  const scheduled = daily.times(workDays.length);
+  // المقام = مجموع ساعات الأيام لا (عددها × رقم ثابت) — فالجمعة القصيرة تُسهم بساعاتها هي.
+  let scheduled = new Decimal(0);
+  for (const d of workDays) scheduled = scheduled.plus(hoursForDay(input.schedule, d));
 
   let payable = new Decimal(0);
   let absentDays = 0;
@@ -101,6 +122,7 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
   let shortHours = new Decimal(0);
 
   for (const d of workDays) {
+    const daily = hoursForDay(input.schedule, d);
     // ما قبل تاريخ السريان: لا بيانات حضور موثوقة ⇒ يُعامَل يوم دوامٍ كاملاً لا غياباً.
     if (input.payFrom == null || d < input.payFrom) {
       payable = payable.plus(daily);
