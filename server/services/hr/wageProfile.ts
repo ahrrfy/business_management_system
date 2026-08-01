@@ -63,15 +63,21 @@ function finite(v: unknown): number | null {
 }
 
 /**
- * أسعار الأيام كما يقرؤها `attendanceService.rateForDay`: **احتياطٌ لكل يومٍ على حدة**
- * (يومٌ ناقصٌ أو غير صالح يقع على `DAY_RATES_DEFAULT[اليوم]`) — لا احتياط للكائن كلّه.
+ * أسعار الأيام كما يقرؤها `attendanceService.rateForDayDetailed`: قيمةُ اليوم إن كانت
+ * **موجبة**، وإلّا **صفر** — لا احتياطَ لجدولٍ مكتوبٍ في الكود.
+ *
+ * ⚠️ كان هنا احتياطٌ لكل يومٍ على `DAY_RATES_DEFAULT`، وهو ما ألغاه PR #446 من محرّك
+ * الأسعار نفسه («اجعل كلّ شيء أنا أضعه وأختاره»): موظفٌ ساعيٌّ بلا `dayRates` يُدفع له
+ * **صفر** لا ٥٠٠٠. وإبقاءُ الاحتياط هنا كان يفتح ثغرةً صامتة — البصمة تقول «٥٠٠٠»
+ * لموظفٍ يُدفع له صفر، فتعيينُ غير الأدمن تلك القيم بالضبط يمرّ كـ«لا تغيير» بينما
+ * الأجرُ الفعليّ يقفز من صفرٍ إلى سعرٍ كامل. البصمة مرآةُ ما يُدفع، فلتُطابقه حرفياً.
  */
 function normalizeDayRates(raw: unknown): Record<string, number> {
   const stored = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const out: Record<string, number> = {};
   for (const d of WEEK_DAYS) {
     const v = finite(stored[d]);
-    out[d] = v != null && v >= 0 ? v : DAY_RATES_DEFAULT[d] ?? 0;
+    out[d] = v != null && v > 0 ? v : 0;
   }
   return out;
 }

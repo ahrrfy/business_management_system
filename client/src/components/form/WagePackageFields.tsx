@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
-import { DAY_RATES_DEFAULT, WEEK_DAYS } from "@shared/hr";
+import { WEEK_DAYS } from "@shared/hr";
 import { normalizeScheduleShape } from "@shared/wageDiff";
 
 /** يومٌ في الجدول: ساعاته (صفر = راحة) وسعرُ ساعته الصريح (فارغ = يُشتقّ من الراتب). */
@@ -52,8 +52,15 @@ export function wageValueFromEmployee(e: {
     salary: e?.salary != null ? String(e.salary) : "",
     allowances: e?.allowances != null ? String(e.allowances) : "0",
     attendanceExempt: !!e?.attendanceExempt,
-    // أسعار الأيام: احتياطٌ لكل يومٍ على حدة (مطابقٌ لـattendanceService.rateForDay).
-    dayRates: { ...DAY_RATES_DEFAULT, ...((e?.dayRates as Record<string, number>) ?? {}) },
+    // أسعار الأيام **كما هي مخزّنة**، والناقصُ صفرٌ ظاهر — لا دمجَ مع جدولٍ مكتوبٍ في
+    // الكود (PR #446: الساعيّ بلا سعرٍ يُدفع له صفر). الدمجُ كان يعرض ٥٠٠٠ لموظفٍ لا
+    // سعر له، فيُرسلها المستخدم ظانّاً أنه لم يغيّر شيئاً بينما أجرُه يقفز من صفر.
+    dayRates: Object.fromEntries(
+      WEEK_DAYS.map((d) => {
+        const v = Number((e?.dayRates as Record<string, unknown> | undefined)?.[d]);
+        return [d, Number.isFinite(v) && v > 0 ? v : 0];
+      }),
+    ),
     // الجدول: احتياطٌ للكائن كلّه (مطابقٌ لـpayrollService) لا دمجٌ يومياً، مع قبول
     // الشكل القديم (رقمٌ = ساعات) وإكمال الأيام الناقصة راحةً.
     schedule: normalizeScheduleShape(e?.workSchedule, defaultWageSchedule()),

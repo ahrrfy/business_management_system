@@ -152,14 +152,27 @@ describe("تغيير الأجر — بقية الحقول الحاملة له (�
 
 describe("الحارس يقارن القيم الفعّالة لا الحمولة الخام (ل٧)", () => {
   it("ل٧) إرسالُ الجدول الافتراضي لموظفٍ جدولُه NULL ليس تغييراً — تعديلُ الهاتف يمرّ", async () => {
-    const r = await updateEmployee(
-      1,
-      payload({ phone: "07701111111", workSchedule: DEFAULT_SCHED, dayRates: { ...DAY_RATES } }) as never,
-      MANAGER,
-    );
+    const r = await updateEmployee(1, payload({ phone: "07701111111", workSchedule: DEFAULT_SCHED }) as never, MANAGER);
     expect(r.wageChange).toBeNull();
     const [e] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
     expect(e.phone).toBe("07701111111");
+  });
+
+  /*
+   * ل٧-ب) أسعارُ الأيام **لا** تحتاط بجدولٍ مكتوبٍ في الكود (PR #446): الساعيّ بلا سعرٍ
+   * يُدفع له صفر. فلو ادّعت البصمة «٥٠٠٠» لموظفٍ سعرُه الفعليّ صفر، مرّ تعيينُ تلك القيم
+   * بالضبط كـ«لا تغيير» بينما الأجر يقفز من صفرٍ إلى سعرٍ كامل — ثغرةٌ صامتة.
+   */
+  it("ل٧-ب) تعيينُ أسعارٍ لساعيٍّ بلا أسعارٍ مخزّنة تغييرٌ يُمنع (لا احتياط لجدول الكود)", async () => {
+    await db().update(s.employees).set({ dayRates: null }).where(eq(s.employees.id, 2));
+    const hourly = { firstName: "زينب", lastName: "الربيعي", payType: "hourly" as const, allowances: "0" };
+    await expect(
+      updateEmployee(2, { ...hourly, dayRates: { ...DAY_RATES } } as never, MANAGER),
+    ).rejects.toThrow(/الترقيات/);
+    // وإرسالُ أصفارٍ (وهو ما يعرضه المحرّر فعلاً) ليس تغييراً.
+    const zeros = Object.fromEntries(Object.keys(DAY_RATES).map((d) => [d, 0]));
+    const r = await updateEmployee(2, { ...hourly, dayRates: zeros, phone: "07704444444" } as never, MANAGER);
+    expect(r.wageChange).toBeNull();
   });
 
   it("ل٧) وسعرُ صفرٍ/فارغٍ في يومٍ = «يُشتقّ من الراتب» فلا يُعدّ تغييراً", async () => {
