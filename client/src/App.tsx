@@ -76,7 +76,6 @@ const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
 const TasksHub = lazy(() => import("@/pages/TasksHub"));
-const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
 const TaskDetail = lazy(() => import("@/pages/TaskDetail"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
@@ -328,14 +327,8 @@ export default function App() {
           </RequireRole>
         </Shell>
       </Route>
-      {/* الحجوزات (R-م٣): الأدوار = قوالب reservations≥READ (admin/manager/accountant/cashier/warehouse/sales_rep/auditor). */}
-      <Route path="/reservations">
-        <Shell>
-          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","sales_rep","auditor"]} module="reservations" level="READ">
-            <ReservationsHub />
-          </RequireRole>
-        </Shell>
-      </Route>
+      {/* الحجوزات نُقلت إلى مساحة خدمة الزبائن داخل غلاف الاستقبال؛ لا صفحة تشغيل مستقلة بعد الآن. */}
+      <Route path="/reservations"><Redirect to="/pos?mode=RECEPTION&workspace=reservations" /></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
       <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>

@@ -1,10 +1,10 @@
 import { Suspense, useEffect, useMemo } from "react";
 import { Link, useLocation, useSearch } from "wouter";
-import { ShoppingCart, Printer, Palette, Lock, Home, ReceiptText } from "lucide-react";
+import { CalendarClock, ShoppingCart, Printer, Palette, Lock, Home, ReceiptText } from "lucide-react";
 import { lazyWithRetry } from "@/lib/lazyWithRetry";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { type PermissionMap, type RoleKey } from "@shared/permissions";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { type Mode, canSeeMode } from "./pos/posModeGates";
 
 /**
@@ -34,6 +34,10 @@ import { type Mode, canSeeMode } from "./pos/posModeGates";
 const POS = lazyWithRetry(() => import("@/pages/POS"));
 const PrintPOS = lazyWithRetry(() => import("@/pages/PrintPOS"));
 const Reception = lazyWithRetry(() => import("@/pages/Reception"));
+const ReservationsWorkspace = lazyWithRetry(() =>
+  import("@/pages/ReservationsHub").then((m) => ({ default: () => <m.default embedded /> })),
+);
+const RESERVATION_READ_ROLES = ["admin", "manager", "accountant", "cashier", "warehouse", "sales_rep", "auditor"] as const;
 
 // عزل الصلاحيات بين الأقسام (٢٣/٧/٢٦): بوّابة كل تبويب مُعرَّفة في posModeGates (سياسةٌ نقيّة قابلة
 // للاختبار) — RETAIL→sales ، PRINT_SERVICES→pos ، RECEPTION→workorders، موحَّدةٌ مع بوّابات الخادم
@@ -81,6 +85,10 @@ export default function PointOfSale() {
   // تَقييم activeMode، فيَبقى RETAIL مَركَّباً والـtabs «تَعمل بَصرياً» بلا تَأثير.
   const search = useSearch();
   const activeMode = useMemo(() => readMode(search), [search]);
+  const reservationsWorkspace = useMemo(
+    () => new URLSearchParams(search).get("workspace") === "reservations",
+    [search],
+  );
 
   const me = trpc.auth.me.useQuery();
   const myRole = me.data?.role as RoleKey | undefined;
@@ -95,7 +103,18 @@ export default function PointOfSale() {
     [meLoading, myRole, myPerms],
   );
   const activeModeMeta = MODES.find((m) => m.v === activeMode);
-  const accessDenied = !meLoading && activeModeMeta != null && !canSeeMode(activeModeMeta.v, myRole, myPerms);
+  const canReadReservations = !meLoading && moduleAccessAllowed(
+    myRole ?? "user",
+    myPerms,
+    "reservations",
+    "READ",
+    RESERVATION_READ_ROLES,
+  );
+  const accessDenied = !meLoading && (
+    reservationsWorkspace
+      ? !canReadReservations
+      : activeModeMeta != null && !canSeeMode(activeModeMeta.v, myRole, myPerms)
+  );
 
   function setMode(next: Mode) {
     if (next === activeMode) return;
@@ -160,6 +179,12 @@ export default function PointOfSale() {
               </button>
             );
           })}
+          {reservationsWorkspace && (
+            <span className="inline-flex h-9 items-center gap-2 rounded-lg border-2 border-primary bg-primary/10 px-3 text-sm font-bold text-primary">
+              <CalendarClock aria-hidden className="size-4" />
+              حجوزات خدمة الزبائن
+            </span>
+          )}
         </div>
         <div className="ms-auto flex items-center gap-3">
           {/* صدق الهوية: صاحب الدور المخصّص المحصور بقسمٍ (مثل «كاشير طباعة») يرى لماذا
@@ -216,9 +241,15 @@ export default function PointOfSale() {
               </div>
             }
           >
-            {activeMode === "RETAIL" && <POS />}
-            {activeMode === "PRINT_SERVICES" && <PrintPOS />}
-            {activeMode === "RECEPTION" && <Reception />}
+            {reservationsWorkspace && !canSeeMode("RECEPTION", myRole, myPerms) ? (
+              <ReservationsWorkspace />
+            ) : (
+              <>
+                {activeMode === "RETAIL" && <POS />}
+                {activeMode === "PRINT_SERVICES" && <PrintPOS />}
+                {activeMode === "RECEPTION" && <Reception />}
+              </>
+            )}
           </Suspense>
         )}
       </div>
