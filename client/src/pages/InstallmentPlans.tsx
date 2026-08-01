@@ -912,7 +912,7 @@ function PayLineDialog({
   const [attachment, setAttachment] = useState<ImageItem[]>([]);
   const thresholds = trpc.vouchers.thresholds.useQuery(undefined, { staleTime: 300_000 });
 
-  const needsAttachment = thresholds.data != null && D(target.amount).gte(thresholds.data.attachment);
+  // المُرفق اختياريّ دائماً (٣١/٧، قرار المالك: لا مُرفق إلزامي في النظام كله).
   const needsApproval = thresholds.data != null && D(target.amount).gte(thresholds.data.approval);
 
   const pay = trpc.installments.pay.useMutation({
@@ -961,7 +961,7 @@ function PayLineDialog({
             <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={255} placeholder="اختياري" />
           </div>
           <div className="space-y-1">
-            <Label>مُرفَق السند {needsAttachment ? "*" : "(اختياري)"}</Label>
+            <Label>مُرفَق السند (اختياري)</Label>
             <ImageUploader
               value={attachment}
               onChange={setAttachment}
@@ -970,9 +970,6 @@ function PayLineDialog({
               singlePrimary={false}
               hint="صورة وصل التحصيل / الشيك — تُضغط تلقائياً قبل الحفظ."
             />
-            {needsAttachment && attachment.length === 0 && (
-              <p className="text-xs text-destructive">المُرفق إلزامي لهذا المبلغ (سياسة السندات).</p>
-            )}
           </div>
           {needsApproval && (
             <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
@@ -984,7 +981,7 @@ function PayLineDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>إلغاء</Button>
           <Button
-            disabled={pay.isPending || (needsAttachment && attachment.length === 0)}
+            disabled={pay.isPending}
             onClick={() =>
               pay.mutate({
                 lineId: target.lineId,

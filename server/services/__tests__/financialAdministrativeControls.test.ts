@@ -52,8 +52,11 @@ describe("الضوابط الإدارية لمصدر النقد", () => {
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
   });
 
-  it("يرفض قبضاً حراً بلا مرجع يثبت مصدر المال", async () => {
-    await expect(createVoucher({
+  // ٣١/٧ (قرار المالك: لا مُرفق إلزامي في النظام كله): القبض الحرّ بلا توثيق لم يعُد **يُرفَض** —
+  // كان الرافض هو عَتبة إلزام المُرفق وحدها. الضابط الأساس باقٍ: كل قبض OTHER يبقى PENDING_APPROVAL
+  // (اعتماد مدير ثانٍ) بلا أي أثر ماليّ حتى الاعتماد ⇒ لا نقدَ يدخل الخزينة بفاعلٍ واحد.
+  it("قبض حرّ بلا توثيق: لا يُرفض لكنه يبقى معلَّقاً بلا أثر ماليّ (اعتماد مدير ثانٍ)", async () => {
+    const result = await createVoucher({
       voucherType: "RECEIPT",
       branchId: 1,
       amount: "750000",
@@ -62,9 +65,13 @@ describe("الضوابط الإدارية لمصدر النقد", () => {
       counterpartyName: "طرف غير معروف",
       description: "تمويل غير موثق",
       clientRequestId: "financial-admin-receipt-002",
-    }, actor)).rejects.toThrow();
+    }, actor);
 
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(result.approvalStatus).toBe("PENDING_APPROVAL");
+    const rows = await db().select().from(s.receipts);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].cashBucket).toBeNull();
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
   });
 
   it("يرفض تأريخ السند في المستقبل", async () => {

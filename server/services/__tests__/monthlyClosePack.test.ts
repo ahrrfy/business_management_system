@@ -100,9 +100,13 @@ describe("monthlyClosePack", () => {
       { branchId: 1, expenseDate: "2026-07-05", category: "RENT", amount: "300000.00", paymentMethod: "CASH", description: "إيجار", payee: "المالك" },
       { branchId: 1, expenseDate: "2026-06-05", category: "RENT", amount: "77777.00", paymentMethod: "CASH", description: "خارج الشهر", payee: "المالك" },
     ]);
+    // ⚠️ عمود تاريخ الخزينة هو createdAt: getTreasurySummary يفلتر على `DATE(r.createdAt)`.
+    // كان هنا `receiptDate` — **حقل لا وجود له في مخطّط receipts** (الموجود voucherDate) فكان drizzle
+    // يُسقطه صامتاً ويأخذ createdAt = الآن ⇒ الاختبار «الثابت على شهرٍ معلوم» كان يعتمد سرّاً على
+    // اليوم، فيمرّ داخل تموز ٢٠٢٦ فقط وينهار على حدّ الشهر (أحمرَ CI في ١/٨).
     await d.insert(s.receipts).values([
-      { branchId: 1, direction: "IN", amount: "8000.00", paymentMethod: "CASH", cashBucket: "TREASURY", status: "COMPLETED", partyType: "OTHER", description: "قبض", referenceNumber: "R-1", createdBy: 1, receiptDate: new Date(IN_MONTH) },
-      { branchId: 1, direction: "OUT", amount: "3000.00", paymentMethod: "CASH", cashBucket: "TREASURY", status: "COMPLETED", partyType: "OTHER", description: "صرف", referenceNumber: "R-2", createdBy: 1, receiptDate: new Date(IN_MONTH) },
+      { branchId: 1, direction: "IN", amount: "8000.00", paymentMethod: "CASH", cashBucket: "TREASURY", status: "COMPLETED", partyType: "OTHER", description: "قبض", referenceNumber: "R-1", createdBy: 1, createdAt: new Date(IN_MONTH) },
+      { branchId: 1, direction: "OUT", amount: "3000.00", paymentMethod: "CASH", cashBucket: "TREASURY", status: "COMPLETED", partyType: "OTHER", description: "صرف", referenceNumber: "R-2", createdBy: 1, createdAt: new Date(IN_MONTH) },
     ]);
     // مرتجع بيع مُقيَّد بتاريخ الإرجاع (entryDate) — تدقيق ١٧/٧: المرتجعات تُنسب لشهر الإرجاع لا الفاتورة.
     await d.insert(s.accountingEntries).values({

@@ -206,13 +206,11 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
     { enabled: open && !!employeeId },
   );
 
-  // عتبتا السندات (الخادم هو المرجع؛ القيم هنا للتنبيه المسبق فقط).
+  // عَتبة الاعتماد (الخادم هو المرجع؛ القيمة هنا للتنبيه المسبق فقط). لا عَتبة مُرفق — المُرفق اختياريّ (٣١/٧).
   const thresholdsQ = trpc.payroll.advanceThresholds.useQuery(undefined, { enabled: open });
   const approvalThreshold = thresholdsQ.data?.approval ?? 1_000_000;
-  const attachmentThreshold = thresholdsQ.data?.attachment ?? 250_000;
   const amountNum = Number(amount || 0);
   const overApproval = amountNum >= approvalThreshold;
-  const needsAttachment = amountNum > 0 && amountNum >= attachmentThreshold;
 
   // idempotency (تدقيق ١٧/٧): مفتاح ثابت لكل محاولة منح — يُبقى عند الفشل (إعادة المحاولة idempotent
   // فلا صرف نقدي مزدوج) ويتجدّد بعد النجاح فقط.
@@ -229,7 +227,7 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
   });
 
   const canSave =
-    !!employeeId && !!amount && D(amount || 0).gt(0) && !overApproval && (!needsAttachment || !!attachmentUrl) && !grantM.isPending;
+    !!employeeId && !!amount && D(amount || 0).gt(0) && !overApproval && !grantM.isPending;
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -263,14 +261,14 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
             )}
           </div>
           <div>
-            <Label>مُرفق سند الصرف {needsAttachment ? "(إلزامي لهذا المبلغ)" : "(اختياري)"}</Label>
+            <Label>مُرفق سند الصرف (اختياري)</Label>
             <ImageUploader
               value={attachmentImages}
               onChange={setAttachmentImages}
               maxItems={1}
               maxSizeMB={2}
               singlePrimary={false}
-              hint={`صورة إيصال الاستلام/التعهّد — إلزامية للمبالغ ${attachmentThreshold.toLocaleString("ar-IQ-u-nu-latn")} د.ع فما فوق.`}
+              hint="صورة إيصال الاستلام/التعهّد — اختيارية."
             />
           </div>
           <div>

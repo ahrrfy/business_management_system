@@ -153,10 +153,11 @@ describe("advancesService — المنح", () => {
     expect((await db().select().from(s.employeeAdvances)).length).toBe(0);
   });
 
-  it("عتبة المُرفق (vouchers-pro) تسري على سند السلفة: مبلغ ≥ العتبة بلا مُرفق يُرفض", async () => {
+  it("لا مُرفق إلزامي: سلفة بمبلغ كبير بلا مُرفق تُمنَح (٣١/٧ — أُلغيت عتبة المُرفق)", async () => {
     const emp = await seedEmployee();
-    await expect(grantAdvance({ employeeId: emp.id, branchId: 1, amount: "250000" }, ACTOR)).rejects.toThrow(/المُرفق إلزامي/);
-    expect((await db().select().from(s.employeeAdvances)).length).toBe(0);
+    const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "250000" }, ACTOR);
+    expect(adv.voucherNumber).toMatch(/^PV-/);
+    expect((await db().select().from(s.employeeAdvances)).length).toBe(1);
   });
 
   it("لا سلفة لموظف منتهي الخدمة، والخصم الشهري لا يتجاوز المبلغ", async () => {

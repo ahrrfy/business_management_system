@@ -39,7 +39,7 @@ const norm = (s: string | null | undefined): string | null => {
 /**
  * إنشاء سند حركة أمانة (ذرّيّ + idempotent + قفل المودِع FOR UPDATE).
  * الحراس: المودِع CONSIGNOR نشِط؛ كل سطر صنفه isConsignment ومودِعه = مودِع السند؛ اتجاه الأسطر يطابق
- * نوع السند؛ مرفق صورة السند الموقَّع إلزاميّ للسحب/الاستبدال. الحركات بترتيب variantId (منع deadlock).
+ * نوع السند؛ مرفق صورة السند الموقَّع اختياريّ لكل الأنواع. الحركات بترتيب variantId (منع deadlock).
  */
 export async function createConsignmentNote(input: CreateConsignmentNoteInput, actor: Actor) {
   const clientRequestId = norm(input.clientRequestId);
@@ -128,9 +128,9 @@ async function createConsignmentNoteTx(input: CreateConsignmentNoteInput, client
   if (input.noteType === "EXCHANGE" && !(dirs.has("IN") && dirs.has("OUT")))
     throw new TRPCError({ code: "BAD_REQUEST", message: "سند الاستبدال: يلزمه سحبٌ وإيداعٌ معاً" });
 
-  // مرفق صورة السند الموقَّع إلزاميّ للسحب/الاستبدال (لا عتبة — §٥-أ الضابط التعويضيّ).
-  if (input.noteType !== "DEPOSIT" && !norm(input.attachmentUrl))
-    throw new TRPCError({ code: "BAD_REQUEST", message: "سند السحب/الاستبدال يلزمه إرفاق صورة السند الموقَّع" });
+  // مرفق صورة السند الموقَّع **اختياريّ** (٣١/٧، قرار المالك: لا مرفق إلزامي في النظام كله) — كان
+  // إلزاميّاً للسحب/الاستبدال كضابط تعويضيّ؛ الضوابط الباقية (إشعار واتساب للمودِع عند السحب/الاستبدال
+  // + كاشف anomalyWatch D7 لتركّز السحوبات) تبقى فعّالة.
 
   return withTx(async (tx) => {
     // idempotency: إعادة إرسال بنفس المفتاح ⇒ أعد السند القائم.

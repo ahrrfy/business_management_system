@@ -7,7 +7,6 @@ import {
   cancelVoucher,
   createVoucher,
   getApprovalThreshold,
-  getAttachmentThreshold,
   getVoucher,
   listVouchers,
   recentVouchersForParty,
@@ -28,10 +27,10 @@ const moneyStr = z
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 export const voucherRouter = router({
-  /** عَتبات النظام (للتعرّض في الواجهة: تَلميحات «هذا المبلغ يَحتاج اعتماد/مرفق»). */
+  /** عَتبة النظام (للتعرّض في الواجهة: تَلميح «هذا المبلغ يَحتاج اعتماد مدير ثانٍ»).
+   *  لا عَتبة مُرفق — المُرفق اختياريّ دائماً (٣١/٧). */
   thresholds: treasuryManagerReadProcedure.query(() => ({
     approval: getApprovalThreshold(),
-    attachment: getAttachmentThreshold(),
   })),
 
   create: treasuryManagerProcedure

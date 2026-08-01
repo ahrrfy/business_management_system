@@ -105,7 +105,7 @@ describe("بضاعة الأمانة ش٢ — الإيداع", () => {
 });
 
 describe("بضاعة الأمانة ش٢ — السحب", () => {
-  it("سند سحب: حركة OUT + رصيد ينخفض (يلزمه مرفق)", async () => {
+  it("سند سحب: حركة OUT + رصيد ينخفض", async () => {
     const cid = await mkConsignor();
     const { variantId, productUnitId } = await mkConsignProduct(cid);
     await createConsignmentNote({ noteType: "DEPOSIT", consignorId: cid, branchId: 1, lines: [{ lineDirection: "IN", variantId, productUnitId, quantity: "50" }] }, actor);
@@ -119,14 +119,16 @@ describe("بضاعة الأمانة ش٢ — السحب", () => {
     expect(outMv.referenceType).toBe("CONSIGN_OUT");
   });
 
-  it("سحب بلا مرفق يُرفض", async () => {
+  it("سحب بلا مرفق يُقبَل (٣١/٧ — لا مرفق إلزامي في النظام)", async () => {
     const cid = await mkConsignor();
     const { variantId, productUnitId } = await mkConsignProduct(cid);
     await createConsignmentNote({ noteType: "DEPOSIT", consignorId: cid, branchId: 1, lines: [{ lineDirection: "IN", variantId, productUnitId, quantity: "50" }] }, actor);
-    await expect(createConsignmentNote({
+    const r = await createConsignmentNote({
       noteType: "WITHDRAW", consignorId: cid, branchId: 1,
       lines: [{ lineDirection: "OUT", variantId, productUnitId, quantity: "20" }],
-    }, actor)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    }, actor);
+    expect(r.noteNumber).toMatch(/^CSN-1-/);
+    expect((await stockOf(variantId)).qty).toBe(30);
   });
 
   it("سحب أكثر من المتبقي يُرفض (كفاية تحت القفل)", async () => {
