@@ -588,7 +588,7 @@ export default function Reception() {
   async function handleSubmit(opts: { quickFullPay: boolean }) {
     if (cart.length === 0) return;
     if (!shift) {
-      notify.err("لا توجد وردية خدمة زبائن مفتوحة — افتح الوردية أولاً");
+      notify.err("ابدأ العمل أولاً قبل إتمام طلب العميل");
       return;
     }
     const invalidCustom = cart.find((line) => {
@@ -893,10 +893,10 @@ export default function Reception() {
             <span className="grid size-9 place-items-center rounded-lg bg-violet-100 text-violet-700">
               <Palette aria-hidden className="size-5" />
             </span>
-            <h2 className="text-xl font-extrabold">افتح وردية خدمة الزبائن</h2>
+            <h2 className="text-xl font-extrabold">ابدأ العمل</h2>
           </div>
           <p className="mb-5 text-sm text-muted-foreground">
-            درجٌ ورصيدٌ افتتاحيٌّ مستقلّ لاستلام الطلبات وقبض العرابين. لا يمكن العمل بدون وردية مفتوحة.
+            أدخل المبلغ الموجود في درج النقدية، ثم ابدأ استقبال العملاء والطلبات.
           </p>
           {/* الأدمن/المدير بلا فرع مُسنَد يختار الفرع صراحةً (#274) — بدل إسناد الطلبات صامتاً للفرع ١. */}
           {needsBranchChoice && (
@@ -913,7 +913,7 @@ export default function Reception() {
               </select>
             </div>
           )}
-          <label className="mb-1.5 block text-sm font-bold">الرصيد الافتتاحي للصندوق (د.ع)</label>
+          <label className="mb-1.5 block text-sm font-bold">المبلغ الموجود في الدرج الآن (د.ع)</label>
           <Input
             dir="ltr"
             inputMode="decimal"
@@ -944,7 +944,7 @@ export default function Reception() {
             disabled={openShiftM.isPending || needsBranchChoice}
             onClick={() => openShiftM.mutate({ branchId, openingBalance: opening || "0", shiftType: "RECEPTION" })}
           >
-            {openShiftM.isPending ? "جارٍ الفتح…" : needsBranchChoice ? "اختر الفرع أولاً" : "فتح وردية خدمة الزبائن"}
+            {openShiftM.isPending ? "جارٍ البدء…" : needsBranchChoice ? "اختر الفرع أولاً" : "بدء العمل"}
           </Button>
           <Link href="/" className="mt-3 block text-center text-sm text-muted-foreground">← الرئيسية</Link>
         </div>
@@ -971,8 +971,8 @@ export default function Reception() {
         <div className="absolute inset-0 z-30 overflow-y-auto bg-background p-4">
           <div className="mb-3 flex items-center justify-between rounded-xl border bg-card p-3">
             <div>
-              <h1 className="font-extrabold">طلبات المتجر الواردة</h1>
-              <p className="text-xs text-muted-foreground">تثبيت الطلب وتجهيزه وإرساله للمندوب من داخل محطة الاستقبال.</p>
+              <h1 className="font-extrabold">طلبات الموقع الواردة</h1>
+              <p className="text-xs text-muted-foreground">راجع الطلب، ثبّته، جهّزه ثم أرسله للتوصيل.</p>
             </div>
             <Button size="sm" variant="outline" onClick={() => setShowStoreOrders(false)}>
               <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
@@ -992,21 +992,21 @@ export default function Reception() {
             className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-card p-6 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="mb-1 text-lg font-extrabold">إغلاق وردية خدمة الزبائن #{shift.id}</h3>
+            <h3 className="mb-1 text-lg font-extrabold">إنهاء العمل وعدّ النقدية</h3>
             <p className="mb-4 text-xs text-muted-foreground">
               {fmtDate(new Date())}
             </p>
             {reportQ.isLoading ? (
-              <div className="py-6 text-center text-muted-foreground">جارٍ تحميل التقرير…</div>
+              <div className="py-6 text-center text-muted-foreground">جارٍ تجهيز ملخص اليوم…</div>
             ) : (
               <>
                 {(
                   [
                     ["عدد الفواتير", `${reportQ.data?.invoiceCount ?? 0}`],
                     ["إجمالي المبيعات", `${fmt(Number(reportQ.data?.salesTotal ?? 0))} د.ع`],
-                    ["الرصيد الافتتاحي", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
+                    ["المبلغ عند بدء العمل", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
                     ...(showRecExpected
-                      ? [["النقد المتوقَّع بالصندوق", `${fmt(recExpected)} د.ع`] as [string, string]]
+                      ? [["المبلغ المفترض وجوده في الدرج", `${fmt(recExpected)} د.ع`] as [string, string]]
                       : []),
                   ] as [string, string][]
                 ).map(([l, v]) => (
@@ -1020,7 +1020,7 @@ export default function Reception() {
                   onBlur={() => setCountEntered(counted.trim() !== "")}
                 >
                   <label htmlFor="rec-counted-cash" className="block text-sm font-bold">
-                    النقد المعدود (د.ع)
+                    المبلغ الذي عددته في الدرج (د.ع)
                   </label>
                   <MoneyInput
                     id="rec-counted-cash"
@@ -1059,16 +1059,16 @@ export default function Reception() {
                 {hasRecVariance && (
                   <div className="mt-4 space-y-2 rounded-xl border border-destructive/60 bg-destructive/10 p-3">
                     <p className="text-sm font-extrabold text-destructive">
-                      لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الافتتاحي مضافاً إليه صافي المبيعات النقدية المسجّلة.
+                      لا يمكن إنهاء العمل لأن المبلغ المعدود لا يطابق المبلغ المسجّل في النظام.
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      أعد العد وراجع الفواتير والمرتجعات. إذا بقي الفرق فاستدعِ المدير لتصحيح العملية من وحدتها المختصة؛ لا يمكن اعتماد مال بلا مصدر من شاشة الإغلاق.
+                      أعد عدّ النقدية وراجع عمليات البيع والإرجاع. إذا بقي الفرق، اطلب من المدير المراجعة.
                     </p>
                   </div>
                 )}
                 {/* العهدة الوسيطة (imprest، ٢٨/٧/٢٦): يعود كامل النقد المعدود للخزينة تلقائياً عند الإغلاق. */}
                 <div className="mt-3.5 rounded-lg border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
-                  يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق (تسليمٌ كامل). الوردية التالية تبدأ بعهدةٍ جديدة من الخزينة.
+                  عند التأكيد سيُسجّل النظام تسليم كامل المبلغ المعدود، ويبدأ العمل القادم بمبلغ جديد.
                 </div>
                 <div className="mt-5 flex gap-2.5">
                   <Button variant="outline" className="flex-1" onClick={() => setClosing(false)}>
@@ -1082,7 +1082,7 @@ export default function Reception() {
                       countedCash: counted,
                     })}
                   >
-                    {closeShiftM.isPending ? "جارٍ الإغلاق…" : hasRecVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}
+                    {closeShiftM.isPending ? "جارٍ الإنهاء…" : hasRecVariance ? "لا يمكن الإنهاء قبل حل الفرق" : "تأكيد الإنهاء وطباعة الملخص"}
                   </Button>
                 </div>
               </>
@@ -1093,7 +1093,7 @@ export default function Reception() {
       {/* مناطق العمل المتسلسلة: العميل ← الإضافة ← السلة ← التفاصيل ← الدفع. */}
       <div className="flex-shrink-0 space-y-2 border-b bg-card px-4 py-2.5">
         <div className="flex items-center gap-1 overflow-x-auto text-[11px] font-bold text-muted-foreground" aria-label="تسلسل إنشاء الطلب">
-          {["العميل والقناة", "البيع والخدمة والحجز", "جدول السلة", "تفاصيل أمر الشغل", "الدفع والإتمام"].map((label, index) => (
+          {["اختيار العميل", "إضافة المطلوب", "مراجعة السلة", "تفاصيل الطباعة", "استلام المبلغ"].map((label, index) => (
             <div key={label} className="inline-flex shrink-0 items-center gap-1.5">
               <span className={cn(
                 "grid size-5 place-items-center rounded-full border text-[10px]",
@@ -1106,11 +1106,11 @@ export default function Reception() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/25 p-2">
-          <span className="shrink-0 text-xs font-extrabold">١. العميل والقناة</span>
+          <span className="shrink-0 text-xs font-extrabold">١. العميل وطريقة وصول الطلب</span>
           <SmartCustomerInput value={customer} onChange={setCustomer} className="w-60" placeholder="عميل نقدي أو ابحث عن عميل" />
           {customer.customerId && canReadCustomerContext && (
             <Button size="sm" variant="outline" className="h-8" onClick={() => setCustomerContextId(customer.customerId)}>
-              بطاقة العميل ٣٦٠°
+              معلومات العميل
             </Button>
           )}
           <div className="flex flex-wrap gap-1">
@@ -1140,7 +1140,7 @@ export default function Reception() {
             <Input
               value={channelHandle}
               onChange={(e) => setChannelHandle(e.target.value)}
-              placeholder="رقم الهاتف أو معرّف القناة"
+              placeholder="رقم الهاتف أو اسم حساب العميل"
               className="h-8 min-w-48 flex-1 text-xs"
               dir="ltr"
             />
@@ -1148,7 +1148,7 @@ export default function Reception() {
         </div>
 
         <div className="flex items-center gap-3">
-        <span className="shrink-0 text-xs font-extrabold">٢. الإضافة والحجز</span>
+        <span className="shrink-0 text-xs font-extrabold">٢. أضف ما يريده العميل</span>
         <div className="relative max-w-[640px] flex-1">
           <Search aria-hidden className="pointer-events-none absolute inset-y-0 end-3 my-auto size-4 text-muted-foreground" />
           <input
@@ -1243,7 +1243,7 @@ export default function Reception() {
             onClick={() => setShowStoreOrders(true)}
             className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-4 text-xs font-extrabold transition-colors hover:bg-muted/60"
           >
-            <Package aria-hidden className="size-4" /> طلبات المتجر
+            <Package aria-hidden className="size-4" /> طلبات الموقع
           </button>
         )}
 
@@ -1281,10 +1281,10 @@ export default function Reception() {
           )}
           <div className="flex items-center gap-1.5 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-1.5 text-xs font-bold text-violet-700">
             <span className="size-2 animate-pulse rounded-full bg-violet-500" />
-            وردية خدمة الزبائن #{shift.id}
+            العمل مفتوح #{shift.id}
           </div>
           <Button size="sm" variant="outline" onClick={() => setClosing(true)}>
-            إغلاق الوردية
+            إنهاء العمل
           </Button>
           {canReadChannels && (
             <button
@@ -1292,7 +1292,7 @@ export default function Reception() {
               onClick={() => setShowInbox(true)}
               className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-card px-3 text-xs font-bold hover:bg-muted/60"
             >
-              <MessageCircle aria-hidden className="size-4" /> الوارد والقنوات
+              <MessageCircle aria-hidden className="size-4" /> رسائل وطلبات العملاء
             </button>
           )}
         </div>
@@ -1548,7 +1548,7 @@ export default function Reception() {
           <div className="flex-shrink-0 border-b bg-muted/40 p-3">
             <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-extrabold">
               <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٥</span>
-              الدفع والإتمام
+              المبلغ والدفع
             </div>
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-muted-foreground">إجمالي الفاتورة</span>
@@ -1560,13 +1560,13 @@ export default function Reception() {
             <div className="mt-2 grid grid-cols-2 gap-2">
               <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-2">
                 <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700">
-                  <ShoppingCart aria-hidden className="size-3" /> بيع مباشر
+                  <ShoppingCart aria-hidden className="size-3" /> منتجات جاهزة
                 </div>
                 <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumDirect)}</div>
               </div>
               <div className="rounded-lg border border-violet-500/25 bg-violet-500/10 p-2">
                 <div className="inline-flex items-center gap-1 text-[10px] font-bold text-violet-700">
-                  <Printer aria-hidden className="size-3" /> أوامر مطبعة
+                  <Printer aria-hidden className="size-3" /> خدمات وطباعة
                 </div>
                 <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumCustom)}</div>
               </div>
@@ -1673,7 +1673,7 @@ export default function Reception() {
               <Input
                 value={paymentReference}
                 onChange={(e) => setPaymentReference(e.target.value)}
-                placeholder={method === "CARD" ? "رقم عملية البطاقة (إلزامي)" : "رقم مرجع التحويل (إلزامي)"}
+                placeholder={method === "CARD" ? "أدخل رقم عملية البطاقة" : "أدخل رقم التحويل"}
                 className="mt-2 h-9 text-xs"
                 dir="ltr"
               />
@@ -1711,7 +1711,7 @@ export default function Reception() {
               onClick={() => void handleSubmit({ quickFullPay: true })}
               className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-sm font-black text-white shadow-md transition hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
-              <Zap aria-hidden className="size-4" /> دفع سريع وطباعة
+              <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
             </button>
             <button
               type="button"
@@ -1722,11 +1722,11 @@ export default function Reception() {
               {submitting ? (
                 "جارٍ الإرسال…"
               ) : sumCustom > 0 && sumDirect > 0 ? (
-                <><Printer aria-hidden className="size-4" /> إرسال أوامر الشغل ودفع البيع</>
+                <><Printer aria-hidden className="size-4" /> تثبيت البيع وإرسال الطباعة</>
               ) : sumCustom > 0 ? (
                 <><Printer aria-hidden className="size-4" /> إرسال للمطبعة</>
               ) : (
-                <><Check aria-hidden className="size-4" /> إتمام الدفع وطباعة</>
+                <><Check aria-hidden className="size-4" /> إتمام الطلب وطباعة</>
               )}
             </button>
             <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F2 بحث</div>
@@ -1766,8 +1766,8 @@ export default function Reception() {
         <div className="absolute inset-0 z-40 overflow-hidden bg-background p-4">
           <div className="mb-3 flex items-center justify-between rounded-xl border bg-card p-3">
             <div>
-              <h1 className="inline-flex items-center gap-2 font-extrabold"><MessageCircle aria-hidden className="size-4" /> صندوق الوارد الموحّد</h1>
-              <p className="text-xs text-muted-foreground">واتساب والاتصالات والقنوات المرتبطة بالعميل، داخل محطة خدمة الزبائن.</p>
+              <h1 className="inline-flex items-center gap-2 font-extrabold"><MessageCircle aria-hidden className="size-4" /> رسائل وطلبات العملاء</h1>
+              <p className="text-xs text-muted-foreground">تابع رسائل واتساب والاتصالات، واربطها بالعميل عند الحاجة.</p>
             </div>
             <Button size="sm" variant="outline" onClick={() => setShowInbox(false)}>
               <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب

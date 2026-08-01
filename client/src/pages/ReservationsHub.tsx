@@ -160,7 +160,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
             <div>
               <h1 className="text-lg font-extrabold">حجوزات خدمة الزبائن</h1>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                إنشاء الحجز واستدعاؤه وتحويله إلى بيع من داخل شاشة الاستقبال؛ المخزون الفعلي لا يُخصم حتى التنفيذ.
+                أنشئ الحجز أو ابحث عنه، ثم حوّله إلى طلب عند حضور العميل.
               </p>
             </div>
           </div>
@@ -226,7 +226,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                 <TableHead>رقم الحجز</TableHead>
                 <TableHead>العميل</TableHead>
                 <TableHead>الهاتف</TableHead>
-                <TableHead>القناة</TableHead>
+                <TableHead>طريقة وصول الحجز</TableHead>
                 <TableHead>الحالة</TableHead>
                 <TableHead>ينتهي</TableHead>
                 <TableHead>إجراء</TableHead>
@@ -308,9 +308,9 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
       <Dialog open={convertTarget != null} onOpenChange={(open) => !open && !convert.isPending && setConvertTarget(null)}>
         <DialogContent className="sm:max-w-lg" dir="rtl">
           <DialogHeader>
-            <DialogTitle>استدعاء الحجز وإتمام البيع</DialogTitle>
+            <DialogTitle>تحويل الحجز إلى طلب</DialogTitle>
             <DialogDescription>
-              الحجز {convertTarget?.reservationNumber} سيتحوّل إلى فاتورة وتُخصم كمياته من المخزون. اختر الدفعة المستلمة الآن بدقة.
+              الحجز {convertTarget?.reservationNumber} جاهز للتنفيذ. أدخل المبلغ الذي استلمته من العميل الآن.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-1">
@@ -324,7 +324,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                 placeholder="اتركه فارغاً للبيع الآجل"
                 ariaLabel="المبلغ المدفوع عند تحويل الحجز"
               />
-              <p className="text-[11px] text-muted-foreground">النقد يدخل درج الوردية؛ البطاقة والتحويل لا يدخلان عدّ النقدية.</p>
+              <p className="text-[11px] text-muted-foreground">النقد يُضاف إلى مبلغ الدرج. البطاقة والتحويل يُسجّلان منفصلين.</p>
             </div>
 
             {convertAmount.trim() && Number(convertAmount) > 0 ? (
@@ -363,7 +363,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                   onChange={(e) => setConvertReference(e.target.value)}
                   maxLength={100}
                   autoComplete="off"
-                  placeholder="مرجع قابل للمطابقة مع كشف البنك"
+                  placeholder="أدخل الرقم الظاهر في الإيصال أو تطبيق البنك"
                   dir="ltr"
                 />
               </div>
@@ -373,7 +373,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
             <Button variant="outline" onClick={() => setConvertTarget(null)} disabled={convert.isPending}>إلغاء</Button>
             <Button onClick={submitConversion} disabled={convert.isPending}>
               <ShoppingCart className="size-4 me-1" aria-hidden />
-              {convert.isPending ? "جارٍ الإتمام…" : "إنشاء الفاتورة وتثبيت الدفع"}
+              {convert.isPending ? "جارٍ الإتمام…" : "تأكيد الطلب"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -485,7 +485,7 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label htmlFor="res-channel">القناة</Label>
+              <Label htmlFor="res-channel">طريقة وصول الحجز</Label>
               <select id="res-channel" className={`${selectCls} w-full`} value={channel} onChange={(e) => setChannel(e.target.value as Channel)}>
                 {CHANNELS.map((c) => <option key={c} value={c}>{CHANNEL_LABEL[c]}</option>)}
               </select>
