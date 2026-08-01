@@ -65,6 +65,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       hireDate: employees.hireDate,
       terminationDate: employees.terminationDate,
       workSchedule: employees.workSchedule,
+      attendanceExempt: employees.attendanceExempt,
       branchName: branches.name,
     })
     .from(employees)
@@ -170,6 +171,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       branchName: emp.branchName,
       payType: emp.payType,
       salary: emp.salary,
+      attendanceExempt: !!emp.attendanceExempt,
     },
     period: p,
     from: employmentStart,

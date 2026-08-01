@@ -79,6 +79,8 @@ const employeeInput = z.object({
   workSchedule: z
     .record(z.string(), z.object({ hours: z.number().min(0).max(24), rate: z.number().min(0).nullish() }))
     .nullish(),
+  /** إعفاءٌ من الحضور — راتبٌ ثابت (0141). للمُلّاك ولمن لا جهاز بصمة له. */
+  attendanceExempt: z.boolean().optional(),
   hireDate: z.string().optional(),
   gender: z.string().trim().optional(),
   birthDate: z.string().optional(),

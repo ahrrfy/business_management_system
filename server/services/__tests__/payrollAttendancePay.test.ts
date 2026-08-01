@@ -155,3 +155,43 @@ describe("الأجر بالحضور في المسيّر", () => {
     expect(Number(it.gross)).toBeGreaterThan(0);
   });
 });
+
+describe("الإعفاء من الحضور — راتب ثابت (قرار المالك ٣١/٧)", () => {
+  it("ف١) المُعفى يقبض راتبه كاملاً بلا بصمة واحدة", async () => {
+    await enableAttendancePay("2026-06-01");
+    await db().update(s.employees).set({ attendanceExempt: true }).where(eq(s.employees.id, 1));
+
+    const run = await generatePayroll(PERIOD, ADMIN as never);
+    const it = await itemOf(Number(run.id));
+    expect(Number(it.gross)).toBe(900000); // لا صفر
+    expect(it.hours).toBeNull(); // مسارٌ ثابت لا حسابَ ساعات
+  });
+
+  it("ف٢) غير المُعفى بلا بصمات يُوقف التوليد برسالة صريحة — لا تصفير صامت", async () => {
+    await enableAttendancePay("2026-06-01");
+    // لا حضور إطلاقاً ولا إعفاء ⇒ ربطٌ ناقص لا غياب.
+    await expect(generatePayroll(PERIOD, ADMIN as never)).rejects.toThrow(/ربطٌ ناقص بجهاز البصمة/);
+    const runs = await db().select().from(s.payrollRuns);
+    expect(runs).toHaveLength(0); // ذرّيّ: لا مسيّر جزئيّ
+  });
+
+  it("ف٣) الإعفاء لا يُلغي خصم الإجازة بلا راتب (الإجازات تبقى — قرار المالك)", async () => {
+    await enableAttendancePay("2026-06-01");
+    await db().update(s.employees).set({ attendanceExempt: true }).where(eq(s.employees.id, 1));
+    await db().insert(s.leaveRequests).values({
+      employeeId: 1, leaveType: "بدون راتب", paid: false,
+      fromDate: "2026-06-08", toDate: "2026-06-09", days: 2, status: "approved",
+    });
+
+    const run = await generatePayroll(PERIOD, ADMIN as never);
+    const it = await itemOf(Number(run.id));
+    // المسار الثابت يُطبّق خصم الإجازة القديم (الراتب÷٣٠ × يومين).
+    expect(Number(it.deductions)).toBe(60000);
+    expect(Number(it.net)).toBe(840000);
+  });
+
+  it("ف٤) الافتراضي خاضعٌ لا معفى (الإعفاء استثناءٌ يُقرَّر)", async () => {
+    const [e] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
+    expect(e.attendanceExempt).toBe(false);
+  });
+});

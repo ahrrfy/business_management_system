@@ -135,6 +135,7 @@ export interface EmployeeInput {
   allowances?: string | null;
   dayRates?: Record<string, number> | null;
   workSchedule?: Record<string, { hours: number; rate?: number | null }> | null;
+  attendanceExempt?: boolean;
   hireDate?: string | null;
   gender?: string | null;
   birthDate?: string | null;
@@ -170,6 +171,7 @@ function toValues(input: EmployeeInput) {
     allowances: toDbMoney(input.allowances ?? "0"),
     dayRates: input.dayRates ?? null,
     workSchedule: input.workSchedule ?? null,
+    attendanceExempt: input.attendanceExempt ?? false,
     hireDate: input.hireDate || null,
     gender: input.gender?.trim() || null,
     birthDate: input.birthDate || null,

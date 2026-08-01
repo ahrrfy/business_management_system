@@ -59,6 +59,8 @@ export default function EmployeeNew() {
    * ساعات كل يوم وسعر ساعة كل يوم. لا اشتقاق صامت؛ زرّ «احسب من الراتب» يملأ الأسعار
    * دفعةً واحدة كنقطة بداية ثم تُعدَّل كما يشاء.
    */
+  /** إعفاءٌ من الحضور — راتبٌ ثابت (للمُلّاك ولمن لا جهاز له). الافتراضي: خاضع (قرار المالك). */
+  const [exempt, setExempt] = useState(false);
   const [sched, setSched] = useState<Record<string, { hours: number; rate?: number | null }>>(
     () => Object.fromEntries(WEEK_DAYS.map((d) => [d, { hours: d === "الجمعة" ? 0 : 8, rate: null }])),
   );
@@ -107,6 +109,7 @@ export default function EmployeeNew() {
       colorTag: e.colorTag ?? COLORS[0], annualLeaveBalance: String(e.annualLeaveBalance ?? 0), sickLeaveBalance: String(e.sickLeaveBalance ?? 0),
     }));
     if (e.dayRates && typeof e.dayRates === "object") setDayRates({ ...DAY_RATES_DEFAULT, ...(e.dayRates as Record<string, number>) });
+    setExempt(!!e.attendanceExempt);
     if (e.workSchedule && typeof e.workSchedule === "object") {
       setSched({ ...(e.workSchedule as Record<string, { hours: number; rate?: number | null }>) });
     }
@@ -196,6 +199,7 @@ export default function EmployeeNew() {
       dayRates: form.payType === "hourly" ? dayRates : undefined,
       // جدولٌ خاصّ يتقدّم على الافتراضي العامّ؛ إطفاؤه ⇒ null فيرث العامّ.
       workSchedule: sched,
+      attendanceExempt: exempt,
       colorTag: form.colorTag || undefined, photoUrl: photoUrl || undefined,
       education: edu.length ? edu.map(({ key, ...e }) => ({ ...e, degree: e.degree, year: e.year ? Number(e.year) : undefined })) : undefined,
       annualLeaveBalance: Number(form.annualLeaveBalance || 0), sickLeaveBalance: Number(form.sickLeaveBalance || 0),
@@ -374,8 +378,25 @@ export default function EmployeeNew() {
             </div>
           )}
 
+          {/* إعفاءٌ من الحضور — راتبٌ ثابت (قرار المالك ٣١/٧). */}
+          <div className="md:col-span-3 border-t pt-3">
+            <label className="flex items-start gap-2">
+              <input type="checkbox" className="size-4 mt-0.5" checked={exempt} onChange={(ev) => setExempt(ev.target.checked)} />
+              <span>
+                <span className="font-medium">راتب ثابت — لا يخضع للحضور</span>
+                <span className="block text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                  للمُلّاك ولمن لا جهاز بصمة له. يُصرف راتبه ومخصّصاته كاملةً بلا احتساب ساعات،
+                  ولا يظهر في تنبيهات «غير مربوط بجهاز». والإجازات والسلف والعمولات تبقى تعمل كالمعتاد.
+                  <span className="block mt-0.5">
+                    بلا هذا التأشير ومع تفعيل الأجر بالحضور، موظفٌ بلا بصمات يُحتسب شهراً كاملاً غياباً.
+                  </span>
+                </span>
+              </span>
+            </label>
+          </div>
+
           {/* جدول الدوام الأسبوعيّ لهذا الموظف — كل قيمة صريحة بيد المالك (قرار ٣١/٧). */}
-          <div className="md:col-span-3 space-y-2 border-t pt-3">
+          <div className={`md:col-span-3 space-y-2 border-t pt-3 ${exempt ? "opacity-50" : ""}`}>
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <Label>جدول الدوام الأسبوعيّ — ساعات كل يوم وسعر ساعته</Label>
               <Button

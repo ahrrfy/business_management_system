@@ -142,7 +142,13 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
       </CardHeader>
 
       <CardContent className="space-y-3">
-        {!d.attendancePayEnabled && (
+        {d.employee.attendanceExempt && (
+          <p className="text-xs rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 leading-relaxed">
+            <span className="font-medium text-[var(--sem-warn)]">راتب ثابت — لا يخضع للحضور.</span> يُصرف راتبه
+            ومخصّصاته كاملةً بلا احتساب ساعات. الجدول أدناه للاطّلاع فقط ولا يؤثّر في مسيّره.
+          </p>
+        )}
+        {!d.attendancePayEnabled && !d.employee.attendanceExempt && (
           <p className="text-xs text-muted-foreground rounded-md border p-2">
             الأجر بالحضور غير مفعَّل — الكشف يعرض الساعات والأسعار للمراجعة، لكنّ المسيّر
             ما زال يحتسب الراتب الثابت.

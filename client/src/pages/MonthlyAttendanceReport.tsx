@@ -62,7 +62,11 @@ export default function MonthlyAttendanceReport() {
             <select className={selectCls} value={period} onChange={(e) => setPeriod(e.target.value)} aria-label="الشهر">
               {recentMonths().map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
             </select>
-            {d && <span className="text-xs text-muted-foreground">{d.totals.employees} موظفاً</span>}
+            {d && (
+              <span className="text-xs text-muted-foreground">
+                {d.totals.employees} موظفاً{d.totals.exempt > 0 ? ` · ${d.totals.exempt} معفى من الحضور` : ""}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Button
@@ -164,7 +168,14 @@ export default function MonthlyAttendanceReport() {
                     <td className="p-2 text-center tabular-nums" dir="ltr">{Number(r.overtimeHours) > 0 ? h2(r.overtimeHours) : "—"}</td>
                     <td className="p-2 text-center tabular-nums" dir="ltr">{Number(r.restWorkedHours) > 0 ? h2(r.restWorkedHours) : "—"}</td>
                     <td className="p-2 text-end tabular-nums" dir="ltr">{iqd(r.hourlyRate)}</td>
-                    <td className="p-2 text-end tabular-nums font-bold" dir="ltr">{iqd(r.totalDue)}</td>
+                    <td className="p-2 text-end tabular-nums font-bold" dir="ltr">
+                      {iqd(r.totalDue)}
+                      {r.dueBasis !== "attendance" && (
+                        <div className="text-[10px] font-normal text-muted-foreground">
+                          {r.dueBasis === "exempt" ? "راتب ثابت (معفى)" : r.dueBasis === "hourly" ? "بالساعة" : "راتب ثابت"}
+                        </div>
+                      )}
+                    </td>
                     <td className="p-2 text-center tabular-nums">
                       {r.reviewDays > 0 ? <span className="text-[var(--sem-warn)] font-medium">{r.reviewDays}</span> : "—"}
                     </td>

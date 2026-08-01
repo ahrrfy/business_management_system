@@ -35,7 +35,8 @@ export interface ReportRow {
   reviewDays: number;
   basePay: string;
   totalDue: string;
-  dueBasis: "hourly" | "attendance" | "fixedSalary";
+  attendanceExempt: boolean;
+  dueBasis: "hourly" | "attendance" | "fixedSalary" | "exempt";
 }
 
 export interface MonthlyAttendanceReportInput {
@@ -75,9 +76,10 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
      * الحسابُ بالحضور يبقى معروضاً في أعمدة الساعات للمراجعة في الحالتين.
      */
     const hourly = st.employee.payType === "hourly";
+    const exempt = !!st.employee.attendanceExempt;
     const due = hourly
       ? Number(st.actualPaidAmount ?? 0)
-      : st.attendancePayEnabled
+      : st.attendancePayEnabled && !exempt
         ? Number(st.totals.basePay) + Number(st.totals.overtimePay)
         : Number(st.employee.salary ?? 0);
     rows.push({
@@ -103,7 +105,8 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       basePay: st.totals.basePay,
       totalDue: due.toFixed(2),
       /** أساس الرقم أعلاه — يُعرَض في الشاشة فلا يُظنّ حسابُ الحضور مصدرَه دائماً. */
-      dueBasis: hourly ? "hourly" : st.attendancePayEnabled ? "attendance" : "fixedSalary",
+      attendanceExempt: exempt,
+      dueBasis: hourly ? "hourly" : exempt ? "exempt" : st.attendancePayEnabled ? "attendance" : "fixedSalary",
     });
   }
 
@@ -120,7 +123,9 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       reviewDays: sum((r) => r.reviewDays),
       totalDue: sum((r) => Number(r.totalDue)).toFixed(2),
       /** موظفون بلا جدولٍ خاصّ — يقعون على احتياطيّ الكود، ويُنبَّه عليهم. */
-      withoutSchedule: rows.filter((r) => !r.hasOwnSchedule).length,
+      // المعفى لا يحتاج جدولاً ⇒ لا يُحسب في تنبيه «بلا جدول» (وإلّا صار التنبيه ضوضاء).
+      withoutSchedule: rows.filter((r) => !r.hasOwnSchedule && !r.attendanceExempt && r.payType !== "hourly").length,
+      exempt: rows.filter((r) => r.attendanceExempt).length,
     },
   };
 }
