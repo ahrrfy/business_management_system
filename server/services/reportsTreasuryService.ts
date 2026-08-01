@@ -37,6 +37,25 @@ export interface TreasuryMethodLine {
   label: string;
   in: string;
   out: string;
+  /** صافي الحركة للطريقة نفسها؛ موجب = تحصيل أكثر من الصرف. */
+  net: string;
+  /** النقد وحده هو ما يُفترض وجوده فعلياً في درج الكاشير. */
+  settlement: "DRAWER" | "NON_CASH";
+}
+
+export interface TreasuryShiftLine {
+  id: number;
+  branchName: string | null;
+  cashierName: string | null;
+  shiftType: string;
+  status: "OPEN" | "CLOSED";
+  openedAt: Date | string;
+  closedAt: Date | string | null;
+  openingBalance: string;
+  expectedCash: string | null;
+  countedCash: string | null;
+  variance: string | null;
+  reconciliationStatus: string | null;
 }
 
 export interface TreasurySummaryResult {
@@ -45,7 +64,14 @@ export interface TreasurySummaryResult {
   totalIn: string;
   totalOut: string;
   net: string;
-  shifts: { count: number; totalVariance: string; totalCounted: string };
+  shifts: {
+    count: number;
+    /** عدد الصفوف الظاهرة. يُحدّ التقرير التفصيلي لحماية صفحة التقرير. */
+    shownCount: number;
+    totalVariance: string;
+    totalCounted: string;
+    rows: TreasuryShiftLine[];
+  };
 }
 
 export async function getTreasurySummary(opts: {
@@ -60,7 +86,7 @@ export async function getTreasurySummary(opts: {
     totalIn: "0",
     totalOut: "0",
     net: "0",
-    shifts: { count: 0, totalVariance: "0", totalCounted: "0" },
+    shifts: { count: 0, shownCount: 0, totalVariance: "0", totalCounted: "0", rows: [] },
   };
   if (!db) return base;
 
@@ -99,6 +125,10 @@ export async function getTreasurySummary(opts: {
     label: PAY_METHOD_AR[key] ?? key,
     in: toDbMoney(v.in),
     out: toDbMoney(v.out),
+    net: toDbMoney(v.in.minus(v.out)),
+    // البطاقة والتحويل والمحفظة تحصيلات صحيحة، لكن لا تدخل درج الكاشير ولا يجوز
+    // مطالبة الموظف بها عند الإغلاق. نُظهر هذا صراحةً في التقرير.
+    settlement: key === "CASH" ? "DRAWER" : "NON_CASH",
   }));
 
   // (ب) فروقات الورديات في الفترة (حسب openedAt). variance/countedCash قد تكون NULL لوردية مفتوحة.
@@ -114,6 +144,46 @@ export async function getTreasurySummary(opts: {
     `),
   )[0] ?? { cnt: 0, totalVariance: "0", totalCounted: "0" };
 
+  // صفوف الورديات تجعل الرقم المجمّع قابلاً للمراجعة: من فتح الوردية، أي درجٍ أُغلق،
+  // المتوقَّع النقدي فقط، المعدود، والفرق. لا نستخدم مدفوعات البطاقة هنا إطلاقاً.
+  const shiftRows = rowsOf(
+    await db.execute(sql`
+      SELECT
+        s.id AS id,
+        b.name AS branchName,
+        u.name AS cashierName,
+        s.shiftType AS shiftType,
+        s.shiftStatus AS status,
+        s.openedAt AS openedAt,
+        s.closedAt AS closedAt,
+        CAST(s.openingBalance AS CHAR) AS openingBalance,
+        CAST(s.expectedCash AS CHAR) AS expectedCash,
+        CAST(s.countedCash AS CHAR) AS countedCash,
+        CAST(s.variance AS CHAR) AS variance,
+        s.reconciliationStatus AS reconciliationStatus
+      FROM shifts s
+      LEFT JOIN branches b ON b.id = s.branchId
+      LEFT JOIN users u ON u.id = s.userId
+      WHERE DATE(s.openedAt) >= ${opts.from} AND DATE(s.openedAt) <= ${opts.to}
+        ${opts.branchId ? sql`AND s.branchId = ${opts.branchId}` : sql``}
+      ORDER BY s.openedAt DESC, s.id DESC
+      LIMIT 500
+    `),
+  ).map((r): TreasuryShiftLine => ({
+    id: Number(r.id),
+    branchName: r.branchName == null ? null : String(r.branchName),
+    cashierName: r.cashierName == null ? null : String(r.cashierName),
+    shiftType: String(r.shiftType ?? "RETAIL"),
+    status: r.status === "CLOSED" ? "CLOSED" : "OPEN",
+    openedAt: r.openedAt,
+    closedAt: r.closedAt ?? null,
+    openingBalance: toDbMoney(money(r.openingBalance ?? 0)),
+    expectedCash: r.expectedCash == null ? null : toDbMoney(money(r.expectedCash)),
+    countedCash: r.countedCash == null ? null : toDbMoney(money(r.countedCash)),
+    variance: r.variance == null ? null : toDbMoney(money(r.variance)),
+    reconciliationStatus: r.reconciliationStatus == null ? null : String(r.reconciliationStatus),
+  }));
+
   return {
     period: { from: opts.from, to: opts.to },
     methods,
@@ -122,8 +192,10 @@ export async function getTreasurySummary(opts: {
     net: toDbMoney(totalIn.sub(totalOut)),
     shifts: {
       count: Number(sh.cnt ?? 0),
+      shownCount: shiftRows.length,
       totalVariance: toDbMoney(money(sh.totalVariance ?? 0)),
       totalCounted: toDbMoney(money(sh.totalCounted ?? 0)),
+      rows: shiftRows,
     },
   };
 }
