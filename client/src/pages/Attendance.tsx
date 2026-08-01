@@ -16,7 +16,7 @@ import { D } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { WEEK_DAYS } from "@shared/hr";
-import { Clock, Fingerprint, Moon, PenLine, TriangleAlert, Wallet } from "lucide-react";
+import { Clock, Fingerprint, Moon, PenLine, RefreshCw, TriangleAlert, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 
@@ -120,6 +120,20 @@ export default function Attendance() {
   const visHours = D(list.data?.totals.hours ?? 0);
   const visAmount = D(list.data?.totals.amount ?? 0);
 
+  /*
+   * صفوفٌ سعرُها المخزَّن يخالف ملفّ الموظف الآن — لقطةٌ كُتبت قبل ضبط جدوله أو قبل تعديل
+   * راتبه. الأعمدة تعرض المُشتقّ الحيّ (ما سيُدفع فعلاً)، والمجاميع من المخزَّن ⇒ لا بدّ من
+   * إعادة احتساب ليتطابقا — ولأنّ لقطة الساعيّ هي وعاء أجره في المسيّر فعلاً.
+   */
+  const staleCount = list.data?.staleCount ?? 0;
+  const recompute = trpc.attendance.recomputeRates.useMutation({
+    onSuccess: async (r) => {
+      notify.ok(r.updated > 0 ? `أُعيد احتساب ${r.updated} من ${r.scanned} صفّاً` : "كل الأسعار مطابقة لملفّات الموظفين");
+      await Promise.all([utils.attendance.list.invalidate(), utils.attendance.summary.invalidate()]);
+    },
+    onError: (e) => notify.err(e),
+  });
+
   const record = trpc.attendance.record.useMutation({
     onSuccess: async () => {
       notify.ok("تم تسجيل الحضور");
@@ -173,6 +187,28 @@ export default function Attendance() {
 
       <AttendanceSettingsCard />
 
+      {/* لقطاتٌ قديمة: السعر المخزَّن يخالف ملفّ الموظف الآن ⇒ المجاميع أعلاه من المخزَّن
+          والأعمدة من الملفّ. زرٌّ واحدٌ يُطابقهما — وهو ضروريّ للساعيّ (لقطتُه وعاءُ أجره). */}
+      {staleCount > 0 && (
+        <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs">
+          <TriangleAlert aria-hidden className="size-4 mt-0.5 shrink-0 text-[var(--sem-warn)]" />
+          <div className="flex-1 leading-relaxed">
+            <span className="font-medium text-[var(--sem-warn)]">{staleCount} صفّاً بسعرٍ مخزَّنٍ قديم</span> —
+            كُتب قبل ضبط جدول دوام الموظف أو قبل تعديل راتبه. الأعمدة تعرض سعر ملفّه الآن
+            (وهو ما سيُدفع)، والمخزَّن مشطوبٌ بجانبه. أعد الاحتساب ليتطابق السجلّ والمجاميع.
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={recompute.isPending}
+            onClick={() => recompute.mutate({ period, employeeId: employeeId ? Number(employeeId) : undefined })}
+          >
+            <RefreshCw aria-hidden className="size-3.5" />
+            {recompute.isPending ? "جارٍ…" : `إعادة احتساب ${monthLabel(period)}`}
+          </Button>
+        </div>
+      )}
+
       {/* سجل الحضور */}
       <Card>
         <CardHeader>
@@ -184,7 +220,7 @@ export default function Attendance() {
             filters={
               <>
                 <select className={selectCls} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} aria-label="الموظف">
-                  <option value="">كل الموظفين بالساعة</option>
+                  <option value="">كل الموظفين</option>
                   {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
                 </select>
                 <select className={selectCls} value={period} onChange={(e) => setPeriod(e.target.value)} aria-label="الشهر">
@@ -269,8 +305,26 @@ export default function Attendance() {
                       <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkIn ? new Date(r.checkIn).toISOString().slice(11, 16) : "—"}</td>
                       <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkOut ? new Date(r.checkOut).toISOString().slice(11, 16) : "—"}</td>
                       <td className="p-2.5 text-center tabular-nums">{Number(r.hours ?? 0)}</td>
-                      <td className={`p-2.5 text-right tabular-nums ${weekend ? "text-[var(--stock-low)] font-medium" : ""}`} dir="ltr">{iqd(r.hourlyRate)}</td>
-                      <td className="p-2.5 text-right tabular-nums font-semibold" dir="ltr">{iqd(r.amount)}</td>
+                      {/* السعر مُشتقٌّ من ملفّ الموظف الآن — والمخزَّن المخالف يُعرَض مشطوباً لا يُخفى. */}
+                      <td className={`p-2.5 text-right tabular-nums ${weekend ? "text-[var(--stock-low)] font-medium" : ""}`} dir="ltr">
+                        {iqd(r.hourlyRate)}
+                        {r.rateStale && (
+                          <span className="block text-[10px] text-[var(--sem-warn)] line-through" title="السعر المخزَّن قديم — أعد الاحتساب">
+                            {iqd(r.storedHourlyRate)}
+                          </span>
+                        )}
+                        {r.rateBasis === "none" && (
+                          <span className="block text-[10px] text-[var(--sem-warn)]" title="لا سعر ساعةٍ ولا راتب في ملفّ هذا الموظف">
+                            بلا سعر في الملف
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-2.5 text-right tabular-nums font-semibold" dir="ltr">
+                        {iqd(r.amount)}
+                        {r.rateStale && (
+                          <span className="block text-[10px] font-normal text-[var(--sem-warn)] line-through">{iqd(r.storedAmount)}</span>
+                        )}
+                      </td>
                       <td className="p-2.5 text-center">
                         {r.source === "fingerprint" ? (
                           <span className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Fingerprint className="size-3.5" /> بصمة</span>

@@ -6,13 +6,13 @@
  * القراءة hr/READ والكتابة hr/FULL (تُفرض في الموجّه).
  * ========================================================================== */
 import { and, desc, eq, getTableColumns, inArray, like, or, sql, type SQL } from "drizzle-orm";
-import { DAY_RATES_DEFAULT, WEEK_DAYS, fullEmployeeName } from "@shared/hr";
+import { WEEK_DAYS, fullEmployeeName } from "@shared/hr";
 import { attendance, employees, hrAttendanceSettings, payrollRuns } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { money, round2, toDbMoney } from "./money";
-import { standardMonthlyHours, type WorkSchedule } from "./hr/attendancePay";
+import { DEFAULT_WORK_SCHEDULE, standardMonthlyHours, type WorkSchedule } from "./hr/attendancePay";
 
 /** اسم اليوم العربي من تاريخ "YYYY-MM-DD" (الأحد=0). يُحسب بتقويم UTC ثابت من مكوّنات السلسلة
  *  حتى لا تنزلق التسمية (ومعها سعر الساعة) بمنطقة الخادم الزمنية — تكامل مالي مستقلّ عن TZ. */
@@ -27,20 +27,29 @@ function toDateStr(d: unknown): string {
   return String(d ?? "");
 }
 
+/** مصدر سعر الساعة المعروض — يُعرَض للمالك فلا يُظنّ رقمٌ مُشتقٌّ رقماً أدخله بنفسه. */
+export type RateBasis = "schedule" | "derived" | "fallbackSchedule" | "dayRates" | "none";
+
 /**
- * سعر ساعة الموظف لتاريخ معيّن — **من جدول دوامه الأسبوعيّ أوّلاً** (0139/0140).
+ * سعر ساعة الموظف لتاريخ معيّن — **من ملفّه هو، لا من ثابتٍ في الكود**.
  *
- * كان يقرأ من `dayRates` القديم ثمّ من `DAY_RATES_DEFAULT` الثابت في الكود، فظهر في سجلّ
- * الحضور سعرٌ (٦٠٠٠ للسبت مثلاً) **لا علاقة له بما يُدخله المالك** — مصدرا حقيقةٍ متوازيان:
- * السجلّ يكتب بالقديم والمسيّر يحسب بالجديد. الترتيب الآن:
- *   ١) سعر اليوم الصريح في `workSchedule` (هو الأصل).
- *   ٢) المُشتقّ من الراتب ÷ ساعات الشهر المعياريّ (٣٠ يوماً) — للشهريّ.
- *   ٣) `dayRates` القديم — للساعيّ الذي لم يُضبط جدولُه بعد (توافقٌ خلفيّ).
+ * ⚠️ الفخّ الذي أوقع سجلّ الحضور في أرقامٍ وهمية (١/٨): كانت آخرُ درجةٍ في السلّم
+ * `DAY_RATES_DEFAULT` — جدولٌ **مكتوبٌ في المصدر** (٥٠٠٠/٥٥٠٠/٧٥٠٠/٦٠٠٠) لم يُدخله أحد.
+ * فموظفٌ شهريٌّ راتبه ٤٠٠٬٠٠٠ وسعرُ ساعته الحقيقيّ ١٬٩٠٥ ظهر بـ**٦٬٠٠٠/ساعة** و٤٢٬٠٠٠
+ * أجرَ يومٍ لن يُصرف أبداً. وهو يخالف قاعدة المالك: «اجعل كلّ شيء أنا أضعه وأختاره».
+ *
+ * السلّم الآن — كلُّ درجةٍ من بيانات الموظف، وآخرُها **صفرٌ ظاهرٌ** لا رقمٌ مُختلَق:
+ *   ١) الساعيّ: سعرُ اليوم في `dayRates` (نموذجُه المرئيّ) — وإلا صفرٌ موسوم.
+ *   ٢) الشهريّ: سعر اليوم الصريح في `workSchedule` (هو الأصل بقرار المالك ٣١/٧).
+ *   ٣) الشهريّ: الراتب ÷ ساعات الشهر المعياريّ (٣٠ يوماً) وفق جدوله.
+ *   ٤) الشهريّ بلا جدول: نفس الاشتقاق على الجدول الاحتياطيّ — **مطابقةً للمسيّر حرفياً**
+ *      (`payrollService` يستعمل `DEFAULT_WORK_SCHEDULE` نفسه) فلا يعرض السجلّ رقماً غيره.
+ *   ٥) لا شيء ⇒ صفرٌ بأساس `none` تُظهره الشاشة تحذيراً.
  */
-function rateForDay(
-  emp: { dayRates?: unknown; workSchedule?: unknown; salary?: unknown; payType?: string },
+export function rateForDayDetailed(
+  emp: { dayRates?: unknown; workSchedule?: unknown; salary?: unknown; payType?: string | null },
   dateStr: string,
-): number {
+): { rate: number; basis: RateBasis } {
   const day = arabicDayName(dateStr);
   /*
    * أسبقيةٌ بحسب نموذج الأجر (Codex P1): الموظف **الساعيّ** يُدخل أسعاره في `dayRates`
@@ -48,23 +57,37 @@ function rateForDay(
    * قديماً من إعدادٍ شهريٍّ سابق رغم تحديثه الحقلَ المرئيّ. الجدول يتقدّم للشهريّ فقط.
    */
   const rates = (emp.dayRates && typeof emp.dayRates === "object" ? emp.dayRates : {}) as Record<string, number>;
+  const fromDayRates = rates[day];
   if (emp.payType === "hourly") {
-    const r = rates[day];
-    if (typeof r === "number" && Number.isFinite(r) && r >= 0) return r;
-    return DAY_RATES_DEFAULT[day] ?? 0;
+    if (typeof fromDayRates === "number" && Number.isFinite(fromDayRates) && fromDayRates > 0) {
+      return { rate: fromDayRates, basis: "dayRates" };
+    }
+    return { rate: 0, basis: "none" };
   }
   const sched = (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as WorkSchedule | null;
+  const salary = Number(emp.salary ?? 0);
+  const monthStart = `${dateStr.slice(0, 7)}-01`;
   if (sched) {
     const explicit = Number((sched[day] as { rate?: number } | undefined)?.rate ?? NaN);
-    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+    if (Number.isFinite(explicit) && explicit > 0) return { rate: explicit, basis: "schedule" };
     // مُشتقّ: الراتب ÷ ساعات ٣٠ يوماً وفق جدوله (نفس مقام المسيّر ⇒ لا انحراف).
-    const salary = Number(emp.salary ?? 0);
-    const std = standardMonthlyHours(sched, `${dateStr.slice(0, 7)}-01`);
-    if (salary > 0 && std.gt(0)) return salary / std.toNumber();
+    const std = standardMonthlyHours(sched, monthStart);
+    if (salary > 0 && std.gt(0)) return { rate: salary / std.toNumber(), basis: "derived" };
+  } else if (salary > 0) {
+    const std = standardMonthlyHours(DEFAULT_WORK_SCHEDULE, monthStart);
+    if (std.gt(0)) return { rate: salary / std.toNumber(), basis: "fallbackSchedule" };
   }
-  const r = rates[day];
-  if (typeof r === "number" && Number.isFinite(r) && r >= 0) return r;
-  return DAY_RATES_DEFAULT[day] ?? 0;
+  if (typeof fromDayRates === "number" && Number.isFinite(fromDayRates) && fromDayRates > 0) {
+    return { rate: fromDayRates, basis: "dayRates" };
+  }
+  return { rate: 0, basis: "none" };
+}
+
+function rateForDay(
+  emp: { dayRates?: unknown; workSchedule?: unknown; salary?: unknown; payType?: string | null },
+  dateStr: string,
+): number {
+  return rateForDayDetailed(emp, dateStr).rate;
 }
 
 export interface AttendanceFilters {
@@ -132,6 +155,11 @@ export async function listAttendance(filters?: AttendanceFilters & { limit?: num
       lastName: employees.lastName,
       colorTag: employees.colorTag,
       photoUrl: employees.photoUrl,
+      // بيانات الأجر الحيّة — لاشتقاق سعر اليوم من ملفّ الموظف **الآن** لا من لقطةٍ قديمة.
+      payType: employees.payType,
+      salary: employees.salary,
+      workSchedule: employees.workSchedule,
+      dayRates: employees.dayRates,
     })
     .from(attendance)
     .leftJoin(employees, eq(attendance.employeeId, employees.id))
@@ -154,19 +182,105 @@ export async function listAttendance(filters?: AttendanceFilters & { limit?: num
       .where(where)
   )[0];
 
+  /*
+   * السعر والأجر **يُشتقّان حيّاً من ملفّ الموظف** لا من اللقطة المخزَّنة (١/٨).
+   *
+   * اللقطة تُكتب لحظةَ طيّ البصمة أو الإدخال — أي **قبل** أن يضبط المالك جدولَ الموظف
+   * غالباً — ولا يُعيد أحدٌ اشتقاقها بعدُ: عدَّل بطاقةَ الموظف كما شئتَ، يبقى الصفّ على
+   * رقمه القديم إلى الأبد. وللشهريّ اللقطةُ **ليست ما يُدفع أصلاً**: المسيّر يعيد الحساب
+   * من `computeAttendancePay`، فكان العمود يعرض رقماً لن يُصرف ويناقض كشفَ الموظف نفسه.
+   * نُبقي `storedHourlyRate/storedAmount` ونَسِم المختلف بـ`rateStale` ليُعاد احتسابه —
+   * فاللقطة تبقى أساسَ صرف **الساعيّ** في المسيّر، ولا يجوز أن تنحرف صامتةً.
+   */
+  const mapped = rows.map((r) => {
+    const dateStr = toDateStr(r.attendanceDate);
+    const { rate, basis } = rateForDayDetailed(r, dateStr);
+    const hours = money(r.hours ?? 0);
+    const liveRate = round2(money(rate));
+    const liveAmount = round2(hours.times(liveRate)).toDecimalPlaces(0);
+    const stored = money(r.hourlyRate ?? 0);
+    return {
+      ...r,
+      attendanceDate: dateStr,
+      employeeName: fullEmployeeName(r),
+      dayName: dateStr ? arabicDayName(dateStr) : "",
+      storedHourlyRate: toDbMoney(stored),
+      storedAmount: toDbMoney(money(r.amount ?? 0)),
+      hourlyRate: toDbMoney(liveRate),
+      amount: toDbMoney(liveAmount),
+      rateBasis: basis,
+      rateStale: !stored.eq(liveRate),
+    };
+  });
+
   return {
-    rows: rows.map((r) => {
-      const dateStr = toDateStr(r.attendanceDate);
-      return {
-        ...r,
-        attendanceDate: dateStr,
-        employeeName: fullEmployeeName(r),
-        dayName: dateStr ? arabicDayName(dateStr) : "",
-      };
-    }),
+    rows: mapped,
     total: Number(agg?.count ?? 0),
+    // المجاميع من المخزَّن (SUM على كل المطابق لا الصفحة). قد تختلف عن مجموع الأعمدة
+    // المعروضة إن كانت لقطاتٌ قديمة ⇒ الشاشة تُنبّه وتعرض زرّ إعادة الاحتساب.
     totals: { hours: String(agg?.hours ?? "0"), amount: String(agg?.amount ?? "0") },
+    staleCount: mapped.filter((r) => r.rateStale).length,
   };
+}
+
+/**
+ * إعادة احتساب أسعار الساعة وأجور الأيام لشهرٍ كامل من **ملفّات الموظفين الحالية**.
+ *
+ * تُصلح اللقطات القديمة (سعرٌ كُتب قبل ضبط جدول الموظف، أو بعد تعديل راتبه)، وهي
+ * ضروريةٌ لا تجميلية: لقطة **الساعيّ** هي وعاءُ أجره في المسيّر فعلاً.
+ *
+ * محروسة: شهرٌ مسيّرُه معتمد/مدفوع لا يُمَسّ (نفس حارس `recordAttendance` — تغييرُ الأساس
+ * بعد الاعتماد يُفسد مسيّراً مُلتزَماً مالياً). وأيام ABSENT/LEAVE تبقى بأجرٍ صفريّ.
+ */
+export async function recomputeMonthRates(input: { period: string; employeeId?: number }) {
+  const period = String(input.period).slice(0, 7);
+  return withTx(async (tx) => {
+    const [lockedRun] = await tx
+      .select({ id: payrollRuns.id, status: payrollRuns.status })
+      .from(payrollRuns)
+      .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])))
+      .limit(1);
+    if (lockedRun) {
+      throw new Error(
+        `لا يمكن إعادة الاحتساب: مسيّر رواتب شهر ${period} ${lockedRun.status === "paid" ? "مدفوع" : "معتمَد"} — ألغِ اعتماد المسيّر أولاً`,
+      );
+    }
+
+    const conds: SQL[] = [like(attendance.attendanceDate, `${period}%`)];
+    if (input.employeeId) conds.push(eq(attendance.employeeId, input.employeeId));
+    const rows = await tx
+      .select({
+        id: attendance.id,
+        attendanceDate: attendance.attendanceDate,
+        hours: attendance.hours,
+        hourlyRate: attendance.hourlyRate,
+        amount: attendance.amount,
+        status: attendance.status,
+        payType: employees.payType,
+        salary: employees.salary,
+        workSchedule: employees.workSchedule,
+        dayRates: employees.dayRates,
+      })
+      .from(attendance)
+      .leftJoin(employees, eq(attendance.employeeId, employees.id))
+      .where(and(...conds));
+
+    let updated = 0;
+    for (const r of rows) {
+      const dateStr = toDateStr(r.attendanceDate);
+      const rate = round2(money(rateForDay(r, dateStr)));
+      // ABSENT/LEAVE بلا أجرٍ مهما كان السعر (نفس قاعدة recordAttendance).
+      const paid = r.status === "PRESENT" || r.status === "LATE";
+      const amount = paid ? round2(money(r.hours ?? 0).times(rate)).toDecimalPlaces(0) : money(0);
+      if (money(r.hourlyRate ?? 0).eq(rate) && money(r.amount ?? 0).eq(amount)) continue;
+      await tx
+        .update(attendance)
+        .set({ hourlyRate: toDbMoney(rate), amount: toDbMoney(amount) })
+        .where(eq(attendance.id, r.id));
+      updated += 1;
+    }
+    return { period, scanned: rows.length, updated };
+  });
 }
 
 /**
@@ -199,7 +313,14 @@ export async function attendanceSummary(filters?: AttendanceFilters) {
   };
 }
 
-/** خيارات نموذج التسجيل اليدوي: الموظفون بالساعة على رأس العمل فقط. */
+/**
+ * خيارات نموذج التسجيل اليدوي وفلتر السجلّ: **كل** من على رأس العمل.
+ *
+ * كانت مقصورةً على الساعيّ من عهدٍ كان الحضور فيه يخصّه وحده. بعد «الأجر بالحضور» (0138+)
+ * صار حضورُ **الشهريّ** أساسَ راتبه أيضاً — وفي منشأةٍ كلُّ موظفيها شهريّون كانت القائمة
+ * تظهر **فارغة**: لا إدخال يدويّ ليومٍ فات، ولا فلترة بموظف. المُعفى يبقى مُدرَجاً (قد
+ * يُسجَّل حضورُه للاطّلاع) وأجرُه ثابتٌ لا يتأثّر.
+ */
 export async function formOptions() {
   const db = requireDb();
   const rows = await db
@@ -209,11 +330,12 @@ export async function formOptions() {
       fatherName: employees.fatherName,
       grandfatherName: employees.grandfatherName,
       lastName: employees.lastName,
+      payType: employees.payType,
     })
     .from(employees)
-    .where(and(eq(employees.employmentStatus, "active"), eq(employees.payType, "hourly")))
+    .where(eq(employees.employmentStatus, "active"))
     .orderBy(employees.firstName);
-  return rows.map((e) => ({ id: e.id, name: fullEmployeeName(e) }));
+  return rows.map((e) => ({ id: e.id, name: fullEmployeeName(e), payType: e.payType }));
 }
 
 /* ─────────────────── إعدادات احتساب الحضور (صفّ مفرد) ─────────────────── */
