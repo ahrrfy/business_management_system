@@ -35,6 +35,7 @@ export interface ReportRow {
   reviewDays: number;
   basePay: string;
   totalDue: string;
+  dueBasis: "hourly" | "attendance" | "fixedSalary";
 }
 
 export interface MonthlyAttendanceReportInput {
@@ -65,7 +66,20 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
   for (const e of eligible) {
     const st = await getEmployeeStatement({ employeeId: Number(e.id), period: input.period });
     if (!st) continue;
-    const due = Number(st.totals.basePay) + Number(st.totals.overtimePay);
+    /*
+     * المستحقّ يتبع **نموذج أجر الموظف** لا حسابَ الحضور دائماً (Codex P1):
+     *   • الساعيّ: أجرُه مجموع `attendance.amount` (ما يدفعه `generatePayroll` فعلاً)،
+     *     وراتبُه الشهريّ غالباً فارغ فكان الحساب يُظهره صفراً.
+     *   • الشهريّ والأجر بالحضور **معطَّل**: المسيّر يدفع الراتب + المخصّصات بالتناسب،
+     *     لا حسابَ الساعات — فعرضُه هنا يُوهم بمستحقٍّ غير الذي سيُصرف.
+     * الحسابُ بالحضور يبقى معروضاً في أعمدة الساعات للمراجعة في الحالتين.
+     */
+    const hourly = st.employee.payType === "hourly";
+    const due = hourly
+      ? Number(st.actualPaidAmount ?? 0)
+      : st.attendancePayEnabled
+        ? Number(st.totals.basePay) + Number(st.totals.overtimePay)
+        : Number(st.employee.salary ?? 0);
     rows.push({
       employeeId: st.employee.id,
       employeeName: st.employee.name,
@@ -88,6 +102,8 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       reviewDays: st.totals.reviewDays,
       basePay: st.totals.basePay,
       totalDue: due.toFixed(2),
+      /** أساس الرقم أعلاه — يُعرَض في الشاشة فلا يُظنّ حسابُ الحضور مصدرَه دائماً. */
+      dueBasis: hourly ? "hourly" : st.attendancePayEnabled ? "attendance" : "fixedSalary",
     });
   }
 

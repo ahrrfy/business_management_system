@@ -68,9 +68,29 @@ export function computeDayHours(
   /** ساعات اليوم المقرَّرة في جدول الموظف — تُفعّل حارس «أقلّ من النصف». */
   scheduledHours?: number,
 ): DayHoursResult {
+  /*
+   * اضطرابُ ترتيبٍ في الوارد (Codex P2): الفرز يُخفيه، فيُكتشف **قبله**. مصدرُه قفزةُ
+   * ساعةٍ في الجهاز أو دفعةٌ مختلطة — والفرز يحوّل الخروج المبكّر إلى «دخول» ظاهريّ
+   * فيُسجَّل وقتٌ مدفوع بلا مراجعة. نوسمه ولا نمنع.
+   */
+  const outOfOrder = dayPunches.some((t, i) => i > 0 && t < dayPunches[i - 1]);
   const times = [...dayPunches].sort();
 
-  const seq = times;
+  /*
+   * إزالة المكرّر **قبل** المزاوجة (Codex P1): بصمتان بثوانٍ (مسحٌ مزدوج) كانتا تُزاوَجان
+   * معاً ثم تُهمَلان، فينكسر تكافؤ التسلسل ويصير الخروجُ الحقيقيّ معلَّقاً ⇒ اليوم بصفر
+   * ساعات بدل تسع. الحلّ أن تُطرح المكرّرة من التسلسل أصلاً فلا تُغيّر الأزواج.
+   */
+  const seq: string[] = [];
+  let tinySpans = 0;
+  for (const t of times) {
+    const prev = seq[seq.length - 1];
+    if (prev && wallMs(t) - wallMs(prev) < MIN_SPAN_MINUTES * 60_000) {
+      tinySpans += 1;
+      continue;
+    }
+    seq.push(t);
+  }
 
   if (seq.length === 0) {
     return { hours: "0.00", checkIn: null, checkOut: null, needsReview: false, reviewReason: null, usedCount: 0 };
@@ -79,17 +99,8 @@ export function computeDayHours(
   // (ج) المزاوجة: (دخول←خروج) لكل زوج متتالٍ، وتُجمع الفترات ⇒ الاستراحات مطروحة ضمناً.
   let totalMs = 0;
   let lastPairedOut: string | null = null;
-  let badOrder = false; // خروجٌ قبل دخول — كان يُتجاهَل بصمت
-  let tinySpans = 0; // بصماتٌ مكرّرة بثوانٍ
   for (let i = 0; i + 1 < seq.length; i += 2) {
-    const span = wallMs(seq[i + 1]) - wallMs(seq[i]);
-    if (span < 0) {
-      badOrder = true;
-    } else if (span < MIN_SPAN_MINUTES * 60_000) {
-      tinySpans += 1; // تُهمَل ولا تدخل الأجر
-    } else {
-      totalMs += span;
-    }
+    totalMs += wallMs(seq[i + 1]) - wallMs(seq[i]); // موجبٌ حتماً (التسلسل مرتَّب ومنقّى)
     lastPairedOut = seq[i + 1];
   }
 
@@ -108,7 +119,7 @@ export function computeDayHours(
   if (implausible) {
     reasons.push(`ساعات غير معقولة (${round2Str(rawHours)} ساعة) — قُصّت عند سقف ${cap}؛ راجع أوقات البصمات`);
   }
-  if (badOrder) reasons.push("ترتيب أوقات خاطئ — خروجٌ قبل دخول");
+  if (outOfOrder) reasons.push("بصمات وصلت بترتيبٍ مضطرب — تحقّق من ساعة الجهاز");
   if (tinySpans > 0) reasons.push(`${tinySpans} بصمة مكرّرة بأقلّ من ${MIN_SPAN_MINUTES} دقائق — أُهملت`);
   // حدّ أدنى: يومٌ أقلّ من نصف المقرَّر غالباً بصمةٌ ناقصة لا دوامٌ قصير.
   if (scheduledHours != null && scheduledHours > 0 && hours > 0 && hours < scheduledHours / 2) {

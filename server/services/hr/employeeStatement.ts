@@ -90,6 +90,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     .select({
       date: attendance.attendanceDate,
       hours: attendance.hours,
+      amount: attendance.amount,
       checkIn: attendance.checkIn,
       checkOut: attendance.checkOut,
       status: attendance.status,
@@ -106,12 +107,17 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       ),
     );
 
+  // مجموع ما سُجّل فعلياً في الحضور — أساس أجر الموظف الساعيّ في المسيّر.
+  let actualPaid = 0;
   const attendedHoursByDate = new Map<string, ReturnType<typeof money>>();
   const meta = new Map<string, (typeof attRows)[number]>();
   for (const r of attRows) {
     const d = String(r.date).slice(0, 10);
     meta.set(d, r);
-    if (r.status === "PRESENT" || r.status === "LATE") attendedHoursByDate.set(d, money(r.hours ?? 0));
+    if (r.status === "PRESENT" || r.status === "LATE") {
+      attendedHoursByDate.set(d, money(r.hours ?? 0));
+      actualPaid += Number(r.amount ?? 0);
+    }
   }
 
   const leaves = await db
@@ -171,6 +177,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     schedule,
     attendancePayEnabled: !!settings?.attendancePayEnabled,
     hasOwnSchedule,
+    /** مجموع `attendance.amount` — ما يدفعه المسيّر للساعيّ فعلاً. */
+    actualPaidAmount: actualPaid.toFixed(2),
     totals: {
       scheduledHours: pay.scheduledHours,
       standardHours: pay.standardHours,

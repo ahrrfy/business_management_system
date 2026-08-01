@@ -32,6 +32,7 @@ const STATE_LABEL: Record<string, string> = {
   paidLeave: "إجازة مدفوعة",
   unpaidLeave: "إجازة بلا راتب",
   beforeStart: "قبل السريان",
+  restWorked: "عمل يوم راحة",
 };
 
 /** آخر ١٢ شهراً كخيارات. */

@@ -42,6 +42,17 @@ function rateForDay(
   dateStr: string,
 ): number {
   const day = arabicDayName(dateStr);
+  /*
+   * أسبقيةٌ بحسب نموذج الأجر (Codex P1): الموظف **الساعيّ** يُدخل أسعاره في `dayRates`
+   * من نموذجه، وهو مصدرُ الحقيقة الظاهر له — فتقديمُ `workSchedule` عليه قد يُطبّق سعراً
+   * قديماً من إعدادٍ شهريٍّ سابق رغم تحديثه الحقلَ المرئيّ. الجدول يتقدّم للشهريّ فقط.
+   */
+  const rates = (emp.dayRates && typeof emp.dayRates === "object" ? emp.dayRates : {}) as Record<string, number>;
+  if (emp.payType === "hourly") {
+    const r = rates[day];
+    if (typeof r === "number" && Number.isFinite(r) && r >= 0) return r;
+    return DAY_RATES_DEFAULT[day] ?? 0;
+  }
   const sched = (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as WorkSchedule | null;
   if (sched) {
     const explicit = Number((sched[day] as { rate?: number } | undefined)?.rate ?? NaN);
@@ -51,7 +62,6 @@ function rateForDay(
     const std = standardMonthlyHours(sched, `${dateStr.slice(0, 7)}-01`);
     if (salary > 0 && std.gt(0)) return salary / std.toNumber();
   }
-  const rates = (emp.dayRates && typeof emp.dayRates === "object" ? emp.dayRates : {}) as Record<string, number>;
   const r = rates[day];
   if (typeof r === "number" && Number.isFinite(r) && r >= 0) return r;
   return DAY_RATES_DEFAULT[day] ?? 0;

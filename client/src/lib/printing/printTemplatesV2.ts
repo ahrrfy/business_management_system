@@ -371,9 +371,18 @@ export interface SalesReportV2Data {
     invoiceNumber: string;
     date: string;
     customerName: string;
+    branchName?: string;
+    salespersonName?: string;
+    shiftId?: number | null;
+    paymentMethod?: string;
+    subtotal?: string | number;
+    discount?: string | number;
+    tax?: string | number;
     total: string | number;
     paid: string | number;
+    returned?: string | number;
     remaining: string | number;
+    cost?: string | number;
     /** حالة كنصّ عربي: «مسدَّدة»، «جزئية»، «آجلة». */
     status: string;
     /** لون شارة الحالة (`#0D6B52`/`#92400E`/`#8A1F11`). */
@@ -408,37 +417,41 @@ export function printSalesReportV2(d: SalesReportV2Data): boolean {
   </div>`;
 
   const cols: DocTableCol[] = [
-    { key: 'num', label: 'رقم الفاتورة', width: 98 },
-    { key: 'date', label: 'التاريخ', width: 66 },
-    { key: 'customer', label: 'العميل' },
-    { key: 'total', label: 'الإجمالي', width: 82 },
-    { key: 'paid', label: 'المدفوع', width: 82 },
-    { key: 'remaining', label: 'المتبقّي', width: 82, color: B.alert },
-    { key: 'status', label: 'الحالة', width: 60 },
+    { key: 'num', label: 'رقم الفاتورة', width: 108, size: 9.25 },
+    { key: 'date', label: 'التاريخ', width: 68, size: 9.25 },
+    { key: 'customer', label: 'العميل', width: 105, size: 9.25 },
+    { key: 'branch', label: 'الفرع', width: 72, size: 9.25 },
+    { key: 'salesperson', label: 'الكاشير / البائع', width: 88, size: 9.25 },
+    { key: 'shift', label: 'الوردية', width: 44, size: 9.25 },
+    { key: 'payment', label: 'الدفع', width: 58, size: 9.25 },
+    { key: 'total', label: 'الإجمالي', width: 70, size: 9.25 },
+    { key: 'returned', label: 'المرتجع', width: 62, color: B.alert, size: 9.25 },
+    { key: 'paid', label: 'المدفوع', width: 70, size: 9.25 },
+    { key: 'remaining', label: 'المتبقّي', width: 66, color: B.alert, size: 9.25 },
+    ...(d.rows.some((r) => r.cost !== undefined) ? [{ key: 'cost', label: 'التكلفة', width: 66, size: 9.25 } satisfies DocTableCol] : []),
+    { key: 'status', label: 'الحالة', width: 58, size: 9.25 },
   ];
   const rows = d.rows.map((r) => ({
     num: r.invoiceNumber,
     date: r.date,
     customer: r.customerName,
+    branch: r.branchName ?? '—',
+    salesperson: r.salespersonName ?? '—',
+    shift: r.shiftId == null ? '—' : String(r.shiftId),
+    payment: r.paymentMethod ?? '—',
     total: fmtIQD(r.total),
+    returned: fmtIQD(r.returned ?? 0),
     paid: fmtIQD(r.paid),
     remaining: fmtIQD(r.remaining),
+    cost: r.cost === undefined ? '' : fmtIQD(r.cost),
     status: r.status,
   }));
 
   // نبني الجدول ثم نُعدّل خلايا الحالة يدوياً لأنها ملوّنة حسب الحالة
   // (docTableV2 لا يدعم لوناً مختلفاً لكل صف على نفس العمود)
-  let table = docTableV2(cols, rows, {
-    indexWidth: 26,
-    totalsRow: {
-      label: 'الإجمالي',
-      cells: [
-        { key: 'total', value: fmtIQD(d.totalSum) },
-        { key: 'paid', value: fmtIQD(d.paidSum), color: B.green },
-        { key: 'remaining', value: fmtIQD(d.unpaidSum), color: B.alert },
-      ],
-    },
-  });
+  // الملخّص المالي الكامل ظاهر في البطاقات أعلى التقرير. لا نكرر صف إجماليات داخل
+  // الجدول الغني لأن أعمدة المرتجع/التكلفة تقع بين حقول المال وقد تسبب محاذاة مضللة.
+  let table = docTableV2(cols, rows, { indexWidth: 24 });
 
   // استبدال لون الحالة سطراً-بسطر بعد التوليد (الشرح: لكل صف tbody، خليّة الحالة الأخيرة تحمل status).
   d.rows.forEach((r, i) => {
@@ -462,7 +475,7 @@ export function printSalesReportV2(d: SalesReportV2Data): boolean {
   const note = `<div style="margin-top:10px;font-size:9.75px;color:${B.textFaint}">مُولَّد آلياً من مركز التقارير · لا يتطلّب توقيعاً — للاستخدام الداخلي</div>`;
 
   const body = `${pageBodyOpen()}${header}${summary}${table}${note}${pageBodyClose()}${pageFooter(d.settings, { rightText: 'صفحة 1 من 1' })}`;
-  return openPrintWindow(wrapA4Doc('تقرير المبيعات', body));
+  return openPrintWindow(wrapA4Doc('تقرير المبيعات', body, { orientation: 'landscape' }));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

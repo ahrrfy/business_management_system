@@ -127,5 +127,5 @@ export function printMonthlyAttendance(d: MonthlyAttendanceData): boolean {
     d.settings,
     { rightText: `REF ATT-M/${d.period}` },
   )}`;
-  return openPrintWindow(wrapA4Doc(`تقرير الحضور الشهريّ — ${d.period}`, body, { landscape: true }));
+  return openPrintWindow(wrapA4Doc(`تقرير الحضور الشهريّ — ${d.period}`, body, { orientation: "landscape" }));
 }
