@@ -453,6 +453,9 @@ export async function generatePayroll(period: string, actor: Actor) {
           paidLeaveDates: expandSpans(paidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
           unpaidLeaveDates: expandSpans(unpaidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
           payFrom,
+          // حدّا الشهر — شرط منح تعويض الشهر القصير لمن عمله كاملاً.
+          monthStart: periodStart,
+          monthEnd: periodEndYmd,
         });
         attendancePayByEmp.set(Number(e.id), pay);
         gross = round2(money(pay.basePay).plus(allowances));

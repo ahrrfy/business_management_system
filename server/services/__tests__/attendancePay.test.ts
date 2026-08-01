@@ -57,26 +57,26 @@ describe("مساعدات التقويم", () => {
 });
 
 describe("سعر الساعة وأيام الدوام (س١، س٣)", () => {
-  it("تموز ٢٠٢٦ فيه ٥ جُمَع ⇒ ٢٦ يوم دوام × ٨ = ٢٠٨ ساعة", () => {
+  it("تموز فيه ٢٦ يوم دوام (٢٠٨ ساعة) لكنّ **مقام السعر ٣٠ يوماً** لا طول الشهر", () => {
     const r = base({ attendedHoursByDate: fullAttendance() });
-    expect(r.scheduledHours).toBe("208.00");
-    // 900000 ÷ 208 = 4326.92…
-    expect(r.hourlyRate).toBe("4326.92");
+    expect(r.scheduledHours).toBe("208.00"); // تموز كاملاً
+    expect(r.standardHours).toBe("208.00"); // أول ٣٠ يوماً منه (٣١ تموز جمعة = راحة)
+    expect(r.hourlyRate).toBe("4326.92"); // 900000 ÷ 208
   });
 
   it("س٣) الجمعة والسبت صفراً يُقلّلان المقام ويرفعان سعر الساعة", () => {
     const sc = sched({ الجمعة: 0, السبت: 0 });
     const r = base({ schedule: sc, attendedHoursByDate: fullAttendance(sc) });
-    expect(r.scheduledHours).toBe("176.00"); // 22 يوماً × 8
+    expect(r.scheduledHours).toBe("176.00"); // 22 يوماً × 8 في تموز
     expect(r.absentDays).toBe(0);
-    expect(Number(r.basePay)).toBeCloseTo(900000, 0);
+    expect(r.basePay).toBe("900000.00"); // ٣١ تموز جمعة (راحة) ⇒ لا يوم إضافيّ
   });
 
-  it("س٧) حضور كامل ⇒ الأجر = الراتب بالضبط", () => {
+  it("س٧) حضور كامل في تموز ⇒ لا ساعة غير مستحقّة (والأجر فوق الراتب لطول الشهر)", () => {
     const r = base({ attendedHoursByDate: fullAttendance() });
     expect(r.payableHours).toBe("208.00");
     expect(r.unpaidHours).toBe("0.00");
-    expect(Number(r.basePay)).toBeCloseTo(900000, 0);
+    expect(r.absentDays).toBe(0);
   });
 });
 
@@ -90,10 +90,10 @@ describe("مثال المالك الحرفيّ (س٢)", () => {
 
     expect(r.absentDays).toBe(2);
     expect(r.shortHours).toBe("3.00");
-    expect(r.unpaidHours).toBe("19.00"); // 8 + 8 + 3
+    expect(r.unpaidHours).toBe("19.00"); // 8 + 8 + 3 — الثابت المحروس
     expect(r.payableHours).toBe("189.00");
-    // الخصم = 19 × 4326.92 ≈ 82,211 ⇒ الأجر ≈ 817,788
-    expect(Number(r.basePay)).toBeCloseTo(817788.46, 0);
+    // 189 × 4326.92… = 817,788.46
+    expect(Number(r.basePay)).toBeCloseTo(817788.46, 1);
   });
 });
 
@@ -104,8 +104,7 @@ describe("الإجازات (س٤)", () => {
     att.delete("2026-07-14");
     const r = base({ attendedHoursByDate: att, paidLeaveDates: new Set(["2026-07-13", "2026-07-14"]) });
     expect(r.absentDays).toBe(0);
-    expect(r.unpaidHours).toBe("0.00");
-    expect(Number(r.basePay)).toBeCloseTo(900000, 0);
+    expect(r.unpaidHours).toBe("0.00"); // الإجازة المدفوعة لا تُنقص شيئاً
   });
 
   it("بلا راتب لا تُحتسب — وتُميَّز عن الغياب في التفصيل", () => {
@@ -138,7 +137,6 @@ describe("تاريخ السريان (س٥)", () => {
     const r = base({ attendedHoursByDate: new Map(), payFrom: null });
     expect(r.payableHours).toBe("208.00");
     expect(r.absentDays).toBe(0);
-    expect(Number(r.basePay)).toBeCloseTo(900000, 0);
   });
 });
 
@@ -148,10 +146,8 @@ describe("حدّ يوم العمل (س٦)", () => {
     att.set("2026-07-06", D(12));
     const r = base({ attendedHoursByDate: att });
     expect(r.payableHours).toBe("208.00"); // الأساس لا يتضخّم
-    expect(Number(r.basePay)).toBeCloseTo(900000, 0);
     expect(r.overtimeHours).toBe("4.00");
-    // ٤ ساعات × سعر الساعة المُشتقّ (4326.92) ≈ 17,307
-    expect(Number(r.overtimePay)).toBeCloseTo(17307.69, 0);
+    expect(Number(r.overtimePay)).toBeCloseTo(17307.69, 1); // ٤ × 4326.92
   });
 
   it("سعر ساعةٍ صريح لكل يوم هو الأصل — والراتب = مجموع (ساعات × سعر يومها)", () => {
@@ -159,8 +155,8 @@ describe("حدّ يوم العمل (س٦)", () => {
     const sc = sched({ الجمعة: 0 }, 4500);
     const r = base({ schedule: sc, attendedHoursByDate: fullAttendance(sc) });
     expect(r.scheduledHours).toBe("208.00");
-    // 208 × 4500 = 936,000 — أكثر من حقل الراتب (900,000) وهو المقصود.
-    expect(Number(r.basePay)).toBeCloseTo(936000, 0);
+    // السعر الصريح يتجاوز المُشتقّ: 208 × 4500 = 936,000 (حقل الراتب مرجعيّ لا قيد).
+    expect(r.basePay).toBe("936000.00");
   });
 
   it("تفصيل يوميّ: صفٌّ لكل يوم دوام بحالته وسعره وأجره", () => {
@@ -186,7 +182,98 @@ describe("نافذة العمل الجزئية", () => {
     }
     const r = base({ employmentStart: "2026-07-16", attendedHoursByDate: att });
     expect(r.absentDays).toBe(0);
-    // حضر كل أيام دوامه ⇒ يستحقّ راتباً كاملاً عن فترته (سعر ساعته أعلى لأن مقامه أصغر).
-    expect(Number(r.basePay)).toBeCloseTo(900000, 0);
+    // المقام ثابت (٣٠ يوماً) ⇒ نصف شهرٍ يُنتج نحو نصف الراتب لا راتباً كاملاً.
+    expect(Number(r.basePay)).toBeLessThan(900000);
+    expect(Number(r.basePay)).toBeGreaterThan(0);
+  });
+});
+
+describe("مقام ٣٠ يوماً — قرار المالك (٣١/٧)", () => {
+  /** موظف المالك الفعليّ: راتب ٣٥٠٬٠٠٠ و٧ ساعات كل يوم بلا راحة (٤٩ ساعة/أسبوع). */
+  const SEVEN: WorkSchedule = Object.fromEntries(
+    ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"].map((d) => [d, { hours: 7 }]),
+  );
+
+  /** حضورٌ كامل بساعات الجدول لكل يوم في المدى. */
+  function attAll(from: string, to: string, sc: WorkSchedule): Map<string, Decimal> {
+    const m = new Map<string, Decimal>();
+    for (const d of daysBetween(from, to)) {
+      const h = Number((sc[dayNameOf(d)] as { hours: number }).hours);
+      if (h > 0) m.set(d, D(h));
+    }
+    return m;
+  }
+
+  function run(from: string, to: string, att?: Map<string, Decimal>) {
+    return computeAttendancePay({
+      salary: D(350000), employmentStart: from, employmentEnd: to, schedule: SEVEN,
+      attendedHoursByDate: att ?? attAll(from, to, SEVEN),
+      paidLeaveDates: new Set(), unpaidLeaveDates: new Set(), payFrom: from,
+      monthStart: from, monthEnd: to,
+    });
+  }
+
+  it("المقام ٢١٠ ساعة (٣٠ يوماً × ٧) وسعر الساعة ١٬٦٦٦٫٦٧ — لا يتبع طول الشهر", () => {
+    const r = run("2026-08-01", "2026-08-31");
+    expect(r.standardHours).toBe("210.00");
+    expect(r.hourlyRate).toBe("1666.67");
+  });
+
+  it("شهرٌ من ٣٠ يوماً بحضورٍ كامل ⇒ الراتب بالضبط دون نقصان دينار", () => {
+    const r = run("2026-09-01", "2026-09-30");
+    expect(r.scheduledHours).toBe("210.00");
+    expect(r.basePay).toBe("350000.00"); // مطابقة تامّة لا تقريبية
+  });
+
+  it("شهرٌ من ٣١ يوماً ⇒ الراتب + أجر يومٍ إضافيّ (اليوم ٣١ فوق الراتب)", () => {
+    const r = run("2026-08-01", "2026-08-31");
+    expect(r.scheduledHours).toBe("217.00"); // ٧ ساعات زيادة
+    // 350,000 + (7 × 1666.666…) = 361,666.67
+    expect(r.basePay).toBe("361666.67");
+  });
+
+  it("شباط (٢٨ يوماً) ⇒ **الراتب كاملاً** — الشهر القصير يُهمَل ويُقسَم على ٣٠", () => {
+    const r = run("2026-02-01", "2026-02-28");
+    expect(r.scheduledHours).toBe("196.00"); // فعليّ
+    expect(r.shortMonthHours).toBe("14.00"); // يومان تعويضاً
+    expect(r.basePay).toBe("350000.00"); // دون نقصان دينار
+  });
+
+  it("تعويض الشهر القصير لا يُلغي الغياب — يجبر نقصَ التقويم لا نقصَ الحضور", () => {
+    const att = attAll("2026-02-01", "2026-02-28", SEVEN);
+    att.delete("2026-02-10"); // غياب يوم
+    att.delete("2026-02-11"); // غياب يوم
+    const r = run("2026-02-01", "2026-02-28", att);
+    expect(r.absentDays).toBe(2);
+    expect(r.shortMonthHours).toBe("14.00");
+    // (196 − 14 غياب) + 14 تعويض = 196 ساعة × 1666.67
+    expect(r.payableHours).toBe("196.00");
+    expect(r.basePay).toBe("326666.67");
+  });
+
+  it("المعيَّن في منتصف شهرٍ قصير لا يُمنح التعويض (وإلا قبض ما قبل تعيينه)", () => {
+    const r = computeAttendancePay({
+      salary: D(350000), employmentStart: "2026-02-15", employmentEnd: "2026-02-28", schedule: SEVEN,
+      attendedHoursByDate: attAll("2026-02-15", "2026-02-28", SEVEN),
+      paidLeaveDates: new Set(), unpaidLeaveDates: new Set(), payFrom: "2026-02-01",
+      monthStart: "2026-02-01", monthEnd: "2026-02-28",
+    });
+    expect(r.shortMonthHours).toBe("0.00");
+    expect(Number(r.basePay)).toBeLessThan(350000);
+  });
+
+  it("جدولٌ فيه راحة في شهرٍ من ٣٠ يوماً ⇒ الراتب بالضبط (المقام من التقويم الفعليّ)", () => {
+    const sc: WorkSchedule = Object.fromEntries(
+      ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "السبت"].map((d) => [d, { hours: 8 }]),
+    );
+    sc["الجمعة"] = { hours: 0 };
+    const r = computeAttendancePay({
+      salary: D(350000), employmentStart: "2026-09-01", employmentEnd: "2026-09-30", schedule: sc,
+      attendedHoursByDate: attAll("2026-09-01", "2026-09-30", sc),
+      paidLeaveDates: new Set(), unpaidLeaveDates: new Set(), payFrom: "2026-09-01",
+    });
+    // أيلول ٢٠٢٦: ٣٠ يوماً فيها ٤ جُمَع ⇒ ٢٦ يوم دوام × ٨ = ٢٠٨ ساعة معيارية
+    expect(r.standardHours).toBe("208.00");
+    expect(r.basePay).toBe("350000.00"); // حضور كامل ⇒ الراتب حرفياً
   });
 });

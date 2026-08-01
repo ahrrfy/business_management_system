@@ -81,6 +81,40 @@ export function hoursForDay(schedule: WorkSchedule, ymd: string): Decimal {
   return new Decimal(dayOf(schedule, ymd).hours);
 }
 
+/** مجموع ساعات الأسبوع في الجدول. */
+export function weeklyHours(schedule: WorkSchedule): Decimal {
+  return DAY_NAMES.reduce((t, d) => {
+    const v = schedule[d] as DaySchedule | number | undefined;
+    const h = typeof v === "number" ? v : Number(v?.hours ?? 0);
+    return t.plus(Number.isFinite(h) && h > 0 ? h : 0);
+  }, new Decimal(0));
+}
+
+/**
+ * ساعات «الشهر المعياريّ» — مقام سعر الساعة (قرار المالك ٣١/٧):
+ *
+ *   «مبلغ الراتب هو الرقم المرجعيّ الذي تُقسَم عليه المعادلة **على ٣٠ يوماً**… فراتبه
+ *    ٣٥٠ ألفاً لِـ٣٠ يوماً، واليوم ٣١ إضافيٌّ ومكمِّل للشهر وإضافيٌّ فوق الراتب».
+ *
+ * فالمقام = **ساعات أول ثلاثين يوماً من الشهر وفق جدوله** (لا طول الشهر الفعليّ).
+ * أثرُه بالضبط ما وصفه المالك:
+ *   • شهرُ ٣٠ يوماً بحضورٍ كامل ⇒ الراتب حرفياً دون نقصان دينار.
+ *   • شهرُ ٣١ يوماً ⇒ الراتب + أجر اليوم الحادي والثلاثين (إن كان يوم دوام لا راحة).
+ *   • شهرٌ أقصر (٢٨/٢٩) ⇒ يُكمَّل بتعويضٍ إلى ٣٠ (انظر shortMonthHours).
+ *
+ * وحسابُه من التقويم الفعليّ لا بمتوسّطٍ أسبوعيّ يجعله دقيقاً لذوي أيام الراحة أيضاً:
+ * مَن يرتاح الجمعة يُقاس بأيام دوامه الواقعة في تلك الثلاثين، لا بتقديرٍ كسريّ.
+ */
+export function standardMonthlyHours(schedule: WorkSchedule, monthStart: string): Decimal {
+  const first30 = daysBetween(monthStart, addDays(monthStart, 29));
+  return first30.reduce((t, d) => t.plus(hoursForDay(schedule, d)), new Decimal(0));
+}
+
+/** تاريخٌ بعد n يوماً (تقويم UTC ثابت). */
+function addDays(ymd: string, n: number): string {
+  return new Date(Date.parse(`${ymd}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+}
+
 export interface AttendancePayInput {
   /** الراتب الأساس الشهريّ. */
   salary: Decimal;
@@ -101,11 +135,19 @@ export interface AttendancePayInput {
   unpaidLeaveDates: Set<string>;
   /** تاريخ سريان الأجر بالحضور — ما قبله يُعامَل مدفوعاً كاملاً. null = بلا سريان (الكل مدفوع). */
   payFrom: string | null;
+  /**
+   * حدّا الشهر التقويميّ. يُستعملان لتمييز «الشهر كاملاً» عن نافذة عملٍ جزئية (تعيين/فصل
+   * في منتصفه) — فتعويض الشهر القصير لا يُمنح إلا لمن عمل الشهر كلَّه. غيابهما ⇒ يُفترض كاملاً.
+   */
+  monthStart?: string;
+  monthEnd?: string;
 }
 
 export interface AttendancePayResult {
-  /** ساعات الدوام المقرَّرة في نافذة العمل = مجموع ساعات كل يومٍ وفق الجدول (مقام سعر الساعة). */
+  /** ساعات الدوام المقرَّرة في نافذة العمل فعلياً (تتبع طول الشهر). */
   scheduledHours: string;
+  /** ساعات الشهر المعياريّ (٣٠ يوماً) — **مقام سعر الساعة**، ثابتٌ لا يتبع طول الشهر. */
+  standardHours: string;
   /** الساعات المستحقّة الأجر (حضورٌ فعليّ + إجازة مدفوعة + ما قبل السريان). */
   payableHours: string;
   /** ساعات غير مستحقّة (غياب + إجازة بلا راتب) — الفارق الذي يُخصَم فعلياً. */
@@ -118,6 +160,11 @@ export interface AttendancePayResult {
   overtimeHours: string;
   /** أجر الأوفر تايم = مجموع (الساعات الزائدة × سعر ساعة يومها). */
   overtimePay: string;
+  /**
+   * ساعاتٌ تعويضية عن الشهر الأقصر من ٣٠ يوماً (قرار المالك: «الشهر ٢٩ يُهمَل ويُقسَم
+   * على ٣٠ كافتراضي») — تُضاف للمستحقّ فيقبض الموظف راتبه كاملاً في شباط.
+   */
+  shortMonthHours: string;
   /** تفصيل للشفافية في ملاحظة البند. */
   absentDays: number;
   unpaidLeaveDays: number;
@@ -149,10 +196,13 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     hoursForDay(input.schedule, d).gt(0),
   );
 
-  // مجموع ساعات الشهر المقرَّرة — مقامُ السعر المُشتقّ حين لا يُحدَّد سعرٌ صريح لليوم.
+  // ساعات هذا الشهر فعلياً (للعرض والمقارنة) — قد تفوق المعيار في شهرٍ ٣١ يوماً.
   let scheduled = new Decimal(0);
   for (const d of workDays) scheduled = scheduled.plus(hoursForDay(input.schedule, d));
-  const derivedRate = scheduled.gt(0) ? input.salary.div(scheduled) : new Decimal(0);
+
+  // مقام السعر **ثابتٌ على ٣٠ يوماً** لا على طول الشهر (قرار المالك) ⇒ اليوم ٣١ إضافيّ.
+  const stdHours = standardMonthlyHours(input.schedule, input.monthStart ?? input.employmentStart);
+  const derivedRate = stdHours.gt(0) ? input.salary.div(stdHours) : new Decimal(0);
 
   let payable = new Decimal(0);
   let basePay = new Decimal(0);
@@ -224,10 +274,32 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     push("present", attended, counted, ot, rate.times(counted));
   }
 
+  /*
+   * تعويض الشهر القصير (قرار المالك ٣١/٧): «في حالة الشهر ٢٩ يُهمَل ويُقسَم على ٣٠
+   * كافتراضي، وتُحسب الزيادة ٣١ للموظف في حالة الشهر ٣١». فالقاعدة غيرُ متماثلة عمداً
+   * ولمصلحة الموظف: الشهر الأقصر يُكمَّل إلى ٣٠، والأطول يُدفع بزيادته.
+   *
+   * يُمنح **لمن عمل الشهر كلَّه فقط** — المعيَّن/المفصول في منتصفه يُحاسَب على فترته
+   * بلا تعويض، وإلا قبض أيامَ ما قبل تعيينه.
+   * ولا يُلغي الغياب: التعويض يجبر نقصَ التقويم لا نقصَ الحضور.
+   */
+  // متحفّظ عمداً: التعويض منفعةٌ للموظف، فلا يُمنح إلا بإثباتٍ صريح أنه عمل الشهر كلَّه.
+  // غيابُ حدود الشهر ⇒ لا تعويض (لا نُفرِط في الدفع بافتراضٍ ضمنيّ).
+  const wholeMonth =
+    input.monthStart != null &&
+    input.monthEnd != null &&
+    input.employmentStart <= input.monthStart &&
+    input.employmentEnd >= input.monthEnd;
+  const shortMonth = wholeMonth ? Decimal.max(0, stdHours.minus(scheduled)) : new Decimal(0);
+  const paidHours = payable.plus(shortMonth);
+  basePay = basePay.plus(derivedRate.times(shortMonth));
+
   return {
     scheduledHours: scheduled.toFixed(2),
-    payableHours: payable.toFixed(2),
-    unpaidHours: scheduled.minus(payable).toFixed(2),
+    standardHours: stdHours.toFixed(2),
+    payableHours: paidHours.toFixed(2),
+    shortMonthHours: shortMonth.toFixed(2),
+    unpaidHours: Decimal.max(scheduled, stdHours).minus(paidHours).toFixed(2),
     hourlyRate: round2(derivedRate).toFixed(2),
     basePay: round2(basePay).toFixed(2),
     overtimeHours: otHours.toFixed(2),

@@ -136,6 +136,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     unpaidLeaveDates: expand(unpaidSpans, employmentStart, employmentEnd),
     // الكشف يعرض الشهر كما يُحتسب فعلياً؛ غياب السريان ⇒ كل الأيام مدفوعة (السلوك نفسه).
     payFrom: settings?.attendancePayFrom ? String(settings.attendancePayFrom) : null,
+    monthStart,
+    monthEnd,
   });
 
   // نُثري كل يوم بأوقات البصم الفعلية ووسم المراجعة — وهو ما يريده المالك: «من ساعة إلى ساعة».
@@ -168,6 +170,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     attendancePayEnabled: !!settings?.attendancePayEnabled,
     totals: {
       scheduledHours: pay.scheduledHours,
+      standardHours: pay.standardHours,
+      shortMonthHours: pay.shortMonthHours,
       payableHours: pay.payableHours,
       unpaidHours: pay.unpaidHours,
       hourlyRate: pay.hourlyRate,
