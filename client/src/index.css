@@ -489,3 +489,8 @@ option:disabled {
 @media (prefers-reduced-motion: reduce) {
   .app-sidebar .sb-item, .app-sidebar .sb-active { transition: none; }
 }
+
+/* حالة أعمدة الجداول اليدوية تضبطها TableColumnVisibility على الخلايا نفسها. */
+[data-column-hidden="true"] {
+  display: none !important;
+}

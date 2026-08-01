@@ -116,7 +116,7 @@ function TableShell({
   maxHeightClass?: string;
   children: React.ReactNode;
 }) {
-  if (bounded) return <ScrollTableShell maxHeightClass={maxHeightClass}>{children}</ScrollTableShell>;
+  if (bounded) return <ScrollTableShell maxHeightClass={maxHeightClass} showColumnVisibility={false}>{children}</ScrollTableShell>;
   return <div className="rounded-md border overflow-x-auto">{children}</div>;
 }
 
