@@ -140,4 +140,27 @@ export const attendanceRouter = router({
       });
       return row;
     }),
+
+  /**
+   * إعادة احتساب أسعار الشهر من ملفّات الموظفين الحالية — يُصلح اللقطات التي كُتبت قبل
+   * ضبط الجداول (أو بعد تعديل راتب). كتابةٌ ماليّة ⇒ hr/FULL + تدقيق + حارس المسيّر المُقفَل.
+   */
+  recomputeRates: hrWrite
+    .input(
+      z.object({
+        period: z.string().regex(/^\d{4}-\d{2}$/, "الشهر بصيغة YYYY-MM"),
+        employeeId: z.number().int().positive().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      // فصل مهام: سعرُ الساعة قابلٌ للتعديل من بطاقة الموظف ⇒ «ارفع سعرك ثمّ أعد الاحتساب»
+      // مسارُ زيادةِ أجرٍ بفاعلٍ واحد لولا هذا التمرير (Codex P1).
+      const res = await svc.recomputeMonthRates({ ...input, actor: { userId: ctx.user.id, role: ctx.user.role } });
+      await logAudit(ctx, {
+        action: "attendance.recomputeRates",
+        entityType: "attendance",
+        newValue: { period: res.period, employeeId: input.employeeId ?? null, scanned: res.scanned, updated: res.updated },
+      });
+      return res;
+    }),
 });
