@@ -12,7 +12,7 @@ import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { attendance, employees, hrAttendanceSettings, leaveRequests, branches } from "../../../drizzle/schema";
 import { fullEmployeeName } from "@shared/hr";
 import { requireDb } from "../tx";
-import { money } from "../money";
+import { money, round2 } from "../money";
 import { computeAttendancePay, daysBetween, DEFAULT_WORK_SCHEDULE, type WorkSchedule } from "./attendancePay";
 
 export interface EmployeeStatementInput {
@@ -62,6 +62,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       department: employees.department,
       payType: employees.payType,
       salary: employees.salary,
+      allowances: employees.allowances,
       hireDate: employees.hireDate,
       terminationDate: employees.terminationDate,
       workSchedule: employees.workSchedule,
@@ -162,6 +163,38 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     };
   });
 
+  /*
+   * الأجر الثابت كما يحسبه المسيّر بالضبط: (الراتب + البدلات) × تناسب أيام العمل في الشهر.
+   * هو المستحقّ لمن لا يخضع للحضور — المُعفى، ومن كان الأجر بالحضور معطَّلاً عنه. كان الكشف
+   * والتقرير يعرضان له حسابَ الحضور (صفراً لمن لا بصمة له!) أو الراتبَ الأساس خاماً بلا بدلات
+   * ولا تناسبِ شهرِ تعيينٍ/فصل ⇒ رقمٌ يُشارَك ويُطبَع ولا يُطابق ما يُصرف (Codex P2).
+   */
+  const daysInMonth = Number(monthEnd.slice(8, 10));
+  const activeDays =
+    employmentEnd < employmentStart
+      ? 0
+      : Math.floor((Date.parse(`${employmentEnd}T00:00:00Z`) - Date.parse(`${employmentStart}T00:00:00Z`)) / 86_400_000) + 1;
+  const ratio = money(activeDays).div(daysInMonth);
+  const fixedPay = round2(money(emp.salary ?? 0).times(ratio).plus(round2(money(emp.allowances ?? 0).times(ratio))));
+
+  const hourly = emp.payType === "hourly";
+  const exempt = !!emp.attendanceExempt;
+  const attendancePayEnabled = !!settings?.attendancePayEnabled;
+  /** أساس المستحقّ — مصدرُ حقيقةٍ واحد يستهلكه الكشفُ والتقريرُ والطباعة بلا إعادة اشتقاق. */
+  const dueBasis: "hourly" | "exempt" | "attendance" | "fixedSalary" = hourly
+    ? "hourly"
+    : exempt
+      ? "exempt"
+      : attendancePayEnabled
+        ? "attendance"
+        : "fixedSalary";
+  const amountDue =
+    dueBasis === "hourly"
+      ? actualPaid.toFixed(2)
+      : dueBasis === "attendance"
+        ? round2(money(pay.basePay).plus(money(pay.overtimePay))).toFixed(2)
+        : fixedPay.toFixed(2);
+
   return {
     employee: {
       id: Number(emp.id),
@@ -177,10 +210,15 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     from: employmentStart,
     to: employmentEnd,
     schedule,
-    attendancePayEnabled: !!settings?.attendancePayEnabled,
+    attendancePayEnabled,
     hasOwnSchedule,
     /** مجموع `attendance.amount` — ما يدفعه المسيّر للساعيّ فعلاً. */
     actualPaidAmount: actualPaid.toFixed(2),
+    /** (الراتب + البدلات) × تناسب أيام العمل — ما يدفعه المسيّر لغير الخاضع للحضور. */
+    fixedPay: fixedPay.toFixed(2),
+    /** المستحقّ الفعليّ عن الشهر وأساسُه — يُعرَض ويُطبَع ويُشارَك بدل حساب الحضور دائماً. */
+    amountDue,
+    dueBasis,
     totals: {
       scheduledHours: pay.scheduledHours,
       standardHours: pay.standardHours,

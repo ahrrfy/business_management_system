@@ -171,7 +171,9 @@ function toValues(input: EmployeeInput) {
     allowances: toDbMoney(input.allowances ?? "0"),
     dayRates: input.dayRates ?? null,
     workSchedule: input.workSchedule ?? null,
-    attendanceExempt: input.attendanceExempt ?? false,
+    // الإعفاء من الحضور مفهومٌ شهريٌّ بحت: أجر الساعيّ = ساعاتُ حضوره المسجَّلة، فلا راتبَ
+    // ثابتاً يُعفى منه. تثبيتُه هنا يمنع حالةً متناقضةً في القاعدة مهما أرسلت الواجهة.
+    attendanceExempt: input.payType === "hourly" ? false : (input.attendanceExempt ?? false),
     hireDate: input.hireDate || null,
     gender: input.gender?.trim() || null,
     birthDate: input.birthDate || null,

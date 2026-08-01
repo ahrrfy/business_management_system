@@ -478,8 +478,17 @@ export async function generatePayroll(period: string, actor: Actor) {
          * موظفاً — هذا ربطٌ ناقص بالجهاز أو جهازٌ معطَّل، لا غياب. والفرق بين الحالتين
          * راتبٌ كامل، فالنظام يتوقّف ويسأل بدل أن يُصفّر صامتاً.
          * المُعفى لا يبلغ هنا أصلاً (مساره الثابت أعلاه).
+         *
+         * ⚠️ الحارس يصطاد الصفرَ **غيرَ المفسَّر** وحده (Codex P1): مَن كانت كلُّ أيامه إجازةً
+         * بلا راتبٍ **معتمدة** صفرُه مقصودٌ وموثَّق (absentDays = 0) — فلو أوقفناه لَعطّل
+         * إجازةُ موظفٍ واحدٍ توليدَ مسيّر الشركة كلِّها. وكذلك مَن عمل يوم راحته فقط: له
+         * بصماتٌ فعلاً وأجرٌ يُدفع، فليس «بلا جهاز».
          */
-        if (Number(pay.payableHours) === 0 && Number(pay.scheduledHours) > 0) {
+        if (
+          Number(pay.payableHours) === 0 &&
+          Number(pay.restWorkedHours) === 0 &&
+          pay.absentDays > 0
+        ) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message:

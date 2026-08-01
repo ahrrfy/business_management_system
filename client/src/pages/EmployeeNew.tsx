@@ -199,7 +199,8 @@ export default function EmployeeNew() {
       dayRates: form.payType === "hourly" ? dayRates : undefined,
       // جدولٌ خاصّ يتقدّم على الافتراضي العامّ؛ إطفاؤه ⇒ null فيرث العامّ.
       workSchedule: sched,
-      attendanceExempt: exempt,
+      // الإعفاء مفهومٌ شهريٌّ بحت: الساعيّ أجرُه ساعاتُ حضوره أصلاً فلا «راتب ثابت» يُعفى منه.
+      attendanceExempt: form.payType === "monthly" && exempt,
       colorTag: form.colorTag || undefined, photoUrl: photoUrl || undefined,
       education: edu.length ? edu.map(({ key, ...e }) => ({ ...e, degree: e.degree, year: e.year ? Number(e.year) : undefined })) : undefined,
       annualLeaveBalance: Number(form.annualLeaveBalance || 0), sickLeaveBalance: Number(form.sickLeaveBalance || 0),
@@ -378,7 +379,9 @@ export default function EmployeeNew() {
             </div>
           )}
 
-          {/* إعفاءٌ من الحضور — راتبٌ ثابت (قرار المالك ٣١/٧). */}
+          {/* إعفاءٌ من الحضور — راتبٌ ثابت (قرار المالك ٣١/٧). للشهريّ وحده: الساعيّ
+              يُدفع له من سجلّ الحضور دائماً، فتأشيرُه كان يَعِد براتبٍ ثابتٍ لا يُصرف. */}
+          {form.payType === "monthly" && (
           <div className="md:col-span-3 border-t pt-3">
             <label className="flex items-start gap-2">
               <input type="checkbox" className="size-4 mt-0.5" checked={exempt} onChange={(ev) => setExempt(ev.target.checked)} />
@@ -394,6 +397,7 @@ export default function EmployeeNew() {
               </span>
             </label>
           </div>
+          )}
 
           {/* جدول الدوام الأسبوعيّ لهذا الموظف — كل قيمة صريحة بيد المالك (قرار ٣١/٧). */}
           <div className={`md:col-span-3 space-y-2 border-t pt-3 ${exempt ? "opacity-50" : ""}`}>

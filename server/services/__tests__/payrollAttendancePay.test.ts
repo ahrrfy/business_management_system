@@ -13,6 +13,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { generatePayroll } from "../payrollService";
+import { createEmployee } from "../employeeService";
+import { getEmployeeStatement } from "../hr/employeeStatement";
+import { getMonthlyAttendanceReport } from "../hr/monthlyAttendanceReport";
 import { truncateTables } from "./__testUtils__";
 
 function db() {
@@ -193,5 +196,59 @@ describe("الإعفاء من الحضور — راتب ثابت (قرار ال�
   it("ف٤) الافتراضي خاضعٌ لا معفى (الإعفاء استثناءٌ يُقرَّر)", async () => {
     const [e] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
     expect(e.attendanceExempt).toBe(false);
+  });
+
+  // الحارس يصطاد الصفر **غير المفسَّر** وحده: إجازةٌ بلا راتبٍ معتمدةٌ تستغرق الشهر صفرُها
+  // موثَّق — ولو أوقفت التوليد لَعطّلت إجازةُ موظفٍ واحدٍ مسيّرَ الشركة كلِّها.
+  it("ف٥) إجازة بلا راتب تستغرق الشهر ⇒ صفرٌ مفسَّر لا يُوقف المسيّر", async () => {
+    await enableAttendancePay("2026-06-01");
+    await db().insert(s.leaveRequests).values({
+      employeeId: 1, leaveType: "بدون راتب", paid: false,
+      fromDate: "2026-06-01", toDate: "2026-06-30", days: 30, status: "approved",
+    });
+
+    const run = await generatePayroll(PERIOD, ADMIN as never);
+    const it = await itemOf(Number(run.id));
+    expect(Number(it.gross)).toBe(0); // شهرٌ كاملٌ بلا راتب — وهو المقصود
+    expect(Number(it.net)).toBe(0);
+  });
+
+  it("ف٦) الساعيّ لا يُعفى — يُثبَّت «خاضعاً» خادمياً مهما أُرسل", async () => {
+    const created = await createEmployee({
+      firstName: "سعديّ", lastName: "الساعيّ", payType: "hourly", attendanceExempt: true,
+    } as never);
+    const [e] = await db().select().from(s.employees).where(eq(s.employees.id, Number(created!.id)));
+    expect(e.attendanceExempt).toBe(false); // أجرُه ساعاتُ حضوره — لا راتبَ ثابتاً يُعفى منه
+  });
+
+  it("ف٧) كشف المُعفى يعرض راتبه ومخصّصاته — لا صفرَ بصماته", async () => {
+    await enableAttendancePay("2026-06-01");
+    await db().update(s.employees)
+      .set({ attendanceExempt: true, allowances: "100000" })
+      .where(eq(s.employees.id, 1));
+
+    const st = await getEmployeeStatement({ employeeId: 1, period: PERIOD });
+    expect(st!.dueBasis).toBe("exempt");
+    expect(Number(st!.totals.basePay)).toBe(0); // حسابُ الحضور صفرٌ — بلا بصمة واحدة
+    expect(Number(st!.amountDue)).toBe(1000000); // والمعروض/المطبوع راتبُه + بدلاته
+
+    // وهو حرفياً ما يصرفه المسيّر ⇒ لا انحراف بين الكشف والتقرير وما يُدفع.
+    const run = await generatePayroll(PERIOD, ADMIN as never);
+    expect(Number((await itemOf(Number(run.id))).gross)).toBe(1000000);
+    const rep = await getMonthlyAttendanceReport({ period: PERIOD });
+    expect(Number(rep.rows[0].totalDue)).toBe(1000000);
+  });
+
+  it("ف٨) الساعيّ بلا جدولٍ خاصّ يبقى في تنبيه «بلا جدول» — أرقامُ صفّه مشتقّةٌ منه", async () => {
+    await db().insert(s.employees).values({
+      id: 2, firstName: "سعديّ", lastName: "الساعيّ", payType: "hourly", salary: null, allowances: "0",
+      employmentStatus: "active", isActive: true, branchId: 1, hireDate: "2025-01-01",
+    });
+    const rep = await getMonthlyAttendanceReport({ period: PERIOD });
+    expect(rep.totals.withoutSchedule).toBe(2); // الشهريّ والساعيّ كلاهما بلا جدول
+
+    await db().update(s.employees).set({ attendanceExempt: true }).where(eq(s.employees.id, 1));
+    const rep2 = await getMonthlyAttendanceReport({ period: PERIOD });
+    expect(rep2.totals.withoutSchedule).toBe(1); // المُعفى وحده يخرج — لا جدولَ يلزمه
   });
 });

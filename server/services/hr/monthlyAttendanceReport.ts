@@ -68,20 +68,13 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
     const st = await getEmployeeStatement({ employeeId: Number(e.id), period: input.period });
     if (!st) continue;
     /*
-     * المستحقّ يتبع **نموذج أجر الموظف** لا حسابَ الحضور دائماً (Codex P1):
-     *   • الساعيّ: أجرُه مجموع `attendance.amount` (ما يدفعه `generatePayroll` فعلاً)،
-     *     وراتبُه الشهريّ غالباً فارغ فكان الحساب يُظهره صفراً.
-     *   • الشهريّ والأجر بالحضور **معطَّل**: المسيّر يدفع الراتب + المخصّصات بالتناسب،
-     *     لا حسابَ الساعات — فعرضُه هنا يُوهم بمستحقٍّ غير الذي سيُصرف.
-     * الحسابُ بالحضور يبقى معروضاً في أعمدة الساعات للمراجعة في الحالتين.
+     * المستحقّ يتبع **نموذج أجر الموظف** لا حسابَ الحضور دائماً — ويأتي محسوباً من الكشف
+     * نفسه (`amountDue`/`dueBasis`) لا مُعاداً هنا، فمصدرُ الرقم واحدٌ للشاشة والتقرير
+     * والمسيّر. كان هذا الفرعُ يُعيد الراتبَ الأساس خاماً للثابت/المُعفى، فينحرف عن المسيّر
+     * بالبدلات وبتناسب شهر التعيين/الفصل (Codex P2).
      */
-    const hourly = st.employee.payType === "hourly";
     const exempt = !!st.employee.attendanceExempt;
-    const due = hourly
-      ? Number(st.actualPaidAmount ?? 0)
-      : st.attendancePayEnabled && !exempt
-        ? Number(st.totals.basePay) + Number(st.totals.overtimePay)
-        : Number(st.employee.salary ?? 0);
+    const due = Number(st.amountDue);
     rows.push({
       employeeId: st.employee.id,
       employeeName: st.employee.name,
@@ -106,7 +99,7 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       totalDue: due.toFixed(2),
       /** أساس الرقم أعلاه — يُعرَض في الشاشة فلا يُظنّ حسابُ الحضور مصدرَه دائماً. */
       attendanceExempt: exempt,
-      dueBasis: hourly ? "hourly" : exempt ? "exempt" : st.attendancePayEnabled ? "attendance" : "fixedSalary",
+      dueBasis: st.dueBasis,
     });
   }
 
@@ -123,8 +116,10 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       reviewDays: sum((r) => r.reviewDays),
       totalDue: sum((r) => Number(r.totalDue)).toFixed(2),
       /** موظفون بلا جدولٍ خاصّ — يقعون على احتياطيّ الكود، ويُنبَّه عليهم. */
-      // المعفى لا يحتاج جدولاً ⇒ لا يُحسب في تنبيه «بلا جدول» (وإلّا صار التنبيه ضوضاء).
-      withoutSchedule: rows.filter((r) => !r.hasOwnSchedule && !r.attendanceExempt && r.payType !== "hourly").length,
+      // المعفى وحده يخرج من التنبيه: لا جدولَ يلزمه أصلاً. أمّا الساعيّ فيبقى فيه (Codex P2) —
+      // أعمدةُ صفّه (مقرَّر/غياب/إضافيّ) مشتقّةٌ من الجدول الاحتياطيّ لا من جدولٍ ضبطه أحد،
+      // فإخراجُه كان يطمس الإشارةَ الوحيدة إلى أن تلك الأرقام مبنيّةٌ على جدولٍ مُفترَض.
+      withoutSchedule: rows.filter((r) => !r.hasOwnSchedule && !r.attendanceExempt).length,
       exempt: rows.filter((r) => r.attendanceExempt).length,
     },
   };
