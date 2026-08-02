@@ -25,6 +25,9 @@ export const attendanceRouter = router({
         .object({
           employeeId: z.number().int().positive().optional(),
           period: periodStr.optional(),
+          // مدى تواريخ صريح — الشاشة تفتح على اليوم بقرار المالك، والشهر خيارٌ لا افتراض.
+          dateFrom: dateStr.optional(),
+          dateTo: dateStr.optional(),
           source: z.enum(["fingerprint", "manual"]).optional(),
           // بحث خادميّ (اسم/تاريخ/يوم) — كان محلّياً على الصفوف المُحمَّلة وحدها.
           q: z.string().trim().min(1).optional(),
@@ -68,6 +71,8 @@ export const attendanceRouter = router({
         .object({
           employeeId: z.number().int().positive().optional(),
           period: periodStr.optional(),
+          dateFrom: dateStr.optional(),
+          dateTo: dateStr.optional(),
           source: z.enum(["fingerprint", "manual"]).optional(),
         })
         .optional(),
