@@ -194,6 +194,7 @@ export const deliveryRouter = router({
               seen.add(line.consignmentId);
             });
           }),
+        countedCash: moneyStr,
         clientRequestId: z.string().max(64).nullish(),
       }),
     )
@@ -202,7 +203,7 @@ export const deliveryRouter = router({
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
       const res = await retryOnDup(() =>
-        recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
+        recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, countedCash: input.countedCash, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
       );
       await logAudit(ctx, { action: "delivery.remit", entityType: "deliveryRemittance", entityId: res.remittanceId, newValue: { partyId: input.partyId, collectedTotal: res.collectedTotal, feesTotal: res.feesTotal, netRemitted: res.netRemitted, shortfallTotal: res.shortfallTotal } });
       return res;

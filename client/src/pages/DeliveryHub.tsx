@@ -321,6 +321,7 @@ function SettleTab() {
   const cons = trpc.delivery.openConsignments.useQuery({ partyId: Number(partyId) }, { enabled: !!partyId });
   const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "RETURNED"; collected: string }>>({});
   const [countedBreakdown, setCountedBreakdown] = useState<Record<number, number>>({});
+  const [countedCash, setCountedCash] = useState(0);
 
   const remit = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
@@ -329,6 +330,7 @@ function SettleTab() {
       printRemittanceReceipt(partyName, r);
       setRows({});
       setCountedBreakdown({});
+      setCountedCash(0);
       utils.delivery.openConsignments.invalidate();
       utils.delivery.listParties.invalidate();
     },
@@ -363,6 +365,10 @@ function SettleTab() {
       .map((c) => ({ consignmentId: c.id, collectedAmount: String(Math.max(0, Number(get(c).collected) || 0)) }))
       .filter((l) => Number(l.collectedAmount) >= 0);
     if (lines.length === 0) { notify.err("لا إرساليات للتسوية"); return; }
+    if (Math.abs(countedCash - totals.net) > 0.01) {
+      notify.err(`النقد المعدود لا يطابق الصافي المتوقع. المعدود ${fmt(String(countedCash))} والمتوقع ${fmt(String(totals.net))} د.ع`);
+      return;
+    }
     const ok = await confirm({
       variant: "danger",
       title: "تأكيد تسوية تحصيلات المندوب",
@@ -370,7 +376,7 @@ function SettleTab() {
       confirmText: "تأكيد التسوية",
     });
     if (!ok) return;
-    remit.mutate({ partyId: Number(partyId), lines, clientRequestId: crypto.randomUUID() });
+    remit.mutate({ partyId: Number(partyId), lines, countedCash: countedCash.toFixed(2), clientRequestId: crypto.randomUUID() });
   };
 
   return (
@@ -456,11 +462,15 @@ function SettleTab() {
                 <span className="inline-flex items-center gap-1">{totals.shortfall > 0.01 && <AlertTriangle aria-hidden className="size-3.5" />} {totals.shortfall > 0.01 ? "عجز يبقى ذمّةً على المندوب" : "مطابق"}</span>
                 <span dir="ltr" className="tabular-nums">{fmt(String(Math.max(0, totals.shortfall)))} د.ع</span>
               </div>
+              <div className={cn("flex items-center justify-between border-t py-1.5 font-bold", Math.abs(countedCash - totals.net) > 0.01 ? "text-money-negative" : "text-money-positive")}>
+                <span>{Math.abs(countedCash - totals.net) > 0.01 ? "فرق العدّ — لا يمكن التسوية" : "النقد المعدود مطابق للصافي"}</span>
+                <span dir="ltr" className="tabular-nums">{fmt(String(countedCash - totals.net))} د.ع</span>
+              </div>
               {canRemit && (
-                <Button className="mt-3 w-full" onClick={submit} disabled={remit.isPending}>{remit.isPending ? "جارٍ…" : "تأكيد التسوية وتوريد الصافي"}</Button>
+                <Button className="mt-3 w-full" onClick={submit} disabled={remit.isPending || Math.abs(countedCash - totals.net) > 0.01}>{remit.isPending ? "جارٍ…" : "تأكيد التسوية وتوريد الصافي"}</Button>
               )}
             </div>
-            <CashCounter value={countedBreakdown} onChange={(c) => setCountedBreakdown(c)} />
+            <CashCounter value={countedBreakdown} onChange={(c, total) => { setCountedBreakdown(c); setCountedCash(Number(total)); }} />
           </div>
         </>
       )}

@@ -75,6 +75,7 @@ describe("حوكمة مصدر نقد التوصيل", () => {
     await expect(recordDeliveryRemittance({
       branchId: 1,
       partyId: 1,
+      countedCash: "200.00",
       lines: [
         { consignmentId: 1, collectedAmount: "100.00" },
         { consignmentId: 1, collectedAmount: "100.00" },
@@ -87,14 +88,14 @@ describe("حوكمة مصدر نقد التوصيل", () => {
     await seedParty("100.00", null);
     await seedConsignment({ branchId: 2 });
     await expect(recordDeliveryRemittance({
-      branchId: 1, partyId: 1, lines: [{ consignmentId: 1, collectedAmount: "100.00" }],
+      branchId: 1, partyId: 1, countedCash: "100.00", lines: [{ consignmentId: 1, collectedAmount: "100.00" }],
     }, actor)).rejects.toThrow(/فرعاً آخر/);
 
     await db().delete(s.deliveryConsignments);
     await db().delete(s.invoices);
     await seedConsignment({ fee: "150.00" });
     await expect(recordDeliveryRemittance({
-      branchId: 1, partyId: 1, lines: [{ consignmentId: 1, collectedAmount: "100.00" }],
+      branchId: 1, partyId: 1, countedCash: "100.00", lines: [{ consignmentId: 1, collectedAmount: "100.00" }],
     }, actor)).rejects.toThrow(/أجرة توصيل/);
   });
 

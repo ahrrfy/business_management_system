@@ -12,7 +12,7 @@ import { RowActions } from "@/components/list";
 
 /* ═══════════ شاشة تدقيق التوافق المالي (admin فقط) ═══════════
    تستهلك reports.reconcile (adminProcedure) لكشف الانجراف الصامت بين
-   الأرصدة المُشتقّة والمسجَّلة في ثلاثة محاور: ذمم العملاء، المخزون، الدفتر.
+   الأرصدة المُشتقّة والمسجَّلة في الذمم والعهد والمخزون والدفتر.
 ═══════════════════════════════════════════════════════════════ */
 
 type Row = { entity: string; id: number; expected: string; actual: string; drift: string; note?: string };
@@ -20,7 +20,7 @@ type Row = { entity: string; id: number; expected: string; actual: string; drift
 export default function Reconcile() {
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin";
-  // الفحص ثقيل نسبياً (٣ استعلامات تجميعية) — لا يُطلَق إلا للمدير، وبلا إعادة جلب تلقائية.
+  // الفحص ثقيل نسبياً — لا يُطلَق إلا للمدير، وبلا إعادة جلب تلقائية.
   const recon = trpc.reports.reconcile.useQuery(undefined, {
     enabled: isAdmin,
     refetchOnWindowFocus: false,
@@ -37,7 +37,7 @@ export default function Reconcile() {
 
   const data = recon.data;
   const total = data
-    ? data.customers.length + data.inventory.length + data.ledger.length
+    ? data.customers.length + data.suppliers.length + data.delivery.length + data.inventory.length + data.ledger.length
     : 0;
   const loading = me.isLoading || (isAdmin && recon.isLoading);
 
@@ -45,7 +45,7 @@ export default function Reconcile() {
     <div className="space-y-4">
       <PageHeader
         title="تدقيق التوافق المالي"
-        description="يكشف الانجراف الصامت بين الأرصدة المُشتقّة والمسجَّلة في ثلاثة محاور: ذمم العملاء، أرصدة المخزون، وقيود الأرباح في الدفتر. الأخضر = متوازن، الأحمر = انحراف يستوجب المراجعة. يُنصَح بتشغيله دورياً وقبل إقفال الفترات."
+        description="يكشف الانجراف الصامت في ذمم العملاء والموردين، عهدة تحصيلات التوصيل، المخزون والدفتر. الأخضر = متوازن، الأحمر = انحراف يستوجب المراجعة. لا يصحّح النظام أي فرق بصمت."
         actions={
           <div className="flex items-center gap-3">
             {data && (
@@ -101,6 +101,26 @@ export default function Reconcile() {
             rows={data.customers}
             link={(id) => `/customers-statement?id=${id}`}
             linkLabel="كشف الحساب"
+          />
+
+          <DriftSection
+            title="ذمم الموردين"
+            desc="الفرق بين الرصيد المُشتقّ من المشتريات والتسديدات والمسجَّل على المورد."
+            idLabel="رقم المورد"
+            money
+            rows={data.suppliers}
+            link={() => "/suppliers"}
+            linkLabel="الموردون"
+          />
+
+          <DriftSection
+            title="عهدة تحصيلات التوصيل"
+            desc="الفرق بين مبالغ COD المسلّمة للمندوب والمبالغ المورّدة أو المشطوبة وبين رصيده المسجّل."
+            idLabel="رقم جهة التوصيل"
+            money
+            rows={data.delivery}
+            link={() => "/delivery"}
+            linkLabel="مركز التوصيل"
           />
 
           <DriftSection

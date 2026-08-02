@@ -345,15 +345,17 @@ function Stats({ orders }: { orders: WO[] }) {
 
 // ─────────────── حوار التسليم (مالي — تأكيد صريح) ───────────────
 const dlgInput = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverTarget | null; onClose: () => void; onConfirm: (payment?: { amount: string; method: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" }) => void; pending: boolean }) {
+function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverTarget | null; onClose: () => void; onConfirm: (payment?: { amount: string; method: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; reference?: string }) => void; pending: boolean }) {
   const [amount, setAmount] = useState("");
   const [methodV, setMethodV] = useState<"CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">("CASH");
+  const [reference, setReference] = useState("");
   useEffect(() => {
     if (order) {
       // تعبئة المتبقّي تلقائياً = سعر البيع − العربون المقبوض (لا طرح يدويّ من الموظّف).
       const dueInit = positiveDiff(order.salePrice, order.deposit ?? 0);
       setAmount(dueInit.gt(0) ? dueInit.toFixed(2) : "");
       setMethodV("CASH");
+      setReference("");
     }
   }, [order?.id]); // eslint-disable-line
   if (!order) return null;
@@ -380,6 +382,13 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
             <label className="text-sm font-medium">المبلغ المدفوع الآن (الافتراضي = الرصيد المستحق؛ أقل = آجل)</label>
             <MoneyInput value={amount} onChange={setAmount} className={dlgInput} placeholder={`0 – ${fmtAr(due.toFixed(2))}`} />
           </div>
+          {methodV !== "CASH" && (
+            <div className="space-y-1">
+              <label className="text-sm font-medium">مرجع العملية <span className="text-destructive">*</span></label>
+              <input className={dlgInput} value={reference} onChange={(e) => setReference(e.target.value)} placeholder="رقم موافقة البطاقة أو رقم التحويل" />
+              <p className="text-xs text-muted-foreground">لا تُحفظ دفعة إلكترونية بلا مرجع قابل للمطابقة.</p>
+            </div>
+          )}
           <div className="space-y-1">
             <label className="text-sm font-medium">طريقة الدفع</label>
             <select className={dlgInput} value={methodV} onChange={(e) => setMethodV(e.target.value as typeof methodV)}>
@@ -392,8 +401,8 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
         </div>
         <DialogFooter>
           <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={pending}>إلغاء</button>
-          <button className="wob-btn wob-btn-primary" disabled={pending}
-            onClick={() => onConfirm(amtD.gt(0) ? { amount: round2(amtD).toFixed(2), method: methodV } : undefined)}>
+          <button className="wob-btn wob-btn-primary" disabled={pending || (amtD.gt(0) && methodV !== "CASH" && !reference.trim())}
+            onClick={() => onConfirm(amtD.gt(0) ? { amount: round2(amtD).toFixed(2), method: methodV, reference: methodV === "CASH" ? undefined : reference.trim() } : undefined)}>
             {pending ? "جارٍ…" : "تسليم وإصدار الفاتورة"}
           </button>
         </DialogFooter>

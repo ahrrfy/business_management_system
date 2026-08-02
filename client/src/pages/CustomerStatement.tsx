@@ -81,12 +81,21 @@ export default function CustomerStatement() {
   };
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [invoiceFilter, setInvoiceFilter] = useState<"ALL" | "DEPOSIT_DUE" | "OUTSTANDING" | "SETTLED">("ALL");
 
   const index = trpc.reports.customersIndex.useQuery();
   const stmt = trpc.reports.customerStatement.useQuery(
     { customerId: customerId || 0, from: from || undefined, to: to || undefined },
     { enabled: !!customerId }
   );
+  const shownInvoices = useMemo(() => (stmt.data?.invoices ?? []).filter((i) => {
+    const remaining = D(i.total).minus(D(i.paidAmount)).minus(D(i.returnedTotal ?? "0"));
+    const active = i.status !== "CANCELLED" && i.status !== "RETURNED";
+    if (invoiceFilter === "DEPOSIT_DUE") return active && (i.sourceType === "ORDER" || i.sourceType === "WORKORDER") && D(i.paidAmount).gt(0) && remaining.gt(0);
+    if (invoiceFilter === "OUTSTANDING") return active && remaining.gt(0);
+    if (invoiceFilter === "SETTLED") return active && remaining.lte(0);
+    return true;
+  }), [stmt.data?.invoices, invoiceFilter]);
 
   // دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُبنى مرّة ويُشارَك بين الطباعة وتصدير Excel.
   const ledger = useMemo(() => {
@@ -320,7 +329,15 @@ export default function CustomerStatement() {
 
           <Card>
             <CardContent className="p-0">
-              <div className="p-3 border-b bg-muted/30 text-sm font-medium">الفواتير</div>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 p-3">
+                <span className="text-sm font-medium">الفواتير</span>
+                <select className="h-8 rounded-md border bg-background px-2 text-xs" value={invoiceFilter} onChange={(e) => setInvoiceFilter(e.target.value as typeof invoiceFilter)}>
+                  <option value="ALL">كل الفواتير</option>
+                  <option value="DEPOSIT_DUE">عربون — متبقّي للتحصيل</option>
+                  <option value="OUTSTANDING">عليها مبلغ متبقٍ</option>
+                  <option value="SETTLED">مسوّاة بالكامل</option>
+                </select>
+              </div>
               <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
@@ -348,13 +365,16 @@ export default function CustomerStatement() {
                       <td className="p-2" colSpan={2} />
                     </tr>
                   )}
-                  {stmt.data.invoices.map((i) => {
+                  {shownInvoices.map((i) => {
                     // §٥ + REP-06: المتبقّي = total − (المدفوع + المُرتجَع) بدقّة Decimal (لا Number float).
                     // إغفال returnedTotal كان يُظهر متبقّياً موجباً لفاتورة مُرتجَعة جزئياً سُدِّد صافيها.
                     const remaining = positiveDiff(i.total, D(i.paidAmount).plus(i.returnedTotal).toFixed(2)).toFixed(2);
                     const returned = D(i.returnedTotal);
+                    const depositDue = i.status !== "CANCELLED" && i.status !== "RETURNED"
+                      && (i.sourceType === "ORDER" || i.sourceType === "WORKORDER")
+                      && D(i.paidAmount).gt(0) && D(remaining).gt(0);
                     return (
-                      <tr key={i.id} className="border-t">
+                      <tr key={i.id} className={`border-t ${depositDue ? "bg-[var(--sem-warn-bg)] shadow-[inset_-3px_0_0_var(--sem-warn)]" : ""}`}>
                         <td className="p-2"><CopyInline value={i.invoiceNumber} /></td>
                         <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(i.invoiceDate)}</td>
                         <td className="p-2 text-xs" dir="ltr">{i.dueDate ? String(i.dueDate).slice(0, 10) : "—"}</td>
@@ -367,6 +387,7 @@ export default function CustomerStatement() {
                           <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[i.status] ?? "bg-muted"}`}>
                             {STATUS_LABEL[i.status] ?? i.status}
                           </span>
+                          {depositDue && <span className="mt-1 block w-fit rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — الباقي مستحق</span>}
                         </td>
                         <td className="p-2 text-center">
                           <Link href={`/invoices/${i.id}`}>
@@ -376,8 +397,8 @@ export default function CustomerStatement() {
                       </tr>
                     );
                   })}
-                  {stmt.data.invoices.length === 0 && (
-                    <TableEmptyRow colSpan={10} message="لا فواتير لهذا العميل." />
+                  {shownInvoices.length === 0 && (
+                    <TableEmptyRow colSpan={10} message="لا فواتير مطابقة لهذا الفلتر." />
                   )}
                 </tbody>
               </table>
