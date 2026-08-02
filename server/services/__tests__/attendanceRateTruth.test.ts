@@ -238,7 +238,31 @@ describe("صدق العدّاد والقفل والفصل", () => {
     expect(day.rows).toHaveLength(1);
     expect(day.rows[0].rateStale).toBe(false);
     expect(day.staleCount).toBe(1);
-    expect(day.stalePeriod).toBe("2026-08");
+    expect(day.stalePeriods).toEqual(["2026-08"]);
+  });
+
+  it("ص١٧) مدىً يعبر شهرين: العدّاد يرى الشهر الأقدم ويُسمّي كلا الشهرين", async () => {
+    await seedStaleDay("2026-07-31"); // لقطةٌ قديمة في الشهر السابق
+    await recordAttendance({ employeeId: 1, attendanceDate: "2026-08-02", hours: 7, source: "manual" }); // سليمة
+
+    // «آخر ٧ أيام» في مطلع الشهر يعبر حدَّ الشهر — وقصرُ المسح على شهر النهاية كان
+    // يُظهر صفّاً مشطوباً وعدّاداً صفراً ⇒ يختفي الزرّ ولا سبيل للإصلاح.
+    const r = await listAttendance({ dateFrom: "2026-07-27", dateTo: "2026-08-02" });
+    expect(r.staleCount).toBe(1);
+    expect(r.stalePeriods).toEqual(["2026-07"]);
+  });
+
+  it("ص١٨) عدّادا البصمة/اليدوي من نفس مسح المبالغ — لقطةٌ زمنية واحدة", async () => {
+    await recordAttendance({ employeeId: 1, attendanceDate: "2026-08-01", hours: 7, source: "manual" });
+    await db().insert(s.attendance).values({
+      employeeId: 1, attendanceDate: "2026-08-02", status: "PRESENT",
+      hours: "6.00", hourlyRate: "1905.00", amount: "11430.00", source: "fingerprint",
+    });
+    const sum = await attendanceSummary({ period: "2026-08" });
+    expect(sum.fingerprintCount).toBe(1);
+    expect(sum.manualCount).toBe(1);
+    expect(Number(sum.amount)).toBe(13335 + 11430);
+    expect(sum.capped).toBe(false);
   });
 
   it("ص١٣) الأجر يُضرب بالسعر الخام لا المُقرَّب — مطابقةً لما يُخزَّن (فرق الدينار)", async () => {

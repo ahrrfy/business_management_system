@@ -109,6 +109,15 @@ export default function Attendance() {
   const [range, setRange] = useState<RangeKey>("today");
   const [customFrom, setCustomFrom] = useState(todayLocal());
   const [customTo, setCustomTo] = useState(todayLocal());
+  /*
+   * «اليوم» يتقدّم عند منتصف الليل المحليّ (Codex P2): شاشة الحضور تبقى مفتوحةً ليلاً،
+   * وحدودُ المدى كانت تُشتقّ مرّةً واحدة فتبقى معلّقةً على الأمس حتى يلمس المستخدم فلتراً.
+   */
+  const [dayTick, setDayTick] = useState(todayLocal());
+  useEffect(() => {
+    const t = setInterval(() => setDayTick((prev) => { const now = todayLocal(); return now === prev ? prev : now; }), 60_000);
+    return () => clearInterval(t);
+  }, []);
   const [source, setSource] = useState("");
   // طابور التصحيح: أيام ينقصها إغلاق (نُسيت بصمة الخروج) — تُصحَّح قبل إغلاق الشهر.
   const [reviewOnly, setReviewOnly] = useState(false);
@@ -121,17 +130,20 @@ export default function Attendance() {
   const opts = trpc.attendance.formOptions.useQuery();
 
   // فلتر البطاقات (بلا بحث): البطاقات مؤشّرُ الشهر/الفلتر — سلوك محفوظ كما كان.
-  const bounds = useMemo(() => rangeBounds(range, customFrom, customTo), [range, customFrom, customTo]);
+  const bounds = useMemo(() => rangeBounds(range, customFrom, customTo), [range, customFrom, customTo, dayTick]);
+  /** مدىً مخصّصٌ فُرِّغ حقلاه = «بلا حدّ» صراحةً ⇒ لا يُمرَّر الشهر المخفيّ فيُقيّد صامتاً. */
+  const customUnbounded = range === "custom" && !bounds.dateFrom && !bounds.dateTo;
   const filterInput = useMemo(
     () => ({
       employeeId: employeeId ? Number(employeeId) : undefined,
-      // المدى يتقدّم على الشهر خادمياً؛ نُمرّر الشهر دائماً ليبقى نطاقُ زرّ الإصلاح معلوماً.
-      period: period || undefined,
+      // المدى يتقدّم على الشهر خادمياً؛ نُمرّر الشهر ليبقى نطاقُ زرّ الإصلاح معلوماً — إلا
+      // في مدىً مخصّصٍ فارغ الحقلين، فإرسالُه هناك يُقيّد بشهرٍ مخفيٍّ لا يراه المستخدم.
+      period: customUnbounded ? undefined : period || undefined,
       ...bounds,
       source: (source || undefined) as "fingerprint" | "manual" | undefined,
       needsReviewOnly: reviewOnly || undefined,
     }),
-    [employeeId, period, bounds, source, reviewOnly],
+    [employeeId, period, bounds, customUnbounded, source, reviewOnly],
   );
   /** الشهر الذي يُصلحه زرّ إعادة الاحتساب — من نهاية المدى المعروض (وإلا الشهر المختار). */
   const activePeriod = (bounds.dateTo || bounds.dateFrom || period).slice(0, 7);
@@ -164,6 +176,12 @@ export default function Attendance() {
   const totalAmount = D(summary.data?.amount ?? 0);
   const fingerprintCount = summary.data?.fingerprintCount ?? 0;
   const manualCount = summary.data?.manualCount ?? 0;
+  /*
+   * مجاميعُ جزئية تُعلَن جزئيةً (Codex P1): المسح الحيّ محدودٌ بسقف، ونطاقٌ يتجاوزه يُنتج
+   * مبلغاً ناقصاً. عرضُه كرقمٍ نهائيّ كذبٌ ماليّ صامت — نسبقه بـ«≥» ونشرحه.
+   */
+  const partialTotals = !!summary.data?.capped || !!list.data?.totals.capped;
+  const approx = (v: string) => (partialTotals ? `≥ ${v}` : v);
 
   // مجاميع ذيل الجدول تتبع المطابق للفلتر **والبحث** (لا الصفحة) — خادمية بنفس شروط الصفوف.
   const visHours = D(list.data?.totals.hours ?? 0);
@@ -175,13 +193,30 @@ export default function Attendance() {
    * إعادة احتساب ليتطابقا — ولأنّ لقطة الساعيّ هي وعاء أجره في المسيّر فعلاً.
    */
   const staleCount = list.data?.staleCount ?? 0;
-  const recompute = trpc.attendance.recomputeRates.useMutation({
-    onSuccess: async (r) => {
-      notify.ok(r.updated > 0 ? `أُعيد احتساب ${r.updated} من ${r.scanned} صفّاً` : "كل الأسعار مطابقة لملفّات الموظفين");
+  /** الأشهر التي فيها لقطاتٌ قديمة فعلاً — قد تتعدّد إن عبَر المدى حدَّ الشهر. */
+  const stalePeriods = list.data?.stalePeriods ?? [];
+  const recompute = trpc.attendance.recomputeRates.useMutation({ onError: (e) => notify.err(e) });
+  const [fixing, setFixing] = useState(false);
+
+  /** يُصلح **كلّ** شهرٍ فيه لقطاتٌ قديمة — لا شهرَ نهاية المدى وحده. */
+  async function fixStalePeriods() {
+    if (!stalePeriods.length || fixing) return;
+    setFixing(true);
+    try {
+      let updated = 0;
+      for (const p of stalePeriods) {
+        const r = await recompute.mutateAsync({ period: p, employeeId: employeeId ? Number(employeeId) : undefined });
+        updated += r.updated;
+      }
+      notify.ok(updated > 0 ? `أُعيد احتساب ${updated} صفّاً في ${stalePeriods.length} شهراً` : "كل الأسعار مطابقة لملفّات الموظفين");
       await Promise.all([utils.attendance.list.invalidate(), utils.attendance.summary.invalidate()]);
-    },
-    onError: (e) => notify.err(e),
-  });
+    } catch {
+      // notify.err عُرِضت في onError — نُبطّل الكاش كي يظهر ما نجح إصلاحُه قبل الفشل.
+      await Promise.all([utils.attendance.list.invalidate(), utils.attendance.summary.invalidate()]);
+    } finally {
+      setFixing(false);
+    }
+  }
 
   const record = trpc.attendance.record.useMutation({
     onSuccess: async () => {
@@ -228,13 +263,25 @@ export default function Attendance() {
 
       {/* مؤشرات */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label={`إجمالي ساعات ${rangeLabel}`} value={totalHours.toNumber().toLocaleString("en-US")} sub="حسب النطاق المختار" icon={<Clock className="size-5" />} />
-        <StatCard label="المبلغ المستحق" value={iqd(totalAmount.toFixed(2))} sub="د.ع — قبل الاستقطاع" accent="var(--status-active, #16a34a)" icon={<Wallet className="size-5" />} />
+        <StatCard label={`إجمالي ساعات ${rangeLabel}`} value={approx(totalHours.toNumber().toLocaleString("en-US"))} sub={partialTotals ? "مجموعٌ جزئيّ — ضيّق النطاق" : "حسب النطاق المختار"} icon={<Clock className="size-5" />} />
+        <StatCard label="المبلغ المستحق" value={approx(iqd(totalAmount.toFixed(2)))} sub={partialTotals ? "مجموعٌ جزئيّ — ضيّق النطاق" : "د.ع — قبل الاستقطاع"} accent="var(--status-active, #16a34a)" icon={<Wallet className="size-5" />} />
         <StatCard label="سجلات بصمة" value={fingerprintCount.toLocaleString("en-US")} sub="مزامنة تلقائية" icon={<Fingerprint className="size-5" />} />
         <StatCard label="إدخالات يدوية" value={manualCount.toLocaleString("en-US")} sub="تحتاج توثيقاً" accent="var(--stock-low, #d97706)" icon={<PenLine className="size-5" />} />
       </div>
 
       <AttendanceSettingsCard />
+
+      {/* نطاقٌ تجاوز سقف المسح الحيّ ⇒ المجاميع جزئية. لا تُعرَض رقماً نهائياً صامتاً. */}
+      {partialTotals && (
+        <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs">
+          <TriangleAlert aria-hidden className="size-4 mt-0.5 shrink-0 text-[var(--sem-warn)]" />
+          <span className="leading-relaxed">
+            <span className="font-medium text-[var(--sem-warn)]">المجاميع جزئية</span> — النطاق المختار
+            يتجاوز سقف الاحتساب الحيّ، فالساعات والمبالغ أعلاه وفي ذيل الجدول محسوبةٌ على جزءٍ من
+            الصفوف فقط (لذلك سُبقت بعلامة «≥»). ضيّق النطاق أو فلتر بموظفٍ للحصول على رقمٍ نهائيّ.
+          </span>
+        </div>
+      )}
 
       {/* لقطاتٌ قديمة: السعر المخزَّن يخالف ملفّ الموظف الآن ⇒ المجاميع أعلاه من المخزَّن
           والأعمدة من الملفّ. زرٌّ واحدٌ يُطابقهما — وهو ضروريّ للساعيّ (لقطتُه وعاءُ أجره). */}
@@ -245,7 +292,8 @@ export default function Attendance() {
             <span className="font-medium text-[var(--sem-warn)]">
               {staleCount}{list.data?.staleScanCapped ? "+" : ""} صفّاً بسعرٍ مخزَّنٍ قديم
             </span> —
-            في شهر {monthLabel(activePeriod)} — كُتب قبل ضبط جدول دوام الموظف أو قبل تعديل راتبه.
+            في {stalePeriods.length > 1 ? stalePeriods.map(monthLabel).join(" و") : monthLabel(stalePeriods[0] ?? activePeriod)} —
+            كُتب قبل ضبط جدول دوام الموظف أو قبل تعديل راتبه.
             العدّ يشمل <span className="font-medium">الشهر كلَّه</span> لا اليوم المعروض ولا الصفحة،
             لأن الإصلاح شهريّ. الأعمدة
             تعرض سعر ملفّ الموظف الآن (وهو ما سيُدفع)، والمخزَّن مشطوبٌ بجانبه.
@@ -253,14 +301,11 @@ export default function Attendance() {
               أشهرُ المسيّرات المُقفَلة مستثناة — لقطتُها هي ما صُرف فعلاً فتبقى كما هي.
             </span>
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={recompute.isPending}
-            onClick={() => recompute.mutate({ period: activePeriod, employeeId: employeeId ? Number(employeeId) : undefined })}
-          >
+          <Button size="sm" variant="outline" disabled={fixing} onClick={() => void fixStalePeriods()}>
             <RefreshCw aria-hidden className="size-3.5" />
-            {recompute.isPending ? "جارٍ…" : `إعادة احتساب ${monthLabel(activePeriod)}`}
+            {fixing
+              ? "جارٍ…"
+              : `إعادة احتساب ${stalePeriods.length > 1 ? `${stalePeriods.length} أشهر` : monthLabel(stalePeriods[0] ?? activePeriod)}`}
           </Button>
         </div>
       )}
@@ -422,9 +467,9 @@ export default function Attendance() {
                 {rows.length > 0 && (
                   <tr className="border-t-2 border-border bg-muted/40 font-bold">
                     <td className="p-2.5" colSpan={5}>الإجمالي</td>
-                    <td className="p-2.5 text-center tabular-nums">{visHours.toNumber().toLocaleString("en-US")}</td>
+                    <td className="p-2.5 text-center tabular-nums">{approx(visHours.toNumber().toLocaleString("en-US"))}</td>
                     <td></td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(visAmount.toFixed(2))}</td>
+                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{approx(iqd(visAmount.toFixed(2)))}</td>
                     <td></td>
                   </tr>
                 )}
