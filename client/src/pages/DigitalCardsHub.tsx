@@ -6,6 +6,7 @@ const DigitalOfferings = lazy(() => import("@/pages/digitalCards/DigitalOffering
 const DigitalPricing = lazy(() => import("@/pages/digitalCards/DigitalPricing"));
 const DigitalProviders = lazy(() => import("@/pages/digitalCards/DigitalProviders"));
 const DigitalReview = lazy(() => import("@/pages/digitalCards/DigitalReview"));
+const DigitalSubscriptions = lazy(() => import("@/pages/digitalCards/DigitalSubscriptions"));
 const DigitalWallets = lazy(() => import("@/pages/digitalCards/DigitalWallets"));
 
 // البوّابة على مستوى المسار (RequireRole في App.tsx) تعكس digitalCardsAdminReadProcedure
@@ -17,6 +18,7 @@ const TABS: HubTab[] = [
   // المراجعة قبل التعريفات: عملياتٌ عالقة تنتظر قراراً، وتأخيرها يُجمّد رصيد محفظة.
   { value: "review", label: "المراجعة والتسويات", Component: DigitalReview },
   { value: "offerings", label: "البطاقات والاشتراكات", Component: DigitalOfferings },
+  { value: "subscriptions", label: "الاشتراكات وتجديداتها", Component: DigitalSubscriptions },
   { value: "providers", label: "المزوّدون", Component: DigitalProviders },
   { value: "wallets", label: "المحافظ", Component: DigitalWallets },
 ];

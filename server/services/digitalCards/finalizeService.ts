@@ -20,6 +20,7 @@ import {
   digitalOfferings,
   digitalProviders,
   digitalSaleDetails,
+  digitalSubscriptionContracts,
   digitalSaleIntentItems,
   digitalSaleIntents,
   digitalWalletReservations,
@@ -38,6 +39,7 @@ import type { PaymentMethod } from "../sale/types";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { commitStudent, type StudentSnapshot } from "./studentService";
+import { expiresAfter, previousContractId } from "./subscriptionService";
 
 export interface FinalizeInput {
   intentId: number;
@@ -153,7 +155,15 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
   /* معلومات العروض والمزوّدين والمحافظ (من القاعدة، لا من العميل). */
   const meta = new Map<
     number,
-    { providerId: number; settlementMode: string; walletId: number | null; variantId: number; productUnitId: number }
+    {
+      providerId: number;
+      settlementMode: string;
+      walletId: number | null;
+      variantId: number;
+      productUnitId: number;
+      offeringType: string;
+      subscriptionDurationDays: number | null;
+    }
   >();
   for (const it of items) {
     if (meta.has(Number(it.offeringId))) continue;
@@ -163,6 +173,8 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
         settlementMode: digitalProviders.settlementMode,
         variantId: digitalOfferings.variantId,
         productUnitId: digitalOfferings.productUnitId,
+        offeringType: digitalOfferings.offeringType,
+        subscriptionDurationDays: digitalOfferings.subscriptionDurationDays,
       })
       .from(digitalOfferings)
       .innerJoin(digitalProviders, eq(digitalOfferings.providerId, digitalProviders.id))
@@ -175,6 +187,8 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       walletId: null,
       variantId: Number(row.variantId),
       productUnitId: Number(row.productUnitId),
+      offeringType: row.offeringType,
+      subscriptionDurationDays: row.subscriptionDurationDays,
     });
   }
 
@@ -396,6 +410,35 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       studentAddressSnapshot: it.studentAddressSnapshot,
       walletTransactionId: walletTxId,
     });
+
+    if (m.offeringType === "EDUCATIONAL_SUBSCRIPTION") {
+      const studentCustomerId = studentByItem.get(Number(it.id));
+      const durationDays = m.subscriptionDurationDays;
+      if (studentCustomerId == null || durationDays == null || durationDays < 1) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "اشتراك تعليمي بلا طالب أو مدة — أوقف البيع وراجِع تعريف الاشتراك",
+        });
+      }
+      const startsAt = new Date();
+      await tx.insert(digitalSubscriptionContracts).values({
+        offeringId: Number(it.offeringId),
+        branchId: Number(intent.branchId),
+        invoiceId: sale.invoiceId,
+        invoiceItemId: Number(invItem.id),
+        studentCustomerId,
+        studentNameSnapshot: it.studentNameSnapshot ?? "طالب",
+        durationDays,
+        startsAt,
+        expiresAt: expiresAfter(startsAt, durationDays),
+        previousContractId: await previousContractId(
+          tx,
+          Number(it.offeringId),
+          studentCustomerId,
+        ),
+        createdBy: actor.userId,
+      });
+    }
   }
 
   /* ١٠. ربط النيّة بالفاتورة وجعلها FINALIZED. */

@@ -5,7 +5,11 @@ import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { createSupplier } from "../supplierService";
 import { withTx } from "../tx";
-import { offeringService, pricingService, providerService } from "../digitalCards";
+import {
+  offeringService,
+  pricingService,
+  providerService,
+} from "../digitalCards";
 
 /**
  * البطاقات الرقمية — ش٤: أسعار بداية اليوم (مسودّة/نسخ/نشر/مؤشّر/بلاغ تغيّر).
@@ -18,55 +22,112 @@ const DATE = "2026-07-29";
 const NEXT = "2026-07-30";
 
 const TABLES = [
-  "digitalPriceChangeReports", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
-  "digitalOfferingBranches", "digitalOfferings", "digitalWallets", "digitalProviders",
-  "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "products",
-  "auditLogs", "suppliers", "categories", "users", "branches",
+  "digitalPriceChangeReports",
+  "digitalCurrentPrices",
+  "digitalPriceVersions",
+  "digitalPriceBatches",
+  "digitalOfferingBranches",
+  "digitalOfferings",
+  "digitalWallets",
+  "digitalProviders",
+  "productPrices",
+  "productUnitBarcodes",
+  "productUnits",
+  "productVariants",
+  "products",
+  "auditLogs",
+  "suppliers",
+  "categories",
+  "users",
+  "branches",
 ];
 
-function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set for tests"); return d; }
+function db() {
+  const d = getDb();
+  if (!d) throw new Error("DATABASE_URL not set for tests");
+  return d;
+}
 
 async function seedBase() {
-  await db().insert(s.branches).values([
-    { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
-    { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
-  ]);
-  await db().insert(s.users).values([
-    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" },
-    { id: 2, openId: "local_mgr", name: "مدير آخر", role: "manager", loginMethod: "local" },
-  ]);
+  await db()
+    .insert(s.branches)
+    .values([
+      { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
+      { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
+    ]);
+  await db()
+    .insert(s.users)
+    .values([
+      {
+        id: 1,
+        openId: "local_test",
+        name: "admin",
+        role: "admin",
+        loginMethod: "local",
+      },
+      {
+        id: 2,
+        openId: "local_mgr",
+        name: "مدير آخر",
+        role: "manager",
+        loginMethod: "local",
+      },
+    ]);
 }
 
 async function mkProvider(name = "آسياسيل") {
   const { supplierId } = await createSupplier({ name }, actor);
   const { providerId } = await withTx((tx) =>
-    providerService.createProvider(tx, {
-      supplierId, providerType: "TELECOM", settlementMode: "PREPAID",
-      recognitionMode: "PRINCIPAL_GROSS", referencePolicy: "OPTIONAL", settlementCycle: "ON_DEMAND",
-    }, actor),
+    providerService.createProvider(
+      tx,
+      {
+        supplierId,
+        providerType: "TELECOM",
+        settlementMode: "PREPAID",
+        recognitionMode: "PRINCIPAL_GROSS",
+        referencePolicy: "OPTIONAL",
+        settlementCycle: "ON_DEMAND",
+      },
+      actor,
+    ),
   );
   return providerId;
 }
 
 async function mkOffering(
   providerId: number,
-  over: { name?: string; fixedMargin?: string; minimumMargin?: string; roundingStep?: string; branchIds?: number[] } = {},
+  over: {
+    name?: string;
+    fixedMargin?: string;
+    minimumMargin?: string;
+    roundingStep?: string;
+    branchIds?: number[];
+  } = {},
 ) {
-  const r = await withTx((tx) => offeringService.createOffering(tx, {
-    providerId,
-    offeringType: "TELECOM_CARD",
-    name: over.name ?? "كارت ١٠ آلاف",
-    pricingMode: "FIXED_MARGIN",
-    fixedMargin: over.fixedMargin ?? "500",
-    minimumMargin: over.minimumMargin ?? "0",
-    roundingStep: over.roundingStep ?? "250",
-    branches: (over.branchIds ?? [1]).map((branchId) => ({ branchId })),
-  }, actor));
+  const r = await withTx((tx) =>
+    offeringService.createOffering(
+      tx,
+      {
+        providerId,
+        offeringType: "TELECOM_CARD",
+        name: over.name ?? "كارت ١٠ آلاف",
+        pricingMode: "FIXED_MARGIN",
+        fixedMargin: over.fixedMargin ?? "500",
+        minimumMargin: over.minimumMargin ?? "0",
+        roundingStep: over.roundingStep ?? "250",
+        branches: (over.branchIds ?? [1]).map((branchId) => ({ branchId })),
+      },
+      actor,
+    ),
+  );
   return r.offeringId;
 }
 
 async function batchRow(id: number) {
-  const [b] = await db().select().from(s.digitalPriceBatches).where(eq(s.digitalPriceBatches.id, id));
+  const [b] = await db()
+    .select()
+    .from(s.digitalPriceBatches)
+    .where(eq(s.digitalPriceBatches.id, id));
   return b;
 }
 
@@ -80,11 +141,16 @@ async function currentPrice(branchId: number, offeringId: number) {
       validUntil: s.digitalPriceVersions.validUntil,
     })
     .from(s.digitalCurrentPrices)
-    .innerJoin(s.digitalPriceVersions, eq(s.digitalCurrentPrices.priceVersionId, s.digitalPriceVersions.id))
-    .where(and(
-      eq(s.digitalCurrentPrices.branchId, branchId),
-      eq(s.digitalCurrentPrices.offeringId, offeringId),
-    ));
+    .innerJoin(
+      s.digitalPriceVersions,
+      eq(s.digitalCurrentPrices.priceVersionId, s.digitalPriceVersions.id),
+    )
+    .where(
+      and(
+        eq(s.digitalCurrentPrices.branchId, branchId),
+        eq(s.digitalCurrentPrices.offeringId, offeringId),
+      ),
+    );
   return row ?? null;
 }
 
@@ -93,13 +159,20 @@ async function publishPrices(
   branchId: number,
   providerId: number,
   businessDate: string,
-  lines: { offeringId: number; providerShare: string }[],
+  lines: { offeringId: number; providerShare: string; sellPrice?: string }[],
   who = actor,
 ) {
   const { batchId } = await withTx((tx) =>
-    pricingService.createOrGetDraft(tx, { branchId, providerId, businessDate }, who));
+    pricingService.createOrGetDraft(
+      tx,
+      { branchId, providerId, businessDate },
+      who,
+    ),
+  );
   await withTx((tx) => pricingService.saveDraft(tx, { batchId, lines }, who));
-  const res = await withTx((tx) => pricingService.publish(tx, { batchId }, who));
+  const res = await withTx((tx) =>
+    pricingService.publish(tx, { batchId }, who),
+  );
   return { batchId, ...res };
 }
 
@@ -112,8 +185,12 @@ describe("ش٤ — المسودّة", () => {
   it("مسودّة واحدة فقط لكل (فرع×مزوّد×تاريخ) — الاستدعاء الثاني يعيد الأولى", async () => {
     const providerId = await mkProvider();
     const scope = { branchId: 1, providerId, businessDate: DATE };
-    const a = await withTx((tx) => pricingService.createOrGetDraft(tx, scope, actor));
-    const b = await withTx((tx) => pricingService.createOrGetDraft(tx, scope, actor));
+    const a = await withTx((tx) =>
+      pricingService.createOrGetDraft(tx, scope, actor),
+    );
+    const b = await withTx((tx) =>
+      pricingService.createOrGetDraft(tx, scope, actor),
+    );
     expect(a.created).toBe(true);
     expect(b.created).toBe(false);
     expect(b.batchId).toBe(a.batchId);
@@ -121,40 +198,88 @@ describe("ش٤ — المسودّة", () => {
 
   it("قيد القاعدة يمنع مسودّتين متوازيتين حتى بتجاوز الفحص التطبيقيّ", async () => {
     const providerId = await mkProvider();
-    await withTx((tx) => pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: DATE }, actor));
+    await withTx((tx) =>
+      pricingService.createOrGetDraft(
+        tx,
+        { branchId: 1, providerId, businessDate: DATE },
+        actor,
+      ),
+    );
     // إدراج مباشر يتخطّى الخدمة ⇒ يجب أن ترفضه القاعدة نفسها.
     await expect(
       db().insert(s.digitalPriceBatches).values({
-        branchId: 1, providerId, businessDate: DATE, status: "DRAFT", createdBy: 1,
+        branchId: 1,
+        providerId,
+        businessDate: DATE,
+        status: "DRAFT",
+        createdBy: 1,
       }),
     ).rejects.toThrow();
   });
 
-  it("الحفظ يشتقّ سعر البيع خادمياً من الحصة ولا يقبل سعراً من العميل", async () => {
+  it("يحفظ تكلفة الشراء وسعر البيع المدخلين ويحسب الربح منهما", async () => {
     const providerId = await mkProvider();
-    const offeringId = await mkOffering(providerId, { fixedMargin: "500", roundingStep: "250" });
+    const offeringId = await mkOffering(providerId, {
+      fixedMargin: "500",
+      roundingStep: "250",
+    });
     const { batchId } = await withTx((tx) =>
-      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: DATE }, actor));
-    await withTx((tx) => pricingService.saveDraft(tx, {
-      batchId, lines: [{ offeringId, providerShare: "9600" }],
-    }, actor));
+      pricingService.createOrGetDraft(
+        tx,
+        { branchId: 1, providerId, businessDate: DATE },
+        actor,
+      ),
+    );
+    await withTx((tx) =>
+      pricingService.saveDraft(
+        tx,
+        {
+          batchId,
+          lines: [{ offeringId, providerShare: "9600", sellPrice: "10150" }],
+        },
+        actor,
+      ),
+    );
 
-    const [v] = await db().select().from(s.digitalPriceVersions).where(eq(s.digitalPriceVersions.batchId, batchId));
-    // 9600 + 500 = 10100 ⇒ تقريب لأعلى لمضاعف ٢٥٠ = 10250 ⇒ الهامش 650
+    const [v] = await db()
+      .select()
+      .from(s.digitalPriceVersions)
+      .where(eq(s.digitalPriceVersions.batchId, batchId));
+    // التسعير اليومي المباشر لا يقرّب السعر ولا يشتقه من قاعدة ربح قديمة.
     expect(v.providerShare).toBe("9600.00");
-    expect(v.sellPrice).toBe("10250.00");
-    expect(v.marginAmount).toBe("650.00");
+    expect(v.sellPrice).toBe("10150.00");
+    expect(v.marginAmount).toBe("550.00");
   });
 
   it("إعادة الحفظ لنفس البطاقة تُحدِّث السطر ولا تُكرّره", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
     const { batchId } = await withTx((tx) =>
-      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: DATE }, actor));
-    await withTx((tx) => pricingService.saveDraft(tx, { batchId, lines: [{ offeringId, providerShare: "9000" }] }, actor));
-    await withTx((tx) => pricingService.saveDraft(tx, { batchId, lines: [{ offeringId, providerShare: "9500" }] }, actor));
+      pricingService.createOrGetDraft(
+        tx,
+        { branchId: 1, providerId, businessDate: DATE },
+        actor,
+      ),
+    );
+    await withTx((tx) =>
+      pricingService.saveDraft(
+        tx,
+        { batchId, lines: [{ offeringId, providerShare: "9000" }] },
+        actor,
+      ),
+    );
+    await withTx((tx) =>
+      pricingService.saveDraft(
+        tx,
+        { batchId, lines: [{ offeringId, providerShare: "9500" }] },
+        actor,
+      ),
+    );
 
-    const rows = await db().select().from(s.digitalPriceVersions).where(eq(s.digitalPriceVersions.batchId, batchId));
+    const rows = await db()
+      .select()
+      .from(s.digitalPriceVersions)
+      .where(eq(s.digitalPriceVersions.batchId, batchId));
     expect(rows).toHaveLength(1);
     expect(rows[0].providerShare).toBe("9500.00");
   });
@@ -164,9 +289,20 @@ describe("ش٤ — المسودّة", () => {
     const p2 = await mkProvider("زين");
     const foreign = await mkOffering(p2);
     const { batchId } = await withTx((tx) =>
-      pricingService.createOrGetDraft(tx, { branchId: 1, providerId: p1, businessDate: DATE }, actor));
+      pricingService.createOrGetDraft(
+        tx,
+        { branchId: 1, providerId: p1, businessDate: DATE },
+        actor,
+      ),
+    );
     await expect(
-      withTx((tx) => pricingService.saveDraft(tx, { batchId, lines: [{ offeringId: foreign, providerShare: "100" }] }, actor)),
+      withTx((tx) =>
+        pricingService.saveDraft(
+          tx,
+          { batchId, lines: [{ offeringId: foreign, providerShare: "100" }] },
+          actor,
+        ),
+      ),
     ).rejects.toThrow(/ليس ضمن بطاقات هذا المزوّد/);
   });
 
@@ -174,9 +310,20 @@ describe("ش٤ — المسودّة", () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
     const { batchId } = await withTx((tx) =>
-      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: DATE }, actor));
+      pricingService.createOrGetDraft(
+        tx,
+        { branchId: 1, providerId, businessDate: DATE },
+        actor,
+      ),
+    );
     await expect(
-      withTx((tx) => pricingService.saveDraft(tx, { batchId, lines: [{ offeringId, providerShare: "-1" }] }, actor)),
+      withTx((tx) =>
+        pricingService.saveDraft(
+          tx,
+          { batchId, lines: [{ offeringId, providerShare: "-1" }] },
+          actor,
+        ),
+      ),
     ).rejects.toThrow(/سالبة/);
   });
 });
@@ -187,9 +334,12 @@ describe("ش٤ — النشر", () => {
     const offeringId = await mkOffering(providerId);
     expect(await currentPrice(1, offeringId)).toBeNull();
 
-    const { batchId, publishedCount } = await publishPrices(1, providerId, DATE, [
-      { offeringId, providerShare: "9500" },
-    ]);
+    const { batchId, publishedCount } = await publishPrices(
+      1,
+      providerId,
+      DATE,
+      [{ offeringId, providerShare: "9500" }],
+    );
     expect(publishedCount).toBe(1);
     expect((await batchRow(batchId)).status).toBe("PUBLISHED");
 
@@ -203,23 +353,51 @@ describe("ش٤ — النشر", () => {
     const a = await mkOffering(providerId, { name: "كارت أ" });
     await mkOffering(providerId, { name: "كارت ب" });
     const { batchId } = await withTx((tx) =>
-      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: DATE }, actor));
-    await withTx((tx) => pricingService.saveDraft(tx, { batchId, lines: [{ offeringId: a, providerShare: "9500" }] }, actor));
+      pricingService.createOrGetDraft(
+        tx,
+        { branchId: 1, providerId, businessDate: DATE },
+        actor,
+      ),
+    );
+    await withTx((tx) =>
+      pricingService.saveDraft(
+        tx,
+        { batchId, lines: [{ offeringId: a, providerShare: "9500" }] },
+        actor,
+      ),
+    );
 
-    await expect(withTx((tx) => pricingService.publish(tx, { batchId }, actor)))
-      .rejects.toThrow(/أسعار ناقصة/);
+    await expect(
+      withTx((tx) => pricingService.publish(tx, { batchId }, actor)),
+    ).rejects.toThrow(/أسعار ناقصة/);
     expect((await batchRow(batchId)).status).toBe("DRAFT");
   });
 
   it("يرفض النشر إن نزل الهامش عن الحدّ الأدنى، ولا يترك أثراً جزئياً", async () => {
     const providerId = await mkProvider();
-    const offeringId = await mkOffering(providerId, { fixedMargin: "100", minimumMargin: "500", roundingStep: "0" });
+    const offeringId = await mkOffering(providerId, {
+      fixedMargin: "100",
+      minimumMargin: "500",
+      roundingStep: "0",
+    });
     const { batchId } = await withTx((tx) =>
-      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: DATE }, actor));
-    await withTx((tx) => pricingService.saveDraft(tx, { batchId, lines: [{ offeringId, providerShare: "9000" }] }, actor));
+      pricingService.createOrGetDraft(
+        tx,
+        { branchId: 1, providerId, businessDate: DATE },
+        actor,
+      ),
+    );
+    await withTx((tx) =>
+      pricingService.saveDraft(
+        tx,
+        { batchId, lines: [{ offeringId, providerShare: "9000" }] },
+        actor,
+      ),
+    );
 
-    await expect(withTx((tx) => pricingService.publish(tx, { batchId }, actor)))
-      .rejects.toThrow(/أقلّ من الحدّ الأدنى/);
+    await expect(
+      withTx((tx) => pricingService.publish(tx, { batchId }, actor)),
+    ).rejects.toThrow(/أقلّ من الحدّ الأدنى/);
     expect((await batchRow(batchId)).status).toBe("DRAFT");
     expect(await currentPrice(1, offeringId)).toBeNull();
   });
@@ -227,22 +405,31 @@ describe("ش٤ — النشر", () => {
   it("النشر مرّتين للدُفعة نفسها مرفوض (لا نشر مزدوج)", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
-    const { batchId } = await publishPrices(1, providerId, DATE, [{ offeringId, providerShare: "9500" }]);
-    await expect(withTx((tx) => pricingService.publish(tx, { batchId }, actor)))
-      .rejects.toThrow(/ليست مسودّة/);
+    const { batchId } = await publishPrices(1, providerId, DATE, [
+      { offeringId, providerShare: "9500" },
+    ]);
+    await expect(
+      withTx((tx) => pricingService.publish(tx, { batchId }, actor)),
+    ).rejects.toThrow(/ليست مسودّة/);
   });
 
   it("نشر دُفعة جديدة يُسوّد السابقة ويغلق سريان نسخها ويحوّل المؤشّر", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
-    const first = await publishPrices(1, providerId, DATE, [{ offeringId, providerShare: "9500" }]);
+    const first = await publishPrices(1, providerId, DATE, [
+      { offeringId, providerShare: "9500" },
+    ]);
     const firstVersionId = (await currentPrice(1, offeringId))!.priceVersionId;
 
-    const second = await publishPrices(1, providerId, NEXT, [{ offeringId, providerShare: "9750" }]);
+    const second = await publishPrices(1, providerId, NEXT, [
+      { offeringId, providerShare: "9750" },
+    ]);
     expect(second.supersededBatchId).toBe(first.batchId);
     expect((await batchRow(first.batchId)).status).toBe("SUPERSEDED");
 
-    const [oldVersion] = await db().select().from(s.digitalPriceVersions)
+    const [oldVersion] = await db()
+      .select()
+      .from(s.digitalPriceVersions)
       .where(eq(s.digitalPriceVersions.id, Number(firstVersionId)));
     expect(oldVersion.validUntil).not.toBeNull();
     // النسخة القديمة تبقى محفوظةً كما هي (تاريخيّة غير قابلة للتعديل).
@@ -258,10 +445,16 @@ describe("ش٤ — النشر", () => {
   it("قيد القاعدة يمنع وجود دُفعتين منشورتين لنفس (الفرع×المزوّد)", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
-    await publishPrices(1, providerId, DATE, [{ offeringId, providerShare: "9500" }]);
+    await publishPrices(1, providerId, DATE, [
+      { offeringId, providerShare: "9500" },
+    ]);
     await expect(
       db().insert(s.digitalPriceBatches).values({
-        branchId: 1, providerId, businessDate: NEXT, status: "PUBLISHED", createdBy: 1,
+        branchId: 1,
+        providerId,
+        businessDate: NEXT,
+        status: "PUBLISHED",
+        createdBy: 1,
       }),
     ).rejects.toThrow();
   });
@@ -269,8 +462,12 @@ describe("ش٤ — النشر", () => {
   it("الفروع مستقلّة: نشر في فرع لا يمسّ سعر الفرع الآخر", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId, { branchIds: [1, 2] });
-    await publishPrices(1, providerId, DATE, [{ offeringId, providerShare: "9500" }]);
-    await publishPrices(2, providerId, DATE, [{ offeringId, providerShare: "9750" }]);
+    await publishPrices(1, providerId, DATE, [
+      { offeringId, providerShare: "9500" },
+    ]);
+    await publishPrices(2, providerId, DATE, [
+      { offeringId, providerShare: "9750" },
+    ]);
 
     expect((await currentPrice(1, offeringId))!.providerShare).toBe("9500.00");
     expect((await currentPrice(2, offeringId))!.providerShare).toBe("9750.00");
@@ -281,14 +478,32 @@ describe("ش٤ — النشر", () => {
     const a = await mkOffering(providerId, { name: "كارت أ" });
     const b = await mkOffering(providerId, { name: "كارت ب" });
     const { batchId } = await withTx((tx) =>
-      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: DATE }, actor));
-    await withTx((tx) => pricingService.saveDraft(tx, {
-      batchId,
-      lines: [{ offeringId: a, providerShare: "9500" }, { offeringId: b, providerShare: "9500" }],
-    }, actor));
-    await withTx((tx) => offeringService.updateOffering(tx, { id: b, isActive: false }, actor));
+      pricingService.createOrGetDraft(
+        tx,
+        { branchId: 1, providerId, businessDate: DATE },
+        actor,
+      ),
+    );
+    await withTx((tx) =>
+      pricingService.saveDraft(
+        tx,
+        {
+          batchId,
+          lines: [
+            { offeringId: a, providerShare: "9500" },
+            { offeringId: b, providerShare: "9500" },
+          ],
+        },
+        actor,
+      ),
+    );
+    await withTx((tx) =>
+      offeringService.updateOffering(tx, { id: b, isActive: false }, actor),
+    );
 
-    const res = await withTx((tx) => pricingService.publish(tx, { batchId }, actor));
+    const res = await withTx((tx) =>
+      pricingService.publish(tx, { batchId }, actor),
+    );
     expect(res.publishedCount).toBe(1);
     expect(await currentPrice(1, b)).toBeNull();
     expect((await currentPrice(1, a))!.sellPrice).toBe("10000.00");
@@ -297,15 +512,33 @@ describe("ش٤ — النشر", () => {
   it("إلغاء المسودّة يمسح سطورها ولا يمسّ السعر النافذ", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
-    await publishPrices(1, providerId, DATE, [{ offeringId, providerShare: "9500" }]);
+    await publishPrices(1, providerId, DATE, [
+      { offeringId, providerShare: "9500" },
+    ]);
 
     const { batchId } = await withTx((tx) =>
-      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: NEXT }, actor));
-    await withTx((tx) => pricingService.saveDraft(tx, { batchId, lines: [{ offeringId, providerShare: "8000" }] }, actor));
+      pricingService.createOrGetDraft(
+        tx,
+        { branchId: 1, providerId, businessDate: NEXT },
+        actor,
+      ),
+    );
+    await withTx((tx) =>
+      pricingService.saveDraft(
+        tx,
+        { batchId, lines: [{ offeringId, providerShare: "8000" }] },
+        actor,
+      ),
+    );
     await withTx((tx) => pricingService.cancelDraft(tx, { batchId }, actor));
 
     expect((await batchRow(batchId)).status).toBe("CANCELLED");
-    expect(await db().select().from(s.digitalPriceVersions).where(eq(s.digitalPriceVersions.batchId, batchId))).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.digitalPriceVersions)
+        .where(eq(s.digitalPriceVersions.batchId, batchId)),
+    ).toHaveLength(0);
     expect((await currentPrice(1, offeringId))!.providerShare).toBe("9500.00");
   });
 });
@@ -321,38 +554,70 @@ describe("ش٤ — النسخ وكشف الصباح", () => {
     ]);
 
     const res = await withTx((tx) =>
-      pricingService.copyPrevious(tx, { branchId: 1, providerId, businessDate: NEXT }, actor));
+      pricingService.copyPrevious(
+        tx,
+        { branchId: 1, providerId, businessDate: NEXT },
+        actor,
+      ),
+    );
     expect(res.copiedCount).toBe(2);
     expect(res.skippedCount).toBe(0);
 
-    const sheet = await pricingService.getMorningSheet(db(), { branchId: 1, providerId, businessDate: NEXT });
+    const sheet = await pricingService.getMorningSheet(db(), {
+      branchId: 1,
+      providerId,
+      businessDate: NEXT,
+    });
     expect(sheet.missingCount).toBe(0);
-    expect(sheet.rows.find((r) => r.offeringId === a)?.draftProviderShare).toBe("9500.00");
-    expect(sheet.rows.find((r) => r.offeringId === b)?.draftProviderShare).toBe("4500.00");
+    expect(sheet.rows.find((r) => r.offeringId === a)?.draftProviderShare).toBe(
+      "9500.00",
+    );
+    expect(sheet.rows.find((r) => r.offeringId === b)?.draftProviderShare).toBe(
+      "4500.00",
+    );
   });
 
   it("بطاقة جديدة بلا سعر سابق تظهر NEEDS_INPUT وتُحصى في النواقص", async () => {
     const providerId = await mkProvider();
     const a = await mkOffering(providerId, { name: "كارت أ" });
-    await publishPrices(1, providerId, DATE, [{ offeringId: a, providerShare: "9500" }]);
+    await publishPrices(1, providerId, DATE, [
+      { offeringId: a, providerShare: "9500" },
+    ]);
     const fresh = await mkOffering(providerId, { name: "كارت جديد" });
 
     const res = await withTx((tx) =>
-      pricingService.copyPrevious(tx, { branchId: 1, providerId, businessDate: NEXT }, actor));
+      pricingService.copyPrevious(
+        tx,
+        { branchId: 1, providerId, businessDate: NEXT },
+        actor,
+      ),
+    );
     expect(res.copiedCount).toBe(1);
     expect(res.skippedCount).toBe(1);
 
-    const sheet = await pricingService.getMorningSheet(db(), { branchId: 1, providerId, businessDate: NEXT });
+    const sheet = await pricingService.getMorningSheet(db(), {
+      branchId: 1,
+      providerId,
+      businessDate: NEXT,
+    });
     expect(sheet.missingCount).toBe(1);
-    expect(sheet.rows.find((r) => r.offeringId === fresh)?.status).toBe("NEEDS_INPUT");
+    expect(sheet.rows.find((r) => r.offeringId === fresh)?.status).toBe(
+      "NEEDS_INPUT",
+    );
   });
 
   it("كشف الصباح بلا مسودّة يعرض السعر المُرحَّل (CARRIED_OVER)", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
-    await publishPrices(1, providerId, DATE, [{ offeringId, providerShare: "9500" }]);
+    await publishPrices(1, providerId, DATE, [
+      { offeringId, providerShare: "9500" },
+    ]);
 
-    const sheet = await pricingService.getMorningSheet(db(), { branchId: 1, providerId, businessDate: NEXT });
+    const sheet = await pricingService.getMorningSheet(db(), {
+      branchId: 1,
+      providerId,
+      businessDate: NEXT,
+    });
     expect(sheet.batch).toBeNull();
     expect(sheet.missingCount).toBe(0);
     const row = sheet.rows[0];
@@ -366,24 +631,50 @@ describe("ش٤ — بلاغ تغيّر السعر", () => {
   it("الكاشير يُبلّغ، والمدير يعتمد ⇒ نسخة جديدة تُنشر ولا يُعدَّل الإصدار القديم", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
-    await publishPrices(1, providerId, DATE, [{ offeringId, providerShare: "9500" }]);
-    const oldVersionId = Number((await currentPrice(1, offeringId))!.priceVersionId);
+    await publishPrices(1, providerId, DATE, [
+      { offeringId, providerShare: "9500" },
+    ]);
+    const oldVersionId = Number(
+      (await currentPrice(1, offeringId))!.priceVersionId,
+    );
 
-    const { reportId } = await withTx((tx) => pricingService.reportMismatch(tx, {
-      branchId: 1, offeringId, reportedProviderShare: "9750", notes: "الجهاز يعرض ٩٧٥٠",
-    }, actor));
+    const { reportId } = await withTx((tx) =>
+      pricingService.reportMismatch(
+        tx,
+        {
+          branchId: 1,
+          offeringId,
+          reportedProviderShare: "9750",
+          notes: "الجهاز يعرض ٩٧٥٠",
+        },
+        actor,
+      ),
+    );
 
-    const open = await pricingService.listMismatchReports(db(), { branchId: 1, status: "OPEN" });
+    const open = await pricingService.listMismatchReports(db(), {
+      branchId: 1,
+      status: "OPEN",
+    });
     expect(open).toHaveLength(1);
     expect(open[0].reportedProviderShare).toBe("9750.00");
     expect(open[0].currentProviderShare).toBe("9500.00");
 
-    const res = await withTx((tx) => pricingService.approveMismatch(tx, {
-      reportId, businessDate: NEXT,
-    }, actor2));
+    const res = await withTx((tx) =>
+      pricingService.approveMismatch(
+        tx,
+        {
+          reportId,
+          businessDate: NEXT,
+        },
+        actor2,
+      ),
+    );
 
     // الإصدار القديم محفوظ كما هو، والمؤشّر تحوّل للجديد.
-    const [oldV] = await db().select().from(s.digitalPriceVersions).where(eq(s.digitalPriceVersions.id, oldVersionId));
+    const [oldV] = await db()
+      .select()
+      .from(s.digitalPriceVersions)
+      .where(eq(s.digitalPriceVersions.id, oldVersionId));
     expect(oldV.providerShare).toBe("9500.00");
     expect(oldV.validUntil).not.toBeNull();
 
@@ -397,12 +688,28 @@ describe("ش٤ — بلاغ تغيّر السعر", () => {
   it("الرفض لا يمسّ أيّ سعر", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
-    await publishPrices(1, providerId, DATE, [{ offeringId, providerShare: "9500" }]);
-    const { reportId } = await withTx((tx) => pricingService.reportMismatch(tx, {
-      branchId: 1, offeringId, reportedProviderShare: "9750",
-    }, actor));
+    await publishPrices(1, providerId, DATE, [
+      { offeringId, providerShare: "9500" },
+    ]);
+    const { reportId } = await withTx((tx) =>
+      pricingService.reportMismatch(
+        tx,
+        {
+          branchId: 1,
+          offeringId,
+          reportedProviderShare: "9750",
+        },
+        actor,
+      ),
+    );
 
-    await withTx((tx) => pricingService.rejectMismatch(tx, { reportId, notes: "لا تغيير فعليّ" }, actor2));
+    await withTx((tx) =>
+      pricingService.rejectMismatch(
+        tx,
+        { reportId, notes: "لا تغيير فعليّ" },
+        actor2,
+      ),
+    );
 
     expect((await currentPrice(1, offeringId))!.providerShare).toBe("9500.00");
     expect(await pricingService.openMismatchCount(db(), 1)).toBe(0);
@@ -411,35 +718,79 @@ describe("ش٤ — بلاغ تغيّر السعر", () => {
   it("معالجة البلاغ مرّتين مرفوضة", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
-    await publishPrices(1, providerId, DATE, [{ offeringId, providerShare: "9500" }]);
-    const { reportId } = await withTx((tx) => pricingService.reportMismatch(tx, {
-      branchId: 1, offeringId, reportedProviderShare: "9750",
-    }, actor));
-    await withTx((tx) => pricingService.rejectMismatch(tx, { reportId }, actor2));
-    await expect(withTx((tx) => pricingService.rejectMismatch(tx, { reportId }, actor2)))
-      .rejects.toThrow(/عولِج مسبقاً/);
+    await publishPrices(1, providerId, DATE, [
+      { offeringId, providerShare: "9500" },
+    ]);
+    const { reportId } = await withTx((tx) =>
+      pricingService.reportMismatch(
+        tx,
+        {
+          branchId: 1,
+          offeringId,
+          reportedProviderShare: "9750",
+        },
+        actor,
+      ),
+    );
+    await withTx((tx) =>
+      pricingService.rejectMismatch(tx, { reportId }, actor2),
+    );
+    await expect(
+      withTx((tx) => pricingService.rejectMismatch(tx, { reportId }, actor2)),
+    ).rejects.toThrow(/عولِج مسبقاً/);
   });
 
   it("الاعتماد يُرفض إن كانت هناك مسودّة مفتوحة لليوم نفسه (حارس فقد بيانات)", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
-    await publishPrices(1, providerId, DATE, [{ offeringId, providerShare: "9500" }]);
-    const { reportId } = await withTx((tx) => pricingService.reportMismatch(tx, {
-      branchId: 1, offeringId, reportedProviderShare: "9750",
-    }, actor));
+    await publishPrices(1, providerId, DATE, [
+      { offeringId, providerShare: "9500" },
+    ]);
+    const { reportId } = await withTx((tx) =>
+      pricingService.reportMismatch(
+        tx,
+        {
+          branchId: 1,
+          offeringId,
+          reportedProviderShare: "9750",
+        },
+        actor,
+      ),
+    );
 
     // مديرٌ آخر في منتصف إدخال مسودّة الغد.
     const { batchId } = await withTx((tx) =>
-      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: NEXT }, actor2));
-    await withTx((tx) => pricingService.saveDraft(tx, {
-      batchId, lines: [{ offeringId, providerShare: "8888" }],
-    }, actor2));
+      pricingService.createOrGetDraft(
+        tx,
+        { branchId: 1, providerId, businessDate: NEXT },
+        actor2,
+      ),
+    );
+    await withTx((tx) =>
+      pricingService.saveDraft(
+        tx,
+        {
+          batchId,
+          lines: [{ offeringId, providerShare: "8888" }],
+        },
+        actor2,
+      ),
+    );
 
-    await expect(withTx((tx) => pricingService.approveMismatch(tx, { reportId, businessDate: NEXT }, actor2)))
-      .rejects.toThrow(/مسودّة أسعار مفتوحة/);
+    await expect(
+      withTx((tx) =>
+        pricingService.approveMismatch(
+          tx,
+          { reportId, businessDate: NEXT },
+          actor2,
+        ),
+      ),
+    ).rejects.toThrow(/مسودّة أسعار مفتوحة/);
 
     // مسودّة المدير الآخر سليمة ولم تُطمَس.
-    const [line] = await db().select().from(s.digitalPriceVersions)
+    const [line] = await db()
+      .select()
+      .from(s.digitalPriceVersions)
       .where(eq(s.digitalPriceVersions.batchId, batchId));
     expect(line.providerShare).toBe("8888.00");
   });
@@ -447,8 +798,18 @@ describe("ش٤ — بلاغ تغيّر السعر", () => {
   it("بلاغ لبطاقة بلا سعر نافذ مرفوض", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
-    await expect(withTx((tx) => pricingService.reportMismatch(tx, {
-      branchId: 1, offeringId, reportedProviderShare: "9750",
-    }, actor))).rejects.toThrow(/لا سعر نافذ/);
+    await expect(
+      withTx((tx) =>
+        pricingService.reportMismatch(
+          tx,
+          {
+            branchId: 1,
+            offeringId,
+            reportedProviderShare: "9750",
+          },
+          actor,
+        ),
+      ),
+    ).rejects.toThrow(/لا سعر نافذ/);
   });
 });
