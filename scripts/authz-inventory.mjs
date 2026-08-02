@@ -30,6 +30,8 @@ const OUT_DIR = join(ROOT, "docs", "authz");
 const PROCEDURES = {
   publicProcedure:            { authority: "none",        module: null,          level: null,   roles: [],                                          branch: false },
   protectedProcedure:         { authority: "none",        module: null,          level: null,   roles: [],                                          branch: false },
+  // تكليف جرد ذاتي: ليست صلاحية مخزون عامة؛ handler يربط كل استعلام بالمستخدم المكلّف.
+  stocktakeAssignmentProcedure:{authority: "self-assignment", module: "inventory", level: "ASSIGNED", roles: ["assigned-user"],                           branch: "self" },
   branchScopedProcedure:      { authority: "none",        module: null,          level: null,   roles: [],                                          branch: "scoped" },
   adminProcedure:             { authority: "admin",       module: null,          level: null,   roles: ["admin"],                                   branch: false },
   platformAdminProcedure:     { authority: "platform",    module: null,          level: null,   roles: ["platformAdmin"],                           branch: false },

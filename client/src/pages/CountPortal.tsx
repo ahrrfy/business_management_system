@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { useParams } from "wouter";
+import { useLocation, useParams } from "wouter";
 import { TRPCClientError } from "@trpc/client";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { trpc } from "@/lib/trpc";
@@ -99,7 +99,11 @@ function BrandMark() {
 export default function CountPortal() {
   const params = useParams<{ code?: string }>();
   const code = decodeURIComponent(params.code ?? "").trim();
+  const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  // رابط /count مخصص للعامل الخارجي فقط. إذا كان المتصفح يحمل حساب نظام،
+  // ننقله إلى مساحة الحاسوب كي لا يظهر له PIN أو واجهة الهاتف.
+  const account = trpc.auth.me.useQuery(undefined, { retry: false });
 
   const [phase, setPhase] = useState<"boot" | "pin" | "counting" | "paused">("boot");
   const [bootOffline, setBootOffline] = useState(false);
@@ -125,6 +129,12 @@ export default function CountPortal() {
       document.title = prev;
     };
   }, []);
+
+  useEffect(() => {
+    if (account.data && code) navigate(`/my-stocktake/${encodeURIComponent(code)}`, { replace: true });
+  }, [account.data, code, navigate]);
+
+  if (account.data) return null;
 
   /* ── الدخول الصامت: كوكي سارٍ ⇒ مباشرة، وإلا auth بلا PIN (مستخدم نظام بتكليف USER)، وإلا شاشة PIN ── */
   const boot = useCallback(async () => {

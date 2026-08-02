@@ -161,7 +161,7 @@ export default function StocktakeNew() {
   const [pickQ, setPickQ] = useState("");
 
   const [workers, setWorkers] = useState<WorkerRow[]>([
-    { key: "w1", name: "", method: "PIN", userId: "", zone: "" },
+    { key: "w1", name: "", method: "USER", userId: "", zone: "" },
   ]);
 
   const [thresholdPct, setThresholdPct] = useState(DEFAULT_THRESHOLD_PCT);
@@ -726,7 +726,15 @@ export default function StocktakeNew() {
                         className="max-w-sm"
                         value={w.userId}
                         onValueChange={(v) =>
-                          setWorkers(workers.map((x) => (x.key === w.key ? { ...x, userId: v } : x)))
+                          setWorkers(
+                            workers.map((x) => {
+                              if (x.key !== w.key) return x;
+                              // يكفي اختيار الحساب في التكليف الداخلي؛ ننسخ اسمه
+                              // تلقائياً ما لم يكتب المسؤول اسماً مخصصاً للعرض.
+                              const selectedUser = userOptions.find((u) => String(u.id) === v);
+                              return { ...x, userId: v, name: x.name.trim() || selectedUser?.name || "" };
+                            }),
+                          )
                         }
                       >
                         <option value="">— اختر حساباً —</option>
@@ -754,7 +762,7 @@ export default function StocktakeNew() {
               onClick={() =>
                 setWorkers([
                   ...workers,
-                  { key: `w${workers.length + 1}-${Date.now()}`, name: "", method: "PIN", userId: "", zone: "" },
+                  { key: `w${workers.length + 1}-${Date.now()}`, name: "", method: "USER", userId: "", zone: "" },
                 ])
               }
             >
