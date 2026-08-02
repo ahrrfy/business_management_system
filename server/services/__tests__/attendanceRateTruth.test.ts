@@ -18,6 +18,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
+  attendanceSummary,
   formOptions,
   listAttendance,
   rateForDayDetailed,
@@ -202,6 +203,42 @@ describe("صدق العدّاد والقفل والفصل", () => {
     const list = await listAttendance({ period: "2026-08" });
     expect(Number(list.rows[0].amount)).toBe(0); // المسيّر يستبعده ⇒ فليقُل العرضُ ذلك
     expect(list.rows[0].rateStale).toBe(true); // ومبلغُه المخزَّن يحتاج تصفيراً
+  });
+
+  // قرار المالك (١/٨): «سجلّ الحضور يجب أن يكون الافتراضيّ تاريخ اليوم مع إمكانية البحث
+  // والاستعلام عن بقية التواريخ» ⇒ مدىً صريح يتقدّم على الشهر.
+  it("ص١٤) مدى يومٍ واحد يُرجع صفوف ذلك اليوم وحده", async () => {
+    await recordAttendance({ employeeId: 1, attendanceDate: "2026-08-01", hours: 7, source: "manual" });
+    await recordAttendance({ employeeId: 1, attendanceDate: "2026-08-02", hours: 6, source: "manual" });
+
+    const day = await listAttendance({ dateFrom: "2026-08-02", dateTo: "2026-08-02" });
+    expect(day.total).toBe(1);
+    expect(day.rows[0].attendanceDate).toBe("2026-08-02");
+    expect(Number(day.totals.hours)).toBe(6); // والمجاميع تتبع المدى لا الشهر
+
+    const month = await listAttendance({ period: "2026-08" });
+    expect(month.total).toBe(2); // والشهر ما زال متاحاً بالاستعلام
+  });
+
+  it("ص١٦) المجاميع حيّةٌ كالأعمدة — لا مجموعَ لقطاتٍ فوق صفوفٍ تقول غيره", async () => {
+    await seedStaleDay("2026-08-01"); // مخزَّنُها ٤٢٬٠٠٠ والحيّ ١٣٬٣٣٥
+    const list = await listAttendance({ period: "2026-08" });
+    expect(Number(list.rows[0].amount)).toBe(13335);
+    expect(Number(list.totals.amount)).toBe(13335); // ذيلُ الجدول يطابق صفَّه
+    const sum = await attendanceSummary({ period: "2026-08" });
+    expect(Number(sum.amount)).toBe(13335); // وبطاقةُ «المبلغ المستحقّ» كذلك
+  });
+
+  it("ص١٥) عدّاد الإصلاح يشمل الشهر كلَّه ولو كان المعروض يوماً نظيفاً", async () => {
+    await seedStaleDay("2026-08-01"); // لقطةٌ قديمة في يومٍ آخر
+    await recordAttendance({ employeeId: 1, attendanceDate: "2026-08-02", hours: 6, source: "manual" });
+
+    // النظر إلى يوم ٢ (نظيف) لا يُخفي أنّ في الشهر ما يحتاج إصلاحاً — والزرّ شهريّ.
+    const day = await listAttendance({ dateFrom: "2026-08-02", dateTo: "2026-08-02" });
+    expect(day.rows).toHaveLength(1);
+    expect(day.rows[0].rateStale).toBe(false);
+    expect(day.staleCount).toBe(1);
+    expect(day.stalePeriod).toBe("2026-08");
   });
 
   it("ص١٣) الأجر يُضرب بالسعر الخام لا المُقرَّب — مطابقةً لما يُخزَّن (فرق الدينار)", async () => {
