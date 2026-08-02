@@ -491,6 +491,8 @@ export async function getQuotation(quotationId: number) {
       productName: products.name,
       sku: productVariants.sku,
       variantName: productVariants.variantName,
+      // التكلفة الحالية للوحدة الأساس؛ راوتر العرض يحجبها عن غير المخوّلين قبل الإرسال.
+      costBase: productVariants.costPrice,
       unitName: productUnits.unitName,
       conversionFactor: productUnits.conversionFactor,
       barcode: productUnits.barcode,

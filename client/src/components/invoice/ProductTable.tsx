@@ -9,13 +9,20 @@
  * فقط باسم «حصة الضريبة» بجانب «الإجمالي»؛ خلاف ذلك يُخفى العمود تماماً.
  */
 import type { Dispatch } from "react";
-import { Package, ShoppingCart, X } from "lucide-react";
+import { AlertTriangle, Package, ShoppingCart, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { calcLineTotal, calcMargin, fmtNum } from "./totals";
 import { ProductSearchBar } from "./ProductSearchBar";
 import type { Currency, InvoiceAction, InvoiceLine, InvoiceType, PriceTier } from "./types";
+
+/** مرجع تاريخي لسعر الشراء، مصدره أوامر شراء مؤكدة/مستلمة فقط. */
+export interface PurchasePriceInsight {
+  lastPurchase: { price: string; supplierId: number; supplierName: string; purchaseOrderId: number; orderDate: Date | string };
+  lowestPurchase: { price: string; supplierId: number; supplierName: string; purchaseOrderId: number; orderDate: Date | string };
+  selectedSupplierLastPurchase?: { price: string; supplierId: number; supplierName: string; purchaseOrderId: number; orderDate: Date | string };
+}
 
 export interface ProductTableProps {
   items: InvoiceLine[];
@@ -27,6 +34,8 @@ export interface ProductTableProps {
   showCost: boolean;
   purchaseCurrency?: Currency;
   purchaseRate?: string;
+  /** مقارنة سعر الشراء بسجلّ الأوامر المعتمدة، مفهرسة بـ variantId:productUnitId. */
+  purchasePriceInsights?: Record<string, PurchasePriceInsight>;
   /**
    * حصص الضريبة الموزَّعة لكل سطر (عرض فقط). مصفوفة نصوص decimal 2dp بطول `items` بالضبط
    * (يحسبها الأب عبر `allocateLineTax(items.map(i => ({total: calcLineTotal(i)})), totals.totalTax,
@@ -122,6 +131,7 @@ export function ProductTable({
   showCost,
   purchaseCurrency = "IQD",
   purchaseRate = "",
+  purchasePriceInsights,
   taxShares,
   onOpenBulkPicker,
   onNotify,
@@ -142,6 +152,18 @@ export function ProductTable({
   const colCount = 10 + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0) + (showIqdEquivalent ? 1 : 0);
 
   const totalQty = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
+
+  /**
+   * كلّ سجلّ التاريخ يعاد بالدينار (القيمة الدفترية الموحّدة). عند إدخال فاتورة دولار
+   * نحوّل ما يكتبه الموظف بسعر التثبيت الحالي كي لا نقارن الدولار بالدينار خطأً.
+   */
+  const priceAsIqd = (price: string) => {
+    const numeric = Number(price);
+    if (!Number.isFinite(numeric)) return null;
+    if (purchaseCurrency !== "USD") return numeric;
+    const rate = Number(purchaseRate);
+    return Number.isFinite(rate) && rate > 0 ? numeric * rate : null;
+  };
 
   // حالة المخزون لكل صنف (مَشابهة POS/Reception). الـPurchase لا تَنطبق عليه دلالياً.
   // الطلب الكلّي لكل variant عبر كل وحداته في السلّة (رصيد الفرع مُشترك بين القطعة/الدرزن/الكرتون).
@@ -248,6 +270,16 @@ export function ProductTable({
               const margin = calcMargin(item);
               const marginNum = Number(margin);
               const stock = stockState(item);
+              const purchaseInsight = isPurchase
+                ? purchasePriceInsights?.[`${item.variantId}:${item.productUnitId}`]
+                : undefined;
+              const enteredPriceIqd = priceAsIqd(item.costBase || item.price);
+              const lowestPriceIqd = purchaseInsight ? Number(purchaseInsight.lowestPurchase.price) : null;
+              const supplierLastPriceIqd = purchaseInsight?.selectedSupplierLastPurchase
+                ? Number(purchaseInsight.selectedSupplierLastPurchase.price)
+                : null;
+              const isAboveHistoricalLow = enteredPriceIqd != null && lowestPriceIqd != null && enteredPriceIqd > lowestPriceIqd;
+              const isBelowHistoricalLow = enteredPriceIqd != null && lowestPriceIqd != null && enteredPriceIqd > 0 && enteredPriceIqd < lowestPriceIqd;
               return (
                 <tr
                   key={`${item.productUnitId}-${idx}`}
@@ -276,6 +308,36 @@ export function ProductTable({
                       )}
                     </div>
                     <div className="mt-0.5 text-[11px] text-muted-foreground">{item.sku}</div>
+                    {purchaseInsight && (
+                      <div className="mt-1.5 space-y-0.5 text-[10px] leading-4" dir="rtl">
+                        <div className="text-muted-foreground">
+                          آخر شراء: <span dir="ltr" className="font-bold tabular-nums">{fmtNum(purchaseInsight.lastPurchase.price)}</span> د.ع
+                          <span> من {purchaseInsight.lastPurchase.supplierName}</span>
+                        </div>
+                        {purchaseInsight.selectedSupplierLastPurchase && (
+                          <div className="text-muted-foreground">
+                            آخر سعر من المورد الحالي: <span dir="ltr" className="font-bold tabular-nums">{fmtNum(purchaseInsight.selectedSupplierLastPurchase.price)}</span> د.ع
+                          </div>
+                        )}
+                        {isAboveHistoricalLow && (
+                          <div className="flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-400">
+                            <AlertTriangle aria-hidden className="size-3 shrink-0" />
+                            الأرخص سابقاً: {purchaseInsight.lowestPurchase.supplierName} بـ <span dir="ltr">{fmtNum(purchaseInsight.lowestPurchase.price)}</span> د.ع
+                            <span>(فرق {fmtNum(enteredPriceIqd! - lowestPriceIqd!)} د.ع)</span>
+                          </div>
+                        )}
+                        {isBelowHistoricalLow && (
+                          <div className="font-semibold text-emerald-700 dark:text-emerald-400">
+                            سعر ممتاز: أقل من أدنى شراء سابق بـ <span dir="ltr">{fmtNum(lowestPriceIqd! - enteredPriceIqd!)}</span> د.ع
+                          </div>
+                        )}
+                        {!isAboveHistoricalLow && supplierLastPriceIqd != null && enteredPriceIqd != null && enteredPriceIqd > supplierLastPriceIqd && (
+                          <div className="font-semibold text-amber-700 dark:text-amber-400">
+                            أعلى من آخر سعر لهذا المورد بـ <span dir="ltr">{fmtNum(enteredPriceIqd - supplierLastPriceIqd)}</span> د.ع
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className={cn(td, "text-xs text-muted-foreground")}>{item.unit}</td>
                   <td className={td}>

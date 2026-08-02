@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
@@ -55,6 +55,93 @@ export function buildPurchasesListConds(input: PurchasesListFilters, scopedBranc
 }
 
 export const purchaseRouter = router({
+  /**
+   * مرجع تسعير حيّ لمحرّر الشراء. لا يعتمد على costPrice الحالي لأنه قد يتغيّر يدوياً؛
+   * المصدر هو بنود أوامر الشراء المعتمدة/المستلمة فقط. نعيد آخر سعر وأقل سعر، وكذلك
+   * آخر سعر من المورد المحدّد كي يستطيع الموظف اتخاذ قرار واعٍ قبل الحفظ.
+   */
+  priceInsights: purchasesManagerProcedure
+    .input(z.object({
+      branchId: z.number().int().positive(),
+      supplierId: z.number().int().positive().optional(),
+      items: z.array(z.object({
+        variantId: z.number().int().positive(),
+        productUnitId: z.number().int().positive(),
+      })).min(1).max(200),
+    }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return {};
+
+      // نفس سياسة الإنشاء: مسؤول المشتريات لا يطّلع إلا على تاريخ فرعه، أما المدير/الأدمن
+      // فيستطيعان المقارنة في الفرع الذي اختاراه في رأس الفاتورة.
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!elevated && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      const uniqueItems = Array.from(new Map(input.items.map((item) => [`${item.variantId}:${item.productUnitId}`, item])).values());
+      const itemConditions = uniqueItems.map((item) => and(
+        eq(purchaseOrderItems.variantId, item.variantId),
+        eq(purchaseOrderItems.productUnitId, item.productUnitId),
+      ));
+
+      const rows = await db
+        .select({
+          variantId: purchaseOrderItems.variantId,
+          productUnitId: purchaseOrderItems.productUnitId,
+          unitPrice: purchaseOrderItems.unitPrice,
+          purchaseOrderId: purchaseOrders.id,
+          orderDate: purchaseOrders.orderDate,
+          supplierId: purchaseOrders.supplierId,
+          supplierName: suppliers.name,
+        })
+        .from(purchaseOrderItems)
+        .innerJoin(purchaseOrders, eq(purchaseOrderItems.purchaseOrderId, purchaseOrders.id))
+        .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
+        .where(and(
+          eq(purchaseOrders.branchId, effectiveBranchId),
+          inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
+          or(...itemConditions),
+        ))
+        .orderBy(desc(purchaseOrders.orderDate), desc(purchaseOrders.id), desc(purchaseOrderItems.id));
+
+      type PurchaseReference = {
+        price: string;
+        supplierId: number;
+        supplierName: string;
+        purchaseOrderId: number;
+        orderDate: Date;
+      };
+      const result: Record<string, {
+        lastPurchase: PurchaseReference;
+        lowestPurchase: PurchaseReference;
+        selectedSupplierLastPurchase?: PurchaseReference;
+      }> = {};
+
+      for (const row of rows) {
+        const key = `${Number(row.variantId)}:${Number(row.productUnitId)}`;
+        const reference: PurchaseReference = {
+          price: String(row.unitPrice),
+          supplierId: Number(row.supplierId),
+          supplierName: row.supplierName || "مورد غير مسمّى",
+          purchaseOrderId: Number(row.purchaseOrderId),
+          orderDate: row.orderDate,
+        };
+        const current = result[key];
+        if (!current) {
+          result[key] = { lastPurchase: reference, lowestPurchase: reference };
+          if (input.supplierId === reference.supplierId) result[key].selectedSupplierLastPurchase = reference;
+          continue;
+        }
+        if (Number(reference.price) < Number(current.lowestPurchase.price)) current.lowestPurchase = reference;
+        if (input.supplierId === reference.supplierId && !current.selectedSupplierLastPurchase) {
+          current.selectedSupplierLastPurchase = reference;
+        }
+      }
+      return result;
+    }),
+
   createOrder: purchasesManagerProcedure
     .input(
       z.object({

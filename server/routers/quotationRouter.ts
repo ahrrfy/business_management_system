@@ -9,7 +9,7 @@ import {
   updateQuotation,
 } from "../services/quotationService";
 import { logAudit } from "../services/auditService";
-import { router, salesManagerProcedure, salesReadProcedure } from "../trpc";
+import { canSeeCostForUser, router, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString } from "../lib/schemas";
 import { retryOnDup } from "../lib/retryDup";
 
@@ -46,7 +46,11 @@ export const quotationRouter = router({
       const q = await getQuotation(input.quotationId);
       // لا يُكشَف وجود عرض فرع آخر للأدوار غير المرتفعة (نمط sales.get / voucher.get).
       if (q && ctx.scopedBranchId != null && Number(q.branchId) !== ctx.scopedBranchId) return null;
-      return q;
+      // التكلفة معلومة حسّاسة: تبقى مفيدة لتحرير العرض للمدير، أمّا للكاشير فالقيمة null
+      // (بدلاً من حذف المفتاح) حتى تبقى استجابة tRPC ذات شكل ثابت ولا تصل إليه أي تكلفة.
+      if (!q) return null;
+      const showCost = canSeeCostForUser(ctx.user);
+      return { ...q, items: q.items.map((item) => ({ ...item, costBase: showCost ? item.costBase : null })) };
     }),
 
   // §٧ RBAC: عرض السعر التزام تسعيري يربط الشركة بمبلغ مستقبلاً ⇒ مدير فأعلى (كان protected

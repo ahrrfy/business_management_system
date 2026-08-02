@@ -95,7 +95,8 @@ export default function QuotationNew() {
           conversionFactor: item.conversionFactor ?? "1",
           stockBase: 0,
           price: item.unitPrice,
-          costBase: "0",
+          // في المسودة المحفوظة نعرض التكلفة الحالية للمدير/الأدمن؛ الراوتر لا يرسلها للكاشير.
+          costBase: item.costBase ?? "0",
           discount: item.discountAmount ?? "0",
           discountType: "amount",
           note: "",
@@ -137,8 +138,8 @@ export default function QuotationNew() {
   const printAfterSaveRef = useRef(false);
   const shareAfterSaveRef = useRef(false);
 
-  // RBAC: عرض السعر سياق مبيعات — لا تكلفة افتراضياً للكاشير. الافتراضي false (إخفاء التكلفة).
-  const showCost = false;
+  // RBAC: عرض السعر سياق مبيعات — المدير/الأدمن يرى التكلفة والهامش، والكاشير لا يتلقاها من API.
+  const showCost = me.data?.role === "manager" || me.data?.role === "admin";
 
   const create = trpc.quotations.create.useMutation({
     onSuccess: (r) => {
