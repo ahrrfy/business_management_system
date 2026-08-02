@@ -1275,7 +1275,7 @@ export default function Storefront() {
                           <div className="flex flex-1 flex-col gap-1 p-2">
                             <span className="line-clamp-2 min-h-[2.2em] text-[11px] font-bold leading-tight">{rp.productName}</span>
                             <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(rp.salePrice ?? rp.price)}</span>
-                            <button onClick={() => setSelectedId(rp.productId)} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg bg-amber-500 py-1.5 text-[11px] font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600">
+                            <button onClick={() => setSelectedId(rp.productId)} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold transition motion-safe:active:scale-95">
                               <Plus aria-hidden className="size-3" /> اختر
                             </button>
                           </div>
@@ -1489,22 +1489,22 @@ export default function Storefront() {
       {panel === "label" && (
         <PanelShell title="معلومات طلب الشحن" onClose={() => setPanel(null)}>
           {labelQ.isLoading ? (
-            <div className="flex justify-center py-12 text-emerald-600"><Loader2 aria-hidden className="size-7 animate-spin" /></div>
+            <div className="flex justify-center py-12 text-[var(--sem-info)]"><Loader2 aria-hidden className="size-7 animate-spin" /></div>
           ) : labelQ.data ? (
             <div className="space-y-3 text-sm">
               <div className="rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                 <div className="flex items-center justify-between"><span className="font-extrabold" dir="ltr">{labelQ.data.orderNumber}</span><span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${TRACK_STATUS[labelQ.data.status]?.cls ?? "bg-slate-100 text-slate-600"}`}>{TRACK_STATUS[labelQ.data.status]?.label ?? labelQ.data.status}</span></div>
                 <p className="mt-3 text-base font-extrabold text-slate-900 dark:text-white">{labelQ.data.customerName ?? "الزبون"}</p>
-                {labelQ.data.customerPhone && <p dir="ltr" className="mt-1 font-extrabold text-emerald-700 dark:text-emerald-400">{labelQ.data.customerPhone}</p>}
+                {labelQ.data.customerPhone && <p dir="ltr" className="mt-1 font-extrabold text-[var(--sem-info)]">{labelQ.data.customerPhone}</p>}
                 <p className="mt-2 leading-relaxed text-slate-600 dark:text-slate-300">{labelQ.data.addressText ?? labelQ.data.governorate ?? "—"}</p>
               </div>
               <div className="rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                 <p className="mb-2 text-xs font-extrabold text-slate-500">أصناف الطلب</p>
                 <div className="space-y-2">{labelQ.data.items.map((it, index) => <div key={index} className="flex justify-between gap-3 border-b border-slate-100 pb-2 last:border-0 last:pb-0 dark:border-slate-800"><span>{it.productName}{it.unitName ? ` — ${it.unitName}` : ""}</span><b className="shrink-0 tabular-nums">×{it.quantity}</b></div>)}</div>
-                <div className="mt-3 flex justify-between border-t border-slate-200 pt-3 text-base font-extrabold dark:border-slate-700"><span>المبلغ عند الاستلام</span><span dir="ltr" className="text-emerald-700 dark:text-emerald-400">{money(labelQ.data.total)} د.ع</span></div>
+                <div className="mt-3 flex justify-between border-t border-slate-200 pt-3 text-base font-extrabold dark:border-slate-700"><span>المبلغ عند الاستلام</span><span dir="ltr" className="text-money-positive">{money(labelQ.data.total)} د.ع</span></div>
               </div>
             </div>
-          ) : <p className="py-10 text-center text-sm font-bold text-rose-600">تعذر فتح معلومات هذا الملصق.</p>}
+          ) : <p className="py-10 text-center text-sm font-bold text-destructive">تعذر فتح معلومات هذا الملصق.</p>}
         </PanelShell>
       )}
 
