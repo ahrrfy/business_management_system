@@ -456,6 +456,64 @@ export async function openShiftIdTx(
 }
 
 /**
+ * يحلّ الوردية "الفعليّة" لعملية نقدٍ صادرة من درج فرعٍ (مرتجع نقديّ) حين يكون الفاعل (غالباً
+ * مديراً — المرتجعات salesManagerProcedure) شخصاً مختلفاً عن الكاشير الذي يُشغّل الدرج الحقيقيّ.
+ * بخلاف openShiftIdTx (يبحث عن وردية *الفاعل* نفسه)، هذه تبحث عن وردية *الفرع* المفتوحة أيّاً كان
+ * صاحبها — الدرج مورد فرعٍ لا مستخدم. ربط إيصال الاسترداد بوردية الفاعل حين تختلف عن وردية الكاشير
+ * الذي سلّم النقد فعلياً كان يُخفي المرتجع عن Z-report صاحب الدرج الحقيقيّ، فيظهر له عند الإغلاق
+ * عجزٌ لا يفهم سببه (النقد خرج من درجه، والنظام حسبه — إن حسبه أصلاً — على وردية غير ورديته).
+ *
+ * - وردية واحدة مفتوحة بالفرع ⇒ تُستعمل تلقائياً (الحالة الشائعة، بلا احتكاك؛ ونتيجتها مطابقة
+ *   لِما كان عليه openShiftIdTx حين يتصادف الفاعل والكاشير الفعليّ — لا تغيير سلوكيّ هناك).
+ * - صفر ⇒ يرمي PRECONDITION_FAILED (لا درج مفتوح يُسترَدّ منه نقد).
+ * - أكثر من واحدة (مثلاً RETAIL+RECEPTION معاً، أو كاشيران) ⇒ يتطلّب explicitShiftId (اختيارٌ
+ *   صريح لأيّ درجٍ خرج منه النقد فعلياً)؛ بدونه يرمي برسالة تُبلغ عن التعدّد.
+ */
+export async function resolveBranchCashShiftTx(
+  tx: Tx,
+  branchId: number,
+  explicitShiftId?: number | null,
+): Promise<number> {
+  const open = await tx
+    .select({ id: shifts.id })
+    .from(shifts)
+    .where(and(eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")));
+
+  let id: number;
+  if (explicitShiftId != null) {
+    if (!open.some((s) => Number(s.id) === Number(explicitShiftId))) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "الوردية المحدَّدة لاستقبال الاسترداد النقدي غير مفتوحة في هذا الفرع",
+      });
+    }
+    id = Number(explicitShiftId);
+  } else if (open.length === 0) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "لا توجد وردية مفتوحة في هذا الفرع لاسترداد نقدي — افتح وردية أولاً",
+    });
+  } else if (open.length > 1) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `أكثر من وردية مفتوحة في هذا الفرع (${open.length}) — حدّد أيّ درجٍ خرج منه النقد فعلياً`,
+    });
+  } else {
+    id = Number(open[0].id);
+  }
+
+  // قفل صفّ الوردية ثم إعادة فحص الحالة (نمط openShiftIdTx — يمنع سباقاً مع closeShift المتزامن).
+  const locked = await tx.select({ status: shifts.status }).from(shifts).where(eq(shifts.id, id)).for("update").limit(1);
+  if (!locked[0] || locked[0].status !== "OPEN") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "الوردية المستهدَفة أُغلقت للتوّ — أعد المحاولة",
+    });
+  }
+  return id;
+}
+
+/**
  * مرآة صارمة لـopenShiftIdTx: ترمي PRECONDITION_FAILED بدل الإرجاع null حين تكون الوردية مغلقة.
  *
  * تُستعمل قبل كل معاملة نقدية تَلمس صندوق الكاشير (مصاريف/سندات بـpaymentMethod='CASH')

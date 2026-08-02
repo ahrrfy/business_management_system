@@ -20,7 +20,9 @@ export const returnRouter = router({
       z.object({
         invoiceId: z.number().int().positive(),
         lines: z.array(z.object({ invoiceItemId: z.number().int().positive(), baseQuantity: z.number().int().positive() })).min(1),
-        refund: z.object({ amount: nonNegMoneyString, method }).optional(),
+        // shiftId اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx
+        // يرمي طالباً التحديد حينها) — يختار المستخدم أيّ درجٍ خرج منه النقد فعلياً.
+        refund: z.object({ amount: nonNegMoneyString, method, shiftId: z.number().int().positive().optional() }).optional(),
         restock: z.boolean().optional(),
         // idempotency: نفس المفتاح ⇒ مرتجع واحد (لا استرداد/إرجاع/خصم AR مزدوج عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
