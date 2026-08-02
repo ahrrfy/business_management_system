@@ -31,9 +31,14 @@ beforeEach(async () => {
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await d.insert(s.users).values({ id: 1, openId: "a", name: "admin", role: "admin", loginMethod: "local" });
+  // أسعارُ الأيام **في ملفّ الموظف** (١٬٠٠٠ لكل يوم) — المجاميع صارت تُشتقّ حيّاً لا تُجمَع
+  // من اللقطات، فالفِخاخُ نفسها تبقى محروسةً بأرقامها لكن بمصدرٍ حقيقيّ لا لقطةٍ مزروعة.
+  const RATES = Object.fromEntries(
+    ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"].map((d) => [d, 1000]),
+  );
   await d.insert(s.employees).values([
-    { id: 1, firstName: "أحمد", fatherName: "علي", lastName: "الجبوري", payType: "hourly", employmentStatus: "active" },
-    { id: 2, firstName: "زينب", fatherName: "حسن", lastName: "الربيعي", payType: "hourly", employmentStatus: "active" },
+    { id: 1, firstName: "أحمد", fatherName: "علي", lastName: "الجبوري", payType: "hourly", employmentStatus: "active", dayRates: RATES },
+    { id: 2, firstName: "زينب", fatherName: "حسن", lastName: "الربيعي", payType: "hourly", employmentStatus: "active", dayRates: RATES },
   ]);
 });
 
