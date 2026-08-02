@@ -999,15 +999,22 @@
     {
       "idx": 143,
       "version": "5",
-      "when": 1785621354450,
-      "tag": "0143_digital_price_change_reason",
+      "when": 1787875400000,
+      "tag": "0143_promotion_wage_package",
       "breakpoints": true
     },
     {
       "idx": 144,
       "version": "5",
-      "when": 1785622400000,
-      "tag": "0144_digital_subscription_contracts",
+      "when": 1787876400000,
+      "tag": "0144_digital_price_change_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 145,
+      "version": "5",
+      "when": 1787877400000,
+      "tag": "0145_digital_subscription_contracts",
       "breakpoints": true
     }
   ]

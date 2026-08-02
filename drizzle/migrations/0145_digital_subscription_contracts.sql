@@ -1,4 +1,4 @@
--- دورة حياة الاشتراك: تعريف مدة لكل عرض ثم عقد غير قابل للتعديل يولّد من بيع ناجح.
+-- دورة حياة الاشتراك: تعريف مدة لكل عرض ثم عقد غير قابل للتعديل يولَّد من بيع ناجح.
 ALTER TABLE `digitalOfferings`
   ADD `subscriptionDurationDays` int;
 --> statement-breakpoint

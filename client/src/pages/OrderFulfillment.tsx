@@ -145,8 +145,8 @@ export default function OrderFulfillment() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="طلبات المتجر الإلكتروني"
-        description="تثبيت الطلبات الواردة وطباعة ملصق التوصيل"
+        title="طلبات الموقع"
+        description="راجع الطلبات الواردة، ثبّتها وجهّزها للتوصيل"
         icon={<Store aria-hidden className="size-5" />}
         actions={<ShippingLabelSizeSelect />}
       />

@@ -2,7 +2,7 @@
 // الخادم جاهز: server/routers/reservationsRouter.ts + server/services/reservations/*. هذا يستهلكه فقط.
 // حجز ناعم (ATP): الإنشاء يعرض تحذير «فوق المتاح» (overbooked) لا يمنع — قرار المالك. العربون/التحويل R-م٤/م٥.
 import { useMemo, useState } from "react";
-import { CalendarClock, Clock, Plus, Search, ShoppingCart, Trash2, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Plus, Search, ShoppingCart, Trash2, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
@@ -12,6 +12,7 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -23,6 +24,7 @@ import {
 import CustomerPicker from "@/components/CustomerPicker";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
+import { cn } from "@/lib/utils";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -32,6 +34,7 @@ const RESERVATION_MANAGER_ROLES = ["manager"] as const;
 
 type ReservationStatus = "ACTIVE" | "PARTIALLY_FULFILLED" | "FULFILLED" | "EXPIRED" | "CANCELLED" | "RELEASED";
 type Channel = "PHONE" | "WALK_IN" | "WHATSAPP" | "STORE";
+type CheckoutMethod = "CASH" | "CARD" | "TRANSFER";
 type ReservationRow = RouterOutputs["reservations"]["list"][number];
 
 const STATUS_LABEL: Record<ReservationStatus, string> = {
@@ -54,7 +57,13 @@ const CHANNEL_LABEL: Record<Channel, string> = { PHONE: "هاتف", WALK_IN: "ح
 const CHANNELS = Object.keys(CHANNEL_LABEL) as Channel[];
 const CLOSEABLE: ReservationStatus[] = ["ACTIVE", "PARTIALLY_FULFILLED"];
 
-export default function ReservationsHub() {
+interface ReservationsHubProps {
+  embedded?: boolean;
+  fixedBranchId?: number;
+  onClose?: () => void;
+}
+
+export default function ReservationsHub({ embedded = false, fixedBranchId, onClose }: ReservationsHubProps) {
   const me = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
   const role = (me.data?.role ?? "user") as RoleKey;
@@ -64,11 +73,15 @@ export default function ReservationsHub() {
 
   const userBranchId = me.data?.branchId ?? null;
   const [branchId, setBranchId] = useState<number | null>(null);
-  const effectiveBranch = branchId ?? userBranchId ?? branches.data?.[0]?.id ?? null;
+  const effectiveBranch = fixedBranchId ?? branchId ?? userBranchId ?? branches.data?.[0]?.id ?? null;
 
   const [status, setStatus] = useState<"" | ReservationStatus>("");
   const [q, setQ] = useState("");
   const [showNew, setShowNew] = useState(false);
+  const [convertTarget, setConvertTarget] = useState<ReservationRow | null>(null);
+  const [convertAmount, setConvertAmount] = useState("");
+  const [convertMethod, setConvertMethod] = useState<CheckoutMethod>("CASH");
+  const [convertReference, setConvertReference] = useState("");
 
   const list = trpc.reservations.list.useQuery(
     { status: status || undefined, branchId: effectiveBranch ?? undefined, q: q.trim() || undefined, limit: 200 },
@@ -85,19 +98,41 @@ export default function ReservationsHub() {
     onError: (e) => notify.err(e),
   });
   const convert = trpc.reservations.convert.useMutation({
-    onSuccess: (r) => { notify.ok(`أُنشئت الفاتورة ${r.invoiceNumber}`); utils.reservations.list.invalidate(); },
+    onSuccess: (r) => {
+      notify.ok(`أُنشئت الفاتورة ${r.invoiceNumber}`);
+      setConvertTarget(null);
+      setConvertAmount("");
+      setConvertReference("");
+      utils.reservations.list.invalidate();
+    },
     onError: (e) => notify.err(e),
   });
 
   function onConvert(r: ReservationRow) {
-    const raw = window.prompt(
-      `تحويل الحجز ${r.reservationNumber} إلى فاتورة.\nالمبلغ المدفوع نقداً الآن (اتركه فارغاً لبيع آجل — يتطلب عميلاً محدّداً على الحجز):`,
-      "",
-    );
-    if (raw === null) return;
-    const amount = raw.trim();
-    const payment = amount && Number(amount) > 0 ? { amount, method: "CASH" as const } : null;
-    convert.mutate({ reservationId: Number(r.id), payment });
+    setConvertTarget(r);
+    setConvertAmount("");
+    setConvertMethod("CASH");
+    setConvertReference("");
+  }
+  function submitConversion() {
+    if (!convertTarget) return;
+    const amount = convertAmount.trim();
+    if (amount && (!Number.isFinite(Number(amount)) || Number(amount) <= 0)) {
+      notify.err("أدخل مبلغاً صحيحاً أكبر من صفر، أو اتركه فارغاً للبيع الآجل");
+      return;
+    }
+    if (amount && convertMethod !== "CASH" && !convertReference.trim()) {
+      notify.err(convertMethod === "CARD" ? "رقم عملية البطاقة مطلوب" : "رقم مرجع التحويل مطلوب");
+      return;
+    }
+    if (!amount && !convertTarget.customerId) {
+      notify.err("لا يمكن البيع الآجل لحجز بلا عميل مسجل؛ أدخل دفعة أو اربط الحجز بعميل");
+      return;
+    }
+    const payment = amount
+      ? { amount, method: convertMethod, reference: convertMethod === "CASH" ? null : convertReference.trim() }
+      : null;
+    convert.mutate({ reservationId: Number(convertTarget.id), payment });
   }
   function onCancel(r: ReservationRow) {
     const reason = window.prompt("سبب إلغاء الحجز (اختياري):", "");
@@ -115,23 +150,51 @@ export default function ReservationsHub() {
   const rows = list.data ?? [];
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="الحجوزات"
-        description="حجز منتجات للعملاء بمدّة انتهاء — حجز ناعم يخصم «المتاح» دون مسّ المخزون الفعلي. يُستدعى عند حضور العميل ليتحوّل إلى فاتورة."
-        icon={<CalendarClock className="size-5" aria-hidden />}
-        actions={
-          canWrite ? (
-            <Button size="sm" onClick={() => setShowNew(true)} disabled={effectiveBranch == null}>
-              <Plus aria-hidden className="size-4 me-1" /> حجز جديد
-            </Button>
-          ) : undefined
-        }
-      />
+    <div className={cn("space-y-4", embedded && "h-full overflow-y-auto bg-background p-4")}>
+      {embedded ? (
+        <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border bg-card p-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+              <CalendarClock className="size-5" aria-hidden />
+            </span>
+            <div>
+              <h1 className="text-lg font-extrabold">حجوزات خدمة الزبائن</h1>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                أنشئ الحجز أو ابحث عنه، ثم حوّله إلى طلب عند حضور العميل.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {canWrite && (
+              <Button size="sm" onClick={() => setShowNew(true)} disabled={effectiveBranch == null}>
+                <Plus aria-hidden className="size-4 me-1" /> حجز جديد
+              </Button>
+            )}
+            {onClose && (
+              <Button size="sm" variant="outline" onClick={onClose}>
+                <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <PageHeader
+          title="الحجوزات"
+          description="حجز منتجات للعملاء بمدّة انتهاء — حجز ناعم يخصم «المتاح» دون مسّ المخزون الفعلي. يُستدعى عند حضور العميل ليتحوّل إلى فاتورة."
+          icon={<CalendarClock className="size-5" aria-hidden />}
+          actions={
+            canWrite ? (
+              <Button size="sm" onClick={() => setShowNew(true)} disabled={effectiveBranch == null}>
+                <Plus aria-hidden className="size-4 me-1" /> حجز جديد
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         {/* منتقي الفرع للمرتفعين فقط (Codex P2): غير المرتفع مُقيَّد بفرعه خادمياً، فإظهاره يضلّله. */}
-        {(role === "admin" || role === "manager") && (branches.data?.length ?? 0) > 1 && (
+        {fixedBranchId == null && (role === "admin" || role === "manager") && (branches.data?.length ?? 0) > 1 && (
           <select
             className={selectCls}
             value={effectiveBranch ?? ""}
@@ -163,7 +226,7 @@ export default function ReservationsHub() {
                 <TableHead>رقم الحجز</TableHead>
                 <TableHead>العميل</TableHead>
                 <TableHead>الهاتف</TableHead>
-                <TableHead>القناة</TableHead>
+                <TableHead>طريقة وصول الحجز</TableHead>
                 <TableHead>الحالة</TableHead>
                 <TableHead>ينتهي</TableHead>
                 <TableHead>إجراء</TableHead>
@@ -241,6 +304,80 @@ export default function ReservationsHub() {
           onCreated={() => { setShowNew(false); utils.reservations.list.invalidate(); }}
         />
       )}
+
+      <Dialog open={convertTarget != null} onOpenChange={(open) => !open && !convert.isPending && setConvertTarget(null)}>
+        <DialogContent className="sm:max-w-lg" dir="rtl">
+          <DialogHeader>
+            <DialogTitle>تحويل الحجز إلى طلب</DialogTitle>
+            <DialogDescription>
+              الحجز {convertTarget?.reservationNumber} جاهز للتنفيذ. أدخل المبلغ الذي استلمته من العميل الآن.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-1">
+            <div className="space-y-1.5">
+              <Label htmlFor="reservation-payment-amount">المبلغ المدفوع الآن (د.ع)</Label>
+              <MoneyInput
+                id="reservation-payment-amount"
+                value={convertAmount}
+                onChange={setConvertAmount}
+                decimals={0}
+                placeholder="اتركه فارغاً للبيع الآجل"
+                ariaLabel="المبلغ المدفوع عند تحويل الحجز"
+              />
+              <p className="text-[11px] text-muted-foreground">النقد يُضاف إلى مبلغ الدرج. البطاقة والتحويل يُسجّلان منفصلين.</p>
+            </div>
+
+            {convertAmount.trim() && Number(convertAmount) > 0 ? (
+              <div className="space-y-2">
+                <Label>طريقة الدفع</Label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { value: "CASH", label: "نقداً", Icon: Banknote },
+                    { value: "CARD", label: "بطاقة", Icon: CreditCard },
+                    { value: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight },
+                  ] as const).map(({ value, label, Icon }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => { setConvertMethod(value); if (value === "CASH") setConvertReference(""); }}
+                      className={cn(
+                        "flex h-14 flex-col items-center justify-center gap-1 rounded-lg border-2 text-xs font-extrabold transition-colors",
+                        convertMethod === value ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-muted",
+                      )}
+                    >
+                      <Icon className="size-4" aria-hidden /> {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {convertAmount.trim() && Number(convertAmount) > 0 && convertMethod !== "CASH" ? (
+              <div className="space-y-1.5">
+                <Label htmlFor="reservation-payment-reference">
+                  {convertMethod === "CARD" ? "رقم عملية البطاقة" : "رقم مرجع التحويل"} <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  id="reservation-payment-reference"
+                  value={convertReference}
+                  onChange={(e) => setConvertReference(e.target.value)}
+                  maxLength={100}
+                  autoComplete="off"
+                  placeholder="أدخل الرقم الظاهر في الإيصال أو تطبيق البنك"
+                  dir="ltr"
+                />
+              </div>
+            ) : null}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="outline" onClick={() => setConvertTarget(null)} disabled={convert.isPending}>إلغاء</Button>
+            <Button onClick={submitConversion} disabled={convert.isPending}>
+              <ShoppingCart className="size-4 me-1" aria-hidden />
+              {convert.isPending ? "جارٍ الإتمام…" : "تأكيد الطلب"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -348,7 +485,7 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label htmlFor="res-channel">القناة</Label>
+              <Label htmlFor="res-channel">طريقة وصول الحجز</Label>
               <select id="res-channel" className={`${selectCls} w-full`} value={channel} onChange={(e) => setChannel(e.target.value as Channel)}>
                 {CHANNELS.map((c) => <option key={c} value={c}>{CHANNEL_LABEL[c]}</option>)}
               </select>
