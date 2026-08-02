@@ -17,6 +17,7 @@ import {
 } from "../services/categoryService";
 import { logAudit } from "../services/auditService";
 import { getProductUsage } from "../services/entityUsage";
+import { syncActiveFullStocktakeScopes } from "../services/stocktakeService";
 import { canSeeCostForUser, productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { checkVariantSanity, classifySeverity, type UnitPricing } from "../../shared/priceSanity";
@@ -347,6 +348,8 @@ export const catalogRouter = router({
         assertVariantSanityOrThrow(v.color || v.sku, v.costPrice, pricings);
       }
       const res = await createProduct({ ...input, name: input.name ?? "" } as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      // الجرد الشامل الحي: ألحق الصنف الجديد بأي جلسة FULL ما زالت قيد العد.
+      await syncActiveFullStocktakeScopes();
       await logAudit(ctx, { action: "product.create", entityType: "product", entityId: (res as { productId?: number })?.productId, newValue: { name: input.name, brand: input.brand ?? null, modelName: input.modelName ?? null } });
       return res;
     }),
@@ -445,6 +448,7 @@ export const catalogRouter = router({
         })),
       })) ?? [];
       const res = await updateProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await syncActiveFullStocktakeScopes();
       await logAudit(ctx, {
         action: "product.update",
         entityType: "product",
@@ -531,6 +535,8 @@ export const catalogRouter = router({
         }
       }
       const res = await updateProductWithVariants(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      // يغطي إضافة متغيّر جديد إلى منتج قائم أيضاً.
+      await syncActiveFullStocktakeScopes();
       await logAudit(ctx, {
         action: "product.update",
         entityType: "product",

@@ -26,6 +26,7 @@ import {
   monitorStocktakeSession,
   requestStocktakeRecount,
   resolveStocktakeConflict,
+  syncActiveFullStocktakeScopes,
   type CreateStocktakeInput,
 } from "../stocktakeService";
 import { withTx } from "../tx";
@@ -282,6 +283,55 @@ describe("الإنشاء واللقطة", () => {
     const r3 = await mkSession({ variantIds: [1, 2, 3] });
     expect(r3.assignments[0].itemCount).toBe(3);
     expect(await ownedBy(r3.sessionId, r3.assignments[0].assignmentId)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("النطاق الحي للجرد الشامل", () => {
+  it("يلحق المتغيّرات الجديدة بجلسة FULL قيد العد فقط، ولا يلمس جلسة المراجعة", async () => {
+    const session = await mkSession({ scopeType: "FULL" });
+    await db().insert(s.products).values({ id: 6, name: "صنف أضيف أثناء الجرد" });
+    await db().insert(s.productVariants).values({ id: 6, productId: 6, sku: "LIVE-6", costPrice: "77.00" });
+
+    const first = await syncActiveFullStocktakeScopes();
+    expect(first.itemsAdded).toBe(1);
+    const items = await db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId));
+    expect(items.map((i) => Number(i.variantId))).toContain(6);
+    expect(items.find((i) => Number(i.variantId) === 6)?.expectedQty).toBe(0);
+    expect(items.find((i) => Number(i.variantId) === 6)?.unitCost).toBe("77.00");
+
+    await db().update(s.stocktakeSessions).set({ status: "REVIEW" }).where(eq(s.stocktakeSessions.id, session.sessionId));
+    await db().insert(s.products).values({ id: 7, name: "بعد المراجعة" });
+    await db().insert(s.productVariants).values({ id: 7, productId: 7, sku: "LIVE-7", costPrice: "88.00" });
+    expect((await syncActiveFullStocktakeScopes()).itemsAdded).toBe(0);
+  });
+
+  it("الجرد الافتتاحي الحي يستبعد البكج والأمانة وما فُتح مسبقاً", async () => {
+    await db().insert(s.openingModeSettings).values({ id: 1, enabled: true, endsAt: new Date(Date.now() + 86_400_000) });
+    const session = await createStocktakeSession(
+      { name: "افتتاح حي", branchId: 1, scopeType: "FULL", sessionType: "OPENING", assignments: [{ name: "عامل", method: "PIN" }] },
+      { userId: 1, role: "admin" },
+    );
+    await db().insert(s.products).values([
+      { id: 6, name: "مؤهل" },
+      { id: 7, name: "بكج", isBundle: true },
+      { id: 8, name: "أمانة", isConsignment: true },
+      { id: 9, name: "فُتح سابقاً" },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 6, productId: 6, sku: "OPEN-LIVE", costPrice: "10.00" },
+      { id: 7, productId: 7, sku: "OPEN-BUNDLE", costPrice: "10.00" },
+      { id: 8, productId: 8, sku: "OPEN-CONSIGN", costPrice: "10.00" },
+      { id: 9, productId: 9, sku: "OPEN-OPENED", costPrice: "10.00" },
+    ]);
+    await db().insert(s.branchStock).values({ variantId: 9, branchId: 1, quantity: 4, openedAt: new Date() });
+
+    expect((await syncActiveFullStocktakeScopes()).itemsAdded).toBe(1);
+    const items = await db().select({ variantId: s.stocktakeItems.variantId }).from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId));
+    const variantIds = items.map((i) => Number(i.variantId));
+    expect(variantIds).toContain(6);
+    expect(variantIds).not.toContain(7);
+    expect(variantIds).not.toContain(8);
+    expect(variantIds).not.toContain(9);
   });
 });
 
