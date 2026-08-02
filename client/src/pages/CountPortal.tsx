@@ -21,6 +21,7 @@ import { fmtInt } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { CameraScanner } from "@/components/scan/CameraScanner";
 import { cn } from "@/lib/utils";
 import {
   WifiOff,
@@ -29,7 +30,6 @@ import {
   Lock,
   Ban,
   Send,
-  ScanLine,
   Camera,
   RefreshCw,
   PartyPopper,
@@ -111,6 +111,7 @@ export default function CountPortal() {
 
   const [q, setQ] = useState("");
   const [openVariantId, setOpenVariantId] = useState<number | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [flashId, setFlashId] = useState<number | null>(null);
   const [showOthers, setShowOthers] = useState(false);
   const [finished, setFinished] = useState<{ sessionMovedToReview: boolean } | null>(null);
@@ -814,12 +815,13 @@ export default function CountPortal() {
         <button
           type="button"
           onClick={() => {
-            searchRef.current?.focus();
-            notify.info("جاهز للمسح", "استخدم ماسح الباركود، أو اكتب الرقم في حقل البحث ثم اضغط إدخال");
+            if (!canCount) return;
+            setCameraOpen(true);
           }}
+          disabled={!canCount}
           className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground active:scale-95"
         >
-          <ScanLine aria-hidden className="size-4" /> مسح
+          <Camera aria-hidden className="size-4" /> مسح
         </button>
       </div>
 
@@ -1055,6 +1057,14 @@ export default function CountPortal() {
           </div>
         </div>
       )}
+      <CameraScanner
+        open={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onDetect={(raw) => {
+          setCameraOpen(false);
+          handleBarcode(raw);
+        }}
+      />
     </>,
   );
 }
