@@ -42,6 +42,19 @@ function sign(fields: string[]): string {
     .slice(0, 12);
 }
 
+/**
+ * رابط ملصق طلب المتجر: التوقيع يجعل رقم الطلب المتسلسل غير قابل للتخمين أو التزوير.
+ * الرمز يوضع في QR فقط، ولا يحمل بيانات العميل نفسها.
+ */
+export function onlineOrderLabelToken(orderNumber: string): string {
+  return sign(["STORE_LABEL", orderNumber.trim()]);
+}
+
+export function verifyOnlineOrderLabelToken(orderNumber: string, token: string): boolean {
+  if (!orderNumber.trim() || !/^[a-f0-9]{12}$/i.test(token.trim())) return false;
+  return onlineOrderLabelToken(orderNumber) === token.trim().toLowerCase();
+}
+
 /** يُفكّك payload ويتحقق من التوقيع */
 export function verifyPayload(qrPayload: string): VerifyResult {
   try {

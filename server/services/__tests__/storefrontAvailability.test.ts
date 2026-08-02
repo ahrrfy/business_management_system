@@ -89,9 +89,9 @@ describe("storefront color swatches", () => {
     const d = db();
     await d.insert(s.products).values({ id: 4, name: "Colored item", categoryId: 1, showInStore: true });
     await d.insert(s.productVariants).values([
-      { id: 10, productId: 4, sku: "C-RED-S", color: "أحمر", costPrice: "1.00" },
-      { id: 11, productId: 4, sku: "C-RED-L", color: "أحمر", costPrice: "1.00" },
-      { id: 12, productId: 4, sku: "C-BLU", color: "أزرق", costPrice: "1.00" },
+      { id: 10, productId: 4, sku: "C-RED-S", color: "أحمر", size: "S", costPrice: "1.00" },
+      { id: 11, productId: 4, sku: "C-RED-L", color: "أحمر", size: "L", costPrice: "1.00" },
+      { id: 12, productId: 4, sku: "C-BLU", color: "أزرق", size: "M", costPrice: "1.00" },
     ]);
     await d.insert(s.productUnits).values([
       { id: 10, variantId: 10, unitName: "piece", isBaseUnit: true, isStoreSaleUnit: true },
@@ -118,5 +118,10 @@ describe("storefront color swatches", () => {
     // أحمر متوفّر عبر أحد قياساته (تجميع OR)؛ أزرق نافد لكنه معروض.
     expect(colors.find((c) => c.name === "أحمر")?.inStock).toBe(true);
     expect(colors.find((c) => c.name === "أزرق")?.inStock).toBe(false);
+    // الخيارات ليست مجرد نقاط لونية: كل متغير يعيد وحدة البيع والمخزون الخاصين به.
+    expect(product?.variants?.map((v) => [v.color, v.size, v.inStock])).toEqual([
+      ["أحمر", "S", false], ["أحمر", "L", true], ["أزرق", "M", false],
+    ]);
+    expect(product?.variants?.find((v) => v.size === "L")?.units[0]?.productUnitId).toBe(11);
   });
 });
