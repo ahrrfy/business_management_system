@@ -100,6 +100,18 @@ export default function PurchaseNew() {
   /* ─── bulk picker overlay ──────────────────────────────────────── */
   const [bulkOpen, setBulkOpen] = useState(false);
 
+  const insightItems = useMemo(
+    () => Array.from(new Map(state.items.map((item) => [
+      `${item.variantId}:${item.productUnitId}`,
+      { variantId: item.variantId, productUnitId: item.productUnitId },
+    ])).values()),
+    [state.items],
+  );
+  const priceInsights = trpc.purchases.priceInsights.useQuery(
+    { branchId: state.branchId, supplierId: state.entityId ?? undefined, items: insightItems },
+    { enabled: state.branchId > 0 && insightItems.length > 0 },
+  );
+
   /* ─── mutation ─────────────────────────────────────────────────── */
   const create = trpc.purchases.createOrder.useMutation({
     onSuccess: async (r) => {
@@ -324,6 +336,7 @@ export default function PurchaseNew() {
             showCost={true}
             purchaseCurrency={state.currency}
             purchaseRate={state.agreedRate}
+            purchasePriceInsights={priceInsights.data}
             onOpenBulkPicker={() => setBulkOpen(true)}
             onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
           />
