@@ -136,7 +136,7 @@ describe("workOrder.deliver — clientRequestId يَمنع تسليم مزدوج
     const { deliverWorkOrder } = await import("../workOrderService");
     const actor = { userId: 1, branchId: 1, role: "cashier" as const };
     // TRANSFER لا يَستوجب وردية ⇒ يَتجنّب خطأ «وردية مفتوحة»؛ المبلغ = salePrice ⇒ لا آجل.
-    const input = { workOrderId: 1, clientRequestId: "deliver-key-001", payment: { amount: "100.00", method: "TRANSFER" as const } };
+    const input = { workOrderId: 1, clientRequestId: "deliver-key-001", payment: { amount: "100.00", method: "TRANSFER" as const, reference: "TEST-TRANSFER-001" } };
 
     const r1 = await deliverWorkOrder(input, actor);
     expect(r1.invoiceId).toBeGreaterThan(0);
