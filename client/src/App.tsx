@@ -135,6 +135,8 @@ const StocktakeReview = lazy(() => import("@/pages/StocktakeReview"));
 const StocktakeReport = lazy(() => import("@/pages/StocktakeReport"));
 const StocktakeCountSheets = lazy(() => import("@/pages/StocktakeCountSheets"));
 const CountPortal = lazy(() => import("@/pages/CountPortal"));
+const MyStocktakes = lazy(() => import("@/pages/MyStocktakes"));
+const MyStocktakeWorkspace = lazy(() => import("@/pages/MyStocktakeWorkspace"));
 
 function Protected({ children }: { children: React.ReactNode }) {
   const me = trpc.auth.me.useQuery();
@@ -257,6 +259,8 @@ export default function App() {
       <Route path="/store" component={Storefront} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
+      <Route path="/my-stocktake/:code"><Shell><MyStocktakeWorkspace /></Shell></Route>
+      <Route path="/my-stocktake"><Shell><MyStocktakes /></Shell></Route>
       {/* استمارة التقديم على الوظائف — صفحة عامة بلا جلسة دخول وبلا AppLayout (رابط خارجي للمتقدّمين) */}
       <Route path="/apply" component={JobApply} />
       <Route path="/platform-admin" component={PlatformAdmin} />

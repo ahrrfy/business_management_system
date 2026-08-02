@@ -9,8 +9,11 @@
 // (بنمط auth.login) — انظر العقد §٧.
 
 import { TRPCError } from "@trpc/server";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getSessionCookieOptions } from "../cookies";
+import { stocktakeAssignments, stocktakeSessions } from "../../drizzle/schema";
+import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import {
   authenticatePin,
@@ -21,7 +24,7 @@ import {
   resolvePortalIdentity,
   submitCount,
 } from "../services/countPortalService";
-import { publicProcedure, router } from "../trpc";
+import { publicProcedure, router, stocktakeAssignmentProcedure } from "../trpc";
 
 /** رمز الجلسة من الرابط (مثل CNT-2026-0008) — يُطبَّع داخل الخدمة (trim/uppercase). */
 const sessionCode = z
@@ -32,6 +35,46 @@ const sessionCode = z
   .regex(/^[A-Za-z0-9-]+$/, "رمز الجلسة غير صالح");
 
 export const countPortalRouter = router({
+  /**
+   * جلسات العدّ المفتوحة المسندة للحساب الحالي فقط. هذه نقطة الدخول داخل
+   * النظام؛ لا تكشف أي جلسة أو عامل آخر، ولا تحتاج رمز PIN إطلاقاً.
+   */
+  mine: stocktakeAssignmentProcedure.query(async ({ ctx }) => {
+    const db = getDb();
+    if (!db) return [] as Array<{
+      sessionCode: string;
+      sessionName: string;
+      branchId: number;
+      assignmentId: number;
+      assignmentStatus: "ACTIVE" | "SUBMITTED";
+      zone: string | null;
+      lastActivityAt: Date | null;
+    }>;
+
+    const rows = await db
+      .select({
+        sessionCode: stocktakeSessions.code,
+        sessionName: stocktakeSessions.name,
+        branchId: stocktakeSessions.branchId,
+        assignmentId: stocktakeAssignments.id,
+        assignmentStatus: stocktakeAssignments.status,
+        zone: stocktakeAssignments.zone,
+        lastActivityAt: stocktakeAssignments.lastActivityAt,
+      })
+      .from(stocktakeAssignments)
+      .innerJoin(stocktakeSessions, eq(stocktakeSessions.id, stocktakeAssignments.sessionId))
+      .where(
+        and(
+          eq(stocktakeAssignments.method, "USER"),
+          eq(stocktakeAssignments.userId, ctx.user.id),
+          eq(stocktakeSessions.status, "COUNTING"),
+        ),
+      )
+      .orderBy(desc(stocktakeAssignments.lastActivityAt), desc(stocktakeAssignments.createdAt));
+
+    return rows.map((row) => ({ ...row, branchId: Number(row.branchId), assignmentId: Number(row.assignmentId) }));
+  }),
+
   /**
    * دخول البوابة: PIN (٤ أرقام) ⇒ توكن JWT في كوكي count_token،
    * أو بلا PIN لمستخدم نظام مسجَّل له تكليف USER في الجلسة.

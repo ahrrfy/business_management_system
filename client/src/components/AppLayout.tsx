@@ -9,7 +9,7 @@ import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, Gift, DollarSign, CreditCard,
-  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark, Check, WalletCards,
+  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark, Check, WalletCards, ClipboardCheck,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -113,6 +113,10 @@ function isModuleActive(loc: string, href: string): boolean {
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const [loc, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
+  const myStocktakes = trpc.count.mine.useQuery(undefined, {
+    enabled: Boolean(me.data),
+    refetchInterval: 30_000,
+  });
   const utils = trpc.useUtils();
   const printer = usePrinterConnection();
   const logout = trpc.auth.logout.useMutation({
@@ -155,6 +159,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     : isCashier
       ? NAV_LINKS.filter((m) => CASHIER_NAV.includes(m.href) && canSeeGate(m, role, permsOverride))
       : NAV_LINKS.filter((m) => canSeeGate(m, role, permsOverride));
+  const hasMyStocktake = (myStocktakes.data?.length ?? 0) > 0;
 
   const sidebarInner = (
     <>
@@ -185,6 +190,23 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               >
                 <Home className="size-4 shrink-0" aria-hidden />
                 <span className="truncate">لوحة التحكم</span>
+              </Link>
+              <div className="my-1 mx-2 sb-divider" />
+            </>
+          )}
+
+          {hasMyStocktake && (
+            <>
+              <Link
+                href="/my-stocktake"
+                aria-current={loc === "/my-stocktake" || loc.startsWith("/my-stocktake/") ? "page" : undefined}
+                className={cn(
+                  "flex items-center gap-2 mb-0.5 px-3 py-2 min-h-[40px] text-sm transition",
+                  loc === "/my-stocktake" || loc.startsWith("/my-stocktake/") ? "sb-active font-semibold" : "sb-item rounded-md mx-2",
+                )}
+              >
+                <ClipboardCheck className="size-4 shrink-0" aria-hidden />
+                <span className="truncate">جردي</span>
               </Link>
               <div className="my-1 mx-2 sb-divider" />
             </>
