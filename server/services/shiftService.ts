@@ -172,7 +172,7 @@ export async function openShift(
 }
 
 /** Expected cash = opening balance + cash received − cash refunded during the shift. */
-async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: string) {
+export async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: string) {
   const rows = await tx
     .select({
       cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.paymentMethod} = 'CASH' THEN ${receipts.amount} ELSE 0 END), 0)`,
@@ -468,26 +468,30 @@ export async function openShiftIdTx(
  * - صفر ⇒ يرمي PRECONDITION_FAILED (لا درج مفتوح يُسترَدّ منه نقد).
  * - أكثر من واحدة (مثلاً RETAIL+RECEPTION معاً، أو كاشيران) ⇒ يتطلّب explicitShiftId (اختيارٌ
  *   صريح لأيّ درجٍ خرج منه النقد فعلياً)؛ بدونه يرمي برسالة تُبلغ عن التعدّد.
+ *
+ * يُعيد openingBalance مع shiftId — المستدعي (مرتجعٌ نقديّ) يحتاجه ليحسب computeExpectedCash
+ * ويتحقّق أنّ الدرج المستهدَف يحمل فعلاً هذا المبلغ الآن (نمط cashDropService: لا يُسحَب أكثر ممّا فيه).
  */
 export async function resolveBranchCashShiftTx(
   tx: Tx,
   branchId: number,
   explicitShiftId?: number | null,
-): Promise<number> {
+): Promise<{ shiftId: number; openingBalance: string }> {
   const open = await tx
-    .select({ id: shifts.id })
+    .select({ id: shifts.id, openingBalance: shifts.openingBalance })
     .from(shifts)
     .where(and(eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")));
 
-  let id: number;
+  let chosen: { id: number | string | bigint; openingBalance: string };
   if (explicitShiftId != null) {
-    if (!open.some((s) => Number(s.id) === Number(explicitShiftId))) {
+    const match = open.find((s) => Number(s.id) === Number(explicitShiftId));
+    if (!match) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "الوردية المحدَّدة لاستقبال الاسترداد النقدي غير مفتوحة في هذا الفرع",
       });
     }
-    id = Number(explicitShiftId);
+    chosen = match;
   } else if (open.length === 0) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
@@ -499,9 +503,10 @@ export async function resolveBranchCashShiftTx(
       message: `أكثر من وردية مفتوحة في هذا الفرع (${open.length}) — حدّد أيّ درجٍ خرج منه النقد فعلياً`,
     });
   } else {
-    id = Number(open[0].id);
+    chosen = open[0];
   }
 
+  const id = Number(chosen.id);
   // قفل صفّ الوردية ثم إعادة فحص الحالة (نمط openShiftIdTx — يمنع سباقاً مع closeShift المتزامن).
   const locked = await tx.select({ status: shifts.status }).from(shifts).where(eq(shifts.id, id)).for("update").limit(1);
   if (!locked[0] || locked[0].status !== "OPEN") {
@@ -510,7 +515,7 @@ export async function resolveBranchCashShiftTx(
       message: "الوردية المستهدَفة أُغلقت للتوّ — أعد المحاولة",
     });
   }
-  return id;
+  return { shiftId: id, openingBalance: chosen.openingBalance };
 }
 
 /**

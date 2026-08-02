@@ -9,6 +9,12 @@
  *
  * الحلّ (resolveBranchCashShiftTx في shiftService.ts): نبحث في ورديات *الفرع* المفتوحة كلّها —
  * درجٌ واحدٌ مفتوح ⇒ يُستعمَل تلقائياً (بلا احتكاك)، تعدّدٌ ⇒ يتطلّب refund.shiftId صريحاً.
+ *
+ * حدّ الدرج (متابعة بلاغ المالك — «لا عجز أثناء العمل»): سقف الفاتورة (refundCap، موجودٌ أصلاً)
+ * يضمن فقط أنّ المسترَد ≤ ما دُفع بهذه الطريقة على *هذه الفاتورة تحديداً* — لا يضمن أنّ الدرج
+ * المستهدَف يحمل هذا المبلغ *الآن* (سحبٌ نقديّ/مصروفٌ آخر في نفس الوردية قد يكون أنقصه). أضفنا فحصاً
+ * ثانياً (نمط cashDropService: currentDrawerCash ≥ المطلوب) يرفض الاسترداد *أثناء* تنفيذه لا أن
+ * يظهر عجزٌ لاحقاً عند إغلاق الوردية فقط.
  */
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -173,13 +179,63 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
       ),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
+
+  it("الدرج استُنزف بمصروفٍ سابق في نفس الوردية ⇒ استرداد يتجاوز المتاح حالياً يُرفَض (لا عجز أثناء العمل)", async () => {
+    const cashierShift = await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(cashierShift); // بيع نقديّ ١٠.٠٠ على هذا الدرج
+    // مصروفٌ نقديّ لاحق (بلا علاقة بهذه الفاتورة) يستنزف الدرج تقريباً بالكامل — يحاكي سحباً/مصروفاً
+    // وقع قبل محاولة الاسترداد. سقف الفاتورة (refundCap) وحده لا يرصد هذا (invoiceId مختلف).
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId: cashierShift,
+      direction: "OUT",
+      amount: "9.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      status: "COMPLETED",
+      createdBy: 2,
+    });
+    // المتاح الآن = ١٠.٠٠ − ٩.٠٠ = ١.٠٠، لكن المرتجع يطلب كامل قيمة الفاتورة (١٠.٠٠).
+    await expect(
+      returnSale(
+        { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } },
+        manager,
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // صفر أثر: لا مخزون تحرّك ولا قيد RETURN كُتب (الرفض قبل أي كتابة تُلمَس بصرياً هنا خارج الفحص التالي).
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, itemId)))[0];
+    expect(item.returnedBaseQuantity).toBe(0);
+  });
+
+  it("الدرج يحمل ما يكفي (مبيعاتٌ إضافية في نفس الوردية) ⇒ الاسترداد الكامل ينجح رغم مصروفٍ جزئيّ", async () => {
+    const cashierShift = await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(cashierShift); // ١٠.٠٠ (يترك ٩ بالمخزون)
+    // بيعٌ نقديّ إضافي يرفع رصيد الدرج فيتّسع للاسترداد رغم مصروفٍ سابق.
+    await createSale(
+      { branchId: 1, shiftId: cashierShift, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }], payment: { amount: "10.00", method: "CASH" } },
+      cashier,
+    );
+    await db().insert(s.receipts).values({
+      branchId: 1, shiftId: cashierShift, direction: "OUT", amount: "5.00",
+      paymentMethod: "CASH", cashBucket: "DRAWER", status: "COMPLETED", createdBy: 2,
+    });
+    // المتاح الآن = ١٠+١٠−٥ = ١٥.٠٠ — يكفي استرداد ١٠.٠٠ بالكامل.
+    await returnSale(
+      { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } },
+      manager,
+    );
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, itemId)))[0];
+    expect(item.returnedBaseQuantity).toBe(1);
+  });
 });
 
 describe("resolveBranchCashShiftTx", () => {
-  it("وردية واحدة مفتوحة بالفرع ⇒ تُستعمل تلقائياً", async () => {
+  it("وردية واحدة مفتوحة بالفرع ⇒ تُستعمل تلقائياً (مع openingBalance)", async () => {
     const id = await openShiftFor(2, 1);
     const resolved = await withTx((tx) => resolveBranchCashShiftTx(tx, 1, null));
-    expect(resolved).toBe(id);
+    expect(resolved.shiftId).toBe(id);
+    expect(resolved.openingBalance).toBe("0.00");
   });
 
   it("صفر ورديات مفتوحة بالفرع ⇒ يرمي PRECONDITION_FAILED", async () => {
@@ -200,7 +256,7 @@ describe("resolveBranchCashShiftTx", () => {
     await openShiftFor(1, 1);
     const id2 = await openShiftFor(2, 1);
     const resolved = await withTx((tx) => resolveBranchCashShiftTx(tx, 1, id2));
-    expect(resolved).toBe(id2);
+    expect(resolved.shiftId).toBe(id2);
   });
 
   it("تحديدٌ صريح لوردية مفتوحة في فرعٍ آخر ⇒ يرمي (لا يعبُر عزل الفرع)", async () => {

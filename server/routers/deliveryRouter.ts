@@ -210,9 +210,19 @@ export const deliveryRouter = router({
 
   // إرجاع إرسالية (عكس بيع + مخزون + عهدة) — مديرٌ فقط (إجراء تصحيحيّ).
   returnConsignment: managerProcedure
-    .input(z.object({ consignmentId: z.number().int().positive(), clientRequestId: z.string().max(64).nullish() }))
+    .input(z.object({
+      consignmentId: z.number().int().positive(),
+      clientRequestId: z.string().max(64).nullish(),
+      // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
+      // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه ردّ العربون فعلياً.
+      refundShiftId: z.number().int().positive().optional(),
+    }))
     .mutation(async ({ input, ctx }) => {
-      const res = await returnConsignment(input.consignmentId, { ...actorOf(ctx), clientRequestId: input.clientRequestId });
+      const res = await returnConsignment(input.consignmentId, {
+        ...actorOf(ctx),
+        clientRequestId: input.clientRequestId,
+        refundShiftId: input.refundShiftId ?? null,
+      });
       await logAudit(ctx, { action: "delivery.return", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { invoiceId: (res as { invoiceId?: number }).invoiceId } });
       return res;
     }),

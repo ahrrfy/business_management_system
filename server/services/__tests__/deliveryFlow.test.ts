@@ -212,4 +212,69 @@ describe("delivery COD — money path", () => {
     expect(await entryCount("DELIVERY_DISPATCH", partyId)).toBe(1);
     expect(await partyBalance(partyId)).toBe("8000.00");
   });
+
+  // ─── ردّ عربون الإرجاع — إسناد الدرج الفعليّ (بلاغ مالك ٢/٨/٢٦، مرآة إصلاح returnService.ts) ───
+  describe("إرجاع إرسالية بعربون نقديّ — إسناد الدرج الفعليّ لا وردية المدير", () => {
+    it("المديرة بلا وردية + وردية الكاشير هي الوحيدة المفتوحة ⇒ ردّ العربون يُنسَب لها تلقائياً", async () => {
+      const { partyId } = await seed();
+      const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+      const woId = await readyWorkOrder(true); // عربون ٢٠٠٠ نقداً
+      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+
+      // قبل الإصلاح: shiftIdForCashTx(actor=المديرة بلا وردية) ⇒ TREASURY (لا يظهر في Z-report الكاشير).
+      await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-1" });
+
+      const outRows = await db()
+        .select({ shiftId: s.receipts.shiftId, cashBucket: s.receipts.cashBucket, amount: s.receipts.amount })
+        .from(s.receipts)
+        .where(and(eq(s.receipts.invoiceId, disp.invoiceId), eq(s.receipts.direction, "OUT"), eq(s.receipts.paymentMethod, "CASH")));
+      const refundRow = outRows.find((r) => Number(r.amount) === 2000);
+      expect(refundRow?.shiftId).toBe(shift.shiftId); // انتسب لدرج الكاشير الحقيقيّ — لا TREASURY، لا وردية شبحيّة.
+      expect(refundRow?.cashBucket).toBe("DRAWER");
+      await allReconcileClean();
+    });
+
+    it("تعدّد الدرج (وردية المديرة الخاصّة + وردية الكاشير) بلا تحديد صريح ⇒ يُرفَض", async () => {
+      const { partyId } = await seed();
+      const cashierShift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+      await openShift({ branchId: 1, openingBalance: "0", shiftType: "RETAIL" }, { userId: 1, branchId: 1 });
+      const woId = await readyWorkOrder(true);
+      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+
+      await expect(
+        returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-2" }),
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+      void cashierShift;
+    });
+
+    it("تعدّد الدرج + refundShiftId صريح لوردية الكاشير ⇒ ينجح وينتسب لها لا لوردية المديرة", async () => {
+      const { partyId } = await seed();
+      const cashierShift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+      const mgrShift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RETAIL" }, { userId: 1, branchId: 1 });
+      const woId = await readyWorkOrder(true);
+      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+
+      await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-3", refundShiftId: cashierShift.shiftId });
+
+      expect(await drawerNet(cashierShift.shiftId)).toBe(0); // ٢٠٠٠ عربون IN − ٢٠٠٠ ردّ OUT = صفر
+      expect(await drawerNet(mgrShift.shiftId)).toBe(0); // لم يُلمَس درج المديرة إطلاقاً
+    });
+
+    it("الدرج استُنزف بمصروفٍ سابق في نفس الوردية ⇒ ردّ عربونٍ يتجاوز المتاح حالياً يُرفَض", async () => {
+      const { partyId } = await seed();
+      const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+      const woId = await readyWorkOrder(true); // عربون ٢٠٠٠
+      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+      // مصروفٌ نقديّ يستنزف الدرج (المتاح بعد العربون = ٢٠٠٠) إلى ٥٠٠ فقط.
+      await db().insert(s.receipts).values({
+        branchId: 1, shiftId: shift.shiftId, direction: "OUT", amount: "1500.00",
+        paymentMethod: "CASH", cashBucket: "DRAWER", status: "COMPLETED", createdBy: 2,
+      });
+
+      await expect(
+        returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-4" }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    });
+  });
 });

@@ -1,7 +1,9 @@
+import { AlertTriangle } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,6 +15,10 @@ import { D, fmt, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearch } from "wouter";
+
+function shiftTypeLabel(t: string): string {
+  return t === "RECEPTION" ? "استقبال" : t === "PRINT_SERVICES" ? "خدمات طباعة" : "تجزئة";
+}
 
 const INVOICE_STATUS: Record<string, string> = {
   PENDING: "معلّقة",
@@ -61,6 +67,9 @@ export default function Returns() {
   // فيضغط المستخدم مرّةً ثانية ⇒ مرتجع مكرَّر (RETURN restock مكرَّر + adjustCustomerBalance مكرَّر
   // + استرداد نقدي يخرج مرّتين). المفتاح ثابت للفاتورة المختارة، يتجدَّد عند pick()/بعد النجاح.
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  // درج الاسترداد النقدي — الدرج مورد فرعٍ لا مستخدم؛ منفِّذ المرتجع هنا مديرٌ (صلاحية الشاشة) قد
+  // يختلف عن الكاشير صاحب الدرج الفعليّ. راجع resolveBranchCashShiftTx على الخادم + SalesReturnNew.
+  const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
 
   const invoicesQuery = trpc.sales.list.useQuery({ limit: 50 });
 
@@ -80,6 +89,19 @@ export default function Returns() {
     { invoiceId: selectedId ?? 0 },
     { enabled: !!selectedId },
   );
+
+  // درج الاسترداد النقدي — نجلب ورديات الفرع المفتوحة (أيّ صاحب) فقط حين الاسترداد نقديّ فعلاً.
+  const isCashRefundPending = refundMethod === "CASH" && D(refundAmount.trim() || "0").gt(0);
+  const branchId = detail.data?.branchId;
+  const openShiftsQ = trpc.treasury.getOpenShifts.useQuery(
+    { branchId },
+    { enabled: isCashRefundPending && !!branchId }
+  );
+  const drawerShifts = openShiftsQ.data ?? [];
+
+  useEffect(() => {
+    setRefundShiftId(null);
+  }, [branchId, refundMethod]);
 
   // Default the actual refund to the selected return value (capped by what was paid).
   // Previously this legacy screen left it blank, so stock/ledger were reversed while no DRAWER OUT
@@ -119,6 +141,7 @@ export default function Returns() {
     setRefundAmount("");
     setRefundMethod("CASH");
     setRestock(true);
+    setRefundShiftId(null);
     setError("");
     setDone("");
     // #5: مفتاح جديد لكل فاتورة مختارة — يمنع خلط idempotency بين فواتير مختلفة.
@@ -130,6 +153,7 @@ export default function Returns() {
     setRefundAmount("");
     setRefundMethod("CASH");
     setRestock(true);
+    setRefundShiftId(null);
   }
 
   const create = trpc.returns.create.useMutation({
@@ -173,14 +197,34 @@ export default function Returns() {
     if (!lines.length) return setError("أدخل كمية إرجاع واحدة على الأقل.");
 
     // مبلغ الاسترداد اختياري — تحقّق من صحّته قبل D() (decimal.js يرمي على غير الرقمي).
-    let refund: { amount: string; method: typeof refundMethod } | undefined;
+    let refund: { amount: string; method: typeof refundMethod; shiftId?: number } | undefined;
     const refundStr = refundAmount.trim();
     if (refundStr) {
       if (!/^\d+(\.\d+)?$/.test(refundStr)) {
         return setError("مبلغ الاسترداد غير صالح — أدخل رقماً.");
       }
       // حمولة API لا عرض — أرقام صرفة بلا فواصل آلاف (zod moneyStr يرفض الفواصل).
-      if (D(refundStr).gt(0)) refund = { amount: round2(D(refundStr)).toFixed(2), method: refundMethod };
+      if (D(refundStr).gt(0)) {
+        refund = { amount: round2(D(refundStr)).toFixed(2), method: refundMethod };
+        if (refund.method === "CASH") {
+          // الدرج مورد فرعٍ لا مستخدم — يجب تحديد أيّ درجٍ سيخرج منه النقد فعلياً قبل الحفظ
+          // (مرآةً لِما يفرضه resolveBranchCashShiftTx خادمياً) كي لا يظهر عجزٌ لكاشيرٍ لم يَرَ هذا المرتجع.
+          if (openShiftsQ.isLoading || openShiftsQ.isFetching) {
+            return setError("جارٍ فحص الورديات المفتوحة بالفرع — أعد المحاولة بعد لحظة.");
+          }
+          if (drawerShifts.length === 0) {
+            return setError("لا توجد وردية مفتوحة في هذا الفرع لاسترداد نقدي — افتح وردية أو غيّر طريقة الاسترداد.");
+          }
+          if (drawerShifts.length > 1) {
+            if (refundShiftId == null) {
+              return setError("أكثر من درجٍ مفتوح بالفرع — حدّد أعلاه أيّ درجٍ سيخرج منه النقد فعلياً.");
+            }
+            refund.shiftId = refundShiftId;
+          } else {
+            refund.shiftId = drawerShifts[0].shiftId;
+          }
+        }
+      }
     }
 
     if (
@@ -394,6 +438,45 @@ export default function Returns() {
                   {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
                 </select>
               </div>
+
+              {/* مصدر النقد المسترَد — الدرج مورد فرعٍ لا مستخدم؛ راجع resolveBranchCashShiftTx (الخادم). */}
+              {isCashRefundPending && (
+                <div className="space-y-1 md:col-span-3 rounded-lg border bg-muted/30 p-3 text-xs">
+                  <div className="mb-1.5 font-bold text-foreground">مصدر النقد المسترَد</div>
+                  {openShiftsQ.isFetching ? (
+                    <div className="text-muted-foreground">جارٍ فحص الورديات المفتوحة بالفرع…</div>
+                  ) : drawerShifts.length === 0 ? (
+                    <div className="badge-stock-low flex items-start gap-2 rounded-md border px-2.5 py-2">
+                      <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
+                      <span>لا توجد وردية مفتوحة في هذا الفرع — لا يمكن استرداد نقدٍ حتى تُفتح وردية، أو غيّر طريقة الاسترداد.</span>
+                    </div>
+                  ) : drawerShifts.length === 1 ? (
+                    <div className="text-muted-foreground">
+                      سيُخصَم هذا المبلغ من درج: <span className="font-semibold text-foreground">{drawerShifts[0].userName}</span>
+                      {" — "}{shiftTypeLabel(drawerShifts[0].shiftType)} (وردية #{drawerShifts[0].shiftId})
+                    </div>
+                  ) : (
+                    <>
+                      <div className="mb-1.5 text-muted-foreground">
+                        أكثر من درجٍ مفتوح بالفرع — حدّد أيّ درجٍ سيخرج منه النقد فعلياً:
+                      </div>
+                      <AppSelect
+                        size="sm"
+                        className="text-xs"
+                        value={refundShiftId != null ? String(refundShiftId) : ""}
+                        onValueChange={(v) => setRefundShiftId(v ? Number(v) : null)}
+                        placeholder="اختر الدرج…"
+                      >
+                        {drawerShifts.map((s) => (
+                          <option key={s.shiftId} value={String(s.shiftId)}>
+                            {s.userName} — {shiftTypeLabel(s.shiftType)} (وردية #{s.shiftId})
+                          </option>
+                        ))}
+                      </AppSelect>
+                    </>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
 
