@@ -146,13 +146,12 @@ export async function submitCount(
       // العدّ الفعّال = آخر RECOUNT إن وُجد وإلا FIRST (نفس قاعدة rawCount في المراجعة).
       const effectiveRow = latestRecount ?? first;
 
-      const isMine = Number(item.assignmentId) === myAssignmentId;
       const now = new Date();
 
       let kind: "FIRST" | "RECOUNT" | "VERIFY";
       let verifyMatch: boolean | null = null;
 
-      if (isMine && item.recountStatus === "PENDING") {
+      if (item.recountStatus === "PENDING") {
         // إعادة عدّ مطلوبة على صنفي ⇒ عدّ RECOUNT يحسم: يُنجز الطلب ويمسح أي تعارض.
         kind = "RECOUNT";
         await tx.insert(stocktakeCounts).values({
@@ -183,15 +182,6 @@ export async function submitCount(
             )
           );
       } else {
-        if (!isMine && session.dupPolicy === "BLOCK") {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message:
-              "هذا الصنف من منطقة زميلك — سياسة هذه الجلسة تمنع العدّ المكرر. اطلب من مسؤول الجرد إسناده إليك إن لزم.",
-          });
-        }
-
-        // آخر عدّ فعّال سجّلتُه أنا (RECOUNT إن وُجد وإلا FIRST) — «يمكنك تعديل العدّ قبل التسليم».
         const myOwn =
           [...counts]
             .reverse()
@@ -201,6 +191,15 @@ export async function submitCount(
                 (c.kind === "FIRST" || c.kind === "RECOUNT")
             ) ?? null;
 
+        if (effectiveRow && !myOwn && session.dupPolicy === "BLOCK") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "سُجّل عدّ لهذا الصنف بالفعل — سياسة هذه الجلسة تمنع العدّ المكرر.",
+          });
+        }
+
+        // آخر عدّ فعّال سجّلتُه أنا (RECOUNT إن وُجد وإلا FIRST) — «يمكنك تعديل العدّ قبل التسليم».
         if (myOwn) {
           // تحديث عدّي الذاتي (qty/at/breakdown) — clientRequestId الجديد يلتقط إعادة إرسال التعديل.
           kind = myOwn.kind as "FIRST" | "RECOUNT";

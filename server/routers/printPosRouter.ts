@@ -35,7 +35,11 @@ export const printPosRouter = router({
         customerId: z.number().int().positive().optional(),
         priceTier: tier.optional(),
         lines: z.array(lineSchema).min(1),
-        payment: z.object({ amount: positiveMoneyString, method }).optional(),
+        payment: z.object({
+          amount: positiveMoneyString,
+          method,
+          reference: z.string().trim().min(1).max(100).optional(),
+        }).optional(),
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
         cashRoundIQD: z.boolean().optional(),
         clientRequestId: z.string().optional(),

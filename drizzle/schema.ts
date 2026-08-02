@@ -1698,10 +1698,10 @@ export const workOrders = mysqlTable(
     // v3-add-screens: قناة الاستلام + معرّفها (handle).
     receptionChannel: mysqlEnum("receptionChannel", ["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE", "OTHER"]).default("WALK_IN"),
     channelHandle: varchar("channelHandle", { length: 120 }),
-    // v3-add-screens: أولوية، عربون، الدفع (نقدي/بطاقة) + المرجع + إيصال.
+    // v3-add-screens: أولوية، عربون، الدفع (نقدي/بطاقة/تحويل) + المرجع + إيصال.
     priority: mysqlEnum("woPriority", ["LOW", "NORMAL", "URGENT"]).default("NORMAL"),
     deposit: decimal("deposit", { precision: 15, scale: 2 }).default("0"),
-    paymentMethod: mysqlEnum("woPaymentMethod", ["CASH", "CARD"]).default("CASH"),
+    paymentMethod: mysqlEnum("woPaymentMethod", ["CASH", "CARD", "TRANSFER"]).default("CASH"),
     paymentReference: varchar("paymentReference", { length: 100 }),
     // v3-add-screens(100%): TEXT لاستيعاب data URLs (≥100KB) عند الترميز المضمَّن.
     paymentReceiptUrl: text("paymentReceiptUrl"),
@@ -2158,6 +2158,13 @@ export const employees = mysqlTable(
      * null = يُستعمل الجدول الافتراضي العامّ في hrAttendanceSettings.
      */
     workSchedule: json("workSchedule"),
+    /**
+     * إعفاءٌ من الحضور — راتبٌ ثابت (0141، قرار المالك ٣١/٧). للمُلّاك ولمن لا جهاز له.
+     * مع تفعيل الأجر بالحضور، غير المُعفى بلا بصمات يُحتسب شهراً كاملاً غياباً فيقبض صفراً.
+     * **صريح لا مُخمَّن**: الإعفاء التلقائيّ لمن لا بصمات له كان سيُعفي صامتاً موظفاً
+     * تعطّل جهازه فيقبض عن غيابٍ حقيقيّ. الإعفاء من الحضور وحده — الإجازات والسلف تبقى.
+     */
+    attendanceExempt: boolean("attendanceExempt").default(false).notNull(),
     /** حالة التوظيف (مستقلة عن isActive للحذف الناعم). */
     employmentStatus: mysqlEnum("employmentStatus", ["active", "leave", "terminated"]).default("active").notNull(),
     gender: varchar("gender", { length: 10 }),
@@ -3174,9 +3181,6 @@ export type InsertJobApplicant = typeof jobApplicants.$inferInsert;
  */
 export const hrAttendanceSettings = mysqlTable("hrAttendanceSettings", {
   id: int("id").primaryKey().default(1),
-  nightShiftEnabled: boolean("nightShiftEnabled").default(false).notNull(),
-  /** بصمةٌ قبل هذه الساعة في يومٍ تالٍ تُعدّ إغلاقاً لوردية أمس (0-23). */
-  nightShiftCutoffHour: int("nightShiftCutoffHour").default(8).notNull(),
   /**
    * سقف الساعات المعقولة لليوم (0139): «لا توجد ساعات عمل ٢٠ ولا ١٨ ولا حتى ١٦» (قرار
    * المالك). يومٌ يتجاوزه يُقصّ عنده ويُوسَم «يحتاج تصحيح» — بصمةٌ منسيّة أو خللُ ساعةٍ
@@ -3192,11 +3196,6 @@ export const hrAttendanceSettings = mysqlTable("hrAttendanceSettings", {
    */
   attendancePayEnabled: boolean("attendancePayEnabled").default(false).notNull(),
   attendancePayFrom: date("attendancePayFrom", { mode: "string" }),
-  /**
-   * جدول الدوام الأسبوعيّ الافتراضي (0139): ساعات كل يوم، وصفرٌ = راحة.
-   * يتجاوزه `employees.workSchedule` لمن له جدولٌ خاصّ.
-   */
-  defaultWorkSchedule: json("defaultWorkSchedule"),
   updatedBy: int("updatedBy").references(() => users.id),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -3373,6 +3372,12 @@ export const employeePromotions = mysqlTable(
     // الموظف عن المؤجَّلة (effectiveDate مستقبليّ) التي تُطبَّق عند بلوغ تاريخها.
     createdBy: int("createdBy").references(() => users.id),
     appliedAt: timestamp("appliedAt"),
+    // حزمة الأجر (0143): البصمة الأجرية الكاملة قبل/بعد — الراتب والبدلات وجدول الدوام
+    // وأسعار الأيام والإعفاء وطريقة الأجر. كانت الترقية تحمل الراتب وحده، فبقيت بقيةُ
+    // الحقول الحاملة للأجر بلا مسارِ تغييرٍ مزدوج الاعتماد. `toWage` هو **الهدف كاملاً**
+    // لا رقعةً جزئية ⇒ تطبيقُه عند الاعتماد قطعيٌّ لا يحتاج دمجاً بحالةٍ تغيّرت بينهما.
+    fromWage: json("fromWage"),
+    toWage: json("toWage"),
   },
   (t) => ({ empIdx: index("idx_promo_emp").on(t.employeeId) })
 );

@@ -3,8 +3,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
-import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
+import { WagePackageFields, defaultWageSchedule, wageValueFromEmployee, type WageDayValue } from "@/components/form/WagePackageFields";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import {
   AccountFields, accountPermsPayload, emptyAccountValue, validateAccount, type AccountFieldsValue,
@@ -14,7 +14,7 @@ import { CredentialsShare } from "@/components/form/CredentialsShare";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import {
-  DAY_RATES_DEFAULT, DEGREES, GENDERS, HR_DEPARTMENTS, MARITAL_STATUSES, PAY_TYPES, WEEK_DAYS,
+  DAY_RATES_DEFAULT, DEGREES, GENDERS, HR_DEPARTMENTS, MARITAL_STATUSES, PAY_TYPES,
   type EmployeeEducation,
 } from "@shared/hr";
 import { AlertCircle, X } from "lucide-react";
@@ -59,15 +59,21 @@ export default function EmployeeNew() {
    * ساعات كل يوم وسعر ساعة كل يوم. لا اشتقاق صامت؛ زرّ «احسب من الراتب» يملأ الأسعار
    * دفعةً واحدة كنقطة بداية ثم تُعدَّل كما يشاء.
    */
-  const [sched, setSched] = useState<Record<string, { hours: number; rate?: number | null }>>(
-    () => Object.fromEntries(WEEK_DAYS.map((d) => [d, { hours: d === "الجمعة" ? 0 : 8, rate: null }])),
-  );
+  /** إعفاءٌ من الحضور — راتبٌ ثابت (للمُلّاك ولمن لا جهاز له). الافتراضي: خاضع (قرار المالك). */
+  const [exempt, setExempt] = useState(false);
+  const [sched, setSched] = useState<Record<string, WageDayValue>>(defaultWageSchedule);
   const [photo, setPhoto] = useState<ImageItem[]>([]);
   const [edu, setEdu] = useState<EduRow[]>([]);
 
   // —— حساب النظام (admin فقط) ——
   const me = trpc.auth.me?.useQuery?.();
   const isAdmin = me?.data?.role === "admin";
+  /**
+   * حزمة الأجر مقفلةٌ في التعديل لغير الأدمن — مرآةُ حارس `updateEmployee` الخادميّ
+   * (البصمة الأجرية كلّها لا الراتب وحده). الإضافة مفتوحة: شروط التعيين الأولى هي
+   * قرار التوظيف نفسه، وتغييرُها بعده يمرّ بالترقيات (اعتماد مديرٍ ثانٍ).
+   */
+  const payLocked = isEdit && !isAdmin;
   // تسمية الدور المخصّص الحقيقية لبطاقة بيانات الدخول (كانت «دور مخصّص» عامّة تُخفي الهوية).
   const rolesQ = trpc.roles.list.useQuery(undefined, { enabled: isAdmin });
   const [accountMode, setAccountMode] = useState<AccountMode>("none"); // وضع الإضافة
@@ -106,10 +112,12 @@ export default function EmployeeNew() {
       payType: (e.payType as "monthly" | "hourly") ?? "monthly", salary: e.salary != null ? String(e.salary) : "", allowances: e.allowances != null ? String(e.allowances) : "0",
       colorTag: e.colorTag ?? COLORS[0], annualLeaveBalance: String(e.annualLeaveBalance ?? 0), sickLeaveBalance: String(e.sickLeaveBalance ?? 0),
     }));
-    if (e.dayRates && typeof e.dayRates === "object") setDayRates({ ...DAY_RATES_DEFAULT, ...(e.dayRates as Record<string, number>) });
-    if (e.workSchedule && typeof e.workSchedule === "object") {
-      setSched({ ...(e.workSchedule as Record<string, { hours: number; rate?: number | null }>) });
-    }
+    // نفس المُطبِّع الذي تستعمله شاشة الترقيات: يقبل الشكل القديم (رقمٌ = ساعات) ويُكمل
+    // الأيام الناقصة راحةً — وإلا عُرض جدولٌ قديمٌ أصفاراً وأُرسل بشكلٍ يرفضه التحقّق.
+    const w = wageValueFromEmployee(e);
+    setDayRates(w.dayRates);
+    setExempt(w.attendanceExempt);
+    setSched(w.schedule);
     if (Array.isArray(e.education)) setEdu((e.education as EmployeeEducation[]).map((x, i) => ({ ...x, key: i + 1 })));
     if (e.photoUrl) setPhoto([{ dataUrl: e.photoUrl, isPrimary: true } as ImageItem]);
     setLoaded(true);
@@ -193,9 +201,13 @@ export default function EmployeeNew() {
       payType: form.payType,
       salary: form.payType === "monthly" ? (form.salary.trim() || undefined) : undefined,
       allowances: form.payType === "monthly" ? (form.allowances.trim() || "0") : "0",
-      dayRates: form.payType === "hourly" ? dayRates : undefined,
+      // حقول الحزمة **تُحذَف** حين تكون مقفلة: الخادم يفسّر الغياب «لا تُمسّ» ⇒ لا يُرسل
+      // النموذج قيمةً افتراضيةً تُقارَن بجدولٍ فارغٍ في القاعدة فتُقرأ تغييراً وهمياً.
+      dayRates: payLocked ? undefined : form.payType === "hourly" ? dayRates : undefined,
       // جدولٌ خاصّ يتقدّم على الافتراضي العامّ؛ إطفاؤه ⇒ null فيرث العامّ.
-      workSchedule: sched,
+      workSchedule: payLocked ? undefined : sched,
+      // الإعفاء مفهومٌ شهريٌّ بحت: الساعيّ أجرُه ساعاتُ حضوره أصلاً فلا «راتب ثابت» يُعفى منه.
+      attendanceExempt: payLocked ? undefined : form.payType === "monthly" && exempt,
       colorTag: form.colorTag || undefined, photoUrl: photoUrl || undefined,
       education: edu.length ? edu.map(({ key, ...e }) => ({ ...e, degree: e.degree, year: e.year ? Number(e.year) : undefined })) : undefined,
       annualLeaveBalance: Number(form.annualLeaveBalance || 0), sickLeaveBalance: Number(form.sickLeaveBalance || 0),
@@ -351,98 +363,36 @@ export default function EmployeeNew() {
           </div>
           <div className="space-y-1"><Label htmlFor="hire">تاريخ المباشرة</Label><Input id="hire" type="date" dir="ltr" value={form.hireDate} onChange={(e) => set({ hireDate: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="pt">طريقة الأجر</Label>
-            <select id="pt" className={selectCls} value={form.payType} onChange={(e) => set({ payType: e.target.value as "monthly" | "hourly" })}>{PAY_TYPES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}</select>
+            {/* جزءٌ من البصمة الأجرية (يبدّل نموذج الاحتساب كلَّه) ⇒ يتبع قفل الحزمة. */}
+            <select id="pt" className={selectCls} disabled={payLocked} value={form.payType} onChange={(e) => set({ payType: e.target.value as "monthly" | "hourly" })}>{PAY_TYPES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}</select>
           </div>
 
-          {form.payType === "monthly" ? (
-            <>
-              <div className="space-y-1"><Label htmlFor="sal">الراتب الأساس (د.ع) *</Label><MoneyInput id="sal" value={form.salary} onChange={(salary) => set({ salary })} decimals={0} placeholder="1,000,000" /></div>
-              <div className="space-y-1"><Label htmlFor="allw">البدلات (د.ع)</Label><MoneyInput id="allw" value={form.allowances} onChange={(allowances) => set({ allowances })} decimals={0} placeholder="0" /></div>
-            </>
-          ) : (
-            <div className="md:col-span-3 space-y-1">
-              <Label>سعر الساعة لكل يوم (د.ع)</Label>
-              <div className="grid grid-cols-2 md:grid-cols-7 gap-2">
-                {WEEK_DAYS.map((d) => (
-                  <div key={d} className="space-y-1">
-                    <span className="text-xs text-muted-foreground">{d}</span>
-                    <Input dir="ltr" inputMode="numeric" value={String(dayRates[d] ?? 0)} onChange={(e) => setDayRates((r) => ({ ...r, [d]: Number(e.target.value.replace(/\D/g, "")) || 0 }))} />
-                  </div>
-                ))}
-              </div>
-              <p className="text-xs text-muted-foreground">أجر اليوم = ساعات العمل × سعر ساعة ذلك اليوم.</p>
+          {/*
+            حزمة الأجر — محرّرٌ مشترك مع شاشة الترقيات (مصدرُ قيمٍ افتراضيةٍ واحد يطابق
+            تطبيع الخادم). وهي **مقفلةٌ في التعديل لغير الأدمن**: الخادم يرفض أيّ تغيّرٍ
+            في البصمة الأجرية (راتب/بدلات/جدول/أسعار أيام/إعفاء) ويحيل إلى الترقيات ذات
+            الاعتماد المزدوج، فعرضُها قابلةً للكتابة كان يَعِد بحفظٍ يُرفض بعد تعبئة النموذج.
+            الإضافة تبقى مفتوحةً: شروط التعيين الأولى قرارُ التوظيف نفسه.
+          */}
+          {payLocked && (
+            <div className="md:col-span-3 rounded-md border bg-muted/40 px-3 py-2 text-xs leading-relaxed">
+              <span className="font-medium">حزمة الأجر للعرض فقط.</span>{" "}
+              تغييرُ الراتب أو البدلات أو جدول الدوام أو أسعار الساعات أو الإعفاء من الحضور يمرّ بـ
+              <Link href="/hr/promotions" className="mx-1 underline">الترقيات</Link>
+              — باعتماد مديرٍ آخر وتاريخ سريان وسجلّ تاريخيّ.
             </div>
           )}
-
-          {/* جدول الدوام الأسبوعيّ لهذا الموظف — كل قيمة صريحة بيد المالك (قرار ٣١/٧). */}
-          <div className="md:col-span-3 space-y-2 border-t pt-3">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <Label>جدول الدوام الأسبوعيّ — ساعات كل يوم وسعر ساعته</Label>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  // المقام = ساعات أول ٣٠ يوماً من الشهر الجاري وفق جدوله (مطابق للنواة
-                  // الخادمية حرفياً). كان يستعمل متوسّط «٤٫٣٤٥ أسبوعاً» فينحرف حتى ٢٧ ألفاً
-                  // في شباط — والمالك يشترط «الراتب بالضبط دون نقصان ديناراً واحداً».
-                  const now = new Date();
-                  const first = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-                  let std = 0;
-                  for (let i = 0; i < 30; i++) {
-                    const d = new Date(first.getTime() + i * 86_400_000);
-                    std += Number(sched[WEEK_DAYS[d.getUTCDay()]]?.hours) || 0;
-                  }
-                  const sal = Number(String(form.salary).replace(/[^\d.]/g, "")) || 0;
-                  if (!std || !sal) { setError("أدخل الراتب وساعات الأيام أولاً ليُحسب سعر الساعة."); return; }
-                  const r = Math.round((sal / std) * 100) / 100;
-                  setSched((prev) => Object.fromEntries(
-                    WEEK_DAYS.map((d) => [d, { hours: prev[d]?.hours ?? 0, rate: (prev[d]?.hours ?? 0) > 0 ? r : null }]),
-                  ));
-                }}
-              >
-                احسب الأسعار من الراتب
-              </Button>
-            </div>
-            <div className="rounded-md border divide-y">
-              <div className="grid grid-cols-3 gap-2 bg-muted/50 px-2 py-1 text-[11px] font-medium">
-                <span>اليوم</span><span className="text-center">ساعات الدوام</span><span className="text-center">سعر الساعة (د.ع)</span>
-              </div>
-              {WEEK_DAYS.map((d) => (
-                <div key={d} className="grid grid-cols-3 gap-2 items-center px-2 py-1.5">
-                  <span className="text-xs">{d}</span>
-                  <Input
-                    type="number" min={0} max={24} step="0.5" dir="ltr" className="h-8 text-center"
-                    value={sched[d]?.hours ?? 0}
-                    onChange={(ev) => setSched((prev) => ({ ...prev, [d]: { ...(prev[d] ?? {}), hours: Number(ev.target.value) } }))}
-                  />
-                  <Input
-                    type="number" min={0} step="250" dir="ltr" className="h-8 text-center"
-                    placeholder="—"
-                    disabled={!(sched[d]?.hours > 0)}
-                    value={sched[d]?.rate ?? ""}
-                    onChange={(ev) => setSched((prev) => ({ ...prev, [d]: { ...(prev[d] ?? { hours: 0 }), rate: ev.target.value === "" ? null : Number(ev.target.value) } }))}
-                  />
-                </div>
-              ))}
-              <div className="grid grid-cols-3 gap-2 px-2 py-1.5 text-[11px] bg-muted/30">
-                <span className="font-medium">مجموع الأسبوع</span>
-                <span className="text-center tabular-nums font-medium" dir="ltr">
-                  {WEEK_DAYS.reduce((t, d) => t + (Number(sched[d]?.hours) || 0), 0)} ساعة
-                </span>
-                <span />
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              <span className="font-medium">صفر ساعة = يوم راحة.</span> وأجر اليوم = ساعاته المحتسَبة × سعره،
-              والراتب المستحقّ = مجموع أيام الشهر تراكمياً. الساعات فوق المقرَّر اليوميّ تُحتسب
-              <span className="font-medium"> أوفر تايم</span> ببندٍ مستقلّ بسعر اليوم نفسه.
-              <span className="font-medium">تركُ السعر فارغاً هو الأدقّ:</span> يُحسب شهرياً من
-              (الراتب ÷ ساعات أول ٣٠ يوماً) فيطابق الراتب بالضبط دون نقصان دينار — وشهرُ ٣١ يوماً
-              يُدفع بيومه الإضافيّ، والشهر الأقصر (٢٨/٢٩) يُكمَّل إلى ٣٠. وتثبيتُ سعرٍ يدويّ
-              يجعل المجموع يتبع السعر لا الراتب.
-            </p>
-          </div>
+          <WagePackageFields
+            value={{ payType: form.payType, salary: form.salary, allowances: form.allowances, attendanceExempt: exempt, dayRates, schedule: sched }}
+            disabled={payLocked}
+            onChange={(patch) => {
+              if (patch.salary !== undefined) set({ salary: patch.salary });
+              if (patch.allowances !== undefined) set({ allowances: patch.allowances });
+              if (patch.attendanceExempt !== undefined) setExempt(patch.attendanceExempt);
+              if (patch.dayRates !== undefined) setDayRates(patch.dayRates);
+              if (patch.schedule !== undefined) setSched(patch.schedule);
+            }}
+          />
         </CardContent>
       </Card>
 

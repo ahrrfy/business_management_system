@@ -107,14 +107,7 @@ export default function Shifts() {
     { shiftId: closingShiftId ?? 0 },
     { enabled: closingShiftId != null },
   );
-  const closeExpected = closeReportQ.data
-    ? (() => {
-        const p = closeReportQ.data!.payments ?? [];
-        const cashIn = p.filter((x) => x.method === "CASH" && x.direction === "IN").reduce((s, x) => s.plus(D(x.total)), D(0));
-        const cashOut = p.filter((x) => x.method === "CASH" && x.direction === "OUT").reduce((s, x) => s.plus(D(x.total)), D(0));
-        return D(closeReportQ.data!.shift.openingBalance ?? 0).plus(cashIn).minus(cashOut);
-      })()
-    : null;
+  const closeExpected = closeReportQ.data ? D(closeReportQ.data.expectedCash) : null;
   const closeDiff = closeExpected != null && closeCounted ? D(closeCounted).minus(closeExpected) : null;
   const closeHasVariance = closeDiff != null && closeDiff.abs().gt("0.005");
 

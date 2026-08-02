@@ -701,7 +701,7 @@ export default function Inbox() {
         <div className="flex items-center justify-between">
           <h1 className="text-lg font-bold inline-flex items-center gap-2">
             <InboxIcon aria-hidden className="size-5" />
-            صَندوق الوارد
+            رسائل العملاء
             {totalUnread > 0 && <Badge variant="destructive" className="h-5">{totalUnread}</Badge>}
           </h1>
           <Button size="sm" onClick={() => setShowNew(true)}>+ جَديدة</Button>

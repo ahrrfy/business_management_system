@@ -207,7 +207,7 @@ describe("cashBucket='DRAWER' على receipts النقدية", () => {
       {
         branchId: 1, shiftId: 1, customerId: 1, sourceType: "POS",
         lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
-        payment: { amount: "10", method: "CARD" },
+        payment: { amount: "10", method: "CARD", reference: "CARD-REF-1001" },
       },
       actorAdmin,
     );
@@ -217,6 +217,7 @@ describe("cashBucket='DRAWER' على receipts النقدية", () => {
     expect(rs[0].paymentMethod).toBe("CASH");
     expect(rs[1].cashBucket).toBeNull();
     expect(rs[1].paymentMethod).toBe("CARD");
+    expect(rs[1].referenceNumber).toBe("CARD-REF-1001");
   });
 
   it("processPayment نقدي ⇒ DRAWER", async () => {

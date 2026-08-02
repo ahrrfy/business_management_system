@@ -15,6 +15,7 @@ import { escapeLike } from "../lib/sqlLike";
 import { assertNotLastActiveAdmin, createUserTx, type CreateUserInput } from "./userService";
 import { getEmployeeUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
 import { listEmployeeDeviceLinks } from "./hrDeviceService";
+import { WAGE_FIELD_LABELS, wageProfileDiff, wageProfileOf } from "./hr/wageProfile";
 
 export interface EmployeeFilters {
   q?: string;
@@ -135,6 +136,7 @@ export interface EmployeeInput {
   allowances?: string | null;
   dayRates?: Record<string, number> | null;
   workSchedule?: Record<string, { hours: number; rate?: number | null }> | null;
+  attendanceExempt?: boolean;
   hireDate?: string | null;
   gender?: string | null;
   birthDate?: string | null;
@@ -170,6 +172,9 @@ function toValues(input: EmployeeInput) {
     allowances: toDbMoney(input.allowances ?? "0"),
     dayRates: input.dayRates ?? null,
     workSchedule: input.workSchedule ?? null,
+    // الإعفاء من الحضور مفهومٌ شهريٌّ بحت: أجر الساعيّ = ساعاتُ حضوره المسجَّلة، فلا راتبَ
+    // ثابتاً يُعفى منه. تثبيتُه هنا يمنع حالةً متناقضةً في القاعدة مهما أرسلت الواجهة.
+    attendanceExempt: input.payType === "hourly" ? false : (input.attendanceExempt ?? false),
     hireDate: input.hireDate || null,
     gender: input.gender?.trim() || null,
     birthDate: input.birthDate || null,
@@ -203,26 +208,45 @@ export async function createEmployee(input: EmployeeInput) {
 }
 
 /**
- * تعديل بيانات الموظف. يُعيد `salaryChange` (قديم/جديد) ليُسجَّل في التدقيق — تغييرُ أجرٍ
- * بلا أثرٍ يُسمّي القيمة القديمة كان يجعل قفزة `payrollRuns.totalNet` غير قابلة للتفسير.
+ * تعديل بيانات الموظف. يُعيد `wageChange` (البصمة الأجرية قبل/بعد + الحقول التي تغيّرت)
+ * ليُسجَّل في التدقيق — تغييرُ أجرٍ بلا أثرٍ يُسمّي القيمة القديمة كان يجعل قفزة
+ * `payrollRuns.totalNet` غير قابلة للتفسير.
  *
- * ⚠️ الأجر لا يُغيَّر من هنا لغير المدير: مسار الترقيات (`promotions`) يفرض فصل مهام
- * (معتمِد ≠ مُنشئ) وتاريخ سريان وسجلّاً تاريخياً، وكان هذا النموذج بابَ التفافٍ كاملاً
- * عليه — مديرُ فرعٍ مرتبطٌ بسجلّ موظف يرفع راتبه بنقرتين بلا معتمِدٍ ثانٍ.
+ * ⚠️ **الأجر لا يُغيَّر من هنا لغير المدير**، ومعنى «الأجر» هو **البصمة الأجرية** كاملةً
+ * (`hr/wageProfile.ts`): الراتب والبدلات وجدول الدوام وأسعار الأيام والإعفاء من الحضور
+ * وطريقة الأجر. حصرُ الحارس بحقلَي `salary`/`allowances` كان يترك بابَ التفافٍ مفتوحاً:
+ * صاحبُ hr/FULL يخفض ساعات جدوله فيرتفع سعر ساعته المُشتقّ ويتحوّل فائضُ حضوره أوفر
+ * تايم بالسعر الأعلى ⇒ يُضاعف أجره بلا لمس حقل «الراتب» (مراجعة Codex على PR #446).
+ * المسار المشروع لكلّ ذلك: «الترقيات» — فصلُ مهام (معتمِد ≠ مُنشئ) وتاريخ سريان وسجلّ،
+ * وهي تحمل **حزمة الأجر كاملةً** منذ هجرة 0143 فلا يبقى تغييرٌ بلا طريق.
+ *
+ * وحقول الحزمة **المحذوفة من الحمولة تبقى كما هي** (`undefined` = لا تُمسّ): النموذج
+ * لا يرسل `dayRates` للموظف الشهريّ، وكان `?? null` يمحو أسعار أيامه صامتاً عند أيّ
+ * تعديلٍ عابر — خسارةُ بيانات وتغييرُ بصمةٍ زائفٌ في آن.
  */
 export async function updateEmployee(id: number, input: EmployeeInput, actor?: { userId: number; role: string }) {
   const db = requireDb();
   const [e] = await db.select().from(employees).where(eq(employees.id, id)).limit(1);
   if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
 
-  const next = toValues(input);
-  const salaryChanged = String(next.salary ?? "") !== String(e.salary ?? "");
-  const allowancesChanged = String(next.allowances ?? "") !== String(e.allowances ?? "");
-  if ((salaryChanged || allowancesChanged) && actor && actor.role !== "admin") {
+  const base = toValues(input);
+  const keptExempt = input.attendanceExempt === undefined ? !!e.attendanceExempt : !!input.attendanceExempt;
+  const next = {
+    ...base,
+    ...(input.dayRates === undefined ? { dayRates: e.dayRates } : {}),
+    ...(input.workSchedule === undefined ? { workSchedule: e.workSchedule } : {}),
+    attendanceExempt: input.payType === "hourly" ? false : keptExempt,
+  };
+
+  const fromWage = wageProfileOf(e);
+  const toWage = wageProfileOf(next);
+  const changedWage = wageProfileDiff(fromWage, toWage);
+  if (changedWage.length && actor && actor.role !== "admin") {
     throw new TRPCError({
       code: "FORBIDDEN",
       message:
-        "تغيير الأجر لا يتمّ من شاشة تعديل الموظف — استعمل «الترقيات» (تمرّ باعتماد مديرٍ آخر وتاريخ سريان وسجلّ تاريخيّ).",
+        `تغيير الأجر لا يتمّ من شاشة تعديل الموظف (${changedWage.map((f) => WAGE_FIELD_LABELS[f]).join("، ")}) — ` +
+        "استعمل «الترقيات» (تمرّ باعتماد مديرٍ آخر وتاريخ سريان وسجلّ تاريخيّ).",
     });
   }
 
@@ -230,9 +254,7 @@ export async function updateEmployee(id: number, input: EmployeeInput, actor?: {
   const updated = await getEmployee(id);
   return {
     ...updated!,
-    salaryChange: salaryChanged || allowancesChanged
-      ? { fromSalary: e.salary ?? null, toSalary: next.salary ?? null, fromAllowances: e.allowances ?? null, toAllowances: next.allowances ?? null }
-      : null,
+    wageChange: changedWage.length ? { fields: changedWage, from: fromWage, to: toWage } : null,
   };
 }
 

@@ -9,7 +9,7 @@ import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, Gift, DollarSign, CreditCard,
-  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, CalendarClock, Landmark, Check, WalletCards,
+  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark, Check, WalletCards,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -71,7 +71,6 @@ const NAV_LINKS: NavLink[] = [
   // نظام المهام الموحّد (S2/T2.3) — module فقط (بلا roles) ⇒ مرآة hasModuleAccess تماماً كبوّابة
   // الخادم tasksReadProcedure (requireModule("tasks","READ") — لا قائمة أدوار صريحة هناك أيضاً).
   { href: "/tasks", label: "المهام والتذاكر", icon: ListChecks, module: "tasks" },
-  { href: "/reservations", label: "الحجوزات", icon: CalendarClock, module: "reservations" },
   { href: "/invoices", label: "المبيعات", icon: Receipt },
   // (ب) يومي مالي/تشغيلي
   // الخزينة: كل تبويباتها مُقيَّدة (treasury/expenses ≥ READ في TreasuryHub) — بلا قيدٍ هنا يهبط
@@ -148,7 +147,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   // لا يرى «طلبات المتجر»)، وإطفاء وحدةٍ من شاشة «الأدوار» يُسقط بندها هنا فوراً. العزل الحقيقي
   // خادميّ كما هو؛ وبقية الشاشات المسموحة تبقى بلوغاً بالبحث (Ctrl+K) — تركيزٌ لا حجبٌ جديد.
   const isCashier = role === "cashier";
-  const CASHIER_NAV = ["/pos", "/price-checker", "/tasks", "/reservations", "/store-admin"];
+  // طلبات المتجر التشغيلية والحجوزات والقنوات أصبحت داخل محطة الاستقبال؛ يبقى StoreHub
+  // للإدارة (كتالوج/بنرات/إعدادات) ولا يُشتّت قائمة الكاشير اليومية.
+  const CASHIER_NAV = ["/pos", "/price-checker", "/tasks"];
   const visibleNav = isCourier
     ? NAV_LINKS.filter((m) => m.roles?.includes("courier"))
     : isCashier
