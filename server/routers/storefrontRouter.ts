@@ -12,7 +12,7 @@
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated } from "../services/storefrontService";
-import { createOnlineOrder, trackOnlineOrder } from "../services/onlineOrderService";
+import { createOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
 import { retryOnDup } from "../lib/retryDup";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getStoreSettings } from "../services/storeAdmin/storeSettingsService";
@@ -118,4 +118,9 @@ export const storefrontRouter = router({
   trackOrder: publicProcedure
     .input(z.object({ orderNumber: z.string().trim().min(1).max(50), phone: z.string().trim().min(1).max(20) }))
     .query(({ input }) => trackOnlineOrder(input.orderNumber, input.phone)),
+
+  /** تظهر عند مسح QR الملصق: صفحة عامة محدودة الوصول بتوقيع خاص بالملصق. */
+  labelSummary: publicProcedure
+    .input(z.object({ orderNumber: z.string().trim().min(1).max(50), token: z.string().trim().min(12).max(32) }))
+    .query(({ input }) => readOnlineOrderLabel(input.orderNumber, input.token)),
 });
