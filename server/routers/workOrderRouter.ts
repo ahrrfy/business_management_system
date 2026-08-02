@@ -67,6 +67,7 @@ const receptionCheckoutSchema = z.object({
   customerId: z.number().int().positive().nullish(),
   paymentMethod: receptionPaymentMethod,
   paymentReference: z.string().trim().max(100).nullish(),
+  paidAmount: nonNegMoneyString.nullish(),
   clientRequestId: z.string().min(1).max(60),
   regularSale: z.object({
     lines: z.array(z.object({
@@ -91,7 +92,7 @@ const receptionCheckoutSchema = z.object({
   if (!input.regularSale && !input.printSale && input.workOrders.length === 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "السلة فارغة" });
   }
-  const hasPayment = !!input.regularSale || !!input.printSale || input.workOrders.some((order) => money(order.deposit ?? "0").gt(0));
+  const hasPayment = money(input.paidAmount ?? "0").gt(0) || !!input.regularSale || !!input.printSale || input.workOrders.some((order) => money(order.deposit ?? "0").gt(0));
   if (hasPayment && input.paymentMethod !== "CASH" && !input.paymentReference?.trim()) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["paymentReference"], message: "مرجع الدفع مطلوب" });
   }
@@ -297,18 +298,26 @@ export const workOrderRouter = router({
    * cashierProcedure: الكاشير ينشئ أوامر الشغل ويحتاج اختيار المنفّذ؛ القائمة أسماء فقط (لا بيانات حسّاسة).
    * إعادة الإسناد نفسها (mutation `assign`) تبقى managerProcedure — قرار إشرافي.
    */
-  assignableStaff: workordersCashierProcedure.query(async () => {
+  assignableStaff: workordersCashierProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return [];
-    // عزل (تَدقيق ٢٣/٦/٢٦): القائمة كانت تَكشف admin/manager للكاشير ⇒ تَسريب هياكل المنظّمة.
-    // المُسنَد إليه أمر شغل يَنفّذه فعلياً، فيكفي أدوار التنفيذ. الأدمن/المدير يُسنَدون عبر `assign`
-    // (managerProcedure) لو لزم لاحقاً.
+    const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+    let targetBranch: number | null = null;
+    if (elevated && input?.branchId != null) targetBranch = Number(input.branchId);
+    else if (ctx.user.branchId != null) targetBranch = Number(ctx.user.branchId);
+    else if (!elevated) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مسند لهذا المستخدم" });
+    const branchCondition = targetBranch == null
+      ? undefined
+      : or(eq(users.branchId, targetBranch), isNull(users.branchId));
     return db
       .select({ id: users.id, name: users.name, role: users.role })
       .from(users)
       .where(and(
         eq(users.isActive, true),
-        inArray(users.role, ["print_operator", "cashier", "warehouse"]),
+        eq(users.role, "print_operator"),
+        branchCondition,
       ))
       .orderBy(asc(users.name));
   }),
@@ -578,7 +587,11 @@ export const workOrderRouter = router({
     .input(
       z.object({
         workOrderId: z.number().int().positive(),
-        payment: z.object({ amount: positiveMoneyString, method }).optional(),
+        payment: z.object({ amount: positiveMoneyString, method, reference: z.string().trim().max(100).nullish() }).superRefine((payment, ctx) => {
+          if (payment.method !== "CASH" && !payment.reference?.trim()) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reference"], message: "مرجع عملية البطاقة/التحويل مطلوب" });
+          }
+        }).optional(),
         clientRequestId: z.string().optional().nullable(),
       })
     )

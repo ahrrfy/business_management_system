@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import {
   productVariants,
   receipts,
+  users,
   workOrderImages,
   workOrderMaterials,
   workOrders,
@@ -44,6 +45,17 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     // ثم يجعل الأمر غير قابل للتسليم نهائياً (deliver يرفض totalPaid > salePrice). الإشارة السالبة مصدودة بـzod.
     if (round2(money(input.deposit ?? "0")).gt(money(input.salePrice)))
       throw new TRPCError({ code: "BAD_REQUEST", message: "العربون لا يمكن أن يتجاوز سعر البيع الإجمالي للأمر" });
+
+    // الإسناد عند الإنشاء تنفيذٌ تشغيلي، لا اختيار حساب عام: فني مطبعة فعّال من الفرع أو فني مشترك فقط.
+    // تركه null يضع الأمر في الطابور الوارد ليسحبه الفني من محطة التنفيذ.
+    if (input.assignedTo != null) {
+      const assignee = (await tx.select({ role: users.role, branchId: users.branchId, isActive: users.isActive })
+        .from(users).where(eq(users.id, input.assignedTo)).limit(1))[0];
+      if (!assignee || !assignee.isActive || assignee.role !== "print_operator"
+        || (assignee.branchId != null && Number(assignee.branchId) !== Number(input.branchId))) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "يمكن إسناد أمر الشغل إلى فني مطبعة من الفرع فقط" });
+      }
+    }
 
     // v3-add-screens(100%): baseVariantId اختياري — طلب خدمة قد يكون خدمة تخصيص بلا منتج خام.
     if (input.baseVariantId != null) {

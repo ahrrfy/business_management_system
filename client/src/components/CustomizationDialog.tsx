@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Banknote, Check, FileText, Image as ImageIcon, Palette, Ruler, Truck, Layers, UserRound, ReceiptText } from "lucide-react";
+import { Check, FileText, Image as ImageIcon, Palette, Ruler, Truck, Layers, UserRound } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
@@ -55,7 +54,7 @@ export function emptyCustomization(productName: string, price: string): Customiz
     deliveryCost: "0",
     designImages: [],
     paymentReceiptImages: [],
-    deposit: price,
+    deposit: "0",
   };
 }
 
@@ -125,7 +124,6 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
 
   const today = new Date().toISOString().slice(0, 10);
   const grandWithDelivery = D(data.unitPrice || 0).times(Math.max(1, quantity)).plus(D(data.deliveryCost || 0));
-  const remaining = grandWithDelivery.minus(D(data.deposit || 0));
 
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -147,17 +145,6 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
       setSaveError("تكلفة التوصيل لا يمكن أن تكون سالبة");
       return;
     }
-    // حارس عميل: deposit لا يَتجاوز الإجمالي (إصلاح عدائي ٢٣/٦/٢٦). الـmax على input تَحقّق HTML
-    // فقط ولا يَحمي من تَعديل state بَرمجياً ⇒ لو غاب هذا الفحص الخادم سيَرمي عند الإرسال.
-    const depD = D(data.deposit || 0);
-    if (depD.gt(grandWithDelivery)) {
-      setSaveError(`العربون (${fmt(depD.toString())}) يَتجاوز إجمالي الصنف (${fmt(grandWithDelivery.toString())})`);
-      return;
-    }
-    if (depD.lt(0)) {
-      setSaveError("العربون لا يَكون سالباً");
-      return;
-    }
     onSave(data);
   }
 
@@ -166,7 +153,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
       <DialogContent dir="rtl" className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
-            <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٤</span>
+            <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٣</span>
             <Palette aria-hidden className="size-5 text-violet-600" />
             تفاصيل الخدمة وأمر الشغل: {productName}
           </DialogTitle>
@@ -219,7 +206,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
                 onChange={(e) => upd("assignedTo", e.target.value ? Number(e.target.value) : null)}
                 className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs"
               >
-                <option value="">غير مسند</option>
+                <option value="">غير مسند — يسحبه فني المطبعة من محطة التنفيذ</option>
                 {staff.map((member) => (
                   <option key={member.id} value={member.id}>
                     {member.name ?? `موظف #${member.id}`}
@@ -372,43 +359,15 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
             <ImageUploader value={data.designImages} onChange={(v) => upd("designImages", v)} maxItems={10} />
           </div>
 
-          <div className="space-y-1.5">
-            <Label className="text-xs flex items-center justify-between">
-              <span className="inline-flex items-center gap-1">
-                <ReceiptText aria-hidden className="size-3.5" /> مرفق إثبات الدفع
-              </span>
-              <span className="text-[10px] text-muted-foreground font-normal">اختياري — صورة واحدة</span>
-            </Label>
-            <ImageUploader
-              value={data.paymentReceiptImages}
-              onChange={(v) => upd("paymentReceiptImages", v)}
-              maxItems={1}
-            />
-          </div>
-
-          {/* العربون والمتبقّي */}
+          {/* الدفع يُحصّل مرة واحدة من لوحة الطلب، لا داخل كل بند. */}
           <div className="rounded-lg border bg-primary/5 p-3 space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">إجمالي البند ({quantity} × سعر الوحدة){data.hasDelivery && " + التوصيل"}:</span>
               <span className="font-bold tabular-nums" dir="ltr">{fmt(grandWithDelivery.toString())} د.ع</span>
             </div>
-            <div className="space-y-1">
-              <Label htmlFor="cz-deposit" className="text-xs inline-flex items-center gap-1">
-                <Banknote aria-hidden className="size-3.5" /> العربون المدفوع الآن
-              </Label>
-              <MoneyInput
-                id="cz-deposit"
-                value={data.deposit}
-                onChange={(v) => upd("deposit", v)}
-                className="text-sm"
-              />
-            </div>
-            <div className="flex items-center justify-between text-xs pt-1 border-t">
-              <span className="text-muted-foreground">المتبقّي بعد العربون:</span>
-              <Badge variant={remaining.lte(0) ? "default" : "secondary"} className="font-bold tabular-nums" dir="ltr">
-                {fmt(remaining.toString())} د.ع
-              </Badge>
-            </div>
+            <p className="border-t pt-2 text-[11px] text-muted-foreground">
+              أدخل العربون أو المبلغ المقبوض مرة واحدة في مرحلة الدفع؛ سيُوزّعه النظام على كامل الطلب تلقائياً.
+            </p>
           </div>
         </div>
 

@@ -21,6 +21,7 @@ import {
   reconcileSupplierBalances,
   reconcileInventory,
   reconcileLedgerProfit,
+  reconcileDeliveryFloat,
 } from "../services/reconcileService";
 import { getCashFlow, getFinancialPosition, getGeneralLedger, getProfitAndLoss } from "../services/reportsFinancialService";
 import { getSalesRegister, getSalesByDimension } from "../services/reportsSalesService";
@@ -388,6 +389,7 @@ export const reportsRouter = router({
   reconcile: adminProcedure.query(async () => ({
     customers: await reconcileCustomerBalances(),
     suppliers: await reconcileSupplierBalances(),
+    delivery: await reconcileDeliveryFloat(),
     inventory: await reconcileInventory(),
     ledger: await reconcileLedgerProfit(),
     runAt: new Date().toISOString(),

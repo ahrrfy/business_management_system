@@ -82,6 +82,8 @@ type DataTableProps<T, K = string> = {
   getRowId?: (row: T) => K; // مُلزِم لو selection مُعَطاة
   // نَقرة الصَفّ تُغَيِّر التَحديد (افتِراضياً: false — فقط Shift+Click أَو الـcheckbox)
   rowClickSelects?: boolean;
+  /** صنف بصري اختياري للصف مشتق من بياناته (تمييز حالات تشغيلية مهمة). */
+  getRowClassName?: (row: T) => string | undefined;
   /** حجم الصفحة لِلتَرقيم المحلّي (افتِراضياً ٥٠). مَرِّر Infinity لِتَعطيل التَرقيم (عَرض الكُل).
    *  يُتجاهَل مَع serverPagination (حجم الصفحة عندئذٍ من الخادم). */
   pageSize?: number;
@@ -131,6 +133,7 @@ export function DataTable<T, K = string>({
   selection,
   getRowId,
   rowClickSelects = false,
+  getRowClassName,
   pageSize = 50,
   bounded = true,
   maxHeightClass,
@@ -336,7 +339,7 @@ export function DataTable<T, K = string>({
                 <tr
                   key={row.id}
                   data-selected={isSelected || undefined}
-                  className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${selectionEnabled ? "cursor-default" : ""}`}
+                  className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
                   onClick={(e) => {
                     if (!selectionEnabled) return;
                     // نَقرة الصَفّ تُغَيِّر التَحديد فَقَط لو: شِفت، أَو rowClickSelects.

@@ -40,6 +40,18 @@ const STATUS_CLS: Record<string, string> = {
   PENDING: "badge-status-cancelled", RETURNED: "badge-stock-out", CANCELLED: "badge-stock-out",
 };
 const SOURCE: Record<string, string> = { POS: "نقطة بيع", ONLINE: "أونلاين", ORDER: "طلب", WORKORDER: "طلب خدمة" };
+const BALANCE_FILTER = {
+  DEPOSIT_DUE: "عربون — متبقّي للتحصيل",
+  OUTSTANDING: "عليها مبلغ متبقٍ",
+  UNPAID: "غير مدفوعة",
+  SETTLED: "مسوّاة بالكامل",
+} as const;
+
+function isDepositDue(row: Pick<Row, "sourceType" | "total" | "paidAmount" | "returnedTotal" | "status">) {
+  if (row.status === "CANCELLED" || row.status === "RETURNED") return false;
+  if (row.sourceType !== "ORDER" && row.sourceType !== "WORKORDER") return false;
+  return D(row.paidAmount).gt(0) && D(row.total).minus(D(row.paidAmount)).minus(D(row.returnedTotal ?? "0")).gt(0);
+}
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -51,6 +63,8 @@ export default function Invoices() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [status, setStatus] = useState("");
+  const [sourceType, setSourceType] = useState("");
+  const [balanceState, setBalanceState] = useState("");
   const [salespersonId, setSalespersonId] = useState<number | "">("");
   // البحث خادميّ (رقم الفاتورة/اسم العميل): كان محلّياً على الصفحة المُحمَّلة وحدها ⇒ يقول
   // «لا نتائج» عن فاتورة موجودة خارج السقف. debounce ليكتب المستخدم بلا طلب لكل حرف.
@@ -90,10 +104,12 @@ export default function Invoices() {
       from: from || undefined,
       to: to || undefined,
       status: (status || undefined) as Row["status"] | undefined,
+      sourceType: (sourceType || undefined) as Row["sourceType"] | undefined,
+      balanceState: (balanceState || undefined) as keyof typeof BALANCE_FILTER | undefined,
       salespersonId: salespersonId ? Number(salespersonId) : undefined,
       q: qDebounced || undefined,
     }),
-    [from, to, status, salespersonId, qDebounced],
+    [from, to, status, sourceType, balanceState, salespersonId, qDebounced],
   );
 
   // أي تغيير في الفلاتر/البحث يعيدنا للصفحة الأولى (وإلا بقي offset قديماً على مجموعة أصغر
@@ -277,7 +293,13 @@ export default function Invoices() {
       accessorKey: "status", header: "الحالة",
       cell: (c) => {
         const s = c.getValue() as string;
-        return <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[s] ?? "bg-muted"}`}>{STATUS[s] ?? s}</span>;
+        const depositDue = isDepositDue(c.row.original);
+        return (
+          <div className="flex flex-col items-start gap-1">
+            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[s] ?? "bg-muted"}`}>{STATUS[s] ?? s}</span>
+            {depositDue && <span className="inline-block rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — يحتاج تحصيل الباقي</span>}
+          </div>
+        );
       },
     },
     {
@@ -399,7 +421,7 @@ export default function Invoices() {
       />
 
       <Card>
-        <CardContent className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-6">
+        <CardContent className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3 pt-6">
           <div className="space-y-1">
             <Label className="text-xs">من تاريخ</Label>
             <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -426,6 +448,20 @@ export default function Invoices() {
               ))}
             </select>
           </div>
+          <div className="space-y-1">
+            <Label className="text-xs">نوع العملية</Label>
+            <select className={selectCls} value={sourceType} onChange={(e) => setSourceType(e.target.value)}>
+              <option value="">— كل الأنواع —</option>
+              {Object.entries(SOURCE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">حالة التحصيل</Label>
+            <select className={selectCls} value={balanceState} onChange={(e) => setBalanceState(e.target.value)}>
+              <option value="">— كل حالات التحصيل —</option>
+              {Object.entries(BALANCE_FILTER).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </div>
         </CardContent>
       </Card>
 
@@ -437,6 +473,7 @@ export default function Invoices() {
         emptyText="لا فواتير مطابقة."
         selection={sel}
         getRowId={(r) => r.id}
+        getRowClassName={(r) => isDepositDue(r) ? "bg-[var(--sem-warn-bg)] shadow-[inset_-3px_0_0_var(--sem-warn)]" : undefined}
         serverSearch={{ value: q, onChange: setQ }}
         serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total }}
         toolbar={
