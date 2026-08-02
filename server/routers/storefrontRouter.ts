@@ -10,7 +10,8 @@
  *     بهوية الزبون — لا انتحال مدير).
  */
 import { z } from "zod";
-import { publicProcedure, router } from "../trpc";
+import { TRPCError } from "@trpc/server";
+import { middleware, publicProcedure, router } from "../trpc";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated } from "../services/storefrontService";
 import { createOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
 import { retryOnDup } from "../lib/retryDup";
@@ -18,6 +19,27 @@ import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
 import { recordStoreConversionMetric } from "../services/storeAdmin/storeConversionMetricsService";
+
+const labelSummaryInput = z.object({
+  orderNumber: z.string().trim().min(1).max(50),
+  token: z.string().trim().min(12).max(32),
+});
+
+/**
+ * بوابة QR العامة: لا تعتمد على جلسة مستخدم، بل على توقيع HMAC فريد للملصق.
+ * نتحقق من الرمز قبل وصول المعالج إلى البيانات كي لا يصبح رقم الطلب وحده وسيلة وصول.
+ */
+const requireOnlineOrderLabel = middleware(async ({ next, getRawInput }) => {
+  const parsed = labelSummaryInput.safeParse(await getRawInput());
+  if (!parsed.success) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "رابط الملصق غير صالح" });
+  }
+
+  const labelSummary = await readOnlineOrderLabel(parsed.data.orderNumber, parsed.data.token);
+  return next({ ctx: { labelSummary } });
+});
+
+const labelSummaryProcedure = publicProcedure.use(requireOnlineOrderLabel);
 
 export const storefrontRouter = router({
   /** فئات المتجر (لأشرطة الفلترة). */
@@ -120,7 +142,7 @@ export const storefrontRouter = router({
     .query(({ input }) => trackOnlineOrder(input.orderNumber, input.phone)),
 
   /** تظهر عند مسح QR الملصق: صفحة عامة محدودة الوصول بتوقيع خاص بالملصق. */
-  labelSummary: publicProcedure
-    .input(z.object({ orderNumber: z.string().trim().min(1).max(50), token: z.string().trim().min(12).max(32) }))
-    .query(({ input }) => readOnlineOrderLabel(input.orderNumber, input.token)),
+  labelSummary: labelSummaryProcedure
+    .input(labelSummaryInput)
+    .query(({ ctx }) => ctx.labelSummary),
 });

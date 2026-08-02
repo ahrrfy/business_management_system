@@ -25,7 +25,7 @@ const OUT_DIR = join(ROOT, "docs", "authz");
 /**
  * تصنيف كل procedure مُصدَّر من server/trpc.ts: أي بوّابة يمثّل، وما الوحدة/المستوى/الأدوار،
  * وهل يفرض فرعاً. مشتقّ يدوياً من قراءة server/trpc.ts (المصدر الوحيد للبوّابات).
- * authority: raw-role | module-gate | module-map | none | admin | platform
+ * authority: raw-role | module-gate | module-map | token | none | admin | platform
  */
 const PROCEDURES = {
   publicProcedure:            { authority: "none",        module: null,          level: null,   roles: [],                                          branch: false },
@@ -226,6 +226,8 @@ function scanLocalGates(src) {
     }
 
     const mod = rhs.match(/requireModule\(\s*["']([^"']+)["']\s*,\s*["'](FULL|READ)["']/);
+    // بوابة QR الموقّع: لا جلسة، لكن الخدمة تتحقق من HMAC قبل تمرير الملخص للمعالج.
+    const tokenGate = /requireOnlineOrderLabel\b/.test(rhs);
     const roleGate = rhs.match(/ctx\.user\.role\s*!==\s*["']([a-z_]+)["']/g);
     const requireRole = rhs.match(/requireRole\(([^)]*)\)/);
     // (P1) الأساس مُقيَّد بالدور (raw-role) أو admin ⇒ البوّابة مركّبة: يبقى قيد الدور المورَّث فاعلاً
@@ -238,11 +240,11 @@ function scanLocalGates(src) {
         : null;
 
     gates[name] = {
-      authority: mod ? "module-map" : localRoles ? "raw-role" : (inherited?.authority ?? "none"),
+      authority: mod ? "module-map" : localRoles ? "raw-role" : tokenGate ? "token" : (inherited?.authority ?? "none"),
       module: mod ? mod[1] : inherited?.module ?? null,
       level: mod ? mod[2] : inherited?.level ?? null,
       roles: localRoles ?? inherited?.roles ?? [],
-      branch: inherited?.branch ?? false,
+      branch: tokenGate ? "token" : (inherited?.branch ?? false),
       local: true,
       base,
       // مصدر سلطة الدور المورَّث (raw-role/admin من الأساس) يبقى مسجَّلاً حتى مع requireModule.
