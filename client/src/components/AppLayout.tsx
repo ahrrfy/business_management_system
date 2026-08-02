@@ -258,7 +258,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <div className="min-h-screen flex flex-col lg:flex-row bg-muted/30" dir="rtl">
+    <div className="app-shell min-h-screen flex flex-col lg:flex-row bg-muted/30" dir="rtl">
       {/* الشريط الجانبي — سطح المكتب (≥lg) */}
       <aside className="hidden lg:flex w-64 shrink-0 flex-col app-sidebar">
         <div className="sb-header px-4 py-4 flex items-center justify-between gap-1">
@@ -300,7 +300,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </SheetContent>
       </Sheet>
 
-      <main ref={mainRef} tabIndex={-1} className="flex-1 p-3 md:p-6 overflow-auto outline-none">{children}</main>
+      <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 overflow-auto outline-none">{children}</main>
     </div>
   );
 }
