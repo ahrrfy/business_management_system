@@ -12,7 +12,7 @@ import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { attendance, employees, hrAttendanceSettings, leaveRequests, branches } from "../../../drizzle/schema";
 import { fullEmployeeName } from "@shared/hr";
 import { requireDb } from "../tx";
-import { money } from "../money";
+import { money, round2 } from "../money";
 import { computeAttendancePay, daysBetween, DEFAULT_WORK_SCHEDULE, type WorkSchedule } from "./attendancePay";
 
 export interface EmployeeStatementInput {
@@ -62,9 +62,11 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       department: employees.department,
       payType: employees.payType,
       salary: employees.salary,
+      allowances: employees.allowances,
       hireDate: employees.hireDate,
       terminationDate: employees.terminationDate,
       workSchedule: employees.workSchedule,
+      attendanceExempt: employees.attendanceExempt,
       branchName: branches.name,
     })
     .from(employees)
@@ -74,12 +76,13 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   if (!emp) return null;
 
   const [settings] = await db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
+  // جدول الموظف وحده — الجدول العامّ أُلغي (0140) لأنه صار مكرّراً بعد دخوله بطاقةَ كل موظف.
+  // من لم يُضبط جدولُه بعد يقع على الاحتياطيّ الثابت في الكود ويُنبَّه عليه في الشاشة.
   const schedule: WorkSchedule =
     emp.workSchedule && typeof emp.workSchedule === "object"
       ? (emp.workSchedule as WorkSchedule)
-      : settings?.defaultWorkSchedule && typeof settings.defaultWorkSchedule === "object"
-        ? (settings.defaultWorkSchedule as WorkSchedule)
-        : DEFAULT_WORK_SCHEDULE;
+      : DEFAULT_WORK_SCHEDULE;
+  const hasOwnSchedule = !!(emp.workSchedule && typeof emp.workSchedule === "object");
 
   // نافذة عمله داخل الشهر (تعيين/فصل في منتصفه).
   const employmentStart = emp.hireDate && emp.hireDate > monthStart ? String(emp.hireDate) : monthStart;
@@ -89,6 +92,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     .select({
       date: attendance.attendanceDate,
       hours: attendance.hours,
+      amount: attendance.amount,
       checkIn: attendance.checkIn,
       checkOut: attendance.checkOut,
       status: attendance.status,
@@ -105,12 +109,17 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       ),
     );
 
+  // مجموع ما سُجّل فعلياً في الحضور — أساس أجر الموظف الساعيّ في المسيّر.
+  let actualPaid = 0;
   const attendedHoursByDate = new Map<string, ReturnType<typeof money>>();
   const meta = new Map<string, (typeof attRows)[number]>();
   for (const r of attRows) {
     const d = String(r.date).slice(0, 10);
     meta.set(d, r);
-    if (r.status === "PRESENT" || r.status === "LATE") attendedHoursByDate.set(d, money(r.hours ?? 0));
+    if (r.status === "PRESENT" || r.status === "LATE") {
+      attendedHoursByDate.set(d, money(r.hours ?? 0));
+      actualPaid += Number(r.amount ?? 0);
+    }
   }
 
   const leaves = await db
@@ -138,6 +147,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     payFrom: settings?.attendancePayFrom ? String(settings.attendancePayFrom) : null,
     monthStart,
     monthEnd,
+    maxDailyHours: Number(settings?.maxDailyHours ?? 12),
   });
 
   // نُثري كل يوم بأوقات البصم الفعلية ووسم المراجعة — وهو ما يريده المالك: «من ساعة إلى ساعة».
@@ -153,6 +163,38 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     };
   });
 
+  /*
+   * الأجر الثابت كما يحسبه المسيّر بالضبط: (الراتب + البدلات) × تناسب أيام العمل في الشهر.
+   * هو المستحقّ لمن لا يخضع للحضور — المُعفى، ومن كان الأجر بالحضور معطَّلاً عنه. كان الكشف
+   * والتقرير يعرضان له حسابَ الحضور (صفراً لمن لا بصمة له!) أو الراتبَ الأساس خاماً بلا بدلات
+   * ولا تناسبِ شهرِ تعيينٍ/فصل ⇒ رقمٌ يُشارَك ويُطبَع ولا يُطابق ما يُصرف (Codex P2).
+   */
+  const daysInMonth = Number(monthEnd.slice(8, 10));
+  const activeDays =
+    employmentEnd < employmentStart
+      ? 0
+      : Math.floor((Date.parse(`${employmentEnd}T00:00:00Z`) - Date.parse(`${employmentStart}T00:00:00Z`)) / 86_400_000) + 1;
+  const ratio = money(activeDays).div(daysInMonth);
+  const fixedPay = round2(money(emp.salary ?? 0).times(ratio).plus(round2(money(emp.allowances ?? 0).times(ratio))));
+
+  const hourly = emp.payType === "hourly";
+  const exempt = !!emp.attendanceExempt;
+  const attendancePayEnabled = !!settings?.attendancePayEnabled;
+  /** أساس المستحقّ — مصدرُ حقيقةٍ واحد يستهلكه الكشفُ والتقريرُ والطباعة بلا إعادة اشتقاق. */
+  const dueBasis: "hourly" | "exempt" | "attendance" | "fixedSalary" = hourly
+    ? "hourly"
+    : exempt
+      ? "exempt"
+      : attendancePayEnabled
+        ? "attendance"
+        : "fixedSalary";
+  const amountDue =
+    dueBasis === "hourly"
+      ? actualPaid.toFixed(2)
+      : dueBasis === "attendance"
+        ? round2(money(pay.basePay).plus(money(pay.overtimePay))).toFixed(2)
+        : fixedPay.toFixed(2);
+
   return {
     employee: {
       id: Number(emp.id),
@@ -162,12 +204,21 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       branchName: emp.branchName,
       payType: emp.payType,
       salary: emp.salary,
+      attendanceExempt: !!emp.attendanceExempt,
     },
     period: p,
     from: employmentStart,
     to: employmentEnd,
     schedule,
-    attendancePayEnabled: !!settings?.attendancePayEnabled,
+    attendancePayEnabled,
+    hasOwnSchedule,
+    /** مجموع `attendance.amount` — ما يدفعه المسيّر للساعيّ فعلاً. */
+    actualPaidAmount: actualPaid.toFixed(2),
+    /** (الراتب + البدلات) × تناسب أيام العمل — ما يدفعه المسيّر لغير الخاضع للحضور. */
+    fixedPay: fixedPay.toFixed(2),
+    /** المستحقّ الفعليّ عن الشهر وأساسُه — يُعرَض ويُطبَع ويُشارَك بدل حساب الحضور دائماً. */
+    amountDue,
+    dueBasis,
     totals: {
       scheduledHours: pay.scheduledHours,
       standardHours: pay.standardHours,
@@ -181,6 +232,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       absentDays: pay.absentDays,
       unpaidLeaveDays: pay.unpaidLeaveDays,
       shortHours: pay.shortHours,
+      restWorkedHours: pay.restWorkedHours,
       reviewDays: days.filter((d) => d.needsReview).length,
     },
     days,

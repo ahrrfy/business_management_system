@@ -9,7 +9,7 @@ import {
   updateQuotation,
 } from "../services/quotationService";
 import { logAudit } from "../services/auditService";
-import { router, salesManagerProcedure, salesReadProcedure } from "../trpc";
+import { canSeeCostForUser, router, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString } from "../lib/schemas";
 import { retryOnDup } from "../lib/retryDup";
 
@@ -24,7 +24,7 @@ export const quotationRouter = router({
     .input(
       z
         .object({
-          limit: z.number().default(100),
+          limit: z.number().int().positive().max(500).default(100), // تدقيق ٣/٨: سقف صريح ضدّ DoS الذاكرة.
           // فلترة خادمية بالفترة (createdAt) والحالة.
           from: ymd.optional(),
           to: ymd.optional(),
@@ -46,7 +46,9 @@ export const quotationRouter = router({
       const q = await getQuotation(input.quotationId);
       // لا يُكشَف وجود عرض فرع آخر للأدوار غير المرتفعة (نمط sales.get / voucher.get).
       if (q && ctx.scopedBranchId != null && Number(q.branchId) !== ctx.scopedBranchId) return null;
-      return q;
+      if (!q) return null;
+      const showCost = canSeeCostForUser(ctx.user);
+      return { ...q, items: q.items.map((item) => ({ ...item, costBase: showCost ? item.costBase : null })) };
     }),
 
   // §٧ RBAC: عرض السعر التزام تسعيري يربط الشركة بمبلغ مستقبلاً ⇒ مدير فأعلى (كان protected

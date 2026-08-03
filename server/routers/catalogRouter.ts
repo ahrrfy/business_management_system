@@ -17,6 +17,7 @@ import {
 } from "../services/categoryService";
 import { logAudit } from "../services/auditService";
 import { getProductUsage } from "../services/entityUsage";
+import { syncActiveFullStocktakeScopes } from "../services/stocktakeService";
 import { canSeeCostForUser, productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { checkVariantSanity, classifySeverity, type UnitPricing } from "../../shared/priceSanity";
@@ -173,7 +174,7 @@ function assertCostChangeReasonOrThrow(variantLabel: string, oldCost: string | n
 export const catalogRouter = router({
   posList: productsReadProcedure
     // بند 12ب (٧/٧): customerId اختياري — عميل بسعر تعاقدي نشط يرى سعره بدل سعر الفئة (isContractPrice).
-    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
+    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().int().positive().max(1000).default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
     .query(async ({ input, ctx }) => {
       const rows = await listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, customerId: input.customerId ?? undefined });
       return redactPosCost(rows, ctx.user);
@@ -288,7 +289,7 @@ export const catalogRouter = router({
   // مخزن/مسؤول مشتريات) — تحتاجه لإضافة سطور أمر الشراء الذي تُخوَّل إنشاءه؛ محصور بها فلا
   // تتسرّب التكلفة للكاشير/المندوب.
   forPurchase: productsPurchaseProcedure
-    .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().default(50) }))
+    .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().int().positive().max(500).default(50) }))
     .query(({ input }) => listForPurchase(input.branchId, input.query, input.limit)),
 
   createProduct: productsManagerProcedure
@@ -347,6 +348,8 @@ export const catalogRouter = router({
         assertVariantSanityOrThrow(v.color || v.sku, v.costPrice, pricings);
       }
       const res = await createProduct({ ...input, name: input.name ?? "" } as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      // الجرد الشامل الحي: ألحق الصنف الجديد بأي جلسة FULL ما زالت قيد العد.
+      await syncActiveFullStocktakeScopes();
       await logAudit(ctx, { action: "product.create", entityType: "product", entityId: (res as { productId?: number })?.productId, newValue: { name: input.name, brand: input.brand ?? null, modelName: input.modelName ?? null } });
       return res;
     }),
@@ -445,6 +448,7 @@ export const catalogRouter = router({
         })),
       })) ?? [];
       const res = await updateProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await syncActiveFullStocktakeScopes();
       await logAudit(ctx, {
         action: "product.update",
         entityType: "product",
@@ -531,6 +535,8 @@ export const catalogRouter = router({
         }
       }
       const res = await updateProductWithVariants(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      // يغطي إضافة متغيّر جديد إلى منتج قائم أيضاً.
+      await syncActiveFullStocktakeScopes();
       await logAudit(ctx, {
         action: "product.update",
         entityType: "product",

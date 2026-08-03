@@ -550,3 +550,8 @@ option:disabled {
     break-inside: avoid;
   }
 }
+
+/* حالة أعمدة الجداول اليدوية تضبطها TableColumnVisibility على الخلايا نفسها. */
+[data-column-hidden="true"] {
+  display: none !important;
+}

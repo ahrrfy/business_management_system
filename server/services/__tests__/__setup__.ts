@@ -28,6 +28,12 @@ import { closeDb } from "../../db";
 // BARCODE_SECRET أعلاه في vitest.config.ts) كي لا يعلّمها GitGuardian كسرٍّ حقيقيّ.
 process.env.INTEGRATIONS_ENCRYPTION_KEY ??= "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+// M9 (تدقيق ٣/٨): إلزام 2FA الخادميّ للمدير/المشرف يُحجب أي إجراءٍ عبر البوّابات لدورٍ مُلزَمٍ لم
+// يُفعّل 2FA. بذور الاختبار تُنشئ admin/manager بلا 2FA (والتشفير مضبوط أعلاه ⇒ isCryptoReady=true)
+// فتُحجب مئات الاختبارات عبر createCaller. نُعطّل الإنفاذ افتراضياً هنا (مفتاح الإيقاف نفسه)؛
+// الاختبار المخصّص twoFactorEnforcement.test.ts يُفعّله لكلّ حالةٍ للتحقّق. `??=` يحترم قيمة CI الصريحة.
+process.env.TWO_FACTOR_ENFORCEMENT ??= "off";
+
 const SKIP = new Set(["__drizzle_migrations"]);
 
 // نلتقط رابط قاعدة الاختبار **مرّةً عند التحميل** قبل أيّ اختبار: بعض الاختبارات

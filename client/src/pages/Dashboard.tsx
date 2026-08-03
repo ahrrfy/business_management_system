@@ -127,7 +127,7 @@ const ACTIONS: Record<string, Action[]> = {
   reports:       [{ ic: "doc",     label: "مبيعات", href: "/reports/sales-hub" }, { ic: "coin", label: "ذمم", href: "/reports/aging-hub" }, { ic: "rows", label: "تنفيذي", href: "/reports" }],
   cardAccount:   [{ ic: "doc",     label: "الخزينة", href: "/treasury" }],
   exchange:      [{ ic: "doc",     label: "الخزينة", href: "/treasury" }],
-  workOrders:    [{ ic: "plus",    label: "أمر",    href: "/work-orders/new" },      { ic: "plus",    label: "عرض",     href: "/quotations/new" },       { ic: "rows", label: "خامات", href: "/inventory" }],
+  workOrders:    [{ ic: "plus",    label: "استقبال", href: "/pos?mode=RECEPTION" }, { ic: "plus",    label: "عرض",     href: "/quotations/new" },       { ic: "rows", label: "خامات", href: "/inventory" }],
   tasks:         [{ ic: "rows",    label: "مهامي", href: "/tasks?tab=mine" }, { ic: "rows", label: "المتأخرة", href: "/tasks?tab=list&overdue=1" }],
   delivery:      [{ ic: "rows",    label: "الطلبات", href: "/delivery" }, { ic: "rows", label: "الشركات", href: "/delivery/parties" }],
   store:         [{ ic: "rows",    label: "الطلبات", href: "/store-admin" }, { ic: "eye", label: "المتجر", href: "/store" }],

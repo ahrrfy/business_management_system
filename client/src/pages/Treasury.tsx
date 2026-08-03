@@ -381,7 +381,13 @@ export default function Treasury() {
                       </span>
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      أُنشئ {fmtRelativeShort(String(handover.createdAt))}
+                      <div>
+                        الموظف الذي سُحب من ورديته: <span className="font-medium text-foreground">{handover.sourceEmployeeName ?? "غير مسجّل"}</span>
+                        {handover.sourceShiftId != null && <> · وردية #{handover.sourceShiftId}</>}
+                      </div>
+                      <div className="mt-0.5 tabular-nums" dir="ltr">
+                        وقت السحب: {fmtDT(handover.createdAt)}
+                      </div>
                     </div>
                   </div>
                   <div className="text-base font-bold tabular-nums" dir="ltr">

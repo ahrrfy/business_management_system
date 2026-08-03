@@ -230,8 +230,9 @@ export default function StocktakeMonitor() {
   if (!monitor.data) return <div className="p-10 text-center text-muted-foreground">الجلسة غير موجودة.</div>;
 
   const { session: s, assignments, recentCounts, pendingRecounts, conflicts } = monitor.data;
-  const total = assignments.reduce((acc: number, a: { total: number }) => acc + a.total, 0);
-  const counted = assignments.reduce((acc: number, a: { counted: number }) => acc + a.counted, 0);
+  const total = monitor.data.progress.total;
+  const counted = monitor.data.progress.counted;
+  const remaining = Math.max(0, total - counted);
   const pct = total > 0 ? Math.round((counted / total) * 100) : 0;
   const submittedCount = assignments.filter((a: { status: string }) => a.status === "SUBMITTED").length;
   const isCounting = s.status === "COUNTING";
@@ -369,7 +370,7 @@ export default function StocktakeMonitor() {
               <Button
                 size="sm"
                 variant={submittedCount === assignments.length ? "default" : "outline"}
-                disabled={!isManager || forceReview.isPending}
+                disabled={!isManager || counted < total || forceReview.isPending}
                 title={
                   isManager
                     ? counted < total
@@ -425,6 +426,7 @@ export default function StocktakeMonitor() {
 
       {/* مؤشرات */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat label="المنتجات المتبقية" value={nf(remaining)} sub="لا تُرفع الجلسة للمراجعة قبل أن تصبح صفراً" tone={remaining === 0 ? "emerald" : "blue"} />
         <Stat label="تقدم العدّ" value={`${nf(counted)} / ${nf(total)}`} sub="منتج معدود" tone="blue" />
         <Stat label="نسبة الإنجاز" value={`${nf(pct)}٪`} />
         <Stat
@@ -440,7 +442,7 @@ export default function StocktakeMonitor() {
         <Card className="gap-0 py-0">
           <CardHeader className="border-b px-4 py-4">
             <CardTitle className="text-base">عمّال الجرد وروابط العدّ</CardTitle>
-            <p className="text-xs text-muted-foreground">كل عامل يرى منتجات منطقته فقط، دون الرصيد الدفتري.</p>
+          <p className="text-xs text-muted-foreground">كل عامل يرى قائمة الجرد المشتركة دون الرصيد الدفتري؛ توجيه المنتجات يتم ميدانياً.</p>
           </CardHeader>
           <div className="divide-y">
             {assignments.map(
@@ -483,15 +485,9 @@ export default function StocktakeMonitor() {
                     <p className="text-xs text-muted-foreground">
                       {a.zone ? <>المنطقة: {a.zone} · </> : null}آخر نشاط {rel(a.lastActivityAt)}
                     </p>
-                    <div className="mt-1.5 flex items-center gap-2">
-                      <Progress
-                        value={a.total > 0 ? Math.round((a.counted / a.total) * 100) : 0}
-                        className={`w-36 ${a.status === "SUBMITTED" ? "[&>[data-slot=progress-indicator]]:bg-[var(--status-active)]" : ""}`}
-                      />
-                      <span className="text-xs tabular-nums text-muted-foreground" dir="ltr">
-                        {nf(a.counted)}/{nf(a.total)}
-                      </span>
-                    </div>
+                    <p className="mt-1.5 text-xs tabular-nums text-muted-foreground">
+                      سجّل {nf(a.counted)} عدّات في القائمة المشتركة
+                    </p>
                   </div>
                   <div className="flex flex-col items-end gap-1.5">
                     {isCounting && a.status !== "SUBMITTED" && (

@@ -18,6 +18,7 @@ const actor = { userId: 1, branchId: 1, role: "cashier" };
 const DATE = "2026-07-29";
 
 const TABLES = [
+  "digitalSubscriptionContracts",
   "digitalSaleDetails", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
   "digitalWalletTransactions", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWallets", "digitalProviders",
@@ -53,7 +54,8 @@ async function mkWallet(providerId: number, balance: string, code = "W1") {
 async function mkOffering(providerId: number, name: string, walletId: number | null, edu = false) {
   const r = await withTx((tx) => offeringService.createOffering(tx, {
     providerId, offeringType: edu ? "EDUCATIONAL_SUBSCRIPTION" : "TELECOM_CARD", name,
-    requiresStudentData: edu, pricingMode: "FIXED_MARGIN", fixedMargin: "850", roundingStep: "0",
+    requiresStudentData: edu, subscriptionDurationDays: edu ? 30 : null,
+    pricingMode: "FIXED_MARGIN", fixedMargin: "850", roundingStep: "0",
     branches: [{ branchId: 1, walletId }],
   }, { userId: 1, branchId: 1 }));
   return r.offeringId;
@@ -192,6 +194,10 @@ describe("ش٨ — البيع من مزوّد آجل (§٦.٣)", () => {
     expect((await db().select().from(s.digitalWalletTransactions)).length).toBe(0);
     // والطالب أُنشئ ضمن نفس المعاملة.
     expect((await db().select().from(s.studentProfiles)).length).toBe(1);
+    const [contract] = await db().select().from(s.digitalSubscriptionContracts);
+    expect(contract.durationDays).toBe(30);
+    expect(contract.studentNameSnapshot).toBe("مريم");
+    expect(contract.previousContractId).toBeNull();
   });
 
   it("كرتان لنفس المزوّد الآجل في فاتورة واحدة ⇒ استحقاق **واحد مجمَّع**", async () => {

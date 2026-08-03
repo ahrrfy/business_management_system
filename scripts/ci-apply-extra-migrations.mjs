@@ -91,6 +91,10 @@ const EXTRA_MIGRATIONS = [
   // ٣٠/٧/٢٦: priceSanity L3 — جدول أثر التغيّرات على التكلفة/السعر + Trigger BEFORE UPDATE.
   // drizzle-kit لا يُمثّل Triggers ⇒ يجب أن يُطبَّق يدوياً هنا. idempotent (DROP TRIGGER IF EXISTS).
   "drizzle/migrations/0135_price_anomaly_log.sql",
+  // Keep CI's schema-pushed database on the same physical work-order payment
+  // column as migration-built/production databases. The migration also repairs
+  // a database carrying the accidental generic `paymentMethod` column name.
+  "drizzle/migrations/0142_work_order_transfer_deposits.sql",
 ];
 
 const url = process.env.DATABASE_URL;

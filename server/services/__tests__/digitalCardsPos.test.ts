@@ -46,12 +46,17 @@ async function mkProvider(name = "آسياسيل") {
 async function mkOffering(providerId: number, over: {
   name?: string; offeringType?: string; requiresStudentData?: boolean;
   fixedMargin?: string; priceValidityHours?: number | null; branchIds?: number[]; favoriteAt?: number;
+  subscriptionDurationDays?: number | null;
 } = {}) {
   const r = await withTx((tx) => offeringService.createOffering(tx, {
     providerId,
     offeringType: over.offeringType ?? "TELECOM_CARD",
     name: over.name ?? "كارت ١٠ آلاف",
     requiresStudentData: over.requiresStudentData ?? false,
+    subscriptionDurationDays:
+      over.offeringType === "EDUCATIONAL_SUBSCRIPTION"
+        ? over.subscriptionDurationDays ?? 30
+        : null,
     pricingMode: "FIXED_MARGIN",
     fixedMargin: over.fixedMargin ?? "500",
     roundingStep: "250",

@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { useParams } from "wouter";
+import { useLocation, useParams } from "wouter";
 import { TRPCClientError } from "@trpc/client";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { trpc } from "@/lib/trpc";
@@ -21,6 +21,7 @@ import { fmtInt } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { CameraScanner } from "@/components/scan/CameraScanner";
 import { cn } from "@/lib/utils";
 import {
   WifiOff,
@@ -29,7 +30,6 @@ import {
   Lock,
   Ban,
   Send,
-  ScanLine,
   Camera,
   RefreshCw,
   PartyPopper,
@@ -99,9 +99,13 @@ function BrandMark() {
 export default function CountPortal() {
   const params = useParams<{ code?: string }>();
   const code = decodeURIComponent(params.code ?? "").trim();
+  const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  // رابط /count مخصص للعامل الخارجي فقط. إذا كان المتصفح يحمل حساب نظام،
+  // ننقله إلى مساحة الحاسوب كي لا يظهر له PIN أو واجهة الهاتف.
+  const account = trpc.auth.me.useQuery(undefined, { retry: false });
 
-  const [phase, setPhase] = useState<"boot" | "pin" | "counting">("boot");
+  const [phase, setPhase] = useState<"boot" | "pin" | "counting" | "paused">("boot");
   const [bootOffline, setBootOffline] = useState(false);
   const [pin, setPin] = useState("");
   const [authErr, setAuthErr] = useState<string | null>(null);
@@ -111,6 +115,7 @@ export default function CountPortal() {
 
   const [q, setQ] = useState("");
   const [openVariantId, setOpenVariantId] = useState<number | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [flashId, setFlashId] = useState<number | null>(null);
   const [showOthers, setShowOthers] = useState(false);
   const [finished, setFinished] = useState<{ sessionMovedToReview: boolean } | null>(null);
@@ -124,6 +129,12 @@ export default function CountPortal() {
       document.title = prev;
     };
   }, []);
+
+  useEffect(() => {
+    if (account.data && code) navigate(`/my-stocktake/${encodeURIComponent(code)}`, { replace: true });
+  }, [account.data, code, navigate]);
+
+  if (account.data) return null;
 
   /* ── الدخول الصامت: كوكي سارٍ ⇒ مباشرة، وإلا auth بلا PIN (مستخدم نظام بتكليف USER)، وإلا شاشة PIN ── */
   const boot = useCallback(async () => {
@@ -301,9 +312,10 @@ export default function CountPortal() {
     [needle],
   );
 
-  const myAll = useMemo(() => items.filter((i) => i.isMine), [items]);
+  // Every worker receives the same blind product list; allocation happens in the field.
+  const myAll = items;
   const myFiltered = useMemo(() => myAll.filter(matches), [myAll, matches]);
-  const otherAll = useMemo(() => items.filter((i) => !i.isMine), [items]);
+  const otherAll: CountItem[] = [];
   const otherFiltered = useMemo(() => otherAll.filter(matches), [otherAll, matches]);
 
   /** «معدود» محلياً = عدّي المُزامَن أو عدّة معلّقة بالطابور. */
@@ -311,10 +323,11 @@ export default function CountPortal() {
     (i: CountItem) => i.myCount != null || queuedByVariant.has(i.variantId),
     [queuedByVariant],
   );
-  const effCounted = useMemo(() => myAll.filter(hasMyCount).length, [myAll, hasMyCount]);
+  const effCounted = st?.progress.session.counted ?? 0;
   const pendingRecounts = st?.recountTasks.length ?? 0;
-  const allDone = myAll.length > 0 ? effCounted >= myAll.length && pendingRecounts === 0 : pendingRecounts === 0;
-  const remaining = Math.max(0, myAll.length - effCounted) + pendingRecounts;
+  const sessionTotal = st?.progress.session.total ?? myAll.length;
+  const allDone = sessionTotal > 0 ? effCounted >= sessionTotal && pendingRecounts === 0 : pendingRecounts === 0;
+  const remaining = Math.max(0, sessionTotal - effCounted) + pendingRecounts;
 
   const sessionStatus = st?.session.status ?? "COUNTING";
   const submittedAssignment = finished != null || st?.assignment.status === "SUBMITTED";
@@ -325,7 +338,7 @@ export default function CountPortal() {
   const openCard = useCallback(
     (i: CountItem) => {
       if (!canCount) return;
-      if (!i.isMine && dupBlocked) {
+      if (dupBlocked && i.colleagueCounted && !i.myCount) {
         notify.info(
           i.colleagueCounted
             ? "المنتج معدود من زميلك — سياسة الجلسة تمنع العدّ المكرر"
@@ -445,6 +458,17 @@ export default function CountPortal() {
 
   /* ── التسليم النهائي ── */
   const finishMut = trpc.count.finish.useMutation();
+  const logoutMut = trpc.count.logout.useMutation();
+  const doPause = useCallback(() => {
+    if (!online || queueCount > 0 || logoutMut.isPending) return;
+    logoutMut.mutate(undefined, {
+      onSuccess: () => {
+        setPhase("paused");
+        notify.ok("حُفظت العدّات وأنهيت الوردية", "يمكنك العودة لاحقاً وإكمال الجرد من نفس التقدم.");
+      },
+      onError: (e) => notify.err(e),
+    });
+  }, [logoutMut, online, queueCount]);
   const doFinish = useCallback(async () => {
     if (!st) return;
     const zone = st.assignment.zone;
@@ -562,6 +586,21 @@ export default function CountPortal() {
     );
   }
 
+  if (phase === "paused") {
+    return frame(
+      <CenterScreen>
+        <div className="badge-status-active grid size-16 place-items-center rounded-full">
+          <Check aria-hidden className="size-8" />
+        </div>
+        <p className="text-lg font-bold">حُفظت الوردية</p>
+        <p className="text-sm leading-relaxed text-muted-foreground">الجلسة ما زالت قيد العدّ. يمكنك العودة في أي يوم والمتابعة من حيث توقفت.</p>
+        <Button size="lg" className="h-12 text-base font-bold" onClick={() => void boot()}>
+          متابعة الجرد
+        </Button>
+      </CenterScreen>,
+    );
+  }
+
   /* ── قيد العدّ: تحميل/خطأ ── */
   if (!st) {
     return frame(
@@ -675,7 +714,7 @@ export default function CountPortal() {
 
   /* ── الشاشة الرئيسية: ترويسة + مهام إعادة العدّ + بحث + قائمة + تسليم ── */
   const firstName = st.assignment.name.split(" ")[0];
-  const pct = myAll.length > 0 ? Math.min(100, Math.round((effCounted / myAll.length) * 100)) : 0;
+  const pct = sessionTotal > 0 ? Math.min(100, Math.round((effCounted / sessionTotal) * 100)) : 0;
   const othersOpen = showOthers || (needle !== "" && otherFiltered.length > 0);
 
   return frame(
@@ -722,7 +761,7 @@ export default function CountPortal() {
             />
           </div>
           <span className="text-xs font-bold tabular-nums" dir="ltr">
-            {fmtInt(effCounted)}/{fmtInt(myAll.length)}
+            {fmtInt(effCounted)}/{fmtInt(sessionTotal)}
           </span>
         </div>
       </header>
@@ -786,12 +825,13 @@ export default function CountPortal() {
         <button
           type="button"
           onClick={() => {
-            searchRef.current?.focus();
-            notify.info("جاهز للمسح", "استخدم ماسح الباركود، أو اكتب الرقم في حقل البحث ثم اضغط إدخال");
+            if (!canCount) return;
+            setCameraOpen(true);
           }}
+          disabled={!canCount}
           className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground active:scale-95"
         >
-          <ScanLine aria-hidden className="size-4" /> مسح
+          <Camera aria-hidden className="size-4" /> مسح
         </button>
       </div>
 
@@ -805,7 +845,7 @@ export default function CountPortal() {
         {myFiltered.map((i) => {
           const queued = queuedByVariant.get(i.variantId);
           const isRecPending = pendingRecountSet.has(i.variantId);
-          const countedHere = hasMyCount(i);
+          const countedHere = i.counted || hasMyCount(i);
           const shownQty = queued?.qty ?? i.myCount?.qty ?? null;
           const bc = displayBarcode(i);
           return (
@@ -964,6 +1004,21 @@ export default function CountPortal() {
 
       {/* شريط التسليم السفلي */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-background via-background/95 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-8">
+        {!submittedAssignment && (
+          <button
+            type="button"
+            disabled={!online || queueCount > 0 || logoutMut.isPending}
+            onClick={doPause}
+            className={cn(
+              "pointer-events-auto mb-2 h-10 w-full rounded-xl border text-sm font-bold transition-colors",
+              online && queueCount === 0 && !logoutMut.isPending
+                ? "border-border bg-background text-foreground active:bg-muted"
+                : "cursor-not-allowed border-border bg-muted text-muted-foreground",
+            )}
+          >
+            {logoutMut.isPending ? "جارٍ حفظ الوردية…" : "حفظ وإنهاء الوردية — أكمل لاحقاً"}
+          </button>
+        )}
         {submittedAssignment ? (
           <div className="pointer-events-auto inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-100 px-4 py-3 text-center text-sm font-bold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
             <Check aria-hidden className="size-4" /> سلّمت العدّ — بانتظار مراجعة المسؤول
@@ -1012,6 +1067,14 @@ export default function CountPortal() {
           </div>
         </div>
       )}
+      <CameraScanner
+        open={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onDetect={(raw) => {
+          setCameraOpen(false);
+          handleBarcode(raw);
+        }}
+      />
     </>,
   );
 }

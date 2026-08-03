@@ -14,6 +14,7 @@ export interface ProcessPaymentInput {
   invoiceId: number;
   amount: string;
   method: PaymentMethod;
+  reference?: string | null;
   shiftId?: number | null;
   /** إن حُدِّد، يُرفض الدفع على فاتورة فرعٍ مغاير (عزل الفروع لغير المدير). */
   enforceBranchId?: number | null;
@@ -50,6 +51,9 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
             message: "تعارض idempotency: المفتاح مستعمَل لدفعة بطريقة سداد مختلفة",
           });
         }
+        if ((r.referenceNumber ?? null) !== (input.reference?.trim() || null)) {
+          throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: مرجع عملية الدفع مختلف" });
+        }
         // أعِد قراءة الفاتورة لإرجاع حالتها الحديثة (replay آمن، لا كتابة).
         const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
         if (input.enforceBranchId != null && inv && Number(inv.branchId) !== input.enforceBranchId) {
@@ -78,6 +82,10 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الفاتورة مدفوعة بالكامل" });
     }
     const amount = money(input.amount);
+    const paymentReference = input.reference?.trim() || null;
+    if (input.method !== "CASH" && !paymentReference) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
+    }
     if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
     const remaining = money(inv.total)
       .minus(money(inv.returnedTotal ?? "0"))
@@ -135,6 +143,7 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       direction: "IN",
       amount: toDbMoney(amount),
       paymentMethod: input.method,
+      referenceNumber: paymentReference,
       status: "COMPLETED",
       createdBy: actor.userId,
     });

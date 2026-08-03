@@ -79,6 +79,8 @@ const employeeInput = z.object({
   workSchedule: z
     .record(z.string(), z.object({ hours: z.number().min(0).max(24), rate: z.number().min(0).nullish() }))
     .nullish(),
+  /** إعفاءٌ من الحضور — راتبٌ ثابت (0141). للمُلّاك ولمن لا جهاز بصمة له. */
+  attendanceExempt: z.boolean().optional(),
   hireDate: z.string().optional(),
   gender: z.string().trim().optional(),
   birthDate: z.string().optional(),
@@ -219,14 +221,15 @@ export const employeeRouter = router({
       const { id, ...rest } = input;
       try {
         const e = await svc.updateEmployee(id, rest as svc.EmployeeInput, { userId: ctx.user.id, role: ctx.user.role });
-        // تغيير الأجر يُسجَّل بقيمتَيه (قبل/بعد) لا بالاسم وحده — وإلا صار تغييرُ أجرٍ بلا أثر.
+        // تغيير الأجر يُسجَّل ببصمته كاملةً (قبل/بعد) لا بالاسم وحده — وإلا صار تغييرُ أجرٍ
+        // بلا أثر. والبصمة تشمل الجدول والأسعار لا الراتب وحده (وهي مسارات أجرٍ حقيقية).
         await logAudit(ctx, {
           action: "employee.update",
           entityType: "employee",
           entityId: id,
-          oldValue: e.salaryChange ? { salary: e.salaryChange.fromSalary, allowances: e.salaryChange.fromAllowances } : undefined,
-          newValue: e.salaryChange
-            ? { name: e.fullName, salary: e.salaryChange.toSalary, allowances: e.salaryChange.toAllowances }
+          oldValue: e.wageChange ? e.wageChange.from : undefined,
+          newValue: e.wageChange
+            ? { name: e.fullName, wageFields: e.wageChange.fields, wage: e.wageChange.to }
             : { name: e.fullName },
         });
         return e;
