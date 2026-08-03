@@ -13,12 +13,14 @@ import { SmartUserInput, type SmartUserValue } from "@/components/form/SmartUser
 import { CredentialsShare } from "@/components/form/CredentialsShare";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import {
   DAY_RATES_DEFAULT, DEGREES, GENDERS, HR_DEPARTMENTS, MARITAL_STATUSES, PAY_TYPES,
   type EmployeeEducation,
 } from "@shared/hr";
 import { AlertCircle, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { ROLE_OPTIONS } from "@/lib/roles";
 
@@ -227,6 +229,26 @@ export default function EmployeeNew() {
     createWithAccount.mutate({ ...payload, account: { mode: "new", ...accountNewPayload() } });
   }
 
+  /**
+   * حارس فقد البيانات — النموذج طويل (٤٠+ حقلاً) وخطأ إغلاق تبويب بالخطأ مكلف.
+   * الإضافة: أيّ حقلٍ غير فارغ يعني تغييراً حقيقياً (النموذج يبدأ فارغاً).
+   * التعديل: النموذج يبدأ **معبَّأً** من بيانات الموظف ⇒ «غير فارغ» دائماً؛ لا بدّ من
+   * لقطةٍ للحالة الأولى بعد التحميل (`loaded`) ومقارنة الحالة الحالية بها فعلياً.
+   */
+  const dirtySnapshot = () => JSON.stringify({ form, dayRates, exempt, sched, photoUrl, edu: edu.map(({ key, ...e }) => e) });
+  const initialSnapshotRef = useRef<string>("");
+  useEffect(() => {
+    if (isEdit && !loaded) return; // بيانات التعديل لم تصل بعد — لا لقطة سابقة لأوانها
+    if (initialSnapshotRef.current) return; // لقطة واحدة فقط عند أول استقرار
+    initialSnapshotRef.current = dirtySnapshot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEdit, loaded]);
+  const isDirty = !!initialSnapshotRef.current && dirtySnapshot() !== initialSnapshotRef.current;
+  useUnsavedGuard(isDirty && !createdInfo);
+
+  // اختصار: Ctrl+S حفظ — بلا Esc (النموذج مكتظّ بـ<select> أصليّة، راجع تحذير الهوك).
+  useSaveShortcuts({ onSave: submit, enabled: !pending });
+
   /** يبني حقول الحساب الجديد للإرسال (الاسم من الموظف؛ الفرع/الهاتف/المسمّى تُؤخذ من الموظف خادمياً). */
   function accountNewPayload() {
     return {
@@ -289,9 +311,14 @@ export default function EmployeeNew() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      {/* شريط أدوات ثابت أعلى النموذج — نموذجٌ طويل (٤٠+ حقلاً)، والتمرير كان يُغيّب زرّ الحفظ
+          عن النظر تماماً حتى العودة للأعلى. مطابقٌ لشريط الأسفل (نفس الأزرار) لا يفرض قراراً جديداً. */}
+      <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <h1 className="text-2xl font-bold">{isEdit ? "تعديل موظف" : "إضافة موظف"}</h1>
-        <Link href="/hr/employees" className="text-sm text-muted-foreground">← رجوع للموظفين</Link>
+        <div className="flex items-center gap-2">
+          <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+          <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
+        </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
@@ -506,8 +533,8 @@ export default function EmployeeNew() {
           <span className="whitespace-pre-wrap break-words">{error}</span>
         </div>
       )}
-      <div className="flex gap-2">
-        <Button onClick={submit} disabled={pending}>{pending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+      <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
         <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
       </div>
     </div>

@@ -1,6 +1,8 @@
 // price-waves router (٧/٧/٢٦): إدارة موجات تحديث الأسعار — معاينة + تطبيق + تاريخ.
 // RBAC: managerProcedure حصراً (يكشف التكلفة + يعدّل أسعاراً جماعياً).
+import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
+import { priceChangeLog } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import {
   applyPriceWave,
@@ -102,5 +104,30 @@ export const priceWavesRouter = router({
         productName: enrichment.get(Number(r.productUnitId))?.productName ?? null,
         unitName: enrichment.get(Number(r.productUnitId))?.unitName ?? null,
       }));
+    }),
+
+  /** تفاصيل صفوف موجة مطبَّقة — كل priceChangeLog بهذا waveId مُثرًى بأسماء المنتج/الوحدة/SKU
+   *  (البيانات مخزَّنة أصلاً منذ التطبيق عبر `priceChangeLog.waveId`؛ لا نافذة عرض كانت موجودة). */
+  waveDetails: productsManagerProcedure
+    .input(z.object({ waveId: z.number().int().positive() }))
+    .query(async ({ input }) => {
+      return withTx(async (tx) => {
+        const rows = await tx
+          .select()
+          .from(priceChangeLog)
+          .where(eq(priceChangeLog.waveId, input.waveId))
+          .orderBy(asc(priceChangeLog.productUnitId), asc(priceChangeLog.priceTier));
+        const enrichment = await enrichLogRows(tx, rows.map((r) => ({ productUnitId: Number(r.productUnitId) })));
+        return rows.map((r) => ({
+          ...r,
+          id: Number(r.id),
+          productUnitId: Number(r.productUnitId),
+          waveId: r.waveId == null ? null : Number(r.waveId),
+          actorUserId: Number(r.actorUserId),
+          productName: enrichment.get(Number(r.productUnitId))?.productName ?? null,
+          unitName: enrichment.get(Number(r.productUnitId))?.unitName ?? null,
+          sku: enrichment.get(Number(r.productUnitId))?.sku ?? null,
+        }));
+      });
     }),
 });

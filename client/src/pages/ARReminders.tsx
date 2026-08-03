@@ -4,7 +4,7 @@
 // كل تذكير مُرسَل يُسجَّل في `arReminders` مع snapshots اللحظية (مبلغ + أقدم فاتورة + نصّ الرسالة).
 // نافذة التبريد ٧ أيام تمنع تكرار العميل في القائمة قبل استحقاق تذكير جديد.
 import { useMemo, useState } from "react";
-import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark, Info, Bot } from "lucide-react";
+import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark, Info, Bot, Printer, Download } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { sum } from "@/lib/money";
@@ -14,6 +14,7 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -27,6 +28,8 @@ import {
 } from "@/components/ui/dialog";
 import { fmtDateTime } from "@/lib/date";
 import { RowActions } from "@/components/list";
+import { printReportDoc } from "@/lib/printing/reportDoc";
+import { exportRows } from "@/lib/export";
 
 const COMPANY_NAME = "المكتبة العربية للطباعة والقرطاسية";
 
@@ -87,6 +90,14 @@ function daysBadgeCls(days: number): string {
   if (days >= 60) return "bg-amber-500/15 text-amber-700 font-semibold";
   if (days >= 30) return "bg-orange-500/15 text-orange-700";
   return "bg-muted text-muted-foreground";
+}
+
+/** فلتر شريحة التقادم — نفس حدود daysBadgeCls (٧ أدنى القائمة أصلاً — REMINDER_MIN_DAYS_OVERDUE). */
+function matchesAgingBracket(days: number, bracket: "7-30" | "31-60" | "61-90" | "90+"): boolean {
+  if (bracket === "7-30") return days < 31;
+  if (bracket === "31-60") return days >= 31 && days < 61;
+  if (bracket === "61-90") return days >= 61 && days < 91;
+  return days >= 91;
 }
 
 type QueueRow = RouterOutputs["arReminders"]["queue"][number];
@@ -162,23 +173,61 @@ export default function ARReminders() {
   });
 
   const [search, setSearch] = useState("");
+  const [agingBracket, setAgingBracket] = useState<"" | "7-30" | "31-60" | "61-90" | "90+">("");
   const [skipTarget, setSkipTarget] = useState<QueueRow | null>(null);
   const [skipReason, setSkipReason] = useState("");
   const [promisedDate, setPromisedDate] = useState("");
 
   const filteredQueue = useMemo(() => {
-    const list = queue.data ?? [];
-    if (!search.trim()) return list;
-    const s = search.trim().toLowerCase();
-    return list.filter(
-      (r) => r.customerName.toLowerCase().includes(s) || (r.phone ?? "").includes(s),
-    );
-  }, [queue.data, search]);
+    let list = queue.data ?? [];
+    if (search.trim()) {
+      const s = search.trim().toLowerCase();
+      list = list.filter((r) => r.customerName.toLowerCase().includes(s) || (r.phone ?? "").includes(s));
+    }
+    if (agingBracket) list = list.filter((r) => matchesAgingBracket(r.daysOverdue, agingBracket));
+    return list;
+  }, [queue.data, search, agingBracket]);
 
   const totalUnpaidSum = useMemo(
-    () => sum((queue.data ?? []).map((r) => r.totalUnpaid)),
-    [queue.data],
+    () => sum(filteredQueue.map((r) => r.totalUnpaid)),
+    [filteredQueue],
   );
+
+  /** طباعة/تصدير قائمة اليوم (بعد فلاتر البحث/شريحة التقادم) — للمشاركة الورقية أو مراجعة خارج النظام. */
+  function printTodayList() {
+    const opened = printReportDoc({
+      title: "تذكيرات الذمم الآجلة — قائمة اليوم",
+      headerExtra: [{ label: "عدد العملاء", value: String(filteredQueue.length) }],
+      columns: [
+        { key: "customerName", label: "العميل" },
+        { key: "phone", label: "الهاتف" },
+        { key: "amount", label: "الرصيد الآجل", align: "left" },
+        { key: "days", label: "أيام التأخّر", align: "center" },
+      ],
+      rows: filteredQueue.map((r) => ({
+        customerName: r.customerName,
+        phone: r.phone ?? "—",
+        amount: `${fmtAmount(r.totalUnpaid)} د.ع`,
+        days: String(r.daysOverdue),
+      })),
+      summary: [{ label: "إجمالي الذمم", value: `${fmtAmount(totalUnpaidSum)} د.ع`, bold: true, large: true }],
+    });
+    if (!opened) notify.err("حجب المتصفح نافذة الطباعة");
+  }
+
+  function exportTodayList() {
+    void exportRows(filteredQueue, {
+      filename: "تذكيرات-الذمم-اليوم",
+      title: "تذكيرات الذمم الآجلة — قائمة اليوم",
+      columns: [
+        { key: "customerName", header: "العميل" },
+        { key: "phone", header: "الهاتف", map: (r) => r.phone ?? "" },
+        { key: "totalUnpaid", header: "الرصيد الآجل", money: true, map: (r) => Number(r.totalUnpaid) },
+        { key: "daysOverdue", header: "أيام التأخّر" },
+        { key: "oldestInvoiceDate", header: "متأخّر منذ" },
+      ],
+    });
+  }
 
   function handleSend(row: QueueRow) {
     if (!row.phone) {
@@ -332,9 +381,13 @@ export default function ARReminders() {
           filtered={filteredQueue}
           search={search}
           setSearch={setSearch}
+          agingBracket={agingBracket}
+          setAgingBracket={setAgingBracket}
           onSend={handleSend}
           onSendViaApi={handleSendViaApi}
           onSkip={setSkipTarget}
+          onPrint={printTodayList}
+          onExport={exportTodayList}
           sendingId={logSent.isPending ? logSent.variables?.customerId ?? null : null}
           sendingViaApiId={sendViaApi.isPending ? sendViaApi.variables?.customerId ?? null : null}
         />
@@ -415,9 +468,13 @@ function QueueTab({
   filtered,
   search,
   setSearch,
+  agingBracket,
+  setAgingBracket,
   onSend,
   onSendViaApi,
   onSkip,
+  onPrint,
+  onExport,
   sendingId,
   sendingViaApiId,
 }: {
@@ -428,9 +485,13 @@ function QueueTab({
   filtered: QueueRow[];
   search: string;
   setSearch: (v: string) => void;
+  agingBracket: "" | "7-30" | "31-60" | "61-90" | "90+";
+  setAgingBracket: (v: "" | "7-30" | "31-60" | "61-90" | "90+") => void;
   onSend: (row: QueueRow) => void;
   onSendViaApi: (row: QueueRow) => void;
   onSkip: (row: QueueRow) => void;
+  onPrint: () => void;
+  onExport: () => void;
   sendingId: number | null;
   sendingViaApiId: number | null;
 }) {
@@ -452,7 +513,7 @@ function QueueTab({
   return (
     <Card>
       <CardContent className="p-0">
-        <div className="flex items-center gap-2 border-b p-3">
+        <div className="flex flex-wrap items-center gap-2 border-b p-3">
           <div className="relative flex-1 max-w-md">
             <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
               <Search className="size-4" />
@@ -464,8 +525,26 @@ function QueueTab({
               className="h-9 pe-9"
             />
           </div>
+          <AppSelect
+            value={agingBracket}
+            onValueChange={(v) => setAgingBracket(v as typeof agingBracket)}
+            className="h-9 w-44"
+            aria-label="شريحة التقادم"
+            placeholder="كل شرائح التقادم"
+          >
+            <option value="7-30">٧-٣٠ يوماً</option>
+            <option value="31-60">٣١-٦٠ يوماً</option>
+            <option value="61-90">٦١-٩٠ يوماً</option>
+            <option value="90+">أكثر من ٩٠ يوماً</option>
+          </AppSelect>
           <Button variant="outline" size="sm" onClick={refetch} className="gap-1.5">
             <RotateCcw className="size-3.5" aria-hidden /> تحديث
+          </Button>
+          <Button variant="outline" size="sm" onClick={onExport} className="gap-1.5">
+            <Download className="size-3.5" aria-hidden /> تصدير Excel
+          </Button>
+          <Button variant="outline" size="sm" onClick={onPrint} className="gap-1.5">
+            <Printer className="size-3.5" aria-hidden /> طباعة القائمة
           </Button>
         </div>
         <ScrollTableShell bordered={false}>
@@ -486,7 +565,9 @@ function QueueTab({
             <TableBody>
               {filtered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">لا نتائج للبحث «{search}»</TableCell>
+                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                    {search ? `لا نتائج للبحث «${search}»` : "لا نتائج مطابقة لشريحة التقادم المختارة"}
+                  </TableCell>
                 </TableRow>
               ) : (
                 filtered.map((row) => (
@@ -578,12 +659,30 @@ function HistoryTab({
   isError: boolean;
   refetch: () => void;
 }) {
+  // فلاتر السجلّ (بحث + حالة + مدى تاريخ) — تصفية عميلة على النافذة المجلوبة أصلاً (٣٠ يوماً، حدّ
+  // ١٠٠٠ صفّ) لأن توسيع النافذة نفسها يتطلّب تعديل arRemindersService.ts (خارج نطاق هذه الشريحة).
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState<"" | "SENT" | "SKIPPED">("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+
+  const filtered = useMemo(() => {
+    let rows = data;
+    if (search.trim()) {
+      const s = search.trim().toLowerCase();
+      rows = rows.filter((r) => r.customerName.toLowerCase().includes(s));
+    }
+    if (status) rows = rows.filter((r) => r.status === status);
+    if (from) rows = rows.filter((r) => new Date(r.createdAt).toISOString().slice(0, 10) >= from);
+    if (to) rows = rows.filter((r) => new Date(r.createdAt).toISOString().slice(0, 10) <= to);
+    return rows;
+  }, [data, search, status, from, to]);
+
   if (isLoading) return <LoadingState />;
   if (isError) {
     return <ErrorState message="تعذّر تحميل السجلّ." onRetry={refetch} />;
   }
-  const rows = data;
-  if (rows.length === 0) {
+  if (data.length === 0) {
     return (
       <Card>
         <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
@@ -594,9 +693,33 @@ function HistoryTab({
       </Card>
     );
   }
+  const rows = filtered;
   return (
     <Card>
       <CardContent className="p-0">
+        <div className="flex flex-wrap items-center gap-2 border-b p-3">
+          <div className="relative flex-1 max-w-xs">
+            <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+              <Search className="size-4" />
+            </span>
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث بالاسم…" className="h-9 pe-9" />
+          </div>
+          <AppSelect
+            value={status}
+            onValueChange={(v) => setStatus(v as typeof status)}
+            className="h-9 w-36"
+            aria-label="الحالة"
+            placeholder="كل الحالات"
+          >
+            <option value="SENT">أُرسل</option>
+            <option value="SKIPPED">تُخطّي/وعد</option>
+          </AppSelect>
+          <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-36" aria-label="من تاريخ" />
+          <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 w-36" aria-label="إلى تاريخ" />
+          {(search || status || from || to) && (
+            <Button variant="ghost" size="sm" onClick={() => { setSearch(""); setStatus(""); setFrom(""); setTo(""); }}>مسح الفلاتر</Button>
+          )}
+        </div>
         <ScrollTableShell bordered={false}>
           <Table>
             <TableHeader>
@@ -610,6 +733,11 @@ function HistoryTab({
               </TableRow>
             </TableHeader>
             <TableBody>
+              {rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">لا نتائج مطابقة للفلاتر.</TableCell>
+                </TableRow>
+              )}
               {rows.map((r) => (
                 <TableRow key={r.id}>
                   <TableCell className="text-xs text-muted-foreground tabular-nums" dir="ltr">{fmtDateTime(r.createdAt)}</TableCell>

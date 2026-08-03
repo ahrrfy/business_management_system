@@ -72,6 +72,13 @@ export const assetsRouter = router({
           return money(d.salvageValue ?? "0").lte(money(d.purchaseValue));
         },
         { message: "القيمة التخريدية يجب ألا تتجاوز قيمة الشراء", path: ["salvageValue"] },
+      ).refine(
+        (d) => {
+          const re = /^\d+(\.\d{1,2})?$/;
+          if (!re.test(d.purchaseValue)) return true; // الصيغة تتكفّل بخطأ الشكل
+          return money(d.purchaseValue).gt(0);
+        },
+        { message: "قيمة الشراء يجب أن تكون أكبر من صفر", path: ["purchaseValue"] },
       ),
     )
     .mutation(async ({ input, ctx }) => {

@@ -9,6 +9,7 @@ import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyStrin
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase, settlePurchaseUsdDirect } from "../services/purchaseService";
+import { withTx } from "../services/tx";
 import { canSeeCostForUser, purchasesManagerProcedure, purchasesReadProcedure, purchasesWarehouseProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
@@ -140,6 +141,39 @@ export const purchaseRouter = router({
         { userId: ctx.user.id, branchId: effectiveBranchId },
       );
       await logAudit(ctx, { action: "purchase.createOrder", entityType: "purchaseOrder", entityId: (res as { purchaseOrderId?: number })?.purchaseOrderId, newValue: { supplierId: input.supplierId, items: input.items.length } });
+      return res;
+    }),
+
+  // اعتماد مسوّدة (DRAFT → CONFIRMED): يُتمّم دورة «حفظ مسوّدة» — مسوّدةٌ تُحفَظ بلا التزام فوري
+  // (لا تُستلَم منها بضاعة، لا أثر مخزني/مالي أصلاً — createOrder لا يكتب شيئاً غير سطور الأمر
+  // نفسها) ثم تُعتمَد لاحقاً فتصبح قابلة للاستلام عبر receive (الذي يشترط status=CONFIRMED حرفياً).
+  confirmOrder: purchasesManagerProcedure
+    .input(z.object({ purchaseOrderId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن اعتماد أمر شراء" });
+      }
+      // withTx يستدعي requireDb() داخلياً (يرمي نفس الخطأ إن غابت قاعدة البيانات) — لا فحص مكرَّر هنا.
+      const res = await withTx(async (tx) => {
+        const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, input.purchaseOrderId)).for("update").limit(1);
+        if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+        // عزل الفرع: مطابق لـassertPurchaseBranch في purchaseService (غير المرتفع محصور بفرعه).
+        const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+        if (!elevated && Number(po.branchId) !== Number(ctx.user.branchId)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع اعتماد أمر شراء فرع آخر" });
+        }
+        if (po.status !== "DRAFT") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُعتمَد إلا أمر شراء بحالة مسوّدة" });
+        }
+        await tx.update(purchaseOrders).set({ status: "CONFIRMED" }).where(eq(purchaseOrders.id, input.purchaseOrderId));
+        return { purchaseOrderId: input.purchaseOrderId, status: "CONFIRMED" as const };
+      });
+      await logAudit(ctx, {
+        action: "purchase.confirmOrder",
+        entityType: "purchaseOrder",
+        entityId: input.purchaseOrderId,
+        newValue: { status: "CONFIRMED" },
+      });
       return res;
     }),
 
@@ -288,6 +322,8 @@ export const purchaseRouter = router({
             orderDate: purchaseOrders.orderDate,
             // supplierId مطلوب لإجراءات الصف (كشف حساب المورد) في شاشة المشتريات.
             supplierId: purchaseOrders.supplierId,
+            // branchId لعمود «الفرع» عند فلتر «كل الفروع» للمرتفعين (نمط sales.list).
+            branchId: purchaseOrders.branchId,
             total: purchaseOrders.total,
             paidAmount: purchaseOrders.paidAmount,
             shippingCost: purchaseOrders.shippingCost,

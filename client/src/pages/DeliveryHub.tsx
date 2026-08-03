@@ -133,6 +133,7 @@ function DispatchTab() {
   // (بوّابة أدوار صِرفة بلا مفتاح وحدة صلاحيات — لا مفتاح delivery في المصفوفة ⇒ القائمة الحرفية هي المطابقة الدقيقة).
   const canDispatch = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
   const [target, setTarget] = useState<ReadyOrder | null>(null);
+  const [query, setQuery] = useState("");
 
   const dispatch = trpc.delivery.dispatch.useMutation({
     onSuccess: (r) => {
@@ -145,15 +146,42 @@ function DispatchTab() {
   });
 
   if (ready.isError) return <ErrorState onRetry={() => ready.refetch()} />;
-  const rows = ready.data ?? [];
+  const allRows = ready.data ?? [];
+  // بحث محلي فوري (القائمة تُجلب دفعةً واحدة بلا ترقيم خادميّ ⇒ فلترة العميل تكفي).
+  const rows = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase("ar");
+    if (!needle) return allRows;
+    return allRows.filter((o) =>
+      [o.orderNumber, o.title, o.customerName].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(needle)),
+    );
+  }, [allRows, query]);
 
   return (
     <div className="rounded-xl border bg-card">
-      <div className="border-b px-4 py-3 text-sm font-bold">الطلبات الجاهزة للتوصيل</div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+        <span className="text-sm font-bold">الطلبات الجاهزة للتوصيل ({rows.length})</span>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="رقم الطلب أو العميل…"
+              aria-label="بحث في الطلبات الجاهزة"
+              className="h-8 w-56"
+            />
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void ready.refetch()} disabled={ready.isFetching}>
+            <RotateCcw aria-hidden className={cn("size-3.5", ready.isFetching && "animate-spin")} />
+            تحديث
+          </Button>
+        </div>
+      </div>
       {ready.isLoading ? (
         <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
-      ) : rows.length === 0 ? (
+      ) : allRows.length === 0 ? (
         <EmptyState icon={Truck} title="لا طلبات جاهزة" description="لا توجد طلبات بحالة «جاهز» للإرسال حالياً." />
+      ) : rows.length === 0 ? (
+        <EmptyState icon={Truck} title="لا نتائج" description="لا طلبات مطابقة لبحثك." />
       ) : (
         <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">

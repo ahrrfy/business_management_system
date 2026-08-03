@@ -4,15 +4,17 @@
 import { useMemo, useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
-import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
+import { PeriodFilter, DEFAULT_PERIOD, ymd, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { fmtAr, formatIqd, D } from "@/lib/money";
+import { Button } from "@/components/ui/button";
+import { fmtAr, D } from "@/lib/money";
 import { exportSheets, type SheetSpec } from "@/lib/export";
-import { printReportDoc } from "@/lib/printing/reportDoc";
+import { printTreasuryReportA4 } from "@/lib/printing/printTreasuryReportA4";
 import { CopyButton, CopyInline } from "@/components/CopyButton";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmtDateTime } from "@/lib/date";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
 type TS = RouterOutputs["reports"]["treasurySummary"];
 
@@ -124,34 +126,34 @@ export default function TreasuryReport() {
     ]);
   }
 
+  // طباعة A4 — وثيقة توقيع واعتماد (أمين الصندوق/المحاسب/المدير)، لا جدول تقرير مجرّد
+  // (استُبدل printReportDoc العام بقالبٍ مخصّص يحمل خانات التوقيع — التفصيل الكامل في تصدير Excel).
   function onPrint() {
     if (!ts) return;
-    printReportDoc({
-      title: "تقرير الخزينة",
-      headerExtra: [
-        { label: "الفترة", value: `${period.from} — ${period.to}` },
-        { label: "الفرع", value: branchLabel },
-      ],
-      note: NOTE,
-      columns: [
-        { key: "label", label: "طريقة الدفع" },
-        { key: "settlement", label: "مكان التسوية" },
-        { key: "in", label: "مقبوضات", align: "left" },
-        { key: "out", label: "مدفوعات", align: "left" },
-        { key: "net", label: "الصافي", align: "left" },
-      ],
-      rows: [
-        ...ts.methods.map((m) => ({ label: m.label, settlement: m.settlement === "DRAWER" ? "درج الكاشير" : "إلكتروني / خارج الدرج", in: fmtAr(m.in), out: fmtAr(m.out), net: fmtAr(m.net) })),
-        { label: "الإجمالي", settlement: "—", in: fmtAr(ts.totalIn), out: fmtAr(ts.totalOut), net: fmtAr(ts.net) },
-      ],
-      showIndex: false,
-      orientation: "landscape",
-      summary: [
-        { label: "صافي الصندوق", value: formatIqd(ts.net), large: true, bold: true },
-        { label: "النقد المعدود (الورديات)", value: formatIqd(ts.shifts.totalCounted) },
-        { label: "فروقات الورديات", value: formatIqd(ts.shifts.totalVariance) },
-      ],
+    const opened = printTreasuryReportA4({
+      from: period.from,
+      to: period.to,
+      branchLabel,
+      methods: ts.methods.map((m) => ({ label: m.label, in: m.in, out: m.out, net: m.net, settlement: m.settlement })),
+      totalIn: ts.totalIn,
+      totalOut: ts.totalOut,
+      net: ts.net,
+      shiftsCount: ts.shifts.count,
+      totalCounted: ts.shifts.totalCounted,
+      totalVariance: ts.shifts.totalVariance,
     });
+    if (!opened) alert("حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
+  }
+
+  // تنقّل سريع بين الفترات المتجاورة (يوم سابق/تالي) — يزيح كامل نافذة [from,to] بنفس طولها،
+  // مفيدٌ خاصةً حين الفترة يوم واحد (إغلاق يومي متتابع) لكنه يعمل لأي طول فترة.
+  function shiftPeriod(deltaDays: number) {
+    const f = new Date(`${period.from}T00:00:00`);
+    const t = new Date(`${period.to}T00:00:00`);
+    if (isNaN(f.getTime()) || isNaN(t.getTime())) return;
+    f.setDate(f.getDate() + deltaDays);
+    t.setDate(t.getDate() + deltaDays);
+    setPeriod({ from: ymd(f), to: ymd(t), preset: "custom" });
   }
 
   return (
@@ -172,6 +174,15 @@ export default function TreasuryReport() {
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <PeriodFilter value={period} onChange={setPeriod} />
+          {/* تنقّل سريع ليوم سابق/تالٍ — يزيح الفترة كاملةً محافظاً على طولها. */}
+          <div className="flex items-center gap-1">
+            <Button variant="outline" size="sm" title="الفترة السابقة" aria-label="الفترة السابقة" onClick={() => shiftPeriod(-1)}>
+              <ChevronRight aria-hidden className="size-3.5" />
+            </Button>
+            <Button variant="outline" size="sm" title="الفترة التالية" aria-label="الفترة التالية" onClick={() => shiftPeriod(1)}>
+              <ChevronLeft aria-hidden className="size-3.5" />
+            </Button>
+          </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
             <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>

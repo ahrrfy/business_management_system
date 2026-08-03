@@ -50,11 +50,27 @@ export default function ReorderAlerts() {
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
   const branchId = isAdmin ? pickedBranch : canPickBranch ? pickedBranch ?? myBranch : myBranch;
 
+  // بحث محلي (اسم/متغيّر/SKU) داخل الصفحة المحمَّلة — ترقيمٌ خادميّ (limit/offset) يمنع اقتطاع
+  // ٢٠٠ الصامت السابق: طابور أكبر أصبح ظاهراً بلافتة «تحميل المزيد» بدل جدولٍ يبدو مكتملاً.
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 200;
   const alerts = trpc.inventory.reorderAlerts.useQuery(
-    { branchId: branchId ?? undefined },
+    { branchId: branchId ?? undefined, limit: PAGE_SIZE, offset: page * PAGE_SIZE },
     { enabled: me.data != null },
   );
-  const rows = alerts.data ?? [];
+  const loadedRows = alerts.data?.rows ?? [];
+  const total = alerts.data?.total ?? 0;
+  const rows = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    if (!s) return loadedRows;
+    return loadedRows.filter(
+      (r) =>
+        r.productName.toLowerCase().includes(s) ||
+        variantLabel(r).toLowerCase().includes(s) ||
+        r.sku.toLowerCase().includes(s),
+    );
+  }, [loadedRows, search]);
 
   // ── تحرير العتبتين المباشر (لكل صف) ─────────────────────────────────────
   const [editing, setEditing] = useState<string | null>(null);
@@ -205,16 +221,16 @@ export default function ReorderAlerts() {
         </div>
       )}
 
-      {canPickBranch && (
-        <Card>
-          <CardHeader><CardTitle className="text-base">الفلاتر</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+      <Card>
+        <CardHeader><CardTitle className="text-base">الفلاتر</CardTitle></CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+          {canPickBranch && (
             <div className="space-y-1">
               <Label>الفرع</Label>
               <select
                 className={selectCls}
                 value={branchId ?? ""}
-                onChange={(e) => setPickedBranch(e.target.value === "" ? null : Number(e.target.value))}
+                onChange={(e) => { setPickedBranch(e.target.value === "" ? null : Number(e.target.value)); setPage(0); }}
               >
                 {isAdmin && <option value="">كل الفروع</option>}
                 {(branches.data ?? []).map((b) => (
@@ -222,17 +238,28 @@ export default function ReorderAlerts() {
                 ))}
               </select>
             </div>
-          </CardContent>
-        </Card>
-      )}
+          )}
+          <div className="space-y-1">
+            <Label>بحث (اسم/متغيّر/SKU) — في الصفحة المحمَّلة</Label>
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="مثال: ورق A4" />
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="flex-row items-center justify-between gap-3">
           <CardTitle className="text-base">المنتجات الواجب إعادة طلبها</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {alerts.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} صنف`}
+              {alerts.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} من ${fmtInt(total)} صنف`}
             </span>
+            {total > PAGE_SIZE && (
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="sm" disabled={page === 0 || alerts.isFetching} onClick={() => setPage((p) => Math.max(0, p - 1))}>السابق →</Button>
+                <span className="text-xs text-muted-foreground">صفحة {fmtInt(page + 1)} من {fmtInt(Math.max(1, Math.ceil(total / PAGE_SIZE)))}</span>
+                <Button variant="outline" size="sm" disabled={(page + 1) * PAGE_SIZE >= total || alerts.isFetching} onClick={() => setPage((p) => p + 1)}>← التالي</Button>
+              </div>
+            )}
             <Button variant="outline" size="sm" disabled={rows.length === 0} onClick={doExport}>
               تصدير Excel
             </Button>

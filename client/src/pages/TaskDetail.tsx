@@ -321,8 +321,13 @@ export default function TaskDetail() {
           {data.conversationId != null && (
             <div className="space-y-0.5">
               <div className="text-xs text-muted-foreground">المحادثة المرتبطة</div>
-              <Link href="/crm?tab=inbox" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
-                <InboxIcon aria-hidden className="size-3.5" /> فتح صندوق الوارد
+              {/* يحمل معرّف المحادثة في الرابط (لا صفحة الوارد العامة فقط) — بانتظار Inbox.tsx (خارج
+                  ملفات هذه المهمة) ليقرأ conversationId من الرابط ويفتح المحادثة نفسها مباشرةً. */}
+              <Link
+                href={`/crm?tab=inbox&conversationId=${data.conversationId}`}
+                className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+              >
+                <InboxIcon aria-hidden className="size-3.5" /> فتح المحادثة في صندوق الوارد
               </Link>
             </div>
           )}

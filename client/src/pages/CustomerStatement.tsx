@@ -14,6 +14,7 @@ import { exportRows } from "@/lib/export";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
 import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { Search, X as XIcon } from "lucide-react";
@@ -85,9 +86,16 @@ export default function CustomerStatement() {
     const qs = p.toString();
     navigate(qs ? `${loc}?${qs}` : loc, { replace: true });
   };
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [invoiceFilter, setInvoiceFilter] = useState<"ALL" | "DEPOSIT_DUE" | "OUTSTANDING" | "SETTLED">("ALL");
+  // فترة الكشف + فلتر الفواتير محفوظان في الرابط (useUrlFilters) — رابطٌ للكشف بفترته المحدَّدة
+  // يبقى صالحاً بعد إعادة تحميل الصفحة أو مشاركته، لا يُعاد لـ«الكل» صامتاً. id يبقى بآليته الحالية
+  // (useSearch/navigate أعلاه) — لا تعارض: write() في useUrlFilters يقرأ الرابط الحيّ عند كل كتابة.
+  const [periodF, setPeriodF] = useUrlFilters({ from: "", to: "", filter: "ALL" });
+  const from = periodF.from;
+  const to = periodF.to;
+  const invoiceFilter = periodF.filter as "ALL" | "DEPOSIT_DUE" | "OUTSTANDING" | "SETTLED";
+  const setFrom = (v: string) => setPeriodF({ from: v });
+  const setTo = (v: string) => setPeriodF({ to: v });
+  const setInvoiceFilter = (v: string) => setPeriodF({ filter: v });
 
   const index = trpc.reports.customersIndex.useQuery();
   const stmt = trpc.reports.customerStatement.useQuery(
@@ -414,6 +422,10 @@ export default function CustomerStatement() {
 
           <Card>
             <CardContent className="p-0">
+              {/* stmt.data.payments مُقيَّدة بالفترة (from/to) خادمياً فعلاً — getCustomerStatement
+                  (server/services/reports/arAging.ts) يُطبِّق نفس شرط from/to على الإيصالات
+                  والتحصيلات المندوبيّة (COD) ومرتجعات البيع (RETURN) الثلاثة، لا الفواتير وحدها.
+                  تحقّقٌ صريح (لا تُطبَّق فلترة عميل إضافية هنا كي لا نُكرّر منطقاً صحيحاً أصلاً). */}
               <div className="p-3 border-b bg-muted/30 text-sm font-medium">الدفعات والاستردادات</div>
               <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">

@@ -6,7 +6,7 @@
  * عزل ذاتي خادمي: كل نقطة تحلّ المندوب من الجلسة (courier.myDeliveries/confirmDelivery).
  */
 import { useEffect, useState } from "react";
-import { Banknote, CheckCircle2, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck, XCircle } from "lucide-react";
+import { Banknote, CheckCircle2, Info, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck, XCircle } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -124,7 +124,13 @@ export default function MyDeliveries() {
           {/* سُلّمت حديثاً */}
           {data!.delivered.length > 0 && (
             <section className="space-y-2">
-              <h2 className="text-sm font-bold text-muted-foreground">سُلّمت حديثاً ({data!.delivered.length})</h2>
+              <h2 className="flex items-center gap-1.5 text-sm font-bold text-muted-foreground">
+                سُلّمت حديثاً ({data!.delivered.length})
+                {/* lucide-react لا يقبل title كمُعامِل SVG مباشر — نلفّه بـ<span title> (نمط Inbox.tsx). */}
+                <span title="تُعرض آخر ٤٠ عملية تسليم مُسجَّلة لك ضمن أحدث ١٢٠ طلباً أُسنِد إليك — عدٌّ لا حدٌّ زمنيّ (قد تظهر تسليماتٌ أقدم من أيام لو قلّت طلباتك الحديثة).">
+                  <Info aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+                </span>
+              </h2>
               {data!.delivered.map((row) => (
                 <div key={row.id} className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
                   <span className="flex items-center gap-2 font-medium">

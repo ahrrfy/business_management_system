@@ -62,11 +62,18 @@ function actorScopedBranch(user: { role: string; branchId: number | null }): num
 }
 
 const ordersRouter = router({
-  /** قائمة طلبات المتجر (اختياري: فلترة حالة). */
+  /** قائمة طلبات المتجر (اختياري: فلترة حالة/مدى تاريخ + مؤشّر لصفحات إضافية — اليوم كان اقتطاعاً
+   *  صامتاً عند limit؛ الشاشة تكشف ذلك بلافتة حقيقية وزرّ «تحميل المزيد» بدل صمت الاقتطاع). */
   list: storeReadProcedure
-    .input(z.object({ status: statusEnum.nullish(), limit: z.number().int().min(1).max(300).default(100) }))
+    .input(z.object({
+      status: statusEnum.nullish(),
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح").optional(),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح").optional(),
+      cursor: z.number().int().positive().optional(),
+      limit: z.number().int().min(1).max(300).default(100),
+    }))
     .query(({ input, ctx }) =>
-      listOnlineOrders({ scopedBranchId: ctx.scopedBranchId, status: input.status ?? null, limit: input.limit })
+      listOnlineOrders({ scopedBranchId: ctx.scopedBranchId, status: input.status ?? null, from: input.from, to: input.to, cursor: input.cursor, limit: input.limit })
     ),
 
   /** عدّاد لكل حالة (بطاقات الإحصاء). */

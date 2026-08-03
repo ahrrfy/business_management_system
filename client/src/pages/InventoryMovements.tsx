@@ -23,6 +23,7 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMemo, useRef, useState } from "react";
 
 /* ============================ Constants & helpers ============================ */
@@ -56,6 +57,30 @@ const REASON_LABEL: Record<Reason, string> = {
   CORRECTION: "تصحيح",
   OTHER: "أخرى",
 };
+
+// تعريب referenceType (نصّ خام في DB يُكتَب من عشرات نقاط الخدمة) — القيم غير المدرَجة تُعرَض
+// كما هي (fallback في MovementRefBadge أدناه)، فلا تُخفي حركةً بمرجعٍ نادر عن الفلتر أو العرض.
+const REFERENCE_TYPE_LABELS: Record<string, string> = {
+  OPENING: "رصيد افتتاحي",
+  INVOICE: "فاتورة بيع",
+  PURCHASE_ORDER: "أمر شراء",
+  PURCHASE: "استلام شراء",
+  RETURN: "مرتجع",
+  TRANSFER: "تحويل بين الفروع",
+  WORK_ORDER: "أمر شغل",
+  WORK_ORDER_CANCEL: "إلغاء أمر شغل",
+  PRODUCTION: "إنتاج",
+  PRODUCTION_CANCEL: "إلغاء إنتاج",
+  CONSIGN_IN: "إيداع أمانة",
+  CONSIGN_OUT: "سحب أمانة",
+  DELIVERY_RETURN: "إرجاع أمانة",
+  GIFT_IN: "وارد هدايا",
+  GIFT_OUT: "صادر هدايا",
+  EXPENSE: "مصروف",
+  EXPENSE_CANCEL: "إلغاء مصروف",
+  PRINT_SALE: "بيع طباعة",
+};
+const REFERENCE_TYPE_OPTIONS = Object.entries(REFERENCE_TYPE_LABELS).map(([value, label]) => ({ value, label }));
 
 const POSITIVE_TYPES = new Set<MovementType>(["IN", "RETURN", "TRANSFER_IN"]);
 const NEGATIVE_TYPES = new Set<MovementType>(["OUT", "TRANSFER_OUT"]);
@@ -124,11 +149,20 @@ export default function InventoryMovements() {
     : myBranch;
 
   const [movementType, setMovementType] = useState<"" | MovementType>("");
-  // ‎?q= من URL (نمط CustomerStatement): wouter يقصّ الاستعلام، فنقرأ window.location مباشرة —
-  // يتيح روابط «حركات المنتج» العميقة من شاشتي المنتجات/المخزون.
-  const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get("q") ?? "");
+  // ‎?q= أو ?variantId= من URL (نمط CustomerStatement): wouter يقصّ الاستعلام، فنقرأ
+  // window.location مباشرة — يتيح روابط «حركات المنتج» العميقة من شاشتي المنتجات/المخزون.
+  // variantId أدقّ من q (لا يلتبس بمنتج آخر بنفس الاسم الجزئي) — يُفضَّل حين يتوفّر.
+  const initialParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const [q, setQ] = useState(() => initialParams.get("q") ?? "");
+  const [variantId] = useState<number | undefined>(() => {
+    const v = Number(initialParams.get("variantId"));
+    return Number.isInteger(v) && v > 0 ? v : undefined;
+  });
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  const [referenceType, setReferenceType] = useState<"" | (typeof REFERENCE_TYPE_OPTIONS)[number]["value"]>("");
+  const [createdByName, setCreatedByName] = useState("");
+  const debouncedCreatedByName = useDebouncedValue(createdByName, 250);
   const [page, setPage] = useState(0);
 
   const offset = page * PAGE_SIZE;
@@ -137,13 +171,16 @@ export default function InventoryMovements() {
     () => ({
       branchId: branchId ?? undefined,
       movementType: movementType || undefined,
+      variantId,
       q: q.trim() || undefined,
       fromDate: fromDate ? new Date(fromDate + "T00:00:00").toISOString() : undefined,
       toDate: toDate ? new Date(toDate + "T00:00:00").toISOString() : undefined,
+      referenceType: referenceType || undefined,
+      createdByName: debouncedCreatedByName.trim() || undefined,
       limit: PAGE_SIZE,
       offset,
     }),
-    [branchId, movementType, q, fromDate, toDate, offset]
+    [branchId, movementType, variantId, q, fromDate, toDate, referenceType, debouncedCreatedByName, offset]
   );
 
   const movements = trpc.inventory.movementsRich.useQuery(queryInput, {
@@ -333,7 +370,7 @@ export default function InventoryMovements() {
         <CardHeader>
           <CardTitle className="text-base">الفلاتر</CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+        <CardContent className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-3 items-end">
           {canPickBranch && (
             <div className="space-y-1">
               <Label>الفرع</Label>
@@ -406,6 +443,33 @@ export default function InventoryMovements() {
                 setToDate(e.target.value);
                 setPage(0);
               }}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label>نوع المرجع</Label>
+            <select
+              className={selectCls}
+              value={referenceType}
+              onChange={(e) => {
+                setReferenceType(e.target.value as typeof referenceType);
+                setPage(0);
+              }}
+            >
+              <option value="">— كل المراجع —</option>
+              {REFERENCE_TYPE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label>منشئ الحركة</Label>
+            <Input
+              value={createdByName}
+              onChange={(e) => {
+                setCreatedByName(e.target.value);
+                setPage(0);
+              }}
+              placeholder="اسم المستخدم…"
             />
           </div>
         </CardContent>
@@ -535,6 +599,13 @@ export default function InventoryMovements() {
                       {r.referenceType ? (
                         <CopyInline
                           value={r.referenceId ? `${r.referenceType} #${r.referenceId}` : r.referenceType}
+                          display={
+                            <>
+                              {REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType}
+                              {r.referenceId ? <span className="text-muted-foreground"> #{r.referenceId}</span> : null}
+                            </>
+                          }
+                          mono={false}
                         />
                       ) : (
                         <span className="text-muted-foreground">—</span>

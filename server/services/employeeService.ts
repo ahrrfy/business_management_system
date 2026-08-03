@@ -22,6 +22,8 @@ export interface EmployeeFilters {
   department?: string;
   branchId?: number;
   status?: string;
+  /** طريقة الأجر (monthly/hourly) — فلترة اختيارية لمنتقيات مقصورة على نمط أجرٍ بعينه. */
+  payType?: string;
   includeInactive?: boolean;
   limit?: number;
   offset?: number;
@@ -34,6 +36,7 @@ export async function listEmployees(filters?: EmployeeFilters) {
   if (filters?.department) conds.push(eq(employees.department, filters.department));
   if (filters?.branchId) conds.push(eq(employees.branchId, filters.branchId));
   if (filters?.status) conds.push(eq(employees.employmentStatus, filters.status as never));
+  if (filters?.payType) conds.push(eq(employees.payType, filters.payType as never));
   if (filters?.q) {
     const t = `%${escapeLike(filters.q.trim())}%`;
     conds.push(

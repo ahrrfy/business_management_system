@@ -5,8 +5,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
-import { fmtAr, D, round2 } from "@/lib/money";
+import { allocateLineTax } from "@/components/invoice";
+import { fmtAr, D, positiveDiff, round2 } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { NumberInput } from "@/components/form/NumberInput";
+import { notify } from "@/lib/notify";
+import { CO } from "@/lib/printing/brand";
+import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplatesV2";
+import { qrCodeSvg } from "@/lib/printing/qr";
 import { trpc } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
 import { useEffect, useState } from "react";
@@ -190,6 +196,51 @@ export default function PurchaseReceive() {
 
   const fmt = fmtAr;
 
+  // طباعة سند استلام (جزئي أو كامل) — يوثِّق ما استُلم فعلياً حتى الآن. نستدعي القالب الموجود
+  // (printPurchaseInvoiceV2 نفسه المُستعمَل لطباعة أمر الشراء في Purchases.tsx) بشارة توضّح أنه سند
+  // استلام لا أمر شراء مجرّد — لا حاجة لقالب جديد.
+  async function printReceiveSlip() {
+    try {
+      const remaining = positiveDiff(data.total ?? "0", data.paidAmount ?? "0");
+      const taxShares = allocateLineTax(
+        data.items.map((it) => ({ total: String(it.total ?? "0") })),
+        String(data.taxAmount ?? "0"),
+        round2(D(data.subtotal ?? "0")).toFixed(2),
+      );
+      const statusColor =
+        data.status === "RECEIVED" ? "#0D6B52" : data.status === "CANCELLED" ? "#8A1F11" : "#92400E";
+      const qrSvg = await qrCodeSvg(
+        [CO.sub, `سند استلام: ${data.poNumber}`, `الإجمالي: ${fmtAr(data.total ?? 0)} د.ع`].join("\n"),
+        { size: 88, margin: 1 },
+      ).catch(() => "");
+      printPurchaseInvoiceV2({
+        qrSvg: qrSvg || null,
+        invoiceNumber: data.poNumber,
+        invoiceDate: data.orderDate as unknown as string | null,
+        statusLabel: `سند استلام — ${PO_STATUS[data.status] ?? data.status}`,
+        statusColor,
+        supplierName: data.supplierName,
+        items: data.items.map((it, index) => ({
+          productName: it.productName ?? "",
+          unitName: it.unitName,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+          taxAmount: taxShares[index] ?? "0",
+          total: it.total,
+        })),
+        subtotal: data.subtotal ?? "0",
+        taxAmount: data.taxAmount ?? "0",
+        taxRate: Number(data.taxRatePercent ?? 0),
+        total: data.total ?? "0",
+        paidAmount: data.paidAmount ?? "0",
+        remainingAmount: remaining.toFixed(2),
+      });
+    } catch (e) {
+      notify.err(e);
+    }
+  }
+  const hasAnyReceived = data.items.some((it) => (it.receivedBaseQuantity ?? 0) > 0);
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -264,23 +315,25 @@ export default function PurchaseReceive() {
                     <td className="p-2 text-center">{already}</td>
                     <td className="p-2 text-center">{remaining}</td>
                     <td className="p-2">
-                      <Input
-                        dir="ltr"
+                      {/* NumberInput: لوحة أرقام على الجوال (inputMode) + حدّ أدنى صفر (لا سالب — allowNegative
+                          افتراضياً false) + عدد صحيح فقط (decimals=0، الكمية بالوحدة الأساس). */}
+                      <NumberInput
                         className="h-8 text-center"
                         value={recv[Number(it.id)] ?? ""}
                         disabled={closed || remaining <= 0}
-                        onChange={(e) => setRecv((prev) => ({ ...prev, [Number(it.id)]: e.target.value }))}
+                        onChange={(v) => setRecv((prev) => ({ ...prev, [Number(it.id)]: v }))}
+                        ariaLabel={`استلام الآن — ${it.productName}`}
                       />
                     </td>
                     {canGiftBonus ? (
                       <td className="p-2">
-                        <Input
-                          dir="ltr"
+                        <NumberInput
                           className="h-8 text-center"
                           placeholder="0"
                           value={free[Number(it.id)] ?? ""}
                           disabled={closed}
-                          onChange={(e) => setFree((prev) => ({ ...prev, [Number(it.id)]: e.target.value }))}
+                          onChange={(v) => setFree((prev) => ({ ...prev, [Number(it.id)]: v }))}
+                          ariaLabel={`كمية مجانية — ${it.productName}`}
                         />
                       </td>
                     ) : null}
@@ -362,6 +415,14 @@ export default function PurchaseReceive() {
         {!closed && (
           <Button onClick={submit} disabled={receive.isPending}>{receive.isPending ? "جارٍ الاستلام…" : "تأكيد الاستلام"}</Button>
         )}
+        <Button
+          variant="outline"
+          onClick={() => void printReceiveSlip()}
+          disabled={!hasAnyReceived}
+          title={hasAnyReceived ? undefined : "لا كميات مُستلَمة بعد لطباعة سند بها"}
+        >
+          طباعة سند الاستلام
+        </Button>
         <Link href="/purchases"><Button variant="outline">{closed ? "رجوع" : "إلغاء"}</Button></Link>
       </div>
     </div>

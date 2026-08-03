@@ -11,12 +11,45 @@ import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { Check, Printer } from "lucide-react";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { normalizeSearchText } from "@shared/searchNormalize";
+import { Check, Printer, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 
+/** حالات أمر الشغل النشطة — مرآة WO_ACTIVE_STATUSES في workOrderRouter.ts (خادميّ، لا يُستورَد
+ *  للعميل). يُستعمَل لمنتقي «ربط بطلب خدمة» — لا معنى لربط إنتاجٍ بأمرٍ مُسلَّم/ملغى. */
+const WO_OPEN_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
+
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** منتقي الفرع — إن لزم اختياراً صريحاً (needsBranchChoice) يعرض «— اختر الفرع —» إلزامياً،
+ *  وإلا يعرض فرع المستخدم/المُختار مباشرةً. مشترك بين وضعَي وصفة/يدوي كي لا يتكرّر. */
+function BranchPicker({
+  needsChoice, value, branches, onChange,
+}: {
+  needsChoice: boolean;
+  value: number;
+  branches: Array<{ id: number | string; name: string | null }>;
+  onChange: (v: number | "") => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <Label>الفرع {needsChoice && <span className="text-destructive">*</span>}</Label>
+      <select
+        className={selectCls}
+        value={needsChoice ? "" : value}
+        onChange={(e) => onChange(e.target.value ? Number(e.target.value) : "")}
+      >
+        {needsChoice && <option value="">— اختر الفرع —</option>}
+        {branches.map((b) => <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>)}
+      </select>
+      {needsChoice && <p className="text-xs text-destructive">يلزم اختيار الفرع قبل الترحيل.</p>}
+    </div>
+  );
+}
 
 /** شريط مقياس (مخزون متاح / إنتاجية). */
 function Meter({ value, max, tone, right, label }: { value: number; max: number; tone: "ok" | "warn" | "bad"; right?: string; label?: string }) {
@@ -62,8 +95,14 @@ export default function ProductionNew() {
   }, [search]);
 
   const [mode, setMode] = useState<"recipe" | "manual">("recipe");
+  // منتقي فرع صريح (نمط PR #288 في Reception.tsx): فرع المستخدم المُسنَد يُستعمَل صامتاً؛ الأدمن/
+  // المدير بلا فرع مُسنَد يلزمه اختيارٌ صريح قبل الترحيل — بدل فرعٍ أوّل في القائمة يُختار صامتاً
+  // (كان يُنتِج/يستهلك من فرعٍ قد لا يقصده المستخدم إطلاقاً).
   const [branchId, setBranchId] = useState<number | "">("");
-  const effectiveBranch = Number(branchId || me.data?.branchId || (branches.data?.[0] ? Number(branches.data[0].id) : 1));
+  const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
+  const noAssignedBranch = me.data != null && me.data.branchId == null;
+  const needsBranchChoice = noAssignedBranch && isElevatedRole && branchId === "";
+  const effectiveBranch = Number(me.data?.branchId ?? (branchId || null) ?? 1);
   const branchName = (branches.data ?? []).find((b) => Number(b.id) === effectiveBranch)?.name ?? "";
 
   const [notes, setNotes] = useState("");
@@ -76,7 +115,24 @@ export default function ProductionNew() {
   const [batch, setBatch] = useState("100");
   const [scrap, setScrap] = useState("0");
   const [labor, setLabor] = useState("0");
-  const [workOrder, setWorkOrder] = useState("");
+
+  // ربط بطلب شغل مفتوح — منتقي بحث حقيقي (يُرسَل linkedWorkOrderId فعلياً للخادم) بدل حقل نصّ
+  // حرّ سابق كان يُكتب في الملاحظة فقط بلا ربط فعليّ بالسجل.
+  const [workOrderId, setWorkOrderId] = useState<number | null>(null);
+  const [woQuery, setWoQuery] = useState("");
+  const openWOs = trpc.workOrders.list.useQuery(
+    { statuses: [...WO_OPEN_STATUSES], branchId: effectiveBranch || undefined, limit: 200 },
+    { enabled: !needsBranchChoice },
+  );
+  const selectedWO = (openWOs.data ?? []).find((o) => Number(o.id) === workOrderId) ?? null;
+  const woMatches = useMemo(() => {
+    const rows = openWOs.data ?? [];
+    const nq = normalizeSearchText(woQuery.trim());
+    const filtered = nq
+      ? rows.filter((o) => normalizeSearchText(`${o.orderNumber} ${o.title} ${o.customerName ?? ""}`).includes(nq))
+      : rows;
+    return filtered.slice(0, 30);
+  }, [openWOs.data, woQuery]);
 
   // اضبط الوصفة من رابط ?recipe= مرّة واحدة.
   useEffect(() => { if (preRecipe) { setRecipeId(preRecipe); setMode("recipe"); } }, [preRecipe]);
@@ -113,7 +169,7 @@ export default function ProductionNew() {
   function printOrder() {
     if (!pv) return;
     printProductionDoc({
-      branchName, workOrder: workOrder.trim() || null, recipeName: pv.recipeName,
+      branchName, workOrder: selectedWO?.orderNumber ?? null, recipeName: pv.recipeName,
       outputName: pv.outputName ?? "", outputUnit: pv.outputUnitName,
       planned: pv.batch, good: pv.good, scrap: pv.scrap, wasteStdPct: Number(pv.wasteStdPct),
       normalAllow: pv.normalAllow, abnormalUnits: pv.abnormalUnits, yieldPct: pv.yieldPct,
@@ -124,12 +180,13 @@ export default function ProductionNew() {
   }
 
   async function submitRecipe() {
+    if (needsBranchChoice) return setError("اختر الفرع أولاً.");
     if (!recipeId) return setError("اختر وصفة أولاً.");
     if (!(Number(batch) > 0)) return setError("أدخل عدد الدفعة (عدد موجب).");
     if (!pv) return setError("انتظر اكتمال المعاينة.");
     if (pv.anyShort) return setError("المخزون لا يكفي لأحد المدخلات — قلّل الدفعة أو جهّز المخزون.");
     setError("");
-    const noteParts = [notes.trim(), workOrder.trim() ? `مرتبط بطلب خدمة: ${workOrder.trim()}` : ""].filter(Boolean);
+    const noteParts = [notes.trim(), selectedWO ? `مرتبط بطلب خدمة: ${selectedWO.orderNumber}` : ""].filter(Boolean);
     const ok = await confirm({
       variant: "warning",
       title: "تأكيد ترحيل التشغيل",
@@ -141,6 +198,7 @@ export default function ProductionNew() {
       branchId: effectiveBranch,
       run: { recipeId: Number(recipeId), batchQty: Math.trunc(Number(batch)), scrapQty: Math.trunc(Number(scrap) || 0), laborPerUnit: D(labor || "0").toFixed(2) },
       notes: noteParts.join(" · ") || null,
+      linkedWorkOrderId: workOrderId ?? undefined,
       clientRequestId,
     });
   }
@@ -158,6 +216,7 @@ export default function ProductionNew() {
     setList(list.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   }
   async function submitManual() {
+    if (needsBranchChoice) return setError("اختر الفرع أولاً.");
     if (inputs.length === 0) return setError("أضِف مدخلاً واحداً على الأقل.");
     if (outputs.length === 0) return setError("أضِف مخرجاً واحداً على الأقل.");
     for (const l of inputs) if (!lineValid(l)) return setError(`كمية المدخل «${l.productName}» يجب أن تنتج عدداً صحيحاً موجباً.`);
@@ -177,6 +236,18 @@ export default function ProductionNew() {
       laborCost: D(mLabor).toFixed(2), notes: notes.trim() || null, clientRequestId,
     });
   }
+  // اختصارات: Ctrl+S يرحّل المستند وفق الوضع الحاليّ (وصفة/يدوي)؛ بلا Esc (النموذج مكتظّ بـ<select>
+  // أصلية — نمط CustomerNew.tsx §16 يحذّر من تعارض Esc مع إغلاق القائمة).
+  useSaveShortcuts({
+    onSave: () => void (mode === "recipe" ? submitRecipe() : submitManual()),
+    enabled: !create.isPending,
+  });
+  useUnsavedGuard(
+    notes.trim() !== "" ||
+      workOrderId != null ||
+      (mode === "recipe" ? recipeId !== "" : inputs.length > 0 || outputs.length > 0 || D(mLabor).gt(0)),
+  );
+
   function renderLines(list: Line[], setList: (l: Line[]) => void, kind: "in" | "out") {
     return list.map((l) => {
       const base = lineBase(l);
@@ -242,16 +313,13 @@ export default function ProductionNew() {
                   </select>
                   {(recipes.data ?? []).length === 0 && <p className="text-xs text-[var(--stock-low)]">لا وصفات مفعّلة. <Link href="/production-recipes" className="underline">أنشئ وصفة</Link> أولاً.</p>}
                 </div>
-                <div className="space-y-1">
-                  <Label>الفرع</Label>
-                  <select className={selectCls} value={effectiveBranch} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
-                    {(branches.data ?? []).map((b) => <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>)}
-                  </select>
-                </div>
+                <BranchPicker needsChoice={needsBranchChoice} value={effectiveBranch} branches={branches.data ?? []} onChange={setBranchId} />
               </CardContent>
             </Card>
 
-            {recipeId ? (
+            {needsBranchChoice ? (
+              <Card><CardContent className="p-6 text-center text-sm text-destructive">اختر الفرع أعلاه أولاً لبدء التشغيل.</CardContent></Card>
+            ) : recipeId ? (
               <>
                 <Card>
                   <CardHeader>
@@ -324,9 +392,42 @@ export default function ProductionNew() {
                       <p className="text-[11px] text-muted-foreground">إن سجّلت أجر العامل كمصروف رواتب منفصل اتركها صفراً (تفادي الاحتساب المزدوج).</p>
                     </div>
                     <div className="space-y-1">
-                      <Label className="flex items-center gap-1">ربط بطلب خدمة (مرجع، اختياري) <span title="إن كان الإنتاج لطلب خدمة بعينه، اذكره لتفادي خصم الورق مرّتين." className="inline-grid place-items-center w-4 h-4 rounded-full bg-muted text-[10px] text-muted-foreground cursor-help">؟</span></Label>
-                      <Input dir="ltr" value={workOrder} onChange={(e) => setWorkOrder(e.target.value)} placeholder="WO-1-…" />
-                      {workOrder.trim() && <p className="text-[11px] text-[var(--stock-low)]">تأكّد أن الورق لا يُخصَم مرّتين (هنا وداخل طلب الخدمة).</p>}
+                      <Label className="flex items-center gap-1">ربط بطلب شغل مفتوح (اختياري) <span title="إن كان الإنتاج لطلب شغل بعينه، اربطه فعلياً لتفادي خصم الورق مرّتين." className="inline-grid place-items-center w-4 h-4 rounded-full bg-muted text-[10px] text-muted-foreground cursor-help">؟</span></Label>
+                      {selectedWO ? (
+                        <div className="flex h-9 items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 text-sm">
+                          <span className="truncate" dir="ltr">{selectedWO.orderNumber} <span className="text-muted-foreground">— {selectedWO.title}</span></span>
+                          <button type="button" onClick={() => setWorkOrderId(null)} className="shrink-0 text-muted-foreground hover:text-destructive" aria-label="إلغاء الربط">
+                            <X aria-hidden className="size-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="relative">
+                          <Input
+                            dir="auto"
+                            value={woQuery}
+                            onChange={(e) => setWoQuery(e.target.value)}
+                            placeholder="ابحث برقم الأمر/العنوان/العميل…"
+                          />
+                          {woQuery.trim() && (
+                            <div className="absolute z-10 mt-1 w-full rounded-md border bg-popover shadow-md max-h-48 overflow-auto">
+                              {woMatches.length === 0 ? (
+                                <div className="px-3 py-2 text-xs text-muted-foreground">لا نتائج.</div>
+                              ) : woMatches.map((o) => (
+                                <button
+                                  key={o.id}
+                                  type="button"
+                                  onClick={() => { setWorkOrderId(Number(o.id)); setWoQuery(""); }}
+                                  className="w-full text-right px-3 py-1.5 hover:bg-accent text-sm border-b last:border-b-0"
+                                >
+                                  <span className="font-mono text-xs" dir="ltr">{o.orderNumber}</span> — {o.title}
+                                  <span className="block text-[11px] text-muted-foreground">{o.customerName ?? "عميل نقدي"}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {selectedWO && <p className="text-[11px] text-[var(--stock-low)]">تأكّد أن الورق لا يُخصَم مرّتين (هنا وداخل طلب الشغل).</p>}
                     </div>
                   </CardContent>
                 </Card>
@@ -338,8 +439,8 @@ export default function ProductionNew() {
 
                 {error && <p className="text-sm text-destructive">{error}</p>}
                 <div className="flex gap-2 flex-wrap">
-                  <Button onClick={submitRecipe} disabled={create.isPending || !pv || pv.anyShort || !(pv.good > 0)}>
-                    {create.isPending ? "جارٍ الترحيل…" : pv?.anyShort ? "المخزون لا يكفي" : "ترحيل المستند"}
+                  <Button onClick={submitRecipe} disabled={create.isPending || needsBranchChoice || !pv || pv.anyShort || !(pv.good > 0)}>
+                    {create.isPending ? "جارٍ الترحيل…" : needsBranchChoice ? "اختر الفرع أولاً" : pv?.anyShort ? "المخزون لا يكفي" : "ترحيل المستند"}
                   </Button>
                   <Button variant="outline" onClick={printOrder} disabled={!pv}><Printer aria-hidden className="size-4" /> طباعة أمر تشغيل</Button>
                   <Link href="/production"><Button variant="ghost">إلغاء</Button></Link>
@@ -409,9 +510,7 @@ export default function ProductionNew() {
             <Card>
               <CardHeader><CardTitle className="text-base">الفرع</CardTitle></CardHeader>
               <CardContent>
-                <select className={selectCls} value={effectiveBranch} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
-                  {(branches.data ?? []).map((b) => <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>)}
-                </select>
+                <BranchPicker needsChoice={needsBranchChoice} value={effectiveBranch} branches={branches.data ?? []} onChange={setBranchId} />
               </CardContent>
             </Card>
             <Card>
@@ -455,7 +554,9 @@ export default function ProductionNew() {
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex gap-2">
-            <Button onClick={submitManual} disabled={create.isPending}>{create.isPending ? "جارٍ الترحيل…" : "حفظ المستند"}</Button>
+            <Button onClick={submitManual} disabled={create.isPending || needsBranchChoice}>
+              {create.isPending ? "جارٍ الترحيل…" : needsBranchChoice ? "اختر الفرع أولاً" : "حفظ المستند"}
+            </Button>
             <Link href="/production"><Button variant="outline">إلغاء</Button></Link>
           </div>
         </div>

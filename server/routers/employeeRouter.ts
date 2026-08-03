@@ -110,6 +110,8 @@ export const employeeRouter = router({
           department: z.string().optional(),
           branchId: z.number().int().positive().optional(),
           status: z.enum(EMPLOYMENT_STATUS_KEYS).optional(),
+          // طريقة الأجر — تُغذّي منتقيات مقصورة على الساعيّ/الشهريّ (مثلاً نموذج الحضور اليدويّ).
+          payType: z.enum(PAY_TYPE_KEYS).optional(),
           includeInactive: z.boolean().optional(),
           limit: z.number().int().positive().max(200).optional(),
           offset: z.number().int().min(0).optional(),

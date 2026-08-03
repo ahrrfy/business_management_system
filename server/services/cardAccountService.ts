@@ -17,11 +17,12 @@
 //     **بلا قيد دفتر ولا أثر ماليّ** حتى يعتمده مديرٌ آخر (SOD)؛ عدّه كان سيَخصم من البطاقة مالاً لم يخرج.
 //     (في مسار الدرج يُستبعَد ضمناً لأنّ السند المعلَّق يأخذ shiftId=NULL؛ البطاقة ليست مربوطة بوردية
 //      فنُصرّح بالشرط.) الأصل REVERSED يبقى approvalStatus='APPROVED' فيَتصافى مع تعويضيّه — سليم.
-import { and, sql } from "drizzle-orm";
+import { and, sql, type SQL } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "../db";
 import { cardReconciliations, receipts } from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
+import { escLike } from "../lib/sqlLike";
 import { money, toDbMoney } from "./money";
 import { withTx } from "./tx";
 import { utcTodayStart } from "./businessDay";
@@ -193,7 +194,18 @@ export interface CardMovementsResult {
 const MOVEMENTS_MAX = 500;
 
 export async function getCardMovements(
-  input: { branchId?: number; from?: string; to?: string; direction?: "IN" | "OUT"; limit?: number; offset?: number },
+  input: {
+    branchId?: number;
+    from?: string;
+    to?: string;
+    direction?: "IN" | "OUT";
+    /** بحث نصّي: الوصف/المرجع/رقم السند/اسم الطرف الحرّ/آخر ٤ أرقام (أعمدة receipts فقط — بلا join إضافي). */
+    q?: string;
+    /** نوع مصدر الحركة (VOUCHER/INVOICE_PAYMENT/WORK_ORDER/OTHER) — مشتقّ من voucherNumber/invoiceId/workOrderId. */
+    sourceType?: Exclude<CardMovementSource, "SALE">;
+    limit?: number;
+    offset?: number;
+  },
   scope: CardScope,
 ): Promise<CardMovementsResult> {
   const db = getDb();
@@ -207,11 +219,31 @@ export async function getCardMovements(
   // to شامل ليومه كاملاً (< بداية اليوم التالي).
   const toClause = input.to ? sql`AND r.createdAt < DATE_ADD(${input.to}, INTERVAL 1 DAY)` : sql``;
   const dirClause = input.direction ? sql`AND r.direction = ${input.direction}` : sql``;
-  // نطاق الحساب **بلا** فلتر الاتجاه — عليه يُحسَب الرصيد الجاري كي يبقى صحيحاً (الرصيد بعد كل حركة
-  // يشمل الاتجاهين). فلتر الاتجاه يُطبَّق على الصفوف المعروضة فقط (في الاستعلام الخارجي أدناه).
+  // مطابق لاشتقاق `source` في التطبيع أدناه (voucherNumber ⇒ VOUCHER، وإلا invoiceId ⇒ INVOICE_PAYMENT، وإلا workOrderId ⇒ WORK_ORDER، وإلا OTHER).
+  const sourceClause =
+    input.sourceType === "VOUCHER" ? sql`AND r.voucherNumber IS NOT NULL`
+    : input.sourceType === "INVOICE_PAYMENT" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NOT NULL`
+    : input.sourceType === "WORK_ORDER" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NULL AND r.workOrderId IS NOT NULL`
+    : input.sourceType === "OTHER" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NULL AND r.workOrderId IS NULL`
+    : sql``;
+  const qClause = input.q
+    ? (() => {
+        const pat = `%${escLike(input.q.trim())}%`;
+        return sql`AND (
+          r.description LIKE ${pat} ESCAPE '!'
+          OR r.referenceNumber LIKE ${pat} ESCAPE '!'
+          OR r.voucherNumber LIKE ${pat} ESCAPE '!'
+          OR r.counterpartyName LIKE ${pat} ESCAPE '!'
+          OR r.cardLastFour LIKE ${pat} ESCAPE '!'
+        )`;
+      })()
+    : sql``;
+  // نطاق الحساب **بلا** فلتر الاتجاه/البحث/النوع — عليه يُحسَب الرصيد الجاري كي يبقى صحيحاً (الرصيد
+  // بعد كل حركة يشمل كل الحركات فعلياً بصرف النظر عمّا يُعرَض). فلاتر العرض تُطبَّق على الصفوف
+  // المعروضة/الإجماليات فقط (streamFilter+ أدناه، والاستعلام الخارجي).
   const streamFilter = sql`${CARD_WHERE} ${branchClause(branchId)} ${fromClause} ${toClause}`;
-  // فلتر العرض (يشمل الاتجاه) — للإجماليات/العدّ والصفوف المعروضة.
-  const filter = sql`${streamFilter} ${dirClause}`;
+  // فلتر العرض (يشمل الاتجاه/البحث/النوع) — للإجماليات/العدّ والصفوف المعروضة.
+  const filter = sql`${streamFilter} ${dirClause} ${qClause} ${sourceClause}`;
 
   // إجماليات النطاق (كل الصفوف المطابقة، لا الصفحة فقط).
   const totRows = rowsOf(
@@ -247,6 +279,26 @@ export async function getCardMovements(
     ? sql`CAST(SUM(${SIGNED}) OVER (ORDER BY r.createdAt, r.id ROWS UNBOUNDED PRECEDING) AS CHAR)`
     : sql`NULL`;
 
+  // نفس فلاتر العرض (اتجاه/بحث/نوع) لكن بأسماء أعمدة الاستعلام الخارجي x (بعد الفرز على النافذة) —
+  // تُطبَّق هنا لا على streamFilter الداخلي كي يبقى الرصيد الجاري صحيحاً (يُحسَب على النطاق كاملاً).
+  const outerConds: SQL[] = [];
+  if (input.direction) outerConds.push(sql`x.direction = ${input.direction}`);
+  if (input.sourceType === "VOUCHER") outerConds.push(sql`x.voucherNumber IS NOT NULL`);
+  else if (input.sourceType === "INVOICE_PAYMENT") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NOT NULL`);
+  else if (input.sourceType === "WORK_ORDER") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NULL AND x.workOrderId IS NOT NULL`);
+  else if (input.sourceType === "OTHER") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NULL AND x.workOrderId IS NULL`);
+  if (input.q) {
+    const pat = `%${escLike(input.q.trim())}%`;
+    outerConds.push(sql`(
+      x.description LIKE ${pat} ESCAPE '!'
+      OR x.referenceNumber LIKE ${pat} ESCAPE '!'
+      OR x.voucherNumber LIKE ${pat} ESCAPE '!'
+      OR x.counterpartyName LIKE ${pat} ESCAPE '!'
+      OR x.cardLastFour LIKE ${pat} ESCAPE '!'
+    )`);
+  }
+  const outerWhere = outerConds.length ? sql`WHERE ${sql.join(outerConds, sql` AND `)}` : sql``;
+
   const rows = rowsOf(
     await db.execute(sql`
       SELECT * FROM (
@@ -279,7 +331,7 @@ export async function getCardMovements(
         LEFT JOIN users u ON u.id = r.createdBy
         WHERE ${streamFilter}
       ) x
-      ${input.direction ? sql`WHERE x.direction = ${input.direction}` : sql``}
+      ${outerWhere}
       ORDER BY x.createdAt DESC, x.receiptId DESC
       LIMIT ${limit} OFFSET ${offset}
     `),

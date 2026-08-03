@@ -5,7 +5,8 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { confirm } from "@/lib/confirm";
-import { fmtAr } from "@/lib/money";
+import { D, fmtAr, positiveDiff } from "@/lib/money";
+import { fmtDateTime } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
@@ -17,6 +18,7 @@ import { Printer, MessageCircle, Truck } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
+import { canSeeCost } from "@shared/permissions";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
@@ -35,6 +37,13 @@ const STATUS_CLS: Record<string, string> = {
   DELIVERED: "bg-emerald-100 text-emerald-700",
   CANCELLED: "bg-rose-100 text-rose-700",
 };
+
+/** إثراء سياق بطاقة الأمر (كان فقيراً — قناة/أولوية/منفّذ غائبة رغم توفّرها من الخادم). */
+const CHANNEL_LABEL: Record<string, string> = {
+  WHATSAPP: "واتساب", INSTAGRAM: "انستغرام", TIKTOK: "تيك توك",
+  PHONE: "اتصال هاتفي", WALK_IN: "عميل نقدي", OTHER: "أخرى",
+};
+const PRIORITY_LABEL: Record<string, string> = { LOW: "منخفض", NORMAL: "عادي", URGENT: "عاجل" };
 
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
   { v: "CASH", label: "نقدي" },
@@ -70,13 +79,19 @@ export default function WorkOrderDetail() {
   const params = useParams();
   const workOrderId = Number(params.id);
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
   const wo = trpc.workOrders.get.useQuery({ workOrderId }, { enabled: Number.isFinite(workOrderId) });
   const qs = useSearch();
+  // حجب التكلفة بـcanSeeCost (نفس دالة الخادم/الشاشات الأخرى، لا مقارنة دور خام) — الخادم يُخفي
+  // materialsCost/laborCost/unitCost بالفعل (null) لغير المخوَّلين، والواجهة تُخفي الصفوف/الأعمدة
+  // كاملةً بدل عرضها فارغة («—») بلا داعٍ.
+  const showCost = me.data ? canSeeCost(me.data.role) : true;
 
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [payReference, setPayReference] = useState("");
 
   // ?print=1 من شاشة «حفظ وطباعة»: نطبع التذكرة الحرارية تلقائياً مرة واحدة بعد تحميل البيانات.
   const autoPrintedRef = useRef(false);
@@ -99,12 +114,13 @@ export default function WorkOrderDetail() {
     });
   }, [qs, wo.data]);
 
-  // تعبئة المتبقّي تلقائياً عند الجهوزية = سعر البيع − العربون المقبوض (لا طرح يدويّ).
+  // تعبئة المتبقّي تلقائياً عند الجهوزية = سعر البيع − العربون المقبوض (لا طرح يدويّ، decimal.js
+  // عبر positiveDiff — لا Number() على المال، §٥).
   useEffect(() => {
     const d = wo.data;
     if (d && d.status === "READY") {
-      const due = Math.max(0, Number(d.salePrice) - Number(d.deposit ?? 0));
-      setPayAmount(due > 0 ? String(due) : "");
+      const due = positiveDiff(d.salePrice, d.deposit ?? 0);
+      setPayAmount(due.gt(0) ? due.toFixed(2) : "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wo.data?.status, wo.data?.salePrice, wo.data?.deposit]);
@@ -139,6 +155,9 @@ export default function WorkOrderDetail() {
   const data = wo.data;
 
   const fmt = fmtAr;
+  // الرصيد المستحق = سعر البيع − العربون المقبوض، عبر decimal.js (لا Number() على المال، §٥) —
+  // يُستعمَل في رسالة واتساب/ملصق الشحن/بطاقة الدفعة عند التسليم بدل تكرار Math.max(0, Number(a)-Number(b)).
+  const remainingDue = positiveDiff(data.salePrice, data.deposit ?? 0);
 
   return (
     <div className="space-y-4 max-w-4xl">
@@ -181,7 +200,7 @@ export default function WorkOrderDetail() {
               customerName: data.customerName,
               quantity: data.quantity,
               dueDate: data.dueDate ? String(data.dueDate) : null,
-              amountDue: String(Math.max(0, Number(data.salePrice) - Number(data.deposit ?? 0))),
+              amountDue: remainingDue.toFixed(2),
             }))}
           >
             <MessageCircle className="h-3.5 w-3.5" />
@@ -237,7 +256,7 @@ export default function WorkOrderDetail() {
                 customerPhone: data.customerPhone,
                 governorate: null,
                 addressText: data.deliveryAddress ?? null,
-                total: String(Math.max(0, Number(data.salePrice) - Number(data.deposit ?? 0))),
+                total: remainingDue.toFixed(2),
                 createdAt: data.createdAt,
                 items: [{ productName: data.title, unitName: "", quantity: String(data.quantity) }],
               });
@@ -262,17 +281,24 @@ export default function WorkOrderDetail() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-5 md:grid-cols-3">
+            {/* سياق الأمر — كان فقيراً (رقم/عميل/كمية/استحقاق فقط) رغم أنّ الخادم يُعيد القناة
+             *  والأولوية والمنفّذ وتاريخ الإنشاء والتوصيل بلا استهلاك في الشاشة. */}
             <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
               <Field label="رقم الأمر"><CopyInline value={data.orderNumber} successMessage="تم نَسخ رَقم الأَمر" /></Field>
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
               <Field label="الكمية">{data.quantity}</Field>
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
+              <Field label="قناة الاستلام">{CHANNEL_LABEL[data.receptionChannel ?? "WALK_IN"] ?? data.receptionChannel}{data.channelHandle ? ` · ${data.channelHandle}` : ""}</Field>
+              <Field label="الأولوية">{PRIORITY_LABEL[data.priority ?? "NORMAL"] ?? data.priority}</Field>
+              <Field label="المنفّذ المسؤول">{data.assigneeName ?? "غير مُسنَد"}</Field>
+              <Field label="تاريخ الإنشاء">{fmtDateTime(data.createdAt)}</Field>
+              {data.hasDelivery && <Field label="عنوان التوصيل">{data.deliveryAddress ?? "—"}</Field>}
             </div>
 
             <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="سعر البيع" value={data.salePrice} strong />
-              <SummaryRow label="كلفة المواد" value={data.materialsCost} />
-              <SummaryRow label="كلفة العمالة" value={data.laborCost} />
+              {showCost && <SummaryRow label="كلفة المواد" value={data.materialsCost} />}
+              {showCost && <SummaryRow label="كلفة العمالة" value={data.laborCost} />}
             </div>
           </div>
 
@@ -295,8 +321,8 @@ export default function WorkOrderDetail() {
                   <th className="px-3 py-2 font-medium text-start">المادة</th>
                   <th className="px-3 py-2 font-medium text-start">SKU</th>
                   <th className="px-3 py-2 font-medium text-center">كمية (أساس)</th>
-                  <th className="px-3 py-2 font-medium text-right">كلفة الوحدة</th>
-                  <th className="px-3 py-2 font-medium text-right">كلفة السطر</th>
+                  {showCost && <th className="px-3 py-2 font-medium text-right">كلفة الوحدة</th>}
+                  {showCost && <th className="px-3 py-2 font-medium text-right">كلفة السطر</th>}
                 </tr>
               </thead>
               <tbody>
@@ -305,20 +331,20 @@ export default function WorkOrderDetail() {
                     <td className="px-3 py-2">{m.productName}{m.variantName ? ` — ${m.variantName}` : ""}</td>
                     <td className="px-3 py-2 font-mono text-xs" dir="ltr">{m.sku}</td>
                     <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{m.baseQuantity}</td>
-                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(m.unitCost)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(Number(m.unitCost) * m.baseQuantity)}</td>
+                    {showCost && <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(m.unitCost)}</td>}
+                    {showCost && <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(D(m.unitCost).times(m.baseQuantity).toFixed(2))}</td>}
                   </tr>
                 ))}
                 {data.materials.length === 0 && (
-                  <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">لا مواد مرفقة (أمر طباعة/خدمة صرفة).</td></tr>
+                  <tr><td colSpan={showCost ? 5 : 3} className="p-6 text-center text-muted-foreground">لا مواد مرفقة (أمر طباعة/خدمة صرفة).</td></tr>
                 )}
               </tbody>
-              {data.materials.length > 0 && (
+              {data.materials.length > 0 && showCost && (
                 <tfoot>
                   <tr className="border-t-2 bg-muted/40 font-semibold">
                     <td className="px-3 py-2" colSpan={4}>إجمالي كلفة المواد</td>
                     <td className="px-3 py-2 text-right tabular-nums" dir="ltr">
-                      {fmt(data.materials.reduce((s, m) => s + Number(m.unitCost) * m.baseQuantity, 0))}
+                      {fmt(data.materials.reduce((s, m) => s.plus(D(m.unitCost).times(m.baseQuantity)), D(0)).toFixed(2))}
                     </td>
                   </tr>
                 </tfoot>
@@ -334,8 +360,8 @@ export default function WorkOrderDetail() {
           <CardContent className="space-y-4">
             <div className="rounded-md border bg-muted/30 p-3 text-sm space-y-1">
               <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(data.salePrice)} د.ع</span></div>
-              {Number(data.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmt(data.deposit)} د.ع</span></div>}
-              <div className="flex justify-between border-t pt-1 font-bold"><span>الرصيد المستحق</span><span dir="ltr" className="tabular-nums">{fmt(String(Math.max(0, Number(data.salePrice) - Number(data.deposit ?? 0))))} د.ع</span></div>
+              {D(data.deposit ?? 0).gt(0) && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmt(data.deposit)} د.ع</span></div>}
+              <div className="flex justify-between border-t pt-1 font-bold"><span>الرصيد المستحق</span><span dir="ltr" className="tabular-nums">{fmt(remainingDue.toFixed(2))} د.ع</span></div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
               <div className="space-y-1">
@@ -348,6 +374,26 @@ export default function WorkOrderDetail() {
                   {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
                 </select>
               </div>
+              {/* مرآة PaymentReferenceField من POS (client/src/components/pos/PaymentReferenceField.tsx) —
+               *  ذاك المكوّن مبنيّ بأنماط CSS خام تخصّ ثيم POS (colors prop)؛ هنا حقل مطابق ببنى Tailwind
+               *  القائمة في هذه الشاشة. الخادم يرفض دفعاً غير نقديّ بلا مرجع (deliver.ts superRefine)
+               *  فكان الحفظ يفشل بخطأ zod عامّ لا يشرح السبب — الحقل يمنعه مبكراً. */}
+              {payMethod !== "CASH" && (
+                <div className="space-y-1">
+                  <Label htmlFor="pay-ref">مرجع العملية {D(payAmount || "0").gt(0) && <span className="text-destructive">*</span>}</Label>
+                  <Input
+                    id="pay-ref"
+                    dir="ltr"
+                    value={payReference}
+                    onChange={(e) => setPayReference(e.target.value)}
+                    placeholder="رقم إشعار الجهاز/التحويل"
+                    className={cn(payReference.trim() === "" && D(payAmount || "0").gt(0) && "border-[var(--sem-warn)]")}
+                  />
+                  {payReference.trim() === "" && D(payAmount || "0").gt(0) && (
+                    <p className="text-[11px] text-[var(--sem-warn)]">مطلوب لمطابقة دفعة {METHODS.find((m) => m.v === payMethod)?.label} مع كشف الحساب.</p>
+                  )}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -409,17 +455,24 @@ export default function WorkOrderDetail() {
         {data.status === "READY" && (
           <Button
             onClick={async () => {
-              const payNow = Number(payAmount) > 0;
+              const payAmountD = D(payAmount || "0");
+              const payNow = payAmountD.gt(0);
+              // الخادم يرفض دفعاً غير نقديّ بلا مرجع (deliver.ts superRefine) — نتحقّق مبكراً بدل
+              // فشل التسليم بخطأ zod عامّ بعد تأكيد المستخدم.
+              if (payNow && payMethod !== "CASH" && !payReference.trim()) {
+                setError("مرجع العملية مطلوب لدفعة غير نقدية.");
+                return;
+              }
               if (!(await confirm({
                 variant: "danger",
                 title: "تسليم طلب الخدمة وإصدار الفاتورة",
-                description: `سيُسلَّم أمر «${data.title}» (${data.orderNumber}) وتُصدر فاتورة بقيمة ${fmt(data.salePrice)}${payNow ? ` مع دفعة ${fmt(String(Number(payAmount)))}` : " (آجل بالكامل)"}. لا يمكن التراجع. اكتب «تسليم» للتأكيد.`,
+                description: `سيُسلَّم أمر «${data.title}» (${data.orderNumber}) وتُصدر فاتورة بقيمة ${fmt(data.salePrice)}${payNow ? ` مع دفعة ${fmt(payAmountD.toFixed(2))}` : " (آجل بالكامل)"}. لا يمكن التراجع. اكتب «تسليم» للتأكيد.`,
                 confirmText: "تسليم وإصدار فاتورة",
                 requireText: "تسليم",
               }))) return;
               deliver.mutate({
                 workOrderId,
-                payment: payNow ? { amount: String(Number(payAmount)), method: payMethod } : undefined,
+                payment: payNow ? { amount: payAmountD.toFixed(2), method: payMethod, reference: payMethod !== "CASH" ? payReference.trim() : undefined } : undefined,
               });
             }}
             disabled={deliver.isPending}
@@ -444,8 +497,9 @@ export default function WorkOrderDetail() {
             {cancel.isPending ? "جارٍ…" : "إلغاء الأمر"}
           </Button>
         )}
+        {/* رابط الفاتورة كان يوجّه لقائمة الفواتير العامة بدل الفاتورة المحدَّدة. */}
         {data.status === "DELIVERED" && data.invoiceId && (
-          <Link href={`/invoices`}><Button variant="outline">فتح الفاتورة #{data.invoiceId}</Button></Link>
+          <Link href={`/invoices/${data.invoiceId}`}><Button variant="outline">فتح الفاتورة #{data.invoiceId}</Button></Link>
         )}
       </div>
     </div>

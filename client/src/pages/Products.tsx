@@ -18,6 +18,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { confirm } from "@/lib/confirm";
 import { formatTableAsTSV } from "@/lib/copy/formatters";
 import { fmtDateTime } from "@/lib/date";
@@ -47,15 +48,29 @@ function rowKey(r: Row): string {
 export default function Products() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const branchId = me.data?.branchId ?? 1;
   // imports.products = managerProcedure خادمياً — زرّ الاستيراد للمدير/الأدمن فقط (مرآة requireRole).
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const canPickBranch = isElevated;
 
-  const [q, setQ] = useState("");
-  const [includeInactive, setIncludeInactive] = useState(false);
-  // فلترة بالفئة: "" = الكل، "0" = بلا فئة، "<id>" = فئة محدّدة. القيمة الأولية من ?category= (رابط من شاشة الفئات).
-  const [categoryFilter, setCategoryFilter] = useState<string>(() => new URLSearchParams(window.location.search).get("category") ?? "");
-  const [page, setPage] = useState(0);
+  // الفلاتر تعيش في querystring (تُشارَك رابطاً وتنجو من التنقّل). "" = افتراضي كل حقل.
+  const [f, setF] = useUrlFilters({ q: "", category: "", inactive: "", page: "0", branch: "" });
+  const q = f.q;
+  const includeInactive = f.inactive === "1";
+  const categoryFilter = f.category;
+  const page = Number(f.page) || 0;
+  const setQ = (v: string) => setF({ q: v, page: "0" });
+  const setIncludeInactive = (v: boolean) => setF({ inactive: v ? "1" : "", page: "0" });
+  const setCategoryFilter = (v: string) => setF({ category: v, page: "0" });
+  const setPage = (updater: number | ((p: number) => number)) =>
+    setF({ page: String(typeof updater === "function" ? updater(page) : updater) });
+
+  // منتقي فرع صريح (نمط PR #288): افتراضي فرع المستخدم إن مُسنَد؛ وإلا يلزم اختياراً صريحاً
+  // (لا `?? 1` صامت) — أثره هنا على عمود «المخزون» المعروض فقط (المنتجات/الأسعار عابرة للفروع).
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
+  const pickedBranch = f.branch === "" ? null : Number(f.branch);
+  const branchId = pickedBranch ?? (me.data?.branchId != null ? Number(me.data.branchId) : null);
+  const setPickedBranch = (v: number | "") => setF({ branch: v === "" ? "" : String(v) });
+
   const [importOpen, setImportOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveTo, setMoveTo] = useState<number | null>(null);
@@ -68,17 +83,21 @@ export default function Products() {
   // الميل الأخير للبحث الشامل: عند الوصول بـ?q=&focus= نبذر البحث (يُحمِّل الصنف) ثمّ نُبرز صفّه.
   const { seedQuery, rowProps } = useFocusHighlight();
   useEffect(() => {
-    if (seedQuery) { setQ(seedQuery); setPage(0); }
+    if (seedQuery) setQ(seedQuery);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedQuery]);
 
-  const list = trpc.catalog.adminList.useQuery({
-    branchId,
-    q: dq.trim() || undefined,
-    includeInactive,
-    categoryId: categoryFilter === "" ? undefined : Number(categoryFilter),
-    limit,
-    offset: page * limit,
-  });
+  const list = trpc.catalog.adminList.useQuery(
+    {
+      branchId: branchId ?? 0,
+      q: dq.trim() || undefined,
+      includeInactive,
+      categoryId: categoryFilter === "" ? undefined : Number(categoryFilter),
+      limit,
+      offset: page * limit,
+    },
+    { enabled: branchId != null },
+  );
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / limit));
@@ -212,6 +231,14 @@ export default function Products() {
         }}
       />
 
+      {branchId == null && (
+        <div role="alert" className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-sm text-[var(--sem-warn)]">
+          {canPickBranch
+            ? "اختر الفرع من فلتر «الفرع» أدناه لعرض المنتجات ومخزونها — لا فرع مُسنَد لحسابك افتراضياً."
+            : "لا فرع مُسنَد لحسابك — تواصل مع الإدارة لعرض هذه الشاشة."}
+        </div>
+      )}
+
       <Card>
         <CardHeader>
           <ListToolbar
@@ -220,16 +247,31 @@ export default function Products() {
             loading={list.isLoading}
             search={{
               value: q,
-              onChange: (v) => { setQ(v); setPage(0); },
+              onChange: (v) => setQ(v),
               placeholder: "بحث (اسم/SKU/باركود)",
             }}
             filters={
               <div className="flex items-center gap-3 flex-wrap">
+                {canPickBranch && (
+                  <label className="flex items-center gap-1.5 h-8 text-sm">
+                    <span className="text-muted-foreground">الفرع (للمخزون):</span>
+                    <select
+                      value={pickedBranch ?? ""}
+                      onChange={(e) => setPickedBranch(e.target.value === "" ? "" : Number(e.target.value))}
+                      className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+                    >
+                      <option value="">— اختر الفرع —</option>
+                      {(branchesQ.data ?? []).map((b) => (
+                        <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <label className="flex items-center gap-1.5 h-8 text-sm">
                   <span className="text-muted-foreground">الفئة:</span>
                   <select
                     value={categoryFilter}
-                    onChange={(e) => { setCategoryFilter(e.target.value); setPage(0); }}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
                     className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
                   >
                     <option value="">كل الفئات</option>
@@ -242,13 +284,13 @@ export default function Products() {
                     type="checkbox"
                     className="size-4"
                     checked={includeInactive}
-                    onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
+                    onChange={(e) => setIncludeInactive(e.target.checked)}
                   />
                   <span className="text-muted-foreground">إظهار المعطّل</span>
                 </label>
               </div>
             }
-            exportSpec={{
+            exportSpec={branchId == null ? undefined : {
               filename: "المنتجات-الشامل",
               sheetName: "دليل المنتجات الشامل",
               rows,
@@ -259,7 +301,7 @@ export default function Products() {
                   (offset, fetchLimit) =>
                     utils.catalog.adminList
                       .fetch({
-                        branchId,
+                        branchId: branchId ?? 0,
                         q: dq.trim() || undefined,
                         includeInactive,
                         categoryId: categoryFilter === "" ? undefined : Number(categoryFilter),

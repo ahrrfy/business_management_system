@@ -43,9 +43,13 @@ export const tasksRouter = router({
         .object({
           status: taskStatus.optional(),
           kind: taskKind.optional(),
+          priority: taskPriority.optional(),
           assignedTo: z.number().int().positive().optional(),
           branchId: z.number().int().positive().optional(),
           overdue: z.boolean().optional(),
+          // مدى تاريخ الإنشاء (YYYY-MM-DD) — نمط buildWoFilterConds في workOrderRouter.ts.
+          from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح").optional(),
+          to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح").optional(),
           q: z.string().max(200).optional(),
           cursor: z.number().int().positive().optional(),
           limit: z.number().int().positive().max(200).optional(),

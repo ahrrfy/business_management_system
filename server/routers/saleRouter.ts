@@ -184,6 +184,8 @@ const salesListInput = z
     // فرع صريح للمرتفعين (admin/manager عابرَي الفروع) — يُفعَّل فقط حين scopedBranchId فارغ؛
     // غير المرتفع يبقى محصوراً بفرعه مهما أرسل (انظر buildSalesListConds).
     branchId: z.number().int().positive().optional(),
+    // فلترة بفواتير وردية بعينها — لتحقيق فروقات الوردية النقدية من سجلّ الورديات (Shifts.tsx).
+    shiftId: z.number().int().positive().optional(),
     // بحث نصّي خادميّ: رقم الفاتورة أو اسم العميل. كان البحث محلّياً على الصفحة المُحمَّلة وحدها
     // (سقف ٢٠٠) ⇒ فاتورة أقدم تُعطي «لا نتائج» وهي موجودة. خادميّ ⇒ يطال كل المطابق للفلتر.
     q: z.string().trim().min(1).optional(),
@@ -224,6 +226,7 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
     conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
   }
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
+  if (input?.shiftId) conds.push(eq(invoices.shiftId, input.shiftId));
   // المدير/الأدمن يستطيعان اختيار موظف؛ الموظف العادي يبقى مُجبَراً على نفسه.
   if (scopedOwnerId == null && input?.salespersonId) conds.push(eq(invoices.createdBy, input.salespersonId));
   if (input?.q) {

@@ -17,7 +17,7 @@ import { confirm, confirmDelete } from "@/lib/confirm";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { exportRows } from "@/lib/export";
 import { fmtDate } from "@/lib/date";
-import { D, round2 } from "@/lib/money";
+import { D, fmtAr, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -379,7 +379,7 @@ export default function CommissionRuns() {
                         )}
                       </td>
                       <td className="p-2.5 text-center tabular-nums text-xs" dir="ltr">
-                        {l.tierIndex != null ? `${Number(l.ratePct)}%${D(l.fixedBonus).gt(0) ? ` +${iqd(l.fixedBonus)}` : ""}` : "—"}
+                        {l.tierIndex != null ? `${fmtAr(l.ratePct)}%${D(l.fixedBonus).gt(0) ? ` +${iqd(l.fixedBonus)}` : ""}` : "—"}
                       </td>
                       <td className="p-2.5 text-right tabular-nums font-bold" dir="ltr">{iqd(l.commissionAmount)}</td>
                       <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">
@@ -468,13 +468,13 @@ export default function CommissionRuns() {
                 {row("مرحَّل من الشهر السابق", iqd(detailLine.carryIn))}
                 <div className="border-t pt-2">{row("المبلغ المحتسَب عليه", iqd(detailLine.effectiveBase), "font-bold")}</div>
                 {detailLine.targetAmount != null && row("هدفه الشهري", iqd(detailLine.targetAmount))}
-                {detailLine.achievementPct != null && row("نسبة تحقيق الهدف", `${Number(detailLine.achievementPct)}%`)}
+                {detailLine.achievementPct != null && row("نسبة تحقيق الهدف", `${fmtAr(detailLine.achievementPct)}%`)}
                 {d.noTarget && (
                   <p className="text-xs text-destructive">لا هدف محدَّداً لهذا الشهر — وخطة «حسب نسبة تحقيق الهدف» بلا هدف تعطي صفراً. حدّد هدفه من تبويب «الأهداف الشهرية» ثم أعد الاحتساب.</p>
                 )}
                 {row(
                   "المستوى المطبَّق",
-                  detailLine.tierIndex != null ? `من ${d.tierThreshold ?? "?"} ← ${Number(detailLine.ratePct)}%` : "لم يبلغ أي مستوى",
+                  detailLine.tierIndex != null ? `من ${d.tierThreshold ?? "?"} ← ${fmtAr(detailLine.ratePct)}%` : "لم يبلغ أي مستوى",
                 )}
                 {D(detailLine.fixedBonus).gt(0) && row("مكافأة ثابتة", `+${iqd(detailLine.fixedBonus)}`, "text-money-positive")}
                 <div className="border-t pt-2">{row("العمولة المستحقّة", iqd(detailLine.commissionAmount), "font-bold text-money-positive")}</div>

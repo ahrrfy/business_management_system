@@ -1,16 +1,17 @@
 // بند 11 (٧/٧): شاشة «الإقفال الشهري» — صورة الشهر المالية الموحّدة بنقرة (تبويب في محور
 // الإقفال والرقابة): مبيعات/ربح إجمالي/مشتريات/مصاريف/خزينة/لقطة ذمم/أوامر مُسلَّمة + طباعة A4.
 import { useState } from "react";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { MonthPicker } from "@/components/form/MonthPicker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState, ErrorState } from "@/components/PageState";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, D } from "@/lib/money";
+import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { Printer, TrendingUp, ShoppingCart, Wallet, ReceiptText, Scale, Wrench } from "lucide-react";
+import { Printer, FileSpreadsheet, TrendingUp, ShoppingCart, Wallet, ReceiptText, Scale, Wrench } from "lucide-react";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -19,6 +20,63 @@ const selectCls =
 function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
 }
+
+/** الشهر السابق لشهرٍ بصيغة YYYY-MM. */
+function previousMonth(month: string): string {
+  const [y, m] = month.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 2, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/** نسبة تغيّر مئوية بدقّة decimal — null إن كان الأساس صفراً (لا معنى للنسبة). */
+function deltaPct(curr: string, prev: string): string | null {
+  const p = D(prev);
+  if (p.isZero()) return null;
+  return D(curr).sub(p).div(p).times(100).toDecimalPlaces(1).toString();
+}
+
+type ClosePack = RouterOutputs["reports"]["monthlyClosePack"];
+/** ذمم مبنيّة من الدفتر حتى نهاية الشهر (reports.financialPosition.asOf) — بديل «لقطة الآن». */
+type HistoricalAR = { ar: string; ap: string } | null;
+
+/** صفوف حزمة الشهر المسطّحة — مصدر واحد يُشارَك بين الطباعة والتصدير.
+ *  hist: إن توفّرت لقطة الذمم كما في نهاية الشهر (asOf) تحلّ محلّ لقطة الآن الافتراضية. */
+function closePackRows(d: ClosePack, hist: HistoricalAR): { section: string; value: string }[] {
+  return [
+    { section: "عدد فواتير المبيعات", value: String(d.sales.invoiceCount) },
+    { section: "المبيعات (صافٍ قبل الضريبة)", value: fmtAr(d.sales.subtotal) },
+    { section: "الضريبة", value: fmtAr(d.sales.tax) },
+    { section: "إجمالي المبيعات", value: fmtAr(d.sales.total) },
+    { section: "المرتجعات", value: fmtAr(d.sales.returnedTotal) },
+    { section: "صافي المبيعات بعد المرتجعات", value: fmtAr(d.sales.netAfterReturns) },
+    { section: "تكلفة البضاعة المباعة", value: fmtAr(d.profit.cost) },
+    { section: "الربح الإجمالي", value: fmtAr(d.profit.profit) },
+    { section: "المشتريات (عدد الأوامر)", value: String(d.purchases.orderCount) },
+    { section: "قيمة المشتريات", value: fmtAr(d.purchases.total) },
+    { section: "المصروفات", value: fmtAr(d.expenses.total) },
+    { section: "مقبوضات الخزينة", value: fmtAr(d.treasury.totalIn) },
+    { section: "مدفوعات الخزينة", value: fmtAr(d.treasury.totalOut) },
+    { section: "صافي حركة الخزينة", value: fmtAr(d.treasury.net) },
+    {
+      section: hist ? "ذمم العملاء (كما في نهاية الشهر)" : "ذمم العملاء الحالية (لقطة الآن)",
+      value: fmtAr(hist ? hist.ar : d.receivablesSnapshot.arTotal),
+    },
+    {
+      section: hist ? "ذمم الموردين (كما في نهاية الشهر)" : "ذمم الموردين الحالية (لقطة الآن)",
+      value: fmtAr(hist ? hist.ap : d.receivablesSnapshot.apTotal),
+    },
+    { section: "أوامر شغل مُسلَّمة", value: String(d.workOrdersDelivered) },
+  ];
+}
+
+/** بنود المقارنة بالشهر السابق — رباعية (مفتاح/تسمية/هذا الشهر/الشهر السابق). */
+const COMPARE_METRICS: { key: string; label: string; pick: (d: ClosePack) => string }[] = [
+  { key: "netSales", label: "صافي المبيعات", pick: (d) => d.sales.netAfterReturns },
+  { key: "profit", label: "الربح الإجمالي", pick: (d) => d.profit.profit },
+  { key: "purchases", label: "المشتريات", pick: (d) => d.purchases.total },
+  { key: "expenses", label: "المصروفات", pick: (d) => d.expenses.total },
+  { key: "treasuryNet", label: "صافي حركة الخزينة", pick: (d) => d.treasury.net },
+];
 
 export default function MonthlyClosePack() {
   const [month, setMonth] = useState<string>(currentMonth());
@@ -34,11 +92,46 @@ export default function MonthlyClosePack() {
   });
   const d = q.data;
 
+  // لقطة الذمم كما في نهاية الشهر المختار — تستبدل «لقطة الآن» بالحسّاسة للتاريخ (reports.financialPosition
+  // اكتسبت asOf لهذا الغرض بالضبط). لا تُطلَب إلا بعد توفّر period.to من الاستعلام الأول.
+  const posAsOf = trpc.reports.financialPosition.useQuery(
+    { branchId: branchId ? Number(branchId) : undefined, asOf: d?.period.to },
+    { enabled: !!d?.period.to },
+  );
+  const hist: { ar: string; ap: string } | null = posAsOf.data
+    ? { ar: posAsOf.data.arDebit, ap: posAsOf.data.apCredit }
+    : null;
+
+  // مقارنة بالشهر السابق: نداءٌ ثانٍ بنفس الفرع لشهرٍ أقدم بواحد — يُغذّي جدول المقارنة أدناه.
+  const prevMonth = previousMonth(month);
+  const qPrev = trpc.reports.monthlyClosePack.useQuery({
+    month: prevMonth,
+    branchId: branchId ? Number(branchId) : undefined,
+  });
+  const dPrev = qPrev.data;
+
+  const branchLabel = branchId
+    ? branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)
+    : "كل الفروع";
+
+  function onExport() {
+    if (!d) return;
+    exportRows(closePackRows(d, hist), {
+      filename: `حزمة-الإقفال-الشهري-${month}`,
+      title: `حزمة الإقفال الشهري — ${month}`,
+      meta: [
+        { label: "الفترة", value: `${d.period.from} — ${d.period.to}` },
+        { label: "الفرع", value: branchLabel },
+      ],
+      columns: [
+        { key: "section", header: "البند" },
+        { key: "value", header: "القيمة" },
+      ],
+    });
+  }
+
   function onPrint() {
     if (!d) return;
-    const branchLabel = branchId
-      ? branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)
-      : "كل الفروع";
     printReportDoc({
       title: `حزمة الإقفال الشهري — ${month}`,
       headerExtra: [
@@ -49,25 +142,7 @@ export default function MonthlyClosePack() {
         { key: "section", label: "البند" },
         { key: "value", label: "القيمة", align: "left" },
       ],
-      rows: [
-        { section: "عدد فواتير المبيعات", value: String(d.sales.invoiceCount) },
-        { section: "المبيعات (صافٍ قبل الضريبة)", value: fmtAr(d.sales.subtotal) },
-        { section: "الضريبة", value: fmtAr(d.sales.tax) },
-        { section: "إجمالي المبيعات", value: fmtAr(d.sales.total) },
-        { section: "المرتجعات", value: fmtAr(d.sales.returnedTotal) },
-        { section: "صافي المبيعات بعد المرتجعات", value: fmtAr(d.sales.netAfterReturns) },
-        { section: "تكلفة البضاعة المباعة", value: fmtAr(d.profit.cost) },
-        { section: "الربح الإجمالي", value: fmtAr(d.profit.profit) },
-        { section: "المشتريات (عدد الأوامر)", value: String(d.purchases.orderCount) },
-        { section: "قيمة المشتريات", value: fmtAr(d.purchases.total) },
-        { section: "المصروفات", value: fmtAr(d.expenses.total) },
-        { section: "مقبوضات الخزينة", value: fmtAr(d.treasury.totalIn) },
-        { section: "مدفوعات الخزينة", value: fmtAr(d.treasury.totalOut) },
-        { section: "صافي حركة الخزينة", value: fmtAr(d.treasury.net) },
-        { section: "ذمم العملاء الحالية (لقطة الآن)", value: fmtAr(d.receivablesSnapshot.arTotal) },
-        { section: "ذمم الموردين الحالية (لقطة الآن)", value: fmtAr(d.receivablesSnapshot.apTotal) },
-        { section: "أوامر شغل مُسلَّمة", value: String(d.workOrdersDelivered) },
-      ],
+      rows: closePackRows(d, hist),
       summary: [
         { label: "المصروفات", value: fmtAr(d.expenses.total) },
         { label: "صافي المبيعات", value: fmtAr(d.sales.netAfterReturns) },
@@ -82,10 +157,16 @@ export default function MonthlyClosePack() {
         title="الإقفال الشهري"
         description="صورة الشهر المالية الموحّدة: مبيعات وربح ومشتريات ومصاريف وخزينة وذمم — للمراجعة والطباعة."
         actions={
-          <Button onClick={onPrint} disabled={!d} className="gap-1.5">
-            <Printer aria-hidden className="size-4" />
-            طباعة / PDF
-          </Button>
+          <>
+            <Button variant="outline" onClick={onExport} disabled={!d} className="gap-1.5">
+              <FileSpreadsheet aria-hidden className="size-4" />
+              تصدير Excel
+            </Button>
+            <Button onClick={onPrint} disabled={!d} className="gap-1.5">
+              <Printer aria-hidden className="size-4" />
+              طباعة / PDF
+            </Button>
+          </>
         }
       />
 
@@ -117,8 +198,16 @@ export default function MonthlyClosePack() {
             <StatCard label="المشتريات" value={fmtAr(d.purchases.total)} sub={`${d.purchases.orderCount} أمراً — متبقٍّ ${fmtAr(d.purchases.unpaid)}`} icon={ShoppingCart} />
             <StatCard label="المصروفات" value={fmtAr(d.expenses.total)} icon={Wallet} tone="warning" />
             <StatCard label="صافي حركة الخزينة" value={fmtAr(d.treasury.net)} sub={`دخل ${fmtAr(d.treasury.totalIn)} — خرج ${fmtAr(d.treasury.totalOut)}`} icon={Scale} />
-            <StatCard label="ذمم العملاء (لقطة الآن)" value={fmtAr(d.receivablesSnapshot.arTotal)} icon={ReceiptText} />
-            <StatCard label="ذمم الموردين (لقطة الآن)" value={fmtAr(d.receivablesSnapshot.apTotal)} icon={ReceiptText} />
+            <StatCard
+              label={hist ? "ذمم العملاء (كما في نهاية الشهر)" : "ذمم العملاء (لقطة الآن)"}
+              value={fmtAr(hist ? hist.ar : d.receivablesSnapshot.arTotal)}
+              icon={ReceiptText}
+            />
+            <StatCard
+              label={hist ? "ذمم الموردين (كما في نهاية الشهر)" : "ذمم الموردين (لقطة الآن)"}
+              value={fmtAr(hist ? hist.ap : d.receivablesSnapshot.apTotal)}
+              icon={ReceiptText}
+            />
             <StatCard label="أوامر شغل مُسلَّمة" value={String(d.workOrdersDelivered)} icon={Wrench} />
           </div>
 
@@ -150,9 +239,56 @@ export default function MonthlyClosePack() {
             </Card>
           )}
 
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">مقارنة بالشهر السابق ({prevMonth})</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {qPrev.isLoading ? (
+                <LoadingState />
+              ) : !dPrev ? (
+                <p className="p-4 text-center text-sm text-muted-foreground">تعذّر تحميل بيانات الشهر السابق للمقارنة.</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-xs text-muted-foreground">
+                      <th className="p-2.5 text-end font-medium">البند</th>
+                      <th className="p-2.5 text-right font-medium">{month}</th>
+                      <th className="p-2.5 text-right font-medium">{prevMonth}</th>
+                      <th className="p-2.5 text-right font-medium">التغيّر %</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {COMPARE_METRICS.map((m) => {
+                      const curr = m.pick(d);
+                      const prev = m.pick(dPrev);
+                      const pct = deltaPct(curr, prev);
+                      const up = pct != null && Number(pct) > 0;
+                      const down = pct != null && Number(pct) < 0;
+                      return (
+                        <tr key={m.key} className="border-b last:border-0">
+                          <td className="p-2.5 text-end">{m.label}</td>
+                          <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(curr)}</td>
+                          <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(prev)}</td>
+                          <td className={`p-2.5 text-right tabular-nums font-medium ${up ? "text-money-positive" : down ? "text-money-negative" : ""}`} dir="ltr">
+                            {pct == null ? "—" : `${up ? "+" : ""}${pct}%`}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </CardContent>
+          </Card>
+
           <p className="text-[11px] text-muted-foreground">
-            لقطة الذمم تعكس الأرصدة الحالية لحظة توليد التقرير لا نهاية الشهر التاريخية. أقسام الشهر
-            (مبيعات/ربح/مشتريات/مصاريف/خزينة) محسوبة على نطاق {d.period.from} إلى {d.period.to}.
+            {hist
+              ? "ذمم العملاء/الموردين أعلاه مبنيّة من الدفتر حتى نهاية الشهر المختار (لا الآن)."
+              : posAsOf.isLoading
+                ? "جارٍ بناء لقطة الذمم كما في نهاية الشهر…"
+                : "تعذّر بناء لقطة الذمم كما في نهاية الشهر — تُعرض الأرصدة الحالية لحظة توليد التقرير مؤقّتاً."}{" "}
+            أقسام الشهر (مبيعات/ربح/مشتريات/مصاريف/خزينة) محسوبة على نطاق {d.period.from} إلى {d.period.to}.
           </p>
         </>
       ) : null}

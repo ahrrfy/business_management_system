@@ -19,6 +19,8 @@ import { D } from "@/lib/money";
 import { PageHeader } from "@/components/PageHeader";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 
 import {
   InvoiceHeader,
@@ -34,6 +36,7 @@ import {
   INVOICE_TYPES,
   type InvoiceActionKind,
 } from "@/components/invoice";
+import { canSeeCost } from "@shared/permissions";
 
 const INVOICE_TYPE = "QUOTATION" as const;
 
@@ -137,8 +140,9 @@ export default function QuotationNew() {
   const printAfterSaveRef = useRef(false);
   const shareAfterSaveRef = useRef(false);
 
-  // التكلفة حساسة: يراها المدير/الأدمن فقط، والراوتر يعيد null لبقية الأدوار.
-  const showCost = me.data?.role === "manager" || me.data?.role === "admin";
+  // التكلفة حساسة — نفس دالة الخادم/الشاشات الأخرى (canSeeCost، لا مقارنة دور خام) كي لا تنحرف
+  // شاشةٌ عن أخرى في تعريف «مَن يرى التكلفة» (نمط SalesReport.tsx). الراوتر يعيد null لبقية الأدوار.
+  const showCost = me.data ? canSeeCost(me.data.role) : true;
 
   const create = trpc.quotations.create.useMutation({
     onSuccess: (r) => {
@@ -398,6 +402,20 @@ export default function QuotationNew() {
     () => state.items.some((l) => D(l.price).lte(0)),
     [state.items]
   );
+
+  // اختصار Ctrl+S للحفظ (نمط ExpenseNew.tsx — Esc متروك عمداً، النموذج مكتظّ بقوائم اختيار أصلية
+  // يُغلقها Esc أصلاً) — نفس مسار زرّ «حفظ» (case "save" في handleAction) حرفياً: يلغي أي نافذة
+  // طباعة محجوزة سابقاً قبل حفظٍ عادي. + حارس فقد البيانات عند وجود إدخال فعليّ فقط.
+  useSaveShortcuts({
+    onSave: () => {
+      releaseReservedPrintWindow();
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
+      handleSubmit();
+    },
+    enabled: !isSaving,
+  });
+  useUnsavedGuard(state.items.length > 0 || state.entityId != null || state.notes.trim() !== "");
 
   if (isEdit && editQuery.isLoading) {
     return <div className="p-10 text-center text-muted-foreground">جارٍ تحميل مسوّدة عرض السعر…</div>;

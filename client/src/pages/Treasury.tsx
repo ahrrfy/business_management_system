@@ -5,12 +5,15 @@ import { OpenShiftsPanel } from "@/components/treasury/OpenShiftsPanel";
 import { PaymentMethodDonut } from "@/components/treasury/PaymentMethodDonut";
 import { TreasuryKpiCard } from "@/components/treasury/TreasuryKpiCard";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { DataTable } from "@/components/data-table/DataTable";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { newClientRequestId } from "@/lib/countQueue";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { exportRows } from "@/lib/export";
 import { trpc } from "@/lib/trpc";
 import { type ColumnDef } from "@tanstack/react-table";
 import {
@@ -25,8 +28,9 @@ import {
   RefreshCcw,
   Vault,
   Wallet,
+  X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 
 type Period = "today" | "yesterday" | "week" | "month";
@@ -70,9 +74,17 @@ interface MovementRow {
   createdAt: string;
 }
 
+const MOV_PAGE = 20;
+
 export default function Treasury() {
   const [branchId, setBranchId] = useState<number | "">("");
   const [period, setPeriod] = useState<Period>("today");
+  // فلتر مدى تاريخ + ترقيم لجدول «آخر الحركات النقدية» — كان مثبَّتاً على آخر ٢٠ حركة صامتاً
+  // بلا تصفّح لما قبلها ولا حصر بفترة.
+  const [movFrom, setMovFrom] = useState("");
+  const [movTo, setMovTo] = useState("");
+  const [movPage, setMovPage] = useState(0);
+  const [movExporting, setMovExporting] = useState(false);
   // العهدة الوسيطة (imprest، ٢٨/٧/٢٦): تمويل الخزينة (رأس مال) — يُموّل عهد الورديات.
   const [fundOpen, setFundOpen] = useState(false);
   const [fundBranch, setFundBranch] = useState<number | "">("");
@@ -101,9 +113,17 @@ export default function Treasury() {
     { staleTime: 5 * 60_000 },
   );
   const movements = trpc.treasury.getRecentMovements.useQuery(
-    { limit: 20, branchId: branchId ? Number(branchId) : undefined },
+    {
+      limit: MOV_PAGE,
+      offset: movPage * MOV_PAGE,
+      branchId: branchId ? Number(branchId) : undefined,
+      from: movFrom || undefined,
+      to: movTo || undefined,
+    },
     { refetchInterval: 30_000 },
   );
+  // أي تغيير في فلاتر جدول الحركات يعيدنا للصفحة الأولى (وإلا بقي offset قديماً على مجموعة أصغر).
+  useEffect(() => { setMovPage(0); }, [branchId, movFrom, movTo]);
   const openShifts = trpc.treasury.getOpenShifts.useQuery(
     { branchId: branchId ? Number(branchId) : undefined },
     { refetchInterval: 30_000 },
@@ -244,6 +264,43 @@ export default function Treasury() {
     ],
     [],
   );
+
+  // تصدير «الكل» لجدول الحركات (لا صفحة العرض الحالية فقط ٢٠ صفّاً) — نفس فلاتر الفرع/المدى الحاليّة.
+  async function exportMovements() {
+    setMovExporting(true);
+    try {
+      const allRows = await fetchAllPaged<MovementRow>(
+        (offset, limit) =>
+          utils.treasury.getRecentMovements
+            .fetch({
+              limit,
+              offset,
+              branchId: branchId ? Number(branchId) : undefined,
+              from: movFrom || undefined,
+              to: movTo || undefined,
+            })
+            .then((r) => ({ rows: r.rows as MovementRow[] })),
+        { pageSize: 100 },
+      );
+      exportRows(allRows, {
+        filename: "حركات-الخزينة",
+        columns: [
+          { key: "createdAt", header: "الوقت", map: (r) => fmtDT(r.createdAt) },
+          { key: "direction", header: "الاتجاه", map: (r) => (r.direction === "IN" ? "وارد" : "صادر") },
+          { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
+          { key: "paymentMethodLabel", header: "الطريقة" },
+          { key: "cashBucket", header: "مكان النقد", map: (r) => (r.cashBucket === "DRAWER" ? "درج" : r.cashBucket === "TREASURY" ? "خزينة" : "—") },
+          { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "—" },
+          { key: "voucherNumber", header: "السند", map: (r) => r.voucherNumber ?? "" },
+          { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
+        ],
+      });
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setMovExporting(false);
+    }
+  }
 
   const totalDrawerAll = useMemo(
     () => dashboard.data?.drawerBalances.reduce((s, r) => s + Number(r.expectedCash), 0) ?? 0,
@@ -530,21 +587,51 @@ export default function Treasury() {
       {/* ═══ صف ٥: جدول الحركات + الورديات ═══ */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
         <div className="lg:col-span-7 rounded-md border bg-card p-4">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <h3 className="text-sm font-semibold">آخر الحركات النقدية</h3>
             <span className="text-xs text-muted-foreground">
               <Building2 className="inline h-3 w-3" />{" "}
               {branchId ? branches.data?.find((b) => b.id === branchId)?.name : "كل الفروع المرئيّة"}
             </span>
           </div>
+          {/* مدى تاريخ اختياري — بلا فلتر يبقى السلوك القديم (آخر ٢٠ حركة). */}
+          <div className="mb-3 flex flex-wrap items-end gap-2">
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] text-muted-foreground">من تاريخ</label>
+              <Input type="date" dir="ltr" className="h-8 w-36" value={movFrom}
+                onChange={(e) => { const v = e.target.value; setMovFrom(v); if (v && movTo && v > movTo) setMovTo(v); }} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] text-muted-foreground">إلى تاريخ</label>
+              <Input type="date" dir="ltr" className="h-8 w-36" value={movTo}
+                onChange={(e) => { const v = e.target.value; setMovTo(v); if (v && movFrom && v < movFrom) setMovFrom(v); }} />
+            </div>
+            {(movFrom || movTo) && (
+              <Button variant="ghost" size="sm" className="gap-1" onClick={() => { setMovFrom(""); setMovTo(""); }}>
+                <X className="h-3 w-3" />
+                مسح المدى
+              </Button>
+            )}
+            <Button variant="outline" size="sm" className="mr-auto" disabled={movExporting || !(movements.data?.rows.length)}
+              onClick={() => void exportMovements()}>
+              {movExporting ? "جارٍ التحضير…" : "تصدير Excel"}
+            </Button>
+          </div>
           <DataTable
-            data={movements.data ?? []}
+            data={movements.data?.rows ?? []}
             columns={movementCols}
             loading={movements.isLoading}
             emptyText="لا حركات بعد."
             searchable={false}
-            pageSize={20}
+            pageSize={MOV_PAGE}
           />
+          <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+            <span dir="ltr">{movPage * MOV_PAGE + 1}–{movPage * MOV_PAGE + (movements.data?.rows.length ?? 0)}</span>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" disabled={movPage === 0} onClick={() => setMovPage((p) => Math.max(0, p - 1))}>السابق</Button>
+              <Button variant="outline" size="sm" disabled={!movements.data?.hasMore} onClick={() => setMovPage((p) => p + 1)}>التالي</Button>
+            </div>
+          </div>
         </div>
         <div className="lg:col-span-5">
           <OpenShiftsPanel shifts={openShifts.data ?? []} loading={openShifts.isLoading} />

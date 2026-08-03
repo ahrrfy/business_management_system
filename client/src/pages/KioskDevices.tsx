@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -19,7 +20,8 @@ import { fmtDateTime } from "@/lib/date";
 import { internalUrl } from "@/lib/siteHosts";
 import { Download, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import { ListToolbar, RowActions } from "@/components/list";
+import { ListToolbar, RowActions, FilterField } from "@/components/list";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 
 type Reveal = { deviceId: number; label: string; branchName: string | null; rawToken: string };
 
@@ -38,11 +40,18 @@ export default function KioskDevices() {
   const branches = branchesQ.data ?? [];
   const devicesQ = trpc.kiosk.devices.list.useQuery();
   const devices = devicesQ.data ?? [];
-  const [query, setQuery] = useState("");
+  const [f, setF, resetF] = useUrlFilters({ q: "", status: "", branch: "" });
   const visibleDevices = useMemo(() => {
-    const q = query.trim().toLocaleLowerCase("ar");
-    return q ? devices.filter((d) => [d.label, d.branchName, d.tokenPrefix].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : devices;
-  }, [devices, query]);
+    const q = f.q.trim().toLocaleLowerCase("ar");
+    return devices.filter((d) => {
+      if (q && ![d.label, d.branchName, d.tokenPrefix].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) return false;
+      if (f.status === "active" && !d.isActive) return false;
+      if (f.status === "inactive" && d.isActive) return false;
+      if (f.branch && String(d.branchId) !== f.branch) return false;
+      return true;
+    });
+  }, [devices, f.q, f.status, f.branch]);
+  const activeFilterCount = (f.status ? 1 : 0) + (f.branch ? 1 : 0);
 
   const [branchId, setBranchId] = useState<number | "">("");
   const [label, setLabel] = useState("");
@@ -123,9 +132,10 @@ export default function KioskDevices() {
         </CardContent>
       </Card>
 
-      {/* الرمز المكشوف مرّة واحدة */}
+      {/* الرمز المكشوف مرّة واحدة — يُستثنى من الطباعة (print:hidden): زرّ «طباعة» أدناه يطبع
+          الصفحة كاملة بـwindow.print()، ولا يصحّ أن يخرج الرمز السرّي الخام على الورق أبداً. */}
       {reveal && (
-        <Card className="border-emerald-400/60 bg-emerald-50/50 dark:bg-emerald-950/20">
+        <Card className="border-emerald-400/60 bg-emerald-50/50 dark:bg-emerald-950/20 print:hidden">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base text-emerald-700 dark:text-emerald-400">
               رمز الجهاز «{reveal.label}» — يظهر مرّة واحدة فقط
@@ -191,8 +201,26 @@ export default function KioskDevices() {
             title="الأجهزة المسجّلة"
             count={visibleDevices.length}
             loading={devicesQ.isLoading}
-            search={{ value: query, onChange: setQuery, placeholder: "اسم الجهاز، الفرع أو بادئة الرمز…" }}
-            onResetFilters={() => setQuery("")}
+            search={{ value: f.q, onChange: (v) => setF({ q: v }), placeholder: "اسم الجهاز، الفرع أو بادئة الرمز…" }}
+            filters={
+              <>
+                <FilterField label="الحالة">
+                  <AppSelect value={f.status} onValueChange={(v) => setF({ status: v })} placeholder="الكل" className="w-32" size="sm">
+                    <option value="">الكل</option>
+                    <option value="active">مفعّل</option>
+                    <option value="inactive">مُلغى</option>
+                  </AppSelect>
+                </FilterField>
+                <FilterField label="الفرع">
+                  <AppSelect value={f.branch} onValueChange={(v) => setF({ branch: v })} placeholder="كل الفروع" className="w-40" size="sm">
+                    <option value="">كل الفروع</option>
+                    {branches.map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+                  </AppSelect>
+                </FilterField>
+              </>
+            }
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetF}
             onRefresh={() => void devicesQ.refetch()}
             refreshing={devicesQ.isFetching}
             onPrint={() => window.print()}
@@ -204,7 +232,7 @@ export default function KioskDevices() {
                 { key: "label", header: "الجهاز" }, { key: "branchName", header: "الفرع" },
                 { key: "tokenPrefix", header: "بادئة الرمز" },
                 { key: "isActive", header: "الحالة", map: (d) => d.isActive ? "مفعّل" : "ملغى" },
-                { key: "lastSeenAt", header: "آخر ظهور" },
+                { key: "lastSeenAt", header: "آخر ظهور", map: (d) => d.lastSeenAt ? fmtDateTime(d.lastSeenAt) : "لم يظهر بعد" },
               ],
             }}
           />

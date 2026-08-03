@@ -1,11 +1,15 @@
 import { TRPCError } from "@trpc/server";
+import { and, desc, eq, gte, like, lte, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { canSeeCost } from "@shared/permissions";
+import { customers, giftVouchers, suppliers } from "../../drizzle/schema";
+import { getDb } from "../db";
 import { positiveMoneyString, ymdDate } from "../lib/schemas";
+import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { closeGiftCampaign, createGiftCampaign, listGiftCampaigns } from "../services/gifts/campaigns";
 import { receiveInboundGift } from "../services/gifts/inbound";
-import { getGiftVoucher, listGifts } from "../services/gifts/list";
+import { getGiftVoucher } from "../services/gifts/list";
 import { approveGift, createOutboundGift } from "../services/gifts/outbound";
 import { recordPurchaseBonusGift } from "../services/gifts/purchaseBonus";
 import { giftsReport } from "../services/gifts/reports";
@@ -27,6 +31,17 @@ const inboundLineSchema = z.object({
 });
 
 export const giftsRouter = router({
+  /**
+   * قائمة سندات الهدايا — عزل الفرع (نمط consignmentRouter المُثبَت): غير المرتفع يرى فرعه فقط
+   * (من ctx.user مباشرةً)؛ admin/manager يحترمان branchId المُرسَل (عرض عبر-الفروع).
+   *
+   * ترقيمٌ حقيقيّ (offset+total عبر paginateKeyset/countIfOffset — نمط auditRouter) بدل الاقتطاع
+   * الصامت القديم (`LIMIT 200` بلا مؤشّر/عدّاد). from/to لمدى التاريخ (نفس اتفاقية Z الإلزامية —
+   * راجع تعليق `activeToday` في promotionsV2Router.ts). q خادميّ (يبحث في رقم السند/السبب/رقم عرض
+   * المورّد) بدل الفلترة العميلية القديمة التي كانت تعمل على صفحة واحدة فقط بعد الترقيم.
+   * استعلامٌ مباشر هنا لا عبر `listGifts` (الخدمة لا تدعم from/to ولا offset حقيقياً؛ إبقاؤها كما
+   * هي يحفظ اختباراتها القائمة، والاستعلام هنا يطابق أعمدتها وحراستها حرفياً).
+   */
   list: giftsRead
     .input(
       z
@@ -34,20 +49,85 @@ export const giftsRouter = router({
           direction: z.enum(["OUT", "IN"]).optional(),
           status: z.enum(["DRAFT", "PENDING_APPROVAL", "APPROVED", "DELIVERED", "CANCELLED", "REVERSED"]).optional(),
           branchId: z.number().int().positive().optional(),
-          q: z.string().optional(),
+          q: z.string().max(120).optional(),
+          from: ymdDate.nullish(),
+          to: ymdDate.nullish(),
           limit: z.number().int().positive().max(200).optional(),
+          offset: z.number().int().min(0).optional(),
+          cursor: z.number().int().positive().optional(),
         })
         .optional(),
     )
-    // عزل الفرع (نمط consignmentRouter المُثبَت): غير المرتفع يرى فرعه فقط (من ctx.user مباشرةً)؛
-    // admin/manager يحترمان branchId المُرسَل (عرض عبر-الفروع).
-    .query(({ input, ctx }) => {
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return { rows: [], total: 0, hasMore: false, nextCursor: null as number | null };
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
       const scopedBranchId = elevated ? null : Number(ctx.user.branchId);
-      return listGifts(
-        { scopedBranchId },
-        { ...(input ?? {}), branchId: elevated ? input?.branchId : undefined, redactCost: !canSeeCost(ctx.user.role) },
-      );
+      const branch = scopedBranchId ?? (elevated ? input?.branchId : undefined);
+
+      const conds: SQL[] = [];
+      if (branch != null) conds.push(eq(giftVouchers.branchId, branch));
+      if (input?.direction) conds.push(eq(giftVouchers.direction, input.direction));
+      if (input?.status) conds.push(eq(giftVouchers.status, input.status));
+      if (input?.q?.trim()) {
+        const term = `%${input.q.trim()}%`;
+        conds.push(or(like(giftVouchers.giftNumber, term), like(giftVouchers.reason, term), like(giftVouchers.supplierRef, term))!);
+      }
+      // ⚠️ لاحقة Z إلزامية (تدقيق ١٧/٧ #٧، مطابقٌ لـactiveToday في promotionsV2Router.ts): بلا Z
+      // يُفسَّر الحدّ بمنطقة عملية Node فينزاح على أي جهاز بغير TZ=UTC.
+      if (input?.from) conds.push(gte(giftVouchers.createdAt, new Date(input.from + "T00:00:00Z")));
+      if (input?.to) conds.push(lte(giftVouchers.createdAt, new Date(input.to + "T23:59:59Z")));
+
+      const selectCols = {
+        id: giftVouchers.id,
+        giftNumber: giftVouchers.giftNumber,
+        direction: giftVouchers.direction,
+        branchId: giftVouchers.branchId,
+        status: giftVouchers.status,
+        giftType: giftVouchers.giftType,
+        reason: giftVouchers.reason,
+        sellable: giftVouchers.sellable,
+        supplierId: giftVouchers.supplierId,
+        supplierName: suppliers.name,
+        customerId: giftVouchers.customerId,
+        customerName: customers.name,
+        supplierRef: giftVouchers.supplierRef,
+        estimatedValue: giftVouchers.estimatedValue,
+        totalCost: giftVouchers.totalCost,
+        createdAt: giftVouchers.createdAt,
+      };
+
+      const { rows, hasMore, nextCursor, usingCursor } = await paginateKeyset({
+        cursor: input?.cursor,
+        limit: input?.limit,
+        offset: input?.offset,
+        defaultLimit: 50,
+        idCol: giftVouchers.id,
+        baseConds: conds,
+        runQuery: (where, lim, off) =>
+          db
+            .select(selectCols)
+            .from(giftVouchers)
+            .leftJoin(suppliers, eq(giftVouchers.supplierId, suppliers.id))
+            .leftJoin(customers, eq(giftVouchers.customerId, customers.id))
+            .where(where)
+            .orderBy(desc(giftVouchers.id))
+            .limit(lim)
+            .offset(off),
+      });
+      const total = await countIfOffset(usingCursor, async () => {
+        const baseWhere = conds.length ? and(...conds) : undefined;
+        const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(giftVouchers).where(baseWhere))[0];
+        return Number(totalRow?.n ?? 0);
+      });
+      // حجب التكلفة (تدقيق Codex P1) — نفس دلالة listGifts.redactCost.
+      const redact = !canSeeCost(ctx.user.role);
+      return {
+        rows: rows.map((r) => (redact ? { ...r, totalCost: null as string | null } : r)),
+        total,
+        hasMore,
+        nextCursor,
+      };
     }),
 
   // تفاصيل سند هدية للطباعة (رأس + أطراف + أسطر بأسماء المنتجات، بلا تكلفة) — بعزل الفرع (نمط consignments.get).

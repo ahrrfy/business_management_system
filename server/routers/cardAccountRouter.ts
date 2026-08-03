@@ -41,6 +41,10 @@ export const cardAccountRouter = router({
           from: ymdDate.optional(),
           to: ymdDate.optional(),
           direction: z.enum(["IN", "OUT"]).optional(),
+          // بحث نصّي (الوصف/المرجع/رقم السند/الطرف الحرّ/آخر ٤ أرقام) + نوع مصدر الحركة —
+          // وظيفة الشاشة الأساسية (مطابقة كشف البنك بحثاً عن حركة بعينها).
+          q: z.string().trim().min(1).max(200).optional(),
+          sourceType: z.enum(["VOUCHER", "INVOICE_PAYMENT", "WORK_ORDER", "OTHER"]).optional(),
           limit: z.number().int().min(1).max(500).optional(),
           offset: z.number().int().min(0).optional(),
         })

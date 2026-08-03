@@ -35,6 +35,9 @@ export const expenseRouter = router({
           from: ymdDate.optional(),
           to: ymdDate.optional(),
           q: z.string().trim().min(1).optional(),
+          // فلترة إضافية: طريقة الدفع (مطابقة يوم البطاقات) + مصدر الصرف (نقدي/مخزون).
+          paymentMethod: method.optional(),
+          source: z.enum(["CASH", "STOCK"]).optional(),
           limit: z.number().int().positive().max(1000).default(200),
           offset: z.number().int().nonnegative().optional(),
           // S3 (٣٠/٦): cursor (id) اختياري لـkeyset — يتجاوز COUNT الكامل.

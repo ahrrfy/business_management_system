@@ -10,6 +10,7 @@ import { TablePager } from "@/components/table/TablePager";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D } from "@/lib/money";
@@ -104,11 +105,12 @@ function rangeBounds(key: RangeKey, from: string, to: string): { dateFrom?: stri
 
 export default function Attendance() {
   const [, navigate] = useLocation();
-  const [employeeId, setEmployeeId] = useState("");
-  const [period, setPeriod] = useState(currentMonth());
-  const [range, setRange] = useState<RangeKey>("today");
-  const [customFrom, setCustomFrom] = useState(todayLocal());
-  const [customTo, setCustomTo] = useState(todayLocal());
+  // فلاتر محفوظة في querystring (تعيش مع فتح بطاقة موظف والرجوع، وتُشارَك رابطاً).
+  const [f, setF, resetF] = useUrlFilters({
+    employeeId: "", period: currentMonth(), range: "today", customFrom: todayLocal(), customTo: todayLocal(),
+    source: "", reviewOnly: "", q: "",
+  });
+  const range = f.range as RangeKey;
   /*
    * «اليوم» يتقدّم عند منتصف الليل المحليّ (Codex P2): شاشة الحضور تبقى مفتوحةً ليلاً،
    * وحدودُ المدى كانت تُشتقّ مرّةً واحدة فتبقى معلّقةً على الأمس حتى يلمس المستخدم فلتراً.
@@ -118,10 +120,6 @@ export default function Attendance() {
     const t = setInterval(() => setDayTick((prev) => { const now = todayLocal(); return now === prev ? prev : now; }), 60_000);
     return () => clearInterval(t);
   }, []);
-  const [source, setSource] = useState("");
-  // طابور التصحيح: أيام ينقصها إغلاق (نُسيت بصمة الخروج) — تُصحَّح قبل إغلاق الشهر.
-  const [reviewOnly, setReviewOnly] = useState(false);
-  const [query, setQuery] = useState("");
 
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(emptyForm());
@@ -130,33 +128,38 @@ export default function Attendance() {
   const opts = trpc.attendance.formOptions.useQuery();
 
   // فلتر البطاقات (بلا بحث): البطاقات مؤشّرُ الشهر/الفلتر — سلوك محفوظ كما كان.
-  const bounds = useMemo(() => rangeBounds(range, customFrom, customTo), [range, customFrom, customTo, dayTick]);
+  const bounds = useMemo(() => rangeBounds(range, f.customFrom, f.customTo), [range, f.customFrom, f.customTo, dayTick]);
   /** مدىً مخصّصٌ فُرِّغ حقلاه = «بلا حدّ» صراحةً ⇒ لا يُمرَّر الشهر المخفيّ فيُقيّد صامتاً. */
   const customUnbounded = range === "custom" && !bounds.dateFrom && !bounds.dateTo;
   const filterInput = useMemo(
     () => ({
-      employeeId: employeeId ? Number(employeeId) : undefined,
+      employeeId: f.employeeId ? Number(f.employeeId) : undefined,
       // المدى يتقدّم على الشهر خادمياً؛ نُمرّر الشهر ليبقى نطاقُ زرّ الإصلاح معلوماً — إلا
       // في مدىً مخصّصٍ فارغ الحقلين، فإرسالُه هناك يُقيّد بشهرٍ مخفيٍّ لا يراه المستخدم.
-      period: customUnbounded ? undefined : period || undefined,
+      period: customUnbounded ? undefined : f.period || undefined,
       ...bounds,
-      source: (source || undefined) as "fingerprint" | "manual" | undefined,
-      needsReviewOnly: reviewOnly || undefined,
+      source: (f.source || undefined) as "fingerprint" | "manual" | undefined,
+      needsReviewOnly: f.reviewOnly === "1" || undefined,
     }),
-    [employeeId, period, bounds, customUnbounded, source, reviewOnly],
+    [f.employeeId, f.period, bounds, customUnbounded, f.source, f.reviewOnly],
   );
   /** الشهر الذي يُصلحه زرّ إعادة الاحتساب — من نهاية المدى المعروض (وإلا الشهر المختار). */
-  const activePeriod = (bounds.dateTo || bounds.dateFrom || period).slice(0, 7);
+  const activePeriod = (bounds.dateTo || bounds.dateFrom || f.period).slice(0, 7);
   const rangeLabel =
     range === "month"
-      ? monthLabel(period)
+      ? monthLabel(f.period)
       : bounds.dateFrom && bounds.dateFrom === bounds.dateTo
         ? bounds.dateFrom
         : `${bounds.dateFrom ?? "…"} ← ${bounds.dateTo ?? "…"}`;
 
+  // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
+  const activeFilterCount = [
+    f.employeeId, range !== "today" ? f.range : "", f.source, f.reviewOnly === "1" ? "1" : "",
+  ].filter(Boolean).length;
+
   // البحث خادميّ الآن (اسم/تاريخ/يوم): كان يُصفّي الصفوف المُحمَّلة وحدها (سقف ٣٠٠) ⇒ يقول
   // «لا نتائج» عن سجلٍّ موجود خارج السقف. debounce ليكتب المستخدم بلا طلبٍ لكل حرف.
-  const dq = useDebouncedValue(query.trim(), 300);
+  const dq = useDebouncedValue(f.q.trim(), 300);
   const listInput = useMemo(() => ({ ...filterInput, q: dq || undefined }), [filterInput, dq]);
 
   // الترقيم خادميّ: كانت تُحمَّل كل السجلّات المطابقة دفعةً — وبإفراغ منتقي الشهر تُمسح كل
@@ -205,7 +208,7 @@ export default function Attendance() {
     try {
       let updated = 0;
       for (const p of stalePeriods) {
-        const r = await recompute.mutateAsync({ period: p, employeeId: employeeId ? Number(employeeId) : undefined });
+        const r = await recompute.mutateAsync({ period: p, employeeId: f.employeeId ? Number(f.employeeId) : undefined });
         updated += r.updated;
       }
       notify.ok(updated > 0 ? `أُعيد احتساب ${updated} صفّاً في ${stalePeriods.length} شهراً` : "كل الأسعار مطابقة لملفّات الموظفين");
@@ -317,28 +320,30 @@ export default function Attendance() {
             title="سجل الحضور"
             count={total}
             loading={list.isLoading}
-            search={{ value: query, onChange: setQuery, placeholder: "بحث باسم الموظف أو اليوم…" }}
+            search={{ value: f.q, onChange: (v) => setF({ q: v }), placeholder: "بحث باسم الموظف أو اليوم…" }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetF}
             filters={
               <>
-                <select className={selectCls} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} aria-label="الموظف">
+                <select className={selectCls} value={f.employeeId} onChange={(e) => setF({ employeeId: e.target.value })} aria-label="الموظف">
                   <option value="">كل الموظفين</option>
                   {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
                 </select>
                 {/* النطاق — يفتح على «اليوم» بقرار المالك، وبقيةُ التواريخ باستعلامٍ صريح. */}
-                <select className={selectCls} value={range} onChange={(e) => setRange(e.target.value as RangeKey)} aria-label="النطاق">
+                <select className={selectCls} value={range} onChange={(e) => setF({ range: e.target.value })} aria-label="النطاق">
                   {RANGES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
                 </select>
                 {range === "month" && (
-                  <select className={selectCls} value={period} onChange={(e) => setPeriod(e.target.value)} aria-label="الشهر">
+                  <select className={selectCls} value={f.period} onChange={(e) => setF({ period: e.target.value })} aria-label="الشهر">
                     {recentMonths().map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
                   </select>
                 )}
                 {range === "custom" && (
                   <>
-                    <input type="date" className={selectCls} dir="ltr" value={customFrom} max={customTo || undefined}
-                      onChange={(e) => setCustomFrom(e.target.value)} aria-label="من تاريخ" />
-                    <input type="date" className={selectCls} dir="ltr" value={customTo} min={customFrom || undefined}
-                      onChange={(e) => setCustomTo(e.target.value)} aria-label="إلى تاريخ" />
+                    <input type="date" className={selectCls} dir="ltr" value={f.customFrom} max={f.customTo || undefined}
+                      onChange={(e) => setF({ customFrom: e.target.value })} aria-label="من تاريخ" />
+                    <input type="date" className={selectCls} dir="ltr" value={f.customTo} min={f.customFrom || undefined}
+                      onChange={(e) => setF({ customTo: e.target.value })} aria-label="إلى تاريخ" />
                   </>
                 )}
                 {range !== "month" && range !== "custom" && (
@@ -346,13 +351,13 @@ export default function Attendance() {
                     {rangeLabel}
                   </span>
                 )}
-                <select className={selectCls} value={source} onChange={(e) => setSource(e.target.value)} aria-label="المصدر">
+                <select className={selectCls} value={f.source} onChange={(e) => setF({ source: e.target.value })} aria-label="المصدر">
                   <option value="">كل المصادر</option>
                   <option value="fingerprint">بصمة</option>
                   <option value="manual">يدوي</option>
                 </select>
                 <label className="flex items-center gap-2 h-8 text-sm">
-                  <input type="checkbox" className="size-4" checked={reviewOnly} onChange={(e) => setReviewOnly(e.target.checked)} />
+                  <input type="checkbox" className="size-4" checked={f.reviewOnly === "1"} onChange={(e) => setF({ reviewOnly: e.target.checked ? "1" : "" })} />
                   <span className="text-muted-foreground">يحتاج تصحيح فقط</span>
                 </label>
               </>
@@ -462,7 +467,7 @@ export default function Attendance() {
                   <tr><td colSpan={9}><ErrorState message="تعذّر تحميل سجلّات الحضور." onRetry={() => list.refetch()} /></td></tr>
                 )}
                 {!list.isLoading && !list.isError && rows.length === 0 && (
-                  <TableEmptyRow colSpan={9} message={query ? "لا سجلات مطابقة للبحث." : "لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً."} />
+                  <TableEmptyRow colSpan={9} message={f.q ? "لا سجلات مطابقة للبحث." : "لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً."} />
                 )}
                 {rows.length > 0 && (
                   <tr className="border-t-2 border-border bg-muted/40 font-bold">

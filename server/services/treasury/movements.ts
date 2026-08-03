@@ -20,16 +20,24 @@ export interface MovementRow {
 }
 
 export async function getRecentMovements(
-  input: { branchId?: number; limit?: number },
+  input: { branchId?: number; limit?: number; from?: string; to?: string; offset?: number },
   scope: { scopedBranchId: number | null; role: string; userId?: number },
 ): Promise<MovementRow[]> {
   const db = getDb();
   if (!db) return [];
 
   const effectiveBranch = scope.scopedBranchId ?? input.branchId ?? null;
-  const limit = input.limit && input.limit > 0 && input.limit <= 100 ? input.limit : 20;
+  // الحدّ ١٠١ لا ١٠٠: الراوتر يطلب limit+1 داخلياً لاكتشاف hasMore (سقفه الظاهر للعميل ١٠٠) —
+  // لولا هامش الواحد لَسقط طلبٌ بـlimit=100 صامتاً إلى الافتراضي ٢٠ عند تجاوزه هذا الحدّ.
+  const limit = input.limit && input.limit > 0 && input.limit <= 101 ? input.limit : 20;
+  const offset = input.offset && input.offset > 0 ? Math.floor(input.offset) : 0;
   const branchFilterR = effectiveBranch != null ? sql`AND r.branchId = ${effectiveBranch}` : sql``;
   const branchFilterE = effectiveBranch != null ? sql`AND e.branchId = ${effectiveBranch}` : sql``;
+  // مدى تاريخ اختياري (createdAt) — to شامل ليومه كاملاً (نمط getCardMovements: < بداية اليوم التالي).
+  const fromFilterR = input.from ? sql`AND r.createdAt >= ${input.from}` : sql``;
+  const toFilterR = input.to ? sql`AND r.createdAt < DATE_ADD(${input.to}, INTERVAL 1 DAY)` : sql``;
+  const fromFilterE = input.from ? sql`AND e.createdAt >= ${input.from}` : sql``;
+  const toFilterE = input.to ? sql`AND e.createdAt < DATE_ADD(${input.to}, INTERVAL 1 DAY)` : sql``;
   // الكاشير لا يَرى TREASURY مطلقاً (IDOR + إخفاء معلومات إدارية).
   // ⚠️ أسماء أعمدة DB الخام: receipts.cashBucket / expenses.expenseCashBucket / expenses.expensePaymentMethod.
   const bucketFilterR = isCashier(scope.role) ? sql`AND (r.cashBucket = 'DRAWER' OR r.cashBucket IS NULL)` : sql``;
@@ -60,6 +68,8 @@ export async function getRecentMovements(
         WHERE r.receiptStatus = 'COMPLETED'
           AND r.receiptApprovalStatus = 'APPROVED'
           ${branchFilterR}
+          ${fromFilterR}
+          ${toFilterR}
           ${bucketFilterR}
           ${ownShiftR}
       )
@@ -84,11 +94,13 @@ export async function getRecentMovements(
           -- Keep only non-cash/stock expenses that have no receipt.
           AND e.receiptId IS NULL
           ${branchFilterE}
+          ${fromFilterE}
+          ${toFilterE}
           ${bucketFilterE}
           ${ownShiftE}
       )
       ORDER BY createdAt DESC
-      LIMIT ${limit}
+      LIMIT ${limit} OFFSET ${offset}
     `),
   );
 
