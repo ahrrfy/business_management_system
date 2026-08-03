@@ -613,9 +613,18 @@ export const workOrderRouter = router({
 
   // الإلغاء يعكس مخزوناً/قيوداً ⇒ مدير فأعلى.
   cancel: workordersManagerProcedure
-    .input(z.object({ workOrderId: z.number().int().positive() }))
+    .input(z.object({
+      workOrderId: z.number().int().positive(),
+      // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
+      // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه استرداد العربون فعلياً.
+      refundShiftId: z.number().int().positive().optional(),
+    }))
     .mutation(async ({ input, ctx }) => {
-      const res = await cancelWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const res = await cancelWorkOrder(
+        input.workOrderId,
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
+        { refundShiftId: input.refundShiftId ?? null },
+      );
       await logAudit(ctx, { action: "workOrder.cancel", entityType: "workOrder", entityId: input.workOrderId });
       return res;
     }),

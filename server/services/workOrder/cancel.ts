@@ -6,12 +6,16 @@ import { extractInsertId } from "../../lib/insertId";
 import { applyMovement } from "../inventoryService";
 import { postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
-import { openShiftIdTx } from "../shiftService";
+import { computeExpectedCash, openShiftIdTx, resolveBranchCashShiftTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 
 /** Cancel: restocks consumed materials if status was IN_PROGRESS/READY. */
-export async function cancelWorkOrder(workOrderId: number, actor: Actor & { role?: string }) {
+export async function cancelWorkOrder(
+  workOrderId: number,
+  actor: Actor & { role?: string },
+  opts: { refundShiftId?: number | null } = {},
+) {
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
@@ -47,9 +51,24 @@ export async function cancelWorkOrder(workOrderId: number, actor: Actor & { role
       if (depRcpt) {
         const refundAmt = round2(money(depRcpt.amount));
         const refundMethod = depRcpt.paymentMethod ?? "CASH";
-        const shiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId), "RECEPTION");
-        if (refundMethod === "CASH" && shiftId == null)
-          throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لاسترداد العربون النقدي" });
+        // الدرج مورد فرعٍ لا مستخدم — الإلغاء صلاحية مدير (workordersManagerProcedure) قد يختلف عن
+        // الكاشير صاحب درج الاستقبال الذي قبض العربون فعلاً. مرآة إصلاح returnService.ts (بلاغ مالك
+        // ٢/٨/٢٦): resolveBranchCashShiftTx يبحث في ورديات الفرع المفتوحة كلّها لا وردية الفاعل فقط،
+        // ويتحقّق أنّ الدرج المستهدَف يحمل هذا المبلغ الآن فعلاً (نمط cashDropService — لا عجز أثناء العمل).
+        let shiftId: number | null;
+        if (refundMethod === "CASH") {
+          const resolved = await resolveBranchCashShiftTx(tx, Number(wo.branchId), opts.refundShiftId ?? null);
+          shiftId = resolved.shiftId;
+          const currentDrawerCash = await computeExpectedCash(tx, shiftId, resolved.openingBalance);
+          if (refundAmt.gt(currentDrawerCash)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `المبلغ يتجاوز النقد المتوفّر حالياً في هذا الدرج (المتاح ${currentDrawerCash.toFixed(2)} < المطلوب ${refundAmt.toFixed(2)}) — راجع الدرج أو اختر درجاً آخر.`,
+            });
+          }
+        } else {
+          shiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId), "RECEPTION");
+        }
         const rRes = await tx.insert(receipts).values({
           branchId: Number(wo.branchId),
           shiftId,
