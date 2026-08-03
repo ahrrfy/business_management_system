@@ -1494,12 +1494,12 @@ export default function Storefront() {
             <div className="space-y-3 text-sm">
               <div className="rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                 <div className="flex items-center justify-between"><span className="font-extrabold" dir="ltr">{labelQ.data.orderNumber}</span><span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${TRACK_STATUS[labelQ.data.status]?.cls ?? "bg-slate-100 text-slate-600"}`}>{TRACK_STATUS[labelQ.data.status]?.label ?? labelQ.data.status}</span></div>
-                <p className="mt-3 text-base font-extrabold text-slate-900 dark:text-white">{labelQ.data.customerName ?? "الزبون"}</p>
+                <p className="mt-3 text-base font-extrabold text-slate-900 dark:text-white">{labelQ.data.customerName ?? "العميل"}</p>
                 {labelQ.data.customerPhone && <p dir="ltr" className="mt-1 font-extrabold text-[var(--sem-info)]">{labelQ.data.customerPhone}</p>}
                 <p className="mt-2 leading-relaxed text-slate-600 dark:text-slate-300">{labelQ.data.addressText ?? labelQ.data.governorate ?? "—"}</p>
               </div>
               <div className="rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
-                <p className="mb-2 text-xs font-extrabold text-slate-500">أصناف الطلب</p>
+                <p className="mb-2 text-xs font-extrabold text-slate-500">منتجات الطلب</p>
                 <div className="space-y-2">{labelQ.data.items.map((it, index) => <div key={index} className="flex justify-between gap-3 border-b border-slate-100 pb-2 last:border-0 last:pb-0 dark:border-slate-800"><span>{it.productName}{it.unitName ? ` — ${it.unitName}` : ""}</span><b className="shrink-0 tabular-nums">×{it.quantity}</b></div>)}</div>
                 <div className="mt-3 flex justify-between border-t border-slate-200 pt-3 text-base font-extrabold dark:border-slate-700"><span>المبلغ عند الاستلام</span><span dir="ltr" className="text-money-positive">{money(labelQ.data.total)} د.ع</span></div>
               </div>

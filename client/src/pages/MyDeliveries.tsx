@@ -1,7 +1,7 @@
 /**
  * MyDeliveries — شاشة المندوب الذاتية «توصيلاتي» (دور courier، جوّال أولاً).
  *
- * المندوب يرى طلباته المُسنَدة (قيد التوصيل)، يتّصل/يراسل الزبون، وعند التسليم يضغط «تم التسليم
+ * المندوب يرى طلباته المُسنَدة (قيد التوصيل)، يتّصل/يراسل العميل، وعند التسليم يضغط «تم التسليم
  * والتحصيل» فتُسدَّد الفاتورة (ذمّة العميل↓) ويرتفع النقد بذمّته (عهدة) حتى يُورّده للمتجر.
  * عزل ذاتي خادمي: كل نقطة تحلّ المندوب من الجلسة (courier.myDeliveries/confirmDelivery).
  */
@@ -59,8 +59,8 @@ export default function MyDeliveries() {
       title: "تأكيد التسليم والتحصيل",
       description:
         due > 0
-          ? `أكّد استلام الزبون للطلب ${row.orderNumber} وتحصيلك ${money(row.codDue)} د.ع نقداً. سيُضاف المبلغ إلى ما بذمّتك حتى تُورّده للمتجر.`
-          : `أكّد استلام الزبون للطلب ${row.orderNumber} (مدفوع مسبقاً — لا تحصيل).`,
+          ? `أكّد استلام العميل للطلب ${row.orderNumber} وتحصيلك ${money(row.codDue)} د.ع نقداً. سيُضاف المبلغ إلى ما بذمّتك حتى تُورّده للمتجر.`
+          : `أكّد استلام العميل للطلب ${row.orderNumber} (مدفوع مسبقاً — لا تحصيل).`,
       confirmText: "تم التسليم",
     });
     if (!ok) return;
@@ -160,7 +160,7 @@ function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy
       <div className="mb-2 flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="font-bold tracking-wider" dir="ltr">{row.orderNumber}</div>
-          <div className="truncate text-sm text-muted-foreground">{row.customerName ?? "زبون"}</div>
+          <div className="truncate text-sm text-muted-foreground">{row.customerName ?? "عميل"}</div>
         </div>
         <div className="shrink-0 text-left">
           <div className="text-[11px] text-muted-foreground">المطلوب تحصيله</div>
@@ -220,7 +220,7 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [pending, onCancel]);
-  const REASONS = ["رفض الزبون الاستلام", "الزبون غير متوفّر", "عنوان خاطئ", "تعذّر التواصل"];
+  const REASONS = ["رفض العميل الاستلام", "العميل غير متوفّر", "عنوان خاطئ", "تعذّر التواصل"];
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="تعذّر التسليم" onClick={onCancel} dir="rtl">
       <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -229,7 +229,7 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
           تعذّر تسليم <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
         </div>
         <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          سيُلغى الطلب وتُعاد بضاعته للمخزون وتُصفّى ذمّة الزبون (لم يُحصَّل أيّ مبلغ). لا يمكن التراجع.
+          سيُلغى الطلب وتُعاد بضاعته للمخزون وتُصفّى ذمّة العميل (لم يُحصَّل أيّ مبلغ). لا يمكن التراجع.
         </p>
         <div className="mb-2 flex flex-wrap gap-1.5">
           {REASONS.map((r) => (

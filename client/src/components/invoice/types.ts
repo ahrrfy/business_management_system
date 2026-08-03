@@ -116,7 +116,7 @@ export const TIER_OPTIONS: Array<{ value: PriceTier; label: string }> = [
 ];
 
 export const PAYMENT_TERMS: Array<{ value: PaymentTerm; label: string }> = [
-  { value: "CASH",        label: "نقداً" },
+  { value: "CASH",        label: "نقدي" },
   { value: "CREDIT",      label: "آجل (ذمة)" },
   { value: "INSTALLMENT", label: "أقساط" },
 ];

@@ -665,7 +665,7 @@ export default function SalesReturnNew() {
                   copyInvoiceItems(state.items);
                   dispatch({ type: "CLEAR_ITEMS" });
                   setPasteAvailable(true);
-                  notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+                  notify.ok("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
                   break;
                 case "paste": {
                   const items = takeInvoiceItems();

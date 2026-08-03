@@ -152,7 +152,7 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
   function submit() {
     if (create.isPending) return;
     if (!consignorId) return notify.err("اختر المودِع");
-    if (!lines.length) return notify.err("أضف صنفاً واحداً على الأقل");
+    if (!lines.length) return notify.err("أضف منتجاً واحداً على الأقل");
     create.mutate({
       noteType, consignorId, branchId, clientRequestId,
       notes: notes.trim() || null,
@@ -246,12 +246,12 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
                   )}
                 </div>
               ))}
-              {(products.data?.length ?? 0) === 0 && <p className="text-xs text-muted-foreground">لا أصناف لهذا المودِع بعد — أضِف صنف أمانة من المنتجات باسمه.</p>}
+              {(products.data?.length ?? 0) === 0 && <p className="text-xs text-muted-foreground">لا منتجات لهذا المودِع بعد — أضِف منتج أمانة من المنتجات باسمه.</p>}
             </div>
             {/* أسطر السند */}
             {lines.length > 0 && (
               <table className="w-full text-sm">
-                <thead className="bg-muted/50"><tr><th className="p-2">الاتجاه</th><th className="p-2">الصنف</th><th className="p-2">الكمية</th><th className="p-2"></th></tr></thead>
+                <thead className="bg-muted/50"><tr><th className="p-2">الاتجاه</th><th className="p-2">المنتج</th><th className="p-2">الكمية</th><th className="p-2"></th></tr></thead>
                 <tbody>
                   {lines.map((l) => (
                     <tr key={l.key} className="border-t">

@@ -863,7 +863,7 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, numP
           <Key k="00" /><Key k="0" /><Key k="⌫" del />
         </div>
         <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-          <Method m="CASH" Icon={Banknote} label="نقداً" />
+          <Method m="CASH" Icon={Banknote} label="نقدي" />
           <Method m="CARD" Icon={CreditCard} label="بطاقة" />
           <Method m="TRANSFER" Icon={RefreshCw} label="تحويل" />
         </div>

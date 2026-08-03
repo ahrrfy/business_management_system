@@ -25,7 +25,7 @@ type DirFilter = "ALL" | "IN" | "OUT" | "PENDING";
 type GiftLine = { key: number; variantId: number; productUnitId: number; label: string; unit: string; quantity: string };
 
 const STATUS_AR: Record<string, string> = {
-  DRAFT: "مسودة",
+  DRAFT: "مسوّدة",
   PENDING_APPROVAL: "بانتظار اعتماد",
   APPROVED: "معتمد",
   DELIVERED: "مُنجَز",
@@ -663,7 +663,7 @@ export default function GiftsHub() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
-                      <th className="px-3 py-2 text-start">الصنف</th>
+                      <th className="px-3 py-2 text-start">المنتج</th>
                       <th className="px-3 py-2 text-start">الوحدة</th>
                       <th className="px-3 py-2 text-start">الكمية</th>
                       <th className="px-3 py-2" />

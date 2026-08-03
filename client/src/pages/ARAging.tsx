@@ -217,7 +217,7 @@ export default function ARAging() {
                 <th className="p-2 text-right">61–90</th>
                 <th className="p-2 text-right">+90</th>
                 <th className="p-2 text-right">إجمالي غير المدفوع</th>
-                <th className="p-2 text-right" title="الرصيد الجاري ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم">غير مفوتر/افتتاحي</th>
+                <th className="p-2 text-right" title="الرصيد الحالي ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم">غير مفوتر/افتتاحي</th>
                 <th className="p-2 text-right">الرصيد (لنا عليه)</th>
                 <th className="p-2">أقدم فاتورة</th>
                 <th className="p-2 text-center">إجراء</th>

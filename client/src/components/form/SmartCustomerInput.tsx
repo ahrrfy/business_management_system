@@ -137,7 +137,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
             const v = e.target.value;
             setQ(v);
             setOpen(true);
-            // أي تعديل يصبح مسودة فعلية للحفظ. الرقم يُحفظ كهاتف لا كاسم صامت.
+            // أي تعديل يصبح مسوّدة فعلية للحفظ. الرقم يُحفظ كهاتف لا كاسم صامت.
             const typed = v.trim();
             const phone = looksLikePhone(typed) ? typed : null;
             onChange({
@@ -148,7 +148,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
             });
           }}
           onFocus={() => setOpen(true)}
-          placeholder={placeholder || "ابحث بالاسم أو الرقم — يتعرّف على الزبائن السابقين"}
+          placeholder={placeholder || "ابحث بالاسم أو الرقم — يتعرّف على العملاء السابقين"}
           aria-autocomplete="list"
           aria-expanded={open}
         />

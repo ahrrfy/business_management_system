@@ -347,7 +347,7 @@ function MarkOverrideDialog({
             <Textarea
               value={justification}
               onChange={(e) => setJustification(e.target.value)}
-              placeholder={info.kind === "INTENTIONAL" ? "مثال: تصفية مذكرات ٢٠٢٧ — قرار المالك ١/٩" : "مثال: هامش تاريخيّ متعمّد لصنف ولاء"}
+              placeholder={info.kind === "INTENTIONAL" ? "مثال: تصفية مذكرات ٢٠٢٧ — قرار المالك ١/٩" : "مثال: هامش تاريخيّ متعمّد لمنتج ولاء"}
               rows={3}
             />
           </div>

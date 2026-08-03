@@ -291,7 +291,7 @@ export default function PurchaseReturnNew() {
         copyInvoiceItems(state.items);
         dispatch({ type: "CLEAR_ITEMS" });
         setPasteAvailable(true);
-        toast.success("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+        toast.success("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
         return;
       case "paste": {
         const items = takeInvoiceItems();

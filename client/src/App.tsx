@@ -331,7 +331,7 @@ export default function App() {
           </RequireRole>
         </Shell>
       </Route>
-      {/* الحجوزات نُقلت إلى مساحة خدمة الزبائن داخل غلاف الاستقبال؛ لا صفحة تشغيل مستقلة بعد الآن. */}
+      {/* الحجوزات نُقلت إلى مساحة خدمة العملاء داخل غلاف الاستقبال؛ لا صفحة تشغيل مستقلة بعد الآن. */}
       <Route path="/reservations"><Redirect to="/pos?mode=RECEPTION&workspace=reservations" /></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>

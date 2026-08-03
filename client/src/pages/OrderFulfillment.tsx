@@ -188,7 +188,7 @@ export default function OrderFulfillment() {
         title="قائمة الطلبات"
         count={visibleOrders.length}
         loading={listQ.isLoading}
-        search={{ value: query, onChange: setQuery, placeholder: "رقم الطلب، الزبون، الهاتف أو المحافظة…" }}
+        search={{ value: query, onChange: setQuery, placeholder: "رقم الطلب، العميل، الهاتف أو المحافظة…" }}
         activeFilterCount={filter ? 1 : 0}
         onResetFilters={() => { setQuery(""); setFilter(null); }}
         onRefresh={() => { void listQ.refetch(); void countsQ.refetch(); }}
@@ -202,7 +202,7 @@ export default function OrderFulfillment() {
           formats: ["xlsx", "csv"],
           columns: [
             { key: "orderNumber", header: "رقم الطلب" },
-            { key: "customerName", header: "الزبون" },
+            { key: "customerName", header: "العميل" },
             { key: "customerPhone", header: "الهاتف" },
             { key: "governorate", header: "المحافظة" },
             { key: "itemCount", header: "عدد الأصناف" },
@@ -233,7 +233,7 @@ export default function OrderFulfillment() {
           <thead>
             <tr className="text-right">
               <th className="p-2 font-bold">رقم الطلب</th>
-              <th className="p-2 font-bold">الزبون</th>
+              <th className="p-2 font-bold">العميل</th>
               <th className="p-2 font-bold">الهاتف</th>
               <th className="p-2 font-bold">المحافظة</th>
               <th className="p-2 text-center font-bold">أصناف</th>
@@ -389,7 +389,7 @@ export default function OrderFulfillment() {
 
 /** حوار إلغاء طلب المتجر — سببٌ اختياريّ (يظهر لاحقاً في صفّ الطلب الملغى وسجلّ التدقيق). محصورٌ
  *  بطلبٍ قبل الإرسال (بلا فاتورة) — الإلغاء بعده يكون بإرجاع الفاتورة أو «تعذّر التسليم». */
-const CANCEL_REASONS = ["نفد المخزون", "تعذّر التواصل مع الزبون", "طلب مكرَّر", "رفض الزبون الطلب", "خارج نطاق التوصيل"];
+const CANCEL_REASONS = ["نفد المخزون", "تعذّر التواصل مع العميل", "طلب مكرَّر", "رفض العميل الطلب", "خارج نطاق التوصيل"];
 function CancelModal({
   order,
   pending,
@@ -513,7 +513,7 @@ function DispatchModal({
         </div>
         <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
           سيُنشأ فاتورة بيع بقيمة <b className="text-foreground">{money(order.total)} د.ع</b> على ذمّة{" "}
-          {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "الزبون"} (تُحصَّل عند
+          {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"} (تُحصَّل عند
           التسليم COD)، ويُخصم المخزون، ثم يُسند الطلب للمندوب المُختار.
         </p>
 

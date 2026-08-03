@@ -137,7 +137,7 @@ ${CAIRO_FONT}
     <div class="to">
       <span class="to-tag">المستلِم</span>
       <div class="row" style="align-items:flex-start">
-        <div class="to-name" style="flex:1 1 auto">${esc(o.customerName ?? "زبون")}</div>
+        <div class="to-name" style="flex:1 1 auto">${esc(o.customerName ?? "عميل")}</div>
         ${o.customerPhone ? `<div class="to-phone">${esc(o.customerPhone)}</div>` : ""}
       </div>
       ${govName ? `<div class="to-gov">${esc(govName)}</div>` : ""}

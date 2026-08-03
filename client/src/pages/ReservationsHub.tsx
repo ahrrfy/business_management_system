@@ -158,7 +158,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
               <CalendarClock className="size-5" aria-hidden />
             </span>
             <div>
-              <h1 className="text-lg font-extrabold">حجوزات خدمة الزبائن</h1>
+              <h1 className="text-lg font-extrabold">حجوزات خدمة العملاء</h1>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 أنشئ الحجز أو ابحث عنه، ثم حوّله إلى طلب عند حضور العميل.
               </p>
@@ -332,7 +332,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                 <Label>طريقة الدفع</Label>
                 <div className="grid grid-cols-3 gap-2">
                   {([
-                    { value: "CASH", label: "نقداً", Icon: Banknote },
+                    { value: "CASH", label: "نقدي", Icon: Banknote },
                     { value: "CARD", label: "بطاقة", Icon: CreditCard },
                     { value: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight },
                   ] as const).map(({ value, label, Icon }) => (
@@ -404,7 +404,7 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
   const create = trpc.reservations.create.useMutation({
     onSuccess: (r) => {
       if (r.overbookedVariantIds.length > 0) {
-        notify.warn(`أُنشئ الحجز ${r.reservationNumber} — تنبيه: ${r.overbookedVariantIds.length} صنف محجوز فوق المتاح.`);
+        notify.warn(`أُنشئ الحجز ${r.reservationNumber} — تنبيه: ${r.overbookedVariantIds.length} منتج محجوز فوق المتاح.`);
       } else {
         notify.ok(`أُنشئ الحجز ${r.reservationNumber}`);
       }
@@ -441,7 +441,7 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
 
   function submit() {
     if (!contactPhone.trim()) { notify.err("هاتف العميل مطلوب"); return; }
-    if (lines.length === 0) { notify.err("أضف صنفاً واحداً على الأقل"); return; }
+    if (lines.length === 0) { notify.err("أضف منتجاً واحداً على الأقل"); return; }
     if (lines.some((l) => !(l.qty > 0))) { notify.err("كل كمية يجب أن تكون موجبة"); return; }
     const hours = Number(expiresInHours);
     create.mutate({
@@ -466,7 +466,7 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>حجز جديد</DialogTitle>
-          <DialogDescription>احجز أصنافاً لعميل بمدّة انتهاء. الهاتف إلزاميّ لاستدعاء الحجز عند الحضور.</DialogDescription>
+          <DialogDescription>احجز منتجات لعميل بمدّة انتهاء. الهاتف إلزاميّ لاستدعاء الحجز عند الحضور.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3 max-h-[70vh] overflow-auto">
@@ -497,7 +497,7 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
           </div>
 
           <div className="space-y-2">
-            <Label>الأصناف</Label>
+            <Label>المنتجات</Label>
             <ProductSearchBar invoiceType="SALE" branchId={branchId} tier="RETAIL" onAddProduct={addFromSearch} onNotify={(m, k) => (k === "error" ? notify.err(m) : notify.info(m))} />
             {lines.length > 0 && (
               <div className="rounded-md border divide-y">
@@ -513,7 +513,7 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
                       onChange={(e) => setQty(i, Number(e.target.value))}
                       aria-label="الكمية"
                     />
-                    <Button size="sm" variant="ghost" onClick={() => removeLine(i)} aria-label="حذف الصنف"><X aria-hidden className="size-4" /></Button>
+                    <Button size="sm" variant="ghost" onClick={() => removeLine(i)} aria-label="حذف المنتج"><X aria-hidden className="size-4" /></Button>
                   </div>
                 ))}
               </div>

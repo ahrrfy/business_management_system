@@ -140,7 +140,7 @@ export default function Transfers() {
     setError(""); setDone("");
     if (!effectiveFrom || !effectiveTo) return setError("اختر فرعَي المصدر والوجهة.");
     if (effectiveFrom === effectiveTo) return setError("لا يمكن التحويل لنفس الفرع.");
-    if (cart.length === 0) return setError("أضِف صنفاً واحداً على الأقل للسند.");
+    if (cart.length === 0) return setError("أضِف منتجاً واحداً على الأقل للسند.");
     if (blocking) return setError(blocking);
     if (
       !(await confirm({

@@ -156,7 +156,7 @@ export default function PurchaseNew() {
     }
     // landed-cost: التوزيع بنسبة القيمة يحتاج قيمة بضاعة موجبة (مرآة حارس الخادم).
     if (landed.hasLanded && !landed.hasBase) {
-      return "أضِف أصنافاً بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
+      return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
     }
     return null;
   }
@@ -218,7 +218,7 @@ export default function PurchaseNew() {
         copyInvoiceItems(state.items);
         dispatch({ type: "CLEAR_ITEMS" });
         setPasteAvailable(true);
-        notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+        notify.ok("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
         return;
       case "paste": {
         const items = takeInvoiceItems();
@@ -406,7 +406,7 @@ export default function PurchaseNew() {
               )}
               {landed.hasLanded && !landed.hasBase && (
                 <p className="text-[11px] font-semibold text-amber-600">
-                  أضِف أصنافاً بقيمة موجبة لتوزيع الشحن/الكمرك عليها.
+                  أضِف منتجات بقيمة موجبة لتوزيع الشحن/الكمرك عليها.
                 </p>
               )}
             </div>

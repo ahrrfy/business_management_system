@@ -236,7 +236,7 @@ export default function DigitalOfferings() {
             );
             void utils.digitalCards.pricing.getMorningSheet.invalidate();
             notify.ok(
-              "حُفظت البطاقة وأسعارها كمسودة",
+              "حُفظت البطاقة وأسعارها كمسوّدة",
               "راجعها ثم ثبّتها وانشرها من شاشة أسعار اليوم.",
             );
           } catch {
@@ -523,7 +523,7 @@ export default function DigitalOfferings() {
                 <div>
                   <p className="font-medium">سعر اليوم الأول</p>
                   <p className="text-xs text-muted-foreground">
-                    يُحفظ كمسودة لكل فرع محدد أدناه، ثم تثبّته وتنشره من «أسعار
+                    يُحفظ كمسوّدة لكل فرع محدد أدناه، ثم تثبّته وتنشره من «أسعار
                     اليوم».
                   </p>
                 </div>
@@ -540,12 +540,12 @@ export default function DigitalOfferings() {
                   </div>
                   <div className="space-y-1">
                     <label className="text-sm font-medium">
-                      سعر البيع للزبون
+                      سعر البيع للعميل
                     </label>
                     <MoneyInput
                       value={fInitialSellPrice}
                       onChange={setFInitialSellPrice}
-                      ariaLabel="سعر البيع للزبون"
+                      ariaLabel="سعر البيع للعميل"
                     />
                   </div>
                 </div>

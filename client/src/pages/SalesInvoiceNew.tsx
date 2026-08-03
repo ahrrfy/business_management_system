@@ -377,7 +377,7 @@ export default function SalesInvoiceNew() {
         copyInvoiceItems(state.items);
         dispatch({ type: "CLEAR_ITEMS" });
         setPasteAvailable(true);
-        notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+        notify.ok("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
         return;
       case "paste": {
         const items = takeInvoiceItems();
@@ -489,7 +489,7 @@ export default function SalesInvoiceNew() {
           <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
           <span>
             وضع الافتتاح فعّال حتى نهاية يوم {openingModeQuery.data.endsAtYmd} — البيع المسدّد بالكامل نقداً أو بالبطاقة
-            لصنف غير مجرود افتتاحياً يُسجَّل ولو نفد رصيده (ينزل بالسالب)؛ الآجل وغير النقدي صارمان.
+            لمنتج غير مجرود افتتاحياً يُسجَّل ولو نفد رصيده (ينزل بالسالب)؛ الآجل وغير النقدي صارمان.
           </span>
         </div>
       )}

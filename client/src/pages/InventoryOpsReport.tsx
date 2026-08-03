@@ -438,7 +438,7 @@ function ViewTable({
   if (view === "risk") {
     const rows = risk?.rows ?? [];
     return (
-      <Table head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفئة</Th><Th>الرصيد</Th><Th>حدّ الطلب</Th><Th>{`مبيع ${riskDays}ي`}</Th><Th>أيام تغطية</Th></>} empty={!rows.length} colSpan={7} emptyMsg="لا أصناف بخطر نفاد في هذا النطاق.">
+      <Table head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفئة</Th><Th>الرصيد</Th><Th>حدّ الطلب</Th><Th>{`مبيع ${riskDays}ي`}</Th><Th>أيام تغطية</Th></>} empty={!rows.length} colSpan={7} emptyMsg="لا منتجات بخطر نفاد في هذا النطاق.">
         {rows.map((r: any) => (
           <tr key={r.variantId} className="border-b last:border-0 hover:bg-accent/40">
             <td className="p-2.5 text-right font-medium">{r.productName}</td>

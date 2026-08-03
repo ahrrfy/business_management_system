@@ -353,7 +353,7 @@ export default function ProductEdit() {
   function validateLocal(): string | null {
     if (!composedName && !originalName.trim()) return "اسم المنتج مطلوب (نوع/ماركة/موديل).";
     if (!costPrice.trim()) return "سعر التكلفة المشترك مطلوب.";
-    if (consignment.isConsignment && !consignment.consignorId) return "صنف الأمانة يلزمه مودِع — اختر المودِع.";
+    if (consignment.isConsignment && !consignment.consignorId) return "منتج الأمانة يلزمه مودِع — اختر المودِع.";
     if (units.some((u) => !u.name.trim())) return "كل وحدة في القالب تحتاج اسماً.";
     // اسم الوحدة مفتاح مطابقة في مسار الحفظ (unitBarcodes[u.name.trim()]) ⇒ وحدتان بنفس الاسم تتصادمان
     // فيُطمَس باركود/سعر إحداهما (والخادم assertEditUniqueness يرفض لاحقاً) — نمسكه هنا برسالةٍ أوضح وأبكر

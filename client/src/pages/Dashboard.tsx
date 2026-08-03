@@ -1206,8 +1206,8 @@ function CashierHome() {
   const canStore = !!role && hasModuleAccess(role, override, "store", "READ");
 
   const tiles: { href: string; name: string; desc: string }[] = [
-    { href: "/price-checker", name: "قارئ الأسعار", desc: "فحص سعر أي صنف بالباركود" },
-    ...(canTasks ? [{ href: "/tasks", name: "المهام والتذاكر", desc: "طلبات الزبائن المُسنَدة إليك" }] : []),
+    { href: "/price-checker", name: "قارئ الأسعار", desc: "فحص سعر أي منتج بالباركود" },
+    ...(canTasks ? [{ href: "/tasks", name: "المهام والتذاكر", desc: "طلبات العملاء المُسنَدة إليك" }] : []),
     ...(canStore ? [{ href: "/store-admin", name: "طلبات المتجر", desc: "تثبيت طلبات المتجر الإلكتروني" }] : []),
     { href: "/account", name: "حسابي", desc: "بياناتك وكلمة المرور وجلساتك" },
   ];
@@ -1231,7 +1231,7 @@ function CashierHome() {
           أهلاً {me.data?.name ?? ""} — {roleLabel}
         </h1>
         <p style={{ fontSize: 13, color: T.sub, margin: "4px 0 0" }}>
-          محطة عملك: افتح ورديتك، بِع لزبائنك، أغلق وسلّم الصندوق.
+          محطة عملك: افتح ورديتك، بِع لعملائك، أغلق وسلّم الصندوق.
         </p>
       </div>
 

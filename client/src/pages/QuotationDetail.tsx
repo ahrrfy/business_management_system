@@ -260,7 +260,7 @@ export default function QuotationDetail() {
       <div className="flex gap-2 flex-wrap">
         {data.status === "DRAFT" && canManage && (
           <Button asChild>
-            <Link href={`/quotations/${quotationId}/edit`}>تعديل المسودة</Link>
+            <Link href={`/quotations/${quotationId}/edit`}>تعديل المسوّدة</Link>
           </Button>
         )}
         {data.status === "DRAFT" && canManage && (

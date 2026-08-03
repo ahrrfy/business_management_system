@@ -372,7 +372,7 @@ export default function POS() {
     return off;
   }, []);
 
-  // كاشير التجزئة: وردية RETAIL خاصّة (منفصلة عن درج خدمة الزبائن RECEPTION).
+  // كاشير التجزئة: وردية RETAIL خاصّة (منفصلة عن درج خدمة العملاء RECEPTION).
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
   // ش٥: وردية بديلة للإقلاع الأوفلايني — آخر وردية مفتوحة معلومة على هذا الجهاز. تُفعِّل مسارات
   // الالتقاط فقط (الإغلاق/التقرير أونلاينيان، والخادم يتحقق من الوردية فعلياً عند الترحيل).
@@ -1936,7 +1936,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
       {openingActive && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: C.amberSoft, borderBottom: `1px solid ${C.border}`, fontSize: 12, fontWeight: 700, color: "#7a5200", flexShrink: 0 }}>
           <AlertTriangle aria-hidden size={13} />
-          وضع الافتتاح فعّال{openingEndsYmd ? ` حتى نهاية يوم ${openingEndsYmd}` : ""} — الصنف غير المجرود يُباع بسداد كامل نقداً أو بالبطاقة حتى لو نفد (ينزل بالسالب حتى جرده الافتتاحي)؛ الآجل والدفعة الجزئية صارمان.
+          وضع الافتتاح فعّال{openingEndsYmd ? ` حتى نهاية يوم ${openingEndsYmd}` : ""} — المنتج غير المجرود يُباع بسداد كامل نقداً أو بالبطاقة حتى لو نفد (ينزل بالسالب حتى جرده الافتتاحي)؛ الآجل والدفعة الجزئية صارمان.
         </div>
       )}
 
@@ -2071,7 +2071,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
             {flaggedCount > 0 && (
               // شارة دائمة تلخّص أصناف نقص المخزون كي لا يختفي التحذير حين ينزلق سطره خارج الرؤية.
               <span style={{ background: anyOut ? C.danger : C.amber, color: anyOut ? "#fff" : "#241900", borderRadius: 8, padding: "3px 10px", fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                <AlertTriangle aria-hidden size={13} /> {flaggedCount} صنف ناقص المخزون
+                <AlertTriangle aria-hidden size={13} /> {flaggedCount} منتج ناقص المخزون
               </span>
             )}
           </div>

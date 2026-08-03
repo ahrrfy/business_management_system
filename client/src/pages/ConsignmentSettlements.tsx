@@ -222,7 +222,7 @@ export default function ConsignmentSettlements() {
                   <table className="w-full text-sm">
                     <thead className="bg-muted/50">
                       <tr>
-                        <th className="p-2">الصنف</th><th className="p-2 text-center">كمية</th>
+                        <th className="p-2">المنتج</th><th className="p-2 text-center">كمية</th>
                         <th className="p-2 text-start">مُباع</th><th className="p-2 text-start">حصّة</th><th className="p-2 text-start">هامش</th>
                       </tr>
                     </thead>

@@ -320,7 +320,7 @@ export default function InvoiceDetail() {
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={() => void printApprovedA4()}>
                 <FileText aria-hidden className="size-4" />
-                فاتورة الزبون
+                فاتورة العميل
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => printWarehouseSlip()}>
                 <Package aria-hidden className="size-4" />

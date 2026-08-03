@@ -36,7 +36,7 @@ const dateCls = selectCls;
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline" | "success" | "warning" | "danger" | "info" | "neutral";
 
 const CAMPAIGN_STATUS_META: Record<string, { label: string; variant: BadgeVariant }> = {
-  DRAFT: { label: "مسودة", variant: "neutral" },
+  DRAFT: { label: "مسوّدة", variant: "neutral" },
   PENDING_APPROVAL: { label: "بانتظار الاعتماد", variant: "warning" },
   APPROVED: { label: "معتمدة", variant: "success" },
   RUNNING: { label: "قيد التشغيل", variant: "success" },
