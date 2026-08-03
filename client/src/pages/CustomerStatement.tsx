@@ -19,6 +19,7 @@ import { Link, useLocation, useSearch } from "wouter";
 import { Search, X as XIcon } from "lucide-react";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
+import { invoiceStatusLabel, priceTierLabel, sourceTypeLabel } from "@/lib/labels";
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
 const ymd = (d: Date) =>
@@ -53,6 +54,11 @@ const STATUS_LABEL: Record<string, string> = {
   CANCELLED: "ملغاة",
   RETURNED: "مرتجعة",
   CONFIRMED: "مؤكّدة",
+};
+/** حالة سند القبض/الصرف كما يعيدها كشف الحساب (COMPLETED/REVERSED فقط بعد فلترة الخادم). */
+const RECEIPT_STATUS_LABEL: Record<string, string> = {
+  COMPLETED: "مكتملة",
+  REVERSED: "معكوسة",
 };
 const STATUS_CLS: Record<string, string> = {
   PENDING: "badge-status-pending",
@@ -298,7 +304,7 @@ export default function CustomerStatement() {
                   <div className="text-lg font-semibold">{stmt.data.customer.name}</div>
                   <div className="text-xs"><CopyInline value={stmt.data.customer.phone} /></div>
                   <div className="text-xs text-muted-foreground">
-                    {stmt.data.customer.customerType} · فئة سعرية {stmt.data.customer.defaultPriceTier}
+                    {stmt.data.customer.customerType} · فئة سعرية {priceTierLabel(stmt.data.customer.defaultPriceTier)}
                     {stmt.data.customer.creditLimit && Number(stmt.data.customer.creditLimit) > 0
                       ? ` · سقف ائتمان ${fmt(stmt.data.customer.creditLimit)}`
                       : ""}
@@ -378,14 +384,14 @@ export default function CustomerStatement() {
                         <td className="p-2"><CopyInline value={i.invoiceNumber} /></td>
                         <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(i.invoiceDate)}</td>
                         <td className="p-2 text-xs" dir="ltr">{i.dueDate ? String(i.dueDate).slice(0, 10) : "—"}</td>
-                        <td className="p-2 text-xs">{i.sourceType}</td>
+                        <td className="p-2 text-xs">{sourceTypeLabel(i.sourceType)}</td>
                         <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(i.total)}</td>
                         <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(i.paidAmount)}</td>
                         <td className="p-2 text-right tabular-nums" dir="ltr">{returned.isZero() ? "—" : fmt(returned.toFixed(2))}</td>
                         <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
                         <td className="p-2">
                           <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[i.status] ?? "bg-muted"}`}>
-                            {STATUS_LABEL[i.status] ?? i.status}
+                            {STATUS_LABEL[i.status] ?? invoiceStatusLabel(i.status)}
                           </span>
                           {depositDue && <span className="mt-1 block w-fit rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — الباقي مستحق</span>}
                         </td>
@@ -443,7 +449,8 @@ export default function CustomerStatement() {
                       </td>
                       <td className="p-2 text-xs">{METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod}</td>
                       <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.amount)}</td>
-                      <td className="p-2 text-xs">{p.status}</td>
+                      {/* حالة السند (receipts.status): COMPLETED/REVERSED — ليست حالة فاتورة فلا تصلح invoiceStatusLabel. */}
+                      <td className="p-2 text-xs">{RECEIPT_STATUS_LABEL[p.status] ?? p.status}</td>
                     </tr>
                   ))}
                   {stmt.data.payments.length === 0 && (

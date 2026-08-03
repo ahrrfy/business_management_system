@@ -39,10 +39,10 @@ const PRIORITIES: Record<string, { label: string; cls: string }> = {
   LOW: { label: "منخفض", cls: "badge-status-active border-transparent" },
 };
 const STATUS_LABEL: Record<string, string> = {
-  RECEIVED: "بانتظار البدء", IN_PROGRESS: "قيد التنفيذ", READY: "جاهز للتسليم", DELIVERED: "مُسلَّم", CANCELLED: "ملغى",
+  RECEIVED: "مُستلَم", IN_PROGRESS: "قيد التنفيذ", READY: "جاهز للتسليم", DELIVERED: "مُسلَّم", CANCELLED: "ملغى",
 };
 const STAGES: { key: string; label: string }[] = [
-  { key: "RECEIVED", label: "مسحوب" },
+  { key: "RECEIVED", label: "مُستلَم" },
   { key: "IN_PROGRESS", label: "قيد التنفيذ" },
   { key: "READY", label: "جاهز للتسليم" },
 ];

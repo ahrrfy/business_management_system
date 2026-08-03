@@ -205,7 +205,7 @@ export default function PriceWaves() {
                         <th className="px-3 py-2 text-right font-medium">المنتج</th>
                         <th className="px-3 py-2 text-right font-medium">SKU</th>
                         <th className="px-3 py-2 text-right font-medium">الوحدة</th>
-                        <th className="px-3 py-2 text-right font-medium">الفئة</th>
+                        <th className="px-3 py-2 text-right font-medium">فئة السعر</th>
                         <th className="px-3 py-2 text-right font-medium">التكلفة</th>
                         <th className="px-3 py-2 text-right font-medium">السعر القديم</th>
                         <th className="px-3 py-2 text-right font-medium">السعر الجديد</th>

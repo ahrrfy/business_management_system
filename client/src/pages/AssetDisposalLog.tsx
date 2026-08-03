@@ -95,7 +95,7 @@ export default function AssetDisposalLog() {
                 { key: "purchaseValue", header: "قيمة الشراء", map: (r) => Number(r.purchaseValue) },
                 { key: "bookValue", header: "الدفترية عند الإخراج", map: (r) => r.bookValue },
                 { key: "proceeds", header: "العائد", map: (r) => (r.proceeds ?? "") },
-                { key: "gain", header: "النتيجة", map: (r) => (r.gain ?? "") },
+                { key: "gain", header: "ربح/خسارة", map: (r) => (r.gain ?? "") },
               ],
             }}
           />
@@ -110,7 +110,7 @@ export default function AssetDisposalLog() {
                 <th className="p-2 text-right">قيمة الشراء</th>
                 <th className="p-2 text-right">الدفترية عند الإخراج</th>
                 <th className="p-2 text-right">العائد</th>
-                <th className="p-2 text-right">النتيجة</th>
+                <th className="p-2 text-right">ربح/خسارة</th>
               </tr></thead>
               <tbody>
                 {rows.map((r) => (

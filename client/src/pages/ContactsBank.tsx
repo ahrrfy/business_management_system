@@ -93,7 +93,7 @@ export default function ContactsBank() {
             <Input
               value={rawQ}
               onChange={(e) => setRawQ(e.target.value)}
-              placeholder="ابحث بالاسم أو الهاتف أو الرمز القديم (حرفان فأكثر)…"
+              placeholder="ابحث بالاسم أو الهاتف أو الرقم القديم (حرفان فأكثر)…"
               className="h-9 pe-9"
             />
           </div>

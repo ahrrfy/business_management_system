@@ -515,7 +515,7 @@ export default function SalesReturnNew() {
                     <span className="font-mono font-bold text-foreground" dir="ltr">{inv.invoiceNumber}</span>
                     <span className="shrink-0 text-muted-foreground" dir="ltr">{fmt(inv.total)} د.ع</span>
                   </div>
-                  <div className="text-muted-foreground">{inv.customerName ?? "نقدي"} · {fmtDate(inv.invoiceDate)}</div>
+                  <div className="text-muted-foreground">{inv.customerName ?? "عميل نقدي"} · {fmtDate(inv.invoiceDate)}</div>
                 </div>
               ))}
             </div>
@@ -533,7 +533,7 @@ export default function SalesReturnNew() {
         {hasRefLoaded && refDetail.data && (
           <>
             <span className="text-muted-foreground">·</span>
-            <span>عميل: {refDetail.data.customerName ?? "نقدي"}</span>
+            <span>{refDetail.data.customerName ? `عميل: ${refDetail.data.customerName}` : "عميل نقدي"}</span>
             <span className="text-muted-foreground">·</span>
             <span dir="ltr">إجمالي الأصل: {fmt(refDetail.data.total)} د.ع</span>
           </>

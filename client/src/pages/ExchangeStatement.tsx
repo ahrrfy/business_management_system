@@ -129,7 +129,7 @@ export default function ExchangeStatement() {
       <PageHeader
         icon={<FileText className="h-5 w-5 text-primary" />}
         title="كشف حساب الصيرفة"
-        description="كل حركات الصيرفة (إيداع/سحب/شراء/تسديد) مع رصيد جارٍ بعملتيه."
+        description="كل حركات الصيرفة (إيداع/سحب/شراء/تسديد) مع الرصيد بعد كل حركة بعملتيه."
       />
 
       <Card className="p-3">

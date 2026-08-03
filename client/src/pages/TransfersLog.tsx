@@ -216,7 +216,7 @@ export default function TransfersLog() {
                   <TableRow>
                     <TableHead className="text-right">السند</TableHead>
                     <TableHead className="text-right">من ← إلى</TableHead>
-                    <TableHead className="text-center">الأصناف</TableHead>
+                    <TableHead className="text-center">المنتجات</TableHead>
                     <TableHead className="text-center">الوحدات (مرسَل/مستلَم)</TableHead>
                     <TableHead className="text-center">الحالة</TableHead>
                     <TableHead className="text-left">التاريخ</TableHead>

@@ -1,14 +1,18 @@
 // الحجوزات — واجهة R-م٣ (النواة). قائمة الحجوزات + حوار حجز جديد (استعلام منتج + بنود) + إلغاء/تمديد.
 // الخادم جاهز: server/routers/reservationsRouter.ts + server/services/reservations/*. هذا يستهلكه فقط.
 // حجز ناعم (ATP): الإنشاء يعرض تحذير «فوق المتاح» (overbooked) لا يمنع — قرار المالك. العربون/التحويل R-م٤/م٥.
-import { useMemo, useState } from "react";
-import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Plus, Search, ShoppingCart, Trash2, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Search, ShoppingCart, Trash2, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
+import { fmt } from "@/lib/money";
+import { exportRows } from "@/lib/export";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
@@ -35,7 +39,12 @@ const RESERVATION_MANAGER_ROLES = ["manager"] as const;
 type ReservationStatus = "ACTIVE" | "PARTIALLY_FULFILLED" | "FULFILLED" | "EXPIRED" | "CANCELLED" | "RELEASED";
 type Channel = "PHONE" | "WALK_IN" | "WHATSAPP" | "STORE";
 type CheckoutMethod = "CASH" | "CARD" | "TRANSFER";
-type ReservationRow = RouterOutputs["reservations"]["list"][number];
+type SortKey = "EXPIRY" | "NEWEST";
+type ReservationRow = RouterOutputs["reservations"]["list"]["rows"][number];
+type ReservationDetail = RouterOutputs["reservations"]["get"];
+
+/** حجم صفحة القائمة — ترقيم خادمي (offset/hasMore) بدل الاقتطاع الصامت عند ٢٠٠. */
+const PAGE_SIZE = 50;
 
 const STATUS_LABEL: Record<ReservationStatus, string> = {
   ACTIVE: "نشط",
@@ -77,24 +86,64 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
 
   const [status, setStatus] = useState<"" | ReservationStatus>("");
   const [q, setQ] = useState("");
+  // مدى تاريخ الانتهاء (اختياري) + الترتيب: «ينتهي أولاً» افتراضياً — طابور الصباح.
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [sort, setSort] = useState<SortKey>("EXPIRY");
+  const [page, setPage] = useState(0);
   const [showNew, setShowNew] = useState(false);
+  const [detailId, setDetailId] = useState<number | null>(null);
   const [convertTarget, setConvertTarget] = useState<ReservationRow | null>(null);
   const [convertAmount, setConvertAmount] = useState("");
   const [convertMethod, setConvertMethod] = useState<CheckoutMethod>("CASH");
   const [convertReference, setConvertReference] = useState("");
+  const [cancelTarget, setCancelTarget] = useState<ReservationRow | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [extendTarget, setExtendTarget] = useState<ReservationRow | null>(null);
+  const [extendHours, setExtendHours] = useState("24");
+
+  // أي تغيير فلتر يعيد الترقيم لأول صفحة (وإلا صفحة خارج النطاق ⇒ قائمة فارغة مضللة).
+  useEffect(() => { setPage(0); }, [status, q, from, to, sort, effectiveBranch]);
+
+  const filters = {
+    status: status || undefined,
+    branchId: effectiveBranch ?? undefined,
+    q: q.trim() || undefined,
+    from: from || undefined,
+    to: to || undefined,
+    sort,
+  };
 
   const list = trpc.reservations.list.useQuery(
-    { status: status || undefined, branchId: effectiveBranch ?? undefined, q: q.trim() || undefined, limit: 200 },
+    { ...filters, limit: PAGE_SIZE, offset: page * PAGE_SIZE },
     { enabled: effectiveBranch != null },
   );
   const utils = trpc.useUtils();
+  // بنود الحجز («ماذا حجزتُ لك؟») لحوار التفاصيل وحوار التحويل.
+  const detail = trpc.reservations.get.useQuery(
+    { id: detailId ?? 0 },
+    { enabled: detailId != null },
+  );
+  const convertDetail = trpc.reservations.get.useQuery(
+    { id: Number(convertTarget?.id ?? 0) },
+    { enabled: convertTarget != null },
+  );
 
   const cancel = trpc.reservations.cancel.useMutation({
-    onSuccess: () => { notify.ok("أُلغي الحجز"); utils.reservations.list.invalidate(); },
+    onSuccess: () => {
+      notify.ok("أُلغي الحجز");
+      setCancelTarget(null);
+      setCancelReason("");
+      utils.reservations.list.invalidate();
+    },
     onError: (e) => notify.err(e),
   });
   const extend = trpc.reservations.extend.useMutation({
-    onSuccess: () => { notify.ok("مُدّد الحجز"); utils.reservations.list.invalidate(); },
+    onSuccess: () => {
+      notify.ok("مُدّد الحجز");
+      setExtendTarget(null);
+      utils.reservations.list.invalidate();
+    },
     onError: (e) => notify.err(e),
   });
   const convert = trpc.reservations.convert.useMutation({
@@ -134,20 +183,65 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
       : null;
     convert.mutate({ reservationId: Number(convertTarget.id), payment });
   }
+  // حوارا الإلغاء/التمديد بحوارات النظام (Dialog) بدل window.prompt.
   function onCancel(r: ReservationRow) {
-    const reason = window.prompt("سبب إلغاء الحجز (اختياري):", "");
-    if (reason === null) return; // ألغى الحوار
-    cancel.mutate({ id: Number(r.id), reason: reason.trim() || null });
+    setCancelTarget(r);
+    setCancelReason("");
   }
   function onExtend(r: ReservationRow) {
-    const raw = window.prompt("مدّة التمديد بالساعات (١–٧٢):", "24");
-    if (raw === null) return;
-    const hours = Number(raw);
+    setExtendTarget(r);
+    setExtendHours("24");
+  }
+  function submitCancel() {
+    if (!cancelTarget) return;
+    cancel.mutate({ id: Number(cancelTarget.id), reason: cancelReason.trim() || null });
+  }
+  function submitExtend() {
+    if (!extendTarget) return;
+    const hours = Number(extendHours);
     if (!Number.isInteger(hours) || hours < 1 || hours > 72) { notify.err("مدّة غير صالحة (١–٧٢ ساعة)"); return; }
-    extend.mutate({ id: Number(r.id), hours });
+    extend.mutate({ id: Number(extendTarget.id), hours });
   }
 
-  const rows = list.data ?? [];
+  const hasFilters = !!(status || q.trim() || from || to || sort !== "EXPIRY" || branchId != null);
+  function clearFilters() {
+    setStatus("");
+    setQ("");
+    setFrom("");
+    setTo("");
+    setSort("EXPIRY");
+    setBranchId(null);
+    setPage(0);
+  }
+
+  // تصدير كامل النتائج المطابقة للفلاتر (كل الصفحات عبر offset) — لا الصفحة المعروضة فقط.
+  function exportAll() {
+    exportRows(
+      () =>
+        fetchAllPaged(
+          (offset, limit) =>
+            utils.reservations.list.fetch({ ...filters, limit, offset }).then((res) => ({ rows: res.rows })),
+          { pageSize: 200 },
+        ),
+      {
+        filename: "الحجوزات",
+        title: "قائمة الحجوزات",
+        columns: [
+          { key: "reservationNumber", header: "رقم الحجز" },
+          { key: "contactName", header: "العميل" },
+          { key: "contactPhone", header: "الهاتف" },
+          { key: "channel", header: "طريقة وصول الحجز", map: (r) => CHANNEL_LABEL[r.channel as Channel] ?? r.channel },
+          { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status as ReservationStatus] ?? r.status },
+          { key: "expiresAt", header: "ينتهي", map: (r) => (r.expiresAt ? fmtDateTime(r.expiresAt) : "") },
+          { key: "createdAt", header: "أُنشئ", map: (r) => (r.createdAt ? fmtDateTime(r.createdAt) : "") },
+          { key: "notes", header: "ملاحظات" },
+        ],
+      },
+    );
+  }
+
+  const rows = list.data?.rows ?? [];
+  const hasMore = list.data?.hasMore ?? false;
 
   return (
     <div className={cn("space-y-4", embedded && "h-full overflow-y-auto bg-background p-4")}>
@@ -208,10 +302,31 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
           <option value="">كل الحالات</option>
           {(Object.keys(STATUS_LABEL) as ReservationStatus[]).map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
         </select>
+        <AppSelect
+          value={sort}
+          onValueChange={(v) => setSort(v as SortKey)}
+          aria-label="الترتيب"
+          className="min-w-36"
+        >
+          <option value="EXPIRY">ينتهي أولاً</option>
+          <option value="NEWEST">الأحدث أولاً</option>
+        </AppSelect>
+        <div className="flex items-center gap-1.5">
+          <label htmlFor="res-filter-from" className="text-xs text-muted-foreground whitespace-nowrap">ينتهي من</label>
+          <input id="res-filter-from" type="date" className={selectCls} value={from} onChange={(e) => setFrom(e.target.value)} />
+          <label htmlFor="res-filter-to" className="text-xs text-muted-foreground">إلى</label>
+          <input id="res-filter-to" type="date" className={selectCls} value={to} onChange={(e) => setTo(e.target.value)} />
+        </div>
         <div className="relative flex-1 min-w-52">
           <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground"><Search className="size-4" /></span>
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="بحث برقم الحجز أو اسم/هاتف العميل…" className="pe-9" />
         </div>
+        <Button size="sm" variant="outline" onClick={clearFilters} disabled={!hasFilters}>
+          <FilterX aria-hidden className="size-4 me-1" /> مسح الفلاتر
+        </Button>
+        <Button size="sm" variant="outline" onClick={exportAll} disabled={effectiveBranch == null}>
+          <Download aria-hidden className="size-4 me-1" /> تصدير Excel
+        </Button>
       </div>
 
       {list.isLoading ? (
@@ -251,6 +366,13 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                         <RowActions
                           mode="auto"
                           actions={[
+                            {
+                              key: "view",
+                              kind: "view",
+                              label: "التفاصيل",
+                              icon: Eye,
+                              onSelect: () => setDetailId(Number(r.id)),
+                            },
                             {
                               key: "convert",
                               kind: "create",
@@ -297,6 +419,32 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
         </ScrollTableShell>
       )}
 
+      {/* ترقيم خادمي (offset/hasMore) — بدل الاقتطاع الصامت عند ٢٠٠. */}
+      {!list.isLoading && !list.isError && (page > 0 || hasMore) && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={page === 0 || list.isFetching}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            السابق
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            صفحة {page + 1}
+            {hasMore ? " — توجد نتائج أخرى، انتقل للتالي أو ضيّق الفلاتر" : ""}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!hasMore || list.isFetching}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            التالي
+          </Button>
+        </div>
+      )}
+
       {showNew && effectiveBranch != null && (
         <NewReservationDialog
           branchId={effectiveBranch}
@@ -314,6 +462,18 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-1">
+            {/* «ماذا حجزتُ لك؟» — بنود الحجز والإجمالي قبل استلام المبلغ. */}
+            <div className="space-y-1.5">
+              <Label>بنود الحجز</Label>
+              {convertDetail.isLoading ? (
+                <LoadingState />
+              ) : convertDetail.data ? (
+                <ReservationLinesBlock detail={convertDetail.data} />
+              ) : (
+                <p className="text-xs text-muted-foreground">تعذّر تحميل بنود الحجز.</p>
+              )}
+            </div>
+
             <div className="space-y-1.5">
               <Label htmlFor="reservation-payment-amount">المبلغ المدفوع الآن (د.ع)</Label>
               <MoneyInput
@@ -378,6 +538,142 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* حوار التفاصيل — بنود الحجز (منتجات/كميات/أسعار) مع الإجمالي. */}
+      <Dialog open={detailId != null} onOpenChange={(o) => !o && setDetailId(null)}>
+        <DialogContent className="sm:max-w-lg" dir="rtl">
+          <DialogHeader>
+            <DialogTitle>تفاصيل الحجز {detail.data?.reservationNumber ?? ""}</DialogTitle>
+            <DialogDescription>البنود المحجوزة بسعرها المرجعي وقت الحجز.</DialogDescription>
+          </DialogHeader>
+          {detail.isLoading ? (
+            <LoadingState />
+          ) : detail.isError ? (
+            <ErrorState onRetry={() => detail.refetch()} />
+          ) : detail.data ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+                <div><span className="text-muted-foreground">العميل: </span>{detail.data.contactName || "—"}</div>
+                <div><span className="text-muted-foreground">الهاتف: </span><span dir="ltr">{detail.data.contactPhone}</span></div>
+                <div><span className="text-muted-foreground">طريقة وصول الحجز: </span>{CHANNEL_LABEL[detail.data.channel as Channel] ?? detail.data.channel}</div>
+                <div>
+                  <span className="text-muted-foreground">الحالة: </span>
+                  <Badge variant={STATUS_VARIANT[detail.data.status as ReservationStatus]}>
+                    {STATUS_LABEL[detail.data.status as ReservationStatus] ?? detail.data.status}
+                  </Badge>
+                </div>
+                <div><span className="text-muted-foreground">ينتهي: </span><span dir="ltr">{detail.data.expiresAt ? fmtDateTime(detail.data.expiresAt) : "—"}</span></div>
+                <div><span className="text-muted-foreground">أُنشئ: </span><span dir="ltr">{detail.data.createdAt ? fmtDateTime(detail.data.createdAt) : "—"}</span></div>
+              </div>
+              <ReservationLinesBlock detail={detail.data} />
+              {detail.data.notes && (
+                <p className="text-xs text-muted-foreground">ملاحظات: {detail.data.notes}</p>
+              )}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDetailId(null)}>إغلاق</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* حوار الإلغاء (بديل window.prompt) — سبب اختياري. */}
+      <Dialog
+        open={cancelTarget != null}
+        onOpenChange={(o) => { if (!o && !cancel.isPending) { setCancelTarget(null); setCancelReason(""); } }}
+      >
+        <DialogContent className="sm:max-w-md" dir="rtl">
+          <DialogHeader>
+            <DialogTitle>إلغاء الحجز {cancelTarget?.reservationNumber}</DialogTitle>
+            <DialogDescription>يُحرَّر المحجوز فوراً ويُعلَّم الحجز «ملغى». لا يمكن التراجع بعد التأكيد.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="res-cancel-reason">سبب الإلغاء (اختياري)</Label>
+            <Input
+              id="res-cancel-reason"
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              maxLength={300}
+              placeholder="مثال: العميل اعتذر عن الحضور"
+            />
+          </div>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="outline" onClick={() => { setCancelTarget(null); setCancelReason(""); }} disabled={cancel.isPending}>تراجع</Button>
+            <Button variant="destructive" onClick={submitCancel} disabled={cancel.isPending}>
+              <Trash2 className="size-4 me-1" aria-hidden />
+              {cancel.isPending ? "جارٍ الإلغاء…" : "تأكيد الإلغاء"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* حوار التمديد (بديل window.prompt) — ساعات ١–٧٢. */}
+      <Dialog
+        open={extendTarget != null}
+        onOpenChange={(o) => { if (!o && !extend.isPending) setExtendTarget(null); }}
+      >
+        <DialogContent className="sm:max-w-md" dir="rtl">
+          <DialogHeader>
+            <DialogTitle>تمديد الحجز {extendTarget?.reservationNumber}</DialogTitle>
+            <DialogDescription>
+              ينتهي حالياً: <span dir="ltr">{extendTarget?.expiresAt ? fmtDateTime(extendTarget.expiresAt) : "—"}</span> — تُضاف المدّة إلى وقت الانتهاء.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="res-extend-hours">مدّة التمديد بالساعات (١–٧٢)</Label>
+            <Input
+              id="res-extend-hours"
+              dir="ltr"
+              type="number"
+              min={1}
+              max={72}
+              value={extendHours}
+              onChange={(e) => setExtendHours(e.target.value)}
+            />
+          </div>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="outline" onClick={() => setExtendTarget(null)} disabled={extend.isPending}>تراجع</Button>
+            <Button onClick={submitExtend} disabled={extend.isPending}>
+              <Clock className="size-4 me-1" aria-hidden />
+              {extend.isPending ? "جارٍ التمديد…" : "تمديد"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+/** بنود الحجز مع الإجمالي — تُستعمل في حوار التفاصيل وحوار التحويل («ماذا حجزتُ لك؟»).
+ *  المبالغ نصوص جاهزة من الخادم (decimal) — العرض بـfmt فقط، بلا حساب عميلي. */
+function ReservationLinesBlock({ detail }: { detail: ReservationDetail }) {
+  if (detail.lines.length === 0) {
+    return <p className="text-xs text-muted-foreground">لا بنود مسجلة لهذا الحجز.</p>;
+  }
+  return (
+    <div className="rounded-md border divide-y text-sm">
+      {detail.lines.map((l) => {
+        const variantLabel = l.variantName || [l.color, l.size].filter(Boolean).join(" / ");
+        return (
+          <div key={l.id} className="flex items-center gap-2 p-2">
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-medium">
+                {l.productName}
+                {variantLabel ? <span className="text-muted-foreground"> — {variantLabel}</span> : null}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {l.unitName} × {l.quantity.toLocaleString("en-US")}
+                {l.quotedUnitPrice != null ? ` · السعر ${fmt(l.quotedUnitPrice)} د.ع` : " · بلا سعر مرجعي"}
+              </div>
+            </div>
+            <div className="font-bold tabular-nums" dir="ltr">{l.lineTotal != null ? fmt(l.lineTotal) : "—"}</div>
+          </div>
+        );
+      })}
+      <div className="flex items-center justify-between p-2 bg-muted/40">
+        <span className="font-bold">الإجمالي{detail.hasUnpriced ? " (جزئي — بند بلا سعر مرجعي)" : ""}</span>
+        <span className="font-extrabold tabular-nums" dir="ltr">{fmt(detail.total)} د.ع</span>
+      </div>
     </div>
   );
 }

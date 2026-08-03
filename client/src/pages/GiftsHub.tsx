@@ -645,9 +645,9 @@ export default function GiftsHub() {
           ) : null}
 
           <div className="space-y-2">
-            <Label>الأصناف *</Label>
+            <Label>المنتجات *</Label>
             {branchId == null ? (
-              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">اختر الفرع أولاً لإضافة الأصناف.</div>
+              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">اختر الفرع أولاً لإضافة المنتجات.</div>
             ) : (
               <ProductSearchBar
                 invoiceType={mode === "in" ? "PURCHASE" : "SALE"}

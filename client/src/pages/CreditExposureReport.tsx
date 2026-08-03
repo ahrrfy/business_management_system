@@ -63,7 +63,7 @@ export default function CreditExposureReport() {
   function reminderMessage(r: Row): string {
     return [
       `مرحباً ${r.customerName}،`,
-      `نذكّركم بأنّ الرصيد المستحقّ لدى المكتبة العربية للطباعة والقرطاسية هو ${formatIqd(r.currentBalance)}.`,
+      `نذكّركم بأنّ رصيدكم المستحقّ للمكتبة العربية للطباعة والقرطاسية (لنا عليكم) هو ${formatIqd(r.currentBalance)}.`,
       r.overdueAmount && Number(r.overdueAmount) > 0 ? `منه متأخّر: ${formatIqd(r.overdueAmount)}.` : "",
       "نرجو ترتيب السداد في أقرب وقت ممكن. شكراً لتعاونكم.",
     ].filter(Boolean).join("\n");

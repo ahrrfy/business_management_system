@@ -21,7 +21,7 @@ import { useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
 
 const STATUS: Record<string, string> = {
-  DRAFT: "مسودّة",
+  DRAFT: "مسوّدة",
   SENT: "مُرسَل",
   ACCEPTED: "مقبول",
   REJECTED: "مرفوض",
@@ -94,7 +94,7 @@ export default function QuotationDetail() {
   });
   const convert = trpc.quotations.convert.useMutation({
     onSuccess: async (r) => {
-      setDone(r.alreadyConverted ? "مُحوّل مسبقاً." : `تم التحويل فاتورة ${r.invoiceNumber ?? r.invoiceId}.`);
+      setDone(r.alreadyConverted ? "مُحوّل مسبقاً." : `تم التحويل إلى الفاتورة رقم ${r.invoiceNumber ?? r.invoiceId}.`);
       setError("");
       await refresh();
     },

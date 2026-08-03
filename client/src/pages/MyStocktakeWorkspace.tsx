@@ -320,7 +320,7 @@ export default function MyStocktakeWorkspace() {
           <div className="grid grid-cols-[minmax(280px,1fr)_130px_120px] border-b bg-muted/40 px-5 py-3 text-xs font-bold text-muted-foreground">
             <span>المنتج</span>
             <span>حالة الجلسة</span>
-            <span>إجرائي</span>
+            <span>عدّي</span>
           </div>
           <div className="max-h-[52vh] overflow-y-auto">
             {filtered.map((item) => (

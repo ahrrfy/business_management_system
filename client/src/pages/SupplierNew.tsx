@@ -421,7 +421,7 @@ export default function SupplierNew() {
               value={openingDir}
               onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
             >
-              <option value="OWED_BY_US">علينا للمورّد (مستحق له)</option>
+              <option value="OWED_BY_US">له علينا</option>
               <option value="OWED_TO_US">لنا على المورّد (دفعة مقدّمة لنا)</option>
             </select>
           </div>
@@ -440,7 +440,7 @@ export default function SupplierNew() {
               <p className="text-[11px] text-amber-700">
                 سيُسجَّل قيد رصيد افتتاحي:{" "}
                 {openingDir === "OWED_BY_US"
-                  ? `«علينا للمورّد» ${fmt(openingAmount)} د.ع (يبدأ رصيده مستحقاً له).`
+                  ? `«له علينا» ${fmt(openingAmount)} د.ع (يبدأ رصيده له علينا).`
                   : `«لنا على المورّد» ${fmt(openingAmount)} د.ع (يبدأ رصيده مديناً لنا — كدفعة مقدّمة).`}{" "}
                 يظهر فوراً في كشف حساب المورّد والأعمار.
               </p>

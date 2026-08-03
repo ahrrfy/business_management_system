@@ -101,7 +101,7 @@ export default function CatalogAnomalies() {
       <Card>
         <CardContent className="p-3 flex flex-wrap items-center gap-3">
           <Input
-            placeholder="بحث بالمنتج/SKU/vid…"
+            placeholder="بحث بالمنتج/SKU/رقم المتغيّر…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="max-w-xs h-8"
@@ -287,11 +287,11 @@ function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
                   return (
                     <tr key={row.id} className="border-b hover:bg-muted/30">
                       <td className="p-2 text-xs tabular-nums" dir="ltr">{new Date(row.createdAt).toLocaleString("ar-IQ")}</td>
-                      <td className="p-2 max-w-xs truncate" title={row.productName ?? ""}>{row.productName ?? `vid=${row.variantId}`} <span className="text-[10px] text-muted-foreground">{row.sku ?? ""}</span></td>
+                      <td className="p-2 max-w-xs truncate" title={row.productName ?? ""}>{row.productName ?? `رقم المتغيّر ${row.variantId}`} <span className="text-[10px] text-muted-foreground">{row.sku ?? ""}</span></td>
                       <td className="p-2 text-xs tabular-nums" dir="ltr">
                         {oldV.toLocaleString("en-US")} → {newV.toLocaleString("en-US")} <span className="text-muted-foreground">({ratio.toFixed(2)}×)</span>
                       </td>
-                      <td className="p-2 text-xs">{row.severity}</td>
+                      <td className="p-2 text-xs">{SEVERITY_BADGE[row.severity as Severity]?.label ?? row.severity}</td>
                       <td className="p-2 text-xs text-muted-foreground">{row.actorName ?? "—"}</td>
                       <td className="p-2 text-xs">
                         {row.reverted ? (

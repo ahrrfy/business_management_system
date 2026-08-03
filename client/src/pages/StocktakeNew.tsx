@@ -271,7 +271,7 @@ export default function StocktakeNew() {
       // الافتتاحي المشروع عندما لم يكن للفرع أيّ رصيد سابق بعد).
       if ((scopeType === "FULL" || scopeType === "MOVING") && previewCount && previewCount.variantCount === 0) {
         return isOpeningSession
-          ? "لا شيء يُجرَد افتتاحياً — كلّ الأصناف مُفتتَحة سلفاً أو الكتالوج فارغ."
+          ? "لا شيء يُجرَد افتتاحياً — كلّ المنتجات مُفتتَحة سلفاً أو الكتالوج فارغ."
           : "لا منتجات ضمن هذا النطاق — راجع النطاق أو الفرع.";
       }
       return null;
@@ -404,7 +404,7 @@ export default function StocktakeNew() {
                   </Label>
                   <p className="text-xs text-muted-foreground">
                     يثبّت العدّ كرصيد افتتاحي بلا قيود عجز/زيادة على الأرباح، ويُقفل البيع بالسالب على كل
-                    صنف يُجرد. توقيعان إلزاميان، والأصناف المجرودة افتتاحياً سابقاً تُستبعد تلقائياً.
+                    منتج يُجرد. توقيعان إلزاميان، والمنتجات المجرودة افتتاحياً سابقاً تُستبعد تلقائياً.
                     {!openingWindowActive && " — يتطلب تفعيل «وضع الافتتاح» من الإعدادات أولاً."}
                   </p>
                 </div>
@@ -601,7 +601,7 @@ export default function StocktakeNew() {
 
             <div className="space-y-2 rounded-lg bg-muted/60 px-4 py-3 text-sm">
               <div className="flex items-center justify-between">
-                <span className="font-semibold">أصناف ضمن النطاق:</span>
+                <span className="font-semibold">منتجات ضمن النطاق:</span>
                 {scopeCount == null ? (
                   <span className="inline-block rounded-full border bg-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground">
                     جارٍ الحساب…
@@ -642,7 +642,7 @@ export default function StocktakeNew() {
                 <p className="text-xs text-muted-foreground">
                   استُبعد أيضاً: {previewCount.excludedBundle > 0 ? `${nf(previewCount.excludedBundle)} منتجاً بكجاً` : ""}
                   {previewCount.excludedBundle > 0 && previewCount.excludedConsignment > 0 ? " · " : ""}
-                  {previewCount.excludedConsignment > 0 ? `${nf(previewCount.excludedConsignment)} صنف أمانة (يُفتتَح بسند إيداع)` : ""}.
+                  {previewCount.excludedConsignment > 0 ? `${nf(previewCount.excludedConsignment)} منتج أمانة (يُفتتَح بسند إيداع)` : ""}.
                 </p>
               )}
             </div>

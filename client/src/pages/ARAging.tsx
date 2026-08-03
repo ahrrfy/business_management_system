@@ -1,39 +1,88 @@
 import { CopyButton, CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { FilterField } from "@/components/list";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { exportRows } from "@/lib/export";
-import { Label } from "@/components/ui/label";
 import { printARAging } from "@/lib/printing/printTemplates";
 import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
 import { sanitizeForWhatsApp } from "@/lib/whatsapp";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
-import { useMemo, useState } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
 import { RowActions } from "@/components/list";
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+type Row = RouterOutputs["reports"]["arAging"][number];
 
-const CUST_TYPE_LABEL: Record<string, string> = {
-  "فرد": "فرد",
-  "تاجر": "تاجر",
-  "مؤسسة": "مؤسسة",
-  "شركة": "شركة",
-  "حكومي": "حكومي",
-};
+/** الشرائح العمرية كما يعيدها الخادم — مفاتيح الفلترة والفرز معاً. */
+const BUCKETS = [
+  { key: "d0_30", label: "0–30 يوم" },
+  { key: "d31_60", label: "31–60 يوم" },
+  { key: "d61_90", label: "61–90 يوم" },
+  { key: "d91p", label: "أكثر من 90" },
+] as const;
+type MoneyKey = (typeof BUCKETS)[number]["key"] | "unpaidTotal" | "currentBalance";
+
+const PAGE = 50;
 
 const fmt = (s: string | number) => fmtMoney(s);
 
+/** رأس عمود قابل للفرز (تنازلي أولاً ثم تصاعدي) مع aria-sort. */
+function SortTh({
+  label,
+  k,
+  sort,
+  onSort,
+}: {
+  label: string;
+  k: MoneyKey;
+  sort: { key: MoneyKey | ""; dir: "asc" | "desc" };
+  onSort: (k: MoneyKey) => void;
+}) {
+  const active = sort.key === k;
+  return (
+    <th
+      className="p-2 text-right"
+      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(k)}
+        className="inline-flex items-center gap-1 hover:underline"
+      >
+        {label}
+        {active ? (
+          sort.dir === "asc" ? <ArrowUp aria-hidden className="size-3" /> : <ArrowDown aria-hidden className="size-3" />
+        ) : (
+          <ArrowUpDown aria-hidden className="size-3 opacity-40" />
+        )}
+      </button>
+    </th>
+  );
+}
+
 export default function ARAging() {
   const branches = trpc.branches.list.useQuery();
-  const [branchId, setBranchId] = useState<number | "">("");
-  const aging = trpc.reports.arAging.useQuery({ branchId: branchId ? Number(branchId) : undefined });
+  // القائمة كاملة محمَّلة من الخادم ⇒ كل الفلاتر أدناه عميلية (بحث/شريحة/فئة/فرز/ترقيم).
+  const [f, setF, resetF] = useUrlFilters({ branch: "", q: "", bucket: "", ctype: "" });
+  const aging = trpc.reports.arAging.useQuery({ branchId: f.branch ? Number(f.branch) : undefined });
   const sel = useRowSelection<number>();
+
+  // الفرز العميلي: تنازلي أولاً (الأهم = الأكبر ديناً) ثم تصاعدي عند النقر مجدداً.
+  const [sort, setSort] = useState<{ key: MoneyKey | ""; dir: "asc" | "desc" }>({ key: "", dir: "desc" });
+  const onSort = (k: MoneyKey) =>
+    setSort((s) => (s.key === k ? { key: k, dir: s.dir === "desc" ? "asc" : "desc" } : { key: k, dir: "desc" }));
+
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [f.q, f.bucket, f.ctype, f.branch]);
 
   // عقد import-integration §٦: «رصيد غير مفوتر/افتتاحي» = الرصيد الجاري − غير المدفوع،
   // يُحسب في العميل بـDecimal (لا parseFloat) — يفسّر فجوة المستورَد برصيد افتتاحي بلا فواتير.
@@ -41,6 +90,7 @@ export default function ARAging() {
     D(r.currentBalance || 0).minus(D(r.unpaidTotal || 0));
 
   // §٥: نجمع بدقّة Decimal (لا Number()) ⇒ لا انجراف float عبر مئات الصفوف.
+  // المجاميع على **كامل** البيانات (صورة الذمم الكلية) لا على نتيجة الفلاتر العميلية.
   const totals = useMemo(() => {
     const rows = aging.data ?? [];
     const acc = rows.reduce(
@@ -65,33 +115,65 @@ export default function ARAging() {
     };
   }, [aging.data]);
 
-  // الصُفوف المُحدَّدة فَقَط — لِلتَصدير الجُزئي ولِنَسخ ملَخَّص واتساب.
+  // فئات العملاء الموجودة فعلاً في البيانات (قيم enum عربية أصلاً — فرد/تاجر/مؤسسة/شركة/حكومي).
+  const typeOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of aging.data ?? []) if (r.customerType) s.add(r.customerType);
+    return Array.from(s);
+  }, [aging.data]);
+
+  // الفلاتر العميلية: بحث بالاسم/الهاتف + شريحة عمرية بها مبلغ + فئة العميل، ثم الفرز.
+  const filtered = useMemo(() => {
+    const q = f.q.trim();
+    let out = (aging.data ?? []).filter((r) => {
+      if (q && !(r.customerName.includes(q) || (r.phone ?? "").includes(q))) return false;
+      if (f.bucket && !D((r as Record<MoneyKey, string | null>)[f.bucket as MoneyKey] || 0).gt(0)) return false;
+      if (f.ctype && (r.customerType ?? "") !== f.ctype) return false;
+      return true;
+    });
+    if (sort.key) {
+      const k = sort.key;
+      out = [...out].sort((a, b) => {
+        const cmp = D((a as Record<MoneyKey, string | null>)[k] || 0).cmp(
+          D((b as Record<MoneyKey, string | null>)[k] || 0),
+        );
+        return sort.dir === "asc" ? cmp : -cmp;
+      });
+    }
+    return out;
+  }, [aging.data, f.q, f.bucket, f.ctype, sort]);
+
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE));
+  const pageRows = filtered.slice(page * PAGE, page * PAGE + PAGE);
+  const activeCount = [f.q.trim(), f.bucket, f.ctype].filter(Boolean).length;
+
+  // الصفوف المحدَّدة فقط — للتصدير الجزئي ولنسخ ملخّص واتساب (التحديد يعبر الصفحات).
   const selectedRows = useMemo(
     () => (aging.data ?? []).filter((r) => sel.isSelected(r.customerId)),
     [aging.data, sel],
   );
 
-  // ملَخَّص واتساب لِالذِمم المُحدَّدة (مَبلَغ غَير المَدفوع + أَقدَم فاتورة + الهاتِف).
-  // يَنبَني عَبر sanitizeForWhatsApp ⇒ بِلا إيموجي.
+  // ملخّص واتساب للذمم المحدَّدة (مبلغ غير المدفوع + أقدم فاتورة + الهاتف).
+  // يُبنى عبر sanitizeForWhatsApp ⇒ بلا إيموجي.
   const whatsappSummary = useMemo(() => {
     if (selectedRows.length === 0) return "";
     const L: string[] = [];
-    L.push("*ذِمم مُستَحَقّة — لَنا عَلَيكُم*");
+    L.push("*ذمم مستحقّة — لنا عليكم*");
     L.push(`التاريخ: ${fmtDate(new Date())}`);
-    L.push("المَكتَبة العَرَبية لِلطِباعة والقِرطاسية");
+    L.push("المكتبة العربية للطباعة والقرطاسية");
     L.push("————————————————");
     let grand = D(0);
     for (const r of selectedRows) {
       const unpaid = D(r.unpaidTotal || 0);
       grand = grand.plus(unpaid);
       const phone = r.phone ? ` — ${r.phone}` : "";
-      const oldest = r.oldestInvoiceDate ? ` — أَقدَم فاتورة ${r.oldestInvoiceDate}` : "";
+      const oldest = r.oldestInvoiceDate ? ` — أقدم فاتورة ${r.oldestInvoiceDate}` : "";
       L.push(`- ${r.customerName}${phone}: ${fmtAr(unpaid.toFixed(2))} د.ع${oldest}`);
     }
     L.push("————————————————");
-    L.push(`*الإجمالي المُستَحَقّ: ${fmtAr(grand.toFixed(2))} د.ع*`);
+    L.push(`*الإجمالي المستحقّ: ${fmtAr(grand.toFixed(2))} د.ع*`);
     L.push("");
-    L.push("نَرجو التَكَرُّم بِالسَداد أَو التَواصُل لِترتيب التَسوية.");
+    L.push("نرجو التكرّم بالسداد أو التواصل لترتيب التسوية.");
     return sanitizeForWhatsApp(L.join("\n"));
   }, [selectedRows]);
 
@@ -172,14 +254,39 @@ export default function ARAging() {
       />
 
       <Card>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-6">
-          <div className="space-y-1">
-            <Label className="text-xs">الفرع</Label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+        <CardContent className="flex flex-wrap items-end gap-3 pt-6">
+          <FilterField label="الفرع" className="w-44">
+            <AppSelect value={f.branch} onValueChange={(v) => setF({ branch: v })}>
               <option value="">— كل الفروع —</option>
-              {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
-          </div>
+              {(branches.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+            </AppSelect>
+          </FilterField>
+          <FilterField label="بحث (العميل / الهاتف)" className="w-56">
+            <Input
+              type="search"
+              value={f.q}
+              onChange={(e) => setF({ q: e.target.value })}
+              placeholder="اسم العميل أو رقم الهاتف…"
+            />
+          </FilterField>
+          <FilterField label="الشريحة العمرية" className="w-40">
+            <AppSelect value={f.bucket} onValueChange={(v) => setF({ bucket: v })}>
+              <option value="">الكل</option>
+              {BUCKETS.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+            </AppSelect>
+          </FilterField>
+          <FilterField label="فئة العميل" className="w-36">
+            <AppSelect value={f.ctype} onValueChange={(v) => setF({ ctype: v })}>
+              <option value="">الكل</option>
+              {typeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+            </AppSelect>
+          </FilterField>
+          {activeCount > 0 && (
+            <Button variant="ghost" size="sm" onClick={resetF} className="text-muted-foreground">
+              <X aria-hidden className="size-4" />
+              مسح الفلاتر
+            </Button>
+          )}
         </CardContent>
       </Card>
 
@@ -204,27 +311,27 @@ export default function ARAging() {
                 <th className="p-2 w-8 text-center">
                   <input
                     type="checkbox"
-                    aria-label="تحديد كل الذمم"
-                    checked={(aging.data ?? []).length > 0 && (aging.data ?? []).every((r) => sel.isSelected(r.customerId))}
-                    onChange={(e) => sel.setMany((aging.data ?? []).map((r) => r.customerId), e.target.checked)}
+                    aria-label="تحديد كل الذمم المعروضة"
+                    checked={pageRows.length > 0 && pageRows.every((r) => sel.isSelected(r.customerId))}
+                    onChange={(e) => sel.setMany(pageRows.map((r) => r.customerId), e.target.checked)}
                   />
                 </th>
                 <th className="p-2">العميل</th>
                 <th className="p-2">الفئة</th>
                 <th className="p-2">الهاتف</th>
-                <th className="p-2 text-right">0–30</th>
-                <th className="p-2 text-right">31–60</th>
-                <th className="p-2 text-right">61–90</th>
-                <th className="p-2 text-right">+90</th>
-                <th className="p-2 text-right">إجمالي غير المدفوع</th>
+                <SortTh label="0–30" k="d0_30" sort={sort} onSort={onSort} />
+                <SortTh label="31–60" k="d31_60" sort={sort} onSort={onSort} />
+                <SortTh label="61–90" k="d61_90" sort={sort} onSort={onSort} />
+                <SortTh label="+90" k="d91p" sort={sort} onSort={onSort} />
+                <SortTh label="إجمالي غير المدفوع" k="unpaidTotal" sort={sort} onSort={onSort} />
                 <th className="p-2 text-right" title="الرصيد الحالي ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم">غير مفوتر/افتتاحي</th>
-                <th className="p-2 text-right">الرصيد (لنا عليه)</th>
+                <SortTh label="الرصيد (لنا عليه)" k="currentBalance" sort={sort} onSort={onSort} />
                 <th className="p-2">أقدم فاتورة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
             </thead>
             <tbody>
-              {(aging.data ?? []).map((r) => (
+              {pageRows.map((r: Row) => (
                 <tr key={r.customerId} className="border-t">
                   <td className="p-2 text-center">
                     <input
@@ -235,7 +342,7 @@ export default function ARAging() {
                     />
                   </td>
                   <td className="p-2 font-medium">{r.customerName}</td>
-                  <td className="p-2 text-xs">{CUST_TYPE_LABEL[r.customerType ?? ""] ?? r.customerType ?? "—"}</td>
+                  <td className="p-2 text-xs">{r.customerType ?? "—"}</td>
                   <td className="p-2"><CopyInline value={r.phone} /></td>
                   <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d0_30)}</td>
                   <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d31_60)}</td>
@@ -259,8 +366,11 @@ export default function ARAging() {
                   </td>
                 </tr>
               ))}
-              {aging.data && aging.data.length === 0 && (
-                <TableEmptyRow colSpan={13} message="لا ذمم مستحقّة. ممتاز." />
+              {aging.data && filtered.length === 0 && (
+                <TableEmptyRow
+                  colSpan={13}
+                  message={aging.data.length === 0 ? "لا ذمم مستحقّة. ممتاز." : "لا نتائج مطابقة للفلاتر."}
+                />
               )}
             </tbody>
           </table>
@@ -268,17 +378,30 @@ export default function ARAging() {
         </CardContent>
       </Card>
 
+      {/* ترقيم عميلي بسيط — القائمة كلها محمَّلة، التقطيع للعرض فقط. */}
+      {filtered.length > PAGE && (
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-muted-foreground">
+            {filtered.length.toLocaleString("ar-IQ-u-nu-latn")} صفّ — صفحة {(page + 1).toLocaleString("ar-IQ-u-nu-latn")} من {pages.toLocaleString("ar-IQ-u-nu-latn")}
+          </span>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>السابق</Button>
+            <Button variant="outline" size="sm" disabled={page + 1 >= pages} onClick={() => setPage((p) => p + 1)}>التالي</Button>
+          </div>
+        </div>
+      )}
+
       {sel.count > 0 && (
         <div className="sticky bottom-3 z-20 mx-auto flex w-fit items-center gap-2 rounded-full border bg-background/95 px-3 py-1.5 shadow-lg backdrop-blur">
           <CopyButton
             value={whatsappSummary}
-            title="نَسخ المُحَدَّد كَـ WhatsApp summary"
+            title="نسخ المحدَّد كملخّص واتساب"
             size="sm"
             variant="outline"
-            successMessage="تَم نَسخ المُلَخَّص"
+            successMessage="تم نسخ الملخّص"
             className="gap-1"
           />
-          <span className="text-xs text-muted-foreground">ملَخَّص واتساب</span>
+          <span className="text-xs text-muted-foreground">ملخّص واتساب</span>
         </div>
       )}
 

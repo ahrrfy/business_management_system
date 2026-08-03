@@ -64,8 +64,8 @@ export default function MonthlyClosePack() {
         { section: "مقبوضات الخزينة", value: fmtAr(d.treasury.totalIn) },
         { section: "مدفوعات الخزينة", value: fmtAr(d.treasury.totalOut) },
         { section: "صافي حركة الخزينة", value: fmtAr(d.treasury.net) },
-        { section: "ذمم العملاء الجارية (لقطة الآن)", value: fmtAr(d.receivablesSnapshot.arTotal) },
-        { section: "ذمم الموردين الجارية (لقطة الآن)", value: fmtAr(d.receivablesSnapshot.apTotal) },
+        { section: "ذمم العملاء الحالية (لقطة الآن)", value: fmtAr(d.receivablesSnapshot.arTotal) },
+        { section: "ذمم الموردين الحالية (لقطة الآن)", value: fmtAr(d.receivablesSnapshot.apTotal) },
         { section: "أوامر شغل مُسلَّمة", value: String(d.workOrdersDelivered) },
       ],
       summary: [
@@ -151,7 +151,7 @@ export default function MonthlyClosePack() {
           )}
 
           <p className="text-[11px] text-muted-foreground">
-            لقطة الذمم تعكس الأرصدة الجارية لحظة توليد التقرير لا نهاية الشهر التاريخية. أقسام الشهر
+            لقطة الذمم تعكس الأرصدة الحالية لحظة توليد التقرير لا نهاية الشهر التاريخية. أقسام الشهر
             (مبيعات/ربح/مشتريات/مصاريف/خزينة) محسوبة على نطاق {d.period.from} إلى {d.period.to}.
           </p>
         </>

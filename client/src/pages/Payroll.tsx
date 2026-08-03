@@ -3,26 +3,29 @@
  * مسيّر شهري بثلاث حالات (مسوّدة → معتمد → مدفوع). مُركَّب على trpc.payroll.
  *
  * المكوّنات: مؤشّرات (الإجمالي/الإضافي/الاستقطاع/الصافي) + اختيار المسيّر (أو الأحدث) +
- * جدول البنود (الموظف/نوع الأجر/الأساسي أو الساعات/المخصّصات/الإضافي/الاستقطاع/الصافي/الحالة +
- * زر القسيمة + تحرير الإضافي/الاستقطاع أثناء المسوّدة) + أزرار توليد/اعتماد/دفع/إلغاء حسب الحالة.
+ * جدول البنود (الموظف/نوع الأجر/الأساسي أو الساعات/البدلات/الإضافي/الاستقطاع/الصافي/الحالة +
+ * زر القسيمة + تحرير الإضافي/الاستقطاع أثناء المسوّدة + بحث/فلترة محلية + تصدير Excel) +
+ * أزرار توليد/اعتماد/دفع/إلغاء حسب الحالة.
  * كل المبالغ تُعرَض عبر iqd() (الخادم هو المرجع الحسابي).
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { confirm, confirmDelete } from "@/lib/confirm";
+import { exportRows } from "@/lib/export";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { D, round2 } from "@/lib/money";
-import { payrollStatusLabel, payTypeLabel } from "@shared/hr";
+import { PAY_TYPES, payrollStatusLabel, payTypeLabel } from "@shared/hr";
 import { printPayslip } from "@/lib/printing/printPayslip";
-import { AlarmClock, Banknote, Check, FileText, Minus, Plus, Printer, Wallet, X } from "lucide-react";
+import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
 
 const selectCls =
@@ -117,6 +120,57 @@ export default function Payroll() {
   const isPaid = run?.status === "paid";
   const busy = generate.isPending || approve.isPending || pay.isPending || cancel.isPending;
 
+  // اسم فرع كل موظف — payroll.get لا يحمل الفرع، فنشتقّه من قائمة الموظفين (نفس بوّابة hr/READ)
+  // لتمريره لقسيمة الراتب المطبوعة (كان يُطبع «—» دائماً بسبب branchName: null الثابتة).
+  const employeesQ = trpc.employees.list.useQuery({ includeInactive: true, limit: 200 });
+  const empBranch = useMemo(
+    () => new Map((employeesQ.data?.rows ?? []).map((e) => [Number(e.id), e.branchName ?? null])),
+    [employeesQ.data],
+  );
+
+  // بحث/فلترة محلية في جدول البنود (اسم الموظف / نوع الأجر) — البيانات كلها محمَّلة مع المسيّر.
+  const [itemQ, setItemQ] = useState("");
+  const [payTypeF, setPayTypeF] = useState("");
+  const visibleItems = useMemo(() => {
+    const q = itemQ.trim();
+    return items.filter((p) => {
+      if (q && !p.employeeName.includes(q)) return false;
+      if (payTypeF && p.payType !== payTypeF) return false;
+      return true;
+    });
+  }, [items, itemQ, payTypeF]);
+  const itemsFiltered = Boolean(itemQ.trim() || payTypeF);
+
+  /** تصدير بنود المسيّر المعروضة (بعد الفلترة المحلية) إلى Excel. */
+  const onExportItems = () => {
+    if (!run || visibleItems.length === 0) return;
+    exportRows(visibleItems, {
+      filename: `مسير-الرواتب-${run.period}`,
+      title: `مسيّر رواتب ${run.period} — ${payrollStatusLabel(run.status)}`,
+      columns: [
+        { key: "employeeName", header: "الموظف" },
+        { key: "position", header: "المنصب", map: (p) => p.position ?? "" },
+        { key: "department", header: "القسم", map: (p) => p.department ?? "" },
+        { key: "payType", header: "نوع الأجر", map: (p) => payTypeLabel(p.payType) },
+        {
+          key: "base",
+          header: "الأساسي / أجر الساعات",
+          money: true,
+          // الأساسي للشهري = الإجمالي − البدلات (gross = أساسي + بدلات)؛ للساعيّ = أجر الساعات كاملاً.
+          map: (p) => (p.payType === "monthly" ? round2(D(p.gross).minus(D(p.allowances))).toNumber() : D(p.gross).toNumber()),
+        },
+        { key: "hours", header: "الساعات", map: (p) => (p.payType === "hourly" ? (p.hours ?? "0") : "") },
+        { key: "allowances", header: "البدلات", money: true, map: (p) => (p.payType === "monthly" ? D(p.allowances).toNumber() : null) },
+        { key: "overtime", header: "الإضافي", money: true, map: (p) => D(p.overtime).toNumber() },
+        { key: "commission", header: "العمولة", money: true, map: (p) => D(p.commission).toNumber() },
+        { key: "deductions", header: "الاستقطاع", money: true, map: (p) => D(p.deductions).toNumber() },
+        { key: "advanceDeduction", header: "منه سلفة", money: true, map: (p) => D(p.advanceDeduction || 0).toNumber() },
+        { key: "net", header: "الصافي", money: true, map: (p) => D(p.net).toNumber() },
+        { key: "note", header: "ملاحظة", map: (p) => p.note ?? "" },
+      ],
+    });
+  };
+
   // مؤشّرات من رأس المسيّر (الخادم هو المرجع).
   const totals = useMemo(
     () => ({
@@ -158,7 +212,7 @@ export default function Payroll() {
 
       {/* المؤشّرات */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label="الإجمالي (gross)" value={iqd(totals.gross)} sub="د.ع قبل الاستقطاع" icon={<Banknote className="size-4" />} />
+        <StatCard label="الإجمالي قبل الاستقطاع" value={iqd(totals.gross)} sub="د.ع" icon={<Banknote className="size-4" />} />
         <StatCard label="العمل الإضافي" value={iqd(totals.overtime)} sub="د.ع" accent="var(--status-done, #059669)" icon={<AlarmClock className="size-4" />} />
         <StatCard label="الاستقطاعات" value={iqd(totals.deductions)} sub="سلف وغياب" accent="var(--money-negative, #dc2626)" icon={<Minus className="size-4" />} />
         <StatCard label="الصافي المستحق" value={iqd(totals.net)} sub={run ? `د.ع — مسيّر ${run.period}` : "د.ع"} accent="var(--status-active, #2563eb)" icon={<Wallet className="size-4" />} />
@@ -200,8 +254,40 @@ export default function Payroll() {
 
       {/* جدول البنود */}
       <Card>
-        <CardHeader>
-          <CardTitle>{run ? `مسيّر رواتب ${run.period} — ${items.length} موظف` : "مسيّر الرواتب"}</CardTitle>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
+          <CardTitle>
+            {run ? `مسيّر رواتب ${run.period} — ${items.length} موظف` : "مسيّر الرواتب"}
+            {itemsFiltered && (
+              <span className="ms-2 text-xs font-normal text-muted-foreground">
+                (المعروض {visibleItems.length} من {items.length})
+              </span>
+            )}
+          </CardTitle>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              type="search"
+              value={itemQ}
+              onChange={(e) => setItemQ(e.target.value)}
+              placeholder="بحث باسم الموظف…"
+              aria-label="بحث باسم الموظف"
+              className="h-8 w-44"
+            />
+            <AppSelect
+              value={payTypeF}
+              onValueChange={setPayTypeF}
+              size="sm"
+              className="w-32"
+              aria-label="نوع الأجر"
+            >
+              <option value="">كل الأنواع</option>
+              {PAY_TYPES.map((t) => (
+                <option key={t.key} value={t.key}>{t.label}</option>
+              ))}
+            </AppSelect>
+            <Button variant="outline" size="sm" disabled={!visibleItems.length} onClick={onExportItems}>
+              <FileSpreadsheet className="size-4" /> تصدير Excel
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
@@ -211,7 +297,7 @@ export default function Payroll() {
                   <th className="p-2.5">الموظف</th>
                   <th className="p-2.5 text-center">نوع الأجر</th>
                   <th className="p-2.5 text-right">الأساسي / الساعات</th>
-                  <th className="p-2.5 text-right">مخصّصات</th>
+                  <th className="p-2.5 text-right">البدلات</th>
                   <th className="p-2.5 text-right">إضافي</th>
                   <th className="p-2.5 text-right">عمولة</th>
                   <th className="p-2.5 text-right">استقطاع</th>
@@ -221,9 +307,9 @@ export default function Payroll() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((p) => {
+                {visibleItems.map((p) => {
                   const monthly = p.payType === "monthly";
-                  // الأساسي للشهري = الإجمالي − المخصّصات (gross = أساسي + مخصّصات).
+                  // الأساسي للشهري = الإجمالي − البدلات (gross = أساسي + بدلات).
                   const baseDisplay = monthly ? round2(D(p.gross).minus(D(p.allowances))).toFixed(2) : p.gross;
                   return (
                     <tr key={p.id} className="border-t hover:bg-accent/40">
@@ -270,7 +356,9 @@ export default function Payroll() {
                     </tr>
                   );
                 })}
-                {items.length > 0 && (
+                {/* صفّ المجاميع من رأس المسيّر (الخادم هو المرجع) — يُخفى أثناء الفلترة كي لا يوحي
+                    بأنه مجموع الصفوف المعروضة وحدها. */}
+                {visibleItems.length > 0 && !itemsFiltered && (
                   <tr className="border-t-2 bg-muted/40 font-bold">
                     <td className="p-2.5" colSpan={2}>الإجمالي</td>
                     <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(totals.gross)}</td>
@@ -282,10 +370,16 @@ export default function Payroll() {
                     <td colSpan={2}></td>
                   </tr>
                 )}
-                {!runQ.isLoading && items.length === 0 && (
+                {!runQ.isLoading && visibleItems.length === 0 && (
                   <TableEmptyRow
                     colSpan={10}
-                    message={runs.length === 0 ? "لا مسيّرات بعد. ولّد مسيّراً شهرياً للبدء." : "لا بنود في هذا المسيّر."}
+                    message={
+                      runs.length === 0
+                        ? "لا مسيّرات بعد. ولّد مسيّراً شهرياً للبدء."
+                        : items.length === 0
+                          ? "لا بنود في هذا المسيّر."
+                          : "لا بنود مطابقة للبحث/الفلتر."
+                    }
                   />
                 )}
               </tbody>
@@ -304,7 +398,7 @@ export default function Payroll() {
               <Input id="gen-period" type="month" value={genPeriod} onChange={(e) => setGenPeriod(e.target.value)} dir="ltr" className="tabular-nums" />
             </div>
             <p className="text-xs text-muted-foreground">
-              يُولَّد مسيّر مسوّدة لكل الموظفين غير منتهي الخدمة: الراتب الأساسي + المخصّصات للشهريين، ومجموع أجر الساعات للساعيين.
+              يُولَّد مسيّر مسوّدة لكل الموظفين غير منتهي الخدمة: الراتب الأساسي + البدلات للشهريين، ومجموع أجر الساعات للساعيين.
               الإضافي والاستقطاع صفر ابتداءً ويُحرَّران من زر «تعديل» قبل الاعتماد.
               وإن وُجدت تشغيلة عمولات <b>معتمدة</b> لنفس الشهر (تبويب «تشغيلات العمولة») يُدرَج بند «عمولة» لكل موظف تلقائياً.
               وتُملأ استقطاعات <b>سلف الموظفين</b> النشطة تلقائياً ضمن الاستقطاع (تبويب «سلف الموظفين»).
@@ -350,7 +444,7 @@ export default function Payroll() {
                   <span className="tabular-nums" dir="ltr">{iqd(slip.payType === "monthly" ? round2(D(slip.gross).minus(D(slip.allowances))).toFixed(2) : slip.gross)}</span>
                 </div>
                 {slip.payType === "monthly" && (
-                  <div className="flex justify-between"><span className="text-muted-foreground">المخصّصات</span><span className="tabular-nums" dir="ltr">{iqd(slip.allowances)}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">البدلات</span><span className="tabular-nums" dir="ltr">{iqd(slip.allowances)}</span></div>
                 )}
                 <div className="flex justify-between"><span className="text-muted-foreground">العمل الإضافي</span><span className="tabular-nums text-money-positive" dir="ltr">+{iqd(slip.overtime)}</span></div>
                 {D(slip.commission).gt(0) && (
@@ -392,7 +486,8 @@ export default function Payroll() {
             <Button onClick={() => slip && run && printPayslip({
               runId: run.id, period: run.period, statusLabel: payrollStatusLabel(run.status),
               employeeName: slip.employeeName, employeeId: Number(slip.employeeId),
-              position: slip.position, department: slip.department, branchName: null,
+              // اسم الفرع الفعلي من قائمة الموظفين (كان null ثابتة فتُطبع القسيمة بفرع «—» دائماً).
+              position: slip.position, department: slip.department, branchName: empBranch.get(Number(slip.employeeId)) ?? null,
               payTypeLabel: payTypeLabel(slip.payType),
               baseSalary: slip.payType === "monthly" ? round2(D(slip.gross).minus(D(slip.allowances))).toFixed(2) : null,
               hours: slip.hours, gross: slip.gross, overtime: slip.overtime, commission: slip.commission,
@@ -442,7 +537,7 @@ function EditItemDialog({
         {item && (
           <div className="space-y-3 py-1">
             <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">الإجمالي (gross)</span>
+              <span className="text-muted-foreground">الإجمالي قبل الاستقطاع</span>
               <span className="tabular-nums font-medium" dir="ltr">{iqd(item.gross)}</span>
             </div>
             {D(item.commission || 0).gt(0) && (

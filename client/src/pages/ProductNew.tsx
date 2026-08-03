@@ -667,7 +667,7 @@ export default function ProductNew() {
           <Field label="الحالة (المنتج كاملاً)">
             <div className="flex items-center gap-2 h-9">
               <Switch checked={isActive} onCheckedChange={setIsActive} />
-              <span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "مخفي"}</span>
+              <span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "معطّل"}</span>
             </div>
           </Field>
         </CardContent>

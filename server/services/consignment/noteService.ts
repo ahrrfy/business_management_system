@@ -1,11 +1,13 @@
 // بضاعة الأمانة — ش٢: خدمة سندات الإيداع/السحب/الاستبدال. راجع docs/consignment-design-2026-07-20.md §٢-أ/د.
 // إيداع/سحب/استبدال = حركات مخزون بصفر أثر ماليّ (الالتزام يُلتقَط لحظة البيع في ش٣). ذرّيّ + idempotent.
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { consignmentNoteLines, consignmentNotes, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
+import { escLike } from "../../lib/sqlLike";
+import { localDayStart, localNextDayStart } from "../dateRange";
 import { logger } from "../../logger";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
 import { money, round2 } from "../money";
@@ -210,9 +212,10 @@ async function createConsignmentNoteTx(input: CreateConsignmentNoteInput, client
   });
 }
 
-/** قائمة السندات (فلاتر مودِع/نوع/فترة) — لتبويب سندات الأمانة. */
+/** قائمة السندات (فلاتر مودِع/نوع/فرع/نطاق تاريخ + بحث برقم السند) — لتبويب سندات الأمانة. */
 export async function listConsignmentNotes(input: {
-  consignorId?: number; noteType?: ConsignmentNoteType; branchId?: number; limit?: number; offset?: number;
+  consignorId?: number; noteType?: ConsignmentNoteType; branchId?: number;
+  from?: string; to?: string; q?: string; limit?: number; offset?: number;
 }) {
   const db = getDb();
   if (!db) return { rows: [], total: 0 };
@@ -222,6 +225,10 @@ export async function listConsignmentNotes(input: {
   if (input.consignorId) conds.push(eq(consignmentNotes.consignorId, input.consignorId));
   if (input.noteType) conds.push(eq(consignmentNotes.noteType, input.noteType));
   if (input.branchId) conds.push(eq(consignmentNotes.branchId, input.branchId));
+  if (input.from) conds.push(gte(consignmentNotes.createdAt, localDayStart(input.from)));
+  if (input.to) conds.push(lt(consignmentNotes.createdAt, localNextDayStart(input.to)));
+  const term = input.q?.trim();
+  if (term) conds.push(sql`${consignmentNotes.noteNumber} LIKE ${`%${escLike(term)}%`} ESCAPE '!'`);
   const where = conds.length ? and(...conds) : undefined;
   const rows = await db
     .select({

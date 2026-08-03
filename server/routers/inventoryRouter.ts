@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { alias } from "drizzle-orm/mysql-core";
 
@@ -364,7 +364,13 @@ export const inventoryRouter = router({
           q: z.string().optional(),
           lowOnly: z.boolean().default(false),
           negativeOnly: z.boolean().default(false),
+          // فلترة بالفئة (نمط catalog.adminList): رقم = فئة محدّدة، 0 = «بلا فئة» (categoryId NULL)، غياب = الكل.
+          categoryId: z.number().int().min(0).optional(),
           limit: z.number().int().positive().max(1000).default(300),
+          // ترقيم offset — الشكل المُعاد يبقى مصفوفةً صرفة (توافق عكسي: StocktakeNew واختبارات onHand
+          // تعتمد المصفوفة). صفحة مكتملة (rows.length === limit) = مؤشّر «هناك المزيد» للعميل —
+          // نفس تقريب paginateKeyset في وضع offset، بلا COUNT ثانٍ كامل.
+          offset: z.number().int().min(0).default(0),
         })
         .optional()
     )
@@ -391,6 +397,9 @@ export const inventoryRouter = router({
       if (input?.negativeOnly) {
         conds.push(sql`${branchStock.quantity} < 0`);
       }
+      if (input?.categoryId != null) {
+        conds.push(input.categoryId === 0 ? isNull(products.categoryId) : eq(products.categoryId, input.categoryId));
+      }
 
       const rows = await db
         .select({
@@ -412,7 +421,8 @@ export const inventoryRouter = router({
         .innerJoin(products, eq(products.id, productVariants.productId))
         .where(and(...conds))
         .orderBy(asc(products.name), asc(productVariants.sku))
-        .limit(input?.limit ?? 300);
+        .limit(input?.limit ?? 300)
+        .offset(input?.offset ?? 0);
 
       return rows.map((r) => ({
         ...r,

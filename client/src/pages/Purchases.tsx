@@ -23,7 +23,7 @@ import { useEffect, useState } from "react";
 type PurchaseRow = RouterOutputs["purchases"]["list"][number];
 
 const PO_STATUS: Record<string, string> = {
-  DRAFT: "مسودّة",
+  DRAFT: "مسوّدة",
   SENT: "مُرسَل",
   CONFIRMED: "مؤكّد",
   RECEIVED: "مُستلَم",

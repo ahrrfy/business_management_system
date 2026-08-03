@@ -29,10 +29,10 @@ export default function CommissionTargets() {
   const grid = trpc.commissions.targets.grid.useQuery({ period });
   const rows = grid.data ?? [];
 
-  /** المسودّة المحلية: القيم المعدَّلة فقط (مفتاحها employeeId). */
+  /** المسوّدة المحلية: القيم المعدَّلة فقط (مفتاحها employeeId). */
   const [draft, setDraft] = useState<Record<number, string>>({});
 
-  // تغيير الشهر يمسح المسودّة (قيم شهر آخر لا تنتقل).
+  // تغيير الشهر يمسح المسوّدة (قيم شهر آخر لا تنتقل).
   function changePeriod(p: string) {
     setPeriod(p);
     setDraft({});

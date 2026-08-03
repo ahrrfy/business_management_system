@@ -602,7 +602,7 @@ export default function ProductEdit() {
           </Field>
           <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً."><div className="flex items-center gap-2 h-9"><Switch checked={isService} onCheckedChange={setIsService} /><span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة"}</span></div></Field>
           <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
-          <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "مخفي"}</span></div></Field>
+          <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "معطّل"}</span></div></Field>
         </CardContent>
       </Card>
 

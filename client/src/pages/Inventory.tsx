@@ -2,18 +2,34 @@ import { RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { TablePager } from "@/components/table/TablePager";
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtInt } from "@/lib/money";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
-import { CheckCircle2, XCircle } from "lucide-react";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { groupCategoriesTree } from "@/lib/categoryTree";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
+import { CheckCircle2, ExternalLink, XCircle } from "lucide-react";
 import { useState } from "react";
+import { Link } from "wouter";
 
 const MTYPE: Record<string, string> = {
   IN: "وارد",
@@ -24,8 +40,10 @@ const MTYPE: Record<string, string> = {
   TRANSFER_OUT: "تحويل صادر",
 };
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+/** حجم صفحة الأرصدة — onHand يعيد مصفوفة صرفة؛ صفحة مكتملة = «هناك المزيد» (نفس تقريب paginateKeyset). */
+const PAGE_SIZE = 50;
+
+type OnHandRow = RouterOutputs["inventory"]["onHand"][number];
 
 function variantLabel(r: { variantName: string | null; color: string | null; size: string | null; sku: string }): string {
   const parts = [r.variantName, r.color, r.size].filter(Boolean);
@@ -43,20 +61,36 @@ export default function Inventory() {
   const myBranch = me.data?.branchId ?? 1;
 
   const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
-  const [pickedBranch, setPickedBranch] = useState<number | null>(null);
-  const branchId = canPickBranch ? pickedBranch ?? myBranch : myBranch;
+  const categoriesQ = trpc.catalog.categories.useQuery();
 
-  const [q, setQ] = useState("");
-  const [lowOnly, setLowOnly] = useState(false);
-  const [negativeOnly, setNegativeOnly] = useState(false);
+  // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
+  // cat: "all" = الكل، "0" = بلا فئة، "<id>" = فئة محدّدة (sentinel لأن AppSelect يعامل "" كـplaceholder).
+  const [f, setF, resetF] = useUrlFilters({ q: "", cat: "all", low: "", neg: "", branch: "" });
+  const [page, setPage] = useState(0);
+  const patchF = (patch: Partial<typeof f>) => { setF(patch); setPage(0); };
+
+  const branchId = canPickBranch && f.branch ? Number(f.branch) : myBranch;
+  const lowOnly = f.low === "1";
+  const negativeOnly = f.neg === "1";
+  const categoryId = f.cat === "all" ? undefined : Number(f.cat);
+  const dq = useDebouncedValue(f.q, 200);
+
   const [err, setErr] = useState("");
 
+  const onHandInput = {
+    branchId,
+    q: dq.trim() || undefined,
+    lowOnly,
+    negativeOnly,
+    categoryId,
+  };
   const onHand = trpc.inventory.onHand.useQuery(
-    { branchId, q: q.trim() || undefined, lowOnly, negativeOnly },
+    { ...onHandInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE },
     { enabled: me.data != null },
   );
-  const movements = trpc.inventory.movements.useQuery(
-    { branchId, limit: 100 },
+  // «آخر الحركات» بالأسماء (movementsRich) بدل الحركات الخام بأرقام المتغيّرات.
+  const movements = trpc.inventory.movementsRich.useQuery(
+    { branchId, limit: 20 },
     { enabled: me.data != null },
   );
 
@@ -91,22 +125,29 @@ export default function Inventory() {
         utils.inventory.pendingAdjustments.invalidate(),
         utils.inventory.onHand.invalidate(),
         utils.inventory.movements.invalidate(),
+        utils.inventory.movementsRich.invalidate(),
       ]);
     },
     onError: (e) => notify.err(e),
   });
+  // حوار النظام بدل window.prompt — سبب الرفض إلزامي للسجل التدقيقي.
+  const [rejectTarget, setRejectTarget] = useState<number | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
   const rejectAdj = trpc.inventory.rejectAdjustment.useMutation({
-    onSuccess: async () => { notify.ok("رُفض طلب التسوية."); await utils.inventory.pendingAdjustments.invalidate(); },
+    onSuccess: async () => {
+      notify.ok("رُفض طلب التسوية.");
+      setRejectTarget(null);
+      await utils.inventory.pendingAdjustments.invalidate();
+    },
     onError: (e) => notify.err(e),
   });
   async function approveFlow(id: number) {
     if (!(await confirm({ title: "اعتماد التسوية", description: "ستُطبَّق التسوية على المخزون ويُرحَّل قيد ADJUST. متابعة؟", confirmText: "اعتماد" }))) return;
     approveAdj.mutate({ id });
   }
-  async function rejectFlow(id: number) {
-    const reason = window.prompt("سبب رفض التسوية (للسجل التدقيقي):");
-    if (reason == null || !reason.trim()) return;
-    rejectAdj.mutate({ id, reason: reason.trim() });
+  function rejectFlow(id: number) {
+    setRejectReason("");
+    setRejectTarget(id);
   }
 
   function startAdjust(r: { variantId: number; quantity: number }) {
@@ -135,7 +176,18 @@ export default function Inventory() {
   }
 
   const rows = onHand.data ?? [];
+  // مصفوفة صرفة بلا COUNT — صفحة مكتملة تعني غالباً وجود المزيد (تقريب paginateKeyset في وضع offset).
+  const hasMore = rows.length === PAGE_SIZE;
   const lowCount = rows.filter((r) => r.isLow).length;
+  const anyFilter = f.q || f.cat !== "all" || f.low || f.neg || f.branch;
+
+  const exportColumns = [
+    { key: "productName" as const, header: "المنتج" },
+    { key: "sku" as const, header: "المتغيّر / SKU", map: (r: OnHandRow) => variantLabel(r) + " (" + r.sku + ")" },
+    { key: "quantity" as const, header: "الرصيد", map: (r: OnHandRow) => r.quantity },
+    { key: "minStock" as const, header: "الحد الأدنى", map: (r: OnHandRow) => r.minStock ?? 0 },
+    { key: "isLow" as const, header: "الحالة", map: (r: OnHandRow) => (r.isLow ? "منخفض" : "متوفّر") },
+  ];
 
   return (
     <div className="space-y-4">
@@ -156,30 +208,56 @@ export default function Inventory() {
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
           {canPickBranch && (
             <div className="space-y-1">
-              <Label>الفرع</Label>
-              <select
-                className={selectCls}
-                value={branchId}
-                onChange={(e) => setPickedBranch(Number(e.target.value))}
+              <Label htmlFor="inv-branch">الفرع</Label>
+              <AppSelect
+                id="inv-branch"
+                value={String(branchId)}
+                onValueChange={(v) => patchF({ branch: v })}
               >
                 {(branches.data ?? []).map((b) => (
-                  <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
+                  <option key={Number(b.id)} value={String(Number(b.id))}>{b.name}</option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
           )}
           <div className="space-y-1">
             <Label>بحث (اسم/SKU/متغيّر)</Label>
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="مثال: ورق A4" />
+            <Input value={f.q} onChange={(e) => patchF({ q: e.target.value })} placeholder="مثال: ورق A4" />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="inv-category">الفئة</Label>
+            <AppSelect id="inv-category" value={f.cat} onValueChange={(v) => patchF({ cat: v })}>
+              <option value="all">كل الفئات</option>
+              <option value="0">— بلا فئة —</option>
+              {groupCategoriesTree(categoriesQ.data ?? []).map(({ top, children }) =>
+                children.length ? (
+                  <optgroup key={top.id} label={top.name}>
+                    <option value={String(top.id)}>{top.name} (عام)</option>
+                    {children.map((c) => (
+                      <option key={c.id} value={String(c.id)}>{c.name}</option>
+                    ))}
+                  </optgroup>
+                ) : (
+                  <option key={top.id} value={String(top.id)}>{top.name}</option>
+                ),
+              )}
+            </AppSelect>
           </div>
           <label className="flex items-center gap-2 h-9 text-sm">
-            <input type="checkbox" className="size-4" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} />
+            <input type="checkbox" className="size-4" checked={lowOnly} onChange={(e) => patchF({ low: e.target.checked ? "1" : "" })} />
             <span className="text-muted-foreground">تحت الحد الأدنى فقط</span>
           </label>
           <label className="flex items-center gap-2 h-9 text-sm">
-            <input type="checkbox" className="size-4" checked={negativeOnly} onChange={(e) => setNegativeOnly(e.target.checked)} />
+            <input type="checkbox" className="size-4" checked={negativeOnly} onChange={(e) => patchF({ neg: e.target.checked ? "1" : "" })} />
             <span className="text-muted-foreground">السوالب فقط (بانتظار الجرد الافتتاحي)</span>
           </label>
+          {anyFilter && (
+            <div className="flex items-center h-9">
+              <Button variant="ghost" size="sm" onClick={() => { resetF(); setPage(0); }}>
+                <XCircle aria-hidden className="size-4 ml-1" /> مسح الفلاتر
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -234,23 +312,25 @@ export default function Inventory() {
           <CardTitle className="text-base">الأرصدة الحالية</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {onHand.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} منتج`}
+              {onHand.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} في الصفحة`}
             </span>
             <Button
               variant="outline"
               size="sm"
-              disabled={rows.length === 0}
+              disabled={onHand.isLoading}
               onClick={() =>
-                exportRows(rows, {
-                  filename: "المخزون",
-                  columns: [
-                    { key: "productName", header: "المنتج" },
-                    { key: "sku", header: "المتغيّر / SKU", map: (r) => variantLabel(r) + " (" + r.sku + ")" },
-                    { key: "quantity", header: "الرصيد", map: (r) => r.quantity },
-                    { key: "minStock", header: "الحد الأدنى", map: (r) => r.minStock ?? 0 },
-                    { key: "isLow", header: "الحالة", map: (r) => (r.isLow ? "منخفض" : "متوفّر") },
-                  ],
-                })
+                // تصدير شامل لكل النتائج المطابقة للفلاتر (لا الصفحة المعروضة فقط) — onHand مصفوفة صرفة.
+                exportRows<OnHandRow>(
+                  () =>
+                    fetchAllPaged<OnHandRow>(
+                      (offset, fetchLimit) =>
+                        utils.inventory.onHand
+                          .fetch({ ...onHandInput, limit: fetchLimit, offset })
+                          .then((arr) => ({ rows: arr })),
+                      { pageSize: 500 },
+                    ),
+                  { filename: "المخزون", columns: exportColumns },
+                )
               }
             >
               تصدير Excel
@@ -258,6 +338,11 @@ export default function Inventory() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          {hasMore && (
+            <p className="px-3 py-2 text-xs text-muted-foreground border-b bg-muted/30">
+              القائمة مقسّمة صفحات — تنقّل بالترقيم أسفل الجدول، و«تصدير Excel» ينزّل كامل النتائج المطابقة للفلاتر.
+            </p>
+          )}
           <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
@@ -365,39 +450,55 @@ export default function Inventory() {
                 );
               })}
               {!onHand.isLoading && rows.length === 0 && (
-                <TableEmptyRow colSpan={7} message="لا منتجات برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء." />
+                <TableEmptyRow colSpan={7} message={page > 0 ? "لا صفوف في هذه الصفحة — ارجع للصفحة السابقة." : "لا منتجات برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء."} />
               )}
             </tbody>
           </table>
           </ScrollTableShell>
+          <TablePager
+            page={page}
+            onPageChange={setPage}
+            pageSize={PAGE_SIZE}
+            rowsOnPage={rows.length}
+            hasMore={hasMore}
+            isLoading={onHand.isLoading}
+          />
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">آخر الحركات</CardTitle></CardHeader>
+        <CardHeader className="flex-row items-center justify-between">
+          <CardTitle className="text-base">آخر الحركات</CardTitle>
+          <Link href="/inventory-movements" className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
+            <ExternalLink aria-hidden className="size-3.5" /> كل الحركات بالفلاتر
+          </Link>
+        </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
                 <th className="p-2 text-start">التاريخ</th>
-                <th className="p-2 text-start">المتغيّر</th>
+                <th className="p-2 text-start">المنتج</th>
                 <th className="p-2 text-start">النوع</th>
                 <th className="p-2 text-center">الكمية (أساس)</th>
                 <th className="p-2 text-start">المرجع</th>
               </tr>
             </thead>
             <tbody>
-              {(movements.data ?? []).map((m) => (
+              {(movements.data?.rows ?? []).map((m) => (
                 <tr key={m.id} className="border-t">
                   <td className="p-2 text-xs">{fmtDateTime(m.createdAt)}</td>
-                  <td className="p-2 font-mono text-xs" dir="ltr">#{m.variantId}</td>
+                  <td className="p-2 text-xs">
+                    {m.productName}
+                    <span className="text-muted-foreground"> — {variantLabel(m)}</span>
+                  </td>
                   <td className="p-2 text-xs">{MTYPE[m.movementType] ?? m.movementType}</td>
                   <td className="p-2 text-center tabular-nums">{fmtInt(m.quantity)}</td>
                   <td className="p-2 text-muted-foreground text-xs">{m.referenceType ?? "—"}{m.referenceId ? ` #${m.referenceId}` : ""}</td>
                 </tr>
               ))}
-              {movements.data && movements.data.length === 0 && (
+              {movements.data && movements.data.rows.length === 0 && (
                 <TableEmptyRow colSpan={5} message="لا حركات مخزون بعد." />
               )}
             </tbody>
@@ -405,6 +506,40 @@ export default function Inventory() {
           </ScrollTableShell>
         </CardContent>
       </Card>
+
+      {/* حوار رفض طلب التسوية — بديل window.prompt: سبب إلزامي يُكتب للسجل التدقيقي. */}
+      <Dialog open={rejectTarget != null} onOpenChange={(o) => { if (!o) setRejectTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>رفض طلب التسوية</DialogTitle>
+            <DialogDescription>اذكر سبب الرفض — يُسجَّل في السجل التدقيقي ويظهر لمُنشئ الطلب.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1 py-1">
+            <Label htmlFor="reject-reason">سبب الرفض</Label>
+            <Textarea
+              id="reject-reason"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="مثال: الرصيد الحالي صحيح — لا حاجة للتسوية"
+              rows={3}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRejectTarget(null)} disabled={rejectAdj.isPending}>إلغاء</Button>
+            <Button
+              variant="destructive"
+              disabled={rejectAdj.isPending || !rejectReason.trim()}
+              onClick={() => {
+                if (rejectTarget == null || !rejectReason.trim()) return;
+                rejectAdj.mutate({ id: rejectTarget, reason: rejectReason.trim() });
+              }}
+            >
+              <XCircle aria-hidden className="size-4 ml-1" /> رفض الطلب
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

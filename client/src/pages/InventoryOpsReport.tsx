@@ -24,7 +24,7 @@ const VIEW_LABEL: Record<View, string> = {
   negatives: "السوالب (وضع الافتتاح)",
 };
 const VIEW_DESC: Record<View, string> = {
-  reorder: "أصناف نفدت أو تحت حدّ الطلب — اطلبها الآن.",
+  reorder: "منتجات نفدت أو تحت حدّ إعادة الطلب — اطلبها الآن.",
   dead: "رصيد بلا بيع منذ مدّة — رأس مال مجمّد يجب تحريره.",
   risk: "مبيعات عالية ومخزون منخفض — اطلب عاجلاً قبل النفاد.",
   variance: "فروقات الجرد المعتمدة حسب الفرع والتاريخ.",
@@ -90,12 +90,12 @@ export default function InventoryOpsReport() {
     }
     if (view === "dead" && dead.data) {
       return [
-        { label: "أصناف راكدة", value: fmtInt(dead.data.summary.count), tone: "warning" },
+        { label: "منتجات راكدة", value: fmtInt(dead.data.summary.count), tone: "warning" },
         { label: "رأس المال المجمّد", value: formatIqd(dead.data.summary.totalValue), tone: "negative" },
       ];
     }
     if (view === "risk" && risk.data) {
-      return [{ label: "أصناف بخطر نفاد", value: fmtInt(risk.data.summary.count), tone: "warning" }];
+      return [{ label: "منتجات بخطر نفاد", value: fmtInt(risk.data.summary.count), tone: "warning" }];
     }
     if (view === "variance" && variance.data) {
       return [
@@ -106,7 +106,7 @@ export default function InventoryOpsReport() {
     }
     if (view === "negatives" && negatives.data) {
       return [
-        { label: "أصناف سالبة", value: fmtInt(negatives.data.summary.count), tone: "negative" },
+        { label: "منتجات سالبة", value: fmtInt(negatives.data.summary.count), tone: "negative" },
         { label: "قيمة الانكشاف", value: formatIqd(negatives.data.summary.totalNegValue), tone: "negative" },
         { label: "بانتظار الجرد الافتتاحي", value: fmtInt(negatives.data.summary.unopenedCount), tone: "warning" },
         { label: "بلا تكلفة", value: fmtInt(negatives.data.summary.missingCostCount), tone: "warning" },

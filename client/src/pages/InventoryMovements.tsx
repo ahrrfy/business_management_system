@@ -365,10 +365,10 @@ export default function InventoryMovements() {
               }}
             >
               <option value="">— كل الأنواع —</option>
-              <option value="IN">وارد (IN)</option>
-              <option value="OUT">صادر (OUT)</option>
-              <option value="RETURN">مرتجع (RETURN)</option>
-              <option value="ADJUST">تسوية (ADJUST)</option>
+              <option value="IN">وارد</option>
+              <option value="OUT">صادر</option>
+              <option value="RETURN">مرتجع</option>
+              <option value="ADJUST">تسوية</option>
               <option value="TRANSFER_IN">تحويل وارد</option>
               <option value="TRANSFER_OUT">تحويل صادر</option>
             </select>
@@ -689,8 +689,8 @@ export default function InventoryMovements() {
                   value={mType}
                   onChange={(e) => setMType(e.target.value as ManualType)}
                 >
-                  <option value="IN">وارد (IN)</option>
-                  <option value="RETURN">مرتجع (RETURN)</option>
+                  <option value="IN">وارد</option>
+                  <option value="RETURN">مرتجع</option>
                 </select>
                 {/* فصل مهام #٦: الشطب (OUT) يمرّ بتسوية معتمَدة لا حركةً فوريّة. */}
                 <p className="text-[11px] text-muted-foreground">للشطب/النقص استعمل «تسوية الرصيد» من شاشة المخزون (يعتمده مديرٌ آخر).</p>

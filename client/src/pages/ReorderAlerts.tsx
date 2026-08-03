@@ -173,7 +173,7 @@ export default function ReorderAlerts() {
         { key: "branchName", header: "الفرع" },
         { key: "quantity", header: "الرصيد", map: (r) => r.quantity },
         { key: "minStock", header: "الحد الأدنى", map: (r) => r.minStock },
-        { key: "reorderPoint", header: "حدّ الطلب", map: (r) => r.reorderPoint },
+        { key: "reorderPoint", header: "حدّ إعادة الطلب", map: (r) => r.reorderPoint },
         { key: "suggestedQty", header: "الكمية المقترحة", map: (r) => r.suggestedQty },
       ],
     });
@@ -259,7 +259,7 @@ export default function ReorderAlerts() {
                   <th className="p-2 text-start">الفرع</th>
                   <th className="p-2 text-left">الرصيد</th>
                   <th className="p-2 text-left">الحد الأدنى</th>
-                  <th className="p-2 text-left">حدّ الطلب</th>
+                  <th className="p-2 text-left">حدّ إعادة الطلب</th>
                   <th className="p-2 text-left">الكمية المقترحة</th>
                   {canWrite && <th className="p-2 text-center">العتبتان</th>}
                 </tr>
@@ -343,7 +343,7 @@ export default function ReorderAlerts() {
                 {!alerts.isLoading && rows.length === 0 && (
                   <TableEmptyRow
                     colSpan={canWrite ? 9 : 7}
-                    message="لا منتجات بلغت حدّ إعادة الطلب. اضبط «حدّ الطلب» من شاشة المنتج (أو من هنا) لتفعيل الإنذار المبكّر."
+                    message="لا منتجات بلغت حدّ إعادة الطلب. اضبط «حدّ إعادة الطلب» من شاشة المنتج (أو من هنا) لتفعيل الإنذار المبكّر."
                   />
                 )}
               </tbody>

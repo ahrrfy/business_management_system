@@ -304,7 +304,7 @@ export default function WorkOrderNew() {
 
     // تأكيد نهائيّ — يصف الوثيقتين والمبلغ المقبوض فوراً (بيع كامل + عربون) ولا رجعة فيه.
     const parts: string[] = [];
-    if (hasCart) parts.push(`فاتورة بيع للأصناف الجاهزة بقيمة ${fmt(saleTotal.toFixed(2))} د.ع تُدفع كاملة`);
+    if (hasCart) parts.push(`فاتورة بيع للمنتجات الجاهزة بقيمة ${fmt(saleTotal.toFixed(2))} د.ع تُدفع كاملة`);
     if (hasCustom) parts.push(`طلب خدمة بقيمة ${fmt(customTotal.toFixed(2))} د.ع بعربون ${fmt(depositD.toFixed(2))} د.ع`);
     if (!(await confirm({
       variant: "danger",
@@ -338,7 +338,7 @@ export default function WorkOrderNew() {
         // إنشاء أمر الشغل تُعيد الفاتورة نفسها (idempotent) بدل فاتورة بيع مكرّرة بخصم مخزون ونقد مزدوجين.
         await utils.shifts.current.invalidate();
       } catch (e: any) {
-        setError(e?.message || "تعذّر إتمام بيع الأصناف الجاهزة.");
+        setError(e?.message || "تعذّر إتمام بيع المنتجات الجاهزة.");
         return;
       }
     }
@@ -827,7 +827,7 @@ export default function WorkOrderNew() {
                   ))}
                 </div>
               )}
-              <p className="text-[11px] text-muted-foreground">على أمر التخصيص فقط — الأصناف الجاهزة تُدفع كاملةً بفاتورتها.</p>
+              <p className="text-[11px] text-muted-foreground">على أمر التخصيص فقط — المنتجات الجاهزة تُدفع كاملةً بفاتورتها.</p>
             </div>
             {paymentMethod === "CARD" && (
               <div className="space-y-1">
@@ -859,7 +859,7 @@ export default function WorkOrderNew() {
               <div className="flex justify-between"><span>إجمالي السلّة</span><span dir="ltr">{fmt(cartSubtotal.toFixed(2))} د.ع</span></div>
               {discount.gt(0) && <div className="flex justify-between text-money-positive"><span>− خصم</span><span dir="ltr">{fmt(discount.toFixed(2))} د.ع</span></div>}
               <div className="flex justify-between font-bold border-t pt-1"><span>يُدفع كاملاً الآن</span><span dir="ltr">{fmt(saleTotal.toFixed(2))} د.ع</span></div>
-              {!shift && hasCart && <p className="text-[11px] text-destructive">يلزم وردية مفتوحة لبيع الأصناف الجاهزة.</p>}
+              {!shift && hasCart && <p className="text-[11px] text-destructive">يلزم وردية مفتوحة لبيع المنتجات الجاهزة.</p>}
             </div>
             {/* بطاقة أمر التخصيص */}
             <div className={cn("rounded-md border p-3 space-y-1", hasCustom ? "bg-violet-500/5 border-violet-500/30" : "bg-muted/20 opacity-60")}>

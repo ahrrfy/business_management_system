@@ -103,7 +103,7 @@ export default function Transfers() {
 
   const transfer = trpc.inventory.transferBatch.useMutation({
     onSuccess: async (res) => {
-      setDone(`أُرسل السند ${res.transferNumber} (${res.lines} صنف) من ${fromName} إلى ${toName} — بالطريق حتى يستلمه الفرع الوجهة بالمطابقة.`);
+      setDone(`أُرسل السند ${res.transferNumber} (${res.lines} منتج) من ${fromName} إلى ${toName} — بالطريق حتى يستلمه الفرع الوجهة بالمطابقة.`);
       setError("");
       setCart([]); setNotes(""); setTrf(genTrf()); setReqId(crypto.randomUUID());
       await Promise.all([
@@ -128,9 +128,9 @@ export default function Transfers() {
   /** أول خطأ يمنع الإرسال (الرسالة تسمّي الصنف) — بالتجميع لا بالسطر (الرصيد مشترك بين الوحدات). */
   const blocking = useMemo(() => {
     const frac = cart.findIndex((_, i) => lineStates[i]?.fractional);
-    if (frac >= 0) return `الصنف «${cart[frac].name}»: كمية غير صالحة (لا تُقبل كسور الوحدة الأساس).`;
+    if (frac >= 0) return `المنتج «${cart[frac].name}»: كمية غير صالحة (لا تُقبل كسور الوحدة الأساس).`;
     const over = aggregated.find((x) => x.baseQuantity > x.stockBase);
-    if (over) return `الصنف «${over.name}»: الكمية المطلوبة ${fmtInt(over.baseQuantity)} تتجاوز المتاح في ${fromName} (${fmtInt(over.stockBase)}).`;
+    if (over) return `المنتج «${over.name}»: الكمية المطلوبة ${fmtInt(over.baseQuantity)} تتجاوز المتاح في ${fromName} (${fmtInt(over.stockBase)}).`;
     return "";
   }, [cart, lineStates, aggregated, fromName]);
 
@@ -146,7 +146,7 @@ export default function Transfers() {
       !(await confirm({
         variant: "danger",
         title: `سند تحويل ${trf}: من ${fromName} إلى ${toName}`,
-        description: `إرسال السند (${fmtInt(aggregated.length)} صنف، ${fmtInt(totalBase)} وحدة أساس) يخصم من رصيد ${fromName} فوراً ويضع البضاعة «بالطريق» حتى يستلمها ${toName} بالمطابقة. متابعة؟`,
+        description: `إرسال السند (${fmtInt(aggregated.length)} منتج، ${fmtInt(totalBase)} وحدة أساس) يخصم من رصيد ${fromName} فوراً ويضع البضاعة «بالطريق» حتى يستلمها ${toName} بالمطابقة. متابعة؟`,
         confirmText: "إرسال السند",
       }))
     )
@@ -275,7 +275,7 @@ export default function Transfers() {
             <div className="flex justify-between"><span className="text-muted-foreground">أصناف السند</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(aggregated.length)}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">إجمالي الوحدات (أساس)</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(totalBase)}</span></div>
             {cart.length > aggregated.length && (
-              <p className="text-[11px] text-muted-foreground">وحدات متعددة لنفس الصنف تُدمَج في بندٍ واحد بالوحدة الأساس.</p>
+              <p className="text-[11px] text-muted-foreground">وحدات متعددة لنفس المنتج تُدمَج في بندٍ واحد بالوحدة الأساس.</p>
             )}
             {blocking && <p className="text-sm text-destructive" role="alert">{blocking}</p>}
             {error && <p className="text-sm text-destructive" role="alert">{error}</p>}

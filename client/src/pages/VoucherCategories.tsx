@@ -160,9 +160,9 @@ export default function VoucherCategories() {
             <div className="space-y-1">
               <Label>الاتجاه *</Label>
               <select className={selectCls} value={direction} onChange={(e) => setDirection(e.target.value as any)}>
-                <option value="BOTH">قبض وصَرف (BOTH)</option>
-                <option value="IN">قبض فقط (IN)</option>
-                <option value="OUT">صَرف فقط (OUT)</option>
+                <option value="BOTH">قبض وصرف</option>
+                <option value="IN">قبض فقط</option>
+                <option value="OUT">صرف فقط</option>
               </select>
             </div>
             <div className="space-y-1 md:col-span-2">

@@ -63,7 +63,7 @@ export default function WorkOrdersReport() {
 
   function onPrint() {
     printReportDoc({
-      title: "تقرير طلبات خدمة العملاء",
+      title: "تقرير أوامر الشغل",
       headerExtra: [
         { label: "الفترة", value: periodLabel },
         { label: "الفرع", value: branchLabel },
@@ -88,8 +88,8 @@ export default function WorkOrdersReport() {
 
   return (
     <ReportShell
-      title="تقرير طلبات خدمة العملاء"
-      description="توزيع طلبات خدمة العملاء حسب الحالة وقناة الاستلام مع ربحية الطلبات المُسلَّمة."
+      title="تقرير أوامر الشغل"
+      description="توزيع أوامر الشغل حسب الحالة وقناة الاستلام مع ربحية الأوامر المُسلَّمة."
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}

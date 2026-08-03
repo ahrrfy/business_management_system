@@ -20,6 +20,12 @@ import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptI
 import { CopyButton } from "@/components/CopyButton";
 import { notify } from "@/lib/notify";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { PasswordInput } from "@/components/form/PasswordInput";
+import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
+import { loadPosTabsDraft, posTabsDraftKey, savePosTabsDraft, type PosDraftScope } from "@/lib/cartDraft";
+import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { ROLE_LABEL } from "@/lib/roles";
+import { normalizeSearchText } from "@shared/searchNormalize";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
@@ -35,6 +41,8 @@ type Tab = {
   method: PaymentMethod;
   customerId: number | null;
   selUid: number | null;
+  /** مرجع عملية الدفع غير النقدي (إشعار جهاز/تحويل) — يُرسَل payment.reference ويُحفظ receipts.referenceNumber. */
+  paymentRef: string;
 };
 
 type Receipt = {
@@ -94,7 +102,7 @@ const riqd = (n: number) => roundCashIQD(n).toNumber();
 let TAB_SEQ = 2;
 let UID = 1;
 const newTab = (id: number, label?: string): Tab => ({
-  id, label: label ?? `طلب ${id}`, cart: [], payInput: "", method: "CASH", customerId: null, selUid: null,
+  id, label: label ?? `طلب ${id}`, cart: [], payInput: "", method: "CASH", customerId: null, selUid: null, paymentRef: "",
 });
 
 function brandedReceipt(r: Receipt): ReceiptBrowserData {
@@ -186,6 +194,52 @@ export default function PrintPOS() {
   );
   const selectedCustomer = tab.customerId == null ? null : selectedCustomerQ.data ?? null;
 
+  // ── مسوّدة التبويبات (localStorage) — نفس نمط كاشير التجزئة (cartDraft) بنطاق فرع+مستخدم+وردية ──
+  // وردية الطباعة PRINT_SERVICES صفٌّ مستقلّ في جدول الورديات (id فريد عبر الأنواع) ⇒ لا تصادم
+  // مفتاح مع مسوّدة كاشير التجزئة على نفس الجهاز.
+  const draftScope: PosDraftScope | null = shift?.id && me.data?.id
+    ? { branchId, userId: me.data.id, shiftId: shift.id }
+    : null;
+  const DRAFT_KEY = draftScope ? posTabsDraftKey(draftScope) : null;
+  const [restoredDraftKey, setRestoredDraftKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!draftScope || !DRAFT_KEY) {
+      // إغلاق الوردية/تبديل الهوية يزيل الفاتورة من الذاكرة فوراً (لا انتظار للوردية التالية).
+      if (restoredDraftKey !== null) {
+        setTabs([newTab(1, "طلب 1")]);
+        setActiveId(1);
+        setRestoredDraftKey(null);
+      }
+      return;
+    }
+    if (restoredDraftKey === DRAFT_KEY) return;
+    const saved = loadPosTabsDraft<Tab>(localStorage, draftScope);
+    if (saved) {
+      // عدّادا الوحدة (TAB_SEQ/UID) يُصفَّران عند إعادة التحميل — يُقدَّمان فوق أقصى معرّف
+      // مستعاد كي لا تتصادم مفاتيح التبويبات/الأسطر الجديدة مع المستعادة.
+      const maxTab = Math.max(0, ...saved.tabs.map((t) => t.id));
+      const maxUid = Math.max(0, ...saved.tabs.flatMap((t) => t.cart.map((c) => c.uid)));
+      if (TAB_SEQ <= maxTab) TAB_SEQ = maxTab + 1;
+      if (UID <= maxUid) UID = maxUid + 1;
+      // المسوّدات الأقدم لا تحمل paymentRef — تُستكمل بفراغ.
+      setTabs(saved.tabs.map((t) => ({ ...t, paymentRef: t.paymentRef ?? "" })));
+      setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
+    } else {
+      setTabs([newTab(1, "طلب 1")]);
+      setActiveId(1);
+    }
+    setRestoredDraftKey(DRAFT_KEY);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [DRAFT_KEY]);
+
+  useEffect(() => {
+    // لا تحفظ حالة وردية سابقة تحت مفتاح الوردية الجديدة أثناء رسم الانتقال.
+    if (!draftScope || !DRAFT_KEY || restoredDraftKey !== DRAFT_KEY) return;
+    savePosTabsDraft(localStorage, draftScope, tabs, activeId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs, activeId, DRAFT_KEY, restoredDraftKey]);
+
   // ── تبويبات ──
   const patch = (p: Partial<Tab>) => setTabs((prev) => prev.map((t) => (t.id === activeId ? { ...t, ...p } : t)));
   const setCart = (u: CartLine[] | ((c: CartLine[]) => CartLine[])) =>
@@ -245,7 +299,7 @@ export default function PrintPOS() {
       };
       setReceipt(rec);
       setLastInv({ num: r.invoiceNumber, total: p?.cashTotal ?? 0 });
-      setCart([]); setPayInput(""); patch({ selUid: null });
+      setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "" });
       setClientRequestId(crypto.randomUUID());
       const printed = await printReceipt(brandedReceipt(rec));
       setMessage({
@@ -290,6 +344,8 @@ export default function PrintPOS() {
       credit: isCredit ? cashTotal - paid : 0,
       isCredit,
     };
+    // مرجع الدفع غير النقدي: يُرسَل فقط غير فارغ (مخطط الخادم min(1) يرفض السلسلة الفارغة).
+    const payRef = method !== "CASH" ? (tab.paymentRef ?? "").trim() : "";
     sale.mutate({
       branchId, shiftId: shift.id, clientRequestId,
       customerId: tab.customerId ?? undefined, priceTier: "RETAIL",
@@ -297,7 +353,7 @@ export default function PrintPOS() {
         variantId: c.svc.variantId, productUnitId: c.svc.productUnitId,
         quantity: String(c.qty), unitPriceOverride: c.price.toFixed(2),
       })),
-      payment: { amount, method },
+      payment: { amount, method, ...(payRef ? { reference: payRef } : {}) },
       ...(cashFull ? { cashRoundIQD: true } : {}),
       ...(approval ? { managerApproval: approval } : {}),
     });
@@ -472,6 +528,7 @@ export default function PrintPOS() {
           setPrice={setPrice} editPriceUid={editPriceUid} setEditPriceUid={setEditPriceUid}
           customerId={tab.customerId} setCustomerId={(id) => patch({ customerId: id })}
           payInput={tab.payInput} setPayInput={setPayInput} method={tab.method} setMethod={(m) => patch({ method: m })}
+          paymentRef={tab.paymentRef ?? ""} setPaymentRef={(v) => patch({ paymentRef: v })}
           numPress={numPress} onPay={() => submit(false)} onQuickPay={() => submit(true)} isPending={sale.isPending}
         />
         <ServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} />
@@ -541,7 +598,10 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <div style={{ textAlign: "left" }}>
             <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.2, color: C.fg }}>{me.name}</div>
-            <div style={{ fontSize: 10.5, color: C.mutedFg, lineHeight: 1.2 }}>{me.role}</div>
+            <div style={{ fontSize: 10.5, color: C.mutedFg, lineHeight: 1.2 }}>
+              {/* تسمية الدور المخصّص أولاً ثم قاموس ROLE_LABEL — كان يُعرض كود الدور الخام (cashier). */}
+              {me.customRoleLabel ?? (me.role ? ROLE_LABEL[me.role] ?? me.role : "")}
+            </div>
           </div>
           <div style={{ width: 36, height: 36, borderRadius: "50%", background: C.primary, color: C.primaryFg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, flexShrink: 0 }}>{me.name?.[0] ?? "?"}</div>
         </div>
@@ -576,7 +636,12 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
 }) {
   const q = search.trim();
   const list = useMemo(() => {
-    if (q) return services.filter((s) => s.productName.includes(q));
+    // تطبيع عربي موحّد (همزات/تاء مربوطة/مقصورة/أرقام هندية) — «استنساخ» يجد «إستنساخ»،
+    // نفس فضاء البحث الخادمي (shared/searchNormalize) بدل includes الخام الحسّاس للهمزة.
+    if (q) {
+      const nq = normalizeSearchText(q);
+      return services.filter((s) => normalizeSearchText(s.productName).includes(nq));
+    }
     // print-catalog: catId=0 هو تبويب «أخرى» (الخدمات بلا فئة، categoryId == null).
     return services.filter((s) => (catId === 0 ? s.categoryId == null : s.categoryId === catId));
   }, [services, q, catId]);
@@ -734,6 +799,7 @@ interface CheckoutProps {
   setPrice: (uid: number, p: number) => void; editPriceUid: number | null; setEditPriceUid: (id: number | null) => void;
   customerId: number | null; setCustomerId: (id: number | null) => void;
   payInput: string; setPayInput: (u: string | ((s: string) => string)) => void; method: PaymentMethod; setMethod: (m: PaymentMethod) => void;
+  paymentRef: string; setPaymentRef: (v: string) => void;
   numPress: (k: string) => void; onPay: () => void; onQuickPay: () => void; isPending: boolean;
 }
 
@@ -817,7 +883,7 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
   );
 }
 
-function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, numPress, onPay, onQuickPay, cart, customerId, isPending }: CheckoutProps) {
+function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paymentRef, setPaymentRef, numPress, onPay, onQuickPay, cart, customerId, isPending }: CheckoutProps) {
   const cartLen = cart.length;
   const paid = Number(payInput || 0);
   const cashTotal = method === "CASH" ? riqd(total) : total;
@@ -867,6 +933,15 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, numP
           <Method m="CARD" Icon={CreditCard} label="بطاقة" />
           <Method m="TRANSFER" Icon={RefreshCw} label="تحويل" />
         </div>
+        {/* مرجع العملية للدفع غير النقدي — إلزامي بصرياً (تحذير) ولا يمنع الإتمام (يخفي نفسه للنقدي) */}
+        <PaymentReferenceField
+          value={paymentRef}
+          onChange={setPaymentRef}
+          method={method}
+          inputId="print-pos-payment-reference"
+          colors={{ border: C.border, muted: C.muted, mutedFg: C.mutedFg, fg: C.fg, amber: C.amber }}
+          style={{ marginBottom: 6 }}
+        />
         <div style={{ minHeight: 24, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
           {!cartLen && <span style={{ fontSize: 12.5, color: C.mutedFg }}>اختر خدمة للبدء</span>}
           {cartLen > 0 && hasZeroLine && <span style={{ fontSize: 12, color: C.amber, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>أدخل سعراً للخدمات ذات السعر اليدوي (<Pencil aria-hidden size={11} />)</span>}
@@ -952,7 +1027,8 @@ function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: 
 
   const closeShift = trpc.shifts.close.useMutation({
     onSuccess: async (r) => {
-      const payRows: [string, string, string][] = (report?.payments ?? []).map((p) => [`${p.method} ${p.direction === "IN" ? "وارد" : "صادر"}`, String(p.count), String(p.total)]);
+      // أكواد الطرق تُعرَّب في Z المطبوع (paymentMethodLabel) — كان يُطبع CARD/TRANSFER خاماً.
+      const payRows: [string, string, string][] = (report?.payments ?? []).map((p) => [`${paymentMethodLabel(p.method)} ${p.direction === "IN" ? "وارد" : "صادر"}`, String(p.count), String(p.total)]);
       await printDoc({
         kind: "zreport", title: SHOP, subtitle: "تقرير نهاية الوردية (Z) — قسم الطباعة",
         meta: [`وردية #${r.shiftId}`, fmtDateTime(new Date())],
@@ -994,7 +1070,7 @@ function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: 
             ))}
             {(report?.payments ?? []).filter((p) => Number(p.total) > 0).length > 0 && <div style={{ margin: "10px 0 4px", fontSize: 12, color: C.mutedFg, fontWeight: 700 }}>تفصيل طرق الدفع:</div>}
             {(report?.payments ?? []).filter((p) => Number(p.total) > 0).map((p) => (
-              <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", borderBottom: `1px dashed ${C.border}` }}><span style={{ color: C.mutedFg }}>{p.method} {p.direction === "IN" ? "وارد" : "صادر"} ({p.count})</span><span style={{ fontWeight: 600, color: p.direction === "OUT" ? C.danger : C.fg }}>{fmt(Number(p.total))} د.ع</span></div>
+              <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", borderBottom: `1px dashed ${C.border}` }}><span style={{ color: C.mutedFg }}>{paymentMethodLabel(p.method)} {p.direction === "IN" ? "وارد" : "صادر"} ({p.count})</span><span style={{ fontWeight: 600, color: p.direction === "OUT" ? C.danger : C.fg }}>{fmt(Number(p.total))} د.ع</span></div>
             ))}
             <div
               style={{ marginTop: 16 }}
@@ -1068,14 +1144,18 @@ function CreditApprovalDialog({ C, message, mgrEmail, setMgrEmail, mgrPwd, setMg
       <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, padding: "24px 28px", width: 380, boxShadow: "0 20px 56px rgb(0 0 0/.3)" }}>
         <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4, color: C.amber, display: "inline-flex", alignItems: "center", gap: 6 }}><AlertTriangle aria-hidden size={18} /> موافقة مدير مطلوبة</div>
         <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 18 }}>{message}</div>
-        {[{ label: "بريد المدير", value: mgrEmail, setter: setMgrEmail, type: "email", placeholder: "manager@alroya.local" }, { label: "كلمة المرور", value: mgrPwd, setter: setMgrPwd, type: "password", placeholder: "••••••••" }].map((f) => (
-          <div key={f.label} style={{ marginBottom: 12 }}>
-            <label style={{ fontSize: 13, fontWeight: 700, display: "block", marginBottom: 5, color: C.fg }}>{f.label}</label>
-            <input type={f.type} dir="ltr" value={f.value} placeholder={f.placeholder} onChange={(e) => f.setter(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && mgrEmail && mgrPwd) onApprove(); }}
-              style={{ width: "100%", height: 44, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 14, padding: "0 12px", outline: "none", boxSizing: "border-box" }} />
-          </div>
-        ))}
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 13, fontWeight: 700, display: "block", marginBottom: 5, color: C.fg }}>بريد المدير</label>
+          <input type="email" dir="ltr" value={mgrEmail} placeholder="manager@alroya.local" onChange={(e) => setMgrEmail(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && mgrEmail && mgrPwd) onApprove(); }}
+            style={{ width: "100%", height: 44, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 14, padding: "0 12px", outline: "none", boxSizing: "border-box" }} />
+        </div>
+        {/* PasswordInput الموحّد (عين إظهار/إخفاء — نفس مكوّن شاشة الدخول) بدل input نصيّ عارٍ.
+            Enter يعتمد ويُكمل — يُلتقط على الحاوية لأن المكوّن لا يكشف onKeyDown. */}
+        <div style={{ marginBottom: 12 }} onKeyDown={(e) => { if (e.key === "Enter" && mgrEmail && mgrPwd) onApprove(); }}>
+          <label style={{ fontSize: 13, fontWeight: 700, display: "block", marginBottom: 5, color: C.fg }}>كلمة المرور</label>
+          <PasswordInput value={mgrPwd} onChange={setMgrPwd} autoComplete="current-password" />
+        </div>
         <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
           <button disabled={!mgrEmail || !mgrPwd || isPending} onClick={onApprove}
             style={{ flex: 1, height: 46, background: !mgrEmail || !mgrPwd || isPending ? C.muted : C.primary, color: !mgrEmail || !mgrPwd || isPending ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 8, fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: !mgrEmail || !mgrPwd || isPending ? "not-allowed" : "pointer" }}>{isPending ? "جارٍ…" : "اعتمد وأكمل البيع"}</button>

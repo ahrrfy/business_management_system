@@ -425,7 +425,7 @@ export default function SupplierEdit() {
                   value={openingDir}
                   onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
                 >
-                  <option value="OWED_BY_US">علينا للمورّد (مستحق له)</option>
+                  <option value="OWED_BY_US">له علينا</option>
                   <option value="OWED_TO_US">لنا على المورّد (دفعة مقدّمة لنا)</option>
                 </select>
               </div>

@@ -178,6 +178,12 @@ const salesListInput = z
     balanceState: z.enum(["DEPOSIT_DUE", "OUTSTANDING", "UNPAID", "SETTLED"]).optional(),
     customerId: z.number().int().positive().optional(),
     salespersonId: z.number().int().positive().optional(),
+    // فلترة بطريقة الدفع (invoices.paymentMethod — نفس مصدر عمود «طريقة الدفع» في الشاشة).
+    // الحاجة التشغيلية: مطابقة يوم البطاقات مع كشف جهاز الدفع تتطلّب حصر فواتير CARD.
+    paymentMethod: method.optional(),
+    // فرع صريح للمرتفعين (admin/manager عابرَي الفروع) — يُفعَّل فقط حين scopedBranchId فارغ؛
+    // غير المرتفع يبقى محصوراً بفرعه مهما أرسل (انظر buildSalesListConds).
+    branchId: z.number().int().positive().optional(),
     // بحث نصّي خادميّ: رقم الفاتورة أو اسم العميل. كان البحث محلّياً على الصفحة المُحمَّلة وحدها
     // (سقف ٢٠٠) ⇒ فاتورة أقدم تُعطي «لا نتائج» وهي موجودة. خادميّ ⇒ يطال كل المطابق للفلتر.
     q: z.string().trim().min(1).optional(),
@@ -191,6 +197,9 @@ type SalesListInput = z.infer<typeof salesListInput>;
 export function buildSalesListConds(input: SalesListInput, scopedBranchId: number | null, scopedOwnerId: number | null = null) {
   const conds = [];
   if (scopedBranchId) conds.push(eq(invoices.branchId, scopedBranchId));
+  // فلتر الفرع الصريح — else حتماً: العزل الحاكم (scopedBranchId) مقدَّم دائماً، فلا يستطيع
+  // غير المرتفع توسيع نطاقه بإرسال branchId مغاير (يُتجاهَل مدخله بصمت ويبقى محصوراً بفرعه).
+  else if (input?.branchId) conds.push(eq(invoices.branchId, input.branchId));
   // عزل الموظف: غير المرتفعين يرون فواتيرهم فقط (createdBy = هم). admin/manager = null = الكل.
   if (scopedOwnerId != null) conds.push(eq(invoices.createdBy, scopedOwnerId));
   // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
@@ -198,6 +207,7 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
   if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
   if (input?.status) conds.push(eq(invoices.status, input.status));
   if (input?.sourceType) conds.push(eq(invoices.sourceType, input.sourceType));
+  if (input?.paymentMethod) conds.push(eq(invoices.paymentMethod, input.paymentMethod));
   if (input?.balanceState === "DEPOSIT_DUE") {
     conds.push(inArray(invoices.sourceType, ["ORDER", "WORKORDER"]));
     conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) > 0`);
@@ -396,6 +406,8 @@ export const saleRouter = router({
             id: invoices.id,
             invoiceNumber: invoices.invoiceNumber,
             sourceType: invoices.sourceType,
+            // branchId يُعرَض في عمود «الفرع» لدى المرتفعين حين الفلتر «كل الفروع» (التسمية من branches.list واجهياً).
+            branchId: invoices.branchId,
             invoiceDate: invoices.invoiceDate,
             total: invoices.total,
             paidAmount: invoices.paidAmount,
@@ -438,6 +450,8 @@ export const saleRouter = router({
             id: invoices.id,
             invoiceNumber: invoices.invoiceNumber,
             sourceType: invoices.sourceType,
+            // branchId يُعرَض في عمود «الفرع» لدى المرتفعين حين الفلتر «كل الفروع» (التسمية من branches.list واجهياً).
+            branchId: invoices.branchId,
             invoiceDate: invoices.invoiceDate,
             total: invoices.total,
             paidAmount: invoices.paidAmount,

@@ -16,6 +16,8 @@ type IssuedCoupon=RouterOutputs["crm"]["coupons"]["listIssued"]["rows"][number];
 /** حجم صفحة الإصدارات — سقف الخادم ٥٠٠. */
 const PAGE_SIZE=50;
 function today(){return new Date().toISOString().slice(0,10)}
+const PROGRAM_STATUS_AR: Record<string, string> = { DRAFT: "مسوّدة", ACTIVE: "نشط", PAUSED: "موقوف", ENDED: "منتهٍ" };
+const COUPON_STATUS_AR: Record<string, string> = { ACTIVE: "نشط", REDEEMED: "مستخدم", VOID: "ملغى" };
 export default function Coupons(){
   const utils=trpc.useUtils(); const programs=trpc.crm.coupons.programs.useQuery(); const campaigns=trpc.crm.campaigns.list.useQuery(); const offers=trpc.salesPromotions.list.useQuery({includeInactive:false});
   const couponOffers=useMemo(()=>(offers.data??[]).filter(o=>o.applicationMode==="COUPON"),[offers.data]);
@@ -54,7 +56,7 @@ export default function Coupons(){
                  stopPropagation (كان يُلطّف العَرَض لا العلّة). */
               <div key={p.id} className={`rounded-lg border p-3 ${selected===p.id?"border-primary bg-primary/5":""}`}>
                 <button type="button" onClick={()=>setSelected(p.id)} aria-pressed={selected===p.id} className="w-full text-right cursor-pointer">
-                  <div className="flex justify-between gap-2"><b>{p.name}</b><Badge>{p.status}</Badge></div>
+                  <div className="flex justify-between gap-2"><b>{p.name}</b><Badge>{PROGRAM_STATUS_AR[p.status] ?? p.status}</Badge></div>
                   <div className="text-xs text-muted-foreground mt-1">صادر: {p.issued} · مستخدم: {p.redeemed}</div>
                 </button>
                 <div className="flex gap-2 mt-2">
@@ -63,6 +65,6 @@ export default function Coupons(){
                   {p.status==="PAUSED"&&<Button size="sm" onClick={()=>status.mutate({programId:p.id,status:"ACTIVE"})}>استئناف</Button>}
                 </div>
               </div>)}</CardContent></Card>
-      <Card><CardHeader className="flex-row items-center justify-between"><CardTitle className="text-base">الإصدارات</CardTitle>{selected&&<div className="flex gap-2"><Input className="w-20" type="number" min="1" max="500" value={count} onChange={e=>setCount(e.target.value)}/><Button size="sm" disabled={issue.isPending} onClick={()=>issue.mutate({programId:selected,count:Math.max(1,Number(count)||1)})}><Ticket className="size-4"/> إصدار وطباعة</Button></div>}</CardHeader><CardContent>{!selected?<div className="text-center py-14 text-muted-foreground">اختر برنامجاً</div>:<><div className="flex justify-end mb-3"><Button size="sm" variant="outline" disabled={activeCount===0||printing} onClick={()=>void printActive()}><Printer className="size-4"/> {printing?"جارٍ التحضير…":`طباعة النشطة 54×84 (${activeCount})`}</Button></div><div className="max-h-[520px] overflow-auto rounded-md border"><table className="w-full text-sm"><thead className="bg-muted"><tr><th className="p-2 text-right">الرمز</th><th>الحالة</th><th></th></tr></thead><tbody>{issuedRows.map(c=><tr key={c.id} className="border-t"><td className="p-2 font-mono font-bold" dir="ltr">{c.code}</td><td className="text-center">{c.status}</td><td className="p-1">{c.status==="ACTIVE"&&<Button size="sm" variant="ghost" onClick={()=>voidM.mutate({couponId:c.id})}><XCircle className="size-4 text-destructive"/></Button>}</td></tr>)}</tbody></table></div><TablePager page={page} onPageChange={setPage} pageSize={PAGE_SIZE} rowsOnPage={issuedRows.length} total={issuedTotal} isLoading={issued.isFetching}/></>}</CardContent></Card></div>
+      <Card><CardHeader className="flex-row items-center justify-between"><CardTitle className="text-base">الإصدارات</CardTitle>{selected&&<div className="flex gap-2"><Input className="w-20" type="number" min="1" max="500" value={count} onChange={e=>setCount(e.target.value)}/><Button size="sm" disabled={issue.isPending} onClick={()=>issue.mutate({programId:selected,count:Math.max(1,Number(count)||1)})}><Ticket className="size-4"/> إصدار وطباعة</Button></div>}</CardHeader><CardContent>{!selected?<div className="text-center py-14 text-muted-foreground">اختر برنامجاً</div>:<><div className="flex justify-end mb-3"><Button size="sm" variant="outline" disabled={activeCount===0||printing} onClick={()=>void printActive()}><Printer className="size-4"/> {printing?"جارٍ التحضير…":`طباعة النشطة 54×84 (${activeCount})`}</Button></div><div className="max-h-[520px] overflow-auto rounded-md border"><table className="w-full text-sm"><thead className="bg-muted"><tr><th className="p-2 text-right">الرمز</th><th>الحالة</th><th></th></tr></thead><tbody>{issuedRows.map(c=><tr key={c.id} className="border-t"><td className="p-2 font-mono font-bold" dir="ltr">{c.code}</td><td className="text-center">{COUPON_STATUS_AR[c.status] ?? c.status}</td><td className="p-1">{c.status==="ACTIVE"&&<Button size="sm" variant="ghost" onClick={()=>voidM.mutate({couponId:c.id})}><XCircle className="size-4 text-destructive"/></Button>}</td></tr>)}</tbody></table></div><TablePager page={page} onPageChange={setPage} pageSize={PAGE_SIZE} rowsOnPage={issuedRows.length} total={issuedTotal} isLoading={issued.isFetching}/></>}</CardContent></Card></div>
   </div>;
 }
