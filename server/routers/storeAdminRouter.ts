@@ -281,7 +281,9 @@ const catalogRouter = router({
       offset: z.number().int().min(0).default(0),
     }))
     .query(async ({ input, ctx }) => {
-      const branchId = await resolveStorefrontBranchId(input.branchId ?? ctx.scopedBranchId ?? undefined);
+      // تدقيق ٣/٨: عزل الفرع أولاً — scopedBranchId (فرع المستخدم لغير المرتفع، null لـadmin/manager)
+      // يسبق input.branchId، وإلا تجاوز غير المرتفع عزله فقرأ مخزون فرع آخر. المرتفع يسقط لـinput.branchId.
+      const branchId = await resolveStorefrontBranchId(ctx.scopedBranchId ?? input.branchId ?? undefined);
       return listStoreCatalog({ ...input, branchId });
     }),
   setFeatured: storeManagerProcedure

@@ -528,18 +528,25 @@ export const authRouter = router({
       return { success: true } as const;
     }),
 
-  /** إعادة توليد رموز الاسترداد (تُبطل القديمة كلها) — تتطلّب رمز TOTP صالحاً. */
+  /** إعادة توليد رموز الاسترداد (تُبطل القديمة كلها) — تتطلّب كلمة المرور + رمز TOTP صالحاً.
+   *  تدقيق ٣/٨: كانت تطلب رمز TOTP فقط ⇒ جلسة مخطوفة برمز TOTP لحظي تُثبّت استمرارية بتوليد
+   *  رموز استرداد جديدة. أُضيف تحقّق كلمة المرور اتساقاً مع twoFactorDisable/twoFactorSetupStart. */
   twoFactorRegenerateCodes: protectedProcedure
-    .input(z.object({ code: z.string().min(1).max(16) }))
+    .input(z.object({ password: z.string().min(1).max(128), code: z.string().min(1).max(16) }))
     .mutation(async ({ input, ctx }) => {
-      const ok = await consumeTotpCode(ctx.user.id, input.code.trim());
-      if (!ok) {
-        const db = getDb();
-        if (db) {
-          const rows = await db.select().from(users).where(eq(users.id, ctx.user.id)).limit(1);
-          if (rows[0]) await registerFailedLogin(db, rows[0]);
-        }
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "رمز التحقق غير صحيح" });
+      const db = getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+      const rows = await db.select().from(users).where(eq(users.id, ctx.user.id)).limit(1);
+      const fresh = rows[0];
+      const locked = !!(fresh?.lockedUntil && new Date(fresh.lockedUntil).getTime() > Date.now());
+      if (!fresh || locked) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "تعذّر التحقق — أعد المحاولة لاحقاً." });
+      }
+      const passOk = verifyPassword(input.password, fresh.passwordHash);
+      const codeOk = passOk ? await consumeTotpCode(fresh.id, input.code.trim()) : false;
+      if (!passOk || !codeOk) {
+        await registerFailedLogin(db, fresh);
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "كلمة المرور أو رمز التحقق غير صحيح" });
       }
       const r = await regenerateRecoveryCodes(ctx.user.id);
       await logAudit(ctx, { action: "auth.2fa.recovery_regenerated", entityType: "user", entityId: ctx.user.id });

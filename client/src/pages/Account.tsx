@@ -442,7 +442,7 @@ function TwoFactorCard() {
             )}
             {step === "idle" && (
               <div className="flex gap-2 flex-wrap">
-                <Button size="sm" variant="outline" onClick={() => { setOtp(""); setStep("regen"); }}>
+                <Button size="sm" variant="outline" onClick={() => { setOtp(""); setPassword(""); setStep("regen"); }}>
                   إعادة توليد رموز الاسترداد
                 </Button>
                 <Button size="sm" variant="outline" className="text-destructive" onClick={() => { setPassword(""); setOtp(""); setDisableRecovery(""); setUseDisableRecovery(false); setStep("disable"); }}>
@@ -452,10 +452,14 @@ function TwoFactorCard() {
             )}
             {step === "regen" && (
               <div className="space-y-3 rounded-lg border p-3">
-                <p className="text-xs text-muted-foreground">أدخل الرمز الحالي من تطبيق المصادقة لتوليد ١٠ رموز استرداد جديدة (تُبطل القديمة كلها).</p>
-                {otpSlots((v) => regenMut.mutate({ code: v }))}
+                <p className="text-xs text-muted-foreground">أدخل كلمة المرور والرمز الحالي من تطبيق المصادقة لتوليد ١٠ رموز استرداد جديدة (تُبطل القديمة كلها).</p>
+                <div className="space-y-1.5">
+                  <Label htmlFor="regen-pw">كلمة المرور</Label>
+                  <PasswordInput id="regen-pw" autoComplete="current-password" value={password} onChange={setPassword} />
+                </div>
+                {otpSlots((v) => regenMut.mutate({ password, code: v }))}
                 <div className="flex gap-2">
-                  <Button size="sm" disabled={busy || otp.length !== 6} onClick={() => regenMut.mutate({ code: otp })}>
+                  <Button size="sm" disabled={busy || !password || otp.length !== 6} onClick={() => regenMut.mutate({ password, code: otp })}>
                     {regenMut.isPending ? "جارٍ…" : "توليد"}
                   </Button>
                   <Button size="sm" variant="ghost" onClick={resetFlow}>إلغاء</Button>

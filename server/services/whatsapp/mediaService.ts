@@ -13,7 +13,7 @@
  */
 import { eq } from "drizzle-orm";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { conversationMessages, waMedia, type WaOutbox } from "../../../drizzle/schema";
+import { conversationMessages, conversations, waMedia, type WaOutbox } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { withTx } from "../tx";
 import { graphFetch, type GraphIntegration } from "./graph";
@@ -21,6 +21,66 @@ import { classifyGraphError } from "./sendService";
 
 /** حدّ حجم الوسائط الوارد — يتّفق مع سقوف رفع الصور الأخرى في النظام (نمط productImages). */
 const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
+
+/** مضيفات وسائط Meta الموثوقة (لاحقة) — يُرسَل لها توكن الوصول عند التنزيل. */
+const TRUSTED_MEDIA_HOST_SUFFIXES = [
+  ".fbcdn.net",
+  ".fbsbx.com",
+  ".whatsapp.net",
+  ".facebook.com",
+  ".cdninstagram.com",
+];
+
+/** مضيف داخليّ/خاص (منع SSRF) — عناوين حرفية loopback/خاصة/link-local. */
+function isPrivateHost(host: string): boolean {
+  // URL.hostname يُبقي أقواس IPv6 (`[::1]`) — نجرّدها للمطابقة.
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".internal") || h.endsWith(".local")) return true;
+  // IPv4 حرفيّ في نطاقات خاصة/loopback/link-local/محجوزة.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) {
+    const [a, b] = h.split(".").map(Number);
+    if (a === 127 || a === 10 || a === 0 || (a === 169 && b === 254)) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  }
+  // IPv6 loopback/ULA/link-local.
+  if (h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) return true;
+  return false;
+}
+
+/**
+ * تدقيق ٣/٨ (SSRF + تسريب Bearer): يتحقّق من رابط تنزيل الوسائط القادم **من استجابة Graph** قبل
+ * جلبه بترويسة توكن الوصول. `meta.url` غير موثوق (لو كان apiBaseUrl خبيثاً أو Graph مُخترَقاً قد
+ * يوجّه الخادم لمضيف داخليّ أو يسرّب التوكن لمضيف عشوائي). القاعدة: (١) https حصراً، (٢) رفض مضيف
+ * داخليّ/خاص (SSRF)، (٣) إرسال التوكن فقط لمضيف Meta موثوق أو مضيف apiBaseUrl المُهيّأ (منع التسريب).
+ */
+export function guardMediaUrl(
+  rawUrl: string,
+  apiBaseUrl?: string | null
+): { ok: true; sendAuth: boolean } | { ok: false; detail: string } {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return { ok: false, detail: "رابط تنزيل الوسائط غير صالح." };
+  }
+  if (u.protocol !== "https:") return { ok: false, detail: "رابط تنزيل الوسائط غير آمن (ليس https)." };
+  const host = u.hostname.toLowerCase();
+  if (isPrivateHost(host)) return { ok: false, detail: "مضيف تنزيل الوسائط غير مسموح." };
+  let apiHost = "";
+  try {
+    if (apiBaseUrl) apiHost = new URL(apiBaseUrl).hostname.toLowerCase();
+  } catch {
+    apiHost = "";
+  }
+  // موثوق ⇒ يُرسَل التوكن: مضيف Meta معروف، أو مضيف apiBaseUrl المُهيّأ نفسه/مضيف فرعيّ منه
+  // (مطابقة فرعيّة صارمة لا «أصل مشترك» — أضيق سطحاً؛ مضيف BSP بأصلٍ مشترك مختلف يُنزَّل بلا توكن).
+  const trusted =
+    TRUSTED_MEDIA_HOST_SUFFIXES.some((s) => host.endsWith(s)) ||
+    (apiHost !== "" && (host === apiHost || host.endsWith(`.${apiHost}`)));
+  return { ok: true, sendAuth: trusted };
+}
 
 export type MediaFetchResult =
   | { ok: true }
@@ -68,10 +128,19 @@ export async function fetchInboundMedia(
     return { ok: false, permanent: true, detail: "الوسائط أكبر من الحد 5MB." };
   }
 
-  // ٢) تنزيل البايتات — بترويسة Authorization أيضاً (روابط lookaside تتطلّبها).
+  // ٢) تنزيل البايتات — بعد التحقّق من الرابط (SSRF + منع تسريب Bearer، تدقيق ٣/٨). التوكن يُرسَل
+  // فقط لمضيف Meta موثوق أو مضيف apiBaseUrl المُهيّأ (روابط lookaside تتطلّبه)؛ مضيف غير موثوق يُنزَّل
+  // بلا توكن (لا تسريب)، ومضيف داخليّ/غير https يُرفَض تماماً.
+  const urlGuard = guardMediaUrl(meta.url, integration.apiBaseUrl);
+  if (!urlGuard.ok) {
+    return { ok: false, permanent: true, detail: urlGuard.detail };
+  }
   let downloadRes: Response;
   try {
-    downloadRes = await fetchImpl(meta.url, { headers: { Authorization: `Bearer ${integration.accessToken}` } });
+    downloadRes = await fetchImpl(
+      meta.url,
+      urlGuard.sendAuth ? { headers: { Authorization: `Bearer ${integration.accessToken}` } } : {}
+    );
   } catch (e: any) {
     return { ok: false, permanent: false, detail: `تعذّر تنزيل الوسائط: ${e?.message ?? "خطأ شبكة"}` };
   }
@@ -103,16 +172,28 @@ export async function fetchInboundMedia(
   return { ok: true };
 }
 
-/** يجلب وسائط رسالة محفوظة للتقديم عبر مسار REST (مسار `/api/wa/media/:id` — مهمة لاحقة). null لو غير موجودة. */
-export async function getMediaForServing(messageId: number): Promise<{ mimeType: string; bytesBase64: string } | null> {
+/** يجلب وسائط رسالة محفوظة للتقديم عبر مسار REST (مسار `/api/wa/media/:id`). null لو غير موجودة.
+ *  يُرجِع `branchId` المحادثة (عبر conversationMessages → conversations) كي يفرض المسار عزل الفرع
+ *  (تدقيق ٣/٨: كان أي مستخدم مصادَق يعدّد messageId تسلسلياً فيسحب وسائط كل الفروع — IDOR أفقي). */
+export async function getMediaForServing(
+  messageId: number
+): Promise<{ mimeType: string; bytesBase64: string; branchId: number | null } | null> {
   const db = getDb();
   if (!db) return null;
   const row = (
     await db
-      .select({ mimeType: waMedia.mimeType, bytesBase64: waMedia.bytesBase64 })
+      .select({
+        mimeType: waMedia.mimeType,
+        bytesBase64: waMedia.bytesBase64,
+        branchId: conversations.branchId,
+      })
       .from(waMedia)
+      .innerJoin(conversationMessages, eq(conversationMessages.id, waMedia.messageId))
+      .innerJoin(conversations, eq(conversations.id, conversationMessages.conversationId))
       .where(eq(waMedia.messageId, messageId))
       .limit(1)
   )[0];
-  return row ? { mimeType: row.mimeType, bytesBase64: row.bytesBase64 } : null;
+  return row
+    ? { mimeType: row.mimeType, bytesBase64: row.bytesBase64, branchId: row.branchId == null ? null : Number(row.branchId) }
+    : null;
 }

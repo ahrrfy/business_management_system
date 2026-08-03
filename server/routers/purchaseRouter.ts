@@ -254,8 +254,8 @@ export const purchaseRouter = router({
     .input(
       z
         .object({
-          limit: z.number().default(50),
-          offset: z.number().default(0),
+          limit: z.number().int().positive().max(500).default(50), // تدقيق ٣/٨: سقف صريح ضدّ DoS الذاكرة.
+          offset: z.number().int().min(0).max(1_000_000).default(0),
           // S3 (٣٠/٦): cursor اختياري لـkeyset — `WHERE id < cursor` بدل OFFSET للعمق العميق.
           cursor: z.number().int().positive().optional(),
           // فلترة خادمية بالفترة (orderDate) والمورد والحالة.

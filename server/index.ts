@@ -266,6 +266,22 @@ async function startServer() {
     })
   );
 
+  // حدّ صارم على تتبّع الطلب العلني (storefront.trackOrder) — تدقيق ٣/٨: رقم الطلب متسلسل
+  // (`ORD-${100000+id}`) والعامل الثاني هاتفٌ شبه علنيّ ⇒ مهاجم يعرف هاتف الضحية يمسح مدى
+  // `ORD-*` تحت الحدّ العام السخيّ (٦٠٠/١٥د) فيحصد سجلّ مشترياته (أصناف/أسعار/محافظة). حدّ
+  // ضيّق خاص (نمط count.auth) يقفل التعداد دون تعطيل تتبّعٍ مشروع نادر لكل زبون.
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(process.env.STOREFRONT_TRACK_RATE_LIMIT_MAX ?? 20),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) => !req.path.includes("storefront.trackOrder"),
+      handler: rateLimitHandler("محاولات تتبّع كثيرة، انتظر قليلاً ثم أعد المحاولة."),
+    })
+  );
+
   // حدّ على سطح المتجر العلني (storefront.*) — قراءة آمنة بلا مصادقة على الإنترنت ⇒ حماية من
   // الكشط/الإغراق. سخيّ لأنه تصفّح (بطاقات + بحث + صفحة منتج) لكن مسقوف لكل IP.
   app.use(
@@ -294,6 +310,8 @@ async function startServer() {
       "auth.login", "count.auth", "kiosk.deviceLogin", "recruitment.submit", "platformAdmin.login",
       // أحداث القياس كتابة علنية؛ نمنع حشو عشرات العدادات في دفعة HTTP واحدة.
       "storefront.trackBanner", "storefront.trackConversion",
+      // تتبّع الطلب: قابل للتعداد (رقم متسلسل) ⇒ نمنع حشو عشرات المحاولات في دفعة واحدة تتجاوز حدّه.
+      "storefront.trackOrder",
     ];
     // مسار البَتش يبدأ بـ"/api/trpc/x," مع فاصلة بين أسماء الإجراءات الموحَّدة.
     const path = req.path || "";
@@ -352,6 +370,22 @@ async function startServer() {
   // tenancyMiddleware (لا كوكي جلسة إطلاقاً) — الأَمان يُطبَّق عبر HMAC verify داخل كل route.
   // نشر أحادي الشركة: كما كان تماماً على /api/webhooks. تعدد الشركات: مسار إضافي بادئته
   // رمز الشركة صراحةً في الرابط نفسه (لا كوكي ليُستخرَج منه) — راجع channelWebhooks.ts.
+  // حدّ معدّل مستقلّ على webhooks (تدقيق ٣/٨): كان الحدّ العام يتخطّى /api/webhooks كلياً بلا
+  // بديل ⇒ كل طلب POST مجهول (بترويسة توقيع بأي قيمة) يُشغّل جولة DB + فكّ AES + HMAC، و
+  // `GET ?hub.verify_token=` يُشغّل SELECT + SHA-256 لكل صفّ قناة — بلا أي سقف. سطح استنزاف
+  // CPU/DB مجهول الهوية. الحدّ سخيٌّ جداً (لا يحجب Meta الشرعية بحجمها المعتاد لعملٍ صغير) لكنه
+  // يقفل الإغراق. الأمان الأساسي يبقى HMAC (ثابت الزمن، fail-closed) — هذا حماية بنية فقط.
+  app.use(
+    "/api/webhooks",
+    rateLimit({
+      windowMs: 60 * 1000,
+      limit: Number(process.env.WEBHOOK_RATE_LIMIT_MAX ?? 300),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      handler: rateLimitHandler("طلبات كثيرة على الـwebhook، انتظر قليلاً."),
+    })
+  );
+
   app.use("/api/webhooks", channelWebhooksRouter());
   app.use("/api/webhooks/company/:companyCode", companyChannelWebhooksRouter());
 

@@ -9,7 +9,7 @@
  * ويطبّق **نفس محرّك العروض** (`resolvePromotionForLine`) المستعمل في نقطة البيع — فالسعر المعروض
  * = السعر المفروض (نقطة العرض = نقطة الفرض)، وطلب الزبون يُعاد تسعيره بنفس المحرّك خادمياً.
  */
-import { and, asc, desc, eq, gt, inArray, isNull, like, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   branchStock,
   branches,
@@ -24,6 +24,7 @@ import {
   promotions,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { escLike } from "../lib/sqlLike";
 import { decodeDataUrl, productImageUrl } from "../imageRoute";
 import { withTx } from "./tx";
 import { money, toDbMoney } from "./money";
@@ -344,8 +345,14 @@ export async function storefrontCatalog(opts: {
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
   const s = String(opts.search ?? "").trim();
   if (s) {
-    const p = `%${s}%`;
-    const searchCond = or(like(products.name, p), like(products.brand, p), like(productUnits.barcode, p));
+    // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') كبقية مسارات البحث — كان بحث «%» يطابق كل
+    // شيء ويفرض مسحاً كاملاً (اتساق/أداء؛ القيمة مربوطة أصلاً فلا حقن).
+    const p = `%${escLike(s)}%`;
+    const searchCond = or(
+      sql`${products.name} LIKE ${p} ESCAPE '!'`,
+      sql`${products.brand} LIKE ${p} ESCAPE '!'`,
+      sql`${productUnits.barcode} LIKE ${p} ESCAPE '!'`,
+    );
     if (searchCond) conds.push(searchCond);
   }
   const rows = await safeSelect(db, branchId)

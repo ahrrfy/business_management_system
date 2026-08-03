@@ -60,6 +60,15 @@ async function seed() {
   const password = process.env.ADMIN_PASSWORD ?? "Admin@12345";
   let admin = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
   if (!admin) {
+    // تدقيق ٣/٨: البذرة العادية (بلا SEED_MODE=prod) كانت تقبل الافتراضي المنشور «Admin@12345» بلا
+    // حارس إنتاج ⇒ تشغيلها على قاعدة إنتاجية بلا ADMIN_PASSWORD يُنشئ مديراً بكلمة معروفة علناً.
+    // نرفض إنشاء مدير جديد بالقيمة المنشورة عند NODE_ENV=production (حارس isProd أعلاه يبقى للبذرة النظيفة).
+    const publishedPw = new Set(["Admin@12345", "ضع-كلمة-قوية-هنا"]);
+    if (process.env.NODE_ENV === "production" && (!process.env.ADMIN_PASSWORD || publishedPw.has(password))) {
+      throw new Error(
+        "رفض إنشاء المدير على قاعدة إنتاجية بكلمة المرور الافتراضية المنشورة — اضبط ADMIN_PASSWORD قوية في .env."
+      );
+    }
     await db.insert(users).values({
       openId: `local_${nanoid()}`,
       email,
