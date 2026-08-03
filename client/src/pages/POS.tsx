@@ -425,7 +425,9 @@ export default function POS() {
   const [restoredDraftKey, setRestoredDraftKey] = useState<string | null>(null);
 
   // تحت 1024px (اللوحي/الأصغر) تُكدَّس لوحتا الكاشير عمودياً بدل الصفّ الأفقي ذي العرض الثابت.
-  const stacked = useMediaQuery("(max-width: 1023px)");
+  // القيد الحاكم عند زوم المتصفح هو الارتفاع لا العرض (الزوم يُقلّص المساحة بوحدات CSS)،
+  // فتُضاف عتبة ارتفاع وإلّا بقيت البنية أفقيّةً في علبةٍ لا تتّسع لها.
+  const stacked = useMediaQuery("(max-width: 1023px), (max-height: 620px)");
 
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -1883,8 +1885,10 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
     else if (s.isShort) { flaggedCount++; }
   }
 
+  // minHeight:0 لازمٌ في الوضع المكدَّس: min-height:auto الافتراضيّ يمنع الانكماش
+  // دون ارتفاع المحتوى، فيفيض العمود ويُقصّ ما تحته.
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: C.card, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, background: C.card, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden" }}>
 
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 12px", height: 46, background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0, gap: 8 }}>
@@ -2142,20 +2146,31 @@ interface PaymentPanelProps {
 
 function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending }: PaymentPanelProps) {
 
+  // ── الاحتواء الديناميكي ──────────────────────────────────────────────────────
+  // زوم المتصفح لا يُكبّر الشاشة بل يُقلّص المساحة المتاحة بوحدات CSS. الارتفاعات
+  // الثابتة كانت تفيض من عمودٍ كلّ أبنائه flexShrink:0 فتُقصّ أزرار الدفع بصمت.
+  // `cqh` تقيس ارتفاع اللوحة الفعليّ (لا الشاشة) ⇒ تنكمش الكثافة مع الزوم والدقّة
+  // وحجم النافذة بآليّةٍ واحدة. في الوضع المكدَّس ارتفاع اللوحة يحدّده محتواها،
+  // و`contain:size` الذي يستلزمه container-type كان يطويها ⇒ نقيس هناك بالشاشة.
+  const HU = stacked ? "vh" : "cqh";
+  const fluid = (min: number, ratio: number, max: number) => `clamp(${min}px, ${ratio}${HU}, ${max}px)`;
+
   const modeStyle = (active: boolean): React.CSSProperties => ({
     display: "flex", alignItems: "center", justifyContent: "center",
-    height: 54, minWidth: 70, padding: "0 8px",
+    height: fluid(34, 6.2, 54), minWidth: 70, padding: "0 8px",
     fontSize: 13, fontWeight: 800, cursor: "pointer",
     fontFamily: "inherit", borderRadius: 9,
     border: active ? `1.5px solid ${C.modeBord}` : `1.5px solid ${C.border}`,
     background: active ? C.modeActive : C.numKey,
     color: active ? C.modeFg : C.mutedFg,
-    transition: "all .1s", userSelect: "none" as const, touchAction: "manipulation" as const,
+    // ⚠ لا تُعِدها `all`: مع ارتفاعٍ بوحدات الحاوية يُبقي كروم القيمة القديمة عند تغيّر
+    // حجم الحاوية (الانتقال لا يُعيد حلّ الوحدة) فيثبت الزرّ على مقاسٍ بائد.
+    transition: "background .1s, color .1s, border-color .1s", userSelect: "none" as const, touchAction: "manipulation" as const,
   });
 
   const numKeyStyle = (del?: boolean): React.CSSProperties => ({
     display: "flex", alignItems: "center", justifyContent: "center",
-    height: 54, fontSize: 21, fontWeight: 800,
+    height: fluid(34, 6.2, 54), fontSize: fluid(16, 2.4, 21), fontWeight: 800,
     background: del ? C.delKey : C.numKey,
     color: del ? C.delFg : C.fg,
     border: `1.5px solid ${C.border}`,
@@ -2167,11 +2182,11 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
 
   const payMethodStyle = (active: boolean): React.CSSProperties => ({
     flex: 1, display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center",
-    gap: 3, minHeight: 60, fontSize: 14, fontWeight: 800,
+    gap: 3, minHeight: fluid(40, 6.9, 60), fontSize: 14, fontWeight: 800,
     border: `2px solid ${active ? C.primary : C.border}`,
     borderRadius: 9, cursor: "pointer", fontFamily: "inherit",
     background: active ? C.primary : C.card, color: active ? C.primaryFg : C.fg,
-    transition: "all .1s", userSelect: "none" as const,
+    transition: "background .1s, color .1s, border-color .1s, box-shadow .1s", userSelect: "none" as const,
     boxShadow: active ? `0 3px 10px oklch(0.488 0.243 264.376 / .28)` : "none",
   });
 
@@ -2180,7 +2195,15 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
     : "المبلغ المستلم";
 
   return (
-    <div style={{ width: stacked ? "100%" : 420, maxWidth: "100%", flexShrink: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+    <div style={{
+      width: stacked ? "100%" : 420, maxWidth: "100%",
+      // مكدَّساً: تشارك المساحة وتنكمش. كانت flexShrink:0 بارتفاعها الطبيعيّ ⇒ تفيض فتُقصّ.
+      ...(stacked ? { flex: "1 1 auto" } : { flexShrink: 0 }),
+      minHeight: 0,
+      display: "flex", flexDirection: "column",
+      containerType: stacked ? undefined : "size",
+      background: C.card, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden",
+    }}>
 
       {/* خطأ بيع حرِج ثابت (بديل toast العابر) — يبقى ظاهراً حتى محاولة جديدة/إغلاق يدوي */}
       {saleError && (
@@ -2196,17 +2219,22 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontSize: 12.5, color: C.mutedFg, fontWeight: 600 }}>إجمالي الفاتورة</span>
           <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-            <span style={{ fontSize: 28, fontWeight: 900, direction: "ltr", letterSpacing: "-1px", color: C.fg }}>{fmt(total)}</span>
+            <span style={{ fontSize: fluid(20, 3.3, 28), fontWeight: 900, direction: "ltr", letterSpacing: "-1px", color: C.fg }}>{fmt(total)}</span>
             <span style={{ fontSize: 12.5, color: C.mutedFg }}>د.ع</span>
           </div>
         </div>
       </div>
 
+      {/* منطقة الإدخال — الوحيدة القابلة للتمرير. شبكة الأمان: مهما ضاق الارتفاع
+          (زوم/دقّة/تكبير خطّ النظام) تُمرَّر هذه وحدها، ويبقى الإجمالي فوقها وأزرار
+          الدفع تحتها ظاهرَين دائماً. بلا هذا كان الفائض يُقصّ بصمت بلا شريط تمرير. */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain" }}>
+
       {/* Amount display */}
       <div style={{ padding: "4px 11px 3px", flexShrink: 0 }}>
-        <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 9, padding: "5px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 46 }}>
+        <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 9, padding: "5px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: fluid(34, 5.4, 46) }}>
           <span style={{ fontSize: 12, color: C.mutedFg }}>{modeLabel}</span>
-          <span style={{ fontSize: 24, fontWeight: 900, direction: "ltr", marginRight: 6, color: numMode === "PAY" && payInput ? (isOwing ? C.amber : C.primary) : C.fg }}>
+          <span style={{ fontSize: fluid(18, 2.9, 24), fontWeight: 900, direction: "ltr", marginRight: 6, color: numMode === "PAY" && payInput ? (isOwing ? C.amber : C.primary) : C.fg }}>
             {numMode === "PAY" ? (payInput ? Number(payInput).toLocaleString("en-US") : "—") : "—"}
           </span>
         </div>
@@ -2217,13 +2245,13 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         <div style={{ padding: "3px 11px 2px", display: "flex", gap: 3, flexWrap: "wrap", flexShrink: 0 }}>
           {QUICK_AMTS.map((a) => (
             <button key={a} onClick={() => setPayInput(String(a))}
-              style={{ height: 40, padding: "0 10px", background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 7, cursor: "pointer", fontSize: 13, fontWeight: 700, color: C.fg, fontFamily: "inherit" }}>
+              style={{ height: fluid(30, 4.7, 40), padding: "0 10px", background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 7, cursor: "pointer", fontSize: 13, fontWeight: 700, color: C.fg, fontFamily: "inherit" }}>
               {fmt(a)}
             </button>
           ))}
           {cartLen > 0 && (
             <button onClick={() => setPayInput(String(total))}
-              style={{ height: 40, padding: "0 10px", background: C.card, border: `1.5px solid ${C.primary}`, borderRadius: 7, cursor: "pointer", fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: "inherit" }}>
+              style={{ height: fluid(30, 4.7, 40), padding: "0 10px", background: C.card, border: `1.5px solid ${C.primary}`, borderRadius: 7, cursor: "pointer", fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: "inherit" }}>
               = الكل
             </button>
           )}
@@ -2266,12 +2294,12 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
             onKeyDown={(e) => { if (e.key === "Enter") onApplyCoupon(); }}
             placeholder="اكتب أو امسح الرمز"
             disabled={!cartLen || couponPending}
-            style={{ minWidth: 0, flex: 1, height: 40, border: `1.5px solid ${couponCode ? C.success : C.border}`, borderRadius: 8, background: C.muted, color: C.fg, padding: "0 9px", fontFamily: "inherit", fontWeight: 800, direction: "ltr" }}
+            style={{ minWidth: 0, flex: 1, height: fluid(30, 4.7, 40), border: `1.5px solid ${couponCode ? C.success : C.border}`, borderRadius: 8, background: C.muted, color: C.fg, padding: "0 9px", fontFamily: "inherit", fontWeight: 800, direction: "ltr" }}
           />
           {couponCode ? (
-            <button onClick={onClearCoupon} style={{ height: 40, padding: "0 10px", border: `1px solid ${C.danger}`, borderRadius: 8, background: C.dangerSoft, color: C.danger, fontFamily: "inherit", fontWeight: 800, cursor: "pointer" }}>إزالة</button>
+            <button onClick={onClearCoupon} style={{ height: fluid(30, 4.7, 40), padding: "0 10px", border: `1px solid ${C.danger}`, borderRadius: 8, background: C.dangerSoft, color: C.danger, fontFamily: "inherit", fontWeight: 800, cursor: "pointer" }}>إزالة</button>
           ) : (
-            <button disabled={!cartLen || !couponInput.trim() || couponPending} onClick={onApplyCoupon} style={{ height: 40, padding: "0 12px", border: 0, borderRadius: 8, background: C.primary, color: C.primaryFg, fontFamily: "inherit", fontWeight: 800, cursor: "pointer" }}>{couponPending ? "تحقق…" : "تطبيق"}</button>
+            <button disabled={!cartLen || !couponInput.trim() || couponPending} onClick={onApplyCoupon} style={{ height: fluid(30, 4.7, 40), padding: "0 12px", border: 0, borderRadius: 8, background: C.primary, color: C.primaryFg, fontFamily: "inherit", fontWeight: 800, cursor: "pointer" }}>{couponPending ? "تحقق…" : "تطبيق"}</button>
           )}
         </div>
         {couponCode && (
@@ -2331,6 +2359,12 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         </div>
       )}
 
+      </div>{/* ← نهاية منطقة الإدخال القابلة للتمرير */}
+
+      {/* منطقة الفعل — خارج التمرير ولا تنكمش أبداً: الباقي/المتبقي + زرّا الدفع.
+          هذه هي الضمانة الصلبة بأنّ زرّ الدفع لا يختفي مهما بلغ الزوم. */}
+      <div style={{ flexShrink: 0, background: C.card }}>
+
       {/* Change / owing indicator */}
       <div style={{ borderTop: `1px solid ${C.border}`, padding: "4px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 36, flexShrink: 0 }}>
         {!cartLen && <span style={{ fontSize: 13, color: C.mutedFg }}>أضف منتجات للبدء</span>}
@@ -2363,14 +2397,14 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
           disabled={!cartLen || isPending}
           onClick={() => onQuickPay()}
           style={{
-            width: "100%", height: 52,
+            width: "100%", height: fluid(42, 6.1, 52),
             background: cartLen && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted,
             color: cartLen && !isPending ? "#fff" : C.mutedFg,
             border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: 15, fontWeight: 900,
             cursor: cartLen && !isPending ? "pointer" : "not-allowed",
             display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
             boxShadow: cartLen && !isPending ? "0 4px 14px oklch(0.60 0.18 50 / .38)" : "none",
-            transition: "all .1s",
+            transition: "background .1s, color .1s, box-shadow .1s",
           }}>
           <Zap aria-hidden size={18} /> دفع سريع وطباعة — {paymentMethodLabel(method)}
         </button>
@@ -2386,14 +2420,14 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
           disabled={!canPay || isPending}
           onClick={() => onPay()}
           style={{
-            width: "100%", height: 52,
+            width: "100%", height: fluid(42, 6.1, 52),
             background: canPay && !isPending ? C.success : C.muted,
             color: canPay && !isPending ? "#fff" : C.mutedFg,
             border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: 15, fontWeight: 900,
             cursor: canPay && !isPending ? "pointer" : "not-allowed",
             display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
             boxShadow: canPay && !isPending ? `0 3px 12px oklch(0.50 0.13 155 / .30)` : "none",
-            transition: "all .1s",
+            transition: "background .1s, color .1s, box-shadow .1s",
           }}>
           {isPending
             ? "جارٍ…"
@@ -2403,6 +2437,8 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         </button>
         <div style={{ textAlign: "center", marginTop: 4, fontSize: 10.5, color: C.mutedFg }}>F4 للدفع · F2 للبحث · F9 طباعة</div>
       </div>
+
+      </div>{/* ← نهاية منطقة الفعل */}
     </div>
   );
 }

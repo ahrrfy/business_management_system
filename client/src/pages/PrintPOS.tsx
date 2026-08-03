@@ -803,6 +803,11 @@ interface CheckoutProps {
   numPress: (k: string) => void; onPay: () => void; onQuickPay: () => void; isPending: boolean;
 }
 
+// الاحتواء الديناميكي: زوم المتصفح لا يُكبّر الشاشة بل يُقلّص المساحة بوحدات CSS.
+// الارتفاعات الثابتة كانت تُفيض لوحة الدفع فتُقصّ أزرارها بصمت تحت overflow:hidden.
+// ارتفاع اللوحة هنا يحدّده محتواها (لا الشبكة) ⇒ نقيس بالشاشة (vh) لا بالحاوية.
+const fluid = (min: number, ratio: number, max: number) => `clamp(${min}px, ${ratio}vh, ${max}px)`;
+
 function CheckoutColumn(props: CheckoutProps) {
   const { C } = props;
   return (
@@ -897,32 +902,33 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
 
   const Key = ({ k, del }: { k: string; del?: boolean }) => (
     <button onClick={() => numPress(k)} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.95)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")} onMouseLeave={(e) => (e.currentTarget.style.transform = "")}
-      style={{ height: 44, fontSize: 20, fontWeight: 800, background: del ? C.delKey : C.numKey, color: del ? C.delFg : C.fg, border: `1.5px solid ${C.border}`, borderRadius: 10, cursor: "pointer", fontFamily: "inherit", direction: "ltr", userSelect: "none", touchAction: "manipulation" }}>{k}</button>
+      style={{ height: fluid(30, 4.6, 44), fontSize: fluid(15, 2.2, 20), fontWeight: 800, background: del ? C.delKey : C.numKey, color: del ? C.delFg : C.fg, border: `1.5px solid ${C.border}`, borderRadius: 10, cursor: "pointer", fontFamily: "inherit", direction: "ltr", userSelect: "none", touchAction: "manipulation" }}>{k}</button>
   );
   const Method = ({ m, Icon, label }: { m: PaymentMethod; Icon: React.ComponentType<{ "aria-hidden"?: boolean; size?: number }>; label: string }) => (
     <button onClick={() => setMethod(m)}
-      style={{ flex: 1, minHeight: 46, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `2px solid ${method === m ? C.primary : C.border}`, borderRadius: 10, background: method === m ? C.primary : C.card, color: method === m ? C.primaryFg : C.fg, fontWeight: 800, fontSize: 13.5, cursor: "pointer", fontFamily: "inherit", touchAction: "manipulation" }}>
+      style={{ flex: 1, minHeight: fluid(36, 4.8, 46), display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `2px solid ${method === m ? C.primary : C.border}`, borderRadius: 10, background: method === m ? C.primary : C.card, color: method === m ? C.primaryFg : C.fg, fontWeight: 800, fontSize: 13.5, cursor: "pointer", fontFamily: "inherit", touchAction: "manipulation" }}>
       <Icon aria-hidden size={19} />{label}
     </button>
   );
 
   return (
-    <div style={{ flexShrink: 0, background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-      <div style={{ padding: "7px 16px", background: C.primary, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+    <div style={{ flexShrink: 0, minHeight: 0, maxHeight: "72%", display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+      <div style={{ padding: "7px 16px", background: C.primary, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
         <span style={{ fontSize: 13.5, color: C.primaryFg, fontWeight: 700, opacity: 0.92 }}>الإجمالي</span>
         <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
-          <span style={{ fontSize: 27, fontWeight: 900, direction: "ltr", letterSpacing: "-1px", color: C.primaryFg }}>{fmt(total)}</span>
+          <span style={{ fontSize: fluid(20, 2.9, 27), fontWeight: 900, direction: "ltr", letterSpacing: "-1px", color: C.primaryFg }}>{fmt(total)}</span>
           <span style={{ fontSize: 12.5, color: C.primaryFg, opacity: 0.85 }}>د.ع</span>
         </div>
       </div>
-      <div style={{ padding: "7px 10px 9px" }}>
-        <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "5px 13px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 38, marginBottom: 6 }}>
+      {/* منطقة الإدخال — الوحيدة القابلة للتمرير؛ الإجمالي فوقها وأزرار الدفع تحتها ثابتان. */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: "7px 10px 0" }}>
+        <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "5px 13px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: fluid(30, 4, 38), marginBottom: 6 }}>
           <span style={{ fontSize: 12, color: C.mutedFg }}>المبلغ المستلم</span>
-          <span style={{ fontSize: 22, fontWeight: 900, direction: "ltr", color: payInput ? (isOwing ? C.amber : C.primary) : C.mutedFg }}>{payInput ? Number(payInput).toLocaleString("en-US") : "—"}</span>
+          <span style={{ fontSize: fluid(17, 2.4, 22), fontWeight: 900, direction: "ltr", color: payInput ? (isOwing ? C.amber : C.primary) : C.mutedFg }}>{payInput ? Number(payInput).toLocaleString("en-US") : "—"}</span>
         </div>
         <div style={{ display: "flex", gap: 5, marginBottom: 6 }}>
-          {QUICK.map((a) => <button key={a} onClick={() => setPayInput(String(a))} style={{ flex: 1, height: 34, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 800, color: C.fg, fontFamily: "inherit", touchAction: "manipulation" }}>{fmt(a)}</button>)}
-          <button onClick={() => setPayInput(String(cashTotal))} disabled={!cartLen} style={{ flex: 0.7, height: 34, background: C.primarySoft, border: `1.5px solid ${C.primary}`, borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 800, color: C.primary, fontFamily: "inherit", touchAction: "manipulation" }}>= الكل</button>
+          {QUICK.map((a) => <button key={a} onClick={() => setPayInput(String(a))} style={{ flex: 1, height: fluid(26, 3.6, 34), background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 800, color: C.fg, fontFamily: "inherit", touchAction: "manipulation" }}>{fmt(a)}</button>)}
+          <button onClick={() => setPayInput(String(cashTotal))} disabled={!cartLen} style={{ flex: 0.7, height: fluid(26, 3.6, 34), background: C.primarySoft, border: `1.5px solid ${C.primary}`, borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 800, color: C.primary, fontFamily: "inherit", touchAction: "manipulation" }}>= الكل</button>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, direction: "ltr", marginBottom: 6 }}>
           {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((k) => <Key key={k} k={k} />)}
@@ -942,6 +948,11 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
           colors={{ border: C.border, muted: C.muted, mutedFg: C.mutedFg, fg: C.fg, amber: C.amber }}
           style={{ marginBottom: 6 }}
         />
+
+        </div>{/* ← نهاية منطقة الإدخال القابلة للتمرير */}
+
+        {/* منطقة الفعل — خارج التمرير ولا تنكمش: زرّا الدفع يبقيان ظاهرَين مهما بلغ الزوم. */}
+        <div style={{ flexShrink: 0, padding: "6px 10px 9px", borderTop: `1px solid ${C.border}` }}>
         <div style={{ minHeight: 24, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
           {!cartLen && <span style={{ fontSize: 12.5, color: C.mutedFg }}>اختر خدمة للبدء</span>}
           {cartLen > 0 && hasZeroLine && <span style={{ fontSize: 12, color: C.amber, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>أدخل سعراً للخدمات ذات السعر اليدوي (<Pencil aria-hidden size={11} />)</span>}
@@ -951,11 +962,11 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
         </div>
         <div style={{ display: "flex", gap: 7 }}>
           <button disabled={!cartLen || hasZeroLine || isPending} onClick={onQuickPay}
-            style={{ width: 116, height: 52, background: cartLen && !hasZeroLine && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: cartLen && !hasZeroLine && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13.5, fontWeight: 900, cursor: cartLen && !hasZeroLine && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, touchAction: "manipulation" }}>
+            style={{ width: 116, height: fluid(42, 5.5, 52), background: cartLen && !hasZeroLine && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: cartLen && !hasZeroLine && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13.5, fontWeight: 900, cursor: cartLen && !hasZeroLine && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, touchAction: "manipulation" }}>
             <Zap aria-hidden size={17} />دفع سريع ({METHOD_LABEL[method]})
           </button>
           <button disabled={!canPay || isPending} onClick={onPay}
-            style={{ flex: 1, height: 52, background: canPay && !isPending ? C.success : C.muted, color: canPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 16, fontWeight: 900, cursor: canPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, touchAction: "manipulation" }}>
+            style={{ flex: 1, height: fluid(42, 5.5, 52), background: canPay && !isPending ? C.success : C.muted, color: canPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 16, fontWeight: 900, cursor: canPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, touchAction: "manipulation" }}>
             {isPending
               ? "جارٍ…"
               : !cartLen
