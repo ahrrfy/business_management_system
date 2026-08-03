@@ -106,7 +106,12 @@ type CartLine = {
 const QUICK_AMTS = [1000, 5000, 10000, 25000];
 
 function effectivePrice(line: CartLine): number {
-  const base = line.origPrice ?? Number(line.custom?.unitPrice ?? line.row.price ?? 0);
+  // التخصيص إضافيّ: سعر الوحدة للسطر المخصّص = سعر المنتج الأساس + سعر التخصيص (فوقه)، لا بديلاً عنه.
+  const base = line.origPrice ?? (
+    line.custom
+      ? Number(line.row.price ?? 0) + Number(line.custom.unitPrice ?? 0)
+      : Number(line.row.price ?? 0)
+  );
   if (line.disc && line.disc > 0) return base * (1 - line.disc / 100);
   return base;
 }
@@ -398,21 +403,8 @@ export default function Reception() {
   const resultsEmpty = results.length === 0 && debounced.trim().length >= 2 && !searchResults.isFetching;
 
   // ───── السلّة ─────────────────────────────────────────────────────────────
-  const addRow = useCallback((row: PosRow) => {
-    // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعر RETAIL
-    // بالدخول للسلّة ثم يَفشل عند الإرسال (createWorkOrder يَرفض salePrice<=0) بَعد ما اَلتزَمت
-    // فاتورة البيع — رحلةٌ بِنصف نتيجة. الحارس موحَّد للنوعين.
-    if (row.price == null || Number(row.price) <= 0) {
-      notify.err(`لا سعر RETAIL لـ ${row.productName} (${row.unitName}) — حدّد سعراً من /products أوّلاً`);
-      return;
-    }
-    // المنتج المخصّص (products.isCustomizable=true) ⇒ افتح نافذة التخصيص.
-    if (row.isCustomizable) {
-      setShowCustomization({ row });
-      setSearch("");
-      setShowDrop(false);
-      return;
-    }
+  /** يضيف صنفاً جاهزاً (بلا تخصيص) بسعره العادي — يدمج مع سطرٍ مطابق غير مخصّص إن وُجد. */
+  const addDirectLine = useCallback((row: PosRow) => {
     setCart((prev) => {
       // دمج كميّات الصنف الجاهز المُكرَّر (لا تكرار سطر).
       const i = prev.findIndex((c) => !isCustomKind(c) && c.row.productUnitId === row.productUnitId);
@@ -426,11 +418,38 @@ export default function Reception() {
       setSelKey(key);
       return [...prev, { key, row, qty: 1 }];
     });
+    setWorkflowStep(3);
+  }, []);
+
+  const addRow = useCallback((row: PosRow) => {
+    // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعر RETAIL
+    // بالدخول للسلّة ثم يَفشل عند الإرسال (createWorkOrder يَرفض salePrice<=0) بَعد ما اَلتزَمت
+    // فاتورة البيع — رحلةٌ بِنصف نتيجة. الحارس موحَّد للنوعين.
+    if (row.price == null || Number(row.price) <= 0) {
+      notify.err(`لا سعر RETAIL لـ ${row.productName} (${row.unitName}) — حدّد سعراً من /products أوّلاً`);
+      return;
+    }
+    // المنتج المخصّص (products.isCustomizable=true) ⇒ افتح نافذة التخصيص (وفيها خيار «بلا تخصيص»
+    // لعميلٍ يريد القطعة كما هي — انظر onAddPlain أدناه، إصلاح ٣/٨).
+    if (row.isCustomizable) {
+      setShowCustomization({ row });
+      setSearch("");
+      setShowDrop(false);
+      return;
+    }
+    addDirectLine(row);
     setSearch("");
     setShowDrop(false);
-    setWorkflowStep(3);
     searchRef.current?.focus();
-  }, []);
+  }, [addDirectLine]);
+
+  /** العميل يريد هذه القطعة تحديداً بلا تخصيص (بسعرها العادي) رغم أنّ صنفها قابلٌ للتخصيص — يسمح
+   *  بمزج قطعةٍ مخصّصة وأخرى جاهزة من نفس المنتج في طلبٍ واحد. */
+  function addPlain(row: PosRow) {
+    addDirectLine(row);
+    setShowCustomization(null);
+    searchRef.current?.focus();
+  }
 
   /** خدمة حرة كانت تُنشأ من صفحة «طلب خدمة جديد». أصبحت الآن سطراً داخل السلة نفسها. */
   function addManualService() {
@@ -629,7 +648,8 @@ export default function Reception() {
     }
     const invalidCustom = cart.find((line) => {
       if (!line.custom) return false;
-      return !line.custom.title.trim() || D(line.custom.unitPrice || 0).lte(0);
+      const unitTotal = D(line.row.price || 0).plus(D(line.custom.unitPrice || 0));
+      return !line.custom.title.trim() || unitTotal.lte(0);
     });
     if (invalidCustom) {
       setSelKey(invalidCustom.key);
@@ -1796,7 +1816,7 @@ export default function Reception() {
           initial={
             showCustomization.editingKey
               ? cart.find((c) => c.key === showCustomization.editingKey)?.custom
-              : emptyCustomization(showCustomization.row.productName, showCustomization.row.price ?? "0")
+              : emptyCustomization(showCustomization.row.productName)
           }
           staff={(staffQ.data ?? []).map((member) => ({
             id: Number(member.id),
@@ -1804,6 +1824,11 @@ export default function Reception() {
             role: member.role ?? null,
           }))}
           canEditInternalCost={isElevatedRole}
+          onAddPlain={
+            !showCustomization.editingKey && showCustomization.row.variantId !== 0
+              ? () => addPlain(showCustomization.row)
+              : undefined
+          }
           onCancel={() => setShowCustomization(null)}
           onSave={saveCustomization}
         />
