@@ -82,8 +82,10 @@ export function printRouter(): Router {
       const target = await sendToPrinter(bytes);
       res.json({ ok: true, via: "server", target: target.kind, bytes: bytes.length });
     } catch (e) {
+      // تدقيق ٣/٨: رسالة عامّة للعميل + التفصيل في السجلّ فقط — كان `e.message` الخام قد يكشف
+      // عنوان/منفذ الطابعة أو تفاصيل شبكة داخلية (نمط imageRoute/waMedia).
       logger.error({ err: e }, "print bridge raw failed");
-      res.status(502).json({ ok: false, error: e instanceof Error ? e.message : "فشل إرسال الطباعة للطابعة." });
+      res.status(502).json({ ok: false, error: "فشل إرسال الطباعة للطابعة." });
     }
   });
 
@@ -99,8 +101,9 @@ export function printRouter(): Router {
       const target = await sendToPrinter(buildTestTicket());
       res.json({ ok: true, via: "server", target: target.kind });
     } catch (e) {
+      // تدقيق ٣/٨: رسالة عامّة للعميل + التفصيل في السجلّ فقط (كأعلاه).
       logger.error({ err: e }, "print bridge test failed");
-      res.status(502).json({ ok: false, error: e instanceof Error ? e.message : "فشل اختبار الطباعة." });
+      res.status(502).json({ ok: false, error: "فشل اختبار الطباعة." });
     }
   });
 

@@ -22,6 +22,7 @@ import {
 } from "@shared/permissions";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gt, gte, isNull, like, ne, or, sql } from "drizzle-orm";
+import { randomInt } from "node:crypto";
 import { nanoid } from "nanoid";
 import { roles, userSessions, users, type UserSession } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
@@ -155,8 +156,11 @@ export function generateStrongPassword(): string {
   const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
   const lower = "abcdefghjkmnpqrstuvwxyz";
   const digits = "23456789";
-  const pick = (s: string) => s[Math.floor(Math.random() * s.length)];
-  const digitCount = Math.random() < 0.5 ? 4 : 5;
+  // أمان (تدقيق ٣/٨): `crypto.randomInt` (CSPRNG) بدل `Math.random` (xorshift128+ قابل للتنبؤ
+  // باستعادة الحالة) — القيمة كلمةُ مرورٍ لبيانات اعتماد (كلمة المدير المقترحة + مدير الشركة
+  // الأول عند التوفير)، فلا يجوز مولّدٌ غير مشفَّر. البنية كما هي (قرار المالك ٢٨/٧، mustChange ٧٢س).
+  const pick = (s: string) => s[randomInt(s.length)];
+  const digitCount = randomInt(2) === 0 ? 4 : 5;
   const letters = pick(upper) + Array.from({ length: 3 }, () => pick(lower)).join("");
   const numbers = Array.from({ length: digitCount }, () => pick(digits)).join("");
   return letters + numbers;

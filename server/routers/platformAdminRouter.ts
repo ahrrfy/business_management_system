@@ -33,7 +33,7 @@ export const platformAdminRouter = router({
         await logPlatformAudit(ctx, { action: "login", success: false, actorEmail: input.email.trim().toLowerCase() });
         throw new TRPCError({ code: "UNAUTHORIZED", message: "البريد أو كلمة المرور غير صحيحة" });
       }
-      const token = await signPlatformSession(admin.id);
+      const token = await signPlatformSession(admin.id, ctx.req);
       ctx.res.cookie(PLATFORM_ADMIN_COOKIE_NAME, token, {
         ...getSessionCookieOptions(ctx.req),
         maxAge: 1000 * 60 * 60 * 8,

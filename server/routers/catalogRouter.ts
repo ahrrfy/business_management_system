@@ -174,7 +174,7 @@ function assertCostChangeReasonOrThrow(variantLabel: string, oldCost: string | n
 export const catalogRouter = router({
   posList: productsReadProcedure
     // بند 12ب (٧/٧): customerId اختياري — عميل بسعر تعاقدي نشط يرى سعره بدل سعر الفئة (isContractPrice).
-    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
+    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().int().positive().max(1000).default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
     .query(async ({ input, ctx }) => {
       const rows = await listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, customerId: input.customerId ?? undefined });
       return redactPosCost(rows, ctx.user);
@@ -289,7 +289,7 @@ export const catalogRouter = router({
   // مخزن/مسؤول مشتريات) — تحتاجه لإضافة سطور أمر الشراء الذي تُخوَّل إنشاءه؛ محصور بها فلا
   // تتسرّب التكلفة للكاشير/المندوب.
   forPurchase: productsPurchaseProcedure
-    .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().default(50) }))
+    .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().int().positive().max(500).default(50) }))
     .query(({ input }) => listForPurchase(input.branchId, input.query, input.limit)),
 
   createProduct: productsManagerProcedure

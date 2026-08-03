@@ -116,7 +116,7 @@ export const workOrderRouter = router({
     .input(
       z
         .object({
-          limit: z.number().default(100),
+          limit: z.number().int().positive().max(500).default(100), // تدقيق ٣/٨: سقف صريح ضدّ DoS الذاكرة.
           branchId: z.number().int().positive().optional(),
           // ترشيح خادميّ بالحالة — لمحطة التنفيذ ولأي شاشة تريد «العمل النشط» وحده.
           // ⚠️ لماذا: القائمة تُرتَّب desc(id) وتُقتطع بـlimit، والحالات النهائية (DELIVERED/

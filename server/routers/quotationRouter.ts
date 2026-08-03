@@ -24,7 +24,7 @@ export const quotationRouter = router({
     .input(
       z
         .object({
-          limit: z.number().default(100),
+          limit: z.number().int().positive().max(500).default(100), // تدقيق ٣/٨: سقف صريح ضدّ DoS الذاكرة.
           // فلترة خادمية بالفترة (createdAt) والحالة.
           from: ymd.optional(),
           to: ymd.optional(),
