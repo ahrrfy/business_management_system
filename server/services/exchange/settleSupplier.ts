@@ -111,10 +111,11 @@ export async function settleSupplierViaExchange(
       commissionIqd = round2(commission.times(usdRate));
       const totalUsdOut = walletAmount.plus(commission);
       const availUsd = money(house.balanceUsd);
-      if (totalUsdOut.gt(availUsd) && !input.confirmNegative) {
+      // يُطلَب التأكيد فقط عند أوّل عبورٍ من رصيدٍ غير سالب إلى سالب — لا عند تعميق دَينٍ قائم أصلاً.
+      if (totalUsdOut.gt(availUsd) && availUsd.gte(0) && !input.confirmNegative) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: `رصيد الدولار ${availUsd.toFixed(2)}$ أقلّ من المطلوب ${totalUsdOut.toFixed(2)}$. أرسل confirmNegative=true للتجاوز.`,
+          message: `التسديد سيجعل رصيد الدولار لدى الصيرفة سالباً (${availUsd.toFixed(2)}$ متاح مقابل ${totalUsdOut.toFixed(2)}$ مطلوب). أرسل confirmNegative=true للتجاوز.`,
         });
       }
       await adjustExchangeBalanceUsd(tx, input.exchangeHouseId, totalUsdOut.negated());
@@ -128,10 +129,11 @@ export async function settleSupplierViaExchange(
       commissionIqd = commission;
       const totalIqdOut = walletAmount.plus(commission);
       const availIqd = money(house.balanceIqd);
-      if (totalIqdOut.gt(availIqd) && !input.confirmNegative) {
+      // يُطلَب التأكيد فقط عند أوّل عبورٍ من رصيدٍ غير سالب إلى سالب — لا عند تعميق دَينٍ قائم أصلاً.
+      if (totalIqdOut.gt(availIqd) && availIqd.gte(0) && !input.confirmNegative) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: `رصيد الدينار ${availIqd.toFixed(2)} أقلّ من المطلوب ${totalIqdOut.toFixed(2)}. أرسل confirmNegative=true للتجاوز.`,
+          message: `التسديد سيجعل رصيد الدينار لدى الصيرفة سالباً (${availIqd.toFixed(2)} متاح مقابل ${totalIqdOut.toFixed(2)} مطلوب). أرسل confirmNegative=true للتجاوز.`,
         });
       }
       await adjustExchangeBalanceIqd(tx, input.exchangeHouseId, totalIqdOut.negated());

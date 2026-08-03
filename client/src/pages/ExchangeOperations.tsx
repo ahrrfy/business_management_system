@@ -1,5 +1,6 @@
 // تبويب «العمليات» — إيداع نقد / سحب / شراء دولار من الصيرفة.
-// الإيداع والسحب نقلُ أصلٍ بين الخزينة والصيرفة؛ شراء الدولار يحوّل دينار→دولار ويحدّث متوسط الكلفة.
+// الإيداع والسحب نقلُ أصلٍ بين الخزينة والصيرفة؛ شراء الدولار (نموذج الدَّين، قرار مالك ٣/٨) يزيد
+// ذمّتنا الدولارية على الصيرفة (الدولار يُسلَّم فوراً نقداً) ولا يمسّ الدينار إطلاقاً.
 import { useMemo, useState } from "react";
 import { ArrowDownToLine, ArrowUpFromLine, Check, Clock, DollarSign, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -11,7 +12,7 @@ import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { notify } from "@/lib/notify";
 import { D, fmtAr, formatIqd } from "@/lib/money";
-import { BalanceTag, isMoneyStr, isRateStr, newClientRequestId, selectCls, type ExchangeRow } from "@/components/exchange/shared";
+import { BalanceTag, isMoneyStr, isRateStr, NetExposureTag, newClientRequestId, selectCls, type ExchangeRow } from "@/components/exchange/shared";
 
 type Action = "deposit" | "withdraw" | "buyUsd";
 type Currency = "IQD" | "USD";
@@ -124,7 +125,7 @@ export default function ExchangeOperations() {
       <PageHeader
         icon={<Wallet className="h-5 w-5 text-primary" />}
         title="عمليات الصيرفة"
-        description="إيداع نقد لدى الصيرفة، أو سحبه، أو شراء دولار بتحديث متوسط الكلفة."
+        description="إيداع نقد لدى الصيرفة، أو سحبه (يجوز أن يتجاوز الرصيد فيصبح دَيناً)، أو شراء دولار يزيد ذمّتنا الدولارية عليها."
       />
 
       <Card className="p-4 space-y-4">
@@ -155,6 +156,7 @@ export default function ExchangeOperations() {
             <span>رصيد الدينار: <BalanceTag value={house.balanceIqd} unit="د.ع" /></span>
             <span>رصيد الدولار: <BalanceTag value={house.balanceUsd} unit="$" /></span>
             <span className="text-muted-foreground">متوسط كلفة الدولار: <span dir="ltr">{D(house.usdCostRate).isZero() ? "—" : fmtAr(house.usdCostRate)}</span></span>
+            <span>صافي التعرّض: <NetExposureTag house={house} /></span>
           </div>
         )}
 
@@ -258,7 +260,7 @@ export default function ExchangeOperations() {
               <MoneyInput value={rate} onChange={setRate} decimals={4} placeholder="1450" />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">الكلفة بالدينار</label>
+              <label className="text-xs text-muted-foreground mb-1 block">القيمة الدينارية المعادلة</label>
               <div className="h-9 flex items-center px-3 rounded-md bg-muted/50 tabular-nums text-sm" dir="ltr">
                 {iqdSpent ? formatIqd(iqdSpent) : "—"}
               </div>
@@ -267,7 +269,9 @@ export default function ExchangeOperations() {
               <Button onClick={() => doBuyUsd(false)} disabled={pending || !canWrite} className="gap-1.5">
                 <DollarSign className="h-4 w-4" />{pending ? "جارٍ…" : "تنفيذ الشراء"}
               </Button>
-              <p className="text-[11px] text-muted-foreground mt-1.5">يحوّل دينارَك لدى الصيرفة إلى دولار ويحدّث متوسط الكلفة المرجّح (WAVG).</p>
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                الصيرفة تُسلِّمكم الدولار فوراً نقداً — يزيد هذا ذمّتكم الدولارية عليها (لا يمسّ رصيدكم الديناري) ويحدّث متوسط سعر نشوء الدَّين (WAVG).
+              </p>
             </div>
           </div>
         )}

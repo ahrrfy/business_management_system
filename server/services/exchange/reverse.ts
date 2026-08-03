@@ -56,9 +56,10 @@ export async function recomputeHouseFromLog(tx: Tx, houseId: number): Promise<vo
         else iqd = iqd.minus(iqdAmt);
         break;
       case "FX_BUY":
-        iqd = iqd.minus(iqdAmt);
-        basis = basis.plus(iqdAmt); // كلفة الدولار المُشترى = الدينار المنفَق
-        usd = usd.plus(usdAmt);
+        // نموذج الدَّين (قرار مالك ٣/٨): الصيرفة تُسلِّم الدولار فوراً نقداً ⇒ لا يُمسّ الدينار إطلاقاً؛
+        // يتعمّق الدَّين الدولاري (usd سالب أكثر) بمتوسط كلفةٍ يشمل سعر نشوء هذا الدَّين تحديداً.
+        basis = basis.minus(iqdAmt);
+        usd = usd.minus(usdAmt);
         break;
       case "SETTLE":
         if (t.currency === "USD") disposeUsd(usdAmt.plus(comm)); // مبدأ + عمولة بالدولار

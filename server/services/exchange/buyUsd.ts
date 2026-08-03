@@ -1,11 +1,13 @@
-// شراء دولار من الصيرفة: تحويل دينار→دولار داخل المحفظة، يُحدّث متوسط الكلفة WAVG.
+// شراء دولار من الصيرفة (نموذج الدَّين، قرار مالك ٣/٨): الصيرفة تُسلِّم الدولار فوراً نقداً — لا تحويل
+// داخل محفظةٍ مزعومة. يزيد ذمّتنا الدولارية عليها (balanceUsd ينخفض) بسعر نشوء الدَّين، ولا يمسّ الدينار
+// إطلاقاً (كان الكود القديم يخصم الدينار المُفتَرَض إيداعه مسبقاً — افتراضٌ لا يطابق واقع التعامل).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
 import { exchangeHouses, exchangeTransactions } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
-import { adjustExchangeBalanceIqd, adjustExchangeBalanceUsd, postEntry } from "../ledgerService";
+import { adjustExchangeBalanceUsd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
@@ -14,13 +16,15 @@ export interface BuyUsdInput {
   exchangeHouseId: number;
   branchId: number;
   usdAmount: string;
-  exchangeRate: string; // دينار/دولار
+  exchangeRate: string; // دينار/دولار — سعر نشوء هذا الدَّين (يُحدّث متوسط الكلفة WAVG لكامل الدَّين القائم)
   notes?: string | null;
   clientRequestId?: string | null;
+  /** يُطلَب فقط عند أوّل عبورٍ من رصيدٍ دولاري غير سالب إلى سالب — لا عند كل عملية (دَينٌ متجدّد طبيعي). */
   confirmNegative?: boolean;
 }
 
-/** شراء دولار من الصيرفة: تحويل دينار→دولار داخل المحفظة بسعر r، يُحدّث متوسط الكلفة WAVG (نقل أصل، 0/0/0). */
+/** شراء دولار من الصيرفة: تُسلِّمه فوراً نقداً ⇒ يزيد دَيننا الدولاري عليها (balanceUsd ينخفض) بمتوسط
+ *  كلفة مرجّح WAVG لسعر نشوء الدَّين (نقل التزام، 0/0/0 دينارياً — الدينار لا يُمسّ). */
 export async function buyUsdAtExchange(input: BuyUsdInput, actor: Actor): Promise<{ txnId: number; txnNumber: string; newRate: string }> {
   return withTx(async (tx) => {
     if (input.clientRequestId) {
@@ -35,28 +39,28 @@ export async function buyUsdAtExchange(input: BuyUsdInput, actor: Actor): Promis
     if (usd.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الدولار يجب أن يكون موجباً" });
     if (rate.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "سعر الصرف يجب أن يكون موجباً" });
 
-    const iqdSpent = round2(usd.times(rate));
+    const iqdSpent = round2(usd.times(rate)); // القيمة الدينارية المعادِلة (إعلامية + أساس WAVG) — لا تُخصَم من محفظة الدينار.
     const house = await lockHouse(tx, input.exchangeHouseId);
-    const availIqd = money(house.balanceIqd);
-    if (iqdSpent.gt(availIqd) && !input.confirmNegative) {
+    const availUsd = money(house.balanceUsd);
+    if (usd.gt(availUsd) && availUsd.gte(0) && !input.confirmNegative) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `رصيد الدينار ${availIqd.toFixed(2)} أقلّ من كلفة الشراء ${iqdSpent.toFixed(2)}. أرسل confirmNegative=true للتجاوز.`,
+        message: `الشراء سيجعل رصيد الدولار لدى الصيرفة سالباً (${availUsd.toFixed(2)}$ متاح مقابل ${usd.toFixed(2)}$ مطلوب) — أي دَيناً دولارياً لكم عليها. أرسل confirmNegative=true للتجاوز.`,
       });
     }
 
-    // متوسط الكلفة المرجّح الجديد: (قيمة الدولار القديم بالكلفة + الدينار المنفَق) / (الدولار الجديد).
+    // متوسط الكلفة المرجّح الجديد لدَينٍ متعمّق: (قيمة الدَّين القائم بكلفته + قيمة الدَّين الجديد بسعره) / (إجمالي الدولار).
+    // كلا الرصيدين (oldUsd الجديد) سالبان عادةً؛ الصيغة سليمة جبرياً لأنها نسبة قيمةٍ إلى كمّيةٍ بإشارتين متطابقتين.
     const oldUsd = money(house.balanceUsd);
     const oldRate = money(house.usdCostRate);
-    const newUsd = oldUsd.plus(usd);
-    const newCostBasisIqd = oldUsd.times(oldRate).plus(iqdSpent);
+    const newUsd = oldUsd.minus(usd);
+    const newCostBasisIqd = oldUsd.times(oldRate).minus(iqdSpent);
     const newRate = newUsd.isZero() ? new Decimal(0) : newCostBasisIqd.div(newUsd);
 
-    await adjustExchangeBalanceIqd(tx, input.exchangeHouseId, iqdSpent.negated());
-    await adjustExchangeBalanceUsd(tx, input.exchangeHouseId, usd);
+    await adjustExchangeBalanceUsd(tx, input.exchangeHouseId, usd.negated());
     await tx.update(exchangeHouses).set({ usdCostRate: toDbRate(newRate) }).where(eq(exchangeHouses.id, input.exchangeHouseId));
 
-    const balIqdAfter = availIqd.minus(iqdSpent);
+    const balIqdAfter = money(house.balanceIqd); // لا يتغيّر إطلاقاً بشراء الدولار.
     const balUsdAfter = newUsd;
 
     const txnNumber = await nextTxnNumber(tx, input.branchId);
