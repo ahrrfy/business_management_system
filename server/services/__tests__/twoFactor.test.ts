@@ -9,7 +9,7 @@
  */
 import crypto from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { hashPassword } from "../../auth/password";
 import {
@@ -418,6 +418,12 @@ describe("قفل الحساب — نافذة العدّاد الزمنية (٦/�
 });
 
 describe("إلزام 2FA — راية me.mustEnroll2FA (قرار المالك ٢٣/٧)", () => {
+  // M9 (٣/٨): الراية وُحِّدت مع دالة الإنفاذ الخادميّ (تحترم مفتاح الإيقاف كي يرفع الحجب الواجهيّ
+  // أيضاً عند إطفائه). __setup__ يضبط TWO_FACTOR_ENFORCEMENT=off عالمياً؛ نُفعّل الإنفاذ لهذه الكتلة
+  // (سلوك الإنتاج) ثم نعيده. الاختبارات «=false» (مُفعِّل/كاشير) تبقى صحيحة بلا اعتمادٍ على الإنفاذ.
+  beforeEach(() => { delete process.env.TWO_FACTOR_ENFORCEMENT; });
+  afterEach(() => { process.env.TWO_FACTOR_ENFORCEMENT = "off"; });
+
   async function seedUserRole(role: string, id = 1) {
     const d = db();
     await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
