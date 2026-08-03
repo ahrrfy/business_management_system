@@ -66,6 +66,7 @@ async function mkOffering(providerId: number, opts: { name?: string; walletId?: 
     offeringType: opts.edu ? "EDUCATIONAL_SUBSCRIPTION" : "TELECOM_CARD",
     name: opts.name ?? "كارت ١٠ آلاف",
     requiresStudentData: !!opts.edu,
+    subscriptionDurationDays: opts.edu ? 30 : null,
     pricingMode: "FIXED_MARGIN",
     fixedMargin: "500",
     roundingStep: "250",

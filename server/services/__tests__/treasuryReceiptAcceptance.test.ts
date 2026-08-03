@@ -17,6 +17,7 @@ function makeCtx(user: any) {
 
 const RECIPIENT = 21;
 const INTRUDER = 22;
+const CASHIER = 23;
 
 async function user(id: number) {
   return (await db().select().from(s.users).where(eq(s.users.id, id)).limit(1))[0];
@@ -42,7 +43,7 @@ async function pendingContract(referenceNumber = "CD-1-20260725-0001") {
 beforeEach(async () => {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const table of ["auditLogs", "accountingEntries", "receipts", "users", "branches"]) {
+  for (const table of ["auditLogs", "accountingEntries", "receipts", "shifts", "users", "branches"]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${table}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -66,6 +67,14 @@ beforeEach(async () => {
       openId: "accept-intruder",
       name: "Other manager",
       role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+    },
+    {
+      id: CASHIER,
+      openId: "accept-cashier",
+      name: "Cashier source",
+      role: "cashier",
       loginMethod: "local",
       branchId: 1,
     },
@@ -131,6 +140,39 @@ describe("treasury handover receipt acceptance", () => {
       entityType: "receipt",
       entityId: String(receiptId),
     });
+  });
+
+  it("shows the cashier and the source shift for a pending cash drop", async () => {
+    const referenceNumber = "CD-1-20260725-0001";
+    const receiptId = await pendingContract(referenceNumber);
+    const shiftResult = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: CASHIER,
+      openingBalance: "0",
+      openGuard: "cashier-source:1:RETAIL",
+    });
+    const shiftId = Number((shiftResult as any)[0]?.insertId ?? (shiftResult as any).insertId);
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "75000",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      referenceNumber,
+      status: "COMPLETED",
+      partyType: "OTHER",
+      createdBy: CASHIER,
+    });
+
+    const recipient = appRouter.createCaller(makeCtx(await user(RECIPIENT)));
+    await expect(recipient.treasury.pendingHandoverReceipts()).resolves.toEqual([
+      expect.objectContaining({
+        id: receiptId,
+        sourceEmployeeName: "Cashier source",
+        sourceShiftId: shiftId,
+      }),
+    ]);
   });
 
   it("accepts a close-shift handover contract through the same recipient workflow", async () => {

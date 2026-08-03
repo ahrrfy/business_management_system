@@ -7,7 +7,7 @@
  * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Check, ClipboardList, Loader2, MessageCircle, Package, Printer, Store, Truck, X } from "lucide-react";
+import { Check, ClipboardList, FileText, Loader2, MessageCircle, Package, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -21,6 +21,8 @@ import { RowActions } from "@/components/list/RowActions";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
+import { printOnlineOrderPreparationA4, printOnlineOrderThermal } from "@/lib/printing/onlineOrder";
+import { storefrontUrl } from "@/lib/siteHosts";
 
 type Status = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
@@ -129,7 +131,8 @@ export default function OrderFulfillment() {
           total: d.total,
           deliveryPartyName: d.deliveryPartyName,
           createdAt: d.createdAt,
-          items: d.items.map((it) => ({ productName: it.productName, unitName: it.unitName, quantity: it.quantity })),
+          items: d.items.map((it) => ({ productName: [it.productName, it.variantLabel].filter(Boolean).join(" — "), unitName: it.unitName, quantity: it.quantity })),
+          qrUrl: `${storefrontUrl()}?order=${encodeURIComponent(d.orderNumber)}&token=${encodeURIComponent(d.labelToken)}`,
         },
         { into: labelWin },
       );
@@ -142,11 +145,32 @@ export default function OrderFulfillment() {
     }
   }
 
+  async function printThermal(id: number) {
+    setPrintingId(id);
+    try {
+      const d = await utils.storeAdmin.orders.detail.fetch({ id });
+      if (!d) { notify.err("تعذر جلب تفاصيل الطلب"); return; }
+      await printOnlineOrderThermal(d);
+      notify.ok("أُرسل الطلب إلى طابعة الإيصالات");
+    } catch (e) { notify.err(e); }
+    finally { setPrintingId(null); }
+  }
+
+  async function printPreparationA4(id: number) {
+    setPrintingId(id);
+    try {
+      const d = await utils.storeAdmin.orders.detail.fetch({ id });
+      if (!d) { notify.err("تعذر جلب تفاصيل الطلب"); return; }
+      printOnlineOrderPreparationA4(d);
+    } catch (e) { notify.err(e); }
+    finally { setPrintingId(null); }
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
-        title="طلبات المتجر الإلكتروني"
-        description="تثبيت الطلبات الواردة وطباعة ملصق التوصيل"
+        title="طلبات الموقع"
+        description="راجع الطلبات الواردة، ثبّتها وجهّزها للتوصيل"
         icon={<Store aria-hidden className="size-5" />}
         actions={<ShippingLabelSizeSelect />}
       />
@@ -265,6 +289,26 @@ export default function OrderFulfillment() {
                             disabled: isBusy,
                             disabledReason: "هناك عملية جارية على الطلب",
                             onSelect: () => printLabel(o.id),
+                          },
+                          {
+                            key: "print-thermal",
+                            kind: "print",
+                            label: "طباعة فاتورة حرارية",
+                            icon: ReceiptText,
+                            gate: { module: "store", level: "READ" },
+                            disabled: isBusy,
+                            disabledReason: "هناك عملية جارية على الطلب",
+                            onSelect: () => printThermal(o.id),
+                          },
+                          {
+                            key: "print-preparation-a4",
+                            kind: "print",
+                            label: "طباعة ورقة تجهيز A4",
+                            icon: FileText,
+                            gate: { module: "store", level: "READ" },
+                            disabled: isBusy,
+                            disabledReason: "هناك عملية جارية على الطلب",
+                            onSelect: () => printPreparationA4(o.id),
                           },
                           {
                             key: "whatsapp",

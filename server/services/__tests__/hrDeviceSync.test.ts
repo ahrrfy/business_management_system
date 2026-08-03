@@ -46,7 +46,13 @@ beforeEach(async () => {
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await d.insert(s.users).values({ id: 1, openId: "a", name: "admin", role: "admin", loginMethod: "local" });
   await d.insert(s.employees).values([
-    { id: 1, firstName: "أحمد", fatherName: "علي", lastName: "الجبوري", payType: "hourly", employmentStatus: "active" },
+    // أسعارُ أيامه **في ملفّه** — لا في ثابتٍ بالكود. كان الاختبار يعتمد `DAY_RATES_DEFAULT`
+    // (الأربعاء=٥٠٠٠) وهو رقمٌ لم يُدخله أحد؛ إسنادُه للملفّ يجعل الحارس أقوى لا أضعف:
+    // يُثبت أنّ الطيّ يسحب السعر من الموظف فعلاً.
+    {
+      id: 1, firstName: "أحمد", fatherName: "علي", lastName: "الجبوري", payType: "hourly", employmentStatus: "active",
+      dayRates: { الأحد: 5000, الاثنين: 5000, الثلاثاء: 5000, الأربعاء: 5000, الخميس: 5500, الجمعة: 7500, السبت: 6000 },
+    },
     { id: 2, firstName: "زينب", fatherName: "حسن", lastName: "الربيعي", payType: "hourly", employmentStatus: "terminated" },
   ]);
   await d.insert(s.hrFingerprintDevices).values({
@@ -148,7 +154,7 @@ describe("الطيّ إلى الحضور (ج٢–ج٤)", () => {
     const [att] = await db().select().from(s.attendance).where(eq(s.attendance.employeeId, 1));
     expect(att).toBeTruthy();
     expect(String(att.hours)).toBe("8.50");
-    // ٢٠٢٦-٠٧-٠١ أربعاء: السعر الافتراضي 5000 ⇒ 8.5 × 5000 = 42500
+    // ٢٠٢٦-٠٧-٠١ أربعاء: سعرُ الأربعاء **في ملفّ الموظف** 5000 ⇒ 8.5 × 5000 = 42500
     expect(String(att.amount)).toBe("42500.00");
     expect(att.source).toBe("fingerprint");
     expect(att.checkIn?.toISOString()).toContain("08:00");

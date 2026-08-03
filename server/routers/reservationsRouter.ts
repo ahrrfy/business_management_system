@@ -105,8 +105,16 @@ export const reservationsRouter = router({
       z.object({
         reservationId: z.number().int().positive(),
         payment: z
-          .object({ amount: positiveMoneyString, method: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]) })
+          .object({
+            amount: positiveMoneyString,
+            method: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]),
+            reference: z.string().trim().max(100).nullish(),
+          })
           .nullish(),
+      }).superRefine((input, ctx) => {
+        if (input.payment && input.payment.method !== "CASH" && !input.payment.reference?.trim()) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "reference"], message: "مرجع الدفع غير النقدي مطلوب" });
+        }
       }),
     )
     .mutation(async ({ ctx, input }) => {

@@ -1,18 +1,24 @@
 import * as React from "react";
 
 import { cn } from "@/lib/utils";
+import { TableColumnVisibility } from "@/components/table/TableColumnVisibility";
 
 function Table({ className, ...props }: React.ComponentProps<"table">) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
   return (
-    <div
-      data-slot="table-container"
-      className="relative w-full overflow-x-auto"
-    >
-      <table
-        data-slot="table"
-        className={cn("w-max min-w-full caption-bottom border-separate border-spacing-0 text-sm", className)}
-        {...props}
-      />
+    <div className="space-y-2">
+      <TableColumnVisibility containerRef={containerRef} suppressIfInsideManagedTable />
+      <div
+        ref={containerRef}
+        data-slot="table-container"
+        className="relative w-full overflow-x-auto"
+      >
+        <table
+          data-slot="table"
+          className={cn("w-max min-w-full caption-bottom border-separate border-spacing-0 text-sm", className)}
+          {...props}
+        />
+      </div>
     </div>
   );
 }

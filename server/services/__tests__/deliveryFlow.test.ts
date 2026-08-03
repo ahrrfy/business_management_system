@@ -131,7 +131,7 @@ describe("delivery COD — money path", () => {
 
     // الترحيل: تحصيل 8000 كاملاً، الأجرة 1500.
     const consignmentId = disp.consignmentId;
-    const rem = await recordDeliveryRemittance({ branchId: 1, partyId, lines: [{ consignmentId, collectedAmount: "8000" }] }, CASHIER);
+    const rem = await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "6500", lines: [{ consignmentId, collectedAmount: "8000" }] }, CASHIER);
     expect(rem.collectedTotal).toBe("8000.00");
     expect(rem.feesTotal).toBe("1500.00");
     expect(rem.netRemitted).toBe("6500.00");
@@ -154,7 +154,7 @@ describe("delivery COD — money path", () => {
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
     // تحصيل جزئي 5000 من 8000 ⇒ عجز 3000 يبقى عهدة، بلا أجرة (لم يُسلَّم بالكامل).
-    const rem = await recordDeliveryRemittance({ branchId: 1, partyId, lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
+    const rem = await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "5000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
     expect(rem.status).toBe("SHORT");
     expect(rem.shortfallTotal).toBe("3000.00");
     expect(rem.feesTotal).toBe("0.00");
@@ -171,12 +171,36 @@ describe("delivery COD — money path", () => {
     await allReconcileClean();
   });
 
+  it("فرق النقد المعدود يوقف التسوية ذرّياً ولا يغيّر الفاتورة أو عهدة المندوب", async () => {
+    const { partyId } = await seed();
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+    const woId = await readyWorkOrder(true);
+    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const beforeInvoice = await invoice(disp.invoiceId);
+    const beforeReceipts = await db().select().from(s.receipts);
+
+    await expect(recordDeliveryRemittance({
+      branchId: 1,
+      partyId,
+      countedCash: "6000",
+      lines: [{ consignmentId: disp.consignmentId, collectedAmount: "8000" }],
+    }, CASHIER)).rejects.toThrow(/لا يطابق صافي التوريد/);
+
+    expect(await partyBalance(partyId)).toBe("8000.00");
+    const afterInvoice = await invoice(disp.invoiceId);
+    expect(afterInvoice.paidAmount).toBe(beforeInvoice.paidAmount);
+    expect(afterInvoice.status).toBe(beforeInvoice.status);
+    expect(await db().select().from(s.receipts)).toHaveLength(beforeReceipts.length);
+    expect(await db().select().from(s.deliveryRemittances)).toHaveLength(0);
+    await allReconcileClean();
+  });
+
   it("تسوية الجهة نقداً تخفض العهدة", async () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(true);
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
-    await recordDeliveryRemittance({ branchId: 1, partyId, lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
+    await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "5000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
     expect(await partyBalance(partyId)).toBe("3000.00");
     const set = await settleDeliveryBalance({ branchId: 1, partyId, amount: "3000" }, CASHIER);
     expect(set.partyBalanceAfter).toBe("0.00");

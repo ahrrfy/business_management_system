@@ -10,6 +10,7 @@
 // تُطبَّق الترويسة اللاصقة على أي thead th بالوراثة (لا حاجة لتعديل thead كل صفحة).
 import * as React from "react";
 import { cn } from "@/lib/utils";
+import { TableColumnVisibility } from "@/components/table/TableColumnVisibility";
 
 export function ScrollTableShell({
   children,
@@ -18,25 +19,35 @@ export function ScrollTableShell({
   maxHeightClass = "max-h-[calc(100dvh-15rem)]",
   /** حدّ + زوايا مُدوَّرة. اجعلها false حين تكون الحاوية داخل بطاقة (Card) لها حدّها أصلاً. */
   bordered = true,
+  /** تعطّلها DataTable لأنه يملك قائمة أعمدة مرتبطة بحالة TanStack الخاصة به. */
+  showColumnVisibility = true,
 }: {
   children: React.ReactNode;
   className?: string;
   maxHeightClass?: string;
   bordered?: boolean;
+  showColumnVisibility?: boolean;
 }) {
+  const tableRef = React.useRef<HTMLDivElement>(null);
   return (
     <div
-      className={cn(
-        "print-table-shell relative overflow-auto bg-card [scrollbar-gutter:stable]",
-        bordered && "rounded-md border",
-        maxHeightClass,
-        // ترويسة لاصقة: أي thead th داخل الحاوية يلتصق أعلى التمرير بخلفية معتمة فوق الصفوف.
-        "[&_thead_th]:sticky [&_thead_th]:top-0 [&_thead_th]:z-10 [&_thead_th]:bg-muted [&_thead_th]:shadow-[0_1px_0_hsl(var(--border))]",
-        "[&_tbody_tr:nth-child(even)]:bg-muted/20 [&_tbody_tr]:transition-colors [&_tbody_tr:hover]:bg-accent/35",
-        className,
-      )}
+      className={cn("space-y-2", className)}
     >
-      {children}
+      {showColumnVisibility && <TableColumnVisibility containerRef={tableRef} />}
+      <div
+        ref={tableRef}
+        data-column-visibility-host
+        className={cn(
+          "print-table-shell relative overflow-auto bg-card [scrollbar-gutter:stable]",
+          bordered && "rounded-md border",
+          maxHeightClass,
+          // ترويسة لاصقة: أي thead th داخل الحاوية يلتصق أعلى التمرير بخلفية معتمة فوق الصفوف.
+          "[&_thead_th]:sticky [&_thead_th]:top-0 [&_thead_th]:z-10 [&_thead_th]:bg-muted [&_thead_th]:shadow-[0_1px_0_hsl(var(--border))]",
+          "[&_tbody_tr:nth-child(even)]:bg-muted/20 [&_tbody_tr]:transition-colors [&_tbody_tr:hover]:bg-accent/35",
+        )}
+      >
+        {children}
+      </div>
     </div>
   );
 }

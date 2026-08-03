@@ -49,6 +49,13 @@ const requireUser = t.middleware(async ({ ctx, next }) => {
 
 export const protectedProcedure = t.procedure.use(requireUser);
 
+/**
+ * بوابة خدمة ذاتية لمكلّف جرد بحساب النظام. لا تمنح هذه البوابة وصولاً عاماً
+ * إلى وحدة المخزون؛ كل handler يستعملها ملزم بربط القراءة/الكتابة بـ userId
+ * للتكليف نفسه (مثال: countPortalRouter.mine).
+ */
+export const stocktakeAssignmentProcedure = protectedProcedure;
+
 const requireAdmin = t.middleware(async ({ ctx, next }) => {
   if (!ctx.user || ctx.user.role !== "admin") {
     throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });

@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, isNotNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "@shared/searchNormalize";
@@ -167,6 +167,8 @@ const salesListInput = z
     from: ymd.optional(),
     to: ymd.optional(),
     status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).optional(),
+    sourceType: z.enum(["POS", "ONLINE", "ORDER", "WORKORDER"]).optional(),
+    balanceState: z.enum(["DEPOSIT_DUE", "OUTSTANDING", "UNPAID", "SETTLED"]).optional(),
     customerId: z.number().int().positive().optional(),
     salespersonId: z.number().int().positive().optional(),
     // بحث نصّي خادميّ: رقم الفاتورة أو اسم العميل. كان البحث محلّياً على الصفحة المُحمَّلة وحدها
@@ -188,6 +190,22 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
   if (input?.from) conds.push(gte(invoices.invoiceDate, localDayStart(input.from)));
   if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
   if (input?.status) conds.push(eq(invoices.status, input.status));
+  if (input?.sourceType) conds.push(eq(invoices.sourceType, input.sourceType));
+  if (input?.balanceState === "DEPOSIT_DUE") {
+    conds.push(inArray(invoices.sourceType, ["ORDER", "WORKORDER"]));
+    conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+  } else if (input?.balanceState === "OUTSTANDING") {
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  } else if (input?.balanceState === "UNPAID") {
+    conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) = 0`);
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  } else if (input?.balanceState === "SETTLED") {
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) <= 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  }
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
   // المدير/الأدمن يستطيعان اختيار موظف؛ الموظف العادي يبقى مُجبَراً على نفسه.
   if (scopedOwnerId == null && input?.salespersonId) conds.push(eq(invoices.createdBy, input.salespersonId));
@@ -219,7 +237,11 @@ export const saleRouter = router({
         lines: z.array(lineSchema).min(1),
         invoiceDiscount: z.string().optional(),
         taxRatePercent: z.string().optional(),
-        payment: z.object({ amount: positiveMoneyString, method }).optional(),
+        payment: z.object({
+          amount: positiveMoneyString,
+          method,
+          reference: z.string().trim().min(1).max(100).optional(),
+        }).optional(),
         // dueDate للبيع الآجل (YYYY-MM-DD) — يُحفظ على invoices.dueDate ليظهر في AR aging
         // ولينبّه على الفواتير المتأخرة. اختياري؛ إن غاب فلا تاريخ استحقاق محدّد.
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
@@ -302,9 +324,13 @@ export const saleRouter = router({
   pay: salesCashierProcedure
     .input(z.object({
       // SALES-04: المبلغ مُقيّد موجباً بـ٢ منازل (كان z.string() ⇒ يَقبل أُسّاً/أكثر من منزلتين).
-      invoiceId: z.number().int().positive(), amount: positiveMoneyString, method, shiftId: z.number().int().positive().optional(),
+      invoiceId: z.number().int().positive(), amount: positiveMoneyString, method, reference: z.string().trim().max(100).nullish(), shiftId: z.number().int().positive().optional(),
       // idempotency: نفس المفتاح ⇒ دفعة واحدة (لا إيصال/قيد PAYMENT_IN/خصم AR مزدوج عند النقر المزدوج).
       clientRequestId: z.string().min(1).max(80).optional(),
+    }).superRefine((input, ctx) => {
+      if (input.method !== "CASH" && !input.reference?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reference"], message: "مرجع عملية البطاقة/التحويل مطلوب" });
+      }
     }))
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المدير يُرفض دفعه على فاتورة فرع آخر (منع IDOR).
@@ -366,6 +392,7 @@ export const saleRouter = router({
             invoiceDate: invoices.invoiceDate,
             total: invoices.total,
             paidAmount: invoices.paidAmount,
+            returnedTotal: invoices.returnedTotal,
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
             customerName: customers.name,
@@ -407,6 +434,7 @@ export const saleRouter = router({
             invoiceDate: invoices.invoiceDate,
             total: invoices.total,
             paidAmount: invoices.paidAmount,
+            returnedTotal: invoices.returnedTotal,
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
             customerName: customers.name,
@@ -559,6 +587,7 @@ export const saleRouter = router({
         paymentMethod: receipts.paymentMethod,
         status: receipts.status,
         createdAt: receipts.createdAt,
+        referenceNumber: receipts.referenceNumber,
         // attachment-upload (٥/٧): سند مربوط بهذه الفاتورة (اختياري) — رقمه + مرفقه إن وُجدا.
         voucherNumber: receipts.voucherNumber,
         attachmentUrl: receipts.attachmentUrl,

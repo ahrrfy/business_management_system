@@ -149,6 +149,18 @@ describe("بيع الطباعة: الإيراد + كلفة المواد + خصم
 });
 
 describe("بيع الطباعة: التقريب النقدي + الذمم + idempotency", () => {
+  it("دفع البطاقة يحفظ مرجع العملية ولا يدخل درج النقد", async () => {
+    await createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CARD", reference: "POS-CARD-7788" },
+    }, actor);
+    const rec = (await db().select().from(s.receipts))[0];
+    expect(rec.paymentMethod).toBe("CARD");
+    expect(rec.cashBucket).toBeNull();
+    expect(rec.referenceNumber).toBe("POS-CARD-7788");
+  });
+
   it("تقريب IQD للبيع النقدي الكامل ⇒ قيد ADJUST بالفرق", async () => {
     const r = await createPrintSale({
       branchId: 1, shiftId: 1,
@@ -279,6 +291,15 @@ describe("بيع الطباعة: فصل درج الطباعة عن التجزئ�
     expect(printReport?.invoiceCount).toBe(1);
     expect(printReport?.salesTotal).toBe("1250.00");
     expect(printReport?.payments.some((p: any) => p.method === "CASH" && p.direction === "IN" && p.total === "1250.00")).toBe(true);
+    expect(printReport?.expectedCash).toBe("51250.00");
+
+    // سجلّ CASH غير تابع للدرج (TREASURY) يحمل shiftId بالخطأ/من بيانات قديمة: يظهر في التفصيل العام
+    // لكنه لا يجوز أن يغيّر رقم العدّ الذي سيفرضه closeShift (DRAWER حصراً).
+    await db().insert(s.receipts).values({
+      branchId: 1, shiftId: 2, direction: "IN", amount: "999.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", createdBy: 1,
+    });
+    expect((await getShiftReport(2))?.expectedCash).toBe("51250.00");
 
     const retailReport = await getShiftReport(1);
     expect(retailReport?.invoiceCount).toBe(0);

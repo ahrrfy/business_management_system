@@ -21,8 +21,10 @@ import { confirm } from "@/lib/confirm";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { WagePackageFields, wageValueFromEmployee, type WagePackageValue } from "@/components/form/WagePackageFields";
 import { TERMINATION_TYPES } from "@shared/hr";
-import { CheckCircle2, TrendingUp, UserMinus } from "lucide-react";
+import { describeWageDiff, type WageProfileShape } from "@shared/wageDiff";
+import { CheckCircle2, TrendingUp, UserMinus, Wallet } from "lucide-react";
 import { useMemo, useState } from "react";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -39,6 +41,28 @@ const termStatusCls: Record<string, string> = {
   pending: "badge-status-pending",
 };
 const termStatusLabel = (s: string) => (s === "completed" ? "مكتملة" : "قيد التنفيذ");
+
+/**
+ * تفصيل حزمة الأجر قبل/بعد — **شرطُ جدوى الاعتماد الثاني**: من يعتمد تغييراً أجرياً
+ * دون رؤية قيمه القديمة والجديدة يُوقّع على ما لم يره، فتصير البوّابة إجراءً شكلياً
+ * (مراجعة Codex P1 على PR #449 — كان الصفّ يعرض وسماً عامّاً «حزمة أجر» فحسب).
+ */
+function WageDiffList({ from, to }: { from: unknown; to: unknown }) {
+  const rows = describeWageDiff(from as WageProfileShape | null, to as WageProfileShape | null);
+  if (!rows.length) return null;
+  return (
+    <ul className="mt-1 space-y-0.5 text-[11px]">
+      {rows.map((r, i) => (
+        <li key={`${r.key}-${i}`} className="flex flex-wrap items-baseline justify-end gap-1">
+          <span className="text-muted-foreground">{r.label}:</span>
+          <span className="tabular-nums line-through text-muted-foreground" dir="auto">{r.before}</span>
+          <span aria-hidden>←</span>
+          <span className="tabular-nums font-medium text-money-positive" dir="auto">{r.after}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function EmpCell({ name, color, photoUrl }: { name: string; color?: string | null; photoUrl?: string | null }) {
   return (
@@ -68,7 +92,16 @@ export default function Promotions() {
   const [pReason, setPReason] = useState("");
   const selectedEmp = useMemo(() => activeEmps.find((e) => String(e.id) === pEmp), [activeEmps, pEmp]);
 
-  const resetPromo = () => { setPEmp(""); setPToTitle(""); setPToSalary(""); setPDate(today()); setPReason(""); };
+  /*
+   * حزمة الأجر (0143): الترقية هي **المسار الوحيد** لتغيير أيّ حقلٍ حاملٍ للأجر بعد
+   * التعيين لغير الأدمن — الراتب والبدلات وجدول الدوام وأسعار ساعات الأيام والإعفاء
+   * من الحضور. كانت تحمل الراتب وحده، فبقيت البقية تُعدَّل من شاشة الموظف بفاعلٍ واحد.
+   * القيم تُملأ من حالة الموظف المختار عبر نفس المُطبِّع الذي يستعمله نموذج الموظف.
+   */
+  const [pWageOn, setPWageOn] = useState(false);
+  const [pWage, setPWage] = useState<WagePackageValue>(() => wageValueFromEmployee(null));
+
+  const resetPromo = () => { setPEmp(""); setPToTitle(""); setPToSalary(""); setPDate(today()); setPReason(""); setPWageOn(false); setPWage(wageValueFromEmployee(null)); };
   const createPromo = trpc.promotions.createPromotion.useMutation({
     onSuccess: async () => { notify.ok("سُجّلت الترقية (قيد الاعتماد)"); setPromoOpen(false); resetPromo(); await utils.promotions.listPromotions.invalidate(); },
     onError: (e) => notify.err(e),
@@ -80,13 +113,31 @@ export default function Promotions() {
 
   const submitPromo = () => {
     if (!pEmp) return notify.warn("اختر الموظف");
-    if (!pToTitle.trim()) return notify.warn("أدخل المسمّى الجديد");
+    // المسمّى لم يعد إلزامياً: تغييرٌ أجريٌّ بحت (جدول/أسعار) يبقي المسمّى الحاليّ —
+    // لكن طلباً بلا مسمّى ولا حزمةٍ ولا راتبٍ لا يغيّر شيئاً فلا يُستهلَك عليه اعتماد.
+    if (!pToTitle.trim() && !pWageOn && !pToSalary.trim()) {
+      return notify.warn("حدّد مسمّى جديداً أو فعّل «تغيير حزمة الأجر»");
+    }
+    if (pWageOn && pWage.payType === "monthly" && !pWage.salary.trim()) {
+      return notify.warn("الراتب الأساس مطلوب لذوي الراتب الشهري");
+    }
     createPromo.mutate({
       employeeId: Number(pEmp),
-      toTitle: pToTitle.trim(),
-      toSalary: pToSalary.trim() || undefined,
+      toTitle: pToTitle.trim() || undefined,
+      // الراتب المستقلّ يُهمَل عند تفعيل الحزمة — الحزمة تحمله فلا مصدران متعارضان.
+      toSalary: pWageOn ? undefined : pToSalary.trim() || undefined,
       effectiveDate: pDate,
       reason: pReason.trim() || undefined,
+      wage: pWageOn
+        ? {
+            payType: pWage.payType,
+            salary: pWage.payType === "monthly" ? pWage.salary.trim() || null : null,
+            allowances: pWage.allowances.trim() || "0",
+            attendanceExempt: pWage.payType === "monthly" && pWage.attendanceExempt,
+            dayRates: pWage.payType === "hourly" ? pWage.dayRates : undefined,
+            workSchedule: pWage.schedule,
+          }
+        : undefined,
     });
   };
 
@@ -204,9 +255,20 @@ export default function Promotions() {
                       <tr key={p.id} className="border-t hover:bg-accent/40">
                         <td className="p-2"><EmpCell name={p.employeeName} color={p.colorTag} photoUrl={p.photoUrl} /></td>
                         <td className="p-2 text-xs text-muted-foreground">{p.fromTitle ?? "—"}</td>
-                        <td className="p-2 text-[13px] font-medium">{p.toTitle}</td>
+                        {/* مسمّى فارغ = تغييرٌ أجريٌّ بحت لا ترقيةَ مسمّى. */}
+                        <td className="p-2 text-[13px] font-medium">{p.toTitle || "—"}</td>
                         <td className="p-2 text-right tabular-nums text-xs" dir="ltr">
                           <span className="text-muted-foreground">{iqd(p.fromSalary)}</span> → <span className="font-medium text-money-positive">{p.toSalary != null ? iqd(p.toSalary) : "—"}</span>
+                          {/* «الراتب لم يتغيّر» لا يعني «الأجر لم يتغيّر»: الجدول وأسعار الساعات
+                              تُغيّر المدفوع فعلياً، فيلزم أن يراها المعتمِد قبل الاعتماد. */}
+                          {p.toWage != null && (
+                            <div dir="rtl">
+                              <span className="mt-0.5 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
+                                <Wallet aria-hidden className="size-3" /> حزمة أجر
+                              </span>
+                              <WageDiffList from={p.fromWage} to={p.toWage} />
+                            </div>
+                          )}
                         </td>
                         <td className="p-2 text-center text-xs tabular-nums" dir="ltr">{p.effectiveDate}</td>
                         <td className="p-2 text-xs">{p.reason ?? "—"}</td>
@@ -223,7 +285,13 @@ export default function Promotions() {
                                 disabled: approvePromo.isPending,
                                 disabledReason: "جارٍ اعتماد الترقية",
                                 onSelect: async () => {
-                                  if (!(await confirm({ variant: "warning", title: "اعتماد الترقية", description: `اعتماد ترقية «${p.employeeName}» إلى «${p.toTitle}» يحدّث بيانات الموظف المالية. متابعة؟`, confirmText: "اعتماد" }))) return;
+                                  // الحوار يسرد التغييرات بقيمها لا بوصفٍ عامّ — المعتمِد يقرّ ما يراه.
+                                  const diff = describeWageDiff(p.fromWage as WageProfileShape | null, p.toWage as WageProfileShape | null);
+                                  const wageNote = diff.length
+                                    ? `\n\nتغييرات حزمة الأجر:\n${diff.map((r) => `• ${r.label}: ${r.before} ← ${r.after}`).join("\n")}`
+                                    : "";
+                                  const titleNote = p.toTitle ? ` إلى «${p.toTitle}»` : "";
+                                  if (!(await confirm({ variant: "warning", title: "اعتماد الترقية", description: `اعتماد طلب «${p.employeeName}»${titleNote} يحدّث بيانات الموظف المالية.${wageNote}`, confirmText: "اعتماد" }))) return;
                                   approvePromo.mutate({ id: p.id });
                                 },
                               }]}
@@ -338,12 +406,22 @@ export default function Promotions() {
 
       {/* ===== نافذة الترقية ===== */}
       <Dialog open={promoOpen} onOpenChange={(o) => { setPromoOpen(o); if (!o) resetPromo(); }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>ترقية موظف</DialogTitle></DialogHeader>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>ترقية / تغيير أجر</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="p-emp">الموظف</Label>
-              <select id="p-emp" className={selectCls} value={pEmp} onChange={(e) => setPEmp(e.target.value)}>
+              <select
+                id="p-emp"
+                className={selectCls}
+                value={pEmp}
+                onChange={(e) => {
+                  setPEmp(e.target.value);
+                  // تعبئة الحزمة من حالة الموظف الحالية: الطلب يُخزَّن **هدفاً كاملاً**،
+                  // فبدءُ التحرير من قيمه الفعلية يمنع تصفير جدولٍ لم يُقصَد تغييره.
+                  setPWage(wageValueFromEmployee(activeEmps.find((x) => String(x.id) === e.target.value) ?? null));
+                }}
+              >
                 <option value="">— اختر موظفاً —</option>
                 {activeEmps.map((e) => <option key={e.id} value={String(e.id)}>{e.fullName}{e.position ? ` — ${e.position}` : ""}</option>)}
               </select>
@@ -354,11 +432,43 @@ export default function Promotions() {
               )}
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1"><Label htmlFor="p-title">المسمّى الجديد</Label><Input id="p-title" value={pToTitle} onChange={(e) => setPToTitle(e.target.value)} placeholder="مثال: محاسبة أولى" /></div>
-              <div className="space-y-1"><Label htmlFor="p-salary">الراتب الجديد (د.ع)</Label><MoneyInput id="p-salary" value={pToSalary} onChange={setPToSalary} decimals={0} placeholder="1,100,000" /></div>
+              <div className="space-y-1"><Label htmlFor="p-title">المسمّى الجديد</Label><Input id="p-title" value={pToTitle} onChange={(e) => setPToTitle(e.target.value)} placeholder="اتركه فارغاً ليبقى كما هو" /></div>
+              {!pWageOn && (
+                <div className="space-y-1"><Label htmlFor="p-salary">الراتب الجديد (د.ع)</Label><MoneyInput id="p-salary" value={pToSalary} onChange={setPToSalary} decimals={0} placeholder="1,100,000" /></div>
+              )}
             </div>
+
+            {/* حزمة الأجر — المسار المزدوج الاعتماد لتغيير ما لا تسمح به شاشة الموظف. */}
+            <div className="rounded-md border p-3 space-y-3">
+              <label className="flex items-start gap-2">
+                <input type="checkbox" className="size-4 mt-0.5" checked={pWageOn} disabled={!pEmp} onChange={(ev) => setPWageOn(ev.target.checked)} />
+                <span>
+                  <span className="font-medium flex items-center gap-1"><Wallet aria-hidden className="size-4" /> تغيير حزمة الأجر</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                    الراتب والبدلات وجدول الدوام وأسعار ساعات الأيام والإعفاء من الحضور — كلُّها تُغيَّر من هنا
+                    فقط (باعتماد مديرٍ آخر)، لأنها تحدّد المبلغ المدفوع فعلياً لا الراتب وحده.
+                    {!pEmp && <span className="block mt-0.5">اختر الموظف أولاً لتُملأ حزمته الحالية.</span>}
+                  </span>
+                </span>
+              </label>
+              {pWageOn && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-t pt-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="p-paytype">طريقة الأجر</Label>
+                    <select id="p-paytype" className={selectCls} value={pWage.payType} onChange={(ev) => setPWage((w) => ({ ...w, payType: ev.target.value as "monthly" | "hourly" }))}>
+                      <option value="monthly">راتب شهري</option>
+                      <option value="hourly">بالساعة</option>
+                    </select>
+                  </div>
+                  <div className="hidden md:block" aria-hidden />
+                  <div className="hidden md:block" aria-hidden />
+                  <WagePackageFields value={pWage} onChange={(patch) => setPWage((w) => ({ ...w, ...patch }))} />
+                </div>
+              )}
+            </div>
+
             <div className="space-y-1"><Label htmlFor="p-date">تاريخ النفاذ</Label><Input id="p-date" type="date" dir="ltr" value={pDate} onChange={(e) => setPDate(e.target.value)} /></div>
-            <div className="space-y-1"><Label htmlFor="p-reason">سبب الترقية</Label><Textarea id="p-reason" rows={2} value={pReason} onChange={(e) => setPReason(e.target.value)} placeholder="أداء متميز، إكمال فترة تدريب…" /></div>
+            <div className="space-y-1"><Label htmlFor="p-reason">سبب الترقية / التغيير</Label><Textarea id="p-reason" rows={2} value={pReason} onChange={(e) => setPReason(e.target.value)} placeholder="أداء متميز، إكمال فترة تدريب، تعديل جدول دوام…" /></div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPromoOpen(false)}>إلغاء</Button>

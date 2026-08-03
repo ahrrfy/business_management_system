@@ -16,11 +16,14 @@ import {
   onlineOrders,
   productUnits,
   productVariants,
+  productImages,
   products,
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money } from "../money";
 import { withTx } from "../tx";
+import { decodeDataUrl, productImageUrl } from "../../imageRoute";
+import { onlineOrderLabelToken } from "../barcodeService";
 
 export type OnlineOrderStatus = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
@@ -119,6 +122,8 @@ export async function onlineOrderStatusCounts(scopedBranchId: number | null): Pr
 
 export interface OnlineOrderDetailItem {
   productName: string;
+  variantLabel: string;
+  imageUrl: string | null;
   unitName: string;
   quantity: string;
   unitPrice: string;
@@ -129,6 +134,8 @@ export interface OnlineOrderDetail extends OnlineOrderRow {
   addressText: string | null;
   subtotal: string;
   deliveryPartyName: string | null;
+  /** يوقّع الخادم هذا الرمز ليُستعمل QR كوصلة عامة غير قابلة للتخمين. */
+  labelToken: string;
   items: OnlineOrderDetailItem[];
 }
 
@@ -168,6 +175,11 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
   const items = await db
     .select({
       productName: products.name,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      imageId: productImages.id,
+      imageUrl: productImages.url,
       unitName: productUnits.unitName,
       quantity: onlineOrderItems.quantity,
       unitPrice: onlineOrderItems.unitPrice,
@@ -177,6 +189,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(productUnits, eq(onlineOrderItems.productUnitId, productUnits.id))
+    .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)))
     .where(eq(onlineOrderItems.onlineOrderId, id));
   return {
     id: Number(order.id),
@@ -191,12 +204,17 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     deliveryFee: String(order.deliveryFee),
     deliveryPartyId: order.deliveryPartyId != null ? Number(order.deliveryPartyId) : null,
     deliveryPartyName: order.deliveryPartyName ?? null,
+    labelToken: onlineOrderLabelToken(order.orderNumber),
     cancelReason: order.cancelReason ?? null,
     total: String(order.total),
     itemCount: items.length,
     createdAt: order.createdAt,
     items: items.map((i) => ({
       productName: i.productName,
+      variantLabel: Array.from(new Set([i.variantName, i.color, i.size].map((v) => v?.trim()).filter(Boolean))).join(" — "),
+      imageUrl: i.imageUrl && (!/^data:/i.test(i.imageUrl) || (i.imageId != null && decodeDataUrl(i.imageUrl)))
+        ? (/^data:/i.test(i.imageUrl) ? productImageUrl(Number(i.imageId), i.imageUrl) : i.imageUrl)
+        : null,
       unitName: i.unitName ?? "",
       quantity: String(i.quantity),
       unitPrice: String(i.unitPrice),

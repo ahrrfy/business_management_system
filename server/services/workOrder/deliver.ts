@@ -15,7 +15,7 @@ import { userNameSnapshot } from "../userSnapshot";
 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
-  payment?: { amount: string; method: PaymentMethod } | null;
+  payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
   clientRequestId?: string | null;
 }
 
@@ -58,6 +58,10 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
 
     // Credit-sale guard. العربون المقبوض سابقاً (receipt+PAYMENT_IN عند الإنشاء) يُضمّ لمدفوع الفاتورة.
     const paidNow = money(input.payment?.amount ?? "0");
+    const paymentReference = input.payment?.reference?.trim() || null;
+    if (paidNow.gt(0) && input.payment?.method !== "CASH" && !paymentReference) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
+    }
     const depositPaid = round2(money(wo.deposit ?? "0"));
     const totalPaid = round2(depositPaid.plus(paidNow));
     if (paidNow.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المدفوع لا يمكن أن يكون سالباً" });
@@ -163,6 +167,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         // cashBucket='DRAWER' للنقد ⇒ يَدخل تسوية الدرج/Z-report (مرآة createSale/processPayment).
         cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
         status: "COMPLETED",
+        referenceNumber: paymentReference,
         invoiceId,
         createdBy: actor.userId,
       });

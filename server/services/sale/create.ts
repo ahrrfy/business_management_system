@@ -747,6 +747,7 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         direction: "IN",
         amount: toDbMoney(paidNow),
         paymentMethod: input.payment!.method,
+        referenceNumber: input.payment!.reference?.trim() || null,
         status: "COMPLETED",
         createdBy: actor.userId,
       });

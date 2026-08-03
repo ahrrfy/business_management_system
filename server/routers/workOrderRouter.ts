@@ -27,8 +27,82 @@ import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { money } from "../services/money";
+import { checkoutReception } from "../services/receptionCheckoutService";
+import { logger } from "../logger";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+const receptionPaymentMethod = z.enum(["CASH", "CARD", "TRANSFER"]);
+const quantityString = z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة");
+const receptionWorkOrderSchema = z.object({
+  baseVariantId: z.number().int().positive().nullish(),
+  title: z.string().trim().min(1),
+  customizationText: z.string().nullish(),
+  quantity: z.number().int().positive().default(1),
+  materials: z.array(z.object({ variantId: z.number().int().positive(), baseQuantity: z.number().int().positive() })).default([]),
+  laborCost: nonNegMoneyString.default("0"),
+  salePrice: positiveMoneyString,
+  dueDate: z.string().nullish(),
+  notes: z.string().nullish(),
+  assignedTo: z.number().int().positive().nullish(),
+  receptionChannel: z.enum(["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE", "OTHER"]).nullish(),
+  channelHandle: z.string().max(120).nullish(),
+  priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
+  deposit: nonNegMoneyString.nullish(),
+  paymentMethod: z.enum(["CASH", "CARD", "TRANSFER"]).nullish(),
+  paymentReference: z.string().max(100).nullish(),
+  paymentReceiptUrl: z.string().nullish(),
+  hasDelivery: z.boolean().nullish(),
+  deliveryAddress: z.string().nullish(),
+  deliveryCost: nonNegMoneyString.nullish(),
+  designImages: z.array(z.object({
+    url: z.string().min(1),
+    caption: z.string().max(255).nullish(),
+    sortOrder: z.number().int().min(0).nullish(),
+  })).max(10).default([]),
+});
+
+const receptionCheckoutSchema = z.object({
+  branchId: z.number().int().positive(),
+  shiftId: z.number().int().positive(),
+  customerId: z.number().int().positive().nullish(),
+  paymentMethod: receptionPaymentMethod,
+  paymentReference: z.string().trim().max(100).nullish(),
+  paidAmount: nonNegMoneyString.nullish(),
+  clientRequestId: z.string().min(1).max(60),
+  regularSale: z.object({
+    lines: z.array(z.object({
+      variantId: z.number().int().positive(),
+      productUnitId: z.number().int().positive(),
+      quantity: quantityString,
+      discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
+    })).min(1),
+    amount: positiveMoneyString,
+  }).nullish(),
+  printSale: z.object({
+    lines: z.array(z.object({
+      variantId: z.number().int().positive(),
+      productUnitId: z.number().int().positive(),
+      quantity: quantityString,
+      unitPriceOverride: nonNegMoneyString.optional(),
+    })).min(1),
+    amount: positiveMoneyString,
+  }).nullish(),
+  workOrders: z.array(receptionWorkOrderSchema).max(50).default([]),
+}).superRefine((input, ctx) => {
+  if (!input.regularSale && !input.printSale && input.workOrders.length === 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "السلة فارغة" });
+  }
+  const hasPayment = money(input.paidAmount ?? "0").gt(0) || !!input.regularSale || !!input.printSale || input.workOrders.some((order) => money(order.deposit ?? "0").gt(0));
+  if (hasPayment && input.paymentMethod !== "CASH" && !input.paymentReference?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["paymentReference"], message: "مرجع الدفع مطلوب" });
+  }
+  for (let index = 0; index < input.workOrders.length; index += 1) {
+    const order = input.workOrders[index];
+    if (money(order.deposit ?? "0").gt(0) && order.paymentMethod !== input.paymentMethod) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workOrders", index, "paymentMethod"], message: "طريقة دفع العربون لا تطابق طريقة دفع العملية" });
+    }
+  }
+});
 
 /** حالات أمر الشغل — مطابقة حرفياً لـmysqlEnum("workOrderStatus") في drizzle/schema.ts:1443. */
 const woStatus = z.enum(["RECEIVED", "IN_PROGRESS", "READY", "DELIVERED", "CANCELLED"]);
@@ -224,18 +298,26 @@ export const workOrderRouter = router({
    * cashierProcedure: الكاشير ينشئ أوامر الشغل ويحتاج اختيار المنفّذ؛ القائمة أسماء فقط (لا بيانات حسّاسة).
    * إعادة الإسناد نفسها (mutation `assign`) تبقى managerProcedure — قرار إشرافي.
    */
-  assignableStaff: workordersCashierProcedure.query(async () => {
+  assignableStaff: workordersCashierProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return [];
-    // عزل (تَدقيق ٢٣/٦/٢٦): القائمة كانت تَكشف admin/manager للكاشير ⇒ تَسريب هياكل المنظّمة.
-    // المُسنَد إليه أمر شغل يَنفّذه فعلياً، فيكفي أدوار التنفيذ. الأدمن/المدير يُسنَدون عبر `assign`
-    // (managerProcedure) لو لزم لاحقاً.
+    const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+    let targetBranch: number | null = null;
+    if (elevated && input?.branchId != null) targetBranch = Number(input.branchId);
+    else if (ctx.user.branchId != null) targetBranch = Number(ctx.user.branchId);
+    else if (!elevated) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مسند لهذا المستخدم" });
+    const branchCondition = targetBranch == null
+      ? undefined
+      : or(eq(users.branchId, targetBranch), isNull(users.branchId));
     return db
       .select({ id: users.id, name: users.name, role: users.role })
       .from(users)
       .where(and(
         eq(users.isActive, true),
-        inArray(users.role, ["print_operator", "cashier", "warehouse"]),
+        eq(users.role, "print_operator"),
+        branchCondition,
       ))
       .orderBy(asc(users.name));
   }),
@@ -297,6 +379,71 @@ export const workOrderRouter = router({
     return rows;
   }),
 
+  /** نقطة الالتزام الوحيدة لشاشة الاستقبال: كل مستندات السلة المختلطة في معاملة واحدة. */
+  receptionCheckout: workordersCashierProcedure
+    .input(receptionCheckoutSchema)
+    .mutation(async ({ input, ctx }) => {
+      for (const order of input.workOrders) {
+        for (const img of order.designImages ?? []) assertValidImageDataUrl(img.url);
+        if (order.paymentReceiptUrl) assertValidImageDataUrl(order.paymentReceiptUrl);
+      }
+
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!elevated && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مسند لهذا المستخدم" });
+      }
+      if (!elevated && Number(ctx.user.branchId) !== input.branchId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع تنفيذ استقبال لفرع آخر" });
+      }
+      if (!elevated && input.workOrders.some((order) => money(order.laborCost ?? "0").gt(0))) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "تكلفة العمالة يحددها المدير فقط" });
+      }
+
+      const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role };
+      const { branchId: _branchId, ...checkoutInput } = input;
+
+      let result: Awaited<ReturnType<typeof checkoutReception>> | undefined;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          result = await checkoutReception({
+            ...checkoutInput,
+            branchId: effectiveBranchId,
+            priceOverrideApproved: elevated,
+          }, actor);
+          break;
+        } catch (error: any) {
+          if (isDupEntry(error) && attempt < 2) continue;
+          if (error instanceof TRPCError) throw error;
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "تعذّر إتمام عملية الاستقبال؛ لم يُحفظ أي جزء منها",
+            cause: error,
+          });
+        }
+      }
+      if (!result) throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد أرقام مستندات فريدة" });
+
+      // التدقيق أثرٌ لاحق، وليس جزءاً من نتيجة الالتزام المالي. فشله لا يجوز أن يوهم الكاشير
+      // بأن المعاملة تراجعت فيعيد قبضها؛ نسجّل العطل تشغيلياً ونُرجع النجاح الملتزم.
+      try {
+        await logAudit(ctx, {
+          action: "workOrder.receptionCheckout",
+          entityType: "receptionCheckout",
+          entityId: input.clientRequestId,
+          newValue: {
+            regularInvoiceId: result.regularSale?.invoiceId ?? null,
+            printInvoiceId: result.printSale?.invoiceId ?? null,
+            workOrderIds: result.workOrders.map((order) => order.workOrderId),
+            paymentMethod: input.paymentMethod,
+          },
+        });
+      } catch (error) {
+        logger.error({ error, clientRequestId: input.clientRequestId }, "reception checkout audit failed after commit");
+      }
+      return result;
+    }),
+
   create: workordersCashierProcedure
     .input(
       z.object({
@@ -323,7 +470,7 @@ export const workOrderRouter = router({
         // v3-add-screens(100%): أولوية + دفع + توصيل.
         priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
         deposit: nonNegMoneyString.nullish(),
-        paymentMethod: z.enum(["CASH", "CARD"]).nullish(),
+        paymentMethod: z.enum(["CASH", "CARD", "TRANSFER"]).nullish(),
         paymentReference: z.string().max(100).nullish(),
         paymentReceiptUrl: z.string().nullish(),
         hasDelivery: z.boolean().nullish(),
@@ -440,7 +587,11 @@ export const workOrderRouter = router({
     .input(
       z.object({
         workOrderId: z.number().int().positive(),
-        payment: z.object({ amount: positiveMoneyString, method }).optional(),
+        payment: z.object({ amount: positiveMoneyString, method, reference: z.string().trim().max(100).nullish() }).superRefine((payment, ctx) => {
+          if (payment.method !== "CASH" && !payment.reference?.trim()) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reference"], message: "مرجع عملية البطاقة/التحويل مطلوب" });
+          }
+        }).optional(),
         clientRequestId: z.string().optional().nullable(),
       })
     )

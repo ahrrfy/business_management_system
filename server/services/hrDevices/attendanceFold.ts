@@ -18,7 +18,8 @@ import { attendance, employees, hrAttendancePunches, hrAttendanceSettings } from
 import { requireDb } from "../tx";
 import { logger } from "../../logger";
 import { recordAttendance } from "../attendanceService";
-import { computeDayHours, DEFAULT_MAX_DAILY_HOURS, DEFAULT_NIGHT_SHIFT, type NightShiftOptions } from "./dayHours";
+import { computeDayHours, DEFAULT_MAX_DAILY_HOURS } from "./dayHours";
+import { DEFAULT_WORK_SCHEDULE, hoursForDay } from "../hr/attendancePay";
 
 /** إزاحة تاريخ نصّي بأيام (UTC نقيّ — لا انزياح منطقة زمنية). */
 function shiftDate(date: string, days: number): string {
@@ -38,16 +39,12 @@ async function punchTimesOf(employeeId: number, date: string): Promise<string[]>
 }
 
 /** إعدادات الاحتساب (صفّ مفرد) — الغياب = الافتراضي المعطَّل، فلا تفشل الوحدة قبل الهجرة/البذر. */
-async function loadFoldSettings(): Promise<{ night: NightShiftOptions; maxDailyHours: number }> {
+async function loadFoldSettings(): Promise<{ maxDailyHours: number }> {
   try {
     const [row] = await requireDb().select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
-    if (!row) return { night: DEFAULT_NIGHT_SHIFT, maxDailyHours: DEFAULT_MAX_DAILY_HOURS };
-    return {
-      night: { enabled: !!row.nightShiftEnabled, cutoffHour: Number(row.nightShiftCutoffHour ?? 8) },
-      maxDailyHours: Number(row.maxDailyHours ?? DEFAULT_MAX_DAILY_HOURS),
-    };
+    return { maxDailyHours: Number(row?.maxDailyHours ?? DEFAULT_MAX_DAILY_HOURS) };
   } catch {
-    return { night: DEFAULT_NIGHT_SHIFT, maxDailyHours: DEFAULT_MAX_DAILY_HOURS };
+    return { maxDailyHours: DEFAULT_MAX_DAILY_HOURS };
   }
 }
 
@@ -73,7 +70,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
     .orderBy(asc(hrAttendancePunches.punchAt))
     .limit(5000);
   if (pending.length === 0) return { days: 0, parked: 0, processedAny: false };
-  const { night, maxDailyHours } = await loadFoldSettings();
+  const { maxDailyHours } = await loadFoldSettings();
 
   // تجميع (موظف × يوم) — punchAt نص "YYYY-MM-DD HH:MM:SS" فاليوم = أول ١٠ خانات.
   const groups = new Map<string, { employeeId: number; date: string; ids: number[] }>();
@@ -113,10 +110,18 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
     // ومعها يوما الجوار حين تُفعَّل الوردية الليلية: الإسناد حتميّ يُستنتَج من الجيران
     // لا من حالةٍ مخزَّنة، فيعطي النتيجة نفسها مهما تكرّر الطيّ.
     const times = await punchTimesOf(g.employeeId, g.date);
-    const [prevTimes, nextTimes] = night.enabled
-      ? await Promise.all([punchTimesOf(g.employeeId, shiftDate(g.date, -1)), punchTimesOf(g.employeeId, shiftDate(g.date, 1))])
-      : [[], []];
-    const day = computeDayHours(times, prevTimes, nextTimes, night, maxDailyHours);
+    // ساعات ذلك اليوم في جدول الموظف — بدونها كان حارس «أقلّ من نصف المقرَّر» ميتاً
+      // في الإنتاج ولا يُختبَر إلا في الوحدات (Codex P2).
+      const [empRow] = await db
+        .select({ workSchedule: employees.workSchedule })
+        .from(employees)
+        .where(eq(employees.id, g.employeeId))
+        .limit(1);
+      const sched = (empRow?.workSchedule && typeof empRow.workSchedule === "object"
+        ? empRow.workSchedule
+        : DEFAULT_WORK_SCHEDULE) as Record<string, { hours?: number } | number>;
+      const schedHours = hoursForDay(sched as never, g.date).toNumber();
+      const day = computeDayHours(times, maxDailyHours, schedHours);
     if (day.usedCount === 0) {
       // كل بصمات اليوم مملوكة لوردية أمس ⇒ لا يوم هنا. توسَم معالَجةً كي لا تدور أبداً.
       await db

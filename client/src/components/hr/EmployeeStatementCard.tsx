@@ -32,6 +32,7 @@ const STATE_LABEL: Record<string, string> = {
   paidLeave: "إجازة مدفوعة",
   unpaidLeave: "إجازة بلا راتب",
   beforeStart: "قبل السريان",
+  restWorked: "عمل يوم راحة",
 };
 
 /** آخر ١٢ شهراً كخيارات. */
@@ -63,10 +64,19 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
     onError: (e) => notify.err(e),
   });
 
-  const totalDue = useMemo(
-    () => (d ? Number(d.totals.basePay) + Number(d.totals.overtimePay) : 0),
-    [d],
-  );
+  /*
+   * المستحقّ من الخادم بأساسه (`amountDue`/`dueBasis`) لا من حساب الحضور دائماً: المُعفى
+   * بلا بصمات كان يرى — ويُشارك ويطبع — صفراً تحت سطرٍ يقول إن الحضور لا يؤثّر في راتبه.
+   */
+  const totalDue = useMemo(() => (d ? Number(d.amountDue) : 0), [d]);
+  const dueLabel =
+    d?.dueBasis === "exempt"
+      ? "الراتب الثابت المستحقّ (لا يخضع للحضور)"
+      : d?.dueBasis === "fixedSalary"
+        ? "الراتب الثابت المستحقّ (الأجر بالحضور غير مفعَّل)"
+        : d?.dueBasis === "hourly"
+          ? "المستحقّ عن الشهر (أجرٌ بالساعة من سجلّ الحضور)"
+          : "المستحقّ عن الشهر (أساس + أوفر تايم)";
 
   if (q.isLoading) return <Card><CardContent className="p-6 text-center text-muted-foreground">جارٍ تحميل الكشف…</CardContent></Card>;
   if (!d) return null;
@@ -74,6 +84,7 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
   const shareText = [
     `كشف حضور — ${d.employee.name}`,
     `الشهر: ${d.period}`,
+    d.dueBasis === "exempt" ? "راتب ثابت — لا يخضع للحضور" : null,
     `ساعات مستحقّة: ${d.totals.payableHours} من ${d.totals.scheduledHours}`,
     d.totals.absentDays > 0 ? `غياب: ${d.totals.absentDays} يوم` : null,
     Number(d.totals.overtimeHours) > 0 ? `أوفر تايم: ${d.totals.overtimeHours} ساعة` : null,
@@ -99,6 +110,7 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
               employeeName: d.employee.name, employeeId: d.employee.id, position: d.employee.position,
               department: d.employee.department, branchName: d.employee.branchName,
               period: d.period, from: d.from, to: d.to, totals: d.totals,
+              amountDue: d.amountDue, dueBasis: d.dueBasis,
             },
             d.days as never,
           )}>
@@ -112,6 +124,8 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
               { label: "الفترة", value: `${d.from} ← ${d.to}` },
               { label: "ساعات مقرَّرة", value: d.totals.scheduledHours },
               { label: "ساعات مستحقّة", value: d.totals.payableHours },
+              // المستحقّ بأساسه — وإلّا قُرئ مجموعُ عمود «أجر اليوم» (صفرٌ للمُعفى) راتباً.
+              { label: dueLabel, value: iqd(String(totalDue)) },
             ],
             columns: [
               { key: "date", header: "التاريخ" },
@@ -141,7 +155,13 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
       </CardHeader>
 
       <CardContent className="space-y-3">
-        {!d.attendancePayEnabled && (
+        {d.employee.attendanceExempt && (
+          <p className="text-xs rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 leading-relaxed">
+            <span className="font-medium text-[var(--sem-warn)]">راتب ثابت — لا يخضع للحضور.</span> يُصرف راتبه
+            ومخصّصاته كاملةً بلا احتساب ساعات. الجدول أدناه للاطّلاع فقط ولا يؤثّر في مسيّره.
+          </p>
+        )}
+        {!d.attendancePayEnabled && !d.employee.attendanceExempt && (
           <p className="text-xs text-muted-foreground rounded-md border p-2">
             الأجر بالحضور غير مفعَّل — الكشف يعرض الساعات والأسعار للمراجعة، لكنّ المسيّر
             ما زال يحتسب الراتب الثابت.
@@ -212,7 +232,7 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
             </tbody>
             <tfoot>
               <tr className="border-t-2 font-medium">
-                <td className="p-2" colSpan={7}>المستحقّ عن الشهر (أساس + أوفر تايم)</td>
+                <td className="p-2" colSpan={7}>{dueLabel}</td>
                 <td className="p-2 text-end tabular-nums" dir="ltr">{iqd(String(totalDue))}</td>
                 <td colSpan={2} />
               </tr>

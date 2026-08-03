@@ -22,6 +22,8 @@ export interface RemittanceInput {
   branchId: number;
   partyId: number;
   lines: RemittanceLineInput[];
+  /** النقد الذي عدّه المستلم فعلياً؛ يجب أن يطابق صافي التوريد بعد الأجور. */
+  countedCash: string;
   shiftType?: "RECEPTION" | "RETAIL";
   clientRequestId?: string | null;
 }
@@ -39,6 +41,7 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       partyId: Number(input.partyId),
       shiftType: input.shiftType ?? "RECEPTION",
       lines: canonicalLines,
+      countedCash: toDbMoney(round2(money(input.countedCash))),
     });
     if (input.clientRequestId) {
       const existingId = await checkIdempotency(tx, "delivery.remit", input.clientRequestId, payloadHash);
@@ -116,6 +119,16 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
     collectedTotal = round2(collectedTotal);
     feesTotal = round2(feesTotal);
     const netRemitted = round2(collectedTotal.minus(feesTotal));
+    const countedCash = round2(money(input.countedCash));
+    if (countedCash.lt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "النقد المعدود لا يمكن أن يكون سالباً" });
+    }
+    if (!countedCash.eq(netRemitted)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `النقد المعدود (${countedCash.toFixed(2)}) لا يطابق صافي التوريد المتوقع (${netRemitted.toFixed(2)}). راجع مبالغ الإرساليات والأجور قبل التأكيد.`,
+      });
+    }
     const shortfallTotal = round2(round2(expectedTotal).minus(collectedTotal)); // عجز يبقى عهدة (D4)
     const status: "BALANCED" | "SHORT" | "OVER" = shortfallTotal.gt("0.01") ? "SHORT" : shortfallTotal.lt("-0.01") ? "OVER" : "BALANCED";
 

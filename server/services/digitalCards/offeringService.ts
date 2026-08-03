@@ -47,6 +47,7 @@ export interface CreateOfferingInput {
   offeringType: string;
   name: string;
   requiresStudentData?: boolean;
+  subscriptionDurationDays?: number | null;
   faceValue?: string | null;
   faceCurrency?: string | null;
   pricingMode: string;
@@ -67,6 +68,7 @@ export interface UpdateOfferingInput {
   name?: string;
   offeringType?: string;
   requiresStudentData?: boolean;
+  subscriptionDurationDays?: number | null;
   faceValue?: string | null;
   faceCurrency?: string | null;
   pricingMode?: string;
@@ -179,6 +181,20 @@ export async function createOffering(
   if (!input.branches?.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "يجب تحديد فرع واحد على الأقل" });
   }
+  if (offeringType === "EDUCATIONAL_SUBSCRIPTION") {
+    if (!input.requiresStudentData) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الاشتراك التعليمي يحتاج بيانات الطالب ليُربط بعقده وتجديده",
+      });
+    }
+    if (input.subscriptionDurationDays == null || input.subscriptionDurationDays < 1) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "أدخِل مدة الاشتراك بالأيام قبل حفظ الاشتراك التعليمي",
+      });
+    }
+  }
 
   // 1. Verify provider exists and is active
   const [provider] = await tx
@@ -261,6 +277,10 @@ export async function createOffering(
     productUnitId,
     offeringType,
     requiresStudentData: input.requiresStudentData ?? false,
+    subscriptionDurationDays:
+      offeringType === "EDUCATIONAL_SUBSCRIPTION"
+        ? input.subscriptionDurationDays ?? null
+        : null,
     faceValue,
     faceCurrency: input.faceCurrency?.trim() || null,
     pricingMode,
@@ -377,6 +397,12 @@ export async function updateOffering(
   if (input.requiresStudentData !== undefined) {
     set.requiresStudentData = input.requiresStudentData;
   }
+  if (input.subscriptionDurationDays !== undefined) {
+    if (input.subscriptionDurationDays != null && input.subscriptionDurationDays < 1) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مدة الاشتراك يجب أن تكون يوماً واحداً على الأقل" });
+    }
+    set.subscriptionDurationDays = input.subscriptionDurationDays;
+  }
   if (input.faceValue !== undefined) {
     set.faceValue = input.faceValue != null ? toDbMoney(money(input.faceValue)) : null;
   }
@@ -487,6 +513,7 @@ export async function listOfferings(db: DB, filters?: OfferingFilters) {
       productUnitId: digitalOfferings.productUnitId,
       offeringType: digitalOfferings.offeringType,
       requiresStudentData: digitalOfferings.requiresStudentData,
+      subscriptionDurationDays: digitalOfferings.subscriptionDurationDays,
       faceValue: digitalOfferings.faceValue,
       faceCurrency: digitalOfferings.faceCurrency,
       pricingMode: digitalOfferings.pricingMode,
@@ -542,6 +569,7 @@ export async function getOffering(db: DB, id: number) {
       productUnitId: digitalOfferings.productUnitId,
       offeringType: digitalOfferings.offeringType,
       requiresStudentData: digitalOfferings.requiresStudentData,
+      subscriptionDurationDays: digitalOfferings.subscriptionDurationDays,
       faceValue: digitalOfferings.faceValue,
       faceCurrency: digitalOfferings.faceCurrency,
       pricingMode: digitalOfferings.pricingMode,

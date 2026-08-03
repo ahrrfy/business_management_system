@@ -5,6 +5,7 @@ import type { DB } from "../db";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import {
   dashboardService,
+  subscriptionService,
   finalizeService,
   intentService,
   offeringService,
@@ -37,7 +38,10 @@ import {
 function requireDb(): DB {
   const db = getDb();
   if (!db) {
-    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير مهيّأة" });
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "قاعدة البيانات غير مهيّأة",
+    });
   }
   return db;
 }
@@ -45,7 +49,11 @@ function requireDb(): DB {
 type Ctx = { user: { id: number; role: string; branchId?: number | null } };
 
 function actorOf(ctx: Ctx): Actor {
-  return { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role };
+  return {
+    userId: ctx.user.id,
+    branchId: Number(ctx.user.branchId ?? 0),
+    role: ctx.user.role,
+  };
 }
 
 /** نفس تعريف `branchScopedProcedure`: admin/manager يعبُران الفروع، وغيرهما محبوسٌ بفرعه.
@@ -57,13 +65,34 @@ function scopedBranchOf(ctx: Ctx): number | null {
 
 /* ─── مخططات المدخلات ──────────────────────────────────────────────────── */
 
-const providerTypeEnum = z.enum(["TELECOM", "GLOBAL_CARDS", "EDUCATIONAL", "OTHER"]);
+const providerTypeEnum = z.enum([
+  "TELECOM",
+  "GLOBAL_CARDS",
+  "EDUCATIONAL",
+  "OTHER",
+]);
 const settlementModeEnum = z.enum(["PREPAID", "POSTPAID"]);
 const recognitionModeEnum = z.enum(["PRINCIPAL_GROSS"]);
 const referencePolicyEnum = z.enum(["REQUIRED", "OPTIONAL", "NONE"]);
-const settlementCycleEnum = z.enum(["DAILY", "WEEKLY", "BIWEEKLY", "MONTHLY", "ON_DEMAND"]);
-const offeringTypeEnum = z.enum(["TELECOM_CARD", "GLOBAL_CARD", "EDUCATIONAL_SUBSCRIPTION", "OTHER"]);
-const pricingModeEnum = z.enum(["FIXED_MARGIN", "PERCENT_MARGIN", "FIXED_PLUS_PERCENT", "FIXED_SELL_PRICE"]);
+const settlementCycleEnum = z.enum([
+  "DAILY",
+  "WEEKLY",
+  "BIWEEKLY",
+  "MONTHLY",
+  "ON_DEMAND",
+]);
+const offeringTypeEnum = z.enum([
+  "TELECOM_CARD",
+  "GLOBAL_CARD",
+  "EDUCATIONAL_SUBSCRIPTION",
+  "OTHER",
+]);
+const pricingModeEnum = z.enum([
+  "FIXED_MARGIN",
+  "PERCENT_MARGIN",
+  "FIXED_PLUS_PERCENT",
+  "FIXED_SELL_PRICE",
+]);
 
 const idInput = z.object({ id: z.number().int().positive() });
 
@@ -77,11 +106,15 @@ const offeringBranchSchema = z.object({
 /* ─── المزوّدون ─────────────────────────────────────────────────────────── */
 
 const providersRouter = router({
-  list: digitalCardsAdminReadProcedure.query(async () => providerService.listProviders(requireDb())),
+  list: digitalCardsAdminReadProcedure.query(async () =>
+    providerService.listProviders(requireDb()),
+  ),
 
   get: digitalCardsAdminReadProcedure
     .input(idInput)
-    .query(async ({ input }) => providerService.getProvider(requireDb(), input.id)),
+    .query(async ({ input }) =>
+      providerService.getProvider(requireDb(), input.id),
+    ),
 
   create: digitalCardsManagerProcedure
     .input(
@@ -146,14 +179,19 @@ const walletsRouter = router({
       });
     }),
 
-  get: digitalCardsAdminReadProcedure.input(idInput).query(async ({ input, ctx }) => {
-    const wallet = await walletService.getWallet(requireDb(), input.id);
-    const scoped = scopedBranchOf(ctx);
-    if (scoped != null && Number(wallet.branchId) !== scoped) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "المحفظة تخصّ فرعاً آخر" });
-    }
-    return wallet;
-  }),
+  get: digitalCardsAdminReadProcedure
+    .input(idInput)
+    .query(async ({ input, ctx }) => {
+      const wallet = await walletService.getWallet(requireDb(), input.id);
+      const scoped = scopedBranchOf(ctx);
+      if (scoped != null && Number(wallet.branchId) !== scoped) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "المحفظة تخصّ فرعاً آخر",
+        });
+      }
+      return wallet;
+    }),
 
   create: digitalCardsManagerProcedure
     .input(
@@ -165,10 +203,18 @@ const walletsRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      if (scopedBranchOf(ctx) != null && input.branchId !== scopedBranchOf(ctx)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن إنشاء محفظة لفرع آخر" });
+      if (
+        scopedBranchOf(ctx) != null &&
+        input.branchId !== scopedBranchOf(ctx)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا يمكن إنشاء محفظة لفرع آخر",
+        });
       }
-      return withTx((tx) => walletService.createWallet(tx, input, actorOf(ctx)));
+      return withTx((tx) =>
+        walletService.createWallet(tx, input, actorOf(ctx)),
+      );
     }),
 
   update: digitalCardsManagerProcedure
@@ -225,27 +271,44 @@ const walletsRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => walletOpsService.requestAdjustment(tx, input, actorOf(ctx))),
+      withTx((tx) =>
+        walletOpsService.requestAdjustment(tx, input, actorOf(ctx)),
+      ),
     ),
 
   approveAdjustment: digitalCardsManagerProcedure
     .input(z.object({ transactionId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => walletOpsService.approveAdjustment(tx, input, actorOf(ctx))),
+      withTx((tx) =>
+        walletOpsService.approveAdjustment(tx, input, actorOf(ctx)),
+      ),
     ),
 
   rejectAdjustment: digitalCardsManagerProcedure
-    .input(z.object({ transactionId: z.number().int().positive(), reason: z.string().max(300).nullish() }))
+    .input(
+      z.object({
+        transactionId: z.number().int().positive(),
+        reason: z.string().max(300).nullish(),
+      }),
+    )
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => walletOpsService.rejectAdjustment(tx, input, actorOf(ctx))),
+      withTx((tx) =>
+        walletOpsService.rejectAdjustment(tx, input, actorOf(ctx)),
+      ),
     ),
 
   statement: digitalCardsAdminReadProcedure
     .input(
       z.object({
         walletId: z.number().int().positive(),
-        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        from: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        to: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
         limit: z.number().int().positive().max(500).optional(),
       }),
     )
@@ -253,7 +316,10 @@ const walletsRouter = router({
       const wallet = await walletService.getWallet(requireDb(), input.walletId);
       const scoped = scopedBranchOf(ctx);
       if (scoped != null && Number(wallet.branchId) !== scoped) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "المحفظة تخصّ فرعاً آخر" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "المحفظة تخصّ فرعاً آخر",
+        });
       }
       return walletOpsService.statement(requireDb(), input);
     }),
@@ -329,7 +395,9 @@ const offeringsRouter = router({
 
   get: digitalCardsAdminReadProcedure
     .input(idInput)
-    .query(async ({ input }) => offeringService.getOffering(requireDb(), input.id)),
+    .query(async ({ input }) =>
+      offeringService.getOffering(requireDb(), input.id),
+    ),
 
   create: digitalCardsManagerProcedure
     .input(
@@ -338,6 +406,7 @@ const offeringsRouter = router({
         offeringType: offeringTypeEnum,
         name: z.string().min(1).max(200),
         requiresStudentData: z.boolean().optional(),
+        subscriptionDurationDays: z.number().int().min(1).max(3650).nullish(),
         faceValue: nonNegMoneyString.nullish(),
         faceCurrency: z.string().length(3).nullish(),
         pricingMode: pricingModeEnum,
@@ -363,6 +432,7 @@ const offeringsRouter = router({
         name: z.string().min(1).max(200).optional(),
         offeringType: offeringTypeEnum.optional(),
         requiresStudentData: z.boolean().optional(),
+        subscriptionDurationDays: z.number().int().min(1).max(3650).nullish(),
         faceValue: nonNegMoneyString.nullish(),
         faceCurrency: z.string().length(3).nullish(),
         pricingMode: pricingModeEnum.optional(),
@@ -401,41 +471,80 @@ const offeringsRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      if (scopedBranchOf(ctx) != null && input.branchId !== scopedBranchOf(ctx)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن إعادة ترتيب بطاقات فرع آخر" });
+      if (
+        scopedBranchOf(ctx) != null &&
+        input.branchId !== scopedBranchOf(ctx)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا يمكن إعادة ترتيب بطاقات فرع آخر",
+        });
       }
-      return withTx((tx) => offeringService.reorderOfferings(tx, input, actorOf(ctx)));
+      return withTx((tx) =>
+        offeringService.reorderOfferings(tx, input, actorOf(ctx)),
+      );
     }),
+});
+
+const subscriptionsRouter = router({
+  list: digitalCardsAdminReadProcedure
+    .input(
+      z
+        .object({
+          branchId: z.number().int().positive().optional(),
+          activeOnly: z.boolean().optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ input, ctx }) =>
+      subscriptionService.listContracts(requireDb(), {
+        branchId: scopedBranchOf(ctx) ?? input?.branchId ?? null,
+        activeOnly: input?.activeOnly,
+      }),
+    ),
 });
 
 /* ─── أسعار اليوم (ش٤) ──────────────────────────────────────────────────── */
 
-const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
+const ymd = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 const scopeInput = z.object({
   branchId: z.number().int().positive(),
   providerId: z.number().int().positive(),
   businessDate: ymd,
 });
+const priceDraftScopeInput = scopeInput.extend({
+  changeReason: z.string().trim().min(3).max(300).nullish(),
+});
 
 const lineInput = z.object({
   offeringId: z.number().int().positive(),
   providerShare: nonNegMoneyString,
+  // سعر البيع يُدخل صراحةً في شاشة أسعار اليوم. إبقاؤه اختيارياً يحافظ على
+  // تكامل الواجهات/العملاء القديمة التي كانت ترسل التكلفة فقط.
+  sellPrice: nonNegMoneyString.optional(),
 });
 
 /** يفرض فرع المستخدم على أي نطاق قادم من العميل (منع IDOR عبر branchId). */
 function assertBranch(ctx: Ctx, branchId: number) {
   const scoped = scopedBranchOf(ctx);
   if (scoped != null && branchId !== scoped) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا صلاحية على فرع آخر" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "لا صلاحية على فرع آخر",
+    });
   }
 }
 
 const pricingRouter = router({
-  getMorningSheet: digitalCardsAdminReadProcedure.input(scopeInput).query(async ({ input, ctx }) => {
-    assertBranch(ctx, input.branchId);
-    return pricingService.getMorningSheet(requireDb(), input);
-  }),
+  getMorningSheet: digitalCardsAdminReadProcedure
+    .input(scopeInput)
+    .query(async ({ input, ctx }) => {
+      assertBranch(ctx, input.branchId);
+      return pricingService.getMorningSheet(requireDb(), input);
+    }),
 
   /** معاينة السعر خادمياً — الواجهة لا تعيد بناء معادلة التقريب (§٧.٣). */
   preview: digitalCardsAdminReadProcedure
@@ -451,31 +560,59 @@ const pricingRouter = router({
       return pricingService.previewPrices(requireDb(), input);
     }),
 
-  copyPrevious: digitalCardsManagerProcedure.input(scopeInput).mutation(async ({ input, ctx }) => {
-    assertBranch(ctx, input.branchId);
-    return withTx((tx) => pricingService.copyPrevious(tx, input, actorOf(ctx)));
-  }),
+  copyPrevious: digitalCardsManagerProcedure
+    .input(priceDraftScopeInput)
+    .mutation(async ({ input, ctx }) => {
+      assertBranch(ctx, input.branchId);
+      return withTx((tx) =>
+        pricingService.copyPrevious(tx, input, actorOf(ctx)),
+      );
+    }),
 
   saveDraft: digitalCardsManagerProcedure
-    .input(scopeInput.extend({ lines: z.array(lineInput).min(1).max(500) }))
+    .input(
+      priceDraftScopeInput.extend({
+        lines: z.array(lineInput).min(1).max(500),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       assertBranch(ctx, input.branchId);
       const actor = actorOf(ctx);
       return withTx(async (tx) => {
-        const { batchId } = await pricingService.createOrGetDraft(tx, input, actor);
-        return pricingService.saveDraft(tx, { batchId, lines: input.lines }, actor);
+        const { batchId } = await pricingService.createOrGetDraft(
+          tx,
+          input,
+          actor,
+        );
+        return pricingService.saveDraft(
+          tx,
+          { batchId, lines: input.lines },
+          actor,
+        );
       });
     }),
 
   /** الحفظ والنشر في معاملة واحدة — لا حالة وسطية بين مسودّة مكتوبة ودُفعة منشورة. */
   publish: digitalCardsManagerProcedure
-    .input(scopeInput.extend({ lines: z.array(lineInput).min(1).max(500) }))
+    .input(
+      priceDraftScopeInput.extend({
+        lines: z.array(lineInput).min(1).max(500),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       assertBranch(ctx, input.branchId);
       const actor = actorOf(ctx);
       return withTx(async (tx) => {
-        const { batchId } = await pricingService.createOrGetDraft(tx, input, actor);
-        await pricingService.saveDraft(tx, { batchId, lines: input.lines }, actor);
+        const { batchId } = await pricingService.createOrGetDraft(
+          tx,
+          input,
+          actor,
+        );
+        await pricingService.saveDraft(
+          tx,
+          { batchId, lines: input.lines },
+          actor,
+        );
         return pricingService.publish(tx, { batchId }, actor);
       });
     }),
@@ -505,15 +642,21 @@ const pricingRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       assertBranch(ctx, input.branchId);
-      return withTx((tx) => pricingService.reportMismatch(tx, input, actorOf(ctx)));
+      return withTx((tx) =>
+        pricingService.reportMismatch(tx, input, actorOf(ctx)),
+      );
     }),
 
   mismatchReports: digitalCardsAdminReadProcedure
     .input(
-      z.object({
-        branchId: z.number().int().positive().optional(),
-        status: z.enum(["OPEN", "APPROVED", "REJECTED", "RESOLVED"]).optional(),
-      }).optional(),
+      z
+        .object({
+          branchId: z.number().int().positive().optional(),
+          status: z
+            .enum(["OPEN", "APPROVED", "REJECTED", "RESOLVED"])
+            .optional(),
+        })
+        .optional(),
     )
     .query(async ({ input, ctx }) => {
       const scoped = scopedBranchOf(ctx);
@@ -536,7 +679,12 @@ const pricingRouter = router({
     ),
 
   rejectMismatch: digitalCardsManagerProcedure
-    .input(z.object({ reportId: z.number().int().positive(), notes: z.string().max(500).nullish() }))
+    .input(
+      z.object({
+        reportId: z.number().int().positive(),
+        notes: z.string().max(500).nullish(),
+      }),
+    )
     .mutation(async ({ input, ctx }) =>
       withTx((tx) => pricingService.rejectMismatch(tx, input, actorOf(ctx))),
     ),
@@ -551,7 +699,9 @@ const posRouter = router({
     .input(
       z.object({
         branchId: z.number().int().positive(),
-        category: z.enum(["FAVORITES", "TELECOM", "GLOBAL", "EDUCATIONAL", "ALL"]).optional(),
+        category: z
+          .enum(["FAVORITES", "TELECOM", "GLOBAL", "EDUCATIONAL", "ALL"])
+          .optional(),
         providerId: z.number().int().positive().optional(),
         q: z.string().max(120).optional(),
       }),
@@ -559,12 +709,20 @@ const posRouter = router({
     .query(async ({ input, ctx }) => {
       // الفرع يُفرَض خادمياً: غير المرتفع يقرأ فرعه مهما أرسل (منع IDOR عبر branchId).
       const scoped = scopedBranchOf(ctx);
-      return posCardsService.listCards(requireDb(), { ...input, branchId: scoped ?? input.branchId });
+      return posCardsService.listCards(requireDb(), {
+        ...input,
+        branchId: scoped ?? input.branchId,
+      });
     }),
 
   /** تأكيد السعر قبل إضافة البطاقة للسلة — لا يُنشئ أثراً مالياً، فقط يُثبّت سعر الخادم. */
   confirmCard: digitalCardsPosProcedure
-    .input(z.object({ branchId: z.number().int().positive(), offeringId: z.number().int().positive() }))
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        offeringId: z.number().int().positive(),
+      }),
+    )
     .query(async ({ input, ctx }) => {
       const scoped = scopedBranchOf(ctx);
       return posCardsService.confirmCard(requireDb(), {
@@ -589,23 +747,32 @@ const studentsRouter = router({
         limit: z.number().int().positive().max(50).optional(),
       }),
     )
-    .query(async ({ input }) => studentService.searchStudents(requireDb(), input)),
+    .query(async ({ input }) =>
+      studentService.searchStudents(requireDb(), input),
+    ),
 
   get: digitalCardsPosProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
-    .query(async ({ input }) => studentService.getStudent(requireDb(), input.customerId)),
+    .query(async ({ input }) =>
+      studentService.getStudent(requireDb(), input.customerId),
+    ),
 
   /** تلميح «لهذا الوليّ N أبناء» — يذكّر الكاشير بألّا يدمج الإخوة في ملفٍّ واحد. */
   siblingCount: digitalCardsPosProcedure
     .input(z.object({ guardianPhone: z.string().min(1).max(25) }))
     .query(async ({ input }) => ({
-      count: await studentService.countSiblings(requireDb(), input.guardianPhone),
+      count: await studentService.countSiblings(
+        requireDb(),
+        input.guardianPhone,
+      ),
     })),
 
   /** فحص الهاتف قبل الإضافة للسلة: جديد أم مرتبطٌ بملفّ واحد أم ملتبسٌ يحتاج اختياراً. */
   resolveByPhone: digitalCardsPosProcedure
     .input(z.object({ studentPhone: z.string().min(1).max(25) }))
-    .query(async ({ input }) => studentService.resolveStudentByPhone(requireDb(), input.studentPhone)),
+    .query(async ({ input }) =>
+      studentService.resolveStudentByPhone(requireDb(), input.studentPhone),
+    ),
 });
 
 /* ─── نيّة البيع والتنفيذ الخارجيّ (ش٧) ──────────────────────────────────────
@@ -666,26 +833,42 @@ const salesRouter = router({
     .input(z.object({ intentId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const res = await intentService.getIntent(requireDb(), input.intentId);
-      if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
+      if (!res)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "النيّة غير موجودة",
+        });
       const scoped = scopedBranchOf(ctx);
       if (scoped != null && Number(res.intent.branchId) !== scoped) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "النيّة تخصّ فرعاً آخر" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "النيّة تخصّ فرعاً آخر",
+        });
       }
       return res;
     }),
 
   cancelIntent: digitalCardsPosProcedure
-    .input(z.object({ intentId: z.number().int().positive(), reason: z.string().max(300).nullish() }))
+    .input(
+      z.object({
+        intentId: z.number().int().positive(),
+        reason: z.string().max(300).nullish(),
+      }),
+    )
     .mutation(async ({ input, ctx }) =>
       withTx((tx) => intentService.cancelIntent(tx, input, actorOf(ctx))),
     ),
 
   /** طابور المراجعة — إشرافيّ: كروتٌ صدرت ولم تُثبَّت بفاتورة. */
   needsReview: digitalCardsAdminReadProcedure
-    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .input(
+      z.object({ branchId: z.number().int().positive().optional() }).optional(),
+    )
     .query(async ({ input, ctx }) => {
       const scoped = scopedBranchOf(ctx);
-      return intentService.listNeedsReview(requireDb(), { branchId: scoped ?? input?.branchId ?? null });
+      return intentService.listNeedsReview(requireDb(), {
+        branchId: scoped ?? input?.branchId ?? null,
+      });
     }),
 
   /** كنّاس النيّات المهجورة — يُشغّله المدير يدوياً حتى تُجدوَل مهمّة دورية. */
@@ -696,7 +879,12 @@ const salesRouter = router({
   /* شطب النيّة العالقة (هجرة 0129): الطلب بلا أثرٍ ماليّ، وكلّ الأثر في الاعتماد
    * الذي يفرض SOD (طالب ≠ معتمِد). الثلاثة مديريّة. */
   requestWriteoff: digitalCardsManagerProcedure
-    .input(z.object({ intentId: z.number().int().positive(), reason: z.string().min(3).max(300) }))
+    .input(
+      z.object({
+        intentId: z.number().int().positive(),
+        reason: z.string().min(3).max(300),
+      }),
+    )
     .mutation(async ({ input, ctx }) =>
       withTx((tx) => writeoffService.requestWriteoff(tx, input, actorOf(ctx))),
     ),
@@ -708,7 +896,12 @@ const salesRouter = router({
     ),
 
   rejectWriteoff: digitalCardsManagerProcedure
-    .input(z.object({ intentId: z.number().int().positive(), reason: z.string().max(300).nullish() }))
+    .input(
+      z.object({
+        intentId: z.number().int().positive(),
+        reason: z.string().max(300).nullish(),
+      }),
+    )
     .mutation(async ({ input, ctx }) =>
       withTx((tx) => writeoffService.rejectWriteoff(tx, input, actorOf(ctx))),
     ),
@@ -730,12 +923,16 @@ const salesRouter = router({
 
   saleDetails: digitalCardsAdminReadProcedure
     .input(z.object({ invoiceId: z.number().int().positive() }))
-    .query(async ({ input }) => finalizeService.getSaleDetails(requireDb(), input.invoiceId)),
+    .query(async ({ input }) =>
+      finalizeService.getSaleDetails(requireDb(), input.invoiceId),
+    ),
 
   /** إعادة طباعة (§١٢.١-٤): لقطات الكرت من الخادم — بلا حصة مزوّد ولا ربح، فالكاشير يراها. */
   printDetails: digitalCardsPosProcedure
     .input(z.object({ invoiceId: z.number().int().positive() }))
-    .query(async ({ input }) => finalizeService.reprintDetails(requireDb(), input.invoiceId)),
+    .query(async ({ input }) =>
+      finalizeService.reprintDetails(requireDb(), input.invoiceId),
+    ),
 });
 
 /* ─── الداشبورد (ش١١) ────────────────────────────────────────────────────────
@@ -749,7 +946,10 @@ const periodInput = z.object({
   branchId: z.number().int().positive().optional(),
 });
 
-function scopeOf(ctx: Ctx & { user: { permissionsOverride?: unknown } }, input: z.infer<typeof periodInput>) {
+function scopeOf(
+  ctx: Ctx & { user: { permissionsOverride?: unknown } },
+  input: z.infer<typeof periodInput>,
+) {
   const scoped = scopedBranchOf(ctx);
   return {
     from: input.from,
@@ -762,13 +962,17 @@ function scopeOf(ctx: Ctx & { user: { permissionsOverride?: unknown } }, input: 
 const dashboardRouter = router({
   summary: digitalCardsAdminReadProcedure
     .input(periodInput)
-    .query(async ({ input, ctx }) => dashboardService.summary(requireDb(), scopeOf(ctx, input))),
+    .query(async ({ input, ctx }) =>
+      dashboardService.summary(requireDb(), scopeOf(ctx, input)),
+    ),
 
   providerBalances: digitalCardsAdminReadProcedure.query(async ({ ctx }) =>
     dashboardService.providerBalances(requireDb(), scopedBranchOf(ctx)),
   ),
 
-  postpaidDues: digitalCardsAdminReadProcedure.query(async () => dashboardService.postpaidDues(requireDb())),
+  postpaidDues: digitalCardsAdminReadProcedure.query(async () =>
+    dashboardService.postpaidDues(requireDb()),
+  ),
 
   priceHealth: digitalCardsAdminReadProcedure.query(async ({ ctx }) =>
     dashboardService.priceHealth(requireDb(), scopedBranchOf(ctx)),
@@ -779,14 +983,24 @@ const dashboardRouter = router({
   ),
 
   topOfferings: digitalCardsAdminReadProcedure
-    .input(periodInput.extend({ limit: z.number().int().positive().max(50).optional() }))
+    .input(
+      periodInput.extend({
+        limit: z.number().int().positive().max(50).optional(),
+      }),
+    )
     .query(async ({ input, ctx }) =>
-      dashboardService.topOfferings(requireDb(), scopeOf(ctx, input), input.limit ?? 10),
+      dashboardService.topOfferings(
+        requireDb(),
+        scopeOf(ctx, input),
+        input.limit ?? 10,
+      ),
     ),
 
   reconciliationStatus: digitalCardsAdminReadProcedure
     .input(periodInput)
-    .query(async ({ input, ctx }) => dashboardService.reconciliationStatus(requireDb(), scopeOf(ctx, input))),
+    .query(async ({ input, ctx }) =>
+      dashboardService.reconciliationStatus(requireDb(), scopeOf(ctx, input)),
+    ),
 });
 
 /* ─── العكس والاستثناءات (ش١٢) ───────────────────────────────────────────────
@@ -796,7 +1010,9 @@ const dashboardRouter = router({
 const reversalRouter = router({
   reversible: digitalCardsAdminReadProcedure
     .input(z.object({ invoiceId: z.number().int().positive() }))
-    .query(async ({ input }) => reversalService.reversibleDetails(requireDb(), input.invoiceId)),
+    .query(async ({ input }) =>
+      reversalService.reversibleDetails(requireDb(), input.invoiceId),
+    ),
 
   approve: digitalCardsManagerProcedure
     .input(
@@ -821,7 +1037,9 @@ const reversalRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => reversalService.requestLossRefund(tx, input, actorOf(ctx))),
+      withTx((tx) =>
+        reversalService.requestLossRefund(tx, input, actorOf(ctx)),
+      ),
     ),
 
   lossRefund: digitalCardsManagerProcedure
@@ -854,6 +1072,7 @@ export const digitalCardsRouter = router({
   providers: providersRouter,
   wallets: walletsRouter,
   offerings: offeringsRouter,
+  subscriptions: subscriptionsRouter,
   pricing: pricingRouter,
   pos: posRouter,
   students: studentsRouter,

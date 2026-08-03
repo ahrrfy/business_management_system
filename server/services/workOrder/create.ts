@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import {
   productVariants,
   receipts,
+  users,
   workOrderImages,
   workOrderMaterials,
   workOrders,
@@ -16,10 +17,10 @@ import { openShiftIdTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
 import { nextWorkOrderNumber } from "./helpers";
 import type { CreateWorkOrderInput } from "./types";
+import type { Tx } from "../../db";
 
 /** Create a work order in RECEIVED status — stock is NOT consumed yet. */
-export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor) {
-  return withTx(async (tx) => {
+export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, actor: Actor) {
     // idempotency: إعادة طلب بنفس المفتاح ⇒ نُعيد الأمر الأول دون إنشاء/قبض عربون ثانٍ.
     const replayId = await findIdempotentRefId(tx, "workOrder.create", input.clientRequestId);
     if (replayId) {
@@ -45,6 +46,17 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
     if (round2(money(input.deposit ?? "0")).gt(money(input.salePrice)))
       throw new TRPCError({ code: "BAD_REQUEST", message: "العربون لا يمكن أن يتجاوز سعر البيع الإجمالي للأمر" });
 
+    // الإسناد عند الإنشاء تنفيذٌ تشغيلي، لا اختيار حساب عام: فني مطبعة فعّال من الفرع أو فني مشترك فقط.
+    // تركه null يضع الأمر في الطابور الوارد ليسحبه الفني من محطة التنفيذ.
+    if (input.assignedTo != null) {
+      const assignee = (await tx.select({ role: users.role, branchId: users.branchId, isActive: users.isActive })
+        .from(users).where(eq(users.id, input.assignedTo)).limit(1))[0];
+      if (!assignee || !assignee.isActive || assignee.role !== "print_operator"
+        || (assignee.branchId != null && Number(assignee.branchId) !== Number(input.branchId))) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "يمكن إسناد أمر الشغل إلى فني مطبعة من الفرع فقط" });
+      }
+    }
+
     // v3-add-screens(100%): baseVariantId اختياري — طلب خدمة قد يكون خدمة تخصيص بلا منتج خام.
     if (input.baseVariantId != null) {
       const base = (
@@ -61,9 +73,12 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
       if (!v[0]) throw new TRPCError({ code: "NOT_FOUND", message: `مادة #${m.variantId} غير موجودة` });
     }
 
-    // v3-add-screens(100%): الدفع بالبطاقة يستلزم مرجع.
-    if (input.paymentMethod === "CARD" && !(input.paymentReference?.trim())) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "رقم العملية المرجعي مطلوب لدفع البطاقة" });
+    // البطاقة والتحويل مساران غير نقديين قابلان للمطابقة؛ يلزم مرجع يمنع دفعة مجهولة المصدر.
+    if ((input.paymentMethod === "CARD" || input.paymentMethod === "TRANSFER") && !(input.paymentReference?.trim())) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: input.paymentMethod === "CARD" ? "رقم العملية المرجعي مطلوب لدفع البطاقة" : "رقم مرجع التحويل مطلوب",
+      });
     }
 
     const orderNumber = await nextWorkOrderNumber(tx, input.branchId);
@@ -116,6 +131,7 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
         direction: "IN",
         amount: toDbMoney(depositD),
         paymentMethod: depositMethod,
+        referenceNumber: input.paymentReference?.trim() || null,
         // cashBucket='DRAWER' للعربون النقدي ⇒ يَدخل تسوية الدرج/Z-report (مرآة دفعة التسليم/البيع).
         // كان NULL ⇒ يُستثنى من computeExpectedCash (cashBucket='DRAWER') ⇒ فائضٌ زائف عند إقفال وردية الاستقبال.
         cashBucket: depositMethod === "CASH" ? "DRAWER" : null,
@@ -160,5 +176,9 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
     }
 
     return { workOrderId, orderNumber };
-  });
+}
+
+/** Public wrapper for callers that create one work order outside a composed transaction. */
+export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor) {
+  return withTx((tx) => createWorkOrderInTx(tx, input, actor));
 }
