@@ -1,5 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
@@ -8,16 +10,31 @@ import { fmtDate } from "@/lib/date";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc } from "@/lib/trpc";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { assetCategoryLabel } from "@shared/assets";
 import { Archive, CircleSlash, TrendingDown, Wallet } from "lucide-react";
+import { useMemo } from "react";
 import { Link } from "wouter";
 
 export default function AssetDisposalLog() {
   const q = trpc.assets.disposalLog.useQuery();
+  const [f, setF, resetF] = useUrlFilters({ q: "", type: "", from: "", to: "" });
+
+  const allRows = q.data ?? [];
+  const rows = useMemo(() => {
+    const needle = f.q.trim().toLowerCase();
+    return allRows.filter((r) => {
+      if (f.type && r.status !== f.type) return false;
+      if (f.from && (r.disposalDate ?? "") < f.from) return false;
+      if (f.to && (r.disposalDate ?? "") > f.to) return false;
+      if (needle && !(r.name.toLowerCase().includes(needle) || (r.code ?? "").toLowerCase().includes(needle))) return false;
+      return true;
+    });
+  }, [allRows, f.q, f.type, f.from, f.to]);
+  const filtersActive = f.q.trim() !== "" || f.type !== "" || f.from !== "" || f.to !== "";
 
   if (q.isLoading) return <LoadingState />;
   if (q.error) return <ErrorState message={q.error.message} onRetry={() => q.refetch()} />;
-  const rows = q.data ?? [];
 
   const disposed = rows.filter((r) => r.status === "disposed");
   const retired = rows.filter((r) => r.status === "retired");
@@ -43,6 +60,19 @@ export default function AssetDisposalLog() {
           <ListToolbar
             title="القائمة"
             count={rows.length}
+            search={{ value: f.q, onChange: (v) => setF({ q: v }), placeholder: "بحث بالأصل/الرمز…" }}
+            filters={
+              <>
+                <AppSelect value={f.type} onValueChange={(v) => setF({ type: v })} className="h-8 w-40" size="sm" placeholder="كل الأنواع">
+                  <option value="">كل الأنواع</option>
+                  <option value="disposed">مُستبعَد (بيع/خردة)</option>
+                  <option value="retired">خارج الخدمة</option>
+                </AppSelect>
+                <Input type="date" value={f.from} max={f.to || undefined} onChange={(e) => setF({ from: e.target.value })} className="h-8 w-36" aria-label="من تاريخ" />
+                <Input type="date" value={f.to} min={f.from || undefined} onChange={(e) => setF({ to: e.target.value })} className="h-8 w-36" aria-label="إلى تاريخ" />
+              </>
+            }
+            onResetFilters={filtersActive ? resetF : undefined}
             onPrint={
               rows.length
                 ? () =>
@@ -50,6 +80,8 @@ export default function AssetDisposalLog() {
                       title: "سجلّ الاستبعاد والإخراج",
                       headerExtra: [
                         { label: "تاريخ التقرير", value: fmtDate(new Date()) },
+                        { label: "الفترة", value: f.from || f.to ? `${f.from || "…"} — ${f.to || "…"}` : "الكل" },
+                        { label: "النوع", value: f.type === "disposed" ? "مُستبعَد (بيع/خردة)" : f.type === "retired" ? "خارج الخدمة" : "الكل" },
                       ],
                       columns: [
                         { key: "asset", label: "الأصل" },
@@ -130,7 +162,9 @@ export default function AssetDisposalLog() {
                     </td>
                   </tr>
                 ))}
-                {rows.length === 0 && <TableEmptyRow colSpan={7} message="لا أصول مُستبعَدة أو خارج الخدمة." />}
+                {rows.length === 0 && (
+                  <TableEmptyRow colSpan={7} message={allRows.length === 0 ? "لا أصول مُستبعَدة أو خارج الخدمة." : "لا نتائج مطابقة للفلاتر."} />
+                )}
               </tbody>
             </table>
           </ScrollTableShell>

@@ -53,6 +53,10 @@ const applicantFields = {
 };
 
 export const recruitmentRouter = router({
+  /**
+   * فلتر الوظيفة (vacancyId) فوق `recruitmentService.listApplicants` — الخدمة (خارج ملكية هذه
+   * الشريحة) لا تدعمه بعد؛ يُطبَّق هنا فوق النتيجة الكاملة (`jobApplicants` تحمل العمود أصلاً).
+   */
   list: hrRead
     .input(
       z
@@ -60,10 +64,14 @@ export const recruitmentRouter = router({
           stage: z.enum(APPLICANT_STAGE_KEYS).optional(),
           source: z.enum(SOURCE_KEYS).optional(),
           q: z.string().optional(),
+          vacancyId: z.number().int().positive().optional(),
         })
         .optional(),
     )
-    .query(({ input }) => svc.listApplicants(input)),
+    .query(async ({ input }) => {
+      const rows = await svc.listApplicants(input);
+      return input?.vacancyId != null ? rows.filter((a) => a.vacancyId === input.vacancyId) : rows;
+    }),
 
   get: hrRead.input(z.object({ id: z.number().int().positive() })).query(({ input }) => svc.getApplicant(input.id)),
 

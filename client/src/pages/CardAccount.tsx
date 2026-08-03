@@ -1,10 +1,11 @@
 // حساب البطاقة/البنك — رصيد أموال البطاقة (منفصل عن درج النقد) + حركاته + مطابقة كشف البنك.
 // الرصيد مشتقّ من receipts (paymentMethod='CARD') — لا يمسّ الدرج/الخزينة. محصور بالمدير/المحاسب
 // (reportViewerProcedure خادمياً). بلا إيموجي — أيقونات lucide فقط.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,14 +15,19 @@ import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { notify } from "@/lib/notify";
 import { fmtAr, formatIqd, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { printReportDoc } from "@/lib/printing/reportDoc";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
   CreditCard,
   Landmark,
   ArrowDownCircle,
   ArrowUpCircle,
   Download,
+  Printer,
   ScrollText,
   Scale,
+  Search,
   AlertTriangle,
   CheckCircle2,
 } from "lucide-react";
@@ -58,15 +64,27 @@ export default function CardAccount() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [direction, setDirection] = useState<"" | "IN" | "OUT">("");
+  // بحث نصّي — وظيفة الشاشة الأساسية (مطابقة كشف البنك بحثاً عن حركة بعينها بمرجعها/رقم سندها/طرفها).
+  const [q, setQ] = useState("");
+  const qDebounced = useDebouncedValue(q.trim(), 300);
+  const [sourceType, setSourceType] = useState<"" | "VOUCHER" | "INVOICE_PAYMENT" | "WORK_ORDER" | "OTHER">("");
   const [page, setPage] = useState(0);
-  const movements = trpc.cardAccount.movements.useQuery({
+  const movementsInput = {
     branchId: effBranch,
     from: from || undefined,
     to: to || undefined,
     direction: direction || undefined,
+    q: qDebounced || undefined,
+    sourceType: sourceType || undefined,
+  };
+  const movements = trpc.cardAccount.movements.useQuery({
+    ...movementsInput,
     limit: PAGE,
     offset: page * PAGE,
   });
+  // أي تغيير في فلاتر الحركات يعيد الصفحة الأولى (وإلا offset قديم على مجموعة أصغر = صفحة فارغة).
+  const movementsFilterKey = JSON.stringify(movementsInput);
+  useEffect(() => { setPage(0); }, [movementsFilterKey]);
 
   // ── المطابقة ──
   const recons = trpc.cardAccount.reconciliations.useQuery({ branchId: effBranch });
@@ -108,27 +126,25 @@ export default function CardAccount() {
   }
 
   const mv = movements.data;
+  type MvRow = NonNullable<typeof movements.data>["rows"][number];
+
+  // نجمع **كل** صفحات الفلتر الحاليّ (لا الصفحة المعروضة فقط) — للتصدير/الطباعة الماليّين معاً.
+  function fetchAllMovements(): Promise<MvRow[]> {
+    return fetchAllPaged<MvRow>(
+      (offset, limit) =>
+        utils.cardAccount.movements
+          .fetch({ ...movementsInput, limit, offset })
+          .then((res) => ({ rows: res.rows, total: res.count })),
+      { pageSize: 500 },
+    );
+  }
+
   const [exporting, setExporting] = useState(false);
   async function onExport() {
     if (!mv || mv.count === 0) return;
     setExporting(true);
     try {
-      // نجمع **كل** صفحات الفلتر الحاليّ (لا الصفحة المعروضة فقط) — تصدير ماليّ يجب أن يكون كاملاً.
-      const all: NonNullable<typeof movements.data>["rows"] = [];
-      let off = 0;
-      for (let guard = 0; guard < 400; guard++) {
-        const res = await utils.cardAccount.movements.fetch({
-          branchId: effBranch,
-          from: from || undefined,
-          to: to || undefined,
-          direction: direction || undefined,
-          limit: 500,
-          offset: off,
-        });
-        all.push(...res.rows);
-        if (!res.hasMore) break;
-        off += 500;
-      }
+      const all = await fetchAllMovements();
       exportRows(all, {
         filename: `حساب-البطاقة-حركات-${from || "الكل"}-${to || todayStr()}`,
         columns: [
@@ -146,6 +162,57 @@ export default function CardAccount() {
       notify.err(e);
     } finally {
       setExporting(false);
+    }
+  }
+
+  const [printing, setPrinting] = useState(false);
+  async function onPrint() {
+    if (!mv || mv.count === 0) return;
+    setPrinting(true);
+    try {
+      const all = await fetchAllMovements();
+      const filterLabels = [
+        from || to ? `الفترة: ${from || "البداية"} — ${to || "اليوم"}` : null,
+        direction ? `الاتجاه: ${direction === "IN" ? "دخل" : "صرف"}` : null,
+        sourceType ? `النوع: ${SOURCE_AR[sourceType] ?? sourceType}` : null,
+        qDebounced ? `بحث: ${qDebounced}` : null,
+      ].filter(Boolean).join(" · ");
+      const opened = printReportDoc({
+        title: "حساب البطاقة/البنك — حركات",
+        headerExtra: [
+          { label: "الفرع", value: mv.branchId != null ? branches.data?.find((b) => b.id === mv.branchId)?.name ?? String(mv.branchId) : "كل الفروع" },
+          ...(filterLabels ? [{ label: "الفلاتر", value: filterLabels }] : []),
+        ],
+        orientation: "landscape",
+        columns: [
+          { key: "date", label: "التاريخ" },
+          { key: "source", label: "النوع" },
+          { key: "party", label: "الطرف" },
+          { key: "ref", label: "المرجع" },
+          { key: "direction", label: "الاتجاه" },
+          { key: "amount", label: "المبلغ", align: "left" },
+          { key: "balance", label: "الرصيد بعد الحركة", align: "left" },
+        ],
+        rows: all.map((r) => ({
+          date: r.createdAt ? new Date(r.createdAt as string).toISOString().slice(0, 10) : "—",
+          source: SOURCE_AR[r.source] ?? r.source,
+          party: r.partyName ?? "—",
+          ref: r.voucherNumber ?? r.referenceNumber ?? "—",
+          direction: r.direction === "IN" ? "دخل" : "صرف",
+          amount: `${r.direction === "IN" ? "" : "−"}${fmtAr(r.amount)}`,
+          balance: r.runningBalance != null ? fmtAr(r.runningBalance) : "—",
+        })),
+        summary: [
+          { label: "دخل", value: fmtAr(mv.totalIn) },
+          { label: "صرف", value: fmtAr(mv.totalOut) },
+          { label: "الصافي", value: fmtAr(mv.net), large: true, bold: true },
+        ],
+      });
+      if (!opened) notify.err("حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setPrinting(false);
     }
   }
 
@@ -249,6 +316,16 @@ export default function CardAccount() {
               حركات حساب البطاقة
             </h2>
             <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search aria-hidden className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  aria-label="بحث بالمرجع أو رقم السند أو اسم الطرف"
+                  placeholder="بحث بالمرجع/السند/الطرف…"
+                  className="h-9 w-48 pr-8"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                />
+              </div>
               <Input
                 type="date"
                 aria-label="من تاريخ"
@@ -282,6 +359,23 @@ export default function CardAccount() {
                 <option value="IN">دخل</option>
                 <option value="OUT">صرف</option>
               </select>
+              <AppSelect
+                aria-label="نوع الحركة"
+                className="h-9 w-40"
+                value={sourceType}
+                onValueChange={(v) => { setSourceType(v as typeof sourceType); setPage(0); }}
+                placeholder="كل الأنواع"
+              >
+                <option value="">كل الأنواع</option>
+                <option value="VOUCHER">سند</option>
+                <option value="INVOICE_PAYMENT">فاتورة/دفعة</option>
+                <option value="WORK_ORDER">أمر شغل</option>
+                <option value="OTHER">أخرى</option>
+              </AppSelect>
+              <Button variant="outline" size="sm" onClick={() => void onPrint()} disabled={printing || !mv || mv.count === 0}>
+                <Printer aria-hidden className="size-4" />
+                {printing ? "جارٍ التحضير…" : "طباعة A4"}
+              </Button>
               <Button variant="outline" size="sm" onClick={onExport} disabled={exporting || !mv || mv.count === 0}>
                 <Download aria-hidden className="size-4" />
                 {exporting ? "جارٍ التصدير…" : "تصدير"}
@@ -361,7 +455,10 @@ export default function CardAccount() {
               <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
                 السابق
               </Button>
-              <span className="text-muted-foreground">صفحة {fmtAr(String(page + 1))}</span>
+              {/* إجمالي حقيقي (mv.count من استعلام المجاميع الكامل) لا مجرّد رقم صفحة. */}
+              <span className="text-muted-foreground tabular-nums" dir="ltr">
+                {page * PAGE + 1}–{page * PAGE + mv.rows.length} / {mv.count.toLocaleString("ar-IQ-u-nu-latn")}
+              </span>
               <Button variant="outline" size="sm" disabled={!mv.hasMore} onClick={() => setPage((p) => p + 1)}>
                 التالي
               </Button>

@@ -6,9 +6,11 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmt } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
-import { AlertTriangle, Check, ClipboardList } from "lucide-react";
+import { exportSheets } from "@/lib/export";
+import { AlertTriangle, Check, ClipboardList, FileDown } from "lucide-react";
 import { Link } from "wouter";
 import { RowActions } from "@/components/list";
+import { useMemo } from "react";
 
 /* ═══════════ شاشة تدقيق التوافق المالي (admin فقط) ═══════════
    تستهلك reports.reconcile (adminProcedure) لكشف الانجراف الصامت بين
@@ -26,6 +28,19 @@ export default function Reconcile() {
     refetchOnWindowFocus: false,
   });
 
+  const data = recon.data;
+
+  // أسماء الأطراف لعرضها بجانب المعرّفات الرقمية — تُجلَب فقط عند وجود انحرافات فعلية لهذا
+  // المحور (لا داعٍ لجلب القوائم الكاملة عند عدم وجود صفوف تحتاجها). هذه الاستعلامات (وما
+  // تحتها من useMemo) يجب أن تُستدعى في كل تصيير بلا شرط (قاعدة الخطاطيف) — لذا هي **قبل**
+  // حاجز «غير المدير» أدناه لا بعده، رغم أنها لا تُفعَّل (enabled) إلا للمدير أصلاً.
+  const customersQ = trpc.customers.list.useQuery(undefined, { enabled: isAdmin && !!data?.customers.length });
+  const suppliersQ = trpc.suppliers.list.useQuery(undefined, { enabled: isAdmin && !!data?.suppliers.length });
+  const partiesQ = trpc.delivery.listParties.useQuery({}, { enabled: isAdmin && !!data?.delivery.length });
+  const customerNames = useMemo(() => new Map((customersQ.data ?? []).map((c) => [c.id, c.name])), [customersQ.data]);
+  const supplierNames = useMemo(() => new Map((suppliersQ.data ?? []).map((s) => [s.id, s.name])), [suppliersQ.data]);
+  const partyNames = useMemo(() => new Map((partiesQ.data ?? []).map((p) => [p.id, p.name])), [partiesQ.data]);
+
   // غير المدير: حاجز واضح (الخادم يرفضها أصلاً بـadminProcedure — هذا دفاع طبقي + رسالة لطيفة).
   if (me.data && !isAdmin) {
     return (
@@ -35,11 +50,36 @@ export default function Reconcile() {
     );
   }
 
-  const data = recon.data;
   const total = data
     ? data.customers.length + data.suppliers.length + data.delivery.length + data.inventory.length + data.ledger.length
     : 0;
   const loading = me.isLoading || (isAdmin && recon.isLoading);
+
+  // تصدير Excel — ورقة مستقلّة لكل محور بنفس بيانات الجدول المعروض (تشمل الأسماء حيث توفّرت).
+  function exportAll() {
+    if (!data) return;
+    const sheet = (title: string, rows: Row[], names?: Map<number, string>) => ({
+      sheetName: title,
+      title: `تدقيق التوافق المالي — ${title}`,
+      meta: [{ label: "تاريخ الفحص", value: fmtDateTime(data.runAt) }],
+      columns: [
+        { key: "id", header: "المعرّف" },
+        ...(names ? [{ key: "name", header: "الاسم", map: (r: any) => names.get(r.id) ?? "—" }] : []),
+        { key: "expected", header: "المتوقّع", money: true, map: (r: any) => Number(r.expected) },
+        { key: "actual", header: "الفعلي", money: true, map: (r: any) => Number(r.actual) },
+        { key: "drift", header: "الانحراف", money: true, map: (r: any) => Number(r.drift) },
+        { key: "note", header: "ملاحظة", map: (r: any) => r.note ?? "" },
+      ],
+      rows: rows as any[],
+    });
+    exportSheets("تدقيق-التوافق-المالي", [
+      sheet("ذمم العملاء", data.customers, customerNames),
+      sheet("ذمم الموردين", data.suppliers, supplierNames),
+      sheet("عهدة التوصيل", data.delivery, partyNames),
+      sheet("أرصدة المخزون", data.inventory),
+      sheet("قيود الدفتر", data.ledger),
+    ]);
+  }
 
   return (
     <div className="space-y-4">
@@ -53,6 +93,16 @@ export default function Reconcile() {
                 آخر فحص: <span dir="ltr" className="tabular-nums">{fmtDateTime(data.runAt)}</span>
               </span>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!data}
+              onClick={exportAll}
+              className="inline-flex items-center gap-1.5"
+            >
+              <FileDown aria-hidden className="size-4" />
+              تصدير Excel
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -99,6 +149,7 @@ export default function Reconcile() {
             idLabel="رقم العميل"
             money
             rows={data.customers}
+            names={customerNames}
             link={(id) => `/customers-statement?id=${id}`}
             linkLabel="كشف الحساب"
           />
@@ -109,8 +160,9 @@ export default function Reconcile() {
             idLabel="رقم المورد"
             money
             rows={data.suppliers}
-            link={() => "/suppliers"}
-            linkLabel="الموردون"
+            names={supplierNames}
+            link={(id) => `/suppliers-statement?id=${id}`}
+            linkLabel="كشف الحساب"
           />
 
           <DriftSection
@@ -119,8 +171,9 @@ export default function Reconcile() {
             idLabel="رقم جهة التوصيل"
             money
             rows={data.delivery}
-            link={() => "/delivery"}
-            linkLabel="مركز التوصيل"
+            names={partyNames}
+            link={() => "/delivery?tab=parties"}
+            linkLabel="جهات التوصيل"
           />
 
           <DriftSection
@@ -163,6 +216,7 @@ function DriftSection({
   link,
   linkLabel,
   action,
+  names,
 }: {
   title: string;
   desc: string;
@@ -172,6 +226,8 @@ function DriftSection({
   link?: (id: number) => string;
   linkLabel?: string;
   action?: React.ReactNode;
+  /** اسم الطرف (عميل/مورّد/جهة توصيل) بحسب المعرّف — يُعرض تحت الرقم إن تُوفِّر. */
+  names?: Map<number, string>;
 }) {
   const val = (s: string) => (money ? fmt(s) : s);
   return (
@@ -216,8 +272,11 @@ function DriftSection({
               {rows.map((r, i) => (
                 // المخزون: متغيّر سالب في فرعين يُنتج id مكرّراً (reconcileInventory يُسقط branchId) ⇒ مفتاح مركّب بالـindex.
                 <tr key={`${title}-${r.id}-${i}`} className="border-t">
-                  <td className="p-2 font-medium tabular-nums" dir="ltr">
-                    {r.id}
+                  <td className="p-2 font-medium">
+                    <div className="tabular-nums" dir="ltr">{r.id}</div>
+                    {names && (
+                      <div className="text-xs font-normal text-muted-foreground">{names.get(r.id) ?? "—"}</div>
+                    )}
                   </td>
                   <td className="p-2 text-right tabular-nums" dir="ltr">
                     {val(r.expected)}

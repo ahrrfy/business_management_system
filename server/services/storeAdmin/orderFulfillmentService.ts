@@ -7,7 +7,7 @@
  * عزل الفرع: القراءة/الكتابة مقيّدة بـscopedBranchId لغير المرتفعين (admin/manager يعبُران).
  */
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
 import {
   customers,
   deliveryParties,
@@ -57,10 +57,18 @@ export interface OnlineOrderRow {
   createdAt: Date;
 }
 
-/** قائمة طلبات المتجر (اختياري: فلترة حالة) — مقيّدة بالفرع لغير المرتفعين. */
+/** قائمة طلبات المتجر (اختياري: فلترة حالة/مدى تاريخ + تحميل صفحات إضافية بالمؤشّر) — مقيّدة
+ *  بالفرع لغير المرتفعين. **يبقى النوع المُعاد مصفوفة مسطّحة** (لا {rows,hasMore}) — يستهلكها أيضاً
+ *  StoreDashboard.tsx خارج نطاق هذه الوحدة؛ تغيير الشكل يكسره. الترقيم الحقيقي في الشاشة عبر
+ *  cursor + heuristic (rows.length===limit) بدل تغيير العقد. */
 export async function listOnlineOrders(opts: {
   scopedBranchId: number | null;
   status?: string | null;
+  /** مدى تاريخ الإنشاء (YYYY-MM-DD) — نمط buildWoFilterConds في workOrderRouter.ts. */
+  from?: string;
+  to?: string;
+  /** مؤشّر ترقيم — id آخر صفّ في الصفحة السابقة ⇒ يجلب ما هو أقدم منه. */
+  cursor?: number;
   limit?: number;
 }): Promise<OnlineOrderRow[]> {
   const db = getDb();
@@ -69,6 +77,19 @@ export async function listOnlineOrders(opts: {
   const conds = [];
   if (opts.scopedBranchId != null) conds.push(eq(onlineOrders.branchId, opts.scopedBranchId));
   if (opts.status) conds.push(eq(onlineOrders.status, opts.status as OnlineOrderStatus));
+  if (opts.from) {
+    const from = new Date(opts.from);
+    if (!isNaN(from.getTime())) conds.push(gte(onlineOrders.createdAt, from));
+  }
+  if (opts.to) {
+    const to = new Date(opts.to);
+    if (!isNaN(to.getTime())) {
+      // الطرف الأعلى شامل ⇒ حدّ علوي حصري ببداية اليوم التالي.
+      const next = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate() + 1));
+      conds.push(lt(onlineOrders.createdAt, next));
+    }
+  }
+  if (opts.cursor != null) conds.push(lt(onlineOrders.id, opts.cursor));
   const where = conds.length ? and(...conds) : undefined;
   const rows = await db
     .select({

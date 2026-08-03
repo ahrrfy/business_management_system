@@ -99,9 +99,18 @@ export const attendanceRouter = router({
     .input(z.object({ period: periodStr, branchId: z.number().int().positive().nullish() }))
     .query(({ input }) => getMonthlyAttendanceReport({ period: input.period, branchId: input.branchId ?? null })),
 
-  /** تقرير الحضور — سجلّات الحضور في نطاق تاريخ + ملخّص (بفلتر موظف اختياري). hr/READ. */
+  /**
+   * تقرير الحضور — سجلّات الحضور في نطاق تاريخ + ملخّص (بفلتر موظف/فرع اختياريَّين). hr/READ.
+   * branchId تضييقٌ اختياريّ لا صلاحيةٌ جديدة — hr/READ لا يحمل عزل فروعٍ أصلاً لأيّ دور (نظير
+   * `attendance.monthlyReport` الذي يدعم branchId فعلاً).
+   */
   report: hrRead
-    .input(z.object({ from: dateStr, to: dateStr, employeeId: z.number().int().positive().optional() }))
+    .input(z.object({
+      from: dateStr,
+      to: dateStr,
+      employeeId: z.number().int().positive().optional(),
+      branchId: z.number().int().positive().optional(),
+    }))
     .query(({ input }) => getAttendanceReport(input)),
 
   record: hrWrite

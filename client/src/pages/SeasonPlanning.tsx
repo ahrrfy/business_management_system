@@ -20,8 +20,8 @@ import { exportRows } from "@/lib/export";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
-import { FileEdit, Plus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { FileEdit, Plus, Search } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 type VariantLike = { variantName: string | null; color: string | null; size: string | null; sku: string };
 function variantLabel(r: VariantLike): string {
@@ -40,7 +40,21 @@ export default function SeasonPlanning() {
     { onlyBelowTarget: onlyBelow },
     { enabled: me.data != null },
   );
-  const rows = plan.data ?? [];
+  const allRows = plan.data ?? [];
+
+  // بحث محلي (اسم منتج/SKU/متغيّر) — لا endpoint خادميّ جديد: صفوف الخطة أصلاً مُحمَّلة كاملةً
+  // (limit=300 خادمياً، عدد الأصناف الموسمية محدود عملياً) فالفلترة محلياً كافية وفورية.
+  // ⚠️ لا فلتر فئة: صفّ `seasonPlan` (server/services/inventory/seasonPlanning.ts، خارج ملكية هذه
+  // الشريحة) لا يحمل categoryId/categoryName إطلاقاً — إضافته فعلياً تعديلٌ خادميّ حقيقي رغم
+  // الوصف، فتُرك خارج هذه الجولة (راجع خلاصة الجلسة).
+  const [planSearch, setPlanSearch] = useState("");
+  const rows = useMemo(() => {
+    const q = planSearch.trim().toLocaleLowerCase("ar");
+    if (!q) return allRows;
+    return allRows.filter((r) =>
+      [r.productName, r.sku, r.variantName, r.color, r.size].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q)),
+    );
+  }, [allRows, planSearch]);
 
   // ── تحرير الهدف المباشر (لكل صف) ────────────────────────────────────────
   const [editing, setEditing] = useState<number | null>(null);
@@ -149,9 +163,19 @@ export default function SeasonPlanning() {
       />
 
       <Card>
-        <CardHeader className="flex-row items-center justify-between gap-3">
+        <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
           <CardTitle className="text-base">المنتجات الموسمية</CardTitle>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative">
+              <Search aria-hidden className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={planSearch}
+                onChange={(e) => setPlanSearch(e.target.value)}
+                placeholder="بحث بالاسم أو SKU…"
+                aria-label="بحث في المنتجات الموسمية"
+                className="h-8 w-48 pr-8"
+              />
+            </div>
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -232,9 +256,11 @@ export default function SeasonPlanning() {
                   <TableEmptyRow
                     colSpan={canWrite ? 6 : 5}
                     message={
-                      onlyBelow
-                        ? "لا منتجات موسمية تحت الهدف. ألغِ «تحت الهدف فقط» لعرض كل المنتجات الموسمية، أو أضِف منتجاً بزرّ «إضافة منتج موسميّ»."
-                        : "لا منتجات موسمية بعد. أضِف منتجاً بزرّ «إضافة منتج موسميّ» واضبط هدفه لتجهيز الموسم."
+                      planSearch.trim()
+                        ? "لا منتجات موسمية مطابقة للبحث."
+                        : onlyBelow
+                          ? "لا منتجات موسمية تحت الهدف. ألغِ «تحت الهدف فقط» لعرض كل المنتجات الموسمية، أو أضِف منتجاً بزرّ «إضافة منتج موسميّ»."
+                          : "لا منتجات موسمية بعد. أضِف منتجاً بزرّ «إضافة منتج موسميّ» واضبط هدفه لتجهيز الموسم."
                     }
                   />
                 )}

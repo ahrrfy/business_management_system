@@ -17,24 +17,25 @@ import {
   LayoutGrid,
   ListFilter,
   Plus,
-  RotateCcw,
-  Search,
   User,
   UserRound,
 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent } from "@/components/ui/card";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { ListToolbar } from "@/components/list";
 import {
   Dialog,
   DialogContent,
@@ -56,8 +57,6 @@ export const TASK_MANAGER_ROLES = ["manager"] as const;
 export type TaskKind = "SERVICE_REQUEST" | "SUPPORT" | "INQUIRY" | "FOLLOW_UP" | "INTERNAL";
 export type TaskPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 export type TaskStatus = "NEW" | "IN_PROGRESS" | "WAITING_CUSTOMER" | "RESOLVED" | "CANCELLED";
-type TaskStatusFilter = "" | TaskStatus;
-type TaskKindFilter = "" | TaskKind;
 type TaskRow = RouterOutputs["tasks"]["list"]["rows"][number];
 
 export const KIND_LABEL: Record<TaskKind, string> = {
@@ -256,76 +255,142 @@ function ListTab({
   branches: { id: number; name: string }[];
   onOpen: (id: number) => void;
 }) {
-  const search = useSearch();
-  // يُقرأ مرّة واحدة عند التركيب (وصول عبر رابط Dashboard العميق /tasks?tab=list&overdue=1) —
-  // نمط WorkOrderDetail.tsx لقراءة ?print=1؛ التغييرات اللاحقة تُدار بحالة داخلية بحتة.
-  const [initialOverdue] = useState(() => new URLSearchParams(search).get("overdue") === "1");
-
-  const [status, setStatus] = useState<TaskStatusFilter>("");
-  const [kind, setKind] = useState<TaskKindFilter>("");
-  const [assignedTo, setAssignedTo] = useState("");
-  const [branchId, setBranchId] = useState("");
-  const [overdueOnly, setOverdueOnly] = useState(initialOverdue);
-  const [q, setQ] = useState("");
-  const [qDebounced, setQDebounced] = useState("");
+  const utils = trpc.useUtils();
+  // فلاتر محفوظة في querystring (تعيش مع فتح التفاصيل والرجوع، وتُشارَك رابطاً) — نمط Invoices.tsx.
+  // «overdue» يُقرأ ابتداءً من رابط Dashboard العميق /tasks?tab=list&overdue=1 تلقائياً (useUrlFilters
+  // تقرأ الـURL الحالي عند التركيب) بلا حاجة لقراءة يدوية منفصلة كما كان سابقاً.
+  const [f, setF, resetF] = useUrlFilters({
+    status: "", kind: "", priority: "", assignedTo: "", branchId: "",
+    overdue: "", from: "", to: "", q: "",
+  });
+  const [qDebounced, setQDebounced] = useState(f.q);
   useEffect(() => {
-    const t = setTimeout(() => setQDebounced(q), 300);
+    const t = setTimeout(() => setQDebounced(f.q), 300);
     return () => clearTimeout(t);
-  }, [q]);
+  }, [f.q]);
 
-  const staff = trpc.tasks.assignableStaff.useQuery({ branchId: branchId ? Number(branchId) : undefined });
+  const staff = trpc.tasks.assignableStaff.useQuery({ branchId: f.branchId ? Number(f.branchId) : undefined });
+
+  // مدخلات الفلترة المشتركة (بلا cursor/limit) — للقائمة والتصدير الشامل معاً (نفس المجموعة حتماً).
+  const filterInput = useMemo(
+    () => ({
+      status: (f.status || undefined) as TaskStatus | undefined,
+      kind: (f.kind || undefined) as TaskKind | undefined,
+      priority: (f.priority || undefined) as TaskPriority | undefined,
+      assignedTo: f.assignedTo ? Number(f.assignedTo) : undefined,
+      branchId: f.branchId ? Number(f.branchId) : undefined,
+      overdue: f.overdue === "1" || undefined,
+      from: f.from || undefined,
+      to: f.to || undefined,
+      q: qDebounced.trim() || undefined,
+    }),
+    [f.status, f.kind, f.priority, f.assignedTo, f.branchId, f.overdue, f.from, f.to, qDebounced],
+  );
 
   const list = trpc.tasks.list.useInfiniteQuery(
-    {
-      status: status || undefined,
-      kind: kind || undefined,
-      assignedTo: assignedTo ? Number(assignedTo) : undefined,
-      branchId: branchId ? Number(branchId) : undefined,
-      overdue: overdueOnly || undefined,
-      q: qDebounced.trim() || undefined,
-      limit: 50,
-    },
+    { ...filterInput, limit: 50 },
     { getNextPageParam: (last) => last.nextCursor },
   );
   const rows = useMemo(() => (list.data?.pages ?? []).flatMap((p) => p.rows), [list.data]);
 
+  // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
+  const activeFilterCount = [
+    f.status, f.kind, f.priority, f.assignedTo, isElevated ? f.branchId : "", f.overdue, f.from || f.to,
+  ].filter(Boolean).length;
+
+  // تصدير «الكل»: القائمة مُرقَّمة keyset (صفحات ٥٠) ⇒ نمشي بالمؤشّر حتى نضب الصفحات، بنفس فلاتر
+  // القائمة الحالية (نمط fetchAllPaged لكن بمؤشّر id لا offset — عقد tasks.list).
+  async function fetchAllTasks(): Promise<TaskRow[]> {
+    const out: TaskRow[] = [];
+    let cursor: number | undefined;
+    for (let i = 0; i < 400; i++) { // صمّام أمان: حتى ٨٠ ألف مهمّة
+      const page = await utils.tasks.list.fetch({ ...filterInput, cursor, limit: 200 });
+      out.push(...page.rows);
+      if (!page.hasMore || page.nextCursor == null) break;
+      cursor = page.nextCursor;
+    }
+    return out;
+  }
+
   return (
     <div className="space-y-3">
-      <Card>
-        <CardContent className="p-3 flex flex-wrap items-center gap-2">
-          <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value as TaskStatusFilter)}>
-            <option value="">كل الحالات</option>
-            {Object.entries(STATUS_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
-          </select>
-          <select className={selectCls} value={kind} onChange={(e) => setKind(e.target.value as TaskKindFilter)}>
-            <option value="">كل الأنواع</option>
-            {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-          </select>
-          <select className={selectCls} value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
-            <option value="">كل المسنَد إليهم</option>
-            {(staff.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-          {isElevated && (
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value)}>
-              <option value="">كل الفروع</option>
-              {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
-          )}
-          <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-            <input type="checkbox" checked={overdueOnly} onChange={(e) => setOverdueOnly(e.target.checked)} />
-            متأخرة فقط
-          </label>
-          <div className="relative flex-1 min-w-[180px] max-w-xs">
-            <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-              <Search className="size-4" />
-            </span>
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ابحث بالعنوان أو الرقم…" className="h-9 pe-9" />
-          </div>
-          <Button variant="outline" size="sm" onClick={() => list.refetch()} className="gap-1.5">
-            <RotateCcw className="size-3.5" aria-hidden /> تحديث
-          </Button>
-        </CardContent>
-      </Card>
+      <ListToolbar
+        title="قائمة المهام"
+        count={rows.length}
+        loading={list.isLoading}
+        search={{ value: f.q, onChange: (v) => setF({ q: v }), placeholder: "ابحث بالعنوان أو الرقم…" }}
+        activeFilterCount={activeFilterCount}
+        onResetFilters={resetF}
+        onRefresh={() => void list.refetch()}
+        refreshing={list.isFetching}
+        exportSpec={{
+          filename: "المهام",
+          sheetName: "المهام",
+          rows,
+          formats: ["xlsx", "csv"],
+          fetchAll: fetchAllTasks,
+          columns: [
+            { key: "taskNumber", header: "الرقم" },
+            { key: "title", header: "العنوان" },
+            { key: "taskKind", header: "النوع", map: (r) => KIND_LABEL[r.taskKind as TaskKind] ?? r.taskKind },
+            { key: "taskStatus", header: "الحالة", map: (r) => STATUS_META[r.taskStatus as TaskStatus]?.label ?? r.taskStatus },
+            { key: "priority", header: "الأولوية", map: (r) => PRIORITY_META[r.priority as TaskPriority]?.label ?? r.priority },
+            { key: "assigneeName", header: "المسنَد إليه", map: (r) => r.assigneeName ?? "" },
+            { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "" },
+            { key: "effectiveDueAt", header: "الاستحقاق الفعلي", map: (r) => (r.effectiveDueAt ? fmtDateTime(r.effectiveDueAt) : "") },
+            { key: "isOverdue", header: "متأخرة", map: (r) => (r.isOverdue ? "نعم" : "لا") },
+          ],
+        }}
+        filters={
+          <>
+            <AppSelect value={f.status} onValueChange={(v) => setF({ status: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر الحالة">
+              <option value="">كل الحالات</option>
+              {Object.entries(STATUS_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
+            </AppSelect>
+            <AppSelect value={f.kind} onValueChange={(v) => setF({ kind: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر النوع">
+              <option value="">كل الأنواع</option>
+              {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </AppSelect>
+            <AppSelect value={f.priority} onValueChange={(v) => setF({ priority: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر الأولوية">
+              <option value="">كل الأولويات</option>
+              {Object.entries(PRIORITY_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
+            </AppSelect>
+            <AppSelect value={f.assignedTo} onValueChange={(v) => setF({ assignedTo: v })} className="h-9 w-auto min-w-[11rem]" aria-label="فلتر المسنَد إليه">
+              <option value="">كل المسنَد إليهم</option>
+              {(staff.data ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
+            </AppSelect>
+            {isElevated && (
+              <AppSelect value={f.branchId} onValueChange={(v) => setF({ branchId: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر الفرع">
+                <option value="">كل الفروع</option>
+                {branches.map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+              </AppSelect>
+            )}
+            <label className="inline-flex h-9 items-center gap-1.5 text-xs text-muted-foreground">
+              <input type="checkbox" checked={f.overdue === "1"} onChange={(e) => setF({ overdue: e.target.checked ? "1" : "" })} />
+              متأخرة فقط
+            </label>
+            <div className="flex items-center gap-1">
+              <Input
+                type="date"
+                value={f.from}
+                onChange={(e) => setF({ from: e.target.value })}
+                className="h-9 w-[9.5rem]"
+                aria-label="من تاريخ الإنشاء"
+                max={f.to || undefined}
+              />
+              <span className="text-xs text-muted-foreground">إلى</span>
+              <Input
+                type="date"
+                value={f.to}
+                onChange={(e) => setF({ to: e.target.value })}
+                className="h-9 w-[9.5rem]"
+                aria-label="إلى تاريخ الإنشاء"
+                min={f.from || undefined}
+              />
+            </div>
+          </>
+        }
+      />
 
       {list.isLoading && <LoadingState />}
       {list.isError && <ErrorState message="تعذّر تحميل المهام." onRetry={() => list.refetch()} />}

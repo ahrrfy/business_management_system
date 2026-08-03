@@ -2,10 +2,11 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ListToolbar } from "@/components/list";
 import { trpc } from "@/lib/trpc";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { AssetStatusBadge, CategoryIcon, iqd } from "@/lib/assets/ui";
 import { ASSET_CATEGORIES, ASSET_STATUSES, assetCategoryLabel, assetStatusLabel } from "@shared/assets";
 import { ChevronLeft } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useLocation } from "wouter";
 
 const selectCls =
@@ -19,28 +20,27 @@ function initials(name?: string | null): string {
 
 export default function AssetRegister() {
   const [, navigate] = useLocation();
-  const [q, setQ] = useState("");
-  const [category, setCategory] = useState("");
-  const [branchId, setBranchId] = useState("");
-  const [status, setStatus] = useState("");
-  const [includeDisposed, setIncludeDisposed] = useState(false);
+  const [f, setF, resetF] = useUrlFilters({ q: "", category: "", branchId: "", status: "", includeDisposed: "" });
 
   const opts = trpc.assets.formOptions.useQuery();
   const list = trpc.assets.list.useQuery({
-    category: (category || undefined) as never,
-    branchId: branchId ? Number(branchId) : undefined,
-    status: (status || undefined) as never,
-    includeDisposed,
+    category: (f.category || undefined) as never,
+    branchId: f.branchId ? Number(f.branchId) : undefined,
+    status: (f.status || undefined) as never,
+    includeDisposed: f.includeDisposed === "1",
   });
 
   const rows = useMemo(() => {
     const all = list.data ?? [];
-    const needle = q.trim().toLowerCase();
+    const needle = f.q.trim().toLowerCase();
     if (!needle) return all;
     return all.filter((a) =>
       [a.code, a.name, a.serial, a.custodianName, a.location].filter(Boolean).some((v) => String(v).toLowerCase().includes(needle)),
     );
-  }, [list.data, q]);
+  }, [list.data, f.q]);
+
+  const activeFilterCount = [f.category, f.branchId, f.status, f.includeDisposed].filter(Boolean).length;
+  const filtersActive = activeFilterCount > 0 || f.q.trim() !== "";
 
   return (
     <div className="space-y-4">
@@ -52,23 +52,27 @@ export default function AssetRegister() {
             title="القائمة"
             count={rows.length}
             loading={list.isLoading}
-            search={{ value: q, onChange: setQ, placeholder: "بحث (اسم/رمز/تسلسلي/عهدة/موقع)" }}
+            search={{ value: f.q, onChange: (v) => setF({ q: v }), placeholder: "بحث (اسم/رمز/تسلسلي/عهدة/موقع)" }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={filtersActive ? resetF : undefined}
+            onRefresh={() => list.refetch()}
+            refreshing={list.isFetching}
             filters={
               <>
-                <select className={selectCls} value={category} onChange={(e) => setCategory(e.target.value)} aria-label="الفئة">
+                <select className={selectCls} value={f.category} onChange={(e) => setF({ category: e.target.value })} aria-label="الفئة">
                   <option value="">كل الفئات</option>
                   {ASSET_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
                 </select>
-                <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value)} aria-label="الفرع">
+                <select className={selectCls} value={f.branchId} onChange={(e) => setF({ branchId: e.target.value })} aria-label="الفرع">
                   <option value="">كل الفروع</option>
                   {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
                 </select>
-                <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
+                <select className={selectCls} value={f.status} onChange={(e) => setF({ status: e.target.value })} aria-label="الحالة">
                   <option value="">كل الحالات</option>
                   {ASSET_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
                 </select>
                 <label className="flex items-center gap-2 h-8 text-sm">
-                  <input type="checkbox" className="size-4" checked={includeDisposed} onChange={(e) => setIncludeDisposed(e.target.checked)} />
+                  <input type="checkbox" className="size-4" checked={f.includeDisposed === "1"} onChange={(e) => setF({ includeDisposed: e.target.checked ? "1" : "" })} />
                   <span className="text-muted-foreground">يشمل المُستبعَد</span>
                 </label>
               </>

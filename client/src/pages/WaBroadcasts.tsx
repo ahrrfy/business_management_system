@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { formatIqd } from "@/lib/money";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -778,8 +779,14 @@ function BroadcastDetailDialog({
                 size="sm"
                 variant="destructive"
                 disabled={cancel.isPending}
-                onClick={() => {
-                  if (window.confirm("إلغاء هذه الحملة نهائياً؟ لا يمكن التراجع.")) cancel.mutate({ broadcastId });
+                onClick={async () => {
+                  const ok = await confirm({
+                    variant: "danger",
+                    title: "إلغاء الحملة",
+                    description: "إلغاء هذه الحملة نهائياً؟ لا يمكن التراجع.",
+                    confirmText: "إلغاء الحملة",
+                  });
+                  if (ok) cancel.mutate({ broadcastId });
                 }}
               >
                 <XCircle aria-hidden className="size-3.5" /> إلغاء

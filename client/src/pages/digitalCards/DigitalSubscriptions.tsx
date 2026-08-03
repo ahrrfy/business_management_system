@@ -2,11 +2,10 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { FilterField, ListToolbar } from "@/components/list";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { trpc } from "@/lib/trpc";
-import { useState } from "react";
-
-const selectCls =
-  "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
 const STATUS: Record<string, string> = {
   ACTIVE: "ساري",
@@ -22,14 +21,20 @@ export default function DigitalSubscriptions() {
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
   const me = trpc.auth.me.useQuery();
-  const [branchId, setBranchId] = useState<number | undefined>(undefined);
-  const [activeOnly, setActiveOnly] = useState(true);
+  const canPickBranch = me.data?.role === "admin" || me.data?.role === "manager";
+
+  // فرع صريح: المرتفعون يختارون فرعاً بعينه أو «كل الفروع»؛ غيرهم مقصور على فرعه خادمياً بصرف
+  // النظر عمّا يُرسَل (لا منتقي لهم — عرضٌ للمرتفع فقط، نمط AbcAnalysis/InventoryOpsReport).
+  const [f, setF, resetF] = useUrlFilters({ branch: "", q: "", expiring: "", status: "" });
+
   const list = trpc.digitalCards.subscriptions.list.useQuery({
-    branchId,
-    activeOnly,
+    branchId: f.branch ? Number(f.branch) : undefined,
+    q: f.q.trim() || undefined,
+    expiring: f.expiring ? true : undefined,
+    status: (f.status as "ACTIVE" | "EXPIRED" | "CANCELLED" | "") || undefined,
   });
 
-  const effectiveBranchId = branchId ?? me.data?.branchId ?? undefined;
+  const activeFilterCount = [f.branch, f.expiring, f.status].filter(Boolean).length;
 
   return (
     <div className="space-y-4">
@@ -39,41 +44,58 @@ export default function DigitalSubscriptions() {
       />
 
       <Card>
-        <CardContent className="flex flex-wrap items-end gap-3 p-4">
-          <div className="space-y-1">
-            <label className="text-sm font-medium" htmlFor="ds-branch">
-              الفرع
-            </label>
-            <select
-              id="ds-branch"
-              className={selectCls}
-              value={effectiveBranchId ?? ""}
-              onChange={(e) =>
-                setBranchId(e.target.value ? Number(e.target.value) : undefined)
-              }
-            >
-              {(branches.data ?? []).map((branch) => (
-                <option key={branch.id} value={branch.id}>
-                  {branch.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <label className="flex h-9 items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={activeOnly}
-              onChange={(e) => setActiveOnly(e.target.checked)}
-            />
-            الاشتراكات السارية فقط
-          </label>
-          <button
-            type="button"
-            className="text-sm text-muted-foreground underline"
-            onClick={() => void utils.digitalCards.subscriptions.list.invalidate()}
-          >
-            تحديث
-          </button>
+        <CardContent className="p-4">
+          <ListToolbar
+            title="الاشتراكات"
+            count={list.data?.length}
+            loading={list.isLoading}
+            search={{
+              value: f.q,
+              onChange: (v) => setF({ q: v }),
+              placeholder: "بحث باسم الطالب…",
+              ariaLabel: "بحث باسم الطالب",
+            }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetF}
+            onRefresh={() => void utils.digitalCards.subscriptions.list.invalidate()}
+            refreshing={list.isFetching}
+            filters={
+              <>
+                {canPickBranch && (
+                  <FilterField label="الفرع" className="w-40">
+                    <AppSelect
+                      size="sm"
+                      value={f.branch}
+                      onValueChange={(v) => setF({ branch: v })}
+                    >
+                      <option value="">— كل الفروع —</option>
+                      {(branches.data ?? []).map((branch) => (
+                        <option key={branch.id} value={String(branch.id)}>
+                          {branch.name}
+                        </option>
+                      ))}
+                    </AppSelect>
+                  </FilterField>
+                )}
+                <FilterField label="الحالة" className="w-32">
+                  <AppSelect size="sm" value={f.status} onValueChange={(v) => setF({ status: v })}>
+                    <option value="">الكل</option>
+                    <option value="ACTIVE">ساري</option>
+                    <option value="EXPIRED">منتهٍ</option>
+                    <option value="CANCELLED">ملغى</option>
+                  </AppSelect>
+                </FilterField>
+                <label className="flex h-8 items-center gap-2 self-end pb-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={f.expiring === "1"}
+                    onChange={(e) => setF({ expiring: e.target.checked ? "1" : "" })}
+                  />
+                  تنتهي خلال أسبوع
+                </label>
+              </>
+            }
+          />
         </CardContent>
       </Card>
 

@@ -45,12 +45,28 @@ export const userRouter = router({
         role: z.string().optional(),
         // فلترة بدورٍ مخصّص بعينه — مدخل «مَن على هذا الدور؟» من شاشة الأدوار (مراجعة ٢٤/٧).
         customRoleId: z.number().int().positive().optional(),
+        // فلتر فرع اختياري (شاشة المستخدمين) — عرضيّ بحت: الإجراء أصلاً adminProcedure بلا عزل
+        // فروع، فلا حارس صلاحية هنا (أدمن يرى كل الفروع أساساً).
+        branchId: z.number().int().positive().optional(),
         includeInactive: z.boolean().default(false),
         limit: z.number().int().positive().max(500).default(50),
         offset: z.number().int().min(0).default(0),
       }).optional()
     )
-    .query(({ input }) => listUsers(input ?? {})),
+    .query(async ({ input }) => {
+      // النمط نفسه في auditRouter.ts: بلا الـcast يُضيّق TS نوع الاتحاد `i` إلى `{}` (فارغ من كل
+      // الحقول) عند مطابقة الفرع الافتراضي بدل الشكل الكامل الاختياري ⇒ خطأ نوع على كل خاصية أدناه.
+      const i = input ?? ({} as NonNullable<typeof input>);
+      if (i.branchId == null) return listUsers(i);
+      // listUsers لا تعرف فلتر الفرع (عمود على users مباشرةً بلا حاجة لتعديل الخدمة المشتركة) —
+      // نجلب حتى سقف الخدمة (٥٠٠، نفس السقف الأقصى المفروض أصلاً على limit) بباقي الفلاتر كما هي،
+      // ثم نُرشّح بالفرع ونُرقّم الصفحات هنا. آمن لأن ٥٠٠ سقفٌ قائمٌ فعلاً لحجم منشأة كهذه.
+      const { rows } = await listUsers({ ...i, limit: 500, offset: 0 });
+      const filtered = rows.filter((r) => Number(r.branchId) === i.branchId);
+      const offset = Math.max(i.offset ?? 0, 0);
+      const limit = Math.min(Math.max(i.limit ?? 50, 1), 500);
+      return { rows: filtered.slice(offset, offset + limit), total: filtered.length };
+    }),
 
   get: adminProcedure
     .input(z.object({ userId: z.number().int().positive() }))

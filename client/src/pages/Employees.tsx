@@ -4,11 +4,12 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ListToolbar } from "@/components/list";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { EmpAvatar, EmploymentStatusBadge } from "@/lib/hr/ui";
 import { CopyInline } from "@/components/CopyButton";
 import { EMPLOYMENT_STATUSES, HR_DEPARTMENTS, employmentStatusLabel, fullEmployeeName, payTypeLabel } from "@shared/hr";
 import { ChevronLeft, Fingerprint } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 
 const selectCls =
@@ -20,26 +21,38 @@ type Row = RouterOutputs["employees"]["list"]["rows"][number];
 export default function Employees() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
-  const [q, setQ] = useState("");
-  const [department, setDepartment] = useState("");
-  const [branchId, setBranchId] = useState("");
-  const [status, setStatus] = useState("");
-  const [includeInactive, setIncludeInactive] = useState(false);
+  // فلاتر محفوظة في querystring (تعيش مع فتح بطاقة موظف والرجوع، وتُشارَك رابطاً).
+  const [f, setF, resetF] = useUrlFilters({
+    q: "", department: "", branchId: "", status: "", includeInactive: "",
+  });
   const [page, setPage] = useState(0);
   const limit = 50;
 
   const opts = trpc.employees.formOptions.useQuery();
+  /**
+   * «منتهي الخدمة» موظفٌ isActive=false (setEmploymentStatus يطفئه دائماً) — والقائمة الافتراضية
+   * تستثني غير النشطين. فلترةُ هذه الحالة بلا تفعيل includeInactive تُعيد صفراً كاذباً دائماً
+   * (لا «لا يوجد منتهو خدمة» بل «القائمة لا تسمح لهم بالظهور أصلاً»).
+   */
+  function setStatus(v: string) {
+    setF({ status: v, includeInactive: v === "terminated" ? "1" : f.includeInactive });
+    setPage(0);
+  }
+  const includeInactive = f.includeInactive === "1";
   // مدخلات الفلترة فقط (بلا limit/offset) — تُعاد استعمالها في التصدير الشامل.
   const filterInput = useMemo(
     () => ({
-      q: q.trim() || undefined,
-      department: department || undefined,
-      branchId: branchId ? Number(branchId) : undefined,
-      status: (status || undefined) as never,
+      q: f.q.trim() || undefined,
+      department: f.department || undefined,
+      branchId: f.branchId ? Number(f.branchId) : undefined,
+      status: (f.status || undefined) as never,
       includeInactive,
     }),
-    [q, department, branchId, status, includeInactive],
+    [f.q, f.department, f.branchId, f.status, includeInactive],
   );
+  // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
+  const activeFilterCount = [f.department, f.branchId, f.status, includeInactive ? "1" : ""].filter(Boolean).length;
+  useEffect(() => { setPage(0); }, [f.department, f.branchId, f.status, f.includeInactive]);
   const input = useMemo(
     () => ({ ...filterInput, limit, offset: page * limit }),
     [filterInput, page],
@@ -60,23 +73,25 @@ export default function Employees() {
             title="القائمة"
             count={total}
             loading={list.isLoading}
-            search={{ value: q, onChange: (v) => { setQ(v); setPage(0); }, placeholder: "بحث (اسم/هاتف/هوية/مسمى)" }}
+            search={{ value: f.q, onChange: (v) => { setF({ q: v }); setPage(0); }, placeholder: "بحث (اسم/هاتف/هوية/مسمى)" }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetF}
             filters={
               <>
-                <select className={selectCls} value={department} onChange={(e) => { setDepartment(e.target.value); setPage(0); }} aria-label="القسم">
+                <select className={selectCls} value={f.department} onChange={(e) => { setF({ department: e.target.value }); }} aria-label="القسم">
                   <option value="">كل الأقسام</option>
                   {HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
                 </select>
-                <select className={selectCls} value={branchId} onChange={(e) => { setBranchId(e.target.value); setPage(0); }} aria-label="الفرع">
+                <select className={selectCls} value={f.branchId} onChange={(e) => { setF({ branchId: e.target.value }); }} aria-label="الفرع">
                   <option value="">كل الفروع</option>
                   {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
                 </select>
-                <select className={selectCls} value={status} onChange={(e) => { setStatus(e.target.value); setPage(0); }} aria-label="الحالة">
+                <select className={selectCls} value={f.status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
                   <option value="">كل الحالات</option>
                   {EMPLOYMENT_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
                 </select>
                 <label className="flex items-center gap-2 h-8 text-sm">
-                  <input type="checkbox" className="size-4" checked={includeInactive} onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }} />
+                  <input type="checkbox" className="size-4" checked={includeInactive} onChange={(e) => setF({ includeInactive: e.target.checked ? "1" : "" })} />
                   <span className="text-muted-foreground">يشمل المعطّلين</span>
                 </label>
               </>

@@ -50,24 +50,44 @@ function scopedBranch(
 }
 
 export const apRemindersRouter = router({
-  /** قائمة اليوم: موردون بذمّة دائنة >٠ متأخّرة ≥٧ أيام، لم يُذكَّروا آخر ٧ أيام. admin يعبُر بـbranchId صريح. */
+  /** قائمة اليوم: موردون بذمّة دائنة >٠ متأخّرة ≥٧ أيام، لم يُذكَّروا آخر ٧ أيام. admin يعبُر بـbranchId صريح.
+   *  `allBranches` (أدمن حصراً) ⇒ قراءة مجمَّعة عبر كل الفروع (getReminderQueue تدعم branchId=null
+   *  أصلاً — مرآة `openingScope` في arRemindersRouter). **قراءة فقط**: الكتابة (logSent/sendViaApi/
+   *  logSkipped) تبقى دائماً على فرعٍ واحدٍ محدَّد (assertSupplierHasBranchPO يتحقّق من أمر شراء في ذلك
+   *  الفرع تحديداً) — لا معنى لكتابة «كل الفروع» فلا نمنحها هنا. */
   queue: suppliersManagerProcedure
-    .input(z.object({ branchId: optionalBranch }).optional())
-    .query(({ ctx, input }) => getReminderQueue({ branchId: scopedBranch(ctx, input?.branchId) })),
+    .input(z.object({ branchId: optionalBranch, allBranches: z.boolean().optional() }).optional())
+    .query(({ ctx, input }) => {
+      if (input?.allBranches) {
+        if (ctx.user.role !== "admin") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "عرض كل الفروع متاح للأدمن فقط." });
+        }
+        return getReminderQueue({ branchId: null });
+      }
+      return getReminderQueue({ branchId: scopedBranch(ctx, input?.branchId) });
+    }),
 
-  /** سجلّ آخر ٣٠ يوماً من التذكيرات في فرع المستخدم (admin يعبُر بـbranchId صريح). */
+  /** سجلّ آخر ٣٠ يوماً من التذكيرات في فرع المستخدم (admin يعبُر بـbranchId صريح).
+   *  `allBranches` (أدمن حصراً) ⇒ سجلّ مجمَّع عبر كل الفروع — مرآة queue.allBranches. */
   history: suppliersManagerProcedure
     .input(
       z
         .object({
           limit: z.number().int().positive().max(1000).optional(),
           branchId: optionalBranch,
+          allBranches: z.boolean().optional(),
         })
         .optional(),
     )
-    .query(({ ctx, input }) =>
-      getReminderHistory({ branchId: scopedBranch(ctx, input?.branchId), limit: input?.limit }),
-    ),
+    .query(({ ctx, input }) => {
+      if (input?.allBranches) {
+        if (ctx.user.role !== "admin") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "عرض كل الفروع متاح للأدمن فقط." });
+        }
+        return getReminderHistory({ branchId: null, limit: input?.limit });
+      }
+      return getReminderHistory({ branchId: scopedBranch(ctx, input?.branchId), limit: input?.limit });
+    }),
 
   /** تسجيل تذكير أُرسِل — يستدعيه الزبون فور عودة المستخدم من فتح wa.me وتأكيده الإرسال. */
   logSent: suppliersManagerProcedure

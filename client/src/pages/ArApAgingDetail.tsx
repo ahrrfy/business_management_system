@@ -4,9 +4,11 @@
 // عرض + KPIs بالشرائح + تصدير Excel + طباعة A4 (ReportShell + printReportDoc).
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
@@ -28,9 +30,14 @@ const BUCKET_CLS: Record<string, string> = {
   "90+": "badge-stock-out",
 };
 
+const BUCKET_OPTIONS = ["0-30", "31-60", "61-90", "90+"];
+
 export default function ArApAgingDetail() {
   const [side, setSide] = useState<Side>("AR");
   const [branchId, setBranchId] = useState<number | "">("");
+  // فلتر الشريحة العمرية + البحث النصّي — عميليّان بحتان (كل الصفوف مُحمَّلة أصلاً بلا ترقيم خادميّ).
+  const [bucket, setBucket] = useState("");
+  const [query, setQuery] = useState("");
 
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.arApAgingDetail.useQuery({
@@ -38,9 +45,18 @@ export default function ArApAgingDetail() {
     branchId: branchId ? Number(branchId) : undefined,
   });
 
-  const rows = q.data?.rows ?? [];
+  const allRows = q.data?.rows ?? [];
   const totals = q.data?.totals;
   const isAR = side === "AR";
+
+  const rows = useMemo(() => {
+    const qq = query.trim().toLowerCase();
+    return allRows.filter((r) => {
+      if (bucket && r.bucket !== bucket) return false;
+      if (qq && !r.partyName.toLowerCase().includes(qq) && !r.number.toLowerCase().includes(qq)) return false;
+      return true;
+    });
+  }, [allRows, bucket, query]);
 
   const kpis: KpiItem[] = totals
     ? [
@@ -146,6 +162,25 @@ export default function ArApAgingDetail() {
               ))}
             </select>
           </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">الشريحة العمرية</label>
+            <select className={selectCls} value={bucket} onChange={(e) => setBucket(e.target.value)}>
+              <option value="">الكل</option>
+              {BUCKET_OPTIONS.map((b) => (<option key={b} value={b}>{b}</option>))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">بحث</label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={isAR ? "العميل أو رقم الفاتورة…" : "المورد أو رقم الأمر…"}
+                className="h-9 w-56 pr-8"
+              />
+            </div>
+          </div>
         </div>
       }
     >
@@ -155,9 +190,13 @@ export default function ArApAgingDetail() {
             <LoadingState />
           ) : q.error ? (
             <ErrorState message={q.error.message} onRetry={() => q.refetch()} />
-          ) : !rows.length ? (
+          ) : !allRows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">
               لا مستندات مستحقّة في هذا النطاق.
+            </p>
+          ) : !rows.length ? (
+            <p className="p-8 text-center text-sm text-muted-foreground">
+              لا مستندات مطابقة للفلتر/البحث.
             </p>
           ) : (
             <ScrollTableShell bordered={false}>

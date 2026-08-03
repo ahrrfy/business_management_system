@@ -12,12 +12,13 @@ import { Badge } from "@/components/ui/badge";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { printDeliveryPartyStmt } from "@/lib/printing/printTemplates";
-import { RowActions } from "@/components/list";
+import { ListToolbar, RowActions } from "@/components/list";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 
 type Party = RouterOutputs["delivery"]["listParties"][number];
 
@@ -42,6 +43,8 @@ export default function DeliveryParties() {
   const [showCreate, setShowCreate] = useState(false);
   const [settleFor, setSettleFor] = useState<Party | null>(null);
   const [writeOffFor, setWriteOffFor] = useState<Party | null>(null);
+  // «ذمة قائمة»: رصيدٌ غير صفريّ (بذمّة المندوب/الجهة نقداً لم يُورَّد بعد) — محفوظ في querystring.
+  const [f, setF, resetF] = useUrlFilters({ outstandingOnly: "" });
 
   const printStatement = async (party: Party) => {
     const data = await utils.delivery.partyStatement.fetch({ partyId: party.id });
@@ -51,7 +54,11 @@ export default function DeliveryParties() {
     for (const e of data.entries) {
       const amt = Number(e.amount);
       const date = fmtDate(e.entryDate);
-      const ref = (e.notes ?? "").replace(/^.*?([CD][NR]-\S+).*$/, "$1") || "—";
+      // استخراج المرجع من الملاحظات: كان يتطابق حصراً مع بادئتَي CN-/DR- (إرسالية/ترحيل) فيُخفي
+      // مرجع طلبات المتجر ORD- (تحصيل COD من المندوب عبر courier.ts — يظهر بنفس نوع القيد
+      // DELIVERY_DISPATCH). أيّ بادئة حرفية لاتينية (٢-٦ أحرف) متبوعة بشَرطة تلتقط الأنماط الحالية
+      // والمستقبلية بلا تخصيص حرفَين ثابتَين.
+      const ref = (e.notes ?? "").match(/[A-Z]{2,6}-[A-Za-z0-9-]+/)?.[0] ?? "—";
       if (e.type === "DELIVERY_DISPATCH") { bal += amt; totDispatch += amt; txs.push({ date, ref, description: "إرسالية (عهدة COD)", debit: e.amount, credit: null, balance: bal.toFixed(2) }); }
       else if (e.type === "DELIVERY_REMIT") { bal -= amt; totSettled += amt; txs.push({ date, ref, description: "توريد/تسوية", debit: null, credit: e.amount, balance: bal.toFixed(2) }); }
       else if (e.type === "DELIVERY_WRITEOFF") { bal -= amt; totSettled += amt; txs.push({ date, ref, description: "شطب عجز", debit: null, credit: e.amount, balance: bal.toFixed(2) }); }
@@ -78,7 +85,9 @@ export default function DeliveryParties() {
   }, [list.data]);
 
   if (list.isError) return <div className="p-6"><ErrorState onRetry={() => list.refetch()} /></div>;
-  const rows = list.data ?? [];
+  const allRows = list.data ?? [];
+  const rows = f.outstandingOnly === "1" ? allRows.filter((p) => !D(p.currentBalance).isZero()) : allRows;
+  const activeFilterCount = f.outstandingOnly === "1" ? 1 : 0;
 
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
@@ -96,11 +105,48 @@ export default function DeliveryParties() {
         <StatCard label="أقدم مستحق" value={kpis.oldest != null ? `${kpis.oldest} يوم` : "—"} icon={Truck} tone={kpis.oldest != null && kpis.oldest > 14 ? "warning" : "default"} />
       </div>
 
+      <ListToolbar
+        title="الجهات"
+        count={rows.length}
+        loading={list.isLoading}
+        activeFilterCount={activeFilterCount}
+        onResetFilters={resetF}
+        onRefresh={() => void list.refetch()}
+        refreshing={list.isFetching}
+        exportSpec={{
+          filename: "جهات-التوصيل",
+          sheetName: "الجهات",
+          rows,
+          formats: ["xlsx", "csv"],
+          columns: [
+            { key: "name", header: "الجهة" },
+            { key: "phone", header: "الهاتف", map: (r) => r.phone ?? "" },
+            { key: "partyType", header: "النوع", map: (r) => (r.partyType === "COMPANY" ? "شركة" : "مندوب") },
+            { key: "currentBalance", header: "نقد بذمّتها", money: true },
+            { key: "openConsignments", header: "شحنات مفتوحة" },
+            { key: "oldestOutstanding", header: "أقدم مستحق (يوم)", map: (r) => ageDays(r.oldestOutstanding) ?? "" },
+            { key: "isActive", header: "الحالة", map: (r) => (r.isActive ? "نشط" : "معطّل") },
+          ],
+        }}
+        filters={
+          <label className="inline-flex h-9 items-center gap-1.5 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={f.outstandingOnly === "1"}
+              onChange={(e) => setF({ outstandingOnly: e.target.checked ? "1" : "" })}
+            />
+            ذمّة قائمة فقط (رصيد غير صفريّ)
+          </label>
+        }
+      />
+
       <div className="rounded-xl border bg-card">
         {list.isLoading ? (
           <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
-        ) : rows.length === 0 ? (
+        ) : allRows.length === 0 ? (
           <EmptyState icon={Truck} title="لا جهات توصيل" description="أضِف مندوباً أو شركة توصيل للبدء." actionLabel={isManager ? "+ جهة جديدة" : undefined} onAction={() => setShowCreate(true)} />
+        ) : rows.length === 0 ? (
+          <EmptyState icon={Truck} title="لا نتائج" description="لا جهات مطابقة لفلترك الحالي." />
         ) : (
           <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">

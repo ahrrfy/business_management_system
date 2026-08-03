@@ -9,6 +9,7 @@ import {
   CalendarPlus,
   CheckCircle2,
   CircleDollarSign,
+  Download,
   FileText,
   Landmark,
   Plus,
@@ -19,11 +20,14 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { exportRows } from "@/lib/export";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -84,19 +88,29 @@ export default function InstallmentPlans() {
   const [branchFilter, setBranchFilter] = useState<number | undefined>(undefined);
   const [statusFilter, setStatusFilter] = useState<"" | "ACTIVE" | "COMPLETED" | "CANCELLED">("");
   const [customerFilter, setCustomerFilter] = useState<SmartCustomerValue>(EMPTY_CUSTOMER);
+  // بحث برقم خطة/رقم صك + مدى تاريخ الإنشاء — installmentRouter.list يدعمهما فعلياً (بحثٌ محدود
+  // بأوّل ٢٠٠ خطة مطابقة لبقية الفلاتر — راجع تعليق الراوتر).
+  const [q, setQ] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const [offset, setOffset] = useState(0);
   const LIMIT = 50;
+  // نافذة «المستحقّ قريباً» قابلة للضبط — الخادم يدعم حتى ٩٠ يوماً (installments.dueSoon).
+  const [dueSoonDays, setDueSoonDays] = useState(7);
 
   const listInput = {
     branchId: isAdmin ? branchFilter : undefined,
     status: statusFilter || undefined,
     customerId: customerFilter.customerId ?? undefined,
+    q: q.trim() || undefined,
+    from: from || undefined,
+    to: to || undefined,
     limit: LIMIT,
     offset,
   };
   const list = trpc.installments.list.useQuery(listInput, { staleTime: 15_000 });
   const due = trpc.installments.dueSoon.useQuery(
-    { branchId: isAdmin ? branchFilter : undefined, days: 7 },
+    { branchId: isAdmin ? branchFilter : undefined, days: dueSoonDays },
     { staleTime: 15_000 },
   );
 
@@ -124,6 +138,8 @@ export default function InstallmentPlans() {
       <DueSoonSection
         rows={due.data ?? []}
         isLoading={due.isLoading}
+        days={dueSoonDays}
+        onDaysChange={setDueSoonDays}
         onPay={(r) => setPayTarget({ lineId: r.lineId, seq: r.seq, amount: r.amount, kind: r.kind, checkNumber: r.checkNumber })}
       />
 
@@ -165,8 +181,56 @@ export default function InstallmentPlans() {
             placeholder="فلترة بعميل معيّن…"
           />
         </div>
+        <div className="min-w-48 space-y-1">
+          <Label className="text-xs">بحث (رقم خطة/رقم صك)</Label>
+          <Input
+            value={q}
+            onChange={(e) => { setQ(e.target.value); setOffset(0); }}
+            placeholder="مثال: 42 أو رقم الصك…"
+            className="h-9"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">أُنشئت من</Label>
+          <Input type="date" dir="ltr" value={from} onChange={(e) => { setFrom(e.target.value); setOffset(0); }} className="h-9" />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">أُنشئت إلى</Label>
+          <Input type="date" dir="ltr" value={to} onChange={(e) => { setTo(e.target.value); setOffset(0); }} className="h-9" />
+        </div>
         <Button variant="outline" size="sm" onClick={() => list.refetch()} className="gap-1.5">
           <RotateCcw className="size-3.5" aria-hidden /> تحديث
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5"
+          onClick={() =>
+            void fetchAllPaged<PlanRow>(
+              (pageOffset, pageLimit) =>
+                utils.installments.list
+                  .fetch({ ...listInput, limit: pageLimit, offset: pageOffset })
+                  .then((r) => ({ rows: r.rows, total: r.hasMore ? undefined : pageOffset + r.rows.length })),
+              { pageSize: 200 },
+            ).then((rows) =>
+              exportRows(rows, {
+                filename: "خطط-الأقساط",
+                title: "خطط الأقساط والصكوك الآجلة",
+                columns: [
+                  { key: "id", header: "رقم الخطة" },
+                  { key: "customerName", header: "العميل" },
+                  { key: "totalAmount", header: "الإجمالي", money: true, map: (r) => Number(r.totalAmount) },
+                  { key: "downPayment", header: "الدفعة الأولى", money: true, map: (r) => Number(r.downPayment) },
+                  { key: "paidAmount", header: "المدفوع", money: true, map: (r) => Number(r.paidAmount) },
+                  { key: "status", header: "الحالة", map: (r) => PLAN_STATUS_AR[r.status]?.label ?? r.status },
+                  { key: "nextDueDate", header: "القسط القادم", map: (r) => r.nextDueDate ?? "" },
+                  { key: "createdAt", header: "أُنشئت", map: (r) => (r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 10) : "") },
+                ],
+              }),
+            )
+          }
+        >
+          <Download className="size-3.5" aria-hidden /> تصدير Excel
         </Button>
       </div>
 
@@ -217,19 +281,53 @@ export default function InstallmentPlans() {
 
 /* ============================ المستحقّ قريباً ============================ */
 
-function DueSoonSection({ rows, isLoading, onPay }: { rows: DueRow[]; isLoading: boolean; onPay: (r: DueRow) => void }) {
+function DueSoonSection({
+  rows,
+  isLoading,
+  days,
+  onDaysChange,
+  onPay,
+}: {
+  rows: DueRow[];
+  isLoading: boolean;
+  /** نافذة «المستحقّ قريباً» بالأيام — الخادم يقبل حتى ٩٠ (installments.dueSoon). */
+  days: number;
+  onDaysChange: (days: number) => void;
+  onPay: (r: DueRow) => void;
+}) {
   if (isLoading) return null;
-  if (rows.length === 0) return null;
   const overdue = rows.filter((r) => r.daysOverdue > 0).length;
   return (
     <Card className="border-amber-300/60">
       <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <AlarmClock className="size-4 text-amber-600" aria-hidden />
-          المستحقّ قريباً ({rows.length} قسطاً{overdue > 0 ? ` — منها ${overdue} متأخّر` : ""})
-        </CardTitle>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <AlarmClock className="size-4 text-amber-600" aria-hidden />
+            المستحقّ قريباً ({rows.length} قسطاً{overdue > 0 ? ` — منها ${overdue} متأخّر` : ""})
+          </CardTitle>
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            خلال
+            <AppSelect
+              value={String(days)}
+              onValueChange={(v) => onDaysChange(Number(v))}
+              className="h-7 w-24 text-xs"
+              size="sm"
+              aria-label="نافذة المستحقّ قريباً بالأيام"
+            >
+              <option value="3">٣ أيام</option>
+              <option value="7">٧ أيام</option>
+              <option value="14">١٤ يوماً</option>
+              <option value="30">٣٠ يوماً</option>
+              <option value="60">٦٠ يوماً</option>
+              <option value="90">٩٠ يوماً</option>
+            </AppSelect>
+          </label>
+        </div>
       </CardHeader>
       <CardContent className="p-0">
+        {rows.length === 0 ? (
+          <p className="p-4 text-sm text-muted-foreground text-center">لا أقساط مستحقّة خلال {days} يوماً.</p>
+        ) : (
         <ScrollTableShell bordered={false} maxHeightClass="max-h-64">
           <Table>
             <TableHeader>
@@ -290,6 +388,7 @@ function DueSoonSection({ rows, isLoading, onPay }: { rows: DueRow[]; isLoading:
             </TableBody>
           </Table>
         </ScrollTableShell>
+        )}
       </CardContent>
     </Card>
   );

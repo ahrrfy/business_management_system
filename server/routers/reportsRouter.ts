@@ -429,7 +429,8 @@ export const reportsRouter = router({
           from: ymdStr.optional(),
           to: ymdStr.optional(),
           branchId: z.number().int().positive().optional(),
-          limit: z.number().int().positive().max(100).default(20),
+          // رُفع من ١٠٠ (تدقيق التقارير): الكتالوج قد يتجاوز عدد المنتجات المُباعة السقف القديم صامتاً.
+          limit: z.number().int().positive().max(2000).default(20),
           by: z.enum(["revenue", "qty"]).default("revenue"),
         })
         .optional()
@@ -515,6 +516,8 @@ export const reportsRouter = router({
             ])
           )
           .optional(),
+        // بحث نصّي حرّ — الطرف (عميل/مورّد)/الملاحظات/رقم الفاتورة المرتبطة.
+        q: z.string().trim().max(200).optional(),
         limit: z.number().int().min(1).max(2000).default(200),
         offset: z.number().int().min(0).default(0),
       })
@@ -526,6 +529,7 @@ export const reportsRouter = router({
         to: input.to,
         branchId,
         entryTypes: input.entryTypes,
+        q: input.q,
         limit: input.limit,
         offset: input.offset,
       });
@@ -536,10 +540,16 @@ export const reportsRouter = router({
    * يكشف الأرصدة/المخزون ⇒ manager فأعلى + عزل الفرع (النقد/المخزون حسب الفرع؛ الذمم على مستوى الشركة).
    */
   financialPosition: reportsBranchScoped
-    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .input(
+      z.object({
+        branchId: z.number().int().positive().optional(),
+        // «كما في تاريخ» — اختياري، افتراضياً اللقطة الحيّة الآن (بلا تغيير سلوكيّ إن غاب).
+        asOf: ymdStr.optional(),
+      }).optional()
+    )
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
-      return getFinancialPosition({ branchId });
+      return getFinancialPosition({ branchId, asOf: input?.asOf });
     }),
 
   /** التدفّق النقدي (أساس نقدي مباشر) — صافي المقبوضات حسب اتّجاه/طريقة الدفع. manager + عزل الفرع. */
@@ -555,12 +565,14 @@ export const reportsRouter = router({
     .input(z.object({
       from: ymdStr, to: ymdStr,
       branchId: z.number().int().positive().optional(),
+      // بحث نصّي حرّ (رقم فاتورة/عميل/منتج) — اختياري، لا يمسّ العزل/الفلاتر القائمة.
+      q: z.string().trim().max(200).optional(),
       limit: z.number().int().min(1).max(2000).default(200),
       offset: z.number().int().min(0).default(0),
     }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
-      return getSalesRegister({ from: input.from, to: input.to, branchId, limit: input.limit, offset: input.offset });
+      return getSalesRegister({ from: input.from, to: input.to, branchId, q: input.q, limit: input.limit, offset: input.offset });
     }),
 
   /** المبيعات حسب بُعد (عميل/فرع/طريقة دفع/كاشير/صنف) + إجماليات وربحية. manager + عزل الفرع. */
@@ -601,12 +613,18 @@ export const reportsRouter = router({
     .input(z.object({
       from: ymdStr, to: ymdStr,
       branchId: z.number().int().positive().optional(),
+      supplierId: z.number().int().positive().optional(),
+      // بحث نصّي حرّ (رقم أمر/مورّد/منتج) — اختياري.
+      q: z.string().trim().max(200).optional(),
       limit: z.number().int().min(1).max(2000).default(200),
       offset: z.number().int().min(0).default(0),
     }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
-      return getPurchaseRegister({ from: input.from, to: input.to, branchId, limit: input.limit, offset: input.offset });
+      return getPurchaseRegister({
+        from: input.from, to: input.to, branchId, supplierId: input.supplierId, q: input.q,
+        limit: input.limit, offset: input.offset,
+      });
     }),
 
   /** تفصيل أعمار الذمم — مستندٌ بمستند (AR فواتير / AP أوامر شراء). manager + عزل الفرع. */
@@ -668,10 +686,15 @@ export const reportsRouter = router({
 
   /** تقرير المصروفات — مصنّفةً حسب الفئة + أكبر جهات الصرف. manager + عزل الفرع. */
   expensesReport: reportsBranchScoped
-    .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
+    .input(z.object({
+      from: ymdStr, to: ymdStr,
+      branchId: z.number().int().positive().optional(),
+      // حدّ جهات الصرف المُعادة — افتراضي ٢٠ (كالسابق)، حتى ٢٠٠.
+      payeeLimit: z.number().int().positive().max(200).optional(),
+    }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
-      return getExpensesReport({ from: input.from, to: input.to, branchId });
+      return getExpensesReport({ from: input.from, to: input.to, branchId, payeeLimit: input.payeeLimit });
     }),
 
   /**

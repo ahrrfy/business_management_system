@@ -1,14 +1,23 @@
 // PriceWaves.tsx (٧/٧/٢٦): موجات تحديث الأسعار — معاينة قبل الالتزام + تطبيق ذرّي + قائمة تاريخية.
 // RBAC: مدير+ فقط (productsManagerProcedure على الخادم يفرض).
-import { AlertCircle, Play, RefreshCw } from "lucide-react";
+import { AlertCircle, Eye, Play, RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Field } from "@/components/product/variantBits";
 import { PageHeader } from "@/components/PageHeader";
+import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { CategoryOptionList } from "@/lib/categoryTree";
@@ -33,7 +42,17 @@ const TIER_LABELS: Record<string, string> = {
 export default function PriceWaves() {
   const utils = trpc.useUtils();
   const categoriesQ = trpc.catalog.categories.useQuery();
-  const wavesQ = trpc.priceWaves.list.useQuery();
+  // ترقيم تاريخ الموجات: يبدأ بـ٥٠ ويتوسّع بزرّ «تحميل المزيد» — لا صفحة كاملة (السجلّ نادراً يتجاوز
+  // بضع عشرات الموجات، والسقف الخادمي ٢٠٠).
+  const [historyLimit, setHistoryLimit] = useState(50);
+  const wavesQ = trpc.priceWaves.list.useQuery({ limit: historyLimit });
+
+  // ── تفاصيل موجة مطبَّقة (حوار) ──
+  const [detailsWaveId, setDetailsWaveId] = useState<number | null>(null);
+  const detailsQ = trpc.priceWaves.waveDetails.useQuery(
+    { waveId: detailsWaveId! },
+    { enabled: detailsWaveId != null },
+  );
 
   // ── فلاتر ──
   const [categoryId, setCategoryId] = useState<number | "">("");
@@ -89,7 +108,7 @@ export default function PriceWaves() {
     previewM.mutate({ filters, changeType, changeValue });
   }
 
-  function doApply() {
+  async function doApply() {
     setError("");
     if (!name.trim()) {
       setError("اسم الموجة مطلوب قبل التطبيق.");
@@ -99,6 +118,14 @@ export default function PriceWaves() {
       setError("لا صفوف للتطبيق — عاين أوّلاً.");
       return;
     }
+    // حارس قبل تنفيذ موجة تسعير فعلية — تعديلٌ جماعيّ لا رجعة عملية سهلة فيه.
+    const ok = await confirm({
+      variant: "warning",
+      title: "تطبيق موجة تسعير",
+      description: `سيُحدَّث سعر ${previewed.totalRows} صفّاً فعلياً باسم «${name.trim()}» (${CHANGE_LABELS[changeType]}: ${changeValue}). لا تراجع تلقائي — أنشئ موجة عكسية لاحقاً إن لزم.`,
+      confirmText: "تطبيق",
+    });
+    if (!ok) return;
     applyM.mutate({
       name: name.trim(),
       description: description.trim() || null,
@@ -177,8 +204,8 @@ export default function PriceWaves() {
       </Card>
 
       {error && (
-        <div className="rounded-md border border-red-500/40 bg-red-50 dark:bg-red-950/40 p-3 text-sm flex items-start gap-2">
-          <AlertCircle className="size-4 mt-0.5 shrink-0 text-red-600" />
+        <div className="rounded-md border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] p-3 text-sm flex items-start gap-2">
+          <AlertCircle className="size-4 mt-0.5 shrink-0 text-[var(--sem-neg)]" />
           <div>{error}</div>
         </div>
       )}
@@ -216,7 +243,7 @@ export default function PriceWaves() {
                       {previewed.rows.map((r: any, i: number) => {
                         const diff = Number(r.newPrice) - Number(r.oldPrice);
                         return (
-                          <tr key={`${r.productUnitId}-${r.priceTier}-${i}`} className={`border-t ${r.belowCost ? "bg-red-50 dark:bg-red-950/30" : ""}`}>
+                          <tr key={`${r.productUnitId}-${r.priceTier}-${i}`} className={`border-t ${r.belowCost ? "bg-[var(--sem-neg-bg)]" : ""}`}>
                             <td className="px-3 py-2">{r.productName}</td>
                             <td className="px-3 py-2 text-xs text-muted-foreground">{r.sku}</td>
                             <td className="px-3 py-2">{r.unitName}</td>
@@ -224,7 +251,7 @@ export default function PriceWaves() {
                             <td className="px-3 py-2 text-muted-foreground">{Number(r.costPrice).toLocaleString("en-US")}</td>
                             <td className="px-3 py-2">{Number(r.oldPrice).toLocaleString("en-US")}</td>
                             <td className="px-3 py-2 font-medium">{Number(r.newPrice).toLocaleString("en-US")}</td>
-                            <td className={`px-3 py-2 ${diff >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                            <td className={`px-3 py-2 ${diff >= 0 ? "text-[var(--sem-pos)]" : "text-[var(--sem-neg)]"}`}>
                               {diff >= 0 ? "+" : ""}{diff.toFixed(2)}
                             </td>
                           </tr>
@@ -245,7 +272,7 @@ export default function PriceWaves() {
                     <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
                   </Field>
                   {previewed.belowCostCount > 0 && (
-                    <div className="md:col-span-3 flex items-center gap-2 p-2 rounded border border-amber-500/40 bg-amber-50 dark:bg-amber-950/40">
+                    <div className="md:col-span-3 flex items-center gap-2 p-2 rounded border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)]">
                       <input type="checkbox" checked={allowBelowCost} onChange={(e) => setAllowBelowCost(e.target.checked)} id="allowBelowCost" />
                       <label htmlFor="allowBelowCost" className="text-sm">
                         أُذّن بالتطبيق رغم أن {previewed.belowCostCount} صفّ تحت التكلفة (سياسة استثنائية).
@@ -283,6 +310,7 @@ export default function PriceWaves() {
                     <th className="px-3 py-2 text-right font-medium">نوع التغيير</th>
                     <th className="px-3 py-2 text-right font-medium">القيمة</th>
                     <th className="px-3 py-2 text-right font-medium">الصفوف</th>
+                    <th className="px-3 py-2"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -293,14 +321,71 @@ export default function PriceWaves() {
                       <td className="px-3 py-2">{CHANGE_LABELS[w.changeType as ChangeType]}</td>
                       <td className="px-3 py-2">{Number(w.changeValue).toLocaleString("en-US")}</td>
                       <td className="px-3 py-2">{w.totalRows}</td>
+                      <td className="px-3 py-2 text-left">
+                        <Button size="sm" variant="ghost" onClick={() => setDetailsWaveId(Number(w.id))}>
+                          <Eye aria-hidden className="size-3.5" />
+                          تفاصيل
+                        </Button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
+          {waves.length >= historyLimit && historyLimit < 200 && (
+            <div className="flex justify-center pt-3">
+              <Button variant="outline" size="sm" onClick={() => setHistoryLimit((v) => Math.min(200, v + 50))} disabled={wavesQ.isFetching}>
+                {wavesQ.isFetching ? "جارٍ التحميل…" : "تحميل المزيد"}
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      <Dialog open={detailsWaveId != null} onOpenChange={(open) => !open && setDetailsWaveId(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>تفاصيل موجة التسعير</DialogTitle>
+            <DialogDescription>كل صفٍّ تغيَّر ضمن هذه الموجة — السعر قبل وبعد لكل منتج/وحدة/فئة سعر.</DialogDescription>
+          </DialogHeader>
+          {detailsQ.isLoading ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</div>
+          ) : (detailsQ.data ?? []).length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">لا صفوف مسجَّلة لهذه الموجة.</div>
+          ) : (
+            <div className="overflow-x-auto rounded-md border max-h-96 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-xs text-muted-foreground sticky top-0">
+                  <tr>
+                    <th className="px-3 py-2 text-right font-medium">المنتج</th>
+                    <th className="px-3 py-2 text-right font-medium">SKU</th>
+                    <th className="px-3 py-2 text-right font-medium">الوحدة</th>
+                    <th className="px-3 py-2 text-right font-medium">فئة السعر</th>
+                    <th className="px-3 py-2 text-right font-medium">السعر القديم</th>
+                    <th className="px-3 py-2 text-right font-medium">السعر الجديد</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(detailsQ.data ?? []).map((r) => (
+                    <tr key={r.id} className="border-t">
+                      <td className="px-3 py-2">{r.productName ?? "—"}</td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">{r.sku ?? "—"}</td>
+                      <td className="px-3 py-2">{r.unitName ?? "—"}</td>
+                      <td className="px-3 py-2">{TIER_LABELS[r.priceTier as string] || r.priceTier}</td>
+                      <td className="px-3 py-2">{Number(r.oldPrice).toLocaleString("en-US")}</td>
+                      <td className="px-3 py-2 font-medium">{Number(r.newPrice).toLocaleString("en-US")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDetailsWaveId(null)}>إغلاق</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

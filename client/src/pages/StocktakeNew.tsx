@@ -34,6 +34,8 @@ import { notify } from "@/lib/notify";
 import { internalUrl } from "@/lib/siteHosts";
 import { trpc } from "@/lib/trpc";
 import { openWhatsApp } from "@/lib/whatsapp";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Check, AlertTriangle, Printer } from "lucide-react";
@@ -180,6 +182,17 @@ export default function StocktakeNew() {
 
   const [created, setCreated] = useState<CreateResult | null>(null);
 
+  // حارس مغادرة أثناء معالجٍ جارٍ: خطوةٌ متقدّمة أو تحديدٌ فعليّ (اسم/عمّال/منتجات) يعني عملاً
+  // لم يُحفظ بعد — إغلاق التبويب/تحديث الصفحة سيهدره (الجلسة تُنشأ فقط عند «إنشاء الجلسة»).
+  const isWizardDirty =
+    !created &&
+    (step > 0 ||
+      name.trim() !== "" ||
+      manualIds.length > 0 ||
+      categoryIds.length > 0 ||
+      workers.some((w) => w.name.trim() !== ""));
+  useUnsavedGuard(isWizardDirty);
+
   /* الفرع الافتراضي: فرع المستخدم ثم أول فرع. دور المخزن مُقيَّد بفرعه (الخادم يُجبره أيضاً). */
   const branches = branchesQ.data ?? [];
   const effectiveBranchId =
@@ -189,12 +202,15 @@ export default function StocktakeNew() {
     (branches[0]?.id ?? 0);
   const branchName = branches.find((b) => b.id === effectiveBranchId)?.name ?? "—";
 
-  /* منتجات الفرع — لمنتقي MANUAL فقط (بحث محلي فوق حمولة واحدة).
+  /* منتجات الفرع — لمنتقي MANUAL فقط. بحثٌ خادميّ (لا حدّ ١٠٠٠ محليّ يُخفي صامتاً ما وراءه في فروعٍ
+     كبيرة) — نفس الاستعلام يقبل `q` أصلاً (نمط شاشة المخزون). بلا نصّ بحث نعرض أوّل صفحة (٢٠٠)
+     كنقطة انطلاق؛ اكتب للبحث عن أي صنفٍ آخر.
      عدّاد النطاق نفسه لم يعد يعتمد onHand: كان يعدّ صفوف branchStock السابقة فقط ⇒ يُخفي
      الأصناف التي لم تُلامَس بحركة بعد، وفارقٌ قاتلٌ في الجرد الافتتاحي. صار العدّاد يُحسب
      خادمياً عبر `stocktakes.previewScopeCount` بنفس منطق resolveScope حرفياً. */
+  const debouncedPickQ = useDebouncedValue(pickQ, 250);
   const onHandQ = trpc.inventory.onHand.useQuery(
-    { branchId: effectiveBranchId, limit: 1000 },
+    { branchId: effectiveBranchId, q: debouncedPickQ.trim() || undefined, limit: 200 },
     { enabled: effectiveBranchId > 0 && scopeType === "MANUAL" }
   );
   const onHand = onHandQ.data ?? [];
@@ -239,19 +255,8 @@ export default function StocktakeNew() {
           ? null
           : (previewCount?.variantCount ?? null);
 
-  /* قائمة المنتقي (MANUAL) مفلترة محلياً. */
-  const pickList = useMemo(() => {
-    const q = pickQ.trim().toLowerCase();
-    const rows = !q
-      ? onHand
-      : onHand.filter(
-          (r) =>
-            (r.productName ?? "").toLowerCase().includes(q) ||
-            (r.variantName ?? "").toLowerCase().includes(q) ||
-            (r.sku ?? "").toLowerCase().includes(q)
-        );
-    return rows.slice(0, 200);
-  }, [onHand, pickQ]);
+  /* قائمة المنتقي (MANUAL) — البحث خادميّ الآن (onHandQ أعلاه)، فالنتيجة جاهزة بلا فلترة محلية. */
+  const pickList = onHand;
 
   /* منتجات مختارة غير ظاهرة في قائمة الفرع الحالي (prefill من شاشة أخرى مثلاً). */
   const unknownSelected = useMemo(() => {

@@ -108,11 +108,11 @@ export default function PayrollLegalSettings() {
         }
       />
 
-      {/* لافتة تحذير المحاسب القانونيّ */}
-      <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+      {/* لافتة تحذير المحاسب القانونيّ — توكنز دلالية (sem-warn) لا ألوان خام (تسقط بالوضع الداكن). */}
+      <div className="flex items-start gap-2 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[var(--sem-warn)]" aria-hidden />
         <div>
-          <b>راجع النِّسب والشرائح مع محاسبك القانونيّ.</b> القيم هنا إعداداتٌ يضبطها المالك وفق القانون
+          <b className="text-[var(--sem-warn)]">راجع النِّسب والشرائح مع محاسبك القانونيّ.</b> القيم هنا إعداداتٌ يضبطها المالك وفق القانون
           العراقيّ النافذ — النظام يوفّر البنية فقط ولا يفرض أرقاماً معتمَدة. ما لم تُفعَّل مكوّناتٌ، تبقى
           الرواتب تُحسب كما هي تماماً بلا أيّ خصم إضافيّ.
         </div>

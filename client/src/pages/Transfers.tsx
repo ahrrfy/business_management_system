@@ -170,7 +170,9 @@ export default function Transfers() {
       <PageHeader
         title="تحويل بين الفروع"
         description="بخطوتين: الإرسال يخصم المصدر ويضع البضاعة «بالطريق»، والفرع الوجهة يستلمها بمطابقة فعلية — العجز يُوثَّق على السند."
-        actions={<Link href="/inventory" className="text-sm text-muted-foreground">حركات المخزون ←</Link>}
+        // كان يشير إلى «/inventory» (مركز المخزون، تبويبه الافتراضي ليس الحركات) — رابطٌ يحمل اسم
+        // «حركات المخزون» يجب أن يفتح شاشتها فعلاً لا مركزاً عاماً.
+        actions={<Link href="/inventory-movements" className="text-sm text-muted-foreground">حركات المخزون ←</Link>}
       />
 
       {/* تبويبا الشاشة: إنشاء سند | سجلّ السندات (مع شارة الوارد بالطريق) */}

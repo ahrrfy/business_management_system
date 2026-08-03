@@ -420,6 +420,8 @@ export async function getGeneralLedger(opts: {
   to: string;
   branchId?: number;
   entryTypes?: string[];
+  /** بحث نصّي حرّ — الطرف (عميل/مورّد)/الملاحظات/رقم الفاتورة المرتبطة. */
+  q?: string;
   limit?: number;
   offset?: number;
 }): Promise<GeneralLedgerResult> {
@@ -434,6 +436,19 @@ export async function getGeneralLedger(opts: {
   const types = (opts.entryTypes ?? []).filter((t) => (LEDGER_ENTRY_TYPES as readonly string[]).includes(t));
   if (types.length) {
     conds.push(sql`ae.entryType IN (${sql.join(types.map((t) => sql`${t}`), sql`, `)})`);
+  }
+  const q = opts.q?.trim();
+  if (q) {
+    // EXISTS بدل الاعتماد على أسماء أعمدة الجداول المُنضَمّة — الاستعلامان (الصفوف والإجماليات)
+    // لا يشتركان بنفس الـJOINs (الإجماليات على accountingEntries وحدها)، فالبحث يجب أن يعمل من
+    // customerId/supplierId/invoiceId الخام مباشرةً بلا افتراض وجود alias الجدول المُنضَمّ.
+    const like = `%${q}%`;
+    conds.push(sql`(
+      ae.notes LIKE ${like}
+      OR EXISTS (SELECT 1 FROM customers c2 WHERE c2.id = ae.customerId AND c2.name LIKE ${like})
+      OR EXISTS (SELECT 1 FROM suppliers s2 WHERE s2.id = ae.supplierId AND s2.name LIKE ${like})
+      OR EXISTS (SELECT 1 FROM invoices i2 WHERE i2.id = ae.invoiceId AND i2.invoiceNumber LIKE ${like})
+    )`);
   }
   const where = sql.join(conds, sql` AND `);
 
@@ -523,10 +538,14 @@ export interface FinancialPosition {
   apReconciled: boolean;
   arDriftCount: number;
   apDriftCount: number;
+  /** تاريخ اللقطة المطلوب (YYYY-MM-DD) — null يعني «الآن» (الافتراضي القديم بلا تغيير). */
+  asOf: string | null;
+  /** يُملأ فقط حين asOf ماضٍ — يوضّح أنّ بعض البنود تبقى حاليةً (انظر تعليق asOf أدناه). */
+  historicalNote: string | null;
 }
 
 export async function getFinancialPosition(
-  opts: { branchId?: number; verify?: boolean } = {}
+  opts: { branchId?: number; verify?: boolean; asOf?: string } = {}
 ): Promise<FinancialPosition> {
   const db = getDb();
   const zero = "0";
@@ -538,24 +557,111 @@ export async function getFinancialPosition(
     totalAssets: zero, totalLiabilities: zero, equity: zero,
     branchScoped: !!opts.branchId,
     arReconciled: true, apReconciled: true, arDriftCount: 0, apDriftCount: 0,
+    asOf: opts.asOf ?? null, historicalNote: null,
   };
   if (!db) return empty;
 
   const bId = opts.branchId;
+  const asOf = opts.asOf;
 
-  const ar = rowsOf(await db.execute(sql`
-    SELECT
-      CAST(COALESCE(SUM(CASE WHEN currentBalance > 0 THEN currentBalance ELSE 0 END), 0) AS CHAR) AS d,
-      CAST(COALESCE(SUM(CASE WHEN currentBalance < 0 THEN -currentBalance ELSE 0 END), 0) AS CHAR) AS c
-    FROM customers
-  `))[0] ?? { d: "0", c: "0" };
+  // asOf (متابعة §٩): النقد/الذمم يُعادان بناؤهما من الدفتر (accountingEntries، مؤرَّخٌ فعلياً) حتى
+  // تاريخ اللقطة — مطابقةً لصيَغ reconcileCustomerBalances/reconcileSupplierBalances الثابتتَي الصحّة،
+  // لكن بحدٍّ زمنيّ entryDate<=asOf بدل قراءة currentBalance الحيّ (الذي يشمل كل شيء حتى الآن دائماً).
+  // ⚠️ المخزون/الأصول الثابتة/عرابين أوامر الشغل/رصيد الصيرفة **تبقى حاليةً دائماً**: لا جدول تاريخ
+  // تكلفة (`costPrice` قيمة حيّة وحيدة — التكلفة «آخر تكلفة» بقرار المالك §٩)، ولا جدول حالة أوامر شغل
+  // تاريخية ⇒ لا يمكن إعادة بنائها لتاريخٍ ماضٍ بلا تخمين. مطابقٌ لقرار MonthlyClosePack السابق
+  // («لقطة الذمم الحالية... لا يمكن إعادة بنائها تاريخياً») — نفس الأصول تنطبق هنا؛ الفرق أنّ AR/AP/النقد
+  // *يمكن* بناؤها من الدفتر فبُنيت، وما تبقّى مُفصَحٌ عنه بـhistoricalNote بدل أن يُعرَض بصمت كأنه تاريخيّ.
+  const isHistorical = !!asOf;
 
-  const ap = rowsOf(await db.execute(sql`
-    SELECT
-      CAST(COALESCE(SUM(CASE WHEN currentBalance > 0 THEN currentBalance ELSE 0 END), 0) AS CHAR) AS c,
-      CAST(COALESCE(SUM(CASE WHEN currentBalance < 0 THEN -currentBalance ELSE 0 END), 0) AS CHAR) AS d
-    FROM suppliers
-  `))[0] ?? { c: "0", d: "0" };
+  let ar: { d?: string; c?: string };
+  let ap: { c?: string; d?: string };
+  let cashRow: { cash?: string; card?: string; cheque?: string; transfer?: string; wallet?: string };
+
+  if (isHistorical) {
+    ar = rowsOf(await db.execute(sql`
+      SELECT
+        CAST(COALESCE(SUM(CASE WHEN t.net > 0 THEN t.net ELSE 0 END), 0) AS CHAR) AS d,
+        CAST(COALESCE(SUM(CASE WHEN t.net < 0 THEN -t.net ELSE 0 END), 0) AS CHAR) AS c
+      FROM (
+        SELECT ae.customerId AS customerId, SUM(CASE
+          WHEN ae.entryType = 'SALE' THEN CAST(ae.amount AS DECIMAL(15,2))
+          WHEN ae.entryType = 'RETURN' AND ae.supplierId IS NULL THEN CAST(ae.amount AS DECIMAL(15,2))
+          WHEN ae.entryType = 'ADJUST' AND ae.dedupeKey LIKE 'ADJUST:IQD:%' THEN CAST(ae.amount AS DECIMAL(15,2))
+          WHEN ae.entryType = 'PAYMENT_IN' THEN -CAST(ae.amount AS DECIMAL(15,2))
+          WHEN ae.entryType = 'PAYMENT_OUT' THEN CAST(ae.amount AS DECIMAL(15,2))
+          WHEN ae.entryType = 'OPENING' THEN CAST(ae.amount AS DECIMAL(15,2))
+          ELSE 0 END) AS net
+        FROM accountingEntries ae
+        WHERE ae.customerId IS NOT NULL AND ae.entryDate <= ${asOf}
+          -- عربون أمر الشغل (WO deposit) لا يَمسّ AR وقت القبض (نظير استثناء reconcileCustomerBalances)
+          AND (ae.receiptId IS NULL OR ae.receiptId NOT IN (
+            SELECT id FROM receipts WHERE workOrderId IS NOT NULL
+          ))
+        GROUP BY ae.customerId
+      ) t
+    `))[0] ?? { d: "0", c: "0" };
+
+    ap = rowsOf(await db.execute(sql`
+      SELECT
+        CAST(COALESCE(SUM(CASE WHEN t.net > 0 THEN t.net ELSE 0 END), 0) AS CHAR) AS c,
+        CAST(COALESCE(SUM(CASE WHEN t.net < 0 THEN -t.net ELSE 0 END), 0) AS CHAR) AS d
+      FROM (
+        SELECT ae.supplierId AS supplierId, SUM(CASE
+          WHEN ae.entryType = 'PURCHASE' THEN CAST(ae.amount AS DECIMAL(15,2))
+          WHEN ae.entryType = 'PAYMENT_OUT' THEN -CAST(ae.amount AS DECIMAL(15,2))
+          WHEN ae.entryType = 'PAYMENT_IN' THEN CAST(ae.amount AS DECIMAL(15,2))
+          WHEN ae.entryType = 'RETURN' THEN CAST(ae.amount AS DECIMAL(15,2))
+          WHEN ae.entryType = 'OPENING' THEN CAST(ae.amount AS DECIMAL(15,2))
+          WHEN ae.entryType = 'EXCHANGE_SETTLE' THEN -CAST(ae.amount AS DECIMAL(15,2))
+          ELSE 0 END) AS net
+        FROM accountingEntries ae
+        WHERE ae.supplierId IS NOT NULL AND ae.entryDate <= ${asOf}
+        GROUP BY ae.supplierId
+      ) t
+    `))[0] ?? { c: "0", d: "0" };
+
+    cashRow = rowsOf(await db.execute(sql`
+      SELECT
+        CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'CASH' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS cash,
+        CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'CARD' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS card,
+        CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'CHECK' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS cheque,
+        CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'TRANSFER' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS transfer,
+        CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'WALLET' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS wallet
+      FROM receipts r
+      -- FIN-04: أساس التاريخ = تاريخ قيد الدفتر المرتبط (نفس أساس getCashFlow)، لا createdAt الخام.
+      LEFT JOIN accountingEntries ae ON ae.receiptId = r.id AND ae.entryType IN ('PAYMENT_IN', 'PAYMENT_OUT')
+      WHERE r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
+        AND COALESCE(ae.entryDate, DATE(r.createdAt)) <= ${asOf}
+        ${bId ? sql`AND r.branchId = ${bId}` : sql``}
+    `))[0] ?? { cash: "0", card: "0", cheque: "0", transfer: "0", wallet: "0" };
+  } else {
+    ar = rowsOf(await db.execute(sql`
+      SELECT
+        CAST(COALESCE(SUM(CASE WHEN currentBalance > 0 THEN currentBalance ELSE 0 END), 0) AS CHAR) AS d,
+        CAST(COALESCE(SUM(CASE WHEN currentBalance < 0 THEN -currentBalance ELSE 0 END), 0) AS CHAR) AS c
+      FROM customers
+    `))[0] ?? { d: "0", c: "0" };
+
+    ap = rowsOf(await db.execute(sql`
+      SELECT
+        CAST(COALESCE(SUM(CASE WHEN currentBalance > 0 THEN currentBalance ELSE 0 END), 0) AS CHAR) AS c,
+        CAST(COALESCE(SUM(CASE WHEN currentBalance < 0 THEN -currentBalance ELSE 0 END), 0) AS CHAR) AS d
+      FROM suppliers
+    `))[0] ?? { c: "0", d: "0" };
+
+    cashRow = rowsOf(await db.execute(sql`
+      SELECT
+        CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CASH' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS cash,
+        CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CARD' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS card,
+        CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CHECK' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS cheque,
+        CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'TRANSFER' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS transfer,
+        CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'WALLET' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS wallet
+      FROM receipts
+      WHERE receiptStatus = 'COMPLETED' AND receiptApprovalStatus = 'APPROVED'
+        ${bId ? sql`AND branchId = ${bId}` : sql``}
+    `))[0] ?? { cash: "0", card: "0", cheque: "0", transfer: "0", wallet: "0" };
+  }
 
   // بضاعة الأمانة (ش٤): تُستبعَد من أصول المخزون — ليست ملك المكتبة (تظهر التزاماً في AP بعد البيع فقط).
   const inv = rowsOf(await db.execute(sql`
@@ -564,18 +670,6 @@ export async function getFinancialPosition(
       JOIN productVariants pv ON pv.id = bs.variantId
       JOIN products p ON p.id = pv.productId
     WHERE p.isConsignment = false ${bId ? sql`AND bs.branchId = ${bId}` : sql``}
-  `))[0] ?? { v: "0" };
-
-  const cashRow = rowsOf(await db.execute(sql`
-    SELECT
-      CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CASH' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS cash,
-      CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CARD' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS card,
-      CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CHECK' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS cheque,
-      CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'TRANSFER' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS transfer,
-      CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'WALLET' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS wallet
-    FROM receipts
-    WHERE receiptStatus = 'COMPLETED' AND receiptApprovalStatus = 'APPROVED'
-      ${bId ? sql`AND branchId = ${bId}` : sql``}
   `))[0] ?? { v: "0" };
 
   // FI-02: الأصول بصافي القيمة الدفترية NBV = التكلفة − الإهلاك المتراكم المُرحَّل (postMonthlyDepreciation).
@@ -634,13 +728,19 @@ export async function getFinancialPosition(
 
   // FI-02: حارس انحراف مرئي (قراءة فقط). الأرقام أعلاه تبقى من currentBalance؛ هذه إشارةٌ فقط.
   // verify=true افتراضياً؛ يَستطيع المستدعي تعطيلها للأداء (verify:false) فتُعتبر متّسقة بلا فحص.
-  const verify = opts.verify ?? true;
+  // asOf (لقطة تاريخية): reconcile* يقارنان الدفتر بالرصيد الحيّ **الآن** فقط — لا معنى لتشغيلهما على
+  // لقطةٍ ماضية (سيُبلّغان بانحرافٍ زائف دائماً لأن الحيّ يشمل حركات بعد asOf). نُعطَّل الفحص حينها.
+  const verify = !isHistorical && (opts.verify ?? true);
   let arDrift: { length: number } = { length: 0 };
   let apDrift: { length: number } = { length: 0 };
   if (verify) {
     arDrift = await reconcileCustomerBalances();
     apDrift = await reconcileSupplierBalances();
   }
+
+  const historicalNote = isHistorical
+    ? "النقد والذمم المدينة/الدائنة مبنيّة من الدفتر حتى هذا التاريخ. المخزون والأصول الثابتة وعرابين أوامر الشغل ورصيد الصيرفة تبقى بقيمتها الحالية دائماً (لا تاريخ رجعي لهذه البنود لغياب سجلّ تاريخ التكلفة/الحالة)."
+    : null;
 
   return {
     cash: toDbMoney(cash),
@@ -665,6 +765,8 @@ export async function getFinancialPosition(
     apReconciled: apDrift.length === 0,
     arDriftCount: arDrift.length,
     apDriftCount: apDrift.length,
+    asOf: asOf ?? null,
+    historicalNote,
   };
 }
 

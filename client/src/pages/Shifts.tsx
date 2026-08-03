@@ -17,8 +17,11 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { Check, Copy, Lock, Printer } from "lucide-react";
+import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { invoiceStatusLabel } from "@/lib/labels";
+import { Check, Copy, Lock, Printer, Receipt } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
 
 /* ═══════════ سجلّ الورديات + إعادة طباعة Z-report ═══════════
    يستهلك shifts.list (branch-scoped): ورديات الكاشير مع فُتحت/أُغلقت/المتوقع/المعدود/الفرق.
@@ -61,6 +64,8 @@ export default function Shifts() {
   const [copying, setCopying] = useState<number | null>(null);
   const [closingShiftId, setClosingShiftId] = useState<number | null>(null);
   const [closeCounted, setCloseCounted] = useState("");
+  // فواتير الوردية — لتحقيق فروقات النقد (فتح قائمة مضمَّنة بدل الانتقال لشاشة مبيعات منفصلة).
+  const [invoicesShiftId, setInvoicesShiftId] = useState<number | null>(null);
   const { copy } = useClipboard({ successMessage: "نُسِخ تقرير Z" });
 
   const utils = trpc.useUtils();
@@ -99,6 +104,13 @@ export default function Shifts() {
     if (d.lt(0)) return "text-money-negative";
     return "text-foreground";
   };
+
+  // فواتير الوردية — قائمة مضمَّنة (بدل التنقّل لشاشة المبيعات) لتحقيق فروقات النقد سطراً بسطر.
+  const invoicesShiftQ = trpc.sales.list.useQuery(
+    { shiftId: invoicesShiftId ?? 0, limit: 200 },
+    { enabled: invoicesShiftId != null },
+  );
+  const invoicesShiftRow = rows.find((r) => r.id === invoicesShiftId) ?? null;
 
   // إغلاق وردية عن بُعد (نسيها كاشيرها مفتوحة) — نفس منطق نوافذ POS/الاستقبال/الطباعة:
   // المتوقع = الافتتاحي + نقد وارد − نقد صادر، ولا يُقبل إغلاقٌ بفرق (نفس حوكمة closeShift الخادمية).
@@ -472,6 +484,14 @@ export default function Shifts() {
                       mode="inline"
                       actions={[
                         {
+                          key: "invoices",
+                          kind: "view",
+                          label: "الفواتير",
+                          icon: Receipt,
+                          onSelect: () => setInvoicesShiftId(r.id),
+                          gate: { module: "sales", level: "READ" },
+                        },
+                        {
                           key: "zreport",
                           kind: "print",
                           label: printing === r.id ? "جارٍ…" : "Z-report",
@@ -584,6 +604,68 @@ export default function Shifts() {
             >
               {closeShiftM.isPending ? "جارٍ الإغلاق…" : "إغلاق"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* فواتير الوردية — قائمة مضمَّنة لتحقيق الفروقات النقدية بلا مغادرة الشاشة (سطراً بسطر). */}
+      <Dialog open={invoicesShiftId != null} onOpenChange={(open) => { if (!open) setInvoicesShiftId(null); }}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              فواتير وردية #{invoicesShiftId} — {invoicesShiftRow?.userName ?? ""}
+            </DialogTitle>
+          </DialogHeader>
+          {invoicesShiftQ.isLoading ? (
+            <LoadingState />
+          ) : (
+            <>
+              <div className="text-xs text-muted-foreground">
+                {invoicesShiftQ.data?.length ?? 0} فاتورة — الإجمالي{" "}
+                <b className="tabular-nums" dir="ltr">
+                  {fmt((invoicesShiftQ.data ?? []).reduce((s, r) => s.plus(D(r.total)), D(0)).toString())}
+                </b>{" "}
+                د.ع
+              </div>
+              <ScrollTableShell bordered maxHeightClass="max-h-[60vh]">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="p-2">رقم الفاتورة</th>
+                      <th className="p-2">الوقت</th>
+                      <th className="p-2">طريقة الدفع</th>
+                      <th className="p-2 text-right">الإجمالي</th>
+                      <th className="p-2 text-right">المدفوع</th>
+                      <th className="p-2 text-center">الحالة</th>
+                      <th className="p-2 text-center">فتح</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(invoicesShiftQ.data ?? []).map((inv) => (
+                      <tr key={inv.id} className="border-t">
+                        <td className="p-2 font-medium tabular-nums" dir="ltr">{inv.invoiceNumber}</td>
+                        <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDT(inv.invoiceDate)}</td>
+                        <td className="p-2 text-xs">{inv.paymentMethod ? paymentMethodLabel(inv.paymentMethod) : "—"}</td>
+                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(inv.total)}</td>
+                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(inv.paidAmount)}</td>
+                        <td className="p-2 text-center text-xs">{invoiceStatusLabel(inv.status)}</td>
+                        <td className="p-2 text-center">
+                          <Link href={`/invoices/${inv.id}`} className="text-primary underline-offset-2 hover:underline">
+                            فتح
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
+                    {(invoicesShiftQ.data ?? []).length === 0 && (
+                      <TableEmptyRow colSpan={7} message="لا فواتير على هذه الوردية." />
+                    )}
+                  </tbody>
+                </table>
+              </ScrollTableShell>
+            </>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setInvoicesShiftId(null)}>إغلاق</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

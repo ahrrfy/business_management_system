@@ -4,6 +4,8 @@
 // مُنتقى، مع «فعليّ الشهر السابق» مرجعاً. الحفظ دفعة واحدة (upsert)، وتفريغ الحقل يحذف الهدف.
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -14,8 +16,10 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { iqd } from "@/lib/hr/ui";
 import { trpc } from "@/lib/trpc";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { CopyPlus, Save } from "lucide-react";
+import { CopyPlus, Save, Search, X } from "lucide-react";
 import { useMemo, useState } from "react";
 
 export default function CommissionTargets() {
@@ -49,6 +53,26 @@ export default function CommissionTargets() {
     }
     return out;
   }, [rows, draft]);
+
+  // حارس فقد بيانات: مسوّدة غير محفوظة (تعديل هدف واحد أو أكثر) يستحقّ تحذيراً قبل مغادرة الصفحة.
+  useUnsavedGuard(dirtyRows.length > 0);
+
+  // فلتر فرع + بحث موظف — عميليان بحتان فوق الشبكة المحمَّلة كاملةً؛ لا يمسّان draft (التعديلات
+  // المخفيّة خلف الفلتر تبقى محفوظة في المسوّدة وتُرسَل مع «حفظ الكل»).
+  const [f, setF] = useUrlFilters({ q: "", branch: "" });
+  const filteredRows = useMemo(() => {
+    const needle = f.q.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (f.branch && r.branchName !== f.branch) return false;
+      if (needle && !r.employeeName.toLowerCase().includes(needle)) return false;
+      return true;
+    });
+  }, [rows, f.q, f.branch]);
+  const branchOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const r of rows) if (r.branchName) names.add(r.branchName);
+    return Array.from(names).sort((a, b) => a.localeCompare(b, "ar"));
+  }, [rows]);
 
   const save = trpc.commissions.targets.saveAll.useMutation({
     onSuccess: (res) => {
@@ -121,8 +145,25 @@ export default function CommissionTargets() {
       <CommissionGuide />
 
       <Card>
-        <CardHeader className="text-sm text-muted-foreground">
-          {grid.isLoading ? "" : `${rows.length} موظفاً — ${totalTargets} منهم له هدف محدَّد لشهر ${period}`}
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
+          <span className="text-sm text-muted-foreground">
+            {grid.isLoading ? "" : `${filteredRows.length} موظفاً — ${totalTargets} منهم له هدف محدَّد لشهر ${period}`}
+          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-40">
+              <Search aria-hidden className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث بالموظف…" aria-label="بحث بالموظف" className="h-8 w-full pr-8 sm:w-44" />
+            </div>
+            <AppSelect value={f.branch} onValueChange={(v) => setF({ branch: v })} className="h-8 w-36" size="sm" placeholder="كل الفروع">
+              <option value="">كل الفروع</option>
+              {branchOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+            </AppSelect>
+            {(f.q.trim() !== "" || f.branch !== "") && (
+              <Button variant="ghost" size="sm" onClick={() => setF({ q: "", branch: "" })} className="text-muted-foreground">
+                <X aria-hidden className="size-4" /> مسح
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
@@ -136,7 +177,7 @@ export default function CommissionTargets() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => {
+                {filteredRows.map((r) => {
                   const d = draft[r.employeeId];
                   const value = d !== undefined ? d : r.target != null ? String(Number(r.target)) : "";
                   const server = r.target != null ? String(Number(r.target)) : "";
@@ -176,6 +217,9 @@ export default function CommissionTargets() {
                 )}
                 {!grid.isLoading && rows.length === 0 && (
                   <TableEmptyRow colSpan={4} message="لا موظفين مرتبطين بحسابات مستخدمين — اربط الموظف بحسابه من شاشة الموظف أولاً." />
+                )}
+                {!grid.isLoading && rows.length > 0 && filteredRows.length === 0 && (
+                  <TableEmptyRow colSpan={4} message="لا موظفين مطابقين للفلاتر." />
                 )}
               </tbody>
             </table>

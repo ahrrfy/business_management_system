@@ -2,16 +2,20 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ListToolbar, RowActions } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState, TableEmptyRow } from "@/components/PageState";
+import { ErrorState, TableEmptyRow, TableSkeleton } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { ROLE_LABEL, ROLE_OPTIONS } from "@/lib/roles";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useMemo, useState } from "react";
-import { Link, useSearch } from "wouter";
 import { AlertTriangle } from "lucide-react";
 import { POS_STATION_LABEL, type PosStation } from "@shared/permissions";
+
+type Row = RouterOutputs["users"]["list"]["rows"][number];
 
 /** شارة «القسم الفعليّ» — ما سيفتحه الحساب فعلاً في نقطة البيع (طبقة الشفافية ش١، محسوب خادمياً). */
 function StationBadge({ station }: { station?: PosStation | "MULTI" | "NONE" }) {
@@ -26,8 +30,11 @@ function StationBadge({ station }: { station?: PosStation | "MULTI" | "NONE" }) 
   return <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${cls[station]}`}>{label}</span>;
 }
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+/** نصّ التصدير للقسم الفعليّ — نفس منطق StationBadge بلا تنسيق. */
+function stationExportLabel(station?: PosStation | "MULTI" | "NONE"): string {
+  if (!station || station === "NONE") return "—";
+  return station === "MULTI" ? "متعدّد الأقسام" : POS_STATION_LABEL[station];
+}
 
 /** ملصق لوني للدور — الدور المخصّص يُعرض بتسميته الحقيقية (لا فئته الأساس) مع تمييز بصري.
  *  فجوة صدق الدور (٢٤/٧): «كاشير طباعة» كان يظهر «كاشير» فيبدو سلوك النظام غير منطقي.
@@ -77,33 +84,42 @@ export function RoleBadge({ role, customRoleLabel, hasOverride, isOwner }: { rol
 
 export default function Users() {
   const utils = trpc.useUtils();
-  const [q, setQ] = useState("");
-  const [role, setRole] = useState("");
-  const [includeInactive, setIncludeInactive] = useState(false);
-  const [page, setPage] = useState(0);
-  const limit = 50;
 
-  // فلتر «مَن على هذا الدور المخصّص؟» — يصل من شاشة الأدوار عبر ?customRoleId=N (مراجعة ٢٤/٧).
-  const search = useSearch();
+  // فلاتر الشاشة محفوظة في الرابط (useUrlFilters) — تعيش مع فتح التفاصيل والرجوع، وقابلة
+  // للمشاركة. كل القيم نصوص (اتفاقية الهوك)؛ نشتقّ الأنواع الفعلية أدناه. customRoleId هنا أيضاً
+  // (كان يُقرأ من useSearch مستقلاً) — توحيدٌ يتيح لزرّ «مسح الفلاتر» تفريغه مع البقية.
+  const [f, setF, resetF] = useUrlFilters({
+    q: "", role: "", branchId: "", inactive: "", customRoleId: "", page: "0",
+  });
+  const q = f.q;
+  const role = f.role;
+  const branchId = f.branchId;
+  const includeInactive = f.inactive === "1";
   const customRoleId = useMemo(() => {
-    const v = new URLSearchParams(search).get("customRoleId");
-    const n = v ? Number(v) : NaN;
+    const n = f.customRoleId ? Number(f.customRoleId) : NaN;
     return Number.isInteger(n) && n > 0 ? n : undefined;
-  }, [search]);
+  }, [f.customRoleId]);
+  const page = Number(f.page) || 0;
+  const limit = 50;
+  function setPage(updater: number | ((p: number) => number)) {
+    const next = typeof updater === "function" ? updater(page) : updater;
+    setF({ page: String(Math.max(0, next)) });
+  }
 
-  const input = useMemo(
+  // مدخلات الفلترة المشتركة (بلا limit/offset) — للقائمة وللتصدير الشامل، فلا يخالف المُصدَّر ما
+  // على الشاشة.
+  const filterInput = useMemo(
     () => ({
       q: q.trim() || undefined,
       role: role || undefined,
       customRoleId,
+      branchId: branchId ? Number(branchId) : undefined,
       includeInactive,
-      limit,
-      offset: page * limit,
     }),
-    [q, role, customRoleId, includeInactive, page],
+    [q, role, customRoleId, branchId, includeInactive],
   );
 
-  const list = trpc.users.list.useQuery(input);
+  const list = trpc.users.list.useQuery({ ...filterInput, limit, offset: page * limit });
   const branches = trpc.branches.list.useQuery();
   const branchName = useMemo(() => {
     const m = new Map<number, string>();
@@ -120,6 +136,7 @@ export default function Users() {
   const total = list.data?.total ?? 0;
   const rows = list.data?.rows ?? [];
   const pages = Math.max(1, Math.ceil(total / limit));
+  const activeFilterCount = [role, branchId, includeInactive ? "1" : "", customRoleId ? "1" : ""].filter(Boolean).length;
 
   async function toggle(id: number, isActive: boolean, name: string, email: string) {
     setErr("");
@@ -145,7 +162,13 @@ export default function Users() {
       {customRoleId != null && (
         <p className="text-xs text-muted-foreground">
           القائمة مفلترة بمستخدمي دورٍ مخصّص محدّد —{" "}
-          <Link href="/users" className="text-primary hover:underline">إزالة الفلتر</Link>
+          <button
+            type="button"
+            className="text-primary hover:underline"
+            onClick={() => { setF({ customRoleId: "" }); setPage(0); }}
+          >
+            إزالة الفلتر
+          </button>
         </p>
       )}
 
@@ -157,27 +180,65 @@ export default function Users() {
             loading={list.isLoading}
             search={{
               value: q,
-              onChange: (v) => { setQ(v); setPage(0); },
+              onChange: (v) => { setF({ q: v }); setPage(0); },
               placeholder: "بحث (اسم/بريد/هاتف)",
             }}
             filters={
               <>
-                <select
-                  className={selectCls}
-                  value={role}
-                  onChange={(e) => { setRole(e.target.value); setPage(0); }}
+                <AppSelect
+                  size="sm"
+                  value={role || "ALL"}
+                  onValueChange={(v) => { setF({ role: v === "ALL" ? "" : v }); setPage(0); }}
                   aria-label="الدور"
+                  className="h-8 w-auto min-w-32"
                 >
-                  <option value="">كل الأدوار</option>
+                  <option value="ALL">كل الأدوار</option>
                   {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-                </select>
+                </AppSelect>
+                <AppSelect
+                  size="sm"
+                  value={branchId || "ALL"}
+                  onValueChange={(v) => { setF({ branchId: v === "ALL" ? "" : v }); setPage(0); }}
+                  aria-label="الفرع"
+                  className="h-8 w-auto min-w-32"
+                >
+                  <option value="ALL">كل الفروع</option>
+                  {(branches.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+                </AppSelect>
                 <label className="flex items-center gap-2 h-8 text-sm">
                   <input type="checkbox" className="size-4" checked={includeInactive}
-                    onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }} />
+                    onChange={(e) => { setF({ inactive: e.target.checked ? "1" : "" }); setPage(0); }} />
                   <span className="text-muted-foreground">عرض المعطّلين</span>
                 </label>
               </>
             }
+            activeFilterCount={activeFilterCount}
+            onResetFilters={() => resetF()}
+            onRefresh={() => void list.refetch()}
+            refreshing={list.isFetching}
+            onPrint={() => window.print()}
+            exportSpec={{
+              filename: "المستخدمون",
+              rows,
+              formats: ["xlsx", "csv"],
+              columns: [
+                { key: "name", header: "الاسم" },
+                { key: "username", header: "معرّف الدخول", map: (u: Row) => (u as { username?: string | null }).username || u.email || "" },
+                { key: "role", header: "الدور", map: (u: Row) => u.customRoleLabel ?? ROLE_LABEL[u.role] ?? u.role },
+                { key: "effectiveStation", header: "القسم الفعليّ", map: (u: Row) => stationExportLabel((u as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation) },
+                { key: "branchId", header: "الفرع", map: (u: Row) => u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "" },
+                { key: "lastSignedIn", header: "آخر دخول", map: (u: Row) => fmtDate(u.lastSignedIn) },
+                { key: "isActive", header: "الحالة", map: (u: Row) => (u.isActive ? "مفعّل" : "معطّل") },
+              ],
+              // تصدير كل النتائج المطابقة للفلاتر (لا الصفحة المعروضة فقط) — نفس filterInput حتماً.
+              // (ListToolbar يتكفّل بمؤشّر «جارٍ التحضير…» داخلياً — لا حاجة لحالة محلية هنا.)
+              fetchAll: () =>
+                fetchAllPaged<Row>(
+                  (offset, lim) =>
+                    utils.users.list.fetch({ ...filterInput, limit: lim, offset }).then((r) => ({ rows: r.rows as Row[], total: r.total })),
+                  { pageSize: 500 },
+                ),
+            }}
             add={{ href: "/users/new", label: "مستخدم جديد" }}
           />
         </CardHeader>
@@ -197,7 +258,8 @@ export default function Users() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((u) => {
+              {list.isLoading && <TableSkeleton rows={8} cols={8} />}
+              {!list.isLoading && rows.map((u) => {
                 const id = Number(u.id);
                 const isActive = !!u.isActive;
                 const mustChange = !!(u as any).mustChangePassword;

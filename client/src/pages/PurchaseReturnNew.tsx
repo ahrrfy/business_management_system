@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Download } from "lucide-react";
 import { confirm } from "@/lib/confirm";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { D, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { PageHeader } from "@/components/PageHeader";
@@ -85,6 +86,15 @@ export default function PurchaseReturnNew() {
   // 4) ───── RBAC: التكلفة مرئية للمدير دائماً في مرتجع الشراء ─────────────────
   const showCost = true;
 
+  // حارس فقدان البيانات (نمط PurchaseNew/ExpenseNew): dirty عند إدخال فعليّ فقط.
+  const isDirty = state.entityId != null || state.items.length > 0 || (state.notes?.trim() ?? "") !== "";
+  useUnsavedGuard(isDirty);
+
+  // الحدّ الأعلى المسموح بإرجاعه لكل سطر (بوحدة الشراء) — يُبنى فقط للبنود المحمَّلة من أمر شراء
+  // مرجعي (استيراد)؛ مفتاحه `variantId:productUnitId`. يُظهر تحذيراً فورياً قبل محاولة الحفظ بدل
+  // انتظار رفض الخادم (السقف الخادمي الحقيقي أدقّ — يخصم مرتجعات سابقة من نفس الأمر لا يعرفها العميل).
+  const [maxByKey, setMaxByKey] = useState<Map<string, { max: number; name: string; unit: string }>>(new Map());
+
   // 5) ───── mutation: trpc.purchaseReturns.create ─────────────────────────────
   const mutation = trpc.purchaseReturns.create.useMutation({
     onSuccess: async () => {
@@ -138,7 +148,11 @@ export default function PurchaseReturnNew() {
       dispatch({ type: "SET_FIELD", field: "taxEnabled", value: D(po.taxAmount ?? "0").gt(0) });
       dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: po.taxRatePercent ?? "0" });
 
-      // — بنود ⇒ خطوط السلة: نأخذ المُستلَم كحدّ أعلى للإرجاع، نتجاهل البنود غير المُستلَمة.
+      // — بنود ⇒ خطوط السلة: الحدّ الأعلى للإرجاع = المُستلَم (لا يخصم مرتجعات سابقة — العميل لا
+      // يعرفها؛ السقف الخادمي الدقيق يُطبَّق وقت الحفظ)، نتجاهل البنود غير المُستلَمة.
+      // الكمية تبدأ من صفر (لا كامل المُستلَم تلقائياً) — المستخدم يختار صراحةً ماذا يُرجِع وكم،
+      // بدل افتراضٍ خطِر «أرجِع كل شيء» قد يُحفَظ سهواً.
+      const maxMap = new Map<string, { max: number; name: string; unit: string }>();
       const lines: InvoiceLine[] = (po.items ?? [])
         .filter((it) => Number(it.receivedBaseQuantity ?? 0) > 0)
         .map((it) => {
@@ -154,17 +168,18 @@ export default function PurchaseReturnNew() {
           const recvInUnit = conv === "1" || conv === "0"
             ? recvBase.toNumber()
             : recvBase.dividedBy(D(conv)).toNumber();
+          const name = (it.productName ?? "منتج") + (it.variantName ? ` — ${it.variantName}` : "");
+          const unit = it.unitName ?? "وحدة";
+          maxMap.set(`${it.variantId}:${it.productUnitId}`, { max: recvInUnit, name, unit });
           return {
             productId: 0, // غير مستخدم في الإرسال؛ المعروض هو variantId/productUnitId.
             variantId: Number(it.variantId),
             productUnitId: Number(it.productUnitId),
-            name:
-              (it.productName ?? "منتج") +
-              (it.variantName ? ` — ${it.variantName}` : ""),
+            name,
             sku: it.sku ?? "",
             barcode: null,
-            unit: it.unitName ?? "وحدة",
-            qty: Math.max(1, Math.floor(recvInUnit) || 1),
+            unit,
+            qty: 0,
             conversionFactor: conv,
             stockBase: 0,
             price: D(it.unitPrice).toFixed(2),
@@ -183,8 +198,9 @@ export default function PurchaseReturnNew() {
       // نمسح أي سلة سابقة قبل الإضافة (مرتجع مرجعي ⇒ السلة = صورة من PO).
       dispatch({ type: "CLEAR_ITEMS" });
       dispatch({ type: "ADD_ITEMS", items: lines });
+      setMaxByKey(maxMap);
       setRefLastFetchedId(id);
-      toast.success(`تم جلب ${lines.length} منتجاً من أمر الشراء ${po.poNumber ?? id}`);
+      toast.success(`تم جلب ${lines.length} منتجاً من أمر الشراء ${po.poNumber ?? id} — أدخل كمية الإرجاع لكل صنف`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "تعذّر جلب أمر الشراء";
       setRefLookupError(msg);
@@ -217,6 +233,15 @@ export default function PurchaseReturnNew() {
       const price = D(l.price || l.costBase || "0");
       if (price.isNegative()) {
         return { ok: false, error: `سعر الإرجاع في «${l.name}» غير صالح.` };
+      }
+      // حارس محلّي بالحدّ الأعلى المعروف (المُستلَم من أمر الشراء المرجعي) — لا ينتظر رفض الخادم.
+      // السقف الخادمي الفعلي قد يكون أدقّ (يخصم مرتجعات سابقة)، فقد يُرفَض رغم اجتياز هذا الفحص.
+      const cap = maxByKey.get(`${l.variantId}:${l.productUnitId}`);
+      if (cap && qty.gt(cap.max)) {
+        return {
+          ok: false,
+          error: `الكمية في «${l.name}» (${qty}) تتجاوز الحدّ الأعلى المسموح بإرجاعه من هذا الأمر (${cap.max} ${cap.unit}).`,
+        };
       }
     }
 
@@ -359,6 +384,7 @@ export default function PurchaseReturnNew() {
           setRefLastFetchedId(null);
           setRefLookupError(null);
           setSettlement("CREDIT");
+          setMaxByKey(new Map());
         }
       } else if (e.key === "Escape") {
         if (!isEditing && !isFnKey) {
@@ -422,6 +448,28 @@ export default function PurchaseReturnNew() {
             onOpenBulkPicker={() => setBulkOpen(true)}
             onNotify={(msg, kind) => (kind === "error" ? toast.error(msg) : toast.info(msg))}
           />
+          {/* الحدّ الأعلى المسموح بإرجاعه لكل سطر مُستورَد من أمر شراء مرجعي — يظهر فوراً بدل انتظار
+              رفض الخادم عند الحفظ (السقف الخادمي الفعلي أدقّ: يخصم مرتجعات سابقة على نفس الأمر). */}
+          {maxByKey.size > 0 && (
+            <div className="rounded-md border border-dashed bg-muted/30 px-3 py-2 text-xs">
+              <div className="mb-1 font-semibold text-muted-foreground">
+                الحدّ الأعلى المسموح بإرجاعه لكل صنف (بحسب أمر الشراء المرجعي — قد تُخفّضه مرتجعات سابقة)
+              </div>
+              <ul className="grid grid-cols-1 gap-y-0.5 sm:grid-cols-2">
+                {state.items.map((l, i) => {
+                  const cap = maxByKey.get(`${l.variantId}:${l.productUnitId}`);
+                  if (!cap) return null;
+                  const over = D(l.qty).gt(cap.max);
+                  return (
+                    <li key={`${l.variantId}-${l.productUnitId}-${i}`} className={over ? "font-bold text-destructive" : "text-muted-foreground"}>
+                      {cap.name}: الحدّ الأعلى {cap.max} {cap.unit}
+                      {over && " — تجاوزت الحدّ!"}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
           <BulkPicker
             open={bulkOpen}
             onClose={() => setBulkOpen(false)}

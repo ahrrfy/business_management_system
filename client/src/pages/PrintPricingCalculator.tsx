@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/PageHeader";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatIqd } from "@/lib/money";
 import { trpc, type RouterInputs } from "@/lib/trpc";
 import {
@@ -130,6 +131,27 @@ export default function PrintPricingCalculator() {
     retry: false,
   });
   const result = estimate.data;
+
+  // مخرج عملي: نسخ تفصيل الحساب كنصّ — مخرج قابل للّصق (عرض سعر شفهي/رسالة عميل/ملاحظة) بدل
+  // نتيجة معزولة تختفي بمغادرة الشاشة. (إنشاء عرض سعر مباشر يلزم دعم تعبئة مسبقة في
+  // QuotationNew.tsx — خارج ملكية هذه المهمة، انظر notes.)
+  const copyText = useMemo(() => {
+    if (!result || !debounced) return "";
+    const lines: string[] = ["تسعير طباعة رقمية"];
+    if (result.category === "SMALL" && debounced.category === "SMALL") {
+      lines.push(
+        `${sizeLabel(debounced.paperSize)} · ${COLOR_MODE_AR[debounced.colorMode]} · ${debounced.sides === 2 ? "وجهان" : "وجه واحد"} · ${debounced.copies} نسخة × ${debounced.pagesPerCopy} صفحة`,
+      );
+    } else if (result.category === "WIDE" && debounced.category === "WIDE") {
+      lines.push(`عريض ${debounced.width}×${debounced.height} م × ${debounced.quantity} قطعة (${result.areaSqm} م²)`);
+    }
+    lines.push("");
+    for (const l of result.lines) lines.push(`${l.label}${l.detail ? ` — ${l.detail}` : ""}: ${formatIqd(l.amount)}`);
+    lines.push(`إجمالي الكلفة: ${formatIqd(result.totalCost)}`);
+    lines.push(`السعر المقترح: ${formatIqd(result.suggestedPrice)}`);
+    lines.push(`سعر الوحدة الواحدة: ${formatIqd(result.unitPrice)}`);
+    return lines.join("\n");
+  }, [result, debounced]);
 
   return (
     <div className="space-y-4">
@@ -296,9 +318,12 @@ export default function PrintPricingCalculator() {
           {/* ─── النتيجة ─── */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                تفصيل الكلفة والسعر المقترح
-                {estimate.isFetching && <Loader2 aria-hidden className="size-4 animate-spin text-muted-foreground" />}
+              <CardTitle className="flex items-center justify-between gap-2 text-base">
+                <span className="flex items-center gap-2">
+                  تفصيل الكلفة والسعر المقترح
+                  {estimate.isFetching && <Loader2 aria-hidden className="size-4 animate-spin text-muted-foreground" />}
+                </span>
+                {result && <CopyAsMenu plain={copyText} label="نسخ التفصيل" size="sm" variant="outline" />}
               </CardTitle>
             </CardHeader>
             <CardContent>
