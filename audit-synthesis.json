@@ -1,0 +1,1473 @@
+{
+ "summary": "خطة تنفيذ من تدقيق ~120 شاشة: (أ) 16 شاشة تشغيلية يومية عالية الأولوية — أبرزها مرجع عملية الدفع غير النقدي في POS/PrintPOS (الخادم جاهز، يحل علّة مطابقة كشف البطاقات الحالية)، إصلاح فلاتر Invoices (طريقة دفع + فرع + عميل + URL)، بحث Returns الخادمي بدل آخر 50، اقتطاعات صامتة (Inventory/WorkOrders/Production/ConsignmentNotes)، إزالة CHECK من السندات، وتفاصيل الحجوزات. (ب) أولوية متوسطة مجمّعة بالوحدات. (ج) ~175 تصحيح مصطلح مؤكد (صنف→منتج، مسوّدة، الرصيد الحالي، له علينا، زبون→عميل، إزالة أكواد إنجليزية خام). (د) 12 نمطاً عرضياً تُحل بمكوّن/تمريرة واحدة (URL للفلاتر، مسح الفلاتر، useUnsavedGuard، نمط ??1، الاقتطاع الصامت، window.prompt، قواميس تعريب مشتركة).",
+ "highPriority": [
+  {
+   "page": "client/src/pages/Invoices.tsx",
+   "actions": [
+    "فلتر طريقة الدفع (العلّة التشغيلية الحالية — مطابقة يوم البطاقات مع كشف الجهاز)",
+    "فلتر فرع للأدمن/المدير مع عمود فرع",
+    "كشف منتقي عميل محدد — customerId جاهز خادمياً (saleRouter.ts:172)",
+    "زر مسح الفلاتر (7 حقول) + حفظ الفلاتر في URL",
+    "منتقي فترة سريع (PeriodFilter كما في SalesRegister)",
+    "توحيد تصدير «الكل» مع «المُحدَّد»: تعريب status/sourceType (سطرا 249/256) + إضافة عمود طريقة الدفع للمُحدَّد",
+    "ترحيل 4 قوائم select خام إلى AppSelect"
+   ],
+   "serverWork": "إضافة paymentMethod + branchId اختياري للمرتفعين في salesListInput/buildSalesListConds (saleRouter.ts:161-184)"
+  },
+  {
+   "page": "client/src/pages/POS.tsx",
+   "actions": [
+    "حقل «مرجع العملية» إلزامي للدفع بطاقة/تحويل/محفظة، يُرسل payment.reference (الخادم يحفظه في receipts.referenceNumber — create.ts:750؛ الاستقبال يفرضه أصلاً)",
+    "مدخل تاريخ استحقاق dueDate للبيع الآجل (الخادم جاهز saleRouter.ts:245) — يصحح أعمار الذمم والتذكيرات",
+    "رفض المبلغ المقبوض السالب برسالة صريحة بدل معاملته صامتاً كدفع كامل",
+    "PasswordInput (عين الإظهار) في CreditApprovalDialog"
+   ],
+   "serverWork": "لا شيء — الخادم جاهز بالكامل"
+  },
+  {
+   "page": "client/src/pages/PrintPOS.tsx",
+   "actions": [
+    "حقل «مرجع العملية» للبطاقة/التحويل (printSaleService.ts:62/474 جاهز) — نفس مكوّن POS المشترك",
+    "تطبيع عربي (همزات) لبحث الخدمات المحلي بدالة مشتركة",
+    "تعريب: الدور بالرأس (سطر 544)، طرق الدفع بإغلاق الوردية (997) وZ المطبوع (955)، «نقداً»→«نقدي» (866)",
+    "حفظ مسودة التبويبات في localStorage كنمط POS"
+   ],
+   "serverWork": "لا شيء"
+  },
+  {
+   "page": "client/src/pages/Reception.tsx",
+   "actions": [
+    "منتقي فئة سعر (مفرد/جملة/حكومي) — يصحح تسعير التاجر/الحكومي «مفرد» صامتاً",
+    "إضافة طريقة دفع «محفظة» WALLET (تُسجَّل اليوم «تحويل» خطأً فتنحرف تقارير Z)",
+    "حقل كوبون خصم كما في كاشير التجزئة",
+    "حفظ مسودة السلة في localStorage (أكلف فقد في الشاشة) + تبويبات متوازية",
+    "decimal بدل Number() في فرق العدّ (سطر 992)"
+   ],
+   "serverWork": "receptionCheckoutService: قبول priceTier + WALLET + couponCode (السطر 18 يحصر CASH|CARD|TRANSFER)"
+  },
+  {
+   "page": "Returns.tsx",
+   "actions": [
+    "تحويل البحث وفلتر الحالة من محلي على آخر 50 فاتورة إلى خادمي عبر sales.list(q,status) + ترقيم — إصلاح واجهي بحت (saleRouter.ts:169,176)",
+    "توسيع البحث ليشمل اسم العميل (q الخادمي يغطيه)",
+    "تسمية مميِّزة «مرتجع سريع من فاتورة» + عنوان «مرتجعات البيع» بدل «المرتجعات» (أو قرار توحيد مع SalesReturnNew)",
+    "AppSelect بدل قائمتَي select الخام"
+   ],
+   "serverWork": "لا شيء"
+  },
+  {
+   "page": "client/src/pages/Vouchers.tsx",
+   "actions": [
+    "كشف فلترَي الفرع والحالة (مكتمل/مُلغى) — vouchers.list يقبلهما جاهزَين + عمود فرع بالجدول والتصدير",
+    "بطاقات الإجماليات الأربع من aggregate خادمي بدل صفوف الصفحة (مضلِّلة فوق 100 سند)",
+    "إجمالي للترقيم + إصلاح «التالي» عند الصفحة الأخيرة",
+    "حوار النظام بدل window.prompt لرفض السند + حفظ الفلاتر في URL"
+   ],
+   "serverWork": "إجراء aggregate لمجاميع النطاق + count في vouchers.list"
+  },
+  {
+   "page": "client/src/pages/_VoucherFormShared.tsx",
+   "actions": [
+    "إزالة CHECK من METHODS (سطر 30) — قرار المالك: لا صكوك",
+    "إصلاح الدلالة المعكوسة: «لنا عليه»→«له علينا» (سطر 158) + صياغة 164 وفق المسرد",
+    "useUnsavedGuard + تأكيد قبل Esc (سطر 291) — نمط ExpenseNew",
+    "منتقي «ربط بفاتورة»: المتبقي = total−paid−returned (درس #286، سطر 487) + بحث خادمي بدل آخر 50 فاتورة"
+   ],
+   "serverWork": "حذف CHECK من creatableMethod (voucherRouter.ts:20)"
+  },
+  {
+   "page": "Inventory.tsx",
+   "actions": [
+    "معالجة الاقتطاع الصامت عند 300 صف (كتالوج 1453): ترقيم/لافتة + تصدير شامل fetchAll",
+    "فلتر فئة للأرصدة",
+    "اسم المنتج بدل #variantId في «آخر الحركات» (سطر 394) + رابط لشاشة الحركات",
+    "حوار النظام بدل window.prompt لرفض طلب التسوية (سطر 107)"
+   ],
+   "serverWork": "offset/hasMore + categoryId في inventory.onHand"
+  },
+  {
+   "page": "client/src/pages/WorkOrders.tsx",
+   "actions": [
+    "إصلاح إسقاط الأوامر النشطة: استعلام statuses النشطة كاملاً + استعلام DELIVERED محدود منفصل (workOrders.list يقبل statuses[] — نمط WorkOrderStation المُصلَح)",
+    "كشف فلتر الفرع (branchId مدعوم :120)",
+    "بطاقات الإحصاءات من عدّ خادمي (تكذب بعد 200 أمر)",
+    "بحث خادمي q + فلتر مدى تاريخ + فلتر فني مُسنَد assignedTo",
+    "تصدير كامل عبر cursor بدل المحمَّل فقط + حفظ الفلاتر في URL"
+   ],
+   "serverWork": "q + from/to + assignedTo + إجراء counts + cursor للتصدير في workOrderRouter"
+  },
+  {
+   "page": "client/src/pages/Production.tsx",
+   "actions": [
+    "إصلاح فلتر الفرع الميت للمدير (الواجهة تعرضه والخادم يتجاهله)",
+    "ترقيم/لافتة اقتطاع (300 صامتة) + فلتر مدى تاريخ + بحث خادمي يشمل اسم المنتج الناتج",
+    "ListToolbar (مسح/تحديث/طباعة) + صف تحميل + URL"
+   ],
+   "serverWork": "from/to + offset + q + احترام branchId للمدير في production.list (productionRouter.ts:62-74)"
+  },
+  {
+   "page": "client/src/pages/ConsignmentNotes.tsx",
+   "actions": [
+    "كشف فلاتر المودِع/نوع السند/الفرع (consignmentRouter.ts:34-36 جاهزة) — «كل سندات فلان» و«السحوبات فقط»",
+    "ترقيم (limit/offset+total جاهزان وغير مستهلَكين) — السندات مستندات موقَّعة تختفي بعد الـ51",
+    "مدى تاريخ + بحث برقم السند + تصدير fetchAll",
+    "إزالة branchId ?? 1 بمنتقي فرع صريح (نمط #288)",
+    "صف تحميل + كمية صحيحة فقط (regex يقبل نقطة عشرية)"
+   ],
+   "serverWork": "from/to + q في listConsignmentNotes"
+  },
+  {
+   "page": "client/src/pages/Inbox.tsx",
+   "actions": [
+    "بحث محادثات (اسم/هاتف): فلترة محلية فورية كتخفيف ثم q خادمي",
+    "كشف فلتر القناة (channel مدعوم وغير مستعمل) ومنتقي فرع للمرتفعين (branchId مقبول)",
+    "تحميل المزيد cursor بدل قصّ صامت عند 500",
+    "إلغاء markRead التلقائي لأول محادثة + إخفاء «فَتح» للمفتوحة + إزالة التشكيل الشاذ"
+   ],
+   "serverWork": "q + cursor في conversations.list"
+  },
+  {
+   "page": "client/src/pages/ReservationsHub.tsx",
+   "actions": [
+    "عرض بنود الحجز (منتجات/كميات/أسعار) — «ماذا حجزتُ لك؟» مستحيلة اليوم؛ وإظهار الإجمالي والبنود في حوار التحويل",
+    "فلتر مدى تاريخ + فرز «ينتهي أولاً» (طابور الصباح)",
+    "ترقيم/لافتة اقتطاع (200) + تصدير + مسح فلاتر",
+    "حوارات النظام بدل window.prompt للإلغاء/التمديد (سطرا 138/143)"
+   ],
+   "serverWork": "إجراء reservations.get بالبنود + from/to/sort/offset في list"
+  },
+  {
+   "page": "ARAging.tsx + APAging.tsx",
+   "actions": [
+    "بحث باسم الطرف/الهاتف (فلترة عميلية — القائمة كاملة محمَّلة)",
+    "فلتر الشريحة العمرية (+90…) وفلتر فئة العميل في AR (حكومي/تاجر/فرد) — عميليان",
+    "فرز الأعمدة بغير المدفوع/الرصيد تنازلياً + ترقيم عميلي",
+    "إزالة التشكيل الشاذ + تعريب «WhatsApp summary» + حذف CUST_TYPE_LABEL الميتة"
+   ],
+   "serverWork": "لا شيء — كله عميلي"
+  },
+  {
+   "page": "client/src/pages/SalesReport.tsx",
+   "actions": [
+    "كشف فلتر الحالات statuses[] (جاهز reportsRouter.ts:223) وإضافة خيار ONLINE المفقود (enum يشمله)",
+    "فلتر طريقة الدفع (حاجة يومية للمطابقة) وفلتر الكاشير/البائع",
+    "التحول لـPeriodFilter الموحّد + ymd محلي بدل toISOString (خطأ التاريخ قبل 3 فجراً)",
+    "زر مسح الفلاتر + URL"
+   ],
+   "serverWork": "paymentMethods[] + salespersonId في reports.salesReport"
+  },
+  {
+   "page": "client/src/pages/Payroll.tsx",
+   "actions": [
+    "تصدير Excel لبنود المسيّر التفصيلية (البيانات كاملة في payroll.get — زر exportRows)",
+    "بحث/فلترة محلية في جدول البنود (اسم الموظف/نوع الأجر)",
+    "إصلاح branchName: null في القسيمة المطبوعة (سطر 395)",
+    "تعريب: مسوّدة (المصدر shared/hr.ts:71)، حذف (gross)، مخصّصات→البدلات"
+   ],
+   "serverWork": "لا شيء آنياً (ترقيم listRuns لاحقاً)"
+  }
+ ],
+ "mediumPriority": [
+  {
+   "page": "SalesRegister.tsx + client/src/pages/PurchaseRegister.tsx + GeneralLedger.tsx",
+   "actions": [
+    "توحيد الطباعة مع التصدير: onPrint عبر fetchAllPaged بدل الصفحة المعروضة (تقرير مبتور يبدو كاملاً)",
+    "بحث نصي في السجلات الثلاثة + فلتر مورد في سجل المشتريات",
+    "اختيار متعدد entryTypes في الأستاذ (المدخل مصفوفة أصلاً)",
+    "عمود تكلفة الوحدة في شاشة سجل المبيعات (موجود بالتصدير فقط) + إصلاح KPI صافي الربح الموجب الثابت"
+   ],
+   "serverWork": "q في salesRegister/purchaseRegister/generalLedger + supplierId في getPurchaseRegister"
+  },
+  {
+   "page": "SalesReturns.tsx + SalesInvoiceNew.tsx + SalesReturnNew.tsx",
+   "actions": [
+    "بحث برقم الفاتورة وفلتر منفّذ المرتجع في السجل",
+    "ربط useUnsavedGuard في النموذجين + تأكيد قبل Esc/F12 (سلة دائرة حكومية تضيع بضغطة)",
+    "استبدال window.print بقالب A4 محجوز (نمط SalesInvoiceNew) + إصلاح سباق setTimeout(400ms) في «حفظ وطباعة»",
+    "Labels مرئية لحقلي التاريخ + مسح فلاتر + AppSelect"
+   ],
+   "serverWork": "q + createdBy في returns.list"
+  },
+  {
+   "page": "client/src/pages/Shifts.tsx",
+   "actions": [
+    "انتقال من صف الوردية إلى فواتيرها — الغرض الأول للسجل (تحقيق الفروقات النقدية)"
+   ],
+   "serverWork": "شرط shiftId في sales.list"
+  },
+  {
+   "page": "client/src/pages/Quotations.tsx + QuotationNew.tsx + QuotationDetail.tsx",
+   "actions": [
+    "فلتر فرع (branchId جاهز quotationRouter.ts:31)",
+    "ترقيم/لافتة اقتطاع (limit 200 صامت — نفس علّة #287)",
+    "مسح فلاتر + URL + تحديث + AppSelect",
+    "حارس فقد بيانات + Ctrl+S + نقل F12 + showCost عبر canSeeCost بدل مقارنة الدور",
+    "حالة isError في التفاصيل + حذف esc() الميتة"
+   ],
+   "serverWork": "cursor/hasMore في listQuotations"
+  },
+  {
+   "page": "client/src/pages/Purchases.tsx + PurchaseNew.tsx + PurchaseReceive.tsx + PurchaseReturns.tsx + PurchaseReturnNew.tsx",
+   "actions": [
+    "فلتر فرع (buildPurchasesListConds جاهز) + عمود فرع",
+    "مسح فلاتر + URL في القائمتين",
+    "حارس فقد بيانات + تأكيد F12 في النموذجين + تفعيل «حفظ مسوّدة» الزائف (الراوتر يدعم DRAFT) أو إخفاؤه",
+    "inputMode=numeric وmin لحقلي الاستلام + طباعة سند استلام جزئي",
+    "كميات المرتجع تبدأ صفراً/فارغة بدل كامل المُستلَم + إظهار الحد الأعلى قبل رفض الخادم + طباعة مستند المرتجع من السجل"
+   ],
+   "serverWork": "لا شيء جوهري"
+  },
+  {
+   "page": "Customers.tsx + CustomerEdit.tsx + CustomerStatement.tsx + CustomerNotes.tsx",
+   "actions": [
+    "مسح شامل للفلاتر + URL + فلتر مدينة/منطقة",
+    "تعريب defaultPriceTier في التصدير (TIER_LABEL) + إزالة ?? 1 في مهام المتابعة (سطرا 262/297)",
+    "useUnsavedGuard + تأكيد Esc + useSaveShortcuts في التعديل",
+    "حفظ فترة الكشف في URL + تقييد جدول الدفعات بالفترة + عرض دفتر ledger التراكمي على الشاشة",
+    "مفتاح «إخفاء المحلولة» (includeResolved جاهز) + ترقيم وبحث الملاحظات + نافذة متابعات الأسبوع"
+   ],
+   "serverWork": "city في customers.search؛ offset/q/from-to في customerNotes.list + نافذة أيام في dueToday"
+  },
+  {
+   "page": "ARReminders.tsx + APReminders.tsx + CreditApprovals.tsx + InstallmentPlans.tsx",
+   "actions": [
+    "بحث/فلتر حالة/تاريخ لتبويب السجل + توسيع نافذة 30 يوماً + تصدير/طباعة قائمة اليوم",
+    "فلتر شريحة تقادم عميلي + خيار «كل الفروع» في AP + حفظ التبويب في URL",
+    "سجل عام لكل الموافقات + إجراء إلغاء موافقة + عرض المُنشئ/الملاحظات وfmt للمبلغ + ترحيل للمكونات الموحّدة",
+    "بحث رقم شيك/خطة + مدى تاريخ + تصدير + نافذة dueSoon قابلة للضبط (الخادم حتى 90) + أتمتة وسم القسط بعد اعتماد السند المعلَّق + قرار مالك بشأن خيار CHECK الحي (يناقض قرار ٢٢/٧)"
+   ],
+   "serverWork": "توسعة history؛ list+cancel في creditApprovalRouter؛ q/from-to في installments.list؛ branchId:null في AP queue"
+  },
+  {
+   "page": "InventoryMovements.tsx + TransfersLog.tsx + Transfers.tsx + ReorderAlerts.tsx + StocktakeNew.tsx + StockStatus.tsx + ItemLedger.tsx",
+   "actions": [
+    "كشف فلتر referenceType (جاهز خادمياً) + فلتر منشئ الحركة + تعريب المرجع/الأنواع",
+    "بحث برقم سند التحويل + from/to + فلتر فرع (جاهز) + تصدير keyset",
+    "إصلاح رابط «حركات المخزون» المضلِّل + عدم عرض رقم سند عميل زائف + حارس فقد بيانات",
+    "بحث محلي وترقيم/لافتة لتنبيهات إعادة الطلب (اقتطاع 200)",
+    "منتقي المنتجات ببحث خادمي بدل حد 1000 + حارس للمعالج",
+    "فصل نفد/منخفض عميلياً + قراءة variantId من URL لبطاقة المنتج + روابط عميقة من الأرصدة"
+   ],
+   "serverWork": "createdBy في movementsRich؛ q/from-to في transfersList"
+  },
+  {
+   "page": "client/src/pages/Products.tsx + ProductEdit.tsx + BarcodeLabels.tsx + CatalogAnomalies.tsx",
+   "actions": [
+    "منتقي فرع صريح بدل ?? 1 (adminList/posList تقبل branchId) — يصحح مخزون «= المخزون» بالملصقات",
+    "كتابة الفلاتر في URL + مسح/تحديث",
+    "حارس فقد بيانات + Ctrl+S في ProductEdit + confirm الموحّد + فحص تكرار الباركود يشمل البدائل المخزّنة",
+    "إدارة بدائل الباركود في التعديل",
+    "حفظ قائمة الملصقات في localStorage + حارس مغادرة",
+    "لافتة اقتطاع (200/50) + تصدير xlsx + مسح فلاتر + حوار موحّد للاستعادة في الشذوذ"
+   ],
+   "serverWork": "barcodeAliases في updateProductVariants؛ offset/total في catalogAnomalies"
+  },
+  {
+   "page": "client/src/pages/PriceWaves.tsx + Offers.tsx + Coupons.tsx + SeasonPlanning.tsx + GiftsHub.tsx",
+   "actions": [
+    "إجراء تفاصيل صفوف الموجة (البيانات مخزّنة بلا نافذة) + ترقيم التاريخ + حارس المعاينة",
+    "تعديل/إعادة تفعيل عرض + فلاتر عميلية (ساري/قناة) + أعمدة القناة/التطبيق + تأكيد التعطيل",
+    "بحث كوبون برمزه (أكثر استفسار متوقع) + فلتر حالة الإصدارات + تصدير الرموز + تأكيد الإبطال",
+    "بحث محلي وفلتر فئة في خطة الموسم",
+    "مدى تاريخ للهدايا + كشف فلتر الحالة الكامل والفرع (جاهزان) + استعمال q الخادمي + ترقيم + عرض بنود السند للمعتمِد + تنسيق القيمة"
+   ],
+   "serverWork": "إجراء تفاصيل موجة؛ update/reactivate في promotionsV2؛ q/status في listIssued؛ from/to في gifts.list"
+  },
+  {
+   "page": "client/src/pages/Treasury.tsx + TreasuryTransfers.tsx + Expenses.tsx + CardAccount.tsx + CashOrphanReport.tsx + DayCloseReport.tsx",
+   "actions": [
+    "دفتر خزينة موحّد: مدى تاريخ + ترقيم + تصدير لحركات النقد (مثبَّتة على آخر 20)",
+    "توضيح أن منتقي الفترة يخص مخطط الطرق فقط أو تعميمه + إصلاح حوار التمويل (focus-trap/Esc)",
+    "ترقيم فعلي للتحويلات (limit/offset جاهزان) + from/to (جاهزان) + فرع (جاهز) + تصدير + عمود ملاحظات",
+    "مسح فلاتر المصروفات + فلتر طريقة الدفع/المصدر + طباعة قائمة",
+    "بحث نصي بحركات البطاقة (وظيفة الشاشة المطابقة) + فلتر نوع المصدر + إجمالي الترقيم + طباعة A4",
+    "زر طباعة A4 لتقرير الإقفال (وثيقة توقيع ورقية) + زرا اليوم السابق/التالي"
+   ],
+   "serverWork": "from/to/offset في getRecentMovements؛ paymentMethod/source في expenses.list؛ q/sourceType في cardAccount.movements"
+  },
+  {
+   "page": "TrialBalance.tsx + BalanceSheet.tsx + MonthlyClosePack.tsx + ArApAgingDetail.tsx",
+   "actions": [
+    "منتقي «كما في» (اللقطة دائماً الآن والطباعة توهم بالدعم) — نقص جوهري لمجموعة الإقفال",
+    "تصدير Excel لحزمة الشهر + مقارنة بالشهر السابق (نداءان للواجهة)",
+    "فلتر شريحة عمرية + بحث في التفصيلي (عميليان)"
+   ],
+   "serverWork": "asOf في reports.financialPosition"
+  },
+  {
+   "page": "client/src/pages/Employees.tsx + EmployeeNew.tsx + Attendance.tsx + AttendanceReport.tsx + MonthlyAttendanceReport.tsx",
+   "actions": [
+    "مسح فلاتر + تفعيل includeInactive تلقائياً عند «منتهي الخدمة» (نتيجة فارغة كاذبة) + فلتر نوع الأجر + URL",
+    "حارس فقد بيانات + Ctrl+S + شريط sticky في نموذج 40+ حقلاً",
+    "فلتر فرع للحضور + مسح + URL",
+    "منتقي موظفين ببحث بدل قصّ 200 + ترقيم عميلي للتقرير (Infinity)",
+    "كشف فلتر الفرع الشهري (الخادم يدعمه attendanceRouter.ts:99) + بحث محلي + فتح أشهر أقدم من 12"
+   ],
+   "serverWork": "branchId في attendance.list/report؛ payType في employees.list"
+  },
+  {
+   "page": "client/src/pages/Leaves.tsx + LeaveReport.tsx + EmployeeAdvances.tsx + HrDevices.tsx + Recruitment.tsx + HrChangesReport.tsx",
+   "actions": [
+    "كشف فلتر الموظف (جاهز) + مدى تاريخ + ترقيم للإجازات + إصلاح حساب «أيام هذا الشهر» للإجازة العابرة",
+    "نطاق سنة لتقرير الأرصدة + ضم الرصيد المتبقي",
+    "تصدير السلف + فلترا موظف/فرع (جاهزان payrollRouter.ts:165-166) + ListToolbar + إزالة ?? 1 في حوار المنح",
+    "فلاتر طابور البصمات (جهاز/تاريخ/موظف) + بحث في حوار الربط",
+    "تصدير المتقدمين + فلتر الوظيفة + شاشة تفاصيل متقدّم (get موجود بلا واجهة)",
+    "مدى تاريخ/بحث لتقرير التغييرات + روابط بطاقة الموظف"
+   ],
+   "serverWork": "from/to/offset في leaves؛ فلاتر punchesList؛ vacancyId في recruitment.list؛ input لـgetHrChanges"
+  },
+  {
+   "page": "client/src/pages/Users.tsx + UserEdit.tsx + UserNew.tsx + RoleEdit.tsx + Roles.tsx + AuditLogs.tsx",
+   "actions": [
+    "فلتر فرع للمستخدمين + تصدير (exportSpec جاهز بالمكوّن) + مسح/تحديث/طباعة + URL + صف تحميل",
+    "حارس فقد بيانات + Ctrl+S + <form> في نماذج المستخدم/الدور (تغيير الفئة الأساسية يمسح المصفوفة بلا تأكيد)",
+    "منسدلة أفعال معرّبة من audit.facets (جاهزة وغير مستعملة) بدل نص إنجليزي حر + فلتر فرع للتدقيق + ListToolbar + URL",
+    "توسيع ACTION_AR للوحدات الحديثة + خريطة تعريب الكيان",
+    "فلتر حالة للأدوار (includeInactive جاهز)"
+   ],
+   "serverWork": "branchId في users.list وaudit.list"
+  },
+  {
+   "page": "client/src/pages/TasksHub.tsx + TaskDetail.tsx + OrderFulfillment.tsx + DeliveryHub.tsx + DeliveryParties.tsx + MyDeliveries.tsx",
+   "actions": [
+    "فلتر مدى تاريخ + أولوية + تصدير للمهام + URL + مسح موحّد",
+    "رابط المحادثة المرتبطة إلى المحادثة نفسها لا /crm العام",
+    "ترقيم/لافتة اقتطاع (200) + مدى تاريخ للطلبات + orderNumber بدل id الداخلي في التأكيد + URL",
+    "بحث محلي وتحديث لجدول الجاهز للتوصيل + فلاتر وتصدير للتسوية",
+    "كشف search/activeOnly (جاهزان في listParties) + فلتر «ذمة قائمة» + تصدير + إصلاح استخراج ref من notes بregex هش",
+    "توضيح نطاق «سُلّمت حديثاً» الزمني"
+   ],
+   "serverWork": "from/to/priority في tasks.list؛ from/to/cursor في storeAdmin.orders.list"
+  },
+  {
+   "page": "client/src/pages/digitalCards/DigitalSubscriptions.tsx + DigitalDashboard.tsx + ExchangeStatement.tsx + ExchangeOperations.tsx",
+   "actions": [
+    "بحث باسم الطالب (السؤال الأول للشاشة) + فلتر «تنتهي قريباً» + حالة كاملة + خيار كل الفروع + تصدير",
+    "مدى تاريخ حر للوحة (الخادم يقبله) + منتقي فرع + رابط لطابور المراجعة",
+    "تصدير + طباعة كشف الصيرفة (جاهز واجهياً — exportRows/printReportDoc) + فلتر نوع عملية + بحث رقم عميلي",
+    "useRef بدل pendingRetry على مستوى الموديول + حارس فقد بيانات"
+   ],
+   "serverWork": "q/expiring/status في subscriptions.list؛ فحص branchId في dashboard.summary"
+  },
+  {
+   "page": "client/src/pages/WIPReport.tsx + ProfitabilityReport.tsx + ExpensesReport.tsx + PurchasesReport.tsx + OfflineSalesReport.tsx + InventoryOpsReport.tsx + AbcAnalysis.tsx",
+   "actions": [
+    "تصدير/طباعة WIP (الوحيد بلا مخرج) + فلتر حالة وبحث عميليان + ReportShell",
+    "لافتة اقتطاع بُعد المنتج (100 من 1453 — KPI موهمة) في الربحية",
+    "رفع حد جهات الصرف 20 + drill-down بفلاتر URL إلى /expenses",
+    "بحث مورد + روابط كشف حساب في تقرير المشتريات + إصلاح مفتاح Math.random()",
+    "فلتر فرع للأوفلاين (جاهز offlineRouter.ts:52) + تصدير/طباعة + بحث OFF + اسم الفرع بدل الرقم + fmt الموحد",
+    "بحث/فئة عميليان + لافتة اقتطاع السوالب + فلتر A/B/C عميلي وترقيم محلي"
+   ],
+   "serverWork": "سقف/cursor في topProducts؛ limit في byPayee"
+  },
+  {
+   "page": "client/src/pages/WorkOrderNew.tsx + WorkOrderDetail.tsx + WorkOrderStation.tsx + PrintPricingCalculator.tsx",
+   "actions": [
+    "حارس فقد بيانات + اختصارات في نموذج 7 أقسام + إصلاح علّة deliveryMethod لا يُرسَل للخادم + إزالة ?? 1 للفرع + إصلاح زر «تحميل كصورة» المضلِّل",
+    "إصلاح رابط الفاتورة إلى /invoices/{id} + حقل مرجع عملية في التسليم (مرآة DeliverDialog) + decimal بدل Number() (سطور 309/321/422) + حجب التكلفة بcanSeeCost + إثراء الشاشة بسياق الـDrawer",
+    "بحث محلي سريع في قائمتَي المحطة",
+    "مخرج عملي للحاسبة: نسخ التفصيل/إنشاء عرض سعر + مراجعة حصر managerOnly مع المالك"
+   ],
+   "serverWork": "لا شيء جوهري"
+  },
+  {
+   "page": "client/src/pages/ProductionNew.tsx + ProductionRecipes.tsx + ContractPrices.tsx + ConsignmentSettlements.tsx",
+   "actions": [
+    "حارس فقد بيانات + Ctrl+S + منتقي WO من المفتوحة بدل نص حر + إزالة ?? 1",
+    "فلتر حالة الوصفات (activeOnly جاهز) + تطبيع بحث عربي + تأكيد الإلغاء",
+    "بحث/فلتر بجدول الأسعار التعاقدية + تصدير/طباعة الملحق (يُرفق بالعقد الحكومي) + إزالة ?? 1 + عرض من/متى أُدخل السطر",
+    "فلتر فرع (جاهز consignmentRouter.ts:67,75) + طباعة/تصدير كشف التسوية (يوصَف مستنداً مرافقاً بلا مخرج) + إزالة ?? 1 على العملية المالية + خيار CARD/TRANSFER للتسوية (الخادم يقبلها)"
+   ],
+   "serverWork": "لا شيء جوهري"
+  },
+  {
+   "page": "Reconcile.tsx + PeriodLock.tsx + YearEnd.tsx + KioskDevices.tsx + Branches.tsx + Settings.tsx",
+   "actions": [
+    "أسماء الأطراف بجانب المعرفات في الانحرافات + تصدير Excel + روابط نقطية للمورد/التوصيل",
+    "سجل الأقفال والفتحات السابقة (محفوظ في auditLogs بلا عرض)",
+    "فلترة الإقفالات بالسنة/الفرع (جاهزة yearEndRouter.ts:39-49) + اسم الفرع وfmt IQD",
+    "فلترا حالة/فرع عميليان للأجهزة + تعريب «آخر ظهور» بالتصدير + طباعة آمنة تخفي الرمز السري",
+    "تحذير فقد بيانات عند إغلاق حوار الفرع بنقرة خارجية",
+    "فهرس مراسٍ داخلية للإعدادات + حد لجدول النسخ"
+   ],
+   "serverWork": "إثراء أسماء في reconcile؛ endpoint سجل الأقفال"
+  },
+  {
+   "page": "client/src/pages/Campaigns.tsx + WaBroadcasts.tsx + WhatsappHubReport.tsx + CommissionLeaderboard.tsx + CommissionTargets.tsx + CommissionRuns.tsx + CrmOverview.tsx + AssetCustodyReport.tsx + AssetDisposalLog.tsx + AssetRegister.tsx + AssetNew.tsx",
+   "actions": [
+    "بحث + فلتر حالة عميليان للحملات + حارس النموذج + confirm الموحّد بدل window.confirm",
+    "زر طباعة لتقرير واتساب (onPrint جاهز)",
+    "فلتر فرع عميلي للوحة الشرف والأهداف + بحث موظف بكشف العمولات + حارس مسودة الأهداف",
+    "ar-IQ-u-nu-latn بدل en-US + بطاقات قابلة للنقر في CrmOverview",
+    "بحث وفلتر فرع لتقرير العهد + طباعة كاملة + PageHeader/ListToolbar",
+    "مدى تاريخ + نوع + بحث لسجل الاستبعاد",
+    "مسح فلاتر + تحديث + URL لسجل الأصول + حارس نماذج الأصول + تحقق قيمة الشراء > 0"
+   ],
+   "serverWork": "لا شيء جوهري"
+  }
+ ],
+ "terminologyMap": [
+  {
+   "file": "InvoiceDetail.tsx",
+   "line": 323,
+   "from": "فاتورة الزبون",
+   "to": "فاتورة العميل"
+  },
+  {
+   "file": "InvoiceDetail.tsx",
+   "line": 366,
+   "from": "ذمة العميل الحالية",
+   "to": "الرصيد الحالي للعميل"
+  },
+  {
+   "file": "SalesReturnNew.tsx",
+   "line": 518,
+   "from": "نقدي (بديل اسم العميل)",
+   "to": "عميل نقدي"
+  },
+  {
+   "file": "SalesReturnNew.tsx",
+   "line": 536,
+   "from": "عميل: نقدي",
+   "to": "عميل نقدي"
+  },
+  {
+   "file": "Returns.tsx",
+   "line": 366,
+   "from": "نقدي (بديل اسم العميل)",
+   "to": "عميل نقدي"
+  },
+  {
+   "file": "client/src/pages/PointOfSale.tsx",
+   "line": 68,
+   "from": "خدمة الزبائن",
+   "to": "خدمة العملاء"
+  },
+  {
+   "file": "client/src/pages/PointOfSale.tsx",
+   "line": 185,
+   "from": "حجوزات خدمة الزبائن",
+   "to": "حجوزات خدمة العملاء"
+  },
+  {
+   "file": "client/src/pages/Reception.tsx",
+   "line": 1700,
+   "from": "نقداً",
+   "to": "نقدي"
+  },
+  {
+   "file": "client/src/pages/Reception.tsx",
+   "line": 1630,
+   "from": "المبلغ المدفوع",
+   "to": "المبلغ المستلم"
+  },
+  {
+   "file": "client/src/pages/Reception.tsx",
+   "line": 1332,
+   "from": "العمل مفتوح",
+   "to": "وردية مفتوحة"
+  },
+  {
+   "file": "client/src/pages/PrintPOS.tsx",
+   "line": 866,
+   "from": "نقداً",
+   "to": "نقدي"
+  },
+  {
+   "file": "client/src/pages/PrintPOS.tsx",
+   "line": 544,
+   "from": "me.role الإنجليزي الخام",
+   "to": "الدور معرّباً (نمط POS.tsx:1704)"
+  },
+  {
+   "file": "client/src/pages/PrintPOS.tsx",
+   "line": 997,
+   "from": "p.method الخام (CASH/CARD)",
+   "to": "paymentMethodLabel"
+  },
+  {
+   "file": "client/src/pages/PrintPOS.tsx",
+   "line": 955,
+   "from": "أكواد الطرق في Z المطبوع",
+   "to": "نقدي/بطاقة… معرّبة"
+  },
+  {
+   "file": "client/src/pages/Shifts.tsx",
+   "line": 39,
+   "from": "استقبال",
+   "to": "خدمة العملاء (توحيد التسمية)"
+  },
+  {
+   "file": "client/src/pages/KioskDevices.tsx",
+   "line": 131,
+   "from": "اظهر مرّة واحدة فقط",
+   "to": "يظهر مرّة واحدة فقط"
+  },
+  {
+   "file": "client/src/pages/Quotations.tsx",
+   "line": 20,
+   "from": "مسودّة",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/QuotationNew.tsx",
+   "line": 169,
+   "from": "مسودة",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/QuotationNew.tsx",
+   "line": 323,
+   "from": "الأصناف",
+   "to": "المنتجات"
+  },
+  {
+   "file": "client/src/pages/QuotationNew.tsx",
+   "line": 403,
+   "from": "مسودة",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/QuotationDetail.tsx",
+   "line": 24,
+   "from": "مسودّة",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/QuotationDetail.tsx",
+   "line": 97,
+   "from": "تم التحويل فاتورة",
+   "to": "تم التحويل إلى الفاتورة رقم"
+  },
+  {
+   "file": "client/src/pages/QuotationDetail.tsx",
+   "line": 263,
+   "from": "تعديل المسودة",
+   "to": "تعديل المسوّدة"
+  },
+  {
+   "file": "client/src/pages/WorkOrderNew.tsx",
+   "line": 307,
+   "from": "الأصناف الجاهزة",
+   "to": "المنتجات الجاهزة"
+  },
+  {
+   "file": "client/src/pages/WorkOrderNew.tsx",
+   "line": 341,
+   "from": "الأصناف الجاهزة",
+   "to": "المنتجات الجاهزة"
+  },
+  {
+   "file": "client/src/pages/WorkOrderNew.tsx",
+   "line": 830,
+   "from": "الأصناف الجاهزة",
+   "to": "المنتجات الجاهزة"
+  },
+  {
+   "file": "client/src/pages/WorkOrderNew.tsx",
+   "line": 862,
+   "from": "الأصناف الجاهزة",
+   "to": "المنتجات الجاهزة"
+  },
+  {
+   "file": "client/src/pages/WorkOrderStation.tsx",
+   "line": 42,
+   "from": "بانتظار البدء / مسحوب (RECEIVED)",
+   "to": "مُستلَم (توحيد الحالة عبر الشاشات)"
+  },
+  {
+   "file": "client/src/pages/PurchaseNew.tsx",
+   "line": 159,
+   "from": "أصنافاً",
+   "to": "منتجات"
+  },
+  {
+   "file": "client/src/pages/PurchaseNew.tsx",
+   "line": 221,
+   "from": "الأصناف",
+   "to": "المنتجات"
+  },
+  {
+   "file": "client/src/pages/PurchaseNew.tsx",
+   "line": 409,
+   "from": "أصنافاً",
+   "to": "منتجات"
+  },
+  {
+   "file": "client/src/pages/PurchaseReceive.tsx",
+   "line": 240,
+   "from": "مجاناً (بونص، أساس)",
+   "to": "كمية مجانية (بالوحدة الأساس)"
+  },
+  {
+   "file": "client/src/pages/PurchaseReturnNew.tsx",
+   "line": 294,
+   "from": "الأصناف",
+   "to": "المنتجات"
+  },
+  {
+   "file": "client/src/pages/SupplierNew.tsx",
+   "line": 424,
+   "from": "علينا للمورّد (مستحق له)",
+   "to": "له علينا"
+  },
+  {
+   "file": "client/src/pages/SupplierNew.tsx",
+   "line": 443,
+   "from": "مستحقاً له",
+   "to": "له علينا"
+  },
+  {
+   "file": "client/src/pages/SupplierEdit.tsx",
+   "line": 428,
+   "from": "علينا للمورّد (مستحق له)",
+   "to": "له علينا"
+  },
+  {
+   "file": "client/src/pages/SupplierEdit.tsx",
+   "line": 438,
+   "from": "الرصيد الجاري",
+   "to": "الرصيد الحالي"
+  },
+  {
+   "file": "client/src/pages/ConsignmentNotes.tsx",
+   "line": 65,
+   "from": "الأصناف (عمود يعرض المرفق)",
+   "to": "مرفق"
+  },
+  {
+   "file": "client/src/pages/ConsignmentNotes.tsx",
+   "line": 155,
+   "from": "أضف صنفاً",
+   "to": "أضف منتجاً"
+  },
+  {
+   "file": "client/src/pages/ConsignmentNotes.tsx",
+   "line": 234,
+   "from": "الأصناف",
+   "to": "المنتجات"
+  },
+  {
+   "file": "client/src/pages/ConsignmentNotes.tsx",
+   "line": 249,
+   "from": "لا أصناف… أضِف صنف",
+   "to": "لا منتجات… أضِف منتج"
+  },
+  {
+   "file": "client/src/pages/ConsignmentNotes.tsx",
+   "line": 254,
+   "from": "الصنف",
+   "to": "المنتج"
+  },
+  {
+   "file": "client/src/pages/ConsignmentSettlements.tsx",
+   "line": 100,
+   "from": "N صنف",
+   "to": "N منتج"
+  },
+  {
+   "file": "client/src/pages/ConsignmentSettlements.tsx",
+   "line": 225,
+   "from": "الصنف",
+   "to": "المنتج"
+  },
+  {
+   "file": "CustomerNew.tsx",
+   "line": 250,
+   "from": "Phone 1",
+   "to": "الهاتف ١ (الرئيسي)"
+  },
+  {
+   "file": "CustomerNew.tsx",
+   "line": 263,
+   "from": "Phone 2",
+   "to": "الهاتف ٢"
+  },
+  {
+   "file": "CustomerNew.tsx",
+   "line": 267,
+   "from": "Phone 3",
+   "to": "الهاتف ٣"
+  },
+  {
+   "file": "CustomerEdit.tsx",
+   "line": 460,
+   "from": "الرصيد الجاري",
+   "to": "الرصيد الحالي"
+  },
+  {
+   "file": "CustomerEdit.tsx",
+   "line": 310,
+   "from": "Phone 1",
+   "to": "الهاتف ١ (الرئيسي)"
+  },
+  {
+   "file": "CustomerEdit.tsx",
+   "line": 315,
+   "from": "Phone 2",
+   "to": "الهاتف ٢"
+  },
+  {
+   "file": "CustomerEdit.tsx",
+   "line": 319,
+   "from": "Phone 3",
+   "to": "الهاتف ٣"
+  },
+  {
+   "file": "CustomerStatement.tsx",
+   "line": 301,
+   "from": "defaultPriceTier الخام",
+   "to": "مفرد/جملة/حكومي"
+  },
+  {
+   "file": "CustomerStatement.tsx",
+   "line": 381,
+   "from": "sourceType الخام",
+   "to": "كاشير/طلب/أمر شغل…"
+  },
+  {
+   "file": "CustomerStatement.tsx",
+   "line": 446,
+   "from": "p.status الخام",
+   "to": "معرّبة (PENDING=معلّقة)"
+  },
+  {
+   "file": "ContactsBank.tsx",
+   "line": 96,
+   "from": "الرمز القديم",
+   "to": "الرقم القديم"
+  },
+  {
+   "file": "CreditApprovals.tsx",
+   "line": 49,
+   "from": "رطانة blanket/approvalId/B5",
+   "to": "موافقة مؤقتة محددة السقف والمدة تُستعمل مرة واحدة — سلّم رقمها للكاشير"
+  },
+  {
+   "file": "CreditApprovals.tsx",
+   "line": 143,
+   "from": "approvalId = X",
+   "to": "رقم الموافقة: X — سلّمه للكاشير"
+  },
+  {
+   "file": "InventoryMovements.tsx",
+   "line": 368,
+   "from": "وارد (IN) / صادر (OUT)…",
+   "to": "وارد/صادر/مرتجع/تسوية بلا أكواد"
+  },
+  {
+   "file": "Transfers.tsx",
+   "line": 131,
+   "from": "الصنف",
+   "to": "المنتج"
+  },
+  {
+   "file": "Transfers.tsx",
+   "line": 133,
+   "from": "الصنف",
+   "to": "المنتج"
+  },
+  {
+   "file": "Transfers.tsx",
+   "line": 143,
+   "from": "أضِف صنفاً",
+   "to": "أضِف منتجاً"
+  },
+  {
+   "file": "Transfers.tsx",
+   "line": 149,
+   "from": "N صنف",
+   "to": "N منتج"
+  },
+  {
+   "file": "Transfers.tsx",
+   "line": 275,
+   "from": "أصناف السند",
+   "to": "منتجات السند"
+  },
+  {
+   "file": "Transfers.tsx",
+   "line": 278,
+   "from": "لنفس الصنف",
+   "to": "لنفس المنتج"
+  },
+  {
+   "file": "TransfersLog.tsx",
+   "line": 219,
+   "from": "الأصناف",
+   "to": "المنتجات"
+  },
+  {
+   "file": "TransfersLog.tsx",
+   "line": 296,
+   "from": "الصنف",
+   "to": "المنتج"
+  },
+  {
+   "file": "ReorderAlerts.tsx",
+   "line": 134,
+   "from": "مسودة (+136/186/191/200/358/360/420)",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "ReorderAlerts.tsx",
+   "line": 116,
+   "from": "صنفاً (+120/153/169/186/231/234/346/358/383)",
+   "to": "منتجاً"
+  },
+  {
+   "file": "ReorderAlerts.tsx",
+   "line": 262,
+   "from": "حدّ الطلب",
+   "to": "حدّ إعادة الطلب"
+  },
+  {
+   "file": "StocktakeNew.tsx",
+   "line": 604,
+   "from": "أصناف (+274/407/615/638/643/645/946/950)",
+   "to": "منتجات"
+  },
+  {
+   "file": "StocktakeReview.tsx",
+   "line": 466,
+   "from": "كل صنف معدود",
+   "to": "كل منتج معدود"
+  },
+  {
+   "file": "StocktakeReview.tsx",
+   "line": 468,
+   "from": "صنفٌ بِيع بالسالب",
+   "to": "منتجٌ بِيع بالسالب"
+  },
+  {
+   "file": "MyStocktakeWorkspace.tsx",
+   "line": 323,
+   "from": "إجرائي",
+   "to": "عدّي"
+  },
+  {
+   "file": "client/src/pages/ProductNew.tsx",
+   "line": 670,
+   "from": "مخفي",
+   "to": "معطّل"
+  },
+  {
+   "file": "client/src/pages/ProductEdit.tsx",
+   "line": 605,
+   "from": "مخفي",
+   "to": "معطّل"
+  },
+  {
+   "file": "client/src/pages/BarcodeLabels.tsx",
+   "line": 288,
+   "from": "بعض الأصناف",
+   "to": "بعض المنتجات"
+  },
+  {
+   "file": "client/src/pages/CatalogAnomalies.tsx",
+   "line": 294,
+   "from": "severity الخام",
+   "to": "كارثيّ/حاجز/تحذير/إخبار"
+  },
+  {
+   "file": "client/src/pages/CatalogAnomalies.tsx",
+   "line": 104,
+   "from": "vid",
+   "to": "رقم المتغيّر"
+  },
+  {
+   "file": "client/src/pages/CatalogAnomalies.tsx",
+   "line": 350,
+   "from": "لصنف ولاء",
+   "to": "لمنتج ولاء"
+  },
+  {
+   "file": "client/src/pages/PriceWaves.tsx",
+   "line": 208,
+   "from": "الفئة (عمود المعاينة)",
+   "to": "فئة السعر"
+  },
+  {
+   "file": "client/src/pages/Coupons.tsx",
+   "line": 57,
+   "from": "p.status الخام",
+   "to": "مسوّدة/نشط/موقوف"
+  },
+  {
+   "file": "client/src/pages/Coupons.tsx",
+   "line": 66,
+   "from": "c.status الخام",
+   "to": "نشط/مستخدم/ملغى/منتهٍ"
+  },
+  {
+   "file": "client/src/pages/SeasonPlanning.tsx",
+   "line": 135,
+   "from": "الأصناف الموسمية (+153/165/236/250/259/273)",
+   "to": "المنتجات الموسمية"
+  },
+  {
+   "file": "client/src/pages/SeasonPlanning.tsx",
+   "line": 144,
+   "from": "إضافة صنف موسميّ",
+   "to": "إضافة منتج موسميّ"
+  },
+  {
+   "file": "client/src/pages/GiftsHub.tsx",
+   "line": 28,
+   "from": "مسودة",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/GiftsHub.tsx",
+   "line": 648,
+   "from": "الأصناف (+666 الصنف)",
+   "to": "المنتجات / المنتج"
+  },
+  {
+   "file": "client/src/pages/ReservationsHub.tsx",
+   "line": 161,
+   "from": "حجوزات خدمة الزبائن",
+   "to": "حجوزات خدمة العملاء"
+  },
+  {
+   "file": "client/src/pages/ReservationsHub.tsx",
+   "line": 335,
+   "from": "نقداً",
+   "to": "نقدي"
+  },
+  {
+   "file": "client/src/pages/ReservationsHub.tsx",
+   "line": 407,
+   "from": "صنف (+444/469/500/516)",
+   "to": "منتج"
+  },
+  {
+   "file": "client/src/pages/Treasury.tsx",
+   "line": 207,
+   "from": "الدلو",
+   "to": "مكان النقد (توحيداً مع السندات)"
+  },
+  {
+   "file": "client/src/pages/_VoucherFormShared.tsx",
+   "line": 158,
+   "from": "رصيدٌ دائن (لنا عليه)",
+   "to": "رصيدٌ دائن (له علينا) — الدلالة معكوسة"
+  },
+  {
+   "file": "client/src/pages/_VoucherFormShared.tsx",
+   "line": 164,
+   "from": "المُستحق… رَصيد مَدين",
+   "to": "ما له علينا… رصيد (لنا عليه)"
+  },
+  {
+   "file": "client/src/pages/VoucherCategories.tsx",
+   "line": 163,
+   "from": "قبض وصَرف (BOTH) / (IN) / (OUT)",
+   "to": "التسمية العربية بلا الأكواد"
+  },
+  {
+   "file": "client/src/pages/Expenses.tsx",
+   "line": 169,
+   "from": "قبضاً صادراً",
+   "to": "حركة صرف من الصندوق"
+  },
+  {
+   "file": "client/src/pages/Expenses.tsx",
+   "line": 42,
+   "from": "صك",
+   "to": "صكّ (توحيد الإملاء)"
+  },
+  {
+   "file": "client/src/pages/CardAccount.tsx",
+   "line": 191,
+   "from": "الرصيد الجاري",
+   "to": "الرصيد الحالي"
+  },
+  {
+   "file": "client/src/pages/CardAccount.tsx",
+   "line": 311,
+   "from": "الرصيد الجاري (عمود تراكمي)",
+   "to": "الرصيد بعد الحركة"
+  },
+  {
+   "file": "client/src/pages/CardAccount.tsx",
+   "line": 140,
+   "from": "الرصيد الجاري (تصدير)",
+   "to": "مطابقة التسمية المصحَّحة"
+  },
+  {
+   "file": "client/src/pages/CashOrphanReport.tsx",
+   "line": 145,
+   "from": "ومتيتم حقيقي",
+   "to": "ونقد يتيم حقيقي"
+  },
+  {
+   "file": "client/src/pages/CashOrphanReport.tsx",
+   "line": 87,
+   "from": "الدلو + DRAWER/TREASURY خام",
+   "to": "مكان النقد + درج/خزينة"
+  },
+  {
+   "file": "client/src/pages/CashOrphanReport.tsx",
+   "line": 96,
+   "from": "الدور الإنجليزي الخام بالتصدير",
+   "to": "ROLE_LABEL"
+  },
+  {
+   "file": "TrialBalance.tsx",
+   "line": 24,
+   "from": "شيكات قيد التحصيل",
+   "to": "صكوك قيد التحصيل"
+  },
+  {
+   "file": "TrialBalance.tsx",
+   "line": 99,
+   "from": "معادلة المركز المالي / ميزان المراجعة",
+   "to": "اسم واحد شاشةً وطباعةً وتصديراً"
+  },
+  {
+   "file": "BalanceSheet.tsx",
+   "line": 31,
+   "from": "الشيكات المقبوضة",
+   "to": "الصكوك المقبوضة"
+  },
+  {
+   "file": "BalanceSheet.tsx",
+   "line": 16,
+   "from": "والشيكات",
+   "to": "والصكوك"
+  },
+  {
+   "file": "Reconcile.tsx",
+   "line": 33,
+   "from": "مخصّصة للمدير (admin)",
+   "to": "مخصّصة لمسؤول النظام"
+  },
+  {
+   "file": "PeriodLock.tsx",
+   "line": 115,
+   "from": "تاريخ الإقفال (cutoff)",
+   "to": "تاريخ الإقفال"
+  },
+  {
+   "file": "YearEnd.tsx",
+   "line": 37,
+   "from": "revenue/cogs/Dec 31/net profit",
+   "to": "وصف عربي: الإيراد والتكلفة والمصروفات، حتى ٣١ كانون الأول، قيد تسوية بصافي الربح"
+  },
+  {
+   "file": "MonthlyClosePack.tsx",
+   "line": 67,
+   "from": "ذمم… الجارية (+68)",
+   "to": "الحالية"
+  },
+  {
+   "file": "MonthlyClosePack.tsx",
+   "line": 154,
+   "from": "الأرصدة الجارية",
+   "to": "الأرصدة الحالية"
+  },
+  {
+   "file": "ARAging.tsx",
+   "line": 220,
+   "from": "الرصيد الجاري",
+   "to": "الرصيد الحالي"
+  },
+  {
+   "file": "ARAging.tsx",
+   "line": 275,
+   "from": "كَـ WhatsApp summary",
+   "to": "كملخّص واتساب"
+  },
+  {
+   "file": "APAging.tsx",
+   "line": 204,
+   "from": "الرصيد الجاري",
+   "to": "الرصيد الحالي"
+  },
+  {
+   "file": "APAging.tsx",
+   "line": 258,
+   "from": "كَـ WhatsApp summary",
+   "to": "كملخّص واتساب"
+  },
+  {
+   "file": "ArApAgingDetail.tsx",
+   "line": 131,
+   "from": "دائنة — علينا للموردين",
+   "to": "دائنة — لهم علينا"
+  },
+  {
+   "file": "client/src/pages/SalesReport.tsx",
+   "line": 39,
+   "from": "WORKORDER: طلب خدمة",
+   "to": "أمر شغل"
+  },
+  {
+   "file": "client/src/pages/SalesByDimension.tsx",
+   "line": 23,
+   "from": "product: صنف",
+   "to": "منتج"
+  },
+  {
+   "file": "client/src/pages/ProfitabilityReport.tsx",
+   "line": 81,
+   "from": "الأصناف",
+   "to": "المنتجات"
+  },
+  {
+   "file": "client/src/pages/InventoryOpsReport.tsx",
+   "line": 27,
+   "from": "أصناف نفدت",
+   "to": "منتجات نفدت"
+  },
+  {
+   "file": "client/src/pages/InventoryOpsReport.tsx",
+   "line": 93,
+   "from": "أصناف راكدة",
+   "to": "منتجات راكدة"
+  },
+  {
+   "file": "client/src/pages/InventoryOpsReport.tsx",
+   "line": 98,
+   "from": "أصناف بخطر نفاد",
+   "to": "منتجات بخطر نفاد"
+  },
+  {
+   "file": "client/src/pages/InventoryOpsReport.tsx",
+   "line": 109,
+   "from": "أصناف سالبة",
+   "to": "منتجات سالبة"
+  },
+  {
+   "file": "client/src/pages/InventoryOpsReport.tsx",
+   "line": 441,
+   "from": "لا أصناف بخطر نفاد",
+   "to": "لا منتجات بخطر نفاد"
+  },
+  {
+   "file": "client/src/pages/ReportsCenter.tsx",
+   "line": 121,
+   "from": "المستفيد",
+   "to": "جهة الصرف"
+  },
+  {
+   "file": "client/src/pages/ReportsTools.tsx",
+   "line": 135,
+   "from": "الأصناف",
+   "to": "المنتجات"
+  },
+  {
+   "file": "client/src/pages/StocktakeReport.tsx",
+   "line": 293,
+   "from": "مسودّة",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/WIPReport.tsx",
+   "line": 27,
+   "from": "تقرير WIP —",
+   "to": "الإنتاج تحت التنفيذ (WIP)"
+  },
+  {
+   "file": "client/src/pages/WIPReport.tsx",
+   "line": 28,
+   "from": "SALE.cost",
+   "to": "ضمن تكلفة المبيعات عند التسليم"
+  },
+  {
+   "file": "client/src/pages/CreditExposureReport.tsx",
+   "line": 32,
+   "from": "الرصيد الجاري",
+   "to": "الرصيد الحالي"
+  },
+  {
+   "file": "client/src/pages/CreditExposureReport.tsx",
+   "line": 66,
+   "from": "الرصيد المستحقّ لدى",
+   "to": "صيغة «لنا عليكم» (رسالة تصل العميل)"
+  },
+  {
+   "file": "client/src/pages/Payroll.tsx",
+   "line": 148,
+   "from": "مسودة (المصدر shared/hr.ts:71)",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/Payroll.tsx",
+   "line": 161,
+   "from": "الإجمالي (gross) (+445)",
+   "to": "الإجمالي قبل الاستقطاع"
+  },
+  {
+   "file": "client/src/pages/Payroll.tsx",
+   "line": 214,
+   "from": "مخصّصات (+247/353)",
+   "to": "البدلات (توحيداً مع نموذج/بطاقة الموظف)"
+  },
+  {
+   "file": "client/src/pages/MonthlyAttendanceReport.tsx",
+   "line": 90,
+   "from": "أوفر تايم",
+   "to": "العمل الإضافي"
+  },
+  {
+   "file": "client/src/pages/MonthlyAttendanceReport.tsx",
+   "line": 103,
+   "from": "أوفر تايم (ساعة)",
+   "to": "العمل الإضافي (ساعة)"
+  },
+  {
+   "file": "client/src/pages/PayrollReport.tsx",
+   "line": 16,
+   "from": "مسودّة",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/UserEdit.tsx",
+   "line": 554,
+   "from": "إبطال كل الجلسات",
+   "to": "تسجيل الخروج من كل الأجهزة (توحيداً مع «حسابي»)"
+  },
+  {
+   "file": "client/src/pages/Settings.tsx",
+   "line": 414,
+   "from": "الصنف غير المجرود… نقداً بالكامل",
+   "to": "المنتج غير المجرود… ببيع نقدي كامل"
+  },
+  {
+   "file": "client/src/pages/Settings.tsx",
+   "line": 432,
+   "from": "للأصناف غير المجرودة",
+   "to": "للمنتجات غير المجرودة"
+  },
+  {
+   "file": "client/src/pages/IntegrationsSettings.tsx",
+   "line": 1156,
+   "from": "تَكاملات القَنوات (الشاشة كلها مشكَّلة)",
+   "to": "تكاملات القنوات — إزالة التشكيل"
+  },
+  {
+   "file": "client/src/pages/IntegrationsSettings.tsx",
+   "line": 954,
+   "from": "حَدّ الإرسال بِالدَقيقة (throttle)",
+   "to": "حدّ الإرسال بالدقيقة"
+  },
+  {
+   "file": "client/src/pages/AdminHub.tsx",
+   "line": 17,
+   "from": "تَكاملات القَنوات",
+   "to": "تكاملات القنوات"
+  },
+  {
+   "file": "client/src/pages/AnomalyWatch.tsx",
+   "line": 126,
+   "from": "الصنف (تصدير)",
+   "to": "المنتج"
+  },
+  {
+   "file": "client/src/pages/AnomalyWatch.tsx",
+   "line": 317,
+   "from": "الصنف (جدول)",
+   "to": "المنتج"
+  },
+  {
+   "file": "client/src/pages/Production.tsx",
+   "line": 52,
+   "from": "كلفة المواد",
+   "to": "تكلفة المواد (توحيداً مع التقارير)"
+  },
+  {
+   "file": "client/src/pages/ProductionNew.tsx",
+   "line": 207,
+   "from": "الورق مصدر حقيقة واحد ⇒ لا سالب",
+   "to": "يُخصم الورق فعلياً من المخزون — لا بيع بالسالب"
+  },
+  {
+   "file": "client/src/pages/WorkOrderProfitability.tsx",
+   "line": 91,
+   "from": "(Job Costing) في عنوان التصدير",
+   "to": "يُحذف"
+  },
+  {
+   "file": "client/src/pages/WorkOrderProfitability.tsx",
+   "line": 137,
+   "from": "أوامر الشغل / طلبات خدمة العملاء (WorkOrdersReport:91)",
+   "to": "توحيد على «أمر شغل»"
+  },
+  {
+   "file": "client/src/pages/Assets.tsx",
+   "line": 54,
+   "from": "idempotent / ADJUST/DEPR",
+   "to": "آمن للتكرار — لن يُنشئ قيداً مضاعفاً، ويسجَّل قيد إهلاك في الدفتر"
+  },
+  {
+   "file": "client/src/pages/Assets.tsx",
+   "line": 147,
+   "from": "(SL/DB)",
+   "to": "(القسط الثابت/المتناقص)"
+  },
+  {
+   "file": "client/src/pages/AssetDetail.tsx",
+   "line": 377,
+   "from": "إخراج من الخدمة (retired)",
+   "to": "إخراج من الخدمة"
+  },
+  {
+   "file": "client/src/pages/AssetDetail.tsx",
+   "line": 378,
+   "from": "استبعاد ببيع/خردة (disposed)",
+   "to": "استبعاد ببيع/خردة"
+  },
+  {
+   "file": "client/src/pages/AssetDisposalLog.tsx",
+   "line": 113,
+   "from": "النتيجة",
+   "to": "ربح/خسارة (توحيد شاشة/طباعة/تصدير)"
+  },
+  {
+   "file": "client/src/pages/AssetsHub.tsx",
+   "line": 14,
+   "from": "تقرير العُهد",
+   "to": "تقرير العهد (مطابقة عنوان الشاشة)"
+  },
+  {
+   "file": "client/src/pages/MyDeliveries.tsx",
+   "line": 62,
+   "from": "استلام الزبون",
+   "to": "استلام العميل"
+  },
+  {
+   "file": "client/src/pages/MyDeliveries.tsx",
+   "line": 63,
+   "from": "استلام الزبون",
+   "to": "استلام العميل"
+  },
+  {
+   "file": "client/src/pages/MyDeliveries.tsx",
+   "line": 163,
+   "from": "زبون",
+   "to": "عميل"
+  },
+  {
+   "file": "client/src/pages/MyDeliveries.tsx",
+   "line": 223,
+   "from": "رفض الزبون / الزبون غير متوفّر",
+   "to": "رفض العميل / العميل غير متوفّر"
+  },
+  {
+   "file": "client/src/pages/MyDeliveries.tsx",
+   "line": 232,
+   "from": "ذمّة الزبون",
+   "to": "ذمّة العميل"
+  },
+  {
+   "file": "client/src/pages/OrderFulfillment.tsx",
+   "line": 191,
+   "from": "الزبون",
+   "to": "العميل"
+  },
+  {
+   "file": "client/src/pages/OrderFulfillment.tsx",
+   "line": 206,
+   "from": "الزبون (تصدير)",
+   "to": "العميل"
+  },
+  {
+   "file": "client/src/pages/OrderFulfillment.tsx",
+   "line": 208,
+   "from": "عدد الأصناف",
+   "to": "عدد المنتجات"
+  },
+  {
+   "file": "client/src/pages/OrderFulfillment.tsx",
+   "line": 236,
+   "from": "الزبون (ترويسة)",
+   "to": "العميل"
+  },
+  {
+   "file": "client/src/pages/OrderFulfillment.tsx",
+   "line": 239,
+   "from": "أصناف",
+   "to": "منتجات"
+  },
+  {
+   "file": "client/src/pages/OrderFulfillment.tsx",
+   "line": 392,
+   "from": "الزبون (أسباب الإلغاء)",
+   "to": "العميل"
+  },
+  {
+   "file": "client/src/pages/OrderFulfillment.tsx",
+   "line": 516,
+   "from": "ذمّة… الزبون",
+   "to": "العميل"
+  },
+  {
+   "file": "client/src/pages/Inbox.tsx",
+   "line": 59,
+   "from": "غَير المَقروء/المُؤرشَفة/اِختَر قالِباً… (تشكيل شاذ)",
+   "to": "بلا تشكيل"
+  },
+  {
+   "file": "client/src/pages/Campaigns.tsx",
+   "line": 15,
+   "from": "مسودة",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/Campaigns.tsx",
+   "line": 27,
+   "from": "حفظ المسودة",
+   "to": "حفظ المسوّدة"
+  },
+  {
+   "file": "client/src/pages/WaBroadcasts.tsx",
+   "line": 62,
+   "from": "مسودة (+437/477/530)",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/WhatsappHubReport.tsx",
+   "line": 39,
+   "from": "مسودة",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/CommissionRuns.tsx",
+   "line": 32,
+   "from": "مسودة (+104/117/129/216/296/307)",
+   "to": "مسوّدة"
+  },
+  {
+   "file": "client/src/pages/ExchangeStatement.tsx",
+   "line": 132,
+   "from": "رصيد جارٍ",
+   "to": "الرصيد بعد كل حركة"
+  },
+  {
+   "file": "client/src/pages/JobApply.tsx",
+   "line": 41,
+   "from": "خدمة زبائن",
+   "to": "خدمة عملاء"
+  }
+ ],
+ "crossCutting": [
+  "حفظ الفلاتر في URL (querystring): hook مشترك useUrlFilters يُعمَّم — النقص مذكور في 30+ شاشة (Invoices/Quotations/Purchases/Customers/Products/Vouchers/Expenses/GeneralLedger/Users/AuditLogs/TasksHub/Shifts…)؛ يحل «فتح تفاصيل والرجوع يفقد كل شيء» ومشاركة الروابط دفعة واحدة",
+  "زر «مسح الفلاتر» + عدّاد الفلاتر النشطة: onResetFilters/activeFilterCount جاهزان في ListToolbar وغير ممرَّرين في ~15 شاشة — تمريرة واحدة؛ واعتماد ListToolbar في الشاشات الخارجة عنه (Vouchers/AuditLogs/Production/EmployeeAdvances/Inventory…)",
+  "حارس فقد البيانات + Ctrl+S: تعميم useUnsavedGuard/useSaveShortcuts على كل النماذج المكشوفة (~20: SalesInvoiceNew/SalesReturnNew/PurchaseNew/PurchaseReturnNew/QuotationNew/WorkOrderNew/SupplierNew+Edit/CustomerEdit/ProductEdit/ProductionNew/Recipes/EmployeeNew/UserNew+Edit/RoleEdit/AssetNew+Edit/Transfers/StocktakeNew/PriceWaves/_VoucherFormShared) + قاعدة: Esc وF12 لا يمسحان بلا تأكيد — النموذج المرجعي ExpenseNew",
+  "استئصال نمط «branchId ?? 1» المتبقي (المحظور منذ #274/#288): ConsignmentNotes/ConsignmentSettlements (عملية مالية!)/Customers/ContractPrices/Products/BarcodeLabels/ProductionNew/ProductionRecipes/WorkOrderNew/EmployeeAdvances — منتقي فرع صريح موحّد للأدمن بلا فرع مُسنَد",
+  "الاقتطاع الصامت (درس #287): نمط موحّد = لافتة hasMore/إجمالي + ترقيم + تصدير كامل fetchAllPaged — يشمل Inventory(300)/WorkOrders(200)/Production(300)/ConsignmentNotes(50)/Quotations(200)/ReorderAlerts(200)/GiftsHub(200)/ReservationsHub(200)/OrderFulfillment(200)/TreasuryTransfers(50)/CatalogAnomalies/PriceWaves/ProfitabilityReport(100)/CustomerNotes(100)/AttendanceReport(منتقي 200)",
+  "تفاوت الطباعة عن التصدير: onPrint يطبع الصفحة المعروضة والتصدير كامل (SalesRegister/PurchaseRegister/GeneralLedger/TreasuryReport) — توحيد الطباعة عبر fetchAllPaged أو لافتة «مطبوع جزئي»",
+  "استبدال window.prompt/confirm الخام بحوارات النظام الموحّدة: Inventory(رفض تسوية)/Vouchers(رفض)/ReservationsHub(إلغاء/تمديد)/VoucherCategories(دمج بمنتقٍ بالاسم بدل رقم!)/CatalogAnomalies(استعادة)/WaBroadcasts/ProductEdit — تمريرة واحدة",
+  "قواميس تعريب مشتركة (shared/labels): status/sourceType/paymentMethod/priceTier/severity/role تُستهلك في العرض والتصدير والطباعة معاً — يحل عدم اتساق تصدير Invoices وCustomers وKioskDevices وCashOrphanReport وZ المطبوع دفعة واحدة، مع توسيع ACTION_AR وخريطة كيانات للتدقيق",
+  "توحيد تسميات المفاهيم في قاموس مركزي: (وردية — لا «العمل»/«استقبال»/«خدمة الزبائن»)، (أمر شغل — لا «طلب خدمة»/«طابور المطبعة»: WorkOrders/PrintHub/SalesReport/WIPReport/WorkOrdersReport)، (حدّ إعادة الطلب)، (البدلات)، (الرقم القديم)، (تسجيل الخروج من كل الأجهزة)، (مسوّدة — الشدة على الواو، ومصدرها shared/hr.ts أيضاً)، (تبويب CrmHub «التحصيل والمتأخرات» = عنوان شاشته)",
+  "إزالة التشكيل الشاذ كأسلوب كتابة: Inbox/IntegrationsSettings/AdminHub/SalesReportsHub/ARAging/APAging/AgingReportsHub/WorkOrderStation — النظام كله غير مشكول",
+  "مكوّن مشترك واحد «مرجع العملية للدفع غير النقدي» (إلزامي كنمط الاستقبال) يُركَّب في POS وPrintPOS وWorkOrderDetail(تسليم) — يغلق ثغرة مطابقة كشف جهاز الدفع من كل الأبواب",
+  "PeriodFilter الموحّد + ymd محلي (لا toISOString/UTC) في كل التقارير الشاذة (SalesReport/Invoices/OfflineSalesReport) — يصحح انزياح التاريخ قبل 3 فجراً بتوقيت العراق",
+  "تمريرة توكنز دلالية بدل الألوان الخام (سيسقط الوضع الداكن): InvoiceDetail/BalanceSheet/PriceWaves/Offers/HrDevices/PayrollLegalSettings — badge-*/sem-*",
+  "استكمال ترحيل <select> الخام إلى AppSelect وفق الخطة القائمة docs/app-select-migration-plan.md (Invoices/SalesRegister/SalesReturns/Returns/Quotations وغيرها مذكورة صراحة في التدقيق)"
+ ]
+}
