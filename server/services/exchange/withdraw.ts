@@ -14,7 +14,9 @@ export interface WithdrawInput {
   branchId: number;
   amount: string; // بعملة `currency`
   /** IQD (افتراضي) = نقد دينار يعود لخزينة الفرع. USD = سحب دولار مباشر (بلا receipt، بلا أثر
-   *  على الدينار — محفظتان معزولتان تماماً). متوسط الكلفة WAVG لا يتغيّر عند السحب. */
+   *  على الدينار — محفظتان معزولتان تماماً). متوسط الكلفة WAVG لا يتغيّر عند السحب.
+   *  السحب علاقة دَينٍ متجدّد (قرار مالك ٣/٨): يجوز أن يتجاوز الرصيد المتاح فيصبح دَيناً
+   *  «علينا للصيرفة» — بتحذير قابل للتجاوز عند **أوّل عبورٍ** من رصيدٍ غير سالب، لا عند كل عملية. */
   currency?: "IQD" | "USD";
   notes?: string | null;
   clientRequestId?: string | null;
@@ -22,7 +24,8 @@ export interface WithdrawInput {
 }
 
 /** سحب نقد (دينار) من محفظة الصيرفة → خزينة الفرع، أو سحب دولار مباشر من محفظتها الدولارية
- *  (عكس الإيداع بكلتا العملتين، كلٌّ بمعزل عن الآخر). */
+ *  (عكس الإيداع بكلتا العملتين، كلٌّ بمعزل عن الآخر). يجوز أن يتجاوز الرصيد المتاح (دَينٌ متجدّد
+ *  علينا للصيرفة) بتأكيد صريح — يُطلَب مرّةً واحدة عند أوّل عبورٍ للسالب فقط. */
 export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): Promise<{ txnId: number; txnNumber: string }> {
   return withTx(async (tx) => {
     if (input.clientRequestId) {
@@ -39,10 +42,10 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
 
     if (input.currency === "USD") {
       const availUsd = money(house.balanceUsd);
-      if (amount.gt(availUsd)) {
+      if (amount.gt(availUsd) && availUsd.gte(0) && !input.confirmNegative) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: `السحب مرفوض: رصيد الدولار لدى الصيرفة ${availUsd.toFixed(2)}$ أقلّ من المطلوب ${amount.toFixed(2)}$. لا يجوز إنشاء رصيد خزينة من محفظة سالبة.`,
+          message: `السحب سيجعل رصيد الدولار لدى الصيرفة سالباً (${availUsd.toFixed(2)}$ متاح مقابل ${amount.toFixed(2)}$ مطلوب) — أي دَيناً لكم عليها. أرسل confirmNegative=true للتجاوز.`,
         });
       }
 
@@ -83,10 +86,10 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
     }
 
     const availIqd = money(house.balanceIqd);
-    if (amount.gt(availIqd)) {
+    if (amount.gt(availIqd) && availIqd.gte(0) && !input.confirmNegative) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `السحب مرفوض: رصيد الدينار لدى الصيرفة ${availIqd.toFixed(2)} أقلّ من المطلوب ${amount.toFixed(2)}. لا يجوز إنشاء نقد خزينة بلا رصيد مصدر.`,
+        message: `السحب سيجعل رصيد الدينار لدى الصيرفة سالباً (${availIqd.toFixed(2)} متاح مقابل ${amount.toFixed(2)} مطلوب) — أي دَيناً لكم عليها. أرسل confirmNegative=true للتجاوز.`,
       });
     }
 

@@ -1,7 +1,7 @@
 // كشف حساب صيرفة: كل العمليات + إجماليات الفترة.
 import Decimal from "decimal.js";
 import { and, eq, gte, lte } from "drizzle-orm";
-import { exchangeHouses, exchangeTransactions } from "../../../drizzle/schema";
+import { branches, exchangeHouses, exchangeTransactions, receipts, suppliers, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 
@@ -21,11 +21,23 @@ export async function getExchangeStatement(input: StatementInput) {
   if (input.from) conds.push(gte(exchangeTransactions.createdAt, new Date(input.from + "T00:00:00Z")));
   if (input.to) conds.push(lte(exchangeTransactions.createdAt, new Date(input.to + "T23:59:59Z")));
 
-  const txns = await db
-    .select()
+  // JOIN لاسم المُنشئ والمورّد والفرع وسند الصرف المرتبط (لعرض الطباعة — سند صيرفة يحتاج أسماءً لا معرّفات خامة).
+  const rows = await db
+    .select({
+      txn: exchangeTransactions,
+      createdByName: users.name,
+      supplierName: suppliers.name,
+      branchName: branches.name,
+      voucherNumber: receipts.voucherNumber,
+    })
     .from(exchangeTransactions)
+    .leftJoin(users, eq(exchangeTransactions.createdBy, users.id))
+    .leftJoin(suppliers, eq(exchangeTransactions.supplierId, suppliers.id))
+    .leftJoin(branches, eq(exchangeTransactions.branchId, branches.id))
+    .leftJoin(receipts, eq(exchangeTransactions.receiptId, receipts.id))
     .where(and(...conds))
     .orderBy(exchangeTransactions.createdAt, exchangeTransactions.id);
+  const txns = rows.map((r) => r.txn);
 
   let totalDepositIqd = new Decimal(0);
   let totalWithdrawIqd = new Decimal(0);
@@ -61,7 +73,7 @@ export async function getExchangeStatement(input: StatementInput) {
       balanceUsd: house.balanceUsd,
       usdCostRate: house.usdCostRate,
     },
-    transactions: txns.map((t) => ({
+    transactions: rows.map(({ txn: t, createdByName, supplierName, branchName, voucherNumber }) => ({
       id: Number(t.id),
       txnNumber: t.txnNumber,
       type: t.type,
@@ -73,6 +85,7 @@ export async function getExchangeStatement(input: StatementInput) {
       commissionIqd: t.commissionIqd,
       fxDiff: t.fxDiff,
       supplierId: t.supplierId ? Number(t.supplierId) : null,
+      supplierName: supplierName ?? null,
       purchaseOrderId: t.purchaseOrderId ? Number(t.purchaseOrderId) : null,
       settledUsd: t.settledUsd,
       settledIqd: t.settledIqd,
@@ -81,6 +94,9 @@ export async function getExchangeStatement(input: StatementInput) {
       status: t.status,
       notes: t.notes,
       createdAt: t.createdAt instanceof Date ? t.createdAt.toISOString() : String(t.createdAt),
+      createdByName: createdByName ?? null,
+      branchName: branchName ?? null,
+      voucherNumber: voucherNumber ?? null,
     })),
     summary: {
       totalDepositIqd: toDbMoney(totalDepositIqd),
