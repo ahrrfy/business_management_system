@@ -5,7 +5,6 @@ import {
   PASSWORD_REGEX,
   SESSION_DEFAULT_MS,
   SESSION_REMEMBER_MAX_MS,
-  TWO_FACTOR_REQUIRED_ROLES,
 } from "@shared/const";
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
@@ -25,7 +24,6 @@ import {
   regenerateRecoveryCodes,
   startTwoFactorSetup,
 } from "../services/twoFactorService";
-import { isCryptoReady } from "../services/cryptoService";
 import { ensureTenantDb, getDb, isMultiTenantModeActive } from "../db";
 import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
@@ -40,7 +38,7 @@ import {
 import { withTx } from "../services/tx";
 import { getCurrentCompanyId, runWithCompany } from "../tenancy/context";
 import { resolveCompanyByCode } from "../tenancy/registry";
-import { adminProcedure, protectedProcedure, publicProcedure, router } from "../trpc";
+import { adminProcedure, protectedProcedure, publicProcedure, router, twoFactorEnrollmentRequired } from "../trpc";
 
 // مزامنة مع ALL_ROLES (shared/permissions) الذي يُمثّل الـenum الكامل في الـschema (١٠ أدوار).
 const ROLE = z.enum(ALL_ROLES as [RoleKey, ...RoleKey[]]);
@@ -124,11 +122,12 @@ export const authRouter = router({
     if (!ctx.user) return null;
     // حجب الأسرار: passwordHash + سرّ TOTP المشفَّر (لا شأن للعميل به حتى مشفَّراً).
     const { passwordHash: _passwordHash, totpSecretEncrypted: _totpSecret, ...safe } = ctx.user;
-    // إلزام 2FA (قرار المالك ٢٣/٧): الأدمن/المدير يجب أن يُفعّلوا 2FA قبل استعمال النظام — تُوجّههم الواجهة
-    // إجبارياً لشاشة التفعيل. **فشلٌ آمن:** لا إلزام إن كان التشفير غير مضبوط (isCryptoReady=false) لئلّا
-    // يُقفَل حسابٌ عالي الصلاحية على خادمٍ بلا مفتاح. الكاشير/البقية اختياريّ كما كان.
-    const mustEnroll2FA =
-      TWO_FACTOR_REQUIRED_ROLES.includes(safe.role) && !safe.totpEnabledAt && isCryptoReady();
+    // إلزام 2FA (قرار المالك ٢٣/٧ + إنفاذ خادميّ M9 ٣/٨): الأدمن/المدير يجب أن يُفعّلوا 2FA قبل
+    // استعمال النظام — تُوجّههم الواجهة إجبارياً لشاشة التفعيل، والخادم يحجب أي إجراء غير التفعيل.
+    // نستعمل نفس دالة الإنفاذ الخادميّ (twoFactorEnrollmentRequired) فتتّسق الراية الواجهية مع
+    // البوّابة الخادمية تماماً — بما فيه مفتاح الإيقاف TWO_FACTOR_ENFORCEMENT=off (وإلا بقيت الواجهة
+    // حاجبةً رغم إيقاف الإنفاذ) وحارس isCryptoReady (لا إلزام بلا مفتاح تشفير).
+    const mustEnroll2FA = twoFactorEnrollmentRequired(safe);
     return { ...safe, mustEnroll2FA };
   }),
 

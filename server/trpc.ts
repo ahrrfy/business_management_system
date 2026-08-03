@@ -1,9 +1,10 @@
-import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from "@shared/const";
+import { NOT_ADMIN_ERR_MSG, TWO_FACTOR_REQUIRED_ROLES, UNAUTHED_ERR_MSG } from "@shared/const";
 import { GENERIC_INTERNAL_AR, mysqlCodeFrom, toArabicMessage } from "@shared/errorMap.ar";
 import { canSeeCost as _canSeeCost, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
+import { isCryptoReady } from "./services/cryptoService";
 import { logger } from "./logger";
 
 const t = initTRPC.context<TrpcContext>().create({
@@ -42,8 +43,45 @@ export const router = t.router;
 export const middleware = t.middleware;
 export const publicProcedure = t.procedure;
 
-const requireUser = t.middleware(async ({ ctx, next }) => {
+// ─── M9 (تدقيق ٣/٨): إلزام 2FA خادمياً للمدير/المشرف ─────────────────────────
+// كانت راية `mustEnroll2FA` توجيهاً واجهياً فقط (ForceTwoFactorEnroll يحجب الشاشة)، فعميلٌ
+// غير قياسيّ أو استدعاء API مباشر يتجاهلها ويعمل بكامل الصلاحية بلا عاملٍ ثانٍ. الآن يُحجب أي
+// إجراء (عدا مسارات التفعيل) لدور مُلزَم لم يُفعّل 2FA — خادمياً — عبر البوّابات الأربع أدناه.
+//
+// 🛟 بوّابات إنقاذ الأدمن (منع القفل الدائم خارج الحساب):
+//   ١) مسارات التفعيل/الحالة مُستثناة دائماً ⇒ الحساب يُصلِح نفسه بالتفعيل بلا أي وصولٍ آخر.
+//   ٢) `isCryptoReady()=false` (لا مفتاح تشفير) ⇒ لا إنفاذ (لا يمكن تفعيل 2FA أصلاً).
+//   ٣) مفتاح إيقافٍ بيئيّ `TWO_FACTOR_ENFORCEMENT=off` ⇒ يُعطّل الإنفاذ كلياً (مخرج المالك عند طارئ).
+//   + إنقاذ الأدمن القائم `users.resetTwoFactor` (أدمن يصفّر 2FA لمستخدمٍ آخر).
+// المسارات المُستثناة تطابق ما يستدعيه ForceTwoFactorEnroll (setupStart/Confirm) + قراءة الحالة.
+const TWO_FACTOR_EXEMPT_PATHS = new Set<string>([
+  "auth.twoFactorSetupStart",
+  "auth.twoFactorSetupConfirm",
+  "auth.twoFactorStatus",
+]);
+
+/** هل يجب على هذا المستخدم تفعيل 2FA قبل استعمال النظام؟ (يطابق `mustEnroll2FA` في authRouter.me). */
+export function twoFactorEnrollmentRequired(user: { role: string; totpEnabledAt?: Date | string | null }): boolean {
+  if (process.env.TWO_FACTOR_ENFORCEMENT === "off") return false; // بوّابة إنقاذ ٣
+  if (!isCryptoReady()) return false; // بوّابة إنقاذ ٢
+  if (!TWO_FACTOR_REQUIRED_ROLES.includes(user.role)) return false;
+  return !user.totpEnabledAt;
+}
+
+/** يرمي FORBIDDEN إن كان الإجراء غير مُستثنى ودورُ المستخدم مُلزَمٌ بـ2FA ولم يُفعّلها. */
+function assertTwoFactorEnrolled(user: { role: string; totpEnabledAt?: Date | string | null }, path: string): void {
+  if (TWO_FACTOR_EXEMPT_PATHS.has(path)) return; // بوّابة إنقاذ ١
+  if (twoFactorEnrollmentRequired(user)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "يلزم تفعيل المصادقة الثنائية (2FA) للمتابعة — سياسة إلزامية للمدير/المشرف.",
+    });
+  }
+}
+
+const requireUser = t.middleware(async ({ ctx, next, path }) => {
   if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  assertTwoFactorEnrolled(ctx.user, path);
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
@@ -56,10 +94,11 @@ export const protectedProcedure = t.procedure.use(requireUser);
  */
 export const stocktakeAssignmentProcedure = protectedProcedure;
 
-const requireAdmin = t.middleware(async ({ ctx, next }) => {
+const requireAdmin = t.middleware(async ({ ctx, next, path }) => {
   if (!ctx.user || ctx.user.role !== "admin") {
     throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
   }
+  assertTwoFactorEnrolled(ctx.user, path);
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
@@ -77,11 +116,12 @@ export const platformAdminProcedure = t.procedure.use(requirePlatformAdmin);
 const FORBIDDEN_MSG = "صلاحيات غير كافية لهذا الإجراء.";
 
 function requireRole(...allowed: string[]) {
-  return t.middleware(async ({ ctx, next }) => {
+  return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
     if (ctx.user.role !== "admin" && !allowed.includes(ctx.user.role)) {
       throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     }
+    assertTwoFactorEnrolled(ctx.user, path);
     return next({ ctx: { ...ctx, user: ctx.user } });
   });
 }
@@ -111,7 +151,7 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
  * كالإلغاءات) — هذا هو معنى «كامل» المعروض للمالك في المصفوفة، والمنح قرار أدمن.
  */
 function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, minLevel: AccessLevel) {
-  return t.middleware(async ({ ctx, next }) => {
+  return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
     const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
       | Record<string, AccessLevel>
@@ -120,6 +160,7 @@ function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, m
     if (!moduleAccessAllowed(ctx.user.role, override, moduleKey, minLevel, allowedRoles)) {
       throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     }
+    assertTwoFactorEnrolled(ctx.user, path);
     return next({ ctx: { ...ctx, user: ctx.user } });
   });
 }
