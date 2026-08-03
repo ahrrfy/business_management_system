@@ -128,7 +128,7 @@ export default function KioskDevices() {
         <Card className="border-emerald-400/60 bg-emerald-50/50 dark:bg-emerald-950/20">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base text-emerald-700 dark:text-emerald-400">
-              رمز الجهاز «{reveal.label}» — اظهر مرّة واحدة فقط
+              رمز الجهاز «{reveal.label}» — يظهر مرّة واحدة فقط
             </CardTitle>
             <button className="text-muted-foreground hover:text-foreground" onClick={() => setReveal(null)} aria-label="إغلاق"><X aria-hidden className="size-5" /></button>
           </CardHeader>

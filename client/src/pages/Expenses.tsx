@@ -166,7 +166,7 @@ export default function Expenses() {
     <div className="space-y-4">
       <PageHeader
         title="المصروفات اليومية"
-        description="كل مصروف يولّد قبضاً صادراً (يُخصم من صندوق الوردية إن كانت مفتوحة) وقيداً في الدفتر."
+        description="كل مصروف يولّد حركة صرف من الصندوق (تُخصم من صندوق الوردية إن كانت مفتوحة) وقيداً في الدفتر."
         actions={
           <div className="flex gap-2">
             <Button

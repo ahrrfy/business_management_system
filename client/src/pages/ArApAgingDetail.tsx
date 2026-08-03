@@ -128,7 +128,7 @@ export default function ArApAgingDetail() {
               onChange={(e) => setSide(e.target.value as Side)}
             >
               <option value="AR">مدينة — لنا على العملاء</option>
-              <option value="AP">دائنة — علينا للموردين</option>
+              <option value="AP">دائنة — لهم علينا</option>
             </select>
           </div>
           <div className="flex flex-col gap-1">

@@ -204,7 +204,7 @@ export default function Treasury() {
       },
       { header: "الطريقة", accessorKey: "paymentMethodLabel" },
       {
-        header: "الدلو",
+        header: "مكان النقد",
         accessorKey: "cashBucket",
         cell: ({ row }) =>
           row.original.cashBucket ? (

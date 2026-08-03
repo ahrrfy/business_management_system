@@ -17,7 +17,7 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { useState } from "react";
 
 const STATUS: Record<string, string> = {
-  DRAFT: "مسودّة",
+  DRAFT: "مسوّدة",
   SENT: "مُرسَل",
   ACCEPTED: "مقبول",
   REJECTED: "مرفوض",

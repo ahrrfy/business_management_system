@@ -24,8 +24,8 @@ export default function WIPReportPage() {
   return (
     <div className="container mx-auto p-4 space-y-4 max-w-6xl">
       <PageHeader
-        title="تقرير WIP — قيمة الإنتاج تحت التنفيذ"
-        description="المواد المُستهلَكة في طلبات خدمة لم تُسلَّم بعد — قيمة معلَّقة بين «المخزون» و«تكلفة المبيع» (تظهر فعلياً في SALE.cost عند التسليم)."
+        title="الإنتاج تحت التنفيذ (WIP)"
+        description="المواد المُستهلَكة في طلبات خدمة لم تُسلَّم بعد — قيمة معلَّقة بين «المخزون» و«تكلفة المبيع» (تدخل ضمن تكلفة المبيعات عند التسليم)."
       />
 
       <Card>

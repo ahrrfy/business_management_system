@@ -216,7 +216,7 @@ export default function TransfersLog() {
                   <TableRow>
                     <TableHead className="text-right">السند</TableHead>
                     <TableHead className="text-right">من ← إلى</TableHead>
-                    <TableHead className="text-center">الأصناف</TableHead>
+                    <TableHead className="text-center">المنتجات</TableHead>
                     <TableHead className="text-center">الوحدات (مرسَل/مستلَم)</TableHead>
                     <TableHead className="text-center">الحالة</TableHead>
                     <TableHead className="text-left">التاريخ</TableHead>
@@ -293,7 +293,7 @@ export default function TransfersLog() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/40">
                     <tr>
-                      <th className="p-2 px-3 text-right">الصنف</th>
+                      <th className="p-2 px-3 text-right">المنتج</th>
                       <th className="p-2 text-center w-24">المرسَل</th>
                       <th className="p-2 text-center w-32">{canReceive ? "المستلَم فعلياً" : "المستلَم"}</th>
                       <th className="p-2 text-center w-20">الفرق</th>

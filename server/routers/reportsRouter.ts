@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { branches, customers, invoices, suppliers } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
@@ -232,6 +232,14 @@ export const reportsRouter = router({
             ])
           )
           .optional(),
+        // فلتر طريقة الدفع على invoices.paymentMethod نفسه الذي يعرضه التقرير عموداً —
+        // "NONE" = فاتورة بلا طريقة مسجَّلة (آجل/تاريخية قبل بدء التسجيل) أي IS NULL.
+        paymentMethods: z
+          .array(z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "NONE"]))
+          .optional(),
+        // فلتر الكاشير/البائع — مرآة sales.list: الإسناد بمُنشئ الفاتورة (createdBy)،
+        // يستفيد من فهرس idx_invoice_salesperson_date.
+        salespersonId: z.number().int().positive().optional(),
         // الفجوة ١٦: حدّ صفحة افتراضي ١٠٠٠ بحدٍّ أعلى ٥٠٠٠ ⇒ يمنع DoS صامت
         // عند طلب مدير لنطاق سنوي يستنفد pool الاتصالات. الكاتب فجواتٍ في الواجهة
         // يجمع الصفحات عبر nextCursor.
@@ -268,7 +276,18 @@ export const reportsRouter = router({
       if (input.statuses && input.statuses.length > 0) {
         conditions.push(inArray(invoices.status, input.statuses));
       }
-      // فلتر الإجماليات = كامل النطاق (from/to/branch/source/status) بلا مؤشّر الصفحة.
+      if (input.paymentMethods && input.paymentMethods.length > 0) {
+        const withCredit = input.paymentMethods.includes("NONE");
+        const methods = input.paymentMethods.filter((m) => m !== "NONE");
+        const parts = [];
+        if (methods.length > 0) parts.push(inArray(invoices.paymentMethod, methods));
+        if (withCredit) parts.push(isNull(invoices.paymentMethod));
+        conditions.push(parts.length === 1 ? parts[0] : or(...parts)!);
+      }
+      if (input.salespersonId) {
+        conditions.push(eq(invoices.createdBy, input.salespersonId));
+      }
+      // فلتر الإجماليات = كامل النطاق (from/to/branch/source/status/طريقة الدفع/البائع) بلا مؤشّر الصفحة.
       const filterWhere = conditions.length > 0 ? and(...conditions) : undefined;
       // مؤشّر keyset للصفوف فقط: id < cursor (الترتيب desc(id) ⇒ الصفحة التالية أقدم).
       // keyset بدل offset: lt(id, cursor) يستفيد من فهرس المفتاح الأساسي مباشرةً.

@@ -36,7 +36,7 @@ const STATUS_CLS: Record<string, string> = {
 };
 const SHIFT_TYPE_LABEL: Record<string, string> = {
   RETAIL: "تجزئة",
-  RECEPTION: "استقبال",
+  RECEPTION: "خدمة العملاء",
   PRINT_SERVICES: "خدمات طباعة",
 };
 
@@ -337,7 +337,7 @@ export default function Shifts() {
                   >
                     <option value="">الكل</option>
                     <option value="RETAIL">تجزئة</option>
-                    <option value="RECEPTION">استقبال</option>
+                    <option value="RECEPTION">خدمة العملاء</option>
                     <option value="PRINT_SERVICES">خدمات طباعة</option>
                   </select>
                 </FilterField>

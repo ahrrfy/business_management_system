@@ -307,16 +307,16 @@ export default function CustomerEdit() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1">
                 <Label htmlFor="ph1">
-                  Phone 1 <span className="text-[10px] text-primary mr-1">رئيسي</span>
+                  الهاتف ١ <span className="text-[10px] text-primary mr-1">رئيسي</span>
                 </Label>
                 <IntlPhoneInput id="ph1" value={phone} onChange={setPhone} />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="ph2">Phone 2</Label>
+                <Label htmlFor="ph2">الهاتف ٢</Label>
                 <IntlPhoneInput id="ph2" value={phone2} onChange={setPhone2} />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="ph3">Phone 3</Label>
+                <Label htmlFor="ph3">الهاتف ٣</Label>
                 <IntlPhoneInput id="ph3" value={phone3} onChange={setPhone3} />
               </div>
               <div className="space-y-1">
@@ -457,7 +457,7 @@ export default function CustomerEdit() {
               </div>
               <div className="md:col-span-2">
                 <p className="text-[11px] text-sky-800">
-                  يُصحّح قيد الرصيد الافتتاحي (لأخطاء الإدخال الأوّليّ) ويُطبّق الفارق على الرصيد الجاري
+                  يُصحّح قيد الرصيد الافتتاحي (لأخطاء الإدخال الأوّليّ) ويُطبّق الفارق على الرصيد الحالي
                   دون المساس بأي حركةٍ لاحقة. اتركه فارغاً لإزالة الرصيد الافتتاحي. لا يتغيّر شيء إن لم تُعدّله.
                 </p>
               </div>

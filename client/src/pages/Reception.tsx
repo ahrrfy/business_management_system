@@ -204,7 +204,7 @@ export default function Reception() {
   const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
   const utils = trpc.useUtils();
 
-  // وردية خدمة الزبائن (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
+  // وردية خدمة العملاء (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
   const branchesQ = trpc.branches.list.useQuery();
   const staffQ = trpc.workOrders.assignableStaff.useQuery({ branchId });
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" });
@@ -937,7 +937,7 @@ export default function Reception() {
     return <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>;
   }
 
-  // بوّابة وردية خدمة الزبائن: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
+  // بوّابة وردية خدمة العملاء: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
   if (!shift) {
     return (
       <div className="flex h-full items-center justify-center bg-background p-4" dir="rtl">
@@ -1034,7 +1034,7 @@ export default function Reception() {
           <OrderFulfillment />
         </div>
       )}
-      {/* نافذة إغلاق وردية خدمة الزبائن (Z-report مستقلّ) */}
+      {/* نافذة إغلاق وردية خدمة العملاء (Z-report مستقلّ) */}
       {closing && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
@@ -1556,7 +1556,7 @@ export default function Reception() {
                               }}
                               className="grid size-8 place-items-center rounded-md border bg-card hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
                               disabled={isCustom && l.qty <= 1}
-                              title={isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية صنف مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
+                              title={isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية منتج مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
                               aria-label="تقليل الكمية"
                             >
                               <Minus aria-hidden className="size-3.5" />
@@ -1584,7 +1584,7 @@ export default function Reception() {
                               removeRow(l.key);
                             }}
                             className="text-muted-foreground hover:text-destructive"
-                            aria-label="حذف الصنف"
+                            aria-label="حذف المنتج"
                           >
                             <Trash2 aria-hidden className="size-4" />
                           </button>
@@ -1717,7 +1717,7 @@ export default function Reception() {
             <div className="flex gap-1.5">
               {(
                 [
-                  { v: "CASH", label: "نقداً", Icon: Banknote },
+                  { v: "CASH", label: "نقدي", Icon: Banknote },
                   { v: "CARD", label: "بطاقة", Icon: CreditCard },
                   { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight },
                 ] as const

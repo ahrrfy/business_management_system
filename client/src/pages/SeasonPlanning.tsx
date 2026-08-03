@@ -1,5 +1,5 @@
-// تخطيط موسم المدارس (بند 7): جدول الأصناف الموسمية بمخزونها الكلّيّ عبر **كل الفروع** مقابل هدف الموسم
-// + الفجوة (كمية الشراء المقترحة لتجهيز ذروة أيلول). تحرير الهدف مباشرةً، إضافة صنف موسميّ بالبحث،
+// تخطيط موسم المدارس (بند 7): جدول المنتجات الموسمية بمخزونها الكلّيّ عبر **كل الفروع** مقابل هدف الموسم
+// + الفجوة (كمية الشراء المقترحة لتجهيز ذروة أيلول). تحرير الهدف مباشرةً، إضافة منتج موسميّ بالبحث،
 // تصفية «تحت الهدف فقط»، وتصدير قائمة الشراء إلى Excel. محصورة بالمدير/المخزن (البوّابة خادمية).
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
@@ -67,7 +67,7 @@ export default function SeasonPlanning() {
     setTarget.mutate({ variantId, seasonTarget: t });
   }
 
-  // ── إضافة صنف موسميّ (بحث + تعيين هدف) ──────────────────────────────────
+  // ── إضافة منتج موسميّ (بحث + تعيين هدف) ──────────────────────────────────
   const [addOpen, setAddOpen] = useState(false);
   const [term, setTerm] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -82,7 +82,7 @@ export default function SeasonPlanning() {
   const [addTargets, setAddTargets] = useState<Record<number, string>>({});
   const addTarget = trpc.inventory.setSeasonTarget.useMutation({
     onSuccess: async (res) => {
-      notify.ok("أُضيف الصنف لخطة الموسم");
+      notify.ok("أُضيف المنتج لخطة الموسم");
       setAddTargets((prev) => {
         const next = { ...prev };
         delete next[res.variantId];
@@ -132,7 +132,7 @@ export default function SeasonPlanning() {
     <div className="space-y-4">
       <PageHeader
         title="تخطيط موسم المدارس"
-        description="الأصناف الموسمية: المخزون الكلّيّ عبر كل الفروع مقابل هدف الموسم — الأبعد عن الهدف أولاً. الفجوة = كمية الشراء المقترحة لتجهيز ذروة أيلول."
+        description="المنتجات الموسمية: المخزون الكلّيّ عبر كل الفروع مقابل هدف الموسم — الأبعد عن الهدف أولاً. الفجوة = كمية الشراء المقترحة لتجهيز ذروة أيلول."
         actions={
           canWrite ? (
             <div className="flex items-center gap-2">
@@ -141,7 +141,7 @@ export default function SeasonPlanning() {
               </Button>
               <Button size="sm" onClick={openAdd}>
                 <Plus aria-hidden className="size-4" />
-                إضافة صنف موسميّ
+                إضافة منتج موسميّ
               </Button>
             </div>
           ) : undefined
@@ -150,7 +150,7 @@ export default function SeasonPlanning() {
 
       <Card>
         <CardHeader className="flex-row items-center justify-between gap-3">
-          <CardTitle className="text-base">الأصناف الموسمية</CardTitle>
+          <CardTitle className="text-base">المنتجات الموسمية</CardTitle>
           <div className="flex items-center gap-3">
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
               <input
@@ -233,8 +233,8 @@ export default function SeasonPlanning() {
                     colSpan={canWrite ? 6 : 5}
                     message={
                       onlyBelow
-                        ? "لا أصناف موسمية تحت الهدف. ألغِ «تحت الهدف فقط» لعرض كل الأصناف الموسمية، أو أضِف صنفاً بزرّ «إضافة صنف موسميّ»."
-                        : "لا أصناف موسمية بعد. أضِف صنفاً بزرّ «إضافة صنف موسميّ» واضبط هدفه لتجهيز الموسم."
+                        ? "لا منتجات موسمية تحت الهدف. ألغِ «تحت الهدف فقط» لعرض كل المنتجات الموسمية، أو أضِف منتجاً بزرّ «إضافة منتج موسميّ»."
+                        : "لا منتجات موسمية بعد. أضِف منتجاً بزرّ «إضافة منتج موسميّ» واضبط هدفه لتجهيز الموسم."
                     }
                   />
                 )}
@@ -247,16 +247,16 @@ export default function SeasonPlanning() {
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>إضافة صنف لخطة موسم المدارس</DialogTitle>
+            <DialogTitle>إضافة منتج لخطة موسم المدارس</DialogTitle>
             <DialogDescription>
-              ابحث عن الصنف باسم المنتج أو SKU، ثم اضبط هدف الموسم (بالوحدة الأساس). الأصناف المُضافة سلفاً
-              تظهر بهدفها الحاليّ. اضبط الهدف إلى صفر لاحقاً لإزالة الصنف من الخطة.
+              ابحث عن المنتج باسمه أو SKU، ثم اضبط هدف الموسم (بالوحدة الأساس). المنتجات المُضافة سلفاً
+              تظهر بهدفها الحاليّ. اضبط الهدف إلى صفر لاحقاً لإزالة المنتج من الخطة.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3">
             <div className="space-y-1">
-              <Label htmlFor="season-search">بحث الصنف</Label>
+              <Label htmlFor="season-search">بحث المنتج</Label>
               <Input
                 id="season-search"
                 value={term}
@@ -270,7 +270,7 @@ export default function SeasonPlanning() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
-                    <th className="p-2 text-start">الصنف</th>
+                    <th className="p-2 text-start">المنتج</th>
                     <th className="p-2 text-left">المخزون الكلّيّ</th>
                     <th className="p-2 text-left">هدف الموسم</th>
                     <th className="p-2 text-center w-24"></th>

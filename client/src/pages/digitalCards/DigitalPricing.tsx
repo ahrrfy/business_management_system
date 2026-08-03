@@ -80,7 +80,7 @@ export default function DigitalPricing() {
     { enabled: branchId != null },
   );
 
-  // تحميل الحصص من المسودّة/السعر المُرحَّل عند وصول الكشف.
+  // تحميل الحصص من المسوّدة/السعر المُرحَّل عند وصول الكشف.
   useEffect(() => {
     if (!sheet.data) return;
     const nextCosts: Record<number, string> = {};
@@ -94,7 +94,7 @@ export default function DigitalPricing() {
     setSellPrices(nextSales);
   }, [sheet.data]);
 
-  // لا نعيد ضبط ما يكتبه المدير عند كل إعادة جلب؛ نحمّل السبب فقط عند تبدّل المسودّة نفسها.
+  // لا نعيد ضبط ما يكتبه المدير عند كل إعادة جلب؛ نحمّل السبب فقط عند تبدّل المسوّدة نفسها.
   useEffect(() => {
     setChangeReason(sheet.data?.batch?.changeReason ?? "");
   }, [sheet.data?.batch?.id]);
@@ -152,7 +152,7 @@ export default function DigitalPricing() {
   const saveMut = trpc.digitalCards.pricing.saveDraft.useMutation({
     onSuccess: (r) => {
       invalidate();
-      notify.ok(`حُفظت مسودّة ${r.savedCount} سعراً`);
+      notify.ok(`حُفظت مسوّدة ${r.savedCount} سعراً`);
     },
     onError: (e) => notify.err(e),
   });
@@ -183,7 +183,7 @@ export default function DigitalPricing() {
   const cancelMut = trpc.digitalCards.pricing.cancelDraft.useMutation({
     onSuccess: () => {
       invalidate();
-      notify.ok("أُلغيت المسودّة", "الأسعار النافذة لم تتغيّر.");
+      notify.ok("أُلغيت المسوّدة", "الأسعار النافذة لم تتغيّر.");
     },
     onError: (e) => notify.err(e),
   });
@@ -265,10 +265,10 @@ export default function DigitalPricing() {
     if (
       !(await confirm({
         variant: "danger",
-        title: "إلغاء المسودّة",
+        title: "إلغاء المسوّدة",
         description:
           "ستُحذف الحصص المحفوظة لهذا اليوم ويعود الكشف فارغاً. الأسعار النافذة في الكاشير لا تتأثّر. متابعة؟",
-        confirmText: "إلغاء المسودّة",
+        confirmText: "إلغاء المسوّدة",
       }))
     )
       return;
@@ -288,7 +288,7 @@ export default function DigitalPricing() {
   const threshold = sheet.data?.bigChangeThresholdPercent ?? 50;
   const bigApprovedBy = sheet.data?.batch?.bigChangeApprovedBy ?? null;
   const draftCreatedBy = sheet.data?.batch?.createdBy ?? null;
-  // مرآة حارس الخادم: لا يعتمد مُنشئ المسودّة (admin مُستثنى) ⇒ لا زرٌّ يعِد بما يُرفَض.
+  // مرآة حارس الخادم: لا يعتمد مُنشئ المسوّدة (admin مُستثنى) ⇒ لا زرٌّ يعِد بما يُرفَض.
   const canApproveBig =
     me.data?.role === "admin" || Number(me.data?.id) !== Number(draftCreatedBy);
   const bigChangeBlocking = bigChanges.length > 0 && bigApprovedBy == null;
@@ -432,13 +432,13 @@ export default function DigitalPricing() {
             <div className="flex flex-wrap items-center gap-3 px-4 pb-4 text-sm text-muted-foreground">
               {bigApprovedBy != null ? (
                 <span>
-                  اعتُمد النشر. أيّ تعديل على المسودّة بعد الآن يُبطل الاعتماد
+                  اعتُمد النشر. أيّ تعديل على المسوّدة بعد الآن يُبطل الاعتماد
                   ويعيد طلبه.
                 </span>
               ) : (
                 <>
                   <span>
-                    النشر موقوفٌ حتى يعتمده مديرٌ آخر غير مُنشئ المسودّة.
+                    النشر موقوفٌ حتى يعتمده مديرٌ آخر غير مُنشئ المسوّدة.
                   </span>
                   <Button
                     size="sm"
@@ -449,7 +449,7 @@ export default function DigitalPricing() {
                     }
                     title={
                       !canApproveBig
-                        ? "لا تعتمد تغييراً في مسودّةٍ أنشأتَها — يلزم مديرٌ آخر"
+                        ? "لا تعتمد تغييراً في مسوّدةٍ أنشأتَها — يلزم مديرٌ آخر"
                         : undefined
                     }
                     onClick={() =>
@@ -543,7 +543,7 @@ export default function DigitalPricing() {
             {sheet.data?.missingCount
               ? ` — ${sheet.data.missingCount} بلا سعر`
               : ""}
-            {sheet.data?.batch ? " — مسودّة محفوظة" : ""}
+            {sheet.data?.batch ? " — مسوّدة محفوظة" : ""}
           </span>
           <div className="flex gap-2">
             {draftBatchId != null && (
@@ -553,7 +553,7 @@ export default function DigitalPricing() {
                 disabled={busy}
                 onClick={() => void cancelDraft()}
               >
-                <Trash2 className="size-4" /> إلغاء المسودّة
+                <Trash2 className="size-4" /> إلغاء المسوّدة
               </Button>
             )}
             <Button
@@ -562,7 +562,7 @@ export default function DigitalPricing() {
               disabled={!scopeReady || busy}
               onClick={saveDraft}
             >
-              <Save className="size-4" /> حفظ مسودّة
+              <Save className="size-4" /> حفظ مسوّدة
             </Button>
             <Button
               size="sm"
@@ -659,7 +659,7 @@ export default function DigitalPricing() {
                           {r.status === "NEEDS_INPUT"
                             ? "بلا سعر"
                             : r.status === "DRAFTED"
-                              ? "مسودّة"
+                              ? "مسوّدة"
                               : "مُرحَّل"}
                         </span>
                       </td>

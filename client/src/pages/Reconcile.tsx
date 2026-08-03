@@ -30,7 +30,7 @@ export default function Reconcile() {
   if (me.data && !isAdmin) {
     return (
       <div className="p-10 text-center text-muted-foreground">
-        هذه الشاشة مخصّصة للمدير (admin) فقط.
+        هذه الشاشة مخصّصة لمسؤول النظام فقط.
       </div>
     );
   }

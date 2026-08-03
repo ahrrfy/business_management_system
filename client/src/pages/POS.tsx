@@ -39,6 +39,8 @@ import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, Ale
 import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
 import { CopyButton } from "@/components/CopyButton";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { PasswordInput } from "@/components/form/PasswordInput";
+import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -91,6 +93,10 @@ type POSTab = {
   couponInput: string;
   couponCode: string | null;
   couponLabel: string | null;
+  /** مرجع عملية الدفع غير النقدي (إشعار جهاز/تحويل) — يُرسَل payment.reference ويُحفظ receipts.referenceNumber. */
+  paymentRef: string;
+  /** تاريخ استحقاق البيع الآجل (YYYY-MM-DD، اختياري) — يصحّح أعمار الذمم والتذكيرات. */
+  dueDate: string;
 };
 
 type Receipt = {
@@ -204,6 +210,7 @@ const createTab = (id: number, label?: string): POSTab => ({
   customerId: null, tierOverride: null,
   clientRequestId: newClientRequestId(),
   couponInput: "", couponCode: null, couponLabel: null,
+  paymentRef: "", dueDate: "",
 });
 
 // ─── useSmartScanInput ────────────────────────────────────────────────────────
@@ -372,7 +379,7 @@ export default function POS() {
     return off;
   }, []);
 
-  // كاشير التجزئة: وردية RETAIL خاصّة (منفصلة عن درج خدمة الزبائن RECEPTION).
+  // كاشير التجزئة: وردية RETAIL خاصّة (منفصلة عن درج خدمة العملاء RECEPTION).
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
   // ش٥: وردية بديلة للإقلاع الأوفلايني — آخر وردية مفتوحة معلومة على هذا الجهاز. تُفعِّل مسارات
   // الالتقاط فقط (الإغلاق/التقرير أونلاينيان، والخادم يتحقق من الوردية فعلياً عند الترحيل).
@@ -504,7 +511,8 @@ export default function POS() {
     discardLegacyPosDrafts(localStorage, branchId);
     const saved = loadPosTabsDraft<POSTab>(localStorage, draftScope);
     if (saved) {
-      setTabs(saved.tabs.map((t) => ({ ...t, clientRequestId: t.clientRequestId ?? newClientRequestId() })));
+      // المسوّدات الأقدم لا تحمل paymentRef/dueDate — تُستكمل بفراغ كي لا تُرسَل undefined.
+      setTabs(saved.tabs.map((t) => ({ ...t, clientRequestId: t.clientRequestId ?? newClientRequestId(), paymentRef: t.paymentRef ?? "", dueDate: t.dueDate ?? "" })));
       setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
     } else {
       setTabs([createTab(1, "طلب 1")]);
@@ -523,7 +531,7 @@ export default function POS() {
 
   // ── Derived ───────────────────────────────────────────────────────────────
   // S5 (٢٩/٦): العميل المختار = قراءة فورية من القائمة المحمَّلة (الشائع ≤٥٠٠ ⇒ بلا وميض تسعير)،
-  // مع fallback إلى customers.get للعميل خارج أوّل ٥٠٠ (يُختار عبر باركود/بحث/مسودّة). يصلح علّة صحّة
+  // مع fallback إلى customers.get للعميل خارج أوّل ٥٠٠ (يُختار عبر باركود/بحث/مسوّدة). يصلح علّة صحّة
   // عند ١٠٠×: قبلُ كان selectedCustomer=null لغير المحمَّل ⇒ تسعير RETAIL خاطئ + فقدان الرصيد.
   // (تحويل القائمة المنسدلة نفسها لبحث شريحة لاحقة يُلغي تحميل ٥٠٠ عند الإقلاع.)
   const customers = trpc.customers.list.useQuery();
@@ -909,7 +917,7 @@ export default function POS() {
       setLastInv({ num: r.invoiceNumber, total: serverTotal });
       notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
-      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
+      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", dueDate: "" });
 
       const printed = await printReceipt(buildBrandedReceipt(alignedRec));
       if (printed.via === "server") {
@@ -1099,7 +1107,7 @@ export default function POS() {
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: ctx.total });
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
-    patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
+    patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", dueDate: "" });
     const printed = await printReceipt(buildBrandedReceipt(rec));
     if (printed.via === "browser") {
       notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة للإيصال المؤقت");
@@ -1128,6 +1136,12 @@ export default function POS() {
       notify.err("أدخل المبلغ المقبوض، أو امسح الحقل للدفع النقدي الكامل. للبيع الآجل اختر عميلاً وأدخل المقدَّم.");
       return;
     }
+    // المبلغ المقبوض السالب (مفتاح +/- بلوحة الأرقام): رفضٌ صريح — كان يُعامَل صامتاً كدفعٍ
+    // كامل (سالب ⇒ ليس آجلاً ولا مطابقاً ⇒ payAmount=الإجمالي) فيُسجَّل قبضٌ لم يقع فعلاً.
+    if (activeTab.payInput.trim() !== "" && D(activeTab.payInput).lt(0)) {
+      notify.err("المبلغ المقبوض لا يكون سالباً — صحّح المبلغ أو امسح الحقل للدفع الكامل.");
+      return;
+    }
     if (isCredit && activeTab.customerId == null) {
       notify.err("البيع الآجل يتطلّب اختيار عميل.");
       return;
@@ -1143,13 +1157,17 @@ export default function POS() {
     const deviceId = await getDeviceCode().catch(() => undefined);
     const cashFull = activeTab.method === "CASH" && !isCredit;
     const payAmount = isCredit ? money(paid) : money(total);
+    // مرجع الدفع غير النقدي: يُرسَل فقط غير فارغ (مخطط الخادم min(1) يرفض السلسلة الفارغة).
+    const payRef = activeTab.method !== "CASH" ? (activeTab.paymentRef ?? "").trim() : "";
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
       deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
-      payment: { amount: payAmount, method: activeTab.method },
+      payment: { amount: payAmount, method: activeTab.method, ...(payRef ? { reference: payRef } : {}) },
+      // تاريخ الاستحقاق للآجل فقط — يُحفظ invoices.dueDate ويصحّح أعمار الذمم والتذكيرات.
+      ...(isCredit && activeTab.dueDate ? { dueDate: activeTab.dueDate } : {}),
       ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),
       ...(cashFull ? { cashRoundIQD: true } : {}),
       ...(approval ? { managerApproval: approval } : {}),
@@ -1174,10 +1192,17 @@ export default function POS() {
       void captureOfflineSale();
       return;
     }
+    // الدفع السريع = دفع كامل بطبيعته، لكن مبلغاً سالباً ظاهراً في الحقل يُرفض صراحةً (لا تجاهل صامت).
+    if (activeTab.payInput.trim() !== "" && D(activeTab.payInput).lt(0)) {
+      notify.err("المبلغ المقبوض لا يكون سالباً — صحّح المبلغ أو امسح الحقل للدفع الكامل.");
+      return;
+    }
     // §٩: quickPay دائماً CASH كامل ⇒ الخادم يقرّب لفئة IQD (لا تقريب على العميل في مبلغ الدفع).
     saleCtxRef.current = captureSaleCtx();
     const deviceId = await getDeviceCode().catch(() => undefined);
     const payAmount = money(total);
+    // نفس مرجع الدفع غير النقدي — الدفع السريع قد يكون بطاقة/تحويلاً أيضاً.
+    const payRef = activeTab.method !== "CASH" ? (activeTab.paymentRef ?? "").trim() : "";
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
       deviceId,
@@ -1185,7 +1210,7 @@ export default function POS() {
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
       // Quick pay means full payment; it must not silently replace CARD/TRANSFER/WALLET with CASH.
-      payment: { amount: payAmount, method: activeTab.method },
+      payment: { amount: payAmount, method: activeTab.method, ...(payRef ? { reference: payRef } : {}) },
       ...(activeTab.method === "CASH" ? { cashRoundIQD: true } : {}),
       ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),
     });
@@ -1429,6 +1454,10 @@ export default function POS() {
           paid={paid} change={change} credit={credit}
           isChange={isChange} isOwing={isCredit}
           method={activeTab.method} setMethod={setMethod}
+          paymentRef={activeTab.paymentRef ?? ""}
+          setPaymentRef={(v) => patchActive({ paymentRef: v })}
+          dueDate={activeTab.dueDate ?? ""}
+          setDueDate={(v) => patchActive({ dueDate: v })}
           numMode={activeTab.numMode} setNumMode={setNumMode}
           numPress={numPress}
           onPay={submitSale} onQuickPay={quickPay}
@@ -1936,7 +1965,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
       {openingActive && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: C.amberSoft, borderBottom: `1px solid ${C.border}`, fontSize: 12, fontWeight: 700, color: "#7a5200", flexShrink: 0 }}>
           <AlertTriangle aria-hidden size={13} />
-          وضع الافتتاح فعّال{openingEndsYmd ? ` حتى نهاية يوم ${openingEndsYmd}` : ""} — الصنف غير المجرود يُباع بسداد كامل نقداً أو بالبطاقة حتى لو نفد (ينزل بالسالب حتى جرده الافتتاحي)؛ الآجل والدفعة الجزئية صارمان.
+          وضع الافتتاح فعّال{openingEndsYmd ? ` حتى نهاية يوم ${openingEndsYmd}` : ""} — المنتج غير المجرود يُباع بسداد كامل نقداً أو بالبطاقة حتى لو نفد (ينزل بالسالب حتى جرده الافتتاحي)؛ الآجل والدفعة الجزئية صارمان.
         </div>
       )}
 
@@ -2071,7 +2100,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
             {flaggedCount > 0 && (
               // شارة دائمة تلخّص أصناف نقص المخزون كي لا يختفي التحذير حين ينزلق سطره خارج الرؤية.
               <span style={{ background: anyOut ? C.danger : C.amber, color: anyOut ? "#fff" : "#241900", borderRadius: 8, padding: "3px 10px", fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                <AlertTriangle aria-hidden size={13} /> {flaggedCount} صنف ناقص المخزون
+                <AlertTriangle aria-hidden size={13} /> {flaggedCount} منتج ناقص المخزون
               </span>
             )}
           </div>
@@ -2097,6 +2126,8 @@ interface PaymentPanelProps {
   paid: number; change: number; credit: number;
   isChange: boolean; isOwing: boolean;
   method: PaymentMethod; setMethod: (m: PaymentMethod) => void;
+  paymentRef: string; setPaymentRef: (v: string) => void;
+  dueDate: string; setDueDate: (v: string) => void;
   numMode: NumMode; setNumMode: (m: NumMode) => void;
   numPress: (k: string) => void;
   onPay: () => void; onQuickPay: () => void;
@@ -2109,7 +2140,7 @@ interface PaymentPanelProps {
   couponPending: boolean;
 }
 
-function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending }: PaymentPanelProps) {
+function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending }: PaymentPanelProps) {
 
   const modeStyle = (active: boolean): React.CSSProperties => ({
     display: "flex", alignItems: "center", justifyContent: "center",
@@ -2272,6 +2303,33 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
           </button>
         </div>
       </div>
+
+      {/* مرجع العملية للدفع غير النقدي — إلزامي بصرياً (تحذير) ولا يمنع الإتمام (يخفي نفسه للنقدي) */}
+      <PaymentReferenceField
+        value={paymentRef}
+        onChange={setPaymentRef}
+        method={method}
+        inputId="pos-payment-reference"
+        colors={{ border: C.border, muted: C.muted, mutedFg: C.mutedFg, fg: C.fg, amber: C.amber }}
+        style={{ padding: "4px 11px 3px", flexShrink: 0 }}
+      />
+
+      {/* تاريخ استحقاق الآجل (اختياري) — يظهر مع دفعة جزئية فقط، يُحفظ invoices.dueDate */}
+      {isOwing && (
+        <div style={{ padding: "4px 11px 3px", flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
+          <label htmlFor="pos-due-date" style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 700, whiteSpace: "nowrap" }}>
+            تاريخ استحقاق الآجل (اختياري)
+          </label>
+          <input
+            id="pos-due-date"
+            type="date"
+            dir="ltr"
+            value={dueDate}
+            onChange={(e) => setDueDate(e.target.value)}
+            style={{ flex: 1, minWidth: 0, height: 36, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 13, fontWeight: 700, padding: "0 9px", outline: "none", boxSizing: "border-box" }}
+          />
+        </div>
+      )}
 
       {/* Change / owing indicator */}
       <div style={{ borderTop: `1px solid ${C.border}`, padding: "4px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 36, flexShrink: 0 }}>
@@ -2723,20 +2781,21 @@ function CreditApprovalDialog({ C, message, mgrEmail, setMgrEmail, mgrPwd, setMg
         style={{ background: C.card, borderRadius: 16, padding: "24px 28px", width: 380, boxShadow: "0 20px 56px rgb(0 0 0/.3)", animation: "popIn .2s ease" }}>
         <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4, color: C.amber, display: "inline-flex", alignItems: "center", gap: 6 }}><AlertTriangle aria-hidden size={18} /> موافقة مدير مطلوبة</div>
         <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 18 }}>{message}</div>
-        {[
-          { label: "بريد المدير", value: mgrEmail, setter: setMgrEmail, type: "email",    placeholder: "manager@alroya.local" },
-          { label: "كلمة المرور", value: mgrPwd,   setter: setMgrPwd,   type: "password", placeholder: "••••••••" },
-        ].map((f) => (
-          <div key={f.label} style={{ marginBottom: 12 }}>
-            <label style={{ fontSize: 13, fontWeight: 700, display: "block", marginBottom: 5, color: C.fg }}>{f.label}</label>
-            <input
-              type={f.type} dir="ltr" value={f.value} placeholder={f.placeholder}
-              onChange={(e) => f.setter(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && mgrEmail && mgrPwd) onApprove(); }}
-              style={{ width: "100%", height: 44, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 14, padding: "0 12px", outline: "none", boxSizing: "border-box" }}
-            />
-          </div>
-        ))}
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 13, fontWeight: 700, display: "block", marginBottom: 5, color: C.fg }}>بريد المدير</label>
+          <input
+            type="email" dir="ltr" value={mgrEmail} placeholder="manager@alroya.local"
+            onChange={(e) => setMgrEmail(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && mgrEmail && mgrPwd) onApprove(); }}
+            style={{ width: "100%", height: 44, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 14, padding: "0 12px", outline: "none", boxSizing: "border-box" }}
+          />
+        </div>
+        {/* PasswordInput الموحّد (عين إظهار/إخفاء — نفس مكوّن شاشة الدخول) بدل input نصيّ عارٍ.
+            Enter يعتمد ويُكمل — يُلتقط على الحاوية لأن المكوّن لا يكشف onKeyDown. */}
+        <div style={{ marginBottom: 12 }} onKeyDown={(e) => { if (e.key === "Enter" && mgrEmail && mgrPwd) onApprove(); }}>
+          <label style={{ fontSize: 13, fontWeight: 700, display: "block", marginBottom: 5, color: C.fg }}>كلمة المرور</label>
+          <PasswordInput value={mgrPwd} onChange={setMgrPwd} autoComplete="current-password" />
+        </div>
         <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
           <button
             disabled={!mgrEmail || !mgrPwd || isPending}

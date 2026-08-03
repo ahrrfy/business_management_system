@@ -3,13 +3,21 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { FilterField } from "@/components/list/FilterField";
+import { ListToolbar } from "@/components/list/ListToolbar";
 import { PageHeader } from "@/components/PageHeader";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { TableEmptyRow } from "@/components/PageState";
+import { TableEmptyRow, TableSkeleton } from "@/components/PageState";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
+import { type ExportColumn } from "@/lib/export";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Handshake, Paperclip, Plus, Printer, X } from "lucide-react";
 import { printConsignmentNote } from "@/lib/printing/printConsignmentNote";
@@ -19,6 +27,7 @@ import { buildConsignmentWithdrawMessage } from "@/lib/whatsapp";
 type NoteType = "DEPOSIT" | "WITHDRAW" | "EXCHANGE";
 type Dir = "IN" | "OUT";
 type Line = { key: number; direction: Dir; variantId: number; productUnitId: number; label: string; quantity: string };
+type NoteRow = RouterOutputs["consignments"]["list"]["rows"][number];
 
 const TYPE_META: Record<NoteType, { label: string; cls: string }> = {
   DEPOSIT: { label: "إيداع", cls: "bg-emerald-100 text-emerald-800" },
@@ -26,13 +35,75 @@ const TYPE_META: Record<NoteType, { label: string; cls: string }> = {
   EXCHANGE: { label: "استبدال", cls: "bg-blue-100 text-blue-800" },
 };
 
+const PAGE = 50;
+
+const dateCls =
+  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
 export default function ConsignmentNotes() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const branchId = me.data?.branchId ?? 1;
+  const role = me.data?.role ?? "";
+  const isElevated = role === "admin" || role === "manager";
+  // إزالة «?? 1» (نمط PR #288): بلا فرع مُسنَد يختار المرتفع فرع السند صراحةً — لا إسناد صامت للفرع ١
+  // (السند حركة مخزون موقَّعة؛ فرع خاطئ = أرصدة أمانة منحرفة). من له فرع مُسنَد يبقى عليه.
+  const [pickedBranch, setPickedBranch] = useState<number | null>(null);
+  const assignedBranch = me.data?.branchId != null ? Number(me.data.branchId) : null;
+  const formBranchId = assignedBranch ?? pickedBranch;
   const [mode, setMode] = useState<"list" | "new">("list");
 
-  const list = trpc.consignments.list.useQuery({ limit: 50 }, { enabled: mode === "list" });
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: isElevated });
+  const consignorsQ = trpc.suppliers.search.useQuery(
+    { kind: "CONSIGNOR", limit: 500 },
+    { enabled: mode === "list" },
+  );
+
+  // فلاتر القائمة في الـURL (تعيش مع التنقّل وتُشارَك رابطاً) + ترقيم فعلي على limit/offset+total الخادمية.
+  const [f, setF, resetF] = useUrlFilters({ q: "", type: "", consignor: "", branch: "", from: "", to: "" });
+  const [page, setPage] = useState(0);
+  const debouncedQ = useDebouncedValue(f.q, 250);
+  function patchFilters(patch: Partial<{ q: string; type: string; consignor: string; branch: string; from: string; to: string }>) {
+    setF(patch);
+    setPage(0);
+  }
+
+  const filterInput = {
+    consignorId: f.consignor ? Number(f.consignor) : undefined,
+    noteType: (f.type || undefined) as NoteType | undefined,
+    // فلتر الفرع للمرتفعين فقط — غير المرتفع مقصور بفرعه خادمياً (لا يُرسَل).
+    branchId: isElevated && f.branch ? Number(f.branch) : undefined,
+    from: f.from || undefined,
+    to: f.to || undefined,
+    q: debouncedQ.trim() || undefined,
+  };
+
+  const list = trpc.consignments.list.useQuery(
+    { ...filterInput, limit: PAGE, offset: page * PAGE },
+    { enabled: mode === "list", placeholderData: keepPreviousData },
+  );
+  const rows = list.data?.rows ?? [];
+  const total = list.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE));
+  const activeFilterCount = [f.type, f.consignor, isElevated ? f.branch : "", f.from, f.to].filter(Boolean).length;
+
+  const exportColumns: ExportColumn<NoteRow>[] = [
+    { key: "noteNumber", header: "رقم السند" },
+    { key: "noteType", header: "النوع", map: (r) => TYPE_META[r.noteType as NoteType]?.label ?? r.noteType },
+    { key: "consignorName", header: "المودِع" },
+    { key: "hasAttachment", header: "مرفق", map: (r) => (r.hasAttachment ? "نعم" : "لا") },
+    { key: "createdAt", header: "التاريخ", map: (r) => new Date(r.createdAt).toLocaleDateString("en-GB") },
+  ];
+
+  /** يجلب كل السندات المطابقة للفلاتر (لا الصفحة المعروضة) — تصدير كامل. */
+  function fetchAll(): Promise<NoteRow[]> {
+    return fetchAllPaged<NoteRow>(
+      (offset, limit) =>
+        utils.consignments.list
+          .fetch({ ...filterInput, limit, offset })
+          .then((r) => ({ rows: r.rows, total: r.total })),
+      { pageSize: 500 },
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -49,24 +120,87 @@ export default function ConsignmentNotes() {
       />
 
       {mode === "new" ? (
-        <NoteForm
-          branchId={branchId}
-          onSaved={() => { setMode("list"); utils.consignments.list.invalidate(); }}
-        />
+        formBranchId != null ? (
+          <NoteForm
+            branchId={formBranchId}
+            onSaved={() => { setMode("list"); utils.consignments.list.invalidate(); }}
+          />
+        ) : isElevated ? (
+          <BranchChoiceCard branches={branchesQ.data ?? []} onPick={setPickedBranch} />
+        ) : (
+          <Card>
+            <CardContent className="p-6 text-sm text-muted-foreground">
+              لا فرع مُسنَد لحسابك — اطلب من المدير إسناد فرع قبل إنشاء سند أمانة.
+            </CardContent>
+          </Card>
+        )
       ) : (
         <Card>
-          <CardHeader><CardTitle className="text-base">آخر السندات</CardTitle></CardHeader>
-          <CardContent className="p-0">
+          <CardContent className="space-y-3 p-4">
+            <ListToolbar<NoteRow>
+              title="السندات"
+              count={total}
+              loading={list.isLoading}
+              search={{
+                value: f.q,
+                onChange: (v) => patchFilters({ q: v }),
+                placeholder: "رقم السند (CSN-…)",
+                ariaLabel: "بحث برقم السند",
+              }}
+              activeFilterCount={activeFilterCount}
+              onResetFilters={() => { resetF(); setPage(0); }}
+              onRefresh={() => list.refetch()}
+              refreshing={list.isFetching}
+              exportSpec={{ filename: "سندات-الأمانة", rows, columns: exportColumns, fetchAll }}
+              filters={
+                <div className="flex flex-wrap items-end gap-2">
+                  <FilterField label="المودِع" className="w-44">
+                    <AppSelect size="sm" value={f.consignor} onValueChange={(v) => patchFilters({ consignor: v })} placeholder="— كل المودِعين —">
+                      <option value="">— كل المودِعين —</option>
+                      {(consignorsQ.data?.rows ?? []).map((c) => (
+                        <option key={Number(c.id)} value={String(c.id)}>{c.name}</option>
+                      ))}
+                    </AppSelect>
+                  </FilterField>
+                  <FilterField label="نوع السند" className="w-32">
+                    <AppSelect size="sm" value={f.type} onValueChange={(v) => patchFilters({ type: v })} placeholder="— الكل —">
+                      <option value="">— الكل —</option>
+                      <option value="DEPOSIT">إيداع</option>
+                      <option value="WITHDRAW">سحب</option>
+                      <option value="EXCHANGE">استبدال</option>
+                    </AppSelect>
+                  </FilterField>
+                  {isElevated && (
+                    <FilterField label="الفرع" className="w-36">
+                      <AppSelect size="sm" value={f.branch} onValueChange={(v) => patchFilters({ branch: v })} placeholder="— كل الفروع —">
+                        <option value="">— كل الفروع —</option>
+                        {(branchesQ.data ?? []).map((b) => (
+                          <option key={Number(b.id)} value={String(b.id)}>{b.name}</option>
+                        ))}
+                      </AppSelect>
+                    </FilterField>
+                  )}
+                  <FilterField label="من">
+                    <input type="date" className={dateCls} value={f.from} onChange={(e) => patchFilters({ from: e.target.value })} />
+                  </FilterField>
+                  <FilterField label="إلى">
+                    <input type="date" className={dateCls} value={f.to} onChange={(e) => patchFilters({ to: e.target.value })} />
+                  </FilterField>
+                </div>
+              }
+            />
+
             <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
                     <th className="p-2">الرقم</th><th className="p-2">النوع</th><th className="p-2">المودِع</th>
-                    <th className="p-2">الأصناف</th><th className="p-2">التاريخ</th><th className="p-2 text-center">طباعة</th>
+                    <th className="p-2">مرفق</th><th className="p-2">التاريخ</th><th className="p-2 text-center">طباعة</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(list.data?.rows ?? []).map((n) => (
+                  {list.isLoading && <TableSkeleton rows={6} cols={6} />}
+                  {!list.isLoading && rows.map((n) => (
                     <tr key={n.id} className="border-t">
                       <td className="p-2 font-mono text-xs" dir="ltr">{n.noteNumber}</td>
                       <td className="p-2"><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", TYPE_META[n.noteType as NoteType].cls)}>{TYPE_META[n.noteType as NoteType].label}</span></td>
@@ -80,12 +214,32 @@ export default function ConsignmentNotes() {
                       </td>
                     </tr>
                   ))}
-                  {!list.isLoading && (list.data?.rows.length ?? 0) === 0 && (
-                    <TableEmptyRow colSpan={6} message="لا سندات بعد. أنشئ سند إيداع لأول مودِع." />
+                  {!list.isLoading && rows.length === 0 && (
+                    <TableEmptyRow
+                      colSpan={6}
+                      message={activeFilterCount > 0 || f.q ? "لا سندات مطابقة للفلاتر." : "لا سندات بعد. أنشئ سند إيداع لأول مودِع."}
+                    />
                   )}
                 </tbody>
               </table>
             </ScrollTableShell>
+
+            {/* ترقيم فعلي — السندات مستندات موقَّعة، اختفاؤها بعد حدّ الصفحة الصامت خطر حقيقي. */}
+            {total > PAGE && (
+              <div className="flex items-center justify-between border-t pt-3 text-xs text-muted-foreground">
+                <span>
+                  الصفحة {(page + 1).toLocaleString("ar-IQ-u-nu-latn")} من {totalPages.toLocaleString("ar-IQ-u-nu-latn")} — {total.toLocaleString("ar-IQ-u-nu-latn")} سند
+                </span>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" disabled={page === 0 || list.isFetching} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+                    السابق
+                  </Button>
+                  <Button variant="outline" size="sm" disabled={page + 1 >= totalPages || list.isFetching} onClick={() => setPage((p) => p + 1)}>
+                    التالي
+                  </Button>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -96,6 +250,37 @@ export default function ConsignmentNotes() {
     const note = await utils.consignments.get.fetch({ noteId });
     if (note) printConsignmentNote(note);
   }
+}
+
+/* ============================ اختيار الفرع (مرتفع بلا فرع مُسنَد) ============================ */
+
+function BranchChoiceCard({
+  branches,
+  onPick,
+}: {
+  branches: RouterOutputs["branches"]["list"];
+  onPick: (id: number) => void;
+}) {
+  const [sel, setSel] = useState("");
+  return (
+    <Card>
+      <CardHeader className="pb-3"><CardTitle className="text-base">اختر فرع السند</CardTitle></CardHeader>
+      <CardContent className="max-w-sm space-y-3">
+        <p className="text-sm text-muted-foreground">
+          حسابك بلا فرع مُسنَد — اختر الفرع صراحةً قبل إنشاء السند (السند يحرّك مخزون فرع بعينه).
+        </p>
+        <AppSelect value={sel} onValueChange={setSel} placeholder="— اختر الفرع —" aria-label="فرع السند">
+          <option value="">— اختر الفرع —</option>
+          {branches.map((b) => (
+            <option key={Number(b.id)} value={String(b.id)}>{b.name}</option>
+          ))}
+        </AppSelect>
+        <Button disabled={!sel} onClick={() => onPick(Number(sel))}>
+          {sel ? "متابعة" : "اختر الفرع أولاً"}
+        </Button>
+      </CardContent>
+    </Card>
+  );
 }
 
 /* ============================ نموذج السند ============================ */
@@ -152,7 +337,7 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
   function submit() {
     if (create.isPending) return;
     if (!consignorId) return notify.err("اختر المودِع");
-    if (!lines.length) return notify.err("أضف صنفاً واحداً على الأقل");
+    if (!lines.length) return notify.err("أضف منتجاً واحداً على الأقل");
     create.mutate({
       noteType, consignorId, branchId, clientRequestId,
       notes: notes.trim() || null,
@@ -228,12 +413,12 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
         </CardContent>
       </Card>
 
-      {/* الأصناف */}
+      {/* المنتجات */}
       {consignorId && (
         <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-base">الأصناف</CardTitle></CardHeader>
+          <CardHeader className="pb-3"><CardTitle className="text-base">المنتجات</CardTitle></CardHeader>
           <CardContent className="space-y-3">
-            {/* منتقي أصناف المودِع */}
+            {/* منتقي منتجات المودِع */}
             <div className="flex flex-wrap gap-2">
               {(products.data ?? []).map((p) => (
                 <div key={p.variantId} className="flex items-center gap-1 rounded border px-2 py-1 text-xs">
@@ -246,18 +431,19 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
                   )}
                 </div>
               ))}
-              {(products.data?.length ?? 0) === 0 && <p className="text-xs text-muted-foreground">لا أصناف لهذا المودِع بعد — أضِف صنف أمانة من المنتجات باسمه.</p>}
+              {(products.data?.length ?? 0) === 0 && <p className="text-xs text-muted-foreground">لا منتجات لهذا المودِع بعد — أضِف منتج أمانة من المنتجات باسمه.</p>}
             </div>
             {/* أسطر السند */}
             {lines.length > 0 && (
               <table className="w-full text-sm">
-                <thead className="bg-muted/50"><tr><th className="p-2">الاتجاه</th><th className="p-2">الصنف</th><th className="p-2">الكمية</th><th className="p-2"></th></tr></thead>
+                <thead className="bg-muted/50"><tr><th className="p-2">الاتجاه</th><th className="p-2">المنتج</th><th className="p-2">الكمية</th><th className="p-2"></th></tr></thead>
                 <tbody>
                   {lines.map((l) => (
                     <tr key={l.key} className="border-t">
                       <td className="p-2"><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", l.direction === "IN" ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-800")}>{l.direction === "IN" ? "إيداع" : "سحب"}</span></td>
                       <td className="p-2">{l.label}</td>
-                      <td className="p-2 w-28"><Input dir="ltr" inputMode="numeric" value={l.quantity} onChange={(e) => setLines((ls) => ls.map((x) => x.key === l.key ? { ...x, quantity: e.target.value.replace(/[^\d.]/g, "") } : x))} className="h-8" /></td>
+                      {/* المخزون بالوحدة الأساس عدد صحيح (§٥) — يُرفَض إدخال كسور من الأصل. */}
+                      <td className="p-2 w-28"><Input dir="ltr" inputMode="numeric" value={l.quantity} onChange={(e) => setLines((ls) => ls.map((x) => x.key === l.key ? { ...x, quantity: e.target.value.replace(/[^\d]/g, "") } : x))} className="h-8" /></td>
                       <td className="p-2"><button type="button" onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))} aria-label="حذف"><X aria-hidden className="size-4 text-muted-foreground hover:text-destructive" /></button></td>
                     </tr>
                   ))}

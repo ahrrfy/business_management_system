@@ -87,7 +87,7 @@ export default function MonthlyAttendanceReport() {
                 meta: [
                   { label: "الموظفون", value: String(d.totals.employees) },
                   { label: "ساعات مستحقّة", value: d.totals.payableHours },
-                  { label: "أوفر تايم", value: d.totals.overtimeHours },
+                  { label: "العمل الإضافي", value: d.totals.overtimeHours },
                   { label: "أيام غياب", value: String(d.totals.absentDays) },
                 ],
                 columns: [
@@ -100,7 +100,7 @@ export default function MonthlyAttendanceReport() {
                   { key: "unpaidHours", header: "ساعات غير مستحقّة" },
                   { key: "absentDays", header: "أيام غياب" },
                   { key: "unpaidLeaveDays", header: "إجازة بلا راتب" },
-                  { key: "overtimeHours", header: "أوفر تايم (ساعة)" },
+                  { key: "overtimeHours", header: "العمل الإضافي (ساعة)" },
                   { key: "restWorkedHours", header: "عمل يوم راحة (ساعة)" },
                   { key: "hourlyRate", header: "سعر الساعة", money: true },
                   { key: "basePay", header: "الأجر الأساس", money: true },

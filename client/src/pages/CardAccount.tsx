@@ -137,7 +137,7 @@ export default function CardAccount() {
           { key: "partyName", header: "الطرف", map: (r) => r.partyName ?? "" },
           { key: "direction", header: "الاتجاه", map: (r) => (r.direction === "IN" ? "دخل" : "صرف") },
           { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
-          { key: "runningBalance", header: "الرصيد الجاري", map: (r) => (r.runningBalance != null ? Number(r.runningBalance) : "") },
+          { key: "runningBalance", header: "الرصيد بعد الحركة", map: (r) => (r.runningBalance != null ? Number(r.runningBalance) : "") },
           { key: "cardLastFour", header: "آخر ٤", map: (r) => r.cardLastFour ?? "" },
           { key: "voucherNumber", header: "المرجع", map: (r) => r.voucherNumber ?? r.referenceNumber ?? "" },
         ],
@@ -188,7 +188,7 @@ export default function CardAccount() {
             <CardContent className="p-4">
               <div className="flex items-center gap-2 text-muted-foreground text-sm">
                 <Landmark aria-hidden className="size-4" />
-                الرصيد الجاري
+                الرصيد الحالي
               </div>
               <div className={`mt-1 text-2xl font-bold ${s && D(s.balance).lt(0) ? "text-red-600" : ""}`}>
                 {formatIqd(s?.balance ?? "0")}
@@ -308,7 +308,7 @@ export default function CardAccount() {
                   <th className="p-2 text-start font-medium">المرجع</th>
                   <th className="p-2 text-center font-medium">الاتجاه</th>
                   <th className="p-2 text-end font-medium">المبلغ</th>
-                  <th className="p-2 text-end font-medium">الرصيد الجاري</th>
+                  <th className="p-2 text-end font-medium">الرصيد بعد الحركة</th>
                 </tr>
               </thead>
               <tbody>

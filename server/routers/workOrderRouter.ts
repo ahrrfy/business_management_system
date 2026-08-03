@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, isNull, or, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import {
   auditLogs,
@@ -109,6 +109,45 @@ const woStatus = z.enum(["RECEIVED", "IN_PROGRESS", "READY", "DELIVERED", "CANCE
 /** الحالات النشطة (غير النهائية) — ما يعنى به الفنّي في محطة التنفيذ. */
 export const WO_ACTIVE_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
 
+// استخدام ! كحرف هروب بـ ESCAPE '!' — بديل آمن عن \ (لا يُصاب بـNO_BACKSLASH_ESCAPES MySQL mode). نمط inventoryRouter.
+const escLike = (s: string) => s.replace(/[!%_]/g, "!$&");
+
+/** فلاتر القائمة/العدّادات المشتركة — تُبنى شروطاً واحدة كي لا تنحرف البطاقات عن الجدول. */
+const woListFilters = {
+  q: z.string().trim().max(120).optional(),
+  /** نطاق تاريخ الإنشاء YYYY-MM-DD (شامل لليوم بحدود UTC — إطار businessDay). */
+  from: z.string().optional(),
+  to: z.string().optional(),
+  /** فلتر الفنّي المسؤول — لا يوسّع النطاق: عزل الفرع/الموظف القائم يبقى حاكماً فوقه. */
+  assignedTo: z.number().int().positive().optional(),
+};
+
+/** يحوّل فلاتر q/from/to/assignedTo إلى شروط SQL — q على رقم الأمر/العنوان/اسم العميل (join العملاء قائم). */
+function buildWoFilterConds(input: { q?: string; from?: string; to?: string; assignedTo?: number } | undefined): SQL[] {
+  const conds: SQL[] = [];
+  const search = input?.q?.trim();
+  if (search) {
+    const pat = `%${escLike(search)}%`;
+    conds.push(
+      sql`(${workOrders.orderNumber} LIKE ${pat} ESCAPE '!' OR ${workOrders.title} LIKE ${pat} ESCAPE '!' OR ${customers.name} LIKE ${pat} ESCAPE '!')`,
+    );
+  }
+  if (input?.from) {
+    const from = new Date(input.from);
+    if (!isNaN(from.getTime())) conds.push(gte(workOrders.createdAt, from));
+  }
+  if (input?.to) {
+    // شامل لليوم: < بداية اليوم التالي بـUTC (نمط movementsRich — حتميّ مهما كانت منطقة عملية Node).
+    const to = new Date(input.to);
+    if (!isNaN(to.getTime())) {
+      const next = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate() + 1));
+      conds.push(lt(workOrders.createdAt, next));
+    }
+  }
+  if (input?.assignedTo != null) conds.push(eq(workOrders.assignedTo, input.assignedTo));
+  return conds;
+}
+
 export const workOrderRouter = router({
   // §٧ IDOR: الكاشير لا يجب أن يرى أوامر فروع أخرى. branchScopedProcedure يحقن
   // scopedBranchId=null للمدير/admin، ورقم الفرع لغيرهما.
@@ -128,6 +167,11 @@ export const workOrderRouter = router({
           assignedToMe: z.boolean().optional(),
           /** أوامر غير مُسنَدة لأحد (الطابور العام المشترك). */
           unassignedOnly: z.boolean().optional(),
+          ...woListFilters,
+          // keyset للتصدير الكامل: id < cursor مع الحفاظ على الشكل المُعاد مصفوفةً صرفة
+          // (WorkOrderStation وشاشات أخرى تعتمد RouterOutputs["workOrders"]["list"] مصفوفة).
+          // صفحة أقصر من limit = النهاية؛ آخر id في الصفحة = cursor التالي.
+          cursor: z.number().int().positive().optional(),
         })
         .optional()
     )
@@ -157,8 +201,9 @@ export const workOrderRouter = router({
         // الهوية من ctx حصراً — لا userId من العميل (وإلا قرأ فنّيٌّ أوامر غيره).
         input?.assignedToMe ? eq(workOrders.assignedTo, Number(ctx.user!.id)) : undefined,
         sharedQueue ? isNull(workOrders.assignedTo) : undefined,
+        input?.cursor != null ? lt(workOrders.id, input.cursor) : undefined,
       ].filter(Boolean) as SQL[];
-      const allConds = [branchCond, ownerCond, ...extra].filter(Boolean) as SQL[];
+      const allConds = [branchCond, ownerCond, ...extra, ...buildWoFilterConds(input)].filter(Boolean) as SQL[];
       const whereCond = allConds.length ? and(...allConds) : undefined;
       // لوحة الكانبان: نُرجع كل ما تحتاجه البطاقة (أولوية/قناة/مسؤول/هاتف العميل/عربون).
       const rows = await db
@@ -204,6 +249,58 @@ export const workOrderRouter = router({
         }
       }
       return rows.map((r) => ({ ...r, thumbnailUrl: thumbs.get(Number(r.id)) ?? null }));
+    }),
+
+  /**
+   * عدّ خفيف لكل حالة (+ المتأخّرة عن الاستحقاق) ضمن نفس نطاق/فلاتر القائمة — لبطاقات الإحصاءات.
+   * لماذا: القائمة صارت تجلب النشطة كاملةً وDELIVERED محدودةً، فبطاقة «مُسلَّم» من صفوف الشاشة
+   * كانت ستعدّ النافذة المعروضة فقط. العدّ خادمياً = أرقام صحيحة مهما اقتُطع العرض.
+   */
+  counts: workordersReadProcedure
+    .input(
+      z
+        .object({
+          branchId: z.number().int().positive().optional(),
+          ...woListFilters,
+        })
+        .optional()
+    )
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return { received: 0, inProgress: 0, ready: 0, delivered: 0, cancelled: 0, late: 0 };
+      // نفس عزل list حرفياً: الفرع مُجبَر لغير المرتفعين، وعزل الموظف (منشئ/مُسنَد) لغير المدير.
+      const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId;
+      const branchCond = effectiveBranchId != null ? eq(workOrders.branchId, effectiveBranchId) : undefined;
+      const ownerCond =
+        ctx.scopedOwnerId != null
+          ? or(eq(workOrders.createdBy, ctx.scopedOwnerId), eq(workOrders.assignedTo, ctx.scopedOwnerId))
+          : undefined;
+      const allConds = [branchCond, ownerCond, ...buildWoFilterConds(input)].filter(Boolean) as SQL[];
+      const whereCond = allConds.length ? and(...allConds) : undefined;
+      // «اليوم» بحدود UTC (إطار businessDay) — dueDate عمود DATE فتصلح مقارنته نصّياً بحتمية.
+      const todayUtc = new Date().toISOString().slice(0, 10);
+      const rows = await db
+        .select({
+          status: workOrders.status,
+          c: sql<number>`count(*)`,
+          lateC: sql<number>`sum(case when ${workOrders.dueDate} is not null and ${workOrders.dueDate} < ${todayUtc} then 1 else 0 end)`,
+        })
+        .from(workOrders)
+        .leftJoin(customers, eq(workOrders.customerId, customers.id))
+        .where(whereCond)
+        .groupBy(workOrders.status);
+      const by = new Map(rows.map((r) => [String(r.status), r]));
+      const num = (s: string) => Number(by.get(s)?.c ?? 0);
+      // «متأخّرة» = استحقاق فائت وحالة نشطة (المُسلَّم/الملغى ليسا متأخّرين بحكم التعريف).
+      const late = (WO_ACTIVE_STATUSES as readonly string[]).reduce((acc, s) => acc + Number(by.get(s)?.lateC ?? 0), 0);
+      return {
+        received: num("RECEIVED"),
+        inProgress: num("IN_PROGRESS"),
+        ready: num("READY"),
+        delivered: num("DELIVERED"),
+        cancelled: num("CANCELLED"),
+        late,
+      };
     }),
 
   get: workordersReadProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {

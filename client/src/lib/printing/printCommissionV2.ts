@@ -2,7 +2,7 @@
  * كشف عمولة موظف — A4 بالتصميم المرجعي V2 (وحدة الأهداف والعمولات، S4).
  *
  * ملف مستقل عن printTemplatesV2.ts عمداً (ملكية شريحة العمولات — مساعدات docHtml
- * المشتركة كلها مُصدَّرة). يُستدعى من شاشة تشغيلات العمولة لكل سطر معتمد/مسودة.
+ * المشتركة كلها مُصدَّرة). يُستدعى من شاشة تشغيلات العمولة لكل سطر معتمد/مسوّدة.
  * ========================================================================== */
 import {
   docTableV2,
@@ -22,7 +22,7 @@ import { formatArabicMoneyWords } from "./tafqit";
 export interface CommissionStatementV2Data {
   runId: number;
   period: string; // YYYY-MM
-  statusLabel: string; // «مسودة» | «معتمدة»
+  statusLabel: string; // «مسوّدة» | «معتمدة»
   employeeName: string;
   position?: string | null;
   branchName?: string | null;

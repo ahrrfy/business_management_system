@@ -48,7 +48,7 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     customerName: d.customerName ?? null,
     items: d.items.map((item) => ({
       name: [
-        item.productName ?? "صنف",
+        item.productName ?? "منتج",
         item.variantName || null,
         item.unitName ? `(${item.unitName})` : null,
       ].filter(Boolean).join(" — "),

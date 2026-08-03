@@ -271,7 +271,7 @@ export default function StocktakeNew() {
       // الافتتاحي المشروع عندما لم يكن للفرع أيّ رصيد سابق بعد).
       if ((scopeType === "FULL" || scopeType === "MOVING") && previewCount && previewCount.variantCount === 0) {
         return isOpeningSession
-          ? "لا شيء يُجرَد افتتاحياً — كلّ الأصناف مُفتتَحة سلفاً أو الكتالوج فارغ."
+          ? "لا شيء يُجرَد افتتاحياً — كلّ المنتجات مُفتتَحة سلفاً أو الكتالوج فارغ."
           : "لا منتجات ضمن هذا النطاق — راجع النطاق أو الفرع.";
       }
       return null;
@@ -404,7 +404,7 @@ export default function StocktakeNew() {
                   </Label>
                   <p className="text-xs text-muted-foreground">
                     يثبّت العدّ كرصيد افتتاحي بلا قيود عجز/زيادة على الأرباح، ويُقفل البيع بالسالب على كل
-                    صنف يُجرد. توقيعان إلزاميان، والأصناف المجرودة افتتاحياً سابقاً تُستبعد تلقائياً.
+                    منتج يُجرد. توقيعان إلزاميان، والمنتجات المجرودة افتتاحياً سابقاً تُستبعد تلقائياً.
                     {!openingWindowActive && " — يتطلب تفعيل «وضع الافتتاح» من الإعدادات أولاً."}
                   </p>
                 </div>
@@ -601,7 +601,7 @@ export default function StocktakeNew() {
 
             <div className="space-y-2 rounded-lg bg-muted/60 px-4 py-3 text-sm">
               <div className="flex items-center justify-between">
-                <span className="font-semibold">أصناف ضمن النطاق:</span>
+                <span className="font-semibold">منتجات ضمن النطاق:</span>
                 {scopeCount == null ? (
                   <span className="inline-block rounded-full border bg-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground">
                     جارٍ الحساب…
@@ -612,7 +612,7 @@ export default function StocktakeNew() {
                       scopeCount > 0 ? "badge-status-pending" : "badge-stock-out"
                     }`}
                   >
-                    {nf(scopeCount)} صنفاً (متغيّراً)
+                    {nf(scopeCount)} منتجاً (متغيّراً)
                   </span>
                 )}
               </div>
@@ -635,14 +635,14 @@ export default function StocktakeNew() {
               {/* استبعاد OPENING: شفافيّة — لماذا العدد أقلّ من المتوقّع في الجرد الافتتاحي. */}
               {isOpeningSession && previewCount && previewCount.excludedOpened > 0 && (
                 <p className="text-xs text-muted-foreground">
-                  استُبعد {nf(previewCount.excludedOpened)} صنفاً مُفتتَحاً مسبقاً — يُجرَد جرداً دورياً لا افتتاحياً.
+                  استُبعد {nf(previewCount.excludedOpened)} منتجاً مُفتتَحاً مسبقاً — يُجرَد جرداً دورياً لا افتتاحياً.
                 </p>
               )}
               {isOpeningSession && scopeType === "FULL" && previewCount && (previewCount.excludedBundle > 0 || previewCount.excludedConsignment > 0) && (
                 <p className="text-xs text-muted-foreground">
-                  استُبعد أيضاً: {previewCount.excludedBundle > 0 ? `${nf(previewCount.excludedBundle)} صنفاً بكجاً` : ""}
+                  استُبعد أيضاً: {previewCount.excludedBundle > 0 ? `${nf(previewCount.excludedBundle)} منتجاً بكجاً` : ""}
                   {previewCount.excludedBundle > 0 && previewCount.excludedConsignment > 0 ? " · " : ""}
-                  {previewCount.excludedConsignment > 0 ? `${nf(previewCount.excludedConsignment)} صنف أمانة (يُفتتَح بسند إيداع)` : ""}.
+                  {previewCount.excludedConsignment > 0 ? `${nf(previewCount.excludedConsignment)} منتج أمانة (يُفتتَح بسند إيداع)` : ""}.
                 </p>
               )}
             </div>
@@ -943,11 +943,11 @@ export default function StocktakeNew() {
                   v={
                     scopeType === "MOVING"
                       ? `${SCOPE_TYPE_LABEL.MOVING} — آخر ${nf(Number(movingDays))} يوماً${
-                          scopeCount != null ? ` (${nf(scopeCount)} صنفاً)` : ""
+                          scopeCount != null ? ` (${nf(scopeCount)} منتجاً)` : ""
                         }`
                       : scopeCount == null
                         ? SCOPE_TYPE_LABEL[scopeType]
-                        : `${SCOPE_TYPE_LABEL[scopeType]} — ${nf(scopeCount)} صنفاً`
+                        : `${SCOPE_TYPE_LABEL[scopeType]} — ${nf(scopeCount)} منتجاً`
                   }
                 />
                 <SummaryRow k="عمّال الجرد" v={validWorkers.map((w) => w.name.trim()).join("، ") || "—"} />

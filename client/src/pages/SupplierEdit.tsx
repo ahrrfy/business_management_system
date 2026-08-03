@@ -425,7 +425,7 @@ export default function SupplierEdit() {
                   value={openingDir}
                   onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
                 >
-                  <option value="OWED_BY_US">علينا للمورّد (مستحق له)</option>
+                  <option value="OWED_BY_US">له علينا</option>
                   <option value="OWED_TO_US">لنا على المورّد (دفعة مقدّمة لنا)</option>
                 </select>
               </div>
@@ -435,7 +435,7 @@ export default function SupplierEdit() {
               </div>
               <div className="md:col-span-2">
                 <p className="text-[11px] text-sky-800">
-                  يُصحّح قيد الرصيد الافتتاحي (لأخطاء الإدخال الأوّليّ) ويُطبّق الفارق على الرصيد الجاري
+                  يُصحّح قيد الرصيد الافتتاحي (لأخطاء الإدخال الأوّليّ) ويُطبّق الفارق على الرصيد الحالي
                   دون المساس بأي حركةٍ لاحقة. اتركه فارغاً لإزالة الرصيد الافتتاحي. لا يتغيّر شيء إن لم تُعدّله.
                 </p>
               </div>

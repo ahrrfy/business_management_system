@@ -46,7 +46,7 @@ export default function CreditApprovalsPage() {
     <div className="container mx-auto p-4 space-y-4">
       <PageHeader
         title="موافقات الائتمان المُسبَقة"
-        description="B5: لا تُقبل موافقة blanket في البيع. أنشئ صفّاً هنا ⇒ يحصل الكاشير على approvalId مرتبط بـ(عميل، مبلغ، انتهاء، single-use)."
+        description="موافقة مؤقتة محددة السقف والمدة تُستعمل مرة واحدة — سلّم رقمها للكاشير."
       />
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
@@ -140,7 +140,7 @@ export default function CreditApprovalsPage() {
             {createdId && (
               <div className="badge-status-active p-3 rounded text-sm flex items-center gap-2">
                 <Check aria-hidden className="size-4" />
-                <span>approvalId = <span className="font-mono font-bold">{createdId}</span> — سلّم هذا الرقم للكاشير.</span>
+                <span>رقم الموافقة: <span className="font-mono font-bold">{createdId}</span> — سلّمه للكاشير.</span>
               </div>
             )}
           </CardContent>

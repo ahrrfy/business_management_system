@@ -34,7 +34,7 @@ export default function YearEndPage() {
     <div className="container mx-auto p-4 space-y-4 max-w-5xl">
       <PageHeader
         title="الإقفال السنوي"
-        description="يحسب revenue/cogs/expenses من دفتر الأستاذ، يقفل الفترة حتى Dec 31، وينشر قيد ADJUST بقيمة net profit على Jan 1 من السنة التالية."
+        description="يحسب الإيراد وتكلفة المبيعات والمصروفات من دفتر الأستاذ، يقفل الفترة حتى ٣١ كانون الأول، وينشر قيد تسوية بصافي الربح على ١ كانون الثاني من السنة التالية."
       />
 
       <Card>

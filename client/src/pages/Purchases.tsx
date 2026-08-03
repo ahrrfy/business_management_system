@@ -13,7 +13,9 @@ import { fmtDate } from "@/lib/date";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D, fmt, positiveDiff, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { CO } from "@/lib/printing/brand";
 import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplatesV2";
+import { qrCodeSvg } from "@/lib/printing/qr";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 
@@ -21,7 +23,7 @@ import { useEffect, useState } from "react";
 type PurchaseRow = RouterOutputs["purchases"]["list"][number];
 
 const PO_STATUS: Record<string, string> = {
-  DRAFT: "مسودّة",
+  DRAFT: "مسوّدة",
   SENT: "مُرسَل",
   CONFIRMED: "مؤكّد",
   RECEIVED: "مُستلَم",
@@ -109,7 +111,13 @@ export default function Purchases() {
       );
       const statusColor =
         d.status === "RECEIVED" ? "#0D6B52" : d.status === "CANCELLED" ? "#8A1F11" : "#92400E";
+      // QR حقيقي ببيانات الأمر (كان القالب يطبع placeholder زخرفياً غير قابل للمسح).
+      const qrSvg = await qrCodeSvg(
+        [CO.sub, `أمر شراء: ${d.poNumber}`, `الإجمالي: ${fmt(d.total ?? 0)} د.ع`].join("\n"),
+        { size: 88, margin: 1 },
+      ).catch(() => "");
       printPurchaseInvoiceV2({
+        qrSvg: qrSvg || null,
         invoiceNumber: d.poNumber,
         invoiceDate: d.orderDate as unknown as string | null,
         statusLabel: PO_STATUS[d.status] ?? d.status,

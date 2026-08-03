@@ -13,7 +13,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "wouter";
 
 const PO_STATUS: Record<string, string> = {
-  DRAFT: "مسودّة",
+  DRAFT: "مسوّدة",
   SENT: "مُرسَل",
   CONFIRMED: "مؤكّد",
   RECEIVED: "مُستلَم",
@@ -237,7 +237,7 @@ export default function PurchaseReceive() {
                 <th className="p-2 text-center">مُستلَم سابقاً</th>
                 <th className="p-2 text-center">المتبقّي</th>
                 <th className="p-2 w-32">استلام الآن</th>
-                {canGiftBonus ? <th className="p-2 w-28">مجاناً (بونص، أساس)</th> : null}
+                {canGiftBonus ? <th className="p-2 w-28">كمية مجانية (بالوحدة الأساس)</th> : null}
               </tr>
             </thead>
             <tbody>

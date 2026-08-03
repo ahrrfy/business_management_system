@@ -97,7 +97,7 @@ export default function ConsignmentSettlements() {
                         <Link href={`/suppliers/${r.consignorId}/edit`} className="hover:underline">{r.consignorName}</Link>
                       </td>
                       <td className="p-2 text-start tabular-nums" dir="ltr">{fmt(r.owed)}</td>
-                      <td className="p-2 text-center">{r.remainingQty} <span className="text-xs text-muted-foreground">({r.variantCount} صنف)</span></td>
+                      <td className="p-2 text-center">{r.remainingQty} <span className="text-xs text-muted-foreground">({r.variantCount} منتج)</span></td>
                       <td className="p-2 text-start tabular-nums text-muted-foreground" dir="ltr">{fmt(r.remainingValueByShare)}</td>
                       <td className="p-2 text-center">
                         <RowActions
@@ -222,7 +222,7 @@ export default function ConsignmentSettlements() {
                   <table className="w-full text-sm">
                     <thead className="bg-muted/50">
                       <tr>
-                        <th className="p-2">الصنف</th><th className="p-2 text-center">كمية</th>
+                        <th className="p-2">المنتج</th><th className="p-2 text-center">كمية</th>
                         <th className="p-2 text-start">مُباع</th><th className="p-2 text-start">حصّة</th><th className="p-2 text-start">هامش</th>
                       </tr>
                     </thead>

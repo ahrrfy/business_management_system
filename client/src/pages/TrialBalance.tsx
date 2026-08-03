@@ -21,7 +21,7 @@ function buildRows(p: Pos) {
   return [
     { label: "النقد (تقديريّ)", debit: p.cash, credit: "0" },
     { label: "مقبوضات البطاقة/البنك", debit: p.card, credit: "0" },
-    { label: "شيكات قيد التحصيل", debit: p.check, credit: "0" },
+    { label: "صكوك قيد التحصيل", debit: p.check, credit: "0" },
     { label: "تحويلات مصرفية", debit: p.transfer, credit: "0" },
     { label: "محافظ إلكترونية", debit: p.wallet, credit: "0" },
     { label: "الذمم المدينة (عملاء)", debit: p.arDebit, credit: "0" },

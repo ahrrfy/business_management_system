@@ -25,7 +25,7 @@ type DirFilter = "ALL" | "IN" | "OUT" | "PENDING";
 type GiftLine = { key: number; variantId: number; productUnitId: number; label: string; unit: string; quantity: string };
 
 const STATUS_AR: Record<string, string> = {
-  DRAFT: "مسودة",
+  DRAFT: "مسوّدة",
   PENDING_APPROVAL: "بانتظار اعتماد",
   APPROVED: "معتمد",
   DELIVERED: "مُنجَز",
@@ -645,9 +645,9 @@ export default function GiftsHub() {
           ) : null}
 
           <div className="space-y-2">
-            <Label>الأصناف *</Label>
+            <Label>المنتجات *</Label>
             {branchId == null ? (
-              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">اختر الفرع أولاً لإضافة الأصناف.</div>
+              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">اختر الفرع أولاً لإضافة المنتجات.</div>
             ) : (
               <ProductSearchBar
                 invoiceType={mode === "in" ? "PURCHASE" : "SALE"}
@@ -663,7 +663,7 @@ export default function GiftsHub() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
-                      <th className="px-3 py-2 text-start">الصنف</th>
+                      <th className="px-3 py-2 text-start">المنتج</th>
                       <th className="px-3 py-2 text-start">الوحدة</th>
                       <th className="px-3 py-2 text-start">الكمية</th>
                       <th className="px-3 py-2" />

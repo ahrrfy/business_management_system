@@ -112,7 +112,7 @@ export default function PeriodLockPage() {
         <CardContent className="space-y-3">
           <div className="grid gap-3 md:grid-cols-2">
           <div className="grid gap-2">
-            <label className="text-sm font-medium">تاريخ الإقفال (cutoff)</label>
+            <label className="text-sm font-medium">تاريخ الإقفال</label>
             <input
               type="date"
               value={cutoffDate}

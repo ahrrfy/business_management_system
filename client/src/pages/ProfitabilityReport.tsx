@@ -78,7 +78,7 @@ export default function ProfitabilityReport() {
   }
 
   const subLabel =
-    dim === "product" ? "الكمية" : dim === "category" ? "الأصناف" : "الفواتير";
+    dim === "product" ? "الكمية" : dim === "category" ? "المنتجات" : "الفواتير";
 
   const rows: UniRow[] = useMemo(() => {
     if (dim === "product") {

@@ -285,7 +285,7 @@ export default function BarcodeLabels() {
           })
         );
       } catch {
-        if (!cancelled) setError("تعذّر إعادة تسعير بعض الأصناف لهذه الفئة — بدّل الفئة ثانيةً لإعادة المحاولة.");
+        if (!cancelled) setError("تعذّر إعادة تسعير بعض المنتجات لهذه الفئة — بدّل الفئة ثانيةً لإعادة المحاولة.");
       }
     })();
     return () => { cancelled = true; };

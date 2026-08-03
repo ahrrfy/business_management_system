@@ -1,6 +1,6 @@
 /**
  * StoreCatalog — «الكتالوج والعرض» في لوحة hPanel (تبويب مديري).
- * مركز تحكّم واحد بعرض منتجات المتجر: تمييز منتج (يتصدّر)، إظهار/إخفاء من واجهة الزبون،
+ * مركز تحكّم واحد بعرض منتجات المتجر: تمييز منتج (يتصدّر)، إظهار/إخفاء من واجهة العميل،
  * ضبط المخزون (ذرّي عبر قيد ADJUST)، وتعيين صورة المنتج الرئيسية. المخزون/الصورة/الأعلام
  * كلّها تنعكس فوراً في المتجر العلني `/store`.
  */
@@ -112,8 +112,8 @@ export default function StoreCatalog() {
                     {p.categoryName ?? "بلا قسم"}
                     {p.retailPrice != null && <> · <span className="font-medium tabular-nums text-foreground">{fmt(p.retailPrice)}</span> د.ع{p.saleUnitName ? ` / ${p.saleUnitName}` : ""}</>}
                   </p>
-                  <button onClick={() => p.variantId && setStockFor({ productId: p.productId, variantId: p.variantId, name: p.name, stockBase: p.stockBase })} disabled={!p.variantId} title={stockLow ? "لن يظهر هذا المنتج في واجهة الزبون حتى يتوفر رصيد" : "متاح للشراء في واجهة الزبون"} className={`mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-bold transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 ${stockLow ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>
-                    <Boxes aria-hidden className="size-3" /> المخزون: {fmtInt(p.stockBase)}{stockLow ? " — نافد (مخفي عن الزبون)" : " — متاح للشراء"}
+                  <button onClick={() => p.variantId && setStockFor({ productId: p.productId, variantId: p.variantId, name: p.name, stockBase: p.stockBase })} disabled={!p.variantId} title={stockLow ? "لن يظهر هذا المنتج في واجهة العميل حتى يتوفر رصيد" : "متاح للشراء في واجهة العميل"} className={`mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-bold transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 ${stockLow ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                    <Boxes aria-hidden className="size-3" /> المخزون: {fmtInt(p.stockBase)}{stockLow ? " — نافد (مخفي عن العميل)" : " — متاح للشراء"}
                   </button>
                 </div>
 

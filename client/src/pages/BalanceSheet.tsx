@@ -13,7 +13,7 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 type Pos = RouterOutputs["reports"]["financialPosition"];
 
 const NOTE =
-  "ميزانية مبسّطة/مشتقّة (بانتظار دليل حسابات كامل): المقبوضات المعتمدة مصنفة حسب وسيلة الدفع ولا تُعامل البطاقات والتحويلات والشيكات والمحافظ كنقد بالصندوق، الأصول بالتكلفة (بلا إهلاك متراكم)، وحقوق الملكية = الأصول − الخصوم. الذمم على مستوى الشركة؛ وسائل الدفع والمخزون حسب الفرع.";
+  "ميزانية مبسّطة/مشتقّة (بانتظار دليل حسابات كامل): المقبوضات المعتمدة مصنفة حسب وسيلة الدفع ولا تُعامل البطاقات والتحويلات والصكوك والمحافظ كنقد بالصندوق، الأصول بالتكلفة (بلا إهلاك متراكم)، وحقوق الملكية = الأصول − الخصوم. الذمم على مستوى الشركة؛ وسائل الدفع والمخزون حسب الفرع.";
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -28,7 +28,7 @@ export default function BalanceSheet() {
     const assets = [
       { label: "النقد المقبوض فعلياً", v: p.cash },
       { label: "مقبوضات البطاقات", v: p.card },
-      { label: "الشيكات المقبوضة", v: p.check },
+      { label: "الصكوك المقبوضة", v: p.check },
       { label: "التحويلات المصرفية", v: p.transfer },
       { label: "المحافظ الإلكترونية", v: p.wallet },
       { label: "الذمم المدينة (عملاء)", v: p.arDebit },

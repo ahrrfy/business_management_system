@@ -551,7 +551,7 @@ export default function UserEdit() {
             بديل أخفّ من «إعادة تعيين كلمة المرور» عندما لا داعي لكلمة مرور جديدة.
           </p>
           <Button variant="outline" onClick={() => void doRevokeSessions()} disabled={revokeSessions.isPending}>
-            {revokeSessions.isPending ? "…" : "إبطال كل الجلسات"}
+            {revokeSessions.isPending ? "…" : "تسجيل الخروج من كل الأجهزة"}
           </Button>
           {revokeMsg && <p className={`text-sm ${revokeSessions.isSuccess ? "text-money-positive" : "text-destructive"}`}>{revokeMsg}</p>}
           {/* إنقاذ 2FA: المستخدم فقد هاتفه ورموز استرداده معاً ⇒ الأدمن يصفّرها ليدخل بكلمة المرور. */}

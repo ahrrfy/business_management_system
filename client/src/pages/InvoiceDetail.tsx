@@ -320,7 +320,7 @@ export default function InvoiceDetail() {
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={() => void printApprovedA4()}>
                 <FileText aria-hidden className="size-4" />
-                فاتورة الزبون
+                فاتورة العميل
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => printWarehouseSlip()}>
                 <Package aria-hidden className="size-4" />
@@ -363,7 +363,7 @@ export default function InvoiceDetail() {
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
               {data.customerId && (
                 <div className="col-span-2 space-y-0.5">
-                  <div className="text-xs text-muted-foreground">ذمة العميل الحالية</div>
+                  <div className="text-xs text-muted-foreground">الرصيد الحالي للعميل</div>
                   <div className="font-medium tabular-nums" dir="ltr">
                     <CopyInline value={data.customerBalance ?? "0"} display={fmt(data.customerBalance ?? "0")} mono={false} />
                   </div>

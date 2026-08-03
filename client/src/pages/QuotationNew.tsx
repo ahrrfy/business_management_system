@@ -166,7 +166,7 @@ export default function QuotationNew() {
         utils.quotations.list.invalidate(),
         utils.quotations.get.invalidate({ quotationId: result.quotationId }),
       ]);
-      notify.ok("تم تحديث مسودة عرض السعر");
+      notify.ok("تم تحديث مسوّدة عرض السعر");
       const printAfterSave = printAfterSaveRef.current;
       const shareAfterSave = shareAfterSaveRef.current;
       printAfterSaveRef.current = false;
@@ -320,7 +320,7 @@ export default function QuotationNew() {
         copyInvoiceItems(state.items);
         dispatch({ type: "CLEAR_ITEMS" });
         setPasteAvailable(true);
-        notify.ok("تم نسخ الأصناف وتفريغ عرض السعر. ستجد «لصق» في أي فاتورة تفتحها.");
+        notify.ok("تم نسخ المنتجات وتفريغ عرض السعر. ستجد «لصق» في أي فاتورة تفتحها.");
         break;
       case "paste": {
         const items = takeInvoiceItems();
@@ -400,7 +400,7 @@ export default function QuotationNew() {
   );
 
   if (isEdit && editQuery.isLoading) {
-    return <div className="p-10 text-center text-muted-foreground">جارٍ تحميل مسودة عرض السعر…</div>;
+    return <div className="p-10 text-center text-muted-foreground">جارٍ تحميل مسوّدة عرض السعر…</div>;
   }
   if (isEdit && editQuery.isError) {
     return (
