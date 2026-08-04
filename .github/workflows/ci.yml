@@ -64,6 +64,11 @@ jobs:
         run: pnpm check:date-boundaries
       - name: حارِس الألوان الخام (ratchet — منع لون مال/حالة جديد يتجاوز التوكنز)
         run: pnpm check:colors
+      # كان معرَّفاً في package.json وضمن check:guards لكنّه **غائبٌ عن CI** ⇒ ظلّ يفشل بصمت
+      # على main (إنذارٌ كاذب في SmartCustomerInput) حتى شغّله أحدٌ يدوياً. حارسٌ لا يُشغَّل
+      # آلياً ليس حارساً. بهذا صار كل أعضاء check:guards مشمولين (authz له وظيفته المستقلّة).
+      - name: حارِس حقول المال والهاتف (IntlPhoneInput / MoneyInput)
+        run: pnpm check:form-inputs
       - name: الاختبارات
         run: pnpm test
       - name: بناء الإنتاج
