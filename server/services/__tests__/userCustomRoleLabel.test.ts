@@ -129,19 +129,19 @@ describe("userService — تسمية الدور المخصّص (customRoleLabel)
     expect(r.isActive).toBe(true);
   });
 
-  it("updateUser يكنس override ميتاً لمستخدم على دور مخصّص (لا يستيقظ عند مسح الدور لاحقاً)", async () => {
+  it("يحفظ updateUser الاستثناء الفردي فوق الدور المخصّص، ثم لا يرحّله عند مسح الدور بلا قرار صريح", async () => {
     const role = await createRole(
       { label: "مقيّد", baseRole: "cashier", permissions: { pos: "FULL", sales: "NONE", workorders: "NONE" } },
       actor,
     );
     const { userId } = await createUser({ name: "س", username: "sara", password: PW, customRoleId: role.id }, actor);
-    // زرع override ميت مباشرة (يحاكي بيانات قديمة سبقت الحارس).
+    // استثناء فردي: يمنح هذا الحساب البيع رغم أن الدور يمنعه.
     await db().update(s.users).set({ permissionsOverride: { sales: "FULL" } }).where(sql`id = ${userId}`);
-    // أي تعديل عابر (اسم فقط) يكنس البقايا.
+    // تعديل عابر لا يجوز أن يمسح قراراً فردياً مشروعاً.
     await updateUser({ userId, name: "سارة" }, { userId: 999, branchId: 1 });
     const afterEdit = (await db().select().from(s.users).where(sql`id = ${userId}`).limit(1))[0];
-    expect(afterEdit.permissionsOverride ?? null).toBeNull();
-    // مسح الدور المخصّص يهبط على قالب نظيف (لا override قديم يستيقظ).
+    expect(afterEdit.permissionsOverride).toEqual({ sales: "FULL" });
+    // مسح الدور المخصّص بلا override صريح يهبط على قالب نظيف؛ لا تُنقل فروق الدور السابق تلقائياً.
     await updateUser({ userId, customRoleId: null }, { userId: 999, branchId: 1 });
     const cleared = (await db().select().from(s.users).where(sql`id = ${userId}`).limit(1))[0];
     expect(cleared.customRoleId ?? null).toBeNull();

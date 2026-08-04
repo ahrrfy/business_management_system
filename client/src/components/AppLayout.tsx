@@ -4,12 +4,13 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { openSearch } from "@/lib/searchEvents";
+import { isPwaUpdatePending, openPwaUpdatePanel, subscribePwaUpdateStatus } from "@/lib/pwaUpdateStatus";
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
 import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, Gift, DollarSign, CreditCard,
-  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark, Check, WalletCards,
+  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark, Check, WalletCards, RefreshCw,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -43,6 +44,27 @@ function PrinterStatusButton({
       {printerReady && (
         <Check className="absolute bottom-1.5 left-1.5 size-3 rounded-full bg-background" aria-hidden strokeWidth={3.5} />
       )}
+    </Button>
+  );
+}
+
+/** يظهر فقط بعد اختيار «لاحقاً»: تذكير هادئ يفتح لوحة التحديث ولا يفرضه. */
+function PwaUpdateButton() {
+  const [pending, setPending] = useState(isPwaUpdatePending);
+  useEffect(() => subscribePwaUpdateStatus(setPending), []);
+  if (!pending) return null;
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      onClick={openPwaUpdatePanel}
+      aria-label="يتوفر تحديث للنظام"
+      title="يتوفر تحديث للنظام — اضغط لاختياره في الوقت المناسب"
+      className="relative text-primary"
+    >
+      <RefreshCw className="size-4" aria-hidden />
+      <span className="absolute left-1.5 top-1.5 size-2 rounded-full bg-primary ring-2 ring-background" aria-hidden />
     </Button>
   );
 }
@@ -264,6 +286,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         <div className="sb-header px-4 py-4 flex items-center justify-between gap-1">
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <div className="flex items-center gap-0.5">
+            <PwaUpdateButton />
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
             <ThemeToggle />
           </div>
@@ -287,6 +310,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </SheetTrigger>
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <div className="flex items-center gap-0.5">
+            <PwaUpdateButton />
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
             <ThemeToggle />
           </div>

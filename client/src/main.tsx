@@ -1,6 +1,8 @@
 import { CommandPalette } from "@/components/CommandPalette";
 import { ConfirmHost } from "@/components/ConfirmHost";
 import { Toaster } from "@/components/ui/sonner";
+import { InteractionDraftSafety } from "@/components/InteractionDraftSafety";
+import { PwaUpdateManager } from "@/components/PwaUpdateManager";
 import { initConnectivity, noteRequestFailure, noteRequestSuccess } from "@/lib/offline/connectivity";
 import { trpc } from "@/lib/trpc";
 import { UNAUTHED_ERR_MSG } from "@shared/const";
@@ -9,7 +11,6 @@ import { httpBatchLink, TRPCClientError } from "@trpc/client";
 import { ThemeProvider } from "next-themes";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
-import { toast } from "sonner";
 import App from "./App";
 // خط Cairo مستضاف محلياً (بلا اعتماد على Google Fonts CDN) ⇒ يعمل النظام كاملاً بلا إنترنت.
 import "@fontsource/cairo/400.css";
@@ -111,6 +112,8 @@ createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
         <App />
+        <InteractionDraftSafety />
+        <PwaUpdateManager />
         <CommandPalette />
         <ConfirmHost />
         <Toaster richColors position="top-center" dir="rtl" />
@@ -118,37 +121,3 @@ createRoot(document.getElementById("root")!).render(
     </QueryClientProvider>
   </trpc.Provider>
 );
-
-// حوكمة تحديث PWA: registerType:'autoUpdate' (انظر vite.config.ts). الـSW الجديد يَنشط فوراً
-// (skipWaiting/clientsClaim) ويُنظّف الحُزَم القديمة، فيُعيد vite-plugin-pwa تحميل الصفحة تلقائياً
-// عند اكتشاف نشر جديد ⇒ لا تبقى نسخة قديمة عالقة على «جار التحميل» بعد النشر. (كانت 'prompt'
-// تُبقي المستخدم عالقاً قبل ظهور زرّ التحديث أصلاً.)
-if (typeof window !== "undefined" && "serviceWorker" in navigator) {
-  void import("virtual:pwa-register").then(({ registerSW }) => {
-    registerSW({
-      immediate: true,
-      onRegisteredSW(_swUrl, registration) {
-        if (!registration) return;
-
-        const checkForUpdate = () => {
-          void registration.update().catch(() => {
-            // الشبكة قد تكون مقطوعة؛ سيُعاد الفحص عند عودة التركيز أو في الدورة التالية.
-          });
-        };
-
-        // register() وحده قد يخضع لتهدئة المتصفّح ويبقي نسخة precache قديمة.
-        // update() الصريح يجلب sw.js ذي Cache-Control:no-cache فور فتح التطبيق.
-        checkForUpdate();
-        window.setInterval(checkForUpdate, 60 * 60 * 1000);
-        document.addEventListener("visibilitychange", () => {
-          if (document.visibilityState === "visible") checkForUpdate();
-        });
-      },
-      onOfflineReady() {
-        toast.success("النظام جاهز للعمل دون اتصال");
-      },
-    });
-  }).catch(() => {
-    // virtual:pwa-register غير متاح في dev بلا plugin؛ صامت.
-  });
-}

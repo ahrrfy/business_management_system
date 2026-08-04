@@ -26,6 +26,8 @@ export interface PermissionMatrixProps {
   permissions: PermissionMap;
   onChange: (moduleKey: string, level: AccessLevel) => void;
   onReset: () => void;
+  /** أساس المقارنة؛ الدور المخصّص يمرّر خريطته بدلاً من قالب فئته. */
+  basePermissions?: PermissionMap;
 }
 
 const LEVELS: AccessLevel[] = ["FULL", "READ", "NONE"];
@@ -54,8 +56,8 @@ const CATEGORIES: { label: string; keys: string[] }[] = [
 
 type ModuleDef = (typeof PERMISSION_MODULES)[number];
 
-export function PermissionMatrix({ role, permissions, onChange, onReset }: PermissionMatrixProps) {
-  const template = ROLE_TEMPLATES[role] || ROLE_TEMPLATES.user;
+export function PermissionMatrix({ role, permissions, onChange, onReset, basePermissions }: PermissionMatrixProps) {
+  const template = basePermissions ?? ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 

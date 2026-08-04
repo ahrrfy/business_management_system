@@ -331,7 +331,14 @@ export function resolvePermissions(
   role: RoleKey,
   override: PermissionMap | null | undefined
 ): PermissionMap {
-  const base = ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
+  return applyPermissionOverrides(ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user, override);
+}
+
+/** يطبّق استثناءات على أي خريطة أساس، بما فيها خريطة دور مخصّص. */
+export function applyPermissionOverrides(
+  base: PermissionMap,
+  override: PermissionMap | null | undefined,
+): PermissionMap {
   if (!override) return { ...base };
   const out: PermissionMap = { ...base };
   // ترحيل ناعم: أي تخصيص قديم لوحدة customers يظلّ حاكماً لـCRM إلى أن يُحفظ تخصيص CRM صريح.
@@ -356,7 +363,14 @@ export function diffFromTemplate(
   role: RoleKey,
   permissions: PermissionMap
 ): PermissionMap | null {
-  const base = ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
+  return diffFromPermissions(ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user, permissions);
+}
+
+/** فرق الصلاحيات عن خريطة أساس محددة (مثلاً الدور المخصّص المسنَد للمستخدم). */
+export function diffFromPermissions(
+  base: PermissionMap,
+  permissions: PermissionMap,
+): PermissionMap | null {
   const diff: PermissionMap = {};
   let changed = 0;
   const legacyCustomers = permissions.customers;

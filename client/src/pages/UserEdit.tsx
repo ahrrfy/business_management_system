@@ -23,6 +23,8 @@ import { EffectivePermissionsPanel } from "@/components/form/EffectivePermission
 import {
   ROLES,
   ROLE_TEMPLATES,
+  applyPermissionOverrides,
+  diffFromPermissions,
   PERMISSION_MODULES,
   diffFromTemplate,
   resolvePermissions,
@@ -46,10 +48,9 @@ function toDateInput(d: unknown): string {
 }
 
 /** فروق الصلاحيات عن قالب الدور — تُعرض فوق المصفوفة (مطابق لشاشة الإضافة). */
-function PermDiffSummary({ role, override }: { role: RoleKey; override: PermissionMap }) {
+function PermDiffSummary({ base, override }: { base: PermissionMap; override: PermissionMap }) {
   const entries = Object.entries(override);
   if (!entries.length) return null;
-  const base = ROLE_TEMPLATES[role];
   return (
     <div className="flex flex-wrap gap-1 mb-2">
       {entries.map(([k, v]) => {
@@ -123,7 +124,12 @@ export default function UserEdit() {
   }, [detail.data, loaded]);
 
   function invalidate() {
-    return Promise.all([utils.users.list.invalidate(), utils.users.get.invalidate({ userId })]);
+    return Promise.all([
+      utils.users.list.invalidate(),
+      utils.users.get.invalidate({ userId }),
+      // لوحة «الأثر الفعلي» في أسفل الصفحة يجب أن تعرض القرار الجديد فور الحفظ.
+      utils.users.effectivePermissions.invalidate({ userId }),
+    ]);
   }
 
   const update = trpc.users.update.useMutation({
@@ -164,14 +170,28 @@ export default function UserEdit() {
   const revokeOneSession = trpc.users.revokeSession.useMutation({
     onSuccess: async () => { await utils.users.sessions.invalidate({ userId }); },
   });
+  const selectedCustomRole = useMemo(
+    () => customRoles.find((r: any) => Number(r.id) === customRoleId) as { id: number; baseRole?: string; permissions?: unknown; label?: string } | undefined,
+    [customRoleId, customRoles],
+  );
+  const permissionBase = useMemo<PermissionMap>(() => {
+    // دور المستخدم الأساسي متاح من سجلّه، لذا لا نعرض مصفوفة فارغة أثناء تحميل قائمة الأدوار.
+    if (customRoleId != null) return (selectedCustomRole?.permissions as PermissionMap) ?? ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
+    return ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
+  }, [customRoleId, role, selectedCustomRole]);
   const resolvedPerms = useMemo(
-    () => resolvePermissions(role, Object.keys(permsOverride).length ? permsOverride : null),
-    [role, permsOverride]
+    () => customRoleId != null
+      ? applyPermissionOverrides(permissionBase, Object.keys(permsOverride).length ? permsOverride : null)
+      : resolvePermissions(role, Object.keys(permsOverride).length ? permsOverride : null),
+    [customRoleId, permissionBase, permsOverride, role],
   );
 
   function handleRoleChange(val: string) {
     if (val.startsWith("custom:")) {
-      setCustomRoleId(Number(val.slice(7))); // دور مخصّص — صلاحياته محفوظة فيه
+      const selected = customRoles.find((r: any) => Number(r.id) === Number(val.slice(7)));
+      setCustomRoleId(Number(val.slice(7)));
+      setRole((selected?.baseRole as RoleKey | undefined) ?? "user");
+      setPermsOverride({}); // لا تُرحّل استثناءات الدور السابق إلى دور جديد.
     } else {
       setCustomRoleId(null);
       setRole(val as RoleKey);
@@ -181,7 +201,7 @@ export default function UserEdit() {
 
   function handlePermChange(moduleKey: string, level: AccessLevel) {
     const newResolved = { ...resolvedPerms, [moduleKey]: level };
-    setPermsOverride(diffFromTemplate(role, newResolved) ?? {});
+    setPermsOverride(diffFromPermissions(permissionBase, newResolved) ?? {});
   }
 
   async function handleGeneratePassword() {
@@ -227,7 +247,9 @@ export default function UserEdit() {
     if (emailV && !/^\S+@\S+\.\S+$/.test(emailV)) return setError("بريد إلكتروني غير صالح.");
     if (usernameV && !USERNAME_REGEX.test(usernameV)) return setError(USERNAME_POLICY_MSG);
     if (hiredAt && !/^\d{4}-\d{2}-\d{2}$/.test(hiredAt)) return setError("تاريخ التوظيف غير صالح.");
-    const override = customRoleId ? null : diffFromTemplate(role, resolvedPerms);
+    const override = customRoleId
+      ? diffFromPermissions(permissionBase, resolvedPerms)
+      : diffFromTemplate(role, resolvedPerms);
     // نرسل القيمتين دائماً: "" ⇒ مسح المعرّف صراحةً (الخادم يضمن بقاء معرّف واحد على الأقل).
     update.mutate({
       userId,
@@ -385,7 +407,7 @@ export default function UserEdit() {
               )}
             </select>
             {customRoleId ? (
-              <p className="text-[11px] text-muted-foreground">دور مخصّص — صلاحياته تُدار من شاشة «الأدوار والصلاحيات».</p>
+              <p className="text-[11px] text-muted-foreground">دور مخصّص — يمكنك هنا إضافة أو سحب استثناء لهذا المستخدم فقط، أو تعديل أساس الدور من شاشة «الأدوار والصلاحيات».</p>
             ) : roleInfo ? <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p> : null}
             {/* معاينة حيّة للأثر الفعليّ (ش١ RBAC): «سيرى: تجزئة فقط» — تلتقط خطأ اختيار الدور قبل الحفظ. */}
             <div className="pt-1">
@@ -452,7 +474,7 @@ export default function UserEdit() {
         <CardHeader>
           <CardTitle className="text-base">
             الصلاحيات
-            {!customRoleId && customCount > 0 && (
+            {customCount > 0 && (
               <span className="text-[10px] font-medium text-primary mr-2 align-middle">
                 {customCount} مخصّص
               </span>
@@ -460,19 +482,19 @@ export default function UserEdit() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {customRoleId ? (
-            <p className="text-sm text-muted-foreground">صلاحيات الدور المخصّص محفوظة في تعريفه — عدّلها من شاشة «الأدوار والصلاحيات».</p>
-          ) : (
-            <>
-              <PermDiffSummary role={role} override={permsOverride} />
-              <PermissionMatrix
-                role={role}
-                permissions={resolvedPerms}
-                onChange={handlePermChange}
-                onReset={() => setPermsOverride({})}
-              />
-            </>
+          {customRoleId && (
+            <p className="mb-3 text-sm text-muted-foreground">
+              الأساس هو دور «{selectedCustomRole?.label ?? "مخصّص"}». التغييرات هنا تخص هذا المستخدم وحده ولا تعدّل بقية أصحاب الدور.
+            </p>
           )}
+          <PermDiffSummary base={permissionBase} override={permsOverride} />
+          <PermissionMatrix
+            role={role}
+            permissions={resolvedPerms}
+            basePermissions={permissionBase}
+            onChange={handlePermChange}
+            onReset={() => setPermsOverride({})}
+          />
         </CardContent>
       </Card>
 
@@ -480,7 +502,7 @@ export default function UserEdit() {
       {done && <p className="text-sm text-money-positive">{done}</p>}
 
       <div className="flex flex-wrap gap-2">
-        <Button onClick={submit} disabled={update.isPending}>
+        <Button onClick={submit} disabled={update.isPending || (customRoleId != null && (rolesQ.isLoading || !selectedCustomRole))}>
           {update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}
         </Button>
         {isActive ? (

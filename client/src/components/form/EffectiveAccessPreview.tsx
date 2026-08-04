@@ -1,5 +1,6 @@
 import {
   POS_STATION_LABEL,
+  applyPermissionOverrides,
   deriveEffectiveAccess,
   diffFromTemplate,
   type EffectiveAccessSummary,
@@ -103,7 +104,9 @@ export function EffectiveAccessForAssignment({
       return null;
     }
     const base = cr.baseRole as RoleKey;
-    const override = diffFromTemplate(base, (cr.permissions as PermissionMap) ?? {});
+    const customPermissions = (cr.permissions as PermissionMap) ?? {};
+    const effectivePermissions = applyPermissionOverrides(customPermissions, permsOverride ?? null);
+    const override = diffFromTemplate(base, effectivePermissions);
     return <EffectiveAccessPreview role={base} override={override} title={title} />;
   }
   return <EffectiveAccessPreview role={role} override={permsOverride ?? null} title={title} />;
