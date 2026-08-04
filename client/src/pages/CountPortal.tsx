@@ -12,11 +12,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useLocation, useParams } from "wouter";
-import { TRPCClientError } from "@trpc/client";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { trpc } from "@/lib/trpc";
 import type { RouterOutputs } from "@/lib/trpc";
 import { notify, errMsg } from "@/lib/notify";
+import { isNetworkError } from "@/lib/netError";
 import { fmtInt } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
@@ -53,13 +53,6 @@ type CountItem = CountState["items"][number];
 type CountMode = "FIRST" | "RECOUNT" | "VERIFY";
 
 /* ─────────────────────────── مساعدات ─────────────────────────── */
-
-/** فشل شبكي (لم يصل للخادم) ⇄ رفض خادمي (وصل ورُفض برسالة). */
-function isNetworkError(e: unknown): boolean {
-  if (typeof navigator !== "undefined" && !navigator.onLine) return true;
-  if (e instanceof TRPCClientError) return e.data == null;
-  return e instanceof TypeError;
-}
 
 /** اسم الوحدة الأساس (factor=1) لعرض الكميات. */
 function baseUnitName(item: CountItem): string {
@@ -414,12 +407,12 @@ export default function CountPortal() {
             if (stale) removeQueued(code, stale.clientRequestId);
             setQueueCount(queueSize(code));
             setOpenVariantId(null);
-            // الخادم هو الحَكَم في نوع العدّ والتعارض — نقرأ حقوله إن وُجدت بتساهل.
-            const r = res as unknown as { isConflict?: boolean; kind?: string } | undefined;
-            const kind = r?.kind ?? mode;
+            // الخادم هو الحَكَم في نوع العدّ ونتيجة المطابقة. ⚠️ كان يُقرأ `isConflict` وهو حقل
+            // لا يُعيده `count.submit` أصلاً (يُعيد `verifyMatch`) ⇒ لم تظهر رسالة التعارض قط.
+            const kind = res.kind ?? mode;
             if (kind === "VERIFY") {
-              if (r?.isConflict === true) notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
-              else if (r?.isConflict === false) notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
+              if (res.verifyMatch === false) notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
+              else if (res.verifyMatch === true) notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
               else notify.ok("سُجّل العدّ التحقّقي");
             } else if (kind === "RECOUNT") {
               notify.ok("سُجّلت إعادة العدّ");
