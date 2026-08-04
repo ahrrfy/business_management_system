@@ -15,12 +15,15 @@ import {
   authenticatePin,
   COUNT_COOKIE_NAME,
   finishAssignment,
+  getPortalCatalog,
+  getPortalDynamic,
   getPortalPulse,
   getPortalState,
   resolvePortalIdentity,
   submitCount,
   type PortalIdentity,
 } from "../countPortalService";
+import { mergePortalState } from "../../../shared/countPortalMerge";
 import {
   computeStocktakeReview,
   createStocktakeSession,
@@ -136,11 +139,27 @@ function submit(identity: PortalIdentity, variantId: number, qty: number, opts: 
   });
 }
 
-/** يحاكي عقد الراوتر `count.state` (غلاف ETag) فوق الخدمتين — نفس منطق countPortalRouter. */
-async function portalState(identity: PortalIdentity, knownVersion?: string) {
+/**
+ * يحاكي عقد الراوتر `count.state` حرفياً (غلاف ETag + فصل الكتالوج) — أي انحرافٍ بينه وبين
+ * `countPortalRouter.state` يجعل هذه الاختبارات تحرس عقداً غير المستعمَل فعلاً.
+ */
+async function portalState(
+  identity: PortalIdentity,
+  knownVersion?: string,
+  knownCatalogVersion?: string,
+) {
   const { v } = await getPortalPulse(identity);
-  if (knownVersion && knownVersion === v) return { v, changed: false as const, state: null };
-  return { v, changed: true as const, state: await getPortalState(identity) };
+  if (knownVersion && knownVersion === v) {
+    return { v, cv: null, changed: false as const, catalog: null, dynamic: null };
+  }
+  const [catalog, dynamic] = await Promise.all([getPortalCatalog(identity), getPortalDynamic(identity)]);
+  return {
+    v,
+    cv: catalog.cv,
+    changed: true as const,
+    catalog: knownCatalogVersion === catalog.cv ? null : catalog.items,
+    dynamic,
+  };
 }
 
 async function countRowsOf(sessionId: number, variantId: number) {
@@ -599,25 +618,63 @@ describe("نبضة النسخة (pulse)", () => {
     expect(after.length).toBe(before.length);
   });
 
-  it("غلاف ETag: knownVersion مطابق ⇒ بلا حمولة؛ ومخالف/غائب ⇒ الحالة كاملةً", async () => {
+  it("غلاف ETag: knownVersion مطابق ⇒ بلا حمولة؛ ومخالف/غائب ⇒ الحمولة", async () => {
     const r = await mkPortalSession();
     const idA = await loginPin(r.code, r.assignments[0].pin!);
     await submit(idA, 1, 10);
 
-    // بلا وسمٍ معروف ⇒ حمولة كاملة + الوسم الحاليّ.
+    // بلا وسمٍ معروف ⇒ كتالوج + متغيّر + الوسمان.
     const full = await portalState(idA);
     expect(full.changed).toBe(true);
-    expect(full.state?.items.length).toBeGreaterThan(0);
+    expect(full.catalog?.length).toBeGreaterThan(0);
+    expect(full.dynamic?.counts.length).toBeGreaterThan(0);
 
-    // بالوسم نفسه ⇒ «بلا تغيير» وبلا أي حمولة (هذا هو مصدر التوفير).
-    const same = await portalState(idA, full.v);
-    expect(same).toMatchObject({ changed: false, state: null, v: full.v });
+    // بالوسم نفسه ⇒ «بلا تغيير» وبلا أي حمولة (مصدر التوفير الأول).
+    const same = await portalState(idA, full.v, full.cv);
+    expect(same).toMatchObject({ changed: false, catalog: null, dynamic: null, v: full.v });
 
-    // بعد عدّةٍ جديدة، نفس الوسم القديم ⇒ يعود بالحمولة كاملةً ووسمٍ جديد.
+    // بعد عدّةٍ جديدة ⇒ وسمٌ جديد وحمولة.
     await submit(idA, 2, 3);
-    const afterChange = await portalState(idA, full.v);
+    const afterChange = await portalState(idA, full.v, full.cv);
     expect(afterChange.changed).toBe(true);
     expect(afterChange.v).not.toBe(full.v);
-    expect(afterChange.state?.items.length).toBeGreaterThan(0);
+  });
+
+  it("الدلتا: العدّ لا يُبدّل وسم الكتالوج ⇒ لا يُعاد إرسال الأصناف (٨٣٪ من الحمولة)", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const first = await portalState(idA);
+    const catalogCv = first.cv!;
+    expect(first.catalog).not.toBeNull();
+
+    // عدّةٌ جديدة تُبدّل وسم الحالة `v` لكن **لا** تمسّ الكتالوج.
+    await submit(idA, 1, 12);
+    const afterCount = await portalState(idA, first.v, catalogCv);
+    expect(afterCount.changed).toBe(true);
+    expect(afterCount.v).not.toBe(first.v);
+    expect(afterCount.cv).toBe(catalogCv); // الكتالوج لم يتبدّل…
+    expect(afterCount.catalog).toBeNull(); // …فلم يُعَد إرساله — جوهر الدلتا.
+    expect(afterCount.dynamic?.counts).toEqual([
+      expect.objectContaining({ variantId: 1, counted: true }),
+    ]);
+
+    // وعميلٌ بلا كتالوج مخزَّن (أو بوسمٍ قديم) يستلمه كاملاً — فلا يعلق بحالةٍ ناقصة.
+    const stranger = await portalState(idA, undefined, "cv-قديم");
+    expect(stranger.catalog?.length).toBeGreaterThan(0);
+  });
+
+  it("التركيب المشترك يعيد إنتاج getPortalState حرفياً (لا انحراف بين الخادم والعميل)", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const idB = await loginPin(r.code, r.assignments[1].pin!);
+    await submit(idA, 1, 9, { unitBreakdown: '{"قطعة":9}' });
+    await submit(idB, 2, 4);
+    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 2, reason: "تدقيق" }, actor);
+
+    // نفس الدالّة النقيّة التي يستعملها العميل لإعادة التركيب.
+    const [cat, dyn] = await Promise.all([getPortalCatalog(idA), getPortalDynamic(idA)]);
+    const rebuilt = mergePortalState(cat.items, dyn);
+    const direct = await getPortalState(idA);
+    expect(rebuilt).toEqual(direct);
   });
 });

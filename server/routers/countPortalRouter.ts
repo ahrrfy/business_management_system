@@ -20,8 +20,9 @@ import {
   COUNT_COOKIE_NAME,
   COUNT_TOKEN_TTL_MS,
   finishAssignment,
+  getPortalCatalog,
+  getPortalDynamic,
   getPortalPulse,
-  getPortalState,
   resolvePortalIdentity,
   submitCount,
 } from "../services/countPortalService";
@@ -145,14 +146,31 @@ export const countPortalRouter = router({
    * والطيّ أفضل وظيفياً أيضاً — جولةٌ واحدة عند التغيّر بدل جولتَي «نبضة ثم جلب».
    */
   state: publicProcedure
-    .input(z.object({ sessionCode, knownVersion: z.string().max(64).optional() }))
+    .input(
+      z.object({
+        sessionCode,
+        knownVersion: z.string().max(64).optional(),
+        /** وسم الكتالوج لدى العميل — إن طابق لم يُعد إرساله (٨٣٪ من الحمولة). */
+        knownCatalogVersion: z.string().max(64).optional(),
+      }),
+    )
     .query(async ({ input, ctx }) => {
       const identity = await resolvePortalIdentity(ctx, input.sessionCode);
       const { v } = await getPortalPulse(identity);
+      // ① لا شيء تبدّل ⇒ ردٌّ بعشرات البايتات.
       if (input.knownVersion && input.knownVersion === v) {
-        return { v, changed: false as const, state: null };
+        return { v, cv: null, changed: false as const, catalog: null, dynamic: null };
       }
-      return { v, changed: true as const, state: await getPortalState(identity) };
+      // ② تبدّل شيء ⇒ أرسل المتغيّر دائماً، والكتالوج **فقط** إن كان لدى العميل قديماً.
+      const [catalog, dynamic] = await Promise.all([getPortalCatalog(identity), getPortalDynamic(identity)]);
+      const catalogFresh = input.knownCatalogVersion === catalog.cv;
+      return {
+        v,
+        cv: catalog.cv,
+        changed: true as const,
+        catalog: catalogFresh ? null : catalog.items,
+        dynamic,
+      };
     }),
 
   /** تسجيل عدّة (idempotent عبر clientRequestId — آمن لمزامنة طابور الأوفلاين). */
