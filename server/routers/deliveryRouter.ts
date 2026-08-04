@@ -194,6 +194,7 @@ export const deliveryRouter = router({
               seen.add(line.consignmentId);
             });
           }),
+        countedCash: moneyStr,
         clientRequestId: z.string().max(64).nullish(),
       }),
     )
@@ -202,7 +203,7 @@ export const deliveryRouter = router({
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
       const res = await retryOnDup(() =>
-        recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
+        recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, countedCash: input.countedCash, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
       );
       await logAudit(ctx, { action: "delivery.remit", entityType: "deliveryRemittance", entityId: res.remittanceId, newValue: { partyId: input.partyId, collectedTotal: res.collectedTotal, feesTotal: res.feesTotal, netRemitted: res.netRemitted, shortfallTotal: res.shortfallTotal } });
       return res;
@@ -210,9 +211,19 @@ export const deliveryRouter = router({
 
   // إرجاع إرسالية (عكس بيع + مخزون + عهدة) — مديرٌ فقط (إجراء تصحيحيّ).
   returnConsignment: managerProcedure
-    .input(z.object({ consignmentId: z.number().int().positive(), clientRequestId: z.string().max(64).nullish() }))
+    .input(z.object({
+      consignmentId: z.number().int().positive(),
+      clientRequestId: z.string().max(64).nullish(),
+      // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
+      // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه ردّ العربون فعلياً.
+      refundShiftId: z.number().int().positive().optional(),
+    }))
     .mutation(async ({ input, ctx }) => {
-      const res = await returnConsignment(input.consignmentId, { ...actorOf(ctx), clientRequestId: input.clientRequestId });
+      const res = await returnConsignment(input.consignmentId, {
+        ...actorOf(ctx),
+        clientRequestId: input.clientRequestId,
+        refundShiftId: input.refundShiftId ?? null,
+      });
       await logAudit(ctx, { action: "delivery.return", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { invoiceId: (res as { invoiceId?: number }).invoiceId } });
       return res;
     }),

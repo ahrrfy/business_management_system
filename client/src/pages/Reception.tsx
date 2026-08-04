@@ -27,8 +27,10 @@ import {
   Search,
   ShoppingCart,
   Store,
+  Ticket,
   Trash2,
   Truck,
+  Wallet,
   X,
   Zap,
 } from "lucide-react";
@@ -39,6 +41,9 @@ import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/S
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useMediaQuery } from "@/hooks/useMobile";
+import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
+import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -51,6 +56,7 @@ import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import ReservationsHub from "@/pages/ReservationsHub";
 import Inbox from "@/pages/Inbox";
 import OrderFulfillment from "@/pages/OrderFulfillment";
+import ReceptionOrderQueue from "@/components/reception/ReceptionOrderQueue";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   getServerBridgeStatus,
@@ -80,12 +86,15 @@ import {
 
 type PosRow = NonNullable<RouterOutputs["catalog"]["posList"]>[number];
 type NumMode = "QTY" | "DISC" | "PAY";
-type PayMethod = "CASH" | "CARD" | "TRANSFER";
+type PayMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 const PAY_METHOD_LABEL: Record<PayMethod, string> = {
   CASH: "نقدي",
   CARD: "بطاقة",
   TRANSFER: "تحويل",
+  WALLET: "محفظة",
 };
+type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
+const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 const RESERVATION_READ_ROLES = ["admin", "manager", "accountant", "cashier", "warehouse", "sales_rep", "auditor"] as const;
 const CHANNEL_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor", "warehouse", "print_operator"] as const;
 const STORE_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
@@ -106,7 +115,17 @@ type CartLine = {
 const QUICK_AMTS = [1000, 5000, 10000, 25000];
 
 function effectivePrice(line: CartLine): number {
-  const base = line.origPrice ?? Number(line.custom?.unitPrice ?? line.row.price ?? 0);
+  // عرض/كوبون (catalog.posList.promotionEffectivePrice) يسبق السعر الأساس كنقطة انطلاق (نمط
+  // POS.tsx effectivePrice) — الخصم اليدوي يُطبَّق فوقه لا بدلاً عنه. لا ينطبق على سطر مخصّص
+  // (custom): تسعيره الإضافي بلا كتالوج ترويجيّ.
+  const promoPrice = !line.custom ? line.row.promotionEffectivePrice : null;
+  // التخصيص إضافيّ: سعر الوحدة للسطر المخصّص = سعر المنتج الأساس + سعر التخصيص (فوقه)، لا بديلاً عنه.
+  const base = line.origPrice ?? (
+    promoPrice != null ? Number(promoPrice) :
+    line.custom
+      ? Number(line.row.price ?? 0) + Number(line.custom.unitPrice ?? 0)
+      : Number(line.row.price ?? 0)
+  );
   if (line.disc && line.disc > 0) return base * (1 - line.disc / 100);
   return base;
 }
@@ -197,12 +216,22 @@ export default function Reception() {
   const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
   const noAssignedBranch = me.data != null && me.data.branchId == null;
   const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
+
+  // طبقة أوفلاين للقراءة فقط (نمط POS.tsx ش٢): أثناء انقطاع الاتصال يُخدَم البحث/الباركود من
+  // النموذج المحلي (Dexie)، والكتابة (checkoutReception) تبقى أونلاين حصراً — قرار الخطة الأصلية
+  // (لا عربون/تسليم أوفلاين للاستقبال، خلافاً للكاشير الذي يلتقط بيعاً نقدياً كاملاً أوفلاين).
+  const connState = useConnectivity();
+  const offline = isDisconnected(connState);
+  useOfflineCatalogSync(me.data ? branchId : null);
   const utils = trpc.useUtils();
 
-  // وردية خدمة الزبائن (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
+  // وردية خدمة العملاء (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
   const branchesQ = trpc.branches.list.useQuery();
-  const staffQ = trpc.workOrders.assignableStaff.useQuery(undefined, { enabled: isElevatedRole });
+  const staffQ = trpc.workOrders.assignableStaff.useQuery({ branchId });
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" });
+  // اِستقبال (تكامل التوصيل، ٤/٨): عدّاد «جاهز» على زرّ طابور الطلبات — مؤشّر سريع بلا فتح الطابور.
+  const woCountsQ = trpc.workOrders.counts.useQuery({ branchId });
+  const woReadyCount = woCountsQ.data?.ready ?? 0;
   const shift = shiftQ.data ?? null;
   const [opening, setOpening] = useState("0");
   const [closing, setClosing] = useState(false);
@@ -270,6 +299,11 @@ export default function Reception() {
     onError: (e) => notify.err(e),
   });
 
+  // احتواء ديناميكي: زوم المتصفح يُقلّص المساحة بوحدات CSS لا الشاشة الفعلية، فلوحة الدفع ذات
+  // الأعمدة الثابتة (نمط POS.tsx PaymentPanel، #466) تحتاج نفس الطبقات الثلاث: رأسٌ ثابت + وسطٌ
+  // قابل للتمرير + أزرار فعل لا تنكمش أبداً، مع كثافة تُقاس بالارتفاع المتاح لحذف الثانويّ أولاً.
+  const receptionDense = useMediaQuery("(max-height: 820px)");
+
   // ───── الحالة ─────────────────────────────────────────────────────────────
   const [cart, setCart] = useState<CartLine[]>([]);
   const [selKey, setSelKey] = useState<string | null>(null);
@@ -281,11 +315,19 @@ export default function Reception() {
   const [paymentReference, setPaymentReference] = useState(""); // P2 fix: مرجع البطاقة للعرابين
   const [showInbox, setShowInbox] = useState(false);
   const [showStoreOrders, setShowStoreOrders] = useState(false);
+  // اِستقبال (تكامل التوصيل، ٤/٨): طابور الطلبات (جاهزة/قيد التنفيذ/سُلِّمت اليوم) + إسناد التوصيل.
+  const [showOrdersQueue, setShowOrdersQueue] = useState(false);
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
+  // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
+  const [tierOverride, setTierOverride] = useState<Tier | null>(null);
+  const [couponInput, setCouponInput] = useState("");
+  const [couponCode, setCouponCode] = useState<string | null>(null);
+  const [couponLabel, setCouponLabel] = useState<string | null>(null);
   const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
   const [channelHandle, setChannelHandle] = useState("");
+  const [workflowStep, setWorkflowStep] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [printerReady, setPrinterReady] = useState(isPaired());
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({
@@ -296,6 +338,45 @@ export default function Reception() {
   // idempotency: مفتاح واحد لكل دورة إرسال — يتجدّد بعد النجاح.
   const reqIdRef = useRef<string>(crypto.randomUUID());
   const searchRef = useRef<HTMLInputElement>(null);
+  const customerSectionRef = useRef<HTMLDivElement>(null);
+  const cartSectionRef = useRef<HTMLDivElement>(null);
+  const paymentSectionRef = useRef<HTMLDivElement>(null);
+
+  // فئة العميل الافتراضية (لحلّ الفئة التلقائية — نمط POS.tsx fetchedCustomer/effectiveTier).
+  const fetchedCustomer = trpc.customers.get.useQuery(
+    { customerId: customer.customerId ?? 0 },
+    { enabled: !!customer.customerId, staleTime: 60_000 },
+  );
+  const effectiveTier: Tier =
+    tierOverride ?? ((fetchedCustomer.data?.defaultPriceTier as Tier | undefined) ?? "RETAIL");
+  // تبديل العميل يُسقط أيّ تجاوز فئة يدوي سابق (تعلّق بعميلٍ آخر) وأيّ كوبون مُطبَّق (أسعاره
+  // قد تختلف بفئة العميل الجديد — يلزم إعادة تطبيق).
+  const prevCustomerIdRef = useRef<number | null>(customer.customerId);
+  useEffect(() => {
+    if (prevCustomerIdRef.current === customer.customerId) return;
+    prevCustomerIdRef.current = customer.customerId;
+    setTierOverride(null);
+    if (couponCode) {
+      setCouponCode(null);
+      setCouponLabel(null);
+      setCouponInput("");
+      setCart((prev) => prev.map((c) => (c.custom ? c : { ...c, row: { ...c.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customer.customerId]);
+
+  const channelCustomerQ = trpc.customers.smartSearch.useQuery(
+    { q: channelHandle.trim(), limit: 6 },
+    { enabled: channel !== "WALK_IN" && channelHandle.replace(/\D/g, "").length >= 6, staleTime: 30_000 },
+  );
+
+  useEffect(() => {
+    if (customer.customerId || channel === "WALK_IN") return;
+    const digits = channelHandle.replace(/\D/g, "");
+    if (digits.length < 6) return;
+    const match = channelCustomerQ.data?.find((candidate) => (candidate.phone ?? "").replace(/\D/g, "") === digits);
+    if (match) setCustomer({ customerId: Number(match.id), name: match.name, phone: match.phone ?? null, isNew: false });
+  }, [channelCustomerQ.data, channelHandle, channel, customer.customerId]);
 
   const connectPrinter = async () => {
     try {
@@ -354,12 +435,8 @@ export default function Reception() {
   const sumDirect = round2(sumDirectD).toNumber();
   const sumCustom = round2(sumCustomD).toNumber();
 
-  // العربون الإجمالي من نوافذ التخصيص.
-  const totalDepositsD = cart
-    .filter(isCustomKind)
-    .reduce((s, c) => s.plus(D(c.custom?.deposit || 0)), D(0));
-  // المبلغ المتوقّع دفعه فوراً = بيع مباشر (كامل) + عربون المخصّص.
-  const expectedNowD = sumDirectD.plus(totalDepositsD);
+  // الدفع موحّد على كامل السلة. البيع المباشر هو الحد الأدنى؛ وما زاد يصبح عربوناً لأوامر الطباعة.
+  const expectedNowD = grandTotalD;
   const expectedNow = round2(expectedNowD).toNumber();
 
   // ما أدخله الكاشير في لوحة الأرقام (مع تكيّف Quick Pay).
@@ -367,39 +444,55 @@ export default function Reception() {
   const paid = round2(paidD).toNumber();
   const changeD = paidD.minus(expectedNowD);
   const change = round2(changeD).toNumber();
-  const remainingD = expectedNowD.minus(paidD);
+  const remainingD = grandTotalD.minus(paidD);
   const remaining = round2(remainingD).toNumber();
   const isChange = method === "CASH" && paidD.gt(0) && paidD.gte(expectedNowD);
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
 
   const hasCustom = cart.some(isCustomKind);
-  const needPaymentRef = method !== "CASH" && (expectedNowD.gt(0) || hasCustom);
+  const needPaymentRef = method !== "CASH" && paidD.gt(0);
 
   // ───── البحث ──────────────────────────────────────────────────────────────
   const debounced = useDebouncedValue(search, 180);
   const searchResults = trpc.catalog.posList.useQuery(
-    { branchId, tier: "RETAIL", query: debounced, limit: 15, includeReceptionServices: true },
-    { enabled: debounced.trim().length >= 2, placeholderData: keepPreviousData, staleTime: 15_000 },
+    { branchId, tier: effectiveTier, query: debounced, limit: 15, includeReceptionServices: true },
+    { enabled: !offline && debounced.trim().length >= 2, placeholderData: keepPreviousData, staleTime: 15_000 },
   );
-  const results = searchResults.data ?? [];
-  const resultsEmpty = results.length === 0 && debounced.trim().length >= 2 && !searchResults.isFetching;
+  // أوفلاين: البحث يُخدَم من النموذج المحلي بنفس شكل PosRow — بقية الشاشة (addRow/السلة/الأسعار)
+  // لا تعرف الفرق. خدمات الطباعة مشمولة (includePrintServices) مطابقةً لـincludeReceptionServices
+  // أونلاين. العروض/الكوبون/الأسعار التعاقدية معطّلة أوفلاين (الخطة الأصلية، نمط POS.tsx).
+  const [offlineResults, setOfflineResults] = useState<PosRow[]>([]);
+  useEffect(() => {
+    if (!offline || debounced.trim().length < 2) {
+      setOfflineResults([]);
+      return;
+    }
+    let cancelled = false;
+    void offlineSearchCatalog(debounced, effectiveTier, { limit: 15, includePrintServices: true }).then((rows) => {
+      if (!cancelled) setOfflineResults(rows as PosRow[]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [offline, debounced, effectiveTier]);
+  const results = offline ? offlineResults : (searchResults.data ?? []);
+  const resultsEmpty = results.length === 0 && debounced.trim().length >= 2 && !(offline || searchResults.isFetching);
 
   // ───── السلّة ─────────────────────────────────────────────────────────────
-  const addRow = useCallback((row: PosRow) => {
-    // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعر RETAIL
-    // بالدخول للسلّة ثم يَفشل عند الإرسال (createWorkOrder يَرفض salePrice<=0) بَعد ما اَلتزَمت
-    // فاتورة البيع — رحلةٌ بِنصف نتيجة. الحارس موحَّد للنوعين.
-    if (row.price == null || Number(row.price) <= 0) {
-      notify.err(`لا سعر RETAIL لـ ${row.productName} (${row.unitName}) — حدّد سعراً من /products أوّلاً`);
-      return;
-    }
-    // المنتج المخصّص (products.isCustomizable=true) ⇒ افتح نافذة التخصيص.
-    if (row.isCustomizable) {
-      setShowCustomization({ row });
-      setSearch("");
-      setShowDrop(false);
-      return;
-    }
+  /** أيّ تعديلٍ على السلة يُسقط كوبوناً مُطبَّقاً سابقاً (نمط POS.tsx clearAppliedCoupon) — أسعار
+   *  الكوبون محسوبة على تركيبة سلّةٍ بعينها، وتعديلها بلا إعادة تطبيق يعني تحصيلاً بسعرٍ فات أوانه. */
+  const clearCouponIfApplied = useCallback(() => {
+    setCouponCode((prev) => {
+      if (!prev) return prev;
+      setCouponLabel(null);
+      setCart((c) => c.map((line) => (line.custom ? line : { ...line, row: { ...line.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
+      return null;
+    });
+  }, []);
+
+  /** يضيف صنفاً جاهزاً (بلا تخصيص) بسعره العادي — يدمج مع سطرٍ مطابق غير مخصّص إن وُجد. */
+  const addDirectLine = useCallback((row: PosRow) => {
+    clearCouponIfApplied();
     setCart((prev) => {
       // دمج كميّات الصنف الجاهز المُكرَّر (لا تكرار سطر).
       const i = prev.findIndex((c) => !isCustomKind(c) && c.row.productUnitId === row.productUnitId);
@@ -413,10 +506,38 @@ export default function Reception() {
       setSelKey(key);
       return [...prev, { key, row, qty: 1 }];
     });
+    setWorkflowStep(3);
+  }, []);
+
+  const addRow = useCallback((row: PosRow) => {
+    // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعرٍ
+    // بالدخول للسلّة ثم يَفشل عند الإرسال (createWorkOrder يَرفض salePrice<=0) بَعد ما اَلتزَمت
+    // فاتورة البيع — رحلةٌ بِنصف نتيجة. الحارس موحَّد للنوعين.
+    if (row.price == null || Number(row.price) <= 0) {
+      notify.err(`لا سعر ${TIER_LABEL[effectiveTier]} لـ ${row.productName} (${row.unitName}) — حدّد سعراً من /products أوّلاً`);
+      return;
+    }
+    // المنتج المخصّص (products.isCustomizable=true) ⇒ افتح نافذة التخصيص (وفيها خيار «بلا تخصيص»
+    // لعميلٍ يريد القطعة كما هي — انظر onAddPlain أدناه، إصلاح ٣/٨).
+    if (row.isCustomizable) {
+      setShowCustomization({ row });
+      setSearch("");
+      setShowDrop(false);
+      return;
+    }
+    addDirectLine(row);
     setSearch("");
     setShowDrop(false);
     searchRef.current?.focus();
-  }, []);
+  }, [addDirectLine]);
+
+  /** العميل يريد هذه القطعة تحديداً بلا تخصيص (بسعرها العادي) رغم أنّ صنفها قابلٌ للتخصيص — يسمح
+   *  بمزج قطعةٍ مخصّصة وأخرى جاهزة من نفس المنتج في طلبٍ واحد. */
+  function addPlain(row: PosRow) {
+    addDirectLine(row);
+    setShowCustomization(null);
+    searchRef.current?.focus();
+  }
 
   /** خدمة حرة كانت تُنشأ من صفحة «طلب خدمة جديد». أصبحت الآن سطراً داخل السلة نفسها. */
   function addManualService() {
@@ -449,15 +570,18 @@ export default function Reception() {
       setSelKey(key);
     }
     setShowCustomization(null);
-    searchRef.current?.focus();
+    setWorkflowStep(3);
+    requestAnimationFrame(() => cartSectionRef.current?.focus());
   }
 
   function changeQty(key: string, delta: number) {
+    clearCouponIfApplied();
     setCart((prev) =>
       prev.map((c) => (c.key === key ? { ...c, qty: Math.max(1, c.qty + delta) } : c)),
     );
   }
   function removeRow(key: string) {
+    clearCouponIfApplied();
     setCart((prev) => prev.filter((c) => c.key !== key));
     if (selKey === key) setSelKey(null);
   }
@@ -469,6 +593,9 @@ export default function Reception() {
       description: "سيُمسح كلّ ما في الطلب الحالي. متابعة؟",
       confirmText: "تفريغ",
     }))) return;
+    setCouponCode(null);
+    setCouponLabel(null);
+    setCouponInput("");
     setCart([]);
     setSelKey(null);
     setPayInput("");
@@ -478,14 +605,17 @@ export default function Reception() {
   const lookupBarcode = useCallback(
     async (code: string) => {
       try {
-        const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: "RETAIL" });
+        // أوفلاين: المطابقة من النموذج المحلي (الباركود الأساسي + البدائل)، نمط POS.tsx.
+        const row = offline
+          ? await offlineFindByBarcode(code, effectiveTier)
+          : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier });
         if (!row) notify.err(`باركود غير معروف: ${code}`);
-        else addRow(row);
+        else addRow(row as PosRow);
       } catch (e: unknown) {
         notify.err(e, "خطأ في المسح");
       }
     },
-    [branchId, addRow, utils],
+    [branchId, addRow, utils, effectiveTier, offline],
   );
   const handleHidScan = useCallback(
     async (raw: string) => {
@@ -520,6 +650,7 @@ export default function Reception() {
     } else if (numMode === "DISC" && selKey) {
       const line = cart.find((c) => c.key === selKey);
       if (!line || isCustomKind(line)) return;
+      clearCouponIfApplied();
       setCart((prev) =>
         prev.map((c) => {
           if (c.key !== selKey) return c;
@@ -548,7 +679,20 @@ export default function Reception() {
   }
   function payAll() {
     setNumMode("PAY");
-    setPayInput(String(expectedNow));
+    setPayInput(String(grandTotal));
+  }
+
+  function goToWorkflowStep(step: number) {
+    setWorkflowStep(step);
+    requestAnimationFrame(() => {
+      if (step === 1) customerSectionRef.current?.querySelector("input")?.focus();
+      if (step === 2) searchRef.current?.focus();
+      if (step === 3) cartSectionRef.current?.focus();
+      if (step === 4) {
+        setNumMode("PAY");
+        paymentSectionRef.current?.focus();
+      }
+    });
   }
 
   // ───── إنشاء العميل عند الحاجة (ensureCustomerId) ────────────────────────
@@ -557,18 +701,26 @@ export default function Reception() {
   const createCustomerM = trpc.customers.create.useMutation();
   async function ensureCustomerId(): Promise<number | null> {
     if (customer.customerId) return customer.customerId;
-    if (!customer.name?.trim()) return null;
+    const channelPhone = channel !== "WALK_IN" && channelHandle.replace(/\D/g, "").length >= 6
+      ? channelHandle.trim()
+      : null;
+    const phone = customer.phone?.trim() || channelPhone;
+    const rawName = customer.name?.trim() || "";
+    const name = rawName && rawName.replace(/\D/g, "") !== phone?.replace(/\D/g, "")
+      ? rawName
+      : phone ? `عميل ${phone}` : "";
+    if (!name) return null;
     if (!(await confirm({
       variant: "warning",
       title: "إنشاء عميل جديد",
-      description: `سيُنشأ عميل جديد باسم «${customer.name.trim()}». متابعة؟`,
+      description: `سيُحفظ «${name}»${phone ? ` برقم ${phone}` : ""} كعميل ويرتبط بهذا الطلب. متابعة؟`,
       confirmText: "إنشاء العميل",
     }))) {
       throw new Error("ألغى المستخدم إنشاء العميل");
     }
     const created = await createCustomerM.mutateAsync({
-      name: customer.name.trim(),
-      phone: customer.phone || null,
+      name,
+      phone: phone || null,
       customerType: "فرد",
       defaultPriceTier: "RETAIL",
     });
@@ -578,8 +730,65 @@ export default function Reception() {
       throw new Error("تعذّر قراءة مُعرّف العميل الجديد من الخادم");
     }
     // عكس الاختيار في الواجهة بعد الإنشاء.
-    setCustomer({ customerId: id, name: customer.name.trim(), phone: customer.phone ?? null, isNew: false });
+    setCustomer({ customerId: id, name, phone: phone ?? null, isNew: false });
     return id;
+  }
+
+  // كوبون خصم (نمط POS.tsx couponPreview) — يُطبَّق على أصناف البيع الجاهزة (المباشرة) فقط، لا
+  // خدمات الطباعة (لا كوبون خادمياً هناك) ولا الأصناف المخصّصة (تسعيرها إضافيّ لا كتالوجيّ). أيّ
+  // تعديلٍ لاحق على السلة يُسقطه (clearCouponIfApplied) — لا إعادة معاينة تلقائية.
+  const couponPreview = trpc.crm.coupons.preview.useMutation({
+    onSuccess: (result) => {
+      const byUnit = new Map(result.lines.map((line) => [Number(line.productUnitId), line]));
+      setCart((items) => items.map((item) => {
+        if (item.custom || item.row.isPrintService) return item;
+        const applied = byUnit.get(Number(item.row.productUnitId));
+        if (!applied) return item;
+        return {
+          ...item,
+          row: {
+            ...item.row,
+            promotionId: applied.promotionId,
+            promotionName: applied.promotionName,
+            promotionEffectivePrice: applied.promotionEffectivePrice,
+          },
+        };
+      }));
+      setCouponCode(result.code);
+      setCouponLabel(result.programName);
+      notify.ok(`تم تطبيق الكوبون — ${result.programName}`);
+    },
+    onError: (e) => notify.err(e, "تعذّر تطبيق الكوبون"),
+  });
+
+  function applyCoupon() {
+    const code = couponInput.trim();
+    if (!code) return;
+    const eligible = cart.filter((c) => !c.custom && !c.row.isPrintService);
+    if (eligible.length === 0) {
+      notify.err("أضف صنفاً جاهزاً غير خدمة طباعة أولاً — الكوبون لا ينطبق على المخصّص/الطباعة");
+      return;
+    }
+    couponPreview.mutate({
+      code,
+      branchId,
+      customerId: customer.customerId ?? undefined,
+      customerTier: effectiveTier,
+      lines: eligible.map((c) => ({
+        productId: c.row.productId,
+        variantId: c.row.variantId,
+        productUnitId: c.row.productUnitId,
+        unitPrice: String(c.row.price ?? "0"),
+        quantity: c.qty,
+        hasContractPrice: !!c.row.isContractPrice,
+      })),
+    });
+  }
+  function clearCoupon() {
+    setCouponCode(null);
+    setCouponLabel(null);
+    setCouponInput("");
+    setCart((prev) => prev.map((c) => (c.custom ? c : { ...c, row: { ...c.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
   }
 
   // نقطة التزام خادمية واحدة للسلة الهجينة: بيع + طباعة + أوامر شغل.
@@ -593,13 +802,12 @@ export default function Reception() {
     }
     const invalidCustom = cart.find((line) => {
       if (!line.custom) return false;
-      const total = D(customLineGrand(line));
-      const deposit = D(line.custom.deposit || 0);
-      return !line.custom.title.trim() || D(line.custom.unitPrice || 0).lte(0) || deposit.lt(0) || deposit.gt(total);
+      const unitTotal = D(line.row.price || 0).plus(D(line.custom.unitPrice || 0));
+      return !line.custom.title.trim() || unitTotal.lte(0);
     });
     if (invalidCustom) {
       setSelKey(invalidCustom.key);
-      notify.err("راجع تفاصيل أمر الشغل: العنوان والسعر مطلوبان، ويجب ألا يتجاوز العربون إجمالي البند");
+      notify.err("راجع تفاصيل أمر الشغل: العنوان وسعر البيع مطلوبان");
       return;
     }
     const directLines = cart.filter((c) => !isCustomKind(c));
@@ -608,37 +816,26 @@ export default function Reception() {
     const printLines = directLines.filter((c) => c.row.isPrintService);
     const customItems = cart.filter(isCustomKind);
 
-    // عربون كل صنف مخصّص: Quick = كامل سعر الصنف+التوصيل؛ غير ذلك = ما حفظه في النافذة.
-    // إصلاح P1: salePrice على workOrder = lineTotal + deliveryCost. deliverWorkOrder يَحسب
-    // إجمالي الفاتورة من wo.salePrice وحده ويَرفض deposit > salePrice ⇒ إن استَبعَدنا التوصيل
-    // فأمر التسليم المدفوع كاملاً يَفشل، وإن لم يَفشل فالتوصيل بلا إيراد فعلاً.
+    // سعر كل أمر فقط؛ العربون لم يعد حقلاً على السطر، بل يوزّعه الخادم من دفعة الطلب الكلية.
     const customWithDeposits = customItems.map((c) => {
       const full = D(customLineGrand(c));
-      const deposit = opts.quickFullPay ? full.toFixed(2) : (c.custom?.deposit || "0");
-      return { c, depositStr: deposit, salePriceStr: full.toFixed(2) };
+      return { c, depositStr: "0.00", salePriceStr: full.toFixed(2) };
     });
 
-    // الدفع المتوقّع لهذا التنفيذ.
-    const expectedDepositsD = customWithDeposits.reduce((s, x) => s.plus(D(x.depositStr)), D(0));
-    const expectedTotalD = round2(sumDirectD.plus(expectedDepositsD));
-    const inputPaidD = opts.quickFullPay ? expectedTotalD : paidD;
+    const inputPaidD = opts.quickFullPay ? grandTotalD : paidD;
+    const appliedPaidD = method === "CASH" && inputPaidD.gt(grandTotalD) ? grandTotalD : inputPaidD;
 
-    // البطاقة/التحويل ليسا نقداً مُسلَّماً ولا يملكان فكّة: يلزم مبلغ مطابق ومرجع تتبّع.
-    if (method !== "CASH" && expectedTotalD.gt(0) && !paymentReference.trim()) {
+    // البطاقة والتحويل صالحان أيضاً كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي.
+    if (method !== "CASH" && inputPaidD.gt(0) && !paymentReference.trim()) {
       notify.err(method === "CARD" ? "رقم عملية البطاقة مطلوب" : "رقم مرجع التحويل مطلوب");
       return;
     }
-    if (!opts.quickFullPay && method !== "CASH" && !inputPaidD.eq(expectedTotalD)) {
-      notify.err(`الدفع ${method === "CARD" ? "بالبطاقة" : "بالتحويل"} يجب أن يطابق المستحق تماماً (${fmt(expectedTotalD.toFixed(2))} د.ع)`);
+    if (method !== "CASH" && inputPaidD.gt(grandTotalD)) {
+      notify.err(`لا يمكن أن يتجاوز مبلغ ${method === "CARD" ? "البطاقة" : "التحويل"} إجمالي الطلب (${fmt(grandTotalD.toFixed(2))} د.ع)`);
       return;
     }
-
-    // إصلاح P1 (٢٣/٦/٢٦): الفحص السابق كان يَتحقّق من تَغطية البيع المباشر فقط، بَينما يَرسل
-    // العربون الكامل لكل صنف لـcreateWorkOrder الذي يَقيّده receipt(IN)+PAYMENT_IN فوراً.
-    // النتيجة: نَقد غير مَقبوض فعلاً يَدخل الدفتر ⇒ تَسوية صندوق/AR مشوَّهة. الفحص الآن
-    // يَستلزم تَغطية إجمالي العَرابين أيضاً (المُدخَل ≥ المتوقَّع).
-    if (!opts.quickFullPay && inputPaidD.lt(expectedTotalD)) {
-      notify.err(`المبلغ المُدخَل (${fmt(inputPaidD.toFixed(2))}) أقلّ من المتوقَّع (${fmt(expectedTotalD.toFixed(2))} = بيع + عرابين). عدّل العرابين من النوافذ أو أكمِل المبلغ.`);
+    if (appliedPaidD.lt(sumDirectD)) {
+      notify.err(`المبلغ المقبوض يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(sumDirectD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
       return;
     }
 
@@ -661,7 +858,12 @@ export default function Reception() {
       const receiptsToPrint: ReceiptBrowserData[] = [];
       const workOrdersToPrint: WorkOrderReceiptData[] = [];
       const printedAt = new Date();
-      const customerName = customer.name.trim() || null;
+      const receiptPhone = customer.phone?.trim()
+        || (channel !== "WALK_IN" && channelHandle.replace(/\D/g, "").length >= 6 ? channelHandle.trim() : null);
+      const rawCustomerName = customer.name.trim();
+      const customerName = rawCustomerName && rawCustomerName.replace(/\D/g, "") !== receiptPhone?.replace(/\D/g, "")
+        ? rawCustomerName
+        : receiptPhone ? `عميل ${receiptPhone}` : null;
       const saleAmount = round2(regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
       const printAmount = round2(printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
       const workOrderPayloads = customWithDeposits.map((x) => {
@@ -701,6 +903,10 @@ export default function Reception() {
           deliveryAddress: custom.deliveryAddress || null,
           // deliveryCost يَبقى في عمود مستقلّ للتقرير؛ salePrice الإجماليّ ضمّه فعلاً.
           deliveryCost: custom.hasDelivery ? D(custom.deliveryCost || 0).toFixed(2) : "0",
+          // اِستقبال (تكامل التوصيل، ٤/٨): هاتف المستلم كعمود مستقلّ قابل للاستعلام — كان
+          // مُضمَّناً كنصٍّ حرٍّ داخل customizationText فقط (composeCustomizationText أدناه ما زال
+          // يُضيفه للنصّ أيضاً — تكرارٌ مقصود: عرضٌ للفنّي في النص + مصدر حقيقة للتوصيل في العمود).
+          deliveryPhone: custom.hasDelivery ? (custom.deliveryPhone || null) : null,
           designImages: custom.designImages.map((img, idx) => ({
             url: img.dataUrl,
             caption: img.name ?? null,
@@ -715,15 +921,34 @@ export default function Reception() {
         customerId: customerId ?? undefined,
         paymentMethod: method,
         paymentReference: method === "CASH" ? undefined : paymentReference.trim(),
+        paidAmount: round2(appliedPaidD).toFixed(2),
         clientRequestId: reqIdRef.current,
+        priceTier: effectiveTier,
+        couponCode: couponCode ?? undefined,
         regularSale: regularLines.length > 0 ? {
           amount: saleAmount,
-          lines: regularLines.map((c) => ({
-            variantId: c.row.variantId,
-            productUnitId: c.row.productUnitId,
-            quantity: String(c.qty),
-            ...(c.disc != null && c.disc > 0 ? { discountPercent: String(c.disc) } : {}),
-          })),
+          lines: regularLines.map((c) => {
+            // كوبون/عرض: سعر قائمة صحيح الدينار + خصمٌ صريح (نمط POS.tsx buildSaleLine) — الخادم
+            // يتحقّق منه مقابل العرض الفعلي بلا رفضٍ لو تغيّر بين المعاينة والحفظ.
+            if (c.row.promotionEffectivePrice != null) {
+              const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
+              const discAmt = listWhole.minus(D(c.row.promotionEffectivePrice)).times(c.qty);
+              return {
+                variantId: c.row.variantId,
+                productUnitId: c.row.productUnitId,
+                quantity: String(c.qty),
+                unitPriceOverride: listWhole.toFixed(2),
+                ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+                ...(c.row.promotionId != null ? { promotionId: c.row.promotionId } : {}),
+              };
+            }
+            return {
+              variantId: c.row.variantId,
+              productUnitId: c.row.productUnitId,
+              quantity: String(c.qty),
+              ...(c.disc != null && c.disc > 0 ? { discountPercent: String(c.disc) } : {}),
+            };
+          }),
         } : null,
         printSale: printLines.length > 0 ? {
           amount: printAmount,
@@ -778,7 +1003,7 @@ export default function Reception() {
           dueDate: custom.dueDate || null,
           status: "RECEIVED",
           customerName,
-          customerPhone: customer.phone,
+          customerPhone: receiptPhone,
           jobTitle: custom.title.trim() || c.row.productName,
           quantity: c.qty,
           specs: finalText || null,
@@ -827,6 +1052,10 @@ export default function Reception() {
       setSelKey(null);
       setPayInput("");
       setPaymentReference("");
+      setCustomer({ customerId: null, name: "", phone: null, isNew: false });
+      setChannel("WALK_IN");
+      setChannelHandle("");
+      setWorkflowStep(1);
       reqIdRef.current = crypto.randomUUID();
       // تحديث القوائم.
       utils.workOrders.list.invalidate().catch(() => {});
@@ -864,6 +1093,10 @@ export default function Reception() {
         if (e.key === "Escape") { e.preventDefault(); setShowStoreOrders(false); }
         return;
       }
+      if (showOrdersQueue) {
+        if (e.key === "Escape") { e.preventDefault(); setShowOrdersQueue(false); }
+        return;
+      }
       if (e.key === "F2") {
         e.preventDefault();
         searchRef.current?.focus();
@@ -877,14 +1110,14 @@ export default function Reception() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showInbox, showDrop, showCustomization, showReservations, showStoreOrders, closeReservations]);
+  }, [showInbox, showDrop, showCustomization, showReservations, showStoreOrders, showOrdersQueue, closeReservations]);
 
   // اقتراح الكاشير: لا يبني الواجهة قبل توفّر الفرع.
   if (me.isLoading || shiftQ.isLoading) {
     return <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>;
   }
 
-  // بوّابة وردية خدمة الزبائن: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
+  // بوّابة وردية خدمة العملاء: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
   if (!shift) {
     return (
       <div className="flex h-full items-center justify-center bg-background p-4" dir="rtl">
@@ -981,7 +1214,12 @@ export default function Reception() {
           <OrderFulfillment />
         </div>
       )}
-      {/* نافذة إغلاق وردية خدمة الزبائن (Z-report مستقلّ) */}
+      {showOrdersQueue && (
+        <div className="absolute inset-0 z-30 overflow-y-auto bg-background p-4">
+          <ReceptionOrderQueue branchId={branchId} onClose={() => setShowOrdersQueue(false)} />
+        </div>
+      )}
+      {/* نافذة إغلاق وردية خدمة العملاء (Z-report مستقلّ) */}
       {closing && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
@@ -1090,22 +1328,28 @@ export default function Reception() {
           </div>
         </div>
       )}
-      {/* مناطق العمل المتسلسلة: العميل ← الإضافة ← السلة ← التفاصيل ← الدفع. */}
+      {/* أربع مناطق حقيقية: تفاصيل أمر الشغل جزء من السلة، فلا نكررها كمرحلة مستقلة. */}
       <div className="flex-shrink-0 space-y-2 border-b bg-card px-4 py-2.5">
         <div className="flex items-center gap-1 overflow-x-auto text-[11px] font-bold text-muted-foreground" aria-label="تسلسل إنشاء الطلب">
-          {["اختيار العميل", "إضافة المطلوب", "مراجعة السلة", "تفاصيل الطباعة", "استلام المبلغ"].map((label, index) => (
-            <div key={label} className="inline-flex shrink-0 items-center gap-1.5">
+          {["العميل والطلب", "إضافة المطلوب", "السلة وتفاصيل الطباعة", "الدفع والطباعة"].map((label, index) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => goToWorkflowStep(index + 1)}
+              className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-muted", workflowStep === index + 1 && "text-primary")}
+              aria-current={workflowStep === index + 1 ? "step" : undefined}
+            >
               <span className={cn(
                 "grid size-5 place-items-center rounded-full border text-[10px]",
-                index === 0 ? "border-primary bg-primary text-primary-foreground" : "bg-muted/50",
+                workflowStep === index + 1 ? "border-primary bg-primary text-primary-foreground" : "bg-muted/50",
               )}>{index + 1}</span>
               <span>{label}</span>
-              {index < 4 && <span className="mx-1 text-border">←</span>}
-            </div>
+              {index < 3 && <span className="mx-1 text-border">←</span>}
+            </button>
           ))}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/25 p-2">
+        <div ref={customerSectionRef} className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/25 p-2">
           <span className="shrink-0 text-xs font-extrabold">١. العميل وطريقة وصول الطلب</span>
           <SmartCustomerInput value={customer} onChange={setCustomer} className="w-60" placeholder="عميل نقدي أو ابحث عن عميل" />
           {customer.customerId && canReadCustomerContext && (
@@ -1139,12 +1383,44 @@ export default function Reception() {
           {channel !== "WALK_IN" && (
             <Input
               value={channelHandle}
-              onChange={(e) => setChannelHandle(e.target.value)}
+              onChange={(e) => {
+                setChannelHandle(e.target.value);
+                setWorkflowStep(1);
+              }}
               placeholder="رقم الهاتف أو اسم حساب العميل"
               className="h-8 min-w-48 flex-1 text-xs"
               dir="ltr"
             />
           )}
+          {channel !== "WALK_IN" && channelHandle.trim() && !customer.customerId && (
+            <span className="text-[11px] font-semibold text-primary">سيُربط الرقم بعميل قائم أو يُحفظ كعميل عند إتمام الطلب</span>
+          )}
+          {customer.customerId && (
+            <span className="text-[11px] font-semibold text-money-positive">تم ربط الطلب بالعميل: {customer.name}</span>
+          )}
+          <div className="flex items-center gap-1.5 border-s ps-2">
+            <label className="text-[11px] font-semibold text-muted-foreground">فئة السعر:</label>
+            <select
+              value={effectiveTier}
+              onChange={(e) => { setTierOverride(e.target.value as Tier); clearCouponIfApplied(); }}
+              className="h-7 rounded-md border border-input bg-transparent px-1.5 text-[11px] font-bold"
+              aria-label="فئة السعر"
+            >
+              <option value="RETAIL">مفرد</option>
+              <option value="WHOLESALE">جملة</option>
+              <option value="GOVERNMENT">حكومي</option>
+            </select>
+            {tierOverride && (
+              <button
+                type="button"
+                onClick={() => setTierOverride(null)}
+                title="عودة لفئة العميل الافتراضية"
+                className="text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                ↩
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
@@ -1155,7 +1431,7 @@ export default function Reception() {
             ref={searchRef}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            onFocus={() => setShowDrop(true)}
+            onFocus={() => { setShowDrop(true); setWorkflowStep(2); }}
             onBlur={() => setTimeout(() => setShowDrop(false), 160)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && results[0]) {
@@ -1225,6 +1501,17 @@ export default function Reception() {
           className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 border-violet-500 bg-violet-50 px-4 text-xs font-extrabold text-violet-700 transition-colors hover:bg-violet-100"
         >
           <ClipboardList aria-hidden className="size-4" /> إضافة خدمة / أمر شغل
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowOrdersQueue(true)}
+          className="relative inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-4 text-xs font-extrabold transition-colors hover:bg-muted/60"
+        >
+          <Truck aria-hidden className="size-4" /> طابور الطلبات والتوصيل
+          {woReadyCount > 0 && (
+            <Badge variant="secondary" className="ms-0.5 tabular-nums">{woReadyCount}</Badge>
+          )}
         </button>
 
         {canReadReservations && (
@@ -1302,7 +1589,7 @@ export default function Reception() {
       {/* ─── الجسم: سلّة (يسار) + لوحة الدفع (يمين) ─── */}
       <div className="flex min-h-0 flex-1 flex-row-reverse gap-3 p-3">
         {/* ─ السلّة ─ */}
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card">
+        <div ref={cartSectionRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
           <div className="flex h-12 flex-shrink-0 items-center justify-between gap-2 border-b bg-muted/40 px-3">
             <div className="flex items-center gap-2">
               <span className="inline-flex items-center gap-1.5 text-sm font-extrabold">
@@ -1488,7 +1775,7 @@ export default function Reception() {
                               }}
                               className="grid size-8 place-items-center rounded-md border bg-card hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
                               disabled={isCustom && l.qty <= 1}
-                              title={isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية صنف مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
+                              title={isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية منتج مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
                               aria-label="تقليل الكمية"
                             >
                               <Minus aria-hidden className="size-3.5" />
@@ -1516,7 +1803,7 @@ export default function Reception() {
                               removeRow(l.key);
                             }}
                             className="text-muted-foreground hover:text-destructive"
-                            aria-label="حذف الصنف"
+                            aria-label="حذف المنتج"
                           >
                             <Trash2 aria-hidden className="size-4" />
                           </button>
@@ -1543,8 +1830,13 @@ export default function Reception() {
         </div>
 
         {/* ─ لوحة الدفع ─ */}
-        <div className="flex w-[408px] flex-shrink-0 flex-col overflow-hidden rounded-xl border bg-card">
-          {/* رأس الإجمالي + التقسيم الهجين */}
+        <div
+          ref={paymentSectionRef}
+          tabIndex={-1}
+          onFocusCapture={() => setWorkflowStep(4)}
+          className="flex w-[408px] flex-shrink-0 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30 [container-type:size]"
+        >
+          {/* رأس الإجمالي + التقسيم الهجين — ثابتٌ دائماً، خارج منطقة التمرير. */}
           <div className="flex-shrink-0 border-b bg-muted/40 p-3">
             <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-extrabold">
               <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٥</span>
@@ -1573,6 +1865,9 @@ export default function Reception() {
             </div>
           </div>
 
+          {/* منطقة الإدخال — الوحيدة القابلة للتمرير. شبكة أمان: مهما ضاق الارتفاع (زوم/دقّة)
+              يُمرَّر هذا الوسط وحده، ويبقى الإجمالي فوقه وزرّا الدفع تحته ظاهرَين دائماً بلا قصّ. */}
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           {/* شاشة المبلغ */}
           <div className="flex-shrink-0 px-3 pb-1 pt-2">
             <div className="flex min-h-[44px] items-center justify-between rounded-lg border-[1.5px] bg-muted/40 px-3 py-1.5">
@@ -1594,7 +1889,8 @@ export default function Reception() {
             </div>
           </div>
 
-          {/* مبالغ سريعة */}
+          {/* مبالغ سريعة — تُحذف عند ضيق الارتفاع (لوحة الأرقام تُغنِي عنها؛ حذف الثانويّ لا تصغير الأساسيّ). */}
+          {!receptionDense && (
           <div className="flex flex-shrink-0 flex-wrap gap-1.5 px-3 py-1">
             {QUICK_AMTS.map((v) => (
               <button
@@ -1615,31 +1911,33 @@ export default function Reception() {
               = الكل
             </button>
           </div>
+          )}
 
-          {/* لوحة الأرقام */}
+          {/* لوحة الأرقام — الارتفاع بوحدات الحاوية (cqh) ينكمش مع الزوم/النافذة بلا قصّ، بحدّ
+              أدنى 44px (هدف اللمس المعياريّ) لا ينزل تحته مهما ضاق الارتفاع. */}
           <div className="flex-shrink-0 px-3 py-1">
             <div className="grid grid-cols-[auto_1fr_1fr_1fr] gap-1.5" dir="rtl">
-              <button onClick={() => setNumMode("QTY")} className={cn("h-12 min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "QTY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>الكمية</button>
+              <button onClick={() => setNumMode("QTY")} className={cn("h-[clamp(44px,6.6cqh,58px)] min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "QTY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>الكمية</button>
               <NumKey k="3" onPress={numPress} />
               <NumKey k="2" onPress={numPress} />
               <NumKey k="1" onPress={numPress} />
 
-              <button onClick={() => setNumMode("DISC")} className={cn("h-12 min-w-[60px] rounded-lg border-[1.5px] text-sm font-extrabold", numMode === "DISC" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>%</button>
+              <button onClick={() => setNumMode("DISC")} className={cn("h-[clamp(44px,6.6cqh,58px)] min-w-[60px] rounded-lg border-[1.5px] text-sm font-extrabold", numMode === "DISC" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>%</button>
               <NumKey k="6" onPress={numPress} />
               <NumKey k="5" onPress={numPress} />
               <NumKey k="4" onPress={numPress} />
 
-              <button onClick={() => setNumMode("PAY")} className={cn("h-12 min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "PAY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>المبلغ</button>
+              <button onClick={() => setNumMode("PAY")} className={cn("h-[clamp(44px,6.6cqh,58px)] min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "PAY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>المبلغ</button>
               <NumKey k="9" onPress={numPress} />
               <NumKey k="8" onPress={numPress} />
               <NumKey k="7" onPress={numPress} />
 
-              <button onClick={() => numPress("DEL")} className="grid h-12 place-items-center rounded-lg border-[1.5px] bg-red-50 text-red-700 hover:bg-red-100" aria-label="حذف">
+              <button onClick={() => numPress("DEL")} className="grid h-[clamp(44px,6.6cqh,58px)] place-items-center rounded-lg border-[1.5px] bg-red-50 text-red-700 hover:bg-red-100" aria-label="حذف">
                 <X aria-hidden className="size-4" />
               </button>
               <NumKey k="." onPress={numPress} />
               <NumKey k="0" onPress={numPress} />
-              <button onClick={() => numPress("C")} className="h-12 rounded-lg border-[1.5px] bg-card text-xs font-extrabold text-muted-foreground hover:bg-muted">C</button>
+              <button onClick={() => numPress("C")} className="h-[clamp(44px,6.6cqh,58px)] rounded-lg border-[1.5px] bg-card text-xs font-extrabold text-muted-foreground hover:bg-muted">C</button>
             </div>
           </div>
 
@@ -1649,16 +1947,17 @@ export default function Reception() {
             <div className="flex gap-1.5">
               {(
                 [
-                  { v: "CASH", label: "نقداً", Icon: Banknote },
+                  { v: "CASH", label: "نقدي", Icon: Banknote },
                   { v: "CARD", label: "بطاقة", Icon: CreditCard },
                   { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight },
+                  { v: "WALLET", label: "محفظة", Icon: Wallet },
                 ] as const
               ).map((p) => (
                 <button
                   key={p.v}
                   onClick={() => setMethod(p.v)}
                   className={cn(
-                    "flex flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border-2 py-2 text-xs font-extrabold transition-colors",
+                    "flex min-h-[clamp(46px,6.6cqh,60px)] flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border-2 py-2 text-xs font-extrabold transition-colors",
                     method === p.v
                       ? "border-primary bg-primary text-primary-foreground"
                       : "bg-card hover:bg-muted",
@@ -1673,10 +1972,47 @@ export default function Reception() {
               <Input
                 value={paymentReference}
                 onChange={(e) => setPaymentReference(e.target.value)}
-                placeholder={method === "CARD" ? "أدخل رقم عملية البطاقة" : "أدخل رقم التحويل"}
+                placeholder={
+                  method === "CARD" ? "أدخل رقم عملية البطاقة"
+                  : method === "WALLET" ? "أدخل رقم عملية المحفظة"
+                  : "أدخل رقم التحويل"
+                }
                 className="mt-2 h-9 text-xs"
                 dir="ltr"
               />
+            )}
+          </div>
+
+          {/* كوبون خصم */}
+          <div className="flex-shrink-0 px-3 py-1.5">
+            <div className="mb-1 flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
+              <Ticket aria-hidden className="size-3.5" /> كوبون خصم
+            </div>
+            {couponCode ? (
+              <div className="flex items-center justify-between rounded-md border border-money-positive/40 bg-money-positive/10 px-2 py-1.5 text-xs font-bold text-money-positive">
+                <span>{couponLabel ?? couponCode}</span>
+                <button type="button" onClick={clearCoupon} className="text-[11px] font-semibold underline">إزالة</button>
+              </div>
+            ) : (
+              <div className="flex gap-1.5">
+                <Input
+                  value={couponInput}
+                  onChange={(e) => setCouponInput(e.target.value)}
+                  placeholder="رمز الكوبون"
+                  className="h-8 flex-1 text-xs"
+                  dir="ltr"
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyCoupon(); } }}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8"
+                  disabled={!couponInput.trim() || couponPreview.isPending}
+                  onClick={applyCoupon}
+                >
+                  {couponPreview.isPending ? "…" : "تطبيق"}
+                </Button>
+              </div>
             )}
           </div>
 
@@ -1702,14 +2038,16 @@ export default function Reception() {
               <span className="text-muted-foreground">المتوقّع الآن: <span className="font-bold tabular-nums" dir="ltr">{fmt(expectedNow)} د.ع</span></span>
             )}
           </div>
+          </div>{/* ← نهاية منطقة الإدخال القابلة للتمرير */}
 
-          {/* الأزرار الكبيرة */}
+          {/* منطقة الفعل — خارج التمرير ولا تنكمش أبداً: زرّا الدفع يبقيان ظاهرَين وقابلَين للنقر
+              مهما بلغ الزوم أو ضاق الارتفاع (هذا ما كان يختفي قبل الإصلاح). */}
           <div className="flex-shrink-0 space-y-1.5 px-3 pb-3 pt-1">
             <button
               type="button"
               disabled={cart.length === 0 || submitting || !shift}
               onClick={() => void handleSubmit({ quickFullPay: true })}
-              className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-sm font-black text-white shadow-md transition hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+              className="inline-flex h-[clamp(44px,6cqh,52px)] w-full items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-sm font-black text-white shadow-md transition-colors hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
               <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
             </button>
@@ -1717,7 +2055,7 @@ export default function Reception() {
               type="button"
               disabled={cart.length === 0 || submitting || !shift}
               onClick={() => void handleSubmit({ quickFullPay: false })}
-              className="inline-flex h-12 w-full items-center justify-center gap-1.5 rounded-lg bg-primary text-sm font-black text-primary-foreground shadow-md transition hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+              className="inline-flex h-[clamp(48px,6.5cqh,56px)] w-full items-center justify-center gap-1.5 rounded-lg bg-primary text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
               {submitting ? (
                 "جارٍ الإرسال…"
@@ -1729,7 +2067,9 @@ export default function Reception() {
                 <><Check aria-hidden className="size-4" /> إتمام الطلب وطباعة</>
               )}
             </button>
-            <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F2 بحث</div>
+            {!receptionDense && (
+              <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F2 بحث</div>
+            )}
           </div>
         </div>
       </div>
@@ -1748,7 +2088,7 @@ export default function Reception() {
           initial={
             showCustomization.editingKey
               ? cart.find((c) => c.key === showCustomization.editingKey)?.custom
-              : emptyCustomization(showCustomization.row.productName, showCustomization.row.price ?? "0")
+              : emptyCustomization(showCustomization.row.productName)
           }
           staff={(staffQ.data ?? []).map((member) => ({
             id: Number(member.id),
@@ -1756,6 +2096,11 @@ export default function Reception() {
             role: member.role ?? null,
           }))}
           canEditInternalCost={isElevatedRole}
+          onAddPlain={
+            !showCustomization.editingKey && showCustomization.row.variantId !== 0
+              ? () => addPlain(showCustomization.row)
+              : undefined
+          }
           onCancel={() => setShowCustomization(null)}
           onSave={saveCustomization}
         />
@@ -1793,7 +2138,7 @@ function NumKey({ k, onPress }: { k: string; onPress: (k: string) => void }) {
     <button
       type="button"
       onClick={() => onPress(k)}
-      className="h-12 rounded-lg border-[1.5px] bg-muted/40 text-lg font-extrabold tabular-nums hover:bg-muted"
+      className="h-[clamp(44px,6.6cqh,58px)] rounded-lg border-[1.5px] bg-muted/40 text-lg font-extrabold tabular-nums hover:bg-muted"
       dir="ltr"
     >
       {k}

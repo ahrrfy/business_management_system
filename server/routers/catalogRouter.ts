@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { asc, sql } from "drizzle-orm";
-import { categories } from "../../drizzle/schema";
+import { asc, eq, sql } from "drizzle-orm";
+import { categories, productVariants } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { assignBarcode, checkBarcodesTaken, createProduct, deleteProduct, getProductForEdit, listByProductIds, listByUnitIds, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
 import { getProductForVariantEdit, updateProductWithVariants } from "../services/productEditService";
@@ -17,6 +17,7 @@ import {
 } from "../services/categoryService";
 import { logAudit } from "../services/auditService";
 import { getProductUsage } from "../services/entityUsage";
+import { syncActiveFullStocktakeScopes } from "../services/stocktakeService";
 import { canSeeCostForUser, productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { checkVariantSanity, classifySeverity, type UnitPricing } from "../../shared/priceSanity";
@@ -116,6 +117,10 @@ const editVariantSchema = z.object({
   // product-variants: صورة هذا اللون — string ⇒ تُعيَّن، null/"" ⇒ تُزال (يُعاد التوفيق دائماً).
   image: z.string().max(5_000_000).nullish(),
   unitBarcodes: z.record(z.string(), z.string()),
+  // توسعة بدائل الباركود من شاشة التعديل (٣/٨): بمفتاح اسم الوحدة، القائمة الكاملة المرغوبة لكل
+  // وحدة — تُوفَّق بعد نجاح الحفظ الرئيسي (انظر reconcileEditBarcodeAliases). اختياري تماماً؛
+  // غيابه = لا مسّ للبدائل القائمة (توافق عكسي كامل مع الحمولة الحالية).
+  barcodeAliases: z.record(z.string(), z.array(barcodeAliasSchema).max(20)).optional(),
 });
 
 // v3-add-screens: صور المنتج (الإنشاء) — url إلزاميّ (كلّها جديدة).
@@ -170,10 +175,67 @@ function assertCostChangeReasonOrThrow(variantLabel: string, oldCost: string | n
   }
 }
 
+/**
+ * توفيق بدائل الباركود (productUnitBarcodes) بعد نجاح `updateProductWithVariants` — عمداً
+ * **خارج** معاملة الخدمة نفسها: `productEditService.ts` مملوكٌ لجلسةٍ أخرى تعمل عليه اليوم (لا
+ * يجوز لمسه)، والدوال المستوردة أعلاه (add/removeUnitBarcodeAlias) مستقلّة الذرّية أصلاً — نفس
+ * ما تستعمله `addUnitBarcodeAlias`/`removeUnitBarcodeAlias` كإجراءين منفصلين قائمين في هذا
+ * الراوتر. المطابقة بـsku (فريد داخل المنتج — `assertEditUniqueness` في الخدمة يضمنه) لا بـid
+ * الوارد في الحمولة، كي تعمل مع متغيّرٍ جديدٍ أُضيف في نفس الحفظة (لا id معروف مسبقاً له).
+ * الأخطاء (باركود متعارض إلخ) تُجمَع كتحذيراتٍ لا تُفشل الحفظ الرئيسي الذي نجح فعلاً.
+ */
+async function reconcileEditBarcodeAliases(
+  productId: number,
+  variants: Array<{ sku: string; barcodeAliases?: Record<string, Array<{ barcode: string; note?: string | null }>> }>,
+  actorUserId: number,
+): Promise<string[]> {
+  const withAliases = variants.filter((v) => v.barcodeAliases && Object.keys(v.barcodeAliases).length > 0);
+  if (!withAliases.length) return [];
+  const db = getDb();
+  if (!db) return [];
+  const warnings: string[] = [];
+  const current = await db
+    .select({ id: productVariants.id, sku: productVariants.sku })
+    .from(productVariants)
+    .where(eq(productVariants.productId, productId));
+  for (const v of withAliases) {
+    const variantRow = current.find((c) => c.sku === v.sku.trim());
+    if (!variantRow) {
+      warnings.push(`تعذّر تحديد المتغيّر «${v.sku}» لتوفيق بدائله — لم يُعثر عليه بعد الحفظ.`);
+      continue;
+    }
+    for (const [unitName, desired] of Object.entries(v.barcodeAliases ?? {})) {
+      const productUnitId = await resolveProductUnitId(Number(variantRow.id), unitName);
+      if (!productUnitId) continue; // وحدة غير موجودة (اسمٌ لم يعد في القالب) — لا بدائل لها أصلاً.
+      const { aliases: existing } = await listUnitBarcodes(productUnitId);
+      const desiredCodes = new Set(desired.map((d) => d.barcode.trim()).filter(Boolean));
+      for (const ex of existing) {
+        if (desiredCodes.has(ex.barcode)) continue;
+        try {
+          await removeUnitBarcodeAlias(ex.id);
+        } catch (e) {
+          warnings.push(e instanceof TRPCError ? e.message : `تعذّر حذف البديل ${ex.barcode}`);
+        }
+      }
+      const existingCodes = new Set(existing.map((e) => e.barcode));
+      for (const d of desired) {
+        const code = d.barcode.trim();
+        if (!code || existingCodes.has(code)) continue;
+        try {
+          await addUnitBarcodeAlias(productUnitId, code, d.note ?? null, actorUserId);
+        } catch (e) {
+          warnings.push(e instanceof TRPCError ? e.message : `تعذّر إضافة البديل ${code}`);
+        }
+      }
+    }
+  }
+  return warnings;
+}
+
 export const catalogRouter = router({
   posList: productsReadProcedure
     // بند 12ب (٧/٧): customerId اختياري — عميل بسعر تعاقدي نشط يرى سعره بدل سعر الفئة (isContractPrice).
-    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
+    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().int().positive().max(1000).default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
     .query(async ({ input, ctx }) => {
       const rows = await listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, customerId: input.customerId ?? undefined });
       return redactPosCost(rows, ctx.user);
@@ -288,7 +350,7 @@ export const catalogRouter = router({
   // مخزن/مسؤول مشتريات) — تحتاجه لإضافة سطور أمر الشراء الذي تُخوَّل إنشاءه؛ محصور بها فلا
   // تتسرّب التكلفة للكاشير/المندوب.
   forPurchase: productsPurchaseProcedure
-    .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().default(50) }))
+    .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().int().positive().max(500).default(50) }))
     .query(({ input }) => listForPurchase(input.branchId, input.query, input.limit)),
 
   createProduct: productsManagerProcedure
@@ -347,6 +409,8 @@ export const catalogRouter = router({
         assertVariantSanityOrThrow(v.color || v.sku, v.costPrice, pricings);
       }
       const res = await createProduct({ ...input, name: input.name ?? "" } as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      // الجرد الشامل الحي: ألحق الصنف الجديد بأي جلسة FULL ما زالت قيد العد.
+      await syncActiveFullStocktakeScopes();
       await logAudit(ctx, { action: "product.create", entityType: "product", entityId: (res as { productId?: number })?.productId, newValue: { name: input.name, brand: input.brand ?? null, modelName: input.modelName ?? null } });
       return res;
     }),
@@ -445,6 +509,7 @@ export const catalogRouter = router({
         })),
       })) ?? [];
       const res = await updateProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await syncActiveFullStocktakeScopes();
       await logAudit(ctx, {
         action: "product.update",
         entityType: "product",
@@ -531,6 +596,10 @@ export const catalogRouter = router({
         }
       }
       const res = await updateProductWithVariants(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      // يغطي إضافة متغيّر جديد إلى منتج قائم أيضاً.
+      await syncActiveFullStocktakeScopes();
+      // بدائل الباركود (توسعة ٣/٨): بعد نجاح الحفظ الرئيسي — انظر تعليق reconcileEditBarcodeAliases.
+      const aliasWarnings = await reconcileEditBarcodeAliases(input.productId, input.variants, ctx.user.id);
       await logAudit(ctx, {
         action: "product.update",
         entityType: "product",
@@ -542,7 +611,7 @@ export const catalogRouter = router({
           variants: input.variants.map((v) => ({ id: v.id ?? null, sku: v.sku, isActive: v.isActive })),
         },
       });
-      return res;
+      return { ...res, aliasWarnings };
     }),
 
   assignBarcode: productsManagerProcedure

@@ -6,11 +6,15 @@
  */
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { and, desc, eq, exists, gte, inArray, lt, or, sql } from "drizzle-orm";
+import { branches, productVariants, productionLines, productionOrders, products } from "../../drizzle/schema";
+import { getDb } from "../db";
+import { escLike } from "../lib/sqlLike";
+import { localDayStart, localNextDayStart } from "../services/dateRange";
 import {
   cancelProduction,
   createProduction,
   getProduction,
-  listProductions,
   runPreview,
 } from "../services/productionService";
 import {
@@ -58,6 +62,87 @@ const runInput = z.object({
   laborPerUnit: z.string().nullish(),
 });
 
+/**
+ * قائمة الإنتاج المفلترة (فرع/حالة/نطاق تاريخ/بحث + ترقيم hasMore) — استعلام محليّ للراوتر
+ * (ملكية ملفات حملة الفلاتر ٣/٨ تقصر التعديل على الراوتر؛ خدمة listProductions القديمة بلا هذه الفلاتر).
+ */
+async function listProductionsFiltered(f: {
+  branchId?: number;
+  status?: "CONFIRMED" | "CANCELLED";
+  from?: string;
+  to?: string;
+  q?: string;
+  limit: number;
+  offset: number;
+}) {
+  const db = getDb();
+  if (!db) return { rows: [] as any[], hasMore: false };
+  const conds = [] as any[];
+  if (f.branchId) conds.push(eq(productionOrders.branchId, f.branchId));
+  if (f.status) conds.push(eq(productionOrders.status, f.status));
+  if (f.from) conds.push(gte(productionOrders.createdAt, localDayStart(f.from)));
+  if (f.to) conds.push(lt(productionOrders.createdAt, localNextDayStart(f.to)));
+  const term = f.q?.trim();
+  if (term) {
+    const likePat = `%${escLike(term)}%`;
+    // البحث برقم المستند أو باسم المنتج الناتج — EXISTS على أسطر OUTPUT كي لا تتكرّر رؤوس المستندات.
+    conds.push(
+      or(
+        sql`${productionOrders.docNumber} LIKE ${likePat} ESCAPE '!'`,
+        exists(
+          db
+            .select({ one: sql`1` })
+            .from(productionLines)
+            .innerJoin(productVariants, eq(productVariants.id, productionLines.variantId))
+            .innerJoin(products, eq(products.id, productVariants.productId))
+            .where(
+              and(
+                eq(productionLines.productionOrderId, productionOrders.id),
+                eq(productionLines.direction, "OUTPUT"),
+                sql`${products.name} LIKE ${likePat} ESCAPE '!'`,
+              ),
+            ),
+        ),
+      ),
+    );
+  }
+  const where = conds.length ? and(...conds) : undefined;
+
+  // limit+1 لاستنتاج hasMore بلا COUNT مكلف (نمط hasMore القائم في بقية القوائم).
+  const heads = await db
+    .select({
+      id: productionOrders.id,
+      docNumber: productionOrders.docNumber,
+      branchId: productionOrders.branchId,
+      branchName: branches.name,
+      status: productionOrders.status,
+      materialsCost: productionOrders.materialsCost,
+      laborCost: productionOrders.laborCost,
+      totalCost: productionOrders.totalCost,
+      notes: productionOrders.notes,
+      createdAt: productionOrders.createdAt,
+    })
+    .from(productionOrders)
+    .leftJoin(branches, eq(productionOrders.branchId, branches.id))
+    .where(where as any)
+    .orderBy(desc(productionOrders.id))
+    .limit(f.limit + 1)
+    .offset(f.offset);
+  const hasMore = heads.length > f.limit;
+  const rows = hasMore ? heads.slice(0, f.limit) : heads;
+  if (!rows.length) return { rows: [] as any[], hasMore };
+
+  // كمية المخرجات الإجمالية لكل مستند (نفس تجميع الخدمة الأصلية).
+  const ids = rows.map((r: any) => Number(r.id));
+  const outAgg = await db
+    .select({ orderId: productionLines.productionOrderId, qty: sql<string>`COALESCE(SUM(${productionLines.baseQuantity}), 0)` })
+    .from(productionLines)
+    .where(and(inArray(productionLines.productionOrderId, ids), eq(productionLines.direction, "OUTPUT")))
+    .groupBy(productionLines.productionOrderId);
+  const outMap = new Map(outAgg.map((a: any) => [Number(a.orderId), Number(a.qty)]));
+  return { rows: rows.map((r: any) => ({ ...r, outputQty: outMap.get(Number(r.id)) ?? 0 })), hasMore };
+}
+
 export const productionRouter = router({
   list: inventoryManagerProcedure
     .input(
@@ -65,13 +150,28 @@ export const productionRouter = router({
         .object({
           branchId: z.number().int().positive().optional(),
           status: z.enum(["CONFIRMED", "CANCELLED"]).optional(),
+          from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          q: z.string().max(100).optional(),
           limit: z.number().int().positive().max(500).default(200),
+          offset: z.number().int().min(0).default(0),
         })
         .optional()
     )
     .query(({ input, ctx }) => {
-      const branchId = ctx.user.role === "admin" ? input?.branchId : Number(ctx.user.branchId ?? 0) || undefined;
-      return listProductions({ branchId, status: input?.status, limit: input?.limit });
+      // علة (تدقيق ٣/٨): branchId كان يُحترم للأدمن فقط والواجهة تعرضه للمدير أيضاً فيتجاهله الخادم صامتاً.
+      // admin/manager يحترمان المُرسَل (نمط consignments.list)؛ غير المرتفع مقصور بفرعه المُسنَد.
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const branchId = elevated ? input?.branchId : Number(ctx.user.branchId ?? 0) || undefined;
+      return listProductionsFiltered({
+        branchId,
+        status: input?.status,
+        from: input?.from,
+        to: input?.to,
+        q: input?.q,
+        limit: input?.limit ?? 200,
+        offset: input?.offset ?? 0,
+      });
     }),
 
   get: inventoryManagerProcedure

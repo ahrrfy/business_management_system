@@ -169,6 +169,55 @@ describe("ذرّية سلة الاستقبال المختلطة", () => {
     const report = await getShiftReport(opened.shiftId);
     expect(report.expectedCash).toBe("0.00");
   });
+
+  it("المبلغ الواحد يغطي البيع ثم ينساب على أكثر من أمر شغل بلا تجاوز أي بند", async () => {
+    const opened = await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
+      { ...actor, role: "admin" },
+    );
+    const result = await checkoutReception({
+      branchId: 1,
+      shiftId: opened.shiftId,
+      paymentMethod: "CARD",
+      paymentReference: "CARD-MIX-42",
+      paidAmount: "42.00",
+      clientRequestId: "reception-global-payment",
+      regularSale: {
+        amount: "10.00",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      workOrders: [
+        { baseVariantId: null, title: "التخصيص الأول", quantity: 1, salePrice: "25.00" },
+        { baseVariantId: null, title: "التخصيص الثاني", quantity: 1, salePrice: "30.00" },
+      ],
+    }, { ...actor, role: "admin" });
+
+    const first = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, result.workOrders[0].workOrderId)))[0];
+    const second = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, result.workOrders[1].workOrderId)))[0];
+    expect(first.deposit).toBe("25.00");
+    expect(second.deposit).toBe("7.00");
+    expect(first.paymentMethod).toBe("CARD");
+    expect(second.paymentReference).toBe("CARD-MIX-42");
+  });
+
+  it("الخادم يرفض دفعة لا تغطي البيع المباشر حتى لو وُجدت أوامر طباعة", async () => {
+    const opened = await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
+      { ...actor, role: "admin" },
+    );
+    await expect(checkoutReception({
+      branchId: 1,
+      shiftId: opened.shiftId,
+      paymentMethod: "CASH",
+      paidAmount: "5.00",
+      clientRequestId: "reception-underpaid-direct",
+      regularSale: {
+        amount: "10.00",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      workOrders: [{ baseVariantId: null, title: "طباعة", quantity: 1, salePrice: "30.00" }],
+    }, { ...actor, role: "admin" })).rejects.toThrow(/يغطي البيع المباشر/);
+  });
 });
 
 describe("إغلاق ثغرة الأصناف اليتيمة (workOrderItems)", () => {
@@ -184,6 +233,16 @@ describe("إغلاق ثغرة الأصناف اليتيمة (workOrderItems)", (
 });
 
 describe("السحب الذاتي (claim) + منع سرقة أمر زميل", () => {
+  it("الإنشاء يرفض إسناد الأمر إلى حساب غير فني", async () => {
+    await expect(createWorkOrder({
+      branchId: 1,
+      baseVariantId: 1,
+      title: "إسناد غير صالح",
+      salePrice: "30.00",
+      assignedTo: 1,
+    }, actor)).rejects.toThrow(/فني مطبعة/);
+  });
+
   it("فنّي يسحب أمراً واردًا غير مُسنَد ⇒ assignedTo = هو؛ وزميله لا يستطيع سحبه", async () => {
     const wo = await createWorkOrder({ branchId: 1, baseVariantId: 1, title: "بنر", salePrice: "30.00" }, actor);
     await caller(opCtx(2)).workOrders.claim({ workOrderId: wo.workOrderId });

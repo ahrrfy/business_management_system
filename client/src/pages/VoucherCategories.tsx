@@ -1,8 +1,10 @@
 // إدارة فئات السندات — admin/manager (list مَتاحة، CRUD admin فقط).
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -16,7 +18,9 @@ import { ListToolbar, RowActions } from "@/components/list";
 
 type Row = RouterOutputs["voucherCategories"]["list"][number];
 
-const DIR_LABEL: Record<string, string> = { IN: "قبض فقط", OUT: "صرف فقط", BOTH: "كلاهما" };
+// توحيد التسمية مع نموذج الإضافة/التعديل أدناه (كان BOTH يُعرَض «كلاهما» هنا و«قبض وصرف» في النموذج
+// لنفس القيمة — تسمية غير متّسقة على الشاشة نفسها).
+const DIR_LABEL: Record<string, string> = { IN: "قبض فقط", OUT: "صرف فقط", BOTH: "قبض وصرف" };
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -66,6 +70,8 @@ export default function VoucherCategories() {
     onSuccess: async () => {
       await utils.voucherCategories.list.invalidate();
       notify.ok("تَمّ الدَمج");
+      setMergingRow(null);
+      setMergeTargetId("");
     },
     onError: (e) => notify.err(e),
   });
@@ -107,19 +113,23 @@ export default function VoucherCategories() {
     setActive.mutate({ id: Number(r.id), isActive: !r.isActive });
   }
 
-  async function doMerge(r: Row) {
-    const otherId = window.prompt(`دَمج «${r.name}» في فئة أخرى — أدخل رقم الفئة الهدف:`);
-    if (!otherId) return;
-    const toId = Number(otherId);
-    if (!Number.isFinite(toId) || toId <= 0) { notify.err("رقم غير صالح"); return; }
-    const ok = await confirm({
-      variant: "danger",
-      title: "دَمج الفئات",
-      description: `كل سندات «${r.name}» سَتُنقل إلى الفئة #${toId} وتُعطَّل الفئة الحالية. هل تتابع؟`,
-      confirmText: "دَمج",
-    });
-    if (!ok) return;
-    merge.mutate({ fromId: Number(r.id), toId });
+  // دَمج فئتين — حوار بمنتقٍ بالاسم (لا رقم فئة خام يكتبه المستخدم يدوياً عبر window.prompt).
+  const [mergingRow, setMergingRow] = useState<Row | null>(null);
+  const [mergeTargetId, setMergeTargetId] = useState<string>("");
+
+  function doMerge(r: Row) {
+    setMergingRow(r);
+    setMergeTargetId("");
+  }
+
+  const mergeCandidates = useMemo(
+    () => rows.filter((c) => c.isActive && Number(c.id) !== Number(mergingRow?.id ?? -1)),
+    [rows, mergingRow],
+  );
+
+  function confirmMerge() {
+    if (!mergingRow || !mergeTargetId) return;
+    merge.mutate({ fromId: Number(mergingRow.id), toId: Number(mergeTargetId) });
   }
 
   return (
@@ -160,9 +170,9 @@ export default function VoucherCategories() {
             <div className="space-y-1">
               <Label>الاتجاه *</Label>
               <select className={selectCls} value={direction} onChange={(e) => setDirection(e.target.value as any)}>
-                <option value="BOTH">قبض وصَرف (BOTH)</option>
-                <option value="IN">قبض فقط (IN)</option>
-                <option value="OUT">صَرف فقط (OUT)</option>
+                <option value="BOTH">قبض وصرف</option>
+                <option value="IN">قبض فقط</option>
+                <option value="OUT">صرف فقط</option>
               </select>
             </div>
             <div className="space-y-1 md:col-span-2">
@@ -285,6 +295,45 @@ export default function VoucherCategories() {
           </ScrollTableShell>
         </CardContent>
       </Card>
+
+      {/* دمج فئتين — منتقٍ بالاسم بدل رقم فئة خام (كان window.prompt يطلب رقماً يدوياً). */}
+      <Dialog open={mergingRow != null} onOpenChange={(open) => { if (!open) { setMergingRow(null); setMergeTargetId(""); } }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>دمج فئة «{mergingRow?.name}»</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            كل سندات «{mergingRow?.name}» سَتُنقل إلى الفئة المُختارة وتُعطَّل الفئة الحالية. هذا الإجراء لا يُمكن التراجع عنه.
+          </p>
+          <div className="space-y-1.5">
+            <Label htmlFor="merge-target">الفئة الهدف *</Label>
+            <AppSelect
+              id="merge-target"
+              value={mergeTargetId}
+              onValueChange={setMergeTargetId}
+              placeholder="— اختر الفئة الهدف —"
+            >
+              <option value="">— اختر الفئة الهدف —</option>
+              {mergeCandidates.map((c) => (
+                <option key={Number(c.id)} value={String(c.id)}>{c.name}</option>
+              ))}
+            </AppSelect>
+            {mergeCandidates.length === 0 && (
+              <p className="text-xs text-muted-foreground">لا فئات نشِطة أخرى للدمج فيها.</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setMergingRow(null); setMergeTargetId(""); }}>إلغاء</Button>
+            <Button
+              variant="destructive"
+              disabled={!mergeTargetId || merge.isPending}
+              onClick={confirmMerge}
+            >
+              {merge.isPending ? "جارٍ الدمج…" : "دمج"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,7 +1,21 @@
+/**
+ * PDF المستندات الرسمية (فاتورة مبيعات / عرض سعر) — يُولَّد خادمياً للمشاركة عبر واتساب
+ * والتسليم الإلكتروني. أُعيد بناؤه (٣/٨/٢٦) بعد ملاحظات المالك على النسخة الأولى:
+ *  - الكمية كانت تُطبع خام «112.000» ⇒ الآن تنسيق بلا أصفار زائدة وبفواصل الآلاف.
+ *  - «الخط السميك» كان زيفاً (bold=regular) ⇒ محاكاة سماكة بالرسم المزدوج للعربي +
+ *    Helvetica-Bold حقيقي للأرقام اللاتينية، وأحجام أكبر عموماً.
+ *  - لا معلومات تواصل ⇒ الترويسة والتذييل يحملان العنوان والهواتف من هوية الشركة الموحّدة.
+ *  - لا QR ⇒ QR حقيقي قابل للمسح (بيانات المستند) أسفل يمين المستند.
+ *  - تفقيط المبلغ + شريط إجمالي أخضر داكن + متبقٍّ بالأحمر — بمطابقة هوية قوالب المتصفح A4.
+ *  - «الصنف» ⇒ «المنتج» (مسرد المصطلحات المعتمد).
+ */
 import fontkit from "@pdf-lib/fontkit";
-import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, PDFFont, PDFImage, PDFPage, StandardFonts, rgb } from "pdf-lib";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import QRCode from "qrcode";
+import { COMPANY_IDENTITY as CO } from "@shared/companyIdentity";
+import { formatArabicMoneyWords } from "@shared/tafqit";
 
 export type OfficialDocumentKind = "INVOICE" | "QUOTATION";
 
@@ -28,20 +42,36 @@ export interface OfficialDocumentPdfData {
   }>;
 }
 
+// ─── هوية بصرية (تطابق BRAND في قوالب المتصفح) ──────────────────────────────
 const GREEN = rgb(13 / 255, 107 / 255, 82 / 255);
 const GREEN_DARK = rgb(13 / 255, 59 / 255, 46 / 255);
 const GREEN_PALE = rgb(240 / 255, 249 / 255, 245 / 255);
+const GREEN_ACCENT = rgb(207 / 255, 231 / 255, 222 / 255);
 const BORDER = rgb(214 / 255, 214 / 255, 207 / 255);
+const BORDER_DARK = rgb(107 / 255, 110 / 255, 102 / 255);
 const LIGHT = rgb(250 / 255, 250 / 255, 247 / 255);
+const ZEBRA = rgb(246 / 255, 246 / 255, 242 / 255);
 const RED = rgb(138 / 255, 31 / 255, 17 / 255);
+const RED_BG = rgb(253 / 255, 236 / 255, 234 / 255);
+const INK = rgb(28 / 255, 31 / 255, 29 / 255);
 const BLACK = rgb(0, 0, 0);
+const WHITE = rgb(1, 1, 1);
+
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
 const MARGIN = 34;
+const CONTENT_W = PAGE_W - MARGIN * 2;
 
+/** مبالغ IQD بلا كسور (الفلوس لا تُتداول) وبفواصل آلاف. */
 function money(value: string | number | null | undefined): string {
   const n = Number(value ?? 0);
-  return Number.isFinite(n) ? n.toLocaleString("en-US", { maximumFractionDigits: 2 }) : "0";
+  return Number.isFinite(n) ? Math.round(n).toLocaleString("en-US") : "0";
+}
+
+/** كميات — بلا أصفار عشرية زائدة (112.000 ⇒ 112، و1.5 تبقى 1.5) وبفواصل آلاف. */
+function qtyText(value: string | number | null | undefined): string {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n.toLocaleString("en-US", { maximumFractionDigits: 3 }) : String(value ?? "");
 }
 
 function dateText(value: string | Date | null | undefined): string {
@@ -72,78 +102,145 @@ async function readCairoFont(): Promise<Uint8Array> {
   throw lastError instanceof Error ? lastError : new Error(`تعذّر تحميل خط Cairo: ${filename}`);
 }
 
-function drawRtl(
-  page: PDFPage,
-  text: string,
-  xRight: number,
-  y: number,
-  font: PDFFont,
-  size: number,
-  color = BLACK,
-): void {
-  const width = font.widthOfTextAtSize(text, size);
-  page.drawText(text, { x: xRight - width, y, font, size, color });
-}
-
-function fitText(text: string, font: PDFFont, size: number, maxWidth: number): string {
-  if (font.widthOfTextAtSize(text, size) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.widthOfTextAtSize(`${out}...`, size) > maxWidth) out = out.slice(0, -1);
-  return `${out}...`;
-}
-
-function drawLabelValue(
-  page: PDFPage,
-  label: string,
-  value: string,
-  xRight: number,
-  y: number,
-  regular: PDFFont,
-  bold: PDFFont,
-): void {
-  drawRtl(page, label, xRight, y + 14, regular, 8, GREEN);
-  drawRtl(page, value || "-", xRight, y, bold, 10, BLACK);
-}
-
 export function officialDocumentFilename(kind: OfficialDocumentKind, number: string): string {
   const prefix = kind === "INVOICE" ? "invoice" : "quotation";
   return `${prefix}-${safeFileNumber(number)}.pdf`;
 }
+
+type Rgb = ReturnType<typeof rgb>;
+interface TextOpts { color?: Rgb; bold?: boolean }
 
 export async function generateOfficialDocumentPdf(data: OfficialDocumentPdfData): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
   pdf.registerFontkit(fontkit);
 
   const cairoBytes = await readCairoFont();
-  const regular = await pdf.embedFont(cairoBytes, { subset: true });
-  // The variable Cairo font is embedded once. Size, color and spacing provide
-  // the visual emphasis without doubling every generated document's size.
-  const bold = regular;
-  const latin = await pdf.embedFont(StandardFonts.Helvetica);
-  const latinBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const cairo = await pdf.embedFont(cairoBytes, { subset: true });
+  const helv = await pdf.embedFont(StandardFonts.Helvetica);
+  const helvBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+  const docLabel = data.kind === "INVOICE" ? "فاتورة مبيعات" : "عرض سعر";
+
+  // QR حقيقي قابل للمسح — بيانات المستند نصاً (يطابق حمولة QR فاتورة المتصفح A4).
+  let qrImage: PDFImage | null = null;
+  try {
+    const qrPayload = [
+      CO.sub,
+      `${docLabel}: ${data.number}`,
+      `التاريخ: ${dateText(data.date)}`,
+      `الإجمالي: ${money(data.total)} د.ع`,
+    ].join("\n");
+    const qrPng = await QRCode.toBuffer(qrPayload, {
+      type: "png",
+      width: 256,
+      margin: 1,
+      errorCorrectionLevel: "M",
+    });
+    qrImage = await pdf.embedPng(qrPng);
+  } catch {
+    qrImage = null; // تدهور سلس: مستند بلا QR خير من فشل التوليد كله — ولا QR زائف أبداً.
+  }
 
   let page = pdf.addPage([PAGE_W, PAGE_H]);
   let y = PAGE_H - MARGIN;
 
-  const drawFrame = () => {
-    page.drawRectangle({
-      x: 20,
-      y: 20,
-      width: PAGE_W - 40,
-      height: PAGE_H - 40,
-      borderColor: BORDER,
-      borderWidth: 0.8,
-    });
+  // ── مساعدات رسم ──────────────────────────────────────────────────────────
+  /**
+   * مقاطع LTR (أرقام/لاتيني، وقد تحوي فراغات وفواصل داخلية) ضمن نص عربي.
+   * pdf-lib بلا محرك bidi: رسم «ورق A4 80غم» كسلسلة واحدة كان يعكس الأرقام (80 ⇒ 08).
+   */
+  // بلا مسافات داخل المقطع: المسافة بين مقطعين لاتينيين محايدة تتبع اتجاه الفقرة RTL
+  // (يطابق UBA/المتصفح: «A4 80غم» ⇒ A4 يمين 80، و«07883000017 · 07838666999» يُقرأ الأول يميناً).
+  const LTR_RUN = /[0-9A-Za-z][0-9A-Za-z+\-.,/%]*[0-9A-Za-z%]|[0-9A-Za-z]/g;
+
+  /**
+   * نص عربي RTL يُرسم منتهياً عند xRight، مع تفكيك مقاطع الأرقام/اللاتيني ورسمها LTR
+   * في موضعها البصري الصحيح. bold = رسم مزدوج بإزاحة 0.32pt (الخط المتغيّر بلا وزن ثانٍ).
+   */
+  const drawAr = (pg: PDFPage, text: string, xRight: number, yy: number, size: number, opts: TextOpts = {}) => {
+    const color = opts.color ?? BLACK;
+    const put = (t: string, x: number) => {
+      pg.drawText(t, { x, y: yy, font: cairo, size, color });
+      if (opts.bold) pg.drawText(t, { x: x + 0.32, y: yy, font: cairo, size, color });
+    };
+    let cursor = xRight;
+    const seg = (t: string) => {
+      if (!t) return;
+      const w = cairo.widthOfTextAtSize(t, size);
+      put(t, cursor - w);
+      cursor -= w;
+    };
+    let last = 0;
+    for (const m of Array.from(text.matchAll(LTR_RUN))) {
+      seg(text.slice(last, m.index));
+      seg(m[0]);
+      last = (m.index ?? 0) + m[0].length;
+    }
+    seg(text.slice(last));
+  };
+  const drawArCentered = (pg: PDFPage, text: string, cx: number, yy: number, size: number, opts: TextOpts = {}) => {
+    const width = cairo.widthOfTextAtSize(text, size);
+    drawAr(pg, text, cx + width / 2, yy, size, opts);
+  };
+  /** أرقام/لاتيني: Helvetica مع Bold حقيقي. يُرسم منتهياً عند xRight (محاذاة يمين للأعمدة المالية). */
+  const drawNumRight = (pg: PDFPage, text: string, xRight: number, yy: number, size: number, opts: TextOpts = {}) => {
+    const font = opts.bold ? helvBold : helv;
+    const width = font.widthOfTextAtSize(text, size);
+    pg.drawText(text, { x: xRight - width, y: yy, font, size, color: opts.color ?? BLACK });
+  };
+  const drawNumCentered = (pg: PDFPage, text: string, cx: number, yy: number, size: number, opts: TextOpts = {}) => {
+    const font = opts.bold ? helvBold : helv;
+    const width = font.widthOfTextAtSize(text, size);
+    pg.drawText(text, { x: cx - width / 2, y: yy, font, size, color: opts.color ?? BLACK });
+  };
+
+  const fitAr = (text: string, size: number, maxWidth: number): string => {
+    if (cairo.widthOfTextAtSize(text, size) <= maxWidth) return text;
+    let out = text;
+    while (out.length > 1 && cairo.widthOfTextAtSize(`${out}…`, size) > maxWidth) out = out.slice(0, -1);
+    return `${out}…`;
+  };
+
+  /** لفّ نص عربي على أسطر بعرض أقصى (للشروط والملاحظات — القصّ الصامت كان يبتر النص). */
+  const wrapAr = (text: string, size: number, maxWidth: number): string[] => {
+    const words = text.split(/\s+/).filter(Boolean);
+    const lines: string[] = [];
+    let current = "";
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (cairo.widthOfTextAtSize(candidate, size) <= maxWidth) {
+        current = candidate;
+      } else {
+        if (current) lines.push(current);
+        current = word;
+      }
+    }
+    if (current) lines.push(current);
+    return lines;
+  };
+
+  // ── ترويسة كل صفحة ───────────────────────────────────────────────────────
+  const drawFrame = (pg: PDFPage) => {
+    pg.drawRectangle({ x: 20, y: 20, width: PAGE_W - 40, height: PAGE_H - 40, borderColor: BORDER, borderWidth: 0.8 });
   };
 
   const drawHeader = () => {
-    drawFrame();
-    page.drawRectangle({ x: MARGIN, y: PAGE_H - 112, width: PAGE_W - MARGIN * 2, height: 66, color: GREEN_PALE });
-    drawRtl(page, "شركة الرؤية العربية للتجارة العامة", PAGE_W - MARGIN - 12, PAGE_H - 70, bold, 13, GREEN_DARK);
-    drawRtl(page, "مكتبة العربية للطباعة والقرطاسية", PAGE_W - MARGIN - 12, PAGE_H - 89, regular, 9, BLACK);
-    const title = data.kind === "INVOICE" ? "فاتورة مبيعات" : "عرض سعر";
-    page.drawText(title, { x: MARGIN + 12, y: PAGE_H - 80, font: bold, size: 16, color: GREEN_DARK });
-    y = PAGE_H - 132;
+    drawFrame(page);
+    const bandTop = PAGE_H - MARGIN;
+    const bandH = 86;
+    page.drawRectangle({ x: MARGIN, y: bandTop - bandH, width: CONTENT_W, height: bandH, color: GREEN_PALE });
+    // يمين: هوية الشركة + التواصل
+    drawAr(page, CO.sub, PAGE_W - MARGIN - 14, bandTop - 30, 15, { color: GREEN_DARK, bold: true });
+    drawAr(page, CO.name, PAGE_W - MARGIN - 14, bandTop - 48, 9.5, { color: BLACK });
+    drawAr(page, `${CO.address}  ·  هاتف: ${CO.phones[0].n} - ${CO.phones[1].n}`, PAGE_W - MARGIN - 14, bandTop - 68, 8, { color: INK });
+    // يسار: عنوان المستند بشريط أخضر داكن
+    const titleSize = 13.5;
+    const titleW = cairo.widthOfTextAtSize(docLabel, titleSize) + 34;
+    page.drawRectangle({ x: MARGIN + 12, y: bandTop - 62, width: titleW, height: 34, color: GREEN_DARK });
+    drawArCentered(page, docLabel, MARGIN + 12 + titleW / 2, bandTop - 50, titleSize, { color: WHITE, bold: true });
+    // خط فاصل أسفل الترويسة
+    page.drawLine({ start: { x: MARGIN, y: bandTop - bandH - 8 }, end: { x: PAGE_W - MARGIN, y: bandTop - bandH - 8 }, color: INK, thickness: 1.1 });
+    y = bandTop - bandH - 20;
   };
 
   const addPage = () => {
@@ -153,95 +250,187 @@ export async function generateOfficialDocumentPdf(data: OfficialDocumentPdfData)
 
   drawHeader();
 
-  page.drawRectangle({ x: MARGIN, y: y - 70, width: PAGE_W - MARGIN * 2, height: 70, color: LIGHT, borderColor: BORDER, borderWidth: 0.7 });
-  drawLabelValue(page, "رقم المستند", data.number, PAGE_W - MARGIN - 14, y - 28, regular, bold);
-  drawLabelValue(page, "التاريخ", dateText(data.date), PAGE_W - MARGIN - 190, y - 28, regular, bold);
-  drawLabelValue(page, "العميل", data.customerName || "عميل نقدي", PAGE_W - MARGIN - 350, y - 28, regular, bold);
-  if (data.kind === "QUOTATION") {
-    drawLabelValue(page, "صالح حتى", dateText(data.validUntil), PAGE_W - MARGIN - 190, y - 57, regular, bold);
-  }
-  if (data.customerPhone) {
-    page.drawText(data.customerPhone, { x: MARGIN + 14, y: y - 57, font: latin, size: 8.5, color: BLACK });
-  }
-  y -= 88;
+  // ── بطاقة معلومات المستند ────────────────────────────────────────────────
+  const cardH = 78;
+  page.drawRectangle({ x: MARGIN, y: y - cardH, width: CONTENT_W, height: cardH, color: LIGHT, borderColor: BORDER, borderWidth: 0.7 });
+  page.drawRectangle({ x: PAGE_W - MARGIN - 3, y: y - cardH, width: 3, height: cardH, color: GREEN });
 
+  const labelValue = (label: string, value: string, xRight: number, yy: number, latinValue = false) => {
+    drawAr(page, label, xRight, yy + 16, 8.5, { color: GREEN, bold: true });
+    if (latinValue) drawNumRight(page, value || "-", xRight, yy, 11, { bold: true });
+    else drawAr(page, fitAr(value || "-", 11, 170), xRight, yy, 11, { bold: true });
+  };
+
+  labelValue("رقم المستند", data.number, PAGE_W - MARGIN - 16, y - 30, true);
+  labelValue("التاريخ", dateText(data.date), PAGE_W - MARGIN - 205, y - 30, true);
+  if (data.kind === "QUOTATION") {
+    labelValue("صالح حتى", dateText(data.validUntil), PAGE_W - MARGIN - 330, y - 30, true);
+  }
+  labelValue("العميل", data.customerName || "عميل نقدي", PAGE_W - MARGIN - 16, y - 64);
+  if (data.customerPhone) {
+    labelValue("الهاتف", data.customerPhone, PAGE_W - MARGIN - 205, y - 64, true);
+  }
+  y -= cardH + 14;
+
+  // ── جدول البنود ──────────────────────────────────────────────────────────
+  // أعمدة من اليمين (RTL): م | المنتج | الوحدة | الكمية | السعر | الإجمالي
   const col = {
-    total: { x: MARGIN, w: 90 },
-    price: { x: MARGIN + 90, w: 90 },
-    qty: { x: MARGIN + 180, w: 60 },
-    unit: { x: MARGIN + 240, w: 70 },
-    product: { x: MARGIN + 310, w: PAGE_W - MARGIN * 2 - 310 },
+    idx:     { x: PAGE_W - MARGIN - 26, w: 26 },
+    product: { x: PAGE_W - MARGIN - 26 - 215, w: 215 },
+    unit:    { x: PAGE_W - MARGIN - 26 - 215 - 56, w: 56 },
+    qty:     { x: PAGE_W - MARGIN - 26 - 215 - 56 - 62, w: 62 },
+    price:   { x: MARGIN + 86, w: PAGE_W - MARGIN - 26 - 215 - 56 - 62 - (MARGIN + 86) },
+    total:   { x: MARGIN, w: 86 },
+  };
+  const ROW_H = 26;
+  const HEAD_H = 26;
+
+  const colSeparators = (topY: number, h: number) => {
+    for (const c of [col.product, col.unit, col.qty, col.price, col.total]) {
+      const edge = c.x + c.w;
+      page.drawLine({ start: { x: edge, y: topY }, end: { x: edge, y: topY - h }, color: BORDER, thickness: 0.4 });
+    }
   };
 
   const drawTableHeader = () => {
-    page.drawRectangle({ x: MARGIN, y: y - 24, width: PAGE_W - MARGIN * 2, height: 24, color: GREEN_DARK });
-    drawRtl(page, "الصنف", col.product.x + col.product.w - 8, y - 16, bold, 8.5, rgb(1, 1, 1));
-    drawRtl(page, "الوحدة", col.unit.x + col.unit.w - 6, y - 16, bold, 8.5, rgb(1, 1, 1));
-    drawRtl(page, "الكمية", col.qty.x + col.qty.w - 6, y - 16, bold, 8.5, rgb(1, 1, 1));
-    drawRtl(page, "السعر", col.price.x + col.price.w - 6, y - 16, bold, 8.5, rgb(1, 1, 1));
-    drawRtl(page, "الإجمالي", col.total.x + col.total.w - 6, y - 16, bold, 8.5, rgb(1, 1, 1));
-    y -= 24;
+    page.drawRectangle({ x: MARGIN, y: y - HEAD_H, width: CONTENT_W, height: HEAD_H, color: GREEN_DARK });
+    const ty = y - 17.5;
+    drawArCentered(page, "م", col.idx.x + col.idx.w / 2, ty, 9.5, { color: WHITE, bold: true });
+    drawArCentered(page, "المنتج", col.product.x + col.product.w / 2, ty, 9.5, { color: WHITE, bold: true });
+    drawArCentered(page, "الوحدة", col.unit.x + col.unit.w / 2, ty, 9.5, { color: WHITE, bold: true });
+    drawArCentered(page, "الكمية", col.qty.x + col.qty.w / 2, ty, 9.5, { color: WHITE, bold: true });
+    drawArCentered(page, "السعر", col.price.x + col.price.w / 2, ty, 9.5, { color: WHITE, bold: true });
+    drawArCentered(page, "الإجمالي", col.total.x + col.total.w / 2, ty, 9.5, { color: WHITE, bold: true });
+    y -= HEAD_H;
   };
 
   drawTableHeader();
   for (let index = 0; index < data.items.length; index += 1) {
-    if (y < 150) {
+    if (y - ROW_H < 170) {
       addPage();
       drawTableHeader();
     }
     const item = data.items[index];
-    const rowY = y - 25;
+    const rowY = y - ROW_H;
     page.drawRectangle({
       x: MARGIN,
       y: rowY,
-      width: PAGE_W - MARGIN * 2,
-      height: 25,
-      color: index % 2 ? LIGHT : rgb(1, 1, 1),
+      width: CONTENT_W,
+      height: ROW_H,
+      color: index % 2 ? ZEBRA : WHITE,
       borderColor: BORDER,
-      borderWidth: 0.35,
+      borderWidth: 0.4,
     });
-    const product = [item.productName, item.variantName].filter(Boolean).join(" - ");
-    drawRtl(page, fitText(product, regular, 8.5, col.product.w - 14), col.product.x + col.product.w - 7, rowY + 8, regular, 8.5);
-    drawRtl(page, item.unitName || "-", col.unit.x + col.unit.w - 6, rowY + 8, regular, 8);
-    page.drawText(String(item.quantity), { x: col.qty.x + 12, y: rowY + 8, font: latin, size: 8 });
-    page.drawText(money(item.unitPrice), { x: col.price.x + 8, y: rowY + 8, font: latin, size: 8 });
-    page.drawText(money(item.total), { x: col.total.x + 7, y: rowY + 8, font: latinBold, size: 8 });
+    colSeparators(y, ROW_H);
+    const baseline = rowY + 9;
+    const product = [item.productName, item.variantName].filter(Boolean).join(" — ");
+    drawArCentered(page, String(index + 1), col.idx.x + col.idx.w / 2, baseline, 9);
+    drawAr(page, fitAr(product, 9.5, col.product.w - 14), col.product.x + col.product.w - 7, baseline, 9.5);
+    drawArCentered(page, item.unitName || "-", col.unit.x + col.unit.w / 2, baseline, 9);
+    drawNumCentered(page, qtyText(item.quantity), col.qty.x + col.qty.w / 2, baseline, 9.5, { bold: true });
+    drawNumRight(page, money(item.unitPrice), col.price.x + col.price.w - 8, baseline, 9.5);
+    drawNumRight(page, money(item.total), col.total.x + col.total.w - 8, baseline, 9.5, { bold: true });
     y = rowY;
   }
+  // حد سفلي أوضح لإغلاق الجدول
+  page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_W - MARGIN, y }, color: BORDER_DARK, thickness: 0.8 });
 
-  y -= 14;
-  if (y < 190) addPage();
-  const boxW = 230;
-  const boxX = PAGE_W - MARGIN - boxW;
-  const totals: Array<{ label: string; value: string; color?: ReturnType<typeof rgb> }> = [
+  // ── منطقة الإجماليات (صندوق يسار) + QR (يمين) ────────────────────────────
+  y -= 16;
+  const totals: Array<{ label: string; value: string; color?: Rgb; sign?: string }> = [
     { label: "المجموع الفرعي", value: money(data.subtotal) },
   ];
-  if (Number(data.discountAmount ?? 0) > 0) totals.push({ label: "الخصم", value: money(data.discountAmount) });
-  if (Number(data.taxAmount ?? 0) > 0) totals.push({ label: "الضريبة", value: money(data.taxAmount) });
-  if (data.kind === "INVOICE" && data.paidAmount != null) totals.push({ label: "المدفوع", value: money(data.paidAmount) });
-  totals.push({ label: "الإجمالي", value: money(data.total), color: GREEN_DARK });
+  if (Number(data.discountAmount ?? 0) > 0) totals.push({ label: "الخصم", value: money(data.discountAmount), sign: "-" });
+  if (Number(data.taxAmount ?? 0) > 0) totals.push({ label: "الضريبة", value: money(data.taxAmount), sign: "+" });
 
-  const totalsH = totals.length * 25;
-  page.drawRectangle({ x: boxX, y: y - totalsH, width: boxW, height: totalsH, color: LIGHT, borderColor: BORDER, borderWidth: 0.7 });
-  totals.forEach((line, index) => {
-    const lineY = y - 18 - index * 25;
-    drawRtl(page, line.label, boxX + boxW - 10, lineY, index === totals.length - 1 ? bold : regular, 9, line.color ?? BLACK);
-    page.drawText(line.value, { x: boxX + 10, y: lineY, font: index === totals.length - 1 ? latinBold : latin, size: 9, color: line.color ?? BLACK });
-  });
+  const paidNum = data.paidAmount != null ? Number(data.paidAmount) : null;
+  const remainingNum = data.kind === "INVOICE" && paidNum != null
+    ? Math.max(Math.round(Number(data.total)) - Math.round(paidNum), 0)
+    : 0;
+  const showPaid = data.kind === "INVOICE" && paidNum != null;
 
-  if (data.notes) {
-    drawRtl(page, "الشروط والملاحظات", MARGIN + 245, y - 18, bold, 9, GREEN);
-    drawRtl(page, fitText(data.notes, regular, 8, 225), MARGIN + 225, y - 38, regular, 8, BLACK);
+  const LINE_H = 22;
+  const GRAND_H = 32;
+  const totalsBoxW = 250;
+  const totalsBoxX = MARGIN;
+  const totalsH = totals.length * LINE_H + GRAND_H + (showPaid ? LINE_H : 0) + (remainingNum > 0 ? LINE_H + 4 : 0);
+  const qrSize = 74;
+  const regionH = Math.max(totalsH, qrImage ? qrSize + 18 : 0);
+  if (y - regionH < 120) addPage();
+
+  let ty = y;
+  for (const line of totals) {
+    drawAr(page, line.label, totalsBoxX + totalsBoxW - 6, ty - 15, 10);
+    const valueText = line.sign ? `${line.sign} ${line.value}` : line.value;
+    drawNumRight(page, valueText, totalsBoxX + 104, ty - 15, 10.5, { bold: true, color: line.color });
+    page.drawLine({ start: { x: totalsBoxX, y: ty - LINE_H }, end: { x: totalsBoxX + totalsBoxW, y: ty - LINE_H }, color: BORDER, thickness: 0.4 });
+    ty -= LINE_H;
+  }
+  // شريط الإجمالي الأخضر الداكن
+  page.drawRectangle({ x: totalsBoxX, y: ty - GRAND_H, width: totalsBoxW, height: GRAND_H, color: GREEN_DARK });
+  drawAr(page, data.kind === "INVOICE" ? "الإجمالي المستحق" : "الإجمالي", totalsBoxX + totalsBoxW - 10, ty - 21, 10.5, { color: GREEN_ACCENT, bold: true });
+  drawAr(page, "د.ع", totalsBoxX + 42, ty - 21, 8.5, { color: GREEN_ACCENT });
+  drawNumRight(page, money(data.total), totalsBoxX + 108 + 28, ty - 21.5, 13.5, { bold: true, color: WHITE });
+  ty -= GRAND_H;
+  if (showPaid) {
+    drawAr(page, "المدفوع", totalsBoxX + totalsBoxW - 6, ty - 16, 9.5);
+    drawNumRight(page, money(paidNum), totalsBoxX + 104, ty - 16, 10, { bold: true });
+    ty -= LINE_H;
+  }
+  if (remainingNum > 0) {
+    page.drawRectangle({ x: totalsBoxX, y: ty - LINE_H, width: totalsBoxW, height: LINE_H, color: RED_BG, borderColor: RED, borderWidth: 0.5 });
+    drawAr(page, "المتبقي", totalsBoxX + totalsBoxW - 8, ty - 15, 9.5, { color: RED, bold: true });
+    drawNumRight(page, money(remainingNum), totalsBoxX + 104, ty - 15, 10.5, { bold: true, color: RED });
+    ty -= LINE_H + 4;
   }
 
+  // QR على يمين منطقة الإجماليات
+  if (qrImage) {
+    const qrX = PAGE_W - MARGIN - qrSize - 6;
+    page.drawImage(qrImage, { x: qrX, y: y - qrSize, width: qrSize, height: qrSize });
+    drawArCentered(page, "امسح للتحقق من بيانات المستند", qrX + qrSize / 2, y - qrSize - 12, 7, { color: INK });
+  }
+  y -= regionH + 14;
+
+  // ── الشروط والملاحظات (ملفوفة لا مبتورة) ─────────────────────────────────
+  if (data.notes) {
+    const noteLines = wrapAr(data.notes, 9, CONTENT_W - 28).slice(0, 6);
+    const notesH = 26 + noteLines.length * 14;
+    if (y - notesH < 100) addPage();
+    page.drawRectangle({ x: MARGIN, y: y - notesH, width: CONTENT_W, height: notesH, color: LIGHT, borderColor: BORDER, borderWidth: 0.7 });
+    page.drawRectangle({ x: PAGE_W - MARGIN - 3, y: y - notesH, width: 3, height: notesH, color: GREEN });
+    drawAr(page, "الشروط والملاحظات", PAGE_W - MARGIN - 14, y - 17, 9, { color: GREEN, bold: true });
+    noteLines.forEach((line, i) => {
+      drawAr(page, line, PAGE_W - MARGIN - 14, y - 33 - i * 14, 9, { color: BLACK });
+    });
+    y -= notesH + 12;
+  }
+
+  // ── التفقيط ──────────────────────────────────────────────────────────────
+  {
+    const tafqitH = 24;
+    if (y - tafqitH < 90) addPage();
+    page.drawRectangle({
+      x: MARGIN, y: y - tafqitH, width: CONTENT_W, height: tafqitH,
+      color: rgb(252 / 255, 252 / 255, 250 / 255),
+      borderColor: rgb(201 / 255, 202 / 255, 194 / 255), borderWidth: 0.7, borderDashArray: [3, 2],
+    });
+    drawAr(page, `المبلغ كتابةً: ${formatArabicMoneyWords(data.total)}`, PAGE_W - MARGIN - 12, y - 16, 9.5, { bold: true });
+    y -= tafqitH;
+  }
+
+  // ── تذييل كل صفحة: تواصل + شكر + ترقيم ───────────────────────────────────
   const totalPages = pdf.getPageCount();
   pdf.getPages().forEach((pdfPage, index) => {
-    pdfPage.drawLine({ start: { x: MARGIN, y: 50 }, end: { x: PAGE_W - MARGIN, y: 50 }, color: BORDER, thickness: 0.6 });
-    drawRtl(pdfPage, "شكراً لتعاملكم معنا", PAGE_W - MARGIN, 34, regular, 8, GREEN_DARK);
-    pdfPage.drawText(`${index + 1} / ${totalPages}`, { x: MARGIN, y: 34, font: latin, size: 8, color: BLACK });
+    pdfPage.drawLine({ start: { x: MARGIN, y: 54 }, end: { x: PAGE_W - MARGIN, y: 54 }, color: BORDER, thickness: 0.6 });
+    drawAr(pdfPage, CO.footer, PAGE_W - MARGIN, 40, 8.5, { color: GREEN_DARK, bold: true });
+    drawAr(pdfPage, CO.footerLine, PAGE_W - MARGIN, 27, 7.5, { color: INK });
+    pdfPage.drawText(`${index + 1} / ${totalPages}`, { x: MARGIN, y: 40, font: helv, size: 8, color: BLACK });
+    pdfPage.drawText(`REF ${data.number}`, { x: MARGIN, y: 27, font: helv, size: 7, color: INK });
   });
 
   pdf.setTitle(`${data.kind === "INVOICE" ? "Invoice" : "Quotation"} ${data.number}`);
+  pdf.setLanguage("ar");
   pdf.setCreator("Business Management System");
   pdf.setProducer("Business Management System");
   return pdf.save({ useObjectStreams: false });

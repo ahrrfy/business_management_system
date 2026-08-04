@@ -7,7 +7,6 @@ import { z } from "zod";
 import { PAY_TYPE_KEYS, TERMINATION_TYPES } from "@shared/hr";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/promotionService";
-import { getHrChanges } from "../services/reportsHrService";
 import { protectedProcedure, requireModule, router } from "../trpc";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
@@ -33,8 +32,42 @@ const wagePatch = z.object({
 });
 
 export const promotionRouter = router({
-  /** تقرير التغييرات الوظيفية — الترقيات وإنهاء الخدمات. hr/READ. */
-  report: hrRead.query(() => getHrChanges()),
+  /**
+   * تقرير التغييرات الوظيفية — الترقيات وإنهاء الخدمات. hr/READ.
+   * مصدره `promotionService.listPromotions/listTerminations` (لا `reportsHrService.getHrChanges`
+   * — خارج ملكية هذه الشريحة وسطرها الخام يفتقد employeeId اللازم لربط كل صفٍّ ببطاقة الموظف)؛
+   * هاتان الدالتان تحملانه أصلاً فضلاً عن مدى تاريخ اختياري (effectiveDate/lastDay) يُطبَّق هنا.
+   */
+  report: hrRead
+    .input(z.object({ from: dateStr.optional(), to: dateStr.optional() }).optional())
+    .query(async ({ input }) => {
+      const [promos, terms] = await Promise.all([svc.listPromotions(), svc.listTerminations()]);
+      const from = input?.from;
+      const to = input?.to;
+      const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
+      return {
+        promotions: promos
+          .filter((p) => inRange(p.effectiveDate))
+          .map((p) => ({
+            employeeId: p.employeeId,
+            employeeName: p.employeeName,
+            fromTitle: p.fromTitle,
+            toTitle: p.toTitle,
+            effectiveDate: p.effectiveDate,
+            status: p.status,
+          })),
+        terminations: terms
+          .filter((t) => inRange(t.lastDay))
+          .map((t) => ({
+            employeeId: t.employeeId,
+            employeeName: t.employeeName,
+            type: t.terminationType,
+            lastDay: t.lastDay,
+            settlement: t.settlement,
+            status: t.status,
+          })),
+      };
+    }),
 
   /* ===== الترقيات ===== */
   listPromotions: hrRead.query(() => svc.listPromotions()),

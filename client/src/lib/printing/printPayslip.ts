@@ -27,7 +27,7 @@ import { formatArabicMoneyWords } from "./tafqit";
 export interface PayslipData {
   runId: number;
   period: string; // YYYY-MM
-  statusLabel: string; // «مسودة» | «معتمد» | «مدفوع»
+  statusLabel: string; // «مسوّدة» | «معتمد» | «مدفوع»
   employeeName: string;
   employeeId: number;
   position?: string | null;

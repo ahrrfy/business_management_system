@@ -8,20 +8,23 @@ import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D, fmt, positiveDiff, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { CO } from "@/lib/printing/brand";
 import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplatesV2";
+import { qrCodeSvg } from "@/lib/printing/qr";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 // نوع صفّ أمر الشراء (يوحّد فرعَي الإخراج: المُقنَّع cost=null وغير المُقنَّع).
 type PurchaseRow = RouterOutputs["purchases"]["list"][number];
 
 const PO_STATUS: Record<string, string> = {
-  DRAFT: "مسودّة",
+  DRAFT: "مسوّدة",
   SENT: "مُرسَل",
   CONFIRMED: "مؤكّد",
   RECEIVED: "مُستلَم",
@@ -36,31 +39,50 @@ const PAGE_SIZE = 50;
 
 export default function Purchases() {
   const utils = trpc.useUtils();
-  const [q, setQ] = useState("");
-  // فلاتر خادمية: فترة orderDate + المورد + الحالة (لا فلترة محلية تُخفي صفحات الخادم).
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [supplierId, setSupplierId] = useState<number | "">("");
-  const [status, setStatus] = useState("");
+  // فلاتر خادمية محفوظة في querystring (نمط Invoices.tsx): تعيش مع فتح التفاصيل والرجوع، وتُشارَك
+  // رابطاً. لا فلترة محلية تُخفي صفحات الخادم — كل القيم نصوص تُحوَّل عند حدود الـAPI.
+  const [f, setF, resetF] = useUrlFilters({
+    q: "", from: "", to: "", supplierId: "", status: "", branchId: "",
+  });
   // الترقيم خادميّ: كانت تُحمَّل ٢٠٠ دفعةً بلا offset ⇒ الأمر ٢٠١ غير قابل للوصول.
   const [page, setPage] = useState(0);
 
   // الميل الأخير للبحث الشامل: عند الوصول بـ?q=&focus= نبذر البحث (يُصفّي للأمر) ثمّ نُبرز صفّه.
   const { seedQuery, rowProps } = useFocusHighlight();
   useEffect(() => {
-    if (seedQuery) setQ(seedQuery);
+    if (seedQuery) setF({ q: seedQuery });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedQuery]);
 
   // البحث خادمي الآن (q ممهَّل) ⇒ يطابق رقم الأمر/اسم المورد/الملاحظات عبر كل النتائج لا الصفحة فقط.
-  const dq = useDebouncedValue(q, 250);
-  const statusArg = (status || undefined) as "DRAFT" | "SENT" | "CONFIRMED" | "RECEIVED" | "CANCELLED" | undefined;
-  const listInput = {
-    from: from || undefined,
-    to: to || undefined,
-    supplierId: supplierId ? Number(supplierId) : undefined,
-    status: statusArg,
-    q: dq.trim() || undefined,
-  };
+  const dq = useDebouncedValue(f.q, 250);
+  const statusArg = (f.status || undefined) as "DRAFT" | "SENT" | "CONFIRMED" | "RECEIVED" | "CANCELLED" | undefined;
+
+  const me = trpc.auth.me.useQuery();
+  // فلتر الفرع وعموده — للمرتفعين العابرين للفروع فقط (الخادم يتجاهل branchId لغيرهم أصلاً:
+  // scopedBranchId الحاكم في buildPurchasesListConds، فالإخفاء هنا عرضيّ لا أمنيّ — نمط Invoices.tsx).
+  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: isElevated });
+  const branchNames = useMemo(
+    () => new Map((branches.data ?? []).map((b) => [b.id, b.name])),
+    [branches.data],
+  );
+  const showBranchCol = isElevated && !f.branchId;
+
+  const listInput = useMemo(
+    () => ({
+      from: f.from || undefined,
+      to: f.to || undefined,
+      supplierId: f.supplierId ? Number(f.supplierId) : undefined,
+      status: statusArg,
+      branchId: isElevated && f.branchId ? Number(f.branchId) : undefined,
+      q: dq.trim() || undefined,
+    }),
+    [f.from, f.to, f.supplierId, statusArg, isElevated, f.branchId, dq],
+  );
+
+  // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
+  const activeFilterCount = [f.from || f.to, f.supplierId, f.status, isElevated ? f.branchId : ""].filter(Boolean).length;
 
   const suppliers = trpc.suppliers.list.useQuery();
   const query = trpc.purchases.list.useQuery({ ...listInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
@@ -71,8 +93,7 @@ export default function Purchases() {
   const total = countQ.data?.count;
 
   // أي تغيير في الفلاتر/البحث يعيدنا للصفحة الأولى.
-  const filterKey = JSON.stringify(listInput);
-  useEffect(() => { setPage(0); }, [filterKey]);
+  useEffect(() => { setPage(0); }, [listInput]);
 
   const cancelMut = trpc.purchases.cancel.useMutation({
     onSuccess: async () => {
@@ -81,6 +102,28 @@ export default function Purchases() {
     },
     onError: (e) => notify.err(e),
   });
+
+  const confirmMut = trpc.purchases.confirmOrder.useMutation({
+    onSuccess: async () => {
+      await utils.purchases.list.invalidate();
+      notify.ok("اعتُمد أمر الشراء — أصبح قابلاً للاستلام");
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  // اعتماد مسوّدة (DRAFT ← CONFIRMED): يُتمّم دورة «حفظ مسوّدة» في شاشة الإنشاء — بعدها الأمر
+  // قابل للاستلام عبر شاشة الاستلام.
+  async function confirmOrder(p: { id: number; poNumber: string }) {
+    const ok = await confirm({
+      variant: "info",
+      title: "اعتماد أمر الشراء",
+      description: `سيُعتمَد الأمر ${p.poNumber} فيصبح قابلاً للاستلام. هل تتابع؟`,
+      confirmText: "اعتماد",
+      cancelText: "تراجع",
+    });
+    if (!ok) return;
+    confirmMut.mutate({ purchaseOrderId: p.id });
+  }
 
   // إلغاء أمر شراء لم يُستلم منه شيء — الحارس النهائي في الخادم (يرفض أي أمر استُلمت منه بضاعة).
   async function cancelOrder(p: { id: number; poNumber: string; total: string }) {
@@ -109,7 +152,13 @@ export default function Purchases() {
       );
       const statusColor =
         d.status === "RECEIVED" ? "#0D6B52" : d.status === "CANCELLED" ? "#8A1F11" : "#92400E";
+      // QR حقيقي ببيانات الأمر (كان القالب يطبع placeholder زخرفياً غير قابل للمسح).
+      const qrSvg = await qrCodeSvg(
+        [CO.sub, `أمر شراء: ${d.poNumber}`, `الإجمالي: ${fmt(d.total ?? 0)} د.ع`].join("\n"),
+        { size: 88, margin: 1 },
+      ).catch(() => "");
       printPurchaseInvoiceV2({
+        qrSvg: qrSvg || null,
         invoiceNumber: d.poNumber,
         invoiceDate: d.orderDate as unknown as string | null,
         statusLabel: PO_STATUS[d.status] ?? d.status,
@@ -146,18 +195,20 @@ export default function Purchases() {
             count={total}
             loading={query.isLoading}
             search={{
-              value: q,
-              onChange: setQ,
+              value: f.q,
+              onChange: (v) => setF({ q: v }),
               placeholder: "بحث (رقم الأمر/المورد/ملاحظات)",
             }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetF}
             filters={
               <>
-                <Input type="date" dir="ltr" className="h-8 w-36" value={from} onChange={(e) => setFrom(e.target.value)} title="من تاريخ" />
-                <Input type="date" dir="ltr" className="h-8 w-36" value={to} onChange={(e) => setTo(e.target.value)} title="إلى تاريخ" />
+                <Input type="date" dir="ltr" className="h-8 w-36" value={f.from} onChange={(e) => setF({ from: e.target.value })} title="من تاريخ" />
+                <Input type="date" dir="ltr" className="h-8 w-36" value={f.to} onChange={(e) => setF({ to: e.target.value })} title="إلى تاريخ" />
                 <select
                   className={selectCls}
-                  value={supplierId}
-                  onChange={(e) => setSupplierId(e.target.value ? Number(e.target.value) : "")}
+                  value={f.supplierId}
+                  onChange={(e) => setF({ supplierId: e.target.value })}
                 >
                   <option value="">— كل الموردين —</option>
                   {(suppliers.data ?? []).map((s) => (
@@ -167,12 +218,20 @@ export default function Purchases() {
                     </option>
                   ))}
                 </select>
-                <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)}>
+                <select className={selectCls} value={f.status} onChange={(e) => setF({ status: e.target.value })}>
                   <option value="">— كل الحالات —</option>
                   {Object.entries(PO_STATUS).map(([k, v]) => (
                     <option key={k} value={k}>{v}</option>
                   ))}
                 </select>
+                {isElevated && (
+                  <select className={selectCls} value={f.branchId} onChange={(e) => setF({ branchId: e.target.value })}>
+                    <option value="">— كل الفروع —</option>
+                    {(branches.data ?? []).map((b) => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
+                )}
               </>
             }
             exportSpec={{
@@ -207,6 +266,8 @@ export default function Purchases() {
               <tr>
                 <th className="p-2">رقم الأمر</th>
                 <th className="p-2">المورد</th>
+                {/* عمود «الفرع» — للمرتفعين حين الفلتر «كل الفروع» فقط (نمط Invoices.tsx). */}
+                {showBranchCol && <th className="p-2">الفرع</th>}
                 <th className="p-2">التاريخ</th>
                 <th className="p-2 text-right">الإجمالي</th>
                 <th className="p-2 text-right">فاتورة المورد</th>
@@ -219,11 +280,13 @@ export default function Purchases() {
             <tbody>
               {rows.map((p) => {
                 const terminal = p.status === "RECEIVED" || p.status === "CANCELLED";
+                const isDraft = p.status === "DRAFT";
                 const fr = rowProps(p.id);
                 return (
                   <tr key={p.id} ref={fr.ref} className={`border-t ${fr.className}`}>
                     <td className="p-2"><CopyInline value={p.poNumber} /></td>
                     <td className="p-2">{p.supplierName ?? "—"}</td>
+                    {showBranchCol && <td className="p-2">{branchNames.get(p.branchId ?? -1) ?? "—"}</td>}
                     <td className="p-2 whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(p.orderDate)}</td>
                     <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.total)}</td>
                     <td className="p-2 text-right tabular-nums" dir="ltr">
@@ -241,10 +304,23 @@ export default function Purchases() {
                         mode="auto"
                         actions={[
                           {
+                            key: "confirm",
+                            kind: "approve",
+                            label: "اعتماد الأمر",
+                            // اعتماد المسوّدة (DRAFT ← CONFIRMED) — بعده يصبح قابلاً للاستلام.
+                            hidden: !isDraft,
+                            disabled: confirmMut.isPending,
+                            disabledReason: "توجد عملية اعتماد قيد التنفيذ",
+                            onSelect: () => void confirmOrder({ id: p.id, poNumber: p.poNumber }),
+                            gate: { roles: ["manager", "purchasing"], module: "purchases", level: "FULL" },
+                          },
+                          {
                             key: "receive",
                             kind: terminal ? "view" : "approve",
                             label: terminal ? "عرض" : "استلام",
                             href: `/purchases/${p.id}/receive`,
+                            // مسوّدة غير قابلة للاستلام قبل الاعتماد (receive يشترط status=CONFIRMED خادمياً).
+                            hidden: isDraft,
                             gate: terminal
                               ? { module: "purchases", level: "READ" }
                               : { roles: ["warehouse", "manager", "purchasing"], module: "purchases", level: "FULL" },
@@ -292,7 +368,7 @@ export default function Purchases() {
                 );
               })}
               {!query.isLoading && rows.length === 0 && (
-                <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">لا أوامر شراء مطابقة.</td></tr>
+                <tr><td colSpan={showBranchCol ? 10 : 9} className="p-6 text-center text-muted-foreground">لا أوامر شراء مطابقة.</td></tr>
               )}
             </tbody>
           </table>

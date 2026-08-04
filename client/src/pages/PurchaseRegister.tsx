@@ -2,17 +2,21 @@
 // المصدر: reports.purchaseRegister (كل البنود عدا الملغاة ضمن الفترة) — ترقيم صفحات بالخادم (limit/offset).
 import { useState } from "react";
 import { Link } from "wouter";
+import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, fmtInt } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 type Row = RouterOutputs["reports"]["purchaseRegister"]["rows"][number];
 const PAGE = 200;
@@ -22,15 +26,22 @@ const selectCls =
 export default function PurchaseRegister() {
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
+  const [supplierId, setSupplierId] = useState<number | "">("");
+  const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
+  const [printing, setPrinting] = useState(false);
 
+  const dq = useDebouncedValue(query, 250);
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
+  const suppliers = trpc.reports.suppliersIndex.useQuery();
   const q = trpc.reports.purchaseRegister.useQuery({
     from: period.from,
     to: period.to,
     branchId: branchId ? Number(branchId) : undefined,
+    supplierId: supplierId ? Number(supplierId) : undefined,
+    q: dq.trim() || undefined,
     limit: PAGE,
     offset: page * PAGE,
   });
@@ -52,6 +63,17 @@ export default function PurchaseRegister() {
   // إعادة ضبط الصفحة عند تغيّر الفلاتر.
   function changePeriod(p: PeriodValue) { setPeriod(p); setPage(0); }
 
+  // فلتر الاستعلام الحالي (بلا limit/offset) — مشترك بين التصدير والطباعة (يبقى المطبوع مطابقاً للمُصدَّر).
+  function currentFilter() {
+    return {
+      from: period.from,
+      to: period.to,
+      branchId: branchId ? Number(branchId) : undefined,
+      supplierId: supplierId ? Number(supplierId) : undefined,
+      q: dq.trim() || undefined,
+    };
+  }
+
   async function onExport() {
     setExporting(true);
     try {
@@ -59,13 +81,7 @@ export default function PurchaseRegister() {
       const all = await fetchAllPaged<Row>(
         (offset, limit) =>
           utils.reports.purchaseRegister
-            .fetch({
-              from: period.from,
-              to: period.to,
-              branchId: branchId ? Number(branchId) : undefined,
-              limit,
-              offset,
-            })
+            .fetch({ ...currentFilter(), limit, offset })
             .then((r) => ({ rows: (r.rows ?? []) as Row[], total: r.total })),
         { pageSize: 500 },
       );
@@ -86,35 +102,48 @@ export default function PurchaseRegister() {
     }
   }
 
-  function onPrint() {
-    printReportDoc({
-      title: "سجلّ المشتريات (تفصيل البنود)",
-      headerExtra: [
-        { label: "الفترة", value: periodLabel },
-        { label: "الفرع", value: branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل" },
-      ],
-      columns: [
-        { key: "date", label: "التاريخ" },
-        { key: "po", label: "أمر الشراء" },
-        { key: "supplier", label: "المورّد" },
-        { key: "product", label: "المنتج" },
-        { key: "qty", label: "الكمية", align: "left" },
-        { key: "unitPrice", label: "سعر الوحدة", align: "left" },
-        { key: "total", label: "الإجمالي", align: "left" },
-      ],
-      rows: rows.map((r) => ({
-        date: r.orderDate,
-        po: r.poNumber ?? `#${r.poId}`,
-        supplier: r.supplierName ?? "—",
-        product: r.productName ?? "—",
-        qty: r.quantity,
-        unitPrice: fmtAr(r.unitPrice),
-        total: fmtAr(r.total),
-      })),
-      summary: totals
-        ? [{ label: "إجمالي البنود", value: fmtAr(totals.amount), large: true, bold: true }]
-        : undefined,
-    });
+  // كانت الطباعة تطبع الصفحة المعروضة فقط (limit=200) — الآن تجلب كل الصفحات المطابقة (نمط onExport).
+  async function onPrint() {
+    setPrinting(true);
+    try {
+      const all = await fetchAllPaged<Row>(
+        (offset, limit) =>
+          utils.reports.purchaseRegister
+            .fetch({ ...currentFilter(), limit, offset })
+            .then((r) => ({ rows: (r.rows ?? []) as Row[], total: r.total })),
+        { pageSize: 500 },
+      );
+      printReportDoc({
+        title: "سجلّ المشتريات (تفصيل البنود)",
+        headerExtra: [
+          { label: "الفترة", value: periodLabel },
+          { label: "الفرع", value: branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل" },
+        ],
+        columns: [
+          { key: "date", label: "التاريخ" },
+          { key: "po", label: "أمر الشراء" },
+          { key: "supplier", label: "المورّد" },
+          { key: "product", label: "المنتج" },
+          { key: "qty", label: "الكمية", align: "left" },
+          { key: "unitPrice", label: "سعر الوحدة", align: "left" },
+          { key: "total", label: "الإجمالي", align: "left" },
+        ],
+        rows: all.map((r) => ({
+          date: r.orderDate,
+          po: r.poNumber ?? `#${r.poId}`,
+          supplier: r.supplierName ?? "—",
+          product: r.productName ?? "—",
+          qty: r.quantity,
+          unitPrice: fmtAr(r.unitPrice),
+          total: fmtAr(r.total),
+        })),
+        summary: totals
+          ? [{ label: "إجمالي البنود", value: fmtAr(totals.amount), large: true, bold: true }]
+          : undefined,
+      });
+    } finally {
+      setPrinting(false);
+    }
   }
 
   return (
@@ -125,7 +154,7 @@ export default function PurchaseRegister() {
       onExport={onExport}
       onPrint={onPrint}
       exportDisabled={!total || exporting}
-      printDisabled={!rows.length}
+      printDisabled={!rows.length || printing}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <PeriodFilter value={period} onChange={changePeriod} />
@@ -135,6 +164,30 @@ export default function PurchaseRegister() {
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
             </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">المورّد</label>
+            <AppSelect
+              className="w-48"
+              value={supplierId ? String(supplierId) : ""}
+              onValueChange={(v) => { setSupplierId(v ? Number(v) : ""); setPage(0); }}
+              placeholder="الكل"
+            >
+              <option value="">الكل</option>
+              {suppliers.data?.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
+            </AppSelect>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">بحث</label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+              <Input
+                value={query}
+                onChange={(e) => { setQuery(e.target.value); setPage(0); }}
+                placeholder="رقم الأمر أو المورّد أو المنتج…"
+                className="h-9 w-56 pr-8"
+              />
+            </div>
           </div>
         </div>
       }

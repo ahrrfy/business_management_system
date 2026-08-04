@@ -11,12 +11,12 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { useParams } from "wouter";
-import { TRPCClientError } from "@trpc/client";
+import { useLocation, useParams } from "wouter";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { trpc } from "@/lib/trpc";
 import type { RouterOutputs } from "@/lib/trpc";
 import { notify, errMsg } from "@/lib/notify";
+import { isNetworkError } from "@/lib/netError";
 import { fmtInt } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
@@ -53,13 +53,6 @@ type CountItem = CountState["items"][number];
 type CountMode = "FIRST" | "RECOUNT" | "VERIFY";
 
 /* ─────────────────────────── مساعدات ─────────────────────────── */
-
-/** فشل شبكي (لم يصل للخادم) ⇄ رفض خادمي (وصل ورُفض برسالة). */
-function isNetworkError(e: unknown): boolean {
-  if (typeof navigator !== "undefined" && !navigator.onLine) return true;
-  if (e instanceof TRPCClientError) return e.data == null;
-  return e instanceof TypeError;
-}
 
 /** اسم الوحدة الأساس (factor=1) لعرض الكميات. */
 function baseUnitName(item: CountItem): string {
@@ -99,7 +92,11 @@ function BrandMark() {
 export default function CountPortal() {
   const params = useParams<{ code?: string }>();
   const code = decodeURIComponent(params.code ?? "").trim();
+  const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  // رابط /count مخصص للعامل الخارجي فقط. إذا كان المتصفح يحمل حساب نظام،
+  // ننقله إلى مساحة الحاسوب كي لا يظهر له PIN أو واجهة الهاتف.
+  const account = trpc.auth.me.useQuery(undefined, { retry: false });
 
   const [phase, setPhase] = useState<"boot" | "pin" | "counting" | "paused">("boot");
   const [bootOffline, setBootOffline] = useState(false);
@@ -125,6 +122,12 @@ export default function CountPortal() {
       document.title = prev;
     };
   }, []);
+
+  useEffect(() => {
+    if (account.data && code) navigate(`/my-stocktake/${encodeURIComponent(code)}`, { replace: true });
+  }, [account.data, code, navigate]);
+
+  if (account.data) return null;
 
   /* ── الدخول الصامت: كوكي سارٍ ⇒ مباشرة، وإلا auth بلا PIN (مستخدم نظام بتكليف USER)، وإلا شاشة PIN ── */
   const boot = useCallback(async () => {
@@ -404,12 +407,12 @@ export default function CountPortal() {
             if (stale) removeQueued(code, stale.clientRequestId);
             setQueueCount(queueSize(code));
             setOpenVariantId(null);
-            // الخادم هو الحَكَم في نوع العدّ والتعارض — نقرأ حقوله إن وُجدت بتساهل.
-            const r = res as unknown as { isConflict?: boolean; kind?: string } | undefined;
-            const kind = r?.kind ?? mode;
+            // الخادم هو الحَكَم في نوع العدّ ونتيجة المطابقة. ⚠️ كان يُقرأ `isConflict` وهو حقل
+            // لا يُعيده `count.submit` أصلاً (يُعيد `verifyMatch`) ⇒ لم تظهر رسالة التعارض قط.
+            const kind = res.kind ?? mode;
             if (kind === "VERIFY") {
-              if (r?.isConflict === true) notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
-              else if (r?.isConflict === false) notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
+              if (res.verifyMatch === false) notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
+              else if (res.verifyMatch === true) notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
               else notify.ok("سُجّل العدّ التحقّقي");
             } else if (kind === "RECOUNT") {
               notify.ok("سُجّلت إعادة العدّ");

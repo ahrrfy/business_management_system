@@ -1,12 +1,14 @@
 // تقارير المخزون التشغيلية — قرارات لا كميات.
 // عروض: إعادة الطلب · راكد عالي القيمة · خطر النفاد · فروقات الجرد. + رابط الكاردكس (بطاقة المنتج).
 // يُركّب endpoints (stockStatus/deadStockValue/reorderRisk/stocktakeVariance). عرض + Excel + طباعة A4.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { FolderOpen } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows, type ExportColumn } from "@/lib/export";
@@ -24,7 +26,7 @@ const VIEW_LABEL: Record<View, string> = {
   negatives: "السوالب (وضع الافتتاح)",
 };
 const VIEW_DESC: Record<View, string> = {
-  reorder: "أصناف نفدت أو تحت حدّ الطلب — اطلبها الآن.",
+  reorder: "منتجات نفدت أو تحت حدّ إعادة الطلب — اطلبها الآن.",
   dead: "رصيد بلا بيع منذ مدّة — رأس مال مجمّد يجب تحريره.",
   risk: "مبيعات عالية ومخزون منخفض — اطلب عاجلاً قبل النفاد.",
   variance: "فروقات الجرد المعتمدة حسب الفرع والتاريخ.",
@@ -49,12 +51,47 @@ export default function InventoryOpsReport() {
   const [to, setTo] = useState(today);
   const branchArg = branchId ? Number(branchId) : undefined;
 
+  // فلترا بحث/فئة محلّيان — يعملان فوق الصفوف المحمَّلة من الخادم بالفعل (لا استعلاماً جديداً).
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("");
+
   const branches = trpc.branches.list.useQuery();
   const reorder = trpc.reports.stockStatus.useQuery({ branchId: branchArg, onlyAlerts: true }, { enabled: view === "reorder", staleTime: 60_000 });
   const dead = trpc.reports.deadStockValue.useQuery({ branchId: branchArg, sinceDays: deadDays }, { enabled: view === "dead", staleTime: 60_000 });
   const risk = trpc.reports.reorderRisk.useQuery({ branchId: branchArg, sinceDays: riskDays }, { enabled: view === "risk", staleTime: 60_000 });
   const variance = trpc.reports.stocktakeVariance.useQuery({ branchId: branchArg, from, to }, { enabled: view === "variance", staleTime: 60_000 });
   const negatives = trpc.reports.negativeStock.useQuery({ branchId: branchArg }, { enabled: view === "negatives", staleTime: 60_000 });
+
+  type AnyRowLocal = Record<string, unknown>;
+  /** بحث بالمنتج/المتغيّر + فئة — الفئة تُطبَّق فقط للعروض التي تحمل categoryName. */
+  function applyFilters(rows: AnyRowLocal[]): AnyRowLocal[] {
+    const s = search.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (s) {
+        const name = String(r.productName ?? "").toLowerCase();
+        const variant = String(r.variantLabel ?? "").toLowerCase();
+        if (!name.includes(s) && !variant.includes(s)) return false;
+      }
+      if (category && String(r.categoryName ?? "") !== category) return false;
+      return true;
+    });
+  }
+
+  // فئات العرض الحاليّ (مصدرها الصفوف الخام بلا فلترة الفئة نفسها) — فارغة لعروضٍ بلا categoryName
+  // (إعادة الطلب/فروقات الجرد) فيُخفى الفلتر عندها بدل عرض قائمة فارغة بلا أثر.
+  const categories = useMemo(() => {
+    const src: AnyRowLocal[] =
+      view === "dead" ? ((dead.data?.rows ?? []) as unknown as AnyRowLocal[])
+      : view === "risk" ? ((risk.data?.rows ?? []) as unknown as AnyRowLocal[])
+      : view === "negatives" ? ((negatives.data?.rows ?? []) as unknown as AnyRowLocal[])
+      : [];
+    const set = new Set<string>();
+    for (const r of src) if (r.categoryName) set.add(String(r.categoryName));
+    return Array.from(set).sort();
+  }, [view, dead.data, risk.data, negatives.data]);
+
+  // تبديل العرض يُصفّر فلتر الفئة (قائمة فئات مختلفة لكل عرض) — البحث النصّي يبقى (منطقيّ عبر العروض).
+  useEffect(() => { setCategory(""); }, [view]);
 
   const loading =
     (view === "reorder" && reorder.isLoading) ||
@@ -90,12 +127,12 @@ export default function InventoryOpsReport() {
     }
     if (view === "dead" && dead.data) {
       return [
-        { label: "أصناف راكدة", value: fmtInt(dead.data.summary.count), tone: "warning" },
+        { label: "منتجات راكدة", value: fmtInt(dead.data.summary.count), tone: "warning" },
         { label: "رأس المال المجمّد", value: formatIqd(dead.data.summary.totalValue), tone: "negative" },
       ];
     }
     if (view === "risk" && risk.data) {
-      return [{ label: "أصناف بخطر نفاد", value: fmtInt(risk.data.summary.count), tone: "warning" }];
+      return [{ label: "منتجات بخطر نفاد", value: fmtInt(risk.data.summary.count), tone: "warning" }];
     }
     if (view === "variance" && variance.data) {
       return [
@@ -106,7 +143,7 @@ export default function InventoryOpsReport() {
     }
     if (view === "negatives" && negatives.data) {
       return [
-        { label: "أصناف سالبة", value: fmtInt(negatives.data.summary.count), tone: "negative" },
+        { label: "منتجات سالبة", value: fmtInt(negatives.data.summary.count), tone: "negative" },
         { label: "قيمة الانكشاف", value: formatIqd(negatives.data.summary.totalNegValue), tone: "negative" },
         { label: "بانتظار الجرد الافتتاحي", value: fmtInt(negatives.data.summary.unopenedCount), tone: "warning" },
         { label: "بلا تكلفة", value: fmtInt(negatives.data.summary.missingCostCount), tone: "warning" },
@@ -115,11 +152,11 @@ export default function InventoryOpsReport() {
     return [];
   }, [view, reorder.data, dead.data, risk.data, variance.data, negatives.data]);
 
-  // ── التصدير + الطباعة لكل عرض ──
-  type AnyRow = Record<string, unknown>;
+  // ── التصدير + الطباعة لكل عرض ── الصفوف تمرّ عبر applyFilters كي يطابق المُصدَّر/المطبوع ما يُعرض.
+  type AnyRow = AnyRowLocal;
   function exportConfig(): { rows: AnyRow[]; columns: ExportColumn<AnyRow>[]; printCols: { key: string; label: string; align?: "left" }[] } {
     if (view === "reorder") {
-      const rows = (reorder.data?.rows ?? []) as unknown as AnyRow[];
+      const rows = applyFilters((reorder.data?.rows ?? []) as unknown as AnyRow[]);
       return {
         rows,
         columns: [
@@ -159,7 +196,7 @@ export default function InventoryOpsReport() {
       };
     }
     if (view === "risk") {
-      const rows = (risk.data?.rows ?? []) as unknown as AnyRow[];
+      const rows = applyFilters((risk.data?.rows ?? []) as unknown as AnyRow[]);
       return {
         rows,
         columns: [
@@ -179,7 +216,7 @@ export default function InventoryOpsReport() {
       };
     }
     if (view === "negatives") {
-      const rows = (negatives.data?.rows ?? []) as unknown as AnyRow[];
+      const rows = applyFilters((negatives.data?.rows ?? []) as unknown as AnyRow[]);
       return {
         rows,
         columns: [
@@ -203,7 +240,7 @@ export default function InventoryOpsReport() {
         ],
       };
     }
-    const rows = (variance.data?.rows ?? []) as unknown as AnyRow[];
+    const rows = applyFilters((variance.data?.rows ?? []) as unknown as AnyRow[]);
     return {
       rows,
       columns: [
@@ -327,6 +364,25 @@ export default function InventoryOpsReport() {
               </div>
             </>
           )}
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">بحث</label>
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="اسم المنتج/المتغيّر…"
+              aria-label="بحث بالمنتج"
+              className="h-9 w-44"
+            />
+          </div>
+          {categories.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] text-muted-foreground">الفئة</label>
+              <AppSelect value={category} onValueChange={setCategory} className="w-36">
+                <option value="">كل الفئات</option>
+                {categories.map((c) => (<option key={c} value={c}>{c}</option>))}
+              </AppSelect>
+            </div>
+          )}
         </div>
       }
     >
@@ -337,7 +393,15 @@ export default function InventoryOpsReport() {
           ) : error ? (
             <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void refetchActive()} />
           ) : (
-            <ViewTable view={view} reorder={reorder.data} dead={dead.data} risk={risk.data} variance={variance.data} negatives={negatives.data} riskDays={riskDays} />
+            <ViewTable
+              view={view}
+              reorder={reorder.data ? { ...reorder.data, rows: applyFilters((reorder.data.rows ?? []) as unknown as AnyRow[]) } : reorder.data}
+              dead={dead.data ? { ...dead.data, rows: applyFilters((dead.data.rows ?? []) as unknown as AnyRow[]) } : dead.data}
+              risk={risk.data ? { ...risk.data, rows: applyFilters((risk.data.rows ?? []) as unknown as AnyRow[]) } : risk.data}
+              variance={variance.data ? { ...variance.data, rows: applyFilters((variance.data.rows ?? []) as unknown as AnyRow[]) } : variance.data}
+              negatives={negatives.data ? { ...negatives.data, rows: applyFilters((negatives.data.rows ?? []) as unknown as AnyRow[]) } : negatives.data}
+              riskDays={riskDays}
+            />
           )}
         </CardContent>
       </Card>
@@ -438,7 +502,7 @@ function ViewTable({
   if (view === "risk") {
     const rows = risk?.rows ?? [];
     return (
-      <Table head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفئة</Th><Th>الرصيد</Th><Th>حدّ الطلب</Th><Th>{`مبيع ${riskDays}ي`}</Th><Th>أيام تغطية</Th></>} empty={!rows.length} colSpan={7} emptyMsg="لا أصناف بخطر نفاد في هذا النطاق.">
+      <Table head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفئة</Th><Th>الرصيد</Th><Th>حدّ الطلب</Th><Th>{`مبيع ${riskDays}ي`}</Th><Th>أيام تغطية</Th></>} empty={!rows.length} colSpan={7} emptyMsg="لا منتجات بخطر نفاد في هذا النطاق.">
         {rows.map((r: any) => (
           <tr key={r.variantId} className="border-b last:border-0 hover:bg-accent/40">
             <td className="p-2.5 text-right font-medium">{r.productName}</td>

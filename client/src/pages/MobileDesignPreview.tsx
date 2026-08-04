@@ -136,6 +136,12 @@ const modules = [
   },
 ];
 
+const workspaceModuleIndexes: Record<UserRole, number[]> = {
+  manager: modules.map((_, index) => index),
+  sales: [0, 1, 2, 5, 7, 9, 11],
+  warehouse: [1, 3, 4, 6, 8, 11],
+};
+
 function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center gap-2.5">
@@ -574,10 +580,15 @@ function HomeContent({
 function WorkContent({
   tablet,
   onView,
+  role,
 }: {
   tablet: boolean;
   onView: (view: View) => void;
+  role: UserRole;
 }) {
+  const visibleModules = workspaceModuleIndexes[role].map(
+    (index) => modules[index],
+  );
   return (
     <div className={`${tablet ? "p-6" : "p-4 pb-24"}`}>
       <div className="mb-4">
@@ -601,7 +612,7 @@ function WorkContent({
       <div
         className={`grid ${tablet ? "grid-cols-3 gap-4" : "grid-cols-2 gap-3"}`}
       >
-        {modules.map(({ label, icon: Icon, tone, view }) => (
+        {visibleModules.map(({ label, icon: Icon, tone, view }) => (
           <button
             type="button"
             key={label}
@@ -1083,7 +1094,7 @@ function AppSurface({ device }: { device: Device }) {
         onNextRole={nextRole}
       />
     ) : view === "work" ? (
-      <WorkContent tablet={tablet} onView={setView} />
+      <WorkContent tablet={tablet} onView={setView} role={role} />
     ) : view === "activity" ? (
       <ActivityContent tablet={tablet} onView={setView} />
     ) : view === "profile" ? (

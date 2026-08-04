@@ -5,7 +5,6 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { MoneyInput } from "@/components/form/MoneyInput";
 import { Badge } from "@/components/ui/badge";
 import { CashCounter } from "@/components/CashCounter";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -16,9 +15,11 @@ import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { printDoc } from "@/lib/printing/print";
-import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
+import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { RowActions } from "@/components/list";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
+import { DispatchDialog } from "@/components/delivery/DispatchDialog";
 
 /**
  * إدارة التوصيل (COD) — شاشة مكرّسة (D5):
@@ -30,50 +31,6 @@ type ReadyOrder = RouterOutputs["delivery"]["readyForDispatch"][number];
 type Party = RouterOutputs["delivery"]["listParties"][number];
 type OpenConsignment = RouterOutputs["delivery"]["openConsignments"][number];
 
-/** بوليصة توصيل حرارية (جسر/WebUSB/متصفح) عند الإرسال. */
-function printDeliverySlip(order: ReadyOrder, party: Party | undefined, r: { consignmentNumber: string; invoiceNumber: string; codAmount: string; deliveryFee: string }) {
-  void printDoc({
-    kind: "receipt",
-    title: "بوليصة توصيل",
-    subtitle: r.consignmentNumber,
-    meta: [
-      `الطلب: ${order.orderNumber}`,
-      `الجهة: ${party?.name ?? ""}`,
-      `المستلم: ${order.customerName ?? "—"}`,
-      order.deliveryAddress ? `العنوان: ${order.deliveryAddress}` : "",
-      `الفاتورة: ${r.invoiceNumber}`,
-    ].filter(Boolean),
-    totals: [
-      { label: "مبلغ التحصيل (COD)", value: `${fmt(r.codAmount)} د.ع` },
-      { label: "أجرة التوصيل", value: `${fmt(r.deliveryFee)} د.ع` },
-    ],
-    footer: "يُسلَّم المبلغ للمكتبة عند التوريد",
-    barcodeSet: { barcode128: r.consignmentNumber, qrPayload: r.consignmentNumber, displayLabel: r.consignmentNumber },
-  });
-}
-/** ملصق شحن للطرد (بالقياس المحفوظ — الافتراضي ٨٠×١٢٠مم): قبل الإرسال برقم الأمر، وبعده
- *  برقم الإرسالية واسم الجهة (نفس ملصق طلبات المتجر — تكامل وظيفي واحد). */
-async function printReadyOrderLabel(
-  order: ReadyOrder,
-  opts?: { partyName?: string | null; trackingNumber?: string; cod?: string; into?: Window | null },
-) {
-  const cod = opts?.cod ?? String(Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0)));
-  const res = await printShippingLabel(
-    {
-      orderNumber: opts?.trackingNumber ?? order.orderNumber,
-      customerName: order.customerName,
-      customerPhone: order.customerPhone,
-      governorate: null,
-      addressText: order.deliveryAddress,
-      total: cod,
-      deliveryPartyName: opts?.partyName ?? null,
-      createdAt: new Date(),
-      items: [{ productName: order.title, unitName: "", quantity: String(order.quantity ?? 1) }],
-    },
-    opts && "into" in opts ? { into: opts.into } : undefined,
-  );
-  if (!res.ok) notify.err("افسح مانع النوافذ المنبثقة لطباعة ملصق الشحن");
-}
 /** إيصال تسوية توصيل حراري عند التوريد. */
 function printRemittanceReceipt(partyName: string, r: { remittanceNumber: string; collectedTotal: string; feesTotal: string; netRemitted: string; shortfallTotal: string }) {
   void printDoc({
@@ -133,6 +90,7 @@ function DispatchTab() {
   // (بوّابة أدوار صِرفة بلا مفتاح وحدة صلاحيات — لا مفتاح delivery في المصفوفة ⇒ القائمة الحرفية هي المطابقة الدقيقة).
   const canDispatch = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
   const [target, setTarget] = useState<ReadyOrder | null>(null);
+  const [query, setQuery] = useState("");
 
   const dispatch = trpc.delivery.dispatch.useMutation({
     onSuccess: (r) => {
@@ -145,15 +103,42 @@ function DispatchTab() {
   });
 
   if (ready.isError) return <ErrorState onRetry={() => ready.refetch()} />;
-  const rows = ready.data ?? [];
+  const allRows = ready.data ?? [];
+  // بحث محلي فوري (القائمة تُجلب دفعةً واحدة بلا ترقيم خادميّ ⇒ فلترة العميل تكفي).
+  const rows = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase("ar");
+    if (!needle) return allRows;
+    return allRows.filter((o) =>
+      [o.orderNumber, o.title, o.customerName].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(needle)),
+    );
+  }, [allRows, query]);
 
   return (
     <div className="rounded-xl border bg-card">
-      <div className="border-b px-4 py-3 text-sm font-bold">الطلبات الجاهزة للتوصيل</div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+        <span className="text-sm font-bold">الطلبات الجاهزة للتوصيل ({rows.length})</span>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="رقم الطلب أو العميل…"
+              aria-label="بحث في الطلبات الجاهزة"
+              className="h-8 w-56"
+            />
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void ready.refetch()} disabled={ready.isFetching}>
+            <RotateCcw aria-hidden className={cn("size-3.5", ready.isFetching && "animate-spin")} />
+            تحديث
+          </Button>
+        </div>
+      </div>
       {ready.isLoading ? (
         <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
-      ) : rows.length === 0 ? (
+      ) : allRows.length === 0 ? (
         <EmptyState icon={Truck} title="لا طلبات جاهزة" description="لا توجد طلبات بحالة «جاهز» للإرسال حالياً." />
+      ) : rows.length === 0 ? (
+        <EmptyState icon={Truck} title="لا نتائج" description="لا طلبات مطابقة لبحثك." />
       ) : (
         <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
@@ -214,14 +199,22 @@ function DispatchTab() {
         parties={parties.data ?? []}
         pending={dispatch.isPending}
         onClose={() => setTarget(null)}
-        onConfirm={async (partyId, fee) => {
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone }) => {
           const ord = target!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
           // نافذة الملصق تُفتح هنا **متزامنةً مع نقرة التأكيد** (قبل await الإرسال) وإلا حجبها
           // مانع النوافذ على المتصفّحات المتشدّدة — تُملأ بعد نجاح الإرسال وتُغلق عند فشله.
           const labelWin = preopenShippingLabelWindow();
           try {
-            const r = await dispatch.mutateAsync({ workOrderId: ord.id, partyId, deliveryFee: fee, deliveryAddress: ord.deliveryAddress ?? undefined, clientRequestId: crypto.randomUUID() });
+            const r = await dispatch.mutateAsync({
+              workOrderId: ord.id,
+              partyId,
+              deliveryFee: fee,
+              recipientName: recipientName || undefined,
+              recipientPhone: recipientPhone || undefined,
+              deliveryAddress: ord.deliveryAddress ?? undefined,
+              clientRequestId: crypto.randomUUID(),
+            });
             void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, into: labelWin });
             printDeliverySlip(ord, party, r);
           } catch {
@@ -229,81 +222,6 @@ function DispatchTab() {
           }
         }}
       />
-    </div>
-  );
-}
-
-function DispatchDialog({ order, parties, pending, onClose, onConfirm }: {
-  order: ReadyOrder | null;
-  parties: Party[];
-  pending: boolean;
-  onClose: () => void;
-  onConfirm: (partyId: number, fee: string) => void;
-}) {
-  const [partyId, setPartyId] = useState<string>("");
-  const [fee, setFee] = useState<string>("0");
-  const selectedParty = parties.find((p) => String(p.id) === partyId);
-  useMemo(() => {
-    if (order) {
-      setPartyId("");
-      setFee("0");
-    }
-  }, [order?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (!order) return null;
-  const cod = Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0));
-
-  const pickParty = (id: string) => {
-    setPartyId(id);
-    const p = parties.find((x) => String(x.id) === id);
-    if (p) setFee(String(Number(p.defaultFee ?? 0)));
-  };
-
-  // النافذة نفسها هي حوار التأكيد (تعرض الجهة والمبالغ و«لا رجعة» صراحةً) ⇒ لا نفتح حوار تأكيد
-  // ثانياً فوقها. (كان حوار confirm الثاني بـz-50 يُفتح خلف هذه النافذة اليدوية z-[100] فيتجمّد
-  // العرض — عولج جذرياً برفع طبقة حوار التأكيد، وبسّطنا هنا التدفّق إلى تأكيد واحد واضح.)
-  const submit = () => {
-    if (!partyId) { notify.err("اختر جهة التوصيل"); return; }
-    onConfirm(Number(partyId), fee || "0");
-  };
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" dir="rtl" onClick={onClose}>
-      <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <h3 className="mb-1 text-lg font-extrabold">تسليم «{order.title}» لمندوب</h3>
-        <p className="mb-4 text-xs text-muted-foreground">{order.orderNumber} — {order.customerName ?? "عميل نقدي"}</p>
-        <div className="mb-3 grid gap-3 sm:grid-cols-2">
-          <div>
-            <label className="mb-1.5 block text-sm font-bold">جهة التوصيل</label>
-            <select
-              className="h-11 w-full rounded-md border bg-transparent px-3 text-sm"
-              value={partyId}
-              onChange={(e) => pickParty(e.target.value)}
-            >
-              <option value="">— اختر —</option>
-              {parties.map((p) => (
-                <option key={p.id} value={p.id}>{p.name} ({p.partyType === "COMPANY" ? "شركة" : "مندوب"})</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1.5 block text-sm font-bold">أجرة التوصيل (د.ع)</label>
-            <MoneyInput value={fee} onChange={setFee} className="h-11 text-end tabular-nums" ariaLabel="أجرة التوصيل" />
-          </div>
-        </div>
-        <div className="mb-4 space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
-          <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(order.salePrice)} د.ع</span></div>
-          {Number(order.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmt(order.deposit)} د.ع</span></div>}
-          <div className="flex justify-between border-t pt-1 font-bold"><span>مبلغ التحصيل (COD)</span><span dir="ltr" className="tabular-nums">{fmt(String(cod))} د.ع</span></div>
-        </div>
-        <p className="mb-4 flex items-start gap-1.5 text-xs text-destructive">
-          <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-          <span>ستُصدَر فاتورة وتُسجَّل {fmt(String(cod))} د.ع ذمّةً على «{selectedParty?.name ?? "المندوب"}». لا رجعة.</span>
-        </p>
-        <div className="flex gap-2.5">
-          <Button variant="outline" className="flex-1" onClick={onClose} disabled={pending}>إلغاء</Button>
-          <Button variant="destructive" className="flex-1" onClick={submit} disabled={pending || !partyId}>{pending ? "جارٍ…" : "تأكيد التسليم للمندوب"}</Button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -321,6 +239,7 @@ function SettleTab() {
   const cons = trpc.delivery.openConsignments.useQuery({ partyId: Number(partyId) }, { enabled: !!partyId });
   const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "RETURNED"; collected: string }>>({});
   const [countedBreakdown, setCountedBreakdown] = useState<Record<number, number>>({});
+  const [countedCash, setCountedCash] = useState(0);
 
   const remit = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
@@ -329,6 +248,7 @@ function SettleTab() {
       printRemittanceReceipt(partyName, r);
       setRows({});
       setCountedBreakdown({});
+      setCountedCash(0);
       utils.delivery.openConsignments.invalidate();
       utils.delivery.listParties.invalidate();
     },
@@ -363,6 +283,10 @@ function SettleTab() {
       .map((c) => ({ consignmentId: c.id, collectedAmount: String(Math.max(0, Number(get(c).collected) || 0)) }))
       .filter((l) => Number(l.collectedAmount) >= 0);
     if (lines.length === 0) { notify.err("لا إرساليات للتسوية"); return; }
+    if (Math.abs(countedCash - totals.net) > 0.01) {
+      notify.err(`النقد المعدود لا يطابق الصافي المتوقع. المعدود ${fmt(String(countedCash))} والمتوقع ${fmt(String(totals.net))} د.ع`);
+      return;
+    }
     const ok = await confirm({
       variant: "danger",
       title: "تأكيد تسوية تحصيلات المندوب",
@@ -370,7 +294,7 @@ function SettleTab() {
       confirmText: "تأكيد التسوية",
     });
     if (!ok) return;
-    remit.mutate({ partyId: Number(partyId), lines, clientRequestId: crypto.randomUUID() });
+    remit.mutate({ partyId: Number(partyId), lines, countedCash: countedCash.toFixed(2), clientRequestId: crypto.randomUUID() });
   };
 
   return (
@@ -456,11 +380,15 @@ function SettleTab() {
                 <span className="inline-flex items-center gap-1">{totals.shortfall > 0.01 && <AlertTriangle aria-hidden className="size-3.5" />} {totals.shortfall > 0.01 ? "عجز يبقى ذمّةً على المندوب" : "مطابق"}</span>
                 <span dir="ltr" className="tabular-nums">{fmt(String(Math.max(0, totals.shortfall)))} د.ع</span>
               </div>
+              <div className={cn("flex items-center justify-between border-t py-1.5 font-bold", Math.abs(countedCash - totals.net) > 0.01 ? "text-money-negative" : "text-money-positive")}>
+                <span>{Math.abs(countedCash - totals.net) > 0.01 ? "فرق العدّ — لا يمكن التسوية" : "النقد المعدود مطابق للصافي"}</span>
+                <span dir="ltr" className="tabular-nums">{fmt(String(countedCash - totals.net))} د.ع</span>
+              </div>
               {canRemit && (
-                <Button className="mt-3 w-full" onClick={submit} disabled={remit.isPending}>{remit.isPending ? "جارٍ…" : "تأكيد التسوية وتوريد الصافي"}</Button>
+                <Button className="mt-3 w-full" onClick={submit} disabled={remit.isPending || Math.abs(countedCash - totals.net) > 0.01}>{remit.isPending ? "جارٍ…" : "تأكيد التسوية وتوريد الصافي"}</Button>
               )}
             </div>
-            <CashCounter value={countedBreakdown} onChange={(c) => setCountedBreakdown(c)} />
+            <CashCounter value={countedBreakdown} onChange={(c, total) => { setCountedBreakdown(c); setCountedCash(Number(total)); }} />
           </div>
         </>
       )}

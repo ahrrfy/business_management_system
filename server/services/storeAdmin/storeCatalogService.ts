@@ -7,6 +7,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { escLike } from "../../lib/sqlLike";
 import { withTx } from "../tx";
 import { requestStockAdjustment } from "../inventory/adjustmentApproval";
 import { assertValidImageDataUrl } from "../../lib/imageValidation";
@@ -57,7 +58,9 @@ export async function listStoreCatalog(
   if (input.categoryId === 0 || input.categoryId === null) conds.push(isNull(products.categoryId));
   else if (input.categoryId != null) conds.push(eq(products.categoryId, input.categoryId));
   const q = input.q?.trim();
-  if (q) conds.push(sql`(${products.name} LIKE ${"%" + q + "%"} OR ${products.searchNorm} LIKE ${"%" + q + "%"})`);
+  // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') — اتساقٌ مع مسارات البحث (القيمة مربوطة، لا حقن).
+  const qPat = q ? `%${escLike(q)}%` : null;
+  if (qPat) conds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
   if (input.featuredOnly) conds.push(eq(products.isFeatured, true));
   if (input.hiddenOnly) conds.push(eq(products.showInStore, false));
   const whereClause = conds.length ? and(...conds) : undefined;
@@ -149,7 +152,7 @@ export async function listStoreCatalog(
   ];
   if (input.categoryId === 0 || input.categoryId === null) sellableConds.push(isNull(products.categoryId));
   else if (input.categoryId != null) sellableConds.push(eq(products.categoryId, input.categoryId));
-  if (q) sellableConds.push(sql`(${products.name} LIKE ${"%" + q + "%"} OR ${products.searchNorm} LIKE ${"%" + q + "%"})`);
+  if (qPat) sellableConds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
   const [sellableCnt] = await db
     .select({ n: sql<number>`COUNT(DISTINCT ${products.id})` })
     .from(products)

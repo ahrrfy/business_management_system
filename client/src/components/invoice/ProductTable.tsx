@@ -17,7 +17,6 @@ import { calcLineTotal, calcMargin, fmtNum } from "./totals";
 import { ProductSearchBar } from "./ProductSearchBar";
 import type { Currency, InvoiceAction, InvoiceLine, InvoiceType, PriceTier } from "./types";
 
-/** مرجع تاريخي لسعر الشراء، مصدره أوامر شراء مؤكدة/مستلمة فقط. */
 export interface PurchasePriceInsight {
   lastPurchase: { price: string; supplierId: number; supplierName: string; purchaseOrderId: number; orderDate: Date | string };
   lowestPurchase: { price: string; supplierId: number; supplierName: string; purchaseOrderId: number; orderDate: Date | string };
@@ -34,7 +33,6 @@ export interface ProductTableProps {
   showCost: boolean;
   purchaseCurrency?: Currency;
   purchaseRate?: string;
-  /** مقارنة سعر الشراء بسجلّ الأوامر المعتمدة، مفهرسة بـ variantId:productUnitId. */
   purchasePriceInsights?: Record<string, PurchasePriceInsight>;
   /**
    * حصص الضريبة الموزَّعة لكل سطر (عرض فقط). مصفوفة نصوص decimal 2dp بطول `items` بالضبط
@@ -153,10 +151,6 @@ export function ProductTable({
 
   const totalQty = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
 
-  /**
-   * كلّ سجلّ التاريخ يعاد بالدينار (القيمة الدفترية الموحّدة). عند إدخال فاتورة دولار
-   * نحوّل ما يكتبه الموظف بسعر التثبيت الحالي كي لا نقارن الدولار بالدينار خطأً.
-   */
   const priceAsIqd = (price: string) => {
     const numeric = Number(price);
     if (!Number.isFinite(numeric)) return null;

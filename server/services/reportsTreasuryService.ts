@@ -226,6 +226,8 @@ export async function getExpensesReport(opts: {
   from: string;
   to: string;
   branchId?: number;
+  /** حدّ جهات الصرف المُعادة — افتراضي ٢٠ (توافقاً مع السلوك القديم)، أعلى سقفٍ ٢٠٠. */
+  payeeLimit?: number;
 }): Promise<ExpensesReportResult> {
   const db = getDb();
   const base: ExpensesReportResult = {
@@ -237,6 +239,7 @@ export async function getExpensesReport(opts: {
   if (!db) return base;
 
   const branchEx = opts.branchId ? sql`AND e.branchId = ${opts.branchId}` : sql``;
+  const payeeLimit = Math.min(Math.max(opts.payeeLimit ?? 20, 1), 200);
 
   // المصروفات الفعّالة مصنّفةً حسب الفئة.
   const catRows = rowsOf(
@@ -253,7 +256,7 @@ export async function getExpensesReport(opts: {
     `),
   );
 
-  // أكبر ٢٠ جهة صرف (payee قد تكون NULL ⇒ "غير محدّد"). نجمع NULL في مجموعة واحدة.
+  // أكبر جهات الصرف (payeeLimit، افتراضي ٢٠ للتوافق) — payee قد تكون NULL ⇒ "غير محدّد" (تُجمَّع في صفّ واحد).
   const payeeRows = rowsOf(
     await db.execute(sql`
       SELECT e.payee AS payee,
@@ -265,7 +268,7 @@ export async function getExpensesReport(opts: {
         ${branchEx}
       GROUP BY e.payee
       ORDER BY SUM(e.amount) DESC
-      LIMIT 20
+      LIMIT ${payeeLimit}
     `),
   );
 

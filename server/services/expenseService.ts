@@ -421,6 +421,10 @@ export interface ListExpensesInput {
   to?: string;
   /** بحث نصّي خادمي: البيان/المرجع/المستفيد (أعمدة expenses فقط ⇒ بلا join في المجاميع). */
   q?: string;
+  /** طريقة الدفع (مطابقة يوم البطاقات مع كشف جهاز الدفع ونحوها). */
+  paymentMethod?: ExpensePaymentMethod;
+  /** مصدر الصرف: نقدي أو صرف من المخزون بالكلفة (نثرية/تلف). */
+  source?: ExpenseSource;
   limit?: number;
   /** إزاحة للتصفّح/التصدير الشامل (fetchAllPaged) — totals تبقى على كامل المطابق. */
   offset?: number;
@@ -438,6 +442,8 @@ export async function listExpenses(input: ListExpensesInput = {}) {
   if (input.createdBy != null) conds.push(eq(expenses.createdBy, input.createdBy));
   if (input.category) conds.push(eq(expenses.category, input.category));
   if (input.status) conds.push(eq(expenses.status, input.status));
+  if (input.paymentMethod) conds.push(eq(expenses.paymentMethod, input.paymentMethod));
+  if (input.source) conds.push(eq(expenses.source, input.source));
   // expenseDate عمود DATE ⇒ منتصف ليل محلي (UTC يستثني يوم from كاملاً على +03:00).
   if (input.from) conds.push(gte(expenses.expenseDate, localDayStart(input.from)));
   if (input.to) conds.push(lte(expenses.expenseDate, localDayStart(input.to)));

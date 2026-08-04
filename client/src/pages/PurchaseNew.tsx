@@ -20,6 +20,7 @@ import { D, fmtAr, round2, toBase } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import {
   ActionButtons,
@@ -100,9 +101,6 @@ export default function PurchaseNew() {
   /* ─── bulk picker overlay ──────────────────────────────────────── */
   const [bulkOpen, setBulkOpen] = useState(false);
 
-  // نجلب سجل الأسعار مرة واحدة لكل زوج (صنف، وحدة) في السلة؛ لا نستخدم «تكلفة الصنف» الحالية
-  // لأنها ليست تاريخاً وقد تكون عُدّلت يدوياً. إعادة الجلب عند تغيير المورد تجعل التنبيه يبيّن
-  // أيضاً آخر سعر دفعناه للمورد المختار.
   const insightItems = useMemo(
     () => Array.from(new Map(state.items.map((item) => [
       `${item.variantId}:${item.productUnitId}`,
@@ -111,20 +109,34 @@ export default function PurchaseNew() {
     [state.items],
   );
   const priceInsights = trpc.purchases.priceInsights.useQuery(
-    {
-      branchId: state.branchId,
-      supplierId: state.entityId ?? undefined,
-      items: insightItems,
-    },
+    { branchId: state.branchId, supplierId: state.entityId ?? undefined, items: insightItems },
     { enabled: state.branchId > 0 && insightItems.length > 0 },
   );
 
+  // حارس فقدان البيانات (نمط CustomerNew/ExpenseNew): dirty عند إدخال فعليّ فقط (مورّد/بنود/شحن/كمرك/ملاحظات)
+  // — شاشة فارغة حديثة الفتح لا تُحسب إدخالاً كي لا يظهر تحذير كاذب.
+  const isDirty =
+    state.entityId != null ||
+    state.items.length > 0 ||
+    state.notes.trim() !== "" ||
+    shippingCost.trim() !== "" ||
+    customsCost.trim() !== "";
+  useUnsavedGuard(isDirty);
+
   /* ─── mutation ─────────────────────────────────────────────────── */
+  // «حفظ مسوّدة» يميَّز عن «حفظ واعتماد» بالتوجيه بعد النجاح: المسوّدة تعود للقائمة (لا تُستلَم
+  // إلا بعد اعتمادها من هناك)، والمعتمَد ينتقل مباشرةً لشاشة الاستلام.
+  const savingDraftRef = useRef(false);
   const create = trpc.purchases.createOrder.useMutation({
     onSuccess: async (r) => {
       await utils.purchases.list.invalidate();
-      notify.ok("تم إنشاء أمر الشراء — انتقال للاستلام");
-      navigate(`/purchases/${r.purchaseOrderId}/receive`);
+      if (savingDraftRef.current) {
+        notify.ok("حُفظ أمر الشراء مسوّدة — اعتمده من قائمة المشتريات لاستلامه لاحقاً");
+        navigate("/purchases");
+      } else {
+        notify.ok("تم إنشاء أمر الشراء — انتقال للاستلام");
+        navigate(`/purchases/${r.purchaseOrderId}/receive`);
+      }
     },
     onError: (e) => notify.err(e),
   });
@@ -163,22 +175,19 @@ export default function PurchaseNew() {
     }
     // landed-cost: التوزيع بنسبة القيمة يحتاج قيمة بضاعة موجبة (مرآة حارس الخادم).
     if (landed.hasLanded && !landed.hasBase) {
-      return "أضِف أصنافاً بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
+      return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
     }
     return null;
   }
 
-  function handleSubmit() {
-    const err = validate();
-    if (err) {
-      notify.warn(err);
-      return;
-    }
-    create.mutate({
+  // يبني حمولة الإنشاء المشتركة بين «حفظ واعتماد» (CONFIRMED) و«حفظ مسوّدة» (DRAFT) — الفرق
+  // الوحيد هو status؛ كل الحقول الأخرى (المورّد/البنود/الشحن/الضريبة) واحدة في الحالتين.
+  function buildPayload(status: "CONFIRMED" | "DRAFT") {
+    return {
       supplierId: state.entityId!,
       branchId: state.branchId,
       taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
-      status: "CONFIRMED",
+      status,
       // IDEMPOTENCY (تدقيق ٢/٧): كان المفتاح يُولَّد ويُعلَّق في DOM مخفيّ فقط ولا يُرسَل ⇒ النقر
       // المزدوج يُنشئ أمرَي شراء. الآن نمرّره في الحمولة فيَحرس الخادم من الازدواج.
       clientRequestId,
@@ -200,12 +209,35 @@ export default function PurchaseNew() {
         // سعر الشراء بالوحدة (price = costBase × convFactor عند الإضافة، قابل للتعديل).
         unitPrice: round2(D(l.price)).toFixed(2),
       })),
-    });
+    };
   }
 
+  function handleSubmit() {
+    // ActionButtons (مشترك) لا يُعطِّل زرّ «مسوّدة» أثناء التحفّظ — حارس محلّي يمنع تضارب حفظَين
+    // متزامنين (كلاهما يشترك clientRequestId ثابتاً؛ الخادم يمنع الازدواج، لكن قد يُربَك التوجيه بعد النجاح).
+    if (create.isPending) return;
+    const err = validate();
+    if (err) {
+      notify.warn(err);
+      return;
+    }
+    savingDraftRef.current = false;
+    create.mutate(buildPayload("CONFIRMED"));
+  }
+
+  // حفظ مسوّدة فعلي (كان زرّاً يوهم بإنذار «سيُفعَّل لاحقاً» بلا استدعاء — الراوتر يدعم
+  // status=DRAFT فعلياً منذ createOrder، فقط لم تكن الواجهة تستدعيه): يحفظ نفس بيانات الأمر بحالة
+  // «مسوّدة» بلا أثر مخزني/مالي فوري (createOrder لا يكتب شيئاً غير سطور الأمر)، قابلة للاستكمال
+  // لاحقاً من قائمة المشتريات عبر «اعتماد الأمر» ثم استلامها كالمعتاد.
   function handleSaveDraft() {
-    // الراوتر يدعم status=DRAFT لكنّ المتطلب الأساسي «CONFIRMED». نوحّد التحذير الآن.
-    notify.info("حفظ المسوّدات سيُفعَّل لاحقاً — استخدم «حفظ واعتماد».");
+    if (create.isPending) return;
+    const err = validate();
+    if (err) {
+      notify.warn(err);
+      return;
+    }
+    savingDraftRef.current = true;
+    create.mutate(buildPayload("DRAFT"));
   }
 
   function handleAction(kind: InvoiceActionKind) {
@@ -225,7 +257,7 @@ export default function PurchaseNew() {
         copyInvoiceItems(state.items);
         dispatch({ type: "CLEAR_ITEMS" });
         setPasteAvailable(true);
-        notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+        notify.ok("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
         return;
       case "paste": {
         const items = takeInvoiceItems();
@@ -413,7 +445,7 @@ export default function PurchaseNew() {
               )}
               {landed.hasLanded && !landed.hasBase && (
                 <p className="text-[11px] font-semibold text-amber-600">
-                  أضِف أصنافاً بقيمة موجبة لتوزيع الشحن/الكمرك عليها.
+                  أضِف منتجات بقيمة موجبة لتوزيع الشحن/الكمرك عليها.
                 </p>
               )}
             </div>

@@ -1,17 +1,22 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { desc, eq, gte, lt, or, sql, type SQL } from "drizzle-orm";
+import { customers, quotations } from "../../drizzle/schema";
+import { getDb } from "../db";
 import {
   convertQuotation,
   createQuotation,
   getQuotation,
-  listQuotations,
   setQuotationStatus,
   updateQuotation,
 } from "../services/quotationService";
+import { utcDayStart, utcNextDayStart } from "../services/businessDay";
 import { logAudit } from "../services/auditService";
 import { canSeeCostForUser, router, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString } from "../lib/schemas";
 import { retryOnDup } from "../lib/retryDup";
+import { paginateKeyset } from "../lib/paginateKeyset";
+import { escLike } from "../lib/sqlLike";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -20,11 +25,17 @@ const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح 
 
 export const quotationRouter = router({
   // عزل الفرع (تدقيق ١٤/٦/٢٦): غير المرتفعين يرون عروض فرعهم فقط (كان protectedProcedure ⇒ IDOR قراءة).
+  // ٣/٨: تحويل من limit ثابت (٢٠٠ صامت) إلى cursor/hasMore (نمط inventory.transfersList/purchases.list).
+  // الاستعلام مباشر هنا (لا listQuotations من الخدمة، القاصرة عن cursor/hasMore — تبقى بلا مسّ) بنفس
+  // شروط الخدمة حرفياً + paginateKeyset المشترك.
   list: salesReadProcedure
     .input(
       z
         .object({
-          limit: z.number().default(100),
+          limit: z.number().int().positive().max(500).default(100), // تدقيق ٣/٨: سقف صريح ضدّ DoS الذاكرة.
+          offset: z.number().int().min(0).max(1_000_000).optional(),
+          // keyset: id < cursor — لزرّ «تحميل المزيد» في الواجهة (نمط inventory.transfersList).
+          cursor: z.number().int().positive().nullish(),
           // فلترة خادمية بالفترة (createdAt) والحالة.
           from: ymd.optional(),
           to: ymd.optional(),
@@ -34,10 +45,54 @@ export const quotationRouter = router({
         })
         .optional()
     )
-    .query(({ input, ctx }) => {
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return { rows: [], hasMore: false, nextCursor: null as number | null };
       // admin/manager (scopedBranchId=null) يحترمان input.branchId إن مُرّر، وإلا يرون كل الفروع.
       const branchId = ctx.scopedBranchId != null ? ctx.scopedBranchId : input?.branchId;
-      return listQuotations({ ...(input ?? {}), branchId });
+      const conds: SQL[] = [];
+      // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ UTC — مطابق لِما كانت تبنيه listQuotations (localDayStart).
+      if (input?.from) conds.push(gte(quotations.createdAt, utcDayStart(input.from)));
+      if (input?.to) conds.push(lt(quotations.createdAt, utcNextDayStart(input.to)));
+      if (input?.status) conds.push(eq(quotations.status, input.status));
+      if (branchId != null) conds.push(eq(quotations.branchId, branchId));
+      // بحث نصّي آمن (escLike + ESCAPE '!'): رقم العرض/اسم العميل/الملاحظات.
+      if (input?.q) {
+        const pat = `%${escLike(input.q.trim())}%`;
+        const cond = or(
+          sql`${quotations.quoteNumber} LIKE ${pat} ESCAPE '!'`,
+          sql`${customers.name} LIKE ${pat} ESCAPE '!'`,
+          sql`${quotations.notes} LIKE ${pat} ESCAPE '!'`,
+        );
+        if (cond) conds.push(cond);
+      }
+      const { rows, hasMore, nextCursor } = await paginateKeyset({
+        cursor: input?.cursor ?? undefined,
+        limit: input?.limit,
+        offset: input?.offset,
+        defaultLimit: 100,
+        idCol: quotations.id,
+        baseConds: conds,
+        runQuery: (where, lim, off) =>
+          db
+            .select({
+              id: quotations.id,
+              quoteNumber: quotations.quoteNumber,
+              quoteDate: quotations.quoteDate,
+              validUntil: quotations.validUntil,
+              total: quotations.total,
+              status: quotations.status,
+              convertedInvoiceId: quotations.convertedInvoiceId,
+              customerName: customers.name,
+            })
+            .from(quotations)
+            .leftJoin(customers, eq(quotations.customerId, customers.id))
+            .where(where)
+            .orderBy(desc(quotations.id))
+            .limit(lim)
+            .offset(off),
+      });
+      return { rows, hasMore, nextCursor };
     }),
 
   get: salesReadProcedure
@@ -46,8 +101,6 @@ export const quotationRouter = router({
       const q = await getQuotation(input.quotationId);
       // لا يُكشَف وجود عرض فرع آخر للأدوار غير المرتفعة (نمط sales.get / voucher.get).
       if (q && ctx.scopedBranchId != null && Number(q.branchId) !== ctx.scopedBranchId) return null;
-      // التكلفة معلومة حسّاسة: تبقى مفيدة لتحرير العرض للمدير، أمّا للكاشير فالقيمة null
-      // (بدلاً من حذف المفتاح) حتى تبقى استجابة tRPC ذات شكل ثابت ولا تصل إليه أي تكلفة.
       if (!q) return null;
       const showCost = canSeeCostForUser(ctx.user);
       return { ...q, items: q.items.map((item) => ({ ...item, costBase: showCost ? item.costBase : null })) };

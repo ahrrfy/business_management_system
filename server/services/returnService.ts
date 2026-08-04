@@ -8,7 +8,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement } from "./inventoryService";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, round2, toDbMoney } from "./money";
-import { openShiftIdTx } from "./shiftService";
+import { computeExpectedCash, openShiftIdTx, resolveBranchCashShiftTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
@@ -22,7 +22,7 @@ export interface ReturnLineInput {
 export interface ReturnSaleInput {
   invoiceId: number;
   lines: ReturnLineInput[];
-  refund?: { amount: string; method: PaymentMethod } | null;
+  refund?: { amount: string; method: PaymentMethod; shiftId?: number | null } | null;
   restock?: boolean;
   /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة المرتجع الأول (لا استرداد/إرجاع مزدوج). */
   clientRequestId?: string | null;
@@ -435,12 +435,30 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     const cashRefund = requestedRefund;
 
     if (cashRefund.gt(0)) {
-      // انسب الاسترداد النقدي لوردية الموظّف المفتوحة (وإلا فالـZ-report يُظهر عجزاً وهمياً).
-      const shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
-      // G9 (١٩/٦/٢٦): استرداد نقدي بلا وردية مفتوحة كان يكتب receipt بـshiftId=null
-      // ⇒ يخرج النقد من الدُرج لكن لا يدخل تسوية Z-report ⇒ عجز وهمي عند الإغلاق.
-      if (input.refund!.method === "CASH" && shiftId == null) {
-        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "افتح وردية أولاً لاسترداد نقدي" });
+      // انسب الاسترداد إلى وردية الدرج الذي خرج منه النقد فعلياً — لا وردية الفاعل بالضرورة.
+      // المرتجعات salesManagerProcedure ⇒ مُنفِّذ الاسترداد غالباً مديرٌ قد يختلف عن الكاشير الذي
+      // يُشغّل الدرج الحقيقيّ؛ ربطه بوردية الفاعل (لو خلَت، G9 ١٩/٦/٢٦) كان يُخفي الاسترداد عن
+      // Z-report صاحب الدرج فيظهر له عجزٌ لا يفهم سببه عند الإغلاق. resolveBranchCashShiftTx يبحث
+      // في ورديات الفرع المفتوحة كلّها (لا الفاعل فقط)، ويتطلّب اختياراً صريحاً (refund.shiftId)
+      // حين يتعدّد الدرج المفتوح. غير النقد لا يمسّ صندوقاً فيبقى على النمط القديم (معلوماتيّ بحت).
+      let shiftId: number | null;
+      if (input.refund!.method === "CASH") {
+        const resolved = await resolveBranchCashShiftTx(tx, Number(inv.branchId), input.refund!.shiftId ?? null);
+        shiftId = resolved.shiftId;
+        // حدّ الدرج (نمط cashDropService — لا يُسحَب أكثر من النقد الحاليّ فيه): سقف الفاتورة
+        // (refundCap أعلاه) وحده لا يكفي — يضمن فقط أن المسترَد ≤ ما دُفع بهذه الطريقة على هذه
+        // الفاتورة، لا أنّ الدرج المستهدَف يحمل هذا المبلغ *الآن* (سحبٌ نقديّ أو مصروفٌ سابقٌ في
+        // نفس الوردية قد يكون أنقص الدرج فعلياً). بلا هذا الحدّ يُطلَب من الكاشير تسليم نقدٍ لا يملكه
+        // فعلياً في درجه أثناء العمل، لا أن يُكتشَف الخلل لاحقاً عند الإغلاق فقط.
+        const currentDrawerCash = await computeExpectedCash(tx, shiftId, resolved.openingBalance);
+        if (cashRefund.gt(currentDrawerCash)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `المبلغ يتجاوز النقد المتوفّر حالياً في هذا الدرج (المتاح ${currentDrawerCash.toFixed(2)} < المطلوب ${cashRefund.toFixed(2)}) — راجع الدرج أو اختر درجاً/طريقة استرداد أخرى.`,
+          });
+        }
+      } else {
+        shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
       }
       const rRes = await tx.insert(receipts).values({
         invoiceId: input.invoiceId,

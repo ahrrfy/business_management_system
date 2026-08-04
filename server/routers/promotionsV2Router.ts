@@ -152,6 +152,99 @@ export const promotionsV2Router = router({
       return { ok: true };
     }),
 
+  /** إعادة تفعيل عرض معطَّل (عكس deactivate) — نفس حراسة عزل الفرع. */
+  reactivate: campaignsManagerProcedure
+    .input(z.object({ promotionId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      await withTx(async (tx) => {
+        const promotion = (await tx.select().from(promotions).where(eq(promotions.id, input.promotionId)).limit(1))[0];
+        if (!promotion) throw new TRPCError({ code: "NOT_FOUND", message: "العرض غير موجود" });
+        if (ctx.user.role !== "admin" && Number(promotion.branchId) !== Number(ctx.user.branchId)) throw new TRPCError({ code: "FORBIDDEN", message: "العرض لا يخص فرعك" });
+        if (promotion.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "العرض نشط أصلاً" });
+        await tx.update(promotions).set({ isActive: true }).where(eq(promotions.id, input.promotionId));
+      });
+      await logAudit(ctx, {
+        action: "promotion.reactivate",
+        entityType: "promotion",
+        entityId: input.promotionId,
+      });
+      return { ok: true };
+    }),
+
+  /**
+   * تعديل عرضٍ قائم — حقول وصفية/تسعيرية/زمنية فقط (لا `scope`/`targets`/`type`: تغييرها
+   * هيكليّ ويُفضَّل عرضاً جديداً كي لا ينكسر التوافق مع أهداف مُخزَّنة). كل حقل اختياريّ (patch جزئيّ)
+   * — يُحدَّث فقط ما أُرسل. نفس حراسة عزل الفرع في create/deactivate.
+   */
+  update: campaignsManagerProcedure
+    .input(
+      z.object({
+        promotionId: z.number().int().positive(),
+        name: z.string().min(1).max(255).optional(),
+        description: z.string().max(2000).nullish(),
+        discountPercent: percentStr.optional(),
+        discountAmount: moneyStr.optional(),
+        effectiveFrom: ymd.optional(),
+        effectiveTo: ymd.nullish(),
+        customerTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).nullish(),
+        minLineAmount: moneyStr.optional(),
+        priority: z.number().int().min(0).max(999).optional(),
+        applicationMode: z.enum(["AUTO", "COUPON"]).optional(),
+        channel: z.enum(["POS", "STORE"]).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { promotionId, channel, ...patch } = input;
+      await withTx(async (tx) => {
+        const promotion = (await tx.select().from(promotions).where(eq(promotions.id, promotionId)).limit(1))[0];
+        if (!promotion) throw new TRPCError({ code: "NOT_FOUND", message: "العرض غير موجود" });
+        if (ctx.user.role !== "admin" && Number(promotion.branchId) !== Number(ctx.user.branchId)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "العرض لا يخص فرعك" });
+        }
+        // نوع الخصم ثابت منذ الإنشاء — نمنع إرسال الحقل الذي لا يخصّ نوع العرض القائم (يطابق assertShape
+        // في createPromotion، لكن هنا نتحقّق من النوع المُخزَّن لا حقلٍ في المُدخَل).
+        if (promotion.type === "PERCENT" && patch.discountAmount != null) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "عرض النسبة لا يقبل تعديل مبلغ ثابت" });
+        }
+        if (promotion.type === "AMOUNT" && patch.discountPercent != null) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "عرض المبلغ الثابت لا يقبل تعديل نسبة" });
+        }
+        // effectiveFrom/To عمود `date` (mode افتراضي "date") ⇒ القيمة المُعادة من select() كائن
+        // Date حقيقي (مطابقةً لـmapFromDriverValue) — نحوّله لسلسلة YYYY-MM-DD للمقارنة مع مُدخَل ymd.
+        const toYmd = (d: unknown): string => (d instanceof Date ? d.toISOString() : String(d)).slice(0, 10);
+        const nextFrom = patch.effectiveFrom ?? toYmd(promotion.effectiveFrom);
+        const nextTo = patch.effectiveTo !== undefined ? patch.effectiveTo : promotion.effectiveTo != null ? toYmd(promotion.effectiveTo) : null;
+        if (nextTo && nextTo < nextFrom) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ الانتهاء أقدم من البدء" });
+        }
+
+        const set: Record<string, unknown> = {};
+        if (patch.name !== undefined) set.name = patch.name.trim();
+        if (patch.description !== undefined) set.description = patch.description?.trim() || null;
+        if (patch.discountPercent !== undefined) set.discountPercent = patch.discountPercent;
+        if (patch.discountAmount !== undefined) set.discountAmount = patch.discountAmount;
+        // new Date(...) لا السلسلة الخام — يطابق نمط الإدراج في createPromotion (عمود `date` mode
+        // افتراضي "date" يتوقّع Date لا string، رغم أنّ درايزل يقبل كليهما وقت الكتابة فعلياً هنا
+        // للاتّساق النوعيّ مع بقية الملف).
+        if (patch.effectiveFrom !== undefined) set.effectiveFrom = new Date(patch.effectiveFrom);
+        if (patch.effectiveTo !== undefined) set.effectiveTo = patch.effectiveTo ? new Date(patch.effectiveTo) : null;
+        if (patch.customerTier !== undefined) set.customerTier = patch.customerTier ?? null;
+        if (patch.minLineAmount !== undefined) set.minLineAmount = patch.minLineAmount;
+        if (patch.priority !== undefined) set.priority = patch.priority;
+        if (patch.applicationMode !== undefined) set.applicationMode = patch.applicationMode;
+        if (channel !== undefined) set.isStoreManaged = channel === "STORE";
+        if (Object.keys(set).length === 0) return;
+        await tx.update(promotions).set(set).where(eq(promotions.id, promotionId));
+      });
+      await logAudit(ctx, {
+        action: "promotion.update",
+        entityType: "promotion",
+        entityId: promotionId,
+        newValue: patch,
+      });
+      return { ok: true };
+    }),
+
   /** العروض الساري تاريخها اليوم على فرع/فئة معيّنَين — للـPOS و/offers (badges). */
   activeToday: campaignsReadProcedure
     .input(

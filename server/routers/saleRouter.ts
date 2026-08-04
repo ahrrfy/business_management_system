@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, isNotNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "@shared/searchNormalize";
@@ -23,13 +23,7 @@ import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
-import {
-  canSeeCostForUser,
-  router,
-  salesCashierProcedure,
-  salesManagerProcedure,
-  salesReadProcedure,
-} from "../trpc";
+import { canSeeCostForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -60,9 +54,7 @@ setInterval(() => {
 function _trackMgrAttempt(email: string): boolean {
   const now = Date.now();
   const key = email.trim().toLowerCase();
-  const arr = (mgrApprovalAttempts.get(key) ?? []).filter(
-    (t) => now - t < MGR_APPROVAL_WINDOW_MS,
-  );
+  const arr = (mgrApprovalAttempts.get(key) ?? []).filter((t) => now - t < MGR_APPROVAL_WINDOW_MS);
   arr.push(now);
   mgrApprovalAttempts.set(key, arr);
   return arr.length <= MGR_APPROVAL_MAX;
@@ -80,21 +72,14 @@ export async function verifyManagerApproval(
   const start = Date.now();
   const email = approval.email.trim().toLowerCase();
   const db = getDb();
-  if (!db)
-    throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: "قاعدة البيانات غير متاحة",
-    });
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
 
   // rate limit (لا يُلَتقَط في الـcatch — يُرمى مباشرة لإفهام المستخدم بحدّ المعدّل).
   if (!_trackMgrAttempt(email)) {
     await logAudit(ctx as any, {
       action: "sale.creditOverride.rateLimited",
       entityType: "user",
-      newValue: {
-        email,
-        attempts: mgrApprovalAttempts.get(email)?.length ?? 0,
-      },
+      newValue: { email, attempts: mgrApprovalAttempts.get(email)?.length ?? 0 },
     });
     throw new TRPCError({
       code: "TOO_MANY_REQUESTS",
@@ -102,21 +87,13 @@ export async function verifyManagerApproval(
     });
   }
 
-  const u = (
-    await db.select().from(users).where(eq(users.email, email)).limit(1)
-  )[0];
-  const ok =
-    u &&
-    u.isActive !== false &&
-    verifyPassword(approval.password, u.passwordHash) &&
-    (u.role === "manager" || u.role === "admin");
+  const u = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+  const ok = u && u.isActive !== false && verifyPassword(approval.password, u.passwordHash) && (u.role === "manager" || u.role === "admin");
 
   // ثبّت الحدّ الأدنى للوقت قبل الإرجاع (يَمنع timing attack).
   const elapsed = Date.now() - start;
   if (elapsed < MGR_APPROVAL_MIN_RESPONSE_MS) {
-    await new Promise((r) =>
-      setTimeout(r, MGR_APPROVAL_MIN_RESPONSE_MS - elapsed),
-    );
+    await new Promise((r) => setTimeout(r, MGR_APPROVAL_MIN_RESPONSE_MS - elapsed));
   }
 
   if (!ok) {
@@ -124,20 +101,9 @@ export async function verifyManagerApproval(
       action: "sale.creditOverride.fail",
       entityType: "user",
       entityId: u?.id ?? null,
-      newValue: {
-        email,
-        reason: !u
-          ? "no_user"
-          : u.isActive === false
-            ? "inactive"
-            : "wrong_password_or_role",
-      },
+      newValue: { email, reason: !u ? "no_user" : (u.isActive === false ? "inactive" : "wrong_password_or_role") },
     });
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message:
-        "موافقة المدير غير صالحة (تأكّد من البريد وكلمة المرور وأنّ الحساب مدير).",
-    });
+    throw new TRPCError({ code: "FORBIDDEN", message: "موافقة المدير غير صالحة (تأكّد من البريد وكلمة المرور وأنّ الحساب مدير)." });
   }
   // SOD-03 (فصل المهام): لا يجوز للمستخدم اعتماد عمليته بنفسه (كاشير بدور مدير يُدخل بيانات نفسه).
   // كان غياب الفحص يُتيح للمدير-الكاشير تجاوز حدّ الائتمان على بيعه ذاتياً بلا حسيب.
@@ -148,52 +114,27 @@ export async function verifyManagerApproval(
       entityId: u.id,
       newValue: { email, reason: "self_approval" },
     });
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "لا يجوز اعتماد عمليتك بنفسك — يلزم مدير آخر (فصل المهام).",
-    });
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز اعتماد عمليتك بنفسك — يلزم مدير آخر (فصل المهام)." });
   }
   // عزل الفرع: admin يَعبر؛ manager يَجب أن يَخدم فرع الفاتورة نفسه.
-  if (
-    u.role === "manager" &&
-    branchId != null &&
-    Number(u.branchId) !== branchId
-  ) {
+  if (u.role === "manager" && branchId != null && Number(u.branchId) !== branchId) {
     await logAudit(ctx as any, {
       action: "sale.creditOverride.fail",
       entityType: "user",
       entityId: u.id,
-      newValue: {
-        email,
-        reason: "cross_branch",
-        approverBranchId: u.branchId,
-        saleBranchId: branchId,
-      },
+      newValue: { email, reason: "cross_branch", approverBranchId: u.branchId, saleBranchId: branchId },
     });
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "المعتمد ليس مدير هذا الفرع",
-    });
+    throw new TRPCError({ code: "FORBIDDEN", message: "المعتمد ليس مدير هذا الفرع" });
   }
   // M (تَدقيق ٢٣/٦/٢٦): admin عابر-الفرع يَجتاز بلا تَوثيق صريح ⇒ نَسجّل سطر تَدقيق مُكثَّف
   // عند المرور. لا يَمنع المرور (admin له سلطة عليا بالتَصميم)، لكن يَترك أَثَراً forensic
   // كَشّافاً لإساءة استعمال admin مُخترَق (نافذة تَحقيقات لاحقة كاشفة).
-  if (
-    u.role === "admin" &&
-    branchId != null &&
-    u.branchId != null &&
-    Number(u.branchId) !== branchId
-  ) {
+  if (u.role === "admin" && branchId != null && u.branchId != null && Number(u.branchId) !== branchId) {
     await logAudit(ctx as any, {
       action: "sale.creditOverride.adminCrossBranch",
       entityType: "user",
       entityId: u.id,
-      newValue: {
-        email,
-        approverBranchId: u.branchId,
-        saleBranchId: branchId,
-        saleActorId: ctx.user.id,
-      },
+      newValue: { email, approverBranchId: u.branchId, saleBranchId: branchId, saleActorId: ctx.user.id },
     });
   }
   return Number(u.id);
@@ -202,21 +143,19 @@ export async function verifyManagerApproval(
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 // تاريخ فلترة YYYY-MM-DD (فلاتر الفترات الخادمية — لا فلترة محلية تُخفي صفحات الخادم).
-const ymd = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
+const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 // قيمة override/خصم: مالية غير سالبة (٢ منزلتان) — nonNegMoneyString المركزية (سدّ تكرار schemas).
 const lineSchema = z.object({
   variantId: z.number().int().positive(),
   productUnitId: z.number().int().positive(),
+  // تدقيق ٣/٨: سقف علويّ (١ مليون) — بلا حدّ، كمية بـ٢٠ خانة تفيض MAX_SAFE_INTEGER/BIGINT بعد
+  // ×conversionFactor في convertToBaseQuantity (اتساقٌ مع سقف openingStock). أطول من ٧ خانات صحيحة مرفوض.
   quantity: z
     .string()
-    .regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة (موجبة، ثلاث منازل)"),
+    .regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة (موجبة، ثلاث منازل)")
+    .refine((s) => Number(s) > 0 && Number(s) <= 1_000_000, "الكمية خارج المدى المسموح"),
   unitPriceOverride: nonNegMoneyString.optional(),
-  discountPercent: z
-    .string()
-    .regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة")
-    .optional(),
+  discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
   discountAmount: nonNegMoneyString.optional(),
   // promotions v2 (٨/٧/٢٦): معرّف العرض الذي عرضه POS للعميل — الخادم يتحقّق (idempotent)
   // ويُخزّن promotionId + promotionDiscount على invoiceItem. إن اختلف عن حلّ الخادم ⇒ يعامل كيدوي.
@@ -228,24 +167,27 @@ const lineSchema = z.object({
 // إن مُرّر cursor، يُقيَّد `id < cursor` ويُتجاهل offset؛ وإلّا يبقى OFFSET للتوافق.
 const salesListInput = z
   .object({
-    limit: z.number().default(50),
-    offset: z.number().default(0),
+    // تدقيق ٣/٨: سقف صريح — كانت `z.number()` عارية تصل `.limit()` بلا قصّ (paginateKeyset لا يقصّها)
+    // ⇒ `limit: 1e8` يحاول جلب ملايين الصفوف للذاكرة (DoS)، وقيمة سالبة/عشرية ⇒ خطأ MySQL/500.
+    limit: z.number().int().positive().max(500).default(50),
+    offset: z.number().int().min(0).max(1_000_000).default(0),
     cursor: z.number().int().positive().optional(),
     // فلترة خادمية بالفترة (invoiceDate) والحالة والعميل.
     from: ymd.optional(),
     to: ymd.optional(),
-    status: z
-      .enum([
-        "PENDING",
-        "CONFIRMED",
-        "PAID",
-        "PARTIALLY_PAID",
-        "CANCELLED",
-        "RETURNED",
-      ])
-      .optional(),
+    status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).optional(),
+    sourceType: z.enum(["POS", "ONLINE", "ORDER", "WORKORDER"]).optional(),
+    balanceState: z.enum(["DEPOSIT_DUE", "OUTSTANDING", "UNPAID", "SETTLED"]).optional(),
     customerId: z.number().int().positive().optional(),
     salespersonId: z.number().int().positive().optional(),
+    // فلترة بطريقة الدفع (invoices.paymentMethod — نفس مصدر عمود «طريقة الدفع» في الشاشة).
+    // الحاجة التشغيلية: مطابقة يوم البطاقات مع كشف جهاز الدفع تتطلّب حصر فواتير CARD.
+    paymentMethod: method.optional(),
+    // فرع صريح للمرتفعين (admin/manager عابرَي الفروع) — يُفعَّل فقط حين scopedBranchId فارغ؛
+    // غير المرتفع يبقى محصوراً بفرعه مهما أرسل (انظر buildSalesListConds).
+    branchId: z.number().int().positive().optional(),
+    // فلترة بفواتير وردية بعينها — لتحقيق فروقات الوردية النقدية من سجلّ الورديات (Shifts.tsx).
+    shiftId: z.number().int().positive().optional(),
     // بحث نصّي خادميّ: رقم الفاتورة أو اسم العميل. كان البحث محلّياً على الصفحة المُحمَّلة وحدها
     // (سقف ٢٠٠) ⇒ فاتورة أقدم تُعطي «لا نتائج» وهي موجودة. خادميّ ⇒ يطال كل المطابق للفلتر.
     q: z.string().trim().min(1).optional(),
@@ -256,25 +198,39 @@ type SalesListInput = z.infer<typeof salesListInput>;
 
 /** يبني شروط WHERE لقائمة المبيعات — مستخدم في list و listSummary معاً
  *  ⇒ يضمن تطابق الفلترة بينهما للأبد (نفس عزل الفرع ونفس الحدّ نصف المفتوح [from, to+يوم)). */
-export function buildSalesListConds(
-  input: SalesListInput,
-  scopedBranchId: number | null,
-  scopedOwnerId: number | null = null,
-) {
+export function buildSalesListConds(input: SalesListInput, scopedBranchId: number | null, scopedOwnerId: number | null = null) {
   const conds = [];
   if (scopedBranchId) conds.push(eq(invoices.branchId, scopedBranchId));
+  // فلتر الفرع الصريح — else حتماً: العزل الحاكم (scopedBranchId) مقدَّم دائماً، فلا يستطيع
+  // غير المرتفع توسيع نطاقه بإرسال branchId مغاير (يُتجاهَل مدخله بصمت ويبقى محصوراً بفرعه).
+  else if (input?.branchId) conds.push(eq(invoices.branchId, input.branchId));
   // عزل الموظف: غير المرتفعين يرون فواتيرهم فقط (createdBy = هم). admin/manager = null = الكل.
   if (scopedOwnerId != null) conds.push(eq(invoices.createdBy, scopedOwnerId));
   // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
-  if (input?.from)
-    conds.push(gte(invoices.invoiceDate, localDayStart(input.from)));
-  if (input?.to)
-    conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
+  if (input?.from) conds.push(gte(invoices.invoiceDate, localDayStart(input.from)));
+  if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
   if (input?.status) conds.push(eq(invoices.status, input.status));
+  if (input?.sourceType) conds.push(eq(invoices.sourceType, input.sourceType));
+  if (input?.paymentMethod) conds.push(eq(invoices.paymentMethod, input.paymentMethod));
+  if (input?.balanceState === "DEPOSIT_DUE") {
+    conds.push(inArray(invoices.sourceType, ["ORDER", "WORKORDER"]));
+    conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+  } else if (input?.balanceState === "OUTSTANDING") {
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  } else if (input?.balanceState === "UNPAID") {
+    conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) = 0`);
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  } else if (input?.balanceState === "SETTLED") {
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) <= 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  }
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
+  if (input?.shiftId) conds.push(eq(invoices.shiftId, input.shiftId));
   // المدير/الأدمن يستطيعان اختيار موظف؛ الموظف العادي يبقى مُجبَراً على نفسه.
-  if (scopedOwnerId == null && input?.salespersonId)
-    conds.push(eq(invoices.createdBy, input.salespersonId));
+  if (scopedOwnerId == null && input?.salespersonId) conds.push(eq(invoices.createdBy, input.salespersonId));
   if (input?.q) {
     // رقم الفاتورة يُطابَق خاماً (رموز/أرقام لا معنى للتطبيع العربي فيها)، واسم العميل عبر
     // customers.searchNorm المطبَّع عربياً (D2 ١/٧ — «احمد» يجد «أحمد»)، نفس نمط customerService.
@@ -299,25 +255,18 @@ export const saleRouter = router({
         shiftId: z.number().int().positive().optional(),
         customerId: z.number().int().positive().optional(),
         priceTier: tier.optional(),
-        sourceType: z
-          .enum(["POS", "ONLINE", "ORDER", "WORKORDER"])
-          .default("POS"),
+        sourceType: z.enum(["POS", "ONLINE", "ORDER", "WORKORDER"]).default("POS"),
         lines: z.array(lineSchema).min(1),
         invoiceDiscount: z.string().optional(),
         taxRatePercent: z.string().optional(),
-        payment: z
-          .object({
-            amount: positiveMoneyString,
-            method,
-            reference: z.string().trim().min(1).max(100).optional(),
-          })
-          .optional(),
+        payment: z.object({
+          amount: positiveMoneyString,
+          method,
+          reference: z.string().trim().min(1).max(100).optional(),
+        }).optional(),
         // dueDate للبيع الآجل (YYYY-MM-DD) — يُحفظ على invoices.dueDate ليظهر في AR aging
         // ولينبّه على الفواتير المتأخرة. اختياري؛ إن غاب فلا تاريخ استحقاق محدّد.
-        dueDate: z
-          .string()
-          .regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)")
-          .optional(),
+        dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
         // تقريب نقدي IQD للبيع النقدي الكامل (يُحسب على الخادم، يُسجَّل ADJUST لفرق التقريب).
         cashRoundIQD: z.boolean().optional(),
         clientRequestId: z.string().optional(),
@@ -325,10 +274,8 @@ export const saleRouter = router({
         couponCode: z.string().trim().min(3).max(64).optional(),
         notes: z.string().optional(),
         // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
-        managerApproval: z
-          .object({ email: z.string().min(1), password: z.string().min(1) })
-          .optional(),
-      }),
+        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+      })
     )
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المدير يُجبَر على فرعه (لا يُصدَّق branchId القادم من العميل — منع IDOR).
@@ -339,31 +286,18 @@ export const saleRouter = router({
       let effectiveBranchId = input.branchId;
       if (!elevated) {
         if (ctx.user.branchId == null) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "لا فرع مُسنَد لهذا المستخدم",
-          });
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
         }
         effectiveBranchId = Number(ctx.user.branchId);
       }
       // role إلزامي: خدمة البيع تفحص ملكية الوردية (SHIFT-OWN) وتُعفي admin/manager — بدونه يُحجب الجميع.
-      const actor = {
-        userId: ctx.user.id,
-        branchId: effectiveBranchId,
-        role: ctx.user.role,
-      };
+      const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role };
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
-      if (managerApproval)
-        approvedBy = await verifyManagerApproval(
-          managerApproval,
-          ctx,
-          effectiveBranchId,
-        );
+      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
       // SALES-01/02: سلطة البيع تحت التكلفة. المدير/الأدمن لهما السلطة ذاتياً (elevated)؛
       // الكاشير يحتاج managerApproval مُتحقَّقاً (approvedBy). الخدمة تَكشف البيع تحت COGS وتَرفضه بلا سلطة.
-      const priceOverrideApprovedBy: number | null =
-        approvedBy ?? (elevated ? ctx.user.id : null);
+      const priceOverrideApprovedBy: number | null = approvedBy ?? (elevated ? ctx.user.id : null);
       // B5 (١٩/٦/٢٦): الراوتر لا يمرّر creditApproved منفرداً — يمرّر معه managerOverrideByUserId
       // لتُنشئ saleService approval ذرّياً مرتبطاً بـ(customer, unpaid, single-use, 5min).
       const effectiveInput = {
@@ -379,42 +313,13 @@ export const saleRouter = router({
           // AUDIT-REPLAY (تدقيق ٢/٧): إعادة التشغيل الـidempotent لا تُنشئ بيعاً جديداً ⇒ لا نكتب سطر
           // تدقيق مكرَّراً في كل مرة (كان يضخّم السجلّ بأحداث «بيع» وهميّة لعملية واحدة).
           if (!res.idempotentReplay) {
-            await logAudit(ctx, {
-              action: "sale.create",
-              entityType: "invoice",
-              entityId: (res as { invoiceId?: number })?.invoiceId,
-              newValue: {
-                lines: input.lines.length,
-                creditApprovedBy: approvedBy,
-              },
-            });
-            if (approvedBy != null)
-              await logAudit(ctx, {
-                action: "sale.creditOverride",
-                entityType: "invoice",
-                entityId: (res as { invoiceId?: number })?.invoiceId,
-                newValue: { approvedByManagerId: approvedBy },
-              });
+            await logAudit(ctx, { action: "sale.create", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { lines: input.lines.length, creditApprovedBy: approvedBy } });
+            if (approvedBy != null) await logAudit(ctx, { action: "sale.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy } });
             // SALES-01/02: أثر تدقيقي صريح للبيع تحت التكلفة (لا يُكتفى بعدّ الأسطر).
-            if (res.priceOverride)
-              await logAudit(ctx, {
-                action: "sale.priceOverride",
-                entityType: "invoice",
-                entityId: res.invoiceId,
-                newValue: {
-                  approvedByUserId: priceOverrideApprovedBy,
-                  byRole: ctx.user.role,
-                },
-              });
+            if (res.priceOverride) await logAudit(ctx, { action: "sale.priceOverride", entityType: "invoice", entityId: res.invoiceId, newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role } });
             // «وضع الافتتاح» (ش٢): أثر تدقيقي لكل بيعٍ أنزل صنفاً تحت الصفر — يقع مرّة واحدة على
             // المحاولة الفائزة (replay لا يعيد negativeDips). مصدر الحقيقة الدائم = حركة المخزون بملاحظتها.
-            if (res.negativeDips?.length)
-              await logAudit(ctx, {
-                action: "sale.openingNegative",
-                entityType: "invoice",
-                entityId: res.invoiceId,
-                newValue: { dips: res.negativeDips },
-              });
+            if (res.negativeDips?.length) await logAudit(ctx, { action: "sale.openingNegative", entityType: "invoice", entityId: res.invoiceId, newValue: { dips: res.negativeDips } });
           }
           return res;
         } catch (e: any) {
@@ -425,42 +330,30 @@ export const saleRouter = router({
           // عمود مخطط ناقص ظهر للمستخدم كـ«تعذّر إتمام البيع» بلا أثرٍ يكشف العمود).
           logger.error(
             {
-              err: {
-                message: e?.message,
-                code: e?.code,
-                sqlMessage: e?.sqlMessage,
-                sql: e?.sql,
-              },
+              err: { message: e?.message, code: e?.code, sqlMessage: e?.sqlMessage, sql: e?.sql },
               userId: actor.userId,
               branchId: actor.branchId,
               lines: input.lines.length,
             },
-            "sale.create فشل بخطأ غير متوقّع (السبب الجذري أدناه)",
+            "sale.create فشل بخطأ غير متوقّع (السبب الجذري أدناه)"
           );
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "تعذّر إتمام البيع",
-          });
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام البيع" });
         }
       }
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "تعذّر توليد رقم فاتورة فريد",
-      });
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
     }),
 
   pay: salesCashierProcedure
-    .input(
-      z.object({
-        // SALES-04: المبلغ مُقيّد موجباً بـ٢ منازل (كان z.string() ⇒ يَقبل أُسّاً/أكثر من منزلتين).
-        invoiceId: z.number().int().positive(),
-        amount: positiveMoneyString,
-        method,
-        shiftId: z.number().int().positive().optional(),
-        // idempotency: نفس المفتاح ⇒ دفعة واحدة (لا إيصال/قيد PAYMENT_IN/خصم AR مزدوج عند النقر المزدوج).
-        clientRequestId: z.string().min(1).max(80).optional(),
-      }),
-    )
+    .input(z.object({
+      // SALES-04: المبلغ مُقيّد موجباً بـ٢ منازل (كان z.string() ⇒ يَقبل أُسّاً/أكثر من منزلتين).
+      invoiceId: z.number().int().positive(), amount: positiveMoneyString, method, reference: z.string().trim().max(100).nullish(), shiftId: z.number().int().positive().optional(),
+      // idempotency: نفس المفتاح ⇒ دفعة واحدة (لا إيصال/قيد PAYMENT_IN/خصم AR مزدوج عند النقر المزدوج).
+      clientRequestId: z.string().min(1).max(80).optional(),
+    }).superRefine((input, ctx) => {
+      if (input.method !== "CASH" && !input.reference?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reference"], message: "مرجع عملية البطاقة/التحويل مطلوب" });
+      }
+    }))
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المدير يُرفض دفعه على فاتورة فرع آخر (منع IDOR).
       // G1 (تدقيق ١٤/٦/٢٦): استبدل `?? -1` برميٍ صريح. كان -1 يجعل enforceBranchId يطابق
@@ -469,10 +362,7 @@ export const saleRouter = router({
       let enforceBranchId: number | null = null;
       if (!elevated) {
         if (ctx.user.branchId == null) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "لا فرع مُسنَد لهذا المستخدم",
-          });
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
         }
         enforceBranchId = Number(ctx.user.branchId);
       }
@@ -481,10 +371,7 @@ export const saleRouter = router({
       let actorBranchId: number;
       if (elevated) {
         if (ctx.user.branchId == null) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "لا فرع مُسنَد للمستخدم — حدّد فرعك قبل تسجيل دفعات",
-          });
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد للمستخدم — حدّد فرعك قبل تسجيل دفعات" });
         }
         actorBranchId = Number(ctx.user.branchId);
       } else {
@@ -492,44 +379,20 @@ export const saleRouter = router({
       }
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await processPayment(
-            { ...input, enforceBranchId },
-            {
-              userId: ctx.user.id,
-              branchId: actorBranchId,
-              role: ctx.user.role,
-            },
-          );
-          await logAudit(ctx, {
-            action: "sale.pay",
-            entityType: "invoice",
-            entityId: input.invoiceId,
-            newValue: { amount: input.amount, method: input.method },
-          });
+          const res = await processPayment({ ...input, enforceBranchId }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
+          await logAudit(ctx, { action: "sale.pay", entityType: "invoice", entityId: input.invoiceId, newValue: { amount: input.amount, method: input.method } });
           return res;
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "تعذّر إتمام الدفعة",
-          });
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام الدفعة" });
         }
       }
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "تعذّر إتمام الدفعة (تكرار)",
-      });
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام الدفعة (تكرار)" });
     }),
 
-  /**
-   * تصحيح إداري لبيانات الفاتورة بعد إصدارها.
-   *
-   * المقصود هنا هو البيانات الوصفية وطريقة الدفع، لا تعديل بنود البيع أو مبالغها:
-   * البنود مرتبطة بحركات مخزون وقيود دفترية، وتعديلها كتابةً مباشرةً يفسد الأثر
-   * المحاسبي. كل تصحيح يكتب سجل تدقيق إلزامياً داخل المعاملة نفسها، لذلك لا يمكن
-   * أن تنجح عملية من دون معرفة من عدّل ماذا ولماذا.
-   */
+  // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).
+  // /simplify ٣٠/٦: list = listPage().rows ⇒ كاتب واحد للاستعلام، صفر تَكرار.
   correct: salesManagerProcedure
     .input(
       z.object({
@@ -741,11 +604,7 @@ export const saleRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
-      const baseConds = buildSalesListConds(
-        input,
-        ctx.scopedBranchId,
-        ctx.scopedOwnerId,
-      );
+      const baseConds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
       const page = await paginateKeyset({
         cursor: input?.cursor,
         limit: input?.limit,
@@ -753,31 +612,31 @@ export const saleRouter = router({
         defaultLimit: 50,
         idCol: invoices.id,
         baseConds,
-        runQuery: (where, lim, off) =>
-          db
-            .select({
-              id: invoices.id,
-              invoiceNumber: invoices.invoiceNumber,
-              sourceType: invoices.sourceType,
-              invoiceDate: invoices.invoiceDate,
-              total: invoices.total,
-              paidAmount: invoices.paidAmount,
-              status: invoices.status,
-              paymentMethod: invoices.paymentMethod,
-              customerName: customers.name,
-              salespersonName: sql<
-                string | null
-              >`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
-              shiftId: invoices.shiftId,
-              deviceId: invoices.posDeviceId,
-            })
-            .from(invoices)
-            .leftJoin(customers, eq(invoices.customerId, customers.id))
-            .leftJoin(users, eq(invoices.createdBy, users.id))
-            .where(where)
-            .orderBy(desc(invoices.id))
-            .limit(lim)
-            .offset(off),
+        runQuery: (where, lim, off) => db
+          .select({
+            id: invoices.id,
+            invoiceNumber: invoices.invoiceNumber,
+            sourceType: invoices.sourceType,
+            // branchId يُعرَض في عمود «الفرع» لدى المرتفعين حين الفلتر «كل الفروع» (التسمية من branches.list واجهياً).
+            branchId: invoices.branchId,
+            invoiceDate: invoices.invoiceDate,
+            total: invoices.total,
+            paidAmount: invoices.paidAmount,
+            returnedTotal: invoices.returnedTotal,
+            status: invoices.status,
+            paymentMethod: invoices.paymentMethod,
+            customerName: customers.name,
+            salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
+            shiftId: invoices.shiftId,
+            deviceId: invoices.posDeviceId,
+          })
+          .from(invoices)
+          .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(users, eq(invoices.createdBy, users.id))
+          .where(where)
+          .orderBy(desc(invoices.id))
+          .limit(lim)
+          .offset(off),
       });
       return page.rows;
     }),
@@ -788,13 +647,8 @@ export const saleRouter = router({
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
-      if (!db)
-        return { rows: [], nextCursor: null as number | null, hasMore: false };
-      const baseConds = buildSalesListConds(
-        input,
-        ctx.scopedBranchId,
-        ctx.scopedOwnerId,
-      );
+      if (!db) return { rows: [], nextCursor: null as number | null, hasMore: false };
+      const baseConds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
       const { rows, hasMore, nextCursor } = await paginateKeyset({
         cursor: input?.cursor,
         limit: input?.limit,
@@ -802,31 +656,31 @@ export const saleRouter = router({
         defaultLimit: 50,
         idCol: invoices.id,
         baseConds,
-        runQuery: (where, lim, off) =>
-          db
-            .select({
-              id: invoices.id,
-              invoiceNumber: invoices.invoiceNumber,
-              sourceType: invoices.sourceType,
-              invoiceDate: invoices.invoiceDate,
-              total: invoices.total,
-              paidAmount: invoices.paidAmount,
-              status: invoices.status,
-              paymentMethod: invoices.paymentMethod,
-              customerName: customers.name,
-              salespersonName: sql<
-                string | null
-              >`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
-              shiftId: invoices.shiftId,
-              deviceId: invoices.posDeviceId,
-            })
-            .from(invoices)
-            .leftJoin(customers, eq(invoices.customerId, customers.id))
-            .leftJoin(users, eq(invoices.createdBy, users.id))
-            .where(where)
-            .orderBy(desc(invoices.id))
-            .limit(lim)
-            .offset(off),
+        runQuery: (where, lim, off) => db
+          .select({
+            id: invoices.id,
+            invoiceNumber: invoices.invoiceNumber,
+            sourceType: invoices.sourceType,
+            // branchId يُعرَض في عمود «الفرع» لدى المرتفعين حين الفلتر «كل الفروع» (التسمية من branches.list واجهياً).
+            branchId: invoices.branchId,
+            invoiceDate: invoices.invoiceDate,
+            total: invoices.total,
+            paidAmount: invoices.paidAmount,
+            returnedTotal: invoices.returnedTotal,
+            status: invoices.status,
+            paymentMethod: invoices.paymentMethod,
+            customerName: customers.name,
+            salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
+            shiftId: invoices.shiftId,
+            deviceId: invoices.posDeviceId,
+          })
+          .from(invoices)
+          .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(users, eq(invoices.createdBy, users.id))
+          .where(where)
+          .orderBy(desc(invoices.id))
+          .limit(lim)
+          .offset(off),
       });
       return { rows, nextCursor, hasMore };
     }),
@@ -836,10 +690,8 @@ export const saleRouter = router({
     const db = getDb();
     if (!db) return [];
     const conds = [isNotNull(invoices.createdBy)];
-    if (ctx.scopedBranchId != null)
-      conds.push(eq(invoices.branchId, ctx.scopedBranchId));
-    if (ctx.scopedOwnerId != null)
-      conds.push(eq(invoices.createdBy, ctx.scopedOwnerId));
+    if (ctx.scopedBranchId != null) conds.push(eq(invoices.branchId, ctx.scopedBranchId));
+    if (ctx.scopedOwnerId != null) conds.push(eq(invoices.createdBy, ctx.scopedOwnerId));
     return db
       .select({
         id: invoices.createdBy,
@@ -858,13 +710,8 @@ export const saleRouter = router({
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
-      if (!db)
-        return { count: 0, totalAmount: "0", paidAmount: "0", dueAmount: "0" };
-      const conds = buildSalesListConds(
-        input,
-        ctx.scopedBranchId,
-        ctx.scopedOwnerId,
-      );
+      if (!db) return { count: 0, totalAmount: "0", paidAmount: "0", dueAmount: "0" };
+      const conds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
       const row = (
         await db
           .select({
@@ -891,143 +738,121 @@ export const saleRouter = router({
       };
     }),
 
-  get: salesReadProcedure
-    .input(z.object({ invoiceId: z.number().int().positive() }))
-    .query(async ({ input, ctx }) => {
-      const db = getDb();
-      if (!db) return null;
-      const inv = (
-        await db
-          .select({
-            id: invoices.id,
-            invoiceNumber: invoices.invoiceNumber,
-            sourceType: invoices.sourceType,
-            branchId: invoices.branchId,
-            customerId: invoices.customerId,
-            customerName: customers.name,
-            customerPhone: customers.phone,
-            customerBalance: customers.currentBalance,
-            priceTier: invoices.priceTier,
-            invoiceDate: invoices.invoiceDate,
-            dueDate: invoices.dueDate,
-            subtotal: invoices.subtotal,
-            taxAmount: invoices.taxAmount,
-            taxRatePercent: invoices.taxRatePercent,
-            discountAmount: invoices.discountAmount,
-            total: invoices.total,
-            costTotal: invoices.costTotal,
-            paidAmount: invoices.paidAmount,
-            // #1 (تدقيق التثبيت): المتبقّي الحقيقي = total − returnedTotal − paidAmount (كـlistSummary).
-            returnedTotal: invoices.returnedTotal,
-            status: invoices.status,
-            paymentMethod: invoices.paymentMethod,
-            notes: invoices.notes,
-            createdBy: invoices.createdBy,
-            salespersonName: sql<
-              string | null
-            >`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
-            shiftId: invoices.shiftId,
-            shiftType: shifts.shiftType,
-            shiftOpenedAt: shifts.openedAt,
-            deviceId: invoices.posDeviceId,
-            cancelledByName: invoices.cancelledByNameSnapshot,
-            cancelledAt: invoices.cancelledAt,
-          })
-          .from(invoices)
-          .leftJoin(customers, eq(invoices.customerId, customers.id))
-          .leftJoin(users, eq(invoices.createdBy, users.id))
-          .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
-          .where(eq(invoices.id, input.invoiceId))
-          .limit(1)
-      )[0];
-      if (!inv) return null;
-      // عزل الفرع: لا تكشف وجود فاتورة فرع آخر لغير المدير.
-      if (ctx.scopedBranchId && inv.branchId !== ctx.scopedBranchId)
-        return null;
-      // عزل المالك: الكاشير/المندوب لا يستطيع فتح فاتورة زميل عبر رابط مباشر.
-      if (
-        ctx.scopedOwnerId != null &&
-        Number(inv.createdBy) !== ctx.scopedOwnerId
-      )
-        return null;
-      const items = await db
+  get: salesReadProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+    const db = getDb();
+    if (!db) return null;
+    const inv = (
+      await db
         .select({
-          id: invoiceItems.id,
-          variantId: invoiceItems.variantId,
-          productUnitId: invoiceItems.productUnitId,
-          quantity: invoiceItems.quantity,
-          baseQuantity: invoiceItems.baseQuantity,
-          returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
-          unitPrice: invoiceItems.unitPrice,
-          unitCost: invoiceItems.unitCost,
-          discountAmount: invoiceItems.discountAmount,
-          total: invoiceItems.total,
-          productId: products.id,
-          productName: products.name,
-          sku: productVariants.sku,
-          variantName: productVariants.variantName,
-          unitName: productUnits.unitName,
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          sourceType: invoices.sourceType,
+          branchId: invoices.branchId,
+          customerId: invoices.customerId,
+          customerName: customers.name,
+          customerPhone: customers.phone,
+          customerBalance: customers.currentBalance,
+          priceTier: invoices.priceTier,
+          invoiceDate: invoices.invoiceDate,
+          dueDate: invoices.dueDate,
+          subtotal: invoices.subtotal,
+          taxAmount: invoices.taxAmount,
+          taxRatePercent: invoices.taxRatePercent,
+          discountAmount: invoices.discountAmount,
+          total: invoices.total,
+          costTotal: invoices.costTotal,
+          paidAmount: invoices.paidAmount,
+          // #1 (تدقيق التثبيت): المتبقّي الحقيقي = total − returnedTotal − paidAmount (كـlistSummary).
+          returnedTotal: invoices.returnedTotal,
+          status: invoices.status,
+          paymentMethod: invoices.paymentMethod,
+          notes: invoices.notes,
+          createdBy: invoices.createdBy,
+          salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
+          shiftId: invoices.shiftId,
+          shiftType: shifts.shiftType,
+          shiftOpenedAt: shifts.openedAt,
+          deviceId: invoices.posDeviceId,
+          cancelledByName: invoices.cancelledByNameSnapshot,
+          cancelledAt: invoices.cancelledAt,
         })
-        .from(invoiceItems)
-        .leftJoin(
-          productVariants,
-          eq(invoiceItems.variantId, productVariants.id),
-        )
-        .leftJoin(products, eq(productVariants.productId, products.id))
-        .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
-        .where(eq(invoiceItems.invoiceId, input.invoiceId));
-      const payments = await db
-        .select({
-          id: receipts.id,
-          direction: receipts.direction,
-          amount: receipts.amount,
-          paymentMethod: receipts.paymentMethod,
-          status: receipts.status,
-          createdAt: receipts.createdAt,
-          // attachment-upload (٥/٧): سند مربوط بهذه الفاتورة (اختياري) — رقمه + مرفقه إن وُجدا.
-          voucherNumber: receipts.voucherNumber,
-          attachmentUrl: receipts.attachmentUrl,
-        })
-        .from(receipts)
-        .where(eq(receipts.invoiceId, input.invoiceId))
-        .orderBy(asc(receipts.id));
-      const returns = await db
-        .select({
-          id: accountingEntries.id,
-          amount: accountingEntries.amount,
-          performedBy: accountingEntries.createdBy,
-          performedByName: accountingEntries.createdByNameSnapshot,
-          createdAt: accountingEntries.createdAt,
-        })
-        .from(accountingEntries)
-        .where(
-          and(
-            eq(accountingEntries.invoiceId, input.invoiceId),
-            eq(accountingEntries.entryType, "RETURN"),
-          ),
-        )
-        .orderBy(asc(accountingEntries.id));
+        .from(invoices)
+        .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .leftJoin(users, eq(invoices.createdBy, users.id))
+        .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
+        .where(eq(invoices.id, input.invoiceId))
+        .limit(1)
+    )[0];
+    if (!inv) return null;
+    // عزل الفرع: لا تكشف وجود فاتورة فرع آخر لغير المدير.
+    if (ctx.scopedBranchId && inv.branchId !== ctx.scopedBranchId) return null;
+    // عزل المالك: الكاشير/المندوب لا يستطيع فتح فاتورة زميل عبر رابط مباشر.
+    if (ctx.scopedOwnerId != null && Number(inv.createdBy) !== ctx.scopedOwnerId) return null;
+    const items = await db
+      .select({
+        id: invoiceItems.id,
+        variantId: invoiceItems.variantId,
+        productUnitId: invoiceItems.productUnitId,
+        quantity: invoiceItems.quantity,
+        baseQuantity: invoiceItems.baseQuantity,
+        returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
+        unitPrice: invoiceItems.unitPrice,
+        unitCost: invoiceItems.unitCost,
+        discountAmount: invoiceItems.discountAmount,
+        total: invoiceItems.total,
+        productId: products.id,
+        productName: products.name,
+        sku: productVariants.sku,
+        variantName: productVariants.variantName,
+        unitName: productUnits.unitName,
+      })
+      .from(invoiceItems)
+      .leftJoin(productVariants, eq(invoiceItems.variantId, productVariants.id))
+      .leftJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
+      .where(eq(invoiceItems.invoiceId, input.invoiceId));
+    const payments = await db
+      .select({
+        id: receipts.id,
+        direction: receipts.direction,
+        amount: receipts.amount,
+        paymentMethod: receipts.paymentMethod,
+        status: receipts.status,
+        createdAt: receipts.createdAt,
+        referenceNumber: receipts.referenceNumber,
+        // attachment-upload (٥/٧): سند مربوط بهذه الفاتورة (اختياري) — رقمه + مرفقه إن وُجدا.
+        voucherNumber: receipts.voucherNumber,
+        attachmentUrl: receipts.attachmentUrl,
+      })
+      .from(receipts)
+      .where(eq(receipts.invoiceId, input.invoiceId))
+      .orderBy(asc(receipts.id));
+    const returns = await db
+      .select({
+        id: accountingEntries.id,
+        amount: accountingEntries.amount,
+        performedBy: accountingEntries.createdBy,
+        performedByName: accountingEntries.createdByNameSnapshot,
+        createdAt: accountingEntries.createdAt,
+      })
+      .from(accountingEntries)
+      .where(and(eq(accountingEntries.invoiceId, input.invoiceId), eq(accountingEntries.entryType, "RETURN")))
+      .orderBy(asc(accountingEntries.id));
 
-      // توليد qrPayload موقَّعة بـ HMAC من الخادم — الواجهة تعرضها فقط
-      const qrPayload = invoiceBarcodeSet({
-        invoiceNumber: inv.invoiceNumber,
-        invoiceDate: String(inv.invoiceDate),
-        total: inv.total,
-        branchId: inv.branchId,
-      }).qrPayload;
+    // توليد qrPayload موقَّعة بـ HMAC من الخادم — الواجهة تعرضها فقط
+    const qrPayload = invoiceBarcodeSet({
+      invoiceNumber: inv.invoiceNumber,
+      invoiceDate: String(inv.invoiceDate),
+      total: inv.total,
+      branchId: inv.branchId,
+    }).qrPayload;
 
-      // حجب التكلفة عن غير المدير (منع كشف هامش الربح).
-      if (!canSeeCostForUser(ctx.user)) {
-        const { costTotal: _c, ...invNoCost } = inv;
-        const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
-        return {
-          ...invNoCost,
-          items: itemsNoCost,
-          payments,
-          returns,
-          qrPayload,
-        };
-      }
-      return { ...inv, items, payments, returns, qrPayload };
-    }),
+    // حجب التكلفة عن غير المدير (منع كشف هامش الربح).
+    if (!canSeeCostForUser(ctx.user)) {
+      const { costTotal: _c, ...invNoCost } = inv;
+      const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
+      return { ...invNoCost, items: itemsNoCost, payments, returns, qrPayload };
+    }
+    return { ...inv, items, payments, returns, qrPayload };
+  }),
 });

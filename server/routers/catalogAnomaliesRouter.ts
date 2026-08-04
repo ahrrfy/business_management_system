@@ -32,13 +32,24 @@ export const catalogAnomaliesRouter = router({
         codes: z.array(codeSchema).optional(),
         severities: z.array(z.enum(["blocker", "warning", "info"])).optional(),
         limitPerLens: z.number().int().positive().max(500).default(200),
+        // ترقيم النتيجة النهائية (بعد الفلترة/الاستثناءات) — offset/total تكشف الاقتطاع الصامت
+        // بدل جدولٍ يوهم بالاكتمال. limitPerLens يبقى سقف الكشف من DB لكل عدسة (غير هذا).
+        offset: z.number().int().min(0).default(0),
+        limit: z.number().int().positive().max(500).default(200),
       })
     )
     .query(async ({ input }) => {
       const d = getDb();
-      if (!d) return { findings: [], counts: { blocker: 0, warning: 0, info: 0 }, overriddenCount: 0 };
+      if (!d) return { findings: [], counts: { blocker: 0, warning: 0, info: 0 }, overriddenCount: 0, total: 0, hasMore: false, truncatedLenses: [] as string[] };
       // ١) شغّل الكواشف الست.
       let findings = await detectAll(d, input.limitPerLens);
+      // عدسةٌ بلغ عدد نتائجها الخام سقف limitPerLens ⇒ الأرجح أنها اقُتطعت عند مصدر الكشف
+      // نفسه (قبل أي فلترة/استثناء) — نُبلغ الواجهة كي تعرض لافتة بدل جدولٍ يوهم بالاكتمال.
+      const rawCountByCode = new Map<string, number>();
+      for (const f of findings) rawCountByCode.set(f.code, (rawCountByCode.get(f.code) ?? 0) + 1);
+      const truncatedLenses = Array.from(rawCountByCode.entries())
+        .filter(([, n]) => n >= input.limitPerLens)
+        .map(([code]) => code);
       // ٢) فلترة اختيارية بالعدسة/الحدّة.
       if (input.codes && input.codes.length > 0) {
         const codeSet = new Set(input.codes);
@@ -89,7 +100,10 @@ export const catalogAnomaliesRouter = router({
         const ov = overrideMap.get(`${f.variantId}:${f.code}`);
         return { ...f, override: ov ? { kind: ov.kind, excludeUntil: ov.excludeUntil } : null };
       });
-      return { findings: withOverride, counts, overriddenCount };
+      // ٨) ترقيم الصفحة الأخيرة — counts/overriddenCount تبقيان على المجموع الكامل (بطاقات الملخّص).
+      const total = withOverride.length;
+      const page = withOverride.slice(input.offset, input.offset + input.limit);
+      return { findings: page, counts, overriddenCount, total, hasMore: input.offset + page.length < total, truncatedLenses };
     }),
 
   /** يُعلَّم صفٌّ كـ«قصديّ» (تصفية، عرض ترويجيّ، مذكّرة سنة قديمة، …). */

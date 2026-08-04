@@ -1,6 +1,6 @@
 // شاشة الهدايا والمجانيات — G-م١ الوارد (استلام مجّانيّ من مورّد، صفر تكلفة) + G-م٢ الصادر (منح للعميل،
 // GIFT_OUT + حوكمة SOD: فوق العتبة/غير المدير ⇒ اعتماد مدير آخر). القراءة/الكتابة خلف مفتاح `gifts`.
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, Megaphone, MessageCircle, Plus, Printer, Trash2, X } from "lucide-react";
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
@@ -11,8 +11,20 @@ import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { AppSelect } from "@/components/ui/AppSelect";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { TablePager } from "@/components/table/TablePager";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import SupplierPicker from "@/components/voucher/SupplierPicker";
 import CustomerPicker from "@/components/CustomerPicker";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
@@ -21,11 +33,16 @@ import { printGiftVoucherA4 } from "@/lib/printing/giftVoucher";
 import { buildGiftMessage, openWhatsApp } from "@/lib/whatsapp";
 
 type Mode = "list" | "in" | "out" | "report" | "campaigns";
-type DirFilter = "ALL" | "IN" | "OUT" | "PENDING";
+type DirFilter = "ALL" | "IN" | "OUT";
+type GiftStatus = "DRAFT" | "PENDING_APPROVAL" | "APPROVED" | "DELIVERED" | "CANCELLED" | "REVERSED";
+type StatusFilter = "ALL" | GiftStatus;
 type GiftLine = { key: number; variantId: number; productUnitId: number; label: string; unit: string; quantity: string };
+type GiftListRow = RouterOutputs["gifts"]["list"]["rows"][number];
+/** حجم صفحة سجلّ السندات — الترقيم خادميّ حقيقيّ (لا اقتطاع صامت عند ٢٠٠). */
+const PAGE_SIZE = 50;
 
 const STATUS_AR: Record<string, string> = {
-  DRAFT: "مسودة",
+  DRAFT: "مسوّدة",
   PENDING_APPROVAL: "بانتظار اعتماد",
   APPROVED: "معتمد",
   DELIVERED: "مُنجَز",
@@ -43,7 +60,17 @@ export default function GiftsHub() {
   const canApprove = role === "admin" || role === "manager";
 
   const [mode, setMode] = useState<Mode>("list");
+
+  // ── فلاتر سجلّ السندات (list) — كلّها خادمية عبر gifts.list؛ لا فلترة محلية تُخفي صفحات الخادم ──
   const [dirFilter, setDirFilter] = useState<DirFilter>("ALL");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
+  const [listBranchId, setListBranchId] = useState<number | "">(""); // للمرتفعين فقط
+  const [listFrom, setListFrom] = useState("");
+  const [listTo, setListTo] = useState("");
+  const [query, setQuery] = useState("");
+  const qDebounced = useDebouncedValue(query.trim(), 300);
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [dirFilter, statusFilter, listBranchId, listFrom, listTo, qDebounced]);
 
   // ── حالة النموذج (مشتركة بين الوارد والصادر) ──
   const [formBranchId, setFormBranchId] = useState<number | null>(null);
@@ -63,13 +90,20 @@ export default function GiftsHub() {
   // مفتاح حماية الازدواج — يُولَّد لكل فتح نموذجٍ جديد؛ إعادة الإرسال بنفسه لا تُنشئ سنداً ثانياً (Codex P1).
   const [reqId, setReqId] = useState("");
 
-  const list = trpc.gifts.list.useQuery(
-    dirFilter === "PENDING"
-      ? { status: "PENDING_APPROVAL" as const }
-      : dirFilter === "ALL"
-        ? {}
-        : { direction: dirFilter as "IN" | "OUT" },
+  const listInput = useMemo(
+    () => ({
+      direction: dirFilter === "ALL" ? undefined : dirFilter,
+      status: statusFilter === "ALL" ? undefined : statusFilter,
+      branchId: elevated && listBranchId !== "" ? Number(listBranchId) : undefined,
+      from: listFrom || undefined,
+      to: listTo || undefined,
+      q: qDebounced || undefined,
+    }),
+    [dirFilter, statusFilter, elevated, listBranchId, listFrom, listTo, qDebounced],
   );
+  const list = trpc.gifts.list.useQuery({ ...listInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
+  const listRows = list.data?.rows ?? [];
+  const listTotal = list.data?.total ?? 0;
 
   // حملات الهدايا (G-م٧): للاختيار في نموذج الصادر (النشطة فقط) ولإدارتها في وضع «الحملات».
   const activeCampaigns = trpc.gifts.campaignList.useQuery({ status: "ACTIVE" }, { enabled: canWrite });
@@ -180,9 +214,14 @@ export default function GiftsHub() {
     },
     onError: (e) => notify.err(e),
   });
+  // حوار «عرض قبل الاعتماد» — يعرض بنود السند للمعتمِد قبل تنفيذ الاعتماد الفعليّ (بلا تكلفة، نفس
+  // نطاق gifts.get المستعمَل للطباعة/الإشعار — سند الهدية لا يحمل حقول تكلفة أصلاً).
+  const [approvingId, setApprovingId] = useState<number | null>(null);
+  const approvePreviewQ = trpc.gifts.get.useQuery({ giftId: approvingId! }, { enabled: approvingId != null });
   const approve = trpc.gifts.approveGift.useMutation({
     onSuccess: () => {
       notify.ok("تم اعتماد الهدية");
+      setApprovingId(null);
       utils.gifts.list.invalidate();
       utils.gifts.campaignList.invalidate();
     },
@@ -279,13 +318,6 @@ export default function GiftsHub() {
     });
   }
 
-  const rows = list.data ?? [];
-  const [query, setQuery] = useState("");
-  const visibleRows = useMemo(() => {
-    const q = query.trim().toLocaleLowerCase("ar");
-    return q ? rows.filter((r) => [r.giftNumber, r.supplierName, r.customerName, STATUS_AR[r.status], r.direction === "IN" ? "وارد" : "صادر"].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
-  }, [rows, query]);
-
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4">
       <PageHeader
@@ -331,18 +363,24 @@ export default function GiftsHub() {
         <>
           <ListToolbar
             title="سندات الهدايا"
-            count={visibleRows.length}
+            count={listTotal}
             loading={list.isLoading}
-            search={{ value: query, onChange: setQuery, placeholder: "رقم السند، الطرف، الاتجاه أو الحالة…" }}
-            activeFilterCount={dirFilter === "ALL" ? 0 : 1}
-            onResetFilters={() => { setQuery(""); setDirFilter("ALL"); }}
+            search={{ value: query, onChange: setQuery, placeholder: "رقم السند، السبب أو رقم عرض المورّد…" }}
+            activeFilterCount={[dirFilter !== "ALL", statusFilter !== "ALL", listBranchId !== "", listFrom, listTo].filter(Boolean).length}
+            onResetFilters={() => { setQuery(""); setDirFilter("ALL"); setStatusFilter("ALL"); setListBranchId(""); setListFrom(""); setListTo(""); }}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
             onPrint={() => window.print()}
             exportSpec={{
               filename: "سندات-الهدايا",
-              rows: visibleRows,
+              rows: listRows,
               formats: ["xlsx", "csv"],
+              // يجلب **كل** السندات المطابقة للفلاتر (لا الصفحة المعروضة فقط) — نفس نمط Invoices.tsx.
+              fetchAll: () =>
+                fetchAllPaged<GiftListRow>(
+                  (offset, limit) => utils.gifts.list.fetch({ ...listInput, limit, offset }).then((r) => ({ rows: r.rows, total: r.total })),
+                  { pageSize: 200 },
+                ),
               columns: [
                 { key: "giftNumber", header: "رقم السند" },
                 { key: "direction", header: "الاتجاه", map: (r) => r.direction === "IN" ? "وارد" : "صادر" },
@@ -352,17 +390,37 @@ export default function GiftsHub() {
                 { key: "estimatedValue", header: "القيمة التقديرية", money: true },
               ],
             }}
-            filters={<div className="flex gap-2">{([
-              ["ALL", "الكل"],
-              ["IN", "واردة"],
-              ["OUT", "صادرة"],
-              ["PENDING", "بانتظار الاعتماد"],
-            ] as [DirFilter, string][]).map(([k, lbl]) => (
-              <Button key={k} size="sm" variant={dirFilter === k ? "default" : "outline"} onClick={() => setDirFilter(k)}>
-                {lbl}
-              </Button>
-            ))}
-            </div>}
+            filters={
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex gap-1">
+                  {([
+                    ["ALL", "الكل"],
+                    ["IN", "واردة"],
+                    ["OUT", "صادرة"],
+                  ] as [DirFilter, string][]).map(([k, lbl]) => (
+                    <Button key={k} size="sm" variant={dirFilter === k ? "default" : "outline"} onClick={() => setDirFilter(k)}>
+                      {lbl}
+                    </Button>
+                  ))}
+                </div>
+                <AppSelect value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)} className="h-8 w-40" size="sm" aria-label="فلتر الحالة">
+                  <option value="ALL">كل الحالات</option>
+                  {Object.entries(STATUS_AR).map(([k, lbl]) => (
+                    <option key={k} value={k}>{lbl}</option>
+                  ))}
+                </AppSelect>
+                {elevated && (
+                  <AppSelect value={listBranchId === "" ? "" : String(listBranchId)} onValueChange={(v) => setListBranchId(v === "" ? "" : Number(v))} className="h-8 w-36" size="sm" aria-label="فلتر الفرع">
+                    <option value="">كل الفروع</option>
+                    {(branches.data ?? []).map((b) => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </AppSelect>
+                )}
+                <Input type="date" value={listFrom} onChange={(e) => setListFrom(e.target.value)} className="h-8 w-36" aria-label="من تاريخ" />
+                <Input type="date" value={listTo} onChange={(e) => setListTo(e.target.value)} className="h-8 w-36" aria-label="إلى تاريخ" />
+              </div>
+            }
           />
 
           <div className="overflow-x-auto rounded-lg border">
@@ -385,14 +443,14 @@ export default function GiftsHub() {
                       جارٍ التحميل…
                     </td>
                   </tr>
-                ) : visibleRows.length === 0 ? (
+                ) : listRows.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="py-8 text-center text-muted-foreground">
-                      لا توجد سندات هدايا بعد.
+                      لا توجد سندات هدايا مطابقة.
                     </td>
                   </tr>
                 ) : (
-                  visibleRows.map((r) => (
+                  listRows.map((r) => (
                     <tr key={r.id} className="border-t">
                       <td className="px-3 py-2 font-medium">{r.giftNumber}</td>
                       <td className="px-3 py-2">
@@ -418,7 +476,8 @@ export default function GiftsHub() {
                               gate: { roles: ["manager"], module: "gifts", level: "FULL" },
                               disabled: approve.isPending,
                               disabledReason: "جارٍ اعتماد السند",
-                              onSelect: () => approve.mutate({ giftId: Number(r.id) }),
+                              // يفتح حواراً يعرض بنود السند أوّلاً — لا اعتماد مباشر بلا مراجعة.
+                              onSelect: () => setApprovingId(Number(r.id)),
                             },
                             { key: "print", kind: "print", label: "طباعة السند", icon: Printer, gate: { module: "gifts", level: "READ" }, onSelect: () => printGift(Number(r.id)) },
                             { key: "share", kind: "other", label: "إشعار واتساب", icon: MessageCircle, hidden: !r.supplierName && !r.customerName, gate: { module: "gifts", level: "READ" }, onSelect: () => shareGift(Number(r.id)) },
@@ -431,6 +490,57 @@ export default function GiftsHub() {
               </tbody>
             </table>
           </div>
+          <TablePager page={page} onPageChange={setPage} pageSize={PAGE_SIZE} rowsOnPage={listRows.length} total={listTotal} isLoading={list.isFetching} />
+
+          <Dialog open={approvingId != null} onOpenChange={(open) => !open && setApprovingId(null)}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>مراجعة السند قبل الاعتماد</DialogTitle>
+                <DialogDescription>
+                  {approvePreviewQ.data ? `سند ${approvePreviewQ.data.giftNumber} — ${approvePreviewQ.data.partyName ?? "بلا طرف"}` : "جارٍ التحميل…"}
+                </DialogDescription>
+              </DialogHeader>
+              {approvePreviewQ.isLoading ? (
+                <div className="py-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</div>
+              ) : approvePreviewQ.data ? (
+                <div className="space-y-3">
+                  {approvePreviewQ.data.reason && (
+                    <div className="text-sm text-muted-foreground">السبب: {approvePreviewQ.data.reason}</div>
+                  )}
+                  <div className="overflow-x-auto rounded-md border">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/50 text-xs text-muted-foreground">
+                        <tr>
+                          <th className="px-3 py-2 text-start">المنتج</th>
+                          <th className="px-3 py-2 text-start">SKU</th>
+                          <th className="px-3 py-2 text-start">الوحدة</th>
+                          <th className="px-3 py-2 text-end">الكمية</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {approvePreviewQ.data.lines.map((l, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="px-3 py-2">{l.productName}</td>
+                            <td className="px-3 py-2 text-xs text-muted-foreground">{l.sku}</td>
+                            <td className="px-3 py-2">{l.unitName}</td>
+                            <td className="px-3 py-2 text-end">{Number(l.quantity)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <div className="py-6 text-center text-sm text-muted-foreground">تعذّر تحميل السند.</div>
+              )}
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setApprovingId(null)} disabled={approve.isPending}>إلغاء</Button>
+                <Button onClick={() => approvingId != null && approve.mutate({ giftId: approvingId })} disabled={approve.isPending || !approvePreviewQ.data}>
+                  {approve.isPending ? "جارٍ الاعتماد…" : "اعتماد السند"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </>
       ) : mode === "report" ? (
         <div className="space-y-4 rounded-lg border p-4">
@@ -645,9 +755,9 @@ export default function GiftsHub() {
           ) : null}
 
           <div className="space-y-2">
-            <Label>الأصناف *</Label>
+            <Label>المنتجات *</Label>
             {branchId == null ? (
-              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">اختر الفرع أولاً لإضافة الأصناف.</div>
+              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">اختر الفرع أولاً لإضافة المنتجات.</div>
             ) : (
               <ProductSearchBar
                 invoiceType={mode === "in" ? "PURCHASE" : "SALE"}
@@ -663,7 +773,7 @@ export default function GiftsHub() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
-                      <th className="px-3 py-2 text-start">الصنف</th>
+                      <th className="px-3 py-2 text-start">المنتج</th>
                       <th className="px-3 py-2 text-start">الوحدة</th>
                       <th className="px-3 py-2 text-start">الكمية</th>
                       <th className="px-3 py-2" />

@@ -132,7 +132,7 @@ export default function ReportsTools() {
           sheetName: SHEET_LABEL.inventory, title: SHEET_LABEL.inventory, meta, rows: iv.rows as any[],
           columns: [
             { key: "categoryName", header: "الفئة" },
-            { key: "items", header: "الأصناف", map: (r: any) => Number(r.items) },
+            { key: "items", header: "المنتجات", map: (r: any) => Number(r.items) },
             { key: "totalQty", header: "الكمية", map: (r: any) => Number(r.totalQty) },
             moneyCol("totalValue", "القيمة"),
           ],

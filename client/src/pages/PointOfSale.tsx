@@ -65,7 +65,7 @@ const MODES: {
   },
   {
     v: "RECEPTION",
-    label: "خدمة الزبائن",
+    label: "خدمة العملاء",
     subtitle: "بيع • طلبات • حجوزات",
     Icon: Palette,
     activeCls: "border-violet-500 bg-violet-50 text-violet-700",
@@ -182,7 +182,7 @@ export default function PointOfSale() {
           {reservationsWorkspace && (
             <span className="inline-flex h-9 items-center gap-2 rounded-lg border-2 border-primary bg-primary/10 px-3 text-sm font-bold text-primary">
               <CalendarClock aria-hidden className="size-4" />
-              حجوزات خدمة الزبائن
+              حجوزات خدمة العملاء
             </span>
           )}
         </div>

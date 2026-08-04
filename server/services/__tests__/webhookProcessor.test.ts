@@ -301,7 +301,7 @@ describe("processWaEvent — وسائط واردة (جلب مؤجَّل) عبر 
     const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
       if (u.includes("/media-abc")) {
-        return new Response(JSON.stringify({ url: "https://lookaside.example/file", mime_type: "image/jpeg", file_size: 4 }), {
+        return new Response(JSON.stringify({ url: "https://lookaside.fbsbx.com/file", mime_type: "image/jpeg", file_size: 4 }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -335,7 +335,7 @@ describe("processWaEvent — وسائط واردة (جلب مؤجَّل) عبر 
 
     const outboxRow = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.dedupeKey, "MF:wamid.MEDIA2")))[0];
     const fetchImpl = (async () =>
-      new Response(JSON.stringify({ url: "https://lookaside.example/big", mime_type: "image/jpeg", file_size: 6 * 1024 * 1024 }), {
+      new Response(JSON.stringify({ url: "https://lookaside.fbsbx.com/big", mime_type: "image/jpeg", file_size: 6 * 1024 * 1024 }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })) as typeof fetch;

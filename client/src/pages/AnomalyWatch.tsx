@@ -314,7 +314,7 @@ export default function AnomalyWatch() {
                       <th className={thCls}>الفاتورة</th>
                       <th className={thCls}>التاريخ</th>
                       <th className={thCls}>الكاشير</th>
-                      <th className={thCls}>الصنف</th>
+                      <th className={thCls}>المنتج</th>
                       <th className={thCls}>الكمية</th>
                       <th className={thCls}>صافي السطر</th>
                       <th className={thCls}>كلفته</th>

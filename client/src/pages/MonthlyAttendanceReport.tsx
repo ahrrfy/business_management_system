@@ -6,6 +6,9 @@
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -14,35 +17,41 @@ import { iqd } from "@/lib/hr/ui";
 import { printMonthlyAttendance } from "@/lib/printing/printMonthlyAttendance";
 import { trpc } from "@/lib/trpc";
 import { CalendarDays, FileSpreadsheet, Printer, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "wouter";
-
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const MONTH_NAMES = ["كانون الثاني", "شباط", "آذار", "نيسان", "أيار", "حزيران", "تموز", "آب", "أيلول", "تشرين الأول", "تشرين الثاني", "كانون الأول"];
 function monthLabel(p: string): string {
   const [y, m] = p.split("-").map(Number);
   return `${MONTH_NAMES[(m || 1) - 1]} ${y}`;
 }
-function recentMonths(count = 12): string[] {
-  const out: string[] = [];
-  const d = new Date();
-  d.setDate(1);
-  for (let i = 0; i < count; i++) {
-    out.push(d.toISOString().slice(0, 7));
-    d.setMonth(d.getMonth() - 1);
-  }
-  return out;
-}
 
 /** رقم بمنزلتين وفواصل — تنسيقٌ موحّد لكل أعمدة الساعات. */
 const h2 = (v: string | number) => Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function MonthlyAttendanceReport() {
-  const [period, setPeriod] = useState(() => new Date().toISOString().slice(0, 7));
-  const q = trpc.attendance.monthlyReport.useQuery({ period });
+  const [period, setPeriod] = useState(thisMonth());
+  // فلتر الفرع — للمرتفعين العابرين للفروع فقط (الخادم يدعمه أصلاً؛ hr/READ لا يحمل عزل
+  // فروعٍ لأيّ دور، فهذا تضييقٌ اختياريّ لا صلاحيةٌ جديدة، نظير AttendanceReport.tsx).
+  const [branchId, setBranchId] = useState<number | "">("");
+  const me = trpc.auth.me.useQuery();
+  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: isElevated });
+  // بحث محلّي (اسم/قسم/وظيفة) — الشهر كلّه محمَّلٌ أصلاً دفعة واحدة (كل الموظفين)، فلا حاجة
+  // لبحثٍ خادميّ؛ يُصفّي الجدول فقط، والمجاميع أعلاه/بالتذييل تبقى مجموع الشهر كاملاً (لا تكذب).
+  const [search, setSearch] = useState("");
+
+  const q = trpc.attendance.monthlyReport.useQuery({ period, branchId: isElevated && branchId ? branchId : undefined });
   const d = q.data;
+  const filteredRows = useMemo(() => {
+    const t = search.trim();
+    if (!t) return d?.rows ?? [];
+    const norm = (s: string) => s.toLowerCase();
+    const nt = norm(t);
+    return (d?.rows ?? []).filter((r) =>
+      norm(r.employeeName).includes(nt) || norm(r.department ?? "").includes(nt) || norm(r.position ?? "").includes(nt),
+    );
+  }, [d?.rows, search]);
 
   return (
     <div className="space-y-4">
@@ -59,12 +68,31 @@ export default function MonthlyAttendanceReport() {
       <Card>
         <CardContent className="p-3 flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap">
-            <select className={selectCls} value={period} onChange={(e) => setPeriod(e.target.value)} aria-label="الشهر">
-              {recentMonths().map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
-            </select>
+            {/* منتقي شهرٍ بأسهم — بلا سقف ١٢ شهراً القديم (كان قائمة منسدلة لآخر ١٢ شهراً فقط،
+                والخادم لا يفرض هذا الحدّ إطلاقاً). max=الشهر الجاري يمنع فتح شهرٍ مستقبليّ فارغ. */}
+            <MonthPicker value={period} onChange={setPeriod} max={thisMonth()} ariaLabel="الشهر" />
+            {isElevated && (
+              <AppSelect
+                aria-label="الفرع"
+                className="h-9 w-40"
+                value={branchId === "" ? "" : String(branchId)}
+                onValueChange={(v) => setBranchId(v ? Number(v) : "")}
+              >
+                <option value="">كل الفروع</option>
+                {(branches.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+              </AppSelect>
+            )}
+            <Input
+              className="h-9 w-56"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="بحث بالاسم أو القسم أو الوظيفة…"
+              aria-label="بحث في الجدول"
+            />
             {d && (
               <span className="text-xs text-muted-foreground">
-                {d.totals.employees} موظفاً{d.totals.exempt > 0 ? ` · ${d.totals.exempt} معفى من الحضور` : ""}
+                {search.trim() ? `${filteredRows.length} من ${d.rows.length}` : `${d.totals.employees} موظفاً`}
+                {d.totals.exempt > 0 ? ` · ${d.totals.exempt} معفى من الحضور` : ""}
               </span>
             )}
           </div>
@@ -87,7 +115,7 @@ export default function MonthlyAttendanceReport() {
                 meta: [
                   { label: "الموظفون", value: String(d.totals.employees) },
                   { label: "ساعات مستحقّة", value: d.totals.payableHours },
-                  { label: "أوفر تايم", value: d.totals.overtimeHours },
+                  { label: "العمل الإضافي", value: d.totals.overtimeHours },
                   { label: "أيام غياب", value: String(d.totals.absentDays) },
                 ],
                 columns: [
@@ -100,7 +128,7 @@ export default function MonthlyAttendanceReport() {
                   { key: "unpaidHours", header: "ساعات غير مستحقّة" },
                   { key: "absentDays", header: "أيام غياب" },
                   { key: "unpaidLeaveDays", header: "إجازة بلا راتب" },
-                  { key: "overtimeHours", header: "أوفر تايم (ساعة)" },
+                  { key: "overtimeHours", header: "العمل الإضافي (ساعة)" },
                   { key: "restWorkedHours", header: "عمل يوم راحة (ساعة)" },
                   { key: "hourlyRate", header: "سعر الساعة", money: true },
                   { key: "basePay", header: "الأجر الأساس", money: true },
@@ -155,7 +183,7 @@ export default function MonthlyAttendanceReport() {
                 </tr>
               </thead>
               <tbody>
-                {(d?.rows ?? []).map((r) => (
+                {filteredRows.map((r) => (
                   <tr key={r.employeeId} className="border-t hover:bg-accent/40">
                     <td className="p-2">
                       <Link href={`/hr/employees/${r.employeeId}`} className="font-medium hover:underline">{r.employeeName}</Link>
@@ -183,8 +211,11 @@ export default function MonthlyAttendanceReport() {
                 ))}
                 {q.isLoading && <tr><td colSpan={10} className="p-0"><LoadingState /></td></tr>}
                 {q.isError && <tr><td colSpan={10} className="p-0"><ErrorState message="تعذّر تحميل التقرير." onRetry={() => q.refetch()} /></td></tr>}
-                {!q.isLoading && !q.isError && (d?.rows.length ?? 0) === 0 && (
-                  <TableEmptyRow colSpan={10} message="لا موظفين في هذا الشهر." />
+                {!q.isLoading && !q.isError && filteredRows.length === 0 && (
+                  <TableEmptyRow
+                    colSpan={10}
+                    message={search.trim() && (d?.rows.length ?? 0) > 0 ? "لا نتائج مطابقة للبحث." : "لا موظفين في هذا الشهر."}
+                  />
                 )}
               </tbody>
               {d && d.rows.length > 0 && (

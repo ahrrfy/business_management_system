@@ -24,6 +24,9 @@ export const auditRouter = router({
           userId: z.number().int().positive().optional(),
           entityType: z.string().optional(),
           action: z.string().optional(),
+          // فلتر فرع اختياري (شاشة سجلّ التدقيق) — auditReadProcedure أصلاً بلا عزل فروع (أدمن/مدقّق
+          // يريان كل الفروع)، فلا حارس صلاحية إضافي هنا.
+          branchId: z.number().int().positive().optional(),
           from: z.string().optional(), // YYYY-MM-DD
           to: z.string().optional(),
           limit: z.number().int().positive().max(200).default(50),
@@ -40,6 +43,7 @@ export const auditRouter = router({
       const conds: SQL[] = [];
       if (i.userId) conds.push(eq(auditLogs.userId, i.userId));
       if (i.entityType) conds.push(eq(auditLogs.entityType, i.entityType));
+      if (i.branchId) conds.push(eq(auditLogs.branchId, i.branchId));
       if (i.action?.trim()) {
         const pat = `%${escLike(i.action.trim())}%`;
         conds.push(sql`${auditLogs.action} LIKE ${pat} ESCAPE '!'`);

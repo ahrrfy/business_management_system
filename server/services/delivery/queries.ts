@@ -22,6 +22,7 @@ export async function listReadyForDispatch(branchId: number | null) {
       customerName: customers.name,
       customerPhone: customers.phone,
       deliveryAddress: workOrders.deliveryAddress,
+      deliveryPhone: workOrders.deliveryPhone,
       hasDelivery: workOrders.hasDelivery,
       dueDate: workOrders.dueDate,
     })

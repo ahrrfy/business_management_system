@@ -361,7 +361,7 @@ function WriteoffRequestDialog({
             id="dcw-reason"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="الكرت شُحن ولم يُسلَّم، الزبون غادر قبل الدفع…"
+            placeholder="الكرت شُحن ولم يُسلَّم، العميل غادر قبل الدفع…"
             dir="auto"
             autoFocus
           />

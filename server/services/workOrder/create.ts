@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import {
   productVariants,
   receipts,
+  users,
   workOrderImages,
   workOrderMaterials,
   workOrders,
@@ -45,6 +46,17 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     if (round2(money(input.deposit ?? "0")).gt(money(input.salePrice)))
       throw new TRPCError({ code: "BAD_REQUEST", message: "العربون لا يمكن أن يتجاوز سعر البيع الإجمالي للأمر" });
 
+    // الإسناد عند الإنشاء تنفيذٌ تشغيلي، لا اختيار حساب عام: فني مطبعة فعّال من الفرع أو فني مشترك فقط.
+    // تركه null يضع الأمر في الطابور الوارد ليسحبه الفني من محطة التنفيذ.
+    if (input.assignedTo != null) {
+      const assignee = (await tx.select({ role: users.role, branchId: users.branchId, isActive: users.isActive })
+        .from(users).where(eq(users.id, input.assignedTo)).limit(1))[0];
+      if (!assignee || !assignee.isActive || assignee.role !== "print_operator"
+        || (assignee.branchId != null && Number(assignee.branchId) !== Number(input.branchId))) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "يمكن إسناد أمر الشغل إلى فني مطبعة من الفرع فقط" });
+      }
+    }
+
     // v3-add-screens(100%): baseVariantId اختياري — طلب خدمة قد يكون خدمة تخصيص بلا منتج خام.
     if (input.baseVariantId != null) {
       const base = (
@@ -61,11 +73,17 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
       if (!v[0]) throw new TRPCError({ code: "NOT_FOUND", message: `مادة #${m.variantId} غير موجودة` });
     }
 
-    // البطاقة والتحويل مساران غير نقديين قابلان للمطابقة؛ يلزم مرجع يمنع دفعة مجهولة المصدر.
-    if ((input.paymentMethod === "CARD" || input.paymentMethod === "TRANSFER") && !(input.paymentReference?.trim())) {
+    // البطاقة/التحويل/المحفظة مسارات غير نقدية قابلة للمطابقة؛ يلزم مرجع يمنع دفعة مجهولة المصدر.
+    if (
+      (input.paymentMethod === "CARD" || input.paymentMethod === "TRANSFER" || input.paymentMethod === "WALLET") &&
+      !(input.paymentReference?.trim())
+    ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: input.paymentMethod === "CARD" ? "رقم العملية المرجعي مطلوب لدفع البطاقة" : "رقم مرجع التحويل مطلوب",
+        message:
+          input.paymentMethod === "CARD" ? "رقم العملية المرجعي مطلوب لدفع البطاقة"
+          : input.paymentMethod === "WALLET" ? "رقم عملية المحفظة مطلوب"
+          : "رقم مرجع التحويل مطلوب",
       });
     }
 
@@ -96,6 +114,7 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
       hasDelivery: !!input.hasDelivery,
       deliveryAddress: input.deliveryAddress?.trim() || null,
       deliveryCost: input.deliveryCost ? round2(money(input.deliveryCost)).toFixed(2) : "0.00",
+      deliveryPhone: input.deliveryPhone?.trim() || null,
     });
     const workOrderId = extractInsertId(insRes);
     // سجّل مفتاح الـidempotency فوراً بعد إدراج الأمر — طلبٌ متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK) قبل قبض العربون.

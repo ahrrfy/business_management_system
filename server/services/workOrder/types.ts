@@ -27,12 +27,14 @@ export interface CreateWorkOrderInput {
   channelHandle?: string | null;
   priority?: "LOW" | "NORMAL" | "URGENT" | null;
   deposit?: string | null;
-  paymentMethod?: "CASH" | "CARD" | "TRANSFER" | null;
+  paymentMethod?: "CASH" | "CARD" | "TRANSFER" | "WALLET" | null;
   paymentReference?: string | null;
   paymentReceiptUrl?: string | null;
   hasDelivery?: boolean | null;
   deliveryAddress?: string | null;
   deliveryCost?: string | null;
+  // اِستقبال (تكامل التوصيل، ٤/٨): هاتف مستلم التوصيل — مصدر حقيقة قابل للاستعلام.
+  deliveryPhone?: string | null;
   // v3-add-screens(100%): صور نموذج العمل (تذهب لجدول workOrderImages).
   designImages?: Array<{ url: string; caption?: string | null; sortOrder?: number | null }>;
   /** idempotency: نقرة مزدوجة/إعادة شبكة بنفس المفتاح ⇒ طلب خدمة واحد (لا عربون نقدي مزدوج). */

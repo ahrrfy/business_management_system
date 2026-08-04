@@ -2,17 +2,20 @@
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). ترقيم صفحات بالخادم (limit/offset).
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 type Row = RouterOutputs["reports"]["generalLedger"]["rows"][number];
 type EntryType = "SALE" | "PURCHASE" | "PAYMENT_IN" | "PAYMENT_OUT" | "RETURN" | "ADJUST" | "OPENING" | "INTERNAL_USE" | "WASTAGE";
@@ -43,17 +46,26 @@ export default function GeneralLedger() {
   const utils = trpc.useUtils();
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
-  const [entryType, setEntryType] = useState("");
+  // نوع القيد: اختيار متعدّد (كان مفرداً) — كل الأنواع افتراضياً (مصفوفة فارغة = بلا فلترة).
+  const [entryTypes, setEntryTypes] = useState<EntryType[]>([]);
+  const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
+  const [printing, setPrinting] = useState(false);
 
+  const dq = useDebouncedValue(query, 250);
   const branches = trpc.branches.list.useQuery();
+  function toggleType(t: EntryType) {
+    setEntryTypes((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
+    setPage(0);
+  }
   // مدخلات الفلترة الحالية بلا limit/offset — تُعاد استعمالها للاستعلام والتصدير الشامل.
   const filterInput = {
     from: period.from,
     to: period.to,
     branchId: branchId ? Number(branchId) : undefined,
-    entryTypes: entryType ? [entryType as EntryType] : undefined,
+    entryTypes: entryTypes.length ? entryTypes : undefined,
+    q: dq.trim() || undefined,
   };
   const q = trpc.reports.generalLedger.useQuery({
     ...filterInput,
@@ -71,7 +83,7 @@ export default function GeneralLedger() {
         { label: "عدد القيود", value: total },
         { label: "إجمالي الإيراد", value: fmtAr(totals.revenue), tone: "info" },
         { label: "إجمالي التكلفة", value: fmtAr(totals.cost), tone: "warning" },
-        { label: "صافي الربح", value: fmtAr(totals.profit), tone: "positive" },
+        { label: "صافي الربح", value: fmtAr(totals.profit), tone: Number(totals.profit) < 0 ? "negative" : "positive" },
       ]
     : [];
 
@@ -111,40 +123,53 @@ export default function GeneralLedger() {
     }
   }
 
-  function onPrint() {
-    printReportDoc({
-      title: "دفتر اليومية / الأستاذ",
-      headerExtra: [
-        { label: "الفترة", value: periodLabel },
-        { label: "الفرع", value: branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل" },
-        { label: "النوع", value: entryType ? TYPE_LABEL[entryType] : "الكل" },
-      ],
-      columns: [
-        { key: "date", label: "التاريخ" },
-        { key: "type", label: "النوع" },
-        { key: "party", label: "الطرف" },
-        { key: "revenue", label: "الإيراد", align: "left" },
-        { key: "cost", label: "التكلفة", align: "left" },
-        { key: "amount", label: "المبلغ", align: "left" },
-        { key: "ref", label: "المرجع" },
-      ],
-      rows: rows.map((r) => ({
-        date: r.entryDate,
-        type: TYPE_LABEL[r.entryType] ?? r.entryType,
-        party: r.partyName ?? "—",
-        revenue: fmtAr(r.revenue),
-        cost: fmtAr(r.cost),
-        amount: fmtAr(r.amount),
-        ref: refLabel(r).text,
-      })),
-      summary: totals
-        ? [
-            { label: "إجمالي الإيراد", value: fmtAr(totals.revenue) },
-            { label: "إجمالي التكلفة", value: fmtAr(totals.cost) },
-            { label: "صافي الربح", value: fmtAr(totals.profit), large: true, bold: true },
-          ]
-        : undefined,
-    });
+  // كانت الطباعة تطبع الصفحة المعروضة فقط (limit=200) — الآن تجلب كل الصفحات المطابقة (نمط onExport).
+  async function onPrint() {
+    setPrinting(true);
+    try {
+      const allRows = await fetchAllPaged<Row>(
+        (offset, limit) =>
+          utils.reports.generalLedger
+            .fetch({ ...filterInput, limit, offset })
+            .then((r) => ({ rows: r.rows, total: r.total })),
+        { pageSize: 500 },
+      );
+      printReportDoc({
+        title: "دفتر اليومية / الأستاذ",
+        headerExtra: [
+          { label: "الفترة", value: periodLabel },
+          { label: "الفرع", value: branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل" },
+          { label: "النوع", value: entryTypes.length ? entryTypes.map((t) => TYPE_LABEL[t]).join("، ") : "الكل" },
+        ],
+        columns: [
+          { key: "date", label: "التاريخ" },
+          { key: "type", label: "النوع" },
+          { key: "party", label: "الطرف" },
+          { key: "revenue", label: "الإيراد", align: "left" },
+          { key: "cost", label: "التكلفة", align: "left" },
+          { key: "amount", label: "المبلغ", align: "left" },
+          { key: "ref", label: "المرجع" },
+        ],
+        rows: allRows.map((r) => ({
+          date: r.entryDate,
+          type: TYPE_LABEL[r.entryType] ?? r.entryType,
+          party: r.partyName ?? "—",
+          revenue: fmtAr(r.revenue),
+          cost: fmtAr(r.cost),
+          amount: fmtAr(r.amount),
+          ref: refLabel(r).text,
+        })),
+        summary: totals
+          ? [
+              { label: "إجمالي الإيراد", value: fmtAr(totals.revenue) },
+              { label: "إجمالي التكلفة", value: fmtAr(totals.cost) },
+              { label: "صافي الربح", value: fmtAr(totals.profit), large: true, bold: true },
+            ]
+          : undefined,
+      });
+    } finally {
+      setPrinting(false);
+    }
   }
 
   return (
@@ -155,7 +180,7 @@ export default function GeneralLedger() {
       onExport={onExport}
       onPrint={onPrint}
       exportDisabled={!rows.length || exporting}
-      printDisabled={!rows.length}
+      printDisabled={!rows.length || printing}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <PeriodFilter value={period} onChange={changePeriod} />
@@ -167,11 +192,48 @@ export default function GeneralLedger() {
             </select>
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-muted-foreground">نوع القيد</label>
-            <select className={selectCls} value={entryType} onChange={(e) => { setEntryType(e.target.value); setPage(0); }}>
-              <option value="">الكل</option>
-              {TYPE_OPTIONS.map((t) => (<option key={t} value={t}>{TYPE_LABEL[t]}</option>))}
-            </select>
+            <label className="text-[11px] text-muted-foreground">بحث</label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+              <Input
+                value={query}
+                onChange={(e) => { setQuery(e.target.value); setPage(0); }}
+                placeholder="الطرف أو الملاحظات أو رقم الفاتورة…"
+                className="h-9 w-56 pr-8"
+              />
+            </div>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">نوع القيد — اختيار متعدّد</label>
+            <div className="flex flex-wrap gap-1 max-w-md" role="group" aria-label="فلترة نوع القيد">
+              {TYPE_OPTIONS.map((t) => {
+                const active = entryTypes.includes(t as EntryType);
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => toggleType(t as EntryType)}
+                    className={`rounded-full border px-2.5 py-1 text-[11px] transition ${
+                      active
+                        ? "border-primary bg-primary text-primary-foreground font-medium"
+                        : "border-input bg-transparent text-muted-foreground hover:bg-accent"
+                    }`}
+                  >
+                    {TYPE_LABEL[t]}
+                  </button>
+                );
+              })}
+              {entryTypes.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => { setEntryTypes([]); setPage(0); }}
+                  className="rounded-full px-2.5 py-1 text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                >
+                  مسح
+                </button>
+              )}
+            </div>
           </div>
         </div>
       }

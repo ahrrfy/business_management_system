@@ -1,9 +1,12 @@
-// تقرير المشتريات — ملخّص حسب المورّد (مرآة تقرير المبيعات). عرض + تصدير Excel + طباعة A4.
+// تقرير المشتريات — ملخّص حسب المورّد (مرآة تقرير المبيعات). عرض + بحث مورّد + تصدير Excel + طباعة A4.
 // المصدر: reports.purchasesReport (أوامر شراء ملتزمة CONFIRMED/RECEIVED ضمن الفترة).
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { Link } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
@@ -13,12 +16,10 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 
 type Row = RouterOutputs["reports"]["purchasesReport"]["rows"][number];
 
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
 export default function PurchasesReport() {
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
+  const [search, setSearch] = useState("");
 
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.purchasesReport.useQuery({
@@ -27,7 +28,13 @@ export default function PurchasesReport() {
     branchId: branchId ? Number(branchId) : undefined,
   });
 
-  const rows = q.data?.rows ?? [];
+  const allRows = q.data?.rows ?? [];
+  // بحث مورّد محلّي — القائمة كاملة محمَّلة من الخادم أصلاً (ملخّص مُجمَّع لا سجلّاً طويلاً).
+  const rows = useMemo(() => {
+    const s = search.trim();
+    if (!s) return allRows;
+    return allRows.filter((r) => (r.supplierName ?? "").includes(s));
+  }, [allRows, search]);
   const totals = q.data?.totals;
 
   const kpis: KpiItem[] = totals
@@ -100,10 +107,24 @@ export default function PurchasesReport() {
           <PeriodFilter value={period} onChange={setPeriod} />
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect
+              className="w-40"
+              value={branchId ? String(branchId) : ""}
+              onValueChange={(v) => setBranchId(v ? Number(v) : "")}
+            >
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">بحث مورّد</label>
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="اسم المورّد…"
+              aria-label="بحث مورّد"
+              className="h-9 w-48"
+            />
           </div>
         </div>
       }
@@ -115,7 +136,9 @@ export default function PurchasesReport() {
           ) : q.isError ? (
             <ErrorState message="تعذّر تحميل تقرير المشتريات." onRetry={() => q.refetch()} />
           ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا مشتريات في هذا النطاق.</p>
+            <p className="p-8 text-center text-sm text-muted-foreground">
+              {allRows.length ? "لا مورّد مطابق للبحث." : "لا مشتريات في هذا النطاق."}
+            </p>
           ) : (
             <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
@@ -129,9 +152,17 @@ export default function PurchasesReport() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r: Row) => (
-                    <tr key={r.supplierId ?? r.supplierName ?? Math.random()} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">{r.supplierName ?? "—"}</td>
+                  {rows.map((r: Row, i: number) => (
+                    <tr key={r.supplierId ?? `no-supplier-${i}`} className="border-b last:border-0 hover:bg-accent/40">
+                      <td className="p-2.5 text-right">
+                        {r.supplierId ? (
+                          <Link href={`/suppliers-statement?id=${r.supplierId}`} className="text-primary hover:underline">
+                            {r.supplierName ?? "—"}
+                          </Link>
+                        ) : (
+                          r.supplierName ?? "—"
+                        )}
+                      </td>
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.orders}</td>
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.total)}</td>
                       <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{fmtAr(r.paid)}</td>

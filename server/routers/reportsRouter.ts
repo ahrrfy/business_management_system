@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { branches, customers, invoices, suppliers } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
@@ -21,6 +21,7 @@ import {
   reconcileSupplierBalances,
   reconcileInventory,
   reconcileLedgerProfit,
+  reconcileDeliveryFloat,
 } from "../services/reconcileService";
 import { getCashFlow, getFinancialPosition, getGeneralLedger, getProfitAndLoss } from "../services/reportsFinancialService";
 import { getSalesRegister, getSalesByDimension } from "../services/reportsSalesService";
@@ -231,6 +232,14 @@ export const reportsRouter = router({
             ])
           )
           .optional(),
+        // فلتر طريقة الدفع على invoices.paymentMethod نفسه الذي يعرضه التقرير عموداً —
+        // "NONE" = فاتورة بلا طريقة مسجَّلة (آجل/تاريخية قبل بدء التسجيل) أي IS NULL.
+        paymentMethods: z
+          .array(z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "NONE"]))
+          .optional(),
+        // فلتر الكاشير/البائع — مرآة sales.list: الإسناد بمُنشئ الفاتورة (createdBy)،
+        // يستفيد من فهرس idx_invoice_salesperson_date.
+        salespersonId: z.number().int().positive().optional(),
         // الفجوة ١٦: حدّ صفحة افتراضي ١٠٠٠ بحدٍّ أعلى ٥٠٠٠ ⇒ يمنع DoS صامت
         // عند طلب مدير لنطاق سنوي يستنفد pool الاتصالات. الكاتب فجواتٍ في الواجهة
         // يجمع الصفحات عبر nextCursor.
@@ -267,7 +276,18 @@ export const reportsRouter = router({
       if (input.statuses && input.statuses.length > 0) {
         conditions.push(inArray(invoices.status, input.statuses));
       }
-      // فلتر الإجماليات = كامل النطاق (from/to/branch/source/status) بلا مؤشّر الصفحة.
+      if (input.paymentMethods && input.paymentMethods.length > 0) {
+        const withCredit = input.paymentMethods.includes("NONE");
+        const methods = input.paymentMethods.filter((m) => m !== "NONE");
+        const parts = [];
+        if (methods.length > 0) parts.push(inArray(invoices.paymentMethod, methods));
+        if (withCredit) parts.push(isNull(invoices.paymentMethod));
+        conditions.push(parts.length === 1 ? parts[0] : or(...parts)!);
+      }
+      if (input.salespersonId) {
+        conditions.push(eq(invoices.createdBy, input.salespersonId));
+      }
+      // فلتر الإجماليات = كامل النطاق (from/to/branch/source/status/طريقة الدفع/البائع) بلا مؤشّر الصفحة.
       const filterWhere = conditions.length > 0 ? and(...conditions) : undefined;
       // مؤشّر keyset للصفوف فقط: id < cursor (الترتيب desc(id) ⇒ الصفحة التالية أقدم).
       // keyset بدل offset: lt(id, cursor) يستفيد من فهرس المفتاح الأساسي مباشرةً.
@@ -388,6 +408,7 @@ export const reportsRouter = router({
   reconcile: adminProcedure.query(async () => ({
     customers: await reconcileCustomerBalances(),
     suppliers: await reconcileSupplierBalances(),
+    delivery: await reconcileDeliveryFloat(),
     inventory: await reconcileInventory(),
     ledger: await reconcileLedgerProfit(),
     runAt: new Date().toISOString(),
@@ -408,7 +429,8 @@ export const reportsRouter = router({
           from: ymdStr.optional(),
           to: ymdStr.optional(),
           branchId: z.number().int().positive().optional(),
-          limit: z.number().int().positive().max(100).default(20),
+          // رُفع من ١٠٠ (تدقيق التقارير): الكتالوج قد يتجاوز عدد المنتجات المُباعة السقف القديم صامتاً.
+          limit: z.number().int().positive().max(2000).default(20),
           by: z.enum(["revenue", "qty"]).default("revenue"),
         })
         .optional()
@@ -494,6 +516,8 @@ export const reportsRouter = router({
             ])
           )
           .optional(),
+        // بحث نصّي حرّ — الطرف (عميل/مورّد)/الملاحظات/رقم الفاتورة المرتبطة.
+        q: z.string().trim().max(200).optional(),
         limit: z.number().int().min(1).max(2000).default(200),
         offset: z.number().int().min(0).default(0),
       })
@@ -505,6 +529,7 @@ export const reportsRouter = router({
         to: input.to,
         branchId,
         entryTypes: input.entryTypes,
+        q: input.q,
         limit: input.limit,
         offset: input.offset,
       });
@@ -515,10 +540,16 @@ export const reportsRouter = router({
    * يكشف الأرصدة/المخزون ⇒ manager فأعلى + عزل الفرع (النقد/المخزون حسب الفرع؛ الذمم على مستوى الشركة).
    */
   financialPosition: reportsBranchScoped
-    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .input(
+      z.object({
+        branchId: z.number().int().positive().optional(),
+        // «كما في تاريخ» — اختياري، افتراضياً اللقطة الحيّة الآن (بلا تغيير سلوكيّ إن غاب).
+        asOf: ymdStr.optional(),
+      }).optional()
+    )
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
-      return getFinancialPosition({ branchId });
+      return getFinancialPosition({ branchId, asOf: input?.asOf });
     }),
 
   /** التدفّق النقدي (أساس نقدي مباشر) — صافي المقبوضات حسب اتّجاه/طريقة الدفع. manager + عزل الفرع. */
@@ -534,12 +565,14 @@ export const reportsRouter = router({
     .input(z.object({
       from: ymdStr, to: ymdStr,
       branchId: z.number().int().positive().optional(),
+      // بحث نصّي حرّ (رقم فاتورة/عميل/منتج) — اختياري، لا يمسّ العزل/الفلاتر القائمة.
+      q: z.string().trim().max(200).optional(),
       limit: z.number().int().min(1).max(2000).default(200),
       offset: z.number().int().min(0).default(0),
     }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
-      return getSalesRegister({ from: input.from, to: input.to, branchId, limit: input.limit, offset: input.offset });
+      return getSalesRegister({ from: input.from, to: input.to, branchId, q: input.q, limit: input.limit, offset: input.offset });
     }),
 
   /** المبيعات حسب بُعد (عميل/فرع/طريقة دفع/كاشير/صنف) + إجماليات وربحية. manager + عزل الفرع. */
@@ -580,12 +613,18 @@ export const reportsRouter = router({
     .input(z.object({
       from: ymdStr, to: ymdStr,
       branchId: z.number().int().positive().optional(),
+      supplierId: z.number().int().positive().optional(),
+      // بحث نصّي حرّ (رقم أمر/مورّد/منتج) — اختياري.
+      q: z.string().trim().max(200).optional(),
       limit: z.number().int().min(1).max(2000).default(200),
       offset: z.number().int().min(0).default(0),
     }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
-      return getPurchaseRegister({ from: input.from, to: input.to, branchId, limit: input.limit, offset: input.offset });
+      return getPurchaseRegister({
+        from: input.from, to: input.to, branchId, supplierId: input.supplierId, q: input.q,
+        limit: input.limit, offset: input.offset,
+      });
     }),
 
   /** تفصيل أعمار الذمم — مستندٌ بمستند (AR فواتير / AP أوامر شراء). manager + عزل الفرع. */
@@ -647,10 +686,15 @@ export const reportsRouter = router({
 
   /** تقرير المصروفات — مصنّفةً حسب الفئة + أكبر جهات الصرف. manager + عزل الفرع. */
   expensesReport: reportsBranchScoped
-    .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
+    .input(z.object({
+      from: ymdStr, to: ymdStr,
+      branchId: z.number().int().positive().optional(),
+      // حدّ جهات الصرف المُعادة — افتراضي ٢٠ (كالسابق)، حتى ٢٠٠.
+      payeeLimit: z.number().int().positive().max(200).optional(),
+    }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
-      return getExpensesReport({ from: input.from, to: input.to, branchId });
+      return getExpensesReport({ from: input.from, to: input.to, branchId, payeeLimit: input.payeeLimit });
     }),
 
   /**

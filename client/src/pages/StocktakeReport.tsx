@@ -290,7 +290,7 @@ export default function StocktakeReport() {
 
       {s.status !== "APPROVED" && (
         <p className="badge-stock-low rounded-lg border p-3 text-sm">
-          الجلسة {statusLabel} — هذا المحضر مسودّة معاينة قبل الاعتماد النهائي.
+          الجلسة {statusLabel} — هذا المحضر مسوّدة معاينة قبل الاعتماد النهائي.
         </p>
       )}
 

@@ -13,7 +13,7 @@ import { StatCard } from "@/components/StatCard";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmtAr } from "@/lib/money";
-import { BalanceTag, type ExchangeRow } from "@/components/exchange/shared";
+import { BalanceTag, netExposureIqd, NetExposureTag, type ExchangeRow } from "@/components/exchange/shared";
 import { RowActions } from "@/components/list";
 
 export default function ExchangeAccounts() {
@@ -34,11 +34,13 @@ export default function ExchangeAccounts() {
   const totals = useMemo(() => {
     let iqd = D(0);
     let usd = D(0);
+    let net = D(0);
     for (const r of rows) {
       iqd = iqd.plus(D(r.balanceIqd));
       usd = usd.plus(D(r.balanceUsd));
+      net = net.plus(D(netExposureIqd(r)));
     }
-    return { count: rows.length, iqd: iqd.toFixed(2), usd: usd.toFixed(2) };
+    return { count: rows.length, iqd: iqd.toFixed(2), usd: usd.toFixed(2), net: net.toFixed(2) };
   }, [rows]);
 
   const cols: ColumnDef<ExchangeRow>[] = useMemo(
@@ -67,6 +69,11 @@ export default function ExchangeAccounts() {
             {D(row.original.usdCostRate).isZero() ? "—" : fmtAr(row.original.usdCostRate)}
           </span>
         ),
+      },
+      {
+        header: "صافي التعرّض",
+        id: "netExposure",
+        cell: ({ row }) => <NetExposureTag house={row.original} />,
       },
       {
         header: "الحالة",
@@ -125,10 +132,16 @@ export default function ExchangeAccounts() {
         }
       />
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard label="عدد الصيرفات" value={totals.count} icon={Building2} />
         <StatCard label="صافي أرصدتنا (دينار)" value={fmtAr(totals.iqd)} sub="موجب = لنا عندهم" tone={D(totals.iqd).isNegative() ? "negative" : "positive"} />
         <StatCard label="صافي أرصدتنا (دولار)" value={fmtAr(totals.usd)} sub="$" icon={DollarSign} tone={D(totals.usd).isNegative() ? "negative" : "positive"} />
+        <StatCard
+          label="صافي التعرّض الموحَّد (دينار)"
+          value={fmtAr(totals.net)}
+          sub="بسعر التكلفة المرجَّح — موجب = لنا، سالب = علينا"
+          tone={D(totals.net).isNegative() ? "negative" : "positive"}
+        />
       </div>
 
       <Card className="p-4">

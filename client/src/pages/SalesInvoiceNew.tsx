@@ -22,8 +22,10 @@ import { Link, useLocation } from "wouter";
 
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
 import { D, round2, toBase } from "@/lib/money";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -377,7 +379,7 @@ export default function SalesInvoiceNew() {
         copyInvoiceItems(state.items);
         dispatch({ type: "CLEAR_ITEMS" });
         setPasteAvailable(true);
-        notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+        notify.ok("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
         return;
       case "paste": {
         const items = takeInvoiceItems();
@@ -397,11 +399,24 @@ export default function SalesInvoiceNew() {
     }
   }
 
+  // حارس فقد البيانات (نمط ExpenseNew.tsx): بند واحد فأكثر أو عميل مُحدَّد أو ملاحظة مكتوبة تكفي
+  // لاعتبار الفاتورة "قيد الإدخال" — يعترض تحديث/إغلاق التبويب فقط (beforeunload)، أما Esc/F12
+  // الداخليان فيُحرَسان أدناه بتأكيدٍ صريح (وليس هذا الهوك، الذي لا يعترض تنقّل SPA الداخلي).
+  const isDirty = useMemo(
+    () => state.items.length > 0 || state.entityId != null || state.notes.trim() !== "",
+    [state.items, state.entityId, state.notes],
+  );
+  useUnsavedGuard(isDirty);
+
   /* ─── اختصارات لوحة المفاتيح (F2/F4/F9/F12/Esc) ───────────────────── */
   const containerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const isTypingTarget = (el: EventTarget | null) =>
       !!el && (el as HTMLElement).matches?.("input, textarea, select, [contenteditable='true']");
+    // هل حوار تأكيدٍ (ConfirmHost) مفتوح فعلاً؟ — يمنع إعادة إطلاق تأكيد «مسح/مغادرة» جديد أثناء
+    // إغلاق تأكيدٍ سابق بنفس ضغطة Esc (نمط anyOverlayOpen في useSaveShortcuts.ts).
+    const confirmDialogOpen = () =>
+      typeof document !== "undefined" && !!document.querySelector('[role="alertdialog"][data-state="open"]');
 
     const onKey = (e: KeyboardEvent) => {
       // أثناء فتح حوار الموافقة: Esc يغلقه فقط.
@@ -438,19 +453,33 @@ export default function SalesInvoiceNew() {
       }
       if (e.key === "F12") {
         e.preventDefault();
-        handleReset();
+        if (confirmDialogOpen()) return;
+        if (!isDirty) { handleReset(); return; }
+        void confirm({
+          variant: "warning",
+          title: "مسح الفاتورة الحالية",
+          description: "توجد بيانات لم تُحفَظ في هذه الفاتورة (بنود/عميل/ملاحظات). المسح سيُفقدها نهائياً. متابعة؟",
+          confirmText: "مسح",
+        }).then((ok) => { if (ok) handleReset(); });
         return;
       }
       if (e.key === "Escape" && !isTypingTarget(e.target) && !bulkOpen) {
         e.preventDefault();
-        navigate("/invoices");
+        if (confirmDialogOpen()) return;
+        if (!isDirty) { navigate("/invoices"); return; }
+        void confirm({
+          variant: "warning",
+          title: "مغادرة الفاتورة الحالية",
+          description: "توجد بيانات لم تُحفَظ في هذه الفاتورة (بنود/عميل/ملاحظات). المغادرة ستُفقدها. متابعة؟",
+          confirmText: "مغادرة",
+        }).then((ok) => { if (ok) navigate("/invoices"); });
         return;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, bulkOpen, creditPrompt, create.isPending]);
+  }, [state, bulkOpen, creditPrompt, create.isPending, isDirty]);
 
   const typeInfo = INVOICE_TYPES[INVOICE_TYPE];
 
@@ -489,7 +518,7 @@ export default function SalesInvoiceNew() {
           <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
           <span>
             وضع الافتتاح فعّال حتى نهاية يوم {openingModeQuery.data.endsAtYmd} — البيع المسدّد بالكامل نقداً أو بالبطاقة
-            لصنف غير مجرود افتتاحياً يُسجَّل ولو نفد رصيده (ينزل بالسالب)؛ الآجل وغير النقدي صارمان.
+            لمنتج غير مجرود افتتاحياً يُسجَّل ولو نفد رصيده (ينزل بالسالب)؛ الآجل وغير النقدي صارمان.
           </span>
         </div>
       )}

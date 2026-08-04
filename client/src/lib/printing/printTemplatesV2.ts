@@ -163,7 +163,7 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
   ]);
 
   const cols: DocTableCol[] = [
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'unit', label: 'الوحدة', width: 58 },
     { key: 'qty',  label: 'الكمية', width: 52 },
     { key: 'price', label: 'السعر', width: 74 },
@@ -206,7 +206,7 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
   const tafqit = tafqitLine(formatArabicMoneyWords(d.total));
 
   const sig = signaturesBlock({
-    qrSvg: d.qrSvg ?? true,
+    qrSvg: d.qrSvg ?? null,
     qrCaption: d.qrCaption ?? 'امسح للتحقق من مطابقة بيانات الفاتورة',
     items: [
       { kind: 'sig', label: 'توقيع المستلم' },
@@ -297,7 +297,7 @@ export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
   ]);
 
   const cols: DocTableCol[] = [
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'unit', label: 'الوحدة', width: 58 },
     { key: 'qty', label: 'الكمية', width: 52 },
     { key: 'price', label: 'السعر', width: 74 },
@@ -340,7 +340,7 @@ export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
   const tafqit = tafqitLine(formatArabicMoneyWords(d.total));
 
   const sig = signaturesBlock({
-    qrSvg: d.qrSvg ?? true,
+    qrSvg: d.qrSvg ?? null,
     qrCaption: d.qrCaption ?? 'امسح للتحقق من مطابقة بيانات الفاتورة',
     items: [
       { kind: 'sig', label: 'استلام المخزن' },
@@ -510,6 +510,8 @@ export interface QuotationV2Data {
   total: string | number;
 
   terms?: string | null;
+  /** SVG جاهز من qr.ts — QR حقيقي قابل للمسح ببيانات العرض. لا placeholder زائف عند غيابه. */
+  qrSvg?: string | null;
   settings?: CompanySettings;
 }
 
@@ -544,7 +546,7 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
   ]);
 
   const cols: DocTableCol[] = [
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'unit', label: 'الوحدة', width: 58 },
     { key: 'qty', label: 'الكمية', width: 52 },
     { key: 'price', label: 'السعر', width: 74 },
@@ -576,16 +578,14 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
     <div style="font-size:10.75px;color:#000;line-height:1.7">${esc(termsText)}</div>
   </div>`;
 
-  const sigs = `<div style="display:flex;justify-content:space-between;margin-top:24px;gap:20px">
-    <div style="text-align:center;width:220px">
-      <div style="height:22px"></div>
-      <div style="border-top:1px solid ${B.ink};padding-top:5px;font-size:10.25px;color:#000;font-weight:600">توقيع العميل بالموافقة على العرض</div>
-    </div>
-    <div style="text-align:center;width:220px">
-      <div style="height:22px"></div>
-      <div style="border-top:1px solid ${B.ink};padding-top:5px;font-size:10.25px;color:#000;font-weight:600">الممثل التجاري</div>
-    </div>
-  </div>`;
+  const sigs = `<div style="margin-top:24px">${signaturesBlock({
+    qrSvg: d.qrSvg ?? null,
+    qrCaption: d.qrSvg ? 'امسح للتحقق من بيانات العرض' : null,
+    items: [
+      { kind: 'sig', label: 'توقيع العميل بالموافقة على العرض', width: 200 },
+      { kind: 'sig', label: 'الممثل التجاري', width: 200 },
+    ],
+  })}</div>`;
 
   const body = `${pageBodyOpen()}${header}${cards}${table}${totals}${termsBox}${sigs}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.quoteNumber}` })}`;
   return openPrintWindow(wrapA4Doc(`عرض سعر ${d.quoteNumber}`, body));
@@ -929,7 +929,7 @@ export function printVoucherV2(d: VoucherV2Data): boolean {
   const tafqit = tafqitLine(formatArabicMoneyWords(d.amount));
 
   const sig = signaturesBlock({
-    qrSvg: d.qrSvg ?? true,
+    qrSvg: d.qrSvg ?? null,
     qrCaption: 'للتحقق من صحة السند',
     qrSize: 52,
     spaceHeight: 28,
@@ -1021,7 +1021,7 @@ export function printWarehouseSlipV2(d: WarehouseSlipV2Data): boolean {
 
   const cols: DocTableCol[] = [
     { key: 'seq', label: '#', width: 36 },
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'unit', label: 'الوحدة', width: 70 },
     { key: 'qty', label: 'الكمية', width: 60, emphasize: true },
     { key: 'check', label: 'تم', width: 40 },

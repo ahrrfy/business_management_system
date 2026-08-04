@@ -118,7 +118,7 @@ const SECTIONS: Section[] = [
     items: [
       { title: "ملخّص الصندوق اليومي", desc: "قبض/صرف + توزيع طرق الدفع + فروقات الورديات", href: "/reports/treasury", icon: Calculator, gate: "manager", status: "ready" },
       { title: "مطابقة إقفال اليوم", desc: "المتوقَّع مقابل المعدود مقابل الفرق — لكل وردية وفرع", href: "/reports/day-close", icon: Scale, gate: "manager", status: "ready" },
-      { title: "تقرير المصروفات", desc: "بالفئة/المستفيد/الفترة", href: "/reports/expenses", icon: Receipt, gate: "manager", status: "ready" },
+      { title: "تقرير المصروفات", desc: "بالفئة/جهة الصرف/الفترة", href: "/reports/expenses", icon: Receipt, gate: "manager", status: "ready" },
       { title: "المصروفات اليومية", desc: "سجلّ المصروفات وإدخالها", href: "/expenses", icon: Banknote, gate: "all", status: "ready" },
       { title: "سندات القبض والصرف", desc: "سجلّ السندات المستقلّة", href: "/vouchers", icon: Receipt, gate: "all", status: "ready" },
       { title: "سجلّ الورديات (تقرير Z)", desc: "افتتاح/إغلاق + فروقات الصندوق", href: "/shifts", icon: Clock, gate: "all", status: "ready" },
@@ -130,7 +130,7 @@ const SECTIONS: Section[] = [
     icon: Printer,
     items: [
       { title: "تقرير الإنتاج", desc: "بالفترة + تفصيل التكلفة + الهدر/المردود", href: "/reports/production", icon: Factory, gate: "manager", status: "ready" },
-      { title: "تقرير طلبات خدمة العملاء", desc: "توزيع الحالات + الربحية + أعمار التسليم", href: "/reports/work-orders", icon: FileStack, gate: "manager", status: "ready" },
+      { title: "تقرير أوامر الشغل", desc: "توزيع الحالات + الربحية + أعمار التسليم", href: "/reports/work-orders", icon: FileStack, gate: "manager", status: "ready" },
     ],
   },
   {

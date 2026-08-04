@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { invoices, shifts } from "../../drizzle/schema";
 import type { SaleLineInput, PaymentMethod } from "./sale/types";
+import type { PriceTier } from "./pricing";
 import { createSaleInTx } from "./sale/create";
 import type { PrintSaleLineInput } from "./printSaleService";
 import { createPrintSaleInTx } from "./printSaleService";
@@ -9,14 +10,22 @@ import type { CreateWorkOrderInput } from "./workOrder/types";
 import { createWorkOrderInTx } from "./workOrder/create";
 import { withTx, type Actor } from "./tx";
 import { findIdempotentRefId } from "./idempotency";
+import { money, round2 } from "./money";
 
 export interface ReceptionCheckoutInput {
   branchId: number;
   shiftId: number;
   customerId?: number | null;
-  paymentMethod: Extract<PaymentMethod, "CASH" | "CARD" | "TRANSFER">;
+  paymentMethod: Extract<PaymentMethod, "CASH" | "CARD" | "TRANSFER" | "WALLET">;
   paymentReference?: string | null;
+  /** المبلغ المطبّق على الطلب كله. البيع المباشر يُغطّى أولاً، ثم أوامر الشغل بالترتيب. */
+  paidAmount?: string | null;
   clientRequestId: string;
+  /** فئة سعر صريحة لكامل سلة الاستقبال (بيع مباشر + طباعة) — تتبع فئة العميل الافتراضية إن غابت
+   *  (نمط resolveTier في sale/create.ts). غيابها يبقي السلوك السابق (RETAIL افتراضياً). */
+  priceTier?: PriceTier | null;
+  /** كوبون CRM — ينطبق على البيع المباشر فقط (createPrintSaleInTx لا يدعم كوبونات). */
+  couponCode?: string | null;
   regularSale?: { lines: SaleLineInput[]; amount: string } | null;
   printSale?: { lines: PrintSaleLineInput[]; amount: string } | null;
   workOrders?: Array<Omit<CreateWorkOrderInput, "branchId" | "customerId" | "clientRequestId">>;
@@ -69,12 +78,53 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
       }
     }
 
+    let normalizedWorkOrders = input.workOrders ?? [];
+    if (input.paidAmount != null) {
+      const directTotal = round2(
+        money(input.regularSale?.amount ?? "0").plus(money(input.printSale?.amount ?? "0")),
+      );
+      const workTotal = round2(normalizedWorkOrders.reduce(
+        (sum, order) => sum.plus(money(order.salePrice)),
+        money("0"),
+      ));
+      const grandTotal = round2(directTotal.plus(workTotal));
+      const applied = round2(money(input.paidAmount));
+      if (applied.lt(directTotal)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `المبلغ المقبوض يجب أن يغطي البيع المباشر أولاً (${directTotal.toFixed(2)})`,
+        });
+      }
+      if (applied.gt(grandTotal)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المطبق يتجاوز إجمالي الطلب" });
+      }
+
+      let remainingForWork = applied.minus(directTotal);
+      normalizedWorkOrders = normalizedWorkOrders.map((order) => {
+        const orderTotal = round2(money(order.salePrice));
+        const deposit = remainingForWork.lte(0)
+          ? money("0")
+          : round2(remainingForWork.gte(orderTotal) ? orderTotal : remainingForWork);
+        remainingForWork = round2(remainingForWork.minus(deposit));
+        return {
+          ...order,
+          deposit: deposit.toFixed(2),
+          paymentMethod: deposit.gt(0) ? input.paymentMethod : null,
+          paymentReference: deposit.gt(0) && input.paymentMethod !== "CASH"
+            ? input.paymentReference?.trim() || null
+            : null,
+        };
+      });
+    }
+
     const regularSale = input.regularSale
       ? await createSaleInTx(tx, {
           branchId: input.branchId,
           shiftId: input.shiftId,
           customerId: input.customerId ?? null,
           sourceType: "POS",
+          priceTier: input.priceTier ?? null,
+          couponCode: input.couponCode?.trim() || null,
           lines: input.regularSale.lines,
           payment: {
             amount: input.regularSale.amount,
@@ -92,6 +142,7 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
           branchId: input.branchId,
           shiftId: input.shiftId,
           customerId: input.customerId ?? null,
+          priceTier: input.priceTier ?? null,
           lines: input.printSale.lines,
           payment: {
             amount: input.printSale.amount,
@@ -105,8 +156,8 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
       : null;
 
     const workOrders = [] as Array<Awaited<ReturnType<typeof createWorkOrderInTx>>>;
-    for (let index = 0; index < (input.workOrders?.length ?? 0); index += 1) {
-      const order = input.workOrders![index];
+    for (let index = 0; index < normalizedWorkOrders.length; index += 1) {
+      const order = normalizedWorkOrders[index];
       workOrders.push(await createWorkOrderInTx(tx, {
         ...order,
         branchId: input.branchId,

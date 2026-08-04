@@ -71,6 +71,7 @@ interface CartLine {
   price: string; // سعر العرض المؤثّر (للعرض — الخادم يُعيد التسعير)
   imageUrl: string | null;
   unitName: string;
+  variantLabel?: string;
   qty: number;
 }
 
@@ -258,7 +259,7 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
           disabled={p.inStock === false}
           className="store-primary-action store-mobile-action mt-auto flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-1.5 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
         >
-          <Plus aria-hidden className="size-3.5" /> {p.inStock === false ? "غير متوفّر" : "أضف"}
+          <Plus aria-hidden className="size-3.5" /> {p.inStock === false ? "غير متوفّر" : "اختر"}
         </button>
       </div>
     </div>
@@ -376,7 +377,7 @@ function BannerCarousel({ banners }: { banners: BannerItem[] }) {
   );
 }
 
-type Panel = null | "cart" | "checkout" | "confirmation" | "track";
+type Panel = null | "cart" | "checkout" | "confirmation" | "track" | "label";
 type AvailabilityFilter = "IN_STOCK" | "ALL";
 type PriceFilter = "ALL" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
 type CatalogSort = "RECOMMENDED" | "PRICE_ASC" | "PRICE_DESC" | "BEST_SELLERS";
@@ -401,6 +402,7 @@ export default function Storefront() {
   const [sort, setSort] = useState<CatalogSort>("RECOMMENDED");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedStoreUnitId, setSelectedStoreUnitId] = useState<number | null>(null);
+  const [selectedVariantId, setSelectedVariantId] = useState<number | null>(null);
   const [panel, setPanel] = useState<Panel>(null);
   const [cart, setCart] = useState<Map<number, CartLine>>(loadCart);
 
@@ -414,6 +416,13 @@ export default function Storefront() {
   const [trackForm, setTrackForm] = useState<{ orderNumber: string; phone: string }>({ orderNumber: "", phone: "+964" });
   const [trackResult, setTrackResult] = useState<TrackData | null>(null);
   const [trackState, setTrackState] = useState<"idle" | "loading" | "notfound" | "error">("idle");
+  const labelParams = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const q = new URLSearchParams(window.location.search);
+    const orderNumber = q.get("order");
+    const token = q.get("token");
+    return orderNumber && token ? { orderNumber, token } : null;
+  }, []);
   const openTrack = (orderNumber = "") => {
     setTrackForm({ orderNumber, phone: "+964" });
     setTrackResult(null);
@@ -469,6 +478,7 @@ export default function Storefront() {
     { placeholderData: (prev) => prev }
   );
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
+  const labelQ = trpc.storefront.labelSummary.useQuery(labelParams ?? { orderNumber: "-", token: "-" }, { enabled: labelParams != null, retry: false });
   const relatedQ = trpc.storefront.related.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
   const trackConversion = trpc.storefront.trackConversion.useMutation();
 
@@ -494,10 +504,14 @@ export default function Storefront() {
     },
   });
 
+  const detailVariant = useMemo(() => {
+    const variants = detailQ.data?.variants ?? [];
+    return variants.find((v) => v.variantId === selectedVariantId) ?? variants.find((v) => v.inStock) ?? variants[0] ?? null;
+  }, [detailQ.data, selectedVariantId]);
   const detailUnit = useMemo(() => {
     const product = detailQ.data;
     if (!product) return null;
-    const options = product.storeUnits ?? [];
+    const options = detailVariant?.units ?? product.storeUnits ?? [];
     return options.find((u) => u.productUnitId === selectedStoreUnitId) ?? options[0] ?? {
       productUnitId: product.productUnitId,
       unitName: product.unitName,
@@ -508,11 +522,16 @@ export default function Storefront() {
       inStock: product.inStock,
       stockLeft: product.stockLeft,
     };
-  }, [detailQ.data, selectedStoreUnitId]);
+  }, [detailQ.data, detailVariant, selectedStoreUnitId]);
 
   useEffect(() => {
     setSelectedStoreUnitId(null);
+    setSelectedVariantId(null);
   }, [selectedId]);
+
+  useEffect(() => {
+    if (labelQ.data) setPanel("label");
+  }, [labelQ.data]);
 
   const items = catalogQ.data?.items ?? [];
   const cats = categoriesQ.data ?? [];
@@ -607,7 +626,7 @@ export default function Storefront() {
 
   function addToCart(p: {
     productUnitId: number; productId: number; productName: string; price: string | null;
-    salePrice?: string | null; imageUrl: string | null; unitName: string; inStock?: boolean;
+    salePrice?: string | null; imageUrl: string | null; unitName: string; variantLabel?: string; inStock?: boolean;
   }) {
     const eff = p.salePrice ?? p.price;
     if (eff == null || p.inStock === false) return;
@@ -618,10 +637,11 @@ export default function Storefront() {
       next.set(p.productUnitId, {
         productUnitId: p.productUnitId,
         productId: p.productId,
-        name: p.productName,
+        name: p.variantLabel ? `${p.productName} — ${p.variantLabel}` : p.productName,
         price: eff,
         imageUrl: p.imageUrl,
         unitName: p.unitName,
+        variantLabel: p.variantLabel,
         qty: (existing?.qty ?? 0) + 1,
       });
       return next;
@@ -907,7 +927,7 @@ export default function Storefront() {
               icon={<Flame aria-hidden className="size-4 text-rose-500" />}
               products={dealProducts}
               onSelect={setSelectedId}
-              onAdd={addToCart}
+              onAdd={(p) => setSelectedId(p.productId)}
             />
 
             {/* الأكثر مبيعاً — دليلٌ اجتماعيّ يبني الثقة */}
@@ -916,7 +936,7 @@ export default function Storefront() {
               icon={<TrendingUp aria-hidden className="size-4 text-emerald-600" />}
               products={bestSellers}
               onSelect={setSelectedId}
-              onAdd={addToCart}
+              onAdd={(p) => setSelectedId(p.productId)}
             />
 
             {/* باقات حقيقية مُعرّفة في النظام؛ نعرضها كحلول جاهزة لا كتركيبٍ وهمي للمنتجات. */}
@@ -925,7 +945,7 @@ export default function Storefront() {
               icon={<Package aria-hidden className="size-4 text-emerald-600" />}
               products={bundleProducts}
               onSelect={setSelectedId}
-              onAdd={addToCart}
+              onAdd={(p) => setSelectedId(p.productId)}
             />
 
             <h3 className="mb-3 flex items-center gap-1.5 text-sm font-extrabold text-slate-800 dark:text-slate-200">
@@ -1022,12 +1042,12 @@ export default function Storefront() {
                       ) : null}
                     </div>
                     <button
-                      onClick={() => addToCart(p)}
+                      onClick={() => setSelectedId(p.productId)}
                       disabled={!p.inStock}
                       className="store-primary-action store-mobile-action mt-auto flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-2 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
                     >
                       <Plus aria-hidden className="size-3.5" />
-                      {p.inStock ? "أضف للسلة" : "غير متوفّر"}
+                      {p.inStock ? "اختر الخيارات" : "غير متوفّر"}
                     </button>
                   </div>
                 </div>
@@ -1136,9 +1156,34 @@ export default function Storefront() {
                     <h3 className="text-base font-extrabold leading-snug text-slate-900 dark:text-white">{detailQ.data.productName}</h3>
                     {detailQ.data.category && <p className="mt-1 text-xs text-slate-500">الفئة: {detailQ.data.category}</p>}
                     <p className="mt-0.5 text-xs text-slate-500">الوحدة: {detailUnit?.unitName ?? detailQ.data.unitName}</p>
-                    {(detailQ.data.storeUnits?.length ?? 0) > 1 && (
+                    {(detailQ.data.variants?.length ?? 0) > 1 && (
+                      <div className="mt-3" aria-label="اختر اللون أو القياس المطلوب">
+                        <p className="mb-1.5 text-xs font-extrabold text-slate-700 dark:text-slate-200">اختر اللون / القياس</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {detailQ.data.variants!.map((variant) => {
+                            const selected = (detailVariant?.variantId ?? detailQ.data!.variantId) === variant.variantId;
+                            return (
+                              <button
+                                key={variant.variantId}
+                                type="button"
+                                disabled={!variant.inStock}
+                                onClick={() => { setSelectedVariantId(variant.variantId); setSelectedStoreUnitId(null); }}
+                                className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                                  selected ? "border-[var(--sem-pos)] bg-[var(--sem-pos)] text-white" : "border-slate-200 text-slate-700 hover:border-[var(--sem-pos)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:text-slate-200"
+                                }`}
+                              >
+                                {variant.colorHex && <span className="size-3 rounded-full ring-1 ring-black/20" style={{ backgroundColor: variant.colorHex }} aria-hidden />}
+                                <span>{variant.label}</span>
+                                {!variant.inStock && <span className="text-[10px]">نفد</span>}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {(detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 1 && (
                       <div className="mt-2 flex flex-wrap gap-1.5" aria-label="اختر وحدة البيع">
-                        {detailQ.data.storeUnits!.map((unit) => {
+                        {(detailVariant?.units ?? detailQ.data.storeUnits ?? []).map((unit) => {
                           const selected = (detailUnit?.productUnitId ?? detailQ.data!.productUnitId) === unit.productUnitId;
                           return (
                             <button
@@ -1190,7 +1235,7 @@ export default function Storefront() {
                 </div>
                 <button
                   onClick={() => {
-                    if (detailQ.data && detailUnit) addToCart({ ...detailQ.data, ...detailUnit });
+                    if (detailQ.data && detailUnit) addToCart({ ...detailQ.data, ...detailUnit, variantLabel: detailVariant?.label });
                     setSelectedId(null);
                   }}
                   disabled={!detailUnit?.inStock || detailUnit.price == null}
@@ -1230,8 +1275,8 @@ export default function Storefront() {
                           <div className="flex flex-1 flex-col gap-1 p-2">
                             <span className="line-clamp-2 min-h-[2.2em] text-[11px] font-bold leading-tight">{rp.productName}</span>
                             <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(rp.salePrice ?? rp.price)}</span>
-                            <button onClick={() => addToCart(rp)} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg bg-amber-500 py-1.5 text-[11px] font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600">
-                              <Plus aria-hidden className="size-3" /> أضف
+                            <button onClick={() => setSelectedId(rp.productId)} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold transition motion-safe:active:scale-95">
+                              <Plus aria-hidden className="size-3" /> اختر
                             </button>
                           </div>
                         </div>
@@ -1438,6 +1483,28 @@ export default function Storefront() {
               <Package aria-hidden className="size-4" /> تتبّع هذا الطلب
             </button>
           </div>
+        </PanelShell>
+      )}
+
+      {panel === "label" && (
+        <PanelShell title="معلومات طلب الشحن" onClose={() => setPanel(null)}>
+          {labelQ.isLoading ? (
+            <div className="flex justify-center py-12 text-[var(--sem-info)]"><Loader2 aria-hidden className="size-7 animate-spin" /></div>
+          ) : labelQ.data ? (
+            <div className="space-y-3 text-sm">
+              <div className="rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+                <div className="flex items-center justify-between"><span className="font-extrabold" dir="ltr">{labelQ.data.orderNumber}</span><span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${TRACK_STATUS[labelQ.data.status]?.cls ?? "bg-slate-100 text-slate-600"}`}>{TRACK_STATUS[labelQ.data.status]?.label ?? labelQ.data.status}</span></div>
+                <p className="mt-3 text-base font-extrabold text-slate-900 dark:text-white">{labelQ.data.customerName ?? "العميل"}</p>
+                {labelQ.data.customerPhone && <p dir="ltr" className="mt-1 font-extrabold text-[var(--sem-info)]">{labelQ.data.customerPhone}</p>}
+                <p className="mt-2 leading-relaxed text-slate-600 dark:text-slate-300">{labelQ.data.addressText ?? labelQ.data.governorate ?? "—"}</p>
+              </div>
+              <div className="rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+                <p className="mb-2 text-xs font-extrabold text-slate-500">منتجات الطلب</p>
+                <div className="space-y-2">{labelQ.data.items.map((it, index) => <div key={index} className="flex justify-between gap-3 border-b border-slate-100 pb-2 last:border-0 last:pb-0 dark:border-slate-800"><span>{it.productName}{it.unitName ? ` — ${it.unitName}` : ""}</span><b className="shrink-0 tabular-nums">×{it.quantity}</b></div>)}</div>
+                <div className="mt-3 flex justify-between border-t border-slate-200 pt-3 text-base font-extrabold dark:border-slate-700"><span>المبلغ عند الاستلام</span><span dir="ltr" className="text-money-positive">{money(labelQ.data.total)} د.ع</span></div>
+              </div>
+            </div>
+          ) : <p className="py-10 text-center text-sm font-bold text-destructive">تعذر فتح معلومات هذا الملصق.</p>}
         </PanelShell>
       )}
 

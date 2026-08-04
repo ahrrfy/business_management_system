@@ -14,8 +14,10 @@ import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { fmtDateTime } from "@/lib/date";
 import { describeUserAgent } from "@/lib/userAgent";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { AlertTriangle, Check, Monitor, Zap } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { ROLE_LABEL, ROLE_OPTIONS } from "@/lib/roles";
 import { EffectiveAccessForAssignment } from "@/components/form/EffectiveAccessPreview";
@@ -23,8 +25,6 @@ import { EffectivePermissionsPanel } from "@/components/form/EffectivePermission
 import {
   ROLES,
   ROLE_TEMPLATES,
-  applyPermissionOverrides,
-  diffFromPermissions,
   PERMISSION_MODULES,
   diffFromTemplate,
   resolvePermissions,
@@ -48,9 +48,10 @@ function toDateInput(d: unknown): string {
 }
 
 /** فروق الصلاحيات عن قالب الدور — تُعرض فوق المصفوفة (مطابق لشاشة الإضافة). */
-function PermDiffSummary({ base, override }: { base: PermissionMap; override: PermissionMap }) {
+function PermDiffSummary({ role, override }: { role: RoleKey; override: PermissionMap }) {
   const entries = Object.entries(override);
   if (!entries.length) return null;
+  const base = ROLE_TEMPLATES[role];
   return (
     <div className="flex flex-wrap gap-1 mb-2">
       {entries.map(([k, v]) => {
@@ -105,6 +106,10 @@ export default function UserEdit() {
   const [resetShare, setResetShare] = useState<{ password: string; email: string; username?: string; name: string; phone?: string } | null>(null);
   const [revokeMsg, setRevokeMsg] = useState("");
 
+  // لقطة القيم عند التحميل (وبعد كل حفظ ناجح) — أساس مقارنة حارس فقد البيانات (useUnsavedGuard).
+  // مبنيّة من سجلّ الخادم مباشرةً (لا من الحالة) لتفادي سباق التحديثات المُجمَّعة عند setLoaded.
+  const baselineRef = useRef<string>("");
+
   useEffect(() => {
     if (detail.data && !loaded) {
       const u = detail.data;
@@ -119,21 +124,36 @@ export default function UserEdit() {
       setHiredAt(toDateInput((u as { hiredAt?: unknown }).hiredAt));
       setPermsOverride(((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {});
       setIsOwner(!!(u as { isOwner?: boolean }).isOwner);
+      baselineRef.current = JSON.stringify({
+        name: u.name ?? "", email: u.email ?? "", username: (u as { username?: string | null }).username ?? "",
+        role: (u.role as RoleKey) ?? "cashier", customRoleId: (u as { customRoleId?: number | null }).customRoleId ?? null,
+        branchId: u.branchId ? String(u.branchId) : "", phone: (u as { phone?: string | null }).phone ?? "",
+        jobTitle: (u as { jobTitle?: string | null }).jobTitle ?? "", hiredAt: toDateInput((u as { hiredAt?: unknown }).hiredAt),
+        permsOverride: ((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {},
+        isOwner: !!(u as { isOwner?: boolean }).isOwner,
+      });
       setLoaded(true);
     }
   }, [detail.data, loaded]);
 
+  const isDirty = loaded && JSON.stringify({
+    name, email, username, role, customRoleId, branchId, phone, jobTitle, hiredAt, permsOverride, isOwner,
+  }) !== baselineRef.current;
+  useUnsavedGuard(isDirty);
+
   function invalidate() {
-    return Promise.all([
-      utils.users.list.invalidate(),
-      utils.users.get.invalidate({ userId }),
-      // لوحة «الأثر الفعلي» في أسفل الصفحة يجب أن تعرض القرار الجديد فور الحفظ.
-      utils.users.effectivePermissions.invalidate({ userId }),
-    ]);
+    return Promise.all([utils.users.list.invalidate(), utils.users.get.invalidate({ userId })]);
   }
 
   const update = trpc.users.update.useMutation({
-    onSuccess: async () => { setDone("تمّ حفظ التعديلات بنجاح."); await invalidate(); },
+    onSuccess: async () => {
+      setDone("تمّ حفظ التعديلات بنجاح.");
+      // الحفظ نجح ⇒ الحالة الحالية هي الأساس الجديد (وإلا يبقى الحارس يُنذر بفقد بيانات محفوظة فعلاً).
+      baselineRef.current = JSON.stringify({
+        name, email, username, role, customRoleId, branchId, phone, jobTitle, hiredAt, permsOverride, isOwner,
+      });
+      await invalidate();
+    },
     onError: (e) => setError(e.message),
   });
   const setActive = trpc.users.setActive.useMutation({
@@ -170,38 +190,36 @@ export default function UserEdit() {
   const revokeOneSession = trpc.users.revokeSession.useMutation({
     onSuccess: async () => { await utils.users.sessions.invalidate({ userId }); },
   });
-  const selectedCustomRole = useMemo(
-    () => customRoles.find((r: any) => Number(r.id) === customRoleId) as { id: number; baseRole?: string; permissions?: unknown; label?: string } | undefined,
-    [customRoleId, customRoles],
-  );
-  const permissionBase = useMemo<PermissionMap>(() => {
-    // دور المستخدم الأساسي متاح من سجلّه، لذا لا نعرض مصفوفة فارغة أثناء تحميل قائمة الأدوار.
-    if (customRoleId != null) return (selectedCustomRole?.permissions as PermissionMap) ?? ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
-    return ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
-  }, [customRoleId, role, selectedCustomRole]);
   const resolvedPerms = useMemo(
-    () => customRoleId != null
-      ? applyPermissionOverrides(permissionBase, Object.keys(permsOverride).length ? permsOverride : null)
-      : resolvePermissions(role, Object.keys(permsOverride).length ? permsOverride : null),
-    [customRoleId, permissionBase, permsOverride, role],
+    () => resolvePermissions(role, Object.keys(permsOverride).length ? permsOverride : null),
+    [role, permsOverride]
   );
 
-  function handleRoleChange(val: string) {
+  // Ctrl/⌘+S ⇒ حفظ. بلا onCancel/Esc عمداً — الشاشة مكتظّة بـ<select> أصلية (الدور/الفرع) وEsc
+  // يتعارض مع إغلاقها (تحذير الهوك نفسه).
+  useSaveShortcuts({ onSave: () => submit(), enabled: !update.isPending });
+
+  async function handleRoleChange(val: string) {
     if (val.startsWith("custom:")) {
-      const selected = customRoles.find((r: any) => Number(r.id) === Number(val.slice(7)));
-      setCustomRoleId(Number(val.slice(7)));
-      setRole((selected?.baseRole as RoleKey | undefined) ?? "user");
-      setPermsOverride({}); // لا تُرحّل استثناءات الدور السابق إلى دور جديد.
+      setCustomRoleId(Number(val.slice(7))); // دور مخصّص — صلاحياته محفوظة فيه
     } else {
+      // اختيار دور مبني يعيد الصلاحيات لقالبه ويمسح أي تخصيص يدوي حالي — تأكيدٌ صريح إن كان
+      // ثمّة تخصيصٌ فعلي ليخسره (كان يُمسَح صامتاً بلا تحذير).
+      if (Object.keys(permsOverride).length > 0 && !(await confirm({
+        variant: "warning",
+        title: "تغيير الدور الأساسي",
+        description: "سيُعاد ضبط الصلاحيات المخصَّصة الحالية لهذا الحساب إلى قالب الدور الجديد ويُفقَد أي تخصيص يدوي. هل تتابع؟",
+        confirmText: "تغيير الدور",
+      }))) return;
       setCustomRoleId(null);
       setRole(val as RoleKey);
-      setPermsOverride({}); // اختيار دور مبني يعيد الصلاحيات لقالبه
+      setPermsOverride({});
     }
   }
 
   function handlePermChange(moduleKey: string, level: AccessLevel) {
     const newResolved = { ...resolvedPerms, [moduleKey]: level };
-    setPermsOverride(diffFromPermissions(permissionBase, newResolved) ?? {});
+    setPermsOverride(diffFromTemplate(role, newResolved) ?? {});
   }
 
   async function handleGeneratePassword() {
@@ -247,9 +265,7 @@ export default function UserEdit() {
     if (emailV && !/^\S+@\S+\.\S+$/.test(emailV)) return setError("بريد إلكتروني غير صالح.");
     if (usernameV && !USERNAME_REGEX.test(usernameV)) return setError(USERNAME_POLICY_MSG);
     if (hiredAt && !/^\d{4}-\d{2}-\d{2}$/.test(hiredAt)) return setError("تاريخ التوظيف غير صالح.");
-    const override = customRoleId
-      ? diffFromPermissions(permissionBase, resolvedPerms)
-      : diffFromTemplate(role, resolvedPerms);
+    const override = customRoleId ? null : diffFromTemplate(role, resolvedPerms);
     // نرسل القيمتين دائماً: "" ⇒ مسح المعرّف صراحةً (الخادم يضمن بقاء معرّف واحد على الأقل).
     update.mutate({
       userId,
@@ -366,6 +382,10 @@ export default function UserEdit() {
         </CardContent>
       </Card>
 
+      {/* عنصر نموذج حقيقي يلفّ حقول الحفظ الفعلية (كان غائباً — يمنع حفظ متصفح/تعبئة تلقائية ويكسر
+          دلالة Enter-to-submit). لا يلفّ بطاقات الإجراءات المستقلة أسفله (إعادة تعيين كلمة المرور/
+          إبطال الجلسات/2FA/الحذف) — لكلٍّ منها مطفَره الخاص. */}
+      <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); submit(); }}>
       <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card>
         <CardHeader><CardTitle className="text-base">البيانات الأساسية</CardTitle></CardHeader>
@@ -395,7 +415,7 @@ export default function UserEdit() {
             <select
               id="role" className={selectCls}
               value={customRoleId ? `custom:${customRoleId}` : role}
-              onChange={(e) => handleRoleChange(e.target.value)}
+              onChange={(e) => void handleRoleChange(e.target.value)}
             >
               <optgroup label="أدوار النظام">
                 {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
@@ -407,7 +427,7 @@ export default function UserEdit() {
               )}
             </select>
             {customRoleId ? (
-              <p className="text-[11px] text-muted-foreground">دور مخصّص — يمكنك هنا إضافة أو سحب استثناء لهذا المستخدم فقط، أو تعديل أساس الدور من شاشة «الأدوار والصلاحيات».</p>
+              <p className="text-[11px] text-muted-foreground">دور مخصّص — صلاحياته تُدار من شاشة «الأدوار والصلاحيات».</p>
             ) : roleInfo ? <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p> : null}
             {/* معاينة حيّة للأثر الفعليّ (ش١ RBAC): «سيرى: تجزئة فقط» — تلتقط خطأ اختيار الدور قبل الحفظ. */}
             <div className="pt-1">
@@ -474,7 +494,7 @@ export default function UserEdit() {
         <CardHeader>
           <CardTitle className="text-base">
             الصلاحيات
-            {customCount > 0 && (
+            {!customRoleId && customCount > 0 && (
               <span className="text-[10px] font-medium text-primary mr-2 align-middle">
                 {customCount} مخصّص
               </span>
@@ -482,19 +502,19 @@ export default function UserEdit() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {customRoleId && (
-            <p className="mb-3 text-sm text-muted-foreground">
-              الأساس هو دور «{selectedCustomRole?.label ?? "مخصّص"}». التغييرات هنا تخص هذا المستخدم وحده ولا تعدّل بقية أصحاب الدور.
-            </p>
+          {customRoleId ? (
+            <p className="text-sm text-muted-foreground">صلاحيات الدور المخصّص محفوظة في تعريفه — عدّلها من شاشة «الأدوار والصلاحيات».</p>
+          ) : (
+            <>
+              <PermDiffSummary role={role} override={permsOverride} />
+              <PermissionMatrix
+                role={role}
+                permissions={resolvedPerms}
+                onChange={handlePermChange}
+                onReset={() => setPermsOverride({})}
+              />
+            </>
           )}
-          <PermDiffSummary base={permissionBase} override={permsOverride} />
-          <PermissionMatrix
-            role={role}
-            permissions={resolvedPerms}
-            basePermissions={permissionBase}
-            onChange={handlePermChange}
-            onReset={() => setPermsOverride({})}
-          />
         </CardContent>
       </Card>
 
@@ -502,11 +522,14 @@ export default function UserEdit() {
       {done && <p className="text-sm text-money-positive">{done}</p>}
 
       <div className="flex flex-wrap gap-2">
-        <Button onClick={submit} disabled={update.isPending || (customRoleId != null && (rolesQ.isLoading || !selectedCustomRole))}>
+        {/* type="submit" وبلا onClick مباشر — يعتمد على onSubmit في <form> وحده كمصدرٍ واحد
+            (تفادياً لاستدعاء submit() مرّتين لو حمل الزرّ onClick أيضاً). */}
+        <Button type="submit" disabled={update.isPending}>
           {update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}
         </Button>
         {isActive ? (
           <Button
+            type="button"
             variant="outline"
             onClick={() => void (async () => {
               if (!(await confirm({ variant: "danger", title: "تعطيل المستخدم", description: `لن يستطيع «${name || u.email}» الدخول وتُبطَل جلساته فوراً. هل تتابع؟`, confirmText: "تعطيل" }))) return;
@@ -517,12 +540,13 @@ export default function UserEdit() {
             {setActive.isPending ? "…" : "تعطيل المستخدم"}
           </Button>
         ) : (
-          <Button variant="outline" onClick={() => setActive.mutate({ userId, isActive: true })} disabled={setActive.isPending}>
+          <Button type="button" variant="outline" onClick={() => setActive.mutate({ userId, isActive: true })} disabled={setActive.isPending}>
             {setActive.isPending ? "…" : "إعادة تفعيل"}
           </Button>
         )}
-        <Link href="/users"><Button variant="ghost">رجوع</Button></Link>
+        <Link href="/users"><Button type="button" variant="ghost">رجوع</Button></Link>
       </div>
+      </form>
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
       {/* إعادة تعيين كلمة المرور */}
@@ -573,7 +597,7 @@ export default function UserEdit() {
             بديل أخفّ من «إعادة تعيين كلمة المرور» عندما لا داعي لكلمة مرور جديدة.
           </p>
           <Button variant="outline" onClick={() => void doRevokeSessions()} disabled={revokeSessions.isPending}>
-            {revokeSessions.isPending ? "…" : "إبطال كل الجلسات"}
+            {revokeSessions.isPending ? "…" : "تسجيل الخروج من كل الأجهزة"}
           </Button>
           {revokeMsg && <p className={`text-sm ${revokeSessions.isSuccess ? "text-money-positive" : "text-destructive"}`}>{revokeMsg}</p>}
           {/* إنقاذ 2FA: المستخدم فقد هاتفه ورموز استرداده معاً ⇒ الأدمن يصفّرها ليدخل بكلمة المرور. */}

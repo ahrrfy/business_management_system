@@ -3,7 +3,7 @@
 // (decimal.js) — الواجهة تعرض فقط. المطبعة ديجيتال: صغير المقاس بالوجه، عريض (فلكس) بالمتر².
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
-import { Calculator, Settings2, Loader2 } from "lucide-react";
+import { Calculator, Settings2, Loader2, MessageCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -11,7 +11,9 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/PageHeader";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatIqd } from "@/lib/money";
+import { openWhatsApp, buildPrintPricingMessage } from "@/lib/whatsapp";
 import { trpc, type RouterInputs } from "@/lib/trpc";
 import {
   COLOR_MODE_AR,
@@ -130,6 +132,45 @@ export default function PrintPricingCalculator() {
     retry: false,
   });
   const result = estimate.data;
+
+  // مخرج عملي: نسخ تفصيل الحساب كنصّ — مخرج قابل للّصق (عرض سعر شفهي/رسالة عميل/ملاحظة) بدل
+  // نتيجة معزولة تختفي بمغادرة الشاشة. (إنشاء عرض سعر مباشر يلزم دعم تعبئة مسبقة في
+  // QuotationNew.tsx — خارج ملكية هذه المهمة، انظر notes.)
+  // وصف الطلب سطراً واحداً — يُستعمل في نصّ النسخ ورسالة واتساب معاً (مصدر حقيقة واحد).
+  const jobDescription = useMemo(() => {
+    if (!result || !debounced) return "";
+    if (result.category === "SMALL" && debounced.category === "SMALL") {
+      return `${sizeLabel(debounced.paperSize)} · ${COLOR_MODE_AR[debounced.colorMode]} · ${debounced.sides === 2 ? "وجهان" : "وجه واحد"} · ${debounced.copies} نسخة × ${debounced.pagesPerCopy} صفحة`;
+    }
+    if (result.category === "WIDE" && debounced.category === "WIDE") {
+      return `عريض ${debounced.width}×${debounced.height} م × ${debounced.quantity} قطعة (${result.areaSqm} م²)`;
+    }
+    return "";
+  }, [result, debounced]);
+
+  const copyText = useMemo(() => {
+    if (!result || !debounced) return "";
+    const lines: string[] = ["تسعير طباعة رقمية", jobDescription, ""];
+    for (const l of result.lines) lines.push(`${l.label}${l.detail ? ` — ${l.detail}` : ""}: ${formatIqd(l.amount)}`);
+    lines.push(`إجمالي الكلفة: ${formatIqd(result.totalCost)}`);
+    lines.push(`السعر المقترح: ${formatIqd(result.suggestedPrice)}`);
+    lines.push(`سعر الوحدة الواحدة: ${formatIqd(result.unitPrice)}`);
+    return lines.join("\n");
+  }, [result, debounced, jobDescription]);
+
+  function shareViaWhatsApp() {
+    if (!result) return;
+    openWhatsApp(
+      null,
+      buildPrintPricingMessage({
+        jobDescription,
+        lines: result.lines,
+        totalCost: result.totalCost,
+        suggestedPrice: result.suggestedPrice,
+        unitPrice: result.unitPrice,
+      }),
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -296,9 +337,19 @@ export default function PrintPricingCalculator() {
           {/* ─── النتيجة ─── */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                تفصيل الكلفة والسعر المقترح
-                {estimate.isFetching && <Loader2 aria-hidden className="size-4 animate-spin text-muted-foreground" />}
+              <CardTitle className="flex items-center justify-between gap-2 text-base">
+                <span className="flex items-center gap-2">
+                  تفصيل الكلفة والسعر المقترح
+                  {estimate.isFetching && <Loader2 aria-hidden className="size-4 animate-spin text-muted-foreground" />}
+                </span>
+                {result && (
+                  <div className="flex items-center gap-1.5">
+                    <Button type="button" size="sm" variant="outline" onClick={shareViaWhatsApp} className="gap-1.5">
+                      <MessageCircle aria-hidden className="size-4" /> إرسال عبر واتساب
+                    </Button>
+                    <CopyAsMenu plain={copyText} label="نسخ التفصيل" size="sm" variant="outline" />
+                  </div>
+                )}
               </CardTitle>
             </CardHeader>
             <CardContent>

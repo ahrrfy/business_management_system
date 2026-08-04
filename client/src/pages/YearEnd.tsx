@@ -3,8 +3,11 @@
  */
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
@@ -14,13 +17,26 @@ import { trpc } from "@/lib/trpc";
 import { TrendingUp, TrendingDown } from "lucide-react";
 import { useState } from "react";
 
+// قيمة القائمة المنسدلة عندما يريد المستخدم "الشركة كلّها" حصراً (branchId=null خادمياً)
+// — مُميَّزة عن "" (بلا فلتر نطاق إطلاقاً)، وAppSelect يتعامل بالنصوص فقط.
+const COMPANY_WIDE = "COMPANY";
+
 export default function YearEndPage() {
   const utils = trpc.useUtils();
-  const list = trpc.yearEnd.list.useQuery();
   const branches = trpc.branches.list.useQuery();
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(currentYear - 1);
   const [branchId, setBranchId] = useState<number | null>(null);
+
+  // فلترا سجل «الإقفالات السابقة» — مستقلّان عن نموذج «إقفال سنة جديدة» أعلاه.
+  const [histYear, setHistYear] = useState("");
+  const [histBranch, setHistBranch] = useState("");
+  const histFilters = {
+    year: histYear.trim() ? Number(histYear) : undefined,
+    branchId: histBranch === "" ? undefined : histBranch === COMPANY_WIDE ? null : Number(histBranch),
+  };
+  const histFiltered = histYear.trim() !== "" || histBranch !== "";
+  const list = trpc.yearEnd.list.useQuery(histFilters);
 
   const closeMut = trpc.yearEnd.close.useMutation({
     onSuccess: (r) => {
@@ -34,7 +50,7 @@ export default function YearEndPage() {
     <div className="container mx-auto p-4 space-y-4 max-w-5xl">
       <PageHeader
         title="الإقفال السنوي"
-        description="يحسب revenue/cogs/expenses من دفتر الأستاذ، يقفل الفترة حتى Dec 31، وينشر قيد ADJUST بقيمة net profit على Jan 1 من السنة التالية."
+        description="يحسب الإيراد وتكلفة المبيعات والمصروفات من دفتر الأستاذ، يقفل الفترة حتى ٣١ كانون الأول، وينشر قيد تسوية بصافي الربح على ١ كانون الثاني من السنة التالية."
       />
 
       <Card>
@@ -83,7 +99,36 @@ export default function YearEndPage() {
       </Card>
 
       <Card>
-        <CardHeader className="font-semibold">الإقفالات السابقة</CardHeader>
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <span className="font-semibold">الإقفالات السابقة</span>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="grid gap-1">
+              <Label className="text-xs text-muted-foreground">السنة</Label>
+              <Input
+                type="number"
+                value={histYear}
+                onChange={(e) => setHistYear(e.target.value)}
+                placeholder="كل السنوات"
+                className="h-9 w-32"
+              />
+            </div>
+            <div className="grid gap-1">
+              <Label className="text-xs text-muted-foreground">النطاق</Label>
+              <AppSelect value={histBranch} onValueChange={setHistBranch} placeholder="كل النطاقات" className="w-44">
+                <option value="">كل النطاقات</option>
+                <option value={COMPANY_WIDE}>الشركة كلّها فقط</option>
+                {branches.data?.map((b: any) => (
+                  <option key={b.id} value={String(b.id)}>{b.name} ({b.code})</option>
+                ))}
+              </AppSelect>
+            </div>
+            {histFiltered && (
+              <Button variant="ghost" size="sm" onClick={() => { setHistYear(""); setHistBranch(""); }}>
+                إعادة ضبط
+              </Button>
+            )}
+          </div>
+        </CardHeader>
         <CardContent>
           {list.isLoading ? (
             <LoadingState />
@@ -103,15 +148,16 @@ export default function YearEndPage() {
                 </thead>
                 <tbody>
                   {(list.data?.rows.length ?? 0) === 0 ? (
-                    <TableEmptyRow colSpan={7} message="لا إقفالات سابقة" />
+                    <TableEmptyRow colSpan={7} message={histFiltered ? "لا إقفالات مطابقة للفلاتر" : "لا إقفالات سابقة"} />
                   ) : (
                     list.data!.rows.map((s: any) => {
                       const net = Number(s.netProfit);
                       const isProfit = net >= 0;
+                      const branchName = s.branchId == null ? "كل الفروع" : (branches.data?.find((b: any) => b.id === s.branchId)?.name ?? `فرع #${s.branchId}`);
                       return (
                         <tr key={s.id} className="hover:bg-accent/40">
                           <td className="p-2 border font-medium">{s.year}</td>
-                          <td className="p-2 border">{s.branchId ?? "كل الفروع"}</td>
+                          <td className="p-2 border">{branchName}</td>
                           <td className="p-2 border">{formatIqd(s.totalRevenue)}</td>
                           <td className="p-2 border">{formatIqd(s.totalCogs)}</td>
                           <td className="p-2 border">{formatIqd(s.totalExpenses)}</td>

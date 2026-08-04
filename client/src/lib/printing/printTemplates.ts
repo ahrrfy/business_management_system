@@ -181,10 +181,18 @@ export interface QuotationPrintData {
   total: string | number;
 }
 
-export function printQuotation(d: QuotationPrintData): void {
-  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printQuotationV2 بالتصميم المرجعي (٦ أعمدة صنف/وحدة/كمية/سعر/ضريبة/إجمالي،
+export async function printQuotation(d: QuotationPrintData): Promise<void> {
+  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printQuotationV2 بالتصميم المرجعي (٦ أعمدة منتج/وحدة/كمية/سعر/ضريبة/إجمالي،
   // شروط في صندوق أخضر داخلي، توقيعا العميل والممثّل التجاري). description القديم يُلحَق باسم المنتج.
+  const qrPayload = [
+    CO.sub,
+    `عرض سعر: ${d.quoteNumber}`,
+    ...(d.quoteDate ? [`التاريخ: ${d.quoteDate}`] : []),
+    `الإجمالي: ${fmtC(d.total)}`,
+  ].join('\n');
+  const qrSvg = await qrCodeSvg(qrPayload, { size: 88, margin: 1 }).catch(() => '');
   printQuotationV2({
+    qrSvg: qrSvg || null,
     quoteNumber: d.quoteNumber,
     quoteDate: d.quoteDate,
     validUntil: d.validUntil,

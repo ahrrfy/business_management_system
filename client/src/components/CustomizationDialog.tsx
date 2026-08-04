@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { Banknote, Check, FileText, Image as ImageIcon, Palette, Ruler, Truck, Layers, UserRound, ReceiptText } from "lucide-react";
+import { Check, FileText, Image as ImageIcon, Package, Palette, Ruler, Truck, Layers, UserRound } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
@@ -15,8 +15,9 @@ import { cn } from "@/lib/utils";
 /**
  * نافذة التخصيص — تجمع مواصفات أمر الشغل لصنف مخصّص في سلّة الاستقبال.
  *
- * المخرج: {title, customizationText, priority, dueDate, hasDelivery, deliveryAddress, deliveryCost,
- *          designImages[], deposit}. السعر يبقى من سعر الصنف (لا يُتغيّر من هنا).
+ * التسعير **إضافي**: `unitPrice` هنا هو سعر التخصيص/الخدمة الإضافي فقط — يُضاف فوق سعر المنتج
+ * الأساس (المُمرَّر عبر prop) لا يستبدله. الإجمالي الفعلي للوحدة = سعر المنتج + unitPrice
+ * (إصلاح ٣/٨: كان unitPrice يستبدل سعر المنتج بالكامل فيضيع سعر المنتج الأساس من الفاتورة).
  *
  * المقاس/الخامة يُحفظان كسطرين مهيكلَين في صدر `customizationText` ⇒ تظهران كرقائق في السلّة وفي
  * بطاقة الطابور بلا حقول جديدة في الـschema.
@@ -33,16 +34,17 @@ export type CustomizationData = {
   dueDate: string; // YYYY-MM-DD
   hasDelivery: boolean;
   deliveryAddress: string;
+  deliveryPhone: string;
   deliveryCost: string;
   designImages: ImageItem[];
   paymentReceiptImages: ImageItem[];
   deposit: string;
 };
 
-export function emptyCustomization(productName: string, price: string): CustomizationData {
+export function emptyCustomization(productName: string): CustomizationData {
   return {
     title: productName,
-    unitPrice: price,
+    unitPrice: "0",
     laborCost: "0",
     assignedTo: null,
     size: "",
@@ -52,10 +54,11 @@ export function emptyCustomization(productName: string, price: string): Customiz
     dueDate: "",
     hasDelivery: false,
     deliveryAddress: "",
+    deliveryPhone: "",
     deliveryCost: "0",
     designImages: [],
     paymentReceiptImages: [],
-    deposit: price,
+    deposit: "0",
   };
 }
 
@@ -64,7 +67,10 @@ export function composeCustomizationText(d: CustomizationData): string {
   const lines: string[] = [];
   if (d.size.trim()) lines.push(`[المقاس] ${d.size.trim()}`);
   if (d.material.trim()) lines.push(`[الخامة] ${d.material.trim()}`);
-  if (d.hasDelivery) lines.push(`[توصيل] ${d.deliveryAddress.trim() || "—"}`);
+  if (d.hasDelivery) {
+    const phoneSuffix = d.deliveryPhone.trim() ? ` — هاتف المستلم: ${d.deliveryPhone.trim()}` : "";
+    lines.push(`[توصيل] ${d.deliveryAddress.trim() || "—"}${phoneSuffix}`);
+  }
   if (d.customizationText.trim()) {
     if (lines.length) lines.push("---");
     lines.push(d.customizationText.trim());
@@ -88,22 +94,24 @@ interface Props {
   initial?: CustomizationData;
   staff?: Array<{ id: number; name: string | null; role?: string | null }>;
   canEditInternalCost?: boolean;
+  /** إضافة الصنف بلا تخصيص (بسعره العادي، كصنفٍ جاهز) — غير مُمرَّرة عند تعديل تخصيصٍ موجود. */
+  onAddPlain?: () => void;
   onCancel: () => void;
   onSave: (data: CustomizationData) => void;
 }
 
-export function CustomizationDialog({ open, productName, price, quantity = 1, initial, staff = [], canEditInternalCost = false, onCancel, onSave }: Props) {
-  const [data, setData] = useState<CustomizationData>(() => initial ?? emptyCustomization(productName, price));
+export function CustomizationDialog({ open, productName, price, quantity = 1, initial, staff = [], canEditInternalCost = false, onAddPlain, onCancel, onSave }: Props) {
+  const [data, setData] = useState<CustomizationData>(() => initial ?? emptyCustomization(productName));
   // لقطة القيمة الأساس عند الفتح — لكشف «تغييرات غير محفوظة» قبل الإغلاق بالخطأ.
   const baselineRef = useRef<string>("");
 
   useEffect(() => {
     if (open) {
-      const init = initial ?? emptyCustomization(productName, price);
+      const init = initial ?? emptyCustomization(productName);
       setData(init);
       baselineRef.current = JSON.stringify(init);
     }
-  }, [open, productName, price, initial]);
+  }, [open, productName, initial]);
 
   // حارس فقد البيانات: عند محاولة إغلاق نافذة أمر شغل طويلة وفيها تعديلات، أكّد قبل التجاهل.
   async function requestClose() {
@@ -124,8 +132,9 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
     setData((d) => ({ ...d, [k]: v }));
 
   const today = new Date().toISOString().slice(0, 10);
-  const grandWithDelivery = D(data.unitPrice || 0).times(Math.max(1, quantity)).plus(D(data.deliveryCost || 0));
-  const remaining = grandWithDelivery.minus(D(data.deposit || 0));
+  // الإجمالي **إضافي**: سعر المنتج الأساس + سعر التخصيص، لكل وحدة، مضروباً بالكمية + توصيل (مرّة واحدة).
+  const unitTotal = D(price || 0).plus(D(data.unitPrice || 0));
+  const grandWithDelivery = unitTotal.times(Math.max(1, quantity)).plus(D(data.deliveryCost || 0));
 
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -135,8 +144,8 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
       setSaveError("عنوان أمر الشغل مطلوب");
       return;
     }
-    if (D(data.unitPrice || 0).lte(0)) {
-      setSaveError("سعر بيع الخدمة يجب أن يكون أكبر من صفر");
+    if (unitTotal.lte(0)) {
+      setSaveError("السعر الإجمالي للوحدة (سعر المنتج + سعر التخصيص) يجب أن يكون أكبر من صفر");
       return;
     }
     if (D(data.laborCost || 0).lt(0)) {
@@ -147,17 +156,6 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
       setSaveError("تكلفة التوصيل لا يمكن أن تكون سالبة");
       return;
     }
-    // حارس عميل: deposit لا يَتجاوز الإجمالي (إصلاح عدائي ٢٣/٦/٢٦). الـmax على input تَحقّق HTML
-    // فقط ولا يَحمي من تَعديل state بَرمجياً ⇒ لو غاب هذا الفحص الخادم سيَرمي عند الإرسال.
-    const depD = D(data.deposit || 0);
-    if (depD.gt(grandWithDelivery)) {
-      setSaveError(`العربون (${fmt(depD.toString())}) يَتجاوز إجمالي الصنف (${fmt(grandWithDelivery.toString())})`);
-      return;
-    }
-    if (depD.lt(0)) {
-      setSaveError("العربون لا يَكون سالباً");
-      return;
-    }
     onSave(data);
   }
 
@@ -166,7 +164,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
       <DialogContent dir="rtl" className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
-            <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٤</span>
+            <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٣</span>
             <Palette aria-hidden className="size-5 text-violet-600" />
             تفاصيل الخدمة وأمر الشغل: {productName}
           </DialogTitle>
@@ -188,14 +186,17 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
           {/* التسعير والمسؤول — جزء إداري من أمر الشغل، لا يظهر كتفاصيل فنية للعميل. */}
           <div className={cn("grid grid-cols-1 gap-3", canEditInternalCost ? "sm:grid-cols-3" : "sm:grid-cols-2")}>
             <div className="space-y-1.5">
-              <Label htmlFor="cz-price" className="text-xs">سعر بيع الوحدة *</Label>
+              <Label htmlFor="cz-price" className="text-xs">سعر التخصيص الإضافي *</Label>
               <MoneyInput
                 id="cz-price"
                 value={data.unitPrice}
                 onChange={(v) => upd("unitPrice", v)}
-                ariaLabel="سعر بيع وحدة الخدمة"
+                ariaLabel="سعر التخصيص الإضافي"
                 className="text-sm"
               />
+              <p className="text-[11px] text-muted-foreground">
+                فوق سعر المنتج ({fmt(price || "0")} د.ع) = <span className="font-bold tabular-nums" dir="ltr">{fmt(unitTotal.toString())}</span> د.ع / وحدة
+              </p>
             </div>
             {canEditInternalCost && (
               <div className="space-y-1.5">
@@ -219,7 +220,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
                 onChange={(e) => upd("assignedTo", e.target.value ? Number(e.target.value) : null)}
                 className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs"
               >
-                <option value="">غير مسند</option>
+                <option value="">غير مسند — يسحبه فني المطبعة من محطة التنفيذ</option>
                 {staff.map((member) => (
                   <option key={member.id} value={member.id}>
                     {member.name ?? `موظف #${member.id}`}
@@ -328,20 +329,34 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
               <Truck aria-hidden className="size-4" /> توصيل للعميل
             </label>
             {data.hasDelivery && (
-              <div className="grid grid-cols-3 gap-2 pt-1">
-                <Input
-                  value={data.deliveryAddress}
-                  onChange={(e) => upd("deliveryAddress", e.target.value)}
-                  placeholder="عنوان التوصيل"
-                  className="text-sm col-span-2"
-                />
-                <MoneyInput
-                  value={data.deliveryCost}
-                  onChange={(v) => upd("deliveryCost", v)}
-                  placeholder="تكلفة التوصيل"
-                  className="text-sm"
-                  ariaLabel="تكلفة التوصيل"
-                />
+              <div className="space-y-2 pt-1">
+                <div className="grid grid-cols-3 gap-2">
+                  <Input
+                    value={data.deliveryAddress}
+                    onChange={(e) => upd("deliveryAddress", e.target.value)}
+                    placeholder="عنوان التوصيل"
+                    className="text-sm col-span-2"
+                  />
+                  <MoneyInput
+                    value={data.deliveryCost}
+                    onChange={(v) => upd("deliveryCost", v)}
+                    placeholder="تكلفة التوصيل"
+                    className="text-sm"
+                    ariaLabel="تكلفة التوصيل"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="cz-delivery-phone" className="text-[11px] font-normal text-muted-foreground">
+                    هاتف المستلم <span className="text-muted-foreground/70">(إن اختلف عن هاتف العميل)</span>
+                  </Label>
+                  <IntlPhoneInput
+                    id="cz-delivery-phone"
+                    value={data.deliveryPhone}
+                    onChange={(v) => upd("deliveryPhone", v)}
+                    ariaLabel="هاتف مستلم التوصيل"
+                    className="text-sm"
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -372,43 +387,19 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
             <ImageUploader value={data.designImages} onChange={(v) => upd("designImages", v)} maxItems={10} />
           </div>
 
-          <div className="space-y-1.5">
-            <Label className="text-xs flex items-center justify-between">
-              <span className="inline-flex items-center gap-1">
-                <ReceiptText aria-hidden className="size-3.5" /> مرفق إثبات الدفع
-              </span>
-              <span className="text-[10px] text-muted-foreground font-normal">اختياري — صورة واحدة</span>
-            </Label>
-            <ImageUploader
-              value={data.paymentReceiptImages}
-              onChange={(v) => upd("paymentReceiptImages", v)}
-              maxItems={1}
-            />
-          </div>
-
-          {/* العربون والمتبقّي */}
+          {/* الدفع يُحصّل مرة واحدة من لوحة الطلب، لا داخل كل بند. */}
           <div className="rounded-lg border bg-primary/5 p-3 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">سعر الوحدة: منتج {fmt(price || "0")} + تخصيص {fmt(data.unitPrice || "0")} =</span>
+              <span className="font-bold tabular-nums" dir="ltr">{fmt(unitTotal.toString())} د.ع</span>
+            </div>
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">إجمالي البند ({quantity} × سعر الوحدة){data.hasDelivery && " + التوصيل"}:</span>
               <span className="font-bold tabular-nums" dir="ltr">{fmt(grandWithDelivery.toString())} د.ع</span>
             </div>
-            <div className="space-y-1">
-              <Label htmlFor="cz-deposit" className="text-xs inline-flex items-center gap-1">
-                <Banknote aria-hidden className="size-3.5" /> العربون المدفوع الآن
-              </Label>
-              <MoneyInput
-                id="cz-deposit"
-                value={data.deposit}
-                onChange={(v) => upd("deposit", v)}
-                className="text-sm"
-              />
-            </div>
-            <div className="flex items-center justify-between text-xs pt-1 border-t">
-              <span className="text-muted-foreground">المتبقّي بعد العربون:</span>
-              <Badge variant={remaining.lte(0) ? "default" : "secondary"} className="font-bold tabular-nums" dir="ltr">
-                {fmt(remaining.toString())} د.ع
-              </Badge>
-            </div>
+            <p className="border-t pt-2 text-[11px] text-muted-foreground">
+              أدخل العربون أو المبلغ المقبوض مرة واحدة في مرحلة الدفع؛ سيُوزّعه النظام على كامل الطلب تلقائياً.
+            </p>
           </div>
         </div>
 
@@ -420,6 +411,18 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
 
         <DialogFooter className="gap-2 sm:gap-2">
           <Button variant="outline" onClick={onCancel} size="sm">إلغاء</Button>
+          {onAddPlain && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onAddPlain}
+              size="sm"
+              className="inline-flex items-center gap-1"
+              title={`إضافة القطعة كصنفٍ جاهز بسعرها العادي (${fmt(price || "0")} د.ع) بلا تخصيص`}
+            >
+              <Package aria-hidden className="size-4" /> إضافة بلا تخصيص ({fmt(price || "0")})
+            </Button>
+          )}
           <Button onClick={handleSave} size="sm" disabled={!data.title.trim()} className="inline-flex items-center gap-1">
             <Check aria-hidden className="size-4" /> حفظ التخصيص
           </Button>

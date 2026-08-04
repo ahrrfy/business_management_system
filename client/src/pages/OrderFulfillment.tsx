@@ -7,8 +7,8 @@
  * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Check, ClipboardList, Loader2, MessageCircle, Package, Printer, Store, Truck, X } from "lucide-react";
-import { trpc } from "@/lib/trpc";
+import { AlertTriangle, Check, ClipboardList, FileText, Loader2, MessageCircle, Package, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
@@ -19,8 +19,12 @@ import { StatCard } from "@/components/StatCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { RowActions } from "@/components/list/RowActions";
 import { ListToolbar } from "@/components/list/ListToolbar";
+import { Input } from "@/components/ui/input";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
+import { printOnlineOrderPreparationA4, printOnlineOrderThermal } from "@/lib/printing/onlineOrder";
+import { storefrontUrl } from "@/lib/siteHosts";
 
 type Status = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
@@ -57,10 +61,16 @@ function money(v: string | number | null): string {
 }
 
 type OrderRow = { id: number; orderNumber: string; total: string; customerName: string | null };
+type Row = RouterOutputs["storeAdmin"]["orders"]["list"][number];
+
+// حجم صفحة الطلبات — نفس الافتراضي التاريخي (كان سقفاً صامتاً)، الآن صفحة أولى من ترقيم حقيقي.
+const PAGE_SIZE = 200;
 
 export default function OrderFulfillment() {
   const [filter, setFilter] = useState<Status | null>(null);
   const [query, setQuery] = useState("");
+  // مدى تاريخ الطلب (إنشاء الطلب) — محفوظ في querystring (يعيش مع الرجوع من التفاصيل، يُشارَك رابطاً).
+  const [f, setF, resetF] = useUrlFilters({ from: "", to: "" });
   const [printingId, setPrintingId] = useState<number | null>(null);
   const [dispatchTarget, setDispatchTarget] = useState<OrderRow | null>(null);
   const [cancelTarget, setCancelTarget] = useState<{ id: number; orderNumber: string } | null>(null);
@@ -73,7 +83,13 @@ export default function OrderFulfillment() {
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["manager"]);
 
   const countsQ = trpc.storeAdmin.orders.counts.useQuery();
-  const listQ = trpc.storeAdmin.orders.list.useQuery({ status: filter, limit: 200 });
+  // ترقيم حقيقي بالمؤشّر (كان يُحمَّل ٢٠٠ صفّاً فقط بلا مؤشّر ولا لافتة — اقتطاعٌ صامت). orders.list
+  // يبقى مصفوفة مسطّحة (عقدٌ يشاركه StoreDashboard.tsx خارج نطاق هذه الشاشة) ⇒ hasMore heuristic
+  // بطول الصفحة (نمط BoardColumn في TasksHub.tsx)، لا حقل hasMore صريح من الخادم.
+  const listQ = trpc.storeAdmin.orders.list.useInfiniteQuery(
+    { status: filter, from: f.from || undefined, to: f.to || undefined, limit: PAGE_SIZE },
+    { getNextPageParam: (last) => (last.length === PAGE_SIZE ? last[last.length - 1]?.id : undefined) },
+  );
   const setStatusM = trpc.storeAdmin.orders.setStatus.useMutation({
     onSuccess: (res) => {
       notify.ok(`تم تحديث الطلب إلى «${STATUS_META[res.to].label}»`);
@@ -94,7 +110,7 @@ export default function OrderFulfillment() {
   });
 
   const counts = countsQ.data ?? {};
-  const orders = listQ.data ?? [];
+  const orders = useMemo(() => (listQ.data?.pages ?? []).flatMap((p) => p), [listQ.data]);
   const visibleOrders = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase("ar");
     if (!needle) return orders;
@@ -104,9 +120,28 @@ export default function OrderFulfillment() {
     );
   }, [orders, query]);
 
-  async function advance(id: number, to: Status, label: string) {
-    const ok = await confirm({ title: `${label}؟`, description: `الطلب رقم ${id}` });
-    if (ok) setStatusM.mutate({ id, status: to });
+  const activeFilterCount = (filter ? 1 : 0) + (f.from || f.to ? 1 : 0);
+
+  // تصدير/طباعة «الكل»: نمشي بمؤشّر id (لا offset — عقد orders.list) حتى تنضب الصفحات المطابقة
+  // لفلاتر الحالة/المدى الحاليّة، بصرف النظر عمّا حُمِّل على الشاشة أو نطاق البحث المحلي.
+  async function fetchAllOrders(): Promise<Row[]> {
+    const out: Row[] = [];
+    let cursor: number | undefined;
+    for (let i = 0; i < 100; i++) { // صمّام أمان: حتى ٣٠ ألف طلب
+      const page = await utils.storeAdmin.orders.list.fetch({ status: filter, from: f.from || undefined, to: f.to || undefined, cursor, limit: 300 });
+      out.push(...page);
+      if (page.length < 300) break;
+      const lastId = page[page.length - 1]?.id;
+      if (lastId == null) break;
+      cursor = lastId;
+    }
+    return out;
+  }
+
+  // نصّ التأكيد يستعمل رقم الطلب الظاهر للمستخدم (orderNumber) لا معرّفه الداخلي (id).
+  async function advance(order: { id: number; orderNumber: string }, to: Status, label: string) {
+    const ok = await confirm({ title: `${label}؟`, description: `الطلب رقم ${order.orderNumber}` });
+    if (ok) setStatusM.mutate({ id: order.id, status: to });
   }
   async function printLabel(id: number) {
     setPrintingId(id);
@@ -129,7 +164,8 @@ export default function OrderFulfillment() {
           total: d.total,
           deliveryPartyName: d.deliveryPartyName,
           createdAt: d.createdAt,
-          items: d.items.map((it) => ({ productName: it.productName, unitName: it.unitName, quantity: it.quantity })),
+          items: d.items.map((it) => ({ productName: [it.productName, it.variantLabel].filter(Boolean).join(" — "), unitName: it.unitName, quantity: it.quantity })),
+          qrUrl: `${storefrontUrl()}?order=${encodeURIComponent(d.orderNumber)}&token=${encodeURIComponent(d.labelToken)}`,
         },
         { into: labelWin },
       );
@@ -140,6 +176,27 @@ export default function OrderFulfillment() {
     } finally {
       setPrintingId(null);
     }
+  }
+
+  async function printThermal(id: number) {
+    setPrintingId(id);
+    try {
+      const d = await utils.storeAdmin.orders.detail.fetch({ id });
+      if (!d) { notify.err("تعذر جلب تفاصيل الطلب"); return; }
+      await printOnlineOrderThermal(d);
+      notify.ok("أُرسل الطلب إلى طابعة الإيصالات");
+    } catch (e) { notify.err(e); }
+    finally { setPrintingId(null); }
+  }
+
+  async function printPreparationA4(id: number) {
+    setPrintingId(id);
+    try {
+      const d = await utils.storeAdmin.orders.detail.fetch({ id });
+      if (!d) { notify.err("تعذر جلب تفاصيل الطلب"); return; }
+      printOnlineOrderPreparationA4(d);
+    } catch (e) { notify.err(e); }
+    finally { setPrintingId(null); }
   }
 
   return (
@@ -164,9 +221,9 @@ export default function OrderFulfillment() {
         title="قائمة الطلبات"
         count={visibleOrders.length}
         loading={listQ.isLoading}
-        search={{ value: query, onChange: setQuery, placeholder: "رقم الطلب، الزبون، الهاتف أو المحافظة…" }}
-        activeFilterCount={filter ? 1 : 0}
-        onResetFilters={() => { setQuery(""); setFilter(null); }}
+        search={{ value: query, onChange: setQuery, placeholder: "رقم الطلب، العميل، الهاتف أو المحافظة…" }}
+        activeFilterCount={activeFilterCount}
+        onResetFilters={() => { setQuery(""); setFilter(null); resetF(); }}
         onRefresh={() => { void listQ.refetch(); void countsQ.refetch(); }}
         refreshing={listQ.isFetching || countsQ.isFetching}
         onPrint={() => window.print()}
@@ -175,10 +232,11 @@ export default function OrderFulfillment() {
           filename: "طلبات-المتجر",
           sheetName: "الطلبات",
           rows: visibleOrders,
+          fetchAll: fetchAllOrders,
           formats: ["xlsx", "csv"],
           columns: [
             { key: "orderNumber", header: "رقم الطلب" },
-            { key: "customerName", header: "الزبون" },
+            { key: "customerName", header: "العميل" },
             { key: "customerPhone", header: "الهاتف" },
             { key: "governorate", header: "المحافظة" },
             { key: "itemCount", header: "عدد الأصناف" },
@@ -187,21 +245,47 @@ export default function OrderFulfillment() {
           ],
         }}
         filters={
-          <div className="flex flex-wrap gap-1">
-            {FILTERS.map((f) => (
-              <button
-                key={f.label}
-                onClick={() => setFilter(f.value)}
-                className={`rounded-full px-3 py-1.5 text-xs font-bold transition ${
-                  filter === f.value ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="flex flex-wrap gap-1">
+              {FILTERS.map((opt) => (
+                <button
+                  key={opt.label}
+                  onClick={() => setFilter(opt.value)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                    filter === opt.value ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-1">
+              <Input type="date" value={f.from} onChange={(e) => setF({ from: e.target.value })} className="h-8 w-[8.5rem]" aria-label="من تاريخ الطلب" max={f.to || undefined} />
+              <span className="text-xs text-muted-foreground">إلى</span>
+              <Input type="date" value={f.to} onChange={(e) => setF({ to: e.target.value })} className="h-8 w-[8.5rem]" aria-label="إلى تاريخ الطلب" min={f.from || undefined} />
+            </div>
+          </>
         }
       />
+
+      {/* لافتة حقيقية بدل الاقتطاع الصامت: الصفحة المحمَّلة الأخيرة بلغت السقف ⇒ قد توجد طلبات
+          إضافية أقدم — لا نُخفي ذلك، ونعرض «تحميل المزيد» صراحةً. */}
+      {listQ.hasNextPage && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs font-medium text-[var(--sem-warn)]">
+          <span className="inline-flex items-center gap-1.5">
+            <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
+            معروض {orders.length} طلباً — قد توجد طلبات أقدم غير محمَّلة بعد.
+          </span>
+          <button
+            type="button"
+            onClick={() => listQ.fetchNextPage()}
+            disabled={listQ.isFetchingNextPage}
+            className="shrink-0 rounded-lg border border-[var(--sem-warn)]/60 bg-transparent px-3 py-1.5 text-xs font-bold text-[var(--sem-warn)] transition hover:bg-[var(--sem-warn-bg)] disabled:opacity-50"
+          >
+            {listQ.isFetchingNextPage ? "جارٍ التحميل…" : "تحميل المزيد"}
+          </button>
+        </div>
+      )}
 
       {/* الجدول */}
       <ScrollTableShell>
@@ -209,7 +293,7 @@ export default function OrderFulfillment() {
           <thead>
             <tr className="text-right">
               <th className="p-2 font-bold">رقم الطلب</th>
-              <th className="p-2 font-bold">الزبون</th>
+              <th className="p-2 font-bold">العميل</th>
               <th className="p-2 font-bold">الهاتف</th>
               <th className="p-2 font-bold">المحافظة</th>
               <th className="p-2 text-center font-bold">أصناف</th>
@@ -267,6 +351,26 @@ export default function OrderFulfillment() {
                             onSelect: () => printLabel(o.id),
                           },
                           {
+                            key: "print-thermal",
+                            kind: "print",
+                            label: "طباعة فاتورة حرارية",
+                            icon: ReceiptText,
+                            gate: { module: "store", level: "READ" },
+                            disabled: isBusy,
+                            disabledReason: "هناك عملية جارية على الطلب",
+                            onSelect: () => printThermal(o.id),
+                          },
+                          {
+                            key: "print-preparation-a4",
+                            kind: "print",
+                            label: "طباعة ورقة تجهيز A4",
+                            icon: FileText,
+                            gate: { module: "store", level: "READ" },
+                            disabled: isBusy,
+                            disabledReason: "هناك عملية جارية على الطلب",
+                            onSelect: () => printPreparationA4(o.id),
+                          },
+                          {
                             key: "whatsapp",
                             kind: "other",
                             label: "متابعة عبر واتساب",
@@ -297,7 +401,7 @@ export default function OrderFulfillment() {
                             gate: { module: "store", level: "FULL" },
                             disabled: isBusy,
                             disabledReason: "هناك عملية جارية على الطلب",
-                            onSelect: () => next && advance(o.id, next.to, next.label),
+                            onSelect: () => next && advance(o, next.to, next.label),
                           },
                           {
                             key: "cancel",
@@ -345,7 +449,7 @@ export default function OrderFulfillment() {
 
 /** حوار إلغاء طلب المتجر — سببٌ اختياريّ (يظهر لاحقاً في صفّ الطلب الملغى وسجلّ التدقيق). محصورٌ
  *  بطلبٍ قبل الإرسال (بلا فاتورة) — الإلغاء بعده يكون بإرجاع الفاتورة أو «تعذّر التسليم». */
-const CANCEL_REASONS = ["نفد المخزون", "تعذّر التواصل مع الزبون", "طلب مكرَّر", "رفض الزبون الطلب", "خارج نطاق التوصيل"];
+const CANCEL_REASONS = ["نفد المخزون", "تعذّر التواصل مع العميل", "طلب مكرَّر", "رفض العميل الطلب", "خارج نطاق التوصيل"];
 function CancelModal({
   order,
   pending,
@@ -469,7 +573,7 @@ function DispatchModal({
         </div>
         <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
           سيُنشأ فاتورة بيع بقيمة <b className="text-foreground">{money(order.total)} د.ع</b> على ذمّة{" "}
-          {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "الزبون"} (تُحصَّل عند
+          {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"} (تُحصَّل عند
           التسليم COD)، ويُخصم المخزون، ثم يُسند الطلب للمندوب المُختار.
         </p>
 

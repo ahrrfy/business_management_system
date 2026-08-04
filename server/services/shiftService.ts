@@ -172,7 +172,7 @@ export async function openShift(
 }
 
 /** Expected cash = opening balance + cash received − cash refunded during the shift. */
-async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: string) {
+export async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: string) {
   const rows = await tx
     .select({
       cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.paymentMethod} = 'CASH' THEN ${receipts.amount} ELSE 0 END), 0)`,
@@ -470,6 +470,69 @@ export async function openShiftIdTx(
     .limit(1);
   if (!locked[0] || locked[0].status !== "OPEN") return null;
   return id;
+}
+
+/**
+ * يحلّ الوردية "الفعليّة" لعملية نقدٍ صادرة من درج فرعٍ (مرتجع نقديّ) حين يكون الفاعل (غالباً
+ * مديراً — المرتجعات salesManagerProcedure) شخصاً مختلفاً عن الكاشير الذي يُشغّل الدرج الحقيقيّ.
+ * بخلاف openShiftIdTx (يبحث عن وردية *الفاعل* نفسه)، هذه تبحث عن وردية *الفرع* المفتوحة أيّاً كان
+ * صاحبها — الدرج مورد فرعٍ لا مستخدم. ربط إيصال الاسترداد بوردية الفاعل حين تختلف عن وردية الكاشير
+ * الذي سلّم النقد فعلياً كان يُخفي المرتجع عن Z-report صاحب الدرج الحقيقيّ، فيظهر له عند الإغلاق
+ * عجزٌ لا يفهم سببه (النقد خرج من درجه، والنظام حسبه — إن حسبه أصلاً — على وردية غير ورديته).
+ *
+ * - وردية واحدة مفتوحة بالفرع ⇒ تُستعمل تلقائياً (الحالة الشائعة، بلا احتكاك؛ ونتيجتها مطابقة
+ *   لِما كان عليه openShiftIdTx حين يتصادف الفاعل والكاشير الفعليّ — لا تغيير سلوكيّ هناك).
+ * - صفر ⇒ يرمي PRECONDITION_FAILED (لا درج مفتوح يُسترَدّ منه نقد).
+ * - أكثر من واحدة (مثلاً RETAIL+RECEPTION معاً، أو كاشيران) ⇒ يتطلّب explicitShiftId (اختيارٌ
+ *   صريح لأيّ درجٍ خرج منه النقد فعلياً)؛ بدونه يرمي برسالة تُبلغ عن التعدّد.
+ *
+ * يُعيد openingBalance مع shiftId — المستدعي (مرتجعٌ نقديّ) يحتاجه ليحسب computeExpectedCash
+ * ويتحقّق أنّ الدرج المستهدَف يحمل فعلاً هذا المبلغ الآن (نمط cashDropService: لا يُسحَب أكثر ممّا فيه).
+ */
+export async function resolveBranchCashShiftTx(
+  tx: Tx,
+  branchId: number,
+  explicitShiftId?: number | null,
+): Promise<{ shiftId: number; openingBalance: string }> {
+  const open = await tx
+    .select({ id: shifts.id, openingBalance: shifts.openingBalance })
+    .from(shifts)
+    .where(and(eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")));
+
+  let chosen: { id: number | string | bigint; openingBalance: string };
+  if (explicitShiftId != null) {
+    const match = open.find((s) => Number(s.id) === Number(explicitShiftId));
+    if (!match) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "الوردية المحدَّدة لاستقبال الاسترداد النقدي غير مفتوحة في هذا الفرع",
+      });
+    }
+    chosen = match;
+  } else if (open.length === 0) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "لا توجد وردية مفتوحة في هذا الفرع لاسترداد نقدي — افتح وردية أولاً",
+    });
+  } else if (open.length > 1) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `أكثر من وردية مفتوحة في هذا الفرع (${open.length}) — حدّد أيّ درجٍ خرج منه النقد فعلياً`,
+    });
+  } else {
+    chosen = open[0];
+  }
+
+  const id = Number(chosen.id);
+  // قفل صفّ الوردية ثم إعادة فحص الحالة (نمط openShiftIdTx — يمنع سباقاً مع closeShift المتزامن).
+  const locked = await tx.select({ status: shifts.status }).from(shifts).where(eq(shifts.id, id)).for("update").limit(1);
+  if (!locked[0] || locked[0].status !== "OPEN") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "الوردية المستهدَفة أُغلقت للتوّ — أعد المحاولة",
+    });
+  }
+  return { shiftId: id, openingBalance: chosen.openingBalance };
 }
 
 /**

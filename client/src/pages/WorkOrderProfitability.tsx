@@ -88,7 +88,7 @@ export default function WorkOrderProfitability() {
       );
       exportRows(all, {
         filename: `ربحية-أوامر-الشغل-${range.from}-${range.to}`,
-        title: "ربحية أوامر الشغل (Job Costing)",
+        title: "ربحية أوامر الشغل",
         meta: [
           { label: "الفترة", value: `${range.from} — ${range.to}` },
           {

@@ -5,7 +5,7 @@
  * (employeeId, attendanceDate). المبالغ عبر money.ts (toDbMoney) — لا parseFloat.
  * القراءة hr/READ والكتابة hr/FULL (تُفرض في الموجّه).
  * ========================================================================== */
-import { and, desc, eq, getTableColumns, inArray, like, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gte, inArray, like, lte, or, sql, type SQL } from "drizzle-orm";
 import { WEEK_DAYS, fullEmployeeName } from "@shared/hr";
 import { attendance, employees, hrAttendanceSettings, payrollRuns } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
@@ -95,6 +95,13 @@ export interface AttendanceFilters {
   employeeId?: number;
   /** الشهر بصيغة "YYYY-MM" — يُطابَق على attendanceDate بـ LIKE 'YYYY-MM%'. */
   period?: string;
+  /**
+   * مدى تواريخ "YYYY-MM-DD" (شاملُ الطرفين) — يتقدّم على `period` حين يُرسَل.
+   * الشاشة تفتح على **اليوم** (from = to = اليوم) بقرار المالك: سجلّ اليوم هو ما يُراجَع
+   * صباحاً، وفتحُ الشهر كاملاً كان يُغرق الصفحة بصفوفٍ لا تخصّ اللحظة.
+   */
+  dateFrom?: string;
+  dateTo?: string;
   /** مصدر التسجيل: fingerprint | manual. */
   source?: string;
   /** بحث نصّي: اسم الموظف (رباعيّ) أو التاريخ أو اسم اليوم العربي. */
@@ -111,7 +118,13 @@ export interface AttendanceFilters {
 function buildAttendanceConds(filters?: AttendanceFilters): SQL[] {
   const conds: SQL[] = [];
   if (filters?.employeeId) conds.push(eq(attendance.employeeId, filters.employeeId));
-  if (filters?.period) conds.push(like(attendance.attendanceDate, `${filters.period}%`));
+  // المدى يتقدّم على الشهر (وقد يُرسَلان معاً من شاشةٍ قديمة) — ولا يُجمَعان فيتضاربا.
+  if (filters?.dateFrom || filters?.dateTo) {
+    if (filters.dateFrom) conds.push(gte(attendance.attendanceDate, filters.dateFrom));
+    if (filters.dateTo) conds.push(lte(attendance.attendanceDate, filters.dateTo));
+  } else if (filters?.period) {
+    conds.push(like(attendance.attendanceDate, `${filters.period}%`));
+  }
   if (filters?.source) conds.push(eq(attendance.source, filters.source));
   if (filters?.needsReviewOnly) conds.push(eq(attendance.needsReview, true));
   const q = filters?.q?.trim();
@@ -200,6 +213,75 @@ function deriveRow(r: RateRow, locked: Set<string>) {
   };
 }
 
+/** سقف مسح الاشتقاق الحيّ — يُعلَن حين يُبلَغ فلا يُزعَم رقمٌ ناقصٌ رقماً كاملاً. */
+const SCAN_CAP = 20_000;
+
+/** أعمدة الاشتقاق الحيّ (خفيفة) — يتقاسمها مسحُ المجاميع ومسحُ اللقطات القديمة. */
+const scanCols = {
+  attendanceDate: attendance.attendanceDate,
+  hours: attendance.hours,
+  hourlyRate: attendance.hourlyRate,
+  amount: attendance.amount,
+  status: attendance.status,
+  source: attendance.source,
+  payType: employees.payType,
+  salary: employees.salary,
+  workSchedule: employees.workSchedule,
+  dayRates: employees.dayRates,
+} as const;
+
+/** الأشهر التي يغطّيها المدى (سقف ٢٤ شهراً) — نطاقُ زرّ الإصلاح قد يتعدّد بتعدّدها. */
+function monthsInRange(from?: string, to?: string): string[] {
+  const a = String(from ?? to ?? "").slice(0, 7);
+  const b = String(to ?? from ?? "").slice(0, 7);
+  if (!a || !b) return [];
+  const out: string[] = [];
+  let [y, m] = a.split("-").map(Number);
+  for (let i = 0; i < 24; i++) {
+    const cur = `${y}-${String(m).padStart(2, "0")}`;
+    out.push(cur);
+    if (cur >= b) break;
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  return out;
+}
+
+/**
+ * مجاميع **حيّة** لنطاقٍ من الفلتر — لا `SUM(amount)` المخزَّن.
+ *
+ * ذيلُ الجدول وبطاقةُ «المبلغ المستحقّ» كانا يجمعان اللقطات بينما الصفوف تعرض المُشتقّ من
+ * ملفّ الموظف ⇒ صفٌّ واحدٌ بـ١٣٬٣٣٥ تحته إجماليٌّ ٤٢٬٠٠٠. وهو عينُ ما اشتكى منه المالك:
+ * «الجدول مضلِّل». فليقُل كلُّ رقمٍ على الشاشة ما سيُدفع فعلاً.
+ */
+async function liveTotals(db: ReturnType<typeof requireDb>, where: SQL | undefined, locked: Set<string>) {
+  const rows = await db
+    .select(scanCols)
+    .from(attendance)
+    .leftJoin(employees, eq(attendance.employeeId, employees.id))
+    .where(where)
+    .limit(SCAN_CAP);
+  let hours = money(0);
+  let amount = money(0);
+  let fingerprintCount = 0;
+  let manualCount = 0;
+  for (const r of rows) {
+    hours = hours.plus(money(r.hours ?? 0));
+    amount = amount.plus(money(deriveRow(r, locked).amount));
+    if (r.source === "fingerprint") fingerprintCount += 1;
+    else manualCount += 1;
+  }
+  // العدّادان من **نفس** المسح لا من استعلامٍ ثانٍ (Codex P2): كانا لقطتين زمنيتين مختلفتين
+  // أثناء مزامنة البصمات، فتُعرَض عدّاداتُ مجموعةٍ فوق مبالغِ مجموعةٍ أخرى.
+  return {
+    hours: toDbMoney(hours),
+    amount: toDbMoney(amount),
+    fingerprintCount,
+    manualCount,
+    capped: rows.length >= SCAN_CAP,
+  };
+}
+
 /** سجلّ الحضور المدمج مع اسم الموظف واسم اليوم المحسوب — مرتّب بالأحدث تاريخاً، **مُرقَّم**.
  *  يُعيد صفوف الصفحة + إجمالي المطابق (للترقيم) + مجاميع المطابق (لتذييل الجدول). */
 export async function listAttendance(filters?: AttendanceFilters & { limit?: number; offset?: number }) {
@@ -231,21 +313,17 @@ export async function listAttendance(filters?: AttendanceFilters & { limit?: num
     .limit(limit)
     .offset(offset);
 
-  // الإجمالي + مجاميع المطابق كلّه (لا الصفحة) — بنفس الشروط ونفس الـjoin.
-  // المبالغ نصّية كما يعيدها mysql2 (SUM على decimal) — لا parseFloat (§٥).
+  // الإجمالي (للترقيم) بـCOUNT خادميّ؛ والمجاميع المعروضة **حيّة** لا مجموعَ اللقطات.
   const agg = (
     await db
-      .select({
-        count: sql<number>`COUNT(*)`,
-        hours: sql<string>`COALESCE(SUM(${attendance.hours}), 0)`,
-        amount: sql<string>`COALESCE(SUM(${attendance.amount}), 0)`,
-      })
+      .select({ count: sql<number>`COUNT(*)` })
       .from(attendance)
       .leftJoin(employees, eq(attendance.employeeId, employees.id))
       .where(where)
   )[0];
 
   const locked = await lockedPeriods(db);
+  const totals = await liveTotals(db, where, locked);
   const mapped = rows.map((r) => ({
     ...r,
     ...deriveRow(r, locked),
@@ -253,37 +331,43 @@ export async function listAttendance(filters?: AttendanceFilters & { limit?: num
   }));
 
   /*
-   * عدّ اللقطات القديمة على **كل المطابق** لا على الصفحة (Codex P1): بصفحةٍ حديثةٍ نظيفة
-   * كان العدّاد صفراً فيختفي زرُّ إعادة الاحتساب، وتبقى لقطاتُ صفحاتٍ أقدم — وهي وعاءُ
-   * أجر الساعيّ في المسيّر — منحرفةً بلا أيّ إشارة. مسحٌ خفيف (٤ أعمدة) بسقفٍ صريح.
+   * عدّ اللقطات القديمة على **نطاق زرّ الإصلاح** لا على الصفحة ولا على المدى المعروض:
+   *  • على الصفحة (Codex P1): صفحةٌ حديثةٌ نظيفة ⇒ صفرٌ ⇒ يختفي الزرّ وتبقى صفحاتٌ أقدم منحرفة.
+   *  • على المدى المعروض: الشاشة تفتح على **اليوم**، والزرُّ يُصلح **الشهر** ⇒ يخفى عن المالك
+   *    أنّ في شهره صفوفاً تحتاج إصلاحاً لمجرّد أنه ينظر إلى يومٍ نظيف.
+   * فالمسح على الشهر المستهدَف (وموظفِه إن فُلتِر) — تماماً ما ستفعله `recomputeMonthRates`.
    */
-  const STALE_SCAN_CAP = 20_000;
+  const periods = filters?.dateFrom || filters?.dateTo
+    ? monthsInRange(filters.dateFrom, filters.dateTo)
+    : filters?.period
+      ? [filters.period]
+      : [];
+  const scanConds: SQL[] = [];
+  if (periods.length) {
+    // **كلّ** شهرٍ يمثّله المدى لا شهرَ نهايته وحده (Codex P2): «آخر ٧ أيام» في مطلع الشهر
+    // يعبر شهرين، فقصرُ المسح على الأخير كان يُظهر صفوفاً مشطوبةً وعدّاداً صفراً ⇒ يختفي الزرّ.
+    scanConds.push(or(...periods.map((p) => like(attendance.attendanceDate, `${p}%`)))!);
+  }
+  if (filters?.employeeId) scanConds.push(eq(attendance.employeeId, filters.employeeId));
   const scan = await db
-    .select({
-      attendanceDate: attendance.attendanceDate,
-      hours: attendance.hours,
-      hourlyRate: attendance.hourlyRate,
-      amount: attendance.amount,
-      status: attendance.status,
-      payType: employees.payType,
-      salary: employees.salary,
-      workSchedule: employees.workSchedule,
-      dayRates: employees.dayRates,
-    })
+    .select(scanCols)
     .from(attendance)
     .leftJoin(employees, eq(attendance.employeeId, employees.id))
-    .where(where)
-    .limit(STALE_SCAN_CAP);
+    .where(scanConds.length ? and(...scanConds) : where)
+    .limit(SCAN_CAP);
+  const staleRows = scan.filter((r) => deriveRow(r, locked).rateStale);
 
   return {
     rows: mapped,
     total: Number(agg?.count ?? 0),
-    // المجاميع من المخزَّن (SUM على كل المطابق لا الصفحة). قد تختلف عن مجموع الأعمدة
-    // المعروضة إن كانت لقطاتٌ قديمة ⇒ الشاشة تُنبّه وتعرض زرّ إعادة الاحتساب.
-    totals: { hours: String(agg?.hours ?? "0"), amount: String(agg?.amount ?? "0") },
-    staleCount: scan.filter((r) => deriveRow(r, locked).rateStale).length,
+    // مجاميع **كل المطابق** (لا الصفحة) بالقيم الحيّة ⇒ الذيل يطابق الأعمدة دائماً.
+    // `capped` تُعلَن في الشاشة: مجاميعُ جزئية تُعرَض جزئيةً لا رقماً نهائياً كاذباً.
+    totals: { hours: totals.hours, amount: totals.amount, capped: totals.capped },
+    staleCount: staleRows.length,
+    /** الأشهر التي تحتاج إعادة احتساب فعلاً — الزرّ يمرّ عليها جميعاً. */
+    stalePeriods: Array.from(new Set(staleRows.map((r) => toDateStr(r.attendanceDate).slice(0, 7)))).sort(),
     /** بلغ المسحُ سقفَه ⇒ قد تكون هناك لقطاتٌ قديمة غير معدودة (لا نزعم صفراً كاذباً). */
-    staleScanCapped: scan.length >= STALE_SCAN_CAP,
+    staleScanCapped: scan.length >= SCAN_CAP,
   };
 }
 
@@ -379,23 +463,16 @@ export async function attendanceSummary(filters?: AttendanceFilters) {
   const db = requireDb();
   const conds = buildAttendanceConds(filters);
   const where = conds.length ? and(...conds) : undefined;
-  const row = (
-    await db
-      .select({
-        hours: sql<string>`COALESCE(SUM(${attendance.hours}), 0)`,
-        amount: sql<string>`COALESCE(SUM(${attendance.amount}), 0)`,
-        fingerprintCount: sql<number>`COALESCE(SUM(CASE WHEN ${attendance.source} = 'fingerprint' THEN 1 ELSE 0 END), 0)`,
-        manualCount: sql<number>`COALESCE(SUM(CASE WHEN ${attendance.source} <> 'fingerprint' THEN 1 ELSE 0 END), 0)`,
-      })
-      .from(attendance)
-      .leftJoin(employees, eq(attendance.employeeId, employees.id))
-      .where(where)
-  )[0];
+  // «المبلغ المستحقّ» بالقيم الحيّة كالجدول تماماً — مجموعُ اللقطات كان يعرض ٤٢٬٠٠٠ فوق
+  // صفوفٍ مجموعُها ١٣٬٣٣٥، وهو عينُ «الجدول مضلِّل» الذي شكاه المالك.
+  // ومسحٌ **واحد** يُخرج المبالغ والعدّادات معاً ⇒ لقطةٌ زمنية واحدة لا اثنتان.
+  const totals = await liveTotals(db, where, await lockedPeriods(db));
   return {
-    hours: String(row?.hours ?? "0"),
-    amount: String(row?.amount ?? "0"),
-    fingerprintCount: Number(row?.fingerprintCount ?? 0),
-    manualCount: Number(row?.manualCount ?? 0),
+    hours: totals.hours,
+    amount: totals.amount,
+    capped: totals.capped,
+    fingerprintCount: totals.fingerprintCount,
+    manualCount: totals.manualCount,
   };
 }
 
