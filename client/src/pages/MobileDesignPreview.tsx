@@ -737,16 +737,14 @@ function SalesContent({ tablet }: { tablet: boolean }) {
 function ActivityContent({
   tablet,
   onView,
-  attendanceNotification,
 }: {
   tablet: boolean;
   onView: (view: View) => void;
-  attendanceNotification: string;
 }) {
   const notifications = [
     {
-      title: attendanceNotification,
-      detail: "سجل الحضور الشخصي · منذ لحظات",
+      title: "تم تسجيل حضورك · 08:02 ص",
+      detail: "بوابة المنصور 01 · سجل الدوام",
       tone: "bg-[#e5f3ed] text-[#0f745e]",
       action: "عرض ملفي",
       view: "profile" as const,
@@ -830,22 +828,11 @@ function ActivityContent({
           ),
         )}
       </div>
-      <p className="mt-4 text-center text-[10px] text-[#7d9289]">
-        الإشعار يفتح الإجراء الصحيح، ولا يكتفي بعرض رسالة.
-      </p>
     </div>
   );
 }
 
-function ProfileContent({
-  tablet,
-  checkedIn,
-  onToggleClock,
-}: {
-  tablet: boolean;
-  checkedIn: boolean;
-  onToggleClock: () => void;
-}) {
+function ProfileContent({ tablet }: { tablet: boolean }) {
   return (
     <div className={`${tablet ? "p-6" : "p-4 pb-24"}`}>
       <section className="relative overflow-hidden rounded-[24px] bg-gradient-to-br from-[#113d34] to-[#0b6755] p-4 text-white shadow-[0_14px_28px_rgb(8_66_53_/_24%)]">
@@ -863,28 +850,43 @@ function ProfileContent({
           </div>
         </div>
       </section>
-      <section className="mt-3 rounded-2xl border border-white bg-white/85 p-3.5 shadow-[0_8px_20px_rgb(24_66_55_/_6%)]">
+      <section className="neo-attendance-card mt-3 overflow-hidden rounded-[22px] p-3.5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="grid size-9 place-items-center rounded-xl bg-[#e5f3ed] text-[#0f745e]">
+            <span className="grid size-9 place-items-center rounded-xl bg-[#e4f4ed] text-[#0f745e]">
               <CalendarClock className="size-4" />
             </span>
             <div>
-              <b className="block text-xs text-[#24483e]">حضور اليوم</b>
+              <b className="block text-xs text-[#24483e]">دوام اليوم</b>
               <small className="text-[10px] text-[#71877f]">
-                {checkedIn
-                  ? "تم تسجيل الدخول 08:02 ص"
-                  : "لم يتم تسجيل الحضور بعد"}
+                بوابة المنصور 01
               </small>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onToggleClock}
-            className={`rounded-xl px-3 py-2 text-[10px] font-bold text-white shadow-[0_7px_14px_rgb(15_128_104_/_22%)] ${checkedIn ? "bg-[#c25b22]" : "bg-[#0f8068]"}`}
-          >
-            {checkedIn ? "تسجيل انصراف" : "تسجيل حضور"}
-          </button>
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-[#e5f3ed] px-2.5 py-1 text-[9px] font-bold text-[#0f745e]">
+            <i className="size-1.5 rounded-full bg-[#16a276]" />
+            نشط
+          </span>
+        </div>
+        <div className="mt-3 grid grid-cols-3 overflow-hidden rounded-2xl border border-[#e4eee9] bg-white/70 text-center">
+          <div className="border-l border-[#e4eee9] px-2 py-2.5">
+            <small className="block text-[9px] text-[#81958d]">دخول</small>
+            <b className="mt-1 block text-[11px] text-[#24483e]" dir="ltr">
+              08:02 ص
+            </b>
+          </div>
+          <div className="border-l border-[#e4eee9] px-2 py-2.5">
+            <small className="block text-[9px] text-[#81958d]">الآن</small>
+            <b className="mt-1 block text-[11px] text-[#24483e]" dir="ltr">
+              06:17 م
+            </b>
+          </div>
+          <div className="px-2 py-2.5">
+            <small className="block text-[9px] text-[#81958d]">الإجمالي</small>
+            <b className="mt-1 block text-[11px] text-[#0e765f]" dir="ltr">
+              10:15
+            </b>
+          </div>
         </div>
       </section>
       <section
@@ -1063,11 +1065,6 @@ function AppSurface({ device }: { device: Device }) {
   const [view, setView] = useState<View>("home");
   const [role, setRole] = useState<UserRole>("manager");
   const [quickActionOpen, setQuickActionOpen] = useState(false);
-  const [checkedIn, setCheckedIn] = useState(true);
-  const [attendanceNotification, setAttendanceNotification] = useState(
-    "تم تسجيل حضورك اليوم الساعة 08:02 ص",
-  );
-  const [attendanceToast, setAttendanceToast] = useState<string | null>(null);
   const tablet = device === "tablet";
   const nextRole = () =>
     setRole((current) =>
@@ -1077,16 +1074,6 @@ function AppSurface({ device }: { device: Device }) {
           ? "warehouse"
           : "manager",
     );
-  const toggleAttendance = () => {
-    const next = !checkedIn;
-    const message = next
-      ? "تم تسجيل حضورك اليوم الساعة 08:02 ص"
-      : "تم تسجيل انصرافك اليوم وإجمالي دوامك 08:15 ساعات";
-    setCheckedIn(next);
-    setAttendanceNotification(message);
-    setAttendanceToast(message);
-    window.setTimeout(() => setAttendanceToast(null), 4200);
-  };
   const content =
     view === "home" ? (
       <HomeContent
@@ -1098,17 +1085,9 @@ function AppSurface({ device }: { device: Device }) {
     ) : view === "work" ? (
       <WorkContent tablet={tablet} onView={setView} />
     ) : view === "activity" ? (
-      <ActivityContent
-        tablet={tablet}
-        onView={setView}
-        attendanceNotification={attendanceNotification}
-      />
+      <ActivityContent tablet={tablet} onView={setView} />
     ) : view === "profile" ? (
-      <ProfileContent
-        tablet={tablet}
-        checkedIn={checkedIn}
-        onToggleClock={toggleAttendance}
-      />
+      <ProfileContent tablet={tablet} />
     ) : (
       <SalesContent tablet={tablet} />
     );
@@ -1150,12 +1129,6 @@ function AppSurface({ device }: { device: Device }) {
           )}
         </>
       )}
-      {attendanceToast && (
-        <AttendanceToast
-          message={attendanceToast}
-          onClose={() => setAttendanceToast(null)}
-        />
-      )}
     </div>
   );
 }
@@ -1170,6 +1143,7 @@ export default function MobileDesignPreview() {
       <style>{`@keyframes hero-glow { 0%,100% { transform: translate3d(0,0,0) scale(1); opacity:.55 } 50% { transform: translate3d(-14px,-8px,0) scale(1.18); opacity:.9 } } @keyframes neon-breathe { 0%,100% { box-shadow: 0 9px 18px rgb(13 105 86 / .24), inset 0 1px 0 rgb(255 255 255 / .33); } 50% { box-shadow: 0 13px 26px rgb(13 105 86 / .36), inset 0 1px 0 rgb(255 255 255 / .48); } } .mobile-preview-canvas { background: radial-gradient(circle at 8% 8%, #d7f2e5 0, transparent 24%), radial-gradient(circle at 93% 85%, #fce5cf 0, transparent 22%), linear-gradient(135deg, #eff7f2, #dfece6); } .mobile-preview-surface { background: #eef4f1; } .neo-topbar { background: linear-gradient(135deg, #102f2a, #0a4b3f); color: #f4fbf8; border-bottom: 1px solid rgb(255 255 255 / .08); box-shadow: inset 0 -1px 0 rgb(0 0 0 / .16); } .neo-topbar-title { color: #f8fffc; } .neo-topbar-button { color: #eafff7; background: linear-gradient(145deg, rgb(255 255 255 / .12), rgb(255 255 255 / .04)); border: 1px solid rgb(255 255 255 / .09); box-shadow: 4px 4px 9px rgb(0 0 0 / .18), -2px -2px 5px rgb(255 255 255 / .05); } .neo-topbar-button:hover { transform: translateY(-1px); background: rgb(255 255 255 / .16); } .neo-alert-dot { background: #e88a37; box-shadow: 0 0 0 3px #0e3b33; } .neo-branch-tag { color: #d9f9ed; background: rgb(224 255 241 / .12); border: 1px solid rgb(224 255 241 / .12); } .neo-home { isolation: isolate; } .neo-home-dark-layer { position: absolute; z-index: -1; inset: -65px -24px auto; height: 394px; background: radial-gradient(circle at 76% 25%, rgb(35 144 115 / .32), transparent 20%), linear-gradient(145deg, #102e29, #0a4b3f 62%, #063d34); border-radius: 0 0 52% 14% / 0 0 17% 8%; box-shadow: inset 0 -18px 42px rgb(0 0 0 / .17); } .neo-home-dark-layer::after { display: none; } .neo-greeting { color: #edf8f3; } .neo-greeting p, .neo-greeting span { color: #b9d9ce; } .neo-avatar { color: #e9fff6; background: linear-gradient(145deg, rgb(255 255 255 / .17), rgb(255 255 255 / .06)); border: 1px solid rgb(255 255 255 / .14); box-shadow: 5px 7px 14px rgb(0 0 0 / .18), -2px -2px 6px rgb(255 255 255 / .08); } .neo-search { color: #eafff7; background: linear-gradient(145deg, rgb(7 40 34 / .72), rgb(23 103 84 / .42)); border: 1px solid rgb(255 255 255 / .11); box-shadow: inset 3px 3px 7px rgb(0 0 0 / .23), inset -1px -1px 4px rgb(255 255 255 / .06); } .neo-hero-card { color: #fff; background: linear-gradient(140deg, #102c29, #174f44 60%, #0f5f50); border: 1px solid rgb(255 255 255 / .12); box-shadow: 11px 14px 28px rgb(3 31 26 / .32), -2px -2px 5px rgb(255 255 255 / .08), inset 1px 1px 0 rgb(255 255 255 / .08); } .neo-progress { background: rgb(0 0 0 / .3); box-shadow: inset 2px 2px 5px rgb(0 0 0 / .27); } .neo-progress span { background: linear-gradient(90deg, #69dbbe, #e5fff7 64%, #efae65); box-shadow: 0 0 14px rgb(149 255 222 / .8); } .neo-quick-panel { margin-top: 6px; padding: 16px 14px 2px; border-radius: 30px 30px 0 0; background: linear-gradient(180deg, rgb(255 255 255 / .45), transparent); } .neo-shortcut { background: linear-gradient(145deg, #f8fcfa, #dce8e2); box-shadow: 7px 8px 15px rgb(33 78 65 / .16), -4px -4px 9px #fff, inset 1px 1px 0 rgb(255 255 255 / .85); } .neo-bottom-nav { background: linear-gradient(145deg, #f7fbf9, #e2ece7); box-shadow: 0 -10px 26px rgb(11 62 49 / .1), inset 0 1px 0 #fff; border-top: 1px solid rgb(255 255 255 / .9); } .neo-fab { position: absolute; left: 50%; top: -25px; display: grid; width: 58px; height: 58px; place-items: center; transform: translateX(-50%); border-radius: 50%; color: #fff; background: linear-gradient(145deg, #1aa98b, #0b6a57); border: 5px solid #e9f2ed; animation: neon-breathe 4s ease-in-out infinite; } .neo-fab:hover { transform: translateX(-50%) translateY(-2px) scale(1.04); } @media (min-width: 768px) { .neo-home-dark-layer { height: 368px; border-radius: 0 0 38% 10% / 0 0 18% 7%; } .neo-quick-panel { padding-inline: 18px; } } @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }`}</style>
       <style>{`.neo-topbar-mobile { overflow: visible; border-radius: 0 0 34px 34px; box-shadow: inset 0 -1px 0 rgb(0 0 0 / .16), 0 10px 20px rgb(3 40 32 / .14); } .neo-topbar-mobile::after { position: absolute; z-index: -1; right: 18%; bottom: -22px; left: 18%; height: 37px; content: ''; border-radius: 0 0 46px 46px; background: linear-gradient(145deg, #0e392f, #0a4b3f); box-shadow: 0 9px 18px rgb(3 40 32 / .16); } .neo-cloud-button { color: #d5f5e9; } .neo-profile-dock { border-radius: 0 0 34px 34px; background: linear-gradient(145deg, #0e392f, #0a4b3f); box-shadow: 0 9px 18px rgb(3 40 32 / .24), inset 1px 0 0 rgb(255 255 255 / .07); } .neo-profile-button { color: #ecfff7; background: linear-gradient(145deg, rgb(255 255 255 / .18), rgb(255 255 255 / .06)); border: 1px solid rgb(255 255 255 / .17); box-shadow: 4px 5px 10px rgb(0 0 0 / .2), -2px -2px 5px rgb(255 255 255 / .08), inset 0 1px 0 rgb(255 255 255 / .2); }`}</style>
       <style>{`.neo-action-sheet { background: linear-gradient(145deg, #f9fcfa, #e6efea); border: 1px solid rgb(255 255 255 / .9); box-shadow: 0 -14px 38px rgb(4 47 38 / .25), inset 0 1px 0 #fff; } .neo-action-option { background: linear-gradient(145deg, #fff, #e8f0ec); box-shadow: 5px 6px 13px rgb(26 73 59 / .12), -3px -3px 7px #fff, inset 1px 1px 0 rgb(255 255 255 / .9); } .neo-action-option:active { transform: translateY(1px); box-shadow: inset 3px 3px 7px rgb(26 73 59 / .12), inset -2px -2px 5px #fff; }`}</style>
+      <style>{`.neo-attendance-card { background: radial-gradient(circle at 88% 15%, rgb(30 164 120 / .13), transparent 31%), linear-gradient(145deg, #f9fcfa, #e4eee9); border: 1px solid rgb(255 255 255 / .95); box-shadow: 8px 9px 20px rgb(27 75 61 / .1), -4px -4px 10px #fff, inset 1px 1px 0 rgb(255 255 255 / .88); }`}</style>
       <div className="mx-auto max-w-[1280px]">
         <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div>
