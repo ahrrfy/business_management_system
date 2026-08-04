@@ -19,6 +19,7 @@ import {
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
+import type { PortalState } from "@shared/countPortalMerge";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { confirm } from "@/lib/confirm";
 import { errMsg, notify } from "@/lib/notify";
@@ -50,8 +51,9 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 
-// `count.state` صار غلافاً بنمط ETag (`{ v, changed, state }`) — الحالة الفعلية في `.state`.
-type State = NonNullable<RouterOutputs["count"]["state"]["state"]>;
+// النوع من الوحدة المشتركة مباشرةً: `count.state` صار غلافاً (كتالوج + متغيّر) تُركّبه
+// `usePulsedCountState`، فاشتقاق النوع من شكل الردّ لم يعد يمثّل الحالة المعروضة.
+type State = PortalState;
 type CountItem = State["items"][number];
 type CountUnit = CountItem["units"][number];
 /** نوع العدّة كما تُسمّيها بوابة العدّ: أول عدّ · إعادة عدّ مطلوبة · عدّ تحقّقي فوق عدّ زميل. */

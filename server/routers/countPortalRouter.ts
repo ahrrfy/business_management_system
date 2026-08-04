@@ -20,8 +20,9 @@ import {
   COUNT_COOKIE_NAME,
   COUNT_TOKEN_TTL_MS,
   finishAssignment,
+  getPortalCatalog,
+  getPortalDynamic,
   getPortalPulse,
-  getPortalState,
   resolvePortalIdentity,
   submitCount,
 } from "../services/countPortalService";
@@ -145,14 +146,34 @@ export const countPortalRouter = router({
    * والطيّ أفضل وظيفياً أيضاً — جولةٌ واحدة عند التغيّر بدل جولتَي «نبضة ثم جلب».
    */
   state: publicProcedure
-    .input(z.object({ sessionCode, knownVersion: z.string().max(64).optional() }))
+    .input(
+      z.object({
+        sessionCode,
+        knownVersion: z.string().max(64).optional(),
+        /** وسم الكتالوج لدى العميل — إن طابق لم يُعد إرساله (٨٣٪ من الحمولة). */
+        knownCatalogVersion: z.string().max(64).optional(),
+      }),
+    )
     .query(async ({ input, ctx }) => {
       const identity = await resolvePortalIdentity(ctx, input.sessionCode);
-      const { v } = await getPortalPulse(identity);
+      // استعلاما تجميعٍ مفهرسان يعطيان **الوسمين معاً** — بلا تجسيد أي صفّ.
+      const { v, cv } = await getPortalPulse(identity);
+
+      // ① لا شيء تبدّل ⇒ ردٌّ بعشرات البايتات (الحالة الغالبة، ~٨٩٪).
       if (input.knownVersion && input.knownVersion === v) {
-        return { v, changed: false as const, state: null };
+        return { v, cv, changed: false as const, catalog: null, dynamic: null };
       }
-      return { v, changed: true as const, state: await getPortalState(identity) };
+
+      // ② تبدّل شيء ⇒ المتغيّر دائماً، والكتالوج **فقط** إن كان لدى العميل قديماً.
+      // ⚠️ المقارنة تسبق البناء عمداً: بناء الكتالوج ثمّ رميه كان يُبقي حمل القاعدة
+      // والتخصيصات كما هي (٣٤١٤ صنفاً + وحداتها + باركوداتها لكل عادّ عند كل تغيّر)،
+      // فيوفّر بايتات الشبكة وحدها ولا يعالج ضغط الذاكرة الذي أتت الشريحة لأجله.
+      const catalogFresh = input.knownCatalogVersion === cv;
+      const [dynamic, catalog] = await Promise.all([
+        getPortalDynamic(identity),
+        catalogFresh ? Promise.resolve(null) : getPortalCatalog(identity),
+      ]);
+      return { v, cv, changed: true as const, catalog: catalog?.items ?? null, dynamic };
     }),
 
   /** تسجيل عدّة (idempotent عبر clientRequestId — آمن لمزامنة طابور الأوفلاين). */

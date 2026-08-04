@@ -26,8 +26,15 @@ export { COUNT_COOKIE_NAME, COUNT_TOKEN_TTL_MS, signCountToken, verifyCountToken
 export type { CountTokenPayload } from "./countPortal/token";
 export { authenticatePin, resolvePortalIdentity } from "./countPortal/identity";
 export type { PortalIdentity, PortalAuthResult } from "./countPortal/identity";
-export { getPortalPulse, getPortalState } from "./countPortal/state";
-export type { PortalUnit, PortalItem } from "./countPortal/state";
+export { getPortalCatalog, getPortalDynamic, getPortalPulse, getPortalState } from "./countPortal/state";
+export type {
+  PortalCatalogItem,
+  PortalCountState,
+  PortalDynamic,
+  PortalItem,
+  PortalState,
+  PortalUnit,
+} from "./countPortal/state";
 export { submitCount } from "./countPortal/submit";
 export type { SubmitCountInput, SubmitCountResult } from "./countPortal/submit";
 export { finishAssignment } from "./countPortal/finish";

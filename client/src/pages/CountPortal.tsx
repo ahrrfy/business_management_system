@@ -22,6 +22,7 @@ import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
+import type { PortalState } from "@shared/countPortalMerge";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { cn } from "@/lib/utils";
 import {
@@ -49,8 +50,9 @@ import {
   type QueuedCount,
 } from "@/lib/countQueue";
 
-// `count.state` صار غلافاً بنمط ETag (`{ v, changed, state }`) — الحالة الفعلية في `.state`.
-type CountState = NonNullable<RouterOutputs["count"]["state"]["state"]>;
+// النوع من الوحدة المشتركة مباشرةً: `count.state` صار غلافاً (كتالوج + متغيّر) تُركّبه
+// `usePulsedCountState`، فاشتقاق النوع من شكل الردّ لم يعد يمثّل الحالة المعروضة.
+type CountState = PortalState;
 type CountItem = CountState["items"][number];
 type CountMode = "FIRST" | "RECOUNT" | "VERIFY";
 

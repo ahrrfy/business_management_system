@@ -1,6 +1,6 @@
 // حالة بوابة العدّ (جرد أعمى).
 // 🔒 يُمنع منعاً باتاً تضمين: expectedQty، الأسعار/التكاليف، كميات أو أسماء عدّات الزملاء.
-import { asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   branches,
   products,
@@ -11,6 +11,14 @@ import {
   stocktakeItems,
 } from "../../../drizzle/schema";
 import { createHmac, randomBytes } from "node:crypto";
+import {
+  mergePortalState,
+  type PortalCatalogItem,
+  type PortalCountState,
+  type PortalDynamic,
+  type PortalState,
+  type PortalUnit,
+} from "../../../shared/countPortalMerge";
 import { requireDb } from "../tx";
 import type { PortalIdentity } from "./identity";
 
@@ -26,29 +34,15 @@ function signPortalVersion(raw: string): string {
   return createHmac("sha256", VERSION_KEY).update(raw).digest("base64url").slice(0, 22);
 }
 
-export type PortalUnit = {
-  unitName: string;
-  /** عدد الوحدات الأساس في هذه الوحدة — معامل تحويل وليس مالاً (Number مشروع هنا). */
-  factor: number;
-  barcode: string | null;
-  /** الباركودات البديلة للوحدة (`productUnitBarcodes`) — تُطابَق عند المسح كما في الكاشير. */
-  aliases: string[];
-};
-
-export type PortalItem = {
-  variantId: number;
-  productName: string;
-  variantName: string | null;
-  sku: string;
-  isMine: boolean;
-  /** معدود من أي أحد (عدّ فعّال FIRST/RECOUNT) — بلا كمية لغير صاحب العدّ. */
-  counted: boolean;
-  /** آخر عدّة سجّلتُها أنا على هذا الصنف (إن وُجدت) — كميتي أراها وأعدّلها. */
-  myCount: { qty: number; at: Date; unitBreakdown: string | null } | null;
-  /** عدّه زميل (بلا كمية ولا اسم — جرد أعمى). */
-  colleagueCounted: boolean;
-  units: PortalUnit[];
-};
+// الأنواع ودالّة الدمج مشتركة مع العميل (`shared/countPortalMerge.ts`) كي يستحيل انحرافهما.
+export type {
+  PortalCatalogItem,
+  PortalCountState,
+  PortalDynamic,
+  PortalItem,
+  PortalState,
+  PortalUnit,
+} from "../../../shared/countPortalMerge";
 
 /**
  * بصمة نسخةٍ رخيصة لحالة البوابة — بديل الاستقصاء الثقيل.
@@ -124,31 +118,48 @@ export async function getPortalPulse(identity: PortalIdentity) {
     Number(i?.lastRecountAt ?? 0),
   ].join(":");
 
-  return { v: signPortalVersion(raw) };
+  // وسم الكتالوج يُشتقّ من **نفس** تجميعات الأصناف أعلاه (لا استعلامٍ إضافي ولا تجسيد).
+  // هذا ما يجعل المسار التزايديّ رخيصاً فعلاً: الراوتر يقارن `cv` قبل أن يبني الكتالوج،
+  // فلا يُجسَّد ٣٤١٤ صنفاً ووحداتها وباركوداتها ثمّ تُرمى. الصيغة مطابقة لما يحسبه
+  // `getPortalCatalog` حرفياً (session.id + أكبر معرّف صنف + العدد) — أي تغييرٍ في إحداهما
+  // يجب أن ينعكس في الأخرى وإلّا لم يتطابق الوسمان أبداً فيُعاد إرسال الكتالوج في كل دورة.
+  const cv = catalogVersionOf(Number(session.id), Number(i?.maxId ?? 0), Number(i?.n ?? 0));
+  return { v: signPortalVersion(raw), cv };
+}
+
+/** صيغة وسم الكتالوج — مصدرٌ واحد يستعمله `getPortalPulse` و`getPortalCatalog` معاً. */
+function catalogVersionOf(sessionId: number, maxItemId: number, itemCount: number): string {
+  return signPortalVersion(`cat:${sessionId}:${maxItemId}:${itemCount}`);
 }
 
 /**
- * حالة بوابة العدّ (العقد §٥ — `state`).
+ * حالة بوابة العدّ الكاملة (العقد §٥ — `state`) = الكتالوج الساكن ⊕ الحالة المتغيّرة.
+ * تبقى بنفس الشكل الخارجيّ بالضبط بعد الفصل، فلا يتغيّر أي مستهلك ولا اختبار.
  * 🔒 يُمنع منعاً باتاً تضمين: expectedQty، الأسعار/التكاليف، كميات أو أسماء عدّات الزملاء.
  */
-export async function getPortalState(identity: PortalIdentity) {
+export async function getPortalState(identity: PortalIdentity): Promise<PortalState> {
+  const [catalog, dyn] = await Promise.all([getPortalCatalog(identity), getPortalDynamic(identity)]);
+  return mergePortalState(catalog.items, dyn);
+}
+
+/**
+ * الجزء **الساكن**: أصناف الجلسة بأسمائها وSKU ووحدات قياسها وباركوداتها البديلة.
+ * ٨٣٪ من حجم الحمولة (٤٢٨ﻙﺐ أسماء + ٣٨٨ﻙﺐ وحدات، مقاسةً على جلسةٍ إنتاجية من ٣٤١٤ صنفاً)
+ * ولا يتغيّر خلال العدّ ⇒ يُرسَل مرّةً بوسمه الخاص `cv` ويُخزَّن لدى العميل فلا يتكرّر.
+ *
+ * ⚠️ `cv` يغطّي **تركيب** الجلسة (إضافة/حذف صنف) لا تحرير الكتالوج نفسه (إعادة تسمية منتج،
+ * تبديل باركود) — نادرٌ أثناء الجرد، ويلتقطه التحديث الكامل الدوريّ في `usePulsedCountState`.
+ */
+export async function getPortalCatalog(
+  identity: PortalIdentity,
+): Promise<{ cv: string; items: PortalCatalogItem[] }> {
   const db = requireDb();
-  const { session, assignment } = identity;
-  const myAssignmentId = Number(assignment.id);
+  const { session } = identity;
 
-  const branchRows = await db
-    .select({ name: branches.name })
-    .from(branches)
-    .where(eq(branches.id, session.branchId))
-    .limit(1);
-
-  // أصناف الجلسة كلها (أصناف الزملاء تلزم للبحث/العدّ التحقّقي) — بلا expectedQty/unitCost.
   const itemRows = await db
     .select({
+      id: stocktakeItems.id,
       variantId: stocktakeItems.variantId,
-      assignmentId: stocktakeItems.assignmentId,
-      recountStatus: stocktakeItems.recountStatus,
-      recountReason: stocktakeItems.recountReason,
       productName: products.name,
       variantName: productVariants.variantName,
       sku: productVariants.sku,
@@ -159,29 +170,6 @@ export async function getPortalState(identity: PortalIdentity) {
     .where(eq(stocktakeItems.sessionId, session.id))
     .orderBy(asc(stocktakeItems.id));
 
-  const countRows = await db
-    .select({
-      id: stocktakeCounts.id,
-      variantId: stocktakeCounts.variantId,
-      assignmentId: stocktakeCounts.assignmentId,
-      kind: stocktakeCounts.kind,
-      qty: stocktakeCounts.qty,
-      unitBreakdown: stocktakeCounts.unitBreakdown,
-      countedAt: stocktakeCounts.countedAt,
-    })
-    .from(stocktakeCounts)
-    .where(eq(stocktakeCounts.sessionId, session.id))
-    .orderBy(asc(stocktakeCounts.id));
-
-  const countsByVariant = new Map<number, typeof countRows>();
-  for (const c of countRows) {
-    const vid = Number(c.variantId);
-    const arr = countsByVariant.get(vid);
-    if (arr) arr.push(c);
-    else countsByVariant.set(vid, [c]);
-  }
-
-  // وحدات القياس النشطة لكل متغيّر (قطعة/درزن/كرتون + باركود مستقل لكل وحدة).
   const variantIds = itemRows.map((r) => Number(r.variantId));
   const unitRows = variantIds.length
     ? await db
@@ -198,7 +186,7 @@ export async function getPortalState(identity: PortalIdentity) {
         .orderBy(asc(productUnits.id))
     : [];
   const activeUnits = unitRows.filter((u) => u.isActive !== false);
-  // الباركودات البديلة للوحدات النشطة — العدّاد يمسح أيّ باركود ملصوق على البضاعة (أساسيّاً أو بديلاً).
+  // الباركودات البديلة للوحدات النشطة — العدّاد يمسح أيّ باركود ملصوق (أساسيّاً أو بديلاً).
   const activeUnitIds = activeUnits.map((u) => Number(u.id));
   const aliasRows = activeUnitIds.length
     ? await db
@@ -229,50 +217,95 @@ export async function getPortalState(identity: PortalIdentity) {
   // الوحدات الكبرى أولاً (كرتون ثم درزن ثم قطعة) — كما في نموذج التصميم jrd-count.
   for (const arr of Array.from(unitsByVariant.values())) arr.sort((a, b) => b.factor - a.factor);
 
-  let mineTotal = 0;
+  const items: PortalCatalogItem[] = itemRows.map((it) => ({
+    variantId: Number(it.variantId),
+    productName: it.productName,
+    variantName: it.variantName,
+    sku: it.sku,
+    units: unitsByVariant.get(Number(it.variantId)) ?? [],
+  }));
+
+  // ⚠️ نفس صيغة `getPortalPulse` بالضبط عبر `catalogVersionOf` — لو انحرفتا لما تطابق
+  // الوسمان أبداً فأُعيد إرسال الكتالوج في كل دورة وضاع كل التوفير صامتاً. اختبارٌ يحرسها.
+  const maxItemId = itemRows.length ? Number(itemRows[itemRows.length - 1]!.id) : 0;
+  return { cv: catalogVersionOf(Number(session.id), maxItemId, itemRows.length), items };
+}
+
+/**
+ * الجزء **المتغيّر**: حالتا الجلسة والتكليف، والتقدّم، ومهام إعادة العدّ، وحالات العدّ
+ * **للأصناف المعدودة فقط** (غير المذكور = لم يُعدّ) — ١٧٪ من الحمولة وهو وحده ما يتبدّل.
+ * 🔒 بلا expectedQty ولا أسعار ولا كميات/أسماء عدّات الزملاء (جرد أعمى).
+ */
+export async function getPortalDynamic(identity: PortalIdentity): Promise<PortalDynamic> {
+  const db = requireDb();
+  const { session, assignment } = identity;
+  const myAssignmentId = Number(assignment.id);
+
+  const [branchRows, countRows, itemAgg, recountRows] = await Promise.all([
+    db.select({ name: branches.name }).from(branches).where(eq(branches.id, session.branchId)).limit(1),
+    db
+      .select({
+        variantId: stocktakeCounts.variantId,
+        assignmentId: stocktakeCounts.assignmentId,
+        kind: stocktakeCounts.kind,
+        qty: stocktakeCounts.qty,
+        unitBreakdown: stocktakeCounts.unitBreakdown,
+        countedAt: stocktakeCounts.countedAt,
+      })
+      .from(stocktakeCounts)
+      .where(eq(stocktakeCounts.sessionId, session.id))
+      .orderBy(asc(stocktakeCounts.id)),
+    db
+      .select({ total: sql<number>`COUNT(*)` })
+      .from(stocktakeItems)
+      .where(eq(stocktakeItems.sessionId, session.id)),
+    // مهام إعادة العدّ قليلة ⇒ ضمُّها بأسمائها هنا أرخص من إقحام الأسماء في كل صنف.
+    db
+      .select({
+        variantId: stocktakeItems.variantId,
+        productName: products.name,
+        variantName: productVariants.variantName,
+        recountReason: stocktakeItems.recountReason,
+      })
+      .from(stocktakeItems)
+      .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(and(eq(stocktakeItems.sessionId, session.id), eq(stocktakeItems.recountStatus, "PENDING")))
+      .orderBy(asc(stocktakeItems.id)),
+  ]);
+
+  const countsByVariant = new Map<number, typeof countRows>();
+  for (const c of countRows) {
+    const vid = Number(c.variantId);
+    const arr = countsByVariant.get(vid);
+    if (arr) arr.push(c);
+    else countsByVariant.set(vid, [c]);
+  }
+
   let mineCounted = 0;
   let sessionCounted = 0;
-
-  const items: PortalItem[] = itemRows.map((it) => {
-    const vid = Number(it.variantId);
-    const counts = countsByVariant.get(vid) ?? [];
+  const counts: PortalCountState[] = [];
+  for (const [vid, rows] of Array.from(countsByVariant.entries())) {
     // «معدود» = يوجد عدّ فعّال (FIRST/RECOUNT) من أي أحد — VERIFY وحده لا يقع إلا بعد FIRST.
-    const counted = counts.some((c) => c.kind === "FIRST" || c.kind === "RECOUNT");
-    // The count list is deliberately shared. Field assignmentId is retained in
-    // storage for legacy rows, but no longer represents ownership of a product.
-    const isMine = true;
-    const myCounts = counts.filter((c) => Number(c.assignmentId) === myAssignmentId);
-    const myLast = myCounts.length ? myCounts[myCounts.length - 1] : null;
-    const colleagueCounted = counts.some(
-      (c) => (c.kind === "FIRST" || c.kind === "RECOUNT") && Number(c.assignmentId) !== myAssignmentId
+    const counted = rows.some((c) => c.kind === "FIRST" || c.kind === "RECOUNT");
+    const myRows = rows.filter((c) => Number(c.assignmentId) === myAssignmentId);
+    const myLast = myRows.length ? myRows[myRows.length - 1]! : null;
+    const colleagueCounted = rows.some(
+      (c) => (c.kind === "FIRST" || c.kind === "RECOUNT") && Number(c.assignmentId) !== myAssignmentId,
     );
     if (counted) sessionCounted++;
-    mineTotal++;
-    if (myCounts.some((c) => c.kind === "FIRST" || c.kind === "RECOUNT")) mineCounted++;
-    return {
+    if (myRows.some((c) => c.kind === "FIRST" || c.kind === "RECOUNT")) mineCounted++;
+    counts.push({
       variantId: vid,
-      productName: it.productName,
-      variantName: it.variantName,
-      sku: it.sku,
-      isMine,
       counted,
+      colleagueCounted,
       myCount: myLast
         ? { qty: myLast.qty, at: myLast.countedAt, unitBreakdown: myLast.unitBreakdown ?? null }
         : null,
-      colleagueCounted,
-      units: unitsByVariant.get(vid) ?? [],
-    };
-  });
-  // إعادة العدّ متاحة لأي عامل متصل؛ يوجّهه المشرف ميدانياً إلى الصنف المطلوب.
-  const recountTasks = itemRows
-    .filter((it) => it.recountStatus === "PENDING")
-    .map((it) => ({
-      variantId: Number(it.variantId),
-      productName: it.productName,
-      variantName: it.variantName,
-      reason: it.recountReason ?? "",
-    }));
+    });
+  }
 
+  const total = Number(itemAgg[0]?.total ?? 0);
   return {
     session: {
       code: session.code,
@@ -288,11 +321,19 @@ export async function getPortalState(identity: PortalIdentity) {
       zone: assignment.zone,
       status: assignment.status,
     },
+    // «لي» و«الجلسة» يتقاسمان نفس المجموع — القائمة مشتركة (سلوكٌ قائم قبل الفصل).
     progress: {
-      mine: { counted: mineCounted, total: mineTotal },
-      session: { counted: sessionCounted, total: itemRows.length },
+      mine: { counted: mineCounted, total },
+      session: { counted: sessionCounted, total },
     },
-    recountTasks,
-    items,
+    recountTasks: recountRows.map((it) => ({
+      variantId: Number(it.variantId),
+      productName: it.productName,
+      variantName: it.variantName,
+      reason: it.recountReason ?? "",
+    })),
+    counts,
   };
 }
+
+/* ── نهاية الخدمة ── */
