@@ -7,6 +7,7 @@ import { z } from "zod";
 import {
   customers,
   accountingEntries,
+  auditLogs,
   invoiceItems,
   invoices,
   productUnits,
@@ -20,12 +21,13 @@ import { logger } from "../logger";
 import { users } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
-import { logAudit } from "../services/auditService";
+import { logAudit, logAuditTx } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
-import { canSeeCostForUser, router, salesCashierProcedure, salesReadProcedure } from "../trpc";
+import { canSeeCostForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { withTx } from "../services/tx";
 
 // تحصين verifyManagerApproval ضدّ تخمين كلمة المرور:
 // (١) حدّ معدّل بالبريد المُحاوَل: ≤ ٥ محاولات / ٦٠ ثانية.
@@ -387,6 +389,212 @@ export const saleRouter = router({
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام الدفعة (تكرار)" });
+    }),
+
+  // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).
+  // /simplify ٣٠/٦: list = listPage().rows ⇒ كاتب واحد للاستعلام، صفر تَكرار.
+  correct: salesManagerProcedure
+    .input(
+      z.object({
+        invoiceId: z.number().int().positive(),
+        notes: z.string().max(5_000).optional(),
+        dueDate: ymd.nullable().optional(),
+        receiptMethods: z
+          .array(
+            z.object({
+              receiptId: z.number().int().positive(),
+              method,
+            }),
+          )
+          .max(50)
+          .optional(),
+        reason: z.string().trim().min(3, "اكتب سبب التعديل").max(500),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      return withTx(async (tx) => {
+        const inv = (
+          await tx
+            .select()
+            .from(invoices)
+            .where(eq(invoices.id, input.invoiceId))
+            .for("update")
+            .limit(1)
+        )[0];
+        if (!inv)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "الفاتورة غير موجودة",
+          });
+
+        const invoiceReceipts = await tx
+          .select({
+            id: receipts.id,
+            paymentMethod: receipts.paymentMethod,
+            cashBucket: receipts.cashBucket,
+            shiftId: receipts.shiftId,
+            status: receipts.status,
+          })
+          .from(receipts)
+          .where(eq(receipts.invoiceId, input.invoiceId))
+          .for("update");
+
+        const requestedMethods = new Map<number, z.infer<typeof method>>();
+        for (const receipt of input.receiptMethods ?? []) {
+          if (requestedMethods.has(receipt.receiptId)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "تكرر سند الدفع في طلب التعديل",
+            });
+          }
+          requestedMethods.set(receipt.receiptId, receipt.method);
+        }
+        const receiptIds = new Set(
+          invoiceReceipts.map((receipt) => Number(receipt.id)),
+        );
+        for (const receiptId of Array.from(requestedMethods.keys())) {
+          if (!receiptIds.has(receiptId)) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "سند الدفع لا يتبع هذه الفاتورة",
+            });
+          }
+        }
+
+        const oldFields = {
+          notes: inv.notes ?? null,
+          dueDate: inv.dueDate ? String(inv.dueDate).slice(0, 10) : null,
+          paymentMethod: inv.paymentMethod ?? null,
+          receipts: invoiceReceipts.map((receipt) => ({
+            receiptId: Number(receipt.id),
+            method: receipt.paymentMethod,
+            cashBucket: receipt.cashBucket,
+          })),
+        };
+
+        const nextNotes =
+          input.notes === undefined
+            ? (inv.notes ?? null)
+            : input.notes.trim() || null;
+        const nextDueDate =
+          input.dueDate === undefined
+            ? inv.dueDate
+              ? String(inv.dueDate).slice(0, 10)
+              : null
+            : input.dueDate;
+        const nextReceipts = invoiceReceipts.map((receipt) => ({
+          ...receipt,
+          nextMethod:
+            requestedMethods.get(Number(receipt.id)) ?? receipt.paymentMethod,
+        }));
+        const receiptMethodChanged = nextReceipts.some(
+          (receipt) => receipt.nextMethod !== receipt.paymentMethod,
+        );
+        const headerChanged =
+          nextNotes !== (inv.notes ?? null) ||
+          nextDueDate !==
+            (inv.dueDate ? String(inv.dueDate).slice(0, 10) : null);
+        if (!headerChanged && !receiptMethodChanged) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "لم يتغير أي حقل في الفاتورة",
+          });
+        }
+
+        for (const receipt of nextReceipts) {
+          if (receipt.nextMethod === receipt.paymentMethod) continue;
+          // لا يجوز إنشاء حركة درج نقدي بلا وردية؛ إن كانت دفعة البطاقة الأصلية
+          // مرتبطة بورديّة الفاتورة نستخدمها عند التصحيح، وإلا يلزم تسجيلها عبر
+          // مسار خزينة مناسب بدلاً من توليد نقدٍ يتيم في التقارير.
+          if (
+            receipt.nextMethod === "CASH" &&
+            receipt.shiftId == null &&
+            inv.shiftId == null
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "لا يمكن تحويل الدفعة إلى نقدي بلا وردية مرتبطة بالفاتورة",
+            });
+          }
+          // طريقة الدفع هي مصدر تقارير الصندوق والبطاقات. لذلك تُعدّل في سند القبض
+          // نفسه، لا في شارة الفاتورة فقط. النقد يبقى مرتبطاً بدرج الكاشير إن وُجد.
+          await tx
+            .update(receipts)
+            .set({
+              paymentMethod: receipt.nextMethod,
+              cashBucket: receipt.nextMethod === "CASH" ? "DRAWER" : null,
+              shiftId:
+                receipt.nextMethod === "CASH"
+                  ? (receipt.shiftId ?? inv.shiftId)
+                  : receipt.shiftId,
+            })
+            .where(eq(receipts.id, receipt.id));
+        }
+
+        // invoices.paymentMethod حقل عرض مختصر فقط؛ مصدر الحقيقة للدفعات هو receipts.
+        // في الدفع المختلط نحتفظ بآخر طريقة قبض، كما يفعل تسجيل الدفعة الاعتيادي.
+        const lastReceipt = nextReceipts.at(-1);
+        const nextPaymentMethod =
+          lastReceipt?.nextMethod ?? inv.paymentMethod ?? null;
+        await tx
+          .update(invoices)
+          .set({
+            notes: nextNotes,
+            dueDate: nextDueDate
+              ? new Date(`${nextDueDate}T00:00:00.000Z`)
+              : null,
+            paymentMethod: nextPaymentMethod,
+          })
+          .where(eq(invoices.id, input.invoiceId));
+
+        const newFields = {
+          notes: nextNotes,
+          dueDate: nextDueDate,
+          paymentMethod: nextPaymentMethod,
+          receipts: nextReceipts.map((receipt) => ({
+            receiptId: Number(receipt.id),
+            method: receipt.nextMethod,
+            cashBucket: receipt.nextMethod === "CASH" ? "DRAWER" : null,
+          })),
+        };
+        await logAuditTx(tx, ctx, {
+          action: "sale.invoiceCorrect",
+          entityType: "invoice",
+          entityId: input.invoiceId,
+          oldValue: oldFields,
+          newValue: { reason: input.reason, fields: newFields },
+        });
+
+        return { invoiceId: input.invoiceId };
+      });
+    }),
+
+  /** سجل تصحيحات الفاتورة للمدير/المالك فقط. */
+  correctionHistory: salesManagerProcedure
+    .input(z.object({ invoiceId: z.number().int().positive() }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return [];
+      return db
+        .select({
+          id: auditLogs.id,
+          action: auditLogs.action,
+          oldValue: auditLogs.oldValue,
+          newValue: auditLogs.newValue,
+          createdAt: auditLogs.createdAt,
+          userName: users.name,
+        })
+        .from(auditLogs)
+        .leftJoin(users, eq(auditLogs.userId, users.id))
+        .where(
+          and(
+            eq(auditLogs.entityType, "invoice"),
+            eq(auditLogs.entityId, String(input.invoiceId)),
+            eq(auditLogs.action, "sale.invoiceCorrect"),
+          ),
+        )
+        .orderBy(desc(auditLogs.id));
     }),
 
   // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).
