@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, useParams } from "wouter";
 import {
   AlertTriangle,
+  Ban,
   Camera,
+  Check,
   CheckCircle2,
   ClipboardCheck,
   Hourglass,
+  Lock,
+  PartyPopper,
+  RefreshCw,
   Search,
   Send,
   WifiOff,
@@ -46,6 +52,8 @@ import { Input } from "@/components/ui/input";
 type State = RouterOutputs["count"]["state"];
 type CountItem = State["items"][number];
 type CountUnit = CountItem["units"][number];
+/** نوع العدّة كما تُسمّيها بوابة العدّ: أول عدّ · إعادة عدّ مطلوبة · عدّ تحقّقي فوق عدّ زميل. */
+type CountMode = "FIRST" | "RECOUNT" | "VERIFY";
 
 /** مطابقة حرفية لباركود الوحدة — الأساسيّ أو أيّ بديل (فضاء تفرّد واحد كما في الكاشير). */
 function unitHasBarcode(unit: CountUnit, value: string) {
@@ -95,6 +103,8 @@ export default function MyStocktakeWorkspace() {
     () => typeof navigator === "undefined" || navigator.onLine,
   );
   const [queueCount, setQueueCount] = useState<number>(() => (code ? queueSize(code) : 0));
+  /** بعد التسليم: عرض القائمة للقراءة فقط بدل بطاقة الشكر (كبوابة العدّ). */
+  const [showListAfterSubmit, setShowListAfterSubmit] = useState(false);
 
   const st = state.data;
   const items = useMemo(() => st?.items ?? [], [st]);
@@ -201,7 +211,7 @@ export default function MyStocktakeWorkspace() {
         item.colleagueCounted &&
         !item.myCount
       ) {
-        notify.info("هذا المنتج عُدّ مسبقاً، وسياسة الجلسة تمنع العدّ المكرر.");
+        notify.info("المنتج معدود من زميلك — سياسة الجلسة تمنع العدّ المكرر");
         return;
       }
       setScannedUnit(unitName ?? null);
@@ -218,7 +228,7 @@ export default function MyStocktakeWorkspace() {
         (item) => matchesBarcode(item, value) || item.sku === value,
       );
       if (!found) {
-        notify.warn("الباركود لا يطابق منتجاً في هذه الجلسة", value);
+        notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", value);
         return;
       }
       // باركود وحدة أكبر (كرتون/درزن) ⇒ افتح الكمية على وحدته لا على وحدة الأساس.
@@ -231,6 +241,34 @@ export default function MyStocktakeWorkspace() {
     enabled: Boolean(st) && selected == null && !cameraOpen,
   });
 
+  /** Enter في حقل البحث: تطابق حرفيّ مع باركود/SKU ⇒ افتح البطاقة مباشرةً (كبوابة العدّ). */
+  const tryOpenByQuery = useCallback(() => {
+    const exact = query.trim();
+    if (!exact) return;
+    const hit =
+      items.find((i) => i.units.some((u) => unitHasBarcode(u, exact))) ??
+      items.find((i) => i.sku === exact);
+    if (!hit) return;
+    setQuery("");
+    openItem(hit, hit.units.find((u) => unitHasBarcode(u, exact))?.unitName);
+  }, [items, openItem, query]);
+
+  /** مهام إعادة العدّ المعلّقة — تحدّد نوع العدّة وتُعرض بسببها. */
+  const recountReasonByVariant = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const t of st?.recountTasks ?? []) m.set(t.variantId, t.reason);
+    return m;
+  }, [st]);
+
+  /** نوع عدّة المنتج المفتوح: إعادة عدّ مطلوبة ⇐ تحقّقي فوق عدّ زميل ⇐ عدّ أول. */
+  const selectedMode: CountMode = selected
+    ? recountReasonByVariant.has(selected.variantId)
+      ? "RECOUNT"
+      : selected.colleagueCounted && !selected.myCount
+        ? "VERIFY"
+        : "FIRST"
+    : "FIRST";
+
   const save = (qty: number, unitBreakdown: string | undefined) => {
     if (!selected) return;
     if (!Number.isSafeInteger(qty) || qty < 0) {
@@ -238,6 +276,7 @@ export default function MyStocktakeWorkspace() {
       return;
     }
     const item = selected;
+    const mode = selectedMode;
     const clientRequestId = newClientRequestId();
     submit.mutate(
       {
@@ -248,7 +287,7 @@ export default function MyStocktakeWorkspace() {
         clientRequestId,
       },
       {
-        onSuccess: async () => {
+        onSuccess: async (res) => {
           // عدّة مباشرة نجحت ⇒ أي نسخة معلّقة قديمة لنفس المنتج صارت لاغية.
           const stale = peekAll(code).find((q) => q.variantId === item.variantId);
           if (stale) removeQueued(code, stale.clientRequestId);
@@ -256,7 +295,19 @@ export default function MyStocktakeWorkspace() {
           setOnline(true);
           setSelected(null);
           setScannedUnit(null);
-          notify.ok("تم حفظ العدّ");
+          // الخادم هو الحَكَم في نوع العدّة ونتيجة المطابقة — لا الواجهة.
+          const kind = res.kind ?? mode;
+          if (kind === "VERIFY") {
+            if (res.verifyMatch === false)
+              notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
+            else if (res.verifyMatch === true)
+              notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
+            else notify.ok("سُجّل العدّ التحقّقي");
+          } else if (kind === "RECOUNT") {
+            notify.ok("سُجّلت إعادة العدّ");
+          } else {
+            notify.ok("سُجّلت الكمية");
+          }
           await utils.count.state.invalidate({ sessionCode: code });
         },
         onError: (error) => {
@@ -290,25 +341,24 @@ export default function MyStocktakeWorkspace() {
   };
 
   const submitAssignment = async () => {
-    if (
-      !st ||
-      !(await confirm({
-        title: "تسليم العدّ للمراجعة",
-        description:
-          "لن تتمكن من إضافة أو تعديل عدّك بعد التسليم. لا تنهِ المهمة إلا بعد توجيه المسؤول.",
-        confirmText: "تسليم العدّ",
-        variant: "warning",
-      }))
-    )
-      return;
+    if (!st) return;
+    const zone = st.assignment.zone;
+    const ok = await confirm({
+      variant: "warning",
+      title: "تسليم العدّ النهائي",
+      description: `بعد التسليم لا يمكنك تعديل عدّك${zone ? ` — منطقة «${zone}»` : ""}. هل أنت متأكد؟`,
+      confirmText: "تسليم العدّ",
+    });
+    if (!ok) return;
     finish.mutate(
       { sessionCode: code },
       {
         onSuccess: async (result) => {
+          setShowListAfterSubmit(false);
           notify.ok(
             result.sessionMovedToReview
-              ? "اكتمل الجرد وانتقل للمراجعة"
-              : "تم تسليم عدّك للمراجعة",
+              ? "سُلّم العدّ — اكتمل الجرد وانتقلت الجلسة للمراجعة"
+              : "سُلّم العدّ — شكراً لجهدك",
           );
           await Promise.all([
             utils.count.state.invalidate({ sessionCode: code }),
@@ -394,6 +444,72 @@ export default function MyStocktakeWorkspace() {
       ? `بانتظار مزامنة ${fmtInt(queueCount)} عدّة`
       : null;
 
+  /* ── حالات الجلسة المنتهية — بنصوص بوابة العدّ نفسها ── */
+  if (st.session.status === "CANCELLED") {
+    return (
+      <StateCard
+        icon={<Ban className="size-8" aria-hidden />}
+        title="أُلغيت جلسة الجرد"
+        body={`ألغى المسؤول هذه الجلسة — لا حاجة لمزيد من العدّ. شكراً لجهدك ${st.assignment.name}.`}
+      />
+    );
+  }
+  if (st.session.status === "APPROVED") {
+    return (
+      <StateCard
+        icon={<Check className="size-8" aria-hidden />}
+        tone="ok"
+        title="اعتُمدت نتائج الجرد"
+        body={`أُغلقت جلسة «${st.session.name}» واعتُمدت نتائجها — شكراً لمشاركتك ${st.assignment.name}.`}
+      />
+    );
+  }
+  if (st.session.status === "REVIEW" && st.assignment.status !== "SUBMITTED") {
+    return (
+      <StateCard
+        icon={<Lock className="size-8" aria-hidden />}
+        tone="low"
+        title="أُقفل العدّ"
+        body={`نقل المسؤول الجلسة لمرحلة المراجعة — لم يعد إدخال العدّ متاحاً. شكراً لجهدك ${st.assignment.name}.`}
+      />
+    );
+  }
+
+  /* ── تكليف مسلَّم: بطاقة شكر (ثم القائمة للقراءة فقط عند الطلب) ── */
+  if (st.assignment.status === "SUBMITTED" && !showListAfterSubmit) {
+    const movedToReview = st.session.status === "REVIEW";
+    return (
+      <Card className="mx-auto mt-10 max-w-2xl">
+        <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+          <div className="badge-stock-ok grid size-20 place-items-center rounded-full">
+            <Check className="size-10" aria-hidden />
+          </div>
+          <p className="flex items-center justify-center gap-2 text-xl font-bold">
+            سلّمت عدّك — شكراً {st.assignment.name.split(" ")[0]}
+            <PartyPopper className="size-5" aria-hidden />
+          </p>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            {movedToReview
+              ? "اكتمل العدّ من جميع العمّال — الجلسة الآن قيد مراجعة المسؤول."
+              : `بانتظار بقية الزملاء — تقدّم الجلسة ${fmtInt(overall.counted)}/${fmtInt(overall.total)} منتجاً.`}
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <button
+              type="button"
+              className="py-2 text-sm font-bold text-primary"
+              onClick={() => setShowListAfterSubmit(true)}
+            >
+              عرض منتجاتي (للقراءة فقط)
+            </button>
+            <Link href="/my-stocktake">
+              <Button variant="outline">العودة إلى جردي</Button>
+            </Link>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-[1500px] space-y-4 p-1 sm:space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border bg-card p-4 shadow-sm sm:p-6">
@@ -429,9 +545,11 @@ export default function MyStocktakeWorkspace() {
             title={online ? "متصل" : "لا اتصال"}
             aria-label={online ? "متصل" : "لا اتصال"}
           />
-          <div className="flex items-center gap-2 rounded-xl bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary sm:px-4 sm:py-2 sm:text-sm">
-            <ClipboardCheck className="size-4" aria-hidden /> جرد أعمى
-          </div>
+          {st.session.blind && (
+            <div className="flex items-center gap-2 rounded-xl bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary sm:px-4 sm:py-2 sm:text-sm">
+              <ClipboardCheck className="size-4" aria-hidden /> جرد أعمى
+            </div>
+          )}
         </div>
       </header>
 
@@ -512,26 +630,39 @@ export default function MyStocktakeWorkspace() {
         </Card>
       </section>
 
-      {st.recountTasks.length > 0 && (
+      {canCount && st.recountTasks.length > 0 && (
         <div className="badge-stock-low rounded-xl border border-border p-4 text-sm">
-          <p className="font-bold">
-            يوجد {fmtInt(st.recountTasks.length)} طلب إعادة عدّ.
+          <p className="inline-flex items-center gap-1.5 font-bold">
+            <RefreshCw className="size-3.5" aria-hidden /> مطلوب إعادة عدّ (
+            {fmtInt(st.recountTasks.length)}):
           </p>
-          <div className="mt-2 flex flex-wrap gap-2">
+          <div className="mt-2 space-y-1.5">
             {st.recountTasks.map((task) => (
-              <Button
+              <button
                 key={task.variantId}
-                size="sm"
-                variant="outline"
+                type="button"
                 onClick={() => {
-                  const item = items.find(
-                    (i) => i.variantId === task.variantId,
-                  );
+                  const item = items.find((i) => i.variantId === task.variantId);
                   if (item) openItem(item);
                 }}
+                className="flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-right text-sm font-semibold transition hover:bg-muted/50"
               >
-                {task.productName} — إعادة عدّ
-              </Button>
+                <span className="min-w-0">
+                  <span className="block truncate">
+                    {task.productName}
+                    {task.variantName ? (
+                      <span className="font-normal text-muted-foreground">
+                        {" "}
+                        {task.variantName}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="block truncate text-[11px] font-normal text-muted-foreground">
+                    السبب: {task.reason}
+                  </span>
+                </span>
+                <span className="shrink-0 text-xs">عدّ الآن ←</span>
+              </button>
             ))}
           </div>
         </div>
@@ -556,7 +687,13 @@ export default function MyStocktakeWorkspace() {
                 <Input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="اسم المنتج أو SKU أو باركود…"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      tryOpenByQuery();
+                    }
+                  }}
+                  placeholder="بحث بالاسم أو SKU أو رقم الباركود…"
                   className="h-11 pr-9"
                 />
               </div>
@@ -630,7 +767,9 @@ export default function MyStocktakeWorkspace() {
             })}
             {filtered.length === 0 && (
               <p className="p-10 text-center text-sm text-muted-foreground">
-                لا توجد نتائج مطابقة.
+                {needle
+                  ? `لا نتائج للبحث «${query.trim()}»`
+                  : "لا توجد منتجات في هذه الجلسة."}
               </p>
             )}
           </div>
@@ -654,8 +793,10 @@ export default function MyStocktakeWorkspace() {
           </DialogHeader>
           {selected && (
             <QtyEditor
-              key={selected.variantId}
+              key={`${selected.variantId}-${selectedMode}`}
               item={selected}
+              mode={selectedMode}
+              recountReason={recountReasonByVariant.get(selected.variantId)}
               queued={queuedByVariant.get(selected.variantId)}
               focusUnit={scannedUnit}
               saving={submit.isPending}
@@ -685,6 +826,8 @@ export default function MyStocktakeWorkspace() {
 
 function QtyEditor({
   item,
+  mode,
+  recountReason,
   queued,
   focusUnit,
   saving,
@@ -692,6 +835,8 @@ function QtyEditor({
   onSave,
 }: {
   item: CountItem;
+  mode: CountMode;
+  recountReason?: string;
   /** عدّة محفوظة على الجهاز لم تُزامَن بعد — أحدث من `item.myCount` فتسبقها في التعبئة. */
   queued?: QueuedCount;
   focusUnit: string | null;
@@ -699,6 +844,8 @@ function QtyEditor({
   onCancel: () => void;
   onSave: (qty: number, unitBreakdown: string | undefined) => void;
 }) {
+  const isVerify = mode === "VERIFY";
+  const isRecount = mode === "RECOUNT";
   // من الأكبر للأصغر (كرتون ← درزن ← قطعة) — نفس ترتيب بوابة العدّ.
   const units = useMemo(() => {
     const list = item.units.map((u) => ({ unitName: u.unitName, factor: u.factor }));
@@ -708,8 +855,9 @@ function QtyEditor({
   const baseUnit = baseUnitName(item);
 
   const [vals, setVals] = useState<Record<string, string>>(() => {
-    // تعبئة مسبقة من عدّي السابق: المحفوظ محلياً أولاً (الأحدث) ثم المُزامَن —
-    // التفصيل بالوحدات إن وُجد، وإلا الإجمالي بوحدة الأساس.
+    // إعادة العدّ والعدّ التحقّقي عدٌّ جديد **أعمى** يبدأ من الصفر (كبوابة العدّ) — التعبئة
+    // المسبقة للعدّ الأول فقط: المحفوظ محلياً أولاً (الأحدث) ثم المُزامَن.
+    if (mode !== "FIRST") return {};
     const src = queued?.unitBreakdown ?? item.myCount?.unitBreakdown ?? null;
     if (src) {
       try {
@@ -756,6 +904,29 @@ function QtyEditor({
 
   return (
     <div className="space-y-4">
+      {isRecount && (
+        <p className="badge-stock-low inline-flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold leading-relaxed">
+          <RefreshCw className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          <span>
+            مطلوب إعادة عدّ ثانية لهذا المنتج
+            {recountReason ? ` — السبب: ${recountReason}` : ""}. عُدّ من جديد
+            بتمعّن.
+          </span>
+        </p>
+      )}
+      {isVerify && (
+        <p className="inline-flex items-start gap-1.5 rounded-lg bg-primary/10 px-3 py-2 text-xs font-semibold leading-relaxed text-primary">
+          <span className="mt-0.5 inline-flex shrink-0 items-center -space-x-1 rtl:space-x-reverse">
+            <Check className="size-3.5" aria-hidden />
+            <Check className="size-3.5" aria-hidden />
+          </span>
+          <span>
+            عدّ تحقّقي — المنتج عدّه زميلك سابقاً. عدّك لن يستبدل عدّه: إن تطابقا
+            تأكّد الرقم، وإن اختلفا يُرفع تعارض يفصل فيه المسؤول. (كميته لا تُعرض
+            لك — جرد أعمى)
+          </span>
+        </p>
+      )}
       {queued && (
         <p className="inline-flex items-start gap-1.5 rounded-lg bg-muted p-3 text-xs font-semibold text-muted-foreground">
           <Hourglass className="mt-0.5 size-3.5 shrink-0" aria-hidden />
@@ -763,12 +934,6 @@ function QtyEditor({
             عدّتك السابقة لهذا المنتج محفوظة على الجهاز ولم تُزامَن بعد — تعديلها
             هنا يستبدلها، وتُرسَل تلقائياً عند عودة الاتصال.
           </span>
-        </p>
-      )}
-      {item.colleagueCounted && !item.myCount && (
-        <p className="rounded-lg bg-primary/10 p-3 text-xs text-primary">
-          عدّ تحققي: المنتج عُدّ من زميل، لكن كميته لا تظهر لك حفاظاً على الجرد
-          الأعمى.
         </p>
       )}
       <div className="rounded-lg border bg-muted/30 p-3 text-sm">
@@ -847,15 +1012,63 @@ function QtyEditor({
         </span>
       </div>
 
-      <DialogFooter>
+      <DialogFooter className="flex-col gap-2 sm:flex-row">
         <Button variant="outline" disabled={saving} onClick={onCancel}>
           إلغاء
         </Button>
         <Button disabled={saving || !valid} onClick={handleSave}>
-          {saving ? "جارٍ الحفظ…" : "حفظ العدّ"}
+          {saving
+            ? "جارٍ الحفظ…"
+            : isVerify
+              ? "تسجيل العدّ التحقّقي"
+              : isRecount
+                ? "تسجيل إعادة العدّ"
+                : "تسجيل الكمية"}
         </Button>
       </DialogFooter>
+      <p className="text-center text-[11px] text-muted-foreground">
+        يُسجَّل الإدخال باسمك ووقته — يمكنك تعديل العدّ قبل التسليم.
+      </p>
     </div>
+  );
+}
+
+/** بطاقة حالةٍ نهائية (أُلغيت/اعتُمدت/أُقفلت) بنصوص بوابة العدّ نفسها. */
+function StateCard({
+  icon,
+  title,
+  body,
+  tone = "muted",
+}: {
+  icon: ReactNode;
+  title: string;
+  body: string;
+  tone?: "muted" | "ok" | "low";
+}) {
+  return (
+    <Card className="mx-auto mt-10 max-w-2xl">
+      <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+        <div
+          className={cn(
+            "grid size-16 place-items-center rounded-full",
+            tone === "ok"
+              ? "badge-stock-ok"
+              : tone === "low"
+                ? "badge-stock-low"
+                : "bg-muted text-muted-foreground",
+          )}
+        >
+          {icon}
+        </div>
+        <p className="text-lg font-bold">{title}</p>
+        <p className="max-w-md text-sm leading-relaxed text-muted-foreground">
+          {body}
+        </p>
+        <Link href="/my-stocktake">
+          <Button variant="outline">العودة إلى جردي</Button>
+        </Link>
+      </CardContent>
+    </Card>
   );
 }
 

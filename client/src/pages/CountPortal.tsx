@@ -407,12 +407,12 @@ export default function CountPortal() {
             if (stale) removeQueued(code, stale.clientRequestId);
             setQueueCount(queueSize(code));
             setOpenVariantId(null);
-            // الخادم هو الحَكَم في نوع العدّ والتعارض — نقرأ حقوله إن وُجدت بتساهل.
-            const r = res as unknown as { isConflict?: boolean; kind?: string } | undefined;
-            const kind = r?.kind ?? mode;
+            // الخادم هو الحَكَم في نوع العدّ ونتيجة المطابقة. ⚠️ كان يُقرأ `isConflict` وهو حقل
+            // لا يُعيده `count.submit` أصلاً (يُعيد `verifyMatch`) ⇒ لم تظهر رسالة التعارض قط.
+            const kind = res.kind ?? mode;
             if (kind === "VERIFY") {
-              if (r?.isConflict === true) notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
-              else if (r?.isConflict === false) notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
+              if (res.verifyMatch === false) notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
+              else if (res.verifyMatch === true) notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
               else notify.ok("سُجّل العدّ التحقّقي");
             } else if (kind === "RECOUNT") {
               notify.ok("سُجّلت إعادة العدّ");

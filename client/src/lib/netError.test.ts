@@ -4,15 +4,28 @@
  * الجرد عند انقطاع الشبكة، أو طابوراً لا يفرغ.
  */
 import { TRPCClientError } from "@trpc/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { isNetworkError } from "./netError";
 
-/** node لا يعرّف navigator.onLine (المتصفّح يعرّفه) — نثبّته لكل حالة. */
+/**
+ * `navigator` عالميّ في المتصفّح، وفي node يوجد منذ ٢١ فقط وبلا `onLine` — وعدّاء CI
+ * قد يفتقده كلياً (`Object.defineProperty` على non-object ⇒ سقوط الملف كلّه). لذلك
+ * نستبدل الكائن نفسه بكاملٍ بديل ونعيد الأصل في النهاية، بدل تعديل خاصية داخله.
+ */
+const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+
 function setOnLine(value: boolean) {
-  Object.defineProperty(globalThis.navigator, "onLine", { value, configurable: true });
+  Object.defineProperty(globalThis, "navigator", {
+    value: { onLine: value },
+    configurable: true,
+    writable: true,
+  });
 }
 
-afterEach(() => setOnLine(true));
+afterAll(() => {
+  if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
+  else Reflect.deleteProperty(globalThis as unknown as Record<string, unknown>, "navigator");
+});
 
 describe("isNetworkError", () => {
   it("يعتبر خطأ tRPC بلا data انقطاعاً (لم يصل الطلب للخادم)", () => {
