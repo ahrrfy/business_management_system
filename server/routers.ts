@@ -72,7 +72,6 @@ import { contactsRouter } from "./routers/contactsRouter";
 import { broadcastsRouter } from "./routers/broadcastsRouter";
 import { reservationsRouter } from "./routers/reservationsRouter";
 import { documentDeliveryRouter } from "./routers/documentDeliveryRouter";
-import { superAppRouter } from "./routers/superAppRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -80,7 +79,6 @@ import { superAppRouter } from "./routers/superAppRouter";
 export const appRouter = router({
   system: systemRouter,
   auth: authRouter,
-  superApp: superAppRouter,
   // العمل دون اتصال (لقطات النموذج المحلي) — الشريحة ٢ من خطة الأوفلاين.
   offline: offlineRouter,
   users: userRouter,

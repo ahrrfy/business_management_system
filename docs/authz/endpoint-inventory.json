@@ -1,28 +1,28 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 775,
+    "trpcTotal": 773,
     "byKind": {
-      "query": 388,
-      "mutation": 387
+      "mutation": 387,
+      "query": 386
     },
     "byAuthority": {
       "module-gate": 339,
       "module-map": 241,
       "admin": 73,
       "raw-role": 60,
-      "none": 55,
+      "none": 53,
       "platform": 5,
       "self-assignment": 1,
       "token": 1
     },
     "bySensitivity": {
-      "LOW": 387,
+      "LOW": 385,
       "MEDIUM": 293,
       "HIGH": 95
     },
     "byModule": {
-      "(none)": 192,
+      "(none)": 190,
       "hr": 77,
       "digital_cards": 67,
       "reports": 56,
@@ -56,15 +56,15 @@
       "ADMIN_ONLY": 76,
       "RAW_ROLE_GATE": 70,
       "UNAUTHENTICATED": 32,
-      "READ_WITHOUT_MODULE_GATE": 32,
+      "READ_WITHOUT_MODULE_GATE": 30,
       "WRITE_WITHOUT_MODULE_GATE": 23,
       "HANDLER_ROLE_CHECK": 5
     },
     "expressRoutes": 15,
     "expressMounts": 10,
     "jobs": 5,
-    "routerFiles": 75,
-    "proposedPermissions": 632,
+    "routerFiles": 74,
+    "proposedPermissions": 630,
     "proposedDomains": {
       "hr": 83,
       "digitalcards": 67,
@@ -94,7 +94,6 @@
       "reservations": 6,
       "consignment": 4,
       "audit": 2,
-      "superapp": 2,
       "search": 1
     }
   },
@@ -11658,40 +11657,6 @@
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
       "loc": "server/routers/storefrontRouter.ts:140"
-    },
-    {
-      "surface": "trpc",
-      "router": "superAppRouter",
-      "proposedPermission": "superapp.super_app.bootstrap",
-      "name": "bootstrap",
-      "kind": "query",
-      "procedure": "protectedProcedure",
-      "authority": "none",
-      "module": "",
-      "level": "",
-      "roles": "",
-      "branch": "none",
-      "sensitivity": "LOW",
-      "sensitivityWhy": "قراءة",
-      "flags": "READ_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/superAppRouter.ts:36"
-    },
-    {
-      "surface": "trpc",
-      "router": "superAppRouter",
-      "proposedPermission": "superapp.super_app.my_workspace",
-      "name": "myWorkspace",
-      "kind": "query",
-      "procedure": "protectedProcedure",
-      "authority": "none",
-      "module": "",
-      "level": "",
-      "roles": "",
-      "branch": "none",
-      "sensitivity": "LOW",
-      "sensitivityWhy": "قراءة",
-      "flags": "READ_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/superAppRouter.ts:81"
     },
     {
       "surface": "trpc",
