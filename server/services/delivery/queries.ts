@@ -7,7 +7,9 @@ import { getDb } from "../../db";
 export async function listReadyForDispatch(branchId: number | null) {
   const db = getDb();
   if (!db) return [];
-  const conds = [eq(workOrders.status, "READY")];
+  // هذه شاشة «الإرسال للتوصيل» فقط؛ الاستلام المباشر يبقى في طابور خدمة العملاء
+  // ولا يجوز أن يظهر هنا كأنه شحنة قابلة للإسناد.
+  const conds = [eq(workOrders.status, "READY"), eq(workOrders.hasDelivery, true)];
   if (branchId != null) conds.push(eq(workOrders.branchId, branchId));
   return db
     .select({

@@ -97,7 +97,18 @@ async function allReconcileClean() {
 /** ينشئ طلباً بعربون نقدي ويجعله READY. يُرجِع معرّفه. */
 async function readyWorkOrder(shiftOpen: boolean): Promise<number> {
   const wo = await createWorkOrder(
-    { branchId: 1, customerId: 1, baseVariantId: 1, title: "طباعة", salePrice: "10000", quantity: 1, deposit: shiftOpen ? "2000" : "0", paymentMethod: "CASH" },
+    {
+      branchId: 1,
+      customerId: 1,
+      baseVariantId: 1,
+      title: "طباعة",
+      salePrice: "10000",
+      quantity: 1,
+      deposit: shiftOpen ? "2000" : "0",
+      paymentMethod: "CASH",
+      hasDelivery: true,
+      deliveryAddress: "بغداد",
+    },
     { userId: 2, branchId: 1 },
   );
   const woId = (wo as { workOrderId: number }).workOrderId;

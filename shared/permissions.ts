@@ -322,7 +322,9 @@ export const SECTION_CASHIER_ROLES: SectionRoleSpec[] = [
     label: "موظف استقبال",
     description: "موظف استقبال أوامر الشغل (عربون/تصميم) فقط — لا يرى «التجزئة» ولا «خدمات الطباعة».",
     baseRole: "cashier",
-    permissions: { ...ROLE_TEMPLATES.cashier, sales: "NONE", pos: "NONE" },
+    // قراءة الفواتير فقط: يرى فاتورة طلبه بعد التسليم/الإرسال من دون أن يفتح
+    // كاشير التجزئة أو يستطيع إصدار مبيعات مستقلة.
+    permissions: { ...ROLE_TEMPLATES.cashier, sales: "READ", pos: "NONE" },
     station: "RECEPTION",
   },
 ];
