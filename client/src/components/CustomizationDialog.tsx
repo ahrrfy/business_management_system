@@ -7,6 +7,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
@@ -33,6 +34,7 @@ export type CustomizationData = {
   dueDate: string; // YYYY-MM-DD
   hasDelivery: boolean;
   deliveryAddress: string;
+  deliveryPhone: string;
   deliveryCost: string;
   designImages: ImageItem[];
   paymentReceiptImages: ImageItem[];
@@ -52,6 +54,7 @@ export function emptyCustomization(productName: string): CustomizationData {
     dueDate: "",
     hasDelivery: false,
     deliveryAddress: "",
+    deliveryPhone: "",
     deliveryCost: "0",
     designImages: [],
     paymentReceiptImages: [],
@@ -64,7 +67,10 @@ export function composeCustomizationText(d: CustomizationData): string {
   const lines: string[] = [];
   if (d.size.trim()) lines.push(`[المقاس] ${d.size.trim()}`);
   if (d.material.trim()) lines.push(`[الخامة] ${d.material.trim()}`);
-  if (d.hasDelivery) lines.push(`[توصيل] ${d.deliveryAddress.trim() || "—"}`);
+  if (d.hasDelivery) {
+    const phoneSuffix = d.deliveryPhone.trim() ? ` — هاتف المستلم: ${d.deliveryPhone.trim()}` : "";
+    lines.push(`[توصيل] ${d.deliveryAddress.trim() || "—"}${phoneSuffix}`);
+  }
   if (d.customizationText.trim()) {
     if (lines.length) lines.push("---");
     lines.push(d.customizationText.trim());
@@ -323,20 +329,34 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
               <Truck aria-hidden className="size-4" /> توصيل للعميل
             </label>
             {data.hasDelivery && (
-              <div className="grid grid-cols-3 gap-2 pt-1">
-                <Input
-                  value={data.deliveryAddress}
-                  onChange={(e) => upd("deliveryAddress", e.target.value)}
-                  placeholder="عنوان التوصيل"
-                  className="text-sm col-span-2"
-                />
-                <MoneyInput
-                  value={data.deliveryCost}
-                  onChange={(v) => upd("deliveryCost", v)}
-                  placeholder="تكلفة التوصيل"
-                  className="text-sm"
-                  ariaLabel="تكلفة التوصيل"
-                />
+              <div className="space-y-2 pt-1">
+                <div className="grid grid-cols-3 gap-2">
+                  <Input
+                    value={data.deliveryAddress}
+                    onChange={(e) => upd("deliveryAddress", e.target.value)}
+                    placeholder="عنوان التوصيل"
+                    className="text-sm col-span-2"
+                  />
+                  <MoneyInput
+                    value={data.deliveryCost}
+                    onChange={(v) => upd("deliveryCost", v)}
+                    placeholder="تكلفة التوصيل"
+                    className="text-sm"
+                    ariaLabel="تكلفة التوصيل"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="cz-delivery-phone" className="text-[11px] font-normal text-muted-foreground">
+                    هاتف المستلم <span className="text-muted-foreground/70">(إن اختلف عن هاتف العميل)</span>
+                  </Label>
+                  <IntlPhoneInput
+                    id="cz-delivery-phone"
+                    value={data.deliveryPhone}
+                    onChange={(v) => upd("deliveryPhone", v)}
+                    ariaLabel="هاتف مستلم التوصيل"
+                    className="text-sm"
+                  />
+                </div>
               </div>
             )}
           </div>

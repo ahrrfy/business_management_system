@@ -5,7 +5,6 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { MoneyInput } from "@/components/form/MoneyInput";
 import { Badge } from "@/components/ui/badge";
 import { CashCounter } from "@/components/CashCounter";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -16,9 +15,11 @@ import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { printDoc } from "@/lib/printing/print";
-import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
+import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { RowActions } from "@/components/list";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
+import { DispatchDialog } from "@/components/delivery/DispatchDialog";
 
 /**
  * إدارة التوصيل (COD) — شاشة مكرّسة (D5):
@@ -30,50 +31,6 @@ type ReadyOrder = RouterOutputs["delivery"]["readyForDispatch"][number];
 type Party = RouterOutputs["delivery"]["listParties"][number];
 type OpenConsignment = RouterOutputs["delivery"]["openConsignments"][number];
 
-/** بوليصة توصيل حرارية (جسر/WebUSB/متصفح) عند الإرسال. */
-function printDeliverySlip(order: ReadyOrder, party: Party | undefined, r: { consignmentNumber: string; invoiceNumber: string; codAmount: string; deliveryFee: string }) {
-  void printDoc({
-    kind: "receipt",
-    title: "بوليصة توصيل",
-    subtitle: r.consignmentNumber,
-    meta: [
-      `الطلب: ${order.orderNumber}`,
-      `الجهة: ${party?.name ?? ""}`,
-      `المستلم: ${order.customerName ?? "—"}`,
-      order.deliveryAddress ? `العنوان: ${order.deliveryAddress}` : "",
-      `الفاتورة: ${r.invoiceNumber}`,
-    ].filter(Boolean),
-    totals: [
-      { label: "مبلغ التحصيل (COD)", value: `${fmt(r.codAmount)} د.ع` },
-      { label: "أجرة التوصيل", value: `${fmt(r.deliveryFee)} د.ع` },
-    ],
-    footer: "يُسلَّم المبلغ للمكتبة عند التوريد",
-    barcodeSet: { barcode128: r.consignmentNumber, qrPayload: r.consignmentNumber, displayLabel: r.consignmentNumber },
-  });
-}
-/** ملصق شحن للطرد (بالقياس المحفوظ — الافتراضي ٨٠×١٢٠مم): قبل الإرسال برقم الأمر، وبعده
- *  برقم الإرسالية واسم الجهة (نفس ملصق طلبات المتجر — تكامل وظيفي واحد). */
-async function printReadyOrderLabel(
-  order: ReadyOrder,
-  opts?: { partyName?: string | null; trackingNumber?: string; cod?: string; into?: Window | null },
-) {
-  const cod = opts?.cod ?? String(Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0)));
-  const res = await printShippingLabel(
-    {
-      orderNumber: opts?.trackingNumber ?? order.orderNumber,
-      customerName: order.customerName,
-      customerPhone: order.customerPhone,
-      governorate: null,
-      addressText: order.deliveryAddress,
-      total: cod,
-      deliveryPartyName: opts?.partyName ?? null,
-      createdAt: new Date(),
-      items: [{ productName: order.title, unitName: "", quantity: String(order.quantity ?? 1) }],
-    },
-    opts && "into" in opts ? { into: opts.into } : undefined,
-  );
-  if (!res.ok) notify.err("افسح مانع النوافذ المنبثقة لطباعة ملصق الشحن");
-}
 /** إيصال تسوية توصيل حراري عند التوريد. */
 function printRemittanceReceipt(partyName: string, r: { remittanceNumber: string; collectedTotal: string; feesTotal: string; netRemitted: string; shortfallTotal: string }) {
   void printDoc({
@@ -242,14 +199,22 @@ function DispatchTab() {
         parties={parties.data ?? []}
         pending={dispatch.isPending}
         onClose={() => setTarget(null)}
-        onConfirm={async (partyId, fee) => {
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone }) => {
           const ord = target!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
           // نافذة الملصق تُفتح هنا **متزامنةً مع نقرة التأكيد** (قبل await الإرسال) وإلا حجبها
           // مانع النوافذ على المتصفّحات المتشدّدة — تُملأ بعد نجاح الإرسال وتُغلق عند فشله.
           const labelWin = preopenShippingLabelWindow();
           try {
-            const r = await dispatch.mutateAsync({ workOrderId: ord.id, partyId, deliveryFee: fee, deliveryAddress: ord.deliveryAddress ?? undefined, clientRequestId: crypto.randomUUID() });
+            const r = await dispatch.mutateAsync({
+              workOrderId: ord.id,
+              partyId,
+              deliveryFee: fee,
+              recipientName: recipientName || undefined,
+              recipientPhone: recipientPhone || undefined,
+              deliveryAddress: ord.deliveryAddress ?? undefined,
+              clientRequestId: crypto.randomUUID(),
+            });
             void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, into: labelWin });
             printDeliverySlip(ord, party, r);
           } catch {
@@ -257,81 +222,6 @@ function DispatchTab() {
           }
         }}
       />
-    </div>
-  );
-}
-
-function DispatchDialog({ order, parties, pending, onClose, onConfirm }: {
-  order: ReadyOrder | null;
-  parties: Party[];
-  pending: boolean;
-  onClose: () => void;
-  onConfirm: (partyId: number, fee: string) => void;
-}) {
-  const [partyId, setPartyId] = useState<string>("");
-  const [fee, setFee] = useState<string>("0");
-  const selectedParty = parties.find((p) => String(p.id) === partyId);
-  useMemo(() => {
-    if (order) {
-      setPartyId("");
-      setFee("0");
-    }
-  }, [order?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (!order) return null;
-  const cod = Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0));
-
-  const pickParty = (id: string) => {
-    setPartyId(id);
-    const p = parties.find((x) => String(x.id) === id);
-    if (p) setFee(String(Number(p.defaultFee ?? 0)));
-  };
-
-  // النافذة نفسها هي حوار التأكيد (تعرض الجهة والمبالغ و«لا رجعة» صراحةً) ⇒ لا نفتح حوار تأكيد
-  // ثانياً فوقها. (كان حوار confirm الثاني بـz-50 يُفتح خلف هذه النافذة اليدوية z-[100] فيتجمّد
-  // العرض — عولج جذرياً برفع طبقة حوار التأكيد، وبسّطنا هنا التدفّق إلى تأكيد واحد واضح.)
-  const submit = () => {
-    if (!partyId) { notify.err("اختر جهة التوصيل"); return; }
-    onConfirm(Number(partyId), fee || "0");
-  };
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" dir="rtl" onClick={onClose}>
-      <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <h3 className="mb-1 text-lg font-extrabold">تسليم «{order.title}» لمندوب</h3>
-        <p className="mb-4 text-xs text-muted-foreground">{order.orderNumber} — {order.customerName ?? "عميل نقدي"}</p>
-        <div className="mb-3 grid gap-3 sm:grid-cols-2">
-          <div>
-            <label className="mb-1.5 block text-sm font-bold">جهة التوصيل</label>
-            <select
-              className="h-11 w-full rounded-md border bg-transparent px-3 text-sm"
-              value={partyId}
-              onChange={(e) => pickParty(e.target.value)}
-            >
-              <option value="">— اختر —</option>
-              {parties.map((p) => (
-                <option key={p.id} value={p.id}>{p.name} ({p.partyType === "COMPANY" ? "شركة" : "مندوب"})</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1.5 block text-sm font-bold">أجرة التوصيل (د.ع)</label>
-            <MoneyInput value={fee} onChange={setFee} className="h-11 text-end tabular-nums" ariaLabel="أجرة التوصيل" />
-          </div>
-        </div>
-        <div className="mb-4 space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
-          <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(order.salePrice)} د.ع</span></div>
-          {Number(order.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmt(order.deposit)} د.ع</span></div>}
-          <div className="flex justify-between border-t pt-1 font-bold"><span>مبلغ التحصيل (COD)</span><span dir="ltr" className="tabular-nums">{fmt(String(cod))} د.ع</span></div>
-        </div>
-        <p className="mb-4 flex items-start gap-1.5 text-xs text-destructive">
-          <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-          <span>ستُصدَر فاتورة وتُسجَّل {fmt(String(cod))} د.ع ذمّةً على «{selectedParty?.name ?? "المندوب"}». لا رجعة.</span>
-        </p>
-        <div className="flex gap-2.5">
-          <Button variant="outline" className="flex-1" onClick={onClose} disabled={pending}>إلغاء</Button>
-          <Button variant="destructive" className="flex-1" onClick={submit} disabled={pending || !partyId}>{pending ? "جارٍ…" : "تأكيد التسليم للمندوب"}</Button>
-        </div>
-      </div>
     </div>
   );
 }

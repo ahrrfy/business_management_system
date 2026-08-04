@@ -229,9 +229,27 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
         </div>
       )}
 
+      {/* الصندوق الرئيسي يلتقط رقماً أو اسماً — لا كليهما معاً. إن كتب المستخدم رقماً (فصار
+          الرقم هو نفسه المعروض كـname بلا تمييز) نعرض حقلاً ثانياً صريحاً لاسم العميل، حتى لا
+          يُحفظ عميلٌ جديد باسم هو رقم هاتفه فعلياً. */}
+      {value.isNew && !value.customerId && value.phone && (
+        <div className="mt-2 space-y-1">
+          <label htmlFor="smart-customer-name" className="text-[11px] font-medium text-muted-foreground">
+            اسم العميل (اختياري)
+          </label>
+          <Input
+            id="smart-customer-name"
+            value={value.name === value.phone ? "" : value.name}
+            onChange={(e) => onChange({ ...value, name: e.target.value.trim() || value.phone! })}
+            placeholder="اكتب اسم العميل"
+            className="h-8 text-xs"
+          />
+        </div>
+      )}
+
       {value.isNew && !value.customerId && trimmed && (
         <div className="mt-2 text-[11px] text-primary">
-          سيُحفظ «{trimmed}» تلقائياً كعميل جديد عند حفظ الأمر.
+          سيُحفظ «{value.name}» تلقائياً كعميل جديد عند حفظ الأمر.
         </div>
       )}
     </div>

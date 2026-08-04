@@ -2393,6 +2393,9 @@ export const workOrders = mysqlTable(
     deliveryCost: decimal("deliveryCost", { precision: 15, scale: 2 }).default(
       "0",
     ),
+    // هاتف مستلم التوصيل — مصدر حقيقة قابل للاستعلام (كان محصوراً بنصّ customizationText الحرّ).
+    // يُقرأ افتراضياً عند إرسال المندوب (delivery/dispatch.ts) إن لم يُمرَّر صراحةً.
+    deliveryPhone: varchar("deliveryPhone", { length: 20 }),
     status: mysqlEnum("workOrderStatus", [
       "RECEIVED",
       "IN_PROGRESS",
@@ -5655,6 +5658,9 @@ export const deliveryConsignments = mysqlTable(
     ),
     branchIdx: index("idx_consignment_branch").on(table.branchId),
     remittanceIdx: index("idx_consignment_remittance").on(table.remittanceId),
+    // اِستقبال (تكامل التوصيل، ٤/٨): يربط أوامر الشغل بإرساليّاتها — كان العمود مكتوباً فقط
+    // بلا فهرس، وصار الآن مقروءاً بانتظام (LEFT JOIN من قائمة أوامر الشغل).
+    workOrderIdx: index("idx_consignment_workorder").on(table.workOrderId),
     // حارس بنيوي: فاتورة واحدة ⇒ إرسالية واحدة (لا ازدواج عهدة على نفس البيع).
     invoiceUq: unique("uq_consignment_invoice").on(table.invoiceId),
   }),
