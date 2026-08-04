@@ -21,6 +21,7 @@ import { fmtInt } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { cn } from "@/lib/utils";
 import {
@@ -48,7 +49,8 @@ import {
   type QueuedCount,
 } from "@/lib/countQueue";
 
-type CountState = RouterOutputs["count"]["state"];
+// `count.state` صار غلافاً بنمط ETag (`{ v, changed, state }`) — الحالة الفعلية في `.state`.
+type CountState = NonNullable<RouterOutputs["count"]["state"]["state"]>;
 type CountItem = CountState["items"][number];
 type CountMode = "FIRST" | "RECOUNT" | "VERIFY";
 
@@ -99,6 +101,8 @@ export default function CountPortal() {
   const account = trpc.auth.me.useQuery(undefined, { retry: false });
 
   const [phase, setPhase] = useState<"boot" | "pin" | "counting" | "paused">("boot");
+  // يزيد عند كل تبدّل هوية (دخول/خروج) ⇒ يُصفّر كاش الحالة كي لا يرى العادّ الجديد بيانات سابقه.
+  const [identityEpoch, setIdentityEpoch] = useState(0);
   const [bootOffline, setBootOffline] = useState(false);
   const [pin, setPin] = useState("");
   const [authErr, setAuthErr] = useState<string | null>(null);
@@ -175,7 +179,10 @@ export default function CountPortal() {
       authMut.mutate(
         { sessionCode: code, pin: pinValue },
         {
-          onSuccess: () => setPhase("counting"),
+          onSuccess: () => {
+            setIdentityEpoch((n) => n + 1);
+            setPhase("counting");
+          },
           onError: (e) => {
             setPin("");
             setAuthErr(isNetworkError(e) ? "لا اتصال بالشبكة — تحقّق من الإنترنت وحاول مجدداً." : errMsg(e));
@@ -186,11 +193,8 @@ export default function CountPortal() {
     [authMut, code],
   );
 
-  /* ── حالة الجلسة (متابعة حيّة كل ٥ ثوانٍ) ── */
-  const stateQ = trpc.count.state.useQuery(
-    { sessionCode: code },
-    { enabled: phase === "counting" && code !== "", refetchInterval: 5000, retry: false },
-  );
+  /* ── حالة الجلسة (متابعة حيّة كل ٥ ثوانٍ عبر نبضةٍ رخيصة — usePulsedCountState) ── */
+  const stateQ = usePulsedCountState(code, phase === "counting" && code !== "", identityEpoch);
   const st = stateQ.data;
 
   // نجاح ⇒ متصل؛ فشل شبكي ⇒ مقطوع؛ انتهاء صلاحية الدخول ⇒ عودة لشاشة PIN.
@@ -456,6 +460,7 @@ export default function CountPortal() {
     if (!online || queueCount > 0 || logoutMut.isPending) return;
     logoutMut.mutate(undefined, {
       onSuccess: () => {
+        setIdentityEpoch((n) => n + 1);
         setPhase("paused");
         notify.ok("حُفظت العدّات وأنهيت الوردية", "يمكنك العودة لاحقاً وإكمال الجرد من نفس التقدم.");
       },

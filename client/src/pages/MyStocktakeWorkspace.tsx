@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { confirm } from "@/lib/confirm";
 import { errMsg, notify } from "@/lib/notify";
@@ -49,7 +50,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 
-type State = RouterOutputs["count"]["state"];
+// `count.state` صار غلافاً بنمط ETag (`{ v, changed, state }`) — الحالة الفعلية في `.state`.
+type State = NonNullable<RouterOutputs["count"]["state"]["state"]>;
 type CountItem = State["items"][number];
 type CountUnit = CountItem["units"][number];
 /** نوع العدّة كما تُسمّيها بوابة العدّ: أول عدّ · إعادة عدّ مطلوبة · عدّ تحقّقي فوق عدّ زميل. */
@@ -88,10 +90,8 @@ export default function MyStocktakeWorkspace() {
   const { code: rawCode } = useParams<{ code?: string }>();
   const code = decodeURIComponent(rawCode ?? "").trim();
   const utils = trpc.useUtils();
-  const state = trpc.count.state.useQuery(
-    { sessionCode: code },
-    { enabled: Boolean(code), retry: false, refetchInterval: 5_000 },
-  );
+  // محكومة بنبضةٍ رخيصة بدل جلب الحالة الكاملة كل ٥ ثوانٍ — راجع usePulsedCountState.
+  const state = usePulsedCountState(code, Boolean(code));
   const submit = trpc.count.submit.useMutation();
   const finish = trpc.count.finish.useMutation();
   const [query, setQuery] = useState("");
