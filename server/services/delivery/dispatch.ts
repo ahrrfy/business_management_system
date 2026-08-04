@@ -165,7 +165,9 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       collectedAmount: "0",
       deliveryFee: toDbMoney(fee),
       recipientName: input.recipientName ?? null,
-      recipientPhone: input.recipientPhone ?? null,
+      // اِستقبال (٤/٨): هاتف المستلم المُلتقَط عند إنشاء/تصنيف أمر الشغل — نفس نمط fallback العنوان
+      // أدناه؛ يمنع مندوباً يُرسَل بلا وسيلة اتصال بالزبون حين لا يُدخِل الموظّف رقماً صريحاً هنا.
+      recipientPhone: input.recipientPhone ?? wo.deliveryPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? wo.deliveryAddress ?? null,
       // codAmount=0 (مدفوع كامل بالعربون) ⇒ إرسالية تسليم فقط بلا عهدة.
       status: codPositive ? "DISPATCHED" : "DELIVERED",

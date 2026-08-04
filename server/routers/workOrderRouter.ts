@@ -4,6 +4,8 @@ import { z } from "zod";
 import {
   auditLogs,
   customers,
+  deliveryConsignments,
+  deliveryParties,
   productVariants,
   products,
   users,
@@ -19,9 +21,11 @@ import {
   deliverWorkOrder,
   markWorkOrderReady,
   startWorkOrder,
+  updateWorkOrderDeliveryMethod,
 } from "../services/workOrderService";
 import { logAudit } from "../services/auditService";
 import { canSeeCostForUser, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
+import { hasModuleAccess } from "@shared/permissions";
 import { workOrderBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
@@ -55,6 +59,7 @@ const receptionWorkOrderSchema = z.object({
   hasDelivery: z.boolean().nullish(),
   deliveryAddress: z.string().nullish(),
   deliveryCost: nonNegMoneyString.nullish(),
+  deliveryPhone: z.string().max(20).nullish(),
   designImages: z.array(z.object({
     url: z.string().min(1),
     caption: z.string().max(255).nullish(),
@@ -128,12 +133,17 @@ const woListFilters = {
   /** نطاق تاريخ الإنشاء YYYY-MM-DD (شامل لليوم بحدود UTC — إطار businessDay). */
   from: z.string().optional(),
   to: z.string().optional(),
+  // اِستقبال (٤/٨): نطاق تاريخ **التسليم الفعلي** — مستقلّ عن from/to (تاريخ الإنشاء). قسم «سُلِّمت
+  // اليوم» في ReceptionOrderQueue يحتاج أوامر سُلِّمت اليوم بصرف النظر عن تاريخ إنشائها (قد يكون
+  // الأمر أُنشئ أمس وسُلِّم اليوم) — from/to كانا سيُخفيانه صامتاً لو استُعملا هنا.
+  deliveredFrom: z.string().optional(),
+  deliveredTo: z.string().optional(),
   /** فلتر الفنّي المسؤول — لا يوسّع النطاق: عزل الفرع/الموظف القائم يبقى حاكماً فوقه. */
   assignedTo: z.number().int().positive().optional(),
 };
 
-/** يحوّل فلاتر q/from/to/assignedTo إلى شروط SQL — q على رقم الأمر/العنوان/اسم العميل (join العملاء قائم). */
-function buildWoFilterConds(input: { q?: string; from?: string; to?: string; assignedTo?: number } | undefined): SQL[] {
+/** يحوّل فلاتر q/from/to/deliveredFrom/deliveredTo/assignedTo إلى شروط SQL — q على رقم الأمر/العنوان/اسم العميل (join العملاء قائم). */
+function buildWoFilterConds(input: { q?: string; from?: string; to?: string; deliveredFrom?: string; deliveredTo?: string; assignedTo?: number } | undefined): SQL[] {
   const conds: SQL[] = [];
   const search = input?.q?.trim();
   if (search) {
@@ -154,8 +164,29 @@ function buildWoFilterConds(input: { q?: string; from?: string; to?: string; ass
       conds.push(lt(workOrders.createdAt, next));
     }
   }
+  if (input?.deliveredFrom) {
+    const from = new Date(input.deliveredFrom);
+    if (!isNaN(from.getTime())) conds.push(gte(workOrders.deliveredAt, from));
+  }
+  if (input?.deliveredTo) {
+    const to = new Date(input.deliveredTo);
+    if (!isNaN(to.getTime())) {
+      const next = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate() + 1));
+      conds.push(lt(workOrders.deliveredAt, next));
+    }
+  }
   if (input?.assignedTo != null) conds.push(eq(workOrders.assignedTo, input.assignedTo));
   return conds;
+}
+
+/**
+ * اِستقبال (تكامل التوصيل، ٤/٨): رؤية حالة الإرسالية/الجهة داخل قوائم أوامر الشغل — **نفس بوّابة**
+ * `deliveryReadProcedure` بالضبط (`requireModule("store","READ")`) كي لا ينحرف من يرى DeliveryHub
+ * عمّن يرى نفس المعلومة مضمّنةً في شاشة الاستقبال (defense-in-depth، نمط canSeeCostForUser).
+ */
+function canSeeDeliveryForUser(user: { role: string; permissionsOverride?: unknown }): boolean {
+  if (user.role === "admin") return true;
+  return hasModuleAccess(user.role, (user.permissionsOverride as any) ?? null, "store", "READ");
 }
 
 export const workOrderRouter = router({
@@ -236,10 +267,21 @@ export const workOrderRouter = router({
           // لملصق الشحن من بطاقة اللوحة (طباعة عنوان التوصيل بلا فتح التفاصيل).
           hasDelivery: workOrders.hasDelivery,
           deliveryAddress: workOrders.deliveryAddress,
+          deliveryPhone: workOrders.deliveryPhone,
+          deliveryCost: workOrders.deliveryCost,
+          // اِستقبال (٤/٨): حالة الإرسالية إن وُجدت — لطابور الاستقبال («جاهز» ⇐ تحت التسليم/الإرسال
+          // ⇐ مُرسَل لجهة X). NULL طبيعي لأغلب الصفوف (لم تُرسَل بعد). تُحجب أدناه بحسب canSeeDeliveryForUser.
+          consignmentId: deliveryConsignments.id,
+          consignmentStatus: deliveryConsignments.status,
+          consignmentNumber: deliveryConsignments.consignmentNumber,
+          deliveryPartyId: deliveryConsignments.partyId,
+          deliveryPartyName: deliveryParties.name,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
         .leftJoin(users, eq(workOrders.assignedTo, users.id))
+        .leftJoin(deliveryConsignments, eq(deliveryConsignments.workOrderId, workOrders.id))
+        .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
         .where(whereCond)
         .orderBy(desc(workOrders.id))
         .limit(input?.limit ?? 100);
@@ -258,7 +300,17 @@ export const workOrderRouter = router({
           if (!thumbs.has(k)) thumbs.set(k, im.url);
         }
       }
-      return rows.map((r) => ({ ...r, thumbnailUrl: thumbs.get(Number(r.id)) ?? null }));
+      // §٧ defense-in-depth: معلومة الإرسالية/الجهة تُحجب عمّن لا يرى «store» READ (نفس بوّابة DeliveryHub).
+      const seeDelivery = canSeeDeliveryForUser(ctx.user);
+      return rows.map((r) => ({
+        ...r,
+        thumbnailUrl: thumbs.get(Number(r.id)) ?? null,
+        consignmentId: seeDelivery ? r.consignmentId : null,
+        consignmentStatus: seeDelivery ? r.consignmentStatus : null,
+        consignmentNumber: seeDelivery ? r.consignmentNumber : null,
+        deliveryPartyId: seeDelivery ? r.deliveryPartyId : null,
+        deliveryPartyName: seeDelivery ? r.deliveryPartyName : null,
+      }));
     }),
 
   /**
@@ -341,6 +393,8 @@ export const workOrderRouter = router({
           invoiceId: workOrders.invoiceId,
           hasDelivery: workOrders.hasDelivery,
           deliveryAddress: workOrders.deliveryAddress,
+          deliveryPhone: workOrders.deliveryPhone,
+          deliveryCost: workOrders.deliveryCost,
           assignedTo: workOrders.assignedTo,
           assigneeName: users.name,
           // شَريحة #4: مؤقّت تَنفيذ حَقيقي بَدل اشتقاق من auditLogs.
@@ -349,16 +403,35 @@ export const workOrderRouter = router({
           deliveredAt: workOrders.deliveredAt,
           createdAt: workOrders.createdAt,
           updatedAt: workOrders.updatedAt,
+          // اِستقبال (٤/٨): حالة الإرسالية إن وُجدت — تُحجب أدناه بحسب canSeeDeliveryForUser.
+          consignmentId: deliveryConsignments.id,
+          consignmentStatus: deliveryConsignments.status,
+          consignmentNumber: deliveryConsignments.consignmentNumber,
+          deliveryPartyId: deliveryConsignments.partyId,
+          deliveryPartyName: deliveryParties.name,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
         .leftJoin(users, eq(workOrders.assignedTo, users.id))
+        .leftJoin(deliveryConsignments, eq(deliveryConsignments.workOrderId, workOrders.id))
+        .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
         .where(eq(workOrders.id, input.workOrderId))
         .limit(1)
     )[0];
     if (!wo) return null;
     // §٧ IDOR: لا تكشف وجود أمر فرع آخر لغير المدير.
     if (ctx.scopedBranchId != null && Number(wo.branchId) !== ctx.scopedBranchId) return null;
+    // §٧ defense-in-depth: نفس حجب list — تُصفَّر معلومة الإرسالية/الجهة عمّن لا يرى «store» READ.
+    const seeDelivery = canSeeDeliveryForUser(ctx.user);
+    const deliveryInfo = seeDelivery
+      ? {
+          consignmentId: wo.consignmentId,
+          consignmentStatus: wo.consignmentStatus,
+          consignmentNumber: wo.consignmentNumber,
+          deliveryPartyId: wo.deliveryPartyId,
+          deliveryPartyName: wo.deliveryPartyName,
+        }
+      : { consignmentId: null, consignmentStatus: null, consignmentNumber: null, deliveryPartyId: null, deliveryPartyName: null };
     const materials = await db
       .select({
         id: workOrderMaterials.id,
@@ -390,6 +463,7 @@ export const workOrderRouter = router({
       const safeMaterials = materials.map((m) => ({ ...m, unitCost: null as unknown as string }));
       return {
         ...wo,
+        ...deliveryInfo,
         materialsCost: null as unknown as string,
         laborCost: null as unknown as string,
         materials: safeMaterials,
@@ -397,7 +471,7 @@ export const workOrderRouter = router({
         qrPayload,
       };
     }
-    return { ...wo, materials, images, qrPayload };
+    return { ...wo, ...deliveryInfo, materials, images, qrPayload };
   }),
 
   /**
@@ -583,6 +657,7 @@ export const workOrderRouter = router({
         hasDelivery: z.boolean().nullish(),
         deliveryAddress: z.string().nullish(),
         deliveryCost: nonNegMoneyString.nullish(),
+        deliveryPhone: z.string().max(20).nullish(),
         // ملاحظة سلامة (٢١/٦/٢٦): أُزيل `items` (أصناف البيع المصغّرة) — كانت تُخزَّن بلا خصم
         // مخزون ولا COGS. الأصناف الجاهزة تُباع الآن بفاتورة مستقلّة عبر saleRouter (القرار أ).
         // v3-add-screens(100%): صور نموذج العمل.
@@ -653,6 +728,37 @@ export const workOrderRouter = router({
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء طلب الخدمة" });
+    }),
+
+  /**
+   * اِستقبال (تكامل التوصيل، ٤/٨): تصنيف/إعادة تصنيف طريقة التسليم لأمرٍ قائم (استلام مباشر ⇄
+   * توصيل) — السيناريو (ج): زبون قال «آتي أستلم» ثم غيّر رأيه (أو العكس)، في أيّ وقتٍ قبل
+   * التسليم/الإرسال الفعلي (الخدمة ترفض بعد DELIVERED/CANCELLED). لا تُعدَّل salePrice هنا أبداً —
+   * فرق التسعير عند إعادة التصنيف تنبيهٌ واجهيٌّ للموظف فقط (قرار المالك)، لا تعديل تلقائي.
+   */
+  setDeliveryMethod: workordersCashierProcedure
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        hasDelivery: z.boolean(),
+        deliveryAddress: z.string().nullish(),
+        deliveryPhone: z.string().max(20).nullish(),
+        deliveryCost: nonNegMoneyString.nullish(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await updateWorkOrderDeliveryMethod(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "workOrder.setDeliveryMethod",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: { hasDelivery: input.hasDelivery },
+      });
+      return res;
     }),
 
   /**

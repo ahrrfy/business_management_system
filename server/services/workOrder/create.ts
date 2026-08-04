@@ -114,6 +114,7 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
       hasDelivery: !!input.hasDelivery,
       deliveryAddress: input.deliveryAddress?.trim() || null,
       deliveryCost: input.deliveryCost ? round2(money(input.deliveryCost)).toFixed(2) : "0.00",
+      deliveryPhone: input.deliveryPhone?.trim() || null,
     });
     const workOrderId = extractInsertId(insRes);
     // سجّل مفتاح الـidempotency فوراً بعد إدراج الأمر — طلبٌ متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK) قبل قبض العربون.
