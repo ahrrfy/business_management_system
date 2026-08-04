@@ -1030,6 +1030,13 @@
       "when": 1787879400000,
       "tag": "0147_workorder_delivery_phone",
       "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "5",
+      "when": 1787879401000,
+      "tag": "0148_reception_order_invoice_visibility",
+      "breakpoints": true
     }
   ]
 }

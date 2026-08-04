@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, inArray, isNotNull, lt, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "@shared/searchNormalize";
@@ -15,6 +16,7 @@ import {
   products,
   receipts,
   shifts,
+  workOrders,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logger } from "../logger";
@@ -28,6 +30,11 @@ import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
+
+// فاتورة أمر الشغل تُنشأ عند التسليم/الإرسال، وقد ينفّذها كاشير آخر عن الذي استقبل
+// الطلب. نصل الفاتورة بأمرها عبر invoiceId (علاقة 1:1) كي تبقى مرئية لصاحب الطلب
+// الأصلي أيضاً، من دون توسيع كشف فواتير الموظفين الآخرين.
+const workOrderInvoiceCustomer = alias(customers, "workOrderInvoiceCustomer");
 
 // تحصين verifyManagerApproval ضدّ تخمين كلمة المرور:
 // (١) حدّ معدّل بالبريد المُحاوَل: ≤ ٥ محاولات / ٦٠ ثانية.
@@ -204,8 +211,18 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
   // فلتر الفرع الصريح — else حتماً: العزل الحاكم (scopedBranchId) مقدَّم دائماً، فلا يستطيع
   // غير المرتفع توسيع نطاقه بإرسال branchId مغاير (يُتجاهَل مدخله بصمت ويبقى محصوراً بفرعه).
   else if (input?.branchId) conds.push(eq(invoices.branchId, input.branchId));
-  // عزل الموظف: غير المرتفعين يرون فواتيرهم فقط (createdBy = هم). admin/manager = null = الكل.
-  if (scopedOwnerId != null) conds.push(eq(invoices.createdBy, scopedOwnerId));
+  // عزل الموظف: يرى الموظف فواتيره التي أنشأها، وفواتير أوامر الشغل التي استقبلها
+  // ولو أصدرها/أرسلها لاحقاً كاشير آخر. علاقة workOrders.invoiceId فريدة 1:1، لذلك
+  // لا توسّع هذا الاستثناء إلى أي فاتورة لا تخص طلبه ولا تكرّر صفوف القائمة.
+  // كل مستهلك لهذا الشرط يضم leftJoin(workOrders, workOrders.invoiceId = invoices.id).
+  if (scopedOwnerId != null) {
+    const ownerOrReceptionOrder = or(
+      eq(invoices.createdBy, scopedOwnerId),
+      eq(workOrders.createdBy, scopedOwnerId),
+    );
+    // مدخلا or ثابتان هنا، لكن تعريف Drizzle العام يسمح بقائمة فارغة.
+    conds.push(ownerOrReceptionOrder!);
+  }
   // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
   if (input?.from) conds.push(gte(invoices.invoiceDate, localDayStart(input.from)));
   if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
@@ -625,13 +642,17 @@ export const saleRouter = router({
             returnedTotal: invoices.returnedTotal,
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
-            customerName: customers.name,
+            // فاتورة COD لا تحمل العميل كطرف مدين، لكن نعرض عميل أمر الخدمة الأصلي
+            // كي لا تختفي طلبات واتساب تحت «عميل نقدي».
+            customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
             deviceId: invoices.posDeviceId,
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+          .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
           .leftJoin(users, eq(invoices.createdBy, users.id))
           .where(where)
           .orderBy(desc(invoices.id))
@@ -669,13 +690,15 @@ export const saleRouter = router({
             returnedTotal: invoices.returnedTotal,
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
-            customerName: customers.name,
+            customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
             deviceId: invoices.posDeviceId,
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+          .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
           .leftJoin(users, eq(invoices.createdBy, users.id))
           .where(where)
           .orderBy(desc(invoices.id))
@@ -728,6 +751,7 @@ export const saleRouter = router({
           // leftJoin على مفتاح أجنبيّ أحاديّ ⇒ لا يُضاعف صفوف الفواتير ⇒ المجاميع تبقى صحيحة،
           // وcount يبقى مطابقاً تماماً لعدد صفوف list (نفس الشروط ونفس الجداول).
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
           .where(conds.length ? and(...conds) : undefined)
       )[0];
       return {
@@ -748,10 +772,11 @@ export const saleRouter = router({
           invoiceNumber: invoices.invoiceNumber,
           sourceType: invoices.sourceType,
           branchId: invoices.branchId,
-          customerId: invoices.customerId,
-          customerName: customers.name,
-          customerPhone: customers.phone,
-          customerBalance: customers.currentBalance,
+          // العميل هنا مرجع عرضٍ وتشغيل لفاتورة COD فقط؛ الطرف المالي يبقى جهة التوصيل.
+          customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
+          customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
+          customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${workOrderInvoiceCustomer.phone})`,
+          customerBalance: sql<string | null>`COALESCE(${customers.currentBalance}, ${workOrderInvoiceCustomer.currentBalance})`,
           priceTier: invoices.priceTier,
           invoiceDate: invoices.invoiceDate,
           dueDate: invoices.dueDate,
@@ -775,9 +800,12 @@ export const saleRouter = router({
           deviceId: invoices.posDeviceId,
           cancelledByName: invoices.cancelledByNameSnapshot,
           cancelledAt: invoices.cancelledAt,
+          workOrderCreatedBy: workOrders.createdBy,
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+        .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
         .leftJoin(users, eq(invoices.createdBy, users.id))
         .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
         .where(eq(invoices.id, input.invoiceId))
@@ -786,8 +814,13 @@ export const saleRouter = router({
     if (!inv) return null;
     // عزل الفرع: لا تكشف وجود فاتورة فرع آخر لغير المدير.
     if (ctx.scopedBranchId && inv.branchId !== ctx.scopedBranchId) return null;
-    // عزل المالك: الكاشير/المندوب لا يستطيع فتح فاتورة زميل عبر رابط مباشر.
-    if (ctx.scopedOwnerId != null && Number(inv.createdBy) !== ctx.scopedOwnerId) return null;
+    // لا يفتح الكاشير فاتورة زميل عبر رابط مباشر، لكنه يفتح الفاتورة الناتجة من
+    // أمر خدمة العملاء الذي أنشأه حتى إن قام موظف آخر بالإرسال أو التسليم.
+    if (
+      ctx.scopedOwnerId != null
+      && Number(inv.createdBy) !== ctx.scopedOwnerId
+      && Number(inv.workOrderCreatedBy) !== ctx.scopedOwnerId
+    ) return null;
     const items = await db
       .select({
         id: invoiceItems.id,
@@ -846,13 +879,15 @@ export const saleRouter = router({
       total: inv.total,
       branchId: inv.branchId,
     }).qrPayload;
+    // حقل تفويض داخلي للاستعلام فقط؛ لا يكون جزءاً من عقد تفاصيل الفاتورة.
+    const { workOrderCreatedBy: _workOrderCreatedBy, ...invoiceForView } = inv;
 
     // حجب التكلفة عن غير المدير (منع كشف هامش الربح).
     if (!canSeeCostForUser(ctx.user)) {
-      const { costTotal: _c, ...invNoCost } = inv;
+      const { costTotal: _c, ...invNoCost } = invoiceForView;
       const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
       return { ...invNoCost, items: itemsNoCost, payments, returns, qrPayload };
     }
-    return { ...inv, items, payments, returns, qrPayload };
+    return { ...invoiceForView, items, payments, returns, qrPayload };
   }),
 });

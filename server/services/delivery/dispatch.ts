@@ -69,6 +69,14 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إرسال أمر فرعٍ آخر" });
     }
     if (wo.status !== "READY") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس جاهزاً للإرسال" });
+    // حارس خادمي مقابل طابور الواجهة: لا يتحول الاستلام المباشر إلى شحنة بسبب
+    // رابط قديم أو طلب API يدوي. يحدد موظف خدمة العملاء طريقة التسليم أولاً.
+    if (!wo.hasDelivery) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الطلب مضبوط للاستلام المباشر — غيّر طريقة التسليم إلى توصيل أولاً",
+      });
+    }
 
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party || !party.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل غير متاحة" });
