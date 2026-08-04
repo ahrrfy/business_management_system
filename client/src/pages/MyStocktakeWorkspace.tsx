@@ -1,20 +1,30 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "wouter";
 import {
   AlertTriangle,
   Camera,
   CheckCircle2,
   ClipboardCheck,
+  Hourglass,
   Search,
   Send,
+  WifiOff,
 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { confirm } from "@/lib/confirm";
 import { errMsg, notify } from "@/lib/notify";
+import { isNetworkError } from "@/lib/netError";
 import { fmtInt } from "@/lib/money";
-import { newClientRequestId } from "@/lib/countQueue";
+import {
+  enqueue,
+  newClientRequestId,
+  peekAll,
+  remove as removeQueued,
+  size as queueSize,
+  type QueuedCount,
+} from "@/lib/countQueue";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -61,6 +71,10 @@ function baseUnitName(item: CountItem) {
 /**
  * مساحة عدّ الجرد للحساب المسند إليه تكليف USER — تعمل على الحاسوب والهاتف معاً:
  * مسح بكاميرا الجهاز (كبوابة العدّ الخارجية) أو بقارئ HID، وإدخال الكمية بالوحدات.
+ *
+ * أوفلاين: فشل شبكي في الحفظ ⇒ طابور localStorage (نفس `countQueue` المستعمل في بوابة
+ * العدّ) بنفس `clientRequestId` ⇒ المزامنة الآلية (عند عودة الاتصال وكل ٥ ثوانٍ) آمنة
+ * التكرار عبر UNIQUE(sessionId, clientRequestId) على الخادم.
  */
 export default function MyStocktakeWorkspace() {
   const { code: rawCode } = useParams<{ code?: string }>();
@@ -77,6 +91,10 @@ export default function MyStocktakeWorkspace() {
   /** الوحدة التي طابق باركودُها المسح — يبدأ التركيز عليها في بطاقة الكمية. */
   const [scannedUnit, setScannedUnit] = useState<string | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [online, setOnline] = useState<boolean>(
+    () => typeof navigator === "undefined" || navigator.onLine,
+  );
+  const [queueCount, setQueueCount] = useState<number>(() => (code ? queueSize(code) : 0));
 
   const st = state.data;
   const items = useMemo(() => st?.items ?? [], [st]);
@@ -97,6 +115,79 @@ export default function MyStocktakeWorkspace() {
       }),
     [items, needle],
   );
+
+  /* ── حالة الاتصال: نجاح الاستعلام الدوري ⇒ متصل، وفشلٌ شبكيّ ⇒ مقطوع ── */
+  useEffect(() => {
+    if (state.isSuccess) setOnline(true);
+  }, [state.isSuccess, state.dataUpdatedAt]);
+  useEffect(() => {
+    if (state.isError && isNetworkError(state.error)) setOnline(false);
+  }, [state.isError, state.error, state.errorUpdatedAt]);
+
+  /* ── مزامنة الطابور (idempotent بنفس clientRequestId) ── */
+  const flushing = useRef(false);
+  const flushQueue = useCallback(async () => {
+    if (flushing.current || !code) return;
+    const pending = peekAll(code);
+    if (pending.length === 0) return;
+    flushing.current = true;
+    let synced = 0;
+    try {
+      for (const it of pending) {
+        try {
+          await utils.client.count.submit.mutate({
+            sessionCode: code,
+            variantId: it.variantId,
+            qty: it.qty,
+            unitBreakdown: it.unitBreakdown,
+            clientRequestId: it.clientRequestId,
+          });
+          removeQueued(code, it.clientRequestId);
+          synced++;
+        } catch (e) {
+          if (isNetworkError(e)) {
+            setOnline(false);
+            break; // ما زال الاتصال مقطوعاً — نعيد المحاولة في الدورة القادمة
+          }
+          // رفض خادمي نهائي (أُقفل العدّ مثلاً) — لا معنى لإبقائها بالطابور.
+          removeQueued(code, it.clientRequestId);
+          notify.warn("تعذّرت مزامنة عدّة محفوظة", errMsg(e));
+        }
+      }
+    } finally {
+      flushing.current = false;
+      setQueueCount(queueSize(code));
+      if (synced > 0) {
+        setOnline(true);
+        notify.ok(`عاد الاتصال — تمت مزامنة ${fmtInt(synced)} عدّة محفوظة محلياً`);
+        await utils.count.state.invalidate({ sessionCode: code });
+      }
+    }
+  }, [code, utils]);
+
+  useEffect(() => {
+    const up = () => {
+      setOnline(true);
+      void flushQueue();
+    };
+    const down = () => setOnline(false);
+    window.addEventListener("online", up);
+    window.addEventListener("offline", down);
+    const timer = window.setInterval(() => void flushQueue(), 5_000);
+    return () => {
+      window.removeEventListener("online", up);
+      window.removeEventListener("offline", down);
+      window.clearInterval(timer);
+    };
+  }, [flushQueue]);
+
+  /** العدّات المحفوظة محلياً بانتظار المزامنة — مفتاحها المنتج. */
+  const queuedByVariant = useMemo(() => {
+    const m = new Map<number, QueuedCount>();
+    if (code) for (const it of peekAll(code)) m.set(it.variantId, it);
+    return m;
+    // queueCount يتغيّر مع كل حفظ محليّ/مزامنة ⇒ يعيد القراءة.
+  }, [code, queueCount]);
 
   const openItem = useCallback(
     (item: CountItem, unitName?: string) => {
@@ -146,22 +237,54 @@ export default function MyStocktakeWorkspace() {
       notify.warn("أدخل كمية صحيحة تساوي صفراً أو أكثر.");
       return;
     }
+    const item = selected;
+    const clientRequestId = newClientRequestId();
     submit.mutate(
       {
         sessionCode: code,
-        variantId: selected.variantId,
+        variantId: item.variantId,
         qty,
         unitBreakdown,
-        clientRequestId: newClientRequestId(),
+        clientRequestId,
       },
       {
         onSuccess: async () => {
+          // عدّة مباشرة نجحت ⇒ أي نسخة معلّقة قديمة لنفس المنتج صارت لاغية.
+          const stale = peekAll(code).find((q) => q.variantId === item.variantId);
+          if (stale) removeQueued(code, stale.clientRequestId);
+          setQueueCount(queueSize(code));
+          setOnline(true);
           setSelected(null);
           setScannedUnit(null);
           notify.ok("تم حفظ العدّ");
           await utils.count.state.invalidate({ sessionCode: code });
         },
-        onError: (error) => notify.err(error),
+        onError: (error) => {
+          if (!isNetworkError(error)) {
+            // رفض خادميّ (سياسة الجلسة، إقفال العدّ…) — البطاقة تبقى مفتوحة برسالة الخادم.
+            notify.err(error);
+            return;
+          }
+          setOnline(false);
+          const persisted = enqueue(code, {
+            clientRequestId,
+            variantId: item.variantId,
+            qty,
+            unitBreakdown,
+            queuedAt: new Date().toISOString(),
+          });
+          setQueueCount(queueSize(code));
+          setSelected(null);
+          setScannedUnit(null);
+          if (persisted) {
+            notify.info(
+              "لا اتصال — حُفظت الكمية على الجهاز",
+              "ستُزامَن تلقائياً عند عودة الاتصال",
+            );
+          } else {
+            notify.err("تعذّر الحفظ على هذا الجهاز — أعد المحاولة عند توفّر الاتصال");
+          }
+        },
       },
     );
   };
@@ -203,24 +326,42 @@ export default function MyStocktakeWorkspace() {
     return (
       <p className="p-8 text-sm text-muted-foreground">جارٍ فتح مساحة الجرد…</p>
     );
-  if (state.isError || !st) {
+  // انقطاعٌ شبكيّ بعد التحميل لا يطرد العامل: ما دامت لقطة الجلسة في الكاش يواصل العدّ
+  // (يُحفظ محلياً ويُزامَن لاحقاً). شاشة العطل تظهر فقط حين لا توجد بيانات أصلاً.
+  if (!st) {
+    const offlineBoot = state.isError && isNetworkError(state.error);
     return (
       <Card className="mx-auto mt-10 max-w-2xl">
         <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
-          <AlertTriangle className="size-10 text-stock-low" aria-hidden />
+          {offlineBoot ? (
+            <WifiOff className="size-10 text-stock-low" aria-hidden />
+          ) : (
+            <AlertTriangle className="size-10 text-stock-low" aria-hidden />
+          )}
           <div>
-            <p className="font-bold">لا يمكن فتح مهمة الجرد بهذا الحساب</p>
+            <p className="font-bold">
+              {offlineBoot ? "لا اتصال بالشبكة" : "لا يمكن فتح مهمة الجرد بهذا الحساب"}
+            </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              يجب أن يكون تكليفك من نوع «حساب مستخدم داخل النظام». لا يوجد PIN
-              في شاشة الحسابات.
+              {offlineBoot
+                ? "تعذّر تحميل منتجات الجلسة — تحقّق من الإنترنت ثم أعد المحاولة."
+                : "يجب أن يكون تكليفك من نوع «حساب مستخدم داخل النظام». لا يوجد PIN في شاشة الحسابات."}
             </p>
-            <p className="mt-2 text-xs text-destructive">
-              {state.error ? errMsg(state.error) : ""}
-            </p>
+            {!offlineBoot && (
+              <p className="mt-2 text-xs text-destructive">
+                {state.error ? errMsg(state.error) : ""}
+              </p>
+            )}
           </div>
-          <Link href="/my-stocktake">
-            <Button variant="outline">العودة إلى جردي</Button>
-          </Link>
+          {offlineBoot ? (
+            <Button variant="outline" onClick={() => void state.refetch()}>
+              إعادة المحاولة
+            </Button>
+          ) : (
+            <Link href="/my-stocktake">
+              <Button variant="outline">العودة إلى جردي</Button>
+            </Link>
+          )}
         </CardContent>
       </Card>
     );
@@ -232,7 +373,12 @@ export default function MyStocktakeWorkspace() {
   const overallPct = overall.total
     ? Math.round((overall.counted / overall.total) * 100)
     : 0;
-  const minePct = mine.total ? Math.round((mine.counted / mine.total) * 100) : 0;
+  // العدّات المحفوظة محلياً تُحتسب في تقدّمي فوراً — العامل عدّها فعلاً وإن لم تُزامَن بعد.
+  const queuedFresh = items.filter(
+    (i) => i.myCount == null && queuedByVariant.has(i.variantId),
+  ).length;
+  const mineCounted = Math.min(mine.total, mine.counted + queuedFresh);
+  const minePct = mine.total ? Math.round((mineCounted / mine.total) * 100) : 0;
   const canCount =
     st.session.status === "COUNTING" && st.assignment.status === "ACTIVE";
   const statusHint = canCount
@@ -240,6 +386,13 @@ export default function MyStocktakeWorkspace() {
     : st.assignment.status === "SUBMITTED"
       ? "تم تسليم عدّك للمراجعة."
       : "أغلقت الجلسة للمراجعة.";
+  // التسليم نهائيّ ويحتاج خادماً: لا يُسمح به قبل مزامنة كل عدّة محفوظة محلياً.
+  const canSubmitAssignment = canCount && online && queueCount === 0;
+  const submitBlockedLabel = !online
+    ? "التسليم يتطلّب اتصالاً — عدّك محفوظ"
+    : queueCount > 0
+      ? `بانتظار مزامنة ${fmtInt(queueCount)} عدّة`
+      : null;
 
   return (
     <div className="mx-auto max-w-[1500px] space-y-4 p-1 sm:space-y-5">
@@ -259,17 +412,49 @@ export default function MyStocktakeWorkspace() {
             {st.assignment.zone ? ` · المنطقة: ${st.assignment.zone}` : ""}
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-xl bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary sm:px-4 sm:py-2 sm:text-sm">
-          <ClipboardCheck className="size-4" aria-hidden /> جرد أعمى
+        <div className="flex shrink-0 items-center gap-2">
+          {queueCount > 0 && (
+            <span
+              className="inline-flex items-center gap-1 rounded-xl bg-muted px-2.5 py-1.5 text-xs font-bold text-muted-foreground"
+              title="عدّات محفوظة على الجهاز بانتظار المزامنة"
+            >
+              <Hourglass className="size-3.5" aria-hidden /> {fmtInt(queueCount)}
+            </span>
+          )}
+          <span
+            className={cn(
+              "inline-block size-2.5 rounded-full",
+              online ? "bg-[var(--stock-ok)]" : "bg-[var(--stock-out)]",
+            )}
+            title={online ? "متصل" : "لا اتصال"}
+            aria-label={online ? "متصل" : "لا اتصال"}
+          />
+          <div className="flex items-center gap-2 rounded-xl bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary sm:px-4 sm:py-2 sm:text-sm">
+            <ClipboardCheck className="size-4" aria-hidden /> جرد أعمى
+          </div>
         </div>
       </header>
+
+      {!online && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted px-4 py-2.5 text-xs font-bold text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <WifiOff className="size-3.5" aria-hidden /> لا اتصال — عدّك يُحفظ على
+            الجهاز ويُزامَن تلقائياً عند عودة الشبكة
+          </span>
+          {queueCount > 0 && (
+            <span className="rounded-full bg-background px-2 py-0.5">
+              {fmtInt(queueCount)} بانتظار المزامنة
+            </span>
+          )}
+        </div>
+      )}
 
       {/* الهاتف: شريط تقدّم مضغوط + زرّ التسليم (بدل البطاقات الثلاث) */}
       <section className="rounded-2xl border bg-card p-4 sm:hidden">
         <div className="flex items-center justify-between gap-2 text-sm font-bold">
           <span>عدّي المسجّل</span>
           <span className="font-mono tabular-nums" dir="ltr">
-            {fmtInt(mine.counted)} / {fmtInt(mine.total)}
+            {fmtInt(mineCounted)} / {fmtInt(mine.total)}
           </span>
         </div>
         <div className="mt-2 h-2 overflow-hidden rounded-full bg-primary/10">
@@ -284,10 +469,11 @@ export default function MyStocktakeWorkspace() {
         </p>
         <Button
           className="mt-3 h-11 w-full"
-          disabled={!canCount || finish.isPending}
+          disabled={!canSubmitAssignment || finish.isPending}
           onClick={() => void submitAssignment()}
         >
-          <Send className="size-4" aria-hidden /> تسليم عدّي للمراجعة
+          <Send className="size-4" aria-hidden />{" "}
+          {submitBlockedLabel ?? "تسليم عدّي للمراجعة"}
         </Button>
       </section>
 
@@ -300,8 +486,12 @@ export default function MyStocktakeWorkspace() {
         />
         <Metric
           title="عدّي المسجّل"
-          value={`${fmtInt(mine.counted)} / ${fmtInt(mine.total)}`}
-          hint="عدد المنتجات التي أدخلتها أنت"
+          value={`${fmtInt(mineCounted)} / ${fmtInt(mine.total)}`}
+          hint={
+            queueCount > 0
+              ? `منها ${fmtInt(queueCount)} محفوظة على الجهاز بانتظار المزامنة`
+              : "عدد المنتجات التي أدخلتها أنت"
+          }
           pct={minePct}
         />
         <Card className="gap-3 py-5">
@@ -312,10 +502,11 @@ export default function MyStocktakeWorkspace() {
           <CardContent className="px-5">
             <Button
               className="w-full"
-              disabled={!canCount || finish.isPending}
+              disabled={!canSubmitAssignment || finish.isPending}
               onClick={() => void submitAssignment()}
             >
-              <Send className="size-4" aria-hidden /> تسليم عدّي للمراجعة
+              <Send className="size-4" aria-hidden />{" "}
+              {submitBlockedLabel ?? "تسليم عدّي للمراجعة"}
             </Button>
           </CardContent>
         </Card>
@@ -387,7 +578,11 @@ export default function MyStocktakeWorkspace() {
             <span className="w-[110px] shrink-0">عدّي</span>
           </div>
           <div className="max-h-[52vh] overflow-y-auto">
-            {filtered.map((item) => (
+            {filtered.map((item) => {
+              const queued = queuedByVariant.get(item.variantId);
+              // العدّة المحفوظة محلياً أحدث من المُزامَنة ⇒ هي المعروضة.
+              const myQty = queued?.qty ?? item.myCount?.qty ?? null;
+              return (
               <button
                 key={item.variantId}
                 type="button"
@@ -409,8 +604,12 @@ export default function MyStocktakeWorkspace() {
                   </span>
                 </span>
                 <span className="shrink-0 text-xs sm:w-[130px] sm:text-sm">
-                  {item.counted ? (
-                    <span className="inline-flex items-center gap-1 text-stock-ok">
+                  {queued ? (
+                    <span className="inline-flex items-center gap-1 text-muted-foreground">
+                      <Hourglass className="size-4" aria-hidden /> بانتظار المزامنة
+                    </span>
+                  ) : item.counted ? (
+                    <span className="inline-flex items-center gap-1 text-[var(--stock-ok)]">
                       <CheckCircle2 className="size-4" aria-hidden /> معدود
                     </span>
                   ) : (
@@ -418,16 +617,17 @@ export default function MyStocktakeWorkspace() {
                   )}
                 </span>
                 <span className="w-14 shrink-0 text-left sm:w-[110px] sm:text-right">
-                  {item.myCount ? (
+                  {myQty != null ? (
                     <span className="font-mono text-primary" dir="ltr">
-                      {fmtInt(item.myCount.qty)}
+                      {fmtInt(myQty)}
                     </span>
                   ) : (
                     <span className="text-muted-foreground">—</span>
                   )}
                 </span>
               </button>
-            ))}
+              );
+            })}
             {filtered.length === 0 && (
               <p className="p-10 text-center text-sm text-muted-foreground">
                 لا توجد نتائج مطابقة.
@@ -456,6 +656,7 @@ export default function MyStocktakeWorkspace() {
             <QtyEditor
               key={selected.variantId}
               item={selected}
+              queued={queuedByVariant.get(selected.variantId)}
               focusUnit={scannedUnit}
               saving={submit.isPending}
               onCancel={() => {
@@ -484,12 +685,15 @@ export default function MyStocktakeWorkspace() {
 
 function QtyEditor({
   item,
+  queued,
   focusUnit,
   saving,
   onCancel,
   onSave,
 }: {
   item: CountItem;
+  /** عدّة محفوظة على الجهاز لم تُزامَن بعد — أحدث من `item.myCount` فتسبقها في التعبئة. */
+  queued?: QueuedCount;
   focusUnit: string | null;
   saving: boolean;
   onCancel: () => void;
@@ -504,8 +708,9 @@ function QtyEditor({
   const baseUnit = baseUnitName(item);
 
   const [vals, setVals] = useState<Record<string, string>>(() => {
-    // تعبئة مسبقة من عدّي السابق: التفصيل بالوحدات إن حُفظ، وإلا الإجمالي بوحدة الأساس.
-    const src = item.myCount?.unitBreakdown ?? null;
+    // تعبئة مسبقة من عدّي السابق: المحفوظ محلياً أولاً (الأحدث) ثم المُزامَن —
+    // التفصيل بالوحدات إن وُجد، وإلا الإجمالي بوحدة الأساس.
+    const src = queued?.unitBreakdown ?? item.myCount?.unitBreakdown ?? null;
     if (src) {
       try {
         const parsed = JSON.parse(src) as Record<string, unknown>;
@@ -520,7 +725,8 @@ function QtyEditor({
         /* تفصيل غير قابل للقراءة — نبدأ من الإجمالي */
       }
     }
-    if (item.myCount) return { [baseUnitName(item)]: String(item.myCount.qty) };
+    const fallbackQty = queued?.qty ?? item.myCount?.qty ?? null;
+    if (fallbackQty != null) return { [baseUnitName(item)]: String(fallbackQty) };
     return {};
   });
 
@@ -550,6 +756,15 @@ function QtyEditor({
 
   return (
     <div className="space-y-4">
+      {queued && (
+        <p className="inline-flex items-start gap-1.5 rounded-lg bg-muted p-3 text-xs font-semibold text-muted-foreground">
+          <Hourglass className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          <span>
+            عدّتك السابقة لهذا المنتج محفوظة على الجهاز ولم تُزامَن بعد — تعديلها
+            هنا يستبدلها، وتُرسَل تلقائياً عند عودة الاتصال.
+          </span>
+        </p>
+      )}
       {item.colleagueCounted && !item.myCount && (
         <p className="rounded-lg bg-primary/10 p-3 text-xs text-primary">
           عدّ تحققي: المنتج عُدّ من زميل، لكن كميته لا تظهر لك حفاظاً على الجرد

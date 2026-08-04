@@ -12,11 +12,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useLocation, useParams } from "wouter";
-import { TRPCClientError } from "@trpc/client";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { trpc } from "@/lib/trpc";
 import type { RouterOutputs } from "@/lib/trpc";
 import { notify, errMsg } from "@/lib/notify";
+import { isNetworkError } from "@/lib/netError";
 import { fmtInt } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
@@ -53,13 +53,6 @@ type CountItem = CountState["items"][number];
 type CountMode = "FIRST" | "RECOUNT" | "VERIFY";
 
 /* ─────────────────────────── مساعدات ─────────────────────────── */
-
-/** فشل شبكي (لم يصل للخادم) ⇄ رفض خادمي (وصل ورُفض برسالة). */
-function isNetworkError(e: unknown): boolean {
-  if (typeof navigator !== "undefined" && !navigator.onLine) return true;
-  if (e instanceof TRPCClientError) return e.data == null;
-  return e instanceof TypeError;
-}
 
 /** اسم الوحدة الأساس (factor=1) لعرض الكميات. */
 function baseUnitName(item: CountItem): string {
