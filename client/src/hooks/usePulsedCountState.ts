@@ -1,72 +1,124 @@
-// استقصاء حالة بوابة العدّ عبر «نبضة» رخيصة بدل جلب الحالة الكاملة كل ٥ ثوانٍ.
+// استقصاء حالة بوابة العدّ بنمط ETag: يُرسَل وسم النسخة المعروف، فيردّ الخادم «بلا تغيير»
+// رخيصاً بدل إعادة إرسال الحالة الكاملة كل ٥ ثوانٍ.
 //
 // المشكلة (مقاسة على الإنتاج ٤/٨/٢٦): `count.state` يُجسّد كل أصناف الجلسة + كل عدّاتها +
 // وحدات القياس وباركوداتها في كل نداء (~٨–١٥ ألف صفّ، ١٠٣ﻙﺐ للردّ على جلسةٍ من ٣٣٨٣ صنفاً).
 // وباستقصائه كل ٥ ثوانٍ من كل عادّ صار **٩٤٪ من حركة الخادم** (١٤١ﻣﺐ خلال ٦٨ دقيقة) ودفع
 // الذاكرة من ٣٠٠م إلى ٦٠٠م خلال دقيقة فضرب سقف PM2 وأعاد تشغيل الخادم ١٥–٢٣ مرّة/ساعة.
+// معدّل الإرسال المقاس ١.٣٤ عدّة/دقيقة ⇒ ~٨٩٪ من الاستقصاءات لا تحمل تغييراً أصلاً.
 //
-// الحل: تستقصي الواجهة `count.pulse` (وسمُ نسخةٍ من استعلامَي تجميعٍ مفهرسَين، ~عشرات البايتات)
-// ولا تُبطِل `count.state` إلّا عند تبدّل الوسم. السلوك المرئيّ للعادّ لا يتغيّر: أي عدّة جديدة
-// أو طلب إعادة عدّ يُبدّل الوسم فوراً فتصل التحديثات بنفس زمن الـ٥ ثوانٍ.
-import { useEffect, useRef } from "react";
-import { trpc } from "@/lib/trpc";
+// لماذا استقصاءٌ أمريّ (imperative) لا `useQuery` ثانٍ: `knownVersion` يتبدّل مع كل تحديث،
+// ولو دخل مفتاحَ الكاش لأنشأ مدخلاً جديداً في كل دورة. فالمفتاح المخبّأ يبقى `{sessionCode}`
+// وحده، ونحن نضخّ فيه النتيجة بـ`setData` عند التغيّر — جولةٌ واحدة، بلا إعادة جلبٍ ثانية.
+import { useCallback, useEffect, useRef, useState } from "react";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 
-/** فاصل الاستقصاء — نفس الإيقاع السابق كي لا تتأخّر التحديثات عمّا اعتاده العادّون. */
-const PULSE_INTERVAL_MS = 5_000;
+type StateResponse = RouterOutputs["count"]["state"];
+type PortalState = NonNullable<StateResponse["state"]>;
+
+const POLL_MS = 5_000;
 
 /**
- * شبكة أمان: تحديثٌ كامل إجباريّ كل دقيقتين مهما قالت النبضة.
- * البصمة لا تغطّي تعديلات الكتالوج (اسم منتج/باركود/وحدة تُحرَّر أثناء الجرد) — نادرة لكنها
- * ممكنة. هذا يجعل أسوأ تقادمٍ ممكن دقيقتين بدل «إلى الأبد»، بكلفة ~٣٠ نداءً كاملاً في الساعة
- * لكل عادّ بدل ٧٢٠. راجع حدود البصمة الموثَّقة في server/services/countPortal/state.ts.
+ * شبكة أمان: تجاهل الوسم كلّ دقيقتين واطلب الحالة كاملةً.
+ * البصمة لا تغطّي تعديلات الكتالوج (اسم منتج/باركود يُحرَّر أثناء الجرد) — نادرة لكن ممكنة.
+ * فأسوأ تقادمٍ ممكن دقيقتان بدل «إلى الأبد».
  */
 const FULL_REFRESH_MS = 120_000;
 
 /**
- * يعيد استعلام `count.state` نفسه (بديلٌ مباشر) لكن محكوماً بالنبضة لا بمؤقّتٍ ثابت.
- * @param code   رمز الجلسة.
+ * حالة بوابة العدّ، محكومةً بوسم النسخة. يعيد كائناً بواجهة استعلامٍ مألوفة
+ * (`data`/`isError`/`refetch`…) كي يبقى بديلاً مباشراً لـ`trpc.count.state.useQuery`.
+ *
+ * @param code رمز الجلسة.
  * @param enabled هل الشاشة في طور العدّ فعلاً.
+ * @param identityEpoch عدّادٌ يزيده المستدعي عند **كل تبدّل هوية** (دخول/خروج من البوابة).
+ *   إلزاميّ للجهاز المشترك: مفتاح الكاش رمز الجلسة وحده، فبلا تصفيرٍ صريح يرى العادّ الجديد
+ *   بيانات سابقه وكمياته (`myCount`) على أنّها له.
  */
-export function usePulsedCountState(code: string, enabled: boolean) {
+export function usePulsedCountState(code: string, enabled: boolean, identityEpoch = 0) {
   const utils = trpc.useUtils();
 
-  // بلا refetchInterval — لا يُعاد جلبها إلّا بإبطالٍ صريح (من النبضة أو من طفرة محلّية).
-  const state = trpc.count.state.useQuery({ sessionCode: code }, { enabled, retry: false });
+  // المصدر المخبّأ الوحيد للحالة الكاملة — بلا `knownVersion` فيردّ الحالة كاملةً عند التحميل.
+  const q = trpc.count.state.useQuery({ sessionCode: code }, { enabled, retry: false });
 
-  const pulse = trpc.count.pulse.useQuery(
-    { sessionCode: code },
-    { enabled, retry: false, refetchInterval: PULSE_INTERVAL_MS },
-  );
-
-  const lastVersion = useRef<string | null>(null);
+  const version = useRef<string | null>(null);
   const lastFullAt = useRef<number>(0);
+  const inFlight = useRef(false);
+  const [probeError, setProbeError] = useState<unknown>(null);
+  const [probeErrorAt, setProbeErrorAt] = useState(0);
+  const [probeOkAt, setProbeOkAt] = useState(0);
 
-  // التبعية `dataUpdatedAt` لا `data`: react-query يُبقي نفس المرجع عند تطابق المحتوى، فلو
-  // اعتمدنا على `data` لما عمل المؤثِّر أصلاً حين لا يتغيّر الوسم — وهي الحالة الغالبة، وفيها
-  // بالذات نحتاج التحقّق من شبكة الأمان.
-  const pulseAt = pulse.dataUpdatedAt;
-  const version = pulse.data?.v ?? null;
+  // تبدّل الهوية ⇒ امسح كل أثرٍ للعادّ السابق قبل أن تُعرَض أي بيانات للجديد.
+  useEffect(() => {
+    version.current = null;
+    lastFullAt.current = 0;
+    setProbeError(null);
+    void utils.count.state.reset();
+  }, [identityEpoch, code, utils]);
+
+  // وسم النسخة يُلتقط من ردّ الاستعلام المخبّأ نفسه (لا من نداءٍ منفصل) ⇒ لا سباق بين
+  // «لقطة الحالة» و«أوّل نبضة»: الوسم دائماً هو وسم البيانات المعروضة بالضبط.
+  const cachedVersion = q.data?.v ?? null;
+  const cachedChanged = q.data?.changed ?? false;
+  useEffect(() => {
+    if (cachedVersion && cachedChanged) {
+      version.current = cachedVersion;
+      lastFullAt.current = Date.now();
+    }
+  }, [cachedVersion, cachedChanged]);
+
+  const probe = useCallback(async () => {
+    if (!enabled || !code || inFlight.current) return;
+    inFlight.current = true;
+    try {
+      const stale = Date.now() - lastFullAt.current >= FULL_REFRESH_MS;
+      const known = stale ? undefined : (version.current ?? undefined);
+      const res = await utils.client.count.state.query({ sessionCode: code, knownVersion: known });
+      setProbeError(null);
+      setProbeOkAt(Date.now());
+      if (res.changed && res.state) {
+        // نضخّ الردّ في الكاش مباشرةً — لا إعادة جلبٍ ثانية، والمؤشّرات لا تتقدّم إلّا بعد
+        // نجاحٍ فعليّ (لو فشل النداء بقينا على الوسم القديم فأعدنا المحاولة بعد ٥ ثوانٍ،
+        // بدل كتم التحديث دقيقتين على بياناتٍ لم تُحدَّث).
+        utils.count.state.setData({ sessionCode: code }, res);
+        version.current = res.v;
+        lastFullAt.current = Date.now();
+      } else {
+        version.current = res.v;
+      }
+    } catch (e) {
+      // أخطاء الاستقصاء تُمرَّر للمستهلك: انتهاء صلاحية رمز البوابة يظهر هنا فقط (الاستعلام
+      // المخبّأ يبقى «ناجحاً» ببياناتٍ قديمة)، وبدون تمريره لا يعود العادّ لشاشة PIN أبداً.
+      setProbeError(e);
+      setProbeErrorAt(Date.now());
+    } finally {
+      inFlight.current = false;
+    }
+  }, [code, enabled, utils]);
 
   useEffect(() => {
-    if (!enabled || version == null) return;
-    const now = Date.now();
+    if (!enabled || !code) return;
+    const id = setInterval(() => void probe(), POLL_MS);
+    return () => clearInterval(id);
+  }, [enabled, code, probe]);
 
-    // أوّل نبضة بعد التحميل: الحالة الكاملة جُلبت للتوّ مع تركيب الشاشة ⇒ نتبنّى الوسم بلا
-    // إبطال، وإلّا صار كل فتحِ شاشةٍ جلبتين متتاليتين بلا فائدة.
-    if (lastVersion.current === null) {
-      lastVersion.current = version;
-      lastFullAt.current = now;
-      return;
-    }
+  const data: PortalState | undefined = q.data?.state ?? undefined;
+  const isError = q.isError || probeError != null;
+  const error = q.error ?? probeError;
 
-    const changed = version !== lastVersion.current;
-    const stale = now - lastFullAt.current >= FULL_REFRESH_MS;
-    if (!changed && !stale) return;
-
-    lastVersion.current = version;
-    lastFullAt.current = now;
-    void utils.count.state.invalidate({ sessionCode: code });
-  }, [pulseAt, version, enabled, code, utils]);
-
-  return state;
+  return {
+    data,
+    isLoading: q.isLoading,
+    isSuccess: q.isSuccess && !probeError,
+    isError,
+    error,
+    dataUpdatedAt: Math.max(q.dataUpdatedAt, probeOkAt),
+    errorUpdatedAt: Math.max(q.errorUpdatedAt, probeErrorAt),
+    refetch: async () => {
+      setProbeError(null);
+      version.current = null;
+      lastFullAt.current = 0;
+      return q.refetch();
+    },
+  };
 }

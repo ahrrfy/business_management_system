@@ -50,7 +50,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 
-type State = RouterOutputs["count"]["state"];
+// `count.state` صار غلافاً بنمط ETag (`{ v, changed, state }`) — الحالة الفعلية في `.state`.
+type State = NonNullable<RouterOutputs["count"]["state"]["state"]>;
 type CountItem = State["items"][number];
 type CountUnit = CountItem["units"][number];
 /** نوع العدّة كما تُسمّيها بوابة العدّ: أول عدّ · إعادة عدّ مطلوبة · عدّ تحقّقي فوق عدّ زميل. */

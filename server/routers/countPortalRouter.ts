@@ -135,21 +135,25 @@ export const countPortalRouter = router({
    * حالة البوابة (جرد أعمى): أصنافي + أصناف الزملاء (للبحث/العدّ التحقّقي) +
    * مهام إعادة العدّ + التقدّم — بلا أرصدة دفترية ولا أسعار ولا كميات زملاء.
    */
-  state: publicProcedure.input(z.object({ sessionCode })).query(async ({ input, ctx }) => {
-    const identity = await resolvePortalIdentity(ctx, input.sessionCode);
-    return getPortalState(identity);
-  }),
-
   /**
-   * بصمة نسخةٍ رخيصة للاستقصاء الدوري — تُستبدَل بها `state` في حلقة الـ٥ ثوانٍ.
-   * نفس حراسة `state` بالضبط (`resolvePortalIdentity` بنفس رمز الجلسة/الكوكي) ولا تكشف
-   * أي بيانات: وسمٌ مبهم لا يحمل أسماء ولا كميات ولا أرصدة (الجرد الأعمى محفوظ).
-   * التفصيل وحدود البصمة في `countPortal/state.ts`.
+   * حالة البوابة بنمط ETag في **جولةٍ واحدة**: يمرّر العميل وسم نسخته (`knownVersion`)؛ فإن
+   * طابق الحالي رُدّ `changed:false` بلا حمولة (عشرات البايتات بدل ~١٠٠ﻙﺐ)، وإلّا رُدّت
+   * الحالة الكاملة مع الوسم الجديد. بلا `knownVersion` ⇒ الحالة الكاملة دائماً (أول تحميل).
+   *
+   * ⚠️ الفحص مطويٌّ **داخل** `state` عمداً لا في إجراءٍ جديد: أي `publicProcedure` جديد
+   * يُدخِل نقطة سلطةٍ مستجدّة يرفضها `authz-guard` بنيوياً (لا أساسَ يُحدَّث ولا استثناء).
+   * والطيّ أفضل وظيفياً أيضاً — جولةٌ واحدة عند التغيّر بدل جولتَي «نبضة ثم جلب».
    */
-  pulse: publicProcedure.input(z.object({ sessionCode })).query(async ({ input, ctx }) => {
-    const identity = await resolvePortalIdentity(ctx, input.sessionCode);
-    return getPortalPulse(identity);
-  }),
+  state: publicProcedure
+    .input(z.object({ sessionCode, knownVersion: z.string().max(64).optional() }))
+    .query(async ({ input, ctx }) => {
+      const identity = await resolvePortalIdentity(ctx, input.sessionCode);
+      const { v } = await getPortalPulse(identity);
+      if (input.knownVersion && input.knownVersion === v) {
+        return { v, changed: false as const, state: null };
+      }
+      return { v, changed: true as const, state: await getPortalState(identity) };
+    }),
 
   /** تسجيل عدّة (idempotent عبر clientRequestId — آمن لمزامنة طابور الأوفلاين). */
   submit: publicProcedure

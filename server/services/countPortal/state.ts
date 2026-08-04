@@ -10,8 +10,21 @@ import {
   stocktakeCounts,
   stocktakeItems,
 } from "../../../drizzle/schema";
+import { createHmac, randomBytes } from "node:crypto";
 import { requireDb } from "../tx";
 import type { PortalIdentity } from "./identity";
+
+/**
+ * مفتاح توقيع وسم النسخة. `JWT_SECRET` في الإنتاج، ومفتاحٌ عشوائيّ لكل عملية عند غيابه
+ * (اختبارات/تطوير) — تبدّله عند إعادة التشغيل يكلّف جلبةً كاملةً واحدة لا أكثر، ولا يكسر شيئاً.
+ * ⚠️ لا تجعله ثابتاً مكتوباً: الوسم يُصدَّر للعميل، وثباتُه المعلوم يُعيد فتح باب التخمين.
+ */
+const VERSION_KEY = process.env.JWT_SECRET || randomBytes(32).toString("hex");
+
+/** يوقّع تجميعات البصمة الداخلية فيصير المُعاد وسماً مبهماً غير قابلٍ للعكس. */
+function signPortalVersion(raw: string): string {
+  return createHmac("sha256", VERSION_KEY).update(raw).digest("base64url").slice(0, 22);
+}
 
 export type PortalUnit = {
   unitName: string;
@@ -38,7 +51,7 @@ export type PortalItem = {
 };
 
 /**
- * بصمة نسخةٍ رخيصة لحالة البوابة (`pulse`) — بديل الاستقصاء الثقيل.
+ * بصمة نسخةٍ رخيصة لحالة البوابة — بديل الاستقصاء الثقيل.
  *
  * **لماذا:** `getPortalState` يُجسّد كل أصناف الجلسة + كل عدّاتها + وحدات القياس وباركوداتها
  * البديلة في **كل** نداء. على جلسة إنتاجية واقعية (٣٣٨٣ صنفاً/١١٩٢ عدّة) ذلك ≈ ٨–١٥ ألف صفّ
@@ -46,8 +59,15 @@ export type PortalItem = {
  * (١٤١ﻣﺐ/٦٨د مقاسة على nginx) ويدفع الذاكرة من ٣٠٠م إلى ٦٠٠م خلال دقيقة فيضرب سقف PM2.
  * تتفاقم مع الوقت لأنّ عدد العدّات ينمو خلال الجرد.
  *
- * **العقد:** تعيد وسماً يتغيّر **كلّما تغيّر شيءٌ يظهر في `state`**؛ فتستقصي الواجهة هذه
- * (استعلاما تجميعٍ مفهرسان) ولا تجلب `state` الكامل إلّا عند تبدّل الوسم.
+ * **العقد:** تعيد وسماً يتغيّر **كلّما تغيّر شيءٌ يظهر في `state`**؛ يُمرّره العميل في
+ * `knownVersion` فيردّ الخادم «بلا تغيير» رخيصاً بدل الحمولة الكاملة (نمط ETag بجولةٍ واحدة).
+ *
+ * 🔒 **الوسم مُفتَّح (HMAC) عمداً — لا تُعِده قيمةً خاماً.** الصيغة الأولى كانت تُعيد
+ * `BIT_XOR(CRC32(...))` خاماً، وهي **قابلة للعكس**: بين نبضتين تفصلهما عدّةٌ واحدة يعطي
+ * `XOR` للوسمين قيمةَ CRC32 لذلك الصفّ وحده، ومعرّفُه معلومٌ من فرق `maxId`، والنوع وصيغة
+ * التفصيل ونافذة الوقت محصورة ⇒ يُخمَّن مقدار الكمية بالقوة الغاشمة حتى يطابق CRC32، فينكشف
+ * عدّ الزميل ويسقط **الجرد الأعمى** (أمسكته مراجعة Codex). المعالجة: التجميعات تبقى داخلية،
+ * والمُعاد هو `HMAC-SHA256` عليها بمفتاح خادميّ ⇒ لا بنية جبرية تُستغلّ ولا تخمين بلا المفتاح.
  *
  * ⚠️ **حدود البصمة (مقصودة وموثَّقة):** تغطّي العدّات وأصناف الجلسة وطلبات إعادة العدّ وحالتَي
  * الجلسة والتكليف. لا تغطّي تعديلات **الكتالوج** (اسم منتج/باركود/وحدة تُحرَّر أثناء الجرد) —
@@ -89,19 +109,22 @@ export async function getPortalPulse(identity: PortalIdentity) {
     .where(eq(stocktakeItems.sessionId, session.id));
 
   // حالتا الجلسة والتكليف تأتيان من الهوية المُحلَّلة سلفاً في كل نداء ⇒ بلا استعلامٍ إضافي.
-  return {
-    v: [
-      session.status,
-      assignment.status,
-      Number(c?.maxId ?? 0),
-      Number(c?.n ?? 0),
-      Number(c?.crc ?? 0),
-      Number(i?.maxId ?? 0),
-      Number(i?.n ?? 0),
-      Number(i?.pendingRecounts ?? 0),
-      Number(i?.lastRecountAt ?? 0),
-    ].join(":"),
-  };
+  // التكليف داخل البصمة كي لا يتشارك عادّان على جهازٍ واحد وسماً واحداً بعد تبديل الدخول.
+  const raw = [
+    session.id,
+    session.status,
+    assignment.id,
+    assignment.status,
+    Number(c?.maxId ?? 0),
+    Number(c?.n ?? 0),
+    Number(c?.crc ?? 0),
+    Number(i?.maxId ?? 0),
+    Number(i?.n ?? 0),
+    Number(i?.pendingRecounts ?? 0),
+    Number(i?.lastRecountAt ?? 0),
+  ].join(":");
+
+  return { v: signPortalVersion(raw) };
 }
 
 /**

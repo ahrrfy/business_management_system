@@ -136,6 +136,13 @@ function submit(identity: PortalIdentity, variantId: number, qty: number, opts: 
   });
 }
 
+/** يحاكي عقد الراوتر `count.state` (غلاف ETag) فوق الخدمتين — نفس منطق countPortalRouter. */
+async function portalState(identity: PortalIdentity, knownVersion?: string) {
+  const { v } = await getPortalPulse(identity);
+  if (knownVersion && knownVersion === v) return { v, changed: false as const, state: null };
+  return { v, changed: true as const, state: await getPortalState(identity) };
+}
+
 async function countRowsOf(sessionId: number, variantId: number) {
   const rows = await db()
     .select()
@@ -570,22 +577,47 @@ describe("نبضة النسخة (pulse)", () => {
     expect(v).not.toContain("4242");
   });
 
-  it("الجرد الأعمى محفوظ: لا يُستنتَج مقدار عدّة الزميل من فرق الوسم (لا مجموع كميات)", async () => {
+  it("الوسم مُفتَّح ومبهم: لا بنية جبرية تُعكَس لاستخراج عدّة الزميل (ثغرة CRC الخام)", async () => {
     const r = await mkPortalSession();
     const idA = await loginPin(r.code, r.assignments[0].pin!);
     const idB = await loginPin(r.code, r.assignments[1].pin!);
 
-    // منظور «أ» قبل وبعد عدّة زميلٍ بكميةٍ معلومة: الوسم يتبدّل (ليعرف أنّ شيئاً جرى)
-    // لكن الفرق العدديّ بين الوسمين يجب ألّا يساوي الكمية — وإلّا كان مجموعاً قابلاً للعكس.
     const before = (await getPortalPulse(idA)).v;
     await submit(idB, 2, 777);
     const after = (await getPortalPulse(idA)).v;
 
+    // يتبدّل (فيعرف «أ» أنّ شيئاً جرى) لكن بلا أي مسارٍ لاستخراج المقدار.
     expect(after).not.toBe(before);
-    const numsBefore = before.split(":").map(Number);
-    const numsAfter = after.split(":").map(Number);
-    const deltas = numsAfter.map((n, i) => n - (numsBefore[i] ?? 0));
-    expect(deltas).not.toContain(777);
     expect(after).not.toContain("777");
+
+    // ⛔ الصيغة الأولى أعادت تجميعاتٍ خاماً مفصولةً بـ«:» فكان XOR/الطرح بين وسمين
+    // متتاليين يعطي بصمة الصفّ المُضاف وحده ⇒ تُخمَّن الكمية بالقوة الغاشمة. الوسم الآن
+    // HMAC واحد: لا فواصل، ولا أجزاء عددية، وطولٌ ثابت لا يتغيّر بحجم الجلسة.
+    expect(after).not.toContain(":");
+    expect(Number.isNaN(Number(after))).toBe(true);
+    expect(after).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(after.length).toBe(before.length);
+  });
+
+  it("غلاف ETag: knownVersion مطابق ⇒ بلا حمولة؛ ومخالف/غائب ⇒ الحالة كاملةً", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    await submit(idA, 1, 10);
+
+    // بلا وسمٍ معروف ⇒ حمولة كاملة + الوسم الحاليّ.
+    const full = await portalState(idA);
+    expect(full.changed).toBe(true);
+    expect(full.state?.items.length).toBeGreaterThan(0);
+
+    // بالوسم نفسه ⇒ «بلا تغيير» وبلا أي حمولة (هذا هو مصدر التوفير).
+    const same = await portalState(idA, full.v);
+    expect(same).toMatchObject({ changed: false, state: null, v: full.v });
+
+    // بعد عدّةٍ جديدة، نفس الوسم القديم ⇒ يعود بالحمولة كاملةً ووسمٍ جديد.
+    await submit(idA, 2, 3);
+    const afterChange = await portalState(idA, full.v);
+    expect(afterChange.changed).toBe(true);
+    expect(afterChange.v).not.toBe(full.v);
+    expect(afterChange.state?.items.length).toBeGreaterThan(0);
   });
 });

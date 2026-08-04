@@ -1,9 +1,9 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 771,
+    "trpcTotal": 770,
     "byKind": {
-      "query": 386,
+      "query": 385,
       "mutation": 385
     },
     "byAuthority": {
@@ -11,18 +11,18 @@
       "module-map": 241,
       "admin": 73,
       "raw-role": 60,
-      "none": 54,
+      "none": 53,
       "platform": 5,
       "self-assignment": 1,
       "token": 1
     },
     "bySensitivity": {
-      "LOW": 385,
+      "LOW": 384,
       "MEDIUM": 291,
       "HIGH": 95
     },
     "byModule": {
-      "(none)": 191,
+      "(none)": 190,
       "hr": 77,
       "digital_cards": 67,
       "reports": 56,
@@ -55,8 +55,8 @@
       "SENSITIVE_ACTION": 95,
       "ADMIN_ONLY": 76,
       "RAW_ROLE_GATE": 70,
-      "UNAUTHENTICATED": 33,
-      "READ_WITHOUT_MODULE_GATE": 31,
+      "UNAUTHENTICATED": 32,
+      "READ_WITHOUT_MODULE_GATE": 30,
       "WRITE_WITHOUT_MODULE_GATE": 23,
       "HANDLER_ROLE_CHECK": 5
     },
@@ -64,12 +64,12 @@
     "expressMounts": 10,
     "jobs": 5,
     "routerFiles": 74,
-    "proposedPermissions": 629,
+    "proposedPermissions": 628,
     "proposedDomains": {
       "hr": 83,
       "digitalcards": 67,
       "catalog": 63,
-      "inventory": 63,
+      "inventory": 62,
       "treasury": 59,
       "reports": 58,
       "iam": 39,
@@ -2969,7 +2969,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/countPortalRouter.ts:199"
+      "loc": "server/routers/countPortalRouter.ts:203"
     },
     {
       "surface": "trpc",
@@ -2986,7 +2986,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/countPortalRouter.ts:220"
+      "loc": "server/routers/countPortalRouter.ts:224"
     },
     {
       "surface": "trpc",
@@ -3008,23 +3008,6 @@
     {
       "surface": "trpc",
       "router": "countPortalRouter",
-      "proposedPermission": "inventory.count_portal.pulse",
-      "name": "pulse",
-      "kind": "query",
-      "procedure": "publicProcedure",
-      "authority": "none",
-      "module": "",
-      "level": "",
-      "roles": "",
-      "branch": "none",
-      "sensitivity": "LOW",
-      "sensitivityWhy": "قراءة",
-      "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/countPortalRouter.ts:149"
-    },
-    {
-      "surface": "trpc",
-      "router": "countPortalRouter",
       "proposedPermission": "inventory.count_portal.state",
       "name": "state",
       "kind": "query",
@@ -3037,7 +3020,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/countPortalRouter.ts:138"
+      "loc": "server/routers/countPortalRouter.ts:147"
     },
     {
       "surface": "trpc",
@@ -3054,7 +3037,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/countPortalRouter.ts:155"
+      "loc": "server/routers/countPortalRouter.ts:159"
     },
     {
       "surface": "trpc",
