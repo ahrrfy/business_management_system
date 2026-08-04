@@ -118,7 +118,18 @@ export async function getPortalPulse(identity: PortalIdentity) {
     Number(i?.lastRecountAt ?? 0),
   ].join(":");
 
-  return { v: signPortalVersion(raw) };
+  // وسم الكتالوج يُشتقّ من **نفس** تجميعات الأصناف أعلاه (لا استعلامٍ إضافي ولا تجسيد).
+  // هذا ما يجعل المسار التزايديّ رخيصاً فعلاً: الراوتر يقارن `cv` قبل أن يبني الكتالوج،
+  // فلا يُجسَّد ٣٤١٤ صنفاً ووحداتها وباركوداتها ثمّ تُرمى. الصيغة مطابقة لما يحسبه
+  // `getPortalCatalog` حرفياً (session.id + أكبر معرّف صنف + العدد) — أي تغييرٍ في إحداهما
+  // يجب أن ينعكس في الأخرى وإلّا لم يتطابق الوسمان أبداً فيُعاد إرسال الكتالوج في كل دورة.
+  const cv = catalogVersionOf(Number(session.id), Number(i?.maxId ?? 0), Number(i?.n ?? 0));
+  return { v: signPortalVersion(raw), cv };
+}
+
+/** صيغة وسم الكتالوج — مصدرٌ واحد يستعمله `getPortalPulse` و`getPortalCatalog` معاً. */
+function catalogVersionOf(sessionId: number, maxItemId: number, itemCount: number): string {
+  return signPortalVersion(`cat:${sessionId}:${maxItemId}:${itemCount}`);
 }
 
 /**
@@ -214,8 +225,10 @@ export async function getPortalCatalog(
     units: unitsByVariant.get(Number(it.variantId)) ?? [],
   }));
 
+  // ⚠️ نفس صيغة `getPortalPulse` بالضبط عبر `catalogVersionOf` — لو انحرفتا لما تطابق
+  // الوسمان أبداً فأُعيد إرسال الكتالوج في كل دورة وضاع كل التوفير صامتاً. اختبارٌ يحرسها.
   const maxItemId = itemRows.length ? Number(itemRows[itemRows.length - 1]!.id) : 0;
-  return { cv: signPortalVersion(`cat:${session.id}:${maxItemId}:${itemRows.length}`), items };
+  return { cv: catalogVersionOf(Number(session.id), maxItemId, itemRows.length), items };
 }
 
 /**

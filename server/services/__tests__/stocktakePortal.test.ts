@@ -148,18 +148,16 @@ async function portalState(
   knownVersion?: string,
   knownCatalogVersion?: string,
 ) {
-  const { v } = await getPortalPulse(identity);
+  const { v, cv } = await getPortalPulse(identity);
   if (knownVersion && knownVersion === v) {
-    return { v, cv: null, changed: false as const, catalog: null, dynamic: null };
+    return { v, cv, changed: false as const, catalog: null, dynamic: null };
   }
-  const [catalog, dynamic] = await Promise.all([getPortalCatalog(identity), getPortalDynamic(identity)]);
-  return {
-    v,
-    cv: catalog.cv,
-    changed: true as const,
-    catalog: knownCatalogVersion === catalog.cv ? null : catalog.items,
-    dynamic,
-  };
+  const catalogFresh = knownCatalogVersion === cv;
+  const [dynamic, catalog] = await Promise.all([
+    getPortalDynamic(identity),
+    catalogFresh ? Promise.resolve(null) : getPortalCatalog(identity),
+  ]);
+  return { v, cv, changed: true as const, catalog: catalog?.items ?? null, dynamic };
 }
 
 async function countRowsOf(sessionId: number, variantId: number) {
@@ -589,11 +587,15 @@ describe("نبضة النسخة (pulse)", () => {
     const idA = await loginPin(r.code, r.assignments[0].pin!);
     await submit(idA, 1, 4242, { unitBreakdown: '{"قطعة":4242}' });
 
-    const { v } = await getPortalPulse(idA);
-    expect(Object.keys(await getPortalPulse(idA))).toEqual(["v"]);
-    // لا اسم منتجٍ ولا كمية عدّةٍ داخل الوسم.
-    expect(v).not.toMatch(/قلم|جاف/);
-    expect(v).not.toContain("4242");
+    const { v, cv } = await getPortalPulse(idA);
+    // وسمان لا غير: حالة (`v`) وكتالوج (`cv`) — لا حقل بياناتٍ ثالث يتسلّل مع الوقت.
+    expect(Object.keys(await getPortalPulse(idA)).sort()).toEqual(["cv", "v"]);
+    // لا اسم منتجٍ ولا كمية عدّةٍ في أيٍّ منهما.
+    for (const tag of [v, cv]) {
+      expect(tag).not.toMatch(/قلم|جاف/);
+      expect(tag).not.toContain("4242");
+      expect(tag).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    }
   });
 
   it("الوسم مُفتَّح ومبهم: لا بنية جبرية تُعكَس لاستخراج عدّة الزميل (ثغرة CRC الخام)", async () => {
@@ -661,6 +663,26 @@ describe("نبضة النسخة (pulse)", () => {
     // وعميلٌ بلا كتالوج مخزَّن (أو بوسمٍ قديم) يستلمه كاملاً — فلا يعلق بحالةٍ ناقصة.
     const stranger = await portalState(idA, undefined, "cv-قديم");
     expect(stranger.catalog?.length).toBeGreaterThan(0);
+  });
+
+  it("وسم الكتالوج من النبضة = وسمه من الكتالوج نفسه (وإلّا ضاع التوفير صامتاً)", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+
+    // الراوتر يقارن `cv` القادم من النبضة (رخيص) بما لدى العميل، ولا يبني الكتالوج إلّا
+    // عند الاختلاف. فلو انحرفت صيغتا الوسم لما تطابقا أبداً ⇒ يُبنى الكتالوج ويُرسَل في
+    // **كل** دورة، فيعود الحمل كما كان بلا أي اختبارٍ أحمر يكشف ذلك.
+    const pulse = await getPortalPulse(idA);
+    const cat = await getPortalCatalog(idA);
+    expect(pulse.cv).toBe(cat.cv);
+
+    // ويبقيان متطابقين بعد العدّ (العدّ لا يمسّ الكتالوج).
+    await submit(idA, 1, 5);
+    const pulse2 = await getPortalPulse(idA);
+    const cat2 = await getPortalCatalog(idA);
+    expect(pulse2.cv).toBe(cat2.cv);
+    expect(pulse2.cv).toBe(pulse.cv);
+    expect(pulse2.v).not.toBe(pulse.v);
   });
 
   it("التركيب المشترك يعيد إنتاج getPortalState حرفياً (لا انحراف بين الخادم والعميل)", async () => {

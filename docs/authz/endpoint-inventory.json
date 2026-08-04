@@ -2978,7 +2978,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/countPortalRouter.ts:221"
+      "loc": "server/routers/countPortalRouter.ts:224"
     },
     {
       "surface": "trpc",
@@ -2995,7 +2995,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/countPortalRouter.ts:242"
+      "loc": "server/routers/countPortalRouter.ts:245"
     },
     {
       "surface": "trpc",
@@ -3046,7 +3046,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/countPortalRouter.ts:177"
+      "loc": "server/routers/countPortalRouter.ts:180"
     },
     {
       "surface": "trpc",

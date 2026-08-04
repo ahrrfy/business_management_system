@@ -53,6 +53,8 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
   const merged = useRef<PortalState | null>(null);
   const lastFullAt = useRef<number>(0);
   const inFlight = useRef(false);
+  /** جيل الهوية/الجلسة الحاليّ — ردٌّ من جيلٍ سابق يُرمى بدل أن يلوّث الحالة الجديدة. */
+  const generation = useRef(0);
 
   const [tick, setTick] = useState(0);
   const [probeError, setProbeError] = useState<unknown>(null);
@@ -65,12 +67,16 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
       if (cat) {
         catalog.current = cat;
         catalogVersion.current = cv;
+        // ⚠️ الساعة تتقدّم **فقط** عند استلام كتالوجٍ فعليّ. لو تقدّمت مع كل ردٍّ متغيّرٍ
+        // بلا كتالوج، لما صار `stale` صحيحاً أبداً في جردٍ نشط (تغيُّرٌ كل أقلّ من دقيقتين)
+        // ⇒ تموت شبكة الأمان ويبقى منتجٌ أُعيدت تسميته قديماً **إلى الأبد** لا دقيقتين،
+        // لأنّ تحرير الكتالوج غائبٌ عمداً عن الوسمين معاً.
+        lastFullAt.current = Date.now();
       }
       const c = catalog.current;
       if (!c) return false;
       merged.current = mergePortalState(c, dyn);
       version.current = v;
-      lastFullAt.current = Date.now();
       return true;
     },
     [],
@@ -78,6 +84,7 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
 
   // تبدّل الهوية ⇒ امسح كل أثرٍ للعادّ السابق قبل أن تُعرَض أي بيانات للجديد.
   useEffect(() => {
+    generation.current += 1;
     version.current = null;
     catalogVersion.current = null;
     catalog.current = null;
@@ -99,6 +106,10 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
   const probe = useCallback(async () => {
     if (!enabled || !code || inFlight.current) return;
     inFlight.current = true;
+    // الجيل عند الإطلاق: لو تبدّلت الجلسة/الهوية أثناء الطيران، يُرمى الردّ كاملاً. بدونه
+    // يكتب ردُّ الجلسة السابقة كتالوجها وحالتها في مراجع الجلسة الجديدة، فتُعرض بيانات
+    // جلسةٍ أخرى ويُمكن أن يُتّخذ إجراءٌ عليها.
+    const gen = generation.current;
     try {
       const stale = Date.now() - lastFullAt.current >= FULL_REFRESH_MS;
       const res = await utils.client.count.state.query({
@@ -106,6 +117,7 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
         knownVersion: stale ? undefined : (version.current ?? undefined),
         knownCatalogVersion: stale ? undefined : (catalogVersion.current ?? undefined),
       });
+      if (gen !== generation.current) return;
       setProbeError(null);
       setProbeOkAt(Date.now());
 
@@ -122,6 +134,7 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
         catalogVersion.current = null;
       }
     } catch (e) {
+      if (gen !== generation.current) return;
       // أخطاء الاستقصاء تُمرَّر للمستهلك: انتهاء صلاحية رمز البوابة يظهر هنا فقط (الاستعلام
       // المخبّأ يبقى «ناجحاً» ببياناتٍ قديمة)، وبدون تمريره لا يعود العادّ لشاشة PIN أبداً.
       setProbeError(e);
@@ -139,14 +152,19 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
 
   void tick; // إعادة الرسم تأتي من setTick؛ القراءة من المرجع المستقرّ.
   const data = merged.current ?? undefined;
-  const isError = q.isError || probeError != null;
+  // بعد أوّل تركيبٍ ناجح تسقط أخطاء الاستعلام الأوّليّ من الحساب: لم نعد نكتب نتائج
+  // الاستقصاء في كاش الاستعلام، فيبقى `q.isError` عالقاً على فشلٍ عابرٍ قديم. لو أبقيناه
+  // لأبلغنا نجاحاً وخطأً معاً، **ولحجب خطأٌ شبكيّ قديم خطأً لاحقاً أهمّ** مثل انتهاء
+  // صلاحية الرمز (UNAUTHORIZED) الذي يُعيد العادّ إلى شاشة PIN.
+  const settled = merged.current != null;
+  const isError = settled ? probeError != null : q.isError || probeError != null;
 
   return {
     data,
-    isLoading: q.isLoading && merged.current == null,
-    isSuccess: (q.isSuccess || merged.current != null) && !probeError,
+    isLoading: q.isLoading && !settled,
+    isSuccess: (q.isSuccess || settled) && !probeError,
     isError,
-    error: q.error ?? probeError,
+    error: settled ? probeError : (q.error ?? probeError),
     dataUpdatedAt: Math.max(q.dataUpdatedAt, probeOkAt),
     errorUpdatedAt: Math.max(q.errorUpdatedAt, probeErrorAt),
     refetch: async () => {

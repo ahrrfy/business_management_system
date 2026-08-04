@@ -156,21 +156,24 @@ export const countPortalRouter = router({
     )
     .query(async ({ input, ctx }) => {
       const identity = await resolvePortalIdentity(ctx, input.sessionCode);
-      const { v } = await getPortalPulse(identity);
-      // ① لا شيء تبدّل ⇒ ردٌّ بعشرات البايتات.
+      // استعلاما تجميعٍ مفهرسان يعطيان **الوسمين معاً** — بلا تجسيد أي صفّ.
+      const { v, cv } = await getPortalPulse(identity);
+
+      // ① لا شيء تبدّل ⇒ ردٌّ بعشرات البايتات (الحالة الغالبة، ~٨٩٪).
       if (input.knownVersion && input.knownVersion === v) {
-        return { v, cv: null, changed: false as const, catalog: null, dynamic: null };
+        return { v, cv, changed: false as const, catalog: null, dynamic: null };
       }
-      // ② تبدّل شيء ⇒ أرسل المتغيّر دائماً، والكتالوج **فقط** إن كان لدى العميل قديماً.
-      const [catalog, dynamic] = await Promise.all([getPortalCatalog(identity), getPortalDynamic(identity)]);
-      const catalogFresh = input.knownCatalogVersion === catalog.cv;
-      return {
-        v,
-        cv: catalog.cv,
-        changed: true as const,
-        catalog: catalogFresh ? null : catalog.items,
-        dynamic,
-      };
+
+      // ② تبدّل شيء ⇒ المتغيّر دائماً، والكتالوج **فقط** إن كان لدى العميل قديماً.
+      // ⚠️ المقارنة تسبق البناء عمداً: بناء الكتالوج ثمّ رميه كان يُبقي حمل القاعدة
+      // والتخصيصات كما هي (٣٤١٤ صنفاً + وحداتها + باركوداتها لكل عادّ عند كل تغيّر)،
+      // فيوفّر بايتات الشبكة وحدها ولا يعالج ضغط الذاكرة الذي أتت الشريحة لأجله.
+      const catalogFresh = input.knownCatalogVersion === cv;
+      const [dynamic, catalog] = await Promise.all([
+        getPortalDynamic(identity),
+        catalogFresh ? Promise.resolve(null) : getPortalCatalog(identity),
+      ]);
+      return { v, cv, changed: true as const, catalog: catalog?.items ?? null, dynamic };
     }),
 
   /** تسجيل عدّة (idempotent عبر clientRequestId — آمن لمزامنة طابور الأوفلاين). */
