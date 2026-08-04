@@ -20,6 +20,7 @@ import {
   COUNT_COOKIE_NAME,
   COUNT_TOKEN_TTL_MS,
   finishAssignment,
+  getPortalPulse,
   getPortalState,
   resolvePortalIdentity,
   submitCount,
@@ -134,10 +135,25 @@ export const countPortalRouter = router({
    * حالة البوابة (جرد أعمى): أصنافي + أصناف الزملاء (للبحث/العدّ التحقّقي) +
    * مهام إعادة العدّ + التقدّم — بلا أرصدة دفترية ولا أسعار ولا كميات زملاء.
    */
-  state: publicProcedure.input(z.object({ sessionCode })).query(async ({ input, ctx }) => {
-    const identity = await resolvePortalIdentity(ctx, input.sessionCode);
-    return getPortalState(identity);
-  }),
+  /**
+   * حالة البوابة بنمط ETag في **جولةٍ واحدة**: يمرّر العميل وسم نسخته (`knownVersion`)؛ فإن
+   * طابق الحالي رُدّ `changed:false` بلا حمولة (عشرات البايتات بدل ~١٠٠ﻙﺐ)، وإلّا رُدّت
+   * الحالة الكاملة مع الوسم الجديد. بلا `knownVersion` ⇒ الحالة الكاملة دائماً (أول تحميل).
+   *
+   * ⚠️ الفحص مطويٌّ **داخل** `state` عمداً لا في إجراءٍ جديد: أي `publicProcedure` جديد
+   * يُدخِل نقطة سلطةٍ مستجدّة يرفضها `authz-guard` بنيوياً (لا أساسَ يُحدَّث ولا استثناء).
+   * والطيّ أفضل وظيفياً أيضاً — جولةٌ واحدة عند التغيّر بدل جولتَي «نبضة ثم جلب».
+   */
+  state: publicProcedure
+    .input(z.object({ sessionCode, knownVersion: z.string().max(64).optional() }))
+    .query(async ({ input, ctx }) => {
+      const identity = await resolvePortalIdentity(ctx, input.sessionCode);
+      const { v } = await getPortalPulse(identity);
+      if (input.knownVersion && input.knownVersion === v) {
+        return { v, changed: false as const, state: null };
+      }
+      return { v, changed: true as const, state: await getPortalState(identity) };
+    }),
 
   /** تسجيل عدّة (idempotent عبر clientRequestId — آمن لمزامنة طابور الأوفلاين). */
   submit: publicProcedure
