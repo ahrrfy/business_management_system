@@ -2382,6 +2382,7 @@ export const workOrders = mysqlTable(
       "CASH",
       "CARD",
       "TRANSFER",
+      "WALLET",
     ]).default("CASH"),
     paymentReference: varchar("paymentReference", { length: 100 }),
     // v3-add-screens(100%): TEXT لاستيعاب data URLs (≥100KB) عند الترميز المضمَّن.

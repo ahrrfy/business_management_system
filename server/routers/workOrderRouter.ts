@@ -31,7 +31,8 @@ import { checkoutReception } from "../services/receptionCheckoutService";
 import { logger } from "../logger";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
-const receptionPaymentMethod = z.enum(["CASH", "CARD", "TRANSFER"]);
+const receptionPaymentMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
+const priceTierEnum = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const quantityString = z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة");
 const receptionWorkOrderSchema = z.object({
   baseVariantId: z.number().int().positive().nullish(),
@@ -48,7 +49,7 @@ const receptionWorkOrderSchema = z.object({
   channelHandle: z.string().max(120).nullish(),
   priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
   deposit: nonNegMoneyString.nullish(),
-  paymentMethod: z.enum(["CASH", "CARD", "TRANSFER"]).nullish(),
+  paymentMethod: z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]).nullish(),
   paymentReference: z.string().max(100).nullish(),
   paymentReceiptUrl: z.string().nullish(),
   hasDelivery: z.boolean().nullish(),
@@ -69,12 +70,21 @@ const receptionCheckoutSchema = z.object({
   paymentReference: z.string().trim().max(100).nullish(),
   paidAmount: nonNegMoneyString.nullish(),
   clientRequestId: z.string().min(1).max(60),
+  // فئة سعر صريحة لكامل سلة الاستقبال (غيابها ⇒ فئة العميل الافتراضية ثم RETAIL، نمط resolveTier).
+  priceTier: priceTierEnum.nullish(),
+  // كوبون CRM — على البيع المباشر فقط (لا خدمات طباعة).
+  couponCode: z.string().trim().min(1).max(64).nullish(),
   regularSale: z.object({
     lines: z.array(z.object({
       variantId: z.number().int().positive(),
       productUnitId: z.number().int().positive(),
       quantity: quantityString,
       discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
+      // ترويج/كوبون (نمط POS.tsx buildSaleLine): سعر قائمة صحيح الدينار + خصم صريح، يتحقّق منه
+      // الخادم مقابل العرض الفعلي (sale/create.ts) بلا رفضٍ لو تغيّر العرض بين العرض والحفظ.
+      unitPriceOverride: nonNegMoneyString.optional(),
+      discountAmount: nonNegMoneyString.optional(),
+      promotionId: z.number().int().positive().nullish(),
     })).min(1),
     amount: positiveMoneyString,
   }).nullish(),

@@ -1,4 +1,5 @@
-// بند 12أ (٧/٧): راوتر الأقساط والشيكات الآجلة.
+// بند 12أ (٧/٧): راوتر الأقساط. الصكوك أُزيلت من الإنشاء/السداد (٤/٨، قرار مالك «لا استثناء») —
+// bounceCheck يبقى لارتجاع صكوكٍ قديمة مجدولة قبل هذا القرار فقط (لا مسار حيّ ينشئ صكاً جديداً).
 //
 // الصلاحيات — مرآة voucherRouter عمداً: سداد القسط يُنشئ **سند قبض حقيقياً** (createVoucher)
 // فيَحمل نفس بوّابته (treasuryManagerProcedure = manager/accountant + منح صريح، **لا كاشير**
@@ -27,9 +28,11 @@ const moneyStr = z
   .string()
   .regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (موجب، منزلتان عشريتان كحدّ أقصى)");
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
-const lineKind = z.enum(["CASH", "CHECK"]);
 const planStatus = z.enum(["ACTIVE", "COMPLETED", "CANCELLED"]);
-const payMethod = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+// الصكوك أُزيلت من الإنشاء والسداد (قرار مالك ٤/٨: «لا استثناء» — مطابقةً لسياسة النظام العامة
+// «لا تعامل بالصكوك»). القيمة تبقى في installmentService/DB لقراءة السجلات القديمة وارتجاعها
+// (bounceCheck) فقط — لا مسار حيّ ينشئ خطّاً أو سنداً جديداً بصك بعد اليوم.
+const payMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
 
 type CtxUser = { id: number; role: string; branchId?: number | null };
 
@@ -54,9 +57,6 @@ export const installmentRouter = router({
             z.object({
               dueDate: ymd,
               amount: moneyStr,
-              kind: lineKind,
-              checkNumber: z.string().max(60).nullish(),
-              bankName: z.string().max(100).nullish(),
             }),
           )
           .min(1, "قسط واحد على الأقل")
@@ -71,7 +71,9 @@ export const installmentRouter = router({
       if (restrict == null && ctx.user.role !== "admin" && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء خطة" });
       }
-      const res = await createPlan({ ...input, enforceFinancialIntegrity: true }, {
+      // كل الأقساط الجديدة نقدية (لا صكوك — راجع تعليق payMethod أعلاه).
+      const lines = input.lines.map((l) => ({ ...l, kind: "CASH" as const }));
+      const res = await createPlan({ ...input, lines, enforceFinancialIntegrity: true }, {
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? input.branchId),
         role: ctx.user.role,

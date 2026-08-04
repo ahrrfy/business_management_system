@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { invoices, shifts } from "../../drizzle/schema";
 import type { SaleLineInput, PaymentMethod } from "./sale/types";
+import type { PriceTier } from "./pricing";
 import { createSaleInTx } from "./sale/create";
 import type { PrintSaleLineInput } from "./printSaleService";
 import { createPrintSaleInTx } from "./printSaleService";
@@ -15,11 +16,16 @@ export interface ReceptionCheckoutInput {
   branchId: number;
   shiftId: number;
   customerId?: number | null;
-  paymentMethod: Extract<PaymentMethod, "CASH" | "CARD" | "TRANSFER">;
+  paymentMethod: Extract<PaymentMethod, "CASH" | "CARD" | "TRANSFER" | "WALLET">;
   paymentReference?: string | null;
   /** المبلغ المطبّق على الطلب كله. البيع المباشر يُغطّى أولاً، ثم أوامر الشغل بالترتيب. */
   paidAmount?: string | null;
   clientRequestId: string;
+  /** فئة سعر صريحة لكامل سلة الاستقبال (بيع مباشر + طباعة) — تتبع فئة العميل الافتراضية إن غابت
+   *  (نمط resolveTier في sale/create.ts). غيابها يبقي السلوك السابق (RETAIL افتراضياً). */
+  priceTier?: PriceTier | null;
+  /** كوبون CRM — ينطبق على البيع المباشر فقط (createPrintSaleInTx لا يدعم كوبونات). */
+  couponCode?: string | null;
   regularSale?: { lines: SaleLineInput[]; amount: string } | null;
   printSale?: { lines: PrintSaleLineInput[]; amount: string } | null;
   workOrders?: Array<Omit<CreateWorkOrderInput, "branchId" | "customerId" | "clientRequestId">>;
@@ -117,6 +123,8 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
           shiftId: input.shiftId,
           customerId: input.customerId ?? null,
           sourceType: "POS",
+          priceTier: input.priceTier ?? null,
+          couponCode: input.couponCode?.trim() || null,
           lines: input.regularSale.lines,
           payment: {
             amount: input.regularSale.amount,
@@ -134,6 +142,7 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
           branchId: input.branchId,
           shiftId: input.shiftId,
           customerId: input.customerId ?? null,
+          priceTier: input.priceTier ?? null,
           lines: input.printSale.lines,
           payment: {
             amount: input.printSale.amount,

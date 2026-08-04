@@ -73,11 +73,17 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
       if (!v[0]) throw new TRPCError({ code: "NOT_FOUND", message: `مادة #${m.variantId} غير موجودة` });
     }
 
-    // البطاقة والتحويل مساران غير نقديين قابلان للمطابقة؛ يلزم مرجع يمنع دفعة مجهولة المصدر.
-    if ((input.paymentMethod === "CARD" || input.paymentMethod === "TRANSFER") && !(input.paymentReference?.trim())) {
+    // البطاقة/التحويل/المحفظة مسارات غير نقدية قابلة للمطابقة؛ يلزم مرجع يمنع دفعة مجهولة المصدر.
+    if (
+      (input.paymentMethod === "CARD" || input.paymentMethod === "TRANSFER" || input.paymentMethod === "WALLET") &&
+      !(input.paymentReference?.trim())
+    ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: input.paymentMethod === "CARD" ? "رقم العملية المرجعي مطلوب لدفع البطاقة" : "رقم مرجع التحويل مطلوب",
+        message:
+          input.paymentMethod === "CARD" ? "رقم العملية المرجعي مطلوب لدفع البطاقة"
+          : input.paymentMethod === "WALLET" ? "رقم عملية المحفظة مطلوب"
+          : "رقم مرجع التحويل مطلوب",
       });
     }
 

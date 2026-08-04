@@ -125,8 +125,8 @@ export default function InstallmentPlans() {
   return (
     <div className="space-y-4 p-4">
       <PageHeader
-        title="الأقساط والصكوك الآجلة"
-        description="جدولة تحصيل ذمّة العميل بدفعات نقدية أو صكوك آجلة — سداد كل قسط يُنشئ سند قبض حقيقياً."
+        title="الأقساط"
+        description="جدولة تحصيل ذمّة العميل بدفعات نقدية مجدولة — سداد كل قسط يُنشئ سند قبض حقيقياً."
         actions={
           <Button onClick={() => setCreateOpen(true)} className="gap-1.5">
             <Plus className="size-4" aria-hidden /> خطة أقساط جديدة
@@ -215,7 +215,7 @@ export default function InstallmentPlans() {
             ).then((rows) =>
               exportRows(rows, {
                 filename: "خطط-الأقساط",
-                title: "خطط الأقساط والصكوك الآجلة",
+                title: "خطط الأقساط",
                 columns: [
                   { key: "id", header: "رقم الخطة" },
                   { key: "customerName", header: "العميل" },
@@ -425,7 +425,7 @@ function PlansTable({
         <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
           <CalendarPlus className="size-10 text-muted-foreground" aria-hidden />
           <p className="text-lg font-semibold">لا خطط أقساط بعد</p>
-          <p className="text-sm text-muted-foreground">أنشئ خطة لجدولة تحصيل ذمّة عميل بدفعات نقدية أو صكوك آجلة.</p>
+          <p className="text-sm text-muted-foreground">أنشئ خطة لجدولة تحصيل ذمّة عميل بدفعات نقدية مجدولة.</p>
         </CardContent>
       </Card>
     );
@@ -505,9 +505,6 @@ function PlansTable({
 interface DraftLine {
   dueDate: string;
   amount: string;
-  kind: "CASH" | "CHECK";
-  checkNumber: string;
-  bankName: string;
 }
 
 function CreatePlanDialog({
@@ -572,9 +569,6 @@ function CreatePlanDialog({
       next.push({
         dueDate: addDays(firstDue, i * Math.max(1, intervalDays)),
         amount: (i === n - 1 ? last : per).toFixed(2),
-        kind: "CASH",
-        checkNumber: "",
-        bankName: "",
       });
     }
     setLines(next);
@@ -589,13 +583,11 @@ function CreatePlanDialog({
   const diff = D(total || "0").minus(scheduled);
   const sumMatches = total !== "" && lines.length > 0 && diff.isZero();
   const datesAscending = lines.every((l, i) => i === 0 || l.dueDate >= lines[i - 1].dueDate);
-  const checksValid = lines.every((l) => l.kind !== "CHECK" || l.checkNumber.trim() !== "");
   const canSubmit =
     customer.customerId != null &&
     effectiveBranch != null &&
     sumMatches &&
     datesAscending &&
-    checksValid &&
     lines.every((l) => l.dueDate && D(l.amount || "0").gt(0)) &&
     !create.isPending;
 
@@ -610,9 +602,6 @@ function CreatePlanDialog({
       lines: lines.map((l) => ({
         dueDate: l.dueDate,
         amount: D(l.amount).toFixed(2),
-        kind: l.kind,
-        checkNumber: l.kind === "CHECK" ? l.checkNumber.trim() : undefined,
-        bankName: l.bankName.trim() || undefined,
       })),
     });
   }
@@ -696,7 +685,7 @@ function CreatePlanDialog({
               </Button>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              تُولَّد أسطر متساوية قابلة للتحرير سطراً-سطراً (تاريخ/مبلغ/نقدي أو صك) — السطر الأخير يمتصّ فرق التقريب.
+              تُولَّد أسطر متساوية قابلة للتحرير سطراً-سطراً (تاريخ/مبلغ) — السطر الأخير يمتصّ فرق التقريب.
             </p>
           </div>
 
@@ -710,9 +699,6 @@ function CreatePlanDialog({
                       <TableHead className="text-center">#</TableHead>
                       <TableHead className="text-center">الاستحقاق</TableHead>
                       <TableHead className="text-center">المبلغ</TableHead>
-                      <TableHead className="text-center">النوع</TableHead>
-                      <TableHead className="text-center">رقم الصك</TableHead>
-                      <TableHead className="text-center">المصرف</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -724,35 +710,6 @@ function CreatePlanDialog({
                         </TableCell>
                         <TableCell>
                           <MoneyInput value={l.amount} onChange={(v) => updateLine(i, { amount: v })} className="h-8 w-32" ariaLabel={`مبلغ القسط ${i + 1}`} />
-                        </TableCell>
-                        <TableCell>
-                          <select
-                            value={l.kind}
-                            onChange={(e) => updateLine(i, { kind: e.target.value as DraftLine["kind"] })}
-                            className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
-                          >
-                            <option value="CASH">نقدي</option>
-                            <option value="CHECK">صك آجل</option>
-                          </select>
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            value={l.checkNumber}
-                            onChange={(e) => updateLine(i, { checkNumber: e.target.value })}
-                            disabled={l.kind !== "CHECK"}
-                            placeholder={l.kind === "CHECK" ? "إلزامي" : "—"}
-                            className="h-8 w-28"
-                            dir="ltr"
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            value={l.bankName}
-                            onChange={(e) => updateLine(i, { bankName: e.target.value })}
-                            disabled={l.kind !== "CHECK"}
-                            placeholder={l.kind === "CHECK" ? "اسم المصرف" : "—"}
-                            className="h-8 w-32"
-                          />
                         </TableCell>
                       </TableRow>
                     ))}
@@ -774,7 +731,6 @@ function CreatePlanDialog({
                 )}
               </div>
               {!datesAscending && <p className="text-xs text-destructive">تواريخ الأقساط يجب أن تكون متصاعدة.</p>}
-              {!checksValid && <p className="text-xs text-destructive">كل قسط صك يحتاج رقم صك.</p>}
             </div>
           )}
 
@@ -1004,9 +960,9 @@ function PayLineDialog({
   onClose: () => void;
   onDone: () => Promise<void> | void;
 }) {
-  const [method, setMethod] = useState<"CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">(
-    target.kind === "CHECK" ? "CHECK" : "CASH",
-  );
+  // الصكوك أُزيلت من طرق السداد (٤/٨، قرار مالك «لا استثناء») — حتى قسطٍ مجدوَل أصلاً كصكٍّ
+  // (بيانات قديمة سابقة للقرار) يُحصَّل الآن نقداً أو ببديل آخر، لا صكّاً جديداً.
+  const [method, setMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET">("CASH");
   const [note, setNote] = useState("");
   const [attachment, setAttachment] = useState<ImageItem[]>([]);
   const thresholds = trpc.vouchers.thresholds.useQuery(undefined, { staleTime: 300_000 });
@@ -1049,7 +1005,6 @@ function PayLineDialog({
               className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="CASH">نقدي</option>
-              <option value="CHECK">صك (تحصيل الصك)</option>
               <option value="TRANSFER">تحويل</option>
               <option value="CARD">بطاقة</option>
               <option value="WALLET">محفظة</option>
@@ -1067,7 +1022,7 @@ function PayLineDialog({
               maxItems={1}
               maxSizeMB={2}
               singlePrimary={false}
-              hint="صورة وصل التحصيل / الصك — تُضغط تلقائياً قبل الحفظ."
+              hint="صورة وصل التحصيل — تُضغط تلقائياً قبل الحفظ."
             />
           </div>
           {needsApproval && (

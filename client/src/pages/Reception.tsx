@@ -27,8 +27,10 @@ import {
   Search,
   ShoppingCart,
   Store,
+  Ticket,
   Trash2,
   Truck,
+  Wallet,
   X,
   Zap,
 } from "lucide-react";
@@ -80,12 +82,15 @@ import {
 
 type PosRow = NonNullable<RouterOutputs["catalog"]["posList"]>[number];
 type NumMode = "QTY" | "DISC" | "PAY";
-type PayMethod = "CASH" | "CARD" | "TRANSFER";
+type PayMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 const PAY_METHOD_LABEL: Record<PayMethod, string> = {
   CASH: "نقدي",
   CARD: "بطاقة",
   TRANSFER: "تحويل",
+  WALLET: "محفظة",
 };
+type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
+const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 const RESERVATION_READ_ROLES = ["admin", "manager", "accountant", "cashier", "warehouse", "sales_rep", "auditor"] as const;
 const CHANNEL_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor", "warehouse", "print_operator"] as const;
 const STORE_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
@@ -106,8 +111,13 @@ type CartLine = {
 const QUICK_AMTS = [1000, 5000, 10000, 25000];
 
 function effectivePrice(line: CartLine): number {
+  // عرض/كوبون (catalog.posList.promotionEffectivePrice) يسبق السعر الأساس كنقطة انطلاق (نمط
+  // POS.tsx effectivePrice) — الخصم اليدوي يُطبَّق فوقه لا بدلاً عنه. لا ينطبق على سطر مخصّص
+  // (custom): تسعيره الإضافي بلا كتالوج ترويجيّ.
+  const promoPrice = !line.custom ? line.row.promotionEffectivePrice : null;
   // التخصيص إضافيّ: سعر الوحدة للسطر المخصّص = سعر المنتج الأساس + سعر التخصيص (فوقه)، لا بديلاً عنه.
   const base = line.origPrice ?? (
+    promoPrice != null ? Number(promoPrice) :
     line.custom
       ? Number(line.row.price ?? 0) + Number(line.custom.unitPrice ?? 0)
       : Number(line.row.price ?? 0)
@@ -289,6 +299,11 @@ export default function Reception() {
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
+  // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
+  const [tierOverride, setTierOverride] = useState<Tier | null>(null);
+  const [couponInput, setCouponInput] = useState("");
+  const [couponCode, setCouponCode] = useState<string | null>(null);
+  const [couponLabel, setCouponLabel] = useState<string | null>(null);
   const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
   const [channelHandle, setChannelHandle] = useState("");
   const [workflowStep, setWorkflowStep] = useState(1);
@@ -305,6 +320,29 @@ export default function Reception() {
   const customerSectionRef = useRef<HTMLDivElement>(null);
   const cartSectionRef = useRef<HTMLDivElement>(null);
   const paymentSectionRef = useRef<HTMLDivElement>(null);
+
+  // فئة العميل الافتراضية (لحلّ الفئة التلقائية — نمط POS.tsx fetchedCustomer/effectiveTier).
+  const fetchedCustomer = trpc.customers.get.useQuery(
+    { customerId: customer.customerId ?? 0 },
+    { enabled: !!customer.customerId, staleTime: 60_000 },
+  );
+  const effectiveTier: Tier =
+    tierOverride ?? ((fetchedCustomer.data?.defaultPriceTier as Tier | undefined) ?? "RETAIL");
+  // تبديل العميل يُسقط أيّ تجاوز فئة يدوي سابق (تعلّق بعميلٍ آخر) وأيّ كوبون مُطبَّق (أسعاره
+  // قد تختلف بفئة العميل الجديد — يلزم إعادة تطبيق).
+  const prevCustomerIdRef = useRef<number | null>(customer.customerId);
+  useEffect(() => {
+    if (prevCustomerIdRef.current === customer.customerId) return;
+    prevCustomerIdRef.current = customer.customerId;
+    setTierOverride(null);
+    if (couponCode) {
+      setCouponCode(null);
+      setCouponLabel(null);
+      setCouponInput("");
+      setCart((prev) => prev.map((c) => (c.custom ? c : { ...c, row: { ...c.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customer.customerId]);
 
   const channelCustomerQ = trpc.customers.smartSearch.useQuery(
     { q: channelHandle.trim(), limit: 6 },
@@ -396,15 +434,27 @@ export default function Reception() {
   // ───── البحث ──────────────────────────────────────────────────────────────
   const debounced = useDebouncedValue(search, 180);
   const searchResults = trpc.catalog.posList.useQuery(
-    { branchId, tier: "RETAIL", query: debounced, limit: 15, includeReceptionServices: true },
+    { branchId, tier: effectiveTier, query: debounced, limit: 15, includeReceptionServices: true },
     { enabled: debounced.trim().length >= 2, placeholderData: keepPreviousData, staleTime: 15_000 },
   );
   const results = searchResults.data ?? [];
   const resultsEmpty = results.length === 0 && debounced.trim().length >= 2 && !searchResults.isFetching;
 
   // ───── السلّة ─────────────────────────────────────────────────────────────
+  /** أيّ تعديلٍ على السلة يُسقط كوبوناً مُطبَّقاً سابقاً (نمط POS.tsx clearAppliedCoupon) — أسعار
+   *  الكوبون محسوبة على تركيبة سلّةٍ بعينها، وتعديلها بلا إعادة تطبيق يعني تحصيلاً بسعرٍ فات أوانه. */
+  const clearCouponIfApplied = useCallback(() => {
+    setCouponCode((prev) => {
+      if (!prev) return prev;
+      setCouponLabel(null);
+      setCart((c) => c.map((line) => (line.custom ? line : { ...line, row: { ...line.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
+      return null;
+    });
+  }, []);
+
   /** يضيف صنفاً جاهزاً (بلا تخصيص) بسعره العادي — يدمج مع سطرٍ مطابق غير مخصّص إن وُجد. */
   const addDirectLine = useCallback((row: PosRow) => {
+    clearCouponIfApplied();
     setCart((prev) => {
       // دمج كميّات الصنف الجاهز المُكرَّر (لا تكرار سطر).
       const i = prev.findIndex((c) => !isCustomKind(c) && c.row.productUnitId === row.productUnitId);
@@ -422,11 +472,11 @@ export default function Reception() {
   }, []);
 
   const addRow = useCallback((row: PosRow) => {
-    // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعر RETAIL
+    // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعرٍ
     // بالدخول للسلّة ثم يَفشل عند الإرسال (createWorkOrder يَرفض salePrice<=0) بَعد ما اَلتزَمت
     // فاتورة البيع — رحلةٌ بِنصف نتيجة. الحارس موحَّد للنوعين.
     if (row.price == null || Number(row.price) <= 0) {
-      notify.err(`لا سعر RETAIL لـ ${row.productName} (${row.unitName}) — حدّد سعراً من /products أوّلاً`);
+      notify.err(`لا سعر ${TIER_LABEL[effectiveTier]} لـ ${row.productName} (${row.unitName}) — حدّد سعراً من /products أوّلاً`);
       return;
     }
     // المنتج المخصّص (products.isCustomizable=true) ⇒ افتح نافذة التخصيص (وفيها خيار «بلا تخصيص»
@@ -487,11 +537,13 @@ export default function Reception() {
   }
 
   function changeQty(key: string, delta: number) {
+    clearCouponIfApplied();
     setCart((prev) =>
       prev.map((c) => (c.key === key ? { ...c, qty: Math.max(1, c.qty + delta) } : c)),
     );
   }
   function removeRow(key: string) {
+    clearCouponIfApplied();
     setCart((prev) => prev.filter((c) => c.key !== key));
     if (selKey === key) setSelKey(null);
   }
@@ -503,6 +555,9 @@ export default function Reception() {
       description: "سيُمسح كلّ ما في الطلب الحالي. متابعة؟",
       confirmText: "تفريغ",
     }))) return;
+    setCouponCode(null);
+    setCouponLabel(null);
+    setCouponInput("");
     setCart([]);
     setSelKey(null);
     setPayInput("");
@@ -512,14 +567,14 @@ export default function Reception() {
   const lookupBarcode = useCallback(
     async (code: string) => {
       try {
-        const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: "RETAIL" });
+        const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier });
         if (!row) notify.err(`باركود غير معروف: ${code}`);
         else addRow(row);
       } catch (e: unknown) {
         notify.err(e, "خطأ في المسح");
       }
     },
-    [branchId, addRow, utils],
+    [branchId, addRow, utils, effectiveTier],
   );
   const handleHidScan = useCallback(
     async (raw: string) => {
@@ -554,6 +609,7 @@ export default function Reception() {
     } else if (numMode === "DISC" && selKey) {
       const line = cart.find((c) => c.key === selKey);
       if (!line || isCustomKind(line)) return;
+      clearCouponIfApplied();
       setCart((prev) =>
         prev.map((c) => {
           if (c.key !== selKey) return c;
@@ -635,6 +691,63 @@ export default function Reception() {
     // عكس الاختيار في الواجهة بعد الإنشاء.
     setCustomer({ customerId: id, name, phone: phone ?? null, isNew: false });
     return id;
+  }
+
+  // كوبون خصم (نمط POS.tsx couponPreview) — يُطبَّق على أصناف البيع الجاهزة (المباشرة) فقط، لا
+  // خدمات الطباعة (لا كوبون خادمياً هناك) ولا الأصناف المخصّصة (تسعيرها إضافيّ لا كتالوجيّ). أيّ
+  // تعديلٍ لاحق على السلة يُسقطه (clearCouponIfApplied) — لا إعادة معاينة تلقائية.
+  const couponPreview = trpc.crm.coupons.preview.useMutation({
+    onSuccess: (result) => {
+      const byUnit = new Map(result.lines.map((line) => [Number(line.productUnitId), line]));
+      setCart((items) => items.map((item) => {
+        if (item.custom || item.row.isPrintService) return item;
+        const applied = byUnit.get(Number(item.row.productUnitId));
+        if (!applied) return item;
+        return {
+          ...item,
+          row: {
+            ...item.row,
+            promotionId: applied.promotionId,
+            promotionName: applied.promotionName,
+            promotionEffectivePrice: applied.promotionEffectivePrice,
+          },
+        };
+      }));
+      setCouponCode(result.code);
+      setCouponLabel(result.programName);
+      notify.ok(`تم تطبيق الكوبون — ${result.programName}`);
+    },
+    onError: (e) => notify.err(e, "تعذّر تطبيق الكوبون"),
+  });
+
+  function applyCoupon() {
+    const code = couponInput.trim();
+    if (!code) return;
+    const eligible = cart.filter((c) => !c.custom && !c.row.isPrintService);
+    if (eligible.length === 0) {
+      notify.err("أضف صنفاً جاهزاً غير خدمة طباعة أولاً — الكوبون لا ينطبق على المخصّص/الطباعة");
+      return;
+    }
+    couponPreview.mutate({
+      code,
+      branchId,
+      customerId: customer.customerId ?? undefined,
+      customerTier: effectiveTier,
+      lines: eligible.map((c) => ({
+        productId: c.row.productId,
+        variantId: c.row.variantId,
+        productUnitId: c.row.productUnitId,
+        unitPrice: String(c.row.price ?? "0"),
+        quantity: c.qty,
+        hasContractPrice: !!c.row.isContractPrice,
+      })),
+    });
+  }
+  function clearCoupon() {
+    setCouponCode(null);
+    setCouponLabel(null);
+    setCouponInput("");
+    setCart((prev) => prev.map((c) => (c.custom ? c : { ...c, row: { ...c.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
   }
 
   // نقطة التزام خادمية واحدة للسلة الهجينة: بيع + طباعة + أوامر شغل.
@@ -765,14 +878,32 @@ export default function Reception() {
         paymentReference: method === "CASH" ? undefined : paymentReference.trim(),
         paidAmount: round2(appliedPaidD).toFixed(2),
         clientRequestId: reqIdRef.current,
+        priceTier: effectiveTier,
+        couponCode: couponCode ?? undefined,
         regularSale: regularLines.length > 0 ? {
           amount: saleAmount,
-          lines: regularLines.map((c) => ({
-            variantId: c.row.variantId,
-            productUnitId: c.row.productUnitId,
-            quantity: String(c.qty),
-            ...(c.disc != null && c.disc > 0 ? { discountPercent: String(c.disc) } : {}),
-          })),
+          lines: regularLines.map((c) => {
+            // كوبون/عرض: سعر قائمة صحيح الدينار + خصمٌ صريح (نمط POS.tsx buildSaleLine) — الخادم
+            // يتحقّق منه مقابل العرض الفعلي بلا رفضٍ لو تغيّر بين المعاينة والحفظ.
+            if (c.row.promotionEffectivePrice != null) {
+              const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
+              const discAmt = listWhole.minus(D(c.row.promotionEffectivePrice)).times(c.qty);
+              return {
+                variantId: c.row.variantId,
+                productUnitId: c.row.productUnitId,
+                quantity: String(c.qty),
+                unitPriceOverride: listWhole.toFixed(2),
+                ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+                ...(c.row.promotionId != null ? { promotionId: c.row.promotionId } : {}),
+              };
+            }
+            return {
+              variantId: c.row.variantId,
+              productUnitId: c.row.productUnitId,
+              quantity: String(c.qty),
+              ...(c.disc != null && c.disc > 0 ? { discountPercent: String(c.disc) } : {}),
+            };
+          }),
         } : null,
         printSale: printLines.length > 0 ? {
           amount: printAmount,
@@ -1213,6 +1344,29 @@ export default function Reception() {
           {customer.customerId && (
             <span className="text-[11px] font-semibold text-money-positive">تم ربط الطلب بالعميل: {customer.name}</span>
           )}
+          <div className="flex items-center gap-1.5 border-s ps-2">
+            <label className="text-[11px] font-semibold text-muted-foreground">فئة السعر:</label>
+            <select
+              value={effectiveTier}
+              onChange={(e) => { setTierOverride(e.target.value as Tier); clearCouponIfApplied(); }}
+              className="h-7 rounded-md border border-input bg-transparent px-1.5 text-[11px] font-bold"
+              aria-label="فئة السعر"
+            >
+              <option value="RETAIL">مفرد</option>
+              <option value="WHOLESALE">جملة</option>
+              <option value="GOVERNMENT">حكومي</option>
+            </select>
+            {tierOverride && (
+              <button
+                type="button"
+                onClick={() => setTierOverride(null)}
+                title="عودة لفئة العميل الافتراضية"
+                className="text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                ↩
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
@@ -1720,6 +1874,7 @@ export default function Reception() {
                   { v: "CASH", label: "نقدي", Icon: Banknote },
                   { v: "CARD", label: "بطاقة", Icon: CreditCard },
                   { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight },
+                  { v: "WALLET", label: "محفظة", Icon: Wallet },
                 ] as const
               ).map((p) => (
                 <button
@@ -1741,10 +1896,47 @@ export default function Reception() {
               <Input
                 value={paymentReference}
                 onChange={(e) => setPaymentReference(e.target.value)}
-                placeholder={method === "CARD" ? "أدخل رقم عملية البطاقة" : "أدخل رقم التحويل"}
+                placeholder={
+                  method === "CARD" ? "أدخل رقم عملية البطاقة"
+                  : method === "WALLET" ? "أدخل رقم عملية المحفظة"
+                  : "أدخل رقم التحويل"
+                }
                 className="mt-2 h-9 text-xs"
                 dir="ltr"
               />
+            )}
+          </div>
+
+          {/* كوبون خصم */}
+          <div className="flex-shrink-0 px-3 py-1.5">
+            <div className="mb-1 flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
+              <Ticket aria-hidden className="size-3.5" /> كوبون خصم
+            </div>
+            {couponCode ? (
+              <div className="flex items-center justify-between rounded-md border border-money-positive/40 bg-money-positive/10 px-2 py-1.5 text-xs font-bold text-money-positive">
+                <span>{couponLabel ?? couponCode}</span>
+                <button type="button" onClick={clearCoupon} className="text-[11px] font-semibold underline">إزالة</button>
+              </div>
+            ) : (
+              <div className="flex gap-1.5">
+                <Input
+                  value={couponInput}
+                  onChange={(e) => setCouponInput(e.target.value)}
+                  placeholder="رمز الكوبون"
+                  className="h-8 flex-1 text-xs"
+                  dir="ltr"
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyCoupon(); } }}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8"
+                  disabled={!couponInput.trim() || couponPreview.isPending}
+                  onClick={applyCoupon}
+                >
+                  {couponPreview.isPending ? "…" : "تطبيق"}
+                </Button>
+              </div>
             )}
           </div>
 
