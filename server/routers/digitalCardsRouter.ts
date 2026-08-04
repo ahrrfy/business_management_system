@@ -5,16 +5,17 @@
 // `digitalCards.wallets.*`، …) التي كان يبنيها هذا الملف بنفس الأسلوب أصلاً.
 //
 // خريطة الوحدات (كل ملف = الراوتر الفرعي بنفس اسمه سابقاً):
-//   shared      — أدوات مشتركة: requireDb/actorOf/scopedBranchOf/Ctx/idInput.
-//   providers   — إعداد المزوّدين (ش٣).
-//   wallets     — المحافظ + عمليات الرصيد (ش٩).
-//   offerings   — العروض (البطاقات/الاشتراكات).
-//   pricing     — أسعار بداية اليوم (ش٤) + بلاغ اختلاف السعر (ش٧.٥).
-//   pos         — شبكة بطاقات نقطة البيع (ش٥).
-//   students     — بحث الطلاب (ش٦).
-//   sales       — نيّة البيع والتنفيذ والتثبيت المالي (ش٧-٨).
-//   dashboard   — لوحة المؤشرات (ش١١).
-//   reversal    — العكس واستثناءات الخسارة (ش١٢).
+//   shared         — أدوات مشتركة: requireDb/actorOf/scopedBranchOf/Ctx/idInput.
+//   providers      — إعداد المزوّدين (ش٣).
+//   wallets        — المحافظ + عمليات الرصيد (ش٩).
+//   offerings      — العروض (البطاقات/الاشتراكات).
+//   pricing        — أسعار بداية اليوم (ش٤) + بلاغ اختلاف السعر (ش٧.٥).
+//   pos            — شبكة بطاقات نقطة البيع (ش٥).
+//   students       — بحث الطلاب (ش٦).
+//   sales          — نيّة البيع والتنفيذ والتثبيت المالي (ش٧-٨).
+//   dashboard      — لوحة المؤشرات (ش١١).
+//   reversal       — العكس واستثناءات الخسارة (ش١٢).
+//   subscriptions  — عقود الاشتراكات التعليمية (تتبّع الانتهاء/البحث).
 import { router } from "../trpc";
 import { dashboardRouter } from "./digitalCards/dashboardRouter";
 import { offeringsRouter } from "./digitalCards/offeringsRouter";
@@ -24,6 +25,7 @@ import { providersRouter } from "./digitalCards/providersRouter";
 import { reversalRouter } from "./digitalCards/reversalRouter";
 import { salesRouter } from "./digitalCards/salesRouter";
 import { studentsRouter } from "./digitalCards/studentsRouter";
+import { subscriptionsRouter } from "./digitalCards/subscriptionsRouter";
 import { walletsRouter } from "./digitalCards/walletsRouter";
 
 export const digitalCardsRouter = router({
@@ -36,4 +38,5 @@ export const digitalCardsRouter = router({
   pos: posRouter,
   students: studentsRouter,
   sales: salesRouter,
+  subscriptions: subscriptionsRouter,
 });

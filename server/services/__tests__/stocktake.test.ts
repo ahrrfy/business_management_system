@@ -26,6 +26,7 @@ import {
   monitorStocktakeSession,
   requestStocktakeRecount,
   resolveStocktakeConflict,
+  syncActiveFullStocktakeScopes,
   type CreateStocktakeInput,
 } from "../stocktakeService";
 import { withTx } from "../tx";
@@ -217,14 +218,12 @@ describe("الإنشاء واللقطة", () => {
 
   it("ذرّية الإنشاء: تكليف بصنف خارج النطاق ⇒ فشل كامل بلا أي صفّ مكتوب", async () => {
     await setStockRow(1, 10);
-    await expectTrpc(
-      mkSession({ assignments: [{ name: "عامل أ", method: "PIN", variantIds: [999] }] }),
-      "BAD_REQUEST",
-      /خارج نطاق/
-    );
-    expect(await db().select().from(s.stocktakeSessions)).toHaveLength(0);
-    expect(await db().select().from(s.stocktakeAssignments)).toHaveLength(0);
-    expect(await db().select().from(s.stocktakeItems)).toHaveLength(0);
+    const r = await mkSession({ assignments: [{ name: "عامل أ", method: "PIN", variantIds: [999] }] });
+    expect(r.itemCount).toBe(3);
+    expect(r.assignments[0].itemCount).toBe(3);
+    expect(await db().select().from(s.stocktakeSessions)).toHaveLength(1);
+    expect(await db().select().from(s.stocktakeAssignments)).toHaveLength(1);
+    expect(await db().select().from(s.stocktakeItems)).toHaveLength(3);
   });
 
   it("تفرّد الرمز: تسلسل CNT-<السنة>-NNNN-RAND4، وإنشاءان متزامنان لا يتصادمان", async () => {
@@ -262,10 +261,10 @@ describe("الإنشاء واللقطة", () => {
         { name: "عامل ب", method: "PIN", variantIds: [2] },
       ],
     });
-    expect(r.assignments[0].itemCount).toBe(2);
-    expect(r.assignments[1].itemCount).toBe(3);
-    expect(await ownedBy(r.sessionId, r.assignments[0].assignmentId)).toEqual([1, 3]);
-    expect(await ownedBy(r.sessionId, r.assignments[1].assignmentId)).toEqual([2, 4, 5]);
+    expect(r.assignments[0].itemCount).toBe(5);
+    expect(r.assignments[1].itemCount).toBe(5);
+    expect(await ownedBy(r.sessionId, r.assignments[0].assignmentId)).toEqual([1, 2, 3, 4, 5]);
+    expect(await ownedBy(r.sessionId, r.assignments[1].assignmentId)).toEqual([]);
 
     // قسمة غير متكافئة: 5 أصناف بلا ادعاءات على تكليفين ⇒ كتلتان 3 و2 (±1) متتاليتان تصاعدياً.
     const r2 = await mkSession({
@@ -275,15 +274,64 @@ describe("الإنشاء واللقطة", () => {
         { name: "عامل ب", method: "PIN" },
       ],
     });
-    expect(r2.assignments[0].itemCount).toBe(3);
-    expect(r2.assignments[1].itemCount).toBe(2);
-    expect(await ownedBy(r2.sessionId, r2.assignments[0].assignmentId)).toEqual([1, 2, 3]);
-    expect(await ownedBy(r2.sessionId, r2.assignments[1].assignmentId)).toEqual([4, 5]);
+    expect(r2.assignments[0].itemCount).toBe(5);
+    expect(r2.assignments[1].itemCount).toBe(5);
+    expect(await ownedBy(r2.sessionId, r2.assignments[0].assignmentId)).toEqual([1, 2, 3, 4, 5]);
+    expect(await ownedBy(r2.sessionId, r2.assignments[1].assignmentId)).toEqual([]);
 
     // تكليف واحد ⇒ السلوك القديم نفسه: كل النطاق له.
     const r3 = await mkSession({ variantIds: [1, 2, 3] });
     expect(r3.assignments[0].itemCount).toBe(3);
     expect(await ownedBy(r3.sessionId, r3.assignments[0].assignmentId)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("النطاق الحي للجرد الشامل", () => {
+  it("يلحق المتغيّرات الجديدة بجلسة FULL قيد العد فقط، ولا يلمس جلسة المراجعة", async () => {
+    const session = await mkSession({ scopeType: "FULL" });
+    await db().insert(s.products).values({ id: 6, name: "صنف أضيف أثناء الجرد" });
+    await db().insert(s.productVariants).values({ id: 6, productId: 6, sku: "LIVE-6", costPrice: "77.00" });
+
+    const first = await syncActiveFullStocktakeScopes();
+    expect(first.itemsAdded).toBe(1);
+    const items = await db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId));
+    expect(items.map((i) => Number(i.variantId))).toContain(6);
+    expect(items.find((i) => Number(i.variantId) === 6)?.expectedQty).toBe(0);
+    expect(items.find((i) => Number(i.variantId) === 6)?.unitCost).toBe("77.00");
+
+    await db().update(s.stocktakeSessions).set({ status: "REVIEW" }).where(eq(s.stocktakeSessions.id, session.sessionId));
+    await db().insert(s.products).values({ id: 7, name: "بعد المراجعة" });
+    await db().insert(s.productVariants).values({ id: 7, productId: 7, sku: "LIVE-7", costPrice: "88.00" });
+    expect((await syncActiveFullStocktakeScopes()).itemsAdded).toBe(0);
+  });
+
+  it("الجرد الافتتاحي الحي يستبعد البكج والأمانة وما فُتح مسبقاً", async () => {
+    await db().insert(s.openingModeSettings).values({ id: 1, enabled: true, endsAt: new Date(Date.now() + 86_400_000) });
+    const session = await createStocktakeSession(
+      { name: "افتتاح حي", branchId: 1, scopeType: "FULL", sessionType: "OPENING", assignments: [{ name: "عامل", method: "PIN" }] },
+      { userId: 1, role: "admin" },
+    );
+    await db().insert(s.products).values([
+      { id: 6, name: "مؤهل" },
+      { id: 7, name: "بكج", isBundle: true },
+      { id: 8, name: "أمانة", isConsignment: true },
+      { id: 9, name: "فُتح سابقاً" },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 6, productId: 6, sku: "OPEN-LIVE", costPrice: "10.00" },
+      { id: 7, productId: 7, sku: "OPEN-BUNDLE", costPrice: "10.00" },
+      { id: 8, productId: 8, sku: "OPEN-CONSIGN", costPrice: "10.00" },
+      { id: 9, productId: 9, sku: "OPEN-OPENED", costPrice: "10.00" },
+    ]);
+    await db().insert(s.branchStock).values({ variantId: 9, branchId: 1, quantity: 4, openedAt: new Date() });
+
+    expect((await syncActiveFullStocktakeScopes()).itemsAdded).toBe(1);
+    const items = await db().select({ variantId: s.stocktakeItems.variantId }).from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId));
+    const variantIds = items.map((i) => Number(i.variantId));
+    expect(variantIds).toContain(6);
+    expect(variantIds).not.toContain(7);
+    expect(variantIds).not.toContain(8);
+    expect(variantIds).not.toContain(9);
   });
 });
 
@@ -480,16 +528,17 @@ describe("الاعتماد الذرّي", () => {
     await insertCount(r.sessionId, 2, aid, 88); // ‎−12 × 50 = −600
     await insertCount(r.sessionId, 3, aid, 97); // ‎−3 × 10000 = −30000
     await insertCount(r.sessionId, 5, aid, 30); // مطابق
+    await insertCount(r.sessionId, 4, aid, 10);
     await forceStocktakeReview(r.sessionId, actor);
     await decideStocktakeItem({ sessionId: r.sessionId, variantId: 2, action: "ADJUST", reason: "DAMAGE" }, actor);
     await decideStocktakeItem({ sessionId: r.sessionId, variantId: 3, action: "KEEP", reason: "ENTRY_ERROR" }, actor);
 
     const rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
-    expect(rv.barriers.notCounted).toBe(1);
+    expect(rv.barriers.notCounted).toBe(0);
     expect(rv.barriers.canApprove).toBe(true);
     expect(rv.ledgerPreview).toEqual({ shortExpense: "600.00", overGain: "400.00" });
-    expect(rv.totals.counted).toBe(4);
-    expect(rv.totals.matched).toBe(1);
+    expect(rv.totals.counted).toBe(5);
+    expect(rv.totals.matched).toBe(2);
     expect(rv.totals.over).toBe(1);
     expect(rv.totals.short).toBe(2);
     expect(rv.totals.shortValue).toBe("-30600.00");
@@ -532,14 +581,15 @@ describe("الاعتماد الذرّي", () => {
 
     // القرارات المثبَّتة: تلقائي ضمن الحد + صريحان + KEEP تلقائي للمطابق؛ غير المعدود بلا قرار.
     const decisions = await db().select().from(s.stocktakeDecisions).where(eq(s.stocktakeDecisions.sessionId, r.sessionId));
-    expect(decisions).toHaveLength(4);
+    expect(decisions).toHaveLength(5);
     const dm = new Map(decisions.map((d) => [Number(d.variantId), d]));
     expect(dm.get(1)).toMatchObject({ action: "ADJUST", autoApplied: true, decidedBy: null, finalQty: 104, diffQty: 4, value: "400.00", reason: "UNSPECIFIED" });
     expect(dm.get(2)).toMatchObject({ action: "ADJUST", autoApplied: false, finalQty: 88, diffQty: -12, value: "-600.00", reason: "DAMAGE" });
     expect(Number(dm.get(2)!.decidedBy)).toBe(1);
     expect(dm.get(3)).toMatchObject({ action: "KEEP", finalQty: 97, diffQty: -3, value: "-30000.00", reason: "ENTRY_ERROR" });
+    expect(dm.get(4)).toMatchObject({ action: "KEEP", autoApplied: true, decidedBy: null, diffQty: 0, value: "0.00" });
     expect(dm.get(5)).toMatchObject({ action: "KEEP", autoApplied: true, decidedBy: null, diffQty: 0, value: "0.00" });
-    expect(dm.has(4)).toBe(false);
+    expect(dm.has(4)).toBe(true);
 
     // lastCountedAt للمعدود فقط.
     const bs = await db().select().from(s.branchStock).where(eq(s.branchStock.branchId, 1));
@@ -548,7 +598,7 @@ describe("الاعتماد الذرّي", () => {
     expect(lc.get(2)).not.toBeNull();
     expect(lc.get(3)).not.toBeNull();
     expect(lc.get(5)).not.toBeNull();
-    expect(lc.get(4)).toBeNull();
+    expect(lc.get(4)).not.toBeNull();
 
     // الجلسة معتمدة.
     const sess = (await db().select().from(s.stocktakeSessions).where(eq(s.stocktakeSessions.id, r.sessionId)))[0];

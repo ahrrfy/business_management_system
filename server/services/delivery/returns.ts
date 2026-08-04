@@ -7,12 +7,15 @@ import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { applyMovement } from "../inventoryService";
 import { adjustDeliveryBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
-import { shiftIdForCashTx } from "../shiftService";
+import { computeExpectedCash, resolveBranchCashShiftTx } from "../shiftService";
 import { withTx } from "../tx";
 import type { DeliveryTxActor } from "./types";
 
 /** إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون. مقيَّد بـDISPATCHED (collected==0). */
-export async function returnConsignment(consignmentId: number, actor: DeliveryTxActor & { clientRequestId?: string | null }) {
+export async function returnConsignment(
+  consignmentId: number,
+  actor: DeliveryTxActor & { clientRequestId?: string | null; refundShiftId?: number | null },
+) {
   return withTx(async (tx) => {
     if (actor.clientRequestId) {
       const existingId = await findIdempotentRefId(tx, "delivery.return", actor.clientRequestId);
@@ -116,10 +119,23 @@ export async function returnConsignment(consignmentId: number, actor: DeliveryTx
     // رد العربون نقداً إن وُجد (paidAmount على فاتورة COD = العربون).
     const deposit = round2(money(inv.paidAmount));
     if (deposit.gt(0)) {
-      const { shiftId, cashBucket } = await shiftIdForCashTx(tx, { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role }, Number(cn.branchId), "رد عربون إرجاع", "RECEPTION");
+      // الدرج مورد فرعٍ لا مستخدم — الإرجاع صلاحية مدير (managerProcedure، «إجراء تصحيحيّ») قد يختلف
+      // عن الكاشير صاحب درج الاستقبال الذي قبض العربون فعلاً. shiftIdForCashTx القديمة كانت تنسب
+      // الاسترداد لوردية الفاعل نفسه (إن وُجدت) أو تُسقطه في TREASURY بمعزلٍ عن أيّ Z-report — كلاهما
+      // قد يُخفي خروج النقد الفعليّ عن صاحب الدرج الحقيقيّ. مرآة إصلاح returnService.ts (بلاغ مالك
+      // ٢/٨/٢٦): resolveBranchCashShiftTx يبحث في ورديات الفرع المفتوحة كلّها، ويتحقّق أنّ الدرج
+      // المستهدَف يحمل هذا المبلغ الآن فعلياً (نمط cashDropService — لا عجز أثناء العمل).
+      const resolved = await resolveBranchCashShiftTx(tx, Number(cn.branchId), actor.refundShiftId ?? null);
+      const currentDrawerCash = await computeExpectedCash(tx, resolved.shiftId, resolved.openingBalance);
+      if (deposit.gt(currentDrawerCash)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `المبلغ يتجاوز النقد المتوفّر حالياً في هذا الدرج (المتاح ${currentDrawerCash.toFixed(2)} < المطلوب ${deposit.toFixed(2)}) — راجع الدرج أو اختر درجاً آخر.`,
+        });
+      }
       const rOut = await tx.insert(receipts).values({
-        branchId: Number(cn.branchId), shiftId, direction: "OUT", amount: toDbMoney(deposit),
-        paymentMethod: "CASH", cashBucket, status: "COMPLETED", invoiceId: Number(cn.invoiceId),
+        branchId: Number(cn.branchId), shiftId: resolved.shiftId, direction: "OUT", amount: toDbMoney(deposit),
+        paymentMethod: "CASH", cashBucket: "DRAWER", status: "COMPLETED", invoiceId: Number(cn.invoiceId),
         referenceNumber: `RET-${cn.consignmentNumber}`, description: `رد عربون إرجاع ${cn.consignmentNumber}`, createdBy: actor.userId,
       });
       await postEntry(tx, {

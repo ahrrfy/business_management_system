@@ -1,6 +1,7 @@
 import { RowActions } from "@/components/list";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -16,9 +17,10 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
 import { printDoc } from "@/lib/printing/print";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { Loader2, Search } from "lucide-react";
+import { Loader2, Printer, Search, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "wouter";
 
@@ -94,8 +96,11 @@ export default function Expenses() {
   const [status, setStatus] = useState<string>("ACTIVE");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<string>("");
+  const [source, setSource] = useState<string>("");
   const [query, setQuery] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [printing, setPrinting] = useState(false);
   // الترقيم خادميّ: كانت تُحمَّل أحدث ٣٠٠ دفعةً والباقي غير قابل للوصول (بينما التصدير يرى الكل
   // ⇒ تناقض صامت بين ملف Excel والشاشة). الآن صفحة صفحة، والتصدير يبقى شاملاً صراحةً.
   const [page, setPage] = useState(0);
@@ -110,8 +115,22 @@ export default function Expenses() {
     status: (status || undefined) as any,
     from: from || undefined,
     to: to || undefined,
+    paymentMethod: (paymentMethod || undefined) as any,
+    source: (source || undefined) as any,
     q: dq.trim() || undefined,
   };
+  const activeFilterCount = [branchId, category, status !== "ACTIVE" ? status : "", from, to, paymentMethod, source]
+    .filter((v) => v !== "" && v != null).length;
+  function resetFilters() {
+    setBranchId("");
+    setCategory("");
+    setStatus("ACTIVE");
+    setFrom("");
+    setTo("");
+    setPaymentMethod("");
+    setSource("");
+    setQuery("");
+  }
   const list = trpc.expenses.list.useQuery({ ...listInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
   const rows = list.data?.rows ?? [];
   const total = list.data?.totals.count ?? 0;
@@ -149,6 +168,57 @@ export default function Expenses() {
     }
   }
 
+  // طباعة قائمة المصروفات — كل النتائج المطابقة للفلتر (fetchAllPaged) لا الصفحة المعروضة فقط.
+  async function printAll() {
+    setPrinting(true);
+    try {
+      const all = await fetchAllPaged<ExpenseRow>(
+        (offset, limit) =>
+          utils.expenses.list.fetch({ ...listInput, limit, offset }).then((res) => ({ rows: res.rows ?? [], total: res.totals.count })),
+        { pageSize: 1000 },
+      );
+      if (!all.length) { notify.err("لا بيانات للطباعة"); return; }
+      const filterLabels = [
+        branchId ? `الفرع: ${branches.data?.find((b) => b.id === branchId)?.name ?? branchId}` : null,
+        category ? `الفئة: ${CATEGORY_LABEL[category] ?? category}` : null,
+        status ? `الحالة: ${STATUS_LABEL[status] ?? status}` : null,
+        paymentMethod ? `طريقة الدفع: ${METHOD_LABEL[paymentMethod] ?? paymentMethod}` : null,
+        source ? `المصدر: ${source === "STOCK" ? "مخزون" : "نقدي"}` : null,
+        from || to ? `الفترة: ${from || "البداية"} — ${to || "اليوم"}` : null,
+        query.trim() ? `بحث: ${query.trim()}` : null,
+      ].filter(Boolean).join(" · ");
+      const printTotal = all.reduce((s, r) => s + Number(r.amount), 0);
+      const opened = printReportDoc({
+        title: "المصروفات اليومية",
+        headerExtra: filterLabels ? [{ label: "الفلاتر", value: filterLabels }] : [],
+        columns: [
+          { key: "date", label: "التاريخ" },
+          { key: "branch", label: "الفرع" },
+          { key: "category", label: "الفئة" },
+          { key: "description", label: "الوصف" },
+          { key: "source", label: "الدفع / المصدر" },
+          { key: "amount", label: "المبلغ", align: "left" },
+          { key: "status", label: "الحالة" },
+        ],
+        rows: all.map((r) => ({
+          date: fmtDate(r.expenseDate as unknown as string),
+          branch: r.branchName ?? "—",
+          category: CATEGORY_LABEL[r.category] ?? r.category,
+          description: r.description ?? "—",
+          source: sourceLabel(r),
+          amount: fmt(r.amount),
+          status: STATUS_LABEL[r.status] ?? r.status,
+        })),
+        summary: [{ label: "الإجمالي", value: `${fmt(printTotal)} د.ع`, large: true, bold: true }],
+      });
+      if (!opened) notify.err("حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setPrinting(false);
+    }
+  }
+
   // الإلغاء = expensesManagerProcedure(["manager"], "expenses", "FULL") — نُخفي الزرّ عمّن يرفضه
   // الخادم (كاشير/محاسب: إدخالٌ بلا إلغاء) بنفس دالة الخادم moduleAccessAllowed ⇒ لا تباعُد.
   const me = trpc.auth.me.useQuery();
@@ -166,9 +236,17 @@ export default function Expenses() {
     <div className="space-y-4">
       <PageHeader
         title="المصروفات اليومية"
-        description="كل مصروف يولّد قبضاً صادراً (يُخصم من صندوق الوردية إن كانت مفتوحة) وقيداً في الدفتر."
+        description="كل مصروف يولّد حركة صرف من الصندوق (تُخصم من صندوق الوردية إن كانت مفتوحة) وقيداً في الدفتر."
         actions={
           <div className="flex gap-2">
+            <Button
+              variant="outline"
+              disabled={printing || (list.data?.totals.count ?? 0) === 0}
+              onClick={() => void printAll()}
+            >
+              {printing ? <Loader2 className="size-4 animate-spin" /> : <Printer className="size-4" />}
+              {printing ? "جارٍ التحضير…" : "طباعة قائمة"}
+            </Button>
             <Button
               variant="outline"
               disabled={exporting || (list.data?.totals.count ?? 0) === 0}
@@ -185,7 +263,7 @@ export default function Expenses() {
       <div className="grid gap-4 lg:grid-cols-3 items-start">
         <Card className="lg:col-span-2">
           <CardContent className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 pt-6">
-            <div className="space-y-1 sm:col-span-2 xl:col-span-5">
+            <div className="space-y-1 sm:col-span-2 xl:col-span-4">
               <Label className="text-xs">بحث</Label>
               <div className="relative">
                 <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -196,6 +274,19 @@ export default function Expenses() {
                   className="pr-8"
                 />
               </div>
+            </div>
+            <div className="flex items-end">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="gap-1 text-muted-foreground"
+                disabled={activeFilterCount === 0 && !query}
+                onClick={resetFilters}
+              >
+                <X className="size-3.5" />
+                مسح الفلاتر{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
+              </Button>
             </div>
             <div className="space-y-1">
               <Label className="text-xs">الفرع</Label>
@@ -230,6 +321,23 @@ export default function Expenses() {
             <div className="space-y-1">
               <Label className="text-xs">إلى تاريخ</Label>
               <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="exp-f-method" className="text-xs">طريقة الدفع</Label>
+              <AppSelect id="exp-f-method" value={paymentMethod} onValueChange={setPaymentMethod} placeholder="— كل الطرق —">
+                <option value="">— كل الطرق —</option>
+                {Object.entries(METHOD_LABEL).map(([k, v]) => (
+                  <option key={k} value={k}>{v}</option>
+                ))}
+              </AppSelect>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="exp-f-source" className="text-xs">المصدر</Label>
+              <AppSelect id="exp-f-source" value={source} onValueChange={setSource} placeholder="— كل المصادر —">
+                <option value="">— كل المصادر —</option>
+                <option value="CASH">نقدي</option>
+                <option value="STOCK">مخزون (نثرية/تلف)</option>
+              </AppSelect>
             </div>
           </CardContent>
         </Card>

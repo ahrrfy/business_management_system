@@ -11,13 +11,17 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { LoadingState } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
-import { fmtDateTime } from "@/lib/date";
+import { fmtDate, fmtDateTime } from "@/lib/date";
+import { exportRows } from "@/lib/export";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { printTransferDoc } from "@/lib/printing/printTransferDoc";
 import { CheckCheck, PackageCheck, Printer, Undo2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+
+type TransferRow = RouterOutputs["inventory"]["transfersList"]["rows"][number];
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -47,13 +51,62 @@ export default function TransfersLog() {
 
   const [status, setStatus] = useState<"all" | "IN_TRANSIT" | "RECEIVED" | "CANCELLED">("all");
   const [direction, setDirection] = useState<"all" | "in" | "out">("all");
+  const [q, setQ] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  // فلتر فرع صريح — للمرتفعين فقط (المدير/الأدمن)؛ غيرهم مقيَّد بفرعه خادمياً أصلاً (نفس عزل القائمة).
+  const [pickedBranch, setPickedBranch] = useState<number | "">("");
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: elevated });
+  const dq = useDebouncedValue(q, 250);
   const [openId, setOpenId] = useState<number | null>(null);
+  const [exporting, setExporting] = useState(false);
 
+  const filterInput = {
+    status,
+    dir: direction,
+    branchId: elevated && pickedBranch !== "" ? Number(pickedBranch) : undefined,
+    q: dq.trim() || undefined,
+    fromDate: fromDate ? new Date(fromDate + "T00:00:00").toISOString() : undefined,
+    toDate: toDate ? new Date(toDate + "T00:00:00").toISOString() : undefined,
+  };
   const list = trpc.inventory.transfersList.useInfiniteQuery(
-    { status, dir: direction, limit: 30 },
+    { ...filterInput, limit: 30 },
     { getNextPageParam: (last) => last.nextCursor }
   );
   const rows = useMemo(() => (list.data?.pages ?? []).flatMap((p) => p.rows), [list.data]);
+
+  /** تصدير كامل — كل الصفحات المطابقة للفلاتر الحاليّة (keyset)، لا الصفحة المحمَّلة في الشاشة فقط. */
+  async function exportAll() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const all: TransferRow[] = [];
+      let cursor: number | null | undefined;
+      for (let i = 0; i < 500; i++) {
+        const page = await utils.inventory.transfersList.fetch({ ...filterInput, limit: 100, cursor: cursor ?? undefined });
+        all.push(...page.rows);
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+      if (all.length === 0) { notify.err("لا سندات مطابقة للفلاتر"); return; }
+      exportRows(all, {
+        filename: "سندات-التحويل",
+        columns: [
+          { key: "transferNumber", header: "السند" },
+          { key: "fromBranchName", header: "من فرع" },
+          { key: "toBranchName", header: "إلى فرع" },
+          { key: "status", header: "الحالة", map: (r) => (r.status === "IN_TRANSIT" ? "بالطريق" : r.status === "CANCELLED" ? "ملغى" : "مستلَم") },
+          { key: "linesCount", header: "عدد المنتجات" },
+          { key: "totalSentBase", header: "الوحدات المرسَلة" },
+          { key: "totalReceivedBase", header: "الوحدات المستلَمة", map: (r) => r.totalReceivedBase ?? "" },
+          { key: "reason", header: "السبب", map: (r) => (r.reason ? REASON_LABELS[r.reason] ?? r.reason : "") },
+          { key: "createdAt", header: "تاريخ الإرسال", map: (r) => fmtDate(r.createdAt) },
+        ],
+      });
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const detail = trpc.inventory.transferGet.useQuery({ id: openId ?? 0 }, { enabled: openId != null });
   const doc = openId != null ? detail.data : undefined;
@@ -187,20 +240,50 @@ export default function TransfersLog() {
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Label className="text-muted-foreground">الحالة</Label>
-        <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
-          <option value="all">الكل</option>
-          <option value="IN_TRANSIT">بالطريق</option>
-          <option value="RECEIVED">مستلَم</option>
-          <option value="CANCELLED">ملغى</option>
-        </select>
-        <Label className="text-muted-foreground mr-2">الاتجاه</Label>
-        <select className={selectCls} value={direction} onChange={(e) => setDirection(e.target.value as typeof direction)}>
-          <option value="all">الكل</option>
-          <option value="in">وارد لفرعي</option>
-          <option value="out">صادر من فرعي</option>
-        </select>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-col gap-1">
+          <Label className="text-muted-foreground text-xs">رقم السند</Label>
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="TRF-…" className="h-9 w-40" dir="ltr" />
+        </div>
+        <div className="flex flex-col gap-1">
+          <Label className="text-muted-foreground text-xs">من تاريخ</Label>
+          <Input type="date" dir="ltr" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="h-9" />
+        </div>
+        <div className="flex flex-col gap-1">
+          <Label className="text-muted-foreground text-xs">إلى تاريخ</Label>
+          <Input type="date" dir="ltr" value={toDate} onChange={(e) => setToDate(e.target.value)} className="h-9" />
+        </div>
+        <div className="flex flex-col gap-1">
+          <Label className="text-muted-foreground text-xs">الحالة</Label>
+          <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
+            <option value="all">الكل</option>
+            <option value="IN_TRANSIT">بالطريق</option>
+            <option value="RECEIVED">مستلَم</option>
+            <option value="CANCELLED">ملغى</option>
+          </select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <Label className="text-muted-foreground text-xs">الاتجاه</Label>
+          <select className={selectCls} value={direction} onChange={(e) => setDirection(e.target.value as typeof direction)}>
+            <option value="all">الكل</option>
+            <option value="in">وارد لفرعي</option>
+            <option value="out">صادر من فرعي</option>
+          </select>
+        </div>
+        {elevated && (
+          <div className="flex flex-col gap-1">
+            <Label className="text-muted-foreground text-xs">الفرع</Label>
+            <select className={selectCls} value={pickedBranch} onChange={(e) => setPickedBranch(e.target.value === "" ? "" : Number(e.target.value))}>
+              <option value="">كل الفروع</option>
+              {(branchesQ.data ?? []).map((b) => (
+                <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        <Button variant="outline" size="sm" className="h-9 ms-auto" disabled={rows.length === 0 || exporting} onClick={() => void exportAll()}>
+          {exporting ? "جارٍ التحضير…" : "تصدير Excel (الكل)"}
+        </Button>
       </div>
 
       <Card>
@@ -216,7 +299,7 @@ export default function TransfersLog() {
                   <TableRow>
                     <TableHead className="text-right">السند</TableHead>
                     <TableHead className="text-right">من ← إلى</TableHead>
-                    <TableHead className="text-center">الأصناف</TableHead>
+                    <TableHead className="text-center">المنتجات</TableHead>
                     <TableHead className="text-center">الوحدات (مرسَل/مستلَم)</TableHead>
                     <TableHead className="text-center">الحالة</TableHead>
                     <TableHead className="text-left">التاريخ</TableHead>
@@ -293,7 +376,7 @@ export default function TransfersLog() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/40">
                     <tr>
-                      <th className="p-2 px-3 text-right">الصنف</th>
+                      <th className="p-2 px-3 text-right">المنتج</th>
                       <th className="p-2 text-center w-24">المرسَل</th>
                       <th className="p-2 text-center w-32">{canReceive ? "المستلَم فعلياً" : "المستلَم"}</th>
                       <th className="p-2 text-center w-20">الفرق</th>

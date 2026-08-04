@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import {
   ArrowLeftRight,
+  ArrowRight,
   Banknote,
+  CalendarClock,
   Camera,
   Check,
+  ClipboardList,
   CreditCard,
   FileText,
   Globe,
@@ -24,8 +27,10 @@ import {
   Search,
   ShoppingCart,
   Store,
+  Ticket,
   Trash2,
   Truck,
+  Wallet,
   X,
   Zap,
 } from "lucide-react";
@@ -44,6 +49,11 @@ import { fmtDate } from "@/lib/date";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { Contact360Panel } from "@/components/contacts/Contact360Panel";
+import ReservationsHub from "@/pages/ReservationsHub";
+import Inbox from "@/pages/Inbox";
+import OrderFulfillment from "@/pages/OrderFulfillment";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   getServerBridgeStatus,
   isPaired,
@@ -72,12 +82,19 @@ import {
 
 type PosRow = NonNullable<RouterOutputs["catalog"]["posList"]>[number];
 type NumMode = "QTY" | "DISC" | "PAY";
-type PayMethod = "CASH" | "CARD" | "TRANSFER";
+type PayMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 const PAY_METHOD_LABEL: Record<PayMethod, string> = {
   CASH: "نقدي",
   CARD: "بطاقة",
   TRANSFER: "تحويل",
+  WALLET: "محفظة",
 };
+type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
+const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
+const RESERVATION_READ_ROLES = ["admin", "manager", "accountant", "cashier", "warehouse", "sales_rep", "auditor"] as const;
+const CHANNEL_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor", "warehouse", "print_operator"] as const;
+const STORE_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
+const CRM_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
 
 type CartLine = {
   key: string; // معرّف فريد للسطر (للأصناف المخصّصة المتعدّدة من نفس المنتج)
@@ -86,6 +103,7 @@ type CartLine = {
   origPrice?: number;
   disc?: number; // نسبة خصم
   custom?: CustomizationData; // إن كان مخصّصاً
+  manualService?: boolean; // خدمة حرة لا ترتبط بمنتج/متغيّر من الكتالوج
 };
 
 // مبالغ سريعة بالقيمة الفعلية (د.ع). إصلاح P2 (٢٣/٦/٢٦): كان `setQuickAmt(v * 1000)` يجعل
@@ -93,7 +111,17 @@ type CartLine = {
 const QUICK_AMTS = [1000, 5000, 10000, 25000];
 
 function effectivePrice(line: CartLine): number {
-  const base = line.origPrice ?? Number(line.row.price ?? 0);
+  // عرض/كوبون (catalog.posList.promotionEffectivePrice) يسبق السعر الأساس كنقطة انطلاق (نمط
+  // POS.tsx effectivePrice) — الخصم اليدوي يُطبَّق فوقه لا بدلاً عنه. لا ينطبق على سطر مخصّص
+  // (custom): تسعيره الإضافي بلا كتالوج ترويجيّ.
+  const promoPrice = !line.custom ? line.row.promotionEffectivePrice : null;
+  // التخصيص إضافيّ: سعر الوحدة للسطر المخصّص = سعر المنتج الأساس + سعر التخصيص (فوقه)، لا بديلاً عنه.
+  const base = line.origPrice ?? (
+    promoPrice != null ? Number(promoPrice) :
+    line.custom
+      ? Number(line.row.price ?? 0) + Number(line.custom.unitPrice ?? 0)
+      : Number(line.row.price ?? 0)
+  );
   if (line.disc && line.disc > 0) return base * (1 - line.disc / 100);
   return base;
 }
@@ -135,7 +163,45 @@ function buildStockState(cart: CartLine[]) {
 }
 
 export default function Reception() {
+  const [, navigate] = useLocation();
+  const pageSearch = useSearch();
   const me = trpc.auth.me.useQuery();
+  const reservationsRequested = useMemo(
+    () => new URLSearchParams(pageSearch).get("workspace") === "reservations",
+    [pageSearch],
+  );
+  const reservationPermissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const canReadReservations = me.data != null && moduleAccessAllowed(
+    me.data.role,
+    reservationPermissions,
+    "reservations",
+    "READ",
+    RESERVATION_READ_ROLES,
+  );
+  const canReadChannels = me.data != null && moduleAccessAllowed(
+    me.data.role, reservationPermissions, "channels", "READ", CHANNEL_READ_ROLES,
+  );
+  const canReadStoreOrders = me.data != null && moduleAccessAllowed(
+    me.data.role, reservationPermissions, "store", "READ", STORE_READ_ROLES,
+  );
+  const canReadCustomerContext = me.data != null && moduleAccessAllowed(
+    me.data.role, reservationPermissions, "crm", "READ", CRM_READ_ROLES,
+  );
+  const showReservations = reservationsRequested && canReadReservations;
+  const openReservations = useCallback(
+    () => navigate("/pos?mode=RECEPTION&workspace=reservations", { replace: true }),
+    [navigate],
+  );
+  const closeReservations = useCallback(
+    () => navigate("/pos?mode=RECEPTION", { replace: true }),
+    [navigate],
+  );
+
+  useEffect(() => {
+    if (!reservationsRequested || me.isLoading || canReadReservations) return;
+    notify.err("لا تملك صلاحية قراءة الحجوزات");
+    closeReservations();
+  }, [reservationsRequested, me.isLoading, canReadReservations, closeReservations]);
   // الأدمن/المدير بلا فرع مُسنَد: يختار الفرع صراحةً قبل فتح وردية الخدمة بدل الإسناد الصامت للفرع ١
   // (نمط POS/PrintPOS، #274 — الوردية تحمل الفرع والطلبات تتبعها). لا يمسّ مستخدماً له فرع (يبقى فرعه).
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
@@ -148,8 +214,9 @@ export default function Reception() {
   const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
   const utils = trpc.useUtils();
 
-  // وردية خدمة الزبائن (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
+  // وردية خدمة العملاء (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
   const branchesQ = trpc.branches.list.useQuery();
+  const staffQ = trpc.workOrders.assignableStaff.useQuery({ branchId });
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" });
   const shift = shiftQ.data ?? null;
   const [opening, setOpening] = useState("0");
@@ -228,10 +295,18 @@ export default function Reception() {
   const [method, setMethod] = useState<PayMethod>("CASH");
   const [paymentReference, setPaymentReference] = useState(""); // P2 fix: مرجع البطاقة للعرابين
   const [showInbox, setShowInbox] = useState(false);
+  const [showStoreOrders, setShowStoreOrders] = useState(false);
+  const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
+  // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
+  const [tierOverride, setTierOverride] = useState<Tier | null>(null);
+  const [couponInput, setCouponInput] = useState("");
+  const [couponCode, setCouponCode] = useState<string | null>(null);
+  const [couponLabel, setCouponLabel] = useState<string | null>(null);
   const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
   const [channelHandle, setChannelHandle] = useState("");
+  const [workflowStep, setWorkflowStep] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [printerReady, setPrinterReady] = useState(isPaired());
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({
@@ -242,6 +317,45 @@ export default function Reception() {
   // idempotency: مفتاح واحد لكل دورة إرسال — يتجدّد بعد النجاح.
   const reqIdRef = useRef<string>(crypto.randomUUID());
   const searchRef = useRef<HTMLInputElement>(null);
+  const customerSectionRef = useRef<HTMLDivElement>(null);
+  const cartSectionRef = useRef<HTMLDivElement>(null);
+  const paymentSectionRef = useRef<HTMLDivElement>(null);
+
+  // فئة العميل الافتراضية (لحلّ الفئة التلقائية — نمط POS.tsx fetchedCustomer/effectiveTier).
+  const fetchedCustomer = trpc.customers.get.useQuery(
+    { customerId: customer.customerId ?? 0 },
+    { enabled: !!customer.customerId, staleTime: 60_000 },
+  );
+  const effectiveTier: Tier =
+    tierOverride ?? ((fetchedCustomer.data?.defaultPriceTier as Tier | undefined) ?? "RETAIL");
+  // تبديل العميل يُسقط أيّ تجاوز فئة يدوي سابق (تعلّق بعميلٍ آخر) وأيّ كوبون مُطبَّق (أسعاره
+  // قد تختلف بفئة العميل الجديد — يلزم إعادة تطبيق).
+  const prevCustomerIdRef = useRef<number | null>(customer.customerId);
+  useEffect(() => {
+    if (prevCustomerIdRef.current === customer.customerId) return;
+    prevCustomerIdRef.current = customer.customerId;
+    setTierOverride(null);
+    if (couponCode) {
+      setCouponCode(null);
+      setCouponLabel(null);
+      setCouponInput("");
+      setCart((prev) => prev.map((c) => (c.custom ? c : { ...c, row: { ...c.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customer.customerId]);
+
+  const channelCustomerQ = trpc.customers.smartSearch.useQuery(
+    { q: channelHandle.trim(), limit: 6 },
+    { enabled: channel !== "WALK_IN" && channelHandle.replace(/\D/g, "").length >= 6, staleTime: 30_000 },
+  );
+
+  useEffect(() => {
+    if (customer.customerId || channel === "WALK_IN") return;
+    const digits = channelHandle.replace(/\D/g, "");
+    if (digits.length < 6) return;
+    const match = channelCustomerQ.data?.find((candidate) => (candidate.phone ?? "").replace(/\D/g, "") === digits);
+    if (match) setCustomer({ customerId: Number(match.id), name: match.name, phone: match.phone ?? null, isNew: false });
+  }, [channelCustomerQ.data, channelHandle, channel, customer.customerId]);
 
   const connectPrinter = async () => {
     try {
@@ -300,12 +414,8 @@ export default function Reception() {
   const sumDirect = round2(sumDirectD).toNumber();
   const sumCustom = round2(sumCustomD).toNumber();
 
-  // العربون الإجمالي من نوافذ التخصيص.
-  const totalDepositsD = cart
-    .filter(isCustomKind)
-    .reduce((s, c) => s.plus(D(c.custom?.deposit || 0)), D(0));
-  // المبلغ المتوقّع دفعه فوراً = بيع مباشر (كامل) + عربون المخصّص.
-  const expectedNowD = sumDirectD.plus(totalDepositsD);
+  // الدفع موحّد على كامل السلة. البيع المباشر هو الحد الأدنى؛ وما زاد يصبح عربوناً لأوامر الطباعة.
+  const expectedNowD = grandTotalD;
   const expectedNow = round2(expectedNowD).toNumber();
 
   // ما أدخله الكاشير في لوحة الأرقام (مع تكيّف Quick Pay).
@@ -313,42 +423,38 @@ export default function Reception() {
   const paid = round2(paidD).toNumber();
   const changeD = paidD.minus(expectedNowD);
   const change = round2(changeD).toNumber();
-  const remainingD = expectedNowD.minus(paidD);
+  const remainingD = grandTotalD.minus(paidD);
   const remaining = round2(remainingD).toNumber();
-  const isChange = paidD.gt(0) && paidD.gte(expectedNowD);
+  const isChange = method === "CASH" && paidD.gt(0) && paidD.gte(expectedNowD);
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
 
   const hasCustom = cart.some(isCustomKind);
-  // TRANSFER غير مدعوم على workOrders (schema: CASH/CARD فقط). إصلاح P2: نعطّل التحويل عند وجود
-  // مخصّص بدل تحويله صامتاً لـCASH (كان يشوّه نوع الدفع المُسجَّل).
-  const transferDisabled = hasCustom;
-  const needPaymentRef = hasCustom && method === "CARD";
+  const needPaymentRef = method !== "CASH" && paidD.gt(0);
 
   // ───── البحث ──────────────────────────────────────────────────────────────
   const debounced = useDebouncedValue(search, 180);
   const searchResults = trpc.catalog.posList.useQuery(
-    { branchId, tier: "RETAIL", query: debounced, limit: 15, includeReceptionServices: true },
+    { branchId, tier: effectiveTier, query: debounced, limit: 15, includeReceptionServices: true },
     { enabled: debounced.trim().length >= 2, placeholderData: keepPreviousData, staleTime: 15_000 },
   );
   const results = searchResults.data ?? [];
   const resultsEmpty = results.length === 0 && debounced.trim().length >= 2 && !searchResults.isFetching;
 
   // ───── السلّة ─────────────────────────────────────────────────────────────
-  const addRow = useCallback((row: PosRow) => {
-    // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعر RETAIL
-    // بالدخول للسلّة ثم يَفشل عند الإرسال (createWorkOrder يَرفض salePrice<=0) بَعد ما اَلتزَمت
-    // فاتورة البيع — رحلةٌ بِنصف نتيجة. الحارس موحَّد للنوعين.
-    if (row.price == null || Number(row.price) <= 0) {
-      notify.err(`لا سعر RETAIL لـ ${row.productName} (${row.unitName}) — حدّد سعراً من /products أوّلاً`);
-      return;
-    }
-    // المنتج المخصّص (products.isCustomizable=true) ⇒ افتح نافذة التخصيص.
-    if (row.isCustomizable) {
-      setShowCustomization({ row });
-      setSearch("");
-      setShowDrop(false);
-      return;
-    }
+  /** أيّ تعديلٍ على السلة يُسقط كوبوناً مُطبَّقاً سابقاً (نمط POS.tsx clearAppliedCoupon) — أسعار
+   *  الكوبون محسوبة على تركيبة سلّةٍ بعينها، وتعديلها بلا إعادة تطبيق يعني تحصيلاً بسعرٍ فات أوانه. */
+  const clearCouponIfApplied = useCallback(() => {
+    setCouponCode((prev) => {
+      if (!prev) return prev;
+      setCouponLabel(null);
+      setCart((c) => c.map((line) => (line.custom ? line : { ...line, row: { ...line.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
+      return null;
+    });
+  }, []);
+
+  /** يضيف صنفاً جاهزاً (بلا تخصيص) بسعره العادي — يدمج مع سطرٍ مطابق غير مخصّص إن وُجد. */
+  const addDirectLine = useCallback((row: PosRow) => {
+    clearCouponIfApplied();
     setCart((prev) => {
       // دمج كميّات الصنف الجاهز المُكرَّر (لا تكرار سطر).
       const i = prev.findIndex((c) => !isCustomKind(c) && c.row.productUnitId === row.productUnitId);
@@ -362,31 +468,82 @@ export default function Reception() {
       setSelKey(key);
       return [...prev, { key, row, qty: 1 }];
     });
+    setWorkflowStep(3);
+  }, []);
+
+  const addRow = useCallback((row: PosRow) => {
+    // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعرٍ
+    // بالدخول للسلّة ثم يَفشل عند الإرسال (createWorkOrder يَرفض salePrice<=0) بَعد ما اَلتزَمت
+    // فاتورة البيع — رحلةٌ بِنصف نتيجة. الحارس موحَّد للنوعين.
+    if (row.price == null || Number(row.price) <= 0) {
+      notify.err(`لا سعر ${TIER_LABEL[effectiveTier]} لـ ${row.productName} (${row.unitName}) — حدّد سعراً من /products أوّلاً`);
+      return;
+    }
+    // المنتج المخصّص (products.isCustomizable=true) ⇒ افتح نافذة التخصيص (وفيها خيار «بلا تخصيص»
+    // لعميلٍ يريد القطعة كما هي — انظر onAddPlain أدناه، إصلاح ٣/٨).
+    if (row.isCustomizable) {
+      setShowCustomization({ row });
+      setSearch("");
+      setShowDrop(false);
+      return;
+    }
+    addDirectLine(row);
     setSearch("");
     setShowDrop(false);
     searchRef.current?.focus();
-  }, []);
+  }, [addDirectLine]);
+
+  /** العميل يريد هذه القطعة تحديداً بلا تخصيص (بسعرها العادي) رغم أنّ صنفها قابلٌ للتخصيص — يسمح
+   *  بمزج قطعةٍ مخصّصة وأخرى جاهزة من نفس المنتج في طلبٍ واحد. */
+  function addPlain(row: PosRow) {
+    addDirectLine(row);
+    setShowCustomization(null);
+    searchRef.current?.focus();
+  }
+
+  /** خدمة حرة كانت تُنشأ من صفحة «طلب خدمة جديد». أصبحت الآن سطراً داخل السلة نفسها. */
+  function addManualService() {
+    const row = {
+      variantId: 0,
+      productUnitId: 0,
+      productName: "خدمة / أمر شغل",
+      sku: "SERVICE",
+      unitName: "خدمة",
+      conversionFactor: "1",
+      price: "0",
+      stockBase: 0,
+      isService: true,
+      isPrintService: false,
+      isCustomizable: true,
+    } as PosRow;
+    setShowCustomization({ row });
+    setSearch("");
+    setShowDrop(false);
+  }
 
   function saveCustomization(data: CustomizationData) {
     if (!showCustomization) return;
     const { row, editingKey } = showCustomization;
     if (editingKey) {
-      setCart((prev) => prev.map((c) => (c.key === editingKey ? { ...c, custom: data, qty: 1 } : c)));
+      setCart((prev) => prev.map((c) => (c.key === editingKey ? { ...c, custom: data } : c)));
     } else {
       const key = `c-${row.productUnitId}-${Date.now()}`;
-      setCart((prev) => [...prev, { key, row, qty: 1, custom: data }]);
+      setCart((prev) => [...prev, { key, row, qty: 1, custom: data, manualService: row.variantId === 0 }]);
       setSelKey(key);
     }
     setShowCustomization(null);
-    searchRef.current?.focus();
+    setWorkflowStep(3);
+    requestAnimationFrame(() => cartSectionRef.current?.focus());
   }
 
   function changeQty(key: string, delta: number) {
+    clearCouponIfApplied();
     setCart((prev) =>
       prev.map((c) => (c.key === key ? { ...c, qty: Math.max(1, c.qty + delta) } : c)),
     );
   }
   function removeRow(key: string) {
+    clearCouponIfApplied();
     setCart((prev) => prev.filter((c) => c.key !== key));
     if (selKey === key) setSelKey(null);
   }
@@ -398,6 +555,9 @@ export default function Reception() {
       description: "سيُمسح كلّ ما في الطلب الحالي. متابعة؟",
       confirmText: "تفريغ",
     }))) return;
+    setCouponCode(null);
+    setCouponLabel(null);
+    setCouponInput("");
     setCart([]);
     setSelKey(null);
     setPayInput("");
@@ -407,14 +567,14 @@ export default function Reception() {
   const lookupBarcode = useCallback(
     async (code: string) => {
       try {
-        const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: "RETAIL" });
+        const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier });
         if (!row) notify.err(`باركود غير معروف: ${code}`);
         else addRow(row);
       } catch (e: unknown) {
         notify.err(e, "خطأ في المسح");
       }
     },
-    [branchId, addRow, utils],
+    [branchId, addRow, utils, effectiveTier],
   );
   const handleHidScan = useCallback(
     async (raw: string) => {
@@ -449,6 +609,7 @@ export default function Reception() {
     } else if (numMode === "DISC" && selKey) {
       const line = cart.find((c) => c.key === selKey);
       if (!line || isCustomKind(line)) return;
+      clearCouponIfApplied();
       setCart((prev) =>
         prev.map((c) => {
           if (c.key !== selKey) return c;
@@ -477,7 +638,20 @@ export default function Reception() {
   }
   function payAll() {
     setNumMode("PAY");
-    setPayInput(String(expectedNow));
+    setPayInput(String(grandTotal));
+  }
+
+  function goToWorkflowStep(step: number) {
+    setWorkflowStep(step);
+    requestAnimationFrame(() => {
+      if (step === 1) customerSectionRef.current?.querySelector("input")?.focus();
+      if (step === 2) searchRef.current?.focus();
+      if (step === 3) cartSectionRef.current?.focus();
+      if (step === 4) {
+        setNumMode("PAY");
+        paymentSectionRef.current?.focus();
+      }
+    });
   }
 
   // ───── إنشاء العميل عند الحاجة (ensureCustomerId) ────────────────────────
@@ -486,18 +660,26 @@ export default function Reception() {
   const createCustomerM = trpc.customers.create.useMutation();
   async function ensureCustomerId(): Promise<number | null> {
     if (customer.customerId) return customer.customerId;
-    if (!customer.name?.trim()) return null;
+    const channelPhone = channel !== "WALK_IN" && channelHandle.replace(/\D/g, "").length >= 6
+      ? channelHandle.trim()
+      : null;
+    const phone = customer.phone?.trim() || channelPhone;
+    const rawName = customer.name?.trim() || "";
+    const name = rawName && rawName.replace(/\D/g, "") !== phone?.replace(/\D/g, "")
+      ? rawName
+      : phone ? `عميل ${phone}` : "";
+    if (!name) return null;
     if (!(await confirm({
       variant: "warning",
       title: "إنشاء عميل جديد",
-      description: `سيُنشأ عميل جديد باسم «${customer.name.trim()}». متابعة؟`,
+      description: `سيُحفظ «${name}»${phone ? ` برقم ${phone}` : ""} كعميل ويرتبط بهذا الطلب. متابعة؟`,
       confirmText: "إنشاء العميل",
     }))) {
       throw new Error("ألغى المستخدم إنشاء العميل");
     }
     const created = await createCustomerM.mutateAsync({
-      name: customer.name.trim(),
-      phone: customer.phone || null,
+      name,
+      phone: phone || null,
       customerType: "فرد",
       defaultPriceTier: "RETAIL",
     });
@@ -507,60 +689,112 @@ export default function Reception() {
       throw new Error("تعذّر قراءة مُعرّف العميل الجديد من الخادم");
     }
     // عكس الاختيار في الواجهة بعد الإنشاء.
-    setCustomer({ customerId: id, name: customer.name.trim(), phone: customer.phone ?? null, isNew: false });
+    setCustomer({ customerId: id, name, phone: phone ?? null, isNew: false });
     return id;
   }
 
-  // ───── الإرسال (هجين) ─────────────────────────────────────────────────────
-  const saleM = trpc.sales.create.useMutation();
-  const woM = trpc.workOrders.create.useMutation();
-  // خدمات الطباعة المُوجَّهة للاستقبال تُباع عبر مسار createPrintSale المدقَّق (خصم مواد + COGS).
-  const printSaleM = trpc.printPos.createSale.useMutation();
+  // كوبون خصم (نمط POS.tsx couponPreview) — يُطبَّق على أصناف البيع الجاهزة (المباشرة) فقط، لا
+  // خدمات الطباعة (لا كوبون خادمياً هناك) ولا الأصناف المخصّصة (تسعيرها إضافيّ لا كتالوجيّ). أيّ
+  // تعديلٍ لاحق على السلة يُسقطه (clearCouponIfApplied) — لا إعادة معاينة تلقائية.
+  const couponPreview = trpc.crm.coupons.preview.useMutation({
+    onSuccess: (result) => {
+      const byUnit = new Map(result.lines.map((line) => [Number(line.productUnitId), line]));
+      setCart((items) => items.map((item) => {
+        if (item.custom || item.row.isPrintService) return item;
+        const applied = byUnit.get(Number(item.row.productUnitId));
+        if (!applied) return item;
+        return {
+          ...item,
+          row: {
+            ...item.row,
+            promotionId: applied.promotionId,
+            promotionName: applied.promotionName,
+            promotionEffectivePrice: applied.promotionEffectivePrice,
+          },
+        };
+      }));
+      setCouponCode(result.code);
+      setCouponLabel(result.programName);
+      notify.ok(`تم تطبيق الكوبون — ${result.programName}`);
+    },
+    onError: (e) => notify.err(e, "تعذّر تطبيق الكوبون"),
+  });
+
+  function applyCoupon() {
+    const code = couponInput.trim();
+    if (!code) return;
+    const eligible = cart.filter((c) => !c.custom && !c.row.isPrintService);
+    if (eligible.length === 0) {
+      notify.err("أضف صنفاً جاهزاً غير خدمة طباعة أولاً — الكوبون لا ينطبق على المخصّص/الطباعة");
+      return;
+    }
+    couponPreview.mutate({
+      code,
+      branchId,
+      customerId: customer.customerId ?? undefined,
+      customerTier: effectiveTier,
+      lines: eligible.map((c) => ({
+        productId: c.row.productId,
+        variantId: c.row.variantId,
+        productUnitId: c.row.productUnitId,
+        unitPrice: String(c.row.price ?? "0"),
+        quantity: c.qty,
+        hasContractPrice: !!c.row.isContractPrice,
+      })),
+    });
+  }
+  function clearCoupon() {
+    setCouponCode(null);
+    setCouponLabel(null);
+    setCouponInput("");
+    setCart((prev) => prev.map((c) => (c.custom ? c : { ...c, row: { ...c.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
+  }
+
+  // نقطة التزام خادمية واحدة للسلة الهجينة: بيع + طباعة + أوامر شغل.
+  const checkoutM = trpc.workOrders.receptionCheckout.useMutation();
 
   async function handleSubmit(opts: { quickFullPay: boolean }) {
     if (cart.length === 0) return;
     if (!shift) {
-      notify.err("لا توجد وردية خدمة زبائن مفتوحة — افتح الوردية أولاً");
+      notify.err("ابدأ العمل أولاً قبل إتمام طلب العميل");
       return;
     }
-    // P2: مرجع البطاقة إلزاميّ عند وجود مخصَّص (createWorkOrder يَرفض CARD بلا مرجع).
-    if (hasCustom && method === "CARD" && !paymentReference.trim()) {
-      notify.err("رقم العملية المرجعي مطلوب عند الدفع ببطاقة لطلبات الخدمة المخصّصة");
+    const invalidCustom = cart.find((line) => {
+      if (!line.custom) return false;
+      const unitTotal = D(line.row.price || 0).plus(D(line.custom.unitPrice || 0));
+      return !line.custom.title.trim() || unitTotal.lte(0);
+    });
+    if (invalidCustom) {
+      setSelKey(invalidCustom.key);
+      notify.err("راجع تفاصيل أمر الشغل: العنوان وسعر البيع مطلوبان");
       return;
     }
-    // P2: التحويل غير مدعوم في workOrders (CASH/CARD فقط) ⇒ لا نقبله مع وجود مخصّصات.
-    if (hasCustom && method === "TRANSFER") {
-      notify.err("التحويل البنكي غير مدعوم لعرابين أوامر الشغل — اختر نقداً أو بطاقة");
-      return;
-    }
-
     const directLines = cart.filter((c) => !isCustomKind(c));
     // فصل خدمات الطباعة (تُباع عبر createPrintSale) عن البيع العادي (sales.create).
     const regularLines = directLines.filter((c) => !c.row.isPrintService);
     const printLines = directLines.filter((c) => c.row.isPrintService);
     const customItems = cart.filter(isCustomKind);
 
-    // عربون كل صنف مخصّص: Quick = كامل سعر الصنف+التوصيل؛ غير ذلك = ما حفظه في النافذة.
-    // إصلاح P1: salePrice على workOrder = lineTotal + deliveryCost. deliverWorkOrder يَحسب
-    // إجمالي الفاتورة من wo.salePrice وحده ويَرفض deposit > salePrice ⇒ إن استَبعَدنا التوصيل
-    // فأمر التسليم المدفوع كاملاً يَفشل، وإن لم يَفشل فالتوصيل بلا إيراد فعلاً.
+    // سعر كل أمر فقط؛ العربون لم يعد حقلاً على السطر، بل يوزّعه الخادم من دفعة الطلب الكلية.
     const customWithDeposits = customItems.map((c) => {
       const full = D(customLineGrand(c));
-      const deposit = opts.quickFullPay ? full.toFixed(2) : (c.custom?.deposit || "0");
-      return { c, depositStr: deposit, salePriceStr: full.toFixed(2) };
+      return { c, depositStr: "0.00", salePriceStr: full.toFixed(2) };
     });
 
-    // الدفع المتوقّع لهذا التنفيذ.
-    const expectedDepositsD = customWithDeposits.reduce((s, x) => s.plus(D(x.depositStr)), D(0));
-    const expectedTotalD = round2(sumDirectD.plus(expectedDepositsD));
-    const inputPaidD = opts.quickFullPay ? expectedTotalD : paidD;
+    const inputPaidD = opts.quickFullPay ? grandTotalD : paidD;
+    const appliedPaidD = method === "CASH" && inputPaidD.gt(grandTotalD) ? grandTotalD : inputPaidD;
 
-    // إصلاح P1 (٢٣/٦/٢٦): الفحص السابق كان يَتحقّق من تَغطية البيع المباشر فقط، بَينما يَرسل
-    // العربون الكامل لكل صنف لـcreateWorkOrder الذي يَقيّده receipt(IN)+PAYMENT_IN فوراً.
-    // النتيجة: نَقد غير مَقبوض فعلاً يَدخل الدفتر ⇒ تَسوية صندوق/AR مشوَّهة. الفحص الآن
-    // يَستلزم تَغطية إجمالي العَرابين أيضاً (المُدخَل ≥ المتوقَّع).
-    if (!opts.quickFullPay && inputPaidD.lt(expectedTotalD)) {
-      notify.err(`المبلغ المُدخَل (${fmt(inputPaidD.toFixed(2))}) أقلّ من المتوقَّع (${fmt(expectedTotalD.toFixed(2))} = بيع + عرابين). عدّل العرابين من النوافذ أو أكمِل المبلغ.`);
+    // البطاقة والتحويل صالحان أيضاً كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي.
+    if (method !== "CASH" && inputPaidD.gt(0) && !paymentReference.trim()) {
+      notify.err(method === "CARD" ? "رقم عملية البطاقة مطلوب" : "رقم مرجع التحويل مطلوب");
+      return;
+    }
+    if (method !== "CASH" && inputPaidD.gt(grandTotalD)) {
+      notify.err(`لا يمكن أن يتجاوز مبلغ ${method === "CARD" ? "البطاقة" : "التحويل"} إجمالي الطلب (${fmt(grandTotalD.toFixed(2))} د.ع)`);
+      return;
+    }
+    if (appliedPaidD.lt(sumDirectD)) {
+      notify.err(`المبلغ المقبوض يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(sumDirectD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
       return;
     }
 
@@ -578,97 +812,20 @@ export default function Reception() {
       return;
     }
 
+    let checkoutCommitted = false;
     try {
-      let invoiceId: number | null = null;
-      const createdWoIds: number[] = [];
       const receiptsToPrint: ReceiptBrowserData[] = [];
       const workOrdersToPrint: WorkOrderReceiptData[] = [];
       const printedAt = new Date();
-      const customerName = customer.name.trim() || null;
-
-      // ١) فاتورة البيع المباشر للأصناف العادية (إن وُجدت).
-      if (regularLines.length > 0) {
-        const lines = regularLines.map((c) => {
-          const base: any = {
-            variantId: c.row.variantId,
-            productUnitId: c.row.productUnitId,
-            quantity: String(c.qty),
-          };
-          if (c.disc != null && c.disc > 0) base.discountPercent = String(c.disc);
-          return base;
-        });
-        const saleAmount = round2(regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
-        const res = await saleM.mutateAsync({
-          branchId,
-          shiftId: shift.id,
-          sourceType: "POS",
-          customerId: customerId ?? undefined,
-          lines,
-          payment: { amount: saleAmount, method },
-          clientRequestId: `${reqIdRef.current}-sale`,
-        });
-        invoiceId = res.invoiceId ?? null;
-        receiptsToPrint.push({
-          receiptNumber: res.invoiceNumber,
-          date: fmtDate(printedAt),
-          time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
-          cashierName: me.data?.name ?? "موظف الخدمة",
-          customerName,
-          items: regularLines.map((c) => ({
-            name: `${c.row.productName} (${c.row.unitName})`,
-            quantity: c.qty,
-            price: round2(D(effectivePrice(c))).toFixed(2),
-            total: round2(D(lineTotal(c))).toFixed(2),
-          })),
-          subtotal: saleAmount,
-          total: saleAmount,
-          paid: saleAmount,
-          change: 0,
-          paymentMethod: PAY_METHOD_LABEL[method],
-        });
-      }
-
-      // ١.ب) فاتورة خدمات الطباعة (الاستقبال): createPrintSale يَخصم وصفة المواد ويُسجّل COGS
-      //       (sales.create لا يَفعل ذلك). السعر اليدوي = السعر الفعّال المعروض في السلّة (بعد الخصم).
-      if (printLines.length > 0) {
-        const lines = printLines.map((c) => ({
-          variantId: c.row.variantId,
-          productUnitId: c.row.productUnitId,
-          quantity: String(c.qty),
-          unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
-        }));
-        const printAmount = round2(printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
-        const res = await printSaleM.mutateAsync({
-          branchId,
-          shiftId: shift.id,
-          customerId: customerId ?? undefined,
-          lines,
-          payment: { amount: printAmount, method },
-          clientRequestId: `${reqIdRef.current}-print`,
-        });
-        if (invoiceId == null) invoiceId = (res as { invoiceId?: number }).invoiceId ?? null;
-        receiptsToPrint.push({
-          receiptNumber: res.invoiceNumber,
-          date: fmtDate(printedAt),
-          time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
-          cashierName: me.data?.name ?? "موظف الخدمة",
-          customerName,
-          items: printLines.map((c) => ({
-            name: `${c.row.productName} (${c.row.unitName})`,
-            quantity: c.qty,
-            price: round2(D(effectivePrice(c))).toFixed(2),
-            total: round2(D(lineTotal(c))).toFixed(2),
-          })),
-          subtotal: printAmount,
-          total: printAmount,
-          paid: printAmount,
-          change: 0,
-          paymentMethod: PAY_METHOD_LABEL[method],
-        });
-      }
-
-      // ٢) أمر شغل لكل صنف مخصّص.
-      for (const x of customWithDeposits) {
+      const receiptPhone = customer.phone?.trim()
+        || (channel !== "WALK_IN" && channelHandle.replace(/\D/g, "").length >= 6 ? channelHandle.trim() : null);
+      const rawCustomerName = customer.name.trim();
+      const customerName = rawCustomerName && rawCustomerName.replace(/\D/g, "") !== receiptPhone?.replace(/\D/g, "")
+        ? rawCustomerName
+        : receiptPhone ? `عميل ${receiptPhone}` : null;
+      const saleAmount = round2(regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
+      const printAmount = round2(printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
+      const workOrderPayloads = customWithDeposits.map((x) => {
         const c = x.c;
         const custom = c.custom!;
         const finalText = composeCustomizationText(custom);
@@ -683,22 +840,22 @@ export default function Reception() {
           const baseQty = Math.max(1, Math.round(c.qty * factor));
           materials.push({ variantId: c.row.variantId, baseQuantity: baseQty });
         }
-        const res = await woM.mutateAsync({
-          branchId,
-          customerId: customerId ?? undefined,
-          baseVariantId: c.row.variantId,
+        return {
+          baseVariantId: c.manualService ? null : c.row.variantId,
           title: custom.title.trim() || c.row.productName,
           customizationText: finalText || null,
           quantity: c.qty,
           materials,
-          laborCost: "0",
+          laborCost: D(custom.laborCost || 0).toFixed(2),
           // ملاحظة: salePrice الآن يَضمّ التوصيل (إصلاح P1 — حتى يَتطابق مع deliverWorkOrder).
           salePrice: x.salePriceStr,
           dueDate: custom.dueDate || null,
           priority: custom.priority,
+          assignedTo: custom.assignedTo ?? undefined,
           deposit: x.depositStr,
-          paymentMethod: method === "TRANSFER" ? "CASH" : method,
-          paymentReference: needPaymentRef ? paymentReference.trim() : null,
+          paymentMethod: D(x.depositStr).gt(0) ? method : null,
+          paymentReference: D(x.depositStr).gt(0) && method !== "CASH" ? paymentReference.trim() : null,
+          paymentReceiptUrl: custom.paymentReceiptImages[0]?.dataUrl || null,
           receptionChannel: channel,
           channelHandle: channelHandle || null,
           hasDelivery: custom.hasDelivery,
@@ -710,17 +867,98 @@ export default function Reception() {
             caption: img.name ?? null,
             sortOrder: idx,
           })),
-          clientRequestId: `${reqIdRef.current}-wo-${c.key}`,
+        };
+      });
+
+      const result = await checkoutM.mutateAsync({
+        branchId,
+        shiftId: shift.id,
+        customerId: customerId ?? undefined,
+        paymentMethod: method,
+        paymentReference: method === "CASH" ? undefined : paymentReference.trim(),
+        paidAmount: round2(appliedPaidD).toFixed(2),
+        clientRequestId: reqIdRef.current,
+        priceTier: effectiveTier,
+        couponCode: couponCode ?? undefined,
+        regularSale: regularLines.length > 0 ? {
+          amount: saleAmount,
+          lines: regularLines.map((c) => {
+            // كوبون/عرض: سعر قائمة صحيح الدينار + خصمٌ صريح (نمط POS.tsx buildSaleLine) — الخادم
+            // يتحقّق منه مقابل العرض الفعلي بلا رفضٍ لو تغيّر بين المعاينة والحفظ.
+            if (c.row.promotionEffectivePrice != null) {
+              const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
+              const discAmt = listWhole.minus(D(c.row.promotionEffectivePrice)).times(c.qty);
+              return {
+                variantId: c.row.variantId,
+                productUnitId: c.row.productUnitId,
+                quantity: String(c.qty),
+                unitPriceOverride: listWhole.toFixed(2),
+                ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+                ...(c.row.promotionId != null ? { promotionId: c.row.promotionId } : {}),
+              };
+            }
+            return {
+              variantId: c.row.variantId,
+              productUnitId: c.row.productUnitId,
+              quantity: String(c.qty),
+              ...(c.disc != null && c.disc > 0 ? { discountPercent: String(c.disc) } : {}),
+            };
+          }),
+        } : null,
+        printSale: printLines.length > 0 ? {
+          amount: printAmount,
+          lines: printLines.map((c) => ({
+            variantId: c.row.variantId,
+            productUnitId: c.row.productUnitId,
+            quantity: String(c.qty),
+            unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
+          })),
+        } : null,
+        workOrders: workOrderPayloads,
+      });
+      checkoutCommitted = true;
+
+      const invoiceId = result.regularSale?.invoiceId ?? result.printSale?.invoiceId ?? null;
+      const createdWoIds = result.workOrders.map((order) => order.workOrderId);
+
+      if (result.regularSale) {
+        receiptsToPrint.push({
+          receiptNumber: result.regularSale.invoiceNumber,
+          date: fmtDate(printedAt), time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
+          cashierName: me.data?.name ?? "موظف الخدمة", customerName,
+          items: regularLines.map((c) => ({
+            name: `${c.row.productName} (${c.row.unitName})`, quantity: c.qty,
+            price: round2(D(effectivePrice(c))).toFixed(2), total: round2(D(lineTotal(c))).toFixed(2),
+          })),
+          subtotal: saleAmount, total: saleAmount, paid: saleAmount, change: 0,
+          paymentMethod: PAY_METHOD_LABEL[method],
         });
-        const woId = (res as { workOrderId?: number }).workOrderId;
-        if (woId) createdWoIds.push(woId);
+      }
+      if (result.printSale) {
+        receiptsToPrint.push({
+          receiptNumber: result.printSale.invoiceNumber,
+          date: fmtDate(printedAt), time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
+          cashierName: me.data?.name ?? "موظف الخدمة", customerName,
+          items: printLines.map((c) => ({
+            name: `${c.row.productName} (${c.row.unitName})`, quantity: c.qty,
+            price: round2(D(effectivePrice(c))).toFixed(2), total: round2(D(lineTotal(c))).toFixed(2),
+          })),
+          subtotal: printAmount, total: printAmount, paid: printAmount, change: 0,
+          paymentMethod: PAY_METHOD_LABEL[method],
+        });
+      }
+
+      customWithDeposits.forEach((x, index) => {
+        const c = x.c;
+        const custom = c.custom!;
+        const finalText = composeCustomizationText(custom);
         workOrdersToPrint.push({
-          orderNumber: res.orderNumber,
+          orderNumber: result.workOrders[index]?.orderNumber ?? "",
           orderDate: fmtDate(printedAt),
           dueDate: custom.dueDate || null,
           status: "RECEIVED",
           customerName,
-          customerPhone: customer.phone,
+          customerPhone: receiptPhone,
           jobTitle: custom.title.trim() || c.row.productName,
           quantity: c.qty,
           specs: finalText || null,
@@ -729,7 +967,7 @@ export default function Reception() {
             ? `توصيل إلى: ${custom.deliveryAddress || "العنوان غير محدد"}`
             : null,
         });
-      }
+      });
 
       // نجاح الحفظ لا يُلغى إذا تعذّرت الطابعة. نحاول المسارات بالترتيب الموحّد:
       // جسر الخادم ← WebUSB ← نافذة طباعة المتصفح، ثم نُفرغ السلة دائماً.
@@ -769,16 +1007,20 @@ export default function Reception() {
       setSelKey(null);
       setPayInput("");
       setPaymentReference("");
+      setCustomer({ customerId: null, name: "", phone: null, isNew: false });
+      setChannel("WALK_IN");
+      setChannelHandle("");
+      setWorkflowStep(1);
       reqIdRef.current = crypto.randomUUID();
       // تحديث القوائم.
       utils.workOrders.list.invalidate().catch(() => {});
       utils.shifts.current.invalidate().catch(() => {});
     } catch (e: unknown) {
-      // ذرّية جزئية: الفاتورة قد تَكون التُزِمت قبل فَشل أوامر الشغل (أو العكس). نُبقي reqIdRef
-      // ثابتاً (لا نُجدّده) — sales.create و workOrders.create يَستعملان clientRequestId فريداً
-      // (`-sale` و`-wo-${key}`) ⇒ إعادة الضغط على نفس الزرّ تُكمل ما نَقص بأمان (idempotency
-      // على الخادم تُجنّب التَكرار) ولا تُنشئ سَلَّةً مَلتزَمة مرّتَين.
-      notify.err(e, "تعذّر إتمام الاستلام بالكامل — اضغط مرّة أخرى لاستئناف ما لم يَلتَزم (idempotent)");
+      // لا توجد حالة التزام جزئي. عند غياب رد الشبكة قد تكون المعاملة كلها التزمت أو كلها
+      // تراجعت؛ المفتاح الثابت يجعل إعادة الإرسال تستعيد النتيجة بلا تكرار.
+      notify.err(e, checkoutCommitted
+        ? "تم حفظ العملية كاملة، لكن تعذّر إكمال تجهيز المستندات؛ راجع الفواتير وأوامر الشغل"
+        : "لم يصل تأكيد العملية؛ لا يمكن أن يكون جزء منها محفوظاً وحده. أعد المحاولة بأمان");
     } finally {
       setSubmitting(false);
     }
@@ -795,6 +1037,17 @@ export default function Reception() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (showCustomization) return;
+      if (showReservations) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeReservations();
+        }
+        return;
+      }
+      if (showStoreOrders) {
+        if (e.key === "Escape") { e.preventDefault(); setShowStoreOrders(false); }
+        return;
+      }
       if (e.key === "F2") {
         e.preventDefault();
         searchRef.current?.focus();
@@ -808,14 +1061,14 @@ export default function Reception() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showInbox, showDrop, showCustomization]);
+  }, [showInbox, showDrop, showCustomization, showReservations, showStoreOrders, closeReservations]);
 
   // اقتراح الكاشير: لا يبني الواجهة قبل توفّر الفرع.
   if (me.isLoading || shiftQ.isLoading) {
     return <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>;
   }
 
-  // بوّابة وردية خدمة الزبائن: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
+  // بوّابة وردية خدمة العملاء: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
   if (!shift) {
     return (
       <div className="flex h-full items-center justify-center bg-background p-4" dir="rtl">
@@ -824,10 +1077,10 @@ export default function Reception() {
             <span className="grid size-9 place-items-center rounded-lg bg-violet-100 text-violet-700">
               <Palette aria-hidden className="size-5" />
             </span>
-            <h2 className="text-xl font-extrabold">افتح وردية خدمة الزبائن</h2>
+            <h2 className="text-xl font-extrabold">ابدأ العمل</h2>
           </div>
           <p className="mb-5 text-sm text-muted-foreground">
-            درجٌ ورصيدٌ افتتاحيٌّ مستقلّ لاستلام الطلبات وقبض العرابين. لا يمكن العمل بدون وردية مفتوحة.
+            أدخل المبلغ الموجود في درج النقدية، ثم ابدأ استقبال العملاء والطلبات.
           </p>
           {/* الأدمن/المدير بلا فرع مُسنَد يختار الفرع صراحةً (#274) — بدل إسناد الطلبات صامتاً للفرع ١. */}
           {needsBranchChoice && (
@@ -844,7 +1097,7 @@ export default function Reception() {
               </select>
             </div>
           )}
-          <label className="mb-1.5 block text-sm font-bold">الرصيد الافتتاحي للصندوق (د.ع)</label>
+          <label className="mb-1.5 block text-sm font-bold">المبلغ الموجود في الدرج الآن (د.ع)</label>
           <Input
             dir="ltr"
             inputMode="decimal"
@@ -875,7 +1128,7 @@ export default function Reception() {
             disabled={openShiftM.isPending || needsBranchChoice}
             onClick={() => openShiftM.mutate({ branchId, openingBalance: opening || "0", shiftType: "RECEPTION" })}
           >
-            {openShiftM.isPending ? "جارٍ الفتح…" : needsBranchChoice ? "اختر الفرع أولاً" : "فتح وردية خدمة الزبائن"}
+            {openShiftM.isPending ? "جارٍ البدء…" : needsBranchChoice ? "اختر الفرع أولاً" : "بدء العمل"}
           </Button>
           <Link href="/" className="mt-3 block text-center text-sm text-muted-foreground">← الرئيسية</Link>
         </div>
@@ -883,22 +1136,36 @@ export default function Reception() {
     );
   }
 
-  // تسوية الصندوق (نافذة الإغلاق): المتوقَّع = الافتتاحي + نقد وارد − نقد صادر (DRAWER).
-  const recCashIn = (reportQ.data?.payments ?? [])
-    .filter((p) => p.method === "CASH" && p.direction === "IN")
-    .reduce((s, p) => s + Number(p.total), 0);
-  const recCashOut = (reportQ.data?.payments ?? [])
-    .filter((p) => p.method === "CASH" && p.direction === "OUT")
-    .reduce((s, p) => s + Number(p.total), 0);
-  const recExpected = Number(shift.openingBalance ?? 0) + recCashIn - recCashOut;
+  // رقم الخادم نفسه الذي يفرضه closeShift (DRAWER فقط)؛ لا نعيد تركيب المعادلة من تقرير طرق الدفع.
+  const recExpected = Number(reportQ.data?.expectedCash ?? shift.openingBalance ?? 0);
   // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
   const showRecExpected = isElevatedRole || countEntered;
   const recDiff = showRecExpected && counted ? Number(counted) - recExpected : null;
   const hasRecVariance = recDiff != null && Math.abs(recDiff) >= 0.01;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-background" dir="rtl">
-      {/* نافذة إغلاق وردية خدمة الزبائن (Z-report مستقلّ) */}
+    <div className="relative flex h-full flex-col overflow-hidden bg-background" dir="rtl">
+      {/* مساحة الحجوزات جزء من شاشة الاستقبال نفسها؛ تبقى السلة محفوظة خلفها عند الرجوع. */}
+      {showReservations && (
+        <div className="absolute inset-0 z-30 bg-background">
+          <ReservationsHub embedded fixedBranchId={branchId} onClose={closeReservations} />
+        </div>
+      )}
+      {showStoreOrders && (
+        <div className="absolute inset-0 z-30 overflow-y-auto bg-background p-4">
+          <div className="mb-3 flex items-center justify-between rounded-xl border bg-card p-3">
+            <div>
+              <h1 className="font-extrabold">طلبات الموقع الواردة</h1>
+              <p className="text-xs text-muted-foreground">راجع الطلب، ثبّته، جهّزه ثم أرسله للتوصيل.</p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => setShowStoreOrders(false)}>
+              <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
+            </Button>
+          </div>
+          <OrderFulfillment />
+        </div>
+      )}
+      {/* نافذة إغلاق وردية خدمة العملاء (Z-report مستقلّ) */}
       {closing && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
@@ -909,21 +1176,21 @@ export default function Reception() {
             className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-card p-6 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="mb-1 text-lg font-extrabold">إغلاق وردية خدمة الزبائن #{shift.id}</h3>
+            <h3 className="mb-1 text-lg font-extrabold">إنهاء العمل وعدّ النقدية</h3>
             <p className="mb-4 text-xs text-muted-foreground">
               {fmtDate(new Date())}
             </p>
             {reportQ.isLoading ? (
-              <div className="py-6 text-center text-muted-foreground">جارٍ تحميل التقرير…</div>
+              <div className="py-6 text-center text-muted-foreground">جارٍ تجهيز ملخص اليوم…</div>
             ) : (
               <>
                 {(
                   [
                     ["عدد الفواتير", `${reportQ.data?.invoiceCount ?? 0}`],
                     ["إجمالي المبيعات", `${fmt(Number(reportQ.data?.salesTotal ?? 0))} د.ع`],
-                    ["الرصيد الافتتاحي", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
+                    ["المبلغ عند بدء العمل", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
                     ...(showRecExpected
-                      ? [["النقد المتوقَّع بالصندوق", `${fmt(recExpected)} د.ع`] as [string, string]]
+                      ? [["المبلغ المفترض وجوده في الدرج", `${fmt(recExpected)} د.ع`] as [string, string]]
                       : []),
                   ] as [string, string][]
                 ).map(([l, v]) => (
@@ -937,7 +1204,7 @@ export default function Reception() {
                   onBlur={() => setCountEntered(counted.trim() !== "")}
                 >
                   <label htmlFor="rec-counted-cash" className="block text-sm font-bold">
-                    النقد المعدود (د.ع)
+                    المبلغ الذي عددته في الدرج (د.ع)
                   </label>
                   <MoneyInput
                     id="rec-counted-cash"
@@ -976,16 +1243,16 @@ export default function Reception() {
                 {hasRecVariance && (
                   <div className="mt-4 space-y-2 rounded-xl border border-destructive/60 bg-destructive/10 p-3">
                     <p className="text-sm font-extrabold text-destructive">
-                      لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الافتتاحي مضافاً إليه صافي المبيعات النقدية المسجّلة.
+                      لا يمكن إنهاء العمل لأن المبلغ المعدود لا يطابق المبلغ المسجّل في النظام.
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      أعد العد وراجع الفواتير والمرتجعات. إذا بقي الفرق فاستدعِ المدير لتصحيح العملية من وحدتها المختصة؛ لا يمكن اعتماد مال بلا مصدر من شاشة الإغلاق.
+                      أعد عدّ النقدية وراجع عمليات البيع والإرجاع. إذا بقي الفرق، اطلب من المدير المراجعة.
                     </p>
                   </div>
                 )}
                 {/* العهدة الوسيطة (imprest، ٢٨/٧/٢٦): يعود كامل النقد المعدود للخزينة تلقائياً عند الإغلاق. */}
                 <div className="mt-3.5 rounded-lg border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
-                  يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق (تسليمٌ كامل). الوردية التالية تبدأ بعهدةٍ جديدة من الخزينة.
+                  عند التأكيد سيُسجّل النظام تسليم كامل المبلغ المعدود، ويبدأ العمل القادم بمبلغ جديد.
                 </div>
                 <div className="mt-5 flex gap-2.5">
                   <Button variant="outline" className="flex-1" onClick={() => setClosing(false)}>
@@ -999,7 +1266,7 @@ export default function Reception() {
                       countedCash: counted,
                     })}
                   >
-                    {closeShiftM.isPending ? "جارٍ الإغلاق…" : hasRecVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}
+                    {closeShiftM.isPending ? "جارٍ الإنهاء…" : hasRecVariance ? "لا يمكن الإنهاء قبل حل الفرق" : "تأكيد الإنهاء وطباعة الملخص"}
                   </Button>
                 </div>
               </>
@@ -1007,15 +1274,110 @@ export default function Reception() {
           </div>
         </div>
       )}
-      {/* ─── شريط البحث + جسر الطباعة + الوارد ─── */}
-      <div className="flex flex-shrink-0 items-center gap-3 border-b bg-card px-4 py-2.5">
+      {/* أربع مناطق حقيقية: تفاصيل أمر الشغل جزء من السلة، فلا نكررها كمرحلة مستقلة. */}
+      <div className="flex-shrink-0 space-y-2 border-b bg-card px-4 py-2.5">
+        <div className="flex items-center gap-1 overflow-x-auto text-[11px] font-bold text-muted-foreground" aria-label="تسلسل إنشاء الطلب">
+          {["العميل والطلب", "إضافة المطلوب", "السلة وتفاصيل الطباعة", "الدفع والطباعة"].map((label, index) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => goToWorkflowStep(index + 1)}
+              className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-muted", workflowStep === index + 1 && "text-primary")}
+              aria-current={workflowStep === index + 1 ? "step" : undefined}
+            >
+              <span className={cn(
+                "grid size-5 place-items-center rounded-full border text-[10px]",
+                workflowStep === index + 1 ? "border-primary bg-primary text-primary-foreground" : "bg-muted/50",
+              )}>{index + 1}</span>
+              <span>{label}</span>
+              {index < 3 && <span className="mx-1 text-border">←</span>}
+            </button>
+          ))}
+        </div>
+
+        <div ref={customerSectionRef} className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/25 p-2">
+          <span className="shrink-0 text-xs font-extrabold">١. العميل وطريقة وصول الطلب</span>
+          <SmartCustomerInput value={customer} onChange={setCustomer} className="w-60" placeholder="عميل نقدي أو ابحث عن عميل" />
+          {customer.customerId && canReadCustomerContext && (
+            <Button size="sm" variant="outline" className="h-8" onClick={() => setCustomerContextId(customer.customerId)}>
+              معلومات العميل
+            </Button>
+          )}
+          <div className="flex flex-wrap gap-1">
+            {(
+              [
+                { v: "WALK_IN", label: "مباشر", Icon: Store },
+                { v: "WHATSAPP", label: "واتساب", Icon: MessageCircle },
+                { v: "INSTAGRAM", label: "انستغرام", Icon: Camera },
+                { v: "TIKTOK", label: "تيك توك", Icon: Music },
+                { v: "PHONE", label: "اتصال", Icon: Phone },
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.v}
+                type="button"
+                onClick={() => setChannel(item.v)}
+                className={cn(
+                  "inline-flex h-8 items-center gap-1 rounded-md border px-2 text-[11px] font-bold",
+                  channel === item.v ? "border-primary bg-primary/10 text-primary" : "bg-card hover:bg-muted",
+                )}
+              >
+                <item.Icon aria-hidden className="size-3.5" /> {item.label}
+              </button>
+            ))}
+          </div>
+          {channel !== "WALK_IN" && (
+            <Input
+              value={channelHandle}
+              onChange={(e) => {
+                setChannelHandle(e.target.value);
+                setWorkflowStep(1);
+              }}
+              placeholder="رقم الهاتف أو اسم حساب العميل"
+              className="h-8 min-w-48 flex-1 text-xs"
+              dir="ltr"
+            />
+          )}
+          {channel !== "WALK_IN" && channelHandle.trim() && !customer.customerId && (
+            <span className="text-[11px] font-semibold text-primary">سيُربط الرقم بعميل قائم أو يُحفظ كعميل عند إتمام الطلب</span>
+          )}
+          {customer.customerId && (
+            <span className="text-[11px] font-semibold text-money-positive">تم ربط الطلب بالعميل: {customer.name}</span>
+          )}
+          <div className="flex items-center gap-1.5 border-s ps-2">
+            <label className="text-[11px] font-semibold text-muted-foreground">فئة السعر:</label>
+            <select
+              value={effectiveTier}
+              onChange={(e) => { setTierOverride(e.target.value as Tier); clearCouponIfApplied(); }}
+              className="h-7 rounded-md border border-input bg-transparent px-1.5 text-[11px] font-bold"
+              aria-label="فئة السعر"
+            >
+              <option value="RETAIL">مفرد</option>
+              <option value="WHOLESALE">جملة</option>
+              <option value="GOVERNMENT">حكومي</option>
+            </select>
+            {tierOverride && (
+              <button
+                type="button"
+                onClick={() => setTierOverride(null)}
+                title="عودة لفئة العميل الافتراضية"
+                className="text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                ↩
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+        <span className="shrink-0 text-xs font-extrabold">٢. أضف ما يريده العميل</span>
         <div className="relative max-w-[640px] flex-1">
           <Search aria-hidden className="pointer-events-none absolute inset-y-0 end-3 my-auto size-4 text-muted-foreground" />
           <input
             ref={searchRef}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            onFocus={() => setShowDrop(true)}
+            onFocus={() => { setShowDrop(true); setWorkflowStep(2); }}
             onBlur={() => setTimeout(() => setShowDrop(false), 160)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && results[0]) {
@@ -1079,6 +1441,34 @@ export default function Reception() {
           )}
         </div>
 
+        <button
+          type="button"
+          onClick={addManualService}
+          className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 border-violet-500 bg-violet-50 px-4 text-xs font-extrabold text-violet-700 transition-colors hover:bg-violet-100"
+        >
+          <ClipboardList aria-hidden className="size-4" /> إضافة خدمة / أمر شغل
+        </button>
+
+        {canReadReservations && (
+          <button
+            type="button"
+            onClick={openReservations}
+            className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 border-primary bg-primary/5 px-4 text-xs font-extrabold text-primary transition-colors hover:bg-primary/10"
+          >
+            <CalendarClock aria-hidden className="size-4" /> الحجوزات
+          </button>
+        )}
+
+        {canReadStoreOrders && (
+          <button
+            type="button"
+            onClick={() => setShowStoreOrders(true)}
+            className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-4 text-xs font-extrabold transition-colors hover:bg-muted/60"
+          >
+            <Package aria-hidden className="size-4" /> طلبات الموقع
+          </button>
+        )}
+
         <div className="ms-auto flex items-center gap-2">
           {bridge.enabled && (
             <button
@@ -1113,40 +1503,41 @@ export default function Reception() {
           )}
           <div className="flex items-center gap-1.5 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-1.5 text-xs font-bold text-violet-700">
             <span className="size-2 animate-pulse rounded-full bg-violet-500" />
-            وردية خدمة الزبائن #{shift.id}
+            العمل مفتوح #{shift.id}
           </div>
           <Button size="sm" variant="outline" onClick={() => setClosing(true)}>
-            إغلاق الوردية
+            إنهاء العمل
           </Button>
-          <button
-            type="button"
-            onClick={() => setShowInbox(true)}
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-card px-3 text-xs font-bold hover:bg-muted/60"
-          >
-            <MessageCircle aria-hidden className="size-4" />
-            الوارد
-            <span className="rounded-full bg-muted px-1.5 text-[10px] font-bold text-muted-foreground">قريباً</span>
-          </button>
+          {canReadChannels && (
+            <button
+              type="button"
+              onClick={() => setShowInbox(true)}
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-card px-3 text-xs font-bold hover:bg-muted/60"
+            >
+              <MessageCircle aria-hidden className="size-4" /> رسائل وطلبات العملاء
+            </button>
+          )}
+        </div>
         </div>
       </div>
 
       {/* ─── الجسم: سلّة (يسار) + لوحة الدفع (يمين) ─── */}
       <div className="flex min-h-0 flex-1 flex-row-reverse gap-3 p-3">
         {/* ─ السلّة ─ */}
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card">
+        <div ref={cartSectionRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
           <div className="flex h-12 flex-shrink-0 items-center justify-between gap-2 border-b bg-muted/40 px-3">
             <div className="flex items-center gap-2">
               <span className="inline-flex items-center gap-1.5 text-sm font-extrabold">
-                <ShoppingCart aria-hidden className="size-4" /> الطلب الحالي
+                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٣</span>
+                <ShoppingCart aria-hidden className="size-4" /> جدول سلة الطلب
               </span>
               {cart.length > 0 && (
                 <Badge variant="default" className="text-[11px]">
-                  {cart.length} منتج · {cartCount} قطعة
+                  {cart.length} بند · {cartCount} وحدة
                 </Badge>
               )}
             </div>
             <div className="flex items-center gap-2">
-              <SmartCustomerInput value={customer} onChange={setCustomer} className="w-56" placeholder="عميل نقدي" />
               {cart.length > 0 && (
                 <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
                   تفريغ
@@ -1161,7 +1552,7 @@ export default function Reception() {
                 <div>
                   <ShoppingCart aria-hidden className="mx-auto size-10 opacity-40" />
                   <div className="mt-2 text-sm font-bold">السلة فارغة</div>
-                  <div className="mt-1 text-xs">امسح الباركود أو ابحث لإضافة المنتجات</div>
+                  <div className="mt-1 text-xs">امسح الباركود، ابحث عن منتج، أو أضف خدمة/أمر شغل</div>
                 </div>
               </div>
             ) : (
@@ -1319,7 +1710,7 @@ export default function Reception() {
                               }}
                               className="grid size-8 place-items-center rounded-md border bg-card hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
                               disabled={isCustom && l.qty <= 1}
-                              title={isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية صنف مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
+                              title={isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية منتج مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
                               aria-label="تقليل الكمية"
                             >
                               <Minus aria-hidden className="size-3.5" />
@@ -1347,7 +1738,7 @@ export default function Reception() {
                               removeRow(l.key);
                             }}
                             className="text-muted-foreground hover:text-destructive"
-                            aria-label="حذف الصنف"
+                            aria-label="حذف المنتج"
                           >
                             <Trash2 aria-hidden className="size-4" />
                           </button>
@@ -1374,9 +1765,13 @@ export default function Reception() {
         </div>
 
         {/* ─ لوحة الدفع ─ */}
-        <div className="flex w-[408px] flex-shrink-0 flex-col overflow-hidden rounded-xl border bg-card">
+        <div ref={paymentSectionRef} tabIndex={-1} onFocusCapture={() => setWorkflowStep(4)} className="flex w-[408px] flex-shrink-0 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
           {/* رأس الإجمالي + التقسيم الهجين */}
           <div className="flex-shrink-0 border-b bg-muted/40 p-3">
+            <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-extrabold">
+              <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٥</span>
+              المبلغ والدفع
+            </div>
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-muted-foreground">إجمالي الفاتورة</span>
               <div className="flex items-baseline gap-1">
@@ -1387,13 +1782,13 @@ export default function Reception() {
             <div className="mt-2 grid grid-cols-2 gap-2">
               <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-2">
                 <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700">
-                  <ShoppingCart aria-hidden className="size-3" /> بيع مباشر
+                  <ShoppingCart aria-hidden className="size-3" /> منتجات جاهزة
                 </div>
                 <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumDirect)}</div>
               </div>
               <div className="rounded-lg border border-violet-500/25 bg-violet-500/10 p-2">
                 <div className="inline-flex items-center gap-1 text-[10px] font-bold text-violet-700">
-                  <Printer aria-hidden className="size-3" /> أوامر مطبعة
+                  <Printer aria-hidden className="size-3" /> خدمات وطباعة
                 </div>
                 <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumCustom)}</div>
               </div>
@@ -1476,21 +1871,18 @@ export default function Reception() {
             <div className="flex gap-1.5">
               {(
                 [
-                  { v: "CASH", label: "نقداً", Icon: Banknote, disabled: false },
-                  { v: "CARD", label: "بطاقة", Icon: CreditCard, disabled: false },
-                  { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight, disabled: transferDisabled },
+                  { v: "CASH", label: "نقدي", Icon: Banknote },
+                  { v: "CARD", label: "بطاقة", Icon: CreditCard },
+                  { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight },
+                  { v: "WALLET", label: "محفظة", Icon: Wallet },
                 ] as const
               ).map((p) => (
                 <button
                   key={p.v}
-                  onClick={() => !p.disabled && setMethod(p.v)}
-                  disabled={p.disabled}
-                  title={p.disabled ? "غير مدعوم لأوامر الشغل (CASH/CARD فقط)" : ""}
+                  onClick={() => setMethod(p.v)}
                   className={cn(
                     "flex flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border-2 py-2 text-xs font-extrabold transition-colors",
-                    p.disabled
-                      ? "bg-muted/30 text-muted-foreground opacity-50 cursor-not-allowed"
-                      : method === p.v
+                    method === p.v
                       ? "border-primary bg-primary text-primary-foreground"
                       : "bg-card hover:bg-muted",
                   )}
@@ -1504,10 +1896,47 @@ export default function Reception() {
               <Input
                 value={paymentReference}
                 onChange={(e) => setPaymentReference(e.target.value)}
-                placeholder="رقم العملية / المرجع (إلزامي للبطاقة)"
+                placeholder={
+                  method === "CARD" ? "أدخل رقم عملية البطاقة"
+                  : method === "WALLET" ? "أدخل رقم عملية المحفظة"
+                  : "أدخل رقم التحويل"
+                }
                 className="mt-2 h-9 text-xs"
                 dir="ltr"
               />
+            )}
+          </div>
+
+          {/* كوبون خصم */}
+          <div className="flex-shrink-0 px-3 py-1.5">
+            <div className="mb-1 flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
+              <Ticket aria-hidden className="size-3.5" /> كوبون خصم
+            </div>
+            {couponCode ? (
+              <div className="flex items-center justify-between rounded-md border border-money-positive/40 bg-money-positive/10 px-2 py-1.5 text-xs font-bold text-money-positive">
+                <span>{couponLabel ?? couponCode}</span>
+                <button type="button" onClick={clearCoupon} className="text-[11px] font-semibold underline">إزالة</button>
+              </div>
+            ) : (
+              <div className="flex gap-1.5">
+                <Input
+                  value={couponInput}
+                  onChange={(e) => setCouponInput(e.target.value)}
+                  placeholder="رمز الكوبون"
+                  className="h-8 flex-1 text-xs"
+                  dir="ltr"
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyCoupon(); } }}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8"
+                  disabled={!couponInput.trim() || couponPreview.isPending}
+                  onClick={applyCoupon}
+                >
+                  {couponPreview.isPending ? "…" : "تطبيق"}
+                </Button>
+              </div>
             )}
           </div>
 
@@ -1542,7 +1971,7 @@ export default function Reception() {
               onClick={() => void handleSubmit({ quickFullPay: true })}
               className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-sm font-black text-white shadow-md transition hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
-              <Zap aria-hidden className="size-4" /> دفع سريع وطباعة
+              <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
             </button>
             <button
               type="button"
@@ -1553,11 +1982,11 @@ export default function Reception() {
               {submitting ? (
                 "جارٍ الإرسال…"
               ) : sumCustom > 0 && sumDirect > 0 ? (
-                <><Printer aria-hidden className="size-4" /> إرسال أوامر الشغل ودفع البيع</>
+                <><Printer aria-hidden className="size-4" /> تثبيت البيع وإرسال الطباعة</>
               ) : sumCustom > 0 ? (
                 <><Printer aria-hidden className="size-4" /> إرسال للمطبعة</>
               ) : (
-                <><Check aria-hidden className="size-4" /> إتمام الدفع وطباعة</>
+                <><Check aria-hidden className="size-4" /> إتمام الطلب وطباعة</>
               )}
             </button>
             <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F2 بحث</div>
@@ -1571,76 +2000,54 @@ export default function Reception() {
           open
           productName={showCustomization.row.productName}
           price={showCustomization.row.price ?? "0"}
+          quantity={
+            showCustomization.editingKey
+              ? cart.find((c) => c.key === showCustomization.editingKey)?.qty ?? 1
+              : 1
+          }
           initial={
             showCustomization.editingKey
               ? cart.find((c) => c.key === showCustomization.editingKey)?.custom
-              : emptyCustomization(showCustomization.row.productName, showCustomization.row.price ?? "0")
+              : emptyCustomization(showCustomization.row.productName)
+          }
+          staff={(staffQ.data ?? []).map((member) => ({
+            id: Number(member.id),
+            name: member.name ?? null,
+            role: member.role ?? null,
+          }))}
+          canEditInternalCost={isElevatedRole}
+          onAddPlain={
+            !showCustomization.editingKey && showCustomization.row.variantId !== 0
+              ? () => addPlain(showCustomization.row)
+              : undefined
           }
           onCancel={() => setShowCustomization(null)}
           onSave={saveCustomization}
         />
       )}
 
-      {/* ─── درج الوارد (Stub) ─── */}
+      {/* صندوق القنوات الحقيقي داخل محطة الاستقبال؛ يعود الموظف إلى السلة من دون فقد محتواها. */}
       {showInbox && (
-        <>
-          <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setShowInbox(false)} />
-          <aside className="fixed inset-y-0 end-0 z-50 flex w-[360px] max-w-[92vw] flex-col bg-card shadow-2xl">
-            <div className="flex items-center justify-between border-b p-4">
-              <div className="inline-flex items-center gap-2 font-extrabold">
-                <MessageCircle aria-hidden className="size-4" /> صندوق الوارد الموحّد
-              </div>
-              <button onClick={() => setShowInbox(false)} className="grid size-8 place-items-center rounded-md bg-muted hover:bg-muted/80" aria-label="إغلاق">
-                <X aria-hidden className="size-4" />
-              </button>
+        <div className="absolute inset-0 z-40 overflow-hidden bg-background p-4">
+          <div className="mb-3 flex items-center justify-between rounded-xl border bg-card p-3">
+            <div>
+              <h1 className="inline-flex items-center gap-2 font-extrabold"><MessageCircle aria-hidden className="size-4" /> رسائل وطلبات العملاء</h1>
+              <p className="text-xs text-muted-foreground">تابع رسائل واتساب والاتصالات، واربطها بالعميل عند الحاجة.</p>
             </div>
-            <div className="border-b bg-primary/5 p-3 text-xs leading-relaxed">
-              تكامل القنوات (واتساب Business / انستغرام / المتجر) <b>قيد التنفيذ</b> — هذه معاينة فقط.
-              عند الاكتمال، يُمكنك الردّ على العميل وتحويل محادثته إلى طلب خدمة من هنا مباشرة.
-            </div>
-            <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
-              <div>
-                <MessageCircle aria-hidden className="mx-auto size-10 opacity-40" />
-                <div className="mt-3 font-bold">لا محادثات بعد</div>
-                <div className="mt-1 text-xs">تظهر هنا تلقائياً عند ربط القنوات.</div>
-              </div>
-            </div>
-            <div className="border-t bg-muted/30 p-3">
-              <div className="text-[11px] text-muted-foreground">قناة الطلب الحالي</div>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {(
-                  [
-                    { v: "WALK_IN", label: "مباشر", Icon: Store },
-                    { v: "WHATSAPP", label: "واتساب", Icon: MessageCircle },
-                    { v: "INSTAGRAM", label: "انستغرام", Icon: Camera },
-                    { v: "TIKTOK", label: "تيك توك", Icon: Music },
-                    { v: "PHONE", label: "اتصال", Icon: Phone },
-                  ] as const
-                ).map((c) => (
-                  <button
-                    key={c.v}
-                    onClick={() => setChannel(c.v)}
-                    className={cn(
-                      "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-bold transition-colors",
-                      channel === c.v ? "border-primary bg-primary/10 text-primary" : "bg-card hover:bg-muted",
-                    )}
-                  >
-                    <c.Icon aria-hidden className="size-3.5" /> {c.label}
-                  </button>
-                ))}
-              </div>
-              {channel !== "WALK_IN" && (
-                <input
-                  value={channelHandle}
-                  onChange={(e) => setChannelHandle(e.target.value)}
-                  placeholder="معرّف القناة (رقم/يوزر)"
-                  className="mt-2 h-9 w-full rounded-md border bg-card px-2 text-xs"
-                  dir="ltr"
-                />
-              )}
-            </div>
-          </aside>
-        </>
+            <Button size="sm" variant="outline" onClick={() => setShowInbox(false)}>
+              <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
+            </Button>
+          </div>
+          <Inbox />
+        </div>
+      )}
+      {customerContextId != null && (
+        <Contact360Panel
+          kind="customer"
+          id={customerContextId}
+          onClose={() => setCustomerContextId(null)}
+          onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }}
+        />
       )}
     </div>
   );

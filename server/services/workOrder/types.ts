@@ -27,7 +27,7 @@ export interface CreateWorkOrderInput {
   channelHandle?: string | null;
   priority?: "LOW" | "NORMAL" | "URGENT" | null;
   deposit?: string | null;
-  paymentMethod?: "CASH" | "CARD" | null;
+  paymentMethod?: "CASH" | "CARD" | "TRANSFER" | "WALLET" | null;
   paymentReference?: string | null;
   paymentReceiptUrl?: string | null;
   hasDelivery?: boolean | null;

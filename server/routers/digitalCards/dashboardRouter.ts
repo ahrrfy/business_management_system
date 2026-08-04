@@ -28,19 +28,25 @@ export const dashboardRouter = router({
     .input(periodInput)
     .query(async ({ input, ctx }) => dashboardService.summary(requireDb(), scopeOf(ctx, input))),
 
-  providerBalances: digitalCardsAdminReadProcedure.query(async ({ ctx }) =>
-    dashboardService.providerBalances(requireDb(), scopedBranchOf(ctx)),
-  ),
+  providerBalances: digitalCardsAdminReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) =>
+      dashboardService.providerBalances(requireDb(), scopedBranchOf(ctx) ?? input?.branchId ?? null),
+    ),
 
   postpaidDues: digitalCardsAdminReadProcedure.query(async () => dashboardService.postpaidDues(requireDb())),
 
-  priceHealth: digitalCardsAdminReadProcedure.query(async ({ ctx }) =>
-    dashboardService.priceHealth(requireDb(), scopedBranchOf(ctx)),
-  ),
+  priceHealth: digitalCardsAdminReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) =>
+      dashboardService.priceHealth(requireDb(), scopedBranchOf(ctx) ?? input?.branchId ?? null),
+    ),
 
-  pendingExecutions: digitalCardsAdminReadProcedure.query(async ({ ctx }) =>
-    dashboardService.pendingExecutions(requireDb(), scopedBranchOf(ctx)),
-  ),
+  pendingExecutions: digitalCardsAdminReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) =>
+      dashboardService.pendingExecutions(requireDb(), scopedBranchOf(ctx) ?? input?.branchId ?? null),
+    ),
 
   topOfferings: digitalCardsAdminReadProcedure
     .input(periodInput.extend({ limit: z.number().int().positive().max(50).optional() }))

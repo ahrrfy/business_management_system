@@ -2,7 +2,7 @@
 // (server/routers/broadcastsRouter.ts + server/services/whatsapp/{broadcastService,segmentService}.ts)؛
 // هذا الملف يستهلكه فقط: باني شريحة (RFM + نوع عميل/فئة سعر/فرع/رصيد) + معاينة حيّة (عدد+كلفة) +
 // اختيار قالب معتمَد (MARKETING/APPROVED) + ربط متغيّراته بحقول العميل + جدولة/سرعة إرسال ⇒ حفظ
-// كمسودة، ثم إطلاق (SOD: فوق عتبة الجمهور يتحوّل PENDING_APPROVAL بانتظار مديرٍ آخر — لا استثناء
+// كمسوّدة، ثم إطلاق (SOD: فوق عتبة الجمهور يتحوّل PENDING_APPROVAL بانتظار مديرٍ آخر — لا استثناء
 // حتى لـadmin، قرار مالك موثَّق في رأس broadcastService.ts)، وطابور اعتماد مخصّص، وإيقاف/استئناف/
 // إلغاء، وتقرير نتائج (تجميع حالات المستلمين بنسب — نواة تقرير أداء الحملات الكامل في S6).
 //
@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { formatIqd } from "@/lib/money";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -59,7 +60,7 @@ type WaTemplateRow = RouterOutputs["integrations"]["templates"]["list"][number];
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline" | "success" | "warning" | "danger" | "info" | "neutral";
 
 const BROADCAST_STATUS_META: Record<string, { label: string; variant: BadgeVariant }> = {
-  DRAFT: { label: "مسودة", variant: "neutral" },
+  DRAFT: { label: "مسوّدة", variant: "neutral" },
   PENDING_APPROVAL: { label: "بانتظار الاعتماد", variant: "warning" },
   APPROVED: { label: "معتمدة", variant: "success" },
   RUNNING: { label: "قيد التشغيل", variant: "success" },
@@ -434,7 +435,7 @@ function NewBroadcastDialog({
 
   const create = trpc.broadcasts.create.useMutation({
     onSuccess: async (res) => {
-      notify.ok("حُفظت الحملة كمسودة", `الجمهور المقدَّر: ${fmtCount(res.audienceCount)} — الكلفة: ${formatIqd(res.costEstimate)}`);
+      notify.ok("حُفظت الحملة كمسوّدة", `الجمهور المقدَّر: ${fmtCount(res.audienceCount)} — الكلفة: ${formatIqd(res.costEstimate)}`);
       await utils.broadcasts.list.invalidate();
       onCreated(res.broadcastId);
     },
@@ -474,7 +475,7 @@ function NewBroadcastDialog({
         <DialogHeader>
           <DialogTitle>حملة بث واتساب جديدة</DialogTitle>
           <DialogDescription>
-            تُحفَظ كمسودة أولاً — الإطلاق خطوة منفصلة قد تتطلّب اعتماد مديرٍ آخر فوق عتبة حجم الجمهور (فصل المهام).
+            تُحفَظ كمسوّدة أولاً — الإطلاق خطوة منفصلة قد تتطلّب اعتماد مديرٍ آخر فوق عتبة حجم الجمهور (فصل المهام).
           </DialogDescription>
         </DialogHeader>
 
@@ -527,7 +528,7 @@ function NewBroadcastDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>إلغاء</Button>
           <Button onClick={submit} disabled={!canSubmit}>
-            {create.isPending ? "جارٍ الحفظ…" : "حفظ كمسودة"}
+            {create.isPending ? "جارٍ الحفظ…" : "حفظ كمسوّدة"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -778,8 +779,14 @@ function BroadcastDetailDialog({
                 size="sm"
                 variant="destructive"
                 disabled={cancel.isPending}
-                onClick={() => {
-                  if (window.confirm("إلغاء هذه الحملة نهائياً؟ لا يمكن التراجع.")) cancel.mutate({ broadcastId });
+                onClick={async () => {
+                  const ok = await confirm({
+                    variant: "danger",
+                    title: "إلغاء الحملة",
+                    description: "إلغاء هذه الحملة نهائياً؟ لا يمكن التراجع.",
+                    confirmText: "إلغاء الحملة",
+                  });
+                  if (ok) cancel.mutate({ broadcastId });
                 }}
               >
                 <XCircle aria-hidden className="size-3.5" /> إلغاء

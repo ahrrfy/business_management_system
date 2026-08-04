@@ -13,7 +13,7 @@ import {
   listConsignorProducts,
 } from "../services/consignment/noteService";
 import { createVoucher } from "../services/voucher/create";
-import { consignmentReadProcedure, consignmentWriteProcedure, reportViewerProcedure, router, treasuryManagerProcedure } from "../trpc";
+import { canSeeCostForUser, consignmentReadProcedure, consignmentWriteProcedure, reportViewerProcedure, router, treasuryManagerProcedure } from "../trpc";
 
 /**
  * بضاعة الأمانة — ش٢: سندات الإيداع/السحب/الاستبدال. راجع docs/consignment-design-2026-07-20.md.
@@ -34,6 +34,9 @@ export const consignmentRouter = router({
         consignorId: z.number().int().positive().optional(),
         noteType: z.enum(["DEPOSIT", "WITHDRAW", "EXCHANGE"]).optional(),
         branchId: z.number().int().positive().optional(),
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        q: z.string().max(50).optional(),
         limit: z.number().int().positive().max(500).default(50),
         offset: z.number().int().min(0).default(0),
       }).optional(),
@@ -60,7 +63,19 @@ export const consignmentRouter = router({
 
   consignorProducts: consignmentReadProcedure
     .input(z.object({ consignorId: z.number().int().positive(), branchId: z.number().int().positive() }))
-    .query(({ input }) => listConsignorProducts(input.consignorId, input.branchId)),
+    .query(async ({ input, ctx }) => {
+      // عزل الفرع (تدقيق ٣/٨): غير المرتفع يستعلم بفرعه فقط — مطابقةً لـlist/get (كان branchId مُتجاهَلاً).
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!elevated && Number(input.branchId) !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة بيانات فرع آخر" });
+      }
+      const rows = await listConsignorProducts(input.consignorId, input.branchId);
+      // حجب حصة المودِع (= التكلفة، §٥، تدقيق ٣/٨): warehouse/purchasing/auditor يمرّون بوّابة
+      // consignments READ لكنهم ليسوا canSeeCost — shared/permissions:173 ينصّ صراحةً أن warehouse
+      // «لا يرى الحصة». كان الإندبوينت يعيدها بلا حجب (يناقض تحصين list/get). العميل لا يستهلك share.
+      if (!canSeeCostForUser(ctx.user)) return rows.map((r) => ({ ...r, share: null as string | null }));
+      return rows;
+    }),
 
   // تقرير أرصدة بضاعة الأمانة — خلف بوّابة التقارير الحمراء (قيمة بالتكلفة/الحصة). §١١.
   balancesReport: reportViewerProcedure

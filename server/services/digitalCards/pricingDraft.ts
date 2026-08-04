@@ -18,6 +18,7 @@ import {
   priceFor,
   type DraftLineInput,
   type OfferingRules,
+  type PriceDraftScope,
   type SheetScope,
 } from "./pricingShared";
 import {
@@ -121,6 +122,7 @@ export async function getMorningSheet(db: DB, scope: SheetScope) {
           id: draftBatch.id,
           status: draftBatch.status,
           businessDate: draftBatch.businessDate,
+          changeReason: draftBatch.changeReason,
           createdBy: Number(draftBatch.createdBy),
           bigChangeApprovedBy: draftBatch.bigChangeApprovedBy != null ? Number(draftBatch.bigChangeApprovedBy) : null,
         }
@@ -154,12 +156,13 @@ export async function previewPrices(
         message: `العرض ${line.offeringId} ليس ضمن بطاقات هذا المزوّد الفعّالة في هذا الفرع`,
       });
     }
-    const priced = priceFor(rules, line.providerShare, false);
+    const priced = priceFor(rules, line.providerShare, line.sellPrice, false);
     return {
       offeringId: line.offeringId,
       providerShare: priced.providerShare,
       sellPrice: priced.sellPrice,
       marginAmount: priced.marginAmount,
+      belowCost: money(priced.marginAmount).lt(0),
       belowMinimum: money(priced.marginAmount).lt(money(rules.minimumMargin)),
       minimumMargin: rules.minimumMargin,
     };
@@ -171,7 +174,7 @@ export async function previewPrices(
 /** يعيد مسودّة اليوم إن وُجدت، وإلا ينشئها. القيد الفريد يحسم أي سباق. */
 export async function createOrGetDraft(
   tx: Tx,
-  scope: SheetScope,
+  scope: PriceDraftScope,
   actor: Actor,
 ): Promise<{ batchId: number; created: boolean }> {
   await assertScopeExists(tx, scope.branchId, scope.providerId);
@@ -188,12 +191,21 @@ export async function createOrGetDraft(
       ),
     )
     .limit(1);
-  if (existing) return { batchId: Number(existing.id), created: false };
+  if (existing) {
+    if (scope.changeReason !== undefined) {
+      await tx
+        .update(digitalPriceBatches)
+        .set({ changeReason: scope.changeReason?.trim() || null })
+        .where(eq(digitalPriceBatches.id, existing.id));
+    }
+    return { batchId: Number(existing.id), created: false };
+  }
 
   const res = await tx.insert(digitalPriceBatches).values({
     branchId: scope.branchId,
     providerId: scope.providerId,
     businessDate: scope.businessDate,
+    changeReason: scope.changeReason?.trim() || null,
     status: "DRAFT",
     createdBy: actor.userId,
   });
@@ -206,7 +218,7 @@ export async function createOrGetDraft(
 
 export async function copyPrevious(
   tx: Tx,
-  scope: SheetScope,
+  scope: PriceDraftScope,
   actor: Actor,
 ): Promise<{ batchId: number; copiedCount: number; skippedCount: number }> {
   const { batchId } = await createOrGetDraft(tx, scope, actor);
@@ -219,6 +231,7 @@ export async function copyPrevious(
     .select({
       offeringId: digitalCurrentPrices.offeringId,
       providerShare: digitalPriceVersions.providerShare,
+      sellPrice: digitalPriceVersions.sellPrice,
     })
     .from(digitalCurrentPrices)
     .innerJoin(digitalPriceVersions, eq(digitalCurrentPrices.priceVersionId, digitalPriceVersions.id))
@@ -228,12 +241,14 @@ export async function copyPrevious(
         inArray(digitalCurrentPrices.offeringId, offerings.map((o) => o.offeringId)),
       ),
     );
-  const shareByOffering = new Map(live.map((l) => [Number(l.offeringId), l.providerShare]));
+  const priceByOffering = new Map(live.map((l) => [Number(l.offeringId), l]));
 
   const lines: DraftLineInput[] = [];
   for (const o of offerings) {
-    const share = shareByOffering.get(o.offeringId);
-    if (share != null) lines.push({ offeringId: o.offeringId, providerShare: share });
+    const current = priceByOffering.get(o.offeringId);
+    if (current != null) {
+      lines.push({ offeringId: o.offeringId, providerShare: current.providerShare, sellPrice: current.sellPrice });
+    }
   }
 
   // النسخ لا يفرض الحدّ الأدنى: قد تكون قاعدة الربح تغيّرت بعد آخر نشر، فالمدير يراجع قبل النشر.
@@ -269,17 +284,25 @@ async function writeDraftLines(
   // نفسها؛ فمسحٌ غير مشروط كان يُبطل الاعتماد لحظةَ استعماله ⇒ نشرٌ مستحيل (أمسكته الجولة
   // البصرية). إعادةُ حفظٍ مطابقة ليست تعديلاً. المقارنة بـdecimal لا بالنصّ ("20000" = "20000.00").
   const existing = await tx
-    .select({ offeringId: digitalPriceVersions.offeringId, providerShare: digitalPriceVersions.providerShare })
+    .select({
+      offeringId: digitalPriceVersions.offeringId,
+      providerShare: digitalPriceVersions.providerShare,
+      sellPrice: digitalPriceVersions.sellPrice,
+    })
     .from(digitalPriceVersions)
     .where(eq(digitalPriceVersions.batchId, batchId));
-  const existingByOffering = new Map(existing.map((e) => [Number(e.offeringId), e.providerShare]));
-  const sharesChanged =
+  const existingByOffering = new Map(existing.map((e) => [Number(e.offeringId), e]));
+  const pricesChanged =
     lines.length !== existing.length ||
     lines.some((l) => {
       const prev = existingByOffering.get(l.offeringId);
-      return prev == null || !money(prev).eq(money(l.providerShare));
+      return (
+        prev == null ||
+        !money(prev.providerShare).eq(money(l.providerShare)) ||
+        (l.sellPrice != null && !money(prev.sellPrice).eq(money(l.sellPrice)))
+      );
     });
-  if (sharesChanged) {
+  if (pricesChanged) {
     await tx
       .update(digitalPriceBatches)
       .set({ bigChangeApprovedBy: null, bigChangeApprovedAt: null })
@@ -297,7 +320,7 @@ async function writeDraftLines(
         message: `العرض ${line.offeringId} ليس ضمن بطاقات هذا المزوّد الفعّالة في هذا الفرع`,
       });
     }
-    const priced = priceFor(rules, line.providerShare, enforceMinimum);
+    const priced = priceFor(rules, line.providerShare, line.sellPrice, enforceMinimum);
 
     // upsert على القيد الفريد (batchId, offeringId) — إعادة الإدخال تُحدِّث ولا تُكرّر.
     await tx

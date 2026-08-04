@@ -1,6 +1,6 @@
 // قراءة المهام: قائمة مُرقَّمة (keyset) + تفاصيل مهمة + قائمة الموظفين القابلين للإسناد.
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import { customers, taskEvents, tasks, users } from "../../../drizzle/schema";
 import { paginateKeyset } from "../../lib/paginateKeyset";
 import { escLike } from "../../lib/sqlLike";
@@ -9,6 +9,7 @@ import { isTaskVisibleToOwnerScope } from "./helpers";
 
 export type TaskStatus = "NEW" | "IN_PROGRESS" | "WAITING_CUSTOMER" | "RESOLVED" | "CANCELLED";
 export type TaskKindFilter = "SERVICE_REQUEST" | "SUPPORT" | "INQUIRY" | "FOLLOW_UP" | "INTERNAL";
+export type TaskPriorityFilter = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 
 const CLOSED_STATUSES: readonly TaskStatus[] = ["RESOLVED", "CANCELLED"];
 
@@ -23,10 +24,14 @@ export interface TaskListCtx {
 export interface ListTasksFilters {
   status?: TaskStatus;
   kind?: TaskKindFilter;
+  priority?: TaskPriorityFilter;
   assignedTo?: number;
   /** فرع صريح — يُستشار فقط حين scopedBranchId=null (مدير/أدمن). */
   branchId?: number | null;
   overdue?: boolean;
+  /** مدى تاريخ الإنشاء (YYYY-MM-DD شامل الطرفين) — نمط workOrderRouter.buildWoFilterConds. */
+  from?: string;
+  to?: string;
   q?: string;
   cursor?: number;
   limit?: number;
@@ -110,7 +115,20 @@ export async function listTasks(ctx: TaskListCtx, filters: ListTasksFilters = {}
 
   if (filters.status) conds.push(eq(tasks.taskStatus, filters.status));
   if (filters.kind) conds.push(eq(tasks.taskKind, filters.kind));
+  if (filters.priority) conds.push(eq(tasks.priority, filters.priority));
   if (filters.assignedTo != null) conds.push(eq(tasks.assignedTo, filters.assignedTo));
+  if (filters.from) {
+    const from = new Date(filters.from);
+    if (!isNaN(from.getTime())) conds.push(gte(tasks.createdAt, from));
+  }
+  if (filters.to) {
+    const to = new Date(filters.to);
+    if (!isNaN(to.getTime())) {
+      // الطرف الأعلى شامل ⇒ حدّ علوي حصري ببداية اليوم التالي (نمط workOrderRouter).
+      const next = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate() + 1));
+      conds.push(lt(tasks.createdAt, next));
+    }
+  }
   if (filters.q?.trim()) {
     const pat = `%${escLike(filters.q.trim())}%`;
     conds.push(

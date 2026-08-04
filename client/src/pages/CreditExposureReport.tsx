@@ -29,7 +29,7 @@ const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const NOTE =
-  "الرصيد الجاري والمتأخّر مشتقّان من الفواتير غير المسدّدة + الرصيد الافتتاحي. تصنيف الخطر: عالٍ = تجاوز الحدّ أو ذمم +٩٠ يوم؛ متوسّط = ٦١–٩٠ يوم أو استخدام >٨٠٪ من الحدّ.";
+  "الرصيد الحالي والمتأخّر مشتقّان من الفواتير غير المسدّدة + الرصيد الافتتاحي. تصنيف الخطر: عالٍ = تجاوز الحدّ أو ذمم +٩٠ يوم؛ متوسّط = ٦١–٩٠ يوم أو استخدام >٨٠٪ من الحدّ.";
 
 function fmtDay(d: string | null): string {
   if (!d) return "—";
@@ -63,7 +63,7 @@ export default function CreditExposureReport() {
   function reminderMessage(r: Row): string {
     return [
       `مرحباً ${r.customerName}،`,
-      `نذكّركم بأنّ الرصيد المستحقّ لدى المكتبة العربية للطباعة والقرطاسية هو ${formatIqd(r.currentBalance)}.`,
+      `نذكّركم بأنّ رصيدكم المستحقّ للمكتبة العربية للطباعة والقرطاسية (لنا عليكم) هو ${formatIqd(r.currentBalance)}.`,
       r.overdueAmount && Number(r.overdueAmount) > 0 ? `منه متأخّر: ${formatIqd(r.overdueAmount)}.` : "",
       "نرجو ترتيب السداد في أقرب وقت ممكن. شكراً لتعاونكم.",
     ].filter(Boolean).join("\n");

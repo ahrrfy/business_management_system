@@ -6,14 +6,14 @@
 // (الراوتر + اختبارا digitalCardsPricing/digitalCardsBigChange) بلا أي تعديل.
 //
 // خريطة الوحدات:
-//   pricingShared     — أنواع مشتركة (SheetScope/DraftLineInput) + أدوات أساس (activeOfferings،
-//                        priceFor، lockBatch، assertScopeExists، auditLog).
+//   pricingShared     — أنواع مشتركة (SheetScope/PriceDraftScope/DraftLineInput) + أدوات أساس
+//                        (activeOfferings، priceFor، lockBatch، assertScopeExists، auditLog).
 //   pricingBigChange  — كشف «التغيير الكبير» (§٧.١): العتبة، المقارنة، الحصص النافذة.
 //   pricingDraft      — دورة حياة المسودّة: الكشف، المعاينة، الإنشاء/النسخ، الحفظ، الاعتماد، الإلغاء.
 //   pricingPublish    — النشر الذرّي (١١ خطوة، §٧.٤).
 //   pricingMismatch   — بلاغ «السعر لدى الجهاز مختلف» (§٧.٥) واعتماده/رفضه.
 export { BIG_CHANGE_THRESHOLD_PERCENT, type BigChangeLine } from "./pricingBigChange";
-export type { SheetScope, DraftLineInput } from "./pricingShared";
+export type { SheetScope, PriceDraftScope, DraftLineInput } from "./pricingShared";
 export {
   getMorningSheet,
   previewPrices,

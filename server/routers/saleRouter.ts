@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, isNotNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "@shared/searchNormalize";
@@ -146,7 +146,12 @@ const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح 
 const lineSchema = z.object({
   variantId: z.number().int().positive(),
   productUnitId: z.number().int().positive(),
-  quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة (موجبة، ثلاث منازل)"),
+  // تدقيق ٣/٨: سقف علويّ (١ مليون) — بلا حدّ، كمية بـ٢٠ خانة تفيض MAX_SAFE_INTEGER/BIGINT بعد
+  // ×conversionFactor في convertToBaseQuantity (اتساقٌ مع سقف openingStock). أطول من ٧ خانات صحيحة مرفوض.
+  quantity: z
+    .string()
+    .regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة (موجبة، ثلاث منازل)")
+    .refine((s) => Number(s) > 0 && Number(s) <= 1_000_000, "الكمية خارج المدى المسموح"),
   unitPriceOverride: nonNegMoneyString.optional(),
   discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
   discountAmount: nonNegMoneyString.optional(),
@@ -160,15 +165,27 @@ const lineSchema = z.object({
 // إن مُرّر cursor، يُقيَّد `id < cursor` ويُتجاهل offset؛ وإلّا يبقى OFFSET للتوافق.
 const salesListInput = z
   .object({
-    limit: z.number().default(50),
-    offset: z.number().default(0),
+    // تدقيق ٣/٨: سقف صريح — كانت `z.number()` عارية تصل `.limit()` بلا قصّ (paginateKeyset لا يقصّها)
+    // ⇒ `limit: 1e8` يحاول جلب ملايين الصفوف للذاكرة (DoS)، وقيمة سالبة/عشرية ⇒ خطأ MySQL/500.
+    limit: z.number().int().positive().max(500).default(50),
+    offset: z.number().int().min(0).max(1_000_000).default(0),
     cursor: z.number().int().positive().optional(),
     // فلترة خادمية بالفترة (invoiceDate) والحالة والعميل.
     from: ymd.optional(),
     to: ymd.optional(),
     status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).optional(),
+    sourceType: z.enum(["POS", "ONLINE", "ORDER", "WORKORDER"]).optional(),
+    balanceState: z.enum(["DEPOSIT_DUE", "OUTSTANDING", "UNPAID", "SETTLED"]).optional(),
     customerId: z.number().int().positive().optional(),
     salespersonId: z.number().int().positive().optional(),
+    // فلترة بطريقة الدفع (invoices.paymentMethod — نفس مصدر عمود «طريقة الدفع» في الشاشة).
+    // الحاجة التشغيلية: مطابقة يوم البطاقات مع كشف جهاز الدفع تتطلّب حصر فواتير CARD.
+    paymentMethod: method.optional(),
+    // فرع صريح للمرتفعين (admin/manager عابرَي الفروع) — يُفعَّل فقط حين scopedBranchId فارغ؛
+    // غير المرتفع يبقى محصوراً بفرعه مهما أرسل (انظر buildSalesListConds).
+    branchId: z.number().int().positive().optional(),
+    // فلترة بفواتير وردية بعينها — لتحقيق فروقات الوردية النقدية من سجلّ الورديات (Shifts.tsx).
+    shiftId: z.number().int().positive().optional(),
     // بحث نصّي خادميّ: رقم الفاتورة أو اسم العميل. كان البحث محلّياً على الصفحة المُحمَّلة وحدها
     // (سقف ٢٠٠) ⇒ فاتورة أقدم تُعطي «لا نتائج» وهي موجودة. خادميّ ⇒ يطال كل المطابق للفلتر.
     q: z.string().trim().min(1).optional(),
@@ -182,13 +199,34 @@ type SalesListInput = z.infer<typeof salesListInput>;
 export function buildSalesListConds(input: SalesListInput, scopedBranchId: number | null, scopedOwnerId: number | null = null) {
   const conds = [];
   if (scopedBranchId) conds.push(eq(invoices.branchId, scopedBranchId));
+  // فلتر الفرع الصريح — else حتماً: العزل الحاكم (scopedBranchId) مقدَّم دائماً، فلا يستطيع
+  // غير المرتفع توسيع نطاقه بإرسال branchId مغاير (يُتجاهَل مدخله بصمت ويبقى محصوراً بفرعه).
+  else if (input?.branchId) conds.push(eq(invoices.branchId, input.branchId));
   // عزل الموظف: غير المرتفعين يرون فواتيرهم فقط (createdBy = هم). admin/manager = null = الكل.
   if (scopedOwnerId != null) conds.push(eq(invoices.createdBy, scopedOwnerId));
   // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
   if (input?.from) conds.push(gte(invoices.invoiceDate, localDayStart(input.from)));
   if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
   if (input?.status) conds.push(eq(invoices.status, input.status));
+  if (input?.sourceType) conds.push(eq(invoices.sourceType, input.sourceType));
+  if (input?.paymentMethod) conds.push(eq(invoices.paymentMethod, input.paymentMethod));
+  if (input?.balanceState === "DEPOSIT_DUE") {
+    conds.push(inArray(invoices.sourceType, ["ORDER", "WORKORDER"]));
+    conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+  } else if (input?.balanceState === "OUTSTANDING") {
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  } else if (input?.balanceState === "UNPAID") {
+    conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) = 0`);
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  } else if (input?.balanceState === "SETTLED") {
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) <= 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  }
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
+  if (input?.shiftId) conds.push(eq(invoices.shiftId, input.shiftId));
   // المدير/الأدمن يستطيعان اختيار موظف؛ الموظف العادي يبقى مُجبَراً على نفسه.
   if (scopedOwnerId == null && input?.salespersonId) conds.push(eq(invoices.createdBy, input.salespersonId));
   if (input?.q) {
@@ -219,7 +257,11 @@ export const saleRouter = router({
         lines: z.array(lineSchema).min(1),
         invoiceDiscount: z.string().optional(),
         taxRatePercent: z.string().optional(),
-        payment: z.object({ amount: positiveMoneyString, method }).optional(),
+        payment: z.object({
+          amount: positiveMoneyString,
+          method,
+          reference: z.string().trim().min(1).max(100).optional(),
+        }).optional(),
         // dueDate للبيع الآجل (YYYY-MM-DD) — يُحفظ على invoices.dueDate ليظهر في AR aging
         // ولينبّه على الفواتير المتأخرة. اختياري؛ إن غاب فلا تاريخ استحقاق محدّد.
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
@@ -302,9 +344,13 @@ export const saleRouter = router({
   pay: salesCashierProcedure
     .input(z.object({
       // SALES-04: المبلغ مُقيّد موجباً بـ٢ منازل (كان z.string() ⇒ يَقبل أُسّاً/أكثر من منزلتين).
-      invoiceId: z.number().int().positive(), amount: positiveMoneyString, method, shiftId: z.number().int().positive().optional(),
+      invoiceId: z.number().int().positive(), amount: positiveMoneyString, method, reference: z.string().trim().max(100).nullish(), shiftId: z.number().int().positive().optional(),
       // idempotency: نفس المفتاح ⇒ دفعة واحدة (لا إيصال/قيد PAYMENT_IN/خصم AR مزدوج عند النقر المزدوج).
       clientRequestId: z.string().min(1).max(80).optional(),
+    }).superRefine((input, ctx) => {
+      if (input.method !== "CASH" && !input.reference?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reference"], message: "مرجع عملية البطاقة/التحويل مطلوب" });
+      }
     }))
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المدير يُرفض دفعه على فاتورة فرع آخر (منع IDOR).
@@ -363,9 +409,12 @@ export const saleRouter = router({
             id: invoices.id,
             invoiceNumber: invoices.invoiceNumber,
             sourceType: invoices.sourceType,
+            // branchId يُعرَض في عمود «الفرع» لدى المرتفعين حين الفلتر «كل الفروع» (التسمية من branches.list واجهياً).
+            branchId: invoices.branchId,
             invoiceDate: invoices.invoiceDate,
             total: invoices.total,
             paidAmount: invoices.paidAmount,
+            returnedTotal: invoices.returnedTotal,
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
             customerName: customers.name,
@@ -404,9 +453,12 @@ export const saleRouter = router({
             id: invoices.id,
             invoiceNumber: invoices.invoiceNumber,
             sourceType: invoices.sourceType,
+            // branchId يُعرَض في عمود «الفرع» لدى المرتفعين حين الفلتر «كل الفروع» (التسمية من branches.list واجهياً).
+            branchId: invoices.branchId,
             invoiceDate: invoices.invoiceDate,
             total: invoices.total,
             paidAmount: invoices.paidAmount,
+            returnedTotal: invoices.returnedTotal,
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
             customerName: customers.name,
@@ -559,6 +611,7 @@ export const saleRouter = router({
         paymentMethod: receipts.paymentMethod,
         status: receipts.status,
         createdAt: receipts.createdAt,
+        referenceNumber: receipts.referenceNumber,
         // attachment-upload (٥/٧): سند مربوط بهذه الفاتورة (اختياري) — رقمه + مرفقه إن وُجدا.
         voucherNumber: receipts.voucherNumber,
         attachmentUrl: receipts.attachmentUrl,

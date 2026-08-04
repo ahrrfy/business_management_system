@@ -102,6 +102,7 @@ export default function InvoiceDetail() {
 
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [payReference, setPayReference] = useState("");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [printingReceipt, setPrintingReceipt] = useState(false);
@@ -126,6 +127,7 @@ export default function InvoiceDetail() {
         utils.sales.list.invalidate(),
       ]);
       setClientRequestId(crypto.randomUUID()); // مفتاح جديد للدفعة التالية
+      setPayReference("");
     },
     onError: (e) => { setError(e.message); setDone(""); },
   });
@@ -185,6 +187,7 @@ export default function InvoiceDetail() {
     const amt = D(payAmount || "0");
     if (amt.lte(0)) return setError("أدخل مبلغاً موجباً.");
     if (amt.gt(remaining)) return setError(`المبلغ يتجاوز المتبقّي (${fmt(remaining.toFixed(2))}).`);
+    if (payMethod !== "CASH" && !payReference.trim()) return setError("أدخل مرجع عملية البطاقة أو التحويل.");
     const methodLabel = paymentMethodLabel(payMethod);
     if (
       !(await confirm({
@@ -195,7 +198,7 @@ export default function InvoiceDetail() {
       }))
     )
       return;
-    pay.mutate({ invoiceId, amount: amt.toFixed(2), method: payMethod, clientRequestId });
+    pay.mutate({ invoiceId, amount: amt.toFixed(2), method: payMethod, reference: payMethod === "CASH" ? null : payReference.trim(), clientRequestId });
   }
 
   async function printApprovedA4() {
@@ -317,7 +320,7 @@ export default function InvoiceDetail() {
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={() => void printApprovedA4()}>
                 <FileText aria-hidden className="size-4" />
-                فاتورة الزبون
+                فاتورة العميل
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => printWarehouseSlip()}>
                 <Package aria-hidden className="size-4" />
@@ -360,7 +363,7 @@ export default function InvoiceDetail() {
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
               {data.customerId && (
                 <div className="col-span-2 space-y-0.5">
-                  <div className="text-xs text-muted-foreground">ذمة العميل الحالية</div>
+                  <div className="text-xs text-muted-foreground">الرصيد الحالي للعميل</div>
                   <div className="font-medium tabular-nums" dir="ltr">
                     <CopyInline value={data.customerBalance ?? "0"} display={fmt(data.customerBalance ?? "0")} mono={false} />
                   </div>
@@ -511,13 +514,14 @@ export default function InvoiceDetail() {
                     <td className="px-3 py-2 text-right tabular-nums"><CopyInline value={p.amount} display={fmt(p.amount)} /></td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">{PAY_STATUS[p.status] ?? p.status}</td>
                     <td className="px-3 py-2 text-xs">
-                      {p.voucherNumber && <span className="text-muted-foreground">{p.voucherNumber}</span>}
+                      {p.referenceNumber && <span className="font-mono text-muted-foreground" dir="ltr">{p.referenceNumber}</span>}
+                      {p.voucherNumber && <span className="text-muted-foreground">{p.referenceNumber ? ` — ${p.voucherNumber}` : p.voucherNumber}</span>}
                       {p.attachmentUrl && (
                         <a href={p.attachmentUrl} target="_blank" rel="noreferrer" title="فتح المُرفق" className="ms-1 inline-block">
                           <Paperclip aria-hidden className="size-3.5 text-emerald-700 inline" />
                         </a>
                       )}
-                      {!p.voucherNumber && !p.attachmentUrl && "—"}
+                      {!p.referenceNumber && !p.voucherNumber && !p.attachmentUrl && "—"}
                     </td>
                   </tr>
                 ))}
@@ -544,7 +548,13 @@ export default function InvoiceDetail() {
                 {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
               </select>
             </div>
-            <Button onClick={submit} disabled={pay.isPending}>{pay.isPending ? "جارٍ…" : "تسجيل الدفعة"}</Button>
+            {payMethod !== "CASH" && (
+              <div className="space-y-1">
+                <Label>مرجع العملية</Label>
+                <Input value={payReference} onChange={(e) => setPayReference(e.target.value)} placeholder="رقم موافقة البطاقة أو التحويل" />
+              </div>
+            )}
+            <Button onClick={submit} disabled={pay.isPending || (payMethod !== "CASH" && !payReference.trim())}>{pay.isPending ? "جارٍ…" : "تسجيل الدفعة"}</Button>
           </CardContent>
         </Card>
       )}

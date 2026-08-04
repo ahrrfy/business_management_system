@@ -1,7 +1,7 @@
 // تسليم التكليف (finish) — تنتقل الجلسة آلياً لـREVIEW عند تسليم آخر تكليف.
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
-import { stocktakeAssignments, stocktakeSessions } from "../../../drizzle/schema";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { stocktakeAssignments, stocktakeCounts, stocktakeItems, stocktakeSessions } from "../../../drizzle/schema";
 import { withTx } from "../tx";
 import type { PortalIdentity } from "./identity";
 import { SESSION_UNAVAILABLE_MSG, IDENTITY_EXPIRED_MSG, COUNTING_ENDED_MSG } from "./shared";
@@ -46,6 +46,23 @@ export async function finishAssignment(identity: PortalIdentity): Promise<Finish
       throw new TRPCError({ code: "BAD_REQUEST", message: COUNTING_ENDED_MSG });
     }
 
+    // The shared session only moves to review after every scoped product has a
+    // first/recount value. Worker hand-off alone must never close it early.
+    const [{ total }] = await tx
+      .select({ total: sql<number>`COUNT(*)` })
+      .from(stocktakeItems)
+      .where(eq(stocktakeItems.sessionId, session.id));
+    const [{ counted }] = await tx
+      .select({ counted: sql<number>`COUNT(DISTINCT ${stocktakeCounts.variantId})` })
+      .from(stocktakeCounts)
+      .where(and(eq(stocktakeCounts.sessionId, session.id), inArray(stocktakeCounts.kind, ["FIRST", "RECOUNT"])));
+    if (Number(counted) < Number(total)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `لا يمكن رفع الجرد للمراجعة قبل عدّ كل المنتجات (${Number(counted)}/${Number(total)})`,
+      });
+    }
+
     const now = new Date();
     await tx
       .update(stocktakeAssignments)
@@ -53,16 +70,15 @@ export async function finishAssignment(identity: PortalIdentity): Promise<Finish
       .where(eq(stocktakeAssignments.id, me.id));
 
     // آخر تكليف يُسلَّم ⇒ الجلسة تنتقل آلياً لقيد المراجعة.
-    const allSubmitted = assignments.every(
-      (a) => Number(a.id) === Number(me.id) || a.status === "SUBMITTED"
-    );
-    if (allSubmitted) {
-      await tx
-        .update(stocktakeSessions)
-        .set({ status: "REVIEW", submittedAt: now })
-        .where(eq(stocktakeSessions.id, session.id));
-    }
+    await tx
+      .update(stocktakeAssignments)
+      .set({ status: "SUBMITTED", submittedAt: now, lastActivityAt: now })
+      .where(and(eq(stocktakeAssignments.sessionId, session.id), eq(stocktakeAssignments.status, "ACTIVE")));
+    await tx
+      .update(stocktakeSessions)
+      .set({ status: "REVIEW", submittedAt: now })
+      .where(eq(stocktakeSessions.id, session.id));
 
-    return { ok: true as const, sessionMovedToReview: allSubmitted, alreadySubmitted: false };
+    return { ok: true as const, sessionMovedToReview: true, alreadySubmitted: false };
   });
 }

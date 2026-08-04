@@ -126,16 +126,16 @@ describe("inventory — المدير يَقرأ كلَّ الفروع (قراء�
 });
 
 // ─── (2) assignableStaff: لا تَكشف admin/manager ─────────────────────
-describe("workOrders.assignableStaff — لا تَكشف admin/manager للكاشير", () => {
-  it("القائمة تَستثني admin/manager وتَحوي print_operator/cashier/warehouse فقط", async () => {
+describe("workOrders.assignableStaff — فنيو المطبعة فقط", () => {
+  it("القائمة لا تعرض الحسابات الإدارية أو موظفي البيع والكاشير", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(4))); // كاشير
     const staff = await caller.workOrders.assignableStaff();
     const roles = staff.map((s) => s.role);
     expect(roles).not.toContain("admin");
     expect(roles).not.toContain("manager");
-    // print_operator و cashier موجودان (من seed).
+    expect(roles).not.toContain("cashier");
+    expect(roles).not.toContain("warehouse");
     expect(roles).toContain("print_operator");
-    expect(roles).toContain("cashier");
   });
 });
 

@@ -19,10 +19,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { exportRows } from "@/lib/export";
+import { confirm } from "@/lib/confirm";
+import { notify } from "@/lib/notify";
 
 type Severity = "blocker" | "warning" | "info";
 type LensCode = "L1" | "L2" | "L3" | "L4" | "L5" | "L6";
+type Finding = RouterOutputs["catalogAnomalies"]["list"]["findings"][number];
 
 const LENS_LABELS: Record<LensCode, string> = {
   L1: "L1 · تكلفة ≥ ٥× بيع",
@@ -41,24 +45,64 @@ const SEVERITY_BADGE: Record<Severity, { className: string; label: string; icon:
   info: { className: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30", label: "إخبار", icon: <CheckCircle2 className="size-3" aria-hidden /> },
 };
 
+const PAGE_SIZE = 200;
+
 export default function CatalogAnomalies() {
   const [includeOverridden, setIncludeOverridden] = useState(false);
   const [codeFilter, setCodeFilter] = useState<LensCode | "">("");
   const [sevFilter, setSevFilter] = useState<Severity | "">("");
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
   const [markDialog, setMarkDialog] = useState<{
     variantId: number; code: LensCode; kind: "INTENTIONAL" | "IGNORED"; productLabel: string;
   } | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const utils = trpc.useUtils();
   const meQ = trpc.auth.me.useQuery();
   const canWrite = meQ.data?.role === "admin" || meQ.data?.role === "manager";
-  const listQ = trpc.catalogAnomalies.list.useQuery({
+  const filterInput = {
     includeOverridden,
     codes: codeFilter ? [codeFilter] : undefined,
     severities: sevFilter ? [sevFilter] : undefined,
     limitPerLens: 200,
+  };
+  const listQ = trpc.catalogAnomalies.list.useQuery({
+    ...filterInput,
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
   }, { staleTime: 60 * 1000 });
+  const total = listQ.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  /** تصدير كامل — كل صفحات النتائج المطابقة للفلاتر الحاليّة (لا الصفحة المعروضة فقط). */
+  async function exportAll() {
+    if (total === 0 || exporting) return;
+    setExporting(true);
+    try {
+      const rows: Finding[] = [];
+      let offset = 0;
+      for (;;) {
+        const res = await utils.catalogAnomalies.list.fetch({ ...filterInput, limit: 500, offset });
+        rows.push(...res.findings);
+        offset += res.findings.length;
+        if (res.findings.length === 0 || offset >= res.total) break;
+      }
+      exportRows(rows, {
+        filename: "تدقيق-شذوذ-الكتالوج",
+        columns: [
+          { key: "code", header: "العدسة", map: (f) => LENS_LABELS[f.code as LensCode] ?? f.code },
+          { key: "severity", header: "الحدّة", map: (f) => SEVERITY_BADGE[f.severity as Severity]?.label ?? f.severity },
+          { key: "productName", header: "المنتج" },
+          { key: "sku", header: "SKU" },
+          { key: "note", header: "تفاصيل" },
+          { key: "status", header: "الحالة", map: (f) => (f.override ? (f.override.kind === "INTENTIONAL" ? "قصديّ" : "متجاهَل") : "نشط") },
+        ],
+      });
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const markIntentional = trpc.catalogAnomalies.markIntentional.useMutation({
     onSuccess: () => { utils.catalogAnomalies.list.invalidate(); setMarkDialog(null); },
@@ -101,33 +145,56 @@ export default function CatalogAnomalies() {
       <Card>
         <CardContent className="p-3 flex flex-wrap items-center gap-3">
           <Input
-            placeholder="بحث بالمنتج/SKU/vid…"
+            placeholder="بحث بالمنتج/SKU/رقم المتغيّر (في الصفحة المعروضة)…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="max-w-xs h-8"
           />
-          <select value={codeFilter} onChange={(e) => setCodeFilter(e.target.value as LensCode | "")} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
+          <select value={codeFilter} onChange={(e) => { setCodeFilter(e.target.value as LensCode | ""); setPage(0); }} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
             <option value="">كل العدسات</option>
             {(Object.keys(LENS_LABELS) as LensCode[]).map((k) => (
               <option key={k} value={k}>{LENS_LABELS[k]}</option>
             ))}
           </select>
-          <select value={sevFilter} onChange={(e) => setSevFilter(e.target.value as Severity | "")} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
+          <select value={sevFilter} onChange={(e) => { setSevFilter(e.target.value as Severity | ""); setPage(0); }} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
             <option value="">كل الحدّات</option>
             <option value="blocker">حاجز</option>
             <option value="warning">تحذير</option>
             <option value="info">إخبار</option>
           </select>
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-            <input type="checkbox" checked={includeOverridden} onChange={(e) => setIncludeOverridden(e.target.checked)} />
+            <input type="checkbox" checked={includeOverridden} onChange={(e) => { setIncludeOverridden(e.target.checked); setPage(0); }} />
             تضمين المستثنى
           </label>
+          <Button variant="outline" size="sm" className="me-auto h-8" disabled={total === 0 || exporting} onClick={() => void exportAll()}>
+            {exporting ? "جارٍ التحضير…" : "تصدير Excel (الكل)"}
+          </Button>
         </CardContent>
       </Card>
 
+      {/* لافتة اقتطاع: عدسة بلغ عدد نتائجها الخام سقف limitPerLens ⇒ قد توجد نتائج أخرى لم تُكتشف من المصدر. */}
+      {(listQ.data?.truncatedLenses?.length ?? 0) > 0 && (
+        <div role="status" className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]">
+          <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />
+          <span>
+            العدسات {listQ.data!.truncatedLenses.map((c) => LENS_LABELS[c as LensCode] ?? c).join("، ")} بلغت سقف الكشف
+            (٢٠٠) — قد توجد نتائج إضافية غير ظاهرة. ضيّق الفلتر بعدسة واحدة لرؤية الكل.
+          </span>
+        </div>
+      )}
+
       {/* الجدول */}
       <Card>
-        <CardHeader><CardTitle className="text-base">النتائج ({filtered.length})</CardTitle></CardHeader>
+        <CardHeader className="flex-row items-center justify-between gap-3">
+          <CardTitle className="text-base">النتائج ({filtered.length} من {total})</CardTitle>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">صفحة {page + 1} من {totalPages}</span>
+              <Button variant="outline" size="sm" disabled={page === 0 || listQ.isFetching} onClick={() => setPage((p) => Math.max(0, p - 1))}>السابق →</Button>
+              <Button variant="outline" size="sm" disabled={page + 1 >= totalPages || listQ.isFetching} onClick={() => setPage((p) => p + 1)}>← التالي</Button>
+            </div>
+          )}
+        </CardHeader>
         <CardContent>
           {listQ.isLoading ? <LoadingState /> : filtered.length === 0 ? (
             <div className="text-center py-8 text-sm text-muted-foreground">
@@ -243,7 +310,9 @@ function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
     onSuccess: () => {
       utils.catalogAnomalies.changeLog.invalidate();
       utils.catalogAnomalies.list.invalidate();
+      notify.ok("استُعيدت التكلفة السابقة");
     },
+    onError: (e) => notify.err(e),
   });
   return (
     <Card>
@@ -287,18 +356,24 @@ function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
                   return (
                     <tr key={row.id} className="border-b hover:bg-muted/30">
                       <td className="p-2 text-xs tabular-nums" dir="ltr">{new Date(row.createdAt).toLocaleString("ar-IQ")}</td>
-                      <td className="p-2 max-w-xs truncate" title={row.productName ?? ""}>{row.productName ?? `vid=${row.variantId}`} <span className="text-[10px] text-muted-foreground">{row.sku ?? ""}</span></td>
+                      <td className="p-2 max-w-xs truncate" title={row.productName ?? ""}>{row.productName ?? `رقم المتغيّر ${row.variantId}`} <span className="text-[10px] text-muted-foreground">{row.sku ?? ""}</span></td>
                       <td className="p-2 text-xs tabular-nums" dir="ltr">
                         {oldV.toLocaleString("en-US")} → {newV.toLocaleString("en-US")} <span className="text-muted-foreground">({ratio.toFixed(2)}×)</span>
                       </td>
-                      <td className="p-2 text-xs">{row.severity}</td>
+                      <td className="p-2 text-xs">{SEVERITY_BADGE[row.severity as Severity]?.label ?? row.severity}</td>
                       <td className="p-2 text-xs text-muted-foreground">{row.actorName ?? "—"}</td>
                       <td className="p-2 text-xs">
                         {row.reverted ? (
                           <Badge variant="secondary" className="text-[10px]">مستعادٌ سابقاً</Badge>
                         ) : canWrite ? (
-                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => {
-                            if (confirm(`استعادة التكلفة إلى ${oldV.toLocaleString("en-US")} د.ع؟`)) revert.mutate({ logId: row.id });
+                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={async () => {
+                            const ok = await confirm({
+                              variant: "warning",
+                              title: "استعادة تكلفة سابقة",
+                              description: `استعادة التكلفة إلى ${oldV.toLocaleString("en-US")} د.ع؟`,
+                              confirmText: "استعادة",
+                            });
+                            if (ok) revert.mutate({ logId: row.id });
                           }}>
                             <RotateCcw className="size-3 me-1" aria-hidden /> استعادة
                           </Button>
@@ -347,7 +422,7 @@ function MarkOverrideDialog({
             <Textarea
               value={justification}
               onChange={(e) => setJustification(e.target.value)}
-              placeholder={info.kind === "INTENTIONAL" ? "مثال: تصفية مذكرات ٢٠٢٧ — قرار المالك ١/٩" : "مثال: هامش تاريخيّ متعمّد لصنف ولاء"}
+              placeholder={info.kind === "INTENTIONAL" ? "مثال: تصفية مذكرات ٢٠٢٧ — قرار المالك ١/٩" : "مثال: هامش تاريخيّ متعمّد لمنتج ولاء"}
               rows={3}
             />
           </div>

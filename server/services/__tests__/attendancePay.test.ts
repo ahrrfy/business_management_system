@@ -277,3 +277,37 @@ describe("مقام ٣٠ يوماً — قرار المالك (٣١/٧)", () => {
     expect(r.basePay).toBe("350000.00"); // حضور كامل ⇒ الراتب حرفياً
   });
 });
+
+describe("العمل في يوم الراحة (قرار المالك ٣١/٧: سعر عادي)", () => {
+  it("من حضر يوم راحته يتقاضى ساعاته بالسعر العاديّ — كان لا يتقاضى شيئاً", () => {
+    const att = fullAttendance();
+    att.set("2026-07-03", D(8)); // الجمعة = راحة في الجدول
+    const r = base({ attendedHoursByDate: att });
+    expect(r.restWorkedHours).toBe("8.00");
+    const fri = r.days.find((x) => x.date === "2026-07-03");
+    expect(fri?.state).toBe("restWorked");
+    expect(Number(fri?.amount)).toBeGreaterThan(0);
+    // ٨ ساعات × سعر الساعة تُضاف فوق أجر أيام الدوام.
+    expect(Number(r.basePay)).toBeGreaterThan(900000);
+  });
+
+  it("يوم الراحة لا يدخل مقام السعر (عملٌ فوق الجدول لا جزءٌ منه)", () => {
+    const att = fullAttendance();
+    att.set("2026-07-03", D(8));
+    const r = base({ attendedHoursByDate: att });
+    expect(r.standardHours).toBe("208.00"); // كما لو لم يعمل الجمعة
+  });
+
+  it("يوم راحةٍ بلا حضور يبقى غير موجود (لا صفّ ولا أجر)", () => {
+    const r = base({ attendedHoursByDate: fullAttendance() });
+    expect(r.restWorkedHours).toBe("0.00");
+    expect(r.days.some((x) => x.state === "restWorked")).toBe(false);
+  });
+
+  it("العمل في يوم الراحة يخضع لسقف الساعات أيضاً", () => {
+    const att = fullAttendance();
+    att.set("2026-07-03", D(20));
+    const r = base({ attendedHoursByDate: att, maxDailyHours: 12 });
+    expect(r.restWorkedHours).toBe("12.00");
+  });
+});

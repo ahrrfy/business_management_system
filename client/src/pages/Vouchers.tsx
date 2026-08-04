@@ -2,8 +2,18 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { CopyInline } from "@/components/CopyButton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { RowActions } from "@/components/list";
@@ -11,11 +21,12 @@ import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printVoucherReceipt, printVoucherA4, type VoucherPrintData } from "@/lib/printing/voucherPrint";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -47,33 +58,40 @@ export default function Vouchers() {
   const me = trpc.auth.me.useQuery();
   const canManage = me.data &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "treasury", "FULL", ["manager", "accountant"]);
-  const [voucherType, setVoucherType] = useState<"" | "RECEIPT" | "PAYMENT">("");
-  const [partyType, setPartyType] = useState<"" | "CUSTOMER" | "SUPPLIER" | "OTHER">("");
-  const [paymentMethod, setPaymentMethod] = useState<"" | "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "EXCHANGE">("");
-  const [approvalStatus, setApprovalStatus] = useState<"" | "APPROVED" | "PENDING_APPROVAL" | "REJECTED">("");
-  const [voucherCategoryId, setVoucherCategoryId] = useState<"" | number>("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [q, setQ] = useState("");
-  const debouncedQ = useDebouncedValue(q.trim(), 250);
+  // الفلاتر تعيش في querystring — تبقى مع فتح التفاصيل والرجوع، وتُشارَك رابطاً.
+  const [f, setF, resetF] = useUrlFilters({
+    type: "", party: "", method: "", approval: "", cat: "", branch: "", status: "", from: "", to: "", q: "",
+  });
+  const debouncedQ = useDebouncedValue(f.q.trim(), 250);
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
   const limit = 100;
 
+  /** أي تغيير فلتر يعيد الترقيم للصفحة الأولى. */
+  function applyFilter(patch: Partial<typeof f>) {
+    setF(patch);
+    setPage(0);
+  }
+
   const categories = trpc.voucherCategories.list.useQuery({ includeInactive: true });
+  const branches = trpc.branches.list.useQuery();
+  // فلتر الفرع فعّال للأدمن/مدير بلا فرع مُسنَد فقط — الخادم يفرض فرع البقية أياً كان المُرسَل.
+  const canFilterBranch = me.data != null && (me.data.role === "admin" || me.data.branchId == null);
 
   const filterInput = useMemo(
     () => ({
-      voucherType: voucherType || undefined,
-      partyType: partyType || undefined,
-      paymentMethod: paymentMethod || undefined,
-      approvalStatus: approvalStatus || undefined,
-      voucherCategoryId: voucherCategoryId === "" ? undefined : Number(voucherCategoryId),
+      voucherType: (f.type || undefined) as "RECEIPT" | "PAYMENT" | undefined,
+      partyType: (f.party || undefined) as "CUSTOMER" | "SUPPLIER" | "OTHER" | undefined,
+      paymentMethod: (f.method || undefined) as "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "EXCHANGE" | undefined,
+      approvalStatus: (f.approval || undefined) as "APPROVED" | "PENDING_APPROVAL" | "REJECTED" | undefined,
+      status: (f.status || undefined) as "COMPLETED" | "REVERSED" | undefined,
+      branchId: f.branch ? Number(f.branch) : undefined,
+      voucherCategoryId: f.cat ? Number(f.cat) : undefined,
       q: debouncedQ || undefined,
-      from: from || undefined,
-      to: to || undefined,
+      from: f.from || undefined,
+      to: f.to || undefined,
     }),
-    [voucherType, partyType, paymentMethod, approvalStatus, voucherCategoryId, debouncedQ, from, to],
+    [f, debouncedQ],
   );
 
   const input = useMemo(
@@ -82,10 +100,12 @@ export default function Vouchers() {
   );
   const list = trpc.vouchers.list.useQuery(input);
   const all = list.data ?? [];
+  // مجاميع كامل النطاق المفلتر من الخادم (لا جمع صفوف الصفحة — كان مضلّلاً فوق ١٠٠ سند).
+  const agg = trpc.vouchers.aggregate.useQuery(filterInput);
 
   const cancelMut = trpc.vouchers.cancel.useMutation({
     onSuccess: async (res) => {
-      await utils.vouchers.list.invalidate();
+      await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
       notify.ok(`أُلغي السند ${res.voucherNumber} وعُكست آثاره المالية`);
     },
     onError: (e) => notify.err(e),
@@ -93,15 +113,20 @@ export default function Vouchers() {
 
   const approveMut = trpc.vouchers.approve.useMutation({
     onSuccess: async (res) => {
-      await utils.vouchers.list.invalidate();
+      await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
       notify.ok(`اعتُمد السند ${res.voucherNumber} — بَصمة ${shortHash(res.signatureHash)}`);
     },
     onError: (e) => notify.err(e),
   });
 
+  // حوار سبب الرفض (بديل window.prompt — نمط حوارات النظام).
+  const [rejectTarget, setRejectTarget] = useState<VoucherRow | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+
   const rejectMut = trpc.vouchers.reject.useMutation({
     onSuccess: async (res) => {
-      await utils.vouchers.list.invalidate();
+      setRejectTarget(null);
+      await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
       notify.ok(`رُفض السند ${res.voucherNumber}`);
     },
     onError: (e) => notify.err(e),
@@ -121,10 +146,15 @@ export default function Vouchers() {
     approveMut.mutate({ receiptId: Number(r.id) });
   }
 
-  async function rejectVoucher(r: VoucherRow) {
-    const reason = window.prompt(`سبب رفض السند ${r.voucherNumber ?? ""}؟ (إلزامي للسجل التَدقيقي)`);
-    if (!reason || !reason.trim()) return;
-    rejectMut.mutate({ receiptId: Number(r.id), reason: reason.trim() });
+  function openReject(r: VoucherRow) {
+    setRejectReason("");
+    setRejectTarget(r);
+  }
+
+  function submitReject() {
+    const reason = rejectReason.trim();
+    if (!reason || !rejectTarget || rejectMut.isPending) return;
+    rejectMut.mutate({ receiptId: Number(rejectTarget.id), reason });
   }
 
   async function cancelVoucher(r: VoucherRow) {
@@ -143,26 +173,27 @@ export default function Vouchers() {
   // البحث جزء من استعلام الخادم، لذلك تشمل النتائج كل السندات لا الصفحة الحالية فقط.
   const rows = all;
 
-  // المَجاميع تَستثني الملغاة و«بانتظار الاعتماد» (لم يُسجَّل أَثَر مالي بَعد).
-  const totals = useMemo(() => {
-    let inn = 0;
-    let out = 0;
-    let pending = 0;
-    for (const r of rows) {
-      if (r.status === "REVERSED") continue;
-      const amt = Number(r.amount ?? 0);
-      if (r.approvalStatus === "PENDING_APPROVAL") { pending += amt; continue; }
-      if (r.direction === "IN") inn += amt;
-      else out += amt;
-    }
-    return { inn, out, pending, net: inn - out };
-  }, [rows]);
+  // المَجاميع خادمية (aggregate) على كامل النطاق المفلتر — القبض/الصرف من المُعتمَد غير الملغى،
+  // والمعلّق بلا أَثَر مالي بَعد. الصافي بdecimal لا Number (أموال).
+  const totalIn = agg.data?.totalIn ?? "0";
+  const totalOut = agg.data?.totalOut ?? "0";
+  const netTotal = useMemo(() => D(totalIn).minus(D(totalOut)), [totalIn, totalOut]);
+  const totalCount = agg.data?.count;
+  const pageCount = totalCount != null ? Math.max(1, Math.ceil(totalCount / limit)) : null;
+  // «التالي» بcount الخادمي؛ وقبل وصول aggregate نتحفّظ بقاعدة «صفحة ممتلئة = قد يوجد تالٍ».
+  const hasNext = totalCount != null ? (page + 1) * limit < totalCount : all.length >= limit;
 
   const categoryMap = useMemo(() => {
     const m = new Map<number, string>();
     for (const c of categories.data ?? []) m.set(Number(c.id), c.name);
     return m;
   }, [categories.data]);
+
+  const branchMap = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const b of branches.data ?? []) m.set(Number(b.id), b.name);
+    return m;
+  }, [branches.data]);
 
   async function exportAll() {
     if (exporting) return;
@@ -181,6 +212,7 @@ export default function Vouchers() {
           { key: "voucherNumber", header: "رقم السند" },
           { key: "voucherDate", header: "تاريخ السند", map: (r) => fmtDate(r.voucherDate as any) },
           { key: "createdAt", header: "تاريخ الإدخال", map: (r) => fmtDate(r.createdAt as any) },
+          { key: "branchId", header: "الفرع", map: (r) => (r.branchId != null ? (branchMap.get(Number(r.branchId)) ?? String(r.branchId)) : "—") },
           { key: "direction", header: "النوع", map: (r) => TYPE_LABEL[r.direction] ?? r.direction },
           { key: "partyType", header: "نوع الطرف", map: (r) => PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—" },
           { key: "counterpartyName", header: "اسم المُستفيد" },
@@ -256,24 +288,19 @@ export default function Vouchers() {
     r.partyType === "CUSTOMER" ? `/customers-statement?id=${r.partyId}` : `/suppliers-statement?id=${r.partyId}`;
 
   const activeFilterCount = [
-    voucherType,
-    partyType,
-    paymentMethod,
-    approvalStatus,
-    voucherCategoryId,
-    from,
-    to,
+    f.type,
+    f.party,
+    f.method,
+    f.approval,
+    f.cat,
+    f.branch,
+    f.status,
+    f.from,
+    f.to,
   ].filter((value) => value !== "").length;
 
   function resetFilters() {
-    setVoucherType("");
-    setPartyType("");
-    setPaymentMethod("");
-    setApprovalStatus("");
-    setVoucherCategoryId("");
-    setFrom("");
-    setTo("");
-    setQ("");
+    resetF();
     setPage(0);
   }
 
@@ -307,17 +334,17 @@ export default function Vouchers() {
               </span>
             )}
           </div>
-          {(activeFilterCount > 0 || q.trim()) && (
+          {(activeFilterCount > 0 || f.q.trim()) && (
             <Button variant="ghost" size="sm" onClick={resetFilters} className="text-muted-foreground">
               <X aria-hidden className="size-4" />
               مسح الفلاتر
             </Button>
           )}
         </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-3 items-end">
+        <CardContent className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
           <div className="space-y-1">
             <Label>النوع</Label>
-            <select className={selectCls} value={voucherType} onChange={(e) => { setVoucherType(e.target.value as any); setPage(0); }}>
+            <select className={selectCls} value={f.type} onChange={(e) => applyFilter({ type: e.target.value })}>
               <option value="">الكل</option>
               <option value="RECEIPT">قبض</option>
               <option value="PAYMENT">صرف</option>
@@ -325,7 +352,7 @@ export default function Vouchers() {
           </div>
           <div className="space-y-1">
             <Label>الطرف</Label>
-            <select className={selectCls} value={partyType} onChange={(e) => { setPartyType(e.target.value as any); setPage(0); }}>
+            <select className={selectCls} value={f.party} onChange={(e) => applyFilter({ party: e.target.value })}>
               <option value="">الكل</option>
               <option value="CUSTOMER">عميل</option>
               <option value="SUPPLIER">مورّد</option>
@@ -334,10 +361,11 @@ export default function Vouchers() {
           </div>
           <div className="space-y-1">
             <Label>طريقة الدفع</Label>
-            <select className={selectCls} value={paymentMethod} onChange={(e) => { setPaymentMethod(e.target.value as any); setPage(0); }}>
+            <select className={selectCls} value={f.method} onChange={(e) => applyFilter({ method: e.target.value })}>
               <option value="">الكل</option>
               <option value="CASH">نقدي</option>
               <option value="CARD">بطاقة</option>
+              {/* صكّ: للسجلات التاريخية فقط — الإنشاء الجديد بلا صكوك (قرار المالك). */}
               <option value="CHECK">صكّ</option>
               <option value="TRANSFER">تحويل</option>
               <option value="WALLET">محفظة</option>
@@ -346,7 +374,7 @@ export default function Vouchers() {
           </div>
           <div className="space-y-1">
             <Label>الاعتماد</Label>
-            <select className={selectCls} value={approvalStatus} onChange={(e) => { setApprovalStatus(e.target.value as any); setPage(0); }}>
+            <select className={selectCls} value={f.approval} onChange={(e) => applyFilter({ approval: e.target.value })}>
               <option value="">الكل</option>
               <option value="APPROVED">مُعتمَد</option>
               <option value="PENDING_APPROVAL">بانتظار الاعتماد</option>
@@ -354,53 +382,86 @@ export default function Vouchers() {
             </select>
           </div>
           <div className="space-y-1">
+            <Label>حالة السند</Label>
+            <AppSelect
+              value={f.status || "all"}
+              onValueChange={(v) => applyFilter({ status: v === "all" ? "" : v })}
+              aria-label="فلتر حالة السند"
+            >
+              <option value="all">الكل</option>
+              <option value="COMPLETED">مكتمل</option>
+              <option value="REVERSED">مُلغى</option>
+            </AppSelect>
+          </div>
+          {canFilterBranch && (
+            <div className="space-y-1">
+              <Label>الفرع</Label>
+              <AppSelect
+                value={f.branch || "all"}
+                onValueChange={(v) => applyFilter({ branch: v === "all" ? "" : v })}
+                aria-label="فلتر الفرع"
+              >
+                <option value="all">الكل</option>
+                {(branches.data ?? []).map((b) => (
+                  <option key={Number(b.id)} value={String(b.id)}>{b.name}</option>
+                ))}
+              </AppSelect>
+            </div>
+          )}
+          <div className="space-y-1">
             <Label>الفئة</Label>
-            <select className={selectCls} value={voucherCategoryId === "" ? "" : String(voucherCategoryId)} onChange={(e) => { setVoucherCategoryId(e.target.value === "" ? "" : Number(e.target.value)); setPage(0); }}>
+            <select className={selectCls} value={f.cat} onChange={(e) => applyFilter({ cat: e.target.value })}>
               <option value="">الكل</option>
               {(categories.data ?? []).map((c) => (
-                <option key={Number(c.id)} value={Number(c.id)}>{c.name}</option>
+                <option key={Number(c.id)} value={String(c.id)}>{c.name}</option>
               ))}
             </select>
           </div>
           <div className="space-y-1">
             <Label>من تاريخ</Label>
-            <Input type="date" dir="ltr" value={from} onChange={(e) => { setFrom(e.target.value); setPage(0); }} />
+            <Input type="date" dir="ltr" value={f.from} onChange={(e) => applyFilter({ from: e.target.value })} />
           </div>
           <div className="space-y-1">
             <Label>إلى تاريخ</Label>
-            <Input type="date" dir="ltr" value={to} onChange={(e) => { setTo(e.target.value); setPage(0); }} />
+            <Input type="date" dir="ltr" value={f.to} onChange={(e) => applyFilter({ to: e.target.value })} />
           </div>
-          <div className="space-y-1 md:col-span-4 lg:col-span-7">
+          <div className="space-y-1 md:col-span-3 lg:col-span-5">
             <Label>بحث (رقم/وصف/اسم مُستفيد)</Label>
             <Input
               type="search"
-              value={q}
-              onChange={(e) => { setQ(e.target.value); setPage(0); }}
+              value={f.q}
+              onChange={(e) => applyFilter({ q: e.target.value })}
               placeholder="رقم السند، الوصف، المستفيد، المرجع أو رقم الفاتورة…"
             />
           </div>
         </CardContent>
       </Card>
 
+      {/* البطاقات من aggregate الخادمي — كامل النطاق المفلتر لا صفوف الصفحة الحالية. */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
         <Card>
           <CardContent className="p-4">
             <div className="text-xs text-muted-foreground">إجمالي القبض (مُعتمَد)</div>
-            <div className="text-xl font-bold text-money-positive tabular-nums" dir="ltr">{fmt(totals.inn)}</div>
+            <div className="text-xl font-bold text-money-positive tabular-nums" dir="ltr">{fmt(totalIn)}</div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4">
             <div className="text-xs text-muted-foreground">إجمالي الصرف (مُعتمَد)</div>
-            <div className="text-xl font-bold text-money-negative tabular-nums" dir="ltr">{fmt(totals.out)}</div>
+            <div className="text-xl font-bold text-money-negative tabular-nums" dir="ltr">{fmt(totalOut)}</div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4">
             <div className="text-xs text-muted-foreground">الصافي</div>
-            <div className={`text-xl font-bold tabular-nums ${totals.net >= 0 ? "text-money-positive" : "text-money-negative"}`} dir="ltr">
-              {fmt(totals.net)}
+            <div className={`text-xl font-bold tabular-nums ${netTotal.gte(0) ? "text-money-positive" : "text-money-negative"}`} dir="ltr">
+              {fmt(netTotal.toFixed(2))}
             </div>
+            {(agg.data?.reversedCount ?? 0) > 0 && (
+              <div className="text-[11px] text-muted-foreground mt-0.5">
+                {(agg.data?.reversedCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} سند مُلغى في النطاق
+              </div>
+            )}
           </CardContent>
         </Card>
         <Card>
@@ -409,7 +470,10 @@ export default function Vouchers() {
               <ShieldQuestion aria-hidden className="size-3.5" />
               بانتظار اعتماد (بلا أَثَر)
             </div>
-            <div className="text-xl font-bold text-amber-700 tabular-nums" dir="ltr">{fmt(totals.pending)}</div>
+            <div className="text-xl font-bold text-amber-700 tabular-nums" dir="ltr">{fmt(agg.data?.pendingTotal ?? "0")}</div>
+            <div className="text-[11px] text-muted-foreground mt-0.5">
+              {(agg.data?.pendingCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} سند معلّق
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -419,7 +483,11 @@ export default function Vouchers() {
           <CardTitle className="text-base">القائمة</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {list.isLoading ? "" : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} سند`}
+              {list.isLoading
+                ? ""
+                : totalCount != null
+                  ? `${totalCount.toLocaleString("ar-IQ-u-nu-latn")} سند`
+                  : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} سند`}
             </span>
             <Button
               variant="outline"
@@ -438,6 +506,7 @@ export default function Vouchers() {
                 <tr>
                   <th className="p-2">رقم السند</th>
                   <th className="p-2">التاريخ</th>
+                  <th className="p-2">الفرع</th>
                   <th className="p-2 text-center">النوع</th>
                   <th className="p-2">الطرف</th>
                   <th className="p-2">الفئة</th>
@@ -451,11 +520,11 @@ export default function Vouchers() {
               </thead>
               <tbody>
                 {list.isLoading && (
-                  <tr><td colSpan={11}><LoadingState /></td></tr>
+                  <tr><td colSpan={12}><LoadingState /></td></tr>
                 )}
                 {list.isError && !list.isLoading && (
                   <tr>
-                    <td colSpan={11}>
+                    <td colSpan={12}>
                       <ErrorState message={list.error?.message} onRetry={() => void list.refetch()} />
                     </td>
                   </tr>
@@ -486,6 +555,9 @@ export default function Vouchers() {
                             أُدخل: {fmtDate(r.createdAt as any)}
                           </div>
                         )}
+                      </td>
+                      <td className="p-2 text-xs">
+                        {r.branchId != null ? (branchMap.get(Number(r.branchId)) ?? `فرع ${r.branchId}`) : "—"}
                       </td>
                       <td className="p-2 text-center">
                         <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
@@ -564,7 +636,7 @@ export default function Vouchers() {
                               hidden: !canManage || r.approvalStatus !== "PENDING_APPROVAL",
                               disabled: rejectMut.isPending,
                               disabledReason: "توجد عملية رفض قيد التنفيذ",
-                              onSelect: () => void rejectVoucher(r),
+                              onSelect: () => openReject(r),
                               gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
                             {
@@ -593,7 +665,7 @@ export default function Vouchers() {
                   );
                 })}
                 {!list.isLoading && !list.isError && rows.length === 0 && (
-                  <TableEmptyRow colSpan={11} message="لا سندات مطابقة. أضِف سند قبض أو صرف جديداً." />
+                  <TableEmptyRow colSpan={12} message="لا سندات مطابقة. أضِف سند قبض أو صرف جديداً." />
                 )}
               </tbody>
             </table>
@@ -601,13 +673,53 @@ export default function Vouchers() {
         </CardContent>
       </Card>
 
-      {all.length >= limit && (
+      {/* الترقيم: «التالي» يُعطَّل على آخر صفحة اعتماداً على count الخادمي (كان يقفز لصفحة فارغة). */}
+      {(page > 0 || hasNext) && (
         <div className="flex items-center justify-between text-sm">
           <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
-          <div className="text-muted-foreground">صفحة {page + 1}</div>
-          <Button variant="outline" size="sm" onClick={() => setPage((p) => p + 1)}>التالي →</Button>
+          <div className="text-muted-foreground">
+            صفحة {(page + 1).toLocaleString("ar-IQ-u-nu-latn")}
+            {pageCount != null ? ` من ${pageCount.toLocaleString("ar-IQ-u-nu-latn")}` : ""}
+          </div>
+          <Button variant="outline" size="sm" disabled={!hasNext} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
         </div>
       )}
+
+      {/* حوار سبب الرفض — بديل window.prompt (سجل تَدقيقي إلزامي). */}
+      <Dialog open={rejectTarget != null} onOpenChange={(open) => { if (!open && !rejectMut.isPending) setRejectTarget(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>رفض السند {rejectTarget?.voucherNumber ?? ""}</DialogTitle>
+            <DialogDescription>
+              سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <Label htmlFor="voucher-reject-reason">سبب الرفض *</Label>
+            <Textarea
+              id="voucher-reject-reason"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="مَثلاً: المبلغ لا يطابق المستند المُرفَق"
+              rows={3}
+              maxLength={500}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectTarget(null)} disabled={rejectMut.isPending}>
+              تراجع
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={submitReject}
+              disabled={!rejectReason.trim() || rejectMut.isPending}
+            >
+              {rejectMut.isPending ? "جارٍ الرفض…" : "رفض السند"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

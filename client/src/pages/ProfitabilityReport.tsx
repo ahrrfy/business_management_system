@@ -41,6 +41,10 @@ interface UniRow {
 /** عتبة تآكل الهامش — أقلّ منها = تحذير «بيع بهامش ضعيف». */
 const LOW_MARGIN = 10;
 
+// بُعد «المنتج» كان محدوداً بأعلى ١٠٠ منتج صامتاً (الكتالوج قد يتجاوز ١٤٥٣ منتجاً — راجع CLAUDE.md
+// §٦) فتختفي منتجات دون أي مؤشّر. سقفٌ أعلى معقول + لافتة اقتطاع صريحة عند بلوغه (rows.length===limit).
+const PRODUCT_LIMIT = 1500;
+
 export default function ProfitabilityReport() {
   const [dim, setDim] = useState<Dim>("product");
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
@@ -52,9 +56,11 @@ export default function ProfitabilityReport() {
 
   // كل مصدر يُفعَّل فقط حين يُختار بُعده (enabled) ⇒ استدعاء واحد فعّال.
   const products = trpc.reports.topProducts.useQuery(
-    { ...range, by: "revenue", limit: 100 },
+    { ...range, by: "revenue", limit: PRODUCT_LIMIT },
     { enabled: dim === "product", staleTime: 60_000 },
   );
+  // اقتطاع صامت سابقاً: النتائج تساوي الحدّ المطلوب بالضبط ⇒ قد تكون هناك منتجات أخرى لم تظهر.
+  const productsTruncated = dim === "product" && (products.data?.length ?? 0) === PRODUCT_LIMIT;
   const categories = trpc.reports.profitByCategory.useQuery(range, { enabled: dim === "category", staleTime: 60_000 });
   const byDim = trpc.reports.salesByDimension.useQuery(
     { from: period.from, to: period.to, branchId: branchArg, dimension: (dim === "product" || dim === "category" ? "customer" : dim) },
@@ -78,7 +84,7 @@ export default function ProfitabilityReport() {
   }
 
   const subLabel =
-    dim === "product" ? "الكمية" : dim === "category" ? "الأصناف" : "الفواتير";
+    dim === "product" ? "الكمية" : dim === "category" ? "المنتجات" : "الفواتير";
 
   const rows: UniRow[] = useMemo(() => {
     if (dim === "product") {
@@ -169,6 +175,11 @@ export default function ProfitabilityReport() {
     <ReportShell
       title="تحليل الربحية الحقيقي"
       description="أين المال الحقيقي — ربح وهامش حسب المنتج/الفئة/العميل/الفرع/الكاشير، مع كشف تآكل الهامش."
+      note={
+        productsTruncated
+          ? `تُعرض أعلى ${fmtInt(PRODUCT_LIMIT)} منتجاً فقط — قد توجد منتجات إضافية لم تظهر. ضيّق الفترة أو استعمل بُعداً آخر لرؤية بقية الكتالوج.`
+          : undefined
+      }
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}

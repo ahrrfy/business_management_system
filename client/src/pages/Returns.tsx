@@ -1,18 +1,27 @@
+import { AlertTriangle } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { TablePager } from "@/components/table/TablePager";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
+import { POS_METHODS, type PaymentMethod } from "@/lib/paymentMethod";
 import { trpc } from "@/lib/trpc";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearch } from "wouter";
+
+function shiftTypeLabel(t: string): string {
+  return t === "RECEPTION" ? "استقبال" : t === "PRINT_SERVICES" ? "خدمات طباعة" : "تجزئة";
+}
 
 const INVOICE_STATUS: Record<string, string> = {
   PENDING: "معلّقة",
@@ -23,15 +32,8 @@ const INVOICE_STATUS: Record<string, string> = {
   RETURNED: "مرتجعة",
 };
 
-const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
-  { v: "CASH", label: "نقدي" },
-  { v: "TRANSFER", label: "تحويل" },
-  { v: "CARD", label: "بطاقة" },
-  { v: "WALLET", label: "محفظة" },
-];
-
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+/** حجم صفحة قائمة الفواتير — الترقيم خادميّ (نمط Invoices). */
+const PAGE_SIZE = 50;
 
 export default function Returns() {
   const utils = trpc.useUtils();
@@ -51,7 +53,7 @@ export default function Returns() {
   const [qty, setQty] = useState<Record<number, string>>({});
   const [restock, setRestock] = useState(true);
   const [refundAmount, setRefundAmount] = useState("");
-  const [refundMethod, setRefundMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [refundMethod, setRefundMethod] = useState<PaymentMethod>("CASH");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [q, setQ] = useState("");
@@ -61,25 +63,50 @@ export default function Returns() {
   // فيضغط المستخدم مرّةً ثانية ⇒ مرتجع مكرَّر (RETURN restock مكرَّر + adjustCustomerBalance مكرَّر
   // + استرداد نقدي يخرج مرّتين). المفتاح ثابت للفاتورة المختارة، يتجدَّد عند pick()/بعد النجاح.
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  // درج الاسترداد النقدي — الدرج مورد فرعٍ لا مستخدم؛ منفِّذ المرتجع هنا مديرٌ (صلاحية الشاشة) قد
+  // يختلف عن الكاشير صاحب الدرج الفعليّ. راجع resolveBranchCashShiftTx على الخادم + SalesReturnNew.
+  const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
 
-  const invoicesQuery = trpc.sales.list.useQuery({ limit: 50 });
-
-  const filteredInvoices = useMemo(() => {
-    const all = invoicesQuery.data ?? [];
-    const needle = q.trim().toLowerCase();
-    return all.filter((inv) => {
-      if (statusFilter && inv.status !== statusFilter) return false;
-      if (!needle) return true;
-      return (
-        String(inv.invoiceNumber ?? "").toLowerCase().includes(needle) ||
-        String(inv.total ?? "").toLowerCase().includes(needle)
-      );
-    });
-  }, [invoicesQuery.data, q, statusFilter]);
+  // البحث والفلترة خادميان (sales.listPage): كان البحث محلياً في آخر ٥٠ فاتورة فقط ⇒ فاتورة
+  // أقدم تُعطي «لا نتائج» وهي موجودة. q يشمل رقم الفاتورة واسم العميل (نفس بحث شاشة المبيعات).
+  const [page, setPage] = useState(0);
+  const qDebounced = useDebouncedValue(q.trim(), 300);
+  // أي تغيير في البحث/الفلتر يعيد للصفحة الأولى (وإلا بقي offset قديماً على مجموعة أصغر).
+  useEffect(() => { setPage(0); }, [qDebounced, statusFilter]);
+  const invoicesQuery = trpc.sales.listPage.useQuery({
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+    q: qDebounced || undefined,
+    status: (statusFilter || undefined) as
+      | "PENDING" | "CONFIRMED" | "PAID" | "PARTIALLY_PAID" | "CANCELLED" | "RETURNED"
+      | undefined,
+  });
+  const invoiceRows = invoicesQuery.data?.rows ?? [];
+  // إجمالي المطابق للفلتر (نفس buildSalesListConds خادمياً) — يغذّي TablePager بعدّاد «من N»
+  // كنمط شاشة المبيعات؛ عند تأخّره يعمل الترقيم بوضع hasMore (keyset) بلا انتظار.
+  const summaryQ = trpc.sales.listSummary.useQuery({
+    q: qDebounced || undefined,
+    status: (statusFilter || undefined) as
+      | "PENDING" | "CONFIRMED" | "PAID" | "PARTIALLY_PAID" | "CANCELLED" | "RETURNED"
+      | undefined,
+  });
   const detail = trpc.returns.getInvoice.useQuery(
     { invoiceId: selectedId ?? 0 },
     { enabled: !!selectedId },
   );
+
+  // درج الاسترداد النقدي — نجلب ورديات الفرع المفتوحة (أيّ صاحب) فقط حين الاسترداد نقديّ فعلاً.
+  const isCashRefundPending = refundMethod === "CASH" && D(refundAmount.trim() || "0").gt(0);
+  const branchId = detail.data?.branchId;
+  const openShiftsQ = trpc.treasury.getOpenShifts.useQuery(
+    { branchId },
+    { enabled: isCashRefundPending && !!branchId }
+  );
+  const drawerShifts = openShiftsQ.data ?? [];
+
+  useEffect(() => {
+    setRefundShiftId(null);
+  }, [branchId, refundMethod]);
 
   // Default the actual refund to the selected return value (capped by what was paid).
   // Previously this legacy screen left it blank, so stock/ledger were reversed while no DRAWER OUT
@@ -108,8 +135,8 @@ export default function Returns() {
   useEffect(() => {
     setRefundAmount(suggestedRefund === "0.00" ? "" : suggestedRefund);
     const originalMethod = detail.data?.paymentMethod;
-    if (originalMethod && METHODS.some((m) => m.v === originalMethod)) {
-      setRefundMethod(originalMethod as (typeof METHODS)[number]["v"]);
+    if (originalMethod && POS_METHODS.some((m) => m.v === originalMethod)) {
+      setRefundMethod(originalMethod as PaymentMethod);
     }
   }, [suggestedRefund, detail.data?.paymentMethod]);
 
@@ -119,6 +146,7 @@ export default function Returns() {
     setRefundAmount("");
     setRefundMethod("CASH");
     setRestock(true);
+    setRefundShiftId(null);
     setError("");
     setDone("");
     // #5: مفتاح جديد لكل فاتورة مختارة — يمنع خلط idempotency بين فواتير مختلفة.
@@ -130,6 +158,7 @@ export default function Returns() {
     setRefundAmount("");
     setRefundMethod("CASH");
     setRestock(true);
+    setRefundShiftId(null);
   }
 
   const create = trpc.returns.create.useMutation({
@@ -140,6 +169,7 @@ export default function Returns() {
       setClientRequestId(crypto.randomUUID());
       await Promise.all([
         utils.sales.list.invalidate(),
+        utils.sales.listPage.invalidate(),
         utils.returns.getInvoice.invalidate(),
       ]);
     },
@@ -173,14 +203,34 @@ export default function Returns() {
     if (!lines.length) return setError("أدخل كمية إرجاع واحدة على الأقل.");
 
     // مبلغ الاسترداد اختياري — تحقّق من صحّته قبل D() (decimal.js يرمي على غير الرقمي).
-    let refund: { amount: string; method: typeof refundMethod } | undefined;
+    let refund: { amount: string; method: typeof refundMethod; shiftId?: number } | undefined;
     const refundStr = refundAmount.trim();
     if (refundStr) {
       if (!/^\d+(\.\d+)?$/.test(refundStr)) {
         return setError("مبلغ الاسترداد غير صالح — أدخل رقماً.");
       }
       // حمولة API لا عرض — أرقام صرفة بلا فواصل آلاف (zod moneyStr يرفض الفواصل).
-      if (D(refundStr).gt(0)) refund = { amount: round2(D(refundStr)).toFixed(2), method: refundMethod };
+      if (D(refundStr).gt(0)) {
+        refund = { amount: round2(D(refundStr)).toFixed(2), method: refundMethod };
+        if (refund.method === "CASH") {
+          // الدرج مورد فرعٍ لا مستخدم — يجب تحديد أيّ درجٍ سيخرج منه النقد فعلياً قبل الحفظ
+          // (مرآةً لِما يفرضه resolveBranchCashShiftTx خادمياً) كي لا يظهر عجزٌ لكاشيرٍ لم يَرَ هذا المرتجع.
+          if (openShiftsQ.isLoading || openShiftsQ.isFetching) {
+            return setError("جارٍ فحص الورديات المفتوحة بالفرع — أعد المحاولة بعد لحظة.");
+          }
+          if (drawerShifts.length === 0) {
+            return setError("لا توجد وردية مفتوحة في هذا الفرع لاسترداد نقدي — افتح وردية أو غيّر طريقة الاسترداد.");
+          }
+          if (drawerShifts.length > 1) {
+            if (refundShiftId == null) {
+              return setError("أكثر من درجٍ مفتوح بالفرع — حدّد أعلاه أيّ درجٍ سيخرج منه النقد فعلياً.");
+            }
+            refund.shiftId = refundShiftId;
+          } else {
+            refund.shiftId = drawerShifts[0].shiftId;
+          }
+        }
+      }
     }
 
     if (
@@ -199,7 +249,7 @@ export default function Returns() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="المرتجعات"
+        title="مرتجعات البيع"
         description="اختر فاتورة، حدّد كميات الإرجاع (بالوحدة الأساس)، ثم أكّد. يُعاد للمخزون اختيارياً ويُسجَّل الاسترداد."
         actions={<Link href="/invoices" className="text-sm text-muted-foreground">← رجوع للمبيعات</Link>}
       />
@@ -209,30 +259,35 @@ export default function Returns() {
         <CardHeader>
           <ListToolbar
             title="اختيار الفاتورة"
-            count={filteredInvoices.length}
+            // العدّاد = إجمالي المطابق خادمياً (لا صفوف الصفحة المعروضة وحدها) متى ما توفّر.
+            count={summaryQ.data?.count ?? invoiceRows.length}
             loading={invoicesQuery.isLoading}
             search={{
               value: q,
               onChange: setQ,
-              placeholder: "بحث (رقم الفاتورة/الإجمالي)",
+              placeholder: "بحث (رقم الفاتورة/اسم العميل)",
             }}
             filters={
-              <select
-                className={selectCls + " h-8 w-44"}
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
+              // قيمة «ALL» الحارسة: Radix يرفض بند القيمة الفارغة فلا يمكن الرجوع لـ«كل الحالات» بدونها.
+              <AppSelect
+                size="sm"
+                className="w-44"
+                aria-label="فلتر حالة الفاتورة"
+                value={statusFilter || "ALL"}
+                onValueChange={(v) => setStatusFilter(v === "ALL" ? "" : v)}
               >
-                <option value="">كل الحالات</option>
+                <option value="ALL">كل الحالات</option>
                 {Object.entries(INVOICE_STATUS).map(([v, label]) => (
                   <option key={v} value={v}>{label}</option>
                 ))}
-              </select>
+              </AppSelect>
             }
             exportSpec={{
               filename: "فواتير-للمرتجعات",
-              rows: filteredInvoices,
+              rows: invoiceRows,
               columns: [
                 { key: "invoiceNumber", header: "رقم الفاتورة" },
+                { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "عميل نقدي" },
                 { key: "total", header: "الإجمالي", map: (r) => Number(r.total ?? 0) },
                 { key: "status", header: "الحالة", map: (r) => INVOICE_STATUS[r.status] ?? r.status },
               ],
@@ -251,7 +306,7 @@ export default function Returns() {
               </tr>
             </thead>
             <tbody>
-              {filteredInvoices.map((inv) => {
+              {invoiceRows.map((inv) => {
                 const id = Number(inv.id);
                 const isPicked = selectedId === id;
                 return (
@@ -285,10 +340,12 @@ export default function Returns() {
                   </tr>
                 );
               })}
-              {!invoicesQuery.isLoading && filteredInvoices.length === 0 && (
+              {!invoicesQuery.isLoading && invoiceRows.length === 0 && (
                 <TableEmptyRow
                   colSpan={4}
-                  message={(invoicesQuery.data ?? []).length === 0 ? "لا فواتير بعد." : "لا فواتير مطابقة. غيّر البحث أو الفلتر."}
+                  // صفر نتائج بلا أي بحث/فلتر وعلى الصفحة الأولى = لا فواتير في النظام أصلاً؛
+                  // غير ذلك فالمجموعة مفلترة خادمياً والرسالة تُوجّه لتغيير الفلتر.
+                  message={!qDebounced && !statusFilter && page === 0 ? "لا فواتير بعد." : "لا فواتير مطابقة. غيّر البحث أو الفلتر."}
                 />
               )}
               {invoicesQuery.isLoading && (
@@ -297,6 +354,15 @@ export default function Returns() {
             </tbody>
           </table>
           </ScrollTableShell>
+          <TablePager
+            page={page}
+            onPageChange={setPage}
+            pageSize={PAGE_SIZE}
+            rowsOnPage={invoiceRows.length}
+            total={summaryQ.data?.count}
+            hasMore={invoicesQuery.data?.hasMore}
+            isLoading={invoicesQuery.isLoading || invoicesQuery.isFetching}
+          />
         </CardContent>
       </Card>
 
@@ -319,7 +385,7 @@ export default function Returns() {
             <CardHeader><CardTitle className="text-base">بيانات الفاتورة</CardTitle></CardHeader>
             <CardContent className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 text-sm">
               <div><div className="text-muted-foreground text-xs">رقم الفاتورة</div><div className="font-mono" dir="ltr">{detail.data.invoiceNumber}</div></div>
-              <div><div className="text-muted-foreground text-xs">العميل</div><div>{detail.data.customerName ?? "نقدي"}</div></div>
+              <div><div className="text-muted-foreground text-xs">العميل</div><div>{detail.data.customerName ?? "عميل نقدي"}</div></div>
               <div><div className="text-muted-foreground text-xs">الحالة</div><div>{INVOICE_STATUS[detail.data.status] ?? detail.data.status}</div></div>
               <div><div className="text-muted-foreground text-xs">الإجمالي</div><div dir="ltr">{fmt(detail.data.total)}</div></div>
               <div><div className="text-muted-foreground text-xs">المدفوع</div><div dir="ltr">{fmt(detail.data.paidAmount)}</div></div>
@@ -389,11 +455,54 @@ export default function Returns() {
                 <MoneyInput value={refundAmount} onChange={setRefundAmount} ariaLabel="مبلغ الاسترداد" />
               </div>
               <div className="space-y-1">
-                <Label>طريقة الاسترداد</Label>
-                <select className={selectCls} value={refundMethod} onChange={(e) => setRefundMethod(e.target.value as typeof refundMethod)}>
-                  {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
-                </select>
+                <Label htmlFor="ret-refund-method">طريقة الاسترداد</Label>
+                <AppSelect
+                  id="ret-refund-method"
+                  value={refundMethod}
+                  onValueChange={(v) => setRefundMethod(v as PaymentMethod)}
+                >
+                  {POS_METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
+                </AppSelect>
               </div>
+
+              {/* مصدر النقد المسترَد — الدرج مورد فرعٍ لا مستخدم؛ راجع resolveBranchCashShiftTx (الخادم). */}
+              {isCashRefundPending && (
+                <div className="space-y-1 md:col-span-3 rounded-lg border bg-muted/30 p-3 text-xs">
+                  <div className="mb-1.5 font-bold text-foreground">مصدر النقد المسترَد</div>
+                  {openShiftsQ.isFetching ? (
+                    <div className="text-muted-foreground">جارٍ فحص الورديات المفتوحة بالفرع…</div>
+                  ) : drawerShifts.length === 0 ? (
+                    <div className="badge-stock-low flex items-start gap-2 rounded-md border px-2.5 py-2">
+                      <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
+                      <span>لا توجد وردية مفتوحة في هذا الفرع — لا يمكن استرداد نقدٍ حتى تُفتح وردية، أو غيّر طريقة الاسترداد.</span>
+                    </div>
+                  ) : drawerShifts.length === 1 ? (
+                    <div className="text-muted-foreground">
+                      سيُخصَم هذا المبلغ من درج: <span className="font-semibold text-foreground">{drawerShifts[0].userName}</span>
+                      {" — "}{shiftTypeLabel(drawerShifts[0].shiftType)} (وردية #{drawerShifts[0].shiftId})
+                    </div>
+                  ) : (
+                    <>
+                      <div className="mb-1.5 text-muted-foreground">
+                        أكثر من درجٍ مفتوح بالفرع — حدّد أيّ درجٍ سيخرج منه النقد فعلياً:
+                      </div>
+                      <AppSelect
+                        size="sm"
+                        className="text-xs"
+                        value={refundShiftId != null ? String(refundShiftId) : ""}
+                        onValueChange={(v) => setRefundShiftId(v ? Number(v) : null)}
+                        placeholder="اختر الدرج…"
+                      >
+                        {drawerShifts.map((s) => (
+                          <option key={s.shiftId} value={String(s.shiftId)}>
+                            {s.userName} — {shiftTypeLabel(s.shiftType)} (وردية #{s.shiftId})
+                          </option>
+                        ))}
+                      </AppSelect>
+                    </>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
 

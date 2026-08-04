@@ -3,11 +3,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState } from "@/components/PageState";
 import { Check, CheckCircle2, ChevronRight, CornerDownLeft, Layers, MessageSquare, Ruler, Truck, Timer as TimerIcon } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { normalizeSearchText } from "@shared/searchNormalize";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 
@@ -39,10 +41,10 @@ const PRIORITIES: Record<string, { label: string; cls: string }> = {
   LOW: { label: "منخفض", cls: "badge-status-active border-transparent" },
 };
 const STATUS_LABEL: Record<string, string> = {
-  RECEIVED: "بانتظار البدء", IN_PROGRESS: "قيد التنفيذ", READY: "جاهز للتسليم", DELIVERED: "مُسلَّم", CANCELLED: "ملغى",
+  RECEIVED: "مُستلَم", IN_PROGRESS: "قيد التنفيذ", READY: "جاهز للتسليم", DELIVERED: "مُسلَّم", CANCELLED: "ملغى",
 };
 const STAGES: { key: string; label: string }[] = [
-  { key: "RECEIVED", label: "مسحوب" },
+  { key: "RECEIVED", label: "مُستلَم" },
   { key: "IN_PROGRESS", label: "قيد التنفيذ" },
   { key: "READY", label: "جاهز للتسليم" },
 ];
@@ -93,9 +95,10 @@ function ElapsedTimer({ startAt, endAt }: { startAt: Date | null; endAt: Date | 
 }
 
 /** يَستخرج الحُقول المُنسَّقة `[Tag] value` من customizationText الذي تَكتبه Reception
- *  عبر composeCustomizationText. يَدعم: المقاس، الخامة، توصيل (العنوان). */
-function parseCustomSpecs(text: string | null | undefined): { size: string | null; material: string | null; delivery: string | null; raw: string } {
-  if (!text) return { size: null, material: null, delivery: null, raw: "" };
+ *  عبر composeCustomizationText، أو WorkOrderNew.tsx (طريقة التسليم). يَدعم: المقاس، الخامة،
+ *  توصيل (العنوان)، طريقة التسليم (استلام من المحل/توصيل للعميل/شحن سريع). */
+function parseCustomSpecs(text: string | null | undefined): { size: string | null; material: string | null; delivery: string | null; deliveryMethod: string | null; raw: string } {
+  if (!text) return { size: null, material: null, delivery: null, deliveryMethod: null, raw: "" };
   const lines = text.split(/\r?\n/);
   const get = (tag: string) => {
     for (const ln of lines) {
@@ -108,6 +111,7 @@ function parseCustomSpecs(text: string | null | undefined): { size: string | nul
     size: get("المقاس"),
     material: get("الخامة"),
     delivery: get("توصيل"),
+    deliveryMethod: get("طريقة التسليم"),
     // raw يُبقي الأَسطر بَلا الـtag prefix كَمُلاحظات حُرّة (لِعَرضها في كَتلة منفصلة).
     raw: lines.filter((ln) => !/^\[[^\]]+\]/.test(ln)).join("\n").trim(),
   };
@@ -251,9 +255,10 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
                     </div>
                     <div className="rounded-lg border bg-muted/20 p-3">
                       <div className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Truck aria-hidden className="size-3.5" /> التَسليم</div>
-                      <div className={`font-bold text-base mt-1 ${specs.delivery ? "text-[var(--status-pending)]" : ""}`}>
-                        {specs.delivery ?? "استلام من المَطبعة"}
+                      <div className={`font-bold text-base mt-1 ${specs.delivery || specs.deliveryMethod ? "text-[var(--status-pending)]" : ""}`}>
+                        {specs.deliveryMethod ?? "استلام من المَطبعة"}
                       </div>
+                      {specs.delivery && <div className="text-[11px] text-muted-foreground mt-0.5">{specs.delivery}</div>}
                     </div>
                   </div>
                   {specs.raw && (
@@ -402,8 +407,16 @@ export default function WorkOrderStation() {
   const mineQ = trpc.workOrders.list.useQuery({ statuses: [...ACTIVE_STATUSES], assignedToMe: true, limit: 200 });
   const queueQ = trpc.workOrders.list.useQuery({ statuses: ["RECEIVED"], unassignedOnly: true, limit: 200 });
 
-  const mine = mineQ.data ?? [];
-  const queue = queueQ.data ?? [];
+  const mineAll = mineQ.data ?? [];
+  const queueAll = queueQ.data ?? [];
+
+  // بحث محلي سريع بقائمتَي المحطة (رقم الأمر/العنوان/العميل) — القائمتان محدودتان بطبيعتهما
+  // (عمل نشط فقط) فالفلترة المحلية كافية بلا جولة خادم إضافية.
+  const [search, setSearch] = useState("");
+  const nq = normalizeSearchText(search.trim());
+  const matches = (o: WO) => !nq || normalizeSearchText(`${o.orderNumber} ${o.title} ${o.customerName ?? ""}`).includes(nq);
+  const mine = useMemo(() => mineAll.filter(matches), [mineAll, nq]);
+  const queue = useMemo(() => queueAll.filter(matches), [queueAll, nq]);
 
   useEffect(() => {
     if (selId == null && mine.length) setSelId(mine[0].id);
@@ -423,11 +436,23 @@ export default function WorkOrderStation() {
           <Link href="/work-orders" className="text-xs text-muted-foreground">اللوحة ←</Link>
         </div>
 
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="ابحث برقم الأمر/العنوان/العميل…"
+          dir="auto"
+          className="h-9"
+        />
+
         <div>
           <div className="text-xs font-semibold text-muted-foreground mb-1.5">أوامري ({mine.length})</div>
           <div className="space-y-2">
             {mine.map((o) => <OrderRow key={o.id} o={o} mine active={selId === o.id} onClick={() => setSelId(o.id)} />)}
-            {mine.length === 0 && <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">لا أوامر مُسنَدة إليك — اسحب من الطابور العام أدناه.</div>}
+            {mine.length === 0 && (
+              <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">
+                {mineAll.length === 0 ? "لا أوامر مُسنَدة إليك — اسحب من الطابور العام أدناه." : "لا نتائج مطابقة للبحث."}
+              </div>
+            )}
           </div>
         </div>
 
@@ -446,7 +471,11 @@ export default function WorkOrderStation() {
                 >سحب</Button>
               </div>
             ))}
-            {queue.length === 0 && <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">الطابور فارغ.</div>}
+            {queue.length === 0 && (
+              <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">
+                {queueAll.length === 0 ? "الطابور فارغ." : "لا نتائج مطابقة للبحث."}
+              </div>
+            )}
           </div>
         </div>
       </div>

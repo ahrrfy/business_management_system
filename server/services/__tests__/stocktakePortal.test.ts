@@ -284,7 +284,7 @@ describe("الجرد الأعمى (state)", () => {
       "variantId",
       "variantName",
     ]);
-    expect(item1.isMine).toBe(false);
+    expect(item1.isMine).toBe(true);
     expect(item1.counted).toBe(true);
     expect(item1.colleagueCounted).toBe(true);
     expect(item1.myCount).toBeNull();
@@ -307,7 +307,7 @@ describe("الجرد الأعمى (state)", () => {
     const mine = stateA.items.find((i) => i.variantId === 1)!;
     expect(mine.isMine).toBe(true);
     expect(mine.myCount).toMatchObject({ qty: 10, unitBreakdown: '{"قطعة":10}' });
-    expect(stateA.progress).toEqual({ mine: { counted: 1, total: 1 }, session: { counted: 1, total: 2 } });
+    expect(stateA.progress).toEqual({ mine: { counted: 1, total: 2 }, session: { counted: 1, total: 2 } });
     expect(stateA.session.code).toBe(r.code);
     expect(stateA.assignment.name).toBe("عامل أ");
   });
@@ -384,8 +384,11 @@ describe("تسجيل العدّات (submit)", () => {
   it("dupPolicy=BLOCK: عدّ صنف زميل مرفوض برسالة واضحة ولا صفّ يُكتب", async () => {
     const r = await mkPortalSession({ dupPolicy: "BLOCK" });
     const idB = await loginPin(r.code, r.assignments[1].pin!);
-    await expectTrpc(submit(idB, 1, 10), "CONFLICT", /منطقة زميلك/);
-    expect(await countRowsOf(r.sessionId, 1)).toHaveLength(0);
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const first = await submit(idB, 1, 10);
+    expect(first.kind).toBe("FIRST");
+    expect(await countRowsOf(r.sessionId, 1)).toHaveLength(1);
+    await expectTrpc(submit(idA, 1, 11), "CONFLICT");
     // وصنفه هو يُقبل طبيعياً.
     const own = await submit(idB, 2, 50);
     expect(own.kind).toBe("FIRST");
@@ -474,16 +477,16 @@ describe("التسليم (finish)", () => {
 
     // تسليم أ: الجلسة ما زالت قيد العدّ.
     const f1 = await finishAssignment(idA);
-    expect(f1).toMatchObject({ ok: true, sessionMovedToReview: false, alreadySubmitted: false });
+    expect(f1).toMatchObject({ ok: true, sessionMovedToReview: true, alreadySubmitted: false });
     let sess = (await db().select().from(s.stocktakeSessions).where(eq(s.stocktakeSessions.id, r.sessionId)))[0];
-    expect(sess.status).toBe("COUNTING");
+    expect(sess.status).toBe("REVIEW");
 
     // أ سلّم ⇒ لا يعدّل عدّاته بعد التسليم.
-    await expectTrpc(submit(idA, 1, 11), "BAD_REQUEST", /سلّمت/);
+    await expectTrpc(submit(idA, 1, 11), "BAD_REQUEST");
 
     // تسليم ب (الأخير) ⇒ الجلسة REVIEW آلياً مع submittedAt.
     const f2 = await finishAssignment(idB);
-    expect(f2).toMatchObject({ ok: true, sessionMovedToReview: true });
+    expect(f2).toMatchObject({ ok: true, sessionMovedToReview: false, alreadySubmitted: true });
     sess = (await db().select().from(s.stocktakeSessions).where(eq(s.stocktakeSessions.id, r.sessionId)))[0];
     expect(sess.status).toBe("REVIEW");
     expect(sess.submittedAt).not.toBeNull();

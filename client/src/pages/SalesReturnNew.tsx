@@ -33,13 +33,16 @@ import {
 } from "@/components/invoice";
 import { AlertTriangle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { trpc } from "@/lib/trpc";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 
@@ -89,6 +92,10 @@ export function computeExpectedReturnTotal(
   return round2(returnedRevenue.plus(returnedTax)).toFixed(2);
 }
 
+function shiftTypeLabel(t: string): string {
+  return t === "RECEPTION" ? "استقبال" : t === "PRINT_SERVICES" ? "خدمات طباعة" : "تجزئة";
+}
+
 export default function SalesReturnNew() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
@@ -125,6 +132,12 @@ export default function SalesReturnNew() {
   const [showCost] = useState(false); // مرتجع بيع: الكاشير قد يراه، نخفي التكلفة.
   const [restock, setRestock] = useState(true);
   const searchRef = useRef<HTMLInputElement | null>(null);
+
+  // درج الاسترداد النقدي: الدرج مورد فرعٍ لا مستخدم — هذه الشاشة تتطلّب صلاحية مدير، وقد يكون
+  // منفِّذ المرتجع شخصاً مختلفاً عن الكاشير الذي يُشغّل الدرج الذي سيخرج منه النقد فعلياً. نجلب
+  // ورديات الفرع المفتوحة فعلياً لنعرض/نُلزم اختيار الدرج الصحيح (راجع resolveBranchCashShiftTx
+  // على الخادم) بدل ترك النظام يخمّن، فيظهر عجزٌ لا يفهم الكاشير سببه عند إغلاق ورديته.
+  const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
 
   // بحث حيّ (رقم الفاتورة المرجعية) — خادميّ عبر sales.list({q}) (رقم الفاتورة LIKE أو اسم
   // العميل)، لا يقتصر على آخر ٢٠٠ فاتورة محمَّلة مسبقاً كما كان (كانت فاتورة أقدم "غير موجودة").
@@ -250,6 +263,11 @@ export default function SalesReturnNew() {
     }
   }
 
+  // نافذة الطباعة المحجوزة (نمط SalesInvoiceNew.tsx): تُفتح فوراً عند تأكيد الحفظ فتنجو من حاجب
+  // النوافذ المنبثقة، ثم يستهلكها قالب A4 المعتمد (?print=1 في صفحة الفاتورة) بعد التنقّل —
+  // تستبدل window.print() المباشر (كان يطبع محرّر المرتجع غير المحفوظ نفسه) وسباق setTimeout(400).
+  const printAfterSaveRef = useRef(false);
+
   // إرسال المرتجع — يبني payload وفق ما يتوقّعه trpc.returns.create.
   const createMutation = trpc.returns.create.useMutation({
     onSuccess: async (r) => {
@@ -259,9 +277,15 @@ export default function SalesReturnNew() {
         utils.inventory.onHand.invalidate(),
       ]);
       notify.ok("تمّ تسجيل المرتجع بنجاح.");
-      navigate(`/invoices/${r.invoiceId}`);
+      const printAfterSave = printAfterSaveRef.current;
+      printAfterSaveRef.current = false;
+      navigate(`/invoices/${r.invoiceId}${printAfterSave ? "?print=1" : ""}`);
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      releaseReservedPrintWindow();
+      printAfterSaveRef.current = false;
+      notify.err(e);
+    },
   });
 
   function buildLinesPayload(): Array<{ invoiceItemId: number; baseQuantity: number }> | null {
@@ -308,7 +332,7 @@ export default function SalesReturnNew() {
 
     // مبلغ الاسترداد — إن دفع شيئاً نسجّله؛ غير ذلك يبقى ذمة (سيُسوَّى لاحقاً).
     const paidStr = state.paidAmount.trim();
-    let refund: { amount: string; method: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" } | undefined;
+    let refund: { amount: string; method: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; shiftId?: number } | undefined;
     if (paidStr) {
       if (!/^\d+(\.\d+)?$/.test(paidStr)) {
         notify.err("مبلغ الاسترداد غير صالح.");
@@ -321,6 +345,27 @@ export default function SalesReturnNew() {
       }
       if (amt.gt(0)) {
         refund = { amount: round2(amt).toFixed(2), method: state.paymentMethod };
+        if (refund.method === "CASH") {
+          // الدرج مورد فرعٍ لا مستخدم — يجب تحديد أيّ درجٍ سيخرج منه النقد فعلياً قبل الحفظ
+          // (مرآةً لِما يفرضه resolveBranchCashShiftTx خادمياً) كي لا يظهر عجزٌ لكاشيرٍ لم يَرَ هذا المرتجع.
+          if (openShiftsQ.isLoading || openShiftsQ.isFetching) {
+            notify.err("جارٍ فحص الورديات المفتوحة بالفرع — أعد المحاولة بعد لحظة.");
+            return;
+          }
+          if (drawerShifts.length === 0) {
+            notify.err("لا توجد وردية مفتوحة في هذا الفرع لاسترداد نقدي — افتح وردية أو غيّر طريقة الاسترداد.");
+            return;
+          }
+          if (drawerShifts.length > 1) {
+            if (refundShiftId == null) {
+              notify.err("أكثر من درجٍ مفتوح بالفرع — حدّد أعلاه أيّ درجٍ سيخرج منه النقد فعلياً.");
+              return;
+            }
+            refund.shiftId = refundShiftId;
+          } else {
+            refund.shiftId = drawerShifts[0].shiftId;
+          }
+        }
       }
     }
 
@@ -334,17 +379,18 @@ export default function SalesReturnNew() {
     )
       return;
 
-    createMutation.mutate(
-      { invoiceId: sourceInvoiceId, lines, refund, restock, clientRequestId },
-      {
-        onSuccess: () => {
-          if (opts.print) {
-            // الطباعة بعد الحفظ — التنقّل سيُحدث، فنطبع بعد التحديث في صفحة الفاتورة.
-            setTimeout(() => window.print(), 400);
-          }
-        },
-      }
-    );
+    // نافذة الطباعة تُحجَز الآن (زرّ «تأكيد» أعلاه — لا تزال ضمن نشاط المستخدم التفاعلي) قبل أي
+    // انتقال لاحق؛ القالب المعتمد (printInvoiceA4 عبر ?print=1 في صفحة الفاتورة) يستهلكها بعد
+    // الحفظ والتنقّل — نمط SalesInvoiceNew.tsx حرفياً.
+    if (opts.print) {
+      reservePrintWindow();
+      printAfterSaveRef.current = true;
+    } else {
+      releaseReservedPrintWindow();
+      printAfterSaveRef.current = false;
+    }
+
+    createMutation.mutate({ invoiceId: sourceInvoiceId, lines, refund, restock, clientRequestId });
   }
 
   // اختصارات لوحة المفاتيح (F2/F4/F9/F12/Esc).
@@ -362,14 +408,25 @@ export default function SalesReturnNew() {
         if (!createMutation.isPending) handleSubmit();
       } else if (e.key === "F9") {
         e.preventDefault();
-        window.print();
+        // حفظ+طباعة (نمط SalesInvoiceNew.tsx) — كان window.print() المباشر يطبع محرّر المرتجع
+        // غير المحفوظ نفسه بدل قالب A4 المعتمد لفاتورة الأصل بعد ترحيل المرتجع.
+        if (!createMutation.isPending) void handleSubmit({ print: true });
       } else if (e.key === "F12") {
         e.preventDefault();
-        if (window.confirm("تفريغ كلّ بيانات المرتجع الحالي؟")) {
+        // حوارٌ من نوع alertdialog (ConfirmHost) مفتوحٌ أصلاً ⇒ لا نُطلق تأكيداً ثانياً فوقه
+        // (نمط anyOverlayOpen في useSaveShortcuts.ts).
+        if (document.querySelector('[role="alertdialog"][data-state="open"]')) return;
+        void confirm({
+          variant: "warning",
+          title: "تفريغ نموذج المرتجع",
+          description: "سيُمسَح كل ما أُدخِل في نموذج المرتجع الحالي (البنود والفاتورة المرجعية). متابعة؟",
+          confirmText: "تفريغ",
+        }).then((ok) => {
+          if (!ok) return;
           dispatch({ type: "RESET", invoiceType: "SALE_RETURN" });
           setSourceInvoiceId(null);
           setRefMeta({});
-        }
+        });
       } else if (e.key === "Escape" && !isTyping) {
         if (bulkOpen) setBulkOpen(false);
       }
@@ -378,6 +435,10 @@ export default function SalesReturnNew() {
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bulkOpen, createMutation.isPending, sourceInvoiceId, state.items]);
+
+  // حارس فقد البيانات (نمط ExpenseNew.tsx): بنود مُحمَّلة أو فاتورة مرجعية مُختارة تكفي لاعتبار
+  // المرتجع "قيد الإدخال" — يعترض تحديث/إغلاق التبويب فقط (beforeunload).
+  useUnsavedGuard(state.items.length > 0 || sourceInvoiceId != null);
 
   const typeMeta = INVOICE_TYPES["SALE_RETURN"];
   const hasRefLoaded = !!sourceInvoiceId && !!refDetail.data;
@@ -399,6 +460,21 @@ export default function SalesReturnNew() {
       dispatch({ type: "SET_FIELD", field: "paidAmount", value: expectedReturnTotal });
     }
   }, [expectedReturnTotal]);
+
+  // درج الاسترداد النقدي — نجلب ورديات الفرع المفتوحة (أيّ صاحب) فقط حين الاسترداد نقديّ فعلاً؛
+  // غير النقد لا يمسّ درجاً فلا داعي للاستعلام. مطابقٌ لِما يفحصه الخادم (resolveBranchCashShiftTx).
+  const isCashRefundPending = state.paymentMethod === "CASH" && D(state.paidAmount.trim() || "0").gt(0);
+  const openShiftsQ = trpc.treasury.getOpenShifts.useQuery(
+    { branchId: state.branchId },
+    { enabled: isCashRefundPending && !!state.branchId }
+  );
+  const drawerShifts = openShiftsQ.data ?? [];
+
+  // اختيارٌ سابق قد يصير غير صالح إن تغيّر الفرع أو طريقة الدفع أو انغلق الدرج المُختار — نصفّره
+  // بدل إبقاء قيمة يتيمة قد تُرسَل خطأً (الخادم يرفضها فعلياً، لكن الأوضح مسحها من الواجهة أولاً).
+  useEffect(() => {
+    setRefundShiftId(null);
+  }, [state.branchId, state.paymentMethod]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3" dir="rtl">
@@ -468,7 +544,7 @@ export default function SalesReturnNew() {
                     <span className="font-mono font-bold text-foreground" dir="ltr">{inv.invoiceNumber}</span>
                     <span className="shrink-0 text-muted-foreground" dir="ltr">{fmt(inv.total)} د.ع</span>
                   </div>
-                  <div className="text-muted-foreground">{inv.customerName ?? "نقدي"} · {fmtDate(inv.invoiceDate)}</div>
+                  <div className="text-muted-foreground">{inv.customerName ?? "عميل نقدي"} · {fmtDate(inv.invoiceDate)}</div>
                 </div>
               ))}
             </div>
@@ -486,7 +562,7 @@ export default function SalesReturnNew() {
         {hasRefLoaded && refDetail.data && (
           <>
             <span className="text-muted-foreground">·</span>
-            <span>عميل: {refDetail.data.customerName ?? "نقدي"}</span>
+            <span>{refDetail.data.customerName ? `عميل: ${refDetail.data.customerName}` : "عميل نقدي"}</span>
             <span className="text-muted-foreground">·</span>
             <span dir="ltr">إجمالي الأصل: {fmt(refDetail.data.total)} د.ع</span>
           </>
@@ -546,6 +622,47 @@ export default function SalesReturnNew() {
             showShipping={false}
             showOtherExpenses={false}
           />
+
+          {/* مصدر النقد المسترَد — الدرج مورد فرعٍ لا مستخدم؛ هذه الشاشة صلاحية مدير وقد يختلف
+              منفِّذ المرتجع عن الكاشير صاحب الدرج الفعليّ. راجع resolveBranchCashShiftTx (الخادم). */}
+          {isCashRefundPending && (
+            <div className="rounded-xl border bg-card p-3 text-xs">
+              <div className="mb-1.5 font-bold text-foreground">مصدر النقد المسترَد</div>
+              {openShiftsQ.isFetching ? (
+                <div className="text-muted-foreground">جارٍ فحص الورديات المفتوحة بالفرع…</div>
+              ) : drawerShifts.length === 0 ? (
+                <div className="badge-stock-low flex items-start gap-2 rounded-md border px-2.5 py-2">
+                  <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
+                  <span>لا توجد وردية مفتوحة في هذا الفرع — لا يمكن استرداد نقدٍ حتى تُفتح وردية، أو غيّر طريقة الاسترداد.</span>
+                </div>
+              ) : drawerShifts.length === 1 ? (
+                <div className="text-muted-foreground">
+                  سيُخصَم هذا المبلغ من درج: <span className="font-semibold text-foreground">{drawerShifts[0].userName}</span>
+                  {" — "}{shiftTypeLabel(drawerShifts[0].shiftType)} (وردية #{drawerShifts[0].shiftId})
+                </div>
+              ) : (
+                <>
+                  <div className="mb-1.5 text-muted-foreground">
+                    أكثر من درجٍ مفتوح بالفرع — حدّد أيّ درجٍ سيخرج منه النقد فعلياً:
+                  </div>
+                  <AppSelect
+                    size="sm"
+                    className="text-xs"
+                    value={refundShiftId != null ? String(refundShiftId) : ""}
+                    onValueChange={(v) => setRefundShiftId(v ? Number(v) : null)}
+                    placeholder="اختر الدرج…"
+                  >
+                    {drawerShifts.map((s) => (
+                      <option key={s.shiftId} value={String(s.shiftId)}>
+                        {s.userName} — {shiftTypeLabel(s.shiftType)} (وردية #{s.shiftId})
+                      </option>
+                    ))}
+                  </AppSelect>
+                </>
+              )}
+            </div>
+          )}
+
           <ActionButtons
             invoiceType="SALE_RETURN"
             items={state.items}
@@ -562,7 +679,9 @@ export default function SalesReturnNew() {
                   notify.info("لا توجد مسوّدات للمرتجعات — احفظ مباشرة عند الجاهزية.");
                   break;
                 case "pdf":
-                  window.print();
+                  // نفس مسار «حفظ وطباعة» — القالب المعتمد (?print=1) لا معاينة الطابعة الخام
+                  // لصفحة المحرّر (كان window.print() يطبع النموذج غير المحفوظ نفسه).
+                  handleSubmit({ print: true });
                   break;
                 case "send":
                 case "convert":
@@ -577,7 +696,7 @@ export default function SalesReturnNew() {
                   copyInvoiceItems(state.items);
                   dispatch({ type: "CLEAR_ITEMS" });
                   setPasteAvailable(true);
-                  notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+                  notify.ok("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
                   break;
                 case "paste": {
                   const items = takeInvoiceItems();

@@ -35,13 +35,14 @@ export async function publish(
       id: digitalPriceVersions.id,
       offeringId: digitalPriceVersions.offeringId,
       providerShare: digitalPriceVersions.providerShare,
+      sellPrice: digitalPriceVersions.sellPrice,
     })
     .from(digitalPriceVersions)
     .where(eq(digitalPriceVersions.batchId, input.batchId));
-  const shareByOffering = new Map(draftLines.map((l) => [Number(l.offeringId), l.providerShare]));
+  const draftByOffering = new Map(draftLines.map((l) => [Number(l.offeringId), l]));
 
   // ٤: لا سعر مفقود.
-  const missing = offerings.filter((o) => !shareByOffering.has(o.offeringId));
+  const missing = offerings.filter((o) => !draftByOffering.has(o.offeringId));
   if (missing.length) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -62,7 +63,7 @@ export async function publish(
   const now = new Date();
   const priced = offerings.map((o) => ({
     offeringId: o.offeringId,
-    ...priceFor(o, shareByOffering.get(o.offeringId)!, true),
+    ...priceFor(o, draftByOffering.get(o.offeringId)!.providerShare, draftByOffering.get(o.offeringId)!.sellPrice, true),
   }));
 
   // ٦-ب (§٧.١): بوّابة «التغيير الكبير» — تُحسب من **الحصص المُعاد حسابها** لا من مُدخل العميل،

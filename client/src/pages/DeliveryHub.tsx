@@ -133,6 +133,7 @@ function DispatchTab() {
   // (بوّابة أدوار صِرفة بلا مفتاح وحدة صلاحيات — لا مفتاح delivery في المصفوفة ⇒ القائمة الحرفية هي المطابقة الدقيقة).
   const canDispatch = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
   const [target, setTarget] = useState<ReadyOrder | null>(null);
+  const [query, setQuery] = useState("");
 
   const dispatch = trpc.delivery.dispatch.useMutation({
     onSuccess: (r) => {
@@ -145,15 +146,42 @@ function DispatchTab() {
   });
 
   if (ready.isError) return <ErrorState onRetry={() => ready.refetch()} />;
-  const rows = ready.data ?? [];
+  const allRows = ready.data ?? [];
+  // بحث محلي فوري (القائمة تُجلب دفعةً واحدة بلا ترقيم خادميّ ⇒ فلترة العميل تكفي).
+  const rows = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase("ar");
+    if (!needle) return allRows;
+    return allRows.filter((o) =>
+      [o.orderNumber, o.title, o.customerName].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(needle)),
+    );
+  }, [allRows, query]);
 
   return (
     <div className="rounded-xl border bg-card">
-      <div className="border-b px-4 py-3 text-sm font-bold">الطلبات الجاهزة للتوصيل</div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+        <span className="text-sm font-bold">الطلبات الجاهزة للتوصيل ({rows.length})</span>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="رقم الطلب أو العميل…"
+              aria-label="بحث في الطلبات الجاهزة"
+              className="h-8 w-56"
+            />
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void ready.refetch()} disabled={ready.isFetching}>
+            <RotateCcw aria-hidden className={cn("size-3.5", ready.isFetching && "animate-spin")} />
+            تحديث
+          </Button>
+        </div>
+      </div>
       {ready.isLoading ? (
         <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
-      ) : rows.length === 0 ? (
+      ) : allRows.length === 0 ? (
         <EmptyState icon={Truck} title="لا طلبات جاهزة" description="لا توجد طلبات بحالة «جاهز» للإرسال حالياً." />
+      ) : rows.length === 0 ? (
+        <EmptyState icon={Truck} title="لا نتائج" description="لا طلبات مطابقة لبحثك." />
       ) : (
         <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
@@ -321,6 +349,7 @@ function SettleTab() {
   const cons = trpc.delivery.openConsignments.useQuery({ partyId: Number(partyId) }, { enabled: !!partyId });
   const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "RETURNED"; collected: string }>>({});
   const [countedBreakdown, setCountedBreakdown] = useState<Record<number, number>>({});
+  const [countedCash, setCountedCash] = useState(0);
 
   const remit = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
@@ -329,6 +358,7 @@ function SettleTab() {
       printRemittanceReceipt(partyName, r);
       setRows({});
       setCountedBreakdown({});
+      setCountedCash(0);
       utils.delivery.openConsignments.invalidate();
       utils.delivery.listParties.invalidate();
     },
@@ -363,6 +393,10 @@ function SettleTab() {
       .map((c) => ({ consignmentId: c.id, collectedAmount: String(Math.max(0, Number(get(c).collected) || 0)) }))
       .filter((l) => Number(l.collectedAmount) >= 0);
     if (lines.length === 0) { notify.err("لا إرساليات للتسوية"); return; }
+    if (Math.abs(countedCash - totals.net) > 0.01) {
+      notify.err(`النقد المعدود لا يطابق الصافي المتوقع. المعدود ${fmt(String(countedCash))} والمتوقع ${fmt(String(totals.net))} د.ع`);
+      return;
+    }
     const ok = await confirm({
       variant: "danger",
       title: "تأكيد تسوية تحصيلات المندوب",
@@ -370,7 +404,7 @@ function SettleTab() {
       confirmText: "تأكيد التسوية",
     });
     if (!ok) return;
-    remit.mutate({ partyId: Number(partyId), lines, clientRequestId: crypto.randomUUID() });
+    remit.mutate({ partyId: Number(partyId), lines, countedCash: countedCash.toFixed(2), clientRequestId: crypto.randomUUID() });
   };
 
   return (
@@ -456,11 +490,15 @@ function SettleTab() {
                 <span className="inline-flex items-center gap-1">{totals.shortfall > 0.01 && <AlertTriangle aria-hidden className="size-3.5" />} {totals.shortfall > 0.01 ? "عجز يبقى ذمّةً على المندوب" : "مطابق"}</span>
                 <span dir="ltr" className="tabular-nums">{fmt(String(Math.max(0, totals.shortfall)))} د.ع</span>
               </div>
+              <div className={cn("flex items-center justify-between border-t py-1.5 font-bold", Math.abs(countedCash - totals.net) > 0.01 ? "text-money-negative" : "text-money-positive")}>
+                <span>{Math.abs(countedCash - totals.net) > 0.01 ? "فرق العدّ — لا يمكن التسوية" : "النقد المعدود مطابق للصافي"}</span>
+                <span dir="ltr" className="tabular-nums">{fmt(String(countedCash - totals.net))} د.ع</span>
+              </div>
               {canRemit && (
-                <Button className="mt-3 w-full" onClick={submit} disabled={remit.isPending}>{remit.isPending ? "جارٍ…" : "تأكيد التسوية وتوريد الصافي"}</Button>
+                <Button className="mt-3 w-full" onClick={submit} disabled={remit.isPending || Math.abs(countedCash - totals.net) > 0.01}>{remit.isPending ? "جارٍ…" : "تأكيد التسوية وتوريد الصافي"}</Button>
               )}
             </div>
-            <CashCounter value={countedBreakdown} onChange={(c) => setCountedBreakdown(c)} />
+            <CashCounter value={countedBreakdown} onChange={(c, total) => { setCountedBreakdown(c); setCountedCash(Number(total)); }} />
           </div>
         </>
       )}

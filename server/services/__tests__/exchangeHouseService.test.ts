@@ -2,10 +2,12 @@
  * اختبارات وحدة «الصيرفة» (exchange-house) — السلامة المالية ثنائية العملة:
  *  1) CRUD + رصيد افتتاحي + حماية تعطيل صيرفة برصيد.
  *  2) إيداع (الخزينة ↓ عبر receipt OUT، محفظة الدينار ↑) — نقل أصل.
- *  3) شراء دولار (WAVG: متوسط كلفة مرجّح صحيح، دينار↓ دولار↑).
+ *  3) شراء دولار (نموذج الدَّين، قرار مالك ٣/٨): الصيرفة تُسلِّم الدولار فوراً ⇒ WAVG صحيح لدَينٍ
+ *     دولاريّ متعمّق (balanceUsd↓)، والدينار لا يُمسّ إطلاقاً.
  *  4) تسديد مورد بالدولار: محفظة الدولار ↓ + دين المورد ↓ + فرق صرف محقَّق + عمولة مصروف،
  *     **والخزينة لا تتأثّر** (سند EXCHANGE غير خزيني) — أهمّ ثابت محاسبي.
- *  5) منع المكشوف منعاً قطعياً؛ لا يمكن لأي تأكيد أن يخلق نقداً غير موجود.
+ *  5) المكشوف (سحب/شراء/تسديد) يُسمح به بتأكيد صريح — يُطلَب مرّةً واحدة فقط عند أوّل عبورٍ من
+ *     رصيدٍ غير سالب إلى سالب، لا عند كل عملية تُعمِّق دَيناً قائماً أصلاً (دَينٌ متجدّد طبيعي).
  *  6) كشف الحساب + المطابقة.
  */
 import { and, eq, sql } from "drizzle-orm";
@@ -153,28 +155,33 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     expect(await ledgerAmount("EXCHANGE_DEPOSIT", id)).toBe("2000000.00");
   });
 
-  it("شراء دولار: WAVG صحيح + دينار↓ دولار↑", async () => {
+  it("شراء دولار (نموذج الدَّين، قرار مالك ٣/٨): الصيرفة تُسلِّم الدولار فوراً ⇒ دَينٌ دولاريّ، الدينار لا يُمسّ، WAVG صحيح", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
-    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
-    // شراء ١٠٠٠$ بسعر ١٤٠٠ ⇒ يُنفَق ١٬٤٠٠٬٠٠٠ د.ع.
-    const r1 = await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400" }, actor);
+
+    // أوّل شراء يعبر من رصيدٍ صفريّ (غير سالب) إلى سالب ⇒ يلزم تأكيد التجاوز.
+    await expect(
+      buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400" }, actor),
+    ).rejects.toThrow();
+
+    const r1 = await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400", confirmNegative: true }, actor);
     expect(r1.newRate).toBe("1400.0000");
     let h = await getExchangeHouse(id);
-    expect(h?.balanceIqd).toBe("600000.00");
-    expect(h?.balanceUsd).toBe("1000.00");
+    expect(h?.balanceUsd).toBe("-1000.00"); // دَينٌ دولاريّ للصيرفة، لا أصلٌ مملوك
+    expect(h?.balanceIqd).toBe("0.00"); // لا يُمسّ إطلاقاً — لا تحويل داخل محفظة
 
-    // شراء ٥٠٠$ إضافية بسعر ١٤٦٠ ⇒ WAVG = (1000×1400 + 500×1460)/1500 = 2,130,000/1500 = 1420.
-    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "730000" }, actor);
+    // شراء ٥٠٠$ إضافية بسعر ١٤٦٠ — الرصيد سالبٌ أصلاً ⇒ بلا حاجة لتأكيدٍ إضافي (تعميق دَينٍ قائم لا عبور جديد).
+    // WAVG = (1000×1400 + 500×1460)/1500 = 2,130,000/1500 = 1420 (نفس حساب الترجيح، بإشارة الدَّين).
     const r2 = await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "500", exchangeRate: "1460" }, actor);
     expect(r2.newRate).toBe("1420.0000");
     h = await getExchangeHouse(id);
-    expect(h?.balanceUsd).toBe("1500.00");
+    expect(h?.balanceUsd).toBe("-1500.00");
+    expect(h?.balanceIqd).toBe("0.00");
   });
 
   it("تسديد مورد بالدولار: المحفظة ودين المورد ينخفضان + فرق صرف + عمولة، والخزينة لا تتأثّر", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
-    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400" }, actor);
+    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400", confirmNegative: true }, actor);
 
     const treasuryBefore = await treasuryBalance(1); // = -2,000,000 (الإيداع فقط)
 
@@ -189,8 +196,8 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     expect(res.voucherNumber).toMatch(/^PV-1-\d{8}-\d{5}$/);
 
     const h = await getExchangeHouse(id);
-    expect(h?.balanceUsd).toBe("90.00"); // 1000 − (900 + 10)
-    expect(h?.balanceIqd).toBe("600000.00"); // لم يتأثّر (التسديد بالدولار)
+    expect(h?.balanceUsd).toBe("-1910.00"); // -1000 − (900 + 10) — تعميق الدَّين الدولاري
+    expect(h?.balanceIqd).toBe("2000000.00"); // لم يتأثّر إطلاقاً (لا الشراء ولا التسديد بالدولار يمسّان الدينار)
 
     // دين المورد انخفض بمقدار المُسوّى فقط (1,300,000): 2,000,000 → 700,000.
     const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)).limit(1))[0];
@@ -216,7 +223,7 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     const actorB = { userId: 2, branchId: 1, role: "manager" as const };
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
-    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400" }, actor);
+    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400", confirmNegative: true }, actor);
     // تسويةٌ لاحقة تستهلك ٩٠٠$ من دولار الاقتناء (تُرحِّل EXCHANGE_FX_DIFF على WAVG وقتها).
     await settleSupplierViaExchange(
       { exchangeHouseId: id, branchId: 1, supplierId: 1, currency: "USD", walletAmount: "900", settledIqd: "1300000", commission: "10" },
@@ -253,19 +260,24 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     expect(await ledgerAmount("EXCHANGE_FEE", id)).toBe("5000.00");
   });
 
-  it("منع المكشوف: السحب الذي يتجاوز الرصيد يُرفض حتى مع confirmNegative", async () => {
+  it("سحب يتجاوز الرصيد (قرار مالك ٣/٨): يُرفض بلا تأكيد، ويُقبَل بتأكيد التجاوز (دَينٌ للصيرفة)، وتعميقه لاحقاً بلا تأكيدٍ إضافي", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "100000" }, actor);
 
     await expect(
       withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "150000" }, actor),
     ).rejects.toThrow();
+    let h = await getExchangeHouse(id);
+    expect(h?.balanceIqd).toBe("100000.00"); // لم يتغيّر بعد الرفض
 
-    await expect(
-      withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "150000", confirmNegative: true }, actor),
-    ).rejects.toThrow();
-    const h = await getExchangeHouse(id);
-    expect(h?.balanceIqd).toBe("100000.00");
+    await withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "150000", confirmNegative: true }, actor);
+    h = await getExchangeHouse(id);
+    expect(h?.balanceIqd).toBe("-50000.00"); // 100,000 − 150,000 (دَينٌ علينا للصيرفة)
+
+    // سحبٌ إضافي بعد الدخول بالسالب: تعميق دَينٍ قائم لا عبور جديد ⇒ بلا حاجة لتأكيدٍ.
+    await withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "20000" }, actor);
+    h = await getExchangeHouse(id);
+    expect(h?.balanceIqd).toBe("-70000.00");
   });
 
   it("idempotency: إيداع بنفس clientRequestId لا يُكرّر", async () => {
@@ -280,19 +292,19 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
   it("كشف الحساب + المطابقة: رصيد جارٍ ومطابقة بتاريخ القطع", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "1000000" }, actor);
-    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "500", exchangeRate: "1400" }, actor);
+    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "500", exchangeRate: "1400", confirmNegative: true }, actor);
 
     const st = await getExchangeStatement({ exchangeHouseId: id });
     expect(st?.transactions.length).toBe(2);
-    expect(st?.summary.currentBalanceIqd).toBe("300000.00"); // 1,000,000 − 700,000
-    expect(st?.summary.currentBalanceUsd).toBe("500.00");
+    expect(st?.summary.currentBalanceIqd).toBe("1000000.00"); // الشراء لا يمسّ الدينار إطلاقاً
+    expect(st?.summary.currentBalanceUsd).toBe("-500.00"); // دَينٌ دولاريّ (الصيرفة سلَّمته فوراً)
 
-    // مطابقة: رصيدنا 300,000 د.ع / 500$ مقابل ما يقوله الصرّاف.
-    const rec = await reconcileExchange({ exchangeHouseId: id, statedBalanceIqd: "300000", statedBalanceUsd: "500" });
+    // مطابقة: رصيدنا 1,000,000 د.ع / -500$ مقابل ما يقوله الصرّاف.
+    const rec = await reconcileExchange({ exchangeHouseId: id, statedBalanceIqd: "1000000", statedBalanceUsd: "-500" });
     expect(rec?.matched).toBe(true);
     expect(rec?.diffIqd).toBe("0.00");
 
-    const rec2 = await reconcileExchange({ exchangeHouseId: id, statedBalanceIqd: "250000", statedBalanceUsd: "500" });
+    const rec2 = await reconcileExchange({ exchangeHouseId: id, statedBalanceIqd: "950000", statedBalanceUsd: "-500" });
     expect(rec2?.matched).toBe(false);
     expect(rec2?.diffIqd).toBe("50000.00"); // رصيدنا أعلى بـ50,000 (بند معلّق لديهم)
   });
@@ -362,7 +374,7 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     await expect(approveExchangeDeposit(dep.txnId, actorB)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
-  it("سحب دولار مباشر: يخفض المحفظة فقط بلا تغيير WAVG ولا أثر دينار، ويُمنع المكشوف بتحذير", async () => {
+  it("سحب دولار مباشر: يخفض المحفظة بلا تغيير WAVG ولا أثر دينار، ويُسمح بتجاوزه بتأكيد (دَينٌ دولاريّ للصيرفة)", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositUsdApproved({ exchangeHouseId: id, branchId: 1, amount: "1000", currency: "USD", exchangeRate: "1500" });
     const treasuryBefore = await treasuryBalance(1);
@@ -374,15 +386,17 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     expect(h?.balanceIqd).toBe("0.00");
     expect(await treasuryBalance(1)).toBe(treasuryBefore); // بلا receipt
 
-    // سحب يتجاوز الرصيد الدولاري يُرفض حتى مع confirmNegative.
+    // سحب يتجاوز الرصيد الدولاري: يُرفض بلا تأكيد، ويُقبَل (دَينٌ دولاريّ للصيرفة) بتأكيد التجاوز.
     await expect(
       withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "800", currency: "USD" }, actor),
     ).rejects.toThrow();
-    await expect(
-      withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "800", currency: "USD", confirmNegative: true }, actor),
-    ).rejects.toThrow();
     h = await getExchangeHouse(id);
-    expect(h?.balanceUsd).toBe("700.00");
+    expect(h?.balanceUsd).toBe("700.00"); // لم يتغيّر بعد الرفض
+
+    await withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "800", currency: "USD", confirmNegative: true }, actor);
+    h = await getExchangeHouse(id);
+    expect(h?.balanceUsd).toBe("-100.00"); // 700 − 800
+    expect(h?.usdCostRate).toBe("1500.0000"); // WAVG لا يتغيّر بالسحب حتى عابراً للسالب
   });
 
   it("كشف الحساب: إجمالي الإيداع/السحب الدولاري المباشر لا يُخلط مع الديناري", async () => {
@@ -425,7 +439,7 @@ describe("exchange-house — تكامل التقارير والمطابقة (إ�
 
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
-    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400" }, actor);
+    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400", confirmNegative: true }, actor);
     await settleSupplierViaExchange(
       { exchangeHouseId: id, branchId: 1, supplierId: 1, currency: "USD", walletAmount: "900", settledIqd: "1300000", commission: "10" },
       actor,
@@ -437,7 +451,7 @@ describe("exchange-house — تكامل التقارير والمطابقة (إ�
   it("العمولة وفرق الصرف يظهران في قائمة الأرباح والخسائر", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
-    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400" }, actor);
+    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400", confirmNegative: true }, actor);
     await settleSupplierViaExchange(
       { exchangeHouseId: id, branchId: 1, supplierId: 1, currency: "USD", walletAmount: "900", settledIqd: "1300000", commission: "10" },
       actor,
@@ -496,34 +510,35 @@ describe("reverseExchangeTransaction — عكس عملية صيرفة (تدقي�
     await seed();
   });
 
-  it("عكس شراء دولار يُعيد اشتقاق WAVG والأرصدة من السجلّ النشط (يعالج تبعية المسار)", async () => {
+  it("عكس شراء دولار يُعيد اشتقاق WAVG من السجلّ النشط (نموذج الدَّين — الدينار لا يُمسّ إطلاقاً)", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "1000000", currency: "IQD" }, actor);
-    const b1 = await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "100", exchangeRate: "1500" }, actor);
-    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "100", exchangeRate: "1600" }, actor);
+    const b1 = await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "100", exchangeRate: "1500", confirmNegative: true }, actor);
+    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "100", exchangeRate: "1600" }, actor); // سالبٌ أصلاً ⇒ بلا تأكيدٍ إضافي
     let house = await getExchangeHouse(id);
-    expect(Number(house!.balanceUsd)).toBe(200);
+    expect(Number(house!.balanceUsd)).toBe(-200); // دَينٌ دولاريّ، لا أصل
     expect(Number(house!.usdCostRate)).toBe(1550); // (100×1500 + 100×1600)/200
+    expect(Number(house!.balanceIqd)).toBe(1000000); // لا يُمسّ إطلاقاً بأيّ من الشراءَين
 
     // عكس الشراء **الأول** (@1500) — يبقى الثاني فقط ⇒ WAVG=1600 (إثبات إعادة الاشتقاق لا عكسٍ خطّيّ).
     const res = await reverseExchangeTransaction(b1.txnId, reverser);
     expect(res.status).toBe("REVERSED");
     house = await getExchangeHouse(id);
-    expect(Number(house!.balanceUsd)).toBe(100);
+    expect(Number(house!.balanceUsd)).toBe(-100);
     expect(Number(house!.usdCostRate)).toBe(1600);
-    expect(Number(house!.balanceIqd)).toBe(840000); // 1000000 − 160000 (الثاني فقط)
+    expect(Number(house!.balanceIqd)).toBe(1000000); // ما زال بلا تغيير
 
     const [t] = await db().select().from(s.exchangeTransactions).where(eq(s.exchangeTransactions.id, b1.txnId));
     expect(t.status).toBe("REVERSED");
     const rev = await db().select().from(s.accountingEntries).where(sql`${s.accountingEntries.dedupeKey} LIKE 'EXREV:%'`);
     expect(rev).toHaveLength(1);
-    expect(Number(rev[0].amount)).toBe(-150000); // عكس iqdSpent للشراء الأول
+    expect(Number(rev[0].amount)).toBe(-150000); // عكس iqdSpent للشراء الأول (القيمة الإعلامية في الدفتر لم تتغيّر)
   });
 
   it("عكس تسديد مورد يعيد دين المورد ورصيد المحفظة، ويعكس قيود الكشف، وWAVG بلا تغيير", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000", currency: "IQD" }, actor);
-    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400" }, actor); // WAVG 1400
+    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400", confirmNegative: true }, actor); // WAVG 1400، دَينٌ دولاريّ -1000
     const st = await settleSupplierViaExchange(
       { exchangeHouseId: id, branchId: 1, supplierId: 1, currency: "USD", walletAmount: "500", settledIqd: "750000", commission: "10", exchangeRate: "1400" },
       actor,
@@ -535,8 +550,9 @@ describe("reverseExchangeTransaction — عكس عملية صيرفة (تدقي�
     sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(Number(sup.currentBalance)).toBe(2000000); // الدين استُعيد
     const house = await getExchangeHouse(id);
-    expect(Number(house!.balanceUsd)).toBe(1000); // 490 + 510 (مبدأ+عمولة)
+    expect(Number(house!.balanceUsd)).toBe(-1000); // يعود لحال ما بعد الشراء فقط (قبل التسديد)
     expect(Number(house!.usdCostRate)).toBe(1400); // الصرف لا يمسّ المعدّل
+    expect(Number(house!.balanceIqd)).toBe(2000000); // لم يُمسّ طوال العملية (شراء ثم تسديد بالدولار)
     const stmt = await getExchangeStatement({ exchangeHouseId: id });
     expect(stmt?.summary.totalSettledIqd).toBe("0.00"); // المعكوسة مُستثناة من الإجماليات
     const [voucher] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(st.receiptId)));
@@ -559,7 +575,7 @@ describe("reverseExchangeTransaction — عكس عملية صيرفة (تدقي�
   it("فصل المهام: المُنشئ لا يعكس عمليته بنفسه؛ ومنفِّذٌ آخر يمرّ؛ والعكس المزدوج مرفوض", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "1000000", currency: "IQD" }, actor);
-    const b = await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "100", exchangeRate: "1500" }, actor);
+    const b = await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "100", exchangeRate: "1500", confirmNegative: true }, actor);
     await expect(reverseExchangeTransaction(b.txnId, actor)).rejects.toThrow(/فصل المهام/); // actor = المُنشئ
     await reverseExchangeTransaction(b.txnId, reverser); // منفِّذٌ آخر ⇒ يمرّ
     await expect(reverseExchangeTransaction(b.txnId, reverser)).rejects.toThrow(/معكوسة سابقاً/);

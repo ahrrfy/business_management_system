@@ -100,7 +100,7 @@ export function printTransferDoc(d: TransferDocData): boolean {
 
   const table = docTableV2(
     [
-      { key: "item", label: "الصنف", width: 210 },
+      { key: "item", label: "المنتج", width: 210 },
       { key: "sku", label: "SKU", width: 90 },
       { key: "sent", label: "المرسَل", width: 70, emphasize: true },
       { key: "received", label: "المستلَم فعلياً", width: 90 },

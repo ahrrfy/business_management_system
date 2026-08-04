@@ -4,23 +4,35 @@ import { useMemo, useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
+/** اليوم YYYY-MM-DD محلياً — لا toISOString (ينزاح قرب منتصف الليل ببغداد UTC+3). */
+function todayYmd(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+}
+
 type Pos = RouterOutputs["reports"]["financialPosition"];
 
 const NOTE =
-  "ميزانية مبسّطة/مشتقّة (بانتظار دليل حسابات كامل): المقبوضات المعتمدة مصنفة حسب وسيلة الدفع ولا تُعامل البطاقات والتحويلات والشيكات والمحافظ كنقد بالصندوق، الأصول بالتكلفة (بلا إهلاك متراكم)، وحقوق الملكية = الأصول − الخصوم. الذمم على مستوى الشركة؛ وسائل الدفع والمخزون حسب الفرع.";
+  "ميزانية مبسّطة/مشتقّة (بانتظار دليل حسابات كامل): المقبوضات المعتمدة مصنفة حسب وسيلة الدفع ولا تُعامل البطاقات والتحويلات والصكوك والمحافظ كنقد بالصندوق، الأصول بالتكلفة (بلا إهلاك متراكم)، وحقوق الملكية = الأصول − الخصوم. الذمم على مستوى الشركة؛ وسائل الدفع والمخزون حسب الفرع.";
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function BalanceSheet() {
   const [branchId, setBranchId] = useState<number | "">("");
+  // «كما في تاريخ» — فارغ يعني اللقطة الحيّة الآن (بلا تغيير سلوكيّ افتراضاً).
+  const [asOf, setAsOf] = useState("");
   const branches = trpc.branches.list.useQuery();
-  const q = trpc.reports.financialPosition.useQuery({ branchId: branchId ? Number(branchId) : undefined });
+  const q = trpc.reports.financialPosition.useQuery({
+    branchId: branchId ? Number(branchId) : undefined,
+    asOf: asOf || undefined,
+  });
   const p = q.data;
 
   const sections = useMemo(() => {
@@ -28,7 +40,7 @@ export default function BalanceSheet() {
     const assets = [
       { label: "النقد المقبوض فعلياً", v: p.cash },
       { label: "مقبوضات البطاقات", v: p.card },
-      { label: "الشيكات المقبوضة", v: p.check },
+      { label: "الصكوك المقبوضة", v: p.check },
       { label: "التحويلات المصرفية", v: p.transfer },
       { label: "المحافظ الإلكترونية", v: p.wallet },
       { label: "الذمم المدينة (عملاء)", v: p.arDebit },
@@ -83,10 +95,10 @@ export default function BalanceSheet() {
     printReportDoc({
       title: "الميزانية العمومية",
       headerExtra: [
-        { label: "كما في", value: fmtDate(new Date()) },
+        { label: "كما في", value: p.asOf ? fmtDate(new Date(`${p.asOf}T00:00:00`)) : fmtDate(new Date()) },
         { label: "الفرع", value: branchLabel },
       ],
-      note: NOTE,
+      note: p.historicalNote ? `${NOTE} ${p.historicalNote}` : NOTE,
       columns: [
         { key: "label", label: "البند" },
         { key: "amount", label: "القيمة", align: "left" },
@@ -105,19 +117,25 @@ export default function BalanceSheet() {
     <ReportShell
       title="الميزانية العمومية"
       description="لقطة مبسّطة: أصول / خصوم / حقوق ملكية."
-      note={NOTE}
+      note={p?.historicalNote ? `${NOTE} ${p.historicalNote}` : NOTE}
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
       exportDisabled={!p}
       printDisabled={!p}
       filters={
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-muted-foreground">الفرع</label>
-          <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
-            <option value="">الكل (الشركة)</option>
-            {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-          </select>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">الفرع</label>
+            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+              <option value="">الكل (الشركة)</option>
+              {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">كما في تاريخ</label>
+            <Input type="date" dir="ltr" value={asOf} max={todayYmd()} onChange={(e) => setAsOf(e.target.value)} className="h-9 w-40" />
+          </div>
         </div>
       }
     >

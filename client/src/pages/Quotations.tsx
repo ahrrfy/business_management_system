@@ -1,4 +1,6 @@
 import { CopyInline } from "@/components/CopyButton";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ListToolbar, RowActions } from "@/components/list";
@@ -6,18 +8,20 @@ import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { allocateLineTax } from "@/components/invoice";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { trpc } from "@/lib/trpc";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { useState } from "react";
+import { useMemo } from "react";
 
 const STATUS: Record<string, string> = {
-  DRAFT: "مسودّة",
+  DRAFT: "مسوّدة",
   SENT: "مُرسَل",
   ACCEPTED: "مقبول",
   REJECTED: "مرفوض",
@@ -33,8 +37,7 @@ const STATUS_CLS: Record<string, string> = {
   EXPIRED: "badge-stock-low",
 };
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+type Row = RouterOutputs["quotations"]["list"]["rows"][number];
 
 export default function Quotations() {
   const utils = trpc.useUtils();
@@ -43,22 +46,34 @@ export default function Quotations() {
   const me = trpc.auth.me.useQuery();
   const canManage = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "sales", "FULL", ["manager"]);
-  const [q, setQ] = useState("");
-  // فلاتر خادمية: فترة createdAt + الحالة (لا فلترة محلية تُخفي صفحات الخادم).
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [status, setStatus] = useState("");
+  // فلتر الفرع للمرتفعين فقط — غير المرتفع محصور بفرعه خادمياً (scopedBranchId) بصرف النظر عمّا يُختار هنا.
+  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: isElevated });
 
-  // البحث خادمي الآن (q ممهَّل): رقم العرض/اسم العميل/الملاحظات عبر كل النتائج لا المُحمَّل فقط.
-  const dq = useDebouncedValue(q, 250);
-  const listInput = {
-    from: from || undefined,
-    to: to || undefined,
-    status: (status || undefined) as "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED" | undefined,
-    q: dq.trim() || undefined,
-  };
-  const rows = trpc.quotations.list.useQuery({ ...listInput, limit: 200 });
-  const items = rows.data ?? [];
+  // فلاتر خادمية محفوظة في querystring (تعيش مع فتح التفاصيل والرجوع) — لا فلترة محلية تُخفي صفحات الخادم.
+  const [f, setF, resetF] = useUrlFilters({ from: "", to: "", status: "", branchId: "", q: "" });
+
+  // البحث خادمي (q ممهَّل): رقم العرض/اسم العميل/الملاحظات عبر كل النتائج لا المُحمَّل فقط.
+  const dq = useDebouncedValue(f.q, 250);
+  const listInput = useMemo(
+    () => ({
+      from: f.from || undefined,
+      to: f.to || undefined,
+      status: (f.status || undefined) as "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED" | undefined,
+      branchId: f.branchId ? Number(f.branchId) : undefined,
+      q: dq.trim() || undefined,
+    }),
+    [f.from, f.to, f.status, f.branchId, dq],
+  );
+  const activeFilterCount = [f.from || f.to, f.status, isElevated ? f.branchId : ""].filter(Boolean).length;
+
+  // ٣/٨: cursor/hasMore بدل الاقتطاع الصامت عند ٢٠٠ (كان limit ثابتاً بلا زرّ استكمال) — «تحميل
+  // المزيد» يجلب الصفحة التالية عبر nextCursor (نمط TransfersLog.tsx).
+  const rows = trpc.quotations.list.useInfiniteQuery(
+    { ...listInput, limit: 100 },
+    { getNextPageParam: (last) => last.nextCursor },
+  );
+  const items = useMemo(() => (rows.data?.pages ?? []).flatMap((p) => p.rows), [rows.data]);
 
   // «وضع مُرسَل» من القائمة مباشرة (DRAFT → SENT فقط؛ بقية الانتقالات من شاشة العرض).
   const setStatusMut = trpc.quotations.setStatus.useMutation({
@@ -116,26 +131,45 @@ export default function Quotations() {
             count={items.length}
             loading={rows.isLoading}
             search={{
-              value: q,
-              onChange: setQ,
+              value: f.q,
+              onChange: (v) => setF({ q: v }),
               placeholder: "بحث (رقم العرض/العميل/ملاحظات)",
             }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetF}
             filters={
               <>
-                <Input type="date" dir="ltr" className="h-8 w-36" value={from} onChange={(e) => setFrom(e.target.value)} title="من تاريخ" />
-                <Input type="date" dir="ltr" className="h-8 w-36" value={to} onChange={(e) => setTo(e.target.value)} title="إلى تاريخ" />
-                <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)}>
-                  <option value="">— كل الحالات —</option>
+                <Input type="date" dir="ltr" className="h-8 w-36" value={f.from} onChange={(e) => setF({ from: e.target.value })} title="من تاريخ" />
+                <Input type="date" dir="ltr" className="h-8 w-36" value={f.to} onChange={(e) => setF({ to: e.target.value })} title="إلى تاريخ" />
+                <AppSelect size="sm" className="h-8 w-40" value={f.status || "ALL"} onValueChange={(v) => setF({ status: v === "ALL" ? "" : v })}>
+                  <option value="ALL">— كل الحالات —</option>
                   {Object.entries(STATUS).map(([k, v]) => (
                     <option key={k} value={k}>{v}</option>
                   ))}
-                </select>
+                </AppSelect>
+                {isElevated && (
+                  <AppSelect size="sm" className="h-8 w-40" value={f.branchId || "ALL"} onValueChange={(v) => setF({ branchId: v === "ALL" ? "" : v })}>
+                    <option value="ALL">— كل الفروع —</option>
+                    {(branches.data ?? []).map((b) => (
+                      <option key={b.id} value={String(b.id)}>{b.name}</option>
+                    ))}
+                  </AppSelect>
+                )}
               </>
             }
             exportSpec={{
               filename: "عروض الأسعار",
               rows: items,
-              fetchAll: () => utils.quotations.list.fetch({ ...listInput, limit: 100000 }).then((arr) => arr ?? []),
+              // كل الصفحات المطابقة للفلتر (لا المُحمَّل على الشاشة فقط) — offset يعمل حين لا cursor
+              // يُمرَّر (توافق عَكسي في paginateKeyset)، فتُغطّى كل الصفوف مهما كثرت.
+              fetchAll: () =>
+                fetchAllPaged<Row>(
+                  (offset, limit) =>
+                    utils.quotations.list
+                      .fetch({ ...listInput, limit, offset })
+                      .then((r) => ({ rows: (r.rows ?? []) as Row[] })),
+                  { pageSize: 200 },
+                ),
               columns: [
                 { key: "quoteNumber", header: "رقم العرض" },
                 { key: "customerName", header: "العميل" },
@@ -230,6 +264,13 @@ export default function Quotations() {
             </tbody>
           </table>
           </ScrollTableShell>
+          {rows.hasNextPage && (
+            <div className="border-t p-3 text-center">
+              <Button variant="outline" size="sm" onClick={() => void rows.fetchNextPage()} disabled={rows.isFetchingNextPage}>
+                {rows.isFetchingNextPage ? "جارٍ التحميل…" : "تحميل المزيد"}
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

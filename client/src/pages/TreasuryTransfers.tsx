@@ -10,7 +10,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { type ColumnDef } from "@tanstack/react-table";
 import { ArrowDownLeft, ArrowUpRight, Send, Check, X, Plus, ArrowRight } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { RowActions } from "@/components/list";
 
@@ -51,6 +51,8 @@ interface TransferRow {
   notes: string | null;
 }
 
+const PAGE = 50;
+
 export default function TreasuryTransfers() {
   const [tab, setTab] = useState<Tab>("outgoing");
   const [status, setStatus] = useState<Status>("");
@@ -58,6 +60,9 @@ export default function TreasuryTransfers() {
   const [receivingId, setReceivingId] = useState<number | null>(null);
   const [cancellingId, setCancellingId] = useState<number | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  // ترقيم فعلي — كان offset مثبَّتاً على صفر صامتاً (٥٠ الأحدث فقط بلا تصفّح لما قبلها).
+  // limit+1 يكشف hasMore دون تعديل عقد الراوتر (يعيد مصفوفة صرفة كما هو).
+  const [page, setPage] = useState(0);
 
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
@@ -65,9 +70,12 @@ export default function TreasuryTransfers() {
   const list = trpc.cashTransfers.list.useQuery({
     direction: tab === "all" ? "ALL" : tab === "incoming" ? "INCOMING" : "OUTGOING",
     status: status || undefined,
-    limit: 50,
-    offset: 0,
+    limit: PAGE + 1,
+    offset: page * PAGE,
   });
+  const rows = ((list.data ?? []) as TransferRow[]).slice(0, PAGE);
+  const hasMore = (list.data?.length ?? 0) > PAGE;
+  useEffect(() => { setPage(0); }, [tab, status]);
 
   const cancelMut = trpc.cashTransfers.cancel.useMutation({
     onSuccess: () => {
@@ -241,13 +249,20 @@ export default function TreasuryTransfers() {
       <Card className="p-4">
         <div className="overflow-x-auto">
           <DataTable
-            data={(list.data ?? []) as TransferRow[]}
+            data={rows}
             columns={cols}
             loading={list.isLoading}
             emptyText={tab === "incoming" ? "لا تحويلات واردة." : tab === "outgoing" ? "لا تحويلات صادرة." : "لا تحويلات."}
             searchable={false}
-            pageSize={20}
+            pageSize={PAGE}
           />
+        </div>
+        <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+          <span dir="ltr">{rows.length === 0 ? "لا صفوف" : `${page * PAGE + 1}–${page * PAGE + rows.length}`}</span>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>السابق</Button>
+            <Button variant="outline" size="sm" disabled={!hasMore} onClick={() => setPage((p) => p + 1)}>التالي</Button>
+          </div>
         </div>
       </Card>
 

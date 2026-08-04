@@ -21,8 +21,9 @@ import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { Plus } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 type BranchRow = RouterOutputs["branches"]["adminList"][number];
 type BranchType = "MAIN" | "SALES";
@@ -47,6 +48,35 @@ export default function Branches() {
   const [fAddress, setFAddress] = useState("");
   const [fPhone, setFPhone] = useState("");
 
+  // خط أساس الحوار عند فتحه (إضافة=فارغ، تعديل=قيم الفرع الأصلية) — يقارَن بالحالة الحالية
+  // لتحديد وجود تعديلات غير محفوظة، فيُحذَّر منها عند إغلاق الحوار بنقرة خارجية/Esc بدل إغلاقه صامتاً.
+  const formBaselineRef = useRef({ name: "", code: "", type: "SALES" as BranchType, address: "", phone: "" });
+  const isFormDirty =
+    fName !== formBaselineRef.current.name ||
+    fCode !== formBaselineRef.current.code ||
+    fType !== formBaselineRef.current.type ||
+    fAddress !== formBaselineRef.current.address ||
+    fPhone !== formBaselineRef.current.phone;
+  useUnsavedGuard(formOpen && isFormDirty);
+  const closeGuardBusyRef = useRef(false);
+  async function requestFormClose() {
+    if (!isFormDirty) { setFormOpen(false); return; }
+    if (closeGuardBusyRef.current) return;
+    closeGuardBusyRef.current = true;
+    try {
+      const ok = await confirm({
+        variant: "warning",
+        title: "إغلاق النموذج",
+        description: "توجد تعديلات غير محفوظة على الفرع — ستُفقد عند الإغلاق. هل تتابع؟",
+        confirmText: "إغلاق بلا حفظ",
+        cancelText: "بقاء",
+      });
+      if (ok) setFormOpen(false);
+    } finally {
+      closeGuardBusyRef.current = false;
+    }
+  }
+
   function invalidateAll() {
     void utils.branches.adminList.invalidate();
     void utils.branches.list.invalidate();
@@ -68,11 +98,13 @@ export default function Branches() {
   function openAdd() {
     setEditId(null);
     setFName(""); setFCode(""); setFType("SALES"); setFAddress(""); setFPhone("");
+    formBaselineRef.current = { name: "", code: "", type: "SALES", address: "", phone: "" };
     setFormOpen(true);
   }
   function openEdit(b: BranchRow) {
     setEditId(b.id);
     setFName(b.name); setFCode(b.code); setFType(b.type); setFAddress(b.address ?? ""); setFPhone(b.phone ?? "");
+    formBaselineRef.current = { name: b.name, code: b.code, type: b.type, address: b.address ?? "", phone: b.phone ?? "" };
     setFormOpen(true);
   }
   function submitForm() {
@@ -193,7 +225,7 @@ export default function Branches() {
         </CardContent>
       </Card>
 
-      <Dialog open={formOpen} onOpenChange={setFormOpen}>
+      <Dialog open={formOpen} onOpenChange={(open) => { if (open) setFormOpen(true); else void requestFormClose(); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{editId == null ? "إضافة فرع" : "تعديل فرع"}</DialogTitle>
@@ -231,7 +263,7 @@ export default function Branches() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
+            <Button variant="outline" size="sm" onClick={() => void requestFormClose()}>إلغاء</Button>
             <Button size="sm" onClick={submitForm} disabled={createMut.isPending || updateMut.isPending}>
               {createMut.isPending || updateMut.isPending ? "جارٍ الحفظ…" : "حفظ"}
             </Button>

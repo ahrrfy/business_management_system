@@ -48,6 +48,11 @@ interface CustomerSummary {
   isFrequent?: boolean;
 }
 
+const looksLikePhone = (text: string) => {
+  const compact = text.replace(/[\s()+-]/g, "");
+  return /^\d{6,15}$/.test(compact);
+};
+
 export function SmartCustomerInput({ value, onChange, placeholder, className }: SmartCustomerInputProps) {
   const [q, setQ] = useState(value.name || "");
   const [open, setOpen] = useState(false);
@@ -76,6 +81,15 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
 
   const suggestions = (summary.data ?? []) as CustomerSummary[];
 
+  useEffect(() => {
+    if (!value.isNew || !value.phone) return;
+    const digits = value.phone.replace(/\D/g, "");
+    const exact = suggestions.find((candidate) => (candidate.phone ?? "").replace(/\D/g, "") === digits);
+    if (exact) selectCustomer(exact);
+  // selectCustomer intentionally uses the current onChange; suggestions are the trigger.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestions, value.isNew, value.phone]);
+
   const noMatch = enabled && !summary.isLoading && suggestions.length === 0;
 
   function selectCustomer(c: CustomerSummary) {
@@ -85,7 +99,8 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
   }
 
   function selectAsNew() {
-    onChange({ customerId: null, name: trimmed, phone: null, isNew: true });
+    const phone = looksLikePhone(trimmed) ? trimmed : null;
+    onChange({ customerId: null, name: trimmed, phone, isNew: true });
     setOpen(false);
   }
 
@@ -122,15 +137,18 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
             const v = e.target.value;
             setQ(v);
             setOpen(true);
-            // أيّ تعديل يفقد ربط العميل القائم؛ يبقى الاسم فقط كـ«جديد محتمل».
-            if (value.customerId) {
-              onChange({ customerId: null, name: v, phone: null, isNew: v.trim().length > 0 });
-            } else {
-              onChange({ customerId: null, name: v, phone: null, isNew: v.trim().length > 0 });
-            }
+            // أي تعديل يصبح مسوّدة فعلية للحفظ. الرقم يُحفظ كهاتف لا كاسم صامت.
+            const typed = v.trim();
+            const phone = looksLikePhone(typed) ? typed : null;
+            onChange({
+              customerId: null,
+              name: v,
+              phone,
+              isNew: typed.length > 0,
+            });
           }}
           onFocus={() => setOpen(true)}
-          placeholder={placeholder || "ابحث بالاسم أو الرقم — يتعرّف على الزبائن السابقين"}
+          placeholder={placeholder || "ابحث بالاسم أو الرقم — يتعرّف على العملاء السابقين"}
           aria-autocomplete="list"
           aria-expanded={open}
         />

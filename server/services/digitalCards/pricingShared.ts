@@ -25,10 +25,17 @@ export interface SheetScope {
   businessDate: string;
 }
 
+export interface PriceDraftScope extends SheetScope {
+  /** مبرّر قرار السعر؛ يثبت مع الدفعة المنشورة ويخدم التدقيق اللاحق. */
+  changeReason?: string | null;
+}
+
 export interface DraftLineInput {
   offeringId: number;
-  /** حصة المزوّد (تكلفة الجهاز) — المدخل الوحيد؛ سعر البيع يُشتقّ خادمياً. */
+  /** تكلفة البطاقة عند المزوّد؛ هي التي تُخصم من المحفظة عند البيع. */
   providerShare: string;
+  /** سعر البيع للجمهور. القديم اختياري للتوافق، أما الواجهة الحالية فترسله دائماً. */
+  sellPrice?: string;
 }
 
 /** قواعد تسعير عرضٍ ما — تُقرأ من التعريف لا من العميل. */
@@ -102,18 +109,47 @@ export async function activeOfferings(
 }
 
 /** يحسب السعر من الحصة + قواعد العرض، ويرفض هامشاً دون الحدّ الأدنى. */
-export function priceFor(rules: OfferingRules, providerShare: string, enforceMinimum: boolean) {
+export function priceFor(
+  rules: OfferingRules,
+  providerShare: string,
+  sellPrice: string | undefined,
+  enforceMinimum: boolean,
+) {
   const share = money(providerShare);
   if (share.lt(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: `حصة المزوّد لا تكون سالبة — «${rules.name}»` });
   }
-  const r = computeSellPrice({
-    pricingMode: rules.pricingMode,
-    providerShare: toDbMoney(share),
-    fixedMargin: rules.fixedMargin,
-    marginPercent: rules.marginPercent,
-    roundingStep: rules.roundingStep,
-  });
+  // التسعير المباشر هو المسار المعتاد: تكلفة + سعر بيع واضحان. نُبقي اشتقاق
+  // القاعدة القديمة فقط لطلبات متوافقة أقدم لم ترسل سعر البيع بعد.
+  const r =
+    sellPrice != null
+      ? (() => {
+          const sell = money(sellPrice);
+          if (sell.lt(0)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `سعر البيع لا يكون سالباً — «${rules.name}»`,
+            });
+          }
+          return {
+            providerShare: toDbMoney(share),
+            sellPrice: toDbMoney(sell),
+            marginAmount: toDbMoney(sell.minus(share)),
+          };
+        })()
+      : computeSellPrice({
+          pricingMode: rules.pricingMode,
+          providerShare: toDbMoney(share),
+          fixedMargin: rules.fixedMargin,
+          marginPercent: rules.marginPercent,
+          roundingStep: rules.roundingStep,
+        });
+  if (enforceMinimum && money(r.marginAmount).lt(0)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `سعر بيع «${rules.name}» أقل من تكلفة الشراء — لا يُنشر سعر بخسارة`,
+    });
+  }
   if (enforceMinimum && money(r.marginAmount).lt(money(rules.minimumMargin))) {
     throw new TRPCError({
       code: "BAD_REQUEST",

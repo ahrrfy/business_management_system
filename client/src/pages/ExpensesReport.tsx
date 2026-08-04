@@ -2,10 +2,13 @@
 // عرض (تبويبان) + تصدير Excel + طباعة A4 (ReportShell + PeriodFilter + printReportDoc).
 // ⚠️ يشمل المصروفات الفعّالة فقط (expenseStatus='ACTIVE') ضمن تاريخ المصروف.
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
+import { ExternalLink } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { exportRows } from "@/lib/export";
@@ -14,7 +17,10 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 type ER = RouterOutputs["reports"]["expensesReport"];
 type Tab = "category" | "payee";
 
-const NOTE = "يشمل المصروفات الفعّالة (غير الملغاة) ضمن تاريخ المصروف. حسب الفرع المحدّد. أكبر ٢٠ جهة صرف.";
+// حدّ جهات الصرف — كان صلباً ٢٠ صامتاً؛ الآن أعلى بكثير (الخادم يقبل حتى ٢٠٠).
+const PAYEE_LIMIT = 100;
+
+const NOTE = `يشمل المصروفات الفعّالة (غير الملغاة) ضمن تاريخ المصروف. حسب الفرع المحدّد. أعلى ${PAYEE_LIMIT} جهة صرف.`;
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -27,6 +33,7 @@ export default function ExpensesReport() {
     from: period.from,
     to: period.to,
     branchId: branchId ? Number(branchId) : undefined,
+    payeeLimit: PAYEE_LIMIT,
   });
   const er: ER | undefined = q.data;
 
@@ -34,7 +41,7 @@ export default function ExpensesReport() {
     ? [
         { label: "إجمالي المصروفات", value: fmtAr(er.total), tone: "warning" },
         { label: "عدد الفئات", value: String(er.byCategory.length), tone: "info" },
-        { label: "جهات الصرف (أعلى ٢٠)", value: String(er.byPayee.length), tone: "info" },
+        { label: `جهات الصرف (أعلى ${PAYEE_LIMIT})`, value: String(er.byPayee.length), tone: "info" },
       ]
     : [];
 
@@ -91,6 +98,16 @@ export default function ExpensesReport() {
       onPrint={onPrint}
       exportDisabled={!er}
       printDisabled={!er}
+      actions={
+        // شاشة سجلّ المصروفات لا تقرأ فلاتر من الرابط (لا q/from/to في URL) — رابطٌ بسيط بلا
+        // تمرير معاملات بدل ادّعاء «فتح مفلتَر» لا يعمل فعلياً.
+        <Link href="/expenses">
+          <Button variant="outline" size="sm" className="gap-1.5">
+            <ExternalLink aria-hidden className="size-3.5" />
+            فتح سجلّ المصروفات
+          </Button>
+        </Link>
+      }
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <PeriodFilter value={period} onChange={setPeriod} />

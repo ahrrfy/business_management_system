@@ -10,7 +10,8 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { createWorkOrder, startWorkOrder, markWorkOrderReady, deliverWorkOrder } from "../workOrderService";
-import { openShift } from "../shiftService";
+import { getShiftReport, openShift } from "../shiftService";
+import { checkoutReception } from "../receptionCheckoutService";
 
 const actor = { userId: 1, branchId: 1 };
 const adminCtx = { req: { headers: {}, ip: "127.0.0.1" } as any, res: { cookie() {}, clearCookie() {} } as any, user: { id: 1, role: "admin", branchId: 1 } as any };
@@ -41,6 +42,7 @@ async function seedBase() {
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PAP-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
   await d.insert(s.productPrices).values([{ productUnitId: 1, priceTier: "RETAIL", price: "10.00" }]);
+  await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 20 });
 }
 beforeEach(async () => { await reset(); await seedBase(); });
 
@@ -65,6 +67,159 @@ describe("تسليم أمر خدمة خالص (بلا منتج أساس) — ك�
   });
 });
 
+describe("ذرّية سلة الاستقبال المختلطة", () => {
+  it("فشل أمر الشغل بعد إنشاء البيع يعيد الفاتورة والقبض والمخزون بالكامل", async () => {
+    const opened = await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
+      { ...actor, role: "admin" },
+    );
+
+    await expect(checkoutReception({
+      branchId: 1,
+      shiftId: opened.shiftId,
+      paymentMethod: "CASH",
+      clientRequestId: "reception-atomic-rollback",
+      regularSale: {
+        amount: "10.00",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      workOrders: [{
+        baseVariantId: 999999,
+        title: "أمر يفشل بعد البيع",
+        quantity: 1,
+        salePrice: "25.00",
+        deposit: "0",
+        paymentMethod: null,
+      }],
+    }, { ...actor, role: "admin" })).rejects.toThrow();
+
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await db().select().from(s.workOrders)).toHaveLength(0);
+    const stock = (await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0];
+    expect(Number(stock.quantity)).toBe(20);
+  });
+
+  it("إعادة رد عملية ملتزمة تبقى آمنة حتى بعد إغلاق الوردية", async () => {
+    const opened = await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
+      { ...actor, role: "admin" },
+    );
+    const input = {
+      branchId: 1,
+      shiftId: opened.shiftId,
+      paymentMethod: "CASH" as const,
+      clientRequestId: "reception-atomic-replay",
+      regularSale: {
+        amount: "10.00",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      workOrders: [{
+        baseVariantId: null,
+        title: "تصميم آمن الإعادة",
+        quantity: 1,
+        salePrice: "25.00",
+        deposit: "0",
+        paymentMethod: null,
+      }],
+    };
+    const first = await checkoutReception(input, { ...actor, role: "admin" });
+    await db().update(s.shifts).set({ status: "CLOSED", openGuard: null }).where(eq(s.shifts.id, opened.shiftId));
+    const replay = await checkoutReception(input, { ...actor, role: "admin" });
+
+    expect(replay.regularSale?.invoiceId).toBe(first.regularSale?.invoiceId);
+    expect(replay.workOrders[0].workOrderId).toBe(first.workOrders[0].workOrderId);
+    expect(await db().select().from(s.invoices)).toHaveLength(1);
+    expect(await db().select().from(s.workOrders)).toHaveLength(1);
+    expect(await db().select().from(s.receipts)).toHaveLength(1);
+    const stock = (await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0];
+    expect(Number(stock.quantity)).toBe(19);
+  });
+
+  it("عربون التحويل يُسجّل بمرجعه ولا يدخل عدّ النقدية", async () => {
+    const opened = await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
+      { ...actor, role: "admin" },
+    );
+    const result = await checkoutReception({
+      branchId: 1,
+      shiftId: opened.shiftId,
+      paymentMethod: "TRANSFER",
+      paymentReference: "TRX-WO-1001",
+      clientRequestId: "reception-transfer-deposit",
+      workOrders: [{
+        baseVariantId: null,
+        title: "عمل بعربون تحويل",
+        quantity: 1,
+        salePrice: "100.00",
+        deposit: "40.00",
+        paymentMethod: "TRANSFER",
+        paymentReference: "TRX-WO-1001",
+      }],
+    }, { ...actor, role: "admin" });
+
+    const order = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, result.workOrders[0].workOrderId)))[0];
+    expect(order.paymentMethod).toBe("TRANSFER");
+    expect(order.paymentReference).toBe("TRX-WO-1001");
+    const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.workOrderId, order.id)))[0];
+    expect(receipt.paymentMethod).toBe("TRANSFER");
+    expect(receipt.referenceNumber).toBe("TRX-WO-1001");
+    expect(receipt.cashBucket).toBeNull();
+    const report = await getShiftReport(opened.shiftId);
+    expect(report.expectedCash).toBe("0.00");
+  });
+
+  it("المبلغ الواحد يغطي البيع ثم ينساب على أكثر من أمر شغل بلا تجاوز أي بند", async () => {
+    const opened = await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
+      { ...actor, role: "admin" },
+    );
+    const result = await checkoutReception({
+      branchId: 1,
+      shiftId: opened.shiftId,
+      paymentMethod: "CARD",
+      paymentReference: "CARD-MIX-42",
+      paidAmount: "42.00",
+      clientRequestId: "reception-global-payment",
+      regularSale: {
+        amount: "10.00",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      workOrders: [
+        { baseVariantId: null, title: "التخصيص الأول", quantity: 1, salePrice: "25.00" },
+        { baseVariantId: null, title: "التخصيص الثاني", quantity: 1, salePrice: "30.00" },
+      ],
+    }, { ...actor, role: "admin" });
+
+    const first = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, result.workOrders[0].workOrderId)))[0];
+    const second = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, result.workOrders[1].workOrderId)))[0];
+    expect(first.deposit).toBe("25.00");
+    expect(second.deposit).toBe("7.00");
+    expect(first.paymentMethod).toBe("CARD");
+    expect(second.paymentReference).toBe("CARD-MIX-42");
+  });
+
+  it("الخادم يرفض دفعة لا تغطي البيع المباشر حتى لو وُجدت أوامر طباعة", async () => {
+    const opened = await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
+      { ...actor, role: "admin" },
+    );
+    await expect(checkoutReception({
+      branchId: 1,
+      shiftId: opened.shiftId,
+      paymentMethod: "CASH",
+      paidAmount: "5.00",
+      clientRequestId: "reception-underpaid-direct",
+      regularSale: {
+        amount: "10.00",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      workOrders: [{ baseVariantId: null, title: "طباعة", quantity: 1, salePrice: "30.00" }],
+    }, { ...actor, role: "admin" })).rejects.toThrow(/يغطي البيع المباشر/);
+  });
+});
+
 describe("إغلاق ثغرة الأصناف اليتيمة (workOrderItems)", () => {
   it("create لا يكتب workOrderItems حتى لو مُرّرت items (الأصناف الجاهزة تُباع بفاتورة مستقلّة)", async () => {
     const wo = await createWorkOrder(
@@ -78,6 +233,16 @@ describe("إغلاق ثغرة الأصناف اليتيمة (workOrderItems)", (
 });
 
 describe("السحب الذاتي (claim) + منع سرقة أمر زميل", () => {
+  it("الإنشاء يرفض إسناد الأمر إلى حساب غير فني", async () => {
+    await expect(createWorkOrder({
+      branchId: 1,
+      baseVariantId: 1,
+      title: "إسناد غير صالح",
+      salePrice: "30.00",
+      assignedTo: 1,
+    }, actor)).rejects.toThrow(/فني مطبعة/);
+  });
+
   it("فنّي يسحب أمراً واردًا غير مُسنَد ⇒ assignedTo = هو؛ وزميله لا يستطيع سحبه", async () => {
     const wo = await createWorkOrder({ branchId: 1, baseVariantId: 1, title: "بنر", salePrice: "30.00" }, actor);
     await caller(opCtx(2)).workOrders.claim({ workOrderId: wo.workOrderId });

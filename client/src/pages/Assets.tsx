@@ -51,7 +51,7 @@ export default function Assets() {
     if (!(await confirm({
       variant: "info",
       title: "ترحيل إهلاك الشهر",
-      description: `سيُرحَّل إهلاك ${depPeriod} لكل الأصول النشطة (يتخطّى تلقائياً ما رُحِّل سابقاً — idempotent). قيد ADJUST/DEPR في الدفتر.`,
+      description: `سيُرحَّل إهلاك ${depPeriod} لكل الأصول النشطة — آمن للتكرار، لن يُنشئ قيداً مضاعفاً لشهر مُرحَّل سابقاً. يُسجَّل قيد إهلاك في الدفتر.`,
       confirmText: "ترحيل",
     }))) return;
     postDep.mutate({ year, month });
@@ -144,7 +144,7 @@ export default function Assets() {
               {postDep.isPending ? "جارٍ الترحيل…" : "ترحيل إهلاك الشهر"}
             </Button>
             <p className="text-xs text-muted-foreground md:me-auto max-w-lg">
-              يُرحَّل مصروف الإهلاك لكل الأصول النشطة (SL/DB) على أساس التاريخ المطلوب. آمن للتكرار — لن يُنشئ قيداً مضاعفاً لشهر مُرحَّل.
+              يُرحَّل مصروف الإهلاك لكل الأصول النشطة (القسط الثابت/المتناقص) على أساس التاريخ المطلوب. آمن للتكرار — لن يُنشئ قيداً مضاعفاً لشهر مُرحَّل.
             </p>
           </div>
         </CardContent>

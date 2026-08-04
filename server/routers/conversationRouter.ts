@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, like, lt, or, sql, type SQL } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { channelIntegrations, conversationMessages, conversations, customers, users, waOutbox } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -10,7 +10,6 @@ import { logAudit } from "../services/auditService";
 import {
   addMessage,
   linkConversationToWorkOrder,
-  listConversations,
   markConversationRead,
   setConversationStatus,
   upsertConversation,
@@ -73,36 +72,100 @@ const channelsRead = branchScopedProcedure.use(requireModule("channels", "READ")
 const channelsWrite = cashierProcedure.use(requireModule("channels", "FULL"));
 
 export const conversationRouter = router({
-  /** قائمة الـinbox للفَرع الحالي. */
+  /** قائمة الـinbox للفَرع الحالي — بِبَحث اختياري (q: اسم/هاتف) وتَحميل تَدريجي (cursor keyset).
+   *
+   *  الاستعلام مُباشِر هُنا (لا listConversations مِن conversationService، القاصِرة عَن q/cursor —
+   *  تَبقى بِلا مَسّ لِمُستهلكيها الآخَرين) بِنَفس شُروط الفَلترة حَرفياً + join العُملاء لِلبَحث بالاسم
+   *  والهاتف. التَرتيب lastMessageAt DESC ثُم id DESC (MySQL يَضع NULL آخِراً في DESC ⇒ المُحادثات
+   *  بِلا رَسائل بَعد كُلّ ذَوات الرَسائل)، والمُؤشِّر ثُنائي {lastMessageAt|null, id} يُطابِقه. */
   list: channelsRead
     .input(z.object({
       filter: z.enum(["all", "unread", "archived", "closed"]).optional(),
       channel: channelEnum.optional(),
+      q: z.string().trim().max(200).optional(),
       limit: z.number().int().positive().max(500).optional(),
       branchId: z.number().int().positive().optional(),
+      cursor: z.object({
+        lastMessageAt: z.string().max(40).nullable(),
+        id: z.number().int().positive(),
+      }).nullish(),
     }).optional())
     .query(async ({ input, ctx }) => {
       const db = getDb();
-      if (!db) return [];
+      if (!db) return { rows: [], nextCursor: null };
       const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId;
       if (effectiveBranchId == null) {
         // أَدمن بَلا فَلتر فَرع ⇒ يَلزمه تَحديد branchId صَراحة.
         throw new TRPCError({ code: "BAD_REQUEST", message: "حَدّد branchId للقائمة" });
       }
-      const rows = await listConversations(
-        { branchId: effectiveBranchId, filter: input?.filter, channel: input?.channel, limit: input?.limit },
-      );
-      if (rows.length === 0) return [];
 
-      // إثراء (بَند ٤ — نَواة Cloud API): lastInboundAt/windowExpiresAt/assignedTo لَيسَت في
-      // مُخرَجات listConversations القائمة (تَخدم شَرائح أُخرى بِلا حاجة لَها) ⇒ اِستعلام إضافي
-      // خَفيف على نَفس الصُفوف (استهلاك الخدمة القائمة + إثراء هُنا — لا تَعديل conversationService).
-      const ids = rows.map((r) => Number(r.id));
-      const extra = await db
-        .select({ id: conversations.id, lastInboundAt: conversations.lastInboundAt, assignedTo: conversations.assignedTo })
+      const filter = input?.filter ?? "all";
+      const conds: (SQL | undefined)[] = [eq(conversations.branchId, effectiveBranchId)];
+      if (filter === "archived") conds.push(eq(conversations.status, "ARCHIVED"));
+      else if (filter === "closed") conds.push(eq(conversations.status, "CLOSED"));
+      else conds.push(eq(conversations.status, "OPEN"));
+      if (filter === "unread") conds.push(sql`${conversations.unreadCount} > 0`);
+      if (input?.channel) conds.push(eq(conversations.channel, input.channel));
+      const q = input?.q?.trim();
+      if (q) {
+        const pat = `%${q}%`;
+        conds.push(or(
+          like(conversations.displayName, pat),
+          like(conversations.channelHandle, pat),
+          like(customers.name, pat),
+          like(customers.phone, pat),
+        ));
+      }
+      const cursor = input?.cursor;
+      if (cursor) {
+        if (cursor.lastMessageAt != null) {
+          const t = new Date(cursor.lastMessageAt);
+          if (Number.isNaN(t.getTime())) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "مؤشر ترقيم غير صالح" });
+          }
+          conds.push(or(
+            lt(conversations.lastMessageAt, t),
+            and(eq(conversations.lastMessageAt, t), lt(conversations.id, cursor.id)),
+            // NULL تَأتي بَعد كُلّ القِيَم في DESC ⇒ كُلّها «أَبعد» مِن مُؤشِّر غَير NULL.
+            isNull(conversations.lastMessageAt),
+          ));
+        } else {
+          conds.push(isNull(conversations.lastMessageAt));
+          conds.push(lt(conversations.id, cursor.id));
+        }
+      }
+
+      const pageSize = Math.min(input?.limit ?? 100, 500);
+      const rows = await db
+        .select({
+          id: conversations.id,
+          branchId: conversations.branchId,
+          channel: conversations.channel,
+          channelHandle: conversations.channelHandle,
+          customerId: conversations.customerId,
+          customerName: customers.name,
+          displayName: conversations.displayName,
+          linkedWorkOrderId: conversations.linkedWorkOrderId,
+          unreadCount: conversations.unreadCount,
+          lastMessageAt: conversations.lastMessageAt,
+          lastMessagePreview: conversations.lastMessagePreview,
+          status: conversations.status,
+          createdAt: conversations.createdAt,
+          lastInboundAt: conversations.lastInboundAt,
+          assignedTo: conversations.assignedTo,
+        })
         .from(conversations)
-        .where(inArray(conversations.id, ids));
-      const extraMap = new Map(extra.map((e) => [Number(e.id), e]));
+        .leftJoin(customers, eq(conversations.customerId, customers.id))
+        .where(and(...conds))
+        .orderBy(desc(conversations.lastMessageAt), desc(conversations.id))
+        .limit(pageSize + 1);
+      const hasMore = rows.length > pageSize;
+      const page = hasMore ? rows.slice(0, pageSize) : rows;
+      const last = page[page.length - 1];
+      const nextCursor = hasMore && last
+        ? { lastMessageAt: last.lastMessageAt ? last.lastMessageAt.toISOString() : null, id: Number(last.id) }
+        : null;
+      if (page.length === 0) return { rows: [], nextCursor: null };
 
       // apiActive: كل صُفوف القائمة تَتبَع effectiveBranchId نَفسه (فَرع واحِد لِكُلّ نِداء list)
       // ⇒ فَحص واحِد يَكفي بَدل استعلام لِكُلّ مُحادثة.
@@ -119,20 +182,22 @@ export const conversationRouter = router({
       )[0];
       const hasActiveWa = !!activeWa;
 
-      return rows.map((r) => {
-        const ex = extraMap.get(Number(r.id));
-        const lastInboundAt = ex?.lastInboundAt ?? null;
-        const windowExpiresAt = lastInboundAt ? new Date(lastInboundAt.getTime() + 24 * 3600 * 1000) : null;
-        return {
-          ...r,
-          lastInboundAt,
-          windowExpiresAt,
-          assignedTo: ex?.assignedTo ?? null,
-          // تَعطيل الملحن واجهياً مَشروط بِتَكامل ACTIVE فِعلي (§المَبدأ الحاكِم) — قَناة غَير
-          // WHATSAPP أَو بِلا تَكامل ⇒ false دائماً (السُلوك القَديم بِلا أَي قَيد نافِذة).
-          apiActive: r.channel === "WHATSAPP" && hasActiveWa,
-        };
-      });
+      return {
+        rows: page.map((r) => {
+          const lastInboundAt = r.lastInboundAt ?? null;
+          const windowExpiresAt = lastInboundAt ? new Date(lastInboundAt.getTime() + 24 * 3600 * 1000) : null;
+          return {
+            ...r,
+            lastInboundAt,
+            windowExpiresAt,
+            assignedTo: r.assignedTo ?? null,
+            // تَعطيل الملحن واجهياً مَشروط بِتَكامل ACTIVE فِعلي (§المَبدأ الحاكِم) — قَناة غَير
+            // WHATSAPP أَو بِلا تَكامل ⇒ false دائماً (السُلوك القَديم بِلا أَي قَيد نافِذة).
+            apiActive: r.channel === "WHATSAPP" && hasActiveWa,
+          };
+        }),
+        nextCursor,
+      };
     }),
 
   /** رَسائل مُحادثة مُحدَّدة (بَعد التَحقّق من عَزل الفُروع) — مُثراة بِحُقول التَسليم/المَصدر (بَند ٤)

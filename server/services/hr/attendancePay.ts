@@ -135,6 +135,8 @@ export interface AttendancePayInput {
   unpaidLeaveDates: Set<string>;
   /** تاريخ سريان الأجر بالحضور — ما قبله يُعامَل مدفوعاً كاملاً. null = بلا سريان (الكل مدفوع). */
   payFrom: string | null;
+  /** سقف ساعات اليوم الواحد — يقصّ أيضاً العملَ في يوم الراحة. */
+  maxDailyHours?: number;
   /**
    * حدّا الشهر التقويميّ. يُستعملان لتمييز «الشهر كاملاً» عن نافذة عملٍ جزئية (تعيين/فصل
    * في منتصفه) — فتعويض الشهر القصير لا يُمنح إلا لمن عمل الشهر كلَّه. غيابهما ⇒ يُفترض كاملاً.
@@ -165,6 +167,8 @@ export interface AttendancePayResult {
    * على ٣٠ كافتراضي») — تُضاف للمستحقّ فيقبض الموظف راتبه كاملاً في شباط.
    */
   shortMonthHours: string;
+  /** ساعات عُملت في أيام الراحة — تُدفع بالسعر العاديّ (قرار المالك ٣١/٧). */
+  restWorkedHours: string;
   /** تفصيل للشفافية في ملاحظة البند. */
   absentDays: number;
   unpaidLeaveDays: number;
@@ -179,7 +183,7 @@ export interface AttendancePayResult {
     overtimeHours: string;
     rate: string;
     amount: string;
-    state: "present" | "absent" | "paidLeave" | "unpaidLeave" | "beforeStart";
+    state: "present" | "absent" | "paidLeave" | "unpaidLeave" | "beforeStart" | "restWorked";
   }>;
 }
 
@@ -211,6 +215,7 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
   let absentDays = 0;
   let unpaidLeaveDays = 0;
   let shortHours = new Decimal(0);
+  let restWorked = new Decimal(0);
   const days: AttendancePayResult["days"] = [];
 
   for (const d of workDays) {
@@ -294,8 +299,37 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
   const paidHours = payable.plus(shortMonth);
   basePay = basePay.plus(derivedRate.times(shortMonth));
 
+  /*
+   * العمل في يوم الراحة (قرار المالك ٣١/٧: «سعر عادي»). كان اليوم صفرُ الساعات يُستبعَد
+   * من الحساب كلياً، فمَن حضر يوم راحته وبصم ثماني ساعات **لا يتقاضى عنها شيئاً** —
+   * ثغرةٌ صامتة. الآن تُدفع ساعاته الفعلية بالسعر المُشتقّ (لا مضاعف، بقراره).
+   * ولا تدخل مقام السعر: هي عملٌ فوق الجدول لا جزءٌ منه.
+   */
+  for (const d of daysBetween(input.employmentStart, input.employmentEnd)) {
+    if (hoursForDay(input.schedule, d).gt(0)) continue; // يوم دوام — عولج أعلاه
+    if (input.payFrom != null && d < input.payFrom) continue;
+    const att = input.attendedHoursByDate.get(d);
+    if (att == null || att.lte(0)) continue;
+    const counted = Decimal.min(att, new Decimal(input.maxDailyHours ?? 12));
+    restWorked = restWorked.plus(counted);
+    basePay = basePay.plus(derivedRate.times(counted));
+    days.push({
+      date: d,
+      dayName: dayNameOf(d),
+      scheduledHours: "0.00",
+      attendedHours: att.toFixed(2),
+      countedHours: counted.toFixed(2),
+      overtimeHours: "0.00",
+      rate: round2(derivedRate).toFixed(2),
+      amount: round2(derivedRate.times(counted)).toFixed(2),
+      state: "restWorked",
+    });
+  }
+  days.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
   return {
     scheduledHours: scheduled.toFixed(2),
+    restWorkedHours: restWorked.toFixed(2),
     standardHours: stdHours.toFixed(2),
     payableHours: paidHours.toFixed(2),
     shortMonthHours: shortMonth.toFixed(2),

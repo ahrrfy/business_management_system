@@ -15,9 +15,16 @@ const scopeInput = z.object({
   businessDate: ymd,
 });
 
+const priceDraftScopeInput = scopeInput.extend({
+  changeReason: z.string().trim().min(3).max(300).nullish(),
+});
+
 const lineInput = z.object({
   offeringId: z.number().int().positive(),
   providerShare: nonNegMoneyString,
+  // سعر البيع يُدخل صراحةً في شاشة أسعار اليوم. إبقاؤه اختيارياً يحافظ على
+  // تكامل الواجهات/العملاء القديمة التي كانت ترسل التكلفة فقط.
+  sellPrice: nonNegMoneyString.optional(),
 });
 
 /** يفرض فرع المستخدم على أي نطاق قادم من العميل (منع IDOR عبر branchId). */
@@ -48,13 +55,13 @@ export const pricingRouter = router({
       return pricingService.previewPrices(requireDb(), input);
     }),
 
-  copyPrevious: digitalCardsManagerProcedure.input(scopeInput).mutation(async ({ input, ctx }) => {
+  copyPrevious: digitalCardsManagerProcedure.input(priceDraftScopeInput).mutation(async ({ input, ctx }) => {
     assertBranch(ctx, input.branchId);
     return withTx((tx) => pricingService.copyPrevious(tx, input, actorOf(ctx)));
   }),
 
   saveDraft: digitalCardsManagerProcedure
-    .input(scopeInput.extend({ lines: z.array(lineInput).min(1).max(500) }))
+    .input(priceDraftScopeInput.extend({ lines: z.array(lineInput).min(1).max(500) }))
     .mutation(async ({ input, ctx }) => {
       assertBranch(ctx, input.branchId);
       const actor = actorOf(ctx);
@@ -66,7 +73,7 @@ export const pricingRouter = router({
 
   /** الحفظ والنشر في معاملة واحدة — لا حالة وسطية بين مسودّة مكتوبة ودُفعة منشورة. */
   publish: digitalCardsManagerProcedure
-    .input(scopeInput.extend({ lines: z.array(lineInput).min(1).max(500) }))
+    .input(priceDraftScopeInput.extend({ lines: z.array(lineInput).min(1).max(500) }))
     .mutation(async ({ input, ctx }) => {
       assertBranch(ctx, input.branchId);
       const actor = actorOf(ctx);

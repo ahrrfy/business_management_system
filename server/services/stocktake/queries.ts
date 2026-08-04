@@ -125,25 +125,14 @@ async function loadAssignmentProgress(db: DbLike, sessionId: number) {
     .where(eq(stocktakeAssignments.sessionId, sessionId))
     .orderBy(asc(stocktakeAssignments.id));
 
-  const totals = await db
-    .select({ assignmentId: stocktakeItems.assignmentId, c: sql<number>`COUNT(*)` })
-    .from(stocktakeItems)
-    .where(eq(stocktakeItems.sessionId, sessionId))
-    .groupBy(stocktakeItems.assignmentId);
-  const totalMap = new Map(totals.map((r) => [Number(r.assignmentId), Number(r.c)]));
-
   const counted = await db
     .select({
-      assignmentId: stocktakeItems.assignmentId,
+      assignmentId: stocktakeCounts.assignmentId,
       c: sql<number>`COUNT(DISTINCT ${stocktakeCounts.variantId})`,
     })
-    .from(stocktakeItems)
-    .innerJoin(
-      stocktakeCounts,
-      and(eq(stocktakeCounts.sessionId, stocktakeItems.sessionId), eq(stocktakeCounts.variantId, stocktakeItems.variantId))
-    )
-    .where(eq(stocktakeItems.sessionId, sessionId))
-    .groupBy(stocktakeItems.assignmentId);
+    .from(stocktakeCounts)
+    .where(and(eq(stocktakeCounts.sessionId, sessionId), inArray(stocktakeCounts.kind, ["FIRST", "RECOUNT"])))
+    .groupBy(stocktakeCounts.assignmentId);
   const countedByAsg = new Map(counted.map((r) => [Number(r.assignmentId), Number(r.c)]));
 
   return asg.map((a) => ({
@@ -153,11 +142,24 @@ async function loadAssignmentProgress(db: DbLike, sessionId: number) {
     userId: a.userId == null ? null : Number(a.userId),
     zone: a.zone,
     status: a.status,
-    total: totalMap.get(Number(a.id)) ?? 0,
+    // A worker has no product quota in the open shared count.
+    total: 0,
     counted: countedByAsg.get(Number(a.id)) ?? 0,
     lastActivityAt: a.lastActivityAt,
     submittedAt: a.submittedAt,
   }));
+}
+
+async function loadSessionProgress(db: DbLike, sessionId: number) {
+  const [{ total }] = await db
+    .select({ total: sql<number>`COUNT(*)` })
+    .from(stocktakeItems)
+    .where(eq(stocktakeItems.sessionId, sessionId));
+  const [{ counted }] = await db
+    .select({ counted: sql<number>`COUNT(DISTINCT ${stocktakeCounts.variantId})` })
+    .from(stocktakeCounts)
+    .where(and(eq(stocktakeCounts.sessionId, sessionId), inArray(stocktakeCounts.kind, ["FIRST", "RECOUNT"])));
+  return { total: Number(total), counted: Number(counted) };
 }
 
 export async function getStocktakeSession(sessionId: number, opts: { restrictBranchId?: number | null } = {}) {
@@ -165,8 +167,7 @@ export async function getStocktakeSession(sessionId: number, opts: { restrictBra
   const s = await loadSessionHeader(db, sessionId);
   assertBranchAccess(Number(s.branchId), opts.restrictBranchId);
   const assignments = await loadAssignmentProgress(db, sessionId);
-  const total = assignments.reduce((acc, a) => acc + a.total, 0);
-  const counted = assignments.reduce((acc, a) => acc + a.counted, 0);
+  const { total, counted } = await loadSessionProgress(db, sessionId);
   return {
     session: {
       id: Number(s.id),
@@ -211,6 +212,7 @@ export async function monitorStocktakeSession(
   const s = await loadSessionHeader(db, sessionId);
   assertBranchAccess(Number(s.branchId), opts.restrictBranchId);
   const assignments = await loadAssignmentProgress(db, sessionId);
+  const progress = await loadSessionProgress(db, sessionId);
 
   const q = opts.q?.trim() ?? "";
   // تهريب محارف LIKE من مدخل المستخدم — «%» المُدخلة تطابق نصاً لا كل شيء.
@@ -329,6 +331,7 @@ export async function monitorStocktakeSession(
       counted: a.counted,
       lastActivityAt: a.lastActivityAt,
     })),
+    progress,
     recentCounts: recent.map((r) => ({
       variantId: Number(r.variantId),
       variantLabel: labelOf(r.productName, r.variantName),

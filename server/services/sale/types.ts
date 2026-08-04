@@ -38,7 +38,7 @@ export interface CreateSaleInput {
    *  (COD) كي تكون invoice.total = subtotal + الشحن = ما وافق عليه الزبون، فيُحصّل المندوب كامل المبلغ. */
   deliveryFee?: string | null;
   taxRatePercent?: string | null;
-  payment?: { amount: string; method: PaymentMethod } | null;
+  payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
   clientRequestId?: string | null;
   /** معرّف محطة/جهاز نقطة البيع للتدقيق (ليس سراً ولا رمز مصادقة). */
   deviceId?: string | null;
