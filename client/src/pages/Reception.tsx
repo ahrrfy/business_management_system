@@ -41,6 +41,9 @@ import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/S
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useMediaQuery } from "@/hooks/useMobile";
+import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
+import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -53,6 +56,7 @@ import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import ReservationsHub from "@/pages/ReservationsHub";
 import Inbox from "@/pages/Inbox";
 import OrderFulfillment from "@/pages/OrderFulfillment";
+import ReceptionOrderQueue from "@/components/reception/ReceptionOrderQueue";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   getServerBridgeStatus,
@@ -212,12 +216,22 @@ export default function Reception() {
   const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
   const noAssignedBranch = me.data != null && me.data.branchId == null;
   const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
+
+  // طبقة أوفلاين للقراءة فقط (نمط POS.tsx ش٢): أثناء انقطاع الاتصال يُخدَم البحث/الباركود من
+  // النموذج المحلي (Dexie)، والكتابة (checkoutReception) تبقى أونلاين حصراً — قرار الخطة الأصلية
+  // (لا عربون/تسليم أوفلاين للاستقبال، خلافاً للكاشير الذي يلتقط بيعاً نقدياً كاملاً أوفلاين).
+  const connState = useConnectivity();
+  const offline = isDisconnected(connState);
+  useOfflineCatalogSync(me.data ? branchId : null);
   const utils = trpc.useUtils();
 
   // وردية خدمة العملاء (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
   const branchesQ = trpc.branches.list.useQuery();
   const staffQ = trpc.workOrders.assignableStaff.useQuery({ branchId });
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" });
+  // اِستقبال (تكامل التوصيل، ٤/٨): عدّاد «جاهز» على زرّ طابور الطلبات — مؤشّر سريع بلا فتح الطابور.
+  const woCountsQ = trpc.workOrders.counts.useQuery({ branchId });
+  const woReadyCount = woCountsQ.data?.ready ?? 0;
   const shift = shiftQ.data ?? null;
   const [opening, setOpening] = useState("0");
   const [closing, setClosing] = useState(false);
@@ -285,6 +299,11 @@ export default function Reception() {
     onError: (e) => notify.err(e),
   });
 
+  // احتواء ديناميكي: زوم المتصفح يُقلّص المساحة بوحدات CSS لا الشاشة الفعلية، فلوحة الدفع ذات
+  // الأعمدة الثابتة (نمط POS.tsx PaymentPanel، #466) تحتاج نفس الطبقات الثلاث: رأسٌ ثابت + وسطٌ
+  // قابل للتمرير + أزرار فعل لا تنكمش أبداً، مع كثافة تُقاس بالارتفاع المتاح لحذف الثانويّ أولاً.
+  const receptionDense = useMediaQuery("(max-height: 820px)");
+
   // ───── الحالة ─────────────────────────────────────────────────────────────
   const [cart, setCart] = useState<CartLine[]>([]);
   const [selKey, setSelKey] = useState<string | null>(null);
@@ -296,6 +315,8 @@ export default function Reception() {
   const [paymentReference, setPaymentReference] = useState(""); // P2 fix: مرجع البطاقة للعرابين
   const [showInbox, setShowInbox] = useState(false);
   const [showStoreOrders, setShowStoreOrders] = useState(false);
+  // اِستقبال (تكامل التوصيل، ٤/٨): طابور الطلبات (جاهزة/قيد التنفيذ/سُلِّمت اليوم) + إسناد التوصيل.
+  const [showOrdersQueue, setShowOrdersQueue] = useState(false);
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
@@ -435,10 +456,27 @@ export default function Reception() {
   const debounced = useDebouncedValue(search, 180);
   const searchResults = trpc.catalog.posList.useQuery(
     { branchId, tier: effectiveTier, query: debounced, limit: 15, includeReceptionServices: true },
-    { enabled: debounced.trim().length >= 2, placeholderData: keepPreviousData, staleTime: 15_000 },
+    { enabled: !offline && debounced.trim().length >= 2, placeholderData: keepPreviousData, staleTime: 15_000 },
   );
-  const results = searchResults.data ?? [];
-  const resultsEmpty = results.length === 0 && debounced.trim().length >= 2 && !searchResults.isFetching;
+  // أوفلاين: البحث يُخدَم من النموذج المحلي بنفس شكل PosRow — بقية الشاشة (addRow/السلة/الأسعار)
+  // لا تعرف الفرق. خدمات الطباعة مشمولة (includePrintServices) مطابقةً لـincludeReceptionServices
+  // أونلاين. العروض/الكوبون/الأسعار التعاقدية معطّلة أوفلاين (الخطة الأصلية، نمط POS.tsx).
+  const [offlineResults, setOfflineResults] = useState<PosRow[]>([]);
+  useEffect(() => {
+    if (!offline || debounced.trim().length < 2) {
+      setOfflineResults([]);
+      return;
+    }
+    let cancelled = false;
+    void offlineSearchCatalog(debounced, effectiveTier, { limit: 15, includePrintServices: true }).then((rows) => {
+      if (!cancelled) setOfflineResults(rows as PosRow[]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [offline, debounced, effectiveTier]);
+  const results = offline ? offlineResults : (searchResults.data ?? []);
+  const resultsEmpty = results.length === 0 && debounced.trim().length >= 2 && !(offline || searchResults.isFetching);
 
   // ───── السلّة ─────────────────────────────────────────────────────────────
   /** أيّ تعديلٍ على السلة يُسقط كوبوناً مُطبَّقاً سابقاً (نمط POS.tsx clearAppliedCoupon) — أسعار
@@ -567,14 +605,17 @@ export default function Reception() {
   const lookupBarcode = useCallback(
     async (code: string) => {
       try {
-        const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier });
+        // أوفلاين: المطابقة من النموذج المحلي (الباركود الأساسي + البدائل)، نمط POS.tsx.
+        const row = offline
+          ? await offlineFindByBarcode(code, effectiveTier)
+          : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier });
         if (!row) notify.err(`باركود غير معروف: ${code}`);
-        else addRow(row);
+        else addRow(row as PosRow);
       } catch (e: unknown) {
         notify.err(e, "خطأ في المسح");
       }
     },
-    [branchId, addRow, utils, effectiveTier],
+    [branchId, addRow, utils, effectiveTier, offline],
   );
   const handleHidScan = useCallback(
     async (raw: string) => {
@@ -862,6 +903,10 @@ export default function Reception() {
           deliveryAddress: custom.deliveryAddress || null,
           // deliveryCost يَبقى في عمود مستقلّ للتقرير؛ salePrice الإجماليّ ضمّه فعلاً.
           deliveryCost: custom.hasDelivery ? D(custom.deliveryCost || 0).toFixed(2) : "0",
+          // اِستقبال (تكامل التوصيل، ٤/٨): هاتف المستلم كعمود مستقلّ قابل للاستعلام — كان
+          // مُضمَّناً كنصٍّ حرٍّ داخل customizationText فقط (composeCustomizationText أدناه ما زال
+          // يُضيفه للنصّ أيضاً — تكرارٌ مقصود: عرضٌ للفنّي في النص + مصدر حقيقة للتوصيل في العمود).
+          deliveryPhone: custom.hasDelivery ? (custom.deliveryPhone || null) : null,
           designImages: custom.designImages.map((img, idx) => ({
             url: img.dataUrl,
             caption: img.name ?? null,
@@ -1048,6 +1093,10 @@ export default function Reception() {
         if (e.key === "Escape") { e.preventDefault(); setShowStoreOrders(false); }
         return;
       }
+      if (showOrdersQueue) {
+        if (e.key === "Escape") { e.preventDefault(); setShowOrdersQueue(false); }
+        return;
+      }
       if (e.key === "F2") {
         e.preventDefault();
         searchRef.current?.focus();
@@ -1061,7 +1110,7 @@ export default function Reception() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showInbox, showDrop, showCustomization, showReservations, showStoreOrders, closeReservations]);
+  }, [showInbox, showDrop, showCustomization, showReservations, showStoreOrders, showOrdersQueue, closeReservations]);
 
   // اقتراح الكاشير: لا يبني الواجهة قبل توفّر الفرع.
   if (me.isLoading || shiftQ.isLoading) {
@@ -1163,6 +1212,11 @@ export default function Reception() {
             </Button>
           </div>
           <OrderFulfillment />
+        </div>
+      )}
+      {showOrdersQueue && (
+        <div className="absolute inset-0 z-30 overflow-y-auto bg-background p-4">
+          <ReceptionOrderQueue branchId={branchId} onClose={() => setShowOrdersQueue(false)} />
         </div>
       )}
       {/* نافذة إغلاق وردية خدمة العملاء (Z-report مستقلّ) */}
@@ -1447,6 +1501,17 @@ export default function Reception() {
           className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 border-violet-500 bg-violet-50 px-4 text-xs font-extrabold text-violet-700 transition-colors hover:bg-violet-100"
         >
           <ClipboardList aria-hidden className="size-4" /> إضافة خدمة / أمر شغل
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowOrdersQueue(true)}
+          className="relative inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-4 text-xs font-extrabold transition-colors hover:bg-muted/60"
+        >
+          <Truck aria-hidden className="size-4" /> طابور الطلبات والتوصيل
+          {woReadyCount > 0 && (
+            <Badge variant="secondary" className="ms-0.5 tabular-nums">{woReadyCount}</Badge>
+          )}
         </button>
 
         {canReadReservations && (
@@ -1765,8 +1830,13 @@ export default function Reception() {
         </div>
 
         {/* ─ لوحة الدفع ─ */}
-        <div ref={paymentSectionRef} tabIndex={-1} onFocusCapture={() => setWorkflowStep(4)} className="flex w-[408px] flex-shrink-0 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
-          {/* رأس الإجمالي + التقسيم الهجين */}
+        <div
+          ref={paymentSectionRef}
+          tabIndex={-1}
+          onFocusCapture={() => setWorkflowStep(4)}
+          className="flex w-[408px] flex-shrink-0 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30 [container-type:size]"
+        >
+          {/* رأس الإجمالي + التقسيم الهجين — ثابتٌ دائماً، خارج منطقة التمرير. */}
           <div className="flex-shrink-0 border-b bg-muted/40 p-3">
             <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-extrabold">
               <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٥</span>
@@ -1795,6 +1865,9 @@ export default function Reception() {
             </div>
           </div>
 
+          {/* منطقة الإدخال — الوحيدة القابلة للتمرير. شبكة أمان: مهما ضاق الارتفاع (زوم/دقّة)
+              يُمرَّر هذا الوسط وحده، ويبقى الإجمالي فوقه وزرّا الدفع تحته ظاهرَين دائماً بلا قصّ. */}
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           {/* شاشة المبلغ */}
           <div className="flex-shrink-0 px-3 pb-1 pt-2">
             <div className="flex min-h-[44px] items-center justify-between rounded-lg border-[1.5px] bg-muted/40 px-3 py-1.5">
@@ -1816,7 +1889,8 @@ export default function Reception() {
             </div>
           </div>
 
-          {/* مبالغ سريعة */}
+          {/* مبالغ سريعة — تُحذف عند ضيق الارتفاع (لوحة الأرقام تُغنِي عنها؛ حذف الثانويّ لا تصغير الأساسيّ). */}
+          {!receptionDense && (
           <div className="flex flex-shrink-0 flex-wrap gap-1.5 px-3 py-1">
             {QUICK_AMTS.map((v) => (
               <button
@@ -1837,31 +1911,33 @@ export default function Reception() {
               = الكل
             </button>
           </div>
+          )}
 
-          {/* لوحة الأرقام */}
+          {/* لوحة الأرقام — الارتفاع بوحدات الحاوية (cqh) ينكمش مع الزوم/النافذة بلا قصّ، بحدّ
+              أدنى 44px (هدف اللمس المعياريّ) لا ينزل تحته مهما ضاق الارتفاع. */}
           <div className="flex-shrink-0 px-3 py-1">
             <div className="grid grid-cols-[auto_1fr_1fr_1fr] gap-1.5" dir="rtl">
-              <button onClick={() => setNumMode("QTY")} className={cn("h-12 min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "QTY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>الكمية</button>
+              <button onClick={() => setNumMode("QTY")} className={cn("h-[clamp(44px,6.6cqh,58px)] min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "QTY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>الكمية</button>
               <NumKey k="3" onPress={numPress} />
               <NumKey k="2" onPress={numPress} />
               <NumKey k="1" onPress={numPress} />
 
-              <button onClick={() => setNumMode("DISC")} className={cn("h-12 min-w-[60px] rounded-lg border-[1.5px] text-sm font-extrabold", numMode === "DISC" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>%</button>
+              <button onClick={() => setNumMode("DISC")} className={cn("h-[clamp(44px,6.6cqh,58px)] min-w-[60px] rounded-lg border-[1.5px] text-sm font-extrabold", numMode === "DISC" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>%</button>
               <NumKey k="6" onPress={numPress} />
               <NumKey k="5" onPress={numPress} />
               <NumKey k="4" onPress={numPress} />
 
-              <button onClick={() => setNumMode("PAY")} className={cn("h-12 min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "PAY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>المبلغ</button>
+              <button onClick={() => setNumMode("PAY")} className={cn("h-[clamp(44px,6.6cqh,58px)] min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "PAY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>المبلغ</button>
               <NumKey k="9" onPress={numPress} />
               <NumKey k="8" onPress={numPress} />
               <NumKey k="7" onPress={numPress} />
 
-              <button onClick={() => numPress("DEL")} className="grid h-12 place-items-center rounded-lg border-[1.5px] bg-red-50 text-red-700 hover:bg-red-100" aria-label="حذف">
+              <button onClick={() => numPress("DEL")} className="grid h-[clamp(44px,6.6cqh,58px)] place-items-center rounded-lg border-[1.5px] bg-red-50 text-red-700 hover:bg-red-100" aria-label="حذف">
                 <X aria-hidden className="size-4" />
               </button>
               <NumKey k="." onPress={numPress} />
               <NumKey k="0" onPress={numPress} />
-              <button onClick={() => numPress("C")} className="h-12 rounded-lg border-[1.5px] bg-card text-xs font-extrabold text-muted-foreground hover:bg-muted">C</button>
+              <button onClick={() => numPress("C")} className="h-[clamp(44px,6.6cqh,58px)] rounded-lg border-[1.5px] bg-card text-xs font-extrabold text-muted-foreground hover:bg-muted">C</button>
             </div>
           </div>
 
@@ -1881,7 +1957,7 @@ export default function Reception() {
                   key={p.v}
                   onClick={() => setMethod(p.v)}
                   className={cn(
-                    "flex flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border-2 py-2 text-xs font-extrabold transition-colors",
+                    "flex min-h-[clamp(46px,6.6cqh,60px)] flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border-2 py-2 text-xs font-extrabold transition-colors",
                     method === p.v
                       ? "border-primary bg-primary text-primary-foreground"
                       : "bg-card hover:bg-muted",
@@ -1962,14 +2038,16 @@ export default function Reception() {
               <span className="text-muted-foreground">المتوقّع الآن: <span className="font-bold tabular-nums" dir="ltr">{fmt(expectedNow)} د.ع</span></span>
             )}
           </div>
+          </div>{/* ← نهاية منطقة الإدخال القابلة للتمرير */}
 
-          {/* الأزرار الكبيرة */}
+          {/* منطقة الفعل — خارج التمرير ولا تنكمش أبداً: زرّا الدفع يبقيان ظاهرَين وقابلَين للنقر
+              مهما بلغ الزوم أو ضاق الارتفاع (هذا ما كان يختفي قبل الإصلاح). */}
           <div className="flex-shrink-0 space-y-1.5 px-3 pb-3 pt-1">
             <button
               type="button"
               disabled={cart.length === 0 || submitting || !shift}
               onClick={() => void handleSubmit({ quickFullPay: true })}
-              className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-sm font-black text-white shadow-md transition hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+              className="inline-flex h-[clamp(44px,6cqh,52px)] w-full items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-sm font-black text-white shadow-md transition-colors hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
               <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
             </button>
@@ -1977,7 +2055,7 @@ export default function Reception() {
               type="button"
               disabled={cart.length === 0 || submitting || !shift}
               onClick={() => void handleSubmit({ quickFullPay: false })}
-              className="inline-flex h-12 w-full items-center justify-center gap-1.5 rounded-lg bg-primary text-sm font-black text-primary-foreground shadow-md transition hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+              className="inline-flex h-[clamp(48px,6.5cqh,56px)] w-full items-center justify-center gap-1.5 rounded-lg bg-primary text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
               {submitting ? (
                 "جارٍ الإرسال…"
@@ -1989,7 +2067,9 @@ export default function Reception() {
                 <><Check aria-hidden className="size-4" /> إتمام الطلب وطباعة</>
               )}
             </button>
-            <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F2 بحث</div>
+            {!receptionDense && (
+              <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F2 بحث</div>
+            )}
           </div>
         </div>
       </div>
@@ -2058,7 +2138,7 @@ function NumKey({ k, onPress }: { k: string; onPress: (k: string) => void }) {
     <button
       type="button"
       onClick={() => onPress(k)}
-      className="h-12 rounded-lg border-[1.5px] bg-muted/40 text-lg font-extrabold tabular-nums hover:bg-muted"
+      className="h-[clamp(44px,6.6cqh,58px)] rounded-lg border-[1.5px] bg-muted/40 text-lg font-extrabold tabular-nums hover:bg-muted"
       dir="ltr"
     >
       {k}
