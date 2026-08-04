@@ -15,6 +15,7 @@ import {
   authenticatePin,
   COUNT_COOKIE_NAME,
   finishAssignment,
+  getPortalPulse,
   getPortalState,
   resolvePortalIdentity,
   submitCount,
@@ -508,5 +509,83 @@ describe("التسليم (finish)", () => {
     const stateB = await getPortalState(freshB);
     expect(stateB.session.status).toBe("REVIEW");
     expect(stateB.assignment.status).toBe("SUBMITTED");
+  });
+});
+
+// ─────────────────────────── نبضة النسخة (pulse) ───────────────────────────
+// العقد: الوسم يتبدّل **كلّما تبدّل شيءٌ يظهر في state**، ويثبت إن لم يتبدّل شيء.
+// الخطر الذي تحرسه هذه الاختبارات: وسمٌ يُغفل تغييراً ⇒ شاشة العادّ تتجمّد صامتةً،
+// وهو عطلٌ أسوأ من البطء الذي أتت النبضة لتعالجه.
+describe("نبضة النسخة (pulse)", () => {
+  it("ثابتة بلا تغيير، وتتبدّل عند كل حدثٍ يظهر في state", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const idB = await loginPin(r.code, r.assignments[1].pin!);
+
+    // (١) ثبات: نداءان متتاليان بلا أي حدث ⇒ نفس الوسم بالضبط (وإلّا لأبطلنا الكاش عبثاً
+    //     في كل استقصاء وعاد الحمل الذي نعالجه).
+    const v0 = (await getPortalPulse(idA)).v;
+    expect((await getPortalPulse(idA)).v).toBe(v0);
+
+    // (٢) عدّة جديدة مني ⇒ يتبدّل.
+    await submit(idA, 1, 10);
+    const v1 = (await getPortalPulse(idA)).v;
+    expect(v1).not.toBe(v0);
+
+    // (٣) تحديث عدّتي نفسها (لا صفّ جديد — نفس الصفّ تتغيّر كميته) ⇒ يجب أن يتبدّل أيضاً،
+    //     لأنّ state يعرض الكمية الجديدة. هذه الحالة تسقط لو اكتُفي بـMAX(id) وحده.
+    await submit(idA, 1, 25);
+    const v2 = (await getPortalPulse(idA)).v;
+    expect(v2).not.toBe(v1);
+
+    // (٤) عدّة زميل ⇒ يتبدّل عند الطرفين (state يُظهر colleagueCounted وتقدّم الجلسة).
+    await submit(idB, 2, 7);
+    const v3 = (await getPortalPulse(idA)).v;
+    expect(v3).not.toBe(v2);
+
+    // (٥) طلب إعادة عدّ إداريّ: لا صفّ عدّاتٍ جديد ولا صفّ أصنافٍ جديد — تحديث حالة فقط.
+    //     يظهر في state.recountTasks ⇒ يجب أن يتبدّل الوسم.
+    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 1, reason: "فرق كبير" }, actor);
+    const v4 = (await getPortalPulse(idA)).v;
+    expect(v4).not.toBe(v3);
+
+    // (٦) تسليم التكليف ⇒ assignment.status يتبدّل في state ⇒ الوسم يتبدّل.
+    await finishAssignment(idA);
+    const freshA = await resolvePortalIdentity(
+      { req: { headers: { cookie: `${COUNT_COOKIE_NAME}=${idA.token ?? ""}` } }, user: null } as any,
+      r.code,
+    ).catch(() => null);
+    if (freshA) expect((await getPortalPulse(freshA)).v).not.toBe(v4);
+  });
+
+  it("لا تكشف أي بيانات: الوسم أرقامٌ وحالاتٌ فقط — بلا أسماء ولا كميات (الجرد الأعمى)", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    await submit(idA, 1, 4242, { unitBreakdown: '{"قطعة":4242}' });
+
+    const { v } = await getPortalPulse(idA);
+    expect(Object.keys(await getPortalPulse(idA))).toEqual(["v"]);
+    // لا اسم منتجٍ ولا كمية عدّةٍ داخل الوسم.
+    expect(v).not.toMatch(/قلم|جاف/);
+    expect(v).not.toContain("4242");
+  });
+
+  it("الجرد الأعمى محفوظ: لا يُستنتَج مقدار عدّة الزميل من فرق الوسم (لا مجموع كميات)", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const idB = await loginPin(r.code, r.assignments[1].pin!);
+
+    // منظور «أ» قبل وبعد عدّة زميلٍ بكميةٍ معلومة: الوسم يتبدّل (ليعرف أنّ شيئاً جرى)
+    // لكن الفرق العدديّ بين الوسمين يجب ألّا يساوي الكمية — وإلّا كان مجموعاً قابلاً للعكس.
+    const before = (await getPortalPulse(idA)).v;
+    await submit(idB, 2, 777);
+    const after = (await getPortalPulse(idA)).v;
+
+    expect(after).not.toBe(before);
+    const numsBefore = before.split(":").map(Number);
+    const numsAfter = after.split(":").map(Number);
+    const deltas = numsAfter.map((n, i) => n - (numsBefore[i] ?? 0));
+    expect(deltas).not.toContain(777);
+    expect(after).not.toContain("777");
   });
 });

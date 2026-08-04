@@ -21,6 +21,7 @@ import { fmtInt } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { cn } from "@/lib/utils";
 import {
@@ -186,11 +187,8 @@ export default function CountPortal() {
     [authMut, code],
   );
 
-  /* ── حالة الجلسة (متابعة حيّة كل ٥ ثوانٍ) ── */
-  const stateQ = trpc.count.state.useQuery(
-    { sessionCode: code },
-    { enabled: phase === "counting" && code !== "", refetchInterval: 5000, retry: false },
-  );
+  /* ── حالة الجلسة (متابعة حيّة كل ٥ ثوانٍ عبر نبضةٍ رخيصة — usePulsedCountState) ── */
+  const stateQ = usePulsedCountState(code, phase === "counting" && code !== "");
   const st = stateQ.data;
 
   // نجاح ⇒ متصل؛ فشل شبكي ⇒ مقطوع؛ انتهاء صلاحية الدخول ⇒ عودة لشاشة PIN.

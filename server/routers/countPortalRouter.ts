@@ -20,6 +20,7 @@ import {
   COUNT_COOKIE_NAME,
   COUNT_TOKEN_TTL_MS,
   finishAssignment,
+  getPortalPulse,
   getPortalState,
   resolvePortalIdentity,
   submitCount,
@@ -137,6 +138,17 @@ export const countPortalRouter = router({
   state: publicProcedure.input(z.object({ sessionCode })).query(async ({ input, ctx }) => {
     const identity = await resolvePortalIdentity(ctx, input.sessionCode);
     return getPortalState(identity);
+  }),
+
+  /**
+   * بصمة نسخةٍ رخيصة للاستقصاء الدوري — تُستبدَل بها `state` في حلقة الـ٥ ثوانٍ.
+   * نفس حراسة `state` بالضبط (`resolvePortalIdentity` بنفس رمز الجلسة/الكوكي) ولا تكشف
+   * أي بيانات: وسمٌ مبهم لا يحمل أسماء ولا كميات ولا أرصدة (الجرد الأعمى محفوظ).
+   * التفصيل وحدود البصمة في `countPortal/state.ts`.
+   */
+  pulse: publicProcedure.input(z.object({ sessionCode })).query(async ({ input, ctx }) => {
+    const identity = await resolvePortalIdentity(ctx, input.sessionCode);
+    return getPortalPulse(identity);
   }),
 
   /** تسجيل عدّة (idempotent عبر clientRequestId — آمن لمزامنة طابور الأوفلاين). */
