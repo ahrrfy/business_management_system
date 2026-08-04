@@ -128,6 +128,17 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
     );
   };
 
+  /**
+   * ما يُعرَض في حقل «اسم العميل» للعميل الجديد: فارغٌ ما دام الاسم مطابقاً للرقم (أي أنّ
+   * المستخدم كتب رقماً ولم يُسمِّ بعد)، وإلّا الاسم نفسه.
+   *
+   * مُستخرَجٌ خارج JSX عمداً: تركُه تعبيراً داخل `value={…}` يجعل ذكرَ `value.phone` فيه —
+   * وهو مجرّد **مقارنة** لا قيمةُ الحقل — يُطابق إشارةَ الهاتف في
+   * `scripts/check-form-inputs.mjs` فيُبلَّغ حقلُ الاسم زوراً كحقل هاتفٍ خام. الاستخراج
+   * يزيل الإشارة المضلِّلة بلا إضعاف الحارس وبلا أي تغيير سلوكيّ.
+   */
+  const displayedNewCustomerName = value.name === value.phone ? "" : value.name;
+
   return (
     <div ref={wrapRef} className={cn("relative", className)}>
       <div className="relative">
@@ -239,7 +250,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
           </label>
           <Input
             id="smart-customer-name"
-            value={value.name === value.phone ? "" : value.name}
+            value={displayedNewCustomerName}
             onChange={(e) => onChange({ ...value, name: e.target.value.trim() || value.phone! })}
             placeholder="اكتب اسم العميل"
             className="h-8 text-xs"
