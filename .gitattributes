@@ -2,3 +2,10 @@
 # (المستودع يُطوَّر على Windows بـcore.autocrlf=true؛ بدون هذا الملف سلامة LF مصادفة قابلة للانتكاس).
 *.sh text eol=lf
 deploy/** text eol=lf
+
+# مخرجاتٌ مولَّدة آلياً ومُلتزَمة: السكريبتات تكتبها بـLF بينما شجرة العمل CRLF (autocrlf) ⇒
+# تظهر «معدَّلة» بعد كل `pnpm check:guards` رغم أنّ محتواها مطابقٌ حرفياً (git diff فارغ).
+# تثبيتها على LF يُنهي هذا الاتّساخ الوهميّ الذي يُوهم بانجرافٍ غير موجود.
+docs/authz/endpoint-inventory.csv text eol=lf
+docs/authz/endpoint-inventory.json text eol=lf
+docs/authz/authz-baseline.json text eol=lf
