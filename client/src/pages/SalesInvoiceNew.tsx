@@ -243,8 +243,20 @@ export default function SalesInvoiceNew() {
               discountAmount: l.discountType === "amount" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
             }),
       })),
-      // أجرة التوصيل: إيراد شحن يدخل الإجمالي. صفر/فارغ = «توصيل مجاني» (لا سطر إيراد أصلاً).
-      deliveryFee: D(totals.shipping).gt(0) ? totals.shipping : undefined,
+      // أجرة التوصيل (0152) — ثلاث حالات صريحة لا اثنتان:
+      //   مدفوع  ⇒ deliveryFee > 0 (إيرادُ شحنٍ يدخل الإجمالي)
+      //   مجّانيّ ⇒ deliveryFree=true + القيمة المُتنازَل عنها (بلا إيراد ولا إجمالي)
+      //   بلا توصيل ⇒ لا شيء يُرسَل إطلاقاً
+      ...(state.shippingFree
+        ? {
+            deliveryFree: true as const,
+            ...(D(state.shipping || "0").gt(0)
+              ? { deliveryWaivedAmount: round2(D(state.shipping)).toFixed(2) }
+              : {}),
+          }
+        : D(totals.shipping).gt(0)
+          ? { deliveryFee: totals.shipping }
+          : {}),
       // خصم إجمالي كمبلغ (calcTotals يحوّل النسبة إلى مبلغ). يُرسَل فقط إن كان موجباً.
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
       // العراق VAT=0% افتراضياً — الضريبة اختيارية على مستوى الفاتورة، تُطبَّق فقط عند تفعيلها
