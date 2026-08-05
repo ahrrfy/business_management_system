@@ -67,9 +67,22 @@ async function isCompleteReplay(tx: Parameters<Parameters<typeof withTx>[0]>[0],
  * The reception commit boundary. A mixed basket is one business operation:
  * inventory sale, print-service sale, work orders, deposits, receipts and ledger
  * entries either all commit or all roll back.
+ *
+ * ش٣ (§٧.١): الجسم مستخرَجٌ `checkoutReceptionInTx` **ميكانيكياً بصفر تغيير سلوكيّ** —
+ * `withTx` = `db.transaction(fn)` غير قابلة لإعادة الدخول، فتثبيت المسوّدة (commitDraft)
+ * يستدعي الجسم داخل معاملته ويُكمل بعده ذرّياً. الغلاف يبقى للمستدعين القائمين
+ * (workOrders.receptionCheckout المباشر + offline.replayReception — يبقيان إلى الأبد).
  */
 export async function checkoutReception(input: ReceptionCheckoutInput, actor: Actor) {
-  return withTx(async (tx) => {
+  return withTx((tx) => checkoutReceptionInTx(tx, input, actor));
+}
+
+export async function checkoutReceptionInTx(
+  tx: Parameters<Parameters<typeof withTx>[0]>[0],
+  input: ReceptionCheckoutInput,
+  actor: Actor,
+) {
+  {
     // إعادة ردّ عملية سبق التزامها لا تحتاج وردية ما زالت مفتوحة. هذا مهم إذا وصل الالتزام
     // إلى القاعدة ثم انقطع الرد وأُغلقت الوردية قبل إعادة المحاولة. أي عملية جديدة/ناقصة تمرّ
     // بالحارس الصارم أدناه؛ والحالة الناقصة لا يمكن أن تنتج عن هذه الخدمة لأن الالتزام ذرّي.
@@ -203,5 +216,5 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
     }
 
     return { regularSale, printSale, workOrders };
-  });
+  }
 }

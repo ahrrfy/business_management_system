@@ -873,11 +873,8 @@ export default function Reception() {
     if (cart.length === 0 || !!activeDraft || offline) return;
     promoteM.mutate({ branchId, shiftId: shift?.id ?? null, ...buildDraftPayload() });
   }
-  /** طيّ مسوّدةٍ أُتمّ طلبها بالدفع المباشر — أفضل جهد (جسرٌ حتى تثبيت ش٣ الذرّي من المسوّدة). */
-  const finishDraftM = trpc.reception.draftCancel.useMutation({
-    onSuccess: () => void utils.reception.draftList.invalidate(),
-    onError: () => { /* تبقى OPEN فيطويها الكنّاس أو تُلغى يدوياً */ },
-  });
+  /** ش٣ — التثبيت الذرّي من المسوّدة نفسها (يستبدل جسر «الطيّ» المؤقّت من ش٢). */
+  const commitDraftM = trpc.reception.draftCommit.useMutation();
 
   /** مزامنة بالجملة بdebounce (§٦ — لا سطراً-سطراً: مسح ١٢ باركوداً متتابعاً يمرّ بلا CONFLICT). */
   useEffect(() => {
@@ -1108,7 +1105,34 @@ export default function Reception() {
         };
       });
 
-      const result = await checkoutM.mutateAsync({
+      // ش٣: طلبٌ محفوظٌ (مسوّدة نشطة) يُثبَّت **من مسوّدته** ذرّياً عبر reception.draftCommit —
+      // idempotency ثلاثية (version + FOR UPDATE + commitRequestId الخادمي). قبله «تفريغُ
+      // مزامنةٍ» متزامنٌ يقتل سباق «عدّلتُ ثم ثبّتُّ قبل نبضة الـdebounce»، وexpectedTotal
+      // (الخام قبل تقريب IQD) حزام أمانٍ ضدّ انجراف العرض.
+      const result = activeDraft
+        ? await (async () => {
+            if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+            const synced = await syncM.mutateAsync({
+              draftId: activeDraft.id,
+              version: activeDraft.version,
+              ...buildDraftPayload(),
+            });
+            const committed = await commitDraftM.mutateAsync({
+              draftId: activeDraft.id,
+              version: synced.version,
+              expectedTotal: round2(grandTotalD).toFixed(2),
+              shiftId: shift.id,
+              collectNow: appliedPaidD.gt(0)
+                ? { amount: round2(appliedPaidD).toFixed(2), method, reference: method === "CASH" ? undefined : paymentReference.trim() }
+                : null,
+              cashRoundIQD: cashRoundActive,
+              managerApproval: mgrCredsRef.current ?? undefined,
+            });
+            setActiveDraft(null);
+            void utils.reception.draftList.invalidate();
+            return committed;
+          })()
+        : await checkoutM.mutateAsync({
         branchId,
         shiftId: shift.id,
         customerId: customerId ?? undefined,
@@ -1294,14 +1318,6 @@ export default function Reception() {
       mgrCredsRef.current = null;
       setDiscountFor(null);
       setApprovalAsk(null);
-      // ش٢: طلبٌ محفوظٌ ثُبِّت عبر الدفع المباشر ⇒ تُطوى مسوّدته (جسرٌ حتى ش٣ حيث يصير التثبيت
-      // من المسوّدة نفسها ذرّياً). أفضل جهدٍ — فشله لا يمسّ العملية الملتزمة.
-      if (activeDraft) {
-        if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
-        const finished = activeDraft;
-        setActiveDraft(null);
-        finishDraftM.mutate({ draftId: finished.id, version: finished.version, reason: "أُتمّ الطلب ودُفع في المحطة" });
-      }
       setCart([]);
       setSelKey(null);
       setPayInput("");

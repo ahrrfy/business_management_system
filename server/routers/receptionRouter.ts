@@ -11,12 +11,14 @@ import { assertValidImageDataUrl } from "../lib/imageValidation";
 import {
   cancelDraft,
   collectOnReceptionInvoice,
+  commitDraft,
   getDraft,
   listDrafts,
   listReceptionInvoices,
   promoteDraft,
   syncDraft,
 } from "../services/reception";
+import { verifyManagerApproval } from "./saleRouter";
 import { router, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
 import { logAudit } from "../services/auditService";
 
@@ -199,6 +201,83 @@ export const receptionRouter = router({
         newValue: { total: res.totals.total, lines: input.lines.length },
       });
       return { version: res.version, totals: res.totals };
+    }),
+
+  /** ش٣ — التثبيت: المسوّدة تصير مساراً إنتاجياً بذرّيةٍ كاملة (§٧.٣). خلف بوّابة **الكاشير**
+   *  (المال) لا exec — فنّي الطباعة يحرّر ولا يثبّت (V7: treasury=NONE ⇒ لا وردية أصلاً). */
+  draftCommit: workordersCashierProcedure
+    .input(z.object({
+      draftId: z.number().int().positive(),
+      version: z.number().int().min(0),
+      expectedTotal: positiveMoneyString,
+      shiftId: z.number().int().positive(),
+      collectNow: z.object({
+        amount: positiveMoneyString,
+        method: payMethodEnum,
+        reference: z.string().trim().max(100).nullish(),
+      }).nullish(),
+      cashRoundIQD: z.boolean().optional(),
+      // ملاحظة ١.٨: الكوبون **مرفوض** على مسار التثبيت في v1 — يُطبَّق داخل createSaleInTx
+      // فينسف expectedTotal وأرضية moneyLocked. الحقل موجود ليُرفض برسالةٍ صريحة لا صمتاً.
+      couponCode: z.string().nullish(),
+      managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (input.couponCode?.trim()) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "الكوبونات غير مدعومة على تثبيت الطلب المحفوظ — طبّق الكوبون في طلبٍ مباشرٍ من السلة",
+        });
+      }
+      if (input.collectNow && input.collectNow.method !== "CASH" && !input.collectNow.reference?.trim()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
+      }
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!elevated && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      let approvedBy: number | null = null;
+      if (input.managerApproval) {
+        approvedBy = await verifyManagerApproval(
+          input.managerApproval,
+          ctx,
+          ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
+        );
+      }
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null,
+        role: ctx.user.role,
+      };
+      const result = await commitDraft(
+        {
+          draftId: input.draftId,
+          version: input.version,
+          expectedTotal: input.expectedTotal,
+          shiftId: input.shiftId,
+          collectNow: input.collectNow ?? null,
+          cashRoundIQD: input.cashRoundIQD,
+          priceOverrideApproved: elevated || approvedBy != null,
+        },
+        actor as never,
+      );
+      if (!result.idempotentReplay) {
+        await logAudit(ctx, {
+          action: "reception.draftCommit",
+          entityType: "receptionDraft",
+          entityId: input.draftId,
+          newValue: {
+            draftNumber: result.draftNumber,
+            invoiceId: result.regularSale?.invoiceId ?? null,
+            printInvoiceId: result.printSale?.invoiceId ?? null,
+            workOrderIds: result.workOrders.map((w) => w.workOrderId),
+            collected: input.collectNow?.amount ?? null,
+            method: input.collectNow?.method ?? null,
+            ...(approvedBy != null ? { discountApprovedBy: approvedBy } : {}),
+          },
+        });
+      }
+      return result;
     }),
 
   draftCancel: workordersExecProcedure
