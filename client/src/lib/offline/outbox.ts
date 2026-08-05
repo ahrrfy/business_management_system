@@ -14,7 +14,7 @@
 
 import { getLastSyncAt } from "./catalogSync";
 import { decryptJson, encryptJson, isEncryptedEnvelope } from "./crypto";
-import { getMeta, offlineDb, setMeta, type OfflineOutboxItem } from "./db";
+import { getMeta, offlineDb, setMeta, type OfflineOutboxItem, type OfflineOutboxKind } from "./db";
 
 export const OFFLINE_QUEUE_CAP_IQD = 5_000_000;
 export const OFFLINE_CACHE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
@@ -43,6 +43,39 @@ export interface OfflineSalePayload {
   cashRoundIQD?: boolean;
   notes?: string;
 }
+
+/** خدمات الطباعة: سعرٌ يدويّ لكل سطر (طبيعة الشاشة)، بلا خصم سطر. */
+export interface OfflinePrintSalePayload {
+  branchId: number;
+  shiftId: number;
+  customerId?: number;
+  contactName?: string;
+  contactPhone?: string;
+  priceTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
+  lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string }>;
+  payment: { amount: string; method: "CASH" };
+  clientRequestId: string;
+  cashRoundIQD?: boolean;
+  notes?: string;
+}
+
+/** سلّة الاستقبال: بضاعةٌ جاهزة و/أو خدمات طباعة في معاملةٍ واحدة. **بلا أوامر شغل** —
+ *  ترقيمها وإسنادها وصورها خادميّة، فلا تُلتقَط أصلاً (الشاشة ترفض قبل الوصول إلى هنا). */
+export interface OfflineReceptionPayload {
+  branchId: number;
+  shiftId: number;
+  customerId?: number;
+  contactName?: string;
+  contactPhone?: string;
+  priceTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
+  paymentMethod: "CASH";
+  paidAmount: string;
+  regularSale?: { lines: OfflineSaleLine[]; amount: string } | null;
+  printSale?: { lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string }>; amount: string } | null;
+  clientRequestId: string;
+}
+
+export type OfflinePayload = OfflineSalePayload | OfflinePrintSalePayload | OfflineReceptionPayload;
 
 // ── مفتاح تجربة البيع الأوفلايني (ش٥ — قرار مالك: تفعيل لكل جهاز، افتراضياً معطَّل) ──
 // يبوّب **الالتقاط (الكتابة)** فقط: النموذج المحلي للقراءة (تصفح/مسح/سعر) يبقى فعّالاً
@@ -125,15 +158,16 @@ export async function assertCanCapture(saleTotalIQD: number): Promise<{ ok: true
 
 // ── الالتقاط ────────────────────────────────────────────────────────────────
 
-export async function enqueueOfflineSale(args: {
-  payload: OfflineSalePayload;
+export async function enqueueOfflineItem(args: {
+  kind: OfflineOutboxKind;
+  payload: OfflinePayload;
   offlineReceiptNumber: string;
   total: string;
 }): Promise<boolean> {
   try {
     const item: OfflineOutboxItem = {
       clientRequestId: args.payload.clientRequestId,
-      kind: "SALE",
+      kind: args.kind,
       // ش٥: الحمولة (تفاصيل البيع/العميل/المبالغ) مشفَّرة AES-GCM بمفتاح الجهاز غير القابل
       // للاستخراج — ما يبقى صريحاً على العنصر هو ما تحتاجه الواجهة والصمّامات فقط.
       payload: await encryptJson(args.payload),
@@ -155,10 +189,19 @@ export async function enqueueOfflineSale(args: {
   }
 }
 
+/** غلاف توافقٍ رجعيّ لكاشير التجزئة (kind = SALE) — المستدعي الأقدم يبقى بلا تعديل. */
+export async function enqueueOfflineSale(args: {
+  payload: OfflineSalePayload;
+  offlineReceiptNumber: string;
+  total: string;
+}): Promise<boolean> {
+  return enqueueOfflineItem({ kind: "SALE", ...args });
+}
+
 /** يقرأ حمولة العنصر: مغلّفة مشفَّرة (ش٥) تُفكّ؛ وعناصر ما قبل التشفير تُقرأ كما هي (توافق رجعي). */
-export async function readItemPayload(item: OfflineOutboxItem): Promise<OfflineSalePayload> {
-  if (isEncryptedEnvelope(item.payload)) return decryptJson<OfflineSalePayload>(item.payload);
-  return item.payload as OfflineSalePayload;
+export async function readItemPayload(item: OfflineOutboxItem): Promise<OfflinePayload> {
+  if (isEncryptedEnvelope(item.payload)) return decryptJson<OfflinePayload>(item.payload);
+  return item.payload as OfflinePayload;
 }
 
 // ── محرك التفريغ ────────────────────────────────────────────────────────────
@@ -168,12 +211,25 @@ export interface ReplayResult {
   invoiceNumber: string;
   idempotentReplay?: boolean;
 }
-export type ReplaySaleApi = (args: {
-  payload: OfflineSalePayload;
+export interface ReplayArgs {
+  payload: OfflinePayload;
   capturedAt: string;
   offlineReceiptNumber: string;
   deviceId: string;
-}) => Promise<ReplayResult>;
+}
+export type ReplaySaleApi = (args: ReplayArgs) => Promise<ReplayResult>;
+
+/**
+ * خريطة الترحيل بحسب نوع الكاشير. المحرّك لا يعرف شيئاً عن العقود الخادمية — يختار المسار
+ * من `item.kind` فقط. غياب مسارٍ لنوعٍ ما ⇒ العنصر يُعلَّق برسالةٍ صريحة بدل محاولةٍ خاطئة
+ * (مثلاً: شاشةٌ لم تُمرِّر إلا مسارها فتلقّى الطابور عنصراً من نوعٍ آخر).
+ */
+export type ReplayApiMap = Partial<Record<OfflineOutboxKind, ReplaySaleApi>>;
+
+/** يقبل المحرّك دالةً واحدة (توافق رجعيّ = كلّها SALE) أو خريطةً كاملة. */
+function toApiMap(api: ReplaySaleApi | ReplayApiMap): ReplayApiMap {
+  return typeof api === "function" ? { SALE: api } : api;
+}
 
 interface FlushState {
   flushing: boolean;
@@ -211,7 +267,8 @@ async function cleanupSent(): Promise<void> {
 }
 
 /** تفريغ الطابور: FIFO، طلب واحد بالطيران. يُستدعى من محفّزات useOutbox أو زرّ «مزامنة الآن». */
-export async function flushOutbox(api: ReplaySaleApi, opts?: { force?: boolean }): Promise<void> {
+export async function flushOutbox(api: ReplaySaleApi | ReplayApiMap, opts?: { force?: boolean }): Promise<void> {
+  const apis = toApiMap(api);
   if (flushState.flushing) return;
   if (!opts?.force && Date.now() < flushState.backoffUntil) return;
   flushState.flushing = true;
@@ -219,13 +276,24 @@ export async function flushOutbox(api: ReplaySaleApi, opts?: { force?: boolean }
   try {
     await cleanupSent();
     const deviceId = await getDeviceCode();
+    // عناصرٌ تخطّيناها لغياب مسار نوعها — تُستثنى من الاختيار كي لا تدور الحلقة عليها أبداً.
+    let skippedKinds = 0;
     for (;;) {
-      const next = (await offlineDb.outbox.where("status").equals("QUEUED").sortBy("capturedAt"))[0];
+      const queued = await offlineDb.outbox.where("status").equals("QUEUED").sortBy("capturedAt");
+      const next = queued[skippedKinds];
       if (!next) break;
       await offlineDb.outbox.update(next.clientRequestId, { status: "SENDING" });
       notifyOutboxChanged();
       // فشل فكّ التشفير (مفتاح جهاز مُتلَف/مُبدَّل) ليس خطأ شبكة — تعليق فوري لا backoff أبدي.
-      let payload: OfflineSalePayload;
+      // اختيار المسار قبل فكّ التشفير: عنصرٌ من نوعٍ لا تملك هذه الشاشة مسارَه لا يُستهلك
+      // ولا يُعلَّق — يُترَك في الطابور لتفريغه شاشتُه (أو الشارة العامّة) بلا فقدٍ للنقد.
+      const kindApi = apis[next.kind ?? "SALE"];
+      if (!kindApi) {
+        await offlineDb.outbox.update(next.clientRequestId, { status: "QUEUED" });
+        skippedKinds += 1;
+        continue;
+      }
+      let payload: OfflinePayload;
       try {
         payload = await readItemPayload(next);
       } catch {
@@ -237,7 +305,7 @@ export async function flushOutbox(api: ReplaySaleApi, opts?: { force?: boolean }
         continue;
       }
       try {
-        const res = await api({
+        const res = await kindApi({
           payload,
           capturedAt: next.capturedAt,
           offlineReceiptNumber: next.offlineReceiptNumber,
@@ -347,15 +415,19 @@ export async function requeueParkedItem(clientRequestId: string): Promise<void> 
  */
 export async function replayParkedWithApproval(
   clientRequestId: string,
-  api: ReplaySaleApi,
+  api: ReplaySaleApi | ReplayApiMap,
 ): Promise<{ ok: boolean; error?: string }> {
   const item = await offlineDb.outbox.get(clientRequestId);
   if (!item || item.status !== "PARKED") return { ok: false, error: "العنصر لم يعد معلَّقاً" };
+  // نفس اختيار المسار بحسب النوع كما في محرّك التفريغ — لا يُرحَّل عنصرُ استقبالٍ عبر مسار
+  // التجزئة لأن الشاشة مرّرت دالةً واحدة.
+  const kindApi = toApiMap(api)[item.kind ?? "SALE"];
+  if (!kindApi) return { ok: false, error: "هذا النوع لا يُرحَّل من هذه الشاشة — افتح شاشته أو شارة المزامنة العامّة" };
   await offlineDb.outbox.update(clientRequestId, { status: "SENDING" });
   notifyOutboxChanged();
   try {
     const deviceId = await getDeviceCode();
-    const res = await api({
+    const res = await kindApi({
       payload: await readItemPayload(item),
       capturedAt: item.capturedAt,
       offlineReceiptNumber: item.offlineReceiptNumber,

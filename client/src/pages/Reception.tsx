@@ -44,6 +44,14 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
+import {
+  allocateOfflineReceiptNumber,
+  assertCanCapture,
+  enqueueOfflineItem,
+  isOfflineSaleEnabled,
+  type OfflineReceptionPayload,
+} from "@/lib/offline/outbox";
+import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -896,6 +904,14 @@ export default function Reception() {
     if (submitting) return;
     setSubmitting(true);
 
+    // انقطاعٌ معلوم: لا نُرسل ثم ننتظر مهلة — نلتقط فوراً. (الالتقاط نفسه يفرض شروطه:
+    // بلا أوامر شغل، نقديّ كامل، بلا كوبون/توصيل، والجهاز مُفعَّل للالتقاط.)
+    if (isDisconnected(connState)) {
+      await captureOfflineReception();
+      setSubmitting(false);
+      return;
+    }
+
     // ٥/٨ — إنشاء العميل لم يعُد شرطاً لإتمام الطلب. الاسم والهاتف يُحفظان مرجعاً نصّياً على
     // الفاتورة وأمر الشغل (contactName/contactPhone)، ولا يُنشَأ سجلّ عميلٍ إلا بطلبٍ صريح
     // («احفظه كعميل») ومن يملك صلاحيته. سابقاً كان كلّ بيعٍ يمرّ بـcustomers.create فيفشل
@@ -1154,6 +1170,14 @@ export default function Reception() {
       utils.workOrders.list.invalidate().catch(() => {});
       utils.shifts.current.invalidate().catch(() => {});
     } catch (e: unknown) {
+      // فخّ «النقرة الأولى» بعد قطعٍ صامت: المتصفّح لم يُحدِّث حالة الاتصال بعد، فيفشل النقل
+      // بلا كود tRPC. تدهورٌ سلس: نلتقط بدل أن نُعيد خطأً غامضاً والنقد بيد الموظّف.
+      // شرطٌ حاسم: **لم يلتزم شيء** (checkoutCommitted=false) — وإلا لَازدوجت العملية.
+      const isTransportFailure = !checkoutCommitted
+        && (e as { data?: { code?: string } } | null)?.data?.code == null;
+      if (isTransportFailure && (await captureOfflineReception())) {
+        return;
+      }
       // لا توجد حالة التزام جزئي. عند غياب رد الشبكة قد تكون المعاملة كلها التزمت أو كلها
       // تراجعت؛ المفتاح الثابت يجعل إعادة الإرسال تستعيد النتيجة بلا تكرار.
       notify.err(e, checkoutCommitted
@@ -1162,6 +1186,143 @@ export default function Reception() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  /**
+   * التقاط سلّة الاستقبال دون اتصال — تعميم الأوفلاين على كاشير خدمات الزبائن.
+   *
+   * ما يُلتقَط: بضاعةٌ جاهزة و/أو خدمات طباعة، **مدفوعةٌ نقداً بالكامل**، بلا عميلٍ آجل.
+   * ما لا يُلتقَط ويُرفَض صراحةً: **أوامر الشغل** — ترقيمها تسلسليّ خادميّ تحت قفل، وصورها
+   * قد تبلغ ميغابايتات، وإسنادها وعربونها الجزئيّ قرارات خادمية. التقاطها كان سيُنتج طابوراً
+   * يفشل ترحيله بصمت أو أرقاماً متصادمة من جهازين. الرفض هنا **أصدق** من التقاطٍ يكذب.
+   *
+   * النقد المقبوض يُطبَع عليه إيصالٌ مؤقّت OFF-… ويُرحَّل تلقائياً عبر offline.replayReception
+   * بنفس clientRequestId ⇒ لا ازدواج حتى لو كان الالتزام قد وصل الخادم قبل انقطاع الردّ.
+   */
+  async function captureOfflineReception(): Promise<boolean> {
+    if (!shift || cart.length === 0) return false;
+    const directLines = cart.filter((c) => !isCustomKind(c));
+    const regularLines = directLines.filter((c) => !c.row.isPrintService);
+    const printLines = directLines.filter((c) => c.row.isPrintService);
+    const customItems = cart.filter(isCustomKind);
+    if (customItems.length > 0) {
+      notify.errBig(
+        "أوامر الشغل تحتاج اتصالاً",
+        "ترقيم أمر الشغل وإسناده ورفع صوره تتمّ على الخادم. أزل بنود التخصيص من السلّة لإتمام البيع نقداً الآن، أو انتظر عودة الاتصال.",
+      );
+      return false;
+    }
+    if (!(await isOfflineSaleEnabled())) {
+      notify.errBig(
+        "البيع دون اتصال غير مفعَّل على هذا الجهاز",
+        "التصفّح والاستعلام متاحان. تفعيل الالتقاط قرار إداريّ من «إعدادات الجهاز» في شارة المزامنة أسفل الشاشة.",
+      );
+      return false;
+    }
+    if (method !== "CASH") {
+      notify.errBig("أثناء انقطاع الاتصال: النقد فقط — البطاقة والتحويل يتطلبان الخادم للتحقّق من المرجع.");
+      return false;
+    }
+    if (couponCode) {
+      notify.errBig("الكوبونات غير متاحة دون اتصال — أزل الكوبون أولاً.");
+      return false;
+    }
+    if (heldDelivery > 0) {
+      notify.errBig("أجرة التوصيل أمانةً تحتاج اتصالاً", "إسناد المندوب وصرف الأجرة عمليّتان خادميّتان — أتمّ الطلب بلا توصيل الآن.");
+      return false;
+    }
+    // الدفع الكامل شرطٌ: الأوفلاين لا يُقيّم ذمّة عميل ولا سقف ائتمانه من نسخةٍ محليّة.
+    const paidNowD = round2(D(payInput || 0));
+    const fullyPaid = paidNowD.gte(grandTotalD);
+    if (!fullyPaid) {
+      notify.errBig("دون اتصال: الدفع الكامل فقط", `المطلوب ${fmt(grandTotalD.toFixed(2))} د.ع — الآجل والعربون الجزئيّ يتطلبان اتصالاً.`);
+      return false;
+    }
+    const gate = await assertCanCapture(grandTotalD.toNumber());
+    if (!gate.ok) {
+      notify.errBig(gate.reason);
+      return false;
+    }
+
+    const receiptNumber = await allocateOfflineReceiptNumber(branchId);
+    const payload: OfflineReceptionPayload = {
+      branchId,
+      shiftId: shift.id,
+      ...(customer.customerId ? { customerId: customer.customerId } : {}),
+      ...(customer.name.trim() ? { contactName: customer.name.trim() } : {}),
+      ...(customer.phone?.trim() ? { contactPhone: customer.phone.trim() } : {}),
+      priceTier: effectiveTier,
+      paymentMethod: "CASH",
+      paidAmount: round2(grandTotalD).toFixed(2),
+      regularSale: regularLines.length > 0 ? {
+        // السعر الملتقَط إلزاميّ: النقد قُبض بالسعر المطبوع — لا إعادة تسعيرٍ صامتة عند الترحيل.
+        lines: regularLines.map((c) => ({
+          variantId: c.row.variantId,
+          productUnitId: c.row.productUnitId,
+          quantity: String(c.qty),
+          unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
+        })),
+        amount: round2(regularLines.reduce((sum, c) => sum.plus(D(lineTotal(c))), D(0))).toFixed(2),
+      } : null,
+      printSale: printLines.length > 0 ? {
+        lines: printLines.map((c) => ({
+          variantId: c.row.variantId,
+          productUnitId: c.row.productUnitId,
+          quantity: String(c.qty),
+          unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
+        })),
+        amount: round2(printLines.reduce((sum, c) => sum.plus(D(lineTotal(c))), D(0))).toFixed(2),
+      } : null,
+      clientRequestId: reqIdRef.current,
+    };
+    const stored = await enqueueOfflineItem({
+      kind: "RECEPTION",
+      payload,
+      offlineReceiptNumber: receiptNumber,
+      total: round2(grandTotalD).toFixed(2),
+    });
+    if (!stored) {
+      notify.errBig("تعذّر حفظ العملية محلياً (مساحة المتصفح؟) — لا تُسلّم البضاعة قبل عودة الاتصال.");
+      return false;
+    }
+
+    // إيصالٌ مؤقّت بنفس تصميم الإيصال الرسميّ — الزبون يخرج بورقةٍ قابلة للبحث برقمها.
+    const now = new Date();
+    const cashierName = me.data?.name ?? "موظف الخدمة";
+    const contact = customer.name.trim() || (customer.phone?.trim() ?? "");
+    void printReceipt({
+      receiptNumber,
+      date: fmtDate(now),
+      time: now.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
+      cashierName,
+      customerName: contact || null,
+      items: [...regularLines, ...printLines].map((c) => ({
+        name: `${c.row.productName} (${c.row.unitName})${c.disc ? ` −${c.disc}%` : ""}`,
+        quantity: c.qty,
+        price: round2(D(effectivePrice(c))).toFixed(2),
+        total: round2(D(lineTotal(c))).toFixed(2),
+      })),
+      subtotal: round2(grandTotalD).toFixed(2),
+      total: round2(grandTotalD).toFixed(2),
+      paid: round2(paidNowD).toFixed(2),
+      change: paidNowD.gt(grandTotalD) ? round2(paidNowD.minus(grandTotalD)).toFixed(2) : null,
+      paymentMethod: PAY_METHOD_LABEL.CASH,
+    }).catch(() => { /* فشل الطابعة لا يُلغي التقاطاً التزم محلياً */ });
+
+    notify.ok(
+      `بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`,
+      "الرقم الرسميّ يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)",
+    );
+    setCart([]);
+    setSelKey(null);
+    setPayInput("");
+    setPaymentReference("");
+    setCustomer({ customerId: null, name: "", phone: null, isNew: false });
+    setChannel("WALK_IN");
+    setChannelHandle("");
+    setWorkflowStep(1);
+    reqIdRef.current = crypto.randomUUID();
+    return true;
   }
 
   // إصلاح P2 (٢٣/٦/٢٦): F4 كان يُمسك إغلاقاً بياناتيّاً قديماً (payInput/method/customer/shift)
@@ -2227,6 +2388,10 @@ export default function Reception() {
           </div>
         </div>
       </div>
+
+      {/* شارة المزامنة — تُركَّب في كلّ شاشات الكاشير: تعرض حالة الاتصال وطابور الالتقاط،
+          وتُفرّغ **كلّ** الأنواع (تجزئة/طباعة/استقبال) لا نوع هذه الشاشة وحده. */}
+      <OfflineSyncChip userRole={me.data?.role} />
 
       {/* ─── نافذة التخصيص ─── */}
       {showCustomization && (

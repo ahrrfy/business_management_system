@@ -78,6 +78,11 @@ export interface CreatePrintSaleInput {
   /** SALES-01/02 (قناة الطباعة): موافقة على بيع خدمة بأقل من تكلفة موادها (سعر/خصم تحت COGS).
    *  يضبطها الراوتر: مدير/أدمن ذاتياً، والكاشير بموافقة مدير مُتحقَّقة. */
   priceOverrideApproved?: boolean;
+  /** أوفلاين (تعميم على كاشير الطباعة — داخليّ، لا يعرضه printPosRouter): بيانات التقاط بيعٍ
+   *  جرى دون اتصال، يضبطها `offline.replayPrintSale` حصراً. تُوسَم بها الفاتورة (المنشأ +
+   *  الرقم المؤقّت المطبوع + لحظة البيع الحقيقية) — قيود الدفتر تبقى بوقت الخادم (سلامة
+   *  assertPeriodOpen)، تماماً كمسار البيع في sale/create. */
+  offlineCapture?: { capturedAt: Date; offlineReceiptNumber: string; deviceId?: string | null } | null;
 }
 
 export interface CreatePrintSaleResult {
@@ -389,6 +394,11 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       // ٥/٨ — زبونٌ عابر: مرجعٌ نصّيّ على الفاتورة بلا إنشاء عميل (customerId يبقى NULL ⇒ لا AR).
       contactName: input.contactName?.trim() || null,
       contactPhone: input.contactPhone?.trim() || null,
+      // أوفلاين: وسم المنشأ + الرقم المؤقّت المطبوع + لحظة الالتقاط الحقيقية (مرآة sale/create).
+      originatedOffline: !!input.offlineCapture,
+      offlineReceiptNumber: input.offlineCapture?.offlineReceiptNumber ?? null,
+      capturedAt: input.offlineCapture?.capturedAt ?? null,
+      posDeviceId: input.offlineCapture?.deviceId ?? null,
       salespersonNameSnapshot,
       createdBy: actor.userId,
     });

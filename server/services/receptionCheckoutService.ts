@@ -34,6 +34,10 @@ export interface ReceptionCheckoutInput {
   printSale?: { lines: PrintSaleLineInput[]; amount: string } | null;
   workOrders?: Array<Omit<CreateWorkOrderInput, "branchId" | "customerId" | "clientRequestId">>;
   priceOverrideApproved?: boolean;
+  /** أوفلاين (تعميم على كاشير الاستقبال — داخليّ، يضبطه `offline.replayReception` حصراً):
+   *  وسم منشأ الفاتورتين (البيع المباشر وخدمات الطباعة) بالالتقاط دون اتصال. أوامر الشغل
+   *  لا تُلتقَط أصلاً (ترقيم/إسناد/صور خادميّة) فلا معنى لوسمها. */
+  offlineCapture?: { capturedAt: Date; offlineReceiptNumber: string; deviceId?: string | null } | null;
 }
 
 async function isCompleteReplay(tx: Parameters<Parameters<typeof withTx>[0]>[0], input: ReceptionCheckoutInput) {
@@ -138,6 +142,10 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
             reference: input.paymentReference?.trim() || null,
           },
           clientRequestId: `${input.clientRequestId}-sale`,
+          offlineCapture: input.offlineCapture ?? null,
+          // البضاعة خرجت فعلاً أثناء الانقطاع والنقد قُبض؛ رفض التسجيل يجعل الدفاتر تكذب
+          // (قرار المالك ١٨/٧: تسجيل بوسم مراجعة لا تعليق). الوسم = originatedOffline.
+          allowNegativeStock: input.offlineCapture != null,
           creditApproved: false,
           priceOverrideApproved: input.priceOverrideApproved === true,
         }, actor)
@@ -158,6 +166,7 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
             reference: input.paymentReference?.trim() || null,
           },
           clientRequestId: `${input.clientRequestId}-print`,
+          offlineCapture: input.offlineCapture ?? null,
           creditApproved: false,
           priceOverrideApproved: input.priceOverrideApproved === true,
         }, actor)
