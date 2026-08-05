@@ -11,6 +11,7 @@ import type { RoleGate } from "@/lib/navVisibility";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { DispatchDialog, type DispatchParty } from "@/components/delivery/DispatchDialog";
+import { ReceptionInvoiceQueue } from "./ReceptionInvoiceQueue";
 import { MarkPickedUpDialog } from "@/components/delivery/MarkPickedUpDialog";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
@@ -135,6 +136,10 @@ export default function ReceptionOrderQueue({ branchId, onClose }: { branchId: n
             canFulfill={canFulfill}
             onReclassify={setReclassifyTarget}
           />
+          {/* ٥/٨ — كل فواتير الوردية: كان الطابور مصدره جدول أوامر الشغل حصراً، فالبيع المباشر
+              (منتجات جاهزة/طباعة بلا تخصيص) لا يظهر إطلاقاً ولا سبيل لإسناده للتوصيل بعد إتمامه. */}
+          <ReceptionInvoiceQueue branchId={branchId} parties={(parties.data ?? []) as DispatchParty[]} canFulfill={canFulfill} />
+
           <QueueSection
             title="سُلِّمت اليوم"
             icon={Check}

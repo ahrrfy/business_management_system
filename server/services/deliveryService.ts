@@ -41,7 +41,11 @@ export {
   listOpenConsignments,
   listConsignmentsForParty,
   getDeliveryPartyStatement,
+  listReceptionInvoiceQueue,
 } from "./delivery/queries";
+// ٥/٨: إسناد فاتورةٍ قائمة (بيع مباشر بلا أمر شغل) للتوصيل — كان مستحيلاً بنيوياً.
+export type { DispatchInvoiceInput } from "./delivery/dispatchInvoice";
+export { dispatchInvoiceToDelivery } from "./delivery/dispatchInvoice";
 // courier (١٢/٧): شاشة المندوب الذاتية «توصيلاتي» — عزل ذاتي عبر deliveryParties.userId.
 export type { MyDeliveryRow, MyDeliveriesResult, ConfirmDeliveryResult, FailDeliveryResult } from "./delivery/courier";
 export { resolveCourierPartyId, listMyDeliveries, confirmCourierDelivery, failCourierDelivery } from "./delivery/courier";

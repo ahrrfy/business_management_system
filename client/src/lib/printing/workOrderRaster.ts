@@ -7,6 +7,10 @@ import { CO, RECEIPT_PHONES, fmt, logoUrl } from "./brand";
 
 const W = 576;
 const PAD = 12;
+// ٥/٨ — عتبة تسمين الخطّ: كانت غائبةً هنا فتُستعمل ١٢٨ الافتراضية بينما إيصال الكاشير يمرّر
+// ١٦٠ ⇒ تذكرة أمر الشغل تخرج **رفيعةً باهتة** والإيصال غامقاً. توحيدها مع receiptRaster
+// (مع رفع الأوزان من 400 إلى 600) يجعل الوثيقتين بسماكةٍ واحدة على الطابعة نفسها.
+const WORKORDER_THRESHOLD = 160;
 
 export interface WorkOrderReceiptData {
   orderNumber: string;
@@ -53,7 +57,7 @@ async function ensureFonts(): Promise<void> {
     if (!fonts) return;
     const sample = "مكتبة العربية للطباعة 0123 IQD طلب خدمة";
     await Promise.all(
-      ["400 21px Cairo", "600 19px Cairo", "700 21px Cairo", "800 25px Cairo", "900 29px Cairo", "900 38px Cairo"].map(
+      ["600 21px Cairo", "600 19px Cairo", "700 21px Cairo", "800 25px Cairo", "900 29px Cairo", "900 38px Cairo"].map(
         (f) => fonts.load(f, sample).catch(() => undefined),
       ),
     );
@@ -122,7 +126,7 @@ export async function workOrderToCanvas(
   ctx.textAlign = "center";
   ctx.font = "900 38px Cairo, sans-serif"; y += 44; ctx.fillText("مكتبة العربية", W / 2, y);
   ctx.font = "800 25px Cairo, sans-serif"; y += 34; ctx.fillText("للطباعة والقرطاسية", W / 2, y);
-  ctx.font = "400 16px Cairo, sans-serif"; y += 24; ctx.fillText(CO.name, W / 2, y);
+  ctx.font = "600 16px Cairo, sans-serif"; y += 24; ctx.fillText(CO.name, W / 2, y);
   y += 14; solidLine(ctx, y, 4); y += 4;
 
   // ──── ٢) باركود رقم الأمر ────
@@ -149,7 +153,7 @@ export async function workOrderToCanvas(
   const infoRow = (label: string, value: string) => {
     ctx.font = "700 20px Cairo, sans-serif"; ctx.textAlign = "right";
     ctx.fillText(label, W - PAD, y);
-    ctx.font = "400 20px Cairo, sans-serif"; ctx.textAlign = "left";
+    ctx.font = "600 20px Cairo, sans-serif"; ctx.textAlign = "left";
     ctx.fillText(value, PAD, y);
     y += 30;
   };
@@ -176,7 +180,7 @@ export async function workOrderToCanvas(
   if (d.quantity != null && String(d.quantity).trim()) {
     ctx.font = "700 20px Cairo, sans-serif"; ctx.textAlign = "right";
     ctx.fillText("الكمية:", W - PAD, y);
-    ctx.font = "400 20px Cairo, sans-serif"; ctx.textAlign = "left";
+    ctx.font = "600 20px Cairo, sans-serif"; ctx.textAlign = "left";
     ctx.fillText(String(d.quantity), PAD, y);
     y += 30;
   }
@@ -185,7 +189,7 @@ export async function workOrderToCanvas(
     y += 4;
     ctx.font = "700 20px Cairo, sans-serif"; ctx.textAlign = "right";
     ctx.fillText("المواصفات:", W - PAD, y); y += 28;
-    ctx.font = "400 19px Cairo, sans-serif";
+    ctx.font = "600 19px Cairo, sans-serif";
     const specLines = wrapLines(ctx, d.specs, W - PAD * 2, 4);
     for (const l of specLines) { ctx.fillText(l, W - PAD, y); y += 26; }
   }
@@ -202,7 +206,7 @@ export async function workOrderToCanvas(
   if (d.notes) {
     ctx.font = "700 19px Cairo, sans-serif"; ctx.textAlign = "right";
     ctx.fillText("ملاحظات:", W - PAD, y); y += 26;
-    ctx.font = "400 18px Cairo, sans-serif";
+    ctx.font = "600 18px Cairo, sans-serif";
     const noteLines = wrapLines(ctx, d.notes, W - PAD * 2, 5);
     for (const l of noteLines) { ctx.fillText(l, W - PAD, y); y += 24; }
     y += 8;
@@ -223,7 +227,7 @@ export async function workOrderToCanvas(
   dashedLine(ctx, y); y += 34;
   ctx.font = "700 20px Cairo, sans-serif"; ctx.textAlign = "center";
   ctx.fillText("شكراً لتعاملكم مع مكتبة العربية", W / 2, y); y += 28;
-  ctx.font = "400 18px Cairo, sans-serif";
+  ctx.font = "600 18px Cairo, sans-serif";
   for (const p of RECEIPT_PHONES.slice(0, 2)) {
     ctx.textAlign = "right"; ctx.font = "600 18px Cairo, sans-serif";
     ctx.fillText(p.l, W - PAD, y);
@@ -231,7 +235,7 @@ export async function workOrderToCanvas(
     ctx.fillText(p.n, PAD, y);
     y += 26;
   }
-  ctx.font = "400 17px Cairo, sans-serif"; ctx.textAlign = "center";
+  ctx.font = "600 17px Cairo, sans-serif"; ctx.textAlign = "center";
   ctx.fillText(CO.address, W / 2, y + 20); y += 42;
 
   return { canvas, height: Math.min(Math.ceil(y) + 8, estH) };
@@ -244,5 +248,5 @@ export async function workOrderToRaster(d: WorkOrderReceiptData): Promise<Raster
   const ctx = drawn.canvas.getContext("2d");
   if (!ctx) return null;
   const img = ctx.getImageData(0, 0, W, drawn.height);
-  return imageDataToRaster({ width: W, height: drawn.height, data: img.data });
+  return imageDataToRaster({ width: W, height: drawn.height, data: img.data }, WORKORDER_THRESHOLD);
 }

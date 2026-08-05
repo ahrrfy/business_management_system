@@ -1319,6 +1319,11 @@ export const invoices = mysqlTable(
     paymentMethod: varchar("paymentMethod", { length: 20 }),
     paymentDate: timestamp("paymentDate"),
     notes: text("notes"),
+    // ٥/٨ — زبون عابر: اسمٌ وهاتفٌ مرجعيّان على الفاتورة نفسها (لا عميل ولا ذمّة). يُطبَعان على
+    // الإيصال ويُستعملان عند تحويل الفاتورة للتوصيل. customerId يبقى NULL — فلا يتأثّر AR ولا
+    // كشف الحساب ولا سقف الائتمان، ولا تُنشَأ سجلّات عملاء طيفية من كل بيعٍ نقديّ.
+    contactName: varchar("contactName", { length: 255 }),
+    contactPhone: varchar("contactPhone", { length: 32 }),
     // أوفلاين (هجرة 0085، ش٣ من خطة الأوفلاين): فاتورة التُقطت على جهاز الكاشير أثناء انقطاع
     // الاتصال وأُعيد تشغيلها عبر offline.replaySale. الرقم المؤقّت OFF-... هو المطبوع على
     // الإيصال الحراري وقت الالتقاط — يبقى قابلاً للبحث (مرتجعات/استفسار بورقة الزبون)،
@@ -2078,6 +2083,10 @@ export const accountingEntries = mysqlTable(
       "DELIVERY_DISPATCH",
       "DELIVERY_REMIT",
       "DELIVERY_FEE",
+      // ٥/٨ — أجرة توصيل قُبضت في الدرج **أمانةً** للمندوب: حركة نقدٍ بلا إيراد ولا مصروف
+      // (تمرير). تُبرَّأ عند خصمها من توريد المندوب. تُميَّز عن DELIVERY_FEE (مصروف حقيقيّ حين
+      // تتحمّلها المكتبة) كي لا يختلط الالتزام بالمصروف في التقارير.
+      "DELIVERY_FEE_HELD",
       "DELIVERY_WRITEOFF",
       "EXCHANGE_DEPOSIT",
       "EXCHANGE_WITHDRAW",
@@ -2401,6 +2410,21 @@ export const workOrders = mysqlTable(
     // هاتف مستلم التوصيل — مصدر حقيقة قابل للاستعلام (كان محصوراً بنصّ customizationText الحرّ).
     // يُقرأ افتراضياً عند إرسال المندوب (delivery/dispatch.ts) إن لم يُمرَّر صراحةً.
     deliveryPhone: varchar("deliveryPhone", { length: 20 }),
+    // ٥/٨ — أجرة التوصيل تمريرٌ لا إيراد (قرار المالك): مَن يقبضها يُحدَّد لكل طلب.
+    //   COURIER = المندوب يقبضها من الزبون (الافتراضي) ⇒ لا تمرّ بالدرج ولا بدفترنا إطلاقاً.
+    //   COUNTER = الكاشير قبضها مقدّماً ⇒ تدخل الدرج **أمانةً** (التزام) وتُنقَص من توريد المندوب.
+    //   SHOP    = المكتبة تتحمّلها (توصيل مجّاني للزبون) ⇒ مصروفٌ حقيقيّ عند التوريد.
+    deliveryFeeCollection: mysqlEnum("deliveryFeeCollection", [
+      "COURIER",
+      "COUNTER",
+      "SHOP",
+    ])
+      .default("COURIER")
+      .notNull(),
+    // زبون عابر بلا سجلّ عميل: اسمٌ وهاتفٌ مرجعيّان للطلب (طباعة/اتصال/تحويل للتوصيل).
+    // لا يُنشئان عميلاً ولا ذمّة — customerId يبقى NULL ما لم يُحفَظ العميل صراحةً.
+    contactName: varchar("contactName", { length: 255 }),
+    contactPhone: varchar("contactPhone", { length: 32 }),
     status: mysqlEnum("workOrderStatus", [
       "RECEIVED",
       "IN_PROGRESS",
@@ -5633,6 +5657,20 @@ export const deliveryConsignments = mysqlTable(
     deliveryFee: decimal("deliveryFee", { precision: 15, scale: 2 })
       .default("0")
       .notNull(), // أجرة ثابتة لكل طلب (D7)
+    // ٥/٨ — مَن قبض الأجرة (مرآة workOrders.deliveryFeeCollection، تُثبَّت لحظة الإرسال):
+    //   COURIER ⇒ الأجرة خارج codAmount وخارج دفترنا كلّياً (يقبضها المندوب من الزبون).
+    //   COUNTER ⇒ قُبضت في الدرج أمانةً ⇒ تُخصَم من صافي التوريد (تُبرَّأ الأمانة، بلا مصروف).
+    //   SHOP    ⇒ المكتبة تتحمّلها ⇒ تُخصَم من التوريد **كمصروف** حقيقيّ (السلوك القديم).
+    feeCollection: mysqlEnum("consignmentFeeCollection", [
+      "COURIER",
+      "COUNTER",
+      "SHOP",
+    ])
+      .default("COURIER")
+      .notNull(),
+    // ختم تسوية الأجرة: يُضبَط حين تُدفَع للمندوب لحظة الإرسال (COUNTER — النقد بالدرج أصلاً،
+    // أو أيّ حالةٍ بلا COD يُنتظَر). وجودُه يمنع خصمها ثانيةً من التوريد ⇒ لا صرفَ مزدوج.
+    feeSettledAt: timestamp("feeSettledAt"),
     recipientName: varchar("recipientName", { length: 255 }),
     recipientPhone: varchar("recipientPhone", { length: 20 }),
     deliveryAddress: text("deliveryAddress"),

@@ -16,6 +16,10 @@ export interface ReceptionCheckoutInput {
   branchId: number;
   shiftId: number;
   customerId?: number | null;
+  /** ٥/٨ — زبونٌ عابر: اسمٌ/هاتفٌ مرجعيّان يُكتبان على الفاتورة وأمر الشغل بلا إنشاء عميل.
+   *  يُغني عن إجبار الكاشير على إنشاء عميلٍ (وكان يفشل بـFORBIDDEN لأدوار الاستقبال بلا crm=FULL). */
+  contactName?: string | null;
+  contactPhone?: string | null;
   paymentMethod: Extract<PaymentMethod, "CASH" | "CARD" | "TRANSFER" | "WALLET">;
   paymentReference?: string | null;
   /** المبلغ المطبّق على الطلب كله. البيع المباشر يُغطّى أولاً، ثم أوامر الشغل بالترتيب. */
@@ -122,6 +126,8 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
           branchId: input.branchId,
           shiftId: input.shiftId,
           customerId: input.customerId ?? null,
+          contactName: input.contactName ?? null,
+          contactPhone: input.contactPhone ?? null,
           sourceType: "POS",
           priceTier: input.priceTier ?? null,
           couponCode: input.couponCode?.trim() || null,
@@ -142,6 +148,8 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
           branchId: input.branchId,
           shiftId: input.shiftId,
           customerId: input.customerId ?? null,
+          contactName: input.contactName ?? null,
+          contactPhone: input.contactPhone ?? null,
           priceTier: input.priceTier ?? null,
           lines: input.printSale.lines,
           payment: {
@@ -162,6 +170,8 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
         ...order,
         branchId: input.branchId,
         customerId: input.customerId ?? null,
+        contactName: order.contactName ?? input.contactName ?? null,
+        contactPhone: order.contactPhone ?? input.contactPhone ?? null,
         clientRequestId: `${input.clientRequestId}-wo-${index}`,
       }, actor));
     }

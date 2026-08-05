@@ -84,7 +84,7 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
     }
 
     // المرور ١: قفل + تحقّق + حساب (بلا كتابة) — ترتيب أقفال الإرساليات تصاعدياً يمنع الجمود.
-    type Work = { id: number; invoiceId: number; collected: Decimal; newCollected: Decimal; delivered: boolean; fee: Decimal; remaining: Decimal };
+    type Work = { id: number; invoiceId: number; collected: Decimal; newCollected: Decimal; delivered: boolean; fee: Decimal; remaining: Decimal; feeCollection: string };
     const work: Work[] = [];
     let collectedTotal = new Decimal(0);
     let feesTotal = new Decimal(0);
@@ -104,14 +104,20 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       if (collected.gt(remaining)) throw new TRPCError({ code: "BAD_REQUEST", message: `أكثر من المتبقّي للإرسالية ${cn.consignmentNumber}` });
       const newCollected = round2(money(cn.collectedAmount).plus(collected));
       const delivered = newCollected.gte(money(cn.codAmount));
-      const fee = delivered ? round2(money(cn.deliveryFee)) : new Decimal(0); // الأجرة تُحقَّق عند التسليم الكامل فقط
+      // ٥/٨ — الأجرة تُخصَم من التوريد فقط إذا كانت **ما زالت مستحقّةً علينا** للمندوب:
+      //   COURIER ⇒ يقبضها من الزبون مباشرةً، خارج دفترنا كلّياً ⇒ لا خصم (كان الخصم هنا يصرفها
+      //             مرّةً ثانيةً بعد أن قبضها بنفسه).
+      //   feeSettledAt ⇒ صُرفت نقداً لحظة الإرسال ⇒ لا خصم (حارس الصرف المزدوج).
+      // وتبقى مستحقّةً عند التسليم الكامل فقط (تسليمٌ جزئيّ لا يستحقّ أجرةً).
+      const feeStillOwed = cn.feeCollection !== "COURIER" && cn.feeSettledAt == null;
+      const fee = delivered && feeStillOwed ? round2(money(cn.deliveryFee)) : new Decimal(0);
       if (fee.gt(collected)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: `أجرة توصيل الإرسالية ${cn.consignmentNumber} تتجاوز النقد المورّد في هذه التسوية`,
         });
       }
-      work.push({ id: Number(cn.id), invoiceId: Number(cn.invoiceId), collected, newCollected, delivered, fee, remaining });
+      work.push({ id: Number(cn.id), invoiceId: Number(cn.invoiceId), collected, newCollected, delivered, fee, remaining, feeCollection: String(cn.feeCollection ?? "SHOP") });
       collectedTotal = collectedTotal.plus(collected);
       feesTotal = feesTotal.plus(fee);
       expectedTotal = expectedTotal.plus(remaining);
@@ -199,13 +205,19 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
           branchId: input.branchId, invoiceId: w.invoiceId, deliveryPartyId: input.partyId, amount: w.collected,
         });
       }
-      // مصروف الأجرة عند التسليم الكامل (cost-only؛ يربط إيصال OUT الدفعة).
+      // الأجرة عند التسليم الكامل (يربط إيصال OUT الدفعة). ٥/٨ — تُصنَّف بحسب مَن تحمّلها:
+      //   COUNTER ⇒ قبضناها من الزبون أمانةً ⇒ تمريرٌ (amount فقط) لا مصروف ⇒ صفر أثرٍ على الربح.
+      //   SHOP    ⇒ المكتبة تحمّلتها فعلاً ⇒ مصروفٌ حقيقيّ (cost-only) كما كان.
       if (w.fee.gt(0)) {
+        const passThrough = w.feeCollection === "COUNTER";
         await postEntry(tx, {
-          entryType: "DELIVERY_FEE", branchId: input.branchId, invoiceId: w.invoiceId, receiptId: receiptOutId,
-          deliveryPartyId: input.partyId, amount: w.fee, cost: w.fee, profit: w.fee.neg(),
+          entryType: passThrough ? "DELIVERY_FEE_HELD" : "DELIVERY_FEE",
+          branchId: input.branchId, invoiceId: w.invoiceId, receiptId: receiptOutId,
+          deliveryPartyId: input.partyId, amount: w.fee,
+          ...(passThrough ? {} : { cost: w.fee, profit: w.fee.neg() }),
           notes: `أجرة توصيل ${remittanceNumber}`,
         });
+        await tx.update(deliveryConsignments).set({ feeSettledAt: new Date() }).where(eq(deliveryConsignments.id, w.id));
       }
     }
 

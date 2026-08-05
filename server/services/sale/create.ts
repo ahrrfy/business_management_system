@@ -546,6 +546,9 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       paymentMethod: input.payment?.method ?? null,
       paymentDate: paidNow.gt(0) ? new Date() : null,
       notes: input.notes ?? null,
+      // ٥/٨ — زبونٌ عابر: مرجعٌ نصّيّ على الفاتورة بلا إنشاء عميل (customerId يبقى NULL ⇒ لا AR).
+      contactName: input.contactName?.trim() || null,
+      contactPhone: input.contactPhone?.trim() || null,
       // أوفلاين (ش٣): وسم المنشأ + الرقم المؤقّت المطبوع + لحظة الالتقاط الحقيقية —
       // يضبطها offline.replaySale حصراً (saleRouter لا يعرض offlineCapture).
       originatedOffline: !!input.offlineCapture,

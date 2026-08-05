@@ -57,6 +57,9 @@ export interface CreatePrintSaleInput {
   branchId: number;
   shiftId?: number | null;
   customerId?: number | null;
+  /** ٥/٨ — زبونٌ عابر: اسمٌ/هاتفٌ مرجعيّان على الفاتورة بلا سجلّ عميل ولا ذمّة. */
+  contactName?: string | null;
+  contactPhone?: string | null;
   priceTier?: PriceTier | null;
   lines: PrintSaleLineInput[];
   payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
@@ -383,6 +386,9 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       paymentMethod: input.payment?.method ?? null,
       paymentDate: paidNow.gt(0) ? new Date() : null,
       notes: input.notes ?? null,
+      // ٥/٨ — زبونٌ عابر: مرجعٌ نصّيّ على الفاتورة بلا إنشاء عميل (customerId يبقى NULL ⇒ لا AR).
+      contactName: input.contactName?.trim() || null,
+      contactPhone: input.contactPhone?.trim() || null,
       salespersonNameSnapshot,
       createdBy: actor.userId,
     });

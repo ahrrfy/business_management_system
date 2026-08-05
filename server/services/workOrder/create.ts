@@ -115,6 +115,10 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
       deliveryAddress: input.deliveryAddress?.trim() || null,
       deliveryCost: input.deliveryCost ? round2(money(input.deliveryCost)).toFixed(2) : "0.00",
       deliveryPhone: input.deliveryPhone?.trim() || null,
+      // ٥/٨ — الأجرة تمرير: تُخزَّن في عمودها وحدها ولا تُضمّ إلى salePrice أبداً.
+      deliveryFeeCollection: input.deliveryFeeCollection ?? "COURIER",
+      contactName: input.contactName?.trim() || null,
+      contactPhone: input.contactPhone?.trim() || null,
     });
     const workOrderId = extractInsertId(insRes);
     // سجّل مفتاح الـidempotency فوراً بعد إدراج الأمر — طلبٌ متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK) قبل قبض العربون.
@@ -153,6 +157,41 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
         customerId: input.customerId ?? null,
         amount: depositD,
         notes: `[WO_DEPOSIT:${workOrderId}]`,
+      });
+    }
+
+    // ٥/٨ — أجرة توصيل قُبضت في الاستقبال (COUNTER): نقدٌ حقيقيّ يدخل الدرج لكنه **ليس بيعاً**.
+    // يُسجَّل إيصالاً مستقلاً عن الفاتورة + قيد DELIVERY_FEE_HELD (مبلغٌ فقط: لا إيراد ولا تكلفة
+    // ولا ربح) ⇒ يظهر في «النقد المتوقّع» فيُطابِق الدرج فعلاً، ثم يُبرَّأ حين يُخصَم من توريد
+    // المندوب. بلا هذا الإيصال يكون النقد في الدرج بلا مصدرٍ مسجَّل ⇒ فائضٌ يمنع إغلاق الوردية.
+    const heldFeeD = round2(money(input.deliveryCost ?? "0"));
+    if (input.hasDelivery && (input.deliveryFeeCollection ?? "COURIER") === "COUNTER" && heldFeeD.gt(0)) {
+      const feeMethod = input.paymentMethod ?? "CASH";
+      const feeShiftId = await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
+      if (feeMethod === "CASH" && feeShiftId == null) {
+        throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لقبض أجرة توصيل نقداً" });
+      }
+      const feeRes = await tx.insert(receipts).values({
+        branchId: input.branchId,
+        shiftId: feeShiftId,
+        workOrderId,
+        direction: "IN",
+        amount: toDbMoney(heldFeeD),
+        paymentMethod: feeMethod,
+        referenceNumber: `DLV-FEE-WO-${workOrderId}`,
+        cashBucket: feeMethod === "CASH" ? "DRAWER" : null,
+        status: "COMPLETED",
+        partyType: "OTHER",
+        description: `أجرة توصيل مقبوضة أمانةً للمندوب — طلب ${orderNumber}`,
+        createdBy: actor.userId,
+      });
+      await postEntry(tx, {
+        entryType: "DELIVERY_FEE_HELD",
+        dedupeKey: `DELIVERY_FEE_HELD:WO:${workOrderId}`,
+        branchId: input.branchId,
+        receiptId: extractInsertId(feeRes),
+        amount: heldFeeD,
+        notes: `أمانة أجرة توصيل — طلب ${orderNumber}`,
       });
     }
 

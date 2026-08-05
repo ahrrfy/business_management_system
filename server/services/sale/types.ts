@@ -37,6 +37,9 @@ export interface CreateSaleInput {
   branchId: number;
   shiftId?: number | null;
   customerId?: number | null;
+  /** ٥/٨ — زبونٌ عابر: اسمٌ/هاتفٌ مرجعيّان على الفاتورة بلا سجلّ عميل ولا ذمّة. */
+  contactName?: string | null;
+  contactPhone?: string | null;
   priceTier?: PriceTier | null;
   sourceType: "POS" | "ONLINE" | "ORDER" | "WORKORDER";
   lines: SaleLineInput[];
