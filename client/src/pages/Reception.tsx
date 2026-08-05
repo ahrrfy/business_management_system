@@ -54,6 +54,8 @@ import Inbox from "@/pages/Inbox";
 import OrderFulfillment from "@/pages/OrderFulfillment";
 import ReceptionOrderQueue from "@/components/reception/ReceptionOrderQueue";
 import { ReceptionInvoiceQueue } from "@/components/reception/ReceptionInvoiceQueue";
+import { DraftStrip } from "@/components/reception/DraftStrip";
+import { printDraftTicket } from "@/lib/printing/draftTicket";
 // تفكيك §١٣ ش١ (٥/٨): الأنواع/الدوال النقيّة والمكوّنات الثقيلة (السلة/الدفع/الإيصال) صارت
 // وحدات مستقلّة تحت components/reception — نقلٌ حرفيّ بصفر تغيير سلوكي.
 import {
@@ -288,6 +290,10 @@ export default function Reception() {
   const [approvalAsk, setApprovalAsk] = useState<{ lineKey: string; pct: number } | null>(null);
   /** اعتماد المدير للخصم >١٠٪ — يُحمل حتى الإرسال (يتحقّق خادمياً عند الالتزام). */
   const mgrCredsRef = useRef<{ email: string; password: string } | null>(null);
+  // ش٢ (§٨.٢): المسوّدة المُرقّاة — السلّة محليّةٌ بالافتراض، وتترقّى بحفظٍ صريح؛ بعدها تُزامَن
+  // بالجملة بdebounce ~٨٠٠مث وversion تفاؤليّ (تعارضُ زميلٍ ⇒ إعادة تحميلٍ لا طمس).
+  const [activeDraft, setActiveDraft] = useState<{ id: number; version: number } | null>(null);
+  const draftSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // ش١: جهات التوصيل لورشة الفواتير (الإسناد من الصفّ) — تُجلب عند فتح الورشة فقط.
   const partiesQ = trpc.delivery.listParties.useQuery(
     { activeOnly: true },
@@ -595,6 +601,10 @@ export default function Reception() {
     setCouponCode(null);
     setCouponLabel(null);
     setCouponInput("");
+    // ش٢: التفريغ يفكّ ارتباط المسوّدة **قبل** مسح السلة (وإلا زامنت المزامنة المؤجَّلة أسطراً
+    // فارغة فمُحيت المسوّدة المحفوظة عن بُعد) — المسوّدة تبقى سليمة في الشريط.
+    if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+    setActiveDraft(null);
     setCart([]);
     setSelKey(null);
     setPayInput("");
@@ -796,6 +806,164 @@ export default function Reception() {
 
   // نقطة التزام خادمية واحدة للسلة الهجينة: بيع + طباعة + أوامر شغل.
   const checkoutM = trpc.workOrders.receptionCheckout.useMutation();
+
+  // ───── ش٢: المسوّدة المُرقّاة (حفظ/استئناف/مزامنة) ─────────────────────────
+  /** تحويل السلّة الحالية إلى حمولة مسوّدة (الخصم اليدويّ مطويّ في unitPrice الفعّال). */
+  function buildDraftPayload() {
+    const header = {
+      customerId: customer.customerId ?? null,
+      contactName: customer.customerId == null ? (customer.name.trim() || null) : null,
+      contactPhone: customer.customerId == null ? (customer.phone?.trim() || null) : null,
+      priceTier: effectiveTier,
+      channel,
+    };
+    const lines = cart.map((c, i) => {
+      const eff = round2(D(effectivePrice(c))).toFixed(2);
+      if (c.custom) {
+        return {
+          lineKind: "CUSTOM" as const,
+          sortOrder: i,
+          variantId: c.manualService ? null : (c.row.variantId || null),
+          productUnitId: c.manualService ? null : (c.row.productUnitId || null),
+          quantity: String(c.qty),
+          unitPrice: eff,
+          title: c.custom.title.trim() || c.row.productName,
+          customizationText: composeCustomizationText(c.custom) || null,
+          designImages: c.custom.designImages.length
+            ? JSON.stringify(c.custom.designImages.map((img, ix) => ({ url: img.dataUrl, caption: img.name ?? null, sortOrder: ix })))
+            : null,
+          // المواصفة كاملةً عدا الصور — الاستئناف الوفيّ (I22: الصور في عمودها وحدها).
+          printSpec: JSON.stringify({ ...c.custom, designImages: [], paymentReceiptImages: [] }),
+          dueDate: c.custom.dueDate || null,
+          assignedTo: c.custom.assignedTo ?? null,
+        };
+      }
+      return {
+        lineKind: c.row.isPrintService ? ("PRINT" as const) : ("GOODS" as const),
+        sortOrder: i,
+        variantId: c.row.variantId,
+        productUnitId: c.row.productUnitId,
+        quantity: String(c.qty),
+        unitPrice: eff,
+        title: `${c.row.productName} (${c.row.unitName})`,
+      };
+    });
+    return { header, lines };
+  }
+
+  const promoteM = trpc.reception.draftPromote.useMutation({
+    onSuccess: (r) => {
+      setActiveDraft({ id: r.draftId, version: r.version });
+      notify.ok(`حُفظ الطلب — ${r.draftNumber}`, "يُزامَن تلقائياً مع كل تعديل، ويستطيع زميلك إكماله من جهازه");
+      void utils.reception.draftList.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const syncM = trpc.reception.draftSync.useMutation({
+    onSuccess: (r) => setActiveDraft((prev) => (prev ? { ...prev, version: r.version } : prev)),
+    onError: (e) => {
+      // تعارضُ زميل (I9) أو انغلاق المسوّدة ⇒ فكّ الارتباط بلا طمس، والرسالة تشرح.
+      notify.warn("توقّفت مزامنة الطلب المحفوظ", e.message);
+      setActiveDraft(null);
+      void utils.reception.draftList.invalidate();
+    },
+  });
+
+  function saveDraft() {
+    if (cart.length === 0 || !!activeDraft || offline) return;
+    promoteM.mutate({ branchId, shiftId: shift?.id ?? null, ...buildDraftPayload() });
+  }
+  /** طيّ مسوّدةٍ أُتمّ طلبها بالدفع المباشر — أفضل جهد (جسرٌ حتى تثبيت ش٣ الذرّي من المسوّدة). */
+  const finishDraftM = trpc.reception.draftCancel.useMutation({
+    onSuccess: () => void utils.reception.draftList.invalidate(),
+    onError: () => { /* تبقى OPEN فيطويها الكنّاس أو تُلغى يدوياً */ },
+  });
+
+  /** مزامنة بالجملة بdebounce (§٦ — لا سطراً-سطراً: مسح ١٢ باركوداً متتابعاً يمرّ بلا CONFLICT). */
+  useEffect(() => {
+    if (!activeDraft || offline) return;
+    if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+    draftSyncTimer.current = setTimeout(() => {
+      if (!activeDraft) return;
+      syncM.mutate({ draftId: activeDraft.id, version: activeDraft.version, ...buildDraftPayload() });
+    }, 800);
+    return () => {
+      if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart, customer.customerId, customer.name, customer.phone, effectiveTier, channel, activeDraft?.id]);
+
+  /** استئناف مسوّدة (من هذا الجهاز أو جهاز زميل): صفوفٌ حيّة عبر catalog.byUnitIds + مواصفة CUSTOM من printSpec. */
+  async function resumeDraft(draftId: number) {
+    try {
+      const d = await utils.reception.draftGet.fetch({ draftId });
+      const unitIds = Array.from(new Set(d.lines.map((l) => Number(l.productUnitId)).filter((n) => n > 0)));
+      const live = unitIds.length
+        ? await utils.catalog.byUnitIds.fetch({ branchId, tier: (d.priceTier as Tier) ?? "RETAIL", productUnitIds: unitIds })
+        : [];
+      const byUnit = new Map(live.map((r) => [Number(r.productUnitId), r as PosRow]));
+      let skipped = 0;
+      const newCart: CartLine[] = [];
+      for (const l of d.lines) {
+        const qty = Math.max(1, Math.trunc(Number(l.quantity)));
+        if (l.lineKind === "CUSTOM") {
+          let spec: Partial<CustomizationData> = {};
+          let imgs: Array<{ url: string; caption?: string | null }> = [];
+          try { spec = l.printSpec ? JSON.parse(l.printSpec) : {}; } catch { /* مواصفة تالفة ⇒ افتراضي */ }
+          try { imgs = l.designImages ? JSON.parse(l.designImages) : []; } catch { /* صور تالفة ⇒ بلا صور */ }
+          const custom: CustomizationData = {
+            ...emptyCustomization(l.title ?? ""),
+            ...spec,
+            designImages: imgs.map((im, ix) => ({ id: `r-${l.id}-${ix}`, dataUrl: im.url, name: im.caption ?? undefined, isPrimary: ix === 0 })),
+            paymentReceiptImages: [],
+          };
+          const row = byUnit.get(Number(l.productUnitId)) ?? ({
+            variantId: Number(l.variantId ?? 0), productUnitId: Number(l.productUnitId ?? 0),
+            productName: l.title ?? "خدمة / أمر شغل", sku: "SERVICE", unitName: "خدمة",
+            conversionFactor: "1", price: "0", stockBase: 0,
+            isService: true, isPrintService: false, isCustomizable: true,
+          } as PosRow);
+          newCart.push({ key: `r-${l.id}`, row, qty, custom, manualService: l.variantId == null });
+          continue;
+        }
+        const row = byUnit.get(Number(l.productUnitId));
+        if (!row) { skipped += 1; continue; }
+        const line: CartLine = { key: `r-${l.id}`, row, qty };
+        // السعر المخزَّن (الفعّال وقت الحفظ) يُثبَّت — تغيّر سعر الكتالوج لا يُعيد التسعير صامتاً.
+        if (Number(l.unitPrice) !== Number(row.price ?? 0)) line.origPrice = Number(l.unitPrice);
+        newCart.push(line);
+      }
+      clearCouponIfApplied();
+      setCart(newCart);
+      setCustomer({ customerId: d.customerId != null ? Number(d.customerId) : null, name: d.contactName ?? "", phone: d.contactPhone ?? null, isNew: false });
+      setTierOverride((d.priceTier as Tier) ?? null);
+      setActiveDraft({ id: draftId, version: Number(d.version) });
+      setWorkshop("CART");
+      notify.ok(
+        `فُتحت المسوّدة ${d.draftNumber}`,
+        skipped > 0 ? `تنبيه: ${skipped} بند تعذّر استرجاعه (منتج غير متاح)` : "تعديلاتك تُزامَن وتُسجَّل باسمك",
+      );
+    } catch (e) {
+      notify.err(e, "تعذّر فتح المسوّدة");
+    }
+  }
+
+  async function printDraftTicketById(draftId: number) {
+    try {
+      const d = await utils.reception.draftGet.fetch({ draftId });
+      await printDraftTicket({
+        draftNumber: d.draftNumber,
+        date: fmtDate(new Date(d.createdAt as unknown as string)),
+        contactName: d.contactName,
+        contactPhone: d.contactPhone,
+        items: d.lines.map((l) => ({ name: l.title ?? "بند", quantity: Number(l.quantity), total: String(l.lineTotal) })),
+        total: String(d.total),
+        notes: d.notes,
+      });
+    } catch (e) {
+      notify.err(e, "تعذّرت طباعة تذكرة المسوّدة");
+    }
+  }
 
   async function handleSubmit(opts: { quickFullPay: boolean }) {
     if (cart.length === 0) return;
@@ -1126,6 +1294,14 @@ export default function Reception() {
       mgrCredsRef.current = null;
       setDiscountFor(null);
       setApprovalAsk(null);
+      // ش٢: طلبٌ محفوظٌ ثُبِّت عبر الدفع المباشر ⇒ تُطوى مسوّدته (جسرٌ حتى ش٣ حيث يصير التثبيت
+      // من المسوّدة نفسها ذرّياً). أفضل جهدٍ — فشله لا يمسّ العملية الملتزمة.
+      if (activeDraft) {
+        if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+        const finished = activeDraft;
+        setActiveDraft(null);
+        finishDraftM.mutate({ draftId: finished.id, version: finished.version, reason: "أُتمّ الطلب ودُفع في المحطة" });
+      }
       setCart([]);
       setSelKey(null);
       setPayInput("");
@@ -1876,6 +2052,19 @@ export default function Reception() {
           )}
         </div>
         </div>
+        {/* ش٢ (§٨.٢): شريط الطلبات المحفوظة — يدخل سُلَّم الاحتواء: تحت compactHeader ينكمش
+            إلى زرٍّ منسدلٍ واحد (V18) فلا يموّل نفسه من لوحة الدفع. */}
+        <DraftStrip
+          branchId={branchId}
+          meUserId={Number(me.data?.id ?? 0)}
+          activeDraftId={activeDraft?.id ?? null}
+          offline={offline}
+          compact={compactHeader}
+          canSave={cart.length > 0}
+          onSave={saveDraft}
+          onResume={(id) => void resumeDraft(id)}
+          onPrintTicket={(id) => void printDraftTicketById(id)}
+        />
       </div>
 
       {/* ─── الجسم: سلّة (يسار) + لوحة الدفع (يمين) ─── */}

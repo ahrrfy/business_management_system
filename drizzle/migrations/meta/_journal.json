@@ -1058,6 +1058,13 @@
       "when": 1787879404000,
       "tag": "0151_reception_deposit_link_and_shift_index",
       "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "5",
+      "when": 1787879405000,
+      "tag": "0152_reception_drafts",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import {
   int,
   bigint,
   tinyint,
+  char,
   decimal,
   varchar,
   text,
@@ -2472,6 +2473,104 @@ export const workOrders = mysqlTable(
 
 export type WorkOrder = typeof workOrders.$inferSelect;
 export type InsertWorkOrder = typeof workOrders.$inferInsert;
+
+/**
+ * ش٢ (٥/٨/٢٦) — مسوّدة طلب محطة خدمة الزبائن (م١: تعديلٌ حرّ قبل التثبيت بصفر أثرٍ ماليّ).
+ * الوثيقة الحاكمة docs/reception-cashier-system-design-2026-08-05.md §٥.١.
+ * **صفرٌ ماليّ بنيوياً** (الثابت I1): الكيان لا يكتب في invoices/accountingEntries/
+ * inventoryMovements أصلاً — يخرج تلقائياً من وعاء العمولة والأعمار وZ-report.
+ */
+export const receptionDrafts = mysqlTable(
+  "receptionDrafts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** DRF-{فرع}-{YYYYMMDD}-{NNNNN} — مسلسلٌ مستقلّ لا يمسّ ترقيم الفواتير. */
+    draftNumber: varchar("draftNumber", { length: 40 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    /** إعلاميّ فقط — المسوّدة لا تنتمي لوردية (I14: لا تمنع الإغلاق). */
+    createdByShiftId: bigint("createdByShiftId", { mode: "number" }),
+    status: mysqlEnum("draftStatus", ["OPEN", "COMMITTED", "CANCELLED", "EXPIRED"])
+      .default("OPEN")
+      .notNull(),
+    /** قفل تفاؤليّ للتحرير المتوازي (I9). */
+    version: int("version").default(0).notNull(),
+    /** يولّده **الخادم** عند الإنشاء ويعيش مع الصفّ — طبقة idempotency الثالثة للتثبيت (ش٣):
+     *  يصير sourceId `{uuid}-sale` فيصطدم بـuq_invoice_source حتى لو سقط القفلان. */
+    commitRequestId: char("commitRequestId", { length: 36 }).notNull(),
+    /** يُرفع عند أوّل قبضٍ (ش٤) **ولا يُخفَض أبداً** — العمود الفقريّ لحارس I3. */
+    moneyLocked: boolean("moneyLocked").default(false).notNull(),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    contactName: varchar("contactName", { length: 255 }),
+    contactPhone: varchar("contactPhone", { length: 32 }),
+    priceTier: mysqlEnum("draftPriceTier", ["RETAIL", "WHOLESALE", "GOVERNMENT"])
+      .default("RETAIL")
+      .notNull(),
+    channel: varchar("channel", { length: 20 }),
+    notes: text("notes"),
+    dueDate: date("dueDate"),
+    /** ذاكرة عرضٍ فقط — تُعاد حسابها خادمياً في كل كتابةٍ وعند التثبيت (لا يُقرأ منها قرار). */
+    subtotal: decimal("subtotal", { precision: 15, scale: 2 }).default("0").notNull(),
+    discountTotal: decimal("discountTotal", { precision: 15, scale: 2 }).default("0").notNull(),
+    total: decimal("total", { precision: 15, scale: 2 }).default("0").notNull(),
+    committedInvoiceId: bigint("committedInvoiceId", { mode: "number" }).references(() => invoices.id),
+    committedPrintInvoiceId: bigint("committedPrintInvoiceId", { mode: "number" }).references(() => invoices.id),
+    expiresAt: timestamp("expiresAt"),
+    committedAt: timestamp("committedAt"),
+    cancelledAt: timestamp("cancelledAt"),
+    cancelReason: varchar("cancelReason", { length: 500 }),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    updatedBy: int("updatedBy"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    numberUq: unique("uq_draft_number").on(table.draftNumber),
+    commitRequestUq: unique("uq_draft_commit_request").on(table.commitRequestId),
+    committedInvoiceUq: unique("uq_draft_committed_invoice").on(table.committedInvoiceId),
+    branchStatusIdx: index("idx_draft_branch_status_id").on(table.branchId, table.status, table.id),
+    creatorIdx: index("idx_draft_creator").on(table.createdBy, table.status),
+    phoneIdx: index("idx_draft_phone").on(table.contactPhone),
+    customerIdx: index("idx_draft_customer").on(table.customerId),
+  }),
+);
+
+/** بنود المسوّدة — لقطة تحريرٍ حرّة (GOODS/PRINT/CUSTOM). FKs المنتج RESTRICT عمداً + مدخل
+ *  getProductUsage محصورٌ بـOPEN (V17) كي لا تمنع مسوّدةٌ ملغاة حذف منتجٍ للأبد.
+ *  قاعدة صلبة (I22): لا استعلام قائمةٍ ينتقي designImages/printSpec ولا حمولة تدقيقٍ تحملهما. */
+export const receptionDraftLines = mysqlTable(
+  "receptionDraftLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    draftId: bigint("draftId", { mode: "number" })
+      .notNull()
+      .references(() => receptionDrafts.id, { onDelete: "cascade" }),
+    lineKind: mysqlEnum("draftLineKind", ["GOODS", "PRINT", "CUSTOM"]).notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    variantId: bigint("variantId", { mode: "number" }).references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
+    quantity: decimal("quantity", { precision: 15, scale: 3 }).default("1").notNull(),
+    unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).default("0").notNull(),
+    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    lineTotal: decimal("lineTotal", { precision: 15, scale: 2 }).default("0").notNull(),
+    title: varchar("title", { length: 255 }),
+    customizationText: text("customizationText"),
+    /** MEDIUMTEXT: صور base64 مضغوطة (نمط productImages) — JSON [{url,caption,sortOrder}]. */
+    designImages: mediumtext("designImages"),
+    /** مواصفة السطر المخصّص (JSON بنية CustomizationData عدا الصور) — للاستئناف الوفيّ. */
+    printSpec: text("printSpec"),
+    dueDate: date("dueDate"),
+    assignedTo: int("assignedTo"),
+    priceOverride: boolean("priceOverride").default(false).notNull(),
+    priceApprovedBy: bigint("priceApprovedBy", { mode: "number" }),
+    lineRequestId: varchar("lineRequestId", { length: 64 }),
+  },
+  (table) => ({
+    draftIdx: index("idx_dline_draft").on(table.draftId, table.sortOrder),
+  }),
+);
+
+export type ReceptionDraft = typeof receptionDrafts.$inferSelect;
+export type ReceptionDraftLine = typeof receptionDraftLines.$inferSelect;
 
 /** المواد المستهلكة من المخزون لأمر الشغل. */
 export const workOrderMaterials = mysqlTable(

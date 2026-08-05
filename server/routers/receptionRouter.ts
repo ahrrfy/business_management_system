@@ -6,9 +6,18 @@
 // قائمة أدوار تفتح الطابور لـwarehouse/user/auditor.)
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { positiveMoneyString } from "../lib/schemas";
-import { collectOnReceptionInvoice, listReceptionInvoices } from "../services/reception";
-import { router, workordersCashierProcedure } from "../trpc";
+import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
+import { assertValidImageDataUrl } from "../lib/imageValidation";
+import {
+  cancelDraft,
+  collectOnReceptionInvoice,
+  getDraft,
+  listDrafts,
+  listReceptionInvoices,
+  promoteDraft,
+  syncDraft,
+} from "../services/reception";
+import { router, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
 import { logAudit } from "../services/auditService";
 
 /** عزل الفرع (نمط deliveryRouter.effectiveBranch): المرتفعون يعبرون بـbranchId صريح؛
@@ -20,6 +29,54 @@ function effectiveBranch(ctx: { user: { role?: string | null; branchId?: number 
 }
 
 const payMethodEnum = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
+
+// ش٢ — عقود المسوّدة (§٦): بوّابة **exec** (كاشير/مدير/فنّي طباعة — المسوّدة بلا مالٍ فتُحرَّر
+// بأوسع أدوار المحطة)؛ التثبيت والمال يبقيان خلف بوّابة الكاشير (ش٣/ش٤).
+const quantityString = z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة");
+const draftLineSchema = z.object({
+  lineKind: z.enum(["GOODS", "PRINT", "CUSTOM"]),
+  sortOrder: z.number().int().min(0).optional(),
+  variantId: z.number().int().positive().nullish(),
+  productUnitId: z.number().int().positive().nullish(),
+  quantity: quantityString,
+  unitPrice: nonNegMoneyString,
+  discountAmount: nonNegMoneyString.nullish(),
+  title: z.string().trim().max(255).nullish(),
+  customizationText: z.string().max(5000).nullish(),
+  /** JSON نصّي [{url,caption,sortOrder}] — يُتحقَّق من كل صورة فيه أدناه. */
+  designImages: z.string().max(8_000_000).nullish(),
+  printSpec: z.string().max(20_000).nullish(),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+  assignedTo: z.number().int().positive().nullish(),
+  priceOverride: z.boolean().optional(),
+  lineRequestId: z.string().max(64).nullish(),
+});
+const draftHeaderSchema = z.object({
+  customerId: z.number().int().positive().nullish(),
+  contactName: z.string().trim().max(255).nullish(),
+  contactPhone: z.string().trim().max(32).nullish(),
+  priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).nullish(),
+  channel: z.string().trim().max(20).nullish(),
+  notes: z.string().max(2000).nullish(),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+});
+function assertDraftImages(lines: Array<{ designImages?: string | null }>) {
+  for (const line of lines) {
+    if (!line.designImages) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line.designImages);
+    } catch {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "صور المسوّدة بصيغة غير صالحة" });
+    }
+    if (!Array.isArray(parsed) || parsed.length > 10) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "صور المسوّدة: ١٠ صور كحدّ أقصى" });
+    }
+    for (const img of parsed as Array<{ url?: string }>) {
+      if (img?.url) assertValidImageDataUrl(img.url);
+    }
+  }
+}
 
 export const receptionRouter = router({
   /** طابور فواتير المحطة: keyset + فلاتر (§٨.٥ — الافتراض «ورديتي» يقرّره العميل بتمرير shiftIds). */
@@ -74,5 +131,91 @@ export const receptionRouter = router({
         },
       });
       return result;
+    }),
+
+  // ── ش٢ — المسوّدة المُرقّاة (§٨.٢: السلّة محليّةٌ بالافتراض؛ الترقية عند أوّل سببٍ حقيقيّ) ──
+  draftPromote: workordersExecProcedure
+    .input(z.object({
+      branchId: z.number().int().positive().nullish(),
+      shiftId: z.number().int().positive().nullish(),
+      header: draftHeaderSchema,
+      lines: z.array(draftLineSchema).max(100),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const branchId = effectiveBranch(ctx, input.branchId);
+      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      assertDraftImages(input.lines);
+      const actor = { userId: ctx.user.id, branchId, role: ctx.user.role };
+      const res = await promoteDraft({ branchId, shiftId: input.shiftId, header: input.header, lines: input.lines }, actor as never);
+      await logAudit(ctx, {
+        action: "reception.draftPromote",
+        entityType: "receptionDraft",
+        entityId: res.draftId,
+        newValue: { draftNumber: res.draftNumber, lines: input.lines.length, total: res.total },
+      });
+      return res;
+    }),
+
+  draftGet: workordersExecProcedure
+    .input(z.object({ draftId: z.number().int().positive() }))
+    .query(({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null, role: ctx.user.role };
+      return getDraft(input.draftId, actor as never);
+    }),
+
+  draftList: workordersExecProcedure
+    .input(z.object({
+      branchId: z.number().int().positive().nullish(),
+      mine: z.boolean().optional(),
+      status: z.enum(["OPEN", "COMMITTED", "CANCELLED", "EXPIRED"]).optional(),
+      q: z.string().trim().max(80).optional(),
+      cursor: z.number().int().positive().optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+    }))
+    .query(({ input, ctx }) => {
+      const branchId = effectiveBranch(ctx, input.branchId);
+      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      const actor = { userId: ctx.user.id, branchId, role: ctx.user.role };
+      return listDrafts({ ...input, branchId }, actor as never);
+    }),
+
+  draftSync: workordersExecProcedure
+    .input(z.object({
+      draftId: z.number().int().positive(),
+      version: z.number().int().min(0),
+      header: draftHeaderSchema,
+      lines: z.array(draftLineSchema).max(100),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      assertDraftImages(input.lines);
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null, role: ctx.user.role };
+      const res = await syncDraft(input, actor as never);
+      // I22: تدقيقٌ بقبل/بعد للمبالغ والعناوين فقط — لا designImages/printSpec في الحمولة أبداً.
+      await logAudit(ctx, {
+        action: "reception.draftSync",
+        entityType: "receptionDraft",
+        entityId: input.draftId,
+        oldValue: res.auditBefore,
+        newValue: { total: res.totals.total, lines: input.lines.length },
+      });
+      return { version: res.version, totals: res.totals };
+    }),
+
+  draftCancel: workordersExecProcedure
+    .input(z.object({
+      draftId: z.number().int().positive(),
+      version: z.number().int().min(0),
+      reason: z.string().trim().min(3).max(500),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null, role: ctx.user.role };
+      const res = await cancelDraft(input, actor as never);
+      await logAudit(ctx, {
+        action: "reception.draftCancel",
+        entityType: "receptionDraft",
+        entityId: input.draftId,
+        newValue: { reason: input.reason },
+      });
+      return res;
     }),
 });
