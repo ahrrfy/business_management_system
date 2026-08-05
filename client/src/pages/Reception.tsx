@@ -861,13 +861,29 @@ export default function Reception() {
   });
   const syncM = trpc.reception.draftSync.useMutation({
     onSuccess: (r) => setActiveDraft((prev) => (prev ? { ...prev, version: r.version } : prev)),
-    onError: (e) => {
-      // تعارضُ زميل (I9) أو انغلاق المسوّدة ⇒ فكّ الارتباط بلا طمس، والرسالة تشرح.
-      notify.warn("توقّفت مزامنة الطلب المحفوظ", e.message);
-      setActiveDraft(null);
-      void utils.reception.draftList.invalidate();
+    onError: (e, vars) => {
+      // مراجعة عدائية (٥/٨): التمييز بالكود — فكُّ الربط على كل خطأ كان يترك مسوّداتٍ يتيمةً
+      // OPEN لبيعٍ أُتمّ (زميل يثبّتها = ازدواج) ويقطع الحفظ على عطل شبكةٍ عابر.
+      const code = (e as { data?: { code?: string } }).data?.code;
+      if (code === "CONFLICT") {
+        // تعارض زميل (I9) أو نسخة closure قديمة ⇒ أعد الجلب والربط بالنسخة الحيّة بلا طمس.
+        notify.warn("حُدِّث الطلب المحفوظ", "أُعيد تحميله بأحدث نسخة — راجعه ثم تابع");
+        void resumeDraft(vars.draftId);
+      } else if (code === "PRECONDITION_FAILED") {
+        // انغلقت (ثُبِّتت/أُلغيت/انقضت) ⇒ فكّ الربط والرسالة تشرح.
+        notify.warn("توقّفت مزامنة الطلب المحفوظ", e.message);
+        setActiveDraft(null);
+        void utils.reception.draftList.invalidate();
+      }
+      // عطل نقلٍ عابر (code فارغ): أبقِ الربط — النبضة القادمة تعيد المحاولة.
     },
   });
+  // نسخة المسوّدة في ref — المؤقّت المجدول أثناء ذهابِ مزامنةٍ سابقة كان يحمل closure قديمة
+  // فيطلق CONFLICT «ذاتيّ المنشأ» (توست «حدّثها زميل» بلا زميل).
+  const activeDraftRef = useRef(activeDraft);
+  useEffect(() => {
+    activeDraftRef.current = activeDraft;
+  }, [activeDraft]);
 
   function saveDraft() {
     if (cart.length === 0 || !!activeDraft || offline) return;
@@ -876,13 +892,15 @@ export default function Reception() {
   /** ش٣ — التثبيت الذرّي من المسوّدة نفسها (يستبدل جسر «الطيّ» المؤقّت من ش٢). */
   const commitDraftM = trpc.reception.draftCommit.useMutation();
 
-  /** مزامنة بالجملة بdebounce (§٦ — لا سطراً-سطراً: مسح ١٢ باركوداً متتابعاً يمرّ بلا CONFLICT). */
+  /** مزامنة بالجملة بdebounce (§٦ — لا سطراً-سطراً: مسح ١٢ باركوداً متتابعاً يمرّ بلا CONFLICT).
+   *  النسخة تُقرأ من ref **لحظة الإطلاق** لا من closure الجدولة (مراجعة عدائية — سباق ذاتي المنشأ). */
   useEffect(() => {
     if (!activeDraft || offline) return;
     if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
     draftSyncTimer.current = setTimeout(() => {
-      if (!activeDraft) return;
-      syncM.mutate({ draftId: activeDraft.id, version: activeDraft.version, ...buildDraftPayload() });
+      const live = activeDraftRef.current;
+      if (!live) return;
+      syncM.mutate({ draftId: live.id, version: live.version, ...buildDraftPayload() });
     }, 800);
     return () => {
       if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
@@ -1112,14 +1130,26 @@ export default function Reception() {
       const result = activeDraft
         ? await (async () => {
             if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
-            const synced = await syncM.mutateAsync({
-              draftId: activeDraft.id,
-              version: activeDraft.version,
-              ...buildDraftPayload(),
-            });
+            const live = activeDraftRef.current ?? activeDraft;
+            // تفريغ المزامنة قبل التثبيت (يقتل سباق التعديل قبل نبضة debounce). مراجعة عدائية:
+            // إن رُفض بـ«ثُبِّتت فاتورةً» (فُقد ردُّ تثبيتٍ سابق) **نتابع** إلى commitDraft —
+            // الخادم يعيد النتيجة المبنيّة من مفاتيح idempotency، لا نفكّ الربط فنزدوج بمسارٍ مباشر.
+            let commitVersion = live.version;
+            try {
+              const synced = await syncM.mutateAsync({
+                draftId: live.id,
+                version: live.version,
+                ...buildDraftPayload(),
+              });
+              commitVersion = synced.version;
+            } catch (syncErr) {
+              const code = (syncErr as { data?: { code?: string } }).data?.code;
+              if (code !== "PRECONDITION_FAILED") throw syncErr; // CONFLICT/نقل ⇒ المسار العام
+              // مسوّدة مغلقة: إن كانت COMMITTED فcommitDraft يعيد النتيجة نفسها (rebuild يسبق فحص version).
+            }
             const committed = await commitDraftM.mutateAsync({
-              draftId: activeDraft.id,
-              version: synced.version,
+              draftId: live.id,
+              version: commitVersion,
               expectedTotal: round2(grandTotalD).toFixed(2),
               shiftId: shift.id,
               collectNow: appliedPaidD.gt(0)
@@ -1362,6 +1392,17 @@ export default function Reception() {
    */
   async function captureOfflineReception(): Promise<boolean> {
     if (!shift || cart.length === 0) return false;
+    // مراجعة عدائية (٥/٨) — **حاصرة**: طلبٌ محفوظ (مسوّدة) لا يُلتقَط أوفلاينياً أبداً.
+    // التثبيت يلتزم خادمياً بمفتاح المسوّدة (commitRequestId) بينما الالتقاط كان سيرحّل
+    // بمفتاح الواجهة (reqIdRef) المختلف ⇒ uq_invoice_source عاجزٌ عن صدّ فاتورةٍ ثانية
+    // إذا كان الالتزام وصل قبل انقطاع الردّ. المسوّدة الخادمية **هي** الأثر الناجي.
+    if (activeDraftRef.current) {
+      notify.errBig(
+        "طلبك محفوظٌ على الخادم — لا يُلتقَط دون اتصال",
+        "عند عودة الاتصال افتح الطلب من «طلبات محفوظة» واضغط التثبيت — لن يتكرّر ولن يضيع.",
+      );
+      return false;
+    }
     const directLines = cart.filter((c) => !isCustomKind(c));
     const regularLines = directLines.filter((c) => !c.row.isPrintService);
     const printLines = directLines.filter((c) => c.row.isPrintService);
@@ -1681,6 +1722,14 @@ export default function Reception() {
                   [
                     ["عدد الفواتير", `${reportQ.data?.invoiceCount ?? 0}`],
                     ["إجمالي المبيعات", `${fmt(Number(reportQ.data?.salesTotal ?? 0))} د.ع`],
+                    // إفصاح (مراجعة ٥/٨): فواتير تسليم الطلبات ضمن الإجمالي أعلاه، لكن عرابينها
+                    // قُبضت في ورديات سابقة — السطر يمنع قراءة «مبيعاتي ≠ درجي» كعجز.
+                    ...(Number(reportQ.data?.woInvoicesCount ?? 0) > 0
+                      ? [[
+                          `منها فواتير تسليم طلبات (${reportQ.data?.woInvoicesCount})`,
+                          `${fmt(Number(reportQ.data?.woInvoicesTotal ?? 0))} د.ع`,
+                        ] as [string, string]]
+                      : []),
                     ["المبلغ عند بدء العمل", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
                     ...(showRecExpected
                       ? [["المبلغ المفترض وجوده في الدرج", `${fmt(recExpected)} د.ع`] as [string, string]]

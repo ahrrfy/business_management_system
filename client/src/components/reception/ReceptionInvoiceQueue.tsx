@@ -303,10 +303,16 @@ export function ReceptionInvoiceQueue({
                     </td>
                     <td className="px-2 py-2">
                       <div className="flex items-center justify-center gap-1">
-                        {remaining > 0 && (
+                        {/* بالطريق مع المندوب ⇒ التحصيل عبر توريده لا الدرج (مرآة حارس الخادم — مراجعة ٥/٨) */}
+                        {remaining > 0 && r.consignmentStatus !== "DISPATCHED" && r.consignmentStatus !== "PARTIAL" && (
                           <Button size="sm" className="h-7 px-2 text-[10px]" onClick={() => setCollectTarget(r)}>
                             <HandCoins aria-hidden className="size-3 me-1" /> تسديد
                           </Button>
+                        )}
+                        {remaining > 0 && (r.consignmentStatus === "DISPATCHED" || r.consignmentStatus === "PARTIAL") && (
+                          <span className="inline-flex h-7 items-center rounded-md border border-dashed px-1.5 text-[10px] text-muted-foreground" title="الفاتورة بالطريق مع المندوب — التحصيل عبر توريد المندوب">
+                            مع المندوب
+                          </span>
                         )}
                         <Button size="sm" variant="outline" className="h-7 px-1.5" title="إعادة طباعة حرارية" aria-label={`إعادة طباعة الفاتورة ${r.invoiceNumber}`} disabled={printingId != null} onClick={() => void reprintThermal(r)}>
                           <Printer aria-hidden className="size-3" />

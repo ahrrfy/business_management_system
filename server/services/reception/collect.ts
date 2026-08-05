@@ -8,7 +8,7 @@
 // على مبيعات التجزئة (§٩.٢).
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { invoices, shifts } from "../../../drizzle/schema";
+import { deliveryConsignments, invoices, shifts } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { processPayment } from "../sale/payment";
 import { getOpenShift } from "../shiftService";
@@ -40,6 +40,22 @@ export async function collectOnReceptionInvoice(
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "هذه الفاتورة خارج نطاق محطة خدمة الزبائن — تُسدَّد من شاشة الفواتير",
+    });
+  }
+  // مراجعة عدائية (٥/٨): فاتورةٌ إرساليتها **بالطريق** مع المندوب — التسديد في الكاونتر يزدوج
+  // مع تحصيل المندوب (paidAmount يتجاوز total وذمّةٌ سالبة وقيدا PAYMENT_IN لبيعٍ واحد، أو
+  // عهدة مندوبٍ دائمة). التحصيل مسارُه التوريد؛ ولو عاد الزبون للكاونتر تُعاد الإرسالية أولاً.
+  const inTransit = (
+    await db
+      .select({ n: deliveryConsignments.consignmentNumber, st: deliveryConsignments.status })
+      .from(deliveryConsignments)
+      .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
+      .limit(1)
+  )[0];
+  if (inTransit && (inTransit.st === "DISPATCHED" || inTransit.st === "PARTIAL")) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `الفاتورة بالطريق مع المندوب (إرسالية ${inTransit.n}) — التحصيل عبر توريد المندوب، أو أعد الإرسالية أولاً`,
     });
   }
 

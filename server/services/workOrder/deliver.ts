@@ -1,7 +1,7 @@
 // READY → DELIVERED: إنشاء فاتورة (sourceType=WORKORDER) + دفعة اختيارية + قيد SALE + تسوية الذمم.
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull, notLike, or } from "drizzle-orm";
-import { invoiceItems, invoices, productUnits, receipts, workOrders } from "../../../drizzle/schema";
+import { invoiceItems, invoices, productUnits, receipts, shifts, workOrders } from "../../../drizzle/schema";
 import { assertCreditLimit } from "../../lib/credit";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
@@ -85,7 +85,22 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     // طابور فواتير المحطة (innerJoin shifts) وخارج نطاق reception.collectOnInvoice، بينما هي
     // **الحالة الأولى** لتسديد المتبقّي (عربونٌ مقبوض والباقي عند الاستلام). تُحلّ مبكراً وتُعاد
     // في إيصال الدفعة أدناه (نفس الوردية حتماً — لا انشطار درج).
-    const deliveryShiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId), "RECEPTION");
+    // مراجعة عدائية (٥/٨): الختم بوردية **RECEPTION حصراً** — openShiftIdTx المرن كان يلتقط
+    // وردية RETAIL/PRINT_SERVICES الوحيدة فتسقط الفاتورة من طابور المحطة (innerJoin RECEPTION)
+    // وتتضخّم Z تلك الوردية بمبيعاتٍ ليست لها. غيابها ⇒ null (سلوك ما قبل ش١، دلالة نظيفة).
+    const receptionShiftRow = (
+      await tx
+        .select({ id: shifts.id })
+        .from(shifts)
+        .where(and(
+          eq(shifts.userId, actor.userId),
+          eq(shifts.branchId, Number(wo.branchId)),
+          eq(shifts.status, "OPEN"),
+          eq(shifts.shiftType, "RECEPTION"),
+        ))
+        .limit(1)
+    )[0];
+    const deliveryShiftId = receptionShiftRow ? Number(receptionShiftRow.id) : null;
     const invRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "WORKORDER",
@@ -172,7 +187,8 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     // Optional payment receipt + PAYMENT_IN entry.
     if (paidNow.gt(0)) {
       // انسب الدفع النقدي لوردية الموظّف المفتوحة (تسوية الصندوق/Z-report) — تفضيل وردية الاستقبال.
-      const shiftId = deliveryShiftId;
+      // الحلّ **المرن** هنا عمداً (بخلاف ختم الفاتورة): النقد يدخل الدرج المفتوح فعلاً أياً كان نوعه.
+      const shiftId = deliveryShiftId ?? await openShiftIdTx(tx, actor.userId, Number(wo.branchId), "RECEPTION");
       if (input.payment!.method === "CASH" && shiftId == null)
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "يَلزم وردية مفتوحة للدفع النقدي" });
       const rRes = await tx.insert(receipts).values({

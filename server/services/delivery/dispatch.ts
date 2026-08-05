@@ -10,6 +10,7 @@ import {
   invoices,
   productUnits,
   receipts,
+  shifts as shiftsTable,
   workOrders,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
@@ -114,7 +115,21 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
     // ش١ (٥/٨): فاتورة الإرسال تنتمي لوردية مُرسِلها (مرآة deliver.ts) — تظهر في طابور فواتير
     // المحطة بحالتها التسليمية بدل أن تختفي بلا shiftId.
-    const dispatchShiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId), "RECEPTION");
+    // مراجعة عدائية (٥/٨): الختم بوردية RECEPTION **حصراً أو null** — الحلّ المرن كان يلتقط
+    // وردية RETAIL الوحيدة فتتضخّم Z ورديةٍ ليست لها والفاتورة تسقط من طابور المحطة معاً.
+    const dispatchShiftRow = (
+      await tx
+        .select({ id: shiftsTable.id })
+        .from(shiftsTable)
+        .where(and(
+          eq(shiftsTable.userId, actor.userId),
+          eq(shiftsTable.branchId, Number(wo.branchId)),
+          eq(shiftsTable.status, "OPEN"),
+          eq(shiftsTable.shiftType, "RECEPTION"),
+        ))
+        .limit(1)
+    )[0];
+    const dispatchShiftId = dispatchShiftRow ? Number(dispatchShiftRow.id) : null;
     const invRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "WORKORDER",

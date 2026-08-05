@@ -102,6 +102,27 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       if (collected.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ سالب" });
       const remaining = round2(money(cn.codAmount).minus(money(cn.collectedAmount)));
       if (collected.gt(remaining)) throw new TRPCError({ code: "BAD_REQUEST", message: `أكثر من المتبقّي للإرسالية ${cn.consignmentNumber}` });
+      // مراجعة عدائية (٥/٨) — حزامٌ ثانٍ: السقف على متبقّي **الفاتورة** الحيّ لا الإرسالية وحدها.
+      // codAmount لُقط لحظة الإرسال؛ تسديدٌ كاونتريّ لاحق (قبل حارس collectOnInvoice أو من مسارٍ
+      // آخر) يخفض متبقّي الفاتورة دون علم الإرسالية ⇒ بلا هذا السقف يصير paidAmount > total
+      // وتنقلب ذمّة العميل سالبة بقيدَي PAYMENT_IN لبيعٍ واحد.
+      const invRow = (
+        await tx
+          .select({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal })
+          .from(invoices)
+          .where(eq(invoices.id, Number(cn.invoiceId)))
+          .for("update")
+          .limit(1)
+      )[0];
+      const invRemaining = invRow
+        ? round2(money(invRow.total).minus(money(invRow.returnedTotal ?? "0")).minus(money(invRow.paidAmount)))
+        : remaining;
+      if (collected.gt(invRemaining)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `المُحصَّل للإرسالية ${cn.consignmentNumber} يتجاوز متبقّي فاتورتها الحيّ (${invRemaining.toFixed(2)}) — سُدِّد جزءٌ في الكاونتر؛ سوِّ الفارق مع المندوب وأدخل المتبقّي فقط`,
+        });
+      }
       const newCollected = round2(money(cn.collectedAmount).plus(collected));
       const delivered = newCollected.gte(money(cn.codAmount));
       // ٥/٨ — الأجرة تُخصَم من التوريد فقط إذا كانت **ما زالت مستحقّةً علينا** للمندوب:

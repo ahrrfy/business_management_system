@@ -223,6 +223,25 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
         message: "السلة فيها بضاعة/طباعة تُدفع الآن — أدخل المبلغ المقبوض ثم ثبّت",
       });
     }
+    // مراجعة عدائية (٥/٨): أجرة «مقبوضة في الاستقبال» (COUNTER) على مسار المسوّدة —
+    // createWorkOrderInTx يكتب إيصال IN بالأجرة **حتماً** بينما collectNow لا يستطيع شمولها
+    // بنيوياً (الأجرة خارج grandTotal) ⇒ إيصالُ نقدٍ لم يُقبَض يمنع إغلاق الوردية. تُرفض هنا
+    // حتى تعالجها ش٦ (deliveryFeeHeld على مستوى الطلب) — «المندوب يقبضها» و«على المكتبة» يمرّان.
+    for (const l of lines) {
+      if (l.lineKind !== "CUSTOM" || !l.printSpec) continue;
+      try {
+        const spec = JSON.parse(l.printSpec) as { hasDelivery?: boolean; deliveryFeeCollection?: string; deliveryCost?: string };
+        if (spec.hasDelivery && spec.deliveryFeeCollection === "COUNTER" && money(spec.deliveryCost ?? "0").gt(0)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `بند «${l.title ?? "تخصيص"}»: أجرة التوصيل «مقبوضة في الاستقبال» غير مدعومة على الطلب المحفوظ بعد — اختر «المندوب يقبضها من الزبون» أو «على المكتبة»، أو أتمّ الطلب من السلة مباشرةً`,
+          });
+        }
+      } catch (e) {
+        if (e instanceof TRPCError) throw e;
+        /* مواصفة تالفة ⇒ بلا توصيل — تمرّ */
+      }
+    }
 
     const checkoutInput = materialize(draft, lines, input);
     const result = await checkoutReceptionInTx(tx, checkoutInput, actor);
