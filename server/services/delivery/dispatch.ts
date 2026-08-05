@@ -17,7 +17,7 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
-import { shiftIdForCashTx } from "../shiftService";
+import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
 import type { DeliveryTxActor } from "./types";
@@ -112,10 +112,14 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
     const invStatus = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(depositPaid));
     const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
+    // ش١ (٥/٨): فاتورة الإرسال تنتمي لوردية مُرسِلها (مرآة deliver.ts) — تظهر في طابور فواتير
+    // المحطة بحالتها التسليمية بدل أن تختفي بلا shiftId.
+    const dispatchShiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId), "RECEPTION");
     const invRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "WORKORDER",
       sourceId: `WO-${wo.id}`,
+      shiftId: dispatchShiftId,
       branchId: Number(wo.branchId),
       customerId: null,
       priceTier: "RETAIL",

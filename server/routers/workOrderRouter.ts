@@ -24,6 +24,7 @@ import {
   updateWorkOrderDeliveryMethod,
 } from "../services/workOrderService";
 import { logAudit } from "../services/auditService";
+import { verifyManagerApproval } from "./saleRouter";
 import { canSeeCostForUser, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { hasModuleAccess } from "@shared/permissions";
 import { workOrderBarcodeSet } from "../services/barcodeService";
@@ -87,6 +88,9 @@ const receptionCheckoutSchema = z.object({
   // ش٠ (٥/٨، V1): تقريب نقدي IQD — يسري خادمياً على البيع المباشر الخالص النقديّ فقط
   // (الحارس في receptionCheckoutService يُسقطه عن السلة المختلطة/غير النقدية حتى لو أُرسل).
   cashRoundIQD: z.boolean().optional(),
+  // ش١ (م٦): اعتماد مديرٍ للخصم اليدويّ >١٠٪ (بريد+كلمة مرور، verifyManagerApproval نفسها) —
+  // يمنح priceOverrideApproved للكاشير كما يمنحه sales.create تماماً.
+  managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
   // ٥/٨ — زبونٌ عابر: اسمٌ وهاتفٌ مرجعيّان يُكتبان على الفاتورة نفسها بلا إنشاء عميل ولا ذمّة.
   // يحلّان محلّ إجبار الكاشير على إنشاء عميلٍ لكل بيعٍ نقديّ (وكان يفشل بـFORBIDDEN لأدوارٍ
   // تفتح محطة الاستقبال بلا صلاحية crm=FULL، فيسقط الاسم والهاتف بعد الطباعة تماماً).
@@ -595,7 +599,11 @@ export const workOrderRouter = router({
 
       const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role };
-      const { branchId: _branchId, ...checkoutInput } = input;
+      const { branchId: _branchId, managerApproval, ...checkoutInput } = input;
+      // ش١ (م٦): كاشير بخصمٍ >١٠٪ يلتقط اعتماد المدير استباقياً في الواجهة ويُتحقَّق منه هنا —
+      // نفس verifyManagerApproval (قفل تخمين + تدقيق) التي يستعملها sales.create حرفياً.
+      let approvedBy: number | null = null;
+      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
 
       let result: Awaited<ReturnType<typeof checkoutReception>> | undefined;
       for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -603,7 +611,7 @@ export const workOrderRouter = router({
           result = await checkoutReception({
             ...checkoutInput,
             branchId: effectiveBranchId,
-            priceOverrideApproved: elevated,
+            priceOverrideApproved: elevated || approvedBy != null,
           }, actor);
           break;
         } catch (error: any) {
@@ -630,6 +638,12 @@ export const workOrderRouter = router({
             printInvoiceId: result.printSale?.invoiceId ?? null,
             workOrderIds: result.workOrders.map((order) => order.workOrderId),
             paymentMethod: input.paymentMethod,
+            // م٦ (§٨.٤): الرقابة اللاحقة مستحيلة بلا سجلّ — كل خصم سطرٍ >=١٠٪ يُدوَّن حتى وهو
+            // مسموح، ومعه هوية المدير المُعتمِد إن وُجد.
+            ...(approvedBy != null ? { discountApprovedBy: approvedBy } : {}),
+            highDiscountLines: (input.regularSale?.lines ?? [])
+              .filter((line) => Number(line.discountPercent ?? 0) >= 10)
+              .map((line) => ({ variantId: line.variantId, pct: Number(line.discountPercent) })),
           },
         });
       } catch (error) {

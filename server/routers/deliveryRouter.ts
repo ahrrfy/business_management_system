@@ -13,7 +13,6 @@ import {
   listDeliveryParties,
   listOpenConsignments,
   listReadyForDispatch,
-  listReceptionInvoiceQueue,
   recordDeliveryRemittance,
   returnConsignment,
   setDeliveryPartyActive,
@@ -22,7 +21,6 @@ import {
   writeOffDeliveryShortfall,
 } from "../services/deliveryService";
 import { logAudit } from "../services/auditService";
-import { utcTodayStart } from "../services/businessDay";
 
 const partyKind = z.enum(["INDIVIDUAL", "COMPANY"]);
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -174,29 +172,8 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  // 5/8: kul fawatir wardiat al-istiqbal (queue source = invoices, not workOrders).
-  // Bawwaba: workordersCashierProcedure (dawr + miftah wihda workorders=FULL) la cashierProcedure
-  // al-kham — tabiq FULFILL_GATE fi ReceptionOrderQueue.tsx bil-dabt, wa-yurdi authz-guard
-  // alladhi yarfud idafat nuqat sulta bi-dawr kham dun miftah wihda.
-  receptionQueue: workordersCashierProcedure
-    .input(z.object({
-      branchId: z.number().int().positive().nullish(),
-      shiftIds: z.array(z.number().int().positive()).max(20).optional(),
-      sinceDays: z.number().int().min(0).max(30).default(1),
-      limit: z.number().int().min(1).max(300).default(200),
-    }))
-    .query(async ({ input, ctx }) => {
-      const branchId = effectiveBranch(ctx, input.branchId);
-      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
-      // حدّ اليوم بإطار businessDay (UTC) لا بمكوّنات محلية — وإلا انزاح الطابور بفارق المنطقة.
-      const since = new Date(utcTodayStart().getTime() - input.sinceDays * 86_400_000);
-      return listReceptionInvoiceQueue({
-        branchId,
-        shiftIds: input.shiftIds,
-        since,
-        limit: input.limit,
-      });
-    }),
+  // ش١ (٥/٨): receptionQueue انتقل إلى reception.invoiceQueue (راوتر المحطة الجديد) بترقيمٍ
+  // keyset وفلاتر — حُذف هنا في نفس الـPR (حارس check:orphans: نقلٌ = حذفُ القديم معاً).
 
   // 5/8: isnad fatura qa'ima lil-tawseel (bay' mubashir bila amr shughl).
   // Nafs bawwabat receptionQueue (workorders=FULL) — a'la min delivery.dispatch al-qadim

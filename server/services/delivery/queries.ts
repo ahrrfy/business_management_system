@@ -1,6 +1,6 @@
 // قراءات الشاشة: الجاهز للإرسال، الإرساليات المفتوحة/كاملة، كشف حساب جهة.
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryParties, invoices, shifts, workOrders } from "../../../drizzle/schema";
+import { and, desc, eq, sql } from "drizzle-orm";
+import { accountingEntries, customers, deliveryConsignments, deliveryParties, invoices, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 
 /** أوامر الشغل الجاهزة (READY) القابلة للإرسال عبر مندوب — تبويب «جاهز للإرسال». */
@@ -100,67 +100,5 @@ export async function getDeliveryPartyStatement(partyId: number, from?: string, 
   };
 }
 
-/**
- * ٥/٨ — طابور فواتير الاستقبال: **كل** فاتورةٍ أنشأها الموظّف في وردية استقبالٍ مفتوحة/اليوم،
- * لا أوامر الشغل وحدها. كان الطابور مصدرُه جدول `workOrders` حصراً، فالبيع المباشر (منتجات
- * جاهزة/خدمات طباعة بلا تخصيص) لا يُنتج صفّاً فيه إطلاقاً ⇒ لا سبيل لإسناده للتوصيل بعد إتمامه.
- *
- * المصدر: `invoices` مقيَّدةً بورديات RECEPTION، مع LEFT JOIN على الإرسالية (فريدة لكل فاتورة
- * بقيد uq_consignment_invoice) وعلى أمر الشغل (إن كانت الفاتورة صادرةً عن أمر شغل) ⇒ صفٌّ واحد
- * لكل فاتورة يحمل حالتها التسليمية. الفلترة على invoices.shiftId ثم على نوع الوردية.
- * ش٠ (٥/٨): كان هذا التعليق يدّعي أن shiftId «مفهرَس» ولا فهرس له فعلاً — أُنشئ
- * idx_invoice_shift(shiftId, id) في هجرة 0151 (العمودان معاً: الطابور يقطع بـid).
- */
-export async function listReceptionInvoiceQueue(input: {
-  branchId: number;
-  /** ورديات بعينها (الوردية المفتوحة عادةً). فارغة ⇒ كل ورديات الاستقبال منذ `since`. */
-  shiftIds?: number[];
-  since?: Date;
-  limit?: number;
-}) {
-  const db = getDb();
-  if (!db) return [];
-  const conds = [eq(invoices.branchId, input.branchId), eq(shifts.shiftType, "RECEPTION")];
-  if (input.shiftIds && input.shiftIds.length > 0) {
-    conds.push(inArray(invoices.shiftId, input.shiftIds));
-  } else if (input.since) {
-    conds.push(gte(invoices.invoiceDate, input.since));
-  }
-  return db
-    .select({
-      invoiceId: invoices.id,
-      invoiceNumber: invoices.invoiceNumber,
-      invoiceDate: invoices.invoiceDate,
-      total: invoices.total,
-      paidAmount: invoices.paidAmount,
-      status: invoices.status,
-      customerId: invoices.customerId,
-      customerName: customers.name,
-      customerPhone: customers.phone,
-      // مرجع الزبون العابر (بلا سجلّ عميل) — يُستعمل مستلِماً عند الإسناد للتوصيل.
-      contactName: invoices.contactName,
-      contactPhone: invoices.contactPhone,
-      createdBy: invoices.createdBy,
-      shiftId: invoices.shiftId,
-      workOrderId: workOrders.id,
-      workOrderNumber: workOrders.orderNumber,
-      workOrderStatus: workOrders.status,
-      hasDelivery: workOrders.hasDelivery,
-      deliveryAddress: workOrders.deliveryAddress,
-      deliveryPhone: workOrders.deliveryPhone,
-      consignmentId: deliveryConsignments.id,
-      consignmentNumber: deliveryConsignments.consignmentNumber,
-      consignmentStatus: deliveryConsignments.status,
-      consignmentCod: deliveryConsignments.codAmount,
-      partyName: deliveryParties.name,
-    })
-    .from(invoices)
-    .innerJoin(shifts, eq(shifts.id, invoices.shiftId))
-    .leftJoin(customers, eq(customers.id, invoices.customerId))
-    .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
-    .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
-    .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
-    .where(and(...conds))
-    .orderBy(desc(invoices.id))
-    .limit(input.limit ?? 200);
-}
+// ش١ (٥/٨): listReceptionInvoiceQueue انتقلت إلى server/services/reception/queries.ts
+// (بترقيم keyset وفلاتر) — حُذفت هنا مع نقطة نهايتها (حارس check:orphans).

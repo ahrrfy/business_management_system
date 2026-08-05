@@ -81,10 +81,16 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const status = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(totalPaid));
     const sourceId = `WO-${wo.id}`;
     const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
+    // ش١ (٥/٨): فاتورة التسليم تنتمي لوردية مُسلِّمها — كانت تُنشأ بلا shiftId فتسقط خارج
+    // طابور فواتير المحطة (innerJoin shifts) وخارج نطاق reception.collectOnInvoice، بينما هي
+    // **الحالة الأولى** لتسديد المتبقّي (عربونٌ مقبوض والباقي عند الاستلام). تُحلّ مبكراً وتُعاد
+    // في إيصال الدفعة أدناه (نفس الوردية حتماً — لا انشطار درج).
+    const deliveryShiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId), "RECEPTION");
     const invRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "WORKORDER",
       sourceId,
+      shiftId: deliveryShiftId,
       branchId: Number(wo.branchId),
       customerId: wo.customerId ?? null,
       priceTier: "RETAIL",
@@ -166,7 +172,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     // Optional payment receipt + PAYMENT_IN entry.
     if (paidNow.gt(0)) {
       // انسب الدفع النقدي لوردية الموظّف المفتوحة (تسوية الصندوق/Z-report) — تفضيل وردية الاستقبال.
-      const shiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId), "RECEPTION");
+      const shiftId = deliveryShiftId;
       if (input.payment!.method === "CASH" && shiftId == null)
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "يَلزم وردية مفتوحة للدفع النقدي" });
       const rRes = await tx.insert(receipts).values({

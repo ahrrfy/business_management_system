@@ -8,10 +8,13 @@ import {
   CalendarClock,
   Camera,
   Check,
+  ChevronDown,
   ClipboardList,
+  Copy,
   CreditCard,
   FileText,
   Globe,
+  HandCoins,
   Image as ImageIcon,
   Layers,
   MessageCircle,
@@ -20,9 +23,11 @@ import {
   Package,
   Palette,
   Pencil,
+  Percent,
   Phone,
   Plus,
   Printer,
+  Receipt as ReceiptIcon,
   Ruler,
   Search,
   ShoppingCart,
@@ -65,6 +70,11 @@ import ReservationsHub from "@/pages/ReservationsHub";
 import Inbox from "@/pages/Inbox";
 import OrderFulfillment from "@/pages/OrderFulfillment";
 import ReceptionOrderQueue from "@/components/reception/ReceptionOrderQueue";
+import { ReceptionInvoiceQueue } from "@/components/reception/ReceptionInvoiceQueue";
+import type { DispatchParty } from "@/components/delivery/DispatchDialog";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { CashDropDialog } from "@/components/pos/CashDropDialog";
+import type { PosTokens } from "@/components/pos/ShiftHandoverSection";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   getServerBridgeStatus,
@@ -93,8 +103,25 @@ import {
  */
 
 type PosRow = NonNullable<RouterOutputs["catalog"]["posList"]>[number];
-type NumMode = "QTY" | "DISC" | "PAY";
+/** م٤ — ورش عمود العمل: السلة أساسٌ، والبقية تُركَّب داخله فلا تُغطّي لوحة الدفع أبداً (§٨.١). */
+type Workshop = "CART" | "INVOICES" | "ORDERS" | "STORE";
 type PayMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
+/** رموز ألوان CashDropDialog (بنية PosTokens المشتركة). */
+const RECEPTION_TOKENS: PosTokens = {
+  card: "#ffffff", border: "#e2e8f0", muted: "#f1f5f9", mutedFg: "#64748b",
+  fg: "#0f172a", primary: "#7c3aed", danger: "#dc2626",
+};
+/** ملخّص آخر عملية ناجحة — نافذة الإيصال + F9 (إعادة طباعة) + شارة «آخر فاتورة» (§٨.٦). */
+type LastSaleSummary = {
+  invoiceNumbers: string[];
+  workOrderNumbers: string[];
+  totalStr: string;
+  changeStr: string | null;
+  creditStr: string | null;
+  receipts: ReceiptBrowserData[];
+  workOrders: WorkOrderReceiptData[];
+  printFailures: number;
+};
 const PAY_METHOD_LABEL: Record<PayMethod, string> = {
   CASH: "نقدي",
   CARD: "بطاقة",
@@ -361,14 +388,29 @@ export default function Reception() {
   const [selKey, setSelKey] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [showDrop, setShowDrop] = useState(false);
-  const [numMode, setNumMode] = useState<NumMode>("PAY");
+  // م٤: لوحة الأرقام صارت لوحة **مبلغٍ** خالصة — أوضاع الكمية/الخصم حُذفت (الكمية داخل الصفّ،
+  // والخصم Popover في خلية السعر). لا وضعيّة خفيّة بعد اليوم: اللوحة تعني المبلغ دائماً.
   const [payInput, setPayInput] = useState("");
   const [method, setMethod] = useState<PayMethod>("CASH");
   const [paymentReference, setPaymentReference] = useState(""); // P2 fix: مرجع البطاقة للعرابين
   const [showInbox, setShowInbox] = useState(false);
-  const [showStoreOrders, setShowStoreOrders] = useState(false);
-  // اِستقبال (تكامل التوصيل، ٤/٨): طابور الطلبات (جاهزة/قيد التنفيذ/سُلِّمت اليوم) + إسناد التوصيل.
-  const [showOrdersQueue, setShowOrdersQueue] = useState(false);
+  // ش١ (§٨.١): ورش عمود العمل — الفواتير/الطلبات/طلبات الموقع تُركَّب داخل عمود السلة
+  // (لوحة الدفع لا تُغطّى أبداً). الحجوزات/الرسائل تبقيان طبقتين (قرار §١٤.٦).
+  const [workshop, setWorkshop] = useState<Workshop>("CART");
+  // ش١: نافذة الإيصال بعد الإتمام + سحب نقدي + خصم داخل الصفّ + اعتماد مدير للخصم >١٠٪.
+  const [lastSale, setLastSale] = useState<LastSaleSummary | null>(null);
+  const [showReceiptOverlay, setShowReceiptOverlay] = useState(false);
+  const [cashDropping, setCashDropping] = useState(false);
+  const [depositMenuOpen, setDepositMenuOpen] = useState(false);
+  const [discountFor, setDiscountFor] = useState<string | null>(null);
+  const [approvalAsk, setApprovalAsk] = useState<{ lineKey: string; pct: number } | null>(null);
+  /** اعتماد المدير للخصم >١٠٪ — يُحمل حتى الإرسال (يتحقّق خادمياً عند الالتزام). */
+  const mgrCredsRef = useRef<{ email: string; password: string } | null>(null);
+  // ش١: جهات التوصيل لورشة الفواتير (الإسناد من الصفّ) — تُجلب عند فتح الورشة فقط.
+  const partiesQ = trpc.delivery.listParties.useQuery(
+    { activeOnly: true },
+    { enabled: workshop === "INVOICES", staleTime: 60_000 },
+  );
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
@@ -707,55 +749,46 @@ export default function Reception() {
   );
   useBarcodeScanner(handleHidScan, { enabled: !showCustomization && !submitting });
 
-  // ───── لوحة الأرقام ──────────────────────────────────────────────────────
+  // ───── لوحة المبلغ (م٤ — مبلغٌ فقط، لا أوضاع) ────────────────────────────
   function numPress(k: string) {
-    if (numMode === "QTY" && selKey) {
-      const line = cart.find((c) => c.key === selKey);
-      if (!line) return;
-      setCart((prev) =>
-        prev.map((c) => {
-          if (c.key !== selKey) return c;
-          let s = String(c.qty);
-          if (k === "DEL") s = s.length > 1 ? s.slice(0, -1) : "1";
-          else if (k === "C") s = "1";
-          else s = s === "0" ? k : s + k;
-          return { ...c, qty: Math.max(1, parseInt(s, 10) || 1) };
-        }),
-      );
-    } else if (numMode === "DISC" && selKey) {
-      const line = cart.find((c) => c.key === selKey);
-      if (!line || isCustomKind(line)) return;
-      clearCouponIfApplied();
-      setCart((prev) =>
-        prev.map((c) => {
-          if (c.key !== selKey) return c;
-          const base = c.origPrice ?? Number(c.row.price ?? 0);
-          let s = c.disc != null ? String(c.disc) : "";
-          if (k === "DEL") s = s.slice(0, -1);
-          else if (k === "C") s = "";
-          else if (k === "." && s.includes(".")) return c;
-          else s = s + k;
-          const disc = Math.min(100, Math.max(0, parseFloat(s) || 0));
-          return { ...c, origPrice: base, disc };
-        }),
-      );
-    } else {
-      setPayInput((prev) => {
-        if (k === "DEL") return prev.slice(0, -1);
-        if (k === "C") return "";
-        if (k === "." && prev.includes(".")) return prev;
-        return prev + k;
-      });
-    }
+    setPayInput((prev) => {
+      if (k === "DEL") return prev.slice(0, -1);
+      if (k === "C") return "";
+      if (k === "000") return prev ? `${prev}000` : "";
+      if (k === "." && prev.includes(".")) return prev;
+      return prev + k;
+    });
   }
   function setQuickAmt(v: number) {
-    setNumMode("PAY");
     setPayInput(String(v));
   }
   function payAll() {
-    setNumMode("PAY");
     // ش٠: «= الكل» يملأ الإجمالي **الفعليّ** (المقرَّب لفئة ٢٥٠ في البيع المباشر النقديّ الخالص).
     setPayInput(String(expectedNow));
+  }
+  /** م٤ — الكمية داخل الصفّ: مدخلٌ رقميّ مباشر (والزرّان ± يبقيان للمس السريع). */
+  function setQty(key: string, qty: number) {
+    clearCouponIfApplied();
+    setCart((prev) => prev.map((c) => (c.key === key ? { ...c, qty: Math.max(1, Math.trunc(qty) || 1) } : c)));
+  }
+  /** م٤ — الخصم داخل الصفّ (Popover خلية السعر): نسبةٌ 0..100، null = إزالة الخصم. */
+  function setLineDiscount(key: string, pct: number | null) {
+    clearCouponIfApplied();
+    setCart((prev) =>
+      prev.map((c) => {
+        if (c.key !== key) return c;
+        if (pct == null || pct <= 0) return { ...c, disc: undefined };
+        const base = c.origPrice ?? Number(c.row.price ?? 0);
+        return { ...c, origPrice: base, disc: Math.min(100, pct) };
+      }),
+    );
+  }
+  /** عربون ▾ (§٨.٣): تعبئة سريعة = الجاهز كاملاً + نسبة من المخصّص (الخوارزمية الجشعة الخادمية
+   *  تُغطّي البيع المباشر أولاً ثم توزّع الفائض عرابين — هذه الأزرار تملأ المبلغ وفقها بلا حساب يدويّ). */
+  function fillDeposit(pctOfCustom: number) {
+    const v = round2(sumDirectD.plus(sumCustomD.times(pctOfCustom)));
+    setPayInput(v.toFixed(0));
+    setDepositMenuOpen(false);
   }
 
   function goToWorkflowStep(step: number) {
@@ -764,10 +797,7 @@ export default function Reception() {
       if (step === 1) customerSectionRef.current?.querySelector("input")?.focus();
       if (step === 2) searchRef.current?.focus();
       if (step === 3) cartSectionRef.current?.focus();
-      if (step === 4) {
-        setNumMode("PAY");
-        paymentSectionRef.current?.focus();
-      }
+      if (step === 4) paymentSectionRef.current?.focus();
     });
   }
 
@@ -1024,6 +1054,8 @@ export default function Reception() {
         paymentReference: method === "CASH" ? undefined : paymentReference.trim(),
         paidAmount: round2(appliedPaidD).toFixed(2),
         cashRoundIQD: cashRoundActive,
+        // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
+        managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
         priceTier: effectiveTier,
         couponCode: couponCode ?? undefined,
@@ -1181,6 +1213,22 @@ export default function Reception() {
           ? "فُتحت نافذة الطباعة لأن الطابعة المباشرة غير متصلة"
           : "أُرسلت المستندات إلى الطابعة مباشرة";
       notify.ok(`تمّ ${summary}`, printDescription);
+      // ش١ (§٨.٦): نافذة الإيصال — الفكّة بخطٍّ ضخم + أرقام المستندات + إعادة الطباعة (F9)،
+      // ولافتةٌ تسمّي ما لم يُطبَع (كان يُبتلَع في toast عابرٍ بلا أيّ سبيلٍ لإعادة الطباعة).
+      setLastSale({
+        invoiceNumbers: [result.regularSale?.invoiceNumber, result.printSale?.invoiceNumber].filter(Boolean) as string[],
+        workOrderNumbers: result.workOrders.map((o) => o.orderNumber).filter(Boolean),
+        totalStr: round2(effectiveGrandD).toFixed(2),
+        changeStr: printedChange,
+        creditStr: printedCredit,
+        receipts: receiptsToPrint,
+        workOrders: workOrdersToPrint,
+        printFailures,
+      });
+      setShowReceiptOverlay(true);
+      mgrCredsRef.current = null;
+      setDiscountFor(null);
+      setApprovalAsk(null);
       setCart([]);
       setSelKey(null);
       setPayInput("");
@@ -1357,6 +1405,28 @@ export default function Reception() {
     submitRef.current = handleSubmit;
   });
 
+  /** F9 — إعادة طباعة مستندات آخر عملية (من أيّ مكان، حتى بعد إغلاق النافذة). */
+  const reprintLastRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    reprintLastRef.current = () => {
+      if (!lastSale) {
+        notify.warn("لا عملية سابقة لإعادة طباعتها");
+        return;
+      }
+      void (async () => {
+        let failures = 0;
+        for (const r of lastSale.receipts) {
+          try { await printReceipt(r); } catch { failures += 1; }
+        }
+        for (const w of lastSale.workOrders) {
+          try { await printWorkOrderReceipt(w); } catch { failures += 1; }
+        }
+        if (failures > 0) notify.err(`تعذّرت طباعة ${failures} مستند`);
+        else notify.ok("أُعيدت طباعة مستندات آخر عملية");
+      })();
+    };
+  });
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (showCustomization) return;
@@ -1367,12 +1437,17 @@ export default function Reception() {
         }
         return;
       }
-      if (showStoreOrders) {
-        if (e.key === "Escape") { e.preventDefault(); setShowStoreOrders(false); }
+      if (showReceiptOverlay) {
+        if (e.key === "Escape") { e.preventDefault(); setShowReceiptOverlay(false); }
+        if (e.key === "F9") { e.preventDefault(); reprintLastRef.current?.(); }
         return;
       }
-      if (showOrdersQueue) {
-        if (e.key === "Escape") { e.preventDefault(); setShowOrdersQueue(false); }
+      if (cashDropping || approvalAsk) {
+        if (e.key === "Escape") { e.preventDefault(); setCashDropping(false); setApprovalAsk(null); }
+        return;
+      }
+      if (workshop !== "CART") {
+        if (e.key === "Escape") { e.preventDefault(); setWorkshop("CART"); }
         return;
       }
       if (e.key === "F2") {
@@ -1381,14 +1456,28 @@ export default function Reception() {
       } else if (e.key === "F4") {
         e.preventDefault();
         submitRef.current?.({ quickFullPay: false });
+      } else if (e.key === "F9") {
+        e.preventDefault();
+        reprintLastRef.current?.();
+      } else if (e.key === "F12") {
+        e.preventDefault();
+        void clearCartRef.current?.();
       } else if (e.key === "Escape") {
         if (showInbox) setShowInbox(false);
+        else if (depositMenuOpen) setDepositMenuOpen(false);
+        else if (discountFor) setDiscountFor(null);
         else if (showDrop) setShowDrop(false);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showInbox, showDrop, showCustomization, showReservations, showStoreOrders, showOrdersQueue, closeReservations]);
+  }, [showInbox, showDrop, showCustomization, showReservations, workshop, showReceiptOverlay, cashDropping, approvalAsk, depositMenuOpen, discountFor, closeReservations]);
+
+  /** F12 — تفريغ بتأكيد (clearCart تُعرَّف بعد هذا الأثر ⇒ ref يحمل أحدث نسخة). */
+  const clearCartRef = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => {
+    clearCartRef.current = clearCart;
+  });
 
   // اقتراح الكاشير: لا يبني الواجهة قبل توفّر الفرع.
   if (me.isLoading || shiftQ.isLoading) {
@@ -1478,25 +1567,8 @@ export default function Reception() {
           <ReservationsHub embedded fixedBranchId={branchId} onClose={closeReservations} />
         </div>
       )}
-      {showStoreOrders && (
-        <div className="absolute inset-0 z-30 overflow-y-auto bg-background p-4">
-          <div className="mb-3 flex items-center justify-between rounded-xl border bg-card p-3">
-            <div>
-              <h1 className="font-extrabold">طلبات الموقع الواردة</h1>
-              <p className="text-xs text-muted-foreground">راجع الطلب، ثبّته، جهّزه ثم أرسله للتوصيل.</p>
-            </div>
-            <Button size="sm" variant="outline" onClick={() => setShowStoreOrders(false)}>
-              <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
-            </Button>
-          </div>
-          <OrderFulfillment />
-        </div>
-      )}
-      {showOrdersQueue && (
-        <div className="absolute inset-0 z-30 overflow-y-auto bg-background p-4">
-          <ReceptionOrderQueue branchId={branchId} onClose={() => setShowOrdersQueue(false)} />
-        </div>
-      )}
+      {/* ش١ (§٨.١): ورشتا الطلبات وطلبات الموقع لم تعودا طبقتين تُغطّيان لوحة الدفع —
+          صارتا تبويبين داخل عمود العمل أدناه (زرّ التثبيت وشارة الوردية مرئيان دائماً). */}
       {/* نافذة إغلاق وردية خدمة العملاء (Z-report مستقلّ) */}
       {closing && (
         <div
@@ -1698,16 +1770,16 @@ export default function Reception() {
           )}
           <div className="flex items-center gap-1.5 border-s ps-2">
             <label className="text-[11px] font-semibold text-muted-foreground">فئة السعر:</label>
-            <select
+            <AppSelect
               value={effectiveTier}
-              onChange={(e) => { setTierOverride(e.target.value as Tier); clearCouponIfApplied(); }}
-              className="h-7 rounded-md border border-input bg-transparent px-1.5 text-[11px] font-bold"
+              onValueChange={(v) => { setTierOverride(v as Tier); clearCouponIfApplied(); }}
               aria-label="فئة السعر"
+              className="h-7 w-24 text-[11px] font-bold"
             >
               <option value="RETAIL">مفرد</option>
               <option value="WHOLESALE">جملة</option>
               <option value="GOVERNMENT">حكومي</option>
-            </select>
+            </AppSelect>
             {tierOverride && (
               <button
                 type="button"
@@ -1804,7 +1876,7 @@ export default function Reception() {
 
         <button
           type="button"
-          onClick={() => setShowOrdersQueue(true)}
+          onClick={() => setWorkshop("ORDERS")}
           className="relative inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-4 text-xs font-extrabold transition-colors hover:bg-muted/60"
         >
           <Truck aria-hidden className="size-4" /> طابور الطلبات والتوصيل
@@ -1826,7 +1898,7 @@ export default function Reception() {
         {canReadStoreOrders && (
           <button
             type="button"
-            onClick={() => setShowStoreOrders(true)}
+            onClick={() => setWorkshop("STORE")}
             className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-4 text-xs font-extrabold transition-colors hover:bg-muted/60"
           >
             <Package aria-hidden className="size-4" /> طلبات الموقع
@@ -1865,6 +1937,30 @@ export default function Reception() {
               {printerReady && <Check aria-hidden className="size-3.5" strokeWidth={3} />}
             </button>
           )}
+          {/* ش١: شارة «آخر فاتورة» + نسخ الرقم — أكثر ما يُطلَب بعد إغلاق النافذة. */}
+          {lastSale && lastSale.invoiceNumbers[0] && (
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard?.writeText(lastSale.invoiceNumbers[0]);
+                notify.ok("نُسخ رقم الفاتورة", lastSale.invoiceNumbers[0]);
+              }}
+              title="آخر فاتورة — اضغط لنسخ الرقم (F9 لإعادة الطباعة)"
+              className="inline-flex h-9 items-center gap-1 rounded-lg border bg-card px-2.5 text-[11px] font-bold text-muted-foreground hover:bg-muted/60"
+              dir="ltr"
+            >
+              <Copy aria-hidden className="size-3" /> {lastSale.invoiceNumbers[0]}
+            </button>
+          )}
+          {/* ش١ (§٨.٦): سحبٌ نقديّ من الدرج — درج الاستقبال يتراكم فيه بيعٌ وعرابين وأجرةٌ أمانة. */}
+          <button
+            type="button"
+            onClick={() => setCashDropping(true)}
+            title="سحب نقدي من الدرج إلى الخزينة"
+            className="inline-flex h-9 items-center gap-1 rounded-lg border bg-card px-2.5 text-[11px] font-bold hover:bg-muted/60"
+          >
+            <HandCoins aria-hidden className="size-4" /> سحب نقدي
+          </button>
           <div className="flex items-center gap-1.5 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-1.5 text-xs font-bold text-violet-700">
             <span className="size-2 animate-pulse rounded-full bg-violet-500" />
             العمل مفتوح #{shift.id}
@@ -1887,29 +1983,46 @@ export default function Reception() {
 
       {/* ─── الجسم: سلّة (يسار) + لوحة الدفع (يمين) ─── */}
       <div className="flex min-h-0 flex-1 flex-row-reverse gap-3 p-3">
-        {/* ─ السلّة ─ */}
+        {/* ─ عمود العمل: تبويبات الورش تركب رأس السلة (§٨.١ — صفر تكلفة عمودية) ─ */}
         <div ref={cartSectionRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
-          <div className="flex h-12 flex-shrink-0 items-center justify-between gap-2 border-b bg-muted/40 px-3">
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 text-sm font-extrabold">
-                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٣</span>
-                <ShoppingCart aria-hidden className="size-4" /> جدول سلة الطلب
-              </span>
-              {cart.length > 0 && (
-                <Badge variant="default" className="text-[11px]">
-                  {cart.length} بند · {cartCount} وحدة
-                </Badge>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {cart.length > 0 && (
-                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
-                  تفريغ
-                </Button>
+          <div className="flex h-12 flex-shrink-0 items-center gap-1 border-b bg-muted/40 px-2" role="tablist" aria-label="ورش المحطة">
+            <WsTab active={workshop === "CART"} onClick={() => setWorkshop("CART")} Icon={ShoppingCart}
+              label={cart.length > 0 ? `السلة (${cart.length})` : "السلة"} />
+            <WsTab active={workshop === "INVOICES"} onClick={() => setWorkshop("INVOICES")} Icon={ReceiptIcon} label="الفواتير" />
+            <WsTab active={workshop === "ORDERS"} onClick={() => setWorkshop("ORDERS")} Icon={Truck} label="الطلبات" badge={woReadyCount} />
+            {canReadStoreOrders && (
+              <WsTab active={workshop === "STORE"} onClick={() => setWorkshop("STORE")} Icon={Package} label="طلبات الموقع" />
+            )}
+            <div className="ms-auto flex items-center gap-2">
+              {workshop === "CART" && cart.length > 0 && (
+                <>
+                  <span className="hidden text-[11px] text-muted-foreground sm:inline">{cartCount} وحدة</span>
+                  <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
+                    تفريغ
+                  </Button>
+                </>
               )}
             </div>
           </div>
 
+          {workshop === "INVOICES" ? (
+            <ReceptionInvoiceQueue
+              branchId={branchId}
+              currentShiftId={shift ? Number(shift.id) : null}
+              branchName={branchName}
+              parties={(partiesQ.data ?? []) as DispatchParty[]}
+              canFulfill={me.data?.role === "cashier" || isElevatedRole}
+              isManager={isElevatedRole}
+            />
+          ) : workshop === "ORDERS" ? (
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              <ReceptionOrderQueue branchId={branchId} onClose={() => setWorkshop("CART")} />
+            </div>
+          ) : workshop === "STORE" ? (
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              <OrderFulfillment />
+            </div>
+          ) : (<>
           <div className="flex-1 overflow-y-auto">
             {cart.length === 0 ? (
               <div className="grid h-full place-items-center px-4 py-10 text-center text-muted-foreground">
@@ -1944,10 +2057,7 @@ export default function Reception() {
                     return (
                       <tr
                         key={l.key}
-                        onClick={() => {
-                          setSelKey(l.key);
-                          if (!isCustom) setNumMode((m) => (m === "PAY" ? "QTY" : m));
-                        }}
+                        onClick={() => setSelKey(l.key)}
                         className={cn(
                           "cursor-pointer border-b align-top",
                           isCustom
@@ -2052,8 +2162,41 @@ export default function Reception() {
                         </td>
                         <td className="px-1 py-2.5 text-center text-xs text-muted-foreground">{l.row.unitName}</td>
                         <td className="px-1 py-2.5 text-center text-xs tabular-nums" dir="ltr">
-                          {fmt(effectivePrice(l))}
-                          {l.disc ? <div className="text-[10px] text-amber-600">−{l.disc}%</div> : null}
+                          {/* م٤ (§٨.٤): خلية السعر زرٌّ يفتح خصم الصفّ — لا حقل خصمٍ دائمٍ يُنقَر سهواً. */}
+                          {isCustom ? (
+                            <span>{fmt(effectivePrice(l))}</span>
+                          ) : (
+                            <div className="relative inline-block">
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setDiscountFor(discountFor === l.key ? null : l.key); }}
+                                className={cn(
+                                  "min-h-[32px] rounded-md border px-1.5 tabular-nums hover:bg-muted",
+                                  l.disc ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] font-bold text-[var(--sem-warn)]" : "border-transparent",
+                                )}
+                                aria-label={`سعر السطر ${fmt(effectivePrice(l))} — افتح خصم الصفّ`}
+                              >
+                                {fmt(effectivePrice(l))}
+                                {l.disc ? <div className="text-[10px] text-[var(--sem-warn)]">−{l.disc}%</div> : null}
+                              </button>
+                              {discountFor === l.key && (
+                                <LineDiscountPopover
+                                  line={l}
+                                  isElevated={isElevatedRole}
+                                  onApply={(pct) => {
+                                    // م٦: سقف الخصم الحرّ ١٠٪ — فوقه اعتمادُ مديرٍ استباقيّ (لا انتظار رفض الخادم).
+                                    if (pct != null && pct > 10 && !isElevatedRole && !mgrCredsRef.current) {
+                                      setApprovalAsk({ lineKey: l.key, pct });
+                                    } else {
+                                      setLineDiscount(l.key, pct);
+                                    }
+                                    setDiscountFor(null);
+                                  }}
+                                  onClose={() => setDiscountFor(null)}
+                                />
+                              )}
+                            </div>
+                          )}
                         </td>
                         <td
                           className={cn(
@@ -2079,7 +2222,20 @@ export default function Reception() {
                             >
                               <Minus aria-hidden className="size-3.5" />
                             </button>
-                            <span className="min-w-[28px] text-center text-sm font-extrabold tabular-nums" dir="ltr">{l.qty}</span>
+                            {/* م٤: الكمية مُدخلٌ مباشر داخل الصفّ (لوحة الأرقام لم تعد تعدّلها). */}
+                            <input
+                              value={l.qty}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => {
+                                const n = parseInt(e.target.value.replace(/\D/g, ""), 10);
+                                if (Number.isFinite(n)) setQty(l.key, n);
+                                else if (e.target.value === "") setQty(l.key, 1);
+                              }}
+                              inputMode="numeric"
+                              dir="ltr"
+                              aria-label={`كمية ${isCustom ? l.custom!.title : l.row.productName}`}
+                              className="h-8 w-12 rounded-md border bg-card text-center text-sm font-extrabold tabular-nums outline-none focus:border-primary"
+                            />
                             <button
                               type="button"
                               onClick={(e) => {
@@ -2126,6 +2282,7 @@ export default function Reception() {
               </div>
             </div>
           )}
+          </>)}
         </div>
 
         {/* ─ لوحة الدفع ─ */}
@@ -2192,28 +2349,31 @@ export default function Reception() {
           {/* منطقة الإدخال — تتّسع بلا تمرير: الاحتواء المتكيّف أعلاه حذف الثانويّ بالفعل، ولوحة
               الأرقام تمتصّ الفائض بوحدات الحاوية. التمرير لا يُفتح إلا تحت ٤٥٢px (لا يُبلَغ عملياً). */}
           <div className={cn("flex min-h-0 flex-1 flex-col", payOverflowGuard ? "overflow-y-auto overscroll-contain" : "overflow-hidden")}>
-          {/* شاشة المبلغ */}
+          {/* م٤ — حقل المبلغ الحقيقيّ: `payInput` كان بلا أيّ مدخلٍ نصّيّ (F13) — حذفُ أوضاع
+              اللوحة بلا هذا البديل كان يشلّ إدخال أيّ مبلغٍ جزئيّ/عربون. */}
           <div className={cn("flex-shrink-0 px-3", payUltra ? "pb-0.5 pt-1" : "pb-1 pt-2")}>
             <div className={cn(
-              "flex items-center justify-between rounded-lg border-[1.5px] bg-muted/40 px-3",
+              "flex items-center justify-between gap-2 rounded-lg border-[1.5px] bg-muted/40 px-3 focus-within:border-primary",
               payUltra ? "min-h-[36px] py-1" : "min-h-[44px] py-1.5",
             )}>
-              <span className="text-xs text-muted-foreground">
-                {numMode === "QTY" && "الكمية للسطر المحدّد"}
-                {numMode === "DISC" && "خصم % للسطر المحدّد"}
-                {numMode === "PAY" && "المبلغ المدفوع"}
-              </span>
-              <span
-                className={cn(
-                  "font-black tabular-nums",
-                  payUltra ? "text-xl" : "text-2xl",
-                  numMode === "PAY" && isOwing && "text-amber-600",
-                  numMode === "PAY" && isChange && "text-emerald-600",
-                )}
+              <span className="shrink-0 text-xs text-muted-foreground">المبلغ المدفوع</span>
+              <input
+                value={payInput}
+                onChange={(e) => {
+                  const v = e.target.value.replace(/[^\d.]/g, "");
+                  if ((v.match(/\./g) ?? []).length <= 1) setPayInput(v);
+                }}
+                inputMode="decimal"
                 dir="ltr"
-              >
-                {numMode === "QTY" ? (cart.find((c) => c.key === selKey)?.qty ?? "—") : numMode === "DISC" ? `${cart.find((c) => c.key === selKey)?.disc ?? 0}%` : payInput || "0"}
-              </span>
+                placeholder="0"
+                aria-label="المبلغ المدفوع"
+                className={cn(
+                  "w-full min-w-0 bg-transparent text-end font-black tabular-nums outline-none",
+                  payUltra ? "text-xl" : "text-2xl",
+                  isOwing && "text-amber-600",
+                  isChange && "text-emerald-600",
+                )}
+              />
             </div>
           </div>
 
@@ -2244,24 +2404,53 @@ export default function Reception() {
           {/* لوحة الأرقام — تمتصّ الفائض: صفوفها `1fr` داخل كتلةٍ `flex-1` فتكبر بالمساحة المتاحة
               وتنكمش معها بلا قصٍّ ولا تمرير. الحدّ الأدنى 44px (هدف اللمس المعياريّ)، ولا ينزل إلى
               40px إلا في الدرجة الأضيق بعد حذف كل ثانويّ. */}
+          {/* م٤ (§٨.٣): لوحة مبلغٍ خالصة — العمود المُحرَّر من أزرار الأوضاع صار: 000 (أعلى مفتاحٍ
+              عائداً في سوق الدينار) و«= الكل» و«عربون» المنسدل (عند وجود تخصيص). */}
           <div className="min-h-0 flex-1 px-3 py-1">
             <div className={cn("grid h-full grid-cols-[auto_1fr_1fr_1fr] grid-rows-4 gap-1.5", payUltra ? "[--numh:40px]" : "[--numh:44px]")} dir="rtl">
-              <button onClick={() => setNumMode("QTY")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "QTY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>الكمية</button>
+              <button onClick={() => numPress("000")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] bg-card text-sm font-extrabold tabular-nums hover:bg-muted")} dir="ltr">000</button>
               <NumKey k="3" onPress={numPress} />
               <NumKey k="2" onPress={numPress} />
               <NumKey k="1" onPress={numPress} />
 
-              <button onClick={() => setNumMode("DISC")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] text-sm font-extrabold", numMode === "DISC" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>%</button>
+              <button onClick={payAll} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] border-primary bg-card text-xs font-extrabold text-primary hover:bg-primary/10")}>= الكل</button>
               <NumKey k="6" onPress={numPress} />
               <NumKey k="5" onPress={numPress} />
               <NumKey k="4" onPress={numPress} />
 
-              <button onClick={() => setNumMode("PAY")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "PAY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>المبلغ</button>
+              <div className="relative">
+                <button
+                  onClick={() => setDepositMenuOpen((v) => !v)}
+                  disabled={!hasCustom}
+                  title={hasCustom ? "تعبئة عربونٍ سريعة: الجاهز كاملاً + نسبة من المخصّص" : "يظهر عند وجود طلب تخصيص في السلة"}
+                  className={cn(NUM_H, "w-full min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", hasCustom ? "bg-card hover:bg-muted" : "cursor-not-allowed bg-muted/40 text-muted-foreground/50")}
+                >
+                  عربون <ChevronDown aria-hidden className="inline size-3" />
+                </button>
+                {depositMenuOpen && hasCustom && (
+                  <div className="absolute end-0 top-[calc(100%+4px)] z-30 w-44 rounded-lg border bg-card p-1.5 shadow-xl" dir="rtl">
+                    <div className="px-1 pb-1 text-[10px] text-muted-foreground">الجاهز كاملاً + نسبة من المخصّص:</div>
+                    {([["٢٥٪", 0.25], ["٥٠٪", 0.5], ["المخصّص كاملاً", 1]] as const).map(([label, pct]) => (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={() => fillDeposit(pct)}
+                        className="block w-full rounded-md px-2 py-1.5 text-start text-xs font-bold hover:bg-muted"
+                      >
+                        {label}
+                        <span className="ms-1 text-[10px] font-semibold text-muted-foreground tabular-nums" dir="ltr">
+                          = {fmt(round2(sumDirectD.plus(sumCustomD.times(pct))).toNumber())}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <NumKey k="9" onPress={numPress} />
               <NumKey k="8" onPress={numPress} />
               <NumKey k="7" onPress={numPress} />
 
-              <button onClick={() => numPress("DEL")} className={cn(NUM_H, "grid place-items-center rounded-lg border-[1.5px] bg-red-50 text-red-700 hover:bg-red-100")} aria-label="حذف">
+              <button onClick={() => numPress("DEL")} className={cn(NUM_H, "grid place-items-center rounded-lg border-[1.5px] bg-red-50 text-red-700 hover:bg-red-100")} aria-label="حذف آخر رقم">
                 <X aria-hidden className="size-4" />
               </button>
               <NumKey k="." onPress={numPress} />
@@ -2479,6 +2668,207 @@ export default function Reception() {
           onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }}
         />
       )}
+
+      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام: الفكّة بخطٍّ ضخم + المستندات + إعادة الطباعة. */}
+      {showReceiptOverlay && lastSale && (
+        <div className="fixed inset-0 z-[90] grid place-items-center bg-black/50 p-4" dir="rtl" onClick={() => setShowReceiptOverlay(false)}>
+          <div className="w-full max-w-sm space-y-3 rounded-2xl bg-card p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+              <span className="grid size-9 place-items-center rounded-full bg-money-positive/15 text-money-positive">
+                <Check aria-hidden className="size-5" strokeWidth={3} />
+              </span>
+              <h3 className="text-lg font-extrabold">تمّ الطلب</h3>
+            </div>
+            {lastSale.changeStr && (
+              <div className="rounded-xl border-2 border-money-positive/40 bg-money-positive/10 p-3 text-center">
+                <div className="text-xs font-bold text-money-positive">الفكّة للزبون</div>
+                <div className="text-4xl font-black tabular-nums text-money-positive" dir="ltr">{fmt(lastSale.changeStr)}</div>
+              </div>
+            )}
+            {lastSale.creditStr && (
+              <div className="rounded-xl border-2 border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-center">
+                <div className="text-xs font-bold text-[var(--sem-warn)]">المتبقّي (آجل / عند الاستلام)</div>
+                <div className="text-3xl font-black tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(lastSale.creditStr)}</div>
+              </div>
+            )}
+            <div className="space-y-1 rounded-lg border bg-muted/30 p-2.5 text-xs">
+              {lastSale.invoiceNumbers.map((n) => (
+                <div key={n} className="flex items-center justify-between">
+                  <span className="text-muted-foreground">فاتورة</span>
+                  <span className="font-bold tabular-nums" dir="ltr">{n}</span>
+                </div>
+              ))}
+              {lastSale.workOrderNumbers.map((n) => (
+                <div key={n} className="flex items-center justify-between">
+                  <span className="text-muted-foreground">طلب تخصيص</span>
+                  <span className="font-bold tabular-nums" dir="ltr">{n}</span>
+                </div>
+              ))}
+              <div className="flex items-center justify-between border-t pt-1">
+                <span className="text-muted-foreground">الإجمالي</span>
+                <span className="font-extrabold tabular-nums" dir="ltr">{fmt(lastSale.totalStr)} د.ع</span>
+              </div>
+            </div>
+            {lastSale.printFailures > 0 && (
+              <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[11px] font-bold text-destructive">
+                تعذّرت طباعة {lastSale.printFailures} مستند — أعد الطباعة أدناه بعد فحص الطابعة.
+              </p>
+            )}
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => reprintLastRef.current?.()}>
+                <Printer aria-hidden className="size-4 me-1" /> إعادة طباعة (F9)
+              </Button>
+              <Button className="flex-1" onClick={() => setShowReceiptOverlay(false)}>
+                طلب جديد (Esc)
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* م٦ — اعتماد المدير للخصم >١٠٪ (استباقيّ): يُتحقَّق خادمياً لحظة الالتزام. */}
+      {approvalAsk && (
+        <ManagerApprovalDialog
+          pct={approvalAsk.pct}
+          onCancel={() => setApprovalAsk(null)}
+          onApprove={(email, password) => {
+            mgrCredsRef.current = { email, password };
+            setLineDiscount(approvalAsk.lineKey, approvalAsk.pct);
+            setApprovalAsk(null);
+            notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب");
+          }}
+        />
+      )}
+
+      {cashDropping && shift && (
+        <CashDropDialog
+          C={RECEPTION_TOKENS}
+          shiftId={shift.id}
+          onClose={() => setCashDropping(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** تبويب ورشةٍ في رأس عمود العمل (§٨.١). */
+function WsTab({ active, onClick, Icon, label, badge }: {
+  active: boolean;
+  onClick: () => void;
+  Icon: typeof ShoppingCart;
+  label: string;
+  badge?: number;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-extrabold transition-colors",
+        active ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-muted",
+      )}
+    >
+      <Icon aria-hidden className="size-4" />
+      {label}
+      {badge != null && badge > 0 && (
+        <span className={cn("rounded-full px-1.5 text-[10px] tabular-nums", active ? "bg-primary-foreground/20" : "bg-muted-foreground/15")}>{badge}</span>
+      )}
+    </button>
+  );
+}
+
+/** م٤ (§٨.٤) — خصم الصفّ: رقائق تقف عند ١٠٪ (م٦)، ونسبة حرّة فوقها تستدعي اعتماد المدير. */
+function LineDiscountPopover({ line, isElevated, onApply, onClose }: {
+  line: CartLine;
+  isElevated: boolean;
+  onApply: (pct: number | null) => void;
+  onClose: () => void;
+}) {
+  const [freePct, setFreePct] = useState(line.disc != null ? String(line.disc) : "");
+  const base = line.origPrice ?? Number(line.row.price ?? 0);
+  const pctNum = Math.min(100, Math.max(0, parseFloat(freePct) || 0));
+  const preview = base * (1 - pctNum / 100);
+  return (
+    <div
+      className="absolute start-1/2 top-[calc(100%+4px)] z-40 w-60 -translate-x-1/2 rounded-xl border bg-card p-2.5 text-start shadow-2xl"
+      dir="rtl"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="inline-flex items-center gap-1 text-[11px] font-extrabold"><Percent aria-hidden className="size-3" /> خصم الصفّ</span>
+        <button type="button" onClick={onClose} aria-label="إغلاق" className="text-muted-foreground hover:text-foreground"><X aria-hidden className="size-3.5" /></button>
+      </div>
+      <div className="mb-1.5 flex gap-1.5">
+        {[5, 10].map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => onApply(p)}
+            className="min-h-[36px] flex-1 rounded-lg border bg-card text-xs font-extrabold tabular-nums hover:bg-muted"
+          >
+            {p}٪
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => onApply(null)}
+          disabled={line.disc == null}
+          className="min-h-[36px] flex-1 rounded-lg border bg-card text-[11px] font-bold text-muted-foreground hover:bg-muted disabled:opacity-40"
+        >
+          إزالة
+        </button>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <input
+          value={freePct}
+          onChange={(e) => setFreePct(e.target.value.replace(/[^\d.]/g, ""))}
+          inputMode="decimal"
+          dir="ltr"
+          placeholder="نسبة حرّة"
+          aria-label="نسبة خصم حرّة"
+          className="h-9 w-full rounded-md border bg-card px-2 text-center text-sm font-bold tabular-nums outline-none focus:border-primary"
+        />
+        <Button size="sm" className="h-9" disabled={pctNum <= 0} onClick={() => onApply(pctNum)}>تطبيق</Button>
+      </div>
+      {pctNum > 0 && (
+        <div className="mt-1.5 rounded-md bg-muted/50 px-2 py-1 text-[11px] tabular-nums" dir="ltr">
+          {fmt(base)} ← <span className="font-extrabold">{fmt(preview)}</span>
+          <span className="ms-1 text-money-positive">وفّر {fmt(base - preview)}</span>
+        </div>
+      )}
+      {pctNum > 10 && !isElevated && (
+        <p className="mt-1.5 text-[10px] font-bold text-[var(--sem-warn)]">فوق ١٠٪ — سيُطلَب اعتماد المدير.</p>
+      )}
+    </div>
+  );
+}
+
+/** حوار اعتماد المدير (بريد + كلمة مرور) — يُتحقَّق خادمياً عبر verifyManagerApproval عند الالتزام. */
+function ManagerApprovalDialog({ pct, onApprove, onCancel }: {
+  pct: number;
+  onApprove: (email: string, password: string) => void;
+  onCancel: () => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  return (
+    <div className="fixed inset-0 z-[95] grid place-items-center bg-black/50 p-4" dir="rtl" onClick={onCancel}>
+      <div className="w-full max-w-xs space-y-3 rounded-2xl bg-card p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-sm font-extrabold">اعتماد مدير — خصم {pct}٪</h3>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          الخصم فوق ١٠٪ يحتاج مديراً (تُفحص البيانات على الخادم لحظة إتمام الطلب وتُسجَّل باسمه).
+        </p>
+        <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="بريد المدير" dir="ltr" className="h-10 text-sm" autoComplete="off" />
+        <Input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="كلمة المرور" dir="ltr" className="h-10 text-sm" autoComplete="new-password" />
+        <div className="flex gap-2">
+          <Button variant="outline" className="flex-1" onClick={onCancel}>إلغاء</Button>
+          <Button className="flex-1" disabled={!email.trim() || !password} onClick={() => onApprove(email.trim(), password)}>
+            اعتماد
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
