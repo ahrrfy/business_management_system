@@ -1384,7 +1384,7 @@ export default function POS() {
     (activeTab.payInput === "" || paid >= total || (isCredit && activeTab.customerId != null));
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
+    <div className="retail-pos-surface" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
 
       {/* Header */}
       <POSHeader
@@ -1817,8 +1817,11 @@ function TabBar({ C, tabs, activeId, onSwitch, onAdd, onClose }: TabBarProps) {
         );
       })}
       {tabs.length < 8 && (
-        <button onClick={onAdd}
-          style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 34, height: 34, borderRadius: 8, background: C.card, border: `1.5px dashed ${C.border}`, cursor: "pointer", fontSize: 22, color: C.mutedFg, flexShrink: 0 }}>+</button>
+        <button
+          aria-label="طلب جديد"
+          onClick={onAdd}
+          style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: 8, background: C.card, border: `1.5px dashed ${C.border}`, cursor: "pointer", fontSize: 22, color: C.mutedFg, flexShrink: 0 }}
+        >+</button>
       )}
     </div>
   );
