@@ -13,6 +13,9 @@ import * as s from "../../../drizzle/schema";
 import {
   ALL_ROLES,
   ROLE_TEMPLATES,
+  SECTION_CASHIER_ROLES,
+  canUseStation,
+  diffFromTemplate,
   moduleAccessAllowed,
   type PermissionMap,
 } from "@shared/permissions";
@@ -126,6 +129,21 @@ describe("تكافؤ RBAC — المسار «خارج القائمة» (المن
       expect(decide(posGate, role, null), `${role} × شبكة البطاقات`).toBe(false);
       expect(decide(adminReadGate, role, null), `${role} × القراءة الإدارية`).toBe(false);
     }
+  });
+});
+
+describe("RBAC — digital-card POS station guard", () => {
+  it("allows a retail cashier and rejects print/reception cashiers", () => {
+    const section = (key: string) => SECTION_CASHIER_ROLES.find((role) => role.key === key)!;
+    const retail = diffFromTemplate("cashier", section("retail_cashier").permissions);
+    const print = diffFromTemplate("cashier", section("print_cashier").permissions);
+    const reception = diffFromTemplate("cashier", section("reception_clerk").permissions);
+
+    // This is the exact RETAIL predicate used by digitalCardsPosProcedure,
+    // following its digital_cards=READ module check.
+    expect(canUseStation("RETAIL", "cashier", retail)).toBe(true);
+    expect(canUseStation("RETAIL", "cashier", print)).toBe(false);
+    expect(canUseStation("RETAIL", "cashier", reception)).toBe(false);
   });
 });
 

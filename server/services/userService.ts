@@ -72,6 +72,7 @@ export interface UpdateUserInput {
 export interface ListUsersInput {
   q?: string;
   role?: string;
+  branchId?: number;
   /** فلترة بدور مخصّص بعينه (شاشة الأدوار ← «مَن على هذا الدور؟»). */
   customRoleId?: number;
   includeInactive?: boolean;
@@ -798,6 +799,7 @@ export async function listUsers(input: ListUsersInput = {}) {
   const conds: any[] = [];
   if (!input.includeInactive) conds.push(eq(users.isActive, true));
   if (input.role) conds.push(eq(users.role, input.role as any));
+  if (input.branchId != null) conds.push(eq(users.branchId, input.branchId));
   if (input.customRoleId) conds.push(eq(users.customRoleId, input.customRoleId));
   if (input.q?.trim()) {
     const q = `%${escapeLike(input.q.trim())}%`;

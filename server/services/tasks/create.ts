@@ -1,7 +1,7 @@
 // إنشاء مهمة (NEW) — تذكرة موحّدة لأي طلب خدمة/دعم/استفسار بغضّ النظر عن قناة الورود.
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { serviceTypes, taskEvents, tasks } from "../../../drizzle/schema";
+import { serviceTypes, taskEvents, tasks, users } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
 import { withTx } from "../tx";
@@ -46,6 +46,21 @@ export type CreateTaskActor = { userId: number | null; branchId: number; role?: 
 export async function createTask(input: CreateTaskInput, actor: CreateTaskActor, tx?: Tx) {
   const run = async (t: Tx) => {
     if (!input.title?.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "عنوان المهمة مطلوب" });
+
+    if (input.assignedTo != null) {
+      const assignee = (await t
+        .select({ id: users.id, branchId: users.branchId, role: users.role, isActive: users.isActive })
+        .from(users)
+        .where(eq(users.id, input.assignedTo))
+        .limit(1))[0];
+      if (!assignee || !assignee.isActive) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير موجود أو معطّل" });
+      }
+      const elevatedAssignee = assignee.role === "admin" || assignee.role === "manager";
+      if (!elevatedAssignee && Number(assignee.branchId) !== input.branchId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إسناد المهمة إلى موظف من فرع آخر" });
+      }
+    }
 
     // اشتقاق priority/dueAt من نوع الخدمة فقط حين لا يُمرَّرا صراحةً (undefined — لا null، الذي
     // يُعامَل كتفضيلٍ صريح للافتراضي العام). القراءة داخل نفس المعاملة (اتّساق ذرّي).

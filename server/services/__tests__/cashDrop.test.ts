@@ -196,6 +196,31 @@ describe("createCashDrop — idempotency وترقيمٌ صلب (مراجعة Cod
     ).rejects.toThrow(/idempotency/);
   });
 
+  it("مفتاح idempotency بمبلغ أو مستلِم مختلف ⇒ CONFLICT بدل نجاحٍ زائف", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const crid = "crid-fingerprint";
+    await createCashDrop(
+      { shiftId, amount: "10000", dropTo: MANAGER1, clientRequestId: crid },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
+
+    await expect(
+      createCashDrop(
+        { shiftId, amount: "20000", dropTo: MANAGER1, clientRequestId: crid },
+        { userId: CASHIER1, branchId: 1, role: "cashier" },
+      ),
+    ).rejects.toThrow(/idempotency/);
+    await expect(
+      createCashDrop(
+        { shiftId, amount: "10000", dropTo: MANAGER2, clientRequestId: crid },
+        { userId: CASHIER1, branchId: 1, role: "cashier" },
+      ),
+    ).rejects.toThrow(/idempotency/);
+
+    const outs = await db().select().from(s.receipts).where(and(eq(s.receipts.shiftId, shiftId), eq(s.receipts.direction, "OUT")));
+    expect(outs).toHaveLength(1);
+  });
+
   it("يتجاهل مرجع CD- حرّاً غير رقميّ عند الترقيم (لا NaN)", async () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, "");

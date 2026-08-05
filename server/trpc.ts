@@ -1,6 +1,6 @@
 import { NOT_ADMIN_ERR_MSG, TWO_FACTOR_REQUIRED_ROLES, UNAUTHED_ERR_MSG } from "@shared/const";
 import { GENERIC_INTERNAL_AR, mysqlCodeFrom, toArabicMessage } from "@shared/errorMap.ar";
-import { canSeeCost as _canSeeCost, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import { canSeeCost as _canSeeCost, canUseStation, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
@@ -86,6 +86,20 @@ const requireUser = t.middleware(async ({ ctx, next, path }) => {
 });
 
 export const protectedProcedure = t.procedure.use(requireUser);
+
+/**
+ * Self-service boundary for the mobile workspace. Handlers using this
+ * procedure must derive the subject from ctx.user and must not accept a
+ * caller-supplied user or employee identifier.
+ */
+export const selfServiceProcedure = protectedProcedure;
+
+/**
+ * Permission-aware aggregation boundary for the super-app BFF. It does not
+ * grant a module permission by itself: every handler must resolve the current
+ * user's permission map and keep all records branch-scoped.
+ */
+export const superAppProcedure = protectedProcedure;
 
 /**
  * بوابة خدمة ذاتية لمكلّف جرد بحساب النظام. لا تمنح هذه البوابة وصولاً عاماً
@@ -393,7 +407,26 @@ export const commissionsReadProcedure = protectedProcedure.use(requireModule("co
 //   • AdminRead: قائمة manager/accountant/auditor عبر البوّابة الموحّدة ⇒ الكاشير محجوب
 //     (قالبه READ لا يضعه في القائمة، ولا يعبُر إلا بمنح **صريح** — قرار أدمن واعٍ).
 // الكتابة (إنشاء/تعديل مزوّد أو محفظة أو بطاقة، ونشر السعر) مديرية حصراً — §١١ من وثيقة التصميم.
-export const digitalCardsPosProcedure = branchScopedProcedure.use(requireModule("digital_cards", "READ"));
+/**
+ * Digital-card selling is a RETAIL-POS operation. A print/reception cashier
+ * may share the cashier base template (including digital_cards=READ), but must
+ * not be able to invoke the retail sale endpoints directly.
+ */
+const requireDigitalCardsRetailStation = t.middleware(async ({ ctx, next }) => {
+  if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
+    | Record<string, AccessLevel>
+    | null
+    | undefined;
+  if (!canUseStation("RETAIL", ctx.user.role, override)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+export const digitalCardsPosProcedure = branchScopedProcedure
+  .use(requireModule("digital_cards", "READ"))
+  .use(requireDigitalCardsRetailStation);
 export const digitalCardsAdminReadProcedure = branchScopedProcedure.use(
   requireModuleGate(["manager", "accountant", "auditor"], "digital_cards", "READ")
 );

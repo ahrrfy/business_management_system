@@ -5,7 +5,7 @@ import Decimal from "decimal.js";
 import { eq, inArray, sql } from "drizzle-orm";
 import { accountingEntries, branchStock, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { applyMovement } from "../inventoryService";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
@@ -51,8 +51,25 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     // قبل أيّ replay، نتحقّق أنّ المفتاح المخزَّن يخصّ نفس أمر الشراء وفرعه والكميات المطلوبة.
     // كان الـreplay يَعود بنتيجة مضلِّلة (receivedTotal=0.00) دون أيّ تحقّق ⇒ مفتاح يُعاد استعماله
     // على PO مختلف أو بكميات مختلفة كان يُرجع نجاحاً صامتاً ⇒ يَخفي تكرار طلب على كيان مختلف.
+    const receiveRequestHash = input.clientRequestId
+      ? idempotencyHash({
+          purchaseOrderId: input.purchaseOrderId,
+          lines: [...input.lines]
+            .map((line) => ({
+              purchaseOrderItemId: line.purchaseOrderItemId,
+              receivedBaseQuantity: line.receivedBaseQuantity,
+            }))
+            .sort((left, right) => left.purchaseOrderItemId - right.purchaseOrderItemId),
+          payment: input.payment
+            ? {
+                amount: input.payment.amount,
+                method: input.payment.method,
+              }
+            : null,
+        })
+      : null;
     if (input.clientRequestId) {
-      const existingRefId = await findIdempotentRefId(tx, "purchase.receive", input.clientRequestId);
+      const existingRefId = await checkIdempotency(tx, "purchase.receive", input.clientRequestId, receiveRequestHash);
       if (existingRefId != null) {
         if (existingRefId !== input.purchaseOrderId) {
           throw new TRPCError({
@@ -448,7 +465,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
 
     // Idempotency: سجّل المفتاح بعد نجاح الكتابة (refId = أمر الشراء).
     if (input.clientRequestId) {
-      await recordIdempotencyKey(tx, "purchase.receive", input.clientRequestId, input.purchaseOrderId);
+      await recordIdempotencyKey(tx, "purchase.receive", input.clientRequestId, input.purchaseOrderId, receiveRequestHash);
     }
 
     return {

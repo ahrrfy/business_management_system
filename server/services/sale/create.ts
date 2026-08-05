@@ -846,7 +846,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
   // حماية flowNotify الداخلية — فشله (لأي سبب) **لا يُسقِط** بيعاً ناجحاً بالفعل (القاعدة الحاكمة،
   // راجع server/services/whatsapp/flowNotify.ts).
   try {
-    await notifyPurchaseThanks(input, result);
+    await notifySaleCustomerAfterCommit(input, result);
   } catch (e) {
     logger.warn(
       { err: e instanceof Error ? e.message : String(e), invoiceId: result.invoiceId },
@@ -858,7 +858,8 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
 }
 
 /** يجلب هاتف/اسم عميل الفاتورة (إن عُرف) ويستدعي flowNotify — لا شيء إن لا عميل/لا هاتف. */
-async function notifyPurchaseThanks(input: CreateSaleInput, result: CreateSaleResult): Promise<void> {
+/** Post-commit customer acknowledgement, reusable by composite sale flows. */
+export async function notifySaleCustomerAfterCommit(input: CreateSaleInput, result: CreateSaleResult): Promise<void> {
   if (!input.customerId) return;
   const db = requireDb();
   const cust = (
