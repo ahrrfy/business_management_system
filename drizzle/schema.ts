@@ -1439,6 +1439,11 @@ export const invoiceItems = mysqlTable(
     promotionDiscount: decimal("promotionDiscount", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    // هدايا الفاتورة (0149): سطرٌ مُهدىً — سعره صفر ويُخصَم من المخزون كسائر البنود، لكنّ تكلفته
+    // (لقطة WAVG في `unitCost` أدناه، محفوظة كاملةً) تُرحَّل قيدَ GIFT_OUT مصروفَ هدايا بدل أن
+    // تدخل `invoices.costTotal`/قيد SALE ⇒ الثابت «SALE.cost = invoices.costTotal = تكلفة البنود
+    // المدفوعة» يبقى سارياً، والهدية خارج وعاء العمولة تلقائياً (الوعاء يفلتر SALE/RETURN).
+    isGift: boolean("isGift").default(false).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({

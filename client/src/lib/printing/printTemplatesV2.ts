@@ -107,6 +107,8 @@ export interface SalesInvoiceV2Data {
     /** حصة السطر من الضريبة (Line-tax). إن كانت صفرية، تُعرَض «—». */
     taxAmount?: string | number | null;
     total: string | number;
+    /** هدايا الفاتورة (0149): سطرٌ مُهدىً — يُطبَع «مجاناً» ووسمُ «هدية» بجانب الاسم. */
+    isGift?: boolean | null;
   }[];
 
   subtotal: string | number;
@@ -170,13 +172,15 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
     { key: 'tax', label: 'الضريبة', width: 62, color: B.orange },
     { key: 'total', label: 'الإجمالي', width: 88, emphasize: true },
   ];
+  // الهدية تُطبَع «مجاناً» لا «0»: الصفر على مستندٍ رسميّ يُقرأ خطأَ تسعيرٍ أو سهواً، والوسم
+  // يُثبت للزبون (وللمراجع) أنّ المجّانيّة قرارٌ مقصود — وتكلفتها مُرحَّلة مصروفَ هدايا في الدفتر.
   const rows = d.items.map((it) => ({
-    name: it.productName,
+    name: it.isGift ? `${it.productName} (هدية)` : it.productName,
     unit: it.unitName ?? '',
     qty:  fmtQty(it.quantity),
-    price: fmtIQD(it.unitPrice),
+    price: it.isGift ? 'مجاناً' : fmtIQD(it.unitPrice),
     tax:  Number(it.taxAmount ?? 0) > 0 ? fmtIQD(it.taxAmount) : '—',
-    total: fmtIQD(it.total),
+    total: it.isGift ? 'مجاناً' : fmtIQD(it.total),
   }));
   const table = docTableV2(cols, rows);
 

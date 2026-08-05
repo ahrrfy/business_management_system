@@ -51,12 +51,15 @@ export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTo
   let totalDiscount = new Decimal(0);
 
   for (const item of items) {
-    const price = safeD(item.price);
+    // هدايا الفاتورة (0149): السطر المُهدى صفرٌ في كلّ الحسابات — لا مجموعَ فرعيّاً ولا خصماً
+    // (خصمٌ على مجّانٍ لا معنى له وينفخ «إجمالي الخصومات» زوراً). مرآةُ ما يفعله الخادم بالضبط
+    // (`create.ts`: unitPrice=0 وdiscount=0 للسطر المُهدى) ⇒ الإجمالي المعروض = المحفوظ.
+    const price = item.isGift ? new Decimal(0) : safeD(item.price);
     const qty = safeD(item.qty);
     const lineBase = price.times(qty);
     subtotal = subtotal.plus(lineBase);
 
-    const discRaw = safeD(item.discount);
+    const discRaw = item.isGift ? new Decimal(0) : safeD(item.discount);
     const disc =
       item.discountType === "percent"
         ? lineBase.times(discRaw).dividedBy(100)
@@ -101,6 +104,8 @@ export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTo
 
 /** Per-line total (after discount, pre-tax) — 2dp string. الضريبة على مستوى الفاتورة لا السطر. */
 export function calcLineTotal(item: InvoiceLine): string {
+  // هدايا الفاتورة (0149): إجمالي السطر المُهدى صفرٌ دائماً — مرآةُ `create.ts` خادمياً.
+  if (item.isGift) return "0.00";
   const price = safeD(item.price);
   const qty = safeD(item.qty);
   const lineBase = price.times(qty);

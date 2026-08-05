@@ -175,6 +175,10 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
 
     let returnedGrossNet = new Decimal(0);
     let returnedCost = new Decimal(0);
+    // هدايا الفاتورة (0149): تكلفة البنود المُهداة المُرجَعة تُجمَع **منفصلةً**. تكلفتها لم تدخل قيد
+    // SALE أصلاً (دخلت قيد GIFT_OUT)، فعكسُها داخل قيد RETURN يُلغي تكلفةً لم تُسجَّل هناك قطّ ⇒
+    // ربحٌ منفوخ من العدم. تُعكَس في قيد GIFT_OUT سالبٍ أدناه — كلٌّ يُعكَس في وعائه.
+    let returnedGiftCost = new Decimal(0);
 
     // bundles (٧/٧/٢٦): إن كان أحد البنود المُرجَعة بكجاً، لا نطبّق applyMovement على البكج نفسه
     // (لا branchStock له) — نُوسّع مكوّناته من الوصفة الحالية ونعيدها للمخزون. تجميع لكل المتغيّرات
@@ -217,7 +221,11 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     for (const { line, item } of work) {
       const portion = new Decimal(line.baseQuantity).dividedBy(item.baseQuantity);
       returnedGrossNet = returnedGrossNet.plus(money(item.total).times(portion));
-      returnedCost = returnedCost.plus(round2(money(item.unitCost).times(line.baseQuantity)));
+      // سطر الهدية: `item.total` صفر ⇒ لا إيراد يُعكَس (لا استرداد نقديّ — لم يُدفع شيء)، وتكلفته
+      // تذهب لوعاء الهدايا لا لوعاء COGS.
+      const lineCost = round2(money(item.unitCost).times(line.baseQuantity));
+      if (item.isGift) returnedGiftCost = returnedGiftCost.plus(lineCost);
+      else returnedCost = returnedCost.plus(lineCost);
 
       const itemVariantId = Number(item.variantId);
       const kind = kindByVariant.get(itemVariantId) ?? "STOCKED";
@@ -322,6 +330,10 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     // (restock=true) فيتعادل ازديادُ المخزون مع نقصان COGS. أمّا الإيراد/الضريبة/الذمة فتُعكَس
     // في الحالتين (العميل أُسترِدّ/أُسقطت ذمّته بصرف النظر عن مصير البضاعة المُعادة).
     const reversedCost = restock ? returnedCost : new Decimal(0);
+    // هدايا الفاتورة (0149): مرآةُ القاعدة نفسها على وعاء الهدايا — الهديةُ العائدة إلى الرفّ
+    // (restock=true) يُعكَس مصروفها، والتالفةُ/غير العائدة تبقى مصروفاً (البضاعة ذهبت فعلاً).
+    returnedGiftCost = round2(returnedGiftCost);
+    const reversedGiftCost = restock ? returnedGiftCost : new Decimal(0);
 
     // RETURN ledger entry: negative values + منفّذ مستقلّ عن بائع الفاتورة.
     const returnOperatorName = await userNameSnapshot(tx, actor.userId);
@@ -338,6 +350,25 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
       createdBy: actor.userId,
       createdByNameSnapshot: returnOperatorName,
     });
+
+    // هدايا الفاتورة (0149): عكسُ مصروف الهدية بقيد GIFT_OUT سالبٍ (تكلفة سالبة ⇒ ربحٌ موجب يُلغي
+    // الخصمَ الأصليّ) — نظير عكس النثرية/التلف في `expenseService.cancelExpense`. بلا `dedupeKey`:
+    // المرتجعات الجزئية المتعدّدة على الفاتورة نفسها مشروعة، وكلٌّ يعكس حصّته.
+    if (reversedGiftCost.gt(0)) {
+      await postEntry(tx, {
+        entryType: "GIFT_OUT",
+        branchId: Number(inv.branchId),
+        invoiceId: input.invoiceId,
+        customerId: inv.customerId,
+        revenue: new Decimal(0),
+        cost: reversedGiftCost.neg(),
+        profit: reversedGiftCost,
+        amount: reversedGiftCost.neg(),
+        createdBy: actor.userId,
+        createdByNameSnapshot: returnOperatorName,
+        notes: "عكس هدايا ضمن مرتجع بيع",
+      });
+    }
 
     // بضاعة الأمانة (ش٣): عكس التزام المودِع — **دائماً** (restock أو تالف)، بقيدٍ PURCHASE سالب بنفس
     // invoiceId ⇒ يدخل فلتر خصم العمولة فيستردّ حصّة البائع (صافي وعائه = 0). §٥ حاصرة ١.

@@ -1037,6 +1037,13 @@
       "when": 1787879401000,
       "tag": "0148_reception_order_invoice_visibility",
       "breakpoints": true
+    },
+    {
+      "idx": 149,
+      "version": "5",
+      "when": 1787879402000,
+      "tag": "0149_invoice_gift_lines",
+      "breakpoints": true
     }
   ]
 }

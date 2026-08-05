@@ -21,6 +21,7 @@ import {
   getBundleDefinitions,
   type VariantKind,
 } from "../bundleService";
+import { GIFT_APPROVAL_THRESHOLD } from "../gifts/outbound";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
 import { resolveContractPrices } from "../contractPriceService";
 import {
@@ -324,14 +325,22 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         : kind === "BUNDLE"
           ? snapshotUnitCost(bundleUnitCosts.get(l.variantId) ?? "0")
           : snapshotUnitCost(v.costPrice);
-      const lineRes = computeLineTotal({
-        unitPrice,
-        quantity: money(l.quantity),
-        discountPercent: l.discountPercent,
-        discountAmount: l.discountAmount,
-      });
+      // هدايا الفاتورة (0149): السطر المُهدى مجّانيّ **بقرار خادميّ** — لا نثق بسعرٍ/خصمٍ وارد من
+      // الشاشة. السعر صفر والخصم صفر (خصمٌ على مجّانٍ لا معنى له، وحسابُه يفتح باب خصمٍ سالب)،
+      // بينما `unitCost` أعلاه يبقى لقطة WAVG الحقيقية — هي أساس مصروف الهدية في قيد GIFT_OUT.
+      const isGift = l.isGift === true;
+      const lineRes = isGift
+        ? computeLineTotal({ unitPrice: money(0), quantity: money(l.quantity) })
+        : computeLineTotal({
+            unitPrice,
+            quantity: money(l.quantity),
+            discountPercent: l.discountPercent,
+            discountAmount: l.discountAmount,
+          });
       // H6: انحراف صافي السطر عن مرجعه لأسفل بأكثر من العتبة ⇒ يستوجب تفويض مدير (يُفرَض بعد الحلقة).
-      if (lineDiscountExceedsThreshold(refUnit, money(l.quantity), lineRes.total)) manualDiscountGateTriggered = true;
+      // الهدية مُستثناة: مجّانيّتها **مقصودة ومصنَّفة** (قيد GIFT_OUT + بوّابة عتبة الهدايا أدناه)،
+      // لا انحرافُ تسعيرٍ مستتر — وإلّا لَطالبت كلُّ هديةٍ بتفويضٍ بحجّة «خصم ١٠٠٪».
+      if (!isGift && lineDiscountExceedsThreshold(refUnit, money(l.quantity), lineRes.total)) manualDiscountGateTriggered = true;
 
       // promotions v2 (idempotent verification): إن مرّر POS `promotionId`، نُعيد الحلّ خادمياً
       // ونتحقّق أن `expectedPromoDiscount = discountForUnit × qty` يتّسق مع `discountAmount` (± 1 IQD).
@@ -339,7 +348,8 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       // العرض والحفظ) ⇒ نعامل الخصم كيدوي بلا رفض — يحمي البيع من فشل بسبب تعديل عرض بين وقتين.
       let recordedPromotionId: number | null = null;
       let recordedPromoDiscount = "0.00";
-      if (l.promotionId != null && kind !== "BUNDLE") {
+      // الهدية خارج العروض: خصمها صفر (السعر صفر أصلاً) فلا عرضَ يُثبَّت عليها.
+      if (l.promotionId != null && kind !== "BUNDLE" && !isGift) {
         const productId = productIdByVariant.get(l.variantId);
         if (productId != null && productId > 0) {
           const categoryId = categoryByProduct.get(productId) ?? null;
@@ -382,6 +392,7 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         discountAmount: lineRes.discountAmount,
         total: lineRes.total,
         kind,
+        isGift,
         promotionId: recordedPromotionId,
         promotionDiscount: recordedPromoDiscount,
       });
@@ -406,15 +417,27 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       taxRatePercent: input.taxRatePercent,
       deliveryFee: input.deliveryFee,
     });
+    // هدايا الفاتورة (0149): فصلُ وعاءين. `costTotal` (⇐ `invoices.costTotal` وقيد SALE) يبقى
+    // **تكلفة البنود المدفوعة وحدها** — فالثابت القائم «SALE.cost = invoices.costTotal» يظلّ سارياً
+    // ويظلّ كلُّ قارئٍ قائمٍ صحيحاً بلا مساس (COALESCE(ic.cost, i.costTotal) في تقارير المبيعات،
+    // عكس التكلفة الكامل في مرتجع التوصيل، تحليل ربحية أوامر الشغل). وتكلفة الهدايا تُرحَّل وحدها
+    // في قيد GIFT_OUT (§١١.ب) مصروفَ هدايا وترويج — الاعتراف بها مرّةً واحدةً لا مرّتين.
+    const paidLines = computed.filter((c) => !c.isGift);
+    const giftLines = computed.filter((c) => c.isGift);
     const costTotal = computeInvoiceCost(
-      computed.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))
+      paidLines.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))
+    );
+    const giftCost = computeInvoiceCost(
+      giftLines.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))
     );
 
     // 6.b SALES-01/02 — بوّابة البيع بأقل من التكلفة (سدّ حرج: كاشير يبيع بسعر/خصم صفر).
     //     المنطق مشترك في billing.isInvoiceBelowCost ⇒ لا تَنجرف سياسة POS عن قناة الطباعة.
-    //     أيُّ بند/فاتورة تحت COGS يَلزمه موافقة مدير (الراوتر يَمنح المدير/الأدمن السلطة ذاتياً)؛
-    //     الهدايا (تكلفة=صفر) تَبقى مسموحة.
-    const belowCost = isInvoiceBelowCost(computed, totals.subtotal, totals.discountAmount, costTotal);
+    //     أيُّ بند/فاتورة تحت COGS يَلزمه موافقة مدير (الراوتر يَمنح المدير/الأدمن السلطة ذاتياً).
+    //     تُفحَص **البنود المدفوعة** وحدها مقابل `costTotal` (وهو تكلفتها وحدها) — سطر الهدية
+    //     مجّانيّ عمداً وتكلفته خارج هذا الوعاء، فإقحامه هنا يجعل كلّ فاتورةٍ فيها هديةٌ «تحت
+    //     التكلفة» زوراً. حوكمتُه بوّابةُ عتبة الهدايا أدناه لا هذه.
+    const belowCost = isInvoiceBelowCost(paidLines, totals.subtotal, totals.discountAmount, costTotal);
     // H6/H7: بوّابة الخصم اليدويّ فوق التكلفة — تُفرَض على قناة POS الحيّة فقط، لا على إعادة تشغيل
     // الأوفلاين (offlineCapture): بيعٌ اكتمل والتقاطُه لا يُعاد حظره — يُوسَم للمراجعة لا غير. المرتفعون
     // والقنوات المُقِرّة سلفاً (بث/عرض سعر) يمرّون عبر priceOverrideApproved كما في بوّابة تحت-التكلفة.
@@ -424,6 +447,18 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         ? "بيع بأقل من التكلفة"
         : `خصمٌ يتجاوز ${Math.round(MANUAL_DISCOUNT_APPROVAL_THRESHOLD * 100)}٪ عن السعر المرجعيّ`;
       throw new TRPCError({ code: "FORBIDDEN", message: `${reason} يتطلب موافقة مدير.` });
+    }
+
+    // 6.ج حوكمة الهدايا داخل الفاتورة: تُستعار عتبةُ سند الهدية المستقلّ نفسها
+    //     (`GIFT_APPROVAL_THRESHOLD`) فلا تصير الفاتورة باباً خلفياً يلتفّ على حوكمة وحدة الهدايا
+    //     (إهداءٌ بلا سقف من شاشة البيع). المعيار **تكلفةُ** الهدية لا سعرُها (السعر صفر دائماً).
+    //     تحت العتبة يمرّ الكاشير مباشرةً؛ فوقها يفتح حوارُ اعتماد المدير نفسه (priceOverrideApproved).
+    const giftCostD = money(giftCost);
+    if (giftCostD.gt(money(GIFT_APPROVAL_THRESHOLD)) && !input.priceOverrideApproved) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: `تكلفة الهدايا في هذه الفاتورة (${giftCostD.toFixed(2)}) تتجاوز حدّ الإهداء بلا تفويض (${money(GIFT_APPROVAL_THRESHOLD).toFixed(2)} د.ع) — يتطلب موافقة مدير.`,
+      });
     }
 
     // 7. تقريب نقدي IQD للبيع النقدي الكامل: يُقرَّب الإجمالي لفئة 250، فالنقد المستلم = الإجمالي المقرّب
@@ -542,6 +577,9 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         // promotions v2: الأثر متجمّد على المستند — تعديل عرضٍ لاحقاً لا يمسّ سجلّ فواتير سابقة.
         promotionId: c.promotionId,
         promotionDiscount: c.promotionDiscount,
+        // هدايا الفاتورة (0149): وسمُ السطر المُهدى. `unitCost` أعلاه يحمل تكلفته الحقيقية كاملةً
+        // (لقطة WAVG) — مصدرُ مصروف الهدية ومصدرُ عكسِه عند الإرجاع.
+        isGift: c.isGift,
       });
       // gstack B6: لقطة مكوّنات البكج لحظة البيع. المرتجع يقرأ منها حصراً بدل الوصفة الحيّة —
       // يحمي من انحراف مخزون صامت لو عُدّلت الوصفة بين البيع والإرجاع.
@@ -694,6 +732,26 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       amount: money(totals.total),
     });
 
+    // 11.ب هدايا الفاتورة (0149): قيدٌ واحدٌ لتكلفة كلّ البنود المُهداة — مصروف هدايا وترويج
+    // (إيراد=0، ربح=−التكلفة) مطابقٌ تماماً لقيد سند الهدية المستقلّ في `gifts/outbound.ts` فلا
+    // تنجرف القناتان. يحمل `invoiceId` للتتبّع (أيّ فاتورةٍ أهدت ماذا) ويبقى مع ذلك **خارج وعاء
+    // العمولة** لأنّ الوعاء يفلتر `entryType IN ('SALE','RETURN')` — فالبائع لا يُكافأ على إهداء
+    // ولا يُعاقَب به. `dedupeKey` حارسٌ بنيويّ: قيد هدايا واحد لكل فاتورة (نظير SALE:${invoiceId}).
+    if (giftCostD.gt(0)) {
+      await postEntry(tx, {
+        entryType: "GIFT_OUT",
+        dedupeKey: `GIFT:INV:${invoiceId}`,
+        branchId: input.branchId,
+        invoiceId,
+        customerId: input.customerId ?? null,
+        revenue: money(0),
+        cost: giftCostD,
+        profit: round2(money(0).minus(giftCostD)),
+        amount: giftCostD,
+        notes: "هدايا ضمن فاتورة بيع",
+      });
+    }
+
     // 11.أ بضاعة الأمانة (ش٣): التقاط التزام المودِع لحظة البيع. طريقة الإجمالي — قيد SALE أعلاه لم يُمسّ
     // (revenue كامل، الربح=الهامش لأن الحصة داخل unitCost). لكل مودِع: قيد PURCHASE **يتيم** بـinvoiceId
     // (المميّز البنيوي PURCHASE∧invoiceId فارغ تاريخياً) بصفر أثر P&L (amount فقط) + رفع رصيده (AP). §٢-ب.
@@ -771,6 +829,8 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       total: toDbMoney(effectiveTotalD),
       status,
       priceOverride: belowCost || manualDiscountGateTriggered,
+      // هدايا الفاتورة: تكلفة ما أُهدي (للأثر التدقيقيّ في الراوتر — مَن أهدى وبكم).
+      ...(giftCostD.gt(0) ? { giftCost: giftCostD.toFixed(2) } : {}),
       ...(negativeDips.length ? { negativeDips } : {}),
     };
 }

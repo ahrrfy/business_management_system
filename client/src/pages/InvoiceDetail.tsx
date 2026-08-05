@@ -48,6 +48,7 @@ import { Link, useParams, useSearch } from "wouter";
 import {
   ChevronDown,
   FileText,
+  Gift,
   History,
   Package,
   Paperclip,
@@ -401,6 +402,7 @@ export default function InvoiceDetail() {
         unitPrice: it.unitPrice,
         total: it.total,
         taxAmount: shares[i] ?? "0",
+        isGift: it.isGift,
       })),
     });
   }
@@ -684,6 +686,13 @@ export default function InvoiceDetail() {
                       <td className="px-3 py-2">
                         {it.productName ?? "—"}
                         {it.variantName ? ` — ${it.variantName}` : ""}{" "}
+                        {it.isGift && (
+                          // وسمُ الهدية على الشاشة: يميّز «مجّانيّ مقصود» عن «سعر صفر بالخطأ»،
+                          // ويشرح لماذا لا يزيد هذا السطر إجمالي الفاتورة.
+                          <span className="badge-status-active inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-extrabold">
+                            <Gift aria-hidden className="size-3" /> هدية
+                          </span>
+                        )}{" "}
                         {it.sku && (
                           <span
                             className="text-xs text-muted-foreground font-mono"
