@@ -15,9 +15,15 @@ export interface OfflineMetaRow {
 
 /** عنصر طابور المبيعات الأوفلاينية — يُملأ في الشريحة ٣؛ الجدول معرَّف من الآن كي لا نحتاج
  *  ترقية نسخة Dexie لاحقاً. الحمولة بشكل CreateSaleInput (عقد الخادم) + بيانات العرض. */
+/** نوع العمليّة الملتقَطة — يحدّد **مسار الترحيل** الخادميّ عند عودة الاتصال.
+ *  SALE = كاشير التجزئة (offline.replaySale) · PRINT_SALE = كاشير الطباعة
+ *  (offline.replayPrintSale) · RECEPTION = سلّة خدمات الزبائن (offline.replayReception).
+ *  عناصر ما قبل التعميم بلا حقل صريح تُقرأ SALE (توافق رجعيّ — لا تُفقَد نقودٌ في الطابور). */
+export type OfflineOutboxKind = "SALE" | "PRINT_SALE" | "RECEPTION";
+
 export interface OfflineOutboxItem {
   clientRequestId: string;
-  kind: "SALE";
+  kind: OfflineOutboxKind;
   payload: unknown;
   offlineReceiptNumber: string;
   capturedAt: string;
