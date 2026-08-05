@@ -95,7 +95,10 @@ async function allReconcileClean() {
 }
 
 /** ينشئ طلباً بعربون نقدي ويجعله READY. يُرجِع معرّفه. */
-async function readyWorkOrder(shiftOpen: boolean): Promise<number> {
+async function readyWorkOrder(
+  shiftOpen: boolean,
+  feeCollection: "COURIER" | "COUNTER" | "SHOP" = "SHOP",
+): Promise<number> {
   const wo = await createWorkOrder(
     {
       branchId: 1,
@@ -108,6 +111,9 @@ async function readyWorkOrder(shiftOpen: boolean): Promise<number> {
       paymentMethod: "CASH",
       hasDelivery: true,
       deliveryAddress: "بغداد",
+      // 5/8: al-ujra tunqas min al-tawrid faqat 'inda SHOP/COUNTER. COURIER = yaqbiduha
+      // al-mandub min al-zabun mubasharatan ⇒ kharij daftarina tamaman.
+      deliveryFeeCollection: feeCollection,
     },
     { userId: 2, branchId: 1 },
   );

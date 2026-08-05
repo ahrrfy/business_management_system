@@ -1,9 +1,10 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { cashierProcedure, deliveryReadProcedure, managerProcedure, router } from "../trpc";
+import { cashierProcedure, deliveryReadProcedure, managerProcedure, router, workordersCashierProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 import {
   createDeliveryParty,
+  dispatchInvoiceToDelivery,
   dispatchToDelivery,
   getDeliveryParty,
   getDeliveryPartyStatement,
@@ -12,6 +13,7 @@ import {
   listDeliveryParties,
   listOpenConsignments,
   listReadyForDispatch,
+  listReceptionInvoiceQueue,
   recordDeliveryRemittance,
   returnConsignment,
   setDeliveryPartyActive,
@@ -20,6 +22,7 @@ import {
   writeOffDeliveryShortfall,
 } from "../services/deliveryService";
 import { logAudit } from "../services/auditService";
+import { utcTodayStart } from "../services/businessDay";
 
 const partyKind = z.enum(["INDIVIDUAL", "COMPANY"]);
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -168,6 +171,58 @@ export const deliveryRouter = router({
       // NUMBERING-RACE (تدقيق ٢/٧): ترقيم الإرسالية يعتمد قيداً فريداً كحارس أخير — نعيد المحاولة على التصادم.
       const res = await retryOnDup(() => dispatchToDelivery(input, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.dispatch", entityType: "deliveryConsignment", entityId: res.consignmentId, newValue: { workOrderId: input.workOrderId, partyId: input.partyId, codAmount: res.codAmount } });
+      return res;
+    }),
+
+  // 5/8: kul fawatir wardiat al-istiqbal (queue source = invoices, not workOrders).
+  // Bawwaba: workordersCashierProcedure (dawr + miftah wihda workorders=FULL) la cashierProcedure
+  // al-kham — tabiq FULFILL_GATE fi ReceptionOrderQueue.tsx bil-dabt, wa-yurdi authz-guard
+  // alladhi yarfud idafat nuqat sulta bi-dawr kham dun miftah wihda.
+  receptionQueue: workordersCashierProcedure
+    .input(z.object({
+      branchId: z.number().int().positive().nullish(),
+      shiftIds: z.array(z.number().int().positive()).max(20).optional(),
+      sinceDays: z.number().int().min(0).max(30).default(1),
+      limit: z.number().int().min(1).max(300).default(200),
+    }))
+    .query(async ({ input, ctx }) => {
+      const branchId = effectiveBranch(ctx, input.branchId);
+      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      // حدّ اليوم بإطار businessDay (UTC) لا بمكوّنات محلية — وإلا انزاح الطابور بفارق المنطقة.
+      const since = new Date(utcTodayStart().getTime() - input.sinceDays * 86_400_000);
+      return listReceptionInvoiceQueue({
+        branchId,
+        shiftIds: input.shiftIds,
+        since,
+        limit: input.limit,
+      });
+    }),
+
+  // 5/8: isnad fatura qa'ima lil-tawseel (bay' mubashir bila amr shughl).
+  // Nafs bawwabat receptionQueue (workorders=FULL) — a'la min delivery.dispatch al-qadim
+  // (cashierProcedure kham) wa-la tuda''if shay'an qa'iman.
+  dispatchInvoice: workordersCashierProcedure
+    .input(
+      z.object({
+        invoiceId: z.number().int().positive(),
+        partyId: z.number().int().positive(),
+        deliveryFee: moneyStr.nullish(),
+        feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
+        recipientName: z.string().max(255).nullish(),
+        recipientPhone: z.string().max(20).nullish(),
+        deliveryAddress: z.string().max(1000).nullish(),
+        clientRequestId: z.string().max(64).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
+      const res = await retryOnDup(() => dispatchInvoiceToDelivery(input, actorOf(ctx)));
+      await logAudit(ctx, {
+        action: "delivery.dispatchInvoice",
+        entityType: "deliveryConsignment",
+        entityId: res.consignmentId,
+        newValue: { invoiceId: input.invoiceId, partyId: input.partyId, codAmount: res.codAmount, deliveryFee: res.deliveryFee },
+      });
       return res;
     }),
 

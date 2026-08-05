@@ -36,6 +36,11 @@ export type CustomizationData = {
   deliveryAddress: string;
   deliveryPhone: string;
   deliveryCost: string;
+  /** ٥/٨ — مَن يقبض أجرة التوصيل. تمريرٌ لا إيراد: لا تدخل سعر البيع ولا الفاتورة في أيّ حالة.
+   *  COURIER (افتراضي) = المندوب يقبضها من الزبون ⇒ لا تمرّ بالدرج ولا بدفترنا.
+   *  COUNTER = تُقبض الآن في الكاشير **أمانةً** للمندوب ⇒ تدخل الدرج وتخرج له عند الإرسال.
+   *  SHOP    = المكتبة تتحمّلها (توصيل مجّاني) ⇒ لا تُقبض من الزبون وتصير مصروفاً. */
+  deliveryFeeCollection: "COURIER" | "COUNTER" | "SHOP";
   designImages: ImageItem[];
   paymentReceiptImages: ImageItem[];
   deposit: string;
@@ -56,6 +61,7 @@ export function emptyCustomization(productName: string): CustomizationData {
     deliveryAddress: "",
     deliveryPhone: "",
     deliveryCost: "0",
+    deliveryFeeCollection: "COURIER",
     designImages: [],
     paymentReceiptImages: [],
     deposit: "0",
@@ -132,9 +138,11 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
     setData((d) => ({ ...d, [k]: v }));
 
   const today = new Date().toISOString().slice(0, 10);
-  // الإجمالي **إضافي**: سعر المنتج الأساس + سعر التخصيص، لكل وحدة، مضروباً بالكمية + توصيل (مرّة واحدة).
+  // الإجمالي **إضافي**: سعر المنتج الأساس + سعر التخصيص، لكل وحدة، مضروباً بالكمية.
+  // ٥/٨ — أجرة التوصيل **لم تعد** تُجمَع هنا: هي تمريرٌ للمندوب لا بيعٌ، فلا تدخل سعر أمر الشغل
+  // ولا الفاتورة ولا الإيراد (كانت تُجمَع فتصير إيراداً بهامش ١٠٠٪ ونقداً يُحاسَب عليه الموظّف).
   const unitTotal = D(price || 0).plus(D(data.unitPrice || 0));
-  const grandWithDelivery = unitTotal.times(Math.max(1, quantity)).plus(D(data.deliveryCost || 0));
+  const orderTotal = unitTotal.times(Math.max(1, quantity));
 
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -340,10 +348,39 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
                   <MoneyInput
                     value={data.deliveryCost}
                     onChange={(v) => upd("deliveryCost", v)}
-                    placeholder="تكلفة التوصيل"
+                    placeholder="أجرة التوصيل"
                     className="text-sm"
-                    ariaLabel="تكلفة التوصيل"
+                    ariaLabel="أجرة التوصيل"
                   />
+                </div>
+                {/* ٥/٨ — مَن يقبض الأجرة: قرارٌ لكلّ طلب. الأجرة **لا** تدخل الفاتورة أبداً؛
+                    هذا المفتاح يحدّد أين يمرّ نقدُها فقط، فيبقى الدرج مطابقاً عند الإغلاق. */}
+                <div className="space-y-1">
+                  <Label className="text-[11px] font-normal text-muted-foreground">مَن يقبض الأجرة؟</Label>
+                  <div className="flex gap-1.5">
+                    {(
+                      [
+                        { v: "COURIER", label: "المندوب من الزبون", hint: "لا تدخل الدرج" },
+                        { v: "COUNTER", label: "الكاشير الآن", hint: "أمانة تُسلَّم للمندوب" },
+                        { v: "SHOP", label: "على المكتبة", hint: "توصيل مجّاني للزبون" },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.v}
+                        type="button"
+                        onClick={() => upd("deliveryFeeCollection", opt.v)}
+                        aria-pressed={data.deliveryFeeCollection === opt.v}
+                        className={`flex-1 rounded-md border-[1.5px] px-2 py-1.5 text-[11px] font-bold leading-tight ${
+                          data.deliveryFeeCollection === opt.v
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "bg-card hover:bg-muted"
+                        }`}
+                      >
+                        {opt.label}
+                        <span className="block text-[10px] font-normal text-muted-foreground">{opt.hint}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div className="space-y-1">
                   <Label htmlFor="cz-delivery-phone" className="text-[11px] font-normal text-muted-foreground">
@@ -394,9 +431,17 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
               <span className="font-bold tabular-nums" dir="ltr">{fmt(unitTotal.toString())} د.ع</span>
             </div>
             <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">إجمالي البند ({quantity} × سعر الوحدة){data.hasDelivery && " + التوصيل"}:</span>
-              <span className="font-bold tabular-nums" dir="ltr">{fmt(grandWithDelivery.toString())} د.ع</span>
+              <span className="text-muted-foreground">إجمالي البند ({quantity} × سعر الوحدة):</span>
+              <span className="font-bold tabular-nums" dir="ltr">{fmt(orderTotal.toString())} د.ع</span>
             </div>
+            {data.hasDelivery && D(data.deliveryCost || 0).gt(0) && (
+              <div className="flex items-center justify-between border-t pt-2 text-xs">
+                <span className="text-muted-foreground">
+                  أجرة توصيل ({data.deliveryFeeCollection === "COUNTER" ? "تُقبض الآن أمانةً" : data.deliveryFeeCollection === "SHOP" ? "على المكتبة" : "يقبضها المندوب"}) — خارج الفاتورة:
+                </span>
+                <span className="font-bold tabular-nums text-muted-foreground" dir="ltr">{fmt(data.deliveryCost)} د.ع</span>
+              </div>
+            )}
             <p className="border-t pt-2 text-[11px] text-muted-foreground">
               أدخل العربون أو المبلغ المقبوض مرة واحدة في مرحلة الدفع؛ سيُوزّعه النظام على كامل الطلب تلقائياً.
             </p>

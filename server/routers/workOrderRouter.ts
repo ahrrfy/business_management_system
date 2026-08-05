@@ -60,6 +60,11 @@ const receptionWorkOrderSchema = z.object({
   deliveryAddress: z.string().nullish(),
   deliveryCost: nonNegMoneyString.nullish(),
   deliveryPhone: z.string().max(20).nullish(),
+  // ٥/٨ — مَن يقبض أجرة التوصيل (الأجرة تمريرٌ لا إيراد، خارج salePrice دائماً).
+  deliveryFeeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
+  // زبون عابر بلا سجلّ عميل: مرجعٌ للطلب فقط (لا عميل ولا ذمّة).
+  contactName: z.string().trim().max(255).nullish(),
+  contactPhone: z.string().trim().max(32).nullish(),
   designImages: z.array(z.object({
     url: z.string().min(1),
     caption: z.string().max(255).nullish(),
@@ -79,6 +84,11 @@ const receptionCheckoutSchema = z.object({
   priceTier: priceTierEnum.nullish(),
   // كوبون CRM — على البيع المباشر فقط (لا خدمات طباعة).
   couponCode: z.string().trim().min(1).max(64).nullish(),
+  // ٥/٨ — زبونٌ عابر: اسمٌ وهاتفٌ مرجعيّان يُكتبان على الفاتورة نفسها بلا إنشاء عميل ولا ذمّة.
+  // يحلّان محلّ إجبار الكاشير على إنشاء عميلٍ لكل بيعٍ نقديّ (وكان يفشل بـFORBIDDEN لأدوارٍ
+  // تفتح محطة الاستقبال بلا صلاحية crm=FULL، فيسقط الاسم والهاتف بعد الطباعة تماماً).
+  contactName: z.string().trim().max(255).nullish(),
+  contactPhone: z.string().trim().max(32).nullish(),
   regularSale: z.object({
     lines: z.array(z.object({
       variantId: z.number().int().positive(),

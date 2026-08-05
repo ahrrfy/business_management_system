@@ -17,6 +17,7 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
+import { shiftIdForCashTx } from "../shiftService";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
 import type { DeliveryTxActor } from "./types";
@@ -89,12 +90,21 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     const costTotal = round2(money(wo.materialsCost).plus(money(wo.laborCost)));
     const depositPaid = round2(money(wo.deposit ?? "0"));
     if (depositPaid.gt(salePrice)) throw new TRPCError({ code: "BAD_REQUEST", message: "العربون يتجاوز إجمالي الأمر" });
+    // ٥/٨ — أجرة التوصيل تمريرٌ لا إيراد (قرار المالك): salePrice بضاعةٌ وخدمةٌ فقط، وcodAmount
+    // = **مالُنا** الذي يحصّله المندوب ويورّده. الأجرة رقمٌ موازٍ لا يدخل الفاتورة ولا الإيراد.
+    // كان الحارس القديم يرفض fee > codAmount لأن الأجرة كانت مضمومةً داخل codAmount؛ وبعد فصلها
+    // صار الرفض خاطئاً بنيوياً — بل هو الحالة العادية في الطلب المدفوع كاملاً (codAmount=0).
     const codAmount = round2(salePrice.minus(depositPaid)); // >= 0
     const fee = round2(money(input.deliveryFee ?? party.defaultFee ?? "0"));
-    if (fee.gt(codAmount)) {
+    if (fee.lt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "أجرة التوصيل لا تصحّ أن تكون سالبة" });
+    }
+    // مَن قبض الأجرة: يتبع ما ثُبِّت على أمر الشغل في الاستقبال (COURIER افتراضياً).
+    const feeCollection = (wo.deliveryFeeCollection ?? "COURIER") as "COURIER" | "COUNTER" | "SHOP";
+    if (feeCollection === "COUNTER" && fee.gt(round2(money(wo.deliveryCost ?? "0")))) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "أجرة التوصيل لا يمكن أن تتجاوز مبلغ التحصيل عند خصمها منه",
+        message: "أجرة المندوب تتجاوز الأجرة المقبوضة من الزبون في الاستقبال — سوّها قبل الإرسال",
       });
     }
 
@@ -162,6 +172,13 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
 
     const consignmentNumber = await nextConsignmentNumber(tx, Number(wo.branchId));
     const codPositive = codAmount.gt(0);
+    // الأجرة تُسوَّى لحظة الإرسال متى كان النقد بأيدينا أو لا توريدَ يُنتظَر:
+    //   COUNTER ⇒ قبضناها أمانةً في الاستقبال والمندوب واقفٌ الآن ⇒ تُدفَع له نقداً من الدرج.
+    //   codAmount=0 ⇒ لا توريد قادم أصلاً ⇒ لا مجال لخصمها لاحقاً (هذه هي الحالة التي كانت
+    //   تبتلع الأجرة صامتةً: إرسالية تُنشَأ DELIVERED فوراً فلا يراها مسار التوريد أبداً).
+    // ما عدا ذلك (COURIER بـCOD موجب) لا يمرّ بدفترنا إطلاقاً؛ وSHOP بـCOD موجب يُخصَم مصروفاً
+    // عند التوريد كما كان.
+    const settleFeeNow = fee.gt(0) && feeCollection !== "COURIER" && (feeCollection === "COUNTER" || !codPositive);
     const cnRes = await tx.insert(deliveryConsignments).values({
       consignmentNumber,
       branchId: Number(wo.branchId),
@@ -177,12 +194,53 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       // أدناه؛ يمنع مندوباً يُرسَل بلا وسيلة اتصال بالزبون حين لا يُدخِل الموظّف رقماً صريحاً هنا.
       recipientPhone: input.recipientPhone ?? wo.deliveryPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? wo.deliveryAddress ?? null,
+      feeCollection,
+      feeSettledAt: settleFeeNow ? new Date() : null,
       // codAmount=0 (مدفوع كامل بالعربون) ⇒ إرسالية تسليم فقط بلا عهدة.
       status: codPositive ? "DISPATCHED" : "DELIVERED",
       settledAt: codPositive ? null : new Date(),
       dispatchedBy: actor.userId,
     });
     const consignmentId = extractInsertId(cnRes);
+
+    // صرف الأجرة للمندوب نقداً من الدرج (إيصال OUT) ⇒ الدرج يُطابِق فعلاً عند الإغلاق.
+    // COUNTER: تبرئة أمانةٍ مقبوضة (بلا مصروف — تمرير). SHOP: مصروفٌ حقيقيّ تتحمّله المكتبة.
+    if (settleFeeNow) {
+      const { shiftId, cashBucket } = await shiftIdForCashTx(
+        tx,
+        { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role },
+        Number(wo.branchId),
+        "صرف أجرة توصيل",
+        "RECEPTION",
+      );
+      const feeOut = await tx.insert(receipts).values({
+        branchId: Number(wo.branchId),
+        shiftId,
+        invoiceId,
+        direction: "OUT",
+        amount: toDbMoney(fee),
+        paymentMethod: "CASH",
+        cashBucket,
+        status: "COMPLETED",
+        partyType: "OTHER",
+        referenceNumber: consignmentNumber,
+        description: `أجرة توصيل إرسالية ${consignmentNumber}`,
+        createdBy: actor.userId,
+      });
+      const feeReceiptId = extractInsertId(feeOut);
+      await postEntry(tx, {
+        entryType: feeCollection === "COUNTER" ? "DELIVERY_FEE_HELD" : "DELIVERY_FEE",
+        dedupeKey: `DELIVERY_FEE_DISPATCH:${consignmentId}`,
+        branchId: Number(wo.branchId),
+        invoiceId,
+        deliveryPartyId: input.partyId,
+        receiptId: feeReceiptId,
+        amount: fee,
+        // COUNTER تمرير: قبضناها ودفعناها ⇒ صفر أثرٍ على الأرباح. SHOP تحمُّلٌ فعليّ ⇒ مصروف.
+        ...(feeCollection === "SHOP" ? { cost: fee, profit: fee.neg() } : {}),
+        notes: `أجرة توصيل ${consignmentNumber}`,
+      });
+    }
 
     if (codPositive) {
       await adjustDeliveryBalance(tx, input.partyId, codAmount);

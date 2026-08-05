@@ -97,6 +97,8 @@ type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 const RESERVATION_READ_ROLES = ["admin", "manager", "accountant", "cashier", "warehouse", "sales_rep", "auditor"] as const;
 const CHANNEL_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor", "warehouse", "print_operator"] as const;
+/** مرآة قائمة أدوار customersCashierProcedure الخادمية (server/trpc.ts) — لا تنجرف عنها. */
+const CUSTOMER_CREATE_ROLES = ["cashier", "manager", "sales_rep"] as const;
 const STORE_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
 const CRM_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
 
@@ -135,12 +137,21 @@ function lineTotal(line: CartLine): number {
 function isCustomKind(line: CartLine): boolean {
   return !!line.custom;
 }
-/** الإجمالي الكامل لسطر مخصّص (سعر السطر + تكلفة التوصيل). يُستعمل لـsalePrice على workOrder
- *  ليطابق إجمالي الفاتورة عند التسليم (deliverWorkOrder يَحسبه من wo.salePrice وحده). */
+/** ٥/٨ — سعر بيع السطر المخصّص: بضاعةٌ وخدمةٌ فقط. أجرة التوصيل **لا** تُجمَع هنا.
+ *  كانت تُضمّ إلى salePrice ⇒ تصير إيراداً بهامش ١٠٠٪ في قيد SALE ونقداً في الدرج يُحاسَب عليه
+ *  الموظّف عند الإغلاق، بينما أجرة المندوب الحقيقية رقمٌ آخر يُصرَف من مسارٍ مستقلّ. */
 function customLineGrand(line: CartLine): number {
-  if (!line.custom) return lineTotal(line);
-  const delivery = line.custom.hasDelivery ? Number(line.custom.deliveryCost || 0) : 0;
-  return lineTotal(line) + delivery;
+  return lineTotal(line);
+}
+/** أجرة التوصيل المُثبَّتة على السطر (تمريرٌ للمندوب — خارج الفاتورة والإيراد دائماً). */
+function lineDeliveryFee(line: CartLine): number {
+  if (!line.custom?.hasDelivery) return 0;
+  return Number(line.custom.deliveryCost || 0);
+}
+/** الأجرة التي يقبضها **الكاشير الآن** أمانةً (وضع COUNTER وحده) ⇒ نقدٌ يدخل الدرج بإيصالٍ
+ *  مستقلّ عن الفاتورة، ويخرج للمندوب عند الإرسال. غيرها لا يمرّ بالدرج إطلاقاً. */
+function lineCounterHeldFee(line: CartLine): number {
+  return line.custom?.deliveryFeeCollection === "COUNTER" ? lineDeliveryFee(line) : 0;
 }
 
 /** حالة المخزون للأصناف الجاهزة (المخصَّصة لا مَخزون لها — إنتاج). يَحسب الطلب الكلّي للصنف
@@ -184,6 +195,12 @@ export default function Reception() {
   );
   const canReadChannels = me.data != null && moduleAccessAllowed(
     me.data.role, reservationPermissions, "channels", "READ", CHANNEL_READ_ROLES,
+  );
+  // مرآة بوّابة customers.create الخادمية بالضبط (customersCashierProcedure =
+  // moduleProcedure(["cashier","manager","sales_rep"], "crm", "FULL") — server/trpc.ts).
+  // مطابقتها هنا تُظهر/تُخفي زرّ «احفظه كعميل» بدل أن يفاجئ الموظّفَ رفضٌ في منتصف الدفع.
+  const canCreateCustomer = me.data != null && moduleAccessAllowed(
+    me.data.role, reservationPermissions, "crm", "FULL", CUSTOMER_CREATE_ROLES,
   );
   const canReadStoreOrders = me.data != null && moduleAccessAllowed(
     me.data.role, reservationPermissions, "store", "READ", STORE_READ_ROLES,
@@ -299,10 +316,37 @@ export default function Reception() {
     onError: (e) => notify.err(e),
   });
 
-  // احتواء ديناميكي: زوم المتصفح يُقلّص المساحة بوحدات CSS لا الشاشة الفعلية، فلوحة الدفع ذات
-  // الأعمدة الثابتة (نمط POS.tsx PaymentPanel، #466) تحتاج نفس الطبقات الثلاث: رأسٌ ثابت + وسطٌ
-  // قابل للتمرير + أزرار فعل لا تنكمش أبداً، مع كثافة تُقاس بالارتفاع المتاح لحذف الثانويّ أولاً.
-  const receptionDense = useMediaQuery("(max-height: 820px)");
+  // احتواء ديناميكي (إعادة بناء ٥/٨ — «منطقة الدفع فيها تمرير»): القياس بالنافذة كان خاطئاً
+  // بنيوياً، لأن لوحة الدفع أقصر من النافذة بـ«شريط الأوضاع + ترويسة الاستقبال + الحشوة»
+  // (~٢٤٠px، أكبر بكثير من فارق POS). فنافذةٌ «فسيحة» ٩٤٥px تُخفي أن اللوحة نفسها ٦٧٠px
+  // ⇒ عجزٌ يُصرَف تمريراً دائماً. الآن تُقاس **اللوحة نفسها** بـResizeObserver، فالكثافة تتبع
+  // المساحة الحقيقية. لا حلقة ارتجاج: ارتفاع اللوحة يفرضه الأب (صفّ flex بارتفاع ثابت)،
+  // وكل ما تُبدّله الكثافة يقع **داخل** اللوحة فلا يُغيّر ارتفاعها.
+  const paymentSectionRef = useRef<HTMLDivElement>(null);
+  const [payPanelH, setPayPanelH] = useState(0);
+  useEffect(() => {
+    const el = paymentSectionRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([entry]) => {
+      const h = entry.contentRect.height;
+      // عتبة ٤px تمنع إعادة رسمٍ لا داعي لها من كسور البكسل عند الزوم.
+      setPayPanelH((prev) => (Math.abs(prev - h) < 4 ? prev : h));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // ثلاث درجات احتواء: يُحذف الثانويّ أولاً ثم يُعاد التركيب — لا تصغيرَ للأساسيّ.
+  // (0 = قبل أول قياس ⇒ نفترض الفسيح فلا يومض التركيب المضغوط عند الإقلاع.)
+  const payDense = payPanelH > 0 && payPanelH < 700;
+  const payUltra = payPanelH > 0 && payPanelH < 580;
+  // شبكة أمانٍ أخيرة: تحت هذا الحدّ لا يبقى ثانويٌّ يُحذف، والحدود الدنيا الصلبة (مفاتيح ٤٠px
+  // ×٤ صفوف + طرق الدفع ٤٤px + زرّا الفعل ٤٤/٤٨px) تطلب ~٥٠٠px. فلو مُنع التمرير هنا لَقُصّ
+  // المحتوى **صامتاً** — وهو أسوأ من شريط تمرير. العتبة ٥٢٠ تترك هامشاً فوق الطلب الفعليّ
+  // فلا تُفتَح إلا حين يستحيل الاحتواء حقّاً (خارج مدى التشغيل: أقصر لوحةٍ عمليّة ~٥٠٠px).
+  const payOverflowGuard = payPanelH > 0 && payPanelH < 520;
+  // ترويسة الصفحة تُقاس بالنافذة عمداً (لا باللوحة): تقليصها يُطيل اللوحة، فقياسها باللوحة
+  // يصنع حلقة «يُخفى ⇒ تتّسع ⇒ يظهر ⇒ تضيق». النافذة مقياسٌ مستقلّ عن هذا التغذّي الراجع.
+  const compactHeader = useMediaQuery("(max-height: 900px)");
 
   // ───── الحالة ─────────────────────────────────────────────────────────────
   const [cart, setCart] = useState<CartLine[]>([]);
@@ -323,6 +367,10 @@ export default function Reception() {
   // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
   const [tierOverride, setTierOverride] = useState<Tier | null>(null);
   const [couponInput, setCouponInput] = useState("");
+  // الكوبون مطويّ افتراضياً في الدرجات الضيّقة؛ هذه الراية تفتحه بطلب الموظّف.
+  const [couponOpen, setCouponOpen] = useState(false);
+  // ٥/٨ — «احفظه كعميل»: اختياريّ صراحةً. بلا تفعيله يبقى الاسم/الهاتف مرجعاً على الفاتورة فقط.
+  const [saveAsCustomer, setSaveAsCustomer] = useState(false);
   const [couponCode, setCouponCode] = useState<string | null>(null);
   const [couponLabel, setCouponLabel] = useState<string | null>(null);
   const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
@@ -340,7 +388,6 @@ export default function Reception() {
   const searchRef = useRef<HTMLInputElement>(null);
   const customerSectionRef = useRef<HTMLDivElement>(null);
   const cartSectionRef = useRef<HTMLDivElement>(null);
-  const paymentSectionRef = useRef<HTMLDivElement>(null);
 
   // فئة العميل الافتراضية (لحلّ الفئة التلقائية — نمط POS.tsx fetchedCustomer/effectiveTier).
   const fetchedCustomer = trpc.customers.get.useQuery(
@@ -434,6 +481,11 @@ export default function Reception() {
   const grandTotal = round2(grandTotalD).toNumber();
   const sumDirect = round2(sumDirectD).toNumber();
   const sumCustom = round2(sumCustomD).toNumber();
+  // ٥/٨ — أجرة توصيلٍ تُقبض الآن أمانةً للمندوب: نقدٌ يدخل الدرج **خارج** الفاتورة (ليست بيعاً).
+  // تُعرَض منفصلةً كي يعرف الموظّف كم يستلم فعلاً، ولا تُخلَط بإجمالي الفاتورة ولا بالمبلغ المُطبَّق.
+  const heldDeliveryD = round2(cart.reduce((s, c) => s.plus(D(lineCounterHeldFee(c))), D(0)));
+  const heldDelivery = heldDeliveryD.toNumber();
+  const cashDueNow = round2(grandTotalD.plus(heldDeliveryD)).toNumber();
 
   // الدفع موحّد على كامل السلة. البيع المباشر هو الحد الأدنى؛ وما زاد يصبح عربوناً لأوامر الطباعة.
   const expectedNowD = grandTotalD;
@@ -844,13 +896,19 @@ export default function Reception() {
     if (submitting) return;
     setSubmitting(true);
 
-    let customerId: number | null = null;
-    try {
-      customerId = await ensureCustomerId();
-    } catch (e: any) {
-      setSubmitting(false);
-      notify.err(e?.message || "تعذّر تجهيز العميل");
-      return;
+    // ٥/٨ — إنشاء العميل لم يعُد شرطاً لإتمام الطلب. الاسم والهاتف يُحفظان مرجعاً نصّياً على
+    // الفاتورة وأمر الشغل (contactName/contactPhone)، ولا يُنشَأ سجلّ عميلٍ إلا بطلبٍ صريح
+    // («احفظه كعميل») ومن يملك صلاحيته. سابقاً كان كلّ بيعٍ يمرّ بـcustomers.create فيفشل
+    // الطلب كلّه بـFORBIDDEN لأدوارٍ تفتح محطة الاستقبال بلا crm=FULL (فنّي المطبعة مثلاً).
+    let customerId: number | null = customer.customerId ?? null;
+    if (customerId == null && saveAsCustomer && canCreateCustomer) {
+      try {
+        customerId = await ensureCustomerId();
+      } catch (e: any) {
+        setSubmitting(false);
+        notify.err(e?.message || "تعذّر حفظ العميل");
+        return;
+      }
     }
 
     let checkoutCommitted = false;
@@ -901,8 +959,9 @@ export default function Reception() {
           channelHandle: channelHandle || null,
           hasDelivery: custom.hasDelivery,
           deliveryAddress: custom.deliveryAddress || null,
-          // deliveryCost يَبقى في عمود مستقلّ للتقرير؛ salePrice الإجماليّ ضمّه فعلاً.
+          // ٥/٨ — الأجرة في عمودها وحدها: تمريرٌ للمندوب خارج salePrice/الفاتورة/الإيراد.
           deliveryCost: custom.hasDelivery ? D(custom.deliveryCost || 0).toFixed(2) : "0",
+          deliveryFeeCollection: custom.hasDelivery ? custom.deliveryFeeCollection : "COURIER",
           // اِستقبال (تكامل التوصيل، ٤/٨): هاتف المستلم كعمود مستقلّ قابل للاستعلام — كان
           // مُضمَّناً كنصٍّ حرٍّ داخل customizationText فقط (composeCustomizationText أدناه ما زال
           // يُضيفه للنصّ أيضاً — تكرارٌ مقصود: عرضٌ للفنّي في النص + مصدر حقيقة للتوصيل في العمود).
@@ -919,6 +978,9 @@ export default function Reception() {
         branchId,
         shiftId: shift.id,
         customerId: customerId ?? undefined,
+        // مرجع الزبون العابر: يُكتب على الفاتورة وأمر الشغل حتى بلا سجلّ عميل.
+        contactName: customerId == null ? (customerName ?? undefined) : undefined,
+        contactPhone: customerId == null ? (receiptPhone ?? undefined) : undefined,
         paymentMethod: method,
         paymentReference: method === "CASH" ? undefined : paymentReference.trim(),
         paidAmount: round2(appliedPaidD).toFixed(2),
@@ -966,30 +1028,49 @@ export default function Reception() {
       const invoiceId = result.regularSale?.invoiceId ?? result.printSale?.invoiceId ?? null;
       const createdWoIds = result.workOrders.map((order) => order.workOrderId);
 
+      // ٥/٨ — إيصال الاستقبال كان يُبنى بقيمٍ مثبَّتة (paid = الإجمالي دائماً، change = 0 دائماً،
+      // بلا خصمٍ ولا هاتفٍ ولا آجل) فيخرج ناقص المعلومات مقارنةً بإيصال التجزئة الذي يمرّ بمُحوّلٍ
+      // موحّد. صار يُبنى بمُحوّلٍ واحد هنا يحمل الحقيقة كاملةً: الخصم على السطر، هاتف الزبون،
+      // الفكّة الحقيقية على أول إيصال، والمتبقّي آجلاً إن وُجد.
+      const receiptCustomerName = customerName && receiptPhone
+        ? `${customerName} — ${receiptPhone}`
+        : customerName ?? (receiptPhone ? `عميل ${receiptPhone}` : null);
+      const changeD2 = round2(appliedPaidD.minus(grandTotalD));
+      const printedChange = method === "CASH" && changeD2.gt(0) ? changeD2.toFixed(2) : null;
+      const creditD = round2(grandTotalD.minus(appliedPaidD));
+      const printedCredit = creditD.gt(0) ? creditD.toFixed(2) : null;
+      const receiptLine = (c: CartLine) => ({
+        name: `${c.row.productName} (${c.row.unitName})${c.disc ? ` −${c.disc}%` : ""}`,
+        quantity: c.qty,
+        price: round2(D(effectivePrice(c))).toFixed(2),
+        total: round2(D(lineTotal(c))).toFixed(2),
+      });
+      const receiptHead = {
+        date: fmtDate(printedAt),
+        time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
+        cashierName: me.data?.name ?? "موظف الخدمة",
+        customerName: receiptCustomerName,
+        paymentMethod: PAY_METHOD_LABEL[method],
+      };
       if (result.regularSale) {
         receiptsToPrint.push({
+          ...receiptHead,
           receiptNumber: result.regularSale.invoiceNumber,
-          date: fmtDate(printedAt), time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
-          cashierName: me.data?.name ?? "موظف الخدمة", customerName,
-          items: regularLines.map((c) => ({
-            name: `${c.row.productName} (${c.row.unitName})`, quantity: c.qty,
-            price: round2(D(effectivePrice(c))).toFixed(2), total: round2(D(lineTotal(c))).toFixed(2),
-          })),
-          subtotal: saleAmount, total: saleAmount, paid: saleAmount, change: 0,
-          paymentMethod: PAY_METHOD_LABEL[method],
+          items: regularLines.map(receiptLine),
+          subtotal: saleAmount, total: saleAmount, paid: saleAmount,
+          // الفكّة تُطبع مرّةً واحدةً على أول إيصال (هي فكّة الطلب كله لا فكّة فاتورةٍ بعينها).
+          change: printedChange,
+          credit: printedCredit,
         });
       }
       if (result.printSale) {
         receiptsToPrint.push({
+          ...receiptHead,
           receiptNumber: result.printSale.invoiceNumber,
-          date: fmtDate(printedAt), time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
-          cashierName: me.data?.name ?? "موظف الخدمة", customerName,
-          items: printLines.map((c) => ({
-            name: `${c.row.productName} (${c.row.unitName})`, quantity: c.qty,
-            price: round2(D(effectivePrice(c))).toFixed(2), total: round2(D(lineTotal(c))).toFixed(2),
-          })),
-          subtotal: printAmount, total: printAmount, paid: printAmount, change: 0,
-          paymentMethod: PAY_METHOD_LABEL[method],
+          items: printLines.map(receiptLine),
+          subtotal: printAmount, total: printAmount, paid: printAmount,
+          change: result.regularSale ? null : printedChange,
+          credit: result.regularSale ? null : printedCredit,
         });
       }
 
@@ -1008,8 +1089,20 @@ export default function Reception() {
           quantity: c.qty,
           specs: finalText || null,
           total: x.salePriceStr,
+          // ٥/٨ — أجرة التوصيل تُطبع صراحةً على التذكرة **خارج الإجمالي**، مع مَن يقبضها:
+          // يمنع سوءَ الفهم الذي كان يجعل الموظّف والزبون يظنّانها جزءاً من قيمة الطلب.
           notes: custom.hasDelivery
-            ? `توصيل إلى: ${custom.deliveryAddress || "العنوان غير محدد"}`
+            ? [
+                `توصيل إلى: ${custom.deliveryAddress || "العنوان غير محدد"}`,
+                custom.deliveryPhone ? `هاتف المستلم: ${custom.deliveryPhone}` : null,
+                D(custom.deliveryCost || 0).gt(0)
+                  ? `أجرة التوصيل ${fmt(custom.deliveryCost)} د.ع (${
+                      custom.deliveryFeeCollection === "COUNTER" ? "مقبوضة في الاستقبال"
+                      : custom.deliveryFeeCollection === "SHOP" ? "على المكتبة"
+                      : "تُدفع للمندوب عند الاستلام"
+                    }) — خارج قيمة الطلب`
+                  : null,
+              ].filter(Boolean).join(" · ")
             : null,
         });
       });
@@ -1329,7 +1422,10 @@ export default function Reception() {
         </div>
       )}
       {/* أربع مناطق حقيقية: تفاصيل أمر الشغل جزء من السلة، فلا نكررها كمرحلة مستقلة. */}
-      <div className="flex-shrink-0 space-y-2 border-b bg-card px-4 py-2.5">
+      <div className={cn("flex-shrink-0 border-b bg-card px-4", compactHeader ? "space-y-1.5 py-1.5" : "space-y-2 py-2.5")}>
+        {/* شريط التسلسل إرشاديٌّ لا وظيفيّ (الانتقال متاح بالنقر على المناطق نفسها وبـF2/F4)،
+            فهو أول ما يُحذف عند ضيق الارتفاع ليعود ~٣٠px إلى لوحة الدفع والسلة. */}
+        {!compactHeader && (
         <div className="flex items-center gap-1 overflow-x-auto text-[11px] font-bold text-muted-foreground" aria-label="تسلسل إنشاء الطلب">
           {["العميل والطلب", "إضافة المطلوب", "السلة وتفاصيل الطباعة", "الدفع والطباعة"].map((label, index) => (
             <button
@@ -1348,6 +1444,7 @@ export default function Reception() {
             </button>
           ))}
         </div>
+        )}
 
         <div ref={customerSectionRef} className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/25 p-2">
           <span className="shrink-0 text-xs font-extrabold">١. العميل وطريقة وصول الطلب</span>
@@ -1392,8 +1489,24 @@ export default function Reception() {
               dir="ltr"
             />
           )}
-          {channel !== "WALK_IN" && channelHandle.trim() && !customer.customerId && (
-            <span className="text-[11px] font-semibold text-primary">سيُربط الرقم بعميل قائم أو يُحفظ كعميل عند إتمام الطلب</span>
+          {/* ٥/٨ — اسم الزبون وهاتفه يُحفظان مرجعاً على الفاتورة دائماً (يُطبَعان ويُستعملان عند
+              التحويل للتوصيل) بلا إنشاء سجلّ عميل. إنشاء العميل صار فعلاً صريحاً مستقلاً. */}
+          {!customer.customerId && (customer.name.trim() || customer.phone?.trim()) && (
+            canCreateCustomer ? (
+              <label className="inline-flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="size-3.5"
+                  checked={saveAsCustomer}
+                  onChange={(e) => setSaveAsCustomer(e.target.checked)}
+                />
+                احفظه كعميل دائم
+              </label>
+            ) : (
+              <span className="text-[11px] font-semibold text-muted-foreground">
+                يُحفظ الاسم والهاتف مرجعاً على الفاتورة (حفظه كعميل دائم يحتاج صلاحية إدارة العملاء)
+              </span>
+            )
           )}
           {customer.customerId && (
             <span className="text-[11px] font-semibold text-money-positive">تم ربط الطلب بالعميل: {customer.name}</span>
@@ -1837,40 +1950,62 @@ export default function Reception() {
           className="flex w-[408px] flex-shrink-0 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30 [container-type:size]"
         >
           {/* رأس الإجمالي + التقسيم الهجين — ثابتٌ دائماً، خارج منطقة التمرير. */}
-          <div className="flex-shrink-0 border-b bg-muted/40 p-3">
-            <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-extrabold">
-              <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٥</span>
-              المبلغ والدفع
-            </div>
+          <div className={cn("flex-shrink-0 border-b bg-muted/40", payUltra ? "px-3 py-1.5" : "p-3")}>
+            {!payDense && (
+              <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-extrabold">
+                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٥</span>
+                المبلغ والدفع
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-muted-foreground">إجمالي الفاتورة</span>
               <div className="flex items-baseline gap-1">
-                <span className="text-3xl font-black tabular-nums tracking-tight" dir="ltr">{fmt(grandTotal)}</span>
+                <span className="text-[clamp(22px,3.8cqh,30px)] font-black leading-tight tabular-nums tracking-tight" dir="ltr">{fmt(grandTotal)}</span>
                 <span className="text-xs text-muted-foreground">د.ع</span>
               </div>
             </div>
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-2">
-                <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700">
-                  <ShoppingCart aria-hidden className="size-3" /> منتجات جاهزة
+            {/* أجرة التوصيل المقبوضة أمانةً: خارج الفاتورة، لكنها نقدٌ يُستلَم فعلاً الآن.
+                عرضها منفصلةً يمنع الخلط الذي كان يجعل الموظّف يظنّها جزءاً من البيع. */}
+            {heldDelivery > 0 && (
+              <div className="mt-1 space-y-0.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-1">
+                <div className="flex items-center justify-between text-[11px] font-bold text-[var(--sem-warn)]">
+                  <span className="inline-flex items-center gap-1"><Truck aria-hidden className="size-3" /> أجرة توصيل أمانةً للمندوب</span>
+                  <span className="tabular-nums" dir="ltr">{fmt(heldDelivery)}</span>
                 </div>
-                <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumDirect)}</div>
-              </div>
-              <div className="rounded-lg border border-violet-500/25 bg-violet-500/10 p-2">
-                <div className="inline-flex items-center gap-1 text-[10px] font-bold text-violet-700">
-                  <Printer aria-hidden className="size-3" /> خدمات وطباعة
+                <div className="flex items-center justify-between text-[11px] font-extrabold">
+                  <span>المُستلَم نقداً الآن</span>
+                  <span className="tabular-nums" dir="ltr">{fmt(cashDueNow)} د.ع</span>
                 </div>
-                <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumCustom)}</div>
               </div>
-            </div>
+            )}
+            {/* بطاقتا التقسيم ثانويّتان (الرقمان يظهران في السلة نفسها) ⇒ تُحذفان في أضيق درجة. */}
+            {!payUltra && (
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-2">
+                  <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700">
+                    <ShoppingCart aria-hidden className="size-3" /> منتجات جاهزة
+                  </div>
+                  <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumDirect)}</div>
+                </div>
+                <div className="rounded-lg border border-violet-500/25 bg-violet-500/10 p-2">
+                  <div className="inline-flex items-center gap-1 text-[10px] font-bold text-violet-700">
+                    <Printer aria-hidden className="size-3" /> خدمات وطباعة
+                  </div>
+                  <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumCustom)}</div>
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* منطقة الإدخال — الوحيدة القابلة للتمرير. شبكة أمان: مهما ضاق الارتفاع (زوم/دقّة)
-              يُمرَّر هذا الوسط وحده، ويبقى الإجمالي فوقه وزرّا الدفع تحته ظاهرَين دائماً بلا قصّ. */}
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          {/* منطقة الإدخال — تتّسع بلا تمرير: الاحتواء المتكيّف أعلاه حذف الثانويّ بالفعل، ولوحة
+              الأرقام تمتصّ الفائض بوحدات الحاوية. التمرير لا يُفتح إلا تحت ٤٥٢px (لا يُبلَغ عملياً). */}
+          <div className={cn("flex min-h-0 flex-1 flex-col", payOverflowGuard ? "overflow-y-auto overscroll-contain" : "overflow-hidden")}>
           {/* شاشة المبلغ */}
-          <div className="flex-shrink-0 px-3 pb-1 pt-2">
-            <div className="flex min-h-[44px] items-center justify-between rounded-lg border-[1.5px] bg-muted/40 px-3 py-1.5">
+          <div className={cn("flex-shrink-0 px-3", payUltra ? "pb-0.5 pt-1" : "pb-1 pt-2")}>
+            <div className={cn(
+              "flex items-center justify-between rounded-lg border-[1.5px] bg-muted/40 px-3",
+              payUltra ? "min-h-[36px] py-1" : "min-h-[44px] py-1.5",
+            )}>
               <span className="text-xs text-muted-foreground">
                 {numMode === "QTY" && "الكمية للسطر المحدّد"}
                 {numMode === "DISC" && "خصم % للسطر المحدّد"}
@@ -1878,7 +2013,8 @@ export default function Reception() {
               </span>
               <span
                 className={cn(
-                  "text-2xl font-black tabular-nums",
+                  "font-black tabular-nums",
+                  payUltra ? "text-xl" : "text-2xl",
                   numMode === "PAY" && isOwing && "text-amber-600",
                   numMode === "PAY" && isChange && "text-emerald-600",
                 )}
@@ -1890,7 +2026,7 @@ export default function Reception() {
           </div>
 
           {/* مبالغ سريعة — تُحذف عند ضيق الارتفاع (لوحة الأرقام تُغنِي عنها؛ حذف الثانويّ لا تصغير الأساسيّ). */}
-          {!receptionDense && (
+          {!payDense && (
           <div className="flex flex-shrink-0 flex-wrap gap-1.5 px-3 py-1">
             {QUICK_AMTS.map((v) => (
               <button
@@ -1913,37 +2049,39 @@ export default function Reception() {
           </div>
           )}
 
-          {/* لوحة الأرقام — الارتفاع بوحدات الحاوية (cqh) ينكمش مع الزوم/النافذة بلا قصّ، بحدّ
-              أدنى 44px (هدف اللمس المعياريّ) لا ينزل تحته مهما ضاق الارتفاع. */}
-          <div className="flex-shrink-0 px-3 py-1">
-            <div className="grid grid-cols-[auto_1fr_1fr_1fr] gap-1.5" dir="rtl">
-              <button onClick={() => setNumMode("QTY")} className={cn("h-[clamp(44px,6.6cqh,58px)] min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "QTY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>الكمية</button>
+          {/* لوحة الأرقام — تمتصّ الفائض: صفوفها `1fr` داخل كتلةٍ `flex-1` فتكبر بالمساحة المتاحة
+              وتنكمش معها بلا قصٍّ ولا تمرير. الحدّ الأدنى 44px (هدف اللمس المعياريّ)، ولا ينزل إلى
+              40px إلا في الدرجة الأضيق بعد حذف كل ثانويّ. */}
+          <div className="min-h-0 flex-1 px-3 py-1">
+            <div className={cn("grid h-full grid-cols-[auto_1fr_1fr_1fr] grid-rows-4 gap-1.5", payUltra ? "[--numh:40px]" : "[--numh:44px]")} dir="rtl">
+              <button onClick={() => setNumMode("QTY")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "QTY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>الكمية</button>
               <NumKey k="3" onPress={numPress} />
               <NumKey k="2" onPress={numPress} />
               <NumKey k="1" onPress={numPress} />
 
-              <button onClick={() => setNumMode("DISC")} className={cn("h-[clamp(44px,6.6cqh,58px)] min-w-[60px] rounded-lg border-[1.5px] text-sm font-extrabold", numMode === "DISC" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>%</button>
+              <button onClick={() => setNumMode("DISC")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] text-sm font-extrabold", numMode === "DISC" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>%</button>
               <NumKey k="6" onPress={numPress} />
               <NumKey k="5" onPress={numPress} />
               <NumKey k="4" onPress={numPress} />
 
-              <button onClick={() => setNumMode("PAY")} className={cn("h-[clamp(44px,6.6cqh,58px)] min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "PAY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>المبلغ</button>
+              <button onClick={() => setNumMode("PAY")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "PAY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>المبلغ</button>
               <NumKey k="9" onPress={numPress} />
               <NumKey k="8" onPress={numPress} />
               <NumKey k="7" onPress={numPress} />
 
-              <button onClick={() => numPress("DEL")} className="grid h-[clamp(44px,6.6cqh,58px)] place-items-center rounded-lg border-[1.5px] bg-red-50 text-red-700 hover:bg-red-100" aria-label="حذف">
+              <button onClick={() => numPress("DEL")} className={cn(NUM_H, "grid place-items-center rounded-lg border-[1.5px] bg-red-50 text-red-700 hover:bg-red-100")} aria-label="حذف">
                 <X aria-hidden className="size-4" />
               </button>
               <NumKey k="." onPress={numPress} />
               <NumKey k="0" onPress={numPress} />
-              <button onClick={() => numPress("C")} className="h-[clamp(44px,6.6cqh,58px)] rounded-lg border-[1.5px] bg-card text-xs font-extrabold text-muted-foreground hover:bg-muted">C</button>
+              <button onClick={() => numPress("C")} className={cn(NUM_H, "rounded-lg border-[1.5px] bg-card text-xs font-extrabold text-muted-foreground hover:bg-muted")}>C</button>
             </div>
           </div>
 
-          {/* طريقة الدفع */}
-          <div className="flex-shrink-0 px-3 py-1.5">
-            <div className="mb-1 text-[11px] font-bold text-muted-foreground">طريقة الدفع</div>
+          {/* طريقة الدفع — عند الضيق يُحذف العنوان وتُعاد الأيقونة والنصّ إلى صفٍّ واحد داخل
+              الزرّ (تركيبٌ متكيّف) بدل تصغير الزرّ نفسه: يبقى ≥44px هدفَ لمسٍ سليماً. */}
+          <div className={cn("flex-shrink-0 px-3", payUltra ? "py-0.5" : "py-1.5")}>
+            {!payDense && <div className="mb-1 text-[11px] font-bold text-muted-foreground">طريقة الدفع</div>}
             <div className="flex gap-1.5">
               {(
                 [
@@ -1957,13 +2095,16 @@ export default function Reception() {
                   key={p.v}
                   onClick={() => setMethod(p.v)}
                   className={cn(
-                    "flex min-h-[clamp(46px,6.6cqh,60px)] flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border-2 py-2 text-xs font-extrabold transition-colors",
+                    "flex flex-1 items-center justify-center rounded-lg border-2 text-xs font-extrabold transition-colors",
+                    payUltra
+                      ? "min-h-[44px] flex-row gap-1 py-1"
+                      : "min-h-[clamp(46px,6.6cqh,60px)] flex-col gap-0.5 py-2",
                     method === p.v
                       ? "border-primary bg-primary text-primary-foreground"
                       : "bg-card hover:bg-muted",
                   )}
                 >
-                  <p.Icon aria-hidden className="size-5" />
+                  <p.Icon aria-hidden className={payUltra ? "size-4" : "size-5"} />
                   {p.label}
                 </button>
               ))}
@@ -1983,7 +2124,19 @@ export default function Reception() {
             )}
           </div>
 
-          {/* كوبون خصم */}
+          {/* كوبون خصم — نادر الاستعمال ⇒ يُطوى خلف زرٍّ عند الضيق، ويبقى ظاهراً دائماً وهو
+              مُطبَّق (لا يُخفى خصمٌ سارٍ) أو حين يطلبه الموظّف صراحةً. */}
+          {payDense && !couponCode && !couponOpen ? (
+            <div className="flex-shrink-0 px-3 py-1">
+              <button
+                type="button"
+                onClick={() => setCouponOpen(true)}
+                className="inline-flex h-8 items-center gap-1 rounded-md border-[1.5px] bg-card px-2 text-[11px] font-bold text-muted-foreground hover:bg-muted"
+              >
+                <Ticket aria-hidden className="size-3.5" /> كوبون خصم
+              </button>
+            </div>
+          ) : (
           <div className="flex-shrink-0 px-3 py-1.5">
             <div className="mb-1 flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
               <Ticket aria-hidden className="size-3.5" /> كوبون خصم
@@ -2015,6 +2168,7 @@ export default function Reception() {
               </div>
             )}
           </div>
+          )}
 
           {/* مؤشّر فكّة/متبقّي */}
           <div className="flex flex-shrink-0 items-center justify-between border-t px-3 py-1.5 text-xs">
@@ -2038,11 +2192,11 @@ export default function Reception() {
               <span className="text-muted-foreground">المتوقّع الآن: <span className="font-bold tabular-nums" dir="ltr">{fmt(expectedNow)} د.ع</span></span>
             )}
           </div>
-          </div>{/* ← نهاية منطقة الإدخال القابلة للتمرير */}
+          </div>{/* ← نهاية منطقة الإدخال */}
 
-          {/* منطقة الفعل — خارج التمرير ولا تنكمش أبداً: زرّا الدفع يبقيان ظاهرَين وقابلَين للنقر
+          {/* منطقة الفعل — لا تنكمش أبداً: زرّا الدفع يبقيان ظاهرَين وقابلَين للنقر
               مهما بلغ الزوم أو ضاق الارتفاع (هذا ما كان يختفي قبل الإصلاح). */}
-          <div className="flex-shrink-0 space-y-1.5 px-3 pb-3 pt-1">
+          <div className={cn("flex-shrink-0 space-y-1.5 px-3", payUltra ? "pb-2 pt-0.5" : "pb-3 pt-1")}>
             <button
               type="button"
               disabled={cart.length === 0 || submitting || !shift}
@@ -2067,7 +2221,7 @@ export default function Reception() {
                 <><Check aria-hidden className="size-4" /> إتمام الطلب وطباعة</>
               )}
             </button>
-            {!receptionDense && (
+            {!payDense && (
               <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F2 بحث</div>
             )}
           </div>
@@ -2133,12 +2287,16 @@ export default function Reception() {
   );
 }
 
+/** ارتفاع مفتاح اللوحة: يملأ صفّ الشبكة (h-full) بحدٍّ أدنى هو هدف اللمس المعياريّ الممرَّر
+ *  بالمتغيّر `--numh` من الحاوية (44px، و40px في الدرجة الأضيق) ⇒ يكبر بالمساحة ولا يُقصّ. */
+const NUM_H = "h-full min-h-[var(--numh,44px)]";
+
 function NumKey({ k, onPress }: { k: string; onPress: (k: string) => void }) {
   return (
     <button
       type="button"
       onClick={() => onPress(k)}
-      className="h-[clamp(44px,6.6cqh,58px)] rounded-lg border-[1.5px] bg-muted/40 text-lg font-extrabold tabular-nums hover:bg-muted"
+      className={cn(NUM_H, "rounded-lg border-[1.5px] bg-muted/40 text-lg font-extrabold tabular-nums hover:bg-muted")}
       dir="ltr"
     >
       {k}

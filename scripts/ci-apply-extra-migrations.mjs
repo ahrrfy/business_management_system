@@ -95,6 +95,11 @@ const EXTRA_MIGRATIONS = [
   // column as migration-built/production databases. The migration also repairs
   // a database carrying the accidental generic `paymentMethod` column name.
   "drizzle/migrations/0142_work_order_transfer_deposits.sql",
+  // 5/8 (0150): DELIVERY_FEE_HELD — drizzle-kit push la yuwassi' enum qa'iman.
+  // ⚠ YAJIB an tabqa AKHIR al-qa'ima: 0129_digital_intent_writeoff yu'id kitabat nafs
+  //   al-'amud (MODIFY COLUMN entryType ENUM) bi-qa'ima aqdam, fa-ayy tartib qablahu
+  //   yamhu al-qima SAMITAN (al-script yaqul tubbiqat wa-l-enum yarji' kama kan).
+  "drizzle/migrations/extras/0150_delivery_fee_held_enum.sql",
 ];
 
 const url = process.env.DATABASE_URL;

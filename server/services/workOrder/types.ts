@@ -35,6 +35,12 @@ export interface CreateWorkOrderInput {
   deliveryCost?: string | null;
   // اِستقبال (تكامل التوصيل، ٤/٨): هاتف مستلم التوصيل — مصدر حقيقة قابل للاستعلام.
   deliveryPhone?: string | null;
+  /** ٥/٨ — مَن يقبض أجرة التوصيل: COURIER (افتراضي) | COUNTER | SHOP. الأجرة **ليست** جزءاً
+   *  من salePrice في أيّ حالة — تمريرٌ لا إيراد (قرار المالك). */
+  deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+  /** ٥/٨ — زبون عابر بلا سجلّ عميل: اسمٌ/هاتفٌ مرجعيّان للطلب (لا يُنشئان عميلاً ولا ذمّة). */
+  contactName?: string | null;
+  contactPhone?: string | null;
   // v3-add-screens(100%): صور نموذج العمل (تذهب لجدول workOrderImages).
   designImages?: Array<{ url: string; caption?: string | null; sortOrder?: number | null }>;
   /** idempotency: نقرة مزدوجة/إعادة شبكة بنفس المفتاح ⇒ طلب خدمة واحد (لا عربون نقدي مزدوج). */
