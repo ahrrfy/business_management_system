@@ -14,6 +14,17 @@ import {
 import { categoryIcon, isCustomPriceSku, serviceIcon } from "@/lib/printServices";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
+import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
+import { useOfflineCatalogSync } from "@/lib/offline/catalogSync";
+import { cachePrintServices, readCachedPrintServices } from "@/lib/offline/printServicesCache";
+import {
+  allocateOfflineReceiptNumber,
+  assertCanCapture,
+  enqueueOfflineItem,
+  isOfflineSaleEnabled,
+  type OfflinePrintSalePayload,
+} from "@/lib/offline/outbox";
+import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
@@ -137,8 +148,32 @@ export default function PrintPOS() {
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "PRINT_SERVICES" });
   const shift = shiftQ.data;
 
-  const servicesQ = trpc.printPos.services.useQuery({ tier: "RETAIL" });
-  const services = useMemo(() => servicesQ.data ?? [], [servicesQ.data]);
+  // ── طبقة القراءة المحليّة (تعميم الأوفلاين على كاشير الطباعة) ───────────────
+  // البلاطات كانت تأتي من الخادم مباشرةً، فالشاشة تُظلم تماماً عند الانقطاع قبل أن يصل
+  // الموظّف إلى زرّ الدفع أصلاً. الآن: تُحفَظ آخر قائمةٍ وصلت، وتُقدَّم كما هي عند الانقطاع.
+  const connState = useConnectivity();
+  const offline = isDisconnected(connState);
+  // نبض مزامنة الكتالوج: يُبقي ختم `lastSyncAt` حيّاً — وهو صمّام صلاحية الأسعار الذي
+  // يستعمله `assertCanCapture` (أسعارٌ أقدم من ٤٨ ساعة ⇒ لا التقاط).
+  useOfflineCatalogSync(me.data ? branchId : null);
+
+  const servicesQ = trpc.printPos.services.useQuery({ tier: "RETAIL" }, { enabled: !offline });
+  const [cachedServices, setCachedServices] = useState<typeof servicesQ.data>(undefined);
+  useEffect(() => {
+    if (servicesQ.data?.length) void cachePrintServices("RETAIL", servicesQ.data);
+  }, [servicesQ.data]);
+  useEffect(() => {
+    if (!offline) return;
+    let cancelled = false;
+    void readCachedPrintServices<NonNullable<typeof servicesQ.data>[number]>("RETAIL").then((snap) => {
+      if (!cancelled) setCachedServices(snap?.items);
+    });
+    return () => { cancelled = true; };
+  }, [offline]);
+  const services = useMemo(
+    () => (offline ? cachedServices ?? [] : servicesQ.data ?? []),
+    [offline, cachedServices, servicesQ.data],
+  );
 
   // الفئات (تبويبات) مشتقّة من الخدمات مع حفظ ترتيب أول ظهور.
   // print-catalog: تبويب «أخرى» (id=0) للخدمات بلا فئة — وإلا تُحجَب من الشبكة كُلّياً
@@ -315,14 +350,117 @@ export default function PrintPOS() {
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
     },
     onError: (e) => {
-      if ((e.data as { code?: string } | undefined)?.code === "PRECONDITION_FAILED") setCreditPrompt(e.message);
+      const code = (e.data as { code?: string } | undefined)?.code;
+      // فخّ «النقرة الأولى» بعد قطعٍ صامت: المتصفّح لم يُحدِّث حالة الاتصال بعد، فيفشل النقل
+      // بلا كود tRPC. لا التزام جزئيّ هنا (المعاملة ذرّية) ⇒ الالتقاط آمن، وclientRequestId
+      // الثابت يجعل الترحيل idempotent لو كان الطلب قد وصل الخادم فعلاً قبل انقطاع الردّ.
+      if (code == null) {
+        void captureOfflinePrintSale(pendingRef.current?.isCredit === false).then((captured) => {
+          if (!captured) setMessage({ kind: "err", text: e.message });
+        });
+        return;
+      }
+      if (code === "PRECONDITION_FAILED") setCreditPrompt(e.message);
       else setMessage({ kind: "err", text: e.message });
     },
   });
 
+  /**
+   * التقاط بيع خدمات طباعةٍ دون اتصال.
+   *
+   * نقديّ كامل فقط: الآجل يحتاج ذمّة العميل وسقفه من الخادم، والبطاقة تحتاج مرجع عمليّةٍ
+   * يُتحقَّق منه. المواد تُستهلك عند الترحيل لا عند الالتقاط — وهذا مقبول: `createPrintSale`
+   * يخصمها بـallowNegative أصلاً، فالاستهلاك يبقى متعقَّباً حتى لو نفدت المادة دفترياً.
+   */
+  async function captureOfflinePrintSale(forceFullPayment: boolean): Promise<boolean> {
+    if (!shift || !cart.length) return false;
+    if (!(await isOfflineSaleEnabled())) {
+      setMessage({
+        kind: "err",
+        text: "البيع دون اتصال غير مفعَّل على هذا الجهاز — تفعيله قرار إداريّ من «إعدادات الجهاز» في شارة المزامنة.",
+      });
+      return false;
+    }
+    if (tab.method !== "CASH") {
+      setMessage({ kind: "err", text: "أثناء انقطاع الاتصال: النقد فقط — البطاقة والتحويل يتطلبان الخادم." });
+      return false;
+    }
+    const cashTotal = riqd(total);
+    const paid = forceFullPayment ? cashTotal : Number(tab.payInput || 0);
+    if (paid < cashTotal) {
+      setMessage({ kind: "err", text: `دون اتصال: الدفع الكامل فقط — المطلوب ${cashTotal.toFixed(2)} د.ع.` });
+      return false;
+    }
+    const gate = await assertCanCapture(cashTotal);
+    if (!gate.ok) {
+      setMessage({ kind: "err", text: gate.reason });
+      return false;
+    }
+
+    const receiptNumber = await allocateOfflineReceiptNumber(branchId);
+    const payload: OfflinePrintSalePayload = {
+      branchId,
+      shiftId: shift.id,
+      ...(tab.customerId ? { customerId: tab.customerId } : {}),
+      priceTier: "RETAIL",
+      lines: cart.map((c) => ({
+        variantId: c.svc.variantId,
+        productUnitId: c.svc.productUnitId,
+        quantity: String(c.qty),
+        // السعر الملتقَط إلزاميّ: النقد قُبض بالسعر المطبوع — لا إعادة تسعيرٍ صامتة عند الترحيل.
+        unitPriceOverride: c.price.toFixed(2),
+      })),
+      payment: { amount: total.toFixed(2), method: "CASH" },
+      clientRequestId,
+      cashRoundIQD: true,
+    };
+    const stored = await enqueueOfflineItem({
+      kind: "PRINT_SALE",
+      payload,
+      offlineReceiptNumber: receiptNumber,
+      total: cashTotal.toFixed(2),
+    });
+    if (!stored) {
+      setMessage({ kind: "err", text: "تعذّر حفظ العملية محلياً (مساحة المتصفح؟) — لا تُسلّم العمل قبل عودة الاتصال." });
+      return false;
+    }
+
+    const now = new Date();
+    const rec: Receipt = {
+      num: receiptNumber,
+      invoiceId: 0, // لا فاتورة رسميّة بعد — الطباعة تستعمل الرقم المؤقّت.
+      date: fmtDateTime(now),
+      printDate: fmtDate(now),
+      printTime: fmtTime(now),
+      cashier: me.data?.name ?? undefined,
+      customer: selectedCustomer?.name,
+      lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
+      total: cashTotal,
+      received: paid,
+      change: Math.max(0, paid - cashTotal),
+      credit: 0,
+      method: METHOD_LABEL.CASH,
+      isCredit: false,
+    };
+    setReceipt(rec);
+    setLastInv({ num: receiptNumber, total: cashTotal });
+    setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "" });
+    setClientRequestId(crypto.randomUUID());
+    setMessage({
+      kind: "ok",
+      text: `بيع دون اتصال — إيصال مؤقّت ${receiptNumber}. الرقم الرسميّ يصدر تلقائياً عند عودة الاتصال.`,
+    });
+    void printReceipt(brandedReceipt(rec)).catch(() => { /* فشل الطابعة لا يُلغي التقاطاً التزم محلياً */ });
+    return true;
+  }
+
   function submit(forceFullPayment: boolean, approval?: { email: string; password: string }) {
     if (!shift || !cart.length || sale.isPending) return;
     setMessage(null);
+    if (offline) {
+      void captureOfflinePrintSale(forceFullPayment);
+      return;
+    }
     // Quick pay means full payment, not a forced change of the selected method to CASH.
     const method: PaymentMethod = tab.method;
     const cashTotal = method === "CASH" ? riqd(total) : total;
@@ -534,6 +672,9 @@ export default function PrintPOS() {
         />
         <ServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} />
       </div>
+
+      {/* شارة المزامنة — تعرض حالة الاتصال وطابور الالتقاط، وتُفرّغ كلّ الأنواع. */}
+      <OfflineSyncChip userRole={me.data?.role} />
 
       {receipt && <ReceiptOverlay C={C} r={receipt} onDismiss={() => setReceipt(null)} onPrint={() => printReceipt(brandedReceipt(receipt))} />}
       {shifting && <ShiftCloseDialog C={C} shift={shift} isElevatedRole={isElevatedRole} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
