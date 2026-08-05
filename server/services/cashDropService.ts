@@ -126,6 +126,15 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
         eq(receipts.direction, "IN"),
         eq(receipts.cashBucket, "TREASURY"),
       )).limit(1))[0];
+      // إعادة التشغيل لا تكون آمنة إلا للعملية نفسها. كان فحص الوردية فقط
+      // يعيد نجاحاً زائفاً إذا أُعيد استعمال المفتاح بمبلغ أو مستلم مختلف؛
+      // فيظن الكاشير أن السحب الثاني تمّ بينما لا تغادر النقود الدرج.
+      if (
+        money(out.amount).toFixed(2) !== money(input.amount).toFixed(2) ||
+        (inn?.createdBy == null ? null : Number(inn.createdBy)) !== (input.dropTo ?? null)
+      ) {
+        throw new TRPCError({ code: "CONFLICT", message: "مفتاح idempotency مستعمَل لسحبٍ بمبلغ أو مستلِم مختلف" });
+      }
       const drawerNow = await currentDrawerCash(tx, input.shiftId, sh.openingBalance);
       return {
         dropNumber: String(out.referenceNumber),

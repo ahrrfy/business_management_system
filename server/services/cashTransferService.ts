@@ -38,15 +38,22 @@ async function nextTransferNumber(tx: Tx, fromBranchId: number): Promise<string>
     throw new Error(`transfer numbering lock timeout for ${lockName}`);
   }
   try {
+    // لا تعتمد على آخر id: قد تحتوي البيانات التاريخية على مرجع حر يبدأ
+    // بالبادئة نفسها ولا ينتهي برقم. parseInt عندها يعطي NaN ويعطّل كل
+    // التحويلات اللاحقة لذلك اليوم. نأخذ أعلى لاحقة رقمية صالحة فقط.
     const rows = await tx
       .select({ n: cashTransfers.transferNumber })
       .from(cashTransfers)
-      .where(like(cashTransfers.transferNumber, `${prefix}%`))
-      .orderBy(desc(cashTransfers.id))
-      .limit(1);
-    const last = rows[0]?.n;
-    const seq = last ? parseInt(String(last).slice(prefix.length), 10) + 1 : 1;
-    return prefix + String(seq).padStart(5, "0");
+      .where(like(cashTransfers.transferNumber, `${prefix}%`));
+    let maxSeq = 0;
+    for (const row of rows) {
+      const suffix = String(row.n ?? "").slice(prefix.length);
+      if (/^\d+$/.test(suffix)) {
+        const seq = Number(suffix);
+        if (Number.isSafeInteger(seq) && seq > maxSeq) maxSeq = seq;
+      }
+    }
+    return prefix + String(maxSeq + 1).padStart(5, "0");
   } finally {
     await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
   }
