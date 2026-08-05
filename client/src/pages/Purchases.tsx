@@ -18,6 +18,7 @@ import { CO } from "@/lib/printing/brand";
 import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplatesV2";
 import { qrCodeSvg } from "@/lib/printing/qr";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { useEffect, useMemo, useState } from "react";
 
 // نوع صفّ أمر الشراء (يوحّد فرعَي الإخراج: المُقنَّع cost=null وغير المُقنَّع).
@@ -85,6 +86,10 @@ export default function Purchases() {
   const activeFilterCount = [f.from || f.to, f.supplierId, f.status, isElevated ? f.branchId : ""].filter(Boolean).length;
 
   const suppliers = trpc.suppliers.list.useQuery();
+  const supplierContacts = useMemo(
+    () => new Map((suppliers.data ?? []).map((s) => [Number(s.id), s])),
+    [suppliers.data],
+  );
   const query = trpc.purchases.list.useQuery({ ...listInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
   const rows: PurchaseRow[] = query.data ?? [];
   // الإجمالي من listCount (نفس buildPurchasesListConds ⇒ مطابق للصفوف بالبناء) — لا rows.length
@@ -302,6 +307,21 @@ export default function Purchases() {
                     <td className="p-2 text-center">
                       <RowActions
                         mode="auto"
+                        contact={{
+                          whatsapp: supplierContacts.get(Number(p.supplierId))?.whatsapp,
+                          phone: supplierContacts.get(Number(p.supplierId))?.phone,
+                          label: `واتساب ${p.supplierName ?? "المورّد"}`,
+                          message: buildOperationalContactMessage({
+                            entityLabel: "أمر شراء",
+                            reference: p.poNumber,
+                            partyName: p.supplierName,
+                            title: `إجمالي الأمر: ${fmt(p.total)} د.ع`,
+                            dueAt: p.orderDate,
+                            status: PO_STATUS[p.status] ?? p.status,
+                            nextAction: p.status === "CONFIRMED" ? "يرجى تأكيد موعد تجهيز الطلب." : undefined,
+                          }),
+                          gate: { module: "purchases", level: "READ" },
+                        }}
                         actions={[
                           {
                             key: "confirm",

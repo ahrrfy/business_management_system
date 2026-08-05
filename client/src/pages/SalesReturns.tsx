@@ -11,6 +11,7 @@ import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 
@@ -197,6 +198,19 @@ export default function SalesReturns() {
                   <td className="p-2 text-center">
                     <RowActions
                       mode="auto"
+                      contact={r.customerName ? {
+                        phone: r.customerPhone,
+                        label: `واتساب ${r.customerName}`,
+                        message: buildOperationalContactMessage({
+                          entityLabel: "مرتجع بيع",
+                          reference: String(r.id),
+                          partyName: r.customerName,
+                          title: `قيمة المرتجع: ${fmt(returned(r.amount))} د.ع`,
+                          dueAt: r.entryDate,
+                          nextAction: "نؤكد لكم تسجيل المرتجع وتسوية الفاتورة المرتبطة.",
+                        }),
+                        gate: { module: "sales", level: "READ" },
+                      } : undefined}
                       actions={[
                         {
                           key: "invoice",

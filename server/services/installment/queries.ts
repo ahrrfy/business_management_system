@@ -21,7 +21,7 @@ export async function listPlans(filter: ListPlansFilter) {
     .select({
       plan: installmentPlans,
       customerName: customers.name,
-      customerPhone: customers.phone,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
     })
     .from(installmentPlans)
     .innerJoin(customers, eq(installmentPlans.customerId, customers.id))
@@ -86,7 +86,11 @@ export async function getPlan(planId: number, restrictToBranchId: BranchRestrict
   const db = requireDb();
   const row = (
     await db
-      .select({ plan: installmentPlans, customerName: customers.name, customerPhone: customers.phone })
+      .select({
+        plan: installmentPlans,
+        customerName: customers.name,
+        customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+      })
       .from(installmentPlans)
       .innerJoin(customers, eq(installmentPlans.customerId, customers.id))
       .where(eq(installmentPlans.id, planId))
@@ -132,7 +136,7 @@ export async function dueSoon(filter: { branchId?: number | null; days?: number 
       branchId: installmentPlans.branchId,
       customerId: installmentPlans.customerId,
       customerName: customers.name,
-      customerPhone: customers.phone,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
     })
     .from(installmentLines)
     .innerJoin(installmentPlans, eq(installmentLines.planId, installmentPlans.id))

@@ -654,7 +654,9 @@ export const saleRouter = router({
             paymentMethod: invoices.paymentMethod,
             // فاتورة COD لا تحمل العميل كطرف مدين، لكن نعرض عميل أمر الخدمة الأصلي
             // كي لا تختفي طلبات واتساب تحت «عميل نقدي».
+            customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
             customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
+            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''))`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
             deviceId: invoices.posDeviceId,
@@ -700,7 +702,9 @@ export const saleRouter = router({
             returnedTotal: invoices.returnedTotal,
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
+            customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
             customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
+            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''))`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
             deviceId: invoices.posDeviceId,

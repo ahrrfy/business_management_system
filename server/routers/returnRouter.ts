@@ -113,6 +113,7 @@ export const returnRouter = router({
           invoiceNumber: invoices.invoiceNumber,
           customerId: accountingEntries.customerId,
           customerName: customers.name,
+          customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
           amount: accountingEntries.amount,
           notes: accountingEntries.notes,
           createdAt: accountingEntries.createdAt,

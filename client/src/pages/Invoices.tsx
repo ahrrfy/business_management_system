@@ -30,6 +30,7 @@ import { paymentMethodLabel, paymentMethodClass, POS_METHODS, type PaymentMethod
 import { invoiceStatusLabel, sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { X } from "lucide-react";
+import { buildInvoiceMessage } from "@/lib/whatsapp";
 
 type Row = RouterOutputs["sales"]["list"][number];
 
@@ -432,6 +433,20 @@ export default function Invoices() {
         return (
           <RowActions
             mode="auto"
+            contact={{
+              phone: r.customerPhone,
+              label: `واتساب ${custName(r.customerName)}`,
+              message: buildInvoiceMessage({
+                invoiceNumber: r.invoiceNumber,
+                invoiceDate: r.invoiceDate ? String(r.invoiceDate) : null,
+                customerName: r.customerName,
+                total: r.total,
+                paidAmount: r.paidAmount,
+                status: r.status,
+              }),
+              disabledReason: "لا يوجد رقم واتساب مرتبط بهذه الفاتورة",
+              gate: { module: "sales", level: "READ" },
+            }}
             actions={[
               {
                 key: "view",

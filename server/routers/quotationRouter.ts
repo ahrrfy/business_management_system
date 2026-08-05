@@ -83,7 +83,9 @@ export const quotationRouter = router({
               total: quotations.total,
               status: quotations.status,
               convertedInvoiceId: quotations.convertedInvoiceId,
+              customerId: quotations.customerId,
               customerName: customers.name,
+              customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
             })
             .from(quotations)
             .leftJoin(customers, eq(quotations.customerId, customers.id))

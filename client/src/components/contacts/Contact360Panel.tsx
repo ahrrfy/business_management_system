@@ -47,6 +47,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { StatusBadge as TaskStatusBadge } from "@/pages/TasksHub";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 type PartyKind = "customer" | "supplier";
 type WaConsentValue = "UNKNOWN" | "OPTED_IN" | "OPTED_OUT";
@@ -125,9 +127,23 @@ function HeaderCard({ data }: { data: Contact360Data }) {
     return (
       <Card>
         <CardContent className="pt-4 space-y-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="info">عميل</Badge>
-            <span className="font-bold text-lg truncate">{c.name}</span>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <Badge variant="info">عميل</Badge>
+              <span className="font-bold text-lg truncate">{c.name}</span>
+            </div>
+            <WhatsAppShare
+              whatsapp={c.whatsapp}
+              phone={c.phone}
+              alternativePhones={[c.phone2, c.phone3]}
+              label={`واتساب ${c.name}`}
+              message={buildOperationalContactMessage({
+                entityLabel: "حساب عميل",
+                reference: String(c.id),
+                partyName: c.name,
+                title: "متابعة خدمة العملاء والحساب",
+              })}
+            />
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
             <InfoRow icon={Phone} label="الهاتف" value={c.phone ? <span dir="ltr">{c.phone}</span> : "—"} />
@@ -152,9 +168,23 @@ function HeaderCard({ data }: { data: Contact360Data }) {
   return (
     <Card>
       <CardContent className="pt-4 space-y-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Badge variant="warning">مورّد</Badge>
-          <span className="font-bold text-lg truncate">{s.name}</span>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2 min-w-0">
+            <Badge variant="warning">مورّد</Badge>
+            <span className="font-bold text-lg truncate">{s.name}</span>
+          </div>
+          <WhatsAppShare
+            whatsapp={s.whatsapp}
+            phone={s.phone}
+            alternativePhones={[s.phone2, s.phone3]}
+            label={`واتساب ${s.name}`}
+            message={buildOperationalContactMessage({
+              entityLabel: "حساب مورّد",
+              reference: String(s.id),
+              partyName: s.name,
+              title: "متابعة التوريد والحساب",
+            })}
+          />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
           <InfoRow icon={Phone} label="الهاتف" value={s.phone ? <span dir="ltr">{s.phone}</span> : "—"} />
