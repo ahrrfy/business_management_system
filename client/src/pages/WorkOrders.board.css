@@ -73,6 +73,8 @@
 .wob-search .wob-si { position: absolute; inset-inline-end: 12px; top: 50%; transform: translateY(-50%); color: var(--muted-fg); font-size: 15px; pointer-events: none; }
 .wob-sel { height: 38px; border-radius: 9px; border: 1px solid var(--border); background: var(--card); padding: 0 30px 0 12px; font-size: 13px; color: var(--fg); font-weight: 600; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: left 11px center; appearance: none; font-family: inherit; }
 .wob-sel:focus { outline: none; border-color: var(--ring); }
+.wob-date-range { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; color: var(--muted-fg); font-size: 12px; font-weight: 700; }
+.wob-date { width: 148px; padding-inline: 10px; background-image: none; appearance: auto; }
 .wob-chip-clear { font-size: 12.5px; color: var(--primary); font-weight: 700; padding: 6px 8px; background: none; border: none; cursor: pointer; font-family: inherit; }
 
 /* ─── اللوحة ─── */

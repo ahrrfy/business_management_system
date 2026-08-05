@@ -28,6 +28,7 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 // صفّ نتيجة البحث — صريح لأنّ الإجراء يُعيد اتحاداً (تقنيع التكلفة) يُفشل استدلال T في fetchAllPaged.
 type CustomerRow = RouterOutputs["customers"]["search"]["rows"][number];
@@ -676,6 +677,21 @@ export default function Customers() {
                     <td className="p-2 text-center">
                       {/* ٣ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
                       <RowActions
+                        contact={{
+                          phone: c.phone,
+                          whatsapp: (c as { whatsapp?: string | null }).whatsapp,
+                          alternativePhones: [
+                            (c as { phone2?: string | null }).phone2,
+                            (c as { phone3?: string | null }).phone3,
+                          ],
+                          label: `واتساب ${c.name}`,
+                          message: buildOperationalContactMessage({
+                            partyName: c.name,
+                            entityLabel: "حساب العميل",
+                            nextAction: "نتواصل معكم لمتابعة طلبكم أو حسابكم. يرجى الرد عند الملاءمة.",
+                          }),
+                          gate: { module: "crm", level: "READ" },
+                        }}
                         actions={[
                           {
                             key: "edit",

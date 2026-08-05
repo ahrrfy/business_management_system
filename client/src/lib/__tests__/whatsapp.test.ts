@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   buildInvoiceMessage,
+  buildWhatsAppLinks,
+  buildOperationalContactMessage,
   buildQuotationMessage,
   buildReconciliationMessage,
   buildStatementMessage,
   buildWorkOrderStatusMessage,
+  preferredWhatsAppPhone,
   sanitizeForWhatsApp,
+  toIraqiIntl,
 } from "../whatsapp";
 
 /** صحيح إن خلا النصّ من أي إيموجي/رمز تصويري. */
@@ -35,7 +39,43 @@ describe("sanitizeForWhatsApp", () => {
   });
 });
 
+describe("اختيار رقم التواصل", () => {
+  it("يقبل الرقم العراقي وصيغة E.164 الدولية وبادئة 00", () => {
+    expect(toIraqiIntl("0770 123 4567")).toBe("+9647701234567");
+    expect(toIraqiIntl("+966 50 123 4567")).toBe("+966501234567");
+    expect(toIraqiIntl("00971 50 123 4567")).toBe("+971501234567");
+  });
+
+  it("يفضّل رقم واتساب الصريح ثم أول بديل صالح", () => {
+    expect(preferredWhatsAppPhone("+966501234567", "07701234567")).toBe("+966501234567");
+    expect(preferredWhatsAppPhone("123", null, "07701234567")).toBe("07701234567");
+    expect(preferredWhatsAppPhone("123", null)).toBeNull();
+  });
+
+  it("يبني رابط التطبيق الأصلي ورابط wa.me الاحتياطي للمحادثة نفسها", () => {
+    const links = buildWhatsAppLinks("0770 123 4567", "مرحباً أحمد");
+    expect(links.appUrl).toBe(`whatsapp://send?phone=9647701234567&text=${encodeURIComponent("مرحباً أحمد")}`);
+    expect(links.webUrl).toBe(`https://wa.me/9647701234567?text=${encodeURIComponent("مرحباً أحمد")}`);
+  });
+});
+
 describe("بناة رسائل الواتساب خالية من الإيموجي", () => {
+  it("buildOperationalContactMessage", () => {
+    const m = buildOperationalContactMessage({
+      entityLabel: "مهمة",
+      reference: "T-12",
+      partyName: "أحمد",
+      title: "تأكيد موعد التسليم",
+      status: "قيد التنفيذ",
+      dueAt: "2026-08-06",
+      nextAction: "يرجى تأكيد الموعد.",
+    });
+    expect(noEmoji(m)).toBe(true);
+    expect(m).toContain("*متابعة مهمة #T-12*");
+    expect(m).toContain("مرحباً أحمد");
+    expect(m).toContain("يرجى تأكيد الموعد.");
+  });
+
   it("buildInvoiceMessage", () => {
     const m = buildInvoiceMessage({
       invoiceNumber: "INV-1",

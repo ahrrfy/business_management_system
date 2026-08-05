@@ -19,6 +19,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { printDeliveryPartyStmt } from "@/lib/printing/printTemplates";
 import { ListToolbar, RowActions } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 type Party = RouterOutputs["delivery"]["listParties"][number];
 
@@ -175,6 +176,18 @@ export default function DeliveryParties() {
                       <td className="p-3 text-center">
                         <RowActions
                           mode="menu"
+                          contact={{
+                            phone: p.phone,
+                            alternativePhones: [(p as { phone2?: string | null }).phone2],
+                            label: `واتساب ${p.name}`,
+                            message: buildOperationalContactMessage({
+                              partyName: p.name,
+                              entityLabel: p.partyType === "COMPANY" ? "شركة التوصيل" : "المندوب",
+                              status: p.openConsignments > 0 ? `${p.openConsignments} شحنة مفتوحة` : "لا شحنات مفتوحة",
+                              nextAction: Number(p.currentBalance ?? 0) > 0 ? `توجد عهدة قيد التسوية بقيمة ${fmt(p.currentBalance)} د.ع.` : null,
+                            }),
+                            gate: { module: "store", level: "READ" },
+                          }}
                           actions={[
                             {
                               key: "statement",

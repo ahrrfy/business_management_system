@@ -1,7 +1,7 @@
 // قراءة المهام: قائمة مُرقَّمة (keyset) + تفاصيل مهمة + قائمة الموظفين القابلين للإسناد.
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
-import { customers, taskEvents, tasks, users } from "../../../drizzle/schema";
+import { customers, suppliers, taskEvents, tasks, users } from "../../../drizzle/schema";
 import { paginateKeyset } from "../../lib/paginateKeyset";
 import { escLike } from "../../lib/sqlLike";
 import { requireDb } from "../tx";
@@ -77,6 +77,10 @@ const LIST_COLUMNS = {
   title: tasks.title,
   customerId: tasks.customerId,
   customerName: customers.name,
+  customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+  supplierId: tasks.supplierId,
+  supplierName: suppliers.name,
+  supplierPhone: sql<string | null>`COALESCE(NULLIF(${suppliers.whatsapp}, ''), NULLIF(${suppliers.phone}, ''), NULLIF(${suppliers.phone2}, ''), NULLIF(${suppliers.phone3}, ''))`,
   assignedTo: tasks.assignedTo,
   assigneeName: users.name,
   createdBy: tasks.createdBy,
@@ -135,6 +139,12 @@ export async function listTasks(ctx: TaskListCtx, filters: ListTasksFilters = {}
       or(
         sql`${tasks.title} LIKE ${pat} ESCAPE '!'`,
         sql`${tasks.taskNumber} LIKE ${pat} ESCAPE '!'`,
+        sql`${customers.name} LIKE ${pat} ESCAPE '!'`,
+        sql`${suppliers.name} LIKE ${pat} ESCAPE '!'`,
+        sql`${customers.phone} LIKE ${pat} ESCAPE '!'`,
+        sql`${customers.whatsapp} LIKE ${pat} ESCAPE '!'`,
+        sql`${suppliers.phone} LIKE ${pat} ESCAPE '!'`,
+        sql`${suppliers.whatsapp} LIKE ${pat} ESCAPE '!'`,
       ) as SQL,
     );
   }
@@ -151,6 +161,7 @@ export async function listTasks(ctx: TaskListCtx, filters: ListTasksFilters = {}
         .select(LIST_COLUMNS)
         .from(tasks)
         .leftJoin(customers, eq(tasks.customerId, customers.id))
+        .leftJoin(suppliers, eq(tasks.supplierId, suppliers.id))
         .leftJoin(users, eq(tasks.assignedTo, users.id))
         .where(where)
         .orderBy(desc(tasks.id))
@@ -191,6 +202,7 @@ export async function getTask(ctx: TaskListCtx, taskId: number) {
       })
       .from(tasks)
       .leftJoin(customers, eq(tasks.customerId, customers.id))
+      .leftJoin(suppliers, eq(tasks.supplierId, suppliers.id))
       .leftJoin(users, eq(tasks.assignedTo, users.id))
       .where(eq(tasks.id, taskId))
       .limit(1)

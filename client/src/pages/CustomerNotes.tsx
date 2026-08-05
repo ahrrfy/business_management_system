@@ -20,6 +20,8 @@ import { notify } from "@/lib/notify";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 const EMPTY_CUSTOMER: SmartCustomerValue = { customerId: null, name: "", phone: null, isNew: false };
 
@@ -153,7 +155,7 @@ export default function CustomerNotes() {
   const notes = (notesQuery.data?.rows ?? []) as CustomerNoteRow[];
   const notesTotal = notesQuery.data?.total ?? 0;
   const notesPages = Math.max(1, Math.ceil(notesTotal / NOTES_LIMIT));
-  const dueTodayRows = (dueToday.data ?? []) as Array<{ id: number; customerId: number; customerName: string; note: string; followUpDate: string }>;
+  const dueTodayRows = (dueToday.data ?? []) as Array<{ id: number; customerId: number; customerName: string; customerPhone: string | null; note: string; followUpDate: string }>;
 
   return (
     <div className="space-y-4">
@@ -188,16 +190,34 @@ export default function CustomerNotes() {
           </CardHeader>
           <CardContent className="space-y-2">
             {dueTodayRows.map((r) => (
-              <button
+              <div
                 key={r.id}
-                type="button"
-                onClick={() => selectCustomer({ customerId: r.customerId, name: r.customerName, phone: null, isNew: false })}
-                className="w-full text-right rounded-md border p-2 hover:bg-accent flex flex-col gap-0.5"
+                className="flex items-center gap-2 rounded-md border p-2"
               >
-                <span className="text-sm font-medium">{r.customerName}</span>
-                <span className="text-xs text-muted-foreground truncate">{r.note}</span>
-                <span className="text-[11px] text-muted-foreground" dir="ltr">{fmtDate(r.followUpDate)}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => selectCustomer({ customerId: r.customerId, name: r.customerName, phone: r.customerPhone, isNew: false })}
+                  className="min-w-0 flex-1 text-right hover:bg-accent rounded p-1 flex flex-col gap-0.5"
+                >
+                  <span className="text-sm font-medium">{r.customerName}</span>
+                  <span className="text-xs text-muted-foreground truncate">{r.note}</span>
+                  <span className="text-[11px] text-muted-foreground" dir="ltr">{fmtDate(r.followUpDate)}</span>
+                </button>
+                <WhatsAppShare
+                  phone={r.customerPhone}
+                  message={buildOperationalContactMessage({
+                    entityLabel: "متابعة عميل",
+                    reference: String(r.id),
+                    partyName: r.customerName,
+                    title: r.note,
+                    dueAt: r.followUpDate,
+                    nextAction: "نتواصل معكم بخصوص المتابعة المسجلة لدينا.",
+                  })}
+                  label={`واتساب ${r.customerName}`}
+                  size="icon-sm"
+                  iconOnly
+                />
+              </div>
             ))}
           </CardContent>
         </Card>

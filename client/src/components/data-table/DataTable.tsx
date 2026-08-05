@@ -26,13 +26,14 @@ import {
   type SortingState,
   type VisibilityState,
 } from "@tanstack/react-table";
-import { useMemo, useState } from "react";
-import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown, Columns3 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown, Columns3, Rows3, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -106,7 +107,46 @@ type DataTableProps<T, K = string> = {
     value: string;
     onChange: (value: string) => void;
   };
+  /** مفتاح ثابت لحفظ الأعمدة والكثافة. إن غاب يُشتق مفتاح من المسار ومعرّفات الأعمدة. */
+  viewKey?: string;
+  /** فرز خادمي مضبوط. بدونه يُعطّل الفرز في serverPagination كي لا يفرز الصفحة الحالية فقط. */
+  serverSorting?: {
+    value: SortingState;
+    onChange: (value: SortingState) => void;
+  };
 };
+
+type StoredTableView = { columnVisibility?: VisibilityState; compact?: boolean };
+
+function columnIdentity(column: ColumnDef<unknown, unknown>, index: number): string {
+  const candidate = column as { id?: string; accessorKey?: string; header?: unknown };
+  if (candidate.id) return candidate.id;
+  if (candidate.accessorKey) return candidate.accessorKey;
+  if (typeof candidate.header === "string") return candidate.header;
+  return `column-${index}`;
+}
+
+function readTableView(key: string): StoredTableView {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) ?? "{}") as StoredTableView;
+    return {
+      columnVisibility: parsed.columnVisibility && typeof parsed.columnVisibility === "object" ? parsed.columnVisibility : {},
+      compact: parsed.compact === true,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function writeTableView(key: string, value: StoredTableView): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // فشل localStorage لا يعطّل الجدول؛ يبقى التفضيل صالحاً للجلسة الحالية.
+  }
+}
 
 /** يَختار حاوية الجَدول: محبوسة بِحَجم الشاشة (ترويسة لاصقة) أَو تَمرير أُفُقي بَسيط. */
 function TableShell({
@@ -139,25 +179,45 @@ export function DataTable<T, K = string>({
   maxHeightClass,
   serverPagination,
   serverSearch,
+  viewKey,
+  serverSorting,
 }: DataTableProps<T, K>) {
+  const storageKey = useMemo(() => {
+    const scope = viewKey || (typeof window !== "undefined" ? window.location.pathname : "table");
+    const ids = columns.map((column, index) => columnIdentity(column as ColumnDef<unknown, unknown>, index)).join("|");
+    let hash = 0;
+    for (let i = 0; i < ids.length; i += 1) hash = ((hash << 5) - hash + ids.charCodeAt(i)) | 0;
+    return `data-table-view:v2:${scope}:${hash >>> 0}`;
+  }, [columns, viewKey]);
+  const initialView = useMemo(() => readTableView(storageKey), [storageKey]);
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(initialView.columnVisibility ?? {});
+  const [compact, setCompact] = useState(initialView.compact === true);
   const [lastIndex, setLastIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    writeTableView(storageKey, { columnVisibility, compact });
+  }, [storageKey, columnVisibility, compact]);
 
   // مَع الترقيم الخادميّ: `data` صفحةٌ جاهزة ⇒ لا ترقيم ولا تصفية محلّيان (كلاهما يعمل على
   // الصفحة وحدها فيُخفي صفوف الخادم ويكذب على المستخدم).
   const serverMode = !!serverPagination;
   const paginated = !serverMode && Number.isFinite(pageSize);
+  const effectiveSorting = serverMode ? (serverSorting?.value ?? []) : sorting;
   const table = useReactTable({
     data,
     columns,
-    state: serverMode ? { sorting, columnVisibility } : { sorting, globalFilter, columnVisibility },
-    onSortingChange: setSorting,
+    state: serverMode ? { sorting: effectiveSorting, columnVisibility } : { sorting, globalFilter, columnVisibility },
+    onSortingChange: serverMode && serverSorting
+      ? (updater) => serverSorting.onChange(typeof updater === "function" ? updater(serverSorting.value) : updater)
+      : setSorting,
     onColumnVisibilityChange: setColumnVisibility,
+    enableSorting: !serverMode || !!serverSorting,
+    manualSorting: serverMode,
     ...(serverMode ? {} : { onGlobalFilterChange: setGlobalFilter }),
     getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
+    ...(!serverMode ? { getSortedRowModel: getSortedRowModel() } : {}),
     ...(serverMode ? {} : { getFilteredRowModel: getFilteredRowModel() }),
     ...(paginated ? { getPaginationRowModel: getPaginationRowModel() } : {}),
     initialState: paginated ? { pagination: { pageSize } } : undefined,
@@ -191,6 +251,7 @@ export function DataTable<T, K = string>({
 
   // تَرويسات الأَعمِدة كَنُصوص (لِلنَسخ كَ TSV) — مُشتَقَّة مَرّة واحِدة مِن تَعريف الأَعمِدة.
   const leafCols = table.getAllLeafColumns();
+  const visibleColumnCount = leafCols.filter((column) => column.getIsVisible()).length;
   const copyHeaders = useMemo<string[]>(() => leafCols.map(columnHeaderText), [leafCols]);
 
   // قِيَم العَمود الظاهِرة لِكُل عَمود — لِخَيار «نَسخ العَمود كَ TSV».
@@ -243,7 +304,7 @@ export function DataTable<T, K = string>({
   };
 
   return (
-    <div className="space-y-3">
+    <div className={compact ? "space-y-3 [&_th]:!p-1.5 [&_td]:!p-1.5 [&_tbody_tr]:text-xs" : "space-y-3"} data-table-density={compact ? "compact" : "comfortable"}>
       {(showSearch || toolbar || table.getAllLeafColumns().length > 5) && (
         <div className="flex items-center gap-2 justify-between flex-wrap">
           {showSearch ? (
@@ -254,6 +315,7 @@ export function DataTable<T, K = string>({
               onChange={(e) =>
                 serverSearch ? serverSearch.onChange(e.target.value) : setGlobalFilter(e.target.value)
               }
+              aria-label={searchPlaceholder}
             />
           ) : <span />}
           <div className="flex flex-wrap items-center gap-2">
@@ -262,7 +324,7 @@ export function DataTable<T, K = string>({
                 <DropdownMenuTrigger asChild>
                   <Button type="button" variant="outline" size="sm" className="gap-2">
                     <Columns3 aria-hidden className="size-4" />
-                    الأعمدة
+                    الأعمدة {visibleColumnCount}/{leafCols.length}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="max-h-80 min-w-52 overflow-y-auto text-right">
@@ -272,12 +334,31 @@ export function DataTable<T, K = string>({
                     <DropdownMenuCheckboxItem
                       key={column.id}
                       checked={column.getIsVisible()}
+                      disabled={!column.getCanHide() || (column.getIsVisible() && visibleColumnCount === 1)}
                       onCheckedChange={(value) => column.toggleVisibility(Boolean(value))}
                       onSelect={(event) => event.preventDefault()}
                     >
                       {columnHeaderText(column)}
                     </DropdownMenuCheckboxItem>
                   ))}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuCheckboxItem
+                    checked={compact}
+                    onCheckedChange={(value) => setCompact(Boolean(value))}
+                    onSelect={(event) => event.preventDefault()}
+                  >
+                    <Rows3 aria-hidden className="size-4" />
+                    عرض مدمج
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setColumnVisibility({});
+                      setCompact(false);
+                    }}
+                  >
+                    <RotateCcw aria-hidden className="size-4" />
+                    إعادة ضبط العرض
+                  </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             )}

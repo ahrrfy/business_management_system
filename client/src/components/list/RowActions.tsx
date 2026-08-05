@@ -5,7 +5,7 @@
 //     { key: "del", label: "تعطيل", icon: Ban, variant: "destructive", onSelect: () => toggle(id) },
 //   ]} />
 import * as React from "react";
-import { MoreHorizontal } from "lucide-react";
+import { MessageCircle, MoreHorizontal } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +17,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import type { PermissionMap } from "@shared/permissions";
+import { openWhatsApp, preferredWhatsAppPhone } from "@/lib/whatsapp";
 
 export type RowActionKind =
   | "view"
@@ -26,10 +27,26 @@ export type RowActionKind =
   | "export"
   | "duplicate"
   | "pay"
+  | "contact"
   | "approve"
+  | "correct"
+  | "convert"
+  | "transfer"
   | "reverse"
+  | "cancel"
   | "delete"
   | "other";
+
+export type RowContactAction = {
+  phone?: string | null;
+  whatsapp?: string | null;
+  alternativePhones?: Array<string | null | undefined>;
+  message: string;
+  label?: string;
+  hidden?: boolean;
+  disabledReason?: string;
+  gate?: RoleGate;
+};
 
 export type RowAction = {
   key: string;
@@ -55,6 +72,8 @@ export type RowAction = {
 
 export type RowActionsProps = {
   actions: RowAction[];
+  /** إجراء واتساب موحّد يُضاف إلى القائمة ويظل ظاهراً مع سبب واضح عند غياب الرقم. */
+  contact?: RowContactAction;
   /** menu = قائمة ⋯ · inline = أزرار · auto = قائمة إن كانت الإجراءات الظاهرة > ٢. */
   mode?: "menu" | "inline" | "auto";
   label?: string;
@@ -63,6 +82,7 @@ export type RowActionsProps = {
 
 export function RowActions({
   actions,
+  contact,
   mode = "auto",
   label = "إجراءات",
   align = "end",
@@ -70,7 +90,29 @@ export function RowActions({
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role;
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const visible = actions.filter(
+  const contactPhone = contact
+    ? preferredWhatsAppPhone(contact.whatsapp, contact.phone, ...(contact.alternativePhones ?? []))
+    : null;
+  const allActions: RowAction[] = contact
+    ? [
+        ...actions,
+        {
+          key: "contact-whatsapp",
+          kind: "contact",
+          label: contact.label ?? "تواصل عبر واتساب",
+          icon: MessageCircle,
+          hidden: contact.hidden,
+          disabled: !contactPhone,
+          disabledReason:
+            contact.disabledReason ?? "لا يوجد رقم واتساب صالح — أضف الرقم إلى بيانات الطرف أولاً",
+          gate: contact.gate,
+          onSelect: () => {
+            if (contactPhone) openWhatsApp(contactPhone, contact.message);
+          },
+        },
+      ]
+    : actions;
+  const visible = allActions.filter(
     (a) => !a.hidden && (!a.gate || (!me.isLoading && canSeeGate(a.gate, role, override))),
   );
   if (visible.length === 0) return null;

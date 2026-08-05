@@ -22,7 +22,7 @@ export async function listReadyForDispatch(branchId: number | null) {
       branchId: workOrders.branchId,
       customerId: workOrders.customerId,
       customerName: customers.name,
-      customerPhone: customers.phone,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       deliveryAddress: workOrders.deliveryAddress,
       deliveryPhone: workOrders.deliveryPhone,
       hasDelivery: workOrders.hasDelivery,

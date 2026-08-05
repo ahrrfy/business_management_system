@@ -172,7 +172,7 @@ export default function PeriodLockPage() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
-                    <th className="p-2 text-right">الإجراء</th>
+                    <th className="p-2 text-right">الحدث</th>
                     <th className="p-2 text-right">تاريخ الإقفال</th>
                     <th className="p-2 text-right">بواسطة</th>
                     <th className="p-2 text-right">الوقت</th>

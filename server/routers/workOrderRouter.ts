@@ -273,7 +273,7 @@ export const workOrderRouter = router({
           assignedTo: workOrders.assignedTo,
           assigneeName: users.name,
           customerName: customers.name,
-          customerPhone: customers.phone,
+          customerPhone: sql<string | null>`COALESCE(NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
           // لملصق الشحن من بطاقة اللوحة (طباعة عنوان التوصيل بلا فتح التفاصيل).
           hasDelivery: workOrders.hasDelivery,
           deliveryAddress: workOrders.deliveryAddress,
@@ -393,7 +393,7 @@ export const workOrderRouter = router({
           branchId: workOrders.branchId,
           customerId: workOrders.customerId,
           customerName: customers.name,
-          customerPhone: customers.phone,
+          customerPhone: sql<string | null>`COALESCE(NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
           baseVariantId: workOrders.baseVariantId,
           materialsCost: workOrders.materialsCost,
           laborCost: workOrders.laborCost,

@@ -19,6 +19,7 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useMemo } from "react";
+import { buildQuotationMessage } from "@/lib/whatsapp";
 
 const STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
@@ -212,6 +213,19 @@ export default function Quotations() {
                   <td className="p-2 text-center">
                     <RowActions
                       mode="auto"
+                      contact={{
+                        phone: qr.customerPhone,
+                        label: `واتساب ${qr.customerName ?? "العميل"}`,
+                        message: buildQuotationMessage({
+                          quoteNumber: qr.quoteNumber,
+                          quoteDate: qr.quoteDate ? String(qr.quoteDate) : null,
+                          validUntil: qr.validUntil ? String(qr.validUntil) : null,
+                          customerName: qr.customerName,
+                          total: qr.total,
+                        }),
+                        disabledReason: "لا يوجد رقم واتساب مرتبط بعرض السعر",
+                        gate: { module: "sales", level: "READ" },
+                      }}
                       actions={[
                         {
                           key: "open",

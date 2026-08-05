@@ -20,6 +20,7 @@ import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/delivery
 import { RowActions } from "@/components/list";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { DispatchDialog } from "@/components/delivery/DispatchDialog";
+import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 
 /**
  * إدارة التوصيل (COD) — شاشة مكرّسة (D5):
@@ -167,6 +168,21 @@ function DispatchTab() {
                     <td className="p-3 text-center">
                       <RowActions
                         mode="inline"
+                        contact={{
+                          phone: o.deliveryPhone ?? o.customerPhone,
+                          alternativePhones: [o.customerPhone],
+                          label: `واتساب ${o.customerName ?? "المستلم"}`,
+                          message: buildWorkOrderStatusMessage({
+                            orderNumber: o.orderNumber,
+                            title: o.title,
+                            status: "READY",
+                            customerName: o.customerName,
+                            quantity: o.quantity,
+                            dueDate: o.dueDate ? String(o.dueDate) : null,
+                            amountDue: cod,
+                          }),
+                          gate: { module: "store", level: "READ" },
+                        }}
                         actions={[
                           {
                             key: "label",

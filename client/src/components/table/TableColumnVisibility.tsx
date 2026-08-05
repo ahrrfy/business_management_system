@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Columns3, RotateCcw } from "lucide-react";
+import { Columns3, RotateCcw, Rows3 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 type TableColumn = { index: number; label: string };
-type TableConfig = { key: string; columns: TableColumn[]; hidden: Record<number, boolean> };
+type TableConfig = { key: string; columns: TableColumn[]; hidden: Record<number, boolean>; compact: boolean };
 
 const MIN_COLUMNS_FOR_MENU = 6;
 
@@ -41,6 +41,22 @@ function storeHidden(key: string, hidden: Record<number, boolean>): void {
     window.localStorage.setItem(key, JSON.stringify(hidden));
   } catch {
     // وضع الخصوصية أو مساحة تخزين ممتلئة لا يجب أن يعطّل إخفاء العمود في الجلسة الحالية.
+  }
+}
+
+function readCompact(key: string): boolean {
+  try {
+    return window.localStorage.getItem(`${key}:density`) === "compact";
+  } catch {
+    return false;
+  }
+}
+
+function storeCompact(key: string, compact: boolean): void {
+  try {
+    window.localStorage.setItem(`${key}:density`, compact ? "compact" : "comfortable");
+  } catch {
+    // تفضيل اختياري فقط.
   }
 }
 
@@ -85,7 +101,7 @@ export function TableColumnVisibility({
       ) {
         return previous;
       }
-      return { key, columns, hidden: readHidden(key) };
+      return { key, columns, hidden: readHidden(key), compact: readCompact(key) };
     });
   }, [containerRef, suppressIfInsideManagedTable]);
 
@@ -115,6 +131,13 @@ export function TableColumnVisibility({
     return () => observer.disconnect();
   }, [config, containerRef]);
 
+  React.useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !config) return;
+    container.setAttribute("data-table-density", config.compact ? "compact" : "comfortable");
+    return () => container.removeAttribute("data-table-density");
+  }, [config, containerRef]);
+
   if (!config) return null;
 
   const visibleCount = config.columns.filter((column) => !config.hidden[column.index]).length;
@@ -134,7 +157,8 @@ export function TableColumnVisibility({
     setConfig((previous) => {
       if (!previous) return previous;
       storeHidden(previous.key, {});
-      return { ...previous, hidden: {} };
+      storeCompact(previous.key, false);
+      return { ...previous, hidden: {}, compact: false };
     });
   };
 
@@ -144,7 +168,7 @@ export function TableColumnVisibility({
         <DropdownMenuTrigger asChild>
           <Button type="button" variant="outline" size="sm" className="gap-2">
             <Columns3 aria-hidden className="size-4" />
-            الأعمدة
+            الأعمدة {visibleCount}/{config.columns.length}
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="max-h-80 min-w-52 overflow-y-auto text-right">
@@ -165,6 +189,21 @@ export function TableColumnVisibility({
             );
           })}
           <DropdownMenuSeparator />
+          <DropdownMenuCheckboxItem
+            checked={config.compact}
+            onCheckedChange={(value) => {
+              const compact = Boolean(value);
+              setConfig((previous) => {
+                if (!previous) return previous;
+                storeCompact(previous.key, compact);
+                return { ...previous, compact };
+              });
+            }}
+            onSelect={(event) => event.preventDefault()}
+          >
+            <Rows3 aria-hidden className="size-4" />
+            عرض مدمج
+          </DropdownMenuCheckboxItem>
           <DropdownMenuItem onSelect={reset}>
             <RotateCcw aria-hidden className="size-4" />
             إعادة ضبط الأعمدة
