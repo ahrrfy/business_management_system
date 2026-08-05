@@ -89,6 +89,8 @@ export interface InvoicePrintData {
     /** حصة السطر من ضريبة الفاتورة (اختياري، decimal-string 2dp). عند وجود قيمة موجبة واحدة
      *  على الأقلّ بين البنود، يُدرَج عمود «الضريبة» في جدول العناصر بجانب «المبلغ». */
     taxAmount?: string | number | null;
+    /** هدايا الفاتورة (0149): سطرٌ مُهدىً — يُطبَع «مجاناً» بدل صفرٍ يُقرأ خطأَ تسعير. */
+    isGift?: boolean | null;
   }[];
   subtotal: string | number;
   discountAmount?: string | number | null;
@@ -134,6 +136,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
       unitPrice: it.unitPrice,
       taxAmount: it.taxAmount ?? null,
       total: it.total,
+      isGift: it.isGift ?? null,
     })),
     subtotal: d.subtotal,
     discountAmount: d.discountAmount ?? null,

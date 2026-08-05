@@ -29,6 +29,8 @@ export interface InvoiceReceiptSource {
     quantity: string | number;
     unitPrice: string | number;
     total: string | number;
+    /** هدايا الفاتورة (0149): يُوسَم الاسم بـ«هدية» في الإيصال الحراريّ (السعر صفر أصلاً). */
+    isGift?: boolean | null;
   }[];
 }
 
@@ -51,6 +53,7 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
         item.productName ?? "منتج",
         item.variantName || null,
         item.unitName ? `(${item.unitName})` : null,
+        item.isGift ? "هدية مجاناً" : null,
       ].filter(Boolean).join(" — "),
       quantity: D(item.quantity).toNumber(),
       price: item.unitPrice,

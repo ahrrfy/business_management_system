@@ -10339,7 +10339,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:413"
+      "loc": "server/routers/saleRouter.ts:423"
     },
     {
       "surface": "trpc",
@@ -10356,7 +10356,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:591"
+      "loc": "server/routers/saleRouter.ts:601"
     },
     {
       "surface": "trpc",
@@ -10373,7 +10373,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:268"
+      "loc": "server/routers/saleRouter.ts:271"
     },
     {
       "surface": "trpc",
@@ -10390,7 +10390,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:765"
+      "loc": "server/routers/saleRouter.ts:775"
     },
     {
       "surface": "trpc",
@@ -10407,7 +10407,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:619"
+      "loc": "server/routers/saleRouter.ts:629"
     },
     {
       "surface": "trpc",
@@ -10424,7 +10424,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:667"
+      "loc": "server/routers/saleRouter.ts:677"
     },
     {
       "surface": "trpc",
@@ -10441,7 +10441,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:732"
+      "loc": "server/routers/saleRouter.ts:742"
     },
     {
       "surface": "trpc",
@@ -10458,7 +10458,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:363"
+      "loc": "server/routers/saleRouter.ts:373"
     },
     {
       "surface": "trpc",
@@ -10475,7 +10475,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:712"
+      "loc": "server/routers/saleRouter.ts:722"
     },
     {
       "surface": "trpc",

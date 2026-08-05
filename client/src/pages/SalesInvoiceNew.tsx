@@ -233,10 +233,18 @@ export default function SalesInvoiceNew() {
         variantId: l.variantId,
         productUnitId: l.productUnitId,
         quantity: D(l.qty).toString(),
-        unitPriceOverride: round2(D(l.price)).toFixed(2),
-        discountPercent: l.discountType === "percent" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
-        discountAmount: l.discountType === "amount" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
+        // الهدية: نُعلن النيّة فقط ولا نُرسل سعراً/خصماً — الخادم يُصفّرهما بنفسه ويُرحّل التكلفة
+        // قيدَ GIFT_OUT. إرسال سعرٍ هنا يفتح باب «هديةٍ بسعر» لو انحرفت الشاشة يوماً.
+        ...(l.isGift
+          ? { isGift: true as const }
+          : {
+              unitPriceOverride: round2(D(l.price)).toFixed(2),
+              discountPercent: l.discountType === "percent" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
+              discountAmount: l.discountType === "amount" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
+            }),
       })),
+      // أجرة التوصيل: إيراد شحن يدخل الإجمالي. صفر/فارغ = «توصيل مجاني» (لا سطر إيراد أصلاً).
+      deliveryFee: D(totals.shipping).gt(0) ? totals.shipping : undefined,
       // خصم إجمالي كمبلغ (calcTotals يحوّل النسبة إلى مبلغ). يُرسَل فقط إن كان موجباً.
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
       // العراق VAT=0% افتراضياً — الضريبة اختيارية على مستوى الفاتورة، تُطبَّق فقط عند تفعيلها
@@ -483,8 +491,10 @@ export default function SalesInvoiceNew() {
 
   const typeInfo = INVOICE_TYPES[INVOICE_TYPE];
 
+  // بندٌ بسعر صفر **غير** موسومٍ هديةً = خطأ إدخال (سعر ناقص) يستحقّ التنبيه. أمّا الهدية فمجّانيّتها
+  // مقصودة ومصنَّفة (تُرحَّل تكلفتها مصروفَ هدايا) ⇒ لا تُنذَر.
   const hasZeroPriceLine = useMemo(
-    () => state.items.some((l) => D(l.price).lte(0)),
+    () => state.items.some((l) => !l.isGift && D(l.price).lte(0)),
     [state.items]
   );
 
@@ -540,6 +550,9 @@ export default function SalesInvoiceNew() {
             tier={state.tier}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
+            /* هدايا الفاتورة (0149): مفتاح «هدية» لكلّ سطر — يُصفّر قيمته في الفاتورة وتُرحَّل
+               تكلفته مصروفَ هدايا في الدفتر (قيد GIFT_OUT) لا خسارةَ بيعٍ مبهمة. */
+            allowGiftLines
             /* حصص ضريبة الفاتورة (توزيع تناسبي، عرض فقط) — تظهر كعمود حين taxEnabled=true. */
             taxShares={taxShares}
             onOpenBulkPicker={() => setBulkOpen(true)}
@@ -557,13 +570,17 @@ export default function SalesInvoiceNew() {
         </div>
 
         <aside className="flex w-80 shrink-0 flex-col gap-2">
-          {/* الشحن/المصاريف الأخرى غير مدعومة في sales.create ⇒ نُخفيها لئلّا تُضخّم
-              الإجمالي المعروض و«ادفع الكل» بمبلغ لا يُحفظ (خسارة مالية صامتة). */}
+          {/* أجرة التوصيل صارت مدعومة في sales.create (تُحفَظ في `invoices.deliveryFee` وتدخل
+              قيد SALE إيراداً بلا تكلفة، ويعكسها المرتجع الكامل) ⇒ أُظهرت مع مفتاح «مجاني».
+              «مصاريف أخرى» تبقى مخفيّة: الخادم لا يحفظها، وإظهارها يُضخّم الإجمالي المعروض
+              و«ادفع الكل» بمبلغٍ لا يُحفَظ (خسارة مالية صامتة). */}
           <TotalsPanel
+            shippingLabel="أجرة التوصيل"
+            allowFreeShipping
             items={state.items}
             state={state}
             dispatch={dispatch}
-            showShipping={false}
+            showShipping
             showOtherExpenses={false}
             showTaxToggle
           />

@@ -9,7 +9,7 @@
  * فقط باسم «حصة الضريبة» بجانب «الإجمالي»؛ خلاف ذلك يُخفى العمود تماماً.
  */
 import type { Dispatch } from "react";
-import { AlertTriangle, Package, ShoppingCart, X } from "lucide-react";
+import { AlertTriangle, Gift, Package, ShoppingCart, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -41,6 +41,11 @@ export interface ProductTableProps {
    * يظهر فقط حين taxShares مصفوفة بنفس طول items وفيها قيمة موجبة على الأقلّ. أُهمِل ⇒ لا عمود.
    */
   taxShares?: string[] | null;
+  /**
+   * هدايا الفاتورة (0149): إظهار عمود «هدية» بمفتاحٍ لكلّ سطر (فاتورة البيع فقط — الخادم لا يقبل
+   * `isGift` إلّا في `sales.create`). الافتراضي false فلا تتأثّر شاشات الشراء/عرض السعر/المرتجع.
+   */
+  allowGiftLines?: boolean;
   onOpenBulkPicker: () => void;
   /** Toast hook. */
   onNotify?: (msg: string, kind: "error" | "info") => void;
@@ -131,6 +136,7 @@ export function ProductTable({
   purchaseRate = "",
   purchasePriceInsights,
   taxShares,
+  allowGiftLines = false,
   onOpenBulkPicker,
   onNotify,
 }: ProductTableProps) {
@@ -146,8 +152,9 @@ export function ProductTable({
     Array.isArray(taxShares) &&
     taxShares.length === items.length &&
     taxShares.some((s) => Number(s) > 0);
-  // عدد الأعمدة لصفّ «السلة فارغة»: ١٠ ثابتة + (تكلفة+هامش) + (حصة ضريبة).
-  const colCount = 10 + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0) + (showIqdEquivalent ? 1 : 0);
+  // عدد الأعمدة لصفّ «السلة فارغة»: ١٠ ثابتة + (تكلفة+هامش) + (حصة ضريبة) + (هدية).
+  const colCount =
+    10 + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0) + (showIqdEquivalent ? 1 : 0) + (allowGiftLines ? 1 : 0);
 
   const totalQty = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
 
@@ -242,6 +249,7 @@ export function ProductTable({
               <th className={cn(th, "w-24")}>{isPurchase ? `سعر الشراء ${purchaseCurrency === "USD" ? "$" : "د.ع"}` : "السعر"}</th>
               <th className={cn(th, "w-32")}>الكمية</th>
               <th className={cn(th, "w-20")}>خصم %</th>
+              {allowGiftLines && <th className={cn(th, "w-14")}>هدية</th>}
               {showTaxCol && <th className={cn(th, "w-24")}>حصة الضريبة</th>}
               {showCostCol && <th className={cn(th, "w-16")}>هامش%</th>}
               <th className={cn(th, "w-28")}>الإجمالي</th>
@@ -353,7 +361,13 @@ export function ProductTable({
                     </td>
                   )}
                   <td className={td}>
-                    {readOnlyPricing ? (
+                    {item.isGift ? (
+                      // السطر المُهدى: لا حقلَ سعرٍ أصلاً (الخادم يُصفّره) — نُظهر الحالة لا مُدخَلاً
+                      // يوهم بإمكان التسعير. السعر المخزَّن في الحالة يبقى كما هو ليعود عند إلغاء الإهداء.
+                      <span className="badge-status-active inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-extrabold">
+                        <Gift aria-hidden className="size-3" /> مجاناً
+                      </span>
+                    ) : readOnlyPricing ? (
                       <span dir="ltr" className="text-sm font-bold tabular-nums">{fmtNum(item.price)}</span>
                     ) : (
                       <InlineNumberInput
@@ -377,7 +391,10 @@ export function ProductTable({
                     />
                   </td>
                   <td className={td}>
-                    {readOnlyPricing ? (
+                    {item.isGift ? (
+                      // خصمٌ على مجّانٍ لا معنى له — نُعطّل الحقل بدل تركه يوهم بأثرٍ لا يقع.
+                      <span className="text-xs text-muted-foreground">—</span>
+                    ) : readOnlyPricing ? (
                       <span className="text-xs text-muted-foreground tabular-nums">{fmtNum(item.discount)}%</span>
                     ) : (
                       <InlineNumberInput
@@ -389,6 +406,24 @@ export function ProductTable({
                       />
                     )}
                   </td>
+                  {allowGiftLines && (
+                    <td className={td}>
+                      <Button
+                        type="button"
+                        variant={item.isGift ? "default" : "outline"}
+                        size="icon"
+                        aria-pressed={item.isGift === true}
+                        aria-label={item.isGift ? `إلغاء إهداء ${item.name}` : `إهداء ${item.name} مجاناً`}
+                        title={item.isGift ? "إلغاء الإهداء (يعود السعر)" : "اجعل هذا الصنف هديةً مجانية"}
+                        className="h-8 w-8"
+                        onClick={() =>
+                          dispatch({ type: "UPDATE_ITEM", idx, field: "isGift", value: !item.isGift })
+                        }
+                      >
+                        <Gift aria-hidden className="size-4" />
+                      </Button>
+                    </td>
+                  )}
                   {showTaxCol && (
                     <td className={cn(td, "text-xs font-semibold text-muted-foreground")} dir="ltr">
                       {fmtNum(taxShares![idx])}

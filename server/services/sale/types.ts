@@ -24,6 +24,13 @@ export interface SaleLineInput {
    * من نيّةٍ **مقفولة** في القاعدة، لا من الشاشة. بدونها يُسجَّل الكرت بتكلفة صفر فينتفخ الربح.
    */
   unitCostOverride?: string | null;
+  /**
+   * هدايا الفاتورة (0149): سطرٌ مُهدىً — يُطبَع في الفاتورة ويُخصَم من المخزون كسائر البنود، لكنّ
+   * سعره **يُصفَّر خادمياً** (لا يُوثَق بسعرٍ وارد من الشاشة) وتكلفته تخرج من `invoices.costTotal`
+   * وقيد SALE لتُرحَّل في قيد `GIFT_OUT` مصروفَ هدايا. فوق `GIFT_APPROVAL_THRESHOLD` (بالتكلفة)
+   * يلزم تفويض مدير — نفس حوكمة سند الهدية المستقلّ.
+   */
+  isGift?: boolean;
 }
 
 export interface CreateSaleInput {
@@ -78,6 +85,8 @@ export interface CreateSaleResult {
   idempotentReplay?: boolean;
   /** SALES-01/02: صحيح إن باع بند/فاتورة تحت التكلفة (طُبِّق بموافقة) — للتدقيق. */
   priceOverride?: boolean;
+  /** هدايا الفاتورة (0149): تكلفة البنود المُهداة (قيد GIFT_OUT) — يغيب إن لم تكن ثمّة هدية. */
+  giftCost?: string;
   /** «وضع الافتتاح» (ش٢): أصناف هبطت تحت الصفر بهذا البيع (معلومة استشارية للمحاولة الفائزة
    *  فقط — replay الـidempotency لا يعيدها؛ حدث التدقيق sale.openingNegative يقع مرّة واحدة). */
   negativeDips?: { variantId: number; newQuantity: number }[];
