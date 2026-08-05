@@ -2,42 +2,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import {
-  ArrowLeftRight,
   ArrowRight,
-  Banknote,
   CalendarClock,
   Camera,
   Check,
-  ChevronDown,
   ClipboardList,
   Copy,
-  CreditCard,
-  FileText,
   Globe,
   HandCoins,
-  Image as ImageIcon,
-  Layers,
   MessageCircle,
-  Minus,
   Music,
   Package,
   Palette,
-  Pencil,
-  Percent,
   Phone,
-  Plus,
   Printer,
   Receipt as ReceiptIcon,
-  Ruler,
   Search,
   ShoppingCart,
   Store,
-  Ticket,
-  Trash2,
   Truck,
-  Wallet,
-  X,
-  Zap,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -62,7 +45,7 @@ import { D, fmt, round2, roundCashIQD } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
 import { fmtDate } from "@/lib/date";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
@@ -71,6 +54,28 @@ import Inbox from "@/pages/Inbox";
 import OrderFulfillment from "@/pages/OrderFulfillment";
 import ReceptionOrderQueue from "@/components/reception/ReceptionOrderQueue";
 import { ReceptionInvoiceQueue } from "@/components/reception/ReceptionInvoiceQueue";
+// تفكيك §١٣ ش١ (٥/٨): الأنواع/الدوال النقيّة والمكوّنات الثقيلة (السلة/الدفع/الإيصال) صارت
+// وحدات مستقلّة تحت components/reception — نقلٌ حرفيّ بصفر تغيير سلوكي.
+import {
+  customLineGrand,
+  effectivePrice,
+  isCustomKind,
+  lineCounterHeldFee,
+  lineTotal,
+  PAY_METHOD_LABEL,
+  TIER_LABEL,
+  type CartLine,
+  type LastSaleSummary,
+  type PayMethod,
+  type PosRow,
+  type Tier,
+  type Workshop,
+} from "@/components/reception/cartMath";
+import { CartTable } from "@/components/reception/CartTable";
+import { PaymentPanel } from "@/components/reception/PaymentPanel";
+import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
+import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { WsTab } from "@/components/reception/WsTab";
 import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
@@ -102,115 +107,17 @@ import {
  * شريحة customer-service-reception (٢٣/٦/٢٦) — README §5.1.
  */
 
-type PosRow = NonNullable<RouterOutputs["catalog"]["posList"]>[number];
-/** م٤ — ورش عمود العمل: السلة أساسٌ، والبقية تُركَّب داخله فلا تُغطّي لوحة الدفع أبداً (§٨.١). */
-type Workshop = "CART" | "INVOICES" | "ORDERS" | "STORE";
-type PayMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 /** رموز ألوان CashDropDialog (بنية PosTokens المشتركة). */
 const RECEPTION_TOKENS: PosTokens = {
   card: "#ffffff", border: "#e2e8f0", muted: "#f1f5f9", mutedFg: "#64748b",
   fg: "#0f172a", primary: "#7c3aed", danger: "#dc2626",
 };
-/** ملخّص آخر عملية ناجحة — نافذة الإيصال + F9 (إعادة طباعة) + شارة «آخر فاتورة» (§٨.٦). */
-type LastSaleSummary = {
-  invoiceNumbers: string[];
-  workOrderNumbers: string[];
-  totalStr: string;
-  changeStr: string | null;
-  creditStr: string | null;
-  receipts: ReceiptBrowserData[];
-  workOrders: WorkOrderReceiptData[];
-  printFailures: number;
-};
-const PAY_METHOD_LABEL: Record<PayMethod, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-};
-type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
-const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 const RESERVATION_READ_ROLES = ["admin", "manager", "accountant", "cashier", "warehouse", "sales_rep", "auditor"] as const;
 const CHANNEL_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor", "warehouse", "print_operator"] as const;
 /** مرآة قائمة أدوار customersCashierProcedure الخادمية (server/trpc.ts) — لا تنجرف عنها. */
 const CUSTOMER_CREATE_ROLES = ["cashier", "manager", "sales_rep"] as const;
 const STORE_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
 const CRM_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
-
-type CartLine = {
-  key: string; // معرّف فريد للسطر (للأصناف المخصّصة المتعدّدة من نفس المنتج)
-  row: PosRow;
-  qty: number;
-  origPrice?: number;
-  disc?: number; // نسبة خصم
-  custom?: CustomizationData; // إن كان مخصّصاً
-  manualService?: boolean; // خدمة حرة لا ترتبط بمنتج/متغيّر من الكتالوج
-};
-
-// مبالغ سريعة بالقيمة الفعلية (د.ع). إصلاح P2 (٢٣/٦/٢٦): كان `setQuickAmt(v * 1000)` يجعل
-// زرّ «5,000» يُدخل 5,000,000 ⇒ فكّةٌ خاطئة ١٠٠٠× — كارثة كاشير.
-const QUICK_AMTS = [1000, 5000, 10000, 25000];
-
-function effectivePrice(line: CartLine): number {
-  // عرض/كوبون (catalog.posList.promotionEffectivePrice) يسبق السعر الأساس كنقطة انطلاق (نمط
-  // POS.tsx effectivePrice) — الخصم اليدوي يُطبَّق فوقه لا بدلاً عنه. لا ينطبق على سطر مخصّص
-  // (custom): تسعيره الإضافي بلا كتالوج ترويجيّ.
-  const promoPrice = !line.custom ? line.row.promotionEffectivePrice : null;
-  // التخصيص إضافيّ: سعر الوحدة للسطر المخصّص = سعر المنتج الأساس + سعر التخصيص (فوقه)، لا بديلاً عنه.
-  const base = line.origPrice ?? (
-    promoPrice != null ? Number(promoPrice) :
-    line.custom
-      ? Number(line.row.price ?? 0) + Number(line.custom.unitPrice ?? 0)
-      : Number(line.row.price ?? 0)
-  );
-  if (line.disc && line.disc > 0) return base * (1 - line.disc / 100);
-  return base;
-}
-function lineTotal(line: CartLine): number {
-  return effectivePrice(line) * line.qty;
-}
-function isCustomKind(line: CartLine): boolean {
-  return !!line.custom;
-}
-/** ٥/٨ — سعر بيع السطر المخصّص: بضاعةٌ وخدمةٌ فقط. أجرة التوصيل **لا** تُجمَع هنا.
- *  كانت تُضمّ إلى salePrice ⇒ تصير إيراداً بهامش ١٠٠٪ في قيد SALE ونقداً في الدرج يُحاسَب عليه
- *  الموظّف عند الإغلاق، بينما أجرة المندوب الحقيقية رقمٌ آخر يُصرَف من مسارٍ مستقلّ. */
-function customLineGrand(line: CartLine): number {
-  return lineTotal(line);
-}
-/** أجرة التوصيل المُثبَّتة على السطر (تمريرٌ للمندوب — خارج الفاتورة والإيراد دائماً). */
-function lineDeliveryFee(line: CartLine): number {
-  if (!line.custom?.hasDelivery) return 0;
-  return Number(line.custom.deliveryCost || 0);
-}
-/** الأجرة التي يقبضها **الكاشير الآن** أمانةً (وضع COUNTER وحده) ⇒ نقدٌ يدخل الدرج بإيصالٍ
- *  مستقلّ عن الفاتورة، ويخرج للمندوب عند الإرسال. غيرها لا يمرّ بالدرج إطلاقاً. */
-function lineCounterHeldFee(line: CartLine): number {
-  return line.custom?.deliveryFeeCollection === "COUNTER" ? lineDeliveryFee(line) : 0;
-}
-
-/** حالة المخزون للأصناف الجاهزة (المخصَّصة لا مَخزون لها — إنتاج). يَحسب الطلب الكلّي للصنف
- *  عبر كل وحداته في السلّة (رصيد الفرع مُشترك بين القطعة/الدرزن/الكرتون). نَمط مُطابق POS.tsx. */
-function buildStockState(cart: CartLine[]) {
-  const demandByVariant = new Map<number, number>();
-  for (const l of cart) {
-    if (l.custom) continue;
-    const f = Number(l.row.conversionFactor) || 1;
-    demandByVariant.set(l.row.variantId, (demandByVariant.get(l.row.variantId) ?? 0) + l.qty * f);
-  }
-  return (line: CartLine) => {
-    if (line.custom || line.row.isService) {
-      return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
-    }
-    const convFactor = Number(line.row.conversionFactor) || 1;
-    const availBase = line.row.stockBase ?? 0;
-    const reqBase = demandByVariant.get(line.row.variantId) ?? line.qty * convFactor;
-    const isOut = availBase <= 0;
-    const isShort = !isOut && reqBase > availBase;
-    const availInUnit = Math.floor(availBase / convFactor);
-    return { isOut, isShort, availInUnit };
-  };
-}
 
 export default function Reception() {
   const [, navigate] = useLocation();
@@ -351,34 +258,9 @@ export default function Reception() {
     onError: (e) => notify.err(e),
   });
 
-  // احتواء ديناميكي (إعادة بناء ٥/٨ — «منطقة الدفع فيها تمرير»): القياس بالنافذة كان خاطئاً
-  // بنيوياً، لأن لوحة الدفع أقصر من النافذة بـ«شريط الأوضاع + ترويسة الاستقبال + الحشوة»
-  // (~٢٤٠px، أكبر بكثير من فارق POS). فنافذةٌ «فسيحة» ٩٤٥px تُخفي أن اللوحة نفسها ٦٧٠px
-  // ⇒ عجزٌ يُصرَف تمريراً دائماً. الآن تُقاس **اللوحة نفسها** بـResizeObserver، فالكثافة تتبع
-  // المساحة الحقيقية. لا حلقة ارتجاج: ارتفاع اللوحة يفرضه الأب (صفّ flex بارتفاع ثابت)،
-  // وكل ما تُبدّله الكثافة يقع **داخل** اللوحة فلا يُغيّر ارتفاعها.
+  // سلّم الاحتواء الديناميكي (ResizeObserver + درجات الكثافة) صار داخل PaymentPanel نفسه
+  // (تفكيك §١٣ ش١) — الصفحة تحتفظ بالـref للتركيز فقط (goToWorkflowStep خطوة ٤).
   const paymentSectionRef = useRef<HTMLDivElement>(null);
-  const [payPanelH, setPayPanelH] = useState(0);
-  useEffect(() => {
-    const el = paymentSectionRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(([entry]) => {
-      const h = entry.contentRect.height;
-      // عتبة ٤px تمنع إعادة رسمٍ لا داعي لها من كسور البكسل عند الزوم.
-      setPayPanelH((prev) => (Math.abs(prev - h) < 4 ? prev : h));
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  // ثلاث درجات احتواء: يُحذف الثانويّ أولاً ثم يُعاد التركيب — لا تصغيرَ للأساسيّ.
-  // (0 = قبل أول قياس ⇒ نفترض الفسيح فلا يومض التركيب المضغوط عند الإقلاع.)
-  const payDense = payPanelH > 0 && payPanelH < 700;
-  const payUltra = payPanelH > 0 && payPanelH < 580;
-  // شبكة أمانٍ أخيرة: تحت هذا الحدّ لا يبقى ثانويٌّ يُحذف، والحدود الدنيا الصلبة (مفاتيح ٤٠px
-  // ×٤ صفوف + طرق الدفع ٤٤px + زرّا الفعل ٤٤/٤٨px) تطلب ~٥٠٠px. فلو مُنع التمرير هنا لَقُصّ
-  // المحتوى **صامتاً** — وهو أسوأ من شريط تمرير. العتبة ٥٢٠ تترك هامشاً فوق الطلب الفعليّ
-  // فلا تُفتَح إلا حين يستحيل الاحتواء حقّاً (خارج مدى التشغيل: أقصر لوحةٍ عمليّة ~٥٠٠px).
-  const payOverflowGuard = payPanelH > 0 && payPanelH < 520;
   // ترويسة الصفحة تُقاس بالنافذة عمداً (لا باللوحة): تقليصها يُطيل اللوحة، فقياسها باللوحة
   // يصنع حلقة «يُخفى ⇒ تتّسع ⇒ يظهر ⇒ تضيق». النافذة مقياسٌ مستقلّ عن هذا التغذّي الراجع.
   const compactHeader = useMediaQuery("(max-height: 900px)");
@@ -783,6 +665,15 @@ export default function Reception() {
       }),
     );
   }
+  /** م٦: سقف الخصم الحرّ ١٠٪ — فوقه اعتمادُ مديرٍ استباقيّ (لا انتظار رفض الخادم).
+   *  تُمرَّر لـCartTable — مسار الاعتماد قرارُ الصفحة (mgrCredsRef/approvalAsk ملكها). */
+  function applyLineDiscount(lineKey: string, pct: number | null) {
+    if (pct != null && pct > 10 && !isElevatedRole && !mgrCredsRef.current) {
+      setApprovalAsk({ lineKey, pct });
+    } else {
+      setLineDiscount(lineKey, pct);
+    }
+  }
   /** عربون ▾ (§٨.٣): تعبئة سريعة = الجاهز كاملاً + نسبة من المخصّص (الخوارزمية الجشعة الخادمية
    *  تُغطّي البيع المباشر أولاً ثم توزّع الفائض عرابين — هذه الأزرار تملأ المبلغ وفقها بلا حساب يدويّ). */
   function fillDeposit(pctOfCustom: number) {
@@ -790,6 +681,12 @@ export default function Reception() {
     setPayInput(v.toFixed(0));
     setDepositMenuOpen(false);
   }
+  /** خيارات «عربون» المنسدلة — تُحسب هنا (sumDirectD/sumCustomD ملك الصفحة) وتستهلكها PaymentPanel. */
+  const depositOptions = ([["٢٥٪", 0.25], ["٥٠٪", 0.5], ["المخصّص كاملاً", 1]] as const).map(([label, pct]) => ({
+    label,
+    amountLabel: fmt(round2(sumDirectD.plus(sumCustomD.times(pct))).toNumber()),
+    onPick: () => fillDeposit(pct),
+  }));
 
   function goToWorkflowStep(step: number) {
     setWorkflowStep(step);
@@ -2022,591 +1919,69 @@ export default function Reception() {
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
               <OrderFulfillment />
             </div>
-          ) : (<>
-          <div className="flex-1 overflow-y-auto">
-            {cart.length === 0 ? (
-              <div className="grid h-full place-items-center px-4 py-10 text-center text-muted-foreground">
-                <div>
-                  <ShoppingCart aria-hidden className="mx-auto size-10 opacity-40" />
-                  <div className="mt-2 text-sm font-bold">السلة فارغة</div>
-                  <div className="mt-1 text-xs">امسح الباركود، ابحث عن منتج، أو أضف خدمة/أمر شغل</div>
-                </div>
-              </div>
-            ) : (
-              <table className="w-full border-collapse text-sm">
-                <thead className="sticky top-0 bg-muted/50 text-[11px] text-muted-foreground">
-                  <tr>
-                    <th className="w-8 px-2 py-2 text-center font-bold">#</th>
-                    <th className="px-2 py-2 text-right font-bold">المنتج</th>
-                    <th className="w-14 px-1 py-2 text-center font-bold">الوحدة</th>
-                    <th className="w-24 px-1 py-2 text-center font-bold">السعر</th>
-                    <th className="w-16 px-1 py-2 text-center font-bold">المخزون</th>
-                    <th className="w-32 px-1 py-2 text-center font-bold">الكمية</th>
-                    <th className="w-24 px-1 py-2 text-center font-bold">الإجمالي</th>
-                    <th className="w-8 px-1 py-2" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {(() => {
-                    const stockState = buildStockState(cart);
-                    return cart.map((l, idx) => {
-                    const isCustom = isCustomKind(l);
-                    const total = isCustom ? customLineGrand(l) : lineTotal(l);
-                    const selected = selKey === l.key;
-                    const stock = stockState(l);
-                    return (
-                      <tr
-                        key={l.key}
-                        onClick={() => setSelKey(l.key)}
-                        className={cn(
-                          "cursor-pointer border-b align-top",
-                          isCustom
-                            ? "border-s-[3px] border-s-violet-500"
-                            : stock.isOut
-                              ? "border-s-[3px] border-s-destructive bg-destructive/5"
-                              : stock.isShort
-                                ? "border-s-[3px] border-s-amber-500 bg-amber-50"
-                                : "border-s-[3px] border-s-emerald-500",
-                          selected && "bg-primary/5",
-                        )}
-                      >
-                        <td className="px-2 py-2.5 text-center text-xs font-bold text-muted-foreground">{idx + 1}</td>
-                        <td className="px-2 py-2.5">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span
-                              className={cn(
-                                "rounded-full px-1.5 py-0.5 text-[10px] font-bold",
-                                isCustom ? "bg-violet-100 text-violet-700" : "bg-emerald-100 text-emerald-700",
-                              )}
-                            >
-                              {isCustom ? "تخصيص" : "جاهز"}
-                            </span>
-                            <span className="text-lg font-extrabold">
-                              {isCustom ? l.custom!.title : l.row.productName}
-                            </span>
-                            <span className="text-xs text-muted-foreground" dir="ltr">{l.row.sku}</span>
-                            {!isCustom && stock.isOut && (
-                              <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">
-                                نافذ — لا مخزون
-                              </span>
-                            )}
-                            {!isCustom && stock.isShort && (
-                              <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold text-amber-50">
-                                {stock.availInUnit === 0
-                                  ? "لا يكفي لوحدة"
-                                  : `المتاح ${stock.availInUnit} فقط`}
-                              </span>
-                            )}
-                          </div>
-                          {isCustom && (
-                            <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50/50 p-2.5">
-                              <div className="flex flex-wrap gap-1.5">
-                                {l.custom!.size && (
-                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">
-                                    <Ruler aria-hidden className="size-3" /> {l.custom!.size}
-                                  </span>
-                                )}
-                                {l.custom!.material && (
-                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">
-                                    <Layers aria-hidden className="size-3" /> {l.custom!.material}
-                                  </span>
-                                )}
-                                {l.custom!.dueDate && (
-                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold" dir="ltr">
-                                    {l.custom!.dueDate}
-                                  </span>
-                                )}
-                                {l.custom!.hasDelivery && (
-                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">
-                                    <Truck aria-hidden className="size-3" /> توصيل
-                                    {Number(l.custom!.deliveryCost) > 0 && (
-                                      <span dir="ltr">+{fmt(l.custom!.deliveryCost)}</span>
-                                    )}
-                                  </span>
-                                )}
-                                <span
-                                  className={cn(
-                                    "rounded-md border px-2 py-0.5 text-[11px] font-bold",
-                                    l.custom!.priority === "URGENT" && "bg-destructive/10 text-destructive border-destructive/30",
-                                    l.custom!.priority === "NORMAL" && "bg-[var(--sem-info)]/10 text-[var(--sem-info)] border-[var(--sem-info)]/30",
-                                    l.custom!.priority === "LOW" && "bg-emerald-500/10 text-emerald-700 border-emerald-500/30",
-                                  )}
-                                >
-                                  {l.custom!.priority === "URGENT" ? "عاجل" : l.custom!.priority === "NORMAL" ? "عادي" : "منخفض"}
-                                </span>
-                              </div>
-                              {l.custom!.customizationText && (
-                                <div className="mt-2 line-clamp-2 inline-flex items-start gap-1 text-[11px] leading-relaxed text-muted-foreground">
-                                  <FileText aria-hidden className="size-3 mt-0.5 flex-shrink-0" />
-                                  <span>{l.custom!.customizationText}</span>
-                                </div>
-                              )}
-                              <div className="mt-2 flex items-center gap-2">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-7 text-[11px] inline-flex items-center gap-1"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setShowCustomization({ row: l.row, editingKey: l.key });
-                                  }}
-                                >
-                                  <Pencil aria-hidden className="size-3" /> تعديل التخصيص
-                                </Button>
-                                <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-[11px] font-bold text-muted-foreground">
-                                  <ImageIcon aria-hidden className="size-3" /> صور: {l.custom!.designImages.length}
-                                </span>
-                              </div>
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-1 py-2.5 text-center text-xs text-muted-foreground">{l.row.unitName}</td>
-                        <td className="px-1 py-2.5 text-center text-xs tabular-nums" dir="ltr">
-                          {/* م٤ (§٨.٤): خلية السعر زرٌّ يفتح خصم الصفّ — لا حقل خصمٍ دائمٍ يُنقَر سهواً. */}
-                          {isCustom ? (
-                            <span>{fmt(effectivePrice(l))}</span>
-                          ) : (
-                            <div className="relative inline-block">
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); setDiscountFor(discountFor === l.key ? null : l.key); }}
-                                className={cn(
-                                  "min-h-[32px] rounded-md border px-1.5 tabular-nums hover:bg-muted",
-                                  l.disc ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] font-bold text-[var(--sem-warn)]" : "border-transparent",
-                                )}
-                                aria-label={`سعر السطر ${fmt(effectivePrice(l))} — افتح خصم الصفّ`}
-                              >
-                                {fmt(effectivePrice(l))}
-                                {l.disc ? <div className="text-[10px] text-[var(--sem-warn)]">−{l.disc}%</div> : null}
-                              </button>
-                              {discountFor === l.key && (
-                                <LineDiscountPopover
-                                  line={l}
-                                  isElevated={isElevatedRole}
-                                  onApply={(pct) => {
-                                    // م٦: سقف الخصم الحرّ ١٠٪ — فوقه اعتمادُ مديرٍ استباقيّ (لا انتظار رفض الخادم).
-                                    if (pct != null && pct > 10 && !isElevatedRole && !mgrCredsRef.current) {
-                                      setApprovalAsk({ lineKey: l.key, pct });
-                                    } else {
-                                      setLineDiscount(l.key, pct);
-                                    }
-                                    setDiscountFor(null);
-                                  }}
-                                  onClose={() => setDiscountFor(null)}
-                                />
-                              )}
-                            </div>
-                          )}
-                        </td>
-                        <td
-                          className={cn(
-                            "px-1 py-2.5 text-center text-xs font-bold tabular-nums",
-                            isCustom ? "text-muted-foreground" : stock.isOut ? "text-destructive" : stock.isShort ? "text-amber-600" : "text-muted-foreground",
-                          )}
-                          dir="ltr"
-                        >
-                          {isCustom ? "—" : l.row.isService ? "∞" : stock.availInUnit}
-                        </td>
-                        <td className="px-1 py-1.5">
-                          <div className="flex items-center justify-center gap-1">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                changeQty(l.key, -1);
-                              }}
-                              className="grid size-8 place-items-center rounded-md border bg-card hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
-                              disabled={isCustom && l.qty <= 1}
-                              title={isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية منتج مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
-                              aria-label="تقليل الكمية"
-                            >
-                              <Minus aria-hidden className="size-3.5" />
-                            </button>
-                            {/* م٤: الكمية مُدخلٌ مباشر داخل الصفّ (لوحة الأرقام لم تعد تعدّلها). */}
-                            <input
-                              value={l.qty}
-                              onClick={(e) => e.stopPropagation()}
-                              onChange={(e) => {
-                                const n = parseInt(e.target.value.replace(/\D/g, ""), 10);
-                                if (Number.isFinite(n)) setQty(l.key, n);
-                                else if (e.target.value === "") setQty(l.key, 1);
-                              }}
-                              inputMode="numeric"
-                              dir="ltr"
-                              aria-label={`كمية ${isCustom ? l.custom!.title : l.row.productName}`}
-                              className="h-8 w-12 rounded-md border bg-card text-center text-sm font-extrabold tabular-nums outline-none focus:border-primary"
-                            />
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                changeQty(l.key, +1);
-                              }}
-                              className="grid size-8 place-items-center rounded-md border bg-card hover:bg-muted"
-                              aria-label="زيادة الكمية"
-                            >
-                              <Plus aria-hidden className="size-3.5" />
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-1 py-2.5 text-center text-sm font-extrabold tabular-nums" dir="ltr">{fmt(total)}</td>
-                        <td className="px-1 py-2.5 text-center">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              removeRow(l.key);
-                            }}
-                            className="text-muted-foreground hover:text-destructive"
-                            aria-label="حذف المنتج"
-                          >
-                            <Trash2 aria-hidden className="size-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  });
-                  })()}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          {cart.length > 0 && (
-            <div className="flex flex-shrink-0 items-center justify-between border-t bg-muted/40 px-4 py-2.5">
-              <span className="text-xs text-muted-foreground">{cart.length} منتج · {cartCount} قطعة</span>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-xs text-muted-foreground">المجموع:</span>
-                <span className="text-2xl font-black tabular-nums" dir="ltr">{fmt(grandTotal)}</span>
-                <span className="text-xs text-muted-foreground">د.ع</span>
-              </div>
-            </div>
+          ) : (
+            <CartTable
+              cart={cart}
+              selKey={selKey}
+              onSelect={setSelKey}
+              discountFor={discountFor}
+              setDiscountFor={setDiscountFor}
+              isElevated={isElevatedRole}
+              onApplyDiscount={applyLineDiscount}
+              changeQty={changeQty}
+              setQty={setQty}
+              removeRow={removeRow}
+              onEditCustomization={(row, editingKey) => setShowCustomization({ row, editingKey })}
+              grandTotal={grandTotal}
+              cartCount={cartCount}
+            />
           )}
-          </>)}
         </div>
 
         {/* ─ لوحة الدفع ─ */}
-        <div
+        <PaymentPanel
           ref={paymentSectionRef}
-          tabIndex={-1}
-          onFocusCapture={() => setWorkflowStep(4)}
-          className="flex w-[408px] flex-shrink-0 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30 [container-type:size]"
-        >
-          {/* رأس الإجمالي + التقسيم الهجين — ثابتٌ دائماً، خارج منطقة التمرير. */}
-          <div className={cn("flex-shrink-0 border-b bg-muted/40", payUltra ? "px-3 py-1.5" : "p-3")}>
-            {!payDense && (
-              <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-extrabold">
-                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٥</span>
-                المبلغ والدفع
-              </div>
-            )}
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-muted-foreground">إجمالي الفاتورة</span>
-              <div className="flex items-baseline gap-1">
-                <span className="text-[clamp(22px,3.8cqh,30px)] font-black leading-tight tabular-nums tracking-tight" dir="ltr">{fmt(expectedNow)}</span>
-                <span className="text-xs text-muted-foreground">د.ع</span>
-              </div>
-            </div>
-            {/* ش٠ — شفافية التقريب النقدي: يظهر الفرق فقط حين يسري (فئة ٢٥٠ د.ع). */}
-            {cashRoundingDelta !== 0 && (
-              <div className="mt-0.5 text-end text-[10px] font-semibold text-muted-foreground" dir="rtl">
-                قُرّب نقدياً لفئة ٢٥٠ ({cashRoundingDelta > 0 ? "+" : "−"}{fmt(Math.abs(cashRoundingDelta))} على {fmt(grandTotal)})
-              </div>
-            )}
-            {/* أجرة التوصيل المقبوضة أمانةً: خارج الفاتورة، لكنها نقدٌ يُستلَم فعلاً الآن.
-                عرضها منفصلةً يمنع الخلط الذي كان يجعل الموظّف يظنّها جزءاً من البيع. */}
-            {heldDelivery > 0 && (
-              <div className="mt-1 space-y-0.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-1">
-                <div className="flex items-center justify-between text-[11px] font-bold text-[var(--sem-warn)]">
-                  <span className="inline-flex items-center gap-1"><Truck aria-hidden className="size-3" /> أجرة توصيل أمانةً للمندوب</span>
-                  <span className="tabular-nums" dir="ltr">{fmt(heldDelivery)}</span>
-                </div>
-                <div className="flex items-center justify-between text-[11px] font-extrabold">
-                  <span>المُستلَم نقداً الآن</span>
-                  <span className="tabular-nums" dir="ltr">{fmt(cashDueNow)} د.ع</span>
-                </div>
-              </div>
-            )}
-            {/* بطاقتا التقسيم ثانويّتان (الرقمان يظهران في السلة نفسها) ⇒ تُحذفان في أضيق درجة. */}
-            {!payUltra && (
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-2">
-                  <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700">
-                    <ShoppingCart aria-hidden className="size-3" /> منتجات جاهزة
-                  </div>
-                  <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumDirect)}</div>
-                </div>
-                <div className="rounded-lg border border-violet-500/25 bg-violet-500/10 p-2">
-                  <div className="inline-flex items-center gap-1 text-[10px] font-bold text-violet-700">
-                    <Printer aria-hidden className="size-3" /> خدمات وطباعة
-                  </div>
-                  <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumCustom)}</div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* منطقة الإدخال — تتّسع بلا تمرير: الاحتواء المتكيّف أعلاه حذف الثانويّ بالفعل، ولوحة
-              الأرقام تمتصّ الفائض بوحدات الحاوية. التمرير لا يُفتح إلا تحت ٤٥٢px (لا يُبلَغ عملياً). */}
-          <div className={cn("flex min-h-0 flex-1 flex-col", payOverflowGuard ? "overflow-y-auto overscroll-contain" : "overflow-hidden")}>
-          {/* م٤ — حقل المبلغ الحقيقيّ: `payInput` كان بلا أيّ مدخلٍ نصّيّ (F13) — حذفُ أوضاع
-              اللوحة بلا هذا البديل كان يشلّ إدخال أيّ مبلغٍ جزئيّ/عربون. */}
-          <div className={cn("flex-shrink-0 px-3", payUltra ? "pb-0.5 pt-1" : "pb-1 pt-2")}>
-            <div className={cn(
-              "flex items-center justify-between gap-2 rounded-lg border-[1.5px] bg-muted/40 px-3 focus-within:border-primary",
-              payUltra ? "min-h-[36px] py-1" : "min-h-[44px] py-1.5",
-            )}>
-              <span className="shrink-0 text-xs text-muted-foreground">المبلغ المدفوع</span>
-              <input
-                value={payInput}
-                onChange={(e) => {
-                  const v = e.target.value.replace(/[^\d.]/g, "");
-                  if ((v.match(/\./g) ?? []).length <= 1) setPayInput(v);
-                }}
-                inputMode="decimal"
-                dir="ltr"
-                placeholder="0"
-                aria-label="المبلغ المدفوع"
-                className={cn(
-                  "w-full min-w-0 bg-transparent text-end font-black tabular-nums outline-none",
-                  payUltra ? "text-xl" : "text-2xl",
-                  isOwing && "text-amber-600",
-                  isChange && "text-emerald-600",
-                )}
-              />
-            </div>
-          </div>
-
-          {/* مبالغ سريعة — تُحذف عند ضيق الارتفاع (لوحة الأرقام تُغنِي عنها؛ حذف الثانويّ لا تصغير الأساسيّ). */}
-          {!payDense && (
-          <div className="flex flex-shrink-0 flex-wrap gap-1.5 px-3 py-1">
-            {QUICK_AMTS.map((v) => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => setQuickAmt(v)}
-                className="h-7 rounded-md border-[1.5px] bg-card px-2 text-[11px] font-bold tabular-nums hover:bg-muted"
-                dir="ltr"
-              >
-                {v.toLocaleString("en-US")}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={payAll}
-              className="h-7 rounded-md border-[1.5px] border-primary bg-card px-2 text-[11px] font-extrabold text-primary hover:bg-primary/10"
-            >
-              = الكل
-            </button>
-          </div>
-          )}
-
-          {/* لوحة الأرقام — تمتصّ الفائض: صفوفها `1fr` داخل كتلةٍ `flex-1` فتكبر بالمساحة المتاحة
-              وتنكمش معها بلا قصٍّ ولا تمرير. الحدّ الأدنى 44px (هدف اللمس المعياريّ)، ولا ينزل إلى
-              40px إلا في الدرجة الأضيق بعد حذف كل ثانويّ. */}
-          {/* م٤ (§٨.٣): لوحة مبلغٍ خالصة — العمود المُحرَّر من أزرار الأوضاع صار: 000 (أعلى مفتاحٍ
-              عائداً في سوق الدينار) و«= الكل» و«عربون» المنسدل (عند وجود تخصيص). */}
-          <div className="min-h-0 flex-1 px-3 py-1">
-            <div className={cn("grid h-full grid-cols-[auto_1fr_1fr_1fr] grid-rows-4 gap-1.5", payUltra ? "[--numh:40px]" : "[--numh:44px]")} dir="rtl">
-              <button onClick={() => numPress("000")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] bg-card text-sm font-extrabold tabular-nums hover:bg-muted")} dir="ltr">000</button>
-              <NumKey k="3" onPress={numPress} />
-              <NumKey k="2" onPress={numPress} />
-              <NumKey k="1" onPress={numPress} />
-
-              <button onClick={payAll} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] border-primary bg-card text-xs font-extrabold text-primary hover:bg-primary/10")}>= الكل</button>
-              <NumKey k="6" onPress={numPress} />
-              <NumKey k="5" onPress={numPress} />
-              <NumKey k="4" onPress={numPress} />
-
-              <div className="relative">
-                <button
-                  onClick={() => setDepositMenuOpen((v) => !v)}
-                  disabled={!hasCustom}
-                  title={hasCustom ? "تعبئة عربونٍ سريعة: الجاهز كاملاً + نسبة من المخصّص" : "يظهر عند وجود طلب تخصيص في السلة"}
-                  className={cn(NUM_H, "w-full min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", hasCustom ? "bg-card hover:bg-muted" : "cursor-not-allowed bg-muted/40 text-muted-foreground/50")}
-                >
-                  عربون <ChevronDown aria-hidden className="inline size-3" />
-                </button>
-                {depositMenuOpen && hasCustom && (
-                  <div className="absolute end-0 top-[calc(100%+4px)] z-30 w-44 rounded-lg border bg-card p-1.5 shadow-xl" dir="rtl">
-                    <div className="px-1 pb-1 text-[10px] text-muted-foreground">الجاهز كاملاً + نسبة من المخصّص:</div>
-                    {([["٢٥٪", 0.25], ["٥٠٪", 0.5], ["المخصّص كاملاً", 1]] as const).map(([label, pct]) => (
-                      <button
-                        key={label}
-                        type="button"
-                        onClick={() => fillDeposit(pct)}
-                        className="block w-full rounded-md px-2 py-1.5 text-start text-xs font-bold hover:bg-muted"
-                      >
-                        {label}
-                        <span className="ms-1 text-[10px] font-semibold text-muted-foreground tabular-nums" dir="ltr">
-                          = {fmt(round2(sumDirectD.plus(sumCustomD.times(pct))).toNumber())}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <NumKey k="9" onPress={numPress} />
-              <NumKey k="8" onPress={numPress} />
-              <NumKey k="7" onPress={numPress} />
-
-              <button onClick={() => numPress("DEL")} className={cn(NUM_H, "grid place-items-center rounded-lg border-[1.5px] bg-red-50 text-red-700 hover:bg-red-100")} aria-label="حذف آخر رقم">
-                <X aria-hidden className="size-4" />
-              </button>
-              <NumKey k="." onPress={numPress} />
-              <NumKey k="0" onPress={numPress} />
-              <button onClick={() => numPress("C")} className={cn(NUM_H, "rounded-lg border-[1.5px] bg-card text-xs font-extrabold text-muted-foreground hover:bg-muted")}>C</button>
-            </div>
-          </div>
-
-          {/* طريقة الدفع — عند الضيق يُحذف العنوان وتُعاد الأيقونة والنصّ إلى صفٍّ واحد داخل
-              الزرّ (تركيبٌ متكيّف) بدل تصغير الزرّ نفسه: يبقى ≥44px هدفَ لمسٍ سليماً. */}
-          <div className={cn("flex-shrink-0 px-3", payUltra ? "py-0.5" : "py-1.5")}>
-            {!payDense && <div className="mb-1 text-[11px] font-bold text-muted-foreground">طريقة الدفع</div>}
-            <div className="flex gap-1.5">
-              {(
-                [
-                  { v: "CASH", label: "نقدي", Icon: Banknote },
-                  { v: "CARD", label: "بطاقة", Icon: CreditCard },
-                  { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight },
-                  { v: "WALLET", label: "محفظة", Icon: Wallet },
-                ] as const
-              ).map((p) => (
-                <button
-                  key={p.v}
-                  onClick={() => setMethod(p.v)}
-                  className={cn(
-                    "flex flex-1 items-center justify-center rounded-lg border-2 text-xs font-extrabold transition-colors",
-                    payUltra
-                      ? "min-h-[44px] flex-row gap-1 py-1"
-                      : "min-h-[clamp(46px,6.6cqh,60px)] flex-col gap-0.5 py-2",
-                    method === p.v
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "bg-card hover:bg-muted",
-                  )}
-                >
-                  <p.Icon aria-hidden className={payUltra ? "size-4" : "size-5"} />
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            {needPaymentRef && (
-              <Input
-                value={paymentReference}
-                onChange={(e) => setPaymentReference(e.target.value)}
-                placeholder={
-                  method === "CARD" ? "أدخل رقم عملية البطاقة"
-                  : method === "WALLET" ? "أدخل رقم عملية المحفظة"
-                  : "أدخل رقم التحويل"
-                }
-                className="mt-2 h-9 text-xs"
-                dir="ltr"
-              />
-            )}
-          </div>
-
-          {/* كوبون خصم — نادر الاستعمال ⇒ يُطوى خلف زرٍّ عند الضيق، ويبقى ظاهراً دائماً وهو
-              مُطبَّق (لا يُخفى خصمٌ سارٍ) أو حين يطلبه الموظّف صراحةً. */}
-          {payDense && !couponCode && !couponOpen ? (
-            <div className="flex-shrink-0 px-3 py-1">
-              <button
-                type="button"
-                onClick={() => setCouponOpen(true)}
-                className="inline-flex h-8 items-center gap-1 rounded-md border-[1.5px] bg-card px-2 text-[11px] font-bold text-muted-foreground hover:bg-muted"
-              >
-                <Ticket aria-hidden className="size-3.5" /> كوبون خصم
-              </button>
-            </div>
-          ) : (
-          <div className="flex-shrink-0 px-3 py-1.5">
-            <div className="mb-1 flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
-              <Ticket aria-hidden className="size-3.5" /> كوبون خصم
-            </div>
-            {couponCode ? (
-              <div className="flex items-center justify-between rounded-md border border-money-positive/40 bg-money-positive/10 px-2 py-1.5 text-xs font-bold text-money-positive">
-                <span>{couponLabel ?? couponCode}</span>
-                <button type="button" onClick={clearCoupon} className="text-[11px] font-semibold underline">إزالة</button>
-              </div>
-            ) : (
-              <div className="flex gap-1.5">
-                <Input
-                  value={couponInput}
-                  onChange={(e) => setCouponInput(e.target.value)}
-                  placeholder="رمز الكوبون"
-                  className="h-8 flex-1 text-xs"
-                  dir="ltr"
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyCoupon(); } }}
-                />
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-8"
-                  disabled={!couponInput.trim() || couponPreview.isPending}
-                  onClick={applyCoupon}
-                >
-                  {couponPreview.isPending ? "…" : "تطبيق"}
-                </Button>
-              </div>
-            )}
-          </div>
-          )}
-
-          {/* مؤشّر فكّة/متبقّي */}
-          <div className="flex flex-shrink-0 items-center justify-between border-t px-3 py-1.5 text-xs">
-            {isChange && paid > 0 && (
-              <>
-                <span className="font-semibold text-emerald-700">الفكّة:</span>
-                <span className="text-xl font-black tabular-nums text-emerald-700" dir="ltr">
-                  {fmt(change)} <span className="text-[10px] font-medium">د.ع</span>
-                </span>
-              </>
-            )}
-            {isOwing && (
-              <>
-                <span className="font-semibold text-amber-700">متبقّي:</span>
-                <span className="text-xl font-black tabular-nums text-amber-700" dir="ltr">
-                  {fmt(remaining)} <span className="text-[10px] font-medium">د.ع</span>
-                </span>
-              </>
-            )}
-            {!isChange && !isOwing && (
-              <span className="text-muted-foreground">المتوقّع الآن: <span className="font-bold tabular-nums" dir="ltr">{fmt(expectedNow)} د.ع</span></span>
-            )}
-          </div>
-          </div>{/* ← نهاية منطقة الإدخال */}
-
-          {/* منطقة الفعل — لا تنكمش أبداً: زرّا الدفع يبقيان ظاهرَين وقابلَين للنقر
-              مهما بلغ الزوم أو ضاق الارتفاع (هذا ما كان يختفي قبل الإصلاح). */}
-          <div className={cn("flex-shrink-0 space-y-1.5 px-3", payUltra ? "pb-2 pt-0.5" : "pb-3 pt-1")}>
-            <button
-              type="button"
-              disabled={cart.length === 0 || submitting || !shift}
-              onClick={() => void handleSubmit({ quickFullPay: true })}
-              className="inline-flex h-[clamp(44px,6cqh,52px)] w-full items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-sm font-black text-white shadow-md transition-colors hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
-            >
-              <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
-            </button>
-            <button
-              type="button"
-              disabled={cart.length === 0 || submitting || !shift}
-              onClick={() => void handleSubmit({ quickFullPay: false })}
-              className="inline-flex h-[clamp(48px,6.5cqh,56px)] w-full items-center justify-center gap-1.5 rounded-lg bg-primary text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
-            >
-              {submitting ? (
-                "جارٍ الإرسال…"
-              ) : sumCustom > 0 && sumDirect > 0 ? (
-                <><Printer aria-hidden className="size-4" /> تثبيت البيع وإرسال الطباعة</>
-              ) : sumCustom > 0 ? (
-                <><Printer aria-hidden className="size-4" /> إرسال للمطبعة</>
-              ) : (
-                <><Check aria-hidden className="size-4" /> إتمام الطلب وطباعة</>
-              )}
-            </button>
-            {!payDense && (
-              <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F2 بحث</div>
-            )}
-          </div>
-        </div>
+          onFocusStep={() => setWorkflowStep(4)}
+          payInput={payInput}
+          setPayInput={setPayInput}
+          method={method}
+          setMethod={setMethod}
+          paymentReference={paymentReference}
+          setPaymentReference={setPaymentReference}
+          needPaymentRef={needPaymentRef}
+          grandTotal={grandTotal}
+          expectedNow={expectedNow}
+          cashRoundingDelta={cashRoundingDelta}
+          sumDirect={sumDirect}
+          sumCustom={sumCustom}
+          heldDelivery={heldDelivery}
+          cashDueNow={cashDueNow}
+          paid={paid}
+          change={change}
+          remaining={remaining}
+          isChange={isChange}
+          isOwing={isOwing}
+          hasCustom={hasCustom}
+          depositMenuOpen={depositMenuOpen}
+          setDepositMenuOpen={setDepositMenuOpen}
+          depositOptions={depositOptions}
+          numPress={numPress}
+          payAll={payAll}
+          setQuickAmt={setQuickAmt}
+          couponCode={couponCode}
+          couponLabel={couponLabel}
+          couponInput={couponInput}
+          setCouponInput={setCouponInput}
+          couponOpen={couponOpen}
+          setCouponOpen={setCouponOpen}
+          applyCoupon={applyCoupon}
+          clearCoupon={clearCoupon}
+          couponPending={couponPreview.isPending}
+          submitting={submitting}
+          cartEmpty={cart.length === 0}
+          hasShift={!!shift}
+          onSubmit={(opts) => void handleSubmit(opts)}
+        />
       </div>
 
       {/* شارة المزامنة — تُركَّب في كلّ شاشات الكاشير: تعرض حالة الاتصال وطابور الالتقاط،
@@ -2669,61 +2044,13 @@ export default function Reception() {
         />
       )}
 
-      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام: الفكّة بخطٍّ ضخم + المستندات + إعادة الطباعة. */}
+      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام: الفكّة بخطٍّ ضخم + المستندات + إعادة الطباعة. */}
       {showReceiptOverlay && lastSale && (
-        <div className="fixed inset-0 z-[90] grid place-items-center bg-black/50 p-4" dir="rtl" onClick={() => setShowReceiptOverlay(false)}>
-          <div className="w-full max-w-sm space-y-3 rounded-2xl bg-card p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2">
-              <span className="grid size-9 place-items-center rounded-full bg-money-positive/15 text-money-positive">
-                <Check aria-hidden className="size-5" strokeWidth={3} />
-              </span>
-              <h3 className="text-lg font-extrabold">تمّ الطلب</h3>
-            </div>
-            {lastSale.changeStr && (
-              <div className="rounded-xl border-2 border-money-positive/40 bg-money-positive/10 p-3 text-center">
-                <div className="text-xs font-bold text-money-positive">الفكّة للزبون</div>
-                <div className="text-4xl font-black tabular-nums text-money-positive" dir="ltr">{fmt(lastSale.changeStr)}</div>
-              </div>
-            )}
-            {lastSale.creditStr && (
-              <div className="rounded-xl border-2 border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-center">
-                <div className="text-xs font-bold text-[var(--sem-warn)]">المتبقّي (آجل / عند الاستلام)</div>
-                <div className="text-3xl font-black tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(lastSale.creditStr)}</div>
-              </div>
-            )}
-            <div className="space-y-1 rounded-lg border bg-muted/30 p-2.5 text-xs">
-              {lastSale.invoiceNumbers.map((n) => (
-                <div key={n} className="flex items-center justify-between">
-                  <span className="text-muted-foreground">فاتورة</span>
-                  <span className="font-bold tabular-nums" dir="ltr">{n}</span>
-                </div>
-              ))}
-              {lastSale.workOrderNumbers.map((n) => (
-                <div key={n} className="flex items-center justify-between">
-                  <span className="text-muted-foreground">طلب تخصيص</span>
-                  <span className="font-bold tabular-nums" dir="ltr">{n}</span>
-                </div>
-              ))}
-              <div className="flex items-center justify-between border-t pt-1">
-                <span className="text-muted-foreground">الإجمالي</span>
-                <span className="font-extrabold tabular-nums" dir="ltr">{fmt(lastSale.totalStr)} د.ع</span>
-              </div>
-            </div>
-            {lastSale.printFailures > 0 && (
-              <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[11px] font-bold text-destructive">
-                تعذّرت طباعة {lastSale.printFailures} مستند — أعد الطباعة أدناه بعد فحص الطابعة.
-              </p>
-            )}
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => reprintLastRef.current?.()}>
-                <Printer aria-hidden className="size-4 me-1" /> إعادة طباعة (F9)
-              </Button>
-              <Button className="flex-1" onClick={() => setShowReceiptOverlay(false)}>
-                طلب جديد (Esc)
-              </Button>
-            </div>
-          </div>
-        </div>
+        <ReceiptOverlay
+          lastSale={lastSale}
+          onReprint={() => reprintLastRef.current?.()}
+          onClose={() => setShowReceiptOverlay(false)}
+        />
       )}
 
       {/* م٦ — اعتماد المدير للخصم >١٠٪ (استباقيّ): يُتحقَّق خادمياً لحظة الالتزام. */}
@@ -2748,144 +2075,5 @@ export default function Reception() {
         />
       )}
     </div>
-  );
-}
-
-/** تبويب ورشةٍ في رأس عمود العمل (§٨.١). */
-function WsTab({ active, onClick, Icon, label, badge }: {
-  active: boolean;
-  onClick: () => void;
-  Icon: typeof ShoppingCart;
-  label: string;
-  badge?: number;
-}) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-extrabold transition-colors",
-        active ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-muted",
-      )}
-    >
-      <Icon aria-hidden className="size-4" />
-      {label}
-      {badge != null && badge > 0 && (
-        <span className={cn("rounded-full px-1.5 text-[10px] tabular-nums", active ? "bg-primary-foreground/20" : "bg-muted-foreground/15")}>{badge}</span>
-      )}
-    </button>
-  );
-}
-
-/** م٤ (§٨.٤) — خصم الصفّ: رقائق تقف عند ١٠٪ (م٦)، ونسبة حرّة فوقها تستدعي اعتماد المدير. */
-function LineDiscountPopover({ line, isElevated, onApply, onClose }: {
-  line: CartLine;
-  isElevated: boolean;
-  onApply: (pct: number | null) => void;
-  onClose: () => void;
-}) {
-  const [freePct, setFreePct] = useState(line.disc != null ? String(line.disc) : "");
-  const base = line.origPrice ?? Number(line.row.price ?? 0);
-  const pctNum = Math.min(100, Math.max(0, parseFloat(freePct) || 0));
-  const preview = base * (1 - pctNum / 100);
-  return (
-    <div
-      className="absolute start-1/2 top-[calc(100%+4px)] z-40 w-60 -translate-x-1/2 rounded-xl border bg-card p-2.5 text-start shadow-2xl"
-      dir="rtl"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div className="mb-1.5 flex items-center justify-between">
-        <span className="inline-flex items-center gap-1 text-[11px] font-extrabold"><Percent aria-hidden className="size-3" /> خصم الصفّ</span>
-        <button type="button" onClick={onClose} aria-label="إغلاق" className="text-muted-foreground hover:text-foreground"><X aria-hidden className="size-3.5" /></button>
-      </div>
-      <div className="mb-1.5 flex gap-1.5">
-        {[5, 10].map((p) => (
-          <button
-            key={p}
-            type="button"
-            onClick={() => onApply(p)}
-            className="min-h-[36px] flex-1 rounded-lg border bg-card text-xs font-extrabold tabular-nums hover:bg-muted"
-          >
-            {p}٪
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={() => onApply(null)}
-          disabled={line.disc == null}
-          className="min-h-[36px] flex-1 rounded-lg border bg-card text-[11px] font-bold text-muted-foreground hover:bg-muted disabled:opacity-40"
-        >
-          إزالة
-        </button>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <input
-          value={freePct}
-          onChange={(e) => setFreePct(e.target.value.replace(/[^\d.]/g, ""))}
-          inputMode="decimal"
-          dir="ltr"
-          placeholder="نسبة حرّة"
-          aria-label="نسبة خصم حرّة"
-          className="h-9 w-full rounded-md border bg-card px-2 text-center text-sm font-bold tabular-nums outline-none focus:border-primary"
-        />
-        <Button size="sm" className="h-9" disabled={pctNum <= 0} onClick={() => onApply(pctNum)}>تطبيق</Button>
-      </div>
-      {pctNum > 0 && (
-        <div className="mt-1.5 rounded-md bg-muted/50 px-2 py-1 text-[11px] tabular-nums" dir="ltr">
-          {fmt(base)} ← <span className="font-extrabold">{fmt(preview)}</span>
-          <span className="ms-1 text-money-positive">وفّر {fmt(base - preview)}</span>
-        </div>
-      )}
-      {pctNum > 10 && !isElevated && (
-        <p className="mt-1.5 text-[10px] font-bold text-[var(--sem-warn)]">فوق ١٠٪ — سيُطلَب اعتماد المدير.</p>
-      )}
-    </div>
-  );
-}
-
-/** حوار اعتماد المدير (بريد + كلمة مرور) — يُتحقَّق خادمياً عبر verifyManagerApproval عند الالتزام. */
-function ManagerApprovalDialog({ pct, onApprove, onCancel }: {
-  pct: number;
-  onApprove: (email: string, password: string) => void;
-  onCancel: () => void;
-}) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  return (
-    <div className="fixed inset-0 z-[95] grid place-items-center bg-black/50 p-4" dir="rtl" onClick={onCancel}>
-      <div className="w-full max-w-xs space-y-3 rounded-2xl bg-card p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-sm font-extrabold">اعتماد مدير — خصم {pct}٪</h3>
-        <p className="text-[11px] leading-relaxed text-muted-foreground">
-          الخصم فوق ١٠٪ يحتاج مديراً (تُفحص البيانات على الخادم لحظة إتمام الطلب وتُسجَّل باسمه).
-        </p>
-        <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="بريد المدير" dir="ltr" className="h-10 text-sm" autoComplete="off" />
-        <Input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="كلمة المرور" dir="ltr" className="h-10 text-sm" autoComplete="new-password" />
-        <div className="flex gap-2">
-          <Button variant="outline" className="flex-1" onClick={onCancel}>إلغاء</Button>
-          <Button className="flex-1" disabled={!email.trim() || !password} onClick={() => onApprove(email.trim(), password)}>
-            اعتماد
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** ارتفاع مفتاح اللوحة: يملأ صفّ الشبكة (h-full) بحدٍّ أدنى هو هدف اللمس المعياريّ الممرَّر
- *  بالمتغيّر `--numh` من الحاوية (44px، و40px في الدرجة الأضيق) ⇒ يكبر بالمساحة ولا يُقصّ. */
-const NUM_H = "h-full min-h-[var(--numh,44px)]";
-
-function NumKey({ k, onPress }: { k: string; onPress: (k: string) => void }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onPress(k)}
-      className={cn(NUM_H, "rounded-lg border-[1.5px] bg-muted/40 text-lg font-extrabold tabular-nums hover:bg-muted")}
-      dir="ltr"
-    >
-      {k}
-    </button>
   );
 }
