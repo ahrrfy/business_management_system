@@ -283,6 +283,9 @@ export const saleRouter = router({
         // الإرجاع الكامل (`returnService`). كان المحرّك يدعمه (`createSale`) بينما الراوتر لا يقبله،
         // فبقيت خانة الشحن مخفيّةً في شاشة الفاتورة المتقدّمة. «توصيل مجاني» = صفر (أو تركُه فارغاً).
         deliveryFee: nonNegMoneyString.optional(),
+        // إفصاح التوصيل المجّاني (0152): يميّز «أُهديت أجرته» عن «بلا توصيل». بلا أثر ماليّ.
+        deliveryFree: z.boolean().optional(),
+        deliveryWaivedAmount: nonNegMoneyString.optional(),
         payment: z.object({
           amount: positiveMoneyString,
           method,
@@ -810,6 +813,11 @@ export const saleRouter = router({
           deviceId: invoices.posDeviceId,
           cancelledByName: invoices.cancelledByNameSnapshot,
           cancelledAt: invoices.cancelledAt,
+          // إفصاح التوصيل (0152): الأجرة المقبوضة، وهل أُهديت، وقيمة ما تُنوزِل عنه — تُعرَض
+          // في الشاشة وتُطبَع، فيميّز الزبون «توصيل مجّاني» عن «بلا توصيل».
+          deliveryFee: invoices.deliveryFee,
+          deliveryFree: invoices.deliveryFree,
+          deliveryWaivedAmount: invoices.deliveryWaivedAmount,
           workOrderCreatedBy: workOrders.createdBy,
         })
         .from(invoices)
@@ -847,6 +855,7 @@ export const saleRouter = router({
         // يُقرأ خطأَ إدخالٍ، والوسم يُثبت أنّ المجّانيّة قرارٌ مسجَّلٌ بتكلفةٍ مُرحَّلة في الدفتر).
         isGift: invoiceItems.isGift,
         productId: products.id,
+
         productName: products.name,
         sku: productVariants.sku,
         variantName: productVariants.variantName,

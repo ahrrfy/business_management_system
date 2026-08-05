@@ -83,7 +83,8 @@ export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTo
     totalTax = afterGlobalDisc.times(invoiceTaxRate).dividedBy(100);
   }
 
-  const shipping = safeD(state.shipping);
+  // توصيلٌ مجّانيّ ⇒ صفرٌ في الإجمالي: قيمة `shipping` حينها هي المُتنازَل عنه لا مبلغٌ يُقبض.
+  const shipping = state.shippingFree ? new Decimal(0) : safeD(state.shipping);
   const otherExpenses = safeD(state.otherExpenses);
   const grandTotal = afterGlobalDisc.plus(totalTax).plus(shipping).plus(otherExpenses);
   const paid = safeD(state.paidAmount);

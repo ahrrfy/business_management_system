@@ -431,6 +431,17 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       giftLines.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))
     );
 
+    // إفصاح التوصيل المجّاني (0152): «مجّانيّ» = أجرةٌ صفر حتماً. الحسم خادميّ لا من الشاشة:
+    // عَلَمٌ مع أجرةٍ موجبة تناقضٌ (فاتورةٌ تقول «مجاناً» وتقبض) ⇒ الأجرة تُغلِّب والعَلَم يسقط.
+    // القيمة المُتنازَل عنها إفصاحيّة بحتة: تُعرَض للزبون وتُحصى في التقارير ولا تدخل إيراداً
+    // ولا قيداً — الإيراد يبقى `deliveryFee` وحده (صفرٌ في هذه الحالة).
+    const deliveryFeeD = round2(money(input.deliveryFee ?? "0"));
+    const isFreeDelivery = input.deliveryFree === true && deliveryFeeD.lte(0);
+    const waivedDelivery = round2(money(input.deliveryWaivedAmount ?? "0"));
+    if (waivedDelivery.lt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "قيمة التوصيل المُتنازَل عنها لا تصحّ أن تكون سالبة" });
+    }
+
     // 6.b SALES-01/02 — بوّابة البيع بأقل من التكلفة (سدّ حرج: كاشير يبيع بسعر/خصم صفر).
     //     المنطق مشترك في billing.isInvoiceBelowCost ⇒ لا تَنجرف سياسة POS عن قناة الطباعة.
     //     أيُّ بند/فاتورة تحت COGS يَلزمه موافقة مدير (الراوتر يَمنح المدير/الأدمن السلطة ذاتياً).
@@ -541,6 +552,11 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       // أجرة الشحن كإيراد (مُضمَّنة في total ومُعترَف بها في revenue أدناه) — تُخزَّن صراحةً ليعكسها
       // المرتجع الكامل بدقّة (returnService) فيبقى Σ(revenue)=Σ(profit)=0.
       deliveryFee: toDbMoney(round2(money(input.deliveryFee ?? "0"))),
+      // إفصاح التوصيل المجّاني (0152): يُحسَم **خادمياً** — «مجّانيّ» تعني أجرةً صفراً حتماً،
+      // فلو وردت أجرةٌ موجبة مع العَلَم فالأجرة تُغلِّب والعَلَم يسقط (لا فاتورةٌ تقول «مجاناً»
+      // وتقبض أجرةً في آنٍ واحد). والقيمة المُتنازَل عنها لا تُخزَّن إلّا مع المجّانيّة الفعلية.
+      deliveryFree: isFreeDelivery,
+      deliveryWaivedAmount: toDbMoney(isFreeDelivery ? waivedDelivery : money(0)),
       status,
       paidAmount: toDbMoney(paidNow),
       paymentMethod: input.payment?.method ?? null,

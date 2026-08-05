@@ -404,6 +404,9 @@ export default function InvoiceDetail() {
         taxAmount: shares[i] ?? "0",
         isGift: it.isGift,
       })),
+      deliveryFee: data.deliveryFee,
+      deliveryFree: data.deliveryFree,
+      deliveryWaivedAmount: data.deliveryWaivedAmount,
     });
   }
 
@@ -590,6 +593,20 @@ export default function InvoiceDetail() {
                   value={data.taxAmount}
                 />
               )}
+              {/* إفصاح التوصيل (0152): أجرةٌ مقبوضة، أو توصيلٌ أُهدي (بقيمته)، أو لا سطر
+                  إطلاقاً حين لا توصيل — الصفر الصامت كان يخلط الحالتين الأخيرتين. */}
+              {Number(data.deliveryFee ?? 0) > 0 ? (
+                <SummaryRow label="أجرة التوصيل" value={data.deliveryFee} />
+              ) : data.deliveryFree ? (
+                <div className="flex items-center justify-between py-1 text-sm">
+                  <span className="text-muted-foreground">التوصيل</span>
+                  <span className="badge-status-active rounded-md px-1.5 py-0.5 text-xs font-extrabold">
+                    {Number(data.deliveryWaivedAmount ?? 0) > 0
+                      ? `مجاناً — قيمته ${fmt(data.deliveryWaivedAmount)} د.ع`
+                      : "مجاناً"}
+                  </span>
+                </div>
+              ) : null}
               <div className="border-t pt-2.5">
                 <SummaryRow label="الإجمالي" value={data.total} strong />
               </div>

@@ -71,6 +71,12 @@ export interface InvoiceState {
   globalDiscount: string;
   globalDiscountType: DiscountType;
   shipping: string;
+  /**
+   * إفصاح التوصيل المجّاني (0152، فاتورة البيع): `true` = وُصِّل الطلب وأُهديت أجرته، وقيمة
+   * `shipping` حينها هي **المُتنازَل عنه** لا مبلغٌ يُقبض. يميّز «توصيل مجّاني» عن «بلا توصيل»
+   * (كلاهما كان صفراً). لا يدخل الإجمالي ولا الإيراد — إفصاحٌ للزبون وللتقارير.
+   */
+  shippingFree: boolean;
   otherExpenses: string;
   paidAmount: string;
   /** تفعيل ضريبة على مستوى الفاتورة (اختياري — العراق VAT=0% افتراضياً). */
