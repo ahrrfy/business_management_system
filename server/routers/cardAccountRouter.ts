@@ -44,7 +44,7 @@ export const cardAccountRouter = router({
           // بحث نصّي (الوصف/المرجع/رقم السند/الطرف الحرّ/آخر ٤ أرقام) + نوع مصدر الحركة —
           // وظيفة الشاشة الأساسية (مطابقة كشف البنك بحثاً عن حركة بعينها).
           q: z.string().trim().min(1).max(200).optional(),
-          sourceType: z.enum(["VOUCHER", "INVOICE_PAYMENT", "WORK_ORDER", "OTHER"]).optional(),
+          sourceType: z.enum(["VOUCHER", "INVOICE_PAYMENT", "WORK_ORDER", "DRAFT_DEPOSIT", "OTHER"]).optional(),
           limit: z.number().int().min(1).max(500).optional(),
           offset: z.number().int().min(0).optional(),
         })

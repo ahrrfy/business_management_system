@@ -37,6 +37,9 @@ const FLAG_SHORTAGE_TOTAL_IQD = new Decimal("25000");
 const FLAG_REVERSALS_PER_USER = 2;
 /** سحب بضاعة الأمانة: يُعلَّم مُنشئ ≥ هذا العدد من سندات السحب/الاستبدال بالفترة (SOD فاعل واحد). */
 const FLAG_CONSIGN_WITHDRAWALS_PER_USER = 3;
+/** D8 (ش٤): مسوّدات مموّلة أُلغيت بلا تثبيت — يُعلَّم مُنشئ ≥ هذا العدد بالفترة (نمط
+ *  «اقبض ثم رُدّ ثم ألغِ» المتكرّر أثرُ تلاعبٍ محتملٌ بالدرج وإن كان كل مستندٍ فردياً سليماً). */
+const FLAG_CANCELLED_FUNDED_DRAFTS_PER_USER = 2;
 /** حدّ أسوأ أسطر البيع دون الكلفة المعروضة. */
 const WORST_LINES_LIMIT = 10;
 
@@ -134,6 +137,18 @@ export interface ConsignWithdrawRow {
   flagged: boolean;
 }
 
+/** D8 (ش٤): مسوّدات استقبالٍ مموّلة أُلغيت بلا تثبيت — لكل مُنشئ (يُشحن مع ميزة العرابين). */
+export interface CancelledFundedDraftRow {
+  userId: number | null;
+  userName: string;
+  draftCount: number;
+  /** Σ ما قُبض على تلك المسوّدات (COLLECTION). */
+  collectedTotal: string;
+  /** Σ ما رُدّ منها (REFUND) — يساوي المقبوض حتماً قبل الإلغاء (شرط الإلغاء صافي صفر). */
+  refundedTotal: string;
+  flagged: boolean;
+}
+
 export interface AnomalyWatchResult {
   generatedAt: string;
   from: string;
@@ -147,6 +162,7 @@ export interface AnomalyWatchResult {
     reversedVouchers: number;
     sequenceGapDays: number;
     flaggedConsignWithdrawers: number;
+    flaggedCancelledFundedDrafters: number;
   };
   belowCost: { cashiers: BelowCostCashierRow[]; worstLines: BelowCostLineRow[] };
   discounts: { rows: DiscountCashierRow[]; scopeAvgRatePct: string };
@@ -155,6 +171,7 @@ export interface AnomalyWatchResult {
   reversedVouchers: { rows: ReversedVoucherRow[] };
   sequenceGaps: { rows: SequenceGapRow[] };
   consignWithdrawals: { rows: ConsignWithdrawRow[] };
+  cancelledFundedDrafts: { rows: CancelledFundedDraftRow[] };
 }
 
 const UNKNOWN_USER = "غير معروف";
@@ -193,6 +210,7 @@ export async function getAnomalyWatch(opts: {
       reversedVouchers: 0,
       sequenceGapDays: 0,
       flaggedConsignWithdrawers: 0,
+      flaggedCancelledFundedDrafters: 0,
     },
     belowCost: { cashiers: [], worstLines: [] },
     discounts: { rows: [], scopeAvgRatePct: "0.00" },
@@ -201,6 +219,7 @@ export async function getAnomalyWatch(opts: {
     reversedVouchers: { rows: [] },
     sequenceGaps: { rows: [] },
     consignWithdrawals: { rows: [] },
+    cancelledFundedDrafts: { rows: [] },
   };
   if (!db) return empty;
 
@@ -419,7 +438,29 @@ export async function getAnomalyWatch(opts: {
     null,
   );
 
-  const [belowCashRes, belowLinesRes, discRes, retSellersRes, retProcRes, shortRes, revRes, gapsRes, consignWithdrawRes] =
+  // ── D8 (ش٤): مسوّدات مموّلة أُلغيت بلا تثبيت — لكل مُنشئ ──
+  // كل مستندٍ في السلسلة (قبض/ردّ/إلغاء مديريّ) سليمٌ فردياً؛ التكرار هو الإشارة. الشرط
+  // moneyLocked=1 (مرّ مالٌ من هنا يوماً) + CANCELLED خلال الفترة. المبالغ من orderPayments.
+  const branchDraft = branchId ? sql`AND d.branchId = ${branchId}` : sql``;
+  const cancelledFundedP = safe(
+    db.execute(sql`
+      SELECT d.createdBy AS userId, u.name AS userName,
+        COUNT(DISTINCT d.id) AS draftCount,
+        CAST(COALESCE(SUM(CASE WHEN op.orderPayKind = 'COLLECTION' THEN op.amount ELSE 0 END), 0) AS CHAR) AS collectedTotal,
+        CAST(COALESCE(SUM(CASE WHEN op.orderPayKind = 'REFUND' THEN op.amount ELSE 0 END), 0) AS CHAR) AS refundedTotal
+      FROM receptionDrafts d
+      LEFT JOIN orderPayments op ON op.draftId = d.id
+      LEFT JOIN users u ON u.id = d.createdBy
+      WHERE d.draftStatus = 'CANCELLED' AND d.moneyLocked = 1
+        AND d.cancelledAt >= ${fromTs} AND d.cancelledAt < ${toTs}
+        ${branchDraft}
+      GROUP BY d.createdBy, u.name
+      ORDER BY COUNT(DISTINCT d.id) DESC
+    `),
+    null,
+  );
+
+  const [belowCashRes, belowLinesRes, discRes, retSellersRes, retProcRes, shortRes, revRes, gapsRes, consignWithdrawRes, cancelledFundedRes] =
     await Promise.all([
       belowCostCashiersP,
       belowCostLinesP,
@@ -430,6 +471,7 @@ export async function getAnomalyWatch(opts: {
       reversedP,
       gapsP,
       consignWithdrawP,
+      cancelledFundedP,
     ]);
 
   // ── D1: تجميع ──
@@ -571,6 +613,19 @@ export async function getAnomalyWatch(opts: {
     };
   });
 
+  // ── D8: أعلام المسوّدات المموّلة الملغاة (≥ حدّ لكل مُنشئ بالفترة) ──
+  const cancelledFundedRows: CancelledFundedDraftRow[] = rowsOf(cancelledFundedRes).map((r) => {
+    const draftCount = Number(r.draftCount ?? 0);
+    return {
+      userId: r.userId == null ? null : Number(r.userId),
+      userName: r.userName ?? UNKNOWN_USER,
+      draftCount,
+      collectedTotal: toDbMoney(money(r.collectedTotal ?? 0)),
+      refundedTotal: toDbMoney(money(r.refundedTotal ?? 0)),
+      flagged: draftCount >= FLAG_CANCELLED_FUNDED_DRAFTS_PER_USER,
+    };
+  });
+
   return {
     generatedAt,
     from: opts.from,
@@ -584,6 +639,7 @@ export async function getAnomalyWatch(opts: {
       reversedVouchers: reversedRows.length,
       sequenceGapDays: gapRows.length,
       flaggedConsignWithdrawers: consignWithdrawRows.filter((r) => r.flagged).length,
+      flaggedCancelledFundedDrafters: cancelledFundedRows.filter((r) => r.flagged).length,
     },
     belowCost: { cashiers: belowCostCashiers, worstLines },
     discounts: { rows: discountRows, scopeAvgRatePct: pct(discScopeAvg) },
@@ -592,5 +648,6 @@ export async function getAnomalyWatch(opts: {
     reversedVouchers: { rows: reversedRows },
     sequenceGaps: { rows: gapRows },
     consignWithdrawals: { rows: consignWithdrawRows },
+    cancelledFundedDrafts: { rows: cancelledFundedRows },
   };
 }

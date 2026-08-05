@@ -43,6 +43,18 @@ export interface ReceptionCheckoutInput {
    *  وسم منشأ الفاتورتين (البيع المباشر وخدمات الطباعة) بالالتقاط دون اتصال. أوامر الشغل
    *  لا تُلتقَط أصلاً (ترقيم/إسناد/صور خادميّة) فلا معنى لوسمها. */
   offlineCapture?: { capturedAt: Date; offlineReceiptNumber: string; deviceId?: string | null } | null;
+  /** ش٤ (§٧.٢) — مالٌ قُبض سلفاً على هذه السلة (عرابين مسوّدة، يضبطه commitDraft حصراً):
+   *  يدخل التوزيع الجشع **أولاً** (البيع المباشر ⇒ أمر شغل ١ ⇒ ٢ …) ثم يكمله النقد الجديد
+   *  (paidAmount)، ولا يُنشأ له إيصالٌ ثانٍ في أيّ خدمة (I5). receiptIds/paymentIds تحملها
+   *  الحمولة لاكتمال العقد؛ التخصيص والختم في allocateAtCommit (حيث تُعرف وحدة الهدف). */
+  preCollected?: { total: string; receiptIds?: number[]; paymentIds?: number[] } | null;
+}
+
+/** حصص المال المقبوض سلفاً لكل هدفٍ بعد التوزيع الجشع — يستهلكها allocateAtCommit (ش٤). */
+export interface PreCollectedSplit {
+  sale: string;
+  print: string;
+  workOrders: string[];
 }
 
 async function isCompleteReplay(tx: Parameters<Parameters<typeof withTx>[0]>[0], input: ReceptionCheckoutInput) {
@@ -104,17 +116,24 @@ export async function checkoutReceptionInTx(
       }
     }
 
-    let normalizedWorkOrders = input.workOrders ?? [];
-    if (input.paidAmount != null) {
-      const directTotal = round2(
-        money(input.regularSale?.amount ?? "0").plus(money(input.printSale?.amount ?? "0")),
-      );
+    // ش٤: التوزيع الجشع بترتيب السلّة كما هو، لكن **المقبوض سلفاً يُطبَّق أولاً** (§٧.٢):
+    // البيع المباشر (العادي ثم الطباعة) ⇒ أمر شغل ١ ⇒ ٢ … كلُّ هدفٍ يستهلك P المتبقّي قبل N.
+    const preTotalD = round2(money(input.preCollected?.total ?? "0"));
+    const preSplit: PreCollectedSplit = { sale: "0.00", print: "0.00", workOrders: [] };
+    let normalizedWorkOrders = (input.workOrders ?? []).map((order) => ({
+      ...order,
+      depositPreCollected: "0.00",
+    }));
+    if (input.paidAmount != null || preTotalD.gt(0)) {
+      const regularAmount = round2(money(input.regularSale?.amount ?? "0"));
+      const printAmount = round2(money(input.printSale?.amount ?? "0"));
+      const directTotal = round2(regularAmount.plus(printAmount));
       const workTotal = round2(normalizedWorkOrders.reduce(
         (sum, order) => sum.plus(money(order.salePrice)),
         money("0"),
       ));
       const grandTotal = round2(directTotal.plus(workTotal));
-      const applied = round2(money(input.paidAmount));
+      const applied = round2(money(input.paidAmount ?? "0").plus(preTotalD));
       if (applied.lt(directTotal)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -125,6 +144,15 @@ export async function checkoutReceptionInTx(
         throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المطبق يتجاوز إجمالي الطلب" });
       }
 
+      // حصص P: البيع العادي ثم الطباعة ثم أوامر الشغل — نفس ترتيب استهلاك N بالضبط.
+      let preLeft = preTotalD;
+      const salePre = round2(preLeft.gte(regularAmount) ? regularAmount : preLeft);
+      preLeft = round2(preLeft.minus(salePre));
+      const printPre = round2(preLeft.gte(printAmount) ? printAmount : preLeft);
+      preLeft = round2(preLeft.minus(printPre));
+      preSplit.sale = salePre.toFixed(2);
+      preSplit.print = printPre.toFixed(2);
+
       let remainingForWork = applied.minus(directTotal);
       normalizedWorkOrders = normalizedWorkOrders.map((order) => {
         const orderTotal = round2(money(order.salePrice));
@@ -132,11 +160,17 @@ export async function checkoutReceptionInTx(
           ? money("0")
           : round2(remainingForWork.gte(orderTotal) ? orderTotal : remainingForWork);
         remainingForWork = round2(remainingForWork.minus(deposit));
+        const woPre = round2(preLeft.gte(deposit) ? deposit : preLeft);
+        preLeft = round2(preLeft.minus(woPre));
+        preSplit.workOrders.push(woPre.toFixed(2));
+        const newDeposit = round2(deposit.minus(woPre));
         return {
           ...order,
           deposit: deposit.toFixed(2),
-          paymentMethod: deposit.gt(0) ? input.paymentMethod : null,
-          paymentReference: deposit.gt(0) && input.paymentMethod !== "CASH"
+          depositPreCollected: woPre.toFixed(2),
+          // طريقة/مرجع إيصال العربون الجديد — تلزم فقط حين يوجد جزءٌ جديد N يُقبض الآن.
+          paymentMethod: newDeposit.gt(0) ? input.paymentMethod : null,
+          paymentReference: newDeposit.gt(0) && input.paymentMethod !== "CASH"
             ? input.paymentReference?.trim() || null
             : null,
         };
@@ -162,8 +196,11 @@ export async function checkoutReceptionInTx(
           couponCode: input.couponCode?.trim() || null,
           lines: input.regularSale.lines,
           cashRoundIQD: roundDirectCash,
+          // ش٤: حصة البيع المباشر من المقبوض سلفاً — تدخل paidAmount بلا إيصالٍ ثانٍ (I5)،
+          // والدفعة الجديدة payment.amount تُقلَّص بها (الفاتورة تستلم P + N = أمانها الكامل).
+          preCollected: money(preSplit.sale).gt(0) ? { amount: preSplit.sale, receiptIds: [] } : null,
           payment: {
-            amount: input.regularSale.amount,
+            amount: round2(money(input.regularSale.amount).minus(money(preSplit.sale))).toFixed(2),
             method: input.paymentMethod,
             reference: input.paymentReference?.trim() || null,
           },
@@ -186,8 +223,9 @@ export async function checkoutReceptionInTx(
           contactPhone: input.contactPhone ?? null,
           priceTier: input.priceTier ?? null,
           lines: input.printSale.lines,
+          preCollected: money(preSplit.print).gt(0) ? { amount: preSplit.print, receiptIds: [] } : null,
           payment: {
-            amount: input.printSale.amount,
+            amount: round2(money(input.printSale.amount).minus(money(preSplit.print))).toFixed(2),
             method: input.paymentMethod,
             reference: input.paymentReference?.trim() || null,
           },
@@ -198,10 +236,10 @@ export async function checkoutReceptionInTx(
         }, actor)
       : null;
 
-    const workOrders = [] as Array<Awaited<ReturnType<typeof createWorkOrderInTx>>>;
+    const workOrders = [] as Array<Awaited<ReturnType<typeof createWorkOrderInTx>> & { deposit: string }>;
     for (let index = 0; index < normalizedWorkOrders.length; index += 1) {
       const order = normalizedWorkOrders[index];
-      workOrders.push(await createWorkOrderInTx(tx, {
+      const created = await createWorkOrderInTx(tx, {
         ...order,
         branchId: input.branchId,
         customerId: input.customerId ?? null,
@@ -212,9 +250,12 @@ export async function checkoutReceptionInTx(
         // لكل أمر شغل ⇒ عرابين السلة تهبط على درج قابضها نفسه، لا على وردية أخرى يحلّها
         // openShiftIdTx بنفسه (سلّةٌ كانت قابلة للانشطار على درجين ⇒ محاسبة موظّفٍ على نقدٍ لم يستلمه).
         shiftId: input.shiftId,
-      }, actor));
+      }, actor);
+      // ش٤: العربون الموزَّع يرافق النتيجة — تطبعه تذكرة الأمر («مدفوع مقدماً/المتبقّي») بلا
+      // إعادة حسابٍ واجهيّ قد ينحرف عن الجشع الخادميّ.
+      workOrders.push({ ...created, deposit: round2(money(order.deposit ?? "0")).toFixed(2) });
     }
 
-    return { regularSale, printSale, workOrders };
+    return { regularSale, printSale, workOrders, preSplit };
   }
 }

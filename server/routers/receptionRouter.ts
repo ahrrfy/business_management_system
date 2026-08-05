@@ -10,12 +10,15 @@ import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import {
   cancelDraft,
+  collectDeposit,
   collectOnReceptionInvoice,
   commitDraft,
   getDraft,
+  listDraftPayments,
   listDrafts,
   listReceptionInvoices,
   promoteDraft,
+  refundDeposit,
   syncDraft,
 } from "../services/reception";
 import { verifyManagerApproval } from "./saleRouter";
@@ -134,6 +137,80 @@ export const receptionRouter = router({
       });
       return result;
     }),
+
+  // ── ش٤ — العرابين (المال): بوّابة **الكاشير** حصراً (print_operator محجوبٌ بنيوياً) ──
+  /** قبض عربون على طلبٍ محفوظ — بوردية استقبالٍ مُلزَمة بنوعها (V12، حتى للمدير).
+   *  بلا version عمداً: قبضُ مالٍ لا يفشل لأنّ زميلاً أضاف سطراً — حاميه clientRequestId. */
+  collectDeposit: workordersCashierProcedure
+    .input(
+      z.object({
+        draftId: z.number().int().positive(),
+        amount: positiveMoneyString,
+        method: payMethodEnum,
+        reference: z.string().trim().max(64).nullish(),
+        clientRequestId: z.string().min(8).max(80),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (input.method !== "CASH" && !input.reference?.trim()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "المرجع إلزاميّ لغير النقد (رقم القسيمة/التحويل)" });
+      }
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null,
+        role: ctx.user.role,
+      };
+      const result = await collectDeposit({ ...input, reference: input.reference ?? null }, actor as never);
+      if (!result.idempotentReplay) {
+        // حدثٌ حاكم (I22): مبلغٌ دخل الدرج بلا فاتورة — الفاعل والوردية والمبلغ تُسمّى كلها.
+        await logAudit(ctx, {
+          action: "reception.collectDeposit",
+          entityType: "receptionDraft",
+          entityId: input.draftId,
+          newValue: {
+            paymentId: result.paymentId,
+            amount: input.amount,
+            method: input.method,
+            collectedIntoShiftId: result.shiftId,
+            collectedTotal: result.collectedTotal,
+          },
+        });
+      }
+      return result;
+    }),
+
+  /** ردّ عربونٍ محتجز — بطريقة القبض حتماً، مربوطاً بأمّه، بمبلغٍ <= المتبقّي (I17). */
+  refundDeposit: workordersCashierProcedure
+    .input(
+      z.object({
+        paymentId: z.number().int().positive(),
+        amount: positiveMoneyString,
+        reason: z.string().trim().min(5).max(300),
+        clientRequestId: z.string().min(8).max(80),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null,
+        role: ctx.user.role,
+      };
+      const result = await refundDeposit(input, actor as never);
+      if (!result.idempotentReplay) {
+        await logAudit(ctx, {
+          action: "reception.refundDeposit",
+          entityType: "orderPayment",
+          entityId: input.paymentId,
+          newValue: { amount: input.amount, reason: input.reason, refundReceiptId: result.refundReceiptId },
+        });
+      }
+      return result;
+    }),
+
+  /** سجلّ عرابين طلبٍ محفوظ (القبض/التطبيق/الردّ) + الصافي المحتجز. */
+  paymentsOf: workordersCashierProcedure
+    .input(z.object({ draftId: z.number().int().positive() }))
+    .query(async ({ input }) => listDraftPayments(input.draftId)),
 
   // ── ش٢ — المسوّدة المُرقّاة (§٨.٢: السلّة محليّةٌ بالافتراض؛ الترقية عند أوّل سببٍ حقيقيّ) ──
   draftPromote: workordersExecProcedure

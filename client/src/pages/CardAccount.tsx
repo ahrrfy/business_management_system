@@ -40,6 +40,8 @@ const SOURCE_AR: Record<string, string> = {
   INVOICE_PAYMENT: "فاتورة/دفعة",
   VOUCHER: "سند",
   WORK_ORDER: "أمر شغل",
+  // ش٤: عربون طلبٍ محفوظ (بطاقةً) — قبل التثبيت؛ بعده يصير الإيصال INVOICE_PAYMENT أو يبقى هنا لأوامر الشغل.
+  DRAFT_DEPOSIT: "عربون طلب محفوظ",
   OTHER: "أخرى",
 };
 
@@ -67,7 +69,7 @@ export default function CardAccount() {
   // بحث نصّي — وظيفة الشاشة الأساسية (مطابقة كشف البنك بحثاً عن حركة بعينها بمرجعها/رقم سندها/طرفها).
   const [q, setQ] = useState("");
   const qDebounced = useDebouncedValue(q.trim(), 300);
-  const [sourceType, setSourceType] = useState<"" | "VOUCHER" | "INVOICE_PAYMENT" | "WORK_ORDER" | "OTHER">("");
+  const [sourceType, setSourceType] = useState<"" | "VOUCHER" | "INVOICE_PAYMENT" | "WORK_ORDER" | "DRAFT_DEPOSIT" | "OTHER">("");
   const [page, setPage] = useState(0);
   const movementsInput = {
     branchId: effBranch,
@@ -370,6 +372,7 @@ export default function CardAccount() {
                 <option value="VOUCHER">سند</option>
                 <option value="INVOICE_PAYMENT">فاتورة/دفعة</option>
                 <option value="WORK_ORDER">أمر شغل</option>
+                <option value="DRAFT_DEPOSIT">عربون طلب محفوظ</option>
                 <option value="OTHER">أخرى</option>
               </AppSelect>
               <Button variant="outline" size="sm" onClick={() => void onPrint()} disabled={printing || !mv || mv.count === 0}>

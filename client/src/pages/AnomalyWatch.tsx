@@ -92,6 +92,7 @@ export default function AnomalyWatch() {
         { label: "سندات معكوسة", value: String(aw.kpis.reversedVouchers), tone: aw.kpis.reversedVouchers > 0 ? "info" : "positive" },
         { label: "أيام بفجوة تسلسل", value: String(aw.kpis.sequenceGapDays), tone: aw.kpis.sequenceGapDays > 0 ? "negative" : "positive" },
         { label: "مُنشئو سحب أمانة مُعلَّمون", value: String(aw.kpis.flaggedConsignWithdrawers), tone: aw.kpis.flaggedConsignWithdrawers > 0 ? "warning" : "positive" },
+        { label: "مُلغو طلبات مموّلة مُعلَّمون", value: String(aw.kpis.flaggedCancelledFundedDrafters), tone: aw.kpis.flaggedCancelledFundedDrafters > 0 ? "warning" : "positive" },
       ]
     : [];
 
@@ -535,6 +536,40 @@ export default function AnomalyWatch() {
                       <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.noteCount}</td>
                       <td className={numCls} dir="ltr">{fmtAr(r.totalQty)}</td>
                       <td className={cn(numCls, "text-muted-foreground")} dir="ltr">{fmtAr(r.totalValue)}</td>
+                      <FlagCell flagged={r.flagged} />
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </SectionCard>
+
+          {/* D8 (ش٤) — مسوّدات استقبالٍ مموّلة أُلغيت بلا تثبيت (نمط «اقبض ثم رُدّ ثم ألغِ») */}
+          <SectionCard
+            title="طلبات محفوظة مموّلة أُلغيت بلا تثبيت"
+            subtitle="طلبٌ قُبض عليه عربون ثم رُدَّ وأُلغي بلا فاتورة — كل مستندٍ سليمٌ فردياً، والتكرار هو الإشارة. المؤشر: مُنشئٌ له طلبان فأكثر بالفترة."
+            count={aw.kpis.flaggedCancelledFundedDrafters}
+          >
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-xs text-muted-foreground">
+                  <th className={thCls}>المُنشئ</th>
+                  <th className={thCls}>الطلبات الملغاة المموّلة</th>
+                  <th className={thCls}>المقبوض عليها</th>
+                  <th className={thCls}>المردود منها</th>
+                  <th className={thCls}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {aw.cancelledFundedDrafts.rows.length === 0 ? (
+                  <TableEmptyRow colSpan={5} message="لا طلبات مموّلة أُلغيت في الفترة." />
+                ) : (
+                  aw.cancelledFundedDrafts.rows.map((r, i) => (
+                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
+                      <td className={tdCls}>{r.userName}</td>
+                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.draftCount}</td>
+                      <td className={numCls} dir="ltr">{fmtAr(r.collectedTotal)}</td>
+                      <td className={cn(numCls, "text-muted-foreground")} dir="ltr">{fmtAr(r.refundedTotal)}</td>
                       <FlagCell flagged={r.flagged} />
                     </tr>
                   ))

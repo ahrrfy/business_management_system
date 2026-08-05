@@ -93,6 +93,12 @@ export function DraftStrip({
         <span dir="ltr">…{row.draftNumber.slice(-5)}</span>
         <span className="max-w-24 truncate text-muted-foreground">{row.contactName ?? "عميل نقدي"}</span>
         <span className="tabular-nums text-muted-foreground" dir="ltr">{fmt(row.total)}</span>
+        {/* ش٤: المقبوض فعلاً على الطلب — يميّز المموّلة بمبلغها لا بأيقونةٍ فقط */}
+        {Number((row as { heldTotal?: string }).heldTotal ?? 0) > 0 && (
+          <span className="tabular-nums font-extrabold text-[var(--sem-warn)]">
+            مقبوض <span dir="ltr">{fmt(Number((row as { heldTotal?: string }).heldTotal))}</span>
+          </span>
+        )}
       </button>
       <button type="button" onClick={() => onPrintTicket(Number(row.id))} aria-label={`طباعة تذكرة ${row.draftNumber}`} className="text-muted-foreground hover:text-foreground">
         <Printer aria-hidden className="size-3" />

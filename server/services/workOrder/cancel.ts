@@ -6,6 +6,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { applyMovement } from "../inventoryService";
 import { postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
+import { refundAppliedCollectionsForWorkOrder } from "../reception/deposits";
 import { computeExpectedCash, openShiftIdTx, resolveBranchCashShiftTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
@@ -108,6 +109,16 @@ export async function cancelWorkOrder(
           notes: `استرداد عربون طلب خدمة ملغى #${workOrderId}`,
         });
       }
+      // ش٤: حصص العربون المقبوضة **سلفاً** (مسوّدة ⇒ APPLICATION على هذا الأمر) — إيصال
+      // depositReceiptId أعلاه يحمل الجزء الجديد N وحده، فردُّه وحدَه يترك حصص P بلا ردّ
+      // (وقد يكون N صفراً أصلاً). كلّ حصّة تُردّ بطريقة قبضها + صفّ REFUND مربوط بأمّه (I17).
+      await refundAppliedCollectionsForWorkOrder(tx, {
+        workOrderId,
+        branchId: Number(wo.branchId),
+        customerId: wo.customerId != null ? Number(wo.customerId) : null,
+        actor,
+        refundShiftId: opts.refundShiftId ?? null,
+      });
     }
 
     await tx.update(workOrders).set({ status: "CANCELLED" }).where(eq(workOrders.id, workOrderId));

@@ -1055,6 +1055,14 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
     <span style="font-size:13px;font-weight:900;">${fmtC(d.total)}</span>
   </div>
 
+  ${d.paidUpfront != null && Number(d.paidUpfront) > 0 ? `
+  <div style="display:flex;justify-content:space-between;font-size:10.5px;font-weight:700;padding:0.5mm 0;">
+    <span>مدفوع مقدماً:</span><span>${fmtC(d.paidUpfront)}</span>
+  </div>
+  <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:900;padding:1mm 0;border-bottom:1.5px solid #000;margin-bottom:1mm;">
+    <span>المتبقّي عند الاستلام:</span><span>${fmtC(d.balanceDue ?? Math.max(0, Number(d.total) - Number(d.paidUpfront)))}</span>
+  </div>` : ''}
+
   ${notesHtml}
 
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
@@ -1238,6 +1246,9 @@ export interface ShiftCloseData {
   countedCash: string | number;
   /** من r.variance */
   variance: string | number;
+  /** ش٤ (I14) — عرابين محجوزة لطلبات لم تُثبَّت قُبضت على هذه الوردية (إفصاح، اختياري). */
+  heldDepositsCount?: number | null;
+  heldDepositsTotal?: string | number | null;
 }
 
 export function printShiftCloseBrowser(d: ShiftCloseData): void {
@@ -1339,6 +1350,10 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
   ${returns > 0 ? `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
     <span style="font-weight:600;color:#333;">المرتجعات</span>
     <span style="font-weight:800;direction:ltr;">${fmt(returns)} د.ع</span>
+  </div>` : ''}
+  ${Number(d.heldDepositsCount ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+    <span style="font-weight:600;color:#333;">عرابين محجوزة لطلبات لم تُثبَّت (${d.heldDepositsCount})</span>
+    <span style="font-weight:800;direction:ltr;">${fmt(d.heldDepositsTotal ?? 0)} د.ع</span>
   </div>` : ''}
 
   <!-- صافي المبيعات — معكوس -->

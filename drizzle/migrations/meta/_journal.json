@@ -1,4 +1,4 @@
-{
+﻿{
   "version": "7",
   "dialect": "mysql",
   "entries": [
@@ -1064,6 +1064,13 @@
       "version": "5",
       "when": 1787879405000,
       "tag": "0152_reception_drafts",
+      "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "5",
+      "when": 1787879406000,
+      "tag": "0153_order_payments",
       "breakpoints": true
     }
   ]

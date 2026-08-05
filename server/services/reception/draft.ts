@@ -9,8 +9,9 @@
 //  I22 — التدقيق يحمل قبل/بعد ولا يحمل designImages/printSpec أبداً.
 //  ق٤  — الفارغة تنقضي بعد ٢٤ ساعة (تتجدّد بكل نشاط)؛ المموّلة لا تُطوى أبداً.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, like, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, like, lt, or, sql, type SQL } from "drizzle-orm";
 import {
+  orderPayments,
   receptionDraftLines,
   receptionDrafts,
   users,
@@ -21,6 +22,7 @@ import { paginateKeyset } from "../../lib/paginateKeyset";
 import { escLike } from "../../lib/sqlLike";
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
+import { heldNetOfDraft } from "./deposits";
 
 export interface DraftLineInput {
   lineKind: "GOODS" | "PRINT" | "CUSTOM";
@@ -169,12 +171,28 @@ export async function syncDraft(
       });
     }
     const totals = computeTotals(input.lines);
-    // I3 (هيكل ش٤): مسوّدة مموّلة لا يهبط إجماليها دون المقبوض ولا يُحذف بندها بحرّية.
-    if (row.moneyLocked && totals.total.lt(money(row.total))) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "المسوّدة عليها مبلغٌ مقبوض — لا يُخفَض إجماليها دون المقبوض؛ ردّ الفارق أولاً (يتطلّب مديراً)",
-      });
+    // I3 (ش٤ — بالجمع الفعليّ): مسوّدة مموّلة (أ) لا يُحذف بندٌ منها (المال قُبض على سلةٍ
+    // بعينها — الحذف بابُ «اقبض ٣٠٠ﻙ ثم صفّر السلة») و(ب) لا يهبط إجماليها دون صافي المقبوض.
+    if (row.moneyLocked) {
+      const existingCount = (
+        await tx
+          .select({ n: sql<number>`COUNT(*)` })
+          .from(receptionDraftLines)
+          .where(eq(receptionDraftLines.draftId, input.draftId))
+      )[0];
+      if (input.lines.length < Number(existingCount?.n ?? 0)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "الطلب عليه مبلغٌ مقبوض — لا يُحذف بندٌ منه؛ ردّ العربون أولاً أو أكمل بالإلغاء المديريّ",
+        });
+      }
+      const heldNet = await heldNetOfDraft(tx, input.draftId);
+      if (totals.total.lt(heldNet)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `الإجمالي الجديد (${totals.total.toFixed(2)}) أقل من المقبوض سلفاً (${heldNet.toFixed(2)}) — ردّ الفارق أولاً (ردّ عربون)`,
+        });
+      }
     }
 
     const before = await tx
@@ -237,7 +255,16 @@ export async function getDraft(draftId: number, actor: Actor & { role?: string }
     .from(receptionDraftLines)
     .where(eq(receptionDraftLines.draftId, draftId))
     .orderBy(receptionDraftLines.sortOrder, receptionDraftLines.id);
-  return { ...row, ownerName: owner?.name ?? null, lines };
+  // ش٤: صافي المحتجز — تعتمده الشاشة («مقبوض سلفاً») وتقلّص به «المتوقّع الآن».
+  const opRows = await db
+    .select({ kind: orderPayments.kind, amount: orderPayments.amount })
+    .from(orderPayments)
+    .where(and(eq(orderPayments.draftId, draftId), inArray(orderPayments.kind, ["COLLECTION", "REFUND"])));
+  let heldNet = money(0);
+  for (const r of opRows) {
+    heldNet = r.kind === "COLLECTION" ? heldNet.plus(money(r.amount)) : heldNet.minus(money(r.amount));
+  }
+  return { ...row, ownerName: owner?.name ?? null, lines, heldTotal: toDbMoney(round2(heldNet)) };
 }
 
 export async function listDrafts(
@@ -260,6 +287,9 @@ export async function listDrafts(
     if (cond) baseConds.push(cond);
   }
   const linesCount = sql<number>`(SELECT COUNT(*) FROM receptionDraftLines l WHERE l.draftId = ${receptionDrafts.id})`;
+  // ش٤: صافي المحتجز لكل مسوّدة (COLLECTION − REFUND) — تعرضه الرقاقة/الاستئناف. أسماء أعمدة
+  // DB الحرفية (orderPayKind) لا أسماء TS — raw SQL (فخّ موثَّق).
+  const heldTotal = sql<string>`CAST((SELECT COALESCE(SUM(CASE WHEN op.orderPayKind = 'COLLECTION' THEN op.amount WHEN op.orderPayKind = 'REFUND' THEN -op.amount ELSE 0 END), 0) FROM orderPayments op WHERE op.draftId = ${receptionDrafts.id}) AS CHAR)`;
   const page = await paginateKeyset({
     cursor: input.cursor,
     limit: input.limit,
@@ -283,6 +313,7 @@ export async function listDrafts(
           createdAt: receptionDrafts.createdAt,
           updatedAt: receptionDrafts.updatedAt,
           linesCount,
+          heldTotal,
         })
         .from(receptionDrafts)
         .leftJoin(users, eq(users.id, receptionDrafts.createdBy))
@@ -317,6 +348,17 @@ export async function cancelDraft(
         code: "FORBIDDEN",
         message: "المسوّدة عليها مبلغٌ مقبوض — إلغاؤها يتطلّب مديراً (ويُردّ المبلغ بمساره الموثَّق)",
       });
+    }
+    // ش٤ (I17): لا يُلغى طلبٌ وعليه مالٌ محتجز — يُدفن المال بلا وعاءٍ ولا مخرج. الردّ أولاً
+    // (refundDeposit: OUT موثَّق مربوط بإيصال قبضه) ثم الإلغاء المديريّ بسببه.
+    if (row.moneyLocked) {
+      const heldNet = await heldNetOfDraft(tx, input.draftId);
+      if (heldNet.gt(0)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `على الطلب مبلغٌ محتجز (${heldNet.toFixed(2)}) — رُدَّه أولاً (ردّ عربون) ثم ألغِ`,
+        });
+      }
     }
     await tx
       .update(receptionDrafts)

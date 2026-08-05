@@ -5,16 +5,17 @@
 // إعادة التشغيل (ملاحظة ٢.١٠): النتيجة **تُعاد بناؤها من مفاتيح idempotency** لا من أعمدة
 // الرأس — نفس منطق isCompleteReplay القائم، فلا تعود workOrderIds فارغةً أبداً.
 import { TRPCError } from "@trpc/server";
-import { asc, eq } from "drizzle-orm";
-import { invoices, receptionDraftLines, receptionDrafts, workOrders as workOrdersTable } from "../../../drizzle/schema";
+import { and, asc, eq } from "drizzle-orm";
+import { invoices, orderPayments, receptionDraftLines, receptionDrafts, workOrders as workOrdersTable } from "../../../drizzle/schema";
 import { findIdempotentRefId } from "../idempotency";
-import { money, round2, roundCashIQD } from "../money";
+import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import {
   checkoutReceptionInTx,
   type ReceptionCheckoutInput,
 } from "../receptionCheckoutService";
 import { type Actor, withTx } from "../tx";
 import type { Tx } from "../../db";
+import { allocateAtCommit, heldNetOfDraft, type AllocationTarget } from "./deposits";
 
 export interface CommitDraftInput {
   draftId: number;
@@ -35,7 +36,12 @@ export interface CommitDraftResult {
   idempotentReplay: boolean;
   regularSale: { invoiceId: number; invoiceNumber: string } | null;
   printSale: { invoiceId: number; invoiceNumber: string } | null;
-  workOrders: Array<{ workOrderId: number; orderNumber: string }>;
+  /** deposit (ش٤): العربون الموزَّع على الأمر (P+N) — تطبعه التذكرة «مدفوعٌ مقدماً». */
+  workOrders: Array<{ workOrderId: number; orderNumber: string; deposit: string }>;
+  /** ش٤: تخصيصات المقبوض سلفاً على المستندات (I4) — للعرض والإثبات، لا لحساب لاحق. */
+  appliedPayments: Array<{ paymentId: number; appliedKind: "INVOICE" | "WORKORDER"; appliedId: number; amount: string }>;
+  /** ش٤: صافي المحتجز الذي طُبِّق في هذا التثبيت. */
+  heldApplied: string;
 }
 
 /** تجسيد أسطر المسوّدة إلى مدخل حدّ الالتزام القائم — كل الحرّاس القائمة تعمل كما هي. */
@@ -43,6 +49,7 @@ function materialize(
   draft: typeof receptionDrafts.$inferSelect,
   lines: Array<typeof receptionDraftLines.$inferSelect>,
   input: CommitDraftInput,
+  heldNet: ReturnType<typeof money>,
 ): ReceptionCheckoutInput {
   const goods = lines.filter((l) => l.lineKind === "GOODS");
   const prints = lines.filter((l) => l.lineKind === "PRINT");
@@ -56,10 +63,13 @@ function materialize(
   // في checkoutReceptionInTx يقارن بالمبالغ المُرسَلة ⇒ بلا هذا التقريب يُرفض «يتجاوز الإجمالي»
   // لكل مسوّدةٍ إجماليها ليس مضاعف ٢٥٠ (أمسكته الجولة الحيّة). createSaleInTx يعيد التقريب
   // بنفس الدالة فيتطابقان ويقيّد الفرق ADJUST.
-  const roundActive =
+  // ش٤: لو أنزل التقريبُ الإجماليَّ تحت المقبوض سلفاً (عربونٌ = الإجمالي الخام بالضبط + تقريبٌ
+  // لأسفل) لَما وُجد للفارق مخرجٌ (ردٌّ قسريّ لـ<=125 ديناراً) — نتخطّى التقريب حينها.
+  const rawRound =
     input.cashRoundIQD === true &&
     input.collectNow?.method === "CASH" &&
     goods.length > 0 && prints.length === 0 && customs.length === 0;
+  const roundActive = rawRound && !roundCashIQD(sum(goods)).lt(heldNet);
   const goodsAmount = roundActive ? roundCashIQD(sum(goods)) : sum(goods);
 
   const saleLine = (l: (typeof lines)[number]) => ({
@@ -119,10 +129,14 @@ function materialize(
     paymentMethod: input.collectNow?.method ?? "CASH",
     paymentReference: input.collectNow?.reference ?? null,
     paidAmount: input.collectNow ? money(input.collectNow.amount).toFixed(2) : null,
+    // ش٤: صافي المحتجز على المسوّدة يدخل التوزيع أولاً — الإيصالات قائمة منذ القبض (I5).
+    preCollected: heldNet.gt(0) ? { total: heldNet.toFixed(2) } : null,
     clientRequestId: draft.commitRequestId,
     priceTier: draft.priceTier as never,
     couponCode: null, // مرفوضٌ بنيوياً على مسار التثبيت في v1 (ملاحظة ١.٨ — ينسف expectedTotal)
-    cashRoundIQD: input.cashRoundIQD === true,
+    // العلم المُمرَّر هو المُشتقّ (roundActive) لا الخام — لو أُسقط التقريب لحماية المقبوض سلفاً
+    // يجب ألّا يعيد createSaleInTx تقريبه من جهته فينحرف الطرفان.
+    cashRoundIQD: roundActive,
     regularSale: goods.length ? { lines: goods.map(saleLine), amount: goodsAmount.toFixed(2) } : null,
     printSale: prints.length ? { lines: prints.map(saleLine), amount: sum(prints).toFixed(2) } : null,
     workOrders: customs.map(workOrderOf),
@@ -148,19 +162,34 @@ async function rebuildResult(
   };
   const regularSale = await bySource("-sale");
   const printSale = await bySource("-print");
-  const workOrders: Array<{ workOrderId: number; orderNumber: string }> = [];
+  const workOrders: Array<{ workOrderId: number; orderNumber: string; deposit: string }> = [];
   for (let i = 0; i < customCount; i += 1) {
     const id = await findIdempotentRefId(tx, "workOrder.create", `${draft.commitRequestId}-wo-${i}`);
     if (id == null) break;
     const wo = (
       await tx
-        .select({ orderNumber: workOrdersTable.orderNumber })
+        .select({ orderNumber: workOrdersTable.orderNumber, deposit: workOrdersTable.deposit })
         .from(workOrdersTable)
         .where(eq(workOrdersTable.id, id))
         .limit(1)
     )[0];
-    workOrders.push({ workOrderId: id, orderNumber: wo?.orderNumber ?? "" });
+    workOrders.push({ workOrderId: id, orderNumber: wo?.orderNumber ?? "", deposit: String(wo?.deposit ?? "0.00") });
   }
+  // ش٤: التخصيصات المكتوبة فعلاً — النتيجة المُعادة مطابقة تماماً للأولى (I8).
+  const appRows = await tx
+    .select()
+    .from(orderPayments)
+    .where(and(eq(orderPayments.draftId, Number(draft.id)), eq(orderPayments.kind, "APPLICATION")))
+    .orderBy(asc(orderPayments.id));
+  const appliedPayments = appRows.map((r) => ({
+    paymentId: Number(r.parentPaymentId),
+    appliedKind: (r.appliedKind ?? "INVOICE") as "INVOICE" | "WORKORDER",
+    appliedId: Number(r.appliedId),
+    amount: String(r.amount),
+  }));
+  const heldApplied = toDbMoney(
+    round2(appRows.reduce((s, r) => s.plus(money(r.amount)), money("0"))),
+  );
   return {
     draftId: Number(draft.id),
     draftNumber: draft.draftNumber,
@@ -168,6 +197,8 @@ async function rebuildResult(
     regularSale,
     printSale,
     workOrders,
+    appliedPayments,
+    heldApplied,
   };
 }
 
@@ -214,13 +245,27 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
         message: `إجمالي المسوّدة تغيّر (${recomputed.toFixed(2)} لا ${money(input.expectedTotal).toFixed(2)}) — راجع الطلب ثم ثبّت`,
       });
     }
-    // القاعدة ٧ (تُشحذ مالياً في ش٤ مع orderPayments): إجمالي المستند >= المقبوض سلفاً.
-    // moneyLocked بلا orderPayments بعدُ ⇒ الحارس هيكليّ هنا؛ ش٤ تستبدله بالجمع الفعليّ.
+    // القاعدة ٧ (ش٤ — بالجمع الفعليّ من orderPayments تحت قفل المسوّدة): إجمالي المستند
+    // المُعاد حسابه >= صافي المقبوض سلفاً، وإلا فالموظّف حذف/خفّض بعد القبض بما يجعل المال
+    // بلا وعاء — يُردّ الفارق أولاً (refundDeposit) ثم يُثبَّت.
+    const heldNet = await heldNetOfDraft(tx, input.draftId);
+    if (heldNet.gt(recomputed)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `المقبوض سلفاً (${heldNet.toFixed(2)}) يتجاوز إجمالي الطلب (${recomputed.toFixed(2)}) — رُدَّ الفارق أولاً (ردّ عربون) ثم ثبّت`,
+      });
+    }
+    // بضاعة/طباعة تُدفع كاملةً عند التثبيت: يلزم قبضٌ الآن **إلا إذا** غطّاها المحتجز سلفاً.
     const hasDirect = lines.some((l) => l.lineKind !== "CUSTOM");
-    if (hasDirect && !input.collectNow) {
+    const directTotal = round2(
+      lines.filter((l) => l.lineKind !== "CUSTOM").reduce((s, l) => s.plus(money(l.lineTotal)), money("0")),
+    );
+    if (hasDirect && !input.collectNow && heldNet.lt(directTotal)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "السلة فيها بضاعة/طباعة تُدفع الآن — أدخل المبلغ المقبوض ثم ثبّت",
+        message: heldNet.gt(0)
+          ? `المقبوض سلفاً (${heldNet.toFixed(2)}) لا يغطّي البضاعة/الطباعة (${directTotal.toFixed(2)}) — أدخل المبلغ المتبقّي ثم ثبّت`
+          : "السلة فيها بضاعة/طباعة تُدفع الآن — أدخل المبلغ المقبوض ثم ثبّت",
       });
     }
     // مراجعة عدائية (٥/٨): أجرة «مقبوضة في الاستقبال» (COUNTER) على مسار المسوّدة —
@@ -243,8 +288,25 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       }
     }
 
-    const checkoutInput = materialize(draft, lines, input);
+    const checkoutInput = materialize(draft, lines, input, heldNet);
     const result = await checkoutReceptionInTx(tx, checkoutInput, actor);
+
+    // ش٤ (§٧.٣ خطوة ٦): تخصيص المحتجز على المستندات بنفس حصص الجشع الخادميّ (preSplit) —
+    // صفوف APPLICATION + COLLECTION⇒APPLIED + ختم الإيصال أحاديّ الهدف بفاتورته.
+    const targets: AllocationTarget[] = [];
+    if (result.regularSale && money(result.preSplit.sale).gt(0)) {
+      targets.push({ kind: "INVOICE", id: result.regularSale.invoiceId, preAmount: result.preSplit.sale });
+    }
+    if (result.printSale && money(result.preSplit.print).gt(0)) {
+      targets.push({ kind: "INVOICE", id: result.printSale.invoiceId, preAmount: result.preSplit.print });
+    }
+    result.workOrders.forEach((w, i) => {
+      const pre = result.preSplit.workOrders[i] ?? "0.00";
+      if (money(pre).gt(0)) targets.push({ kind: "WORKORDER", id: w.workOrderId, preAmount: pre });
+    });
+    const { appliedPayments } = targets.length
+      ? await allocateAtCommit(tx, { draftId: input.draftId, targets, actor })
+      : { appliedPayments: [] };
 
     await tx
       .update(receptionDrafts)
@@ -267,7 +329,9 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       printSale: result.printSale
         ? { invoiceId: result.printSale.invoiceId, invoiceNumber: result.printSale.invoiceNumber }
         : null,
-      workOrders: result.workOrders.map((w) => ({ workOrderId: w.workOrderId, orderNumber: w.orderNumber })),
+      workOrders: result.workOrders.map((w) => ({ workOrderId: w.workOrderId, orderNumber: w.orderNumber, deposit: w.deposit })),
+      appliedPayments,
+      heldApplied: toDbMoney(heldNet),
     } satisfies CommitDraftResult;
   });
 }

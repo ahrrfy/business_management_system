@@ -49,6 +49,12 @@ export interface CreateSaleInput {
   deliveryFee?: string | null;
   taxRatePercent?: string | null;
   payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
+  /** ش٤ (§٧.٢) — مالٌ قُبض **سلفاً** على هذه السلة (عرابين مسوّدة عبر orderPayments):
+   *  يدخل paidAmount والذمّة، و**لا يُنشأ له إيصالٌ ثانٍ أبداً** (الإيصال الجديد للجزء
+   *  المُسلَّم الآن وحده — I5). receiptIds إيصالاتٌ قائمة تُختم invoiceId فقط إن مُرّرت
+   *  (نمط deliver.ts — append-only)؛ مسار التثبيت يمرّرها فارغةً ويختم أحاديّ الهدف
+   *  في allocateAtCommit حيث تُعرف وحدة الهدف. */
+  preCollected?: { amount: string; receiptIds: number[] } | null;
   clientRequestId?: string | null;
   /** معرّف محطة/جهاز نقطة البيع للتدقيق (ليس سراً ولا رمز مصادقة). */
   deviceId?: string | null;

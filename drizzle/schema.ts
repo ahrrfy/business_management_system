@@ -18,6 +18,7 @@ import {
   unique,
   primaryKey,
   foreignKey,
+  type AnyMySqlColumn,
 } from "drizzle-orm/mysql-core";
 
 /**
@@ -2571,6 +2572,55 @@ export const receptionDraftLines = mysqlTable(
 
 export type ReceptionDraft = typeof receptionDrafts.$inferSelect;
 export type ReceptionDraftLine = typeof receptionDraftLines.$inferSelect;
+
+/**
+ * ش٤ (٥/٨/٢٦) — سجلّ المال السابق للفاتورة (العرابين على المسوّدات) §٥.٣.
+ * جدولٌ واحد بثلاثة أنواع صفوف: COLLECTION (قبضٌ محتجز) / APPLICATION (تخصيصٌ لهدفٍ عند
+ * التثبيت) / REFUND (ردٌّ مربوطٌ بأمّه). يحلّ محلّ أيّ مسحٍ ظنّيٍّ للإيصالات:
+ * - `receiptId UNIQUE` هو الإصلاح البنيويّ لعلّة V3 (لا `.limit(1)` ولا `NOT LIKE`).
+ * - `amount` موجبٌ دائماً؛ الاتجاه من `kind`.
+ * - `method` تشمل TELECOM منذ الإنشاء (مكسبٌ مجّانيّ — extras لازمٌ فقط لتوسيع
+ *   receipts.paymentMethod القائم في ش٥)؛ قبضُ TELECOM نفسه يُرفض خدمياً حتى ش٥.
+ */
+export const orderPayments = mysqlTable(
+  "orderPayments",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    draftId: bigint("draftId", { mode: "number" })
+      .notNull()
+      .references(() => receptionDrafts.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    kind: mysqlEnum("orderPayKind", ["COLLECTION", "APPLICATION", "REFUND"]).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    method: mysqlEnum("orderPayMethod", ["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]),
+    /** إيصال القبض/الردّ؛ NULL لصفوف APPLICATION. */
+    receiptId: bigint("receiptId", { mode: "number" }).references(() => receipts.id),
+    /** وردية القبض — تبقى عليها أبداً (قاعدة ٤ / I12). */
+    shiftId: bigint("shiftId", { mode: "number" }).references(() => shifts.id),
+    /** APPLICATION/REFUND ← COLLECTION الأمّ. FK ذاتيّ عبر AnyMySqlColumn (نمط drizzle). */
+    parentPaymentId: bigint("parentPaymentId", { mode: "number" }).references(
+      (): AnyMySqlColumn => orderPayments.id,
+    ),
+    appliedKind: mysqlEnum("orderPayAppliedKind", ["INVOICE", "WORKORDER"]),
+    appliedId: bigint("appliedId", { mode: "number" }),
+    /** على صفوف COLLECTION فقط. */
+    status: mysqlEnum("orderPayStatus", ["HELD", "APPLIED", "REFUNDED"]),
+    referenceNumber: varchar("referenceNumber", { length: 64 }),
+    clientRequestId: varchar("clientRequestId", { length: 80 }),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    receiptUq: unique("uq_orderpay_receipt").on(table.receiptId),
+    requestUq: unique("uq_orderpay_request").on(table.clientRequestId),
+    draftIdx: index("idx_orderpay_draft").on(table.draftId, table.kind, table.status),
+    appliedIdx: index("idx_orderpay_applied").on(table.appliedKind, table.appliedId),
+    parentIdx: index("idx_orderpay_parent").on(table.parentPaymentId),
+  }),
+);
+
+export type OrderPayment = typeof orderPayments.$inferSelect;
 
 /** المواد المستهلكة من المخزون لأمر الشغل. */
 export const workOrderMaterials = mysqlTable(

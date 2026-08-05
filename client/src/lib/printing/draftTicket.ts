@@ -15,6 +15,42 @@ export interface DraftTicketData {
   notes?: string | null;
 }
 
+/** ش٤ — سند قبض عربونٍ على طلبٍ محفوظ: إثبات الزبون قبل وجود فاتورة. يحمل رقم الطلب
+ *  (DRF-) صراحةً ويسمّي نفسه «سند قبض عربون» — ليس فاتورةً ولا إيصال بيع. */
+export interface DepositReceiptData {
+  draftNumber: string;
+  date: string;
+  contactName?: string | null;
+  amount: string;
+  methodLabel: string;
+  reference?: string | null;
+  collectedTotal: string;
+  orderTotal: string;
+  cashierName?: string | null;
+}
+
+export async function printDepositReceipt(d: DepositReceiptData) {
+  return printDoc({
+    kind: "receipt",
+    title: "سند قبض عربون",
+    subtitle: `على الطلب المحفوظ ${d.draftNumber} — يُخصَم من قيمته عند التثبيت`,
+    meta: [
+      `التاريخ: ${d.date}`,
+      ...(d.contactName ? [`الزبون: ${d.contactName}`] : []),
+      `طريقة الدفع: ${d.methodLabel}`,
+      ...(d.reference ? [`المرجع: ${d.reference}`] : []),
+      ...(d.cashierName ? [`القابض: ${d.cashierName}`] : []),
+    ],
+    columns: ["البيان", "المبلغ"],
+    rows: [["عربون مقبوض الآن", d.amount]],
+    totals: [
+      { label: "إجمالي المقبوض على الطلب", value: d.collectedTotal },
+      { label: "قيمة الطلب التقديرية", value: d.orderTotal },
+    ],
+    footer: "يُستردّ العربون بطريقة قبضه حصراً وبهذا السند — احتفظ به حتى استلام الطلب.",
+  });
+}
+
 export async function printDraftTicket(d: DraftTicketData) {
   return printDoc({
     kind: "receipt",

@@ -7,6 +7,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
+import { linkSoleTargetCollectionsToInvoice } from "../reception/deposits";
 import { openShiftIdTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
@@ -182,6 +183,10 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         // ⛔ كان هنا UPDATE accountingEntries.invoiceId — أُزيل ضمن A1: انتهاك append-only
         //     على دفتر الأستاذ. الـUPDATE لم يكن load-bearing لأي حساب.
       }
+      // ش٤: حصص العربون المقبوضة **سلفاً** (مسوّدة ⇒ orderPayments APPLICATION على هذا الأمر) —
+      // إيصال القبض أحاديّ الهدف يُختم بفاتورة التسليم (نفس نمط append-only أعلاه)؛ المُشظّى
+      // بين أهدافٍ يبقى بلا ختم وحقيقتُه في orderPayments (I4). depositReceiptId يحمل N وحده.
+      await linkSoleTargetCollectionsToInvoice(tx, Number(wo.id), invoiceId);
     }
 
     // Optional payment receipt + PAYMENT_IN entry.

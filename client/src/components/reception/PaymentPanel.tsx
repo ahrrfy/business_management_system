@@ -32,6 +32,8 @@ export interface PaymentPanelProps {
   needPaymentRef: boolean;
   grandTotal: number; expectedNow: number; cashRoundingDelta: number;
   sumDirect: number; sumCustom: number; heldDelivery: number; cashDueNow: number;
+  /** ش٤ — عربونٌ مقبوضٌ سلفاً على الطلب المحفوظ النشط: يُعرض ويُخصَم من «المتوقّع الآن». */
+  heldDeposit: number;
   paid: number;
   change: number; remaining: number; isChange: boolean; isOwing: boolean;
   hasCustom: boolean;
@@ -55,7 +57,7 @@ export const PaymentPanel = forwardRef<HTMLDivElement, PaymentPanelProps>(functi
     paymentReference, setPaymentReference,
     needPaymentRef,
     grandTotal, expectedNow, cashRoundingDelta,
-    sumDirect, sumCustom, heldDelivery, cashDueNow,
+    sumDirect, sumCustom, heldDelivery, cashDueNow, heldDeposit,
     paid, change, remaining, isChange, isOwing,
     hasCustom,
     depositMenuOpen, setDepositMenuOpen,
@@ -131,6 +133,13 @@ export const PaymentPanel = forwardRef<HTMLDivElement, PaymentPanelProps>(functi
         )}
         {/* أجرة التوصيل المقبوضة أمانةً: خارج الفاتورة، لكنها نقدٌ يُستلَم فعلاً الآن.
             عرضها منفصلةً يمنع الخلط الذي كان يجعل الموظّف يظنّها جزءاً من البيع. */}
+        {/* ش٤ — عربون مقبوض سلفاً: الزبون دفعه فعلاً بإيصالٍ سابق ⇒ «المتوقّع الآن» أعلاه ناقصُه. */}
+        {heldDeposit > 0 && (
+          <div className="mt-1 flex items-center justify-between rounded-md border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] px-2 py-1 text-[11px] font-bold text-[var(--sem-info)]">
+            <span className="inline-flex items-center gap-1"><Banknote aria-hidden className="size-3" /> عربون مقبوض سلفاً (يُخصَم)</span>
+            <span className="tabular-nums" dir="ltr">−{fmt(heldDeposit)}</span>
+          </div>
+        )}
         {heldDelivery > 0 && (
           <div className="mt-1 space-y-0.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-1">
             <div className="flex items-center justify-between text-[11px] font-bold text-[var(--sem-warn)]">
@@ -235,17 +244,20 @@ export const PaymentPanel = forwardRef<HTMLDivElement, PaymentPanelProps>(functi
           <NumKey k="4" onPress={numPress} />
 
           <div className="relative">
+            {/* ش٤ (م٢): العربون على أيّ طلبٍ — مخصوصٍ وغير مخصوص — فالزرّ يُقفل بفراغ السلة فقط.
+                خيارات التعبئة النسبية (٢٥٪/٥٠٪ من المخصّص) تظهر مع التخصيص وحده؛
+                «قبض عربون الآن» و«سجلّ العرابين» يظهران دائماً (تحسبهما الصفحة). */}
             <button
               onClick={() => setDepositMenuOpen((v) => !v)}
-              disabled={!hasCustom}
-              title={hasCustom ? "تعبئة عربونٍ سريعة: الجاهز كاملاً + نسبة من المخصّص" : "يظهر عند وجود طلب تخصيص في السلة"}
-              className={cn(NUM_H, "w-full min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", hasCustom ? "bg-card hover:bg-muted" : "cursor-not-allowed bg-muted/40 text-muted-foreground/50")}
+              disabled={cartEmpty}
+              title={cartEmpty ? "أضف ما يريده الزبون أولاً" : "عربون: قبضٌ فوريّ بسند، أو تعبئة سريعة من المخصّص"}
+              className={cn(NUM_H, "w-full min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", !cartEmpty ? "bg-card hover:bg-muted" : "cursor-not-allowed bg-muted/40 text-muted-foreground/50")}
             >
               عربون <ChevronDown aria-hidden className="inline size-3" />
             </button>
-            {depositMenuOpen && hasCustom && (
+            {depositMenuOpen && !cartEmpty && (
               <div className="absolute end-0 top-[calc(100%+4px)] z-30 w-44 rounded-lg border bg-card p-1.5 shadow-xl" dir="rtl">
-                <div className="px-1 pb-1 text-[10px] text-muted-foreground">الجاهز كاملاً + نسبة من المخصّص:</div>
+                {hasCustom && <div className="px-1 pb-1 text-[10px] text-muted-foreground">الجاهز كاملاً + نسبة من المخصّص:</div>}
                 {depositOptions.map((opt) => (
                   <button
                     key={opt.label}

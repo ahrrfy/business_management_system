@@ -191,6 +191,10 @@ function printWoThermalFromCard(o: WO) {
     jobTitle: o.title,
     quantity: o.quantity ? `${o.quantity} نسخة` : undefined,
     total: o.salePrice,
+    paidUpfront: Number(o.deposit ?? 0) > 0 ? o.deposit : null,
+    balanceDue: Number(o.deposit ?? 0) > 0
+      ? String(Math.max(0, Number(o.salePrice) - Number(o.deposit ?? 0)))
+      : null,
   });
 }
 

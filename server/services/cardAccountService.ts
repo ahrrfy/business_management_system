@@ -157,7 +157,7 @@ export async function getCardSummary(input: { branchId?: number }, scope: CardSc
 
 // ───────────────────────────── الحركات ─────────────────────────────
 
-export type CardMovementSource = "SALE" | "INVOICE_PAYMENT" | "VOUCHER" | "WORK_ORDER" | "OTHER";
+export type CardMovementSource = "SALE" | "INVOICE_PAYMENT" | "VOUCHER" | "WORK_ORDER" | "DRAFT_DEPOSIT" | "OTHER";
 
 export interface CardMovementRow {
   receiptId: number;
@@ -219,12 +219,15 @@ export async function getCardMovements(
   // to شامل ليومه كاملاً (< بداية اليوم التالي).
   const toClause = input.to ? sql`AND r.createdAt < DATE_ADD(${input.to}, INTERVAL 1 DAY)` : sql``;
   const dirClause = input.direction ? sql`AND r.direction = ${input.direction}` : sql``;
-  // مطابق لاشتقاق `source` في التطبيع أدناه (voucherNumber ⇒ VOUCHER، وإلا invoiceId ⇒ INVOICE_PAYMENT، وإلا workOrderId ⇒ WORK_ORDER، وإلا OTHER).
+  // مطابق لاشتقاق `source` في التطبيع أدناه (voucherNumber ⇒ VOUCHER، وإلا invoiceId ⇒ INVOICE_PAYMENT،
+  // وإلا workOrderId ⇒ WORK_ORDER، وإلا عربون مسوّدة (orderPayments) ⇒ DRAFT_DEPOSIT، وإلا OTHER).
+  const isDraftDep = sql`EXISTS (SELECT 1 FROM orderPayments op WHERE op.receiptId = r.id)`;
   const sourceClause =
     input.sourceType === "VOUCHER" ? sql`AND r.voucherNumber IS NOT NULL`
     : input.sourceType === "INVOICE_PAYMENT" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NOT NULL`
     : input.sourceType === "WORK_ORDER" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NULL AND r.workOrderId IS NOT NULL`
-    : input.sourceType === "OTHER" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NULL AND r.workOrderId IS NULL`
+    : input.sourceType === "DRAFT_DEPOSIT" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NULL AND r.workOrderId IS NULL AND ${isDraftDep}`
+    : input.sourceType === "OTHER" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NULL AND r.workOrderId IS NULL AND NOT ${isDraftDep}`
     : sql``;
   const qClause = input.q
     ? (() => {
@@ -286,7 +289,8 @@ export async function getCardMovements(
   if (input.sourceType === "VOUCHER") outerConds.push(sql`x.voucherNumber IS NOT NULL`);
   else if (input.sourceType === "INVOICE_PAYMENT") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NOT NULL`);
   else if (input.sourceType === "WORK_ORDER") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NULL AND x.workOrderId IS NOT NULL`);
-  else if (input.sourceType === "OTHER") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NULL AND x.workOrderId IS NULL`);
+  else if (input.sourceType === "DRAFT_DEPOSIT") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NULL AND x.workOrderId IS NULL AND x.isDraftDeposit = 1`);
+  else if (input.sourceType === "OTHER") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NULL AND x.workOrderId IS NULL AND x.isDraftDeposit = 0`);
   if (input.q) {
     const pat = `%${escLike(input.q.trim())}%`;
     outerConds.push(sql`(
@@ -316,6 +320,7 @@ export async function getCardMovements(
           r.voucherNumber AS voucherNumber,
           r.invoiceId AS invoiceId,
           r.workOrderId AS workOrderId,
+          CASE WHEN ${isDraftDep} THEN 1 ELSE 0 END AS isDraftDeposit,
           r.receiptStatus AS receiptStatus,
           r.voucherPartyType AS partyType,
           r.partyId AS partyId,
@@ -346,6 +351,7 @@ export async function getCardMovements(
     if (voucherNumber != null) source = "VOUCHER";
     else if (invoiceId != null) source = "INVOICE_PAYMENT";
     else if (workOrderId != null) source = "WORK_ORDER";
+    else if (Number(r.isDraftDeposit ?? 0) === 1) source = "DRAFT_DEPOSIT"; // ش٤: عربون طلب محفوظ (orderPayments)
     // ملاحظة: إيصال البيع النقديّ اللحظيّ يُكتب بـinvoiceId ⇒ يظهر INVOICE_PAYMENT؛ التمييز الدقيق
     // «بيع مقابل تسديد دفعة» غير جوهريّ للمطابقة (كلاهما دخل بطاقة على الفاتورة).
     const partyName =

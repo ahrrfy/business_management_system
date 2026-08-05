@@ -127,10 +127,18 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     // عربون مقبوض عند الإنشاء: نقدٌ حقيقي يدخل الصندوق ⇒ سجّله receipt(IN) بـshiftId + قيد PAYMENT_IN
     // (وإلا فهو نقد غير محتسَب في تسوية الوردية/الدفتر). يُربَط بالفاتورة عند التسليم.
     const depositD = round2(money(input.deposit ?? "0"));
+    // ش٤ (§٧.٢): جزءٌ من العربون قد يكون قُبض **سلفاً** (عرابين مسوّدة عبر orderPayments) — له
+    // إيصاله وقيده منذ لحظة قبضه، والإيصال هنا يُنشأ للجزء **الجديد** وحده (I5: لا إيصال ثانٍ
+    // لمالٍ سبق قبضه). عمود deposit يخزّن الكامل (P+N) — هو ما يقرؤه deliver/cancel.
+    const depositPreD = round2(money(input.depositPreCollected ?? "0"));
+    if (depositPreD.gt(depositD)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "المقبوض سلفاً يتجاوز عربون الأمر — خلل توزيع" });
+    }
+    const newDepositD = round2(depositD.minus(depositPreD));
     // ش٠ (V4): وردية السلة المُتحقَّق منها (من checkoutReception) تُلزِم درجاً واحداً لكل نقد
     // السلة؛ الإنشاء المفرد (بلا shiftId) يبقى على الحلّ الذاتي — يفاضل RECEPTION لو فُتحت وردِيتان.
     const basketShiftId = input.shiftId ?? null;
-    if (depositD.gt(0)) {
+    if (newDepositD.gt(0)) {
       const depositMethod = input.paymentMethod ?? "CASH";
       const shiftId = basketShiftId ?? await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
       // عربون نقدي يدخل الدُرج ⇒ يلزم وردية مفتوحة لينعكس في تسوية الصندوق/Z-report (لا نقد «معلّق» بلا وردية).
@@ -141,7 +149,7 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
         shiftId,
         workOrderId,
         direction: "IN",
-        amount: toDbMoney(depositD),
+        amount: toDbMoney(newDepositD),
         paymentMethod: depositMethod,
         referenceNumber: input.paymentReference?.trim() || null,
         // cashBucket='DRAWER' للعربون النقدي ⇒ يَدخل تسوية الدرج/Z-report (مرآة دفعة التسليم/البيع).
@@ -153,13 +161,14 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
       const depositReceiptId = extractInsertId(dRes);
       // ش٠ (V3): هويّة إيصال العربون تُثبَّت على الأمر لحظة قبضه — قرّاؤها (deliver/cancel/dispatch)
       // لم يعودوا يلتقطون بـ`.limit(1)` الملتبسة مع إيصال أجرة COUNTER.
+      // (depositReceiptId يحمل إيصال الجزء الجديد N وحده؛ حصص P حقيقتها في orderPayments.)
       await tx.update(workOrders).set({ depositReceiptId }).where(eq(workOrders.id, workOrderId));
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,
         receiptId: depositReceiptId,
         customerId: input.customerId ?? null,
-        amount: depositD,
+        amount: newDepositD,
         notes: `[WO_DEPOSIT:${workOrderId}]`,
       });
     }

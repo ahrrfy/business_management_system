@@ -77,6 +77,8 @@ import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import DepositDialog from "@/components/reception/DepositDialog";
+import DraftPaymentsDialog from "@/components/reception/DraftPaymentsDialog";
 import { WsTab } from "@/components/reception/WsTab";
 import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -251,6 +253,9 @@ export default function Reception() {
         expectedCash: r.expectedCash,
         countedCash: r.countedCash,
         variance: r.variance,
+        // ش٤ (I14): إفصاح عرابين الطلبات غير المُثبَّتة على Z المطبوع أيضاً.
+        heldDepositsCount: rep?.heldDepositsCount ?? 0,
+        heldDepositsTotal: rep?.heldDepositsTotal ?? "0",
       });
       setClosing(false);
       setCounted("");
@@ -294,6 +299,11 @@ export default function Reception() {
   // بالجملة بdebounce ~٨٠٠مث وversion تفاؤليّ (تعارضُ زميلٍ ⇒ إعادة تحميلٍ لا طمس).
   const [activeDraft, setActiveDraft] = useState<{ id: number; version: number } | null>(null);
   const draftSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ش٤: صافي العربون المقبوض على الطلب المحفوظ النشط — يقلّص «المتوقّع الآن» ويظهر في اللوحة.
+  const [draftHeld, setDraftHeld] = useState("0.00");
+  const [draftInfo, setDraftInfo] = useState<{ draftNumber: string } | null>(null);
+  const [depositOpen, setDepositOpen] = useState(false);
+  const [paymentsOpen, setPaymentsOpen] = useState(false);
   // ش١: جهات التوصيل لورشة الفواتير (الإسناد من الصفّ) — تُجلب عند فتح الورشة فقط.
   const partiesQ = trpc.delivery.listParties.useQuery(
     { activeOnly: true },
@@ -435,8 +445,12 @@ export default function Reception() {
   const effectiveGrandD = cashRoundActive ? roundCashIQD(grandTotalD.toFixed(2)) : grandTotalD;
   const cashRoundingDelta = cashRoundActive ? round2(effectiveGrandD.minus(grandTotalD)).toNumber() : 0;
 
+  // ش٤: العربون المقبوض سلفاً على الطلب المحفوظ يقلّص «المتوقّع الآن» — الزبون دفعه فعلاً
+  // وإيصاله قائم؛ collectNow عند التثبيت هو الجزء الجديد وحده (I5).
+  const heldD = D(draftHeld || 0);
   // الدفع موحّد على كامل السلة. البيع المباشر هو الحد الأدنى؛ وما زاد يصبح عربوناً لأوامر الطباعة.
-  const expectedNowD = effectiveGrandD;
+  const dueNowRawD = effectiveGrandD.minus(heldD);
+  const expectedNowD = dueNowRawD.lt(0) ? D(0) : dueNowRawD;
   const expectedNow = round2(expectedNowD).toNumber();
 
   // ما أدخله الكاشير في لوحة الأرقام (مع تكيّف Quick Pay).
@@ -444,7 +458,7 @@ export default function Reception() {
   const paid = round2(paidD).toNumber();
   const changeD = paidD.minus(expectedNowD);
   const change = round2(changeD).toNumber();
-  const remainingD = effectiveGrandD.minus(paidD);
+  const remainingD = expectedNowD.minus(paidD);
   const remaining = round2(remainingD).toNumber();
   const isChange = method === "CASH" && paidD.gt(0) && paidD.gte(expectedNowD);
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
@@ -602,9 +616,11 @@ export default function Reception() {
     setCouponLabel(null);
     setCouponInput("");
     // ش٢: التفريغ يفكّ ارتباط المسوّدة **قبل** مسح السلة (وإلا زامنت المزامنة المؤجَّلة أسطراً
-    // فارغة فمُحيت المسوّدة المحفوظة عن بُعد) — المسوّدة تبقى سليمة في الشريط.
+    // فارغة فمُحيت المسوّدة المحفوظة عن بُعد) — المسوّدة تبقى سليمة في الشريط (ومعها عربونها).
     if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
     setActiveDraft(null);
+    setDraftHeld("0.00");
+    setDraftInfo(null);
     setCart([]);
     setSelKey(null);
     setPayInput("");
@@ -691,12 +707,40 @@ export default function Reception() {
     setPayInput(v.toFixed(0));
     setDepositMenuOpen(false);
   }
-  /** خيارات «عربون» المنسدلة — تُحسب هنا (sumDirectD/sumCustomD ملك الصفحة) وتستهلكها PaymentPanel. */
-  const depositOptions = ([["٢٥٪", 0.25], ["٥٠٪", 0.5], ["المخصّص كاملاً", 1]] as const).map(([label, pct]) => ({
-    label,
-    amountLabel: fmt(round2(sumDirectD.plus(sumCustomD.times(pct))).toNumber()),
-    onPick: () => fillDeposit(pct),
-  }));
+  /** ش٤ — «قبض عربون الآن»: يقبض مبلغاً **فوراً بإيصالٍ وسند** على الطلب المحفوظ (يُرقّى تلقائياً
+   *  إن لزم — §٨.٢/أ: قبض العربون سببُ ترقيةٍ حقيقيّ). يختلف عن أزرار التعبئة (تملأ الحقل فقط). */
+  async function openDepositCollect() {
+    setDepositMenuOpen(false);
+    if (offline) { notify.errBig("لا قبض عربون دون اتصال", "العربون يحتاج إيصالاً خادمياً — أعد المحاولة عند عودة الاتصال."); return; }
+    if (cart.length === 0) { notify.warn("السلة فارغة", "أضف ما يريده الزبون ثم اقبض العربون"); return; }
+    if (!shift) { notify.errBig("افتح وردية استقبال أولاً", "العربون يدخل درجك وتُحاسَب عليه عند الإغلاق."); return; }
+    try {
+      if (!activeDraft) {
+        const p = await promoteM.mutateAsync({ branchId, shiftId: shift?.id ?? null, ...buildDraftPayload() });
+        setDraftInfo({ draftNumber: p.draftNumber });
+      }
+      setDepositOpen(true);
+    } catch {
+      /* promoteM.onError أبلغ */
+    }
+  }
+  /** خيارات «عربون» المنسدلة — تُحسب هنا (sumDirectD/sumCustomD ملك الصفحة) وتستهلكها PaymentPanel.
+   *  خيارات التعبئة النسبية للمخصّص فقط؛ القبض الفوريّ لأيّ سلة (م٢: عربونٌ على أيّ طلب). */
+  const depositOptions = [
+    ...(hasCustom
+      ? ([["٢٥٪", 0.25], ["٥٠٪", 0.5], ["المخصّص كاملاً", 1]] as const).map(([label, pct]) => ({
+          label,
+          amountLabel: fmt(round2(sumDirectD.plus(sumCustomD.times(pct))).toNumber()),
+          onPick: () => fillDeposit(pct),
+        }))
+      : []),
+    // قبضٌ فعليّ لا تعبئة — يظهر دائماً ما دامت السلة غير فارغة (م٥: بلا شرط نسبة).
+    { label: "قبض عربون الآن (سند)", amountLabel: "إيصال فوري", onPick: () => void openDepositCollect() },
+    // سجلّ العرابين + الردّ — للطلب المحفوظ النشط المموّل فقط.
+    ...(activeDraft && heldD.gt(0)
+      ? [{ label: "سجلّ العرابين / ردّ", amountLabel: fmt(round2(heldD).toNumber()), onPick: () => { setDepositMenuOpen(false); setPaymentsOpen(true); } }]
+      : []),
+  ];
 
   function goToWorkflowStep(step: number) {
     setWorkflowStep(step);
@@ -854,6 +898,8 @@ export default function Reception() {
   const promoteM = trpc.reception.draftPromote.useMutation({
     onSuccess: (r) => {
       setActiveDraft({ id: r.draftId, version: r.version });
+      setDraftInfo({ draftNumber: r.draftNumber });
+      setDraftHeld("0.00"); // طلبٌ جديد — لا مقبوض عليه بعد
       notify.ok(`حُفظ الطلب — ${r.draftNumber}`, "يُزامَن تلقائياً مع كل تعديل، ويستطيع زميلك إكماله من جهازه");
       void utils.reception.draftList.invalidate();
     },
@@ -870,10 +916,19 @@ export default function Reception() {
         notify.warn("حُدِّث الطلب المحفوظ", "أُعيد تحميله بأحدث نسخة — راجعه ثم تابع");
         void resumeDraft(vars.draftId);
       } else if (code === "PRECONDITION_FAILED") {
-        // انغلقت (ثُبِّتت/أُلغيت/انقضت) ⇒ فكّ الربط والرسالة تشرح.
-        notify.warn("توقّفت مزامنة الطلب المحفوظ", e.message);
-        setActiveDraft(null);
-        void utils.reception.draftList.invalidate();
+        // انغلقت (ثُبِّتت/أُلغيت/انقضت) أو حارس I3 (مموّلة: حذف بند/خفض دون المقبوض) ⇒ الرسالة تشرح.
+        // حارس I3 لا يفكّ الربط — الطلب حيٌّ والموظّف يصحّح (يعيد البند أو يردّ العربون).
+        const i3Guard = /مبلغٌ مقبوض|المقبوض سلفاً/.test(e.message);
+        notify.warn(i3Guard ? "الطلب عليه مبلغ مقبوض" : "توقّفت مزامنة الطلب المحفوظ", e.message);
+        if (!i3Guard) {
+          setActiveDraft(null);
+          setDraftHeld("0.00");
+          setDraftInfo(null);
+          void utils.reception.draftList.invalidate();
+        } else if (activeDraftRef.current) {
+          // استرجع النسخة الخادمية الصادقة (البنود قبل الحذف المرفوض).
+          void resumeDraft(activeDraftRef.current.id);
+        }
       }
       // عطل نقلٍ عابر (code فارغ): أبقِ الربط — النبضة القادمة تعيد المحاولة.
     },
@@ -953,9 +1008,15 @@ export default function Reception() {
       setCustomer({ customerId: d.customerId != null ? Number(d.customerId) : null, name: d.contactName ?? "", phone: d.contactPhone ?? null, isNew: false });
       setTierOverride((d.priceTier as Tier) ?? null);
       setActiveDraft({ id: draftId, version: Number(d.version) });
+      // ش٤: صافي المقبوض سلفاً يرافق الاستئناف — «المتوقّع الآن» يهبط به فوراً.
+      setDraftHeld(String((d as { heldTotal?: string }).heldTotal ?? "0.00"));
+      setDraftInfo({ draftNumber: d.draftNumber });
       setWorkshop("CART");
+      const heldNote = Number((d as { heldTotal?: string }).heldTotal ?? 0) > 0
+        ? ` — عليها عربون مقبوض ${fmt(Number((d as { heldTotal?: string }).heldTotal))} د.ع`
+        : "";
       notify.ok(
-        `فُتحت المسوّدة ${d.draftNumber}`,
+        `فُتحت المسوّدة ${d.draftNumber}${heldNote}`,
         skipped > 0 ? `تنبيه: ${skipped} بند تعذّر استرجاعه (منتج غير متاح)` : "تعديلاتك تُزامَن وتُسجَّل باسمك",
       );
     } catch (e) {
@@ -1010,21 +1071,22 @@ export default function Reception() {
 
     // ش٠ (V1): كل المقارنات على الإجمالي **الفعليّ** (المقرَّب عند سريان التقريب) — إرسال مبالغ
     // غير مقرَّبة مع علم التقريب كان يجعل الخادم يرى نقصاً (رفضٌ للزبون العابر) أو ذمّةً صامتة.
-    const inputPaidD = opts.quickFullPay ? effectiveGrandD : paidD;
-    const appliedPaidD = method === "CASH" && inputPaidD.gt(effectiveGrandD) ? effectiveGrandD : inputPaidD;
+    // ش٤: المستحقّ الآن = الإجمالي − العربون المقبوض سلفاً (heldD) — الدفع الجديد يقاس عليه.
+    const inputPaidD = opts.quickFullPay ? expectedNowD : paidD;
+    const appliedPaidD = method === "CASH" && inputPaidD.gt(expectedNowD) ? expectedNowD : inputPaidD;
 
     // البطاقة والتحويل صالحان أيضاً كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي.
     if (method !== "CASH" && inputPaidD.gt(0) && !paymentReference.trim()) {
       notify.err(method === "CARD" ? "رقم عملية البطاقة مطلوب" : "رقم مرجع التحويل مطلوب");
       return;
     }
-    if (method !== "CASH" && inputPaidD.gt(effectiveGrandD)) {
-      notify.err(`لا يمكن أن يتجاوز مبلغ ${method === "CARD" ? "البطاقة" : "التحويل"} إجمالي الطلب (${fmt(effectiveGrandD.toFixed(2))} د.ع)`);
+    if (method !== "CASH" && inputPaidD.gt(expectedNowD)) {
+      notify.err(`لا يمكن أن يتجاوز مبلغ ${method === "CARD" ? "البطاقة" : "التحويل"} المستحقّ الآن (${fmt(expectedNowD.toFixed(2))} د.ع)`);
       return;
     }
     const directFloorD = cashRoundActive ? effectiveGrandD : sumDirectD;
-    if (appliedPaidD.lt(directFloorD)) {
-      notify.err(`المبلغ المقبوض يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(directFloorD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
+    if (appliedPaidD.plus(heldD).lt(directFloorD)) {
+      notify.err(`المبلغ المقبوض (مع العربون السابق) يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(directFloorD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
       return;
     }
 
@@ -1159,6 +1221,8 @@ export default function Reception() {
               managerApproval: mgrCredsRef.current ?? undefined,
             });
             setActiveDraft(null);
+            setDraftHeld("0.00");
+            setDraftInfo(null);
             void utils.reception.draftList.invalidate();
             return committed;
           })()
@@ -1226,9 +1290,10 @@ export default function Reception() {
       const receiptCustomerName = customerName && receiptPhone
         ? `${customerName} — ${receiptPhone}`
         : customerName ?? (receiptPhone ? `عميل ${receiptPhone}` : null);
-      const changeD2 = round2(appliedPaidD.minus(effectiveGrandD));
+      // ش٤: الفكّة والمتبقّي يقاسان على المستحقّ الآن (بعد خصم العربون السابق heldD).
+      const changeD2 = round2(appliedPaidD.minus(expectedNowD));
       const printedChange = method === "CASH" && changeD2.gt(0) ? changeD2.toFixed(2) : null;
-      const creditD = round2(effectiveGrandD.minus(appliedPaidD));
+      const creditD = round2(expectedNowD.minus(appliedPaidD));
       const printedCredit = creditD.gt(0) ? creditD.toFixed(2) : null;
       const receiptLine = (c: CartLine) => ({
         name: `${c.row.productName} (${c.row.unitName})${c.disc ? ` −${c.disc}%` : ""}`,
@@ -1269,6 +1334,10 @@ export default function Reception() {
         const c = x.c;
         const custom = c.custom!;
         const finalText = composeCustomizationText(custom);
+        // ش٤ (§١٠): العربون الموزَّع على الأمر من ردّ الخادم (الجشع الخادميّ هو الحقيقة) —
+        // التذكرة تحمل «مدفوع مقدماً/المتبقّي عند الاستلام» فلا يخرج الزبون بورقةٍ لا تُثبت عربونه.
+        const woDeposit = (result.workOrders[index] as { deposit?: string } | undefined)?.deposit ?? "0.00";
+        const woBalance = round2(D(x.salePriceStr).minus(D(woDeposit)));
         workOrdersToPrint.push({
           orderNumber: result.workOrders[index]?.orderNumber ?? "",
           orderDate: fmtDate(printedAt),
@@ -1280,6 +1349,8 @@ export default function Reception() {
           quantity: c.qty,
           specs: finalText || null,
           total: x.salePriceStr,
+          paidUpfront: Number(woDeposit) > 0 ? woDeposit : null,
+          balanceDue: Number(woDeposit) > 0 ? woBalance.toFixed(2) : null,
           // ٥/٨ — أجرة التوصيل تُطبع صراحةً على التذكرة **خارج الإجمالي**، مع مَن يقبضها:
           // يمنع سوءَ الفهم الذي كان يجعل الموظّف والزبون يظنّانها جزءاً من قيمة الطلب.
           notes: custom.hasDelivery
@@ -1728,6 +1799,14 @@ export default function Reception() {
                       ? [[
                           `منها فواتير تسليم طلبات (${reportQ.data?.woInvoicesCount})`,
                           `${fmt(Number(reportQ.data?.woInvoicesTotal ?? 0))} د.ع`,
+                        ] as [string, string]]
+                      : []),
+                    // ش٤ (I14): عرابين قُبضت على هذه الوردية لطلباتٍ لم تُثبَّت بعد — نقدٌ في الدرج
+                    // بلا فاتورة؛ السطر يمنع قراءته «فائضاً مجهولاً» ولا يمنع الإغلاق.
+                    ...(Number(reportQ.data?.heldDepositsCount ?? 0) > 0
+                      ? [[
+                          `عرابين طلبات لم تُثبَّت (${reportQ.data?.heldDepositsCount})`,
+                          `${fmt(Number(reportQ.data?.heldDepositsTotal ?? 0))} د.ع`,
                         ] as [string, string]]
                       : []),
                     ["المبلغ عند بدء العمل", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
@@ -2210,6 +2289,7 @@ export default function Reception() {
           sumCustom={sumCustom}
           heldDelivery={heldDelivery}
           cashDueNow={cashDueNow}
+          heldDeposit={round2(heldD).toNumber()}
           paid={paid}
           change={change}
           remaining={remaining}
@@ -2241,6 +2321,40 @@ export default function Reception() {
       {/* شارة المزامنة — تُركَّب في كلّ شاشات الكاشير: تعرض حالة الاتصال وطابور الالتقاط،
           وتُفرّغ **كلّ** الأنواع (تجزئة/طباعة/استقبال) لا نوع هذه الشاشة وحده. */}
       <OfflineSyncChip userRole={me.data?.role} />
+
+      {/* ─── ش٤: حوار قبض العربون (على الطلب المحفوظ النشط) ─── */}
+      {depositOpen && activeDraft && (
+        <DepositDialog
+          draftId={activeDraft.id}
+          draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`}
+          contactName={customer.name?.trim() || null}
+          orderTotal={round2(grandTotalD).toFixed(2)}
+          heldTotal={draftHeld}
+          suggestedAmount={paidD.gt(0) ? round2(paidD).toFixed(2) : round2(sumCustomD.times(0.25)).toFixed(0)}
+          currentShiftId={shift?.id ?? null}
+          branchName={branchName}
+          cashierName={me.data?.name ?? null}
+          onClose={() => setDepositOpen(false)}
+          onCollected={(total) => {
+            setDraftHeld(total);
+            setPayInput("");
+            void utils.reception.draftList.invalidate();
+          }}
+        />
+      )}
+
+      {/* ─── ش٤: سجلّ عرابين الطلب النشط + الردّ ─── */}
+      {paymentsOpen && activeDraft && (
+        <DraftPaymentsDialog
+          draftId={activeDraft.id}
+          draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`}
+          onClose={() => setPaymentsOpen(false)}
+          onChanged={(heldNet) => {
+            setDraftHeld(heldNet);
+            void utils.reception.draftList.invalidate();
+          }}
+        />
+      )}
 
       {/* ─── نافذة التخصيص ─── */}
       {showCustomization && (

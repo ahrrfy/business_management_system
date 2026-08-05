@@ -27,6 +27,9 @@ export interface CreateWorkOrderInput {
   channelHandle?: string | null;
   priority?: "LOW" | "NORMAL" | "URGENT" | null;
   deposit?: string | null;
+  /** ش٤ (§٧.٢) — جزء `deposit` الذي سبق قبضُه (عرابين مسوّدة عبر orderPayments): له إيصاله
+   *  وقيده منذ القبض، فلا يُنشأ له إيصالٌ ثانٍ هنا (I5) — الإيصال للجزء الجديد N = deposit − هذا. */
+  depositPreCollected?: string | null;
   paymentMethod?: "CASH" | "CARD" | "TRANSFER" | "WALLET" | null;
   paymentReference?: string | null;
   paymentReceiptUrl?: string | null;
