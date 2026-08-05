@@ -1,6 +1,6 @@
 // READY → DELIVERED: إنشاء فاتورة (sourceType=WORKORDER) + دفعة اختيارية + قيد SALE + تسوية الذمم.
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, notLike, or } from "drizzle-orm";
 import { invoiceItems, invoices, productUnits, receipts, workOrders } from "../../../drizzle/schema";
 import { assertCreditLimit } from "../../lib/credit";
 import { extractInsertId } from "../../lib/insertId";
@@ -143,10 +143,21 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     // الإقفال محاسبياً: deposit مُحتسَب في invoice.paidAmount عند التسليم (totalPaid). reconcileService
     // يستثني قيد العربون من voucherSum عبر فلتر receipt.workOrderId NOT NULL (لا يعتمد على entry.invoiceId).
     if (depositPaid.gt(0)) {
-      const depRcpt = (await tx.select({ id: receipts.id }).from(receipts)
-        .where(and(eq(receipts.workOrderId, Number(wo.id)), isNull(receipts.invoiceId))).limit(1))[0];
-      if (depRcpt) {
-        await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcpt.id)));
+      // ش٠ (V3): هويّة إيصال العربون من عموده الصريح — الالتقاط القديم بـ`.limit(1)` على
+      // (workOrderId, invoiceId NULL) كان يتصادم مع إيصال أجرة COUNTER (نفس البصمة) فقد يربط
+      // إيصال الأجرة بالفاتورة بدل العربون. البديل الاحتياطي (أوامر قديمة قبل 0151 لم يلتقطها
+      // backfill) يستثني إيصالات الأجرة صراحةً.
+      const depRcptId = wo.depositReceiptId != null
+        ? Number(wo.depositReceiptId)
+        : (await tx.select({ id: receipts.id }).from(receipts)
+            .where(and(
+              eq(receipts.workOrderId, Number(wo.id)),
+              eq(receipts.direction, "IN"),
+              isNull(receipts.invoiceId),
+              or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
+            )).limit(1))[0]?.id;
+      if (depRcptId != null) {
+        await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcptId)));
         // ⛔ كان هنا UPDATE accountingEntries.invoiceId — أُزيل ضمن A1: انتهاك append-only
         //     على دفتر الأستاذ. الـUPDATE لم يكن load-bearing لأي حساب.
       }

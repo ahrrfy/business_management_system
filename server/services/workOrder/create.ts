@@ -127,11 +127,12 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     // عربون مقبوض عند الإنشاء: نقدٌ حقيقي يدخل الصندوق ⇒ سجّله receipt(IN) بـshiftId + قيد PAYMENT_IN
     // (وإلا فهو نقد غير محتسَب في تسوية الوردية/الدفتر). يُربَط بالفاتورة عند التسليم.
     const depositD = round2(money(input.deposit ?? "0"));
+    // ش٠ (V4): وردية السلة المُتحقَّق منها (من checkoutReception) تُلزِم درجاً واحداً لكل نقد
+    // السلة؛ الإنشاء المفرد (بلا shiftId) يبقى على الحلّ الذاتي — يفاضل RECEPTION لو فُتحت وردِيتان.
+    const basketShiftId = input.shiftId ?? null;
     if (depositD.gt(0)) {
       const depositMethod = input.paymentMethod ?? "CASH";
-      // نقد أوامر الشغل ينتمي لوردية خدمة الزبائن (RECEPTION) عند وجودها؛ الحلّ المرن يستعمل
-      // وردية المشغّل الواحد أيّاً كان نوعها، ويفاضل RECEPTION لو فُتحت وردِيتان.
-      const shiftId = await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
+      const shiftId = basketShiftId ?? await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
       // عربون نقدي يدخل الدُرج ⇒ يلزم وردية مفتوحة لينعكس في تسوية الصندوق/Z-report (لا نقد «معلّق» بلا وردية).
       if (depositMethod === "CASH" && shiftId == null)
         throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لقبض عربون نقدي" });
@@ -150,6 +151,9 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
         createdBy: actor.userId,
       });
       const depositReceiptId = extractInsertId(dRes);
+      // ش٠ (V3): هويّة إيصال العربون تُثبَّت على الأمر لحظة قبضه — قرّاؤها (deliver/cancel/dispatch)
+      // لم يعودوا يلتقطون بـ`.limit(1)` الملتبسة مع إيصال أجرة COUNTER.
+      await tx.update(workOrders).set({ depositReceiptId }).where(eq(workOrders.id, workOrderId));
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,
@@ -167,7 +171,8 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     const heldFeeD = round2(money(input.deliveryCost ?? "0"));
     if (input.hasDelivery && (input.deliveryFeeCollection ?? "COURIER") === "COUNTER" && heldFeeD.gt(0)) {
       const feeMethod = input.paymentMethod ?? "CASH";
-      const feeShiftId = await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
+      // ش٠ (V4): نفس درج السلة المُتحقَّق منه — لا ينشطر نقد سلةٍ واحدة على درجين.
+      const feeShiftId = basketShiftId ?? await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
       if (feeMethod === "CASH" && feeShiftId == null) {
         throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لقبض أجرة توصيل نقداً" });
       }

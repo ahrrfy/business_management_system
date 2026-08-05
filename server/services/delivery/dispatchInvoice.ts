@@ -37,6 +37,16 @@ export interface DispatchInvoiceInput {
 export async function dispatchInvoiceToDelivery(input: DispatchInvoiceInput, actor: DeliveryTxActor) {
   return withTx(async (tx) => {
     const feeCollection = input.feeCollection ?? "COURIER";
+    // ش٠ (٥/٨، V15): COUNTER محظور على مسار الفاتورة حتى ش٦ — الكاتب الوارد الوحيد لأمانة
+    // الأجرة هو workOrder/create.ts (إيصال IN لحظة القبض). هنا لا قبضَ يسبق الإرسال، فقبول
+    // COUNTER يُنتج إيصال OUT للمندوب **بلا IN يقابله** ⇒ عجزٌ في الدرج يمنع إغلاق الوردية،
+    // ويُحاسَب الموظّف على نقدٍ لم يستلمه قط. ش٦ تضيف القبض الوارد (deliveryFeeHeld) ثم يُرفع الحظر.
+    if (feeCollection === "COUNTER") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "قبض أجرة التوصيل في الكاشير غير متاح لفاتورةٍ بلا أمر شغل — اختر «المندوب يقبضها من الزبون» أو «على المكتبة»",
+      });
+    }
     const payloadHash = idempotencyHash({
       invoiceId: Number(input.invoiceId),
       partyId: Number(input.partyId),
@@ -91,8 +101,9 @@ export async function dispatchInvoiceToDelivery(input: DispatchInvoiceInput, act
     const codAmount = round2(money(inv.total).minus(money(inv.paidAmount ?? "0")));
     if (codAmount.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة مدفوعةٌ بأكثر من قيمتها — راجعها قبل الإسناد" });
     const codPositive = codAmount.gt(0);
-    // الأجرة تُصرَف الآن متى كان نقدها بأيدينا أو لا توريدَ يُنتظَر (نفس قاعدة dispatch.ts).
-    const settleFeeNow = fee.gt(0) && feeCollection !== "COURIER" && (feeCollection === "COUNTER" || !codPositive);
+    // الأجرة تُصرَف الآن حين لا توريدَ يُنتظَر (نفس قاعدة dispatch.ts). بعد حظر COUNTER (ش٠)
+    // بقي مسارٌ واحد للصرف الفوريّ: SHOP بفاتورةٍ مدفوعة كاملاً (codAmount=0) — لا توريد يُخصم منه.
+    const settleFeeNow = fee.gt(0) && feeCollection === "SHOP" && !codPositive;
 
     const consignmentNumber = await nextConsignmentNumber(tx, Number(inv.branchId));
     const cnRes = await tx.insert(deliveryConsignments).values({
@@ -151,15 +162,17 @@ export async function dispatchInvoiceToDelivery(input: DispatchInvoiceInput, act
         description: `أجرة توصيل إرسالية ${consignmentNumber}`,
         createdBy: actor.userId,
       });
+      // ش٠: بعد حظر COUNTER لا يصل هنا إلا SHOP (مصروفٌ حقيقيّ) — DELIVERY_FEE_HELD يعود مع ش٦.
       await postEntry(tx, {
-        entryType: feeCollection === "COUNTER" ? "DELIVERY_FEE_HELD" : "DELIVERY_FEE",
+        entryType: "DELIVERY_FEE",
         dedupeKey: `DELIVERY_FEE_DISPATCH:${consignmentId}`,
         branchId: Number(inv.branchId),
         invoiceId: Number(inv.id),
         deliveryPartyId: input.partyId,
         receiptId: extractInsertId(feeOut),
         amount: fee,
-        ...(feeCollection === "SHOP" ? { cost: fee, profit: fee.neg() } : {}),
+        cost: fee,
+        profit: fee.neg(),
         notes: `أجرة توصيل ${consignmentNumber}`,
       });
     }

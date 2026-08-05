@@ -107,7 +107,9 @@ export async function getDeliveryPartyStatement(partyId: number, from?: string, 
  *
  * المصدر: `invoices` مقيَّدةً بورديات RECEPTION، مع LEFT JOIN على الإرسالية (فريدة لكل فاتورة
  * بقيد uq_consignment_invoice) وعلى أمر الشغل (إن كانت الفاتورة صادرةً عن أمر شغل) ⇒ صفٌّ واحد
- * لكل فاتورة يحمل حالتها التسليمية. الفلترة على invoices.shiftId (مفهرَس) ثم على نوع الوردية.
+ * لكل فاتورة يحمل حالتها التسليمية. الفلترة على invoices.shiftId ثم على نوع الوردية.
+ * ش٠ (٥/٨): كان هذا التعليق يدّعي أن shiftId «مفهرَس» ولا فهرس له فعلاً — أُنشئ
+ * idx_invoice_shift(shiftId, id) في هجرة 0151 (العمودان معاً: الطابور يقطع بـid).
  */
 export async function listReceptionInvoiceQueue(input: {
   branchId: number;

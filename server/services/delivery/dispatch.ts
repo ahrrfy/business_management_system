@@ -2,7 +2,7 @@
 //
 // READY → DELIVERED + إرسالية: فاتورة (customerId=NULL) + SALE + عهدة COD على الجهة (D3).
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, notLike, or } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
@@ -164,10 +164,18 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     });
 
     // ربط إيصال العربون بالفاتورة (كان workOrderId-only) — append-only على القيد كـdeliverWorkOrder.
+    // ش٠ (V3): بهويّته الصريحة (depositReceiptId) — الالتقاط الظنّي كان يتصادم مع إيصال أجرة COUNTER.
     if (depositPaid.gt(0)) {
-      const depRcpt = (await tx.select({ id: receipts.id }).from(receipts)
-        .where(and(eq(receipts.workOrderId, Number(wo.id)), isNull(receipts.invoiceId))).limit(1))[0];
-      if (depRcpt) await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcpt.id)));
+      const depRcptId = wo.depositReceiptId != null
+        ? Number(wo.depositReceiptId)
+        : (await tx.select({ id: receipts.id }).from(receipts)
+            .where(and(
+              eq(receipts.workOrderId, Number(wo.id)),
+              eq(receipts.direction, "IN"),
+              isNull(receipts.invoiceId),
+              or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
+            )).limit(1))[0]?.id;
+      if (depRcptId != null) await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcptId)));
     }
 
     const consignmentNumber = await nextConsignmentNumber(tx, Number(wo.branchId));

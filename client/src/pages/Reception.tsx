@@ -53,7 +53,7 @@ import {
 } from "@/lib/offline/outbox";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { confirm } from "@/lib/confirm";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, round2, roundCashIQD } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
 import { fmtDate } from "@/lib/date";
@@ -495,8 +495,18 @@ export default function Reception() {
   const heldDelivery = heldDeliveryD.toNumber();
   const cashDueNow = round2(grandTotalD.plus(heldDeliveryD)).toNumber();
 
+  // ش٠ (٥/٨، V1) — تقريب نقدي IQD لأقرب ٢٥٠ (نمط POS حرفياً): للبيع المباشر **الخالص** النقديّ
+  // فقط (لا تخصيص ولا خدمات طباعة — السلة المختلطة بلا تقريبٍ حتى ش٦)، وأونلاين فقط: مسار
+  // الالتقاط الأوفلايني يلتقط المبالغ غير المقرَّبة، فتفعيل التقريب معه يفصل ما رآه الزبون عمّا
+  // سيُرحَّل (فرقٌ في الدرج يمنع الإغلاق). roundCashIQD نفس دالة الخادم ⇒ اتفاقٌ حتميّ على الفرق
+  // الذي يقيّده الخادم قيدَ ADJUST.
+  const hasPrintInCart = cart.some((c) => !isCustomKind(c) && c.row.isPrintService);
+  const cashRoundActive = method === "CASH" && cart.length > 0 && !cart.some(isCustomKind) && !hasPrintInCart && !offline;
+  const effectiveGrandD = cashRoundActive ? roundCashIQD(grandTotalD.toFixed(2)) : grandTotalD;
+  const cashRoundingDelta = cashRoundActive ? round2(effectiveGrandD.minus(grandTotalD)).toNumber() : 0;
+
   // الدفع موحّد على كامل السلة. البيع المباشر هو الحد الأدنى؛ وما زاد يصبح عربوناً لأوامر الطباعة.
-  const expectedNowD = grandTotalD;
+  const expectedNowD = effectiveGrandD;
   const expectedNow = round2(expectedNowD).toNumber();
 
   // ما أدخله الكاشير في لوحة الأرقام (مع تكيّف Quick Pay).
@@ -504,7 +514,7 @@ export default function Reception() {
   const paid = round2(paidD).toNumber();
   const changeD = paidD.minus(expectedNowD);
   const change = round2(changeD).toNumber();
-  const remainingD = grandTotalD.minus(paidD);
+  const remainingD = effectiveGrandD.minus(paidD);
   const remaining = round2(remainingD).toNumber();
   const isChange = method === "CASH" && paidD.gt(0) && paidD.gte(expectedNowD);
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
@@ -537,6 +547,11 @@ export default function Reception() {
   }, [offline, debounced, effectiveTier]);
   const results = offline ? offlineResults : (searchResults.data ?? []);
   const resultsEmpty = results.length === 0 && debounced.trim().length >= 2 && !(offline || searchResults.isFetching);
+  // ش٠ — حارس سباق البحث (نمط POS searchSettled): Enter لا يضيف أول نتيجة إلا بعد استقرار
+  // النتائج على النصّ الحاليّ — كان يضيف منتجاً خاطئاً من استعلامٍ أقدم أثناء الكتابة السريعة.
+  const searchSettled = debounced.trim() === search.trim()
+    && search.trim().length >= 2
+    && (offline || !searchResults.isFetching);
 
   // ───── السلّة ─────────────────────────────────────────────────────────────
   /** أيّ تعديلٍ على السلة يُسقط كوبوناً مُطبَّقاً سابقاً (نمط POS.tsx clearAppliedCoupon) — أسعار
@@ -739,7 +754,8 @@ export default function Reception() {
   }
   function payAll() {
     setNumMode("PAY");
-    setPayInput(String(grandTotal));
+    // ش٠: «= الكل» يملأ الإجمالي **الفعليّ** (المقرَّب لفئة ٢٥٠ في البيع المباشر النقديّ الخالص).
+    setPayInput(String(expectedNow));
   }
 
   function goToWorkflowStep(step: number) {
@@ -882,20 +898,23 @@ export default function Reception() {
       return { c, depositStr: "0.00", salePriceStr: full.toFixed(2) };
     });
 
-    const inputPaidD = opts.quickFullPay ? grandTotalD : paidD;
-    const appliedPaidD = method === "CASH" && inputPaidD.gt(grandTotalD) ? grandTotalD : inputPaidD;
+    // ش٠ (V1): كل المقارنات على الإجمالي **الفعليّ** (المقرَّب عند سريان التقريب) — إرسال مبالغ
+    // غير مقرَّبة مع علم التقريب كان يجعل الخادم يرى نقصاً (رفضٌ للزبون العابر) أو ذمّةً صامتة.
+    const inputPaidD = opts.quickFullPay ? effectiveGrandD : paidD;
+    const appliedPaidD = method === "CASH" && inputPaidD.gt(effectiveGrandD) ? effectiveGrandD : inputPaidD;
 
     // البطاقة والتحويل صالحان أيضاً كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي.
     if (method !== "CASH" && inputPaidD.gt(0) && !paymentReference.trim()) {
       notify.err(method === "CARD" ? "رقم عملية البطاقة مطلوب" : "رقم مرجع التحويل مطلوب");
       return;
     }
-    if (method !== "CASH" && inputPaidD.gt(grandTotalD)) {
-      notify.err(`لا يمكن أن يتجاوز مبلغ ${method === "CARD" ? "البطاقة" : "التحويل"} إجمالي الطلب (${fmt(grandTotalD.toFixed(2))} د.ع)`);
+    if (method !== "CASH" && inputPaidD.gt(effectiveGrandD)) {
+      notify.err(`لا يمكن أن يتجاوز مبلغ ${method === "CARD" ? "البطاقة" : "التحويل"} إجمالي الطلب (${fmt(effectiveGrandD.toFixed(2))} د.ع)`);
       return;
     }
-    if (appliedPaidD.lt(sumDirectD)) {
-      notify.err(`المبلغ المقبوض يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(sumDirectD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
+    const directFloorD = cashRoundActive ? effectiveGrandD : sumDirectD;
+    if (appliedPaidD.lt(directFloorD)) {
+      notify.err(`المبلغ المقبوض يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(directFloorD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
       return;
     }
 
@@ -938,7 +957,11 @@ export default function Reception() {
       const customerName = rawCustomerName && rawCustomerName.replace(/\D/g, "") !== receiptPhone?.replace(/\D/g, "")
         ? rawCustomerName
         : receiptPhone ? `عميل ${receiptPhone}` : null;
-      const saleAmount = round2(regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
+      // ش٠ (V1): عند سريان التقريب (بيع مباشر خالص) يُرسَل مبلغ البيع **مقرَّباً** — الخادم يعيد
+      // التقريب بنفس الدالة فيتطابقان، ويقيّد الفرق ADJUST. السلة الخالصة ⇒ مجموع الأسطر = الإجمالي.
+      const saleAmount = cashRoundActive
+        ? round2(effectiveGrandD).toFixed(2)
+        : round2(regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
       const printAmount = round2(printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
       const workOrderPayloads = customWithDeposits.map((x) => {
         const c = x.c;
@@ -1000,6 +1023,7 @@ export default function Reception() {
         paymentMethod: method,
         paymentReference: method === "CASH" ? undefined : paymentReference.trim(),
         paidAmount: round2(appliedPaidD).toFixed(2),
+        cashRoundIQD: cashRoundActive,
         clientRequestId: reqIdRef.current,
         priceTier: effectiveTier,
         couponCode: couponCode ?? undefined,
@@ -1051,9 +1075,9 @@ export default function Reception() {
       const receiptCustomerName = customerName && receiptPhone
         ? `${customerName} — ${receiptPhone}`
         : customerName ?? (receiptPhone ? `عميل ${receiptPhone}` : null);
-      const changeD2 = round2(appliedPaidD.minus(grandTotalD));
+      const changeD2 = round2(appliedPaidD.minus(effectiveGrandD));
       const printedChange = method === "CASH" && changeD2.gt(0) ? changeD2.toFixed(2) : null;
-      const creditD = round2(grandTotalD.minus(appliedPaidD));
+      const creditD = round2(effectiveGrandD.minus(appliedPaidD));
       const printedCredit = creditD.gt(0) ? creditD.toFixed(2) : null;
       const receiptLine = (c: CartLine) => ({
         name: `${c.row.productName} (${c.row.unitName})${c.disc ? ` −${c.disc}%` : ""}`,
@@ -1708,7 +1732,8 @@ export default function Reception() {
             onFocus={() => { setShowDrop(true); setWorkflowStep(2); }}
             onBlur={() => setTimeout(() => setShowDrop(false), 160)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && results[0]) {
+              // ش٠: searchSettled يمنع إضافة نتيجةٍ من استعلامٍ أقدم أثناء الكتابة/المسح السريع.
+              if (e.key === "Enter" && searchSettled && results[0]) {
                 e.preventDefault();
                 addRow(results[0]);
               }
@@ -2121,10 +2146,16 @@ export default function Reception() {
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-muted-foreground">إجمالي الفاتورة</span>
               <div className="flex items-baseline gap-1">
-                <span className="text-[clamp(22px,3.8cqh,30px)] font-black leading-tight tabular-nums tracking-tight" dir="ltr">{fmt(grandTotal)}</span>
+                <span className="text-[clamp(22px,3.8cqh,30px)] font-black leading-tight tabular-nums tracking-tight" dir="ltr">{fmt(expectedNow)}</span>
                 <span className="text-xs text-muted-foreground">د.ع</span>
               </div>
             </div>
+            {/* ش٠ — شفافية التقريب النقدي: يظهر الفرق فقط حين يسري (فئة ٢٥٠ د.ع). */}
+            {cashRoundingDelta !== 0 && (
+              <div className="mt-0.5 text-end text-[10px] font-semibold text-muted-foreground" dir="rtl">
+                قُرّب نقدياً لفئة ٢٥٠ ({cashRoundingDelta > 0 ? "+" : "−"}{fmt(Math.abs(cashRoundingDelta))} على {fmt(grandTotal)})
+              </div>
+            )}
             {/* أجرة التوصيل المقبوضة أمانةً: خارج الفاتورة، لكنها نقدٌ يُستلَم فعلاً الآن.
                 عرضها منفصلةً يمنع الخلط الذي كان يجعل الموظّف يظنّها جزءاً من البيع. */}
             {heldDelivery > 0 && (

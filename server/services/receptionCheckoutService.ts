@@ -34,6 +34,11 @@ export interface ReceptionCheckoutInput {
   printSale?: { lines: PrintSaleLineInput[]; amount: string } | null;
   workOrders?: Array<Omit<CreateWorkOrderInput, "branchId" | "customerId" | "clientRequestId">>;
   priceOverrideApproved?: boolean;
+  /** ش٠ (٥/٨، V1): تقريب نقدي IQD لأقرب ٢٥٠ — للبيع المباشر **الخالص** النقديّ فقط (بلا خدمات
+   *  طباعة وبلا أوامر شغل). الواجهة تُقرّب أوّلاً وترسل المبالغ مقرَّبة، والخادم يعيد التقريب
+   *  بنفس الدالة ويقيّد الفرق ADJUST (نمط POS حرفياً). السلة المختلطة بلا تقريب في هذه الشريحة
+   *  (بندٌ معلَن لش٦) — الحارس أدناه يُسقط العلم عنها حتى لو أرسلته الواجهة سهواً. */
+  cashRoundIQD?: boolean;
   /** أوفلاين (تعميم على كاشير الاستقبال — داخليّ، يضبطه `offline.replayReception` حصراً):
    *  وسم منشأ الفاتورتين (البيع المباشر وخدمات الطباعة) بالالتقاط دون اتصال. أوامر الشغل
    *  لا تُلتقَط أصلاً (ترقيم/إسناد/صور خادميّة) فلا معنى لوسمها. */
@@ -125,6 +130,13 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
       });
     }
 
+    // ش٠ (V1): العلم يسري على البيع المباشر الخالص النقديّ حصراً — مزجُه بطباعة/أوامر شغل أو
+    // بدفعٍ غير نقديّ يُسقطه صامتاً (السلوك المختلط الحالي مُثبَّت باختبار حتى تعالجه ش٦).
+    const roundDirectCash = input.cashRoundIQD === true
+      && input.paymentMethod === "CASH"
+      && !input.printSale
+      && normalizedWorkOrders.length === 0;
+
     const regularSale = input.regularSale
       ? await createSaleInTx(tx, {
           branchId: input.branchId,
@@ -136,6 +148,7 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
           priceTier: input.priceTier ?? null,
           couponCode: input.couponCode?.trim() || null,
           lines: input.regularSale.lines,
+          cashRoundIQD: roundDirectCash,
           payment: {
             amount: input.regularSale.amount,
             method: input.paymentMethod,
@@ -182,6 +195,10 @@ export async function checkoutReception(input: ReceptionCheckoutInput, actor: Ac
         contactName: order.contactName ?? input.contactName ?? null,
         contactPhone: order.contactPhone ?? input.contactPhone ?? null,
         clientRequestId: `${input.clientRequestId}-wo-${index}`,
+        // ش٠ (V4): الوردية المُتحقَّق منها أعلاه (OPEN + RECEPTION + الفرع + المالك تحت قفل) تُمرَّر
+        // لكل أمر شغل ⇒ عرابين السلة تهبط على درج قابضها نفسه، لا على وردية أخرى يحلّها
+        // openShiftIdTx بنفسه (سلّةٌ كانت قابلة للانشطار على درجين ⇒ محاسبة موظّفٍ على نقدٍ لم يستلمه).
+        shiftId: input.shiftId,
       }, actor));
     }
 

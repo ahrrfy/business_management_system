@@ -1,6 +1,6 @@
 // إلغاء أمر شغل: يعيد المواد المُستهلَكة للمخزون ويسترد العربون المقبوض (إن وُجد).
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, notLike, or } from "drizzle-orm";
 import { receipts, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { applyMovement } from "../inventoryService";
@@ -41,13 +41,29 @@ export async function cancelWorkOrder(
     // نعكس فقط ما قُبِض فعلاً (إيصال موجود) — لا نختلق استرداداً لأوامر قديمة لم تُسجِّل العربون كقيد.
     const refundD = round2(money(wo.deposit ?? "0"));
     if (refundD.gt(0)) {
-      const depRcpt = (
-        await tx
-          .select({ amount: receipts.amount, paymentMethod: receipts.paymentMethod })
-          .from(receipts)
-          .where(and(eq(receipts.workOrderId, workOrderId), eq(receipts.direction, "IN"), isNull(receipts.invoiceId)))
-          .limit(1)
-      )[0];
+      // ش٠ (V3): الردّ من إيصال العربون **بهويّته** (depositReceiptId) لا بالتقاطٍ ظنّي — كان
+      // `.limit(1)` قد يلتقط إيصال أجرة COUNTER (نفس البصمة) فيُردّ للزبون مبلغ الأجرة بدل
+      // عربونه. البديل الاحتياطي (ما قبل 0151) يستثني إيصالات الأجرة صراحةً.
+      const depRcpt = wo.depositReceiptId != null
+        ? (
+            await tx
+              .select({ amount: receipts.amount, paymentMethod: receipts.paymentMethod })
+              .from(receipts)
+              .where(eq(receipts.id, Number(wo.depositReceiptId)))
+              .limit(1)
+          )[0]
+        : (
+            await tx
+              .select({ amount: receipts.amount, paymentMethod: receipts.paymentMethod })
+              .from(receipts)
+              .where(and(
+                eq(receipts.workOrderId, workOrderId),
+                eq(receipts.direction, "IN"),
+                isNull(receipts.invoiceId),
+                or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
+              ))
+              .limit(1)
+          )[0];
       if (depRcpt) {
         const refundAmt = round2(money(depRcpt.amount));
         const refundMethod = depRcpt.paymentMethod ?? "CASH";

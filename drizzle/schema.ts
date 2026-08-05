@@ -1394,6 +1394,9 @@ export const invoices = mysqlTable(
       table.createdBy,
       table.invoiceDate,
     ),
+    // ش٠ (٥/٨، V2): طابور الاستقبال يفلتر على shiftId ويرتّب/يقطع بـid (keyset) — كان تعليق
+    // delivery/queries.ts يدّعي أن العمود «مفهرَس» ولا فهرس له فعلاً ⇒ مسح كامل مع نموّ الجدول.
+    shiftIdx: index("idx_invoice_shift").on(table.shiftId, table.id),
   }),
 );
 
@@ -2401,6 +2404,11 @@ export const workOrders = mysqlTable(
     paymentReference: varchar("paymentReference", { length: 100 }),
     // v3-add-screens(100%): TEXT لاستيعاب data URLs (≥100KB) عند الترميز المضمَّن.
     paymentReceiptUrl: text("paymentReceiptUrl"),
+    // ش٠ (٥/٨، V3): هويّة إيصال العربون الصريحة — تُكتب لحظة قبضه في createWorkOrderInTx.
+    // كان الالتقاط ظنّياً بـ`.limit(1)` على (workOrderId, IN, invoiceId NULL) فيتصادم مع إيصال
+    // أجرة COUNTER (نفس البصمة) ⇒ إلغاء الأمر قد يردّ مبلغ الأجرة بدل العربون، والتسليم قد يربط
+    // الإيصال الخاطئ بالفاتورة. بلا FK (receipts يشير إلى workOrders أصلاً — نتجنّب حلقة FK).
+    depositReceiptId: bigint("depositReceiptId", { mode: "number" }),
     // v3-add-screens: التوصيل.
     hasDelivery: boolean("hasDelivery").default(false),
     deliveryAddress: text("deliveryAddress"),
@@ -2458,6 +2466,7 @@ export const workOrders = mysqlTable(
     // (فاتورة WORKORDER تُنسَب لمنشئ أمر الشغل عبر join على invoiceId) — تعدّد NULL مسموح.
     // ⚠ invoiceId عمود FK — drizzle-kit قد يُسقط UNIQUE عليه صامتاً؛ دقّق هجرة 0051 يدوياً.
     invoiceUq: unique("uq_wo_invoice").on(table.invoiceId),
+    depositReceiptIdx: index("idx_wo_deposit_receipt").on(table.depositReceiptId),
   }),
 );
 

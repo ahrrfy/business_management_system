@@ -36,7 +36,9 @@ export function ReceptionInvoiceQueue({
   canFulfill: boolean;
 }) {
   const utils = trpc.useUtils();
-  const q = trpc.delivery.receptionQueue.useQuery({ branchId, sinceDays: 1, limit: 200 });
+  // ش٠: كان sinceDays:1 مثبَّتاً ⇒ فاتورة الأمس غير قابلة للوصول إطلاقاً من الطابور. أسبوعٌ
+  // يغطّي الحالة اليومية الواقعية (زبونٌ يعود بعد يومين)؛ الطابور الكامل بفلاتر وترقيم في ش١.
+  const q = trpc.delivery.receptionQueue.useQuery({ branchId, sinceDays: 7, limit: 200 });
   const [target, setTarget] = useState<Row | null>(null);
 
   const dispatchInvoice = trpc.delivery.dispatchInvoice.useMutation({
@@ -161,7 +163,8 @@ function InvoiceDispatchDialog({
 }) {
   const [partyId, setPartyId] = useState("");
   const [fee, setFee] = useState("0");
-  const [feeCollection, setFeeCollection] = useState<"COURIER" | "COUNTER" | "SHOP">("COURIER");
+  // ش٠ (V15): COUNTER خارج مسار الفاتورة حتى ش٦ — النوع مُضيَّق عمداً ليمسك TypeScript أيّ إرجاعٍ سهويّ.
+  const [feeCollection, setFeeCollection] = useState<"COURIER" | "SHOP">("COURIER");
   const [name, setName] = useState(row.customerName ?? row.contactName ?? "");
   const [phone, setPhone] = useState(row.customerPhone ?? row.contactPhone ?? row.deliveryPhone ?? "");
   const [address, setAddress] = useState(row.deliveryAddress ?? "");
@@ -215,13 +218,15 @@ function InvoiceDispatchDialog({
           </div>
           <div className="space-y-1">
             <Label className="text-[11px]">مَن يقبضها؟</Label>
+            {/* ش٠ (V15): «مقبوضة في الكاشير» أُزيلت من مسار الفاتورة — لا قبضَ وارد يسبق الإرسال
+                هنا (بخلاف أمر الشغل الذي يقبضها لحظة الإنشاء)، فقبولها يُنتج صرفاً للمندوب بلا
+                قبضٍ يقابله ⇒ عجزٌ يمنع إغلاق الوردية. الخادم يحظرها أيضاً؛ تعود في ش٦ مع القبض. */}
             <AppSelect
               value={feeCollection}
-              onValueChange={(v) => setFeeCollection(v as "COURIER" | "COUNTER" | "SHOP")}
+              onValueChange={(v) => setFeeCollection(v as "COURIER" | "SHOP")}
               aria-label="من يقبض أجرة التوصيل"
             >
               <option value="COURIER">المندوب من الزبون</option>
-              <option value="COUNTER">مقبوضة في الكاشير</option>
               <option value="SHOP">على المكتبة</option>
             </AppSelect>
           </div>
@@ -231,7 +236,6 @@ function InvoiceDispatchDialog({
         <p className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground">
           يحصّل المندوب <span className="font-bold tabular-nums" dir="ltr">{fmt(remaining.toFixed(2))}</span> د.ع
           لصالح المكتبة (المتبقّي على الفاتورة). أجرة التوصيل مبلغٌ مستقلّ لا يدخل الفاتورة ولا الإيراد
-          {feeCollection === "COUNTER" && " — وهي مقبوضة في الدرج وتُصرف للمندوب الآن"}
           {feeCollection === "SHOP" && " — وتتحمّلها المكتبة كمصروف"}.
         </p>
 

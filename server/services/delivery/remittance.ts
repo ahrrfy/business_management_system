@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm";
 import { deliveryConsignments, deliveryParties, deliveryRemittances, invoices, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
-import { adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import { adjustCustomerBalance, adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { shiftIdForCashTx } from "../shiftService";
 import { withTx } from "../tx";
@@ -188,15 +188,23 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       }).where(eq(deliveryConsignments.id, w.id));
 
       if (w.collected.gt(0)) {
+        const inv = (await tx.select({ total: invoices.total, paidAmount: invoices.paidAmount, customerId: invoices.customerId }).from(invoices).where(eq(invoices.id, w.invoiceId)).limit(1))[0];
         // تسوية الفاتورة بالـCOD المُحصَّل كاملاً (PAYMENT_IN) — يربط إيصال IN الدفعة.
         await postEntry(tx, {
           entryType: "PAYMENT_IN", branchId: input.branchId, invoiceId: w.invoiceId, receiptId: receiptInId,
+          customerId: inv?.customerId != null ? Number(inv.customerId) : null,
           amount: w.collected, notes: `توريد ${remittanceNumber}`,
         });
-        const inv = (await tx.select({ total: invoices.total, paidAmount: invoices.paidAmount }).from(invoices).where(eq(invoices.id, w.invoiceId)).limit(1))[0];
         if (inv) {
           const newPaid = round2(money(inv.paidAmount).plus(w.collected));
           await tx.update(invoices).set({ paidAmount: toDbMoney(newPaid), status: computeInvoiceStatus(String(inv.total), toDbMoney(newPaid)), paymentDate: new Date() }).where(eq(invoices.id, w.invoiceId));
+          // ش٠ (٥/٨، V14): فاتورةٌ آجلة **بعميلٍ مسجَّل** أُسندت للتوصيل (dispatchInvoice يُبقي
+          // customerId) — سدّد الزبون للمندوب فذمّته تنخفض بما حُصِّل، مرآةً حرفيةً لمسار المتجر
+          // (courier.ts). كان التوريد يرفع paidAmount ولا يمسّ currentBalance إطلاقاً ⇒ ذمّةٌ
+          // لا تُغلق أبداً وكشفٌ يطالب من سدّد. (فواتير أوامر الشغل customerId=NULL عمداً ⇒ لا أثر.)
+          if (inv.customerId != null) {
+            await adjustCustomerBalance(tx, Number(inv.customerId), w.collected.neg());
+          }
         }
         // خفض العهدة بالـCOD المُحصَّل كاملاً (الأجرة netting لا تَمسّ العهدة).
         await adjustDeliveryBalance(tx, input.partyId, w.collected.neg());

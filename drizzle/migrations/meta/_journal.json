@@ -1051,6 +1051,13 @@
       "when": 1787879403000,
       "tag": "0150_delivery_fee_passthrough",
       "breakpoints": true
+    },
+    {
+      "idx": 151,
+      "version": "5",
+      "when": 1787879404000,
+      "tag": "0151_reception_deposit_link_and_shift_index",
+      "breakpoints": true
     }
   ]
 }
