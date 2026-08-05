@@ -1,11 +1,14 @@
-// landed-cost على مرتجع الشراء (متابعة Codex على #311، تصحيح خطأ #318 — قرار المالك ٢٢/٧/٢٦):
-// الشحن/الكمرك (landed) رُسمِل في تكلفة المخزون (WAVG) وأُضيف إلى ذمّة المورّد عند الاستلام (#311).
-// قرار المالك: الشحن الوارد **غير مسترد** عند الإرجاع ⇒ (١) يُقيَّد **خسارةً** في الأرباح والخسائر
-// (قيد ADJUST بمفتاح PURCHRET_LANDED)، و(٢) يبقى التزامه في ذمّة المورّد (قيد RETURN يَخصم قيمة
-// البضاعة وحدها من AP) ⇒ الرصيد لا يُصفَّر بل يبقى = حصّة الشحن، وreconcileSupplierBalances يبقى خالياً.
+// مرتجع الشراء بعد **قرار المالك ٥/٨/٢٦**: الشحن مصروفُ شركةٍ يقع لحظة الاستلام، خارج ذمّة
+// المورّد وخارج تكلفة الصنف. لذا **لا منطق شحنٍ في المرتجع إطلاقاً**.
 //
-// حارس red-green: بلا الإصلاح كان #318 يَعكس الشحن من AP فوق خصم RETURN (خصمٌ مزدوج) ⇒ الرصيد يعود
-// صفراً خطأً + انحراف مطابقة دائم. تُثبّت الاختبارات الآن: الرصيد = الشحن + reconcileSupplierBalances خالٍ.
+// نسخت هذه الاختبارات سياسةً سابقة (#311/#318/#321) كان فيها الشحن مُرسمَلاً ومُضافاً لذمّة
+// المورّد، فاستوجب الإرجاعُ قيدَ «خسارة شحن» (ADJUST بمفتاح PURCHRET_LANDED) وإبقاءَ حصّة الشحن
+// ديناً في AP. بعد القرار صار ذلك كلّه لاغياً، وأُعيدت كتابتها لتحرس النقيض:
+//   (١) الإرجاع الكامل يُصفّر رصيد المورّد تماماً — لا بقايا شحنٍ عالقة في ذمّته.
+//   (٢) لا قيد خسارة شحن (PURCHRET_LANDED) في أيّ مسار — إبقاؤه كان سيقيّد الخسارة مرّتين
+//       (مرّةً مصروفَ نقلٍ عند الاستلام ومرّةً خسارةً عند الإرجاع).
+//   (٣) مصروف النقل المُسجَّل عند الاستلام **لا يُعكَس** بالإرجاع: البضاعة شُحنت إلينا فعلاً والمال دُفع.
+//   (٤) reconcileSupplierBalances يبقى خالياً (الدفتر والرصيد متطابقان).
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -23,7 +26,7 @@ function db() {
 }
 
 const TABLES = [
-  "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements",
+  "idempotencyKeys", "accountingEntries", "expenses", "receipts", "inventoryMovements",
   "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices",
   "productUnits", "productVariants", "products", "auditLogs", "suppliers", "branches", "users",
 ];
@@ -50,6 +53,7 @@ async function seed() {
     { id: 2, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
   ]);
 }
+
 beforeEach(async () => { await reset(); await seed(); });
 
 async function supplierBalance(): Promise<string> {
@@ -59,16 +63,16 @@ async function supplierBalance(): Promise<string> {
 async function entries() {
   return db().select().from(s.accountingEntries).orderBy(s.accountingEntries.id);
 }
-async function landedLossEntries() {
-  return (await entries()).filter(
-    (e) => e.entryType === "ADJUST" && String(e.dedupeKey ?? "").startsWith("PURCHRET_LANDED:"),
-  );
+async function shippingLossEntries() {
+  return (await entries()).filter((e) => String(e.dedupeKey ?? "").startsWith("PURCHRET_LANDED"));
+}
+async function transportExpenses() {
+  return db().select().from(s.expenses).where(eq(s.expenses.category, "TRANSPORT"));
 }
 
-/** أمر شراء مُحمَّل: v1 10×100=1,000 + v2 5×600=3,000 (subtotal 4,000)، شحن 300 + كمرك 100 = 400.
- *  توزيع #311 بالقيمة: v1 حصّة 100 (10/وحدة ⇒ تكلفة 110)، v2 حصّة 300 (60/وحدة ⇒ تكلفة 660).
- *  عند الاستلام الكامل: AP = 4,400 (بضاعة 4,000 + شحن/كمرك 400). */
-async function receiveLandedPO(paymentAmount?: string) {
+/** أمرٌ ببضاعة ٤٬٠٠٠ وشحن ٤٠٠، مُستلَمٌ بالكامل. `payNow` يسدّد للمورّد عند الاستلام (يلزم
+ *  للاسترداد النقديّ: لا يُستردّ نقدٌ لم يُدفَع). يعيد معرّف الأمر. */
+async function orderedAndReceived(payNow?: string): Promise<number> {
   const po = await createPurchaseOrder(
     {
       supplierId: 1, branchId: 1, taxRatePercent: "0",
@@ -85,165 +89,84 @@ async function receiveLandedPO(paymentAmount?: string) {
   await receivePurchase(
     {
       purchaseOrderId: po.purchaseOrderId,
-      lines: items.map((it) => ({ purchaseOrderItemId: Number(it.id), receivedBaseQuantity: it.baseQuantity })),
-      payment: paymentAmount ? { amount: paymentAmount, method: "CASH" as const } : undefined,
+      lines: items.map((i) => ({ purchaseOrderItemId: Number(i.id), receivedBaseQuantity: i.baseQuantity })),
+      ...(payNow ? { payment: { amount: payNow, method: "CASH" as const } } : {}),
     },
     actor,
   );
   return po.purchaseOrderId;
 }
 
-describe("landed-cost على مرتجع الشراء — الشحن غير مسترد ⇒ خسارة + إبقاء التزامه في ذمّة المورّد", () => {
-  it("إرجاع كامل مرجعيّ (CREDIT) ⇒ رصيد المورّد = الشحن (400) + قيد خسارة الشحن = 400 (الثوابت ١+٢+٣)", async () => {
-    const poId = await receiveLandedPO();
-    expect(await supplierBalance()).toBe("4400.00"); // 4,000 بضاعة + 400 شحن/كمرك
+describe("مرتجع الشراء — لا منطق شحنٍ بعد نقل الشحن إلى المصروفات", () => {
+  it("(١+٢) إرجاع كامل آجل ⇒ رصيد المورّد صفر تماماً، وبلا قيد خسارة شحن", async () => {
+    const poId = await orderedAndReceived();
+    expect(await supplierBalance()).toBe("4000.00"); // البضاعة وحدها ارتفعت في الذمّة
 
     await createPurchaseReturn(
       {
         supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }, // سعر البضاعة
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
           { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" },
         ],
       },
       actor,
     );
 
-    // (١) الرصيد = حصّة الشحن (400) تبقى ديناً — خصمُ RETURN غطّى البضاعة (4,000) فقط، لا يُصفَّر بالشحن.
-    expect(await supplierBalance()).toBe("400.00");
-    // (١-ب) لا انحراف مطابقة (إصلاح #318): المُتوقَّع من الدفتر = الرصيد المخزَّن (خصمُ RETURN وحده).
-    expect(await reconcileSupplierBalances()).toEqual([]);
-
-    // (٢) قيد خسارة ADJUST بمفتاح PURCHRET_LANDED، cost=400، بلا supplierId (لا يلوّث كشف المورّد).
-    const adj = await landedLossEntries();
-    expect(adj).toHaveLength(1);
-    expect(adj[0].cost).toBe("400.00");
-    expect(adj[0].amount).toBe("400.00");
-    expect(adj[0].supplierId).toBeNull();
-    expect(adj[0].purchaseOrderId).toBe(poId);
-
-    // (٣) قائمة الدخل (نفس محرّك إقفال السنة): سطر خسائر الشحن = 400 يَخفض صافي الربح.
-    const { plSnapshot } = await import("../reportsFinancialService");
-    const pl = await plSnapshot("2020-01-01", "2099-12-31", 1);
-    const line = pl.expenseLines.find((l) => l.key === "PURCH_RETURN_LANDED");
-    expect(line?.amount).toBe("400.00");
-    expect(pl.netProfit).toBe("-400.00"); // لا بيع ⇒ الربح الإجماليّ 0، والخسارة −400
+    // يُصفَّر تماماً — لا «٤٠٠ شحنٍ» عالقةٍ في ذمّته كما كانت السياسة الملغاة.
+    expect(await supplierBalance()).toBe("0.00");
+    expect(await shippingLossEntries()).toHaveLength(0);
   });
 
-  it("إرجاع جزئيّ ⇒ خسارة شحن متناسبة (50) + عكس ذمّة متناسب", async () => {
-    const poId = await receiveLandedPO();
-    // أرجِع نصف v1 فقط (5 من 10) بسعر البضاعة 100.
+  it("(٣) مصروف النقل المُسجَّل عند الاستلام لا يُعكَس بالإرجاع", async () => {
+    const poId = await orderedAndReceived();
+    const before = await transportExpenses();
+    expect(before).toHaveLength(1);
+    expect(before[0].amount).toBe("400.00");
+
     await createPurchaseReturn(
       {
         supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "100.00" }],
-      },
-      actor,
-    );
-    // البضاعة 500، وشحن v1 = 10/وحدة × 5 = 50 يبقى ديناً. AP = 4,400 − 500 = 3,900 (خصمُ RETURN وحده).
-    expect(await supplierBalance()).toBe("3900.00");
-    // لا انحراف مطابقة بعد المرتجع المُرسمَل الجزئيّ.
-    expect(await reconcileSupplierBalances()).toEqual([]);
-    const adj = await landedLossEntries();
-    expect(adj).toHaveLength(1);
-    expect(adj[0].cost).toBe("50.00");
-  });
-
-  it("سعر إرجاع أعلى من سعر أمر الشراء ⇒ يُرفض ويظل السعر الأصلي هو المرجع", async () => {
-    const poId = await receiveLandedPO();
-    await expect(
-      createPurchaseReturn(
-        {
-          supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
-          items: [
-            { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "110.00" },
-            { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" },
-          ],
-        },
-        actor,
-      ),
-    ).rejects.toThrow(/سعر المرتجع يجب أن يطابق سعر أمر الشراء/);
-
-    expect(await supplierBalance()).toBe("4400.00");
-    expect(await landedLossEntries()).toHaveLength(0);
-    const stocks = await db().select().from(s.branchStock);
-    expect(stocks.reduce((sum, row) => sum + row.quantity, 0)).toBe(15);
-  });
-
-  it("أمر بلا شحن/كمرك ⇒ لا قيد خسارة (حارس انحدار) — الرصيد يعود صفراً بالبضاعة وحدها", async () => {
-    const po = await createPurchaseOrder(
-      { supplierId: 1, branchId: 1, taxRatePercent: "0", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }] },
-      actor,
-    );
-    const it0 = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
-    await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(it0.id), receivedBaseQuantity: 10 }] }, actor);
-    expect(await supplierBalance()).toBe("1000.00");
-
-    await createPurchaseReturn(
-      {
-        supplierId: 1, branchId: 1, purchaseOrderRefId: po.purchaseOrderId, settlement: "CREDIT",
         items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
       },
       actor,
     );
-    expect(await supplierBalance()).toBe("0.00");
-    expect(await landedLossEntries()).toHaveLength(0);
+
+    const after = await transportExpenses();
+    expect(after).toHaveLength(1);
+    expect(after[0].amount).toBe("400.00"); // البضاعة شُحنت إلينا فعلاً والمال دُفع
+    expect(after[0].status).toBe("ACTIVE");
   });
 
-  it("مرتجع حرّ (بلا أمر مرجعيّ) ⇒ لا منطق شحن (الشحن مفهومُ أمرِ شراء)", async () => {
-    // استلم أمراً مُحمَّلاً لبناء رصيد/تكلفة، ثم أرجِع بلا purchaseOrderRefId.
-    await receiveLandedPO();
+  it("إرجاع جزئيّ ⇒ عكسٌ متناسب للبضاعة وحدها، بلا أثر شحن", async () => {
+    const poId = await orderedAndReceived();
     await createPurchaseReturn(
       {
-        supplierId: 1, branchId: 1, settlement: "CREDIT",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "100.00" }],
+        supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
+        items: [{ variantId: 2, productUnitId: 2, quantity: "2", unitPrice: "600.00" }], // 1,200
       },
       actor,
     );
-    expect(await landedLossEntries()).toHaveLength(0);
+    expect(await supplierBalance()).toBe("2800.00"); // 4,000 − 1,200
+    expect(await shippingLossEntries()).toHaveLength(0);
   });
 
-  it("إرجاع كامل نقديّ (CASH) ⇒ خسارة الشحن = 400 تُقيَّد في P&L + AP محايد + الميزانية تتّزن (إصلاح #321)", async () => {
-    // ⚠️ حارس #321: قبل الإصلاح كانت الكتلة تتخطّى المسار النقديّ (settlementKind !== "CASH") ⇒ المخزون
-    // يخرج بالقيمة الدفترية (شحن مُرسمَل) لكن لا قيد خسارة ⇒ الأصول تنقص بلا مقابلٍ في الدخل (قائمةُ دخلٍ ≠ ميزانية).
-    const poId = await receiveLandedPO("4000.00");
-    expect(await supplierBalance()).toBe("400.00"); // البضاعة دُفعت، وتبقى 400 شحن/كمرك
-
+  it("(٤) إرجاع كامل نقديّ ⇒ AP محايد وبلا خسارة شحن، والمطابقة خالية", async () => {
+    // سُدِّدت البضاعة نقداً عند الاستلام (٤٬٠٠٠) — شرطُ الاسترداد النقديّ. لاحظ أنّ المسدَّد قيمة
+    // البضاعة وحدها: الشحن خرج نقداً في مصروفٍ مستقلٍّ لا يمرّ بالمورّد أصلاً.
+    const poId = await orderedAndReceived("4000.00");
     await createPurchaseReturn(
       {
-        supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CASH", paymentMethod: "CASH",
+        supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CASH",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }, // سعر البضاعة
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
           { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" },
         ],
       },
       actor,
     );
-
-    // (١) المسار النقديّ محايدٌ على AP بعد توثيق الدفعة السابقة: يبقى التزام الشحن فقط.
-    expect(await supplierBalance()).toBe("400.00");
-    // (١-ب) لا انحراف مطابقة: خسارة الشحن بلا supplierId فلا تلوّث رصيد المورّد؛ المخزَّن = المُحتسَب من الدفتر.
-    expect(await reconcileSupplierBalances()).toEqual([]);
-
-    // (٢) المورد ردّ النقد بقيمة البضاعة (receipt IN = 4,000) — لا يشمل الشحن غير المسترد.
-    const rcs = (await db().select().from(s.receipts)).filter((r) => r.direction === "IN");
-    expect(rcs).toHaveLength(1);
-    expect(rcs[0].amount).toBe("4000.00");
-
-    // (٣) الإصلاح الجوهريّ: قيد خسارة الشحن ADJUST/PURCHRET_LANDED يُقيَّد للنقديّ أيضاً (كان مفقوداً — #321).
-    const adj = await landedLossEntries();
-    expect(adj).toHaveLength(1);
-    expect(adj[0].cost).toBe("400.00");
-    expect(adj[0].amount).toBe("400.00");
-    expect(adj[0].supplierId).toBeNull();
-    expect(adj[0].purchaseOrderId).toBe(poId);
-
-    // (٤) قائمة الدخل تتّسق مع الميزانية: الأصول نقصت بحصّة الشحن (400)، وصافي الربح يعكس الخسارة نفسها.
-    // (الأصول: مخزونٌ خرج بـ4,400 مقابل نقدٍ دخل 4,000 ⇒ صافي −400 = الخسارة المُقيَّدة ⇒ اتّزان.)
-    const { plSnapshot } = await import("../reportsFinancialService");
-    const pl = await plSnapshot("2020-01-01", "2099-12-31", 1);
-    const line = pl.expenseLines.find((l) => l.key === "PURCH_RETURN_LANDED");
-    expect(line?.amount).toBe("400.00");
-    expect(pl.netProfit).toBe("-400.00"); // لا بيع ⇒ الربح الإجماليّ 0، والخسارة −400
+    expect(await shippingLossEntries()).toHaveLength(0);
+    const drift = await reconcileSupplierBalances();
+    expect(drift).toHaveLength(0); // الرصيد يطابق الدفتر
   });
 });

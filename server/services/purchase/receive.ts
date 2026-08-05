@@ -3,7 +3,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { eq, inArray, sql } from "drizzle-orm";
-import { accountingEntries, branchStock, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
+import { accountingEntries, branchStock, expenses, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { applyMovement } from "../inventoryService";
@@ -254,13 +254,13 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       const factor = new Decimal(unitFactorMap.get(Number(item.productUnitId)) ?? "1");
       const costPerBase = round2(money(item.unitPrice).dividedBy(factor.lte(0) ? new Decimal(1) : factor));
 
-      // landed-cost: حصّة البند من الشحن/الكمرك ÷ كمية البند الأساس = تكلفة مُرسمَلة لكلّ وحدة أساس،
-      // تُضاف إلى تكلفة الشراء **قبل** حساب المتوسّط المرجّح ⇒ WAVG (ومنه COGS عند البيع) يعكس التكلفة
-      // الحقيقية. تبقى بدقّة كاملة هنا (WAVG مُقرَّب في نهايته على أيّ حال) — نظير costPerBase تماماً.
+      // قرار المالك (٥/٨/٢٦) — **الشحن/الكمرك لا يُرسمَلان في تكلفة الصنف**: «تكلفة الصنف سعر
+      // المورّد فقط، والشحن مصاريف علينا لا دخل للمورّد بها». فحصّة البند من الشحن تُحسَب أدناه
+      // لغرضٍ واحد: مقدارُ **المصروف** المعترَف به لحظة الاستلام (§الشحن مصروفاً) — لا تدخل WAVG
+      // إطلاقاً. الاعتراف بها هنا مصروفاً وفي WAVG معاً كان سيحتسبها مرّتين (مرّة مصروفاً ومرّة في
+      // COGS عند البيع) فينقص الربح ضعفاً.
       const lineLanded = landedByItemId.get(Number(item.id)) ?? new Decimal(0);
-      const lineBaseQty = new Decimal(item.baseQuantity);
-      const landedPerBase = lineBaseQty.gt(0) ? lineLanded.dividedBy(lineBaseQty) : new Decimal(0);
-      const capCostPerBase = costPerBase.plus(landedPerBase);
+      const capCostPerBase = costPerBase;
 
       // WAVG (المتوسّط المرجّح): المخزون القائم + التكلفة القديمة مُقرآن قبل الحلقة.
       // التكلفة صفة عالمية للصنف ⇒ الوزن بإجمالي الأساس عبر الفروع.
@@ -343,8 +343,9 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     // Proportional tax from the PO's effective rate.
     const poSubtotal = money(po.subtotal);
     const rate = poSubtotal.gt(0) ? money(po.taxAmount).dividedBy(poSubtotal) : new Decimal(0);
-    // landed-cost: الإجماليّ المستلَم = البضاعة + الضريبة + حصّة الشحن/الكمرك ⇒ AP يعكس التكلفة
-    // الشاملة، ومجموعه عبر الاستلام الكامل يطابق po.total (البضاعة + الضريبة + الشحن + الكمرك).
+    // قرار المالك (٥/٨/٢٦): الإجماليّ المستلَم = **البضاعة + الضريبة فقط**. الشحن/الكمرك خرجا من
+    // ذمّة المورّد نهائياً (يُدفعان لشركة نقلٍ أو يكونان مجّانيَّين — لا دخل للمورّد بهما)، ويُسجَّلان
+    // مصروفاً مستقلاً أدناه. ومجموع المستلَم عبر الاستلام الكامل يطابق po.total (= البضاعة + الضريبة).
     // Final status: fully received if every item meets its ordered base qty.
     const refreshed = await tx
       .select({ baseQuantity: purchaseOrderItems.baseQuantity, receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity })
@@ -361,36 +362,92 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     )[0];
     const priorTax = money(priorTaxRow?.v ?? "0");
     const receivedTax = cumulativePurchaseTax(String(po.taxAmount), priorTax.toFixed(2), receivedNet, rate, fullyReceived);
-    const receivedTotal = round2(receivedNet.plus(receivedTax).plus(receivedLanded));
-    // في الفاتورة الدولارية الشحن المحلي ليس ديناً على المورد الأجنبي؛ يُرسمَل في المخزون فقط.
-    const supplierIqd = po.agreedCurrency === "USD"
-      ? round2(receivedNet.plus(receivedTax))
-      : receivedTotal;
+    // ذمّة المورّد = البضاعة + الضريبة، في الدينارية والدولارية سواء (كان الاستثناء مقصوراً على
+    // الدولارية بحجّة «الشحن المحلي ليس ديناً على المورد الأجنبي» — قرار المالك عمّم المبدأ).
+    const receivedTotal = round2(receivedNet.plus(receivedTax));
+    const supplierIqd = receivedTotal;
     await tx
       .update(purchaseOrders)
       .set({ status: fullyReceived ? "RECEIVED" : "CONFIRMED" })
       .where(eq(purchaseOrders.id, input.purchaseOrderId));
 
-    // PURCHASE ledger entry + AP.
-    // ⚠️ متابعة مؤجَّلة (Codex P2 — تحتاج قرار مالك، خارج نطاق v1): مرتجع الشراء المرجعيّ يعكس AP
-    // بسعر البند المُدخَل (سقفه تكلفة WAVG الشاملة للرسملة في purchaseReturnsService). ردٌّ كامل بسعر
-    // البضاعة وحده يُبقي حصّة الشحن/الكمرك في AP — هل الشحن الوارد مستردٌّ عند الإرجاع؟ قرارُ سياسةٍ
-    // ماليّة يحسمه المالك. v1: الرسملة عند الاستلام فقط (نطاق هذه الشريحة).
-    // landed-cost: cost = تكلفة المخزون المُرسمَلة (البضاعة + الشحن/الكمرك) — لا مصروف P&L: قيود
-    // PURCHASE لا تدخل حساب الربح (reportsFinancialService يجمع cost لـSALE/RETURN فقط)، وقيمة
-    // المخزون تعكس نفس الرسملة عبر costPrice (WAVG) ⇒ لا ازدواج، والاعتراف بالتكلفة مرّةً عند البيع.
+    // PURCHASE ledger entry + AP. cost = قيمة البضاعة وحدها (بلا شحن/كمرك — قرار المالك ٥/٨/٢٦)،
+    // وهي نفسها التي دخلت WAVG أعلاه ⇒ قيمة المخزون وقيد الشراء متطابقان. قيود PURCHASE لا تدخل
+    // حساب الربح (reportsFinancialService يجمع cost لـSALE/RETURN فقط) والاعتراف بتكلفة البضاعة
+    // يقع مرّةً واحدةً عند البيع؛ أمّا الشحن فيُعترَف به مصروفاً فوراً أدناه.
+    // ملاحظة مرتجع الشراء: بعد إلغاء الرسملة صار المرتجع يعكس AP بقيمة البضاعة فقط بلا بقايا شحنٍ
+    // عالقةٍ في الذمّة — وسقفُه في purchaseReturnsService صار WAVG = سعر المورّد (لا شحن فيه).
     await postEntry(tx, {
       entryType: "PURCHASE",
       branchId: Number(po.branchId),
       purchaseOrderId: input.purchaseOrderId,
       supplierId: Number(po.supplierId),
-      cost: round2(receivedNet.plus(receivedLanded)),
+      cost: round2(receivedNet),
       taxAmount: receivedTax,
       amount: supplierIqd,
     });
     await adjustSupplierBalance(tx, Number(po.supplierId), supplierIqd);
     if (po.agreedCurrency === "USD") {
       await adjustSupplierBalanceUsd(tx, Number(po.supplierId), receivedUsd);
+    }
+
+    // ═══ الشحن/الكمرك: مصروف شركةٍ لحظة الاستلام (قرار المالك ٥/٨/٢٦) ═══
+    // «الشحن يُسجَّل مصروفاً لحظة الاستلام وتكلفة الصنف سعر المورّد فقط — الشحن مصاريف علينا ولا
+    // دخل للمورّد به.» فحصّة هذا الاستلام (`receivedLanded`، تناسبية مع المستلَم فعلاً) تُسجَّل
+    // **صفَّ مصروفٍ حقيقياً** في `expenses` (فئة نقل) — فتظهر في شاشة المصروفات وتقاريرها وفي
+    // الربح والخسارة كأيّ مصروفٍ يوميّ — مع إيصال صرف وقيد PAYMENT_OUT يُخرج النقد من الصندوق.
+    // لا نمرّ بـ`expenseService.createExpense` عمداً: فهو يحصر تسجيل المصروفات بالمدير/الأدمن،
+    // والاستلام يقوم به أمين المخزن — والتفويض هنا هو صلاحية الاستلام نفسها، لا صلاحية المصروفات.
+    // النقديّ يمرّ بـ`shiftIdForCashTx` كسائر النقد (وردية الكاشير أو خزينة الإدارة) فلا يخرج
+    // نقدٌ خارج تسوية الـZ-report.
+    if (receivedLanded.gt(0)) {
+      const shipMethod = input.shippingPaymentMethod ?? "CASH";
+      let shipShiftId: number | null = null;
+      let shipBucket: "DRAWER" | "TREASURY" | null = null;
+      if (shipMethod === "CASH") {
+        const g = await shiftIdForCashTx(
+          tx,
+          { userId: actor.userId, branchId: Number(po.branchId), role: (actor as Actor & { role?: string }).role },
+          Number(po.branchId),
+          "مصروف شحن/كمرك عند الاستلام",
+        );
+        shipShiftId = g.shiftId;
+        shipBucket = g.cashBucket;
+      }
+      const shipReceiptRes = await tx.insert(receipts).values({
+        branchId: Number(po.branchId),
+        shiftId: shipShiftId,
+        cashBucket: shipBucket,
+        direction: "OUT",
+        amount: toDbMoney(receivedLanded),
+        paymentMethod: shipMethod,
+        status: "COMPLETED",
+        referenceNumber: `SHIP-${po.poNumber}`,
+        createdBy: actor.userId,
+      });
+      const shipReceiptId = extractInsertId(shipReceiptRes);
+      await tx.insert(expenses).values({
+        branchId: Number(po.branchId),
+        shiftId: shipShiftId,
+        cashBucket: shipBucket,
+        expenseDate: new Date(),
+        category: "TRANSPORT",
+        amount: toDbMoney(receivedLanded),
+        paymentMethod: shipMethod,
+        description: `شحن/كمرك أمر الشراء ${po.poNumber}`,
+        referenceNumber: po.poNumber,
+        receiptId: shipReceiptId,
+        status: "ACTIVE",
+        createdBy: actor.userId,
+      });
+      await postEntry(tx, {
+        entryType: "PAYMENT_OUT",
+        branchId: Number(po.branchId),
+        purchaseOrderId: input.purchaseOrderId,
+        receiptId: shipReceiptId,
+        amount: receivedLanded,
+        notes: `مصروف شحن/كمرك — أمر الشراء ${po.poNumber}`,
+      });
     }
 
     // Optional payment to supplier.

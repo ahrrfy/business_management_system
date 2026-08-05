@@ -152,8 +152,12 @@ export default function PurchaseNew() {
     const rate = state.currency === "USD" ? safeMoney(state.agreedRate) : D(1);
     const goodsIqd = round2(sourceSubtotal.times(rate));
     const taxIqd = round2(D(totals.totalTax).times(rate));
-    const grand = round2(goodsIqd.plus(taxIqd).plus(sum));
-    const uplift = goodsIqd.gt(0) ? goodsIqd.plus(sum).dividedBy(goodsIqd) : D(1);
+    // قرار المالك (٥/٨/٢٦): **الإجمالي = البضاعة + الضريبة فقط** — الشحن خارجه (مصروفُ شركةٍ لا
+    // ذمّةُ مورّد). كان يُجمَع هنا فيعرض للمستخدم إجمالياً لا يحفظه الخادم (٧٠٠ بينما المحفوظ ٣٠٠)
+    // ⇒ يدفع للمورّد أكثر مما عليه — الخطأ نفسه الذي حُذِّر منه في شاشة البيع.
+    const grand = round2(goodsIqd.plus(taxIqd));
+    // معامل الرفع صار ١ دائماً: حصّة الشحن تُعرَض للعِلم ولا تُضاف إلى تكلفة الوحدة (لم تعُد تُرسمَل).
+    const uplift = D(1);
     return { sum, goodsIqd, taxIqd, grand, uplift, rate, hasLanded: sum.gt(0), hasBase: goodsIqd.gt(0) };
   }, [shippingCost, customsCost, totals.subtotal, totals.totalTax, state.currency, state.agreedRate]);
 
@@ -424,22 +428,33 @@ export default function PurchaseNew() {
 
               {landed.hasLanded && landed.hasBase && (
                 <div className="mt-1 rounded-lg border border-dashed bg-muted/40 p-2.5 text-xs">
-                  <div className="mb-1.5 font-bold text-foreground">التكلفة المُرسمَلة لكلّ وحدة (توزيع بنسبة القيمة)</div>
+                  <div className="mb-1.5 font-bold text-foreground">توزيع الشحن على البنود بنسبة القيمة (للعِلم فقط)</div>
                   <ul className="space-y-1">
                     {state.items.map((l, i) => (
                       <li key={i} className="flex items-center justify-between gap-2">
                         <span className="min-w-0 truncate text-muted-foreground">{l.name}</span>
                         <span dir="ltr" className="shrink-0 font-bold tabular-nums">
-                          {fmtAr(round2(D(l.price).times(landed.rate).times(landed.uplift)).toFixed(2))} د.ع
+                          {/* حصّة البند من مصروف الشحن (بنسبة قيمته) — معلومةٌ تحليلية، لا تُضاف
+                              إلى سعره ولا إلى تكلفته. الأصلُ يُعرَض بجانبها للمقارنة. */}
+                          {fmtAr(
+                            round2(
+                              D(totals.subtotal).gt(0)
+                                ? landed.sum
+                                    .times(D(l.price).times(D(l.qty || 0)))
+                                    .dividedBy(D(totals.subtotal))
+                                : D(0),
+                            ).toFixed(2),
+                          )}{" "}د.ع شحناً
                           <span className="font-normal text-muted-foreground">
-                            {" "}(الأصل {fmtAr(l.price)}{state.currency === "USD" ? "$" : " د.ع"})
+                            {" "}(سعر الشراء {fmtAr(l.price)}{state.currency === "USD" ? "$" : " د.ع"})
                           </span>
                         </span>
                       </li>
                     ))}
                   </ul>
                   <div className="mt-1.5 border-t pt-1.5 text-[11px] text-muted-foreground">
-                    تُضاف إلى ذمّة المورّد وتظهر في تكلفة البضاعة — لا كمصروف مستقلّ.
+                    <strong>لا تُضاف إلى ذمّة المورّد ولا إلى تكلفة الصنف.</strong> تُسجَّل مصروف نقلٍ
+                    على الشركة لحظة الاستلام (يظهر في المصروفات والدفتر)، وتكلفة الصنف تبقى سعر المورّد وحده.
                   </div>
                 </div>
               )}

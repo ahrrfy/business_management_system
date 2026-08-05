@@ -197,6 +197,8 @@ export const purchaseRouter = router({
             });
           }),
         payment: z.object({ amount: positiveMoneyString, method }).optional(),
+        // طريقة دفع مصروف الشحن/الكمرك (لشركة النقل، لا للمورّد). الافتراضي نقديّ.
+        shippingPaymentMethod: method.optional(),
         // idempotency: نفس المفتاح ⇒ استلام واحد (لا مخزون/AP/قيد/دفعة مزدوجة عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
       })
