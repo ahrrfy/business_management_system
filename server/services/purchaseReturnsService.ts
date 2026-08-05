@@ -356,92 +356,13 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       await adjustSupplierBalance(tx, input.supplierId, cashRefund);
     }
 
-    // ── landed-cost على مرتجع الشراء (متابعة Codex على #311، تصحيح #318 — قرار المالك ٢٢/٧/٢٦) ──
-    // الشحن/الكمرك (landed) رُسمِل في تكلفة المخزون (WAVG) وأُضيف إلى ذمّة المورّد عند الاستلام (#311).
-    // قرار المالك: الشحن الوارد **غير مسترد** عند الإرجاع ⇒ يُقيَّد **خسارةً** في الأرباح والخسائر.
-    // ⚠️ تصحيح #318: كان يَعكس حصّة الشحن من AP فوق خصم RETURN (خصمٌ مزدوج) ⇒ انحرافُ مطابقةٍ دائم في
-    // reconcileSupplierBalances + قائمةُ دخلٍ ≠ ميزانية (netProfit يُظهر الخسارة وحقوقُ الملكية لا تنخفض).
-    // ⚠️ إصلاح #321: يُقيَّد في **كلا** المسارين (آجل CREDIT ونقديّ CASH) — الكتلة **محايدةٌ على AP** (تقيّد
-    // خسارة P&L فقط بلا adjustSupplierBalance بعد #319). الآجل: قيد RETURN خصم قيمة البضاعة وحدها فتبقى
-    // حصّةُ الشحن ديناً في AP تُسدَّد لاحقاً. النقديّ: صافي أثر AP صفر (خصم RETURN ثم عكسه عند استلام النقد)
-    // والاسترداد بسعر البضاعة، فحصّةُ الشحن غير المُستردّة (uncredited) هي الخسارة. المخزون يخرج بـWAVG.
-    if (refPo) {
-      const totalLanded = round2(money(refPo.shippingCost ?? "0").plus(money(refPo.customsCost ?? "0")));
-      if (totalLanded.gt(0)) {
-        const poItems = await tx
-          .select({
-            id: purchaseOrderItems.id,
-            variantId: purchaseOrderItems.variantId,
-            total: purchaseOrderItems.total,
-            baseQuantity: purchaseOrderItems.baseQuantity,
-          })
-          .from(purchaseOrderItems)
-          .where(eq(purchaseOrderItems.purchaseOrderId, Number(refPo.id)));
-        const poSubtotal = money(refPo.subtotal ?? "0");
-        // توزيع الشحن/الكمرك على بنود الأمر **بنسبة القيمة** — مطابقٌ حرفياً لتوزيع #311 عند الاستلام
-        // (آخر بندٍ ذي قيمة يمتصّ فرق التقريب ⇒ Σ الحصص = totalLanded بالضبط).
-        const landedByItemId = new Map<number, Decimal>();
-        for (const it of poItems) landedByItemId.set(Number(it.id), new Decimal(0));
-        if (poSubtotal.gt(0)) {
-          const ordered = [...poItems].sort((a, b) => Number(a.id) - Number(b.id));
-          let lastValued = -1;
-          for (let i = 0; i < ordered.length; i++) if (money(ordered[i].total).gt(0)) lastValued = i;
-          let allocated = new Decimal(0);
-          for (let i = 0; i < ordered.length; i++) {
-            const it = ordered[i];
-            if (money(it.total).lte(0)) continue;
-            if (i === lastValued) {
-              landedByItemId.set(Number(it.id), round2(totalLanded.minus(allocated)));
-            } else {
-              const share = round2(totalLanded.times(money(it.total)).dividedBy(poSubtotal));
-              landedByItemId.set(Number(it.id), share);
-              allocated = allocated.plus(share);
-            }
-          }
-        }
-        // حصّة الشحن/الكمرك لكلّ وحدة أساس على مستوى المتغيّر (تجميع بنود المتغيّر الواحد).
-        const landedSumByVariant = new Map<number, Decimal>();
-        const baseQtyByVariant = new Map<number, Decimal>();
-        for (const it of poItems) {
-          const vid = Number(it.variantId);
-          landedSumByVariant.set(vid, (landedSumByVariant.get(vid) ?? new Decimal(0)).plus(landedByItemId.get(Number(it.id)) ?? new Decimal(0)));
-          baseQtyByVariant.set(vid, (baseQtyByVariant.get(vid) ?? new Decimal(0)).plus(new Decimal(it.baseQuantity ?? 0)));
-        }
-        // خسارة الشحن الخام = Σ (حصّة الوحدة × الكمية المُرتجَعة بالأساس)؛ القيمة الدفترية للمرتجَع = Σ (WAVG × الأساس).
-        let landedLossRaw = new Decimal(0);
-        let fullBookValue = new Decimal(0);
-        for (const w of work) {
-          const vid = w.input.variantId;
-          const totBase = baseQtyByVariant.get(vid) ?? new Decimal(0);
-          const perBase = totBase.gt(0) ? (landedSumByVariant.get(vid) ?? new Decimal(0)).dividedBy(totBase) : new Decimal(0);
-          landedLossRaw = landedLossRaw.plus(perBase.times(w.baseQuantity));
-          fullBookValue = fullBookValue.plus(round2(w.bookCostPerBase.times(w.baseQuantity)));
-        }
-        landedLossRaw = round2(landedLossRaw);
-        fullBookValue = round2(fullBookValue);
-        // السقف: الخسارة لا تتجاوز حصّةَ الشحن غير المُعتمَدة = (القيمة الدفترية − ما اعتمده المورّد في
-        // returnedTotal) ⇒ لو أُدخل سعرُ إرجاعٍ أعلى من سعر البضاعة (يعتمد المورّد جزءاً من الشحن) لا
-        // تُقيَّد خسارةٌ على الجزء المُعتمَد، ولا تتجاوز الخسارةُ القيمةَ الدفترية غير المُستردّة للمرتجَع.
-        const uncredited = Decimal.max(new Decimal(0), fullBookValue.minus(returnedTotal));
-        const landedLoss = round2(Decimal.min(landedLossRaw, uncredited));
-        if (landedLoss.gt(0)) {
-          // قيّد الخسارة في P&L — ADJUST بمفتاح PURCHRET_LANDED (سطر مصروف مستقلّ في قائمة الدخل، خارج
-          // SALE/RETURN فلا يمسّ إيراد/تكلفة المبيعات). cost موجب = خسارة تَخفض صافي الربح.
-          // **بلا خصمٍ من ذمّة المورّد هنا** (تصحيح #318): خصمُ RETURN أعلاه غطّى قيمة البضاعة فقط، فتبقى
-          // حصّةُ الشحن ديناً في AP (التزامٌ حقيقيّ تُسدّده لاحقاً) ⇒ reconcileSupplierBalances يبقى خالياً
-          // والميزانية تتّزن مع قائمة الدخل. بلا supplierId ⇒ لا بندَ حركةٍ زائف في كشف المورّد (الالتزام بقيد PURCHASE).
-          await postEntry(tx, {
-            entryType: "ADJUST",
-            branchId: input.branchId,
-            purchaseOrderId: Number(refPo.id),
-            cost: landedLoss,
-            amount: landedLoss,
-            dedupeKey: `PURCHRET_LANDED:${purchaseReturnEntryId}`,
-            notes: "خسارة شحن/كمرك بضاعة مُرتجَعة للمورّد (غير مسترد)",
-          });
-        }
-      }
-    }
+    // ── الشحن/الكمرك على مرتجع الشراء: لا منطق (قرار المالك ٥/٨/٢٦) ──
+    // أُزيلت هنا كتلةُ «خسارة الشحن غير المستردّ». كانت لازمةً حين كان الشحن يُرسمَل في WAVG
+    // ويُضاف إلى ذمّة المورّد عند الاستلام (#311/#318/#321): فالإرجاع كان يترك حصّة شحنٍ عالقةً
+    // في الذمّة وقيمةً دفتريةً غير مستردّة تستوجب قيدَ خسارةٍ صريحاً بسقفٍ محسوب.
+    // بعد قرار المالك صار الشحن **مصروفاً معترَفاً به لحظة الاستلام**، خارج ذمّة المورّد وخارج
+    // تكلفة الصنف تماماً — فلا شيء يتبقّى ليُعكَس أو يُخسَر هنا: المرتجع يعكس قيمة البضاعة وحدها،
+    // والمصروف وقع فعلاً ولا يُستردّ (البضاعة شُحنت إلينا بالفعل). إبقاء الكتلة كان يقيّد الخسارة مرّتين.
 
     return {
       purchaseReturnEntryId,

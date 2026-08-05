@@ -46,6 +46,12 @@ export interface ReceivePurchaseInput {
   purchaseOrderId: number;
   lines: ReceiveLineInput[];
   payment?: { amount: string; method: PaymentMethod } | null;
+  /**
+   * طريقة دفع **مصروف الشحن/الكمرك** المُسجَّل لحظة الاستلام (قرار المالك ٥/٨/٢٦: الشحن مصروفُ
+   * شركةٍ لا ذمّةُ مورّد). الافتراضي نقديّ — ويمرّ عندها بحارس وردية/خزينة الصندوق. مستقلٌّ تماماً
+   * عن `payment` أعلاه (تلك دفعةٌ للمورّد، وهذه دفعةٌ لشركة النقل).
+   */
+  shippingPaymentMethod?: PaymentMethod | null;
   /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة الاستلام الأول (لا تكرار للمخزون/AP). */
   clientRequestId?: string | null;
 }
