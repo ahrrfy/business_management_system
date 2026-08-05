@@ -438,24 +438,42 @@ export async function getAnomalyWatch(opts: {
     null,
   );
 
-  // ── D8 (ش٤): مسوّدات مموّلة أُلغيت بلا تثبيت — لكل مُنشئ ──
-  // كل مستندٍ في السلسلة (قبض/ردّ/إلغاء مديريّ) سليمٌ فردياً؛ التكرار هو الإشارة. الشرط
-  // moneyLocked=1 (مرّ مالٌ من هنا يوماً) + CANCELLED خلال الفترة. المبالغ من orderPayments.
+  // ── D8 (ش٤): «قبضٌ ثم ردٌّ بلا تثبيت» — لكل فاعل ──
+  // مراجعة ش٤ العدائية: النسخة الأولى اشترطت CANCELLED فكانت عمياء بنيوياً عن الفاعل الوحيد
+  // المصمَّمة لمراقبته — الكاشير لا يملك إلغاء المموّلة (مديريّ) فمسوّدته تبقى OPEN أبداً بعد
+  // «اقبض بإيصال ثم رُدّ لنفسك». الإشارتان الآن: (أ) مسوّدة مموّلة أُلغيت (لمنشئها)، أو
+  // (ب) قبضٌ رُدَّ **كاملاً** على مسوّدة غير مثبّتة أياً كانت حالتها (لرادّ المال — هو من مسّه).
   const branchDraft = branchId ? sql`AND d.branchId = ${branchId}` : sql``;
+  const branchDraft2 = branchId ? sql`AND d2.branchId = ${branchId}` : sql``;
   const cancelledFundedP = safe(
     db.execute(sql`
-      SELECT d.createdBy AS userId, u.name AS userName,
-        COUNT(DISTINCT d.id) AS draftCount,
-        CAST(COALESCE(SUM(CASE WHEN op.orderPayKind = 'COLLECTION' THEN op.amount ELSE 0 END), 0) AS CHAR) AS collectedTotal,
-        CAST(COALESCE(SUM(CASE WHEN op.orderPayKind = 'REFUND' THEN op.amount ELSE 0 END), 0) AS CHAR) AS refundedTotal
-      FROM receptionDrafts d
-      LEFT JOIN orderPayments op ON op.draftId = d.id
-      LEFT JOIN users u ON u.id = d.createdBy
-      WHERE d.draftStatus = 'CANCELLED' AND d.moneyLocked = 1
-        AND d.cancelledAt >= ${fromTs} AND d.cancelledAt < ${toTs}
-        ${branchDraft}
-      GROUP BY d.createdBy, u.name
-      ORDER BY COUNT(DISTINCT d.id) DESC
+      SELECT a.userId AS userId, u.name AS userName,
+        COUNT(DISTINCT a.draftId) AS draftCount,
+        CAST(COALESCE(SUM(a.collected), 0) AS CHAR) AS collectedTotal,
+        CAST(COALESCE(SUM(a.refunded), 0) AS CHAR) AS refundedTotal
+      FROM (
+        SELECT d.createdBy AS userId, d.id AS draftId,
+          (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op WHERE op.draftId = d.id AND op.orderPayKind = 'COLLECTION') AS collected,
+          (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op WHERE op.draftId = d.id AND op.orderPayKind = 'REFUND') AS refunded
+        FROM receptionDrafts d
+        WHERE d.draftStatus = 'CANCELLED' AND d.moneyLocked = 1
+          AND d.cancelledAt >= ${fromTs} AND d.cancelledAt < ${toTs}
+          ${branchDraft}
+        UNION
+        SELECT DISTINCT rf.createdBy AS userId, d2.id AS draftId,
+          (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op WHERE op.draftId = d2.id AND op.orderPayKind = 'COLLECTION') AS collected,
+          (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op WHERE op.draftId = d2.id AND op.orderPayKind = 'REFUND') AS refunded
+        FROM orderPayments rf
+        JOIN orderPayments coll ON coll.id = rf.parentPaymentId
+        JOIN receptionDrafts d2 ON d2.id = coll.draftId
+        WHERE rf.orderPayKind = 'REFUND' AND coll.orderPayStatus = 'REFUNDED'
+          AND d2.draftStatus NOT IN ('COMMITTED', 'CANCELLED')
+          AND rf.createdAt >= ${fromTs} AND rf.createdAt < ${toTs}
+          ${branchDraft2}
+      ) a
+      LEFT JOIN users u ON u.id = a.userId
+      GROUP BY a.userId, u.name
+      ORDER BY COUNT(DISTINCT a.draftId) DESC
     `),
     null,
   );

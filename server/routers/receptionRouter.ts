@@ -22,6 +22,7 @@ import {
   syncDraft,
 } from "../services/reception";
 import { verifyManagerApproval } from "./saleRouter";
+import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { router, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
 import { logAudit } from "../services/auditService";
 
@@ -160,13 +161,17 @@ export const receptionRouter = router({
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null,
         role: ctx.user.role,
       };
-      const result = await collectDeposit({ ...input, reference: input.reference ?? null }, actor as never);
+      const result = await retryOnDeadlock(() =>
+        collectDeposit({ ...input, reference: input.reference ?? null }, actor as never),
+      );
       if (!result.idempotentReplay) {
-        // حدثٌ حاكم (I22): مبلغٌ دخل الدرج بلا فاتورة — الفاعل والوردية والمبلغ تُسمّى كلها.
+        // تدقيقٌ إلحاقيّ best-effort خارج معاملة الخدمة (نمط المحطة كلّها — collectOnInvoice ش١):
+        // الأثر الماليّ البنيويّ (receipts + orderPayments بshiftId وcreatedBy) داخل المعاملة أصلاً.
         await logAudit(ctx, {
           action: "reception.collectDeposit",
           entityType: "receptionDraft",
           entityId: input.draftId,
+          oldValue: { heldBefore: result.heldBefore },
           newValue: {
             paymentId: result.paymentId,
             amount: input.amount,
@@ -179,13 +184,16 @@ export const receptionRouter = router({
       return result;
     }),
 
-  /** ردّ عربونٍ محتجز — بطريقة القبض حتماً، مربوطاً بأمّه، بمبلغٍ <= المتبقّي (I17). */
+  /** ردّ عربونٍ محتجز — بطريقة القبض حتماً، مربوطاً بأمّه، بمبلغٍ <= المتبقّي (I17).
+   *  refundShiftId: عند تعدّد الدرج النقديّ المفتوح بالفرع يلزم تحديد أيّها يخرج منه النقد
+   *  (مراجعة ش٤ — كان الردّ النقديّ ميتاً طوال ساعات العمل بورديتين، نمط workOrderRouter). */
   refundDeposit: workordersCashierProcedure
     .input(
       z.object({
         paymentId: z.number().int().positive(),
         amount: positiveMoneyString,
         reason: z.string().trim().min(5).max(300),
+        refundShiftId: z.number().int().positive().optional(),
         clientRequestId: z.string().min(8).max(80),
       }),
     )
@@ -195,22 +203,37 @@ export const receptionRouter = router({
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null,
         role: ctx.user.role,
       };
-      const result = await refundDeposit(input, actor as never);
+      const result = await retryOnDeadlock(() =>
+        refundDeposit(input, actor as never, { refundShiftId: input.refundShiftId ?? null }),
+      );
       if (!result.idempotentReplay) {
         await logAudit(ctx, {
           action: "reception.refundDeposit",
           entityType: "orderPayment",
           entityId: input.paymentId,
-          newValue: { amount: input.amount, reason: input.reason, refundReceiptId: result.refundReceiptId },
+          oldValue: { refundableBefore: result.refundableBefore },
+          newValue: {
+            amount: input.amount,
+            reason: input.reason,
+            refundReceiptId: result.refundReceiptId,
+            refundShiftId: result.shiftId,
+          },
         });
       }
       return result;
     }),
 
-  /** سجلّ عرابين طلبٍ محفوظ (القبض/التطبيق/الردّ) + الصافي المحتجز. */
+  /** سجلّ عرابين طلبٍ محفوظ (القبض/التطبيق/الردّ) + الصافي المحتجز — بعزل الفرع (IDOR). */
   paymentsOf: workordersCashierProcedure
     .input(z.object({ draftId: z.number().int().positive() }))
-    .query(async ({ input }) => listDraftPayments(input.draftId)),
+    .query(async ({ input, ctx }) => {
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null,
+        role: ctx.user.role,
+      };
+      return listDraftPayments(input.draftId, actor as never);
+    }),
 
   // ── ش٢ — المسوّدة المُرقّاة (§٨.٢: السلّة محليّةٌ بالافتراض؛ الترقية عند أوّل سببٍ حقيقيّ) ──
   draftPromote: workordersExecProcedure

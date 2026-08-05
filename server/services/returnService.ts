@@ -455,6 +455,30 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
           ),
         );
       methodAvailable = money(mr[0]?.inSum ?? "0").minus(money(mr[0]?.outSum ?? "0"));
+      // ش٤ (مراجعة عدائية): حصص العرابين المُطبَّقة على هذه الفاتورة (orderPayments APPLICATION)
+      // تدخل paidAmount بينما إيصال أمّها **غير مختوم** بالفاتورة (مُشظّى بين هدفين، أو مشوبٌ
+      // بردٍّ جزئيّ) فلا يراه inSum ⇒ فاتورةٌ PAID كان مرتجعُها غير قابلٍ للاسترداد بنيوياً
+      // (refundCap=0) ومال الزبون العابر يُحتجز بلا مسار. تُضمّ الحصّة بطريقة قبض أمّها، مع
+      // استبعاد ما إيصال أمّه مختومٌ بهذه الفاتورة (محسوبٌ في inSum سلفاً — لا ازدواج).
+      // outSum القائم (إيصالات OUT المختومة) يظلّ يُنقص السقف بعد كل استرداد فلا استهلاك مزدوج.
+      const appRes = await tx.execute(sql`
+        SELECT CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS v
+        FROM orderPayments app
+        JOIN orderPayments coll ON coll.id = app.parentPaymentId
+        LEFT JOIN receipts pr ON pr.id = coll.receiptId
+        WHERE app.orderPayKind = 'APPLICATION'
+          AND (
+            (app.orderPayAppliedKind = 'INVOICE' AND app.appliedId = ${input.invoiceId})
+            OR (app.orderPayAppliedKind = 'WORKORDER' AND app.appliedId IN (
+              SELECT wo.id FROM workOrders wo WHERE wo.invoiceId = ${input.invoiceId}
+            ))
+          )
+          AND coll.orderPayMethod = ${refundMethod}
+          AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${input.invoiceId})
+      `);
+      const appData = (appRes as unknown as [Array<{ v: string }>])[0] ?? appRes;
+      const appRow = Array.isArray(appData) ? appData[0] : undefined;
+      methodAvailable = methodAvailable.plus(money(appRow?.v ?? "0"));
     }
     const refundCap = Decimal.min(returnedTotal, methodAvailable);
     if (requestedRefund.gt(refundCap)) {

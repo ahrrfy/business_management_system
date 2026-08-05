@@ -29,27 +29,40 @@ const STATUS_AR: Record<string, string> = {
 export default function DraftPaymentsDialog({
   draftId,
   draftNumber,
+  branchId,
   onClose,
   onChanged,
 }: {
   draftId: number;
   draftNumber: string;
+  branchId: number;
   onClose: () => void;
   /** بعد ردٍّ ناجح — يمرّر صافي المحتجز الجديد لتحديث الشاشة الأم. */
   onChanged: (heldNet: string) => void;
 }) {
   const q = trpc.reception.paymentsOf.useQuery({ draftId }, { staleTime: 0 });
   const [refundFor, setRefundFor] = useState<number | null>(null);
+  const [refundMethodFor, setRefundMethodFor] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
+  const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+
+  // مراجعة ش٤: الردّ النقديّ مع أكثر من درجٍ مفتوح بالفرع يتطلّب تحديد أيّ درجٍ يخرج منه
+  // النقد فعلاً (نمط شاشة المرتجعات حرفياً) — بلا المنتقي كان الردّ ميتاً طوال ساعات العمل.
+  const cashRefundOpen = refundFor != null && refundMethodFor === "CASH";
+  const openShiftsQ = trpc.treasury.getOpenShifts.useQuery({ branchId }, { enabled: cashRefundOpen });
+  const drawerShifts = openShiftsQ.data ?? [];
+  const needShiftPick = cashRefundOpen && drawerShifts.length > 1;
 
   const refundM = trpc.reception.refundDeposit.useMutation({
     onSuccess: async () => {
       notify.ok("رُدَّ المبلغ", "بطريقة قبضه — والسند مسجَّل");
       setRefundFor(null);
+      setRefundMethodFor(null);
       setAmount("");
       setReason("");
+      setRefundShiftId(null);
       setClientRequestId(crypto.randomUUID());
       const fresh = await q.refetch();
       onChanged(String(fresh.data?.heldNet ?? "0.00"));
@@ -102,7 +115,16 @@ export default function DraftPaymentsDialog({
                   {canRefund && refundFor !== Number(r.id) && (
                     <Button
                       size="sm" variant="outline" className="mt-1 h-7 px-2 text-[10px]"
-                      onClick={() => { setRefundFor(Number(r.id)); setAmount(remaining.toFixed(2)); setReason(""); }}
+                      onClick={() => {
+                        setRefundFor(Number(r.id));
+                        setRefundMethodFor(String(r.method ?? "CASH"));
+                        setAmount(remaining.toFixed(2));
+                        setReason("");
+                        setRefundShiftId(null);
+                        // مفتاح idempotency جديد لكل فتح نموذج ردّ — ردّان متتاليان لقبضين
+                        // مختلفين بنفس المفتاح كانا يعيدان نتيجة الأول (replay) صامتاً.
+                        setClientRequestId(crypto.randomUUID());
+                      }}
                     >
                       <RotateCcw aria-hidden className="size-3 me-1" /> ردّ من هذا القبض
                     </Button>
@@ -116,16 +138,35 @@ export default function DraftPaymentsDialog({
                         placeholder="سبب الردّ (إلزامي — يُوثَّق على السند)"
                         className="h-8 text-xs"
                       />
+                      {needShiftPick && (
+                        <div className="space-y-1">
+                          <div className="text-[10px] font-bold text-muted-foreground">أكثر من درجٍ مفتوح — من أيّ درجٍ يخرج النقد؟</div>
+                          <select
+                            aria-label="درج الردّ النقدي"
+                            className="h-8 w-full rounded-md border bg-card px-2 text-[11px] font-bold"
+                            value={refundShiftId != null ? String(refundShiftId) : ""}
+                            onChange={(e) => setRefundShiftId(e.target.value ? Number(e.target.value) : null)}
+                          >
+                            <option value="">اختر الدرج…</option>
+                            {drawerShifts.map((s) => (
+                              <option key={s.shiftId} value={String(s.shiftId)}>
+                                {s.userName} — وردية #{s.shiftId}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
                       <div className="flex gap-1.5">
-                        <Button size="sm" variant="ghost" className="h-7 flex-1 text-[10px]" onClick={() => setRefundFor(null)}>إلغاء</Button>
+                        <Button size="sm" variant="ghost" className="h-7 flex-1 text-[10px]" onClick={() => { setRefundFor(null); setRefundMethodFor(null); }}>إلغاء</Button>
                         <Button
                           size="sm" className="h-7 flex-1 text-[10px]"
-                          disabled={refundM.isPending || D(amount || 0).lte(0) || D(amount || 0).gt(remaining) || reason.trim().length < 5}
+                          disabled={refundM.isPending || D(amount || 0).lte(0) || D(amount || 0).gt(remaining) || reason.trim().length < 5 || (needShiftPick && refundShiftId == null)}
                           onClick={() =>
                             refundM.mutate({
                               paymentId: Number(r.id),
                               amount: D(amount).toFixed(2),
                               reason: reason.trim(),
+                              refundShiftId: refundShiftId ?? undefined,
                               clientRequestId,
                             })
                           }

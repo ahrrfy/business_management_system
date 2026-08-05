@@ -400,6 +400,8 @@ export async function getShiftReport(shiftId: number) {
   // الإغلاق** (المال في receipts والدرج متّسق) — السطر إفصاحٌ يفسّر وجود نقدٍ بلا فاتورة.
   // (استعلامٌ مضمَّن لا استيراد من reception/deposits — يمنع دورة استيراد deposits⇄shiftService.
   //  أسماء أعمدة DB الحرفية: orderPayKind/orderPayStatus — فخّ raw SQL الموثَّق.)
+  // دلالة الدرج (مراجعة ش٤): تُطرح ردود **هذه الوردية** فقط (ردُّ درجٍ آخر يخصّ Z درجِه)،
+  // ويُضمّ REFUNDED (قُبض هنا فعلاً) — وإلا تحوّر Z المؤرشف رجعياً وفقد تفسير درجه التاريخيّ.
   const heldRes = await db.execute(sql`
     SELECT COUNT(DISTINCT op.draftId) AS c,
            CAST(COALESCE(SUM(op.amount - COALESCE(rf.s, 0)), 0) AS CHAR) AS t
@@ -407,10 +409,10 @@ export async function getShiftReport(shiftId: number) {
     LEFT JOIN (
       SELECT parentPaymentId, SUM(amount) AS s
       FROM orderPayments
-      WHERE orderPayKind = 'REFUND'
+      WHERE orderPayKind = 'REFUND' AND shiftId = ${shiftId}
       GROUP BY parentPaymentId
     ) rf ON rf.parentPaymentId = op.id
-    WHERE op.shiftId = ${shiftId} AND op.orderPayKind = 'COLLECTION' AND op.orderPayStatus = 'HELD'
+    WHERE op.shiftId = ${shiftId} AND op.orderPayKind = 'COLLECTION' AND op.orderPayStatus IN ('HELD','REFUNDED')
   `);
   const heldData = (heldRes as unknown as [Array<{ c: number | string; t: string }>])[0] ?? heldRes;
   const heldRow = Array.isArray(heldData) ? heldData[0] : undefined;

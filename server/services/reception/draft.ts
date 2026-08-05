@@ -193,6 +193,19 @@ export async function syncDraft(
           message: `الإجمالي الجديد (${totals.total.toFixed(2)}) أقل من المقبوض سلفاً (${heldNet.toFixed(2)}) — ردّ الفارق أولاً (ردّ عربون)`,
         });
       }
+      // مراجعة ش٤ (ج): قيود العربون مختومة بعميل لحظة قبضه (PAYMENT_IN + سطر إفصاح I11) —
+      // تغييرُ عميل مسوّدةٍ عليها محتجزٌ يفصم القيد عن الفاتورة اللاحقة فيكذب AR الفرعيّ
+      // المشتقّ **دائماً** (عميلٌ يُطالَب بما سدّده). الردّ أولاً ثم التغيير.
+      if (heldNet.gt(0)) {
+        const currentCustomer = row.customerId != null ? Number(row.customerId) : null;
+        const nextCustomer = input.header.customerId ?? null;
+        if (nextCustomer !== currentCustomer) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "الطلب عليه مبلغٌ مقبوض باسم طرفه الحاليّ — رُدَّ العربون أولاً ثم غيّر العميل",
+          });
+        }
+      }
     }
 
     const before = await tx

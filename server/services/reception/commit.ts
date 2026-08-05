@@ -69,7 +69,9 @@ function materialize(
     input.cashRoundIQD === true &&
     input.collectNow?.method === "CASH" &&
     goods.length > 0 && prints.length === 0 && customs.length === 0;
-  const roundActive = rawRound && !roundCashIQD(sum(goods)).lt(heldNet);
+  // `.lte` لا `.lt` (مراجعة ش٤): عند تساوي المحتجز مع المقرَّب بالضبط (عربون 5,000 على 5,100
+  // تُقرَّب 5,000) كان التقريب يبقى فيصير applied=5,100 > 5,000 ⇒ طريقٌ نقديّ مسدود بلا مخرج.
+  const roundActive = rawRound && !roundCashIQD(sum(goods)).lte(heldNet);
   const goodsAmount = roundActive ? roundCashIQD(sum(goods)) : sum(goods);
 
   const saleLine = (l: (typeof lines)[number]) => ({
@@ -254,6 +256,28 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
         code: "PRECONDITION_FAILED",
         message: `المقبوض سلفاً (${heldNet.toFixed(2)}) يتجاوز إجمالي الطلب (${recomputed.toFixed(2)}) — رُدَّ الفارق أولاً (ردّ عربون) ثم ثبّت`,
       });
+    }
+    // صمّام عميل القبض (مراجعة ش٤ — يغلق أيّ بابٍ مستقبليّ يغيّر العميل من غير syncDraft):
+    // قيود العربون مختومة بعميل لحظة القبض؛ تثبيتٌ لعميلٍ مغاير يفصم القيد عن فاتورته.
+    if (heldNet.gt(0)) {
+      const heldRows = await tx
+        .select({ customerId: orderPayments.customerId })
+        .from(orderPayments)
+        .where(and(
+          eq(orderPayments.draftId, input.draftId),
+          eq(orderPayments.kind, "COLLECTION"),
+          eq(orderPayments.status, "HELD"),
+        ));
+      const draftCustomer = draft.customerId != null ? Number(draft.customerId) : null;
+      const mismatch = heldRows.some(
+        (r) => (r.customerId != null ? Number(r.customerId) : null) !== draftCustomer,
+      );
+      if (mismatch) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "عرابين الطلب مقبوضة باسم طرفٍ يخالف عميله الحاليّ — رُدَّ العربون ثم أعد قبضه بالاسم الصحيح",
+        });
+      }
     }
     // بضاعة/طباعة تُدفع كاملةً عند التثبيت: يلزم قبضٌ الآن **إلا إذا** غطّاها المحتجز سلفاً.
     const hasDirect = lines.some((l) => l.lineKind !== "CUSTOM");

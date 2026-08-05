@@ -28,12 +28,15 @@ import { getDb } from "../../db";
 import { closeShift, getShiftReport, openShift } from "../shiftService";
 import { reconcileCustomerBalances } from "../reconcileService";
 import { getCustomerStatement } from "../reports/arAging";
+import { getAnomalyWatch } from "../reports/anomalyWatch";
+import { returnSale } from "../returnService";
 import { deliverWorkOrder } from "../workOrder/deliver";
 import { cancelWorkOrder } from "../workOrder/cancel";
 import {
   cancelDraft,
   collectDeposit,
   commitDraft,
+  listDraftPayments,
   promoteDraft,
   refundDeposit,
   sweepExpiredDrafts,
@@ -70,6 +73,7 @@ async function seed() {
   await d.insert(s.users).values([
     { id: 1, openId: "mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "rc", name: "موظف خدمة", email: "r@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 5, openId: "rc2", name: "موظف ثانٍ", email: "r2@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
   await d.insert(s.customers).values([{ id: 1, name: "عميل", currentBalance: "0.00", creditLimit: "1000000.00" }]);
   await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
@@ -422,6 +426,212 @@ describe("D11 — لا إلغاء وطلبٌ عليه محتجز؛ وبعد ال
       { draftId: p.draftId, version: 0, reason: "الزبون عدل عن الطلب — دُوّنت بنوده" }, MANAGER,
     );
     expect(done.status).toBe("CANCELLED");
+  });
+});
+
+describe("R1 — مراجعة: القبض المردود جزئياً لا يُختم إيصالُه (سقف المرتجع يصدق)", () => {
+  it("قبض 20,000 ← ردّ 5,000 ← تثبيت تخصيصٍ خالص ← تسليم آجل ⇒ الإيصال بلا ختمٍ وسقف الاسترداد = الصافي", async () => {
+    const shift = await openReception();
+    // بندٌ مخصّص بمنتجٍ أساس — فاتورة تسليمه تحمل بنداً قابلاً للإرجاع (خدمة بلا منتجٍ لا بنود لها).
+    const p = await promoteDraft({
+      branchId: 1,
+      header: { customerId: 1 },
+      lines: [{ ...CUSTOM_LINE, variantId: 1, productUnitId: 1 }],
+    }, CASHIER);
+    const dep = await collectDeposit(
+      { draftId: p.draftId, amount: "20000.00", method: "CASH", clientRequestId: uuid("r1c00001") },
+      CASHIER,
+    );
+    await refundDeposit(
+      { paymentId: dep.paymentId, amount: "5000.00", reason: "ردٌّ جزئيّ بطلب الزبون", clientRequestId: uuid("r1r00001") },
+      CASHIER,
+    );
+    const r = await commitDraft({
+      draftId: p.draftId, version: 0, expectedTotal: "45000.00", shiftId: shift.shiftId, collectNow: null,
+    }, CASHIER);
+    const woId = r.workOrders[0].workOrderId;
+    const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0];
+    expect(wo.deposit).toBe("15000.00"); // الصافي بعد الردّ
+
+    await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
+    const delivered = await deliverWorkOrder({ workOrderId: woId, payment: null }, CASHIER);
+    // الإيصال المشوب بردٍّ جزئيّ (20,000 قُبضت، 15,000 صافياً) لا يُختم — مبلغه الكامل يكذب
+    // على سقف استرداد المرتجع (كان يسمح بصرف 20,000 لفاتورةٍ دفعت 15,000).
+    const depReceipt = (await db().select().from(s.receipts).where(eq(s.receipts.id, dep.receiptId)))[0];
+    expect(depReceipt.invoiceId).toBeNull();
+
+    // سقف الاسترداد من حصص orderPayments: مرتجعٌ كامل باسترداد 15,000 نقداً يمرّ، و16,000 يُرفض.
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, delivered.invoiceId)))[0];
+    await expect(returnSale(
+      {
+        invoiceId: delivered.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: Number(item.baseQuantity) }],
+        refund: { amount: "16000.00", method: "CASH", shiftId: shift.shiftId },
+      },
+      MANAGER,
+    )).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await returnSale(
+      {
+        invoiceId: delivered.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: Number(item.baseQuantity) }],
+        refund: { amount: "15000.00", method: "CASH", shiftId: shift.shiftId },
+      },
+      MANAGER,
+    );
+    // الدرج: +20,000 −5,000 −15,000 = 0.
+    const closed = await closeShift({ shiftId: shift.shiftId, countedCash: "0.00" }, CASHIER);
+    expect(closed.variance).toBe("0.00");
+  });
+});
+
+describe("R2 — مراجعة: العربون المُشظّى بين هدفين قابلٌ للاسترداد عبر حصص التخصيص", () => {
+  it("بضاعة 2,000 + تخصيص، عربونٌ واحد يغطّيهما ⇒ مرتجع البضاعة يستردّ نقدها رغم غياب إيصالٍ مختوم", async () => {
+    const shift = await openReception();
+    const p = await promoteMixed(1);
+    await collectDeposit(
+      { draftId: p.draftId, amount: "10000.00", method: "CASH", clientRequestId: uuid("r2c00001") },
+      CASHIER,
+    );
+    // heldNet (10,000) يغطّي البيع المباشر (2,000) ⇒ التثبيت بلا collectNow جائز — القبض يتشظّى
+    // (2,000 للفاتورة + 8,000 للأمر) فلا يُختم إيصاله بأيّ فاتورة.
+    const r = await commitDraft({
+      draftId: p.draftId, version: 0, expectedTotal: "47000.00", shiftId: shift.shiftId, collectNow: null,
+    }, CASHIER);
+    const invId = r.regularSale!.invoiceId;
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, invId)))[0];
+    expect(inv.paidAmount).toBe("2000.00");
+    const linked = await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, invId));
+    expect(linked.length).toBe(0); // لا إيصال مربوط — الحقيقة في orderPayments
+
+    // قبل الإصلاح: refundCap = 0 ⇒ رفضٌ بنيويّ لاسترداد فاتورةٍ PAID. الآن حصّة APPLICATION تدخله.
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invId)))[0];
+    await returnSale(
+      {
+        invoiceId: invId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: Number(item.baseQuantity) }],
+        refund: { amount: "2000.00", method: "CASH", shiftId: shift.shiftId },
+      },
+      MANAGER,
+    );
+    const outs = await db().select().from(s.receipts)
+      .where(and(eq(s.receipts.invoiceId, invId), eq(s.receipts.direction, "OUT")));
+    expect(outs.length).toBe(1);
+    expect(outs[0].amount).toBe("2000.00");
+  });
+});
+
+describe("R3 — مراجعة: لا تغيير عميلٍ لطلبٍ عليه محتجز", () => {
+  it("syncDraft بتغيير العميل يُرفض؛ وبعد الردّ الكامل يمرّ", async () => {
+    await openReception();
+    const p = await promoteMixed(1);
+    const dep = await collectDeposit(
+      { draftId: p.draftId, amount: "5000.00", method: "CASH", clientRequestId: uuid("r3c00001") },
+      CASHIER,
+    );
+    await expect(syncDraft({
+      draftId: p.draftId, version: 0, header: { customerId: null, contactName: "عابر" }, lines: [GOODS_LINE, CUSTOM_LINE],
+    }, CASHIER)).rejects.toThrowError(/باسم طرفه الحاليّ/);
+
+    await refundDeposit(
+      { paymentId: dep.paymentId, amount: "5000.00", reason: "الزبون بدّل الطرف الدافع", clientRequestId: uuid("r3r00001") },
+      CASHIER,
+    );
+    const synced = await syncDraft({
+      draftId: p.draftId, version: 0, header: { customerId: null, contactName: "عابر" }, lines: [GOODS_LINE, CUSTOM_LINE],
+    }, CASHIER);
+    expect(synced.version).toBe(1);
+  });
+});
+
+describe("R4 — مراجعة: تقريب IQD لا يسدّ الطريق النقديّ حين يساوي المحتجزُ المقرَّبَ", () => {
+  it("بضاعة خام 5,100 وعربون 5,000 (= المقرَّب) ⇒ التثبيت النقديّ بالباقي الخام 100 يمرّ بلا ADJUST", async () => {
+    const shift = await openReception();
+    // سطر بضاعة بسعر 5,100 (خام غير مضاعفٍ لـ250، تقريبه 5,000 = العربون بالضبط).
+    const p = await promoteDraft({
+      branchId: 1,
+      header: { customerId: 1 },
+      lines: [{ lineKind: "GOODS" as const, variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "5100.00", title: "دفتر (قطعة)" }],
+    }, CASHIER);
+    await collectDeposit(
+      { draftId: p.draftId, amount: "5000.00", method: "CASH", clientRequestId: uuid("r4c00001") },
+      CASHIER,
+    );
+    const r = await commitDraft({
+      draftId: p.draftId, version: 0, expectedTotal: "5100.00", shiftId: shift.shiftId,
+      collectNow: { amount: "100.00", method: "CASH" },
+      cashRoundIQD: true, // العميل القديم قد يرسله — الخادم يسقطه لحماية الفارغ من الوعاء
+    }, CASHIER);
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, r.regularSale!.invoiceId)))[0];
+    expect(inv.total).toBe("5100.00");
+    expect(inv.paidAmount).toBe("5100.00");
+    expect(inv.cashRoundingAdjustment).toBe("0.00");
+    const closed = await closeShift({ shiftId: shift.shiftId, countedCash: "5100.00" }, CASHIER);
+    expect(closed.variance).toBe("0.00");
+  });
+});
+
+describe("R5 — مراجعة: الردّ النقديّ بتعدّد الدرج يتطلّب refundShiftId ويُنسَب للدرج المحدَّد", () => {
+  it("ورديتان مفتوحتان ⇒ بلا تحديدٍ يُرفض؛ وبالتحديد يخرج من الدرج المختار", async () => {
+    const rec = await openReception(2);
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RETAIL" }, { userId: 5, branchId: 1 });
+    const p = await promoteMixed(1);
+    const dep = await collectDeposit(
+      { draftId: p.draftId, amount: "6000.00", method: "CASH", clientRequestId: uuid("r5c00001") },
+      CASHIER,
+    );
+    await expect(refundDeposit(
+      { paymentId: dep.paymentId, amount: "6000.00", reason: "الزبون عدل عن الطلب", clientRequestId: uuid("r5r00001") },
+      CASHIER,
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const done = await refundDeposit(
+      { paymentId: dep.paymentId, amount: "6000.00", reason: "الزبون عدل عن الطلب", clientRequestId: uuid("r5r00002") },
+      CASHIER,
+      { refundShiftId: rec.shiftId },
+    );
+    expect(done.idempotentReplay).toBe(false);
+    const out = (await db().select().from(s.receipts).where(eq(s.receipts.id, done.refundReceiptId!)))[0];
+    expect(Number(out.shiftId)).toBe(rec.shiftId);
+  });
+});
+
+describe("R6 — مراجعة: عزل الفرع في سجلّ العرابين (IDOR)", () => {
+  it("كاشير فرعٍ آخر يُرفض FORBIDDEN والمدير يمرّ", async () => {
+    await db().insert(s.branches).values([{ id: 2, name: "المبيعات", code: "SALES", type: "SALES" }]);
+    await openReception();
+    const p = await promoteMixed(1);
+    await collectDeposit(
+      { draftId: p.draftId, amount: "3000.00", method: "CASH", clientRequestId: uuid("r6c00001") },
+      CASHIER,
+    );
+    await expect(
+      listDraftPayments(p.draftId, { userId: 9, branchId: 2, role: "cashier" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const ok = await listDraftPayments(p.draftId, { userId: 1, branchId: 1, role: "manager" });
+    expect(ok.heldNet).toBe("3000.00");
+  });
+});
+
+describe("R7 — مراجعة: كاشف D8 يمسك «اقبض ثم رُدّ» والمسوّدة باقية OPEN", () => {
+  it("قبضان مردودان كاملاً على مسوّدتين OPEN لنفس الفاعل ⇒ العلم مرفوع", async () => {
+    await openReception();
+    for (const tag of ["r7a00001", "r7b00001"] as const) {
+      const p = await promoteMixed(1);
+      const dep = await collectDeposit(
+        { draftId: p.draftId, amount: "4000.00", method: "CASH", clientRequestId: uuid(tag) },
+        CASHIER,
+      );
+      await refundDeposit(
+        { paymentId: dep.paymentId, amount: "4000.00", reason: "الزبون عدل عن الطلب", clientRequestId: uuid(tag.replace("c", "r") + "x") },
+        CASHIER,
+      );
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const aw = await getAnomalyWatch({ from: today, to: today, branchId: 1 });
+    const row = aw.cancelledFundedDrafts.rows.find((x) => x.userId === 2);
+    expect(row).toBeTruthy();
+    expect(row!.draftCount).toBe(2);
+    expect(row!.flagged).toBe(true);
   });
 });
 

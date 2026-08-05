@@ -441,13 +441,17 @@ export default function Reception() {
   // سيُرحَّل (فرقٌ في الدرج يمنع الإغلاق). roundCashIQD نفس دالة الخادم ⇒ اتفاقٌ حتميّ على الفرق
   // الذي يقيّده الخادم قيدَ ADJUST.
   const hasPrintInCart = cart.some((c) => !isCustomKind(c) && c.row.isPrintService);
-  const cashRoundActive = method === "CASH" && cart.length > 0 && !cart.some(isCustomKind) && !hasPrintInCart && !offline;
+  // مراجعة ش٤: مرآة شرط الخادم — لو أنزل التقريبُ الإجماليَّ إلى/تحت العربون المقبوض سلفاً
+  // لَسُدَّ الطريق النقديّ (المتوقّع 0 والخادم يطالب بالفارق الخام) ⇒ يسقط التقريب حينها.
+  const draftHeldEarlyD = D(draftHeld || 0);
+  const roundedWouldTrapHeld = draftHeldEarlyD.gt(0) && roundCashIQD(grandTotalD.toFixed(2)).lte(draftHeldEarlyD);
+  const cashRoundActive = method === "CASH" && cart.length > 0 && !cart.some(isCustomKind) && !hasPrintInCart && !offline && !roundedWouldTrapHeld;
   const effectiveGrandD = cashRoundActive ? roundCashIQD(grandTotalD.toFixed(2)) : grandTotalD;
   const cashRoundingDelta = cashRoundActive ? round2(effectiveGrandD.minus(grandTotalD)).toNumber() : 0;
 
   // ش٤: العربون المقبوض سلفاً على الطلب المحفوظ يقلّص «المتوقّع الآن» — الزبون دفعه فعلاً
   // وإيصاله قائم؛ collectNow عند التثبيت هو الجزء الجديد وحده (I5).
-  const heldD = D(draftHeld || 0);
+  const heldD = draftHeldEarlyD;
   // الدفع موحّد على كامل السلة. البيع المباشر هو الحد الأدنى؛ وما زاد يصبح عربوناً لأوامر الطباعة.
   const dueNowRawD = effectiveGrandD.minus(heldD);
   const expectedNowD = dueNowRawD.lt(0) ? D(0) : dueNowRawD;
@@ -718,6 +722,19 @@ export default function Reception() {
       if (!activeDraft) {
         const p = await promoteM.mutateAsync({ branchId, shiftId: shift?.id ?? null, ...buildDraftPayload() });
         setDraftInfo({ draftNumber: p.draftNumber });
+      } else {
+        // مراجعة ش٤: تفريغ المزامنة المؤجَّلة قبل فتح الحوار (نمط مسار التثبيت) — سقف الحوار
+        // من السلة الحيّة بينما الخادم يحسب على أسطره؛ بلا التفريغ يُرفض عربونٌ مشروع بعد
+        // إضافة صنفٍ للتوّ، والتقادم يدوم بعد عطل نقلٍ عابر (لا نبضة إلا بتغيير السلة).
+        if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+        const live = activeDraftRef.current ?? activeDraft;
+        try {
+          await syncM.mutateAsync({ draftId: live.id, version: live.version, ...buildDraftPayload() });
+        } catch {
+          // syncM.onError عالج (CONFLICT ⇒ إعادة ربط، انغلاق ⇒ فكّ) — لا نفتح على أسطرٍ متقادمة.
+          notify.warn("تعذّرت مزامنة الطلب قبل القبض", "تحقّق من الاتصال ثم أعد المحاولة");
+          return;
+        }
       }
       setDepositOpen(true);
     } catch {
@@ -966,7 +983,9 @@ export default function Reception() {
   /** استئناف مسوّدة (من هذا الجهاز أو جهاز زميل): صفوفٌ حيّة عبر catalog.byUnitIds + مواصفة CUSTOM من printSpec. */
   async function resumeDraft(draftId: number) {
     try {
-      const d = await utils.reception.draftGet.fetch({ draftId });
+      // staleTime:0 إلزاميّ (مراجعة ش٤): الافتراض العام ٦٠ث كان يعيد نسخة الكاش بعد CONFLICT/
+      // حارس I3 — heldTotal وversion وبنوداً متقادمة دقيقةً كاملة ⇒ حلقة CONFLICT وتحصيلٌ زائد.
+      const d = await utils.reception.draftGet.fetch({ draftId }, { staleTime: 0 });
       const unitIds = Array.from(new Set(d.lines.map((l) => Number(l.productUnitId)).filter((n) => n > 0)));
       const live = unitIds.length
         ? await utils.catalog.byUnitIds.fetch({ branchId, tier: (d.priceTier as Tier) ?? "RETAIL", productUnitIds: unitIds })
@@ -1026,7 +1045,7 @@ export default function Reception() {
 
   async function printDraftTicketById(draftId: number) {
     try {
-      const d = await utils.reception.draftGet.fetch({ draftId });
+      const d = await utils.reception.draftGet.fetch({ draftId }, { staleTime: 0 });
       await printDraftTicket({
         draftNumber: d.draftNumber,
         date: fmtDate(new Date(d.createdAt as unknown as string)),
@@ -2348,6 +2367,7 @@ export default function Reception() {
         <DraftPaymentsDialog
           draftId={activeDraft.id}
           draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`}
+          branchId={branchId}
           onClose={() => setPaymentsOpen(false)}
           onChanged={(heldNet) => {
             setDraftHeld(heldNet);
