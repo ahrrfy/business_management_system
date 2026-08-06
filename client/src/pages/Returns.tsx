@@ -55,6 +55,9 @@ export default function Returns() {
   const [refundAmount, setRefundAmount] = useState("");
   // ش٥: TELECOM خارج طرق الاسترداد (رصيد زين لا «يُعاد شحنه» للزبون) — النوع مضيَّق على عقد الخادم.
   const [refundMethod, setRefundMethod] = useState<Exclude<PaymentMethod, "TELECOM">>("CASH");
+  // تبسيط ٦/٨ (طلب مالك): المسار الاعتيادي صفريّ الإدخال — المبلغ والطريقة يُحسبان تلقائياً
+  // من الكميات وممّا دُفع فعلاً؛ التحرير اليدويّ حالةٌ خاصة خلف مفتاح صريح.
+  const [manualRefund, setManualRefund] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [q, setQ] = useState("");
@@ -133,20 +136,35 @@ export default function Returns() {
     return (total.lte(paid) ? total : paid).toFixed(2);
   }, [detail.data, qty]);
 
-  useEffect(() => {
-    setRefundAmount(suggestedRefund === "0.00" ? "" : suggestedRefund);
-    const originalMethod = detail.data?.paymentMethod;
-    // ش٥: فاتورة دُفعت برصيد زين تُستردّ بطريقةٍ أخرى (الرصيد لا «يُعاد شحنه») ⇒ تبقى CASH.
-    if (originalMethod && originalMethod !== "TELECOM" && POS_METHODS.some((m) => m.v === originalMethod)) {
-      setRefundMethod(originalMethod as Exclude<PaymentMethod, "TELECOM">);
+  // «بمَ دُفعت فعلاً؟» — سقوف الطرق من الخادم، ورصيد زين يُطوى في سقف النقد (يُستردّ نقداً).
+  const methodCaps = useMemo(() => {
+    const caps = new Map<Exclude<PaymentMethod, "TELECOM">, ReturnType<typeof D>>();
+    for (const p of detail.data?.paidByMethod ?? []) {
+      const m = (p.method === "TELECOM" ? "CASH" : p.method) as Exclude<PaymentMethod, "TELECOM">;
+      if (!POS_METHODS.some((x) => x.v === m)) continue;
+      caps.set(m, (caps.get(m) ?? D(0)).plus(D(p.amount)));
     }
-  }, [suggestedRefund, detail.data?.paymentMethod]);
+    return caps;
+  }, [detail.data?.paidByMethod]);
+
+  useEffect(() => {
+    if (manualRefund) return; // التحرير اليدويّ يملك الحقلين — لا مزاحمة.
+    setRefundAmount(suggestedRefund === "0.00" ? "" : suggestedRefund);
+    // الطريقة الافتراضية = أكبر سقفٍ مدفوعٍ فعلاً (زينٌ مطويٌّ نقداً) — لا تخمين للموظف.
+    let best: Exclude<PaymentMethod, "TELECOM"> = "CASH";
+    let bestV = D(-1);
+    methodCaps.forEach((v, m) => {
+      if (v.gt(bestV)) { best = m; bestV = v; }
+    });
+    setRefundMethod(best);
+  }, [suggestedRefund, methodCaps, manualRefund]);
 
   function pick(id: number) {
     setSelectedId(id);
     setQty({});
     setRefundAmount("");
     setRefundMethod("CASH");
+    setManualRefund(false);
     setRestock(true);
     setRefundShiftId(null);
     setError("");
@@ -159,8 +177,38 @@ export default function Returns() {
     setQty({});
     setRefundAmount("");
     setRefundMethod("CASH");
+    setManualRefund(false);
     setRestock(true);
     setRefundShiftId(null);
+  }
+
+  // الكمية بأزرارٍ مضبوطة لا نصٍّ حرّ: القيمة تُقصّ بنيوياً على [0..المتبقّي] والخطوة =
+  // وحدة البيع (درزن ⇒ ±12 قطعة) — الموظف لا يحسب الوحدة الأساس ذهنياً ولا يمكنه تجاوز المتبقّي.
+  function qtyOf(itemId: number): number {
+    const raw = (qty[itemId] ?? "").trim();
+    return /^\d+$/.test(raw) ? parseInt(raw, 10) : 0;
+  }
+  function setQtyClamped(itemId: number, next: number, remaining: number) {
+    const v = Math.max(0, Math.min(remaining, Math.trunc(next)));
+    setQty((prev) => ({ ...prev, [itemId]: v > 0 ? String(v) : "" }));
+    setError("");
+    setDone("");
+  }
+  function fillAll() {
+    const inv = detail.data;
+    if (!inv) return;
+    const next: Record<number, string> = {};
+    for (const it of inv.items) if (it.remaining > 0) next[it.invoiceItemId] = String(it.remaining);
+    setQty(next);
+    setError("");
+    setDone("");
+  }
+  /** «٢ درزن (٢٤ قطعة)» — وللوحدة الأساس أو الكسور: «٢٤ قطعة». */
+  function unitsLabel(base: number, factor: number, unitName: string): string {
+    if (base <= 0) return "0";
+    if (factor <= 1) return `${base} ${unitName || "قطعة"}`;
+    if (base % factor !== 0) return `${base} قطعة`;
+    return `${base / factor} ${unitName} (${base} قطعة)`;
   }
 
   const create = trpc.returns.create.useMutation({
@@ -235,12 +283,18 @@ export default function Returns() {
       }
     }
 
+    // تأكيدٌ بالكلمات البسيطة (طلب مالك ٦/٨): ماذا يرجع، كم يستلم الزبون وكيف، وأين تذهب البضاعة.
+    const totalPieces = lines.reduce((s, l) => s + l.baseQuantity, 0);
+    const refundSentence = refund
+      ? `يستلم الزبون ${fmt(refund.amount)} د.ع ${POS_METHODS.find((m) => m.v === refund!.method)?.label ?? refund.method}${refund.method === "CASH" ? " من الدرج" : ""}`
+      : "بلا إرجاع نقود (تُخصَم من ذمّة العميل فقط)";
+    const stockSentence = restock ? "والبضاعة تعود للرفّ" : "والبضاعة تالفة لا تعود للمخزون";
     if (
       !(await confirm({
         variant: "danger",
-        title: "تأكيد مرتجع البيع",
-        description: `تسجيل مرتجع البيع للفاتورة «${data.invoiceNumber}» سينقل المخزون والذمم. متابعة؟`,
-        confirmText: "تسجيل",
+        title: `مرتجع الفاتورة ${data.invoiceNumber}`,
+        description: `ترجع ${lines.length === 1 ? "صنفٌ واحد" : `${lines.length} أصناف`} (${totalPieces} قطعة) — ${refundSentence}، ${stockSentence}. متابعة؟`,
+        confirmText: "تسجيل المرتجع",
       }))
     )
       return;
@@ -252,7 +306,7 @@ export default function Returns() {
     <div className="space-y-4">
       <PageHeader
         title="مرتجعات البيع"
-        description="اختر فاتورة، حدّد كميات الإرجاع (بالوحدة الأساس)، ثم أكّد. يُعاد للمخزون اختيارياً ويُسجَّل الاسترداد."
+        description="ثلاث خطوات: اختر الفاتورة، حدّد ما يرجع بأزرار + و−، ثم أكّد — المبلغ والطريقة يُحسبان تلقائياً ممّا دُفع فعلاً."
         actions={<Link href="/invoices" className="text-sm text-muted-foreground">← رجوع للمبيعات</Link>}
       />
 
@@ -395,42 +449,92 @@ export default function Returns() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle className="text-base">البنود</CardTitle></CardHeader>
+            <CardHeader className="flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-base">ماذا يرجع؟</CardTitle>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={fillAll}
+                disabled={detail.data.items.every((it) => it.remaining <= 0)}
+              >
+                إرجاع كامل الفاتورة
+              </Button>
+            </CardHeader>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
                     <th className="p-2 text-start">المنتج</th>
-                    <th className="p-2 text-start">الوحدة</th>
-                    <th className="p-2 text-center">المُباع (أساس)</th>
-                    <th className="p-2 text-center">المُرتجع</th>
-                    <th className="p-2 text-center">المتبقّي</th>
+                    <th className="p-2 text-center">المُباع</th>
+                    <th className="p-2 text-center">أُرجع سابقاً</th>
                     <th className="p-2 text-right">السعر</th>
-                    <th className="p-2 w-32 text-start">إرجاع الآن (أساس)</th>
+                    <th className="p-2 w-56 text-center">يرجع الآن</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {detail.data.items.map((it) => (
-                    <tr key={it.invoiceItemId} className="border-t">
-                      <td className="p-2">{it.productName}{it.variantLabel ? ` — ${it.variantLabel}` : ""}</td>
-                      <td className="p-2 text-muted-foreground">{it.unitName}</td>
-                      <td className="p-2 text-center">{it.baseQuantity}</td>
-                      <td className="p-2 text-center">{it.returnedBaseQuantity}</td>
-                      <td className="p-2 text-center">{it.remaining}</td>
-                      <td className="p-2 text-right" dir="ltr">{fmt(it.unitPrice)}</td>
-                      <td className="p-2">
-                        <Input
-                          dir="ltr"
-                          className="h-8 text-center"
-                          value={qty[it.invoiceItemId] ?? ""}
-                          placeholder="0"
-                          disabled={it.remaining <= 0}
-                          onChange={(e) => setQty((prev) => ({ ...prev, [it.invoiceItemId]: e.target.value }))}
-                        />
-                      </td>
-                    </tr>
-                  ))}
+                  {detail.data.items.map((it) => {
+                    const v = qtyOf(it.invoiceItemId);
+                    const step = it.conversionFactor > 1 ? it.conversionFactor : 1;
+                    return (
+                      <tr key={it.invoiceItemId} className={`border-t ${v > 0 ? "bg-[var(--sem-info-bg)]/40" : ""}`}>
+                        <td className="p-2">
+                          {it.productName}{it.variantLabel ? ` — ${it.variantLabel}` : ""}
+                          {it.conversionFactor > 1 && (
+                            <div className="text-[11px] text-muted-foreground">
+                              ١ {it.unitName} = {it.conversionFactor} قطعة
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-2 text-center">{unitsLabel(it.baseQuantity, it.conversionFactor, it.unitName)}</td>
+                        <td className="p-2 text-center">{it.returnedBaseQuantity > 0 ? unitsLabel(it.returnedBaseQuantity, it.conversionFactor, it.unitName) : "—"}</td>
+                        <td className="p-2 text-right" dir="ltr">{fmt(it.unitPrice)}</td>
+                        <td className="p-2">
+                          {it.remaining <= 0 ? (
+                            <div className="text-center text-xs text-muted-foreground">أُرجع بالكامل</div>
+                          ) : (
+                            <div className="flex items-center justify-center gap-1" dir="ltr">
+                              <Button
+                                size="sm" variant="outline" className="h-8 w-8 p-0 font-black"
+                                aria-label="أنقص كمية الإرجاع"
+                                disabled={v <= 0}
+                                onClick={() => setQtyClamped(it.invoiceItemId, v - step, it.remaining)}
+                              >
+                                −
+                              </Button>
+                              <Input
+                                dir="ltr"
+                                inputMode="numeric"
+                                className="h-8 w-16 text-center font-bold tabular-nums"
+                                value={qty[it.invoiceItemId] ?? ""}
+                                placeholder="0"
+                                aria-label={`كمية إرجاع ${it.productName} بالقطعة`}
+                                onChange={(e) => {
+                                  const raw = e.target.value.replace(/[^\d]/g, "");
+                                  setQtyClamped(it.invoiceItemId, raw ? parseInt(raw, 10) : 0, it.remaining);
+                                }}
+                              />
+                              <Button
+                                size="sm" variant="outline" className="h-8 w-8 p-0 font-black"
+                                aria-label="زد كمية الإرجاع"
+                                disabled={v >= it.remaining}
+                                onClick={() => setQtyClamped(it.invoiceItemId, v + step, it.remaining)}
+                              >
+                                +
+                              </Button>
+                              <Button
+                                size="sm" variant="ghost" className="h-8 px-2 text-[11px] font-bold"
+                                disabled={v >= it.remaining}
+                                onClick={() => setQtyClamped(it.invoiceItemId, it.remaining, it.remaining)}
+                              >
+                                الكل
+                              </Button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               </div>
@@ -438,33 +542,89 @@ export default function Returns() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle className="text-base">خيارات المرتجع</CardTitle></CardHeader>
-            <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-              <div className="space-y-1">
-                <Label>إعادة للمخزون</Label>
-                <label className="flex items-center gap-2 h-9 text-sm">
-                  <input
-                    type="checkbox"
-                    className="size-4"
-                    checked={restock}
-                    onChange={(e) => setRestock(e.target.checked)}
-                  />
-                  <span className="text-muted-foreground">{restock ? "نعم، تُضاف للمخزون" : "لا تُضاف"}</span>
-                </label>
-              </div>
-              <div className="space-y-1">
-                <Label>مبلغ الاسترداد (اختياري)</Label>
-                <MoneyInput value={refundAmount} onChange={setRefundAmount} ariaLabel="مبلغ الاسترداد" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="ret-refund-method">طريقة الاسترداد</Label>
-                <AppSelect
-                  id="ret-refund-method"
-                  value={refundMethod}
-                  onValueChange={(v) => setRefundMethod(v as Exclude<PaymentMethod, "TELECOM">)}
+            <CardHeader><CardTitle className="text-base">حالة البضاعة العائدة</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              {/* سليم/تالف ببطاقتين واضحتين لا checkbox صغيراً — التالف قرارٌ يجب أن يُرى. */}
+              <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="حالة البضاعة العائدة">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={restock}
+                  onClick={() => setRestock(true)}
+                  className={`rounded-lg border-2 p-3 text-start text-sm font-bold ${restock ? "border-primary bg-primary/5" : "bg-card hover:bg-muted"}`}
                 >
-                  {POS_METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
-                </AppSelect>
+                  سليمة — تعود للرفّ
+                  <div className="mt-0.5 text-[11px] font-normal text-muted-foreground">تُضاف الكمية للمخزون وتُباع مجدداً</div>
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!restock}
+                  onClick={() => setRestock(false)}
+                  className={`rounded-lg border-2 p-3 text-start text-sm font-bold ${!restock ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)]" : "bg-card hover:bg-muted"}`}
+                >
+                  تالفة — لا تعود للمخزون
+                  <div className="mt-0.5 text-[11px] font-normal text-muted-foreground">خسارةٌ على المكتبة، لا تُضاف للرفّ</div>
+                </button>
+              </div>
+
+              {/* «بمَ دُفعت؟» — يمنع اختيار طريقةٍ سيُرفض بها الاسترداد بعد ملء كل شيء. */}
+              {(detail.data.paidByMethod?.length ?? 0) > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="font-bold text-muted-foreground">دُفعت الفاتورة:</span>
+                  {detail.data.paidByMethod.map((p) => (
+                    <span key={p.method} className="rounded-md border bg-muted/40 px-2 py-0.5 font-bold tabular-nums">
+                      {p.method === "TELECOM" ? "رصيد زين (يُستردّ نقداً)" : POS_METHODS.find((m) => m.v === p.method)?.label ?? p.method}
+                      {" "}{fmt(p.amount)}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* الاسترداد التلقائيّ: قيمة المرتجع بطريقة الدفع الأصلية — التحرير حالةٌ خاصة. */}
+              <div className="rounded-lg border bg-muted/30 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm">
+                    <span className="font-bold">يُعاد للزبون: </span>
+                    <span className="text-lg font-black tabular-nums" dir="ltr">{fmt(refundAmount.trim() || "0")}</span>
+                    <span className="ms-1 text-sm font-bold">د.ع {POS_METHODS.find((m) => m.v === refundMethod)?.label ? `(${POS_METHODS.find((m) => m.v === refundMethod)!.label})` : ""}</span>
+                  </div>
+                  <label className="flex items-center gap-1.5 text-[11px] font-bold text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      className="size-3.5"
+                      checked={manualRefund}
+                      onChange={(e) => setManualRefund(e.target.checked)}
+                    />
+                    تعديل يدويّ (حالة خاصة)
+                  </label>
+                </div>
+                {manualRefund && (
+                  <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label>مبلغ الاسترداد</Label>
+                      <MoneyInput value={refundAmount} onChange={setRefundAmount} ariaLabel="مبلغ الاسترداد" />
+                      <p className="text-[11px] text-muted-foreground">اتركه فارغاً إن كان المرتجع بلا إرجاع نقود (خصم ذمّة فقط).</p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="ret-refund-method">طريقة الاسترداد</Label>
+                      <AppSelect
+                        id="ret-refund-method"
+                        value={refundMethod}
+                        onValueChange={(v) => setRefundMethod(v as Exclude<PaymentMethod, "TELECOM">)}
+                      >
+                        {POS_METHODS.map((m) => {
+                          const cap = methodCaps.get(m.v as Exclude<PaymentMethod, "TELECOM">) ?? D(0);
+                          return (
+                            <option key={m.v} value={m.v}>
+                              {m.label}{cap.gt(0) ? ` — المدفوع بها ${fmt(cap.toFixed(2))}` : " — لم يُدفع بها شيء"}
+                            </option>
+                          );
+                        })}
+                      </AppSelect>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* مصدر النقد المسترَد — الدرج مورد فرعٍ لا مستخدم؛ راجع resolveBranchCashShiftTx (الخادم). */}
