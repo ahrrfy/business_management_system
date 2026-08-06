@@ -97,6 +97,15 @@ const receptionCheckoutSchema = z.object({
   cashRoundingOverride: z.enum(["SALE", "PRINT"]).nullish(),
   // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن أمانةً للمندوب — نقداً في الدرج حتماً.
   deliveryFeeHeld: positiveMoneyString.nullish(),
+  // ش٧: إسناد الطلب لمندوبٍ داخل نفس المعاملة — المتبقّي عهدةٌ عليه لا نقدٌ في الدرج.
+  delivery: z.object({
+    partyId: z.number().int().positive(),
+    fee: nonNegMoneyString.nullish(),
+    feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
+    recipientName: z.string().trim().max(255).nullish(),
+    recipientPhone: z.string().trim().max(32).nullish(),
+    address: z.string().trim().max(500).nullish(),
+  }).nullish(),
   // ش١ (م٦): اعتماد مديرٍ للخصم اليدويّ >١٠٪ (بريد+كلمة مرور، verifyManagerApproval نفسها) —
   // يمنح priceOverrideApproved للكاشير كما يمنحه sales.create تماماً.
   managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),

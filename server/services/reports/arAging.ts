@@ -156,7 +156,15 @@ export interface CustomerStatementResult {
  *  فيظهر الرصيد الجاري «منحرفاً» بلا تفسير في الحركة المعروضة. */
 function customerPaymentLink(customerId: number) {
   return or(
-    eq(invoices.customerId, customerId),
+    and(
+      eq(invoices.customerId, customerId),
+      // تدقيق ٦/٨ (ث٢/ث٦/ث١٤): إيصالُ أمانة أجرة التوصيل مختومٌ بالفاتورة لأسبابٍ تشغيلية
+      // (ربطُ الأمانة بمستندها) لا لأنّه دفعةٌ من العميل — مالُ طرفٍ ثالث لم يمسّ paidAmount
+      // ولا currentBalance. عرضُه دفعةً كان يُظهر العميل دائناً بقيمة الأجرة ويُنقص رصيده
+      // المُرحَّل بلا سند. البصمة البنيوية: إيصالات التمرير وحدها تحمل partyType='OTHER'،
+      // ودفعاتُ العميل الحقيقية تتركه NULL أو 'CUSTOMER'.
+      sql`(${receipts.partyType} IS NULL OR ${receipts.partyType} <> 'OTHER')`,
+    ),
     and(
       isNull(receipts.invoiceId),
       eq(receipts.partyType, "CUSTOMER"),

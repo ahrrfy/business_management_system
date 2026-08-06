@@ -325,6 +325,15 @@ export const receptionRouter = router({
       cashRoundIQD: z.boolean().optional(),
       // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن أمانةً للمندوب — نقداً في الدرج حتماً.
       deliveryFeeHeld: positiveMoneyString.nullish(),
+      // ش٧: إسناد الطلب لمندوبٍ داخل معاملة التثبيت — المتبقّي عهدةٌ عليه لا نقدٌ في الدرج.
+      delivery: z.object({
+        partyId: z.number().int().positive(),
+        fee: nonNegMoneyString.nullish(),
+        feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
+        recipientName: z.string().trim().max(255).nullish(),
+        recipientPhone: z.string().trim().max(32).nullish(),
+        address: z.string().trim().max(500).nullish(),
+      }).nullish(),
       // ملاحظة ١.٨: الكوبون **مرفوض** على مسار التثبيت في v1 — يُطبَّق داخل createSaleInTx
       // فينسف expectedTotal وأرضية moneyLocked. الحقل موجود ليُرفض برسالةٍ صريحة لا صمتاً.
       couponCode: z.string().nullish(),
@@ -369,6 +378,7 @@ export const receptionRouter = router({
           collectNow: input.collectNow ?? null,
           cashRoundIQD: input.cashRoundIQD,
           deliveryFeeHeld: input.deliveryFeeHeld ?? null,
+          delivery: input.delivery ?? null,
           priceOverrideApproved: elevated || approvedBy != null,
           // ش٦ (§٩.٣): هويّة المُقِرّ — المدير المصادِق، أو الفاعل المرتفع نفسه (سلطة ذاتية).
           priceApprovedBy: approvedBy ?? (elevated ? ctx.user.id : null),

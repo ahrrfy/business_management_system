@@ -524,7 +524,10 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
     const paidNow = totalTenderedD.gt(effectiveTotalD) ? effectiveTotalD : totalTenderedD;
     const newMoneyD = round2(paidNow.minus(preCollectedD));
     const unpaid = effectiveTotalD.minus(paidNow);
-    if (unpaid.gt(0) && !input.customerId) {
+    // ش٧ (قرار المالك ٦/٨): متبقّي فاتورة التوصيل COD ليس بيعاً آجلاً على زبونٍ عابر — إنّه
+    // **عهدةٌ على المندوب** تُرفع في نفس المعاملة (dispatchInvoiceInTx). الاستثناء محصورٌ
+    // بالعلم الداخليّ الذي ترفعه الخدمةُ المُسنِدة وحدها؛ حدّ ائتمان العميل المسجَّل يبقى نافذاً.
+    if (unpaid.gt(0) && !input.customerId && !input.codDispatchPending) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
     }
     // 7.b فحص حدّ الائتمان (H4): null=بلا حدّ، 0=حظر آجل، >0=فحص الإسقاط.

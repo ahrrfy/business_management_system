@@ -568,8 +568,10 @@ export async function getAnomalyWatch(opts: {
         CAST(x.heldNet AS CHAR) AS heldNet, x.ageHours
       FROM (
         SELECT d.id AS draftId, d.draftNumber AS draftNumber, d.createdBy AS userId,
+          -- تدقيق ٦/٨ (ث١٣، مرآة إقفال اليوم): البسط يشمل REFUNDED وإلّا طُرح ردٌّ لم يُجمع أصلُه.
           (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op
-            WHERE op.draftId = d.id AND op.orderPayKind = 'COLLECTION' AND op.orderPayStatus = 'HELD')
+            WHERE op.draftId = d.id AND op.orderPayKind = 'COLLECTION'
+              AND op.orderPayStatus IN ('HELD','REFUNDED'))
           - (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op
             WHERE op.draftId = d.id AND op.orderPayKind = 'REFUND') AS heldNet,
           TIMESTAMPDIFF(HOUR, d.createdAt, NOW()) AS ageHours

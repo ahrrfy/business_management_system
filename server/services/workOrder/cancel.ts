@@ -1,6 +1,6 @@
 // إلغاء أمر شغل: يعيد المواد المُستهلَكة للمخزون ويسترد العربون المقبوض (إن وُجد).
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNull, notLike, or } from "drizzle-orm";
+import { and, eq, isNull, notLike, or, sql } from "drizzle-orm";
 import { receipts, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { applyMovement } from "../inventoryService";
@@ -121,6 +121,47 @@ export async function cancelWorkOrder(
         customerId: wo.customerId != null ? Number(wo.customerId) : null,
         actor,
         refundShiftId: opts.refundShiftId ?? null,
+      });
+    }
+
+    // تدقيق ٦/٨ (ث٢) — **ردّ أمانة أجرة التوصيل** المقبوضة في الاستقبال (DLV-FEE-WO-x): الطلب
+    // أُلغي فلم يقع توصيل ⇒ الأمانة مالُ الزبون. كانت تُستثنى من ردّ العربون (السطر أعلاه) ولا
+    // تُعالَج في أيّ موضع آخر ⇒ نقدٌ في الدرج بلا مالكٍ ولا قيد إبراء.
+    const feeHeldRow = (
+      await tx
+        .select({ v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)` })
+        .from(receipts)
+        .where(and(
+          eq(receipts.workOrderId, workOrderId),
+          eq(receipts.referenceNumber, `DLV-FEE-WO-${workOrderId}`),
+          eq(receipts.status, "COMPLETED"),
+        ))
+    )[0];
+    const feeHeldNet = round2(money(feeHeldRow?.v ?? "0"));
+    if (feeHeldNet.gt(0)) {
+      const resolved = await resolveBranchCashShiftTx(tx, Number(wo.branchId), opts.refundShiftId ?? null);
+      const drawerNow = await computeExpectedCash(tx, resolved.shiftId, resolved.openingBalance);
+      if (feeHeldNet.gt(drawerNow)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `ردّ أمانة أجرة التوصيل (${feeHeldNet.toFixed(2)}) يتجاوز النقد المتوفّر في هذا الدرج (${drawerNow.toFixed(2)}) — اختر درجاً آخر`,
+        });
+      }
+      const feeOut = await tx.insert(receipts).values({
+        branchId: Number(wo.branchId), shiftId: resolved.shiftId, workOrderId,
+        direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",
+        status: "COMPLETED", partyType: "OTHER",
+        referenceNumber: `DLV-FEE-WO-${workOrderId}`,
+        description: `ردّ أمانة أجرة توصيل — إلغاء طلب #${workOrderId}`,
+        createdBy: actor.userId,
+      });
+      await postEntry(tx, {
+        entryType: "DELIVERY_FEE_HELD",
+        dedupeKey: `DELIVERY_FEE_HELD_REFUND:WO:${workOrderId}`,
+        branchId: Number(wo.branchId),
+        receiptId: extractInsertId(feeOut),
+        amount: feeHeldNet.neg(),
+        notes: `ردّ أمانة أجرة توصيل — إلغاء طلب #${workOrderId}`,
       });
     }
 

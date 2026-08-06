@@ -108,9 +108,16 @@ describe("I13 — إيصال العربون بهويّته لا بالصدفة (
 
     await cancelWorkOrder(workOrderId, MANAGER);
 
+    // تدقيق ٦/٨ (ث٢): الإلغاء يردّ **الاثنين** — العربون بهويّته (٢٬٠٠٠) وأمانة الأجرة
+    // (٣٬٠٠٠) التي لم تُصرَف للمندوب. سابقاً كانت الأمانة تُستثنى فتبقى نقداً في الدرج بلا
+    // مالكٍ ولا قيد إبراء. المهمّ أنّ كلاً منهما بمبلغه لا أن يُخلط أحدهما بالآخر (علّة V3).
     const outs = (await receiptsOf(workOrderId)).filter((r) => r.direction === "OUT");
-    expect(outs.length).toBe(1);
-    expect(outs[0].amount).toBe("2000.00"); // العربون — لا ٣٠٠٠ الأجرة
+    expect(outs.length).toBe(2);
+    const amounts = outs.map((r) => String(r.amount)).sort();
+    expect(amounts).toEqual(["2000.00", "3000.00"]);
+    const feeRefund = outs.find((r) => String(r.referenceNumber ?? "").startsWith("DLV-FEE-WO-"));
+    expect(feeRefund).toBeTruthy();
+    expect(String(feeRefund!.amount)).toBe("3000.00"); // الأمانة تُردّ بمرجعها
   });
 
   it("مسار ما قبل 0151 (depositReceiptId فارغ): البديل الاحتياطي يستثني إيصال الأجرة فيردّ العربون", async () => {
@@ -121,9 +128,11 @@ describe("I13 — إيصال العربون بهويّته لا بالصدفة (
 
     await cancelWorkOrder(workOrderId, MANAGER);
 
+    // البديل الاحتياطي يلتقط العربون (٢٬٠٠٠) لا الأجرة، وأمانة الأجرة تُردّ بمسارها المستقلّ.
     const outs = (await receiptsOf(workOrderId)).filter((r) => r.direction === "OUT");
-    expect(outs.length).toBe(1);
-    expect(outs[0].amount).toBe("2000.00");
+    const depositRefund = outs.find((r) => !String(r.referenceNumber ?? "").startsWith("DLV-FEE-WO-"));
+    expect(depositRefund).toBeTruthy();
+    expect(String(depositRefund!.amount)).toBe("2000.00");
   });
 
   it("التسليم يربط إيصال العربون بالفاتورة ويُبقي إيصال الأجرة غير مربوط", async () => {

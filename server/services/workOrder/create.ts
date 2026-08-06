@@ -191,16 +191,11 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     // المندوب. بلا هذا الإيصال يكون النقد في الدرج بلا مصدرٍ مسجَّل ⇒ فائضٌ يمنع إغلاق الوردية.
     const heldFeeD = round2(money(input.deliveryCost ?? "0"));
     if (input.hasDelivery && (input.deliveryFeeCollection ?? "COURIER") === "COUNTER" && heldFeeD.gt(0)) {
-      const feeMethod = input.paymentMethod ?? "CASH";
-      // ش٥ (مراجعة عدائية ٦/٨): أجرة COUNTER أمانةٌ نقديّة تُبرَّأ من توريد المندوب نقداً —
-      // قبضُها «رصيد زين» بلا معنى تشغيليّ، وكان يفلت من ضوابط §٩.٤ كلّها (مرجعه الصناعيّ
-      // DLV-FEE-WO-x يمرّ زوراً من فحص شكل الكود، وخارج مبلغ حارس السلة أصلاً).
-      if (feeMethod === "TELECOM") {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "أجرة التوصيل المقبوضة في الاستقبال أمانةٌ نقديّة للمندوب — تُقبض نقداً أو بطاقةً، لا برصيد الاتصال",
-        });
-      }
+      // تدقيق ٦/٨ (ث٩): الأجرة أمانةٌ **نقديّة** تُصرَف للمندوب نقداً من الدرج — فاشتقاق
+      // طريقتها من طريقة دفع السلّة كان يقبضها بطاقةً/تحويلاً (خارج الدرج، cashBucket=NULL)
+      // ثم يصرفها نقداً ⇒ نقدٌ يخرج بلا نظيرٍ داخل. تُثبَّت نقداً حتماً، مرآةَ مسار الفاتورة
+      // (receptionCheckoutService) الذي يفعل ذلك أصلاً. وبهذا يسقط فحص TELECOM من جذره.
+      const feeMethod = "CASH" as const;
       // ش٠ (V4): نفس درج السلة المُتحقَّق منه — لا ينشطر نقد سلةٍ واحدة على درجين.
       const feeShiftId = basketShiftId ?? await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
       if (feeMethod === "CASH" && feeShiftId == null) {

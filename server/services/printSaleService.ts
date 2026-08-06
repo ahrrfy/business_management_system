@@ -81,6 +81,8 @@ export interface CreatePrintSaleInput {
   /** ش٦ — تقريب السلّة المختلطة (يضبطه checkoutReception حصراً): إجماليٌّ فعّالٌ صريح يحمل
    *  فرق تقريب السلّة كلّها على هذه الفاتورة حين لا بيعَ مباشرَ يحمله. نفس حرّاس sale/create. */
   cashRoundingOverride?: string | null;
+  /** ش٧ — متبقّي فاتورة التوصيل عهدةٌ على مندوبٍ تُرفع في نفس المعاملة (مرآة sale/create). */
+  codDispatchPending?: boolean;
   /** SALES-01/02 (قناة الطباعة): موافقة على بيع خدمة بأقل من تكلفة موادها (سعر/خصم تحت COGS).
    *  يضبطها الراوتر: مدير/أدمن ذاتياً، والكاشير بموافقة مدير مُتحقَّقة. */
   priceOverrideApproved?: boolean;
@@ -354,7 +356,8 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     const paidNow = totalTenderedD.gt(effectiveTotalD) ? effectiveTotalD : totalTenderedD;
     const newMoneyD = round2(paidNow.minus(preCollectedD));
     const unpaid = effectiveTotalD.minus(paidNow);
-    if (unpaid.gt(0) && !input.customerId) {
+    // ش٧: متبقّي فاتورة التوصيل عهدةُ مندوبٍ تُرفع في نفس المعاملة (مرآة sale/create حرفياً).
+    if (unpaid.gt(0) && !input.customerId && !input.codDispatchPending) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
     }
     // B5 (١٩/٦/٢٦): الموافقة لم تعد blanket — تحتاج (أ) creditApprovalId أو (ب) managerOverrideByUserId.

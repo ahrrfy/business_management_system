@@ -33,6 +33,9 @@ export interface CommitDraftInput {
   /** ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن أمانةً للمندوب (نقداً في الدرج) — تُكتب مع
    *  الفاتورة الحاملة إيصالاً وقيد DELIVERY_FEE_HELD، وبها يُسنَد الطلب COUNTER بعد التثبيت. */
   deliveryFeeHeld?: string | null;
+  /** ش٧ (قرار المالك ٦/٨): إسناد الطلب لمندوبٍ **داخل معاملة التثبيت** — المتبقّي عهدةٌ عليه
+   *  لا نقدٌ في الدرج ولا ذمّةٌ على زبونٍ عابر. */
+  delivery?: ReceptionCheckoutInput["delivery"];
 }
 
 export interface CommitDraftResult {
@@ -47,6 +50,8 @@ export interface CommitDraftResult {
   appliedPayments: Array<{ paymentId: number; appliedKind: "INVOICE" | "WORKORDER"; appliedId: number; amount: string }>;
   /** ش٤: صافي المحتجز الذي طُبِّق في هذا التثبيت. */
   heldApplied: string;
+  /** ش٧: الإرسالية المُنشأة في نفس المعاملة (إن أُسنِد الطلب لمندوب) — للطباعة والإشعار. */
+  dispatch?: { consignmentNumber: string; codAmount: string; deliveryFee: string } | null;
 }
 
 /** تجسيد أسطر المسوّدة إلى مدخل حدّ الالتزام القائم — كل الحرّاس القائمة تعمل كما هي. */
@@ -171,6 +176,7 @@ function materialize(
     cashRoundIQD: roundActive,
     cashRoundingOverride: mixedRoundTarget,
     deliveryFeeHeld: input.deliveryFeeHeld ?? null,
+    delivery: input.delivery ?? null,
     priceApprovedBy: input.priceApprovedBy ?? null,
     regularSale: goods.length ? { lines: goods.map(saleLine), amount: goodsAmount.toFixed(2) } : null,
     printSale: prints.length ? { lines: prints.map(saleLine), amount: printAmount.toFixed(2) } : null,
@@ -317,7 +323,9 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
     const directTotal = round2(
       lines.filter((l) => l.lineKind !== "CUSTOM").reduce((s, l) => s.plus(money(l.lineTotal)), money("0")),
     );
-    if (hasDirect && !input.collectNow && heldNet.lt(directTotal)) {
+    // ش٧ (قرار المالك ٦/٨): طلبٌ يُسنَد لمندوبٍ **مُستثنى** — الزبون يدفع عند الاستلام، فلا
+    // يُجبَر الكاشير على «قبض» مالٍ لم يستلمه (فائضُ درجٍ يُحاسَب عليه). المتبقّي عهدةُ مندوب.
+    if (!input.delivery && hasDirect && !input.collectNow && heldNet.lt(directTotal)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: heldNet.gt(0)
@@ -389,6 +397,13 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       workOrders: result.workOrders.map((w) => ({ workOrderId: w.workOrderId, orderNumber: w.orderNumber, deposit: w.deposit })),
       appliedPayments,
       heldApplied: toDbMoney(heldNet),
+      dispatch: result.dispatch
+        ? {
+            consignmentNumber: result.dispatch.consignmentNumber,
+            codAmount: result.dispatch.codAmount,
+            deliveryFee: result.dispatch.deliveryFee,
+          }
+        : null,
     } satisfies CommitDraftResult;
   });
 }

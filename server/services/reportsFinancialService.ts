@@ -528,6 +528,13 @@ export interface FinancialPosition {
   // exchange-house: صافي رصيدنا لدى الصرّافين (دينار + دولار×متوسط الكلفة) — موجب=أصل، سالب=خصم.
   exchangeDebit: string;
   exchangeCredit: string;
+  /**
+   * تدقيق ٦/٨ (ث٨) — **عهدة مناديب التوصيل**: مالُ فواتيرَ خرجت بضاعتُها واعتُرف بإيرادها
+   * لحظة الإرسال، والنقد بيد المندوب حتى يورّده. كان **غائباً عن الأصول كلّها**: لا نقد (لا
+   * إيصال بعد) ولا ذمّة عميل (فاتورة COD) ⇒ نقصٌ صامت في الأصول تبتلعه حقوق الملكية. أصلٌ
+   * صريح الآن (Σ أرصدة الجهات الموجبة) — لا دينار بلا تبويب.
+   */
+  deliveryFloat: string;
   totalAssets: string;
   totalLiabilities: string;
   equity: string;
@@ -553,7 +560,7 @@ export async function getFinancialPosition(
     cash: zero, card: zero, check: zero, transfer: zero, wallet: zero,
     arDebit: zero, arCredit: zero, inventory: zero, fixedAssets: zero,
     apCredit: zero, apDebit: zero, customerAdvances: zero,
-    exchangeDebit: zero, exchangeCredit: zero,
+    exchangeDebit: zero, exchangeCredit: zero, deliveryFloat: zero,
     totalAssets: zero, totalLiabilities: zero, equity: zero,
     branchScoped: !!opts.branchId,
     arReconciled: true, apReconciled: true, arDriftCount: 0, apDriftCount: 0,
@@ -718,10 +725,18 @@ export async function getFinancialPosition(
   const customerAdvances = money(wa.v ?? 0); // FIN-05: عرابين أوامر الشغل غير المُسلَّمة (التزام).
   const exchangeDebit = money(ex.d ?? 0); // أموالنا لدى الصرّافين (أصل).
   const exchangeCredit = money(ex.c ?? 0); // ما نَدين به للصرّافين (خصم).
+  // تدقيق ٦/٨ (ث٨): عهدة مناديب التوصيل — نقدٌ/تحصيلٌ بيد المندوب لم يُورَّد بعد (أصل).
+  const dfRow = rowsOf(await db.execute(sql`
+    SELECT CAST(COALESCE(SUM(CASE WHEN currentBalance > 0 THEN currentBalance ELSE 0 END), 0) AS CHAR) AS v
+    FROM deliveryParties
+    ${bId ? sql`WHERE branchId = ${bId} OR branchId IS NULL` : sql``}
+  `))[0] ?? { v: "0" };
+  const deliveryFloat = money(dfRow.v ?? 0);
 
-  // الأصول = نقد + مدينون + سُلف للموردين (ذمة لنا) + مخزون + أصول ثابتة + رصيدنا لدى الصرّافين.
+  // الأصول = نقد + مدينون + سُلف للموردين (ذمة لنا) + مخزون + أصول ثابتة + رصيدنا لدى الصرّافين
+  //          + عهدة مناديب التوصيل (مالُ فواتيرَ بالطريق).
   const totalAssets = cash.add(card).add(cheque).add(transfer).add(wallet)
-    .add(arDebit).add(apDebit).add(inventory).add(fixedAssets).add(exchangeDebit);
+    .add(arDebit).add(apDebit).add(inventory).add(fixedAssets).add(exchangeDebit).add(deliveryFloat);
   // الخصوم = دائنون + سُلف العملاء على الذمم + عرابين أوامر الشغل (FIN-05) + ما نَدين به للصرّافين.
   const totalLiabilities = apCredit.add(arCredit).add(customerAdvances).add(exchangeCredit);
   const equity = totalAssets.sub(totalLiabilities);
@@ -757,6 +772,7 @@ export async function getFinancialPosition(
     customerAdvances: toDbMoney(customerAdvances),
     exchangeDebit: toDbMoney(exchangeDebit),
     exchangeCredit: toDbMoney(exchangeCredit),
+    deliveryFloat: toDbMoney(deliveryFloat),
     totalAssets: toDbMoney(totalAssets),
     totalLiabilities: toDbMoney(totalLiabilities),
     equity: toDbMoney(equity),

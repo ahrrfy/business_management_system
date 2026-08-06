@@ -262,7 +262,10 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         invoiceId,
         deliveryPartyId: input.partyId,
         receiptId: feeReceiptId,
-        amount: fee,
+        // تدقيق ٦/٨ (ث٨): إشارةُ التبرئة **سالبة** — الوارد (workOrder/create) موجبٌ، فبقاؤها
+        // موجبةً هنا يجعل Σ(DELIVERY_FEE_HELD) لكل مستندٍ = ضعفَ الأجرة بدل صفر، فيستحيل
+        // على أيّ تقريرٍ أن يجيب «كم أمانةً قُبضت ولم تُبرَّأ؟». الثابت: Σ = 0 ⇔ مُبرَّأة.
+        amount: feeCollection === "COUNTER" ? fee.neg() : fee,
         // COUNTER تمرير: قبضناها ودفعناها ⇒ صفر أثرٍ على الأرباح. SHOP تحمُّلٌ فعليّ ⇒ مصروف.
         ...(feeCollection === "SHOP" ? { cost: fee, profit: fee.neg() } : {}),
         notes: `أجرة توصيل ${consignmentNumber}`,

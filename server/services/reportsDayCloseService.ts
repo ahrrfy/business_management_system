@@ -322,8 +322,12 @@ export async function getDayCloseReconciliation(opts: {
       SELECT COUNT(*) AS c, CAST(COALESCE(SUM(h.heldNet), 0) AS CHAR) AS t
       FROM (
         SELECT d.id,
+          -- تدقيق ٦/٨ (ث١٣): البسط كان يقتصر على HELD بينما المقام يطرح **كل** الردود —
+          -- فقبضٌ رُدَّ كاملاً (يصير REFUNDED) يُطرح بلا أن يُجمع أصلُه ⇒ الرقم يُبخَس أو
+          -- يصير سالباً فيسقط الطلب من التقرير كلّه. الحالتان معاً كتعريف heldNetOfDraft.
           (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op
-            WHERE op.draftId = d.id AND op.orderPayKind = 'COLLECTION' AND op.orderPayStatus = 'HELD')
+            WHERE op.draftId = d.id AND op.orderPayKind = 'COLLECTION'
+              AND op.orderPayStatus IN ('HELD','REFUNDED'))
           - (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op
             WHERE op.draftId = d.id AND op.orderPayKind = 'REFUND') AS heldNet
         FROM receptionDrafts d

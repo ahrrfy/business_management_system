@@ -10,6 +10,7 @@ import type { PrintSaleLineInput } from "./printSaleService";
 import { createPrintSaleInTx } from "./printSaleService";
 import type { CreateWorkOrderInput } from "./workOrder/types";
 import { createWorkOrderInTx } from "./workOrder/create";
+import { dispatchInvoiceInTx } from "./delivery/dispatchInvoice";
 import { withTx, type Actor } from "./tx";
 import { findIdempotentRefId } from "./idempotency";
 import { money, round2 } from "./money";
@@ -54,6 +55,22 @@ export interface ReceptionCheckoutInput {
   /** ش٦ (§٩.٣) — هويّة مُقِرّ تجاوز السعر/الخصم: حين priceOverrideApproved صادقة يُسجَّل سطرُ
    *  تدقيقٍ داخل المعاملة يسمّي المُقِرّ والأسعار النهائية (الراية وحدها كانت بلا هويّة). */
   priceApprovedBy?: number | null;
+  /**
+   * ش٧ (قرار المالك ٦/٨/٢٦) — **إسناد الطلب للتوصيل داخل نفس معاملة التثبيت**.
+   *
+   * «لا تُحتسَب الفاتورة التي فيها توصيل ولديها مندوب على الكاشير والدرج — الدرج فقط ما
+   * قُبض عربوناً نقدياً أو كاشاً من الفواتير.» ⇒ الفاتورة تُنشأ بالمقبوض نقداً فعلاً
+   * (`paidAmount`)، والمتبقّي يصير **عهدةً على المندوب** (قيد DELIVERY_DISPATCH) في نفس
+   * المعاملة — فلا لحظةَ تكون فيها الفاتورة بلا دافعٍ ولا حاملِ عهدة.
+   */
+  delivery?: {
+    partyId: number;
+    fee?: string | null;
+    feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+    recipientName?: string | null;
+    recipientPhone?: string | null;
+    address?: string | null;
+  } | null;
   /** أوفلاين (تعميم على كاشير الاستقبال — داخليّ، يضبطه `offline.replayReception` حصراً):
    *  وسم منشأ الفاتورتين (البيع المباشر وخدمات الطباعة) بالالتقاط دون اتصال. أوامر الشغل
    *  لا تُلتقَط أصلاً (ترقيم/إسناد/صور خادميّة) فلا معنى لوسمها. */
@@ -147,6 +164,9 @@ export async function checkoutReceptionInTx(
     // البيع المباشر (العادي ثم الطباعة) ⇒ أمر شغل ١ ⇒ ٢ … كلُّ هدفٍ يستهلك P المتبقّي قبل N.
     const preTotalD = round2(money(input.preCollected?.total ?? "0"));
     const preSplit: PreCollectedSplit = { sale: "0.00", print: "0.00", workOrders: [] };
+    // ش٧: المقبوض فعلاً المخصَّص لكل فاتورة (يساوي مبلغها الكامل بلا توصيل — والفرق مع COD).
+    let saleApplied = round2(money(input.regularSale?.amount ?? "0"));
+    let printApplied = round2(money(input.printSale?.amount ?? "0"));
     let normalizedWorkOrders = (input.workOrders ?? []).map((order) => ({
       ...order,
       depositPreCollected: "0.00",
@@ -161,7 +181,9 @@ export async function checkoutReceptionInTx(
       ));
       const grandTotal = round2(directTotal.plus(workTotal));
       const applied = round2(money(input.paidAmount ?? "0").plus(preTotalD));
-      if (applied.lt(directTotal)) {
+      // ش٧: طلبٌ يُسنَد للتوصيل في نفس المعاملة ⇒ **لا يُشترط تغطية البيع المباشر نقداً**
+      // (الزبون يدفع للمندوب). المتبقّي يصير عهدةً عليه أدناه، والدرج يبقى على المقبوض فعلاً.
+      if (!input.delivery && applied.lt(directTotal)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: `المبلغ المقبوض يجب أن يغطي البيع المباشر أولاً (${directTotal.toFixed(2)})`,
@@ -171,16 +193,54 @@ export async function checkoutReceptionInTx(
         throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المطبق يتجاوز إجمالي الطلب" });
       }
 
+      // ش٧: **الفاتورة الحاملة للـCOD واحدةٌ فقط** (البضاعة إن وُجدت، وإلا الطباعة) — لأنّ
+      // الإرسالية تُربط بفاتورةٍ واحدة. فلو بقيت فاتورةٌ ثانية غير مدفوعة لصار متبقّيها بلا
+      // حاملٍ ولا دافع = مالٌ بلا مسار. لذلك: الطباعة تُسدَّد أولاً كاملةً عند التوصيل، ثم
+      // تحمل البضاعةُ المتبقّي عهدةً على المندوب. وبلا توصيلٍ يبقى الترتيب الأصلي كما هو.
+      const codCarrier: "SALE" | "PRINT" | null = input.delivery
+        ? (input.regularSale ? "SALE" : input.printSale ? "PRINT" : null)
+        : null;
+      if (input.delivery && codCarrier === "SALE" && printAmount.gt(0) && applied.lt(printAmount)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `طلب التوصيل: تُسدَّد خدمات الطباعة (${printAmount.toFixed(2)}) أوّلاً — المتبقّي المُحصَّل عند الاستلام يكون على فاتورة البضاعة وحدها`,
+        });
+      }
+
       // حصص P: البيع العادي ثم الطباعة ثم أوامر الشغل — نفس ترتيب استهلاك N بالضبط.
+      // (عند التوصيل بحاملٍ SALE يُقلب الترتيب: الطباعة أولاً كي تبقى الحاملةُ وحدها ناقصة.)
       let preLeft = preTotalD;
-      const salePre = round2(preLeft.gte(regularAmount) ? regularAmount : preLeft);
-      preLeft = round2(preLeft.minus(salePre));
-      const printPre = round2(preLeft.gte(printAmount) ? printAmount : preLeft);
-      preLeft = round2(preLeft.minus(printPre));
+      let salePre: ReturnType<typeof money>;
+      let printPre: ReturnType<typeof money>;
+      if (codCarrier === "SALE") {
+        printPre = round2(preLeft.gte(printAmount) ? printAmount : preLeft);
+        preLeft = round2(preLeft.minus(printPre));
+        salePre = round2(preLeft.gte(regularAmount) ? regularAmount : preLeft);
+        preLeft = round2(preLeft.minus(salePre));
+      } else {
+        salePre = round2(preLeft.gte(regularAmount) ? regularAmount : preLeft);
+        preLeft = round2(preLeft.minus(salePre));
+        printPre = round2(preLeft.gte(printAmount) ? printAmount : preLeft);
+        preLeft = round2(preLeft.minus(printPre));
+      }
       preSplit.sale = salePre.toFixed(2);
       preSplit.print = printPre.toFixed(2);
 
-      let remainingForWork = applied.minus(directTotal);
+      // ش٧: توزيع **المقبوض فعلاً** (نقداً + سلفاً) على الفواتير بحدّ كلٍّ — كان يفترض أنّه
+      // يغطّي البيع المباشر دائماً (صحيحٌ بلا توصيل، خاطئٌ مع COD حيث الدرج لا يستلم شيئاً).
+      let leftApplied = applied;
+      if (codCarrier === "SALE") {
+        printApplied = round2(leftApplied.gte(printAmount) ? printAmount : leftApplied);
+        leftApplied = round2(leftApplied.minus(printApplied));
+        saleApplied = round2(leftApplied.gte(regularAmount) ? regularAmount : leftApplied);
+        leftApplied = round2(leftApplied.minus(saleApplied));
+      } else {
+        saleApplied = round2(leftApplied.gte(regularAmount) ? regularAmount : leftApplied);
+        leftApplied = round2(leftApplied.minus(saleApplied));
+        printApplied = round2(leftApplied.gte(printAmount) ? printAmount : leftApplied);
+        leftApplied = round2(leftApplied.minus(printApplied));
+      }
+      let remainingForWork = leftApplied;
       normalizedWorkOrders = normalizedWorkOrders.map((order) => {
         const orderTotal = round2(money(order.salePrice));
         const deposit = remainingForWork.lte(0)
@@ -235,10 +295,12 @@ export async function checkoutReceptionInTx(
           // والدفعة الجديدة payment.amount تُقلَّص بها (الفاتورة تستلم P + N = أمانها الكامل).
           preCollected: money(preSplit.sale).gt(0) ? { amount: preSplit.sale, receiptIds: [] } : null,
           payment: {
-            amount: round2(money(input.regularSale.amount).minus(money(preSplit.sale))).toFixed(2),
+            // ش٧: المدفوع = **المخصَّص فعلاً** لا مبلغ الفاتورة — مع COD يبقى الفرق عهدةَ مندوب.
+            amount: round2(saleApplied.minus(money(preSplit.sale))).toFixed(2),
             method: input.paymentMethod,
             reference: input.paymentReference?.trim() || null,
           },
+          codDispatchPending: input.delivery != null,
           clientRequestId: `${input.clientRequestId}-sale`,
           offlineCapture: input.offlineCapture ?? null,
           // البضاعة خرجت فعلاً أثناء الانقطاع والنقد قُبض؛ رفض التسجيل يجعل الدفاتر تكذب
@@ -261,10 +323,12 @@ export async function checkoutReceptionInTx(
           cashRoundingOverride: overrideTarget === "PRINT" ? input.printSale.amount : null,
           preCollected: money(preSplit.print).gt(0) ? { amount: preSplit.print, receiptIds: [] } : null,
           payment: {
-            amount: round2(money(input.printSale.amount).minus(money(preSplit.print))).toFixed(2),
+            // ش٧: المخصَّص فعلاً (الطباعة تُسدَّد كاملةً عند التوصيل بحاملٍ SALE — حارسٌ أعلاه).
+            amount: round2(printApplied.minus(money(preSplit.print))).toFixed(2),
             method: input.paymentMethod,
             reference: input.paymentReference?.trim() || null,
           },
+          codDispatchPending: input.delivery != null,
           clientRequestId: `${input.clientRequestId}-print`,
           offlineCapture: input.offlineCapture ?? null,
           creditApproved: false,
@@ -275,6 +339,7 @@ export async function checkoutReceptionInTx(
     // ش٦ (V15) — أمانة أجرة توصيل الطلب: إيصال IN نقديّ + قيد DELIVERY_FEE_HELD مربوطان
     // بالفاتورة الحاملة (البيع المباشر ثم الطباعة) — بها يُرفع حظر COUNTER عن dispatchInvoice.
     // تُكتب داخل نفس معاملة المستندات (ذرّية) وتُتخطّى عند replay (كُتبت مع الالتزام الأول).
+    // ملاحظة الترتيب: تسبق الإسناد عمداً — dispatchInvoiceInTx يشترط وجودها لقبول COUNTER.
     const feeHeldD = round2(money(input.deliveryFeeHeld ?? "0"));
     if (feeHeldD.gt(0) && !completeReplay) {
       const carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
@@ -309,6 +374,34 @@ export async function checkoutReceptionInTx(
         amount: feeHeldD,
         notes: "أمانة أجرة توصيل — طلب استقبال",
       });
+    }
+
+    // ش٧ (قرار المالك ٦/٨) — **الإسناد داخل المعاملة**: متبقّي فاتورة التوصيل يصير عهدةً على
+    // المندوب (DELIVERY_DISPATCH) في نفس اللحظة التي تُنشأ فيها الفاتورة. بهذا لا توجد لحظةٌ
+    // واحدة يكون فيها مالٌ بلا مالك: إمّا (فاتورة + عهدة) معاً وإمّا لا شيء.
+    let dispatch: Awaited<ReturnType<typeof dispatchInvoiceInTx>> | null = null;
+    if (input.delivery && !completeReplay) {
+      const carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
+      if (carrierInvoiceId == null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "التوصيل يحتاج فاتورةً في الطلب (بضاعة أو طباعة) — أوامر الشغل تُسلَّم من طابور الطلبات عند جاهزيّتها",
+        });
+      }
+      dispatch = await dispatchInvoiceInTx(
+        tx,
+        {
+          invoiceId: carrierInvoiceId,
+          partyId: input.delivery.partyId,
+          deliveryFee: input.delivery.fee ?? "0",
+          feeCollection: input.delivery.feeCollection ?? "COURIER",
+          recipientName: input.delivery.recipientName ?? input.contactName ?? null,
+          recipientPhone: input.delivery.recipientPhone ?? input.contactPhone ?? null,
+          deliveryAddress: input.delivery.address ?? null,
+          clientRequestId: `${input.clientRequestId}-dispatch`,
+        },
+        { userId: actor.userId, branchId: actor.branchId ?? null, role: actor.role } as never,
+      );
     }
 
     // ش٦ (§٩.٣) — هويّة مُقِرّ السعر داخل المعاملة: الراية بلا هويّةٍ كانت تُذيب المسؤولية.
@@ -352,6 +445,6 @@ export async function checkoutReceptionInTx(
       workOrders.push({ ...created, deposit: round2(money(order.deposit ?? "0")).toFixed(2) });
     }
 
-    return { regularSale, printSale, workOrders, preSplit };
+    return { regularSale, printSale, workOrders, preSplit, dispatch };
   }
 }

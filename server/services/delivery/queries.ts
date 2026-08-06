@@ -78,7 +78,7 @@ export async function getDeliveryPartyStatement(partyId: number, from?: string, 
   if (!party) return null;
   const conds = [
     eq(accountingEntries.deliveryPartyId, partyId),
-    sql`${accountingEntries.entryType} IN ('DELIVERY_DISPATCH','DELIVERY_REMIT','DELIVERY_WRITEOFF','DELIVERY_FEE')`,
+    sql`${accountingEntries.entryType} IN ('DELIVERY_DISPATCH','DELIVERY_REMIT','DELIVERY_WRITEOFF','DELIVERY_FEE','DELIVERY_FEE_HELD')`,
   ];
   if (from) conds.push(sql`${accountingEntries.entryDate} >= ${from}`);
   if (to) conds.push(sql`${accountingEntries.entryDate} <= ${to}`);

@@ -458,6 +458,14 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
             eq(receipts.invoiceId, input.invoiceId),
             inArray(receipts.paymentMethod, capMethods as never),
             eq(receipts.status, "COMPLETED"),
+            // تدقيق ٦/٨ (ث٣/ث٥/ث١٢): إيصال **أمانة أجرة التوصيل** مختومٌ بالفاتورة تشغيلياً
+            // لكنّه مالُ طرفٍ ثالث (لم يمسّ paidAmount) — احتسابُه «مقبوضاً نقداً على الفاتورة»
+            // كان يفتح رداً نقدياً على فاتورةٍ لم يُدفَع منها دينارٌ نقداً (مدفوعة بالبطاقة مثلاً)
+            // ويستهلك أمانة المندوب استرداداً. البصمة البنيوية: له قيد DELIVERY_FEE_HELD.
+            sql`NOT EXISTS (
+              SELECT 1 FROM accountingEntries ae
+              WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD'
+            )`,
           ),
         );
       methodAvailable = money(mr[0]?.inSum ?? "0").minus(money(mr[0]?.outSum ?? "0"));
