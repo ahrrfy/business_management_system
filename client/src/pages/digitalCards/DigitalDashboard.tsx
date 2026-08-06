@@ -6,10 +6,12 @@ import { StatCard } from "@/components/StatCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Button } from "@/components/ui/button";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, CreditCard, TrendingUp, Wallet } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
 
 const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
@@ -37,14 +39,24 @@ const RANGES = [
 type RangeKey = (typeof RANGES)[number]["key"];
 
 const MODE_LABEL: Record<string, string> = { PREPAID: "مسبق الدفع", POSTPAID: "آجل" };
-const AVAIL_LABEL: Record<string, string> = { NO_PRICE: "بلا سعر منشور", STALE_PRICE: "سعر منتهٍ" };
+const AVAIL_LABEL: Record<string, string> = {
+  NO_PRICE: "لم يُنشر سعر البيع",
+  STALE_PRICE: "سعر البيع يحتاج تحديثاً",
+  NO_WALLET: "لم تُربط بمحفظة المزوّد",
+  WALLET_MISMATCH: "المحفظة مرتبطة بمزوّد أو فرع آخر",
+  WALLET_INACTIVE: "محفظة المزوّد معطّلة",
+  INSUFFICIENT_BALANCE: "رصيد المزوّد لا يكفي لبيع كرت واحد",
+};
 const INTENT_LABEL: Record<string, string> = {
   PREPARED: "مُعدّة", EXECUTING: "قيد التنفيذ", EXECUTED: "نُفِّذت بلا فاتورة", NEEDS_REVIEW: "تحتاج مراجعة",
 };
 
 export default function DigitalDashboard() {
+  const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
-  const canPickBranch = me.data?.role === "admin" || me.data?.role === "manager";
+  const canPickBranch =
+    me.data?.role === "admin" ||
+    (me.data?.role === "manager" && me.data?.branchId == null);
   const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
 
   const [range, setRange] = useState<RangeKey>("today");
@@ -54,6 +66,13 @@ export default function DigitalDashboard() {
   const [customTo, setCustomTo] = useState(() => dayOffset(0));
   const [branchId, setBranchId] = useState<number | "">("");
 
+  // مدير الفرع يرى فرعه فوراً؛ لا نعرض له «كل الفروع» بينما الخادم يفرض فرعه في الخلفية.
+  useEffect(() => {
+    if (branchId === "" && me.data?.branchId != null) {
+      setBranchId(Number(me.data.branchId));
+    }
+  }, [branchId, me.data?.branchId]);
+
   const period = useMemo(() => {
     if (range === "today") return { from: dayOffset(0), to: dayOffset(1) };
     if (range === "week") return { from: dayOffset(-6), to: dayOffset(1) };
@@ -61,7 +80,11 @@ export default function DigitalDashboard() {
     return { from: customFrom, to: nextDayUtc(customTo) };
   }, [range, customFrom, customTo]);
 
-  const branchArg = branchId ? Number(branchId) : undefined;
+  const branchArg = branchId
+    ? Number(branchId)
+    : me.data?.branchId != null
+      ? Number(me.data.branchId)
+      : undefined;
 
   const summary = trpc.digitalCards.dashboard.summary.useQuery({ ...period, branchId: branchArg });
   const balances = trpc.digitalCards.dashboard.providerBalances.useQuery({ branchId: branchArg });
@@ -77,8 +100,8 @@ export default function DigitalDashboard() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="لوحة البطاقات الرقمية"
-        description="أرقام الفترة مُجمَّعة على الخادم من لقطات البيع المثبَّتة. الفترة نصف مفتوحة — يوم العمل لا يبتلع اليوم التالي."
+        title="جاهزية بيع البطاقات والاشتراكات"
+        description="ابدأ بما يمنع البيع، ثم راقب المبيعات والأرصدة. كل بطاقة تُعدّ جاهزة فقط عندما يكون سعرها صالحاً وربط المزوّد ومحفظته ورصيده سليماً."
         actions={
           <div className="flex flex-wrap items-end gap-2">
             {canPickBranch && (
@@ -155,7 +178,7 @@ export default function DigitalDashboard() {
             )}
             {(health.data?.needsAttention.length ?? 0) > 0 && (
               <span className="rounded-md border px-3 py-1.5">
-                {health.data?.needsAttention.length} بطاقة بلا سعر نافذ — بيعٌ ضائع حتى تُسعَّر
+                {health.data?.needsAttention.length} بطاقة غير جاهزة للبيع — افتح جدول الجاهزية لمعرفة السبب والإجراء
               </span>
             )}
             {(recon.data?.open ?? 0) > 0 && (
@@ -305,11 +328,11 @@ export default function DigitalDashboard() {
         </CardContent>
       </Card>
 
-      {/* صحة الأسعار + تفصيل نمط التسوية */}
+      {/* جاهزية البيع + تفصيل طريقة سداد المزوّد */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader className="text-sm font-medium">
-            صحة الأسعار — {health.data?.ready ?? 0} من {health.data?.total ?? 0} جاهزة
+            جاهزية البيع — {health.data?.ready ?? 0} من {health.data?.total ?? 0} جاهزة
           </CardHeader>
           <CardContent className="p-0">
             <ScrollTableShell bordered={false}>
@@ -318,7 +341,8 @@ export default function DigitalDashboard() {
                   <tr>
                     <th className="p-2 text-start">البطاقة</th>
                     <th className="p-2 text-start">الفرع</th>
-                    <th className="p-2 text-start">الحالة</th>
+                    <th className="p-2 text-start">ما الذي يمنع البيع؟</th>
+                    <th className="p-2 text-center">الإجراء</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -327,11 +351,35 @@ export default function DigitalDashboard() {
                       <td className="p-2">{h.offeringName}</td>
                       <td className="p-2 text-muted-foreground">{h.branchName}</td>
                       <td className="p-2">{AVAIL_LABEL[h.availability] ?? h.availability}</td>
+                      <td className="p-2 text-center">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const pricingIssue = h.availability === "NO_PRICE" || h.availability === "STALE_PRICE";
+                            const tab = pricingIssue
+                              ? "pricing"
+                              : h.availability === "INSUFFICIENT_BALANCE" || h.availability === "WALLET_INACTIVE"
+                                ? "wallets"
+                                : "offerings";
+                            const params = new URLSearchParams({ tab });
+                            params.set("branchId", String(h.branchId));
+                            params.set("providerId", String(h.providerId));
+                            navigate(`/digital-cards?${params.toString()}`);
+                          }}
+                        >
+                          {h.availability === "NO_PRICE" || h.availability === "STALE_PRICE"
+                            ? "فتح التسعير"
+                            : h.availability === "INSUFFICIENT_BALANCE" || h.availability === "WALLET_INACTIVE"
+                              ? "فتح رصيد المزوّد"
+                              : "إصلاح الربط"}
+                        </Button>
+                      </td>
                     </tr>
                   ))}
-                  {health.isLoading && <tr><td colSpan={3}><LoadingState /></td></tr>}
+                  {health.isLoading && <tr><td colSpan={4}><LoadingState /></td></tr>}
                   {!health.isLoading && (health.data?.needsAttention.length ?? 0) === 0 && (
-                    <TableEmptyRow colSpan={3} message="كل البطاقات مُسعَّرة." />
+                    <TableEmptyRow colSpan={4} message="كل البطاقات جاهزة للبيع في النطاق المحدد." />
                   )}
                 </tbody>
               </table>
@@ -340,13 +388,13 @@ export default function DigitalDashboard() {
         </Card>
 
         <Card>
-          <CardHeader className="text-sm font-medium">حسب نمط التسوية</CardHeader>
+          <CardHeader className="text-sm font-medium">حسب طريقة سداد المزوّد</CardHeader>
           <CardContent className="p-0">
             <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
-                    <th className="p-2 text-start">النمط</th>
+                    <th className="p-2 text-start">طريقة السداد</th>
                     <th className="p-2 text-start">كروت</th>
                     <th className="p-2 text-start">المبيعات</th>
                     {showCost && <th className="p-2 text-start">الربح</th>}

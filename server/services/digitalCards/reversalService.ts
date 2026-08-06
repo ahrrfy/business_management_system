@@ -34,6 +34,7 @@ import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { cancelContractsByInvoiceItems } from "./subscriptionService";
 
 export type ReversalOutcome = "REVERSED" | "LOSS_REFUND";
 
@@ -280,6 +281,7 @@ export async function approveReversal(
     .update(digitalSaleDetails)
     .set({ fulfillmentStatus: "REVERSED" })
     .where(inArray(digitalSaleDetails.id, details.map((d) => Number(d.id))));
+  await cancelContractsByInvoiceItems(tx, details.map((detail) => Number(detail.invoiceItemId)));
 
   await auditLog(tx, actor, "digitalCards.reversal.approved", input.invoiceId, {
     details: details.length,
@@ -421,6 +423,7 @@ export async function lossRefund(
       lossRefundApprovedAt: new Date(),
     })
     .where(inArray(digitalSaleDetails.id, details.map((d) => Number(d.id))));
+  await cancelContractsByInvoiceItems(tx, details.map((detail) => Number(detail.invoiceItemId)));
 
   await auditLog(tx, actor, "digitalCards.reversal.lossRefund", input.invoiceId, {
     details: details.length,
@@ -442,7 +445,18 @@ export async function lossRefund(
 /* ────────── قراءات ────────── */
 
 /** بنود فاتورةٍ قابلة للعكس (ISSUED فقط) — تُغذّي شاشة القرار. */
-export async function reversibleDetails(db: DB, invoiceId: number) {
+export async function reversibleDetails(db: DB, invoiceId: number, branchId?: number | null) {
+  if (branchId != null) {
+    const [invoice] = await db
+      .select({ branchId: invoices.branchId })
+      .from(invoices)
+      .where(eq(invoices.id, invoiceId))
+      .limit(1);
+    if (!invoice) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (Number(invoice.branchId) !== branchId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة تخص فرعاً آخر" });
+    }
+  }
   return db
     .select({
       id: digitalSaleDetails.id,
@@ -456,7 +470,11 @@ export async function reversibleDetails(db: DB, invoiceId: number) {
       lossRefundReason: digitalSaleDetails.lossRefundReason,
     })
     .from(digitalSaleDetails)
-    .where(eq(digitalSaleDetails.invoiceId, invoiceId))
+    .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
+    .where(and(
+      eq(digitalSaleDetails.invoiceId, invoiceId),
+      ...(branchId == null ? [] : [eq(invoices.branchId, branchId)]),
+    ))
     .orderBy(asc(digitalSaleDetails.id));
 }
 

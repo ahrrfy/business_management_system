@@ -83,7 +83,7 @@ async function mkProvider(name = "آسياسيل") {
       {
         supplierId,
         providerType: "TELECOM",
-        settlementMode: "PREPAID",
+        settlementMode: "POSTPAID",
         recognitionMode: "PRINCIPAL_GROSS",
         referencePolicy: "OPTIONAL",
         settlementCycle: "ON_DEMAND",
@@ -196,6 +196,17 @@ describe("ش٤ — المسودّة", () => {
     expect(b.batchId).toBe(a.batchId);
   });
 
+  it("سباق createOrGetDraft يعيد الدفعة الفائزة للطلبين", async () => {
+    const providerId = await mkProvider();
+    const scope = { branchId: 1, providerId, businessDate: DATE };
+    const [a, b] = await Promise.all([
+      withTx((tx) => pricingService.createOrGetDraft(tx, scope, actor)),
+      withTx((tx) => pricingService.createOrGetDraft(tx, scope, actor2)),
+    ]);
+    expect(a.batchId).toBe(b.batchId);
+    expect([a.created, b.created].filter(Boolean)).toHaveLength(1);
+  });
+
   it("قيد القاعدة يمنع مسودّتين متوازيتين حتى بتجاوز الفحص التطبيقيّ", async () => {
     const providerId = await mkProvider();
     await withTx((tx) =>
@@ -282,6 +293,24 @@ describe("ش٤ — المسودّة", () => {
       .where(eq(s.digitalPriceVersions.batchId, batchId));
     expect(rows).toHaveLength(1);
     expect(rows[0].providerShare).toBe("9500.00");
+  });
+
+  it("يرفض تكرار البطاقة في payload بدلاً من نجاح بعدد صفوف مضلل", async () => {
+    const providerId = await mkProvider();
+    const offeringId = await mkOffering(providerId);
+    const { batchId } = await withTx((tx) =>
+      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: DATE }, actor),
+    );
+
+    await expect(
+      withTx((tx) => pricingService.saveDraft(tx, {
+        batchId,
+        lines: [
+          { offeringId, providerShare: "9000" },
+          { offeringId, providerShare: "9500" },
+        ],
+      }, actor)),
+    ).rejects.toThrow(/مكررة/);
   });
 
   it("يرفض سطراً لبطاقة خارج مزوّد الدُفعة/فرعها", async () => {
@@ -373,6 +402,45 @@ describe("ش٤ — النشر", () => {
     expect((await batchRow(batchId)).status).toBe("DRAFT");
   });
 
+  it("عقد النشر exact: لا يستكمل payload الناقص من صفوف مسودة قديمة مخفية", async () => {
+    const providerId = await mkProvider();
+    const a = await mkOffering(providerId, { name: "كارت أ" });
+    const b = await mkOffering(providerId, { name: "كارت ب" });
+    const { batchId } = await withTx((tx) =>
+      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: DATE }, actor),
+    );
+    await withTx((tx) =>
+      pricingService.saveDraft(tx, {
+        batchId,
+        lines: [
+          { offeringId: a, providerShare: "9500" },
+          { offeringId: b, providerShare: "9500" },
+        ],
+      }, actor),
+    );
+
+    await expect(
+      withTx((tx) => pricingService.publish(tx, { batchId, expectedOfferingIds: [a] }, actor)),
+    ).rejects.toThrow(/كل بطاقات النطاق/);
+    expect((await batchRow(batchId)).status).toBe("DRAFT");
+  });
+
+  it("يرفض نشر تاريخ أقدم فوق الدفعة النافذة الأحدث", async () => {
+    const providerId = await mkProvider();
+    const offeringId = await mkOffering(providerId);
+    await publishPrices(1, providerId, NEXT, [{ offeringId, providerShare: "9500" }]);
+    const { batchId } = await withTx((tx) =>
+      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: DATE }, actor),
+    );
+    await withTx((tx) =>
+      pricingService.saveDraft(tx, { batchId, lines: [{ offeringId, providerShare: "9600" }] }, actor),
+    );
+
+    await expect(
+      withTx((tx) => pricingService.publish(tx, { batchId }, actor)),
+    ).rejects.toThrow(/أسعار أحدث/);
+  });
+
   it("يرفض النشر إن نزل الهامش عن الحدّ الأدنى، ولا يترك أثراً جزئياً", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId, {
@@ -398,6 +466,23 @@ describe("ش٤ — النشر", () => {
     await expect(
       withTx((tx) => pricingService.publish(tx, { batchId }, actor)),
     ).rejects.toThrow(/أقلّ من الحدّ الأدنى/);
+    expect((await batchRow(batchId)).status).toBe("DRAFT");
+    expect(await currentPrice(1, offeringId)).toBeNull();
+  });
+
+  it("فشل كتابة سجل التدقيق يُرجع النشر كله ولا يترك سعراً نافذاً", async () => {
+    const providerId = await mkProvider();
+    const offeringId = await mkOffering(providerId);
+    const { batchId } = await withTx((tx) =>
+      pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: DATE }, actor),
+    );
+    await withTx((tx) =>
+      pricingService.saveDraft(tx, { batchId, lines: [{ offeringId, providerShare: "9500" }] }, actor),
+    );
+
+    await expect(
+      withTx((tx) => pricingService.publish(tx, { batchId }, { ...actor, branchId: 1e30 })),
+    ).rejects.toThrow();
     expect((await batchRow(batchId)).status).toBe("DRAFT");
     expect(await currentPrice(1, offeringId)).toBeNull();
   });
@@ -665,6 +750,7 @@ describe("ش٤ — بلاغ تغيّر السعر", () => {
         {
           reportId,
           businessDate: NEXT,
+          sellPrice: "10000",
         },
         actor2,
       ),
@@ -681,6 +767,7 @@ describe("ش٤ — بلاغ تغيّر السعر", () => {
     const live = await currentPrice(1, offeringId);
     expect(Number(live!.priceVersionId)).toBe(res.priceVersionId);
     expect(live!.providerShare).toBe("9750.00");
+    expect(live!.sellPrice).toBe("10000.00");
 
     expect(await pricingService.openMismatchCount(db(), 1)).toBe(0);
   });
@@ -713,6 +800,29 @@ describe("ش٤ — بلاغ تغيّر السعر", () => {
 
     expect((await currentPrice(1, offeringId))!.providerShare).toBe("9500.00");
     expect(await pricingService.openMismatchCount(db(), 1)).toBe(0);
+  });
+
+  it("اعتماد البلاغ يرفض سعر بيع لا يطابق snapshot النافذ", async () => {
+    const providerId = await mkProvider();
+    const offeringId = await mkOffering(providerId);
+    await publishPrices(1, providerId, DATE, [{ offeringId, providerShare: "9500" }]);
+    const { reportId } = await withTx((tx) =>
+      pricingService.reportMismatch(
+        tx,
+        { branchId: 1, offeringId, reportedProviderShare: "9750" },
+        actor,
+      ),
+    );
+
+    await expect(
+      withTx((tx) => pricingService.approveMismatch(
+        tx,
+        { reportId, businessDate: NEXT, sellPrice: "9999" },
+        actor2,
+      )),
+    ).rejects.toThrow(/لا يطابق سعر العميل/);
+    expect((await currentPrice(1, offeringId))!.sellPrice).toBe("10000.00");
+    expect(await pricingService.openMismatchCount(db(), 1)).toBe(1);
   });
 
   it("معالجة البلاغ مرّتين مرفوضة", async () => {
@@ -781,7 +891,7 @@ describe("ش٤ — بلاغ تغيّر السعر", () => {
       withTx((tx) =>
         pricingService.approveMismatch(
           tx,
-          { reportId, businessDate: NEXT },
+          { reportId, businessDate: NEXT, sellPrice: "10000" },
           actor2,
         ),
       ),

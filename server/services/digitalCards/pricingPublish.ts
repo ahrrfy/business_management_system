@@ -3,19 +3,48 @@ import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import {
   digitalCurrentPrices,
+  digitalOfferingBranches,
+  digitalOfferings,
   digitalPriceBatches,
   digitalPriceVersions,
+  digitalProviders,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import type { Actor } from "../tx";
-import { activeOfferings, auditLog, lockBatch, priceFor } from "./pricingShared";
-import { BIG_CHANGE_THRESHOLD_PERCENT, currentSharesFor, detectBigChanges } from "./pricingBigChange";
+import {
+  activeOfferings,
+  auditLog,
+  latestBigChangeApproval,
+  lockBatch,
+  lockPublishedScope,
+  priceFor,
+} from "./pricingShared";
+import {
+  BIG_CHANGE_THRESHOLD_PERCENT,
+  approvalFingerprint,
+  approvalSnapshotFor,
+  currentPricesFor,
+  detectBigChanges,
+} from "./pricingBigChange";
+
+export interface PublishReadiness {
+  scopeTotal: number;
+  scopeReady: number;
+  branchTotal: number;
+  branchReady: number;
+  missing: number;
+}
 
 export async function publish(
   tx: Tx,
-  input: { batchId: number },
+  input: { batchId: number; expectedOfferingIds?: number[] },
   actor: Actor,
-): Promise<{ batchId: number; publishedCount: number; supersededBatchId: number | null }> {
+): Promise<{
+  batchId: number;
+  publishedCount: number;
+  supersededBatchId: number | null;
+  readiness: PublishReadiness;
+}> {
   // ١+٢: قفل الرأس والتحقّق من الحالة.
   const batch = await lockBatch(tx, input.batchId);
   if (batch.status !== "DRAFT") {
@@ -23,11 +52,36 @@ export async function publish(
   }
   const branchId = Number(batch.branchId);
   const providerId = Number(batch.providerId);
+  const publishedScope = await lockPublishedScope(tx, branchId, providerId);
+  const supersededBatchId = publishedScope?.id ?? null;
+  if (publishedScope && String(batch.businessDate) < publishedScope.businessDate) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `لا يمكن نشر أسعار ${String(batch.businessDate)} فوق أسعار أحدث (${publishedScope.businessDate})`,
+    });
+  }
+  // كل timestamps بعد قفل النطاق، فلا يمكن back-date لسريان دفعة انتظرَت ناشراً آخر.
+  const now = new Date();
 
   // ٣: كل البطاقات الفعّالة للمزوّد في هذا الفرع.
   const offerings = await activeOfferings(tx, branchId, providerId);
   if (!offerings.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا بطاقات فعّالة لهذا المزوّد في هذا الفرع" });
+  }
+  if (input.expectedOfferingIds) {
+    const expected = new Set(input.expectedOfferingIds);
+    const active = new Set(offerings.map((o) => o.offeringId));
+    const duplicates = input.expectedOfferingIds.length - expected.size;
+    const omitted = offerings.filter((o) => !expected.has(o.offeringId));
+    const unexpected = Array.from(expected).filter((id) => !active.has(id));
+    if (duplicates || omitted.length || unexpected.length) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          `طلب النشر يجب أن يحتوي كل بطاقات النطاق مرةً واحدة ` +
+          `(ناقص ${omitted.length}، زائد ${unexpected.length}، مكرر ${duplicates})`,
+      });
+    }
   }
 
   const draftLines = await tx
@@ -36,6 +90,7 @@ export async function publish(
       offeringId: digitalPriceVersions.offeringId,
       providerShare: digitalPriceVersions.providerShare,
       sellPrice: digitalPriceVersions.sellPrice,
+      createdBy: digitalPriceVersions.createdBy,
     })
     .from(digitalPriceVersions)
     .where(eq(digitalPriceVersions.batchId, input.batchId));
@@ -60,7 +115,6 @@ export async function publish(
   }
 
   // ٥+٦: إعادة الحساب خادمياً ورفض ما دون الحدّ الأدنى.
-  const now = new Date();
   const priced = offerings.map((o) => ({
     offeringId: o.offeringId,
     ...priceFor(o, draftByOffering.get(o.offeringId)!.providerShare, draftByOffering.get(o.offeringId)!.sellPrice, true),
@@ -68,11 +122,15 @@ export async function publish(
 
   // ٦-ب (§٧.١): بوّابة «التغيير الكبير» — تُحسب من **الحصص المُعاد حسابها** لا من مُدخل العميل،
   // وتحت قفل الدُفعة نفسه الذي يمسكه `saveDraft` ⇒ لا نافذة بين الاعتماد والنشر.
-  const currentShares = await currentSharesFor(tx, branchId, offerings.map((o) => o.offeringId));
+  const offeringIds = offerings.map((o) => o.offeringId);
+  const currentPrices = await currentPricesFor(tx, branchId, offeringIds);
+  const currentByOffering = new Map(currentPrices.map((row) => [row.offeringId, row]));
   const bigChanges = detectBigChanges(
     offerings,
-    currentShares,
+    new Map(currentPrices.map((row) => [row.offeringId, row.providerShare])),
     new Map(priced.map((p) => [p.offeringId, p.providerShare])),
+    new Map(currentPrices.map((row) => [row.offeringId, row.sellPrice])),
+    new Map(priced.map((p) => [p.offeringId, p.sellPrice])),
   );
   if (bigChanges.length > 0) {
     const approvedBy = batch.bigChangeApprovedBy != null ? Number(batch.bigChangeApprovedBy) : null;
@@ -85,11 +143,35 @@ export async function publish(
           `${bigChanges.length > 3 ? "…" : ""}) — يلزم اعتماد مديرٍ آخر قبل النشر.`,
       });
     }
-    // فصل المهام: المعتمِد ≠ مُنشئ المسودّة. admin مُستثنى للتصحيح الإداريّ.
-    if (approvedBy === Number(batch.createdBy) && actor.role !== "admin") {
+    if (approvedBy === Number(batch.createdBy)) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "اعتماد التغيير الكبير جاء من مُنشئ المسودّة نفسه — يلزم مديرٌ آخر",
+      });
+    }
+
+    const snapshot = approvalSnapshotFor(
+      input.batchId,
+      offeringIds,
+      currentByOffering,
+      priced.map((line) => ({
+        offeringId: line.offeringId,
+        providerShare: line.providerShare,
+        sellPrice: line.sellPrice,
+        editedBy: Number(draftByOffering.get(line.offeringId)!.createdBy),
+      })),
+    );
+    const expectedFingerprint = approvalFingerprint(snapshot);
+    const approval = await latestBigChangeApproval(tx, input.batchId);
+    const details = approval?.newValue as Record<string, unknown> | null | undefined;
+    if (
+      Number(approval?.userId) !== approvedBy ||
+      details?.approvalFingerprint !== expectedFingerprint ||
+      details?.approvalSnapshotVersion !== snapshot.version
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "تغيّر السعر النافذ أو تفاصيل المسودّة بعد الاعتماد — يلزم اعتماد جديد على الأرقام الحالية",
       });
     }
   }
@@ -114,18 +196,6 @@ export async function publish(
 
   // ٩ (قبل ٨ وقبل ختم PUBLISHED): تسويد الدُفعة المنشورة السابقة وإغلاق سريان نسخها.
   // الترتيب مفروضٌ بالقيد الفريد «منشورة واحدة لكل (فرع×مزوّد)» — لا يمكن ختم الجديدة قبله.
-  const [prev] = await tx
-    .select({ id: digitalPriceBatches.id })
-    .from(digitalPriceBatches)
-    .where(
-      and(
-        eq(digitalPriceBatches.branchId, branchId),
-        eq(digitalPriceBatches.providerId, providerId),
-        eq(digitalPriceBatches.status, "PUBLISHED"),
-      ),
-    )
-    .for("update");
-  const supersededBatchId = prev ? Number(prev.id) : null;
   if (supersededBatchId != null) {
     await tx
       .update(digitalPriceVersions)
@@ -163,6 +233,49 @@ export async function publish(
       .onDuplicateKeyUpdate({ set: { priceVersionId: Number(v.id) } });
   }
 
+  const branchHealth = await tx
+    .select({
+      providerId: digitalOfferings.providerId,
+      priceValidityHours: digitalOfferings.priceValidityHours,
+      priceVersionId: digitalCurrentPrices.priceVersionId,
+      validFrom: digitalPriceVersions.validFrom,
+      validUntil: digitalPriceVersions.validUntil,
+    })
+    .from(digitalOfferingBranches)
+    .innerJoin(digitalOfferings, eq(digitalOfferingBranches.offeringId, digitalOfferings.id))
+    .innerJoin(digitalProviders, eq(digitalOfferings.providerId, digitalProviders.id))
+    .leftJoin(
+      digitalCurrentPrices,
+      and(
+        eq(digitalCurrentPrices.offeringId, digitalOfferings.id),
+        eq(digitalCurrentPrices.branchId, branchId),
+      ),
+    )
+    .leftJoin(digitalPriceVersions, eq(digitalCurrentPrices.priceVersionId, digitalPriceVersions.id))
+    .where(
+      and(
+        eq(digitalOfferingBranches.branchId, branchId),
+        eq(digitalOfferingBranches.isActive, true),
+        eq(digitalOfferings.isActive, true),
+        eq(digitalProviders.isActive, true),
+      ),
+    );
+  const readinessNow = Date.now();
+  const isReady = (row: (typeof branchHealth)[number]) => {
+    if (row.priceVersionId == null || row.validUntil != null) return false;
+    if (row.priceValidityHours == null || row.validFrom == null) return true;
+    const ageHours = (readinessNow - new Date(row.validFrom).getTime()) / 3_600_000;
+    return ageHours <= row.priceValidityHours;
+  };
+  const scopeHealth = branchHealth.filter((row) => Number(row.providerId) === providerId);
+  const readiness: PublishReadiness = {
+    scopeTotal: scopeHealth.length,
+    scopeReady: scopeHealth.filter(isReady).length,
+    branchTotal: branchHealth.length,
+    branchReady: branchHealth.filter(isReady).length,
+    missing: branchHealth.filter((row) => !isReady(row)).length,
+  };
+
   // ١٠: أثر التدقيق.
   await auditLog(tx, actor, "digitalCards.pricing.published", input.batchId, {
     branchId,
@@ -170,7 +283,8 @@ export async function publish(
     businessDate: String(batch.businessDate),
     count: priced.length,
     supersededBatchId,
+    readiness,
   });
 
-  return { batchId: input.batchId, publishedCount: priced.length, supersededBatchId };
+  return { batchId: input.batchId, publishedCount: priced.length, supersededBatchId, readiness };
 }

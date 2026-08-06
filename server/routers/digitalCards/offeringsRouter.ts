@@ -39,7 +39,8 @@ export const offeringsRouter = router({
 
   get: digitalCardsAdminReadProcedure
     .input(idInput)
-    .query(async ({ input }) => offeringService.getOffering(requireDb(), input.id)),
+    .query(async ({ input, ctx }) =>
+      offeringService.getOffering(requireDb(), input.id, scopedBranchOf(ctx))),
 
   create: digitalCardsManagerProcedure
     .input(

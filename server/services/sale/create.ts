@@ -47,7 +47,21 @@ import type { CreateSaleInput, CreateSaleResult } from "./types";
  * تصدير داخلي فقط: يستعمله `createSale` (المغلّف) و`digitalCards.sales.finalize` (تركيب).
  * لا يُعرَض عبر الراوتر مباشرة.
  */
-export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Actor): Promise<CreateSaleResult> {
+/** رمز غير قابل للإنشاء من حمولة tRPC؛ يفتح منتجات DIGITAL_CARD لمسار التثبيت الموثوق فقط. */
+export const DIGITAL_SALE_CAPABILITY = Symbol("DIGITAL_SALE_CAPABILITY");
+
+export async function createSaleInTx(
+  tx: Tx,
+  input: CreateSaleInput,
+  actor: Actor,
+  capability?: typeof DIGITAL_SALE_CAPABILITY,
+): Promise<CreateSaleResult> {
+    // This namespace is generated only by the trusted digital-card finalizer.  Check it
+    // before idempotency lookup so a public POS request cannot replay an existing
+    // digital invoice merely by guessing its sourceId.
+    if (capability !== DIGITAL_SALE_CAPABILITY && input.clientRequestId?.startsWith("DIGITAL_INTENT:")) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح الطلب محجوز لمسار البطاقات الرقمية" });
+    }
     // 1. Idempotency: replay the existing invoice for a repeated clientRequestId.
     //    SALES-04 (تدقيق ٢٣/٦/٢٦): البصمة كانت قاصرة على branchId ⇒ كاشير يُعيد استعمال المفتاح
     //    على بيع مختلف فيستلم فاتورة بيعٍ سابق ولا يُسجَّل البيع الجديد ⇒ منفذ سرقة نقد. الحلّ على
@@ -203,12 +217,31 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         id: productVariants.id,
         costPrice: productVariants.costPrice,
         isActive: productVariants.isActive,
+        productType: products.productType,
       })
       .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productVariants.id, uniqueVariantIds));
-    const variantById = new Map<number, { costPrice: string; isActive: boolean | null }>();
+    const variantById = new Map<number, { costPrice: string; isActive: boolean | null; productType: string | null }>();
     for (const r of variantRows) {
-      variantById.set(Number(r.id), { costPrice: String(r.costPrice), isActive: r.isActive });
+      variantById.set(Number(r.id), {
+        costPrice: String(r.costPrice),
+        isActive: r.isActive,
+        productType: r.productType ?? null,
+      });
+    }
+    const containsDigitalCard = Array.from(variantById.values()).some((v) => v.productType === "DIGITAL_CARD");
+    if (containsDigitalCard && capability !== DIGITAL_SALE_CAPABILITY) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "البطاقات الرقمية تُباع من مسار الإصدار المخصّص فقط — لا تُضاف كصنف عادي",
+      });
+    }
+    if (capability === DIGITAL_SALE_CAPABILITY && Array.from(variantById.values()).some((v) => v.productType !== "DIGITAL_CARD")) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "مسار تثبيت البطاقات الرقمية لا يقبل أصنافاً عادية",
+      });
     }
     // بضاعة الأمانة (ش٣): خريطة variantId → consignorId للأصناف الموسومة أمانةً — لالتقاط التزام المودِع
     // لحظة البيع (قيد PURCHASE يتيم) ولاستثنائها من البيع بالسالب في المسار الحيّ. راجع design §٢-ب/§٥-ج.
@@ -395,6 +428,7 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         isGift,
         promotionId: recordedPromotionId,
         promotionDiscount: recordedPromoDiscount,
+        internalLineToken: l.internalLineToken?.trim() || null,
       });
     }
 
@@ -592,6 +626,7 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
     }
 
     // 9. Items.
+    const createdLineItems: { lineToken: string; invoiceItemId: number }[] = [];
     for (const c of computed) {
       const itemInsRes = await tx.insert(invoiceItems).values({
         invoiceId,
@@ -610,10 +645,14 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         // (لقطة WAVG) — مصدرُ مصروف الهدية ومصدرُ عكسِه عند الإرجاع.
         isGift: c.isGift,
       });
+      const insertedInvoiceItemId = extractInsertId(itemInsRes);
+      if (c.internalLineToken) {
+        createdLineItems.push({ lineToken: c.internalLineToken, invoiceItemId: insertedInvoiceItemId });
+      }
       // gstack B6: لقطة مكوّنات البكج لحظة البيع. المرتجع يقرأ منها حصراً بدل الوصفة الحيّة —
       // يحمي من انحراف مخزون صامت لو عُدّلت الوصفة بين البيع والإرجاع.
       if (c.kind === "BUNDLE") {
-        const invoiceItemId = extractInsertId(itemInsRes);
+        const invoiceItemId = insertedInvoiceItemId;
         const def = bundleDefs.get(c.variantId) ?? [];
         for (const bc of def) {
           await tx.insert(invoiceItemBundleComponents).values({
@@ -861,6 +900,7 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       // هدايا الفاتورة: تكلفة ما أُهدي (للأثر التدقيقيّ في الراوتر — مَن أهدى وبكم).
       ...(giftCostD.gt(0) ? { giftCost: giftCostD.toFixed(2) } : {}),
       ...(negativeDips.length ? { negativeDips } : {}),
+      ...(createdLineItems.length ? { createdLineItems } : {}),
     };
 }
 

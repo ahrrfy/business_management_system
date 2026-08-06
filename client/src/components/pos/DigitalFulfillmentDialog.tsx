@@ -52,6 +52,12 @@ export function DigitalFulfillmentDialog({
   const utils = trpc.useUtils();
   const [reference, setReference] = useState("");
   const [warnLeave, setWarnLeave] = useState(false);
+  const [activeClaim, setActiveClaim] = useState<{
+    intentItemId: number;
+    claimToken: string;
+    providerIdempotencyKey: string;
+    expiresAt: Date | string;
+  } | null>(null);
   const refInput = useRef<HTMLInputElement>(null);
 
   const q = trpc.digitalCards.sales.getIntent.useQuery(
@@ -59,8 +65,15 @@ export function DigitalFulfillmentDialog({
     { enabled: intentId != null, refetchOnWindowFocus: false },
   );
 
+  const claim = trpc.digitalCards.sales.claimExecution.useMutation({
+    onSuccess: (r) => {
+      setActiveClaim(r);
+      setTimeout(() => refInput.current?.focus(), 40);
+    },
+    onError: (e) => notify.err(e),
+  });
   const mark = trpc.digitalCards.sales.markExecution.useMutation({
-    onSuccess: () => { setReference(""); void utils.digitalCards.sales.getIntent.invalidate(); },
+    onSuccess: () => { setReference(""); setActiveClaim(null); void utils.digitalCards.sales.getIntent.invalidate(); },
     onError: (e) => notify.err(e),
   });
   const cancel = trpc.digitalCards.sales.cancelIntent.useMutation({
@@ -83,7 +96,8 @@ export function DigitalFulfillmentDialog({
   const settledNotAllSuccess = items.length > 0 && !current && !allSuccess;
 
   useEffect(() => {
-    if (current) setTimeout(() => refInput.current?.focus(), 40);
+    setReference("");
+    setActiveClaim(null);
   }, [current?.id]);
 
   useEffect(() => {
@@ -93,13 +107,13 @@ export function DigitalFulfillmentDialog({
 
   function attemptClose() {
     // §٨.٧: قبل أيّ تنفيذ يجوز التراجع؛ بعده لا تجاهُل — تحذير مراجعة صريح.
-    if (anySuccess) { setWarnLeave(true); return; }
+    if (anySuccess || activeClaim != null) { setWarnLeave(true); return; }
     if (intentId != null) cancel.mutate({ intentId, reason: "cashier-cancel" });
     else onClose();
   }
 
   function submit(status: "SUCCESS" | "FAILED" | "UNKNOWN") {
-    if (!current || intentId == null || mark.isPending) return;
+    if (!current || intentId == null || !activeClaim || activeClaim.intentItemId !== current.id || mark.isPending) return;
     if (status === "SUCCESS" && current.referencePolicy === "REQUIRED" && !reference.trim()) {
       notify.err("هذا المزوّد يتطلّب رقم مرجع التنفيذ");
       refInput.current?.focus();
@@ -108,9 +122,23 @@ export function DigitalFulfillmentDialog({
     mark.mutate({
       intentId,
       intentItemId: current.id,
+      claimToken: activeClaim.claimToken,
       status,
       providerReference: current.referencePolicy === "NONE" ? null : reference.trim() || null,
     });
+  }
+
+  function beginIssuance() {
+    if (!current || intentId == null || claim.isPending) return;
+    const cryptoApi = globalThis.crypto;
+    if (!cryptoApi?.getRandomValues) {
+      notify.err("تعذّر إنشاء رمز إصدار آمن؛ حدّث المتصفح ثم أعد المحاولة");
+      return;
+    }
+    const claimToken = typeof cryptoApi.randomUUID === "function"
+      ? cryptoApi.randomUUID()
+      : Array.from(cryptoApi.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, "0")).join("");
+    claim.mutate({ intentId, intentItemId: current.id, claimToken });
   }
 
   if (intentId == null) return null;
@@ -120,6 +148,12 @@ export function DigitalFulfillmentDialog({
       role="dialog"
       aria-modal="true"
       aria-label="تنفيذ الكروت"
+      onKeyDownCapture={(e) => {
+        if (!["F2", "F3", "F4", "F9", "F12"].includes(e.key)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.nativeEvent.stopImmediatePropagation();
+      }}
       onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); attemptClose(); } }}
       style={{ position: "fixed", inset: 0, background: C.overlay, zIndex: 64, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
     >
@@ -151,7 +185,22 @@ export function DigitalFulfillmentDialog({
                 <span style={{ fontSize: 13, color: C.fg }}>الطالب: {current.studentName}</span>
               )}
 
-              {current.referencePolicy !== "NONE" && (
+              {!activeClaim && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <span style={{ fontSize: 13.5, color: C.fg, lineHeight: 1.6 }}>
+                    اضغط البدء أولاً، ثم أصدر هذه البطاقة مرة واحدة فقط من جهاز المزوّد. إذا كانت مفتوحة في نافذة أخرى سيمنعك النظام.
+                  </span>
+                  <button
+                    onClick={beginIssuance}
+                    disabled={claim.isPending}
+                    style={{ height: 52, borderRadius: 10, border: "none", background: C.primary, color: C.primaryFg, fontFamily: "inherit", fontSize: 16, fontWeight: 900, cursor: claim.isPending ? "not-allowed" : "pointer" }}
+                  >
+                    {claim.isPending ? "جارٍ حجز الإصدار…" : "ابدأ إصدار البطاقة"}
+                  </button>
+                </div>
+              )}
+
+              {activeClaim && current.referencePolicy !== "NONE" && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                   <label style={{ fontSize: 13, fontWeight: 700, color: C.fg }} htmlFor="fulfil-ref">
                     مرجع التنفيذ {current.referencePolicy === "REQUIRED" ? "(مطلوب)" : "(اختياري)"}
@@ -169,7 +218,7 @@ export function DigitalFulfillmentDialog({
                 </div>
               )}
 
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {activeClaim && <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button
                   onClick={() => submit("SUCCESS")}
                   disabled={mark.isPending}
@@ -192,7 +241,7 @@ export function DigitalFulfillmentDialog({
                 >
                   <CircleHelp aria-hidden size={16} /> غير مؤكَّد
                 </button>
-              </div>
+              </div>}
             </div>
           )}
 
@@ -252,7 +301,7 @@ export function DigitalFulfillmentDialog({
             disabled={cancel.isPending}
             style={{ flex: 1, height: 48, borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 15, fontWeight: 700, cursor: "pointer" }}
           >
-            {anySuccess ? "إنهاء" : "إلغاء العملية"}
+            {anySuccess || activeClaim ? "إنهاء ونقل للمراجعة" : "إلغاء العملية"}
           </button>
         </div>
       </div>
@@ -262,11 +311,11 @@ export function DigitalFulfillmentDialog({
         <div style={{ position: "fixed", inset: 0, background: C.overlay, zIndex: 65, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
           <div style={{ width: "min(440px, 100%)", background: C.bg, border: `1.5px solid ${C.amber}`, borderRadius: 14, padding: 20, display: "flex", flexDirection: "column", gap: 12 }}>
             <span style={{ fontSize: 16, fontWeight: 800, color: C.fg, display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <AlertTriangle aria-hidden size={19} /> كرتٌ صدر فعلاً
+              <AlertTriangle aria-hidden size={19} /> بدأ إصدار بطاقة
             </span>
             <span style={{ fontSize: 13.5, color: C.fg, lineHeight: 1.6 }}>
-              سُجِّل نجاحُ كرتٍ واحدٍ على الأقل، فلا يجوز تجاهل العملية. ستنتقل إلى طابور المراجعة
-              الإدارية ويبقى أثر الكرت محفوظاً حتى لو أُغلق المتصفّح.
+              بدأ إصدار بطاقة أو سُجّل نجاح بطاقة واحدة على الأقل، لذلك لا يجوز تجاهل العملية. ستنتقل إلى طابور المراجعة
+              الإدارية ويبقى أثرها المالي محفوظاً حتى لو أُغلق المتصفح.
             </span>
             <div style={{ display: "flex", gap: 8 }}>
               <button

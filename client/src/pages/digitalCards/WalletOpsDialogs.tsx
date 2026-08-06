@@ -25,9 +25,10 @@ const TX_TYPE: Record<string, string> = {
   ADJUSTMENT: "تعديل",
   SALE_CONSUMPTION: "استهلاك بيع",
   SALE_REVERSAL: "عكس بيع",
+  WRITEOFF: "شطب بطاقة غير مثبتة",
 };
 const TX_STATUS: Record<string, string> = {
-  ACTIVE: "نافذة",
+  ACTIVE: "معتمدة",
   PENDING_APPROVAL: "بانتظار الاعتماد",
   REVERSED: "مرفوضة",
 };

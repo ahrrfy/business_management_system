@@ -249,6 +249,17 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
     `),
   )[0] ?? { amount: "0" };
 
+  // شطب البطاقة الرقمية يُثبت خسارةً فعلية حين استهلك المزوّد الرصيد وتعذّر إثبات البيع.
+  const digitalWriteoff = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.cost), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType = 'DIGITAL_WRITEOFF'
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
   const revenue = money(rc.revenue ?? 0);
   const cogs = money(rc.cogs ?? 0);
   const grossProfit = revenue.sub(cogs);
@@ -279,6 +290,16 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
   if (giftExpense.gt(0)) {
     expenseLines.push({ key: "GIFTS", label: "هدايا وترويج", amount: toDbMoney(giftExpense) });
     totalExpenses = totalExpenses.add(giftExpense);
+  }
+
+  const digitalWriteoffExpense = money(digitalWriteoff.amount ?? 0);
+  if (!digitalWriteoffExpense.isZero()) {
+    expenseLines.push({
+      key: "DIGITAL_CARD_WRITEOFF",
+      label: "خسائر بطاقات رقمية غير مثبتة",
+      amount: toDbMoney(digitalWriteoffExpense),
+    });
+    totalExpenses = totalExpenses.add(digitalWriteoffExpense);
   }
 
   // خسائر شحن/كمرك مرتجعات الشراء — سطر مستقلّ يَخفض صافي الربح (الشحن الوارد غير مسترد عند الإرجاع).
@@ -413,6 +434,8 @@ const LEDGER_ENTRY_TYPES = [
   "SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "GIFT_OUT",
   "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF",
   "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF",
+  "DIGITAL_WALLET_DEPOSIT", "DIGITAL_WALLET_WITHDRAWAL", "DIGITAL_WALLET_CONSUMPTION",
+  "DIGITAL_WALLET_REVERSAL", "DIGITAL_WALLET_ADJUSTMENT", "DIGITAL_WRITEOFF",
 ] as const;
 
 export async function getGeneralLedger(opts: {
@@ -516,6 +539,7 @@ export interface FinancialPosition {
   check: string;
   transfer: string;
   wallet: string;
+  digitalWalletAsset: string; // رصيدنا النقدي لدى مزوّدي البطاقات مسبقة الدفع
   arDebit: string; // ذمم مدينة (عملاء يدينون لنا)
   arCredit: string; // سُلف العملاء (دفعوا زيادة)
   inventory: string;
@@ -550,7 +574,7 @@ export async function getFinancialPosition(
   const db = getDb();
   const zero = "0";
   const empty: FinancialPosition = {
-    cash: zero, card: zero, check: zero, transfer: zero, wallet: zero,
+    cash: zero, card: zero, check: zero, transfer: zero, wallet: zero, digitalWalletAsset: zero,
     arDebit: zero, arCredit: zero, inventory: zero, fixedAssets: zero,
     apCredit: zero, apDebit: zero, customerAdvances: zero,
     exchangeDebit: zero, exchangeCredit: zero,
@@ -663,6 +687,26 @@ export async function getFinancialPosition(
     `))[0] ?? { cash: "0", card: "0", cheque: "0", transfer: "0", wallet: "0" };
   }
 
+  // رصيد محافظ المزوّد أصل نقدي مستقل عن وسيلة دفع العملاء المسماة WALLET أعلاه.
+  // لا نستبعد المحافظ المعطلة: التعطيل لا يمحو أصلاً قائماً. وعند اللقطة التاريخية
+  // نعيد بناء الرصيد من الحركات المعتمدة بدلاً من قراءة الرصيد الحي.
+  const digitalWalletRow = isHistorical
+    ? rowsOf(await db.execute(sql`
+        SELECT CAST(COALESCE(SUM(
+          CASE WHEN dwt.direction = 'IN' THEN dwt.amount ELSE -dwt.amount END
+        ), 0) AS CHAR) AS v
+        FROM digitalWalletTransactions dwt
+        INNER JOIN digitalWallets dw ON dw.id = dwt.walletId
+        WHERE dwt.status = 'ACTIVE'
+          AND DATE(COALESCE(dwt.approvedAt, dwt.createdAt)) <= ${asOf}
+          ${bId ? sql`AND dw.branchId = ${bId}` : sql``}
+      `))[0] ?? { v: "0" }
+    : rowsOf(await db.execute(sql`
+        SELECT CAST(COALESCE(SUM(dw.currentBalance), 0) AS CHAR) AS v
+        FROM digitalWallets dw
+        WHERE 1 = 1 ${bId ? sql`AND dw.branchId = ${bId}` : sql``}
+      `))[0] ?? { v: "0" };
+
   // بضاعة الأمانة (ش٤): تُستبعَد من أصول المخزون — ليست ملك المكتبة (تظهر التزاماً في AP بعد البيع فقط).
   const inv = rowsOf(await db.execute(sql`
     SELECT CAST(COALESCE(SUM(bs.quantity * pv.costPrice), 0) AS CHAR) AS v
@@ -709,6 +753,7 @@ export async function getFinancialPosition(
   const cheque = money(cashRow.cheque ?? 0);
   const transfer = money(cashRow.transfer ?? 0);
   const wallet = money(cashRow.wallet ?? 0);
+  const digitalWalletAsset = money(digitalWalletRow.v ?? 0);
   const arDebit = money(ar.d ?? 0);
   const arCredit = money(ar.c ?? 0);
   const inventory = money(inv.v ?? 0);
@@ -721,7 +766,7 @@ export async function getFinancialPosition(
 
   // الأصول = نقد + مدينون + سُلف للموردين (ذمة لنا) + مخزون + أصول ثابتة + رصيدنا لدى الصرّافين.
   const totalAssets = cash.add(card).add(cheque).add(transfer).add(wallet)
-    .add(arDebit).add(apDebit).add(inventory).add(fixedAssets).add(exchangeDebit);
+    .add(digitalWalletAsset).add(arDebit).add(apDebit).add(inventory).add(fixedAssets).add(exchangeDebit);
   // الخصوم = دائنون + سُلف العملاء على الذمم + عرابين أوامر الشغل (FIN-05) + ما نَدين به للصرّافين.
   const totalLiabilities = apCredit.add(arCredit).add(customerAdvances).add(exchangeCredit);
   const equity = totalAssets.sub(totalLiabilities);
@@ -748,6 +793,7 @@ export async function getFinancialPosition(
     check: toDbMoney(cheque),
     transfer: toDbMoney(transfer),
     wallet: toDbMoney(wallet),
+    digitalWalletAsset: toDbMoney(digitalWalletAsset),
     arDebit: toDbMoney(arDebit),
     arCredit: toDbMoney(arCredit),
     inventory: toDbMoney(inventory),
