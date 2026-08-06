@@ -24,6 +24,7 @@ import { closeShift, openShift } from "../shiftService";
 import { getAnomalyWatch } from "../reports/anomalyWatch";
 import { createCardReconciliation, getCardSummary, listCardReconciliations } from "../cardAccountService";
 import { collectDeposit, collectOnReceptionInvoice, commitDraft, promoteDraft, refundDeposit } from "../reception";
+import { returnSale } from "../returnService";
 import { createWorkOrder } from "../workOrderService";
 
 const TABLES = [
@@ -83,6 +84,10 @@ const GOODS_LINE = {
 
 const uuid = (tag: string) => `${tag}-0000-4000-8000-000000000000`.slice(0, 36);
 const CODE = (n: number) => `ZAIN-${String(n).padStart(10, "0")}`;
+
+async function openReceptionWithFloat(userId: number, openingBalance: string) {
+  return openShift({ branchId: 1, openingBalance, shiftType: "RECEPTION" }, { userId, branchId: 1 });
+}
 
 const SAVED_ENV = { ...process.env };
 beforeEach(async () => {
@@ -399,6 +404,50 @@ describe("T12 — إصلاح المراجعة: قفل تقادم المطابق�
       CASHIER,
     );
     expect(ok.idempotentReplay).toBe(false);
+  });
+});
+
+describe("T13 — قرار مالك ٦/٨: مرتجع فاتورةٍ مدفوعة زيناً يُستردّ نقداً", () => {
+  it("بيع 2,000 زيناً ثم مرتجع كامل باسترداد CASH ⇒ إيصال OUT نقديّ من الدرج والمشتقّ لا يُمسّ؛ وCARD يبقى سقفه صفراً", async () => {
+    const shift = await openReceptionWithFloat(2, "10000.00");
+    const p = await promoteDraft({ branchId: 1, header: { customerId: 1 }, lines: [GOODS_LINE] }, CASHIER);
+    const r = await commitDraft({
+      draftId: p.draftId, version: 0, expectedTotal: "2000.00", shiftId: shift.shiftId,
+      collectNow: { amount: "2000.00", method: "TELECOM", reference: CODE(81) },
+    }, CASHIER);
+    const invoiceId = r.regularSale!.invoiceId;
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+
+    // الاسترداد بغير النقد (بطاقة) يبقى صفريّ السقف — المقبوض زينٌ لا بطاقة.
+    await expect(returnSale(
+      {
+        invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }],
+        refund: { amount: "2000.00", method: "CARD" },
+        restock: true,
+      },
+      MANAGER,
+    )).rejects.toThrowError(/يتجاوز المسموح/);
+
+    const ret = await returnSale(
+      {
+        invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }],
+        refund: { amount: "2000.00", method: "CASH" },
+        restock: true,
+      },
+      MANAGER,
+    );
+    expect(ret).toBeTruthy();
+    const out = (await db().select().from(s.receipts)
+      .where(and(eq(s.receipts.invoiceId, invoiceId), eq(s.receipts.direction, "OUT"))))[0];
+    expect(out.paymentMethod).toBe("CASH");
+    expect(out.cashBucket).toBe("DRAWER");
+    // الحساب المشتقّ لا يُمسّ: رصيد زين المشحون بقي لدى الشركة (2,000 قبضاً بلا OUT زين).
+    const summary = await getCardSummary({ branchId: 1, accountKind: "TELECOM" }, { role: "manager", branchId: 1 });
+    expect(summary.balance).toBe("2000.00");
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0];
+    expect(inv.status).toBe("RETURNED");
   });
 });
 

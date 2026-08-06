@@ -438,7 +438,13 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     }
     // سقف الاسترداد بالطريقة نفسها: المتاح = Σ(IN بهذه الطريقة) − Σ(OUT بهذه الطريقة)،
     // فلا يُسترَدّ نقداً ما دُفع بطاقةً (يُفرّغ الصندوق) ولا يتجاوز المقبوض فعلاً بتلك الطريقة.
+    // ش٥ (قرار مالك ٦/٨): المقبوض **رصيد زين** يُستردّ **نقداً** — TELECOM ليست طريقة استرداد
+    // (لا سكّة ردٍّ لرصيدٍ شُحن؛ OUT بزين يُنقص الحساب المشتقّ زوراً)، فبِلا هذا الضمّ كانت
+    // فاتورة زينٍ خالصة مرتجعُها بلا أيّ مسار استردادٍ بنيوياً (سقف كل طريقةٍ صفر). حصص زين
+    // تدخل سقف النقد وحده، وOUT النقدية السابقة تُنقصه فلا استهلاك مزدوج. مرآة سياسة ردّ
+    // العربون في reception/deposits.ts. المرتجع أصلاً مديريّ (م٧) وحدّ الدرج أدناه قائم.
     const refundMethod = input.refund?.method;
+    const capMethods: string[] = refundMethod === "CASH" ? ["CASH", "TELECOM"] : refundMethod ? [refundMethod] : [];
     let methodAvailable = new Decimal(0);
     if (refundMethod) {
       const mr = await tx
@@ -450,7 +456,7 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
         .where(
           and(
             eq(receipts.invoiceId, input.invoiceId),
-            eq(receipts.paymentMethod, refundMethod),
+            inArray(receipts.paymentMethod, capMethods as never),
             eq(receipts.status, "COMPLETED"),
           ),
         );
@@ -473,7 +479,7 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
               SELECT wo.id FROM workOrders wo WHERE wo.invoiceId = ${input.invoiceId}
             ))
           )
-          AND coll.orderPayMethod = ${refundMethod}
+          AND coll.orderPayMethod IN (${sql.join(capMethods.map((m) => sql`${m}`), sql`, `)})
           AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${input.invoiceId})
       `);
       const appData = (appRes as unknown as [Array<{ v: string }>])[0] ?? appRes;
@@ -484,7 +490,7 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     if (requestedRefund.gt(refundCap)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = الأقل من قيمة المرتجع والمقبوض بهذه الطريقة)`,
+        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = الأقل من قيمة المرتجع والمقبوض بهذه الطريقة${refundMethod === "CASH" ? " — المقبوض رصيدَ زين يُستردّ نقداً ويدخل هذا السقف" : ""})`,
       });
     }
     const cashRefund = requestedRefund;
