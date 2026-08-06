@@ -243,6 +243,80 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
   });
 });
 
+describe("M8 — قرار المالك: مرتجعُ فاتورةٍ بيد المندوب يخصم عهدته بقيمة ما عاد", () => {
+  it("فاتورة 10,000 بعهدة المندوب ⇒ مرتجع 3 قطع (3,000) يعكس 3,000 من عهدته ويُخفّض COD الإرسالية", async () => {
+    const shift = await openReception();
+    const r = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, customerId: 1,
+      paymentMethod: "CASH", paidAmount: "0",
+      clientRequestId: "m8-relief",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = r.regularSale!.invoiceId;
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+
+    await returnSale({ invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 3 }], restock: true }, MANAGER);
+
+    // عهدة المندوب انخفضت بقيمة ما عاد فقط (لا شطبَ خسارةٍ ولا دفعٌ من جيبه).
+    const party = (await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0];
+    expect(Number(party.currentBalance)).toBe(7000);
+    // وCOD الإرسالية انخفض بالمثل فلا يُطالَب بتحصيل ما رجع.
+    const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
+    expect(Number(cn.codAmount)).toBe(7000);
+    const relief = (await db().select().from(s.accountingEntries)
+      .where(and(
+        eq(s.accountingEntries.entryType, "DELIVERY_REMIT"),
+        eq(s.accountingEntries.invoiceId, invoiceId),
+      )))[0];
+    expect(relief).toBeTruthy();
+    expect(Number(relief.amount)).toBe(3000);
+  });
+});
+
+describe("M9 — قرار المالك: ما ورّده المندوب يدخل سقف الاسترداد النقديّ", () => {
+  it("زبونٌ عابر دفع للمندوب ⇒ يستطيع استرداد نقده عند الإرجاع (كان السقف صفراً)", async () => {
+    const shift = await openReception();
+    const r = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId,
+      contactName: "زبون عابر", contactPhone: "07700000001",
+      paymentMethod: "CASH", paidAmount: "0",
+      clientRequestId: "m9-cod-refund",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = r.regularSale!.invoiceId;
+    const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
+
+    // محاكاة التحصيل والتوريد: المندوب حصّل كامل المبلغ (نمط remittance) والفاتورة صارت مدفوعة.
+    await db().update(s.deliveryConsignments)
+      .set({ collectedAmount: "10000.00", status: "DELIVERED", settledAt: new Date() })
+      .where(eq(s.deliveryConsignments.id, Number(cn.id)));
+    await db().update(s.invoices).set({ paidAmount: "10000.00", status: "PAID" })
+      .where(eq(s.invoices.id, invoiceId));
+    // نقدُ التوريد دخل درج الوردية (إيصال مجمَّع بلا invoiceId — نفس بنية remittance).
+    await db().insert(s.receipts).values({
+      branchId: 1, shiftId: shift.shiftId, direction: "IN", amount: "10000.00",
+      paymentMethod: "CASH", cashBucket: "DRAWER", status: "COMPLETED",
+      referenceNumber: "DR-TEST-1", createdBy: 2,
+    });
+
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+    const ret = await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 10 }],
+      refund: { amount: "10000.00", method: "CASH", shiftId: shift.shiftId },
+      restock: true,
+    }, MANAGER);
+    expect(ret).toBeTruthy();
+    const out = (await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, invoiceId), eq(s.receipts.direction, "OUT"),
+    )))[0];
+    expect(out).toBeTruthy();
+    expect(String(out.amount)).toBe("10000.00"); // الزبون العابر استردّ ديناره فعلاً
+  });
+});
+
 describe("M6/M7 — عهدة المناديب أصلٌ ظاهر، وسقفها يُنفَّذ", () => {
   it("M6: العهدة القائمة تظهر في المركز المالي أصلاً صريحاً", async () => {
     const shift = await openReception();

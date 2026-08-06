@@ -352,10 +352,12 @@ describe("T10 — إصلاح المراجعة: ردّ عربون زين نقدا
   });
 });
 
-describe("T11 — إصلاح المراجعة: أجرة توصيل COUNTER لا تُقبض برصيد زين", () => {
-  it("إنشاء أمر شغلٍ بأجرة COUNTER وطريقة TELECOM ⇒ رفضٌ صريح", async () => {
+describe("T11 — أجرة توصيل COUNTER أمانةٌ نقديّة حتماً (تدقيق ٦/٨ ث٩)", () => {
+  it("أمرُ شغلٍ بأجرة COUNTER وطريقة سلّةٍ غير نقدية ⇒ الأجرة تُقبض **نقداً في الدرج** لا بطريقة السلّة", async () => {
     await openReception();
-    await expect(createWorkOrder(
+    // كان الرفض هو العلاج المؤقّت لزين؛ الجذر أعمق: اشتقاق طريقة الأجرة من السلّة كان يقبضها
+    // بطاقةً/زيناً (خارج الدرج) ثم يصرفها نقداً ⇒ نقدٌ يخرج بلا نظير. صارت CASH حتماً.
+    const wo = await createWorkOrder(
       {
         branchId: 1,
         customerId: 1,
@@ -369,7 +371,14 @@ describe("T11 — إصلاح المراجعة: أجرة توصيل COUNTER لا 
         deliveryCost: "5000.00",
       } as never,
       { userId: 2, branchId: 1, role: "cashier" },
-    )).rejects.toThrowError(/أمانةٌ نقديّة/);
+    );
+    const woId = (wo as { workOrderId: number }).workOrderId;
+    const feeRcpt = (await db().select().from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, `DLV-FEE-WO-${woId}`)))[0];
+    expect(feeRcpt).toBeTruthy();
+    expect(feeRcpt.paymentMethod).toBe("CASH");
+    expect(feeRcpt.cashBucket).toBe("DRAWER");
+    expect(String(feeRcpt.amount)).toBe("5000.00");
   });
 });
 
