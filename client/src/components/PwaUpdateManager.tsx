@@ -1,10 +1,52 @@
 import { Button } from "@/components/ui/button";
 import { flushAutosaves } from "@/lib/autosave";
 import { hasUnsavedInteraction, saveInteractionDraft } from "@/lib/interactionDraft";
+import { decidePwaUpdateAction } from "@/lib/pwaUpdateLifecycle";
 import { setPwaUpdatePending, subscribePwaUpdateOpen } from "@/lib/pwaUpdateStatus";
 import { Download, RefreshCw, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+
+const UPDATE_CHECK_TIMEOUT_MS = 5_000;
+const UPDATE_ACTIVATION_TIMEOUT_MS = 10_000;
+const UPDATE_SNOOZE_MS = 30 * 60 * 1_000;
+const UPDATE_SNOOZE_KEY = "alroya.pwa-update.snoozed-until";
+
+function readSnoozedUntil(): number {
+  try {
+    const value = Number(sessionStorage.getItem(UPDATE_SNOOZE_KEY));
+    return Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function waitForActivation(worker: ServiceWorker, requestSkipWaiting?: () => Promise<void>): Promise<boolean> {
+  if (worker.state === "activated") return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (activated: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      worker.removeEventListener("statechange", onStateChange);
+      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+      resolve(activated);
+    };
+    const onStateChange = () => {
+      if (worker.state === "activated") finish(true);
+      else if (worker.state === "redundant") finish(false);
+    };
+    const onControllerChange = () => finish(true);
+    const timeout = window.setTimeout(() => finish(false), UPDATE_ACTIVATION_TIMEOUT_MS);
+    worker.addEventListener("statechange", onStateChange);
+    navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+    worker.postMessage({ type: "SKIP_WAITING" });
+    // Workbox يرسل الرسالة نفسها عبر MessageChannel إلى العامل الذي سجّله هو؛
+    // الإبقاء على القناتين يعالج اختلافات المتصفحات/الأغلفة في إيقاظ عامل waiting.
+    void requestSkipWaiting?.().catch(() => undefined);
+  });
+}
 
 /**
  * التحديث يُنزّل في الخلفية ثم يبقى منتظراً. لا يستدعي SKIP_WAITING ولا reload
@@ -14,6 +56,14 @@ export function PwaUpdateManager() {
   const [ready, setReady] = useState(false);
   const [applying, setApplying] = useState(false);
   const updateRef = useRef<((reloadPage?: boolean) => Promise<void>) | null>(null);
+  const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
+  const updateWasSignaledRef = useRef(false);
+  const snoozedUntilRef = useRef(readSnoozedUntil());
+
+  const revealUpdate = (force = false) => {
+    setPwaUpdatePending(true);
+    if (force || Date.now() >= snoozedUntilRef.current) setReady(true);
+  };
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
@@ -23,8 +73,8 @@ export function PwaUpdateManager() {
         immediate: true,
         onNeedRefresh() {
           if (!disposed) {
-            setPwaUpdatePending(true);
-            setReady(true);
+            updateWasSignaledRef.current = true;
+            revealUpdate();
           }
         },
         onOfflineReady() {
@@ -34,29 +84,42 @@ export function PwaUpdateManager() {
           // لا نوقف العمل إن فشل فحص التحديث؛ النسخة الفعالة تبقى صالحة.
           console.warn("[pwa] registration/update check failed", error);
         },
+        onRegisteredSW(_swUrl, registration) {
+          registrationRef.current = registration ?? null;
+        },
       });
       updateRef.current = update;
-    }).catch(() => {
+    }).catch((error) => {
       // بيئة التطوير لا توفر virtual:pwa-register دائماً.
+      if (import.meta.env.PROD) console.warn("[pwa] update module failed to load", error);
     });
     return () => { disposed = true; };
   }, []);
 
-  useEffect(() => subscribePwaUpdateOpen(() => setReady(true)), []);
+  useEffect(() => subscribePwaUpdateOpen(() => {
+    snoozedUntilRef.current = 0;
+    revealUpdate(true);
+  }), []);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
     const check = () => {
-      void navigator.serviceWorker.getRegistration().then((registration) => {
+      void navigator.serviceWorker.getRegistration().then(async (registration) => {
+        registrationRef.current = registration ?? null;
         // «لاحقاً» يخفي الرسالة لهذه اللحظة فقط؛ عند العودة للتطبيق نعرض التحديث
-        // المنتظر مجدداً من دون أن نفرضه.
+        // المنتظر مجدداً بعد انتهاء مهلة التأجيل، من دون أن نفرضه.
         if (registration?.waiting) {
-          setPwaUpdatePending(true);
-          setReady(true);
+          updateWasSignaledRef.current = true;
+          revealUpdate();
         }
-        return registration?.update();
+        await registration?.update();
+        if (registration?.waiting) {
+          updateWasSignaledRef.current = true;
+          revealUpdate();
+        }
       }).catch(() => undefined);
     };
+    check();
     const interval = window.setInterval(check, 60 * 60 * 1000);
     const visible = () => { if (document.visibilityState === "visible") check(); };
     document.addEventListener("visibilitychange", visible);
@@ -75,42 +138,57 @@ export function PwaUpdateManager() {
     }
     try {
       setApplying(true);
+      const registration = registrationRef.current ?? await navigator.serviceWorker.getRegistration();
+      registrationRef.current = registration ?? null;
+      let action = decidePwaUpdateAction({
+        hasRegistration: !!registration,
+        hasWaitingWorker: !!registration?.waiting,
+        hasActiveWorker: !!registration?.active,
+        updateWasSignaled: updateWasSignaledRef.current,
+      });
 
-      // لا نعتمد على دالة vite-plugin-pwa وحدها: قد يظهر العامل المنتظر قبل أن
-      // ينتهي تحميل وحدة التسجيل الديناميكية، وكان ذلك يحوّل نقرة الزر إلى no-op.
-      const registration = await navigator.serviceWorker.getRegistration();
-      await registration?.update();
-      const waitingWorker = registration?.waiting;
-
-      if (waitingWorker) {
-        // Workbox في وضع prompt يستقبل هذه الرسالة ويستدعي skipWaiting().
-        // clientsClaim معطّل عمداً، لذلك نعيد التحميل بعد التفعيل ليبدأ التبويب
-        // نفسه تحت سيطرة الإصدار الجديد.
-        const activated = new Promise<void>((resolve) => {
-          const onStateChange = () => {
-            if (waitingWorker.state === "activated" || waitingWorker.state === "redundant") {
-              waitingWorker.removeEventListener("statechange", onStateChange);
-              resolve();
-            }
-          };
-          waitingWorker.addEventListener("statechange", onStateChange);
-        });
-        waitingWorker.postMessage({ type: "SKIP_WAITING" });
+      // لا نطلب فحصاً جديداً قبل استهلاك العامل المنتظر الموجود فعلاً؛ ذلك كان
+      // يفتح سباقاً يمكن أن يغيّر الحالة بين الضغط وقراءة registration.waiting.
+      if (action === "CHECK_AGAIN" && registration) {
         await Promise.race([
-          activated,
-          new Promise<void>((resolve) => window.setTimeout(resolve, 3_000)),
-        ]);
-        window.location.reload();
+          registration.update(),
+          new Promise<void>((resolve) => window.setTimeout(resolve, UPDATE_CHECK_TIMEOUT_MS)),
+        ]).catch(() => undefined);
+        action = decidePwaUpdateAction({
+          hasRegistration: true,
+          hasWaitingWorker: !!registration.waiting,
+          hasActiveWorker: !!registration.active,
+          updateWasSignaled: updateWasSignaledRef.current,
+        });
+      }
+
+      if (action === "ACTIVATE_WAITING" && registration?.waiting) {
+        const activated = await waitForActivation(
+          registration.waiting,
+          updateRef.current ? () => updateRef.current!(false) : undefined,
+        );
+        if (!activated) {
+          toast.error("لم يكتمل تفعيل التحديث؛ لم تُعد الصفحة ويمكنك المحاولة مجدداً.");
+          return;
+        }
+      } else if (action === "RELOAD_ACTIVE") {
+        // Workbox قد يعلن التحديث بعد أن أصبح العامل الجديد active مباشرةً في
+        // تبويب غير مسيطر عليه؛ لا يوجد waiting لإرسال الرسالة إليه، وإعادة
+        // التحميل هي الإجراء الوحيد الذي ينقل الصفحة إلى النسخة الجديدة.
+      } else if (action === "UNAVAILABLE") {
+        toast.error("خدمة تحديث النظام غير متاحة في هذا المتصفح حالياً.");
+        return;
+      } else {
+        setPwaUpdatePending(false);
+        setReady(false);
+        toast.message("لا يوجد تحديث منتظر الآن؛ النظام على أحدث نسخة.");
         return;
       }
 
-      // مسار احتياطي لحالة اكتشاف التحديث من vite-plugin-pwa نفسه.
-      if (updateRef.current) {
-        await updateRef.current(true);
-        return;
-      }
-
-      toast.message("جارٍ تجهيز التحديث؛ أعد المحاولة بعد لحظات.");
+      setPwaUpdatePending(false);
+      setReady(false);
+      window.location.reload();
+      return;
     } catch {
       toast.error("تعذّر تطبيق التحديث الآن؛ يمكنك متابعة عملك بأمان.");
     } finally {
@@ -157,6 +235,9 @@ export function PwaUpdateManager() {
             size="sm"
             disabled={applying}
             onClick={() => {
+              const until = Date.now() + UPDATE_SNOOZE_MS;
+              snoozedUntilRef.current = until;
+              try { sessionStorage.setItem(UPDATE_SNOOZE_KEY, String(until)); } catch { /* التخزين اختياري */ }
               setPwaUpdatePending(false);
               setReady(false);
             }}
