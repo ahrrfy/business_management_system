@@ -5,6 +5,7 @@
  */
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
+import { RowActions } from "@/components/list/RowActions";
 import { Button } from "@/components/ui/button";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -23,6 +24,7 @@ import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { Check, History, Plus, X } from "lucide-react";
 import { useState } from "react";
 
@@ -336,7 +338,7 @@ function ApprovalsLog() {
                   <th className="p-2 font-medium text-end">ينتهي</th>
                   <th className="p-2 font-medium text-center">الحالة</th>
                   <th className="p-2 font-medium text-end">ملاحظات</th>
-                  <th className="p-2 font-medium text-center">إجراء</th>
+                  <th className="p-2 font-medium text-center">الإجراءات والتواصل</th>
                 </tr>
               </thead>
               <tbody>
@@ -356,19 +358,36 @@ function ApprovalsLog() {
                       </td>
                       <td className="p-2 text-end text-xs text-muted-foreground max-w-56 truncate" title={r.notes ?? undefined}>{r.notes ?? "—"}</td>
                       <td className="p-2 text-center">
-                        {st === "ACTIVE" ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-destructive hover:text-destructive gap-1"
-                            disabled={cancelMut.isPending}
-                            onClick={() => setCancelTarget({ id: Number(r.id), customerName: r.customerName })}
-                          >
-                            <X className="size-3.5" aria-hidden /> إلغاء
-                          </Button>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
+                        <RowActions
+                          actions={[
+                            {
+                              key: "cancel",
+                              kind: "cancel",
+                              label: "إلغاء الموافقة",
+                              onSelect: () => setCancelTarget({ id: Number(r.id), customerName: r.customerName }),
+                              variant: "destructive",
+                              disabled: st !== "ACTIVE" || cancelMut.isPending,
+                              disabledReason: st !== "ACTIVE"
+                                ? "لا يمكن إلغاء موافقة غير نشطة"
+                                : "توجد عملية إلغاء قيد التنفيذ",
+                              gate: { managerOnly: true },
+                            },
+                          ]}
+                          contact={{
+                            phone: r.customerPhone,
+                            label: `التواصل مع ${r.customerName}`,
+                            message: buildOperationalContactMessage({
+                              entityLabel: "موافقة ائتمان",
+                              reference: String(r.id),
+                              partyName: r.customerName,
+                              status: STATUS_LABEL[st].label,
+                              dueAt: r.expiresAt,
+                              title: `سقف الموافقة: ${fmtAr(r.maxAmount)} د.ع`,
+                              nextAction: st === "ACTIVE" ? "يرجى تأكيد استلام تفاصيل الموافقة." : undefined,
+                            }),
+                            gate: { managerOnly: true },
+                          }}
+                        />
                       </td>
                     </tr>
                   );

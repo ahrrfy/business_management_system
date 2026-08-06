@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, like } from "drizzle-orm";
 import {
+  productUnits,
   productVariants,
   products,
   productionOrders,
@@ -31,6 +32,7 @@ async function resolveLine(tx: any, line: ProductionLineInput): Promise<Resolved
     baseQuantity = conv.baseQuantity;
     quantity = money(line.quantity).toFixed(4);
   } else {
+    if (line.productUnitId != null) await convertToBaseQuantity(tx, line.productUnitId, "1", line.variantId);
     if (line.baseQuantity == null || !Number.isInteger(line.baseQuantity) || line.baseQuantity <= 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً" });
     }
@@ -91,6 +93,11 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
   )[0];
   if (!head) throw new TRPCError({ code: "NOT_FOUND", message: "الوصفة غير موجودة" });
   if (!head.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الوصفة معطّلة" });
+  const outputUnit = (await tx.select({ variantId: productUnits.variantId, isBaseUnit: productUnits.isBaseUnit, isActive: productUnits.isActive })
+    .from(productUnits).where(eq(productUnits.id, Number(head.outputProductUnitId))).limit(1))[0];
+  if (!outputUnit || Number(outputUnit.variantId) !== Number(head.outputVariantId) || !outputUnit.isBaseUnit || !outputUnit.isActive) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "وحدة ناتج الوصفة غير صالحة للإنتاج؛ يجب أن تكون الوحدة الأساسية النشطة للصنف الناتج" });
+  }
 
   const batch = Number(run.batchQty);
   if (!Number.isSafeInteger(batch) || batch <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "عدد الدفعة يجب أن يكون عدداً صحيحاً موجباً" });

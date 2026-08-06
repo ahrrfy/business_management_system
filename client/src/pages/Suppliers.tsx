@@ -17,6 +17,7 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useMemo, useState } from "react";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 /** نوع صفّ المورّد صريحاً — يتجنّب فشل استدلال T بسبب اتحاد تقنيع التكلفة (maskSupplierSensitive). */
 type Row = RouterOutputs["suppliers"]["search"]["rows"][number];
@@ -269,6 +270,21 @@ export default function Suppliers() {
                     <td className="p-2 text-center">
                       {/* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
                       <RowActions
+                        contact={{
+                          phone: s.phone,
+                          whatsapp: (s as { whatsapp?: string | null }).whatsapp,
+                          alternativePhones: [
+                            (s as { phone2?: string | null }).phone2,
+                            (s as { phone3?: string | null }).phone3,
+                          ],
+                          label: `واتساب ${s.name}`,
+                          message: buildOperationalContactMessage({
+                            partyName: s.name,
+                            entityLabel: "حساب المورّد",
+                            nextAction: "نتواصل معكم لمتابعة طلب شراء أو تسوية الحساب. يرجى الرد عند الملاءمة.",
+                          }),
+                          gate: { module: "suppliers", level: "READ" },
+                        }}
                         actions={[
                           {
                             key: "edit",

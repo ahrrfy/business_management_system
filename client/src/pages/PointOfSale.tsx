@@ -155,9 +155,9 @@ export default function PointOfSale() {
   }, [meLoading, accessDenied, visibleModes, navigate]);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background" dir="rtl">
+    <div className="pos-workspace flex h-dvh flex-col overflow-hidden bg-background" dir="rtl" data-pos-mode={activeMode}>
       {/* شريط الأوضاع — مَوحَّد عبر الأوضاع الثلاثة */}
-      <div className="flex h-12 flex-shrink-0 items-center gap-2 border-b bg-card px-3">
+      <div className="pos-modebar flex flex-shrink-0 items-center gap-2 overflow-x-auto border-b bg-card px-3 py-1.5">
         <div className="flex items-center gap-1.5" role="tablist" aria-label="أوضاع نقطة البيع">
           {visibleModes.map((m) => {
             const active = m.v === activeMode;
@@ -169,7 +169,7 @@ export default function PointOfSale() {
                 aria-selected={active}
                 onClick={() => setMode(m.v)}
                 className={cn(
-                  "inline-flex h-9 items-center gap-2 rounded-lg border-2 px-3 text-sm font-bold transition-all",
+                  "inline-flex h-[var(--ui-control)] items-center gap-2 rounded-lg border-2 px-3 text-sm font-bold transition-all",
                   active ? m.activeCls : "border-transparent bg-muted/40 hover:bg-muted",
                 )}
                 title={`${m.label} — ${m.subtitle}`}
@@ -180,13 +180,13 @@ export default function PointOfSale() {
             );
           })}
           {reservationsWorkspace && (
-            <span className="inline-flex h-9 items-center gap-2 rounded-lg border-2 border-primary bg-primary/10 px-3 text-sm font-bold text-primary">
+            <span className="inline-flex h-[var(--ui-control)] items-center gap-2 rounded-lg border-2 border-primary bg-primary/10 px-3 text-sm font-bold text-primary">
               <CalendarClock aria-hidden className="size-4" />
               حجوزات خدمة العملاء
             </span>
           )}
         </div>
-        <div className="ms-auto flex items-center gap-3">
+        <div className="pos-modebar-meta ms-auto flex shrink-0 items-center gap-3">
           {/* صدق الهوية: صاحب الدور المخصّص المحصور بقسمٍ (مثل «كاشير طباعة») يرى لماذا
               يظهر له قسم واحد — كان يظهر تبويب وحيد بلا تفسير فيبدو النظام «غير منطقي».
               والتخصيص الفرديّ (permissionsOverride بلا دور مخصّص) يُعلَن كذلك — نفس الفجوة بطريق ثانٍ. */}
@@ -207,7 +207,7 @@ export default function PointOfSale() {
           {visibleModes.some((mode) => mode.v === "RETAIL") && (
             <Link
               href="/invoices"
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
+              className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
               title="عرض الفواتير المباعة وإعادة طباعتها"
             >
               <ReceiptText aria-hidden className="size-4" />
@@ -216,7 +216,7 @@ export default function PointOfSale() {
           )}
           <Link
             href="/"
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
+            className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
             title="العودة إلى الرئيسية"
           >
             <Home aria-hidden className="size-4" />

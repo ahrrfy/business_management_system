@@ -1298,6 +1298,14 @@ export const invoices = mysqlTable(
     deliveryFee: decimal("deliveryFee", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    // إفصاح التوصيل المجّاني (0152): يميّز «توصيل أُهدي» عن «بلا توصيل» — كلاهما كان
+    // `deliveryFee = 0` فلا يُفرَّقان. `deliveryFree` هو التمييز، و`deliveryWaivedAmount`
+    // قيمةُ ما تُنوزِل عنه (يراها الزبون على الفاتورة وتُحصى في التقارير).
+    // **إفصاحٌ لا محاسبة**: الإيراد يبقى `deliveryFee` وحده — لا قيد ولا أثر ماليّ لهذين.
+    deliveryFree: boolean("deliveryFree").default(false).notNull(),
+    deliveryWaivedAmount: decimal("deliveryWaivedAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
     status: mysqlEnum("invoiceStatus", [
       "PENDING",
       "CONFIRMED",

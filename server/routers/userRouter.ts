@@ -57,15 +57,7 @@ export const userRouter = router({
       // النمط نفسه في auditRouter.ts: بلا الـcast يُضيّق TS نوع الاتحاد `i` إلى `{}` (فارغ من كل
       // الحقول) عند مطابقة الفرع الافتراضي بدل الشكل الكامل الاختياري ⇒ خطأ نوع على كل خاصية أدناه.
       const i = input ?? ({} as NonNullable<typeof input>);
-      if (i.branchId == null) return listUsers(i);
-      // listUsers لا تعرف فلتر الفرع (عمود على users مباشرةً بلا حاجة لتعديل الخدمة المشتركة) —
-      // نجلب حتى سقف الخدمة (٥٠٠، نفس السقف الأقصى المفروض أصلاً على limit) بباقي الفلاتر كما هي،
-      // ثم نُرشّح بالفرع ونُرقّم الصفحات هنا. آمن لأن ٥٠٠ سقفٌ قائمٌ فعلاً لحجم منشأة كهذه.
-      const { rows } = await listUsers({ ...i, limit: 500, offset: 0 });
-      const filtered = rows.filter((r) => Number(r.branchId) === i.branchId);
-      const offset = Math.max(i.offset ?? 0, 0);
-      const limit = Math.min(Math.max(i.limit ?? 50, 1), 500);
-      return { rows: filtered.slice(offset, offset + limit), total: filtered.length };
+      return listUsers(i);
     }),
 
   get: adminProcedure

@@ -12,7 +12,7 @@
 // (المندوب لا يرى/يؤكّد إلا طلباته). لا نستعمل عزل الفرع — المندوب عابرٌ لفروع طلباته.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { customers, deliveryParties, invoiceItems, invoices, onlineOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
@@ -82,7 +82,7 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
       orderTotal: onlineOrders.total,
       createdAt: onlineOrders.orderDate,
       customerName: customers.name,
-      customerPhone: customers.phone,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       invTotal: invoices.total,
       invPaid: invoices.paidAmount,
       invReturned: invoices.returnedTotal,

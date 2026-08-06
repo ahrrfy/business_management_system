@@ -7,12 +7,12 @@
  * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, ClipboardList, FileText, Loader2, MessageCircle, Package, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
+import { AlertTriangle, Check, ClipboardList, FileText, Loader2, Package, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { buildOnlineOrderFollowupMessage, openWhatsApp } from "@/lib/whatsapp";
+import { buildOnlineOrderFollowupMessage } from "@/lib/whatsapp";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
@@ -339,6 +339,17 @@ export default function OrderFulfillment() {
                     <td className="p-2">
                       <RowActions
                         mode="menu"
+                        contact={{
+                          phone: o.customerPhone,
+                          label: `واتساب ${o.customerName ?? "العميل"}`,
+                          message: buildOnlineOrderFollowupMessage({
+                            orderNumber: o.orderNumber,
+                            customerName: o.customerName,
+                            total: o.total,
+                            status: o.status,
+                          }),
+                          gate: { module: "store", level: "READ" },
+                        }}
                         actions={[
                           {
                             key: "print-label",
@@ -369,17 +380,6 @@ export default function OrderFulfillment() {
                             disabled: isBusy,
                             disabledReason: "هناك عملية جارية على الطلب",
                             onSelect: () => printPreparationA4(o.id),
-                          },
-                          {
-                            key: "whatsapp",
-                            kind: "other",
-                            label: "متابعة عبر واتساب",
-                            icon: MessageCircle,
-                            hidden: !o.customerPhone,
-                            gate: { module: "store", level: "READ" },
-                            onSelect: () => {
-                              if (o.customerPhone) openWhatsApp(o.customerPhone, buildOnlineOrderFollowupMessage({ orderNumber: o.orderNumber, customerName: o.customerName, total: o.total, status: o.status }));
-                            },
                           },
                           {
                             key: "dispatch",

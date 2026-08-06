@@ -74,8 +74,16 @@ export async function assignTask(taskId: number, assignedTo: number | null, acto
     if (!(OPEN_STATUSES as readonly string[]).includes(task.taskStatus))
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إعادة إسناد مهمة مغلقة (محلولة أو ملغاة)" });
     if (assignedTo != null) {
-      const u = (await tx.select({ id: users.id, isActive: users.isActive }).from(users).where(eq(users.id, assignedTo)).limit(1))[0];
+      const u = (await tx
+        .select({ id: users.id, branchId: users.branchId, role: users.role, isActive: users.isActive })
+        .from(users)
+        .where(eq(users.id, assignedTo))
+        .limit(1))[0];
       if (!u || !u.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير موجود أو معطّل" });
+      const elevatedAssignee = u.role === "admin" || u.role === "manager";
+      if (!elevatedAssignee && Number(u.branchId) !== Number(task.branchId)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إسناد المهمة إلى موظف من فرع آخر" });
+      }
     }
     await tx.update(tasks).set({ assignedTo }).where(eq(tasks.id, taskId));
     await insertEvent(tx, { taskId, eventType: "ASSIGN", userId: actor.userId });

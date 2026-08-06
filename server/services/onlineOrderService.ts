@@ -123,7 +123,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
             id: onlineOrders.id,
             orderNumber: onlineOrders.orderNumber,
             branchId: onlineOrders.branchId,
-            customerPhone: customers.phone,
+            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
             subtotal: onlineOrders.subtotal,
             shippingCost: onlineOrders.shippingCost,
             total: onlineOrders.total,
@@ -383,7 +383,7 @@ export async function trackOnlineOrder(orderNumber: string, phone: string): Prom
         total: onlineOrders.total,
         governorate: onlineOrders.governorate,
         createdAt: onlineOrders.createdAt,
-        customerPhone: customers.phone,
+        customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       })
       .from(onlineOrders)
       .innerJoin(customers, eq(onlineOrders.customerId, customers.id))
@@ -442,7 +442,9 @@ export async function readOnlineOrderLabel(orderNumber: string, token: string): 
     id: onlineOrders.id, orderNumber: onlineOrders.orderNumber, status: onlineOrders.status,
     subtotal: onlineOrders.subtotal, shippingCost: onlineOrders.shippingCost, total: onlineOrders.total,
     governorate: onlineOrders.governorate, createdAt: onlineOrders.createdAt,
-    customerName: customers.name, customerPhone: customers.phone, addressText: onlineOrders.shippingAddress,
+    customerName: customers.name,
+    customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+    addressText: onlineOrders.shippingAddress,
   }).from(onlineOrders).innerJoin(customers, eq(onlineOrders.customerId, customers.id))
     .where(eq(onlineOrders.orderNumber, orderNumber.trim())).limit(1))[0];
   if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });

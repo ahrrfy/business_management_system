@@ -29,6 +29,7 @@ import CustomerPicker from "@/components/CustomerPicker";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
 import { cn } from "@/lib/utils";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -365,6 +366,19 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                       <TableCell>
                         <RowActions
                           mode="auto"
+                          contact={{
+                            phone: r.contactPhone,
+                            label: `واتساب ${r.contactName || "العميل"}`,
+                            message: buildOperationalContactMessage({
+                              partyName: r.contactName,
+                              entityLabel: "الحجز",
+                              reference: r.reservationNumber,
+                              status: STATUS_LABEL[st] ?? st,
+                              dueAt: r.expiresAt,
+                              nextAction: closeable ? "يرجى تأكيد الحجز أو التواصل معنا قبل انتهاء مدته." : null,
+                            }),
+                            gate: { module: "reservations", level: "READ" },
+                          }}
                           actions={[
                             {
                               key: "view",
@@ -372,6 +386,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                               label: "التفاصيل",
                               icon: Eye,
                               onSelect: () => setDetailId(Number(r.id)),
+                              gate: { module: "reservations", level: "READ" },
                             },
                             {
                               key: "convert",

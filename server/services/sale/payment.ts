@@ -123,6 +123,16 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       if (s.status !== "OPEN") {
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الوردية مغلقة" });
       }
+      // لا يكفي أن تكون الوردية مفتوحة ومملوكة للفاعل: يجب أن تكون درجاً من
+      // الفرع نفسه للفـاتورة. من دون ذلك يمكن تمرير وردية فرعٍ آخر فتُسجّل
+      // مقبوضات الفرع A في Z-report للفرع B (مع receipt.branchId=A)، وهو
+      // انحراف نقدي لا يمكن تسويته على مستوى الفرع.
+      if (Number(s.branchId) !== Number(inv.branchId)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "الوردية لا تخص فرع الفاتورة",
+        });
+      }
       const role = actor.role;
       if (role !== "admin" && role !== "manager") {
         if (Number(s.userId) !== Number(actor.userId)) {

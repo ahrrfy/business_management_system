@@ -36,6 +36,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { RowActions } from "@/components/list";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import {
   Dialog,
   DialogContent,
@@ -373,6 +374,20 @@ function DueSoonSection({
                   <TableCell className="text-center">
                     <RowActions
                       mode="inline"
+                      contact={{
+                        phone: r.customerPhone,
+                        label: `واتساب ${r.customerName}`,
+                        message: buildOperationalContactMessage({
+                          entityLabel: "قسط",
+                          reference: `${r.planId}-${r.seq}`,
+                          partyName: r.customerName,
+                          title: `القسط المستحق: ${fmt(r.amount)} د.ع`,
+                          dueAt: r.dueDate,
+                          status: r.daysOverdue > 0 ? `متأخر ${r.daysOverdue} يوماً` : "قريب الاستحقاق",
+                          nextAction: "يرجى تأكيد موعد السداد.",
+                        }),
+                        gate: { module: "treasury", level: "READ" },
+                      }}
                       actions={[{
                         key: "pay",
                         kind: "pay",
@@ -477,7 +492,30 @@ function PlansTable({
                     {p.createdAt ? fmtDateTime(p.createdAt as unknown as string) : "—"}
                   </TableCell>
                   <TableCell className="text-center">
-                    <Button size="sm" variant="ghost" onClick={() => onDetail(p.id)}>عرض</Button>
+                    <RowActions
+                      mode="inline"
+                      contact={{
+                        phone: p.customerPhone,
+                        label: `واتساب ${p.customerName}`,
+                        message: buildOperationalContactMessage({
+                          entityLabel: "خطة أقساط",
+                          reference: String(p.id),
+                          partyName: p.customerName,
+                          title: `إجمالي الخطة: ${fmt(p.totalAmount)} د.ع`,
+                          dueAt: p.nextDueDate,
+                          status: PLAN_STATUS_AR[p.status]?.label ?? p.status,
+                          nextAction: p.nextDueDate ? "يرجى تأكيد موعد القسط القادم." : undefined,
+                        }),
+                        gate: { module: "treasury", level: "READ" },
+                      }}
+                      actions={[{
+                        key: "detail",
+                        kind: "view",
+                        label: "عرض",
+                        onSelect: () => onDetail(p.id),
+                        gate: { module: "treasury", level: "READ" },
+                      }]}
+                    />
                   </TableCell>
                 </TableRow>
               ))}
@@ -848,6 +886,20 @@ function PlanDetailDialog({
                       <TableCell className="text-center whitespace-nowrap">
                         <RowActions
                           mode="inline"
+                          contact={{
+                            phone: p.customerPhone,
+                            label: `واتساب ${p.customerName}`,
+                            message: buildOperationalContactMessage({
+                              entityLabel: "قسط",
+                              reference: `${p.id}-${l.seq}`,
+                              partyName: p.customerName,
+                              title: `قيمة القسط: ${fmt(l.amount)} د.ع`,
+                              dueAt: l.dueDate,
+                              status: LINE_STATUS_AR[l.status]?.label ?? l.status,
+                              nextAction: "يرجى تأكيد حالة السداد.",
+                            }),
+                            gate: { module: "treasury", level: "READ" },
+                          }}
                           actions={[
                             {
                               key: "pay",

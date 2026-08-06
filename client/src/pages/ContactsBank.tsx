@@ -19,6 +19,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { fmt } from "@/lib/money";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { RowActions } from "@/components/list";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 type ContactKind = "customer" | "supplier" | "delivery" | "wa_unlinked";
 type PartyKind = "customer" | "supplier";
@@ -178,6 +179,19 @@ export default function ContactsBank() {
                                 <div onClick={(e) => e.stopPropagation()}>
                                   <RowActions
                                     mode="inline"
+                                    contact={{
+                                      phone: r.phone,
+                                      label: `واتساب ${r.name}`,
+                                      message: buildOperationalContactMessage({
+                                        entityLabel: KIND_META[kind].label,
+                                        reference: String(r.id),
+                                        partyName: r.name,
+                                        title: "متابعة جهة الاتصال",
+                                      }),
+                                      gate: kind === "supplier"
+                                        ? { module: "suppliers", level: "READ" }
+                                        : { module: "crm", level: "READ" },
+                                    }}
                                     actions={[{
                                       key: "view-360",
                                       kind: "view",
@@ -193,6 +207,17 @@ export default function ContactsBank() {
                               ) : kind === "wa_unlinked" ? (
                                 <RowActions
                                   mode="inline"
+                                  contact={{
+                                    phone: r.phone,
+                                    label: `واتساب ${r.name}`,
+                                    message: buildOperationalContactMessage({
+                                      entityLabel: "جهة واتساب",
+                                      reference: String(r.id),
+                                      partyName: r.name,
+                                      title: "متابعة المحادثة غير المربوطة",
+                                    }),
+                                    gate: { module: "campaigns", level: "READ" },
+                                  }}
                                   actions={[{
                                     key: "open-inbox",
                                     kind: "view",
@@ -203,7 +228,21 @@ export default function ContactsBank() {
                                   }]}
                                 />
                               ) : (
-                                <span className="text-xs text-muted-foreground">—</span>
+                                <RowActions
+                                  mode="inline"
+                                  actions={[]}
+                                  contact={{
+                                    phone: r.phone,
+                                    label: `واتساب ${r.name}`,
+                                    message: buildOperationalContactMessage({
+                                      entityLabel: "جهة توصيل",
+                                      reference: String(r.id),
+                                      partyName: r.name,
+                                      title: "متابعة التوصيل والعهدة",
+                                    }),
+                                    gate: { module: "crm", level: "READ" },
+                                  }}
+                                />
                               )}
                             </TableCell>
                           </TableRow>

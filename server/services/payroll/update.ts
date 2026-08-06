@@ -12,7 +12,14 @@ export async function updateItem(itemId: number, input: UpdateItemInput, actor?:
   return withTx(async (tx) => {
     const [item] = await tx.select().from(payrollItems).where(eq(payrollItems.id, itemId)).for("update").limit(1);
     if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "بند المسيّر غير موجود" });
-    const [run] = await tx.select().from(payrollRuns).where(eq(payrollRuns.id, Number(item.runId))).limit(1);
+    // Serialise edits to different items in the same run: recomputing the run header
+    // from concurrent snapshots can otherwise leave totalNet stale.
+    const [run] = await tx
+      .select()
+      .from(payrollRuns)
+      .where(eq(payrollRuns.id, Number(item.runId)))
+      .for("update")
+      .limit(1);
     if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "المسيّر غير موجود" });
     if (run.status !== "draft") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعديل البنود إلا والمسيّر مسودة" });

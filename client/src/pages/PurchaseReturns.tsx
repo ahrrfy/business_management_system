@@ -13,6 +13,7 @@ import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc } from "@/lib/trpc";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 
@@ -49,6 +50,10 @@ export default function PurchaseReturns() {
   const activeFilterCount = [f.supplierId, f.branchId, f.from || f.to].filter(Boolean).length;
 
   const suppliers = trpc.suppliers.list.useQuery();
+  const supplierContacts = useMemo(
+    () => new Map((suppliers.data ?? []).map((s) => [Number(s.id), s])),
+    [suppliers.data],
+  );
   const branches = trpc.branches.list.useQuery();
   const list = trpc.purchaseReturns.list.useQuery({ ...listInput, limit: PAGE, offset: page * PAGE });
 
@@ -212,6 +217,20 @@ export default function PurchaseReturns() {
                   <td className="p-2 text-center">
                     <RowActions
                       mode="auto"
+                      contact={{
+                        whatsapp: supplierContacts.get(Number(r.supplierId))?.whatsapp,
+                        phone: supplierContacts.get(Number(r.supplierId))?.phone,
+                        label: `واتساب ${supplierName(r.supplierId)}`,
+                        message: buildOperationalContactMessage({
+                          entityLabel: "مرتجع شراء",
+                          reference: String(r.id),
+                          partyName: supplierName(r.supplierId),
+                          title: `قيمة المرتجع: ${fmt(returned(r.amount))} د.ع`,
+                          dueAt: r.entryDate,
+                          nextAction: "يرجى تأكيد استلام المرتجع وتسوية الحساب.",
+                        }),
+                        gate: { module: "purchases", level: "READ" },
+                      }}
                       actions={[
                         {
                           key: "print",

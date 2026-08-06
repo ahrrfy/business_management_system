@@ -431,6 +431,27 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       giftLines.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))
     );
 
+    // إفصاح التوصيل المجّاني (0152): «مجّانيّ» = أجرةٌ صفر حتماً. الحسم خادميّ لا من الشاشة:
+    // عَلَمٌ مع أجرةٍ موجبة تناقضٌ (فاتورةٌ تقول «مجاناً» وتقبض) ⇒ الأجرة تُغلِّب والعَلَم يسقط.
+    // القيمة المُتنازَل عنها إفصاحيّة بحتة: تُعرَض للزبون وتُحصى في التقارير ولا تدخل إيراداً
+    // ولا قيداً — الإيراد يبقى `deliveryFee` وحده (صفرٌ في هذه الحالة).
+    const deliveryFeeD = round2(money(input.deliveryFee ?? "0"));
+    const isFreeDelivery = input.deliveryFree === true && deliveryFeeD.lte(0);
+    const waivedDelivery = round2(money(input.deliveryWaivedAmount ?? "0"));
+    if (waivedDelivery.lt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "قيمة التوصيل المُتنازَل عنها لا تصحّ أن تكون سالبة" });
+    }
+    // قرار المالك (٦/٨/٢٦): **القيمة إلزامية عند تفعيل «مجاني»**. كانت اختيارية فتُخزَّن صفراً،
+    // فتضيع فائدة القياس («كم أهديتُ توصيلاً وبكم؟») على تلك الفواتير وتُطبَع «مجاناً» بلا مقدار.
+    // الإلزام هنا لا في الشاشة وحدها: الشاشة تُرشِد، والخادم يمنع — فلا تتسرّب فاتورةٌ ناقصة
+    // الإفصاح من أيّ قناة (استيراد/أوفلاين/تكامل مستقبليّ).
+    if (isFreeDelivery && waivedDelivery.lte(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "أدخِل قيمة أجرة التوصيل قبل جعله مجّانياً — تُطبَع للزبون وتُحصى في التقارير",
+      });
+    }
+
     // 6.b SALES-01/02 — بوّابة البيع بأقل من التكلفة (سدّ حرج: كاشير يبيع بسعر/خصم صفر).
     //     المنطق مشترك في billing.isInvoiceBelowCost ⇒ لا تَنجرف سياسة POS عن قناة الطباعة.
     //     أيُّ بند/فاتورة تحت COGS يَلزمه موافقة مدير (الراوتر يَمنح المدير/الأدمن السلطة ذاتياً).
@@ -562,6 +583,11 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       // أجرة الشحن كإيراد (مُضمَّنة في total ومُعترَف بها في revenue أدناه) — تُخزَّن صراحةً ليعكسها
       // المرتجع الكامل بدقّة (returnService) فيبقى Σ(revenue)=Σ(profit)=0.
       deliveryFee: toDbMoney(round2(money(input.deliveryFee ?? "0"))),
+      // إفصاح التوصيل المجّاني (0152): يُحسَم **خادمياً** — «مجّانيّ» تعني أجرةً صفراً حتماً،
+      // فلو وردت أجرةٌ موجبة مع العَلَم فالأجرة تُغلِّب والعَلَم يسقط (لا فاتورةٌ تقول «مجاناً»
+      // وتقبض أجرةً في آنٍ واحد). والقيمة المُتنازَل عنها لا تُخزَّن إلّا مع المجّانيّة الفعلية.
+      deliveryFree: isFreeDelivery,
+      deliveryWaivedAmount: toDbMoney(isFreeDelivery ? waivedDelivery : money(0)),
       status,
       paidAmount: toDbMoney(paidNow),
       paymentMethod: input.payment?.method ?? null,
@@ -876,7 +902,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
   // حماية flowNotify الداخلية — فشله (لأي سبب) **لا يُسقِط** بيعاً ناجحاً بالفعل (القاعدة الحاكمة،
   // راجع server/services/whatsapp/flowNotify.ts).
   try {
-    await notifyPurchaseThanks(input, result);
+    await notifySaleCustomerAfterCommit(input, result);
   } catch (e) {
     logger.warn(
       { err: e instanceof Error ? e.message : String(e), invoiceId: result.invoiceId },
@@ -888,7 +914,8 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
 }
 
 /** يجلب هاتف/اسم عميل الفاتورة (إن عُرف) ويستدعي flowNotify — لا شيء إن لا عميل/لا هاتف. */
-async function notifyPurchaseThanks(input: CreateSaleInput, result: CreateSaleResult): Promise<void> {
+/** Post-commit customer acknowledgement, reusable by composite sale flows. */
+export async function notifySaleCustomerAfterCommit(input: CreateSaleInput, result: CreateSaleResult): Promise<void> {
   if (!input.customerId) return;
   const db = requireDb();
   const cust = (

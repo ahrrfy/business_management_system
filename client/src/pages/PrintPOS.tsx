@@ -626,7 +626,7 @@ export default function PrintPOS() {
 
   // ── الشاشة الرئيسية ──
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
+    <div className="print-pos-surface" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
       <Header C={C} dark={dark} toggleDark={toggleDark} search={search} setSearch={setSearch} searchRef={searchRef}
         me={me.data} shiftId={shift.id} lastInv={lastInv} onCloseShift={() => setShifting(true)}
         printerReady={printerReady} onConnectPrinter={connectPrinter}
@@ -647,7 +647,7 @@ export default function PrintPOS() {
             </div>
           );
         })}
-        {tabs.length < 6 && <button onClick={addTab} style={{ width: 34, height: 34, borderRadius: 9, background: C.card, border: `1.5px dashed ${C.border}`, cursor: "pointer", fontSize: 22, color: C.mutedFg, flexShrink: 0 }}>+</button>}
+        {tabs.length < 6 && <button aria-label="طلب طباعة جديد" onClick={addTab} style={{ width: 44, height: 44, borderRadius: 9, background: C.card, border: `1.5px dashed ${C.border}`, cursor: "pointer", fontSize: 22, color: C.mutedFg, flexShrink: 0 }}>+</button>}
       </div>
 
       {message && (
@@ -998,7 +998,7 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
                       {c.svc.productName}
                       <span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 500 }}>/ {c.svc.unitName}</span>
                     </div>
-                    <button onClick={(e) => { e.stopPropagation(); removeRow(c.uid); }} aria-label="حذف السطر" style={{ width: 34, height: 34, flexShrink: 0, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={15} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); removeRow(c.uid); }} aria-label="حذف السطر" style={{ width: 44, height: 44, flexShrink: 0, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={18} /></button>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                     <div onClick={(e) => { e.stopPropagation(); setSelUid(c.uid); setEditPriceUid(c.uid); }} style={{ minWidth: 78 }}>

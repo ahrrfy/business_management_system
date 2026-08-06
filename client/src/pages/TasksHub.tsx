@@ -45,6 +45,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import CustomerPicker from "@/components/CustomerPicker";
+import { RowActions } from "@/components/list";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 export const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -107,29 +110,49 @@ export function OverdueBadge() {
 /* ═══════════ لوحة (كانبان) ═══════════ */
 
 function BoardCard({ task, onClick }: { task: TaskRow; onClick: () => void }) {
+  const partyName = task.customerName ?? task.supplierName ?? null;
+  const partyPhone = task.customerPhone ?? task.supplierPhone ?? null;
+  const contactMessage = buildOperationalContactMessage({
+    partyName,
+    entityLabel: "المهمة",
+    reference: task.taskNumber,
+    title: task.title,
+    status: STATUS_META[task.taskStatus as TaskStatus]?.label ?? task.taskStatus,
+    dueAt: task.effectiveDueAt,
+    nextAction: task.taskStatus === "WAITING_CUSTOMER" ? "نحتاج ردّكم للمتابعة وإكمال الطلب." : null,
+  });
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="w-full text-right rounded-lg border bg-card p-3 hover:border-primary/50 hover:shadow-sm transition-colors space-y-2"
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] font-mono text-muted-foreground truncate" dir="ltr">{task.taskNumber}</span>
-        {task.isOverdue && <OverdueBadge />}
-      </div>
-      <div className="text-sm font-semibold line-clamp-2">{task.title}</div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <KindBadge kind={task.taskKind} />
-        <PriorityBadge priority={task.priority} />
-      </div>
-      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground pt-1.5 border-t">
-        <span className="inline-flex items-center gap-1 truncate">
-          <User aria-hidden className="size-3 shrink-0" />
-          {task.assigneeName ?? "بلا إسناد"}
-        </span>
-        {task.customerName && <span className="truncate">{task.customerName}</span>}
-      </div>
-    </button>
+    <div className="rounded-lg border bg-card p-3 hover:border-primary/50 hover:shadow-sm transition-colors">
+      <button type="button" onClick={onClick} className="w-full space-y-2 text-right">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-mono text-muted-foreground truncate" dir="ltr">{task.taskNumber}</span>
+          {task.isOverdue && <OverdueBadge />}
+        </div>
+        <div className="text-sm font-semibold line-clamp-2">{task.title}</div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <KindBadge kind={task.taskKind} />
+          <PriorityBadge priority={task.priority} />
+        </div>
+        <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground pt-1.5 border-t">
+          <span className="inline-flex items-center gap-1 truncate">
+            <User aria-hidden className="size-3 shrink-0" />
+            {task.assigneeName ?? "بلا إسناد"}
+          </span>
+          {partyName && <span className="truncate">{partyName}</span>}
+        </div>
+      </button>
+      {task.taskKind !== "INTERNAL" && (
+        <div className="mt-2 flex justify-end border-t pt-2" onClick={(event) => event.stopPropagation()}>
+          <WhatsAppShare
+            phone={partyPhone}
+            message={contactMessage}
+            label={`واتساب ${partyName ?? "الطرف"}`}
+            size="icon-sm"
+            iconOnly
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -209,15 +232,17 @@ function TaskTable({ rows, onOpen }: { rows: TaskRow[]; onOpen: (id: number) => 
                 <TableHead className="text-center">الحالة</TableHead>
                 <TableHead className="text-center">الأولوية</TableHead>
                 <TableHead className="text-right">المسنَد إليه</TableHead>
-                <TableHead className="text-right">العميل</TableHead>
+                <TableHead className="text-right">الطرف</TableHead>
+                <TableHead className="text-right">الهاتف</TableHead>
                 <TableHead className="text-center">الاستحقاق الفعلي</TableHead>
                 <TableHead className="text-center">متأخرة</TableHead>
+                <TableHead className="text-center">إجراءات</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">لا مهام.</TableCell>
+                  <TableCell colSpan={11} className="py-8 text-center text-muted-foreground">لا مهام.</TableCell>
                 </TableRow>
               ) : (
                 rows.map((t) => (
@@ -228,11 +253,38 @@ function TaskTable({ rows, onOpen }: { rows: TaskRow[]; onOpen: (id: number) => 
                     <TableCell className="text-center"><StatusBadge status={t.taskStatus} /></TableCell>
                     <TableCell className="text-center"><PriorityBadge priority={t.priority} /></TableCell>
                     <TableCell className="whitespace-nowrap">{t.assigneeName ?? "—"}</TableCell>
-                    <TableCell className="whitespace-nowrap">{t.customerName ?? "—"}</TableCell>
+                    <TableCell className="whitespace-nowrap">{t.customerName ?? t.supplierName ?? "—"}</TableCell>
+                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground" dir="ltr">{t.customerPhone ?? t.supplierPhone ?? "—"}</TableCell>
                     <TableCell className="text-center text-xs text-muted-foreground whitespace-nowrap">
                       {t.effectiveDueAt ? fmtDateTime(t.effectiveDueAt) : "—"}
                     </TableCell>
                     <TableCell className="text-center">{t.isOverdue ? <OverdueBadge /> : "—"}</TableCell>
+                    <TableCell className="text-center" onClick={(event) => event.stopPropagation()}>
+                      <RowActions
+                        mode="menu"
+                        actions={[{
+                          key: "view",
+                          kind: "view",
+                          label: "فتح المهمة",
+                          onSelect: () => onOpen(Number(t.id)),
+                          gate: { module: "tasks", level: "READ" },
+                        }]}
+                        contact={t.taskKind === "INTERNAL" ? undefined : {
+                          phone: t.customerPhone ?? t.supplierPhone,
+                          label: `واتساب ${t.customerName ?? t.supplierName ?? "الطرف"}`,
+                          message: buildOperationalContactMessage({
+                            partyName: t.customerName ?? t.supplierName,
+                            entityLabel: "المهمة",
+                            reference: t.taskNumber,
+                            title: t.title,
+                            status: STATUS_META[t.taskStatus as TaskStatus]?.label ?? t.taskStatus,
+                            dueAt: t.effectiveDueAt,
+                            nextAction: t.taskStatus === "WAITING_CUSTOMER" ? "نحتاج ردّكم للمتابعة وإكمال الطلب." : null,
+                          }),
+                          gate: { module: "tasks", level: "READ" },
+                        }}
+                      />
+                    </TableCell>
                   </TableRow>
                 ))
               )}
@@ -370,6 +422,7 @@ function ListTab({
               متأخرة فقط
             </label>
             <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground">من</span>
               <Input
                 type="date"
                 value={f.from}

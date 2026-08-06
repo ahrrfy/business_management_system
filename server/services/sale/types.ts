@@ -49,6 +49,16 @@ export interface CreateSaleInput {
   /** أجرة توصيل/شحن تُضاف على رأس الفاتورة كإيراد شحن (بلا تكلفة/مخزون). تُستعمل في إرسال طلب المتجر
    *  (COD) كي تكون invoice.total = subtotal + الشحن = ما وافق عليه الزبون، فيُحصّل المندوب كامل المبلغ. */
   deliveryFee?: string | null;
+  /**
+   * إفصاح التوصيل المجّاني (0152): `true` = وُصِّل الطلب و**أُهديت** أجرته. يميّزه عن «بلا
+   * توصيل» (كلاهما `deliveryFee = 0`). لا أثر ماليّ: لا إيراد ولا قيد — إفصاحٌ للزبون وللتقارير.
+   */
+  deliveryFree?: boolean;
+  /**
+   * قيمة الأجرة المُتنازَل عنها (تُعرَض «مجاناً — قيمته X»). تُقبل مع `deliveryFree` فقط،
+   * و**إلزامية** معه (قرار المالك ٦/٨/٢٦): توصيلٌ مجّانيّ بلا قيمة يُضيّع قياس ما أُهدي.
+   */
+  deliveryWaivedAmount?: string | null;
   taxRatePercent?: string | null;
   payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
   /** ش٤ (§٧.٢) — مالٌ قُبض **سلفاً** على هذه السلة (عرابين مسوّدة عبر orderPayments):

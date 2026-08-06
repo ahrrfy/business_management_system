@@ -91,6 +91,7 @@ export const creditApprovalRouter = router({
           id: creditApprovals.id,
           customerId: creditApprovals.customerId,
           customerName: customers.name,
+          customerPhone: sql<string | null>`COALESCE(${customers.whatsapp}, ${customers.phone}, ${customers.phone2}, ${customers.phone3})`,
           maxAmount: creditApprovals.maxAmount,
           approvedBy: creditApprovals.approvedBy,
           approvedByName: users.name,

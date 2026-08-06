@@ -18,9 +18,11 @@ import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { printShippingLabel, type ShippingLabelData } from "@/lib/printing/shippingLabel";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { RowActions } from "@/components/list";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
+import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import {
   Dialog,
   DialogContent,
@@ -120,18 +122,26 @@ function dueInfo(o: { status: string; dueDate: unknown }): { state: "done" | "ok
   return { state: "ok", text: `باقٍ ${days} يوم` };
 }
 function progressOf(status: string) { const i = STAGE_INDEX[status] ?? 0; return { idx: i, pct: Math.round((i / 3) * 100) }; }
-function waUrl(phone: string, customer: string | null, o: { orderNumber: string; title: string; status: string; dueDate: unknown }) {
-  const msg = encodeURIComponent(
-    `مرحباً ${customer ?? ""}،\nطلب خدمة رقم: ${o.orderNumber}\nالعمل: ${o.title}\nالحالة: ${STATUS_LABEL[o.status] ?? o.status}\nالاستحقاق: ${o.dueDate ? String(o.dueDate).slice(0, 10) : "—"}\nشكراً — المطبعة`
-  );
-  return `https://wa.me/${String(phone).replace(/[^\d]/g, "")}?text=${msg}`;
+function workOrderContactMessage(o: {
+  orderNumber: string;
+  title: string;
+  status: string;
+  customerName: string | null;
+  quantity?: number | null;
+  dueDate: unknown;
+  salePrice?: string | number | null;
+  deposit?: string | number | null;
+}) {
+  return buildWorkOrderStatusMessage({
+    orderNumber: o.orderNumber,
+    title: o.title,
+    status: o.status,
+    customerName: o.customerName,
+    quantity: o.quantity,
+    dueDate: o.dueDate ? String(o.dueDate) : null,
+    amountDue: o.status === "READY" ? D(o.salePrice ?? 0).minus(D(o.deposit ?? 0)).toString() : null,
+  });
 }
-
-const WaIcon = ({ size = 13 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
-  </svg>
-);
 
 // ─────────────── البطاقة ───────────────
 /** طباعة طلب الخدمة من بيانات البطاقة — نفس قالب printWorkOrder المستعمل في الـDrawer
@@ -245,11 +255,18 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
             <RowActions
               mode="menu"
               label={`إجراءات ${o.orderNumber}`}
+              contact={{
+                phone: o.customerPhone,
+                alternativePhones: [o.deliveryPhone],
+                label: `واتساب ${o.customerName ?? "العميل"}`,
+                message: workOrderContactMessage(o),
+                gate: { module: "workorders", level: "READ" },
+              }}
               actions={[
-                { key: "print", label: "طباعة A4", onSelect: () => printWoFromCard(o) },
-                { key: "print-thermal", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o) },
-                { key: "print-label", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o) },
-                { key: "open", label: "فتح التفاصيل", href: `/work-orders/${o.id}` },
+                { key: "print", kind: "print", label: "طباعة A4", onSelect: () => printWoFromCard(o), gate: { module: "workorders", level: "READ" } },
+                { key: "print-thermal", kind: "print", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o), gate: { module: "workorders", level: "READ" } },
+                { key: "print-label", kind: "print", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o), gate: { module: "workorders", level: "READ" } },
+                { key: "open", kind: "view", label: "فتح التفاصيل", href: `/work-orders/${o.id}`, gate: { module: "workorders", level: "READ" } },
               ]}
             />
           </span>
@@ -282,12 +299,17 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
           )}
           <span className="wob-who-name">{o.assigneeName ?? "غير مُسنَد"}</span>
         </div>
-        {o.customerPhone && (
-          <a className="wob-wa" href={waUrl(o.customerPhone, o.customerName, o)} target="_blank" rel="noopener noreferrer"
-            title={`واتساب: ${o.customerName ?? ""}`} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-            <WaIcon />
-          </a>
-        )}
+        <span onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+          <WhatsAppShare
+            phone={o.customerPhone}
+            alternativePhones={[o.deliveryPhone]}
+            message={workOrderContactMessage(o)}
+            label={`واتساب ${o.customerName ?? "العميل"}`}
+            size="icon-sm"
+            iconOnly
+            className="wob-wa"
+          />
+        </span>
       </div>
       {/* شَريط إسناد inline لعَمود «طابور وارد» فَقط — مَدير فَقط، per README §5.2. */}
       {inboxAssign && staff && !ghost && (
@@ -605,9 +627,13 @@ function Drawer({
                 title="ملصق شحن يُلصَق على الطرد (بالقياس المحفوظ — الافتراضي ٨٠×١٢٠مم)"
                 onClick={() => printWoShippingLabel(d)}
               ><Package aria-hidden className="size-4 inline-block align-text-bottom me-1" /> ملصق شحن</button>
-              {d.customerPhone && (
-                <a className="wob-wa-lg" href={waUrl(d.customerPhone, d.customerName, d)} target="_blank" rel="noopener noreferrer"><WaIcon size={18} /> راسل العميل</a>
-              )}
+              <WhatsAppShare
+                phone={d.customerPhone}
+                alternativePhones={[d.deliveryPhone]}
+                message={workOrderContactMessage(d)}
+                label="راسل العميل"
+                className="wob-wa-lg"
+              />
               {next ? (next !== "DELIVERED" || canDeliver) && (
                 <button className="wob-btn wob-btn-primary" style={{ flex: 1 }} disabled={busy}
                   onClick={() => (next === "DELIVERED" ? onDeliver(d) : onAdvance(d.id, next))}>{ADV_LABEL[next]}</button>
@@ -904,22 +930,26 @@ export default function WorkOrders() {
           </AppSelect>
         )}
         {/* نطاق تاريخ الاستلام (createdAt) — شامل لليوم بحدود UTC خادمياً. */}
-        <input
-          type="date"
-          className="wob-sel"
-          value={f.from}
-          onChange={(e) => setF({ from: e.target.value })}
-          aria-label="من تاريخ"
-          title="من تاريخ الاستلام"
-        />
-        <input
-          type="date"
-          className="wob-sel"
-          value={f.to}
-          onChange={(e) => setF({ to: e.target.value })}
-          aria-label="إلى تاريخ"
-          title="إلى تاريخ الاستلام"
-        />
+        <div className="wob-date-range" aria-label="نطاق تاريخ الاستلام">
+          <span>من</span>
+          <input
+            type="date"
+            className="wob-sel wob-date"
+            value={f.from}
+            onChange={(e) => setF({ from: e.target.value })}
+            aria-label="من تاريخ"
+            title="من تاريخ الاستلام"
+          />
+          <span>إلى</span>
+          <input
+            type="date"
+            className="wob-sel wob-date"
+            value={f.to}
+            onChange={(e) => setF({ to: e.target.value })}
+            aria-label="إلى تاريخ"
+            title="إلى تاريخ الاستلام"
+          />
+        </div>
         {anyFilter && <button className="wob-chip-clear" onClick={resetF}>مسح الفلاتر <X aria-hidden className="size-3.5 inline-block align-text-bottom" /></button>}
       </div>
 

@@ -44,6 +44,8 @@ import {
   TASK_WRITE_ROLES,
   type TaskStatus,
 } from "@/pages/TasksHub";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 type TaskDetailData = RouterOutputs["tasks"]["get"];
 type TaskEvent = TaskDetailData["events"][number];
@@ -275,6 +277,17 @@ export default function TaskDetail() {
 
   // ترتيب زمنيّ تصاعديّ من الخادم (asc id) — نعرضه تنازلياً (الأحدث أعلى، نمط شريط نشاط).
   const events = [...data.events].reverse();
+  const partyName = data.customerName ?? data.supplierName ?? null;
+  const partyPhone = data.customerPhone ?? data.supplierPhone ?? null;
+  const contactMessage = buildOperationalContactMessage({
+    partyName,
+    entityLabel: "المهمة",
+    reference: data.taskNumber,
+    title: data.title,
+    status: STATUS_META[data.taskStatus as TaskStatus]?.label ?? data.taskStatus,
+    dueAt: data.effectiveDueAt,
+    nextAction: data.taskStatus === "WAITING_CUSTOMER" ? "نحتاج ردّكم للمتابعة وإكمال الطلب." : null,
+  });
 
   return (
     <div className="space-y-4 p-4 max-w-4xl">
@@ -286,6 +299,13 @@ export default function TaskDetail() {
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={data.taskStatus} />
             {data.isOverdue && <OverdueBadge />}
+            {data.taskKind !== "INTERNAL" && (
+              <WhatsAppShare
+                phone={partyPhone}
+                message={contactMessage}
+                label={`واتساب ${partyName ?? "الطرف"}`}
+              />
+            )}
           </div>
         }
       />
@@ -314,6 +334,14 @@ export default function TaskDetail() {
               <div className="font-medium">—</div>
             )}
           </div>
+          {data.supplierId != null && (
+            <div className="space-y-0.5">
+              <div className="text-xs text-muted-foreground">المورّد</div>
+              <Link href={`/suppliers/${data.supplierId}/edit`} className="font-medium text-primary hover:underline">
+                {data.supplierName ?? `#${data.supplierId}`}
+              </Link>
+            </div>
+          )}
           <div className="space-y-0.5">
             <div className="text-xs text-muted-foreground">الاستحقاق الفعلي</div>
             <div className="font-medium" dir="ltr">{data.effectiveDueAt ? fmtDateTime(data.effectiveDueAt) : "—"}</div>

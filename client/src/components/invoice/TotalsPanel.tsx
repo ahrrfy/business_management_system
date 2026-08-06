@@ -51,8 +51,9 @@ export function TotalsPanel({
   allowFreeShipping = false,
 }: TotalsPanelProps) {
   const t = calcTotals(items, state);
-  // «مجاني» = أجرة مُدخَلة صفراً صراحةً (لا حقلٌ فارغ لم يُقرَّر بعد) ⇒ المفتاح يعكس قراراً واعياً.
-  const isFreeShipping = state.shipping.trim() !== "" && Number(state.shipping) === 0;
+  // (0152) «مجاني» صار حالةً صريحة لا استنتاجاً من الصفر — فالصفر كان يخلط «أُهديت الأجرة»
+  // بـ«لا توصيل أصلاً». والمبلغ المُدخَل يبقى ظاهراً ليُطبَع «مجاناً — قيمته X».
+  const isFreeShipping = state.shippingFree === true;
   const currSym = state.currency === "USD" ? "$" : "د.ع";
   const effectiveGrandTotal = overrideGrandTotal ?? t.grandTotal;
   const grandTotalNum = Number(effectiveGrandTotal);
@@ -173,9 +174,7 @@ export function TotalsPanel({
                   variant={isFreeShipping ? "default" : "outline"}
                   aria-pressed={isFreeShipping}
                   className="h-7 px-2 text-[11px] font-bold"
-                  onClick={() =>
-                    dispatch({ type: "SET_FIELD", field: "shipping", value: isFreeShipping ? "" : "0" })
-                  }
+                  onClick={() => dispatch({ type: "SET_FIELD", field: "shippingFree", value: !isFreeShipping })}
                 >
                   <Gift aria-hidden className="size-3.5" />
                   مجاني
@@ -189,6 +188,20 @@ export function TotalsPanel({
               />
             </div>
           </div>
+        )}
+        {/* شفافيةٌ للموظّف: يرى بالضبط ما سيُطبَع للزبون في كلّ حالة. */}
+        {showShipping && allowFreeShipping && isFreeShipping && (
+          <p
+            className={cn(
+              "pb-1.5 text-[11px] font-semibold",
+              Number(state.shipping || "0") > 0 ? "text-muted-foreground" : "text-destructive",
+            )}
+            role={Number(state.shipping || "0") > 0 ? undefined : "alert"}
+          >
+            {Number(state.shipping || "0") > 0
+              ? `سيُطبَع على الفاتورة: «التوصيل مجاناً — قيمته ${fmtNum(state.shipping)} ${currSym}» ولن يُضاف للإجمالي.`
+              : "أدخِل قيمة الأجرة — إلزامية عند الإهداء كي تُطبَع للزبون وتُحصى في التقارير."}
+          </p>
         )}
 
         {/* Other expenses */}

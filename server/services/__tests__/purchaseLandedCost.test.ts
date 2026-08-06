@@ -1,11 +1,14 @@
-// landed-cost (تكلفة الشحن/الكمرك): تُوزَّع على بنود أمر الشراء **بنسبة القيمة** وتُرسمَل في تكلفة
-// المخزون (WAVG) عند الاستلام ⇒ تظهر في COGS عند البيع، وتُضاف إلى ذمّة المورّد (AP). لا تُسجَّل
-// مصروفَ P&L (منعُ ازدواج مع COGS). هذه الاختبارات تُثبِت الثوابت الأربعة:
-//   (١) WAVG لكلّ بند يشمل حصّته المُوزَّعة بالقيمة (لا بالكمية).
-//   (٢) AP = الإجماليّ الشامل (البضاعة + الضريبة + الشحن + الكمرك).
-//   (٣) لا قيد مصروفٍ منفصل — قيد PURCHASE واحدٌ فقط (cost = البضاعة + الشحن/الكمرك المُرسمَلة).
-//   (٤) الاستلام الجزئيّ يُرسمِل حصّته بدقّة (Σ عبر الاستلامات = الحصّة بالضبط، لا انجراف).
-// (بلا الإصلاح: total=البضاعة فقط، والتكلفة/AP بلا الشحن ⇒ كلّ التوكيدات المُرسمَلة تفشل.)
+// الشحن/الكمرك على أمر الشراء — **قرار المالك ٥/٨/٢٦**: «الشحن يُسجَّل مصروفاً لحظة الاستلام
+// وتكلفة الصنف سعر المورّد فقط؛ الشحن مصاريف علينا ولا دخل للمورّد به.»
+//
+// نسخت هذه الاختبارات سياسةً سابقة (رسملة الشحن في WAVG + إضافته لذمّة المورّد، #311) وأُعيدت
+// كتابتها بالكامل. الثوابت الأربعة الآن:
+//   (١) `purchaseOrders.total` = البضاعة + الضريبة فقط — الشحن يُخزَّن ولا يدخل الإجمالي/الذمّة.
+//   (٢) WAVG بعد الاستلام = **سعر المورّد وحده** (لا حصّة شحن) ⇒ COGS عند البيع لا يحمل الشحن.
+//   (٣) رصيد المورّد يرتفع بالبضاعة + الضريبة فقط، وقيد PURCHASE.cost = البضاعة.
+//   (٤) الشحن يُسجَّل **صفّ مصروفٍ حقيقياً** (فئة نقل) + إيصال صرف + قيد PAYMENT_OUT، بحصّةٍ
+//       متناسبة مع المستلَم فعلاً (Σ عبر الاستلامات = الشحن بالضبط، لا انجراف).
+// الجمع بين (٢) و(٤) محظور: لو رُسمِل الشحن **وسُجّل** مصروفاً لاحتُسِب مرّتين فينقص الربح ضعفاً.
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -18,7 +21,7 @@ function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set
 async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of ["idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices", "productUnits", "productVariants", "products", "suppliers", "branches", "users"]) {
+  for (const t of ["idempotencyKeys", "accountingEntries", "expenses", "receipts", "inventoryMovements", "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices", "productUnits", "productVariants", "products", "suppliers", "branches", "users"]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -55,147 +58,128 @@ async function itemsOf(poId: number) {
 async function entries() {
   return db().select().from(s.accountingEntries).orderBy(s.accountingEntries.id);
 }
+async function expenseRows() {
+  return db().select().from(s.expenses).orderBy(s.expenses.id);
+}
 
-describe("landed-cost — رسملة الشحن/الكمرك (توزيع بالقيمة + AP + بلا ازدواج)", () => {
-  it("createPurchaseOrder: total = البضاعة + الضريبة + الشحن + الكمرك، والحقلان يُخزَّنان", async () => {
-    const po = await createPurchaseOrder(
-      {
-        supplierId: 1, branchId: 1, taxRatePercent: "0",
-        items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }, // 1,000
-          { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" },  // 3,000
-        ],
-        shippingCost: "300", customsCost: "100",
-      },
-      actor,
-    );
+/** أمرٌ بقيمة بضاعة ٤٬٠٠٠ وشحن+كمرك ٤٠٠ (بلا ضريبة). */
+async function orderWithShipping(shipping = "300", customs = "100") {
+  return createPurchaseOrder(
+    {
+      supplierId: 1, branchId: 1, taxRatePercent: "0",
+      items: [
+        { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }, // 1,000
+        { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" },  // 3,000
+      ],
+      shippingCost: shipping, customsCost: customs,
+    },
+    actor,
+  );
+}
+
+describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ مورّد ولا تكلفةُ صنف", () => {
+  it("(١) إجمالي أمر الشراء = البضاعة + الضريبة فقط، والشحن يُخزَّن خارجه", async () => {
+    const po = await orderWithShipping();
     const row = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
     expect(row.subtotal).toBe("4000.00");
     expect(row.shippingCost).toBe("300.00");
     expect(row.customsCost).toBe("100.00");
-    expect(row.total).toBe("4400.00"); // 4000 + 0 ضريبة + 400 شحن/كمرك
+    // ٤٬٠٠٠ لا ٤٬٤٠٠: المورّد لم يبِعنا الشحن، فلا يدخل ما نُطالَب به.
+    expect(row.total).toBe("4000.00");
   });
 
-  it("استلام كامل: WAVG يشمل الحصّة المُوزَّعة **بالقيمة** + AP شامل + قيد PURCHASE واحد بلا مصروف منفصل", async () => {
-    // بندان: قيمة 1,000 (10×100) وقيمة 3,000 (5×600). المجموع 4,000. شحن 300 + كمرك 100 = 400.
-    // التوزيع بالقيمة: الحصّة_أ = 400×1000/4000 = 100 ⇒ لكلّ وحدة 100/10 = 10 ⇒ التكلفة 110.
-    //                  الحصّة_ب = 400×3000/4000 = 300 ⇒ لكلّ وحدة 300/5  = 60 ⇒ التكلفة 660.
-    // (لو كان التوزيع بالكمية لكانت 400/15=26.67 للوحدة ⇒ 126.67 و626.67 — مختلفة تماماً.)
-    const po = await createPurchaseOrder(
+  it("(٢+٣) استلام كامل: WAVG = سعر المورّد وحده، والذمّة = البضاعة، وقيد PURCHASE بلا شحن", async () => {
+    const po = await orderWithShipping();
+    const items = await itemsOf(po.purchaseOrderId);
+    await receivePurchase(
+      { purchaseOrderId: po.purchaseOrderId, lines: items.map((i) => ({ purchaseOrderItemId: Number(i.id), receivedBaseQuantity: i.baseQuantity })) },
+      actor,
+    );
+    // سعر المورّد: ١٠٠ و٦٠٠ — بلا أيّ حصّة شحن مُضافة (كانت ١١٠ و٦٦٠ في السياسة الملغاة).
+    expect(await costOf(1)).toBe("100.00");
+    expect(await costOf(2)).toBe("600.00");
+    expect(await supplierBalance()).toBe("4000.00");
+    const purchase = (await entries()).filter((e) => e.entryType === "PURCHASE");
+    expect(purchase).toHaveLength(1);
+    expect(purchase[0].cost).toBe("4000.00");
+    expect(purchase[0].amount).toBe("4000.00");
+  });
+
+  it("(٤) الاستلام يُنشئ مصروف نقلٍ حقيقياً بالشحن كاملاً + قيد PAYMENT_OUT", async () => {
+    const po = await orderWithShipping();
+    const items = await itemsOf(po.purchaseOrderId);
+    await receivePurchase(
+      { purchaseOrderId: po.purchaseOrderId, lines: items.map((i) => ({ purchaseOrderItemId: Number(i.id), receivedBaseQuantity: i.baseQuantity })) },
+      actor,
+    );
+    const exps = await expenseRows();
+    expect(exps).toHaveLength(1);
+    expect(exps[0].category).toBe("TRANSPORT");
+    expect(exps[0].amount).toBe("400.00"); // ٣٠٠ شحن + ١٠٠ كمرك
+    expect(exps[0].status).toBe("ACTIVE");
+    expect(exps[0].receiptId).not.toBeNull();
+
+    const payOut = (await entries()).filter((e) => e.entryType === "PAYMENT_OUT");
+    expect(payOut).toHaveLength(1);
+    expect(payOut[0].amount).toBe("400.00");
+    // المصروف **ليس** على المورّد: القيد بلا supplierId فلا يظهر حركةً في كشف حسابه.
+    expect(payOut[0].supplierId).toBeNull();
+    // وإيصال صرفٍ فعليّ خرج به النقد.
+    const rcpts = await db().select().from(s.receipts);
+    expect(rcpts).toHaveLength(1);
+    expect(rcpts[0].direction).toBe("OUT");
+    expect(rcpts[0].amount).toBe("400.00");
+  });
+
+  it("الاستلام الجزئيّ: المصروف متناسب، وΣ عبر الاستلامات = الشحن بالضبط", async () => {
+    const po = await orderWithShipping();
+    const items = await itemsOf(po.purchaseOrderId);
+    // الدفعة الأولى: نصف كمية البند الأول فقط.
+    await receivePurchase(
+      { purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: 5 }] },
+      actor,
+    );
+    const first = await expenseRows();
+    expect(first).toHaveLength(1);
+    // حصّة البند الأول من الشحن = ٤٠٠ × (1000/4000) = ١٠٠، ونصفها = ٥٠.
+    expect(first[0].amount).toBe("50.00");
+    expect(await supplierBalance()).toBe("500.00"); // بضاعة الدفعة وحدها
+
+    // بقيّة الكميات.
+    await receivePurchase(
       {
-        supplierId: 1, branchId: 1, taxRatePercent: "0",
-        items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
-          { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" },
+        purchaseOrderId: po.purchaseOrderId,
+        lines: [
+          { purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: 5 },
+          { purchaseOrderItemId: Number(items[1].id), receivedBaseQuantity: items[1].baseQuantity },
         ],
-        shippingCost: "300", customsCost: "100",
       },
       actor,
     );
-    const items = await itemsOf(po.purchaseOrderId);
-    await receivePurchase(
-      { purchaseOrderId: po.purchaseOrderId, lines: items.map((it) => ({ purchaseOrderItemId: Number(it.id), receivedBaseQuantity: it.baseQuantity })) },
-      actor,
-    );
-
-    // (١) WAVG لكلّ بند يشمل حصّته المُوزَّعة بالقيمة (لا بالكمية).
-    expect(await costOf(1)).toBe("110.00");
-    expect(await costOf(2)).toBe("660.00");
-
-    // (٢) AP = الإجماليّ الشامل.
-    expect(await supplierBalance()).toBe("4400.00");
-
-    // (٣) قيد PURCHASE واحد فقط — لا مصروف منفصل. cost = البضاعة + الشحن/الكمرك المُرسمَلة.
-    const es = await entries();
-    expect(es.length).toBe(1);
-    expect(es[0].entryType).toBe("PURCHASE");
-    expect(es[0].cost).toBe("4400.00");   // 4000 بضاعة + 400 شحن/كمرك
-    expect(es[0].amount).toBe("4400.00"); // نفس أثر AP
-    expect(es[0].taxAmount).toBe("0.00");
-    expect(es[0].revenue).toBe("0.00");
-    expect(es[0].profit).toBe("0.00");
+    const all = await expenseRows();
+    const sum = all.reduce((a, e) => a + Number(e.amount), 0);
+    expect(sum).toBeCloseTo(400, 2); // لا انجراف تقريب
+    expect(await supplierBalance()).toBe("4000.00");
+    expect(await costOf(1)).toBe("100.00"); // ما زال سعر المورّد وحده
   });
 
-  it("بلا شحن/كمرك ⇒ سلوكٌ غير متغيّر (total = البضاعة، التكلفة/AP بلا رسملة) — حارس انحدار", async () => {
+  it("أمرٌ بلا شحن ⇒ لا مصروف ولا إيصال (حارس انحدار)", async () => {
     const po = await createPurchaseOrder(
       { supplierId: 1, branchId: 1, taxRatePercent: "0", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }] },
       actor,
     );
-    const row = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
-    expect(row.shippingCost).toBe("0.00");
-    expect(row.customsCost).toBe("0.00");
-    expect(row.total).toBe("1000.00");
     const items = await itemsOf(po.purchaseOrderId);
-    await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: 10 }] }, actor);
+    await receivePurchase(
+      { purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: items[0].baseQuantity }] },
+      actor,
+    );
+    expect(await expenseRows()).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
     expect(await costOf(1)).toBe("100.00");
     expect(await supplierBalance()).toBe("1000.00");
   });
 
-  it("استلام جزئيّ: الحصّة تُرسمَل تدريجياً وΣ = الحصّة بالضبط (لا انجراف تقريب)", async () => {
-    // بند واحد قيمته 1,000 (10×100)، كمرك 33 (رقمٌ يُنتج كسوراً). الحصّة = 33 (بندٌ وحيد).
-    const po = await createPurchaseOrder(
-      { supplierId: 1, branchId: 1, taxRatePercent: "0", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }], customsCost: "33" },
-      actor,
-    );
-    const items = await itemsOf(po.purchaseOrderId);
-    const itemId = Number(items[0].id);
-
-    // استلام ٣ من ١٠: cumLanded(3) = round2(33×3/10) = 9.90 ⇒ AP += 300 + 9.90 = 309.90.
-    // WAVG: 100 + 33/10 = 103.30 (بلا مخزون قائم).
-    await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: itemId, receivedBaseQuantity: 3 }] }, actor);
-    expect(await costOf(1)).toBe("103.30");
-    expect(await supplierBalance()).toBe("309.90");
-
-    // استلام ٧ المتبقّية (يُكمِل): الحصّة المتبقّية = 33 − 9.90 = 23.10 ⇒ AP += 700 + 23.10 = 723.10.
-    await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: itemId, receivedBaseQuantity: 7 }] }, actor);
-    expect(await costOf(1)).toBe("103.30"); // المتوسّط المرجّح ثابت (تكلفة موحّدة)
-    expect(await supplierBalance()).toBe("1033.00"); // 1000 بضاعة + 33 كمرك — بالضبط
-
-    // قيدا PURCHASE (واحدٌ لكلّ استلام) — مجموع amount = 1,033.00 بالضبط، لا مصروف منفصل.
-    const es = await entries();
-    expect(es.length).toBe(2);
-    expect(es.every((e) => e.entryType === "PURCHASE")).toBe(true);
-    expect(es[0].amount).toBe("309.90");
-    expect(es[1].amount).toBe("723.10");
-  });
-
-  it("رسملة دون السنت: المكوّنان يُقرّبان قبل الإجمالي ⇒ الأعمدة المخزَّنة تطابق total وAP (لا انحراف)", async () => {
-    // استدعاءٌ مباشرٌ بقيمٍ دون السنت (يتجاوز حارس الراوتر). قبل الإصلاح: total يحمل
-    // round2(0.005+0.005)=0.01 بينما الأعمدة تُخزَّن 0.01+0.01، فيُعيد receive حساب 0.02 ⇒ AP≠total.
-    // بعد الإصلاح: كلٌّ يُقرّب إلى 0.01 أولاً ⇒ total=…​+0.02، والأعمدة والـAP متّسقة.
-    const po = await createPurchaseOrder(
-      {
-        supplierId: 1, branchId: 1, taxRatePercent: "0",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
-        shippingCost: "0.005", customsCost: "0.005",
-      },
-      actor,
-    );
-    const row = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
-    expect(row.shippingCost).toBe("0.01");
-    expect(row.customsCost).toBe("0.01");
-    expect(row.total).toBe("1000.02");
-    const items = await itemsOf(po.purchaseOrderId);
-    await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: 10 }] }, actor);
-    expect(await supplierBalance()).toBe("1000.02"); // = total بالضبط
-  });
-
-  it("حارس: شحن/كمرك على أمر بقيمة بضاعة صفر ⇒ BAD_REQUEST (لا وعاء للتوزيع)", async () => {
-    await expect(
-      createPurchaseOrder(
-        { supplierId: 1, branchId: 1, taxRatePercent: "0", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "0" }], shippingCost: "100" },
-        actor,
-      ),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    expect((await db().select().from(s.purchaseOrders)).length).toBe(0);
-  });
-
   it("حارس: شحن سالب ⇒ BAD_REQUEST", async () => {
-    await expect(
-      createPurchaseOrder(
-        { supplierId: 1, branchId: 1, taxRatePercent: "0", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100" }], shippingCost: "-5" },
-        actor,
-      ),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(orderWithShipping("-1", "0")).rejects.toThrow(/سالب/);
   });
 });

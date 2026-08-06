@@ -92,6 +92,10 @@ export interface InvoicePrintData {
     /** هدايا الفاتورة (0149): سطرٌ مُهدىً — يُطبَع «مجاناً» بدل صفرٍ يُقرأ خطأَ تسعير. */
     isGift?: boolean | null;
   }[];
+  /** إفصاح التوصيل (0152): أجرةٌ مقبوضة / توصيلٌ مُهدىً بقيمته / لا توصيل. */
+  deliveryFee?: string | number | null;
+  deliveryFree?: boolean | null;
+  deliveryWaivedAmount?: string | number | null;
   subtotal: string | number;
   discountAmount?: string | number | null;
   taxAmount?: string | number | null;
@@ -138,6 +142,9 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
       total: it.total,
       isGift: it.isGift ?? null,
     })),
+    deliveryFee: d.deliveryFee ?? null,
+    deliveryFree: d.deliveryFree ?? null,
+    deliveryWaivedAmount: d.deliveryWaivedAmount ?? null,
     subtotal: d.subtotal,
     discountAmount: d.discountAmount ?? null,
     taxAmount: d.taxAmount ?? null,

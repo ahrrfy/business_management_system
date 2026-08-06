@@ -1056,35 +1056,49 @@
       "idx": 151,
       "version": "5",
       "when": 1787879404000,
-      "tag": "0151_reception_deposit_link_and_shift_index",
+      "tag": "0151_retail_cashier_digital_cards_access",
       "breakpoints": true
     },
     {
       "idx": 152,
       "version": "5",
       "when": 1787879405000,
-      "tag": "0152_reception_drafts",
+      "tag": "0152_free_delivery_disclosure",
       "breakpoints": true
     },
     {
       "idx": 153,
       "version": "5",
       "when": 1787879406000,
-      "tag": "0153_order_payments",
+      "tag": "0153_reception_deposit_link_and_shift_index",
       "breakpoints": true
     },
     {
       "idx": 154,
       "version": "5",
       "when": 1787879407000,
-      "tag": "0154_telecom_payment_method",
+      "tag": "0154_reception_drafts",
       "breakpoints": true
     },
     {
       "idx": 155,
       "version": "5",
       "when": 1787879408000,
-      "tag": "0155_telecom_guard_indexes",
+      "tag": "0155_order_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 156,
+      "version": "5",
+      "when": 1787879409000,
+      "tag": "0156_telecom_payment_method",
+      "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "5",
+      "when": 1787879410000,
+      "tag": "0157_telecom_guard_indexes",
       "breakpoints": true
     }
   ]

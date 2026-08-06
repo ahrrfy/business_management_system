@@ -333,6 +333,49 @@ describe("inventory.transferBatch idempotency", () => {
     expect(docs[0].status).toBe("IN_TRANSIT");
   });
 
+  it("إعادة استخدام معرّف الإرسال بحمولة مختلفة ⇒ CONFLICT، لا نجاح وهمي", async () => {
+    const caller = appRouter.createCaller(makeCtx(await userById(1)));
+    const clientRequestId = "batch-idem-payload-conflict";
+    await caller.inventory.transferBatch({
+      fromBranchId: 1, toBranchId: 2, items: [{ variantId: 1, baseQuantity: 5 }], clientRequestId,
+    });
+
+    await expect(
+      caller.inventory.transferBatch({
+        fromBranchId: 1, toBranchId: 2, items: [{ variantId: 1, baseQuantity: 4 }], clientRequestId,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await db().select().from(s.stockTransfers)).toHaveLength(1);
+    expect((await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0].quantity).toBe(45);
+  });
+
+  it("معرّف استلام مكرر لسند مختلف ⇒ CONFLICT، والسند الثاني لا يُغلق", async () => {
+    const caller = appRouter.createCaller(makeCtx(await userById(1)));
+    const first = await caller.inventory.transferBatch({
+      fromBranchId: 1, toBranchId: 2, items: [{ variantId: 1, baseQuantity: 3 }], clientRequestId: "receipt-source-1",
+    });
+    const second = await caller.inventory.transferBatch({
+      fromBranchId: 1, toBranchId: 2, items: [{ variantId: 2, baseQuantity: 2 }], clientRequestId: "receipt-source-2",
+    });
+    const [firstLine] = await db().select().from(s.stockTransferLines).where(eq(s.stockTransferLines.transferId, first.transferId));
+    const [secondLine] = await db().select().from(s.stockTransferLines).where(eq(s.stockTransferLines.transferId, second.transferId));
+
+    await caller.inventory.transferReceive({
+      transferId: first.transferId,
+      lines: [{ lineId: Number(firstLine.id), quantityReceived: 3 }],
+      clientRequestId: "receipt-idempotency-key",
+    });
+    await expect(
+      caller.inventory.transferReceive({
+        transferId: second.transferId,
+        lines: [{ lineId: Number(secondLine.id), quantityReceived: 2 }],
+        clientRequestId: "receipt-idempotency-key",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect((await db().select().from(s.stockTransfers).where(eq(s.stockTransfers.id, second.transferId)))[0].status).toBe("IN_TRANSIT");
+  });
+
   it("مفاتيح مختلفة ⇒ سندان منفصلان (تأكيد عدم الإفراط)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(1)));
     await caller.inventory.transferBatch({

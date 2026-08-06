@@ -6,7 +6,7 @@
  * `dueToday` تجمع تذكيرات كل الفروع (لا عزل فرع هنا — المتابعة قرار مبيعات عابر للفروع).
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, lte } from "drizzle-orm";
+import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
 import { customerNotes, customers, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -114,6 +114,7 @@ export async function dueTodayCustomerNotes() {
       id: customerNotes.id,
       customerId: customerNotes.customerId,
       customerName: customers.name,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       note: customerNotes.note,
       followUpDate: customerNotes.followUpDate,
     })

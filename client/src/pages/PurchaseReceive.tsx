@@ -54,6 +54,8 @@ export default function PurchaseReceive() {
   const [free, setFree] = useState<Record<number, string>>({});
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  // طريقة دفع **مصروف الشحن/الكمرك** (لشركة النقل) — مستقلّة تماماً عن دفعة المورّد أعلاه.
+  const [shipMethod, setShipMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [directUsd, setDirectUsd] = useState("");
   const [directIqd, setDirectIqd] = useState("");
   const [directFee, setDirectFee] = useState("");
@@ -184,7 +186,7 @@ export default function PurchaseReceive() {
           .filter((b) => b.freeBaseQuantity > 0)
       : [];
     try {
-      await receive.mutateAsync({ purchaseOrderId, lines, payment, clientRequestId });
+      await receive.mutateAsync({ purchaseOrderId, lines, payment, shippingPaymentMethod: shipMethod, clientRequestId });
       // البونص المجّانيّ بعد نجاح الاستلام العاديّ (تسلسليّ idempotent — نمط convertQuotation؛ مفتاح مشتقّ).
       if (bonusLines.length) await recordBonus.mutateAsync({ purchaseOrderId, bonusLines, clientRequestId: `${clientRequestId}:bonus` });
       setClientRequestId(crypto.randomUUID()); // تصفيرٌ بعد نجاح الاثنين معاً
@@ -299,8 +301,10 @@ export default function PurchaseReceive() {
                 const share = D(data.subtotal ?? 0).gt(0)
                   ? landed.times(D(it.total ?? 0)).dividedBy(D(data.subtotal ?? 1))
                   : D(0);
+                // قرار المالك (٥/٨/٢٦): تكلفة الوحدة = سعر المورّد وحده — حصّة الشحن (share) تبقى
+                // معروضةً للعِلم فقط ولا تُضاف هنا، لأنّها لم تعُد تدخل WAVG (صارت مصروف نقل).
                 const finalUnit = D(it.quantity ?? 0).gt(0)
-                  ? D(it.total ?? 0).plus(share).dividedBy(D(it.quantity))
+                  ? D(it.total ?? 0).dividedBy(D(it.quantity))
                   : D(0);
                 return (
                   <tr key={it.id} className="border-t">
@@ -345,6 +349,29 @@ export default function PurchaseReceive() {
         </CardContent>
       </Card>
 
+      {/* مصروف الشحن/الكمرك — يُسجَّل مصروف نقلٍ على الشركة لحظة الاستلام (لا على المورّد). */}
+      {!closed && D(data.shippingCost ?? 0).plus(D(data.customsCost ?? 0)).gt(0) && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">مصروف الشحن/الكمرك</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+            <p className="text-sm text-muted-foreground sm:col-span-2">
+              شحن هذا الأمر{" "}
+              <span dir="ltr" className="font-bold tabular-nums text-foreground">
+                {fmt(D(data.shippingCost ?? 0).plus(D(data.customsCost ?? 0)).toFixed(2))} د.ع
+              </span>{" "}
+              يُسجَّل <strong>مصروف نقلٍ على الشركة</strong> بحصّة ما تستلمه الآن — لا يُضاف إلى ذمّة
+              المورّد ولا إلى تكلفة الصنف. إن كنتَ ستدفع لشركة النقل لاحقاً، سجّله من شاشة المصروفات
+              وقت الدفع بدل الآن.
+            </p>
+            <div className="space-y-1">
+              <Label>طريقة دفع الشحن</Label>
+              <select className={selectCls} value={shipMethod} onChange={(e) => setShipMethod(e.target.value as typeof shipMethod)}>
+                {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
+              </select>
+            </div>
+          </CardContent>
+        </Card>
+      )}
       {!closed && data.agreedCurrency !== "USD" && (
         <Card>
           <CardHeader><CardTitle className="text-base">دفعة للمورد (اختياري)</CardTitle></CardHeader>

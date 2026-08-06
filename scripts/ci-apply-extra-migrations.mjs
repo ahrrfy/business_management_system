@@ -100,9 +100,9 @@ const EXTRA_MIGRATIONS = [
   //   al-'amud (MODIFY COLUMN entryType ENUM) bi-qa'ima aqdam, fa-ayy tartib qablahu
   //   yamhu al-qima SAMITAN (al-script yaqul tubbiqat wa-l-enum yarji' kama kan).
   "drizzle/migrations/extras/0150_delivery_fee_held_enum.sql",
-  // 6/8 (0154): TELECOM 'ala receipts.paymentMethod — nafs qissat 0150 (push la
+  // 6/8 (0156): TELECOM 'ala receipts.paymentMethod — nafs qissat 0150 (push la
   // yuwassi' enum). 'amud mukhtalif 'an 0150/0129 lakin al-qa'ida wahida: al-akhir.
-  "drizzle/migrations/extras/0154_receipt_payment_method_telecom.sql",
+  "drizzle/migrations/extras/0156_receipt_payment_method_telecom.sql",
 ];
 
 const url = process.env.DATABASE_URL;

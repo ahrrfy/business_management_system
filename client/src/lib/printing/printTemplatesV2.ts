@@ -111,6 +111,13 @@ export interface SalesInvoiceV2Data {
     isGift?: boolean | null;
   }[];
 
+  /** إفصاح التوصيل (0152): الأجرة المقبوضة (>0 ⇒ سطر «أجرة التوصيل»). */
+  deliveryFee?: string | number | null;
+  /** true ⇒ يُطبَع «التوصيل: مجاناً» — يميّزه عن غياب التوصيل أصلاً. */
+  deliveryFree?: boolean | null;
+  /** قيمة الأجرة المُتنازَل عنها — تُطبَع «مجاناً — قيمته X» ليرى الزبون مقدار ما أُهدي له. */
+  deliveryWaivedAmount?: string | number | null;
+
   subtotal: string | number;
   discountAmount?: string | number | null;
   taxAmount?: string | number | null;
@@ -193,6 +200,19 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
       { label: 'المجموع الفرعي', value: fmtIQD(d.subtotal) },
       ...(Number(d.discountAmount ?? 0) > 0 ? [{ label: 'الخصم', value: fmtIQD(d.discountAmount), color: B.orange, sign: '−' as const }] : []),
       ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, d.discountAmount), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
+      // إفصاح التوصيل (0152) — ثلاث حالات: أجرةٌ مقبوضة، أو توصيلٌ مُهدىً (بقيمته إن عُرِفت)،
+      // أو لا سطر إطلاقاً حين لا توصيل. الصفر الصامت كان يخلط الحالتين الأخيرتين.
+      ...(Number(d.deliveryFee ?? 0) > 0
+        ? [{ label: 'أجرة التوصيل', value: fmtIQD(d.deliveryFee), sign: '+' as const }]
+        : d.deliveryFree
+          ? [{
+              label: 'التوصيل',
+              value: Number(d.deliveryWaivedAmount ?? 0) > 0
+                ? `مجاناً (قيمته ${fmtIQD(d.deliveryWaivedAmount)})`
+                : 'مجاناً',
+              color: B.orange,
+            }]
+          : []),
     ],
     grandTotal: { label: 'الإجمالي المستحق', value: fmtIQD(d.total) },
     paid: d.paidAmount != null ? { label: 'المدفوع', value: fmtIQD(d.paidAmount) } : null,
