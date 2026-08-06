@@ -465,7 +465,15 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
     //    (لا فائض/عجز وهمي عند الرفع، ولا رفض بيع نقدي عند الخفض). الفرق يُسجَّل قيد ADJUST لاحقاً.
     const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
     const grandTotalD = money(totals.total);
-    const effectiveTotalD = roundCash ? roundCashIQD(grandTotalD) : grandTotalD;
+    // ش٦ — تقريب السلّة المختلطة: الإجمالي الفعّال الصريح يحمل فرق تقريب السلّة كلّها على
+    // هذه الفاتورة (checkoutReception يضبطه حصراً). محروسٌ ضدّ سوء الاستعمال كتلاعبِ سعرٍ:
+    // نقديّ فقط + |الفرق| دون خطوة التقريب + الناتج موجب — وإلا يُهمل ويُعتمد الخام.
+    let overrideD: ReturnType<typeof money> | null = null;
+    if (input.cashRoundingOverride != null && input.payment?.method === "CASH") {
+      const cand = round2(money(input.cashRoundingOverride));
+      if (cand.gt(0) && cand.minus(grandTotalD).abs().lt(250)) overrideD = cand;
+    }
+    const effectiveTotalD = overrideD ?? (roundCash ? roundCashIQD(grandTotalD) : grandTotalD);
     const cashRoundingAdj = effectiveTotalD.minus(grandTotalD); // ± (صفر إن لا تقريب)
     const tendered = money(input.payment?.amount ?? "0");
     // ش٤ (§٧.٢): المقبوض سلفاً (عرابين المسوّدة) يدخل الحساب **قبل** حرّاس الآجل/الائتمان —

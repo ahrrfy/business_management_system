@@ -260,6 +260,28 @@ function ReconciliationHero({ dc }: { dc: DC }) {
             {"  —  "}المتبقّي فعلاً في الأدراج: <span className="font-semibold tabular-nums text-foreground" dir="ltr">{fmtAr(dc.totals.retainedInDrawer)}</span>
           </p>
         )}
+
+        {/* ش٦ — سطرا الاستقبال: عرابين معلّقة (لقطة حاضرة) + الخصم اليدويّ لكل موظف */}
+        {dc.receptionExtras.fundedDrafts.count > 0 && (
+          <p className="mt-2 border-t pt-2 text-center text-xs text-[var(--sem-warn)]">
+            طلبات محفوظة عليها عرابين لم تُثبَّت بعد:{" "}
+            <span className="font-bold tabular-nums" dir="ltr">{dc.receptionExtras.fundedDrafts.count}</span>
+            {" طلباً بمجموع "}
+            <span className="font-bold tabular-nums" dir="ltr">{fmtAr(dc.receptionExtras.fundedDrafts.heldNet)}</span>
+            {" د.ع (مال زبائن محتجزٌ بلا فاتورة — لقطة الآن لا اليوم)"}
+          </p>
+        )}
+        {dc.receptionExtras.discountByUser.length > 0 && (
+          <div className="mt-2 border-t pt-2 text-center text-xs text-muted-foreground">
+            <span className="font-bold">الخصم اليدويّ اليوم لكل موظف: </span>
+            {dc.receptionExtras.discountByUser.map((u, i) => (
+              <span key={u.userId ?? i} className="mx-1 inline-block whitespace-nowrap">
+                {u.userName}: <span className="font-semibold tabular-nums text-foreground" dir="ltr">{fmtAr(u.manualDiscount)}</span>
+                {" "}({u.avgRatePct}% من {u.invoiceCount} فاتورة)
+              </span>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

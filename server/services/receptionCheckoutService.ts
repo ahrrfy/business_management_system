@@ -1,6 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { invoices, shifts } from "../../drizzle/schema";
+import { auditLogs, invoices, receipts, shifts } from "../../drizzle/schema";
+import { extractInsertId } from "../lib/insertId";
+import { postEntry } from "./ledgerService";
 import type { SaleLineInput, PaymentMethod } from "./sale/types";
 import type { PriceTier } from "./pricing";
 import { createSaleInTx } from "./sale/create";
@@ -37,9 +39,21 @@ export interface ReceptionCheckoutInput {
   priceOverrideApproved?: boolean;
   /** ش٠ (٥/٨، V1): تقريب نقدي IQD لأقرب ٢٥٠ — للبيع المباشر **الخالص** النقديّ فقط (بلا خدمات
    *  طباعة وبلا أوامر شغل). الواجهة تُقرّب أوّلاً وترسل المبالغ مقرَّبة، والخادم يعيد التقريب
-   *  بنفس الدالة ويقيّد الفرق ADJUST (نمط POS حرفياً). السلة المختلطة بلا تقريب في هذه الشريحة
-   *  (بندٌ معلَن لش٦) — الحارس أدناه يُسقط العلم عنها حتى لو أرسلته الواجهة سهواً. */
+   *  بنفس الدالة ويقيّد الفرق ADJUST (نمط POS حرفياً). السلة المختلطة عبر cashRoundingOverride
+   *  أدناه (ش٦) — الحارس يُسقط هذا العلم عنها حتى لو أرسلته الواجهة سهواً. */
   cashRoundIQD?: boolean;
+  /** ش٦ — تقريب السلّة المختلطة: فرق تقريب السلّة **كلّها** مبيّتٌ سلفاً في مبلغ الفاتورة
+   *  الحاملة (regularSale.amount أو printSale.amount = الخام + الفرق)، وهذا الحقل يسمّيها
+   *  فيمرَّر مبلغُها إجماليّاً فعّالاً صريحاً لخدمتها (قيد ADJUST بالفرق). NULL = لا تقريب مختلط. */
+  cashRoundingOverride?: "SALE" | "PRINT" | null;
+  /** ش٦ (V15) — أجرة توصيلٍ تُقبض في الاستقبال **الآن** لطلبٍ سيُسنَد للتوصيل بعد التثبيت:
+   *  إيصال IN نقديّ (أمانةٌ للمندوب — تدخل الدرج حتماً مهما كانت طريقة دفع السلّة) + قيد
+   *  DELIVERY_FEE_HELD بـdedupeKey `DELIVERY_FEE_HELD:INV:{invoiceId}` — مرآةُ مسار أمر الشغل
+   *  حرفياً، وبها يُرفع حظر COUNTER عن dispatchInvoice (الأجرة في الدرج قبل صرفها للمندوب). */
+  deliveryFeeHeld?: string | null;
+  /** ش٦ (§٩.٣) — هويّة مُقِرّ تجاوز السعر/الخصم: حين priceOverrideApproved صادقة يُسجَّل سطرُ
+   *  تدقيقٍ داخل المعاملة يسمّي المُقِرّ والأسعار النهائية (الراية وحدها كانت بلا هويّة). */
+  priceApprovedBy?: number | null;
   /** أوفلاين (تعميم على كاشير الاستقبال — داخليّ، يضبطه `offline.replayReception` حصراً):
    *  وسم منشأ الفاتورتين (البيع المباشر وخدمات الطباعة) بالالتقاط دون اتصال. أوامر الشغل
    *  لا تُلتقَط أصلاً (ترقيم/إسناد/صور خادميّة) فلا معنى لوسمها. */
@@ -191,11 +205,18 @@ export async function checkoutReceptionInTx(
     }
 
     // ش٠ (V1): العلم يسري على البيع المباشر الخالص النقديّ حصراً — مزجُه بطباعة/أوامر شغل أو
-    // بدفعٍ غير نقديّ يُسقطه صامتاً (السلوك المختلط الحالي مُثبَّت باختبار حتى تعالجه ش٦).
+    // بدفعٍ غير نقديّ يُسقطه صامتاً. المختلطة عبر cashRoundingOverride (ش٦) أدناه.
     const roundDirectCash = input.cashRoundIQD === true
       && input.paymentMethod === "CASH"
       && !input.printSale
       && normalizedWorkOrders.length === 0;
+    // ش٦ — تقريب السلّة المختلطة: الفاتورة الحاملة تستلم مبلغها (المبيَّت فيه فرق السلّة كلّها)
+    // إجماليّاً فعّالاً صريحاً. نقديّ فقط، ولا يجتمع مع علم البيع الخالص.
+    const overrideTarget = input.paymentMethod === "CASH" && !roundDirectCash
+      ? (input.cashRoundingOverride === "SALE" && input.regularSale ? "SALE"
+        : input.cashRoundingOverride === "PRINT" && input.printSale ? "PRINT"
+        : null)
+      : null;
 
     const regularSale = input.regularSale
       ? await createSaleInTx(tx, {
@@ -209,6 +230,7 @@ export async function checkoutReceptionInTx(
           couponCode: input.couponCode?.trim() || null,
           lines: input.regularSale.lines,
           cashRoundIQD: roundDirectCash,
+          cashRoundingOverride: overrideTarget === "SALE" ? input.regularSale.amount : null,
           // ش٤: حصة البيع المباشر من المقبوض سلفاً — تدخل paidAmount بلا إيصالٍ ثانٍ (I5)،
           // والدفعة الجديدة payment.amount تُقلَّص بها (الفاتورة تستلم P + N = أمانها الكامل).
           preCollected: money(preSplit.sale).gt(0) ? { amount: preSplit.sale, receiptIds: [] } : null,
@@ -236,6 +258,7 @@ export async function checkoutReceptionInTx(
           contactPhone: input.contactPhone ?? null,
           priceTier: input.priceTier ?? null,
           lines: input.printSale.lines,
+          cashRoundingOverride: overrideTarget === "PRINT" ? input.printSale.amount : null,
           preCollected: money(preSplit.print).gt(0) ? { amount: preSplit.print, receiptIds: [] } : null,
           payment: {
             amount: round2(money(input.printSale.amount).minus(money(preSplit.print))).toFixed(2),
@@ -248,6 +271,66 @@ export async function checkoutReceptionInTx(
           priceOverrideApproved: input.priceOverrideApproved === true,
         }, actor)
       : null;
+
+    // ش٦ (V15) — أمانة أجرة توصيل الطلب: إيصال IN نقديّ + قيد DELIVERY_FEE_HELD مربوطان
+    // بالفاتورة الحاملة (البيع المباشر ثم الطباعة) — بها يُرفع حظر COUNTER عن dispatchInvoice.
+    // تُكتب داخل نفس معاملة المستندات (ذرّية) وتُتخطّى عند replay (كُتبت مع الالتزام الأول).
+    const feeHeldD = round2(money(input.deliveryFeeHeld ?? "0"));
+    if (feeHeldD.gt(0) && !completeReplay) {
+      const carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
+      if (carrierInvoiceId == null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "أجرة التوصيل المقبوضة الآن تحتاج فاتورةً في السلّة (بضاعة أو طباعة) — أوامر الشغل وحدها أجرتُها على بندها",
+        });
+      }
+      const feeRes = await tx.insert(receipts).values({
+        branchId: input.branchId,
+        shiftId: input.shiftId,
+        invoiceId: carrierInvoiceId,
+        direction: "IN",
+        amount: feeHeldD.toFixed(2),
+        // أمانةٌ نقديّة للمندوب تدخل الدرج حتماً — مهما كانت طريقة دفع السلّة (تُصرف له نقداً
+        // من نفس الدرج عند توريده، فقبضُها بغير النقد يترك OUT بلا IN).
+        paymentMethod: "CASH",
+        cashBucket: "DRAWER",
+        status: "COMPLETED",
+        partyType: "OTHER",
+        referenceNumber: `DLV-FEE-INV-${carrierInvoiceId}`,
+        description: "أجرة توصيل مقبوضة أمانةً للمندوب — طلب استقبال",
+        createdBy: actor.userId,
+      });
+      await postEntry(tx, {
+        entryType: "DELIVERY_FEE_HELD",
+        dedupeKey: `DELIVERY_FEE_HELD:INV:${carrierInvoiceId}`,
+        branchId: input.branchId,
+        invoiceId: carrierInvoiceId,
+        receiptId: extractInsertId(feeRes),
+        amount: feeHeldD,
+        notes: "أمانة أجرة توصيل — طلب استقبال",
+      });
+    }
+
+    // ش٦ (§٩.٣) — هويّة مُقِرّ السعر داخل المعاملة: الراية بلا هويّةٍ كانت تُذيب المسؤولية.
+    if (!completeReplay && input.priceOverrideApproved === true && input.priceApprovedBy != null) {
+      const overriddenLines = [
+        ...(input.regularSale?.lines ?? []).filter((l) => l.unitPriceOverride != null || l.discountAmount != null),
+        ...(input.printSale?.lines ?? []).filter((l) => (l as { unitPriceOverride?: string }).unitPriceOverride != null),
+      ].map((l) => ({
+        variantId: (l as { variantId?: number }).variantId ?? null,
+        productUnitId: (l as { productUnitId?: number }).productUnitId ?? null,
+        finalUnitPrice: (l as { unitPriceOverride?: string }).unitPriceOverride ?? null,
+        discountAmount: (l as { discountAmount?: string }).discountAmount ?? null,
+      }));
+      await tx.insert(auditLogs).values({
+        userId: actor.userId,
+        branchId: input.branchId,
+        action: "reception.priceOverride",
+        entityType: "invoice",
+        entityId: String(regularSale?.invoiceId ?? printSale?.invoiceId ?? 0),
+        newValue: JSON.stringify({ approvedBy: input.priceApprovedBy, lines: overriddenLines }),
+      });
+    }
 
     const workOrders = [] as Array<Awaited<ReturnType<typeof createWorkOrderInTx>> & { deposit: string }>;
     for (let index = 0; index < normalizedWorkOrders.length; index += 1) {

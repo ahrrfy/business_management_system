@@ -79,6 +79,7 @@ import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import DepositDialog from "@/components/reception/DepositDialog";
 import DraftPaymentsDialog from "@/components/reception/DraftPaymentsDialog";
+import OrderDeliveryDialog, { type OrderDeliveryValue } from "@/components/reception/OrderDeliveryDialog";
 import { WsTab } from "@/components/reception/WsTab";
 import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -304,10 +305,14 @@ export default function Reception() {
   const [draftInfo, setDraftInfo] = useState<{ draftNumber: string } | null>(null);
   const [depositOpen, setDepositOpen] = useState(false);
   const [paymentsOpen, setPaymentsOpen] = useState(false);
+  // ش٦ — توصيل الطلب على مستوى السلة: يُملأ قبل التثبيت ويُنفَّذ إسناداً تلقائياً بعده.
+  // حالةُ سلةٍ محلية (لا تُحفظ مع المسوّدة — من استأنف مسوّدةً يعيد إدخال التوصيل).
+  const [orderDelivery, setOrderDelivery] = useState<OrderDeliveryValue | null>(null);
+  const [deliveryDialogOpen, setDeliveryDialogOpen] = useState(false);
   // ش١: جهات التوصيل لورشة الفواتير (الإسناد من الصفّ) — تُجلب عند فتح الورشة فقط.
   const partiesQ = trpc.delivery.listParties.useQuery(
     { activeOnly: true },
-    { enabled: workshop === "INVOICES", staleTime: 60_000 },
+    { enabled: workshop === "INVOICES" || deliveryDialogOpen || orderDelivery != null, staleTime: 60_000 },
   );
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
@@ -431,7 +436,9 @@ export default function Reception() {
   const sumCustom = round2(sumCustomD).toNumber();
   // ٥/٨ — أجرة توصيلٍ تُقبض الآن أمانةً للمندوب: نقدٌ يدخل الدرج **خارج** الفاتورة (ليست بيعاً).
   // تُعرَض منفصلةً كي يعرف الموظّف كم يستلم فعلاً، ولا تُخلَط بإجمالي الفاتورة ولا بالمبلغ المُطبَّق.
-  const heldDeliveryD = round2(cart.reduce((s, c) => s.plus(D(lineCounterHeldFee(c))), D(0)));
+  // ش٦: أجرة توصيل **الطلب** (COUNTER) تنضمّ لنفس العرض — نفس أمانة الدرج بالضبط.
+  const orderFeeHeldD = orderDelivery?.feeCollection === "COUNTER" ? round2(D(orderDelivery.fee || 0)) : D(0);
+  const heldDeliveryD = round2(cart.reduce((s, c) => s.plus(D(lineCounterHeldFee(c))), D(0)).plus(orderFeeHeldD));
   const heldDelivery = heldDeliveryD.toNumber();
   const cashDueNow = round2(grandTotalD.plus(heldDeliveryD)).toNumber();
 
@@ -446,8 +453,20 @@ export default function Reception() {
   const draftHeldEarlyD = D(draftHeld || 0);
   const roundedWouldTrapHeld = draftHeldEarlyD.gt(0) && roundCashIQD(grandTotalD.toFixed(2)).lte(draftHeldEarlyD);
   const cashRoundActive = method === "CASH" && cart.length > 0 && !cart.some(isCustomKind) && !hasPrintInCart && !offline && !roundedWouldTrapHeld;
-  const effectiveGrandD = cashRoundActive ? roundCashIQD(grandTotalD.toFixed(2)) : grandTotalD;
-  const cashRoundingDelta = cashRoundActive ? round2(effectiveGrandD.minus(grandTotalD)).toNumber() : 0;
+  // ش٦ — تقريب السلّة المختلطة (مرآة materialize/checkout حرفياً): فرق تقريب السلّة كلّها
+  // يُحمَّل على الفاتورة الحاملة (بضاعة ثم طباعة). يسري **فقط** حين يُدفع المقرَّب كاملاً نقداً
+  // الآن (يُحسم عند الإرسال) — هنا نحسب أهليّته ونعرض المقرَّب لأن المسار الاعتيادي دفعٌ كامل.
+  const sumGoodsRawD = cart.filter((c) => !isCustomKind(c) && !c.row.isPrintService).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
+  const sumPrintRawD = cart.filter((c) => !isCustomKind(c) && c.row.isPrintService).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
+  const mixedCarrier: "SALE" | "PRINT" | null = sumGoodsRawD.gt(0) ? "SALE" : sumPrintRawD.gt(0) ? "PRINT" : null;
+  const mixedDeltaD = round2(roundCashIQD(grandTotalD.toFixed(2)).minus(grandTotalD));
+  const mixedRoundEligible =
+    method === "CASH" && cart.length > 0 && !cashRoundActive && !offline && !roundedWouldTrapHeld
+    && (cart.some(isCustomKind) || hasPrintInCart) && mixedCarrier != null && !mixedDeltaD.isZero()
+    && (mixedCarrier === "SALE" ? sumGoodsRawD : sumPrintRawD).plus(mixedDeltaD).gt(0);
+  const roundingDisplayActive = cashRoundActive || mixedRoundEligible;
+  const effectiveGrandD = roundingDisplayActive ? roundCashIQD(grandTotalD.toFixed(2)) : grandTotalD;
+  const cashRoundingDelta = roundingDisplayActive ? round2(effectiveGrandD.minus(grandTotalD)).toNumber() : 0;
 
   // ش٤: العربون المقبوض سلفاً على الطلب المحفوظ يقلّص «المتوقّع الآن» — الزبون دفعه فعلاً
   // وإيصاله قائم؛ collectNow عند التثبيت هو الجزء الجديد وحده (I5).
@@ -869,6 +888,8 @@ export default function Reception() {
 
   // نقطة التزام خادمية واحدة للسلة الهجينة: بيع + طباعة + أوامر شغل.
   const checkoutM = trpc.workOrders.receptionCheckout.useMutation();
+  // ش٦: إسناد فاتورة الطلب للتوصيل تلقائياً **بعد** التثبيت — فشله لا يمسّ الالتزام المالي.
+  const dispatchOrderM = trpc.delivery.dispatchInvoice.useMutation();
 
   // ───── ش٢: المسوّدة المُرقّاة (حفظ/استئناف/مزامنة) ─────────────────────────
   /** تحويل السلّة الحالية إلى حمولة مسوّدة (الخصم اليدويّ مطويّ في unitPrice الفعّال). */
@@ -1110,7 +1131,14 @@ export default function Reception() {
       notify.err(`لا يمكن أن يتجاوز مبلغ ${PAY_METHOD_LABEL[method] ?? "الدفع"} المستحقّ الآن (${fmt(expectedNowD.toFixed(2))} د.ع)`);
       return;
     }
-    const directFloorD = cashRoundActive ? effectiveGrandD : sumDirectD;
+    // ش٦ — التقريب المختلط يُحسم هنا: يسري فقط حين يُدفع المقرَّب **كاملاً** الآن (المرآة
+    // الحرفية لشرط materialize خادمياً) — دفعةٌ جزئية تُرسَل بمبالغ خام بلا تقريب.
+    const mixedRoundApplied = mixedRoundEligible
+      && round2(appliedPaidD.plus(heldD)).eq(round2(effectiveGrandD));
+    const mixedDeltaAppliedD = mixedRoundApplied ? mixedDeltaD : D(0);
+    const directFloorD = cashRoundActive
+      ? effectiveGrandD
+      : round2(sumDirectD.plus(mixedDeltaAppliedD));
     if (appliedPaidD.plus(heldD).lt(directFloorD)) {
       notify.err(`المبلغ المقبوض (مع العربون السابق) يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(directFloorD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
       return;
@@ -1167,10 +1195,18 @@ export default function Reception() {
         : receiptPhone ? `عميل ${receiptPhone}` : null;
       // ش٠ (V1): عند سريان التقريب (بيع مباشر خالص) يُرسَل مبلغ البيع **مقرَّباً** — الخادم يعيد
       // التقريب بنفس الدالة فيتطابقان، ويقيّد الفرق ADJUST. السلة الخالصة ⇒ مجموع الأسطر = الإجمالي.
+      // ش٦: عند التقريب المختلط يُبيَّت فرق السلّة كلّها في مبلغ الفاتورة الحاملة، ويُسمّى
+      // للخادم بـcashRoundingOverride فيقيّد الفرق ADJUST عليها.
       const saleAmount = cashRoundActive
         ? round2(effectiveGrandD).toFixed(2)
-        : round2(regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
-      const printAmount = round2(printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
+        : round2(
+            regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))
+              .plus(mixedRoundApplied && mixedCarrier === "SALE" ? mixedDeltaAppliedD : D(0)),
+          ).toFixed(2);
+      const printAmount = round2(
+        printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))
+          .plus(mixedRoundApplied && mixedCarrier === "PRINT" ? mixedDeltaAppliedD : D(0)),
+      ).toFixed(2);
       const workOrderPayloads = customWithDeposits.map((x) => {
         const c = x.c;
         const custom = c.custom!;
@@ -1253,7 +1289,10 @@ export default function Reception() {
               collectNow: appliedPaidD.gt(0)
                 ? { amount: round2(appliedPaidD).toFixed(2), method, reference: method === "CASH" ? undefined : paymentReference.trim() }
                 : null,
-              cashRoundIQD: cashRoundActive,
+              // ش٦: العلم يشمل المختلط — materialize خادمياً يعيد اشتقاق الهدف والفرق من الأسطر.
+              cashRoundIQD: cashRoundActive || mixedRoundApplied,
+              // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
+              deliveryFeeHeld: orderFeeHeldD.gt(0) ? orderFeeHeldD.toFixed(2) : undefined,
               managerApproval: mgrCredsRef.current ?? undefined,
             });
             setActiveDraft(null);
@@ -1273,6 +1312,10 @@ export default function Reception() {
         paymentReference: method === "CASH" ? undefined : paymentReference.trim(),
         paidAmount: round2(appliedPaidD).toFixed(2),
         cashRoundIQD: cashRoundActive,
+        // ش٦: تسمية الفاتورة الحاملة لفرق التقريب المختلط (المبلغ مُبيَّتٌ فيها أعلاه).
+        cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
+        // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
+        deliveryFeeHeld: orderFeeHeldD.gt(0) ? orderFeeHeldD.toFixed(2) : undefined,
         // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
         managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
@@ -1318,6 +1361,39 @@ export default function Reception() {
 
       const invoiceId = result.regularSale?.invoiceId ?? result.printSale?.invoiceId ?? null;
       const createdWoIds = result.workOrders.map((order) => order.workOrderId);
+
+      // ش٦ — تسلسل الإسناد بعد التثبيت: الالتزام الماليّ تمّ؛ الإسناد أثرٌ لاحق منفصل
+      // بمعاملته الخاصة. فشله **يُعلَن بوسم إعادة محاولةٍ لا يُبتلَع** (معيار قبول ش٦):
+      // الفاتورة تبقى في طابور الفواتير وزر «إسناد للتوصيل» هو مسار الإعادة.
+      if (orderDelivery) {
+        if (invoiceId == null) {
+          notify.warn(
+            "لم يُسنَد التوصيل تلقائياً",
+            "الطلب أوامر شغلٍ فقط بلا فاتورة — التوصيل يُرتَّب على بند الطلب نفسه أو عند التسليم",
+          );
+        } else {
+          try {
+            await dispatchOrderM.mutateAsync({
+              invoiceId,
+              partyId: orderDelivery.partyId,
+              deliveryFee: orderDelivery.fee,
+              feeCollection: orderDelivery.feeCollection,
+              recipientName: orderDelivery.recipientName || undefined,
+              recipientPhone: orderDelivery.recipientPhone || undefined,
+              deliveryAddress: orderDelivery.address || undefined,
+              clientRequestId: crypto.randomUUID(),
+            });
+            notify.ok(`أُسند الطلب للتوصيل — ${orderDelivery.partyName}`);
+            void utils.delivery.invalidate();
+          } catch (e) {
+            notify.err(
+              "ثُبِّت الطلب ولم يُسنَد للتوصيل",
+              `الفاتورة سليمة في «الفواتير» — اضغط زرّ (إسناد للتوصيل) عليها لإعادة المحاولة. السبب: ${e instanceof Error ? e.message : "خطأ غير معروف"}`,
+            );
+          }
+        }
+        setOrderDelivery(null);
+      }
 
       // ٥/٨ — إيصال الاستقبال كان يُبنى بقيمٍ مثبَّتة (paid = الإجمالي دائماً، change = 0 دائماً،
       // بلا خصمٍ ولا هاتفٍ ولا آجل) فيخرج ناقص المعلومات مقارنةً بإيصال التجزئة الذي يمرّ بمُحوّلٍ
@@ -2138,6 +2214,21 @@ export default function Reception() {
           )}
         </button>
 
+        {/* ش٦ — توصيل هذا الطلب: طلبٌ هاتفيّ بخطوة واحدة (سلة + توصيل + تثبيت ⇒ إسناد تلقائيّ). */}
+        <button
+          type="button"
+          onClick={() => setDeliveryDialogOpen(true)}
+          className={cn(
+            "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 px-4 text-xs font-extrabold transition-colors",
+            orderDelivery
+              ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+              : "hover:bg-muted/60",
+          )}
+        >
+          <Truck aria-hidden className="size-4" />
+          {orderDelivery ? `توصيل: ${orderDelivery.partyName}` : "توصيل هذا الطلب"}
+        </button>
+
         {canReadReservations && (
           <button
             type="button"
@@ -2390,6 +2481,19 @@ export default function Reception() {
             setDraftHeld(heldNet);
             void utils.reception.draftList.invalidate();
           }}
+        />
+      )}
+
+      {/* ─── ش٦: كتلة توصيل الطلب (إسنادٌ تلقائيّ بعد التثبيت) ─── */}
+      {deliveryDialogOpen && (
+        <OrderDeliveryDialog
+          parties={(partiesQ.data ?? []) as DispatchParty[]}
+          initial={orderDelivery}
+          defaultRecipientName={customer.name || null}
+          defaultRecipientPhone={customer.phone || null}
+          onSave={setOrderDelivery}
+          onClear={() => setOrderDelivery(null)}
+          onClose={() => setDeliveryDialogOpen(false)}
         />
       )}
 

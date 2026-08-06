@@ -92,6 +92,11 @@ const receptionCheckoutSchema = z.object({
   // ش٠ (٥/٨، V1): تقريب نقدي IQD — يسري خادمياً على البيع المباشر الخالص النقديّ فقط
   // (الحارس في receptionCheckoutService يُسقطه عن السلة المختلطة/غير النقدية حتى لو أُرسل).
   cashRoundIQD: z.boolean().optional(),
+  // ش٦ — تقريب السلّة المختلطة: الواجهة تبيّت فرق السلّة كلّها في مبلغ الفاتورة الحاملة
+  // وتسمّيها هنا؛ الخادم يقيّد الفرق ADJUST عليها (محروس: نقديّ + |الفرق| < ٢٥٠ + ناتجٌ موجب).
+  cashRoundingOverride: z.enum(["SALE", "PRINT"]).nullish(),
+  // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن أمانةً للمندوب — نقداً في الدرج حتماً.
+  deliveryFeeHeld: positiveMoneyString.nullish(),
   // ش١ (م٦): اعتماد مديرٍ للخصم اليدويّ >١٠٪ (بريد+كلمة مرور، verifyManagerApproval نفسها) —
   // يمنح priceOverrideApproved للكاشير كما يمنحه sales.create تماماً.
   managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
@@ -618,6 +623,8 @@ export const workOrderRouter = router({
             ...checkoutInput,
             branchId: effectiveBranchId,
             priceOverrideApproved: elevated || approvedBy != null,
+            // ش٦ (§٩.٣): هويّة المُقِرّ — المدير المصادِق، أو الفاعل المرتفع نفسه.
+            priceApprovedBy: approvedBy ?? (elevated ? ctx.user.id : null),
           }, actor));
           break;
         } catch (error: any) {

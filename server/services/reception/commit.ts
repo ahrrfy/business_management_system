@@ -28,6 +28,11 @@ export interface CommitDraftInput {
   collectNow?: { amount: string; method: "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM"; reference?: string | null } | null;
   cashRoundIQD?: boolean;
   priceOverrideApproved?: boolean;
+  /** ش٦ (§٩.٣): هويّة مُقِرّ تجاوز السعر — يمرّرها الراوتر حين priceOverrideApproved صادقة. */
+  priceApprovedBy?: number | null;
+  /** ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن أمانةً للمندوب (نقداً في الدرج) — تُكتب مع
+   *  الفاتورة الحاملة إيصالاً وقيد DELIVERY_FEE_HELD، وبها يُسنَد الطلب COUNTER بعد التثبيت. */
+  deliveryFeeHeld?: string | null;
 }
 
 export interface CommitDraftResult {
@@ -72,7 +77,32 @@ function materialize(
   // `.lte` لا `.lt` (مراجعة ش٤): عند تساوي المحتجز مع المقرَّب بالضبط (عربون 5,000 على 5,100
   // تُقرَّب 5,000) كان التقريب يبقى فيصير applied=5,100 > 5,000 ⇒ طريقٌ نقديّ مسدود بلا مخرج.
   const roundActive = rawRound && !roundCashIQD(sum(goods)).lte(heldNet);
-  const goodsAmount = roundActive ? roundCashIQD(sum(goods)) : sum(goods);
+  let goodsAmount = roundActive ? roundCashIQD(sum(goods)) : sum(goods);
+  let printAmount = sum(prints);
+
+  // ش٦ — تقريب السلّة المختلطة: فرقُ تقريب السلّة **كلّها** (بضاعة+طباعة+تخصيص) يُحمَّل على
+  // فاتورةٍ واحدةٍ حاملة (البيع المباشر ثم الطباعة) عبر cashRoundingOverride. شروطه:
+  // نقديٌّ كامل الآن (المقبوض + المحتجز = المقرَّب بالضبط — دفعةٌ جزئية تجعل التقريب بلا معنى)،
+  // وفاتورةٌ تحمل الفرق، وحاملُها لا ينقلب صفراً/سالباً، والمقرَّب فوق المحتجز (نفس مأزق ش٤).
+  let mixedRoundTarget: "SALE" | "PRINT" | null = null;
+  if (
+    input.cashRoundIQD === true &&
+    input.collectNow?.method === "CASH" &&
+    !rawRound &&
+    (goods.length > 0 || prints.length > 0)
+  ) {
+    const grandAll = round2(sum(goods).plus(sum(prints)).plus(sum(customs)));
+    const roundedAll = roundCashIQD(grandAll);
+    const delta = roundedAll.minus(grandAll);
+    const carrier = goods.length > 0 ? "SALE" as const : "PRINT" as const;
+    const carrierRaw = carrier === "SALE" ? sum(goods) : sum(prints);
+    const fullCashNow = round2(money(input.collectNow.amount).plus(heldNet)).eq(roundedAll);
+    if (!delta.isZero() && fullCashNow && !roundedAll.lte(heldNet) && carrierRaw.plus(delta).gt(0)) {
+      mixedRoundTarget = carrier;
+      if (carrier === "SALE") goodsAmount = round2(carrierRaw.plus(delta));
+      else printAmount = round2(carrierRaw.plus(delta));
+    }
+  }
 
   const saleLine = (l: (typeof lines)[number]) => ({
     variantId: Number(l.variantId),
@@ -139,8 +169,11 @@ function materialize(
     // العلم المُمرَّر هو المُشتقّ (roundActive) لا الخام — لو أُسقط التقريب لحماية المقبوض سلفاً
     // يجب ألّا يعيد createSaleInTx تقريبه من جهته فينحرف الطرفان.
     cashRoundIQD: roundActive,
+    cashRoundingOverride: mixedRoundTarget,
+    deliveryFeeHeld: input.deliveryFeeHeld ?? null,
+    priceApprovedBy: input.priceApprovedBy ?? null,
     regularSale: goods.length ? { lines: goods.map(saleLine), amount: goodsAmount.toFixed(2) } : null,
-    printSale: prints.length ? { lines: prints.map(saleLine), amount: sum(prints).toFixed(2) } : null,
+    printSale: prints.length ? { lines: prints.map(saleLine), amount: printAmount.toFixed(2) } : null,
     workOrders: customs.map(workOrderOf),
     priceOverrideApproved: input.priceOverrideApproved === true,
   };

@@ -45,6 +45,10 @@ const FLAG_CANCELLED_FUNDED_DRAFTS_PER_USER = 2;
 const FLAG_TELECOM_SHARE = new Decimal("0.30");
 /** أرضية مبلغ زين بالفترة قبل احتساب النسبة (يمنع أعلام موظفٍ حصّل ٥ آلاف كلها زين). */
 const FLAG_TELECOM_MIN_TOTAL = new Decimal("100000");
+/** D11 (ش٦): تسديداتٌ على فواتير أنشأها غير القابض — يُعلَّم القابض عند ≥ هذا العدد بالفترة. */
+const FLAG_OTHERS_COLLECT_PER_USER = 5;
+/** D12 (ش٦): خفض إجمالي مسوّدةٍ مموّلة بعد القبض — يُعلَّم الفاعل عند ≥ هذا العدد بالفترة. */
+const FLAG_FUNDED_REDUCED_PER_USER = 3;
 /** حدّ أسوأ أسطر البيع دون الكلفة المعروضة. */
 const WORST_LINES_LIMIT = 10;
 
@@ -166,6 +170,31 @@ export interface TelecomShareRow {
   flagged: boolean;
 }
 
+/** D10 (ش٦): مسوّدة مموّلة OPEN معلّقة > ٢٤ ساعة — كل صفٍّ إنذار. */
+export interface FundedStaleDraftRow {
+  draftId: number;
+  draftNumber: string;
+  userId: number | null;
+  userName: string;
+  heldNet: string;
+  ageHours: number;
+}
+/** D11 (ش٦): تركّز التسديدات على فواتير أنشأها غير القابض. */
+export interface OthersCollectRow {
+  userId: number | null;
+  userName: string;
+  receiptCount: number;
+  totalAmount: string;
+  flagged: boolean;
+}
+/** D12 (ش٦): خفض إجمالي مسوّدةٍ مموّلة بعد القبض (من حدث التدقيق). */
+export interface FundedReducedRow {
+  userId: number | null;
+  userName: string;
+  eventCount: number;
+  flagged: boolean;
+}
+
 export interface AnomalyWatchResult {
   generatedAt: string;
   from: string;
@@ -181,6 +210,9 @@ export interface AnomalyWatchResult {
     flaggedConsignWithdrawers: number;
     flaggedCancelledFundedDrafters: number;
     flaggedTelecomCollectors: number;
+    fundedStaleDrafts: number;
+    flaggedOthersCollectors: number;
+    flaggedFundedReducers: number;
   };
   belowCost: { cashiers: BelowCostCashierRow[]; worstLines: BelowCostLineRow[] };
   discounts: { rows: DiscountCashierRow[]; scopeAvgRatePct: string };
@@ -191,6 +223,9 @@ export interface AnomalyWatchResult {
   consignWithdrawals: { rows: ConsignWithdrawRow[] };
   cancelledFundedDrafts: { rows: CancelledFundedDraftRow[] };
   telecomShares: { rows: TelecomShareRow[] };
+  fundedStaleDrafts: { rows: FundedStaleDraftRow[] };
+  othersCollections: { rows: OthersCollectRow[] };
+  fundedReductions: { rows: FundedReducedRow[] };
 }
 
 const UNKNOWN_USER = "غير معروف";
@@ -231,6 +266,9 @@ export async function getAnomalyWatch(opts: {
       flaggedConsignWithdrawers: 0,
       flaggedCancelledFundedDrafters: 0,
       flaggedTelecomCollectors: 0,
+      fundedStaleDrafts: 0,
+      flaggedOthersCollectors: 0,
+      flaggedFundedReducers: 0,
     },
     belowCost: { cashiers: [], worstLines: [] },
     discounts: { rows: [], scopeAvgRatePct: "0.00" },
@@ -241,6 +279,9 @@ export async function getAnomalyWatch(opts: {
     consignWithdrawals: { rows: [] },
     cancelledFundedDrafts: { rows: [] },
     telecomShares: { rows: [] },
+    fundedStaleDrafts: { rows: [] },
+    othersCollections: { rows: [] },
+    fundedReductions: { rows: [] },
   };
   if (!db) return empty;
 
@@ -519,7 +560,70 @@ export async function getAnomalyWatch(opts: {
     null,
   );
 
-  const [belowCashRes, belowLinesRes, discRes, retSellersRes, retProcRes, shortRes, revRes, gapsRes, consignWithdrawRes, cancelledFundedRes, telecomShareRes] =
+  // ── D10 (ش٦): مسوّدات مموّلة OPEN معلّقة > ٢٤ ساعة — مال زبونٍ محتجزٌ بلا مستند نهائيّ.
+  //    كاشف حالةٍ راهنة (لا يتقيّد بنطاق التاريخ): كل صفٍّ إنذارٌ بذاته.
+  const fundedStaleP = safe(
+    db.execute(sql`
+      SELECT x.draftId, x.draftNumber, x.userId, u.name AS userName,
+        CAST(x.heldNet AS CHAR) AS heldNet, x.ageHours
+      FROM (
+        SELECT d.id AS draftId, d.draftNumber AS draftNumber, d.createdBy AS userId,
+          (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op
+            WHERE op.draftId = d.id AND op.orderPayKind = 'COLLECTION' AND op.orderPayStatus = 'HELD')
+          - (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op
+            WHERE op.draftId = d.id AND op.orderPayKind = 'REFUND') AS heldNet,
+          TIMESTAMPDIFF(HOUR, d.createdAt, NOW()) AS ageHours
+        FROM receptionDrafts d
+        WHERE d.draftStatus = 'OPEN' AND d.moneyLocked = 1
+          AND d.createdAt < DATE_SUB(NOW(), INTERVAL 24 HOUR)
+          ${branchDraft}
+      ) x
+      LEFT JOIN users u ON u.id = x.userId
+      WHERE x.heldNet > 0
+      ORDER BY x.ageHours DESC
+      LIMIT 100
+    `),
+    null,
+  );
+
+  // ── D11 (ش٦): تركّز التسديدات على فواتير الغير — موظفٌ يكثر قبضُه على فواتير أنشأها غيره
+  //    (القبض مشروعٌ بنطاق الفرع §٩.٣، لكنّ تركّزه إشارةُ التفافٍ على مساءلة الدرج/العمولة).
+  const othersCollectP = safe(
+    db.execute(sql`
+      SELECT r.createdBy AS userId, u.name AS userName,
+        COUNT(*) AS receiptCount,
+        CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS totalAmount
+      FROM receipts r
+      JOIN invoices i ON i.id = r.invoiceId
+      LEFT JOIN users u ON u.id = r.createdBy
+      WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED'
+        AND r.voucherNumber IS NULL
+        AND i.createdBy IS NOT NULL AND r.createdBy IS NOT NULL AND i.createdBy <> r.createdBy
+        AND r.createdAt >= ${fromTs} AND r.createdAt < ${toTs}
+        ${branchReceipt}
+      GROUP BY r.createdBy, u.name
+      ORDER BY COUNT(*) DESC
+    `),
+    null,
+  );
+
+  // ── D12 (ش٦): خفض إجماليٍّ بعد قبض — من حدث تدقيق reception.fundedTotalReduced (يكتبه
+  //    syncDraft داخل المعاملة) مجمَّعاً بالفاعل. best-effort كنمط D3(ب) الموثَّق.
+  const fundedReducedP = safe(
+    db.execute(sql`
+      SELECT a.userId AS userId, u.name AS userName, COUNT(*) AS eventCount
+      FROM auditLogs a
+      LEFT JOIN users u ON u.id = a.userId
+      WHERE a.action = 'reception.fundedTotalReduced'
+        AND a.createdAt >= ${fromTs} AND a.createdAt < ${toTs}
+        ${branchId ? sql`AND a.branchId = ${branchId}` : sql``}
+      GROUP BY a.userId, u.name
+      ORDER BY COUNT(*) DESC
+    `),
+    null,
+  );
+
+  const [belowCashRes, belowLinesRes, discRes, retSellersRes, retProcRes, shortRes, revRes, gapsRes, consignWithdrawRes, cancelledFundedRes, telecomShareRes, fundedStaleRes, othersCollectRes, fundedReducedRes] =
     await Promise.all([
       belowCostCashiersP,
       belowCostLinesP,
@@ -532,6 +636,9 @@ export async function getAnomalyWatch(opts: {
       consignWithdrawP,
       cancelledFundedP,
       telecomShareP,
+      fundedStaleP,
+      othersCollectP,
+      fundedReducedP,
     ]);
 
   // ── D1: تجميع ──
@@ -702,6 +809,29 @@ export async function getAnomalyWatch(opts: {
     };
   });
 
+  // ── D10/D11/D12 (ش٦): تجميع ──
+  const fundedStaleRows: FundedStaleDraftRow[] = rowsOf(fundedStaleRes).map((r) => ({
+    draftId: Number(r.draftId),
+    draftNumber: String(r.draftNumber ?? ""),
+    userId: r.userId == null ? null : Number(r.userId),
+    userName: r.userName ?? UNKNOWN_USER,
+    heldNet: toDbMoney(money(r.heldNet ?? 0)),
+    ageHours: Number(r.ageHours ?? 0),
+  }));
+  const othersCollectRows: OthersCollectRow[] = rowsOf(othersCollectRes).map((r) => ({
+    userId: r.userId == null ? null : Number(r.userId),
+    userName: r.userName ?? UNKNOWN_USER,
+    receiptCount: Number(r.receiptCount ?? 0),
+    totalAmount: toDbMoney(money(r.totalAmount ?? 0)),
+    flagged: Number(r.receiptCount ?? 0) >= FLAG_OTHERS_COLLECT_PER_USER,
+  }));
+  const fundedReducedRows: FundedReducedRow[] = rowsOf(fundedReducedRes).map((r) => ({
+    userId: r.userId == null ? null : Number(r.userId),
+    userName: r.userName ?? UNKNOWN_USER,
+    eventCount: Number(r.eventCount ?? 0),
+    flagged: Number(r.eventCount ?? 0) >= FLAG_FUNDED_REDUCED_PER_USER,
+  }));
+
   return {
     generatedAt,
     from: opts.from,
@@ -717,6 +847,9 @@ export async function getAnomalyWatch(opts: {
       flaggedConsignWithdrawers: consignWithdrawRows.filter((r) => r.flagged).length,
       flaggedCancelledFundedDrafters: cancelledFundedRows.filter((r) => r.flagged).length,
       flaggedTelecomCollectors: telecomShareRows.filter((r) => r.flagged).length,
+      fundedStaleDrafts: fundedStaleRows.length,
+      flaggedOthersCollectors: othersCollectRows.filter((r) => r.flagged).length,
+      flaggedFundedReducers: fundedReducedRows.filter((r) => r.flagged).length,
     },
     belowCost: { cashiers: belowCostCashiers, worstLines },
     discounts: { rows: discountRows, scopeAvgRatePct: pct(discScopeAvg) },
@@ -727,5 +860,8 @@ export async function getAnomalyWatch(opts: {
     consignWithdrawals: { rows: consignWithdrawRows },
     cancelledFundedDrafts: { rows: cancelledFundedRows },
     telecomShares: { rows: telecomShareRows },
+    fundedStaleDrafts: { rows: fundedStaleRows },
+    othersCollections: { rows: othersCollectRows },
+    fundedReductions: { rows: fundedReducedRows },
   };
 }

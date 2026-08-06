@@ -11,6 +11,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, like, lt, or, sql, type SQL } from "drizzle-orm";
 import {
+  auditLogs,
   orderPayments,
   receptionDraftLines,
   receptionDrafts,
@@ -217,6 +218,20 @@ export async function syncDraft(
       })
       .from(receptionDraftLines)
       .where(eq(receptionDraftLines.draftId, input.draftId));
+
+    // ش٦ (كاشف «خفض إجماليٍّ بعد قبض»): الخفض ضمن المسموح (فوق المحتجز) مشروعٌ لكنه إشارة
+    // شذوذ تُسجَّل حدثَ تدقيقٍ داخل المعاملة — يقرؤه كاشف D12 (anomalyWatch) مجمَّعاً بالفاعل.
+    if (row.moneyLocked && totals.total.lt(money(String(row.total)))) {
+      await tx.insert(auditLogs).values({
+        userId: actor.userId,
+        branchId: Number(row.branchId),
+        action: "reception.fundedTotalReduced",
+        entityType: "receptionDraft",
+        entityId: String(input.draftId),
+        oldValue: JSON.stringify({ total: String(row.total) }),
+        newValue: JSON.stringify({ total: totals.total.toFixed(2) }),
+      });
+    }
 
     await tx.delete(receptionDraftLines).where(eq(receptionDraftLines.draftId, input.draftId));
     for (let i = 0; i < input.lines.length; i += 1) {

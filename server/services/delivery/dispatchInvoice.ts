@@ -6,7 +6,7 @@
 // هنا نربط فاتورةً موجودةً بإرسالية: نفس محاسبة العهدة، بلا إنشاء فاتورةٍ ثانية وبلا لمس قيد
 // SALE الأصليّ (الإيراد اعتُرف به لحظة البيع؛ التوصيل تسليمٌ لا بيع).
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
@@ -37,15 +37,30 @@ export interface DispatchInvoiceInput {
 export async function dispatchInvoiceToDelivery(input: DispatchInvoiceInput, actor: DeliveryTxActor) {
   return withTx(async (tx) => {
     const feeCollection = input.feeCollection ?? "COURIER";
-    // ش٠ (٥/٨، V15): COUNTER محظور على مسار الفاتورة حتى ش٦ — الكاتب الوارد الوحيد لأمانة
-    // الأجرة هو workOrder/create.ts (إيصال IN لحظة القبض). هنا لا قبضَ يسبق الإرسال، فقبول
-    // COUNTER يُنتج إيصال OUT للمندوب **بلا IN يقابله** ⇒ عجزٌ في الدرج يمنع إغلاق الوردية،
-    // ويُحاسَب الموظّف على نقدٍ لم يستلمه قط. ش٦ تضيف القبض الوارد (deliveryFeeHeld) ثم يُرفع الحظر.
+    // ش٦ (V15) — رُفع حظر COUNTER **مشروطاً**: يُقبل فقط إن سبق قبضُ الأمانة فعلاً (إيصال IN
+    // بمرجع DLV-FEE-INV-{الفاتورة} يكتبه checkoutReception عبر deliveryFeeHeld) وبما يغطّي
+    // الأجرة — وإلا بقي الرفض: OUT للمندوب بلا IN يقابله = عجز درجٍ يمنع إغلاق الوردية.
     if (feeCollection === "COUNTER") {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "قبض أجرة التوصيل في الكاشير غير متاح لفاتورةٍ بلا أمر شغل — اختر «المندوب يقبضها من الزبون» أو «على المكتبة»",
-      });
+      const feeD = round2(money(input.deliveryFee ?? "0"));
+      const heldRow = (
+        await tx
+          .select({ v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)` })
+          .from(receipts)
+          .where(and(
+            eq(receipts.invoiceId, input.invoiceId),
+            eq(receipts.referenceNumber, `DLV-FEE-INV-${input.invoiceId}`),
+            eq(receipts.status, "COMPLETED"),
+          ))
+      )[0];
+      const heldD = round2(money(heldRow?.v ?? "0"));
+      if (feeD.lte(0) || heldD.lt(feeD)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: heldD.gt(0)
+            ? `أمانة الأجرة المقبوضة (${heldD.toFixed(2)}) لا تغطّي الأجرة (${feeD.toFixed(2)}) — صحّح المبلغ أو اختر «المندوب يقبضها»`
+            : "«مقبوضة في الاستقبال» تتطلّب قبض الأجرة مع الطلب نفسه (خانة أجرة التوصيل في السلّة) — أو اختر «المندوب يقبضها من الزبون» / «على المكتبة»",
+        });
+      }
     }
     const payloadHash = idempotencyHash({
       invoiceId: Number(input.invoiceId),

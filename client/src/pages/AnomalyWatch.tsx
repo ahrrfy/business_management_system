@@ -614,6 +614,100 @@ export default function AnomalyWatch() {
               </tbody>
             </table>
           </SectionCard>
+
+          {/* D10 (ش٦) — مسوّدات مموّلة معلّقة > ٢٤ ساعة: مال زبونٍ محتجزٌ بلا مستند نهائيّ */}
+          <SectionCard
+            title="طلبات محفوظة مموّلة معلّقة أكثر من يوم"
+            subtitle="مالُ زبونٍ مقبوضٌ عربوناً وطلبُه ما زال معلّقاً بلا فاتورةٍ ولا إلغاء — كل صفٍّ إنذارٌ يُتابَع (تثبيتٌ أو ردّ). لقطة حاضرة لا تتقيّد بالفترة."
+            count={aw.kpis.fundedStaleDrafts}
+          >
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-xs text-muted-foreground">
+                  <th className={thCls}>الطلب</th>
+                  <th className={thCls}>المُنشئ</th>
+                  <th className={thCls}>المحتجز</th>
+                  <th className={thCls}>عمره (ساعات)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {aw.fundedStaleDrafts.rows.length === 0 ? (
+                  <TableEmptyRow colSpan={4} message="لا طلبات مموّلة معلّقة فوق يوم." />
+                ) : (
+                  aw.fundedStaleDrafts.rows.map((r, i) => (
+                    <tr key={i} className="border-b bg-[var(--sem-warn-bg)] last:border-0">
+                      <td className={tdCls}>{r.draftNumber}</td>
+                      <td className={tdCls}>{r.userName}</td>
+                      <td className={cn(numCls, "font-bold text-destructive")} dir="ltr">{fmtAr(r.heldNet)}</td>
+                      <td className={numCls} dir="ltr">{r.ageHours}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </SectionCard>
+
+          {/* D11 (ش٦) — تركّز التسديدات على فواتير الغير لكل موظف */}
+          <SectionCard
+            title="تركّز التسديد على فواتير الغير"
+            subtitle="القبض على فاتورة أنشأها زميلٌ مشروعٌ بنطاق الفرع — تكرارُه المكثّف لدى موظفٍ إشارةُ التفافٍ على مساءلة الدرج. المؤشر: ≥٥ تسديداتٍ بالفترة."
+            count={aw.kpis.flaggedOthersCollectors}
+          >
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-xs text-muted-foreground">
+                  <th className={thCls}>القابض</th>
+                  <th className={thCls}>تسديداتٌ على فواتير الغير</th>
+                  <th className={thCls}>مجموعها</th>
+                  <th className={thCls}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {aw.othersCollections.rows.length === 0 ? (
+                  <TableEmptyRow colSpan={4} message="لا تسديدات على فواتير الغير في الفترة." />
+                ) : (
+                  aw.othersCollections.rows.map((r, i) => (
+                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
+                      <td className={tdCls}>{r.userName}</td>
+                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.receiptCount}</td>
+                      <td className={numCls} dir="ltr">{fmtAr(r.totalAmount)}</td>
+                      <FlagCell flagged={r.flagged} />
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </SectionCard>
+
+          {/* D12 (ش٦) — خفض إجمالي طلبٍ مموّل بعد القبض (من حدث تدقيق syncDraft) */}
+          <SectionCard
+            title="خفض إجمالي طلبٍ بعد قبض عربونه"
+            subtitle="خفضُ الطلب فوق المحتجز مشروعٌ — تكرارُه لدى موظفٍ إشارةُ تلاعبٍ بالأسعار بعد القبض. المؤشر: ≥٣ أحداثٍ بالفترة (من سجلّ التدقيق — best-effort)."
+            count={aw.kpis.flaggedFundedReducers}
+          >
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-xs text-muted-foreground">
+                  <th className={thCls}>الفاعل</th>
+                  <th className={thCls}>مرّات الخفض بعد القبض</th>
+                  <th className={thCls}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {aw.fundedReductions.rows.length === 0 ? (
+                  <TableEmptyRow colSpan={3} message="لا خفض إجمالياتٍ بعد قبضٍ في الفترة." />
+                ) : (
+                  aw.fundedReductions.rows.map((r, i) => (
+                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
+                      <td className={tdCls}>{r.userName}</td>
+                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.eventCount}</td>
+                      <FlagCell flagged={r.flagged} />
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </SectionCard>
         </div>
       )}
     </ReportShell>

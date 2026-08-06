@@ -78,6 +78,9 @@ export interface CreatePrintSaleInput {
   dueDate?: string | null;
   /** تقريب نقدي عراقي للبيع النقدي الكامل (يضبطه POS). */
   cashRoundIQD?: boolean;
+  /** ش٦ — تقريب السلّة المختلطة (يضبطه checkoutReception حصراً): إجماليٌّ فعّالٌ صريح يحمل
+   *  فرق تقريب السلّة كلّها على هذه الفاتورة حين لا بيعَ مباشرَ يحمله. نفس حرّاس sale/create. */
+  cashRoundingOverride?: string | null;
   /** SALES-01/02 (قناة الطباعة): موافقة على بيع خدمة بأقل من تكلفة موادها (سعر/خصم تحت COGS).
    *  يضبطها الراوتر: مدير/أدمن ذاتياً، والكاشير بموافقة مدير مُتحقَّقة. */
   priceOverrideApproved?: boolean;
@@ -320,7 +323,13 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     //    والفرق قيد ADJUST ⇒ (SALE.amount + ADJUST.amount) = الإجمالي المقرّب = النقد المستلم.
     const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
     const grandTotalD = money(totals.total);
-    const effectiveTotalD = roundCash ? roundCashIQD(grandTotalD) : grandTotalD;
+    // ش٦ — تقريب السلّة المختلطة: إجماليٌّ فعّالٌ صريح (نفس حرّاس sale/create حرفياً).
+    let overrideD: ReturnType<typeof money> | null = null;
+    if (input.cashRoundingOverride != null && input.payment?.method === "CASH") {
+      const cand = round2(money(input.cashRoundingOverride));
+      if (cand.gt(0) && cand.minus(grandTotalD).abs().lt(250)) overrideD = cand;
+    }
+    const effectiveTotalD = overrideD ?? (roundCash ? roundCashIQD(grandTotalD) : grandTotalD);
     const cashRoundingAdj = effectiveTotalD.minus(grandTotalD);
     const tendered = money(input.payment?.amount ?? "0");
     // ش٤ (§٧.٢): المقبوض سلفاً يدخل الحساب قبل حرّاس الآجل/الائتمان (مرآة sale/create — حاصرة ١.١).

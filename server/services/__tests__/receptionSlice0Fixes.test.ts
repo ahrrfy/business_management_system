@@ -11,9 +11,10 @@
  *        (مديرٌ يسجّل على وردية موظفٍ كان عربونه يهبط على درج المدير).
  *  I21 — فاتورة توصيلٍ لعميلٍ مسجَّل تُغلق ذمّتها عند التوريد (V14: remittance كان يرفع
  *        paidAmount ولا يمسّ currentBalance إطلاقاً — مرآة courier.ts).
- *  V15 — COUNTER محظور على مسار الفاتورة (لا قبضَ واردَ يقابل الصرف ⇒ عجز درج).
+ *  V15 — COUNTER على مسار الفاتورة يلزمه قبضٌ واردٌ يقابل الصرف وإلا فعجزُ درج (ش٦ رفعت
+ *        الحظر المطلق وأبقت الشرط: أمانةٌ مقبوضةٌ فعلاً بمرجع DLV-FEE-INV-{الفاتورة}).
  *  V1  — تقريب IQD في الاستقبال: بيعٌ مباشر خالص نقديّ بإجماليٍّ يُقرَّب لأعلى/لأسفل ينجح
- *        لزبونٍ عابر، والسلّة المختلطة تبقى **بلا تقريب** (سلوكٌ مُثبَّت حتى ش٦).
+ *        لزبونٍ عابر. (السلّة المختلطة صار لها تقريبها في ش٦ — receptionSlice6.test.ts.)
  */
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -208,8 +209,8 @@ describe("I21 — توريد المندوب يُغلق ذمّة العميل ا�
   });
 });
 
-describe("V15 — COUNTER محظور على مسار الفاتورة حتى ش٦", () => {
-  it("dispatchInvoice بأجرة «مقبوضة في الكاشير» يُرفض برسالة صريحة", async () => {
+describe("V15 — COUNTER على مسار الفاتورة مشروطٌ بأمانةٍ مقبوضة (رُفع الحظر المطلق في ش٦)", () => {
+  it("dispatchInvoice بأجرة «مقبوضة في الكاشير» بلا إيصال أمانةٍ يُرفض برسالة صريحة", async () => {
     const { id: partyId } = await createDeliveryParty(
       { partyType: "INDIVIDUAL", name: "مندوب", defaultFee: "2000", branchId: 1 }, MANAGER,
     );
@@ -221,9 +222,11 @@ describe("V15 — COUNTER محظور على مسار الفاتورة حتى ش�
       createdBy: 2,
     });
 
+    // ش٦: الرفض بقي لكنه صار **مشروطاً** بغياب الأمانة (PRECONDITION_FAILED) بدل حظرٍ مطلق —
+    // القبول مع أمانةٍ مقبوضة مُثبَتٌ في receptionSlice6.test.ts (S1).
     await expect(dispatchInvoiceToDelivery(
       { invoiceId: 502, partyId, deliveryFee: "2000", feeCollection: "COUNTER" }, CASHIER,
-    )).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 });
 
@@ -264,7 +267,9 @@ describe("V1 — تقريب IQD للبيع المباشر الخالص النق�
     expect(inv.status).toBe("PAID");
   });
 
-  it("السلّة المختلطة (بيع + أمر شغل) تبقى بلا تقريبٍ حتى لو أُرسل العلم — سلوكٌ مُثبَّت حتى ش٦", async () => {
+  // ش٦: تقريب السلّة المختلطة صار متاحاً لكن **بتسميةٍ صريحة** (cashRoundingOverride) لا
+  // بعلم cashRoundIQD وحده — فهذا الثابت يبقى كما هو: العلم العاري يُسقَط على المختلطة.
+  it("السلّة المختلطة (بيع + أمر شغل) تبقى بلا تقريبٍ حين يُرسَل العلم وحده بلا تسمية الحاملة", async () => {
     const shift = await openReceptionShift();
     const result = await checkoutReception({
       branchId: 1, shiftId: shift.shiftId, customerId: 1,
