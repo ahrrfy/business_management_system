@@ -100,12 +100,15 @@ describe("إفصاح التوصيل — ثلاث حالات متمايزة", () 
     expect(Number((await saleEntry(r.invoiceId)).revenue)).toBeCloseTo(50, 2);
   });
 
-  it("مجّانيّ بلا قيمة مذكورة: العَلَم يكفي للتمييز عن «بلا توصيل»", async () => {
-    const r = await sell({ deliveryFree: true });
-    const i = await inv(r.invoiceId);
-    expect(Number(i.deliveryFree)).toBe(1);
-    expect(Number(i.deliveryWaivedAmount)).toBe(0);
-    expect(Number(i.total)).toBeCloseTo(50, 2);
+  it("مجّانيّ بلا قيمة ⇒ يُرفض (قرار المالك ٦/٨: القيمة إلزامية عند الإهداء)", async () => {
+    // كان يُقبَل ويُخزَّن صفراً، فتُطبَع «مجاناً» بلا مقدار وتضيع فائدة القياس («كم أُهدي وبكم؟»).
+    // الإلزام خادميّ لا واجهيّ فقط: لا تتسرّب فاتورةٌ ناقصة الإفصاح من أيّ قناة.
+    await expect(sell({ deliveryFree: true })).rejects.toThrow(/أدخِل قيمة أجرة التوصيل/);
+    expect(await db().select().from(s.invoices)).toHaveLength(0); // تراجعٌ كامل
+  });
+
+  it("صفرٌ صريح كقيمة مُتنازَل عنها ⇒ يُرفض أيضاً (لا التفاف على الإلزام)", async () => {
+    await expect(sell({ deliveryFree: true, deliveryWaivedAmount: "0" })).rejects.toThrow(/أدخِل قيمة أجرة التوصيل/);
   });
 
   it("تناقضٌ محسوم خادمياً: عَلَمٌ مع أجرةٍ موجبة ⇒ الأجرة تُغلِّب والعَلَم يسقط", async () => {

@@ -52,7 +52,10 @@ export interface CreateSaleInput {
    * توصيل» (كلاهما `deliveryFee = 0`). لا أثر ماليّ: لا إيراد ولا قيد — إفصاحٌ للزبون وللتقارير.
    */
   deliveryFree?: boolean;
-  /** قيمة الأجرة المُتنازَل عنها (تُعرَض «مجاناً — قيمته X»). تُقبل مع `deliveryFree` فقط. */
+  /**
+   * قيمة الأجرة المُتنازَل عنها (تُعرَض «مجاناً — قيمته X»). تُقبل مع `deliveryFree` فقط،
+   * و**إلزامية** معه (قرار المالك ٦/٨/٢٦): توصيلٌ مجّانيّ بلا قيمة يُضيّع قياس ما أُهدي.
+   */
   deliveryWaivedAmount?: string | null;
   taxRatePercent?: string | null;
   payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;

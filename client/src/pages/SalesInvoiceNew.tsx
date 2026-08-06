@@ -278,6 +278,11 @@ export default function SalesInvoiceNew() {
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
+    // قرار المالك (٦/٨/٢٦): «مجاني» يلزمه مقدار الأجرة — يُطبَع للزبون ويُحصى في التقارير.
+    // الخادم يمنعه أيضاً؛ هذا الحارس ليوفّر على الموظّف رحلةَ ذهابٍ وإياب.
+    if (state.shippingFree && !D(state.shipping || "0").gt(0)) {
+      return "أدخِل قيمة أجرة التوصيل قبل جعله مجّانياً — تُطبَع للزبون وتُحصى في التقارير.";
+    }
     for (const l of state.items) {
       if (!D(l.qty).gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
       if (D(l.price).lt(0)) return `السعر في «${l.name}» غير صالح.`;
