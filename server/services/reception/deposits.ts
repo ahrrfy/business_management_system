@@ -180,6 +180,7 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
     if (input.method === "TELECOM") {
       const checked = await assertTelecomCollectAllowed(tx, {
         userId: actor.userId,
+        branchId: Number(draft.branchId),
         amount: amountD.toFixed(2),
         reference: input.reference,
         senderPhone: input.telecomSenderPhone ?? null,
@@ -315,7 +316,11 @@ export async function refundDeposit(
     }
 
     // بطريقة القبض حتماً — لا «قُبض بطاقةً ورُدّ نقداً» (I17 + اختبار ش٤ الصريح).
-    const method = (payment.method ?? "CASH") as DepositMethod;
+    // **استثناء رصيد زين** (مراجعة عدائية ٦/٨): لا سكّة ردٍّ فيزيائية له — الكارت شُحن ولا
+    // يُعاد شحنه للزبون؛ إيصال OUT بTELECOM كان يُنقص الحساب المشتقّ بينما رصيد زين الحقيقي
+    // لا يتحرّك ⇒ فرقُ مطابقةٍ شبحيّ دائم. الردّ نقداً من الدرج (بفحص كفايته) والأصل موسوم.
+    const collectedMethod = (payment.method ?? "CASH") as DepositMethod;
+    const method: DepositMethod = collectedMethod === "TELECOM" ? "CASH" : collectedMethod;
     let shiftId: number | null;
     if (method === "CASH") {
       const resolved = await resolveBranchCashShiftTx(tx, Number(draft.branchId), opts.refundShiftId ?? null);
@@ -340,7 +345,7 @@ export async function refundDeposit(
       cashBucket: method === "CASH" ? "DRAWER" : null,
       status: "COMPLETED",
       referenceNumber: `DRF-REFUND-${Number(draft.id)}`,
-      description: `استرداد عربون طلب محفوظ ${draft.draftNumber}: ${input.reason}`,
+      description: `استرداد عربون طلب محفوظ ${draft.draftNumber}: ${input.reason}${collectedMethod === "TELECOM" ? " (أصل القبض: رصيد زين — رُدّ نقداً)" : ""}`,
       createdBy: actor.userId,
     });
     const refundReceiptId = extractInsertId(rRes);
@@ -581,8 +586,11 @@ export async function refundAppliedCollectionsForWorkOrder(
   for (const part of parts) {
     const amountD = round2(money(part.amount));
     if (amountD.lte(0)) continue;
+    // استثناء رصيد زين (مراجعة عدائية ٦/٨ — مرآة refundDeposit): لا سكّة ردٍّ له؛ إيصال OUT
+    // بTELECOM يُنقص الحساب المشتقّ زوراً ⇒ يُردّ نقداً من الدرج والأصل موسوم.
+    const refundMethod: DepositMethod = part.method === "TELECOM" ? "CASH" : part.method;
     let shiftId: number | null;
-    if (part.method === "CASH") {
+    if (refundMethod === "CASH") {
       if (!cashShift) {
         const resolved = await resolveBranchCashShiftTx(tx, args.branchId, args.refundShiftId ?? null);
         cashShift = { shiftId: resolved.shiftId, openingBalance: resolved.openingBalance };
@@ -605,11 +613,11 @@ export async function refundAppliedCollectionsForWorkOrder(
       workOrderId: args.workOrderId,
       direction: "OUT",
       amount: toDbMoney(amountD),
-      paymentMethod: part.method,
-      cashBucket: part.method === "CASH" ? "DRAWER" : null,
+      paymentMethod: refundMethod,
+      cashBucket: refundMethod === "CASH" ? "DRAWER" : null,
       status: "COMPLETED",
       referenceNumber: `WO-CANCEL-REFUND-${args.workOrderId}`,
-      description: `ردّ حصّة عربونٍ مقبوضةٍ سلفاً — إلغاء طلب #${args.workOrderId}`,
+      description: `ردّ حصّة عربونٍ مقبوضةٍ سلفاً — إلغاء طلب #${args.workOrderId}${part.method === "TELECOM" ? " (أصل القبض: رصيد زين — رُدّ نقداً)" : ""}`,
       createdBy: args.actor.userId,
     });
     const refundReceiptId = extractInsertId(rRes);
@@ -629,7 +637,7 @@ export async function refundAppliedCollectionsForWorkOrder(
         customerId: part.customerId ?? args.customerId,
         kind: "REFUND",
         amount: toDbMoney(amountD),
-        method: part.method,
+        method: refundMethod,
         receiptId: refundReceiptId,
         shiftId,
         parentPaymentId: part.collectionId,

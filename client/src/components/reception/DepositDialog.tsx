@@ -1,5 +1,6 @@
 // ش٤ — حوار قبض عربون على طلبٍ محفوظ (م٢: أيّ طريقة، والربح يبقى عند التسليم).
-// المرآة الشاشيّة لخدمة reception.collectDeposit: وردية استقبالٍ مُلزَمة («سيدخل درجك أنت»)،
+// المرآة الشاشيّة لخدمة reception.collectDeposit: وردية استقبالٍ مُلزَمة («سيدخل درجك أنت»
+// للنقد وحده — I15: غير النقد يُسجَّل على الوردية للمحاسبة ولا يدخل الدرج)،
 // مرجعٌ لغير النقد، مفتاح idempotency لكل فتح، وسند قبضٍ مطبوعٌ للزبون (ليس إيصال بيع).
 import { useState } from "react";
 import Decimal from "decimal.js";
@@ -63,9 +64,11 @@ export default function DepositDialog({
 
   const collect = trpc.reception.collectDeposit.useMutation({
     onSuccess: (r) => {
+      // I15: غير النقد لا يدخل الدرج — الوردية للمحاسبة فقط (مراجعة عدائية ٦/٨).
+      const shiftNo = "shiftId" in r && r.shiftId ? r.shiftId : currentShiftId ?? "";
       notify.ok(
         `قُبض عربون ${fmt(amount)} د.ع على ${draftNumber}`,
-        `إجمالي المقبوض على الطلب: ${fmt(r.collectedTotal)} د.ع — دخل درج وردية #${"shiftId" in r && r.shiftId ? r.shiftId : currentShiftId ?? ""}`,
+        `إجمالي المقبوض على الطلب: ${fmt(r.collectedTotal)} د.ع — ${method === "CASH" ? `دخل درج وردية #${shiftNo}` : `سُجِّل على وردية #${shiftNo} (لا يدخل درج النقد)`}`,
       );
       onCollected(String(r.collectedTotal));
       void printDepositReceipt({
@@ -116,7 +119,7 @@ export default function DepositDialog({
             <button
               key={v}
               type="button"
-              onClick={() => setMethod(v)}
+              onClick={() => { setMethod(v); setTelecomConfirmed(false); }}
               className={cn(
                 "min-h-[40px] flex-1 rounded-lg border-2 text-xs font-extrabold",
                 method === v ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-muted",
@@ -129,7 +132,7 @@ export default function DepositDialog({
         {needRef && (
           <Input
             value={reference}
-            onChange={(e) => setReference(e.target.value)}
+            onChange={(e) => { setReference(e.target.value); if (method === "TELECOM") setTelecomConfirmed(false); }}
             placeholder={
               method === "CARD" ? "رقم عملية البطاقة"
               : method === "WALLET" ? "رقم عملية المحفظة"
@@ -160,10 +163,19 @@ export default function DepositDialog({
             </label>
           </>
         )}
+        {/* I15: «سيدخل درجك» للنقد وحده — لغيره الوردية للمحاسبة ولا يدخل الدرج (لا تناقض مع سطر زين). */}
         <p className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--sem-warn)]">
           <Banknote aria-hidden className="me-1 inline size-3.5" />
-          سيدخل المبلغ <span className="underline">درجك أنت</span>
-          {currentShiftId ? ` — وردية #${currentShiftId}` : " (لا وردية استقبال مفتوحة — سيُرفض)"} · {branchName}
+          {method === "CASH" ? (
+            <>
+              سيدخل المبلغ <span className="underline">درجك أنت</span>
+              {currentShiftId ? ` — وردية #${currentShiftId}` : " (لا وردية استقبال مفتوحة — سيُرفض)"} · {branchName}
+            </>
+          ) : (
+            <>
+              يُسجَّل على ورديتك{currentShiftId ? ` #${currentShiftId}` : " (لا وردية استقبال مفتوحة — سيُرفض)"} للمحاسبة — لا يدخل درج النقد · {branchName}
+            </>
+          )}
         </p>
         <div className="flex gap-2">
           <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>

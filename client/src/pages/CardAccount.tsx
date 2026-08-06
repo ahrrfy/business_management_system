@@ -63,6 +63,10 @@ export default function CardAccount() {
 
   // ش٥ — تبويب الحساب: بطاقة/بنك (افتراضيّ) أو رصيد زين. نواة خدمةٍ واحدة معمَّمة بمعامل.
   const [accountKind, setAccountKind] = useState<"CARD" | "TELECOM">("CARD");
+  // كل تسميات الأقسام/الطباعة/التصدير تتبع التبويب — «حساب البطاقة» على كشف زين تسميةٌ كاذبة.
+  const isTelecom = accountKind === "TELECOM";
+  const acctLabel = isTelecom ? "رصيد زين" : "البطاقة/البنك";
+  const stmtLabel = isTelecom ? "كشف تسوية وكيل زين" : "كشف البنك";
 
   const summary = trpc.cardAccount.summary.useQuery({ branchId: effBranch, accountKind });
 
@@ -154,7 +158,7 @@ export default function CardAccount() {
     try {
       const all = await fetchAllMovements();
       exportRows(all, {
-        filename: `حساب-البطاقة-حركات-${from || "الكل"}-${to || todayStr()}`,
+        filename: `حساب-${isTelecom ? "رصيد-زين" : "البطاقة"}-حركات-${from || "الكل"}-${to || todayStr()}`,
         columns: [
           { key: "createdAt", header: "التاريخ", map: (r) => (r.createdAt ? new Date(r.createdAt as string).toISOString().slice(0, 10) : "") },
           { key: "source", header: "النوع", map: (r) => SOURCE_AR[r.source] ?? r.source },
@@ -186,7 +190,7 @@ export default function CardAccount() {
         qDebounced ? `بحث: ${qDebounced}` : null,
       ].filter(Boolean).join(" · ");
       const opened = printReportDoc({
-        title: "حساب البطاقة/البنك — حركات",
+        title: `حساب ${acctLabel} — حركات`,
         headerExtra: [
           { label: "الفرع", value: mv.branchId != null ? branches.data?.find((b) => b.id === mv.branchId)?.name ?? String(mv.branchId) : "كل الفروع" },
           ...(filterLabels ? [{ label: "الفلاتر", value: filterLabels }] : []),
@@ -314,7 +318,7 @@ export default function CardAccount() {
           </Card>
           <Card>
             <CardContent className="p-4">
-              <div className="text-muted-foreground text-sm">إجمالي دخل/صرف البطاقة</div>
+              <div className="text-muted-foreground text-sm">إجمالي دخل/صرف {isTelecom ? "رصيد زين" : "البطاقة"}</div>
               <div className="mt-1 text-sm">
                 <span className="text-green-700">{fmtAr(s?.totalIn ?? "0")}</span>
                 <span className="mx-1 text-muted-foreground">/</span>
@@ -344,7 +348,7 @@ export default function CardAccount() {
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h2 className="flex items-center gap-2 font-semibold">
               <ScrollText aria-hidden className="size-4" />
-              حركات حساب البطاقة
+              حركات حساب {acctLabel}
             </h2>
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
@@ -445,7 +449,7 @@ export default function CardAccount() {
                     </td>
                   </tr>
                 ) : !mv || mv.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={7} message="لا حركات بطاقة في النطاق المحدَّد" />
+                  <TableEmptyRow colSpan={7} message={isTelecom ? "لا حركات رصيد زين في النطاق المحدَّد" : "لا حركات بطاقة في النطاق المحدَّد"} />
                 ) : (
                   mv.rows.map((r) => (
                     <tr key={r.receiptId} className={`border-b ${r.reversed ? "opacity-50" : ""}`}>
@@ -504,10 +508,10 @@ export default function CardAccount() {
         <CardContent className="p-4">
           <h2 className="mb-3 flex items-center gap-2 font-semibold">
             <Scale aria-hidden className="size-4" />
-            مطابقة كشف البنك/البطاقة
+            مطابقة {stmtLabel}
           </h2>
           <p className="mb-3 text-sm text-muted-foreground">
-            يحسب النظام الرصيد المتوقَّع لحركات البطاقة حتى التاريخ المحدَّد، وتُدخِل رصيد كشف البنك الفعليّ ⇒ الفرق يكشف
+            يحسب النظام الرصيد المتوقَّع لحركات {acctLabel} حتى التاريخ المحدَّد، وتُدخِل رصيد {stmtLabel} الفعليّ ⇒ الفرق يكشف
             الصفقات غير المُسوَّاة أو الرسوم أو الأخطاء. سجلٌّ تدقيقيٌّ لا يمسّ أيّ رصيد.
           </p>
 
@@ -524,8 +528,8 @@ export default function CardAccount() {
               <Input id="rec-date" type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} max={todayStr()} />
             </div>
             <div>
-              <Label htmlFor="rec-bal">رصيد كشف البنك</Label>
-              <MoneyInput id="rec-bal" value={statementBalance} onChange={setStatementBalance} placeholder="0" ariaLabel="رصيد كشف البنك" allowNegative />
+              <Label htmlFor="rec-bal">رصيد {stmtLabel}</Label>
+              <MoneyInput id="rec-bal" value={statementBalance} onChange={setStatementBalance} placeholder="0" ariaLabel={`رصيد ${stmtLabel}`} allowNegative />
             </div>
             <div>
               <Label htmlFor="rec-label">وصف الكشف (اختياري)</Label>

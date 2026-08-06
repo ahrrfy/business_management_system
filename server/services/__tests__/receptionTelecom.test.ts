@@ -23,7 +23,8 @@ import { getDb } from "../../db";
 import { closeShift, openShift } from "../shiftService";
 import { getAnomalyWatch } from "../reports/anomalyWatch";
 import { createCardReconciliation, getCardSummary, listCardReconciliations } from "../cardAccountService";
-import { collectDeposit, commitDraft, promoteDraft } from "../reception";
+import { collectDeposit, collectOnReceptionInvoice, commitDraft, promoteDraft, refundDeposit } from "../reception";
+import { createWorkOrder } from "../workOrderService";
 
 const TABLES = [
   "cardReconciliations", "orderPayments", "receptionDraftLines", "receptionDrafts",
@@ -51,7 +52,10 @@ async function reset() {
 
 async function seed() {
   const d = db();
-  await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
+  await d.insert(s.branches).values([
+    { id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" },
+    { id: 2, name: "المبيعات", code: "SALES", type: "SALES" },
+  ]);
   await d.insert(s.users).values([
     { id: 1, openId: "mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "rc", name: "موظف خدمة", email: "r@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
@@ -267,6 +271,134 @@ describe("T7 — الحساب المشتقّ المعمَّم بلا اختلا�
     // ملخّص زين يحمل آخر مطابقته.
     const telecomAfter = await getCardSummary({ branchId: 1, accountKind: "TELECOM" }, scope);
     expect(telecomAfter.lastReconciliation?.difference).toBe("0.00");
+  });
+});
+
+describe("T9 — إصلاح المراجعة: حارس زين داخل معاملة الدفع (TOCTOU + replay)", () => {
+  it("تسديد فاتورة استقبال بزين ينجح، وإعادة الإرسال بنفس المفتاح replay لا CONFLICT، والكود يبقى أحادياً", async () => {
+    const shift = await openReception();
+    await db().insert(s.invoices).values({
+      id: 9001,
+      invoiceNumber: "INV-T9-9001",
+      sourceType: "POS",
+      sourceId: "t9-9001",
+      branchId: 1,
+      customerId: 1,
+      priceTier: "RETAIL",
+      subtotal: "50000",
+      total: "50000",
+      paidAmount: "0",
+      status: "PENDING",
+      shiftId: shift.shiftId,
+    });
+    const K = uuid("t9k00001");
+    const first = await collectOnReceptionInvoice(
+      { invoiceId: 9001, amount: "10000.00", method: "TELECOM", reference: CODE(51), clientRequestId: K },
+      { userId: 2, branchId: 1, role: "cashier" },
+    );
+    expect((first as { idempotentReplay?: boolean }).idempotentReplay).toBeUndefined();
+    const rcpt = (await db().select().from(s.receipts)
+      .where(and(eq(s.receipts.paymentMethod, "TELECOM"), eq(s.receipts.invoiceId, 9001))))[0];
+    expect(rcpt.cashBucket).toBeNull();
+
+    // إعادة الإرسال المشروعة (ردٌّ ضائع): كانت تُرفض CONFLICT «سبق قبضُه» قبل نقل الحارس
+    // داخل معاملة processPayment — الآن replay نظيف بنتيجة العملية الأولى.
+    const replay = await collectOnReceptionInvoice(
+      { invoiceId: 9001, amount: "10000.00", method: "TELECOM", reference: CODE(51), clientRequestId: K },
+      { userId: 2, branchId: 1, role: "cashier" },
+    );
+    expect((replay as { idempotentReplay?: boolean }).idempotentReplay).toBe(true);
+
+    // والكود يبقى أحادياً لعمليةٍ جديدة (مفتاح مختلف).
+    await expect(collectOnReceptionInvoice(
+      { invoiceId: 9001, amount: "5000.00", method: "TELECOM", reference: CODE(51), clientRequestId: uuid("t9k00002") },
+      { userId: 2, branchId: 1, role: "cashier" },
+    )).rejects.toThrowError(/سبق قبضُه/);
+  });
+});
+
+describe("T10 — إصلاح المراجعة: ردّ عربون زين نقداً من الدرج (لا OUT شبحيّ على الحساب المشتقّ)", () => {
+  it("قبض زين 20,000 + نقد 30,000 ثم ردّ الزين ⇒ إيصال OUT نقديّ DRAWER ورصيد زين المشتقّ لا يُمسّ", async () => {
+    await openReception();
+    const p = await promoteDraft({ branchId: 1, header: { customerId: 1 }, lines: [CUSTOM_LINE] }, CASHIER);
+    const tel = await collectDeposit(
+      { draftId: p.draftId, amount: "20000.00", method: "TELECOM", reference: CODE(61), clientRequestId: uuid("ta000001") },
+      CASHIER,
+    );
+    await collectDeposit(
+      { draftId: p.draftId, amount: "25000.00", method: "CASH", clientRequestId: uuid("ta000002") },
+      CASHIER,
+    );
+    const before = await getCardSummary({ branchId: 1, accountKind: "TELECOM" }, { role: "manager", branchId: 1 });
+    expect(before.balance).toBe("20000.00");
+
+    const r = await refundDeposit(
+      { paymentId: tel.paymentId, amount: "20000.00", reason: "الزبون عدل عن الطلب", clientRequestId: uuid("ta000003") },
+      CASHIER,
+    );
+    const outRcpt = (await db().select().from(s.receipts).where(eq(s.receipts.id, Number(r.refundReceiptId))))[0];
+    expect(outRcpt.direction).toBe("OUT");
+    expect(outRcpt.paymentMethod).toBe("CASH");
+    expect(outRcpt.cashBucket).toBe("DRAWER");
+    expect(outRcpt.description).toContain("رصيد زين");
+
+    const after = await getCardSummary({ branchId: 1, accountKind: "TELECOM" }, { role: "manager", branchId: 1 });
+    expect(after.balance).toBe("20000.00"); // لم يُنقص — الرصيد المشحون بقي لدى الشركة فعلاً.
+  });
+});
+
+describe("T11 — إصلاح المراجعة: أجرة توصيل COUNTER لا تُقبض برصيد زين", () => {
+  it("إنشاء أمر شغلٍ بأجرة COUNTER وطريقة TELECOM ⇒ رفضٌ صريح", async () => {
+    await openReception();
+    await expect(createWorkOrder(
+      {
+        branchId: 1,
+        customerId: 1,
+        title: "لافتة",
+        quantity: 1,
+        salePrice: "40000.00",
+        deposit: "0",
+        paymentMethod: "TELECOM",
+        hasDelivery: true,
+        deliveryFeeCollection: "COUNTER",
+        deliveryCost: "5000.00",
+      } as never,
+      { userId: 2, branchId: 1, role: "cashier" },
+    )).rejects.toThrowError(/أمانةٌ نقديّة/);
+  });
+});
+
+describe("T12 — إصلاح المراجعة: قفل تقادم المطابقة محصورٌ بفرع القبض", () => {
+  it("مرساةٌ متقادمة بفرع ١: مطابقة زين بفرع ٢ لا تفتحه، ومطابقة فرع ١ تفتحه", async () => {
+    await openReception();
+    const p = await promoteDraft({ branchId: 1, header: { customerId: 1 }, lines: [CUSTOM_LINE] }, CASHIER);
+    const first = await collectDeposit(
+      { draftId: p.draftId, amount: "5000.00", method: "TELECOM", reference: CODE(71), clientRequestId: uuid("tb000001") },
+      CASHIER,
+    );
+    await db().update(s.receipts)
+      .set({ createdAt: new Date(Date.now() - 9 * 86_400_000) })
+      .where(eq(s.receipts.id, first.receiptId));
+
+    // admin وحده يعبر لفرعٍ صريح — المدير يُثبَّت خادمياً بفرعه (فلو استُعمل لكُتبت على فرع ١).
+    await createCardReconciliation(
+      { branchId: 2, accountKind: "TELECOM", asOfDate: new Date().toISOString().slice(0, 10), statementBalance: "0.00" },
+      { userId: 1, role: "admin", branchId: null },
+    );
+    await expect(collectDeposit(
+      { draftId: p.draftId, amount: "5000.00", method: "TELECOM", reference: CODE(72), clientRequestId: uuid("tb000002") },
+      CASHIER,
+    )).rejects.toThrowError(/لم يُطابَق|متقادمة/);
+
+    await createCardReconciliation(
+      { branchId: 1, accountKind: "TELECOM", asOfDate: new Date().toISOString().slice(0, 10), statementBalance: "5000.00" },
+      { userId: 1, role: "manager", branchId: 1 },
+    );
+    const ok = await collectDeposit(
+      { draftId: p.draftId, amount: "5000.00", method: "TELECOM", reference: CODE(73), clientRequestId: uuid("tb000003") },
+      CASHIER,
+    );
+    expect(ok.idempotentReplay).toBe(false);
   });
 });
 

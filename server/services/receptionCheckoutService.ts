@@ -123,6 +123,7 @@ export async function checkoutReceptionInTx(
     if (!completeReplay && input.paymentMethod === "TELECOM" && money(input.paidAmount ?? "0").gt(0)) {
       await assertTelecomCollectAllowed(tx, {
         userId: actor.userId,
+        branchId: input.branchId,
         amount: round2(money(input.paidAmount ?? "0")).toFixed(2),
         reference: input.paymentReference,
       });

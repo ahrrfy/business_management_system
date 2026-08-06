@@ -425,15 +425,20 @@ function CollectPaymentDialog({
   onDone: () => void;
 }) {
   const [amount, setAmount] = useState(String(remaining));
-  const [method, setMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET">("CASH");
+  const [method, setMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM">("CASH");
   const [reference, setReference] = useState("");
+  const [telecomConfirmed, setTelecomConfirmed] = useState(false);
   const [clientRequestId] = useState(() => crypto.randomUUID());
 
   const collect = trpc.reception.collectOnInvoice.useMutation({
     onSuccess: (r) => {
       notify.ok(
         `سُدِّدت دفعة على ${row.invoiceNumber}`,
-        r.collectedIntoShiftId ? `دخل المبلغ درج ورديتك #${r.collectedIntoShiftId}` : undefined,
+        method === "CASH" && r.collectedIntoShiftId
+          ? `دخل المبلغ درج ورديتك #${r.collectedIntoShiftId}`
+          : r.collectedIntoShiftId
+            ? `سُجِّلت على ورديتك #${r.collectedIntoShiftId} — لا تدخل درج النقد`
+            : undefined,
       );
       onDone();
     },
@@ -453,21 +458,22 @@ function CollectPaymentDialog({
           <Label className="text-[11px]">المبلغ المقبوض</Label>
           <MoneyInput value={amount} onChange={setAmount} ariaLabel="مبلغ الدفعة" className="h-10 text-sm font-bold" />
         </div>
-        <div className="flex gap-1.5">
+        <div className="grid grid-cols-3 gap-1.5">
           {(
             [
               { v: "CASH", label: "نقدي" },
               { v: "CARD", label: "بطاقة" },
               { v: "TRANSFER", label: "تحويل" },
               { v: "WALLET", label: "محفظة" },
+              { v: "TELECOM", label: "رصيد زين" },
             ] as const
           ).map((p) => (
             <button
               key={p.v}
               type="button"
-              onClick={() => setMethod(p.v)}
+              onClick={() => { setMethod(p.v); setTelecomConfirmed(false); }}
               className={cn(
-                "min-h-[40px] flex-1 rounded-lg border-2 text-xs font-extrabold",
+                "min-h-[40px] rounded-lg border-2 text-xs font-extrabold",
                 method === p.v ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-muted",
               )}
             >
@@ -478,23 +484,48 @@ function CollectPaymentDialog({
         {needRef && (
           <Input
             value={reference}
-            onChange={(e) => setReference(e.target.value)}
-            placeholder={method === "CARD" ? "رقم عملية البطاقة" : method === "WALLET" ? "رقم عملية المحفظة" : "رقم مرجع التحويل"}
+            onChange={(e) => { setReference(e.target.value); if (method === "TELECOM") setTelecomConfirmed(false); }}
+            placeholder={
+              method === "CARD" ? "رقم عملية البطاقة"
+              : method === "WALLET" ? "رقم عملية المحفظة"
+              : method === "TELECOM" ? "أرقام كارت شحن زين (الكود)"
+              : "رقم مرجع التحويل"
+            }
             className="h-9 text-xs"
             dir="ltr"
           />
         )}
-        {/* §٨.٥ — سطرٌ إلزاميّ: shiftIdForCashTx يفرض درج الفاعل، وهذه الشاشة تعلنه بدل أن يُفاجأ عند الإغلاق. */}
+        {method === "TELECOM" && (
+          <label className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--sem-warn)]">
+            <input
+              type="checkbox"
+              checked={telecomConfirmed}
+              onChange={(e) => setTelecomConfirmed(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>تحقّقتُ أنّ الرصيد وصل فعلاً — الكود يُقبل مرّةً واحدة ولا يدخل درج النقد</span>
+          </label>
+        )}
+        {/* §٨.٥ — سطرٌ إلزاميّ: shiftIdForCashTx يفرض درج الفاعل، وهذه الشاشة تعلنه بدل أن يُفاجأ عند الإغلاق.
+            I15: لغير النقد المبلغ يُسجَّل على الوردية للمحاسبة ولا يدخل الدرج. */}
         <p className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--sem-warn)]">
           <Banknote aria-hidden className="me-1 inline size-3.5" />
-          سيدخل المبلغ <span className="underline">درجك أنت</span>
-          {currentShiftId ? ` — وردية #${currentShiftId}` : " (لا وردية مفتوحة — النقدي سيُرفض)"} · {branchName}
+          {method === "CASH" ? (
+            <>
+              سيدخل المبلغ <span className="underline">درجك أنت</span>
+              {currentShiftId ? ` — وردية #${currentShiftId}` : " (لا وردية مفتوحة — النقدي سيُرفض)"} · {branchName}
+            </>
+          ) : (
+            <>
+              يُسجَّل على ورديتك{currentShiftId ? ` #${currentShiftId}` : ""} للمحاسبة — لا يدخل درج النقد · {branchName}
+            </>
+          )}
         </p>
         <div className="flex gap-2">
           <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
           <Button
             className="flex-1"
-            disabled={collect.isPending || D(amount || 0).lte(0) || (needRef && !reference.trim())}
+            disabled={collect.isPending || D(amount || 0).lte(0) || (needRef && !reference.trim()) || (method === "TELECOM" && !telecomConfirmed)}
             onClick={() =>
               collect.mutate({
                 invoiceId: Number(row.id),

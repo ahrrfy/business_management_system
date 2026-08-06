@@ -39,6 +39,8 @@ export function getTelecomReconMaxAgeDays(): number {
 
 export interface TelecomCollectCheck {
   userId: number;
+  /** فرع القبض — يحصر قفل تقادم المطابقة بحبيبة المطابقة نفسها (فرع×نوع). */
+  branchId: number;
   amount: string;
   /** كود كارت الشحن (referenceNumber) — إلزاميّ. */
   reference: string | null | undefined;
@@ -141,12 +143,18 @@ export async function assertTelecomCollectAllowed(
 
   // ٤) قفل تقادم المطابقة: آخر مطابقة زين أقدم من الحدّ ⇒ لا قبض جديد حتى تُطابَق.
   //    ومنذ أوّل قبضٍ إن لم تُطابَق قطّ (يغلق ثغرة «لا نطابق أبداً فلا نُقفل أبداً»).
+  //    محصورٌ **بفرع القبض** (مراجعة عدائية ٦/٨): المطابقة تُنشأ وتُحسب لكل فرعٍ
+  //    (cardReconciliations.branchId إلزاميّ) — قفلٌ عابرٌ للفروع كانت تفتحه مطابقةُ فرعٍ
+  //    خاملٍ للأبد، وتقفل فرعاً جديداً بإيصالات فرعٍ آخر قبل أول قبضٍ له.
   const maxAgeMs = getTelecomReconMaxAgeDays() * 86_400_000;
   const lastRecon = (
     await tx
       .select({ createdAt: cardReconciliations.createdAt })
       .from(cardReconciliations)
-      .where(eq(cardReconciliations.accountKind, "TELECOM"))
+      .where(and(
+        eq(cardReconciliations.accountKind, "TELECOM"),
+        eq(cardReconciliations.branchId, input.branchId),
+      ))
       .orderBy(sql`${cardReconciliations.createdAt} DESC`)
       .limit(1)
   )[0];
@@ -155,7 +163,10 @@ export async function assertTelecomCollectAllowed(
       await tx
         .select({ createdAt: receipts.createdAt })
         .from(receipts)
-        .where(eq(receipts.paymentMethod, "TELECOM"))
+        .where(and(
+          eq(receipts.paymentMethod, "TELECOM"),
+          eq(receipts.branchId, input.branchId),
+        ))
         .orderBy(sql`${receipts.createdAt} ASC`)
         .limit(1)
     )[0]?.createdAt

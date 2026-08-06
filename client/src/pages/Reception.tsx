@@ -468,7 +468,9 @@ export default function Reception() {
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
 
   const hasCustom = cart.some(isCustomKind);
-  const needPaymentRef = method !== "CASH" && paidD.gt(0);
+  // مراجعة عدائية ٦/٨: الحقل يظهر فور اختيار طريقةٍ غير نقدية وسلّةٍ غير فارغة — كان مشروطاً
+  // بمبلغٍ مُدخَل، فالمسار السريع (تحصيل المطلوب الآن) يطلب المرجع/الكود وحقله مخفيّ.
+  const needPaymentRef = method !== "CASH" && (paidD.gt(0) || expectedNowD.gt(0));
 
   // ───── البحث ──────────────────────────────────────────────────────────────
   const debounced = useDebouncedValue(search, 180);
@@ -1094,13 +1096,18 @@ export default function Reception() {
     const inputPaidD = opts.quickFullPay ? expectedNowD : paidD;
     const appliedPaidD = method === "CASH" && inputPaidD.gt(expectedNowD) ? expectedNowD : inputPaidD;
 
-    // البطاقة والتحويل صالحان أيضاً كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي.
+    // غير النقد كلّه صالح كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي (كود الكارت لرصيد زين).
     if (method !== "CASH" && inputPaidD.gt(0) && !paymentReference.trim()) {
-      notify.err(method === "CARD" ? "رقم عملية البطاقة مطلوب" : "رقم مرجع التحويل مطلوب");
+      notify.err(
+        method === "CARD" ? "رقم عملية البطاقة مطلوب"
+        : method === "WALLET" ? "رقم عملية المحفظة مطلوب"
+        : method === "TELECOM" ? "أرقام كارت شحن زين (الكود) مطلوبة"
+        : "رقم مرجع التحويل مطلوب",
+      );
       return;
     }
     if (method !== "CASH" && inputPaidD.gt(expectedNowD)) {
-      notify.err(`لا يمكن أن يتجاوز مبلغ ${method === "CARD" ? "البطاقة" : "التحويل"} المستحقّ الآن (${fmt(expectedNowD.toFixed(2))} د.ع)`);
+      notify.err(`لا يمكن أن يتجاوز مبلغ ${PAY_METHOD_LABEL[method] ?? "الدفع"} المستحقّ الآن (${fmt(expectedNowD.toFixed(2))} د.ع)`);
       return;
     }
     const directFloorD = cashRoundActive ? effectiveGrandD : sumDirectD;

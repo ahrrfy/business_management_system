@@ -355,7 +355,10 @@ export const receptionRouter = router({
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null,
         role: ctx.user.role,
       };
-      const result = await commitDraft(
+      // ش٥ (مراجعة عدائية ٦/٨): سلّتا زين متزامنتان تتصادمان حتماً على قفل فجوة نطاق TELECOM
+      // (فحص الكود الأحاديّ على نطاقٍ فارغ) — retryOnDeadlock يعيد الخاسرة نظيفةً (المفاتيح
+      // تُكتب داخل المعاملة المُدحرَجة فلا أثر، والمحاولة التالية تمرّ أو تعود replay).
+      const result = await retryOnDeadlock(() => commitDraft(
         {
           draftId: input.draftId,
           version: input.version,
@@ -366,7 +369,7 @@ export const receptionRouter = router({
           priceOverrideApproved: elevated || approvedBy != null,
         },
         actor as never,
-      );
+      ));
       if (!result.idempotentReplay) {
         await logAudit(ctx, {
           action: "reception.draftCommit",

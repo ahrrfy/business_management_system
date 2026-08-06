@@ -67,7 +67,10 @@ export async function cancelWorkOrder(
           )[0];
       if (depRcpt) {
         const refundAmt = round2(money(depRcpt.amount));
-        const refundMethod = depRcpt.paymentMethod ?? "CASH";
+        // استثناء رصيد زين (ش٥، مراجعة عدائية ٦/٨): لا سكّة ردٍّ له — إيصال OUT بTELECOM
+        // يُنقص الحساب المشتقّ بينما رصيد زين الحقيقيّ لا يتحرّك ⇒ يُردّ نقداً من الدرج.
+        const collectedMethod = depRcpt.paymentMethod ?? "CASH";
+        const refundMethod = collectedMethod === "TELECOM" ? "CASH" : collectedMethod;
         // الدرج مورد فرعٍ لا مستخدم — الإلغاء صلاحية مدير (workordersManagerProcedure) قد يختلف عن
         // الكاشير صاحب درج الاستقبال الذي قبض العربون فعلاً. مرآة إصلاح returnService.ts (بلاغ مالك
         // ٢/٨/٢٦): resolveBranchCashShiftTx يبحث في ورديات الفرع المفتوحة كلّها لا وردية الفاعل فقط،
@@ -106,7 +109,7 @@ export async function cancelWorkOrder(
           receiptId: refundReceiptId,
           customerId: wo.customerId ?? null,
           amount: refundAmt,
-          notes: `استرداد عربون طلب خدمة ملغى #${workOrderId}`,
+          notes: `استرداد عربون طلب خدمة ملغى #${workOrderId}${collectedMethod === "TELECOM" ? " (أصل القبض: رصيد زين — رُدّ نقداً)" : ""}`,
         });
       }
       // ش٤: حصص العربون المقبوضة **سلفاً** (مسوّدة ⇒ APPLICATION على هذا الأمر) — إيصال

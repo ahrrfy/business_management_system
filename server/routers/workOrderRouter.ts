@@ -32,6 +32,7 @@ import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { money } from "../services/money";
+import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { checkoutReception } from "../services/receptionCheckoutService";
 import { logger } from "../logger";
 
@@ -611,11 +612,13 @@ export const workOrderRouter = router({
       let result: Awaited<ReturnType<typeof checkoutReception>> | undefined;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
-          result = await checkoutReception({
+          // ش٥: retryOnDeadlock لتصادم قفل فجوة نطاق TELECOM (سلّتا زين متزامنتان) — حلقة
+          // isDupEntry الخارجية تبقى لسباق أرقام المستندات كما هي.
+          result = await retryOnDeadlock(() => checkoutReception({
             ...checkoutInput,
             branchId: effectiveBranchId,
             priceOverrideApproved: elevated || approvedBy != null,
-          }, actor);
+          }, actor));
           break;
         } catch (error: any) {
           if (isDupEntry(error) && attempt < 2) continue;

@@ -1,4 +1,4 @@
-﻿{
+{
   "version": "7",
   "dialect": "mysql",
   "entries": [
@@ -1078,6 +1078,13 @@
       "version": "5",
       "when": 1787879407000,
       "tag": "0154_telecom_payment_method",
+      "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "5",
+      "when": 1787879408000,
+      "tag": "0155_telecom_guard_indexes",
       "breakpoints": true
     }
   ]

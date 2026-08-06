@@ -10,9 +10,10 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { deliveryConsignments, invoices, shifts } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { processPayment } from "../sale/payment";
 import { getOpenShift } from "../shiftService";
-import { withTx, type Actor } from "../tx";
+import { type Actor } from "../tx";
 import { assertTelecomCollectAllowed } from "./telecom";
 import type { CollectOnInvoiceInput } from "./types";
 
@@ -72,20 +73,8 @@ export async function collectOnReceptionInvoice(
     });
   }
 
-  // ش٥ (§٩.٤): رصيد زين خلف ضوابطه قبل التفويض لـprocessPayment (كودٌ أحاديّ + سقفان + قفل
-  // تقادم المطابقة). معاملةٌ مستقلّة للفحص — processPayment يدير معاملته بنفسه.
-  if (input.method === "TELECOM") {
-    await withTx((tx) =>
-      assertTelecomCollectAllowed(tx, {
-        userId: actor.userId,
-        amount: input.amount,
-        reference: input.reference,
-      }),
-    );
-  }
-
   const elevated = actor.role === "admin" || actor.role === "manager";
-  const result = await processPayment(
+  const result = await retryOnDeadlock(() => processPayment(
     {
       invoiceId: input.invoiceId,
       amount: input.amount,
@@ -94,8 +83,22 @@ export async function collectOnReceptionInvoice(
       shiftId: myShift ? Number(myShift.id) : null,
       enforceBranchId: elevated ? null : actor.branchId ?? null,
       clientRequestId: input.clientRequestId,
+      // ش٥ (§٩.٤): ضوابط رصيد زين **داخل** معاملة الدفع نفسها (مراجعة عدائية ٦/٨): الفحص
+      // بمعاملةٍ مستقلّة قبل النداء كان يفتح TOCTOU (كودٌ واحد يُقبَض مرّتين تحت التزامن —
+      // أقفال فجوة الحارس تتحرّر قبل إدراج الإيصال) ويرفض الـreplay المشروع بـCONFLICT
+      // (الحارس يصطدم بإيصال العملية الأولى نفسها). الخطّاف يُنفَّذ بعد مسار الـreplay.
+      preInsertCheck: input.method === "TELECOM"
+        ? async (tx) => {
+            await assertTelecomCollectAllowed(tx, {
+              userId: actor.userId,
+              branchId: Number(inv.branchId),
+              amount: input.amount,
+              reference: input.reference,
+            });
+          }
+        : undefined,
     },
     actor,
-  );
+  ));
   return { ...result, collectedIntoShiftId: myShift ? Number(myShift.id) : null };
 }

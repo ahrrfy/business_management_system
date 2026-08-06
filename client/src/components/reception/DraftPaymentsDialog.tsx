@@ -1,5 +1,6 @@
 // ش٤ — سجلّ عرابين الطلب المحفوظ: القبض/التطبيق/الردّ + تنفيذ الردّ من هنا.
-// الردّ بطريقة القبض حتماً (يفرضها الخادم — I17) وبسقف المتبقّي من كل قبض؛ السبب إلزاميّ
+// الردّ بطريقة القبض حتماً (يفرضها الخادم — I17؛ استثناء ش٥: رصيد زين يُردّ نقداً من
+// الدرج لأنّ الرصيد المشحون لا يُعاد) وبسقف المتبقّي من كل قبض؛ السبب إلزاميّ
 // (يوثَّق على الإيصال وسجلّ التدقيق). المطبَّق على فاتورة لا يُردّ من هنا — مساره مرتجعها.
 import { useState } from "react";
 import Decimal from "decimal.js";
@@ -50,14 +51,16 @@ export default function DraftPaymentsDialog({
 
   // مراجعة ش٤: الردّ النقديّ مع أكثر من درجٍ مفتوح بالفرع يتطلّب تحديد أيّ درجٍ يخرج منه
   // النقد فعلاً (نمط شاشة المرتجعات حرفياً) — بلا المنتقي كان الردّ ميتاً طوال ساعات العمل.
-  const cashRefundOpen = refundFor != null && refundMethodFor === "CASH";
+  // ش٥: عربون رصيد زين يُردّ **نقداً من الدرج** (الخادم يفرضه — لا سكّة ردٍّ لرصيدٍ شُحن) ⇒
+  // منتقي الدرج يشمله كما يشمل النقد.
+  const cashRefundOpen = refundFor != null && (refundMethodFor === "CASH" || refundMethodFor === "TELECOM");
   const openShiftsQ = trpc.treasury.getOpenShifts.useQuery({ branchId }, { enabled: cashRefundOpen });
   const drawerShifts = openShiftsQ.data ?? [];
   const needShiftPick = cashRefundOpen && drawerShifts.length > 1;
 
   const refundM = trpc.reception.refundDeposit.useMutation({
     onSuccess: async () => {
-      notify.ok("رُدَّ المبلغ", "بطريقة قبضه — والسند مسجَّل");
+      notify.ok("رُدَّ المبلغ", "والسند مسجَّل — رصيد زين يُردّ نقداً من الدرج، وغيره بطريقة قبضه");
       setRefundFor(null);
       setRefundMethodFor(null);
       setAmount("");
@@ -171,7 +174,11 @@ export default function DraftPaymentsDialog({
                             })
                           }
                         >
-                          {refundM.isPending ? "جارٍ الردّ…" : `ردّ ${METHOD_AR[String(r.method)] ?? ""}`}
+                          {refundM.isPending
+                            ? "جارٍ الردّ…"
+                            : String(r.method) === "TELECOM"
+                              ? "ردّ نقداً (أصله رصيد زين)"
+                              : `ردّ ${METHOD_AR[String(r.method)] ?? ""}`}
                         </Button>
                       </div>
                     </div>

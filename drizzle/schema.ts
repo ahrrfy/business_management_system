@@ -1994,6 +1994,18 @@ export const receipts = mysqlTable(
       table.branchId,
       table.createdAt,
     ),
+    // ش٥/0155: قراءات حارس زين القافلة (telecom.ts) — بلا فهرسٍ خادمٍ كان فحص الكود الأحاديّ
+    // يقفل X كامل نطاق TELECOM (نموّ غير محدود + تسلسل كل الفروع). الأول يحصر قفل فحص
+    // الازدواج بسجلّات/فجوة الكود المعنيّ، والثاني يحصر قفل السقف اليوميّ بالمستخدم×اليوم.
+    payMethodRefIdx: index("idx_receipt_paymethod_ref").on(
+      table.paymentMethod,
+      table.referenceNumber,
+    ),
+    payMethodUserDateIdx: index("idx_receipt_paymethod_user_date").on(
+      table.paymentMethod,
+      table.createdBy,
+      table.createdAt,
+    ),
   }),
 );
 

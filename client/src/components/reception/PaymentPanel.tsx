@@ -96,13 +96,16 @@ export const PaymentPanel = forwardRef<HTMLDivElement, PaymentPanelProps>(functi
   }, []);
   // ثلاث درجات احتواء: يُحذف الثانويّ أولاً ثم يُعاد التركيب — لا تصغيرَ للأساسيّ.
   // (0 = قبل أول قياس ⇒ نفترض الفسيح فلا يومض التركيب المضغوط عند الإقلاع.)
-  const payDense = payPanelH > 0 && payPanelH < 700;
-  const payUltra = payPanelH > 0 && payPanelH < 580;
+  // ش٥: صفّ طرق الدفع صار صفّين (٥ طرق grid ≤٣ ⇒ ٤٤+٦+٤٤ = ٩٤px بدل ٤٤) ⇒ رُفعت العتبات
+  // الثلاث بمقدار النموّ (+٥٠px) — مراجعة ٦/٨: بلا الرفع كانت لوحة ٧٦٨px (لابتوب 1366×768)
+  // تدخل النطاق «الفسيح» بميزانية العمود القديم فتُقصّ أزرار الفعل صامتاً.
+  const payDense = payPanelH > 0 && payPanelH < 750;
+  const payUltra = payPanelH > 0 && payPanelH < 630;
   // شبكة أمانٍ أخيرة: تحت هذا الحدّ لا يبقى ثانويٌّ يُحذف، والحدود الدنيا الصلبة (مفاتيح ٤٠px
-  // ×٤ صفوف + طرق الدفع ٤٤px + زرّا الفعل ٤٤/٤٨px) تطلب ~٥٠٠px. فلو مُنع التمرير هنا لَقُصّ
-  // المحتوى **صامتاً** — وهو أسوأ من شريط تمرير. العتبة ٥٢٠ تترك هامشاً فوق الطلب الفعليّ
-  // فلا تُفتَح إلا حين يستحيل الاحتواء حقّاً (خارج مدى التشغيل: أقصر لوحةٍ عمليّة ~٥٠٠px).
-  const payOverflowGuard = payPanelH > 0 && payPanelH < 520;
+  // ×٤ صفوف + طرق الدفع ٩٤px + زرّا الفعل ٤٤/٤٨px) تطلب ~٥٥٠px. فلو مُنع التمرير هنا لَقُصّ
+  // المحتوى **صامتاً** — وهو أسوأ من شريط تمرير. العتبة ٥٧٠ تترك هامشاً فوق الطلب الفعليّ
+  // فلا تُفتَح إلا حين يستحيل الاحتواء حقّاً (خارج مدى التشغيل: أقصر لوحةٍ عمليّة ~٥٥٠px).
+  const payOverflowGuard = payPanelH > 0 && payPanelH < 570;
 
   return (
     <div
@@ -173,7 +176,7 @@ export const PaymentPanel = forwardRef<HTMLDivElement, PaymentPanelProps>(functi
       </div>
 
       {/* منطقة الإدخال — تتّسع بلا تمرير: الاحتواء المتكيّف أعلاه حذف الثانويّ بالفعل، ولوحة
-          الأرقام تمتصّ الفائض بوحدات الحاوية. التمرير لا يُفتح إلا تحت ٤٥٢px (لا يُبلَغ عملياً). */}
+          الأرقام تمتصّ الفائض بوحدات الحاوية. التمرير لا يُفتح إلا تحت ٥٧٠px (لا يُبلَغ عملياً). */}
       <div className={cn("flex min-h-0 flex-1 flex-col", payOverflowGuard ? "overflow-y-auto overscroll-contain" : "overflow-hidden")}>
       {/* م٤ — حقل المبلغ الحقيقيّ: `payInput` كان بلا أيّ مدخلٍ نصّيّ (F13) — حذفُ أوضاع
           اللوحة بلا هذا البديل كان يشلّ إدخال أيّ مبلغٍ جزئيّ/عربون. */}
@@ -232,7 +235,10 @@ export const PaymentPanel = forwardRef<HTMLDivElement, PaymentPanelProps>(functi
           40px إلا في الدرجة الأضيق بعد حذف كل ثانويّ. */}
       {/* م٤ (§٨.٣): لوحة مبلغٍ خالصة — العمود المُحرَّر من أزرار الأوضاع صار: 000 (أعلى مفتاحٍ
           عائداً في سوق الدينار) و«= الكل» و«عربون» المنسدل (عند وجود تخصيص). */}
-      <div className="min-h-0 flex-1 px-3 py-1">
+      {/* أرضية min-h حقيقية (مراجعة ٦/٨): بلا أرضيةٍ كان min-h-0 يجعل flex يمتصّ العجز بإفاضة
+          مفاتيح الشبكة فوق قسم الطرق بدل أن يشتغل overflow-y-auto للحارس — الأرضية = ٤ صفوف
+          مفاتيح بحدّها الأدنى + الفجوات والحشوة، فلا تسري قصّاً إلا داخل نطاق الحارس. */}
+      <div className={cn("flex-1 px-3 py-1", payUltra ? "min-h-[186px]" : "min-h-[202px]")}>
         <div className={cn("grid h-full grid-cols-[auto_1fr_1fr_1fr] grid-rows-4 gap-1.5", payUltra ? "[--numh:40px]" : "[--numh:44px]")} dir="rtl">
           <button onClick={() => numPress("000")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] bg-card text-sm font-extrabold tabular-nums hover:bg-muted")} dir="ltr">000</button>
           <NumKey k="3" onPress={numPress} />
