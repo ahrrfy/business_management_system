@@ -191,10 +191,16 @@ export function TotalsPanel({
         )}
         {/* شفافيةٌ للموظّف: يرى بالضبط ما سيُطبَع للزبون في كلّ حالة. */}
         {showShipping && allowFreeShipping && isFreeShipping && (
-          <p className="pb-1.5 text-[11px] font-semibold text-muted-foreground">
+          <p
+            className={cn(
+              "pb-1.5 text-[11px] font-semibold",
+              Number(state.shipping || "0") > 0 ? "text-muted-foreground" : "text-destructive",
+            )}
+            role={Number(state.shipping || "0") > 0 ? undefined : "alert"}
+          >
             {Number(state.shipping || "0") > 0
               ? `سيُطبَع على الفاتورة: «التوصيل مجاناً — قيمته ${fmtNum(state.shipping)} ${currSym}» ولن يُضاف للإجمالي.`
-              : "سيُطبَع «التوصيل مجاناً». أدخِل قيمة الأجرة ليرى الزبون مقدار ما أُهدي له."}
+              : "أدخِل قيمة الأجرة — إلزامية عند الإهداء كي تُطبَع للزبون وتُحصى في التقارير."}
           </p>
         )}
 
