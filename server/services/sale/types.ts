@@ -31,6 +31,12 @@ export interface SaleLineInput {
    * يلزم تفويض مدير — نفس حوكمة سند الهدية المستقلّ.
    */
   isGift?: boolean;
+  /**
+   * معرّف ربط داخلي يعيده `createSaleInTx` مع invoiceItemId بعد إعادة ترتيب الأقفال.
+   * لا يوجد في مخطط أيّ راوتر، ولا يُخزَّن في الفاتورة. يستعمله تركيب البيع الرقمي فقط
+   * كي لا يربط مرجع كرت/طالب ببند آخر اعتماداً على ترتيب المصفوفة.
+   */
+  internalLineToken?: string | null;
 }
 
 export interface CreateSaleInput {
@@ -103,4 +109,6 @@ export interface CreateSaleResult {
   /** «وضع الافتتاح» (ش٢): أصناف هبطت تحت الصفر بهذا البيع (معلومة استشارية للمحاولة الفائزة
    *  فقط — replay الـidempotency لا يعيدها؛ حدث التدقيق sale.openingNegative يقع مرّة واحدة). */
   negativeDips?: { variantId: number; newQuantity: number }[];
+  /** نتيجة داخلية لمسارات البيع المركّبة؛ الراوتر العام لا يرسل internalLineToken أصلاً. */
+  createdLineItems?: { lineToken: string; invoiceItemId: number }[];
 }

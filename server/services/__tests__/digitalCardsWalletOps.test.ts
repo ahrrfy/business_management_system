@@ -58,7 +58,7 @@ beforeEach(async () => {
   seq = 0;
 });
 
-describe("ش٩ — الإيداع (§٦.١)", () => {
+describe.sequential("ش٩ — الإيداع (§٦.١)", () => {
   it("يرفع الرصيد + سند صرف OUT من الخزينة + قيد أصلٍ بصفر أثر P&L", async () => {
     const { walletId } = await mkWallet();
     const r = await withTx((tx) => walletOpsService.deposit(tx, {
@@ -106,7 +106,7 @@ describe("ش٩ — الإيداع (§٦.١)", () => {
   });
 });
 
-describe("ش٩ — السحب", () => {
+describe.sequential("ش٩ — السحب", () => {
   it("يخفض الرصيد بسند قبض IN وقيد أصلٍ صفريّ", async () => {
     const { walletId } = await mkWallet();
     await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "50000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
@@ -134,12 +134,20 @@ describe("ش٩ — السحب", () => {
   });
 });
 
-describe("ش٩ — التعديل بفصل المهام", () => {
+describe.sequential("ش٩ — التعديل بفصل المهام", () => {
   async function funded() {
     const { walletId } = await mkWallet();
     await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "100000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
     return walletId;
   }
+
+  it("لا يقبل طلب تعديل جديد على محفظة معطلة", async () => {
+    const { walletId } = await mkWallet();
+    await db().update(s.digitalWallets).set({ isActive: false }).where(eq(s.digitalWallets.id, walletId));
+    await expect(withTx((tx) => walletOpsService.requestAdjustment(tx, {
+      walletId, amount: "1000", direction: "IN", reason: "تصحيح", clientRequestId: rid(),
+    }, mgrA))).rejects.toThrow(/المحفظة معطّلة/);
+  });
 
   it("الطلب لا يمسّ الرصيد إطلاقاً", async () => {
     const walletId = await funded();
@@ -202,7 +210,7 @@ describe("ش٩ — التعديل بفصل المهام", () => {
   });
 });
 
-describe("ش٩ — معيار الخروج: الرصيد يُعاد إنتاجه من الحركات", () => {
+describe.sequential("ش٩ — معيار الخروج: الرصيد يُعاد إنتاجه من الحركات", () => {
   it("سلسلة عمليات مختلطة ⇒ الرصيد المخزَّن = مجموع الحركات الفعّالة", async () => {
     const { walletId } = await mkWallet();
     await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "1000000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
@@ -231,7 +239,7 @@ describe("ش٩ — معيار الخروج: الرصيد يُعاد إنتاجه
   });
 });
 
-describe("ش٩ — المطابقة اليومية (§٥.١١)", () => {
+describe.sequential("ش٩ — المطابقة اليومية (§٥.١١)", () => {
   async function funded(amount = "100000") {
     const { walletId } = await mkWallet();
     await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount, paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
@@ -292,10 +300,47 @@ describe("ش٩ — المطابقة اليومية (§٥.١١)", () => {
     // وبعد التسوية صار الرصيد مطابقاً للفعليّ المعدود.
     expect((await wallet(walletId)).currentBalance).toBe("96600.00");
     expect(await walletOpsService.assertBalanceReproducible(db(), walletId)).toBe(true);
+
+    const [adjustmentRow] = await db().select().from(s.digitalWalletTransactions)
+      .where(eq(s.digitalWalletTransactions.id, adj.transactionId));
+    expect(adjustmentRow.notes).toContain(`[RECONCILIATION:${rec.reconciliationId}]`);
+
+    const second = await withTx((tx) => walletOpsService.reconcile(tx, {
+      walletId, businessDate: "2026-07-30", actualBalance: "93200",
+    }, mgrA));
+    await expect(withTx((tx) => walletOpsService.resolveVariance(tx, {
+      reconciliationId: second.reconciliationId,
+      adjustmentTransactionId: adj.transactionId,
+    }, mgrB))).rejects.toThrow(/استُخدم هذا التعديل سابقاً/);
+  });
+
+  it("يرفض تعديل مطابقة بمبلغ أو اتجاه لا يساوي الفرق", async () => {
+    const walletId = await funded();
+    const rec = await withTx((tx) => walletOpsService.reconcile(tx, {
+      walletId, businessDate: "2026-07-29", actualBalance: "96600",
+    }, mgrA));
+
+    const wrongAmount = await withTx((tx) => walletOpsService.requestAdjustment(tx, {
+      walletId, amount: "3000", direction: "OUT", reason: "مبلغ خاطئ", clientRequestId: rid(),
+    }, mgrA));
+    await withTx((tx) => walletOpsService.approveAdjustment(tx, { transactionId: wrongAmount.transactionId }, mgrB));
+    await expect(withTx((tx) => walletOpsService.resolveVariance(tx, {
+      reconciliationId: rec.reconciliationId,
+      adjustmentTransactionId: wrongAmount.transactionId,
+    }, mgrB))).rejects.toThrow(/لا يطابق فرق المطابقة/);
+
+    const wrongDirection = await withTx((tx) => walletOpsService.requestAdjustment(tx, {
+      walletId, amount: "3400", direction: "IN", reason: "اتجاه خاطئ", clientRequestId: rid(),
+    }, mgrA));
+    await withTx((tx) => walletOpsService.approveAdjustment(tx, { transactionId: wrongDirection.transactionId }, mgrB));
+    await expect(withTx((tx) => walletOpsService.resolveVariance(tx, {
+      reconciliationId: rec.reconciliationId,
+      adjustmentTransactionId: wrongDirection.transactionId,
+    }, mgrB))).rejects.toThrow(/لا يطابق فرق المطابقة/);
   });
 });
 
-describe("ش٩ — تنبيه الرصيد المنخفض", () => {
+describe.sequential("ش٩ — تنبيه الرصيد المنخفض", () => {
   it("يظهر عند نزول المتاح تحت حدّ المزوّد ويختفي بالإيداع", async () => {
     const { walletId } = await mkWallet("50000");
     await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "40000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));

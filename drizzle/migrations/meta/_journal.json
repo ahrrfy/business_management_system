@@ -1065,6 +1065,13 @@
       "when": 1787879405000,
       "tag": "0152_free_delivery_disclosure",
       "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "5",
+      "when": 1787879406000,
+      "tag": "0154_digital_sale_execution_claims",
+      "breakpoints": true
     }
   ]
 }

@@ -221,7 +221,13 @@ export async function createOffering(
   if (input.productId != null) {
     // Link to existing product — verify it's a service product
     const [prod] = await tx
-      .select({ id: products.id, isService: products.isService, productType: products.productType })
+      .select({
+        id: products.id,
+        isService: products.isService,
+        productType: products.productType,
+        isConsignment: products.isConsignment,
+        consignorId: products.consignorId,
+      })
       .from(products)
       .where(eq(products.id, input.productId))
       .limit(1);
@@ -230,6 +236,12 @@ export async function createOffering(
     }
     if (!prod.isService) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يجب أن يكون خدمياً (isService)" });
+    }
+    if (prod.isConsignment || prod.consignorId != null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن ربط عرض رقمي بمنتج أمانة؛ تسوية المزوّد الرقمي هي المصدر المالي الوحيد لهذا البيع",
+      });
     }
     productId = prod.id;
 
@@ -295,7 +307,7 @@ export async function createOffering(
   const offeringId = extractInsertId(offeringResult);
 
   // 4. Insert digitalOfferingBranches rows
-  await insertOfferingBranches(tx, offeringId, input.branches, provider.settlementMode);
+  await insertOfferingBranches(tx, offeringId, input.providerId, input.branches, provider.settlementMode);
 
   // 5. Audit
   await auditLog(tx, actor, "digitalCards.offering.create", offeringId, {
@@ -313,6 +325,7 @@ export async function createOffering(
 async function insertOfferingBranches(
   tx: Tx,
   offeringId: number,
+  providerId: number,
   branchInputs: OfferingBranchInput[],
   providerSettlementMode: string,
 ): Promise<void> {
@@ -327,7 +340,14 @@ async function insertOfferingBranches(
       throw new TRPCError({ code: "NOT_FOUND", message: `الفرع ${b.branchId} غير موجود` });
     }
 
-    // If walletId provided, verify it belongs to the right provider/branch
+    if (providerSettlementMode === "PREPAID" && b.walletId == null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `اختر محفظة المزوّد للفرع ${b.branchId}؛ البيع المسبق لا يعمل بلا محفظة`,
+      });
+    }
+
+    // If walletId provided, verify it belongs to the right provider/branch and is usable.
     let walletId: number | null = null;
     if (b.walletId != null) {
       if (providerSettlementMode !== "PREPAID") {
@@ -337,7 +357,12 @@ async function insertOfferingBranches(
         });
       }
       const [wallet] = await tx
-        .select({ id: digitalWallets.id, branchId: digitalWallets.branchId })
+        .select({
+          id: digitalWallets.id,
+          providerId: digitalWallets.providerId,
+          branchId: digitalWallets.branchId,
+          isActive: digitalWallets.isActive,
+        })
         .from(digitalWallets)
         .where(eq(digitalWallets.id, b.walletId))
         .limit(1);
@@ -348,6 +373,18 @@ async function insertOfferingBranches(
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: `المحفظة ${b.walletId} لا تنتمي للفرع ${b.branchId}`,
+        });
+      }
+      if (Number(wallet.providerId) !== providerId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `المحفظة ${b.walletId} لا تتبع المزوّد المحدد`,
+        });
+      }
+      if (!wallet.isActive) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `المحفظة ${b.walletId} معطّلة؛ فعّلها أو اختر محفظة أخرى`,
         });
       }
       walletId = b.walletId;
@@ -375,6 +412,9 @@ export async function updateOffering(
       id: digitalOfferings.id,
       providerId: digitalOfferings.providerId,
       productId: digitalOfferings.productId,
+      offeringType: digitalOfferings.offeringType,
+      requiresStudentData: digitalOfferings.requiresStudentData,
+      subscriptionDurationDays: digitalOfferings.subscriptionDurationDays,
     })
     .from(digitalOfferings)
     .where(eq(digitalOfferings.id, input.id))
@@ -389,20 +429,37 @@ export async function updateOffering(
     await tx.update(products).set({ name }).where(eq(products.id, existing.productId));
   }
 
-  // Build update set — providerId, productId, variantId, productUnitId are immutable
-  const set: Record<string, unknown> = {};
+  // Fulfilment semantics are immutable. Existing intents/contracts depend on these
+  // values and the current schema has no per-intent snapshot columns for them.
+  // To change the kind or duration, create a new offering and deactivate this one.
   if (input.offeringType !== undefined) {
-    set.offeringType = assertEnum(input.offeringType, OFFERING_TYPES, "نوع العرض");
+    const requested = assertEnum(input.offeringType, OFFERING_TYPES, "نوع العرض");
+    if (requested !== existing.offeringType) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "لا يمكن تغيير نوع عرض منشأ؛ أنشئ عرضاً جديداً وعطّل القديم لحماية المبيعات السابقة",
+      });
+    }
   }
-  if (input.requiresStudentData !== undefined) {
-    set.requiresStudentData = input.requiresStudentData;
+  if (input.requiresStudentData !== undefined && input.requiresStudentData !== existing.requiresStudentData) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "لا يمكن تغيير اشتراط بيانات الطالب بعد إنشاء العرض؛ أنشئ عرضاً جديداً",
+    });
   }
   if (input.subscriptionDurationDays !== undefined) {
-    if (input.subscriptionDurationDays != null && input.subscriptionDurationDays < 1) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "مدة الاشتراك يجب أن تكون يوماً واحداً على الأقل" });
+    const requestedDuration = input.subscriptionDurationDays == null ? null : Number(input.subscriptionDurationDays);
+    const storedDuration = existing.subscriptionDurationDays == null ? null : Number(existing.subscriptionDurationDays);
+    if (requestedDuration !== storedDuration) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "لا يمكن تغيير مدة اشتراك عرض منشأ؛ أنشئ عرضاً جديداً وعطّل القديم",
+      });
     }
-    set.subscriptionDurationDays = input.subscriptionDurationDays;
   }
+
+  // Build update set — identity and fulfilment semantics are immutable.
+  const set: Record<string, unknown> = {};
   if (input.faceValue !== undefined) {
     set.faceValue = input.faceValue != null ? toDbMoney(money(input.faceValue)) : null;
   }
@@ -454,7 +511,7 @@ export async function updateOffering(
       .where(eq(digitalOfferingBranches.offeringId, input.id));
 
     if (input.branches.length > 0) {
-      await insertOfferingBranches(tx, input.id, input.branches, settlementMode);
+      await insertOfferingBranches(tx, input.id, existing.providerId, input.branches, settlementMode);
     }
   }
 
@@ -556,7 +613,7 @@ export async function listOfferings(db: DB, filters?: OfferingFilters) {
 }
 
 /* ────────── Get single ────────── */
-export async function getOffering(db: DB, id: number) {
+export async function getOffering(db: DB, id: number, branchId?: number | null) {
   const [row] = await db
     .select({
       id: digitalOfferings.id,
@@ -593,6 +650,20 @@ export async function getOffering(db: DB, id: number) {
     throw new TRPCError({ code: "NOT_FOUND", message: "العرض غير موجود" });
   }
 
+  if (branchId != null) {
+    const [linked] = await db
+      .select({ offeringId: digitalOfferingBranches.offeringId })
+      .from(digitalOfferingBranches)
+      .where(and(
+        eq(digitalOfferingBranches.offeringId, id),
+        eq(digitalOfferingBranches.branchId, branchId),
+      ))
+      .limit(1);
+    if (!linked) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "العرض غير متاح في فرع المستخدم" });
+    }
+  }
+
   // Fetch branches with details
   const offeringBranches = await db
     .select({
@@ -607,7 +678,10 @@ export async function getOffering(db: DB, id: number) {
     .from(digitalOfferingBranches)
     .innerJoin(branches, eq(digitalOfferingBranches.branchId, branches.id))
     .leftJoin(digitalWallets, eq(digitalOfferingBranches.walletId, digitalWallets.id))
-    .where(eq(digitalOfferingBranches.offeringId, id))
+    .where(and(
+      eq(digitalOfferingBranches.offeringId, id),
+      ...(branchId == null ? [] : [eq(digitalOfferingBranches.branchId, branchId)]),
+    ))
     .orderBy(digitalOfferingBranches.displayOrder);
 
   return { ...row, branches: offeringBranches };

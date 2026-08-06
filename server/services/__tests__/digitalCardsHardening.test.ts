@@ -22,7 +22,7 @@ const mgr = { userId: 2, branchId: 1, role: "manager" };
 const DATE = "2026-07-29";
 
 const TABLES = [
-  "digitalWalletReconciliations", "digitalSaleDetails", "digitalSaleIntentItems",
+  "digitalWalletReconciliations", "digitalSaleDetails", "digitalSaleExecutionClaims", "digitalSaleIntentItems",
   "digitalWalletReservations", "digitalSaleIntents", "digitalWalletTransactions",
   "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWallets", "digitalProviders",

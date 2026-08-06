@@ -54,11 +54,24 @@ export const salesRouter = router({
       return withTx((tx) => intentService.prepare(tx, input, actorOf(ctx)));
     }),
 
+  claimExecution: digitalCardsPosProcedure
+    .input(
+      z.object({
+        intentId: z.number().int().positive(),
+        intentItemId: z.number().int().positive(),
+        claimToken: z.string().min(8).max(80),
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => intentService.claimExecution(tx, input, actorOf(ctx))),
+    ),
+
   markExecution: digitalCardsPosProcedure
     .input(
       z.object({
         intentId: z.number().int().positive(),
         intentItemId: z.number().int().positive(),
+        claimToken: z.string().min(8).max(80),
         status: z.enum(["SUCCESS", "FAILED", "UNKNOWN"]),
         providerReference: z.string().max(120).nullish(),
       }),
@@ -133,12 +146,21 @@ export const salesRouter = router({
       withTx((tx) => finalizeService.finalize(tx, input, actorOf(ctx))),
     ),
 
+  /** Complete an all-success NEEDS_REVIEW intent from its locked snapshots. */
+  recover: digitalCardsManagerProcedure
+    .input(z.object({ intentId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => finalizeService.recoverNeedsReview(tx, input.intentId, actorOf(ctx))),
+    ),
+
   saleDetails: digitalCardsAdminReadProcedure
     .input(z.object({ invoiceId: z.number().int().positive() }))
-    .query(async ({ input }) => finalizeService.getSaleDetails(requireDb(), input.invoiceId)),
+    .query(async ({ input, ctx }) =>
+      finalizeService.getSaleDetails(requireDb(), input.invoiceId, scopedBranchOf(ctx))),
 
   /** إعادة طباعة (§١٢.١-٤): لقطات الكرت من الخادم — بلا حصة مزوّد ولا ربح، فالكاشير يراها. */
   printDetails: digitalCardsPosProcedure
     .input(z.object({ invoiceId: z.number().int().positive() }))
-    .query(async ({ input }) => finalizeService.reprintDetails(requireDb(), input.invoiceId)),
+    .query(async ({ input, ctx }) =>
+      finalizeService.reprintDetails(requireDb(), input.invoiceId, scopedBranchOf(ctx))),
 });

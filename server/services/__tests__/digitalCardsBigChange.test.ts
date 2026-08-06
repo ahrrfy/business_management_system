@@ -25,7 +25,7 @@ const mgrB = { userId: 3, branchId: 1, role: "manager" };
 const admin = { userId: 4, branchId: 1, role: "admin" };
 
 const TABLES = [
-  "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
+  "digitalSaleExecutionClaims", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
   "digitalPriceChangeReports", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWalletTransactions", "digitalWallets", "digitalProviders",
   "accountingEntries", "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "products",
@@ -47,7 +47,7 @@ async function mkProvider() {
   const { supplierId } = await createSupplier({ name: "آسياسيل" }, mgrA);
   const { providerId } = await withTx((tx) =>
     providerService.createProvider(tx, {
-      supplierId, providerType: "TELECOM", settlementMode: "PREPAID",
+      supplierId, providerType: "TELECOM", settlementMode: "POSTPAID",
       recognitionMode: "PRINCIPAL_GROSS", referencePolicy: "OPTIONAL", settlementCycle: "ON_DEMAND",
     }, mgrA),
   );
@@ -64,14 +64,24 @@ async function mkOffering(providerId: number, name = "كارت ١٠ آلاف") {
 }
 
 /** يُنشئ مسودّة بحصصٍ معطاة ويعيد رقمها (بلا نشر). */
-async function draft(providerId: number, date: string, lines: { offeringId: number; providerShare: string }[], actor = mgrA) {
+async function draft(
+  providerId: number,
+  date: string,
+  lines: { offeringId: number; providerShare: string; sellPrice?: string }[],
+  actor = mgrA,
+) {
   const { batchId } = await withTx((tx) =>
     pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: date }, actor));
   await withTx((tx) => pricingService.saveDraft(tx, { batchId, lines }, actor));
   return batchId;
 }
 
-async function publishNow(providerId: number, date: string, lines: { offeringId: number; providerShare: string }[], actor = mgrA) {
+async function publishNow(
+  providerId: number,
+  date: string,
+  lines: { offeringId: number; providerShare: string; sellPrice?: string }[],
+  actor = mgrA,
+) {
   const batchId = await draft(providerId, date, lines, actor);
   await withTx((tx) => pricingService.publish(tx, { batchId }, actor));
   return batchId;
@@ -173,14 +183,15 @@ describe("§٧.١ — الاعتماد وفصل المهام", () => {
     await expect(withTx((tx) => pricingService.publish(tx, { batchId }, mgrA))).resolves.toBeTruthy();
   });
 
-  it("B3: الأدمن مُستثنى — يعتمد مسودّته", async () => {
+  it("B3: لا استثناء للأدمن — لا يعتمد مسودّته المالية بنفسه", async () => {
     const providerId = await mkProvider();
     const offeringId = await mkOffering(providerId);
     await publishNow(providerId, "2026-07-30", [{ offeringId, providerShare: "10000" }]);
     const batchId = await draft(providerId, "2026-07-31", [{ offeringId, providerShare: "20000" }], admin);
 
-    await withTx((tx) => pricingService.approveBigChange(tx, { batchId }, admin));
-    await expect(withTx((tx) => pricingService.publish(tx, { batchId }, admin))).resolves.toBeTruthy();
+    await expect(
+      withTx((tx) => pricingService.approveBigChange(tx, { batchId }, admin)),
+    ).rejects.toThrow(/مديرٌ آخر/);
   });
 
   it("الاعتماد بلا تغييرٍ كبير مرفوض", async () => {
@@ -192,6 +203,58 @@ describe("§٧.١ — الاعتماد وفصل المهام", () => {
     await expect(
       withTx((tx) => pricingService.approveBigChange(tx, { batchId }, mgrB)),
     ).rejects.toThrow(/لا تغييرات كبيرة/);
+  });
+
+  it("تغيّر سعر البيع الكبير مع ثبات التكلفة يحتاج اعتماداً ثانياً", async () => {
+    const providerId = await mkProvider();
+    const offeringId = await mkOffering(providerId);
+    await publishNow(providerId, "2026-08-01", [{ offeringId, providerShare: "100", sellPrice: "750" }]);
+    const batchId = await draft(providerId, "2026-08-02", [
+      { offeringId, providerShare: "100", sellPrice: "1500" },
+    ]);
+
+    await expect(withTx((tx) => pricingService.publish(tx, { batchId }, mgrA))).rejects.toThrow(/اعتماد مدير/);
+  });
+
+  it("آخر محرر للتغيير لا يستطيع اعتماد عمله ولو لم ينشئ الدفعة", async () => {
+    const providerId = await mkProvider();
+    const offeringId = await mkOffering(providerId);
+    await publishNow(providerId, "2026-08-01", [{ offeringId, providerShare: "100" }]);
+    const batchId = await draft(providerId, "2026-08-02", [{ offeringId, providerShare: "160" }], mgrA);
+    await withTx((tx) =>
+      pricingService.saveDraft(tx, { batchId, lines: [{ offeringId, providerShare: "200" }] }, mgrB),
+    );
+
+    await expect(
+      withTx((tx) => pricingService.approveBigChange(tx, { batchId }, mgrB)),
+    ).rejects.toThrow(/حرّرتَه بنفسك/);
+  });
+
+  it("تغيّر baseline بعد الاعتماد يبطل بصمته ولو بقيت المسودة نفسها", async () => {
+    const providerId = await mkProvider();
+    const offeringId = await mkOffering(providerId);
+    await publishNow(providerId, "2026-08-01", [{ offeringId, providerShare: "100" }]);
+
+    const staleApproved = await draft(
+      providerId,
+      "2026-08-03",
+      [{ offeringId, providerShare: "160" }],
+      mgrA,
+    );
+    await withTx((tx) => pricingService.approveBigChange(tx, { batchId: staleApproved }, mgrB));
+
+    const intervening = await draft(
+      providerId,
+      "2026-08-02",
+      [{ offeringId, providerShare: "10" }],
+      mgrB,
+    );
+    await withTx((tx) => pricingService.approveBigChange(tx, { batchId: intervening }, mgrA));
+    await withTx((tx) => pricingService.publish(tx, { batchId: intervening }, mgrB));
+
+    await expect(
+      withTx((tx) => pricingService.publish(tx, { batchId: staleApproved }, mgrA)),
+    ).rejects.toThrow(/تغيّر السعر النافذ/);
   });
 });
 

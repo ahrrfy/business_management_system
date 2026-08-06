@@ -15,6 +15,7 @@ import {
   assertScopeExists,
   auditLog,
   lockBatch,
+  lockPublishedScope,
   priceFor,
   type DraftLineInput,
   type OfferingRules,
@@ -23,7 +24,9 @@ import {
 } from "./pricingShared";
 import {
   BIG_CHANGE_THRESHOLD_PERCENT,
-  currentSharesFor,
+  approvalFingerprint,
+  approvalSnapshotFor,
+  currentPricesFor,
   detectBigChanges,
   type BigChangeLine,
 } from "./pricingBigChange";
@@ -109,11 +112,13 @@ export async function getMorningSheet(db: DB, scope: SheetScope) {
   // §٧.١: التغييرات الكبيرة في المسودّة الحالية + حالة اعتمادها — تُحسب هنا كي يرى المدير
   // البوّابة **قبل** أن يصطدم بها عند النشر، ويعرف مَن اعتمد إن اعتُمدت.
   const bigChanges = draftBatch
-    ? detectBigChanges(
-        offerings,
-        new Map(current.map((c) => [Number(c.offeringId), c.providerShare])),
-        new Map(draftLines.map((l) => [Number(l.offeringId), l.providerShare])),
-      )
+      ? detectBigChanges(
+          offerings,
+          new Map(current.map((c) => [Number(c.offeringId), c.providerShare])),
+          new Map(draftLines.map((l) => [Number(l.offeringId), l.providerShare])),
+          new Map(current.map((c) => [Number(c.offeringId), c.sellPrice])),
+          new Map(draftLines.map((l) => [Number(l.offeringId), l.sellPrice])),
+        )
     : [];
 
   return {
@@ -201,14 +206,39 @@ export async function createOrGetDraft(
     return { batchId: Number(existing.id), created: false };
   }
 
-  const res = await tx.insert(digitalPriceBatches).values({
-    branchId: scope.branchId,
-    providerId: scope.providerId,
-    businessDate: scope.businessDate,
-    changeReason: scope.changeReason?.trim() || null,
-    status: "DRAFT",
-    createdBy: actor.userId,
-  });
+  let res;
+  try {
+    res = await tx.insert(digitalPriceBatches).values({
+      branchId: scope.branchId,
+      providerId: scope.providerId,
+      businessDate: scope.businessDate,
+      changeReason: scope.changeReason?.trim() || null,
+      status: "DRAFT",
+      createdBy: actor.userId,
+    });
+  } catch (error) {
+    // القيد الفريد يحسم سباق SELECT→INSERT. locking read يرى الفائز حتى تحت REPEATABLE READ.
+    const [winner] = await tx
+      .select({ id: digitalPriceBatches.id })
+      .from(digitalPriceBatches)
+      .where(
+        and(
+          eq(digitalPriceBatches.branchId, scope.branchId),
+          eq(digitalPriceBatches.providerId, scope.providerId),
+          eq(digitalPriceBatches.businessDate, scope.businessDate),
+          eq(digitalPriceBatches.status, "DRAFT"),
+        ),
+      )
+      .for("update");
+    if (!winner) throw error;
+    if (scope.changeReason !== undefined) {
+      await tx
+        .update(digitalPriceBatches)
+        .set({ changeReason: scope.changeReason?.trim() || null })
+        .where(eq(digitalPriceBatches.id, winner.id));
+    }
+    return { batchId: Number(winner.id), created: false };
+  }
   const batchId = extractInsertId(res);
   await auditLog(tx, actor, "digitalCards.pricing.draftCreated", batchId, { ...scope });
   return { batchId, created: true };
@@ -275,6 +305,14 @@ async function writeDraftLines(
   const rulesById = new Map(offerings.map((o) => [o.offeringId, o]));
   const now = new Date();
 
+  const ids = new Set<number>();
+  for (const line of lines) {
+    if (ids.has(line.offeringId)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `البطاقة ${line.offeringId} مكررة في الأسعار` });
+    }
+    ids.add(line.offeringId);
+  }
+
   // §٧.١: يُبطَل اعتماد «التغيير الكبير» عند تغيّر الحصص **فعلاً** — لا عند كل كتابة.
   //
   // وُضع هنا (المسار الوحيد الذي يعدّل السطور) لا في `saveDraft` وحده، وإلا التفّ عليه
@@ -292,27 +330,11 @@ async function writeDraftLines(
     .from(digitalPriceVersions)
     .where(eq(digitalPriceVersions.batchId, batchId));
   const existingByOffering = new Map(existing.map((e) => [Number(e.offeringId), e]));
-  const pricesChanged =
-    lines.length !== existing.length ||
-    lines.some((l) => {
-      const prev = existingByOffering.get(l.offeringId);
-      return (
-        prev == null ||
-        !money(prev.providerShare).eq(money(l.providerShare)) ||
-        (l.sellPrice != null && !money(prev.sellPrice).eq(money(l.sellPrice)))
-      );
-    });
-  if (pricesChanged) {
-    await tx
-      .update(digitalPriceBatches)
-      .set({ bigChangeApprovedBy: null, bigChangeApprovedAt: null })
-      .where(eq(digitalPriceBatches.id, batchId));
-  }
 
-  // ترتيب حتميّ بـofferingId ⇒ لا deadlock عند تزامن حفظَين على الدُفعة نفسها.
+  // احسب القيمة الفعلية أولاً كي تلتقط المقارنة تغيّر السعر المشتق أيضاً. إعادة الحفظ
+  // المطابقة لا تعد تحريراً ولا تغيّر createdBy، وإلا انكسر فصل المهام عند النشر.
   const ordered = [...lines].sort((a, b) => a.offeringId - b.offeringId);
-
-  for (const line of ordered) {
+  const prepared = ordered.map((line) => {
     const rules = rulesById.get(line.offeringId);
     if (!rules) {
       throw new TRPCError({
@@ -320,7 +342,29 @@ async function writeDraftLines(
         message: `العرض ${line.offeringId} ليس ضمن بطاقات هذا المزوّد الفعّالة في هذا الفرع`,
       });
     }
-    const priced = priceFor(rules, line.providerShare, line.sellPrice, enforceMinimum);
+    return { line, priced: priceFor(rules, line.providerShare, line.sellPrice, enforceMinimum) };
+  });
+  const changedByOffering = new Map(
+    prepared.map(({ line, priced }) => {
+      const prev = existingByOffering.get(line.offeringId);
+      return [
+        line.offeringId,
+        prev == null ||
+          !money(prev.providerShare).eq(money(priced.providerShare)) ||
+          !money(prev.sellPrice).eq(money(priced.sellPrice)),
+      ] as const;
+    }),
+  );
+  const pricesChanged = lines.length !== existing.length || Array.from(changedByOffering.values()).some(Boolean);
+  if (pricesChanged) {
+    await tx
+      .update(digitalPriceBatches)
+      .set({ bigChangeApprovedBy: null, bigChangeApprovedAt: null })
+      .where(eq(digitalPriceBatches.id, batchId));
+  }
+
+  for (const { line, priced } of prepared) {
+    if (!changedByOffering.get(line.offeringId)) continue;
 
     // upsert على القيد الفريد (batchId, offeringId) — إعادة الإدخال تُحدِّث ولا تُكرّر.
     await tx
@@ -362,7 +406,7 @@ export async function approveBigChange(
   if (batch.status !== "DRAFT") {
     throw new TRPCError({ code: "CONFLICT", message: "الاعتماد يخصّ مسودّةً فقط" });
   }
-  if (Number(batch.createdBy) === actor.userId && actor.role !== "admin") {
+  if (Number(batch.createdBy) === actor.userId) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "لا تعتمد تغييراً كبيراً في مسودّةٍ أنشأتَها — يلزم مديرٌ آخر",
@@ -371,17 +415,27 @@ export async function approveBigChange(
 
   const branchId = Number(batch.branchId);
   const providerId = Number(batch.providerId);
+  await lockPublishedScope(tx, branchId, providerId);
   const offerings = await activeOfferings(tx, branchId, providerId);
   const draftLines = await tx
-    .select({ offeringId: digitalPriceVersions.offeringId, providerShare: digitalPriceVersions.providerShare })
+    .select({
+      offeringId: digitalPriceVersions.offeringId,
+      providerShare: digitalPriceVersions.providerShare,
+      sellPrice: digitalPriceVersions.sellPrice,
+      createdBy: digitalPriceVersions.createdBy,
+    })
     .from(digitalPriceVersions)
     .where(eq(digitalPriceVersions.batchId, input.batchId));
 
-  const currentShares = await currentSharesFor(tx, branchId, offerings.map((o) => o.offeringId));
+  const offeringIds = offerings.map((o) => o.offeringId);
+  const currentPrices = await currentPricesFor(tx, branchId, offeringIds);
+  const currentByOffering = new Map(currentPrices.map((r) => [r.offeringId, r]));
   const bigChanges = detectBigChanges(
     offerings,
-    currentShares,
+    new Map(currentPrices.map((r) => [r.offeringId, r.providerShare])),
     new Map(draftLines.map((l) => [Number(l.offeringId), l.providerShare])),
+    new Map(currentPrices.map((r) => [r.offeringId, r.sellPrice])),
+    new Map(draftLines.map((l) => [Number(l.offeringId), l.sellPrice])),
   );
   if (bigChanges.length === 0) {
     throw new TRPCError({
@@ -389,6 +443,30 @@ export async function approveBigChange(
       message: "لا تغييرات كبيرة في هذه المسودّة — انشرها مباشرةً بلا اعتمادٍ ثانٍ",
     });
   }
+
+  const draftByOffering = new Map(draftLines.map((line) => [Number(line.offeringId), line]));
+  const selfEdited = bigChanges.find((line) => Number(draftByOffering.get(line.offeringId)?.createdBy) === actor.userId);
+  if (selfEdited) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `لا تعتمد تغييراً كبيراً حرّرتَه بنفسك — «${selfEdited.name}» يحتاج مديراً آخر`,
+    });
+  }
+
+  const snapshot = approvalSnapshotFor(
+    input.batchId,
+    offeringIds,
+    currentByOffering,
+    draftLines
+      .filter((line) => offeringIds.includes(Number(line.offeringId)))
+      .map((line) => ({
+        offeringId: Number(line.offeringId),
+        providerShare: line.providerShare,
+        sellPrice: line.sellPrice,
+        editedBy: Number(line.createdBy),
+      })),
+  );
+  const fingerprint = approvalFingerprint(snapshot);
 
   await tx
     .update(digitalPriceBatches)
@@ -398,7 +476,10 @@ export async function approveBigChange(
   await auditLog(tx, actor, "digitalCards.pricing.bigChangeApproved", input.batchId, {
     branchId, providerId, requestedBy: batch.createdBy,
     thresholdPercent: BIG_CHANGE_THRESHOLD_PERCENT,
-    lines: bigChanges,
+    approvalSnapshotVersion: snapshot.version,
+    approvalFingerprint: fingerprint,
+    lineCount: bigChanges.length,
+    lines: bigChanges.slice(0, 20),
   });
 
   return { batchId: input.batchId, approved: bigChanges };

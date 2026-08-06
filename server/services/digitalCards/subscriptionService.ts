@@ -2,7 +2,7 @@
  * سجلّ اشتراكات التعلم. العقد نتيجة للبيع الناجح ولا يحل محله: التجديد يضيف عقداً جديداً
  * مرتبطاً بالسابق، فتظل الفاتورة والتكلفة والربح التاريخية غير قابلة للتغيير.
  */
-import { and, desc, eq, gte, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, ne } from "drizzle-orm";
 import {
   digitalSubscriptionContracts,
   digitalOfferings,
@@ -34,6 +34,46 @@ export async function previousContractId(
     .orderBy(desc(digitalSubscriptionContracts.expiresAt))
     .limit(1);
   return previous ? Number(previous.id) : null;
+}
+
+/**
+ * Lock the latest non-cancelled contract so two renewals cannot both start from
+ * the same point.  A renewal starts after an active term, not at `now`, avoiding
+ * overlapping paid periods.
+ */
+export async function renewalAnchor(
+  tx: Tx,
+  offeringId: number,
+  studentCustomerId: number,
+): Promise<{ previousContractId: number | null; startsAt: Date }> {
+  const [previous] = await tx
+    .select({ id: digitalSubscriptionContracts.id, expiresAt: digitalSubscriptionContracts.expiresAt })
+    .from(digitalSubscriptionContracts)
+    .where(and(
+      eq(digitalSubscriptionContracts.offeringId, offeringId),
+      eq(digitalSubscriptionContracts.studentCustomerId, studentCustomerId),
+      ne(digitalSubscriptionContracts.status, "CANCELLED"),
+    ))
+    .orderBy(desc(digitalSubscriptionContracts.expiresAt))
+    .limit(1)
+    .for("update");
+  const now = new Date();
+  return {
+    previousContractId: previous ? Number(previous.id) : null,
+    startsAt: previous && previous.expiresAt.getTime() > now.getTime() ? previous.expiresAt : now,
+  };
+}
+
+/** Cancel subscription entitlements atomically with their digital-card reversal. */
+export async function cancelContractsByInvoiceItems(tx: Tx, invoiceItemIds: number[]): Promise<void> {
+  if (invoiceItemIds.length === 0) return;
+  await tx
+    .update(digitalSubscriptionContracts)
+    .set({ status: "CANCELLED" })
+    .where(and(
+      inArray(digitalSubscriptionContracts.invoiceItemId, invoiceItemIds),
+      ne(digitalSubscriptionContracts.status, "CANCELLED"),
+    ));
 }
 
 export async function listContracts(

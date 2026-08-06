@@ -282,6 +282,9 @@ export async function requestAdjustment(
   actor: Actor,
 ): Promise<{ transactionId: number }> {
   const w = await lockWallet(tx, input.walletId);
+  if (!w.isActive) {
+    throw new TRPCError({ code: "CONFLICT", message: "المحفظة معطّلة ولا تقبل تعديلات جديدة" });
+  }
   const amount = money(input.amount);
   if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون أكبر من صفر" });
   const reason = input.reason.trim();
@@ -554,7 +557,17 @@ export async function resolveVariance(
     throw new TRPCError({ code: "CONFLICT", message: "لا فرق مفتوحاً في هذه المطابقة" });
   }
   const [adj] = await tx
-    .select({ id: digitalWalletTransactions.id, walletId: digitalWalletTransactions.walletId, status: digitalWalletTransactions.status, type: digitalWalletTransactions.type })
+    .select({
+      id: digitalWalletTransactions.id,
+      walletId: digitalWalletTransactions.walletId,
+      status: digitalWalletTransactions.status,
+      type: digitalWalletTransactions.type,
+      amount: digitalWalletTransactions.amount,
+      direction: digitalWalletTransactions.direction,
+      notes: digitalWalletTransactions.notes,
+      createdAt: digitalWalletTransactions.createdAt,
+      approvedAt: digitalWalletTransactions.approvedAt,
+    })
     .from(digitalWalletTransactions)
     .where(eq(digitalWalletTransactions.id, input.adjustmentTransactionId))
     .limit(1);
@@ -565,9 +578,43 @@ export async function resolveVariance(
     throw new TRPCError({ code: "BAD_REQUEST", message: "التعديل يخصّ محفظةً أخرى" });
   }
 
+  const variance = money(rec.variance);
+  const expectedDirection = variance.gt(0) ? "IN" : "OUT";
+  if (variance.isZero() || adj.direction !== expectedDirection || !money(adj.amount).eq(variance.abs())) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "التعديل لا يطابق فرق المطابقة في المبلغ أو الاتجاه",
+    });
+  }
+  const usedMarker = /\[RECONCILIATION:\d+\]/;
+  if (usedMarker.test(adj.notes ?? "")) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "استُخدم هذا التعديل سابقاً لإغلاق مطابقة أخرى",
+    });
+  }
+  if (!adj.approvedAt || adj.createdAt < rec.createdAt) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "يجب أن يكون التعديل معتمداً ومُنشأً لمعالجة هذه المطابقة",
+    });
+  }
+
+  const adjustmentMarker = `[RECONCILIATION:${input.reconciliationId}]`;
+  const reconciliationMarker = `[ADJUSTMENT:${input.adjustmentTransactionId}]`;
+  await tx
+    .update(digitalWalletTransactions)
+    .set({ notes: [adj.notes?.trim(), adjustmentMarker].filter(Boolean).join(" ") })
+    .where(eq(digitalWalletTransactions.id, input.adjustmentTransactionId));
+
   await tx
     .update(digitalWalletReconciliations)
-    .set({ status: "RESOLVED", reviewedBy: actor.userId, reviewedAt: new Date() })
+    .set({
+      status: "RESOLVED",
+      reviewedBy: actor.userId,
+      reviewedAt: new Date(),
+      notes: [rec.notes?.trim(), reconciliationMarker].filter(Boolean).join(" "),
+    })
     .where(eq(digitalWalletReconciliations.id, input.reconciliationId));
   await auditLog(tx, actor, "digitalCards.wallet.varianceResolved", Number(rec.walletId), {
     reconciliationId: input.reconciliationId,

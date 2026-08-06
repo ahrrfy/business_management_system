@@ -16,7 +16,7 @@ import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, toDbMoney } from "../money";
 import type { Actor } from "../tx";
-import { auditLog, type SheetScope } from "./pricingShared";
+import { auditLog, lockPublishedScope, type SheetScope } from "./pricingShared";
 import { copyPrevious, saveDraft } from "./pricingDraft";
 import { publish } from "./pricingPublish";
 
@@ -144,7 +144,7 @@ export async function rejectMismatch(
  */
 export async function approveMismatch(
   tx: Tx,
-  input: { reportId: number; businessDate: string; notes?: string | null },
+  input: { reportId: number; businessDate: string; sellPrice: string; notes?: string | null },
   actor: Actor,
 ): Promise<{ reportId: number; batchId: number; priceVersionId: number }> {
   const [report] = await tx
@@ -160,6 +160,34 @@ export async function approveMismatch(
   const branchId = Number(report.branchId);
   const providerId = Number(report.providerId);
   const scope: SheetScope = { branchId, providerId, businessDate: input.businessDate };
+  await lockPublishedScope(tx, branchId, providerId);
+
+  const [priceState] = await tx
+    .select({
+      priceVersionId: digitalCurrentPrices.priceVersionId,
+      sellPrice: digitalPriceVersions.sellPrice,
+    })
+    .from(digitalCurrentPrices)
+    .innerJoin(digitalPriceVersions, eq(digitalCurrentPrices.priceVersionId, digitalPriceVersions.id))
+    .where(
+      and(
+        eq(digitalCurrentPrices.branchId, branchId),
+        eq(digitalCurrentPrices.offeringId, Number(report.offeringId)),
+      ),
+    )
+    .for("update");
+  if (!priceState || Number(priceState.priceVersionId) !== Number(report.currentPriceVersionId)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "تغيّر السعر النافذ منذ تسجيل البلاغ — راجع السعر الجديد وأنشئ بلاغاً حديثاً عند الحاجة",
+    });
+  }
+  if (!money(input.sellPrice).eq(money(priceState.sellPrice))) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "سعر البيع المرسل لا يطابق سعر العميل النافذ — أعد تحميل البلاغ قبل الاعتماد",
+    });
+  }
 
   // حارس فقد بيانات: الاعتماد ينسخ الأسعار النافذة فوق سطور المسودّة، فلو كان مديرٌ آخر
   // في منتصف إدخال مسودّة لهذا اليوم لطُمس عملُه صامتاً. نرفض ونطلب حسمها أوّلاً.
@@ -190,11 +218,23 @@ export async function approveMismatch(
     tx,
     {
       batchId,
-      lines: [{ offeringId: Number(report.offeringId), providerShare: report.reportedProviderShare }],
+      lines: [{
+        offeringId: Number(report.offeringId),
+        providerShare: report.reportedProviderShare,
+        sellPrice: priceState.sellPrice,
+      }],
     },
     actor,
   );
-  await publish(tx, { batchId }, actor);
+  const batchVersions = await tx
+    .select({ offeringId: digitalPriceVersions.offeringId })
+    .from(digitalPriceVersions)
+    .where(eq(digitalPriceVersions.batchId, batchId));
+  await publish(
+    tx,
+    { batchId, expectedOfferingIds: batchVersions.map((line) => Number(line.offeringId)) },
+    actor,
+  );
 
   const [newVersion] = await tx
     .select({ id: digitalPriceVersions.id })

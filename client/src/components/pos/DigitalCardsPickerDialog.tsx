@@ -101,7 +101,12 @@ export function DigitalCardsPickerDialog({
       providerId: providerId ?? undefined,
       q: debouncedQ || undefined,
     },
-    { enabled: open && !offline },
+    {
+      enabled: open && !offline,
+      staleTime: 0,
+      refetchOnMount: "always",
+      refetchOnWindowFocus: true,
+    },
   );
 
   const utils = trpc.useUtils();
@@ -129,7 +134,12 @@ export function DigitalCardsPickerDialog({
   // قائمة المزوّدين تُبنى من نتيجة «كل المزوّدين» كي لا تختفي الأزرار بمجرّد التصفية بأحدهم.
   const allForBranch = trpc.digitalCards.pos.listCards.useQuery(
     { branchId, category: "ALL" },
-    { enabled: open && !offline },
+    {
+      enabled: open && !offline,
+      staleTime: 0,
+      refetchOnMount: "always",
+      refetchOnWindowFocus: true,
+    },
   );
   const providers = useMemo(() => {
     const seen = new Map<number, string>();
@@ -156,7 +166,7 @@ export function DigitalCardsPickerDialog({
     setPicking(true);
     try {
       // السعر يُعاد تأكيده من الخادم لحظة الإضافة — لا نثق بما عُرض قبل ثوانٍ.
-      const fresh = await utils.digitalCards.pos.confirmCard.fetch({
+      const fresh = await utils.client.digitalCards.pos.confirmCard.query({
         branchId,
         offeringId: card.offeringId,
       });
@@ -185,6 +195,12 @@ export function DigitalCardsPickerDialog({
       role="dialog"
       aria-modal="true"
       aria-label="الكروت والاشتراكات"
+      onKeyDownCapture={(e) => {
+        if (!["F2", "F3", "F4", "F9", "F12"].includes(e.key)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.nativeEvent.stopImmediatePropagation();
+      }}
       onClick={(e) => {
         if (e.target === e.currentTarget && !confirming && !reporting)
           dismissPicker();

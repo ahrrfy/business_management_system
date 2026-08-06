@@ -104,10 +104,14 @@ export default function DigitalWallets() {
   }
 
   async function toggle(w: WalletRow) {
+    if (w.isActive && (!D(w.currentBalance).isZero() || !D(w.reservedBalance).isZero())) {
+      notify.err("لا يمكن تعطيل المحفظة قبل تصفير الرصيد وإنهاء كل الحجوزات");
+      return;
+    }
     if (w.isActive && !(await confirm({
       variant: "danger",
       title: "تعطيل المحفظة",
-      description: `لن تُستهلك «${w.name}» في مبيعات جديدة. الرصيد الحالي ${fmtAr(w.currentBalance)} يبقى مسجّلاً كما هو. متابعة؟`,
+      description: `لن تُستخدم «${w.name}» في مبيعات جديدة. لا يُسمح بالتعطيل إلا بعد تصفير الرصيد والحجوزات وإنهاء الحركات المعلقة. متابعة؟`,
       confirmText: "تعطيل",
     }))) return;
     toggleMut.mutate({ id: w.id, isActive: !w.isActive });
@@ -218,6 +222,8 @@ export default function DigitalWallets() {
                             key: "deposit",
                             kind: "pay",
                             label: "إيداع رصيد",
+                            disabled: !w.isActive,
+                            disabledReason: "المحفظة معطّلة",
                             onSelect: () => setMoving({ wallet: w, mode: "deposit" }),
                             gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },
@@ -225,6 +231,8 @@ export default function DigitalWallets() {
                             key: "withdraw",
                             kind: "pay",
                             label: "سحب رصيد",
+                            disabled: !w.isActive,
+                            disabledReason: "المحفظة معطّلة",
                             onSelect: () => setMoving({ wallet: w, mode: "withdraw" }),
                             gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },
@@ -239,6 +247,8 @@ export default function DigitalWallets() {
                             key: "reconcile",
                             kind: "approve",
                             label: "مطابقة يومية",
+                            disabled: !w.isActive,
+                            disabledReason: "المحفظة معطّلة؛ كشف الحساب متاح للقراءة",
                             onSelect: () => setReconciling(w),
                             gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },
@@ -246,6 +256,8 @@ export default function DigitalWallets() {
                             key: "adjust",
                             kind: "approve",
                             label: "طلب تعديل رصيد",
+                            disabled: !w.isActive,
+                            disabledReason: "المحفظة معطّلة",
                             onSelect: () => setAdjusting(w),
                             gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },
@@ -261,8 +273,10 @@ export default function DigitalWallets() {
                             kind: "approve",
                             label: w.isActive ? "تعطيل" : "تفعيل",
                             variant: w.isActive ? "destructive" : "default",
-                            disabled: toggleMut.isPending,
-                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                            disabled: toggleMut.isPending || (w.isActive && (!D(w.currentBalance).isZero() || !D(w.reservedBalance).isZero())),
+                            disabledReason: toggleMut.isPending
+                              ? "توجد عملية تحديث قيد التنفيذ"
+                              : "صفّر الرصيد وأنهِ الحجوزات أولاً",
                             onSelect: () => void toggle(w),
                             gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },

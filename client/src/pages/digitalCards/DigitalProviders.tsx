@@ -106,7 +106,6 @@ export default function DigitalProviders() {
       updateMut.mutate({
         id: editId,
         providerType: fType as ProviderRow["providerType"],
-        settlementMode: fMode as ProviderRow["settlementMode"],
         referencePolicy: fRefPolicy as ProviderRow["referencePolicy"],
         settlementCycle: fCycle as ProviderRow["settlementCycle"],
         lowBalanceThreshold: fThreshold || "0",
@@ -247,9 +246,10 @@ export default function DigitalProviders() {
               </div>
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="dc-mode">نمط التسوية</label>
-                <select id="dc-mode" className={selectCls} value={fMode} onChange={(e) => setFMode(e.target.value)}>
+                <select id="dc-mode" className={selectCls} value={fMode} disabled={editing} onChange={(e) => setFMode(e.target.value)}>
                   {Object.entries(SETTLEMENT_MODE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
+                {editing && <p className="text-xs text-muted-foreground">ثابت بعد الإنشاء لأنه يحدد طريقة احتساب الرصيد وذمة المورّد.</p>}
               </div>
             </div>
 

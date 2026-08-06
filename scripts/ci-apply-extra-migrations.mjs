@@ -95,6 +95,10 @@ const EXTRA_MIGRATIONS = [
   // column as migration-built/production databases. The migration also repairs
   // a database carrying the accidental generic `paymentMethod` column name.
   "drizzle/migrations/0142_work_order_transfer_deposits.sql",
+  // 06/08/2026: a raw SQL execution-lease table protects a digital card item
+  // from being issued in two cashier windows. It intentionally stays outside
+  // schema.ts while that shared file is owned by another coordinated slice.
+  "drizzle/migrations/0154_digital_sale_execution_claims.sql",
   // 5/8 (0150): DELIVERY_FEE_HELD — drizzle-kit push la yuwassi' enum qa'iman.
   // ⚠ YAJIB an tabqa AKHIR al-qa'ima: 0129_digital_intent_writeoff yu'id kitabat nafs
   //   al-'amud (MODIFY COLUMN entryType ENUM) bi-qa'ima aqdam, fa-ayy tartib qablahu
