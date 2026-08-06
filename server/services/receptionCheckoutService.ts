@@ -11,6 +11,7 @@ import { createWorkOrderInTx } from "./workOrder/create";
 import { withTx, type Actor } from "./tx";
 import { findIdempotentRefId } from "./idempotency";
 import { money, round2 } from "./money";
+import { assertTelecomCollectAllowed } from "./reception/telecom";
 
 export interface ReceptionCheckoutInput {
   branchId: number;
@@ -20,7 +21,7 @@ export interface ReceptionCheckoutInput {
    *  يُغني عن إجبار الكاشير على إنشاء عميلٍ (وكان يفشل بـFORBIDDEN لأدوار الاستقبال بلا crm=FULL). */
   contactName?: string | null;
   contactPhone?: string | null;
-  paymentMethod: Extract<PaymentMethod, "CASH" | "CARD" | "TRANSFER" | "WALLET">;
+  paymentMethod: Extract<PaymentMethod, "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM">;
   paymentReference?: string | null;
   /** المبلغ المطبّق على الطلب كله. البيع المباشر يُغطّى أولاً، ثم أوامر الشغل بالترتيب. */
   paidAmount?: string | null;
@@ -114,6 +115,17 @@ export async function checkoutReceptionInTx(
       if (actor.role !== "admin" && actor.role !== "manager" && Number(current.userId) !== Number(actor.userId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع التسجيل على وردية مستخدم آخر" });
       }
+    }
+
+    // ش٥ (§٩.٤): رصيد زين على أيّ قبضٍ جديد في السلة — خلف ضوابطه (كودٌ أحاديّ + سقفان + قفل
+    // تقادم المطابقة). يُفحص مرّةً على مبلغ القبض الجديد كلّه قبل أيّ إنشاء مستند.
+    // (يُتخطّى عند إعادة ردّ عمليةٍ ملتزمة — الكود سُجِّل فيها فسيصطدم بنفسه زوراً.)
+    if (!completeReplay && input.paymentMethod === "TELECOM" && money(input.paidAmount ?? "0").gt(0)) {
+      await assertTelecomCollectAllowed(tx, {
+        userId: actor.userId,
+        amount: round2(money(input.paidAmount ?? "0")).toFixed(2),
+        reference: input.paymentReference,
+      });
     }
 
     // ش٤: التوزيع الجشع بترتيب السلّة كما هو، لكن **المقبوض سلفاً يُطبَّق أولاً** (§٧.٢):

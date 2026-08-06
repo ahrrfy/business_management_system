@@ -2,7 +2,9 @@
 import type { PriceTier } from "../pricing";
 
 // تصدير داخلي للحزمة فقط (يستهلكه create/payment) — لا يُعاد تصديره من البرميل saleService.ts.
-export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+// ش٥: TELECOM (رصيد زين) — يقبله receipts.paymentMethod منذ 0154؛ سطوح البيع العادية لا
+// تعرضه (مقصورٌ على محطة الاستقبال خلف ضوابط reception/telecom.ts).
+export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
 
 export interface SaleLineInput {
   variantId: number;

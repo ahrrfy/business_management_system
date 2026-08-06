@@ -43,7 +43,7 @@ import type { Tx } from "../db";
  *  (مخزّنة في products.productType — لا تحتاج تغيير مخطّط.) */
 export const PRINT_SERVICE_TYPE = "PRINT_SERVICE";
 
-type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
 
 export interface PrintSaleLineInput {
   variantId: number;

@@ -4,7 +4,7 @@
 export type ReceptionDeliveryState = "ALL" | "NOT_DISPATCHED" | "DISPATCHED" | "DELIVERED";
 /** UNSETTLED = غير مسدَّدة (معلّقة + جزئية معاً) — رقاقة الطابور الشائعة. */
 export type ReceptionPaymentState = "ALL" | "UNSETTLED" | "UNPAID" | "PARTIAL" | "PAID";
-export type ReceptionPayMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
+export type ReceptionPayMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM";
 
 export interface ReceptionInvoiceQueueInput {
   branchId: number;

@@ -20,7 +20,7 @@ const KIND_AR: Record<string, string> = {
   REFUND: "ردّ",
 };
 const METHOD_AR: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد اتصال",
+  CASH: "نقدي", CARD: "بطاقة", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
 };
 const STATUS_AR: Record<string, string> = {
   HELD: "محتجز", APPLIED: "مُطبَّق", REFUNDED: "مردود كاملاً",

@@ -1099,7 +1099,7 @@ function calcDuration(openedAt: Date | string | null, closedAt: Date): string {
 
 // ترجمة طرق الدفع
 const METHOD_AR: Record<string, string> = {
-  CASH: 'نقدي', CARD: 'بطاقة', CHECK: 'صك', TRANSFER: 'تحويل', WALLET: 'محفظة',
+  CASH: 'نقدي', CARD: 'بطاقة', CHECK: 'صك', TRANSFER: 'تحويل', WALLET: 'محفظة', TELECOM: 'رصيد زين',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

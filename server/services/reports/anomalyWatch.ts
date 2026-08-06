@@ -40,6 +40,11 @@ const FLAG_CONSIGN_WITHDRAWALS_PER_USER = 3;
 /** D8 (ش٤): مسوّدات مموّلة أُلغيت بلا تثبيت — يُعلَّم مُنشئ ≥ هذا العدد بالفترة (نمط
  *  «اقبض ثم رُدّ ثم ألغِ» المتكرّر أثرُ تلاعبٍ محتملٌ بالدرج وإن كان كل مستندٍ فردياً سليماً). */
 const FLAG_CANCELLED_FUNDED_DRAFTS_PER_USER = 2;
+/** D9 (ش٥ — §٩.٤): نسبة «رصيد زين» من تحصيل الموظف — الطريقة الوحيدة بلا مُثبِتٍ خارجيّ
+ *  (لا قسيمة جهازٍ ولا سجلّ مصرف)، فتركّزها لدى موظفٍ إشارةُ «قبض نقدٍ سُجِّل رصيداً». */
+const FLAG_TELECOM_SHARE = new Decimal("0.30");
+/** أرضية مبلغ زين بالفترة قبل احتساب النسبة (يمنع أعلام موظفٍ حصّل ٥ آلاف كلها زين). */
+const FLAG_TELECOM_MIN_TOTAL = new Decimal("100000");
 /** حدّ أسوأ أسطر البيع دون الكلفة المعروضة. */
 const WORST_LINES_LIMIT = 10;
 
@@ -149,6 +154,18 @@ export interface CancelledFundedDraftRow {
   flagged: boolean;
 }
 
+/** D9 (ش٥): تركيبة تحصيل الموظف — حصّة رصيد زين من وارده. */
+export interface TelecomShareRow {
+  userId: number | null;
+  userName: string;
+  telecomIn: string;
+  totalIn: string;
+  /** النسبة المئوية (0-100) بنصّين عشريين. */
+  sharePct: string;
+  receiptCount: number;
+  flagged: boolean;
+}
+
 export interface AnomalyWatchResult {
   generatedAt: string;
   from: string;
@@ -163,6 +180,7 @@ export interface AnomalyWatchResult {
     sequenceGapDays: number;
     flaggedConsignWithdrawers: number;
     flaggedCancelledFundedDrafters: number;
+    flaggedTelecomCollectors: number;
   };
   belowCost: { cashiers: BelowCostCashierRow[]; worstLines: BelowCostLineRow[] };
   discounts: { rows: DiscountCashierRow[]; scopeAvgRatePct: string };
@@ -172,6 +190,7 @@ export interface AnomalyWatchResult {
   sequenceGaps: { rows: SequenceGapRow[] };
   consignWithdrawals: { rows: ConsignWithdrawRow[] };
   cancelledFundedDrafts: { rows: CancelledFundedDraftRow[] };
+  telecomShares: { rows: TelecomShareRow[] };
 }
 
 const UNKNOWN_USER = "غير معروف";
@@ -211,6 +230,7 @@ export async function getAnomalyWatch(opts: {
       sequenceGapDays: 0,
       flaggedConsignWithdrawers: 0,
       flaggedCancelledFundedDrafters: 0,
+      flaggedTelecomCollectors: 0,
     },
     belowCost: { cashiers: [], worstLines: [] },
     discounts: { rows: [], scopeAvgRatePct: "0.00" },
@@ -220,6 +240,7 @@ export async function getAnomalyWatch(opts: {
     sequenceGaps: { rows: [] },
     consignWithdrawals: { rows: [] },
     cancelledFundedDrafts: { rows: [] },
+    telecomShares: { rows: [] },
   };
   if (!db) return empty;
 
@@ -478,7 +499,27 @@ export async function getAnomalyWatch(opts: {
     null,
   );
 
-  const [belowCashRes, belowLinesRes, discRes, retSellersRes, retProcRes, shortRes, revRes, gapsRes, consignWithdrawRes, cancelledFundedRes] =
+  // ── D9 (ش٥): نسبة رصيد زين من وارد كل موظف — TELECOM بلا مُثبِتٍ خارجيّ، وتركّزه لدى
+  // موظفٍ (فوق أرضية مبلغ) إشارةُ «نقدٌ قُبض وسُجِّل رصيداً» فالدرج يُغلق بفارغ صفرٍ زوراً.
+  const telecomShareP = safe(
+    db.execute(sql`
+      SELECT r.createdBy AS userId, u.name AS userName,
+        CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'TELECOM' THEN r.amount ELSE 0 END), 0) AS CHAR) AS telecomIn,
+        CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS totalIn,
+        SUM(CASE WHEN r.paymentMethod = 'TELECOM' THEN 1 ELSE 0 END) AS telecomCount
+      FROM receipts r
+      LEFT JOIN users u ON u.id = r.createdBy
+      WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED'
+        AND r.createdAt >= ${fromTs} AND r.createdAt < ${toTs}
+        ${branchReceipt}
+      GROUP BY r.createdBy, u.name
+      HAVING SUM(CASE WHEN r.paymentMethod = 'TELECOM' THEN r.amount ELSE 0 END) > 0
+      ORDER BY telecomIn DESC
+    `),
+    null,
+  );
+
+  const [belowCashRes, belowLinesRes, discRes, retSellersRes, retProcRes, shortRes, revRes, gapsRes, consignWithdrawRes, cancelledFundedRes, telecomShareRes] =
     await Promise.all([
       belowCostCashiersP,
       belowCostLinesP,
@@ -490,6 +531,7 @@ export async function getAnomalyWatch(opts: {
       gapsP,
       consignWithdrawP,
       cancelledFundedP,
+      telecomShareP,
     ]);
 
   // ── D1: تجميع ──
@@ -644,6 +686,22 @@ export async function getAnomalyWatch(opts: {
     };
   });
 
+  // ── D9: حصّة رصيد زين لكل موظف — العلم عند نسبة ≥ العتبة **ومبلغٍ ≥ الأرضية** ──
+  const telecomShareRows: TelecomShareRow[] = rowsOf(telecomShareRes).map((r) => {
+    const telecomIn = money(r.telecomIn ?? 0);
+    const totalIn = money(r.totalIn ?? 0);
+    const share = totalIn.gt(0) ? telecomIn.div(totalIn) : new Decimal(0);
+    return {
+      userId: r.userId == null ? null : Number(r.userId),
+      userName: r.userName ?? UNKNOWN_USER,
+      telecomIn: toDbMoney(telecomIn),
+      totalIn: toDbMoney(totalIn),
+      sharePct: pct(share),
+      receiptCount: Number(r.telecomCount ?? 0),
+      flagged: share.gte(FLAG_TELECOM_SHARE) && telecomIn.gte(FLAG_TELECOM_MIN_TOTAL),
+    };
+  });
+
   return {
     generatedAt,
     from: opts.from,
@@ -658,6 +716,7 @@ export async function getAnomalyWatch(opts: {
       sequenceGapDays: gapRows.length,
       flaggedConsignWithdrawers: consignWithdrawRows.filter((r) => r.flagged).length,
       flaggedCancelledFundedDrafters: cancelledFundedRows.filter((r) => r.flagged).length,
+      flaggedTelecomCollectors: telecomShareRows.filter((r) => r.flagged).length,
     },
     belowCost: { cashiers: belowCostCashiers, worstLines },
     discounts: { rows: discountRows, scopeAvgRatePct: pct(discScopeAvg) },
@@ -667,5 +726,6 @@ export async function getAnomalyWatch(opts: {
     sequenceGaps: { rows: gapRows },
     consignWithdrawals: { rows: consignWithdrawRows },
     cancelledFundedDrafts: { rows: cancelledFundedRows },
+    telecomShares: { rows: telecomShareRows },
   };
 }

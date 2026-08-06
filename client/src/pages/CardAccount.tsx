@@ -28,6 +28,7 @@ import {
   ScrollText,
   Scale,
   Search,
+  Smartphone,
   AlertTriangle,
   CheckCircle2,
 } from "lucide-react";
@@ -60,7 +61,10 @@ export default function CardAccount() {
   const [branchId, setBranchId] = useState<number | "">("");
   const effBranch = branchId ? Number(branchId) : undefined;
 
-  const summary = trpc.cardAccount.summary.useQuery({ branchId: effBranch });
+  // ش٥ — تبويب الحساب: بطاقة/بنك (افتراضيّ) أو رصيد زين. نواة خدمةٍ واحدة معمَّمة بمعامل.
+  const [accountKind, setAccountKind] = useState<"CARD" | "TELECOM">("CARD");
+
+  const summary = trpc.cardAccount.summary.useQuery({ branchId: effBranch, accountKind });
 
   // ── الحركات ──
   const [from, setFrom] = useState("");
@@ -73,6 +77,7 @@ export default function CardAccount() {
   const [page, setPage] = useState(0);
   const movementsInput = {
     branchId: effBranch,
+    accountKind,
     from: from || undefined,
     to: to || undefined,
     direction: direction || undefined,
@@ -89,7 +94,7 @@ export default function CardAccount() {
   useEffect(() => { setPage(0); }, [movementsFilterKey]);
 
   // ── المطابقة ──
-  const recons = trpc.cardAccount.reconciliations.useQuery({ branchId: effBranch });
+  const recons = trpc.cardAccount.reconciliations.useQuery({ branchId: effBranch, accountKind });
   const [asOfDate, setAsOfDate] = useState(todayStr());
   const [statementBalance, setStatementBalance] = useState("");
   const [statementLabel, setStatementLabel] = useState("");
@@ -120,6 +125,7 @@ export default function CardAccount() {
     }
     createRec.mutate({
       branchId: effBranch,
+      accountKind,
       asOfDate,
       statementBalance,
       statementLabel: statementLabel.trim() || undefined,
@@ -223,9 +229,13 @@ export default function CardAccount() {
   return (
     <div className="mx-auto max-w-6xl space-y-5 p-4">
       <PageHeader
-        title="حساب البطاقة/البنك"
-        description="رصيد أموال البطاقة (مقبوضات البطاقة − مدفوعات المورّدين بالبطاقة) — منفصلٌ عن درج النقد والخزينة."
-        icon={<CreditCard aria-hidden className="size-5" />}
+        title={accountKind === "TELECOM" ? "حساب رصيد زين" : "حساب البطاقة/البنك"}
+        description={
+          accountKind === "TELECOM"
+            ? "رصيد اتصال زين المتراكم (أكواد كروت الشحن المقبوضة − التسويات) — لا يلمس الدرج، ويُسوّى دورياً."
+            : "رصيد أموال البطاقة (مقبوضات البطاقة − مدفوعات المورّدين بالبطاقة) — منفصلٌ عن درج النقد والخزينة."
+        }
+        icon={accountKind === "TELECOM" ? <Smartphone aria-hidden className="size-5" /> : <CreditCard aria-hidden className="size-5" />}
         actions={
           canPickBranch ? (
             <select
@@ -247,6 +257,25 @@ export default function CardAccount() {
           ) : undefined
         }
       />
+
+      {/* ── ش٥: تبويب نوع الحساب المشتقّ ── */}
+      <div className="flex gap-1.5" role="tablist" aria-label="نوع الحساب">
+        {([["CARD", "بطاقة/بنك"], ["TELECOM", "رصيد زين"]] as const).map(([v, label]) => (
+          <button
+            key={v}
+            role="tab"
+            aria-selected={accountKind === v}
+            onClick={() => { setAccountKind(v); setPage(0); }}
+            className={
+              accountKind === v
+                ? "rounded-lg border-2 border-primary bg-primary px-4 py-1.5 text-xs font-extrabold text-primary-foreground"
+                : "rounded-lg border-2 bg-card px-4 py-1.5 text-xs font-extrabold hover:bg-muted"
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
       {/* ── بطاقات الملخّص ── */}
       {summary.isLoading ? (

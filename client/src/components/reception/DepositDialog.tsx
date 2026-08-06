@@ -17,11 +17,12 @@ const D = (v: string | number) => new Decimal(v || 0);
 const round2 = (v: Decimal) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 const fmt = (n: number | string) => Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
 
-const METHOD_LABEL: Record<"CASH" | "CARD" | "TRANSFER" | "WALLET", string> = {
+const METHOD_LABEL: Record<"CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM", string> = {
   CASH: "نقدي",
   CARD: "بطاقة",
   TRANSFER: "تحويل",
   WALLET: "محفظة",
+  TELECOM: "رصيد زين",
 };
 
 export default function DepositDialog({
@@ -51,8 +52,11 @@ export default function DepositDialog({
   onCollected: (collectedTotal: string) => void;
 }) {
   const [amount, setAmount] = useState(suggestedAmount);
-  const [method, setMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET">("CASH");
+  const [method, setMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM">("CASH");
   const [reference, setReference] = useState("");
+  // ش٥: رصيد زين — تأكيدٌ ثانٍ صريح (لا مُثبِت خارجيّ) + هاتف مُرسِلٍ اختياريّ للتحويل المباشر.
+  const [telecomConfirmed, setTelecomConfirmed] = useState(false);
+  const [senderPhone, setSenderPhone] = useState("");
   const [clientRequestId] = useState(() => crypto.randomUUID());
 
   const remainingCap = round2(D(orderTotal).minus(D(heldTotal)));
@@ -126,10 +130,35 @@ export default function DepositDialog({
           <Input
             value={reference}
             onChange={(e) => setReference(e.target.value)}
-            placeholder={method === "CARD" ? "رقم عملية البطاقة" : method === "WALLET" ? "رقم عملية المحفظة" : "رقم مرجع التحويل"}
+            placeholder={
+              method === "CARD" ? "رقم عملية البطاقة"
+              : method === "WALLET" ? "رقم عملية المحفظة"
+              : method === "TELECOM" ? "أرقام كارت شحن زين (الكود)"
+              : "رقم مرجع التحويل"
+            }
             className="h-9 text-xs"
             dir="ltr"
           />
+        )}
+        {method === "TELECOM" && (
+          <>
+            <Input
+              value={senderPhone}
+              onChange={(e) => setSenderPhone(e.target.value)}
+              placeholder="هاتف المُرسِل (اختياري — لتحويل الرصيد المباشر)"
+              className="h-9 text-xs"
+              dir="ltr"
+            />
+            <label className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--sem-warn)]">
+              <input
+                type="checkbox"
+                checked={telecomConfirmed}
+                onChange={(e) => setTelecomConfirmed(e.target.checked)}
+                className="mt-0.5 size-3.5"
+              />
+              <span>تحقّقتُ أن الرصيد وصل فعلاً — الكود يُقبل مرّةً واحدة ولا يدخل درج النقد.</span>
+            </label>
+          </>
         )}
         <p className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--sem-warn)]">
           <Banknote aria-hidden className="me-1 inline size-3.5" />
@@ -140,13 +169,14 @@ export default function DepositDialog({
           <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
           <Button
             className="flex-1"
-            disabled={collect.isPending || amountD.lte(0) || exceeds || (needRef && !reference.trim())}
+            disabled={collect.isPending || amountD.lte(0) || exceeds || (needRef && !reference.trim()) || (method === "TELECOM" && !telecomConfirmed)}
             onClick={() =>
               collect.mutate({
                 draftId,
                 amount: round2(amountD).toFixed(2),
                 method,
                 reference: needRef ? reference.trim() : undefined,
+                telecomSenderPhone: method === "TELECOM" && senderPhone.trim() ? senderPhone.trim() : undefined,
                 clientRequestId,
               })
             }

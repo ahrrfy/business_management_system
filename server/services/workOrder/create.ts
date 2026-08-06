@@ -13,6 +13,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
+import { assertTelecomCollectAllowed } from "../reception/telecom";
 import { openShiftIdTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
 import { nextWorkOrderNumber } from "./helpers";
@@ -140,6 +141,16 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     const basketShiftId = input.shiftId ?? null;
     if (newDepositD.gt(0)) {
       const depositMethod = input.paymentMethod ?? "CASH";
+      // ش٥ (§٩.٤): عربون زين على الإنشاء المفرد المباشر (بلا shiftId من سلة الاستقبال) يمرّ
+      // بضوابطه هنا — مسار السلة/المسوّدة أُسقط عنه (checkoutReceptionInTx فحص مبلغ القبض كله
+      // سلفاً؛ إعادة الفحص لكل أمرٍ كانت سترفض سلّةً بأمرين على كودٍ واحدٍ مشروع).
+      if (depositMethod === "TELECOM" && basketShiftId == null) {
+        await assertTelecomCollectAllowed(tx, {
+          userId: actor.userId,
+          amount: newDepositD.toFixed(2),
+          reference: input.paymentReference,
+        });
+      }
       const shiftId = basketShiftId ?? await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
       // عربون نقدي يدخل الدُرج ⇒ يلزم وردية مفتوحة لينعكس في تسوية الصندوق/Z-report (لا نقد «معلّق» بلا وردية).
       if (depositMethod === "CASH" && shiftId == null)

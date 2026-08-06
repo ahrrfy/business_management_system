@@ -53,7 +53,8 @@ export default function Returns() {
   const [qty, setQty] = useState<Record<number, string>>({});
   const [restock, setRestock] = useState(true);
   const [refundAmount, setRefundAmount] = useState("");
-  const [refundMethod, setRefundMethod] = useState<PaymentMethod>("CASH");
+  // ش٥: TELECOM خارج طرق الاسترداد (رصيد زين لا «يُعاد شحنه» للزبون) — النوع مضيَّق على عقد الخادم.
+  const [refundMethod, setRefundMethod] = useState<Exclude<PaymentMethod, "TELECOM">>("CASH");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [q, setQ] = useState("");
@@ -135,8 +136,9 @@ export default function Returns() {
   useEffect(() => {
     setRefundAmount(suggestedRefund === "0.00" ? "" : suggestedRefund);
     const originalMethod = detail.data?.paymentMethod;
-    if (originalMethod && POS_METHODS.some((m) => m.v === originalMethod)) {
-      setRefundMethod(originalMethod as PaymentMethod);
+    // ش٥: فاتورة دُفعت برصيد زين تُستردّ بطريقةٍ أخرى (الرصيد لا «يُعاد شحنه») ⇒ تبقى CASH.
+    if (originalMethod && originalMethod !== "TELECOM" && POS_METHODS.some((m) => m.v === originalMethod)) {
+      setRefundMethod(originalMethod as Exclude<PaymentMethod, "TELECOM">);
     }
   }, [suggestedRefund, detail.data?.paymentMethod]);
 
@@ -459,7 +461,7 @@ export default function Returns() {
                 <AppSelect
                   id="ret-refund-method"
                   value={refundMethod}
-                  onValueChange={(v) => setRefundMethod(v as PaymentMethod)}
+                  onValueChange={(v) => setRefundMethod(v as Exclude<PaymentMethod, "TELECOM">)}
                 >
                   {POS_METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
                 </AppSelect>

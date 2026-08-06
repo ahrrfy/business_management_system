@@ -28,16 +28,19 @@ import {
   openShiftIdTx,
   resolveBranchCashShiftTx,
 } from "../shiftService";
+import { assertTelecomCollectAllowed } from "./telecom";
 import { withTx, type Actor } from "../tx";
 
-/** طرق العربون المقبولة في ش٤ — TELECOM محجوزة في الـenum منذ 0153 وتُفتح في ش٥ بضوابط §٩.٤. */
-export type DepositMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
+/** طرق العربون — TELECOM (رصيد زين، ش٥) خلف ضوابط §٩.٤ في telecom.ts. */
+export type DepositMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM";
 
 export interface CollectDepositInput {
   draftId: number;
   amount: string;
   method: DepositMethod;
   reference?: string | null;
+  /** ش٥ — هاتف مُرسِل رصيد الاتصال (اختياريّ، لتحويل الرصيد المباشر؛ يُطبَّع خادمياً). */
+  telecomSenderPhone?: string | null;
   clientRequestId: string;
 }
 
@@ -114,9 +117,6 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
 
     const amountD = round2(money(input.amount));
     if (amountD.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ العربون يجب أن يكون أكبر من صفر" });
-    if ((input.method as string) === "TELECOM") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "قبض رصيد الاتصال يُفتح في مرحلته بضوابطه — غير متاح بعد" });
-    }
     if (input.method !== "CASH" && !input.reference?.trim()) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "المرجع إلزاميّ لغير النقد (رقم القسيمة/التحويل)" });
     }
@@ -174,6 +174,19 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
       });
     }
 
+    // ش٥ (§٩.٤): رصيد زين خلف ضوابطه — كودٌ أحاديّ الاستعمال + سقفا عمليةٍ ويوم + قفل تقادم
+    // المطابقة. I15: لا يلمس الدرج أبداً (cashBucket يبقى NULL أدناه لغير النقد).
+    let telecomPhone: string | null = null;
+    if (input.method === "TELECOM") {
+      const checked = await assertTelecomCollectAllowed(tx, {
+        userId: actor.userId,
+        amount: amountD.toFixed(2),
+        reference: input.reference,
+        senderPhone: input.telecomSenderPhone ?? null,
+      });
+      telecomPhone = checked.normalizedSenderPhone;
+    }
+
     // ٤) الإيصال + القيد — مرآة عربون أمر الشغل (بلا partyType/partyId: ليس سنداً مستقلاً
     //    يظهر في كشف العميل، وقارئ reconcile يستثنيه عبر orderPayments — holdReceipts.ts).
     const rRes = await tx.insert(receipts).values({
@@ -183,6 +196,7 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
       amount: toDbMoney(amountD),
       paymentMethod: input.method,
       referenceNumber: input.reference?.trim() || null,
+      telecomSenderPhone: telecomPhone,
       cashBucket: input.method === "CASH" ? "DRAWER" : null,
       status: "COMPLETED",
       description: `عربون طلب محفوظ ${draft.draftNumber}`,

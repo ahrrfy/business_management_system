@@ -34,7 +34,8 @@ function effectiveBranch(ctx: { user: { role?: string | null; branchId?: number 
   return ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
 }
 
-const payMethodEnum = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
+// ش٥: TELECOM (رصيد زين) طريقةٌ خامسة في المحطة — خلف ضوابط telecom.ts خادمياً (§٩.٤).
+const payMethodEnum = z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]);
 
 // ش٢ — عقود المسوّدة (§٦): بوّابة **exec** (كاشير/مدير/فنّي طباعة — المسوّدة بلا مالٍ فتُحرَّر
 // بأوسع أدوار المحطة)؛ التثبيت والمال يبقيان خلف بوّابة الكاشير (ش٣/ش٤).
@@ -149,6 +150,8 @@ export const receptionRouter = router({
         amount: positiveMoneyString,
         method: payMethodEnum,
         reference: z.string().trim().max(64).nullish(),
+        /** ش٥ — هاتف مُرسِل رصيد زين (اختياريّ؛ يُطبَّع خادمياً E.164). */
+        telecomSenderPhone: z.string().trim().max(32).nullish(),
         clientRequestId: z.string().min(8).max(80),
       }),
     )
@@ -162,7 +165,10 @@ export const receptionRouter = router({
         role: ctx.user.role,
       };
       const result = await retryOnDeadlock(() =>
-        collectDeposit({ ...input, reference: input.reference ?? null }, actor as never),
+        collectDeposit(
+          { ...input, reference: input.reference ?? null, telecomSenderPhone: input.telecomSenderPhone ?? null },
+          actor as never,
+        ),
       );
       if (!result.idempotentReplay) {
         // تدقيقٌ إلحاقيّ best-effort خارج معاملة الخدمة (نمط المحطة كلّها — collectOnInvoice ش١):

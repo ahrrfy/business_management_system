@@ -70,7 +70,7 @@ const STATUS_CLS: Record<string, string> = {
   CONFIRMED: "bg-muted text-muted-foreground",
 };
 const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
 };
 
 export default function CustomerStatement() {

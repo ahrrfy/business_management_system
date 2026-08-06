@@ -1072,6 +1072,13 @@
       "when": 1787879406000,
       "tag": "0153_order_payments",
       "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "5",
+      "when": 1787879407000,
+      "tag": "0154_telecom_payment_method",
+      "breakpoints": true
     }
   ]
 }

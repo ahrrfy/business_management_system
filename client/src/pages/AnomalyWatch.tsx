@@ -93,6 +93,7 @@ export default function AnomalyWatch() {
         { label: "أيام بفجوة تسلسل", value: String(aw.kpis.sequenceGapDays), tone: aw.kpis.sequenceGapDays > 0 ? "negative" : "positive" },
         { label: "مُنشئو سحب أمانة مُعلَّمون", value: String(aw.kpis.flaggedConsignWithdrawers), tone: aw.kpis.flaggedConsignWithdrawers > 0 ? "warning" : "positive" },
         { label: "مُلغو طلبات مموّلة مُعلَّمون", value: String(aw.kpis.flaggedCancelledFundedDrafters), tone: aw.kpis.flaggedCancelledFundedDrafters > 0 ? "warning" : "positive" },
+        { label: "محصّلو رصيد زين مُعلَّمون", value: String(aw.kpis.flaggedTelecomCollectors), tone: aw.kpis.flaggedTelecomCollectors > 0 ? "warning" : "positive" },
       ]
     : [];
 
@@ -570,6 +571,42 @@ export default function AnomalyWatch() {
                       <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.draftCount}</td>
                       <td className={numCls} dir="ltr">{fmtAr(r.collectedTotal)}</td>
                       <td className={cn(numCls, "text-muted-foreground")} dir="ltr">{fmtAr(r.refundedTotal)}</td>
+                      <FlagCell flagged={r.flagged} />
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </SectionCard>
+
+          {/* D9 (ش٥ — §٩.٤) — نسبة رصيد زين من تحصيل الموظف: الطريقة الوحيدة بلا مُثبِتٍ خارجيّ */}
+          <SectionCard
+            title="تركّز قبض رصيد زين"
+            subtitle="رصيد الاتصال بلا قسيمة جهازٍ ولا سجلّ مصرف — تركّزه لدى موظفٍ إشارةُ «نقدٌ قُبض وسُجِّل رصيداً». المؤشر: ≥٣٠٪ من وارده وبمبلغ ≥١٠٠ ألف بالفترة."
+            count={aw.kpis.flaggedTelecomCollectors}
+          >
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-xs text-muted-foreground">
+                  <th className={thCls}>الموظف</th>
+                  <th className={thCls}>رصيد زين</th>
+                  <th className={thCls}>إجمالي وارده</th>
+                  <th className={thCls}>النسبة</th>
+                  <th className={thCls}>عدد القبضات</th>
+                  <th className={thCls}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {aw.telecomShares.rows.length === 0 ? (
+                  <TableEmptyRow colSpan={6} message="لا قبض رصيد زين في الفترة." />
+                ) : (
+                  aw.telecomShares.rows.map((r, i) => (
+                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
+                      <td className={tdCls}>{r.userName}</td>
+                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{fmtAr(r.telecomIn)}</td>
+                      <td className={numCls} dir="ltr">{fmtAr(r.totalIn)}</td>
+                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.sharePct}%</td>
+                      <td className={numCls} dir="ltr">{r.receiptCount}</td>
                       <FlagCell flagged={r.flagged} />
                     </tr>
                   ))

@@ -36,7 +36,8 @@ import { checkoutReception } from "../services/receptionCheckoutService";
 import { logger } from "../logger";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
-const receptionPaymentMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
+// ش٥: TELECOM (رصيد زين) — على مسار الاستقبال حصراً وخلف ضوابط telecom.ts داخل الخدمة.
+const receptionPaymentMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]);
 const priceTierEnum = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const quantityString = z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة");
 const receptionWorkOrderSchema = z.object({
@@ -54,7 +55,9 @@ const receptionWorkOrderSchema = z.object({
   channelHandle: z.string().max(120).nullish(),
   priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
   deposit: nonNegMoneyString.nullish(),
-  paymentMethod: z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]).nullish(),
+  // ش٥: TELECOM مقبولة هنا (سلة الاستقبال تكتب طريقة عربون الأمر) — الإنشاء المفرد المباشر
+  // بعربون زين محروسٌ داخل createWorkOrderInTx (assertTelecomCollectAllowed عند غياب shiftId).
+  paymentMethod: z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]).nullish(),
   paymentReference: z.string().max(100).nullish(),
   paymentReceiptUrl: z.string().nullish(),
   hasDelivery: z.boolean().nullish(),

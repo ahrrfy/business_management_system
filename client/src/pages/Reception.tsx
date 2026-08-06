@@ -1109,6 +1109,16 @@ export default function Reception() {
       return;
     }
 
+    // ش٥ (§٩.٤): رصيد زين بلا مُثبِتٍ خارجيّ — تأكيدٌ ثانٍ صريح قبل التسجيل (الزبون حاضر).
+    if (method === "TELECOM" && appliedPaidD.gt(0)) {
+      if (!(await confirm({
+        variant: "warning",
+        title: "تأكيد قبض رصيد زين",
+        description: `تحقّقتَ أن رصيد ${fmt(round2(appliedPaidD).toNumber())} د.ع وصل فعلاً (كارت شحن ${paymentReference.trim() || "—"})؟ الكود يُقبل مرّةً واحدة ولا يدخل درج النقد.`,
+        confirmText: "وصل الرصيد — سجّل",
+      }))) return;
+    }
+
     // تَفعيل قَفل الإرسال **قبل** ensureCustomerId لمنع سباق نَقر مَزدوج يُنشئ عميلاً مكرَّراً
     // (ensureCustomerId يَحتوي عميلية confirm() غير متزامنة).
     if (submitting) return;

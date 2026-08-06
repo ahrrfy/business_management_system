@@ -54,9 +54,13 @@ function resolveBranch(scope: CardScope, inputBranchId?: number | null): number 
   return inputBranchId ?? null;
 }
 
-/** شرط SQL الأساس لكل صفوف حساب البطاقة (بطاقة + معتمَد).
+/** ش٥ — نوع الحساب المشتقّ: بطاقة/بنك أو رصيد زين (نواة واحدة معمَّمة لا مرآة منسوخة). */
+export type CardAccountKind = "CARD" | "TELECOM";
+
+/** شرط SQL الأساس لكل صفوف الحساب المشتقّ (طريقة الدفع بنوع الحساب + معتمَد).
  *  ⚠️ اسم عمود DB لـapprovalStatus هو `receiptApprovalStatus` (mysqlEnum أوّل معامل = اسم العمود). */
-const CARD_WHERE = sql`r.paymentMethod = 'CARD' AND r.receiptApprovalStatus = 'APPROVED'`;
+const accountWhere = (kind: CardAccountKind) =>
+  sql`r.paymentMethod = ${kind} AND r.receiptApprovalStatus = 'APPROVED'`;
 /** المبلغ الموقَّع (IN موجب، OUT سالب) — decimal(15,2) دقيق في SQL. */
 const SIGNED = sql`CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END`;
 
@@ -83,8 +87,12 @@ export interface CardSummary {
   } | null;
 }
 
-export async function getCardSummary(input: { branchId?: number }, scope: CardScope): Promise<CardSummary> {
+export async function getCardSummary(
+  input: { branchId?: number; accountKind?: CardAccountKind },
+  scope: CardScope,
+): Promise<CardSummary> {
   const db = getDb();
+  const kind: CardAccountKind = input.accountKind ?? "CARD";
   const branchId = resolveBranch(scope, input.branchId);
   const empty: CardSummary = {
     branchId,
@@ -108,7 +116,7 @@ export async function getCardSummary(input: { branchId?: number }, scope: CardSc
         CAST(COALESCE(SUM(CASE WHEN r.direction = 'OUT' AND r.createdAt >= ${todayStart} THEN r.amount ELSE 0 END), 0) AS CHAR) AS todayOut,
         COUNT(*) AS cnt
       FROM receipts r
-      WHERE ${CARD_WHERE} ${branchClause(branchId)}
+      WHERE ${accountWhere(kind)} ${branchClause(branchId)}
     `),
   );
   const r = rows[0] ?? {};
@@ -126,7 +134,7 @@ export async function getCardSummary(input: { branchId?: number }, scope: CardSc
                CAST(difference AS CHAR) AS difference,
                createdAt
         FROM cardReconciliations
-        WHERE branchId = ${branchId}
+        WHERE branchId = ${branchId} AND accountKind = ${kind}
         ORDER BY asOfDate DESC, id DESC
         LIMIT 1
       `),
@@ -203,12 +211,15 @@ export async function getCardMovements(
     q?: string;
     /** نوع مصدر الحركة (VOUCHER/INVOICE_PAYMENT/WORK_ORDER/OTHER) — مشتقّ من voucherNumber/invoiceId/workOrderId. */
     sourceType?: Exclude<CardMovementSource, "SALE">;
+    /** ش٥ — نوع الحساب المشتقّ (بطاقة افتراضاً / رصيد زين). */
+    accountKind?: CardAccountKind;
     limit?: number;
     offset?: number;
   },
   scope: CardScope,
 ): Promise<CardMovementsResult> {
   const db = getDb();
+  const kind: CardAccountKind = input.accountKind ?? "CARD";
   const branchId = resolveBranch(scope, input.branchId);
   const base: CardMovementsResult = { rows: [], count: 0, totalIn: "0.00", totalOut: "0.00", net: "0.00", hasMore: false, branchId };
   if (!db) return base;
@@ -244,7 +255,7 @@ export async function getCardMovements(
   // نطاق الحساب **بلا** فلتر الاتجاه/البحث/النوع — عليه يُحسَب الرصيد الجاري كي يبقى صحيحاً (الرصيد
   // بعد كل حركة يشمل كل الحركات فعلياً بصرف النظر عمّا يُعرَض). فلاتر العرض تُطبَّق على الصفوف
   // المعروضة/الإجماليات فقط (streamFilter+ أدناه، والاستعلام الخارجي).
-  const streamFilter = sql`${CARD_WHERE} ${branchClause(branchId)} ${fromClause} ${toClause}`;
+  const streamFilter = sql`${accountWhere(kind)} ${branchClause(branchId)} ${fromClause} ${toClause}`;
   // فلتر العرض (يشمل الاتجاه/البحث/النوع) — للإجماليات/العدّ والصفوف المعروضة.
   const filter = sql`${streamFilter} ${dirClause} ${qClause} ${sourceClause}`;
 
@@ -271,7 +282,7 @@ export async function getCardMovements(
       await db.execute(sql`
         SELECT CAST(COALESCE(SUM(${SIGNED}), 0) AS CHAR) AS bal
         FROM receipts r
-        WHERE ${CARD_WHERE} AND r.branchId = ${branchId} AND r.createdAt < ${input.from}
+        WHERE ${accountWhere(kind)} AND r.branchId = ${branchId} AND r.createdAt < ${input.from}
       `),
     );
     opening = money(opRows[0]?.bal ?? 0);
@@ -407,14 +418,17 @@ export interface CardReconciliationRow {
 }
 
 export async function listCardReconciliations(
-  input: { branchId?: number; limit?: number },
+  input: { branchId?: number; limit?: number; accountKind?: CardAccountKind },
   scope: CardScope,
 ): Promise<CardReconciliationRow[]> {
   const db = getDb();
   if (!db) return [];
+  const kind: CardAccountKind = input.accountKind ?? "CARD";
   const branchId = resolveBranch(scope, input.branchId);
   const limit = input.limit && input.limit > 0 && input.limit <= 200 ? Math.floor(input.limit) : 50;
-  const branchFilter = branchId != null ? sql`WHERE cr.branchId = ${branchId}` : sql``;
+  const branchFilter = branchId != null
+    ? sql`WHERE cr.accountKind = ${kind} AND cr.branchId = ${branchId}`
+    : sql`WHERE cr.accountKind = ${kind}`;
   const rows = rowsOf(
     await db.execute(sql`
       SELECT
@@ -454,6 +468,8 @@ export async function listCardReconciliations(
 
 export interface CreateReconciliationInput {
   branchId?: number;
+  /** ش٥ — نوع الحساب المُطابَق (بطاقة افتراضاً / رصيد زين). */
+  accountKind?: CardAccountKind;
   asOfDate: string; // YYYY-MM-DD
   statementBalance: string;
   statementLabel?: string;
@@ -488,6 +504,7 @@ export async function createCardReconciliation(
     throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ المطابقة غير صالح (الصيغة YYYY-MM-DD)" });
   }
   const statementBalance = money(input.statementBalance);
+  const kind: CardAccountKind = input.accountKind ?? "CARD";
 
   return withTx(async (tx) => {
     // رصيد النظام حتى نهاية يوم asOfDate (شامل) — نفس ثابت الرصيد.
@@ -495,7 +512,7 @@ export async function createCardReconciliation(
       await tx.execute(sql`
         SELECT CAST(COALESCE(SUM(${SIGNED}), 0) AS CHAR) AS bal
         FROM receipts r
-        WHERE ${CARD_WHERE} AND r.branchId = ${branchId}
+        WHERE ${accountWhere(kind)} AND r.branchId = ${branchId}
           AND r.createdAt < DATE_ADD(${asOf}, INTERVAL 1 DAY)
       `),
     );
@@ -504,6 +521,7 @@ export async function createCardReconciliation(
 
     const res = await tx.insert(cardReconciliations).values({
       branchId,
+      accountKind: kind,
       asOfDate: asOf,
       systemBalance: toDbMoney(systemBalance),
       statementBalance: toDbMoney(statementBalance),

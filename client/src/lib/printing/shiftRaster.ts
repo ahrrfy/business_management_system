@@ -15,7 +15,7 @@ const PAD = 16;
 const THRESHOLD = 160;
 
 const METHOD_AR: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
 };
 
 function loadImage(src: string): Promise<HTMLImageElement | null> {

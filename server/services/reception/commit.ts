@@ -25,7 +25,7 @@ export interface CommitDraftInput {
   expectedTotal: string;
   shiftId: number;
   /** المقبوض الآن (طريقة واحدة للسلة — F7). غيابه جائز لسلّة تخصيصٍ خالصة (م٥: لا شرط عربون). */
-  collectNow?: { amount: string; method: "CASH" | "CARD" | "TRANSFER" | "WALLET"; reference?: string | null } | null;
+  collectNow?: { amount: string; method: "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM"; reference?: string | null } | null;
   cashRoundIQD?: boolean;
   priceOverrideApproved?: boolean;
 }

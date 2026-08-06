@@ -773,7 +773,7 @@ export async function getFinancialPosition(
 /* ============================ التدفّق النقدي (أساس نقدي مباشر) ============================ */
 
 const PAY_METHOD_AR: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
 };
 
 export interface CashFlowLine { key: string; label: string; amount: string }

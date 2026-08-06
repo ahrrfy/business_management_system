@@ -192,7 +192,9 @@ const salesListInput = z
     salespersonId: z.number().int().positive().optional(),
     // فلترة بطريقة الدفع (invoices.paymentMethod — نفس مصدر عمود «طريقة الدفع» في الشاشة).
     // الحاجة التشغيلية: مطابقة يوم البطاقات مع كشف جهاز الدفع تتطلّب حصر فواتير CARD.
-    paymentMethod: method.optional(),
+    // ش٥ (V19): TELECOM في **فلتر القراءة** فقط — الكتابة (create/pay) تبقى بلا رصيد زين
+    // (مقصورٌ على محطة الاستقبال خلف ضوابطها)، لكن فواتيرها تُفلتَر وتُقرأ من هنا.
+    paymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]).optional(),
     // فرع صريح للمرتفعين (admin/manager عابرَي الفروع) — يُفعَّل فقط حين scopedBranchId فارغ؛
     // غير المرتفع يبقى محصوراً بفرعه مهما أرسل (انظر buildSalesListConds).
     branchId: z.number().int().positive().optional(),

@@ -12,7 +12,8 @@ import { deliveryConsignments, invoices, shifts } from "../../../drizzle/schema"
 import { getDb } from "../../db";
 import { processPayment } from "../sale/payment";
 import { getOpenShift } from "../shiftService";
-import type { Actor } from "../tx";
+import { withTx, type Actor } from "../tx";
+import { assertTelecomCollectAllowed } from "./telecom";
 import type { CollectOnInvoiceInput } from "./types";
 
 export async function collectOnReceptionInvoice(
@@ -69,6 +70,18 @@ export async function collectOnReceptionInvoice(
       code: "PRECONDITION_FAILED",
       message: "افتح وردية استقبال أولاً — الدفعة النقدية تدخل درجك أنت وتُحاسَب عليها عند الإغلاق",
     });
+  }
+
+  // ش٥ (§٩.٤): رصيد زين خلف ضوابطه قبل التفويض لـprocessPayment (كودٌ أحاديّ + سقفان + قفل
+  // تقادم المطابقة). معاملةٌ مستقلّة للفحص — processPayment يدير معاملته بنفسه.
+  if (input.method === "TELECOM") {
+    await withTx((tx) =>
+      assertTelecomCollectAllowed(tx, {
+        userId: actor.userId,
+        amount: input.amount,
+        reference: input.reference,
+      }),
+    );
   }
 
   const elevated = actor.role === "admin" || actor.role === "manager";

@@ -1900,6 +1900,10 @@ export const receipts = mysqlTable(
       "TRANSFER",
       "WALLET",
       "EXCHANGE",
+      // ش٥ (٦/٨): رصيد اتصال زين (أكواد كروت شحن) — حسابٌ مشتقّ يُسوّى دورياً، لا يلمس الدرج
+      // أبداً (I15: cashBucket يبقى NULL). قيمة enum على جدول قائم = هجرة مرقّمة 0154 + نسخة
+      // extras آخر قائمة ci-apply (V10 — واحدة وحدها عطلٌ صامت).
+      "TELECOM",
     ]).notNull(),
     /**
      * cash-treasury-mode (تدقيق ١٧/٦): فصل النقد إلى دلوَين دلالياً.
@@ -1910,6 +1914,9 @@ export const receipts = mysqlTable(
      */
     cashBucket: mysqlEnum("cashBucket", ["DRAWER", "TREASURY"]),
     referenceNumber: varchar("referenceNumber", { length: 100 }),
+    /** ش٥ (§٩.٤): هاتف مُرسِل رصيد الاتصال — مُطبَّع E.164 بserver/lib/phone.ts (اختياريّ:
+     *  الآلية الأساس أكواد كروت الشحن في referenceNumber، وهذا لمن حوّل من رقمه مباشرة). */
+    telecomSenderPhone: varchar("telecomSenderPhone", { length: 32 }),
     checkNumber: varchar("checkNumber", { length: 50 }),
     cardLastFour: varchar("cardLastFour", { length: 4 }),
     status: mysqlEnum("receiptStatus", [
@@ -2028,6 +2035,8 @@ export const cardReconciliations = mysqlTable(
   "cardReconciliations",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** ش٥: نوع الحساب المُطابَق — بطاقة/بنك أو رصيد زين (نواةٌ واحدة معمَّمة لا مرآة منسوخة). */
+    accountKind: mysqlEnum("accountKind", ["CARD", "TELECOM"]).default("CARD").notNull(),
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
       .references(() => branches.id),
@@ -2047,7 +2056,9 @@ export const cardReconciliations = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
-    branchIdx: index("idx_cardrecon_branch").on(table.branchId, table.asOfDate),
+    // ش٥ (F8 — لا قيد UNIQUE على الجدول): الفهرس وُسِّع بنوع الحساب ليخدم «آخر مطابقة زين».
+    // branchId يتصدّر (لا accountKind): فهرس FK الفرع — إسقاطه بلا بديلٍ متصدّرٍ به يفشل ER_1553.
+    branchIdx: index("idx_cardrecon_branch").on(table.branchId, table.accountKind, table.asOfDate),
     createdIdx: index("idx_cardrecon_created").on(table.createdAt),
   }),
 );
@@ -2397,11 +2408,13 @@ export const workOrders = mysqlTable(
       "NORMAL",
     ),
     deposit: decimal("deposit", { precision: 15, scale: 2 }).default("0"),
+    // ش٥: TELECOM — عربونٌ بأيّ طريقة (م٢) يشمل رصيد زين؛ توسيع enum قائم = 0154 + extras (V10).
     paymentMethod: mysqlEnum("woPaymentMethod", [
       "CASH",
       "CARD",
       "TRANSFER",
       "WALLET",
+      "TELECOM",
     ]).default("CASH"),
     paymentReference: varchar("paymentReference", { length: 100 }),
     // v3-add-screens(100%): TEXT لاستيعاب data URLs (≥100KB) عند الترميز المضمَّن.

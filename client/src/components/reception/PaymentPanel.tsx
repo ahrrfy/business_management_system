@@ -7,6 +7,7 @@ import {
   CreditCard,
   Printer,
   ShoppingCart,
+  Smartphone,
   Ticket,
   Truck,
   Wallet,
@@ -17,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { QUICK_AMTS, type PayMethod } from "./cartMath";
+import { PAY_METHOD_LABEL, QUICK_AMTS, type PayMethod } from "./cartMath";
 
 /**
  * لوحة الدفع لشاشة الاستقبال — نُقلت حرفياً من Reception.tsx (تفكيك §١٣ ش١) بصفر تغيير سلوكي.
@@ -288,23 +289,26 @@ export const PaymentPanel = forwardRef<HTMLDivElement, PaymentPanelProps>(functi
       </div>
 
       {/* طريقة الدفع — عند الضيق يُحذف العنوان وتُعاد الأيقونة والنصّ إلى صفٍّ واحد داخل
-          الزرّ (تركيبٌ متكيّف) بدل تصغير الزرّ نفسه: يبقى ≥44px هدفَ لمسٍ سليماً. */}
+          الزرّ (تركيبٌ متكيّف) بدل تصغير الزرّ نفسه: يبقى ≥44px هدفَ لمسٍ سليماً.
+          ش٥ (§٨.٣): خمس طرقٍ = grid صفّين ≤٣ (لا تصغير أزرارٍ تحت هدف اللمس)، والطريقة
+          المختارة تُعرض **بالكلمات** في سطر «المتوقّع الآن» أسفل — اللون وحده لا يكفي. */}
       <div className={cn("flex-shrink-0 px-3", payUltra ? "py-0.5" : "py-1.5")}>
         {!payDense && <div className="mb-1 text-[11px] font-bold text-muted-foreground">طريقة الدفع</div>}
-        <div className="flex gap-1.5">
+        <div className="grid grid-cols-3 gap-1.5">
           {(
             [
               { v: "CASH", label: "نقدي", Icon: Banknote },
               { v: "CARD", label: "بطاقة", Icon: CreditCard },
               { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight },
               { v: "WALLET", label: "محفظة", Icon: Wallet },
+              { v: "TELECOM", label: "رصيد زين", Icon: Smartphone },
             ] as const
           ).map((p) => (
             <button
               key={p.v}
               onClick={() => setMethod(p.v)}
               className={cn(
-                "flex flex-1 items-center justify-center rounded-lg border-2 text-xs font-extrabold transition-colors",
+                "flex items-center justify-center rounded-lg border-2 text-xs font-extrabold transition-colors",
                 payUltra
                   ? "min-h-[44px] flex-row gap-1 py-1"
                   : "min-h-[clamp(46px,6.6cqh,60px)] flex-col gap-0.5 py-2",
@@ -325,6 +329,7 @@ export const PaymentPanel = forwardRef<HTMLDivElement, PaymentPanelProps>(functi
             placeholder={
               method === "CARD" ? "أدخل رقم عملية البطاقة"
               : method === "WALLET" ? "أدخل رقم عملية المحفظة"
+              : method === "TELECOM" ? "أدخل أرقام كارت شحن زين"
               : "أدخل رقم التحويل"
             }
             className="mt-2 h-9 text-xs"
@@ -400,6 +405,11 @@ export const PaymentPanel = forwardRef<HTMLDivElement, PaymentPanelProps>(functi
         {!isChange && !isOwing && (
           <span className="text-muted-foreground">المتوقّع الآن: <span className="font-bold tabular-nums" dir="ltr">{fmt(expectedNow)} د.ع</span></span>
         )}
+        {/* ش٥ (§٨.٣): الطريقة المختارة **بالكلمات** فوق زرّي الفعل — خطأ الاختيار على شاشةٍ
+            مضغوطة يُنتج عجز درجٍ يمنع الإغلاق، واللون وحده لا يكفي. */}
+        <span className={cn("ms-auto rounded-md border px-1.5 py-0.5 text-[10px] font-extrabold", method === "CASH" ? "text-muted-foreground" : "border-[var(--sem-info)]/50 bg-[var(--sem-info-bg)] text-[var(--sem-info)]")}>
+          {PAY_METHOD_LABEL[method]}
+        </span>
       </div>
       </div>{/* ← نهاية منطقة الإدخال */}
 

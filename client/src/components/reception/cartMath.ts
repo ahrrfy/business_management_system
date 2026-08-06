@@ -11,7 +11,7 @@ import type { RouterOutputs } from "@/lib/trpc";
 export type PosRow = NonNullable<RouterOutputs["catalog"]["posList"]>[number];
 /** م٤ — ورش عمود العمل: السلة أساسٌ، والبقية تُركَّب داخله فلا تُغطّي لوحة الدفع أبداً (§٨.١). */
 export type Workshop = "CART" | "INVOICES" | "ORDERS" | "STORE";
-export type PayMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
+export type PayMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM";
 /** ملخّص آخر عملية ناجحة — نافذة الإيصال + F9 (إعادة طباعة) + شارة «آخر فاتورة» (§٨.٦). */
 export type LastSaleSummary = {
   invoiceNumbers: string[];
@@ -28,6 +28,7 @@ export const PAY_METHOD_LABEL: Record<PayMethod, string> = {
   CARD: "بطاقة",
   TRANSFER: "تحويل",
   WALLET: "محفظة",
+  TELECOM: "رصيد زين", // ش٥ — أكواد كروت شحن زين (لا يلمس الدرج)
 };
 export type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
