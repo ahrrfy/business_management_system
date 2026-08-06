@@ -16,8 +16,9 @@ function db() {
 
 const TABLES = [
   "accountingEntries", "receipts", "invoiceItems", "invoices",
+  "digitalWalletTransactions", "digitalWallets", "digitalProviders",
   "purchaseOrderItems", "purchaseOrders", "branchStock", "productVariants",
-  "products", "customers", "suppliers", "branches",
+  "products", "customers", "suppliers", "users", "branches",
 ];
 
 beforeEach(async () => {
@@ -25,9 +26,10 @@ beforeEach(async () => {
   for (const table of TABLES) await db().execute(sql.raw(`TRUNCATE TABLE \`${table}\``));
   await db().execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
   await db().insert(s.branches).values({ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" });
+  await db().insert(s.users).values({ id: 1, openId: "financial-reports", name: "مدير", role: "manager", loginMethod: "local" });
 });
 
-describe("سلامة مصادر التقارير المالية", () => {
+describe.sequential("سلامة مصادر التقارير المالية", () => {
   it("لا يحسب السند المعلّق نقداً، ويفصل البطاقة، ولا يخفي ذمة طرف غير نشط", async () => {
     await db().insert(s.customers).values({
       id: 1, name: "inactive debtor", isActive: false, currentBalance: "100.00",
@@ -128,5 +130,80 @@ describe("سلامة مصادر التقارير المالية", () => {
     expect(pl.current.expenseLines.find((x) => x.key === "PAYROLL")?.amount).toBe("-100.00");
     expect(pl.current.totalExpenses).toBe("-100.00");
     expect(pl.current.netProfit).toBe("100.00");
+  });
+
+  it("يعرض رصيد محافظ المزوّدين أصلاً ولو كانت المحفظة معطلة ويعيد بناءه تاريخياً", async () => {
+    await db().insert(s.suppliers).values({ id: 1, name: "مزود بطاقات" });
+    await db().insert(s.digitalProviders).values({
+      id: 1,
+      supplierId: 1,
+      providerType: "TELECOM",
+      settlementMode: "PREPAID",
+      recognitionMode: "PRINCIPAL_GROSS",
+      referencePolicy: "OPTIONAL",
+      settlementCycle: "ON_DEMAND",
+      createdBy: 1,
+    });
+    await db().insert(s.digitalWallets).values({
+      id: 1,
+      providerId: 1,
+      branchId: 1,
+      code: "REPORT-WALLET",
+      name: "محفظة التقرير",
+      currentBalance: "250.00",
+      reservedBalance: "0",
+      isActive: false,
+    });
+    await db().insert(s.digitalWalletTransactions).values([
+      {
+        transactionNumber: "REPORT-IN",
+        walletId: 1,
+        branchId: 1,
+        type: "DEPOSIT",
+        direction: "IN",
+        amount: "300.00",
+        balanceAfter: "300.00",
+        status: "ACTIVE",
+        createdBy: 1,
+        createdAt: new Date("2026-07-01T10:00:00Z"),
+      },
+      {
+        transactionNumber: "REPORT-OUT",
+        walletId: 1,
+        branchId: 1,
+        type: "WITHDRAWAL",
+        direction: "OUT",
+        amount: "50.00",
+        balanceAfter: "250.00",
+        status: "ACTIVE",
+        createdBy: 1,
+        createdAt: new Date("2026-07-20T10:00:00Z"),
+      },
+    ]);
+
+    const current = await getFinancialPosition({ verify: false });
+    expect(current.digitalWalletAsset).toBe("250.00");
+    expect(current.totalAssets).toBe("250.00");
+
+    const historical = await getFinancialPosition({ verify: false, asOf: "2026-07-15" });
+    expect(historical.digitalWalletAsset).toBe("300.00");
+    expect(historical.totalAssets).toBe("300.00");
+  });
+
+  it("يدرج شطب البطاقة الرقمية ضمن المصروف وصافي الربح", async () => {
+    await db().insert(s.accountingEntries).values({
+      entryType: "DIGITAL_WRITEOFF",
+      branchId: 1,
+      amount: "75.00",
+      revenue: "0",
+      cost: "75.00",
+      profit: "-75.00",
+      entryDate: new Date("2026-07-15"),
+      dedupeKey: "TEST:DIGITAL_WRITEOFF:1",
+    });
+    const pl = await getProfitAndLoss({ from: "2026-07-01", to: "2026-07-31" });
+    expect(pl.current.expenseLines.find((x) => x.key === "DIGITAL_CARD_WRITEOFF")?.amount).toBe("75.00");
+    expect(pl.current.totalExpenses).toBe("75.00");
+    expect(pl.current.netProfit).toBe("-75.00");
   });
 });

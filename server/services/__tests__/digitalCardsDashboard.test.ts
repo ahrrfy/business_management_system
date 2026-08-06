@@ -23,7 +23,7 @@ const FROM = "2026-01-01";
 const TO = "2027-01-01";
 
 const TABLES = [
-  "digitalWalletReconciliations", "digitalSaleDetails", "digitalSaleIntentItems",
+  "digitalWalletReconciliations", "digitalSaleDetails", "digitalSaleExecutionClaims", "digitalSaleIntentItems",
   "digitalWalletReservations", "digitalSaleIntents", "digitalWalletTransactions",
   "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWallets", "digitalProviders",
@@ -99,9 +99,13 @@ async function sell(offerings: { offeringId: number; priced: { pv: number; price
   }, actor));
   const items = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
   for (const it of items) {
-    await withTx((tx) => intentService.markExecution(tx, {
-      intentId: r.intentId, intentItemId: Number(it.id), status: "SUCCESS", providerReference: `R-${id}-${it.id}`,
-    }, actor));
+    await withTx(async (tx) => {
+      const claimToken = `dashboard-claim-${id}-${it.id}`;
+      await intentService.claimExecution(tx, { intentId: r.intentId, intentItemId: Number(it.id), claimToken }, actor);
+      return intentService.markExecution(tx, {
+        intentId: r.intentId, intentItemId: Number(it.id), claimToken, status: "SUCCESS", providerReference: `R-${id}-${it.id}`,
+      }, actor);
+    });
   }
   const total = offerings.reduce((a, o) => a + Number(o.priced.price), 0);
   return withTx((tx) => finalizeService.finalize(tx, {
@@ -265,6 +269,40 @@ describe("ش١١ — الصحة والحالات المعلّقة", () => {
     expect(h.needsAttention[0].availability).toBe("NO_PRICE");
   });
 
+  it("جاهزية البيع تطابق POS: السعر المتجاوز لمدة الصلاحية ليس جاهزاً", async () => {
+    const pre = await mkProvider("مزوّد محدود الصلاحية", "PREPAID");
+    const walletId = await mkWallet(pre.providerId, "1000000");
+    const offeringId = await mkOffering(pre.providerId, "سعر صباحي", walletId);
+    const priced = await publish(pre.providerId, 1, [{ offeringId, providerShare: "13400" }]);
+    const price = priced.get(offeringId)!;
+
+    await db()
+      .update(s.digitalOfferings)
+      .set({ priceValidityHours: 1 })
+      .where(eq(s.digitalOfferings.id, offeringId));
+    await db()
+      .update(s.digitalPriceVersions)
+      .set({ validFrom: new Date("2026-08-06T06:00:00.000Z") })
+      .where(eq(s.digitalPriceVersions.id, price.pv));
+
+    const h = await dashboardService.priceHealth(db(), 1, new Date("2026-08-06T08:00:01.000Z"));
+    expect(h.ready).toBe(0);
+    expect(h.needsAttention[0].availability).toBe("STALE_PRICE");
+    expect(h.blockerCounts.STALE_PRICE).toBe(1);
+  });
+
+  it("جاهزية البيع لا تعلن بطاقةً مسبقة الدفع إذا لم يكف رصيد محفظتها لكرت واحد", async () => {
+    const pre = await mkProvider("مزوّد منخفض الرصيد", "PREPAID");
+    const walletId = await mkWallet(pre.providerId, "1000");
+    const offeringId = await mkOffering(pre.providerId, "كرت غير قابل للتنفيذ", walletId);
+    await publish(pre.providerId, 1, [{ offeringId, providerShare: "13400" }]);
+
+    const h = await dashboardService.priceHealth(db(), 1);
+    expect(h.ready).toBe(0);
+    expect(h.needsAttention[0].availability).toBe("INSUFFICIENT_BALANCE");
+    expect(h.blockerCounts.INSUFFICIENT_BALANCE).toBe(1);
+  });
+
   it("الحالات المعلّقة تُحصي NEEDS_REVIEW ولا تعدّ المُثبَّتة", async () => {
     const pre = await mkProvider("آسياسيل", "PREPAID");
     const walletId = await mkWallet(pre.providerId, "1000000");
@@ -278,9 +316,13 @@ describe("ش١١ — الصحة والحالات المعلّقة", () => {
       lines: [{ lineKey: "lkX", offeringId: a, priceVersionId: priced.get(a)!.pv, expectedSellPrice: priced.get(a)!.price }],
     }, actor));
     const [it] = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
-    await withTx((tx) => intentService.markExecution(tx, {
-      intentId: r.intentId, intentItemId: Number(it.id), status: "SUCCESS", providerReference: "ABANDONED-1",
-    }, actor));
+    await withTx(async (tx) => {
+      const claimToken = `dashboard-abandoned-${it.id}`;
+      await intentService.claimExecution(tx, { intentId: r.intentId, intentItemId: Number(it.id), claimToken }, actor);
+      return intentService.markExecution(tx, {
+        intentId: r.intentId, intentItemId: Number(it.id), claimToken, status: "SUCCESS", providerReference: "ABANDONED-1",
+      }, actor);
+    });
     await withTx((tx) => intentService.cancelIntent(tx, { intentId: r.intentId }, actor));
 
     const p = await dashboardService.pendingExecutions(db(), 1);

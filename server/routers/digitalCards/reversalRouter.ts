@@ -5,12 +5,13 @@ import { z } from "zod";
 import { reversalService } from "../../services/digitalCards";
 import { withTx } from "../../services/tx";
 import { digitalCardsAdminReadProcedure, digitalCardsManagerProcedure, router } from "../../trpc";
-import { actorOf, requireDb } from "./shared";
+import { actorOf, requireDb, scopedBranchOf } from "./shared";
 
 export const reversalRouter = router({
   reversible: digitalCardsAdminReadProcedure
     .input(z.object({ invoiceId: z.number().int().positive() }))
-    .query(async ({ input }) => reversalService.reversibleDetails(requireDb(), input.invoiceId)),
+    .query(async ({ input, ctx }) =>
+      reversalService.reversibleDetails(requireDb(), input.invoiceId, scopedBranchOf(ctx))),
 
   approve: digitalCardsManagerProcedure
     .input(

@@ -43,6 +43,7 @@ export default function BalanceSheet() {
       { label: "الصكوك المقبوضة", v: p.check },
       { label: "التحويلات المصرفية", v: p.transfer },
       { label: "المحافظ الإلكترونية", v: p.wallet },
+      { label: "رصيدنا لدى مزوّدي البطاقات", v: p.digitalWalletAsset },
       { label: "الذمم المدينة (عملاء)", v: p.arDebit },
       { label: "سُلف للموردين", v: p.apDebit },
       { label: "المخزون (بالتكلفة)", v: p.inventory },

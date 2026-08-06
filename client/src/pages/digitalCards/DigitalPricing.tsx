@@ -1,6 +1,6 @@
-// شاشة «أسعار الكروت اليوم» (ش٤). حقلٌ واحد لكل صفّ: حصة المزوّد (تكلفة الجهاز).
-// سعر البيع والهامش يأتيان **من الخادم** عبر معاينة مُشتقّة من نفس دالة التسعير المُختبَرة —
-// عمداً لا تُعاد المعادلة هنا (§٧.٣ من وثيقة التصميم).
+// شاشة «أسعار الكروت اليوم» (ش٤). حقلان واضحان لكل صفّ: تكلفة المزوّد وسعر البيع.
+// الهامش وحراس الخسارة يأتيان **من الخادم** عبر معاينة مشتقّة من دالة النشر نفسها —
+// عمداً لا تُعاد قواعد القرار المالي هنا (§٧.٣ من وثيقة التصميم).
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -10,7 +10,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtAr } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import {
   CopyPlus,
   Send,
@@ -19,10 +19,28 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearch } from "wouter";
 
 const selectCls =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
+
+type PriceLine = {
+  offeringId: number;
+  providerShare: string;
+  sellPrice: string;
+};
+
+type MismatchReport =
+  RouterOutputs["digitalCards"]["pricing"]["mismatchReports"][number];
+
+/** بصمة حتمية تمنع نشر أرقام لم تصل معاينتها الخادمية الحالية بعد. */
+function priceLinesKey(lines: PriceLine[]): string {
+  return [...lines]
+    .sort((a, b) => a.offeringId - b.offeringId)
+    .map((line) => `${line.offeringId}:${line.providerShare}:${line.sellPrice}`)
+    .join("|");
+}
 
 /** تاريخ اليوم بصيغة YYYY-MM-DD (توقيت الجهاز — يوم العمل التشغيليّ للمستخدم). */
 function todayYmd(): string {
@@ -31,8 +49,14 @@ function todayYmd(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+function positiveId(value: string | null): number | null {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 export default function DigitalPricing() {
   const utils = trpc.useUtils();
+  const search = useSearch();
   const me = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
   const providers = trpc.digitalCards.providers.list.useQuery();
@@ -44,28 +68,52 @@ export default function DigitalPricing() {
   /** السعران قيد التحرير — التكلفة تخصم من المحفظة، والبيع يراه الزبون. */
   const [costs, setCosts] = useState<Record<number, string>>({});
   const [sellPrices, setSellPrices] = useState<Record<number, string>>({});
+  const initialScope = useRef({
+    branchId: positiveId(new URLSearchParams(search).get("branchId")),
+    providerId: positiveId(new URLSearchParams(search).get("providerId")),
+  });
+  const scopeInitialized = useRef(false);
 
   const activeProviders = useMemo(
     () => (providers.data ?? []).filter((p) => p.isActive),
     [providers.data],
   );
 
-  // فرع افتراضي: فرع المستخدم إن كان مُسنَداً، وإلا أوّل فرع.
+  // رابط لوحة الجاهزية يمرّر الفرع والمزوّد. نقرأه مرةً ثم نتحقق من وجود القيم
+  // وإتاحتها؛ الرابط القديم/المعطوب لا يرسل استعلاماً بنطاق غير صالح.
   useEffect(() => {
-    if (branchId != null) return;
-    const mine = me.data?.branchId;
-    if (mine != null) {
-      setBranchId(Number(mine));
+    if (
+      scopeInitialized.current ||
+      me.isLoading ||
+      branches.isLoading ||
+      providers.isLoading
+    )
       return;
-    }
-    const first = branches.data?.[0]?.id;
-    if (first != null) setBranchId(Number(first));
-  }, [branchId, me.data?.branchId, branches.data]);
 
-  useEffect(() => {
-    if (providerId == null && activeProviders.length)
-      setProviderId(activeProviders[0].id);
-  }, [providerId, activeProviders]);
+    const requested = initialScope.current;
+    const mine = me.data?.branchId;
+    const branchRows = branches.data ?? [];
+    const requestedBranch = branchRows.find(
+      (branch) => branch.id === requested.branchId,
+    );
+    const mineBranch = branchRows.find((branch) => branch.id === Number(mine));
+    const requestedProvider = activeProviders.find(
+      (provider) => provider.id === requested.providerId,
+    );
+
+    setBranchId(
+      requestedBranch?.id ?? mineBranch?.id ?? branchRows[0]?.id ?? null,
+    );
+    setProviderId(requestedProvider?.id ?? activeProviders[0]?.id ?? null);
+    scopeInitialized.current = true;
+  }, [
+    activeProviders,
+    branches.data,
+    branches.isLoading,
+    me.data?.branchId,
+    me.isLoading,
+    providers.isLoading,
+  ]);
 
   const scopeReady = branchId != null && providerId != null;
   const scope = scopeReady
@@ -99,29 +147,28 @@ export default function DigitalPricing() {
     setChangeReason(sheet.data?.batch?.changeReason ?? "");
   }, [sheet.data?.batch?.id]);
 
+  const rows = useMemo(() => sheet.data?.rows ?? [], [sheet.data?.rows]);
+  const filledPriceLines = useMemo<PriceLine[]>(
+    () =>
+      rows.flatMap((row) => {
+        const providerShare = costs[row.offeringId] ?? "";
+        const sellPrice = sellPrices[row.offeringId] ?? "";
+        return providerShare !== "" && sellPrice !== ""
+          ? [{ offeringId: row.offeringId, providerShare, sellPrice }]
+          : [];
+      }),
+    [rows, costs, sellPrices],
+  );
+  const filledPriceLinesKey = priceLinesKey(filledPriceLines);
+
   // معاينة خادمية مُهدّأة (debounce) لكل الصفوف المملوءة.
-  const [previewInput, setPreviewInput] = useState<
-    { offeringId: number; providerShare: string; sellPrice: string }[]
-  >([]);
+  const [previewInput, setPreviewInput] = useState<PriceLine[]>([]);
   useEffect(() => {
     const t = setTimeout(() => {
-      setPreviewInput(
-        Object.entries(costs)
-          .filter(
-            ([key, cost]) =>
-              cost !== "" &&
-              cost != null &&
-              (sellPrices[Number(key)] ?? "") !== "",
-          )
-          .map(([key, cost]) => ({
-            offeringId: Number(key),
-            providerShare: cost,
-            sellPrice: sellPrices[Number(key)],
-          })),
-      );
+      setPreviewInput(filledPriceLines);
     }, 350);
     return () => clearTimeout(t);
-  }, [costs, sellPrices]);
+  }, [filledPriceLines, filledPriceLinesKey]);
 
   const preview = trpc.digitalCards.pricing.preview.useQuery(
     { branchId: branchId!, providerId: providerId!, lines: previewInput },
@@ -131,10 +178,33 @@ export default function DigitalPricing() {
     () => new Map((preview.data ?? []).map((p) => [p.offeringId, p])),
     [preview.data],
   );
+  const previewMatchesCurrent =
+    priceLinesKey(previewInput) === filledPriceLinesKey;
+  const previewReady =
+    rows.length > 0 &&
+    filledPriceLines.length === rows.length &&
+    previewMatchesCurrent &&
+    !preview.isFetching &&
+    !preview.isError &&
+    preview.data?.length === rows.length &&
+    rows.every((row) => previewById.has(row.offeringId));
 
   function invalidate() {
     void utils.digitalCards.pricing.getMorningSheet.invalidate();
     void utils.digitalCards.pricing.mismatchReports.invalidate();
+  }
+
+  /** النشر يغيّر ما يراه الكاشير واللوحة، لا شاشة التسعير وحدها. */
+  async function invalidatePublishedPrices() {
+    // invalidateQueries يعيد جلب الاستعلامات النشطة فوراً، ويبطل cache غير النشط
+    // كي لا يعود كاشير/لوحة مفتوحان لاحقاً إلى نتيجة طازجة ظاهرياً قبل النشر.
+    await Promise.all([
+      utils.digitalCards.pricing.getMorningSheet.invalidate(),
+      utils.digitalCards.pricing.mismatchReports.invalidate(),
+      utils.digitalCards.pos.listCards.invalidate(),
+      utils.digitalCards.pos.confirmCard.invalidate(),
+      utils.digitalCards.dashboard.priceHealth.invalidate(),
+    ]);
   }
 
   const copyMut = trpc.digitalCards.pricing.copyPrevious.useMutation({
@@ -157,19 +227,61 @@ export default function DigitalPricing() {
     onError: (e) => notify.err(e),
   });
   const publishMut = trpc.digitalCards.pricing.publish.useMutation({
-    onSuccess: (r) => {
-      invalidate();
-      notify.ok(
-        `نُشر ${r.publishedCount} سعراً`,
-        "الأسعار نافذة في الكاشير الآن",
+    onSuccess: async (r, variables) => {
+      await invalidatePublishedPrices();
+      const requestedCount = variables.lines.length;
+      const branchName =
+        branches.data?.find((branch) => branch.id === variables.branchId)
+          ?.name ?? `الفرع #${variables.branchId}`;
+      const providerName =
+        activeProviders.find((provider) => provider.id === variables.providerId)
+          ?.supplierName ?? `المزوّد #${variables.providerId}`;
+      const scopeMissing = Math.max(
+        0,
+        r.readiness.scopeTotal - r.readiness.scopeReady,
       );
+      const branchMissing = Math.max(
+        0,
+        r.readiness.branchTotal - r.readiness.branchReady,
+      );
+      const readinessDescription =
+        `${branchName} — ${providerName}. ` +
+        `جاهزية أسعار هذا المزوّد: ${r.readiness.scopeReady}/${r.readiness.scopeTotal}، ` +
+        `وجاهزية أسعار الفرع: ${r.readiness.branchReady}/${r.readiness.branchTotal}، ` +
+        `والأسعار غير الجاهزة في الفرع: ${branchMissing}.`;
+
+      if (r.publishedCount !== requestedCount || scopeMissing > 0) {
+        notify.warn(
+          `نُشر ${r.publishedCount} من ${requestedCount} سعراً فقط`,
+          `${readinessDescription} لم تُعتبر قائمة هذا المزوّد مكتملة؛ راجع الأسعار قبل البيع.`,
+        );
+        return;
+      }
+
+      if (branchMissing > 0) {
+        notify.warn(
+          `اكتمل نشر ${r.publishedCount} سعراً لـ${providerName}`,
+          `${readinessDescription} أسعار هذا المزوّد نافذة، لكن أسعار بقية الفرع ليست جاهزة بالكامل بعد.`,
+        );
+      } else {
+        notify.ok(
+          `نُشر ${r.publishedCount} من ${requestedCount} سعراً`,
+          `${readinessDescription} كل أسعار الفرع جاهزة للكاشير الآن.`,
+        );
+      }
     },
     onError: (e) => notify.err(e),
   });
   const approveMut = trpc.digitalCards.pricing.approveMismatch.useMutation({
-    onSuccess: () => {
-      invalidate();
-      notify.ok("اعتُمد البلاغ ونُشر سعر جديد");
+    onSuccess: async (_result, variables) => {
+      const report = (reports.data ?? []).find(
+        (item) => item.id === variables.reportId,
+      );
+      await invalidatePublishedPrices();
+      notify.ok(
+        `اعتُمد بلاغ ${report?.offeringName ?? `#${variables.reportId}`}`,
+        `${report?.branchName ?? "الفرع المحدد"} — ${report?.providerName ?? "المزوّد المحدد"}. بقي سعر البيع ${fmtAr(variables.sellPrice)} دون تغيير ونُشرت التكلفة الجديدة.`,
+      );
     },
     onError: (e) => notify.err(e),
   });
@@ -199,16 +311,7 @@ export default function DigitalPricing() {
   });
 
   function filledLines() {
-    return Object.entries(costs)
-      .filter(
-        ([key, cost]) =>
-          cost !== "" && cost != null && (sellPrices[Number(key)] ?? "") !== "",
-      )
-      .map(([key, cost]) => ({
-        offeringId: Number(key),
-        providerShare: cost,
-        sellPrice: sellPrices[Number(key)],
-      }));
+    return filledPriceLines;
   }
 
   function saveDraft() {
@@ -231,6 +334,13 @@ export default function DigitalPricing() {
         `ينقص ${total - lines.length} سعراً — النشر يتطلّب سعراً لكل بطاقة فعّالة`,
       );
     }
+    if (!previewReady) {
+      return notify.err(
+        previewMatchesCurrent && preview.isError
+          ? "تعذّرت معاينة الأسعار — أعد المحاولة قبل النشر"
+          : "انتظر اكتمال التحقق من كل الأسعار قبل النشر",
+      );
+    }
     const belowCost = (preview.data ?? []).filter((p) => p.belowCost);
     if (belowCost.length) {
       return notify.err(
@@ -245,8 +355,8 @@ export default function DigitalPricing() {
     }
     if (
       !(await confirm({
-        title: "نشر أسعار اليوم",
-        description: `ستصبح ${lines.length} بطاقة قابلةً للبيع بأسعارها الجديدة فوراً، وتُسوَّد الأسعار السابقة. النشر لا يُلغى — التصحيح يكون بنشر دُفعة جديدة. متابعة؟`,
+        title: `نشر أسعار ${activeProviders.find((provider) => provider.id === scope.providerId)?.supplierName ?? "المزوّد"} في ${branches.data?.find((branch) => branch.id === scope.branchId)?.name ?? "الفرع"}`,
+        description: `ستصبح ${lines.length} بطاقة قابلةً للبيع بأسعارها الجديدة فوراً في هذا الفرع، وتستبدل الأسعار السابقة. لا يمكن التراجع عن النشر — التصحيح يكون بنشر قائمة جديدة. متابعة؟`,
         confirmText: "نشر",
       }))
     )
@@ -255,6 +365,33 @@ export default function DigitalPricing() {
       ...scope,
       changeReason: changeReason.trim() || null,
       lines,
+    });
+  }
+
+  async function approveMismatch(report: MismatchReport) {
+    if (report.currentSellPrice == null) {
+      notify.err(
+        `لا يمكن اعتماد بلاغ «${report.offeringName}» بلا سعر بيع نافذ`,
+      );
+      return;
+    }
+    if (
+      !(await confirm({
+        title: `اعتماد تكلفة «${report.offeringName}» ونشرها`,
+        description:
+          `الفرع: ${report.branchName} — المزوّد: ${report.providerName}. ` +
+          `ستتغيّر تكلفة البطاقة من ${fmtAr(report.currentProviderShare)} إلى ${fmtAr(report.reportedProviderShare)}، ` +
+          `ويبقى سعر البيع للعميل ${fmtAr(report.currentSellPrice)} دون تغيير. ` +
+          "سيُنشر القرار فوراً في كاشير هذا الفرع. متابعة؟",
+        confirmText: "اعتماد التكلفة ونشرها",
+      }))
+    )
+      return;
+
+    approveMut.mutate({
+      reportId: report.id,
+      businessDate,
+      sellPrice: report.currentSellPrice,
     });
   }
 
@@ -275,7 +412,6 @@ export default function DigitalPricing() {
     cancelMut.mutate({ batchId: draftBatchId });
   }
 
-  const rows = sheet.data?.rows ?? [];
   const busy =
     saveMut.isPending ||
     publishMut.isPending ||
@@ -292,6 +428,15 @@ export default function DigitalPricing() {
   const canApproveBig =
     me.data?.role === "admin" || Number(me.data?.id) !== Number(draftCreatedBy);
   const bigChangeBlocking = bigChanges.length > 0 && bigApprovedBy == null;
+  const publishBlockedReason = bigChangeBlocking
+    ? `تغييرٌ ≥${threshold}% ينتظر اعتماد مديرٍ آخر`
+    : rows.length > 0 && !previewReady
+      ? filledPriceLines.length < rows.length
+        ? `ينقص ${rows.length - filledPriceLines.length} سعراً`
+        : previewMatchesCurrent && preview.isError
+          ? "تعذّرت معاينة الأسعار — أعد المحاولة"
+          : "جارٍ التحقق من كل الأسعار"
+      : undefined;
 
   return (
     <div className="space-y-4">
@@ -483,6 +628,7 @@ export default function DigitalPricing() {
                     <th className="p-2 text-start">
                       التكلفة التي أبلغ بها الكاشير
                     </th>
+                    <th className="p-2 text-start">سعر البيع الذي سيبقى</th>
                     <th className="p-2 text-start">ملاحظة</th>
                     <th className="p-2 text-center">قرار</th>
                   </tr>
@@ -500,6 +646,11 @@ export default function DigitalPricing() {
                       <td className="p-2 tabular-nums font-medium">
                         {fmtAr(r.reportedProviderShare)}
                       </td>
+                      <td className="p-2 tabular-nums font-medium">
+                        {r.currentSellPrice != null
+                          ? fmtAr(r.currentSellPrice)
+                          : "—"}
+                      </td>
                       <td className="p-2 text-muted-foreground">
                         {r.notes || "—"}
                       </td>
@@ -508,14 +659,9 @@ export default function DigitalPricing() {
                           <Button
                             size="sm"
                             disabled={approveMut.isPending}
-                            onClick={() =>
-                              approveMut.mutate({
-                                reportId: r.id,
-                                businessDate,
-                              })
-                            }
+                            onClick={() => void approveMismatch(r)}
                           >
-                            اعتماد ونشر
+                            مراجعة واعتماد
                           </Button>
                           <Button
                             size="sm"
@@ -567,13 +713,13 @@ export default function DigitalPricing() {
             <Button
               size="sm"
               disabled={
-                !scopeReady || busy || rows.length === 0 || bigChangeBlocking
+                !scopeReady ||
+                busy ||
+                rows.length === 0 ||
+                bigChangeBlocking ||
+                !previewReady
               }
-              title={
-                bigChangeBlocking
-                  ? `تغييرٌ ≥${threshold}% ينتظر اعتماد مديرٍ آخر`
-                  : undefined
-              }
+              title={publishBlockedReason}
               onClick={() => void publish()}
             >
               <Send className="size-4" /> نشر الأسعار

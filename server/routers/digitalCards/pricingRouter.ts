@@ -27,6 +27,20 @@ const lineInput = z.object({
   sellPrice: nonNegMoneyString.optional(),
 });
 
+const uniqueLinesInput = z.array(lineInput).min(1).max(500).superRefine((lines, ctx) => {
+  const seen = new Set<number>();
+  lines.forEach((line, index) => {
+    if (seen.has(line.offeringId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [index, "offeringId"],
+        message: "البطاقة مكررة في قائمة الأسعار",
+      });
+    }
+    seen.add(line.offeringId);
+  });
+});
+
 /** يفرض فرع المستخدم على أي نطاق قادم من العميل (منع IDOR عبر branchId). */
 function assertBranch(ctx: Ctx, branchId: number) {
   const scoped = scopedBranchOf(ctx);
@@ -61,7 +75,7 @@ export const pricingRouter = router({
   }),
 
   saveDraft: digitalCardsManagerProcedure
-    .input(priceDraftScopeInput.extend({ lines: z.array(lineInput).min(1).max(500) }))
+    .input(priceDraftScopeInput.extend({ lines: uniqueLinesInput }))
     .mutation(async ({ input, ctx }) => {
       assertBranch(ctx, input.branchId);
       const actor = actorOf(ctx);
@@ -73,14 +87,18 @@ export const pricingRouter = router({
 
   /** الحفظ والنشر في معاملة واحدة — لا حالة وسطية بين مسودّة مكتوبة ودُفعة منشورة. */
   publish: digitalCardsManagerProcedure
-    .input(priceDraftScopeInput.extend({ lines: z.array(lineInput).min(1).max(500) }))
+    .input(priceDraftScopeInput.extend({ lines: uniqueLinesInput }))
     .mutation(async ({ input, ctx }) => {
       assertBranch(ctx, input.branchId);
       const actor = actorOf(ctx);
       return withTx(async (tx) => {
         const { batchId } = await pricingService.createOrGetDraft(tx, input, actor);
         await pricingService.saveDraft(tx, { batchId, lines: input.lines }, actor);
-        return pricingService.publish(tx, { batchId }, actor);
+        return pricingService.publish(
+          tx,
+          { batchId, expectedOfferingIds: input.lines.map((line) => line.offeringId) },
+          actor,
+        );
       });
     }),
 
@@ -132,6 +150,7 @@ export const pricingRouter = router({
       z.object({
         reportId: z.number().int().positive(),
         businessDate: ymd,
+        sellPrice: nonNegMoneyString,
         notes: z.string().max(500).nullish(),
       }),
     )

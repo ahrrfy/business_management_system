@@ -62,6 +62,9 @@ export interface PrepareInput {
 /** مهلة النيّة: نافذةٌ معقولة لإصدار الكروت من جهاز المزوّد قبل أن تُعتبر مهجورة. */
 const INTENT_TTL_MINUTES = 30;
 
+/** Short, renewable lease for the physical/provider issuance step. */
+const EXECUTION_CLAIM_TTL_MINUTES = 10;
+
 /** طرق الدفع المسموحة للبيع الرقميّ (§٢ من الوثيقة: لا آجل على الكروت في الإصدار الأول). */
 const ALLOWED_PAYMENT_METHODS = new Set(["CASH", "CARD"]);
 
@@ -89,15 +92,36 @@ export async function prepare(
 ): Promise<{ intentId: number; replay: boolean; expiresAt: Date }> {
   // idempotency: نقرة مزدوجة/إعادة إرسال بنفس المفتاح تُعيد النيّة القائمة بدل حجزٍ ثانٍ.
   const [existing] = await tx
-    .select({ id: digitalSaleIntents.id, expiresAt: digitalSaleIntents.expiresAt, status: digitalSaleIntents.status, fp: digitalSaleIntents.cartFingerprint })
+    .select({
+      id: digitalSaleIntents.id,
+      expiresAt: digitalSaleIntents.expiresAt,
+      status: digitalSaleIntents.status,
+      fp: digitalSaleIntents.cartFingerprint,
+      branchId: digitalSaleIntents.branchId,
+      shiftId: digitalSaleIntents.shiftId,
+      createdBy: digitalSaleIntents.createdBy,
+      paymentMethod: digitalSaleIntents.paymentMethod,
+    })
     .from(digitalSaleIntents)
     .where(eq(digitalSaleIntents.clientRequestId, input.clientRequestId))
     .limit(1);
   if (existing) {
-    if (existing.fp !== input.cartFingerprint) {
+    if (
+      existing.fp !== input.cartFingerprint ||
+      Number(existing.branchId) !== input.branchId ||
+      Number(existing.shiftId) !== input.shiftId ||
+      existing.paymentMethod !== input.paymentMethod ||
+      ((actor.role !== "admin" && actor.role !== "manager") && Number(existing.createdBy) !== actor.userId)
+    ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "نفس مفتاح الطلب بسلّةٍ مختلفة — أعد فتح فاتورة جديدة",
+        message: "نفس مفتاح الطلب استُعمل لسلّةٍ مختلفة أو سياق بيع مختلف — ابدأ طلباً جديداً",
+      });
+    }
+    if (!["PREPARED", "EXECUTING", "EXECUTED"].includes(existing.status)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "المحاولة السابقة أُغلقت — ابدأ طلباً جديداً قبل إعادة بيع الكروت",
       });
     }
     return { intentId: Number(existing.id), replay: true, expiresAt: existing.expiresAt };
@@ -267,6 +291,21 @@ export async function prepare(
     needByWallet.set(r.walletId, list);
   }
   const walletIds = Array.from(needByWallet.keys()).sort((a, b) => a - b);
+  const walletIdsByProvider = new Map<number, Set<number>>();
+  for (const r of resolved) {
+    if (r.walletId == null) continue;
+    const set = walletIdsByProvider.get(r.providerId) ?? new Set<number>();
+    set.add(r.walletId);
+    walletIdsByProvider.set(r.providerId, set);
+  }
+  for (const [providerId, ids] of Array.from(walletIdsByProvider.entries())) {
+    if (ids.size > 1) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `لا تُجمع بطاقات المزوّد ${providerId} من محافظ متعددة في عملية واحدة`,
+      });
+    }
+  }
 
   const expiresAt = new Date(Date.now() + INTENT_TTL_MINUTES * 60_000);
   const expectedTotal = toDbMoney(sumMoney(resolved.map((r) => r.sellPrice)));
@@ -292,11 +331,20 @@ export async function prepare(
         isActive: digitalWallets.isActive,
         currentBalance: digitalWallets.currentBalance,
         reservedBalance: digitalWallets.reservedBalance,
+        providerId: digitalWallets.providerId,
+        branchId: digitalWallets.branchId,
       })
       .from(digitalWallets)
       .where(eq(digitalWallets.id, walletId))
       .for("update");
     if (!wallet) throw new TRPCError({ code: "NOT_FOUND", message: "المحفظة غير موجودة" });
+    const expectedProviderId = resolved.find((r) => r.walletId === walletId)?.providerId;
+    if (expectedProviderId == null || Number(wallet.providerId) !== expectedProviderId || Number(wallet.branchId) !== input.branchId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `المحفظة «${wallet.name}» لا تطابق مزوّد البطاقة وفرعها`,
+      });
+    }
     if (!wallet.isActive) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `المحفظة «${wallet.name}» معطَّلة` });
     }
@@ -356,16 +404,128 @@ export async function prepare(
 
 export type ExecutionStatus = "SUCCESS" | "FAILED" | "UNKNOWN";
 
+type ExecutionClaimRow = {
+  intentItemId: number;
+  claimToken: string;
+  claimedBy: number;
+  claimedAt: Date | string;
+  expiresAt: Date | string;
+  providerIdempotencyKey: string;
+  completedAt: Date | string | null;
+  isActive: number | string;
+};
+
+export interface ClaimExecutionResult {
+  intentItemId: number;
+  claimToken: string;
+  providerIdempotencyKey: string;
+  expiresAt: Date;
+  replay: boolean;
+}
+
+/**
+ * Claims the right to touch the provider terminal for one item. Locking the
+ * item first serialises two browser windows even for the same cashier.
+ */
+export async function claimExecution(
+  tx: Tx,
+  input: { intentId: number; intentItemId: number; claimToken: string },
+  actor: Actor,
+): Promise<ClaimExecutionResult> {
+  const intent = await lockIntent(tx, input.intentId);
+  assertActorOwnsIntent(intent, actor);
+  const elevated = actor.role === "admin" || actor.role === "manager";
+  if (!["PREPARED", "EXECUTING", "NEEDS_REVIEW"].includes(intent.status)) {
+    throw new TRPCError({ code: "CONFLICT", message: "هذه العملية مغلقة ولا تقبل إصدار بطاقة جديدة" });
+  }
+  if (intent.status === "NEEDS_REVIEW" && !elevated) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "تحتاج هذه العملية إلى مراجعة المدير قبل إعادة الإصدار" });
+  }
+
+  const [item] = await tx
+    .select({ id: digitalSaleIntentItems.id, fulfillmentStatus: digitalSaleIntentItems.fulfillmentStatus })
+    .from(digitalSaleIntentItems)
+    .where(and(eq(digitalSaleIntentItems.id, input.intentItemId), eq(digitalSaleIntentItems.intentId, input.intentId)))
+    .for("update");
+  if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "بند التنفيذ غير موجود" });
+  if (item.fulfillmentStatus === "SUCCESS") {
+    throw new TRPCError({ code: "CONFLICT", message: "هذه البطاقة صدرت وسُجلت بنجاح بالفعل" });
+  }
+  if (item.fulfillmentStatus !== "PENDING" && !elevated) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "إعادة محاولة هذه البطاقة تحتاج إلى مراجعة المدير" });
+  }
+
+  const now = new Date();
+  if (intent.expiresAt.getTime() <= now.getTime()) {
+    throw new TRPCError({ code: "CONFLICT", message: "انتهت مهلة عملية البيع؛ ابدأ عملية جديدة أو راجع المدير" });
+  }
+  const claim = await lockExecutionClaim(tx, input.intentItemId);
+  if (claim && claim.completedAt == null && Number(claim.isActive) === 1) {
+    if (claim.claimToken === input.claimToken && Number(claim.claimedBy) === actor.userId) {
+      return {
+        intentItemId: Number(claim.intentItemId),
+        claimToken: claim.claimToken,
+        providerIdempotencyKey: claim.providerIdempotencyKey,
+        expiresAt: asDate(claim.expiresAt),
+        replay: true,
+      };
+    }
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "هذه البطاقة قيد الإصدار في نافذة أخرى؛ لا تُصدرها مرة ثانية",
+    });
+  }
+  if (claim?.completedAt != null && item.fulfillmentStatus !== "PENDING" && !elevated) {
+    throw new TRPCError({ code: "CONFLICT", message: "نتيجة هذه البطاقة مسجلة؛ لا تبدأ إصداراً جديداً" });
+  }
+
+  const expiresAt = new Date(now.getTime() + EXECUTION_CLAIM_TTL_MINUTES * 60_000);
+  const providerIdempotencyKey = claim?.providerIdempotencyKey ?? `digital-issue:${input.intentId}:${input.intentItemId}`;
+  try {
+    if (claim) {
+      await tx.execute(sql`
+        UPDATE digitalSaleExecutionClaims
+        SET claimToken = ${input.claimToken}, claimedBy = ${actor.userId}, claimedAt = ${now},
+            expiresAt = ${expiresAt}, completedAt = NULL
+        WHERE intentItemId = ${input.intentItemId}
+      `);
+    } else {
+      await tx.execute(sql`
+        INSERT INTO digitalSaleExecutionClaims
+          (intentItemId, claimToken, claimedBy, claimedAt, expiresAt, providerIdempotencyKey, completedAt)
+        VALUES
+          (${input.intentItemId}, ${input.claimToken}, ${actor.userId}, ${now}, ${expiresAt}, ${providerIdempotencyKey}, NULL)
+      `);
+    }
+  } catch (e) {
+    if (isDuplicateEntry(e)) {
+      throw new TRPCError({ code: "CONFLICT", message: "رمز بدء الإصدار مستخدم في نافذة أخرى؛ أعد المحاولة" });
+    }
+    throw e;
+  }
+
+  if (intent.status === "PREPARED") {
+    await tx.update(digitalSaleIntents).set({ status: "EXECUTING" }).where(eq(digitalSaleIntents.id, input.intentId));
+  }
+  await auditLog(tx, actor, "digitalCards.intent.executionClaimed", input.intentId, {
+    itemId: input.intentItemId,
+    providerIdempotencyKey,
+    expiresAt,
+  });
+  return { intentItemId: input.intentItemId, claimToken: input.claimToken, providerIdempotencyKey, expiresAt, replay: false };
+}
+
 export async function markExecution(
   tx: Tx,
-  input: { intentId: number; intentItemId: number; status: ExecutionStatus; providerReference?: string | null },
+  input: { intentId: number; intentItemId: number; claimToken: string; status: ExecutionStatus; providerReference?: string | null },
   actor: Actor,
 ): Promise<{ itemId: number; status: ExecutionStatus; allSettled: boolean; idempotent: boolean }> {
   const intent = await lockIntent(tx, input.intentId);
   assertActorOwnsIntent(intent, actor);
-  if (intent.status === "FINALIZED" || intent.status === "CANCELLED") {
-    throw new TRPCError({ code: "CONFLICT", message: "النيّة أُغلقت — لا تُعدَّل" });
+  if (!["PREPARED", "EXECUTING", "EXECUTED", "NEEDS_REVIEW"].includes(intent.status)) {
+    throw new TRPCError({ code: "CONFLICT", message: `Intent status ${intent.status} is final and cannot be edited` });
   }
+  const elevated = actor.role === "admin" || actor.role === "manager";
 
   const [item] = await tx
     .select()
@@ -375,18 +535,34 @@ export async function markExecution(
   if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "بند التنفيذ غير موجود" });
 
   const ref = input.providerReference?.trim() || null;
+  const claim = await lockExecutionClaim(tx, input.intentItemId);
+  if (!claim || claim.claimToken !== input.claimToken || Number(claim.claimedBy) !== actor.userId) {
+    throw new TRPCError({ code: "CONFLICT", message: "ابدأ إصدار البطاقة من هذه النافذة قبل تسجيل النتيجة" });
+  }
 
-  // idempotency: نفس الحالة ونفس المرجع ⇒ لا شيء (نقرة مزدوجة/إعادة إرسال بعد انقطاع).
-  if (item.fulfillmentStatus === input.status && (item.providerReference ?? null) === ref) {
+  // A completed claim can only replay its exact recorded result.
+  if (claim.completedAt != null && item.fulfillmentStatus === input.status && (item.providerReference ?? null) === ref) {
     return { itemId: Number(item.id), status: input.status, allSettled: await allItemsSettled(tx, input.intentId), idempotent: true };
+  }
+  if (claim.completedAt != null) {
+    throw new TRPCError({ code: "CONFLICT", message: "نتيجة مطالبة الإصدار هذه سُجلت بالفعل ولا يمكن تغييرها" });
+  }
+  // Expiry opens the lease to a new claimant; it does not invalidate the
+  // current token by itself. Until a reclaim actually replaces the token, the
+  // original window must still be able to record a card it may have issued.
+  if (intent.status === "EXECUTED") {
+    throw new TRPCError({ code: "CONFLICT", message: "نتيجة النيّة المنفذة نهائية؛ نجاح الكرت غير قابل للتغيير" });
   }
 
   // **لا رجوع عن النجاح من الكاشير**: الكرت صدر فعلاً؛ التصحيح قرارٌ إداريّ (عكسٌ موثَّق).
-  if (item.fulfillmentStatus === "SUCCESS" && actor.role !== "admin" && actor.role !== "manager") {
+  if (item.fulfillmentStatus === "SUCCESS") {
     throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "لا يُلغى نجاحُ كرتٍ صدر فعلاً — راجِع المدير",
+      code: "CONFLICT",
+      message: "A successful issued card is immutable; finalize, write off, or reverse it",
     });
+  }
+  if (item.fulfillmentStatus !== "PENDING" && !elevated) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Manager review is required to correct a recorded result" });
   }
 
   // سياسة المرجع للمزوّد.
@@ -413,6 +589,11 @@ export async function markExecution(
         confirmedAt: new Date(),
       })
       .where(eq(digitalSaleIntentItems.id, input.intentItemId));
+    await tx.execute(sql`
+      UPDATE digitalSaleExecutionClaims
+      SET completedAt = ${new Date()}
+      WHERE intentItemId = ${input.intentItemId} AND claimToken = ${input.claimToken} AND completedAt IS NULL
+    `);
   } catch (e) {
     // القيد الفريد `uq_dsii_provider_ref` (هجرة 0127). drizzle يغلّف خطأ السائق ⇒ نفكّ
     // سلسلة `cause` كما في `isDupUserId` بـemployeeService (نفس الاصطلاح).
@@ -460,21 +641,22 @@ export async function cancelIntent(
 ): Promise<{ intentId: number; outcome: "CANCELLED" | "NEEDS_REVIEW" }> {
   const intent = await lockIntent(tx, input.intentId);
   assertActorOwnsIntent(intent, actor);
-  if (intent.status === "FINALIZED") {
-    throw new TRPCError({ code: "CONFLICT", message: "النيّة مُثبَّتة بفاتورة — لا تُلغى" });
-  }
   if (intent.status === "CANCELLED") {
     return { intentId: input.intentId, outcome: "CANCELLED" };
   }
+  if (!["PREPARED", "EXECUTING", "EXECUTED", "NEEDS_REVIEW"].includes(intent.status)) {
+    throw new TRPCError({ code: "CONFLICT", message: `Intent status ${intent.status} is final and cannot be cancelled` });
+  }
 
-  const executed = await hasSuccessfulItem(tx, input.intentId);
-  if (executed) {
+  const unsafe = await hasUnsafeExecution(tx, input.intentId);
+  if (unsafe) {
     // الحجز **لا يُحرَّر**: كرتٌ صدر فعلاً وله أثرٌ ماليّ مستحقّ. المراجعة الإدارية تحسمه.
     await tx.update(digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(digitalSaleIntents.id, input.intentId));
     await auditLog(tx, actor, "digitalCards.intent.needsReview", input.intentId, { reason: input.reason ?? "cancel-after-execution" });
     return { intentId: input.intentId, outcome: "NEEDS_REVIEW" };
   }
 
+  await deleteExecutionClaims(tx, input.intentId);
   await releaseReservations(tx, input.intentId);
   await tx.update(digitalSaleIntents).set({ status: "CANCELLED" }).where(eq(digitalSaleIntents.id, input.intentId));
   await auditLog(tx, actor, "digitalCards.intent.cancelled", input.intentId, { reason: input.reason ?? null });
@@ -507,11 +689,18 @@ export async function expireStaleIntents(
   let needsReview = 0;
   for (const s of stale) {
     const intentId = Number(s.id);
-    await lockIntent(tx, intentId);
-    if (await hasSuccessfulItem(tx, intentId)) {
+    const locked = await lockIntent(tx, intentId);
+    if (
+      !["PREPARED", "EXECUTING", "EXECUTED"].includes(locked.status) ||
+      locked.expiresAt.getTime() >= now.getTime()
+    ) {
+      continue;
+    }
+    if (await hasUnsafeExecution(tx, intentId)) {
       await tx.update(digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(digitalSaleIntents.id, intentId));
       needsReview++;
     } else {
+      await deleteExecutionClaims(tx, intentId);
       await releaseReservations(tx, intentId);
       await tx.update(digitalSaleIntents).set({ status: "EXPIRED" }).where(eq(digitalSaleIntents.id, intentId));
       expired++;
@@ -615,6 +804,56 @@ function isDupProviderRef(e: unknown): boolean {
   return /uq_dsii_provider_ref|refKey/i.test(msg);
 }
 
+function isDuplicateEntry(e: unknown): boolean {
+  const err = e as { code?: string; cause?: unknown };
+  return (
+    err?.code === "ER_DUP_ENTRY" ||
+    (err?.cause as { code?: string } | undefined)?.code === "ER_DUP_ENTRY" ||
+    ((err?.cause as { cause?: { code?: string } } | undefined)?.cause)?.code === "ER_DUP_ENTRY"
+  );
+}
+
+function rowsOf(result: unknown): any[] {
+  if (Array.isArray(result)) return Array.isArray(result[0]) ? result[0] : result;
+  const rows = (result as { rows?: unknown } | null)?.rows;
+  return Array.isArray(rows) ? rows : [];
+}
+
+function asDate(value: Date | string): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
+async function lockExecutionClaim(tx: Tx, intentItemId: number): Promise<ExecutionClaimRow | null> {
+  const result = await tx.execute(sql`
+    SELECT intentItemId, claimToken, claimedBy, claimedAt, expiresAt, providerIdempotencyKey, completedAt,
+           (expiresAt > CURRENT_TIMESTAMP(3)) AS isActive
+    FROM digitalSaleExecutionClaims
+    WHERE intentItemId = ${intentItemId}
+    FOR UPDATE
+  `);
+  return (rowsOf(result)[0] as ExecutionClaimRow | undefined) ?? null;
+}
+
+/** SUCCESS/UNKNOWN or an uncompleted provider lease means money must stay reserved for review. */
+async function hasUnsafeExecution(tx: Tx, intentId: number): Promise<boolean> {
+  const result = await tx.execute(sql`
+    SELECT COUNT(*) AS n
+    FROM digitalSaleIntentItems i
+    LEFT JOIN digitalSaleExecutionClaims c ON c.intentItemId = i.id
+    WHERE i.intentId = ${intentId}
+      AND (i.fulfillmentStatus IN ('SUCCESS', 'UNKNOWN') OR (c.intentItemId IS NOT NULL AND c.completedAt IS NULL))
+  `);
+  return Number(rowsOf(result)[0]?.n ?? 0) > 0;
+}
+
+async function deleteExecutionClaims(tx: Tx, intentId: number): Promise<void> {
+  await tx.execute(sql`
+    DELETE c FROM digitalSaleExecutionClaims c
+    INNER JOIN digitalSaleIntentItems i ON i.id = c.intentItemId
+    WHERE i.intentId = ${intentId}
+  `);
+}
+
 async function lockIntent(tx: Tx, intentId: number) {
   const [intent] = await tx.select().from(digitalSaleIntents).where(eq(digitalSaleIntents.id, intentId)).for("update");
   if (!intent) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
@@ -625,6 +864,9 @@ function assertActorOwnsIntent(intent: { createdBy: number; branchId: number }, 
   const elevated = actor.role === "admin" || actor.role === "manager";
   if (!elevated && Number(intent.createdBy) !== actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة لمستخدم آخر" });
+  }
+  if (!elevated && Number(intent.branchId) !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة تخص فرعاً آخر" });
   }
 }
 
@@ -690,3 +932,4 @@ export async function activeReservedTotal(db: DB, walletId: number): Promise<str
 }
 
 export const INTENT_TTL = INTENT_TTL_MINUTES;
+export const EXECUTION_CLAIM_TTL = EXECUTION_CLAIM_TTL_MINUTES;

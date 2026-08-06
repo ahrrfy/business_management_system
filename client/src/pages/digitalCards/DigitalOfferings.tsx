@@ -55,6 +55,7 @@ export default function DigitalOfferings() {
   const list = trpc.digitalCards.offerings.list.useQuery();
   const providers = trpc.digitalCards.providers.list.useQuery();
   const branches = trpc.branches.list.useQuery();
+  const wallets = trpc.digitalCards.wallets.list.useQuery({ isActive: true });
   const rows = list.data ?? [];
   const [query, setQuery] = useState("");
   const visibleRows = useMemo(() => {
@@ -91,6 +92,7 @@ export default function DigitalOfferings() {
   const [fMinimumMargin, setFMinimumMargin] = useState("0");
   const [fRoundingStep, setFRoundingStep] = useState("250");
   const [fBranchIds, setFBranchIds] = useState<number[]>([]);
+  const [fWalletByBranch, setFWalletByBranch] = useState<Record<number, string>>({});
   const [fInitialCost, setFInitialCost] = useState("");
   const [fInitialSellPrice, setFInitialSellPrice] = useState("");
 
@@ -141,6 +143,7 @@ export default function DigitalOfferings() {
     setFMinimumMargin("0");
     setFRoundingStep("250");
     setFBranchIds([]);
+    setFWalletByBranch({});
     setFInitialCost("");
     setFInitialSellPrice("");
     setFormOpen(true);
@@ -161,6 +164,7 @@ export default function DigitalOfferings() {
     setFRoundingStep(o.roundingStep);
     // الفروع تصل من استعلام التفاصيل (get) لأن قائمة العرض لا تحملها.
     setFBranchIds([]);
+    setFWalletByBranch({});
     setFormOpen(true);
   }
 
@@ -169,13 +173,22 @@ export default function DigitalOfferings() {
   useEffect(() => {
     if (editId != null && detailForId === editId) {
       setFBranchIds(detail.data?.branches.map((b) => b.branchId) ?? []);
+      setFWalletByBranch(Object.fromEntries(
+        (detail.data?.branches ?? []).map((b) => [b.branchId, b.walletId != null ? String(b.walletId) : ""]),
+      ));
     }
   }, [editId, detailForId, detail.data]);
 
   function toggleBranch(id: number) {
-    setFBranchIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    );
+    setFBranchIds((prev) => {
+      if (!prev.includes(id)) return [...prev, id];
+      setFWalletByBranch((walletsByBranch) => {
+        const next = { ...walletsByBranch };
+        delete next[id];
+        return next;
+      });
+      return prev.filter((x) => x !== id);
+    });
   }
 
   function submitForm() {
@@ -183,6 +196,15 @@ export default function DigitalOfferings() {
     if (!name) return notify.err("اسم البطاقة مطلوب");
     if (fBranchIds.length === 0)
       return notify.err("اختر فرعاً واحداً على الأقل");
+
+    const selectedProvider = (providers.data ?? []).find((p) => p.id === Number(fProviderId));
+    if (selectedProvider?.settlementMode === "PREPAID") {
+      const missingWalletBranch = fBranchIds.find((branchId) => !Number(fWalletByBranch[branchId]));
+      if (missingWalletBranch != null) {
+        const branchName = (branches.data ?? []).find((b) => b.id === missingWalletBranch)?.name;
+        return notify.err(`اختر محفظة المزوّد لفرع ${branchName ?? missingWalletBranch}`);
+      }
+    }
 
     const shared = {
       name,
@@ -198,7 +220,12 @@ export default function DigitalOfferings() {
       marginPercent: fMarginPercent || "0",
       minimumMargin: fMinimumMargin || "0",
       roundingStep: fRoundingStep || "250",
-      branches: fBranchIds.map((branchId) => ({ branchId })),
+      branches: fBranchIds.map((branchId) => ({
+        branchId,
+        walletId: selectedProvider?.settlementMode === "PREPAID"
+          ? Number(fWalletByBranch[branchId])
+          : null,
+      })),
     };
 
     if (fType === "EDUCATIONAL_SUBSCRIPTION" && !Number(fSubscriptionDays)) {
@@ -452,7 +479,7 @@ export default function DigitalOfferings() {
                   className={selectCls}
                   value={fProviderId}
                   disabled={editing}
-                  onChange={(e) => setFProviderId(e.target.value)}
+                  onChange={(e) => { setFProviderId(e.target.value); setFWalletByBranch({}); }}
                 >
                   <option value="">— اختر المزوّد —</option>
                   {activeProviders.map((p) => (
@@ -588,19 +615,37 @@ export default function DigitalOfferings() {
               <span className="text-sm font-medium">
                 الفروع التي تُعرض فيها
               </span>
-              <div className="flex flex-wrap gap-3 rounded-md border p-3">
+              <div className="space-y-2 rounded-md border p-3">
                 {(branches.data ?? []).map((b) => (
-                  <label key={b.id} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="size-4"
-                      checked={fBranchIds.includes(b.id)}
-                      onChange={() => toggleBranch(b.id)}
-                    />
-                    {b.name}
-                  </label>
+                  <div key={b.id} className="grid items-center gap-2 sm:grid-cols-[minmax(10rem,1fr)_minmax(14rem,2fr)]">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="size-4"
+                        checked={fBranchIds.includes(b.id)}
+                        onChange={() => toggleBranch(b.id)}
+                      />
+                      {b.name}
+                    </label>
+                    {fBranchIds.includes(b.id) && (providers.data ?? []).find((p) => p.id === Number(fProviderId))?.settlementMode === "PREPAID" && (
+                      <select
+                        className={selectCls}
+                        aria-label={`محفظة ${b.name}`}
+                        value={fWalletByBranch[b.id] ?? ""}
+                        onChange={(e) => setFWalletByBranch((prev) => ({ ...prev, [b.id]: e.target.value }))}
+                      >
+                        <option value="">— اختر محفظة هذا الفرع —</option>
+                        {(wallets.data ?? [])
+                          .filter((w) => w.providerId === Number(fProviderId) && w.branchId === b.id && w.isActive)
+                          .map((w) => <option key={w.id} value={w.id}>{w.name} — المتاح {fmtAr(String(Number(w.currentBalance) - Number(w.reservedBalance)))}</option>)}
+                      </select>
+                    )}
+                  </div>
                 ))}
               </div>
+              {(providers.data ?? []).find((p) => p.id === Number(fProviderId))?.settlementMode === "PREPAID" && (
+                <p className="text-xs text-muted-foreground">اختر محفظة المزوّد في كل فرع؛ منها يُحجز ويُخصم رصيد البيع تلقائياً.</p>
+              )}
             </div>
           </div>
 

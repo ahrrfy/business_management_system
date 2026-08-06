@@ -8,22 +8,30 @@ import { PRINT_SERVICE_TYPE } from "../printSaleService";
 
 // خدمات الطباعة (productType=PRINT_SERVICE) مُستثناة من كاشير الباركود/الشراء: لا مخزون لها،
 // وتُباع عبر شاشة «نقطة بيع الطباعة» فقط. (NULL = منتج عادي ⇒ يبقى ظاهراً.)
-const notPrintService = sql`(${products.productType} IS NULL OR ${products.productType} <> ${PRINT_SERVICE_TYPE})`;
+const DIGITAL_CARD_TYPE = "DIGITAL_CARD";
+const ordinaryCatalogProduct = sql`(
+  ${products.productType} IS NULL OR
+  (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE})
+)`;
 const activeOnly = and(
   eq(products.isActive, true),
   eq(productVariants.isActive, true),
   eq(productUnits.isActive, true),
-  notPrintService
+  ordinaryCatalogProduct
 );
 
 // رؤية كاشير الاستقبال: كالعادي + خدمات الطباعة المفعَّل عليها showInReception (تُباع عبر createPrintSale).
-const receptionVisible = sql`(${products.productType} IS NULL OR ${products.productType} <> ${PRINT_SERVICE_TYPE} OR ${products.showInReception} = TRUE)`;
+const receptionVisible = sql`(
+  ${products.productType} IS NULL OR
+  (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
+  (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInReception} = TRUE)
+)`;
 function posVisibility(includeReceptionServices: boolean) {
   return and(
     eq(products.isActive, true),
     eq(productVariants.isActive, true),
     eq(productUnits.isActive, true),
-    includeReceptionServices ? receptionVisible : notPrintService,
+    includeReceptionServices ? receptionVisible : ordinaryCatalogProduct,
   );
 }
 
@@ -93,4 +101,4 @@ function buildCatalogSearchOrder(query: string | undefined): SQL[] {
 
 // تصدير داخلي للحزمة فقط (يستهلكه pos/purchase/adminList/productExtras) — لا يُعاد تصديره من
 // البرميل catalogService.ts.
-export { notPrintService, activeOnly, posVisibility, buildCatalogSearchWhere, buildCatalogSearchOrder };
+export { ordinaryCatalogProduct as notPrintService, activeOnly, posVisibility, buildCatalogSearchWhere, buildCatalogSearchOrder };

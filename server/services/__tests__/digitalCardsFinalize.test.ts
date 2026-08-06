@@ -19,7 +19,7 @@ const DATE = "2026-07-29";
 
 const TABLES = [
   "digitalSubscriptionContracts",
-  "digitalSaleDetails", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
+  "digitalSaleDetails", "digitalSaleExecutionClaims", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
   "digitalWalletTransactions", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWallets", "digitalProviders",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "idempotencyKeys",
@@ -89,10 +89,14 @@ async function prepareAndExecute(
   }, actor));
   const items = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
   for (const it of items) {
-    await withTx((tx) => intentService.markExecution(tx, {
-      intentId: r.intentId, intentItemId: Number(it.id), status: "SUCCESS",
-      providerReference: `REF-${id}-${it.id}`,
-    }, actor));
+    await withTx(async (tx) => {
+      const claimToken = `finalize-claim-${id}-${it.id}`;
+      await intentService.claimExecution(tx, { intentId: r.intentId, intentItemId: Number(it.id), claimToken }, actor);
+      return intentService.markExecution(tx, {
+        intentId: r.intentId, intentItemId: Number(it.id), claimToken, status: "SUCCESS",
+        providerReference: `REF-${id}-${it.id}`,
+      }, actor);
+    });
   }
   return r.intentId;
 }

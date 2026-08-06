@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -17,7 +17,7 @@ const manager = { userId: 2, branchId: 1, role: "manager" };
 const DATE = "2026-07-29";
 
 const TABLES = [
-  "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
+  "digitalSaleExecutionClaims", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
   "digitalPriceChangeReports", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWalletTransactions", "digitalWallets", "digitalProviders",
   "shifts", "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "products",
@@ -107,6 +107,17 @@ async function intentRow(id: number) {
 }
 async function itemsOf(intentId: number) {
   return db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, intentId));
+}
+
+let executionClaimSeq = 0;
+async function claimAndMark(
+  tx: Parameters<typeof intentService.markExecution>[0],
+  input: Omit<Parameters<typeof intentService.markExecution>[1], "claimToken">,
+  actorArg: Parameters<typeof intentService.markExecution>[2] = actor,
+) {
+  const claimToken = `test-claim-${++executionClaimSeq}-${Date.now()}`;
+  await intentService.claimExecution(tx, { intentId: input.intentId, intentItemId: input.intentItemId, claimToken }, actorArg);
+  return intentService.markExecution(tx, { ...input, claimToken }, actorArg);
 }
 
 beforeEach(async () => {
@@ -299,12 +310,12 @@ describe("ش٧ — تسجيل التنفيذ", () => {
 
   it("تسجيل النجاح يثبت الحالة والمرجع، وكل البنود ⇒ EXECUTED", async () => {
     const p = await prepared({ count: 2 });
-    await withTx((tx) => intentService.markExecution(tx, {
+    await withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "SUCCESS", providerReference: "REF-1",
     }, actor));
     expect((await intentRow(p.intentId)).status).toBe("EXECUTING");
 
-    const res = await withTx((tx) => intentService.markExecution(tx, {
+    const res = await withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[1].id), status: "SUCCESS", providerReference: "REF-2",
     }, actor));
     expect(res.allSettled).toBe(true);
@@ -313,7 +324,9 @@ describe("ش٧ — تسجيل التنفيذ", () => {
 
   it("النقر المزدوج على «نجح» يمرّ مرّةً واحدة (idempotent)", async () => {
     const p = await prepared();
-    const payload = { intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "SUCCESS" as const, providerReference: "REF-X" };
+    const claimToken = "test-idempotent-claim";
+    const payload = { intentId: p.intentId, intentItemId: Number(p.items[0].id), claimToken, status: "SUCCESS" as const, providerReference: "REF-X" };
+    await withTx((tx) => intentService.claimExecution(tx, { intentId: p.intentId, intentItemId: Number(p.items[0].id), claimToken }, actor));
     const a = await withTx((tx) => intentService.markExecution(tx, payload, actor));
     const b = await withTx((tx) => intentService.markExecution(tx, payload, actor));
     expect(a.idempotent).toBe(false);
@@ -321,49 +334,118 @@ describe("ش٧ — تسجيل التنفيذ", () => {
     expect((await itemsOf(p.intentId))[0].providerReference).toBe("REF-X");
   });
 
+  it("يرفض تسجيل النتيجة بلا مطالبة تنفيذ", async () => {
+    const p = await prepared();
+    await expect(withTx((tx) => intentService.markExecution(tx, {
+      intentId: p.intentId,
+      intentItemId: Number(p.items[0].id),
+      claimToken: "missing-claim-token",
+      status: "SUCCESS",
+      providerReference: "NO-CLAIM",
+    }, actor))).rejects.toThrow(/ابدأ إصدار البطاقة/);
+  });
+
+  it("سباق نافذتين يمنح مطالبة واحدة فقط حتى للمستخدم نفسه", async () => {
+    const p = await prepared();
+    const base = { intentId: p.intentId, intentItemId: Number(p.items[0].id) };
+    const results = await Promise.allSettled([
+      withTx((tx) => intentService.claimExecution(tx, { ...base, claimToken: "window-one-claim" }, actor)),
+      withTx((tx) => intentService.claimExecution(tx, { ...base, claimToken: "window-two-claim" }, actor)),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(1);
+  });
+
+  it("إعادة المطالبة بالرمز نفسه idempotent", async () => {
+    const p = await prepared();
+    const input = { intentId: p.intentId, intentItemId: Number(p.items[0].id), claimToken: "same-window-claim" };
+    const first = await withTx((tx) => intentService.claimExecution(tx, input, actor));
+    const replay = await withTx((tx) => intentService.claimExecution(tx, input, actor));
+    expect(first.replay).toBe(false);
+    expect(replay.replay).toBe(true);
+    expect(replay.providerIdempotencyKey).toBe(first.providerIdempotencyKey);
+  });
+
+  it("صاحب المطالبة يسجل بعد انتهاء المهلة ما لم تُسترد المطالبة", async () => {
+    const p = await prepared();
+    const intentItemId = Number(p.items[0].id);
+    const claimToken = "expired-owner-claim";
+    await withTx((tx) => intentService.claimExecution(tx, { intentId: p.intentId, intentItemId, claimToken }, actor));
+    await db().execute(sql`
+      UPDATE digitalSaleExecutionClaims SET expiresAt = DATE_SUB(NOW(), INTERVAL 1 MINUTE)
+      WHERE intentItemId = ${intentItemId}
+    `);
+    const marked = await withTx((tx) => intentService.markExecution(tx, {
+      intentId: p.intentId, intentItemId, claimToken, status: "SUCCESS", providerReference: "AFTER-TTL",
+    }, actor));
+    expect(marked.status).toBe("SUCCESS");
+  });
+
+  it("بعد استرداد المطالبة يبقى مفتاح المزوّد ثابتاً ويفشل الرمز القديم", async () => {
+    const p = await prepared();
+    const intentItemId = Number(p.items[0].id);
+    const first = await withTx((tx) => intentService.claimExecution(tx, {
+      intentId: p.intentId, intentItemId, claimToken: "old-window-claim",
+    }, actor));
+    await db().execute(sql`
+      UPDATE digitalSaleExecutionClaims SET expiresAt = DATE_SUB(NOW(), INTERVAL 1 MINUTE)
+      WHERE intentItemId = ${intentItemId}
+    `);
+    const reclaimed = await withTx((tx) => intentService.claimExecution(tx, {
+      intentId: p.intentId, intentItemId, claimToken: "new-window-claim",
+    }, actor));
+    expect(reclaimed.providerIdempotencyKey).toBe(first.providerIdempotencyKey);
+    await expect(withTx((tx) => intentService.markExecution(tx, {
+      intentId: p.intentId, intentItemId, claimToken: "old-window-claim", status: "SUCCESS", providerReference: "OLD",
+    }, actor))).rejects.toThrow(/هذه النافذة|ابدأ إصدار/);
+    await withTx((tx) => intentService.markExecution(tx, {
+      intentId: p.intentId, intentItemId, claimToken: "new-window-claim", status: "SUCCESS", providerReference: "NEW",
+    }, actor));
+  });
+
   it("قيد القاعدة يمنع تكرار المرجع لدى المزوّد نفسه", async () => {
     const p = await prepared({ count: 2 });
-    await withTx((tx) => intentService.markExecution(tx, {
+    await withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "SUCCESS", providerReference: "SAME-REF",
     }, actor));
-    await expect(withTx((tx) => intentService.markExecution(tx, {
+    await expect(withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[1].id), status: "SUCCESS", providerReference: "SAME-REF",
     }, actor))).rejects.toThrow(/مسجَّل لكرتٍ آخر/);
   });
 
   it("سياسة المرجع: REQUIRED تفرضه وNONE ترفضه", async () => {
     const req = await prepared({ referencePolicy: "REQUIRED" });
-    await expect(withTx((tx) => intentService.markExecution(tx, {
+    await expect(withTx((tx) => claimAndMark(tx, {
       intentId: req.intentId, intentItemId: Number(req.items[0].id), status: "SUCCESS", providerReference: null,
     }, actor))).rejects.toThrow(/يتطلّب رقم مرجع/);
 
     const none = await prepared({ referencePolicy: "NONE" });
-    await expect(withTx((tx) => intentService.markExecution(tx, {
+    await expect(withTx((tx) => claimAndMark(tx, {
       intentId: none.intentId, intentItemId: Number(none.items[0].id), status: "SUCCESS", providerReference: "R",
     }, actor))).rejects.toThrow(/لا يستعمل مرجع/);
   });
 
-  it("الكاشير لا يتراجع عن نجاحٍ سُجِّل؛ المدير يستطيع", async () => {
+  it("نجاح الكرت نهائي: لا الكاشير ولا المدير يستطيع تحويله إلى فشل", async () => {
     const p = await prepared();
-    await withTx((tx) => intentService.markExecution(tx, {
+    await withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "SUCCESS", providerReference: "REF-Z",
     }, actor));
-    await expect(withTx((tx) => intentService.markExecution(tx, {
+    await expect(withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "FAILED", providerReference: null,
-    }, actor))).rejects.toThrow(/لا يُلغى نجاحُ كرتٍ صدر فعلاً/);
+    }, actor))).rejects.toThrow(/immutable|نهائي|نجاح|بنجاح|مغلقة/i);
 
-    await withTx((tx) => intentService.markExecution(tx, {
+    await expect(withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "FAILED", providerReference: null,
-    }, manager));
-    expect((await itemsOf(p.intentId))[0].fulfillmentStatus).toBe("FAILED");
+    }, manager))).rejects.toThrow(/immutable|نهائي|نجاح|بنجاح|مغلقة/i);
+    expect((await itemsOf(p.intentId))[0].fulfillmentStatus).toBe("SUCCESS");
   });
 
   it("فشل/عدم تأكيد أيّ بند ⇒ النيّة NEEDS_REVIEW لا EXECUTED", async () => {
     const p = await prepared({ count: 2 });
-    await withTx((tx) => intentService.markExecution(tx, {
+    await withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "SUCCESS", providerReference: "OK-1",
     }, actor));
-    await withTx((tx) => intentService.markExecution(tx, {
+    await withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[1].id), status: "UNKNOWN", providerReference: null,
     }, actor));
     expect((await intentRow(p.intentId)).status).toBe("NEEDS_REVIEW");
@@ -371,13 +453,13 @@ describe("ش٧ — تسجيل التنفيذ", () => {
 
   it("نيّة مستخدم آخر محجوبة عن الكاشير ومتاحة للمدير", async () => {
     const p = await prepared();
-    const other = { userId: 99, branchId: 1, role: "cashier" };
+    const other = { userId: 99, branchId: 1, role: "cashier" } as const;
     await db().insert(s.users).values({ id: 99, openId: "u99", name: "كاشير آخر", role: "cashier", loginMethod: "local" });
-    await expect(withTx((tx) => intentService.markExecution(tx, {
+    await expect(withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "SUCCESS", providerReference: "R-9",
     }, other))).rejects.toThrow(/لمستخدم آخر/);
 
-    await withTx((tx) => intentService.markExecution(tx, {
+    await withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "SUCCESS", providerReference: "R-9",
     }, manager));
     expect((await itemsOf(p.intentId))[0].fulfillmentStatus).toBe("SUCCESS");
@@ -407,9 +489,22 @@ describe("ش٧ — الإلغاء والانتهاء وطابور المراجع
     expect((await intentRow(p.intentId)).status).toBe("CANCELLED");
   });
 
+  it("إغلاق نافذة بعد بدء الإصدار يبقي الحجز وينقل العملية للمراجعة", async () => {
+    const p = await prepared();
+    await withTx((tx) => intentService.claimExecution(tx, {
+      intentId: p.intentId,
+      intentItemId: Number(p.items[0].id),
+      claimToken: "abandoned-provider-step",
+    }, actor));
+    const res = await withTx((tx) => intentService.cancelIntent(tx, { intentId: p.intentId }, actor));
+    expect(res.outcome).toBe("NEEDS_REVIEW");
+    expect((await intentRow(p.intentId)).status).toBe("NEEDS_REVIEW");
+    expect((await wallet(p.walletId)).reservedBalance).toBe("9500.00");
+  });
+
   it("معيار خروج ش٧: كرتٌ نُفِّذ لا يُلغى ولا يُحرَّر حجزه — ينتقل للمراجعة", async () => {
     const p = await prepared(2);
-    await withTx((tx) => intentService.markExecution(tx, {
+    await withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "SUCCESS", providerReference: "ISSUED-1",
     }, actor));
 
@@ -432,7 +527,7 @@ describe("ش٧ — الإلغاء والانتهاء وطابور المراجع
   it("الكنّاس: نيّة مهجورة بلا تنفيذ ⇒ EXPIRED وتحرير، وبتنفيذٍ ⇒ NEEDS_REVIEW بلا تحرير", async () => {
     const clean = await prepared();
     const dirty = await prepared();
-    await withTx((tx) => intentService.markExecution(tx, {
+    await withTx((tx) => claimAndMark(tx, {
       intentId: dirty.intentId, intentItemId: Number(dirty.items[0].id), status: "SUCCESS", providerReference: "REF-D",
     }, actor));
 
