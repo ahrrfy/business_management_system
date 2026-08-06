@@ -12,6 +12,14 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { users } from "../../drizzle/schema";
 import { DUMMY_STORED, verifyPassword } from "../auth/password";
+import {
+  createNativeSessionMarker,
+  issueNativeDeviceChallenge,
+  nativeSessionDisplayName,
+  verifiedNativeKeyThumbprint,
+  verifyNativeDeviceRegistration,
+  type NativeDeviceRegistration,
+} from "../auth/deviceProof";
 import { signSession } from "../auth/session";
 import { signTwoFactorTicket, verifyTwoFactorTicket } from "../auth/twoFactorTicket";
 import { getSessionCookieOptions } from "../cookies";
@@ -73,6 +81,31 @@ function getClientUserAgent(req: unknown): string | null {
   return typeof ua === "string" ? ua : null;
 }
 
+async function nativeDeviceAfterAuthentication(req: unknown): Promise<NativeDeviceRegistration | null> {
+  try {
+    return await verifyNativeDeviceRegistration(
+      req as { headers?: Record<string, unknown> },
+    );
+  } catch {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: "تعذر إثبات هوية جهاز التطبيق. أعد تسجيل الدخول من التطبيق المحدث.",
+    });
+  }
+}
+
+function inheritedNativeDeviceThumbprint(req: unknown): string | null {
+  try {
+    return verifiedNativeKeyThumbprint(req as { headers?: Record<string, unknown> });
+  } catch {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "تعذر إثبات هوية جهاز التطبيق." });
+  }
+}
+
+function sessionClientMarker(req: unknown, deviceKeyThumbprint: string | null): string | null {
+  return deviceKeyThumbprint ? createNativeSessionMarker(0) : getClientUserAgent(req);
+}
+
 /** هاش ٦ بايت (١٢ خانة hex) محايد للهوية — يربط الأحداث بلا كشف القيمة الخام. */
 function shortHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
@@ -118,6 +151,9 @@ async function registerFailedLogin(db: NonNullable<ReturnType<typeof getDb>>, us
 }
 
 export const authRouter = router({
+  /** Short-lived signed bootstrap challenge; it grants neither identity nor a session. */
+  nativeDeviceChallenge: publicProcedure.query(() => issueNativeDeviceChallenge()),
+
   me: publicProcedure.query(({ ctx }) => {
     if (!ctx.user) return null;
     // حجب الأسرار: passwordHash + سرّ TOTP المشفَّر (لا شأن للعميل به حتى مشفَّراً).
@@ -128,7 +164,7 @@ export const authRouter = router({
     // البوّابة الخادمية تماماً — بما فيه مفتاح الإيقاف TWO_FACTOR_ENFORCEMENT=off (وإلا بقيت الواجهة
     // حاجبةً رغم إيقاف الإنفاذ) وحارس isCryptoReady (لا إلزام بلا مفتاح تشفير).
     const mustEnroll2FA = twoFactorEnrollmentRequired(safe);
-    return { ...safe, mustEnroll2FA };
+    return { ...safe, mustEnroll2FA, mustEnrollTwoFactor: mustEnroll2FA };
   }),
 
   /** هل الخادم في وضع تعدّد الشركات؟ تستعملها شاشة الدخول لإظهار/إخفاء حقل "رمز الشركة"
@@ -281,18 +317,27 @@ export const authRouter = router({
         }
 
         const expiry = input.remember ? SESSION_REMEMBER_MAX_MS : SESSION_DEFAULT_MS;
+        const nativeDevice = await nativeDeviceAfterAuthentication(ctx.req);
         // سطر جلسة فردية (AUTH-03) — قبل التوقيع كي يُضمَّن معرّفه (sid) في الـJWT، فيتيح
         // لاحقاً إبطال هذا الجهاز تحديداً من شاشة «الجلسات النشطة» بلا مسّ بقية الأجهزة.
         const sessionId = await createUserSessionRecord({
           userId: user.id,
-          userAgent: getClientUserAgent(ctx.req),
+          userAgent: sessionClientMarker(ctx.req, nativeDevice?.keyThumbprint ?? null),
           ipAddress: ip,
           expiresAt: new Date(Date.now() + expiry),
         });
         // نمرّر ctx.req ⇒ يُضمَّن fp (بصمة الجهاز) في الـJWT ⇒ توكن مسروق من جهاز آخر يُرفض.
         // نمرّر companyId (إن وُجد) ⇒ الطلبات اللاحقة تُوجَّه لقاعدة هذه الشركة تلقائياً
         // (وسيط server/index.ts يستخرجه من الكوكي قبل إنشاء سياق tRPC).
-        const token = await signSession(user.id, expiry, ctx.req, undefined, companyId, sessionId);
+        const token = await signSession(
+          user.id,
+          expiry,
+          ctx.req,
+          undefined,
+          companyId,
+          sessionId,
+          nativeDevice?.keyThumbprint,
+        );
         ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: expiry });
 
         // نجاح: حدّث آخر دخول وصفّر القفل — دون إفشال الدخول إن تعثّر التحديث.
@@ -318,6 +363,8 @@ export const authRouter = router({
           username: user.username,
           role: user.role,
           mustChangePassword: user.mustChangePassword ?? false,
+          mustEnroll2FA: twoFactorEnrollmentRequired(user),
+          mustEnrollTwoFactor: twoFactorEnrollmentRequired(user),
         };
       };
 
@@ -410,13 +457,22 @@ export const authRouter = router({
 
         clearIpFailures(rateKey);
         const expiry = ticket.remember ? SESSION_REMEMBER_MAX_MS : SESSION_DEFAULT_MS;
+        const nativeDevice = await nativeDeviceAfterAuthentication(ctx.req);
         const sessionId = await createUserSessionRecord({
           userId: user.id,
-          userAgent: getClientUserAgent(ctx.req),
+          userAgent: sessionClientMarker(ctx.req, nativeDevice?.keyThumbprint ?? null),
           ipAddress: ip,
           expiresAt: new Date(Date.now() + expiry),
         });
-        const token = await signSession(user.id, expiry, ctx.req, undefined, ticket.companyId, sessionId);
+        const token = await signSession(
+          user.id,
+          expiry,
+          ctx.req,
+          undefined,
+          ticket.companyId,
+          sessionId,
+          nativeDevice?.keyThumbprint,
+        );
         ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: expiry });
 
         await db
@@ -450,6 +506,8 @@ export const authRouter = router({
           username: user.username,
           role: user.role,
           mustChangePassword: user.mustChangePassword ?? false,
+          mustEnroll2FA: twoFactorEnrollmentRequired(user),
+          mustEnrollTwoFactor: twoFactorEnrollmentRequired(user),
           // تنبيه العميل عند انخفاض رموز الاسترداد المتبقية.
           recoveryCodesRemaining: recoveryRemaining,
         };
@@ -596,9 +654,10 @@ export const authRouter = router({
       // الطلب قد ينعكس ترتيبهما بعد تقريب TIMESTAMP فيسقط السطر الجديد من الشاشة خطأً بلا هذا).
       // تظهر فوراً في شاشة «الجلسات النشطة»؛ الصفوف القديمة تختفي منها تلقائياً (بلا كتابة
       // عليها) لأن listUserSessions يُصفّي createdAt >= sessionsValidFrom.
+      const nativeDeviceThumbprint = inheritedNativeDeviceThumbprint(ctx.req);
       const sessionId = await createUserSessionRecord({
         userId: ctx.user.id,
-        userAgent: getClientUserAgent(ctx.req),
+        userAgent: sessionClientMarker(ctx.req, nativeDeviceThumbprint),
         ipAddress: getClientIp(ctx.req),
         expiresAt: new Date(Date.now() + SESSION_DEFAULT_MS),
         createdAt: new Date(validFrom.getTime() + 2000),
@@ -611,7 +670,8 @@ export const authRouter = router({
         ctx.req,
         reissueIatSec,
         getCurrentCompanyId() ?? undefined,
-        sessionId
+        sessionId,
+        nativeDeviceThumbprint ?? undefined,
       );
       ctx.res.cookie(COOKIE_NAME, token, {
         ...getSessionCookieOptions(ctx.req),
@@ -645,7 +705,7 @@ export const authRouter = router({
     const rows = await listUserSessions(ctx.user.id);
     return rows.map((r) => ({
       id: r.id,
-      userAgent: r.userAgent,
+      userAgent: nativeSessionDisplayName(r.userAgent) ?? r.userAgent,
       ipAddress: r.ipAddress,
       createdAt: r.createdAt,
       lastSeenAt: r.lastSeenAt,

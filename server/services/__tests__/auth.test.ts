@@ -63,6 +63,8 @@ describe("auth.login — قفل الحساب وتوحيد الخطأ", () => {
     const caller = appRouter.createCaller(ctx);
     const r = await caller.auth.login({ email: "admin@test.local", password: "Admin@12345" });
     expect(r.id).toBe(1);
+    expect(r.mustChangePassword).toBe(false);
+    expect(r.mustEnrollTwoFactor).toBe(r.mustEnroll2FA);
     expect(cookies["app_session_id"]).toBeTruthy();
     const u = (await db().select().from(s.users).where(eq(s.users.id, 1)).limit(1))[0];
     expect(u.failedLoginAttempts).toBe(0);
