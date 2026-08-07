@@ -137,6 +137,16 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  // ── إشعارات السوبر تطبيق الأصلية (0159–0160) ──
+  nativePushDevices_tokenHash_unique: {
+    msg: "رمز إشعارات هذا الجهاز مسجّل مسبقاً — أعد تفعيل الإشعارات من الجهاز نفسه.",
+  },
+  nativePushOutbox_eventKey_unique: {
+    msg: "حدث الإشعار سبق إدراجه للتسليم — لم يُنشأ إرسال مكرّر.",
+  },
+  appNotifications_eventKey_unique: {
+    msg: "هذا الإشعار سبق تسجيله — لم يُنشأ إشعار مكرّر.",
+  },
   // ── مسوّدات محطة خدمة الزبائن (ش٢ — 0152) ──
   uq_draft_number: { field: "رقم المسوّدة", entity: "مسوّدات المحطة", hint: "تعارضٌ نادر في ترقيم المسوّدة — أعد المحاولة." },
   uq_draft_commit_request: { msg: "مفتاح تثبيت المسوّدة مستعمَل — أعد فتح المسوّدة وحاول ثانية." },
