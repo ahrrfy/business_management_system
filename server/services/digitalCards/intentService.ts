@@ -29,6 +29,7 @@ import {
   products,
   shifts,
   suppliers,
+  users,
 } from "../../../drizzle/schema";
 import { normalizeDigitalSaleReference } from "../../../shared/digitalSale";
 import type { DB, Tx } from "../../db";
@@ -834,15 +835,67 @@ export async function listNeedsReview(db: DB, filters: { branchId?: number | nul
       branchId: digitalSaleIntents.branchId,
       branchName: branches.name,
       createdBy: digitalSaleIntents.createdBy,
+      createdByName: users.name,
+      createdByUsername: users.username,
+      shiftId: digitalSaleIntents.shiftId,
+      shiftStatus: shifts.status,
+      shiftOpenedAt: shifts.openedAt,
+      shiftClosedAt: shifts.closedAt,
       expectedTotal: digitalSaleIntents.expectedTotal,
       createdAt: digitalSaleIntents.createdAt,
       expiresAt: digitalSaleIntents.expiresAt,
       status: digitalSaleIntents.status,
       writeoffRequestedBy: digitalSaleIntents.writeoffRequestedBy,
       writeoffReason: digitalSaleIntents.writeoffReason,
+      resolutionDecision: sql<string | null>`(
+        SELECT r.decision FROM digitalSaleReviewResolutions r
+        WHERE r.intentId = digitalSaleIntents.id LIMIT 1
+      )`,
+      resolutionStatus: sql<string | null>`(
+        SELECT r.status FROM digitalSaleReviewResolutions r
+        WHERE r.intentId = digitalSaleIntents.id LIMIT 1
+      )`,
+      resolutionReason: sql<string | null>`(
+        SELECT r.reason FROM digitalSaleReviewResolutions r
+        WHERE r.intentId = digitalSaleIntents.id LIMIT 1
+      )`,
+      resolutionRequestedBy: sql<number | null>`(
+        SELECT r.requestedBy FROM digitalSaleReviewResolutions r
+        WHERE r.intentId = digitalSaleIntents.id LIMIT 1
+      )`,
       successCount: sql<number>`(
         SELECT COUNT(*) FROM digitalSaleIntentItems i
         WHERE i.intentId = digitalSaleIntents.id AND i.fulfillmentStatus = 'SUCCESS'
+      )`,
+      pendingCount: sql<number>`(
+        SELECT COUNT(*) FROM digitalSaleIntentItems i
+        WHERE i.intentId = digitalSaleIntents.id AND i.fulfillmentStatus = 'PENDING'
+      )`,
+      failedCount: sql<number>`(
+        SELECT COUNT(*) FROM digitalSaleIntentItems i
+        WHERE i.intentId = digitalSaleIntents.id AND i.fulfillmentStatus = 'FAILED'
+      )`,
+      unknownCount: sql<number>`(
+        SELECT COUNT(*) FROM digitalSaleIntentItems i
+        WHERE i.intentId = digitalSaleIntents.id AND i.fulfillmentStatus = 'UNKNOWN'
+      )`,
+      referenceCount: sql<number>`(
+        SELECT COUNT(*) FROM digitalSaleIntentItems i
+        WHERE i.intentId = digitalSaleIntents.id AND i.providerReference IS NOT NULL
+      )`,
+      openClaimCount: sql<number>`(
+        SELECT COUNT(*)
+        FROM digitalSaleExecutionClaims c
+        INNER JOIN digitalSaleIntentItems i ON i.id = c.intentItemId
+        WHERE i.intentId = digitalSaleIntents.id AND c.completedAt IS NULL
+      )`,
+      activeClaimCount: sql<number>`(
+        SELECT COUNT(*)
+        FROM digitalSaleExecutionClaims c
+        INNER JOIN digitalSaleIntentItems i ON i.id = c.intentItemId
+        WHERE i.intentId = digitalSaleIntents.id
+          AND c.completedAt IS NULL
+          AND c.expiresAt > CURRENT_TIMESTAMP(3)
       )`,
       /**
        * المحجوز فعلاً = مجموع حصص المزوّد النشطة، **لا** `expectedTotal` (سعر البيع).
@@ -859,6 +912,8 @@ export async function listNeedsReview(db: DB, filters: { branchId?: number | nul
     })
     .from(digitalSaleIntents)
     .innerJoin(branches, eq(digitalSaleIntents.branchId, branches.id))
+    .innerJoin(shifts, eq(digitalSaleIntents.shiftId, shifts.id))
+    .leftJoin(users, eq(digitalSaleIntents.createdBy, users.id))
     .where(and(...conds))
     .orderBy(asc(digitalSaleIntents.id))
     .limit(200);

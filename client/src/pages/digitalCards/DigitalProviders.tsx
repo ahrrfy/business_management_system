@@ -136,8 +136,8 @@ export default function DigitalProviders() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="مزوّدو البطاقات"
-        description="كل مزوّد يرتبط بمورّد واحد في المنظومة فترثُ الوحدة كشفَ حسابه وذمّته. نمط التسوية يحدّد المسار المالي: مسبق الدفع يستهلك من محفظة الجهاز، والآجل يرفع ذمّة المورّد لحظة البيع."
+        title="شركات ومزوّدو البطاقات"
+        description="حدد الشركة التي تصدر الكروت، وكيف ندفع لها: من رصيد مشحون مسبقاً أو كدين مستحق بعد البيع. النظام ينشئ الأثر المالي الصحيح تلقائياً."
         actions={<Button size="sm" onClick={openAdd}><Plus className="size-4" /> مزوّد جديد</Button>}
       />
 
@@ -152,8 +152,8 @@ export default function DigitalProviders() {
                 <tr>
                   <th className="p-2 text-start">المورّد</th>
                   <th className="p-2 text-start">النوع</th>
-                  <th className="p-2 text-start">نمط التسوية</th>
-                  <th className="p-2 text-start">دورية التسوية</th>
+                  <th className="p-2 text-start">طريقة دفعنا للمزوّد</th>
+                  <th className="p-2 text-start">موعد السداد</th>
                   <th className="p-2 text-start">حدّ الرصيد المنخفض</th>
                   <th className="p-2 text-center">الحالة</th>
                   <th className="p-2 text-center">إجراء</th>

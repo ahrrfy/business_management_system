@@ -20,7 +20,7 @@ const actor = { userId: 1, branchId: 1, role: "cashier" };
 const mgr = { userId: 2, branchId: 1, role: "manager" };
 /** مديرٌ ثانٍ — ردّ الخسارة يشترط معتمِداً غير الطالب (SOD، هجرة 0132). */
 const mgr2 = { userId: 3, branchId: 1, role: "manager" };
-const adminUser = { userId: 4, branchId: 1, role: "admin" };
+const ownerUser = { userId: 4, branchId: 1, role: "admin", isOwner: true };
 const DATE = "2026-07-29";
 
 const TABLES = [
@@ -40,7 +40,7 @@ async function seedBase() {
     { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
     { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
     { id: 3, openId: "u3", name: "مدير ثانٍ", role: "manager", loginMethod: "local" },
-    { id: 4, openId: "u4", name: "أدمن", role: "admin", loginMethod: "local" },
+    { id: 4, openId: "u4", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 }
@@ -423,10 +423,10 @@ describe("ش١٢ — ردّ الخسارة بفصل المهام", () => {
     expect(Number(net.profit)).toBe(-13400);
   });
 
-  it("L2: الأدمن مُستثنى من SOD", async () => {
+  it("L2: مالك النظام وحده مستثنى من الاعتماد الثاني", async () => {
     const { sale, ids } = await issued();
-    await withTx((tx) => reversalService.requestLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "سبب" }, adminUser));
-    await withTx((tx) => reversalService.lossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids }, adminUser));
+    await withTx((tx) => reversalService.requestLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "سبب" }, ownerUser));
+    await withTx((tx) => reversalService.lossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids }, ownerUser));
     const d = await reversalService.reversibleDetails(db(), sale.invoiceId);
     expect(d[0].fulfillmentStatus).toBe("LOSS_REFUND");
   });

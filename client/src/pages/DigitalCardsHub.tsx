@@ -12,15 +12,15 @@ const DigitalWallets = lazy(() => import("@/pages/digitalCards/DigitalWallets"))
 // البوّابة على مستوى المسار (RequireRole في App.tsx) تعكس digitalCardsAdminReadProcedure
 // خادمياً — لا حاجة لقيد إضافي على كل تبويب.
 const TABS: HubTab[] = [
-  { value: "dashboard", label: "الجاهزية والمتابعة", Component: DigitalDashboard },
+  { value: "dashboard", label: "ملخص التشغيل", Component: DigitalDashboard },
   // التسعير ثانياً: هو العمل اليوميّ المتكرّر، وما بعده تعريفٌ يُضبط مرّة.
-  { value: "pricing", label: "تحديث الأسعار", gate: { managerOnly: true }, Component: DigitalPricing },
+  { value: "pricing", label: "الأسعار", gate: { managerOnly: true }, Component: DigitalPricing },
   // المراجعة قبل التعريفات: عملياتٌ عالقة تنتظر قراراً، وتأخيرها يُجمّد رصيد محفظة.
-  { value: "review", label: "العمليات المتعثّرة", Component: DigitalReview },
-  { value: "offerings", label: "البطاقات والخدمات", Component: DigitalOfferings },
-  { value: "subscriptions", label: "اشتراكات العملاء", Component: DigitalSubscriptions },
-  { value: "providers", label: "شركات البطاقات", Component: DigitalProviders },
-  { value: "wallets", label: "أرصدة المزوّدين", Component: DigitalWallets },
+  { value: "review", label: "عمليات تحتاج معالجة", Component: DigitalReview },
+  { value: "offerings", label: "البطاقات والاشتراكات", Component: DigitalOfferings },
+  { value: "subscriptions", label: "مبيعات الاشتراكات", Component: DigitalSubscriptions },
+  { value: "providers", label: "المزوّدون", Component: DigitalProviders },
+  { value: "wallets", label: "أرصدة أجهزة المزوّدين", Component: DigitalWallets },
 ];
 
 export default function DigitalCardsHub() {

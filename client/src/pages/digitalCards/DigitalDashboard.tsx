@@ -48,7 +48,7 @@ const AVAIL_LABEL: Record<string, string> = {
   INSUFFICIENT_BALANCE: "رصيد المزوّد لا يكفي لبيع كرت واحد",
 };
 const INTENT_LABEL: Record<string, string> = {
-  PREPARED: "مُعدّة", EXECUTING: "قيد التنفيذ", EXECUTED: "نُفِّذت بلا فاتورة", NEEDS_REVIEW: "تحتاج مراجعة",
+  PREPARED: "بانتظار الإصدار", EXECUTING: "يجري إصدار الكرت", EXECUTED: "صدر الكرت ولم تُنشأ الفاتورة", NEEDS_REVIEW: "تحتاج معالجة",
 };
 
 export default function DigitalDashboard() {
@@ -155,7 +155,7 @@ export default function DigitalDashboard() {
         <StatCard label="إجمالي المبيعات" value={fmtAr(s?.sales ?? "0")} icon={TrendingUp} />
         {showCost && (
           <>
-            <StatCard label="حصص المزوّدين" value={fmtAr(s!.providerShare!)} />
+            <StatCard label="تكلفة الكروت المباعة" value={fmtAr(s!.providerShare!)} />
             <StatCard label="ربح المكتبة" value={fmtAr(s!.profit!)} tone="positive" />
           </>
         )}
@@ -173,7 +173,7 @@ export default function DigitalDashboard() {
           <CardContent className="flex flex-wrap gap-2 pb-4 text-sm">
             {(pending.data?.needsReview ?? 0) > 0 && (
               <span className="rounded-md border px-3 py-1.5">
-                {pending.data?.needsReview} عملية بكروت صادرة بلا فاتورة — طابور المراجعة
+                {pending.data?.needsReview} عملية كروت لم تكتمل — افتح «عمليات تحتاج معالجة»
               </span>
             )}
             {(health.data?.needsAttention.length ?? 0) > 0 && (
@@ -296,7 +296,7 @@ export default function DigitalDashboard() {
       {/* الحالات المعلّقة */}
       <Card>
         <CardHeader className="text-sm font-medium">
-          عمليات لم تُثبَّت ({pending.data?.total ?? 0})
+          عمليات بيع لم تكتمل ({pending.data?.total ?? 0})
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
@@ -306,7 +306,7 @@ export default function DigitalDashboard() {
                   <th className="p-2 text-start">رقم</th>
                   <th className="p-2 text-start">الفرع</th>
                   <th className="p-2 text-start">الحالة</th>
-                  <th className="p-2 text-start">المبلغ المتوقَّع</th>
+                  <th className="p-2 text-start">قيمة البيع</th>
                 </tr>
               </thead>
               <tbody>

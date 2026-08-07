@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 808,
+    "trpcTotal": 813,
     "byKind": {
-      "mutation": 406,
-      "query": 402
+      "mutation": 410,
+      "query": 403
     },
     "byAuthority": {
-      "module-gate": 355,
+      "module-gate": 360,
       "module-map": 247,
       "admin": 73,
       "raw-role": 59,
@@ -18,14 +18,14 @@
       "token": 1
     },
     "bySensitivity": {
-      "LOW": 401,
-      "MEDIUM": 308,
-      "HIGH": 99
+      "LOW": 402,
+      "MEDIUM": 309,
+      "HIGH": 102
     },
     "byModule": {
       "(none)": 207,
       "hr": 77,
-      "digital_cards": 70,
+      "digital_cards": 75,
       "reports": 56,
       "treasury": 52,
       "products": 48,
@@ -53,7 +53,7 @@
     "flagCounts": {
       "LOCAL_GATE": 129,
       "NO_BRANCH_SCOPE": 123,
-      "SENSITIVE_ACTION": 99,
+      "SENSITIVE_ACTION": 102,
       "ADMIN_ONLY": 76,
       "RAW_ROLE_GATE": 69,
       "UNAUTHENTICATED": 32,
@@ -65,7 +65,7 @@
     "expressMounts": 9,
     "jobs": 7,
     "routerFiles": 88,
-    "proposedPermissions": 689,
+    "proposedPermissions": 691,
     "proposedDomains": {
       "hr": 83,
       "catalog": 63,
@@ -80,10 +80,10 @@
       "marketing": 28,
       "workorders": 27,
       "purchasing": 26,
+      "digitalcards/sales": 18,
       "commissions": 17,
       "assets": 15,
-      "digitalcards/sales": 14,
-      "digitalcards/wallets": 14,
+      "digitalcards/wallets": 15,
       "superapp": 14,
       "tasks": 13,
       "storefront": 12,
@@ -4636,6 +4636,23 @@
       "surface": "trpc",
       "router": "digitalCards/salesRouter",
       "proposedPermission": "digitalcards/sales.digital_cards/sale.approve",
+      "name": "approveReviewResolution",
+      "kind": "mutation",
+      "procedure": "digitalCardsManagerProcedure",
+      "authority": "module-gate",
+      "module": "digital_cards",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: approve",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/digitalCards/salesRouter.ts:132"
+    },
+    {
+      "surface": "trpc",
+      "router": "digitalCards/salesRouter",
+      "proposedPermission": "digitalcards/sales.digital_cards/sale.approve",
       "name": "approveWriteoff",
       "kind": "mutation",
       "procedure": "digitalCardsManagerProcedure",
@@ -4647,7 +4664,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/salesRouter.ts:124"
+      "loc": "server/routers/digitalCards/salesRouter.ts:155"
     },
     {
       "surface": "trpc",
@@ -4698,7 +4715,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:112"
+      "loc": "server/routers/digitalCards/salesRouter.ts:143"
     },
     {
       "surface": "trpc",
@@ -4715,7 +4732,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:137"
+      "loc": "server/routers/digitalCards/salesRouter.ts:168"
     },
     {
       "surface": "trpc",
@@ -4800,7 +4817,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "أثر خارجي: print",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/salesRouter.ts:164"
+      "loc": "server/routers/digitalCards/salesRouter.ts:195"
     },
     {
       "surface": "trpc",
@@ -4817,7 +4834,24 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:152"
+      "loc": "server/routers/digitalCards/salesRouter.ts:183"
+    },
+    {
+      "surface": "trpc",
+      "router": "digitalCards/salesRouter",
+      "proposedPermission": "digitalcards/sales.digital_cards/sale.reject",
+      "name": "rejectReviewResolution",
+      "kind": "mutation",
+      "procedure": "digitalCardsManagerProcedure",
+      "authority": "module-gate",
+      "module": "digital_cards",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: reject",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/digitalCards/salesRouter.ts:137"
     },
     {
       "surface": "trpc",
@@ -4834,7 +4868,24 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/salesRouter.ts:130"
+      "loc": "server/routers/digitalCards/salesRouter.ts:161"
+    },
+    {
+      "surface": "trpc",
+      "router": "digitalCards/salesRouter",
+      "proposedPermission": "digitalcards/sales.digital_cards/sale.request_review_resolution",
+      "name": "requestReviewResolution",
+      "kind": "mutation",
+      "procedure": "digitalCardsManagerProcedure",
+      "authority": "module-gate",
+      "module": "digital_cards",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/digitalCards/salesRouter.ts:118"
     },
     {
       "surface": "trpc",
@@ -4851,7 +4902,24 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: writeoff",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/salesRouter.ts:118"
+      "loc": "server/routers/digitalCards/salesRouter.ts:149"
+    },
+    {
+      "surface": "trpc",
+      "router": "digitalCards/salesRouter",
+      "proposedPermission": "digitalcards/sales.digital_cards/sale.review_details",
+      "name": "reviewDetails",
+      "kind": "query",
+      "procedure": "digitalCardsAdminReadProcedure",
+      "authority": "module-gate",
+      "module": "digital_cards",
+      "level": "READ",
+      "roles": "manager|accountant|auditor",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/digitalCards/salesRouter.ts:112"
     },
     {
       "surface": "trpc",
@@ -4868,7 +4936,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:158"
+      "loc": "server/routers/digitalCards/salesRouter.ts:189"
     },
     {
       "surface": "trpc",
@@ -4975,6 +5043,23 @@
     {
       "surface": "trpc",
       "router": "digitalCards/walletsRouter",
+      "proposedPermission": "digitalcards/wallets.digital_cards/wallet.approve",
+      "name": "approveAndResolveVariance",
+      "kind": "mutation",
+      "procedure": "digitalCardsManagerProcedure",
+      "authority": "module-gate",
+      "module": "digital_cards",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: approve",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/digitalCards/walletsRouter.ts:185"
+    },
+    {
+      "surface": "trpc",
+      "router": "digitalCards/walletsRouter",
       "proposedPermission": "digitalcards/wallets.digital_cards/wallet.create",
       "name": "create",
       "kind": "mutation",
@@ -5055,7 +5140,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/digitalCards/walletsRouter.ts:184"
+      "loc": "server/routers/digitalCards/walletsRouter.ts:196"
     },
     {
       "surface": "trpc",

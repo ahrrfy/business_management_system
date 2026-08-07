@@ -59,9 +59,9 @@ const OFFERING_COLUMNS = [
   { key: "wallet", label: "المحفظة المسندة", locked: false },
   { key: "type", label: "النوع", locked: false },
   { key: "faceValue", label: "القيمة الاسمية", locked: false },
-  { key: "pricingMode", label: "قاعدة التسعير", locked: false },
-  { key: "minimumMargin", label: "أقل هامش", locked: false },
-  { key: "studentData", label: "بيانات طالب", locked: false },
+  { key: "pricingMode", label: "طريقة حساب السعر", locked: false },
+  { key: "minimumMargin", label: "أقل ربح مسموح", locked: false },
+  { key: "studentData", label: "بيانات الطالب مطلوبة", locked: false },
   { key: "status", label: "الحالة", locked: false },
   { key: "actions", label: "إجراء", locked: true },
 ] as const;
@@ -425,7 +425,7 @@ export default function DigitalOfferings() {
     <div className="space-y-4">
       <PageHeader
         title="البطاقات والاشتراكات"
-        description="عرّف البطاقة باسمها ومزوّدها وسعرها الأول. تحفظ التكلفة وسعر البيع كسجل يومي مستقل، ولا تظهر البطاقة للكاشير قبل تثبيت السعر ونشره."
+        description="أضف البطاقة أو الاشتراك، وحدد المزوّد والجهاز والرصيد المستخدم للبيع. لا تظهر للكاشير حتى يكتمل الربط ويُنشر سعر صالح."
         actions={
           <Button
             size="sm"
@@ -542,9 +542,9 @@ export default function DigitalOfferings() {
                   {columnVisible("wallet") && <th className="p-2 text-start">المحفظة المسندة</th>}
                   {columnVisible("type") && <th className="p-2 text-start">النوع</th>}
                   {columnVisible("faceValue") && <th className="p-2 text-start">القيمة الاسمية</th>}
-                  {columnVisible("pricingMode") && <th className="p-2 text-start">قاعدة التسعير</th>}
-                  {columnVisible("minimumMargin") && <th className="p-2 text-start">أقلّ هامش</th>}
-                  {columnVisible("studentData") && <th className="p-2 text-center">بيانات طالب</th>}
+                  {columnVisible("pricingMode") && <th className="p-2 text-start">طريقة حساب السعر</th>}
+                  {columnVisible("minimumMargin") && <th className="p-2 text-start">أقل ربح مسموح</th>}
+                  {columnVisible("studentData") && <th className="p-2 text-center">بيانات الطالب مطلوبة</th>}
                   {columnVisible("status") && <th className="p-2 text-center">الحالة</th>}
                   <th className="p-2 text-center">إجراء</th>
                 </tr>

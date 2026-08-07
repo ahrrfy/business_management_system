@@ -13,7 +13,7 @@ import { offeringService, pricingService, providerService } from "../digitalCard
  * الثوابت المحروسة:
  *   B1 — تغيّرٌ <٥٠٪ يُنشَر بلا اعتمادٍ ثانٍ (لا نُعطّل العمل اليوميّ).
  *   B2 — تغيّرٌ ≥٥٠٪ يوقف النشر حتى يعتمده مديرٌ آخر.
- *   B3 — SOD: لا يعتمد مُنشئ المسودّة (admin مُستثنى).
+ *   B3 — SOD: لا يعتمد مُنشئ المسودّة، ومالك النظام وحده مستثنى.
  *   B4 — **تعديل المسودّة بعد الاعتماد يُبطله** — لا يُعتمَد سعرٌ ثمّ يُنشَر غيره.
  *        ويشمل ذلك `copyPrevious` لا `saveDraft` وحده.
  *   B5 — بلا سعرٍ نافذ (أوّل تسعير) ليس تغييراً كبيراً؛ والحصة النافذة صفر تُعدّ كبيرة.
@@ -23,6 +23,7 @@ import { offeringService, pricingService, providerService } from "../digitalCard
 const mgrA = { userId: 2, branchId: 1, role: "manager" };
 const mgrB = { userId: 3, branchId: 1, role: "manager" };
 const admin = { userId: 4, branchId: 1, role: "admin" };
+const owner = { userId: 5, branchId: 1, role: "admin", isOwner: true };
 
 const TABLES = [
   "digitalSaleExecutionClaims", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
@@ -40,6 +41,7 @@ async function seedBase() {
     { id: 2, openId: "u2", name: "مدير أ", role: "manager", loginMethod: "local" },
     { id: 3, openId: "u3", name: "مدير ب", role: "manager", loginMethod: "local" },
     { id: 4, openId: "u4", name: "أدمن", role: "admin", loginMethod: "local" },
+    { id: 5, openId: "u5", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
 }
 
@@ -192,6 +194,20 @@ describe("§٧.١ — الاعتماد وفصل المهام", () => {
     await expect(
       withTx((tx) => pricingService.approveBigChange(tx, { batchId }, admin)),
     ).rejects.toThrow(/مديرٌ آخر/);
+  });
+
+  it("B3: مالك النظام يعتمد وينشر مسودته الكبيرة بنفسه", async () => {
+    const providerId = await mkProvider();
+    const offeringId = await mkOffering(providerId);
+    await publishNow(providerId, "2026-07-30", [{ offeringId, providerShare: "10000" }]);
+    const batchId = await draft(providerId, "2026-07-31", [{ offeringId, providerShare: "20000" }], owner);
+
+    await expect(
+      withTx((tx) => pricingService.approveBigChange(tx, { batchId }, owner)),
+    ).resolves.toBeTruthy();
+    await expect(
+      withTx((tx) => pricingService.publish(tx, { batchId }, owner)),
+    ).resolves.toBeTruthy();
   });
 
   it("الاعتماد بلا تغييرٍ كبير مرفوض", async () => {

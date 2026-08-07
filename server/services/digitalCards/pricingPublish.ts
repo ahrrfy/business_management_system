@@ -8,6 +8,7 @@ import {
   digitalPriceBatches,
   digitalPriceVersions,
   digitalProviders,
+  users,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import type { Actor } from "../tx";
@@ -144,10 +145,17 @@ export async function publish(
       });
     }
     if (approvedBy === Number(batch.createdBy)) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "اعتماد التغيير الكبير جاء من مُنشئ المسودّة نفسه — يلزم مديرٌ آخر",
-      });
+      const [approver] = await tx
+        .select({ isOwner: users.isOwner })
+        .from(users)
+        .where(eq(users.id, approvedBy))
+        .limit(1);
+      if (!approver?.isOwner) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "اعتماد التغيير الكبير جاء من مُنشئ المسودّة نفسه — يلزم مديرٌ آخر، ويُستثنى مالك النظام",
+        });
+      }
     }
 
     const snapshot = approvalSnapshotFor(
