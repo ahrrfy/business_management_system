@@ -15,12 +15,13 @@ import {
 import { actorOf, requireDb, scopedBranchOf } from "./shared";
 
 const studentSnapshotSchema = z.object({
-  customerId: z.number().int().positive().nullish(),
   studentName: z.string().min(1).max(200),
   studentPhone: z.string().min(1).max(25),
-  guardianPhone: z.string().min(1).max(25),
-  address: z.string().min(1).max(500),
-  mode: z.enum(["UPDATE_PROFILE", "INVOICE_ONLY"]),
+  // Backward-compatible optional fields from the retired student-profile flow.
+  customerId: z.number().int().positive().nullish(),
+  guardianPhone: z.string().max(25).nullish(),
+  address: z.string().max(500).nullish(),
+  mode: z.enum(["UPDATE_PROFILE", "INVOICE_ONLY"]).optional(),
 });
 
 export const salesRouter = router({
@@ -39,6 +40,7 @@ export const salesRouter = router({
               offeringId: z.number().int().positive(),
               priceVersionId: z.number().int().positive(),
               expectedSellPrice: nonNegMoneyString,
+              providerReference: z.string().min(1).max(120),
               student: studentSnapshotSchema.nullish(),
             }),
           )

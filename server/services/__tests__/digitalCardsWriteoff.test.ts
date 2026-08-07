@@ -94,14 +94,14 @@ async function stuckIntent(offeringId: number, priced: { pv: number; price: stri
   const r = await withTx((tx) => intentService.prepare(tx, {
     clientRequestId: `woff-req-${seq}-${Math.random().toString(36).slice(2, 8)}`,
     branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: `fp-${seq}`,
-    lines: [{ lineKey: `lk-${seq}`, offeringId, priceVersionId: priced.pv, expectedSellPrice: priced.price }],
+    lines: [{ lineKey: `lk-${seq}`, offeringId, priceVersionId: priced.pv, expectedSellPrice: priced.price, providerReference: `REF-WOFF-${seq}` }],
   }, cashier));
   const [item] = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
   await withTx(async (tx) => {
     const claimToken = `writeoff-claim-${seq}-${item.id}`;
     await intentService.claimExecution(tx, { intentId: r.intentId, intentItemId: Number(item.id), claimToken }, cashier);
     return intentService.markExecution(tx, {
-      intentId: r.intentId, intentItemId: Number(item.id), claimToken, status: "SUCCESS", providerReference: `REF-${seq}`,
+      intentId: r.intentId, intentItemId: Number(item.id), claimToken, status: "SUCCESS", providerReference: item.providerReference,
     }, cashier);
   });
   await db().update(s.digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(s.digitalSaleIntents.id, r.intentId));
@@ -164,7 +164,7 @@ describe("الشطب — الطلب (بلا أثرٍ ماليّ)", () => {
     // نيّةٌ مثبَّتة (PREPARED هنا كافية للدلالة على «خارج المراجعة»)
     const other = await withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "woff-other-1", branchId: 1, shiftId: 1, paymentMethod: "CASH",
-      cartFingerprint: "fp-other", lines: [{ lineKey: "lk-other", offeringId, priceVersionId: priced.get(offeringId)!.pv, expectedSellPrice: priced.get(offeringId)!.price }],
+      cartFingerprint: "fp-other", lines: [{ lineKey: "lk-other", offeringId, priceVersionId: priced.get(offeringId)!.pv, expectedSellPrice: priced.get(offeringId)!.price, providerReference: "REF-WOFF-OTHER" }],
     }, cashier));
     await expect(
       withTx((tx) => writeoffService.requestWriteoff(tx, { intentId: other.intentId, reason: "محاولة" }, manager)),
@@ -180,7 +180,7 @@ describe("الشطب — الطلب (بلا أثرٍ ماليّ)", () => {
 
     const r = await withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "woff-none-1", branchId: 1, shiftId: 1, paymentMethod: "CASH",
-      cartFingerprint: "fp-none", lines: [{ lineKey: "lk-none", offeringId, priceVersionId: p.pv, expectedSellPrice: p.price }],
+      cartFingerprint: "fp-none", lines: [{ lineKey: "lk-none", offeringId, priceVersionId: p.pv, expectedSellPrice: p.price, providerReference: "REF-WOFF-NONE" }],
     }, cashier));
     await db().update(s.digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(s.digitalSaleIntents.id, r.intentId));
 
@@ -280,29 +280,31 @@ describe("الشطب — الاعتماد (SOD وكلّ الأثر المالي)
       paymentMethod: "CASH",
       cartFingerprint: "partial-success",
       lines: [
-        { lineKey: "partial-ok", offeringId, priceVersionId: price.pv, expectedSellPrice: price.price },
-        { lineKey: "partial-failed", offeringId, priceVersionId: price.pv, expectedSellPrice: price.price },
+        { lineKey: "partial-ok", offeringId, priceVersionId: price.pv, expectedSellPrice: price.price, providerReference: "PARTIAL-OK" },
+        { lineKey: "partial-failed", offeringId, priceVersionId: price.pv, expectedSellPrice: price.price, providerReference: "PARTIAL-FAILED" },
       ],
     }, cashier));
     const intentItems = await db().select().from(s.digitalSaleIntentItems)
       .where(eq(s.digitalSaleIntentItems.intentId, prepared.intentId));
+    const okItem = intentItems.find((item) => item.lineKey === "partial-ok")!;
+    const failedItem = intentItems.find((item) => item.lineKey === "partial-failed")!;
     await withTx(async (tx) => {
-      const claimToken = `writeoff-partial-ok-${intentItems[0].id}`;
-      await intentService.claimExecution(tx, { intentId: prepared.intentId, intentItemId: Number(intentItems[0].id), claimToken }, cashier);
+      const claimToken = `writeoff-partial-ok-${okItem.id}`;
+      await intentService.claimExecution(tx, { intentId: prepared.intentId, intentItemId: Number(okItem.id), claimToken }, cashier);
       return intentService.markExecution(tx, {
         intentId: prepared.intentId,
-        intentItemId: Number(intentItems[0].id),
+        intentItemId: Number(okItem.id),
         claimToken,
         status: "SUCCESS",
         providerReference: "PARTIAL-OK",
       }, cashier);
     });
     await withTx(async (tx) => {
-      const claimToken = `writeoff-partial-failed-${intentItems[1].id}`;
-      await intentService.claimExecution(tx, { intentId: prepared.intentId, intentItemId: Number(intentItems[1].id), claimToken }, cashier);
+      const claimToken = `writeoff-partial-failed-${failedItem.id}`;
+      await intentService.claimExecution(tx, { intentId: prepared.intentId, intentItemId: Number(failedItem.id), claimToken }, cashier);
       return intentService.markExecution(tx, {
         intentId: prepared.intentId,
-        intentItemId: Number(intentItems[1].id),
+        intentItemId: Number(failedItem.id),
         claimToken,
         status: "FAILED",
         providerReference: null,

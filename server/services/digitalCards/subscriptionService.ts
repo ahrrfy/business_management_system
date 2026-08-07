@@ -4,8 +4,11 @@
  */
 import { and, desc, eq, gte, inArray, lte, ne } from "drizzle-orm";
 import {
+  branches,
+  digitalSaleDetails,
   digitalSubscriptionContracts,
   digitalOfferings,
+  invoices,
   products,
 } from "../../../drizzle/schema";
 import type { DB, Tx } from "../../db";
@@ -130,4 +133,38 @@ export async function listContracts(
           ? "ACTIVE"
           : "EXPIRED",
   }));
+}
+
+/**
+ * سجل مبيعات الاشتراكات فقط. لا نحسب صلاحية أو انتهاء أو متبقياً؛ تلك مسؤولية المنصة التعليمية.
+ */
+export async function listSubscriptionSales(
+  db: DB,
+  filters: { branchId?: number | null } = {},
+) {
+  const conditions = [eq(digitalOfferings.offeringType, "EDUCATIONAL_SUBSCRIPTION")];
+  if (filters.branchId != null) conditions.push(eq(invoices.branchId, filters.branchId));
+
+  return db
+    .select({
+      id: digitalSaleDetails.id,
+      invoiceId: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      invoiceDate: invoices.invoiceDate,
+      branchId: invoices.branchId,
+      branchName: branches.name,
+      offeringName: products.name,
+      providerReference: digitalSaleDetails.providerReference,
+      studentName: digitalSaleDetails.studentNameSnapshot,
+      studentPhone: digitalSaleDetails.studentPhoneSnapshot,
+      sellPrice: digitalSaleDetails.sellPriceSnapshot,
+      fulfillmentStatus: digitalSaleDetails.fulfillmentStatus,
+    })
+    .from(digitalSaleDetails)
+    .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
+    .innerJoin(branches, eq(invoices.branchId, branches.id))
+    .innerJoin(digitalOfferings, eq(digitalSaleDetails.offeringId, digitalOfferings.id))
+    .innerJoin(products, eq(digitalOfferings.productId, products.id))
+    .where(and(...conditions))
+    .orderBy(desc(invoices.invoiceDate), desc(digitalSaleDetails.id));
 }

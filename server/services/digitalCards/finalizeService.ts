@@ -2,7 +2,7 @@
  * التثبيت المالي للبيع الرقميّ (ش٨) — **معاملة واحدة، لا حالة وسطية**.
  *
  * الثابت الحاكم (معيار خروج ش٨): بين الفاتورة والتسوية والتفاصيل لا توجد حالة وسطية. أي فشلٍ في
- * أيّ خطوة يُرجِع كل شيء: الفاتورة والقبض وحركة المحفظة وذمّة المزوّد وسجلّ التفاصيل وملفّ الطالب.
+ * أيّ خطوة يُرجِع كل شيء: الفاتورة والقبض وحركة المحفظة وذمّة المزوّد وسجلّ التفاصيل ولقطة بيانات الطالب.
  *
  * المعالجة المحاسبية (§٦):
  *   • قيد `SALE` الاعتيادي بـ revenue = سعر البيع، cost = حصة المزوّد، profit = الهامش —
@@ -20,7 +20,6 @@ import {
   digitalOfferings,
   digitalProviders,
   digitalSaleDetails,
-  digitalSubscriptionContracts,
   digitalSaleIntentItems,
   digitalSaleIntents,
   digitalWalletReservations,
@@ -29,6 +28,7 @@ import {
   invoices,
   products,
 } from "../../../drizzle/schema";
+import { digitalSaleReferenceLabel } from "../../../shared/digitalSale";
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
@@ -37,8 +37,6 @@ import { createSaleInTx, DIGITAL_SALE_CAPABILITY } from "../sale/create";
 import type { PaymentMethod } from "../sale/types";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
-import { commitStudent, type StudentSnapshot } from "./studentService";
-import { expiresAfter, renewalAnchor } from "./subscriptionService";
 
 export interface FinalizeInput {
   intentId: number;
@@ -53,6 +51,7 @@ export interface FinalizeInput {
 /** لقطة كرتٍ للطباعة (§١٢.١) — **بلا حصة مزوّد ولا ربح ولا رصيد**؛ الحقول ببساطة غير موجودة. */
 export interface DigitalPrintDetail {
   lineName: string;
+  referenceLabel: string;
   providerReference: string | null;
   studentName: string | null;
   studentPhone: string | null;
@@ -169,7 +168,6 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       variantId: number;
       productUnitId: number;
       offeringType: string;
-      subscriptionDurationDays: number | null;
     }
   >();
   for (const it of items) {
@@ -179,7 +177,6 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
         variantId: digitalOfferings.variantId,
         productUnitId: digitalOfferings.productUnitId,
         offeringType: digitalOfferings.offeringType,
-        subscriptionDurationDays: digitalOfferings.subscriptionDurationDays,
       })
       .from(digitalOfferings)
       .where(eq(digitalOfferings.id, Number(it.offeringId)))
@@ -192,7 +189,6 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       variantId: Number(row.variantId),
       productUnitId: Number(row.productUnitId),
       offeringType: row.offeringType,
-      subscriptionDurationDays: row.subscriptionDurationDays,
     });
   }
 
@@ -267,24 +263,7 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
     });
   }
 
-  /* ٦. إنشاء/تحديث ملفّات الطلاب وفق الوضع المحفوظ في اللقطة. */
-  const studentByItem = new Map<number, number>();
-  for (const it of items) {
-    if (!it.studentNameSnapshot) continue;
-    const snap: StudentSnapshot = {
-      customerId: it.studentCustomerId != null ? Number(it.studentCustomerId) : null,
-      studentName: it.studentNameSnapshot,
-      studentPhone: it.studentPhoneSnapshot ?? "",
-      guardianPhone: it.guardianPhoneSnapshot ?? "",
-      address: it.studentAddressSnapshot ?? "",
-      // اللقطة أُخذت وقت الإضافة للسلة؛ وضعها محفوظٌ ضمناً: ملفٌّ مرتبط ⇒ تحديث، وإلا إنشاء.
-      mode: "UPDATE_PROFILE",
-    };
-    const res = await commitStudent(tx, snap, actor);
-    studentByItem.set(Number(it.id), res.customerId);
-  }
-
-  /* ٧. نواة البيع داخل المعاملة نفسها — تكلفة كل سطر مفروضة من النيّة لا من costPrice. */
+  /* ٦. نواة البيع داخل المعاملة نفسها — بيانات الطالب لقطة بيع فقط، بلا عقد أو ملف تشغيلي. */
   const sale = await createSaleInTx(
     tx,
     {
@@ -438,7 +417,7 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       profitSnapshot: it.marginSnapshot,
       providerReference: it.providerReference,
       fulfillmentStatus: "ISSUED",
-      studentCustomerId: studentByItem.get(Number(it.id)) ?? null,
+      studentCustomerId: null,
       studentNameSnapshot: it.studentNameSnapshot,
       studentPhoneSnapshot: it.studentPhoneSnapshot,
       guardianPhoneSnapshot: it.guardianPhoneSnapshot,
@@ -446,31 +425,6 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       walletTransactionId: walletTxId,
     });
 
-    if (m.offeringType === "EDUCATIONAL_SUBSCRIPTION") {
-      const studentCustomerId = studentByItem.get(Number(it.id));
-      const durationDays = m.subscriptionDurationDays;
-      if (studentCustomerId == null || durationDays == null || durationDays < 1) {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "اشتراك تعليمي بلا طالب أو مدة — أوقف البيع وراجِع تعريف الاشتراك",
-        });
-      }
-      const anchor = await renewalAnchor(tx, Number(it.offeringId), studentCustomerId);
-      const startsAt = anchor.startsAt;
-      await tx.insert(digitalSubscriptionContracts).values({
-        offeringId: Number(it.offeringId),
-        branchId: Number(intent.branchId),
-        invoiceId: sale.invoiceId,
-        invoiceItemId,
-        studentCustomerId,
-        studentNameSnapshot: it.studentNameSnapshot ?? "طالب",
-        durationDays,
-        startsAt,
-        expiresAt: expiresAfter(startsAt, durationDays),
-        previousContractId: anchor.previousContractId,
-        createdBy: actor.userId,
-      });
-    }
   }
 
   /* ١٠. ربط النيّة بالفاتورة وجعلها FINALIZED. */
@@ -535,6 +489,7 @@ async function buildPrintDetails(runner: DB | Tx, invoiceId: number, branchId?: 
   const rows = await runner
     .select({
       lineName: products.name,
+      offeringType: digitalOfferings.offeringType,
       providerReference: digitalSaleDetails.providerReference,
       studentName: digitalSaleDetails.studentNameSnapshot,
       studentPhone: digitalSaleDetails.studentPhoneSnapshot,
@@ -552,6 +507,7 @@ async function buildPrintDetails(runner: DB | Tx, invoiceId: number, branchId?: 
     .orderBy(asc(digitalSaleDetails.id));
   return rows.map((r) => ({
     lineName: r.lineName,
+    referenceLabel: digitalSaleReferenceLabel(r.offeringType),
     providerReference: r.providerReference,
     studentName: r.studentName,
     studentPhone: r.studentPhone,
@@ -573,6 +529,8 @@ export async function getSaleDetails(db: DB, invoiceId: number, branchId?: numbe
       id: digitalSaleDetails.id,
       invoiceItemId: digitalSaleDetails.invoiceItemId,
       offeringId: digitalSaleDetails.offeringId,
+      offeringName: products.name,
+      offeringType: digitalOfferings.offeringType,
       settlementMode: digitalSaleDetails.settlementModeSnapshot,
       sellPrice: digitalSaleDetails.sellPriceSnapshot,
       providerShare: digitalSaleDetails.providerShareSnapshot,
@@ -580,10 +538,13 @@ export async function getSaleDetails(db: DB, invoiceId: number, branchId?: numbe
       providerReference: digitalSaleDetails.providerReference,
       fulfillmentStatus: digitalSaleDetails.fulfillmentStatus,
       studentName: digitalSaleDetails.studentNameSnapshot,
+      studentPhone: digitalSaleDetails.studentPhoneSnapshot,
       walletTransactionId: digitalSaleDetails.walletTransactionId,
     })
     .from(digitalSaleDetails)
     .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
+    .innerJoin(digitalOfferings, eq(digitalSaleDetails.offeringId, digitalOfferings.id))
+    .innerJoin(products, eq(digitalOfferings.productId, products.id))
     .where(and(
       eq(digitalSaleDetails.invoiceId, invoiceId),
       ...(branchId == null ? [] : [eq(invoices.branchId, branchId)]),

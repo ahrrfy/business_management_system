@@ -26,7 +26,7 @@ import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, get
 import { getOfflineProfile, saveOfflineProfile } from "@/lib/offline/pinLock";
 import { getMeta, setMeta } from "@/lib/offline/db";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
-import { DigitalCardsPickerDialog, type ConfirmedCard } from "@/components/pos/DigitalCardsPickerDialog";
+import { DigitalCardsPickerDialog, type ConfirmedCard, type DigitalSaleCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import type { StudentSnapshot } from "@/components/pos/StudentDetailsDialog";
 import type { DigitalReceiptDetail } from "@/lib/printing/digitalReceiptLines";
@@ -52,13 +52,15 @@ type PosRow = RouterOutputs["catalog"]["posList"][number];
 /** وسم سطر بطاقة رقمية (ش٥). كل مثيل مستقلّ حتى لو تكرّرت الفئة نفسها في السلة. */
 type DigitalLineMeta = {
   offeringId: number;
+  providerId: number;
   priceVersionId: number;
-  /** مفتاح السطر (UUID) — مرجع التنفيذ الخارجيّ المستقلّ لهذا الكرت بعينه. */
+  /** مفتاح داخلي (UUID) يميّز مثيل البطاقة في السلة عن رقم عملية المزوّد. */
   lineKey: string;
   /** هوية عدديّة محليّة للسلة فقط (سالبة كي لا تصطدم بـproductUnitId). */
   lineId: number;
   offeringType: string;
   providerName: string;
+  providerReference: string;
   requiresStudentData: boolean;
   /** لقطة بيانات الطالب (ش٦) — تُثبَّت داخل معاملة البيع لاحقاً، لا عند الإضافة للسلة. */
   student?: StudentSnapshot;
@@ -513,8 +515,16 @@ export default function POS() {
     discardLegacyPosDrafts(localStorage, branchId);
     const saved = loadPosTabsDraft<POSTab>(localStorage, draftScope);
     if (saved) {
+      const hadLegacyDigital = saved.tabs.some((t) => t.cart.some((c) => c.digital && (!c.digital.providerReference || !c.digital.providerId)));
       // المسوّدات الأقدم لا تحمل paymentRef/dueDate — تُستكمل بفراغ كي لا تُرسَل undefined.
-      setTabs(saved.tabs.map((t) => ({ ...t, clientRequestId: t.clientRequestId ?? newClientRequestId(), paymentRef: t.paymentRef ?? "", dueDate: t.dueDate ?? "" })));
+      setTabs(saved.tabs.map((t) => ({
+        ...t,
+        cart: t.cart.filter((c) => !c.digital || (!!c.digital.providerReference && !!c.digital.providerId)),
+        clientRequestId: t.clientRequestId ?? newClientRequestId(),
+        paymentRef: t.paymentRef ?? "",
+        dueDate: t.dueDate ?? "",
+      })));
+      if (hadLegacyDigital) notify.warn("أُزيلت كروت قديمة غير مكتملة من المسودة", "أعد إضافتها مع رقم العملية قبل البيع.");
       setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
     } else {
       setTabs([createTab(1, "طلب 1")]);
@@ -659,7 +669,7 @@ export default function POS() {
   /** بصمة سلّة الكروت: تربط النيّة بمحتواها فيُرفض إعادة استعمال المفتاح بسلّةٍ أخرى. */
   function digitalCartFingerprint(): string {
     const basis = digitalLines
-      .map((c) => `${c.digital!.lineKey}:${c.digital!.offeringId}:${c.digital!.priceVersionId}:${c.row.price}`)
+      .map((c) => `${c.digital!.lineKey}:${c.digital!.offeringId}:${c.digital!.priceVersionId}:${c.digital!.providerReference}:${c.row.price}`)
       .sort()
       .join("|");
     let h = 0;
@@ -731,13 +741,14 @@ export default function POS() {
         offeringId: c.digital!.offeringId,
         priceVersionId: c.digital!.priceVersionId,
         expectedSellPrice: String(c.row.price ?? "0"),
+        providerReference: c.digital!.providerReference,
         student: c.digital!.student ?? null,
       })),
     });
   }
 
   /** يُضيف **مثيلاً مستقلاً** دائماً — لا دمج مع سطر موجود من الفئة نفسها (§٨.٣). */
-  function addDigitalCard(card: ConfirmedCard, student?: StudentSnapshot) {
+  function addDigitalCard(card: ConfirmedCard, capture: DigitalSaleCapture) {
     if (receipt) setReceipt(null);
     if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null });
     // المعرّف يُشتقّ من **السلة نفسها** لا من عدّاد في ref: السلة تبقى عبر إعادة تركيب الصفحة
@@ -786,13 +797,15 @@ export default function POS() {
         qty: 1,
         digital: {
           offeringId: card.offeringId,
+          providerId: card.providerId,
           priceVersionId: card.priceVersionId,
           lineKey: crypto.randomUUID(),
           lineId,
           offeringType: card.offeringType,
           providerName: card.providerName,
+          providerReference: capture.providerReference,
           requiresStudentData: card.requiresStudentData,
-          student,
+          student: capture.student,
         },
       },
     ]);
@@ -1418,6 +1431,10 @@ export default function POS() {
         offline={offline}
         onClose={() => setCardsOpen(false)}
         onPick={addDigitalCard}
+        existingReferences={digitalLines.map((c) => ({
+          providerId: c.digital!.providerId,
+          providerReference: c.digital!.providerReference,
+        }))}
       />
 
       {/* خطوات التنفيذ الخارجيّ (ش٧) — كل كرت يُسجَّل نجاحه لحظةَ إصداره. */}
@@ -2036,6 +2053,14 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                           ? `تعليمي — ${c.digital.student.studentName}`
                           : c.digital.requiresStudentData ? "اشتراك تعليمي" : "كرت رقمي"}
                       </span>
+                    )}
+                    {c.digital && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 12px", marginTop: 5, fontSize: 12.5, fontWeight: 800, color: C.fg }}>
+                        <span dir="ltr">
+                          {c.digital.requiresStudentData ? "ID الاشتراك" : "ID العملية"}: {c.digital.providerReference}
+                        </span>
+                        {c.digital.student && <span>{c.digital.student.studentName} · <span dir="ltr">{c.digital.student.studentPhone}</span></span>}
+                      </div>
                     )}
                     {openingSellable && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>

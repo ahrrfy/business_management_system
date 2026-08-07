@@ -6,7 +6,7 @@ import { truncateTables } from "./__testUtils__";
 import { createSupplier } from "../supplierService";
 import { withTx } from "../tx";
 import {
-  finalizeService, intentService, offeringService, pricingService, providerService, walletService,
+  finalizeService, intentService, offeringService, pricingService, providerService, subscriptionService, walletService,
 } from "../digitalCards";
 
 /**
@@ -84,7 +84,7 @@ async function prepareAndExecute(
     branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: `fp${id}`,
     lines: lines.map((l, i) => ({
       lineKey: `lk-${id}-${i}`, offeringId: l.offeringId, priceVersionId: l.priced.pv,
-      expectedSellPrice: l.priced.price, student: l.student ?? null,
+      expectedSellPrice: l.priced.price, providerReference: `REF-FIN-${id}-${i}`, student: l.student ?? null,
     })),
   }, actor));
   const items = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
@@ -94,7 +94,7 @@ async function prepareAndExecute(
       await intentService.claimExecution(tx, { intentId: r.intentId, intentItemId: Number(it.id), claimToken }, actor);
       return intentService.markExecution(tx, {
         intentId: r.intentId, intentItemId: Number(it.id), claimToken, status: "SUCCESS",
-        providerReference: `REF-${id}-${it.id}`,
+        providerReference: it.providerReference,
       }, actor);
     });
   }
@@ -196,12 +196,17 @@ describe("ش٨ — البيع من مزوّد آجل (§٦.٣)", () => {
 
     // لا حركة محفظة للآجل.
     expect((await db().select().from(s.digitalWalletTransactions)).length).toBe(0);
-    // والطالب أُنشئ ضمن نفس المعاملة.
-    expect((await db().select().from(s.studentProfiles)).length).toBe(1);
-    const [contract] = await db().select().from(s.digitalSubscriptionContracts);
-    expect(contract.durationDays).toBe(30);
-    expect(contract.studentNameSnapshot).toBe("مريم");
-    expect(contract.previousContractId).toBeNull();
+    // النظام يبيع الاشتراك ويحفظ لقطة الطالب فقط؛ لا ينشئ ملفاً أو عقد انتهاء/تجديد.
+    expect((await db().select().from(s.studentProfiles)).length).toBe(0);
+    expect((await db().select().from(s.digitalSubscriptionContracts)).length).toBe(0);
+    const [detail] = await db().select().from(s.digitalSaleDetails).where(eq(s.digitalSaleDetails.invoiceId, res.invoiceId));
+    expect(detail.studentNameSnapshot).toBe("مريم");
+    expect(detail.studentPhoneSnapshot).toBe("+9647701234567");
+    const [saleRow] = await subscriptionService.listSubscriptionSales(db(), { branchId: 1 });
+    expect(saleRow.invoiceId).toBe(res.invoiceId);
+    expect(saleRow.providerReference).toMatch(/^REF-FIN-/);
+    expect(saleRow.studentName).toBe("مريم");
+    expect(saleRow.studentPhone).toBe("+9647701234567");
   });
 
   it("كرتان لنفس المزوّد الآجل في فاتورة واحدة ⇒ استحقاق **واحد مجمَّع**", async () => {
@@ -286,7 +291,7 @@ describe("ش٨ — الحراسة والذرّية والidempotency", () => {
     const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
     const r = await withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "prep-notdone-1", branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: "fpX",
-      lines: [{ lineKey: "lk1", offeringId, priceVersionId: priced.get(offeringId)!.pv, expectedSellPrice: priced.get(offeringId)!.price }],
+      lines: [{ lineKey: "lk1", offeringId, priceVersionId: priced.get(offeringId)!.pv, expectedSellPrice: priced.get(offeringId)!.price, providerReference: "REF-NOT-DONE" }],
     }, actor));
 
     await expect(withTx((tx) => finalizeService.finalize(tx, {

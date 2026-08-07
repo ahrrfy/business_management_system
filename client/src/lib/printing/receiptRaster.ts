@@ -247,14 +247,15 @@ export async function receiptToCanvas(
     dashedLine(ctx, y);
     y += 30;
     for (const block of digitalBlocks) {
-      ctx.font = "700 20px Cairo, sans-serif";
+      ctx.font = "900 21px Cairo, sans-serif";
       ctx.textAlign = "right";
       ctx.fillText(block.lineName, W - PAD, y);
       y += 26;
       for (const row of block.rows) {
-        ctx.font = "600 19px Cairo, sans-serif";
+        ctx.font = "700 19px Cairo, sans-serif";
         ctx.textAlign = "right";
         ctx.fillText(`${row.label}:`, W - PAD, y);
+        ctx.font = "900 19px Cairo, sans-serif";
         ctx.textAlign = "left";
         ctx.fillText(row.value, PAD, y);
         y += 25;

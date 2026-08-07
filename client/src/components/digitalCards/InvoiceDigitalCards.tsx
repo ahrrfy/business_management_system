@@ -19,6 +19,7 @@ import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { digitalSaleReferenceLabel } from "@shared/digitalSale";
 import { RotateCcw } from "lucide-react";
 import { useState } from "react";
 
@@ -76,24 +77,31 @@ export function InvoiceDigitalCards({ invoiceId }: { invoiceId: number }) {
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
+                  <th className="p-2 text-start">البطاقة / الاشتراك</th>
                   <th className="p-2 text-start">التسوية</th>
                   <th className="p-2 text-start">سعر البيع</th>
                   <th className="p-2 text-start">حصة المزوّد</th>
                   <th className="p-2 text-start">الربح</th>
-                  <th className="p-2 text-start">مرجع التنفيذ</th>
+                  <th className="p-2 text-start">رقم العملية / الاشتراك</th>
                   <th className="p-2 text-start">الطالب</th>
+                  <th className="p-2 text-start">هاتف الطالب</th>
                   <th className="p-2 text-center">الحالة</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id} className="border-t">
+                    <td className="p-2 font-medium">{r.offeringName}</td>
                     <td className="p-2 text-muted-foreground">{SETTLEMENT[r.settlementMode] ?? r.settlementMode}</td>
                     <td className="p-2 tabular-nums font-medium">{fmtAr(r.sellPrice)}</td>
                     <td className="p-2 tabular-nums text-muted-foreground">{fmtAr(r.providerShare)}</td>
                     <td className="p-2 tabular-nums">{fmtAr(r.profit)}</td>
-                    <td className="p-2 font-mono text-xs" dir="ltr">{r.providerReference || "—"}</td>
+                    <td className="p-2">
+                      <span className="block text-xs text-muted-foreground">{digitalSaleReferenceLabel(r.offeringType)}</span>
+                      <strong className="font-mono text-sm" dir="ltr">{r.providerReference || "—"}</strong>
+                    </td>
                     <td className="p-2">{r.studentName || "—"}</td>
+                    <td className="p-2 font-mono text-xs" dir="ltr">{r.studentPhone || "—"}</td>
                     <td className="p-2 text-center">
                       <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${
                         r.fulfillmentStatus === "ISSUED" ? "badge-status-active" : "badge-status-neutral"
@@ -103,7 +111,7 @@ export function InvoiceDigitalCards({ invoiceId }: { invoiceId: number }) {
                     </td>
                   </tr>
                 ))}
-                {details.isLoading && <tr><td colSpan={7}><LoadingState /></td></tr>}
+                {details.isLoading && <tr><td colSpan={9}><LoadingState /></td></tr>}
               </tbody>
             </table>
           </ScrollTableShell>

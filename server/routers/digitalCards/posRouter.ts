@@ -32,4 +32,19 @@ export const posRouter = router({
         offeringId: input.offeringId,
       });
     }),
+
+  /** فحص تكرار داخلي فقط؛ لا يتصل بجهاز المزوّد أو منصته. */
+  validateReference: digitalCardsPosProcedure
+    .input(z.object({
+      branchId: z.number().int().positive(),
+      offeringId: z.number().int().positive(),
+      providerReference: z.string().min(1).max(120),
+    }))
+    .query(async ({ input, ctx }) => {
+      const scoped = scopedBranchOf(ctx);
+      return posCardsService.assertReferenceAvailable(requireDb(), {
+        ...input,
+        branchId: scoped ?? input.branchId,
+      });
+    }),
 });
