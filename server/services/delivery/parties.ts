@@ -9,6 +9,29 @@ import { money, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import type { DeliveryActor, DeliveryPartyKind } from "./types";
 
+/**
+ * سقف عهدة المندوب (`floatLimit`) — حارسٌ واحد يشترك فيه **كلّ** مسارات الإسناد.
+ *
+ * مراجعة PR #495: كان مطبَّقاً في `dispatchInvoiceInTx` وحده، بينما `dispatchToDelivery`
+ * (مسار أمر الشغل) يقفل نفس الجهة ويُنشئ إرسالية COD ويرفع `currentBalance` بلا قراءة السقف
+ * ⇒ سقفٌ مسرحيّ: أوامرُ شغلٍ جاهزة تدفع مندوباً إلى ما فوق سقفه بلا حدّ. يُستدعى **بعد** قفل
+ * صفّ الجهة (`FOR UPDATE`) وقبل أيّ كتابة، فالرصيد المقروء هو الملتزَم لا لقطةً قديمة.
+ */
+export function assertFloatLimit(
+  party: { name: string; floatLimit?: string | null; currentBalance?: string | null },
+  codAmount: ReturnType<typeof money>,
+): void {
+  const limit = money(party.floatLimit ?? "0");
+  if (!limit.gt(0)) return; // بلا سقفٍ مضبوط ⇒ بلا حدّ (السلوك القائم)
+  const after = money(party.currentBalance ?? "0").plus(codAmount).toDecimalPlaces(2);
+  if (after.gt(limit)) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `عهدة ${party.name} ستبلغ ${after.toFixed(2)} وتتجاوز سقفها (${limit.toFixed(2)}) — استلم توريداً منه أوّلاً أو ارفع السقف`,
+    });
+  }
+}
+
 /** يمنع تعطيل/فكّ ربط جهة عليها طلبات متجر «مع المندوب» (SHIPPED) — وإلا تُيتَّم من مسار التحصيل
  *  الوحيد (توصيلاتي) بلا إعادة إسناد (مراجعة عدائية ١٢/٧). العهدة=0 لطلبٍ لم يُحصَّل بعد فلا يحرسها فحص الرصيد. */
 async function assertNoOpenCourierOrders(tx: Tx, partyId: number): Promise<void> {

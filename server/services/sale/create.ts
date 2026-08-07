@@ -520,13 +520,16 @@ export async function createSaleInTx(
     //    (لا فائض/عجز وهمي عند الرفع، ولا رفض بيع نقدي عند الخفض). الفرق يُسجَّل قيد ADJUST لاحقاً.
     const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
     const grandTotalD = money(totals.total);
-    // ش٦ — تقريب السلّة المختلطة: الإجمالي الفعّال الصريح يحمل فرق تقريب السلّة كلّها على
-    // هذه الفاتورة (checkoutReception يضبطه حصراً). محروسٌ ضدّ سوء الاستعمال كتلاعبِ سعرٍ:
-    // نقديّ فقط + |الفرق| دون خطوة التقريب + الناتج موجب — وإلا يُهمل ويُعتمد الخام.
+    // ش٦ — تقريب السلّة المختلطة: هذه الفاتورة تحمل فرق تقريب السلّة كلّها (checkoutReception
+    // يضبطه حصراً). مراجعة PR #495: الفرق **يُشتقّ خادمياً** من إجماليّ الأسطر المحسوب هنا
+    // ومجموعِ بقيّة السلّة كما حسبه الخادم — لا مبلغَ من العميل (كان يُقبل أيّ رقمٍ ضمن ٢٤٩
+    // ديناراً = خصمٌ غير معتمد يتخطّى بوّابتَي «تحت التكلفة» و«الخصم اليدويّ»).
     let overrideD: ReturnType<typeof money> | null = null;
-    if (input.cashRoundingOverride != null && input.payment?.method === "CASH") {
-      const cand = round2(money(input.cashRoundingOverride));
-      if (cand.gt(0) && cand.minus(grandTotalD).abs().lt(250)) overrideD = cand;
+    if (input.cashRoundingBasketOthers != null && input.payment?.method === "CASH") {
+      const basketRawD = round2(grandTotalD.plus(money(input.cashRoundingBasketOthers)));
+      const deltaD = roundCashIQD(basketRawD).minus(basketRawD); // |الفرق| ≤ ١٢٥ حتماً
+      const cand = round2(grandTotalD.plus(deltaD));
+      if (cand.gt(0)) overrideD = cand;
     }
     const effectiveTotalD = overrideD ?? (roundCash ? roundCashIQD(grandTotalD) : grandTotalD);
     const cashRoundingAdj = effectiveTotalD.minus(grandTotalD); // ± (صفر إن لا تقريب)

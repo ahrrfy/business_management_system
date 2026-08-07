@@ -8,9 +8,17 @@ on:
   schedule:
     - cron: '0 6 * * 1'  # كل اثنين 6 ص UTC
 
+# نفس علاج ازدحام المشغّلات في ci.yml (٧/٨/٢٦): دفعةٌ جديدة على PR تُلغي تشغيلها السابق،
+# وmain لا يُلغى أبداً (سجلّ فحصٍ مكتمل لكل التزام). التشغيل المجدول يبقى بمجموعته الخاصة.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   audit:
     runs-on: ubuntu-latest
+    # فحص الاعتماديات دقائق معدودة (تنزيل osv-scanner + مسح ملف القفل) — ١٥ سقفٌ آمن.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       # Dependency vulnerability audit via OSV-Scanner (Google, maintained) against the

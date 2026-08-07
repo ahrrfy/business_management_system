@@ -78,9 +78,10 @@ export interface CreatePrintSaleInput {
   dueDate?: string | null;
   /** تقريب نقدي عراقي للبيع النقدي الكامل (يضبطه POS). */
   cashRoundIQD?: boolean;
-  /** ش٦ — تقريب السلّة المختلطة (يضبطه checkoutReception حصراً): إجماليٌّ فعّالٌ صريح يحمل
-   *  فرق تقريب السلّة كلّها على هذه الفاتورة حين لا بيعَ مباشرَ يحمله. نفس حرّاس sale/create. */
-  cashRoundingOverride?: string | null;
+  /** ش٦ — تقريب السلّة المختلطة (يضبطه checkoutReception حصراً): هذه الفاتورة تحمل فرق تقريب
+   *  السلّة كلّها حين لا بيعَ مباشرَ يحمله. مراجعة PR #495: القيمة = **مجموع بقيّة السلّة كما
+   *  حسبه الخادم**، والفرق يُشتقّ هنا (لا مبلغَ من العميل). نفس عقيدة sale/create حرفياً. */
+  cashRoundingBasketOthers?: string | null;
   /** ش٧ — متبقّي فاتورة التوصيل عهدةٌ على مندوبٍ تُرفع في نفس المعاملة (مرآة sale/create). */
   codDispatchPending?: boolean;
   /** SALES-01/02 (قناة الطباعة): موافقة على بيع خدمة بأقل من تكلفة موادها (سعر/خصم تحت COGS).
@@ -325,11 +326,13 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     //    والفرق قيد ADJUST ⇒ (SALE.amount + ADJUST.amount) = الإجمالي المقرّب = النقد المستلم.
     const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
     const grandTotalD = money(totals.total);
-    // ش٦ — تقريب السلّة المختلطة: إجماليٌّ فعّالٌ صريح (نفس حرّاس sale/create حرفياً).
+    // ش٦ — تقريب السلّة المختلطة: الفرق مُشتقٌّ خادمياً (نفس منطق sale/create حرفياً — PR #495).
     let overrideD: ReturnType<typeof money> | null = null;
-    if (input.cashRoundingOverride != null && input.payment?.method === "CASH") {
-      const cand = round2(money(input.cashRoundingOverride));
-      if (cand.gt(0) && cand.minus(grandTotalD).abs().lt(250)) overrideD = cand;
+    if (input.cashRoundingBasketOthers != null && input.payment?.method === "CASH") {
+      const basketRawD = round2(grandTotalD.plus(money(input.cashRoundingBasketOthers)));
+      const deltaD = roundCashIQD(basketRawD).minus(basketRawD);
+      const cand = round2(grandTotalD.plus(deltaD));
+      if (cand.gt(0)) overrideD = cand;
     }
     const effectiveTotalD = overrideD ?? (roundCash ? roundCashIQD(grandTotalD) : grandTotalD);
     const cashRoundingAdj = effectiveTotalD.minus(grandTotalD);

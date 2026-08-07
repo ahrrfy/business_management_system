@@ -318,18 +318,41 @@ describe("M9 — قرار المالك: ما ورّده المندوب يدخل 
 });
 
 describe("M6/M7 — عهدة المناديب أصلٌ ظاهر، وسقفها يُنفَّذ", () => {
-  it("M6: العهدة القائمة تظهر في المركز المالي أصلاً صريحاً", async () => {
+  it("M6: عهدةُ زبونٍ عابر (بلا ذمّة) أصلٌ صريح في المركز المالي", async () => {
     const shift = await openReception();
     await checkoutReception({
-      branchId: 1, shiftId: shift.shiftId, customerId: 1,
+      branchId: 1, shiftId: shift.shiftId,
+      contactName: "زبون عابر", contactPhone: "07700000009",
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m6-pos",
       regularSale: { lines: [LINE], amount: "10000.00" },
       delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const pos = await getFinancialPosition({ verify: false });
-    expect(Number(pos.deliveryFloat)).toBe(10000);
+    expect(Number(pos.deliveryFloat)).toBe(10000);          // لا ذمّةَ تقابلها ⇒ أصلٌ كامل
+    expect(Number(pos.deliveryFloatCustomerBacked)).toBe(0);
+    expect(Number(pos.arDebit)).toBe(0);
     expect(Number(pos.totalAssets)).toBeGreaterThanOrEqual(10000);
+    void shift;
+  });
+
+  it("M6.b (مراجعة PR #495): عهدةُ فاتورةٍ بعميلٍ مسجَّل لا تُحتسَب مرّتين — ذمّةٌ واحدة لا أصلان", async () => {
+    const shift = await openReception();
+    await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, customerId: 1,
+      paymentMethod: "CASH", paidAmount: "0",
+      clientRequestId: "m6b-dup",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const pos = await getFinancialPosition({ verify: false });
+    // الذمّة على العميل (البيع الآجل رفعها)، والعهدة على المندوب لنفس المبلغ. الأصول تعدّها
+    // **مرّةً** عبر AR، وتُفصح عن الجزء المستبعَد من العهدة بدل حذفه صامتاً.
+    expect(Number(pos.arDebit)).toBe(10000);
+    expect(Number(pos.deliveryFloat)).toBe(0);
+    expect(Number(pos.deliveryFloatCustomerBacked)).toBe(10000);
+    // الثابت الحاكم: مساهمة هذه الصفقة في الأصول = ١٠٬٠٠٠ لا ٢٠٬٠٠٠.
+    expect(Number(pos.arDebit) + Number(pos.deliveryFloat)).toBe(10000);
     void shift;
   });
 

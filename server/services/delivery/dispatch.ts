@@ -21,6 +21,7 @@ import { nextInvoiceNumber } from "../numbering";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
+import { assertFloatLimit } from "./parties";
 import type { DeliveryTxActor } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 
@@ -108,6 +109,11 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         message: "أجرة المندوب تتجاوز الأجرة المقبوضة من الزبون في الاستقبال — سوّها قبل الإرسال",
       });
     }
+
+    // مراجعة PR #495 — سقف عهدة المندوب: كان يُقرأ في مسار إسناد الفاتورة وحده، فبقي هذا المسار
+    // (أوامر الشغل الجاهزة) يرفع `currentBalance` بلا حدّ. الفحص هنا **قبل** أيّ كتابة (فاتورة/
+    // مخزون/عهدة) وتحت قفل صفّ الجهة أعلاه ⇒ الرفض لا يترك فاتورةً يتيمة.
+    if (codAmount.gt(0)) assertFloatLimit(party, codAmount);
 
     // فاتورة COD: customerId=NULL (الطرف المقابل = جهة التوصيل، عهدة لا AR ⇒ مطابقة AR/الائتمان سليمة).
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));

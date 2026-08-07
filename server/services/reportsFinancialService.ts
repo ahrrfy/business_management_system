@@ -539,6 +539,13 @@ export interface FinancialPosition {
   check: string;
   transfer: string;
   wallet: string;
+  /**
+   * مراجعة PR #495 — **رصيد زين (TELECOM)**: طريقة دفعٍ خامسة أدخلتها منظومة الاستقبال، ورصيدها
+   * أصلٌ حقيقيّ مشتقّ (نفس تعريف `cardAccountService`: Σ الإيصالات المعتمدة الموقَّعة). كانت
+   * التجميعات تعدّ CASH/CARD/CHECK/TRANSFER/WALLET فقط ⇒ كلّ قبضِ رصيدٍ يرفع النقدَ صفراً
+   * ويُبخَس به إجمالي الأصول وحقوق الملكية بكامل الرصيد المستحقّ لدى زين.
+   */
+  telecom: string;
   digitalWalletAsset: string; // رصيدنا النقدي لدى مزوّدي البطاقات مسبقة الدفع
   arDebit: string; // ذمم مدينة (عملاء يدينون لنا)
   arCredit: string; // سُلف العملاء (دفعوا زيادة)
@@ -548,7 +555,16 @@ export interface FinancialPosition {
   apDebit: string; // سُلف للموردين
   // FIN-05: سُلف العملاء على أوامر الشغل غير المُسلَّمة (عرابين مقبوضة نقداً لكن الإيراد لم يُعترف به بعد) —
   // التزامٌ على الشركة (خدمةٌ لم تُنجَز)، يقابل النقدَ الداخل فلا تتضخّم حقوق الملكية.
+  // مراجعة PR #495: يشمل الآن **عرابين الطلبات المحفوظة المفتوحة** (`draftAdvances` أدناه).
   customerAdvances: string;
+  /**
+   * مراجعة PR #495 — عرابين المسوّدات المفتوحة (ش٤): القبض يُنشئ إيصال IN وقيد PAYMENT_IN فيرتفع
+   * النقد فوراً، وعمداً لا يمسّ ذمّة العميل (المسوّدة ليست فاتورةً بعد). فبلا التزامٍ مقابل كانت
+   * كلّ مسوّدةٍ ممولّة تضخّم حقوق الملكية حتى تُثبَّت أو يُردّ عربونها. = Σ(COLLECTION − REFUND)
+   * على مسوّدات `OPEN` (المُثبَّتة صارت `paidAmount` على فواتيرها، والملغاة رُدّت نقداً).
+   * مُفصَحٌ عنه مستقلاً **وداخلٌ** في `customerAdvances` (تبويبٌ لا تكرار).
+   */
+  draftAdvances: string;
   // exchange-house: صافي رصيدنا لدى الصرّافين (دينار + دولار×متوسط الكلفة) — موجب=أصل، سالب=خصم.
   exchangeDebit: string;
   exchangeCredit: string;
@@ -559,6 +575,15 @@ export interface FinancialPosition {
    * صريح الآن (Σ أرصدة الجهات الموجبة) — لا دينار بلا تبويب.
    */
   deliveryFloat: string;
+  /**
+   * مراجعة PR #495 — **الجزء المدعوم بعميلٍ مسجَّل من عهدة المناديب** (مُستبعَدٌ من الأصول أعلاه):
+   * فاتورة COD بعميلٍ مسجَّل ترفع `customers.currentBalance` لحظة البيع (ذمّة مدينة) ثم يرفع
+   * الإسنادُ نفسَ المبلغ في `deliveryParties.currentBalance` ⇒ جمعُهما معاً يحتسب **ذمّةً واحدة
+   * مرّتين** طوال وجودها بالطريق (والتوريد يخفض الاثنين). `deliveryFloat` صار صافي العهدة **غير**
+   * المدعومة بذمّةٍ (فواتير أوامر الشغل/الزبون العابر — customerId=NULL)، وهذا الحقل يُفصح عن
+   * المستبعَد كي يبقى لكل دينارٍ تبويبٌ ظاهر لا حذفٌ صامت.
+   */
+  deliveryFloatCustomerBacked: string;
   totalAssets: string;
   totalLiabilities: string;
   equity: string;
@@ -581,10 +606,10 @@ export async function getFinancialPosition(
   const db = getDb();
   const zero = "0";
   const empty: FinancialPosition = {
-    cash: zero, card: zero, check: zero, transfer: zero, wallet: zero, digitalWalletAsset: zero,
+    cash: zero, card: zero, check: zero, transfer: zero, wallet: zero, telecom: zero, digitalWalletAsset: zero,
     arDebit: zero, arCredit: zero, inventory: zero, fixedAssets: zero,
-    apCredit: zero, apDebit: zero, customerAdvances: zero,
-    exchangeDebit: zero, exchangeCredit: zero, deliveryFloat: zero,
+    apCredit: zero, apDebit: zero, customerAdvances: zero, draftAdvances: zero,
+    exchangeDebit: zero, exchangeCredit: zero, deliveryFloat: zero, deliveryFloatCustomerBacked: zero,
     totalAssets: zero, totalLiabilities: zero, equity: zero,
     branchScoped: !!opts.branchId,
     arReconciled: true, apReconciled: true, arDriftCount: 0, apDriftCount: 0,
@@ -607,7 +632,7 @@ export async function getFinancialPosition(
 
   let ar: { d?: string; c?: string };
   let ap: { c?: string; d?: string };
-  let cashRow: { cash?: string; card?: string; cheque?: string; transfer?: string; wallet?: string };
+  let cashRow: { cash?: string; card?: string; cheque?: string; transfer?: string; wallet?: string; telecom?: string };
 
   if (isHistorical) {
     ar = rowsOf(await db.execute(sql`
@@ -658,14 +683,16 @@ export async function getFinancialPosition(
         CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'CARD' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS card,
         CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'CHECK' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS cheque,
         CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'TRANSFER' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS transfer,
-        CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'WALLET' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS wallet
+        CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'WALLET' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS wallet,
+        -- مراجعة PR #495: رصيد زين أصلٌ مثل بقية الوسائل (كان غائباً كلّياً عن اللقطة).
+        CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'TELECOM' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS telecom
       FROM receipts r
       -- FIN-04: أساس التاريخ = تاريخ قيد الدفتر المرتبط (نفس أساس getCashFlow)، لا createdAt الخام.
       LEFT JOIN accountingEntries ae ON ae.receiptId = r.id AND ae.entryType IN ('PAYMENT_IN', 'PAYMENT_OUT')
       WHERE r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
         AND COALESCE(ae.entryDate, DATE(r.createdAt)) <= ${asOf}
         ${bId ? sql`AND r.branchId = ${bId}` : sql``}
-    `))[0] ?? { cash: "0", card: "0", cheque: "0", transfer: "0", wallet: "0" };
+    `))[0] ?? { cash: "0", card: "0", cheque: "0", transfer: "0", wallet: "0", telecom: "0" };
   } else {
     ar = rowsOf(await db.execute(sql`
       SELECT
@@ -687,11 +714,13 @@ export async function getFinancialPosition(
         CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CARD' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS card,
         CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CHECK' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS cheque,
         CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'TRANSFER' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS transfer,
-        CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'WALLET' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS wallet
+        CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'WALLET' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS wallet,
+        -- مراجعة PR #495: رصيد زين (نفس تعريف cardAccountService: الموقَّع المعتمَد).
+        CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'TELECOM' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS telecom
       FROM receipts
       WHERE receiptStatus = 'COMPLETED' AND receiptApprovalStatus = 'APPROVED'
         ${bId ? sql`AND branchId = ${bId}` : sql``}
-    `))[0] ?? { cash: "0", card: "0", cheque: "0", transfer: "0", wallet: "0" };
+    `))[0] ?? { cash: "0", card: "0", cheque: "0", transfer: "0", wallet: "0", telecom: "0" };
   }
 
   // رصيد محافظ المزوّد أصل نقدي مستقل عن وسيلة دفع العملاء المسماة WALLET أعلاه.
@@ -746,6 +775,19 @@ export async function getFinancialPosition(
       ${bId ? sql`AND branchId = ${bId}` : sql``}
   `))[0] ?? { v: "0" };
 
+  // مراجعة PR #495 (ش٤ — عرابين الطلبات المحفوظة): صافي المحتجَز على مسوّدات **مفتوحة**
+  // = Σ(COLLECTION) − Σ(REFUND). المال في الدرج/البطاقة فعلاً (أصلٌ مُحتسَب أعلاه) والخدمة لم
+  // تُقدَّم ⇒ التزامُ «سُلفة عميل» تماماً كعربون أمر الشغل (FIN-05). المسوّدة المُثبَّتة تخرج
+  // تلقائياً (صار المال `paidAmount` على فاتورتها فالإيراد اعتُرف به)، والملغاة رُدَّ عربونها نقداً.
+  // أسماء أعمدة DB الحرفية (mysqlEnum أوّل معامل = اسم العمود): orderPayKind / draftStatus.
+  const da = rowsOf(await db.execute(sql`
+    SELECT CAST(COALESCE(SUM(CASE WHEN op.orderPayKind = 'COLLECTION' THEN op.amount ELSE -op.amount END), 0) AS CHAR) AS v
+    FROM orderPayments op
+      JOIN receptionDrafts d ON d.id = op.draftId
+    WHERE d.draftStatus = 'OPEN' AND op.orderPayKind IN ('COLLECTION', 'REFUND')
+      ${bId ? sql`AND op.branchId = ${bId}` : sql``}
+  `))[0] ?? { v: "0" };
+
   // exchange-house: صافي أرصدتنا لدى الصرّافين على مستوى الشركة (دينار + دولار مُقيَّماً بمتوسط الكلفة).
   // موجب لكل صيرفة ⇒ أصل (أموالنا لديها)، سالب ⇒ خصم (نَدين لها). نظير AR/AP — بلا عزل فرع.
   const ex = rowsOf(await db.execute(sql`
@@ -760,6 +802,7 @@ export async function getFinancialPosition(
   const cheque = money(cashRow.cheque ?? 0);
   const transfer = money(cashRow.transfer ?? 0);
   const wallet = money(cashRow.wallet ?? 0);
+  const telecom = money(cashRow.telecom ?? 0); // مراجعة PR #495: رصيد زين المستحقّ (أصل).
   const digitalWalletAsset = money(digitalWalletRow.v ?? 0);
   const arDebit = money(ar.d ?? 0);
   const arCredit = money(ar.c ?? 0);
@@ -767,7 +810,10 @@ export async function getFinancialPosition(
   const fixedAssets = money(fa.v ?? 0);
   const apCredit = money(ap.c ?? 0);
   const apDebit = money(ap.d ?? 0);
-  const customerAdvances = money(wa.v ?? 0); // FIN-05: عرابين أوامر الشغل غير المُسلَّمة (التزام).
+  // FIN-05 + مراجعة PR #495: عرابين أوامر الشغل غير المُسلَّمة **وعرابين المسوّدات المفتوحة**.
+  const draftAdvancesRaw = money(da.v ?? 0);
+  const draftAdvances = draftAdvancesRaw.gt(0) ? draftAdvancesRaw : money(0); // صافٍ سالب مستحيلٌ بنيوياً (I2) — حزام أمان
+  const customerAdvances = money(wa.v ?? 0).add(draftAdvances);
   const exchangeDebit = money(ex.d ?? 0); // أموالنا لدى الصرّافين (أصل).
   const exchangeCredit = money(ex.c ?? 0); // ما نَدين به للصرّافين (خصم).
   // تدقيق ٦/٨ (ث٨): عهدة مناديب التوصيل — نقدٌ/تحصيلٌ بيد المندوب لم يُورَّد بعد (أصل).
@@ -776,11 +822,30 @@ export async function getFinancialPosition(
     FROM deliveryParties
     ${bId ? sql`WHERE branchId = ${bId} OR branchId IS NULL` : sql``}
   `))[0] ?? { v: "0" };
-  const deliveryFloat = money(dfRow.v ?? 0);
+  // مراجعة PR #495 (ازدواج): الجزء المدعوم بعميلٍ مسجَّل من عهدة المناديب محسوبٌ سلفاً في
+  // `arDebit` (البيع الآجل رفع `customers.currentBalance` بنفس المبلغ، والتوريد يخفض الاثنين
+  // معاً). المتبقّي على الإرساليات الحيّة (DISPATCHED/PARTIAL) لفواتيرَ ذاتِ عميلٍ مسجَّل
+  // يُستبعَد من الأصل هنا فلا يُحتسب ديناران لدينارٍ واحد بالطريق.
+  const dfDupRow = rowsOf(await db.execute(sql`
+    SELECT CAST(COALESCE(SUM(GREATEST(dc.codAmount - dc.collectedAmount, 0)), 0) AS CHAR) AS v
+    FROM deliveryConsignments dc
+      JOIN invoices i ON i.id = dc.invoiceId
+    WHERE dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL')
+      AND i.customerId IS NOT NULL
+      ${bId ? sql`AND dc.branchId = ${bId}` : sql``}
+  `))[0] ?? { v: "0" };
+  const deliveryFloatGross = money(dfRow.v ?? 0);
+  const deliveryFloatCustomerBackedRaw = money(dfDupRow.v ?? 0);
+  // الحدّ الأدنى صفر: العهدة قد تشمل عجزاً/تحصيلاً لطلبات متجرٍ لا يقابله صفٌّ هنا، والطرح
+  // لا يصحّ أن ينقلب أصلاً سالباً. نُفصح عن المُستبعَد فعلياً (المقصوص) لا عن الخام.
+  const deliveryFloat = deliveryFloatGross.sub(deliveryFloatCustomerBackedRaw).gt(0)
+    ? deliveryFloatGross.sub(deliveryFloatCustomerBackedRaw)
+    : money(0);
+  const deliveryFloatCustomerBacked = deliveryFloatGross.sub(deliveryFloat);
 
   // الأصول = نقد + مدينون + سُلف للموردين (ذمة لنا) + مخزون + أصول ثابتة + رصيدنا لدى الصرّافين
   //          + عهدة مناديب التوصيل (مالُ فواتيرَ بالطريق).
-  const totalAssets = cash.add(card).add(cheque).add(transfer).add(wallet)
+  const totalAssets = cash.add(card).add(cheque).add(transfer).add(wallet).add(telecom)
     .add(digitalWalletAsset).add(arDebit).add(apDebit).add(inventory).add(fixedAssets)
     .add(exchangeDebit).add(deliveryFloat);
   // الخصوم = دائنون + سُلف العملاء على الذمم + عرابين أوامر الشغل (FIN-05) + ما نَدين به للصرّافين.
@@ -800,7 +865,7 @@ export async function getFinancialPosition(
   }
 
   const historicalNote = isHistorical
-    ? "النقد والذمم المدينة/الدائنة مبنيّة من الدفتر حتى هذا التاريخ. المخزون والأصول الثابتة وعرابين أوامر الشغل ورصيد الصيرفة تبقى بقيمتها الحالية دائماً (لا تاريخ رجعي لهذه البنود لغياب سجلّ تاريخ التكلفة/الحالة)."
+    ? "النقد ورصيد زين والذمم المدينة/الدائنة مبنيّة من الدفتر حتى هذا التاريخ. المخزون والأصول الثابتة وعرابين أوامر الشغل والطلبات المحفوظة وعهدة المناديب ورصيد الصيرفة تبقى بقيمتها الحالية دائماً (لا تاريخ رجعي لهذه البنود لغياب سجلّ تاريخ التكلفة/الحالة)."
     : null;
 
   return {
@@ -809,6 +874,7 @@ export async function getFinancialPosition(
     check: toDbMoney(cheque),
     transfer: toDbMoney(transfer),
     wallet: toDbMoney(wallet),
+    telecom: toDbMoney(telecom),
     digitalWalletAsset: toDbMoney(digitalWalletAsset),
     arDebit: toDbMoney(arDebit),
     arCredit: toDbMoney(arCredit),
@@ -817,9 +883,11 @@ export async function getFinancialPosition(
     apCredit: toDbMoney(apCredit),
     apDebit: toDbMoney(apDebit),
     customerAdvances: toDbMoney(customerAdvances),
+    draftAdvances: toDbMoney(draftAdvances),
     exchangeDebit: toDbMoney(exchangeDebit),
     exchangeCredit: toDbMoney(exchangeCredit),
     deliveryFloat: toDbMoney(deliveryFloat),
+    deliveryFloatCustomerBacked: toDbMoney(deliveryFloatCustomerBacked),
     totalAssets: toDbMoney(totalAssets),
     totalLiabilities: toDbMoney(totalLiabilities),
     equity: toDbMoney(equity),
