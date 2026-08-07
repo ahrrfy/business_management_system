@@ -368,20 +368,31 @@ export default function Reception() {
 
   useEffect(() => {
     if (customer.customerId || channel === "WALK_IN") return;
-    const digits = channelHandle.replace(/\D/g, "");
-    if (digits.length < 6) return;
-    if (channelCustomerQ.isFetching) return; // لا تحسم قبل استقرار النتائج (يمنع «لا تطابق» عابرة.
-    const match = channelCustomerQ.data?.find((candidate) => (candidate.phone ?? "").replace(/\D/g, "") === digits);
+    const handle = channelHandle.trim();
+    const digits = handle.replace(/\D/g, "");
+    // إصلاح مراجعة Codex P2 (٨/٨): القنوات نوعان — هاتفٌ رقميّ (واتساب/اتصال) ومعرّفٌ نصّيّ
+    // (انستغرام/تيك توك مثل customer_name). الحارس القديم (digits<6) كان يُخرج المعرّفات النصّية
+    // كلياً فلا ربطَ ولا تهيئةَ عميلٍ جديد لها — يُبطل الميزة لغير الأرقام. الآن: عتبةٌ رقمية
+    // للهاتف (≥٦) أو نصّيةٌ للمعرّف (≥٣، مطابقة enable البحث).
+    const isPhone = digits.length >= 6;
+    if (!isPhone && handle.length < 3) return;
+    if (channelCustomerQ.isFetching) return; // لا تحسم قبل استقرار النتائج (يمنع «لا تطابق» عابرة).
+    // مطابقة العميل القائم: بالهاتف حين رقميّ، وإلا بالاسم/المعرّف النصّيّ (نتائج smartSearch).
+    const match = isPhone
+      ? channelCustomerQ.data?.find((candidate) => (candidate.phone ?? "").replace(/\D/g, "") === digits)
+      : channelCustomerQ.data?.find((candidate) => candidate.name.trim().toLowerCase() === handle.toLowerCase());
     if (match) {
       setCustomer({ customerId: Number(match.id), name: match.name, phone: match.phone ?? null, isNew: false });
       return;
     }
-    // لا تطابق دقيق ⇒ هيّئ «عميل جديد» بنفس نمط الكتابة المباشرة داخل SmartCustomerInput (اسم
-    // مبدئي = الهاتف، فيعرض حقل «اسم العميل» تلقائياً) — لا يُكرِّر فوق تسميةٍ يدوية سابقة لنفس الرقم.
+    // لا تطابق دقيق ⇒ هيّئ «عميل جديد». الهاتف الرقميّ: name=phone مبدئياً (SmartCustomerInput
+    // يُظهر حقل الاسم). المعرّف النصّيّ: هو الاسم مبدئياً بلا هاتف. لا يُكرِّر فوق تسميةٍ يدوية سابقة.
     setCustomer((prev) => {
       if (prev.customerId) return prev;
-      if (prev.isNew && prev.phone === channelHandle.trim()) return prev;
-      return { customerId: null, name: channelHandle.trim(), phone: channelHandle.trim(), isNew: true };
+      if (prev.isNew && (prev.phone === handle || prev.name === handle)) return prev;
+      return isPhone
+        ? { customerId: null, name: handle, phone: handle, isNew: true }
+        : { customerId: null, name: handle, phone: null, isNew: true };
     });
   }, [channelCustomerQ.data, channelCustomerQ.isFetching, channelHandle, channel, customer.customerId]);
 
