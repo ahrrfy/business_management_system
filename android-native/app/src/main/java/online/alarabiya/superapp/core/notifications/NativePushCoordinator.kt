@@ -30,11 +30,14 @@ object NativePushCoordinator {
         val appContext = context.applicationContext
         val store = SecureSessionStore(appContext)
         if (store.loadCookie().isNullOrBlank()) return
-        FirebaseMessaging.getInstance().isAutoInitEnabled = true
         scope.launch {
-            // The current FCM API delivers the Firebase Installation ID through onRegistered.
-            // Calling register on every authenticated startup also refreshes the server binding.
-            runCatching { FirebaseMessaging.getInstance().register().awaitResult() }
+            runCatching {
+                val messaging = FirebaseMessaging.getInstance()
+                messaging.isAutoInitEnabled = true
+                // The current FCM API delivers the Firebase Installation ID through onRegistered.
+                // Calling register on every authenticated startup also refreshes the server binding.
+                messaging.register().awaitResult()
+            }
         }
     }
 
@@ -71,8 +74,9 @@ object NativePushCoordinator {
         return serverRevoked && localUnregistered
     }
 
-    fun isConfigured(context: Context): Boolean =
+    fun isConfigured(context: Context): Boolean = runCatching {
         BuildConfig.REMOTE_PUSH_CONFIGURED && FirebaseApp.getApps(context).isNotEmpty()
+    }.getOrDefault(false)
 
     private suspend fun <T> Task<T>.awaitResult(): T = suspendCancellableCoroutine { continuation ->
         addOnSuccessListener { result -> continuation.resume(result) }
