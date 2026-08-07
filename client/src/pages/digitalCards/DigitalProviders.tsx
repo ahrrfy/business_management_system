@@ -33,8 +33,8 @@ const PROVIDER_TYPE: Record<string, string> = {
   OTHER: "أخرى",
 };
 const SETTLEMENT_MODE: Record<string, string> = {
-  PREPAID: "مسبق الدفع (محفظة)",
-  POSTPAID: "آجل (ذمّة)",
+  PREPAID: "ندفع مقدماً ونبيع من رصيد الجهاز",
+  POSTPAID: "نبيع أولاً ونسدد للمزوّد لاحقاً",
 };
 const SETTLEMENT_CYCLE: Record<string, string> = {
   DAILY: "يومي",
@@ -236,17 +236,17 @@ export default function DigitalProviders() {
                 </select>
               </div>
               <div className="space-y-1">
-                <label className="text-sm font-medium" htmlFor="dc-mode">نمط التسوية</label>
+                <label className="text-sm font-medium" htmlFor="dc-mode">كيف ندفع لهذا المزوّد؟</label>
                 <select id="dc-mode" className={selectCls} value={fMode} disabled={editing} onChange={(e) => setFMode(e.target.value)}>
                   {Object.entries(SETTLEMENT_MODE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
-                {editing && <p className="text-xs text-muted-foreground">ثابت بعد الإنشاء لأنه يحدد طريقة احتساب الرصيد وذمة المورّد.</p>}
+                {editing && <p className="text-xs text-muted-foreground">لا يتغير بعد الإنشاء لأنه يحدد هل يخصم البيع من رصيد الجهاز أم يسجّل مبلغاً مستحقاً للمزوّد.</p>}
               </div>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
-                <label className="text-sm font-medium" htmlFor="dc-cycle">دورية التسوية</label>
+                <label className="text-sm font-medium" htmlFor="dc-cycle">متى نسدد للمزوّد؟</label>
                 <select id="dc-cycle" className={selectCls} value={fCycle} onChange={(e) => setFCycle(e.target.value)}>
                   {Object.entries(SETTLEMENT_CYCLE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>

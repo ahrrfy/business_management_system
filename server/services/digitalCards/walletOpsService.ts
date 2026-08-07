@@ -13,6 +13,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import {
   auditLogs,
   branches,
@@ -411,6 +412,8 @@ export async function statement(
   db: DB,
   input: { walletId: number; from?: string; to?: string; limit?: number },
 ) {
+  const creator = alias(users, "digitalWalletCreator");
+  const approver = alias(users, "digitalWalletApprover");
   const conds = [eq(digitalWalletTransactions.walletId, input.walletId)];
   if (input.from) conds.push(gte(digitalWalletTransactions.createdAt, new Date(`${input.from}T00:00:00Z`)));
   if (input.to) conds.push(lt(digitalWalletTransactions.createdAt, new Date(`${input.to}T00:00:00Z`)));
@@ -429,10 +432,16 @@ export async function statement(
       notes: digitalWalletTransactions.notes,
       createdAt: digitalWalletTransactions.createdAt,
       createdBy: digitalWalletTransactions.createdBy,
-      createdByName: users.name,
+      createdByName: creator.name,
+      createdByUsername: creator.username,
+      approvedBy: digitalWalletTransactions.approvedBy,
+      approvedByName: approver.name,
+      approvedByUsername: approver.username,
+      approvedAt: digitalWalletTransactions.approvedAt,
     })
     .from(digitalWalletTransactions)
-    .leftJoin(users, eq(digitalWalletTransactions.createdBy, users.id))
+    .leftJoin(creator, eq(digitalWalletTransactions.createdBy, creator.id))
+    .leftJoin(approver, eq(digitalWalletTransactions.approvedBy, approver.id))
     .where(and(...conds))
     .orderBy(desc(digitalWalletTransactions.id))
     .limit(Math.min(input.limit ?? 200, 500));
@@ -523,6 +532,8 @@ export async function reconcile(
 }
 
 export async function listReconciliations(db: DB, filters: { walletId?: number; branchId?: number | null; status?: string }) {
+  const counter = alias(users, "digitalReconciliationCounter");
+  const reviewer = alias(users, "digitalReconciliationReviewer");
   const conds = [];
   if (filters.walletId != null) conds.push(eq(digitalWalletReconciliations.walletId, filters.walletId));
   if (filters.branchId != null) conds.push(eq(digitalWalletReconciliations.branchId, filters.branchId));
@@ -541,11 +552,20 @@ export async function listReconciliations(db: DB, filters: { walletId?: number; 
       variance: digitalWalletReconciliations.variance,
       status: digitalWalletReconciliations.status,
       notes: digitalWalletReconciliations.notes,
+      countedBy: digitalWalletReconciliations.countedBy,
+      countedByName: counter.name,
+      countedByUsername: counter.username,
+      reviewedBy: digitalWalletReconciliations.reviewedBy,
+      reviewedByName: reviewer.name,
+      reviewedByUsername: reviewer.username,
+      reviewedAt: digitalWalletReconciliations.reviewedAt,
       createdAt: digitalWalletReconciliations.createdAt,
     })
     .from(digitalWalletReconciliations)
     .innerJoin(digitalWallets, eq(digitalWalletReconciliations.walletId, digitalWallets.id))
     .innerJoin(branches, eq(digitalWalletReconciliations.branchId, branches.id))
+    .leftJoin(counter, eq(digitalWalletReconciliations.countedBy, counter.id))
+    .leftJoin(reviewer, eq(digitalWalletReconciliations.reviewedBy, reviewer.id))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(digitalWalletReconciliations.businessDate))
     .limit(200);

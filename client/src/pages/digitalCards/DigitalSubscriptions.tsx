@@ -5,20 +5,17 @@ import { Card, CardContent } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { FilterField, ListToolbar } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
+import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { Link } from "wouter";
 
 const STATUS: Record<string, string> = {
   ISSUED: "مباع",
-  LOSS_REFUND_PENDING: "قيد المراجعة",
-  REVERSED: "معكوس",
-  LOSS_REFUND: "مردود بخسارة",
+  LOSS_REFUND_PENDING: "طلب إلغاء ينتظر الاعتماد",
+  REVERSED: "أُلغي وأُعيد المبلغ",
+  LOSS_REFUND: "أُعيد المبلغ وسُجّلت خسارة",
 };
-
-function localDate(value: Date | string): string {
-  return new Date(value).toLocaleString("ar-IQ", { dateStyle: "short", timeStyle: "short" });
-}
 
 export default function DigitalSubscriptions() {
   const utils = trpc.useUtils();
@@ -87,7 +84,7 @@ export default function DigitalSubscriptions() {
               <tbody>
                 {(list.data ?? []).map((sale) => (
                   <tr key={sale.id} className="border-t">
-                    <td className="p-2 tabular-nums whitespace-nowrap">{localDate(sale.invoiceDate)}</td>
+                    <td className="p-2 tabular-nums whitespace-nowrap" dir="ltr">{fmtDateTime(sale.invoiceDate)}</td>
                     <td className="p-2"><Link href={`/invoices/${sale.invoiceId}`} className="font-semibold text-primary hover:underline">{sale.invoiceNumber}</Link></td>
                     <td className="p-2 font-medium">{sale.offeringName}</td>
                     <td className="p-2 font-mono font-bold" dir="ltr">{sale.providerReference || "—"}</td>

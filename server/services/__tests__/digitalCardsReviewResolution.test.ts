@@ -209,4 +209,17 @@ describe("digital sale review resolution", () => {
     expect(details.items[0].providerReference).toBe("RR-DETAIL-1");
     expect(details.timeline.length).toBeGreaterThan(0);
   });
+
+  it("prevents a non-admin manager from viewing or resolving another branch operation", async () => {
+    const context = await seed();
+    const operation = await prepare(context, "RR-BRANCH-1");
+    await forceReview(operation.intentId);
+    const otherBranchManager = { ...manager, branchId: 2 };
+
+    await expect(reviewResolutionService.getReviewDetails(db(), operation.intentId, 2)).rejects.toThrow(/فرعاً آخر/);
+    await expect(withTx((tx) => reviewResolutionService.requestResolution(tx, {
+      intentId: operation.intentId, decision: "CANCEL_NO_ISSUE", reason: "محاولة من فرع آخر",
+      items: [{ intentItemId: operation.itemId, outcome: "NOT_ISSUED" }],
+    }, otherBranchManager))).rejects.toThrow(/فرعاً آخر/);
+  });
 });

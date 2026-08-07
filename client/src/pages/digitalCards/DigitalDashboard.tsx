@@ -183,7 +183,7 @@ export default function DigitalDashboard() {
             )}
             {(recon.data?.open ?? 0) > 0 && (
               <span className="rounded-md border px-3 py-1.5">
-                {recon.data?.open} مطابقة بفرقٍ مفتوح ({fmtAr(recon.data?.openVarianceTotal ?? "0")})
+                {recon.data?.open} اختلاف في رصيد جهاز يحتاج معالجة ({fmtAr(recon.data?.openVarianceTotal ?? "0")})
               </span>
             )}
           </CardContent>
@@ -201,7 +201,7 @@ export default function DigitalDashboard() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
-                    <th className="p-2 text-start">المحفظة</th>
+                    <th className="p-2 text-start">حساب رصيد الجهاز</th>
                     <th className="p-2 text-start">المزوّد</th>
                     <th className="p-2 text-start">المتاح</th>
                   </tr>

@@ -59,6 +59,14 @@ beforeEach(async () => {
 });
 
 describe.sequential("ش٩ — الإيداع (§٦.١)", () => {
+  it("يمنع المدير من تحريك رصيد جهاز تابع لفرع آخر", async () => {
+    const { walletId } = await mkWallet();
+    await expect(withTx((tx) => walletOpsService.deposit(tx, {
+      walletId, amount: "1000", paymentMethod: "CASH", clientRequestId: rid(),
+    }, { ...mgrA, branchId: 2 }))).rejects.toThrow(/فرعاً آخر/);
+    expect((await wallet(walletId)).currentBalance).toBe("0.00");
+  });
+
   it("يرفع الرصيد + سند صرف OUT من الخزينة + قيد أصلٍ بصفر أثر P&L", async () => {
     const { walletId } = await mkWallet();
     const r = await withTx((tx) => walletOpsService.deposit(tx, {

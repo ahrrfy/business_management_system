@@ -103,7 +103,7 @@ function assignmentFallback(
   field: AssignmentField,
 ) {
   return settlementMode === "POSTPAID" && field === "walletName"
-    ? "تسوية آجلة — بلا محفظة"
+    ? "الدفع للمزوّد لاحقاً — لا يوجد رصيد جهاز"
     : "غير مسند";
 }
 
@@ -338,7 +338,7 @@ export default function DigitalOfferings() {
       const missingWalletBranch = fBranchIds.find((branchId) => !Number(fWalletByBranch[branchId]));
       if (missingWalletBranch != null) {
         const branchName = (branches.data ?? []).find((b) => b.id === missingWalletBranch)?.name;
-        return notify.err(`اختر محفظة المزوّد لفرع ${branchName ?? missingWalletBranch}`);
+        return notify.err(`اختر حساب رصيد جهاز المزوّد لفرع ${branchName ?? missingWalletBranch}`);
       }
     }
 
@@ -824,7 +824,7 @@ export default function DigitalOfferings() {
                         value={fWalletByBranch[b.id] ?? ""}
                         onChange={(e) => setFWalletByBranch((prev) => ({ ...prev, [b.id]: e.target.value }))}
                       >
-                        <option value="">— اختر محفظة هذا الفرع —</option>
+                        <option value="">— اختر حساب رصيد الجهاز لهذا الفرع —</option>
                         {(wallets.data ?? [])
                           .filter((w) => w.providerId === Number(fProviderId) && w.branchId === b.id && w.isActive)
                           .map((w) => <option key={w.id} value={w.id}>{w.name} — المتاح {fmtAr(String(Number(w.currentBalance) - Number(w.reservedBalance)))}</option>)}
@@ -834,7 +834,7 @@ export default function DigitalOfferings() {
                 ))}
               </div>
               {(providers.data ?? []).find((p) => p.id === Number(fProviderId))?.settlementMode === "PREPAID" && (
-                <p className="text-xs text-muted-foreground">اختر محفظة المزوّد في كل فرع؛ منها يُحجز ويُخصم رصيد البيع تلقائياً.</p>
+                <p className="text-xs text-muted-foreground">اختر حساب رصيد جهاز المزوّد في كل فرع؛ منه يُحجز ويُخصم مبلغ الكرت تلقائياً.</p>
               )}
             </div>
           </div>

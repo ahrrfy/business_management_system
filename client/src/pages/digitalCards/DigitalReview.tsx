@@ -240,6 +240,7 @@ export default function DigitalReview() {
                   <th className="p-3 text-start">رصيد جهاز المزوّد</th>
                   <th className="p-3 text-start">الفرع</th>
                   <th className="p-3 text-start">التاريخ</th>
+                  <th className="p-3 text-start">من سجّل الرصيد</th>
                   <th className="p-3 text-start">في النظام</th>
                   <th className="p-3 text-start">في جهاز المزوّد</th>
                   <th className="p-3 text-start">الاختلاف</th>
@@ -255,6 +256,11 @@ export default function DigitalReview() {
                       <td className="p-3 font-medium">{row.walletName}</td>
                       <td className="p-3 text-muted-foreground">{row.branchName}</td>
                       <td className="p-3" dir="ltr">{row.businessDate}</td>
+                      <td className="p-3">
+                        <p className="font-medium">{row.countedByName || `حساب #${row.countedBy}`}</p>
+                        {row.countedByUsername && <p className="text-xs text-muted-foreground" dir="ltr">@{row.countedByUsername}</p>}
+                        <p className="text-xs text-muted-foreground" dir="ltr">{fmtDateTime(row.createdAt)}</p>
+                      </td>
                       <td className="p-3 tabular-nums">{fmtAr(row.expectedBalance)}</td>
                       <td className="p-3 tabular-nums font-medium">{fmtAr(row.actualBalance)}</td>
                       <td className="p-3 tabular-nums font-bold text-destructive">{fmtAr(D(row.variance).abs().toFixed(2))}</td>
@@ -267,9 +273,9 @@ export default function DigitalReview() {
                     </tr>
                   );
                 })}
-                {variances.isLoading && <tr><td colSpan={8}><LoadingState /></td></tr>}
+                {variances.isLoading && <tr><td colSpan={9}><LoadingState /></td></tr>}
                 {!variances.isLoading && openVariances.length === 0 && (
-                  <TableEmptyRow colSpan={8} message="لا توجد اختلافات مفتوحة — الأرصدة مطابقة." />
+                  <TableEmptyRow colSpan={9} message="لا توجد اختلافات مفتوحة — الأرصدة مطابقة." />
                 )}
               </tbody>
             </table>
