@@ -30,6 +30,7 @@ const OUT_DIR = join(ROOT, "docs", "authz");
 const PROCEDURES = {
   publicProcedure:            { authority: "none",        module: null,          level: null,   roles: [],                                          branch: false },
   protectedProcedure:         { authority: "none",        module: null,          level: null,   roles: [],                                          branch: false },
+  nativeBootstrapProcedure:   { authority: "device-bootstrap", module: null,     level: null,   roles: ["current-native-client"],                   branch: "device" },
   // تكليف جرد ذاتي: ليست صلاحية مخزون عامة؛ handler يربط كل استعلام بالمستخدم المكلّف.
   stocktakeAssignmentProcedure:{authority: "self-assignment", module: "inventory", level: "ASSIGNED", roles: ["assigned-user"],                           branch: "self" },
   branchScopedProcedure:      { authority: "none",        module: null,          level: null,   roles: [],                                          branch: "scoped" },
