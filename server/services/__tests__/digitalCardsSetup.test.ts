@@ -238,6 +238,62 @@ describe.sequential("ش٣ — العرض (البطاقة)", () => {
     expect(current).toHaveLength(0);
   });
 
+  it("يعرض الجهاز والمحفظة المسندين للبطاقة أو الاشتراك في كل فرع", async () => {
+    const { providerId } = await mkProvider({ name: "انتشار", settlementMode: "PREPAID" });
+    const mainWalletId = defaultWallets.get(providerId)!.get(1)!;
+    const salesWalletId = defaultWallets.get(providerId)!.get(2)!;
+    await db().update(s.digitalWallets)
+      .set({ code: "DEV-MAIN", name: "محفظة الجهاز الرئيسي" })
+      .where(eq(s.digitalWallets.id, mainWalletId));
+    await db().update(s.digitalWallets)
+      .set({ code: "DEV-SALES", name: "محفظة جهاز المبيعات" })
+      .where(eq(s.digitalWallets.id, salesWalletId));
+
+    const created = await withTx((tx) => offeringService.createOffering(tx, offeringInput(providerId, {
+      name: "اشتراك تعليمي شهري",
+      offeringType: "EDUCATIONAL_SUBSCRIPTION",
+      requiresStudentData: true,
+      subscriptionDurationDays: 30,
+      branches: [
+        { branchId: 1, walletId: mainWalletId },
+        { branchId: 2, walletId: salesWalletId },
+      ],
+    }), actor));
+
+    const [offering] = (await offeringService.listOfferings(db(), {}))
+      .filter((row) => row.id === created.offeringId);
+    expect(offering.settlementMode).toBe("PREPAID");
+    expect(offering.assignments).toEqual([
+      {
+        offeringId: created.offeringId,
+        branchId: 1,
+        branchName: "الفرع الرئيسي",
+        walletId: mainWalletId,
+        deviceCode: "DEV-MAIN",
+        walletName: "محفظة الجهاز الرئيسي",
+        walletIsActive: true,
+      },
+      {
+        offeringId: created.offeringId,
+        branchId: 2,
+        branchName: "فرع المبيعات",
+        walletId: salesWalletId,
+        deviceCode: "DEV-SALES",
+        walletName: "محفظة جهاز المبيعات",
+        walletIsActive: true,
+      },
+    ]);
+
+    const scoped = await offeringService.listOfferings(db(), { branchId: 2 });
+    expect(scoped).toHaveLength(1);
+    expect(scoped[0].assignments).toHaveLength(1);
+    expect(scoped[0].assignments[0]).toMatchObject({
+      branchId: 2,
+      deviceCode: "DEV-SALES",
+      walletName: "محفظة جهاز المبيعات",
+    });
+  });
+
   it("يرفض ربط محفظة بعرض لمزوّد آجل", async () => {
     const { providerId: prepaidId } = await mkProvider({ name: "آسياسيل", settlementMode: "PREPAID" });
     const { walletId } = await withTx((tx) =>

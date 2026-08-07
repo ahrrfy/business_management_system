@@ -1,0 +1,129 @@
+name: Native Android release artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: native-android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Require successful native CI for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          conclusion="$(gh run list --workflow=android-native-ci.yml --commit "$GITHUB_SHA" --status completed --limit 1 --json conclusion --jq '.[0].conclusion // "missing"')"
+          test "$conclusion" = "success"
+      - name: Recheck native Android source
+        working-directory: android-native
+        env:
+          ALRUEYA_DEV_BASE_URL: http://10.0.2.2:3000
+          ALRUEYA_PROD_BASE_URL: https://srv1548487.hstgr.cloud
+          REMOTE_PUSH_CONFIGURED: "false"
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon \
+            :app:testDevDebugUnitTest \
+            :app:lintDevDebug \
+            :app:lintProdRelease \
+            :app:assembleDevDebug
+
+  signed-native-artifacts:
+    needs: release-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Validate release inputs
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          GOOGLE_SERVICES_JSON_B64: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 }}
+          EXPECTED_UPLOAD_SHA256: ${{ vars.ANDROID_UPLOAD_SIGNING_SHA256 }}
+          PROD_BASE_URL: ${{ vars.ALRUEYA_PROD_BASE_URL }}
+        run: |
+          test -n "$KEYSTORE_B64"
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+          test -n "$GOOGLE_SERVICES_JSON_B64"
+          test -n "$EXPECTED_UPLOAD_SHA256"
+          test "$PROD_BASE_URL" = "https://srv1548487.hstgr.cloud"
+      - name: Restore signing and Firebase configuration
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          GOOGLE_SERVICES_JSON_B64: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/android-upload.jks"
+          echo "$GOOGLE_SERVICES_JSON_B64" | base64 --decode > android-native/app/google-services.json
+      - name: Build signed production APK and AAB
+        working-directory: android-native
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/android-upload.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          REMOTE_PUSH_CONFIGURED: "true"
+          ALRUEYA_PROD_BASE_URL: ${{ vars.ALRUEYA_PROD_BASE_URL }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon clean \
+            :app:lintProdRelease \
+            :app:bundleProdRelease \
+            :app:assembleProdRelease
+      - name: Verify package, endpoint, and signature
+        env:
+          EXPECTED_UPLOAD_SHA256: ${{ vars.ANDROID_UPLOAD_SIGNING_SHA256 }}
+        run: |
+          apk="android-native/app/build/outputs/apk/prod/release/app-prod-release.apk"
+          aab="android-native/app/build/outputs/bundle/prodRelease/app-prod-release.aab"
+          test -s "$apk"
+          test -s "$aab"
+          apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          aapt_path="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          "$apksigner_path" verify --verbose "$apk"
+          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='3' versionName='1.0.0'"
+          unzip -p "$apk" 'classes*.dex' > "$RUNNER_TEMP/native-classes.dex"
+          grep -aFq 'https://srv1548487.hstgr.cloud' "$RUNNER_TEMP/native-classes.dex"
+          actual="$("$apksigner_path" verify --print-certs "$apk" | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+          expected="$(printf '%s' "$EXPECTED_UPLOAD_SHA256" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+          test -n "$actual"
+          test "$actual" = "$expected"
+      - name: Record checksums
+        run: |
+          sha256sum \
+            android-native/app/build/outputs/bundle/prodRelease/app-prod-release.aab \
+            android-native/app/build/outputs/apk/prod/release/app-prod-release.apk \
+            > native-android-SHA256SUMS.txt
+      - name: Upload verified artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: super-alarabiya-native-${{ github.sha }}
+          path: |
+            android-native/app/build/outputs/bundle/prodRelease/app-prod-release.aab
+            android-native/app/build/outputs/apk/prod/release/app-prod-release.apk
+            android-native/app/build/outputs/mapping/prodRelease/mapping.txt
+            native-android-SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14

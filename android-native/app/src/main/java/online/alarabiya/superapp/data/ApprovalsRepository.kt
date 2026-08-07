@@ -1,0 +1,182 @@
+package online.alarabiya.superapp.data
+
+import online.alarabiya.superapp.core.network.TrpcClient
+import online.alarabiya.superapp.model.approvals.ApprovalCapabilities
+import online.alarabiya.superapp.model.approvals.ApprovalDecision
+import online.alarabiya.superapp.model.approvals.ApprovalDecisionReceipt
+import online.alarabiya.superapp.model.approvals.ApprovalKind
+import online.alarabiya.superapp.model.approvals.ApprovalRequest
+import online.alarabiya.superapp.model.approvals.RejectionReasonPolicy
+import org.json.JSONArray
+import org.json.JSONObject
+
+interface ApprovalsDataSource {
+    suspend fun loadPending(): List<ApprovalRequest>
+    suspend fun loadDetail(request: ApprovalRequest): ApprovalRequest = request
+    suspend fun decide(request: ApprovalRequest, decision: ApprovalDecision): ApprovalDecisionReceipt
+}
+
+data class ApprovalInboxPayload(
+    val kind: String,
+    val id: Long,
+    val title: String,
+    val reference: String,
+    val detail: String,
+    val createdAt: String,
+    val amount: String? = null,
+    val currentQuantity: Double? = null,
+    val targetQuantity: Double? = null,
+    val canReject: Boolean,
+)
+
+object ApprovalMapper {
+    fun fromPayload(payload: ApprovalInboxPayload): ApprovalRequest? {
+        val kind = ApprovalKind.fromApi(payload.kind) ?: return null
+        if (payload.id <= 0) return null
+        val rejectionPolicy = when (kind) {
+            ApprovalKind.INVENTORY, ApprovalKind.VOUCHER -> RejectionReasonPolicy.REQUIRED
+            ApprovalKind.LEAVE, ApprovalKind.GIFT -> RejectionReasonPolicy.NOT_SUPPORTED
+        }
+        return ApprovalRequest(
+            id = payload.id,
+            kind = kind,
+            title = payload.title,
+            reference = payload.reference,
+            detail = payload.detail,
+            createdAt = payload.createdAt,
+            amount = payload.amount,
+            currentQuantity = payload.currentQuantity,
+            targetQuantity = payload.targetQuantity,
+            capabilities = ApprovalCapabilities(
+                canApprove = true,
+                canReject = payload.canReject,
+                rejectionReasonPolicy = rejectionPolicy,
+            ),
+        )
+    }
+}
+
+class UnsupportedApprovalDecision(message: String) : IllegalArgumentException(message)
+
+/**
+ * Native facade over the existing domain APIs.
+ *
+ * Known server-contract boundaries (2026-08-06):
+ * - `superApp.approvalInbox` is capped at 30 items and has no cursor. Selection is revalidated
+ *   through `superApp.approvalDetail` before a decision is offered.
+ * - leave rejection supports a decision only; there is no rejection-reason field.
+ * - gifts expose approval only; there is no gift rejection mutation.
+ * - voucher decisions require a session branch, although the aggregate inbox can return vouchers
+ *   to a branchless admin. ApprovalAccessPolicy suppresses those non-actionable rows.
+ * - none of the four decision mutations accepts an idempotency key. The UI therefore prevents
+ *   concurrent repeat taps, while the domain service remains authoritative for stale requests.
+ */
+class ApprovalsRepository(private val api: TrpcClient) : ApprovalsDataSource {
+    override suspend fun loadPending(): List<ApprovalRequest> =
+        // tRPC v11 preserves `null` as a value; the server contract accepts an omitted/empty
+        // optional object, not JSON null. Send the explicit empty filter used by this client.
+        api.queryArray("superApp.approvalInbox", JSONObject())
+            .objects()
+            .mapNotNull { ApprovalMapper.fromPayload(it.toApprovalPayload()) }
+
+    override suspend fun loadDetail(request: ApprovalRequest): ApprovalRequest {
+        val detail = api.query(
+            "superApp.approvalDetail",
+            JSONObject().put("kind", request.kind.apiValue).put("id", request.id),
+        )
+        return ApprovalMapper.fromPayload(detail.toApprovalPayload())
+            ?: throw IllegalStateException("تعذّر تحميل تفاصيل الاعتماد")
+    }
+
+    override suspend fun decide(
+        request: ApprovalRequest,
+        decision: ApprovalDecision,
+    ): ApprovalDecisionReceipt {
+        require(request.id > 0) { "معرّف الطلب غير صالح" }
+        when (decision) {
+            ApprovalDecision.Approve -> {
+                if (!request.capabilities.canApprove) {
+                    throw UnsupportedApprovalDecision("اعتماد هذا النوع غير متاح في العقد الحالي")
+                }
+                approve(request)
+            }
+            is ApprovalDecision.Reject -> reject(request, decision.reason)
+        }
+        return ApprovalDecisionReceipt(request.id, request.kind, decision)
+    }
+
+    private suspend fun approve(request: ApprovalRequest) {
+        when (request.kind) {
+            ApprovalKind.INVENTORY -> api.mutate(
+                "inventory.approveAdjustment",
+                JSONObject().put("id", request.id),
+            )
+            ApprovalKind.LEAVE -> api.mutate(
+                "leaves.decide",
+                JSONObject().put("id", request.id).put("decision", "approved"),
+            )
+            ApprovalKind.VOUCHER -> api.mutate(
+                "vouchers.approve",
+                JSONObject().put("receiptId", request.id),
+            )
+            ApprovalKind.GIFT -> api.mutate(
+                "gifts.approveGift",
+                JSONObject().put("giftId", request.id),
+            )
+        }
+    }
+
+    private suspend fun reject(request: ApprovalRequest, rawReason: String?) {
+        if (!request.capabilities.canReject) {
+            throw UnsupportedApprovalDecision("رفض هذا النوع غير متاح في العقد الحالي")
+        }
+        val reason = rawReason?.trim().orEmpty()
+        require(reason.length <= 500) { "سبب الرفض يجب ألا يتجاوز 500 حرف" }
+        when (request.kind) {
+            ApprovalKind.INVENTORY -> {
+                require(reason.isNotEmpty()) { "سبب الرفض مطلوب" }
+                api.mutate(
+                    "inventory.rejectAdjustment",
+                    JSONObject().put("id", request.id).put("reason", reason),
+                )
+            }
+            ApprovalKind.VOUCHER -> {
+                require(reason.isNotEmpty()) { "سبب الرفض مطلوب" }
+                api.mutate(
+                    "vouchers.reject",
+                    JSONObject().put("receiptId", request.id).put("reason", reason),
+                )
+            }
+            ApprovalKind.LEAVE -> api.mutate(
+                "leaves.decide",
+                JSONObject().put("id", request.id).put("decision", "rejected"),
+            )
+            ApprovalKind.GIFT -> throw UnsupportedApprovalDecision(
+                "واجهة الخادم لا توفر عملية رفض للهدايا",
+            )
+        }
+    }
+}
+
+private fun JSONArray.objects(): List<JSONObject> = buildList {
+    for (index in 0 until length()) optJSONObject(index)?.let(::add)
+}
+
+private fun JSONObject.toApprovalPayload() = ApprovalInboxPayload(
+    kind = optString("kind"),
+    id = optLong("id"),
+    title = optString("title"),
+    reference = optString("reference"),
+    detail = optString("detail"),
+    createdAt = optString("createdAt"),
+    amount = nullableText("amount"),
+    currentQuantity = nullableDouble("currentQuantity"),
+    targetQuantity = nullableDouble("targetQuantity"),
+    canReject = optBoolean("canReject"),
+)
+
+private fun JSONObject.nullableText(key: String): String? =
+    if (!has(key) || isNull(key)) null else opt(key)?.toString()?.takeIf(String::isNotBlank)
+
+private fun JSONObject.nullableDouble(key: String): Double? =
+    if (!has(key) || isNull(key)) null else optDouble(key).takeUnless(Double::isNaN)
