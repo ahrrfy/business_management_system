@@ -333,7 +333,11 @@ export const inventoryWarehouseProcedure = moduleProcedure(["warehouse", "manage
 export const inventoryManagerProcedure = moduleProcedure(["manager"], "inventory", "FULL");
 // أسماء توافقية للراوترات القائمة؛ سلطة ملف العميل انتقلت فعلياً إلى وحدة CRM.
 export const customersReadProcedure = protectedProcedure.use(requireModule("crm", "READ"));
-export const customersCashierProcedure = moduleProcedure(["cashier", "manager", "sales_rep"], "crm", "FULL");
+// print_operator (٧/٨): مرآة POS_STATION_GATES.RECEPTION بالضبط (shared/permissions.ts) — نفس
+// الدور الذي يفتح محطة الاستقبال فعلياً (كاشير/مدير/فنّي المطبعة) يحتاج إنشاء عميلٍ من طلب قناة
+// (واتساب/انستغرام/تيك توك/اتصال) دون رفض FORBIDDEN — كان مفقوداً هنا رغم وجوده في CHANNEL_READ_ROLES
+// وبوّابة محطة الاستقبال، فيرى الموظّف القناة ولا يقدر يحفظ عميلها.
+export const customersCashierProcedure = moduleProcedure(["cashier", "manager", "sales_rep", "print_operator"], "crm", "FULL");
 export const customersManagerProcedure = moduleProcedure(["manager"], "crm", "FULL");
 
 // CRM هو مالك رحلة العميل؛ تبقى وحدات المبيعات/القنوات/الخزينة مزوّدات أحداث عبر حدود واضحة.

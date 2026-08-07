@@ -1,25 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { keepPreviousData } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import {
   ArrowRight,
   CalendarClock,
-  Camera,
   Check,
   ClipboardList,
   Copy,
   Globe,
   HandCoins,
   MessageCircle,
-  Music,
   Package,
   Palette,
-  Phone,
   Printer,
   Receipt as ReceiptIcon,
   Search,
   ShoppingCart,
-  Store,
   Truck,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +26,7 @@ import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/S
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useSmartScanInput } from "@/hooks/useSmartScanInput";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
@@ -80,7 +78,6 @@ import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDia
 import DepositDialog from "@/components/reception/DepositDialog";
 import DraftPaymentsDialog from "@/components/reception/DraftPaymentsDialog";
 import OrderDeliveryDialog, { type OrderDeliveryValue } from "@/components/reception/OrderDeliveryDialog";
-import { WsTab } from "@/components/reception/WsTab";
 import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
@@ -120,7 +117,7 @@ const RECEPTION_TOKENS: PosTokens = {
 const RESERVATION_READ_ROLES = ["admin", "manager", "accountant", "cashier", "warehouse", "sales_rep", "auditor"] as const;
 const CHANNEL_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor", "warehouse", "print_operator"] as const;
 /** مرآة قائمة أدوار customersCashierProcedure الخادمية (server/trpc.ts) — لا تنجرف عنها. */
-const CUSTOMER_CREATE_ROLES = ["cashier", "manager", "sales_rep"] as const;
+const CUSTOMER_CREATE_ROLES = ["cashier", "manager", "sales_rep", "print_operator"] as const;
 const STORE_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
 const CRM_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
 
@@ -266,9 +263,6 @@ export default function Reception() {
     onError: (e) => notify.err(e),
   });
 
-  // سلّم الاحتواء الديناميكي (ResizeObserver + درجات الكثافة) صار داخل PaymentPanel نفسه
-  // (تفكيك §١٣ ش١) — الصفحة تحتفظ بالـref للتركيز فقط (goToWorkflowStep خطوة ٤).
-  const paymentSectionRef = useRef<HTMLDivElement>(null);
   // ترويسة الصفحة تُقاس بالنافذة عمداً (لا باللوحة): تقليصها يُطيل اللوحة، فقياسها باللوحة
   // يصنع حلقة «يُخفى ⇒ تتّسع ⇒ يظهر ⇒ تضيق». النافذة مقياسٌ مستقلّ عن هذا التغذّي الراجع.
   const compactHeader = useMediaQuery("(max-height: 900px)");
@@ -328,7 +322,6 @@ export default function Reception() {
   const [couponLabel, setCouponLabel] = useState<string | null>(null);
   const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
   const [channelHandle, setChannelHandle] = useState("");
-  const [workflowStep, setWorkflowStep] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [printerReady, setPrinterReady] = useState(isPaired());
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({
@@ -365,18 +358,31 @@ export default function Reception() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customer.customerId]);
 
+  // إصلاح (٧/٨، طلب مالك): البحث يشمل الآن أسماء/معرّفات القنوات (لا الهاتف وحده — واتساب
+  // ممكنٌ برقم، لكن انستغرام/تيك توك غالباً معرّفٌ نصّي بلا أرقام) — حدّ ٣ أحرف يكفي أيّ نصّ.
   const channelCustomerQ = trpc.customers.smartSearch.useQuery(
     { q: channelHandle.trim(), limit: 6 },
-    { enabled: channel !== "WALK_IN" && channelHandle.replace(/\D/g, "").length >= 6, staleTime: 30_000 },
+    { enabled: channel !== "WALK_IN" && channelHandle.trim().length >= 3, staleTime: 30_000 },
   );
 
   useEffect(() => {
     if (customer.customerId || channel === "WALK_IN") return;
     const digits = channelHandle.replace(/\D/g, "");
     if (digits.length < 6) return;
+    if (channelCustomerQ.isFetching) return; // لا تحسم قبل استقرار النتائج (يمنع «لا تطابق» عابرة.
     const match = channelCustomerQ.data?.find((candidate) => (candidate.phone ?? "").replace(/\D/g, "") === digits);
-    if (match) setCustomer({ customerId: Number(match.id), name: match.name, phone: match.phone ?? null, isNew: false });
-  }, [channelCustomerQ.data, channelHandle, channel, customer.customerId]);
+    if (match) {
+      setCustomer({ customerId: Number(match.id), name: match.name, phone: match.phone ?? null, isNew: false });
+      return;
+    }
+    // لا تطابق دقيق ⇒ هيّئ «عميل جديد» بنفس نمط الكتابة المباشرة داخل SmartCustomerInput (اسم
+    // مبدئي = الهاتف، فيعرض حقل «اسم العميل» تلقائياً) — لا يُكرِّر فوق تسميةٍ يدوية سابقة لنفس الرقم.
+    setCustomer((prev) => {
+      if (prev.customerId) return prev;
+      if (prev.isNew && prev.phone === channelHandle.trim()) return prev;
+      return { customerId: null, name: channelHandle.trim(), phone: channelHandle.trim(), isNew: true };
+    });
+  }, [channelCustomerQ.data, channelCustomerQ.isFetching, channelHandle, channel, customer.customerId]);
 
   const connectPrinter = async () => {
     try {
@@ -550,7 +556,6 @@ export default function Reception() {
       setSelKey(key);
       return [...prev, { key, row, qty: 1 }];
     });
-    setWorkflowStep(3);
   }, []);
 
   const addRow = useCallback((row: PosRow) => {
@@ -614,7 +619,6 @@ export default function Reception() {
       setSelKey(key);
     }
     setShowCustomization(null);
-    setWorkflowStep(3);
     requestAnimationFrame(() => cartSectionRef.current?.focus());
   }
 
@@ -681,17 +685,27 @@ export default function Reception() {
     [lookupBarcode],
   );
   useBarcodeScanner(handleHidScan, { enabled: !showCustomization && !submitting });
+  // إصلاح (٧/٨): useBarcodeScanner العام يتعمّد تجاهل أي حقلٍ مركَّز (buf.length===0 ⇒ يترك
+  // الكتابة للحقل) كي لا يخطف كتابةً بشرية في أي مُدخَل بالصفحة — لكن حقل البحث هنا يستعيد
+  // التركيز بعد كل إضافة (searchRef.current?.focus()) فيبقى مركَّزاً أغلب الوقت، فلا يبقى أي
+  // مسارٍ يلتقط المسح الفعليّ سوى searchSettled (يعتمد استقرار debounce ١٨٠مي‌ث) — وماسحٌ حقيقي
+  // يرسل Enter خلال عشرات المي‌ث من آخر رقم، أسرع من أي استقرار، فيُبتلَع المسح صامتاً (كان هذا
+  // يبدو للموظفين كأن الباركود «لا يُضاف تلقائياً»، ويترك نصّاً خاماً عالقاً في الحقل يُضاف لاحقاً
+  // بضغطة Enter عرضية كمنتَجٍ قديم/خاطئ). نفس حلّ POS.tsx: توقيتُ الحرف نفسه داخل الحقل (نمط
+  // useSmartScanInput) يطابق الباركود مطابقةً دقيقة بلا انتظار استقرار البحث النصّي إطلاقاً.
+  const { handleKeyDown: handleScanKeyDown } = useSmartScanInput(lookupBarcode);
 
-  // ───── لوحة المبلغ (م٤ — مبلغٌ فقط، لا أوضاع) ────────────────────────────
-  function numPress(k: string) {
-    setPayInput((prev) => {
-      if (k === "DEL") return prev.slice(0, -1);
-      if (k === "C") return "";
-      if (k === "000") return prev ? `${prev}000` : "";
-      if (k === "." && prev.includes(".")) return prev;
-      return prev + k;
-    });
-  }
+  // إصلاح (٧/٨، طلب مالك): أزرار الفواتير/الطلبات/الحجوزات/الوردية… تنتقل إلى الشريط العلوي
+  // المشترك بين الأوضاع الثلاثة (بجانب زرّ «الفواتير» الأصلي، الذي تستبدله محطة الاستقبال بنسخةٍ
+  // أغنى) — عبر portal إلى المُقبس `#pos-header-actions` الذي يرسمه PointOfSale.tsx. الـportal
+  // يُبقي كل الحالة والمنطق هنا (لا رفع state لأعلى، لا تكرار استعلامات وردية/طابعة في الغلاف
+  // المشترك بين POS/PrintPOS/Reception)، ويُلحق العرض فقط بموضعٍ خارج شجرة المكوّن.
+  const [headerActionsNode, setHeaderActionsNode] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setHeaderActionsNode(document.getElementById("pos-header-actions"));
+  }, []);
+
+  // ───── لوحة المبلغ (م٤ — مبلغٌ فقط، لا أوضاع؛ حقل نصّي حقيقي + رقائق سريعة، بلا حاسبة) ──
   function setQuickAmt(v: number) {
     setPayInput(String(v));
   }
@@ -779,16 +793,6 @@ export default function Reception() {
       ? [{ label: "سجلّ العرابين / ردّ", amountLabel: fmt(round2(heldD).toNumber()), onPick: () => { setDepositMenuOpen(false); setPaymentsOpen(true); } }]
       : []),
   ];
-
-  function goToWorkflowStep(step: number) {
-    setWorkflowStep(step);
-    requestAnimationFrame(() => {
-      if (step === 1) customerSectionRef.current?.querySelector("input")?.focus();
-      if (step === 2) searchRef.current?.focus();
-      if (step === 3) cartSectionRef.current?.focus();
-      if (step === 4) paymentSectionRef.current?.focus();
-    });
-  }
 
   // ───── إنشاء العميل عند الحاجة (ensureCustomerId) ────────────────────────
   // إصلاح P2 (٢٣/٦/٢٦): قبل الإصلاح كان customer.customerId=null يُسقط الاسم/الهاتف ⇒ فاتورة وأمر
@@ -1089,7 +1093,7 @@ export default function Reception() {
   async function handleSubmit(opts: { quickFullPay: boolean }) {
     if (cart.length === 0) return;
     if (!shift) {
-      notify.err("ابدأ العمل أولاً قبل إتمام طلب العميل");
+      notify.err("ابدأ الوردية أولاً قبل إتمام طلب العميل");
       return;
     }
     const invalidCustom = cart.find((line) => {
@@ -1174,12 +1178,17 @@ export default function Reception() {
       return;
     }
 
-    // ٥/٨ — إنشاء العميل لم يعُد شرطاً لإتمام الطلب. الاسم والهاتف يُحفظان مرجعاً نصّياً على
-    // الفاتورة وأمر الشغل (contactName/contactPhone)، ولا يُنشَأ سجلّ عميلٍ إلا بطلبٍ صريح
-    // («احفظه كعميل») ومن يملك صلاحيته. سابقاً كان كلّ بيعٍ يمرّ بـcustomers.create فيفشل
-    // الطلب كلّه بـFORBIDDEN لأدوارٍ تفتح محطة الاستقبال بلا crm=FULL (فنّي المطبعة مثلاً).
+    // ٥/٨ — إنشاء العميل لم يعُد شرطاً لإتمام الطلب لبيعٍ مباشر عابر: الاسم والهاتف يُحفظان
+    // مرجعاً نصّياً على الفاتورة وأمر الشغل (contactName/contactPhone) ولا يُنشَأ سجلّ عميلٍ إلا
+    // بطلبٍ صريح («احفظه كعميل») — سابقاً كان كلّ بيعٍ يمرّ بـcustomers.create فيفشل الطلب كلّه
+    // بـFORBIDDEN لأدوارٍ تفتح محطة الاستقبال بلا crm=FULL.
+    // إصلاح (٧/٨، طلب مالك): طلبٌ عبر قناة (واتساب/انستغرام/تيك توك/اتصال) استثناءٌ متعمَّد —
+    // هذه القنوات بطبيعتها متابعةٌ مستقبلية (تذكيرٌ، تسليمٌ لاحق، تكرار شراء) فسجلّ العميل
+    // ليس رفاهية بل الغرض الأساس من التقاطها؛ تُحفَظ تلقائياً بلا انتظار تفعيل خانة، وتبقى
+    // محكومة بنفس الصلاحية (canCreateCustomer) — لا تجاوز أمنيّ، فقط لا حاجة لخطوة إضافية.
+    const isChannelNewCustomer = channel !== "WALK_IN" && customer.isNew && customer.name.trim().length > 0;
     let customerId: number | null = customer.customerId ?? null;
-    if (customerId == null && saveAsCustomer && canCreateCustomer) {
+    if (customerId == null && (saveAsCustomer || isChannelNewCustomer) && canCreateCustomer) {
       try {
         customerId = await ensureCustomerId();
       } catch (e: any) {
@@ -1556,7 +1565,6 @@ export default function Reception() {
       setCustomer({ customerId: null, name: "", phone: null, isNew: false });
       setChannel("WALK_IN");
       setChannelHandle("");
-      setWorkflowStep(1);
       reqIdRef.current = crypto.randomUUID();
       // تحديث القوائم.
       utils.workOrders.list.invalidate().catch(() => {});
@@ -1733,7 +1741,6 @@ export default function Reception() {
     setCustomer({ customerId: null, name: "", phone: null, isNew: false });
     setChannel("WALK_IN");
     setChannelHandle("");
-    setWorkflowStep(1);
     reqIdRef.current = crypto.randomUUID();
     return true;
   }
@@ -1834,7 +1841,7 @@ export default function Reception() {
             <span className="grid size-9 place-items-center rounded-lg bg-violet-100 text-violet-700">
               <Palette aria-hidden className="size-5" />
             </span>
-            <h2 className="text-xl font-extrabold">ابدأ العمل</h2>
+            <h2 className="text-xl font-extrabold">ابدأ الوردية</h2>
           </div>
           <p className="mb-5 text-sm text-muted-foreground">
             أدخل المبلغ الموجود في درج النقدية، ثم ابدأ استقبال العملاء والطلبات.
@@ -1885,7 +1892,7 @@ export default function Reception() {
             disabled={openShiftM.isPending || needsBranchChoice}
             onClick={() => openShiftM.mutate({ branchId, openingBalance: opening || "0", shiftType: "RECEPTION" })}
           >
-            {openShiftM.isPending ? "جارٍ البدء…" : needsBranchChoice ? "اختر الفرع أولاً" : "بدء العمل"}
+            {openShiftM.isPending ? "جارٍ البدء…" : needsBranchChoice ? "اختر الفرع أولاً" : "بدء الوردية"}
           </Button>
           <Link href="/" className="mt-3 block text-center text-sm text-muted-foreground">← الرئيسية</Link>
         </div>
@@ -1921,7 +1928,7 @@ export default function Reception() {
             className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-card p-6 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="mb-1 text-lg font-extrabold">إنهاء العمل وعدّ النقدية</h3>
+            <h3 className="mb-1 text-lg font-extrabold">إنهاء الوردية وعدّ النقدية</h3>
             <p className="mb-4 text-xs text-muted-foreground">
               {fmtDate(new Date())}
             </p>
@@ -1949,7 +1956,7 @@ export default function Reception() {
                           `${fmt(Number(reportQ.data?.heldDepositsTotal ?? 0))} د.ع`,
                         ] as [string, string]]
                       : []),
-                    ["المبلغ عند بدء العمل", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
+                    ["المبلغ عند بدء الوردية", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
                     ...(showRecExpected
                       ? [["المبلغ المفترض وجوده في الدرج", `${fmt(recExpected)} د.ع`] as [string, string]]
                       : []),
@@ -2004,7 +2011,7 @@ export default function Reception() {
                 {hasRecVariance && (
                   <div className="mt-4 space-y-2 rounded-xl border border-destructive/60 bg-destructive/10 p-3">
                     <p className="text-sm font-extrabold text-destructive">
-                      لا يمكن إنهاء العمل لأن المبلغ المعدود لا يطابق المبلغ المسجّل في النظام.
+                      لا يمكن إنهاء الوردية لأن المبلغ المعدود لا يطابق المبلغ المسجّل في النظام.
                     </p>
                     <p className="text-xs text-muted-foreground">
                       أعد عدّ النقدية وراجع عمليات البيع والإرجاع. إذا بقي الفرق، اطلب من المدير المراجعة.
@@ -2037,76 +2044,60 @@ export default function Reception() {
       )}
       {/* أربع مناطق حقيقية: تفاصيل أمر الشغل جزء من السلة، فلا نكررها كمرحلة مستقلة. */}
       <div className={cn("flex-shrink-0 border-b bg-card px-4", compactHeader ? "space-y-1.5 py-1.5" : "space-y-2 py-2.5")}>
-        {/* شريط التسلسل إرشاديٌّ لا وظيفيّ (الانتقال متاح بالنقر على المناطق نفسها وبـF2/F4)،
-            فهو أول ما يُحذف عند ضيق الارتفاع ليعود ~٣٠px إلى لوحة الدفع والسلة. */}
-        {!compactHeader && (
-        <div className="flex items-center gap-1 overflow-x-auto text-[11px] font-bold text-muted-foreground" aria-label="تسلسل إنشاء الطلب">
-          {["العميل والطلب", "إضافة المطلوب", "السلة وتفاصيل الطباعة", "الدفع والطباعة"].map((label, index) => (
-            <button
-              key={label}
-              type="button"
-              onClick={() => goToWorkflowStep(index + 1)}
-              className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-muted", workflowStep === index + 1 && "text-primary")}
-              aria-current={workflowStep === index + 1 ? "step" : undefined}
-            >
-              <span className={cn(
-                "grid size-5 place-items-center rounded-full border text-[10px]",
-                workflowStep === index + 1 ? "border-primary bg-primary text-primary-foreground" : "bg-muted/50",
-              )}>{index + 1}</span>
-              <span>{label}</span>
-              {index < 3 && <span className="mx-1 text-border">←</span>}
-            </button>
-          ))}
-        </div>
-        )}
-
+        {/* إصلاح (٧/٨): شريط التسلسل العلوي (١-٤ بأسماء مختلفة) حُذف — كان يكرّر حرفياً نفس
+            ترقيم «١. العميل…» و«٢. أضف…» أدناه بتسميةٍ ثانية، بلا وظيفةٍ فريدة (الانتقال يبقى
+            متاحاً بالنقر على المناطق نفسها وبـF2/F4). إزالته توفّر مساحة رأسية دائماً، لا عند
+            ضيق الارتفاع فقط. */}
         <div ref={customerSectionRef} className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/25 p-2">
           <span className="shrink-0 text-xs font-extrabold">١. العميل وطريقة وصول الطلب</span>
-          <SmartCustomerInput value={customer} onChange={setCustomer} className="w-60" placeholder="عميل نقدي أو ابحث عن عميل" />
+          {/* إصلاح (٧/٨، طلب مالك): ٥ أزرار قناة طُويت لقائمةٍ منسدلة واحدة — «مباشر» هو الغالب
+              الساحق (زبون حاضر فعلياً)، وتفاصيل القناة (حقل الهاتف/المعرّف) لا تظهر إلا عند
+              اختيار قناة غير مباشرة، فتُستعاد المساحة لبقية الصفّ دائماً لا عند الحاجة فقط. */}
+          <AppSelect
+            value={channel}
+            onValueChange={(v) => setChannel(v as typeof channel)}
+            aria-label="طريقة وصول الطلب"
+            className="h-8 w-32 text-[11px] font-bold"
+          >
+            <option value="WALK_IN">مباشر</option>
+            <option value="WHATSAPP">واتساب</option>
+            <option value="INSTAGRAM">انستغرام</option>
+            <option value="TIKTOK">تيك توك</option>
+            <option value="PHONE">اتصال</option>
+          </AppSelect>
+          {channel !== "WALK_IN" && (
+            <Input
+              value={channelHandle}
+              onChange={(e) => setChannelHandle(e.target.value)}
+              placeholder={channel === "WHATSAPP" || channel === "PHONE" ? "رقم الهاتف" : "معرّف الحساب أو رقم الهاتف"}
+              className="h-8 w-40 text-xs"
+              dir="ltr"
+            />
+          )}
+          <SmartCustomerInput
+            value={customer}
+            onChange={setCustomer}
+            className="w-60"
+            placeholder={channel === "WALK_IN" ? "عميل نقدي أو ابحث عن عميل" : "يُملأ تلقائياً من رقم/معرّف القناة أعلاه"}
+          />
           {customer.customerId && canReadCustomerContext && (
             <Button size="sm" variant="outline" className="h-8" onClick={() => setCustomerContextId(customer.customerId)}>
               معلومات العميل
             </Button>
           )}
-          <div className="flex flex-wrap gap-1">
-            {(
-              [
-                { v: "WALK_IN", label: "مباشر", Icon: Store },
-                { v: "WHATSAPP", label: "واتساب", Icon: MessageCircle },
-                { v: "INSTAGRAM", label: "انستغرام", Icon: Camera },
-                { v: "TIKTOK", label: "تيك توك", Icon: Music },
-                { v: "PHONE", label: "اتصال", Icon: Phone },
-              ] as const
-            ).map((item) => (
-              <button
-                key={item.v}
-                type="button"
-                onClick={() => setChannel(item.v)}
-                className={cn(
-                  "inline-flex h-8 items-center gap-1 rounded-md border px-2 text-[11px] font-bold",
-                  channel === item.v ? "border-primary bg-primary/10 text-primary" : "bg-card hover:bg-muted",
-                )}
-              >
-                <item.Icon aria-hidden className="size-3.5" /> {item.label}
-              </button>
-            ))}
-          </div>
-          {channel !== "WALK_IN" && (
-            <Input
-              value={channelHandle}
-              onChange={(e) => {
-                setChannelHandle(e.target.value);
-                setWorkflowStep(1);
-              }}
-              placeholder="رقم الهاتف أو اسم حساب العميل"
-              className="h-8 min-w-48 flex-1 text-xs"
-              dir="ltr"
-            />
-          )}
-          {/* ٥/٨ — اسم الزبون وهاتفه يُحفظان مرجعاً على الفاتورة دائماً (يُطبَعان ويُستعملان عند
-              التحويل للتوصيل) بلا إنشاء سجلّ عميل. إنشاء العميل صار فعلاً صريحاً مستقلاً. */}
+          {/* ٥/٨ — بيعٌ مباشر: اسم الزبون وهاتفه يُحفظان مرجعاً على الفاتورة افتراضياً (بلا سجلّ
+              عميل) إلا بطلبٍ صريح («احفظه كعميل»). إصلاح (٧/٨، طلب مالك) — طلبُ قناةٍ مختلف:
+              التقاطه هو الغرض من القناة أصلاً، فيُحفظ تلقائياً بلا خانة (SmartCustomerInput نفسه
+              يُظهر «سيُحفظ… تلقائياً» فلا داعي لتكرارها) مع سجلّه الكامل (فواتير/عرابين/محادثات
+              القنوات) مربوطاً من لحظة الإنشاء — إلا أن ينقص المستخدمَ الصلاحية، فيُحذَّر صراحةً. */}
           {!customer.customerId && (customer.name.trim() || customer.phone?.trim()) && (
-            canCreateCustomer ? (
+            channel !== "WALK_IN" ? (
+              !canCreateCustomer && (
+                <span className="text-[11px] font-semibold text-[var(--sem-warn)]">
+                  لا يمكن حفظ سجلّ عميلٍ دائم بصلاحيتك الحالية — سيُحفظ الاسم/الرقم مرجعاً على الطلب فقط. أبلغ المدير.
+                </span>
+              )
+            ) : canCreateCustomer ? (
               <label className="inline-flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
                 <input
                   type="checkbox"
@@ -2158,10 +2149,13 @@ export default function Reception() {
             ref={searchRef}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            onFocus={() => { setShowDrop(true); setWorkflowStep(2); }}
+            onFocus={() => setShowDrop(true)}
             onBlur={() => setTimeout(() => setShowDrop(false), 160)}
             onKeyDown={(e) => {
-              // ش٠: searchSettled يمنع إضافة نتيجةٍ من استعلامٍ أقدم أثناء الكتابة/المسح السريع.
+              // إصلاح (٧/٨): مطابقة الماسح بتوقيت الحرف أولاً (دقيقة، لا تعتمد استقرار البحث).
+              handleScanKeyDown(e, search, setSearch);
+              if (e.defaultPrevented) return;
+              // ش٠: searchSettled يمنع إضافة نتيجةٍ من استعلامٍ أقدم أثناء الكتابة البشرية السريعة.
               if (e.key === "Enter" && searchSettled && results[0]) {
                 e.preventDefault();
                 addRow(results[0]);
@@ -2231,17 +2225,6 @@ export default function Reception() {
           <ClipboardList aria-hidden className="size-4" /> إضافة خدمة / أمر شغل
         </button>
 
-        <button
-          type="button"
-          onClick={() => setWorkshop("ORDERS")}
-          className="relative inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-4 text-xs font-extrabold transition-colors hover:bg-muted/60"
-        >
-          <Truck aria-hidden className="size-4" /> طابور الطلبات والتوصيل
-          {woReadyCount > 0 && (
-            <Badge variant="secondary" className="ms-0.5 tabular-nums">{woReadyCount}</Badge>
-          )}
-        </button>
-
         {/* ش٦ — توصيل هذا الطلب: طلبٌ هاتفيّ بخطوة واحدة (سلة + توصيل + تثبيت ⇒ إسناد تلقائيّ). */}
         <button
           type="button"
@@ -2257,100 +2240,143 @@ export default function Reception() {
           {orderDelivery ? `توصيل: ${orderDelivery.partyName}` : "توصيل هذا الطلب"}
         </button>
 
-        {canReadReservations && (
-          <button
-            type="button"
-            onClick={openReservations}
-            className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 border-primary bg-primary/5 px-4 text-xs font-extrabold text-primary transition-colors hover:bg-primary/10"
-          >
-            <CalendarClock aria-hidden className="size-4" /> الحجوزات
-          </button>
-        )}
+        </div>
 
-        {canReadStoreOrders && (
-          <button
-            type="button"
-            onClick={() => setWorkshop("STORE")}
-            className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-4 text-xs font-extrabold transition-colors hover:bg-muted/60"
-          >
-            <Package aria-hidden className="size-4" /> طلبات الموقع
-          </button>
-        )}
-
-        <div className="ms-auto flex items-center gap-2">
-          {bridge.enabled && (
+        {/* إصلاح (٧/٨، طلب مالك): كل أزرار محطة الاستقبال العابرة للورش (فواتير/طلبات/طلبات
+            الموقع/حجوزات/رسائل/سحب نقدي/طابعة/آخر فاتورة/حالة الوردية) تُرسَل بـportal إلى
+            الشريط العلوي المشترك — بجانب موضع زرّ «الفواتير» الأصلي — بدل تكديسها هنا. تُبقي كل
+            الحالة والمنطق داخل هذا المكوّن (شرط الـportal: نفس شجرة React، موضعٌ مختلف في DOM). */}
+        {headerActionsNode && createPortal(
+          <>
             <button
               type="button"
-              onClick={() => void testServerPrint()}
-              title={`جسر طباعة صامت: ${bridge.description} — اضغط لطباعة تذكرة اختبار`}
-              aria-label="جسر طباعة على الخادم — تذكرة اختبار"
-              className="inline-flex h-9 items-center gap-1 rounded-lg border border-emerald-500 bg-card px-2.5 text-emerald-600 hover:bg-emerald-500/10"
-            >
-              <Printer aria-hidden className="size-4" />
-              <Globe aria-hidden className="size-3.5" />
-            </button>
-          )}
-          {isWebUsbSupported() && (
-            <button
-              type="button"
-              onClick={() => void connectPrinter()}
-              title={printerReady
-                ? "الطابعة الافتراضية مربوطة تلقائياً — اضغط لتبديلها"
-                : "اربط طابعة حرارية — ستُربط تلقائياً في المرات القادمة"}
-              aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط طابعة حرارية"}
+              onClick={() => setWorkshop("INVOICES")}
+              title="فواتيري — كل ما بعتُه من هذه المحطة"
               className={cn(
-                "inline-flex h-9 items-center gap-1 rounded-lg border bg-card px-2.5 hover:bg-muted/60",
-                printerReady
-                  ? "border-emerald-500 text-emerald-600"
-                  : "border-border text-muted-foreground",
+                "inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border px-3 text-sm font-bold transition-colors",
+                workshop === "INVOICES" ? "border-primary bg-primary/10 text-primary" : "bg-muted/40 text-foreground hover:bg-muted",
               )}
             >
-              <Printer aria-hidden className="size-4" />
-              {printerReady && <Check aria-hidden className="size-3.5" strokeWidth={3} />}
+              <ReceiptIcon aria-hidden className="size-4" />
+              <span>الفواتير</span>
             </button>
-          )}
-          {/* ش١: شارة «آخر فاتورة» + نسخ الرقم — أكثر ما يُطلَب بعد إغلاق النافذة. */}
-          {lastSale && lastSale.invoiceNumbers[0] && (
             <button
               type="button"
-              onClick={() => {
-                void navigator.clipboard?.writeText(lastSale.invoiceNumbers[0]);
-                notify.ok("نُسخ رقم الفاتورة", lastSale.invoiceNumbers[0]);
-              }}
-              title="آخر فاتورة — اضغط لنسخ الرقم (F9 لإعادة الطباعة)"
-              className="inline-flex h-9 items-center gap-1 rounded-lg border bg-card px-2.5 text-[11px] font-bold text-muted-foreground hover:bg-muted/60"
-              dir="ltr"
+              onClick={() => setWorkshop("ORDERS")}
+              title="طابور الطلبات والتوصيل — من الاستلام حتى التسليم"
+              className={cn(
+                "relative inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border px-3 text-sm font-bold transition-colors",
+                workshop === "ORDERS" ? "border-primary bg-primary/10 text-primary" : "bg-muted/40 text-foreground hover:bg-muted",
+              )}
             >
-              <Copy aria-hidden className="size-3" /> {lastSale.invoiceNumbers[0]}
+              <Truck aria-hidden className="size-4" />
+              <span>الطلبات</span>
+              {woReadyCount > 0 && (
+                <Badge variant="secondary" className="ms-0.5 tabular-nums">{woReadyCount}</Badge>
+              )}
             </button>
-          )}
-          {/* ش١ (§٨.٦): سحبٌ نقديّ من الدرج — درج الاستقبال يتراكم فيه بيعٌ وعرابين وأجرةٌ أمانة. */}
-          <button
-            type="button"
-            onClick={() => setCashDropping(true)}
-            title="سحب نقدي من الدرج إلى الخزينة"
-            className="inline-flex h-9 items-center gap-1 rounded-lg border bg-card px-2.5 text-[11px] font-bold hover:bg-muted/60"
-          >
-            <HandCoins aria-hidden className="size-4" /> سحب نقدي
-          </button>
-          <div className="flex items-center gap-1.5 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-1.5 text-xs font-bold text-violet-700">
-            <span className="size-2 animate-pulse rounded-full bg-violet-500" />
-            العمل مفتوح #{shift.id}
-          </div>
-          <Button size="sm" variant="outline" onClick={() => setClosing(true)}>
-            إنهاء العمل
-          </Button>
-          {canReadChannels && (
+            {canReadStoreOrders && (
+              <button
+                type="button"
+                onClick={() => setWorkshop("STORE")}
+                title="طلبات الموقع — طلبات العملاء عبر المتجر الإلكتروني"
+                className={cn(
+                  "inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border px-3 text-sm font-bold transition-colors",
+                  workshop === "STORE" ? "border-primary bg-primary/10 text-primary" : "bg-muted/40 text-foreground hover:bg-muted",
+                )}
+              >
+                <Package aria-hidden className="size-4" />
+                <span>طلبات الموقع</span>
+              </button>
+            )}
+            {canReadReservations && (
+              <button
+                type="button"
+                onClick={openReservations}
+                className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/5 px-3 text-sm font-bold text-primary transition-colors hover:bg-primary/10"
+              >
+                <CalendarClock aria-hidden className="size-4" />
+                <span>الحجوزات</span>
+              </button>
+            )}
+            {canReadChannels && (
+              <button
+                type="button"
+                onClick={() => setShowInbox(true)}
+                className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold hover:bg-muted"
+              >
+                <MessageCircle aria-hidden className="size-4" />
+                <span className="hidden lg:inline">رسائل وطلبات العملاء</span>
+              </button>
+            )}
+
+            <div className="mx-1 h-6 w-px shrink-0 bg-border" aria-hidden />
+
+            {bridge.enabled && (
+              <button
+                type="button"
+                onClick={() => void testServerPrint()}
+                title={`جسر طباعة صامت: ${bridge.description} — اضغط لطباعة تذكرة اختبار`}
+                aria-label="جسر طباعة على الخادم — تذكرة اختبار"
+                className="inline-flex h-[var(--ui-control)] items-center gap-1 rounded-lg border border-emerald-500 bg-card px-2.5 text-emerald-600 hover:bg-emerald-500/10"
+              >
+                <Printer aria-hidden className="size-4" />
+                <Globe aria-hidden className="size-3.5" />
+              </button>
+            )}
+            {isWebUsbSupported() && (
+              <button
+                type="button"
+                onClick={() => void connectPrinter()}
+                title={printerReady
+                  ? "الطابعة الافتراضية مربوطة تلقائياً — اضغط لتبديلها"
+                  : "اربط طابعة حرارية — ستُربط تلقائياً في المرات القادمة"}
+                aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط طابعة حرارية"}
+                className={cn(
+                  "inline-flex h-[var(--ui-control)] items-center gap-1 rounded-lg border bg-card px-2.5 hover:bg-muted/60",
+                  printerReady ? "border-emerald-500 text-emerald-600" : "border-border text-muted-foreground",
+                )}
+              >
+                <Printer aria-hidden className="size-4" />
+                {printerReady && <Check aria-hidden className="size-3.5" strokeWidth={3} />}
+              </button>
+            )}
+            {/* ش١: شارة «آخر فاتورة» + نسخ الرقم — أكثر ما يُطلَب بعد إغلاق النافذة. */}
+            {lastSale && lastSale.invoiceNumbers[0] && (
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(lastSale.invoiceNumbers[0]);
+                  notify.ok("نُسخ رقم الفاتورة", lastSale.invoiceNumbers[0]);
+                }}
+                title="آخر فاتورة — اضغط لنسخ الرقم (F9 لإعادة الطباعة)"
+                className="inline-flex h-[var(--ui-control)] items-center gap-1 rounded-lg border bg-card px-2.5 text-xs font-bold text-muted-foreground hover:bg-muted/60"
+                dir="ltr"
+              >
+                <Copy aria-hidden className="size-3" /> {lastSale.invoiceNumbers[0]}
+              </button>
+            )}
+            {/* ش١ (§٨.٦): سحبٌ نقديّ من الدرج — درج الاستقبال يتراكم فيه بيعٌ وعرابين وأجرةٌ أمانة. */}
             <button
               type="button"
-              onClick={() => setShowInbox(true)}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-card px-3 text-xs font-bold hover:bg-muted/60"
+              onClick={() => setCashDropping(true)}
+              title="سحب نقدي من الدرج إلى الخزينة"
+              className="inline-flex h-[var(--ui-control)] items-center gap-1 rounded-lg border bg-muted/40 px-2.5 text-sm font-bold hover:bg-muted"
             >
-              <MessageCircle aria-hidden className="size-4" /> رسائل وطلبات العملاء
+              <HandCoins aria-hidden className="size-4" />
+              <span className="hidden lg:inline">سحب نقدي</span>
             </button>
-          )}
-        </div>
-        </div>
+            <div className="flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 text-sm font-bold text-violet-700">
+              <span className="size-2 animate-pulse rounded-full bg-violet-500" />
+              الوردية #{shift.id}
+            </div>
+            <Button size="sm" variant="outline" onClick={() => setClosing(true)}>
+              إنهاء الوردية
+            </Button>
+          </>,
+          headerActionsNode,
+        )}
+
         {/* ش٢ (§٨.٢): شريط الطلبات المحفوظة — يدخل سُلَّم الاحتواء: تحت compactHeader ينكمش
             إلى زرٍّ منسدلٍ واحد (V18) فلا يموّل نفسه من لوحة الدفع. */}
         <DraftStrip
@@ -2366,28 +2392,43 @@ export default function Reception() {
         />
       </div>
 
-      {/* ─── الجسم: سلّة (يسار) + لوحة الدفع (يمين) ─── */}
-      <div className="flex min-h-0 flex-1 flex-row-reverse gap-3 p-3">
+      {/* ─── الجسم: عمود السلة يملأ العرض؛ لوحة الدفع شريطٌ مستقلّ أسفله (خارج الحشوة، حافّة-لحافّة) ─── */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 pb-0">
         {/* ─ عمود العمل: تبويبات الورش تركب رأس السلة (§٨.١ — صفر تكلفة عمودية) ─ */}
-        <div ref={cartSectionRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
-          <div className="flex h-12 flex-shrink-0 items-center gap-1 border-b bg-muted/40 px-2" role="tablist" aria-label="ورش المحطة">
-            <WsTab active={workshop === "CART"} onClick={() => setWorkshop("CART")} Icon={ShoppingCart}
-              label={cart.length > 0 ? `السلة (${cart.length})` : "السلة"} />
-            <WsTab active={workshop === "INVOICES"} onClick={() => setWorkshop("INVOICES")} Icon={ReceiptIcon} label="الفواتير" />
-            <WsTab active={workshop === "ORDERS"} onClick={() => setWorkshop("ORDERS")} Icon={Truck} label="الطلبات" badge={woReadyCount} />
-            {canReadStoreOrders && (
-              <WsTab active={workshop === "STORE"} onClick={() => setWorkshop("STORE")} Icon={Package} label="طلبات الموقع" />
+        <div ref={cartSectionRef} tabIndex={-1} className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
+          {/* إصلاح (٧/٨، طلب مالك): تبويبات الورش («الفواتير»/«الطلبات»/«طلبات الموقع») حُذفت من
+              هنا — نقاط الدخول إليها صارت في الشريط العلوي المشترك (بجانب زرّ «الفواتير» الأصلي،
+              انظر portal أدناه) بدل التكرار. هذا الصفّ الآن مؤشّر «أين أنا» فقط: اسم السلّة
+              وأدواتها حين workshop=CART، أو زرّ رجوعٍ موحَّد لأي ورشةٍ أخرى. */}
+          <div className="flex h-12 flex-shrink-0 items-center gap-2 border-b bg-muted/40 px-3">
+            {workshop === "CART" ? (
+              <>
+                <span className="inline-flex items-center gap-1.5 text-xs font-extrabold">
+                  <ShoppingCart aria-hidden className="size-4" />
+                  {cart.length > 0 ? `السلة (${cart.length})` : "السلة"}
+                </span>
+                {cart.length > 0 && (
+                  <div className="ms-auto flex items-center gap-2">
+                    <span className="hidden text-[11px] text-muted-foreground sm:inline">{cartCount} وحدة</span>
+                    <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
+                      تفريغ
+                    </Button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setWorkshop("CART")}
+                className="inline-flex items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs font-extrabold hover:bg-muted"
+              >
+                <ArrowRight aria-hidden className="size-4" /> رجوع إلى السلة
+                <span className="text-muted-foreground">
+                  ·{" "}
+                  {workshop === "INVOICES" ? "الفواتير" : workshop === "ORDERS" ? "الطلبات" : "طلبات الموقع"}
+                </span>
+              </button>
             )}
-            <div className="ms-auto flex items-center gap-2">
-              {workshop === "CART" && cart.length > 0 && (
-                <>
-                  <span className="hidden text-[11px] text-muted-foreground sm:inline">{cartCount} وحدة</span>
-                  <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
-                    تفريغ
-                  </Button>
-                </>
-              )}
-            </div>
           </div>
 
           {workshop === "INVOICES" ? (
@@ -2401,7 +2442,7 @@ export default function Reception() {
             />
           ) : workshop === "ORDERS" ? (
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              <ReceptionOrderQueue branchId={branchId} onClose={() => setWorkshop("CART")} />
+              <ReceptionOrderQueue branchId={branchId} />
             </div>
           ) : workshop === "STORE" ? (
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -2425,53 +2466,52 @@ export default function Reception() {
             />
           )}
         </div>
-
-        {/* ─ لوحة الدفع ─ */}
-        <PaymentPanel
-          ref={paymentSectionRef}
-          onFocusStep={() => setWorkflowStep(4)}
-          payInput={payInput}
-          setPayInput={setPayInput}
-          method={method}
-          setMethod={setMethod}
-          paymentReference={paymentReference}
-          setPaymentReference={setPaymentReference}
-          needPaymentRef={needPaymentRef}
-          grandTotal={grandTotal}
-          expectedNow={expectedNow}
-          cashRoundingDelta={cashRoundingDelta}
-          sumDirect={sumDirect}
-          sumCustom={sumCustom}
-          heldDelivery={heldDelivery}
-          cashDueNow={cashDueNow}
-          heldDeposit={round2(heldD).toNumber()}
-          paid={paid}
-          change={change}
-          remaining={remaining}
-          isChange={isChange}
-          isOwing={isOwing}
-          hasCustom={hasCustom}
-          depositMenuOpen={depositMenuOpen}
-          setDepositMenuOpen={setDepositMenuOpen}
-          depositOptions={depositOptions}
-          numPress={numPress}
-          payAll={payAll}
-          setQuickAmt={setQuickAmt}
-          couponCode={couponCode}
-          couponLabel={couponLabel}
-          couponInput={couponInput}
-          setCouponInput={setCouponInput}
-          couponOpen={couponOpen}
-          setCouponOpen={setCouponOpen}
-          applyCoupon={applyCoupon}
-          clearCoupon={clearCoupon}
-          couponPending={couponPreview.isPending}
-          submitting={submitting}
-          cartEmpty={cart.length === 0}
-          hasShift={!!shift}
-          onSubmit={(opts) => void handleSubmit(opts)}
-        />
       </div>
+
+      {/* ─ لوحة الدفع — شريطٌ ثابتٌ حافّة-لحافّة أسفل الصفحة (خارج حشوة عمود السلة) ─
+          آخر عنصرٍ في عمود الصفحة الجذر (flex-col)؛ منطقة السلة أعلاه وحدها flex-1/تُمرَّر،
+          فزرّا الدفع لا يُدفَعان خارج الشاشة أبداً مهما ضاق الارتفاع أو تغيّر تكبير المتصفّح. */}
+      <PaymentPanel
+        payInput={payInput}
+        setPayInput={setPayInput}
+        method={method}
+        setMethod={setMethod}
+        paymentReference={paymentReference}
+        setPaymentReference={setPaymentReference}
+        needPaymentRef={needPaymentRef}
+        grandTotal={grandTotal}
+        expectedNow={expectedNow}
+        cashRoundingDelta={cashRoundingDelta}
+        sumDirect={sumDirect}
+        sumCustom={sumCustom}
+        heldDelivery={heldDelivery}
+        cashDueNow={cashDueNow}
+        heldDeposit={round2(heldD).toNumber()}
+        paid={paid}
+        change={change}
+        remaining={remaining}
+        isChange={isChange}
+        isOwing={isOwing}
+        hasCustom={hasCustom}
+        depositMenuOpen={depositMenuOpen}
+        setDepositMenuOpen={setDepositMenuOpen}
+        depositOptions={depositOptions}
+        payAll={payAll}
+        setQuickAmt={setQuickAmt}
+        couponCode={couponCode}
+        couponLabel={couponLabel}
+        couponInput={couponInput}
+        setCouponInput={setCouponInput}
+        couponOpen={couponOpen}
+        setCouponOpen={setCouponOpen}
+        applyCoupon={applyCoupon}
+        clearCoupon={clearCoupon}
+        couponPending={couponPreview.isPending}
+        submitting={submitting}
+        cartEmpty={cart.length === 0}
+        hasShift={!!shift}
+        onSubmit={(opts) => void handleSubmit(opts)}
+      />
 
       {/* شارة المزامنة — تُركَّب في كلّ شاشات الكاشير: تعرض حالة الاتصال وطابور الالتقاط،
           وتُفرّغ **كلّ** الأنواع (تجزئة/طباعة/استقبال) لا نوع هذه الشاشة وحده. */}

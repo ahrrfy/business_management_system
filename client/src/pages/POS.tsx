@@ -20,6 +20,7 @@ import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printRec
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
+import { useSmartScanInput } from "@/hooks/useSmartScanInput";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
 import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, readOutboxSummary, subscribeOutbox } from "@/lib/offline/outbox";
@@ -158,7 +159,6 @@ const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جم�
 // METHOD_LABEL انتقل إلى lib/paymentMethod.ts — مصدر واحد مع Invoices/InvoiceDetail/حوار الوردية.
 const QUICK_AMTS = [5000, 10000, 25000, 50000, 100000];
 const SHOP = "الرؤية العربية";
-const SCAN_MS = 80;
 
 // ─── Utility ──────────────────────────────────────────────────────────────────
 
@@ -212,78 +212,6 @@ const createTab = (id: number, label?: string): POSTab => ({
   couponInput: "", couponCode: null, couponLabel: null,
   paymentRef: "", dueDate: "",
 });
-
-// ─── useSmartScanInput ────────────────────────────────────────────────────────
-
-function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
-  const prevMsRef  = useRef(0);
-  const bufRef     = useRef("");
-  const inScanRef  = useRef(false);
-  const timerRef   = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  const fire = useCallback(
-    (setValue: (s: string) => void) => {
-      clearTimeout(timerRef.current);
-      const code = bufRef.current;
-      bufRef.current = "";
-      inScanRef.current = false;
-      if (code.length >= 4) {
-        setValue("");
-        onBarcode(code);
-      } else {
-        // إدخال بشري قصير أُسيء تصنيفه كمسح (نقرتان سريعتان <٨٠مي، وليس باركوداً ≥٤ خانات) —
-        // أعِد النصّ المكتوب بدل ابتلاعه صامتاً. لا يمسّ مسار المسح الحقيقي إطلاقاً (≥٤ يُمسح ويُبحث كالسابق).
-        setValue(code);
-      }
-    },
-    [onBarcode]
-  );
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>, curVal: string, setValue: (s: string) => void) => {
-      const now = Date.now();
-      const prevMs = prevMsRef.current;
-      prevMsRef.current = now;
-      const gap = now - prevMs;
-
-      if (e.key === "Enter") {
-        clearTimeout(timerRef.current);
-        if (inScanRef.current && bufRef.current.length >= 4) {
-          e.preventDefault();
-          fire(setValue);
-        }
-        return;
-      }
-      if (e.key === "Escape") {
-        clearTimeout(timerRef.current);
-        bufRef.current = "";
-        inScanRef.current = false;
-        return;
-      }
-      if (e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return;
-
-      if (inScanRef.current) {
-        e.preventDefault();
-        bufRef.current += e.key;
-        clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => fire(setValue), SCAN_MS * 6);
-        return;
-      }
-
-      if (prevMs > 0 && gap < SCAN_MS) {
-        e.preventDefault();
-        bufRef.current = curVal + e.key;
-        inScanRef.current = true;
-        setValue("");
-        clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => fire(setValue), SCAN_MS * 6);
-      }
-    },
-    [fire]
-  );
-
-  return { handleKeyDown };
-}
 
 // ─── Receipt builder ──────────────────────────────────────────────────────────
 
