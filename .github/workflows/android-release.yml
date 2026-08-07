@@ -103,7 +103,7 @@ jobs:
           apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           aapt_path="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
           "$apksigner_path" verify --verbose "$apk"
-          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='3' versionName='1.0.0'"
+          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='4' versionName='1.0.0'"
           unzip -p "$apk" 'classes*.dex' > "$RUNNER_TEMP/native-classes.dex"
           grep -aFq 'https://srv1548487.hstgr.cloud' "$RUNNER_TEMP/native-classes.dex"
           actual="$("$apksigner_path" verify --print-certs "$apk" | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"

@@ -20,6 +20,7 @@ import androidx.lifecycle.ViewModelProvider
 import online.alarabiya.superapp.core.network.TrpcClient
 import online.alarabiya.superapp.core.notifications.NativeNotificationNavigationInbox
 import online.alarabiya.superapp.core.notifications.NativePushCoordinator
+import online.alarabiya.superapp.core.notifications.NotificationPermissionLifecycleGuard
 import online.alarabiya.superapp.core.notifications.NotificationPermissionController
 import online.alarabiya.superapp.core.security.BiometricSessionInvalidatedException
 import online.alarabiya.superapp.core.security.BiometricSessionOperation
@@ -72,6 +73,7 @@ class MainActivity : FragmentActivity() {
     private var biometricPromptInFlight = false
     private var pushActivatedForSession = false
     private var pushRegistrationRequestedForSession = false
+    private val notificationPermissionLifecycle = NotificationPermissionLifecycleGuard()
     @Volatile private var composeLaunchReady = false
     private val platformSplashExited = mutableStateOf(false)
     private val brandLaunchVisible = mutableStateOf(true)
@@ -299,7 +301,11 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::sessionStore.isInitialized && sessionStore.isBiometricEnabled() && ::viewModel.isInitialized) {
+        if (notificationPermissionLifecycle.consumeResumeBypass()) {
+            if (::viewModel.isInitialized && viewModel.sessionState is AppSessionState.Ready) {
+                activateNotificationsForReadySession()
+            }
+        } else if (::sessionStore.isInitialized && sessionStore.isBiometricEnabled() && ::viewModel.isInitialized) {
             // Enforce the lock again on foreground so a late network callback from the previous
             // lifecycle cannot restore a Ready state while the Activity was backgrounded.
             sessionStore.lock()
@@ -312,7 +318,12 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onStop() {
-        if (::sessionStore.isInitialized && sessionStore.isBiometricEnabled() && !isChangingConfigurations) {
+        if (
+            ::sessionStore.isInitialized &&
+            sessionStore.isBiometricEnabled() &&
+            !isChangingConfigurations &&
+            !notificationPermissionLifecycle.onActivityStopping()
+        ) {
             biometricPrompt?.cancelAuthentication()
             biometricPrompt = null
             biometricPromptInFlight = false
@@ -337,14 +348,16 @@ class MainActivity : FragmentActivity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (
-            requestCode == NotificationPermissionController.REQUEST_CODE &&
-            ::viewModel.isInitialized &&
-            viewModel.sessionState is AppSessionState.Ready &&
-            NotificationPermissionController.canPost(this)
-        ) {
-            pushRegistrationRequestedForSession = true
-            NativePushCoordinator.registerExistingSession(applicationContext)
+        if (requestCode == NotificationPermissionController.REQUEST_CODE) {
+            notificationPermissionLifecycle.permissionResultReceived()
+            if (
+                ::viewModel.isInitialized &&
+                viewModel.sessionState is AppSessionState.Ready &&
+                NotificationPermissionController.canPost(this)
+            ) {
+                pushRegistrationRequestedForSession = true
+                NativePushCoordinator.registerExistingSession(applicationContext)
+            }
         }
     }
 
@@ -356,7 +369,11 @@ class MainActivity : FragmentActivity() {
                 NativePushCoordinator.registerExistingSession(applicationContext)
             }
         } else {
-            NotificationPermissionController.requestOnceAfterAuthentication(this)
+            notificationPermissionLifecycle.requestStarting()
+            val requested = runCatching {
+                NotificationPermissionController.requestOnceAfterAuthentication(this)
+            }.getOrDefault(false)
+            if (!requested) notificationPermissionLifecycle.requestDidNotStart()
         }
     }
 
