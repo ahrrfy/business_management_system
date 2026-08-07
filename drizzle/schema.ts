@@ -6367,6 +6367,61 @@ export const nativePushOutbox = mysqlTable(
 export type NativePushOutboxRow = typeof nativePushOutbox.$inferSelect;
 export type InsertNativePushOutbox = typeof nativePushOutbox.$inferInsert;
 
+/** صندوق الإشعارات داخل السوبر تطبيق — مصدر دائم قابل للقراءة والتدقيق، مستقل عن Web Push.
+ *  `eventKey` يجعل إدراج الحدث idempotent حتى لو أعاد العامل/الـwebhook المحاولة. */
+export const appNotifications = mysqlTable(
+  "appNotifications",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id),
+    kind: varchar("kind", { length: 40 }).notNull(),
+    title: varchar("title", { length: 180 }).notNull(),
+    body: varchar("body", { length: 600 }).notNull(),
+    route: varchar("route", { length: 255 }).notNull(),
+    entityType: varchar("entityType", { length: 60 }),
+    entityId: bigint("entityId", { mode: "number" }),
+    eventKey: varchar("eventKey", { length: 190 }).notNull().unique(),
+    requiresAction: boolean("requiresAction").default(false).notNull(),
+    readAt: timestamp("readAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    userCreatedIdx: index("idx_app_notice_user_created").on(
+      table.userId,
+      table.createdAt,
+    ),
+    userReadIdx: index("idx_app_notice_user_read").on(
+      table.userId,
+      table.readAt,
+    ),
+  }),
+);
+export type AppNotification = typeof appNotifications.$inferSelect;
+export type InsertAppNotification = typeof appNotifications.$inferInsert;
+
+/** تفضيلات الإشعارات الشخصية. الاشتراك الفعلي بالجهاز يبقى في pushSubscriptions؛ هذا الصف
+ *  يحدّد فئات الأحداث التي يسمح المستخدم بإظهارها على شاشة القفل. */
+export const appNotificationPreferences = mysqlTable(
+  "appNotificationPreferences",
+  {
+    userId: int("userId")
+      .primaryKey()
+      .references(() => users.id),
+    taskAssigned: boolean("taskAssigned").default(true).notNull(),
+    payrollReady: boolean("payrollReady").default(true).notNull(),
+    attendance: boolean("attendance").default(true).notNull(),
+    leaveStatus: boolean("leaveStatus").default(true).notNull(),
+    approvals: boolean("approvals").default(true).notNull(),
+    quietHoursStart: varchar("quietHoursStart", { length: 5 }),
+    quietHoursEnd: varchar("quietHoursEnd", { length: 5 }),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+);
+export type AppNotificationPreference =
+  typeof appNotificationPreferences.$inferSelect;
+
 /** سجلّ إرسال الإشعارات — يمنع الإرسال المزدوج (يوم واحد لكل مستخدم لكل نوع) ويوفّر تدقيقاً تاريخياً.
  *  status: SENT ناجح، FAILED_GONE (410=المستخدم أبطل الاشتراك بالمتصفّح، شطبنا الصفّ)،
  *  FAILED_OTHER أعطال شبكة/خادم أخرى (نُبقي الاشتراك ونعيد المحاولة الغد). */
@@ -6377,7 +6432,7 @@ export const pushNotificationLog = mysqlTable(
     userId: int("userId")
       .notNull()
       .references(() => users.id),
-    kind: mysqlEnum("pushKind", ["MORNING_BRIEF"]).notNull(),
+    kind: varchar("pushKind", { length: 40 }).notNull(),
     /** JSON مُرسَل (aggregate counts فقط — لا أسماء عملاء) — للتدقيق التاريخي. */
     payload: text("payload").notNull(),
     status: mysqlEnum("pushLogStatus", [

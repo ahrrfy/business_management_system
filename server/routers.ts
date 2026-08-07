@@ -22,6 +22,7 @@ import { arRemindersRouter } from "./routers/arRemindersRouter";
 import { apRemindersRouter } from "./routers/apRemindersRouter";
 import { pushRouter } from "./routers/pushRouter";
 import { nativePushRouter } from "./routers/nativePushRouter";
+import { superAppRouter } from "./routers/superAppRouter";
 import { expenseRouter } from "./routers/expenseRouter";
 import { reportsRouter } from "./routers/reportsRouter";
 import { quotationRouter } from "./routers/quotationRouter";
@@ -81,6 +82,7 @@ import { receptionRouter } from "./routers/receptionRouter";
 export const appRouter = router({
   system: systemRouter,
   auth: authRouter,
+  superApp: superAppRouter,
   // العمل دون اتصال (لقطات النموذج المحلي) — الشريحة ٢ من خطة الأوفلاين.
   offline: offlineRouter,
   users: userRouter,

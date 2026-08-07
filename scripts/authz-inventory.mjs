@@ -62,6 +62,13 @@ const PROCEDURES = {
     roles: ["authenticated-user"],
     branch: "self",
   },
+  superAppProcedure: {
+    authority: "module-map",
+    module: null,
+    level: "RESOLVED",
+    roles: ["authenticated-user"],
+    branch: "scoped",
+  },
   // تكليف جرد ذاتي: ليست صلاحية مخزون عامة؛ handler يربط كل استعلام بالمستخدم المكلّف.
   stocktakeAssignmentProcedure: {
     authority: "self-assignment",
