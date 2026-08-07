@@ -11,13 +11,27 @@
 //   • محتوى الإشعار يحوي أعداداً فقط (aggregate) — لا أسماء/أرقام هواتف عملاء (يظهر في شريط الإشعارات).
 //   • Subscription tokens نفسها من browser push service — endpoint وحده ليس هوية (يحتاج VAPID للتوقيع).
 import { TRPCError } from "@trpc/server";
-import webpush, { type PushSubscription as WebPushSubscription } from "web-push";
+import webpush, {
+  type PushSubscription as WebPushSubscription,
+} from "web-push";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { pushDailyClaim, pushSubscriptions, pushNotificationLog } from "../../drizzle/schema";
+import {
+  pushDailyClaim,
+  pushSubscriptions,
+  pushNotificationLog,
+} from "../../drizzle/schema";
 import { requireDb } from "./tx";
 
-/** أنواع الإشعارات المدعومة — واحد الآن، قابل للتوسيع بلا تغيير schema. */
-export type PushKind = "MORNING_BRIEF";
+/** أنواع الإشعارات المدعومة لقناة الويب والسوبر تطبيق. */
+export type PushKind =
+  | "MORNING_BRIEF"
+  | "ATTENDANCE_CHECK_IN"
+  | "ATTENDANCE_CHECK_OUT"
+  | "TASK_ASSIGNED"
+  | "PAYROLL_READY"
+  | "LEAVE_STATUS"
+  | "APPROVAL_REQUIRED";
+type DailyPushKind = Extract<PushKind, "MORNING_BRIEF">;
 
 /** جسم الإشعار المُرسَل — أعداد فقط (لا بيانات شخصية). يُوسَّع للأنواع القادمة. */
 export interface MorningBriefPayload {
@@ -30,11 +44,42 @@ export interface MorningBriefPayload {
    *  morningPushScheduler.ts. */
   url: string;
   /** أعداد للسياق (للتحقّق في اختبار E2E المستقبلي). */
-  counts: { arRemindersDue: number; promisedToday: number; overdueWorkOrders: number };
+  counts: {
+    arRemindersDue: number;
+    promisedToday: number;
+    overdueWorkOrders: number;
+  };
 }
 
+export interface AttendancePushPayload {
+  kind: "ATTENDANCE_CHECK_IN" | "ATTENDANCE_CHECK_OUT";
+  title: string;
+  body: string;
+  url: "/mobile#attendance";
+}
+
+export interface OperationalPushPayload {
+  kind:
+    | "TASK_ASSIGNED"
+    | "PAYROLL_READY"
+    | "LEAVE_STATUS"
+    | "APPROVAL_REQUIRED";
+  title: string;
+  body: string;
+  url: string;
+}
+
+export type AppPushPayload =
+  | MorningBriefPayload
+  | AttendancePushPayload
+  | OperationalPushPayload;
+
 /** تهيئة web-push من env. تُنادى مرّة عند إنشاء الخدمة (idempotent — web-push يسمح بإعادة الضبط). */
-function ensureVapidConfigured(): { publicKey: string; privateKey: string; subject: string } {
+function ensureVapidConfigured(): {
+  publicKey: string;
+  privateKey: string;
+  subject: string;
+} {
   const publicKey = process.env.VAPID_PUBLIC_KEY;
   const privateKey = process.env.VAPID_PRIVATE_KEY;
   const subject = process.env.VAPID_SUBJECT || "mailto:admin@alroya.local";
@@ -78,7 +123,10 @@ export async function subscribeUserToPush(
   userId: number,
 ): Promise<{ id: number }> {
   if (!input.endpoint || !input.p256dh || !input.auth) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "بيانات الاشتراك ناقصة." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "بيانات الاشتراك ناقصة.",
+    });
   }
   const db = requireDb();
   const existing = await db
@@ -117,12 +165,22 @@ export async function subscribeUserToPush(
 }
 
 /** إبطال اشتراك — يُنادى من واجهة «إيقاف الإشعارات» أو تلقائياً عند 410. */
-export async function unsubscribeByEndpoint(endpoint: string, userId?: number): Promise<void> {
+export async function unsubscribeByEndpoint(
+  endpoint: string,
+  userId?: number,
+): Promise<void> {
   const db = requireDb();
-  const conditions = userId != null
-    ? and(eq(pushSubscriptions.endpoint, endpoint), eq(pushSubscriptions.userId, userId))
-    : eq(pushSubscriptions.endpoint, endpoint);
-  await db.update(pushSubscriptions).set({ revokedAt: new Date() }).where(conditions);
+  const conditions =
+    userId != null
+      ? and(
+          eq(pushSubscriptions.endpoint, endpoint),
+          eq(pushSubscriptions.userId, userId),
+        )
+      : eq(pushSubscriptions.endpoint, endpoint);
+  await db
+    .update(pushSubscriptions)
+    .set({ revokedAt: new Date() })
+    .where(conditions);
 }
 
 /**
@@ -130,7 +188,10 @@ export async function unsubscribeByEndpoint(endpoint: string, userId?: number): 
  * pushDailyClaim ⇒ عمليّتان تحاولان معاً (مثلاً نافذة PM2 reload) ⇒ واحدة تفوز، الأخرى تفشل بسلام.
  * يُعيد true إن فاز حاجزٌ جديد (تابع الإرسال) وfalse إن كان محجوزاً سلفاً (تخطَّ).
  */
-export async function claimDailyPushSlot(userId: number, kind: PushKind): Promise<boolean> {
+export async function claimDailyPushSlot(
+  userId: number,
+  kind: DailyPushKind,
+): Promise<boolean> {
   const db = requireDb();
   try {
     await db.execute(sql`
@@ -140,7 +201,7 @@ export async function claimDailyPushSlot(userId: number, kind: PushKind): Promis
     // نتحقّق: هل نحن أدخلنا؟ نطلب الصفّ ونقارن claimedAt بالثواني القليلة الأخيرة (المكسِب).
     // أبسط: SELECT ROW_COUNT() — على mysql2 يعيد 1 عند INSERT فعلي، 0 عند التجاهل (duplicate).
     const [r] = await db.execute(sql`SELECT ROW_COUNT() AS n`);
-    const n = Number(((r as unknown) as Array<{ n: number }>)[0]?.n ?? 0);
+    const n = Number((r as unknown as Array<{ n: number }>)[0]?.n ?? 0);
     return n === 1;
   } catch {
     // فشل قاعدة عابر ⇒ نتصرّف كأنّ الحجز مُتاح (نُعطي الأولوية للإرسال المفقود، القيود الأخرى تحمي).
@@ -151,7 +212,10 @@ export async function claimDailyPushSlot(userId: number, kind: PushKind): Promis
 
 /** هل أُرسل إشعار من هذا النوع للمستخدم اليوم؟ للاستعمال في اختبار/تشخيص فقط — الجدولة الفعلية
  *  تستعمل claimDailyPushSlot لضمان الذرّية. */
-export async function wasPushSentToday(userId: number, kind: PushKind): Promise<boolean> {
+export async function wasPushSentToday(
+  userId: number,
+  kind: DailyPushKind,
+): Promise<boolean> {
   const db = requireDb();
   // نطاق قابل للفهرسة (sargable) — يستعمل `idx_push_log_user_sent(userId,sentAt)` بدل الفحص الكامل.
   // «أرسل اليوم» = أيّ محاولة داخل نافذة اليوم UTC (بما فيها FAILED_OTHER — قرار: محاولة واحدة/يوم).
@@ -180,7 +244,7 @@ interface SendResultRecord {
  *  يُرجع ملخّصاً للـcaller ليقرّر التسجيل التجميعي. */
 export async function sendPushToUser(
   userId: number,
-  payload: MorningBriefPayload,
+  payload: AppPushPayload,
 ): Promise<{ sent: number; goneRevoked: number; failed: number }> {
   ensureVapidConfigured();
   const db = requireDb();
@@ -192,7 +256,12 @@ export async function sendPushToUser(
       auth: pushSubscriptions.auth,
     })
     .from(pushSubscriptions)
-    .where(and(eq(pushSubscriptions.userId, userId), isNull(pushSubscriptions.revokedAt)));
+    .where(
+      and(
+        eq(pushSubscriptions.userId, userId),
+        isNull(pushSubscriptions.revokedAt),
+      ),
+    );
 
   if (subs.length === 0) return { sent: 0, goneRevoked: 0, failed: 0 };
 
@@ -211,16 +280,30 @@ export async function sendPushToUser(
       let outcome: "SENT" | "FAILED_GONE" | "FAILED_OTHER";
       try {
         // مهلة ١٠ثوان لكل اشتراك ⇒ اشتراك بطيء لا يُعطّل بقيّة الاشتراكات والدورة الصباحية.
-        const r = await webpush.sendNotification(subscription, body, { timeout: 10_000 });
-        record = { status: "SENT", statusCode: r.statusCode, errorMessage: null };
+        const r = await webpush.sendNotification(subscription, body, {
+          timeout: 10_000,
+        });
+        record = {
+          status: "SENT",
+          statusCode: r.statusCode,
+          errorMessage: null,
+        };
         outcome = "SENT";
       } catch (err: unknown) {
-        const e = err as { statusCode?: number; body?: string; message?: string };
+        const e = err as {
+          statusCode?: number;
+          body?: string;
+          message?: string;
+        };
         const code = e.statusCode ?? null;
         if (code === 410 || code === 404) {
           // Gone: المستخدم أبطل الاشتراك من المتصفّح أو حذف بيانات الموقع ⇒ لن يعمل ثانيةً.
           await unsubscribeByEndpoint(s.endpoint);
-          record = { status: "FAILED_GONE", statusCode: code, errorMessage: null };
+          record = {
+            status: "FAILED_GONE",
+            statusCode: code,
+            errorMessage: null,
+          };
           outcome = "FAILED_GONE";
         } else {
           // 4xx أخرى (نادرة) / 5xx / أخطاء شبكة ⇒ نُبقي الاشتراك، سنعيد المحاولة الغد.
@@ -246,7 +329,9 @@ export async function sendPushToUser(
     }),
   );
 
-  let sent = 0, goneRevoked = 0, failed = 0;
+  let sent = 0,
+    goneRevoked = 0,
+    failed = 0;
   for (const r of settled) {
     // كل عنصر داخل map مُعالَج (try/catch شامل) ⇒ لا يُفترَض "rejected" هنا إطلاقاً، لكن نُبقي
     // مساراً آمناً (يُحتسَب "failed") لو نجم خطأ غير متوقَّع خارج المنطقة المحروسة (مثل db.insert).

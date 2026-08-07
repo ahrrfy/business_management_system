@@ -20,6 +20,16 @@ import { logger } from "../../logger";
 import { recordAttendance } from "../attendanceService";
 import { computeDayHours, DEFAULT_MAX_DAILY_HOURS } from "./dayHours";
 import { DEFAULT_WORK_SCHEDULE, hoursForDay } from "../hr/attendancePay";
+import { createAppNotification } from "../appNotificationService";
+
+function baghdadDate(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Baghdad",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
 
 /** إزاحة تاريخ نصّي بأيام (UTC نقيّ — لا انزياح منطقة زمنية). */
 function shiftDate(date: string, days: number): string {
@@ -106,6 +116,12 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
       continue;
     }
 
+    const [existingAttendance] = await db
+      .select({ id: attendance.id, checkIn: attendance.checkIn, checkOut: attendance.checkOut })
+      .from(attendance)
+      .where(and(eq(attendance.employeeId, g.employeeId), eq(attendance.attendanceDate, g.date), eq(attendance.source, "fingerprint")))
+      .limit(1);
+
     // كل بصمات اليوم (معالجة وغير معالجة) — إعادة حساب اليوم كاملاً عند كل وصول جديد.
     // ومعها يوما الجوار حين تُفعَّل الوردية الليلية: الإسناد حتميّ يُستنتَج من الجيران
     // لا من حالةٍ مخزَّنة، فيعطي النتيجة نفسها مهما تكرّر الطيّ.
@@ -113,7 +129,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
     // ساعات ذلك اليوم في جدول الموظف — بدونها كان حارس «أقلّ من نصف المقرَّر» ميتاً
       // في الإنتاج ولا يُختبَر إلا في الوحدات (Codex P2).
       const [empRow] = await db
-        .select({ workSchedule: employees.workSchedule })
+        .select({ userId: employees.userId, workSchedule: employees.workSchedule })
         .from(employees)
         .where(eq(employees.id, g.employeeId))
         .limit(1);
@@ -148,6 +164,34 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
         .update(hrAttendancePunches)
         .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: null })
         .where(inArray(hrAttendancePunches.id, g.ids));
+      if (g.date === baghdadDate() && empRow?.userId) {
+        const events = [
+          !existingAttendance?.checkIn && day.checkIn
+            ? { event: "ATTENDANCE_CHECK_IN" as const, title: "تم تسجيل الدخول", body: "تمت مزامنة بصمة دخولك من جهاز الشركة." }
+            : null,
+          !existingAttendance?.checkOut && day.checkOut
+            ? { event: "ATTENDANCE_CHECK_OUT" as const, title: "تم تسجيل الخروج", body: "تمت مزامنة بصمة خروجك من جهاز الشركة." }
+            : null,
+        ].filter((event): event is NonNullable<typeof event> => event !== null);
+        for (const event of events) {
+          try {
+            await createAppNotification({
+              userId: empRow.userId,
+              kind: "ATTENDANCE",
+              title: event.title,
+              body: event.body,
+              route: "/mobile#attendance",
+              eventKey: `attendance:${g.employeeId}:${g.date}:${event.event}`,
+              entityType: "attendance",
+              entityId: existingAttendance?.id ?? null,
+              requiresAction: Boolean(day.needsReview),
+              push: true,
+            });
+          } catch (error) {
+            logger.warn({ err: error, employeeId: g.employeeId, date: g.date, kind: event.event }, "hrDevices: تعذر حفظ إشعار مزامنة الدوام");
+          }
+        }
+      }
       days++;
     } catch (e) {
       const note = e instanceof Error ? e.message.slice(0, 200) : "تعذر الطي";

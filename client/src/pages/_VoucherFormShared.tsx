@@ -21,6 +21,9 @@ import { printVoucherReceipt, printVoucherA4 } from "@/lib/printing/voucherPrint
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { cn } from "@/lib/utils";
 import { AlertTriangle, Building2, Hourglass, Info, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
@@ -111,6 +114,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   // البحث خادميّ (q + balanceState=OUTSTANDING أي المتبقّي > 0 وغير الملغاة/المرتجعة) — كان «آخر ٥٠»
   // فقط فلا تُوجَد فاتورة أقدم وهي مستحقّة.
   const [invoiceQ, setInvoiceQ] = useState("");
+  const invoiceBarcodeInput = useBarcodeInput((code) => setInvoiceQ(code));
   const debouncedInvoiceQ = useDebouncedValue(invoiceQ.trim(), 250);
   const customerInvoices = trpc.sales.list.useQuery(
     {
@@ -526,12 +530,17 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 {customerId != null && (
                   <div className="space-y-1">
                     <Label>ربط بفاتورة (اختياري)</Label>
-                    <Input
-                      type="search"
-                      value={invoiceQ}
-                      onChange={(e) => setInvoiceQ(e.target.value)}
-                      placeholder="ابحث برقم الفاتورة… (كل الفواتير المستحقّة، لا آخر ٥٠ فقط)"
-                    />
+                    <div className="relative">
+                      <Input
+                        type="search"
+                        value={invoiceQ}
+                        onChange={(e) => setInvoiceQ(e.target.value)}
+                        onKeyDown={(e) => invoiceBarcodeInput.handleKeyDown(e, setInvoiceQ)}
+                        placeholder="ابحث برقم الفاتورة… (كل الفواتير المستحقّة، لا آخر ٥٠ فقط)"
+                        className={cn("ps-[4.9rem]", barcodeSearchInputClass)}
+                      />
+                      <BarcodeSearchCue />
+                    </div>
                     <AppSelect
                       value={invoiceId != null ? String(invoiceId) : "0"}
                       onValueChange={(v) => {

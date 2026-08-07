@@ -898,10 +898,10 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     ? `<div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>` +
       digitalBlocks.map(b => `
         <div style="font-size:10px;margin-bottom:1.5mm;">
-          <div style="font-weight:700;margin-bottom:0.5mm;">${esc(b.lineName)}</div>
+          <div style="font-weight:900;font-size:11px;margin-bottom:0.7mm;">${esc(b.lineName)}</div>
           ${b.rows.map(r => `<div style="display:flex;justify-content:space-between;gap:2mm;">
-            <span style="color:#444;">${esc(r.label)}</span>
-            <span style="font-weight:600;direction:${/هاتف|مرجع/.test(r.label) ? 'ltr' : 'rtl'};">${esc(r.value)}</span>
+            <span style="font-weight:700;color:#222;">${esc(r.label)}</span>
+            <span style="font-weight:900;direction:${/هاتف|رقم|ID/.test(r.label) ? 'ltr' : 'rtl'};">${esc(r.value)}</span>
           </div>`).join('')}
         </div>`).join('')
     : '';

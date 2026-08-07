@@ -11,7 +11,7 @@
  * أصلٍ صفرية كبقية `DIGITAL_WALLET_*`. الدفاتر تُظهر الخسارة ولا تُخفيها.
  *
  * **لماذا باعتمادٍ ثنائيّ:** الشطب بابُ إخفاء عجزٍ بفاعلٍ واحد — لذا طالبٌ ثمّ معتمِدٌ آخر
- * (admin مُستثنى للتصحيح الإداريّ، نفس اصطلاح `approveAdjustment` و`approveStockAdjustment`).
+ * (مالك النظام وحده مستثنى بصفته المرجع النهائي).
  * الطلب **لا يمسّ مالاً إطلاقاً**؛ كل الأثر المالي في الاعتماد وحده وداخل معاملة واحدة.
  *
  * **مساران بحسب نمط التسوية** (كلاهما ينتهي بنفس الخسارة، ويختلفان في مصدرها):
@@ -154,8 +154,8 @@ export async function approveWriteoff(
   if (intent.status !== "WRITEOFF_PENDING") {
     throw new TRPCError({ code: "CONFLICT", message: "لا طلب شطبٍ معلّقاً على هذه النيّة" });
   }
-  // فصل المهام: المُعتمِد ≠ الطالب. admin مُستثنى (نفس اصطلاح بقية الوحدات).
-  if (Number(intent.writeoffRequestedBy) === actor.userId && actor.role !== "admin") {
+  // فصل المهام: المُعتمِد ≠ الطالب. مالك النظام وحده مستثنى بصفته المرجع النهائي.
+  if (Number(intent.writeoffRequestedBy) === actor.userId && !actor.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يعتمد الشطب من طلبه — يلزم مديرٌ آخر" });
   }
 
@@ -340,7 +340,7 @@ export async function rejectWriteoff(
   if (intent.status !== "WRITEOFF_PENDING") {
     throw new TRPCError({ code: "CONFLICT", message: "لا طلب شطبٍ معلّقاً على هذه النيّة" });
   }
-  if (Number(intent.writeoffRequestedBy) === actor.userId && actor.role !== "admin") {
+  if (Number(intent.writeoffRequestedBy) === actor.userId && !actor.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يبتّ في الطلب من قدّمه — يلزم مديرٌ آخر" });
   }
 

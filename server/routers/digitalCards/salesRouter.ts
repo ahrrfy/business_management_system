@@ -4,7 +4,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { nonNegMoneyString } from "../../lib/schemas";
-import { finalizeService, intentService, writeoffService } from "../../services/digitalCards";
+import { finalizeService, intentService, reviewResolutionService, writeoffService } from "../../services/digitalCards";
 import { withTx } from "../../services/tx";
 import {
   digitalCardsAdminReadProcedure,
@@ -15,12 +15,13 @@ import {
 import { actorOf, requireDb, scopedBranchOf } from "./shared";
 
 const studentSnapshotSchema = z.object({
-  customerId: z.number().int().positive().nullish(),
   studentName: z.string().min(1).max(200),
   studentPhone: z.string().min(1).max(25),
-  guardianPhone: z.string().min(1).max(25),
-  address: z.string().min(1).max(500),
-  mode: z.enum(["UPDATE_PROFILE", "INVOICE_ONLY"]),
+  // Backward-compatible optional fields from the retired student-profile flow.
+  customerId: z.number().int().positive().nullish(),
+  guardianPhone: z.string().max(25).nullish(),
+  address: z.string().max(500).nullish(),
+  mode: z.enum(["UPDATE_PROFILE", "INVOICE_ONLY"]).optional(),
 });
 
 export const salesRouter = router({
@@ -39,6 +40,7 @@ export const salesRouter = router({
               offeringId: z.number().int().positive(),
               priceVersionId: z.number().int().positive(),
               expectedSellPrice: nonNegMoneyString,
+              providerReference: z.string().min(1).max(120),
               student: studentSnapshotSchema.nullish(),
             }),
           )
@@ -105,6 +107,37 @@ export const salesRouter = router({
       const scoped = scopedBranchOf(ctx);
       return intentService.listNeedsReview(requireDb(), { branchId: scoped ?? input?.branchId ?? null });
     }),
+
+  /** تفاصيل السبب وطلب المعالجة الآمن لعملية واحدة. */
+  reviewDetails: digitalCardsAdminReadProcedure
+    .input(z.object({ intentId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) =>
+      reviewResolutionService.getReviewDetails(requireDb(), input.intentId, scopedBranchOf(ctx))),
+
+  /** طلب قرار فقط؛ لا فاتورة ولا حركة رصيد حتى يعتمد مدير آخر. */
+  requestReviewResolution: digitalCardsManagerProcedure
+    .input(z.object({
+      intentId: z.number().int().positive(),
+      decision: z.enum(["CANCEL_NO_ISSUE", "FINALIZE_SALE", "WRITEOFF_LOSS"]),
+      reason: z.string().min(5).max(500),
+      items: z.array(z.object({
+        intentItemId: z.number().int().positive(),
+        outcome: z.enum(["ISSUED", "NOT_ISSUED"]),
+        providerReference: z.string().max(120).nullish(),
+      })).min(1).max(50),
+    }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => reviewResolutionService.requestResolution(tx, input, actorOf(ctx)))),
+
+  approveReviewResolution: digitalCardsManagerProcedure
+    .input(z.object({ intentId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => reviewResolutionService.approveResolution(tx, input, actorOf(ctx)))),
+
+  rejectReviewResolution: digitalCardsManagerProcedure
+    .input(z.object({ intentId: z.number().int().positive(), reason: z.string().min(3).max(500) }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => reviewResolutionService.rejectResolution(tx, input, actorOf(ctx)))),
 
   /** كنّاس النيّات المهجورة — يُشغّله المدير يدوياً حتى تُجدوَل مهمّة دورية. */
   expireStale: digitalCardsManagerProcedure.mutation(async () =>

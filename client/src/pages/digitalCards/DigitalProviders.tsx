@@ -33,13 +33,8 @@ const PROVIDER_TYPE: Record<string, string> = {
   OTHER: "أخرى",
 };
 const SETTLEMENT_MODE: Record<string, string> = {
-  PREPAID: "مسبق الدفع (محفظة)",
-  POSTPAID: "آجل (ذمّة)",
-};
-const REFERENCE_POLICY: Record<string, string> = {
-  REQUIRED: "إلزامي",
-  OPTIONAL: "اختياري",
-  NONE: "بلا مرجع",
+  PREPAID: "ندفع مقدماً ونبيع من رصيد الجهاز",
+  POSTPAID: "نبيع أولاً ونسدد للمزوّد لاحقاً",
 };
 const SETTLEMENT_CYCLE: Record<string, string> = {
   DAILY: "يومي",
@@ -61,7 +56,6 @@ export default function DigitalProviders() {
   const [fSupplierId, setFSupplierId] = useState("");
   const [fType, setFType] = useState("TELECOM");
   const [fMode, setFMode] = useState("PREPAID");
-  const [fRefPolicy, setFRefPolicy] = useState("OPTIONAL");
   const [fCycle, setFCycle] = useState("ON_DEMAND");
   const [fThreshold, setFThreshold] = useState("0");
   const [fNotes, setFNotes] = useState("");
@@ -87,7 +81,7 @@ export default function DigitalProviders() {
   function openAdd() {
     setEditId(null);
     setFSupplierId(""); setFType("TELECOM"); setFMode("PREPAID");
-    setFRefPolicy("OPTIONAL"); setFCycle("ON_DEMAND"); setFThreshold("0"); setFNotes("");
+    setFCycle("ON_DEMAND"); setFThreshold("0"); setFNotes("");
     setFormOpen(true);
   }
 
@@ -95,7 +89,7 @@ export default function DigitalProviders() {
     setEditId(p.id);
     setFSupplierId(String(p.supplierId));
     setFType(p.providerType); setFMode(p.settlementMode);
-    setFRefPolicy(p.referencePolicy); setFCycle(p.settlementCycle);
+    setFCycle(p.settlementCycle);
     setFThreshold(p.lowBalanceThreshold); setFNotes(p.notes ?? "");
     setFormOpen(true);
   }
@@ -106,7 +100,6 @@ export default function DigitalProviders() {
       updateMut.mutate({
         id: editId,
         providerType: fType as ProviderRow["providerType"],
-        referencePolicy: fRefPolicy as ProviderRow["referencePolicy"],
         settlementCycle: fCycle as ProviderRow["settlementCycle"],
         lowBalanceThreshold: fThreshold || "0",
         notes,
@@ -120,7 +113,7 @@ export default function DigitalProviders() {
       providerType: fType as ProviderRow["providerType"],
       settlementMode: fMode as ProviderRow["settlementMode"],
       recognitionMode: "PRINCIPAL_GROSS",
-      referencePolicy: fRefPolicy as ProviderRow["referencePolicy"],
+      referencePolicy: "REQUIRED",
       settlementCycle: fCycle as ProviderRow["settlementCycle"],
       lowBalanceThreshold: fThreshold || "0",
       notes,
@@ -143,8 +136,8 @@ export default function DigitalProviders() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="مزوّدو البطاقات"
-        description="كل مزوّد يرتبط بمورّد واحد في المنظومة فترثُ الوحدة كشفَ حسابه وذمّته. نمط التسوية يحدّد المسار المالي: مسبق الدفع يستهلك من محفظة الجهاز، والآجل يرفع ذمّة المورّد لحظة البيع."
+        title="شركات ومزوّدو البطاقات"
+        description="حدد الشركة التي تصدر الكروت، وكيف ندفع لها: من رصيد مشحون مسبقاً أو كدين مستحق بعد البيع. النظام ينشئ الأثر المالي الصحيح تلقائياً."
         actions={<Button size="sm" onClick={openAdd}><Plus className="size-4" /> مزوّد جديد</Button>}
       />
 
@@ -159,9 +152,8 @@ export default function DigitalProviders() {
                 <tr>
                   <th className="p-2 text-start">المورّد</th>
                   <th className="p-2 text-start">النوع</th>
-                  <th className="p-2 text-start">نمط التسوية</th>
-                  <th className="p-2 text-start">المرجع</th>
-                  <th className="p-2 text-start">دورية التسوية</th>
+                  <th className="p-2 text-start">طريقة دفعنا للمزوّد</th>
+                  <th className="p-2 text-start">موعد السداد</th>
                   <th className="p-2 text-start">حدّ الرصيد المنخفض</th>
                   <th className="p-2 text-center">الحالة</th>
                   <th className="p-2 text-center">إجراء</th>
@@ -173,7 +165,6 @@ export default function DigitalProviders() {
                     <td className="p-2 font-medium">{p.supplierName}</td>
                     <td className="p-2">{PROVIDER_TYPE[p.providerType] ?? p.providerType}</td>
                     <td className="p-2">{SETTLEMENT_MODE[p.settlementMode] ?? p.settlementMode}</td>
-                    <td className="p-2 text-muted-foreground">{REFERENCE_POLICY[p.referencePolicy] ?? p.referencePolicy}</td>
                     <td className="p-2 text-muted-foreground">{SETTLEMENT_CYCLE[p.settlementCycle] ?? p.settlementCycle}</td>
                     <td className="p-2 tabular-nums">{fmtAr(p.lowBalanceThreshold)}</td>
                     <td className="p-2 text-center">
@@ -206,9 +197,9 @@ export default function DigitalProviders() {
                     </td>
                   </tr>
                 ))}
-                {list.isLoading && <tr><td colSpan={8}><LoadingState /></td></tr>}
+                {list.isLoading && <tr><td colSpan={7}><LoadingState /></td></tr>}
                 {!list.isLoading && rows.length === 0 && (
-                  <TableEmptyRow colSpan={8} message="لا مزوّدين بعد — أضِف أوّل مزوّد بربطه بمورّد قائم." />
+                  <TableEmptyRow colSpan={7} message="لا مزوّدين بعد — أضِف أوّل مزوّد بربطه بمورّد قائم." />
                 )}
               </tbody>
             </table>
@@ -245,26 +236,23 @@ export default function DigitalProviders() {
                 </select>
               </div>
               <div className="space-y-1">
-                <label className="text-sm font-medium" htmlFor="dc-mode">نمط التسوية</label>
+                <label className="text-sm font-medium" htmlFor="dc-mode">كيف ندفع لهذا المزوّد؟</label>
                 <select id="dc-mode" className={selectCls} value={fMode} disabled={editing} onChange={(e) => setFMode(e.target.value)}>
                   {Object.entries(SETTLEMENT_MODE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
-                {editing && <p className="text-xs text-muted-foreground">ثابت بعد الإنشاء لأنه يحدد طريقة احتساب الرصيد وذمة المورّد.</p>}
+                {editing && <p className="text-xs text-muted-foreground">لا يتغير بعد الإنشاء لأنه يحدد هل يخصم البيع من رصيد الجهاز أم يسجّل مبلغاً مستحقاً للمزوّد.</p>}
               </div>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
-                <label className="text-sm font-medium" htmlFor="dc-ref">مرجع التنفيذ لدى المزوّد</label>
-                <select id="dc-ref" className={selectCls} value={fRefPolicy} onChange={(e) => setFRefPolicy(e.target.value)}>
-                  {Object.entries(REFERENCE_POLICY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm font-medium" htmlFor="dc-cycle">دورية التسوية</label>
+                <label className="text-sm font-medium" htmlFor="dc-cycle">متى نسدد للمزوّد؟</label>
                 <select id="dc-cycle" className={selectCls} value={fCycle} onChange={(e) => setFCycle(e.target.value)}>
                   {Object.entries(SETTLEMENT_CYCLE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
+              </div>
+              <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                رقم العملية أو الاشتراك يُحفظ إلزامياً عند كل بيع للمطابقة وحفظ الحقوق.
               </div>
             </div>
 

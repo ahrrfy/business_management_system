@@ -20,14 +20,13 @@ import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printRec
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
-import { useSmartScanInput } from "@/hooks/useSmartScanInput";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
 import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, readOutboxSummary, subscribeOutbox } from "@/lib/offline/outbox";
 import { getOfflineProfile, saveOfflineProfile } from "@/lib/offline/pinLock";
 import { getMeta, setMeta } from "@/lib/offline/db";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
-import { DigitalCardsPickerDialog, type ConfirmedCard } from "@/components/pos/DigitalCardsPickerDialog";
+import { DigitalCardsPickerDialog, type ConfirmedCard, type DigitalSaleCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import type { StudentSnapshot } from "@/components/pos/StudentDetailsDialog";
 import type { DigitalReceiptDetail } from "@/lib/printing/digitalReceiptLines";
@@ -42,6 +41,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
+import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -53,13 +53,15 @@ type PosRow = RouterOutputs["catalog"]["posList"][number];
 /** وسم سطر بطاقة رقمية (ش٥). كل مثيل مستقلّ حتى لو تكرّرت الفئة نفسها في السلة. */
 type DigitalLineMeta = {
   offeringId: number;
+  providerId: number;
   priceVersionId: number;
-  /** مفتاح السطر (UUID) — مرجع التنفيذ الخارجيّ المستقلّ لهذا الكرت بعينه. */
+  /** مفتاح داخلي (UUID) يميّز مثيل البطاقة في السلة عن رقم عملية المزوّد. */
   lineKey: string;
   /** هوية عدديّة محليّة للسلة فقط (سالبة كي لا تصطدم بـproductUnitId). */
   lineId: number;
   offeringType: string;
   providerName: string;
+  providerReference: string;
   requiresStudentData: boolean;
   /** لقطة بيانات الطالب (ش٦) — تُثبَّت داخل معاملة البيع لاحقاً، لا عند الإضافة للسلة. */
   student?: StudentSnapshot;
@@ -159,6 +161,7 @@ const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جم�
 // METHOD_LABEL انتقل إلى lib/paymentMethod.ts — مصدر واحد مع Invoices/InvoiceDetail/حوار الوردية.
 const QUICK_AMTS = [5000, 10000, 25000, 50000, 100000];
 const SHOP = "الرؤية العربية";
+const SCAN_MS = 80;
 
 // ─── Utility ──────────────────────────────────────────────────────────────────
 
@@ -212,6 +215,78 @@ const createTab = (id: number, label?: string): POSTab => ({
   couponInput: "", couponCode: null, couponLabel: null,
   paymentRef: "", dueDate: "",
 });
+
+// ─── useSmartScanInput ────────────────────────────────────────────────────────
+
+function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
+  const prevMsRef  = useRef(0);
+  const bufRef     = useRef("");
+  const inScanRef  = useRef(false);
+  const timerRef   = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const fire = useCallback(
+    (setValue: (s: string) => void) => {
+      clearTimeout(timerRef.current);
+      const code = normalizeBarcodeScannerInput(bufRef.current);
+      bufRef.current = "";
+      inScanRef.current = false;
+      if (code.length >= 4) {
+        setValue("");
+        onBarcode(code);
+      } else {
+        // إدخال بشري قصير أُسيء تصنيفه كمسح (نقرتان سريعتان <٨٠مي، وليس باركوداً ≥٤ خانات) —
+        // أعِد النصّ المكتوب بدل ابتلاعه صامتاً. لا يمسّ مسار المسح الحقيقي إطلاقاً (≥٤ يُمسح ويُبحث كالسابق).
+        setValue(code);
+      }
+    },
+    [onBarcode]
+  );
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>, curVal: string, setValue: (s: string) => void) => {
+      const now = Date.now();
+      const prevMs = prevMsRef.current;
+      prevMsRef.current = now;
+      const gap = now - prevMs;
+
+      if (e.key === "Enter") {
+        clearTimeout(timerRef.current);
+        if (inScanRef.current && bufRef.current.length >= 4) {
+          e.preventDefault();
+          fire(setValue);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        clearTimeout(timerRef.current);
+        bufRef.current = "";
+        inScanRef.current = false;
+        return;
+      }
+      if (e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return;
+
+      if (inScanRef.current) {
+        e.preventDefault();
+        bufRef.current += e.key;
+        clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => fire(setValue), SCAN_MS * 6);
+        return;
+      }
+
+      if (prevMs > 0 && gap < SCAN_MS) {
+        e.preventDefault();
+        bufRef.current = curVal + e.key;
+        inScanRef.current = true;
+        setValue("");
+        clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => fire(setValue), SCAN_MS * 6);
+      }
+    },
+    [fire]
+  );
+
+  return { handleKeyDown };
+}
 
 // ─── Receipt builder ──────────────────────────────────────────────────────────
 
@@ -441,8 +516,16 @@ export default function POS() {
     discardLegacyPosDrafts(localStorage, branchId);
     const saved = loadPosTabsDraft<POSTab>(localStorage, draftScope);
     if (saved) {
+      const hadLegacyDigital = saved.tabs.some((t) => t.cart.some((c) => c.digital && (!c.digital.providerReference || !c.digital.providerId)));
       // المسوّدات الأقدم لا تحمل paymentRef/dueDate — تُستكمل بفراغ كي لا تُرسَل undefined.
-      setTabs(saved.tabs.map((t) => ({ ...t, clientRequestId: t.clientRequestId ?? newClientRequestId(), paymentRef: t.paymentRef ?? "", dueDate: t.dueDate ?? "" })));
+      setTabs(saved.tabs.map((t) => ({
+        ...t,
+        cart: t.cart.filter((c) => !c.digital || (!!c.digital.providerReference && !!c.digital.providerId)),
+        clientRequestId: t.clientRequestId ?? newClientRequestId(),
+        paymentRef: t.paymentRef ?? "",
+        dueDate: t.dueDate ?? "",
+      })));
+      if (hadLegacyDigital) notify.warn("أُزيلت كروت قديمة غير مكتملة من المسودة", "أعد إضافتها مع رقم العملية قبل البيع.");
       setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
     } else {
       setTabs([createTab(1, "طلب 1")]);
@@ -587,7 +670,7 @@ export default function POS() {
   /** بصمة سلّة الكروت: تربط النيّة بمحتواها فيُرفض إعادة استعمال المفتاح بسلّةٍ أخرى. */
   function digitalCartFingerprint(): string {
     const basis = digitalLines
-      .map((c) => `${c.digital!.lineKey}:${c.digital!.offeringId}:${c.digital!.priceVersionId}:${c.row.price}`)
+      .map((c) => `${c.digital!.lineKey}:${c.digital!.offeringId}:${c.digital!.priceVersionId}:${c.digital!.providerReference}:${c.row.price}`)
       .sort()
       .join("|");
     let h = 0;
@@ -659,13 +742,14 @@ export default function POS() {
         offeringId: c.digital!.offeringId,
         priceVersionId: c.digital!.priceVersionId,
         expectedSellPrice: String(c.row.price ?? "0"),
+        providerReference: c.digital!.providerReference,
         student: c.digital!.student ?? null,
       })),
     });
   }
 
   /** يُضيف **مثيلاً مستقلاً** دائماً — لا دمج مع سطر موجود من الفئة نفسها (§٨.٣). */
-  function addDigitalCard(card: ConfirmedCard, student?: StudentSnapshot) {
+  function addDigitalCard(card: ConfirmedCard, capture: DigitalSaleCapture) {
     if (receipt) setReceipt(null);
     if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null });
     // المعرّف يُشتقّ من **السلة نفسها** لا من عدّاد في ref: السلة تبقى عبر إعادة تركيب الصفحة
@@ -714,13 +798,15 @@ export default function POS() {
         qty: 1,
         digital: {
           offeringId: card.offeringId,
+          providerId: card.providerId,
           priceVersionId: card.priceVersionId,
           lineKey: crypto.randomUUID(),
           lineId,
           offeringType: card.offeringType,
           providerName: card.providerName,
+          providerReference: capture.providerReference,
           requiresStudentData: card.requiresStudentData,
-          student,
+          student: capture.student,
         },
       },
     ]);
@@ -1346,6 +1432,10 @@ export default function POS() {
         offline={offline}
         onClose={() => setCardsOpen(false)}
         onPick={addDigitalCard}
+        existingReferences={digitalLines.map((c) => ({
+          providerId: c.digital!.providerId,
+          providerReference: c.digital!.providerReference,
+        }))}
       />
 
       {/* خطوات التنفيذ الخارجيّ (ش٧) — كل كرت يُسجَّل نجاحه لحظةَ إصداره. */}
@@ -1559,7 +1649,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
             value={search}
             onChange={(e) => { setSearch(e.target.value); setShowDrop(true); }}
             onFocus={(e) => { if (search) setShowDrop(true); e.target.style.borderColor = C.primary; }}
-            onBlur={(e) => (e.target.style.borderColor = C.border)}
+            onBlur={(e) => (e.target.style.borderColor = C.primary)}
             onKeyDown={(e) => {
               handleScanKeyDown(e, search, setSearch);
               if (e.defaultPrevented) return;
@@ -1568,7 +1658,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
               if (e.key === "Enter" && searchSettled && results.length > 0) addToCart(results[0]);
               if (e.key === "Escape") { setSearch(""); setShowDrop(false); }
             }}
-            style={{ width: "100%", height: 50, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14.5, outline: "none", paddingRight: 44, paddingLeft: search ? 44 : 14 }}
+            style={{ width: "100%", height: 50, border: `2px solid ${C.primary}`, borderRadius: 10, background: C.primarySoft, boxShadow: `inset 0 0 0 1px ${C.primary}22`, color: C.fg, fontFamily: "inherit", fontSize: 14.5, outline: "none", paddingRight: 44, paddingLeft: search ? 44 : 14 }}
           />
           {search && (
             <button onClick={() => { setSearch(""); setShowDrop(false); searchRef.current?.focus(); }}
@@ -1964,6 +2054,14 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                           ? `تعليمي — ${c.digital.student.studentName}`
                           : c.digital.requiresStudentData ? "اشتراك تعليمي" : "كرت رقمي"}
                       </span>
+                    )}
+                    {c.digital && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 12px", marginTop: 5, fontSize: 12.5, fontWeight: 800, color: C.fg }}>
+                        <span dir="ltr">
+                          {c.digital.requiresStudentData ? "ID الاشتراك" : "ID العملية"}: {c.digital.providerReference}
+                        </span>
+                        {c.digital.student && <span>{c.digital.student.studentName} · <span dir="ltr">{c.digital.student.studentPhone}</span></span>}
+                      </div>
                     )}
                     {openingSellable && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>

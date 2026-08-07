@@ -185,13 +185,7 @@ export async function createOffering(
     if (!input.requiresStudentData) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "الاشتراك التعليمي يحتاج بيانات الطالب ليُربط بعقده وتجديده",
-      });
-    }
-    if (input.subscriptionDurationDays == null || input.subscriptionDurationDays < 1) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "أدخِل مدة الاشتراك بالأيام قبل حفظ الاشتراك التعليمي",
+        message: "الاشتراك التعليمي يحتاج اسم الطالب وهاتفه عند البيع",
       });
     }
   }
@@ -289,10 +283,8 @@ export async function createOffering(
     productUnitId,
     offeringType,
     requiresStudentData: input.requiresStudentData ?? false,
-    subscriptionDurationDays:
-      offeringType === "EDUCATIONAL_SUBSCRIPTION"
-        ? input.subscriptionDurationDays ?? null
-        : null,
+    // نحن نبيع الاشتراك فقط؛ مدة المنصة وانتهاؤها ليست التزاماً تشغيلياً على نظامنا.
+    subscriptionDurationDays: null,
     faceValue,
     faceCurrency: input.faceCurrency?.trim() || null,
     pricingMode,

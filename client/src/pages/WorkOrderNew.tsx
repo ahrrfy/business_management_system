@@ -18,6 +18,8 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 
@@ -127,8 +129,8 @@ export default function WorkOrderNew() {
   );
 
   // قراءة الباركود الفوريّة عند Enter ⇒ بحث دقيق ثم إضافة مباشرة.
-  function handleBarcodeEnter() {
-    const code = search.trim();
+  function handleBarcodeEnter(rawCode = search) {
+    const code = rawCode.trim();
     if (!code) return;
     utils.catalog.byBarcode.fetch({ barcode: code, branchId: Number(effectiveBranch), tier: "RETAIL" }).then((row) => {
       if (row) {
@@ -149,6 +151,7 @@ export default function WorkOrderNew() {
       }
     }).catch(() => { /* ignore: لو فشل، ندع المستخدم يبحث يدوياً */ });
   }
+  const barcodeInput = useBarcodeInput((code) => handleBarcodeEnter(code));
 
   function addRow(r: SearchResult) {
     setCart((prev) => {
@@ -562,9 +565,15 @@ export default function WorkOrderNew() {
                   value={search}
                   dir="auto"
                   onChange={(e) => setSearch(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleBarcodeEnter(); } }}
+                  onKeyDown={(e) => {
+                    barcodeInput.handleKeyDown(e, setSearch);
+                    if (e.defaultPrevented) return;
+                    if (e.key === "Enter") { e.preventDefault(); handleBarcodeEnter(); }
+                  }}
                   placeholder="امسح الباركود (Enter للإضافة) أو ابحث بالاسم/الـSKU"
+                  className={cn("ps-[4.9rem]", barcodeSearchInputClass)}
                 />
+                <BarcodeSearchCue />
                 {posList.isFetching && (
                   <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">…</span>
                 )}

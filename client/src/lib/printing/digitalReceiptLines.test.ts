@@ -10,6 +10,7 @@ import {
 
 const edu: DigitalReceiptDetail = {
   lineName: "اشتراك منصّة نجاح — شهر",
+  referenceLabel: "رقم الاشتراك أو ID",
   providerReference: "PLT-99881",
   studentName: "مريم عادل",
   studentPhone: "+9647713334444",
@@ -19,6 +20,7 @@ const edu: DigitalReceiptDetail = {
 
 const telecom: DigitalReceiptDetail = {
   lineName: "كارت آسياسيل ١٠ آلاف",
+  referenceLabel: "رقم العملية أو ID الكرت",
   providerReference: "ASIA-12345",
 };
 
@@ -42,7 +44,7 @@ describe("ش١٠ — أسطر الكرت", () => {
   it("الاشتراك التعليميّ يطبع الترتيب المنصوص عليه في §١٢.٢", () => {
     const rows = digitalDetailLines(edu);
     expect(rows.map((r) => r.label)).toEqual([
-      "الطالب", "هاتف الطالب", "هاتف ولي الأمر", "العنوان", "مرجع العملية",
+      "الطالب", "هاتف الطالب", "هاتف ولي الأمر", "العنوان", "رقم الاشتراك أو ID",
     ]);
     expect(rows[0].value).toBe("مريم عادل");
     expect(rows[4].value).toBe("PLT-99881");
@@ -50,12 +52,12 @@ describe("ش١٠ — أسطر الكرت", () => {
 
   it("الكرت غير التعليميّ يطبع المرجع فقط", () => {
     const rows = digitalDetailLines(telecom);
-    expect(rows.map((r) => r.label)).toEqual(["مرجع العملية"]);
+    expect(rows.map((r) => r.label)).toEqual(["رقم العملية أو ID الكرت"]);
   });
 
-  it("التقنيع مُفعَّل افتراضياً ويُعطَّل صراحةً للنسخة الداخلية", () => {
-    expect(digitalDetailLines(edu)[1].value).not.toBe("+9647713334444");
-    expect(digitalDetailLines(edu, { maskPhones: false })[1].value).toBe("+9647713334444");
+  it("الهاتف كامل افتراضياً ويمكن تقنيعه صراحةً لنسخة الخصوصية", () => {
+    expect(digitalDetailLines(edu)[1].value).toBe("+9647713334444");
+    expect(digitalDetailLines(edu, { maskPhones: true })[1].value).not.toBe("+9647713334444");
   });
 
   it("الحقول الفارغة لا تُنتج أسطراً فارغة", () => {

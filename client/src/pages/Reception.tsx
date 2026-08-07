@@ -25,8 +25,9 @@ import { Input } from "@/components/ui/input";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { useSmartScanInput } from "@/hooks/useSmartScanInput";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
@@ -685,15 +686,13 @@ export default function Reception() {
     [lookupBarcode],
   );
   useBarcodeScanner(handleHidScan, { enabled: !showCustomization && !submitting });
-  // إصلاح (٧/٨): useBarcodeScanner العام يتعمّد تجاهل أي حقلٍ مركَّز (buf.length===0 ⇒ يترك
-  // الكتابة للحقل) كي لا يخطف كتابةً بشرية في أي مُدخَل بالصفحة — لكن حقل البحث هنا يستعيد
-  // التركيز بعد كل إضافة (searchRef.current?.focus()) فيبقى مركَّزاً أغلب الوقت، فلا يبقى أي
-  // مسارٍ يلتقط المسح الفعليّ سوى searchSettled (يعتمد استقرار debounce ١٨٠مي‌ث) — وماسحٌ حقيقي
-  // يرسل Enter خلال عشرات المي‌ث من آخر رقم، أسرع من أي استقرار، فيُبتلَع المسح صامتاً (كان هذا
-  // يبدو للموظفين كأن الباركود «لا يُضاف تلقائياً»، ويترك نصّاً خاماً عالقاً في الحقل يُضاف لاحقاً
-  // بضغطة Enter عرضية كمنتَجٍ قديم/خاطئ). نفس حلّ POS.tsx: توقيتُ الحرف نفسه داخل الحقل (نمط
-  // useSmartScanInput) يطابق الباركود مطابقةً دقيقة بلا انتظار استقرار البحث النصّي إطلاقاً.
-  const { handleKeyDown: handleScanKeyDown } = useSmartScanInput(lookupBarcode);
+  // مطابقة الماسح داخل حقل البحث المركَّز عبر hook مخصّص (PR #501): توقيتُ الحرف نفسه + تطبيع
+  // مسح لوحة المفاتيح العربية (normalizeBarcodeScannerInput) — يحلّ خطأ «الباركود لا يُضاف
+  // تلقائياً» بلا الاعتماد على استقرار البحث المؤجَّل، ويصحّح المسح حين تكون اللوحة عربيةً.
+  const barcodeInput = useBarcodeInput((code) => {
+    setSearch("");
+    void lookupBarcode(code);
+  });
 
   // إصلاح (٧/٨، طلب مالك): أزرار الفواتير/الطلبات/الحجوزات/الوردية… تنتقل إلى الشريط العلوي
   // المشترك بين الأوضاع الثلاثة (بجانب زرّ «الفواتير» الأصلي، الذي تستبدله محطة الاستقبال بنسخةٍ
@@ -2152,18 +2151,19 @@ export default function Reception() {
             onFocus={() => setShowDrop(true)}
             onBlur={() => setTimeout(() => setShowDrop(false), 160)}
             onKeyDown={(e) => {
-              // إصلاح (٧/٨): مطابقة الماسح بتوقيت الحرف أولاً (دقيقة، لا تعتمد استقرار البحث).
-              handleScanKeyDown(e, search, setSearch);
+              // مطابقة الماسح بتوقيت الحرف + تطبيع اللوحة العربية أولاً (PR #501، لا تعتمد استقرار البحث).
+              barcodeInput.handleKeyDown(e, setSearch);
               if (e.defaultPrevented) return;
-              // ش٠: searchSettled يمنع إضافة نتيجةٍ من استعلامٍ أقدم أثناء الكتابة البشرية السريعة.
+              // ش٠: searchSettled يمنع إضافة نتيجةٍ من استعلامٍ أقدم أثناء الكتابة/المسح السريع.
               if (e.key === "Enter" && searchSettled && results[0]) {
                 e.preventDefault();
                 addRow(results[0]);
               }
             }}
             placeholder="امسح الباركود أو ابحث بالاسم / SKU…  (F2)"
-            className="h-11 w-full rounded-xl border-[1.5px] border-primary/35 bg-muted/40 px-4 pe-11 text-sm font-semibold outline-none focus:border-primary"
+            className={cn("h-11 w-full rounded-xl border-[1.5px] px-4 pe-11 ps-[4.9rem] text-sm font-semibold outline-none focus:border-primary", barcodeSearchInputClass)}
           />
+          <BarcodeSearchCue />
           {showDrop && debounced.trim().length >= 2 && (
             <div className="absolute inset-x-0 top-[calc(100%+6px)] z-40 max-h-[340px] overflow-y-auto rounded-xl border bg-card p-1.5 shadow-xl">
               {resultsEmpty && (

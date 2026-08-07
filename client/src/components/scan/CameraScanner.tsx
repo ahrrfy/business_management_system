@@ -6,6 +6,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CameraOff, Flashlight, FlashlightOff, ScanLine, X } from "lucide-react";
+import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 
 interface Props {
   open: boolean;
@@ -43,7 +44,7 @@ function ManualEntry({ onSubmit }: { onSubmit: (value: string) => void }) {
       className="mt-4 flex w-full max-w-sm items-center gap-2"
       onSubmit={(event) => {
         event.preventDefault();
-        const code = value.trim();
+        const code = normalizeBarcodeScannerInput(value);
         if (code) onSubmit(code);
       }}
     >

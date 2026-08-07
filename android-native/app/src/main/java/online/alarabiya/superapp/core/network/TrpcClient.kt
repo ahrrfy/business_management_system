@@ -173,7 +173,6 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         val AUTH_COMPLETION_PROCEDURES = setOf(
             "auth.login",
             "auth.twoFactorVerify",
-            "auth.passkeyAuthenticationVerify",
         )
         val BASE_NATIVE_HEADERS = mapOf(
             "X-Alrueya-Client" to "android-native",

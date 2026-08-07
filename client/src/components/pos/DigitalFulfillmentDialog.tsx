@@ -5,8 +5,9 @@
 // بل يعرض تحذير المراجعة — لأن الكرت صدر فعلاً وله أثرٌ ماليّ مستحقّ.
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { digitalSaleReferenceLabel } from "@shared/digitalSale";
 import { AlertTriangle, Check, CircleHelp, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 type IntentData = RouterOutputs["digitalCards"]["sales"]["getIntent"];
 type IntentItem = IntentData["items"][number];
@@ -50,7 +51,6 @@ export function DigitalFulfillmentDialog({
   onAllExecuted: (intentId: number) => void;
 }) {
   const utils = trpc.useUtils();
-  const [reference, setReference] = useState("");
   const [warnLeave, setWarnLeave] = useState(false);
   const [activeClaim, setActiveClaim] = useState<{
     intentItemId: number;
@@ -58,7 +58,6 @@ export function DigitalFulfillmentDialog({
     providerIdempotencyKey: string;
     expiresAt: Date | string;
   } | null>(null);
-  const refInput = useRef<HTMLInputElement>(null);
 
   const q = trpc.digitalCards.sales.getIntent.useQuery(
     { intentId: intentId ?? 0 },
@@ -68,12 +67,11 @@ export function DigitalFulfillmentDialog({
   const claim = trpc.digitalCards.sales.claimExecution.useMutation({
     onSuccess: (r) => {
       setActiveClaim(r);
-      setTimeout(() => refInput.current?.focus(), 40);
     },
     onError: (e) => notify.err(e),
   });
   const mark = trpc.digitalCards.sales.markExecution.useMutation({
-    onSuccess: () => { setReference(""); setActiveClaim(null); void utils.digitalCards.sales.getIntent.invalidate(); },
+    onSuccess: () => { setActiveClaim(null); void utils.digitalCards.sales.getIntent.invalidate(); },
     onError: (e) => notify.err(e),
   });
   const cancel = trpc.digitalCards.sales.cancelIntent.useMutation({
@@ -96,7 +94,6 @@ export function DigitalFulfillmentDialog({
   const settledNotAllSuccess = items.length > 0 && !current && !allSuccess;
 
   useEffect(() => {
-    setReference("");
     setActiveClaim(null);
   }, [current?.id]);
 
@@ -114,9 +111,8 @@ export function DigitalFulfillmentDialog({
 
   function submit(status: "SUCCESS" | "FAILED" | "UNKNOWN") {
     if (!current || intentId == null || !activeClaim || activeClaim.intentItemId !== current.id || mark.isPending) return;
-    if (status === "SUCCESS" && current.referencePolicy === "REQUIRED" && !reference.trim()) {
-      notify.err("هذا المزوّد يتطلّب رقم مرجع التنفيذ");
-      refInput.current?.focus();
+    if (status === "SUCCESS" && !current.providerReference?.trim()) {
+      notify.err("رقم العملية غير محفوظ — أوقف العملية وراجع السلة");
       return;
     }
     mark.mutate({
@@ -124,7 +120,7 @@ export function DigitalFulfillmentDialog({
       intentItemId: current.id,
       claimToken: activeClaim.claimToken,
       status,
-      providerReference: current.referencePolicy === "NONE" ? null : reference.trim() || null,
+      providerReference: current.providerReference,
     });
   }
 
@@ -184,6 +180,10 @@ export function DigitalFulfillmentDialog({
               {current.studentName && (
                 <span style={{ fontSize: 13, color: C.fg }}>الطالب: {current.studentName}</span>
               )}
+              <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 9, padding: "9px 11px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12.5, fontWeight: 800, color: C.mutedFg }}>{digitalSaleReferenceLabel(current.offeringType)}</span>
+                <strong style={{ fontSize: 15, color: C.fg, direction: "ltr" }}>{current.providerReference}</strong>
+              </div>
 
               {!activeClaim && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -197,24 +197,6 @@ export function DigitalFulfillmentDialog({
                   >
                     {claim.isPending ? "جارٍ حجز الإصدار…" : "ابدأ إصدار البطاقة"}
                   </button>
-                </div>
-              )}
-
-              {activeClaim && current.referencePolicy !== "NONE" && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  <label style={{ fontSize: 13, fontWeight: 700, color: C.fg }} htmlFor="fulfil-ref">
-                    مرجع التنفيذ {current.referencePolicy === "REQUIRED" ? "(مطلوب)" : "(اختياري)"}
-                  </label>
-                  <input
-                    id="fulfil-ref"
-                    ref={refInput}
-                    value={reference}
-                    onChange={(e) => setReference(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit("SUCCESS"); } }}
-                    placeholder="رقم العملية على جهاز المزوّد"
-                    dir="ltr"
-                    style={{ height: 46, padding: "0 12px", borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.card, color: C.fg, fontSize: 15, fontFamily: "inherit", outline: "none" }}
-                  />
                 </div>
               )}
 

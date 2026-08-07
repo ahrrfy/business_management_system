@@ -5,7 +5,10 @@
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { eq } from "drizzle-orm";
+import { employees, payrollItems } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
+import { createAppNotification } from "../services/appNotificationService";
 import * as adv from "../services/advancesService";
 import * as svc from "../services/payrollService";
 import * as legal from "../services/payrollLegalService";
@@ -13,12 +16,33 @@ import { getPayrollSummary } from "../services/reportsHrService";
 import { managerProcedure, protectedProcedure, requireModule, router } from "../trpc";
 import { nonNegMoneyString, percentString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { requireDb } from "../services/tx";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
 
 const moneyStr = z.string().trim().regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة");
 const period = z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM");
+
+async function notifyPayrollUsers(runId: number, periodValue: string, stage: "approved" | "paid") {
+  const recipients = await requireDb()
+    .select({ employeeId: payrollItems.employeeId, userId: employees.userId })
+    .from(payrollItems)
+    .innerJoin(employees, eq(payrollItems.employeeId, employees.id))
+    .where(eq(payrollItems.runId, runId));
+  await Promise.all(recipients.filter((row) => row.userId != null).map((row) =>
+    createAppNotification({
+      userId: Number(row.userId),
+      kind: "PAYROLL_READY",
+      title: stage === "paid" ? "تم صرف الراتب" : "كشف الراتب جاهز",
+      body: `الفترة ${periodValue}`,
+      route: "/mobile#payroll",
+      eventKey: `payroll:${runId}:${row.employeeId}:${stage}`,
+      entityType: "payrollRun",
+      entityId: runId,
+    }).catch(() => undefined),
+  ));
+}
 
 export const payrollRouter = router({
   list: hrRead.query(() => svc.listRuns()),
@@ -77,6 +101,7 @@ export const payrollRouter = router({
     .mutation(async ({ input, ctx }) => {
       const run = await svc.approveRun(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0 });
       await logAudit(ctx, { action: "payroll.approve", entityType: "payrollRun", entityId: input.id, newValue: { period: run?.period, approvedBy: ctx.user.id } });
+      if (run?.period) await notifyPayrollUsers(input.id, run.period, "approved");
       return run;
     }),
 
@@ -85,6 +110,7 @@ export const payrollRouter = router({
     .mutation(async ({ input, ctx }) => {
       const run = await svc.payRun(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0 });
       await logAudit(ctx, { action: "payroll.pay", entityType: "payrollRun", entityId: input.id, newValue: { period: run?.period, totalNet: run?.totalNet } });
+      if (run?.period) await notifyPayrollUsers(input.id, run.period, "paid");
       return run;
     }),
 

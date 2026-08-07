@@ -26,7 +26,7 @@ export const providersRouter = router({
         providerType: providerTypeEnum,
         settlementMode: settlementModeEnum,
         recognitionMode: recognitionModeEnum.default("PRINCIPAL_GROSS"),
-        referencePolicy: referencePolicyEnum.default("OPTIONAL"),
+        referencePolicy: referencePolicyEnum.default("REQUIRED"),
         settlementCycle: settlementCycleEnum.default("ON_DEMAND"),
         lowBalanceThreshold: nonNegMoneyString.optional(),
         notes: z.string().max(2000).nullish(),

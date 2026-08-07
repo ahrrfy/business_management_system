@@ -4,6 +4,7 @@ import { TRPCError } from "@trpc/server";
 import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { serviceTypes } from "../../drizzle/schema";
+import { createAppNotification } from "../services/appNotificationService";
 import { logAudit } from "../services/auditService";
 import {
   addComment,
@@ -106,6 +107,19 @@ export const tasksRouter = router({
         entityId: res.taskId,
         newValue: { title: input.title, kind: input.kind ?? null, taskNumber: res.taskNumber },
       });
+      if (input.assignedTo != null) {
+        await createAppNotification({
+          userId: input.assignedTo,
+          kind: "TASK_ASSIGNED",
+          title: "أُسندت إليك مهمة",
+          body: input.title,
+          route: "/mobile#tasks",
+          eventKey: `task:${res.taskId}:assigned:${input.assignedTo}`,
+          entityType: "task",
+          entityId: res.taskId,
+          requiresAction: true,
+        }).catch(() => undefined);
+      }
       return res;
     }),
 
@@ -155,6 +169,19 @@ export const tasksRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await assignTask(input.taskId, input.assignedTo, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
       await logAudit(ctx, { action: "task.assign", entityType: "task", entityId: input.taskId, newValue: { assignedTo: input.assignedTo } });
+      if (input.assignedTo != null) {
+        await createAppNotification({
+          userId: input.assignedTo,
+          kind: "TASK_ASSIGNED",
+          title: "أُسندت إليك مهمة",
+          body: `مهمة #${input.taskId} تحتاج متابعتك`,
+          route: "/mobile#tasks",
+          eventKey: `task:${input.taskId}:assigned:${input.assignedTo}`,
+          entityType: "task",
+          entityId: input.taskId,
+          requiresAction: true,
+        }).catch(() => undefined);
+      }
       return res;
     }),
 

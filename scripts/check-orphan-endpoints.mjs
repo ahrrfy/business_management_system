@@ -78,7 +78,7 @@ function walkAndroidClient(dir) {
     if (st.isDirectory()) walkAndroidClient(fp);
     else if (name.endsWith(".kt")) {
       const src = readFileSync(fp, "utf8");
-      for (const m of src.matchAll(/\.(?:query|mutate|queryList|mutateList)\s*\(\s*"([\w.]+)"/g)) {
+      for (const m of src.matchAll(/\.(?:query|mutate|queryArray|mutateArray|queryObject|mutateObject|queryList|mutateList)\s*\(\s*"([\w.]+)"/g)) {
         addUsedProcedure(m[1]);
       }
       for (const m of src.matchAll(/\/api\/trpc\/([\w.]+)/g)) {

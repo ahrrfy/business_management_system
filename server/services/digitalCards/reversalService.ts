@@ -346,7 +346,7 @@ export async function rejectLossRefund(
   assertManager(actor);
   const details = await lockDetails(tx, input.invoiceId, input.detailIds, "LOSS_REFUND_PENDING");
   const requesters = new Set(details.map((d) => Number(d.lossRefundRequestedBy)));
-  if (requesters.size === 1 && requesters.has(actor.userId) && actor.role !== "admin") {
+  if (requesters.size === 1 && requesters.has(actor.userId) && !actor.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يبتّ في الطلب من قدّمه — يلزم مديرٌ آخر" });
   }
 
@@ -392,9 +392,9 @@ export async function lossRefund(
 
   // البنود يجب أن تكون **معلّقة بطلبٍ سابق** — لا يُعتمَد ردٌّ لم يُطلَب.
   const details = await lockDetails(tx, input.invoiceId, input.detailIds, "LOSS_REFUND_PENDING");
-  // فصل المهام: المُعتمِد ≠ الطالب. admin مُستثنى للتصحيح الإداريّ (اصطلاح الوحدة).
+  // فصل المهام: المُعتمِد ≠ الطالب. مالك النظام وحده مستثنى بصفته المرجع النهائي.
   const requesters = new Set(details.map((d) => Number(d.lossRefundRequestedBy)));
-  if (requesters.size === 1 && requesters.has(actor.userId) && actor.role !== "admin") {
+  if (requesters.size === 1 && requesters.has(actor.userId) && !actor.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يعتمد ردّ الخسارة من طلبه — يلزم مديرٌ آخر" });
   }
   const reason = details[0]?.lossRefundReason ?? "";

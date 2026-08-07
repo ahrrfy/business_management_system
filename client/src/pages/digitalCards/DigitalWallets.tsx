@@ -123,8 +123,8 @@ export default function DigitalWallets() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="محافظ المزوّدين"
-        description="رصيدنا المدفوع مسبقاً لدى كل مزوّد في كل فرع. «المحجوز» رصيدٌ تحفظه عمليات بيع جارية لم تُثبَّت بعد، والمتاح = الرصيد − المحجوز. الإيداع والسحب من شاشة الحركات."
+        title="أرصدة أجهزة المزوّدين"
+        description="يعرض ما دفعناه مسبقاً لكل جهاز مزوّد، وما عُلّق لعمليات بيع لم تكتمل، وما يمكن البيع به الآن."
         actions={
           <Button size="sm" onClick={openAdd} disabled={prepaidProviders.length === 0}>
             <Plus className="size-4" /> محفظة جديدة
@@ -192,8 +192,8 @@ export default function DigitalWallets() {
                   <th className="p-2 text-start">المزوّد</th>
                   <th className="p-2 text-start">الفرع</th>
                   <th className="p-2 text-start">الرصيد</th>
-                  <th className="p-2 text-start">المحجوز</th>
-                  <th className="p-2 text-start">المتاح</th>
+                  <th className="p-2 text-start">معلّق لعمليات بيع</th>
+                  <th className="p-2 text-start">متاح للبيع</th>
                   <th className="p-2 text-center">الحالة</th>
                   <th className="p-2 text-center">إجراء</th>
                 </tr>
@@ -221,7 +221,7 @@ export default function DigitalWallets() {
                           {
                             key: "deposit",
                             kind: "pay",
-                            label: "إيداع رصيد",
+                            label: "تسجيل شحن رصيد",
                             disabled: !w.isActive,
                             disabledReason: "المحفظة معطّلة",
                             onSelect: () => setMoving({ wallet: w, mode: "deposit" }),
@@ -230,7 +230,7 @@ export default function DigitalWallets() {
                           {
                             key: "withdraw",
                             kind: "pay",
-                            label: "سحب رصيد",
+                            label: "تسجيل سحب رصيد",
                             disabled: !w.isActive,
                             disabledReason: "المحفظة معطّلة",
                             onSelect: () => setMoving({ wallet: w, mode: "withdraw" }),
@@ -246,7 +246,7 @@ export default function DigitalWallets() {
                           {
                             key: "reconcile",
                             kind: "approve",
-                            label: "مطابقة يومية",
+                            label: "مطابقة مع الجهاز",
                             disabled: !w.isActive,
                             disabledReason: "المحفظة معطّلة؛ كشف الحساب متاح للقراءة",
                             onSelect: () => setReconciling(w),
@@ -255,7 +255,7 @@ export default function DigitalWallets() {
                           {
                             key: "adjust",
                             kind: "approve",
-                            label: "طلب تعديل رصيد",
+                            label: "طلب تصحيح الرصيد",
                             disabled: !w.isActive,
                             disabledReason: "المحفظة معطّلة",
                             onSelect: () => setAdjusting(w),

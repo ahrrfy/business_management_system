@@ -181,6 +181,18 @@ export const walletsRouter = router({
       withTx((tx) => walletOpsService.resolveVariance(tx, input, actorOf(ctx))),
     ),
 
+  /** خطوة واحدة للمدير الثاني: يعتمد التصحيح المطابق ويغلق فرق الرصيد ذرياً. */
+  approveAndResolveVariance: digitalCardsManagerProcedure
+    .input(
+      z.object({
+        reconciliationId: z.number().int().positive(),
+        adjustmentTransactionId: z.number().int().positive(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => walletOpsService.approveAndResolveVariance(tx, input, actorOf(ctx))),
+    ),
+
   lowBalance: digitalCardsAdminReadProcedure.query(async ({ ctx }) =>
     walletOpsService.lowBalanceWallets(requireDb(), scopedBranchOf(ctx)),
   ),

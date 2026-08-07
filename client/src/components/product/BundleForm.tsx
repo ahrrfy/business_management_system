@@ -16,6 +16,8 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeState, genEan13, onlyDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 
 /**
  * BundleForm — إنشاء «بكج (باندل)»: منتج مركّب من عدّة منتجات بسيطة يُباع كوحدة بباركود وسعر مستقل.
@@ -165,6 +167,7 @@ export default function BundleForm() {
       setBusy(false);
     }
   }
+  const barcodeInput = useBarcodeInput((code) => { void lookupByBarcode(code); });
 
   /** Enter على الحقل الذكيّ:
    *  - نصّ كلّه أرقام (≥٤ خانات) ⇒ يُعامَل كباركود ⇒ نداء `lookupByBarcode`.
@@ -173,6 +176,8 @@ export default function BundleForm() {
    *  المُخبَّأة (TanStack Query cache) قد تبقى بعد تقصير النصّ تحت العتبة — نلزم `hasQuery||hasCategory`
    *  ليكون الاستعلام مفعَّلاً فعلاً، مع مطابقة `pickerDeb === v`. */
   async function handleSmartKey(e: ReactKeyboardEvent<HTMLInputElement>) {
+    barcodeInput.handleKeyDown(e, setPicker);
+    if (e.defaultPrevented) return;
     if (e.key !== "Enter") return;
     if (e.nativeEvent.isComposing || (e as unknown as { keyCode: number }).keyCode === 229) return;
     e.preventDefault();
@@ -393,12 +398,14 @@ export default function BundleForm() {
                   // وبنصٍّ قصير خالص العربية لا يتراكب مع أيقونة البحث. (الأرقام تبقى مقروءة LTR ضمن RTL.)
                   dir="rtl"
                   className={cn(
-                    "pe-9",
+                    "pe-9 ps-[4.9rem]",
+                    barcodeSearchInputClass,
                     flash === "ok" && "border-emerald-500 ring-1 ring-emerald-500",
                     flash === "err" && "border-red-500 ring-1 ring-red-500",
                   )}
                   aria-label="بحث ذكيّ للمكوّن (باركود أو نصّ)"
                 />
+                <BarcodeSearchCue />
               </div>
               <select
                 className="h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm min-w-[130px]"

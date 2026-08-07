@@ -14,7 +14,7 @@ import { providerService, walletOpsService, walletService } from "../digitalCard
 
 const mgrA = { userId: 1, branchId: 1, role: "manager" };
 const mgrB = { userId: 2, branchId: 1, role: "manager" };
-const admin = { userId: 3, branchId: 1, role: "admin" };
+const owner = { userId: 3, branchId: 1, role: "admin", isOwner: true };
 
 const TABLES = [
   "digitalWalletReconciliations", "digitalWalletTransactions", "digitalWalletReservations",
@@ -29,7 +29,7 @@ async function seedBase() {
   await db().insert(s.users).values([
     { id: 1, openId: "m1", name: "مدير أ", role: "manager", loginMethod: "local" },
     { id: 2, openId: "m2", name: "مدير ب", role: "manager", loginMethod: "local" },
-    { id: 3, openId: "a1", name: "أدمن", role: "admin", loginMethod: "local" },
+    { id: 3, openId: "a1", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
 }
 
@@ -59,6 +59,14 @@ beforeEach(async () => {
 });
 
 describe.sequential("ش٩ — الإيداع (§٦.١)", () => {
+  it("يمنع المدير من تحريك رصيد جهاز تابع لفرع آخر", async () => {
+    const { walletId } = await mkWallet();
+    await expect(withTx((tx) => walletOpsService.deposit(tx, {
+      walletId, amount: "1000", paymentMethod: "CASH", clientRequestId: rid(),
+    }, { ...mgrA, branchId: 2 }))).rejects.toThrow(/فرعاً آخر/);
+    expect((await wallet(walletId)).currentBalance).toBe("0.00");
+  });
+
   it("يرفع الرصيد + سند صرف OUT من الخزينة + قيد أصلٍ بصفر أثر P&L", async () => {
     const { walletId } = await mkWallet();
     const r = await withTx((tx) => walletOpsService.deposit(tx, {
@@ -183,12 +191,12 @@ describe.sequential("ش٩ — التعديل بفصل المهام", () => {
     expect(await walletOpsService.assertBalanceReproducible(db(), walletId)).toBe(true);
   });
 
-  it("admin يعتمد طلبه للتصحيح الإداريّ", async () => {
+  it("مالك النظام يعتمد طلبه بصفته المرجع النهائي", async () => {
     const walletId = await funded();
     const { transactionId } = await withTx((tx) => walletOpsService.requestAdjustment(tx, {
       walletId, amount: "1000", direction: "IN", reason: "تصحيح", clientRequestId: rid(),
-    }, admin));
-    const r = await withTx((tx) => walletOpsService.approveAdjustment(tx, { transactionId }, admin));
+    }, owner));
+    const r = await withTx((tx) => walletOpsService.approveAdjustment(tx, { transactionId }, owner));
     expect(r.balanceAfter).toBe("101000.00");
   });
 
