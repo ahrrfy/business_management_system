@@ -56,7 +56,7 @@ async function setup(branchId = 1) {
   }, { userId: 1, branchId: 1 }));
   await withTx((tx) => walletOpsService.deposit(tx, {
     walletId, amount: "1000000", paymentMethod: "CASH", clientRequestId: `d-${Math.random().toString(36).slice(2, 12)}`,
-  }, mgr));
+  }, { ...mgr, branchId }));
   const r = await withTx((tx) => offeringService.createOffering(tx, {
     providerId, offeringType: "TELECOM_CARD", name: `كارت-${branchId}`, pricingMode: "FIXED_MARGIN",
     fixedMargin: "850", roundingStep: "0", branches: [{ branchId, walletId }],
