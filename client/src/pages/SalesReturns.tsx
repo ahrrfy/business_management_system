@@ -101,6 +101,7 @@ export default function SalesReturns() {
               value: q,
               onChange: (v) => { setQ(v); setPage(0); },
               placeholder: "بحث برقم الفاتورة",
+              barcode: true,
             }}
             filters={
               <>

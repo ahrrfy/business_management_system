@@ -322,6 +322,7 @@ export default function Returns() {
               value: q,
               onChange: setQ,
               placeholder: "بحث (رقم الفاتورة/اسم العميل)",
+              barcode: true,
             }}
             filters={
               // قيمة «ALL» الحارسة: Radix يرفض بند القيمة الفارغة فلا يمكن الرجوع لـ«كل الحالات» بدونها.

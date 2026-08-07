@@ -249,6 +249,7 @@ export default function Products() {
               value: q,
               onChange: (v) => setQ(v),
               placeholder: "بحث (اسم/SKU/باركود)",
+              barcode: true,
             }}
             filters={
               <div className="flex items-center gap-3 flex-wrap">

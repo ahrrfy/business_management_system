@@ -14,11 +14,14 @@
  *  7. باركود منتج (EAN-13 / ALR* / أي نص آخر)
  */
 import type { ScanResult } from "@shared/barcodeTypes";
+import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 
 const PIPE_PREFIX = /^(INV|WO|PO|QUO|CUST|EMP|USER)\|/;
 
 export function parseScan(raw: string): ScanResult {
-  const s = raw.trim();
+  // حارس إضافي لباركودات النظام: حتى لو وصل النص من مسار لا يستعمل useBarcodeScanner،
+  // تُستعاد البادئة اللاتينية التي شوّهها تخطيط Windows العربي (÷آ{ ⇒ INV).
+  const s = normalizeKnownSystemBarcode(raw).trim();
   if (!s) return { type: "unknown", raw: s };
 
   // QR payload موقَّعة — pipe-delimited، يستخرج رقم المستند ويُفوَّض recursive

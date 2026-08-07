@@ -40,6 +40,9 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { cn } from "@/lib/utils";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
@@ -152,6 +155,10 @@ export default function SalesReturnNew() {
   const refSuggestions = (refSearchQ.data ?? []).filter(
     (inv) => inv.status !== "CANCELLED" && inv.status !== "RETURNED"
   );
+  const refBarcodeInput = useBarcodeInput((code) => {
+    dispatch({ type: "SET_FIELD", field: "refInvoice", value: code });
+    void lookupReference(code);
+  });
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
@@ -237,8 +244,8 @@ export default function SalesReturnNew() {
   /** يحلّ رقم الفاتورة المُدخَل إلى id عبر بحث خادميّ فوريّ (sales.list — لا byNumber بعد)،
    *  بلا القيد القديم (آخر ٢٠٠ فاتورة محمَّلة سلفاً). يُستعمَل من زرّ "تحميل البنود"/Enter؛
    *  الاختيار من القائمة المنسدلة الحيّة (refSuggestions) أسرع ولا يحتاج تطابقاً تاماً. */
-  async function lookupReference() {
-    const num = state.refInvoice.trim();
+  async function lookupReference(rawNumber = state.refInvoice) {
+    const num = rawNumber.trim();
     if (!num) {
       notify.err("أدخل رقم الفاتورة المرجعية أولاً.");
       return;
@@ -507,6 +514,8 @@ export default function SalesReturnNew() {
             }}
             onFocus={() => setRefOpen(true)}
             onKeyDown={(e) => {
+              refBarcodeInput.handleKeyDown(e, (value) => dispatch({ type: "SET_FIELD", field: "refInvoice", value }));
+              if (e.defaultPrevented) return;
               if (e.key === "Enter") {
                 e.preventDefault();
                 void lookupReference();
@@ -515,8 +524,9 @@ export default function SalesReturnNew() {
               }
             }}
             placeholder="اكتب رقم الفاتورة أو جزءاً منه…"
-            className="h-9 font-mono"
+            className={cn("h-9 ps-[4.9rem] font-mono", barcodeSearchInputClass)}
           />
+          <BarcodeSearchCue />
           {refOpen && debouncedRefQuery.length >= 2 && (
             <div
               role="listbox"

@@ -21,6 +21,8 @@ import { fmtInt } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
 import { CameraScanner } from "@/components/scan/CameraScanner";
@@ -365,6 +367,10 @@ export default function CountPortal() {
     },
     [items, openCard],
   );
+  const barcodeInput = useBarcodeInput((code) => {
+    setQ("");
+    handleBarcode(code);
+  });
 
   useBarcodeScanner((raw) => handleBarcode(raw), {
     enabled: phase === "counting" && openVariantId == null && canCount,
@@ -809,19 +815,24 @@ export default function CountPortal() {
 
       {/* بحث + مسح */}
       <div className="flex gap-2 px-4 py-3">
-        <input
-          ref={searchRef}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              tryOpenByQuery();
-            }
-          }}
-          placeholder="بحث بالاسم أو SKU أو رقم الباركود…"
-          className="h-11 min-w-0 flex-1 rounded-xl border border-border bg-card px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
-        />
+        <div className="relative min-w-0 flex-1">
+          <input
+            ref={searchRef}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              barcodeInput.handleKeyDown(e, setQ);
+              if (e.defaultPrevented) return;
+              if (e.key === "Enter") {
+                e.preventDefault();
+                tryOpenByQuery();
+              }
+            }}
+            placeholder="بحث بالاسم أو SKU أو رقم الباركود…"
+            className={cn("h-11 w-full min-w-0 rounded-xl px-3 ps-[4.9rem] text-sm focus:outline-none focus:ring-2 focus:ring-primary/30", barcodeSearchInputClass)}
+          />
+          <BarcodeSearchCue />
+        </div>
         <button
           type="button"
           onClick={() => {

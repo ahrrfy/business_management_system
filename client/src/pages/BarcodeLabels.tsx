@@ -20,6 +20,9 @@ import { labelContentOf, solveLabelLayout, PART_LABEL_AR } from "@/lib/printing/
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { cn } from "@/lib/utils";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
@@ -394,7 +397,13 @@ export default function BarcodeLabels() {
     }
     return false;
   }
+  const barcodeInput = useBarcodeInput((code) => {
+    setSearch(code);
+    void tryResolveBarcode(code);
+  });
   function onSearchKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    barcodeInput.handleKeyDown(e, setSearch);
+    if (e.defaultPrevented) return;
     if (e.key === "Enter") {
       e.preventDefault();
       const data = results.data;
@@ -720,7 +729,9 @@ export default function BarcodeLabels() {
               placeholder={branchId == null ? "اختر الفرع أولاً…" : "ابحث بالاسم/SKU أو امسح الباركود — Enter يحلّ الباركود حرفياً"}
               disabled={branchId == null}
               autoFocus
+              className={cn("ps-[4.9rem]", barcodeSearchInputClass)}
             />
+            <BarcodeSearchCue />
             {search.trim() && (
               <div
                 className="absolute z-10 mt-1 w-full bg-popover border rounded-md shadow max-h-72 overflow-auto"

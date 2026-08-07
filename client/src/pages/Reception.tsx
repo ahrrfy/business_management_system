@@ -28,6 +28,8 @@ import { Input } from "@/components/ui/input";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
@@ -681,6 +683,10 @@ export default function Reception() {
     [lookupBarcode],
   );
   useBarcodeScanner(handleHidScan, { enabled: !showCustomization && !submitting });
+  const barcodeInput = useBarcodeInput((code) => {
+    setSearch("");
+    void lookupBarcode(code);
+  });
 
   // ───── لوحة المبلغ (م٤ — مبلغٌ فقط، لا أوضاع) ────────────────────────────
   function numPress(k: string) {
@@ -2161,6 +2167,8 @@ export default function Reception() {
             onFocus={() => { setShowDrop(true); setWorkflowStep(2); }}
             onBlur={() => setTimeout(() => setShowDrop(false), 160)}
             onKeyDown={(e) => {
+              barcodeInput.handleKeyDown(e, setSearch);
+              if (e.defaultPrevented) return;
               // ش٠: searchSettled يمنع إضافة نتيجةٍ من استعلامٍ أقدم أثناء الكتابة/المسح السريع.
               if (e.key === "Enter" && searchSettled && results[0]) {
                 e.preventDefault();
@@ -2168,8 +2176,9 @@ export default function Reception() {
               }
             }}
             placeholder="امسح الباركود أو ابحث بالاسم / SKU…  (F2)"
-            className="h-11 w-full rounded-xl border-[1.5px] border-primary/35 bg-muted/40 px-4 pe-11 text-sm font-semibold outline-none focus:border-primary"
+            className={cn("h-11 w-full rounded-xl border-[1.5px] px-4 pe-11 ps-[4.9rem] text-sm font-semibold outline-none focus:border-primary", barcodeSearchInputClass)}
           />
+          <BarcodeSearchCue />
           {showDrop && debounced.trim().length >= 2 && (
             <div className="absolute inset-x-0 top-[calc(100%+6px)] z-40 max-h-[340px] overflow-y-auto rounded-xl border bg-card p-1.5 shadow-xl">
               {resultsEmpty && (

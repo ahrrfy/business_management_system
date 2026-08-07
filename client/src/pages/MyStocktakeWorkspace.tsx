@@ -18,6 +18,8 @@ import {
 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
 import { CameraScanner } from "@/components/scan/CameraScanner";
@@ -238,6 +240,10 @@ export default function MyStocktakeWorkspace() {
     },
     [items, openItem],
   );
+  const barcodeInput = useBarcodeInput((code) => {
+    setQuery("");
+    onBarcode(code);
+  });
   // قارئ HID: يُعطَّل أثناء فتح البطاقة أو الكاميرا كي لا يتضاعف الالتقاط.
   useBarcodeScanner(onBarcode, {
     enabled: Boolean(st) && selected == null && !cameraOpen,
@@ -690,14 +696,17 @@ export default function MyStocktakeWorkspace() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => {
+                    barcodeInput.handleKeyDown(e, setQuery);
+                    if (e.defaultPrevented) return;
                     if (e.key === "Enter") {
                       e.preventDefault();
                       tryOpenByQuery();
                     }
                   }}
                   placeholder="بحث بالاسم أو SKU أو رقم الباركود…"
-                  className="h-11 pr-9"
+                  className={cn("h-11 pr-9 ps-[4.9rem]", barcodeSearchInputClass)}
                 />
+                <BarcodeSearchCue />
               </div>
               <Button
                 type="button"
