@@ -56,6 +56,25 @@ beforeEach(async () => {
   await reset();
 });
 
+describe("auth.nativeDeviceChallenge — native bootstrap boundary", () => {
+  it("rejects callers that do not declare the current native protocol", async () => {
+    const caller = appRouter.createCaller(makeCtx().ctx);
+    await expect(caller.auth.nativeDeviceChallenge()).rejects.toThrow();
+  });
+
+  it("issues a short-lived challenge to the current native Android client", async () => {
+    const { ctx } = makeCtx();
+    ctx.req.headers = {
+      "x-alrueya-client": "android-native",
+      "x-alrueya-client-version": "2",
+      "x-alrueya-device-proof-version": "1",
+    };
+    const challenge = await appRouter.createCaller(ctx).auth.nativeDeviceChallenge();
+    expect(challenge.ticket).toBeTruthy();
+    expect(challenge.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+});
+
 describe("auth.login — قفل الحساب وتوحيد الخطأ", () => {
   it("ينجح بالبيانات الصحيحة ويصفّر العدّاد", async () => {
     await seedAdmin();

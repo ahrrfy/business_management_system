@@ -4,6 +4,7 @@ import { canSeeCost as _canSeeCost, canUseStation, moduleAccessAllowed, resolveP
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
+import { isCurrentNativeClient } from "./auth/deviceProof";
 import { isCryptoReady } from "./services/cryptoService";
 import { logger } from "./logger";
 
@@ -42,6 +43,20 @@ const t = initTRPC.context<TrpcContext>().create({
 export const router = t.router;
 export const middleware = t.middleware;
 export const publicProcedure = t.procedure;
+
+/**
+ * Credential-free bootstrap boundary for the native Android client. This does not authenticate
+ * a user or grant a session; it only prevents browsers and obsolete clients from minting device
+ * registration challenges outside the current signed-device protocol.
+ */
+const requireNativeBootstrapClient = t.middleware(async ({ ctx, next }) => {
+  if (!isCurrentNativeClient(ctx.req)) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  }
+  return next({ ctx });
+});
+
+export const nativeBootstrapProcedure = t.procedure.use(requireNativeBootstrapClient);
 
 // ─── M9 (تدقيق ٣/٨): إلزام 2FA خادمياً للمدير/المشرف ─────────────────────────
 // كانت راية `mustEnroll2FA` توجيهاً واجهياً فقط (ForceTwoFactorEnroll يحجب الشاشة)، فعميلٌ

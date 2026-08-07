@@ -46,7 +46,14 @@ import {
 import { withTx } from "../services/tx";
 import { getCurrentCompanyId, runWithCompany } from "../tenancy/context";
 import { resolveCompanyByCode } from "../tenancy/registry";
-import { adminProcedure, protectedProcedure, publicProcedure, router, twoFactorEnrollmentRequired } from "../trpc";
+import {
+  adminProcedure,
+  nativeBootstrapProcedure,
+  protectedProcedure,
+  publicProcedure,
+  router,
+  twoFactorEnrollmentRequired,
+} from "../trpc";
 
 // مزامنة مع ALL_ROLES (shared/permissions) الذي يُمثّل الـenum الكامل في الـschema (١٠ أدوار).
 const ROLE = z.enum(ALL_ROLES as [RoleKey, ...RoleKey[]]);
@@ -152,7 +159,7 @@ async function registerFailedLogin(db: NonNullable<ReturnType<typeof getDb>>, us
 
 export const authRouter = router({
   /** Short-lived signed bootstrap challenge; it grants neither identity nor a session. */
-  nativeDeviceChallenge: publicProcedure.query(() => issueNativeDeviceChallenge()),
+  nativeDeviceChallenge: nativeBootstrapProcedure.query(() => issueNativeDeviceChallenge()),
 
   me: publicProcedure.query(({ ctx }) => {
     if (!ctx.user) return null;
