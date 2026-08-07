@@ -42,6 +42,10 @@ import { CopyContextMenu } from "@/lib/copy/CopyContextMenu";
 import { TableSkeleton } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { cn } from "@/lib/utils";
+import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
 function columnHeaderText(col: { columnDef: { header?: unknown }; id: string }): string {
@@ -74,6 +78,8 @@ type DataTableProps<T, K = string> = {
   data: T[];
   searchable?: boolean;
   searchPlaceholder?: string;
+  /** البحث يقبل قارئ HID (باركود/رقم مستند): تصحيح تخطيط عربي + هوية بصرية. */
+  barcodeSearch?: boolean;
   emptyText?: string;
   /** أثناء التحميل: تُعرض صفوف هيكلية (skeleton) بدل النصّ الفارغ — إحساس سرعة أفضل بلا قفزة تخطيط. */
   loading?: boolean;
@@ -167,6 +173,7 @@ export function DataTable<T, K = string>({
   data,
   searchable = true,
   searchPlaceholder = "بحث…",
+  barcodeSearch = false,
   emptyText = "لا بيانات",
   loading = false,
   toolbar,
@@ -195,6 +202,10 @@ export function DataTable<T, K = string>({
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(initialView.columnVisibility ?? {});
   const [compact, setCompact] = useState(initialView.compact === true);
   const [lastIndex, setLastIndex] = useState<number | null>(null);
+  const barcodeInput = useBarcodeInput(
+    (code) => serverSearch ? serverSearch.onChange(code) : setGlobalFilter(code),
+    { enabled: barcodeSearch },
+  );
 
   useEffect(() => {
     writeTableView(storageKey, { columnVisibility, compact });
@@ -308,15 +319,23 @@ export function DataTable<T, K = string>({
       {(showSearch || toolbar || table.getAllLeafColumns().length > 5) && (
         <div className="flex items-center gap-2 justify-between flex-wrap">
           {showSearch ? (
-            <Input
-              className="max-w-xs"
-              placeholder={searchPlaceholder}
-              value={serverSearch ? serverSearch.value : globalFilter}
-              onChange={(e) =>
-                serverSearch ? serverSearch.onChange(e.target.value) : setGlobalFilter(e.target.value)
-              }
-              aria-label={searchPlaceholder}
-            />
+            <div className="relative w-full max-w-xs">
+              <Input
+                className={cn(barcodeSearch && `ps-[4.9rem] ${barcodeSearchInputClass}`)}
+                placeholder={searchPlaceholder}
+                value={serverSearch ? serverSearch.value : globalFilter}
+                onChange={(e) => {
+                  const value = barcodeSearch ? normalizeKnownSystemBarcode(e.target.value) : e.target.value;
+                  serverSearch ? serverSearch.onChange(value) : setGlobalFilter(value);
+                }}
+                onKeyDown={(e) => barcodeInput.handleKeyDown(
+                  e,
+                  serverSearch ? serverSearch.onChange : setGlobalFilter,
+                )}
+                aria-label={searchPlaceholder}
+              />
+              {barcodeSearch && <BarcodeSearchCue />}
+            </div>
           ) : <span />}
           <div className="flex flex-wrap items-center gap-2">
             {table.getAllLeafColumns().length > 5 && (

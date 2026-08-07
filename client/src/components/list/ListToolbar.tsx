@@ -16,6 +16,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { notify } from "@/lib/notify";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { cn } from "@/lib/utils";
+import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 
 export type ExportSpec<T> = {
   filename: string;
@@ -44,6 +48,8 @@ export type ListToolbarProps<T> = {
     onChange: (v: string) => void;
     placeholder?: string;
     ariaLabel?: string;
+    /** الحقل يقبل قارئ HID: يفعّل تصحيح التخطيط العربي والتمييز البصري. */
+    barcode?: boolean;
   };
   filters?: React.ReactNode;
   /** عدد الفلاتر المفعّلة حالياً، من دون حقل البحث. */
@@ -85,6 +91,12 @@ export function ListToolbar<T>({
 }: ListToolbarProps<T>) {
   const formats = exportSpec?.formats ?? ["xlsx"];
   const [exporting, setExporting] = React.useState(false);
+  const [filtersOpen, setFiltersOpen] = React.useState(false);
+  const filtersId = React.useId();
+  const barcodeInput = useBarcodeInput(
+    (code) => search?.onChange(code),
+    { enabled: Boolean(search?.barcode) },
+  );
   // مع fetchAll نُتيح التصدير حتى لو كانت الصفحة الحالية فارغة (قد توجد نتائج في صفحات أخرى).
   const exportDisabled =
     !exportSpec || exporting || (!exportSpec.fetchAll && exportSpec.rows.length === 0);
@@ -131,15 +143,41 @@ export function ListToolbar<T>({
             <Input
               type="search"
               value={search.value}
-              onChange={(e) => search.onChange(e.target.value)}
+              onChange={(e) => search.onChange(
+                search.barcode ? normalizeKnownSystemBarcode(e.target.value) : e.target.value,
+              )}
+              onKeyDown={(e) => barcodeInput.handleKeyDown(e, search.onChange)}
               placeholder={search.placeholder ?? "بحث…"}
               aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
-              className="h-8 w-full pr-8 sm:w-56"
+              className={cn(
+                "h-8 w-full pr-8 sm:w-56",
+                search.barcode && `ps-[4.9rem] ${barcodeSearchInputClass}`,
+              )}
             />
+            {search.barcode && <BarcodeSearchCue />}
           </div>
         )}
 
-        {filters}
+        {filters && (
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="list-toolbar-filter-trigger"
+              aria-expanded={filtersOpen}
+              aria-controls={filtersId}
+              onClick={() => setFiltersOpen((open) => !open)}
+            >
+              <SlidersHorizontal aria-hidden className="size-4" />
+              الفلاتر
+              {activeFilterCount > 0 && <span>{activeFilterCount.toLocaleString("ar-IQ-u-nu-latn")}</span>}
+            </Button>
+            <div id={filtersId} className="list-toolbar-filters" data-open={filtersOpen || undefined}>
+              {filters}
+            </div>
+          </>
+        )}
 
         {activeFilterCount > 0 && (
           <span className="inline-flex h-8 items-center gap-1 rounded-md bg-primary/10 px-2.5 text-xs font-semibold text-primary">

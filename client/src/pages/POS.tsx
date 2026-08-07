@@ -41,6 +41,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
+import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -226,7 +227,7 @@ function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
   const fire = useCallback(
     (setValue: (s: string) => void) => {
       clearTimeout(timerRef.current);
-      const code = bufRef.current;
+      const code = normalizeBarcodeScannerInput(bufRef.current);
       bufRef.current = "";
       inScanRef.current = false;
       if (code.length >= 4) {
@@ -1648,7 +1649,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
             value={search}
             onChange={(e) => { setSearch(e.target.value); setShowDrop(true); }}
             onFocus={(e) => { if (search) setShowDrop(true); e.target.style.borderColor = C.primary; }}
-            onBlur={(e) => (e.target.style.borderColor = C.border)}
+            onBlur={(e) => (e.target.style.borderColor = C.primary)}
             onKeyDown={(e) => {
               handleScanKeyDown(e, search, setSearch);
               if (e.defaultPrevented) return;
@@ -1657,7 +1658,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
               if (e.key === "Enter" && searchSettled && results.length > 0) addToCart(results[0]);
               if (e.key === "Escape") { setSearch(""); setShowDrop(false); }
             }}
-            style={{ width: "100%", height: 50, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14.5, outline: "none", paddingRight: 44, paddingLeft: search ? 44 : 14 }}
+            style={{ width: "100%", height: 50, border: `2px solid ${C.primary}`, borderRadius: 10, background: C.primarySoft, boxShadow: `inset 0 0 0 1px ${C.primary}22`, color: C.fg, fontFamily: "inherit", fontSize: 14.5, outline: "none", paddingRight: 44, paddingLeft: search ? 44 : 14 }}
           />
           {search && (
             <button onClick={() => { setSearch(""); setShowDrop(false); searchRef.current?.focus(); }}

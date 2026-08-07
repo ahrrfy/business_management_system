@@ -31,6 +31,7 @@ import { invoiceStatusLabel, sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/label
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { X } from "lucide-react";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
+import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 
 type Row = RouterOutputs["sales"]["list"][number];
 
@@ -159,6 +160,12 @@ export default function Invoices() {
   // البحث خادميّ (رقم الفاتورة/اسم العميل): كان محلّياً على الصفحة المُحمَّلة وحدها ⇒ يقول
   // «لا نتائج» عن فاتورة موجودة خارج السقف. debounce ليكتب المستخدم بلا طلب لكل حرف.
   const qDebounced = useDebouncedValue(f.q.trim(), 300);
+
+  // يصلح أيضاً رابطاً محفوظاً من قبل الإصلاح وفيه ÷آ{ بدلاً من INV.
+  useEffect(() => {
+    const normalized = normalizeKnownSystemBarcode(f.q);
+    if (normalized !== f.q) setF({ q: normalized });
+  }, [f.q, setF]);
 
   // الترقيم خادميّ: الصفحة المعروضة فقط تُحمَّل (كان يُحمَّل ٢٠٠ صفّاً دفعةً بلا وصول لما بعدها).
   const [page, setPage] = useState(0);
@@ -630,6 +637,7 @@ export default function Invoices() {
         columns={columns}
         data={data}
         searchPlaceholder="بحث برقم الفاتورة أو اسم العميل…"
+        barcodeSearch
         loading={rows.isLoading}
         emptyText="لا فواتير مطابقة."
         selection={sel}
