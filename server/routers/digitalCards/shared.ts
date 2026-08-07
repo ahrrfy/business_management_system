@@ -13,10 +13,15 @@ export function requireDb(): DB {
   return db;
 }
 
-export type Ctx = { user: { id: number; role: string; branchId?: number | null } };
+export type Ctx = { user: { id: number; role: string; branchId?: number | null; isOwner?: boolean } };
 
 export function actorOf(ctx: Ctx): Actor {
-  return { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role };
+  return {
+    userId: ctx.user.id,
+    branchId: Number(ctx.user.branchId ?? 0),
+    role: ctx.user.role,
+    isOwner: Boolean(ctx.user.isOwner),
+  };
 }
 
 /** نفس تعريف `branchScopedProcedure`: admin/manager يعبُران الفروع، وغيرهما محبوسٌ بفرعه.

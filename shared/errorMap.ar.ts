@@ -137,6 +137,13 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  // ── معالجة عمليات بيع البطاقات والاشتراكات (0161) ──
+  uq_dsrr_intent: {
+    msg: "توجد معالجة مسجلة لهذه العملية بالفعل — افتح المعالجة الحالية بدلاً من إنشاء معالجة مكررة.",
+  },
+  uq_dsrri_item: {
+    msg: "نتيجة هذا البند مسجلة ضمن المعالجة بالفعل — عدّل السطر الموجود بدلاً من إضافته مرة ثانية.",
+  },
   // ── إشعارات السوبر تطبيق الأصلية (0159–0160) ──
   nativePushDevices_tokenHash_unique: {
     msg: "رمز إشعارات هذا الجهاز مسجّل مسبقاً — أعد تفعيل الإشعارات من الجهاز نفسه.",

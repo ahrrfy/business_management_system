@@ -7809,6 +7809,84 @@ export type InsertDigitalSaleIntentItem =
   typeof digitalSaleIntentItems.$inferInsert;
 
 /**
+ * قرار معالجة عملية بيع رقمية لم تكتمل.
+ *
+ * الطلب لا يُحدث أثراً مالياً. التنفيذ لا يتم إلا بعد اعتماد مدير آخر، ثم يُطبّق
+ * أحد المسارات الثلاثة الذرية: إلغاء بلا إصدار، إكمال البيع، أو إثبات خسارة.
+ */
+export const digitalSaleReviewResolutions = mysqlTable(
+  "digitalSaleReviewResolutions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    intentId: bigint("intentId", { mode: "number" })
+      .notNull()
+      .unique("uq_dsrr_intent"),
+    decision: mysqlEnum("decision", [
+      "CANCEL_NO_ISSUE",
+      "FINALIZE_SALE",
+      "WRITEOFF_LOSS",
+    ]).notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED"])
+      .default("PENDING")
+      .notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    requestedBy: int("requestedBy").notNull(),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    reviewedBy: int("reviewedBy"),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewReason: varchar("reviewReason", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    statusIdx: index("idx_dsrr_status").on(t.status),
+    intentFk: foreignKey({
+      columns: [t.intentId],
+      foreignColumns: [digitalSaleIntents.id],
+      name: "fk_dsrr_intent",
+    }),
+    requesterFk: foreignKey({
+      columns: [t.requestedBy],
+      foreignColumns: [users.id],
+      name: "fk_dsrr_requester",
+    }),
+    reviewerFk: foreignKey({
+      columns: [t.reviewedBy],
+      foreignColumns: [users.id],
+      name: "fk_dsrr_reviewer",
+    }),
+  }),
+);
+export type DigitalSaleReviewResolution = typeof digitalSaleReviewResolutions.$inferSelect;
+
+/** لقطة قرار كل بند داخل طلب المعالجة؛ تحفظ ما طابقه المدير مع تقرير جهاز المزوّد. */
+export const digitalSaleReviewResolutionItems = mysqlTable(
+  "digitalSaleReviewResolutionItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    resolutionId: bigint("resolutionId", { mode: "number" }).notNull(),
+    intentItemId: bigint("intentItemId", { mode: "number" }).notNull(),
+    outcome: mysqlEnum("outcome", ["ISSUED", "NOT_ISSUED"]).notNull(),
+    providerReference: varchar("providerReference", { length: 120 }),
+  },
+  (t) => ({
+    itemUq: unique("uq_dsrri_item").on(t.intentItemId),
+    resolutionIdx: index("idx_dsrri_resolution").on(t.resolutionId),
+    resolutionFk: foreignKey({
+      columns: [t.resolutionId],
+      foreignColumns: [digitalSaleReviewResolutions.id],
+      name: "fk_dsrri_resolution",
+    }),
+    itemFk: foreignKey({
+      columns: [t.intentItemId],
+      foreignColumns: [digitalSaleIntentItems.id],
+      name: "fk_dsrri_item",
+    }),
+  }),
+);
+export type DigitalSaleReviewResolutionItem = typeof digitalSaleReviewResolutionItems.$inferSelect;
+
+/**
  * تفاصيل البيع الرقمي: لقطة كاملة لبيانات كل بند رقمي مُباع (مرتبط ببند الفاتورة).
  */
 export const digitalSaleDetails = mysqlTable(

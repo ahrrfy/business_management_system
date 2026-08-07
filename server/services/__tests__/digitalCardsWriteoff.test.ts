@@ -14,7 +14,7 @@ import {
  *
  * الثوابت المحروسة هنا:
  *   I1 — الطلب **لا يمسّ مالاً**: لا رصيد ولا حجز ولا قيد.
- *   I2 — SOD: لا يعتمد الشطبَ مَن طلبه (admin مُستثنى).
+ *   I2 — SOD: لا يعتمد الشطبَ مَن طلبه (مالك النظام وحده مستثنى).
  *   I3 — المسبق: الرصيد ينزل بالحصة والحجز يُستهلَك (لا يُطلَق) ⇒ المتاح لا يتضخّم كذباً.
  *   I4 — الآجل: ذمّة المزوّد ترتفع بالحصة (لا محفظة ولا حجز).
  *   I5 — القيد خسارة صريحة: revenue=0، cost=الحصة، profit=−الحصة (لا حركة أصلٍ صفرية).
@@ -24,7 +24,7 @@ import {
 const cashier = { userId: 1, branchId: 1, role: "cashier" };
 const manager = { userId: 2, branchId: 1, role: "manager" };
 const manager2 = { userId: 3, branchId: 1, role: "manager" };
-const admin = { userId: 4, branchId: 1, role: "admin" };
+const owner = { userId: 4, branchId: 1, role: "admin", isOwner: true };
 const DATE = "2026-07-30";
 
 const TABLES = [
@@ -43,7 +43,7 @@ async function seedBase() {
     { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
     { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
     { id: 3, openId: "u3", name: "مدير ثانٍ", role: "manager", loginMethod: "local" },
-    { id: 4, openId: "u4", name: "أدمن", role: "admin", loginMethod: "local" },
+    { id: 4, openId: "u4", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 }
@@ -220,15 +220,15 @@ describe("الشطب — الاعتماد (SOD وكلّ الأثر المالي)
     expect((await intentRow(intentId)).status).toBe("WRITTEN_OFF");
   });
 
-  it("I2: الأدمن مُستثنى من SOD (تصحيح إداريّ)", async () => {
+  it("I2: مالك النظام مستثنى من الاعتماد الثاني بصفته المرجع النهائي", async () => {
     const { providerId } = await mkProvider("PREPAID", "آسياسيل");
     const walletId = await mkWallet(providerId, "100000");
     const offeringId = await mkOffering(providerId, walletId);
     const priced = await publish(providerId, [{ offeringId, providerShare: "9500" }]);
     const intentId = await stuckIntent(offeringId, priced.get(offeringId)!);
 
-    await withTx((tx) => writeoffService.requestWriteoff(tx, { intentId, reason: "لم يُسلَّم" }, admin));
-    await withTx((tx) => writeoffService.approveWriteoff(tx, { intentId }, admin));
+    await withTx((tx) => writeoffService.requestWriteoff(tx, { intentId, reason: "لم يُسلَّم" }, owner));
+    await withTx((tx) => writeoffService.approveWriteoff(tx, { intentId }, owner));
     expect((await intentRow(intentId)).status).toBe("WRITTEN_OFF");
   });
 

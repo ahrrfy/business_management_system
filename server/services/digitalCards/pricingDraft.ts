@@ -406,7 +406,7 @@ export async function approveBigChange(
   if (batch.status !== "DRAFT") {
     throw new TRPCError({ code: "CONFLICT", message: "الاعتماد يخصّ مسودّةً فقط" });
   }
-  if (Number(batch.createdBy) === actor.userId) {
+  if (Number(batch.createdBy) === actor.userId && !actor.isOwner) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "لا تعتمد تغييراً كبيراً في مسودّةٍ أنشأتَها — يلزم مديرٌ آخر",
@@ -446,7 +446,7 @@ export async function approveBigChange(
 
   const draftByOffering = new Map(draftLines.map((line) => [Number(line.offeringId), line]));
   const selfEdited = bigChanges.find((line) => Number(draftByOffering.get(line.offeringId)?.createdBy) === actor.userId);
-  if (selfEdited) {
+  if (selfEdited && !actor.isOwner) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: `لا تعتمد تغييراً كبيراً حرّرتَه بنفسك — «${selfEdited.name}» يحتاج مديراً آخر`,

@@ -4,7 +4,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { nonNegMoneyString } from "../../lib/schemas";
-import { finalizeService, intentService, writeoffService } from "../../services/digitalCards";
+import { finalizeService, intentService, reviewResolutionService, writeoffService } from "../../services/digitalCards";
 import { withTx } from "../../services/tx";
 import {
   digitalCardsAdminReadProcedure,
@@ -107,6 +107,37 @@ export const salesRouter = router({
       const scoped = scopedBranchOf(ctx);
       return intentService.listNeedsReview(requireDb(), { branchId: scoped ?? input?.branchId ?? null });
     }),
+
+  /** تفاصيل السبب وطلب المعالجة الآمن لعملية واحدة. */
+  reviewDetails: digitalCardsAdminReadProcedure
+    .input(z.object({ intentId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) =>
+      reviewResolutionService.getReviewDetails(requireDb(), input.intentId, scopedBranchOf(ctx))),
+
+  /** طلب قرار فقط؛ لا فاتورة ولا حركة رصيد حتى يعتمد مدير آخر. */
+  requestReviewResolution: digitalCardsManagerProcedure
+    .input(z.object({
+      intentId: z.number().int().positive(),
+      decision: z.enum(["CANCEL_NO_ISSUE", "FINALIZE_SALE", "WRITEOFF_LOSS"]),
+      reason: z.string().min(5).max(500),
+      items: z.array(z.object({
+        intentItemId: z.number().int().positive(),
+        outcome: z.enum(["ISSUED", "NOT_ISSUED"]),
+        providerReference: z.string().max(120).nullish(),
+      })).min(1).max(50),
+    }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => reviewResolutionService.requestResolution(tx, input, actorOf(ctx)))),
+
+  approveReviewResolution: digitalCardsManagerProcedure
+    .input(z.object({ intentId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => reviewResolutionService.approveResolution(tx, input, actorOf(ctx)))),
+
+  rejectReviewResolution: digitalCardsManagerProcedure
+    .input(z.object({ intentId: z.number().int().positive(), reason: z.string().min(3).max(500) }))
+    .mutation(async ({ input, ctx }) =>
+      withTx((tx) => reviewResolutionService.rejectResolution(tx, input, actorOf(ctx)))),
 
   /** كنّاس النيّات المهجورة — يُشغّله المدير يدوياً حتى تُجدوَل مهمّة دورية. */
   expireStale: digitalCardsManagerProcedure.mutation(async () =>

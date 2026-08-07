@@ -424,9 +424,9 @@ export default function DigitalPricing() {
   const threshold = sheet.data?.bigChangeThresholdPercent ?? 50;
   const bigApprovedBy = sheet.data?.batch?.bigChangeApprovedBy ?? null;
   const draftCreatedBy = sheet.data?.batch?.createdBy ?? null;
-  // مرآة حارس الخادم: لا يعتمد مُنشئ المسوّدة (admin مُستثنى) ⇒ لا زرٌّ يعِد بما يُرفَض.
+  // مرآة حارس الخادم: لا يعتمد مُنشئ المسوّدة، ومالك النظام مستثنى من الاعتماد الثاني.
   const canApproveBig =
-    me.data?.role === "admin" || Number(me.data?.id) !== Number(draftCreatedBy);
+    Boolean(me.data?.isOwner) || Number(me.data?.id) !== Number(draftCreatedBy);
   const bigChangeBlocking = bigChanges.length > 0 && bigApprovedBy == null;
   const publishBlockedReason = bigChangeBlocking
     ? `تغييرٌ ≥${threshold}% ينتظر اعتماد مديرٍ آخر`
@@ -583,7 +583,7 @@ export default function DigitalPricing() {
               ) : (
                 <>
                   <span>
-                    النشر موقوفٌ حتى يعتمده مديرٌ آخر غير مُنشئ المسوّدة.
+                    النشر موقوفٌ حتى يعتمده مديرٌ آخر غير مُنشئ المسوّدة. مالك النظام مستثنى.
                   </span>
                   <Button
                     size="sm"
@@ -594,7 +594,7 @@ export default function DigitalPricing() {
                     }
                     title={
                       !canApproveBig
-                        ? "لا تعتمد تغييراً في مسوّدةٍ أنشأتَها — يلزم مديرٌ آخر"
+                        ? "لا تعتمد تغييراً في مسوّدةٍ أنشأتَها — يلزم مديرٌ آخر، ويُستثنى مالك النظام"
                         : undefined
                     }
                     onClick={() =>
