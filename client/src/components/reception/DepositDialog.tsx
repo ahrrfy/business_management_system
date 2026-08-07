@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
@@ -145,12 +146,13 @@ export default function DepositDialog({
         )}
         {method === "TELECOM" && (
           <>
-            <Input
+            {/* حارس حقول الهاتف: المكوّن الموحّد لا Input عارياً — يُثبّت +964 ويُطبّع الرقم،
+                وهو ما يعتمده تطبيع E.164 خادمياً في قيد (رقم، يوم، مبلغ) لمنع تسجيلٍ مزدوج. */}
+            <IntlPhoneInput
               value={senderPhone}
-              onChange={(e) => setSenderPhone(e.target.value)}
-              placeholder="هاتف المُرسِل (اختياري — لتحويل الرصيد المباشر)"
-              className="h-9 text-xs"
-              dir="ltr"
+              onChange={setSenderPhone}
+              ariaLabel="هاتف المُرسِل (اختياري — لتحويل الرصيد المباشر)"
+              className="text-xs"
             />
             <label className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--sem-warn)]">
               <input
