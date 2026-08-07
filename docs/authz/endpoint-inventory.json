@@ -1,10 +1,10 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 791,
+    "trpcTotal": 794,
     "byKind": {
-      "mutation": 399,
-      "query": 392
+      "mutation": 401,
+      "query": 393
     },
     "byAuthority": {
       "module-gate": 355,
@@ -13,17 +13,17 @@
       "raw-role": 59,
       "none": 53,
       "platform": 5,
+      "self-assignment": 4,
       "device-bootstrap": 1,
-      "self-assignment": 1,
       "token": 1
     },
     "bySensitivity": {
-      "LOW": 391,
-      "MEDIUM": 302,
-      "HIGH": 98
+      "LOW": 392,
+      "MEDIUM": 303,
+      "HIGH": 99
     },
     "byModule": {
-      "(none)": 190,
+      "(none)": 193,
       "hr": 77,
       "digital_cards": 70,
       "reports": 56,
@@ -53,7 +53,7 @@
     "flagCounts": {
       "LOCAL_GATE": 129,
       "NO_BRANCH_SCOPE": 123,
-      "SENSITIVE_ACTION": 98,
+      "SENSITIVE_ACTION": 99,
       "ADMIN_ONLY": 76,
       "RAW_ROLE_GATE": 69,
       "UNAUTHENTICATED": 32,
@@ -62,10 +62,10 @@
       "HANDLER_ROLE_CHECK": 5
     },
     "expressRoutes": 15,
-    "expressMounts": 10,
-    "jobs": 6,
-    "routerFiles": 86,
-    "proposedPermissions": 672,
+    "expressMounts": 9,
+    "jobs": 7,
+    "routerFiles": 87,
+    "proposedPermissions": 675,
     "proposedDomains": {
       "hr": 83,
       "catalog": 63,
@@ -102,6 +102,7 @@
       "consignment": 4,
       "digitalcards/students": 4,
       "digitalcards/pos": 3,
+      "nativepush": 3,
       "audit": 2,
       "digitalcards/subscriptions": 1,
       "search": 1
@@ -4951,7 +4952,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/digitalCards/subscriptionsRouter.ts:21"
+      "loc": "server/routers/digitalCards/subscriptionsRouter.ts:19"
     },
     {
       "surface": "trpc",
@@ -7451,6 +7452,57 @@
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
       "loc": "server/routers/leaveRouter.ts:48"
+    },
+    {
+      "surface": "trpc",
+      "router": "nativePushRouter",
+      "proposedPermission": "nativepush.native_push.create",
+      "name": "register",
+      "kind": "mutation",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/nativePushRouter.ts:72"
+    },
+    {
+      "surface": "trpc",
+      "router": "nativePushRouter",
+      "proposedPermission": "nativepush.native_push.revoke",
+      "name": "revokeDevice",
+      "kind": "mutation",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: revoke",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/nativePushRouter.ts:111"
+    },
+    {
+      "surface": "trpc",
+      "router": "nativePushRouter",
+      "proposedPermission": "nativepush.native_push.view",
+      "name": "status",
+      "kind": "query",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/nativePushRouter.ts:67"
     },
     {
       "surface": "trpc",
@@ -13716,7 +13768,7 @@
       "method": "GET",
       "path": "/healthz",
       "file": "server/index.ts",
-      "line": 155,
+      "line": 176,
       "authority": "public",
       "roles": "public",
       "sensitivity": "LOW",
@@ -13727,7 +13779,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 300,
+      "line": 337,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13738,7 +13790,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 308,
+      "line": 345,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13749,18 +13801,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 343,
-      "authority": "mount",
-      "roles": "",
-      "sensitivity": "",
-      "note": "نقطة تركيب (tenancy/csrf middleware)"
-    },
-    {
-      "surface": "express-mount",
-      "method": "MOUNT",
-      "path": "/api/trpc",
-      "file": "server/index.ts",
-      "line": 346,
+      "line": 385,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13771,7 +13812,7 @@
       "method": "MOUNT",
       "path": "/api/print",
       "file": "server/index.ts",
-      "line": 351,
+      "line": 400,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13782,7 +13823,7 @@
       "method": "MOUNT",
       "path": "/api/img",
       "file": "server/index.ts",
-      "line": 357,
+      "line": 406,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13793,7 +13834,7 @@
       "method": "MOUNT",
       "path": "/api/backups",
       "file": "server/index.ts",
-      "line": 362,
+      "line": 411,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13804,7 +13845,7 @@
       "method": "MOUNT",
       "path": "/api/wa/media",
       "file": "server/index.ts",
-      "line": 366,
+      "line": 415,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13815,7 +13856,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks",
       "file": "server/index.ts",
-      "line": 389,
+      "line": 438,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13826,7 +13867,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks/company/:companyCode",
       "file": "server/index.ts",
-      "line": 390,
+      "line": 439,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13837,7 +13878,7 @@
     {
       "kind": "cron",
       "file": "server/index.ts",
-      "line": 432
+      "line": 498
     },
     {
       "kind": "interval",
@@ -13858,6 +13899,11 @@
       "kind": "cron",
       "file": "server/services/morningPushScheduler.ts",
       "line": 164
+    },
+    {
+      "kind": "interval",
+      "file": "server/services/nativePushOutboxWorker.ts",
+      "line": 275
     },
     {
       "kind": "cron",

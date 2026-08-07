@@ -21,6 +21,7 @@ import { customerNoteRouter } from "./routers/customerNoteRouter";
 import { arRemindersRouter } from "./routers/arRemindersRouter";
 import { apRemindersRouter } from "./routers/apRemindersRouter";
 import { pushRouter } from "./routers/pushRouter";
+import { nativePushRouter } from "./routers/nativePushRouter";
 import { expenseRouter } from "./routers/expenseRouter";
 import { reportsRouter } from "./routers/reportsRouter";
 import { quotationRouter } from "./routers/quotationRouter";
@@ -104,6 +105,7 @@ export const appRouter = router({
   arReminders: arRemindersRouter,
   apReminders: apRemindersRouter,
   push: pushRouter,
+  nativePush: nativePushRouter,
   expenses: expenseRouter,
   reports: reportsRouter,
   quotations: quotationRouter,
