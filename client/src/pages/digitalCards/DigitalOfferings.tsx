@@ -223,7 +223,6 @@ export default function DigitalOfferings() {
   const [fName, setFName] = useState("");
   const [fType, setFType] = useState<OfferingType>("TELECOM_CARD");
   const [fRequiresStudent, setFRequiresStudent] = useState(false);
-  const [fSubscriptionDays, setFSubscriptionDays] = useState("");
   const [fFaceValue, setFFaceValue] = useState("");
   const [fPricingMode, setFPricingMode] = useState<PricingMode>("FIXED_MARGIN");
   const [fFixedMargin, setFFixedMargin] = useState("0");
@@ -274,7 +273,6 @@ export default function DigitalOfferings() {
     setFName("");
     setFType("TELECOM_CARD");
     setFRequiresStudent(false);
-    setFSubscriptionDays("");
     setFFaceValue("");
     setFPricingMode("FIXED_MARGIN");
     setFFixedMargin("0");
@@ -294,7 +292,6 @@ export default function DigitalOfferings() {
     setFName(o.productName);
     setFType(o.offeringType);
     setFRequiresStudent(o.requiresStudentData);
-    setFSubscriptionDays(o.subscriptionDurationDays != null ? String(o.subscriptionDurationDays) : "");
     setFFaceValue(o.faceValue ?? "");
     setFPricingMode(o.pricingMode);
     setFFixedMargin(o.fixedMargin);
@@ -349,10 +346,6 @@ export default function DigitalOfferings() {
       name,
       offeringType: fType,
       requiresStudentData: fRequiresStudent,
-      subscriptionDurationDays:
-        fType === "EDUCATIONAL_SUBSCRIPTION"
-          ? Number(fSubscriptionDays) || null
-          : null,
       faceValue: fFaceValue.trim() || null,
       pricingMode: fPricingMode,
       fixedMargin: fFixedMargin || "0",
@@ -367,9 +360,6 @@ export default function DigitalOfferings() {
       })),
     };
 
-    if (fType === "EDUCATIONAL_SUBSCRIPTION" && !Number(fSubscriptionDays)) {
-      return notify.err("أدخِل مدة الاشتراك بالأيام لكي ينشئ النظام عقد التجديد تلقائياً");
-    }
     if (editId != null) {
       updateMut.mutate({ id: editId, ...shared });
       return;
@@ -800,26 +790,13 @@ export default function DigitalOfferings() {
                 disabled={fType === "EDUCATIONAL_SUBSCRIPTION"}
                 onChange={(e) => setFRequiresStudent(e.target.checked)}
               />
-              تتطلّب بيانات طالب عند البيع (اسم/هاتف الطالب وولي الأمر)
+              تتطلّب اسم الطالب ورقم هاتفه عند البيع
             </label>
 
             {fType === "EDUCATIONAL_SUBSCRIPTION" && (
-              <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
-                <label className="text-sm font-medium" htmlFor="do-subscription-days">
-                  مدة الاشتراك بالأيام
-                </label>
-                <Input
-                  id="do-subscription-days"
-                  type="number"
-                  min={1}
-                  max={3650}
-                  value={fSubscriptionDays}
-                  onChange={(e) => setFSubscriptionDays(e.target.value)}
-                  placeholder="مثال: 30"
-                  dir="ltr"
-                />
+              <div className="rounded-lg border bg-muted/20 p-3">
                 <p className="text-xs text-muted-foreground">
-                  عند إتمام البيع ينشئ النظام اشتراكاً يبدأ تلقائياً ويظهر تاريخ انتهائه وتجديداته.
+                  النظام يسجّل البيع ورقم الاشتراك وبيانات الطالب فقط. انتهاء الاشتراك وحدوده تديرها المنصة التعليمية.
                 </p>
               </div>
             )}

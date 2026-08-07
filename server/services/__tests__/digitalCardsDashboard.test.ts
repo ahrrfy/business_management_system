@@ -95,6 +95,7 @@ async function sell(offerings: { offeringId: number; priced: { pv: number; price
     paymentMethod: "CASH", cartFingerprint: `fp${id}`,
     lines: offerings.map((o, i) => ({
       lineKey: `lk-${id}-${i}`, offeringId: o.offeringId, priceVersionId: o.priced.pv, expectedSellPrice: o.priced.price,
+      providerReference: `REF-DASH-${id}-${i}`,
     })),
   }, actor));
   const items = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
@@ -103,7 +104,7 @@ async function sell(offerings: { offeringId: number; priced: { pv: number; price
       const claimToken = `dashboard-claim-${id}-${it.id}`;
       await intentService.claimExecution(tx, { intentId: r.intentId, intentItemId: Number(it.id), claimToken }, actor);
       return intentService.markExecution(tx, {
-        intentId: r.intentId, intentItemId: Number(it.id), claimToken, status: "SUCCESS", providerReference: `R-${id}-${it.id}`,
+        intentId: r.intentId, intentItemId: Number(it.id), claimToken, status: "SUCCESS", providerReference: it.providerReference,
       }, actor);
     });
   }
@@ -313,14 +314,14 @@ describe("ش١١ — الصحة والحالات المعلّقة", () => {
     // نيّة نُفِّذ كرتُها ثم هُجرت ⇒ NEEDS_REVIEW
     const r = await withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "p-abandoned-1", branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: "fpX",
-      lines: [{ lineKey: "lkX", offeringId: a, priceVersionId: priced.get(a)!.pv, expectedSellPrice: priced.get(a)!.price }],
+      lines: [{ lineKey: "lkX", offeringId: a, priceVersionId: priced.get(a)!.pv, expectedSellPrice: priced.get(a)!.price, providerReference: "REF-DASH-ABANDONED" }],
     }, actor));
     const [it] = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
     await withTx(async (tx) => {
       const claimToken = `dashboard-abandoned-${it.id}`;
       await intentService.claimExecution(tx, { intentId: r.intentId, intentItemId: Number(it.id), claimToken }, actor);
       return intentService.markExecution(tx, {
-        intentId: r.intentId, intentItemId: Number(it.id), claimToken, status: "SUCCESS", providerReference: "ABANDONED-1",
+        intentId: r.intentId, intentItemId: Number(it.id), claimToken, status: "SUCCESS", providerReference: it.providerReference,
       }, actor);
     });
     await withTx((tx) => intentService.cancelIntent(tx, { intentId: r.intentId }, actor));

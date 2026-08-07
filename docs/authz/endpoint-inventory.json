@@ -1,14 +1,14 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 790,
+    "trpcTotal": 791,
     "byKind": {
       "mutation": 399,
-      "query": 391
+      "query": 392
     },
     "byAuthority": {
       "module-gate": 355,
-      "module-map": 242,
+      "module-map": 243,
       "admin": 73,
       "raw-role": 59,
       "none": 53,
@@ -18,14 +18,14 @@
       "token": 1
     },
     "bySensitivity": {
-      "LOW": 390,
+      "LOW": 391,
       "MEDIUM": 302,
       "HIGH": 98
     },
     "byModule": {
       "(none)": 190,
       "hr": 77,
-      "digital_cards": 69,
+      "digital_cards": 70,
       "reports": 56,
       "treasury": 52,
       "products": 48,
@@ -65,7 +65,7 @@
     "expressMounts": 10,
     "jobs": 6,
     "routerFiles": 86,
-    "proposedPermissions": 671,
+    "proposedPermissions": 672,
     "proposedDomains": {
       "hr": 83,
       "catalog": 63,
@@ -101,8 +101,8 @@
       "digitalcards/reversal": 5,
       "consignment": 4,
       "digitalcards/students": 4,
+      "digitalcards/pos": 3,
       "audit": 2,
-      "digitalcards/pos": 2,
       "digitalcards/subscriptions": 1,
       "search": 1
     }
@@ -4258,6 +4258,23 @@
     },
     {
       "surface": "trpc",
+      "router": "digitalCards/posRouter",
+      "proposedPermission": "digitalcards/pos.digital_cards/po.validate_reference",
+      "name": "validateReference",
+      "kind": "query",
+      "procedure": "digitalCardsPosProcedure",
+      "authority": "module-map",
+      "module": "digital_cards",
+      "level": "READ",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/digitalCards/posRouter.ts:37"
+    },
+    {
+      "surface": "trpc",
       "router": "digitalCards/pricingRouter",
       "proposedPermission": "digitalcards/pricing.digital_cards/pricing.approve",
       "name": "approveBigChange",
@@ -4628,7 +4645,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/salesRouter.ts:122"
+      "loc": "server/routers/digitalCards/salesRouter.ts:124"
     },
     {
       "surface": "trpc",
@@ -4645,7 +4662,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/salesRouter.ts:95"
+      "loc": "server/routers/digitalCards/salesRouter.ts:97"
     },
     {
       "surface": "trpc",
@@ -4662,7 +4679,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:57"
+      "loc": "server/routers/digitalCards/salesRouter.ts:59"
     },
     {
       "surface": "trpc",
@@ -4679,7 +4696,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:110"
+      "loc": "server/routers/digitalCards/salesRouter.ts:112"
     },
     {
       "surface": "trpc",
@@ -4696,7 +4713,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:135"
+      "loc": "server/routers/digitalCards/salesRouter.ts:137"
     },
     {
       "surface": "trpc",
@@ -4713,7 +4730,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:83"
+      "loc": "server/routers/digitalCards/salesRouter.ts:85"
     },
     {
       "surface": "trpc",
@@ -4730,7 +4747,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:69"
+      "loc": "server/routers/digitalCards/salesRouter.ts:71"
     },
     {
       "surface": "trpc",
@@ -4747,7 +4764,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:102"
+      "loc": "server/routers/digitalCards/salesRouter.ts:104"
     },
     {
       "surface": "trpc",
@@ -4764,7 +4781,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:27"
+      "loc": "server/routers/digitalCards/salesRouter.ts:28"
     },
     {
       "surface": "trpc",
@@ -4781,7 +4798,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "أثر خارجي: print",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/salesRouter.ts:162"
+      "loc": "server/routers/digitalCards/salesRouter.ts:164"
     },
     {
       "surface": "trpc",
@@ -4798,7 +4815,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:150"
+      "loc": "server/routers/digitalCards/salesRouter.ts:152"
     },
     {
       "surface": "trpc",
@@ -4815,7 +4832,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/salesRouter.ts:128"
+      "loc": "server/routers/digitalCards/salesRouter.ts:130"
     },
     {
       "surface": "trpc",
@@ -4832,7 +4849,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: writeoff",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/salesRouter.ts:116"
+      "loc": "server/routers/digitalCards/salesRouter.ts:118"
     },
     {
       "surface": "trpc",
@@ -4849,7 +4866,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/digitalCards/salesRouter.ts:156"
+      "loc": "server/routers/digitalCards/salesRouter.ts:158"
     },
     {
       "surface": "trpc",
@@ -4934,7 +4951,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/digitalCards/subscriptionsRouter.ts:24"
+      "loc": "server/routers/digitalCards/subscriptionsRouter.ts:21"
     },
     {
       "surface": "trpc",

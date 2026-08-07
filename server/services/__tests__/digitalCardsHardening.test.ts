@@ -105,7 +105,7 @@ describe("ش١٣ — عزل الفرع على كل قراءة", () => {
     const b2 = await setup(2);
     await expect(withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "cross-branch-1", branchId: 2, shiftId: 1, paymentMethod: "CASH", cartFingerprint: "fp",
-      lines: [{ lineKey: "lk", offeringId: b2.offeringId, priceVersionId: b2.priceVersionId, expectedSellPrice: "14250.00" }],
+      lines: [{ lineKey: "lk", offeringId: b2.offeringId, priceVersionId: b2.priceVersionId, expectedSellPrice: "14250.00", providerReference: "REF-CROSS-BRANCH" }],
     }, actor))).rejects.toThrow(/تخصّ فرعاً آخر/);
   });
 });
@@ -168,7 +168,7 @@ describe("ش١٣ — الضغط المتزامن على رصيد المحفظة"
     const attempt = (key: string) =>
       withTx((tx) => intentService.prepare(tx, {
         clientRequestId: key, branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: key,
-        lines: [{ lineKey: `${key}-l`, offeringId, priceVersionId, expectedSellPrice: "14250.00" }],
+        lines: [{ lineKey: `${key}-l`, offeringId, priceVersionId, expectedSellPrice: "14250.00", providerReference: `REF-${key}` }],
       }, actor)).then(() => "ok" as const).catch(() => "rejected" as const);
 
     const results = await Promise.all([attempt("race-aaaa-1111"), attempt("race-bbbb-2222")]);

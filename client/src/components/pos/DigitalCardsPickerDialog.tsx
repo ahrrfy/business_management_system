@@ -4,15 +4,18 @@
 // لأن بيع كرتين من الفئة نفسها يحتاج مرجعَي تنفيذ منفصلين (§٨.٣).
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { digitalSaleReferenceLabel, normalizeDigitalSaleReference } from "@shared/digitalSale";
 import { CreditCard, GraduationCap, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   StudentDetailsDialog,
   type StudentSnapshot,
+  type SubscriptionSaleCapture,
 } from "./StudentDetailsDialog";
 
 export type PosCard = RouterOutputs["digitalCards"]["pos"]["listCards"][number];
 export type ConfirmedCard = RouterOutputs["digitalCards"]["pos"]["confirmCard"];
+export type DigitalSaleCapture = { providerReference: string; student?: StudentSnapshot };
 
 const C = {
   bg: "var(--pos-bg)",
@@ -49,13 +52,15 @@ export function DigitalCardsPickerDialog({
   offline,
   onClose,
   onPick,
+  existingReferences = [],
 }: {
   open: boolean;
   branchId: number;
   /** أثناء الانقطاع لا بيع رقميّ إطلاقاً — الشبكة والأسعار تأتيان من الخادم حصراً. */
   offline: boolean;
   onClose: () => void;
-  onPick: (card: ConfirmedCard, student?: StudentSnapshot) => void;
+  onPick: (card: ConfirmedCard, capture: DigitalSaleCapture) => void;
+  existingReferences?: { providerId: number; providerReference: string }[];
 }) {
   // لا نبدأ بـ«الأكثر استخداماً»: فهو يعرض العروض الموسومة كمفضلة فقط،
   // فيجعل الكروت/الاشتراكات المفعّلة ذات السعر المنشور تبدو مختفية للكاشير.
@@ -65,6 +70,7 @@ export function DigitalCardsPickerDialog({
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [confirming, setConfirming] = useState<PosCard | null>(null);
+  const [providerReference, setProviderReference] = useState("");
   /** الكرت المؤكَّد سعره والمنتظِر بيانات الطالب (اشتراك تعليميّ) — §٨.٣. */
   const [awaitingStudent, setAwaitingStudent] = useState<ConfirmedCard | null>(
     null,
@@ -86,6 +92,7 @@ export function DigitalCardsPickerDialog({
       setQ("");
       setDebouncedQ("");
       setConfirming(null);
+      setProviderReference("");
       setAwaitingStudent(null);
       setReporting(null);
       setReportShare("");
@@ -152,12 +159,36 @@ export function DigitalCardsPickerDialog({
     pickRequestRef.current += 1;
     setPicking(false);
     setConfirming(null);
+    setProviderReference("");
   }
 
   function dismissPicker() {
     cancelConfirm();
     setAwaitingStudent(null);
     onClose();
+  }
+
+  async function validateReference(card: Pick<PosCard, "offeringId" | "providerId" | "offeringType">, raw: string): Promise<string | null> {
+    const normalized = normalizeDigitalSaleReference(raw);
+    if (!normalized) {
+      notify.err(`${digitalSaleReferenceLabel(card.offeringType)} مطلوب قبل الإضافة للسلة`);
+      return null;
+    }
+    if (existingReferences.some((r) => r.providerId === card.providerId && normalizeDigitalSaleReference(r.providerReference).toLocaleLowerCase("en") === normalized.toLocaleLowerCase("en"))) {
+      notify.err("هذا الرقم موجود في السلة للمزوّد نفسه");
+      return null;
+    }
+    try {
+      const checked = await utils.client.digitalCards.pos.validateReference.query({
+        branchId,
+        offeringId: card.offeringId,
+        providerReference: normalized,
+      });
+      return checked.providerReference;
+    } catch (e) {
+      notify.err(e);
+      return null;
+    }
   }
 
   async function confirmAndAdd(card: PosCard) {
@@ -178,8 +209,11 @@ export function DigitalCardsPickerDialog({
         setAwaitingStudent(fresh);
         return;
       }
-      onPick(fresh);
+      const checkedReference = await validateReference(fresh, providerReference);
+      if (!checkedReference || requestId !== pickRequestRef.current) return;
+      onPick(fresh, { providerReference: checkedReference });
       setConfirming(null);
+      setProviderReference("");
       onClose();
     } catch (e) {
       if (requestId === pickRequestRef.current) notify.err(e);
@@ -478,7 +512,11 @@ export function DigitalCardsPickerDialog({
                   return (
                     <button
                       key={card.offeringId}
-                      onClick={() => ready && setConfirming(card)}
+                      onClick={() => {
+                        if (!ready) return;
+                        setProviderReference("");
+                        setConfirming(card);
+                      }}
                       disabled={!ready}
                       style={{
                         textAlign: "start",
@@ -630,8 +668,26 @@ export function DigitalCardsPickerDialog({
             </div>
             {confirming.requiresStudentData && (
               <span style={{ fontSize: 12.5, color: C.mutedFg }}>
-                اشتراك تعليمي — ستُطلب بيانات الطالب قبل إتمام البيع.
+                ستدخل رقم الاشتراك واسم الطالب وهاتفه في خطوة واحدة بسيطة.
               </span>
+            )}
+            {!confirming.requiresStudentData && (
+              <label style={{ display: "flex", flexDirection: "column", gap: 5, fontSize: 13, fontWeight: 800, color: C.fg }}>
+                {digitalSaleReferenceLabel(confirming.offeringType)}
+                <input
+                  value={providerReference}
+                  onChange={(e) => setProviderReference(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void confirmAndAdd(confirming); } }}
+                  maxLength={120}
+                  placeholder="امسح الرقم أو اكتبه"
+                  dir="ltr"
+                  autoFocus
+                  style={{ height: 48, padding: "0 12px", borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.card, color: C.fg, fontSize: 16, fontWeight: 800, fontFamily: "inherit", outline: "none" }}
+                />
+                <span style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 500 }}>
+                  يُحفظ للمطابقة مع تقرير جهاز المزوّد؛ لا يوجد تحقق خارجي.
+                </span>
+              </label>
             )}
             <button
               onClick={() => {
@@ -688,7 +744,7 @@ export function DigitalCardsPickerDialog({
                   cursor: picking ? "not-allowed" : "pointer",
                 }}
               >
-                {picking ? "جارٍ الإضافة…" : "إضافة للسلة"}
+                {picking ? "جارٍ الحفظ…" : confirming.requiresStudentData ? "متابعة" : "حفظ وإضافة للسلة"}
               </button>
             </div>
           </div>
@@ -846,11 +902,21 @@ export function DigitalCardsPickerDialog({
         open={awaitingStudent != null}
         cardName={awaitingStudent?.name ?? ""}
         onCancel={() => setAwaitingStudent(null)}
-        onConfirm={(snapshot) => {
+        onConfirm={(capture: SubscriptionSaleCapture) => {
           if (!awaitingStudent) return;
-          onPick(awaitingStudent, snapshot);
-          setAwaitingStudent(null);
-          onClose();
+          void (async () => {
+            if (picking) return;
+            setPicking(true);
+            try {
+              const checkedReference = await validateReference(awaitingStudent, capture.providerReference);
+              if (!checkedReference) return;
+              onPick(awaitingStudent, { providerReference: checkedReference, student: capture.student });
+              setAwaitingStudent(null);
+              onClose();
+            } finally {
+              setPicking(false);
+            }
+          })();
         }}
       />
     </div>

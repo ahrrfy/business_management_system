@@ -16,10 +16,12 @@ import {
   digitalOfferings,
   digitalPriceVersions,
   digitalProviders,
+  digitalSaleIntentItems,
   productImages,
   products,
   suppliers,
 } from "../../../drizzle/schema";
+import { normalizeDigitalSaleReference } from "../../../shared/digitalSale";
 import type { DB } from "../../db";
 
 export type CardCategory = "FAVORITES" | "TELECOM" | "GLOBAL" | "EDUCATIONAL" | "ALL";
@@ -197,4 +199,39 @@ export async function confirmCard(
     });
   }
   return { ...card, sellPrice: card.sellPrice, priceVersionId: card.priceVersionId };
+}
+
+/**
+ * يمنع إعادة استعمال رقمٍ حُفظ سابقاً لدى المزوّد نفسه قبل إدخاله للسلة.
+ * هذا فحصٌ داخليّ في قاعدة بياناتنا فقط؛ لا يوجد أي اتصال أو تحقق لدى المزوّد.
+ * القيد الفريد داخل `prepare` يبقى الحارس النهائي ضد سباق نافذتين متزامنتين.
+ */
+export async function assertReferenceAvailable(
+  db: DB,
+  input: { branchId: number; offeringId: number; providerReference: string },
+): Promise<{ providerReference: string }> {
+  const card = await confirmCard(db, { branchId: input.branchId, offeringId: input.offeringId });
+  const providerReference = normalizeDigitalSaleReference(input.providerReference);
+  if (!providerReference) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "أدخل رقم العملية أو رقم الاشتراك قبل الإضافة للسلة" });
+  }
+  if (providerReference.length > 120) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الرقم المرجعي أطول من الحد المسموح" });
+  }
+
+  const [used] = await db
+    .select({ id: digitalSaleIntentItems.id })
+    .from(digitalSaleIntentItems)
+    .where(and(
+      eq(digitalSaleIntentItems.providerId, card.providerId),
+      eq(digitalSaleIntentItems.providerReference, providerReference),
+    ))
+    .limit(1);
+  if (used) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "هذا الرقم محفوظ لعملية سابقة لدى المزوّد نفسه — طابقه مع جهاز المزوّد",
+    });
+  }
+  return { providerReference };
 }
