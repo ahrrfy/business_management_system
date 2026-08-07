@@ -15,7 +15,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   customers,
   invoiceItems,
@@ -43,7 +43,7 @@ import type { Tx } from "../db";
  *  (مخزّنة في products.productType — لا تحتاج تغيير مخطّط.) */
 export const PRINT_SERVICE_TYPE = "PRINT_SERVICE";
 
-type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
 
 export interface PrintSaleLineInput {
   variantId: number;
@@ -63,6 +63,9 @@ export interface CreatePrintSaleInput {
   priceTier?: PriceTier | null;
   lines: PrintSaleLineInput[];
   payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
+  /** ش٤ (§٧.٢) — مالٌ قُبض سلفاً (عرابين مسوّدة): يدخل paidAmount بلا إيصالٍ ثانٍ (I5) —
+   *  مرآة CreateSaleInput.preCollected حرفياً. */
+  preCollected?: { amount: string; receiptIds: number[] } | null;
   clientRequestId?: string | null;
   notes?: string | null;
   /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق).
@@ -75,6 +78,11 @@ export interface CreatePrintSaleInput {
   dueDate?: string | null;
   /** تقريب نقدي عراقي للبيع النقدي الكامل (يضبطه POS). */
   cashRoundIQD?: boolean;
+  /** ش٦ — تقريب السلّة المختلطة (يضبطه checkoutReception حصراً): إجماليٌّ فعّالٌ صريح يحمل
+   *  فرق تقريب السلّة كلّها على هذه الفاتورة حين لا بيعَ مباشرَ يحمله. نفس حرّاس sale/create. */
+  cashRoundingOverride?: string | null;
+  /** ش٧ — متبقّي فاتورة التوصيل عهدةٌ على مندوبٍ تُرفع في نفس المعاملة (مرآة sale/create). */
+  codDispatchPending?: boolean;
   /** SALES-01/02 (قناة الطباعة): موافقة على بيع خدمة بأقل من تكلفة موادها (سعر/خصم تحت COGS).
    *  يضبطها الراوتر: مدير/أدمن ذاتياً، والكاشير بموافقة مدير مُتحقَّقة. */
   priceOverrideApproved?: boolean;
@@ -317,21 +325,39 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     //    والفرق قيد ADJUST ⇒ (SALE.amount + ADJUST.amount) = الإجمالي المقرّب = النقد المستلم.
     const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
     const grandTotalD = money(totals.total);
-    const effectiveTotalD = roundCash ? roundCashIQD(grandTotalD) : grandTotalD;
+    // ش٦ — تقريب السلّة المختلطة: إجماليٌّ فعّالٌ صريح (نفس حرّاس sale/create حرفياً).
+    let overrideD: ReturnType<typeof money> | null = null;
+    if (input.cashRoundingOverride != null && input.payment?.method === "CASH") {
+      const cand = round2(money(input.cashRoundingOverride));
+      if (cand.gt(0) && cand.minus(grandTotalD).abs().lt(250)) overrideD = cand;
+    }
+    const effectiveTotalD = overrideD ?? (roundCash ? roundCashIQD(grandTotalD) : grandTotalD);
     const cashRoundingAdj = effectiveTotalD.minus(grandTotalD);
     const tendered = money(input.payment?.amount ?? "0");
-    // SALES-05 (تدقيق ٢/٧): كنفس إصلاح saleService — التقريب على الإجمالي دائماً، لكن paidNow=الإجمالي
-    // المقرّب فقط عند دفعٍ كامل فعلاً؛ الدفعة الجزئية تُسجَّل بالمبلغ المُسلَّم والباقي ذمّة.
-    if (input.payment?.method !== "CASH" && tendered.gt(effectiveTotalD)) {
+    // ش٤ (§٧.٢): المقبوض سلفاً يدخل الحساب قبل حرّاس الآجل/الائتمان (مرآة sale/create — حاصرة ١.١).
+    const preCollectedD = round2(money(input.preCollected?.amount ?? "0"));
+    if (preCollectedD.gt(effectiveTotalD)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `المبلغ المدفوع (${tendered.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
+        message: `المقبوض سلفاً (${preCollectedD.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}) — خلل توزيع، راجع الطلب المحفوظ.`,
+      });
+    }
+    // SALES-05 (تدقيق ٢/٧): كنفس إصلاح saleService — التقريب على الإجمالي دائماً، لكن paidNow=الإجمالي
+    // المقرّب فقط عند دفعٍ كامل فعلاً؛ الدفعة الجزئية تُسجَّل بالمبلغ المُسلَّم والباقي ذمّة.
+    if (input.payment?.method !== "CASH" && preCollectedD.plus(tendered).gt(effectiveTotalD)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `المبلغ المدفوع (${preCollectedD.plus(tendered).toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
       });
     }
     // ما زاد نقداً هو باقي للعميل، وليس دفعة أو نقداً باقياً في الدرج.
-    const paidNow = tendered.gt(effectiveTotalD) ? effectiveTotalD : tendered;
+    // paidNow = المسدَّد كلّه (سلفاً + الآن)؛ الإيصال الجديد للجزء الجديد وحده (I5).
+    const totalTenderedD = preCollectedD.plus(tendered);
+    const paidNow = totalTenderedD.gt(effectiveTotalD) ? effectiveTotalD : totalTenderedD;
+    const newMoneyD = round2(paidNow.minus(preCollectedD));
     const unpaid = effectiveTotalD.minus(paidNow);
-    if (unpaid.gt(0) && !input.customerId) {
+    // ش٧: متبقّي فاتورة التوصيل عهدةُ مندوبٍ تُرفع في نفس المعاملة (مرآة sale/create حرفياً).
+    if (unpaid.gt(0) && !input.customerId && !input.codDispatchPending) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
     }
     // B5 (١٩/٦/٢٦): الموافقة لم تعد blanket — تحتاج (أ) creditApprovalId أو (ب) managerOverrideByUserId.
@@ -474,8 +500,8 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       });
     }
 
-    // ١٣. الدفع + الذمم.
-    if (paidNow.gt(0)) {
+    // ١٣. الدفع + الذمم — ش٤ (I5): الإيصال والقيد للجزء الجديد وحده (مرآة sale/create).
+    if (newMoneyD.gt(0)) {
       const rRes = await tx.insert(receipts).values({
         invoiceId,
         branchId: input.branchId,
@@ -485,7 +511,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         // ومن رصيد الخزينة (منفذ اختلاس + عجز/فائض مزوّر). الآن مطابق تماماً لمسار البيع العادي.
         cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
         direction: "IN",
-        amount: toDbMoney(paidNow),
+        amount: toDbMoney(newMoneyD),
         paymentMethod: input.payment!.method,
         referenceNumber: input.payment!.reference?.trim() || null,
         status: "COMPLETED",
@@ -498,8 +524,14 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         invoiceId,
         receiptId,
         customerId: input.customerId ?? null,
-        amount: paidNow,
+        amount: newMoneyD,
       });
+    }
+    for (const preReceiptId of input.preCollected?.receiptIds ?? []) {
+      await tx
+        .update(receipts)
+        .set({ invoiceId })
+        .where(and(eq(receipts.id, preReceiptId), sql`${receipts.invoiceId} IS NULL`));
     }
     if (input.customerId) {
       await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));

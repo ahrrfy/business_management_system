@@ -423,6 +423,17 @@ async function startServer() {
   const { startWaOutboxSweeper } = await import("./services/whatsapp/outboxSweeper");
   startWaOutboxSweeper();
 
+  // ش٢ (ق٤): كنّاس مسوّدات المحطة — يطوي الفارغة المنقضية (٢٤س بلا نشاط) ليلاً وعلى الإقلاع؛
+  // **لا يمسّ المموّلة أبداً** (المال في receipts — I14). لا cron في بيئة الاختبار.
+  if (process.env.NODE_ENV !== "test") {
+    const { sweepExpiredDrafts } = await import("./services/reception");
+    const cron = (await import("node-cron")).default;
+    void sweepExpiredDrafts().catch(() => { /* الكنّاس لا يُسقط الإقلاع */ });
+    cron.schedule("15 1 * * *", () => {
+      void sweepExpiredDrafts().catch(() => { /* دورة قادمة */ });
+    });
+  }
+
   // جسر أجهزة الحضور (بصمة الوجه/ZKTeco) — يُفعَّل بـHR_DEVICE_BRIDGE=1 (منفذ 7788 افتراضاً)
   // أو HR_DEVICE_PORT لمنفذ مخصّص. غيابهما ⇒ صفر أثر (نمط CONTROL_DATABASE_URL). منفذ مستقل
   // لأن الأجهزة تتكلم HTTP/WS عارياً. (resolveBridgeConfig مصدر حقيقة واحد مع bridgeStatus.)

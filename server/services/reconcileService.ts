@@ -12,6 +12,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { money } from "./money";
+import { entryNotHoldReceiptCond } from "./reception/holdReceipts";
 
 export interface ReconcileResult {
   entity: string;
@@ -74,14 +75,14 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
   // وضمّها هنا يكرّر الحساب. cancelVoucher يكتب قيداً تعويضياً بلا invoiceId أيضاً فينصافر صافي السندات
   // المستقلّة المُلغاة إلى صفر. التناظر مع reconcileSupplierBalances الذي يضمّ الاتجاهين أصلاً.
   //
-  // ⛔ استثناء قيود عربون أمر الشغل (WO deposit): receipt.workOrderId IS NOT NULL.
-  // عربون أمر الشغل ليس تسديداً للذمة (لا فاتورة موجودة بعدُ) بل أمانة على عملٍ مستقبلي،
-  // ولا يُحدِّث customers.currentBalance عند القبض. ضمّه في voucherSum يُنتج drift = depositAmount.
-  // الاستثناء قائم على receipt.workOrderId NOT NULL — حارس بنيوي ثابت لا يعتمد على mutability
-  // (A1، ١٩/٦/٢٦): قيد PAYMENT_IN للعربون يبقى invoiceId=NULL مدى الحياة (append-only صارم على
-  // accountingEntries). عند التسليم يُربط بالفاتورة عبر invoice.paidAmount (yes, totalPaid يشمل العربون)
-  // والاستثناء من voucherSum يبقى عبر receipt.workOrderId. عند الإلغاء PAYMENT_OUT تعويضي بنفس
-  // المحدد البنيوي (receipt.workOrderId NOT NULL) فيُستثنى أيضاً ⇒ صافي صفر على AR (صحيح).
+  // ⛔ استثناء قيود إيصالات الاحتجاز السابقة للفاتورة (V5+V6 — ش٤ وحّدت البصمة):
+  // عربون أمر الشغل (receipt.workOrderId NOT NULL) **وعربون/ردّ مسوّدة الاستقبال** (إيصالٌ
+  // مربوطٌ بصفّ orderPayments). كلاهما ليس تسديداً للذمة (لا فاتورة موجودة بعدُ) بل أمانة على
+  // عملٍ مستقبلي، ولا يُحدِّث customers.currentBalance عند القبض. ضمّه في voucherSum يُنتج
+  // drift = depositAmount. الحارس بنيوي ثابت لا يعتمد على mutability (A1، ١٩/٦/٢٦): قيد
+  // PAYMENT_IN للعربون يبقى invoiceId=NULL مدى الحياة (append-only صارم)، والمال يصل الفاتورة
+  // عبر invoice.paidAmount عند التثبيت/التسليم. الردود (PAYMENT_OUT) بنفس البصمة فتنصافر.
+  // المصدر الواحد: entryNotHoldReceiptCond في reception/holdReceipts.ts.
   const voucherSum = await db
     .select({
       customerId: accountingEntries.customerId,
@@ -96,9 +97,7 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
         sql`${accountingEntries.customerId} IS NOT NULL`,
         sql`${accountingEntries.invoiceId} IS NULL`,
         inArray(accountingEntries.entryType, ["PAYMENT_IN", "PAYMENT_OUT"]),
-        sql`(${accountingEntries.receiptId} IS NULL OR ${accountingEntries.receiptId} NOT IN (
-          SELECT ${receipts.id} FROM ${receipts} WHERE ${receipts.workOrderId} IS NOT NULL
-        ))`,
+        entryNotHoldReceiptCond(accountingEntries.receiptId),
       )
     )
     .groupBy(accountingEntries.customerId);

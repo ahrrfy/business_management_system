@@ -2,7 +2,7 @@
 //
 // READY → DELIVERED + إرسالية: فاتورة (customerId=NULL) + SALE + عهدة COD على الجهة (D3).
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, notLike, or } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
@@ -10,6 +10,7 @@ import {
   invoices,
   productUnits,
   receipts,
+  shifts as shiftsTable,
   workOrders,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
@@ -17,7 +18,7 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
-import { shiftIdForCashTx } from "../shiftService";
+import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
 import type { DeliveryTxActor } from "./types";
@@ -112,10 +113,28 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
     const invStatus = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(depositPaid));
     const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
+    // ش١ (٥/٨): فاتورة الإرسال تنتمي لوردية مُرسِلها (مرآة deliver.ts) — تظهر في طابور فواتير
+    // المحطة بحالتها التسليمية بدل أن تختفي بلا shiftId.
+    // مراجعة عدائية (٥/٨): الختم بوردية RECEPTION **حصراً أو null** — الحلّ المرن كان يلتقط
+    // وردية RETAIL الوحيدة فتتضخّم Z ورديةٍ ليست لها والفاتورة تسقط من طابور المحطة معاً.
+    const dispatchShiftRow = (
+      await tx
+        .select({ id: shiftsTable.id })
+        .from(shiftsTable)
+        .where(and(
+          eq(shiftsTable.userId, actor.userId),
+          eq(shiftsTable.branchId, Number(wo.branchId)),
+          eq(shiftsTable.status, "OPEN"),
+          eq(shiftsTable.shiftType, "RECEPTION"),
+        ))
+        .limit(1)
+    )[0];
+    const dispatchShiftId = dispatchShiftRow ? Number(dispatchShiftRow.id) : null;
     const invRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "WORKORDER",
       sourceId: `WO-${wo.id}`,
+      shiftId: dispatchShiftId,
       branchId: Number(wo.branchId),
       customerId: null,
       priceTier: "RETAIL",
@@ -164,10 +183,18 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     });
 
     // ربط إيصال العربون بالفاتورة (كان workOrderId-only) — append-only على القيد كـdeliverWorkOrder.
+    // ش٠ (V3): بهويّته الصريحة (depositReceiptId) — الالتقاط الظنّي كان يتصادم مع إيصال أجرة COUNTER.
     if (depositPaid.gt(0)) {
-      const depRcpt = (await tx.select({ id: receipts.id }).from(receipts)
-        .where(and(eq(receipts.workOrderId, Number(wo.id)), isNull(receipts.invoiceId))).limit(1))[0];
-      if (depRcpt) await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcpt.id)));
+      const depRcptId = wo.depositReceiptId != null
+        ? Number(wo.depositReceiptId)
+        : (await tx.select({ id: receipts.id }).from(receipts)
+            .where(and(
+              eq(receipts.workOrderId, Number(wo.id)),
+              eq(receipts.direction, "IN"),
+              isNull(receipts.invoiceId),
+              or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
+            )).limit(1))[0]?.id;
+      if (depRcptId != null) await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcptId)));
     }
 
     const consignmentNumber = await nextConsignmentNumber(tx, Number(wo.branchId));
@@ -235,7 +262,10 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         invoiceId,
         deliveryPartyId: input.partyId,
         receiptId: feeReceiptId,
-        amount: fee,
+        // تدقيق ٦/٨ (ث٨): إشارةُ التبرئة **سالبة** — الوارد (workOrder/create) موجبٌ، فبقاؤها
+        // موجبةً هنا يجعل Σ(DELIVERY_FEE_HELD) لكل مستندٍ = ضعفَ الأجرة بدل صفر، فيستحيل
+        // على أيّ تقريرٍ أن يجيب «كم أمانةً قُبضت ولم تُبرَّأ؟». الثابت: Σ = 0 ⇔ مُبرَّأة.
+        amount: feeCollection === "COUNTER" ? fee.neg() : fee,
         // COUNTER تمرير: قبضناها ودفعناها ⇒ صفر أثرٍ على الأرباح. SHOP تحمُّلٌ فعليّ ⇒ مصروف.
         ...(feeCollection === "SHOP" ? { cost: fee, profit: fee.neg() } : {}),
         notes: `أجرة توصيل ${consignmentNumber}`,

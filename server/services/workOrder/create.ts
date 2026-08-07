@@ -13,6 +13,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
+import { assertTelecomCollectAllowed } from "../reception/telecom";
 import { openShiftIdTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
 import { nextWorkOrderNumber } from "./helpers";
@@ -127,11 +128,31 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     // عربون مقبوض عند الإنشاء: نقدٌ حقيقي يدخل الصندوق ⇒ سجّله receipt(IN) بـshiftId + قيد PAYMENT_IN
     // (وإلا فهو نقد غير محتسَب في تسوية الوردية/الدفتر). يُربَط بالفاتورة عند التسليم.
     const depositD = round2(money(input.deposit ?? "0"));
-    if (depositD.gt(0)) {
+    // ش٤ (§٧.٢): جزءٌ من العربون قد يكون قُبض **سلفاً** (عرابين مسوّدة عبر orderPayments) — له
+    // إيصاله وقيده منذ لحظة قبضه، والإيصال هنا يُنشأ للجزء **الجديد** وحده (I5: لا إيصال ثانٍ
+    // لمالٍ سبق قبضه). عمود deposit يخزّن الكامل (P+N) — هو ما يقرؤه deliver/cancel.
+    const depositPreD = round2(money(input.depositPreCollected ?? "0"));
+    if (depositPreD.gt(depositD)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "المقبوض سلفاً يتجاوز عربون الأمر — خلل توزيع" });
+    }
+    const newDepositD = round2(depositD.minus(depositPreD));
+    // ش٠ (V4): وردية السلة المُتحقَّق منها (من checkoutReception) تُلزِم درجاً واحداً لكل نقد
+    // السلة؛ الإنشاء المفرد (بلا shiftId) يبقى على الحلّ الذاتي — يفاضل RECEPTION لو فُتحت وردِيتان.
+    const basketShiftId = input.shiftId ?? null;
+    if (newDepositD.gt(0)) {
       const depositMethod = input.paymentMethod ?? "CASH";
-      // نقد أوامر الشغل ينتمي لوردية خدمة الزبائن (RECEPTION) عند وجودها؛ الحلّ المرن يستعمل
-      // وردية المشغّل الواحد أيّاً كان نوعها، ويفاضل RECEPTION لو فُتحت وردِيتان.
-      const shiftId = await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
+      // ش٥ (§٩.٤): عربون زين على الإنشاء المفرد المباشر (بلا shiftId من سلة الاستقبال) يمرّ
+      // بضوابطه هنا — مسار السلة/المسوّدة أُسقط عنه (checkoutReceptionInTx فحص مبلغ القبض كله
+      // سلفاً؛ إعادة الفحص لكل أمرٍ كانت سترفض سلّةً بأمرين على كودٍ واحدٍ مشروع).
+      if (depositMethod === "TELECOM" && basketShiftId == null) {
+        await assertTelecomCollectAllowed(tx, {
+          userId: actor.userId,
+          branchId: input.branchId,
+          amount: newDepositD.toFixed(2),
+          reference: input.paymentReference,
+        });
+      }
+      const shiftId = basketShiftId ?? await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
       // عربون نقدي يدخل الدُرج ⇒ يلزم وردية مفتوحة لينعكس في تسوية الصندوق/Z-report (لا نقد «معلّق» بلا وردية).
       if (depositMethod === "CASH" && shiftId == null)
         throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لقبض عربون نقدي" });
@@ -140,7 +161,7 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
         shiftId,
         workOrderId,
         direction: "IN",
-        amount: toDbMoney(depositD),
+        amount: toDbMoney(newDepositD),
         paymentMethod: depositMethod,
         referenceNumber: input.paymentReference?.trim() || null,
         // cashBucket='DRAWER' للعربون النقدي ⇒ يَدخل تسوية الدرج/Z-report (مرآة دفعة التسليم/البيع).
@@ -150,12 +171,16 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
         createdBy: actor.userId,
       });
       const depositReceiptId = extractInsertId(dRes);
+      // ش٠ (V3): هويّة إيصال العربون تُثبَّت على الأمر لحظة قبضه — قرّاؤها (deliver/cancel/dispatch)
+      // لم يعودوا يلتقطون بـ`.limit(1)` الملتبسة مع إيصال أجرة COUNTER.
+      // (depositReceiptId يحمل إيصال الجزء الجديد N وحده؛ حصص P حقيقتها في orderPayments.)
+      await tx.update(workOrders).set({ depositReceiptId }).where(eq(workOrders.id, workOrderId));
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,
         receiptId: depositReceiptId,
         customerId: input.customerId ?? null,
-        amount: depositD,
+        amount: newDepositD,
         notes: `[WO_DEPOSIT:${workOrderId}]`,
       });
     }
@@ -166,8 +191,13 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     // المندوب. بلا هذا الإيصال يكون النقد في الدرج بلا مصدرٍ مسجَّل ⇒ فائضٌ يمنع إغلاق الوردية.
     const heldFeeD = round2(money(input.deliveryCost ?? "0"));
     if (input.hasDelivery && (input.deliveryFeeCollection ?? "COURIER") === "COUNTER" && heldFeeD.gt(0)) {
-      const feeMethod = input.paymentMethod ?? "CASH";
-      const feeShiftId = await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
+      // تدقيق ٦/٨ (ث٩): الأجرة أمانةٌ **نقديّة** تُصرَف للمندوب نقداً من الدرج — فاشتقاق
+      // طريقتها من طريقة دفع السلّة كان يقبضها بطاقةً/تحويلاً (خارج الدرج، cashBucket=NULL)
+      // ثم يصرفها نقداً ⇒ نقدٌ يخرج بلا نظيرٍ داخل. تُثبَّت نقداً حتماً، مرآةَ مسار الفاتورة
+      // (receptionCheckoutService) الذي يفعل ذلك أصلاً. وبهذا يسقط فحص TELECOM من جذره.
+      const feeMethod = "CASH" as const;
+      // ش٠ (V4): نفس درج السلة المُتحقَّق منه — لا ينشطر نقد سلةٍ واحدة على درجين.
+      const feeShiftId = basketShiftId ?? await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
       if (feeMethod === "CASH" && feeShiftId == null) {
         throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لقبض أجرة توصيل نقداً" });
       }

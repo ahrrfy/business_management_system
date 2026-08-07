@@ -15,7 +15,7 @@ const PAD = 16;
 const THRESHOLD = 160;
 
 const METHOD_AR: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
 };
 
 function loadImage(src: string): Promise<HTMLImageElement | null> {
@@ -295,6 +295,10 @@ export async function shiftCloseToCanvas(
   bigRow("إجمالي المبيعات", `${fmt(d.salesTotal)} د.ع`);
   if (discounts > 0) bigRow("إجمالي الخصومات", `${fmt(discounts)} د.ع`);
   if (returns > 0) bigRow("المرتجعات", `${fmt(returns)} د.ع`);
+  // ش٤ (I14): إفصاح عرابين الطلبات غير المُثبَّتة — يفسّر نقداً في الدرج بلا فاتورة.
+  if (Number(d.heldDepositsCount ?? 0) > 0) {
+    bigRow(`عرابين طلبات لم تُثبَّت (${d.heldDepositsCount})`, `${fmt(d.heldDepositsTotal ?? 0)} د.ع`);
+  }
 
   // صافي المبيعات — كتلة معكوسة
   const netH = 56;

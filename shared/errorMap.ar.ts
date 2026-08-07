@@ -137,6 +137,13 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  // ── مسوّدات محطة خدمة الزبائن (ش٢ — 0152) ──
+  uq_draft_number: { field: "رقم المسوّدة", entity: "مسوّدات المحطة", hint: "تعارضٌ نادر في ترقيم المسوّدة — أعد المحاولة." },
+  uq_draft_commit_request: { msg: "مفتاح تثبيت المسوّدة مستعمَل — أعد فتح المسوّدة وحاول ثانية." },
+  uq_draft_committed_invoice: { msg: "هذه الفاتورة مربوطة بمسوّدةٍ أخرى مثبَّتة — لا يُعاد ربطها." },
+  // ── عرابين المسوّدات (ش٤ — 0153) ──
+  uq_orderpay_receipt: { msg: "هذا الإيصال مربوطٌ بعربونٍ آخر — لا يُعاد ربطه." },
+  uq_orderpay_request: { msg: "طلب قبض/ردّ العربون هذا سبق تنفيذه — لم يُكرَّر، راجع سجلّ عرابين الطلب." },
   // ── شجرة الحسابات (الدفتر المزدوج) ──
   uq_account_code: { field: "رمز الحساب", entity: "شجرة الحسابات", hint: "رمز الحساب مستعمل لحسابٍ آخر — اختر رمزاً فريداً." },
   uq_account_system_role: { field: "الدور النظاميّ للحساب", entity: "شجرة الحسابات", hint: "هذا الدور النظاميّ مرتبطٌ بحسابٍ آخر — كل دورٍ نظاميّ لحسابٍ واحد فقط." },

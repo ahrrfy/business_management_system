@@ -2,6 +2,7 @@ import {
   int,
   bigint,
   tinyint,
+  char,
   decimal,
   varchar,
   text,
@@ -17,6 +18,7 @@ import {
   unique,
   primaryKey,
   foreignKey,
+  type AnyMySqlColumn,
 } from "drizzle-orm/mysql-core";
 
 /**
@@ -1402,6 +1404,9 @@ export const invoices = mysqlTable(
       table.createdBy,
       table.invoiceDate,
     ),
+    // ش٠ (٥/٨، V2): طابور الاستقبال يفلتر على shiftId ويرتّب/يقطع بـid (keyset) — كان تعليق
+    // delivery/queries.ts يدّعي أن العمود «مفهرَس» ولا فهرس له فعلاً ⇒ مسح كامل مع نموّ الجدول.
+    shiftIdx: index("idx_invoice_shift").on(table.shiftId, table.id),
   }),
 );
 
@@ -1903,6 +1908,10 @@ export const receipts = mysqlTable(
       "TRANSFER",
       "WALLET",
       "EXCHANGE",
+      // ش٥ (٦/٨): رصيد اتصال زين (أكواد كروت شحن) — حسابٌ مشتقّ يُسوّى دورياً، لا يلمس الدرج
+      // أبداً (I15: cashBucket يبقى NULL). قيمة enum على جدول قائم = هجرة مرقّمة 0154 + نسخة
+      // extras آخر قائمة ci-apply (V10 — واحدة وحدها عطلٌ صامت).
+      "TELECOM",
     ]).notNull(),
     /**
      * cash-treasury-mode (تدقيق ١٧/٦): فصل النقد إلى دلوَين دلالياً.
@@ -1913,6 +1922,9 @@ export const receipts = mysqlTable(
      */
     cashBucket: mysqlEnum("cashBucket", ["DRAWER", "TREASURY"]),
     referenceNumber: varchar("referenceNumber", { length: 100 }),
+    /** ش٥ (§٩.٤): هاتف مُرسِل رصيد الاتصال — مُطبَّع E.164 بserver/lib/phone.ts (اختياريّ:
+     *  الآلية الأساس أكواد كروت الشحن في referenceNumber، وهذا لمن حوّل من رقمه مباشرة). */
+    telecomSenderPhone: varchar("telecomSenderPhone", { length: 32 }),
     checkNumber: varchar("checkNumber", { length: 50 }),
     cardLastFour: varchar("cardLastFour", { length: 4 }),
     status: mysqlEnum("receiptStatus", [
@@ -1990,6 +2002,18 @@ export const receipts = mysqlTable(
       table.branchId,
       table.createdAt,
     ),
+    // ش٥/0155: قراءات حارس زين القافلة (telecom.ts) — بلا فهرسٍ خادمٍ كان فحص الكود الأحاديّ
+    // يقفل X كامل نطاق TELECOM (نموّ غير محدود + تسلسل كل الفروع). الأول يحصر قفل فحص
+    // الازدواج بسجلّات/فجوة الكود المعنيّ، والثاني يحصر قفل السقف اليوميّ بالمستخدم×اليوم.
+    payMethodRefIdx: index("idx_receipt_paymethod_ref").on(
+      table.paymentMethod,
+      table.referenceNumber,
+    ),
+    payMethodUserDateIdx: index("idx_receipt_paymethod_user_date").on(
+      table.paymentMethod,
+      table.createdBy,
+      table.createdAt,
+    ),
   }),
 );
 
@@ -2031,6 +2055,8 @@ export const cardReconciliations = mysqlTable(
   "cardReconciliations",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** ش٥: نوع الحساب المُطابَق — بطاقة/بنك أو رصيد زين (نواةٌ واحدة معمَّمة لا مرآة منسوخة). */
+    accountKind: mysqlEnum("accountKind", ["CARD", "TELECOM"]).default("CARD").notNull(),
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
       .references(() => branches.id),
@@ -2050,7 +2076,9 @@ export const cardReconciliations = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
-    branchIdx: index("idx_cardrecon_branch").on(table.branchId, table.asOfDate),
+    // ش٥ (F8 — لا قيد UNIQUE على الجدول): الفهرس وُسِّع بنوع الحساب ليخدم «آخر مطابقة زين».
+    // branchId يتصدّر (لا accountKind): فهرس FK الفرع — إسقاطه بلا بديلٍ متصدّرٍ به يفشل ER_1553.
+    branchIdx: index("idx_cardrecon_branch").on(table.branchId, table.accountKind, table.asOfDate),
     createdIdx: index("idx_cardrecon_created").on(table.createdAt),
   }),
 );
@@ -2400,15 +2428,22 @@ export const workOrders = mysqlTable(
       "NORMAL",
     ),
     deposit: decimal("deposit", { precision: 15, scale: 2 }).default("0"),
+    // ش٥: TELECOM — عربونٌ بأيّ طريقة (م٢) يشمل رصيد زين؛ توسيع enum قائم = 0154 + extras (V10).
     paymentMethod: mysqlEnum("woPaymentMethod", [
       "CASH",
       "CARD",
       "TRANSFER",
       "WALLET",
+      "TELECOM",
     ]).default("CASH"),
     paymentReference: varchar("paymentReference", { length: 100 }),
     // v3-add-screens(100%): TEXT لاستيعاب data URLs (≥100KB) عند الترميز المضمَّن.
     paymentReceiptUrl: text("paymentReceiptUrl"),
+    // ش٠ (٥/٨، V3): هويّة إيصال العربون الصريحة — تُكتب لحظة قبضه في createWorkOrderInTx.
+    // كان الالتقاط ظنّياً بـ`.limit(1)` على (workOrderId, IN, invoiceId NULL) فيتصادم مع إيصال
+    // أجرة COUNTER (نفس البصمة) ⇒ إلغاء الأمر قد يردّ مبلغ الأجرة بدل العربون، والتسليم قد يربط
+    // الإيصال الخاطئ بالفاتورة. بلا FK (receipts يشير إلى workOrders أصلاً — نتجنّب حلقة FK).
+    depositReceiptId: bigint("depositReceiptId", { mode: "number" }),
     // v3-add-screens: التوصيل.
     hasDelivery: boolean("hasDelivery").default(false),
     deliveryAddress: text("deliveryAddress"),
@@ -2466,11 +2501,159 @@ export const workOrders = mysqlTable(
     // (فاتورة WORKORDER تُنسَب لمنشئ أمر الشغل عبر join على invoiceId) — تعدّد NULL مسموح.
     // ⚠ invoiceId عمود FK — drizzle-kit قد يُسقط UNIQUE عليه صامتاً؛ دقّق هجرة 0051 يدوياً.
     invoiceUq: unique("uq_wo_invoice").on(table.invoiceId),
+    depositReceiptIdx: index("idx_wo_deposit_receipt").on(table.depositReceiptId),
   }),
 );
 
 export type WorkOrder = typeof workOrders.$inferSelect;
 export type InsertWorkOrder = typeof workOrders.$inferInsert;
+
+/**
+ * ش٢ (٥/٨/٢٦) — مسوّدة طلب محطة خدمة الزبائن (م١: تعديلٌ حرّ قبل التثبيت بصفر أثرٍ ماليّ).
+ * الوثيقة الحاكمة docs/reception-cashier-system-design-2026-08-05.md §٥.١.
+ * **صفرٌ ماليّ بنيوياً** (الثابت I1): الكيان لا يكتب في invoices/accountingEntries/
+ * inventoryMovements أصلاً — يخرج تلقائياً من وعاء العمولة والأعمار وZ-report.
+ */
+export const receptionDrafts = mysqlTable(
+  "receptionDrafts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** DRF-{فرع}-{YYYYMMDD}-{NNNNN} — مسلسلٌ مستقلّ لا يمسّ ترقيم الفواتير. */
+    draftNumber: varchar("draftNumber", { length: 40 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    /** إعلاميّ فقط — المسوّدة لا تنتمي لوردية (I14: لا تمنع الإغلاق). */
+    createdByShiftId: bigint("createdByShiftId", { mode: "number" }),
+    status: mysqlEnum("draftStatus", ["OPEN", "COMMITTED", "CANCELLED", "EXPIRED"])
+      .default("OPEN")
+      .notNull(),
+    /** قفل تفاؤليّ للتحرير المتوازي (I9). */
+    version: int("version").default(0).notNull(),
+    /** يولّده **الخادم** عند الإنشاء ويعيش مع الصفّ — طبقة idempotency الثالثة للتثبيت (ش٣):
+     *  يصير sourceId `{uuid}-sale` فيصطدم بـuq_invoice_source حتى لو سقط القفلان. */
+    commitRequestId: char("commitRequestId", { length: 36 }).notNull(),
+    /** يُرفع عند أوّل قبضٍ (ش٤) **ولا يُخفَض أبداً** — العمود الفقريّ لحارس I3. */
+    moneyLocked: boolean("moneyLocked").default(false).notNull(),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    contactName: varchar("contactName", { length: 255 }),
+    contactPhone: varchar("contactPhone", { length: 32 }),
+    priceTier: mysqlEnum("draftPriceTier", ["RETAIL", "WHOLESALE", "GOVERNMENT"])
+      .default("RETAIL")
+      .notNull(),
+    channel: varchar("channel", { length: 20 }),
+    notes: text("notes"),
+    dueDate: date("dueDate"),
+    /** ذاكرة عرضٍ فقط — تُعاد حسابها خادمياً في كل كتابةٍ وعند التثبيت (لا يُقرأ منها قرار). */
+    subtotal: decimal("subtotal", { precision: 15, scale: 2 }).default("0").notNull(),
+    discountTotal: decimal("discountTotal", { precision: 15, scale: 2 }).default("0").notNull(),
+    total: decimal("total", { precision: 15, scale: 2 }).default("0").notNull(),
+    committedInvoiceId: bigint("committedInvoiceId", { mode: "number" }).references(() => invoices.id),
+    committedPrintInvoiceId: bigint("committedPrintInvoiceId", { mode: "number" }).references(() => invoices.id),
+    expiresAt: timestamp("expiresAt"),
+    committedAt: timestamp("committedAt"),
+    cancelledAt: timestamp("cancelledAt"),
+    cancelReason: varchar("cancelReason", { length: 500 }),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    updatedBy: int("updatedBy"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    numberUq: unique("uq_draft_number").on(table.draftNumber),
+    commitRequestUq: unique("uq_draft_commit_request").on(table.commitRequestId),
+    committedInvoiceUq: unique("uq_draft_committed_invoice").on(table.committedInvoiceId),
+    branchStatusIdx: index("idx_draft_branch_status_id").on(table.branchId, table.status, table.id),
+    creatorIdx: index("idx_draft_creator").on(table.createdBy, table.status),
+    phoneIdx: index("idx_draft_phone").on(table.contactPhone),
+    customerIdx: index("idx_draft_customer").on(table.customerId),
+  }),
+);
+
+/** بنود المسوّدة — لقطة تحريرٍ حرّة (GOODS/PRINT/CUSTOM). FKs المنتج RESTRICT عمداً + مدخل
+ *  getProductUsage محصورٌ بـOPEN (V17) كي لا تمنع مسوّدةٌ ملغاة حذف منتجٍ للأبد.
+ *  قاعدة صلبة (I22): لا استعلام قائمةٍ ينتقي designImages/printSpec ولا حمولة تدقيقٍ تحملهما. */
+export const receptionDraftLines = mysqlTable(
+  "receptionDraftLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    draftId: bigint("draftId", { mode: "number" })
+      .notNull()
+      .references(() => receptionDrafts.id, { onDelete: "cascade" }),
+    lineKind: mysqlEnum("draftLineKind", ["GOODS", "PRINT", "CUSTOM"]).notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    variantId: bigint("variantId", { mode: "number" }).references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
+    quantity: decimal("quantity", { precision: 15, scale: 3 }).default("1").notNull(),
+    unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).default("0").notNull(),
+    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    lineTotal: decimal("lineTotal", { precision: 15, scale: 2 }).default("0").notNull(),
+    title: varchar("title", { length: 255 }),
+    customizationText: text("customizationText"),
+    /** MEDIUMTEXT: صور base64 مضغوطة (نمط productImages) — JSON [{url,caption,sortOrder}]. */
+    designImages: mediumtext("designImages"),
+    /** مواصفة السطر المخصّص (JSON بنية CustomizationData عدا الصور) — للاستئناف الوفيّ. */
+    printSpec: text("printSpec"),
+    dueDate: date("dueDate"),
+    assignedTo: int("assignedTo"),
+    priceOverride: boolean("priceOverride").default(false).notNull(),
+    priceApprovedBy: bigint("priceApprovedBy", { mode: "number" }),
+    lineRequestId: varchar("lineRequestId", { length: 64 }),
+  },
+  (table) => ({
+    draftIdx: index("idx_dline_draft").on(table.draftId, table.sortOrder),
+  }),
+);
+
+export type ReceptionDraft = typeof receptionDrafts.$inferSelect;
+export type ReceptionDraftLine = typeof receptionDraftLines.$inferSelect;
+
+/**
+ * ش٤ (٥/٨/٢٦) — سجلّ المال السابق للفاتورة (العرابين على المسوّدات) §٥.٣.
+ * جدولٌ واحد بثلاثة أنواع صفوف: COLLECTION (قبضٌ محتجز) / APPLICATION (تخصيصٌ لهدفٍ عند
+ * التثبيت) / REFUND (ردٌّ مربوطٌ بأمّه). يحلّ محلّ أيّ مسحٍ ظنّيٍّ للإيصالات:
+ * - `receiptId UNIQUE` هو الإصلاح البنيويّ لعلّة V3 (لا `.limit(1)` ولا `NOT LIKE`).
+ * - `amount` موجبٌ دائماً؛ الاتجاه من `kind`.
+ * - `method` تشمل TELECOM منذ الإنشاء (مكسبٌ مجّانيّ — extras لازمٌ فقط لتوسيع
+ *   receipts.paymentMethod القائم في ش٥)؛ قبضُ TELECOM نفسه يُرفض خدمياً حتى ش٥.
+ */
+export const orderPayments = mysqlTable(
+  "orderPayments",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    draftId: bigint("draftId", { mode: "number" })
+      .notNull()
+      .references(() => receptionDrafts.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    kind: mysqlEnum("orderPayKind", ["COLLECTION", "APPLICATION", "REFUND"]).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    method: mysqlEnum("orderPayMethod", ["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]),
+    /** إيصال القبض/الردّ؛ NULL لصفوف APPLICATION. */
+    receiptId: bigint("receiptId", { mode: "number" }).references(() => receipts.id),
+    /** وردية القبض — تبقى عليها أبداً (قاعدة ٤ / I12). */
+    shiftId: bigint("shiftId", { mode: "number" }).references(() => shifts.id),
+    /** APPLICATION/REFUND ← COLLECTION الأمّ. FK ذاتيّ عبر AnyMySqlColumn (نمط drizzle). */
+    parentPaymentId: bigint("parentPaymentId", { mode: "number" }).references(
+      (): AnyMySqlColumn => orderPayments.id,
+    ),
+    appliedKind: mysqlEnum("orderPayAppliedKind", ["INVOICE", "WORKORDER"]),
+    appliedId: bigint("appliedId", { mode: "number" }),
+    /** على صفوف COLLECTION فقط. */
+    status: mysqlEnum("orderPayStatus", ["HELD", "APPLIED", "REFUNDED"]),
+    referenceNumber: varchar("referenceNumber", { length: 64 }),
+    clientRequestId: varchar("clientRequestId", { length: 80 }),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    receiptUq: unique("uq_orderpay_receipt").on(table.receiptId),
+    requestUq: unique("uq_orderpay_request").on(table.clientRequestId),
+    draftIdx: index("idx_orderpay_draft").on(table.draftId, table.kind, table.status),
+    appliedIdx: index("idx_orderpay_applied").on(table.appliedKind, table.appliedId),
+    parentIdx: index("idx_orderpay_parent").on(table.parentPaymentId),
+  }),
+);
+
+export type OrderPayment = typeof orderPayments.$inferSelect;
 
 /** المواد المستهلكة من المخزون لأمر الشغل. */
 export const workOrderMaterials = mysqlTable(

@@ -100,10 +100,13 @@ const EXTRA_MIGRATIONS = [
   // schema.ts while that shared file is owned by another coordinated slice.
   "drizzle/migrations/0154_digital_sale_execution_claims.sql",
   // 5/8 (0150): DELIVERY_FEE_HELD — drizzle-kit push la yuwassi' enum qa'iman.
-  // ⚠ YAJIB an tabqa AKHIR al-qa'ima: 0129_digital_intent_writeoff yu'id kitabat nafs
+  // ⚠ YAJIB an tabqa ba'd 0129: 0129_digital_intent_writeoff yu'id kitabat nafs
   //   al-'amud (MODIFY COLUMN entryType ENUM) bi-qa'ima aqdam, fa-ayy tartib qablahu
   //   yamhu al-qima SAMITAN (al-script yaqul tubbiqat wa-l-enum yarji' kama kan).
   "drizzle/migrations/extras/0150_delivery_fee_held_enum.sql",
+  // 6/8 (0157): TELECOM 'ala receipts.paymentMethod — nafs qissat 0150 (push la
+  // yuwassi' enum). 'amud mukhtalif 'an 0150/0129 lakin al-qa'ida wahida: al-akhir.
+  "drizzle/migrations/extras/0157_receipt_payment_method_telecom.sql",
 ];
 
 const url = process.env.DATABASE_URL;

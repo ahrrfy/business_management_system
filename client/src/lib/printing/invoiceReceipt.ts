@@ -8,6 +8,7 @@ const PAYMENT_METHOD_LABEL: Record<string, string> = {
   CHECK: "صك",
   TRANSFER: "تحويل",
   WALLET: "محفظة",
+  TELECOM: "رصيد زين",
 };
 
 export interface InvoiceReceiptSource {

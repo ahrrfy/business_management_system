@@ -70,7 +70,7 @@ const STATUS_CLS: Record<string, string> = {
   CONFIRMED: "bg-muted text-muted-foreground",
 };
 const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
 };
 
 export default function CustomerStatement() {
@@ -329,6 +329,14 @@ export default function CustomerStatement() {
                   />
                   <StatBalance label="الرصيد الحالي" value={stmt.data.summary.currentBalance} />
                 </div>
+                {/* ش٤ (I11): سطر إفصاح العرابين المحتجزة — مالٌ مقبوضٌ بإيصالٍ لم يُطبَّق على فاتورةٍ
+                    ولا يمسّ الرصيد الجاري؛ بدونه يسأل العميل «أين عربوني؟» والكشف صامت. */}
+                {Number(stmt.data.summary.heldDepositsTotal ?? 0) > 0 && (
+                  <div className="mt-2 rounded-md border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] px-3 py-2 text-xs font-bold text-[var(--sem-info)]">
+                    عربون قيد الاحتجاز — غير مُطبَّق على فاتورة: {fmt(stmt.data.summary.heldDepositsTotal)} د.ع
+                    <span className="ms-2 font-semibold text-muted-foreground">(يُخصَم من الطلب عند تثبيته أو يُستردّ بسنده)</span>
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

@@ -1,7 +1,9 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import type Decimal from "decimal.js";
 import { z } from "zod";
-import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, users } from "../../drizzle/schema";
+import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, receipts, users } from "../../drizzle/schema";
+import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { returnSale } from "../services/returnService";
@@ -215,6 +217,7 @@ export const returnRouter = router({
         size: productVariants.size,
         sku: productVariants.sku,
         unitName: productUnits.unitName,
+        conversionFactor: productUnits.conversionFactor,
         baseQuantity: invoiceItems.baseQuantity,
         returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
         unitPrice: invoiceItems.unitPrice,
@@ -235,12 +238,57 @@ export const returnRouter = router({
         productName: r.productName,
         variantLabel,
         unitName: r.unitName ?? "",
+        // معامل تحويل وحدة البيع (درزن=12…) — الشاشة تعرض «١ درزن = ١٢ قطعة» وتَخطو به،
+        // فلا يحسب الموظف الوحدة الأساس ذهنياً (كان أكبر مصدر خطأ كميات المرتجع).
+        conversionFactor: Number(r.conversionFactor ?? 1) || 1,
         baseQuantity: r.baseQuantity,
         returnedBaseQuantity: r.returnedBaseQuantity,
         remaining,
         unitPrice: r.unitPrice,
         total: r.total,
       };
+    });
+
+    // تبسيط المرتجعات (طلب مالك ٦/٨): «بمَ دُفعت هذه الفاتورة فعلاً؟» — الشاشة كانت عمياء
+    // فيختار الموظف «نقدي» لفاتورة بطاقةٍ ويُرفض بعد ملء كل شيء. الصافي لكل طريقة =
+    // Σ(IN) − Σ(OUT) للإيصالات المختومة + حصص العرابين المطبَّقة غير المختومة (نفس منطق
+    // سقف returnService حرفياً، مجموعاً بالطريقة). رصيد زين يُطوى في سقف النقد (قرار ٦/٨).
+    const pmRows = await db
+      .select({
+        method: receipts.paymentMethod,
+        net: sql<string>`CAST(COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0) AS CHAR)`,
+      })
+      .from(receipts)
+      .where(and(eq(receipts.invoiceId, input.invoiceId), eq(receipts.status, "COMPLETED")))
+      .groupBy(receipts.paymentMethod);
+    const appRes = await db.execute(sql`
+      SELECT coll.orderPayMethod AS method, CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS net
+      FROM orderPayments app
+      JOIN orderPayments coll ON coll.id = app.parentPaymentId
+      LEFT JOIN receipts pr ON pr.id = coll.receiptId
+      WHERE app.orderPayKind = 'APPLICATION'
+        AND (
+          (app.orderPayAppliedKind = 'INVOICE' AND app.appliedId = ${input.invoiceId})
+          OR (app.orderPayAppliedKind = 'WORKORDER' AND app.appliedId IN (
+            SELECT wo.id FROM workOrders wo WHERE wo.invoiceId = ${input.invoiceId}
+          ))
+        )
+        AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${input.invoiceId})
+      GROUP BY coll.orderPayMethod
+    `);
+    const appData = (appRes as unknown as [Array<{ method: string; net: string }>])[0] ?? appRes;
+    const paidMap = new Map<string, Decimal>();
+    for (const r of pmRows) {
+      if (!r.method) continue;
+      paidMap.set(r.method, (paidMap.get(r.method) ?? money(0)).plus(money(r.net)));
+    }
+    for (const r of (Array.isArray(appData) ? appData : []) as Array<{ method: string; net: string }>) {
+      if (!r.method) continue;
+      paidMap.set(r.method, (paidMap.get(r.method) ?? money(0)).plus(money(r.net)));
+    }
+    const paidByMethod: Array<{ method: string; amount: string }> = [];
+    paidMap.forEach((v, m) => {
+      if (v.gt(0)) paidByMethod.push({ method: m, amount: v.toFixed(2) });
     });
 
     return {
@@ -256,6 +304,7 @@ export const returnRouter = router({
       total: inv.total,
       paidAmount: inv.paidAmount,
       paymentMethod: inv.paymentMethod,
+      paidByMethod,
       items,
     };
   }),

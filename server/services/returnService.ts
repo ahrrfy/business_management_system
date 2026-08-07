@@ -1,12 +1,12 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement } from "./inventoryService";
-import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
+import { adjustCustomerBalance, adjustDeliveryBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, round2, toDbMoney } from "./money";
 import { computeExpectedCash, openShiftIdTx, resolveBranchCashShiftTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
@@ -438,7 +438,13 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     }
     // سقف الاسترداد بالطريقة نفسها: المتاح = Σ(IN بهذه الطريقة) − Σ(OUT بهذه الطريقة)،
     // فلا يُسترَدّ نقداً ما دُفع بطاقةً (يُفرّغ الصندوق) ولا يتجاوز المقبوض فعلاً بتلك الطريقة.
+    // ش٥ (قرار مالك ٦/٨): المقبوض **رصيد زين** يُستردّ **نقداً** — TELECOM ليست طريقة استرداد
+    // (لا سكّة ردٍّ لرصيدٍ شُحن؛ OUT بزين يُنقص الحساب المشتقّ زوراً)، فبِلا هذا الضمّ كانت
+    // فاتورة زينٍ خالصة مرتجعُها بلا أيّ مسار استردادٍ بنيوياً (سقف كل طريقةٍ صفر). حصص زين
+    // تدخل سقف النقد وحده، وOUT النقدية السابقة تُنقصه فلا استهلاك مزدوج. مرآة سياسة ردّ
+    // العربون في reception/deposits.ts. المرتجع أصلاً مديريّ (م٧) وحدّ الدرج أدناه قائم.
     const refundMethod = input.refund?.method;
+    const capMethods: string[] = refundMethod === "CASH" ? ["CASH", "TELECOM"] : refundMethod ? [refundMethod] : [];
     let methodAvailable = new Decimal(0);
     if (refundMethod) {
       const mr = await tx
@@ -450,17 +456,67 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
         .where(
           and(
             eq(receipts.invoiceId, input.invoiceId),
-            eq(receipts.paymentMethod, refundMethod),
+            inArray(receipts.paymentMethod, capMethods as never),
             eq(receipts.status, "COMPLETED"),
+            // تدقيق ٦/٨ (ث٣/ث٥/ث١٢): إيصال **أمانة أجرة التوصيل** مختومٌ بالفاتورة تشغيلياً
+            // لكنّه مالُ طرفٍ ثالث (لم يمسّ paidAmount) — احتسابُه «مقبوضاً نقداً على الفاتورة»
+            // كان يفتح رداً نقدياً على فاتورةٍ لم يُدفَع منها دينارٌ نقداً (مدفوعة بالبطاقة مثلاً)
+            // ويستهلك أمانة المندوب استرداداً. البصمة البنيوية: له قيد DELIVERY_FEE_HELD.
+            sql`NOT EXISTS (
+              SELECT 1 FROM accountingEntries ae
+              WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD'
+            )`,
           ),
         );
       methodAvailable = money(mr[0]?.inSum ?? "0").minus(money(mr[0]?.outSum ?? "0"));
+      // ش٤ (مراجعة عدائية): حصص العرابين المُطبَّقة على هذه الفاتورة (orderPayments APPLICATION)
+      // تدخل paidAmount بينما إيصال أمّها **غير مختوم** بالفاتورة (مُشظّى بين هدفين، أو مشوبٌ
+      // بردٍّ جزئيّ) فلا يراه inSum ⇒ فاتورةٌ PAID كان مرتجعُها غير قابلٍ للاسترداد بنيوياً
+      // (refundCap=0) ومال الزبون العابر يُحتجز بلا مسار. تُضمّ الحصّة بطريقة قبض أمّها، مع
+      // استبعاد ما إيصال أمّه مختومٌ بهذه الفاتورة (محسوبٌ في inSum سلفاً — لا ازدواج).
+      // outSum القائم (إيصالات OUT المختومة) يظلّ يُنقص السقف بعد كل استرداد فلا استهلاك مزدوج.
+      const appRes = await tx.execute(sql`
+        SELECT CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS v
+        FROM orderPayments app
+        JOIN orderPayments coll ON coll.id = app.parentPaymentId
+        LEFT JOIN receipts pr ON pr.id = coll.receiptId
+        WHERE app.orderPayKind = 'APPLICATION'
+          AND (
+            (app.orderPayAppliedKind = 'INVOICE' AND app.appliedId = ${input.invoiceId})
+            OR (app.orderPayAppliedKind = 'WORKORDER' AND app.appliedId IN (
+              SELECT wo.id FROM workOrders wo WHERE wo.invoiceId = ${input.invoiceId}
+            ))
+          )
+          AND coll.orderPayMethod IN (${sql.join(capMethods.map((m) => sql`${m}`), sql`, `)})
+          AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${input.invoiceId})
+      `);
+      const appData = (appRes as unknown as [Array<{ v: string }>])[0] ?? appRes;
+      const appRow = Array.isArray(appData) ? appData[0] : undefined;
+      methodAvailable = methodAvailable.plus(money(appRow?.v ?? "0"));
+
+      // قرار المالك (٦/٨/٢٦) — **ما حصّله المندوب وورّده مالٌ نقديّ وصلنا فعلاً**: إيصال
+      // التوريد مجمَّعٌ لعدّة فواتير بلا invoiceId، فكان المُحصَّل عبر المندوب غير مرئيٍّ
+      // لسقف الاسترداد ⇒ زبونٌ عابر دفع للمندوب وأعاد البضاعة **لا يستطيع استرداد ديناره
+      // من الشاشة إطلاقاً** (سقفه صفر). نضمّ هنا حصّة هذه الفاتورة من الإرسالية المُحصَّلة
+      // (collectedAmount) للسقف النقديّ — بحدّ ما تبقّى منها فعلاً بعد أيّ استردادٍ سابق
+      // (outSum أعلاه يُنقصه، فلا استهلاك مزدوج).
+      if (refundMethod === "CASH") {
+        const cnRes = await tx.execute(sql`
+          SELECT CAST(COALESCE(SUM(cn.collectedAmount), 0) AS CHAR) AS v
+          FROM deliveryConsignments cn
+          WHERE cn.invoiceId = ${input.invoiceId}
+            AND cn.consignmentStatus IN ('DELIVERED','PARTIAL')
+        `);
+        const cnData = (cnRes as unknown as [Array<{ v: string }>])[0] ?? cnRes;
+        const cnRow = Array.isArray(cnData) ? cnData[0] : undefined;
+        methodAvailable = methodAvailable.plus(money(cnRow?.v ?? "0"));
+      }
     }
     const refundCap = Decimal.min(returnedTotal, methodAvailable);
     if (requestedRefund.gt(refundCap)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = الأقل من قيمة المرتجع والمقبوض بهذه الطريقة)`,
+        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = الأقل من قيمة المرتجع والمقبوض بهذه الطريقة${refundMethod === "CASH" ? " — المقبوض رصيدَ زين يُستردّ نقداً ويدخل هذا السقف" : ""})`,
       });
     }
     const cashRefund = requestedRefund;
@@ -539,6 +595,54 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     // AR: the portion not refunded in cash is dropped from the customer's balance.
     if (inv.customerId) {
       await adjustCustomerBalance(tx, Number(inv.customerId), returnedTotal.minus(cashRefund).neg());
+    }
+
+    // قرار المالك (٦/٨/٢٦) — **مرتجعٌ لفاتورةٍ بيد مندوب: تُخصَم عهدته بقيمة ما عاد**.
+    // الحالة الواقعية: المندوب حصّل جزءاً من الفاتورة وأعاد باقي البضاعة. قبل هذا كان
+    // المتبقّي يبقى عهدةً عليه **بلا نقدٍ يقابله** — ومخرجاه الوحيدان يكذبان: شطبٌ يُسجَّل
+    // خسارةً (والبضاعة عندنا!) أو تسويةٌ يدفع فيها من جيبه ما لم يقبضه. الآن تُعكَس عهدته
+    // بمقدار الأقلّ من (قيمة المرتجع، ما تبقّى في عهدته عن هذه الفاتورة)، ويُخفَّض COD
+    // الإرسالية بالمثل فلا يُطالَب بتحصيله لاحقاً.
+    const cnRows = await tx
+      .select({
+        id: deliveryConsignments.id,
+        number: deliveryConsignments.consignmentNumber,
+        partyId: deliveryConsignments.partyId,
+        codAmount: deliveryConsignments.codAmount,
+        collectedAmount: deliveryConsignments.collectedAmount,
+        status: deliveryConsignments.status,
+      })
+      .from(deliveryConsignments)
+      .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
+      .for("update")
+      .limit(1);
+    const cn = cnRows[0];
+    if (cn && (cn.status === "DISPATCHED" || cn.status === "PARTIAL")) {
+      const outstanding = round2(money(cn.codAmount).minus(money(cn.collectedAmount)));
+      const relief = Decimal.min(returnedTotal, outstanding);
+      if (relief.gt(0)) {
+        await adjustDeliveryBalance(tx, Number(cn.partyId), relief.neg());
+        await postEntry(tx, {
+          entryType: "DELIVERY_REMIT",
+          dedupeKey: `DELIVERY_RETURN_RELIEF:INV:${input.invoiceId}:${toDbMoney(newReturnedTotal)}`,
+          branchId: Number(inv.branchId),
+          invoiceId: input.invoiceId,
+          deliveryPartyId: Number(cn.partyId),
+          amount: relief,
+          notes: `عكس عهدةٍ عن بضاعةٍ عادت — مرتجع فاتورة (إرسالية ${cn.number})`,
+        });
+        // COD الفعّال يُخفَّض فلا يُطالَب المندوب بتحصيل ما رجع؛ والإرسالية تُقفل إن صفر المتبقّي.
+        const newCod = round2(money(cn.codAmount).minus(relief));
+        await tx
+          .update(deliveryConsignments)
+          .set({
+            codAmount: toDbMoney(newCod),
+            ...(newCod.lte(money(cn.collectedAmount))
+              ? { status: "DELIVERED" as const, settledAt: new Date() }
+              : {}),
+          })
+          .where(eq(deliveryConsignments.id, Number(cn.id)));
+      }
     }
 
     // Idempotency: سجّل المفتاح بعد نجاح الكتابة (refId = الفاتورة).

@@ -41,7 +41,6 @@ export {
   listOpenConsignments,
   listConsignmentsForParty,
   getDeliveryPartyStatement,
-  listReceptionInvoiceQueue,
 } from "./delivery/queries";
 // ٥/٨: إسناد فاتورةٍ قائمة (بيع مباشر بلا أمر شغل) للتوصيل — كان مستحيلاً بنيوياً.
 export type { DispatchInvoiceInput } from "./delivery/dispatchInvoice";

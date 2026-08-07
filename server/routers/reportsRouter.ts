@@ -235,7 +235,7 @@ export const reportsRouter = router({
         // فلتر طريقة الدفع على invoices.paymentMethod نفسه الذي يعرضه التقرير عموداً —
         // "NONE" = فاتورة بلا طريقة مسجَّلة (آجل/تاريخية قبل بدء التسجيل) أي IS NULL.
         paymentMethods: z
-          .array(z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "NONE"]))
+          .array(z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM", "NONE"]))
           .optional(),
         // فلتر الكاشير/البائع — مرآة sales.list: الإسناد بمُنشئ الفاتورة (createdBy)،
         // يستفيد من فهرس idx_invoice_salesperson_date.

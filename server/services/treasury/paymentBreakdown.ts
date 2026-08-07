@@ -61,7 +61,7 @@ export async function getPaymentMethodBreakdown(
 
   const map = new Map<string, MethodSlice>();
   // ضمان ظهور كل طرق الدفع حتى الفارغة (للأسطورة).
-  for (const k of ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]) {
+  for (const k of ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]) {
     map.set(k, { key: k, label: PAY_METHOD_AR[k] ?? k, inTotal: "0.00", outTotal: "0.00", count: 0 });
   }
   for (const r of rows) {

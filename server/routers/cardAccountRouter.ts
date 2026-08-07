@@ -25,11 +25,13 @@ function scopeOf(ctx: { user: { role: string; branchId?: number | null } }): Car
 }
 
 const branchInput = z.number().int().positive().optional();
+/** ش٥ — نوع الحساب المشتقّ: بطاقة/بنك (افتراضيّ) أو رصيد زين (TELECOM). */
+const accountKindInput = z.enum(["CARD", "TELECOM"]).optional();
 
 export const cardAccountRouter = router({
   /** ملخّص الرصيد الجاري + دخل/صرف اليوم + آخر لقطة مطابقة. */
   summary: reportViewerProcedure
-    .input(z.object({ branchId: branchInput }).optional())
+    .input(z.object({ branchId: branchInput, accountKind: accountKindInput }).optional())
     .query(({ input, ctx }) => getCardSummary(input ?? {}, scopeOf(ctx))),
 
   /** حركات حساب البطاقة (دخل/صرف) برصيدٍ جارٍ لكل صفّ (للفرع المحدَّد) + إجماليات النطاق. */
@@ -44,7 +46,8 @@ export const cardAccountRouter = router({
           // بحث نصّي (الوصف/المرجع/رقم السند/الطرف الحرّ/آخر ٤ أرقام) + نوع مصدر الحركة —
           // وظيفة الشاشة الأساسية (مطابقة كشف البنك بحثاً عن حركة بعينها).
           q: z.string().trim().min(1).max(200).optional(),
-          sourceType: z.enum(["VOUCHER", "INVOICE_PAYMENT", "WORK_ORDER", "OTHER"]).optional(),
+          sourceType: z.enum(["VOUCHER", "INVOICE_PAYMENT", "WORK_ORDER", "DRAFT_DEPOSIT", "OTHER"]).optional(),
+          accountKind: accountKindInput,
           limit: z.number().int().min(1).max(500).optional(),
           offset: z.number().int().min(0).optional(),
         })
@@ -54,7 +57,7 @@ export const cardAccountRouter = router({
 
   /** سجلّ لقطات المطابقة السابقة. */
   reconciliations: reportViewerProcedure
-    .input(z.object({ branchId: branchInput, limit: z.number().int().min(1).max(200).optional() }).optional())
+    .input(z.object({ branchId: branchInput, accountKind: accountKindInput, limit: z.number().int().min(1).max(200).optional() }).optional())
     .query(({ input, ctx }) => listCardReconciliations(input ?? {}, scopeOf(ctx))),
 
   /** إنشاء لقطة مطابقة: النظام يحسب الرصيد المتوقَّع، والمستخدم يُدخل رصيد كشف البنك ⇒ الفرق. */
@@ -62,6 +65,7 @@ export const cardAccountRouter = router({
     .input(
       z.object({
         branchId: branchInput,
+        accountKind: accountKindInput,
         asOfDate: ymdDate,
         // موقَّع: الحساب قد يكون بالسالب (صرف البطاقة يفوق دخلها/سحب على المكشوف) — الخدمة/القاعدة
         // تتعاملان مع systemBalance/difference موقَّعَين.

@@ -2,37 +2,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import {
-  ArrowLeftRight,
   ArrowRight,
-  Banknote,
   CalendarClock,
   Camera,
   Check,
   ClipboardList,
-  CreditCard,
-  FileText,
+  Copy,
   Globe,
-  Image as ImageIcon,
-  Layers,
+  HandCoins,
   MessageCircle,
-  Minus,
   Music,
   Package,
   Palette,
-  Pencil,
   Phone,
-  Plus,
   Printer,
-  Ruler,
+  Receipt as ReceiptIcon,
   Search,
   ShoppingCart,
   Store,
-  Ticket,
-  Trash2,
   Truck,
-  Wallet,
-  X,
-  Zap,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -53,11 +41,11 @@ import {
 } from "@/lib/offline/outbox";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { confirm } from "@/lib/confirm";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, round2, roundCashIQD } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
 import { fmtDate } from "@/lib/date";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
@@ -65,6 +53,38 @@ import ReservationsHub from "@/pages/ReservationsHub";
 import Inbox from "@/pages/Inbox";
 import OrderFulfillment from "@/pages/OrderFulfillment";
 import ReceptionOrderQueue from "@/components/reception/ReceptionOrderQueue";
+import { ReceptionInvoiceQueue } from "@/components/reception/ReceptionInvoiceQueue";
+import { DraftStrip } from "@/components/reception/DraftStrip";
+import { printDraftTicket } from "@/lib/printing/draftTicket";
+// تفكيك §١٣ ش١ (٥/٨): الأنواع/الدوال النقيّة والمكوّنات الثقيلة (السلة/الدفع/الإيصال) صارت
+// وحدات مستقلّة تحت components/reception — نقلٌ حرفيّ بصفر تغيير سلوكي.
+import {
+  customLineGrand,
+  effectivePrice,
+  isCustomKind,
+  lineCounterHeldFee,
+  lineTotal,
+  PAY_METHOD_LABEL,
+  TIER_LABEL,
+  type CartLine,
+  type LastSaleSummary,
+  type PayMethod,
+  type PosRow,
+  type Tier,
+  type Workshop,
+} from "@/components/reception/cartMath";
+import { CartTable } from "@/components/reception/CartTable";
+import { PaymentPanel } from "@/components/reception/PaymentPanel";
+import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
+import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import DepositDialog from "@/components/reception/DepositDialog";
+import DraftPaymentsDialog from "@/components/reception/DraftPaymentsDialog";
+import OrderDeliveryDialog, { type OrderDeliveryValue } from "@/components/reception/OrderDeliveryDialog";
+import { WsTab } from "@/components/reception/WsTab";
+import type { DispatchParty } from "@/components/delivery/DispatchDialog";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { CashDropDialog } from "@/components/pos/CashDropDialog";
+import type { PosTokens } from "@/components/pos/ShiftHandoverSection";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   getServerBridgeStatus,
@@ -92,98 +112,17 @@ import {
  * شريحة customer-service-reception (٢٣/٦/٢٦) — README §5.1.
  */
 
-type PosRow = NonNullable<RouterOutputs["catalog"]["posList"]>[number];
-type NumMode = "QTY" | "DISC" | "PAY";
-type PayMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
-const PAY_METHOD_LABEL: Record<PayMethod, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
+/** رموز ألوان CashDropDialog (بنية PosTokens المشتركة). */
+const RECEPTION_TOKENS: PosTokens = {
+  card: "#ffffff", border: "#e2e8f0", muted: "#f1f5f9", mutedFg: "#64748b",
+  fg: "#0f172a", primary: "#7c3aed", danger: "#dc2626",
 };
-type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
-const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 const RESERVATION_READ_ROLES = ["admin", "manager", "accountant", "cashier", "warehouse", "sales_rep", "auditor"] as const;
 const CHANNEL_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor", "warehouse", "print_operator"] as const;
 /** مرآة قائمة أدوار customersCashierProcedure الخادمية (server/trpc.ts) — لا تنجرف عنها. */
 const CUSTOMER_CREATE_ROLES = ["cashier", "manager", "sales_rep"] as const;
 const STORE_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
 const CRM_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
-
-type CartLine = {
-  key: string; // معرّف فريد للسطر (للأصناف المخصّصة المتعدّدة من نفس المنتج)
-  row: PosRow;
-  qty: number;
-  origPrice?: number;
-  disc?: number; // نسبة خصم
-  custom?: CustomizationData; // إن كان مخصّصاً
-  manualService?: boolean; // خدمة حرة لا ترتبط بمنتج/متغيّر من الكتالوج
-};
-
-// مبالغ سريعة بالقيمة الفعلية (د.ع). إصلاح P2 (٢٣/٦/٢٦): كان `setQuickAmt(v * 1000)` يجعل
-// زرّ «5,000» يُدخل 5,000,000 ⇒ فكّةٌ خاطئة ١٠٠٠× — كارثة كاشير.
-const QUICK_AMTS = [1000, 5000, 10000, 25000];
-
-function effectivePrice(line: CartLine): number {
-  // عرض/كوبون (catalog.posList.promotionEffectivePrice) يسبق السعر الأساس كنقطة انطلاق (نمط
-  // POS.tsx effectivePrice) — الخصم اليدوي يُطبَّق فوقه لا بدلاً عنه. لا ينطبق على سطر مخصّص
-  // (custom): تسعيره الإضافي بلا كتالوج ترويجيّ.
-  const promoPrice = !line.custom ? line.row.promotionEffectivePrice : null;
-  // التخصيص إضافيّ: سعر الوحدة للسطر المخصّص = سعر المنتج الأساس + سعر التخصيص (فوقه)، لا بديلاً عنه.
-  const base = line.origPrice ?? (
-    promoPrice != null ? Number(promoPrice) :
-    line.custom
-      ? Number(line.row.price ?? 0) + Number(line.custom.unitPrice ?? 0)
-      : Number(line.row.price ?? 0)
-  );
-  if (line.disc && line.disc > 0) return base * (1 - line.disc / 100);
-  return base;
-}
-function lineTotal(line: CartLine): number {
-  return effectivePrice(line) * line.qty;
-}
-function isCustomKind(line: CartLine): boolean {
-  return !!line.custom;
-}
-/** ٥/٨ — سعر بيع السطر المخصّص: بضاعةٌ وخدمةٌ فقط. أجرة التوصيل **لا** تُجمَع هنا.
- *  كانت تُضمّ إلى salePrice ⇒ تصير إيراداً بهامش ١٠٠٪ في قيد SALE ونقداً في الدرج يُحاسَب عليه
- *  الموظّف عند الإغلاق، بينما أجرة المندوب الحقيقية رقمٌ آخر يُصرَف من مسارٍ مستقلّ. */
-function customLineGrand(line: CartLine): number {
-  return lineTotal(line);
-}
-/** أجرة التوصيل المُثبَّتة على السطر (تمريرٌ للمندوب — خارج الفاتورة والإيراد دائماً). */
-function lineDeliveryFee(line: CartLine): number {
-  if (!line.custom?.hasDelivery) return 0;
-  return Number(line.custom.deliveryCost || 0);
-}
-/** الأجرة التي يقبضها **الكاشير الآن** أمانةً (وضع COUNTER وحده) ⇒ نقدٌ يدخل الدرج بإيصالٍ
- *  مستقلّ عن الفاتورة، ويخرج للمندوب عند الإرسال. غيرها لا يمرّ بالدرج إطلاقاً. */
-function lineCounterHeldFee(line: CartLine): number {
-  return line.custom?.deliveryFeeCollection === "COUNTER" ? lineDeliveryFee(line) : 0;
-}
-
-/** حالة المخزون للأصناف الجاهزة (المخصَّصة لا مَخزون لها — إنتاج). يَحسب الطلب الكلّي للصنف
- *  عبر كل وحداته في السلّة (رصيد الفرع مُشترك بين القطعة/الدرزن/الكرتون). نَمط مُطابق POS.tsx. */
-function buildStockState(cart: CartLine[]) {
-  const demandByVariant = new Map<number, number>();
-  for (const l of cart) {
-    if (l.custom) continue;
-    const f = Number(l.row.conversionFactor) || 1;
-    demandByVariant.set(l.row.variantId, (demandByVariant.get(l.row.variantId) ?? 0) + l.qty * f);
-  }
-  return (line: CartLine) => {
-    if (line.custom || line.row.isService) {
-      return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
-    }
-    const convFactor = Number(line.row.conversionFactor) || 1;
-    const availBase = line.row.stockBase ?? 0;
-    const reqBase = demandByVariant.get(line.row.variantId) ?? line.qty * convFactor;
-    const isOut = availBase <= 0;
-    const isShort = !isOut && reqBase > availBase;
-    const availInUnit = Math.floor(availBase / convFactor);
-    return { isOut, isShort, availInUnit };
-  };
-}
 
 export default function Reception() {
   const [, navigate] = useLocation();
@@ -315,6 +254,9 @@ export default function Reception() {
         expectedCash: r.expectedCash,
         countedCash: r.countedCash,
         variance: r.variance,
+        // ش٤ (I14): إفصاح عرابين الطلبات غير المُثبَّتة على Z المطبوع أيضاً.
+        heldDepositsCount: rep?.heldDepositsCount ?? 0,
+        heldDepositsTotal: rep?.heldDepositsTotal ?? "0",
       });
       setClosing(false);
       setCounted("");
@@ -324,34 +266,9 @@ export default function Reception() {
     onError: (e) => notify.err(e),
   });
 
-  // احتواء ديناميكي (إعادة بناء ٥/٨ — «منطقة الدفع فيها تمرير»): القياس بالنافذة كان خاطئاً
-  // بنيوياً، لأن لوحة الدفع أقصر من النافذة بـ«شريط الأوضاع + ترويسة الاستقبال + الحشوة»
-  // (~٢٤٠px، أكبر بكثير من فارق POS). فنافذةٌ «فسيحة» ٩٤٥px تُخفي أن اللوحة نفسها ٦٧٠px
-  // ⇒ عجزٌ يُصرَف تمريراً دائماً. الآن تُقاس **اللوحة نفسها** بـResizeObserver، فالكثافة تتبع
-  // المساحة الحقيقية. لا حلقة ارتجاج: ارتفاع اللوحة يفرضه الأب (صفّ flex بارتفاع ثابت)،
-  // وكل ما تُبدّله الكثافة يقع **داخل** اللوحة فلا يُغيّر ارتفاعها.
+  // سلّم الاحتواء الديناميكي (ResizeObserver + درجات الكثافة) صار داخل PaymentPanel نفسه
+  // (تفكيك §١٣ ش١) — الصفحة تحتفظ بالـref للتركيز فقط (goToWorkflowStep خطوة ٤).
   const paymentSectionRef = useRef<HTMLDivElement>(null);
-  const [payPanelH, setPayPanelH] = useState(0);
-  useEffect(() => {
-    const el = paymentSectionRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(([entry]) => {
-      const h = entry.contentRect.height;
-      // عتبة ٤px تمنع إعادة رسمٍ لا داعي لها من كسور البكسل عند الزوم.
-      setPayPanelH((prev) => (Math.abs(prev - h) < 4 ? prev : h));
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  // ثلاث درجات احتواء: يُحذف الثانويّ أولاً ثم يُعاد التركيب — لا تصغيرَ للأساسيّ.
-  // (0 = قبل أول قياس ⇒ نفترض الفسيح فلا يومض التركيب المضغوط عند الإقلاع.)
-  const payDense = payPanelH > 0 && payPanelH < 700;
-  const payUltra = payPanelH > 0 && payPanelH < 580;
-  // شبكة أمانٍ أخيرة: تحت هذا الحدّ لا يبقى ثانويٌّ يُحذف، والحدود الدنيا الصلبة (مفاتيح ٤٠px
-  // ×٤ صفوف + طرق الدفع ٤٤px + زرّا الفعل ٤٤/٤٨px) تطلب ~٥٠٠px. فلو مُنع التمرير هنا لَقُصّ
-  // المحتوى **صامتاً** — وهو أسوأ من شريط تمرير. العتبة ٥٢٠ تترك هامشاً فوق الطلب الفعليّ
-  // فلا تُفتَح إلا حين يستحيل الاحتواء حقّاً (خارج مدى التشغيل: أقصر لوحةٍ عمليّة ~٥٠٠px).
-  const payOverflowGuard = payPanelH > 0 && payPanelH < 520;
   // ترويسة الصفحة تُقاس بالنافذة عمداً (لا باللوحة): تقليصها يُطيل اللوحة، فقياسها باللوحة
   // يصنع حلقة «يُخفى ⇒ تتّسع ⇒ يظهر ⇒ تضيق». النافذة مقياسٌ مستقلّ عن هذا التغذّي الراجع.
   const compactHeader = useMediaQuery("(max-height: 900px)");
@@ -361,14 +278,42 @@ export default function Reception() {
   const [selKey, setSelKey] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [showDrop, setShowDrop] = useState(false);
-  const [numMode, setNumMode] = useState<NumMode>("PAY");
+  // م٤: لوحة الأرقام صارت لوحة **مبلغٍ** خالصة — أوضاع الكمية/الخصم حُذفت (الكمية داخل الصفّ،
+  // والخصم Popover في خلية السعر). لا وضعيّة خفيّة بعد اليوم: اللوحة تعني المبلغ دائماً.
   const [payInput, setPayInput] = useState("");
   const [method, setMethod] = useState<PayMethod>("CASH");
   const [paymentReference, setPaymentReference] = useState(""); // P2 fix: مرجع البطاقة للعرابين
   const [showInbox, setShowInbox] = useState(false);
-  const [showStoreOrders, setShowStoreOrders] = useState(false);
-  // اِستقبال (تكامل التوصيل، ٤/٨): طابور الطلبات (جاهزة/قيد التنفيذ/سُلِّمت اليوم) + إسناد التوصيل.
-  const [showOrdersQueue, setShowOrdersQueue] = useState(false);
+  // ش١ (§٨.١): ورش عمود العمل — الفواتير/الطلبات/طلبات الموقع تُركَّب داخل عمود السلة
+  // (لوحة الدفع لا تُغطّى أبداً). الحجوزات/الرسائل تبقيان طبقتين (قرار §١٤.٦).
+  const [workshop, setWorkshop] = useState<Workshop>("CART");
+  // ش١: نافذة الإيصال بعد الإتمام + سحب نقدي + خصم داخل الصفّ + اعتماد مدير للخصم >١٠٪.
+  const [lastSale, setLastSale] = useState<LastSaleSummary | null>(null);
+  const [showReceiptOverlay, setShowReceiptOverlay] = useState(false);
+  const [cashDropping, setCashDropping] = useState(false);
+  const [depositMenuOpen, setDepositMenuOpen] = useState(false);
+  const [discountFor, setDiscountFor] = useState<string | null>(null);
+  const [approvalAsk, setApprovalAsk] = useState<{ lineKey: string; pct: number } | null>(null);
+  /** اعتماد المدير للخصم >١٠٪ — يُحمل حتى الإرسال (يتحقّق خادمياً عند الالتزام). */
+  const mgrCredsRef = useRef<{ email: string; password: string } | null>(null);
+  // ش٢ (§٨.٢): المسوّدة المُرقّاة — السلّة محليّةٌ بالافتراض، وتترقّى بحفظٍ صريح؛ بعدها تُزامَن
+  // بالجملة بdebounce ~٨٠٠مث وversion تفاؤليّ (تعارضُ زميلٍ ⇒ إعادة تحميلٍ لا طمس).
+  const [activeDraft, setActiveDraft] = useState<{ id: number; version: number } | null>(null);
+  const draftSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ش٤: صافي العربون المقبوض على الطلب المحفوظ النشط — يقلّص «المتوقّع الآن» ويظهر في اللوحة.
+  const [draftHeld, setDraftHeld] = useState("0.00");
+  const [draftInfo, setDraftInfo] = useState<{ draftNumber: string } | null>(null);
+  const [depositOpen, setDepositOpen] = useState(false);
+  const [paymentsOpen, setPaymentsOpen] = useState(false);
+  // ش٦ — توصيل الطلب على مستوى السلة: يُملأ قبل التثبيت ويُنفَّذ إسناداً تلقائياً بعده.
+  // حالةُ سلةٍ محلية (لا تُحفظ مع المسوّدة — من استأنف مسوّدةً يعيد إدخال التوصيل).
+  const [orderDelivery, setOrderDelivery] = useState<OrderDeliveryValue | null>(null);
+  const [deliveryDialogOpen, setDeliveryDialogOpen] = useState(false);
+  // ش١: جهات التوصيل لورشة الفواتير (الإسناد من الصفّ) — تُجلب عند فتح الورشة فقط.
+  const partiesQ = trpc.delivery.listParties.useQuery(
+    { activeOnly: true },
+    { enabled: workshop === "INVOICES" || deliveryDialogOpen || orderDelivery != null, staleTime: 60_000 },
+  );
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
@@ -491,12 +436,44 @@ export default function Reception() {
   const sumCustom = round2(sumCustomD).toNumber();
   // ٥/٨ — أجرة توصيلٍ تُقبض الآن أمانةً للمندوب: نقدٌ يدخل الدرج **خارج** الفاتورة (ليست بيعاً).
   // تُعرَض منفصلةً كي يعرف الموظّف كم يستلم فعلاً، ولا تُخلَط بإجمالي الفاتورة ولا بالمبلغ المُطبَّق.
-  const heldDeliveryD = round2(cart.reduce((s, c) => s.plus(D(lineCounterHeldFee(c))), D(0)));
+  // ش٦: أجرة توصيل **الطلب** (COUNTER) تنضمّ لنفس العرض — نفس أمانة الدرج بالضبط.
+  const orderFeeHeldD = orderDelivery?.feeCollection === "COUNTER" ? round2(D(orderDelivery.fee || 0)) : D(0);
+  const heldDeliveryD = round2(cart.reduce((s, c) => s.plus(D(lineCounterHeldFee(c))), D(0)).plus(orderFeeHeldD));
   const heldDelivery = heldDeliveryD.toNumber();
   const cashDueNow = round2(grandTotalD.plus(heldDeliveryD)).toNumber();
 
+  // ش٠ (٥/٨، V1) — تقريب نقدي IQD لأقرب ٢٥٠ (نمط POS حرفياً): للبيع المباشر **الخالص** النقديّ
+  // فقط (لا تخصيص ولا خدمات طباعة — السلة المختلطة بلا تقريبٍ حتى ش٦)، وأونلاين فقط: مسار
+  // الالتقاط الأوفلايني يلتقط المبالغ غير المقرَّبة، فتفعيل التقريب معه يفصل ما رآه الزبون عمّا
+  // سيُرحَّل (فرقٌ في الدرج يمنع الإغلاق). roundCashIQD نفس دالة الخادم ⇒ اتفاقٌ حتميّ على الفرق
+  // الذي يقيّده الخادم قيدَ ADJUST.
+  const hasPrintInCart = cart.some((c) => !isCustomKind(c) && c.row.isPrintService);
+  // مراجعة ش٤: مرآة شرط الخادم — لو أنزل التقريبُ الإجماليَّ إلى/تحت العربون المقبوض سلفاً
+  // لَسُدَّ الطريق النقديّ (المتوقّع 0 والخادم يطالب بالفارق الخام) ⇒ يسقط التقريب حينها.
+  const draftHeldEarlyD = D(draftHeld || 0);
+  const roundedWouldTrapHeld = draftHeldEarlyD.gt(0) && roundCashIQD(grandTotalD.toFixed(2)).lte(draftHeldEarlyD);
+  const cashRoundActive = method === "CASH" && cart.length > 0 && !cart.some(isCustomKind) && !hasPrintInCart && !offline && !roundedWouldTrapHeld;
+  // ش٦ — تقريب السلّة المختلطة (مرآة materialize/checkout حرفياً): فرق تقريب السلّة كلّها
+  // يُحمَّل على الفاتورة الحاملة (بضاعة ثم طباعة). يسري **فقط** حين يُدفع المقرَّب كاملاً نقداً
+  // الآن (يُحسم عند الإرسال) — هنا نحسب أهليّته ونعرض المقرَّب لأن المسار الاعتيادي دفعٌ كامل.
+  const sumGoodsRawD = cart.filter((c) => !isCustomKind(c) && !c.row.isPrintService).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
+  const sumPrintRawD = cart.filter((c) => !isCustomKind(c) && c.row.isPrintService).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
+  const mixedCarrier: "SALE" | "PRINT" | null = sumGoodsRawD.gt(0) ? "SALE" : sumPrintRawD.gt(0) ? "PRINT" : null;
+  const mixedDeltaD = round2(roundCashIQD(grandTotalD.toFixed(2)).minus(grandTotalD));
+  const mixedRoundEligible =
+    method === "CASH" && cart.length > 0 && !cashRoundActive && !offline && !roundedWouldTrapHeld
+    && (cart.some(isCustomKind) || hasPrintInCart) && mixedCarrier != null && !mixedDeltaD.isZero()
+    && (mixedCarrier === "SALE" ? sumGoodsRawD : sumPrintRawD).plus(mixedDeltaD).gt(0);
+  const roundingDisplayActive = cashRoundActive || mixedRoundEligible;
+  const effectiveGrandD = roundingDisplayActive ? roundCashIQD(grandTotalD.toFixed(2)) : grandTotalD;
+  const cashRoundingDelta = roundingDisplayActive ? round2(effectiveGrandD.minus(grandTotalD)).toNumber() : 0;
+
+  // ش٤: العربون المقبوض سلفاً على الطلب المحفوظ يقلّص «المتوقّع الآن» — الزبون دفعه فعلاً
+  // وإيصاله قائم؛ collectNow عند التثبيت هو الجزء الجديد وحده (I5).
+  const heldD = draftHeldEarlyD;
   // الدفع موحّد على كامل السلة. البيع المباشر هو الحد الأدنى؛ وما زاد يصبح عربوناً لأوامر الطباعة.
-  const expectedNowD = grandTotalD;
+  const dueNowRawD = effectiveGrandD.minus(heldD);
+  const expectedNowD = dueNowRawD.lt(0) ? D(0) : dueNowRawD;
   const expectedNow = round2(expectedNowD).toNumber();
 
   // ما أدخله الكاشير في لوحة الأرقام (مع تكيّف Quick Pay).
@@ -504,13 +481,15 @@ export default function Reception() {
   const paid = round2(paidD).toNumber();
   const changeD = paidD.minus(expectedNowD);
   const change = round2(changeD).toNumber();
-  const remainingD = grandTotalD.minus(paidD);
+  const remainingD = expectedNowD.minus(paidD);
   const remaining = round2(remainingD).toNumber();
   const isChange = method === "CASH" && paidD.gt(0) && paidD.gte(expectedNowD);
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
 
   const hasCustom = cart.some(isCustomKind);
-  const needPaymentRef = method !== "CASH" && paidD.gt(0);
+  // مراجعة عدائية ٦/٨: الحقل يظهر فور اختيار طريقةٍ غير نقدية وسلّةٍ غير فارغة — كان مشروطاً
+  // بمبلغٍ مُدخَل، فالمسار السريع (تحصيل المطلوب الآن) يطلب المرجع/الكود وحقله مخفيّ.
+  const needPaymentRef = method !== "CASH" && (paidD.gt(0) || expectedNowD.gt(0));
 
   // ───── البحث ──────────────────────────────────────────────────────────────
   const debounced = useDebouncedValue(search, 180);
@@ -537,6 +516,11 @@ export default function Reception() {
   }, [offline, debounced, effectiveTier]);
   const results = offline ? offlineResults : (searchResults.data ?? []);
   const resultsEmpty = results.length === 0 && debounced.trim().length >= 2 && !(offline || searchResults.isFetching);
+  // ش٠ — حارس سباق البحث (نمط POS searchSettled): Enter لا يضيف أول نتيجة إلا بعد استقرار
+  // النتائج على النصّ الحاليّ — كان يضيف منتجاً خاطئاً من استعلامٍ أقدم أثناء الكتابة السريعة.
+  const searchSettled = debounced.trim() === search.trim()
+    && search.trim().length >= 2
+    && (offline || !searchResults.isFetching);
 
   // ───── السلّة ─────────────────────────────────────────────────────────────
   /** أيّ تعديلٍ على السلة يُسقط كوبوناً مُطبَّقاً سابقاً (نمط POS.tsx clearAppliedCoupon) — أسعار
@@ -656,6 +640,12 @@ export default function Reception() {
     setCouponCode(null);
     setCouponLabel(null);
     setCouponInput("");
+    // ش٢: التفريغ يفكّ ارتباط المسوّدة **قبل** مسح السلة (وإلا زامنت المزامنة المؤجَّلة أسطراً
+    // فارغة فمُحيت المسوّدة المحفوظة عن بُعد) — المسوّدة تبقى سليمة في الشريط (ومعها عربونها).
+    if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+    setActiveDraft(null);
+    setDraftHeld("0.00");
+    setDraftInfo(null);
     setCart([]);
     setSelKey(null);
     setPayInput("");
@@ -692,55 +682,103 @@ export default function Reception() {
   );
   useBarcodeScanner(handleHidScan, { enabled: !showCustomization && !submitting });
 
-  // ───── لوحة الأرقام ──────────────────────────────────────────────────────
+  // ───── لوحة المبلغ (م٤ — مبلغٌ فقط، لا أوضاع) ────────────────────────────
   function numPress(k: string) {
-    if (numMode === "QTY" && selKey) {
-      const line = cart.find((c) => c.key === selKey);
-      if (!line) return;
-      setCart((prev) =>
-        prev.map((c) => {
-          if (c.key !== selKey) return c;
-          let s = String(c.qty);
-          if (k === "DEL") s = s.length > 1 ? s.slice(0, -1) : "1";
-          else if (k === "C") s = "1";
-          else s = s === "0" ? k : s + k;
-          return { ...c, qty: Math.max(1, parseInt(s, 10) || 1) };
-        }),
-      );
-    } else if (numMode === "DISC" && selKey) {
-      const line = cart.find((c) => c.key === selKey);
-      if (!line || isCustomKind(line)) return;
-      clearCouponIfApplied();
-      setCart((prev) =>
-        prev.map((c) => {
-          if (c.key !== selKey) return c;
-          const base = c.origPrice ?? Number(c.row.price ?? 0);
-          let s = c.disc != null ? String(c.disc) : "";
-          if (k === "DEL") s = s.slice(0, -1);
-          else if (k === "C") s = "";
-          else if (k === "." && s.includes(".")) return c;
-          else s = s + k;
-          const disc = Math.min(100, Math.max(0, parseFloat(s) || 0));
-          return { ...c, origPrice: base, disc };
-        }),
-      );
-    } else {
-      setPayInput((prev) => {
-        if (k === "DEL") return prev.slice(0, -1);
-        if (k === "C") return "";
-        if (k === "." && prev.includes(".")) return prev;
-        return prev + k;
-      });
-    }
+    setPayInput((prev) => {
+      if (k === "DEL") return prev.slice(0, -1);
+      if (k === "C") return "";
+      if (k === "000") return prev ? `${prev}000` : "";
+      if (k === "." && prev.includes(".")) return prev;
+      return prev + k;
+    });
   }
   function setQuickAmt(v: number) {
-    setNumMode("PAY");
     setPayInput(String(v));
   }
   function payAll() {
-    setNumMode("PAY");
-    setPayInput(String(grandTotal));
+    // ش٠: «= الكل» يملأ الإجمالي **الفعليّ** (المقرَّب لفئة ٢٥٠ في البيع المباشر النقديّ الخالص).
+    setPayInput(String(expectedNow));
   }
+  /** م٤ — الكمية داخل الصفّ: مدخلٌ رقميّ مباشر (والزرّان ± يبقيان للمس السريع). */
+  function setQty(key: string, qty: number) {
+    clearCouponIfApplied();
+    setCart((prev) => prev.map((c) => (c.key === key ? { ...c, qty: Math.max(1, Math.trunc(qty) || 1) } : c)));
+  }
+  /** م٤ — الخصم داخل الصفّ (Popover خلية السعر): نسبةٌ 0..100، null = إزالة الخصم. */
+  function setLineDiscount(key: string, pct: number | null) {
+    clearCouponIfApplied();
+    setCart((prev) =>
+      prev.map((c) => {
+        if (c.key !== key) return c;
+        if (pct == null || pct <= 0) return { ...c, disc: undefined };
+        const base = c.origPrice ?? Number(c.row.price ?? 0);
+        return { ...c, origPrice: base, disc: Math.min(100, pct) };
+      }),
+    );
+  }
+  /** م٦: سقف الخصم الحرّ ١٠٪ — فوقه اعتمادُ مديرٍ استباقيّ (لا انتظار رفض الخادم).
+   *  تُمرَّر لـCartTable — مسار الاعتماد قرارُ الصفحة (mgrCredsRef/approvalAsk ملكها). */
+  function applyLineDiscount(lineKey: string, pct: number | null) {
+    if (pct != null && pct > 10 && !isElevatedRole && !mgrCredsRef.current) {
+      setApprovalAsk({ lineKey, pct });
+    } else {
+      setLineDiscount(lineKey, pct);
+    }
+  }
+  /** عربون ▾ (§٨.٣): تعبئة سريعة = الجاهز كاملاً + نسبة من المخصّص (الخوارزمية الجشعة الخادمية
+   *  تُغطّي البيع المباشر أولاً ثم توزّع الفائض عرابين — هذه الأزرار تملأ المبلغ وفقها بلا حساب يدويّ). */
+  function fillDeposit(pctOfCustom: number) {
+    const v = round2(sumDirectD.plus(sumCustomD.times(pctOfCustom)));
+    setPayInput(v.toFixed(0));
+    setDepositMenuOpen(false);
+  }
+  /** ش٤ — «قبض عربون الآن»: يقبض مبلغاً **فوراً بإيصالٍ وسند** على الطلب المحفوظ (يُرقّى تلقائياً
+   *  إن لزم — §٨.٢/أ: قبض العربون سببُ ترقيةٍ حقيقيّ). يختلف عن أزرار التعبئة (تملأ الحقل فقط). */
+  async function openDepositCollect() {
+    setDepositMenuOpen(false);
+    if (offline) { notify.errBig("لا قبض عربون دون اتصال", "العربون يحتاج إيصالاً خادمياً — أعد المحاولة عند عودة الاتصال."); return; }
+    if (cart.length === 0) { notify.warn("السلة فارغة", "أضف ما يريده الزبون ثم اقبض العربون"); return; }
+    if (!shift) { notify.errBig("افتح وردية استقبال أولاً", "العربون يدخل درجك وتُحاسَب عليه عند الإغلاق."); return; }
+    try {
+      if (!activeDraft) {
+        const p = await promoteM.mutateAsync({ branchId, shiftId: shift?.id ?? null, ...buildDraftPayload() });
+        setDraftInfo({ draftNumber: p.draftNumber });
+      } else {
+        // مراجعة ش٤: تفريغ المزامنة المؤجَّلة قبل فتح الحوار (نمط مسار التثبيت) — سقف الحوار
+        // من السلة الحيّة بينما الخادم يحسب على أسطره؛ بلا التفريغ يُرفض عربونٌ مشروع بعد
+        // إضافة صنفٍ للتوّ، والتقادم يدوم بعد عطل نقلٍ عابر (لا نبضة إلا بتغيير السلة).
+        if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+        const live = activeDraftRef.current ?? activeDraft;
+        try {
+          await syncM.mutateAsync({ draftId: live.id, version: live.version, ...buildDraftPayload() });
+        } catch {
+          // syncM.onError عالج (CONFLICT ⇒ إعادة ربط، انغلاق ⇒ فكّ) — لا نفتح على أسطرٍ متقادمة.
+          notify.warn("تعذّرت مزامنة الطلب قبل القبض", "تحقّق من الاتصال ثم أعد المحاولة");
+          return;
+        }
+      }
+      setDepositOpen(true);
+    } catch {
+      /* promoteM.onError أبلغ */
+    }
+  }
+  /** خيارات «عربون» المنسدلة — تُحسب هنا (sumDirectD/sumCustomD ملك الصفحة) وتستهلكها PaymentPanel.
+   *  خيارات التعبئة النسبية للمخصّص فقط؛ القبض الفوريّ لأيّ سلة (م٢: عربونٌ على أيّ طلب). */
+  const depositOptions = [
+    ...(hasCustom
+      ? ([["٢٥٪", 0.25], ["٥٠٪", 0.5], ["المخصّص كاملاً", 1]] as const).map(([label, pct]) => ({
+          label,
+          amountLabel: fmt(round2(sumDirectD.plus(sumCustomD.times(pct))).toNumber()),
+          onPick: () => fillDeposit(pct),
+        }))
+      : []),
+    // قبضٌ فعليّ لا تعبئة — يظهر دائماً ما دامت السلة غير فارغة (م٥: بلا شرط نسبة).
+    { label: "قبض عربون الآن (سند)", amountLabel: "إيصال فوري", onPick: () => void openDepositCollect() },
+    // سجلّ العرابين + الردّ — للطلب المحفوظ النشط المموّل فقط.
+    ...(activeDraft && heldD.gt(0)
+      ? [{ label: "سجلّ العرابين / ردّ", amountLabel: fmt(round2(heldD).toNumber()), onPick: () => { setDepositMenuOpen(false); setPaymentsOpen(true); } }]
+      : []),
+  ];
 
   function goToWorkflowStep(step: number) {
     setWorkflowStep(step);
@@ -748,10 +786,7 @@ export default function Reception() {
       if (step === 1) customerSectionRef.current?.querySelector("input")?.focus();
       if (step === 2) searchRef.current?.focus();
       if (step === 3) cartSectionRef.current?.focus();
-      if (step === 4) {
-        setNumMode("PAY");
-        paymentSectionRef.current?.focus();
-      }
+      if (step === 4) paymentSectionRef.current?.focus();
     });
   }
 
@@ -853,6 +888,200 @@ export default function Reception() {
 
   // نقطة التزام خادمية واحدة للسلة الهجينة: بيع + طباعة + أوامر شغل.
   const checkoutM = trpc.workOrders.receptionCheckout.useMutation();
+  // ش٦: إسناد فاتورة الطلب للتوصيل تلقائياً **بعد** التثبيت — فشله لا يمسّ الالتزام المالي.
+  const dispatchOrderM = trpc.delivery.dispatchInvoice.useMutation();
+
+  // ───── ش٢: المسوّدة المُرقّاة (حفظ/استئناف/مزامنة) ─────────────────────────
+  /** تحويل السلّة الحالية إلى حمولة مسوّدة (الخصم اليدويّ مطويّ في unitPrice الفعّال). */
+  function buildDraftPayload() {
+    const header = {
+      customerId: customer.customerId ?? null,
+      contactName: customer.customerId == null ? (customer.name.trim() || null) : null,
+      contactPhone: customer.customerId == null ? (customer.phone?.trim() || null) : null,
+      priceTier: effectiveTier,
+      channel,
+    };
+    const lines = cart.map((c, i) => {
+      const eff = round2(D(effectivePrice(c))).toFixed(2);
+      if (c.custom) {
+        return {
+          lineKind: "CUSTOM" as const,
+          sortOrder: i,
+          variantId: c.manualService ? null : (c.row.variantId || null),
+          productUnitId: c.manualService ? null : (c.row.productUnitId || null),
+          quantity: String(c.qty),
+          unitPrice: eff,
+          title: c.custom.title.trim() || c.row.productName,
+          customizationText: composeCustomizationText(c.custom) || null,
+          designImages: c.custom.designImages.length
+            ? JSON.stringify(c.custom.designImages.map((img, ix) => ({ url: img.dataUrl, caption: img.name ?? null, sortOrder: ix })))
+            : null,
+          // المواصفة كاملةً عدا الصور — الاستئناف الوفيّ (I22: الصور في عمودها وحدها).
+          printSpec: JSON.stringify({ ...c.custom, designImages: [], paymentReceiptImages: [] }),
+          dueDate: c.custom.dueDate || null,
+          assignedTo: c.custom.assignedTo ?? null,
+        };
+      }
+      return {
+        lineKind: c.row.isPrintService ? ("PRINT" as const) : ("GOODS" as const),
+        sortOrder: i,
+        variantId: c.row.variantId,
+        productUnitId: c.row.productUnitId,
+        quantity: String(c.qty),
+        unitPrice: eff,
+        title: `${c.row.productName} (${c.row.unitName})`,
+      };
+    });
+    return { header, lines };
+  }
+
+  const promoteM = trpc.reception.draftPromote.useMutation({
+    onSuccess: (r) => {
+      setActiveDraft({ id: r.draftId, version: r.version });
+      setDraftInfo({ draftNumber: r.draftNumber });
+      setDraftHeld("0.00"); // طلبٌ جديد — لا مقبوض عليه بعد
+      notify.ok(`حُفظ الطلب — ${r.draftNumber}`, "يُزامَن تلقائياً مع كل تعديل، ويستطيع زميلك إكماله من جهازه");
+      void utils.reception.draftList.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const syncM = trpc.reception.draftSync.useMutation({
+    onSuccess: (r) => setActiveDraft((prev) => (prev ? { ...prev, version: r.version } : prev)),
+    onError: (e, vars) => {
+      // مراجعة عدائية (٥/٨): التمييز بالكود — فكُّ الربط على كل خطأ كان يترك مسوّداتٍ يتيمةً
+      // OPEN لبيعٍ أُتمّ (زميل يثبّتها = ازدواج) ويقطع الحفظ على عطل شبكةٍ عابر.
+      const code = (e as { data?: { code?: string } }).data?.code;
+      if (code === "CONFLICT") {
+        // تعارض زميل (I9) أو نسخة closure قديمة ⇒ أعد الجلب والربط بالنسخة الحيّة بلا طمس.
+        notify.warn("حُدِّث الطلب المحفوظ", "أُعيد تحميله بأحدث نسخة — راجعه ثم تابع");
+        void resumeDraft(vars.draftId);
+      } else if (code === "PRECONDITION_FAILED") {
+        // انغلقت (ثُبِّتت/أُلغيت/انقضت) أو حارس I3 (مموّلة: حذف بند/خفض دون المقبوض) ⇒ الرسالة تشرح.
+        // حارس I3 لا يفكّ الربط — الطلب حيٌّ والموظّف يصحّح (يعيد البند أو يردّ العربون).
+        const i3Guard = /مبلغٌ مقبوض|المقبوض سلفاً/.test(e.message);
+        notify.warn(i3Guard ? "الطلب عليه مبلغ مقبوض" : "توقّفت مزامنة الطلب المحفوظ", e.message);
+        if (!i3Guard) {
+          setActiveDraft(null);
+          setDraftHeld("0.00");
+          setDraftInfo(null);
+          void utils.reception.draftList.invalidate();
+        } else if (activeDraftRef.current) {
+          // استرجع النسخة الخادمية الصادقة (البنود قبل الحذف المرفوض).
+          void resumeDraft(activeDraftRef.current.id);
+        }
+      }
+      // عطل نقلٍ عابر (code فارغ): أبقِ الربط — النبضة القادمة تعيد المحاولة.
+    },
+  });
+  // نسخة المسوّدة في ref — المؤقّت المجدول أثناء ذهابِ مزامنةٍ سابقة كان يحمل closure قديمة
+  // فيطلق CONFLICT «ذاتيّ المنشأ» (توست «حدّثها زميل» بلا زميل).
+  const activeDraftRef = useRef(activeDraft);
+  useEffect(() => {
+    activeDraftRef.current = activeDraft;
+  }, [activeDraft]);
+
+  function saveDraft() {
+    if (cart.length === 0 || !!activeDraft || offline) return;
+    promoteM.mutate({ branchId, shiftId: shift?.id ?? null, ...buildDraftPayload() });
+  }
+  /** ش٣ — التثبيت الذرّي من المسوّدة نفسها (يستبدل جسر «الطيّ» المؤقّت من ش٢). */
+  const commitDraftM = trpc.reception.draftCommit.useMutation();
+
+  /** مزامنة بالجملة بdebounce (§٦ — لا سطراً-سطراً: مسح ١٢ باركوداً متتابعاً يمرّ بلا CONFLICT).
+   *  النسخة تُقرأ من ref **لحظة الإطلاق** لا من closure الجدولة (مراجعة عدائية — سباق ذاتي المنشأ). */
+  useEffect(() => {
+    if (!activeDraft || offline) return;
+    if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+    draftSyncTimer.current = setTimeout(() => {
+      const live = activeDraftRef.current;
+      if (!live) return;
+      syncM.mutate({ draftId: live.id, version: live.version, ...buildDraftPayload() });
+    }, 800);
+    return () => {
+      if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart, customer.customerId, customer.name, customer.phone, effectiveTier, channel, activeDraft?.id]);
+
+  /** استئناف مسوّدة (من هذا الجهاز أو جهاز زميل): صفوفٌ حيّة عبر catalog.byUnitIds + مواصفة CUSTOM من printSpec. */
+  async function resumeDraft(draftId: number) {
+    try {
+      // staleTime:0 إلزاميّ (مراجعة ش٤): الافتراض العام ٦٠ث كان يعيد نسخة الكاش بعد CONFLICT/
+      // حارس I3 — heldTotal وversion وبنوداً متقادمة دقيقةً كاملة ⇒ حلقة CONFLICT وتحصيلٌ زائد.
+      const d = await utils.reception.draftGet.fetch({ draftId }, { staleTime: 0 });
+      const unitIds = Array.from(new Set(d.lines.map((l) => Number(l.productUnitId)).filter((n) => n > 0)));
+      const live = unitIds.length
+        ? await utils.catalog.byUnitIds.fetch({ branchId, tier: (d.priceTier as Tier) ?? "RETAIL", productUnitIds: unitIds })
+        : [];
+      const byUnit = new Map(live.map((r) => [Number(r.productUnitId), r as PosRow]));
+      let skipped = 0;
+      const newCart: CartLine[] = [];
+      for (const l of d.lines) {
+        const qty = Math.max(1, Math.trunc(Number(l.quantity)));
+        if (l.lineKind === "CUSTOM") {
+          let spec: Partial<CustomizationData> = {};
+          let imgs: Array<{ url: string; caption?: string | null }> = [];
+          try { spec = l.printSpec ? JSON.parse(l.printSpec) : {}; } catch { /* مواصفة تالفة ⇒ افتراضي */ }
+          try { imgs = l.designImages ? JSON.parse(l.designImages) : []; } catch { /* صور تالفة ⇒ بلا صور */ }
+          const custom: CustomizationData = {
+            ...emptyCustomization(l.title ?? ""),
+            ...spec,
+            designImages: imgs.map((im, ix) => ({ id: `r-${l.id}-${ix}`, dataUrl: im.url, name: im.caption ?? undefined, isPrimary: ix === 0 })),
+            paymentReceiptImages: [],
+          };
+          const row = byUnit.get(Number(l.productUnitId)) ?? ({
+            variantId: Number(l.variantId ?? 0), productUnitId: Number(l.productUnitId ?? 0),
+            productName: l.title ?? "خدمة / أمر شغل", sku: "SERVICE", unitName: "خدمة",
+            conversionFactor: "1", price: "0", stockBase: 0,
+            isService: true, isPrintService: false, isCustomizable: true,
+          } as PosRow);
+          newCart.push({ key: `r-${l.id}`, row, qty, custom, manualService: l.variantId == null });
+          continue;
+        }
+        const row = byUnit.get(Number(l.productUnitId));
+        if (!row) { skipped += 1; continue; }
+        const line: CartLine = { key: `r-${l.id}`, row, qty };
+        // السعر المخزَّن (الفعّال وقت الحفظ) يُثبَّت — تغيّر سعر الكتالوج لا يُعيد التسعير صامتاً.
+        if (Number(l.unitPrice) !== Number(row.price ?? 0)) line.origPrice = Number(l.unitPrice);
+        newCart.push(line);
+      }
+      clearCouponIfApplied();
+      setCart(newCart);
+      setCustomer({ customerId: d.customerId != null ? Number(d.customerId) : null, name: d.contactName ?? "", phone: d.contactPhone ?? null, isNew: false });
+      setTierOverride((d.priceTier as Tier) ?? null);
+      setActiveDraft({ id: draftId, version: Number(d.version) });
+      // ش٤: صافي المقبوض سلفاً يرافق الاستئناف — «المتوقّع الآن» يهبط به فوراً.
+      setDraftHeld(String((d as { heldTotal?: string }).heldTotal ?? "0.00"));
+      setDraftInfo({ draftNumber: d.draftNumber });
+      setWorkshop("CART");
+      const heldNote = Number((d as { heldTotal?: string }).heldTotal ?? 0) > 0
+        ? ` — عليها عربون مقبوض ${fmt(Number((d as { heldTotal?: string }).heldTotal))} د.ع`
+        : "";
+      notify.ok(
+        `فُتحت المسوّدة ${d.draftNumber}${heldNote}`,
+        skipped > 0 ? `تنبيه: ${skipped} بند تعذّر استرجاعه (منتج غير متاح)` : "تعديلاتك تُزامَن وتُسجَّل باسمك",
+      );
+    } catch (e) {
+      notify.err(e, "تعذّر فتح المسوّدة");
+    }
+  }
+
+  async function printDraftTicketById(draftId: number) {
+    try {
+      const d = await utils.reception.draftGet.fetch({ draftId }, { staleTime: 0 });
+      await printDraftTicket({
+        draftNumber: d.draftNumber,
+        date: fmtDate(new Date(d.createdAt as unknown as string)),
+        contactName: d.contactName,
+        contactPhone: d.contactPhone,
+        items: d.lines.map((l) => ({ name: l.title ?? "بند", quantity: Number(l.quantity), total: String(l.lineTotal) })),
+        total: String(d.total),
+        notes: d.notes,
+      });
+    } catch (e) {
+      notify.err(e, "تعذّرت طباعة تذكرة المسوّدة");
+    }
+  }
 
   async function handleSubmit(opts: { quickFullPay: boolean }) {
     if (cart.length === 0) return;
@@ -882,21 +1111,47 @@ export default function Reception() {
       return { c, depositStr: "0.00", salePriceStr: full.toFixed(2) };
     });
 
-    const inputPaidD = opts.quickFullPay ? grandTotalD : paidD;
-    const appliedPaidD = method === "CASH" && inputPaidD.gt(grandTotalD) ? grandTotalD : inputPaidD;
+    // ش٠ (V1): كل المقارنات على الإجمالي **الفعليّ** (المقرَّب عند سريان التقريب) — إرسال مبالغ
+    // غير مقرَّبة مع علم التقريب كان يجعل الخادم يرى نقصاً (رفضٌ للزبون العابر) أو ذمّةً صامتة.
+    // ش٤: المستحقّ الآن = الإجمالي − العربون المقبوض سلفاً (heldD) — الدفع الجديد يقاس عليه.
+    const inputPaidD = opts.quickFullPay ? expectedNowD : paidD;
+    const appliedPaidD = method === "CASH" && inputPaidD.gt(expectedNowD) ? expectedNowD : inputPaidD;
 
-    // البطاقة والتحويل صالحان أيضاً كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي.
+    // غير النقد كلّه صالح كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي (كود الكارت لرصيد زين).
     if (method !== "CASH" && inputPaidD.gt(0) && !paymentReference.trim()) {
-      notify.err(method === "CARD" ? "رقم عملية البطاقة مطلوب" : "رقم مرجع التحويل مطلوب");
+      notify.err(
+        method === "CARD" ? "رقم عملية البطاقة مطلوب"
+        : method === "WALLET" ? "رقم عملية المحفظة مطلوب"
+        : method === "TELECOM" ? "أرقام كارت شحن زين (الكود) مطلوبة"
+        : "رقم مرجع التحويل مطلوب",
+      );
       return;
     }
-    if (method !== "CASH" && inputPaidD.gt(grandTotalD)) {
-      notify.err(`لا يمكن أن يتجاوز مبلغ ${method === "CARD" ? "البطاقة" : "التحويل"} إجمالي الطلب (${fmt(grandTotalD.toFixed(2))} د.ع)`);
+    if (method !== "CASH" && inputPaidD.gt(expectedNowD)) {
+      notify.err(`لا يمكن أن يتجاوز مبلغ ${PAY_METHOD_LABEL[method] ?? "الدفع"} المستحقّ الآن (${fmt(expectedNowD.toFixed(2))} د.ع)`);
       return;
     }
-    if (appliedPaidD.lt(sumDirectD)) {
-      notify.err(`المبلغ المقبوض يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(sumDirectD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
+    // ش٦ — التقريب المختلط يُحسم هنا: يسري فقط حين يُدفع المقرَّب **كاملاً** الآن (المرآة
+    // الحرفية لشرط materialize خادمياً) — دفعةٌ جزئية تُرسَل بمبالغ خام بلا تقريب.
+    const mixedRoundApplied = mixedRoundEligible
+      && round2(appliedPaidD.plus(heldD)).eq(round2(effectiveGrandD));
+    const mixedDeltaAppliedD = mixedRoundApplied ? mixedDeltaD : D(0);
+    const directFloorD = cashRoundActive
+      ? effectiveGrandD
+      : round2(sumDirectD.plus(mixedDeltaAppliedD));
+    if (appliedPaidD.plus(heldD).lt(directFloorD)) {
+      notify.err(`المبلغ المقبوض (مع العربون السابق) يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(directFloorD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
       return;
+    }
+
+    // ش٥ (§٩.٤): رصيد زين بلا مُثبِتٍ خارجيّ — تأكيدٌ ثانٍ صريح قبل التسجيل (الزبون حاضر).
+    if (method === "TELECOM" && appliedPaidD.gt(0)) {
+      if (!(await confirm({
+        variant: "warning",
+        title: "تأكيد قبض رصيد زين",
+        description: `تحقّقتَ أن رصيد ${fmt(round2(appliedPaidD).toNumber())} د.ع وصل فعلاً (كارت شحن ${paymentReference.trim() || "—"})؟ الكود يُقبل مرّةً واحدة ولا يدخل درج النقد.`,
+        confirmText: "وصل الرصيد — سجّل",
+      }))) return;
     }
 
     // تَفعيل قَفل الإرسال **قبل** ensureCustomerId لمنع سباق نَقر مَزدوج يُنشئ عميلاً مكرَّراً
@@ -938,8 +1193,20 @@ export default function Reception() {
       const customerName = rawCustomerName && rawCustomerName.replace(/\D/g, "") !== receiptPhone?.replace(/\D/g, "")
         ? rawCustomerName
         : receiptPhone ? `عميل ${receiptPhone}` : null;
-      const saleAmount = round2(regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
-      const printAmount = round2(printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
+      // ش٠ (V1): عند سريان التقريب (بيع مباشر خالص) يُرسَل مبلغ البيع **مقرَّباً** — الخادم يعيد
+      // التقريب بنفس الدالة فيتطابقان، ويقيّد الفرق ADJUST. السلة الخالصة ⇒ مجموع الأسطر = الإجمالي.
+      // ش٦: عند التقريب المختلط يُبيَّت فرق السلّة كلّها في مبلغ الفاتورة الحاملة، ويُسمّى
+      // للخادم بـcashRoundingOverride فيقيّد الفرق ADJUST عليها.
+      const saleAmount = cashRoundActive
+        ? round2(effectiveGrandD).toFixed(2)
+        : round2(
+            regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))
+              .plus(mixedRoundApplied && mixedCarrier === "SALE" ? mixedDeltaAppliedD : D(0)),
+          ).toFixed(2);
+      const printAmount = round2(
+        printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))
+          .plus(mixedRoundApplied && mixedCarrier === "PRINT" ? mixedDeltaAppliedD : D(0)),
+      ).toFixed(2);
       const workOrderPayloads = customWithDeposits.map((x) => {
         const c = x.c;
         const custom = c.custom!;
@@ -990,7 +1257,51 @@ export default function Reception() {
         };
       });
 
-      const result = await checkoutM.mutateAsync({
+      // ش٣: طلبٌ محفوظٌ (مسوّدة نشطة) يُثبَّت **من مسوّدته** ذرّياً عبر reception.draftCommit —
+      // idempotency ثلاثية (version + FOR UPDATE + commitRequestId الخادمي). قبله «تفريغُ
+      // مزامنةٍ» متزامنٌ يقتل سباق «عدّلتُ ثم ثبّتُّ قبل نبضة الـdebounce»، وexpectedTotal
+      // (الخام قبل تقريب IQD) حزام أمانٍ ضدّ انجراف العرض.
+      const result = activeDraft
+        ? await (async () => {
+            if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+            const live = activeDraftRef.current ?? activeDraft;
+            // تفريغ المزامنة قبل التثبيت (يقتل سباق التعديل قبل نبضة debounce). مراجعة عدائية:
+            // إن رُفض بـ«ثُبِّتت فاتورةً» (فُقد ردُّ تثبيتٍ سابق) **نتابع** إلى commitDraft —
+            // الخادم يعيد النتيجة المبنيّة من مفاتيح idempotency، لا نفكّ الربط فنزدوج بمسارٍ مباشر.
+            let commitVersion = live.version;
+            try {
+              const synced = await syncM.mutateAsync({
+                draftId: live.id,
+                version: live.version,
+                ...buildDraftPayload(),
+              });
+              commitVersion = synced.version;
+            } catch (syncErr) {
+              const code = (syncErr as { data?: { code?: string } }).data?.code;
+              if (code !== "PRECONDITION_FAILED") throw syncErr; // CONFLICT/نقل ⇒ المسار العام
+              // مسوّدة مغلقة: إن كانت COMMITTED فcommitDraft يعيد النتيجة نفسها (rebuild يسبق فحص version).
+            }
+            const committed = await commitDraftM.mutateAsync({
+              draftId: live.id,
+              version: commitVersion,
+              expectedTotal: round2(grandTotalD).toFixed(2),
+              shiftId: shift.id,
+              collectNow: appliedPaidD.gt(0)
+                ? { amount: round2(appliedPaidD).toFixed(2), method, reference: method === "CASH" ? undefined : paymentReference.trim() }
+                : null,
+              // ش٦: العلم يشمل المختلط — materialize خادمياً يعيد اشتقاق الهدف والفرق من الأسطر.
+              cashRoundIQD: cashRoundActive || mixedRoundApplied,
+              // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
+              deliveryFeeHeld: orderFeeHeldD.gt(0) ? orderFeeHeldD.toFixed(2) : undefined,
+              managerApproval: mgrCredsRef.current ?? undefined,
+            });
+            setActiveDraft(null);
+            setDraftHeld("0.00");
+            setDraftInfo(null);
+            void utils.reception.draftList.invalidate();
+            return committed;
+          })()
+        : await checkoutM.mutateAsync({
         branchId,
         shiftId: shift.id,
         customerId: customerId ?? undefined,
@@ -1000,6 +1311,13 @@ export default function Reception() {
         paymentMethod: method,
         paymentReference: method === "CASH" ? undefined : paymentReference.trim(),
         paidAmount: round2(appliedPaidD).toFixed(2),
+        cashRoundIQD: cashRoundActive,
+        // ش٦: تسمية الفاتورة الحاملة لفرق التقريب المختلط (المبلغ مُبيَّتٌ فيها أعلاه).
+        cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
+        // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
+        deliveryFeeHeld: orderFeeHeldD.gt(0) ? orderFeeHeldD.toFixed(2) : undefined,
+        // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
+        managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
         priceTier: effectiveTier,
         couponCode: couponCode ?? undefined,
@@ -1044,6 +1362,39 @@ export default function Reception() {
       const invoiceId = result.regularSale?.invoiceId ?? result.printSale?.invoiceId ?? null;
       const createdWoIds = result.workOrders.map((order) => order.workOrderId);
 
+      // ش٦ — تسلسل الإسناد بعد التثبيت: الالتزام الماليّ تمّ؛ الإسناد أثرٌ لاحق منفصل
+      // بمعاملته الخاصة. فشله **يُعلَن بوسم إعادة محاولةٍ لا يُبتلَع** (معيار قبول ش٦):
+      // الفاتورة تبقى في طابور الفواتير وزر «إسناد للتوصيل» هو مسار الإعادة.
+      if (orderDelivery) {
+        if (invoiceId == null) {
+          notify.warn(
+            "لم يُسنَد التوصيل تلقائياً",
+            "الطلب أوامر شغلٍ فقط بلا فاتورة — التوصيل يُرتَّب على بند الطلب نفسه أو عند التسليم",
+          );
+        } else {
+          try {
+            await dispatchOrderM.mutateAsync({
+              invoiceId,
+              partyId: orderDelivery.partyId,
+              deliveryFee: orderDelivery.fee,
+              feeCollection: orderDelivery.feeCollection,
+              recipientName: orderDelivery.recipientName || undefined,
+              recipientPhone: orderDelivery.recipientPhone || undefined,
+              deliveryAddress: orderDelivery.address || undefined,
+              clientRequestId: crypto.randomUUID(),
+            });
+            notify.ok(`أُسند الطلب للتوصيل — ${orderDelivery.partyName}`);
+            void utils.delivery.invalidate();
+          } catch (e) {
+            notify.err(
+              "ثُبِّت الطلب ولم يُسنَد للتوصيل",
+              `الفاتورة سليمة في «الفواتير» — اضغط زرّ (إسناد للتوصيل) عليها لإعادة المحاولة. السبب: ${e instanceof Error ? e.message : "خطأ غير معروف"}`,
+            );
+          }
+        }
+        setOrderDelivery(null);
+      }
+
       // ٥/٨ — إيصال الاستقبال كان يُبنى بقيمٍ مثبَّتة (paid = الإجمالي دائماً، change = 0 دائماً،
       // بلا خصمٍ ولا هاتفٍ ولا آجل) فيخرج ناقص المعلومات مقارنةً بإيصال التجزئة الذي يمرّ بمُحوّلٍ
       // موحّد. صار يُبنى بمُحوّلٍ واحد هنا يحمل الحقيقة كاملةً: الخصم على السطر، هاتف الزبون،
@@ -1051,9 +1402,10 @@ export default function Reception() {
       const receiptCustomerName = customerName && receiptPhone
         ? `${customerName} — ${receiptPhone}`
         : customerName ?? (receiptPhone ? `عميل ${receiptPhone}` : null);
-      const changeD2 = round2(appliedPaidD.minus(grandTotalD));
+      // ش٤: الفكّة والمتبقّي يقاسان على المستحقّ الآن (بعد خصم العربون السابق heldD).
+      const changeD2 = round2(appliedPaidD.minus(expectedNowD));
       const printedChange = method === "CASH" && changeD2.gt(0) ? changeD2.toFixed(2) : null;
-      const creditD = round2(grandTotalD.minus(appliedPaidD));
+      const creditD = round2(expectedNowD.minus(appliedPaidD));
       const printedCredit = creditD.gt(0) ? creditD.toFixed(2) : null;
       const receiptLine = (c: CartLine) => ({
         name: `${c.row.productName} (${c.row.unitName})${c.disc ? ` −${c.disc}%` : ""}`,
@@ -1094,6 +1446,10 @@ export default function Reception() {
         const c = x.c;
         const custom = c.custom!;
         const finalText = composeCustomizationText(custom);
+        // ش٤ (§١٠): العربون الموزَّع على الأمر من ردّ الخادم (الجشع الخادميّ هو الحقيقة) —
+        // التذكرة تحمل «مدفوع مقدماً/المتبقّي عند الاستلام» فلا يخرج الزبون بورقةٍ لا تُثبت عربونه.
+        const woDeposit = (result.workOrders[index] as { deposit?: string } | undefined)?.deposit ?? "0.00";
+        const woBalance = round2(D(x.salePriceStr).minus(D(woDeposit)));
         workOrdersToPrint.push({
           orderNumber: result.workOrders[index]?.orderNumber ?? "",
           orderDate: fmtDate(printedAt),
@@ -1105,6 +1461,8 @@ export default function Reception() {
           quantity: c.qty,
           specs: finalText || null,
           total: x.salePriceStr,
+          paidUpfront: Number(woDeposit) > 0 ? woDeposit : null,
+          balanceDue: Number(woDeposit) > 0 ? woBalance.toFixed(2) : null,
           // ٥/٨ — أجرة التوصيل تُطبع صراحةً على التذكرة **خارج الإجمالي**، مع مَن يقبضها:
           // يمنع سوءَ الفهم الذي كان يجعل الموظّف والزبون يظنّانها جزءاً من قيمة الطلب.
           notes: custom.hasDelivery
@@ -1157,6 +1515,22 @@ export default function Reception() {
           ? "فُتحت نافذة الطباعة لأن الطابعة المباشرة غير متصلة"
           : "أُرسلت المستندات إلى الطابعة مباشرة";
       notify.ok(`تمّ ${summary}`, printDescription);
+      // ش١ (§٨.٦): نافذة الإيصال — الفكّة بخطٍّ ضخم + أرقام المستندات + إعادة الطباعة (F9)،
+      // ولافتةٌ تسمّي ما لم يُطبَع (كان يُبتلَع في toast عابرٍ بلا أيّ سبيلٍ لإعادة الطباعة).
+      setLastSale({
+        invoiceNumbers: [result.regularSale?.invoiceNumber, result.printSale?.invoiceNumber].filter(Boolean) as string[],
+        workOrderNumbers: result.workOrders.map((o) => o.orderNumber).filter(Boolean),
+        totalStr: round2(effectiveGrandD).toFixed(2),
+        changeStr: printedChange,
+        creditStr: printedCredit,
+        receipts: receiptsToPrint,
+        workOrders: workOrdersToPrint,
+        printFailures,
+      });
+      setShowReceiptOverlay(true);
+      mgrCredsRef.current = null;
+      setDiscountFor(null);
+      setApprovalAsk(null);
       setCart([]);
       setSelKey(null);
       setPayInput("");
@@ -1201,6 +1575,17 @@ export default function Reception() {
    */
   async function captureOfflineReception(): Promise<boolean> {
     if (!shift || cart.length === 0) return false;
+    // مراجعة عدائية (٥/٨) — **حاصرة**: طلبٌ محفوظ (مسوّدة) لا يُلتقَط أوفلاينياً أبداً.
+    // التثبيت يلتزم خادمياً بمفتاح المسوّدة (commitRequestId) بينما الالتقاط كان سيرحّل
+    // بمفتاح الواجهة (reqIdRef) المختلف ⇒ uq_invoice_source عاجزٌ عن صدّ فاتورةٍ ثانية
+    // إذا كان الالتزام وصل قبل انقطاع الردّ. المسوّدة الخادمية **هي** الأثر الناجي.
+    if (activeDraftRef.current) {
+      notify.errBig(
+        "طلبك محفوظٌ على الخادم — لا يُلتقَط دون اتصال",
+        "عند عودة الاتصال افتح الطلب من «طلبات محفوظة» واضغط التثبيت — لن يتكرّر ولن يضيع.",
+      );
+      return false;
+    }
     const directLines = cart.filter((c) => !isCustomKind(c));
     const regularLines = directLines.filter((c) => !c.row.isPrintService);
     const printLines = directLines.filter((c) => c.row.isPrintService);
@@ -1333,6 +1718,28 @@ export default function Reception() {
     submitRef.current = handleSubmit;
   });
 
+  /** F9 — إعادة طباعة مستندات آخر عملية (من أيّ مكان، حتى بعد إغلاق النافذة). */
+  const reprintLastRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    reprintLastRef.current = () => {
+      if (!lastSale) {
+        notify.warn("لا عملية سابقة لإعادة طباعتها");
+        return;
+      }
+      void (async () => {
+        let failures = 0;
+        for (const r of lastSale.receipts) {
+          try { await printReceipt(r); } catch { failures += 1; }
+        }
+        for (const w of lastSale.workOrders) {
+          try { await printWorkOrderReceipt(w); } catch { failures += 1; }
+        }
+        if (failures > 0) notify.err(`تعذّرت طباعة ${failures} مستند`);
+        else notify.ok("أُعيدت طباعة مستندات آخر عملية");
+      })();
+    };
+  });
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (showCustomization) return;
@@ -1343,12 +1750,17 @@ export default function Reception() {
         }
         return;
       }
-      if (showStoreOrders) {
-        if (e.key === "Escape") { e.preventDefault(); setShowStoreOrders(false); }
+      if (showReceiptOverlay) {
+        if (e.key === "Escape") { e.preventDefault(); setShowReceiptOverlay(false); }
+        if (e.key === "F9") { e.preventDefault(); reprintLastRef.current?.(); }
         return;
       }
-      if (showOrdersQueue) {
-        if (e.key === "Escape") { e.preventDefault(); setShowOrdersQueue(false); }
+      if (cashDropping || approvalAsk) {
+        if (e.key === "Escape") { e.preventDefault(); setCashDropping(false); setApprovalAsk(null); }
+        return;
+      }
+      if (workshop !== "CART") {
+        if (e.key === "Escape") { e.preventDefault(); setWorkshop("CART"); }
         return;
       }
       if (e.key === "F2") {
@@ -1357,14 +1769,28 @@ export default function Reception() {
       } else if (e.key === "F4") {
         e.preventDefault();
         submitRef.current?.({ quickFullPay: false });
+      } else if (e.key === "F9") {
+        e.preventDefault();
+        reprintLastRef.current?.();
+      } else if (e.key === "F12") {
+        e.preventDefault();
+        void clearCartRef.current?.();
       } else if (e.key === "Escape") {
         if (showInbox) setShowInbox(false);
+        else if (depositMenuOpen) setDepositMenuOpen(false);
+        else if (discountFor) setDiscountFor(null);
         else if (showDrop) setShowDrop(false);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showInbox, showDrop, showCustomization, showReservations, showStoreOrders, showOrdersQueue, closeReservations]);
+  }, [showInbox, showDrop, showCustomization, showReservations, workshop, showReceiptOverlay, cashDropping, approvalAsk, depositMenuOpen, discountFor, closeReservations]);
+
+  /** F12 — تفريغ بتأكيد (clearCart تُعرَّف بعد هذا الأثر ⇒ ref يحمل أحدث نسخة). */
+  const clearCartRef = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => {
+    clearCartRef.current = clearCart;
+  });
 
   // اقتراح الكاشير: لا يبني الواجهة قبل توفّر الفرع.
   if (me.isLoading || shiftQ.isLoading) {
@@ -1454,25 +1880,8 @@ export default function Reception() {
           <ReservationsHub embedded fixedBranchId={branchId} onClose={closeReservations} />
         </div>
       )}
-      {showStoreOrders && (
-        <div className="absolute inset-0 z-30 overflow-y-auto bg-background p-4">
-          <div className="mb-3 flex items-center justify-between rounded-xl border bg-card p-3">
-            <div>
-              <h1 className="font-extrabold">طلبات الموقع الواردة</h1>
-              <p className="text-xs text-muted-foreground">راجع الطلب، ثبّته، جهّزه ثم أرسله للتوصيل.</p>
-            </div>
-            <Button size="sm" variant="outline" onClick={() => setShowStoreOrders(false)}>
-              <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
-            </Button>
-          </div>
-          <OrderFulfillment />
-        </div>
-      )}
-      {showOrdersQueue && (
-        <div className="absolute inset-0 z-30 overflow-y-auto bg-background p-4">
-          <ReceptionOrderQueue branchId={branchId} onClose={() => setShowOrdersQueue(false)} />
-        </div>
-      )}
+      {/* ش١ (§٨.١): ورشتا الطلبات وطلبات الموقع لم تعودا طبقتين تُغطّيان لوحة الدفع —
+          صارتا تبويبين داخل عمود العمل أدناه (زرّ التثبيت وشارة الوردية مرئيان دائماً). */}
       {/* نافذة إغلاق وردية خدمة العملاء (Z-report مستقلّ) */}
       {closing && (
         <div
@@ -1496,6 +1905,22 @@ export default function Reception() {
                   [
                     ["عدد الفواتير", `${reportQ.data?.invoiceCount ?? 0}`],
                     ["إجمالي المبيعات", `${fmt(Number(reportQ.data?.salesTotal ?? 0))} د.ع`],
+                    // إفصاح (مراجعة ٥/٨): فواتير تسليم الطلبات ضمن الإجمالي أعلاه، لكن عرابينها
+                    // قُبضت في ورديات سابقة — السطر يمنع قراءة «مبيعاتي ≠ درجي» كعجز.
+                    ...(Number(reportQ.data?.woInvoicesCount ?? 0) > 0
+                      ? [[
+                          `منها فواتير تسليم طلبات (${reportQ.data?.woInvoicesCount})`,
+                          `${fmt(Number(reportQ.data?.woInvoicesTotal ?? 0))} د.ع`,
+                        ] as [string, string]]
+                      : []),
+                    // ش٤ (I14): عرابين قُبضت على هذه الوردية لطلباتٍ لم تُثبَّت بعد — نقدٌ في الدرج
+                    // بلا فاتورة؛ السطر يمنع قراءته «فائضاً مجهولاً» ولا يمنع الإغلاق.
+                    ...(Number(reportQ.data?.heldDepositsCount ?? 0) > 0
+                      ? [[
+                          `عرابين طلبات لم تُثبَّت (${reportQ.data?.heldDepositsCount})`,
+                          `${fmt(Number(reportQ.data?.heldDepositsTotal ?? 0))} د.ع`,
+                        ] as [string, string]]
+                      : []),
                     ["المبلغ عند بدء العمل", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
                     ...(showRecExpected
                       ? [["المبلغ المفترض وجوده في الدرج", `${fmt(recExpected)} د.ع`] as [string, string]]
@@ -1674,16 +2099,16 @@ export default function Reception() {
           )}
           <div className="flex items-center gap-1.5 border-s ps-2">
             <label className="text-[11px] font-semibold text-muted-foreground">فئة السعر:</label>
-            <select
+            <AppSelect
               value={effectiveTier}
-              onChange={(e) => { setTierOverride(e.target.value as Tier); clearCouponIfApplied(); }}
-              className="h-7 rounded-md border border-input bg-transparent px-1.5 text-[11px] font-bold"
+              onValueChange={(v) => { setTierOverride(v as Tier); clearCouponIfApplied(); }}
               aria-label="فئة السعر"
+              className="h-7 w-24 text-[11px] font-bold"
             >
               <option value="RETAIL">مفرد</option>
               <option value="WHOLESALE">جملة</option>
               <option value="GOVERNMENT">حكومي</option>
-            </select>
+            </AppSelect>
             {tierOverride && (
               <button
                 type="button"
@@ -1708,7 +2133,8 @@ export default function Reception() {
             onFocus={() => { setShowDrop(true); setWorkflowStep(2); }}
             onBlur={() => setTimeout(() => setShowDrop(false), 160)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && results[0]) {
+              // ش٠: searchSettled يمنع إضافة نتيجةٍ من استعلامٍ أقدم أثناء الكتابة/المسح السريع.
+              if (e.key === "Enter" && searchSettled && results[0]) {
                 e.preventDefault();
                 addRow(results[0]);
               }
@@ -1779,13 +2205,28 @@ export default function Reception() {
 
         <button
           type="button"
-          onClick={() => setShowOrdersQueue(true)}
+          onClick={() => setWorkshop("ORDERS")}
           className="relative inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-4 text-xs font-extrabold transition-colors hover:bg-muted/60"
         >
           <Truck aria-hidden className="size-4" /> طابور الطلبات والتوصيل
           {woReadyCount > 0 && (
             <Badge variant="secondary" className="ms-0.5 tabular-nums">{woReadyCount}</Badge>
           )}
+        </button>
+
+        {/* ش٦ — توصيل هذا الطلب: طلبٌ هاتفيّ بخطوة واحدة (سلة + توصيل + تثبيت ⇒ إسناد تلقائيّ). */}
+        <button
+          type="button"
+          onClick={() => setDeliveryDialogOpen(true)}
+          className={cn(
+            "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 px-4 text-xs font-extrabold transition-colors",
+            orderDelivery
+              ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+              : "hover:bg-muted/60",
+          )}
+        >
+          <Truck aria-hidden className="size-4" />
+          {orderDelivery ? `توصيل: ${orderDelivery.partyName}` : "توصيل هذا الطلب"}
         </button>
 
         {canReadReservations && (
@@ -1801,7 +2242,7 @@ export default function Reception() {
         {canReadStoreOrders && (
           <button
             type="button"
-            onClick={() => setShowStoreOrders(true)}
+            onClick={() => setWorkshop("STORE")}
             className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-4 text-xs font-extrabold transition-colors hover:bg-muted/60"
           >
             <Package aria-hidden className="size-4" /> طلبات الموقع
@@ -1840,6 +2281,30 @@ export default function Reception() {
               {printerReady && <Check aria-hidden className="size-3.5" strokeWidth={3} />}
             </button>
           )}
+          {/* ش١: شارة «آخر فاتورة» + نسخ الرقم — أكثر ما يُطلَب بعد إغلاق النافذة. */}
+          {lastSale && lastSale.invoiceNumbers[0] && (
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard?.writeText(lastSale.invoiceNumbers[0]);
+                notify.ok("نُسخ رقم الفاتورة", lastSale.invoiceNumbers[0]);
+              }}
+              title="آخر فاتورة — اضغط لنسخ الرقم (F9 لإعادة الطباعة)"
+              className="inline-flex h-9 items-center gap-1 rounded-lg border bg-card px-2.5 text-[11px] font-bold text-muted-foreground hover:bg-muted/60"
+              dir="ltr"
+            >
+              <Copy aria-hidden className="size-3" /> {lastSale.invoiceNumbers[0]}
+            </button>
+          )}
+          {/* ش١ (§٨.٦): سحبٌ نقديّ من الدرج — درج الاستقبال يتراكم فيه بيعٌ وعرابين وأجرةٌ أمانة. */}
+          <button
+            type="button"
+            onClick={() => setCashDropping(true)}
+            title="سحب نقدي من الدرج إلى الخزينة"
+            className="inline-flex h-9 items-center gap-1 rounded-lg border bg-card px-2.5 text-[11px] font-bold hover:bg-muted/60"
+          >
+            <HandCoins aria-hidden className="size-4" /> سحب نقدي
+          </button>
           <div className="flex items-center gap-1.5 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-1.5 text-xs font-bold text-violet-700">
             <span className="size-2 animate-pulse rounded-full bg-violet-500" />
             العمل مفتوح #{shift.id}
@@ -1858,540 +2323,179 @@ export default function Reception() {
           )}
         </div>
         </div>
+        {/* ش٢ (§٨.٢): شريط الطلبات المحفوظة — يدخل سُلَّم الاحتواء: تحت compactHeader ينكمش
+            إلى زرٍّ منسدلٍ واحد (V18) فلا يموّل نفسه من لوحة الدفع. */}
+        <DraftStrip
+          branchId={branchId}
+          meUserId={Number(me.data?.id ?? 0)}
+          activeDraftId={activeDraft?.id ?? null}
+          offline={offline}
+          compact={compactHeader}
+          canSave={cart.length > 0}
+          onSave={saveDraft}
+          onResume={(id) => void resumeDraft(id)}
+          onPrintTicket={(id) => void printDraftTicketById(id)}
+        />
       </div>
 
       {/* ─── الجسم: سلّة (يسار) + لوحة الدفع (يمين) ─── */}
       <div className="flex min-h-0 flex-1 flex-row-reverse gap-3 p-3">
-        {/* ─ السلّة ─ */}
+        {/* ─ عمود العمل: تبويبات الورش تركب رأس السلة (§٨.١ — صفر تكلفة عمودية) ─ */}
         <div ref={cartSectionRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
-          <div className="flex h-12 flex-shrink-0 items-center justify-between gap-2 border-b bg-muted/40 px-3">
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 text-sm font-extrabold">
-                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٣</span>
-                <ShoppingCart aria-hidden className="size-4" /> جدول سلة الطلب
-              </span>
-              {cart.length > 0 && (
-                <Badge variant="default" className="text-[11px]">
-                  {cart.length} بند · {cartCount} وحدة
-                </Badge>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {cart.length > 0 && (
-                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
-                  تفريغ
-                </Button>
-              )}
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto">
-            {cart.length === 0 ? (
-              <div className="grid h-full place-items-center px-4 py-10 text-center text-muted-foreground">
-                <div>
-                  <ShoppingCart aria-hidden className="mx-auto size-10 opacity-40" />
-                  <div className="mt-2 text-sm font-bold">السلة فارغة</div>
-                  <div className="mt-1 text-xs">امسح الباركود، ابحث عن منتج، أو أضف خدمة/أمر شغل</div>
-                </div>
-              </div>
-            ) : (
-              <table className="w-full border-collapse text-sm">
-                <thead className="sticky top-0 bg-muted/50 text-[11px] text-muted-foreground">
-                  <tr>
-                    <th className="w-8 px-2 py-2 text-center font-bold">#</th>
-                    <th className="px-2 py-2 text-right font-bold">المنتج</th>
-                    <th className="w-14 px-1 py-2 text-center font-bold">الوحدة</th>
-                    <th className="w-24 px-1 py-2 text-center font-bold">السعر</th>
-                    <th className="w-16 px-1 py-2 text-center font-bold">المخزون</th>
-                    <th className="w-32 px-1 py-2 text-center font-bold">الكمية</th>
-                    <th className="w-24 px-1 py-2 text-center font-bold">الإجمالي</th>
-                    <th className="w-8 px-1 py-2" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {(() => {
-                    const stockState = buildStockState(cart);
-                    return cart.map((l, idx) => {
-                    const isCustom = isCustomKind(l);
-                    const total = isCustom ? customLineGrand(l) : lineTotal(l);
-                    const selected = selKey === l.key;
-                    const stock = stockState(l);
-                    return (
-                      <tr
-                        key={l.key}
-                        onClick={() => {
-                          setSelKey(l.key);
-                          if (!isCustom) setNumMode((m) => (m === "PAY" ? "QTY" : m));
-                        }}
-                        className={cn(
-                          "cursor-pointer border-b align-top",
-                          isCustom
-                            ? "border-s-[3px] border-s-violet-500"
-                            : stock.isOut
-                              ? "border-s-[3px] border-s-destructive bg-destructive/5"
-                              : stock.isShort
-                                ? "border-s-[3px] border-s-amber-500 bg-amber-50"
-                                : "border-s-[3px] border-s-emerald-500",
-                          selected && "bg-primary/5",
-                        )}
-                      >
-                        <td className="px-2 py-2.5 text-center text-xs font-bold text-muted-foreground">{idx + 1}</td>
-                        <td className="px-2 py-2.5">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span
-                              className={cn(
-                                "rounded-full px-1.5 py-0.5 text-[10px] font-bold",
-                                isCustom ? "bg-violet-100 text-violet-700" : "bg-emerald-100 text-emerald-700",
-                              )}
-                            >
-                              {isCustom ? "تخصيص" : "جاهز"}
-                            </span>
-                            <span className="text-lg font-extrabold">
-                              {isCustom ? l.custom!.title : l.row.productName}
-                            </span>
-                            <span className="text-xs text-muted-foreground" dir="ltr">{l.row.sku}</span>
-                            {!isCustom && stock.isOut && (
-                              <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">
-                                نافذ — لا مخزون
-                              </span>
-                            )}
-                            {!isCustom && stock.isShort && (
-                              <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold text-amber-50">
-                                {stock.availInUnit === 0
-                                  ? "لا يكفي لوحدة"
-                                  : `المتاح ${stock.availInUnit} فقط`}
-                              </span>
-                            )}
-                          </div>
-                          {isCustom && (
-                            <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50/50 p-2.5">
-                              <div className="flex flex-wrap gap-1.5">
-                                {l.custom!.size && (
-                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">
-                                    <Ruler aria-hidden className="size-3" /> {l.custom!.size}
-                                  </span>
-                                )}
-                                {l.custom!.material && (
-                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">
-                                    <Layers aria-hidden className="size-3" /> {l.custom!.material}
-                                  </span>
-                                )}
-                                {l.custom!.dueDate && (
-                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold" dir="ltr">
-                                    {l.custom!.dueDate}
-                                  </span>
-                                )}
-                                {l.custom!.hasDelivery && (
-                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">
-                                    <Truck aria-hidden className="size-3" /> توصيل
-                                    {Number(l.custom!.deliveryCost) > 0 && (
-                                      <span dir="ltr">+{fmt(l.custom!.deliveryCost)}</span>
-                                    )}
-                                  </span>
-                                )}
-                                <span
-                                  className={cn(
-                                    "rounded-md border px-2 py-0.5 text-[11px] font-bold",
-                                    l.custom!.priority === "URGENT" && "bg-destructive/10 text-destructive border-destructive/30",
-                                    l.custom!.priority === "NORMAL" && "bg-[var(--sem-info)]/10 text-[var(--sem-info)] border-[var(--sem-info)]/30",
-                                    l.custom!.priority === "LOW" && "bg-emerald-500/10 text-emerald-700 border-emerald-500/30",
-                                  )}
-                                >
-                                  {l.custom!.priority === "URGENT" ? "عاجل" : l.custom!.priority === "NORMAL" ? "عادي" : "منخفض"}
-                                </span>
-                              </div>
-                              {l.custom!.customizationText && (
-                                <div className="mt-2 line-clamp-2 inline-flex items-start gap-1 text-[11px] leading-relaxed text-muted-foreground">
-                                  <FileText aria-hidden className="size-3 mt-0.5 flex-shrink-0" />
-                                  <span>{l.custom!.customizationText}</span>
-                                </div>
-                              )}
-                              <div className="mt-2 flex items-center gap-2">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-7 text-[11px] inline-flex items-center gap-1"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setShowCustomization({ row: l.row, editingKey: l.key });
-                                  }}
-                                >
-                                  <Pencil aria-hidden className="size-3" /> تعديل التخصيص
-                                </Button>
-                                <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-[11px] font-bold text-muted-foreground">
-                                  <ImageIcon aria-hidden className="size-3" /> صور: {l.custom!.designImages.length}
-                                </span>
-                              </div>
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-1 py-2.5 text-center text-xs text-muted-foreground">{l.row.unitName}</td>
-                        <td className="px-1 py-2.5 text-center text-xs tabular-nums" dir="ltr">
-                          {fmt(effectivePrice(l))}
-                          {l.disc ? <div className="text-[10px] text-amber-600">−{l.disc}%</div> : null}
-                        </td>
-                        <td
-                          className={cn(
-                            "px-1 py-2.5 text-center text-xs font-bold tabular-nums",
-                            isCustom ? "text-muted-foreground" : stock.isOut ? "text-destructive" : stock.isShort ? "text-amber-600" : "text-muted-foreground",
-                          )}
-                          dir="ltr"
-                        >
-                          {isCustom ? "—" : l.row.isService ? "∞" : stock.availInUnit}
-                        </td>
-                        <td className="px-1 py-1.5">
-                          <div className="flex items-center justify-center gap-1">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                changeQty(l.key, -1);
-                              }}
-                              className="grid size-8 place-items-center rounded-md border bg-card hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
-                              disabled={isCustom && l.qty <= 1}
-                              title={isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية منتج مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
-                              aria-label="تقليل الكمية"
-                            >
-                              <Minus aria-hidden className="size-3.5" />
-                            </button>
-                            <span className="min-w-[28px] text-center text-sm font-extrabold tabular-nums" dir="ltr">{l.qty}</span>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                changeQty(l.key, +1);
-                              }}
-                              className="grid size-8 place-items-center rounded-md border bg-card hover:bg-muted"
-                              aria-label="زيادة الكمية"
-                            >
-                              <Plus aria-hidden className="size-3.5" />
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-1 py-2.5 text-center text-sm font-extrabold tabular-nums" dir="ltr">{fmt(total)}</td>
-                        <td className="px-1 py-2.5 text-center">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              removeRow(l.key);
-                            }}
-                            className="text-muted-foreground hover:text-destructive"
-                            aria-label="حذف المنتج"
-                          >
-                            <Trash2 aria-hidden className="size-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  });
-                  })()}
-                </tbody>
-              </table>
+          <div className="flex h-12 flex-shrink-0 items-center gap-1 border-b bg-muted/40 px-2" role="tablist" aria-label="ورش المحطة">
+            <WsTab active={workshop === "CART"} onClick={() => setWorkshop("CART")} Icon={ShoppingCart}
+              label={cart.length > 0 ? `السلة (${cart.length})` : "السلة"} />
+            <WsTab active={workshop === "INVOICES"} onClick={() => setWorkshop("INVOICES")} Icon={ReceiptIcon} label="الفواتير" />
+            <WsTab active={workshop === "ORDERS"} onClick={() => setWorkshop("ORDERS")} Icon={Truck} label="الطلبات" badge={woReadyCount} />
+            {canReadStoreOrders && (
+              <WsTab active={workshop === "STORE"} onClick={() => setWorkshop("STORE")} Icon={Package} label="طلبات الموقع" />
             )}
+            <div className="ms-auto flex items-center gap-2">
+              {workshop === "CART" && cart.length > 0 && (
+                <>
+                  <span className="hidden text-[11px] text-muted-foreground sm:inline">{cartCount} وحدة</span>
+                  <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
+                    تفريغ
+                  </Button>
+                </>
+              )}
+            </div>
           </div>
 
-          {cart.length > 0 && (
-            <div className="flex flex-shrink-0 items-center justify-between border-t bg-muted/40 px-4 py-2.5">
-              <span className="text-xs text-muted-foreground">{cart.length} منتج · {cartCount} قطعة</span>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-xs text-muted-foreground">المجموع:</span>
-                <span className="text-2xl font-black tabular-nums" dir="ltr">{fmt(grandTotal)}</span>
-                <span className="text-xs text-muted-foreground">د.ع</span>
-              </div>
+          {workshop === "INVOICES" ? (
+            <ReceptionInvoiceQueue
+              branchId={branchId}
+              currentShiftId={shift ? Number(shift.id) : null}
+              branchName={branchName}
+              parties={(partiesQ.data ?? []) as DispatchParty[]}
+              canFulfill={me.data?.role === "cashier" || isElevatedRole}
+              isManager={isElevatedRole}
+            />
+          ) : workshop === "ORDERS" ? (
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              <ReceptionOrderQueue branchId={branchId} onClose={() => setWorkshop("CART")} />
             </div>
+          ) : workshop === "STORE" ? (
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              <OrderFulfillment />
+            </div>
+          ) : (
+            <CartTable
+              cart={cart}
+              selKey={selKey}
+              onSelect={setSelKey}
+              discountFor={discountFor}
+              setDiscountFor={setDiscountFor}
+              isElevated={isElevatedRole}
+              onApplyDiscount={applyLineDiscount}
+              changeQty={changeQty}
+              setQty={setQty}
+              removeRow={removeRow}
+              onEditCustomization={(row, editingKey) => setShowCustomization({ row, editingKey })}
+              grandTotal={grandTotal}
+              cartCount={cartCount}
+            />
           )}
         </div>
 
         {/* ─ لوحة الدفع ─ */}
-        <div
+        <PaymentPanel
           ref={paymentSectionRef}
-          tabIndex={-1}
-          onFocusCapture={() => setWorkflowStep(4)}
-          className="flex w-[408px] flex-shrink-0 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30 [container-type:size]"
-        >
-          {/* رأس الإجمالي + التقسيم الهجين — ثابتٌ دائماً، خارج منطقة التمرير. */}
-          <div className={cn("flex-shrink-0 border-b bg-muted/40", payUltra ? "px-3 py-1.5" : "p-3")}>
-            {!payDense && (
-              <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-extrabold">
-                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٥</span>
-                المبلغ والدفع
-              </div>
-            )}
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-muted-foreground">إجمالي الفاتورة</span>
-              <div className="flex items-baseline gap-1">
-                <span className="text-[clamp(22px,3.8cqh,30px)] font-black leading-tight tabular-nums tracking-tight" dir="ltr">{fmt(grandTotal)}</span>
-                <span className="text-xs text-muted-foreground">د.ع</span>
-              </div>
-            </div>
-            {/* أجرة التوصيل المقبوضة أمانةً: خارج الفاتورة، لكنها نقدٌ يُستلَم فعلاً الآن.
-                عرضها منفصلةً يمنع الخلط الذي كان يجعل الموظّف يظنّها جزءاً من البيع. */}
-            {heldDelivery > 0 && (
-              <div className="mt-1 space-y-0.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-1">
-                <div className="flex items-center justify-between text-[11px] font-bold text-[var(--sem-warn)]">
-                  <span className="inline-flex items-center gap-1"><Truck aria-hidden className="size-3" /> أجرة توصيل أمانةً للمندوب</span>
-                  <span className="tabular-nums" dir="ltr">{fmt(heldDelivery)}</span>
-                </div>
-                <div className="flex items-center justify-between text-[11px] font-extrabold">
-                  <span>المُستلَم نقداً الآن</span>
-                  <span className="tabular-nums" dir="ltr">{fmt(cashDueNow)} د.ع</span>
-                </div>
-              </div>
-            )}
-            {/* بطاقتا التقسيم ثانويّتان (الرقمان يظهران في السلة نفسها) ⇒ تُحذفان في أضيق درجة. */}
-            {!payUltra && (
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-2">
-                  <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700">
-                    <ShoppingCart aria-hidden className="size-3" /> منتجات جاهزة
-                  </div>
-                  <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumDirect)}</div>
-                </div>
-                <div className="rounded-lg border border-violet-500/25 bg-violet-500/10 p-2">
-                  <div className="inline-flex items-center gap-1 text-[10px] font-bold text-violet-700">
-                    <Printer aria-hidden className="size-3" /> خدمات وطباعة
-                  </div>
-                  <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumCustom)}</div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* منطقة الإدخال — تتّسع بلا تمرير: الاحتواء المتكيّف أعلاه حذف الثانويّ بالفعل، ولوحة
-              الأرقام تمتصّ الفائض بوحدات الحاوية. التمرير لا يُفتح إلا تحت ٤٥٢px (لا يُبلَغ عملياً). */}
-          <div className={cn("flex min-h-0 flex-1 flex-col", payOverflowGuard ? "overflow-y-auto overscroll-contain" : "overflow-hidden")}>
-          {/* شاشة المبلغ */}
-          <div className={cn("flex-shrink-0 px-3", payUltra ? "pb-0.5 pt-1" : "pb-1 pt-2")}>
-            <div className={cn(
-              "flex items-center justify-between rounded-lg border-[1.5px] bg-muted/40 px-3",
-              payUltra ? "min-h-[36px] py-1" : "min-h-[44px] py-1.5",
-            )}>
-              <span className="text-xs text-muted-foreground">
-                {numMode === "QTY" && "الكمية للسطر المحدّد"}
-                {numMode === "DISC" && "خصم % للسطر المحدّد"}
-                {numMode === "PAY" && "المبلغ المدفوع"}
-              </span>
-              <span
-                className={cn(
-                  "font-black tabular-nums",
-                  payUltra ? "text-xl" : "text-2xl",
-                  numMode === "PAY" && isOwing && "text-amber-600",
-                  numMode === "PAY" && isChange && "text-emerald-600",
-                )}
-                dir="ltr"
-              >
-                {numMode === "QTY" ? (cart.find((c) => c.key === selKey)?.qty ?? "—") : numMode === "DISC" ? `${cart.find((c) => c.key === selKey)?.disc ?? 0}%` : payInput || "0"}
-              </span>
-            </div>
-          </div>
-
-          {/* مبالغ سريعة — تُحذف عند ضيق الارتفاع (لوحة الأرقام تُغنِي عنها؛ حذف الثانويّ لا تصغير الأساسيّ). */}
-          {!payDense && (
-          <div className="flex flex-shrink-0 flex-wrap gap-1.5 px-3 py-1">
-            {QUICK_AMTS.map((v) => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => setQuickAmt(v)}
-                className="h-7 rounded-md border-[1.5px] bg-card px-2 text-[11px] font-bold tabular-nums hover:bg-muted"
-                dir="ltr"
-              >
-                {v.toLocaleString("en-US")}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={payAll}
-              className="h-7 rounded-md border-[1.5px] border-primary bg-card px-2 text-[11px] font-extrabold text-primary hover:bg-primary/10"
-            >
-              = الكل
-            </button>
-          </div>
-          )}
-
-          {/* لوحة الأرقام — تمتصّ الفائض: صفوفها `1fr` داخل كتلةٍ `flex-1` فتكبر بالمساحة المتاحة
-              وتنكمش معها بلا قصٍّ ولا تمرير. الحدّ الأدنى 44px (هدف اللمس المعياريّ)، ولا ينزل إلى
-              40px إلا في الدرجة الأضيق بعد حذف كل ثانويّ. */}
-          <div className="min-h-0 flex-1 px-3 py-1">
-            <div className={cn("grid h-full grid-cols-[auto_1fr_1fr_1fr] grid-rows-4 gap-1.5", payUltra ? "[--numh:40px]" : "[--numh:44px]")} dir="rtl">
-              <button onClick={() => setNumMode("QTY")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "QTY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>الكمية</button>
-              <NumKey k="3" onPress={numPress} />
-              <NumKey k="2" onPress={numPress} />
-              <NumKey k="1" onPress={numPress} />
-
-              <button onClick={() => setNumMode("DISC")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] text-sm font-extrabold", numMode === "DISC" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>%</button>
-              <NumKey k="6" onPress={numPress} />
-              <NumKey k="5" onPress={numPress} />
-              <NumKey k="4" onPress={numPress} />
-
-              <button onClick={() => setNumMode("PAY")} className={cn(NUM_H, "min-w-[60px] rounded-lg border-[1.5px] text-xs font-extrabold", numMode === "PAY" ? "border-amber-400 bg-amber-100 text-amber-900" : "bg-card hover:bg-muted")}>المبلغ</button>
-              <NumKey k="9" onPress={numPress} />
-              <NumKey k="8" onPress={numPress} />
-              <NumKey k="7" onPress={numPress} />
-
-              <button onClick={() => numPress("DEL")} className={cn(NUM_H, "grid place-items-center rounded-lg border-[1.5px] bg-red-50 text-red-700 hover:bg-red-100")} aria-label="حذف">
-                <X aria-hidden className="size-4" />
-              </button>
-              <NumKey k="." onPress={numPress} />
-              <NumKey k="0" onPress={numPress} />
-              <button onClick={() => numPress("C")} className={cn(NUM_H, "rounded-lg border-[1.5px] bg-card text-xs font-extrabold text-muted-foreground hover:bg-muted")}>C</button>
-            </div>
-          </div>
-
-          {/* طريقة الدفع — عند الضيق يُحذف العنوان وتُعاد الأيقونة والنصّ إلى صفٍّ واحد داخل
-              الزرّ (تركيبٌ متكيّف) بدل تصغير الزرّ نفسه: يبقى ≥44px هدفَ لمسٍ سليماً. */}
-          <div className={cn("flex-shrink-0 px-3", payUltra ? "py-0.5" : "py-1.5")}>
-            {!payDense && <div className="mb-1 text-[11px] font-bold text-muted-foreground">طريقة الدفع</div>}
-            <div className="flex gap-1.5">
-              {(
-                [
-                  { v: "CASH", label: "نقدي", Icon: Banknote },
-                  { v: "CARD", label: "بطاقة", Icon: CreditCard },
-                  { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight },
-                  { v: "WALLET", label: "محفظة", Icon: Wallet },
-                ] as const
-              ).map((p) => (
-                <button
-                  key={p.v}
-                  onClick={() => setMethod(p.v)}
-                  className={cn(
-                    "flex flex-1 items-center justify-center rounded-lg border-2 text-xs font-extrabold transition-colors",
-                    payUltra
-                      ? "min-h-[44px] flex-row gap-1 py-1"
-                      : "min-h-[clamp(46px,6.6cqh,60px)] flex-col gap-0.5 py-2",
-                    method === p.v
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "bg-card hover:bg-muted",
-                  )}
-                >
-                  <p.Icon aria-hidden className={payUltra ? "size-4" : "size-5"} />
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            {needPaymentRef && (
-              <Input
-                value={paymentReference}
-                onChange={(e) => setPaymentReference(e.target.value)}
-                placeholder={
-                  method === "CARD" ? "أدخل رقم عملية البطاقة"
-                  : method === "WALLET" ? "أدخل رقم عملية المحفظة"
-                  : "أدخل رقم التحويل"
-                }
-                className="mt-2 h-9 text-xs"
-                dir="ltr"
-              />
-            )}
-          </div>
-
-          {/* كوبون خصم — نادر الاستعمال ⇒ يُطوى خلف زرٍّ عند الضيق، ويبقى ظاهراً دائماً وهو
-              مُطبَّق (لا يُخفى خصمٌ سارٍ) أو حين يطلبه الموظّف صراحةً. */}
-          {payDense && !couponCode && !couponOpen ? (
-            <div className="flex-shrink-0 px-3 py-1">
-              <button
-                type="button"
-                onClick={() => setCouponOpen(true)}
-                className="inline-flex h-8 items-center gap-1 rounded-md border-[1.5px] bg-card px-2 text-[11px] font-bold text-muted-foreground hover:bg-muted"
-              >
-                <Ticket aria-hidden className="size-3.5" /> كوبون خصم
-              </button>
-            </div>
-          ) : (
-          <div className="flex-shrink-0 px-3 py-1.5">
-            <div className="mb-1 flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
-              <Ticket aria-hidden className="size-3.5" /> كوبون خصم
-            </div>
-            {couponCode ? (
-              <div className="flex items-center justify-between rounded-md border border-money-positive/40 bg-money-positive/10 px-2 py-1.5 text-xs font-bold text-money-positive">
-                <span>{couponLabel ?? couponCode}</span>
-                <button type="button" onClick={clearCoupon} className="text-[11px] font-semibold underline">إزالة</button>
-              </div>
-            ) : (
-              <div className="flex gap-1.5">
-                <Input
-                  value={couponInput}
-                  onChange={(e) => setCouponInput(e.target.value)}
-                  placeholder="رمز الكوبون"
-                  className="h-8 flex-1 text-xs"
-                  dir="ltr"
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyCoupon(); } }}
-                />
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-8"
-                  disabled={!couponInput.trim() || couponPreview.isPending}
-                  onClick={applyCoupon}
-                >
-                  {couponPreview.isPending ? "…" : "تطبيق"}
-                </Button>
-              </div>
-            )}
-          </div>
-          )}
-
-          {/* مؤشّر فكّة/متبقّي */}
-          <div className="flex flex-shrink-0 items-center justify-between border-t px-3 py-1.5 text-xs">
-            {isChange && paid > 0 && (
-              <>
-                <span className="font-semibold text-emerald-700">الفكّة:</span>
-                <span className="text-xl font-black tabular-nums text-emerald-700" dir="ltr">
-                  {fmt(change)} <span className="text-[10px] font-medium">د.ع</span>
-                </span>
-              </>
-            )}
-            {isOwing && (
-              <>
-                <span className="font-semibold text-amber-700">متبقّي:</span>
-                <span className="text-xl font-black tabular-nums text-amber-700" dir="ltr">
-                  {fmt(remaining)} <span className="text-[10px] font-medium">د.ع</span>
-                </span>
-              </>
-            )}
-            {!isChange && !isOwing && (
-              <span className="text-muted-foreground">المتوقّع الآن: <span className="font-bold tabular-nums" dir="ltr">{fmt(expectedNow)} د.ع</span></span>
-            )}
-          </div>
-          </div>{/* ← نهاية منطقة الإدخال */}
-
-          {/* منطقة الفعل — لا تنكمش أبداً: زرّا الدفع يبقيان ظاهرَين وقابلَين للنقر
-              مهما بلغ الزوم أو ضاق الارتفاع (هذا ما كان يختفي قبل الإصلاح). */}
-          <div className={cn("flex-shrink-0 space-y-1.5 px-3", payUltra ? "pb-2 pt-0.5" : "pb-3 pt-1")}>
-            <button
-              type="button"
-              disabled={cart.length === 0 || submitting || !shift}
-              onClick={() => void handleSubmit({ quickFullPay: true })}
-              className="inline-flex h-[clamp(44px,6cqh,52px)] w-full items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-sm font-black text-white shadow-md transition-colors hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
-            >
-              <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
-            </button>
-            <button
-              type="button"
-              disabled={cart.length === 0 || submitting || !shift}
-              onClick={() => void handleSubmit({ quickFullPay: false })}
-              className="inline-flex h-[clamp(48px,6.5cqh,56px)] w-full items-center justify-center gap-1.5 rounded-lg bg-primary text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
-            >
-              {submitting ? (
-                "جارٍ الإرسال…"
-              ) : sumCustom > 0 && sumDirect > 0 ? (
-                <><Printer aria-hidden className="size-4" /> تثبيت البيع وإرسال الطباعة</>
-              ) : sumCustom > 0 ? (
-                <><Printer aria-hidden className="size-4" /> إرسال للمطبعة</>
-              ) : (
-                <><Check aria-hidden className="size-4" /> إتمام الطلب وطباعة</>
-              )}
-            </button>
-            {!payDense && (
-              <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F2 بحث</div>
-            )}
-          </div>
-        </div>
+          onFocusStep={() => setWorkflowStep(4)}
+          payInput={payInput}
+          setPayInput={setPayInput}
+          method={method}
+          setMethod={setMethod}
+          paymentReference={paymentReference}
+          setPaymentReference={setPaymentReference}
+          needPaymentRef={needPaymentRef}
+          grandTotal={grandTotal}
+          expectedNow={expectedNow}
+          cashRoundingDelta={cashRoundingDelta}
+          sumDirect={sumDirect}
+          sumCustom={sumCustom}
+          heldDelivery={heldDelivery}
+          cashDueNow={cashDueNow}
+          heldDeposit={round2(heldD).toNumber()}
+          paid={paid}
+          change={change}
+          remaining={remaining}
+          isChange={isChange}
+          isOwing={isOwing}
+          hasCustom={hasCustom}
+          depositMenuOpen={depositMenuOpen}
+          setDepositMenuOpen={setDepositMenuOpen}
+          depositOptions={depositOptions}
+          numPress={numPress}
+          payAll={payAll}
+          setQuickAmt={setQuickAmt}
+          couponCode={couponCode}
+          couponLabel={couponLabel}
+          couponInput={couponInput}
+          setCouponInput={setCouponInput}
+          couponOpen={couponOpen}
+          setCouponOpen={setCouponOpen}
+          applyCoupon={applyCoupon}
+          clearCoupon={clearCoupon}
+          couponPending={couponPreview.isPending}
+          submitting={submitting}
+          cartEmpty={cart.length === 0}
+          hasShift={!!shift}
+          onSubmit={(opts) => void handleSubmit(opts)}
+        />
       </div>
 
       {/* شارة المزامنة — تُركَّب في كلّ شاشات الكاشير: تعرض حالة الاتصال وطابور الالتقاط،
           وتُفرّغ **كلّ** الأنواع (تجزئة/طباعة/استقبال) لا نوع هذه الشاشة وحده. */}
       <OfflineSyncChip userRole={me.data?.role} />
+
+      {/* ─── ش٤: حوار قبض العربون (على الطلب المحفوظ النشط) ─── */}
+      {depositOpen && activeDraft && (
+        <DepositDialog
+          draftId={activeDraft.id}
+          draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`}
+          contactName={customer.name?.trim() || null}
+          orderTotal={round2(grandTotalD).toFixed(2)}
+          heldTotal={draftHeld}
+          suggestedAmount={paidD.gt(0) ? round2(paidD).toFixed(2) : round2(sumCustomD.times(0.25)).toFixed(0)}
+          currentShiftId={shift?.id ?? null}
+          branchName={branchName}
+          cashierName={me.data?.name ?? null}
+          onClose={() => setDepositOpen(false)}
+          onCollected={(total) => {
+            setDraftHeld(total);
+            setPayInput("");
+            void utils.reception.draftList.invalidate();
+          }}
+        />
+      )}
+
+      {/* ─── ش٤: سجلّ عرابين الطلب النشط + الردّ ─── */}
+      {paymentsOpen && activeDraft && (
+        <DraftPaymentsDialog
+          draftId={activeDraft.id}
+          draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`}
+          branchId={branchId}
+          onClose={() => setPaymentsOpen(false)}
+          onChanged={(heldNet) => {
+            setDraftHeld(heldNet);
+            void utils.reception.draftList.invalidate();
+          }}
+        />
+      )}
+
+      {/* ─── ش٦: كتلة توصيل الطلب (إسنادٌ تلقائيّ بعد التثبيت) ─── */}
+      {deliveryDialogOpen && (
+        <OrderDeliveryDialog
+          parties={(partiesQ.data ?? []) as DispatchParty[]}
+          initial={orderDelivery}
+          defaultRecipientName={customer.name || null}
+          defaultRecipientPhone={customer.phone || null}
+          onSave={setOrderDelivery}
+          onClear={() => setOrderDelivery(null)}
+          onClose={() => setDeliveryDialogOpen(false)}
+        />
+      )}
 
       {/* ─── نافذة التخصيص ─── */}
       {showCustomization && (
@@ -2448,23 +2552,37 @@ export default function Reception() {
           onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }}
         />
       )}
+
+      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام: الفكّة بخطٍّ ضخم + المستندات + إعادة الطباعة. */}
+      {showReceiptOverlay && lastSale && (
+        <ReceiptOverlay
+          lastSale={lastSale}
+          onReprint={() => reprintLastRef.current?.()}
+          onClose={() => setShowReceiptOverlay(false)}
+        />
+      )}
+
+      {/* م٦ — اعتماد المدير للخصم >١٠٪ (استباقيّ): يُتحقَّق خادمياً لحظة الالتزام. */}
+      {approvalAsk && (
+        <ManagerApprovalDialog
+          pct={approvalAsk.pct}
+          onCancel={() => setApprovalAsk(null)}
+          onApprove={(email, password) => {
+            mgrCredsRef.current = { email, password };
+            setLineDiscount(approvalAsk.lineKey, approvalAsk.pct);
+            setApprovalAsk(null);
+            notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب");
+          }}
+        />
+      )}
+
+      {cashDropping && shift && (
+        <CashDropDialog
+          C={RECEPTION_TOKENS}
+          shiftId={shift.id}
+          onClose={() => setCashDropping(false)}
+        />
+      )}
     </div>
-  );
-}
-
-/** ارتفاع مفتاح اللوحة: يملأ صفّ الشبكة (h-full) بحدٍّ أدنى هو هدف اللمس المعياريّ الممرَّر
- *  بالمتغيّر `--numh` من الحاوية (44px، و40px في الدرجة الأضيق) ⇒ يكبر بالمساحة ولا يُقصّ. */
-const NUM_H = "h-full min-h-[var(--numh,44px)]";
-
-function NumKey({ k, onPress }: { k: string; onPress: (k: string) => void }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onPress(k)}
-      className={cn(NUM_H, "rounded-lg border-[1.5px] bg-muted/40 text-lg font-extrabold tabular-nums hover:bg-muted")}
-      dir="ltr"
-    >
-      {k}
-    </button>
   );
 }

@@ -2,7 +2,9 @@
 import type { PriceTier } from "../pricing";
 
 // تصدير داخلي للحزمة فقط (يستهلكه create/payment) — لا يُعاد تصديره من البرميل saleService.ts.
-export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+// ش٥: TELECOM (رصيد زين) — يقبله receipts.paymentMethod منذ 0154؛ سطوح البيع العادية لا
+// تعرضه (مقصورٌ على محطة الاستقبال خلف ضوابط reception/telecom.ts).
+export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
 
 export interface SaleLineInput {
   variantId: number;
@@ -65,6 +67,12 @@ export interface CreateSaleInput {
   deliveryWaivedAmount?: string | null;
   taxRatePercent?: string | null;
   payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
+  /** ش٤ (§٧.٢) — مالٌ قُبض **سلفاً** على هذه السلة (عرابين مسوّدة عبر orderPayments):
+   *  يدخل paidAmount والذمّة، و**لا يُنشأ له إيصالٌ ثانٍ أبداً** (الإيصال الجديد للجزء
+   *  المُسلَّم الآن وحده — I5). receiptIds إيصالاتٌ قائمة تُختم invoiceId فقط إن مُرّرت
+   *  (نمط deliver.ts — append-only)؛ مسار التثبيت يمرّرها فارغةً ويختم أحاديّ الهدف
+   *  في allocateAtCommit حيث تُعرف وحدة الهدف. */
+  preCollected?: { amount: string; receiptIds: number[] } | null;
   clientRequestId?: string | null;
   /** معرّف محطة/جهاز نقطة البيع للتدقيق (ليس سراً ولا رمز مصادقة). */
   deviceId?: string | null;
@@ -83,6 +91,24 @@ export interface CreateSaleInput {
   dueDate?: string | null;
   /** تقريب نقدي عراقي للبيع النقدي الكامل (يضبطه POS): الخادم يقرّب الإجمالي ويُسجّل الفرق ADJUST. */
   cashRoundIQD?: boolean;
+  /** ش٦ — تقريب السلّة المختلطة (يضبطه checkoutReception حصراً، ليس على أيّ راوتر): إجماليٌّ
+   *  فعّالٌ صريح يحمل فرقَ تقريبِ السلّة **كلّها** على هذه الفاتورة وحدها (قيد ADJUST بالفرق).
+   *  محروس: نقديّ فقط، |الفرق| < ٢٥٠ (نصف خطوة التقريب ١٢٥ عملياً)، والناتج موجب. */
+  cashRoundingOverride?: string | null;
+  /**
+   * ش٧ — الدفع عند الاستلام (COD) بعهدة مندوبٍ تُنشَأ في **نفس المعاملة** (يضبطه
+   * `checkoutReceptionInTx` حصراً، ولا يقبله أيّ راوتر — نمط `offlineCapture`).
+   *
+   * قرار المالك (٦/٨/٢٦): «لا تُحتسَب الفاتورة التي فيها توصيل ولديها مندوب على الكاشير
+   * والدرج — الدرج فقط ما قُبض عربوناً نقدياً أو كاشاً من الفواتير.» فالمتبقّي على فاتورة
+   * التوصيل **ليس ذمّةً على الزبون** (قد يكون عابراً بلا سجلّ) ولا نقداً في الدرج، بل
+   * **عهدةٌ على المندوب** تُرفع بقيد DELIVERY_DISPATCH فور إنشاء الفاتورة.
+   *
+   * لذلك يرفع هذا العلم حارسَ «البيع الآجل يتطلب عميلاً» **وحده**: حدّ الائتمان يبقى نافذاً
+   * على العميل المسجَّل، والمسؤولية الماليّة تنتقل للمندوب لا تختفي. مشروطٌ بنيوياً: الخدمة
+   * التي ترفعه هي نفسها التي تُنشئ الإرسالية داخل المعاملة — فلا تُنشأ فاتورةٌ بلا حاملٍ لمالها.
+   */
+  codDispatchPending?: boolean;
   /** SALES-01/02: موافقة على البيع بأقل من التكلفة (سعر override أو خصم يَنزل بالبند/الفاتورة تحت COGS).
    *  يضبطها الراوتر: مدير/أدمن لهما السلطة ذاتياً، والكاشير يحتاج managerApproval مُتحقَّقاً. */
   priceOverrideApproved?: boolean;

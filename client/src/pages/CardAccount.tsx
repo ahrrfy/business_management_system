@@ -28,6 +28,7 @@ import {
   ScrollText,
   Scale,
   Search,
+  Smartphone,
   AlertTriangle,
   CheckCircle2,
 } from "lucide-react";
@@ -40,6 +41,8 @@ const SOURCE_AR: Record<string, string> = {
   INVOICE_PAYMENT: "فاتورة/دفعة",
   VOUCHER: "سند",
   WORK_ORDER: "أمر شغل",
+  // ش٤: عربون طلبٍ محفوظ (بطاقةً) — قبل التثبيت؛ بعده يصير الإيصال INVOICE_PAYMENT أو يبقى هنا لأوامر الشغل.
+  DRAFT_DEPOSIT: "عربون طلب محفوظ",
   OTHER: "أخرى",
 };
 
@@ -58,7 +61,14 @@ export default function CardAccount() {
   const [branchId, setBranchId] = useState<number | "">("");
   const effBranch = branchId ? Number(branchId) : undefined;
 
-  const summary = trpc.cardAccount.summary.useQuery({ branchId: effBranch });
+  // ش٥ — تبويب الحساب: بطاقة/بنك (افتراضيّ) أو رصيد زين. نواة خدمةٍ واحدة معمَّمة بمعامل.
+  const [accountKind, setAccountKind] = useState<"CARD" | "TELECOM">("CARD");
+  // كل تسميات الأقسام/الطباعة/التصدير تتبع التبويب — «حساب البطاقة» على كشف زين تسميةٌ كاذبة.
+  const isTelecom = accountKind === "TELECOM";
+  const acctLabel = isTelecom ? "رصيد زين" : "البطاقة/البنك";
+  const stmtLabel = isTelecom ? "كشف تسوية وكيل زين" : "كشف البنك";
+
+  const summary = trpc.cardAccount.summary.useQuery({ branchId: effBranch, accountKind });
 
   // ── الحركات ──
   const [from, setFrom] = useState("");
@@ -67,10 +77,11 @@ export default function CardAccount() {
   // بحث نصّي — وظيفة الشاشة الأساسية (مطابقة كشف البنك بحثاً عن حركة بعينها بمرجعها/رقم سندها/طرفها).
   const [q, setQ] = useState("");
   const qDebounced = useDebouncedValue(q.trim(), 300);
-  const [sourceType, setSourceType] = useState<"" | "VOUCHER" | "INVOICE_PAYMENT" | "WORK_ORDER" | "OTHER">("");
+  const [sourceType, setSourceType] = useState<"" | "VOUCHER" | "INVOICE_PAYMENT" | "WORK_ORDER" | "DRAFT_DEPOSIT" | "OTHER">("");
   const [page, setPage] = useState(0);
   const movementsInput = {
     branchId: effBranch,
+    accountKind,
     from: from || undefined,
     to: to || undefined,
     direction: direction || undefined,
@@ -87,7 +98,7 @@ export default function CardAccount() {
   useEffect(() => { setPage(0); }, [movementsFilterKey]);
 
   // ── المطابقة ──
-  const recons = trpc.cardAccount.reconciliations.useQuery({ branchId: effBranch });
+  const recons = trpc.cardAccount.reconciliations.useQuery({ branchId: effBranch, accountKind });
   const [asOfDate, setAsOfDate] = useState(todayStr());
   const [statementBalance, setStatementBalance] = useState("");
   const [statementLabel, setStatementLabel] = useState("");
@@ -118,6 +129,7 @@ export default function CardAccount() {
     }
     createRec.mutate({
       branchId: effBranch,
+      accountKind,
       asOfDate,
       statementBalance,
       statementLabel: statementLabel.trim() || undefined,
@@ -146,7 +158,7 @@ export default function CardAccount() {
     try {
       const all = await fetchAllMovements();
       exportRows(all, {
-        filename: `حساب-البطاقة-حركات-${from || "الكل"}-${to || todayStr()}`,
+        filename: `حساب-${isTelecom ? "رصيد-زين" : "البطاقة"}-حركات-${from || "الكل"}-${to || todayStr()}`,
         columns: [
           { key: "createdAt", header: "التاريخ", map: (r) => (r.createdAt ? new Date(r.createdAt as string).toISOString().slice(0, 10) : "") },
           { key: "source", header: "النوع", map: (r) => SOURCE_AR[r.source] ?? r.source },
@@ -178,7 +190,7 @@ export default function CardAccount() {
         qDebounced ? `بحث: ${qDebounced}` : null,
       ].filter(Boolean).join(" · ");
       const opened = printReportDoc({
-        title: "حساب البطاقة/البنك — حركات",
+        title: `حساب ${acctLabel} — حركات`,
         headerExtra: [
           { label: "الفرع", value: mv.branchId != null ? branches.data?.find((b) => b.id === mv.branchId)?.name ?? String(mv.branchId) : "كل الفروع" },
           ...(filterLabels ? [{ label: "الفلاتر", value: filterLabels }] : []),
@@ -221,9 +233,13 @@ export default function CardAccount() {
   return (
     <div className="mx-auto max-w-6xl space-y-5 p-4">
       <PageHeader
-        title="حساب البطاقة/البنك"
-        description="رصيد أموال البطاقة (مقبوضات البطاقة − مدفوعات المورّدين بالبطاقة) — منفصلٌ عن درج النقد والخزينة."
-        icon={<CreditCard aria-hidden className="size-5" />}
+        title={accountKind === "TELECOM" ? "حساب رصيد زين" : "حساب البطاقة/البنك"}
+        description={
+          accountKind === "TELECOM"
+            ? "رصيد اتصال زين المتراكم (أكواد كروت الشحن المقبوضة − التسويات) — لا يلمس الدرج، ويُسوّى دورياً."
+            : "رصيد أموال البطاقة (مقبوضات البطاقة − مدفوعات المورّدين بالبطاقة) — منفصلٌ عن درج النقد والخزينة."
+        }
+        icon={accountKind === "TELECOM" ? <Smartphone aria-hidden className="size-5" /> : <CreditCard aria-hidden className="size-5" />}
         actions={
           canPickBranch ? (
             <select
@@ -245,6 +261,25 @@ export default function CardAccount() {
           ) : undefined
         }
       />
+
+      {/* ── ش٥: تبويب نوع الحساب المشتقّ ── */}
+      <div className="flex gap-1.5" role="tablist" aria-label="نوع الحساب">
+        {([["CARD", "بطاقة/بنك"], ["TELECOM", "رصيد زين"]] as const).map(([v, label]) => (
+          <button
+            key={v}
+            role="tab"
+            aria-selected={accountKind === v}
+            onClick={() => { setAccountKind(v); setPage(0); }}
+            className={
+              accountKind === v
+                ? "rounded-lg border-2 border-primary bg-primary px-4 py-1.5 text-xs font-extrabold text-primary-foreground"
+                : "rounded-lg border-2 bg-card px-4 py-1.5 text-xs font-extrabold hover:bg-muted"
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
       {/* ── بطاقات الملخّص ── */}
       {summary.isLoading ? (
@@ -283,7 +318,7 @@ export default function CardAccount() {
           </Card>
           <Card>
             <CardContent className="p-4">
-              <div className="text-muted-foreground text-sm">إجمالي دخل/صرف البطاقة</div>
+              <div className="text-muted-foreground text-sm">إجمالي دخل/صرف {isTelecom ? "رصيد زين" : "البطاقة"}</div>
               <div className="mt-1 text-sm">
                 <span className="text-green-700">{fmtAr(s?.totalIn ?? "0")}</span>
                 <span className="mx-1 text-muted-foreground">/</span>
@@ -313,7 +348,7 @@ export default function CardAccount() {
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h2 className="flex items-center gap-2 font-semibold">
               <ScrollText aria-hidden className="size-4" />
-              حركات حساب البطاقة
+              حركات حساب {acctLabel}
             </h2>
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
@@ -370,6 +405,7 @@ export default function CardAccount() {
                 <option value="VOUCHER">سند</option>
                 <option value="INVOICE_PAYMENT">فاتورة/دفعة</option>
                 <option value="WORK_ORDER">أمر شغل</option>
+                <option value="DRAFT_DEPOSIT">عربون طلب محفوظ</option>
                 <option value="OTHER">أخرى</option>
               </AppSelect>
               <Button variant="outline" size="sm" onClick={() => void onPrint()} disabled={printing || !mv || mv.count === 0}>
@@ -413,7 +449,7 @@ export default function CardAccount() {
                     </td>
                   </tr>
                 ) : !mv || mv.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={7} message="لا حركات بطاقة في النطاق المحدَّد" />
+                  <TableEmptyRow colSpan={7} message={isTelecom ? "لا حركات رصيد زين في النطاق المحدَّد" : "لا حركات بطاقة في النطاق المحدَّد"} />
                 ) : (
                   mv.rows.map((r) => (
                     <tr key={r.receiptId} className={`border-b ${r.reversed ? "opacity-50" : ""}`}>
@@ -472,10 +508,10 @@ export default function CardAccount() {
         <CardContent className="p-4">
           <h2 className="mb-3 flex items-center gap-2 font-semibold">
             <Scale aria-hidden className="size-4" />
-            مطابقة كشف البنك/البطاقة
+            مطابقة {stmtLabel}
           </h2>
           <p className="mb-3 text-sm text-muted-foreground">
-            يحسب النظام الرصيد المتوقَّع لحركات البطاقة حتى التاريخ المحدَّد، وتُدخِل رصيد كشف البنك الفعليّ ⇒ الفرق يكشف
+            يحسب النظام الرصيد المتوقَّع لحركات {acctLabel} حتى التاريخ المحدَّد، وتُدخِل رصيد {stmtLabel} الفعليّ ⇒ الفرق يكشف
             الصفقات غير المُسوَّاة أو الرسوم أو الأخطاء. سجلٌّ تدقيقيٌّ لا يمسّ أيّ رصيد.
           </p>
 
@@ -492,8 +528,8 @@ export default function CardAccount() {
               <Input id="rec-date" type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} max={todayStr()} />
             </div>
             <div>
-              <Label htmlFor="rec-bal">رصيد كشف البنك</Label>
-              <MoneyInput id="rec-bal" value={statementBalance} onChange={setStatementBalance} placeholder="0" ariaLabel="رصيد كشف البنك" allowNegative />
+              <Label htmlFor="rec-bal">رصيد {stmtLabel}</Label>
+              <MoneyInput id="rec-bal" value={statementBalance} onChange={setStatementBalance} placeholder="0" ariaLabel={`رصيد ${stmtLabel}`} allowNegative />
             </div>
             <div>
               <Label htmlFor="rec-label">وصف الكشف (اختياري)</Label>

@@ -1072,6 +1072,41 @@
       "when": 1787879406000,
       "tag": "0154_digital_sale_execution_claims",
       "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "5",
+      "when": 1787879407000,
+      "tag": "0153_reception_deposit_link_and_shift_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "5",
+      "when": 1787879408000,
+      "tag": "0155_reception_drafts",
+      "breakpoints": true
+    },
+    {
+      "idx": 156,
+      "version": "5",
+      "when": 1787879409000,
+      "tag": "0156_order_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "5",
+      "when": 1787879410000,
+      "tag": "0157_telecom_payment_method",
+      "breakpoints": true
+    },
+    {
+      "idx": 158,
+      "version": "5",
+      "when": 1787879411000,
+      "tag": "0158_telecom_guard_indexes",
+      "breakpoints": true
     }
   ]
 }

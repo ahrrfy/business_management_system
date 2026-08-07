@@ -8,6 +8,7 @@ import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledge
 import { money, toDbMoney } from "../money";
 import { openShiftIdTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
+import type { Tx } from "../../db";
 import type { PaymentMethod } from "./types";
 
 export interface ProcessPaymentInput {
@@ -20,6 +21,13 @@ export interface ProcessPaymentInput {
   enforceBranchId?: number | null;
   /** Idempotency: نفس الـmagic key يُعاد تشغيله بنتيجة العملية الأولى (لا تكرّر دفعة عند النقر المزدوج). */
   clientRequestId?: string | null;
+  /**
+   * فحصٌ حارس يُنفَّذ **داخل** معاملة الدفع بعد مسار الـreplay وقبل إدراج الإيصال (ش٥):
+   * فحصه في معاملةٍ مستقلّة قبل النداء يفتح TOCTOU (الحارس يلتزم ويحرّر أقفال فجوته قبل أن
+   * يُدرَج الإيصال ⇒ كودُ كارتٍ يُقبَض مرّتين تحت التزامن)، ويصطدم بإيصال العملية نفسها عند
+   * إعادة الإرسال المشروعة. هنا يتخطّاه الـreplay وتبقى أقفاله حيّةً حتى التزام الإدراج.
+   */
+  preInsertCheck?: (tx: Tx) => Promise<void>;
 }
 
 /** Record a later payment against a credit invoice; updates status + AR. */
@@ -144,6 +152,7 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
         message: "يَلزم وردية مفتوحة للبيع النقدي",
       });
     }
+    if (input.preInsertCheck) await input.preInsertCheck(tx);
     const rRes = await tx.insert(receipts).values({
       invoiceId: input.invoiceId,
       branchId: Number(inv.branchId),

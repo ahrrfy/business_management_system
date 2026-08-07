@@ -24,6 +24,7 @@ import {
   updateWorkOrderDeliveryMethod,
 } from "../services/workOrderService";
 import { logAudit } from "../services/auditService";
+import { verifyManagerApproval } from "./saleRouter";
 import { canSeeCostForUser, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { hasModuleAccess } from "@shared/permissions";
 import { workOrderBarcodeSet } from "../services/barcodeService";
@@ -31,11 +32,13 @@ import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { money } from "../services/money";
+import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { checkoutReception } from "../services/receptionCheckoutService";
 import { logger } from "../logger";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
-const receptionPaymentMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
+// ش٥: TELECOM (رصيد زين) — على مسار الاستقبال حصراً وخلف ضوابط telecom.ts داخل الخدمة.
+const receptionPaymentMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]);
 const priceTierEnum = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const quantityString = z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة");
 const receptionWorkOrderSchema = z.object({
@@ -53,7 +56,9 @@ const receptionWorkOrderSchema = z.object({
   channelHandle: z.string().max(120).nullish(),
   priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
   deposit: nonNegMoneyString.nullish(),
-  paymentMethod: z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]).nullish(),
+  // ش٥: TELECOM مقبولة هنا (سلة الاستقبال تكتب طريقة عربون الأمر) — الإنشاء المفرد المباشر
+  // بعربون زين محروسٌ داخل createWorkOrderInTx (assertTelecomCollectAllowed عند غياب shiftId).
+  paymentMethod: z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]).nullish(),
   paymentReference: z.string().max(100).nullish(),
   paymentReceiptUrl: z.string().nullish(),
   hasDelivery: z.boolean().nullish(),
@@ -84,6 +89,26 @@ const receptionCheckoutSchema = z.object({
   priceTier: priceTierEnum.nullish(),
   // كوبون CRM — على البيع المباشر فقط (لا خدمات طباعة).
   couponCode: z.string().trim().min(1).max(64).nullish(),
+  // ش٠ (٥/٨، V1): تقريب نقدي IQD — يسري خادمياً على البيع المباشر الخالص النقديّ فقط
+  // (الحارس في receptionCheckoutService يُسقطه عن السلة المختلطة/غير النقدية حتى لو أُرسل).
+  cashRoundIQD: z.boolean().optional(),
+  // ش٦ — تقريب السلّة المختلطة: الواجهة تبيّت فرق السلّة كلّها في مبلغ الفاتورة الحاملة
+  // وتسمّيها هنا؛ الخادم يقيّد الفرق ADJUST عليها (محروس: نقديّ + |الفرق| < ٢٥٠ + ناتجٌ موجب).
+  cashRoundingOverride: z.enum(["SALE", "PRINT"]).nullish(),
+  // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن أمانةً للمندوب — نقداً في الدرج حتماً.
+  deliveryFeeHeld: positiveMoneyString.nullish(),
+  // ش٧: إسناد الطلب لمندوبٍ داخل نفس المعاملة — المتبقّي عهدةٌ عليه لا نقدٌ في الدرج.
+  delivery: z.object({
+    partyId: z.number().int().positive(),
+    fee: nonNegMoneyString.nullish(),
+    feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
+    recipientName: z.string().trim().max(255).nullish(),
+    recipientPhone: z.string().trim().max(32).nullish(),
+    address: z.string().trim().max(500).nullish(),
+  }).nullish(),
+  // ش١ (م٦): اعتماد مديرٍ للخصم اليدويّ >١٠٪ (بريد+كلمة مرور، verifyManagerApproval نفسها) —
+  // يمنح priceOverrideApproved للكاشير كما يمنحه sales.create تماماً.
+  managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
   // ٥/٨ — زبونٌ عابر: اسمٌ وهاتفٌ مرجعيّان يُكتبان على الفاتورة نفسها بلا إنشاء عميل ولا ذمّة.
   // يحلّان محلّ إجبار الكاشير على إنشاء عميلٍ لكل بيعٍ نقديّ (وكان يفشل بـFORBIDDEN لأدوارٍ
   // تفتح محطة الاستقبال بلا صلاحية crm=FULL، فيسقط الاسم والهاتف بعد الطباعة تماماً).
@@ -592,16 +617,24 @@ export const workOrderRouter = router({
 
       const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role };
-      const { branchId: _branchId, ...checkoutInput } = input;
+      const { branchId: _branchId, managerApproval, ...checkoutInput } = input;
+      // ش١ (م٦): كاشير بخصمٍ >١٠٪ يلتقط اعتماد المدير استباقياً في الواجهة ويُتحقَّق منه هنا —
+      // نفس verifyManagerApproval (قفل تخمين + تدقيق) التي يستعملها sales.create حرفياً.
+      let approvedBy: number | null = null;
+      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
 
       let result: Awaited<ReturnType<typeof checkoutReception>> | undefined;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
-          result = await checkoutReception({
+          // ش٥: retryOnDeadlock لتصادم قفل فجوة نطاق TELECOM (سلّتا زين متزامنتان) — حلقة
+          // isDupEntry الخارجية تبقى لسباق أرقام المستندات كما هي.
+          result = await retryOnDeadlock(() => checkoutReception({
             ...checkoutInput,
             branchId: effectiveBranchId,
-            priceOverrideApproved: elevated,
-          }, actor);
+            priceOverrideApproved: elevated || approvedBy != null,
+            // ش٦ (§٩.٣): هويّة المُقِرّ — المدير المصادِق، أو الفاعل المرتفع نفسه.
+            priceApprovedBy: approvedBy ?? (elevated ? ctx.user.id : null),
+          }, actor));
           break;
         } catch (error: any) {
           if (isDupEntry(error) && attempt < 2) continue;
@@ -627,6 +660,12 @@ export const workOrderRouter = router({
             printInvoiceId: result.printSale?.invoiceId ?? null,
             workOrderIds: result.workOrders.map((order) => order.workOrderId),
             paymentMethod: input.paymentMethod,
+            // م٦ (§٨.٤): الرقابة اللاحقة مستحيلة بلا سجلّ — كل خصم سطرٍ >=١٠٪ يُدوَّن حتى وهو
+            // مسموح، ومعه هوية المدير المُعتمِد إن وُجد.
+            ...(approvedBy != null ? { discountApprovedBy: approvedBy } : {}),
+            highDiscountLines: (input.regularSale?.lines ?? [])
+              .filter((line) => Number(line.discountPercent ?? 0) >= 10)
+              .map((line) => ({ variantId: line.variantId, pct: Number(line.discountPercent) })),
           },
         });
       } catch (error) {

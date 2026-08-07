@@ -74,6 +74,13 @@ export async function printDoc(doc: PrintDoc): Promise<{ via: "server" | "therma
  * التصميم واحد في المسارات الثلاثة ⇒ لا يتفاوت شكل الإيصال بتفاوت الناقل.
  */
 export async function printReceipt(d: ReceiptBrowserData): Promise<{ via: "server" | "thermal" | "browser" }> {
+  // ش٢ (§١٠) — حارسٌ بنيويّ: قالب الإيصال لمستندٍ محاسبيّ حقيقيّ حصراً. حمولةٌ بلا رقمٍ، أو
+  // برقم مسوّدة (DRF-)، تُنتج ورقةً لا يميّزها الزبون عن إيصال دفعٍ فعليّ — تُطبَع المسوّدة
+  // بقالبها المنفصل (printDraftTicket) الذي يعلن «غير محاسَبة» ويُمنع فيه سطرا مدفوع/الفكّة.
+  const num = d.receiptNumber?.trim() ?? "";
+  if (!num || num.startsWith("DRF-")) {
+    throw new Error("قالب الإيصال يرفض حمولةً بلا رقم مستندٍ حقيقيّ — مسوّدة الطلب تُطبَع بقالب المسوّدة");
+  }
   // Restore a previously-authorized USB receipt printer at the point of use.
   // Printing can be triggered from screens that do not own the POS reconnect
   // effect, and a printer may have been unplugged and reconnected meanwhile.

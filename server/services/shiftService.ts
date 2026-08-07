@@ -384,6 +384,40 @@ export async function getShiftReport(shiftId: number) {
       .where(eq(invoices.shiftId, shiftId))
   )[0];
 
+  // إفصاح فواتير تسليم الطلبات (مراجعة ٥/٨): «مبيعاتي» في وردية الاستقبال تشمل فواتير
+  // WORKORDER تُثبَّت لحظة التسليم بينما جزءٌ من قيمتها (العربون) قُبض في ورديةٍ سابقة —
+  // نُبرزها كسطرٍ منفصل كي لا يُقرأ الإجمالي وكأن نقده كلَّه في هذا الدرج. لا يغيّر المطابقة
+  // (expectedCash يعتمد الإيصالات لا الفواتير) — شفافية عرضٍ فقط.
+  const woInv = (
+    await db
+      .select({ count: sql<number>`COUNT(*)`, total: sql<string>`COALESCE(SUM(${invoices.total}), 0)` })
+      .from(invoices)
+      .where(and(eq(invoices.shiftId, shiftId), eq(invoices.sourceType, "WORKORDER")))
+  )[0];
+
+  // ش٤ (I14): «عرابين على طلباتٍ لم تُثبَّت» — مالٌ في هذا الدرج مقبوضٌ على مسوّداتٍ ما زالت
+  // OPEN (صفوف COLLECTION HELD على هذه الوردية، صافي ردودها). المسوّدة المموّلة **لا تمنع
+  // الإغلاق** (المال في receipts والدرج متّسق) — السطر إفصاحٌ يفسّر وجود نقدٍ بلا فاتورة.
+  // (استعلامٌ مضمَّن لا استيراد من reception/deposits — يمنع دورة استيراد deposits⇄shiftService.
+  //  أسماء أعمدة DB الحرفية: orderPayKind/orderPayStatus — فخّ raw SQL الموثَّق.)
+  // دلالة الدرج (مراجعة ش٤): تُطرح ردود **هذه الوردية** فقط (ردُّ درجٍ آخر يخصّ Z درجِه)،
+  // ويُضمّ REFUNDED (قُبض هنا فعلاً) — وإلا تحوّر Z المؤرشف رجعياً وفقد تفسير درجه التاريخيّ.
+  const heldRes = await db.execute(sql`
+    SELECT COUNT(DISTINCT op.draftId) AS c,
+           CAST(COALESCE(SUM(op.amount - COALESCE(rf.s, 0)), 0) AS CHAR) AS t
+    FROM orderPayments op
+    LEFT JOIN (
+      SELECT parentPaymentId, SUM(amount) AS s
+      FROM orderPayments
+      WHERE orderPayKind = 'REFUND' AND shiftId = ${shiftId}
+      GROUP BY parentPaymentId
+    ) rf ON rf.parentPaymentId = op.id
+    WHERE op.shiftId = ${shiftId} AND op.orderPayKind = 'COLLECTION' AND op.orderPayStatus IN ('HELD','REFUNDED')
+  `);
+  const heldData = (heldRes as unknown as [Array<{ c: number | string; t: string }>])[0] ?? heldRes;
+  const heldRow = Array.isArray(heldData) ? heldData[0] : undefined;
+  const heldDeposits = { count: Number(heldRow?.c ?? 0), total: String(heldRow?.t ?? "0.00") };
+
   // أوفلاين (ش٤) — «مبيعات مُزامنة لاحقاً»: فواتير أوفلاينية رُحِّلت **بعد** إغلاق الوردية
   // (createdAt > closedAt). تفسّر زيادة الدرج عند العدّ (النقد قُبض قبل الإغلاق والفاتورة
   // وصلت بعده) فلا يُتَّهم الكاشير بفائض مجهول ولا يُساء قراءة Z-report.
@@ -410,6 +444,10 @@ export async function getShiftReport(shiftId: number) {
     expectedCash: toDbMoney(expectedCash),
     invoiceCount: Number(inv?.count ?? 0),
     salesTotal: inv?.total ?? "0.00",
+    woInvoicesCount: Number(woInv?.count ?? 0),
+    woInvoicesTotal: woInv?.total ?? "0.00",
+    heldDepositsCount: heldDeposits.count,
+    heldDepositsTotal: heldDeposits.total,
     lateSyncedCount: lateSynced.count,
     lateSyncedTotal: lateSynced.total,
   };

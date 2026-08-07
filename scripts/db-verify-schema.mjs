@@ -83,6 +83,8 @@ try {
     ["promotions", "idx_promo_application"],
     ["coupons", "uq_coupon_hash"],
     ["couponRedemptions", "uq_coupon_redemption_invoice"],
+    ["invoices", "idx_invoice_shift"], // ش٠ استقبال (0153): طابور المحطة keyset — غيابه مسح كامل
+    ["orderPayments", "uq_orderpay_receipt"], // ش٤ (0155): الإصلاح البنيوي لالتقاط الإيصال الظنّي
   ];
   const [idxRows] = await conn.query(
     "SELECT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? GROUP BY TABLE_NAME, INDEX_NAME",
@@ -149,8 +151,25 @@ try {
     process.exit(1);
   }
 
+  // ── ش٥ (I23): كل قيمة enum جديدة تصل الإنتاج فعلاً — TELECOM على receipts.paymentMethod.
+  //    توسيع enum على عمود قائم لا يمثّله push، وهجرة migrator فاشلة صامتاً كانت ستترك القيمة
+  //    غائبة ⇒ كلّ قبض رصيد اتصال يسقط بخطأ بيانات. الفحص هنا يُفشل النشر **قبل** pm2 reload.
+  const [telecomRows] = await conn.query(
+    "SELECT COLUMN_TYPE AS t FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'receipts' AND COLUMN_NAME = 'paymentMethod'",
+    [dbName],
+  );
+  const telecomType = String(telecomRows?.[0]?.t ?? "");
+  if (!telecomType.includes("TELECOM")) {
+    console.error("⛔ قيمة enum مفقودة: receipts.paymentMethod بلا 'TELECOM' (هجرة 0156 لم تصل فعلياً).");
+    console.error("   COLUMN_TYPE الحالي:", telecomType || "(غير موجود)");
+    console.error("   عالِج: طبّق 0154 (migrator) أو extras/0154 (CI push).");
+    await conn.end();
+    process.exit(1);
+  }
+
   console.log(`✓ تحقّق المخطط: ${Object.keys(expected).length} جدولاً مطابقة لـ snapshot (${snapFiles[snapFiles.length - 1]}).`);
   console.log(`✓ تحقّق الفهارس: ${CRITICAL_INDEXES.length} فهرساً حرجاً موجودة.`);
+  console.log("✓ تحقّق enum: receipts.paymentMethod يحوي TELECOM (I23).");
   console.log(`✓ تحقّق كائنات ما بعد 0034: ${CRITICAL_TABLES.length} جدولاً + ${CRITICAL_COLUMNS.length} عموداً (سدّ النقطة العمياء).`);
   await conn.end();
 } catch (e) {

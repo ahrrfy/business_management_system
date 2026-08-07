@@ -111,6 +111,11 @@ export default function WorkOrderDetail() {
       quantity: wo.data.quantity ? `${wo.data.quantity} نسخة` : undefined,
       specs: wo.data.customizationText ?? undefined,
       total: wo.data.salePrice,
+      // ش٤: التذكرة تُثبت العربون والمتبقّي (كانت تطبع الإجمالي وحده — أكثر ما يُتنازَع عليه).
+      paidUpfront: Number(wo.data.deposit ?? 0) > 0 ? wo.data.deposit : null,
+      balanceDue: Number(wo.data.deposit ?? 0) > 0
+        ? String(Math.max(0, Number(wo.data.salePrice) - Number(wo.data.deposit ?? 0)))
+        : null,
     });
   }, [qs, wo.data]);
 
@@ -239,6 +244,10 @@ export default function WorkOrderDetail() {
               quantity: data.quantity ? `${data.quantity} نسخة` : undefined,
               specs: data.customizationText ?? undefined,
               total: data.salePrice,
+              paidUpfront: Number(data.deposit ?? 0) > 0 ? data.deposit : null,
+              balanceDue: Number(data.deposit ?? 0) > 0
+                ? String(Math.max(0, Number(data.salePrice) - Number(data.deposit ?? 0)))
+                : null,
             })}
           >
             <Printer className="h-3.5 w-3.5" />

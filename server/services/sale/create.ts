@@ -1,7 +1,7 @@
 // إنشاء فاتورة بيع ذرّياً: idempotency + تسعير/تحويل الأسطر + بوّابة أقل-من-التكلفة +
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { couponRedemptions, coupons, customers, invoiceItemBundleComponents, invoiceItems, invoices, openingModeSettings, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
 import {
   computeInvoiceCost,
@@ -520,24 +520,48 @@ export async function createSaleInTx(
     //    (لا فائض/عجز وهمي عند الرفع، ولا رفض بيع نقدي عند الخفض). الفرق يُسجَّل قيد ADJUST لاحقاً.
     const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
     const grandTotalD = money(totals.total);
-    const effectiveTotalD = roundCash ? roundCashIQD(grandTotalD) : grandTotalD;
+    // ش٦ — تقريب السلّة المختلطة: الإجمالي الفعّال الصريح يحمل فرق تقريب السلّة كلّها على
+    // هذه الفاتورة (checkoutReception يضبطه حصراً). محروسٌ ضدّ سوء الاستعمال كتلاعبِ سعرٍ:
+    // نقديّ فقط + |الفرق| دون خطوة التقريب + الناتج موجب — وإلا يُهمل ويُعتمد الخام.
+    let overrideD: ReturnType<typeof money> | null = null;
+    if (input.cashRoundingOverride != null && input.payment?.method === "CASH") {
+      const cand = round2(money(input.cashRoundingOverride));
+      if (cand.gt(0) && cand.minus(grandTotalD).abs().lt(250)) overrideD = cand;
+    }
+    const effectiveTotalD = overrideD ?? (roundCash ? roundCashIQD(grandTotalD) : grandTotalD);
     const cashRoundingAdj = effectiveTotalD.minus(grandTotalD); // ± (صفر إن لا تقريب)
     const tendered = money(input.payment?.amount ?? "0");
+    // ش٤ (§٧.٢): المقبوض سلفاً (عرابين المسوّدة) يدخل الحساب **قبل** حرّاس الآجل/الائتمان —
+    // هذا هو الترتيب الحاسم: لولاه لرُفض زبونٌ عابر سدّد عربوناً كاملاً بحجّة «البيع الآجل
+    // يتطلب عميلاً» بينما ماله محبوسٌ في receipts (الحاصرة ١.١).
+    const preCollectedD = round2(money(input.preCollected?.amount ?? "0"));
+    if (preCollectedD.gt(effectiveTotalD)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `المقبوض سلفاً (${preCollectedD.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}) — خلل توزيع، راجع الطلب المحفوظ.`,
+      });
+    }
     // SALES-05 (تدقيق ٢/٧): كان paidNow يُفرَض = الإجمالي المقرّب عند roundCash متجاهلاً المبلغ
     // المُسلَّم ⇒ بيع آجل جزئي بعلم cashRoundIQD=true يُسجَّل «مدفوعاً بالكامل» فتُمحى ذمة العميل
     // (والنقد الوهمي يظهر عجزاً بدرج الكاشير). الآن: التقريب يطبَّق على الإجمالي دائماً، لكن نعامل
     // البيع كمدفوعٍ بالكامل (paidNow = الإجمالي المقرّب) فقط إذا كان المُسلَّم يغطّي الإجمالي فعلاً؛
     // وإلا فهي دفعة جزئية ⇒ paidNow = المُسلَّم بالضبط والباقي ذمّة على العميل.
-    if (input.payment?.method !== "CASH" && tendered.gt(effectiveTotalD)) {
+    if (input.payment?.method !== "CASH" && preCollectedD.plus(tendered).gt(effectiveTotalD)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `المبلغ المدفوع (${tendered.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
+        message: `المبلغ المدفوع (${preCollectedD.plus(tendered).toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
       });
     }
     // الزيادة النقدية هي باقي للعميل، لا paidAmount ولا receipt ولا نقداً باقياً في الدرج.
-    const paidNow = tendered.gt(effectiveTotalD) ? effectiveTotalD : tendered;
+    // paidNow = إجمالي المسدَّد على الفاتورة (سلفاً + الآن)؛ الإيصال الجديد للجزء الجديد وحده.
+    const totalTenderedD = preCollectedD.plus(tendered);
+    const paidNow = totalTenderedD.gt(effectiveTotalD) ? effectiveTotalD : totalTenderedD;
+    const newMoneyD = round2(paidNow.minus(preCollectedD));
     const unpaid = effectiveTotalD.minus(paidNow);
-    if (unpaid.gt(0) && !input.customerId) {
+    // ش٧ (قرار المالك ٦/٨): متبقّي فاتورة التوصيل COD ليس بيعاً آجلاً على زبونٍ عابر — إنّه
+    // **عهدةٌ على المندوب** تُرفع في نفس المعاملة (dispatchInvoiceInTx). الاستثناء محصورٌ
+    // بالعلم الداخليّ الذي ترفعه الخدمةُ المُسنِدة وحدها؛ حدّ ائتمان العميل المسجَّل يبقى نافذاً.
+    if (unpaid.gt(0) && !input.customerId && !input.codDispatchPending) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
     }
     // 7.b فحص حدّ الائتمان (H4): null=بلا حدّ، 0=حظر آجل، >0=فحص الإسقاط.
@@ -862,7 +886,9 @@ export async function createSaleInTx(
     }
 
     // 12. Payment + AR.
-    if (paidNow.gt(0)) {
+    //     ش٤ (I5): الإيصال والقيد للجزء **الجديد** وحده (newMoneyD) — المقبوض سلفاً له إيصاله
+    //     وقيده منذ لحظة القبض (deposits.ts)، وإنشاء ثانٍ له = نقدٌ وهميّ يمنع إغلاق الوردية.
+    if (newMoneyD.gt(0)) {
       const rRes = await tx.insert(receipts).values({
         invoiceId,
         branchId: input.branchId,
@@ -871,7 +897,7 @@ export async function createSaleInTx(
         // مرآة لنمط voucherService — يَحرس مستقبلاً صيَغ reconcile/cashOrphans التي تَفلتر بـcashBucket.
         cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
         direction: "IN",
-        amount: toDbMoney(paidNow),
+        amount: toDbMoney(newMoneyD),
         paymentMethod: input.payment!.method,
         referenceNumber: input.payment!.reference?.trim() || null,
         status: "COMPLETED",
@@ -884,8 +910,15 @@ export async function createSaleInTx(
         invoiceId,
         receiptId,
         customerId: input.customerId ?? null,
-        amount: paidNow,
+        amount: newMoneyD,
       });
+    }
+    // إيصالات المقبوض سلفاً المُمرَّرة صراحةً تُختم بالفاتورة فقط (append-only — نمط deliver.ts).
+    for (const preReceiptId of input.preCollected?.receiptIds ?? []) {
+      await tx
+        .update(receipts)
+        .set({ invoiceId })
+        .where(and(eq(receipts.id, preReceiptId), sql`${receipts.invoiceId} IS NULL`));
     }
     if (input.customerId) {
       await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));

@@ -23,6 +23,10 @@ export interface WorkOrderReceiptData {
   quantity?: string | number | null;
   specs?: string | null;
   total: string | number;
+  /** ش٤ (§١٠): «مدفوعٌ مقدماً» — بدونها يخرج الزبون بورقةٍ لا تُثبت عربونه (أكثر ما يُتنازَع عليه). */
+  paidUpfront?: string | number | null;
+  /** «المتبقّي عند الاستلام» = total − paidUpfront (يُمرَّر محسوباً لا يُشتقّ هنا). */
+  balanceDue?: string | number | null;
   notes?: string | null;
 }
 
@@ -200,6 +204,19 @@ export async function workOrderToCanvas(
   ctx.fillText("الإجمالي:", W - PAD, y);
   ctx.textAlign = "left";
   ctx.fillText(`${fmt(d.total)} د.ع`, PAD, y);
+  // ش٤: إثبات العربون على الورقة نفسها — «مدفوع مقدماً» ثم «المتبقّي عند الاستلام» بخطٍّ أضخم.
+  if (d.paidUpfront != null && Number(d.paidUpfront) > 0) {
+    y += 36;
+    ctx.font = "700 24px Cairo, sans-serif"; ctx.textAlign = "right";
+    ctx.fillText("مدفوع مقدماً:", W - PAD, y);
+    ctx.textAlign = "left";
+    ctx.fillText(`${fmt(d.paidUpfront)} د.ع`, PAD, y);
+    y += 34;
+    ctx.font = "900 28px Cairo, sans-serif"; ctx.textAlign = "right";
+    ctx.fillText("المتبقّي عند الاستلام:", W - PAD, y);
+    ctx.textAlign = "left";
+    ctx.fillText(`${fmt(d.balanceDue ?? Math.max(0, Number(d.total) - Number(d.paidUpfront)))} د.ع`, PAD, y);
+  }
   y += 14; solidLine(ctx, y, 2); y += 28;
 
   // ──── ٧) ملاحظات ────

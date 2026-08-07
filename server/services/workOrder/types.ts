@@ -27,7 +27,10 @@ export interface CreateWorkOrderInput {
   channelHandle?: string | null;
   priority?: "LOW" | "NORMAL" | "URGENT" | null;
   deposit?: string | null;
-  paymentMethod?: "CASH" | "CARD" | "TRANSFER" | "WALLET" | null;
+  /** ش٤ (§٧.٢) — جزء `deposit` الذي سبق قبضُه (عرابين مسوّدة عبر orderPayments): له إيصاله
+   *  وقيده منذ القبض، فلا يُنشأ له إيصالٌ ثانٍ هنا (I5) — الإيصال للجزء الجديد N = deposit − هذا. */
+  depositPreCollected?: string | null;
+  paymentMethod?: "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM" | null;
   paymentReference?: string | null;
   paymentReceiptUrl?: string | null;
   hasDelivery?: boolean | null;
@@ -45,6 +48,11 @@ export interface CreateWorkOrderInput {
   designImages?: Array<{ url: string; caption?: string | null; sortOrder?: number | null }>;
   /** idempotency: نقرة مزدوجة/إعادة شبكة بنفس المفتاح ⇒ طلب خدمة واحد (لا عربون نقدي مزدوج). */
   clientRequestId?: string | null;
+  /** ش٠ (٥/٨، V4): وردية مُتحقَّقٌ منها من مسار الاستقبال (checkoutReception يقفلها FOR UPDATE
+   *  ويثبت أنها OPEN + RECEPTION + لنفس الفرع). تمريرها يضمن «سلّة واحدة ⇒ درج واحد»: كل نقد
+   *  السلة (بيع + عرابين + أجرة أمانة) يهبط على درج القابض نفسه، فيُحاسَب الموظّف على ما استلمه
+   *  هو فقط. غيابها (الإنشاء المفرد workOrders.create) يُبقي الحلّ الذاتي openShiftIdTx. */
+  shiftId?: number | null;
 }
 
 

@@ -250,6 +250,8 @@ function SettleTab() {
   // مرآة بوّابتي الخادم: recordRemittance = cashierProcedure، وreturnConsignment = managerProcedure
   // (بوّابتا أدوار صِرفتان بلا مفتاح وحدة — القائمة الحرفية هي المطابقة الدقيقة، وadmin يمرّ ضمنياً).
   const canRemit = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
+  // ⚠️ قرار المالك (٦/٨/٢٦) بفتحها لموظّف التسوية **مُعلَّق** حتى تُبنى بوّابة وحدةٍ بعزل فرع
+  // (الفتح المباشر تركها بلا عزل ⇒ كاشير فرعٍ يعكس فاتورة فرعٍ آخر). مرآةُ بوّابة الخادم.
   const canReturn = ["admin", "manager"].includes(me.data?.role ?? "");
   const [partyId, setPartyId] = useState<string>("");
   const cons = trpc.delivery.openConsignments.useQuery({ partyId: Number(partyId) }, { enabled: !!partyId });

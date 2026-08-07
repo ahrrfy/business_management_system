@@ -2,9 +2,10 @@
 //  - getARAging: شيخوخة الذمم المدينة لكل العملاء، بدلاء 0-30/31-60/61-90/90+.
 //  - getCustomerStatement: كشف حساب عميل (فواتير + دفعات + ملخّص).
 import { and, asc, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
-import { accountingEntries, customers, invoices, receipts } from "../../../drizzle/schema";
+import { accountingEntries, customers, invoices, orderPayments, receipts } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
+import { isPreInvoiceHoldReceiptCond } from "../reception/holdReceipts";
 import { nextDayStr, type StatementPeriod } from "./shared";
 
 export interface ARAgingRow {
@@ -145,6 +146,8 @@ export interface CustomerStatementResult {
     currentBalance: string;
     /** الرصيد المُرحَّل: قيد OPENING المستورد + (مع from) كل النشاط السابق للفترة. */
     openingBalance: string;
+    /** ش٤ (I11): صافي عرابين المسوّدات المحتجزة (غير المطبَّقة على فاتورة) — سطر إفصاح. */
+    heldDepositsTotal: string;
   };
 }
 
@@ -153,8 +156,24 @@ export interface CustomerStatementResult {
  *  فيظهر الرصيد الجاري «منحرفاً» بلا تفسير في الحركة المعروضة. */
 function customerPaymentLink(customerId: number) {
   return or(
-    eq(invoices.customerId, customerId),
-    and(isNull(receipts.invoiceId), eq(receipts.partyType, "CUSTOMER"), eq(receipts.partyId, customerId))
+    and(
+      eq(invoices.customerId, customerId),
+      // تدقيق ٦/٨ (ث٢/ث٦/ث١٤): إيصالُ أمانة أجرة التوصيل مختومٌ بالفاتورة لأسبابٍ تشغيلية
+      // (ربطُ الأمانة بمستندها) لا لأنّه دفعةٌ من العميل — مالُ طرفٍ ثالث لم يمسّ paidAmount
+      // ولا currentBalance. عرضُه دفعةً كان يُظهر العميل دائناً بقيمة الأجرة ويُنقص رصيده
+      // المُرحَّل بلا سند. البصمة البنيوية: إيصالات التمرير وحدها تحمل partyType='OTHER'،
+      // ودفعاتُ العميل الحقيقية تتركه NULL أو 'CUSTOMER'.
+      sql`(${receipts.partyType} IS NULL OR ${receipts.partyType} <> 'OTHER')`,
+    ),
+    and(
+      isNull(receipts.invoiceId),
+      eq(receipts.partyType, "CUSTOMER"),
+      eq(receipts.partyId, customerId),
+      // ش٤ (V5 دفاعيّ): إيصال احتجازٍ سابق للفاتورة (عربون WO/مسوّدة) ليس «سنداً مستقلاً» —
+      // لم يمسّ currentBalance، وعرضه دفعةً على الحساب يجعل الكشف يكذب (I11). إيصالات
+      // الاحتجاز لا تكتب partyType أصلاً (نمط WO القائم) — الشرط صمّام أمانٍ بنيويّ.
+      sql`NOT (${isPreInvoiceHoldReceiptCond()})`,
+    )
   );
 }
 
@@ -342,6 +361,33 @@ export async function getCustomerStatement(
 
   const openingBalance = await customerOpeningBalance(customerId, from);
 
+  // ش٤ (I11): عرابين المسوّدات المحتجزة للعميل — **سطر إفصاحٍ منفصل** لا حركة كشف: المال
+  // مقبوضٌ فعلاً (إيصال + قيد) لكنه لم يُطبَّق على فاتورةٍ ولم يمسّ الرصيد الجاري. بدونه
+  // يسأل العميل «أين عربوني؟» والكشف صامت. الصافي = Σ COLLECTION(HELD) − ردودها الجزئية.
+  const heldRows = await db
+    .select({
+      id: orderPayments.id,
+      amount: orderPayments.amount,
+      kind: orderPayments.kind,
+      parentPaymentId: orderPayments.parentPaymentId,
+      status: orderPayments.status,
+    })
+    .from(orderPayments)
+    .where(and(eq(orderPayments.customerId, customerId), sql`${orderPayments.kind} IN ('COLLECTION','REFUND')`));
+  let heldDeposits = money(0);
+  const heldCollectionIds = new Set<number>();
+  for (const r of heldRows) {
+    if (r.kind === "COLLECTION" && r.status === "HELD") {
+      heldDeposits = heldDeposits.plus(money(r.amount));
+      heldCollectionIds.add(Number(r.id));
+    }
+  }
+  for (const r of heldRows) {
+    if (r.kind === "REFUND" && r.parentPaymentId != null && heldCollectionIds.has(Number(r.parentPaymentId))) {
+      heldDeposits = heldDeposits.minus(money(r.amount));
+    }
+  }
+
   // أموال بدقّة decimal.js (§٥) — لا Number/toFixed على الأموال.
   // REP-01: الإجماليات المالية تُحسَب على غير الملغاة فقط، اتّساقاً مع customerOpeningBalance الذي
   // يستثني CANCELLED (التزامها أُلغي) ⇒ totalSales/totalPaid لا يخالفان الرصيد المُرحَّل. الصفوف
@@ -417,6 +463,7 @@ export async function getCustomerStatement(
       unpaid: toDbMoney(unpaid),
       currentBalance: String(c.currentBalance ?? "0"),
       openingBalance: toDbMoney(openingBalance),
+      heldDepositsTotal: toDbMoney(heldDeposits),
     },
   };
 }
