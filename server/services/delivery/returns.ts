@@ -17,6 +17,25 @@ export async function returnConsignment(
   actor: DeliveryTxActor & { clientRequestId?: string | null; refundShiftId?: number | null },
 ) {
   return withTx(async (tx) => {
+    // مراجعة PR #495 (عزل الفرع) — الإرجاع صار `cashierProcedure` بقرار المالك ٦/٨، وبخلاف
+    // remit/settle لا يمرّ بـassertPartyInScope في الراوتر (الجهة تُعرَف من الإرسالية لا من
+    // المدخل) ⇒ كاشير فرعٍ كان يعكس فاتورة فرعٍ آخر ومخزونَه ويُنقص عهدة مندوبه ويردّ عربوناً
+    // من أحد أدراجه بمجرّد تمرير مُعرّف إرسالية. الحارس **قبل** إعادة التشغيل idempotent وقبل
+    // أيّ كتابة (قراءة خفيفة بلا قفل — القفل الحقيقيّ أدناه يعيد قراءة الصفّ كاملاً).
+    const scopedBranch =
+      actor.role === "admin" || actor.role === "manager" ? null : (actor.branchId ?? null);
+    if (scopedBranch != null) {
+      const own = (
+        await tx
+          .select({ branchId: deliveryConsignments.branchId })
+          .from(deliveryConsignments)
+          .where(eq(deliveryConsignments.id, consignmentId))
+          .limit(1)
+      )[0];
+      if (own && Number(own.branchId) !== scopedBranch) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخصّ فرعاً آخر" });
+      }
+    }
     if (actor.clientRequestId) {
       const existingId = await findIdempotentRefId(tx, "delivery.return", actor.clientRequestId);
       if (existingId != null) return { consignmentId, reversed: true as const, idempotentReplay: true as const };
@@ -169,18 +188,34 @@ export async function returnConsignment(
     // تدقيق ٦/٨ (ث٢) — **ردّ أمانة أجرة التوصيل** إن قُبضت في الاستقبال ولم تُصرف للمندوب:
     // التوصيل لم يقع، فالأمانة مالُ الزبون لا مالُ المكتبة ولا المندوب. بلا هذا الردّ تبقى
     // في الدرج بلا مالكٍ وتُرحَّل للخزينة كأنها إيراد.
+    //
+    // ⚠️ مراجعة PR #495 (ازدواج ردّ الأمانة): «مقبوضةٌ في الاستقبال» (COUNTER) تُصرَف للمندوب
+    // **لحظة الإسناد** (dispatchInvoice/dispatch: settleFeeNow) بإيصال OUT مرجعُه **رقم
+    // الإرسالية** لا `DLV-FEE-INV-{الفاتورة}` ⇒ الاستعلام القديم كان لا يرى الصرف فيرى الوارد
+    // الأصليّ موجباً ويردّه **ثانيةً**: خروجُ نقدٍ مرّتين مقابل قبضةٍ واحدة، وΣ(DELIVERY_FEE_HELD)
+    // ينقلب −الأجرة بدل صفر (ينسف ثابت «الأمانة مُبرَّأة ⇔ Σ=0»). الآن حارسان:
+    //   (١) `feeSettledAt` — الأمانة غادرت الدرج إلى المندوب فلا التزامَ باقياً يُحرَّر.
+    //   (٢) صافي الإيصالات يشمل صرف الأجرة برقم الإرسالية أيضاً (تصفيةٌ ذاتية للحالات القديمة).
+    // ما دُفع للمندوب فعلاً ثم أراد المالك ردّه للزبون = **مصروفٌ على المكتبة** بسند صرفٍ
+    // صريح، لا تحريرٌ ثانٍ لنفس الأمانة. (يُعلَن للواجهة بـ`feeAlreadyPaidToCourier`.)
     const feeHeldRow = (
       await tx
-        .select({ v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)` })
+        .select({
+          net: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)`,
+          collected: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.referenceNumber} = ${`DLV-FEE-INV-${Number(cn.invoiceId)}`} THEN ${receipts.amount} ELSE 0 END), 0)`,
+        })
         .from(receipts)
         .where(and(
           eq(receipts.invoiceId, Number(cn.invoiceId)),
-          eq(receipts.referenceNumber, `DLV-FEE-INV-${Number(cn.invoiceId)}`),
+          inArray(receipts.referenceNumber, [`DLV-FEE-INV-${Number(cn.invoiceId)}`, String(cn.consignmentNumber)]),
           eq(receipts.status, "COMPLETED"),
         ))
     )[0];
-    const feeHeldNet = round2(money(feeHeldRow?.v ?? "0"));
-    if (feeHeldNet.gt(0)) {
+    const feeHeldNet = round2(money(feeHeldRow?.net ?? "0"));
+    // الإفصاح: أمانةٌ قُبضت فعلاً (وارِدٌ موجب) ثم غادرت الدرج إلى المندوب ⇒ لا التزامَ باقياً
+    // نُحرّره، لكن الكاشير يجب أن يعلم (ردُّها للزبون قرارُ إدارةٍ يُسجَّل مصروفاً).
+    const feeAlreadyPaidToCourier = cn.feeSettledAt != null && round2(money(feeHeldRow?.collected ?? "0")).gt(0);
+    if (feeHeldNet.gt(0) && cn.feeSettledAt == null) {
       const feeShift = await resolveBranchCashShiftTx(tx, Number(cn.branchId), actor.refundShiftId ?? null);
       const drawerNow = await computeExpectedCash(tx, feeShift.shiftId, feeShift.openingBalance);
       if (feeHeldNet.gt(drawerNow)) {
@@ -210,6 +245,13 @@ export async function returnConsignment(
     await tx.update(deliveryConsignments).set({ status: "RETURNED", settledAt: new Date() }).where(eq(deliveryConsignments.id, consignmentId));
     if (actor.clientRequestId) await recordIdempotencyKey(tx, "delivery.return", actor.clientRequestId, consignmentId);
     void party;
-    return { consignmentId, reversed: true as const, invoiceId: Number(cn.invoiceId) };
+    return {
+      consignmentId,
+      reversed: true as const,
+      invoiceId: Number(cn.invoiceId),
+      /** أمانة أجرةٍ صُرفت للمندوب قبل الإرجاع ⇒ لم تُردّ هنا (ردُّها للزبون قرارُ مالكٍ = مصروف). */
+      feeAlreadyPaidToCourier,
+      deliveryFee: String(cn.deliveryFee ?? "0"),
+    };
   });
 }

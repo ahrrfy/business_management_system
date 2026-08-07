@@ -278,8 +278,16 @@ export async function checkoutReceptionInTx(
         : null)
       : null;
 
-    const regularSale = input.regularSale
-      ? await createSaleInTx(tx, {
+    // مراجعة PR #495 — أساس تقريب السلّة المختلطة **خادميّ بالكامل**: مجموع أوامر الشغل
+    // (سعرُها هو ما يُخزَّن فعلاً على الأمر) + إجماليُّ الفاتورة الأخرى **كما حسبه الخادم**
+    // لا كما أرسله العميل. لذلك تُنشأ الفاتورةُ غيرُ الحاملة أوّلاً حين تحمل الأخرى الفرق:
+    // الحاملة وحدها تحتاج «الباقي» لتشتقّ الفرق، فلا يبقى للعميل أثرٌ على المبلغ النهائيّ.
+    const workTotalServerD = round2(
+      normalizedWorkOrders.reduce((sum, order) => sum.plus(money(order.salePrice)), money("0")),
+    );
+    const buildSale = async (basketOthers: string | null) =>
+      input.regularSale
+        ? await createSaleInTx(tx, {
           branchId: input.branchId,
           shiftId: input.shiftId,
           customerId: input.customerId ?? null,
@@ -290,7 +298,7 @@ export async function checkoutReceptionInTx(
           couponCode: input.couponCode?.trim() || null,
           lines: input.regularSale.lines,
           cashRoundIQD: roundDirectCash,
-          cashRoundingOverride: overrideTarget === "SALE" ? input.regularSale.amount : null,
+          cashRoundingBasketOthers: overrideTarget === "SALE" ? basketOthers : null,
           // ش٤: حصة البيع المباشر من المقبوض سلفاً — تدخل paidAmount بلا إيصالٍ ثانٍ (I5)،
           // والدفعة الجديدة payment.amount تُقلَّص بها (الفاتورة تستلم P + N = أمانها الكامل).
           preCollected: money(preSplit.sale).gt(0) ? { amount: preSplit.sale, receiptIds: [] } : null,
@@ -311,8 +319,9 @@ export async function checkoutReceptionInTx(
         }, actor)
       : null;
 
-    const printSale = input.printSale
-      ? await createPrintSaleInTx(tx, {
+    const buildPrint = async (basketOthers: string | null) =>
+      input.printSale
+        ? await createPrintSaleInTx(tx, {
           branchId: input.branchId,
           shiftId: input.shiftId,
           customerId: input.customerId ?? null,
@@ -320,7 +329,7 @@ export async function checkoutReceptionInTx(
           contactPhone: input.contactPhone ?? null,
           priceTier: input.priceTier ?? null,
           lines: input.printSale.lines,
-          cashRoundingOverride: overrideTarget === "PRINT" ? input.printSale.amount : null,
+          cashRoundingBasketOthers: overrideTarget === "PRINT" ? basketOthers : null,
           preCollected: money(preSplit.print).gt(0) ? { amount: preSplit.print, receiptIds: [] } : null,
           payment: {
             // ش٧: المخصَّص فعلاً (الطباعة تُسدَّد كاملةً عند التوصيل بحاملٍ SALE — حارسٌ أعلاه).
@@ -335,6 +344,25 @@ export async function checkoutReceptionInTx(
           priceOverrideApproved: input.priceOverrideApproved === true,
         }, actor)
       : null;
+
+    // ترتيب الإنشاء: غير الحاملة أوّلاً (كي يُعرَف إجماليُّها الخادميّ) ثم الحاملة بأساسها.
+    // بلا تقريبٍ مختلط يبقى الترتيب الأصليّ حرفياً (بيع ⇐ طباعة) — صفر تغيير سلوكيّ.
+    let regularSale: Awaited<ReturnType<typeof buildSale>>;
+    let printSale: Awaited<ReturnType<typeof buildPrint>>;
+    if (overrideTarget === "SALE") {
+      printSale = await buildPrint(null);
+      regularSale = await buildSale(
+        round2(money(printSale?.total ?? "0").plus(workTotalServerD)).toFixed(2),
+      );
+    } else if (overrideTarget === "PRINT") {
+      regularSale = await buildSale(null);
+      printSale = await buildPrint(
+        round2(money(regularSale?.total ?? "0").plus(workTotalServerD)).toFixed(2),
+      );
+    } else {
+      regularSale = await buildSale(null);
+      printSale = await buildPrint(null);
+    }
 
     // ش٦ (V15) — أمانة أجرة توصيل الطلب: إيصال IN نقديّ + قيد DELIVERY_FEE_HELD مربوطان
     // بالفاتورة الحاملة (البيع المباشر ثم الطباعة) — بها يُرفع حظر COUNTER عن dispatchInvoice.

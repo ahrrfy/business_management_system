@@ -581,7 +581,6 @@ export async function refundAppliedCollectionsForWorkOrder(
   const parts = await appliedCollectionsForWorkOrder(tx, args.workOrderId);
   if (!parts.length) return { refunded: "0.00" };
   let cashShift: { shiftId: number; openingBalance: string } | null = null;
-  let cashOutSoFar = money(0);
   let total = money(0);
   for (const part of parts) {
     const amountD = round2(money(part.amount));
@@ -596,14 +595,17 @@ export async function refundAppliedCollectionsForWorkOrder(
         cashShift = { shiftId: resolved.shiftId, openingBalance: resolved.openingBalance };
       }
       shiftId = cashShift.shiftId;
+      // مراجعة PR #495: `computeExpectedCash` يُعاد حسابه في كلّ دورة **بعد** إدراج إيصال OUT
+      // السابقة داخل نفس المعاملة، فهو يعكس المستردّات السابقة أصلاً. جمعُ `cashOutSoFar` فوقه
+      // كان يخصمها مرّتين ⇒ رفضٌ زائف من الحصّة الثانية فصاعداً (درجٌ فيه ١٠٠ وردّان ٤٠: الثانية
+      // تُرفض بحجّة «المتاح ٢٠» بينما المتبقّي ٦٠ فعلاً). المقارنة الآن بالدرج المُعاد حسابه وحده.
       const drawer = await computeExpectedCash(tx, shiftId, cashShift.openingBalance);
-      if (amountD.plus(cashOutSoFar).gt(drawer)) {
+      if (amountD.gt(drawer)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `ردّ عربون الطلب يتجاوز النقد المتوفّر في الدرج (المتاح ${drawer.minus(cashOutSoFar).toFixed(2)} < المطلوب ${amountD.toFixed(2)})`,
+          message: `ردّ عربون الطلب يتجاوز النقد المتوفّر في الدرج (المتاح ${drawer.toFixed(2)} < المطلوب ${amountD.toFixed(2)})`,
         });
       }
-      cashOutSoFar = cashOutSoFar.plus(amountD);
     } else {
       shiftId = await openShiftIdTx(tx, args.actor.userId, args.branchId, "RECEPTION");
     }

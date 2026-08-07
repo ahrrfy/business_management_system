@@ -5,8 +5,17 @@
 // إعادة التشغيل (ملاحظة ٢.١٠): النتيجة **تُعاد بناؤها من مفاتيح idempotency** لا من أعمدة
 // الرأس — نفس منطق isCompleteReplay القائم، فلا تعود workOrderIds فارغةً أبداً.
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq } from "drizzle-orm";
-import { invoices, orderPayments, receptionDraftLines, receptionDrafts, workOrders as workOrdersTable } from "../../../drizzle/schema";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import {
+  invoices,
+  orderPayments,
+  productUnits,
+  productVariants,
+  products,
+  receptionDraftLines,
+  receptionDrafts,
+  workOrders as workOrdersTable,
+} from "../../../drizzle/schema";
 import { findIdempotentRefId } from "../idempotency";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import {
@@ -54,12 +63,56 @@ export interface CommitDraftResult {
   dispatch?: { consignmentNumber: string; codAmount: string; deliveryFee: string } | null;
 }
 
+/**
+ * البيانات الوصفية اللازمة لبناء **مواد** أوامر الشغل من أسطر المسوّدة (مراجعة PR #495):
+ *   • `conversionFactor` لوحدة البيع — بدونه يُستهلك «درزنان» بـ٢ وحداتٍ أساس لا ٢٤ ⇒ مخزونٌ
+ *     مُبالَغ وCOGS منقوص (يخرق §٥: `baseQuantity = quantity × conversionFactor`).
+ *   • `isService` — الخدمة الكتالوجية بلا مخزون: تسجيلُها مادةً يخلق صفّ `workOrderMaterials`
+ *     كاذباً (والاستهلاك لاحقاً يبحث عن رصيد فرعٍ لا وجود له).
+ * المسار المباشر في الواجهة يفعل هذا حرفياً منذ ٢٣/٦؛ مسار المسوّدة كان يفقده لأنّ السطر
+ * المحفوظ لا يحمل إلا (variantId, productUnitId, quantity) ⇒ نُعيد الاستعلام هنا داخل المعاملة.
+ */
+export interface DraftLineMeta {
+  /** productUnitId → معامل التحويل للوحدة الأساس. */
+  factorByUnit: Map<number, number>;
+  /** variantId → أهي خدمةٌ بلا مخزون؟ */
+  serviceByVariant: Map<number, boolean>;
+}
+
+async function loadDraftLineMeta(
+  tx: Tx,
+  lines: Array<typeof receptionDraftLines.$inferSelect>,
+): Promise<DraftLineMeta> {
+  const customs = lines.filter((l) => l.lineKind === "CUSTOM" && l.variantId != null);
+  const unitIds = Array.from(new Set(customs.map((l) => Number(l.productUnitId)).filter((n) => Number.isFinite(n) && n > 0)));
+  const variantIds = Array.from(new Set(customs.map((l) => Number(l.variantId))));
+  const factorByUnit = new Map<number, number>();
+  const serviceByVariant = new Map<number, boolean>();
+  if (unitIds.length) {
+    const rows = await tx
+      .select({ id: productUnits.id, factor: productUnits.conversionFactor })
+      .from(productUnits)
+      .where(inArray(productUnits.id, unitIds));
+    for (const r of rows) factorByUnit.set(Number(r.id), Number(r.factor) || 1);
+  }
+  if (variantIds.length) {
+    const rows = await tx
+      .select({ id: productVariants.id, isService: products.isService })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, variantIds));
+    for (const r of rows) serviceByVariant.set(Number(r.id), !!r.isService);
+  }
+  return { factorByUnit, serviceByVariant };
+}
+
 /** تجسيد أسطر المسوّدة إلى مدخل حدّ الالتزام القائم — كل الحرّاس القائمة تعمل كما هي. */
 function materialize(
   draft: typeof receptionDrafts.$inferSelect,
   lines: Array<typeof receptionDraftLines.$inferSelect>,
   input: CommitDraftInput,
   heldNet: ReturnType<typeof money>,
+  meta: DraftLineMeta,
 ): ReceptionCheckoutInput {
   const goods = lines.filter((l) => l.lineKind === "GOODS");
   const prints = lines.filter((l) => l.lineKind === "PRINT");
@@ -130,14 +183,19 @@ function materialize(
       deliveryAddress: string; deliveryPhone: string; deliveryCost: string;
       deliveryFeeCollection: "COURIER" | "COUNTER" | "SHOP";
     }>;
+    // مواد الأمر — **مرآة المسار المباشر حرفياً** (مراجعة PR #495): الخدمة الكتالوجية بلا مواد،
+    // وغيرها يستهلك `الكمية × معامل التحويل` بالوحدة الأساس (§٥) لا كمية وحدة البيع الخام.
+    const qtyInt = Math.max(1, Math.trunc(Number(l.quantity)));
+    const variantId = l.variantId != null ? Number(l.variantId) : null;
+    const isServiceVariant = variantId != null && meta.serviceByVariant.get(variantId) === true;
+    const factor = l.productUnitId != null ? (meta.factorByUnit.get(Number(l.productUnitId)) ?? 1) : 1;
     return {
-      baseVariantId: l.variantId != null ? Number(l.variantId) : null,
+      baseVariantId: variantId,
       title: l.title ?? "خدمة / أمر شغل",
       customizationText: l.customizationText ?? null,
-      quantity: Math.max(1, Math.trunc(Number(l.quantity))),
-      // المواد كنمط الواجهة الحالي: المنتج الأساس يستهلك كميته (خدمة خالصة بلا مواد).
-      materials: l.variantId != null
-        ? [{ variantId: Number(l.variantId), baseQuantity: Math.max(1, Math.trunc(Number(l.quantity))) }]
+      quantity: qtyInt,
+      materials: variantId != null && !isServiceVariant
+        ? [{ variantId, baseQuantity: Math.max(1, Math.round(qtyInt * factor)) }]
         : [],
       laborCost: s.laborCost ? money(s.laborCost).toFixed(2) : "0",
       salePrice: money(l.lineTotal).toFixed(2),
@@ -353,7 +411,8 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       }
     }
 
-    const checkoutInput = materialize(draft, lines, input, heldNet);
+    const lineMeta = await loadDraftLineMeta(tx, lines);
+    const checkoutInput = materialize(draft, lines, input, heldNet, lineMeta);
     const result = await checkoutReceptionInTx(tx, checkoutInput, actor);
 
     // ش٤ (§٧.٣ خطوة ٦): تخصيص المحتجز على المستندات بنفس حصص الجشع الخادميّ (preSplit) —

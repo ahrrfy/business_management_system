@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { cashierProcedure, deliveryReadProcedure, managerProcedure, router, workordersCashierProcedure } from "../trpc";
+import { cashierProcedure, deliveryReadProcedure, managerProcedure, router, storeFulfillProcedure, workordersCashierProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 import {
   createDeliveryParty,
@@ -242,16 +242,20 @@ export const deliveryRouter = router({
     }),
 
   // إرجاع إرسالية (عكس بيع + مخزون + عهدة + ذمّة العميل).
+  // قرار المالك (٦/٨/٢٦): **موظّف التسوية يُنفّذها** لا المدير وحده — هذه ليست «مرتجع زبون»
+  // (م٧) بل بضاعةٌ لم تُسلَّم أصلاً وعادت مع المندوب، وحصرُها بالمدير كان يوقف التسوية حتى
+  // يحضر. الضبط بالإفصاح: كل إرجاعٍ يُسجَّل في التدقيق باسم فاعله (logAudit أدناه)، والعملية
+  // محصورةٌ بنيوياً بإرساليةٍ لم يُحصَّل منها شيء وفاتورةٍ لم يُرجَع منها سلفاً.
   //
-  // ⚠️ **قرار المالك (٦/٨/٢٦) مُعلَّق التنفيذ**: طلب أن يُنفّذها **موظّف التسوية** لا المدير
-  // وحده (بضاعةٌ لم تُسلَّم وعادت مع المندوب — ليست «مرتجع زبون» م٧)، وحصرُها بالمدير يوقف
-  // التسوية حتى يحضر. أُعيدت مؤقّتاً إلى managerProcedure لأنّ الفتح المباشر تركها **بلا عزل
-  // فرع**: بخلاف remit/settle المجاورتين لا تستدعي assertPartyInScope ولا تقارن الخدمةُ
+  // القرار كان **مُعلَّقاً** (أُعيدت مؤقّتاً لـmanagerProcedure) لأنّ الفتح المباشر تركها بلا
+  // عزل فرع: بخلاف remit/settle المجاورتين لا تستدعي assertPartyInScope ولا تقارن الخدمةُ
   // actor.branchId بفرع الإرسالية ⇒ كاشير فرعٍ يعكس فاتورة فرعٍ آخر ومخزونه ويسحب من درجه
-  // (أكّدته مراجعة Codex على PR #495، وحارس authz-guard يرفض بوّابة الدور الخام).
-  // **التنفيذ الصحيح المطلوب**: بوّابة وحدةٍ (لا دورٍ خام) على `branchScopedProcedure` +
-  // فحص ملكية الفرع داخل `returnConsignment` قبل الردّ الـidempotent وقبل المعاملة المدمِّرة.
-  returnConsignment: managerProcedure
+  // (مراجعة Codex على PR #495). **وقد نُفِّذ الآن بالشكل الصحيح المطلوب حرفياً**:
+  //   (١) بوّابة **وحدة** لا دورٍ خام: `storeFulfillProcedure` = مفتاح `store=FULL` (قالب
+  //       الكاشير يملكه والمنح/التقييد الصريح يُطاع) + فرعٌ مُسنَد إلزاميّ ⇒ authz-guard أخضر.
+  //   (٢) فحص ملكية الفرع **داخل** `returnConsignment` قبل الردّ الـidempotent وقبل المعاملة
+  //       المدمِّرة (الجهة تُشتقّ من الإرسالية لا من المدخل، فلا يحميها حارسٌ راوتريّ).
+  returnConsignment: storeFulfillProcedure
     .input(z.object({
       consignmentId: z.number().int().positive(),
       clientRequestId: z.string().max(64).nullish(),

@@ -175,19 +175,25 @@ export async function syncDraft(
     // I3 (ش٤ — بالجمع الفعليّ): مسوّدة مموّلة (أ) لا يُحذف بندٌ منها (المال قُبض على سلةٍ
     // بعينها — الحذف بابُ «اقبض ٣٠٠ﻙ ثم صفّر السلة») و(ب) لا يهبط إجماليها دون صافي المقبوض.
     if (row.moneyLocked) {
-      const existingCount = (
-        await tx
-          .select({ n: sql<number>`COUNT(*)` })
-          .from(receptionDraftLines)
-          .where(eq(receptionDraftLines.draftId, input.draftId))
-      )[0];
-      if (input.lines.length < Number(existingCount?.n ?? 0)) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "الطلب عليه مبلغٌ مقبوض — لا يُحذف بندٌ منه؛ ردّ العربون أولاً أو أكمل بالإلغاء المديريّ",
-        });
-      }
       const heldNet = await heldNetOfDraft(tx, input.draftId);
+      // مراجعة PR #495: `moneyLocked` **لاصقٌ أبداً** (عمودُ التدقيق وبوّابة الإلغاء المديريّ) —
+      // فربطُ منع الحذف به وحده كان يُبقي المنع سارياً حتى بعد ردّ العربون كاملاً (heldNet=0)،
+      // فيتعذّر إزالة بندٍ خاطئ للأبد رغم أنّ الرسالة نفسها تقول «ردّ العربون أولاً». المنع الآن
+      // مربوطٌ بوجود **رصيدٍ محتجَزٍ فعليّ**؛ والعَلَم يبقى للتدقيق وللسلطة المديرية بلا تغيير.
+      if (heldNet.gt(0)) {
+        const existingCount = (
+          await tx
+            .select({ n: sql<number>`COUNT(*)` })
+            .from(receptionDraftLines)
+            .where(eq(receptionDraftLines.draftId, input.draftId))
+        )[0];
+        if (input.lines.length < Number(existingCount?.n ?? 0)) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "الطلب عليه مبلغٌ مقبوض — لا يُحذف بندٌ منه؛ ردّ العربون أولاً أو أكمل بالإلغاء المديريّ",
+          });
+        }
+      }
       if (totals.total.lt(heldNet)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",

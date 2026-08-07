@@ -1,23 +1,24 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 789,
+    "trpcTotal": 790,
     "byKind": {
       "mutation": 399,
-      "query": 390
+      "query": 391
     },
     "byAuthority": {
-      "module-gate": 354,
+      "module-gate": 355,
       "module-map": 242,
       "admin": 73,
-      "raw-role": 60,
+      "raw-role": 59,
       "none": 53,
       "platform": 5,
+      "device-bootstrap": 1,
       "self-assignment": 1,
       "token": 1
     },
     "bySensitivity": {
-      "LOW": 389,
+      "LOW": 390,
       "MEDIUM": 302,
       "HIGH": 98
     },
@@ -29,7 +30,7 @@
       "treasury": 52,
       "products": 48,
       "inventory": 37,
-      "store": 36,
+      "store": 37,
       "campaigns": 28,
       "crm": 28,
       "workorders": 27,
@@ -54,7 +55,7 @@
       "NO_BRANCH_SCOPE": 123,
       "SENSITIVE_ACTION": 98,
       "ADMIN_ONLY": 76,
-      "RAW_ROLE_GATE": 70,
+      "RAW_ROLE_GATE": 69,
       "UNAUTHENTICATED": 32,
       "READ_WITHOUT_MODULE_GATE": 30,
       "WRITE_WITHOUT_MODULE_GATE": 23,
@@ -64,17 +65,17 @@
     "expressMounts": 10,
     "jobs": 6,
     "routerFiles": 86,
-    "proposedPermissions": 670,
+    "proposedPermissions": 671,
     "proposedDomains": {
       "hr": 83,
       "catalog": 63,
       "inventory": 62,
       "treasury": 59,
       "reports": 58,
-      "iam": 39,
+      "iam": 40,
       "sales": 38,
+      "store": 37,
       "admin": 36,
-      "store": 36,
       "crm": 30,
       "marketing": 28,
       "workorders": 27,
@@ -84,8 +85,8 @@
       "digitalcards/sales": 14,
       "digitalcards/wallets": 14,
       "tasks": 13,
-      "delivery": 12,
       "storefront": 12,
+      "delivery": 11,
       "digitalcards/pricing": 11,
       "kiosk": 11,
       "channels": 10,
@@ -802,7 +803,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/authRouter.ts:572"
+      "loc": "server/routers/authRouter.ts:637"
     },
     {
       "surface": "trpc",
@@ -819,7 +820,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/authRouter.ts:138"
+      "loc": "server/routers/authRouter.ts:181"
     },
     {
       "surface": "trpc",
@@ -836,7 +837,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/authRouter.ts:555"
+      "loc": "server/routers/authRouter.ts:620"
     },
     {
       "surface": "trpc",
@@ -853,7 +854,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/authRouter.ts:121"
+      "loc": "server/routers/authRouter.ts:164"
     },
     {
       "surface": "trpc",
@@ -870,7 +871,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/authRouter.ts:644"
+      "loc": "server/routers/authRouter.ts:711"
+    },
+    {
+      "surface": "trpc",
+      "router": "authRouter",
+      "proposedPermission": "iam.auth.native_device_challenge",
+      "name": "nativeDeviceChallenge",
+      "kind": "query",
+      "procedure": "nativeBootstrapProcedure",
+      "authority": "device-bootstrap",
+      "module": "",
+      "level": "",
+      "roles": "current-native-client",
+      "branch": "device",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/authRouter.ts:162"
     },
     {
       "surface": "trpc",
@@ -887,7 +905,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/authRouter.ts:674"
+      "loc": "server/routers/authRouter.ts:741"
     },
     {
       "surface": "trpc",
@@ -904,7 +922,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: revoke",
       "flags": "WRITE_WITHOUT_MODULE_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/authRouter.ts:629"
+      "loc": "server/routers/authRouter.ts:696"
     },
     {
       "surface": "trpc",
@@ -921,7 +939,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: revoke",
       "flags": "WRITE_WITHOUT_MODULE_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/authRouter.ts:658"
+      "loc": "server/routers/authRouter.ts:725"
     },
     {
       "surface": "trpc",
@@ -938,7 +956,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/authRouter.ts:136"
+      "loc": "server/routers/authRouter.ts:179"
     },
     {
       "surface": "trpc",
@@ -955,7 +973,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/authRouter.ts:490"
+      "loc": "server/routers/authRouter.ts:555"
     },
     {
       "surface": "trpc",
@@ -972,7 +990,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/authRouter.ts:533"
+      "loc": "server/routers/authRouter.ts:598"
     },
     {
       "surface": "trpc",
@@ -989,7 +1007,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/authRouter.ts:481"
+      "loc": "server/routers/authRouter.ts:546"
     },
     {
       "surface": "trpc",
@@ -1006,7 +1024,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/authRouter.ts:469"
+      "loc": "server/routers/authRouter.ts:534"
     },
     {
       "surface": "trpc",
@@ -1023,7 +1041,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/authRouter.ts:466"
+      "loc": "server/routers/authRouter.ts:531"
     },
     {
       "surface": "trpc",
@@ -1040,7 +1058,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/authRouter.ts:336"
+      "loc": "server/routers/authRouter.ts:390"
     },
     {
       "surface": "trpc",
@@ -3901,19 +3919,19 @@
     {
       "surface": "trpc",
       "router": "deliveryRouter",
-      "proposedPermission": "delivery.delivery.return_consignment",
+      "proposedPermission": "store.delivery.return_consignment",
       "name": "returnConsignment",
       "kind": "mutation",
-      "procedure": "managerProcedure",
-      "authority": "raw-role",
-      "module": "",
-      "level": "",
-      "roles": "manager",
-      "branch": "none",
+      "procedure": "storeFulfillProcedure",
+      "authority": "module-gate",
+      "module": "store",
+      "level": "FULL",
+      "roles": "manager|cashier|sales_rep",
+      "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/deliveryRouter.ts:254"
+      "flags": "",
+      "loc": "server/routers/deliveryRouter.ts:258"
     },
     {
       "surface": "trpc",
@@ -3947,7 +3965,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: settle",
       "flags": "RAW_ROLE_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/deliveryRouter.ts:273"
+      "loc": "server/routers/deliveryRouter.ts:277"
     },
     {
       "surface": "trpc",
@@ -3981,7 +3999,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: writeoff",
       "flags": "RAW_ROLE_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/deliveryRouter.ts:294"
+      "loc": "server/routers/deliveryRouter.ts:298"
     },
     {
       "surface": "trpc",
@@ -13807,7 +13825,7 @@
     {
       "kind": "interval",
       "file": "server/routers/authRouter.ts",
-      "line": 57
+      "line": 72
     },
     {
       "kind": "interval",

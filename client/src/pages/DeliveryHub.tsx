@@ -13,6 +13,7 @@ import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { cn } from "@/lib/utils";
 import { printDoc } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
@@ -250,9 +251,19 @@ function SettleTab() {
   // مرآة بوّابتي الخادم: recordRemittance = cashierProcedure، وreturnConsignment = managerProcedure
   // (بوّابتا أدوار صِرفتان بلا مفتاح وحدة — القائمة الحرفية هي المطابقة الدقيقة، وadmin يمرّ ضمنياً).
   const canRemit = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
-  // ⚠️ قرار المالك (٦/٨/٢٦) بفتحها لموظّف التسوية **مُعلَّق** حتى تُبنى بوّابة وحدةٍ بعزل فرع
-  // (الفتح المباشر تركها بلا عزل ⇒ كاشير فرعٍ يعكس فاتورة فرعٍ آخر). مرآةُ بوّابة الخادم.
-  const canReturn = ["admin", "manager"].includes(me.data?.role ?? "");
+  // قرار المالك (٦/٨/٢٦) — صار **نافذاً** بعد بناء عزل الفرع (كان معلَّقاً بالمدير مؤقّتاً):
+  // إرجاع إرسالية المندوب بيد موظّف التسوية نفسه — بضاعةٌ لم تُسلَّم وعادت، لا مرتجع زبون.
+  // البوّابة الخادمية `storeFulfillProcedure` (وحدة store=FULL لأدوار manager/cashier/sales_rep)
+  // ⇒ نستعمل **نفس دالة الخادم** هنا لا قائمة أدوارٍ حرفية، فتُحترَم المنوح/القيود الصريحة
+  // بلا تباعُد بين الطرفين.
+  const canReturn = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["manager", "cashier", "sales_rep"],
+    );
   const [partyId, setPartyId] = useState<string>("");
   const cons = trpc.delivery.openConsignments.useQuery({ partyId: Number(partyId) }, { enabled: !!partyId });
   const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "RETURNED"; collected: string }>>({});
@@ -273,7 +284,20 @@ function SettleTab() {
     onError: (e) => notify.err(e),
   });
   const ret = trpc.delivery.returnConsignment.useMutation({
-    onSuccess: () => { notify.ok("أُرجعت الإرسالية"); utils.delivery.openConsignments.invalidate(); utils.delivery.listParties.invalidate(); },
+    onSuccess: (r) => {
+      // مراجعة PR #495: أمانة الأجرة المصروفة للمندوب سلفاً **لا تُردّ** هنا (لا التزامَ باقياً
+      // — تحريرُها ثانيةً كان يُخرج نقداً مرّتين). يُفصَح عنها كي يقرّر المالك ردَّها مصروفاً.
+      if ((r as { feeAlreadyPaidToCourier?: boolean })?.feeAlreadyPaidToCourier) {
+        notify.warn(
+          "أُرجعت الإرسالية — أجرة التوصيل صُرفت للمندوب سلفاً",
+          `أجرة ${fmt((r as { deliveryFee?: string }).deliveryFee ?? 0)} د.ع خرجت من الدرج للمندوب لحظة الإسناد ولم تُردّ. ردُّها للزبون قرارُ إدارةٍ يُسجَّل سند صرف (مصروف على المكتبة).`,
+        );
+      } else {
+        notify.ok("أُرجعت الإرسالية");
+      }
+      utils.delivery.openConsignments.invalidate();
+      utils.delivery.listParties.invalidate();
+    },
     onError: (e) => notify.err(e),
   });
 

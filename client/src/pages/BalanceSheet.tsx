@@ -43,7 +43,12 @@ export default function BalanceSheet() {
       { label: "الصكوك المقبوضة", v: p.check },
       { label: "التحويلات المصرفية", v: p.transfer },
       { label: "المحافظ الإلكترونية", v: p.wallet },
+      // مراجعة PR #495: بنودٌ يحتسبها إجمالي الأصول ولم تكن معروضةً في الجدول (فلا يجمع لمجموعه) —
+      // رصيد زين وعهدة المناديب ورصيدنا لدى الصرّافين. «لا دينار بلا مسار وتبويب».
+      { label: "رصيد زين (اتصالات)", v: p.telecom },
       { label: "رصيدنا لدى مزوّدي البطاقات", v: p.digitalWalletAsset },
+      { label: "عهدة مناديب التوصيل (غير المدعومة بذمّة)", v: p.deliveryFloat },
+      { label: "رصيدنا لدى الصرّافين", v: p.exchangeDebit },
       { label: "الذمم المدينة (عملاء)", v: p.arDebit },
       { label: "سُلف للموردين", v: p.apDebit },
       { label: "المخزون (بالتكلفة)", v: p.inventory },
@@ -53,10 +58,26 @@ export default function BalanceSheet() {
       { label: "الذمم الدائنة (موردون)", v: p.apCredit },
       { label: "سُلف العملاء", v: p.arCredit },
       // FIN-05: عرابين طلبات خدمة العملاء غير المُسلَّمة — التزامٌ يقابل النقد الداخل (الخدمة لم تُنجَز بعد).
+      // مراجعة PR #495: يشمل عرابين الطلبات المحفوظة المفتوحة (تُفصَّل في السطر التالي).
       { label: "سُلف عملاء (عرابين طلبات خدمة)", v: p.customerAdvances },
+      { label: "ما نَدين به للصرّافين", v: p.exchangeCredit },
     ].filter((r) => D(r.v).gt(0));
     return { assets, liabilities };
   }, [p]);
+
+  // مراجعة PR #495 — إفصاحٌ نصّي عن البندين اللذين يسهل أن يُقرآ خطأً: الجزء المستبعَد من عهدة
+  // المناديب (لأنّه ذمّةُ عميلٍ محسوبةٌ سلفاً — منعُ ازدواج)، وحصّة عرابين الطلبات المحفوظة.
+  const disclosure = p
+    ? [
+        D(p.deliveryFloatCustomerBacked).gt(0)
+          ? `من عهدة المناديب ${fmtAr(p.deliveryFloatCustomerBacked)} مدعومةٌ بذمّة عميلٍ مسجَّل ⇒ معروضةٌ ضمن «الذمم المدينة» ولا تُحتسب أصلاً مرّتين.`
+          : "",
+        D(p.draftAdvances).gt(0)
+          ? `ومن «سُلف العملاء» ${fmtAr(p.draftAdvances)} عرابينُ طلباتٍ محفوظةٍ ما زالت مفتوحة.`
+          : "",
+      ].filter(Boolean).join(" ")
+    : "";
+  const fullNote = [NOTE, disclosure, p?.historicalNote ?? ""].filter(Boolean).join(" ");
 
   const kpis: KpiItem[] = p
     ? [
@@ -99,7 +120,7 @@ export default function BalanceSheet() {
         { label: "كما في", value: p.asOf ? fmtDate(new Date(`${p.asOf}T00:00:00`)) : fmtDate(new Date()) },
         { label: "الفرع", value: branchLabel },
       ],
-      note: p.historicalNote ? `${NOTE} ${p.historicalNote}` : NOTE,
+      note: fullNote,
       columns: [
         { key: "label", label: "البند" },
         { key: "amount", label: "القيمة", align: "left" },
@@ -118,7 +139,7 @@ export default function BalanceSheet() {
     <ReportShell
       title="الميزانية العمومية"
       description="لقطة مبسّطة: أصول / خصوم / حقوق ملكية."
-      note={p?.historicalNote ? `${NOTE} ${p.historicalNote}` : NOTE}
+      note={fullNote}
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}

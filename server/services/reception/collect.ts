@@ -9,13 +9,39 @@
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { deliveryConsignments, invoices, shifts } from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, type Tx } from "../../db";
 import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { processPayment } from "../sale/payment";
 import { getOpenShift } from "../shiftService";
 import { type Actor } from "../tx";
 import { assertTelecomCollectAllowed } from "./telecom";
 import type { CollectOnInvoiceInput } from "./types";
+
+/**
+ * فاتورةٌ إرساليتها **بالطريق** مع المندوب لا تُحصَّل في الكاونتر (مراجعة عدائية ٥/٨): يزدوج
+ * التحصيل مع توريد المندوب (paidAmount يتجاوز total، ذمّةٌ سالبة، قيدا PAYMENT_IN لبيعٍ واحد،
+ * أو عهدةٌ لا تُغلق). التحصيل مسارُه التوريد؛ ولو عاد الزبون للكاونتر تُعاد الإرسالية أولاً.
+ *
+ * ⚠️ مراجعة PR #495 (سباق TOCTOU): كان الفحص قراءةً **قبل** معاملة الدفع — إسنادٌ متزامن يُنشئ
+ * إرسالية DISPATCHED بعد القراءة وقبل قفل الفاتورة، فيمرّ القبض على فاتورةٍ كامل COD‏ها صار
+ * عهدةً على مندوب. يُنفَّذ الآن كـ`preInsertCheck` **داخل** معاملة processPayment بعد قفل
+ * الفاتورة `FOR UPDATE` — ونفس الصفّ يقفله `dispatchInvoiceInTx` ⇒ المساران متسلسلان حتماً.
+ */
+async function assertNoInTransitConsignment(tx: Tx, invoiceId: number) {
+  const inTransit = (
+    await tx
+      .select({ n: deliveryConsignments.consignmentNumber, st: deliveryConsignments.status })
+      .from(deliveryConsignments)
+      .where(eq(deliveryConsignments.invoiceId, invoiceId))
+      .limit(1)
+  )[0];
+  if (inTransit && (inTransit.st === "DISPATCHED" || inTransit.st === "PARTIAL")) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `الفاتورة بالطريق مع المندوب (إرسالية ${inTransit.n}) — التحصيل عبر توريد المندوب، أو أعد الإرسالية أولاً`,
+    });
+  }
+}
 
 export async function collectOnReceptionInvoice(
   input: CollectOnInvoiceInput,
@@ -44,23 +70,6 @@ export async function collectOnReceptionInvoice(
       message: "هذه الفاتورة خارج نطاق محطة خدمة الزبائن — تُسدَّد من شاشة الفواتير",
     });
   }
-  // مراجعة عدائية (٥/٨): فاتورةٌ إرساليتها **بالطريق** مع المندوب — التسديد في الكاونتر يزدوج
-  // مع تحصيل المندوب (paidAmount يتجاوز total وذمّةٌ سالبة وقيدا PAYMENT_IN لبيعٍ واحد، أو
-  // عهدة مندوبٍ دائمة). التحصيل مسارُه التوريد؛ ولو عاد الزبون للكاونتر تُعاد الإرسالية أولاً.
-  const inTransit = (
-    await db
-      .select({ n: deliveryConsignments.consignmentNumber, st: deliveryConsignments.status })
-      .from(deliveryConsignments)
-      .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
-      .limit(1)
-  )[0];
-  if (inTransit && (inTransit.st === "DISPATCHED" || inTransit.st === "PARTIAL")) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: `الفاتورة بالطريق مع المندوب (إرسالية ${inTransit.n}) — التحصيل عبر توريد المندوب، أو أعد الإرسالية أولاً`,
-    });
-  }
-
   // «سيدخل المبلغ درجك أنت» (§٨.٥): الدفعة تُنسَب لوردية **القابض** الحاليّ لا لوردية الفاتورة
   // الأصلية — الموظّف يُحاسَب على ما استلمه هو (تأكيد المالك ٥/٨). تفضيل وردية الاستقبال.
   const myShift =
@@ -87,16 +96,19 @@ export async function collectOnReceptionInvoice(
       // بمعاملةٍ مستقلّة قبل النداء كان يفتح TOCTOU (كودٌ واحد يُقبَض مرّتين تحت التزامن —
       // أقفال فجوة الحارس تتحرّر قبل إدراج الإيصال) ويرفض الـreplay المشروع بـCONFLICT
       // (الحارس يصطدم بإيصال العملية الأولى نفسها). الخطّاف يُنفَّذ بعد مسار الـreplay.
-      preInsertCheck: input.method === "TELECOM"
-        ? async (tx) => {
-            await assertTelecomCollectAllowed(tx, {
-              userId: actor.userId,
-              branchId: Number(inv.branchId),
-              amount: input.amount,
-              reference: input.reference,
-            });
-          }
-        : undefined,
+      // مراجعة PR #495: حارس «الإرسالية بالطريق» انضمّ لنفس الخطّاف — لعلّته حرفياً (فحصٌ
+      // خارج المعاملة = نافذة سباقٍ بين القراءة وقفل الفاتورة).
+      preInsertCheck: async (tx) => {
+        await assertNoInTransitConsignment(tx, input.invoiceId);
+        if (input.method === "TELECOM") {
+          await assertTelecomCollectAllowed(tx, {
+            userId: actor.userId,
+            branchId: Number(inv.branchId),
+            amount: input.amount,
+            reference: input.reference,
+          });
+        }
+      },
     },
     actor,
   ));

@@ -886,18 +886,21 @@ export default function Reception() {
     setCart((prev) => prev.map((c) => (c.custom ? c : { ...c, row: { ...c.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
   }
 
-  // نقطة التزام خادمية واحدة للسلة الهجينة: بيع + طباعة + أوامر شغل.
+  // نقطة التزام خادمية واحدة للسلة الهجينة: بيع + طباعة + أوامر شغل + **إسناد التوصيل** (PR #495).
   const checkoutM = trpc.workOrders.receptionCheckout.useMutation();
-  // ش٦: إسناد فاتورة الطلب للتوصيل تلقائياً **بعد** التثبيت — فشله لا يمسّ الالتزام المالي.
-  const dispatchOrderM = trpc.delivery.dispatchInvoice.useMutation();
 
   // ───── ش٢: المسوّدة المُرقّاة (حفظ/استئناف/مزامنة) ─────────────────────────
-  /** تحويل السلّة الحالية إلى حمولة مسوّدة (الخصم اليدويّ مطويّ في unitPrice الفعّال). */
-  function buildDraftPayload() {
+  /** تحويل السلّة الحالية إلى حمولة مسوّدة (الخصم اليدويّ مطويّ في unitPrice الفعّال).
+   *  `customerIdOverride` (مراجعة PR #495): عند «احفظه كعميل» أثناء التثبيت يعود المعرّف من
+   *  `ensureCustomerId()` فوراً بينما `setCustomer` **لا يُحدِّث** المتغيّر الملتقَط في هذا
+   *  الاستدعاء (React لا يزامن الحالة داخل نفس الدورة) ⇒ كانت المسوّدة تُزامَن بـ`customerId:null`
+   *  فتُثبَّت الفاتورة/أوامر الشغل باسمٍ عابرٍ لا بالعميل الذي أُنشئ للتوّ. نمرّره صراحةً. */
+  function buildDraftPayload(customerIdOverride?: number | null) {
+    const effectiveCustomerId = customerIdOverride ?? customer.customerId ?? null;
     const header = {
-      customerId: customer.customerId ?? null,
-      contactName: customer.customerId == null ? (customer.name.trim() || null) : null,
-      contactPhone: customer.customerId == null ? (customer.phone?.trim() || null) : null,
+      customerId: effectiveCustomerId,
+      contactName: effectiveCustomerId == null ? (customer.name.trim() || null) : null,
+      contactPhone: effectiveCustomerId == null ? (customer.phone?.trim() || null) : null,
       priceTier: effectiveTier,
       channel,
     };
@@ -1139,7 +1142,11 @@ export default function Reception() {
     const directFloorD = cashRoundActive
       ? effectiveGrandD
       : round2(sumDirectD.plus(mixedDeltaAppliedD));
-    if (appliedPaidD.plus(heldD).lt(directFloorD)) {
+    // مراجعة PR #495 — مرآة حارس الخادم حرفياً (`!input.delivery && applied.lt(directTotal)`):
+    // طلبٌ يُسنَد لمندوبٍ **الدفعُ فيه عند الاستلام**، فاشتراط تغطية البضاعة نقداً الآن كان
+    // يستحيل معه بيعُ COD أصلاً (وإدخالُ المبلغ لإسكات الحارس يسجّله نقداً في الدرج ⇒ عهدةُ
+    // المندوب صفر ونقدٌ لم يُقبَض). المتبقّي يصير عهدةً عليه داخل نفس معاملة التثبيت.
+    if (!orderDelivery && appliedPaidD.plus(heldD).lt(directFloorD)) {
       notify.err(`المبلغ المقبوض (مع العربون السابق) يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(directFloorD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
       return;
     }
@@ -1257,6 +1264,24 @@ export default function Reception() {
         };
       });
 
+      // ش٧ + مراجعة PR #495 — **الإسناد داخل معاملة التثبيت**: كانت الواجهة تُتمّ الطلب ثم
+      // تنادي `delivery.dispatchInvoice` في معاملةٍ تالية، فتُنتج نافذةً تكون فيها الفاتورة بلا
+      // دافعٍ ولا حاملِ عهدة (وفشلُ الإسناد يتركها يتيمةً بلا مندوب). الخادم يدعم `delivery`
+      // على المسارين (receptionCheckout/draftCommit) منذ ش٧ — نمرّرها الآن فيصيران ذرّةً واحدة:
+      // إمّا (فاتورة + عهدة مندوب) معاً وإمّا لا شيء. أوامر الشغل وحدها بلا فاتورةٍ حاملة
+      // تبقى استثناءً مُعلَناً (تحذيرٌ بعد التثبيت) — الخادم يرفض `delivery` بلا فاتورة.
+      const hasCarrierInvoice = regularLines.length > 0 || printLines.length > 0;
+      const deliveryPayload = orderDelivery && hasCarrierInvoice
+        ? {
+            partyId: orderDelivery.partyId,
+            fee: orderDelivery.fee?.trim() ? orderDelivery.fee : "0",
+            feeCollection: orderDelivery.feeCollection,
+            recipientName: orderDelivery.recipientName || undefined,
+            recipientPhone: orderDelivery.recipientPhone || undefined,
+            address: orderDelivery.address || undefined,
+          }
+        : undefined;
+
       // ش٣: طلبٌ محفوظٌ (مسوّدة نشطة) يُثبَّت **من مسوّدته** ذرّياً عبر reception.draftCommit —
       // idempotency ثلاثية (version + FOR UPDATE + commitRequestId الخادمي). قبله «تفريغُ
       // مزامنةٍ» متزامنٌ يقتل سباق «عدّلتُ ثم ثبّتُّ قبل نبضة الـdebounce»، وexpectedTotal
@@ -1273,7 +1298,8 @@ export default function Reception() {
               const synced = await syncM.mutateAsync({
                 draftId: live.id,
                 version: live.version,
-                ...buildDraftPayload(),
+                // مراجعة PR #495: العميل المُنشأ للتوّ يُمرَّر صراحةً (حالة React لم تُحدَّث بعد).
+                ...buildDraftPayload(customerId),
               });
               commitVersion = synced.version;
             } catch (syncErr) {
@@ -1293,6 +1319,8 @@ export default function Reception() {
               cashRoundIQD: cashRoundActive || mixedRoundApplied,
               // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
               deliveryFeeHeld: orderFeeHeldD.gt(0) ? orderFeeHeldD.toFixed(2) : undefined,
+              // مراجعة PR #495: الإسناد داخل نفس معاملة التثبيت (لا نداءً لاحقاً).
+              delivery: deliveryPayload,
               managerApproval: mgrCredsRef.current ?? undefined,
             });
             setActiveDraft(null);
@@ -1316,6 +1344,8 @@ export default function Reception() {
         cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
         // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
         deliveryFeeHeld: orderFeeHeldD.gt(0) ? orderFeeHeldD.toFixed(2) : undefined,
+        // مراجعة PR #495: الإسناد داخل نفس معاملة البيع (ذرّية الفاتورة + عهدة المندوب).
+        delivery: deliveryPayload,
         // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
         managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
@@ -1362,35 +1392,23 @@ export default function Reception() {
       const invoiceId = result.regularSale?.invoiceId ?? result.printSale?.invoiceId ?? null;
       const createdWoIds = result.workOrders.map((order) => order.workOrderId);
 
-      // ش٦ — تسلسل الإسناد بعد التثبيت: الالتزام الماليّ تمّ؛ الإسناد أثرٌ لاحق منفصل
-      // بمعاملته الخاصة. فشله **يُعلَن بوسم إعادة محاولةٍ لا يُبتلَع** (معيار قبول ش٦):
-      // الفاتورة تبقى في طابور الفواتير وزر «إسناد للتوصيل» هو مسار الإعادة.
+      // مراجعة PR #495 — الإسناد **جزءٌ من الالتزام نفسه** (لا نداء لاحق): إن فشل لم يُلتزَم
+      // شيءٌ أصلاً ووصلت رسالة الخادم للكاشير قبل الطباعة. هنا لا يبقى إلا إعلانُ النتيجة.
       if (orderDelivery) {
-        if (invoiceId == null) {
+        const dispatched = (result as { dispatch?: { consignmentNumber: string; codAmount: string } | null }).dispatch;
+        if (dispatched) {
+          notify.ok(
+            `أُسند الطلب للتوصيل — ${orderDelivery.partyName}`,
+            `إرسالية ${dispatched.consignmentNumber} — يُحصَّل عند الاستلام ${fmt(dispatched.codAmount)} د.ع`,
+          );
+          void utils.delivery.invalidate();
+        } else {
           notify.warn(
             "لم يُسنَد التوصيل تلقائياً",
-            "الطلب أوامر شغلٍ فقط بلا فاتورة — التوصيل يُرتَّب على بند الطلب نفسه أو عند التسليم",
+            invoiceId == null
+              ? "الطلب أوامر شغلٍ فقط بلا فاتورة — التوصيل يُرتَّب على بند الطلب نفسه أو عند التسليم"
+              : "الطلب سبق تثبيته (إعادة إرسال) — أسنده من زرّ «إسناد للتوصيل» على فاتورته",
           );
-        } else {
-          try {
-            await dispatchOrderM.mutateAsync({
-              invoiceId,
-              partyId: orderDelivery.partyId,
-              deliveryFee: orderDelivery.fee,
-              feeCollection: orderDelivery.feeCollection,
-              recipientName: orderDelivery.recipientName || undefined,
-              recipientPhone: orderDelivery.recipientPhone || undefined,
-              deliveryAddress: orderDelivery.address || undefined,
-              clientRequestId: crypto.randomUUID(),
-            });
-            notify.ok(`أُسند الطلب للتوصيل — ${orderDelivery.partyName}`);
-            void utils.delivery.invalidate();
-          } catch (e) {
-            notify.err(
-              "ثُبِّت الطلب ولم يُسنَد للتوصيل",
-              `الفاتورة سليمة في «الفواتير» — اضغط زرّ (إسناد للتوصيل) عليها لإعادة المحاولة. السبب: ${e instanceof Error ? e.message : "خطأ غير معروف"}`,
-            );
-          }
         }
         setOrderDelivery(null);
       }
@@ -1614,6 +1632,16 @@ export default function Reception() {
     }
     if (heldDelivery > 0) {
       notify.errBig("أجرة التوصيل أمانةً تحتاج اتصالاً", "إسناد المندوب وصرف الأجرة عمليّتان خادميّتان — أتمّ الطلب بلا توصيل الآن.");
+      return false;
+    }
+    // مراجعة PR #495: بعد أن صار الإسناد **داخل** معاملة التثبيت، التقاطٌ أوفلاينيّ لطلبٍ مُسنَدٍ
+    // لمندوب كان سيُرحّل فاتورةً بلا إرسالية — إسنادٌ يسقط صامتاً (والحارس القديم يمسك أجرة
+    // COUNTER وحدها). الرفض صريحٌ الآن: الترقيم والعهدة والأقفال كلّها خادميّة.
+    if (orderDelivery) {
+      notify.errBig(
+        "إسناد التوصيل يحتاج اتصالاً",
+        "ترقيم الإرسالية وعهدة المندوب يُكتبان مع الفاتورة في معاملةٍ واحدة على الخادم — أزل التوصيل لإتمام البيع نقداً الآن، أو انتظر عودة الاتصال.",
+      );
       return false;
     }
     // الدفع الكامل شرطٌ: الأوفلاين لا يُقيّم ذمّة عميل ولا سقف ائتمانه من نسخةٍ محليّة.

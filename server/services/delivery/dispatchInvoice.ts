@@ -20,6 +20,7 @@ import { money, round2, toDbMoney } from "../money";
 import { shiftIdForCashTx } from "../shiftService";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
+import { assertFloatLimit } from "./parties";
 import type { DeliveryTxActor } from "./types";
 
 export interface DispatchInvoiceInput {
@@ -167,16 +168,8 @@ export async function dispatchInvoiceInTx(
     if (codPositive) {
       // تدقيق ٦/٨ (ث٧): `floatLimit` كان يُدخَل في شاشة الجهة ولا يقرؤه أيّ مسار إسناد ⇒ سقفٌ
       // مسرحيّ. يُنفَّذ الآن: عهدةٌ تتجاوز السقف تُرفض (تراكمُ نقدٍ بيد مندوبٍ بلا حدّ = خطر).
-      const limit = round2(money(party.floatLimit ?? "0"));
-      if (limit.gt(0)) {
-        const after = round2(money(party.currentBalance ?? "0").plus(codAmount));
-        if (after.gt(limit)) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: `عهدة ${party.name} ستبلغ ${after.toFixed(2)} وتتجاوز سقفها (${limit.toFixed(2)}) — استلم توريداً منه أوّلاً أو ارفع السقف`,
-          });
-        }
-      }
+      // مراجعة PR #495: الحارس صار **مشتركاً** (parties.assertFloatLimit) فلا ينحرف مساران.
+      assertFloatLimit(party, codAmount);
       await adjustDeliveryBalance(tx, input.partyId, codAmount);
       await postEntry(tx, {
         entryType: "DELIVERY_DISPATCH",

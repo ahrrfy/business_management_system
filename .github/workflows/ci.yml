@@ -6,9 +6,22 @@ on:
   pull_request:
     branches: [main]
 
+# استقرار المشغّلات (٧/٨/٢٦) — تشخيصٌ بالأدلّة: المستودع فيه عشرات الفروع النشطة، وكلّ دفعةٍ
+# كانت تُطلق تشغيلاً جديداً **بلا إلغاء سابقه**، فيتراكم الطابور حتى تجلس الوظائف ١٦ دقيقةً
+# بصفر خطوات ثم تُلغى (وشوهد تشغيلٌ عالقٌ ١١٨١ دقيقة يحجز مشغّلاً). النتيجة: PR يظهر «أحمر»
+# بلا أيّ علّة كود، والدمج يُحظر لأنّ الفحص المطلوب لم يكتمل قط.
+#   • على الـPR: الدفعة الجديدة تُلغي تشغيل نفس الـPR القديم (نتيجته صارت بلا معنى أصلاً).
+#   • على main: **لا إلغاء أبداً** — كلّ التزامٍ على main يجب أن يبقى له سجلّ فحصٍ مكتمل.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check-test-build:
     runs-on: ubuntu-latest
+    # سقفٌ زمنيّ: التشغيل الناجح يستغرق ٢٠-٢٣ دقيقة، فـ٦٠ هامشٌ سخيّ. بدونه ظلّ تشغيلٌ عالقٌ
+    # يحجز مشغّلاً ما يقارب ٢٠ ساعة (الافتراضي ٣٦٠ دقيقة) ويخنق بقيّة الفروع.
+    timeout-minutes: 60
     services:
       mysql:
         image: mysql:8.0
@@ -30,7 +43,12 @@ jobs:
       TEST_CONTROL_DATABASE_URL: mysql://root:erp_root_pw@127.0.0.1:3306/erp_control_test
       JWT_SECRET: ci_test_secret_change_me_0123456789abcdef
     steps:
+      # fetch-depth: 0 — يلزم لحارس «تصادم ترقيم الهجرات مع origin/main» داخل check:migrations
+      # (يقارن `_journal.json` بالجانب الآخر). بعمق ١ لا يوجد مرجع origin/main فيتخطّى الحارس
+      # صامتاً — و«حارسٌ لا يُشغَّل آلياً ليس حارساً» (درس CI موثَّق في هذا الملف أدناه).
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -84,6 +102,8 @@ jobs:
   # ⇒ لا تُحسَب، فلا يفشل الحارس على انجراف main. يحتاج التاريخ الكامل (fetch-depth: 0) لتجهيز الأساس.
   authz-guard:
     runs-on: ubuntu-latest
+    # وظيفةٌ خفيفة (node فقط بلا قاعدة/تثبيت) — دقائق معدودة؛ ١٥ سقفٌ يمسك التعليق لا العمل.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
