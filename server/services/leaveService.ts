@@ -6,7 +6,17 @@
  * مدفوعة بلا رصيد محدّد فلا خصم، و«بدون راتب» لا تمسّ أي رصيد. كل تغيير قرارٍ
  * (تحديث الحالة + خصم الرصيد) داخل معاملة ذرّية واحدة.
  * ========================================================================== */
-import { and, desc, eq, getTableColumns, gte, inArray, lte, ne, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  getTableColumns,
+  gte,
+  inArray,
+  lte,
+  ne,
+  sql,
+} from "drizzle-orm";
 import { fullEmployeeName, leaveTypeIsPaid } from "@shared/hr";
 import { employees, leaveRequests, payrollRuns } from "../../drizzle/schema";
 import type { Tx } from "../db";
@@ -31,7 +41,8 @@ export interface LeaveFilters {
 export async function listLeaves(filters?: LeaveFilters) {
   const db = requireDb();
   const conds = [];
-  if (filters?.employeeId) conds.push(eq(leaveRequests.employeeId, filters.employeeId));
+  if (filters?.employeeId)
+    conds.push(eq(leaveRequests.employeeId, filters.employeeId));
   if (filters?.status) conds.push(eq(leaveRequests.status, filters.status));
   if (filters?.type) conds.push(eq(leaveRequests.leaveType, filters.type));
   const where = conds.length ? and(...conds) : undefined;
@@ -68,7 +79,8 @@ export interface LeaveInput {
  *  ذرّي: قفل صفّ الموظف ضمن withTx يُسلسل الطلبات المتزامنة فيُرفض الثاني عبر فحص التداخل
  *  ⇒ يسدّ سباق TOCTOU الذي كان يولّد ازدواج طلب وخصم رصيد مرّتين بعد الموافقة على كليهما. */
 export async function createLeave(input: LeaveInput) {
-  if (input.toDate < input.fromDate) throw new Error("تاريخ النهاية يجب ألا يسبق تاريخ البداية");
+  if (input.toDate < input.fromDate)
+    throw new Error("تاريخ النهاية يجب ألا يسبق تاريخ البداية");
   const days = daysInclusive(input.fromDate, input.toDate);
   if (days <= 0) throw new Error("عدد الأيام يجب أن يكون أكبر من صفر");
 
@@ -98,7 +110,8 @@ export async function createLeave(input: LeaveInput) {
         ),
       )
       .limit(1);
-    if (clash) throw new Error("توجد إجازة أخرى متداخلة مع هذه الفترة لنفس الموظف");
+    if (clash)
+      throw new Error("توجد إجازة أخرى متداخلة مع هذه الفترة لنفس الموظف");
 
     const [res] = await tx.insert(leaveRequests).values({
       employeeId: input.employeeId,
@@ -152,7 +165,11 @@ async function listLeavesByIds(id: number) {
  * كان الحارس موجوداً على الحضور وغائباً هنا: إجازة «بلا راتب» تُعتمَد بأثرٍ رجعيّ بعد
  * الدفع فلا تُخصَم **أبداً** — لا في مسيّرها (مقفل) ولا في التالي (شهرٌ آخر).
  */
-async function assertNoLockedPayroll(tx: Tx, fromDate: string, toDate: string): Promise<void> {
+async function assertNoLockedPayroll(
+  tx: Tx,
+  fromDate: string,
+  toDate: string,
+): Promise<void> {
   const [locked] = await tx
     .select({ period: payrollRuns.period, status: payrollRuns.status })
     .from(payrollRuns)
@@ -178,11 +195,18 @@ export async function decideLeave(
   actor: { userId: number },
 ) {
   return withTx(async (tx) => {
-    const [lv] = await tx.select().from(leaveRequests).where(eq(leaveRequests.id, id)).for("update").limit(1);
+    const [lv] = await tx
+      .select()
+      .from(leaveRequests)
+      .where(eq(leaveRequests.id, id))
+      .for("update")
+      .limit(1);
     if (!lv) throw new Error("طلب الإجازة غير موجود");
-    if (lv.status !== "pending") throw new Error("لا يمكن البتّ إلا في طلب قيد الموافقة");
+    if (lv.status !== "pending")
+      throw new Error("لا يمكن البتّ إلا في طلب قيد الموافقة");
     // الاعتماد وحده يُغيّر أساس المسيّر؛ الرفض لا أثر ماليّ له فيمرّ دائماً.
-    if (decision === "approved") await assertNoLockedPayroll(tx, String(lv.fromDate), String(lv.toDate));
+    if (decision === "approved")
+      await assertNoLockedPayroll(tx, String(lv.fromDate), String(lv.toDate));
 
     // HR-PAY-03 (فصل المهام): لا يجوز للمستخدم البتّ في إجازة موظفٍ مرتبطٍ بحسابه (موافقة ذاتية)
     // — يَكسر منح إجازةٍ مدفوعة لنفسه وخصم رصيده ذاتياً بلا مُقرِّر مستقلّ.
@@ -192,14 +216,23 @@ export async function decideLeave(
       .where(eq(employees.id, lv.employeeId))
       .limit(1);
     if (reqEmp?.userId != null && Number(reqEmp.userId) === actor.userId) {
-      throw new Error("لا يجوز البتّ في إجازتك بنفسك — يلزم مُقرِّر آخر (فصل المهام).");
+      throw new Error(
+        "لا يجوز البتّ في إجازتك بنفسك — يلزم مُقرِّر آخر (فصل المهام).",
+      );
     }
 
-    if (decision === "approved" && lv.paid && (lv.leaveType === "سنوية" || lv.leaveType === "مرضية")) {
+    if (
+      decision === "approved" &&
+      lv.paid &&
+      (lv.leaveType === "سنوية" || lv.leaveType === "مرضية")
+    ) {
       // خصم دقيق بحارس كفاية الرصيد (لا قصّ صامت) ⇒ المخصوم = days بالضبط، فالإلغاء يستردّه بدقّة.
       // الأمومة مدفوعة بلا رصيد محدّد فلا خصم. القفل على صفّ الموظف يمنع السباق.
       const [emp] = await tx
-        .select({ annual: employees.annualLeaveBalance, sick: employees.sickLeaveBalance })
+        .select({
+          annual: employees.annualLeaveBalance,
+          sick: employees.sickLeaveBalance,
+        })
         .from(employees)
         .where(eq(employees.id, lv.employeeId))
         .for("update")
@@ -208,14 +241,20 @@ export async function decideLeave(
       const isAnnual = lv.leaveType === "سنوية";
       const current = (isAnnual ? emp.annual : emp.sick) ?? 0;
       if (current < lv.days) {
-        throw new Error(`رصيد إجازة ${lv.leaveType} غير كافٍ (المتاح ${current} يوم، المطلوب ${lv.days})`);
+        throw new Error(
+          `رصيد إجازة ${lv.leaveType} غير كافٍ (المتاح ${current} يوم، المطلوب ${lv.days})`,
+        );
       }
       await tx
         .update(employees)
         .set(
           isAnnual
-            ? { annualLeaveBalance: sql`${employees.annualLeaveBalance} - ${lv.days}` }
-            : { sickLeaveBalance: sql`${employees.sickLeaveBalance} - ${lv.days}` },
+            ? {
+                annualLeaveBalance: sql`${employees.annualLeaveBalance} - ${lv.days}`,
+              }
+            : {
+                sickLeaveBalance: sql`${employees.sickLeaveBalance} - ${lv.days}`,
+              },
         )
         .where(eq(employees.id, lv.employeeId));
     }
@@ -234,9 +273,15 @@ export async function decideLeave(
  */
 export async function cancelLeave(id: number, actor: { userId: number }) {
   return withTx(async (tx) => {
-    const [lv] = await tx.select().from(leaveRequests).where(eq(leaveRequests.id, id)).for("update").limit(1);
+    const [lv] = await tx
+      .select()
+      .from(leaveRequests)
+      .where(eq(leaveRequests.id, id))
+      .for("update")
+      .limit(1);
     if (!lv) throw new Error("طلب الإجازة غير موجود");
-    if (lv.status !== "approved") throw new Error("لا يُلغى إلا طلب إجازة موافق عليه");
+    if (lv.status !== "approved")
+      throw new Error("لا يُلغى إلا طلب إجازة موافق عليه");
 
     /*
      * فصل مهام على الإلغاء أيضاً — كان مفروضاً على البتّ (decideLeave) وغائباً هنا،
@@ -249,27 +294,59 @@ export async function cancelLeave(id: number, actor: { userId: number }) {
       .where(eq(employees.id, lv.employeeId))
       .limit(1);
     if (reqEmp?.userId != null && Number(reqEmp.userId) === actor.userId) {
-      throw new Error("لا يجوز إلغاء إجازتك بنفسك — يلزم مُقرِّر آخر (فصل المهام).");
+      throw new Error(
+        "لا يجوز إلغاء إجازتك بنفسك — يلزم مُقرِّر آخر (فصل المهام).",
+      );
     }
     await assertNoLockedPayroll(tx, String(lv.fromDate), String(lv.toDate));
 
     if (lv.paid && lv.leaveType === "سنوية") {
       await tx
         .update(employees)
-        .set({ annualLeaveBalance: sql`${employees.annualLeaveBalance} + ${lv.days}` })
+        .set({
+          annualLeaveBalance: sql`${employees.annualLeaveBalance} + ${lv.days}`,
+        })
         .where(eq(employees.id, lv.employeeId));
     } else if (lv.paid && lv.leaveType === "مرضية") {
       await tx
         .update(employees)
-        .set({ sickLeaveBalance: sql`${employees.sickLeaveBalance} + ${lv.days}` })
+        .set({
+          sickLeaveBalance: sql`${employees.sickLeaveBalance} + ${lv.days}`,
+        })
         .where(eq(employees.id, lv.employeeId));
     }
 
     await tx
       .update(leaveRequests)
-      .set({ status: "rejected", decidedBy: actor.userId, decidedAt: new Date() })
+      .set({
+        status: "rejected",
+        decidedBy: actor.userId,
+        decidedAt: new Date(),
+      })
       .where(eq(leaveRequests.id, id));
   }).then(async () => (await listLeavesByIds(id))[0] ?? null); // القراءة بعد الـcommit.
+}
+
+/** يسمح للموظف بسحب طلبه المعلّق فقط؛ القرارات المعتمدة تبقى ضمن مسار الموارد البشرية. */
+export async function withdrawPendingLeave(id: number, employeeId: number) {
+  return withTx(async (tx) => {
+    const [leave] = await tx
+      .select()
+      .from(leaveRequests)
+      .where(eq(leaveRequests.id, id))
+      .for("update")
+      .limit(1);
+    if (!leave || Number(leave.employeeId) !== employeeId) {
+      throw new Error("طلب الإجازة غير موجود");
+    }
+    if (leave.status !== "pending") {
+      throw new Error("يمكن سحب الطلب قبل البتّ فيه فقط");
+    }
+    await tx
+      .update(leaveRequests)
+      .set({ status: "rejected", decidedAt: new Date() })
+      .where(eq(leaveRequests.id, id));
+  }).then(async () => (await listLeavesByIds(id))[0] ?? null);
 }
 
 /** أرصدة الإجازات لكل موظف على رأس العمل: {id, name, annualLeaveBalance, sickLeaveBalance, department}. */

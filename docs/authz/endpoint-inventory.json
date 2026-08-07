@@ -1,29 +1,29 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 791,
+    "trpcTotal": 808,
     "byKind": {
-      "mutation": 399,
-      "query": 392
+      "mutation": 406,
+      "query": 402
     },
     "byAuthority": {
       "module-gate": 355,
-      "module-map": 243,
+      "module-map": 247,
       "admin": 73,
       "raw-role": 59,
       "none": 53,
+      "self-assignment": 14,
       "platform": 5,
       "device-bootstrap": 1,
-      "self-assignment": 1,
       "token": 1
     },
     "bySensitivity": {
-      "LOW": 391,
-      "MEDIUM": 302,
-      "HIGH": 98
+      "LOW": 401,
+      "MEDIUM": 308,
+      "HIGH": 99
     },
     "byModule": {
-      "(none)": 190,
+      "(none)": 207,
       "hr": 77,
       "digital_cards": 70,
       "reports": 56,
@@ -53,7 +53,7 @@
     "flagCounts": {
       "LOCAL_GATE": 129,
       "NO_BRANCH_SCOPE": 123,
-      "SENSITIVE_ACTION": 98,
+      "SENSITIVE_ACTION": 99,
       "ADMIN_ONLY": 76,
       "RAW_ROLE_GATE": 69,
       "UNAUTHENTICATED": 32,
@@ -62,10 +62,10 @@
       "HANDLER_ROLE_CHECK": 5
     },
     "expressRoutes": 15,
-    "expressMounts": 10,
-    "jobs": 6,
-    "routerFiles": 86,
-    "proposedPermissions": 672,
+    "expressMounts": 9,
+    "jobs": 7,
+    "routerFiles": 88,
+    "proposedPermissions": 689,
     "proposedDomains": {
       "hr": 83,
       "catalog": 63,
@@ -84,6 +84,7 @@
       "assets": 15,
       "digitalcards/sales": 14,
       "digitalcards/wallets": 14,
+      "superapp": 14,
       "tasks": 13,
       "storefront": 12,
       "delivery": 11,
@@ -102,6 +103,7 @@
       "consignment": 4,
       "digitalcards/students": 4,
       "digitalcards/pos": 3,
+      "nativepush": 3,
       "audit": 2,
       "digitalcards/subscriptions": 1,
       "search": 1
@@ -4951,7 +4953,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/digitalCards/subscriptionsRouter.ts:21"
+      "loc": "server/routers/digitalCards/subscriptionsRouter.ts:19"
     },
     {
       "surface": "trpc",
@@ -6787,7 +6789,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: adjust",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/inventoryRouter.ts:400"
+      "loc": "server/routers/inventoryRouter.ts:402"
     },
     {
       "surface": "trpc",
@@ -6804,7 +6806,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/inventoryRouter.ts:428"
+      "loc": "server/routers/inventoryRouter.ts:451"
     },
     {
       "surface": "trpc",
@@ -6821,7 +6823,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:876"
+      "loc": "server/routers/inventoryRouter.ts:933"
     },
     {
       "surface": "trpc",
@@ -6838,7 +6840,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:781"
+      "loc": "server/routers/inventoryRouter.ts:838"
     },
     {
       "surface": "trpc",
@@ -6855,7 +6857,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:560"
+      "loc": "server/routers/inventoryRouter.ts:617"
     },
     {
       "surface": "trpc",
@@ -6872,7 +6874,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:584"
+      "loc": "server/routers/inventoryRouter.ts:641"
     },
     {
       "surface": "trpc",
@@ -6889,7 +6891,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:462"
+      "loc": "server/routers/inventoryRouter.ts:519"
     },
     {
       "surface": "trpc",
@@ -6906,7 +6908,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:445"
+      "loc": "server/routers/inventoryRouter.ts:502"
     },
     {
       "surface": "trpc",
@@ -6923,7 +6925,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:861"
+      "loc": "server/routers/inventoryRouter.ts:918"
     },
     {
       "surface": "trpc",
@@ -6940,7 +6942,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/inventoryRouter.ts:436"
+      "loc": "server/routers/inventoryRouter.ts:476"
     },
     {
       "surface": "trpc",
@@ -6957,7 +6959,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:725"
+      "loc": "server/routers/inventoryRouter.ts:782"
     },
     {
       "surface": "trpc",
@@ -6974,7 +6976,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:824"
+      "loc": "server/routers/inventoryRouter.ts:881"
     },
     {
       "surface": "trpc",
@@ -6991,7 +6993,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:839"
+      "loc": "server/routers/inventoryRouter.ts:896"
     },
     {
       "surface": "trpc",
@@ -7008,7 +7010,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:757"
+      "loc": "server/routers/inventoryRouter.ts:814"
     },
     {
       "surface": "trpc",
@@ -7025,7 +7027,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:844"
+      "loc": "server/routers/inventoryRouter.ts:901"
     },
     {
       "surface": "trpc",
@@ -7042,7 +7044,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:536"
+      "loc": "server/routers/inventoryRouter.ts:593"
     },
     {
       "surface": "trpc",
@@ -7059,7 +7061,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:145"
+      "loc": "server/routers/inventoryRouter.ts:147"
     },
     {
       "surface": "trpc",
@@ -7076,7 +7078,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:205"
+      "loc": "server/routers/inventoryRouter.ts:207"
     },
     {
       "surface": "trpc",
@@ -7093,7 +7095,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/inventoryRouter.ts:380"
+      "loc": "server/routers/inventoryRouter.ts:382"
     },
     {
       "surface": "trpc",
@@ -7110,7 +7112,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:316"
+      "loc": "server/routers/inventoryRouter.ts:318"
     },
     {
       "surface": "trpc",
@@ -7127,7 +7129,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:341"
+      "loc": "server/routers/inventoryRouter.ts:343"
     },
     {
       "surface": "trpc",
@@ -7144,7 +7146,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:275"
+      "loc": "server/routers/inventoryRouter.ts:277"
     },
     {
       "surface": "trpc",
@@ -7161,7 +7163,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:327"
+      "loc": "server/routers/inventoryRouter.ts:329"
     },
     {
       "surface": "trpc",
@@ -7365,7 +7367,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/leaveRouter.ts:102"
+      "loc": "server/routers/leaveRouter.ts:106"
     },
     {
       "surface": "trpc",
@@ -7382,7 +7384,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/leaveRouter.ts:93"
+      "loc": "server/routers/leaveRouter.ts:97"
     },
     {
       "surface": "trpc",
@@ -7399,7 +7401,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/leaveRouter.ts:181"
+      "loc": "server/routers/leaveRouter.ts:204"
     },
     {
       "surface": "trpc",
@@ -7416,7 +7418,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/leaveRouter.ts:141"
+      "loc": "server/routers/leaveRouter.ts:145"
     },
     {
       "surface": "trpc",
@@ -7433,7 +7435,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/leaveRouter.ts:163"
+      "loc": "server/routers/leaveRouter.ts:167"
     },
     {
       "surface": "trpc",
@@ -7450,7 +7452,58 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/leaveRouter.ts:48"
+      "loc": "server/routers/leaveRouter.ts:52"
+    },
+    {
+      "surface": "trpc",
+      "router": "nativePushRouter",
+      "proposedPermission": "nativepush.native_push.create",
+      "name": "register",
+      "kind": "mutation",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/nativePushRouter.ts:72"
+    },
+    {
+      "surface": "trpc",
+      "router": "nativePushRouter",
+      "proposedPermission": "nativepush.native_push.revoke",
+      "name": "revokeDevice",
+      "kind": "mutation",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: revoke",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/nativePushRouter.ts:111"
+    },
+    {
+      "surface": "trpc",
+      "router": "nativePushRouter",
+      "proposedPermission": "nativepush.native_push.view",
+      "name": "status",
+      "kind": "query",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/nativePushRouter.ts:67"
     },
     {
       "surface": "trpc",
@@ -7603,7 +7656,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:173"
+      "loc": "server/routers/payrollRouter.ts:199"
     },
     {
       "surface": "trpc",
@@ -7620,7 +7673,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:205"
+      "loc": "server/routers/payrollRouter.ts:231"
     },
     {
       "surface": "trpc",
@@ -7637,7 +7690,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: grant",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:180"
+      "loc": "server/routers/payrollRouter.ts:206"
     },
     {
       "surface": "trpc",
@@ -7654,7 +7707,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:161"
+      "loc": "server/routers/payrollRouter.ts:187"
     },
     {
       "surface": "trpc",
@@ -7671,7 +7724,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:178"
+      "loc": "server/routers/payrollRouter.ts:204"
     },
     {
       "surface": "trpc",
@@ -7688,7 +7741,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:75"
+      "loc": "server/routers/payrollRouter.ts:99"
     },
     {
       "surface": "trpc",
@@ -7705,7 +7758,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:91"
+      "loc": "server/routers/payrollRouter.ts:117"
     },
     {
       "surface": "trpc",
@@ -7722,7 +7775,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:35"
+      "loc": "server/routers/payrollRouter.ts:59"
     },
     {
       "surface": "trpc",
@@ -7739,7 +7792,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:26"
+      "loc": "server/routers/payrollRouter.ts:50"
     },
     {
       "surface": "trpc",
@@ -7756,7 +7809,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:106"
+      "loc": "server/routers/payrollRouter.ts:132"
     },
     {
       "surface": "trpc",
@@ -7773,7 +7826,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:24"
+      "loc": "server/routers/payrollRouter.ts:48"
     },
     {
       "surface": "trpc",
@@ -7790,7 +7843,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:83"
+      "loc": "server/routers/payrollRouter.ts:108"
     },
     {
       "surface": "trpc",
@@ -7807,7 +7860,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:31"
+      "loc": "server/routers/payrollRouter.ts:55"
     },
     {
       "surface": "trpc",
@@ -7824,7 +7877,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:54"
+      "loc": "server/routers/payrollRouter.ts:78"
     },
     {
       "surface": "trpc",
@@ -7841,7 +7894,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/payrollRouter.ts:112"
+      "loc": "server/routers/payrollRouter.ts:138"
     },
     {
       "surface": "trpc",
@@ -11976,6 +12029,244 @@
     },
     {
       "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.approval_detail",
+      "name": "approvalDetail",
+      "kind": "query",
+      "procedure": "superAppProcedure",
+      "authority": "module-map",
+      "module": "",
+      "level": "RESOLVED",
+      "roles": "authenticated-user",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1659"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.approval_inbox",
+      "name": "approvalInbox",
+      "kind": "query",
+      "procedure": "superAppProcedure",
+      "authority": "module-map",
+      "module": "",
+      "level": "RESOLVED",
+      "roles": "authenticated-user",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1447"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.bootstrap",
+      "name": "bootstrap",
+      "kind": "query",
+      "procedure": "superAppProcedure",
+      "authority": "module-map",
+      "module": "",
+      "level": "RESOLVED",
+      "roles": "authenticated-user",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:95"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.mark_all_notifications_read",
+      "name": "markAllNotificationsRead",
+      "kind": "mutation",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1877"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.mark_notification_read",
+      "name": "markNotificationRead",
+      "kind": "mutation",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1873"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.module_pulse",
+      "name": "modulePulse",
+      "kind": "query",
+      "procedure": "superAppProcedure",
+      "authority": "module-map",
+      "module": "",
+      "level": "RESOLVED",
+      "roles": "authenticated-user",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:139"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.my_workspace",
+      "name": "myWorkspace",
+      "kind": "query",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1128"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.notification_preferences",
+      "name": "notificationPreferences",
+      "kind": "query",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1881"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.notifications",
+      "name": "notifications",
+      "kind": "query",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1435"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.payroll_history",
+      "name": "payrollHistory",
+      "kind": "query",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1352"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.payslip_detail",
+      "name": "payslipDetail",
+      "kind": "query",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1390"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.request_leave",
+      "name": "requestLeave",
+      "kind": "mutation",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1902"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.update",
+      "name": "updateNotificationPreferences",
+      "kind": "mutation",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1885"
+    },
+    {
+      "surface": "trpc",
+      "router": "superAppRouter",
+      "proposedPermission": "superapp.super_app.withdraw_leave",
+      "name": "withdrawLeave",
+      "kind": "mutation",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/superAppRouter.ts:1950"
+    },
+    {
+      "surface": "trpc",
       "router": "supplierRouter",
       "proposedPermission": "purchasing.supplier.activate",
       "name": "activate",
@@ -12380,7 +12671,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/tasksRouter.ts:144"
+      "loc": "server/routers/tasksRouter.ts:158"
     },
     {
       "surface": "trpc",
@@ -12397,7 +12688,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/tasksRouter.ts:153"
+      "loc": "server/routers/tasksRouter.ts:167"
     },
     {
       "surface": "trpc",
@@ -12414,7 +12705,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/tasksRouter.ts:68"
+      "loc": "server/routers/tasksRouter.ts:69"
     },
     {
       "surface": "trpc",
@@ -12431,7 +12722,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/tasksRouter.ts:169"
+      "loc": "server/routers/tasksRouter.ts:196"
     },
     {
       "surface": "trpc",
@@ -12448,7 +12739,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/tasksRouter.ts:112"
+      "loc": "server/routers/tasksRouter.ts:126"
     },
     {
       "surface": "trpc",
@@ -12465,7 +12756,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/tasksRouter.ts:76"
+      "loc": "server/routers/tasksRouter.ts:77"
     },
     {
       "surface": "trpc",
@@ -12482,7 +12773,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/tasksRouter.ts:63"
+      "loc": "server/routers/tasksRouter.ts:64"
     },
     {
       "surface": "trpc",
@@ -12499,7 +12790,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/tasksRouter.ts:40"
+      "loc": "server/routers/tasksRouter.ts:41"
     },
     {
       "surface": "trpc",
@@ -12516,7 +12807,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reopen",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/tasksRouter.ts:161"
+      "loc": "server/routers/tasksRouter.ts:188"
     },
     {
       "surface": "trpc",
@@ -12533,7 +12824,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/tasksRouter.ts:132"
+      "loc": "server/routers/tasksRouter.ts:146"
     },
     {
       "surface": "trpc",
@@ -12550,7 +12841,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/tasksRouter.ts:126"
+      "loc": "server/routers/tasksRouter.ts:140"
     },
     {
       "surface": "trpc",
@@ -12567,7 +12858,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/tasksRouter.ts:180"
+      "loc": "server/routers/tasksRouter.ts:207"
     },
     {
       "surface": "trpc",
@@ -12584,7 +12875,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/tasksRouter.ts:118"
+      "loc": "server/routers/tasksRouter.ts:132"
     },
     {
       "surface": "trpc",
@@ -13716,7 +14007,7 @@
       "method": "GET",
       "path": "/healthz",
       "file": "server/index.ts",
-      "line": 155,
+      "line": 176,
       "authority": "public",
       "roles": "public",
       "sensitivity": "LOW",
@@ -13727,7 +14018,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 300,
+      "line": 337,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13738,7 +14029,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 308,
+      "line": 345,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13749,18 +14040,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 343,
-      "authority": "mount",
-      "roles": "",
-      "sensitivity": "",
-      "note": "نقطة تركيب (tenancy/csrf middleware)"
-    },
-    {
-      "surface": "express-mount",
-      "method": "MOUNT",
-      "path": "/api/trpc",
-      "file": "server/index.ts",
-      "line": 346,
+      "line": 385,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13771,7 +14051,7 @@
       "method": "MOUNT",
       "path": "/api/print",
       "file": "server/index.ts",
-      "line": 351,
+      "line": 400,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13782,7 +14062,7 @@
       "method": "MOUNT",
       "path": "/api/img",
       "file": "server/index.ts",
-      "line": 357,
+      "line": 406,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13793,7 +14073,7 @@
       "method": "MOUNT",
       "path": "/api/backups",
       "file": "server/index.ts",
-      "line": 362,
+      "line": 411,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13804,7 +14084,7 @@
       "method": "MOUNT",
       "path": "/api/wa/media",
       "file": "server/index.ts",
-      "line": 366,
+      "line": 415,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13815,7 +14095,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks",
       "file": "server/index.ts",
-      "line": 389,
+      "line": 438,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13826,7 +14106,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks/company/:companyCode",
       "file": "server/index.ts",
-      "line": 390,
+      "line": 439,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -13837,7 +14117,7 @@
     {
       "kind": "cron",
       "file": "server/index.ts",
-      "line": 432
+      "line": 498
     },
     {
       "kind": "interval",
@@ -13858,6 +14138,11 @@
       "kind": "cron",
       "file": "server/services/morningPushScheduler.ts",
       "line": 164
+    },
+    {
+      "kind": "interval",
+      "file": "server/services/nativePushOutboxWorker.ts",
+      "line": 275
     },
     {
       "kind": "cron",

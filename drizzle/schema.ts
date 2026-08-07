@@ -1303,7 +1303,10 @@ export const invoices = mysqlTable(
     // قيمةُ ما تُنوزِل عنه (يراها الزبون على الفاتورة وتُحصى في التقارير).
     // **إفصاحٌ لا محاسبة**: الإيراد يبقى `deliveryFee` وحده — لا قيد ولا أثر ماليّ لهذين.
     deliveryFree: boolean("deliveryFree").default(false).notNull(),
-    deliveryWaivedAmount: decimal("deliveryWaivedAmount", { precision: 15, scale: 2 })
+    deliveryWaivedAmount: decimal("deliveryWaivedAmount", {
+      precision: 15,
+      scale: 2,
+    })
       .default("0")
       .notNull(),
     status: mysqlEnum("invoiceStatus", [
@@ -2056,7 +2059,9 @@ export const cardReconciliations = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     /** ش٥: نوع الحساب المُطابَق — بطاقة/بنك أو رصيد زين (نواةٌ واحدة معمَّمة لا مرآة منسوخة). */
-    accountKind: mysqlEnum("accountKind", ["CARD", "TELECOM"]).default("CARD").notNull(),
+    accountKind: mysqlEnum("accountKind", ["CARD", "TELECOM"])
+      .default("CARD")
+      .notNull(),
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
       .references(() => branches.id),
@@ -2078,7 +2083,11 @@ export const cardReconciliations = mysqlTable(
   (table) => ({
     // ش٥ (F8 — لا قيد UNIQUE على الجدول): الفهرس وُسِّع بنوع الحساب ليخدم «آخر مطابقة زين».
     // branchId يتصدّر (لا accountKind): فهرس FK الفرع — إسقاطه بلا بديلٍ متصدّرٍ به يفشل ER_1553.
-    branchIdx: index("idx_cardrecon_branch").on(table.branchId, table.accountKind, table.asOfDate),
+    branchIdx: index("idx_cardrecon_branch").on(
+      table.branchId,
+      table.accountKind,
+      table.asOfDate,
+    ),
     createdIdx: index("idx_cardrecon_created").on(table.createdAt),
   }),
 );
@@ -2501,7 +2510,9 @@ export const workOrders = mysqlTable(
     // (فاتورة WORKORDER تُنسَب لمنشئ أمر الشغل عبر join على invoiceId) — تعدّد NULL مسموح.
     // ⚠ invoiceId عمود FK — drizzle-kit قد يُسقط UNIQUE عليه صامتاً؛ دقّق هجرة 0051 يدوياً.
     invoiceUq: unique("uq_wo_invoice").on(table.invoiceId),
-    depositReceiptIdx: index("idx_wo_deposit_receipt").on(table.depositReceiptId),
+    depositReceiptIdx: index("idx_wo_deposit_receipt").on(
+      table.depositReceiptId,
+    ),
   }),
 );
 
@@ -2520,10 +2531,17 @@ export const receptionDrafts = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     /** DRF-{فرع}-{YYYYMMDD}-{NNNNN} — مسلسلٌ مستقلّ لا يمسّ ترقيم الفواتير. */
     draftNumber: varchar("draftNumber", { length: 40 }).notNull(),
-    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
     /** إعلاميّ فقط — المسوّدة لا تنتمي لوردية (I14: لا تمنع الإغلاق). */
     createdByShiftId: bigint("createdByShiftId", { mode: "number" }),
-    status: mysqlEnum("draftStatus", ["OPEN", "COMMITTED", "CANCELLED", "EXPIRED"])
+    status: mysqlEnum("draftStatus", [
+      "OPEN",
+      "COMMITTED",
+      "CANCELLED",
+      "EXPIRED",
+    ])
       .default("OPEN")
       .notNull(),
     /** قفل تفاؤليّ للتحرير المتوازي (I9). */
@@ -2533,35 +2551,59 @@ export const receptionDrafts = mysqlTable(
     commitRequestId: char("commitRequestId", { length: 36 }).notNull(),
     /** يُرفع عند أوّل قبضٍ (ش٤) **ولا يُخفَض أبداً** — العمود الفقريّ لحارس I3. */
     moneyLocked: boolean("moneyLocked").default(false).notNull(),
-    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    customerId: bigint("customerId", { mode: "number" }).references(
+      () => customers.id,
+    ),
     contactName: varchar("contactName", { length: 255 }),
     contactPhone: varchar("contactPhone", { length: 32 }),
-    priceTier: mysqlEnum("draftPriceTier", ["RETAIL", "WHOLESALE", "GOVERNMENT"])
+    priceTier: mysqlEnum("draftPriceTier", [
+      "RETAIL",
+      "WHOLESALE",
+      "GOVERNMENT",
+    ])
       .default("RETAIL")
       .notNull(),
     channel: varchar("channel", { length: 20 }),
     notes: text("notes"),
     dueDate: date("dueDate"),
     /** ذاكرة عرضٍ فقط — تُعاد حسابها خادمياً في كل كتابةٍ وعند التثبيت (لا يُقرأ منها قرار). */
-    subtotal: decimal("subtotal", { precision: 15, scale: 2 }).default("0").notNull(),
-    discountTotal: decimal("discountTotal", { precision: 15, scale: 2 }).default("0").notNull(),
+    subtotal: decimal("subtotal", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    discountTotal: decimal("discountTotal", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
     total: decimal("total", { precision: 15, scale: 2 }).default("0").notNull(),
-    committedInvoiceId: bigint("committedInvoiceId", { mode: "number" }).references(() => invoices.id),
-    committedPrintInvoiceId: bigint("committedPrintInvoiceId", { mode: "number" }).references(() => invoices.id),
+    committedInvoiceId: bigint("committedInvoiceId", {
+      mode: "number",
+    }).references(() => invoices.id),
+    committedPrintInvoiceId: bigint("committedPrintInvoiceId", {
+      mode: "number",
+    }).references(() => invoices.id),
     expiresAt: timestamp("expiresAt"),
     committedAt: timestamp("committedAt"),
     cancelledAt: timestamp("cancelledAt"),
     cancelReason: varchar("cancelReason", { length: 500 }),
-    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
     updatedBy: int("updatedBy"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
     numberUq: unique("uq_draft_number").on(table.draftNumber),
-    commitRequestUq: unique("uq_draft_commit_request").on(table.commitRequestId),
-    committedInvoiceUq: unique("uq_draft_committed_invoice").on(table.committedInvoiceId),
-    branchStatusIdx: index("idx_draft_branch_status_id").on(table.branchId, table.status, table.id),
+    commitRequestUq: unique("uq_draft_commit_request").on(
+      table.commitRequestId,
+    ),
+    committedInvoiceUq: unique("uq_draft_committed_invoice").on(
+      table.committedInvoiceId,
+    ),
+    branchStatusIdx: index("idx_draft_branch_status_id").on(
+      table.branchId,
+      table.status,
+      table.id,
+    ),
     creatorIdx: index("idx_draft_creator").on(table.createdBy, table.status),
     phoneIdx: index("idx_draft_phone").on(table.contactPhone),
     customerIdx: index("idx_draft_customer").on(table.customerId),
@@ -2578,14 +2620,30 @@ export const receptionDraftLines = mysqlTable(
     draftId: bigint("draftId", { mode: "number" })
       .notNull()
       .references(() => receptionDrafts.id, { onDelete: "cascade" }),
-    lineKind: mysqlEnum("draftLineKind", ["GOODS", "PRINT", "CUSTOM"]).notNull(),
+    lineKind: mysqlEnum("draftLineKind", [
+      "GOODS",
+      "PRINT",
+      "CUSTOM",
+    ]).notNull(),
     sortOrder: int("sortOrder").default(0).notNull(),
-    variantId: bigint("variantId", { mode: "number" }).references(() => productVariants.id),
-    productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
-    quantity: decimal("quantity", { precision: 15, scale: 3 }).default("1").notNull(),
-    unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).default("0").notNull(),
-    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0").notNull(),
-    lineTotal: decimal("lineTotal", { precision: 15, scale: 2 }).default("0").notNull(),
+    variantId: bigint("variantId", { mode: "number" }).references(
+      () => productVariants.id,
+    ),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(
+      () => productUnits.id,
+    ),
+    quantity: decimal("quantity", { precision: 15, scale: 3 })
+      .default("1")
+      .notNull(),
+    unitPrice: decimal("unitPrice", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    lineTotal: decimal("lineTotal", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
     title: varchar("title", { length: 255 }),
     customizationText: text("customizationText"),
     /** MEDIUMTEXT: صور base64 مضغوطة (نمط productImages) — JSON [{url,caption,sortOrder}]. */
@@ -2622,13 +2680,29 @@ export const orderPayments = mysqlTable(
     draftId: bigint("draftId", { mode: "number" })
       .notNull()
       .references(() => receptionDrafts.id),
-    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
-    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
-    kind: mysqlEnum("orderPayKind", ["COLLECTION", "APPLICATION", "REFUND"]).notNull(),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    customerId: bigint("customerId", { mode: "number" }).references(
+      () => customers.id,
+    ),
+    kind: mysqlEnum("orderPayKind", [
+      "COLLECTION",
+      "APPLICATION",
+      "REFUND",
+    ]).notNull(),
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
-    method: mysqlEnum("orderPayMethod", ["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]),
+    method: mysqlEnum("orderPayMethod", [
+      "CASH",
+      "CARD",
+      "TRANSFER",
+      "WALLET",
+      "TELECOM",
+    ]),
     /** إيصال القبض/الردّ؛ NULL لصفوف APPLICATION. */
-    receiptId: bigint("receiptId", { mode: "number" }).references(() => receipts.id),
+    receiptId: bigint("receiptId", { mode: "number" }).references(
+      () => receipts.id,
+    ),
     /** وردية القبض — تبقى عليها أبداً (قاعدة ٤ / I12). */
     shiftId: bigint("shiftId", { mode: "number" }).references(() => shifts.id),
     /** APPLICATION/REFUND ← COLLECTION الأمّ. FK ذاتيّ عبر AnyMySqlColumn (نمط drizzle). */
@@ -2641,14 +2715,23 @@ export const orderPayments = mysqlTable(
     status: mysqlEnum("orderPayStatus", ["HELD", "APPLIED", "REFUNDED"]),
     referenceNumber: varchar("referenceNumber", { length: 64 }),
     clientRequestId: varchar("clientRequestId", { length: 80 }),
-    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
     receiptUq: unique("uq_orderpay_receipt").on(table.receiptId),
     requestUq: unique("uq_orderpay_request").on(table.clientRequestId),
-    draftIdx: index("idx_orderpay_draft").on(table.draftId, table.kind, table.status),
-    appliedIdx: index("idx_orderpay_applied").on(table.appliedKind, table.appliedId),
+    draftIdx: index("idx_orderpay_draft").on(
+      table.draftId,
+      table.kind,
+      table.status,
+    ),
+    appliedIdx: index("idx_orderpay_applied").on(
+      table.appliedKind,
+      table.appliedId,
+    ),
     parentIdx: index("idx_orderpay_parent").on(table.parentPaymentId),
   }),
 );
@@ -6171,6 +6254,174 @@ export const pushSubscriptions = mysqlTable(
 export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 export type InsertPushSubscription = typeof pushSubscriptions.$inferInsert;
 
+/** رموز FCM لتطبيق Android الأصلي. الرمز مشفر، والبحث/منع التكرار يتمان بهاش غير عكوس. */
+export const nativePushDevices = mysqlTable(
+  "nativePushDevices",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: char("tokenHash", { length: 64 }).notNull().unique(),
+    tokenCiphertext: text("tokenCiphertext").notNull(),
+    devicePublicKeyHash: char("devicePublicKeyHash", { length: 64 }).notNull(),
+    platform: mysqlEnum("platform", ["ANDROID"]).default("ANDROID").notNull(),
+    environment: mysqlEnum("environment", ["dev", "staging", "prod"]).notNull(),
+    appVersion: varchar("appVersion", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    lastSeenAt: timestamp("lastSeenAt").defaultNow().notNull(),
+    revokedAt: timestamp("revokedAt"),
+  },
+  (table) => ({
+    userActiveIdx: index("idx_native_push_user_active").on(
+      table.userId,
+      table.revokedAt,
+      table.environment,
+    ),
+    deviceOwnerIdx: index("idx_native_push_device_owner").on(
+      table.userId,
+      table.devicePublicKeyHash,
+      table.revokedAt,
+    ),
+  }),
+);
+export type NativePushDevice = typeof nativePushDevices.$inferSelect;
+export type InsertNativePushDevice = typeof nativePushDevices.$inferInsert;
+
+/** سجل إرسال FCM بلا محتوى الرسالة الحسّاس. */
+export const nativePushDeliveryLog = mysqlTable(
+  "nativePushDeliveryLog",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: char("tokenHash", { length: 64 }).notNull(),
+    notificationId: varchar("notificationId", { length: 96 }).notNull(),
+    kind: varchar("kind", { length: 40 }).notNull(),
+    destination: varchar("destination", { length: 256 }).notNull(),
+    status: mysqlEnum("status", ["SENT", "GONE", "FAILED"]).notNull(),
+    statusCode: int("statusCode").notNull(),
+    messageId: varchar("messageId", { length: 255 }),
+    errorCode: varchar("errorCode", { length: 64 }),
+    sentAt: timestamp("sentAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    userSentIdx: index("idx_native_push_delivery_user_sent").on(
+      table.userId,
+      table.sentAt,
+    ),
+    notificationIdx: index("idx_native_push_delivery_notification").on(
+      table.notificationId,
+    ),
+    notificationTokenUnique: unique(
+      "nativePushDeliveryLog_notification_token_unique",
+    ).on(table.notificationId, table.tokenHash),
+  }),
+);
+export type NativePushDelivery = typeof nativePushDeliveryLog.$inferSelect;
+
+/**
+ * Transactional outbox for native push. The safe, already-redacted payload is committed in the
+ * same transaction as appNotifications. Workers claim due rows and retry with bounded backoff.
+ */
+export const nativePushOutbox = mysqlTable(
+  "nativePushOutbox",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    eventKey: varchar("eventKey", { length: 190 }).notNull().unique(),
+    payload: json("payload").notNull(),
+    environment: mysqlEnum("environment", ["dev", "staging", "prod"]).notNull(),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "PROCESSING",
+      "RETRY",
+      "SENT",
+      "DEAD",
+    ])
+      .default("PENDING")
+      .notNull(),
+    attemptCount: int("attemptCount").default(0).notNull(),
+    availableAt: timestamp("availableAt").defaultNow().notNull(),
+    lockedAt: timestamp("lockedAt"),
+    completedAt: timestamp("completedAt"),
+    lastError: varchar("lastError", { length: 64 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    dueIdx: index("idx_native_push_outbox_due").on(
+      table.status,
+      table.availableAt,
+      table.id,
+    ),
+    userCreatedIdx: index("idx_native_push_outbox_user_created").on(
+      table.userId,
+      table.createdAt,
+    ),
+  }),
+);
+export type NativePushOutboxRow = typeof nativePushOutbox.$inferSelect;
+export type InsertNativePushOutbox = typeof nativePushOutbox.$inferInsert;
+
+/** صندوق الإشعارات داخل السوبر تطبيق — مصدر دائم قابل للقراءة والتدقيق، مستقل عن Web Push.
+ *  `eventKey` يجعل إدراج الحدث idempotent حتى لو أعاد العامل/الـwebhook المحاولة. */
+export const appNotifications = mysqlTable(
+  "appNotifications",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id),
+    kind: varchar("kind", { length: 40 }).notNull(),
+    title: varchar("title", { length: 180 }).notNull(),
+    body: varchar("body", { length: 600 }).notNull(),
+    route: varchar("route", { length: 255 }).notNull(),
+    entityType: varchar("entityType", { length: 60 }),
+    entityId: bigint("entityId", { mode: "number" }),
+    eventKey: varchar("eventKey", { length: 190 }).notNull().unique(),
+    requiresAction: boolean("requiresAction").default(false).notNull(),
+    readAt: timestamp("readAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    userCreatedIdx: index("idx_app_notice_user_created").on(
+      table.userId,
+      table.createdAt,
+    ),
+    userReadIdx: index("idx_app_notice_user_read").on(
+      table.userId,
+      table.readAt,
+    ),
+  }),
+);
+export type AppNotification = typeof appNotifications.$inferSelect;
+export type InsertAppNotification = typeof appNotifications.$inferInsert;
+
+/** تفضيلات الإشعارات الشخصية. الاشتراك الفعلي بالجهاز يبقى في pushSubscriptions؛ هذا الصف
+ *  يحدّد فئات الأحداث التي يسمح المستخدم بإظهارها على شاشة القفل. */
+export const appNotificationPreferences = mysqlTable(
+  "appNotificationPreferences",
+  {
+    userId: int("userId")
+      .primaryKey()
+      .references(() => users.id),
+    taskAssigned: boolean("taskAssigned").default(true).notNull(),
+    payrollReady: boolean("payrollReady").default(true).notNull(),
+    attendance: boolean("attendance").default(true).notNull(),
+    leaveStatus: boolean("leaveStatus").default(true).notNull(),
+    approvals: boolean("approvals").default(true).notNull(),
+    quietHoursStart: varchar("quietHoursStart", { length: 5 }),
+    quietHoursEnd: varchar("quietHoursEnd", { length: 5 }),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+);
+export type AppNotificationPreference =
+  typeof appNotificationPreferences.$inferSelect;
+
 /** سجلّ إرسال الإشعارات — يمنع الإرسال المزدوج (يوم واحد لكل مستخدم لكل نوع) ويوفّر تدقيقاً تاريخياً.
  *  status: SENT ناجح، FAILED_GONE (410=المستخدم أبطل الاشتراك بالمتصفّح، شطبنا الصفّ)،
  *  FAILED_OTHER أعطال شبكة/خادم أخرى (نُبقي الاشتراك ونعيد المحاولة الغد). */
@@ -6181,7 +6432,7 @@ export const pushNotificationLog = mysqlTable(
     userId: int("userId")
       .notNull()
       .references(() => users.id),
-    kind: mysqlEnum("pushKind", ["MORNING_BRIEF"]).notNull(),
+    kind: varchar("pushKind", { length: 40 }).notNull(),
     /** JSON مُرسَل (aggregate counts فقط — لا أسماء عملاء) — للتدقيق التاريخي. */
     payload: text("payload").notNull(),
     status: mysqlEnum("pushLogStatus", [
@@ -7669,7 +7920,9 @@ export const digitalSubscriptionContracts = mysqlTable(
     studentCustomerId: bigint("studentCustomerId", { mode: "number" })
       .notNull()
       .references(() => customers.id),
-    studentNameSnapshot: varchar("studentNameSnapshot", { length: 255 }).notNull(),
+    studentNameSnapshot: varchar("studentNameSnapshot", {
+      length: 255,
+    }).notNull(),
     durationDays: int("durationDays").notNull(),
     startsAt: timestamp("startsAt").notNull(),
     expiresAt: timestamp("expiresAt").notNull(),
@@ -7687,7 +7940,10 @@ export const digitalSubscriptionContracts = mysqlTable(
       t.studentCustomerId,
       t.offeringId,
     ),
-    branchExpiryIdx: index("idx_dsub_branch_expiry").on(t.branchId, t.expiresAt),
+    branchExpiryIdx: index("idx_dsub_branch_expiry").on(
+      t.branchId,
+      t.expiresAt,
+    ),
   }),
 );
 export type DigitalSubscriptionContract =

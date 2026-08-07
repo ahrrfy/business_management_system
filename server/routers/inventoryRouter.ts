@@ -1,13 +1,15 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
+import { resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { alias } from "drizzle-orm/mysql-core";
 
 // استخدام ! كحرف هروب بـ ESCAPE '!' — بديل آمن عن \ (لا يُصاب بـNO_BACKSLASH_ESCAPES MySQL mode).
 const escLike = (s: string) => s.replace(/[!%_]/g, "!$&");
 import { z } from "zod";
-import { branches, branchStock, inventoryMovements, productVariants, products, stockTransfers, users } from "../../drizzle/schema";
+import { branches, branchStock, inventoryMovements, productVariants, products, stockAdjustmentRequests, stockTransfers, users } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { createAppNotification } from "../services/appNotificationService";
 import { logAudit } from "../services/auditService";
 import {
   cancelStockTransfer,
@@ -421,6 +423,27 @@ export const inventoryRouter = router({
         { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
       );
       await logAudit(ctx, { action: "inventory.adjustRequest", entityType: "stockAdjustmentRequest", entityId: res.requestId, newValue: { variantId: input.variantId, branchId, target: input.targetQuantity } });
+      const db = getDb();
+      if (db) {
+        const candidates = await db
+          .select({ id: users.id, role: users.role, permissionsOverride: users.permissionsOverride })
+          .from(users)
+          .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), and(eq(users.role, "manager"), eq(users.branchId, branchId)))));
+        await Promise.all(candidates.filter((user) =>
+          user.id !== ctx.user.id &&
+          resolvePermissions(user.role as RoleKey, (user.permissionsOverride ?? null) as Record<string, AccessLevel> | null).inventory === "FULL"
+        ).map((user) => createAppNotification({
+          userId: user.id,
+          kind: "APPROVAL_REQUIRED",
+          title: "تسوية مخزون بانتظار قرار",
+          body: `طلب #${res.requestId} · الفرع ${branchId}`,
+          route: "/mobile#approvals",
+          eventKey: `stock-adjustment:${res.requestId}:approval:${user.id}`,
+          entityType: "stockAdjustmentRequest",
+          entityId: res.requestId,
+          requiresAction: true,
+        }).catch(() => undefined)));
+      }
       return { requestId: res.requestId, status: "PENDING_APPROVAL" as const };
     }),
 
@@ -430,6 +453,23 @@ export const inventoryRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await approveStockAdjustment(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
       await logAudit(ctx, { action: "inventory.adjustApprove", entityType: "stockAdjustmentRequest", entityId: input.id, newValue: { movementId: res.movementId, delta: res.delta } });
+      const db = getDb();
+      const [request] = db
+        ? await db.select({ createdBy: stockAdjustmentRequests.createdBy }).from(stockAdjustmentRequests).where(eq(stockAdjustmentRequests.id, input.id)).limit(1)
+        : [];
+      if (request?.createdBy) {
+        await createAppNotification({
+          userId: request.createdBy,
+          kind: "APPROVAL_REQUIRED",
+          title: "تم اعتماد تسوية المخزون",
+          body: `الطلب #${input.id}`,
+          route: "/inventory",
+          eventKey: `stock-adjustment:${input.id}:approved`,
+          entityType: "stockAdjustmentRequest",
+          entityId: input.id,
+          push: false,
+        }).catch(() => undefined);
+      }
       return res;
     }),
 
@@ -438,6 +478,23 @@ export const inventoryRouter = router({
     .mutation(async ({ input, ctx }) => {
       await rejectStockAdjustment(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role }, input.reason);
       await logAudit(ctx, { action: "inventory.adjustReject", entityType: "stockAdjustmentRequest", entityId: input.id, newValue: { reason: input.reason } });
+      const db = getDb();
+      const [request] = db
+        ? await db.select({ createdBy: stockAdjustmentRequests.createdBy }).from(stockAdjustmentRequests).where(eq(stockAdjustmentRequests.id, input.id)).limit(1)
+        : [];
+      if (request?.createdBy) {
+        await createAppNotification({
+          userId: request.createdBy,
+          kind: "APPROVAL_REQUIRED",
+          title: "تم تحديث طلب تسوية المخزون",
+          body: `الطلب #${input.id}`,
+          route: "/inventory",
+          eventKey: `stock-adjustment:${input.id}:rejected`,
+          entityType: "stockAdjustmentRequest",
+          entityId: input.id,
+          push: false,
+        }).catch(() => undefined);
+      }
       return { ok: true };
     }),
 

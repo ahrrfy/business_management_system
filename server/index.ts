@@ -5,7 +5,11 @@ const sentryEnabled = initSentry();
 
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { sql } from "drizzle-orm";
-import express, { type NextFunction, type Request, type Response } from "express";
+import express, {
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
@@ -22,11 +26,18 @@ import { serveStatic, setupVite } from "./vite";
 import { registerWellKnown } from "./wellKnown";
 import { applyBodyParsers } from "./middleware/bodyParsers";
 import { csrfGuard } from "./middleware/csrf";
-import { isTrpcSurface, sendTrpcError, trpcAwareRateLimitHandler } from "./middleware/trpcError";
+import {
+  isTrpcSurface,
+  sendTrpcError,
+  trpcAwareRateLimitHandler,
+} from "./middleware/trpcError";
 import { printRouter } from "./printRoute";
 import { imageRouter } from "./imageRoute";
 import { backupRouter } from "./backupRoutes";
-import { channelWebhooksRouter, companyChannelWebhooksRouter } from "./routes/channelWebhooks";
+import {
+  channelWebhooksRouter,
+  companyChannelWebhooksRouter,
+} from "./routes/channelWebhooks";
 import { waMediaRouter } from "./routes/waMedia";
 import { tenancyMiddleware } from "./tenancy/expressMiddleware";
 
@@ -41,7 +52,10 @@ function isPortAvailable(port: number, host?: string): Promise<boolean> {
   });
 }
 
-async function findAvailablePort(startPort = 3000, host?: string): Promise<number> {
+async function findAvailablePort(
+  startPort = 3000,
+  host?: string,
+): Promise<number> {
   for (let port = startPort; port < startPort + 20; port++) {
     if (await isPortAvailable(port, host)) return port;
   }
@@ -53,7 +67,7 @@ async function startServer() {
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret || jwtSecret.length < 32) {
     logger.error(
-      "JWT_SECRET مفقود أو أقصر من ٣٢ حرفاً — أوقفنا الإقلاع. اضبط قيمة عشوائية طويلة في .env (مثال: openssl rand -hex 32)."
+      "JWT_SECRET مفقود أو أقصر من ٣٢ حرفاً — أوقفنا الإقلاع. اضبط قيمة عشوائية طويلة في .env (مثال: openssl rand -hex 32).",
     );
     process.exit(1);
   }
@@ -71,7 +85,10 @@ async function startServer() {
   // (count.auth PIN، auth.login، platformAdmin.login) بتدوير الترويسة في كل طلب — و
   // express-rate-limit يفهرس بـreq.ip. مع `1` يُطابق nginx واحداً ⇒ req.ip = IP العميل الحقيقي
   // كما يسجّله البروكسي ويُتجاهَل أي XFF محقون. (كانت 1 ثم صارت true بالخطأ في b757623.)
-  const trustProxy = process.env.TRUST_PROXY === "1" || process.env.HOST === "127.0.0.1" ? 1 : false;
+  const trustProxy =
+    process.env.TRUST_PROXY === "1" || process.env.HOST === "127.0.0.1"
+      ? 1
+      : false;
   app.set("trust proxy", trustProxy);
 
   // تسجيل بنيوي + معرّف لكل طلب (req.id) يُستعمل للربط في الأخطاء.
@@ -85,7 +102,7 @@ async function startServer() {
       },
       // لا نضجّ السجلّ بطلبات الأصول الثابتة الناجحة.
       autoLogging: { ignore: (req) => req.url?.startsWith("/assets") ?? false },
-    })
+    }),
   );
 
   // حماية رؤوس HTTP. CSP مُفعَّل مع استثناء style-src unsafe-inline لـTailwind/SPA.
@@ -111,11 +128,14 @@ async function startServer() {
           frameAncestors: ["'none'"],
         },
       },
-    })
+    }),
   );
 
   // CORS يُفعَّل فقط عند ضبط أصول مسموحة (التشغيل أحادي الأصل لا يحتاجه).
-  const origins = (process.env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const origins = (process.env.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   if (origins.length > 0) {
     app.use(cors({ origin: origins, credentials: true }));
   }
@@ -137,8 +157,9 @@ async function startServer() {
       // فتح أي صفحة يجلب عشرات حُزَم الأصول دفعةً ⇒ كان يستنزف حدّ المعدّل ويُعلّق التحميل.
       // /api/webhooks: مُزوّدون خارجيون (Meta) يضربونها بمعدّل مستقل عن حركة المستخدمين — حدّ عام
       // مشترك معهم قد يحجب رسائل عملاء حقيقيين وقت الازدحام؛ الأمان هناك عبر HMAC لا حدّ المعدّل.
-      skip: (req) => req.path.startsWith("/assets/") || req.path.startsWith("/api/webhooks"),
-    })
+      skip: (req) =>
+        req.path.startsWith("/assets/") || req.path.startsWith("/api/webhooks"),
+    }),
   );
 
   // HTTP compression (gzip/brotli) — مهم على الشبكات البطيئة (العراق).
@@ -179,8 +200,10 @@ async function startServer() {
       legacyHeaders: false,
       skip: (req) => !req.path.includes("auth.login"),
       skipSuccessfulRequests: true,
-      handler: rateLimitHandler("محاولات دخول كثيرة، انتظر ١٥ دقيقة ثم أعد المحاولة."),
-    })
+      handler: rateLimitHandler(
+        "محاولات دخول كثيرة، انتظر ١٥ دقيقة ثم أعد المحاولة.",
+      ),
+    }),
   );
 
   // مؤشرات البنرات/التحويل عامة وبلا هوية، لكنها كتابة؛ حدّ مستقل يمنع تضخيم
@@ -192,9 +215,13 @@ async function startServer() {
       limit: Number(process.env.STOREFRONT_ANALYTICS_RATE_LIMIT_MAX ?? 120),
       standardHeaders: "draft-7",
       legacyHeaders: false,
-      skip: (req) => !req.path.includes("storefront.trackBanner") && !req.path.includes("storefront.trackConversion"),
-      handler: rateLimitHandler("طلبات قياس كثيرة، انتظر قليلاً ثم أعد المحاولة."),
-    })
+      skip: (req) =>
+        !req.path.includes("storefront.trackBanner") &&
+        !req.path.includes("storefront.trackConversion"),
+      handler: rateLimitHandler(
+        "طلبات قياس كثيرة، انتظر قليلاً ثم أعد المحاولة.",
+      ),
+    }),
   );
 
   // حدّ صارم على دخول بوابة العدّ الخارجية (تخمين PIN) — فوق قفل المحاولات في القاعدة.
@@ -206,8 +233,10 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("count.auth"),
-      handler: rateLimitHandler("محاولات دخول كثيرة لبوابة العدّ، انتظر ١٥ دقيقة."),
-    })
+      handler: rateLimitHandler(
+        "محاولات دخول كثيرة لبوابة العدّ، انتظر ١٥ دقيقة.",
+      ),
+    }),
   );
 
   // حدّ صارم على دخول مدير المنصّة (تعدد الشركات) — إجراء مُميَّز (تفعيل/تعطيل أي شركة)
@@ -222,7 +251,7 @@ async function startServer() {
       legacyHeaders: false,
       skip: (req) => !req.path.includes("platformAdmin.login"),
       handler: rateLimitHandler("محاولات دخول كثيرة، انتظر ١٥ دقيقة."),
-    })
+    }),
   );
 
   // حدّ صارم على تفعيل جهاز الكشك الخارجي (تخمين رمز الجهاز) — رغم أنّ الرمز عشوائي 24 بايت.
@@ -234,8 +263,10 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("kiosk.deviceLogin"),
-      handler: rateLimitHandler("محاولات كثيرة لتفعيل جهاز الكشك، انتظر قليلاً."),
-    })
+      handler: rateLimitHandler(
+        "محاولات كثيرة لتفعيل جهاز الكشك، انتظر قليلاً.",
+      ),
+    }),
   );
 
   // حدّ صارم على استمارة التقديم العامة (recruitment.submit) — إجراء بلا مصادقة على سطح عام
@@ -248,8 +279,10 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("recruitment.submit"),
-      handler: rateLimitHandler("طلبات تقديم كثيرة، انتظر قليلاً ثم أعد المحاولة."),
-    })
+      handler: rateLimitHandler(
+        "طلبات تقديم كثيرة، انتظر قليلاً ثم أعد المحاولة.",
+      ),
+    }),
   );
 
   // حدّ صارم على **كتابة الطلب** العلنية (storefront.createOrder) — إجراء كتابة بلا مصادقة
@@ -263,7 +296,7 @@ async function startServer() {
       legacyHeaders: false,
       skip: (req) => !req.path.includes("storefront.createOrder"),
       handler: rateLimitHandler("طلبات كثيرة، انتظر قليلاً ثم أعد المحاولة."),
-    })
+    }),
   );
 
   // حدّ صارم على تتبّع الطلب العلني (storefront.trackOrder) — تدقيق ٣/٨: رقم الطلب متسلسل
@@ -278,8 +311,10 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("storefront.trackOrder"),
-      handler: rateLimitHandler("محاولات تتبّع كثيرة، انتظر قليلاً ثم أعد المحاولة."),
-    })
+      handler: rateLimitHandler(
+        "محاولات تتبّع كثيرة، انتظر قليلاً ثم أعد المحاولة.",
+      ),
+    }),
   );
 
   // حدّ على سطح المتجر العلني (storefront.*) — قراءة آمنة بلا مصادقة على الإنترنت ⇒ حماية من
@@ -292,8 +327,10 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("storefront."),
-      handler: rateLimitHandler("طلبات كثيرة على المتجر، انتظر قليلاً ثم أعد المحاولة."),
-    })
+      handler: rateLimitHandler(
+        "طلبات كثيرة على المتجر، انتظر قليلاً ثم أعد المحاولة.",
+      ),
+    }),
   );
 
   // حماية CSRF (طبقة دفاع ثانية فوق sameSite:"strict").
@@ -307,9 +344,14 @@ async function startServer() {
   // نداء واحد لكلّ طلب HTTP، فحدّ المعدّل القائم يعمل بدقّته الحقيقية بلا تمييع.
   app.use("/api/trpc", (req, res, next) => {
     const PUBLIC_SENSITIVE = [
-      "auth.login", "count.auth", "kiosk.deviceLogin", "recruitment.submit", "platformAdmin.login",
+      "auth.login",
+      "count.auth",
+      "kiosk.deviceLogin",
+      "recruitment.submit",
+      "platformAdmin.login",
       // أحداث القياس كتابة علنية؛ نمنع حشو عشرات العدادات في دفعة HTTP واحدة.
-      "storefront.trackBanner", "storefront.trackConversion",
+      "storefront.trackBanner",
+      "storefront.trackConversion",
       // تتبّع الطلب: قابل للتعداد (رقم متسلسل) ⇒ نمنع حشو عشرات المحاولات في دفعة واحدة تتجاوز حدّه.
       "storefront.trackOrder",
     ];
@@ -343,7 +385,14 @@ async function startServer() {
   app.use("/api/trpc", tenancy);
   // maxBatchSize: يحدّ حجم دفعة tRPC الواحدة ⇒ سطح هجوم batch محدّد. خفّضناه من 50 إلى 20
   // لأن الواجهة الفعلية لا تتجاوز ~10 نداءات متوازية، والـ20 احتياطٌ مريح.
-  app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext, maxBatchSize: 20 }));
+  app.use(
+    "/api/trpc",
+    createExpressMiddleware({
+      router: appRouter,
+      createContext,
+      maxBatchSize: 20,
+    }),
+  );
 
   // جسر الطباعة الصامتة (خارج tRPC): يستقبل بايتات ESC/POS من العميل ويرسلها للطابعة محلياً.
   // محمي بالمصادقة (كوكي الجلسة) + csrfGuard (فحص Origin) — دفاع عميق فوق sameSite:"strict"
@@ -383,7 +432,7 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       handler: rateLimitHandler("طلبات كثيرة على الـwebhook، انتظر قليلاً."),
-    })
+    }),
   );
 
   app.use("/api/webhooks", channelWebhooksRouter());
@@ -397,40 +446,59 @@ async function startServer() {
   if (port !== preferredPort) {
     if (!isDev) {
       // nginx/العملاء مثبّتون على PORT — الانزياح الصامت يعني 502 صامتاً والتطبيق «online»؛ فشل صريح أوضح.
-      logger.error(`المنفذ ${preferredPort} مشغول — أوقفنا الإقلاع بدل الانزياح الصامت (nginx مثبّت عليه).`);
+      logger.error(
+        `المنفذ ${preferredPort} مشغول — أوقفنا الإقلاع بدل الانزياح الصامت (nginx مثبّت عليه).`,
+      );
       process.exit(1);
     }
     logger.warn(`Port ${preferredPort} busy, using ${port} instead`);
   }
   if (!isDev && !host) {
-    logger.warn("إنتاج بلا HOST — الاستماع على كل الواجهات؛ خلف nginx اضبط HOST=127.0.0.1.");
+    logger.warn(
+      "إنتاج بلا HOST — الاستماع على كل الواجهات؛ خلف nginx اضبط HOST=127.0.0.1.",
+    );
   }
 
   // Listen BEFORE attaching Vite: the API binds immediately and a slow Vite
   // startup never blocks the server from accepting requests.
   await new Promise<void>((resolve) =>
-    host ? server.listen(port, host, () => resolve()) : server.listen(port, () => resolve())
+    host
+      ? server.listen(port, host, () => resolve())
+      : server.listen(port, () => resolve()),
   );
-  logger.info(`Server running on http://${host ?? "localhost"}:${port}/ ${sentryEnabled ? "(Sentry on)" : ""}`);
+  logger.info(
+    `Server running on http://${host ?? "localhost"}:${port}/ ${sentryEnabled ? "(Sentry on)" : ""}`,
+  );
 
   // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
   // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
-  const { startMorningPushCron } = await import("./services/morningPushScheduler");
+  const { startMorningPushCron } =
+    await import("./services/morningPushScheduler");
   startMorningPushCron();
 
   // كنّاس صندوق واتساب الصادر (waOutbox) — إرسال فعلي + إعادة محاولة بتراجع أسّي + إعادة محاولة
   // أحداث webhook الفاشلة (سباق ترتيب). لا cron في بيئة الاختبار (NODE_ENV=test) — راجع outboxSweeper.ts.
-  const { startWaOutboxSweeper } = await import("./services/whatsapp/outboxSweeper");
+  const { startWaOutboxSweeper } =
+    await import("./services/whatsapp/outboxSweeper");
   startWaOutboxSweeper();
+
+  // إشعارات Android الأصلية: عامل صندوق موثوق يعيد المحاولة ولا يعمل دون إعداد FCM.
+  const { startNativePushOutboxWorker, stopNativePushOutboxWorker } =
+    await import("./services/nativePushOutboxWorker");
+  startNativePushOutboxWorker();
 
   // ش٢ (ق٤): كنّاس مسوّدات المحطة — يطوي الفارغة المنقضية (٢٤س بلا نشاط) ليلاً وعلى الإقلاع؛
   // **لا يمسّ المموّلة أبداً** (المال في receipts — I14). لا cron في بيئة الاختبار.
   if (process.env.NODE_ENV !== "test") {
     const { sweepExpiredDrafts } = await import("./services/reception");
     const cron = (await import("node-cron")).default;
-    void sweepExpiredDrafts().catch(() => { /* الكنّاس لا يُسقط الإقلاع */ });
+    void sweepExpiredDrafts().catch(() => {
+      /* الكنّاس لا يُسقط الإقلاع */
+    });
     cron.schedule("15 1 * * *", () => {
-      void sweepExpiredDrafts().catch(() => { /* دورة قادمة */ });
+      void sweepExpiredDrafts().catch(() => {
+        /* دورة قادمة */
+      });
     });
   }
 
@@ -457,6 +525,7 @@ async function startServer() {
       process.exit(1);
     }, 10_000);
     try {
+      stopNativePushOutboxWorker();
       if (hrBridge) await hrBridge.stop().catch(() => undefined);
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
@@ -494,17 +563,32 @@ async function startServer() {
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     logger.error({ err }, "unhandled express error");
     if (res.headersSent) return;
-    const rawStatus = (err as { status?: unknown; statusCode?: unknown } | null);
+    const rawStatus = err as { status?: unknown; statusCode?: unknown } | null;
     const status =
-      typeof rawStatus?.status === "number" ? rawStatus.status
-      : typeof rawStatus?.statusCode === "number" ? rawStatus.statusCode
-      : 500;
+      typeof rawStatus?.status === "number"
+        ? rawStatus.status
+        : typeof rawStatus?.statusCode === "number"
+          ? rawStatus.statusCode
+          : 500;
     const mapped =
       status === 413
-        ? { httpStatus: 413, code: "PAYLOAD_TOO_LARGE" as const, message: "حجم الطلب كبير جداً — صغّر المرفق/الصورة ثم أعد المحاولة." }
+        ? {
+            httpStatus: 413,
+            code: "PAYLOAD_TOO_LARGE" as const,
+            message:
+              "حجم الطلب كبير جداً — صغّر المرفق/الصورة ثم أعد المحاولة.",
+          }
         : status >= 400 && status < 500
-          ? { httpStatus: status, code: "BAD_REQUEST" as const, message: "طلب غير صالح." }
-          : { httpStatus: 500, code: "INTERNAL_SERVER_ERROR" as const, message: "خطأ داخلي في الخادم" };
+          ? {
+              httpStatus: status,
+              code: "BAD_REQUEST" as const,
+              message: "طلب غير صالح.",
+            }
+          : {
+              httpStatus: 500,
+              code: "INTERNAL_SERVER_ERROR" as const,
+              message: "خطأ داخلي في الخادم",
+            };
     if (isTrpcSurface(req)) {
       sendTrpcError(res, mapped);
     } else {
