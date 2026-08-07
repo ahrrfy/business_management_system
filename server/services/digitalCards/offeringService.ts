@@ -3,7 +3,7 @@
  * Auto-creates a service product (isService, productType=DIGITAL_CARD) when no productId is supplied.
  */
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   digitalProviders,
   digitalOfferings,
@@ -563,6 +563,7 @@ export async function listOfferings(db: DB, filters?: OfferingFilters) {
       id: digitalOfferings.id,
       providerId: digitalOfferings.providerId,
       providerType: digitalProviders.providerType,
+      settlementMode: digitalProviders.settlementMode,
       supplierName: suppliers.name,
       productId: digitalOfferings.productId,
       productName: products.name,
@@ -591,25 +592,48 @@ export async function listOfferings(db: DB, filters?: OfferingFilters) {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(digitalOfferings.id);
 
-  // If filtering by branchId, we need to check offering-branch link
-  if (filters?.branchId != null) {
-    const offeringIds = rows.map((r) => r.id);
-    if (offeringIds.length === 0) return [];
+  const offeringIds = rows.map((r) => r.id);
+  if (offeringIds.length === 0) return [];
 
-    const linkedBranches = await db
-      .select({ offeringId: digitalOfferingBranches.offeringId })
-      .from(digitalOfferingBranches)
-      .where(
-        and(
-          inArray(digitalOfferingBranches.offeringId, offeringIds),
-          eq(digitalOfferingBranches.branchId, filters.branchId),
-        ),
-      );
-    const linkedSet = new Set(linkedBranches.map((b) => b.offeringId));
-    return rows.filter((r) => linkedSet.has(r.id));
+  // The wallet code identifies the provider device/account, while its name is
+  // the operator-facing wallet label. Return both with the branch so the list
+  // can show every assignment without issuing one request per offering.
+  const assignmentConds = [inArray(digitalOfferingBranches.offeringId, offeringIds)];
+  if (filters?.branchId != null) {
+    assignmentConds.push(eq(digitalOfferingBranches.branchId, filters.branchId));
+  }
+  const assignmentRows = await db
+    .select({
+      offeringId: digitalOfferingBranches.offeringId,
+      branchId: digitalOfferingBranches.branchId,
+      branchName: branches.name,
+      walletId: digitalOfferingBranches.walletId,
+      deviceCode: digitalWallets.code,
+      walletName: digitalWallets.name,
+      walletIsActive: digitalWallets.isActive,
+    })
+    .from(digitalOfferingBranches)
+    .innerJoin(branches, eq(digitalOfferingBranches.branchId, branches.id))
+    .leftJoin(digitalWallets, eq(digitalOfferingBranches.walletId, digitalWallets.id))
+    .where(and(...assignmentConds))
+    .orderBy(asc(digitalOfferingBranches.branchId));
+
+  const assignmentsByOffering = new Map<number, typeof assignmentRows>();
+  for (const assignment of assignmentRows) {
+    const assignments = assignmentsByOffering.get(assignment.offeringId) ?? [];
+    assignments.push(assignment);
+    assignmentsByOffering.set(assignment.offeringId, assignments);
   }
 
-  return rows;
+  const withAssignments = rows.map((row) => ({
+    ...row,
+    assignments: assignmentsByOffering.get(row.id) ?? [],
+  }));
+
+  // A scoped branch must not learn that an offering exists only in another branch.
+  return filters?.branchId == null
+    ? withAssignments
+    : withAssignments.filter((row) => row.assignments.length > 0);
 }
 
 /* ────────── Get single ────────── */
@@ -619,6 +643,7 @@ export async function getOffering(db: DB, id: number, branchId?: number | null) 
       id: digitalOfferings.id,
       providerId: digitalOfferings.providerId,
       providerType: digitalProviders.providerType,
+      settlementMode: digitalProviders.settlementMode,
       supplierName: suppliers.name,
       productId: digitalOfferings.productId,
       productName: products.name,

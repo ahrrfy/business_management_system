@@ -17,16 +17,27 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtAr } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { Plus } from "lucide-react";
+import { Columns3, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 type OfferingRow = RouterOutputs["digitalCards"]["offerings"]["list"][number];
 type OfferingType = OfferingRow["offeringType"];
 type PricingMode = OfferingRow["pricingMode"];
+type OfferingAssignment = OfferingRow["assignments"][number];
+type AssignmentField = "deviceCode" | "walletName";
 
 const OFFERING_TYPE: Record<string, string> = {
   TELECOM_CARD: "كارت اتصالات",
@@ -41,6 +52,43 @@ const PRICING_MODE: Record<string, string> = {
   FIXED_SELL_PRICE: "سعر بيع محدّد إدارياً",
 };
 
+const OFFERING_COLUMNS = [
+  { key: "product", label: "البطاقة", locked: true },
+  { key: "provider", label: "المزوّد", locked: false },
+  { key: "device", label: "الجهاز المسند", locked: false },
+  { key: "wallet", label: "المحفظة المسندة", locked: false },
+  { key: "type", label: "النوع", locked: false },
+  { key: "faceValue", label: "القيمة الاسمية", locked: false },
+  { key: "pricingMode", label: "قاعدة التسعير", locked: false },
+  { key: "minimumMargin", label: "أقل هامش", locked: false },
+  { key: "studentData", label: "بيانات طالب", locked: false },
+  { key: "status", label: "الحالة", locked: false },
+  { key: "actions", label: "إجراء", locked: true },
+] as const;
+type OfferingColumnKey = (typeof OFFERING_COLUMNS)[number]["key"];
+type OfferingColumnVisibility = Record<OfferingColumnKey, boolean>;
+const COLUMN_VISIBILITY_KEY = "digital-offerings:columns:v1";
+
+function defaultColumnVisibility(): OfferingColumnVisibility {
+  return Object.fromEntries(OFFERING_COLUMNS.map((column) => [column.key, true])) as OfferingColumnVisibility;
+}
+
+function loadColumnVisibility(): OfferingColumnVisibility {
+  const defaults = defaultColumnVisibility();
+  if (typeof window === "undefined") return defaults;
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(COLUMN_VISIBILITY_KEY) ?? "{}") as Record<string, unknown>;
+    for (const column of OFFERING_COLUMNS) {
+      if (!column.locked && typeof stored[column.key] === "boolean") {
+        defaults[column.key] = stored[column.key] as boolean;
+      }
+    }
+  } catch {
+    // التفضيل بصري فقط؛ فشل التخزين لا يمنع عرض الجدول كاملاً.
+  }
+  return defaults;
+}
+
 const selectCls =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
@@ -48,6 +96,75 @@ function todayYmd(): string {
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function assignmentFallback(
+  settlementMode: OfferingRow["settlementMode"],
+  field: AssignmentField,
+) {
+  return settlementMode === "POSTPAID" && field === "walletName"
+    ? "تسوية آجلة — بلا محفظة"
+    : "غير مسند";
+}
+
+function assignmentExport(
+  assignments: OfferingAssignment[],
+  settlementMode: OfferingRow["settlementMode"],
+  field: AssignmentField,
+) {
+  if (assignments.length === 0) return "غير مسند";
+  return assignments
+    .map((assignment) =>
+      `${assignment[field] ?? assignmentFallback(settlementMode, field)} — ${assignment.branchName}`,
+    )
+    .join("، ");
+}
+
+function OfferingAssignmentsCell({
+  assignments,
+  settlementMode,
+  field,
+}: {
+  assignments: OfferingAssignment[];
+  settlementMode: OfferingRow["settlementMode"];
+  field: AssignmentField;
+}) {
+  if (assignments.length === 0) {
+    return (
+      <span className="inline-flex rounded-full px-2 py-0.5 text-xs badge-stock-out">
+        غير مسند
+      </span>
+    );
+  }
+
+  return (
+    <div className="min-w-36 space-y-1.5">
+      {assignments.map((assignment) => {
+        const value = assignment[field];
+        const postpaidWithoutWallet =
+          settlementMode === "POSTPAID" && field === "walletName" && value == null;
+        return (
+          <div key={assignment.branchId} className="space-y-0.5">
+            {value ? (
+              <div
+                className={field === "deviceCode" ? "font-mono text-xs font-medium" : "font-medium"}
+                dir={field === "deviceCode" ? "ltr" : "auto"}
+              >
+                {value}
+              </div>
+            ) : (
+              <span
+                className={`inline-flex rounded-full px-2 py-0.5 text-xs ${postpaidWithoutWallet ? "badge-status-neutral" : "badge-stock-out"}`}
+              >
+                {assignmentFallback(settlementMode, field)}
+              </span>
+            )}
+            <div className="text-xs text-muted-foreground">{assignment.branchName}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function DigitalOfferings() {
@@ -58,6 +175,23 @@ export default function DigitalOfferings() {
   const wallets = trpc.digitalCards.wallets.list.useQuery({ isActive: true });
   const rows = list.data ?? [];
   const [query, setQuery] = useState("");
+  const [visibleColumns, setVisibleColumns] = useState<OfferingColumnVisibility>(loadColumnVisibility);
+  const visibleColumnCount = OFFERING_COLUMNS.filter((column) => visibleColumns[column.key]).length;
+  const columnVisible = (key: OfferingColumnKey) => visibleColumns[key];
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(COLUMN_VISIBILITY_KEY, JSON.stringify(visibleColumns));
+    } catch {
+      // وضع الخصوصية أو امتلاء التخزين لا يمنع اختيار الأعمدة في الجلسة الحالية.
+    }
+  }, [visibleColumns]);
+
+  function setColumnVisible(key: OfferingColumnKey, visible: boolean) {
+    if (OFFERING_COLUMNS.find((column) => column.key === key)?.locked) return;
+    setVisibleColumns((current) => ({ ...current, [key]: visible }));
+  }
+
   const visibleRows = useMemo(() => {
     const q = query.trim().toLocaleLowerCase("ar");
     return q
@@ -67,6 +201,11 @@ export default function DigitalOfferings() {
             o.supplierName,
             OFFERING_TYPE[o.offeringType],
             PRICING_MODE[o.pricingMode],
+            ...o.assignments.flatMap((assignment) => [
+              assignment.deviceCode,
+              assignment.walletName,
+              assignment.branchName,
+            ]),
           ].some((v) =>
             String(v ?? "")
               .toLocaleLowerCase("ar")
@@ -340,6 +479,16 @@ export default function DigitalOfferings() {
                 { key: "productName", header: "البطاقة" },
                 { key: "supplierName", header: "المزوّد" },
                 {
+                  key: "assignments",
+                  header: "الجهاز المسند",
+                  map: (o) => assignmentExport(o.assignments, o.settlementMode, "deviceCode"),
+                },
+                {
+                  key: "assignments",
+                  header: "المحفظة المسندة",
+                  map: (o) => assignmentExport(o.assignments, o.settlementMode, "walletName"),
+                },
+                {
                   key: "offeringType",
                   header: "النوع",
                   map: (o) => OFFERING_TYPE[o.offeringType] ?? o.offeringType,
@@ -358,21 +507,55 @@ export default function DigitalOfferings() {
                 },
               ],
             }}
-          />
+          >
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button type="button" variant="outline" size="sm">
+                  <Columns3 aria-hidden className="size-4" />
+                  الأعمدة {visibleColumnCount}/{OFFERING_COLUMNS.length}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="max-h-80 min-w-56 overflow-y-auto text-right">
+                <DropdownMenuLabel>اختيار معلومات الجدول</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {OFFERING_COLUMNS.map((column) => (
+                  <DropdownMenuCheckboxItem
+                    key={column.key}
+                    checked={visibleColumns[column.key]}
+                    disabled={column.locked}
+                    onCheckedChange={(value) => setColumnVisible(column.key, Boolean(value))}
+                    onSelect={(event) => event.preventDefault()}
+                  >
+                    {column.label}
+                  </DropdownMenuCheckboxItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => setVisibleColumns(defaultColumnVisibility())}>
+                  <RotateCcw aria-hidden className="size-4" />
+                  إظهار كل الأعمدة
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </ListToolbar>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
+          <ScrollTableShell bordered={false} showColumnVisibility={false}>
+            <table
+              className="w-full text-sm"
+              style={{ minWidth: `${Math.max(980, visibleColumnCount * 130)}px` }}
+            >
               <thead className="bg-muted/50">
                 <tr>
                   <th className="p-2 text-start">البطاقة</th>
-                  <th className="p-2 text-start">المزوّد</th>
-                  <th className="p-2 text-start">النوع</th>
-                  <th className="p-2 text-start">القيمة الاسمية</th>
-                  <th className="p-2 text-start">قاعدة التسعير</th>
-                  <th className="p-2 text-start">أقلّ هامش</th>
-                  <th className="p-2 text-center">بيانات طالب</th>
-                  <th className="p-2 text-center">الحالة</th>
+                  {columnVisible("provider") && <th className="p-2 text-start">المزوّد</th>}
+                  {columnVisible("device") && <th className="p-2 text-start">الجهاز المسند</th>}
+                  {columnVisible("wallet") && <th className="p-2 text-start">المحفظة المسندة</th>}
+                  {columnVisible("type") && <th className="p-2 text-start">النوع</th>}
+                  {columnVisible("faceValue") && <th className="p-2 text-start">القيمة الاسمية</th>}
+                  {columnVisible("pricingMode") && <th className="p-2 text-start">قاعدة التسعير</th>}
+                  {columnVisible("minimumMargin") && <th className="p-2 text-start">أقلّ هامش</th>}
+                  {columnVisible("studentData") && <th className="p-2 text-center">بيانات طالب</th>}
+                  {columnVisible("status") && <th className="p-2 text-center">الحالة</th>}
                   <th className="p-2 text-center">إجراء</th>
                 </tr>
               </thead>
@@ -383,29 +566,59 @@ export default function DigitalOfferings() {
                     className={`border-t ${o.isActive ? "" : "opacity-60"}`}
                   >
                     <td className="p-2 font-medium">{o.productName}</td>
-                    <td className="p-2">{o.supplierName}</td>
-                    <td className="p-2 text-muted-foreground">
-                      {OFFERING_TYPE[o.offeringType] ?? o.offeringType}
-                    </td>
-                    <td className="p-2 tabular-nums">
-                      {o.faceValue ? fmtAr(o.faceValue) : "—"}
-                    </td>
-                    <td className="p-2 text-muted-foreground">
-                      {PRICING_MODE[o.pricingMode] ?? o.pricingMode}
-                    </td>
-                    <td className="p-2 tabular-nums">
-                      {fmtAr(o.minimumMargin)}
-                    </td>
-                    <td className="p-2 text-center">
-                      {o.requiresStudentData ? "نعم" : "لا"}
-                    </td>
-                    <td className="p-2 text-center">
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${o.isActive ? "badge-status-active" : "badge-stock-out"}`}
-                      >
-                        {o.isActive ? "مفعّلة" : "معطّلة"}
-                      </span>
-                    </td>
+                    {columnVisible("provider") && <td className="p-2">{o.supplierName}</td>}
+                    {columnVisible("device") && (
+                      <td className="p-2 align-top">
+                        <OfferingAssignmentsCell
+                          assignments={o.assignments}
+                          settlementMode={o.settlementMode}
+                          field="deviceCode"
+                        />
+                      </td>
+                    )}
+                    {columnVisible("wallet") && (
+                      <td className="p-2 align-top">
+                        <OfferingAssignmentsCell
+                          assignments={o.assignments}
+                          settlementMode={o.settlementMode}
+                          field="walletName"
+                        />
+                      </td>
+                    )}
+                    {columnVisible("type") && (
+                      <td className="p-2 text-muted-foreground">
+                        {OFFERING_TYPE[o.offeringType] ?? o.offeringType}
+                      </td>
+                    )}
+                    {columnVisible("faceValue") && (
+                      <td className="p-2 tabular-nums">
+                        {o.faceValue ? fmtAr(o.faceValue) : "—"}
+                      </td>
+                    )}
+                    {columnVisible("pricingMode") && (
+                      <td className="p-2 text-muted-foreground">
+                        {PRICING_MODE[o.pricingMode] ?? o.pricingMode}
+                      </td>
+                    )}
+                    {columnVisible("minimumMargin") && (
+                      <td className="p-2 tabular-nums">
+                        {fmtAr(o.minimumMargin)}
+                      </td>
+                    )}
+                    {columnVisible("studentData") && (
+                      <td className="p-2 text-center">
+                        {o.requiresStudentData ? "نعم" : "لا"}
+                      </td>
+                    )}
+                    {columnVisible("status") && (
+                      <td className="p-2 text-center">
+                        <span
+                          className={`inline-block rounded-full px-2 py-0.5 text-xs ${o.isActive ? "badge-status-active" : "badge-stock-out"}`}
+                        >
+                          {o.isActive ? "مفعّلة" : "معطّلة"}
+                        </span>
+                      </td>
+                    )}
                     <td className="p-2 text-center">
                       <RowActions
                         actions={[
@@ -441,14 +654,14 @@ export default function DigitalOfferings() {
                 ))}
                 {list.isLoading && (
                   <tr>
-                    <td colSpan={9}>
+                    <td colSpan={visibleColumnCount}>
                       <LoadingState />
                     </td>
                   </tr>
                 )}
                 {!list.isLoading && visibleRows.length === 0 && (
                   <TableEmptyRow
-                    colSpan={9}
+                    colSpan={visibleColumnCount}
                     message="لا بطاقات بعد — عرّف أوّل بطاقة لمزوّد مفعّل."
                   />
                 )}
