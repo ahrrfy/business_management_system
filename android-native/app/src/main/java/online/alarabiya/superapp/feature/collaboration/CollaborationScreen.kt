@@ -89,6 +89,7 @@ import online.alarabiya.superapp.model.collaboration.TeamTaskFilter
 import online.alarabiya.superapp.model.collaboration.TeamTaskSummary
 import online.alarabiya.superapp.model.collaboration.WhatsappBroadcastDetail
 import online.alarabiya.superapp.model.collaboration.WhatsappBroadcastSummary
+import online.alarabiya.superapp.ui.rtlIsolate
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -823,9 +824,9 @@ private fun TeamCard(content: @Composable ColumnScope.() -> Unit) {
 
 @Composable
 private fun DetailLine(label: String, value: String) {
-    Row(Modifier.fillMaxWidth()) {
-        Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, fontWeight = FontWeight.SemiBold)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, Modifier.weight(.42f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(rtlIsolate(value), Modifier.weight(.58f), fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
     }
 }
 

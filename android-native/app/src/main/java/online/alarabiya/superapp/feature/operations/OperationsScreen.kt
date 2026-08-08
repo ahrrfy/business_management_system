@@ -86,6 +86,9 @@ import online.alarabiya.superapp.model.operations.MyCommissionStatus
 import online.alarabiya.superapp.model.operations.OperationsPolicy
 import online.alarabiya.superapp.model.operations.OperationsSection
 import online.alarabiya.superapp.model.operations.OperationsValidation
+import online.alarabiya.superapp.core.scanner.NativeScanField
+import online.alarabiya.superapp.ui.scanner.NativeScannerAction
+import online.alarabiya.superapp.ui.rtlIsolate
 import online.alarabiya.superapp.ui.theme.Canvas
 import online.alarabiya.superapp.ui.theme.Emerald
 import online.alarabiya.superapp.ui.theme.EmeraldDark
@@ -237,7 +240,7 @@ private fun MessageStrip(error: String?, notice: String?, onClear: () -> Unit) {
 @Composable
 private fun AssetListPane(state: OperationsUiState, viewModel: OperationsViewModel, modifier: Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(11.dp)) {
-        SearchField(state.query, viewModel::setQuery, "بحث بالرمز أو الأصل أو صاحب العهدة")
+        SearchField(state.query, viewModel::setQuery, "بحث بالرمز أو الأصل أو صاحب العهدة", NativeScanField.SKU_OR_BARCODE)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             item {
                 FilterChip(state.assetStatus == null, { viewModel.setAssetStatus(null) }, label = { Text("الكل") })
@@ -491,7 +494,7 @@ private fun BoxScope.CommissionContent(status: MyCommissionStatus) {
 @Composable
 private fun NoteListPane(state: OperationsUiState, viewModel: OperationsViewModel, modifier: Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(11.dp)) {
-        SearchField(state.query, viewModel::setQuery, "بحث برقم السند أو المودع")
+        SearchField(state.query, viewModel::setQuery, "بحث برقم السند أو المودع", NativeScanField.DOCUMENT_REFERENCE)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             item { FilterChip(state.consignmentType == null, { viewModel.setConsignmentType(null) }, label = { Text("الكل") }) }
             items(ConsignmentNoteType.filterable) { type ->
@@ -751,12 +754,13 @@ private fun ActionConfirmation(
 }
 
 @Composable
-private fun SearchField(value: String, onValueChange: (String) -> Unit, label: String) {
+private fun SearchField(value: String, onValueChange: (String) -> Unit, label: String, scanField: NativeScanField? = null) {
     OutlinedTextField(
         value,
         onValueChange,
         Modifier.fillMaxWidth().testTag("operations_search"),
         leadingIcon = { Icon(Icons.Rounded.Search, null) },
+        trailingIcon = { scanField?.let { NativeScannerAction(it, onValueChange) } },
         label = { Text(label) },
         singleLine = true,
         shape = RoundedCornerShape(18.dp),
@@ -778,9 +782,9 @@ private fun DetailCard(title: String, icon: ImageVector, content: @Composable Co
 
 @Composable
 private fun ValueLine(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = MutedInk, style = MaterialTheme.typography.bodyMedium)
-        Text(value, fontWeight = FontWeight.Bold, textAlign = TextAlign.End, style = MaterialTheme.typography.bodyMedium)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, Modifier.weight(.42f), color = MutedInk, style = MaterialTheme.typography.bodyMedium)
+        Text(rtlIsolate(value), Modifier.weight(.58f), fontWeight = FontWeight.Bold, textAlign = TextAlign.End, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
     }
 }
 

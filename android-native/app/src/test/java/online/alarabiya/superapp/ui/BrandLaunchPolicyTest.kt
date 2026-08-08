@@ -32,6 +32,46 @@ class BrandLaunchPolicyTest {
     }
 
     @Test
+    fun `startup work can never hold the brand layer indefinitely`() {
+        assertEquals(
+            2_500L,
+            brandLaunchExitDelayMillis(
+                startedAtMillis = 1_000L,
+                nowMillis = 1_000L,
+                appIsStarting = true,
+            ),
+        )
+        assertEquals(
+            100L,
+            brandLaunchExitDelayMillis(
+                startedAtMillis = 1_000L,
+                nowMillis = 3_400L,
+                appIsStarting = true,
+            ),
+        )
+        assertEquals(
+            0L,
+            brandLaunchExitDelayMillis(
+                startedAtMillis = 1_000L,
+                nowMillis = 3_600L,
+                appIsStarting = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `ready content exits after the shorter minimum sequence`() {
+        assertEquals(
+            580L,
+            brandLaunchExitDelayMillis(
+                startedAtMillis = 1_000L,
+                nowMillis = 1_600L,
+                appIsStarting = false,
+            ),
+        )
+    }
+
+    @Test
     fun `motion phases clamp before and after their choreography window`() {
         assertEquals(0f, brandLaunchPhase(.1f, .2f, .6f))
         assertEquals(.5f, brandLaunchPhase(.4f, .2f, .6f), .0001f)

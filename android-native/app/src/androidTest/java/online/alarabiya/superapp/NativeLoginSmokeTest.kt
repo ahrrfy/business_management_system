@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -18,9 +19,18 @@ class NativeLoginSmokeTest {
     @get:Rule
     val composeRule = createAndroidComposeRule<MainActivity>()
 
+    private fun awaitLoginSurface() {
+        composeRule.waitUntil(timeoutMillis = 10_000L) {
+            composeRule.onAllNodes(hasTestTag("native-login-surface"))
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+    }
+
     @Test
     fun nativeLoginSurfaceRendersWithoutBrowserChrome() {
-        composeRule.onNodeWithText("سوبر العربية").assertIsDisplayed()
+        awaitLoginSurface()
+        composeRule.onNodeWithTag("native-login-surface").assertIsDisplayed()
         composeRule.onNodeWithText("تسجيل الدخول").assertIsDisplayed()
         composeRule.onNodeWithText("اسم المستخدم أو البريد").assertIsDisplayed()
         composeRule.onNodeWithText("كلمة المرور").assertIsDisplayed()
@@ -28,6 +38,7 @@ class NativeLoginSmokeTest {
 
     @Test
     fun rememberDeviceUsesOneNamedToggleTarget() {
+        awaitLoginSurface()
         composeRule.onNodeWithTag("remember_device")
             .assertIsDisplayed()
             .assertHasClickAction()
@@ -38,6 +49,7 @@ class NativeLoginSmokeTest {
 
     @Test
     fun emptyLoginShowsAccessibleInlineError() {
+        awaitLoginSurface()
         composeRule.onNodeWithTag("login_submit").performClick()
         composeRule.onNodeWithTag("login_error").assertIsDisplayed()
         composeRule.onNodeWithText("أدخل اسم المستخدم أو البريد وكلمة المرور").assertIsDisplayed()

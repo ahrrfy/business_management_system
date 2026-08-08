@@ -40,6 +40,7 @@ import {
 } from "./routes/channelWebhooks";
 import { waMediaRouter } from "./routes/waMedia";
 import { tenancyMiddleware } from "./tenancy/expressMiddleware";
+import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -71,6 +72,10 @@ async function startServer() {
     );
     process.exit(1);
   }
+
+  // نشر التطبيق الأصلي يعلن اعتماده على FCM و2FA وجسر جهاز الحضور. عند تفعيل العلم
+  // الصريح في الإنتاج نفشل قبل فتح المنفذ إذا كانت أي حلقة ناقصة، لا بعد دخول الموظفين.
+  assertMobileProductionReadiness();
 
   const app = express();
   const server = createServer(app);

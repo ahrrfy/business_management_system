@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -446,7 +447,11 @@ private fun Composer(
                 enabled = capabilities.access.canManage && conversation.channel == ConversationChannel.WHATSAPP,
                 shape = RoundedCornerShape(18.dp),
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 if (canSendText) {
                     Button(onClick = actions.sendText, enabled = state.draft.isNotBlank() && state.busyKey == null) {
                         Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = null)

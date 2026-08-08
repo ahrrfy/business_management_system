@@ -71,6 +71,8 @@ import online.alarabiya.superapp.R
 
 internal const val BRAND_LAUNCH_MINIMUM_DURATION_MILLIS = 1_180L
 internal const val BRAND_LAUNCH_REDUCED_MOTION_DURATION_MILLIS = 180L
+internal const val BRAND_LAUNCH_MAXIMUM_DURATION_MILLIS = 2_500L
+internal const val BRAND_LAUNCH_REDUCED_MOTION_MAXIMUM_DURATION_MILLIS = 500L
 
 internal fun brandLaunchRemainingMillis(
     startedAtMillis: Long,
@@ -83,6 +85,23 @@ internal fun brandLaunchRemainingMillis(
         BRAND_LAUNCH_REDUCED_MOTION_DURATION_MILLIS
     }
     return (minimumDuration - (nowMillis - startedAtMillis)).coerceAtLeast(0L)
+}
+
+internal fun brandLaunchExitDelayMillis(
+    startedAtMillis: Long,
+    nowMillis: Long,
+    appIsStarting: Boolean,
+    motionEnabled: Boolean = true,
+): Long {
+    if (!appIsStarting) {
+        return brandLaunchRemainingMillis(startedAtMillis, nowMillis, motionEnabled)
+    }
+    val maximumDuration = if (motionEnabled) {
+        BRAND_LAUNCH_MAXIMUM_DURATION_MILLIS
+    } else {
+        BRAND_LAUNCH_REDUCED_MOTION_MAXIMUM_DURATION_MILLIS
+    }
+    return (maximumDuration - (nowMillis - startedAtMillis)).coerceAtLeast(0L)
 }
 
 internal fun brandLaunchPhase(progress: Float, start: Float, end: Float): Float {
@@ -117,11 +136,12 @@ internal fun BrandLaunchHost(
     }
     LaunchedEffect(appIsStarting, launchVisible, launchStartedAt, motionEnabled) {
         val startedAt = launchStartedAt
-        if (launchVisible && !appIsStarting && startedAt != null) {
+        if (launchVisible && startedAt != null) {
             delay(
-                brandLaunchRemainingMillis(
+                brandLaunchExitDelayMillis(
                     startedAtMillis = startedAt,
                     nowMillis = SystemClock.elapsedRealtime(),
+                    appIsStarting = appIsStarting,
                     motionEnabled = motionEnabled,
                 ),
             )

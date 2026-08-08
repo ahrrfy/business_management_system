@@ -81,6 +81,8 @@ import online.alarabiya.superapp.model.inventory.StocktakeSummary
 import online.alarabiya.superapp.model.inventory.TransferDetail
 import online.alarabiya.superapp.model.inventory.TransferDraft
 import online.alarabiya.superapp.model.inventory.TransferStatus
+import online.alarabiya.superapp.core.scanner.NativeScanField
+import online.alarabiya.superapp.ui.scanner.NativeScannerAction
 
 private val Positive = Color(0xFF0A7A63)
 private val Warning = Color(0xFFC45C16)
@@ -263,7 +265,7 @@ private fun BalancesPane(state: InventoryUiState, capabilities: InventoryCapabil
             )
         }
         item {
-            SearchField(state.balanceQuery, actions.setBalanceQuery, actions.searchBalances, "اسم الصنف أو SKU")
+            SearchField(state.balanceQuery, actions.setBalanceQuery, actions.searchBalances, "اسم الصنف أو SKU", NativeScanField.SKU_OR_BARCODE)
             Spacer(Modifier.height(8.dp))
             FilterChip(selected = state.lowOnly, onClick = actions.toggleLowOnly, label = { Text("دون حد إعادة الطلب") }, leadingIcon = { Icon(Icons.Rounded.FilterAlt, null) })
         }
@@ -301,7 +303,7 @@ private fun BalanceCard(item: StockBalance, writable: Boolean, actions: Inventor
 @Composable
 private fun MovementsPane(state: InventoryUiState, actions: InventoryActions) {
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { SearchField(state.movementQuery, actions.setMovementQuery, actions.searchMovements, "صنف، SKU أو مرجع") }
+        item { SearchField(state.movementQuery, actions.setMovementQuery, actions.searchMovements, "صنف، SKU أو مرجع", NativeScanField.SKU_OR_BARCODE) }
         item { EnumFilters(listOf(null, MovementType.IN, MovementType.OUT, MovementType.TRANSFER_IN, MovementType.TRANSFER_OUT, MovementType.ADJUST), state.movementType, actions.setMovementType) { it?.movementLabel() ?: "الكل" } }
         if (state.movements.rows.isEmpty()) item { EmptyCard("لا توجد حركات مطابقة") }
         items(state.movements.rows, key = { it.id }) { MovementCard(it) }
@@ -341,7 +343,7 @@ private fun TransfersPane(state: InventoryUiState, capabilities: InventoryCapabi
 @Composable
 private fun TransferList(state: InventoryUiState, actions: InventoryActions) {
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { SearchField(state.transferQuery, actions.setTransferQuery, actions.searchTransfers, "رقم السند أو الفرع") }
+        item { SearchField(state.transferQuery, actions.setTransferQuery, actions.searchTransfers, "رقم السند أو الفرع", NativeScanField.DOCUMENT_REFERENCE) }
         item { EnumFilters(listOf(null, TransferStatus.IN_TRANSIT, TransferStatus.RECEIVED, TransferStatus.CANCELLED), state.transferStatus, actions.setTransferStatus) { it?.transferLabel() ?: "الكل" } }
         if (state.transfers.rows.isEmpty()) item { EmptyCard("لا توجد تحويلات مطابقة") }
         items(state.transfers.rows, key = { it.id }) { transfer ->
@@ -549,7 +551,7 @@ private fun CountAssignments(items: List<CountAssignment>, actions: InventoryAct
 private fun CountSessionPane(session: CountSession, state: InventoryUiState, actions: InventoryActions) {
     val filtered = remember(session.items, state.countQuery) { session.items.filter { state.countQuery.isBlank() || it.label.contains(state.countQuery, true) } }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { PaneTitle(session.name, actions.closeCount); Text("${session.branchName} · ${session.assignmentName}", color = MaterialTheme.colorScheme.onSurfaceVariant); ProgressLine(session.counted, session.total); Spacer(Modifier.height(8.dp)); SearchField(state.countQuery, actions.setCountQuery, {}, "اسم الصنف أو SKU") }
+        item { PaneTitle(session.name, actions.closeCount); Text("${session.branchName} · ${session.assignmentName}", color = MaterialTheme.colorScheme.onSurfaceVariant); ProgressLine(session.counted, session.total); Spacer(Modifier.height(8.dp)); SearchField(state.countQuery, actions.setCountQuery, {}, "اسم الصنف أو SKU", NativeScanField.SKU_OR_BARCODE) }
         items(filtered, key = { it.variantId }) { item ->
             var quantity by remember(item.variantId, item.myQuantity) { mutableStateOf(item.myQuantity?.toString().orEmpty()) }
             OperationalCard(if (item.recountReason != null) Warning else if (item.counted) Positive else MaterialTheme.colorScheme.outline) {
@@ -564,11 +566,16 @@ private fun CountSessionPane(session: CountSession, state: InventoryUiState, act
 }
 
 @Composable
-private fun SearchField(value: String, change: (String) -> Unit, search: () -> Unit, label: String) {
+private fun SearchField(value: String, change: (String) -> Unit, search: () -> Unit, label: String, scanField: NativeScanField? = null) {
     OutlinedTextField(
         value = value, onValueChange = change, modifier = Modifier.fillMaxWidth(), singleLine = true,
-        label = { Text(label) }, leadingIcon = { Icon(Icons.Rounded.Search, null) },
-        trailingIcon = { IconButton(search) { Icon(Icons.Rounded.Search, "بحث") } },
+        label = { Text(label) },
+        trailingIcon = {
+            Row {
+                scanField?.let { field -> NativeScannerAction(field, { scanned -> change(scanned); search() }) }
+                IconButton(search) { Icon(Icons.Rounded.Search, "بحث") }
+            }
+        },
         shape = RoundedCornerShape(18.dp),
     )
 }

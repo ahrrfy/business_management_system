@@ -52,6 +52,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.commerce.CommerceCapabilities
 import online.alarabiya.superapp.model.commerce.DigitalCard
@@ -63,6 +64,7 @@ import online.alarabiya.superapp.model.commerce.GiftSummary
 import online.alarabiya.superapp.model.commerce.ReservationDetail
 import online.alarabiya.superapp.model.commerce.ReservationConversion
 import online.alarabiya.superapp.model.commerce.ReservationSummary
+import online.alarabiya.superapp.ui.rtlIsolate
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -516,9 +518,9 @@ private fun SectionCard(content: @Composable ColumnScope.() -> Unit) {
 
 @Composable
 private fun DetailRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, fontWeight = FontWeight.SemiBold)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, Modifier.weight(.42f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(rtlIsolate(value), Modifier.weight(.58f), fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
     }
 }
 

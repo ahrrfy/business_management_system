@@ -70,6 +70,8 @@ jobs:
           CONTROL_DATABASE_URL: mysql://root:erp_root_pw@127.0.0.1:3306/erp_control_test
       - name: فحص الأنواع
         run: pnpm check
+      - name: حارس عقد إصدار تطبيق Android الأصلي
+        run: pnpm check:mobile-release
       - name: حارِس الإيموجي UI
         run: pnpm check:emoji
       - name: حارِس المخطّطات المالية (z.string العارية)

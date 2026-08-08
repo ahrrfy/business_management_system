@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -66,6 +68,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
@@ -98,6 +101,8 @@ import online.alarabiya.superapp.model.receivables.ReminderFilter
 import online.alarabiya.superapp.model.receivables.ReminderHistoryItem
 import online.alarabiya.superapp.model.receivables.ReminderLedger
 import online.alarabiya.superapp.model.receivables.ReminderQueueItem
+import online.alarabiya.superapp.ui.ltrInputTextStyle
+import online.alarabiya.superapp.ui.rtlIsolate
 
 private val ReceivableInk = Color(0xFF362087)
 private val ReceivableBlue = Color(0xFF5B36D2)
@@ -291,26 +296,28 @@ private fun InstallmentFilterPanel(
                 FilterChip(filter.status == status, { onChange { copy(status = status) } }, { Text(status.label) })
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                filter.customerId, { value -> onChange { copy(customerId = value.filter(Char::isDigit)) } },
-                Modifier.weight(1f), label = { Text("معرّف العميل") }, singleLine = true,
-            )
-            if (policy.canFilterBranch) OutlinedTextField(
-                filter.branchId, { value -> onChange { copy(branchId = value) } },
-                Modifier.weight(1f), label = { Text("الفرع") }, singleLine = true,
-            )
-            Button(onClick = onApply) { Text("تطبيق") }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                filter.from, { value -> onChange { copy(from = value.take(10)) } },
-                Modifier.weight(1f), label = { Text("من YYYY-MM-DD") }, singleLine = true,
-            )
-            OutlinedTextField(
-                filter.to, { value -> onChange { copy(to = value.take(10)) } },
-                Modifier.weight(1f), label = { Text("إلى YYYY-MM-DD") }, singleLine = true,
-            )
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            if (maxWidth < 600.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ReceivableCodeField(filter.customerId, { value -> onChange { copy(customerId = value.filter(Char::isDigit)) } }, "معرّف العميل", Modifier.fillMaxWidth(), KeyboardType.Number)
+                    if (policy.canFilterBranch) ReceivableCodeField(filter.branchId, { value -> onChange { copy(branchId = value) } }, "الفرع", Modifier.fillMaxWidth(), KeyboardType.Number)
+                    ReceivableCodeField(filter.from, { value -> onChange { copy(from = value.take(10)) } }, "من YYYY-MM-DD", Modifier.fillMaxWidth(), KeyboardType.Ascii)
+                    ReceivableCodeField(filter.to, { value -> onChange { copy(to = value.take(10)) } }, "إلى YYYY-MM-DD", Modifier.fillMaxWidth(), KeyboardType.Ascii)
+                    Button(onClick = onApply, modifier = Modifier.fillMaxWidth()) { Text("تطبيق") }
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        ReceivableCodeField(filter.customerId, { value -> onChange { copy(customerId = value.filter(Char::isDigit)) } }, "معرّف العميل", Modifier.weight(1f), KeyboardType.Number)
+                        if (policy.canFilterBranch) ReceivableCodeField(filter.branchId, { value -> onChange { copy(branchId = value) } }, "الفرع", Modifier.weight(1f), KeyboardType.Number)
+                        Button(onClick = onApply) { Text("تطبيق") }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ReceivableCodeField(filter.from, { value -> onChange { copy(from = value.take(10)) } }, "من YYYY-MM-DD", Modifier.weight(1f), KeyboardType.Ascii)
+                        ReceivableCodeField(filter.to, { value -> onChange { copy(to = value.take(10)) } }, "إلى YYYY-MM-DD", Modifier.weight(1f), KeyboardType.Ascii)
+                    }
+                }
+            }
         }
         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             items(listOf(0, 7, 30, 90)) { days ->
@@ -335,18 +342,40 @@ private fun ReminderFilterPanel(
     val isAr = state.section == ReceivablesSection.CUSTOMER_REMINDERS
     val aggregateAllowed = if (isAr) policy.canReadOpeningReceivables else policy.canReadAllPayables
     FilterSurface {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (policy.canFilterBranch) OutlinedTextField(
-                state.reminderFilter.branchId,
-                { onFilter(state.reminderFilter.copy(branchId = it)) },
-                Modifier.weight(1f), label = { Text("معرّف الفرع") }, singleLine = true,
-            ) else Spacer(Modifier.weight(1f))
-            if (aggregateAllowed) FilterChip(
-                state.reminderFilter.aggregate,
-                { onFilter(state.reminderFilter.copy(aggregate = !state.reminderFilter.aggregate)) },
-                { Text(if (isAr) "أرصدة افتتاحية" else "كل الفروع") },
-            )
-            Button(onClick = onApply) { Text("تطبيق") }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            if (maxWidth < 520.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (policy.canFilterBranch) ReceivableCodeField(
+                        state.reminderFilter.branchId,
+                        { onFilter(state.reminderFilter.copy(branchId = it)) },
+                        "معرّف الفرع",
+                        Modifier.fillMaxWidth(),
+                        KeyboardType.Number,
+                    )
+                    if (aggregateAllowed) FilterChip(
+                        state.reminderFilter.aggregate,
+                        { onFilter(state.reminderFilter.copy(aggregate = !state.reminderFilter.aggregate)) },
+                        { Text(if (isAr) "أرصدة افتتاحية" else "كل الفروع") },
+                    )
+                    Button(onClick = onApply, modifier = Modifier.fillMaxWidth()) { Text("تطبيق") }
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (policy.canFilterBranch) ReceivableCodeField(
+                        state.reminderFilter.branchId,
+                        { onFilter(state.reminderFilter.copy(branchId = it)) },
+                        "معرّف الفرع",
+                        Modifier.weight(1f),
+                        KeyboardType.Number,
+                    ) else Spacer(Modifier.weight(1f))
+                    if (aggregateAllowed) FilterChip(
+                        state.reminderFilter.aggregate,
+                        { onFilter(state.reminderFilter.copy(aggregate = !state.reminderFilter.aggregate)) },
+                        { Text(if (isAr) "أرصدة افتتاحية" else "كل الفروع") },
+                    )
+                    Button(onClick = onApply) { Text("تطبيق") }
+                }
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
             FilterChip(!state.reminderHistoryMode, { onMode(false) }, { Text("قائمة اليوم") })
@@ -372,20 +401,22 @@ private fun CardFilterPanel(
             filter.query, { value -> onChange { copy(query = value.take(200)) } }, Modifier.fillMaxWidth(),
             label = { Text("مرجع أو سند أو طرف أو آخر 4 أرقام") }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, singleLine = true,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (policy.canFilterBranch) OutlinedTextField(
-                filter.branchId, { value -> onChange { copy(branchId = value) } },
-                Modifier.weight(1f), label = { Text("الفرع") }, singleLine = true,
-            )
-            OutlinedTextField(
-                filter.from, { value -> onChange { copy(from = value.take(10)) } },
-                Modifier.weight(1f), label = { Text("من") }, singleLine = true,
-            )
-            OutlinedTextField(
-                filter.to, { value -> onChange { copy(to = value.take(10)) } },
-                Modifier.weight(1f), label = { Text("إلى") }, singleLine = true,
-            )
-            Button(onClick = onApply) { Text("تطبيق") }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            if (maxWidth < 600.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (policy.canFilterBranch) ReceivableCodeField(filter.branchId, { value -> onChange { copy(branchId = value) } }, "الفرع", Modifier.fillMaxWidth(), KeyboardType.Number)
+                    ReceivableCodeField(filter.from, { value -> onChange { copy(from = value.take(10)) } }, "من", Modifier.fillMaxWidth(), KeyboardType.Ascii)
+                    ReceivableCodeField(filter.to, { value -> onChange { copy(to = value.take(10)) } }, "إلى", Modifier.fillMaxWidth(), KeyboardType.Ascii)
+                    Button(onClick = onApply, modifier = Modifier.fillMaxWidth()) { Text("تطبيق") }
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (policy.canFilterBranch) ReceivableCodeField(filter.branchId, { value -> onChange { copy(branchId = value) } }, "الفرع", Modifier.weight(1f), KeyboardType.Number)
+                    ReceivableCodeField(filter.from, { value -> onChange { copy(from = value.take(10)) } }, "من", Modifier.weight(1f), KeyboardType.Ascii)
+                    ReceivableCodeField(filter.to, { value -> onChange { copy(to = value.take(10)) } }, "إلى", Modifier.weight(1f), KeyboardType.Ascii)
+                    Button(onClick = onApply) { Text("تطبيق") }
+                }
+            }
         }
         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             item { FilterChip(filter.direction == null, { onChange { copy(direction = null) } }, { Text("كل الحركات") }) }
@@ -401,6 +432,25 @@ private fun CardFilterPanel(
             }
         }
     }
+}
+
+@Composable
+private fun ReceivableCodeField(
+    value: String,
+    onValue: (String) -> Unit,
+    label: String,
+    modifier: Modifier,
+    keyboardType: KeyboardType,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValue,
+        modifier = modifier,
+        label = { Text(label) },
+        singleLine = true,
+        textStyle = ltrInputTextStyle(),
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+    )
 }
 
 @Composable
@@ -886,7 +936,7 @@ private fun NewPlanDialog(
 ) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            Modifier.fillMaxWidth(.94f).fillMaxHeight(.9f),
+            Modifier.fillMaxWidth(.94f).fillMaxHeight(.9f).imePadding(),
             shape = RoundedCornerShape(topStart = 34.dp, bottomEnd = 34.dp),
             color = MaterialTheme.colorScheme.surface,
         ) {
@@ -897,36 +947,91 @@ private fun NewPlanDialog(
                     Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(vertical = 12.dp),
                 ) {
-                    item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(draft.customerId, { value -> onUpdate { copy(customerId = value.filter(Char::isDigit)) } }, Modifier.weight(1f), label = { Text("معرّف العميل") })
-                            OutlinedTextField(draft.invoiceId, { value -> onUpdate { copy(invoiceId = value.filter(Char::isDigit)) } }, Modifier.weight(1f), label = { Text("الفاتورة (اختياري)") })
-                        }
-                    }
-                    item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(draft.branchId, { value -> onUpdate { copy(branchId = value.filter(Char::isDigit)) } }, Modifier.weight(1f), label = { Text("الفرع") })
-                            OutlinedTextField(draft.totalAmount, { value -> onUpdate { copy(totalAmount = value) } }, Modifier.weight(1f), label = { Text("إجمالي الخطة") })
-                            OutlinedTextField(draft.downPayment, { value -> onUpdate { copy(downPayment = value) } }, Modifier.weight(1f), label = { Text("دفعة أولى") })
-                        }
-                    }
+                    item { PlanIdentityFields(draft, onUpdate) }
+                    item { PlanAmountFields(draft, onUpdate) }
                     item { OutlinedTextField(draft.notes, { value -> onUpdate { copy(notes = value.take(1000)) } }, Modifier.fillMaxWidth(), label = { Text("ملاحظات") }, minLines = 2) }
                     item { SectionTitle("جدول الأقساط", draft.lines.size.toString()) }
                     itemsIndexed(draft.lines) { index, line ->
-                        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-                            Row(Modifier.padding(10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text("${index + 1}", fontWeight = FontWeight.Bold)
-                                OutlinedTextField(line.dueDate, { value -> onUpdateLine(index) { copy(dueDate = value.take(10)) } }, Modifier.weight(1f), label = { Text("تاريخ الاستحقاق") })
-                                OutlinedTextField(line.amount, { value -> onUpdateLine(index) { copy(amount = value) } }, Modifier.weight(1f), label = { Text("المبلغ") })
-                                IconButton(onClick = { onRemoveLine(index) }, enabled = draft.lines.size > 1) { Icon(Icons.Rounded.Cancel, "حذف") }
-                            }
-                        }
+                        PlanLineEditor(index, line, draft.lines.size > 1, onRemoveLine, onUpdateLine)
                     }
                     item { OutlinedButton(onClick = onAddLine, enabled = draft.lines.size < 60, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Add, null); Text("إضافة قسط") } }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onDismiss, enabled = !submitting, modifier = Modifier.weight(1f)) { Text("إلغاء") }
                     Button(onClick = onReview, enabled = !submitting, modifier = Modifier.weight(1f)) { Text("مراجعة") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlanIdentityFields(
+    draft: NewInstallmentPlan,
+    onUpdate: (NewInstallmentPlan.() -> NewInstallmentPlan) -> Unit,
+) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (maxWidth < 520.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ReceivableCodeField(draft.customerId, { value -> onUpdate { copy(customerId = value.filter(Char::isDigit)) } }, "معرّف العميل", Modifier.fillMaxWidth(), KeyboardType.Number)
+                ReceivableCodeField(draft.invoiceId, { value -> onUpdate { copy(invoiceId = value.filter(Char::isDigit)) } }, "الفاتورة (اختياري)", Modifier.fillMaxWidth(), KeyboardType.Number)
+            }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ReceivableCodeField(draft.customerId, { value -> onUpdate { copy(customerId = value.filter(Char::isDigit)) } }, "معرّف العميل", Modifier.weight(1f), KeyboardType.Number)
+                ReceivableCodeField(draft.invoiceId, { value -> onUpdate { copy(invoiceId = value.filter(Char::isDigit)) } }, "الفاتورة (اختياري)", Modifier.weight(1f), KeyboardType.Number)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlanAmountFields(
+    draft: NewInstallmentPlan,
+    onUpdate: (NewInstallmentPlan.() -> NewInstallmentPlan) -> Unit,
+) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (maxWidth < 620.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ReceivableCodeField(draft.branchId, { value -> onUpdate { copy(branchId = value.filter(Char::isDigit)) } }, "الفرع", Modifier.fillMaxWidth(), KeyboardType.Number)
+                ReceivableCodeField(draft.totalAmount, { value -> onUpdate { copy(totalAmount = value) } }, "إجمالي الخطة", Modifier.fillMaxWidth(), KeyboardType.Decimal)
+                ReceivableCodeField(draft.downPayment, { value -> onUpdate { copy(downPayment = value) } }, "دفعة أولى", Modifier.fillMaxWidth(), KeyboardType.Decimal)
+            }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ReceivableCodeField(draft.branchId, { value -> onUpdate { copy(branchId = value.filter(Char::isDigit)) } }, "الفرع", Modifier.weight(1f), KeyboardType.Number)
+                ReceivableCodeField(draft.totalAmount, { value -> onUpdate { copy(totalAmount = value) } }, "إجمالي الخطة", Modifier.weight(1f), KeyboardType.Decimal)
+                ReceivableCodeField(draft.downPayment, { value -> onUpdate { copy(downPayment = value) } }, "دفعة أولى", Modifier.weight(1f), KeyboardType.Decimal)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlanLineEditor(
+    index: Int,
+    line: NewInstallmentLine,
+    removable: Boolean,
+    onRemoveLine: (Int) -> Unit,
+    onUpdateLine: (Int, NewInstallmentLine.() -> NewInstallmentLine) -> Unit,
+) {
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            if (maxWidth < 520.dp) {
+                Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("${index + 1}", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                        IconButton(onClick = { onRemoveLine(index) }, enabled = removable) { Icon(Icons.Rounded.Cancel, "حذف") }
+                    }
+                    ReceivableCodeField(line.dueDate, { value -> onUpdateLine(index) { copy(dueDate = value.take(10)) } }, "تاريخ الاستحقاق", Modifier.fillMaxWidth(), KeyboardType.Ascii)
+                    ReceivableCodeField(line.amount, { value -> onUpdateLine(index) { copy(amount = value) } }, "المبلغ", Modifier.fillMaxWidth(), KeyboardType.Decimal)
+                }
+            } else {
+                Row(Modifier.padding(10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("${index + 1}", fontWeight = FontWeight.Bold)
+                    ReceivableCodeField(line.dueDate, { value -> onUpdateLine(index) { copy(dueDate = value.take(10)) } }, "تاريخ الاستحقاق", Modifier.weight(1f), KeyboardType.Ascii)
+                    ReceivableCodeField(line.amount, { value -> onUpdateLine(index) { copy(amount = value) } }, "المبلغ", Modifier.weight(1f), KeyboardType.Decimal)
+                    IconButton(onClick = { onRemoveLine(index) }, enabled = removable) { Icon(Icons.Rounded.Cancel, "حذف") }
                 }
             }
         }
@@ -1033,9 +1138,9 @@ private fun MetricCard(icon: ImageVector, title: String, subtitle: String, value
 
 @Composable
 private fun InfoLine(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, fontWeight = FontWeight.SemiBold)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, Modifier.weight(.42f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(rtlIsolate(value), Modifier.weight(.58f), fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
     }
 }
 

@@ -3,6 +3,8 @@ package online.alarabiya.superapp.core.notifications
 import online.alarabiya.superapp.core.navigation.DeepLinkResult
 import online.alarabiya.superapp.core.navigation.NativeDeepLinkCodec
 import online.alarabiya.superapp.core.navigation.NativeDestination
+import online.alarabiya.superapp.core.navigation.NativeFeatureIntent
+import online.alarabiya.superapp.core.navigation.NativeModule
 
 enum class NotificationUrgency {
     INFORMATION,
@@ -63,6 +65,7 @@ object NativeNotificationPayloadParser {
             is DeepLinkResult.Accepted -> parsed.destination
             else -> return rejected("invalid_destination")
         }
+        if (!allowsDestination(kind, destination)) return rejected("destination_not_allowed_for_kind")
 
         return NativeNotificationParseResult.Accepted(
             NativeNotificationPayload(
@@ -77,5 +80,38 @@ object NativeNotificationPayloadParser {
         )
     }
 
+    /**
+     * The URI codec is the syntax boundary; this matrix is the narrower push contract.
+     * It prevents a valid but unrelated native destination from being paired with a forged kind.
+     */
+    fun allowsDestination(kind: String, destination: NativeDestination): Boolean = when (kind) {
+        "TASK_ASSIGNED" -> destination == NativeDestination.Tasks || destination.matchesFeature(
+            module = NativeModule.TASKS,
+            intent = NativeFeatureIntent.VIEW,
+            requiresEntity = true,
+        )
+        "APPROVAL_REQUIRED" -> destination == NativeDestination.Approvals
+        "ATTENDANCE", "ATTENDANCE_CHECK_IN", "ATTENDANCE_CHECK_OUT" -> destination.matchesFeature(
+            module = NativeModule.HR,
+            intent = NativeFeatureIntent.BROWSE,
+            requiresEntity = false,
+        )
+        "PAYROLL_READY", "LEAVE_STATUS" -> destination == NativeDestination.Profile || destination.matchesFeature(
+            module = NativeModule.HR,
+            intent = NativeFeatureIntent.VIEW,
+            requiresEntity = true,
+        )
+        else -> false
+    }
+
     private fun rejected(reason: String) = NativeNotificationParseResult.Rejected(reason)
+
+    private fun NativeDestination.matchesFeature(
+        module: NativeModule,
+        intent: NativeFeatureIntent,
+        requiresEntity: Boolean,
+    ): Boolean = this is NativeDestination.Feature &&
+        this.module == module &&
+        this.intent == intent &&
+        if (requiresEntity) entityId?.toLongOrNull()?.let { it > 0 } == true else entityId == null
 }

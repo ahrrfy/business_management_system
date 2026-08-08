@@ -142,12 +142,12 @@ describe("native push security contract", () => {
       },
     ) as unknown as typeof fetch;
     const payload = normalizeNativePushPayload({
-      notificationId: "approval_42",
-      kind: "APPROVAL_REQUIRED",
-      title: "موافقة جديدة",
-      body: "يوجد طلب بانتظار الإجراء",
-      destination: "alrueya://app/approvals",
-      urgency: "action",
+      notificationId: "attendance_42",
+      kind: "ATTENDANCE",
+      title: "تم تسجيل الحضور",
+      body: "08:05 • مسجّل",
+      destination: "alrueya://app/module/hr/browse",
+      urgency: "information",
       sensitive: false,
     });
 
@@ -164,8 +164,9 @@ describe("native push security contract", () => {
     };
     expect(request.message).toHaveProperty(
       "data.destination",
-      "alrueya://app/approvals",
+      "alrueya://app/module/hr/browse",
     );
+    expect(request.message).toHaveProperty("android.priority", "HIGH");
     expect(request.message).not.toHaveProperty("notification");
     expect(request.message).toHaveProperty("fid", "cYx_AbCdEf1234567890-_");
     expect(request.message).not.toHaveProperty("token");

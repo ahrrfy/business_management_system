@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,7 +52,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -83,6 +84,8 @@ import online.alarabiya.superapp.model.sales.SaleSummary
 import online.alarabiya.superapp.model.sales.SalesCapabilities
 import online.alarabiya.superapp.model.sales.SalesCustomer
 import online.alarabiya.superapp.model.sales.SalesSection
+import online.alarabiya.superapp.core.scanner.NativeScanField
+import online.alarabiya.superapp.ui.scanner.NativeScannerAction
 
 @Composable
 fun SalesRoute(viewModel: SalesViewModel, capabilities: SalesCapabilities, modifier: Modifier = Modifier) {
@@ -171,7 +174,10 @@ fun SalesScreen(state: SalesUiState, capabilities: SalesCapabilities, actions: S
         Column(Modifier.fillMaxSize().padding(padding)) {
             SalesHeader(state.cart.size)
             if (sections.isNotEmpty()) {
-                TabRow(selectedTabIndex = sections.indexOf(state.section).coerceAtLeast(0)) {
+                ScrollableTabRow(
+                    selectedTabIndex = sections.indexOf(state.section).coerceAtLeast(0),
+                    edgePadding = 14.dp,
+                ) {
                     sections.forEach { section ->
                         Tab(
                             selected = state.section == section,
@@ -258,7 +264,7 @@ private fun CheckoutWorkspace(state: SalesUiState, actions: SalesActions) {
 private fun CatalogPane(state: SalesUiState, actions: SalesActions, modifier: Modifier, compact: Boolean = false) {
     SalesCard(modifier) {
         SectionTitle("الكتالوج", "الأسعار والتوفر", Icons.Rounded.Inventory2)
-        SearchField(state.catalogQuery, actions.catalogQuery, actions.searchCatalog, "اسم، رمز أو باركود", state.locked)
+        SearchField(state.catalogQuery, actions.catalogQuery, actions.searchCatalog, "اسم، رمز أو باركود", state.locked, scanField = NativeScanField.SKU_OR_BARCODE)
         if (state.catalog.isEmpty()) EmptyText("لا توجد نتائج متاحة لهذا الفرع") else {
             val listModifier = if (compact) Modifier.fillMaxWidth().height(320.dp) else Modifier.fillMaxSize()
             LazyColumn(listModifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -397,7 +403,7 @@ private fun HistoryWorkspace(state: SalesUiState, capabilities: SalesCapabilitie
 private fun HistoryList(state: SalesUiState, actions: SalesActions, modifier: Modifier) {
     SalesCard(modifier) {
         SectionTitle("سجل المبيعات", "نتائج خاضعة للفرع والصلاحية", Icons.AutoMirrored.Rounded.ReceiptLong)
-        SearchField(state.salesQuery, actions.salesQuery, actions.searchSales, "رقم فاتورة أو عميل", state.locked)
+        SearchField(state.salesQuery, actions.salesQuery, actions.searchSales, "رقم فاتورة أو عميل", state.locked, scanField = NativeScanField.DOCUMENT_REFERENCE)
         LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(state.salesPage.rows, key = SaleSummary::id) { sale ->
                 Column(
@@ -499,8 +505,18 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, action
                 }
                 if (state.returnMethod == PaymentMethod.CASH && state.returnRefundAmount.toDoubleOrNull()?.let { it > 0 } == true) {
                     Text("درج الاسترداد", fontWeight = FontWeight.SemiBold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        state.openShifts.forEach { shift -> FilterChip(state.returnShiftId == shift.id, { actions.returnShift(shift.id) }, label = { Text(shift.userName ?: "وردية ${shift.id}") }, enabled = !state.locked) }
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(state.openShifts, key = { it.id }) { shift ->
+                            FilterChip(
+                                state.returnShiftId == shift.id,
+                                { actions.returnShift(shift.id) },
+                                label = { Text(shift.userName ?: "وردية ${shift.id}") },
+                                enabled = !state.locked,
+                            )
+                        }
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(state.returnRestock, actions.returnRestock, enabled = !state.locked); Text("إعادة الكمية للمخزون") }
@@ -512,10 +528,26 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, action
 }
 
 @Composable
-private fun SearchField(value: String, onValue: (String) -> Unit, search: () -> Unit, label: String, locked: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector = Icons.Rounded.Search) {
+private fun SearchField(
+    value: String,
+    onValue: (String) -> Unit,
+    search: () -> Unit,
+    label: String,
+    locked: Boolean,
+    icon: androidx.compose.ui.graphics.vector.ImageVector = Icons.Rounded.Search,
+    scanField: NativeScanField? = null,
+) {
     OutlinedTextField(
-        value, onValue, Modifier.fillMaxWidth(), label = { Text(label) }, leadingIcon = { Icon(icon, null) },
-        trailingIcon = { IconButton(search, enabled = !locked) { Icon(Icons.Rounded.Search, "بحث") } },
+        value, onValue, Modifier.fillMaxWidth(), label = { Text(label) },
+        leadingIcon = if (icon == Icons.Rounded.Search) null else ({ Icon(icon, null) }),
+        trailingIcon = {
+            Row {
+                scanField?.let { field ->
+                    NativeScannerAction(field, { scanned -> onValue(scanned); search() }, enabled = !locked)
+                }
+                IconButton(search, enabled = !locked) { Icon(Icons.Rounded.Search, "بحث") }
+            }
+        },
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { search() }),
         enabled = !locked, singleLine = true, shape = RoundedCornerShape(18.dp),
     )

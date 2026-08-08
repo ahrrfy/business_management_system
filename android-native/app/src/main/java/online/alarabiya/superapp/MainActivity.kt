@@ -129,6 +129,10 @@ class MainActivity : FragmentActivity() {
                 // here avoids the pre-draw deadlock where the splash cancels the very traversal
                 // that was previously responsible for setting composeLaunchReady.
                 composeLaunchReady = true
+                // Some devices do not invoke the platform exit callback after a custom keep
+                // condition is released. Compose is already mounted at this point, so this is a
+                // safe fallback that prevents the branded hand-off from waiting forever.
+                if (!platformSplashExited.value) platformSplashExited.value = true
             }
             LaunchedEffect(state is AppSessionState.Ready) {
                 if (state is AppSessionState.Ready && !pushActivatedForSession) {
@@ -262,6 +266,7 @@ class MainActivity : FragmentActivity() {
         onNegative: () -> Unit,
     ) {
         if (!biometricAvailable() || biometricPromptInFlight) {
+            operation.cancel()
             onCancel()
             return
         }
@@ -276,7 +281,12 @@ class MainActivity : FragmentActivity() {
                     biometricPrompt = null
                     val cipher = result.cryptoObject?.cipher
                     val completed = try {
-                        cipher != null && sessionStore.completeBiometricOperation(operation, cipher)
+                        if (cipher == null) {
+                            operation.cancel()
+                            false
+                        } else {
+                            sessionStore.completeBiometricOperation(operation, cipher)
+                        }
                     } catch (_: BiometricSessionInvalidatedException) {
                         false
                     }
@@ -290,13 +300,21 @@ class MainActivity : FragmentActivity() {
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     biometricPromptInFlight = false
                     biometricPrompt = null
+                    operation.cancel()
                     if (errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON) onNegative()
                     else onCancel()
                 }
             },
         )
         biometricPrompt = prompt
-        prompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(operation.cipher))
+        try {
+            prompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(operation.cipher))
+        } catch (_: Exception) {
+            biometricPrompt = null
+            biometricPromptInFlight = false
+            operation.cancel()
+            onCancel()
+        }
     }
 
     override fun onResume() {

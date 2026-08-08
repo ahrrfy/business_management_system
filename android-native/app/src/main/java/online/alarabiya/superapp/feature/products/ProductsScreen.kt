@@ -48,7 +48,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -81,6 +81,9 @@ import online.alarabiya.superapp.model.products.ProductRow
 import online.alarabiya.superapp.model.products.ProductTier
 import online.alarabiya.superapp.model.products.ProductsCapabilities
 import online.alarabiya.superapp.model.products.ProductsSection
+import online.alarabiya.superapp.core.scanner.NativeScanField
+import online.alarabiya.superapp.ui.rtlIsolate
+import online.alarabiya.superapp.ui.scanner.NativeScannerAction
 
 @Composable
 fun ProductsRoute(viewModel: ProductsViewModel, capabilities: ProductsCapabilities, modifier: Modifier = Modifier) {
@@ -134,7 +137,10 @@ fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, a
     Scaffold(modifier.fillMaxSize(), containerColor = MaterialTheme.colorScheme.surface) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             ProductsHeader()
-            if (sections.isNotEmpty()) TabRow(sections.indexOf(state.section).coerceAtLeast(0)) {
+            if (sections.isNotEmpty()) ScrollableTabRow(
+                selectedTabIndex = sections.indexOf(state.section).coerceAtLeast(0),
+                edgePadding = 14.dp,
+            ) {
                 sections.forEach { section -> Tab(state.section == section, { actions.section(section) }, enabled = !state.locked, text = { Text(section.label) }, icon = { Icon(section.icon, null) }) }
             }
             state.error?.let { Banner(it, true, actions.retry) }
@@ -191,7 +197,12 @@ fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, a
         OutlinedTextField(
             state.barcodeInput, actions.barcode, Modifier.fillMaxWidth(), label = { Text("مسح/إدخال باركود") },
             leadingIcon = { Icon(Icons.Rounded.QrCodeScanner, null) },
-            trailingIcon = { IconButton(actions.lookupBarcode, enabled = !state.locked) { Icon(Icons.Rounded.Search, "بحث الباركود") } },
+            trailingIcon = {
+                Row {
+                    NativeScannerAction(NativeScanField.BARCODE, actions.barcode, enabled = !state.locked)
+                    IconButton(actions.lookupBarcode, enabled = !state.locked) { Icon(Icons.Rounded.Search, "بحث الباركود") }
+                }
+            },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { actions.lookupBarcode() }), singleLine = true,
         )
         state.barcodeResult?.let { found ->
@@ -226,10 +237,34 @@ fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, a
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(detail.rows, key = { "detail:${it.variantId}:${it.productUnitId}" }) { row ->
                 Column(Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp)).padding(12.dp)) {
-                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text(row.label, fontWeight = FontWeight.SemiBold); Text(row.price(tier)?.let { "$it د.ع" } ?: "غير مسعّر", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) }
-                    Text("SKU ${row.sku ?: "—"} • باركود ${row.barcode ?: "—"}", style = MaterialTheme.typography.bodySmall)
-                    if (row.barcodeAliases.isNotEmpty()) Text("بدائل: ${row.barcodeAliases.joinToString()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (canManage) Text("تجزئة ${row.retailPrice ?: "—"} • جملة ${row.wholesalePrice ?: "—"} • حكومي ${row.governmentPrice ?: "—"} • كلفة ${row.costPrice ?: "—"}", style = MaterialTheme.typography.bodySmall)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(row.label, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            row.price(tier)?.let { "${rtlIsolate(it.toString())} د.ع" } ?: "غير مسعّر",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                        )
+                    }
+                    Text(
+                        "SKU ${rtlIsolate(row.sku ?: "—")} • باركود ${rtlIsolate(row.barcode ?: "—")}",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (row.barcodeAliases.isNotEmpty()) Text(
+                        "بدائل: ${rtlIsolate(row.barcodeAliases.joinToString())}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (canManage) Text(
+                        "تجزئة ${rtlIsolate(row.retailPrice?.toString() ?: "—")} • جملة ${rtlIsolate(row.wholesalePrice?.toString() ?: "—")} • حكومي ${rtlIsolate(row.governmentPrice?.toString() ?: "—")} • كلفة ${rtlIsolate(row.costPrice?.toString() ?: "—")}",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
             detail.bundle?.let { bundle -> item {
@@ -343,7 +378,23 @@ fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, a
     }
 }
 
-@Composable private fun SearchField(value: String, onValue: (String) -> Unit, search: () -> Unit, label: String, locked: Boolean) = OutlinedTextField(value, onValue, Modifier.fillMaxWidth(), label = { Text(label) }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, trailingIcon = { IconButton(search, enabled = !locked) { Icon(Icons.Rounded.Search, "بحث") } }, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { search() }), enabled = !locked, singleLine = true, shape = RoundedCornerShape(18.dp))
+@Composable private fun SearchField(value: String, onValue: (String) -> Unit, search: () -> Unit, label: String, locked: Boolean) = OutlinedTextField(
+    value,
+    onValue,
+    Modifier.fillMaxWidth(),
+    label = { Text(label) },
+    trailingIcon = {
+        Row {
+            NativeScannerAction(NativeScanField.SKU_OR_BARCODE, { scanned -> onValue(scanned); search() }, enabled = !locked)
+            IconButton(search, enabled = !locked) { Icon(Icons.Rounded.Search, "بحث") }
+        }
+    },
+    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+    keyboardActions = KeyboardActions(onSearch = { search() }),
+    enabled = !locked,
+    singleLine = true,
+    shape = RoundedCornerShape(18.dp),
+)
 @Composable private fun NumberField(label: String, value: String, onValue: (String) -> Unit, locked: Boolean) = OutlinedTextField(value, onValue, Modifier.fillMaxWidth(), label = { Text(label) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), enabled = !locked, singleLine = true)
 @Composable private fun ProductsCard(modifier: Modifier, content: @Composable ColumnScope.() -> Unit) = Card(modifier, shape = RoundedCornerShape(topStart = 32.dp, topEnd = 18.dp, bottomEnd = 32.dp, bottomStart = 18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), elevation = CardDefaults.cardElevation(2.dp)) { Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content) }
 @Composable private fun SectionTitle(title: String, subtitle: String, icon: ImageVector) = Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(44.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(topStart = 17.dp, bottomEnd = 17.dp)), contentAlignment = Alignment.Center) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) }; Spacer(Modifier.width(10.dp)); Column { Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }

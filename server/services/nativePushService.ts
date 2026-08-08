@@ -227,6 +227,7 @@ export function normalizeNativePushPayload(
 
 export function readFcmCredentials(
   raw = process.env.FCM_SERVICE_ACCOUNT_JSON,
+  configuredProject = process.env.FCM_PROJECT_ID?.trim(),
 ): FcmCredentials {
   if (!raw || raw.length > 32_768) {
     throw new NativePushConfigurationError("بيانات اعتماد FCM غير مهيأة.");
@@ -259,7 +260,6 @@ export function readFcmCredentials(
   ) {
     throw new NativePushConfigurationError("مفتاح حساب خدمة FCM غير صالح.");
   }
-  const configuredProject = process.env.FCM_PROJECT_ID?.trim();
   if (configuredProject && configuredProject !== projectId) {
     throw new NativePushConfigurationError(
       "معرّف مشروع FCM لا يطابق حساب الخدمة.",
@@ -490,7 +490,12 @@ export async function sendFcmDataMessage(
           fid: validateFcmInstallationId(installationId),
           data: payload,
           android: {
-            priority: payload.urgency === "action" ? "HIGH" : "NORMAL",
+            // حركة جهاز الحضور يجب أن تصل في Doze/الشاشة المغلقة حتى وهي إشعار معلوماتي؛
+            // HIGH هنا أولوية النقل فقط ولا تحوّلها إلى طلب إجراء.
+            priority:
+              payload.urgency === "action" || payload.kind === "ATTENDANCE"
+                ? "HIGH"
+                : "NORMAL",
             ttl: "86400s",
           },
         },
