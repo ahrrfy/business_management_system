@@ -36,6 +36,10 @@ import {
   isClustered,
   isMultiWorker,
 } from "./lib/clusterRole";
+import {
+  createOverloadGuard,
+  startLagMonitor,
+} from "./middleware/overloadGuard";
 import { printRouter } from "./printRoute";
 import { imageRouter } from "./imageRoute";
 import { backupRouter } from "./backupRoutes";
@@ -184,6 +188,45 @@ async function startServer() {
         (req.method === "GET" &&
           req.path !== "/healthz" &&
           !req.path.startsWith("/api")),
+    }),
+  );
+
+  // ── حماية الحِمل الزائد (load shedding) ────────────────────────────────────────────────
+  // بعد حدّ المعدّل، قبل المعالجة الثقيلة: إن تشبّعت حلقة أحداث هذا العامل (تأخّرٌ > العتبة)
+  // نتنازل عن الطلب بـ503 سريعاً بدل مراكمةٍ تُعلّق الجميع. عتبةٌ عاليةٌ محافظة (env-tunable،
+  // 0=مُعطَّل)، ويُستثنى /healthz و/assets و/api/webhooks. لكلّ عاملٍ مرقابه (per-worker).
+  const lagMonitor = startLagMonitor();
+  let lastShedLogAt = 0;
+  app.use(
+    createOverloadGuard({
+      lagMs: lagMonitor.lagMs,
+      maxLagMs: Number(process.env.EVENT_LOOP_MAX_LAG_MS ?? 500),
+      skip: (req) =>
+        req.path === "/healthz" ||
+        req.path.startsWith("/assets/") ||
+        req.path.startsWith("/api/webhooks"),
+      onShed: (req, res) => {
+        // سجلّ مقنَّن (مرّة/٥ث) كي لا يُغرِق السجلّ تحت تشبّعٍ مستمرّ.
+        const now = Date.now();
+        if (now - lastShedLogAt > 5000) {
+          lastShedLogAt = now;
+          logger.warn(
+            { lagMs: Math.round(lagMonitor.lagMs()), path: req.path },
+            "حماية الحِمل الزائد: تشبّع حلقة الأحداث — تنازلٌ عن طلبات (503).",
+          );
+        }
+        res.setHeader("Retry-After", "3");
+        const msg = "الخادم مشغولٌ جداً الآن — أعد المحاولة بعد لحظات.";
+        if (isTrpcSurface(req)) {
+          sendTrpcError(res, {
+            httpStatus: 503,
+            code: "INTERNAL_SERVER_ERROR",
+            message: msg,
+          });
+        } else {
+          res.status(503).json({ error: msg });
+        }
+      },
     }),
   );
 
