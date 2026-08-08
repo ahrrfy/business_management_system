@@ -29,8 +29,9 @@ import type { PortalIdentity } from "./identity";
  */
 const VERSION_KEY = process.env.JWT_SECRET || randomBytes(32).toString("hex");
 
-/** يوقّع تجميعات البصمة الداخلية فيصير المُعاد وسماً مبهماً غير قابلٍ للعكس. */
-function signPortalVersion(raw: string): string {
+/** يوقّع تجميعات البصمة الداخلية فيصير المُعاد وسماً مبهماً غير قابلٍ للعكس.
+ *  مُصدَّرٌ لاختبار وحدةٍ يثبّت البناء (HMAC حقيقيّ لا ترميزٌ عكسيّ) تحت مفتاحٍ محكوم. */
+export function signPortalVersion(raw: string): string {
   return createHmac("sha256", VERSION_KEY).update(raw).digest("base64url").slice(0, 22);
 }
 

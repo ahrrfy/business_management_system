@@ -5,7 +5,7 @@
 // (صنف خارج الجلسة يُرفض)، dupPolicy: BLOCK يرفض وVERIFY مطابق/مخالف (isConflict)
 // والعدّ الثالث يمسح التعارض، تحديث FIRST الذاتي بلا تكرار صفّ، idempotency بتكرار
 // clientRequestId، وfinish: آخر تكليف ينقل الجلسة REVIEW.
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -24,6 +24,7 @@ import {
   type PortalIdentity,
 } from "../countPortalService";
 import { mergePortalState } from "../../../shared/countPortalMerge";
+import { signPortalVersion } from "../countPortal/state";
 import {
   computeStocktakeReview,
   createStocktakeSession,
@@ -595,12 +596,10 @@ describe("نبضة النسخة (pulse)", () => {
       expect(tag).not.toMatch(/قلم|جاف/);
       // شكلٌ مبهم ثابت الطول.
       expect(tag).toMatch(/^[A-Za-z0-9_-]{22}$/);
-      // عدم تسريب الكمية يُثبَت **بنيوياً لا احتمالياً**: الوسم بصمةُ HMAC ثابتة الحجم (١٦ بايت =
-      // ٢٢ حرف base64url) مهما كبر العدّ؛ الترميز الخام القابل للعكس (ثغرة CRC القديمة) كان يتضخّم
-      // بالمقدار. ⚠️ لا تُعِد فحص `not.toContain("<الرقم>")` هنا: الوسم HMAC مبهم فقد يحوي أرقام
-      // العدّ مصادفةً (~١ لكل آلاف التشغيلات) فيُحمّر main زوراً — كان هذا سبب فشل CI #1387 (٨/٨).
-      expect(Buffer.from(tag, "base64url").length).toBe(16);
     }
+    // إثبات الإبهام الفعليّ (لا حشو): البناء HMAC-SHA256 حقيقيّ لا ترميزٌ عكسيّ — انظر اختبار
+    // «signPortalVersion بناءٌ HMAC» أدناه. (⚠️ فحص `not.toContain("<الرقم>")` على HMAC مبهم
+    // بمفتاحٍ عشوائيّ هشٌّ — قد يحوي أرقام العدّ مصادفةً فيُحمّر main زوراً؛ كان سبب فشل CI #1387، ٨/٨.)
   });
 
   it("الوسم مُفتَّح ومبهم: لا بنية جبرية تُعكَس لاستخراج عدّة الزميل (ثغرة CRC الخام)", async () => {
@@ -619,12 +618,27 @@ describe("نبضة النسخة (pulse)", () => {
     // متتاليين يعطي بصمة الصفّ المُضاف وحده ⇒ تُخمَّن الكمية بالقوة الغاشمة. الوسم الآن
     // HMAC واحد: لا فواصل، ولا أجزاء عددية، وطولٌ ثابت لا يتغيّر بحجم الجلسة.
     // (فحص `not.toContain("777")` أُزيل: هشٌّ على HMAC مبهم — قد يحوي الرقم مصادفةً؛ الإبهام
-    // مُثبَتٌ حتمياً أدناه بغياب الفواصل + تعذّر القراءة رقماً + بصمةٍ ثابتة الحجم ١٦ بايت.)
+    // مُثبَتٌ حتمياً في اختبار «signPortalVersion بناءٌ HMAC» أدناه.)
     expect(after).not.toContain(":");
     expect(Number.isNaN(Number(after))).toBe(true);
     expect(after).toMatch(/^[A-Za-z0-9_-]{22}$/);
-    expect(Buffer.from(after, "base64url").length).toBe(16);
-    expect(after.length).toBe(before.length);
+  });
+
+  // مراجعة Codex P2 (٨/٨): إثباتٌ **حتميّ لا احتماليّ ولا حشوٌ منطقيّ** أن الوسم بصمة HMAC-SHA256
+  // حقيقية (لا ترميزٌ قابل للعكس يسرّب الكمية). لو ارتدّ signPortalVersion إلى `raw.slice(0,22)` أو
+  // أي ترميزٍ عكسيّ ثابت العرض، تسقط مساواةُ HMAC هنا فوراً — الحارس الذي يعجز عنه فحص الطول/الشكل.
+  it("signPortalVersion بناءٌ HMAC-SHA256 تحت المفتاح المحكوم — لا ترميزٌ عكسيّ يسرّب الكمية", () => {
+    const key = process.env.JWT_SECRET ?? "test_secret"; // نفس مصدر VERSION_KEY وقت تحميل الوحدة
+    const raw = "sess:7|counts:4242|unit:قطعة"; // مدخلٌ يحوي كميةً حسّاسة (4242) صراحةً
+    const expected = createHmac("sha256", key).update(raw).digest("base64url").slice(0, 22);
+    // (١) البناء HMAC فعلاً — يكشف أيّ ارتدادٍ لترميزٍ عكسيّ:
+    expect(signPortalVersion(raw)).toBe(expected);
+    // (٢) الكمية لا تظهر في الناتج (حتميّ الآن: مفتاحٌ ومدخلٌ ثابتان ⇒ ناتجٌ ثابت):
+    expect(signPortalVersion(raw)).not.toContain("4242");
+    // (٣) avalanche: تبدّلٌ طفيفٌ بالمدخل يقلب الوسم كلياً (لا دلتا جبرية تُعكَس):
+    expect(signPortalVersion(raw + "!")).not.toBe(signPortalVersion(raw));
+    // (٤) طولٌ ثابتٌ مستقلٌّ عن حجم المدخل (بصمةٌ لا ترميزٌ يتضخّم بالمقدار):
+    expect(signPortalVersion("x").length).toBe(signPortalVersion("x".repeat(9999)).length);
   });
 
   it("غلاف ETag: knownVersion مطابق ⇒ بلا حمولة؛ ومخالف/غائب ⇒ الحمولة", async () => {
