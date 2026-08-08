@@ -17,6 +17,9 @@ import androidx.core.view.WindowCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.remember
+import online.alarabiya.superapp.core.network.NetworkStatusMonitor
 import online.alarabiya.superapp.core.network.TrpcClient
 import online.alarabiya.superapp.core.notifications.NativeNotificationNavigationInbox
 import online.alarabiya.superapp.core.notifications.NativePushCoordinator
@@ -152,6 +155,12 @@ class MainActivity : FragmentActivity() {
                 }
             }
             AlrueyaTheme {
+                val networkStatus = remember {
+                    NetworkStatusMonitor.observe(applicationContext)
+                }.collectAsStateWithLifecycle(
+                    initialValue = NetworkStatusMonitor.isCurrentlyAvailable(applicationContext),
+                )
+                val cachedReadActive = api.usingCachedRead.collectAsStateWithLifecycle()
                 SuperAppRoot(
                     viewModel = viewModel,
                     launchAnimationReady = launchAnimationReady,
@@ -210,6 +219,8 @@ class MainActivity : FragmentActivity() {
                     legalSource = legalRepository,
                     systemSettingsSource = systemSettingsRepository,
                     notificationDestinations = NativeNotificationNavigationInbox.destinations,
+                    networkAvailable = networkStatus.value,
+                    cachedReadActive = cachedReadActive.value,
                 )
             }
         }

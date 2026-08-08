@@ -49,6 +49,7 @@ sealed interface AppSessionState {
         val bootstrap: AppBootstrap,
         val workspace: PersonalWorkspace,
         val biometricEnabled: Boolean,
+        val usingCachedData: Boolean = false,
     ) : AppSessionState
 }
 
@@ -222,7 +223,23 @@ class SuperAppViewModel(private val repository: SuperAppRepository) : ViewModel(
                     biometricEnabled = repository.isBiometricEnabled(),
                 )
             }.onFailure { error ->
-                handleRefreshFailure(error)
+                val apiError = error as? ApiException
+                val cached = if (apiError?.retryableTransportFailure == true) {
+                    repository.loadCachedHome()
+                } else {
+                    null
+                }
+                if (cached != null) {
+                    pendingUser = cached.first.user
+                    sessionState = AppSessionState.Ready(
+                        bootstrap = cached.first,
+                        workspace = cached.second,
+                        biometricEnabled = repository.isBiometricEnabled(),
+                        usingCachedData = true,
+                    )
+                } else {
+                    handleRefreshFailure(error)
+                }
             }
         }
     }

@@ -92,7 +92,7 @@ function baghdadDate(): string {
  * session; domain routers remain the authority for all business mutations.
  */
 export const superAppRouter = router({
-  bootstrap: superAppProcedure.query(({ ctx }) => {
+  bootstrap: superAppProcedure.query(async ({ ctx }) => {
     const role = ctx.user.role as RoleKey;
     const permissions = resolvePermissions(
       role,
@@ -102,6 +102,12 @@ export const superAppRouter = router({
       > | null,
     );
     const roleInfo = ROLES.find((item) => item.key === role);
+    const db = requireDb();
+    const [employeeLink] = await db
+      .select({ id: employees.id })
+      .from(employees)
+      .where(eq(employees.userId, ctx.user.id))
+      .limit(1);
 
     return {
       user: {
@@ -124,7 +130,7 @@ export const superAppRouter = router({
       })),
       capabilities: {
         canSeeCost: Boolean(roleInfo?.canSeeCost),
-        hasPersonalWorkspace: true,
+        hasPersonalWorkspace: Boolean(employeeLink),
         supportsNotifications: true,
       },
       generatedAt: new Date().toISOString(),

@@ -173,6 +173,26 @@ android {
     }
 
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+
+    testOptions {
+        animationsDisabled = true
+        managedDevices {
+            localDevices {
+                create("phoneApi35") {
+                    device = "Pixel 2"
+                    apiLevel = 35
+                    systemImageSource = "aosp"
+                }
+                create("tabletApi35") {
+                    // Nexus 7 keeps a real >= 600dp tablet viewport while avoiding the
+                    // 4 GB Nexus 9 emulator allocation that exhausts hosted CI runners.
+                    device = "Nexus 7 (2012)"
+                    apiLevel = 35
+                    systemImageSource = "aosp"
+                }
+            }
+        }
+    }
 }
 
 // Only dev/staging debug builds and the production release are valid deliverables. This makes it

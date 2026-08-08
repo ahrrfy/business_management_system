@@ -74,6 +74,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -465,7 +466,13 @@ fun PersonalProfileScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ProfileInfoCell("البريد", employee?.email ?: account.email, Modifier.weight(1f))
+                    ProfileInfoCell(
+                        label = "البريد",
+                        value = employee?.email ?: account.email,
+                        modifier = Modifier.weight(1f),
+                        compactValue = true,
+                        leftToRight = true,
+                    )
                     ProfileInfoCell("الهاتف", employee?.phone, Modifier.weight(1f))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -537,7 +544,17 @@ fun PersonalProfileScreen(
 }
 
 @Composable
-private fun ProfileInfoCell(label: String, value: String?, modifier: Modifier = Modifier) {
+private fun ProfileInfoCell(
+    label: String,
+    value: String?,
+    modifier: Modifier = Modifier,
+    compactValue: Boolean = false,
+    leftToRight: Boolean = false,
+) {
+    val displayedValue = value
+        ?.takeIf(String::isNotBlank)
+        ?.let { if (leftToRight && '@' in it) it.replace("@", "@\u200B") else it }
+        ?: "غير مسجل"
     Surface(
         modifier = modifier.heightIn(min = 78.dp),
         color = Color.White,
@@ -547,8 +564,15 @@ private fun ProfileInfoCell(label: String, value: String?, modifier: Modifier = 
         Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(label, style = MaterialTheme.typography.labelMedium, color = SelfServiceMuted)
             Text(
-                value?.takeIf(String::isNotBlank) ?: "غير مسجل",
-                style = MaterialTheme.typography.titleMedium,
+                displayedValue,
+                modifier = Modifier.fillMaxWidth(),
+                style = if (compactValue) {
+                    MaterialTheme.typography.bodyMedium.copy(
+                        textDirection = if (leftToRight) TextDirection.Ltr else TextDirection.ContentOrRtl,
+                    )
+                } else {
+                    MaterialTheme.typography.titleMedium
+                },
                 fontWeight = FontWeight.Bold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,

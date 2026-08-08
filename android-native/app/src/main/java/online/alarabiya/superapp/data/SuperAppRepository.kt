@@ -113,6 +113,14 @@ class SuperAppRepository(
 
     suspend fun loadBootstrap(): AppBootstrap {
         val root = api.query("superApp.bootstrap")
+        val bootstrap = parseBootstrap(root)
+        sessionStore.saveBootstrapSnapshot(
+            CachedSnapshotPolicy.envelope(root, System.currentTimeMillis()).toString(),
+        )
+        return bootstrap
+    }
+
+    private fun parseBootstrap(root: JSONObject): AppBootstrap {
         val userJson = root.getJSONObject("user")
         val user = UserIdentity(
             id = userJson.getLong("id"),
@@ -124,6 +132,7 @@ class SuperAppRepository(
         )
         cacheUser(user)
         val scope = root.optJSONObject("scope") ?: JSONObject()
+        val capabilities = root.optJSONObject("capabilities") ?: JSONObject()
         return AppBootstrap(
             user = user,
             modules = root.optJSONArray("modules").objects().map { item ->
@@ -135,11 +144,40 @@ class SuperAppRepository(
             },
             branchId = scope.nullableLong("branchId"),
             allBranches = scope.optBoolean("allBranches"),
+            hasPersonalWorkspace = capabilities.optBoolean("hasPersonalWorkspace", false),
         )
     }
 
     suspend fun loadWorkspace(): PersonalWorkspace {
         val root = api.query("superApp.myWorkspace")
+        val workspace = parseWorkspace(root)
+        val userId = cachedUser()?.id
+        if (userId != null) {
+            sessionStore.saveWorkspaceSnapshot(
+                CachedSnapshotPolicy.envelope(root, System.currentTimeMillis(), userId).toString(),
+            )
+        }
+        return workspace
+    }
+
+    fun loadCachedHome(): Pair<AppBootstrap, PersonalWorkspace>? {
+        val bootstrapEnvelope = sessionStore.loadBootstrapSnapshot()?.let { snapshot ->
+            runCatching { JSONObject(snapshot) }.getOrNull()
+        } ?: return null
+        if (!CachedSnapshotPolicy.isFresh(bootstrapEnvelope, System.currentTimeMillis())) return null
+        val bootstrapRoot = bootstrapEnvelope.optJSONObject("payload") ?: return null
+        val bootstrap = runCatching { parseBootstrap(bootstrapRoot) }.getOrNull() ?: return null
+        val workspaceEnvelope = sessionStore.loadWorkspaceSnapshot()?.let { snapshot ->
+            runCatching { JSONObject(snapshot) }.getOrNull()
+        } ?: return null
+        if (!CachedSnapshotPolicy.isFresh(workspaceEnvelope, System.currentTimeMillis())) return null
+        if (!CachedSnapshotPolicy.belongsTo(workspaceEnvelope, bootstrap.user.id)) return null
+        val workspaceRoot = workspaceEnvelope.optJSONObject("payload") ?: return null
+        val workspace = runCatching { parseWorkspace(workspaceRoot) }.getOrNull() ?: return null
+        return bootstrap to workspace
+    }
+
+    private fun parseWorkspace(root: JSONObject): PersonalWorkspace {
         val employee = root.optJSONObject("employee")?.let { item ->
             EmployeeSummary(
                 name = item.optString("name"),
@@ -263,6 +301,26 @@ class SuperAppRepository(
         }
         singleTenantContractConfirmed = true
     }
+}
+
+internal object CachedSnapshotPolicy {
+    private const val MAX_AGE_MS = 24L * 60L * 60L * 1_000L
+    private const val CLOCK_SKEW_MS = 5L * 60L * 1_000L
+
+    fun envelope(payload: JSONObject, savedAt: Long, userId: Long? = null): JSONObject =
+        JSONObject()
+            .put("savedAt", savedAt)
+            .put("payload", payload)
+            .also { value -> if (userId != null) value.put("userId", userId) }
+
+    fun isFresh(envelope: JSONObject, now: Long): Boolean {
+        val savedAt = envelope.optLong("savedAt", -1L)
+        if (savedAt <= 0L || savedAt > now + CLOCK_SKEW_MS) return false
+        return now - savedAt <= MAX_AGE_MS
+    }
+
+    fun belongsTo(envelope: JSONObject, userId: Long): Boolean =
+        envelope.optLong("userId", -1L) == userId
 }
 
 private fun JSONArray?.objects(): List<JSONObject> {

@@ -1,9 +1,15 @@
 package online.alarabiya.superapp.navigation
 
 import androidx.activity.ComponentActivity
+import android.content.ContentValues
+import android.graphics.Bitmap
+import android.provider.MediaStore
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -42,8 +48,11 @@ import online.alarabiya.superapp.model.collaboration.TeamTaskSummary
 import online.alarabiya.superapp.model.collaboration.WhatsappBroadcastDetail
 import online.alarabiya.superapp.model.collaboration.WhatsappBroadcastSummary
 import online.alarabiya.superapp.model.selfservice.LeaveBalances
+import online.alarabiya.superapp.model.selfservice.AttendanceEntry
 import online.alarabiya.superapp.model.selfservice.NotificationCenter
 import online.alarabiya.superapp.model.selfservice.NotificationPreferences
+import online.alarabiya.superapp.model.selfservice.PersonalEmployeeProfile
+import online.alarabiya.superapp.model.selfservice.PersonalPayroll
 import online.alarabiya.superapp.model.selfservice.PersonalTaskAction
 import online.alarabiya.superapp.model.selfservice.SelfServiceWorkspace
 import online.alarabiya.superapp.ui.AppSessionState
@@ -156,6 +165,34 @@ class NativeWorkspaceNavigationTest {
         assertTrue(compose.onAllNodes(hasTestTag("native-route-hr-admin")).fetchSemanticsNodes().isEmpty())
     }
 
+    @Test
+    fun capturePersonalWorkspaceForVisualAudit() {
+        setWorkspace()
+
+        compose.onNodeWithTag("native-tab-native-services").performClick()
+        compose.onNodeWithTag("native-service-self-service").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodes(hasTestTag("native-route-self-service")).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("مدير الاختبار").assertIsDisplayed()
+        compose.waitForIdle()
+
+        val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
+        val resolver = compose.activity.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "visual-self-service.png")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/SuperArabicQA")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val uri = requireNotNull(resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values))
+        resolver.openOutputStream(uri).use { stream ->
+            requireNotNull(stream)
+            assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream))
+        }
+        resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+    }
+
     private fun setWorkspace(
         modules: List<ModuleAccess> = listOf(
             ModuleAccess("tasks", "المهام", "FULL"),
@@ -222,10 +259,45 @@ private object FakeSelfServiceSource : SelfServiceDataSource {
 
     override suspend fun loadWorkspace(): SelfServiceWorkspace = SelfServiceWorkspace(
         date = "2026-08-06",
-        employee = null,
-        todayAttendance = null,
+        employee = PersonalEmployeeProfile(
+            id = 7,
+            name = "مدير الاختبار",
+            position = "المدير العام",
+            department = "الإدارة",
+            branchId = 1,
+            photoUrl = null,
+            employmentStatus = "active",
+            email = "manager@example.com",
+            phone = "07700000000",
+            hireDate = "2024-01-10",
+            payType = "monthly",
+            baseSalary = "2500000",
+            allowances = "250000",
+        ),
+        todayAttendance = AttendanceEntry(
+            id = 11,
+            date = "2026-08-06",
+            checkIn = "08:17",
+            checkOut = null,
+            status = "present",
+            hours = "6.25",
+            source = "DEVICE",
+            needsReview = false,
+        ),
         attendanceHistory = emptyList(),
-        payroll = null,
+        payroll = PersonalPayroll(
+            itemId = 21,
+            runId = 3,
+            period = "2026-07",
+            status = "paid",
+            paidAt = "2026-08-01T08:00:00Z",
+            gross = "2750000",
+            allowances = "250000",
+            overtime = "0",
+            commission = "0",
+            deductions = "50000",
+            net = "2700000",
+        ),
         tasks = emptyList(),
         leaveRequests = emptyList(),
         leaveBalances = LeaveBalances("0", "0"),

@@ -9,6 +9,7 @@ data class NavigationPrincipal(
     val authenticated: Boolean,
     val grants: Map<NativeModule, ModuleGrant> = emptyMap(),
     val role: String? = null,
+    val hasPersonalWorkspace: Boolean = true,
 ) {
     fun grantFor(module: NativeModule): ModuleGrant = grants[module] ?: ModuleGrant.NONE
 }
@@ -62,18 +63,51 @@ class NativeNavigationRegistry private constructor(
         return when (destination) {
             NativeDestination.Home,
             NativeDestination.ModuleDirectory,
-            NativeDestination.SelfService,
             NativeDestination.Alerts,
-            NativeDestination.AccountingControls,
-            NativeDestination.Collaboration,
-            NativeDestination.Marketing,
-            NativeDestination.Operations,
-            NativeDestination.CrmWorkspace,
-            NativeDestination.Insights,
-            NativeDestination.WorkOrders,
-            NativeDestination.WarehouseTools,
             NativeDestination.Profile,
             -> AccessDecision.Allowed
+
+            NativeDestination.AccountingControls -> principal.requireAny(
+                NativeModule.REPORTS to ModuleGrant.READ,
+                NativeModule.TREASURY to ModuleGrant.READ,
+            )
+            NativeDestination.Collaboration -> principal.requireAny(
+                NativeModule.TASKS to ModuleGrant.READ,
+                NativeModule.CAMPAIGNS to ModuleGrant.READ,
+            )
+            NativeDestination.Marketing -> principal.requireAny(
+                NativeModule.CAMPAIGNS to ModuleGrant.READ,
+                NativeModule.CATALOG_ANOMALIES to ModuleGrant.READ,
+            )
+            NativeDestination.Operations -> principal.requireAny(
+                NativeModule.ASSETS to ModuleGrant.READ,
+                NativeModule.CONSIGNMENTS to ModuleGrant.READ,
+                NativeModule.COMMISSIONS to ModuleGrant.READ,
+            )
+            NativeDestination.CrmWorkspace -> principal.requireAny(
+                NativeModule.CRM to ModuleGrant.READ,
+                NativeModule.SALES to ModuleGrant.READ,
+                NativeModule.CAMPAIGNS to ModuleGrant.READ,
+            )
+            NativeDestination.Insights -> principal.requireAny(
+                NativeModule.REPORTS to ModuleGrant.READ,
+                NativeModule.STORE to ModuleGrant.READ,
+            )
+            NativeDestination.WorkOrders -> principal.requireAny(
+                NativeModule.WORK_ORDERS to ModuleGrant.READ,
+                NativeModule.POS to ModuleGrant.FULL,
+                NativeModule.INVENTORY to ModuleGrant.FULL,
+            )
+            NativeDestination.WarehouseTools -> principal.requireAll(
+                NativeModule.INVENTORY to ModuleGrant.READ,
+                NativeModule.PRODUCTS to ModuleGrant.READ,
+            )
+
+            NativeDestination.SelfService -> if (principal.hasPersonalWorkspace) {
+                AccessDecision.Allowed
+            } else {
+                AccessDecision.Denied(AccessDenialReason.CAPABILITY_NOT_AVAILABLE)
+            }
 
             NativeDestination.Receivables -> principal.authorizeReceivables()
             NativeDestination.Collections -> principal.authorizeCollections()
@@ -116,26 +150,32 @@ class NativeNavigationRegistry private constructor(
     }
 
     private fun NavigationPrincipal.authorizeReceivables(): AccessDecision {
-        val normalizedRole = role?.lowercase()
-        val permitted = when (normalizedRole) {
-            "admin", "manager", "accountant" ->
-                grantFor(NativeModule.TREASURY).satisfies(ModuleGrant.READ) ||
-                    grantFor(NativeModule.COLLECTIONS).satisfies(ModuleGrant.FULL) ||
-                    grantFor(NativeModule.SUPPLIERS).satisfies(ModuleGrant.FULL) ||
-                    grantFor(NativeModule.REPORTS).satisfies(ModuleGrant.READ)
-            "auditor" -> grantFor(NativeModule.REPORTS).satisfies(ModuleGrant.READ)
-            "warehouse", "purchasing" -> grantFor(NativeModule.SUPPLIERS).satisfies(ModuleGrant.FULL)
-            else -> false
-        }
-        return if (permitted) AccessDecision.Allowed
-        else AccessDecision.Denied(AccessDenialReason.MODULE_NOT_GRANTED)
+        return requireAny(
+            NativeModule.TREASURY to ModuleGrant.READ,
+            NativeModule.COLLECTIONS to ModuleGrant.FULL,
+            NativeModule.SUPPLIERS to ModuleGrant.FULL,
+            NativeModule.REPORTS to ModuleGrant.READ,
+        )
     }
 
     private fun NavigationPrincipal.authorizeCollections(): AccessDecision {
-        if (role?.lowercase() !in setOf("admin", "manager")) {
-            return AccessDecision.Denied(AccessDenialReason.MODULE_NOT_GRANTED)
-        }
         return require(NativeModule.COLLECTIONS, ModuleGrant.FULL)
+    }
+
+    private fun NavigationPrincipal.requireAny(
+        vararg requirements: Pair<NativeModule, ModuleGrant>,
+    ): AccessDecision = if (requirements.any { (module, grant) -> grantFor(module).satisfies(grant) }) {
+        AccessDecision.Allowed
+    } else {
+        AccessDecision.Denied(AccessDenialReason.MODULE_NOT_GRANTED)
+    }
+
+    private fun NavigationPrincipal.requireAll(
+        vararg requirements: Pair<NativeModule, ModuleGrant>,
+    ): AccessDecision = if (requirements.all { (module, grant) -> grantFor(module).satisfies(grant) }) {
+        AccessDecision.Allowed
+    } else {
+        AccessDecision.Denied(AccessDenialReason.MODULE_NOT_GRANTED)
     }
 
     companion object {
