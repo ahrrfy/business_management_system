@@ -29,7 +29,7 @@
 - `stocktakeItemReviewEvents`: سجل ذرّي append-only لكل `APPROVE/REOPEN` مع نسخة العملية/الكمية/البصمة والفاعل والسبب.
 - `stocktakeCounts`: `kind: FIRST|RECOUNT|VERIFY`، `qty` int أساس، `unitBreakdown` JSON نصي، `countedByName`، `isConflict`, `resolvedPick: FIRST|VERIFY`, `clientRequestId` + `UNIQUE(sessionId, clientRequestId)` (idempotency للأوفلاين).
 - `stocktakeDecisions`: `action: ADJUST|KEEP`, `finalQty`, `diffQty`, `value`, `reason: UNSPECIFIED|DAMAGE|LOSS_THEFT|ENTRY_ERROR|PRINT_WASTE`, `decidedBy` (NULL+`autoApplied` = تلقائي)، `UNIQUE(sessionId, variantId)`.
-- `stocktakeAssignments`: `method: PIN|USER`, `pinHash`, قفل PIN (`failedPinAttempts`, `lockedUntil`)، `status: ACTIVE|SUBMITTED`.
+- `stocktakeAssignments`: `method: PIN|USER`, `pinHash`, قفل PIN (`failedPinAttempts`, `lockedUntil`)، `status: ACTIVE|SUBMITTED|REMOVED`. الإزالة دورة حياة موثّقة (`addedBy`, `removedBy/At`, `removalReason`) لا حذفاً؛ تبقى العدّات مرتبطة بالعامل وتُبطل هويته فوراً.
 
 ## ٢. معادلات الأعمال (انقلها حرفياً — مصدرها `jrd-data.jsx` + README §٤)
 
@@ -72,8 +72,10 @@ requiresDualSign(item) = |value| > dualThreshold
 | `create` | `warehouseProcedure` | `{ name, branchId, scopeType: "FULL"\|"MOVING"\|"CATEGORY"\|"MANUAL", movingDays?, categoryIds?: number[], variantIds?: number[], blind?, thresholdPct?: string, thresholdValue?: string, dualThreshold?: string, directUnderThreshold?, waNotify?, dupPolicy?, notes?, assignments: [{ name, method:"PIN"\|"USER", userId?, zone?, variantIds?: number[] }] (min 1) }` | `{ sessionId, code, itemCount, assignments: [{ assignmentId, name, method, zone, pin?: string /*مرة واحدة*/, itemCount }] }` |
 | `list` | `warehouseProcedure` | `{ status?, branchId?, limit=50, offset=0 }?` | صفوف: `{ id, code, name, branchId, branchName, scopeType, scopeLabel, status, itemCount, countedCount, createdAt, createdByName, submittedAt, approvedAt }` |
 | `get` | `warehouseProcedure` | `{ sessionId }` | ترويسة الجلسة + التكليفات (بلا pinHash أبداً) + progress |
-| `monitor` | `warehouseProcedure` | `{ sessionId }` | `{ session, assignments: [{ id, name, method, zone, status, total, counted, lastActivityAt }], recentCounts: [{ variantLabel, qty, kind, byName, at }] (آخر ٢٠), pendingRecounts, conflicts }` — **بلا expectedQty/تكلفة** |
+| `monitor` | `warehouseProcedure` | `{ sessionId }` | `{ session, assignments: [{ id, name, method, userId, zone, status, total, counted, lastActivityAt, removedAt, removalReason }], progress:{total,counted}, recentCounts: [{ variantLabel, qty, kind, byName, at }] (آخر ٢٠), pendingRecounts, conflicts }` — **بلا expectedQty/تكلفة**؛ `progress` مصدره تقاطع نطاق الجلسة مع FIRST/RECOUNT وهو نفس تعريف القائمة/المتبقي/المراجعة |
 | `remaining` | `inventoryReadProcedure` | `{ sessionId, q?, assignmentId?, limit, offset }` | كشف غير المعدود المرقّم خادمياً: `{ assignmentMode:"SHARED", total, items: [{ productName, variantName, sku, barcode, baseUnit, assignmentName, zone }] }` — **بلا expectedQty/تكلفة**؛ البحث يشمل الباركود الأساسي والبديل |
+| `addWorker` | `inventoryManagerProcedure` | `{ sessionId, name, method:"PIN"\|"USER", userId?, zone? }` | يضيف عاملاً أثناء COUNTING فقط، يعيد PIN مرة واحدة إن كان خارجياً، ويعيد توزيع **توجيه** غير المعدود بالتساوي بلا تغيير العدّات |
+| `removeWorker` | `inventoryManagerProcedure` | `{ sessionId, assignmentId, reason (min 3) }` | يحوّل العامل إلى REMOVED، يبطل PIN/الكوكي/دخول الحساب، يحفظ عدّاته، ويعيد توجيه غير المعدود؛ يرفض إزالة آخر عامل نشط |
 | `review` | `managerProcedure` | `{ sessionId, autoAdjust?: boolean=true }` | §٤ أدناه |
 | `requestRecount` | `warehouseProcedure` | `{ sessionId, variantId, reason (min 3) }` | `{ ok }` |
 | `resolveConflict` | `managerProcedure` | `{ sessionId, variantId, pick: "FIRST"\|"VERIFY" }` | `{ ok }` |

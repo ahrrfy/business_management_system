@@ -26,6 +26,7 @@ import {
 import { mergePortalState } from "../../../shared/countPortalMerge";
 import {
   approveStocktakeItems,
+  removeStocktakeWorker,
   computeStocktakeReview,
   createStocktakeSession,
   monitorStocktakeSession,
@@ -237,6 +238,37 @@ describe("مصادقة البوابة", () => {
 
     const user1 = (await db().select().from(s.users).where(eq(s.users.id, 1)))[0];
     await expectTrpc(authenticatePin(user1 as any, { sessionCode: r.code }), "FORBIDDEN", /تكليف/);
+  });
+
+  it("إزالة العامل تُبطل PIN والكوكي القديم فوراً دون حذف التكليف", async () => {
+    const r = await mkPortalSession();
+    const pin = r.assignments[0].pin!;
+    const auth = await authenticatePin(null, { sessionCode: r.code, pin });
+    const cookieCtx = {
+      req: { headers: { cookie: `${COUNT_COOKIE_NAME}=${auth.token}` } },
+      user: null,
+    } as any;
+    expect((await resolvePortalIdentity(cookieCtx, r.code)).assignment.name).toBe("عامل أ");
+
+    await removeStocktakeWorker(
+      {
+        sessionId: r.sessionId,
+        assignmentId: r.assignments[0].assignmentId,
+        reason: "استبدال العامل أثناء الجرد",
+      },
+      actor,
+    );
+    await expectTrpc(authenticatePin(null, { sessionCode: r.code, pin }), "UNAUTHORIZED");
+    await expectTrpc(resolvePortalIdentity(cookieCtx, r.code), "UNAUTHORIZED");
+    await expectTrpc(finishAssignment({
+      session: auth.session,
+      assignment: auth.assignment,
+      countedByName: auth.assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    }), "UNAUTHORIZED");
+    const row = await assignmentRow(r.assignments[0].assignmentId);
+    expect(row.status).toBe("REMOVED");
   });
 
   it("PIN خاطئ متكرّر لا يقفل التكليفات (المنع موكول لحدّ معدّل IP في server/index.ts)", async () => {

@@ -9,7 +9,7 @@
 // (بنمط auth.login) — انظر العقد §٧.
 
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import { getSessionCookieOptions } from "../cookies";
 import { stocktakeAssignments, stocktakeSessions } from "../../drizzle/schema";
@@ -69,12 +69,18 @@ export const countPortalRouter = router({
         and(
           eq(stocktakeAssignments.method, "USER"),
           eq(stocktakeAssignments.userId, ctx.user.id),
+          ne(stocktakeAssignments.status, "REMOVED"),
           eq(stocktakeSessions.status, "COUNTING"),
         ),
       )
       .orderBy(desc(stocktakeAssignments.lastActivityAt), desc(stocktakeAssignments.createdAt));
 
-    return rows.map((row) => ({ ...row, branchId: Number(row.branchId), assignmentId: Number(row.assignmentId) }));
+    return rows.map((row) => ({
+      ...row,
+      assignmentStatus: row.assignmentStatus as "ACTIVE" | "SUBMITTED",
+      branchId: Number(row.branchId),
+      assignmentId: Number(row.assignmentId),
+    }));
   }),
 
   /**

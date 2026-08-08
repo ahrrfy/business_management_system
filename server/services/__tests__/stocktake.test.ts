@@ -17,6 +17,7 @@ import { applyMovement } from "../inventoryService";
 import {
   approveStocktake,
   approveStocktakeItems,
+  addStocktakeWorker,
   cancelStocktakeSession,
   computeStocktakeReview,
   createStocktakeSession,
@@ -25,7 +26,9 @@ import {
   forceStocktakeReview,
   getStocktakeCountSheets,
   getStocktakeRemainingItems,
+  listStocktakeSessions,
   monitorStocktakeSession,
+  removeStocktakeWorker,
   reopenStocktakeItemReview,
   requestStocktakeRecount,
   resolveStocktakeConflict,
@@ -696,13 +699,97 @@ describe("الاعتماد الذرّي", () => {
 });
 
 describe("مخرجات بلا تسريب", () => {
-  it("يحافظ مؤشر التقدم على المعدود ≤ إجمالي النطاق حتى مع صف عدّ تاريخي شاذ", async () => {
+  it("يوحّد القائمة والمتابعة والمتبقي والمراجعة على تقدم واحد حتى مع صف عدّ تاريخي شاذ", async () => {
     const r = await mkSession({ variantIds: [1] });
     const aid = r.assignments[0].assignmentId;
     await insertCount(r.sessionId, 1, aid, 10);
     await insertCount(r.sessionId, 2, aid, 5); // صف شاذ خارج stocktakeItems لهذا الاختبار الدفاعي.
     const monitor = await monitorStocktakeSession(r.sessionId);
     expect(monitor.progress).toEqual({ total: 1, counted: 1 });
+    const listed = (await listStocktakeSessions()).find((row) => row.id === r.sessionId)!;
+    expect({ total: listed.itemCount, counted: listed.countedCount }).toEqual(monitor.progress);
+    const remaining = await getStocktakeRemainingItems(r.sessionId, { limit: 100 });
+    expect(remaining.total).toBe(0);
+    const review = await computeStocktakeReview(r.sessionId);
+    expect(review.totals.total).toBe(1);
+    expect(review.totals.counted).toBe(1);
+    expect(review.barriers.notCounted).toBe(0);
+
+    const incomplete = await mkSession({ variantIds: [1, 2] });
+    const incompleteAid = incomplete.assignments[0].assignmentId;
+    await insertCount(incomplete.sessionId, 1, incompleteAid, 10);
+    await insertCount(incomplete.sessionId, 3, incompleteAid, 7); // خارج النطاق: لا يجوز أن يُكمل الجلسة.
+    await expectTrpc(forceStocktakeReview(incomplete.sessionId, actor), "PRECONDITION_FAILED", /1\/2/);
+  });
+
+  it("يضيف ويزيل عامل الجرد بأمان: يحفظ العدّات ويبطل الوصول ويعيد توجيه غير المعدود", async () => {
+    const r = await mkSession({ variantIds: [1, 2, 3] });
+    const originalId = r.assignments[0].assignmentId;
+    const added = await addStocktakeWorker(
+      { sessionId: r.sessionId, name: "عامل بديل", method: "PIN", zone: "الطابق الأول" },
+      actor,
+    );
+    expect(added.pin).toMatch(/^\d{4}$/);
+    expect(added.routedItemCount).toBe(3);
+
+    const routingAfterAdd = await db()
+      .select({ assignmentId: s.stocktakeItems.assignmentId })
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, r.sessionId));
+    expect(new Set(routingAfterAdd.map((row) => Number(row.assignmentId)))).toEqual(new Set([originalId, added.assignmentId]));
+
+    await insertCount(r.sessionId, 1, originalId, 10);
+    const removed = await removeStocktakeWorker(
+      { sessionId: r.sessionId, assignmentId: originalId, reason: "انتهاء وردية العامل" },
+      actor,
+    );
+    expect(removed).toMatchObject({ ok: true, alreadyRemoved: false, preservedCountRows: 1 });
+
+    const oldWorker = (
+      await db().select().from(s.stocktakeAssignments).where(eq(s.stocktakeAssignments.id, originalId))
+    )[0];
+    expect(oldWorker.status).toBe("REMOVED");
+    expect(oldWorker.pinHash).toBeNull();
+    expect(oldWorker.removedBy).toBe(actor.userId);
+    expect(oldWorker.removalReason).toBe("انتهاء وردية العامل");
+
+    const preserved = await db()
+      .select()
+      .from(s.stocktakeCounts)
+      .where(and(eq(s.stocktakeCounts.sessionId, r.sessionId), eq(s.stocktakeCounts.assignmentId, originalId)));
+    expect(preserved).toHaveLength(1);
+    const remainingItems = await getStocktakeRemainingItems(r.sessionId, { limit: 100 });
+    expect(remainingItems.items).toHaveLength(2);
+    expect(remainingItems.items.every((item) => item.assignmentId === added.assignmentId)).toBe(true);
+
+    await expectTrpc(
+      removeStocktakeWorker(
+        { sessionId: r.sessionId, assignmentId: added.assignmentId, reason: "محاولة إزالة آخر عامل" },
+        actor,
+      ),
+      "BAD_REQUEST",
+      /آخر عامل نشط/,
+    );
+  });
+
+  it("يضيف موظفاً بحسابه مرة واحدة ويرفض الإضافة خارج مرحلة العدّ", async () => {
+    const r = await mkSession({ variantIds: [1, 2] });
+    const added = await addStocktakeWorker(
+      { sessionId: r.sessionId, name: "اسم لا يُعتمد", method: "USER", userId: 2 },
+      actor,
+    );
+    expect(added).toMatchObject({ name: "سالم المشرف", method: "USER", userId: 2, pin: undefined });
+    await expectTrpc(
+      addStocktakeWorker({ sessionId: r.sessionId, name: "سالم", method: "USER", userId: 2 }, actor),
+      "CONFLICT",
+      /مضاف بالفعل/,
+    );
+    await db().update(s.stocktakeSessions).set({ status: "REVIEW" }).where(eq(s.stocktakeSessions.id, r.sessionId));
+    await expectTrpc(
+      addStocktakeWorker({ sessionId: r.sessionId, name: "عامل لاحق", method: "PIN" }, actor),
+      "BAD_REQUEST",
+      /مرحلة العدّ/,
+    );
   });
 
   it("كشف المتبقي يعرض بيانات التوجيه فقط ويستبعد ما وصل له عدّ", async () => {

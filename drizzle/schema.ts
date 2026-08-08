@@ -3636,9 +3636,14 @@ export const stocktakeAssignments = mysqlTable(
     userId: int("userId").references(() => users.id),
     pinHash: varchar("pinHash", { length: 255 }),
     zone: varchar("zone", { length: 120 }),
-    status: mysqlEnum("assignmentStatus", ["ACTIVE", "SUBMITTED"])
+    status: mysqlEnum("assignmentStatus", ["ACTIVE", "SUBMITTED", "REMOVED"])
       .default("ACTIVE")
       .notNull(),
+    // أثر دورة حياة العامل: الإزالة إبطال وصول وليست حذفاً للسجل أو للعدّات المنفّذة.
+    addedBy: int("addedBy").references(() => users.id),
+    removedBy: int("removedBy").references(() => users.id),
+    removedAt: timestamp("removedAt"),
+    removalReason: varchar("removalReason", { length: 255 }),
     // قفل محاولات PIN الفاشلة (نمط قفل الحساب 5/15د).
     failedPinAttempts: int("failedPinAttempts").default(0).notNull(),
     lockedUntil: timestamp("lockedUntil"),
@@ -3648,6 +3653,7 @@ export const stocktakeAssignments = mysqlTable(
   },
   (table) => ({
     sessionIdx: index("idx_stkassign_session").on(table.sessionId),
+    sessionStatusIdx: index("idx_stkassign_session_status").on(table.sessionId, table.status),
   }),
 );
 

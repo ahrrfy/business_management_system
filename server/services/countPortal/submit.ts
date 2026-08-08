@@ -109,7 +109,7 @@ export async function submitCount(
       if (asg.status !== "ACTIVE") {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "سلّمت عدّك مسبقاً — لا يمكن تسجيل أو تعديل عدّات بعد التسليم.",
+          message: "تكليف الجرد غير نشط — لا يمكن تسجيل أو تعديل عدّات بعد التسليم أو إزالة العامل.",
         });
       }
       const myAssignmentId = Number(asg.id);

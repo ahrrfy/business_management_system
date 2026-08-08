@@ -1,5 +1,6 @@
 // قراءات الجرد: القائمة، الترويسة، المتابعة الحية (بلا تسريب expectedQty/التكلفة)، والعدّادات.
-import { and, asc, desc, eq, gte, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { escLike } from "../../lib/sqlLike";
 import {
   branches,
@@ -17,7 +18,14 @@ import {
   users,
 } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
-import { assertBranchAccess, chunk, loadSessionHeader, type DbLike } from "./internal";
+import {
+  assertBranchAccess,
+  chunk,
+  loadSessionHeader,
+  loadStocktakeProgress,
+  loadStocktakeProgressMap,
+  type DbLike,
+} from "./internal";
 
 const SCOPE_FALLBACK_LABEL: Record<string, string> = {
   FULL: "جرد شامل للفرع",
@@ -74,22 +82,7 @@ export async function listStocktakeSessions(opts: ListStocktakesOpts = {}) {
     .offset(opts.offset ?? 0);
 
   const ids = rows.map((r) => Number(r.id));
-  const itemCountMap = new Map<number, number>();
-  const countedMap = new Map<number, number>();
-  if (ids.length) {
-    const itemCounts = await db
-      .select({ sessionId: stocktakeItems.sessionId, c: sql<number>`COUNT(*)` })
-      .from(stocktakeItems)
-      .where(inArray(stocktakeItems.sessionId, ids))
-      .groupBy(stocktakeItems.sessionId);
-    for (const r of itemCounts) itemCountMap.set(Number(r.sessionId), Number(r.c));
-    const counted = await db
-      .select({ sessionId: stocktakeCounts.sessionId, c: sql<number>`COUNT(DISTINCT ${stocktakeCounts.variantId})` })
-      .from(stocktakeCounts)
-      .where(inArray(stocktakeCounts.sessionId, ids))
-      .groupBy(stocktakeCounts.sessionId);
-    for (const r of counted) countedMap.set(Number(r.sessionId), Number(r.c));
-  }
+  const progressMap = await loadStocktakeProgressMap(db, ids);
 
   return rows.map((r) => ({
     id: Number(r.id),
@@ -100,8 +93,8 @@ export async function listStocktakeSessions(opts: ListStocktakesOpts = {}) {
     scopeType: r.scopeType,
     scopeLabel: scopeLabelOf(r.scopeType, r.scopeDetail),
     status: r.status,
-    itemCount: itemCountMap.get(Number(r.id)) ?? 0,
-    countedCount: countedMap.get(Number(r.id)) ?? 0,
+    itemCount: progressMap.get(Number(r.id))?.total ?? 0,
+    countedCount: progressMap.get(Number(r.id))?.counted ?? 0,
     createdAt: r.createdAt,
     createdByName: r.createdByName ?? "—",
     submittedAt: r.submittedAt,
@@ -121,6 +114,8 @@ async function loadAssignmentProgress(db: DbLike, sessionId: number) {
       status: stocktakeAssignments.status,
       lastActivityAt: stocktakeAssignments.lastActivityAt,
       submittedAt: stocktakeAssignments.submittedAt,
+      removedAt: stocktakeAssignments.removedAt,
+      removalReason: stocktakeAssignments.removalReason,
     })
     .from(stocktakeAssignments)
     .where(eq(stocktakeAssignments.sessionId, sessionId))
@@ -148,24 +143,9 @@ async function loadAssignmentProgress(db: DbLike, sessionId: number) {
     counted: countedByAsg.get(Number(a.id)) ?? 0,
     lastActivityAt: a.lastActivityAt,
     submittedAt: a.submittedAt,
+    removedAt: a.removedAt,
+    removalReason: a.removalReason,
   }));
-}
-
-async function loadSessionProgress(db: DbLike, sessionId: number) {
-  // العد من جدول النطاق نفسه يضمن invariant: 0 <= counted <= total حتى لو وُجد صف تاريخي شاذ في counts.
-  const [{ total = 0, counted = 0 } = { total: 0, counted: 0 }] = await db
-    .select({
-      total: sql<number>`COUNT(*)`,
-      counted: sql<number>`COALESCE(SUM(CASE WHEN EXISTS (
-        SELECT 1 FROM ${stocktakeCounts} AS stk_progress_count
-        WHERE stk_progress_count.sessionId = ${stocktakeItems.sessionId}
-          AND stk_progress_count.variantId = ${stocktakeItems.variantId}
-          AND stk_progress_count.kind IN ('FIRST', 'RECOUNT')
-      ) THEN 1 ELSE 0 END), 0)`,
-    })
-    .from(stocktakeItems)
-    .where(eq(stocktakeItems.sessionId, sessionId));
-  return { total: Number(total), counted: Number(counted) };
 }
 
 export async function getStocktakeSession(sessionId: number, opts: { restrictBranchId?: number | null } = {}) {
@@ -173,7 +153,7 @@ export async function getStocktakeSession(sessionId: number, opts: { restrictBra
   const s = await loadSessionHeader(db, sessionId);
   assertBranchAccess(Number(s.branchId), opts.restrictBranchId);
   const assignments = await loadAssignmentProgress(db, sessionId);
-  const { total, counted } = await loadSessionProgress(db, sessionId);
+  const { total, counted } = await loadStocktakeProgress(db, sessionId);
   return {
     session: {
       id: Number(s.id),
@@ -218,7 +198,7 @@ export async function monitorStocktakeSession(
   const s = await loadSessionHeader(db, sessionId);
   assertBranchAccess(Number(s.branchId), opts.restrictBranchId);
   const assignments = await loadAssignmentProgress(db, sessionId);
-  const progress = await loadSessionProgress(db, sessionId);
+  const progress = await loadStocktakeProgress(db, sessionId);
 
   const q = opts.q?.trim() ?? "";
   // تهريب محارف LIKE من مدخل المستخدم — «%» المُدخلة تطابق نصاً لا كل شيء.
@@ -331,11 +311,14 @@ export async function monitorStocktakeSession(
       id: a.id,
       name: a.name,
       method: a.method,
+      userId: a.userId,
       zone: a.zone,
       status: a.status,
       total: a.total,
       counted: a.counted,
       lastActivityAt: a.lastActivityAt,
+      removedAt: a.removedAt,
+      removalReason: a.removalReason,
     })),
     progress,
     recentCounts: recent.map((r) => ({
@@ -385,13 +368,8 @@ export async function getStocktakeRemainingItems(
 
   const q = opts.q?.trim() ?? "";
   const likePattern = `%${escLike(q)}%`;
-  const uncounted = sql`NOT EXISTS (
-    SELECT 1 FROM ${stocktakeCounts} AS stk_remaining_count
-    WHERE stk_remaining_count.sessionId = ${stocktakeItems.sessionId}
-      AND stk_remaining_count.variantId = ${stocktakeItems.variantId}
-      AND stk_remaining_count.kind IN ('FIRST', 'RECOUNT')
-  )`;
-  const filters = [eq(stocktakeItems.sessionId, sessionId), uncounted];
+  const effectiveCount = alias(stocktakeCounts, "stk_remaining_effective_count");
+  const filters = [eq(stocktakeItems.sessionId, sessionId), isNull(effectiveCount.id)];
   if (opts.assignmentId != null) filters.push(eq(stocktakeItems.assignmentId, opts.assignmentId));
   if (q) {
     filters.push(
@@ -421,6 +399,14 @@ export async function getStocktakeRemainingItems(
   const [{ total = 0 } = { total: 0 }] = await db
     .select({ total: sql<number>`COUNT(*)` })
     .from(stocktakeItems)
+    .leftJoin(
+      effectiveCount,
+      and(
+        eq(effectiveCount.sessionId, stocktakeItems.sessionId),
+        eq(effectiveCount.variantId, stocktakeItems.variantId),
+        inArray(effectiveCount.kind, ["FIRST", "RECOUNT"]),
+      ),
+    )
     .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .innerJoin(stocktakeAssignments, eq(stocktakeItems.assignmentId, stocktakeAssignments.id))
@@ -449,6 +435,14 @@ export async function getStocktakeRemainingItems(
       zone: stocktakeAssignments.zone,
     })
     .from(stocktakeItems)
+    .leftJoin(
+      effectiveCount,
+      and(
+        eq(effectiveCount.sessionId, stocktakeItems.sessionId),
+        eq(effectiveCount.variantId, stocktakeItems.variantId),
+        inArray(effectiveCount.kind, ["FIRST", "RECOUNT"]),
+      ),
+    )
     .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .innerJoin(stocktakeAssignments, eq(stocktakeItems.assignmentId, stocktakeAssignments.id))
