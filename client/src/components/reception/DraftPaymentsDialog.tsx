@@ -8,9 +8,12 @@ import { Banknote, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { trpc } from "@/lib/trpc";
+import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { trpc, type RouterInputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
+
+type RefundVars = RouterInputs["reception"]["refundDeposit"];
 
 const D = (v: string | number) => new Decimal(v || 0);
 const fmt = (n: number | string) => Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
@@ -48,6 +51,10 @@ export default function DraftPaymentsDialog({
   const [reason, setReason] = useState("");
   const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  // قرار المالك (ب، ٨/٨): ردّ عربونٍ نقديّ عبر ورديةٍ أخرى/بعد الإغلاق يُرفَض خادمياً (FORBIDDEN)
+  // إلّا باعتماد مدير. عند الرفض نلتقط بيانات المحاولة ونطلب اعتماد مدير (نفس حوار تجاوز الخصم)
+  // ثم نعيد الردّ نفسه مع managerApproval — مفتاح idempotency نفسه (الرفض تراجعَ كاملاً بلا كتابة).
+  const [mgrAsk, setMgrAsk] = useState<RefundVars | null>(null);
 
   // مراجعة ش٤: الردّ النقديّ مع أكثر من درجٍ مفتوح بالفرع يتطلّب تحديد أيّ درجٍ يخرج منه
   // النقد فعلاً (نمط شاشة المرتجعات حرفياً) — بلا المنتقي كان الردّ ميتاً طوال ساعات العمل.
@@ -66,11 +73,21 @@ export default function DraftPaymentsDialog({
       setAmount("");
       setReason("");
       setRefundShiftId(null);
+      setMgrAsk(null);
       setClientRequestId(crypto.randomUUID());
       const fresh = await q.refetch();
       onChanged(String(fresh.data?.heldNet ?? "0.00"));
     },
-    onError: (e) => notify.err(e),
+    onError: (e, vars) => {
+      // ردّ نقديّ عابر للوردية يلزمه مدير: نطلب اعتماده ونعيد المحاولة بدل رسالة خطأ عابرة.
+      // (نميّزه عن FORBIDDEN عزل الفرع بوسم الرسالة «اعتماد مدير».)
+      const code = (e as { data?: { code?: string } }).data?.code;
+      if (code === "FORBIDDEN" && /اعتماد مدير/.test(e.message)) {
+        setMgrAsk(vars);
+        return;
+      }
+      notify.err(e);
+    },
   });
 
   const rows = q.data?.rows ?? [];
@@ -194,6 +211,18 @@ export default function DraftPaymentsDialog({
         </div>
         <Button variant="outline" className="w-full" onClick={onClose}>إغلاق</Button>
       </div>
+      {mgrAsk && (
+        <ManagerApprovalDialog
+          title="اعتماد مدير — ردّ عربون نقديّ"
+          description="ردّ العربون النقديّ عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض يحتاج مديراً (تُفحص بياناته على الخادم وتُسجَّل باسمه)."
+          onCancel={() => setMgrAsk(null)}
+          onApprove={(email, password) => {
+            const vars = mgrAsk;
+            setMgrAsk(null);
+            refundM.mutate({ ...vars, managerApproval: { email, password } });
+          }}
+        />
+      )}
     </div>
   );
 }

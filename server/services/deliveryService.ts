@@ -46,5 +46,5 @@ export {
 export type { DispatchInvoiceInput } from "./delivery/dispatchInvoice";
 export { dispatchInvoiceToDelivery } from "./delivery/dispatchInvoice";
 // courier (١٢/٧): شاشة المندوب الذاتية «توصيلاتي» — عزل ذاتي عبر deliveryParties.userId.
-export type { MyDeliveryRow, MyDeliveriesResult, ConfirmDeliveryResult, FailDeliveryResult } from "./delivery/courier";
-export { resolveCourierPartyId, listMyDeliveries, confirmCourierDelivery, failCourierDelivery } from "./delivery/courier";
+export type { MyDeliveryRow, MyDeliveriesResult, ConfirmDeliveryResult, ConfirmConsignmentResult, FailDeliveryResult } from "./delivery/courier";
+export { resolveCourierPartyId, listMyDeliveries, confirmCourierDelivery, confirmConsignmentDelivery, failCourierDelivery } from "./delivery/courier";

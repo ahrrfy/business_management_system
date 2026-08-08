@@ -24,12 +24,19 @@ function money(v: string | number | null | undefined): string {
   return v == null || v === "" ? "0" : fmtInt(v);
 }
 
+// مفتاح فريد يجمع المصدر مع المعرّف — معرّفات onlineOrders وdeliveryConsignments مستقلّة فقد
+// تتصادم (طلبٌ id=5 وإرساليةٌ id=5)، فالمفتاح المركّب يمنع تصادم مفاتيح React واختلاط الحالة.
+function rowKey(row: DeliveryRow): string {
+  return `${row.kind}-${row.id}`;
+}
+
 export default function MyDeliveries() {
   const q = trpc.courier.myDeliveries.useQuery(undefined, { refetchInterval: 60_000 });
   const utils = trpc.useUtils();
-  const [confirmingId, setConfirmingId] = useState<number | null>(null);
+  const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
   const [failTarget, setFailTarget] = useState<DeliveryRow | null>(null);
 
+  // طلب متجر: يُحصّل COD ويرفع العهدة (confirmDelivery).
   const confirmM = trpc.courier.confirmDelivery.useMutation({
     onSuccess: (res) => {
       notify.ok(
@@ -40,7 +47,17 @@ export default function MyDeliveries() {
       void utils.courier.myDeliveries.invalidate();
     },
     onError: (e) => notify.err(e),
-    onSettled: () => setConfirmingId(null),
+    onSettled: () => setConfirmingKey(null),
+  });
+
+  // إرسالية استقبال: ختمٌ تشغيليّ بحت (لا مال) — التسوية عند توريدك للمتجر.
+  const confirmCnM = trpc.courier.confirmConsignmentDelivery.useMutation({
+    onSuccess: (res) => {
+      notify.ok(`تم تسجيل تسليم ${res.consignmentNumber}`);
+      void utils.courier.myDeliveries.invalidate();
+    },
+    onError: (e) => notify.err(e),
+    onSettled: () => setConfirmingKey(null),
   });
 
   const failM = trpc.courier.failDelivery.useMutation({
@@ -53,6 +70,20 @@ export default function MyDeliveries() {
   });
 
   async function doConfirm(row: DeliveryRow) {
+    // إرسالية استقبال: ختمٌ تشغيليّ فقط — النقد يُسوَّى عند توريدك للمتجر، لا هنا.
+    if (row.kind === "consignment") {
+      const ok = await confirm({
+        variant: "info",
+        title: "تأكيد التسليم",
+        description: `أكّد تسليم الإرسالية ${row.orderNumber} للزبون. سيُسجَّل أنك سلّمتها؛ تسوية المبلغ تبقى عند توريدك للمتجر.`,
+        confirmText: "تم التسليم",
+      });
+      if (!ok) return;
+      setConfirmingKey(rowKey(row));
+      confirmCnM.mutate({ consignmentId: row.id });
+      return;
+    }
+    // طلب متجر: تأكيد + تحصيل COD يرفع عهدتك.
     const due = Number(row.codDue);
     const ok = await confirm({
       variant: due > 0 ? "warning" : "info",
@@ -64,7 +95,7 @@ export default function MyDeliveries() {
       confirmText: "تم التسليم",
     });
     if (!ok) return;
-    setConfirmingId(row.id);
+    setConfirmingKey(rowKey(row));
     confirmM.mutate({ onlineOrderId: row.id });
   }
 
@@ -111,9 +142,9 @@ export default function MyDeliveries() {
             ) : (
               data!.toDeliver.map((row) => (
                 <DeliveryCard
-                  key={row.id}
+                  key={rowKey(row)}
                   row={row}
-                  busy={confirmingId === row.id || confirmM.isPending || failM.isPending}
+                  busy={confirmingKey === rowKey(row) || confirmM.isPending || confirmCnM.isPending || failM.isPending}
                   onConfirm={() => doConfirm(row)}
                   onFail={() => setFailTarget(row)}
                 />
@@ -132,10 +163,11 @@ export default function MyDeliveries() {
                 </span>
               </h2>
               {data!.delivered.map((row) => (
-                <div key={row.id} className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
+                <div key={rowKey(row)} className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
                   <span className="flex items-center gap-2 font-medium">
                     <CheckCircle2 aria-hidden className="size-4 text-emerald-600" />
                     <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
+                    <SourceTag kind={row.kind} />
                     <span className="text-muted-foreground">{row.customerName ?? ""}</span>
                   </span>
                   <span className="tabular-nums text-muted-foreground" dir="ltr">{money(row.orderTotal)} د.ع</span>
@@ -158,6 +190,22 @@ export default function MyDeliveries() {
   );
 }
 
+/** وسم المصدر: طلب متجر (onlineOrders) أو إرسالية استقبال (deliveryConsignments). */
+function SourceTag({ kind }: { kind: DeliveryRow["kind"] }) {
+  const isStore = kind === "online";
+  return (
+    <span
+      className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+        isStore
+          ? "bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300"
+          : "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300"
+      }`}
+    >
+      {isStore ? "طلب متجر" : "استلام"}
+    </span>
+  );
+}
+
 function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy: boolean; onConfirm: () => void; onFail: () => void }) {
   const phone = row.customerPhone;
   const waMsg = `مرحباً${row.customerName ? " " + row.customerName : ""}، أنا مندوب توصيل الرؤية العربية بخصوص طلبك ${row.orderNumber}. أنا في الطريق إليك.`;
@@ -165,7 +213,10 @@ function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy
     <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
       <div className="mb-2 flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="font-bold tracking-wider" dir="ltr">{row.orderNumber}</div>
+          <div className="flex items-center gap-2">
+            <span className="font-bold tracking-wider" dir="ltr">{row.orderNumber}</span>
+            <SourceTag kind={row.kind} />
+          </div>
           <div className="truncate text-sm text-muted-foreground">{row.customerName ?? "عميل"}</div>
         </div>
         <div className="shrink-0 text-left">
@@ -198,20 +249,24 @@ function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy
             </button>
           </>
         )}
-        <button
-          onClick={onFail}
-          disabled={busy}
-          className="ms-auto flex items-center gap-1 rounded-lg border border-rose-300 px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10"
-        >
-          <XCircle aria-hidden className="size-3.5" /> تعذّر التسليم
-        </button>
+        {/* «تعذّر التسليم» يعكس بيع الطلب ⇒ لطلبات المتجر فقط (لها مسار عكسٍ خاصّ). إرساليات
+            الاستقبال تُعالَج تعذُّراتها بيد الموظّف عبر إرجاع الإرسالية، فلا زرّ عكسٍ للمندوب هنا. */}
+        {row.kind === "online" && (
+          <button
+            onClick={onFail}
+            disabled={busy}
+            className="ms-auto flex items-center gap-1 rounded-lg border border-rose-300 px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10"
+          >
+            <XCircle aria-hidden className="size-3.5" /> تعذّر التسليم
+          </button>
+        )}
         <button
           onClick={onConfirm}
           disabled={busy}
-          className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
+          className={`${row.kind === "consignment" ? "ms-auto " : ""}flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50`}
         >
           {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <CheckCircle2 aria-hidden className="size-4" />}
-          تم التسليم والتحصيل
+          {row.kind === "consignment" ? "تم التسليم" : "تم التسليم والتحصيل"}
         </button>
       </div>
     </div>

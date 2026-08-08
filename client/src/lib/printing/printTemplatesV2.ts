@@ -117,6 +117,10 @@ export interface SalesInvoiceV2Data {
   deliveryFree?: boolean | null;
   /** قيمة الأجرة المُتنازَل عنها — تُطبَع «مجاناً — قيمته X» ليرى الزبون مقدار ما أُهدي له. */
   deliveryWaivedAmount?: string | number | null;
+  /** ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا على `invoices.deliveryFee`
+   *  (تمريرٌ لا إيراد). عرضٌ فقط — لا يدخل «الإجمالي المستحق للمكتبة»، لكن يُظهر «المجموع النهائي
+   *  الذي يدفعه الزبون شاملاً التوصيل» كي تُصوَّر الفاتورة وتُرسَل للزبون. */
+  courierDelivery?: { partyName: string; fee: string | number; feeCollection: "COURIER" | "COUNTER" | "SHOP" } | null;
 
   subtotal: string | number;
   discountAmount?: string | number | null;
@@ -213,6 +217,25 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
               color: B.orange,
             }]
           : []),
+      // ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية (تمريرٌ لا إيراد) ⇒ لا تدخل
+      // «الإجمالي المستحق»، لكن تظهر أجرةً + «المجموع النهائي الذي يدفعه الزبون شاملاً التوصيل».
+      ...(d.courierDelivery && Number(d.courierDelivery.fee ?? 0) > 0 && Number(d.deliveryFee ?? 0) === 0
+        ? [
+            {
+              label: `أجرة التوصيل (${
+                d.courierDelivery.feeCollection === 'COUNTER' ? 'مقبوضة في الاستقبال'
+                : d.courierDelivery.feeCollection === 'SHOP' ? 'على المكتبة'
+                : `يقبضها ${d.courierDelivery.partyName} من الزبون`
+              })`,
+              value: fmtIQD(d.courierDelivery.fee),
+              sign: '+' as const,
+              color: B.orange,
+            },
+            ...(d.courierDelivery.feeCollection !== 'SHOP'
+              ? [{ label: 'المجموع النهائي (يدفعه الزبون شاملاً التوصيل)', value: fmtIQD(Number(d.total) + Number(d.courierDelivery.fee)) }]
+              : []),
+          ]
+        : []),
     ],
     grandTotal: { label: 'الإجمالي المستحق', value: fmtIQD(d.total) },
     paid: d.paidAmount != null ? { label: 'المدفوع', value: fmtIQD(d.paidAmount) } : null,

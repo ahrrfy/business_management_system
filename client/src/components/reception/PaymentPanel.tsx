@@ -121,6 +121,17 @@ export function PaymentPanel({
           <span className="text-2xl font-black leading-none tabular-nums tracking-tight" dir="ltr">{fmt(expectedNow)}</span>
           <span className="text-xs text-muted-foreground">د.ع</span>
         </div>
+        {/* ٨/٨ — «يدفع الزبون شاملاً التوصيل»: يجيب صراحةً «التوصيل غير محتسبٍ في الإجمالي».
+            الأجرة تمريرٌ لا إيراد ⇒ لا تدخل «إجمالي الفاتورة» (الإيراد)، لكنها تظهر هنا في ما
+            يدفعه الزبون فعلاً. SHOP (على المكتبة) لا يدفعه الزبون فيُستثنى. */}
+        {orderDelivery && orderDelivery.feeCollection !== "SHOP" && orderDelivery.fee > 0 && (
+          <div className="flex items-baseline gap-1.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-0.5">
+            <Truck aria-hidden className="size-3.5 self-center text-[var(--sem-warn)]" />
+            <span className="text-[11px] font-bold text-[var(--sem-warn)]">يدفع الزبون شاملاً التوصيل</span>
+            <span className="text-xl font-black leading-none tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(expectedNow + orderDelivery.fee)}</span>
+            <span className="text-[11px] text-[var(--sem-warn)]">د.ع</span>
+          </div>
+        )}
 
         {isChange && paid > 0 && (
           <span className="inline-flex items-baseline gap-1.5 rounded-md bg-emerald-500/10 px-2 py-0.5">

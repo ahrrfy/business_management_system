@@ -54,6 +54,7 @@ import {
   Paperclip,
   Pencil,
   Printer,
+  Truck,
 } from "lucide-react";
 import { notify } from "@/lib/notify";
 import {
@@ -407,6 +408,11 @@ export default function InvoiceDetail() {
       deliveryFee: data.deliveryFee,
       deliveryFree: data.deliveryFree,
       deliveryWaivedAmount: data.deliveryWaivedAmount,
+      // ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة ⇒ نمرّرها للعرض
+      // كي تُظهر الفاتورة المطبوعة «المجموع النهائي الذي يدفعه الزبون شاملاً التوصيل».
+      courierDelivery: data.courierName && Number(data.courierFee ?? 0) > 0
+        ? { partyName: data.courierName, fee: data.courierFee ?? "0", feeCollection: data.courierFeeCollection ?? "COURIER" }
+        : null,
     });
   }
 
@@ -610,6 +616,24 @@ export default function InvoiceDetail() {
               <div className="border-t pt-2.5">
                 <SummaryRow label="الإجمالي" value={data.total} strong />
               </div>
+              {/* ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة (تمريرٌ لا
+                  إيراد) ⇒ خارج «الإجمالي»؛ نعرضها هنا مع «المجموع النهائي» الذي يدفعه الزبون. */}
+              {data.courierName && Number(data.courierFee ?? 0) > 0 && (
+                <div className="mt-1.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="inline-flex items-center gap-1 font-bold text-[var(--sem-warn)]">
+                      <Truck aria-hidden className="size-3.5" /> أجرة التوصيل ({data.courierFeeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : data.courierFeeCollection === "SHOP" ? "على المكتبة" : `يقبضها ${data.courierName}`})
+                    </span>
+                    <span className="font-black tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(data.courierFee)}</span>
+                  </div>
+                  {data.courierFeeCollection !== "SHOP" && (
+                    <div className="mt-1.5 flex items-center justify-between border-t border-[var(--sem-warn)]/30 pt-1.5 font-black text-[var(--sem-warn)]">
+                      <span>المجموع النهائي (يدفعه الزبون شاملاً التوصيل)</span>
+                      <span className="tabular-nums" dir="ltr">{fmt(round2(D(data.total).plus(D(data.courierFee ?? 0))).toFixed(2))}</span>
+                    </div>
+                  )}
+                </div>
+              )}
               <SummaryRow label="المدفوع" value={data.paidAmount} />
               <SummaryRow
                 label="المتبقّي"
