@@ -19,6 +19,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,7 +40,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.core.scanner.NativeScanField
 import online.alarabiya.superapp.model.warehouseTools.*
+import online.alarabiya.superapp.ui.scanner.NativeScannerAction
 
 private val WarehouseBlue = Color(0xFF5B36D2)
 private val WarehouseTeal = Color(0xFF7254DB)
@@ -90,7 +93,6 @@ private fun ScannerPane(state: WarehouseToolsUiState, actions: WarehouseToolsVie
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             SectionTitle("قارئ الإدخال", "USB · Bluetooth · لوحة النظام", Icons.Rounded.Scanner)
             WedgeInput(state.scanInput, actions::setScanInput, actions::scan)
-            Text("يبقى الحقل جاهزاً لاستقبال قارئ HID وينفّذ القراءة عند Enter.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
             state.selectedCount?.let { session -> Info("المسح يبحث أولاً داخل جرد ${session.code} ثم اللقطة المحلية.") }
             state.snapshot?.let { snapshot -> Text("لقطة الفرع: ${snapshot.items.size} وحدة · ${compact(snapshot.syncedAt)}", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
@@ -110,7 +112,11 @@ private fun ScannerPane(state: WarehouseToolsUiState, actions: WarehouseToolsVie
 private fun WedgeInput(value: String, change: (String) -> Unit, submit: () -> Unit) {
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
-    LaunchedEffect(Unit) { focus.requestFocus() }
+    LaunchedEffect(Unit) {
+        focus.requestFocus()
+        delay(120)
+        keyboard?.hide()
+    }
     OutlinedTextField(
         value = value,
         onValueChange = change,
@@ -119,7 +125,20 @@ private fun WedgeInput(value: String, change: (String) -> Unit, submit: () -> Un
         },
         label = { Text("امسح أو أدخل الرمز") },
         leadingIcon = { Icon(Icons.Rounded.QrCodeScanner, null) },
-        trailingIcon = { FilledIconButton({ keyboard?.hide(); submit() }) { Icon(Icons.AutoMirrored.Rounded.ArrowForward, "تنفيذ") } },
+        trailingIcon = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                NativeScannerAction(
+                    field = NativeScanField.SKU_OR_BARCODE,
+                    onScanned = { scanned ->
+                        change(scanned)
+                        submit()
+                    },
+                )
+                FilledIconButton({ keyboard?.hide(); submit() }) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowForward, "تنفيذ")
+                }
+            }
+        },
         singleLine = true,
         shape = RoundedCornerShape(20.dp),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),

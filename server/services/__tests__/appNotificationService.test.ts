@@ -134,6 +134,25 @@ describe("appNotificationService", () => {
     expect((await listUserNotifications(41)).rows).toHaveLength(1);
   });
 
+  it("يحجب نص الحضور على شاشة القفل ما لم يأت من الباني الآمن صراحة", async () => {
+    await createAppNotification({
+      userId: 41,
+      kind: "ATTENDANCE",
+      title: "نص غير موثوق",
+      body: "تفاصيل لا ينبغي عرضها",
+      route: "/mobile#attendance",
+      eventKey: "attendance:unsafe:ATTENDANCE_CHECK_IN",
+      push: true,
+    });
+    const [row] = await db().select().from(nativePushOutbox);
+    expect(row.payload).toMatchObject({
+      kind: "ATTENDANCE",
+      title: "تحديث آمن",
+      body: "افتح سوبر العربية لعرض التفاصيل.",
+      sensitive: "true",
+    });
+  });
+
   it("يؤجل ساعات الهدوء العابرة لمنتصف الليل حتى نهايتها", () => {
     const now = new Date("2026-08-05T20:00:00.000Z"); // 23:00 بغداد
     expect(quietHoursReleaseAt("22:00", "07:00", now)?.toISOString()).toBe(

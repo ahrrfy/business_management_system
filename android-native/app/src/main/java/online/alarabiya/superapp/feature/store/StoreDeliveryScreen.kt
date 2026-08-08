@@ -90,6 +90,7 @@ import online.alarabiya.superapp.model.store.StoreOrderDetail
 import online.alarabiya.superapp.model.store.StoreOrderPolicy
 import online.alarabiya.superapp.model.store.StoreOrderStatus
 import online.alarabiya.superapp.model.store.StoreOrderSummary
+import online.alarabiya.superapp.ui.rtlIsolate
 import online.alarabiya.superapp.ui.theme.Canvas
 import online.alarabiya.superapp.ui.theme.Emerald
 import online.alarabiya.superapp.ui.theme.EmeraldDark
@@ -675,9 +676,9 @@ private fun DetailCard(title: String, icon: ImageVector, content: @Composable ()
 
 @Composable
 private fun ValueLine(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = MaterialTheme.typography.bodyLarge, color = MutedInk)
-        Text(value, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, textAlign = TextAlign.End)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, Modifier.weight(.42f), style = MaterialTheme.typography.bodyLarge, color = MutedInk)
+        Text(rtlIsolate(value), Modifier.weight(.58f), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, textAlign = TextAlign.End, maxLines = 3, overflow = TextOverflow.Ellipsis)
     }
 }
 

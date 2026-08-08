@@ -17,6 +17,7 @@ import online.alarabiya.superapp.core.navigation.NativeDeepLinkCodec
 
 object NativeNotificationRenderer {
     const val EXTRA_NOTIFICATION_ID = "online.alarabiya.superapp.notification.ID"
+    const val EXTRA_NOTIFICATION_KIND = "online.alarabiya.superapp.notification.KIND"
 
     fun show(context: Context, payload: NativeNotificationPayload): Boolean {
         if (
@@ -33,6 +34,7 @@ object NativeNotificationRenderer {
             data = destination.toUri()
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(EXTRA_NOTIFICATION_ID, payload.notificationId)
+            putExtra(EXTRA_NOTIFICATION_KIND, payload.kind)
         }
         val requestCode = payload.notificationId.hashCode() and Int.MAX_VALUE
         val contentIntent = PendingIntent.getActivity(
@@ -41,17 +43,19 @@ object NativeNotificationRenderer {
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val channel = when (payload.urgency) {
-            NotificationUrgency.ACTION -> AppNotificationChannels.ACTIONS
-            NotificationUrgency.INFORMATION -> AppNotificationChannels.INFORMATION
+        val channel = when (NativeNotificationPrivacyPolicy.deliveryLane(payload.kind, payload.urgency)) {
+            NotificationDeliveryLane.ATTENDANCE -> AppNotificationChannels.ATTENDANCE_UPDATES
+            NotificationDeliveryLane.ACTIONS -> AppNotificationChannels.ACTIONS
+            NotificationDeliveryLane.INFORMATION -> AppNotificationChannels.INFORMATION
         }
+        val lockScreenExposure = NativeNotificationPrivacyPolicy.lockScreenExposure(payload.sensitive)
         val publicVersion = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle("سوبر العربية")
             .setContentText("لديك تحديث جديد")
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
-        val notification = NotificationCompat.Builder(context, channel)
+        val notificationBuilder = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle(payload.title)
             .setContentText(payload.body)
@@ -67,15 +71,23 @@ object NativeNotificationRenderer {
                 },
             )
             .setPriority(
-                if (payload.urgency == NotificationUrgency.ACTION) {
+                if (payload.urgency == NotificationUrgency.ACTION || payload.kind == "ATTENDANCE") {
                     NotificationCompat.PRIORITY_HIGH
                 } else {
                     NotificationCompat.PRIORITY_DEFAULT
                 },
             )
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(publicVersion)
-            .build()
+            .setVisibility(
+                if (lockScreenExposure == LockScreenExposure.PUBLIC) {
+                    NotificationCompat.VISIBILITY_PUBLIC
+                } else {
+                    NotificationCompat.VISIBILITY_PRIVATE
+                },
+            )
+        if (lockScreenExposure == LockScreenExposure.PRIVATE) {
+            notificationBuilder.setPublicVersion(publicVersion)
+        }
+        val notification = notificationBuilder.build()
 
         return runCatching {
             NotificationManagerCompat.from(context).notify(requestCode, notification)

@@ -20,7 +20,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -58,6 +60,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -85,6 +88,7 @@ import online.alarabiya.superapp.model.admin.AdminBranch
 import online.alarabiya.superapp.model.admin.AdminRole
 import online.alarabiya.superapp.model.admin.AdminSection
 import online.alarabiya.superapp.model.admin.AdminUser
+import online.alarabiya.superapp.ui.rtlIsolate
 import online.alarabiya.superapp.model.admin.CreateAdminRoleCommand
 import online.alarabiya.superapp.model.admin.CreateAdminUserCommand
 import online.alarabiya.superapp.model.admin.RoleAssignment
@@ -306,11 +310,17 @@ private fun AdminHeader(state: AdminUiState, onRefresh: () -> Unit) {
 
 @Composable
 private fun AdminTabs(selected: AdminSection, onSelect: (AdminSection) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+    val listState = rememberLazyListState()
+    LaunchedEffect(selected) {
+        listState.animateScrollToItem(AdminSection.entries.indexOf(selected).coerceAtLeast(0))
+    }
+    LazyRow(
+        modifier = Modifier.fillMaxWidth(),
+        state = listState,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        AdminSection.entries.forEach { section ->
+        items(AdminSection.entries, key = AdminSection::name) { section ->
             val icon = when (section) {
                 AdminSection.USERS -> Icons.Rounded.People
                 AdminSection.ROLES -> Icons.Rounded.Security
@@ -321,7 +331,7 @@ private fun AdminTabs(selected: AdminSection, onSelect: (AdminSection) -> Unit) 
                 onClick = { onSelect(section) },
                 label = { Text(section.label, maxLines = 1) },
                 leadingIcon = { Icon(icon, null, Modifier.size(18.dp)) },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.widthIn(min = 132.dp),
             )
         }
     }
@@ -650,14 +660,36 @@ private fun AuditRow(event: AdminAuditEvent) {
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(actionLabel(event.action), fontWeight = FontWeight.Bold)
-                    Text("${event.actorName} • ${event.entityType}${event.entityId?.let { " #$it" }.orEmpty()}", color = MutedInk, style = MaterialTheme.typography.bodySmall)
+                    val entityReference = event.entityId
+                        ?.let { "${rtlIsolate(event.entityType)} ${rtlIsolate("#$it")}" }
+                        ?: rtlIsolate(event.entityType)
+                    Text(
+                        "${event.actorName} • $entityReference",
+                        color = MutedInk,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
-                Text(event.createdAt.take(16).replace('T', ' '), style = MaterialTheme.typography.bodySmall, color = MutedInk)
+                Text(
+                    rtlIsolate(event.createdAt.take(16).replace('T', ' ')),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MutedInk,
+                    maxLines = 1,
+                )
             }
             if (event.changedFields.isNotEmpty()) {
-                Text("الحقول: ${event.changedFields.joinToString("، ")}", style = MaterialTheme.typography.bodySmall, color = EmeraldDark)
+                Text(
+                    "الحقول: ${event.changedFields.joinToString("، ") { rtlIsolate(it) }}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = EmeraldDark,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
-            event.maskedIpAddress?.let { Text("المصدر: $it", style = MaterialTheme.typography.bodySmall, color = MutedInk) }
+            event.maskedIpAddress?.let {
+                Text("المصدر: ${rtlIsolate(it)}", style = MaterialTheme.typography.bodySmall, color = MutedInk)
+            }
         }
     }
 }

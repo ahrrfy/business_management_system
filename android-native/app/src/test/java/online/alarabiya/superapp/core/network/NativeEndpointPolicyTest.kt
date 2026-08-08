@@ -26,4 +26,11 @@ class NativeEndpointPolicyTest {
         assertFalse(NativeEndpointPolicy.isAllowed("https://example.test/api", "prod"))
         assertFalse(NativeEndpointPolicy.isAllowed("https://example.test?next=http://evil.test", "prod"))
     }
+
+    @Test
+    fun `never accepts production cleartext even when host resembles a loopback`() {
+        assertFalse(NativeEndpointPolicy.isAllowed("http://localhost:3000", "prod"))
+        assertFalse(NativeEndpointPolicy.isAllowed("http://127.0.0.1:3000", "staging"))
+        assertFalse(NativeEndpointPolicy.isAllowed("ftp://example.test", "dev"))
+    }
 }

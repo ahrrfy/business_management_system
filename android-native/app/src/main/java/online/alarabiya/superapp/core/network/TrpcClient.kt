@@ -21,6 +21,7 @@ class ApiException(
     val appCode: String? = null,
     val correlationId: String? = null,
     val dbCode: String? = null,
+    val retryableTransportFailure: Boolean = false,
     cause: Throwable? = null,
 ) : Exception(message, cause)
 
@@ -61,6 +62,12 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
     private fun inputEnvelope(input: JSONObject?): JSONObject = TrpcInputSerializer.envelope(input)
 
     private fun execute(method: String, path: String, body: String?): Any = requestLock.withLock {
+        IdempotentRequestRetryPolicy.execute(method) {
+            executeAttempt(method, path, body)
+        }
+    }
+
+    private fun executeAttempt(method: String, path: String, body: String?): Any {
         val sessionCookie = sessionStore.loadCookie()
         val proofHeaders = when {
             procedureName(path) in AUTH_COMPLETION_PROCEDURES ->
@@ -103,7 +110,12 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         } catch (error: ApiException) {
             throw error
         } catch (error: Exception) {
-            throw ApiException("تعذر الاتصال بالخادم. تحقق من الإنترنت ثم أعد المحاولة.", cause = error)
+            val message = if (method.equals("GET", ignoreCase = true)) {
+                "تعذر الوصول إلى خادم الشركة حالياً. تحقق من اتصال الإنترنت ثم أعد المحاولة."
+            } else {
+                "تعذر تأكيد استجابة الخادم للعملية. تحقق من حالتها قبل إعادة الإرسال."
+            }
+            throw ApiException(message, retryableTransportFailure = true, cause = error)
         } finally {
             connection.disconnect()
         }
@@ -111,6 +123,12 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
 
     /** Fetches a credential-free, short-lived registration ticket without recursing through execute(). */
     private fun fetchNativeDeviceChallenge(): NativeDeviceChallenge {
+        return IdempotentRequestRetryPolicy.execute("GET") {
+            fetchNativeDeviceChallengeAttempt()
+        }
+    }
+
+    private fun fetchNativeDeviceChallengeAttempt(): NativeDeviceChallenge {
         val input = Uri.encode(inputEnvelope(null).toString())
         val path = "/api/trpc/auth.nativeDeviceChallenge?batch=1&input=$input"
         val connection = (URL(BuildConfig.ERP_BASE_URL + path).openConnection() as HttpURLConnection).apply {
@@ -138,7 +156,11 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         } catch (error: ApiException) {
             throw error
         } catch (error: Exception) {
-            throw ApiException("تعذر تهيئة إثبات الجهاز الآمن", cause = error)
+            throw ApiException(
+                "تعذر تهيئة إثبات الجهاز الآمن",
+                retryableTransportFailure = true,
+                cause = error,
+            )
         } finally {
             connection.disconnect()
         }

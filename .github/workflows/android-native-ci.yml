@@ -6,12 +6,16 @@ on:
     branches: [main]
     paths:
       - "android-native/**"
+      - "scripts/verify-mobile-release-env.mjs"
+      - "package.json"
       - ".github/workflows/android-native-ci.yml"
       - ".github/workflows/android-release.yml"
   push:
     branches: [main]
     paths:
       - "android-native/**"
+      - "scripts/verify-mobile-release-env.mjs"
+      - "package.json"
       - ".github/workflows/android-native-ci.yml"
       - ".github/workflows/android-release.yml"
 
@@ -33,6 +37,11 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Verify native release source contract
+        run: node scripts/verify-mobile-release-env.mjs
       - name: Test, lint, and assemble the native app
         working-directory: android-native
         env:
@@ -45,4 +54,5 @@ jobs:
             :app:testDevDebugUnitTest \
             :app:lintDevDebug \
             :app:lintProdRelease \
+            :app:compileDevDebugAndroidTestKotlin \
             :app:assembleDevDebug

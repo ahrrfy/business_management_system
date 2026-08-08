@@ -9,6 +9,8 @@ import android.content.Context
 object AppNotificationChannels {
     const val ACTIONS = "operational_actions"
     const val INFORMATION = "business_updates"
+    // New stable ID: channel importance cannot be raised after Android creates a channel.
+    const val ATTENDANCE_UPDATES = "attendance_updates_v1"
 
     fun create(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
@@ -30,6 +32,16 @@ object AppNotificationChannels {
                 ).apply {
                     description = "تحديثات الدوام والرواتب والعمليات"
                     lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+                },
+                NotificationChannel(
+                    ATTENDANCE_UPDATES,
+                    "الحضور والانصراف",
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = "تأكيدات الحضور والانصراف المسجلة من أجهزة الشركة"
+                    enableVibration(true)
+                    // The individual notification decides PUBLIC vs PRIVATE from its sanitized
+                    // payload. A channel-level override would incorrectly expose sensitive events.
                 },
             ),
         )

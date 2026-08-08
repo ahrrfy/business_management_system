@@ -41,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.crm.BranchOption
 import online.alarabiya.superapp.model.crm.CatalogOption
@@ -52,6 +53,9 @@ import online.alarabiya.superapp.model.crm.QuotationDraft
 import online.alarabiya.superapp.model.crm.QuotationLineDraft
 import online.alarabiya.superapp.model.crm.QuotationStatus
 import online.alarabiya.superapp.model.crm.QuotationSummary
+import online.alarabiya.superapp.core.scanner.NativeScanField
+import online.alarabiya.superapp.ui.rtlIsolate
+import online.alarabiya.superapp.ui.scanner.NativeScannerAction
 
 @Composable
 internal fun QuotationsWorkspace(state: CrmUiState, capabilities: CrmCapabilities, actions: CrmActions) {
@@ -327,6 +331,13 @@ private fun QuotationEditorPane(
                         modifier = Modifier.weight(1f),
                         label = { Text("اسم أو SKU أو باركود") },
                         singleLine = true,
+                        trailingIcon = {
+                            NativeScannerAction(
+                                NativeScanField.SKU_OR_BARCODE,
+                                { scanned -> actions.setCatalogQuery(scanned); actions.searchCatalog() },
+                                enabled = !busy && draft.branchId != null,
+                            )
+                        },
                     )
                     IconButton(onClick = actions.searchCatalog, enabled = !busy && draft.branchId != null) {
                         Icon(Icons.Rounded.Search, contentDescription = "بحث في الأصناف")
@@ -481,12 +492,15 @@ private fun QuoteField(value: String, onChange: (String) -> Unit, label: String,
 
 @Composable
 private fun DetailRow(label: String, value: String, emphasized: Boolean = false) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, Modifier.weight(.42f), color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Text(
-            value,
+            rtlIsolate(value),
+            modifier = Modifier.weight(.58f),
             fontWeight = if (emphasized) FontWeight.Bold else FontWeight.Normal,
             color = if (emphasized) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
         )
     }
     HorizontalDivider()

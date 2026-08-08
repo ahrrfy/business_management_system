@@ -22,7 +22,13 @@ class BiometricSessionOperation internal constructor(
     val cipher: Cipher,
     internal val mode: BiometricOperationMode,
     internal val payload: ByteArray,
-)
+) {
+    /** BiometricPrompt must return the exact CryptoObject prepared for this operation. */
+    internal fun accepts(authenticatedCipher: Cipher?): Boolean = authenticatedCipher === cipher
+
+    /** Erase the transient wrapped key input when the system prompt does not complete. */
+    internal fun cancel() = payload.fill(0)
+}
 
 class BiometricSessionInvalidatedException(cause: Throwable? = null) :
     SecurityException("Biometric session key is no longer valid", cause)
@@ -131,6 +137,11 @@ class SecureSessionStore(context: Context) {
      * strong biometric authentication for this exact operation.
      */
     fun completeBiometricOperation(operation: BiometricSessionOperation, authenticatedCipher: Cipher): Boolean {
+        if (!operation.accepts(authenticatedCipher)) {
+            operation.cancel()
+            invalidateBiometricSession()
+            return false
+        }
         return try {
             when (operation.mode) {
                 BiometricOperationMode.ENROLL -> {
@@ -172,7 +183,7 @@ class SecureSessionStore(context: Context) {
             invalidateBiometricSession()
             false
         } finally {
-            operation.payload.fill(0)
+            operation.cancel()
         }
     }
 
