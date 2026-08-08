@@ -15,6 +15,7 @@ import { logAudit } from "../services/auditService";
 import {
   approveStocktake,
   approveStocktakeItems,
+  addStocktakeWorker,
   cancelStocktakeSession,
   computeStocktakeReview,
   createStocktakeSession,
@@ -33,6 +34,7 @@ import {
   previewScope,
   regenerateStocktakePin,
   reopenStocktakeItemReview,
+  removeStocktakeWorker,
   requestStocktakeRecount,
   resolveStocktakeConflict,
 } from "../services/stocktakeService";
@@ -246,6 +248,62 @@ export const stocktakeRouter = router({
       })
       .sort((a, b) => a.name.localeCompare(b.name, "ar"));
   }),
+
+  /** إدارة العمال أثناء COUNTING — حفظ العدّات وإبطال الوصول عند الإزالة، بصلاحية إدارة المخزون. */
+  addWorker: inventoryManagerProcedure
+    .input(
+      z.object({
+        sessionId: idNum,
+        name: z.string().trim().min(1, "اسم العامل مطلوب").max(120),
+        method: z.enum(["PIN", "USER"]),
+        userId: idNum.optional(),
+        zone: z.string().trim().max(120).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      await assertManagerStocktakeBranch(ctx, input.sessionId);
+      const res = await addStocktakeWorker(input, { userId: ctx.user.id, role: ctx.user.role });
+      await logAudit(ctx, {
+        action: "stocktake.addWorker",
+        entityType: "stocktake",
+        entityId: input.sessionId,
+        newValue: {
+          assignmentId: res.assignmentId,
+          name: res.name,
+          method: res.method,
+          userId: res.userId,
+          zone: res.zone,
+          routedItemCount: res.routedItemCount,
+        },
+      });
+      return res;
+    }),
+
+  removeWorker: inventoryManagerProcedure
+    .input(
+      z.object({
+        sessionId: idNum,
+        assignmentId: idNum,
+        reason: z.string().trim().min(3, "سبب الإزالة مطلوب (٣ أحرف فأكثر)").max(255),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      await assertManagerStocktakeBranch(ctx, input.sessionId);
+      const res = await removeStocktakeWorker(input, { userId: ctx.user.id, role: ctx.user.role });
+      await logAudit(ctx, {
+        action: "stocktake.removeWorker",
+        entityType: "stocktake",
+        entityId: input.sessionId,
+        newValue: {
+          assignmentId: input.assignmentId,
+          reason: input.reason,
+          preservedCountRows: res.preservedCountRows,
+          routedItemCount: res.routedItemCount,
+          alreadyRemoved: res.alreadyRemoved,
+        },
+      });
+      return res;
+    }),
 
   /** شاشة المراجعة (مدير فأعلى — تكاليف وقيم). autoAdjust=false للمقارنة في الواجهة فقط. */
   review: managerProcedure

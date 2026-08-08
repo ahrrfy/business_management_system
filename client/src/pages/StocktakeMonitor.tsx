@@ -44,6 +44,8 @@ import {
   Key,
   Printer,
   ListChecks,
+  UserPlus,
+  UserMinus,
 } from "lucide-react";
 
 /* ───────── ثوابت العرض ───────── */
@@ -77,6 +79,8 @@ const LOG_LABEL: Record<string, string> = {
   "stocktake.forceReview": "إغلاق العدّ يدوياً والانتقال للمراجعة",
   "stocktake.cancel": "إلغاء الجلسة",
   "stocktake.regeneratePin": "توليد PIN جديد لعامل",
+  "stocktake.addWorker": "إضافة عامل جرد",
+  "stocktake.removeWorker": "إزالة عامل جرد",
   "stocktake.finish": "تسليم عدّ عامل",
 };
 
@@ -163,6 +167,9 @@ export default function StocktakeMonitor() {
     { sessionId },
     { enabled: idOk && isManager, refetchInterval: 10000 },
   );
+  const assignableUsers = trpc.stocktakes.assignableUsers.useQuery(undefined, {
+    enabled: idOk && isManager,
+  });
 
   /* ───── حالة الحوارات ───── */
   const [recountFor, setRecountFor] = useState<{ variantId: number; label: string } | null>(null);
@@ -170,6 +177,13 @@ export default function StocktakeMonitor() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [newPin, setNewPin] = useState<{ name: string; pin: string } | null>(null);
+  const [addWorkerOpen, setAddWorkerOpen] = useState(false);
+  const [addMethod, setAddMethod] = useState<"PIN" | "USER">("PIN");
+  const [addName, setAddName] = useState("");
+  const [addUserId, setAddUserId] = useState("");
+  const [addZone, setAddZone] = useState("");
+  const [removeFor, setRemoveFor] = useState<{ id: number; name: string; counted: number } | null>(null);
+  const [removeReason, setRemoveReason] = useState("");
 
   /* ───── الطفرات ───── */
   const requestRecount = trpc.stocktakes.requestRecount.useMutation({
@@ -206,6 +220,42 @@ export default function StocktakeMonitor() {
     },
     onError: (e) => notify.err(e),
   });
+  const addWorker = trpc.stocktakes.addWorker.useMutation({
+    onSuccess: async (r) => {
+      setAddWorkerOpen(false);
+      setAddName("");
+      setAddUserId("");
+      setAddZone("");
+      if (r.pin) setNewPin({ name: r.name, pin: r.pin });
+      notify.ok("أُضيف عامل الجرد", "أُعيد توزيع توجيه المنتجات غير المعدودة بالتساوي دون تغيير أي عدّة مسجّلة.");
+      await Promise.all([
+        utils.stocktakes.monitor.invalidate(),
+        utils.stocktakes.remaining.invalidate(),
+        utils.stocktakes.list.invalidate(),
+        utils.stocktakes.log.invalidate(),
+        utils.count.mine.invalidate(),
+      ]);
+    },
+    onError: (e) => notify.err(e),
+  });
+  const removeWorker = trpc.stocktakes.removeWorker.useMutation({
+    onSuccess: async (r) => {
+      setRemoveFor(null);
+      setRemoveReason("");
+      notify.ok(
+        "أُزيل العامل وأُبطل وصوله",
+        `حُفظت ${nf(r.preservedCountRows)} عدّة سابقة وأُعيد توجيه المنتجات غير المعدودة للعمال الباقين.`,
+      );
+      await Promise.all([
+        utils.stocktakes.monitor.invalidate(),
+        utils.stocktakes.remaining.invalidate(),
+        utils.stocktakes.list.invalidate(),
+        utils.stocktakes.log.invalidate(),
+        utils.count.mine.invalidate(),
+      ]);
+    },
+    onError: (e) => notify.err(e),
+  });
 
   /* ───── حواجز عرض مبكرة (بعد كل الـhooks) ───── */
   if (!idOk) return <div className="p-10 text-center text-muted-foreground">معرّف الجلسة غير صالح.</div>;
@@ -237,9 +287,16 @@ export default function StocktakeMonitor() {
   const counted = monitor.data.progress.counted;
   const remaining = Math.max(0, total - counted);
   const pct = total > 0 ? Math.round((counted / total) * 100) : 0;
-  const submittedCount = assignments.filter((a: { status: string }) => a.status === "SUBMITTED").length;
+  const currentAssignments = assignments.filter((a: { status: string }) => a.status !== "REMOVED");
+  const removedAssignments = assignments.filter((a: { status: string }) => a.status === "REMOVED");
+  const activeWorkerCount = currentAssignments.filter((a: { status: string }) => a.status === "ACTIVE").length;
+  const submittedCount = currentAssignments.filter((a: { status: string }) => a.status === "SUBMITTED").length;
   const isCounting = s.status === "COUNTING";
   const scopeLabel = (s as unknown as { scopeLabel?: string }).scopeLabel ?? SCOPE_LABEL[s.scopeType] ?? s.scopeType;
+  const availableUsers = (assignableUsers.data ?? []).filter(
+    (u) => !currentAssignments.some((a: { method: string; userId: number | null; status: string }) =>
+      a.method === "USER" && a.status === "ACTIVE" && Number(a.userId) === Number(u.id)),
+  );
 
   /* ───── أفعال ───── */
   async function onForceReview() {
@@ -308,6 +365,32 @@ export default function StocktakeMonitor() {
     requestRecount.mutate({ sessionId, variantId: recountFor.variantId, reason });
   }
 
+  function submitAddWorker() {
+    const selectedUser = availableUsers.find((u) => Number(u.id) === Number(addUserId));
+    const name = addMethod === "USER" ? selectedUser?.name ?? "" : addName.trim();
+    if (!name) {
+      notify.warn(addMethod === "USER" ? "اختر حساب الموظف" : "اكتب اسم عامل الجرد");
+      return;
+    }
+    addWorker.mutate({
+      sessionId,
+      name,
+      method: addMethod,
+      userId: addMethod === "USER" ? Number(addUserId) : undefined,
+      zone: addZone.trim() || undefined,
+    });
+  }
+
+  function submitRemoveWorker() {
+    if (!removeFor) return;
+    const reason = removeReason.trim();
+    if (reason.length < 3) {
+      notify.warn("سبب الإزالة مطلوب (٣ أحرف على الأقل) لحفظ سجل التدقيق.");
+      return;
+    }
+    removeWorker.mutate({ sessionId, assignmentId: removeFor.id, reason });
+  }
+
   return (
     <div className="space-y-4">
       {/* مسار الرجوع */}
@@ -347,6 +430,11 @@ export default function StocktakeMonitor() {
             <Button variant="outline" size="sm" onClick={() => void copyCountLink()}>
               نسخ رابط العدّ
             </Button>
+            {isManager && isCounting && (
+              <Button variant="outline" size="sm" onClick={() => setAddWorkerOpen(true)}>
+                <UserPlus aria-hidden className="size-4" /> إضافة عامل جرد
+              </Button>
+            )}
             <Link href={`/stocktakes/${sessionId}/remaining`}>
               <Button variant="outline" size="sm">
                 <ListChecks aria-hidden className="size-4" /> عرض المنتجات المتبقية ({nf(remaining)})
@@ -376,7 +464,7 @@ export default function StocktakeMonitor() {
             {isCounting && (
               <Button
                 size="sm"
-                variant={submittedCount === assignments.length ? "default" : "outline"}
+                variant={submittedCount === currentAssignments.length ? "default" : "outline"}
                 disabled={!isManager || counted < total || forceReview.isPending}
                 title={
                   isManager
@@ -438,8 +526,10 @@ export default function StocktakeMonitor() {
         <Stat label="نسبة الإنجاز" value={`${nf(pct)}٪`} />
         <Stat
           label="عمّال الجرد"
-          value={nf(assignments.length)}
-          sub={submittedCount > 0 ? `${nf(submittedCount)} سلّموا العدّ` : "الكل يعمل الآن"}
+          value={nf(currentAssignments.length)}
+          sub={removedAssignments.length > 0
+            ? `${nf(activeWorkerCount)} نشط · ${nf(removedAssignments.length)} أُزيلوا مع حفظ السجل`
+            : submittedCount > 0 ? `${nf(submittedCount)} سلّموا العدّ` : "الكل يعمل الآن"}
         />
         <Stat label="سياسة الحركة أثناء الجرد" value="البيع مستمر" sub="الحركات اللاحقة تُصحَّح آلياً في المراجعة" />
       </div>
@@ -452,13 +542,14 @@ export default function StocktakeMonitor() {
           <p className="text-xs text-muted-foreground">كل عامل يرى قائمة الجرد المشتركة دون الرصيد الدفتري؛ توجيه المنتجات يتم ميدانياً.</p>
           </CardHeader>
           <div className="divide-y">
-            {assignments.map(
+            {currentAssignments.map(
               (a: {
                 id: number;
                 name: string;
                 method: string;
                 zone: string | null;
                 status: string;
+                userId: number | null;
                 total: number;
                 counted: number;
                 lastActivityAt: string | Date | null;
@@ -497,9 +588,9 @@ export default function StocktakeMonitor() {
                     </p>
                   </div>
                   <div className="flex flex-col items-end gap-1.5">
-                    {isCounting && a.status !== "SUBMITTED" && (
+                    {isCounting && (
                       <div className="flex flex-wrap justify-end gap-1">
-                        {s.waNotify && (
+                        {a.status === "ACTIVE" && s.waNotify && (
                           <Button
                             size="sm"
                             variant="ghost"
@@ -510,7 +601,7 @@ export default function StocktakeMonitor() {
                             <Mail aria-hidden className="size-4" /> تذكير واتساب
                           </Button>
                         )}
-                        {a.method === "PIN" && (
+                        {a.status === "ACTIVE" && a.method === "PIN" && (
                           <Button
                             size="sm"
                             variant="outline"
@@ -521,6 +612,23 @@ export default function StocktakeMonitor() {
                             <Key aria-hidden className="size-4" /> PIN جديد
                           </Button>
                         )}
+                        {isManager && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive"
+                            disabled={removeWorker.isPending || (a.status === "ACTIVE" && activeWorkerCount <= 1)}
+                            title={a.status === "ACTIVE" && activeWorkerCount <= 1
+                              ? "أضف العامل البديل أولاً، ثم أزل هذا العامل"
+                              : "إبطال وصول العامل مع حفظ كل العدّات السابقة"}
+                            onClick={() => {
+                              setRemoveReason("");
+                              setRemoveFor({ id: a.id, name: a.name, counted: a.counted });
+                            }}
+                          >
+                            <UserMinus aria-hidden className="size-4" /> إزالة
+                          </Button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -528,6 +636,29 @@ export default function StocktakeMonitor() {
               ),
             )}
           </div>
+          {removedAssignments.length > 0 && (
+            <details className="border-t bg-muted/20 px-4 py-3 text-sm">
+              <summary className="cursor-pointer font-semibold text-muted-foreground">
+                سجل العمال الذين تمت إزالتهم ({nf(removedAssignments.length)})
+              </summary>
+              <div className="mt-3 space-y-2">
+                {removedAssignments.map((a: {
+                  id: number;
+                  name: string;
+                  counted: number;
+                  removedAt: string | Date | null;
+                  removalReason: string | null;
+                }) => (
+                  <div key={a.id} className="rounded-md border bg-card px-3 py-2">
+                    <p className="font-semibold">{a.name} · حفظ النظام {nf(a.counted)} عدّة</p>
+                    <p className="text-xs text-muted-foreground">
+                      {a.removalReason || "دون سبب مسجّل"} · {a.removedAt ? dt(a.removedAt) : "—"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
         </Card>
 
         {/* آخر العدّات + السجلّ */}
@@ -640,6 +771,113 @@ export default function StocktakeMonitor() {
           )}
         </div>
       </div>
+
+      {/* إضافة عامل أثناء العدّ — PIN خارجي أو حساب موظف داخلي. */}
+      <Dialog open={addWorkerOpen} onOpenChange={setAddWorkerOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>إضافة عامل جرد</DialogTitle>
+            <DialogDescription>
+              سيظهر للعامل نطاق الجرد المشترك دون الرصيد الدفتري. يعيد النظام توزيع توجيه المنتجات المتبقية فقط، ولا يغيّر العدّات السابقة.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="stocktake-worker-method">طريقة الدخول</Label>
+              <select
+                id="stocktake-worker-method"
+                value={addMethod}
+                onChange={(e) => {
+                  setAddMethod(e.target.value as "PIN" | "USER");
+                  setAddName("");
+                  setAddUserId("");
+                }}
+                className="h-10 w-full rounded-md border bg-card px-3 text-sm"
+              >
+                <option value="PIN">عامل ميداني برمز PIN</option>
+                <option value="USER">موظف بحساب داخل النظام</option>
+              </select>
+            </div>
+            {addMethod === "PIN" ? (
+              <div className="space-y-1.5">
+                <Label htmlFor="stocktake-worker-name">اسم العامل</Label>
+                <input
+                  id="stocktake-worker-name"
+                  value={addName}
+                  onChange={(e) => setAddName(e.target.value)}
+                  maxLength={120}
+                  placeholder="مثال: علي حسن"
+                  className="h-10 w-full rounded-md border bg-card px-3 text-sm"
+                />
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <Label htmlFor="stocktake-worker-user">حساب الموظف</Label>
+                <select
+                  id="stocktake-worker-user"
+                  value={addUserId}
+                  onChange={(e) => setAddUserId(e.target.value)}
+                  className="h-10 w-full rounded-md border bg-card px-3 text-sm"
+                >
+                  <option value="">اختر الموظف…</option>
+                  {availableUsers.map((u) => (
+                    <option key={u.id} value={u.id}>{u.name} — {u.role}</option>
+                  ))}
+                </select>
+                {availableUsers.length === 0 && !assignableUsers.isLoading && (
+                  <p className="text-xs text-muted-foreground">لا توجد حسابات أخرى متاحة للإضافة.</p>
+                )}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="stocktake-worker-zone">المنطقة أو الفريق (اختياري)</Label>
+              <input
+                id="stocktake-worker-zone"
+                value={addZone}
+                onChange={(e) => setAddZone(e.target.value)}
+                maxLength={120}
+                placeholder="مثال: الطابق الأول / القرطاسية"
+                className="h-10 w-full rounded-md border bg-card px-3 text-sm"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setAddWorkerOpen(false)}>إلغاء</Button>
+            <Button disabled={addWorker.isPending} onClick={submitAddWorker}>
+              {addWorker.isPending ? "جارٍ الإضافة…" : "إضافة وتوزيع التوجيه"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* إزالة آمنة: لا حذف للعدّات، ويُطلب سبب تدقيقي إلزامي. */}
+      <Dialog open={removeFor != null} onOpenChange={(open) => { if (!open) setRemoveFor(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>إزالة عامل الجرد</DialogTitle>
+            <DialogDescription>
+              سيُبطل وصول <b className="text-foreground">{removeFor?.name}</b> فوراً، مع حفظ {nf(removeFor?.counted)} عدّة سابقة باسمه وإعادة توجيه المنتجات غير المعدودة للعمال الباقين.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="stocktake-remove-reason">سبب الإزالة (إلزامي — يظهر في سجل التدقيق)</Label>
+            <Textarea
+              id="stocktake-remove-reason"
+              rows={3}
+              maxLength={255}
+              value={removeReason}
+              onChange={(e) => setRemoveReason(e.target.value)}
+              placeholder="مثال: انتهاء الوردية أو استبدال العامل"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRemoveFor(null)}>رجوع</Button>
+            <Button variant="destructive" disabled={removeWorker.isPending} onClick={submitRemoveWorker}>
+              {removeWorker.isPending ? "جارٍ الإزالة…" : "إبطال الوصول مع حفظ السجل"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* حوار طلب إعادة العدّ — سبب إلزامي */}
       <Dialog open={recountFor != null} onOpenChange={(o) => { if (!o) setRecountFor(null); }}>

@@ -337,6 +337,8 @@ const ACTION_AR: Record<string, string> = {
   "stocktake.forceReview": "إجبار مراجعة الجرد",
   "stocktake.cancel": "إلغاء جلسة جرد",
   "stocktake.regeneratePin": "تجديد رمز بوّابة الجرد",
+  "stocktake.addWorker": "إضافة عامل جرد",
+  "stocktake.removeWorker": "إزالة عامل جرد مع حفظ العدّات",
   // المتجر الإلكتروني
   "store.order.setStatus": "تغيير حالة طلب المتجر",
   "store.order.dispatch": "إرسال طلب المتجر لمندوب",

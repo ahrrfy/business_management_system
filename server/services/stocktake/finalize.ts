@@ -19,7 +19,7 @@ import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import type { StkActor } from "./types";
-import { assertBranchAccess, chunk, lockSession } from "./internal";
+import { assertBranchAccess, chunk, loadStocktakeProgress, lockSession } from "./internal";
 import { loadReviewCore, willAdjust } from "./reviewCore";
 
 export interface ApproveResult {
@@ -413,18 +413,11 @@ export async function forceStocktakeReview(sessionId: number, _actor: StkActor):
     if (s.status !== "COUNTING") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "إقفال العدّ متاح على جلسة قيد العدّ فقط" });
     }
-    const [{ total }] = await tx
-      .select({ total: sql<number>`COUNT(*)` })
-      .from(stocktakeItems)
-      .where(eq(stocktakeItems.sessionId, sessionId));
-    const [{ counted }] = await tx
-      .select({ counted: sql<number>`COUNT(DISTINCT ${stocktakeCounts.variantId})` })
-      .from(stocktakeCounts)
-      .where(and(eq(stocktakeCounts.sessionId, sessionId), inArray(stocktakeCounts.kind, ["FIRST", "RECOUNT"])));
-    if (Number(counted) < Number(total)) {
+    const { total, counted } = await loadStocktakeProgress(tx, sessionId);
+    if (counted < total) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `لا يمكن إنهاء العدّ قبل عدّ كل المنتجات (${Number(counted)}/${Number(total)})`,
+        message: `لا يمكن إنهاء العدّ قبل عدّ كل المنتجات (${counted}/${total})`,
       });
     }
     const now = new Date();
@@ -470,6 +463,7 @@ export async function regenerateStocktakePin(
         id: stocktakeAssignments.id,
         sessionId: stocktakeAssignments.sessionId,
         method: stocktakeAssignments.method,
+        status: stocktakeAssignments.status,
         sessionStatus: stocktakeSessions.status,
         branchId: stocktakeSessions.branchId,
       })
@@ -482,6 +476,7 @@ export async function regenerateStocktakePin(
     if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "تكليف الجرد غير موجود" });
     assertBranchAccess(Number(a.branchId), opts.restrictBranchId);
     if (a.method !== "PIN") throw new TRPCError({ code: "BAD_REQUEST", message: "هذا التكليف بحساب داخلي — لا PIN له" });
+    if (a.status !== "ACTIVE") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تجديد PIN لعامل غير نشط" });
     if (a.sessionStatus !== "COUNTING") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "إعادة توليد PIN متاحة أثناء العدّ فقط" });
     }

@@ -1,8 +1,9 @@
 // تسليم التكليف (finish) — تنتقل الجلسة آلياً لـREVIEW عند تسليم آخر تكليف.
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { stocktakeAssignments, stocktakeCounts, stocktakeItems, stocktakeSessions } from "../../../drizzle/schema";
+import { and, eq } from "drizzle-orm";
+import { stocktakeAssignments, stocktakeSessions } from "../../../drizzle/schema";
 import { withTx } from "../tx";
+import { loadStocktakeProgress } from "../stocktake/internal";
 import type { PortalIdentity } from "./identity";
 import { SESSION_UNAVAILABLE_MSG, IDENTITY_EXPIRED_MSG, COUNTING_ENDED_MSG } from "./shared";
 
@@ -42,24 +43,20 @@ export async function finishAssignment(identity: PortalIdentity): Promise<Finish
     if (me.status === "SUBMITTED") {
       return { ok: true as const, sessionMovedToReview: false, alreadySubmitted: true };
     }
+    if (me.status !== "ACTIVE") {
+      throw new TRPCError({ code: "UNAUTHORIZED", message: IDENTITY_EXPIRED_MSG });
+    }
     if (session.status !== "COUNTING") {
       throw new TRPCError({ code: "BAD_REQUEST", message: COUNTING_ENDED_MSG });
     }
 
     // The shared session only moves to review after every scoped product has a
     // first/recount value. Worker hand-off alone must never close it early.
-    const [{ total }] = await tx
-      .select({ total: sql<number>`COUNT(*)` })
-      .from(stocktakeItems)
-      .where(eq(stocktakeItems.sessionId, session.id));
-    const [{ counted }] = await tx
-      .select({ counted: sql<number>`COUNT(DISTINCT ${stocktakeCounts.variantId})` })
-      .from(stocktakeCounts)
-      .where(and(eq(stocktakeCounts.sessionId, session.id), inArray(stocktakeCounts.kind, ["FIRST", "RECOUNT"])));
-    if (Number(counted) < Number(total)) {
+    const { total, counted } = await loadStocktakeProgress(tx, Number(session.id));
+    if (counted < total) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `لا يمكن رفع الجرد للمراجعة قبل عدّ كل المنتجات (${Number(counted)}/${Number(total)})`,
+        message: `لا يمكن رفع الجرد للمراجعة قبل عدّ كل المنتجات (${counted}/${total})`,
       });
     }
 
