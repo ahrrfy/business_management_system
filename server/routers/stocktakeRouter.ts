@@ -36,7 +36,15 @@ import {
   requestStocktakeRecount,
   resolveStocktakeConflict,
 } from "../services/stocktakeService";
-import { adminProcedure, canSeeCostForUser, inventoryReadProcedure, managerProcedure, router, warehouseProcedure } from "../trpc";
+import {
+  adminProcedure,
+  canSeeCostForUser,
+  inventoryManagerProcedure,
+  inventoryReadProcedure,
+  managerProcedure,
+  router,
+  warehouseProcedure,
+} from "../trpc";
 
 /** مبلغ نصي بنمط purchaseRouter — الأموال نصوص تمرّ عبر decimal.js (لا parseFloat). */
 const moneyStr = z.string().regex(/^\d{1,13}(\.\d{1,2})?$/, "قيمة مالية غير صالحة");
@@ -200,7 +208,7 @@ export const stocktakeRouter = router({
     }),
 
   /** كشف تشغيلي للمنتجات غير المعدودة — بلا رصيد دفتري/تكلفة، صالح للطباعة والتصدير. */
-  remaining: warehouseProcedure
+  remaining: inventoryReadProcedure
     .input(
       z.object({
         sessionId: idNum,
@@ -212,7 +220,7 @@ export const stocktakeRouter = router({
     )
     .query(async ({ input, ctx }) =>
       getStocktakeRemainingItems(input.sessionId, {
-        restrictBranchId: restrictedBranchOf(ctx),
+        restrictBranchId: ctx.scopedBranchId ?? restrictedBranchOf(ctx),
         q: input.q,
         assignmentId: input.assignmentId,
         limit: input.limit,
@@ -298,7 +306,7 @@ export const stocktakeRouter = router({
     }),
 
   /** اعتماد مرحلي للأصناف الجاهزة بينما يبقى بقية نطاق الجلسة قيد العدّ. */
-  approveItems: managerProcedure
+  approveItems: inventoryManagerProcedure
     .input(z.object({ sessionId: idNum, variantIds: z.array(idNum).min(1).max(500) }))
     .mutation(async ({ input, ctx }) => {
       await assertManagerStocktakeBranch(ctx, input.sessionId);
@@ -319,7 +327,7 @@ export const stocktakeRouter = router({
     }),
 
   /** إلغاء اعتماد مرحلي بسبب موثّق؛ لا يطلب إعادة عدّ ما لم يختر المدير ذلك منفصلاً. */
-  reopenItemReview: managerProcedure
+  reopenItemReview: inventoryManagerProcedure
     .input(
       z.object({
         sessionId: idNum,

@@ -73,13 +73,13 @@ requiresDualSign(item) = |value| > dualThreshold
 | `list` | `warehouseProcedure` | `{ status?, branchId?, limit=50, offset=0 }?` | صفوف: `{ id, code, name, branchId, branchName, scopeType, scopeLabel, status, itemCount, countedCount, createdAt, createdByName, submittedAt, approvedAt }` |
 | `get` | `warehouseProcedure` | `{ sessionId }` | ترويسة الجلسة + التكليفات (بلا pinHash أبداً) + progress |
 | `monitor` | `warehouseProcedure` | `{ sessionId }` | `{ session, assignments: [{ id, name, method, zone, status, total, counted, lastActivityAt }], recentCounts: [{ variantLabel, qty, kind, byName, at }] (آخر ٢٠), pendingRecounts, conflicts }` — **بلا expectedQty/تكلفة** |
-| `remaining` | `warehouseProcedure` | `{ sessionId, q?, assignmentId?, limit, offset }` | كشف غير المعدود المرقّم خادمياً: `{ assignmentMode:"SHARED", total, items: [{ productName, variantName, sku, barcode, baseUnit, assignmentName, zone }] }` — **بلا expectedQty/تكلفة**؛ البحث يشمل الباركود الأساسي والبديل |
+| `remaining` | `inventoryReadProcedure` | `{ sessionId, q?, assignmentId?, limit, offset }` | كشف غير المعدود المرقّم خادمياً: `{ assignmentMode:"SHARED", total, items: [{ productName, variantName, sku, barcode, baseUnit, assignmentName, zone }] }` — **بلا expectedQty/تكلفة**؛ البحث يشمل الباركود الأساسي والبديل |
 | `review` | `managerProcedure` | `{ sessionId, autoAdjust?: boolean=true }` | §٤ أدناه |
 | `requestRecount` | `warehouseProcedure` | `{ sessionId, variantId, reason (min 3) }` | `{ ok }` |
 | `resolveConflict` | `managerProcedure` | `{ sessionId, variantId, pick: "FIRST"\|"VERIFY" }` | `{ ok }` |
 | `decide` | `managerProcedure` | `{ sessionId, variantId, action: "ADJUST"\|"KEEP", reason, note? }` | `{ ok }` |
-| `approveItems` | `managerProcedure` | `{ sessionId, variantIds (max 500) }` | اعتماد إداري مرحلي أثناء COUNTING/REVIEW: `{ ok, approvedCount, refreshedCount, alreadyApprovedCount }`؛ يثبت كمية العد ورقم آخر عملية وبصمة SHA-256 للعد/الفرق/القرار، ولا حركة مخزون أو قيد حتى `approve` النهائي |
-| `reopenItemReview` | `managerProcedure` | `{ sessionId, variantId, reason (min 3) }` | يلغي الاعتماد المرحلي بسبب إلزامي ويعيد المنتج للمراجعة بلا طلب إعادة عد تلقائي؛ الحدث محفوظ داخل معاملة الجرد |
+| `approveItems` | `inventoryManagerProcedure` | `{ sessionId, variantIds (max 500) }` | اعتماد إداري مرحلي أثناء COUNTING/REVIEW: `{ ok, approvedCount, refreshedCount, alreadyApprovedCount }`؛ يثبت كمية العد ورقم آخر عملية وبصمة SHA-256 للعد/الفرق/القرار، ولا حركة مخزون أو قيد حتى `approve` النهائي |
+| `reopenItemReview` | `inventoryManagerProcedure` | `{ sessionId, variantId, reason (min 3) }` | يلغي الاعتماد المرحلي بسبب إلزامي ويعيد المنتج للمراجعة بلا طلب إعادة عد تلقائي؛ الحدث محفوظ داخل معاملة الجرد |
 | `firstSign` | `managerProcedure` | `{ sessionId }` | `{ ok, firstSignByName, firstSignAt }` |
 | `approve` | `managerProcedure` | `{ sessionId }` | `{ ok, alreadyApproved?, adjustedCount, shortExpense, overGain }` |
 | `forceReview` | `managerProcedure` | `{ sessionId }` | إقفال العدّ يدوياً (تكليفات ACTIVE ⇒ SUBMITTED) |
