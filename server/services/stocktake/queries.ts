@@ -7,6 +7,7 @@ import {
   categories,
   inventoryMovements,
   products,
+  productUnitBarcodes,
   productUnits,
   productVariants,
   stocktakeAssignments,
@@ -108,7 +109,7 @@ export async function listStocktakeSessions(opts: ListStocktakesOpts = {}) {
   }));
 }
 
-/** تقدّم كل تكليف: إجمالي أصنافه + المعدود منها (من أي عامل — VERIFY يُحتسب عدّاً). */
+/** نشاط كل عدّاد داخل قائمة الجرد المشتركة؛ counted هو ما أدخله فعلياً ولا توجد حصة ملكية. */
 async function loadAssignmentProgress(db: DbLike, sessionId: number) {
   const asg = await db
     .select({
@@ -151,14 +152,19 @@ async function loadAssignmentProgress(db: DbLike, sessionId: number) {
 }
 
 async function loadSessionProgress(db: DbLike, sessionId: number) {
-  const [{ total }] = await db
-    .select({ total: sql<number>`COUNT(*)` })
+  // العد من جدول النطاق نفسه يضمن invariant: 0 <= counted <= total حتى لو وُجد صف تاريخي شاذ في counts.
+  const [{ total = 0, counted = 0 } = { total: 0, counted: 0 }] = await db
+    .select({
+      total: sql<number>`COUNT(*)`,
+      counted: sql<number>`COALESCE(SUM(CASE WHEN EXISTS (
+        SELECT 1 FROM ${stocktakeCounts} AS stk_progress_count
+        WHERE stk_progress_count.sessionId = ${stocktakeItems.sessionId}
+          AND stk_progress_count.variantId = ${stocktakeItems.variantId}
+          AND stk_progress_count.kind IN ('FIRST', 'RECOUNT')
+      ) THEN 1 ELSE 0 END), 0)`,
+    })
     .from(stocktakeItems)
     .where(eq(stocktakeItems.sessionId, sessionId));
-  const [{ counted }] = await db
-    .select({ counted: sql<number>`COUNT(DISTINCT ${stocktakeCounts.variantId})` })
-    .from(stocktakeCounts)
-    .where(and(eq(stocktakeCounts.sessionId, sessionId), inArray(stocktakeCounts.kind, ["FIRST", "RECOUNT"])));
   return { total: Number(total), counted: Number(counted) };
 }
 
@@ -355,6 +361,126 @@ export async function monitorStocktakeSession(
       qty2: c.qty2,
       by2: c.by2,
     })),
+  };
+}
+
+/**
+ * كشف المنتجات التي لم يصل لها عدّ فعّال بعد (FIRST/RECOUNT).
+ * المخرج تشغيلي وآمن لدور المخزن: لا expectedQty ولا تكلفة ولا رصيد دفتري.
+ * يُستعمل لتوجيه فرق الجرد وللطباعة/التصدير أثناء بقاء الجلسة COUNTING.
+ */
+export async function getStocktakeRemainingItems(
+  sessionId: number,
+  opts: {
+    restrictBranchId?: number | null;
+    q?: string;
+    assignmentId?: number;
+    limit?: number;
+    offset?: number;
+  } = {},
+) {
+  const db = requireDb();
+  const s = await loadSessionHeader(db, sessionId);
+  assertBranchAccess(Number(s.branchId), opts.restrictBranchId);
+
+  const q = opts.q?.trim() ?? "";
+  const likePattern = `%${escLike(q)}%`;
+  const uncounted = sql`NOT EXISTS (
+    SELECT 1 FROM ${stocktakeCounts} AS stk_remaining_count
+    WHERE stk_remaining_count.sessionId = ${stocktakeItems.sessionId}
+      AND stk_remaining_count.variantId = ${stocktakeItems.variantId}
+      AND stk_remaining_count.kind IN ('FIRST', 'RECOUNT')
+  )`;
+  const filters = [eq(stocktakeItems.sessionId, sessionId), uncounted];
+  if (opts.assignmentId != null) filters.push(eq(stocktakeItems.assignmentId, opts.assignmentId));
+  if (q) {
+    filters.push(
+      or(
+        sql`${products.name} LIKE ${likePattern} ESCAPE '!'`,
+        sql`${productVariants.sku} LIKE ${likePattern} ESCAPE '!'`,
+        sql`${productVariants.variantName} LIKE ${likePattern} ESCAPE '!'`,
+        sql`EXISTS (
+          SELECT 1 FROM ${productUnits} AS stk_remaining_unit
+          WHERE stk_remaining_unit.variantId = ${stocktakeItems.variantId}
+            AND stk_remaining_unit.barcode LIKE ${likePattern} ESCAPE '!'
+        )`,
+        sql`EXISTS (
+          SELECT 1
+          FROM ${productUnitBarcodes} AS stk_remaining_alias
+          INNER JOIN ${productUnits} AS stk_remaining_alias_unit
+            ON stk_remaining_alias_unit.id = stk_remaining_alias.productUnitId
+          WHERE stk_remaining_alias_unit.variantId = ${stocktakeItems.variantId}
+            AND stk_remaining_alias.barcode LIKE ${likePattern} ESCAPE '!'
+        )`,
+        sql`${stocktakeAssignments.name} LIKE ${likePattern} ESCAPE '!'`,
+        sql`${stocktakeAssignments.zone} LIKE ${likePattern} ESCAPE '!'`,
+      )!,
+    );
+  }
+  const where = and(...filters);
+  const [{ total = 0 } = { total: 0 }] = await db
+    .select({ total: sql<number>`COUNT(*)` })
+    .from(stocktakeItems)
+    .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .innerJoin(stocktakeAssignments, eq(stocktakeItems.assignmentId, stocktakeAssignments.id))
+    .where(where);
+
+  const rows = await db
+    .select({
+      variantId: stocktakeItems.variantId,
+      productName: products.name,
+      variantName: productVariants.variantName,
+      sku: productVariants.sku,
+      barcode: sql<string | null>`(
+        SELECT stk_base_unit.barcode FROM ${productUnits} AS stk_base_unit
+        WHERE stk_base_unit.variantId = ${stocktakeItems.variantId}
+        ORDER BY stk_base_unit.isBaseUnit DESC, stk_base_unit.id ASC
+        LIMIT 1
+      )`,
+      baseUnit: sql<string | null>`(
+        SELECT stk_base_unit.unitName FROM ${productUnits} AS stk_base_unit
+        WHERE stk_base_unit.variantId = ${stocktakeItems.variantId}
+        ORDER BY stk_base_unit.isBaseUnit DESC, stk_base_unit.id ASC
+        LIMIT 1
+      )`,
+      assignmentId: stocktakeAssignments.id,
+      assignmentName: stocktakeAssignments.name,
+      zone: stocktakeAssignments.zone,
+    })
+    .from(stocktakeItems)
+    .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .innerJoin(stocktakeAssignments, eq(stocktakeItems.assignmentId, stocktakeAssignments.id))
+    .where(where)
+    .orderBy(asc(stocktakeAssignments.name), asc(stocktakeAssignments.zone), asc(products.name), asc(productVariants.id))
+    .limit(Math.min(Math.max(opts.limit ?? 500, 1), 10_000))
+    .offset(Math.max(opts.offset ?? 0, 0));
+
+  // الوحدات تُقرأ باستعلام scalar مرتب، لذلك يبقى كل منتج صفاً واحداً وتظل pagination دقيقة.
+  const items = rows.map((r) => ({
+      variantId: Number(r.variantId),
+      productName: String(r.productName ?? ""),
+      variantName: r.variantName,
+      sku: r.sku,
+      barcode: r.barcode ?? null,
+      baseUnit: r.baseUnit ?? null,
+      assignmentId: Number(r.assignmentId),
+      assignmentName: r.assignmentName,
+      zone: r.zone,
+    }));
+
+  return {
+    assignmentMode: "SHARED" as const,
+    session: {
+      id: Number(s.id),
+      code: s.code,
+      name: s.name,
+      branchName: s.branchName ?? "—",
+      status: s.status,
+    },
+    total: Number(total),
+    items,
   };
 }
 

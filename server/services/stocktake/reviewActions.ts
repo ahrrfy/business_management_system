@@ -5,6 +5,7 @@ import {
   stocktakeAssignments,
   stocktakeCounts,
   stocktakeDecisions,
+  stocktakeItemReviewEvents,
   stocktakeItems,
   stocktakeSessions,
   users,
@@ -24,6 +25,26 @@ async function getSessionItem(tx: Tx, sessionId: number, variantId: number) {
   const item = rows[0];
   if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "الصنف ليس ضمن أصناف هذه الجلسة" });
   return item;
+}
+
+async function recordReviewReopen(
+  tx: Tx,
+  item: Awaited<ReturnType<typeof getSessionItem>>,
+  actor: StkActor,
+  reason: string,
+): Promise<void> {
+  if (item.reviewApprovedAt == null) return;
+  await tx.insert(stocktakeItemReviewEvents).values({
+    sessionId: Number(item.sessionId),
+    variantId: Number(item.variantId),
+    action: "REOPEN",
+    snapshotOperationId:
+      item.reviewApprovedOperationId == null ? null : Number(item.reviewApprovedOperationId),
+    snapshotQty: item.reviewApprovedQty,
+    snapshotHash: item.reviewApprovedSnapshotHash,
+    reason,
+    actedBy: actor.userId,
+  });
 }
 
 /**
@@ -52,13 +73,28 @@ export async function requestStocktakeRecount(
     )[0];
     if (!hasCount) throw new TRPCError({ code: "BAD_REQUEST", message: "لا عدّ مسجّلاً لهذا الصنف بعد — لا حاجة لإعادة العدّ" });
 
+    const now = new Date();
+    await recordReviewReopen(tx, item, actor, args.reason);
     await tx
       .update(stocktakeItems)
       .set({
         recountStatus: "PENDING",
         recountReason: args.reason,
         recountRequestedBy: actor.userId,
-        recountRequestedAt: new Date(),
+        recountRequestedAt: now,
+        // إعادة العدّ تغيّر أساس المراجعة؛ أي اعتماد مرحلي سابق يسقط حكماً.
+        reviewApprovedBy: null,
+        reviewApprovedAt: null,
+        reviewApprovedOperationId: null,
+        reviewApprovedQty: null,
+        reviewApprovedSnapshotHash: null,
+        ...(item.reviewApprovedAt != null
+          ? {
+              reviewReopenedBy: actor.userId,
+              reviewReopenedAt: now,
+              reviewReopenReason: args.reason,
+            }
+          : {}),
       })
       .where(eq(stocktakeItems.id, Number(item.id)));
 
@@ -115,6 +151,13 @@ export async function resolveStocktakeConflict(
     if (s.status !== "COUNTING" && s.status !== "REVIEW") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن الفصل في تعارض على جلسة معتمدة أو ملغاة" });
     }
+    const item = await getSessionItem(tx, args.sessionId, args.variantId);
+    if (item.reviewApprovedAt != null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "هذا المنتج معتمد مرحلياً — ألغِ الاعتماد بسبب موثّق قبل تعديل نتيجة التعارض",
+      });
+    }
     const open = (
       await tx
         .select({ id: stocktakeCounts.id })
@@ -154,10 +197,16 @@ export async function decideStocktakeItem(
 ): Promise<{ ok: true }> {
   return withTx(async (tx) => {
     const s = await lockSession(tx, args.sessionId);
-    if (s.status !== "REVIEW") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "القرارات تُتّخذ على جلسة قيد المراجعة فقط" });
+    if (s.status !== "COUNTING" && s.status !== "REVIEW") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "القرارات متاحة أثناء العدّ والمراجعة فقط" });
     }
     const item = await getSessionItem(tx, args.sessionId, args.variantId);
+    if (item.reviewApprovedAt != null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "هذا المنتج معتمد مرحلياً — ألغِ الاعتماد بسبب موثّق قبل تغيير القرار",
+      });
+    }
     if (item.recountStatus === "PENDING") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الصنف بانتظار إعادة العدّ — لا قرار قبل وصول العدّ الجديد" });
     }
@@ -211,6 +260,130 @@ export async function decideStocktakeItem(
   });
 }
 
+/**
+ * اعتماد إداري مرحلي لأصناف معدودة بينما بقية الجلسة مستمرة.
+ * لا يكتب حركة مخزون أو قيداً محاسبياً؛ التنفيذ يبقى ذرّياً في approveStocktake النهائي.
+ * يمنع اعتماد صف غير معدود/متعارض/بانتظار إعادة عدّ/بلا قرار إلزامي.
+ */
+export async function approveStocktakeItems(
+  args: { sessionId: number; variantIds: number[] },
+  actor: StkActor,
+): Promise<{ ok: true; approvedCount: number; refreshedCount: number; alreadyApprovedCount: number }> {
+  return withTx(async (tx) => {
+    const s = await lockSession(tx, args.sessionId);
+    if (s.status !== "COUNTING" && s.status !== "REVIEW") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الاعتماد المرحلي متاح أثناء العدّ والمراجعة فقط" });
+    }
+    const variantIds = Array.from(new Set(args.variantIds.map(Number)));
+    if (!variantIds.length) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "اختر منتجاً واحداً على الأقل للاعتماد" });
+    }
+
+    // تحميل الحساب داخل المعاملة نفسها؛ القرارات والعدّات والحركات يعاد تقييمها خادمياً.
+    const { rows, directUnderThreshold } = await loadReviewCore(tx, args.sessionId, true);
+    const byId = new Map(rows.map((r) => [r.variantId, r]));
+    const missing = variantIds.filter((id) => !byId.has(id));
+    if (missing.length) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "بعض المنتجات المختارة ليست ضمن جلسة الجرد" });
+    }
+
+    const invalid = variantIds
+      .map((id) => byId.get(id)!)
+      .filter((r) => {
+        if (r.reviewApproved?.isCurrent) return false;
+        if (r.rawCount == null || r.recount?.status === "PENDING" || r.openConflict) return true;
+        if (r.diff == null || r.diff === 0 || r.decision) return false;
+        return r.overThreshold || !directUnderThreshold;
+      });
+    if (invalid.length) {
+      const sample = invalid
+        .slice(0, 3)
+        .map((r) => r.variantName ? `${r.productName} — ${r.variantName}` : r.productName)
+        .join("، ");
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `تعذّر اعتماد ${invalid.length} منتج قبل إكمال المراجعة أو حسم التعارض${sample ? `: ${sample}` : ""}`,
+      });
+    }
+
+    const alreadyApprovedCount = variantIds.filter((id) => byId.get(id)?.reviewApproved?.isCurrent).length;
+    const toApprove = variantIds.map((id) => byId.get(id)!).filter((r) => !r.reviewApproved?.isCurrent);
+    const refreshedCount = toApprove.filter((r) => r.reviewApproved != null).length;
+    if (toApprove.length) {
+      const now = new Date();
+      for (const r of toApprove) {
+        if (r.rawCount == null || r.reviewSnapshotHash == null) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تثبيت نسخة المراجعة لهذا المنتج" });
+        }
+        await tx
+          .update(stocktakeItems)
+          .set({
+            reviewApprovedBy: actor.userId,
+            reviewApprovedAt: now,
+            reviewApprovedOperationId: r.latestCountOperationId,
+            reviewApprovedQty: r.rawCount,
+            reviewApprovedSnapshotHash: r.reviewSnapshotHash,
+          })
+          .where(
+            and(
+              eq(stocktakeItems.sessionId, args.sessionId),
+              eq(stocktakeItems.variantId, r.variantId),
+            ),
+          );
+        await tx.insert(stocktakeItemReviewEvents).values({
+          sessionId: args.sessionId,
+          variantId: r.variantId,
+          action: "APPROVE",
+          snapshotOperationId: r.latestCountOperationId,
+          snapshotQty: r.rawCount,
+          snapshotHash: r.reviewSnapshotHash,
+          actedBy: actor.userId,
+        });
+      }
+    }
+    return {
+      ok: true as const,
+      approvedCount: toApprove.length,
+      refreshedCount,
+      alreadyApprovedCount,
+    };
+  });
+}
+
+/** إلغاء اعتماد مرحلي صراحةً مع سبب، من دون إنشاء طلب إعادة عدّ تلقائياً. */
+export async function reopenStocktakeItemReview(
+  args: { sessionId: number; variantId: number; reason: string },
+  actor: StkActor,
+): Promise<{ ok: true }> {
+  return withTx(async (tx) => {
+    const s = await lockSession(tx, args.sessionId);
+    if (s.status !== "COUNTING" && s.status !== "REVIEW") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إعادة فتح منتج في جلسة معتمدة أو ملغاة" });
+    }
+    const item = await getSessionItem(tx, args.sessionId, args.variantId);
+    if (item.reviewApprovedAt == null) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج غير معتمد مرحلياً" });
+    }
+    const now = new Date();
+    await recordReviewReopen(tx, item, actor, args.reason);
+    await tx
+      .update(stocktakeItems)
+      .set({
+        reviewApprovedBy: null,
+        reviewApprovedAt: null,
+        reviewApprovedOperationId: null,
+        reviewApprovedQty: null,
+        reviewApprovedSnapshotHash: null,
+        reviewReopenedBy: actor.userId,
+        reviewReopenedAt: now,
+        reviewReopenReason: args.reason,
+      })
+      .where(eq(stocktakeItems.id, Number(item.id)));
+    await invalidateFirstSign(tx, args.sessionId, s.firstSignBy);
+    return { ok: true as const };
+  });
+}
+
 /** التوقيع الأول (الاعتماد المزدوج): يُسجَّل فقط حين توجد فروقات ستُسوّى فوق dualThreshold. */
 export async function firstSignStocktake(
   sessionId: number,
@@ -234,6 +407,13 @@ export async function firstSignStocktake(
     // كانت جلسة OPENING كل قيمها تحت dualThreshold تُقفَل نهائياً (finalize يشترط توقيعاً أولاً
     // وهذا الحارس يرفض تسجيله = جمود مثبَت في المراجعة العدائية ١٨/٧).
     const { rows, directUnderThreshold } = await loadReviewCore(tx, sessionId, true);
+    const incomplete = rows.filter((r) => r.rawCount == null || !r.reviewApproved?.isCurrent);
+    if (incomplete.length) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `لا توقيع أول قبل اكتمال العدّ والاعتماد المرحلي لكل المنتجات (${incomplete.length} غير مكتمل)`,
+      });
+    }
     const needed =
       s.sessionType === "OPENING" || rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
     if (!needed) {

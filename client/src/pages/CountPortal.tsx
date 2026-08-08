@@ -246,7 +246,16 @@ export default function CountPortal() {
           }
           // رفض خادمي نهائي (مثلاً أُقفل العدّ) — لا معنى لإبقائها بالطابور.
           removeQueued(code, it.clientRequestId);
-          notify.warn("تعذّرت مزامنة عدّة محفوظة", errMsg(e));
+          const serverCode = (e as { data?: { code?: string } | null }).data?.code;
+          if (serverCode === "PRECONDITION_FAILED") {
+            notify.warn(
+              "استُبعدت عدّة محفوظة لأنها لم تعد صالحة",
+              `${errMsg(e)} — لم تُعَد المحاولة، وجرى تحديث حالة المنتج من الخادم.`,
+            );
+            void utils.count.state.invalidate();
+          } else {
+            notify.warn("تعذّرت مزامنة عدّة محفوظة", errMsg(e));
+          }
         }
       }
     } finally {

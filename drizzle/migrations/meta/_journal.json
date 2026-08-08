@@ -1128,6 +1128,27 @@
       "when": 1787879414000,
       "tag": "0161_digital_sale_review_resolutions",
       "breakpoints": true
+    },
+    {
+      "idx": 162,
+      "version": "5",
+      "when": 1787879415000,
+      "tag": "0162_stocktake_count_operations",
+      "breakpoints": true
+    },
+    {
+      "idx": 163,
+      "version": "5",
+      "when": 1787879416000,
+      "tag": "0163_stocktake_live_review",
+      "breakpoints": true
+    },
+    {
+      "idx": 164,
+      "version": "5",
+      "when": 1787879417000,
+      "tag": "0164_stocktake_review_snapshots",
+      "breakpoints": true
     }
   ]
 }

@@ -330,6 +330,8 @@ const ACTION_AR: Record<string, string> = {
   "stocktake.requestRecount": "طلب إعادة عدّ",
   "stocktake.resolveConflict": "حسم تعارض جرد",
   "stocktake.decide": "قرار جرد (تسوية/إبقاء)",
+  "stocktake.approveItems": "اعتماد مرحلي لمنتجات الجرد",
+  "stocktake.reopenItemReview": "إلغاء اعتماد مرحلي وإعادة فتح منتج الجرد",
   "stocktake.firstSign": "توقيع أول على الجرد",
   "stocktake.approve": "اعتماد الجرد",
   "stocktake.forceReview": "إجبار مراجعة الجرد",

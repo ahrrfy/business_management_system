@@ -10,6 +10,8 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
   approveStocktake,
+  approveStocktakeItems,
+  computeStocktakeReview,
   createStocktakeSession,
   firstSignStocktake,
   forceStocktakeReview,
@@ -23,7 +25,9 @@ const WH = { userId: 4, role: "warehouse" };
 const DAY_MS = 86_400_000;
 
 const TABLES = [
+  "stocktakeItemReviewEvents",
   "stocktakeDecisions",
+  "stocktakeCountOperations",
   "stocktakeCounts",
   "stocktakeItems",
   "stocktakeAssignments",
@@ -126,6 +130,12 @@ async function insertCount(sessionId: number, variantId: number, assignmentId: n
     isConflict: false,
     clientRequestId: randomUUID(),
   });
+}
+
+async function approveAllReadyItems(sessionId: number, actor = MGR) {
+  const review = await computeStocktakeReview(sessionId, { viewerId: actor.userId });
+  const ids = review.rows.filter((r) => r.readyForReviewApproval && !r.reviewApproved?.isCurrent).map((r) => r.variantId);
+  if (ids.length) await approveStocktakeItems({ sessionId, variantIds: ids }, actor);
 }
 
 async function firstAssignmentId(sessionId: number): Promise<number> {
@@ -247,6 +257,7 @@ describe("اعتماد الجلسة الافتتاحية — المسار الذ
     await insertCount(res.sessionId, 2, aid, 0); // عُدّ صفراً — لا صفّ branchStock له أصلاً
     await insertCount(res.sessionId, 3, aid, 7);
     await forceStocktakeReview(res.sessionId, MGR);
+    await approveAllReadyItems(res.sessionId, MGR);
 
     // (الحاصرة المُصلَحة) التوقيع الأول يُقبل رغم أن كل القيم تحت dualThreshold.
     await firstSignStocktake(res.sessionId, MGR);
@@ -286,6 +297,7 @@ describe("اعتماد الجلسة الافتتاحية — المسار الذ
     const aid = await firstAssignmentId(res.sessionId);
     await insertCount(res.sessionId, 4, aid, 0); // يطابق الدفتر (لا صفّ = 0)
     await forceStocktakeReview(res.sessionId, MGR);
+    await approveAllReadyItems(res.sessionId, MGR);
     await expectTrpc(approveStocktake(res.sessionId, MGR2), "PRECONDITION_FAILED", /توقيع أول/);
     // والتوقيع الأول مقبول رغم صفر الفروقات (الاعتماد يختم openedAt — يحتاج أربع عيون).
     await firstSignStocktake(res.sessionId, MGR);
@@ -314,6 +326,7 @@ describe("اعتماد الجلسة الافتتاحية — المسار الذ
     await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: -8 });
 
     await forceStocktakeReview(res.sessionId, MGR);
+    await approveAllReadyItems(res.sessionId, MGR);
     await firstSignStocktake(res.sessionId, MGR);
     const ok = await approveStocktake(res.sessionId, MGR2);
     expect(ok.ok).toBe(true);
@@ -331,6 +344,7 @@ describe("اعتماد الجلسة الافتتاحية — المسار الذ
     const aid = await firstAssignmentId(res.sessionId);
     await insertCount(res.sessionId, 1, aid, 10);
     await forceStocktakeReview(res.sessionId, MGR);
+    await approveAllReadyItems(res.sessionId, MGR);
     await firstSignStocktake(res.sessionId, MGR);
     await expireOpeningWindow();
     await expectTrpc(approveStocktake(res.sessionId, MGR2), "PRECONDITION_FAILED", /مدّد النافذة/);
@@ -343,6 +357,7 @@ describe("فصل المهام في الاعتماد الافتتاحي", () => {
     const aid = await firstAssignmentId(res.sessionId);
     await insertCount(res.sessionId, 1, aid, 15);
     await forceStocktakeReview(res.sessionId, MGR);
+    await approveAllReadyItems(res.sessionId, MGR);
     return res;
   }
 
@@ -359,6 +374,7 @@ describe("فصل المهام في الاعتماد الافتتاحي", () => {
       const aid = await firstAssignmentId(r.sessionId);
       await insertCount(r.sessionId, 2, aid, 3);
       await forceStocktakeReview(r.sessionId, ADMIN);
+      await approveAllReadyItems(r.sessionId, MGR);
       await firstSignStocktake(r.sessionId, MGR);
       return r;
     })();
@@ -396,6 +412,7 @@ describe("انحدار: الجرد الدوري لم يتغيّر سلوكه أ�
     await insertCount(res.sessionId, 1, aid, 48); // عجز 2/50 = 4% × 250 = 500
     await insertCount(res.sessionId, 2, aid, 101); // زيادة 1/100 = 1% × 1500 = 1500
     await forceStocktakeReview(res.sessionId, MGR);
+    await approveAllReadyItems(res.sessionId, MGR);
     const ok = await approveStocktake(res.sessionId, MGR2);
     expect(ok.ok).toBe(true);
     expect(ok.shortExpense).toBe("500.00");

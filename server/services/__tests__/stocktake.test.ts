@@ -16,6 +16,7 @@ import { getDb } from "../../db";
 import { applyMovement } from "../inventoryService";
 import {
   approveStocktake,
+  approveStocktakeItems,
   cancelStocktakeSession,
   computeStocktakeReview,
   createStocktakeSession,
@@ -23,7 +24,9 @@ import {
   firstSignStocktake,
   forceStocktakeReview,
   getStocktakeCountSheets,
+  getStocktakeRemainingItems,
   monitorStocktakeSession,
+  reopenStocktakeItemReview,
   requestStocktakeRecount,
   resolveStocktakeConflict,
   syncActiveFullStocktakeScopes,
@@ -36,7 +39,9 @@ const actor2 = { userId: 2 };
 
 // قائمة truncate: جداول الجرد الخمسة + كل جداول الأساس التي تمسّها الاختبارات.
 const TABLES = [
+  "stocktakeItemReviewEvents",
   "stocktakeDecisions",
+  "stocktakeCountOperations",
   "stocktakeCounts",
   "stocktakeItems",
   "stocktakeAssignments",
@@ -45,6 +50,7 @@ const TABLES = [
   "inventoryMovements",
   "branchStock",
   "productPrices",
+  "productUnitBarcodes",
   "productUnits",
   "productVariants",
   "products",
@@ -100,6 +106,7 @@ async function seedBase() {
     { id: 5, variantId: 4, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
     { id: 6, variantId: 5, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
   ]);
+  await d.insert(s.productUnitBarcodes).values([{ productUnitId: 1, barcode: "BC-PEN-ALT" }]);
 }
 
 async function setStockRow(variantId: number, qty: number, branchId = 1) {
@@ -170,6 +177,14 @@ async function expectTrpc(p: Promise<unknown>, code: string, msg?: RegExp) {
   expect(err).toBeInstanceOf(TRPCError);
   expect((err as TRPCError).code).toBe(code);
   if (msg) expect((err as TRPCError).message).toMatch(msg);
+}
+
+async function approveAllReadyItems(sessionId: number, by = actor) {
+  const review = await computeStocktakeReview(sessionId, { viewerId: by.userId });
+  const ids = review.rows
+    .filter((r) => r.readyForReviewApproval && !r.reviewApproved?.isCurrent)
+    .map((r) => r.variantId);
+  if (ids.length) await approveStocktakeItems({ sessionId, variantIds: ids }, by);
 }
 
 beforeEach(async () => {
@@ -425,6 +440,7 @@ describe("حواجز الاعتماد", () => {
       .set({ recountStatus: "DONE" })
       .where(and(eq(s.stocktakeItems.sessionId, r.sessionId), eq(s.stocktakeItems.variantId, 1)));
     await insertCount(r.sessionId, 1, aid, 98, { kind: "RECOUNT" });
+    await approveAllReadyItems(r.sessionId);
     const ok = await approveStocktake(r.sessionId, actor);
     expect(ok.ok).toBe(true);
     expect(await stockOf(1)).toBe(98); // RECOUNT يحلّ محل FIRST في الحساب
@@ -455,8 +471,10 @@ describe("حواجز الاعتماد", () => {
     const row2 = rv2.rows.find((x) => x.variantId === 1)!;
     expect(row2.rawCount).toBe(95); // resolvedPick=VERIFY يحدّد القيمة الفعّالة
     expect(rv2.barriers.openConflicts).toBe(0);
-    expect(rv2.barriers.canApprove).toBe(true);
+    expect(rv2.barriers.canApprove).toBe(false);
+    await expectTrpc(approveStocktake(r.sessionId, actor), "PRECONDITION_FAILED", /لم يُعتمد مرحلياً/);
 
+    await approveAllReadyItems(r.sessionId);
     const ok = await approveStocktake(r.sessionId, actor); // ‎−5 ⇒ 5% و500 ⇒ ضمن الحد ⇒ تسوية تلقائية
     expect(ok.ok).toBe(true);
     expect(await stockOf(1)).toBe(95);
@@ -473,6 +491,7 @@ describe("حواجز الاعتماد", () => {
       { sessionId: r.sessionId, variantId: 2, action: "ADJUST", reason: "DAMAGE", note: "كرتون تالف" },
       actor
     );
+    await approveAllReadyItems(r.sessionId);
     const ok = await approveStocktake(r.sessionId, actor);
     expect(ok.ok).toBe(true);
     expect(await stockOf(2)).toBe(88);
@@ -484,6 +503,7 @@ describe("حواجز الاعتماد", () => {
     await insertCount(r.sessionId, 4, r.assignments[0].assignmentId, 8); // ‎−2 ⇒ ‎−200,000 > حد 150,000
     await forceStocktakeReview(r.sessionId, actor);
     await decideStocktakeItem({ sessionId: r.sessionId, variantId: 4, action: "ADJUST", reason: "LOSS_THEFT" }, actor);
+    await approveAllReadyItems(r.sessionId);
 
     const rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
     expect(rv.rows.find((x) => x.variantId === 4)!.requiresDualSign).toBe(true);
@@ -502,8 +522,10 @@ describe("حواجز الاعتماد", () => {
     // الموقّع الأول لا يرى canFinalApprove، والمستخدم الآخر يراه.
     const rvMe = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
     expect(rvMe.barriers.canFinalApprove).toBe(false);
+    expect(rvMe.barriers.reviewerFinalSeparationBlocked).toBe(true);
     const rvOther = await computeStocktakeReview(r.sessionId, { viewerId: 2 });
     expect(rvOther.barriers.canFinalApprove).toBe(true);
+    expect(rvOther.barriers.reviewerFinalSeparationBlocked).toBe(false);
 
     // مستخدم مختلف ⇒ نجاح.
     const ok = await approveStocktake(r.sessionId, actor2);
@@ -532,6 +554,7 @@ describe("الاعتماد الذرّي", () => {
     await forceStocktakeReview(r.sessionId, actor);
     await decideStocktakeItem({ sessionId: r.sessionId, variantId: 2, action: "ADJUST", reason: "DAMAGE" }, actor);
     await decideStocktakeItem({ sessionId: r.sessionId, variantId: 3, action: "KEEP", reason: "ENTRY_ERROR" }, actor);
+    await approveAllReadyItems(r.sessionId);
 
     const rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
     expect(rv.barriers.notCounted).toBe(0);
@@ -619,6 +642,7 @@ describe("الاعتماد الذرّي", () => {
     const r = await mkSession({ variantIds: [1] });
     await insertCount(r.sessionId, 1, r.assignments[0].assignmentId, 99); // عجز 1 ضمن الحد ⇒ تسوية تلقائية
     await forceStocktakeReview(r.sessionId, actor);
+    await approveAllReadyItems(r.sessionId);
 
     // قيد دفتري مزروع بنفس dedupeKey ⇒ postEntry داخل approve يصطدم بـER_DUP_ENTRY بعد setStock.
     await db().insert(s.accountingEntries).values({
@@ -657,6 +681,7 @@ describe("الاعتماد الذرّي", () => {
     const r = await mkSession({ variantIds: [1] });
     await insertCount(r.sessionId, 1, r.assignments[0].assignmentId, 50);
     await forceStocktakeReview(r.sessionId, actor);
+    await approveAllReadyItems(r.sessionId);
     await approveStocktake(r.sessionId, actor);
     await expectTrpc(cancelStocktakeSession({ sessionId: r.sessionId }, actor), "BAD_REQUEST", /معتمدة/);
 
@@ -671,6 +696,129 @@ describe("الاعتماد الذرّي", () => {
 });
 
 describe("مخرجات بلا تسريب", () => {
+  it("يحافظ مؤشر التقدم على المعدود ≤ إجمالي النطاق حتى مع صف عدّ تاريخي شاذ", async () => {
+    const r = await mkSession({ variantIds: [1] });
+    const aid = r.assignments[0].assignmentId;
+    await insertCount(r.sessionId, 1, aid, 10);
+    await insertCount(r.sessionId, 2, aid, 5); // صف شاذ خارج stocktakeItems لهذا الاختبار الدفاعي.
+    const monitor = await monitorStocktakeSession(r.sessionId);
+    expect(monitor.progress).toEqual({ total: 1, counted: 1 });
+  });
+
+  it("كشف المتبقي يعرض بيانات التوجيه فقط ويستبعد ما وصل له عدّ", async () => {
+    await setStockRow(1, 100);
+    await setStockRow(2, 50);
+    const r = await mkSession({ variantIds: [1, 2] });
+    const byAlias = await getStocktakeRemainingItems(r.sessionId, { q: "BC-PEN-ALT", limit: 100 });
+    expect(byAlias.items.map((x) => x.variantId)).toEqual([1]);
+    await insertCount(r.sessionId, 1, r.assignments[0].assignmentId, 100);
+
+    const remaining = await getStocktakeRemainingItems(r.sessionId, { q: "دفتر", limit: 100 });
+    expect(remaining.total).toBe(1);
+    expect(remaining.items).toHaveLength(1);
+    expect(remaining.items[0]).toMatchObject({ variantId: 2, productName: "دفتر 100 ورقة", sku: "NB-1" });
+    expect(JSON.stringify(remaining)).not.toMatch(/expectedQty|unitCost|costPrice|bookNow/);
+  });
+
+  it("يعتمد المنتج مرحلياً أثناء COUNTING ويبقي الجلسة والعمال مستمرين", async () => {
+    await setStockRow(1, 100);
+    await setStockRow(2, 50);
+    const r = await mkSession({ variantIds: [1, 2] });
+    const aid = r.assignments[0].assignmentId;
+    await insertCount(r.sessionId, 1, aid, 100);
+
+    const approved = await approveStocktakeItems({ sessionId: r.sessionId, variantIds: [1] }, actor);
+    expect(approved).toMatchObject({ ok: true, approvedCount: 1, alreadyApprovedCount: 0 });
+    const session = (await db().select().from(s.stocktakeSessions).where(eq(s.stocktakeSessions.id, r.sessionId)))[0];
+    expect(session.status).toBe("COUNTING");
+    const item = (
+      await db()
+        .select()
+        .from(s.stocktakeItems)
+        .where(and(eq(s.stocktakeItems.sessionId, r.sessionId), eq(s.stocktakeItems.variantId, 1)))
+    )[0];
+    expect(Number(item.reviewApprovedBy)).toBe(actor.userId);
+    expect(item.reviewApprovedAt).not.toBeNull();
+    expect(item.reviewApprovedQty).toBe(100);
+    expect(item.reviewApprovedSnapshotHash).toMatch(/^[a-f0-9]{64}$/);
+
+    const review = await computeStocktakeReview(r.sessionId, { viewerId: actor.userId });
+    expect(review.barriers.reviewApproved).toBe(1);
+    expect(review.barriers.notCounted).toBe(1);
+    expect(review.rows.find((x) => x.variantId === 1)?.reviewApproved?.byName).toBe("أحمد المدير");
+    expect(review.rows.find((x) => x.variantId === 1)?.reviewApproved?.isCurrent).toBe(true);
+
+    // طلب إعادة عدّ يسقط ختم الاعتماد المرحلي لأن أساس المراجعة سيتغير.
+    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 1, reason: "تأكيد ميداني جديد" }, actor);
+    const reopenedItem = (
+      await db()
+        .select()
+        .from(s.stocktakeItems)
+        .where(and(eq(s.stocktakeItems.sessionId, r.sessionId), eq(s.stocktakeItems.variantId, 1)))
+    )[0];
+    expect(reopenedItem.reviewApprovedAt).toBeNull();
+    const events = await db()
+      .select()
+      .from(s.stocktakeItemReviewEvents)
+      .where(and(eq(s.stocktakeItemReviewEvents.sessionId, r.sessionId), eq(s.stocktakeItemReviewEvents.variantId, 1)));
+    expect(events.map((e) => e.action)).toEqual(["APPROVE", "REOPEN"]);
+  });
+
+  it("لا يغيّر قرار منتج معتمد بصمت، وإعادة الفتح الصريحة تحفظ السبب وتسمح بالمراجعة", async () => {
+    await setStockRow(2, 100);
+    const r = await mkSession({ variantIds: [2] });
+    await insertCount(r.sessionId, 2, r.assignments[0].assignmentId, 88);
+    await decideStocktakeItem(
+      { sessionId: r.sessionId, variantId: 2, action: "KEEP", reason: "ENTRY_ERROR" },
+      actor,
+    );
+    await approveStocktakeItems({ sessionId: r.sessionId, variantIds: [2] }, actor);
+
+    await expectTrpc(
+      decideStocktakeItem(
+        { sessionId: r.sessionId, variantId: 2, action: "ADJUST", reason: "DAMAGE" },
+        actor,
+      ),
+      "PRECONDITION_FAILED",
+      /ألغِ الاعتماد/,
+    );
+
+    await reopenStocktakeItemReview(
+      { sessionId: r.sessionId, variantId: 2, reason: "مستند استلام جديد يحتاج تدقيق القرار" },
+      actor2,
+    );
+    await decideStocktakeItem(
+      { sessionId: r.sessionId, variantId: 2, action: "ADJUST", reason: "DAMAGE" },
+      actor,
+    );
+    const [item] = await db()
+      .select()
+      .from(s.stocktakeItems)
+      .where(and(eq(s.stocktakeItems.sessionId, r.sessionId), eq(s.stocktakeItems.variantId, 2)));
+    expect(item.reviewApprovedAt).toBeNull();
+    expect(item.reviewReopenReason).toBe("مستند استلام جديد يحتاج تدقيق القرار");
+    expect(Number(item.reviewReopenedBy)).toBe(actor2.userId);
+  });
+
+  it("يعامل اعتماد 0163 بلا بصمة كاعتماد قديم ويعيد تثبيته صراحةً", async () => {
+    await setStockRow(1, 10);
+    const r = await mkSession({ variantIds: [1] });
+    await insertCount(r.sessionId, 1, r.assignments[0].assignmentId, 10);
+    await db()
+      .update(s.stocktakeItems)
+      .set({ reviewApprovedBy: actor.userId, reviewApprovedAt: new Date() })
+      .where(and(eq(s.stocktakeItems.sessionId, r.sessionId), eq(s.stocktakeItems.variantId, 1)));
+
+    const stale = await computeStocktakeReview(r.sessionId, { viewerId: actor.userId });
+    expect(stale.barriers.staleReviewApprovals).toBe(1);
+    expect(stale.rows[0].reviewApproved?.isCurrent).toBe(false);
+
+    const refreshed = await approveStocktakeItems({ sessionId: r.sessionId, variantIds: [1] }, actor2);
+    expect(refreshed).toMatchObject({ approvedCount: 1, refreshedCount: 1, alreadyApprovedCount: 0 });
+    const current = await computeStocktakeReview(r.sessionId, { viewerId: actor2.userId });
+    expect(current.rows[0].reviewApproved?.isCurrent).toBe(true);
+  });
+
   it("monitor وcountSheets لا يسرّبان expectedQty/التكلفة (مخرجات تصل دور warehouse)", async () => {
     await setStockRow(1, 100);
     const r = await mkSession({ variantIds: [1] });

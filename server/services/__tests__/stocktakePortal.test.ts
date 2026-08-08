@@ -25,6 +25,7 @@ import {
 } from "../countPortalService";
 import { mergePortalState } from "../../../shared/countPortalMerge";
 import {
+  approveStocktakeItems,
   computeStocktakeReview,
   createStocktakeSession,
   monitorStocktakeSession,
@@ -35,7 +36,9 @@ import {
 const actor = { userId: 1 };
 
 const TABLES = [
+  "stocktakeItemReviewEvents",
   "stocktakeDecisions",
+  "stocktakeCountOperations",
   "stocktakeCounts",
   "stocktakeItems",
   "stocktakeAssignments",
@@ -304,6 +307,7 @@ describe("الجرد الأعمى (state)", () => {
       "isMine",
       "myCount",
       "productName",
+      "reviewApproved",
       "sku",
       "units",
       "variantId",
@@ -390,6 +394,29 @@ describe("تسجيل العدّات (submit)", () => {
     expect(rows[0].qty).toBe(8);
   });
 
+  it("الاعتماد المرحلي يقفل تعديل العدّ حتى تطلب الإدارة إعادة عدّ", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    await submit(idA, 1, 100);
+    await approveStocktakeItems({ sessionId: r.sessionId, variantIds: [1] }, actor);
+
+    const [approvedItem] = await db()
+      .select()
+      .from(s.stocktakeItems)
+      .where(and(eq(s.stocktakeItems.sessionId, r.sessionId), eq(s.stocktakeItems.variantId, 1)));
+    expect(Number(approvedItem.reviewApprovedOperationId)).toBeGreaterThan(0);
+    expect(approvedItem.reviewApprovedQty).toBe(100);
+    expect(approvedItem.reviewApprovedSnapshotHash).toMatch(/^[a-f0-9]{64}$/);
+
+    await expectTrpc(submit(idA, 1, 101), "PRECONDITION_FAILED", /اعتمدت الإدارة/);
+    const state = await getPortalState(idA);
+    expect(state.items.find((i) => i.variantId === 1)?.reviewApproved).toBe(true);
+
+    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 1, reason: "إعادة تحقق ميداني" }, actor);
+    const recount = await submit(idA, 1, 101);
+    expect(recount.kind).toBe("RECOUNT");
+  });
+
   it("idempotency: تكرار نفس clientRequestId ⇒ نجاح بلا أثر والكمية الأولى تبقى", async () => {
     const r = await mkPortalSession();
     const idA = await loginPin(r.code, r.assignments[0].pin!);
@@ -404,6 +431,37 @@ describe("تسجيل العدّات (submit)", () => {
     const rows = await countRowsOf(r.sessionId, 1);
     expect(rows).toHaveLength(1);
     expect(rows[0].qty).toBe(7);
+  });
+
+  it("multi-device replay: an older request cannot overwrite a newer count", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const olderRequestId = randomUUID();
+    const newerRequestId = randomUUID();
+
+    await submit(idA, 1, 5, { rid: olderRequestId });
+    await submit(idA, 1, 8, { rid: newerRequestId });
+
+    // Device A comes back online after device B already submitted the newer
+    // value. Replaying A must return its recorded result without touching the
+    // mutable count projection.
+    const delayedReplay = await submit(idA, 1, 5, { rid: olderRequestId });
+    expect(delayedReplay).toMatchObject({ kind: "FIRST", idempotent: true });
+
+    const rows = await countRowsOf(r.sessionId, 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].qty).toBe(8);
+
+    const operations = await db()
+      .select()
+      .from(s.stocktakeCountOperations)
+      .where(eq(s.stocktakeCountOperations.sessionId, r.sessionId));
+    const orderedOperations = operations.sort((a, b) => Number(a.id) - Number(b.id));
+    expect(orderedOperations.map((operation) => operation.clientRequestId)).toEqual([
+      olderRequestId,
+      newerRequestId,
+    ]);
+    expect(orderedOperations.map((operation) => operation.requestQty)).toEqual([5, 8]);
   });
 
   it("dupPolicy=BLOCK: عدّ صنف زميل مرفوض برسالة واضحة ولا صفّ يُكتب", async () => {

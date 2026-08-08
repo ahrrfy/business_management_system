@@ -43,6 +43,7 @@ import {
   Mail,
   Key,
   Printer,
+  ListChecks,
 } from "lucide-react";
 
 /* ───────── ثوابت العرض ───────── */
@@ -69,6 +70,8 @@ const LOG_LABEL: Record<string, string> = {
   "stocktake.requestRecount": "طلب إعادة عدّ",
   "stocktake.resolveConflict": "الفصل في تعارض عدَّين",
   "stocktake.decide": "قرار فرق (تسوية/إبقاء)",
+  "stocktake.approveItems": "اعتماد مرحلي لمنتجات معدودة",
+  "stocktake.reopenItemReview": "إلغاء اعتماد مرحلي وإعادة فتح المنتج",
   "stocktake.firstSign": "توقيع أول على الفروقات عالية القيمة",
   "stocktake.approve": "اعتماد الجلسة وتنفيذ التسوية",
   "stocktake.forceReview": "إغلاق العدّ يدوياً والانتقال للمراجعة",
@@ -246,13 +249,8 @@ export default function StocktakeMonitor() {
       description: (
         <>
           سيُغلق العدّ الآن وتُعتبر كل التكليفات مُسلَّمة، وتنتقل الجلسة لقيد المراجعة.
-          {counted < total && (
-            <>
-              {" "}
-              التقدم الحالي <b>{nf(counted)} من {nf(total)}</b> — المنتجات غير المعدودة ستبقى بأرصدتها
-              الدفترية (مراجعة جزئية).
-            </>
-          )}
+          {" "}
+          سيقبل النظام الإنهاء فقط بعد اكتمال عدّ كل منتجات النطاق ({nf(counted)} من {nf(total)}).
         </>
       ),
       confirmText: "إنهاء العدّ",
@@ -349,6 +347,11 @@ export default function StocktakeMonitor() {
             <Button variant="outline" size="sm" onClick={() => void copyCountLink()}>
               نسخ رابط العدّ
             </Button>
+            <Link href={`/stocktakes/${sessionId}/remaining`}>
+              <Button variant="outline" size="sm">
+                <ListChecks aria-hidden className="size-4" /> عرض المنتجات المتبقية ({nf(remaining)})
+              </Button>
+            </Link>
             <Link href={`/stocktakes/${sessionId}/sheets`}>
               <Button variant="outline" size="sm">
                 <Printer aria-hidden className="size-4" /> قوائم عدّ ورقية
@@ -359,10 +362,14 @@ export default function StocktakeMonitor() {
                 <Button size="sm">المحضر والتقرير</Button>
               </Link>
             )}
-            {(s.status === "REVIEW" || s.status === "APPROVED") && (
+            {isManager && (s.status === "COUNTING" || s.status === "REVIEW" || s.status === "APPROVED") && (
               <Link href={`/stocktakes/${sessionId}/review`}>
                 <Button size="sm" variant={s.status === "REVIEW" ? "default" : "outline"}>
-                  {s.status === "REVIEW" ? "مراجعة واعتماد" : "شاشة المراجعة"}
+                  {s.status === "COUNTING"
+                    ? "المراجعة الحية والاعتماد المرحلي"
+                    : s.status === "REVIEW"
+                      ? "المراجعة والاعتماد النهائي"
+                      : "شاشة المراجعة"}
                 </Button>
               </Link>
             )}
@@ -374,7 +381,7 @@ export default function StocktakeMonitor() {
                 title={
                   isManager
                     ? counted < total
-                      ? "العدّ لم يكتمل — سينتقل كمراجعة جزئية"
+                      ? "العدّ لم يكتمل — يجب عدّ المنتجات المتبقية أولاً"
                       : ""
                     : "إنهاء العدّ صلاحية مشرف فأعلى"
                 }
@@ -426,7 +433,7 @@ export default function StocktakeMonitor() {
 
       {/* مؤشرات */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="المنتجات المتبقية" value={nf(remaining)} sub="لا تُرفع الجلسة للمراجعة قبل أن تصبح صفراً" tone={remaining === 0 ? "emerald" : "blue"} />
+        <Stat label="المنتجات المتبقية" value={nf(remaining)} sub="يمكن عرضها وطباعتها وتصديرها لتوجيه العمال" tone={remaining === 0 ? "emerald" : "blue"} />
         <Stat label="تقدم العدّ" value={`${nf(counted)} / ${nf(total)}`} sub="منتج معدود" tone="blue" />
         <Stat label="نسبة الإنجاز" value={`${nf(pct)}٪`} />
         <Stat

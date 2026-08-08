@@ -73,6 +73,8 @@ const REASONS: { v: Reason; label: string }[] = [
 ];
 const FILTERS = [
   ["all", "الكل"],
+  ["ready", "جاهز للاعتماد"],
+  ["approved", "معتمد مرحلياً"],
   ["diff", "الفروقات فقط"],
   ["over", "يتجاوز الحدّ"],
   ["conflict", "تعارضات"],
@@ -153,10 +155,13 @@ export default function StocktakeReview() {
   const [visible, setVisible] = useState(PAGE);
   const [recountFor, setRecountFor] = useState<{ variantId: number; label: string } | null>(null);
   const [recountReason, setRecountReason] = useState("");
+  const [reopenFor, setReopenFor] = useState<{ variantId: number; label: string } | null>(null);
+  const [reopenReason, setReopenReason] = useState("");
   const [conflictFor, setConflictFor] = useState<number | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   /** سبب الفرق المختار محلياً لكل منتج (قبل/مع القرار). */
   const [reasonSel, setReasonSel] = useState<Record<number, Reason>>({});
+  const [selectedForApproval, setSelectedForApproval] = useState<Set<number>>(() => new Set());
 
   function setFilter(f: FilterKey) {
     setFilterRaw(f);
@@ -171,10 +176,37 @@ export default function StocktakeReview() {
 
   /* ───── الطفرات ───── */
   const invalidate = async () =>
-    Promise.all([utils.stocktakes.review.invalidate(), utils.stocktakes.monitor.invalidate(), utils.stocktakes.list.invalidate()]);
+    Promise.all([
+      utils.stocktakes.review.invalidate(),
+      utils.stocktakes.monitor.invalidate(),
+      utils.stocktakes.remaining.invalidate(),
+      utils.stocktakes.list.invalidate(),
+    ]);
 
   const decide = trpc.stocktakes.decide.useMutation({
     onSuccess: () => utils.stocktakes.review.invalidate(),
+    onError: (e) => notify.err(e),
+  });
+  const approveItems = trpc.stocktakes.approveItems.useMutation({
+    onSuccess: async (r) => {
+      setSelectedForApproval(new Set());
+      notify.ok(
+        `اعتُمد ${nf(r.approvedCount)} منتج مرحلياً`,
+        r.refreshedCount > 0
+          ? `أُعيد تثبيت بصمة ${nf(r.refreshedCount)} اعتماد قديم. يستمر العدّ، ولا ترحيل قبل اعتماد الجلسة.`
+          : "يستمر العمال في عدّ البقية، وتُرحّل التسوية عند الاعتماد النهائي للجلسة.",
+      );
+      await invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const reopenItemReview = trpc.stocktakes.reopenItemReview.useMutation({
+    onSuccess: async () => {
+      setReopenFor(null);
+      setReopenReason("");
+      notify.ok("أُلغي الاعتماد المرحلي وأُعيد المنتج للمراجعة", "سُجّل السبب داخل أثر التدقيق الذرّي للجرد.");
+      await invalidate();
+    },
     onError: (e) => notify.err(e),
   });
   const resolveConflict = trpc.stocktakes.resolveConflict.useMutation({
@@ -246,6 +278,7 @@ export default function StocktakeReview() {
 
   const { session: s, rows, totals, barriers, ledgerPreview } = review.data;
   const isReview = s.status === "REVIEW";
+  const isOperational = s.status === "COUNTING" || s.status === "REVIEW";
   const isApproved = s.status === "APPROVED";
   const dualItems = rows.filter((r: { requiresDualSign: boolean }) => r.requiresDualSign);
 
@@ -263,6 +296,10 @@ export default function StocktakeReview() {
       if (!hay.includes(qNorm)) return false;
     }
     switch (filter) {
+      case "ready":
+        return r.readyForReviewApproval && !r.reviewApproved?.isCurrent;
+      case "approved":
+        return r.reviewApproved?.isCurrent === true;
       case "diff":
         return r.diff != null && r.diff !== 0;
       case "over":
@@ -278,6 +315,46 @@ export default function StocktakeReview() {
     }
   });
   const shown = filtered.slice(0, visible);
+  const shownReady = shown.filter((r: Row) => r.readyForReviewApproval && !r.reviewApproved?.isCurrent);
+  const selectedReady = rows.filter(
+    (r: Row) => selectedForApproval.has(r.variantId) && r.readyForReviewApproval && !r.reviewApproved?.isCurrent,
+  );
+
+  function toggleApprovalSelection(variantId: number, checked: boolean) {
+    setSelectedForApproval((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(variantId);
+      else next.delete(variantId);
+      return next;
+    });
+  }
+
+  function selectShownReady() {
+    setSelectedForApproval(new Set(shownReady.slice(0, 500).map((r: Row) => r.variantId)));
+  }
+
+  async function approveSelectedItems() {
+    const ids = selectedReady.slice(0, 500).map((r: Row) => r.variantId);
+    if (!ids.length) return;
+    const ok = await confirm({
+      variant: "warning",
+      title: `اعتماد مرحلي لـ${nf(ids.length)} منتج`,
+      description:
+        "سيُقفل عدّ هذه المنتجات إدارياً كي لا يتغير بعد المراجعة، بينما يستمر العمال في عدّ المنتجات المتبقية. لا تُرحّل حركة مخزون أو قيد مالي حتى الاعتماد النهائي للجلسة.",
+      confirmText: "اعتماد المحدد ومتابعة الجرد",
+    });
+    if (ok) approveItems.mutate({ sessionId, variantIds: ids });
+  }
+
+  function submitReopen() {
+    if (!reopenFor) return;
+    const reason = reopenReason.trim();
+    if (reason.length < 3) {
+      notify.warn("اكتب سبب إعادة الفتح (3 أحرف على الأقل)");
+      return;
+    }
+    reopenItemReview.mutate({ sessionId, variantId: reopenFor.variantId, reason });
+  }
 
   /* ───── زر الاعتماد (التدفق المزدوج) ───── */
   let approveLabel: string;
@@ -303,10 +380,16 @@ export default function StocktakeReview() {
       : "الاعتماد متاح لجلسة قيد المراجعة فقط"
     : barriers.openConflicts > 0
       ? `${nf(barriers.openConflicts)} تعارض بين عدَّين يحتاج فصلاً`
+      : barriers.notCounted > 0
+        ? `${nf(barriers.notCounted)} منتج غير معدود يحجب الاعتماد النهائي`
       : barriers.pendingRecounts > 0
         ? `${nf(barriers.pendingRecounts)} منتج بانتظار إعادة العدّ`
-        : barriers.undecidedOverThreshold > 0
+      : barriers.undecidedOverThreshold > 0
           ? `${nf(barriers.undecidedOverThreshold)} فرق يتجاوز الحدّ بلا قرار`
+          : barriers.countedPendingReview > 0
+            ? `${nf(barriers.countedPendingReview)} منتج يحتاج اعتماداً مرحلياً صالحاً`
+          : barriers.reviewerFinalSeparationBlocked
+            ? "راجعتَ فرقاً عالي القيمة مرحلياً — الاعتماد النهائي لمسؤول آخر"
           : approveMode === "wait"
             ? "وقّعتَ أولاً — التوقيع الثاني يلزم أن يكون من مسؤول آخر"
             : "";
@@ -472,8 +555,10 @@ export default function StocktakeReview() {
         <div className="flex items-start gap-2 rounded-lg border border-[var(--sem-info)]/30 bg-[var(--sem-info-bg)] px-4 py-2.5 text-sm text-[var(--sem-info)]">
           <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
           <span>
-            الجلسة ما تزال قيد العدّ — هذه معاينة حية. الاعتماد يتاح بعد تسليم العدّ أو إغلاقه من{" "}
-            <Link href={`/stocktakes/${sessionId}`} className="font-bold underline">شاشة المتابعة</Link>.
+            <span className="font-bold">المراجعة الحية فعّالة:</span> يمكنك فحص المنتجات المعدودة واتخاذ القرار
+            واعتمادها مرحلياً الآن، بينما يستمر العمال في عدّ البقية. تنفيذ التسويات والإقفال المالي يبقيان عند
+            الاعتماد النهائي بعد اكتمال العدّ. {" "}
+            <Link href={`/stocktakes/${sessionId}/remaining`} className="font-bold underline">عرض المنتجات المتبقية ←</Link>
           </span>
         </div>
       )}
@@ -492,7 +577,7 @@ export default function StocktakeReview() {
           <Link href={`/stocktakes/${sessionId}/report`} className="font-bold underline">المحضر والتقرير ←</Link>
         </div>
       )}
-      {isReview &&
+      {isOperational &&
         (barriers.openConflicts > 0 || barriers.pendingRecounts > 0 || barriers.undecidedOverThreshold > 0) && (
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
             <span className="font-bold">قبل الاعتماد:</span>
@@ -540,15 +625,16 @@ export default function StocktakeReview() {
         </div>
       )}
       {barriers.notCounted > 0 && !isApproved && (
-        <div className="flex items-start gap-2 rounded-lg border bg-muted/50 px-4 py-2.5 text-sm text-muted-foreground">
-          <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
-          <span>مراجعة جزئية: {nf(barriers.notCounted)} منتج لم يُعَدّ — سيبقى رصيده الدفتري دون تسوية.</span>
+        <div className="flex items-start gap-2 rounded-lg border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-4 py-2.5 text-sm text-[var(--sem-neg)]">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>{nf(barriers.notCounted)} منتج لم يُعَدّ — الاعتماد النهائي محجوب حتى يكتمل نطاق الجرد.</span>
         </div>
       )}
 
       {/* مؤشرات الملخّص */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-7">
         <Stat label="منتجات معدودة" value={`${nf(totals.counted)} / ${nf(totals.total)}`} />
+        <Stat label="معتمدة مرحلياً" value={nf(barriers.reviewApproved)} sub={`بانتظار المراجعة ${nf(barriers.countedPendingReview)}`} tone="emerald" />
         <Stat label="مطابقة تماماً" value={nf(totals.matched)} tone="emerald" />
         <Stat label="زيادة" value={nf(totals.over)} sub={`+${money(totals.overValue)}`} tone="blue" />
         <Stat label="نقص (عجز)" value={nf(totals.short)} sub={money(totals.shortValue)} tone="rose" />
@@ -566,14 +652,24 @@ export default function StocktakeReview() {
           <CardTitle className="text-sm">حواجز الاعتماد — يجب أن تخضرّ كلها قبل التنفيذ</CardTitle>
         </CardHeader>
         <div className="grid gap-x-6 gap-y-2 p-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
-          <p className={`inline-flex items-center gap-1.5 ${barriers.notCounted === 0 ? "text-emerald-700" : "text-amber-700"}`}>
+          <p className={`inline-flex items-center gap-1.5 ${barriers.notCounted === 0 ? "text-[var(--sem-pos)]" : "text-[var(--sem-neg)]"}`}>
             {barriers.notCounted === 0 ? (
               <>
                 <Check aria-hidden className="size-3.5" /> كل منتجات النطاق معدودة
               </>
             ) : (
               <>
-                <AlertTriangle aria-hidden className="size-3.5" /> {nf(barriers.notCounted)} منتج غير معدود (لا يحجب — يبقى دفترياً)
+                <X aria-hidden className="size-3.5" /> {nf(barriers.notCounted)} منتج غير معدود — يحجب الاعتماد
+              </>
+            )}
+          </p>
+          <p className={`inline-flex items-center gap-1.5 ${barriers.countedPendingReview === 0 ? "text-[var(--sem-pos)]" : "text-[var(--sem-neg)]"}`}>
+            {barriers.countedPendingReview === 0 ? (
+              <><Check aria-hidden className="size-3.5" /> كل المنتجات المعدودة معتمدة ببصمة صالحة</>
+            ) : (
+              <>
+                <X aria-hidden className="size-3.5" /> {nf(barriers.countedPendingReview)} منتج يحتاج اعتماداً مرحلياً
+                {barriers.staleReviewApprovals > 0 ? ` (${nf(barriers.staleReviewApprovals)} اعتماد قديم)` : ""}
               </>
             )}
           </p>
@@ -647,6 +743,26 @@ export default function StocktakeReview() {
               </button>
             ))}
           </div>
+          {isOperational && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={shownReady.length === 0 || approveItems.isPending}
+                onClick={selectShownReady}
+              >
+                تحديد الجاهز المعروض ({nf(Math.min(shownReady.length, 500))})
+              </Button>
+              <Button
+                size="sm"
+                className="bg-[var(--stock-ok)] text-white hover:opacity-90"
+                disabled={selectedReady.length === 0 || approveItems.isPending}
+                onClick={() => void approveSelectedItems()}
+              >
+                {approveItems.isPending ? "جارٍ الاعتماد…" : `اعتماد المحدد مرحلياً (${nf(selectedReady.length)})`}
+              </Button>
+            </div>
+          )}
           <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold">
             <Switch checked={autoAdjust} onCheckedChange={setAutoAdjust} />
             التصحيح الآلي للحركات اللاحقة للعدّ
@@ -672,6 +788,7 @@ export default function StocktakeReview() {
           <table className="w-full min-w-[1100px] text-sm">
             <thead className="bg-muted/60">
               <tr className="text-end text-xs text-muted-foreground">
+                <th className="w-10 p-2.5 text-center font-semibold">تحديد</th>
                 <th className="p-2.5 font-semibold">المنتج</th>
                 <th className="p-2.5 font-semibold">عدّه</th>
                 <th className="p-2.5 text-center font-semibold" title="لقطة الرصيد الدفتري لحظة إنشاء الجلسة">الدفتري المتوقع</th>
@@ -709,6 +826,21 @@ export default function StocktakeReview() {
                           : ""
                     }`}
                   >
+                    <td className="p-2.5 text-center">
+                      {r.reviewApproved?.isCurrent ? (
+                        <CheckCheck aria-label="معتمد مرحلياً" className="mx-auto size-4 text-[var(--stock-ok)]" />
+                      ) : r.readyForReviewApproval && isOperational ? (
+                        <input
+                          type="checkbox"
+                          checked={selectedForApproval.has(r.variantId)}
+                          onChange={(e) => toggleApprovalSelection(r.variantId, e.target.checked)}
+                          className="size-4 accent-[var(--stock-ok)]"
+                          aria-label={`تحديد ${r.productName} للاعتماد المرحلي`}
+                        />
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
                     {/* المنتج */}
                     <td className="p-2.5">
                       <p className="font-bold">
@@ -866,6 +998,32 @@ export default function StocktakeReview() {
                         ) : (
                           <Pill tone="green">ضمن الحدّ</Pill>
                         )}
+                        {r.reviewApproved?.isCurrent ? (
+                          <Pill tone="emerald" title={`اعتمده ${r.reviewApproved.byName} · ${dt(r.reviewApproved.at)} · الكمية المثبّتة ${nf(r.reviewApproved.snapshotQty)}`}>
+                            <CheckCheck aria-hidden className="size-3" /> معتمد ببصمة مثبتة
+                          </Pill>
+                        ) : r.reviewApproved ? (
+                          <Pill tone="amber" title="اعتماد سابق بلا بصمة مطابقة — حدده ثم أعد تثبيت الاعتماد">
+                            <AlertTriangle aria-hidden className="size-3" /> يحتاج إعادة تثبيت
+                          </Pill>
+                        ) : null}
+                        {r.reviewApproved && isOperational && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-2 text-[11px] text-[var(--sem-neg)]"
+                            onClick={() => {
+                              setReopenFor({
+                                variantId: r.variantId,
+                                label: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
+                              });
+                              setReopenReason("");
+                            }}
+                          >
+                            إلغاء الاعتماد
+                          </Button>
+                        )}
                         {r.requiresDualSign && (
                           <Pill tone="violet" title={`قيمة الفرق تتجاوز حدّ التوقيعين ${money(s.dualThreshold)}`}>
                             <Pen aria-hidden className="size-3" /> توقيعان
@@ -890,7 +1048,7 @@ export default function StocktakeReview() {
                           size="sm"
                           variant="outline"
                           className="text-rose-700"
-                          disabled={!isReview}
+                          disabled={!isOperational || !!r.reviewApproved}
                           onClick={() => setConflictFor(r.variantId)}
                         >
                           <Scale aria-hidden className="size-4" /> الفصل في التعارض
@@ -911,7 +1069,7 @@ export default function StocktakeReview() {
                                   ? "تلقائي (ضمن الحدّ)"
                                   : `بقرار ${r.decision.decidedByName}`}
                               </p>
-                              {isReview && (
+                              {isOperational && !r.reviewApproved && (
                                 <div className="flex gap-1">
                                   <Button
                                     size="sm"
@@ -931,7 +1089,7 @@ export default function StocktakeReview() {
                               <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
                                 تسوية تلقائية <Check aria-hidden className="size-3" />
                               </span>
-                              {isReview && (
+                              {isOperational && !r.reviewApproved && (
                                 <div className="flex flex-wrap justify-center gap-1">
                                   <Button
                                     size="sm"
@@ -955,7 +1113,7 @@ export default function StocktakeReview() {
                                 </div>
                               )}
                             </>
-                          ) : isReview ? (
+                          ) : isOperational && !r.reviewApproved ? (
                             <div className="flex flex-wrap justify-center gap-1">
                               <Button
                                 size="sm"
@@ -991,7 +1149,7 @@ export default function StocktakeReview() {
                           {/* سبب الفرق — يغذي تقرير الانكماش والقيد المحاسبي */}
                           <select
                             value={reason}
-                            disabled={!isReview || decide.isPending}
+                            disabled={!isOperational || !!r.reviewApproved || decide.isPending}
                             onChange={(e) => onReasonChange(r, e.target.value as Reason)}
                             title="سبب الفرق — يُسجَّل في تقرير الانكماش"
                             className={`mt-1 h-7 w-full max-w-[150px] cursor-pointer rounded-md border bg-card px-1.5 text-[11px] ${
@@ -1012,7 +1170,7 @@ export default function StocktakeReview() {
               })}
               {shown.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="p-8 text-center text-sm text-muted-foreground">
+                  <td colSpan={12} className="p-8 text-center text-sm text-muted-foreground">
                     لا منتجات مطابقة لهذا الفلتر.
                   </td>
                 </tr>
@@ -1064,14 +1222,14 @@ export default function StocktakeReview() {
               <div className="grid grid-cols-2 gap-2">
                 <Button
                   variant="outline"
-                  disabled={resolveConflict.isPending || !isReview}
+                  disabled={resolveConflict.isPending || !isOperational || !!conflictRow.reviewApproved}
                   onClick={() => resolveConflict.mutate({ sessionId, variantId: conflictRow.variantId, pick: "FIRST" })}
                 >
                   اعتماد عدّ {conflictRow.conflict.by1}
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={resolveConflict.isPending || !isReview}
+                  disabled={resolveConflict.isPending || !isOperational || !!conflictRow.reviewApproved}
                   onClick={() => resolveConflict.mutate({ sessionId, variantId: conflictRow.variantId, pick: "VERIFY" })}
                 >
                   اعتماد عدّ {conflictRow.conflict.by2}
@@ -1080,7 +1238,7 @@ export default function StocktakeReview() {
               <Button
                 variant="ghost"
                 className="w-full text-violet-700"
-                disabled={!isReview}
+                disabled={!isOperational || !!conflictRow.reviewApproved}
                 onClick={() => {
                   const r = conflictRow;
                   setConflictFor(null);
@@ -1093,6 +1251,34 @@ export default function StocktakeReview() {
           )}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setConflictFor(null)}>إغلاق</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* حوار إلغاء الاعتماد المرحلي — لا تعديل صامت لصف سبق توقيعه */}
+      <Dialog open={reopenFor != null} onOpenChange={(o) => { if (!o) setReopenFor(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>إلغاء الاعتماد المرحلي وإعادة الفتح</DialogTitle>
+            <DialogDescription>
+              سيعود المنتج <b className="text-foreground">{reopenFor?.label}</b> إلى قائمة المراجعة ويمكن بعدها تغيير
+              القرار. لن يُنشأ طلب إعادة عدّ تلقائياً؛ استخدم «إعادة عدّ» إذا كانت الكمية نفسها موضع شك.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label>سبب إعادة الفتح (إلزامي — محفوظ داخل معاملة الجرد)</Label>
+            <Textarea
+              rows={2}
+              value={reopenReason}
+              onChange={(e) => setReopenReason(e.target.value)}
+              placeholder="مثال: اكتشاف مستند استلام يحتاج إعادة فحص القرار"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setReopenFor(null)}>إلغاء</Button>
+            <Button variant="destructive" onClick={submitReopen} disabled={reopenItemReview.isPending}>
+              {reopenItemReview.isPending ? "جارٍ إعادة الفتح…" : "إلغاء الاعتماد وإعادة الفتح"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
