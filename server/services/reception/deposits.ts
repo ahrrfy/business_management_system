@@ -255,7 +255,7 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
 export async function refundDeposit(
   input: RefundDepositInput,
   actor: Actor & { role?: string },
-  opts: { refundShiftId?: number | null } = {},
+  opts: { refundShiftId?: number | null; authorizedByManager?: boolean } = {},
 ) {
   return withTx(async (tx) => {
     const existingId = await findIdempotentRefId(tx, "reception.refundDeposit", input.clientRequestId);
@@ -321,6 +321,26 @@ export async function refundDeposit(
     // لا يتحرّك ⇒ فرقُ مطابقةٍ شبحيّ دائم. الردّ نقداً من الدرج (بفحص كفايته) والأصل موسوم.
     const collectedMethod = (payment.method ?? "CASH") as DepositMethod;
     const method: DepositMethod = collectedMethod === "TELECOM" ? "CASH" : collectedMethod;
+
+    // قرار المالك (ب، ٨/٨) — سلطة ردّ العربون بحسب الطريقة والوردية:
+    //  • بطاقة/تحويل/محفظة (غير النقد): ردٌّ ذاتيّ **أي وقت** — عكسٌ بأثرٍ بنكيّ واضح، لا نقد يُجيَّب.
+    //  • نقد (ويشمل زين المردود نقداً): ذاتيّ فقط ضمن **وردية القبض نفسها وهي مفتوحة** (المال ما زال
+    //    في درج القابض). عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض (المال عاد للخزينة بالعهدة الوسيطة)
+    //    ⇒ اعتماد مدير — سطح الاحتيال النقديّ العابر للورديات أعلى. (admin/manager يمرّان ذاتياً.)
+    if (method === "CASH" && !elevated && opts.authorizedByManager !== true) {
+      const collShiftId = payment.shiftId != null ? Number(payment.shiftId) : null;
+      const collShift = collShiftId != null
+        ? (await tx.select({ status: shifts.status, userId: shifts.userId }).from(shifts).where(eq(shifts.id, collShiftId)).limit(1))[0]
+        : undefined;
+      const sameOpenShift = collShift != null && collShift.status === "OPEN" && Number(collShift.userId) === actor.userId;
+      if (!sameOpenShift) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: `ردّ عربونٍ نقديّ عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض (#${collShiftId ?? "?"}) يتطلّب اعتماد مدير — المال عاد إلى الخزينة عند الإغلاق. (ردّ عربون البطاقة ذاتيٌّ في أيّ وقت.)`,
+        });
+      }
+    }
+
     let shiftId: number | null;
     if (method === "CASH") {
       const resolved = await resolveBranchCashShiftTx(tx, Number(draft.branchId), opts.refundShiftId ?? null);

@@ -12,8 +12,8 @@
 // (المندوب لا يرى/يؤكّد إلا طلباته). لا نستعمل عزل الفرع — المندوب عابرٌ لفروع طلباته.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { customers, deliveryParties, invoiceItems, invoices, onlineOrders } from "../../../drizzle/schema";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { customers, deliveryConsignments, deliveryParties, invoiceItems, invoices, onlineOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { adjustCustomerBalance, adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
@@ -36,7 +36,10 @@ export async function resolveCourierPartyId(userId: number): Promise<number | nu
 }
 
 export interface MyDeliveryRow {
+  /** المعرّف الطبيعيّ للصفّ: onlineOrders.id للطلب، deliveryConsignments.id للإرسالية. */
   id: number;
+  /** مصدر الصفّ — يحدّد أيّ mutation يستدعيها التأكيد (طلب متجر vs إرسالية استقبال). */
+  kind: "online" | "consignment";
   orderNumber: string;
   status: string;
   customerName: string | null;
@@ -44,7 +47,7 @@ export interface MyDeliveryRow {
   governorate: string | null;
   address: string | null;
   orderTotal: string;
-  /** المبلغ المتبقّي تحصيله من الفاتورة (صافي − مسدَّد) — ما يجب أن يقبضه المندوب. */
+  /** المبلغ المتبقّي تحصيله (صافي الفاتورة − مسدَّد للمتجر، أو codAmount − collectedAmount للإرسالية). */
   codDue: string;
   createdAt: Date;
 }
@@ -102,6 +105,7 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
     const due = Decimal.max(net.minus(money(r.invPaid ?? "0")), 0);
     const row: MyDeliveryRow = {
       id: Number(r.id),
+      kind: "online",
       orderNumber: r.orderNumber,
       status: r.status,
       customerName: r.customerName ?? null,
@@ -114,6 +118,62 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
     };
     (r.status === "DELIVERED" ? delivered : toDeliver).push(row);
   }
+
+  // إرساليات الاستقبال (deliveryConsignments) المُسنَدة لهذه الجهة والتي لم تُورَّد بعد
+  // (remittanceId IS NULL). العهدة تُرفَع عند الإرسال والتسوية عند التوريد؛ هنا المندوب يرى ما
+  // يحمله ويختم «سلّمتُ» (courierDeliveredAt) كإفصاحٍ تشغيليّ بحت — لا يمسّ أيّ مالٍ (§٥). نقصر
+  // على DISPATCHED/PARTIAL (نفس حارس التأكيد): إرساليةٌ مُرجَعة/مشطوبة/مدفوعةٌ كاملاً غير قابلة
+  // للختم فلا تُعرَض بزرٍّ ميّت. codDue = codAmount − collectedAmount (نموذج العهدة، لا الفاتورة).
+  const cnRows = await db
+    .select({
+      id: deliveryConsignments.id,
+      consignmentNumber: deliveryConsignments.consignmentNumber,
+      status: deliveryConsignments.status,
+      codAmount: deliveryConsignments.codAmount,
+      collectedAmount: deliveryConsignments.collectedAmount,
+      courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
+      createdAt: deliveryConsignments.createdAt,
+      recipientName: deliveryConsignments.recipientName,
+      recipientPhone: deliveryConsignments.recipientPhone,
+      deliveryAddress: deliveryConsignments.deliveryAddress,
+      invTotal: invoices.total,
+      custName: customers.name,
+      custPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+    })
+    .from(deliveryConsignments)
+    .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
+    .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
+    .where(and(
+      eq(deliveryConsignments.partyId, partyId),
+      isNull(deliveryConsignments.remittanceId),
+      inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]),
+    ))
+    .orderBy(desc(deliveryConsignments.id))
+    .limit(120);
+
+  for (const r of cnRows) {
+    const due = Decimal.max(money(r.codAmount).minus(money(r.collectedAmount ?? "0")), 0);
+    const row: MyDeliveryRow = {
+      id: Number(r.id),
+      kind: "consignment",
+      orderNumber: r.consignmentNumber,
+      status: r.status,
+      customerName: r.recipientName ?? r.custName ?? null,
+      customerPhone: r.recipientPhone ?? r.custPhone ?? null,
+      governorate: null,
+      address: r.deliveryAddress ?? null,
+      orderTotal: String(r.invTotal ?? toDbMoney(due)),
+      codDue: toDbMoney(due),
+      createdAt: r.createdAt,
+    };
+    (r.courierDeliveredAt ? delivered : toDeliver).push(row);
+  }
+
+  // دمج المصدرين بترتيب زمنيّ نازل (الأحدث أولاً) — كلا القائمتين مبنيّتان أصلاً بترتيب المعرّف
+  // النازل لكلٍّ على حدة، والفرز الموحّد يمنع تكتّل مصدرٍ فوق الآخر.
+  const byRecent = (a: MyDeliveryRow, b: MyDeliveryRow) => b.createdAt.getTime() - a.createdAt.getTime();
+  toDeliver.sort(byRecent);
+  delivered.sort(byRecent);
   return {
     linked: true,
     partyName: party.name,
@@ -219,6 +279,67 @@ export async function confirmCourierDelivery(
       collected: toDbMoney(collected),
       custodyAfter: toDbMoney(custodyAfter),
       alreadyDelivered: wasDelivered && collected.isZero(),
+    };
+  });
+}
+
+export interface ConfirmConsignmentResult {
+  consignmentId: number;
+  consignmentNumber: string;
+  deliveredAt: Date;
+  alreadyDelivered?: boolean;
+}
+
+/**
+ * تأكيد المندوب تسليمَ إرسالية استقبال (شاشة «توصيلاتي») — **ختمٌ تشغيليّ بحت** لا أثر ماليّ له.
+ *
+ * على النقيض من طلب المتجر (confirmCourierDelivery يُحصّل COD ويرفع العهدة)، إرسالية الاستقبال
+ * رُفعت عهدتها **عند الإرسال** (dispatch) وتُسوَّى الفاتورة **عند توريد المندوب** (recordDeliveryRemittance
+ * بيد الموظّف). فلو مسّ هذا التأكيدُ المالَ لَحُسِب مرّتين. لذا يضبط `courierDeliveredAt` **وحده**
+ * (المندوب يقول: سلّمتُ) ولا يمسّ status/collectedAmount/remittanceId/settledAt/deliveryFee، ولا
+ * يستدعي adjustDeliveryBalance/adjustCustomerBalance/postEntry، ولا يحدّث invoices — مسار التوريد
+ * يبقى كما هو تماماً (§٥). idempotent: ختمٌ مسبق يُعاد كما هو بلا خطأ.
+ */
+export async function confirmConsignmentDelivery(
+  input: { consignmentId: number },
+  actor: { userId: number },
+): Promise<ConfirmConsignmentResult> {
+  const partyId = await resolveCourierPartyId(actor.userId);
+  if (partyId == null) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "حسابك غير مرتبط بمندوب توصيل — راجع المدير" });
+  }
+  return withTx(async (tx) => {
+    const cn = (
+      await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, input.consignmentId)).for("update").limit(1)
+    )[0];
+    if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+    // IDOR: المندوب لا يختم إلا إرساليّاته المُسنَدة إليه.
+    if (Number(cn.partyId) !== partyId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "هذه الإرسالية ليست ضمن توصيلاتك" });
+    }
+    // idempotent: مختومة سابقاً ⇒ تُعاد كما هي بلا خطأ ولا تغيير (نقرة مزدوجة/إعادة محاولة).
+    if (cn.courierDeliveredAt != null) {
+      return {
+        consignmentId: Number(cn.id),
+        consignmentNumber: cn.consignmentNumber,
+        deliveredAt: cn.courierDeliveredAt,
+        alreadyDelivered: true,
+      };
+    }
+    // قابلة للختم ما دامت قيد التوصيل ولم تُورَّد — المال يُسوَّى عند التوريد لا هنا.
+    if ((cn.status !== "DISPATCHED" && cn.status !== "PARTIAL") || cn.remittanceId != null) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "غير قابلة للتأكيد" });
+    }
+    const deliveredAt = new Date();
+    // ⛔ لا شيء غير هذا العمود — راجع توثيق الدالة أعلاه (المال يُسوَّى عند توريد المندوب).
+    await tx
+      .update(deliveryConsignments)
+      .set({ courierDeliveredAt: deliveredAt })
+      .where(eq(deliveryConsignments.id, Number(cn.id)));
+    return {
+      consignmentId: Number(cn.id),
+      consignmentNumber: cn.consignmentNumber,
+      deliveredAt,
     };
   });
 }

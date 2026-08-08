@@ -459,6 +459,19 @@ export default function Reception() {
   const heldDeliveryD = round2(cart.reduce((s, c) => s.plus(D(lineCounterHeldFee(c))), D(0)).plus(orderFeeHeldD));
   const heldDelivery = heldDeliveryD.toNumber();
   const cashDueNow = round2(grandTotalD.plus(heldDeliveryD)).toNumber();
+  // ٨/٨ — شفافية أجرة التوصيل في الشريط السفليّ لكلّ المسارات: من «توصيل هذا الطلب» إن وُجِد،
+  // وإلّا من كتل التخصيص التي فُعِّل فيها التوصيل (COURIER/SHOP كانت تختفي كلياً على مسار التخصيص).
+  // COUNTER يُعرَض عبر heldDelivery أعلاه (لا يُكرَّر هنا). الأجرة عرضٌ فقط — لا تدخل إيراداً أبداً.
+  const customDeliveryLinesD = cart.filter((c) => isCustomKind(c) && c.custom?.hasDelivery && D(c.custom.deliveryCost || 0).gt(0));
+  const deliveryDisclosure = orderDelivery
+    ? { fee: round2(D(orderDelivery.fee || 0)).toNumber(), feeCollection: orderDelivery.feeCollection, partyName: orderDelivery.partyName }
+    : customDeliveryLinesD.length > 0
+      ? {
+          fee: round2(customDeliveryLinesD.reduce((s, c) => s.plus(D(c.custom!.deliveryCost || 0)), D(0))).toNumber(),
+          feeCollection: customDeliveryLinesD[0].custom!.deliveryFeeCollection,
+          partyName: "التوصيل",
+        }
+      : null;
 
   // ش٠ (٥/٨، V1) — تقريب نقدي IQD لأقرب ٢٥٠ (نمط POS حرفياً): للبيع المباشر **الخالص** النقديّ
   // فقط (لا تخصيص ولا خدمات طباعة — السلة المختلطة بلا تقريبٍ حتى ش٦)، وأونلاين فقط: مسار
@@ -1100,7 +1113,7 @@ export default function Reception() {
     }
   }
 
-  async function handleSubmit(opts: { quickFullPay: boolean }) {
+  async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean }) {
     if (cart.length === 0) return;
     if (!shift) {
       notify.err("ابدأ الوردية أولاً قبل إتمام طلب العميل");
@@ -1121,6 +1134,44 @@ export default function Reception() {
     const regularLines = directLines.filter((c) => !c.row.isPrintService);
     const printLines = directLines.filter((c) => c.row.isPrintService);
     const customItems = cart.filter(isCustomKind);
+
+    // ٨/٨ (طلب المالك: التوصيل «غير موجود» لأمر شغلٍ خالص) — «توصيل هذا الطلب» كان يُبنى إسناداً
+    // على الفاتورة الحاملة (dispatchInvoice)، وأمرُ الشغل الخالص بلا فاتورةٍ عند التثبيت ⇒ الخادم
+    // يرفض والتوصيل يسقط بتحذيرٍ يُبتلَع. الحلّ: نوجّه التوصيل إلى **حقول أمر الشغل نفسه** —
+    // فيحمله الأمر (hasDelivery + عنوان + هاتف + أجرة + مَن يقبض)، ويُطبَع، ويظهر في الطابور،
+    // ويُسنَد للمندوب من طابور الطلبات عند الجاهزية (delivery.dispatch يشترط hasDelivery=true).
+    const hasCarrierInvoice = regularLines.length > 0 || printLines.length > 0;
+    const routeDeliveryToWO = orderDelivery != null && !hasCarrierInvoice;
+    // القبض الآن (COUNTER) على أمر شغلٍ **محفوظٍ** (مسوّدة) غير مدعومٍ خادمياً (collectNow لا
+    // يغطّيه بنيوياً — reception/commit.ts) ⇒ نمنعه برسالةٍ واضحة بدل خطأ خادميّ غامض.
+    if (routeDeliveryToWO && activeDraft && orderDelivery?.feeCollection === "COUNTER") {
+      notify.err(
+        "قبض أجرة التوصيل الآن غير متاح لطلبٍ محفوظ",
+        "اجعل المندوب يقبضها من الزبون، أو المكتبة تتحمّلها — أو أتمّ الطلب مباشرةً (بلا حفظ المسوّدة) لقبضها الآن.",
+      );
+      return;
+    }
+    // توصيلٌ فعّالٌ لكلّ أمر: من «توصيل هذا الطلب» إن وُجِّه للأوامر (طلب خالص)، وإلّا من كتلة
+    // التخصيص. الأجرة على **أوّل أمرٍ فقط** عند التوجيه (طلبٌ واحدٌ = توصيلٌ واحد) كيلا تتضاعف
+    // الأمانة/المصروف عبر عدّة أوامر. تُستعمل في حمولة الحفظ وفي طباعة التذكرة معاً (مصدرٌ واحد).
+    const effectiveWoDelivery = (custom: CustomizationData, idx: number) =>
+      routeDeliveryToWO && orderDelivery
+        ? {
+            has: true,
+            address: orderDelivery.address || custom.deliveryAddress || null,
+            phone: orderDelivery.recipientPhone || custom.deliveryPhone || null,
+            cost: idx === 0 ? round2(D(orderDelivery.fee || 0)).toFixed(2) : "0.00",
+            feeColl: orderDelivery.feeCollection,
+            partyName: orderDelivery.partyName as string | null,
+          }
+        : {
+            has: custom.hasDelivery,
+            address: custom.deliveryAddress || null,
+            phone: custom.hasDelivery ? custom.deliveryPhone || null : null,
+            cost: custom.hasDelivery ? round2(D(custom.deliveryCost || 0)).toFixed(2) : "0.00",
+            feeColl: (custom.hasDelivery ? custom.deliveryFeeCollection : "COURIER") as "COURIER" | "COUNTER" | "SHOP",
+            partyName: null as string | null,
+          };
 
     // سعر كل أمر فقط؛ العربون لم يعد حقلاً على السطر، بل يوزّعه الخادم من دفعة الطلب الكلية.
     const customWithDeposits = customItems.map((c) => {
@@ -1233,10 +1284,11 @@ export default function Reception() {
         printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))
           .plus(mixedRoundApplied && mixedCarrier === "PRINT" ? mixedDeltaAppliedD : D(0)),
       ).toFixed(2);
-      const workOrderPayloads = customWithDeposits.map((x) => {
+      const workOrderPayloads = customWithDeposits.map((x, woIndex) => {
         const c = x.c;
         const custom = c.custom!;
         const finalText = composeCustomizationText(custom);
+        const eff = effectiveWoDelivery(custom, woIndex);
         // إصلاح P1 (٢٣/٦/٢٦): المنتجات المخصّصة ذات المخزون كانت تَخرج بلا materials ⇒ المخزون
         // لا يَنخفض و COGS صفر، وعند التسليم الفاتورة تُنشَأ بسطر للمنتج الأساس بدون خصم سابق
         // ⇒ بيعٌ بلا تكلفة، أرباح مُبالَغة، رصيدٌ مُبالَغ في المخزون.
@@ -1255,7 +1307,7 @@ export default function Reception() {
           quantity: c.qty,
           materials,
           laborCost: D(custom.laborCost || 0).toFixed(2),
-          // ملاحظة: salePrice الآن يَضمّ التوصيل (إصلاح P1 — حتى يَتطابق مع deliverWorkOrder).
+          // ٥/٨ — salePrice = بضاعة/خدمة فقط؛ أجرة التوصيل في عمودها المستقلّ (تمريرٌ لا إيراد).
           salePrice: x.salePriceStr,
           dueDate: custom.dueDate || null,
           priority: custom.priority,
@@ -1266,15 +1318,16 @@ export default function Reception() {
           paymentReceiptUrl: custom.paymentReceiptImages[0]?.dataUrl || null,
           receptionChannel: channel,
           channelHandle: channelHandle || null,
-          hasDelivery: custom.hasDelivery,
-          deliveryAddress: custom.deliveryAddress || null,
+          // ٨/٨ — التوصيل الفعّال (من «توصيل هذا الطلب» المُوجَّه للأمر، أو من كتلة التخصيص).
+          hasDelivery: eff.has,
+          deliveryAddress: eff.address,
           // ٥/٨ — الأجرة في عمودها وحدها: تمريرٌ للمندوب خارج salePrice/الفاتورة/الإيراد.
-          deliveryCost: custom.hasDelivery ? D(custom.deliveryCost || 0).toFixed(2) : "0",
-          deliveryFeeCollection: custom.hasDelivery ? custom.deliveryFeeCollection : "COURIER",
+          deliveryCost: eff.has ? eff.cost : "0",
+          deliveryFeeCollection: eff.has ? eff.feeColl : "COURIER",
           // اِستقبال (تكامل التوصيل، ٤/٨): هاتف المستلم كعمود مستقلّ قابل للاستعلام — كان
           // مُضمَّناً كنصٍّ حرٍّ داخل customizationText فقط (composeCustomizationText أدناه ما زال
           // يُضيفه للنصّ أيضاً — تكرارٌ مقصود: عرضٌ للفنّي في النص + مصدر حقيقة للتوصيل في العمود).
-          deliveryPhone: custom.hasDelivery ? (custom.deliveryPhone || null) : null,
+          deliveryPhone: eff.has ? eff.phone : null,
           designImages: custom.designImages.map((img, idx) => ({
             url: img.dataUrl,
             caption: img.name ?? null,
@@ -1337,9 +1390,11 @@ export default function Reception() {
               // ش٦: العلم يشمل المختلط — materialize خادمياً يعيد اشتقاق الهدف والفرق من الأسطر.
               cashRoundIQD: cashRoundActive || mixedRoundApplied,
               // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
-              deliveryFeeHeld: orderFeeHeldD.gt(0) ? orderFeeHeldD.toFixed(2) : undefined,
+              deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
               // مراجعة PR #495: الإسناد داخل نفس معاملة التثبيت (لا نداءً لاحقاً).
               delivery: deliveryPayload,
+              // الاستقبال (٨/٨): تأكيد توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح).
+              openingSellUnavailableConfirmed: opts.openingConfirmed === true,
               managerApproval: mgrCredsRef.current ?? undefined,
             });
             setActiveDraft(null);
@@ -1362,9 +1417,11 @@ export default function Reception() {
         // ش٦: تسمية الفاتورة الحاملة لفرق التقريب المختلط (المبلغ مُبيَّتٌ فيها أعلاه).
         cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
         // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
-        deliveryFeeHeld: orderFeeHeldD.gt(0) ? orderFeeHeldD.toFixed(2) : undefined,
+        deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
         // مراجعة PR #495: الإسناد داخل نفس معاملة البيع (ذرّية الفاتورة + عهدة المندوب).
         delivery: deliveryPayload,
+        // الاستقبال (٨/٨): تأكيد توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح).
+        openingSellUnavailableConfirmed: opts.openingConfirmed === true,
         // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
         managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
@@ -1421,6 +1478,14 @@ export default function Reception() {
             `إرسالية ${dispatched.consignmentNumber} — يُحصَّل عند الاستلام ${fmt(dispatched.codAmount)} د.ع`,
           );
           void utils.delivery.invalidate();
+        } else if (routeDeliveryToWO) {
+          // ٨/٨ — أمر شغلٍ خالص: التوصيل مُثبَّتٌ على الأمر نفسه (لا إرسالية الآن — يُسنَد
+          // للمندوب من طابور الطلبات عند الجاهزية). نجاحٌ لا تحذير («وكأنه غير موجود» سابقاً).
+          notify.ok(
+            `التوصيل مُثبَّتٌ على الطلب — ${orderDelivery.partyName}`,
+            "يُسنَد للمندوب من طابور الطلبات عند جاهزية الطلب — العنوان والأجرة وطريقة قبضها محفوظة على الأمر.",
+          );
+          void utils.workOrders.list.invalidate();
         } else {
           notify.warn(
             "لم يُسنَد التوصيل تلقائياً",
@@ -1457,6 +1522,17 @@ export default function Reception() {
         customerName: receiptCustomerName,
         paymentMethod: PAY_METHOD_LABEL[method],
       };
+      // ٨/٨ — إفصاح التوصيل على إيصال البيع المباشر: كان لا يُطبَع إطلاقاً («لم تظهر بالطباعة»).
+      // يُوضَع على الفاتورة الحاملة للإرسالية (البضاعة إن وُجِدت وإلّا الطباعة). الأجرة تمريرٌ لا
+      // إيراد ⇒ خارج الإجمالي؛ الإيصال يعرض «يدفع الزبون شاملاً التوصيل» شفافيةً.
+      const receiptDelivery = orderDelivery && hasCarrierInvoice
+        ? {
+            partyName: orderDelivery.partyName,
+            fee: round2(D(orderDelivery.fee || 0)).toFixed(2),
+            feeCollection: orderDelivery.feeCollection,
+            address: orderDelivery.address || null,
+          }
+        : null;
       if (result.regularSale) {
         receiptsToPrint.push({
           ...receiptHead,
@@ -1466,6 +1542,7 @@ export default function Reception() {
           // الفكّة تُطبع مرّةً واحدةً على أول إيصال (هي فكّة الطلب كله لا فكّة فاتورةٍ بعينها).
           change: printedChange,
           credit: printedCredit,
+          delivery: receiptDelivery,
         });
       }
       if (result.printSale) {
@@ -1476,6 +1553,8 @@ export default function Reception() {
           subtotal: printAmount, total: printAmount, paid: printAmount,
           change: result.regularSale ? null : printedChange,
           credit: result.regularSale ? null : printedCredit,
+          // الإرسالية على البضاعة إن وُجِدت؛ إيصال الطباعة يحمل التوصيل فقط حين لا بضاعة.
+          delivery: result.regularSale ? null : receiptDelivery,
         });
       }
 
@@ -1483,6 +1562,7 @@ export default function Reception() {
         const c = x.c;
         const custom = c.custom!;
         const finalText = composeCustomizationText(custom);
+        const eff = effectiveWoDelivery(custom, index);
         // ش٤ (§١٠): العربون الموزَّع على الأمر من ردّ الخادم (الجشع الخادميّ هو الحقيقة) —
         // التذكرة تحمل «مدفوع مقدماً/المتبقّي عند الاستلام» فلا يخرج الزبون بورقةٍ لا تُثبت عربونه.
         const woDeposit = (result.workOrders[index] as { deposit?: string } | undefined)?.deposit ?? "0.00";
@@ -1500,19 +1580,21 @@ export default function Reception() {
           total: x.salePriceStr,
           paidUpfront: Number(woDeposit) > 0 ? woDeposit : null,
           balanceDue: Number(woDeposit) > 0 ? woBalance.toFixed(2) : null,
-          // ٥/٨ — أجرة التوصيل تُطبع صراحةً على التذكرة **خارج الإجمالي**، مع مَن يقبضها:
-          // يمنع سوءَ الفهم الذي كان يجعل الموظّف والزبون يظنّانها جزءاً من قيمة الطلب.
-          notes: custom.hasDelivery
+          // ٥/٨ + ٨/٨ — أجرة التوصيل تُطبع صراحةً على التذكرة **خارج الإجمالي**، مع الجهة ومَن
+          // يقبضها: يمنع سوءَ الفهم الذي كان يجعل الموظّف والزبون يظنّانها جزءاً من قيمة الطلب،
+          // ويُظهر التوصيل حتى حين جاء من زرّ «توصيل هذا الطلب» (كان لا يُطبَع إطلاقاً قبل الإصلاح).
+          notes: eff.has
             ? [
-                `توصيل إلى: ${custom.deliveryAddress || "العنوان غير محدد"}`,
-                custom.deliveryPhone ? `هاتف المستلم: ${custom.deliveryPhone}` : null,
-                D(custom.deliveryCost || 0).gt(0)
-                  ? `أجرة التوصيل ${fmt(custom.deliveryCost)} د.ع (${
-                      custom.deliveryFeeCollection === "COUNTER" ? "مقبوضة في الاستقبال"
-                      : custom.deliveryFeeCollection === "SHOP" ? "على المكتبة"
-                      : "تُدفع للمندوب عند الاستلام"
+                `توصيل إلى: ${eff.address || "العنوان غير محدد"}`,
+                eff.phone ? `هاتف المستلم: ${eff.phone}` : null,
+                eff.partyName ? `جهة التوصيل: ${eff.partyName}` : null,
+                D(eff.cost || 0).gt(0)
+                  ? `أجرة التوصيل ${fmt(eff.cost)} د.ع (${
+                      eff.feeColl === "COUNTER" ? "مقبوضة في الاستقبال أمانةً"
+                      : eff.feeColl === "SHOP" ? "على المكتبة — مجاناً للزبون"
+                      : "يقبضها المندوب من الزبون عند الاستلام"
                     }) — خارج قيمة الطلب`
-                  : null,
+                  : "توصيل — بلا أجرة",
               ].filter(Boolean).join(" · ")
             : null,
         });
@@ -1580,7 +1662,25 @@ export default function Reception() {
       utils.workOrders.list.invalidate().catch(() => {});
       utils.shifts.current.invalidate().catch(() => {});
     } catch (e: unknown) {
-      // فخّ «النقرة الأولى» بعد قطعٍ صامت: المتصفّح لم يُحدِّث حالة الاتصال بعد، فيفشل النقل
+      // الاستقبال (٨/٨): حاصر البيع بالسالب في وضع الافتتاح — الصنف غير مجرود (رصيد سالب) وطلبٌ
+      // بتوصيل COD. أثناء الافتتاح السالب يعني «لم يُعدّ» لا «نافد»، والمندوب يحمل الصنف الموجود
+      // فعلياً. نعرض تأكيداً صريحاً (توفّر فيزيائيّ) مرّةً واحدة ثم نعيد بنفس opts + العلم.
+      const errMsg = e instanceof Error ? e.message : String((e as { message?: string } | null)?.message ?? "");
+      const isOpeningNegativeBlock = !checkoutCommitted && !opts.openingConfirmed
+        && (errMsg.includes("المخزون غير كافٍ") || errMsg.includes("البيع بالسالب"))
+        && errMsg.includes("الافتتاح");
+      if (isOpeningNegativeBlock) {
+        setSubmitting(false);
+        const ok = await confirm({
+          variant: "warning",
+          title: "صنفٌ غير مجرود في وضع الافتتاح",
+          description: "أحد الأصناف رصيده سالب (لم يُجرَد بعد). أكّد أنه **متوفّر فيزيائياً** لتسليمه — سيُباع بالسالب ويُصحَّح رصيده عند الجرد الافتتاحيّ. لا تؤكّد إن لم يكن الصنف موجوداً فعلاً.",
+          confirmText: "مؤكَّد — الصنف متوفّر، أكمِل البيع",
+        });
+        if (ok) void submitRef.current?.({ ...opts, openingConfirmed: true });
+        return;
+      }
+      // فخّ «النقرة الأولى» بعد قطعٍ صامت: المتصفّح لم يُحدِّث حالة الاتصال بعد, فيفشل النقل
       // بلا كود tRPC. تدهورٌ سلس: نلتقط بدل أن نُعيد خطأً غامضاً والنقد بيد الموظّف.
       // شرطٌ حاسم: **لم يلتزم شيء** (checkoutCommitted=false) — وإلا لَازدوجت العملية.
       const isTransportFailure = !checkoutCommitted
@@ -1758,7 +1858,7 @@ export default function Reception() {
   // إصلاح P2 (٢٣/٦/٢٦): F4 كان يُمسك إغلاقاً بياناتيّاً قديماً (payInput/method/customer/shift)
   // لأن الاعتماديّات لم تَشملها ⇒ نقرة F4 بعد تعديل المبلغ تَنفّذ بمبلغ قديم. الحل: ref يَحمل
   // أحدث `handleSubmit` ⇒ المُستَمع يَستدعي ref.current دائماً.
-  const submitRef = useRef<(opts: { quickFullPay: boolean }) => void>(() => {});
+  const submitRef = useRef<(opts: { quickFullPay: boolean; openingConfirmed?: boolean }) => void>(() => {});
   useEffect(() => {
     submitRef.current = handleSubmit;
   });
@@ -2497,6 +2597,7 @@ export default function Reception() {
         sumCustom={sumCustom}
         heldDelivery={heldDelivery}
         cashDueNow={cashDueNow}
+        orderDelivery={deliveryDisclosure}
         heldDeposit={round2(heldD).toNumber()}
         paid={paid}
         change={change}

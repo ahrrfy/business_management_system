@@ -1156,6 +1156,13 @@
       "when": 1787879418000,
       "tag": "0165_stocktake_assignment_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 166,
+      "version": "5",
+      "when": 1787879419000,
+      "tag": "0166_courier_delivered_at",
+      "breakpoints": true
     }
   ]
 }

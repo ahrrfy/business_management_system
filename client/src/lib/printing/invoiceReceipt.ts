@@ -23,6 +23,11 @@ export interface InvoiceReceiptSource {
   paidAmount?: string | number | null;
   returnedTotal?: string | number | null;
   paymentMethod?: string | null;
+  /** ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة — إفصاحٌ للزبون على
+   *  الإيصال المُعاد طبعه (يُصوَّر ويُرسَل). عرضٌ فقط — لا يمسّ الإجمالي/الإيراد. */
+  courierName?: string | null;
+  courierFee?: string | number | null;
+  courierFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
   items: {
     productName?: string | null;
     variantName?: string | null;
@@ -67,5 +72,8 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     paid: paid.toString(),
     credit: credit.gt(0) ? credit.toString() : null,
     paymentMethod: d.paymentMethod ? (PAYMENT_METHOD_LABEL[d.paymentMethod] ?? d.paymentMethod) : null,
+    delivery: d.courierName && Number(d.courierFee ?? 0) > 0
+      ? { partyName: d.courierName, fee: d.courierFee ?? "0", feeCollection: d.courierFeeCollection ?? "COURIER" }
+      : null,
   };
 }

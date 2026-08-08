@@ -54,6 +54,7 @@ const TABLES = [
 
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
 const CASHIER = { userId: 2, branchId: 1, role: "cashier" };
+const CASHIER2 = { userId: 5, branchId: 1, role: "cashier" };
 
 function db() {
   const d = getDb();
@@ -658,5 +659,87 @@ describe("D12 — I8: إعادة التثبيت تعيد نفس التخصيصا
     const apps = await db().select().from(s.orderPayments)
       .where(and(eq(s.orderPayments.draftId, p.draftId), eq(s.orderPayments.kind, "APPLICATION")));
     expect(apps.reduce((a, x) => a + Number(x.amount), 0)).toBe(10000);
+  });
+});
+
+describe("DB — قرار المالك (ب): سلطة ردّ العربون النقديّ (اعتماد المدير)", () => {
+  it("(أ) نقديّ في وردية القبض نفسها وهي مفتوحة بيد قابضه ⇒ مسموح ذاتياً", async () => {
+    const shift = await openReception();
+    const p = await promoteMixed();
+    const dep = await collectDeposit(
+      { draftId: p.draftId, amount: "10000.00", method: "CASH", clientRequestId: uuid("dbaa0001") },
+      CASHIER,
+    );
+    const done = await refundDeposit(
+      { paymentId: dep.paymentId, amount: "10000.00", reason: "الزبون عدل عن الطلب فوراً", clientRequestId: uuid("dbaa0002") },
+      CASHIER,
+    );
+    expect(done.idempotentReplay).toBe(false);
+    const out = (await db().select().from(s.receipts).where(eq(s.receipts.id, done.refundReceiptId!)))[0];
+    expect(out.direction).toBe("OUT");
+    expect(out.paymentMethod).toBe("CASH");
+    expect(out.cashBucket).toBe("DRAWER");
+    expect(Number(out.shiftId)).toBe(shift.shiftId);
+    const coll = (await db().select().from(s.orderPayments).where(eq(s.orderPayments.id, dep.paymentId)))[0];
+    expect(coll.status).toBe("REFUNDED");
+  });
+
+  it("(ب+ج) نقديّ بكاشير آخر ووردية القبض ليست ورديته ⇒ FORBIDDEN بلا اعتماد؛ ويمرّ بنفسه مع authorizedByManager", async () => {
+    // وردية القابض (cashier #2) تبقى مفتوحة وفيها النقد؛ الطالب كاشير آخر (userId=5).
+    const shift = await openReception();
+    const p = await promoteMixed();
+    const dep = await collectDeposit(
+      { draftId: p.draftId, amount: "10000.00", method: "CASH", clientRequestId: uuid("dbbc0001") },
+      CASHIER,
+    );
+    // (ب) sameOpenShift=false (فاعلٌ مختلفٌ عن قابض النقد) ⇒ FORBIDDEN بلا اعتماد مدير.
+    const rid = uuid("dbbc0002");
+    await expect(refundDeposit(
+      { paymentId: dep.paymentId, amount: "10000.00", reason: "الزبون طلب الاسترداد لاحقاً", clientRequestId: rid },
+      CASHIER2,
+    )).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // الرفض تراجع كاملاً: القبض ما زال HELD ولا صفّ REFUND (ولا مفتاح idempotency).
+    const stillHeld = (await db().select().from(s.orderPayments).where(eq(s.orderPayments.id, dep.paymentId)))[0];
+    expect(stillHeld.status).toBe("HELD");
+    const refundsBefore = await db().select().from(s.orderPayments)
+      .where(and(eq(s.orderPayments.parentPaymentId, dep.paymentId), eq(s.orderPayments.kind, "REFUND")));
+    expect(refundsBefore.length).toBe(0);
+
+    // (ج) نفس الردّ (نفس clientRequestId — مرآة إعادة محاولة الواجهة) باعتماد مدير ⇒ يمرّ؛
+    //     النقد يخرج من درج القبض المفتوح (shift #2).
+    const done = await refundDeposit(
+      { paymentId: dep.paymentId, amount: "10000.00", reason: "الزبون طلب الاسترداد لاحقاً", clientRequestId: rid },
+      CASHIER2,
+      { authorizedByManager: true },
+    );
+    expect(done.idempotentReplay).toBe(false);
+    const out = (await db().select().from(s.receipts).where(eq(s.receipts.id, done.refundReceiptId!)))[0];
+    expect(out.direction).toBe("OUT");
+    expect(out.paymentMethod).toBe("CASH");
+    expect(out.cashBucket).toBe("DRAWER");
+    expect(Number(out.shiftId)).toBe(shift.shiftId);
+    const coll = (await db().select().from(s.orderPayments).where(eq(s.orderPayments.id, dep.paymentId)))[0];
+    expect(coll.status).toBe("REFUNDED");
+  });
+
+  it("(د) عربون بطاقة يُردّ بأيّ كاشير في أيّ وقت بلا اعتماد مدير (الحارس على النقد وحده)", async () => {
+    await openReception(); // قابض البطاقة (cashier #2) — وردية القبض
+    const p = await promoteMixed();
+    const dep = await collectDeposit(
+      { draftId: p.draftId, amount: "20000.00", method: "CARD", reference: "CARD-42", clientRequestId: uuid("dbdd0001") },
+      CASHIER,
+    );
+    // كاشير آخر (userId=5) بلا وردية ولا اعتماد مدير ⇒ الردّ بطاقةً ذاتيٌّ (غير النقد لا يمرّ بالحارس).
+    const done = await refundDeposit(
+      { paymentId: dep.paymentId, amount: "20000.00", reason: "الزبون ألغى — استرداد على البطاقة", clientRequestId: uuid("dbdd0002") },
+      CASHIER2,
+    );
+    expect(done.idempotentReplay).toBe(false);
+    const out = (await db().select().from(s.receipts).where(eq(s.receipts.id, done.refundReceiptId!)))[0];
+    expect(out.direction).toBe("OUT");
+    expect(out.paymentMethod).toBe("CARD");
+    expect(out.cashBucket).toBeNull();
+    const coll = (await db().select().from(s.orderPayments).where(eq(s.orderPayments.id, dep.paymentId)))[0];
+    expect(coll.status).toBe("REFUNDED");
   });
 });

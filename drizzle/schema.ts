@@ -6075,6 +6075,10 @@ export const deliveryConsignments = mysqlTable(
     dispatchedBy: int("dispatchedBy").references(() => users.id),
     dispatchedAt: timestamp("dispatchedAt").defaultNow().notNull(),
     settledAt: timestamp("settledAt"),
+    // ٨/٨ — ختمُ تسليم المندوب الذاتيّ (شاشة «توصيلاتي») لإرساليات الاستقبال: إفصاحٌ تشغيليّ
+    // بحت («المندوب يقول: سلّمتُ»). لا يمسّ status/collectedAmount/remittanceId/settledAt/العهدة/
+    // الدفتر — المال يُسوَّى عند توريد المندوب (recordDeliveryRemittance) كما هو دون تغيير.
+    courierDeliveredAt: timestamp("courierDeliveredAt"),
     notes: text("notes"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

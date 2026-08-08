@@ -37,6 +37,8 @@ export interface CommitDraftInput {
   collectNow?: { amount: string; method: "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM"; reference?: string | null } | null;
   cashRoundIQD?: boolean;
   priceOverrideApproved?: boolean;
+  /** الاستقبال (٨/٨): تأكيد الموظّف توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح). */
+  openingSellUnavailableConfirmed?: boolean;
   /** ش٦ (§٩.٣): هويّة مُقِرّ تجاوز السعر — يمرّرها الراوتر حين priceOverrideApproved صادقة. */
   priceApprovedBy?: number | null;
   /** ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن أمانةً للمندوب (نقداً في الدرج) — تُكتب مع
@@ -235,6 +237,7 @@ function materialize(
     cashRoundingOverride: mixedRoundTarget,
     deliveryFeeHeld: input.deliveryFeeHeld ?? null,
     delivery: input.delivery ?? null,
+    openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
     priceApprovedBy: input.priceApprovedBy ?? null,
     regularSale: goods.length ? { lines: goods.map(saleLine), amount: goodsAmount.toFixed(2) } : null,
     printSale: prints.length ? { lines: prints.map(saleLine), amount: printAmount.toFixed(2) } : null,

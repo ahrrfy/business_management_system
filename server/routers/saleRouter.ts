@@ -9,6 +9,8 @@ import {
   customers,
   accountingEntries,
   auditLogs,
+  deliveryConsignments,
+  deliveryParties,
   invoiceItems,
   invoices,
   productUnits,
@@ -824,6 +826,12 @@ export const saleRouter = router({
           deliveryFee: invoices.deliveryFee,
           deliveryFree: invoices.deliveryFree,
           deliveryWaivedAmount: invoices.deliveryWaivedAmount,
+          // إفصاح توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا على الفاتورة (تمريرٌ
+          // لا إيراد) — نُرجعها للعرض/الطباعة فقط كي تُظهر الفاتورة «يدفع الزبون شاملاً التوصيل».
+          courierName: deliveryParties.name,
+          courierFee: deliveryConsignments.deliveryFee,
+          courierFeeCollection: deliveryConsignments.feeCollection,
+          consignmentNumber: deliveryConsignments.consignmentNumber,
           workOrderCreatedBy: workOrders.createdBy,
         })
         .from(invoices)
@@ -832,6 +840,8 @@ export const saleRouter = router({
         .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
         .leftJoin(users, eq(invoices.createdBy, users.id))
         .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
+        .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
+        .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
         .where(eq(invoices.id, input.invoiceId))
         .limit(1)
     )[0];

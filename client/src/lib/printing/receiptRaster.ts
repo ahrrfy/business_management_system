@@ -299,6 +299,27 @@ export async function receiptToCanvas(
   if (d.change != null) totRow("الباقي:", fmt(d.change));
   if (Number(d.credit ?? 0) > 0) totRow("آجل/ذمة:", fmt(d.credit), true);
 
+  // ٨/٨ — كتلة التوصيل: إفصاحٌ للزبون (الجهة/الأجرة/مَن يقبض/يدفع الزبون). الأجرة خارج `total`
+  // دائماً (تمريرٌ لا إيراد) — «يدفع الزبون» = الإجمالي + الأجرة (إلا SHOP فمجّاني).
+  if (d.delivery) {
+    const dl = d.delivery;
+    const fee = Number(dl.fee || 0);
+    const shop = dl.feeCollection === "SHOP";
+    y += 4; dashedLine(ctx, y); y += 32;
+    ctx.font = "800 24px Cairo, sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("التوصيل", W / 2, y); y += 30;
+    totRow("جهة التوصيل:", dl.partyName, true);
+    if (dl.address) totRow("العنوان:", dl.address);
+    const who = dl.feeCollection === "COUNTER" ? "مقبوضة الآن" : shop ? "على المكتبة" : "يقبضها المندوب";
+    totRow("أجرة التوصيل:", shop ? "مجاناً" : `${fmt(fee)} (${who})`, true);
+    if (!shop) {
+      ctx.font = "900 25px Cairo, sans-serif"; ctx.textAlign = "right";
+      ctx.fillText("يدفع الزبون:", W - PAD, y);
+      ctx.textAlign = "left"; ctx.fillText(`${fmt(Number(d.total || 0) + fee)} د.ع`, PAD, y);
+      y += 32;
+    }
+  }
+
   y += 2;
   dashedLine(ctx, y);
   y += 38;

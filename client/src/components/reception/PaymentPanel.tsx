@@ -33,6 +33,10 @@ export interface PaymentPanelProps {
   needPaymentRef: boolean;
   grandTotal: number; expectedNow: number; cashRoundingDelta: number;
   sumDirect: number; sumCustom: number; heldDelivery: number; cashDueNow: number;
+  /** ٨/٨ — شفافية أجرة التوصيل: تُعرض دائماً مهما كان القابض (كانت تختفي لـCOURIER/SHOP).
+   *  COURIER = المندوب يقبضها من الزبون (خارج فاتورة المكتبة، لكن الزبون يدفعها) ⇒ نُظهر
+   *  «إجمالي ما يدفعه الزبون». SHOP = على المكتبة. COUNTER يُعرض عبر heldDelivery أعلاه. */
+  orderDelivery: { fee: number; feeCollection: "COURIER" | "COUNTER" | "SHOP"; partyName: string } | null;
   /** ش٤ — عربونٌ مقبوضٌ سلفاً على الطلب المحفوظ النشط: يُعرض ويُخصَم من «المتوقّع الآن». */
   heldDeposit: number;
   paid: number;
@@ -56,7 +60,7 @@ export function PaymentPanel({
   paymentReference, setPaymentReference,
   needPaymentRef,
   grandTotal, expectedNow, cashRoundingDelta,
-  sumDirect, sumCustom, heldDelivery, cashDueNow, heldDeposit,
+  sumDirect, sumCustom, heldDelivery, cashDueNow, orderDelivery, heldDeposit,
   paid, change, remaining, isChange, isOwing,
   hasCustom,
   depositMenuOpen, setDepositMenuOpen,
@@ -91,6 +95,20 @@ export function PaymentPanel({
             <Truck aria-hidden className="size-3" /> أجرة توصيل أمانةً: <span dir="ltr">{fmt(heldDelivery)}</span> — المُستلَم نقداً الآن: <span dir="ltr">{fmt(cashDueNow)}</span>
           </span>
         )}
+        {/* ٨/٨ — شفافية أجرة التوصيل غير المقبوضة في الكاونتر (COURIER/SHOP): كانت تختفي كلياً
+            فيتساءل الزبون والموظّف. COURIER: الأجرة خارج فاتورة المكتبة لكن الزبون يدفعها للمندوب
+            ⇒ نُظهر «إجمالي ما يدفعه الزبون». SHOP: على المكتبة (لا يدفعها الزبون). */}
+        {orderDelivery && orderDelivery.feeCollection !== "COUNTER" && orderDelivery.fee > 0 && (
+          orderDelivery.feeCollection === "COURIER" ? (
+            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
+              <Truck aria-hidden className="size-3" /> توصيل ({orderDelivery.partyName}): المندوب يقبض <span dir="ltr">{fmt(orderDelivery.fee)}</span> من الزبون — إجمالي ما يدفعه الزبون <span dir="ltr">{fmt(expectedNow + orderDelivery.fee)}</span>
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 rounded-md border border-muted-foreground/30 bg-muted/40 px-2 py-0.5 text-[11px] font-bold text-muted-foreground">
+              <Truck aria-hidden className="size-3" /> توصيل ({orderDelivery.partyName}): <span dir="ltr">{fmt(orderDelivery.fee)}</span> على المكتبة (لا يدفعها الزبون)
+            </span>
+          )
+        )}
         {couponCode && (
           <span className="inline-flex items-center gap-1.5 rounded-md border border-money-positive/40 bg-money-positive/10 px-2 py-0.5 text-[11px] font-bold text-money-positive">
             <Ticket aria-hidden className="size-3" /> {couponLabel ?? couponCode}
@@ -103,6 +121,17 @@ export function PaymentPanel({
           <span className="text-2xl font-black leading-none tabular-nums tracking-tight" dir="ltr">{fmt(expectedNow)}</span>
           <span className="text-xs text-muted-foreground">د.ع</span>
         </div>
+        {/* ٨/٨ — «يدفع الزبون شاملاً التوصيل»: يجيب صراحةً «التوصيل غير محتسبٍ في الإجمالي».
+            الأجرة تمريرٌ لا إيراد ⇒ لا تدخل «إجمالي الفاتورة» (الإيراد)، لكنها تظهر هنا في ما
+            يدفعه الزبون فعلاً. SHOP (على المكتبة) لا يدفعه الزبون فيُستثنى. */}
+        {orderDelivery && orderDelivery.feeCollection !== "SHOP" && orderDelivery.fee > 0 && (
+          <div className="flex items-baseline gap-1.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-0.5">
+            <Truck aria-hidden className="size-3.5 self-center text-[var(--sem-warn)]" />
+            <span className="text-[11px] font-bold text-[var(--sem-warn)]">يدفع الزبون شاملاً التوصيل</span>
+            <span className="text-xl font-black leading-none tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(expectedNow + orderDelivery.fee)}</span>
+            <span className="text-[11px] text-[var(--sem-warn)]">د.ع</span>
+          </div>
+        )}
 
         {isChange && paid > 0 && (
           <span className="inline-flex items-baseline gap-1.5 rounded-md bg-emerald-500/10 px-2 py-0.5">

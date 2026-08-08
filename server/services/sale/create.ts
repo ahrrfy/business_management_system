@@ -739,11 +739,18 @@ export async function createSaleInTx(
     // شرطا الأمان الصنفيان (مراجعة عدائية ١٨/٧): تكلفة مُدخلة (>0) — سالبٌ بلا COGS = تسريب غير
     // قابل للكشف — وسقف كمية للسطر يصدّ خطأ الإدخال والاحتيال. قناة الأوفلاين (allowNegativeStock)
     // مستقلة تماماً ولا تتراكب. القراءة كسولة: البيع العادي المكتفي المخزون لا يدفع أي استعلام إضافي.
+    // الأهليّة الأساس: بيعٌ مسدَّدٌ بالكامل في الكاونتر (نقداً/بطاقة، unpaid<=0).
+    // امتداد الاستقبال (٨/٨): طلب توصيل COD (codDispatchPending) لا يُسدَّد في الكاونتر
+    // (المندوب يقبض من الزبون) فـunpaid>0 دائماً — لكن في وضع الافتتاح السالب يعني «غير مجرود»
+    // لا «نافد»، والمندوب يحمل الصنف الموجود فعلياً. فنسمح به **بتأكيد توفّرٍ فيزيائيّ صريح**
+    // من الموظّف؛ تبقى رِيلات الأمان (تكلفة>0 + سقف الكمية + استثناء الأمانة) نافذةً كما هي أدناه.
     const openingBaseEligible =
       !input.allowNegativeStock &&
       (input.sourceType ?? "POS") === "POS" &&
-      (input.payment?.method === "CASH" || input.payment?.method === "CARD") &&
-      unpaid.lte(0);
+      (
+        ((input.payment?.method === "CASH" || input.payment?.method === "CARD") && unpaid.lte(0))
+        || (input.codDispatchPending === true && input.openingSellUnavailableConfirmed === true)
+      );
     const readOpeningWindow = async () => {
       const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
       return om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now()

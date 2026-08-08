@@ -201,6 +201,9 @@ export const receptionRouter = router({
         reason: z.string().trim().min(5).max(300),
         refundShiftId: z.number().int().positive().optional(),
         clientRequestId: z.string().min(8).max(80),
+        // قرار المالك (ب، ٨/٨): ردّ العربون النقديّ عبر ورديةٍ أخرى/بعد الإغلاق يلزمه اعتماد
+        // مدير. الكاشير يُمرّر بيانات مديرٍ آخر فتُتحقَّق خادمياً بنفس مسار تجاوز الخصم/الائتمان.
+        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -209,8 +212,23 @@ export const receptionRouter = router({
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null,
         role: ctx.user.role,
       };
+      // اعتماد المدير (اختياريّ): يُتحقَّق بالمُتحقِّق القانونيّ الوحيد verifyManagerApproval
+      // (حدّ معدّل + توقيت ثابت + SOD «لا اعتماد ذاتيّ» + عزل فرع). النجاح ⇒ authorizedByManager
+      // فتتجاوز الخدمة بوّابة «نقد عبر وردية». (الفاعل المرتفع أصلاً يمرّ عبر elevated داخلها.)
+      let authorizedByManager = false;
+      if (input.managerApproval) {
+        await verifyManagerApproval(
+          input.managerApproval,
+          ctx,
+          ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
+        );
+        authorizedByManager = true;
+      }
       const result = await retryOnDeadlock(() =>
-        refundDeposit(input, actor as never, { refundShiftId: input.refundShiftId ?? null }),
+        refundDeposit(input, actor as never, {
+          refundShiftId: input.refundShiftId ?? null,
+          authorizedByManager,
+        }),
       );
       if (!result.idempotentReplay) {
         await logAudit(ctx, {
@@ -223,6 +241,7 @@ export const receptionRouter = router({
             reason: input.reason,
             refundReceiptId: result.refundReceiptId,
             refundShiftId: result.shiftId,
+            ...(authorizedByManager ? { authorizedByManager: true } : {}),
           },
         });
       }
@@ -337,6 +356,8 @@ export const receptionRouter = router({
       // ملاحظة ١.٨: الكوبون **مرفوض** على مسار التثبيت في v1 — يُطبَّق داخل createSaleInTx
       // فينسف expectedTotal وأرضية moneyLocked. الحقل موجود ليُرفض برسالةٍ صريحة لا صمتاً.
       couponCode: z.string().nullish(),
+      // الاستقبال (٨/٨): تأكيد الموظّف توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في وضع الافتتاح).
+      openingSellUnavailableConfirmed: z.boolean().optional(),
       managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -379,6 +400,7 @@ export const receptionRouter = router({
           cashRoundIQD: input.cashRoundIQD,
           deliveryFeeHeld: input.deliveryFeeHeld ?? null,
           delivery: input.delivery ?? null,
+          openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
           priceOverrideApproved: elevated || approvedBy != null,
           // ش٦ (§٩.٣): هويّة المُقِرّ — المدير المصادِق، أو الفاعل المرتفع نفسه (سلطة ذاتية).
           priceApprovedBy: approvedBy ?? (elevated ? ctx.user.id : null),

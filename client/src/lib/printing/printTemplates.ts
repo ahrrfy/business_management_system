@@ -96,6 +96,8 @@ export interface InvoicePrintData {
   deliveryFee?: string | number | null;
   deliveryFree?: boolean | null;
   deliveryWaivedAmount?: string | number | null;
+  /** ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة — عرضٌ فقط. */
+  courierDelivery?: { partyName: string; fee: string | number; feeCollection: "COURIER" | "COUNTER" | "SHOP" } | null;
   subtotal: string | number;
   discountAmount?: string | number | null;
   taxAmount?: string | number | null;
@@ -145,6 +147,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     deliveryFee: d.deliveryFee ?? null,
     deliveryFree: d.deliveryFree ?? null,
     deliveryWaivedAmount: d.deliveryWaivedAmount ?? null,
+    courierDelivery: d.courierDelivery ?? null,
     subtotal: d.subtotal,
     discountAmount: d.discountAmount ?? null,
     taxAmount: d.taxAmount ?? null,
@@ -869,6 +872,14 @@ export interface ReceiptBrowserData {
   digitalDetails?: DigitalReceiptDetail[] | null;
   /** إخفاء وسط أرقام الهواتف في النسخة المطبوعة (افتراضياً مُفعَّل). */
   maskPhones?: boolean;
+  /** ٨/٨ — كتلة التوصيل على الإيصال: تُظهر الجهة والأجرة ومَن يقبضها و«الإجمالي الذي يدفعه
+   *  الزبون» بشفافية. الأجرة تمريرٌ لا إيراد ⇒ لا تدخل `total` أبداً؛ هنا **إفصاحٌ** للزبون فقط. */
+  delivery?: {
+    partyName: string;
+    fee: string | number;
+    feeCollection: "COURIER" | "COUNTER" | "SHOP";
+    address?: string | null;
+  } | null;
 }
 
 export function printBrowserReceipt(d: ReceiptBrowserData): void {
@@ -905,6 +916,25 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
           </div>`).join('')}
         </div>`).join('')
     : '';
+
+  // ٨/٨ — كتلة التوصيل على الإيصال: إفصاحٌ للزبون (الجهة/الأجرة/مَن يقبض/يدفع الزبون). الأجرة
+  // خارج `total` دائماً (تمريرٌ لا إيراد) — «يدفع الزبون» = الإجمالي + الأجرة (إلا SHOP فمجّاني).
+  const deliveryHtml = d.delivery ? (() => {
+    const dl = d.delivery!;
+    const fee = Number(dl.fee || 0);
+    const shop = dl.feeCollection === "SHOP";
+    const pays = Number(d.total || 0) + (shop ? 0 : fee);
+    const who = dl.feeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : shop ? "على المكتبة — مجاناً للزبون" : "يقبضها المندوب من الزبون";
+    return `
+  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
+  <div style="font-size:10.5px;border:1.5px solid #000;border-radius:3px;padding:2mm;">
+    <div style="text-align:center;font-weight:900;font-size:12px;margin-bottom:1mm;">التوصيل</div>
+    <div style="display:flex;justify-content:space-between;"><span>الجهة:</span><span style="font-weight:800;">${esc(dl.partyName)}</span></div>
+    ${dl.address ? `<div style="display:flex;justify-content:space-between;gap:2mm;"><span>العنوان:</span><span style="text-align:left;">${esc(dl.address)}</span></div>` : ''}
+    <div style="display:flex;justify-content:space-between;"><span>أجرة التوصيل:</span><span style="font-weight:800;">${shop ? "مجاناً" : fmt(fee)} <span style="font-weight:600;font-size:8.5px;">(${who})</span></span></div>
+    ${shop ? '' : `<div style="display:flex;justify-content:space-between;font-weight:900;font-size:13px;margin-top:1mm;padding-top:1mm;border-top:1px dashed #000;"><span>يدفع الزبون شاملاً التوصيل:</span><span>${fmt(pays)} د.ع</span></div>`}
+  </div>`;
+  })() : '';
 
   const body = `
   <div style="text-align:center;margin-bottom:2mm;">
@@ -948,6 +978,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     ${d.change != null ? `<div style="display:flex;justify-content:space-between;"><span>الباقي:</span><span>${fmt(d.change)}</span></div>` : ''}
     ${Number(d.credit ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>آجل/ذمة:</span><span>${fmt(d.credit)}</span></div>` : ''}
   </div>
+  ${deliveryHtml}
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
   <div style="text-align:center;margin:3mm 0 1mm;">
     <div style="font-size:12px;font-weight:900;">شكراً لتسوقكم معنا</div>

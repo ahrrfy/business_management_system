@@ -4,7 +4,7 @@ import { Link } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { AlertTriangle, Calendar, CheckCircle2, ChevronRight, FileText, Package, Printer, Receipt, Search, Timer, Wrench, X } from "lucide-react";
+import { AlertTriangle, Calendar, CheckCircle2, ChevronRight, FileText, Package, Printer, Receipt, Search, Timer, Truck, Wrench, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { notify } from "@/lib/notify";
@@ -284,6 +284,19 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
       <div className="wob-meta">
         <span className="wob-meta-pill"><span className="wob-ml">الكمية </span>{fmtInt(o.quantity)}</span>
         <span className="wob-meta-pill"><span className="wob-ml">السعر </span>{fmtAr(o.salePrice)} <span className="wob-ml">د.ع</span></span>
+        {/* ٨/٨ — شارة التوصيل: يظهر التوصيل في التنفيذ (كان «غير موجود بالتنفيذ»). الأجرة تمريرٌ
+            لا إيراد ⇒ تُعرَض للعِلم فقط. العنوان في التلميح. */}
+        {o.hasDelivery && (
+          <span
+            className="wob-deliv"
+            title={o.deliveryAddress ? `توصيل إلى: ${o.deliveryAddress}` : "توصيل"}
+          >
+            <Truck aria-hidden className="size-3.5" />
+            {Number(o.deliveryCost ?? 0) > 0
+              ? <>توصيل <span dir="ltr">{fmtAr(o.deliveryCost)}</span></>
+              : "توصيل"}
+          </span>
+        )}
         <span className={`wob-due wob-${di.state}`} style={{ marginInlineStart: "auto", display: "inline-flex", alignItems: "center", gap: 4 }}>{late ? <Timer aria-hidden className="size-3.5" /> : <Calendar aria-hidden className="size-3.5" />} {di.text}</span>
       </div>
       <div className="wob-prog">
