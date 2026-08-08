@@ -29,7 +29,7 @@ export default defineConfig({
         // حقن معالج Web Push المخصَّص في SW المولَّد (دون التخلّي عن generateSW — يُبقي
         // آليّة autoUpdate وworkbox precache/runtimeCaching كما هي). الملف في public/ ⇒ يُنسَخ
         // إلى /push-handler.js حرفياً، فيصير مُتاحاً لـimportScripts داخل SW.
-        importScripts: ["/push-handler.js"],
+        importScripts: ["/pwa-update-worker.js", "/push-handler.js"],
         // تفعيل الإصدار الجديد لا يتم إلا برسالة SKIP_WAITING من الموظف. الإعداد
         // الافتراضي false يضيف مستقبل الرسالة الآمن في Workbox.
         skipWaiting: false,
