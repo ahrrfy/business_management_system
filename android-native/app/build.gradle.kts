@@ -184,7 +184,9 @@ android {
                     systemImageSource = "aosp"
                 }
                 create("tabletApi35") {
-                    device = "Nexus 9"
+                    // Nexus 7 keeps a real >= 600dp tablet viewport while avoiding the
+                    // 4 GB Nexus 9 emulator allocation that exhausts hosted CI runners.
+                    device = "Nexus 7 (2012)"
                     apiLevel = 35
                     systemImageSource = "aosp"
                 }

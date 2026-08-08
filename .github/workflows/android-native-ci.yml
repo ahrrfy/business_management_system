@@ -73,16 +73,22 @@ jobs:
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Run native smoke tests on phone and tablet
+      - name: Run native smoke tests on phone
         working-directory: android-native
         env:
           ALRUEYA_DEV_BASE_URL: http://10.0.2.2:3000
           REMOTE_PUSH_CONFIGURED: "false"
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon \
-            :app:phoneApi35DevDebugAndroidTest \
-            :app:tabletApi35DevDebugAndroidTest \
+          ./gradlew --no-daemon :app:phoneApi35DevDebugAndroidTest \
+            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+      - name: Run native smoke tests on tablet
+        working-directory: android-native
+        env:
+          ALRUEYA_DEV_BASE_URL: http://10.0.2.2:3000
+          REMOTE_PUSH_CONFIGURED: "false"
+        run: |
+          ./gradlew --no-daemon :app:tabletApi35DevDebugAndroidTest \
             -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
       - name: Upload instrumentation reports
         if: always()
