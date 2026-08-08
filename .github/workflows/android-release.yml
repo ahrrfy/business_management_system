@@ -118,7 +118,11 @@ jobs:
           apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           aapt_path="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
           "$apksigner_path" verify --verbose "$apk"
-          jarsigner -verify -strict "$aab" >/dev/null
+          # The Play upload certificate is intentionally self-signed. `-strict` returns exit code 4
+          # for that valid certificate chain, so verify the JAR signature itself and require the
+          # positive verification marker instead of treating the expected trust warning as damage.
+          jarsigner -verify -verbose -certs "$aab" > "$RUNNER_TEMP/aab-signature.txt"
+          grep -Fq 'jar verified.' "$RUNNER_TEMP/aab-signature.txt"
           "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='4' versionName='1.0.0'"
           unzip -p "$apk" 'classes*.dex' > "$RUNNER_TEMP/native-classes.dex"
           grep -aFq 'https://srv1548487.hstgr.cloud' "$RUNNER_TEMP/native-classes.dex"
