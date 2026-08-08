@@ -173,6 +173,24 @@ android {
     }
 
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+
+    testOptions {
+        animationsDisabled = true
+        managedDevices {
+            localDevices {
+                create("phoneApi35") {
+                    device = "Pixel 2"
+                    apiLevel = 35
+                    systemImageSource = "aosp"
+                }
+                create("tabletApi35") {
+                    device = "Nexus 9"
+                    apiLevel = 35
+                    systemImageSource = "aosp"
+                }
+            }
+        }
+    }
 }
 
 // Only dev/staging debug builds and the production release are valid deliverables. This makes it

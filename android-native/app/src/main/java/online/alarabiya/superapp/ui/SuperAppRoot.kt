@@ -346,6 +346,8 @@ fun SuperAppRoot(
     legalSource: LegalDataSource,
     systemSettingsSource: SystemSettingsDataSource,
     notificationDestinations: Flow<NativeNotificationNavigation>,
+    networkAvailable: Boolean,
+    cachedReadActive: Boolean,
 ) {
     androidx.compose.runtime.CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Surface(modifier = Modifier.fillMaxSize(), color = Canvas) {
@@ -415,6 +417,8 @@ fun SuperAppRoot(
                             legalSource = legalSource,
                             systemSettingsSource = systemSettingsSource,
                             notificationDestinations = notificationDestinations,
+                            networkAvailable = networkAvailable,
+                            cachedReadActive = cachedReadActive,
                         )
                     }
                 }
@@ -888,7 +892,7 @@ private fun AdaptiveAuthLayout(content: @Composable ColumnScope.() -> Unit) {
             .imePadding()
             .testTag("native-login-surface"),
     ) {
-        if (maxWidth >= 840.dp) {
+        if (maxWidth >= 600.dp) {
             Row(Modifier.fillMaxSize()) {
                 LoginBrandPanel(Modifier.weight(.92f).fillMaxHeight(), compact = false)
                 Box(
@@ -1149,6 +1153,8 @@ internal fun AppWorkspace(
     selfServiceSource: SelfServiceDataSource,
     approvalsSource: ApprovalsDataSource,
     notificationDestinations: Flow<NativeNotificationNavigation>,
+    networkAvailable: Boolean = true,
+    cachedReadActive: Boolean = false,
     accountingControlsSourceFactory: ((AppBootstrap) -> AccountingControlsDataSource)? = null,
     adminSource: AdminDataSource? = null,
     crmSource: CrmDataSource? = null,
@@ -1209,7 +1215,7 @@ internal fun AppWorkspace(
         adminSource, crmSource, conversationsSource, commerceSource, collaborationSource, receivablesSource, collectionsSource, marketingSource, operationsSource, accountingControlsSource, inventorySource, hrAdminSource, salesSource, purchasingSource, workOrdersSource, warehouseToolsSource, storeDeliverySource, financeSource, insightsSource, productsSource, legalSource, systemSettingsSource,
     ) {
         buildSet {
-            add(NativeScreen.SELF_SERVICE)
+            if (state.bootstrap.hasPersonalWorkspace) add(NativeScreen.SELF_SERVICE)
             add(NativeScreen.APPROVALS)
             if (
                 accountingControlsSource != null &&
@@ -1454,6 +1460,31 @@ internal fun AppWorkspace(
                     systemSettingsSource = systemSettingsSource,
                     modifier = Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding()),
                 )
+            }
+        }
+        AnimatedVisibility(
+            visible = !networkAvailable || state.usingCachedData || cachedReadActive,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
+            enter = fadeIn(tween(180)) + slideInVertically(tween(220)) { -it },
+            exit = fadeOut(tween(140)) + slideOutVertically(tween(180)) { -it },
+        ) {
+            Surface(
+                color = Ink.copy(alpha = .94f),
+                contentColor = Color.White,
+                shape = RoundedCornerShape(22.dp),
+                shadowElevation = 10.dp,
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(Icons.Rounded.WarningAmber, null, modifier = Modifier.size(18.dp))
+                    Text(
+                        if (!networkAvailable) "بلا اتصال" else "بيانات محفوظة",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
             }
         }
     }
@@ -1944,6 +1975,7 @@ private fun NavHostController.navigateNative(route: NativeComposeRoute) {
 private fun AppBootstrap.toNavigationPrincipal(): NavigationPrincipal = NavigationPrincipal(
     authenticated = true,
     role = user.role,
+    hasPersonalWorkspace = hasPersonalWorkspace,
     grants = modules.mapNotNull { module ->
         val nativeModule = NativeModule.fromWireName(module.key) ?: return@mapNotNull null
         val grant = when (module.access.uppercase(Locale.ROOT)) {
@@ -2051,16 +2083,18 @@ private fun implementedServices(
     installed: Set<NativeScreen>,
 ): List<NativeServiceEntry> = buildList {
     val tasks = bootstrap.modules.firstOrNull { it.key == NativeModule.TASKS.wireName }
-    add(
-        NativeServiceEntry(
-            key = "self-service",
-            label = "مساحتي",
-            accessLabel = if (tasks?.access.equals("FULL", ignoreCase = true)) "إدارة المهام" else "شخصية",
-            screen = NativeScreen.SELF_SERVICE,
-            destination = NativeDestination.SelfService,
-            icon = Icons.Rounded.Badge,
-        ),
-    )
+    if (bootstrap.hasPersonalWorkspace) {
+        add(
+            NativeServiceEntry(
+                key = "self-service",
+                label = "مساحتي",
+                accessLabel = if (tasks?.access.equals("FULL", ignoreCase = true)) "إدارة المهام" else "شخصية",
+                screen = NativeScreen.SELF_SERVICE,
+                destination = NativeDestination.SelfService,
+                icon = Icons.Rounded.Badge,
+            ),
+        )
+    }
 
     if (ApprovalKind.entries.any(approvalPolicy::canManage) &&
         NativeNavigationRegistry.Default.authorize(NativeDestination.Approvals, principal) == AccessDecision.Allowed
