@@ -590,11 +590,16 @@ describe("نبضة النسخة (pulse)", () => {
     const { v, cv } = await getPortalPulse(idA);
     // وسمان لا غير: حالة (`v`) وكتالوج (`cv`) — لا حقل بياناتٍ ثالث يتسلّل مع الوقت.
     expect(Object.keys(await getPortalPulse(idA)).sort()).toEqual(["cv", "v"]);
-    // لا اسم منتجٍ ولا كمية عدّةٍ في أيٍّ منهما.
     for (const tag of [v, cv]) {
+      // لا اسم منتجٍ (حتميّ: base64url لا يحوي حروفاً عربية أصلاً).
       expect(tag).not.toMatch(/قلم|جاف/);
-      expect(tag).not.toContain("4242");
+      // شكلٌ مبهم ثابت الطول.
       expect(tag).toMatch(/^[A-Za-z0-9_-]{22}$/);
+      // عدم تسريب الكمية يُثبَت **بنيوياً لا احتمالياً**: الوسم بصمةُ HMAC ثابتة الحجم (١٦ بايت =
+      // ٢٢ حرف base64url) مهما كبر العدّ؛ الترميز الخام القابل للعكس (ثغرة CRC القديمة) كان يتضخّم
+      // بالمقدار. ⚠️ لا تُعِد فحص `not.toContain("<الرقم>")` هنا: الوسم HMAC مبهم فقد يحوي أرقام
+      // العدّ مصادفةً (~١ لكل آلاف التشغيلات) فيُحمّر main زوراً — كان هذا سبب فشل CI #1387 (٨/٨).
+      expect(Buffer.from(tag, "base64url").length).toBe(16);
     }
   });
 
@@ -609,14 +614,16 @@ describe("نبضة النسخة (pulse)", () => {
 
     // يتبدّل (فيعرف «أ» أنّ شيئاً جرى) لكن بلا أي مسارٍ لاستخراج المقدار.
     expect(after).not.toBe(before);
-    expect(after).not.toContain("777");
 
     // ⛔ الصيغة الأولى أعادت تجميعاتٍ خاماً مفصولةً بـ«:» فكان XOR/الطرح بين وسمين
     // متتاليين يعطي بصمة الصفّ المُضاف وحده ⇒ تُخمَّن الكمية بالقوة الغاشمة. الوسم الآن
     // HMAC واحد: لا فواصل، ولا أجزاء عددية، وطولٌ ثابت لا يتغيّر بحجم الجلسة.
+    // (فحص `not.toContain("777")` أُزيل: هشٌّ على HMAC مبهم — قد يحوي الرقم مصادفةً؛ الإبهام
+    // مُثبَتٌ حتمياً أدناه بغياب الفواصل + تعذّر القراءة رقماً + بصمةٍ ثابتة الحجم ١٦ بايت.)
     expect(after).not.toContain(":");
     expect(Number.isNaN(Number(after))).toBe(true);
     expect(after).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(Buffer.from(after, "base64url").length).toBe(16);
     expect(after.length).toBe(before.length);
   });
 
