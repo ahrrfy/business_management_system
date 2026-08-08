@@ -137,6 +137,10 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  // ── عمليات العدّ غير المتصلة في الجرد (0162) ──
+  uq_stkcountop_request: {
+    msg: "طلب العدّ هذا مسجّل مسبقًا في جلسة الجرد — حدّث الشاشة لعرض النتيجة المحفوظة بدل إعادة إرساله.",
+  },
   // ── معالجة عمليات بيع البطاقات والاشتراكات (0161) ──
   uq_dsrr_intent: {
     msg: "توجد معالجة مسجلة لهذه العملية بالفعل — افتح المعالجة الحالية بدلاً من إنشاء معالجة مكررة.",

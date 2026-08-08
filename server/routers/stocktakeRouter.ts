@@ -14,6 +14,7 @@ import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import {
   approveStocktake,
+  approveStocktakeItems,
   cancelStocktakeSession,
   computeStocktakeReview,
   createStocktakeSession,
@@ -23,6 +24,7 @@ import {
   getCycleSuggestions,
   getIraStats,
   getStocktakeCountSheets,
+  getStocktakeRemainingItems,
   getStocktakeReport,
   getStocktakeSession,
   getStocktakeStats,
@@ -30,10 +32,19 @@ import {
   monitorStocktakeSession,
   previewScope,
   regenerateStocktakePin,
+  reopenStocktakeItemReview,
   requestStocktakeRecount,
   resolveStocktakeConflict,
 } from "../services/stocktakeService";
-import { adminProcedure, canSeeCostForUser, inventoryReadProcedure, managerProcedure, router, warehouseProcedure } from "../trpc";
+import {
+  adminProcedure,
+  canSeeCostForUser,
+  inventoryManagerProcedure,
+  inventoryReadProcedure,
+  managerProcedure,
+  router,
+  warehouseProcedure,
+} from "../trpc";
 
 /** مبلغ نصي بنمط purchaseRouter — الأموال نصوص تمرّ عبر decimal.js (لا parseFloat). */
 const moneyStr = z.string().regex(/^\d{1,13}(\.\d{1,2})?$/, "قيمة مالية غير صالحة");
@@ -196,6 +207,27 @@ export const stocktakeRouter = router({
       return monitorStocktakeSession(input.sessionId, { restrictBranchId: restrictedBranchOf(ctx), q: input.q });
     }),
 
+  /** كشف تشغيلي للمنتجات غير المعدودة — بلا رصيد دفتري/تكلفة، صالح للطباعة والتصدير. */
+  remaining: inventoryReadProcedure
+    .input(
+      z.object({
+        sessionId: idNum,
+        q: z.string().trim().max(80).optional(),
+        assignmentId: idNum.optional(),
+        limit: z.number().int().positive().max(10_000).default(500),
+        offset: z.number().int().min(0).default(0),
+      }),
+    )
+    .query(async ({ input, ctx }) =>
+      getStocktakeRemainingItems(input.sessionId, {
+        restrictBranchId: ctx.scopedBranchId ?? restrictedBranchOf(ctx),
+        q: input.q,
+        assignmentId: input.assignmentId,
+        limit: input.limit,
+        offset: input.offset,
+      }),
+    ),
+
   /** المستخدمون النشطون لمنتقي تكليف USER في معالج الإنشاء — أسماء وأدوار فقط، لا حقول حساسة. */
   assignableUsers: warehouseProcedure.query(async () => {
     const db = getDb();
@@ -269,6 +301,48 @@ export const stocktakeRouter = router({
         entityType: "stocktake",
         entityId: input.sessionId,
         newValue: { variantId: input.variantId, action: input.action, reason: input.reason, note: input.note ?? null },
+      });
+      return res;
+    }),
+
+  /** اعتماد مرحلي للأصناف الجاهزة بينما يبقى بقية نطاق الجلسة قيد العدّ. */
+  approveItems: inventoryManagerProcedure
+    .input(z.object({ sessionId: idNum, variantIds: z.array(idNum).min(1).max(500) }))
+    .mutation(async ({ input, ctx }) => {
+      await assertManagerStocktakeBranch(ctx, input.sessionId);
+      const res = await approveStocktakeItems(input, { userId: ctx.user.id });
+      if (res.approvedCount > 0) {
+        await logAudit(ctx, {
+          action: "stocktake.approveItems",
+          entityType: "stocktake",
+          entityId: input.sessionId,
+          newValue: {
+            approvedCount: res.approvedCount,
+            refreshedCount: res.refreshedCount,
+            variantIds: input.variantIds,
+          },
+        });
+      }
+      return res;
+    }),
+
+  /** إلغاء اعتماد مرحلي بسبب موثّق؛ لا يطلب إعادة عدّ ما لم يختر المدير ذلك منفصلاً. */
+  reopenItemReview: inventoryManagerProcedure
+    .input(
+      z.object({
+        sessionId: idNum,
+        variantId: idNum,
+        reason: z.string().trim().min(3, "سبب إعادة الفتح مطلوب (3 أحرف فأكثر)").max(255),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      await assertManagerStocktakeBranch(ctx, input.sessionId);
+      const res = await reopenStocktakeItemReview(input, { userId: ctx.user.id });
+      await logAudit(ctx, {
+        action: "stocktake.reopenItemReview",
+        entityType: "stocktake",
+        entityId: input.sessionId,
+        newValue: { variantId: input.variantId, reason: input.reason },
       });
       return res;
     }),

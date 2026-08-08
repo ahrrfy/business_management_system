@@ -12,7 +12,9 @@ import { getDb } from "../../db";
 import { previewScope } from "../stocktake/queries";
 
 const TABLES = [
+  "stocktakeItemReviewEvents",
   "stocktakeDecisions",
+  "stocktakeCountOperations",
   "stocktakeCounts",
   "stocktakeItems",
   "stocktakeAssignments",

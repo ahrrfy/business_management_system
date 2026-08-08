@@ -113,6 +113,13 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     const { rows, directUnderThreshold } = await loadReviewCore(tx, sessionId, true);
 
     // (٢) الحواجز.
+    const notCounted = rows.filter((r) => r.rawCount == null);
+    if (notCounted.length) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `لا اعتماد نهائياً قبل عدّ كل منتجات النطاق — المتبقي ${notCounted.length} منتجاً`,
+      });
+    }
     const pendingRecounts = rows.filter((r) => r.recount?.status === "PENDING");
     if (pendingRecounts.length) {
       throw new TRPCError({
@@ -137,6 +144,17 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
         message: `${undecided.length} فرقاً يحتاج قراراً صريحاً (تسوية/إبقاء) قبل الاعتماد`,
       });
     }
+    const unapprovedReviewRows = rows.filter((r) => !r.reviewApproved?.isCurrent);
+    if (unapprovedReviewRows.length) {
+      const stale = unapprovedReviewRows.filter((r) => r.reviewApproved != null).length;
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          stale > 0
+            ? `${unapprovedReviewRows.length} منتجاً يحتاج إعادة تثبيت الاعتماد المرحلي (${stale} بصمة قديمة)`
+            : `${unapprovedReviewRows.length} منتجاً معدوداً لم يُعتمد مرحلياً بعد`,
+      });
+    }
 
     // (٣) التوقيعان: عنصر سيُسوّى |قيمته| > dualThreshold ⇒ توقيع أول موجود + المعتمد شخص مختلف.
     // الجلسة الافتتاحية: توقيعان إلزاميان دائماً (حتى بصفر فروقات — الاعتماد يؤسّس الأرصدة ويختم
@@ -153,6 +171,18 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "وقّعتَ التوقيع الأول — الاعتماد النهائي يلزم أن يكون من مسؤول آخر",
+        });
+      }
+      const reviewedHighValueByFinalApprover = rows.filter(
+        (r) =>
+          r.requiresDualSign &&
+          willAdjust(r, directUnderThreshold) &&
+          r.reviewApproved?.byUserId === actor.userId,
+      );
+      if (reviewedHighValueByFinalApprover.length) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: `فصل المهام: راجعتَ ${reviewedHighValueByFinalApprover.length} فرقاً عالي القيمة مرحلياً — الاعتماد النهائي لمسؤول آخر`,
         });
       }
     }
