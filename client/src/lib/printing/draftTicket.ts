@@ -4,6 +4,7 @@
 // ليس إيصال دفع» في الرأس والذيل، و**منعٌ بنيويّ** لسطرَي «مدفوع» و«الفكّة» (لا وجود لهما
 // في الشكل أصلاً). printReceipt نفسه يرفض أرقام DRF- (الحارس المرافق).
 import { printDoc } from "./print";
+import { D, round2 } from "@/lib/money";
 
 export interface DraftTicketData {
   draftNumber: string;
@@ -30,6 +31,10 @@ export interface DepositReceiptData {
 }
 
 export async function printDepositReceipt(d: DepositReceiptData) {
+  // ٨/٨ (طلب المالك: أوضح وأسمك): الرقم الأهمّ للزبون هو **العربون المقبوض الآن** — يُجعَل آخر
+  // إجماليّ ليأخذ الخطّ الأكبر البارز (٤٤px) في الراسم؛ وقيمة الطلب/المقبوض/المتبقّي سياقٌ أصغر.
+  // «المتبقّي» يُضاف شفافيةً (طلب المالك: لا يتساءل الزبون) — قيمة الطلب ناقص إجمالي المقبوض.
+  const remaining = round2(D(d.orderTotal).minus(D(d.collectedTotal)));
   return printDoc({
     kind: "receipt",
     title: "سند قبض عربون",
@@ -42,10 +47,14 @@ export async function printDepositReceipt(d: DepositReceiptData) {
       ...(d.cashierName ? [`القابض: ${d.cashierName}`] : []),
     ],
     columns: ["البيان", "المبلغ"],
-    rows: [["عربون مقبوض الآن", d.amount]],
+    rows: [
+      ["قيمة الطلب التقديرية", d.orderTotal],
+      ["إجمالي المقبوض على الطلب", d.collectedTotal],
+      ["المتبقّي بعد العربون", remaining.toFixed(2)],
+    ],
     totals: [
-      { label: "إجمالي المقبوض على الطلب", value: d.collectedTotal },
-      { label: "قيمة الطلب التقديرية", value: d.orderTotal },
+      // الإجماليّ الأخير = الأبرز خطّاً في الراسم ⇒ العربون المقبوض الآن (ما دفعه الزبون فعلاً).
+      { label: "العربون المقبوض الآن", value: d.amount },
     ],
     footer: "يُستردّ العربون بطريقة قبضه حصراً وبهذا السند — احتفظ به حتى استلام الطلب.",
   });

@@ -33,6 +33,10 @@ export interface PaymentPanelProps {
   needPaymentRef: boolean;
   grandTotal: number; expectedNow: number; cashRoundingDelta: number;
   sumDirect: number; sumCustom: number; heldDelivery: number; cashDueNow: number;
+  /** ٨/٨ — شفافية أجرة التوصيل: تُعرض دائماً مهما كان القابض (كانت تختفي لـCOURIER/SHOP).
+   *  COURIER = المندوب يقبضها من الزبون (خارج فاتورة المكتبة، لكن الزبون يدفعها) ⇒ نُظهر
+   *  «إجمالي ما يدفعه الزبون». SHOP = على المكتبة. COUNTER يُعرض عبر heldDelivery أعلاه. */
+  orderDelivery: { fee: number; feeCollection: "COURIER" | "COUNTER" | "SHOP"; partyName: string } | null;
   /** ش٤ — عربونٌ مقبوضٌ سلفاً على الطلب المحفوظ النشط: يُعرض ويُخصَم من «المتوقّع الآن». */
   heldDeposit: number;
   paid: number;
@@ -56,7 +60,7 @@ export function PaymentPanel({
   paymentReference, setPaymentReference,
   needPaymentRef,
   grandTotal, expectedNow, cashRoundingDelta,
-  sumDirect, sumCustom, heldDelivery, cashDueNow, heldDeposit,
+  sumDirect, sumCustom, heldDelivery, cashDueNow, orderDelivery, heldDeposit,
   paid, change, remaining, isChange, isOwing,
   hasCustom,
   depositMenuOpen, setDepositMenuOpen,
@@ -90,6 +94,20 @@ export function PaymentPanel({
           <span className="inline-flex items-center gap-1 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
             <Truck aria-hidden className="size-3" /> أجرة توصيل أمانةً: <span dir="ltr">{fmt(heldDelivery)}</span> — المُستلَم نقداً الآن: <span dir="ltr">{fmt(cashDueNow)}</span>
           </span>
+        )}
+        {/* ٨/٨ — شفافية أجرة التوصيل غير المقبوضة في الكاونتر (COURIER/SHOP): كانت تختفي كلياً
+            فيتساءل الزبون والموظّف. COURIER: الأجرة خارج فاتورة المكتبة لكن الزبون يدفعها للمندوب
+            ⇒ نُظهر «إجمالي ما يدفعه الزبون». SHOP: على المكتبة (لا يدفعها الزبون). */}
+        {orderDelivery && orderDelivery.feeCollection !== "COUNTER" && orderDelivery.fee > 0 && (
+          orderDelivery.feeCollection === "COURIER" ? (
+            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
+              <Truck aria-hidden className="size-3" /> توصيل ({orderDelivery.partyName}): المندوب يقبض <span dir="ltr">{fmt(orderDelivery.fee)}</span> من الزبون — إجمالي ما يدفعه الزبون <span dir="ltr">{fmt(expectedNow + orderDelivery.fee)}</span>
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 rounded-md border border-muted-foreground/30 bg-muted/40 px-2 py-0.5 text-[11px] font-bold text-muted-foreground">
+              <Truck aria-hidden className="size-3" /> توصيل ({orderDelivery.partyName}): <span dir="ltr">{fmt(orderDelivery.fee)}</span> على المكتبة (لا يدفعها الزبون)
+            </span>
+          )
         )}
         {couponCode && (
           <span className="inline-flex items-center gap-1.5 rounded-md border border-money-positive/40 bg-money-positive/10 px-2 py-0.5 text-[11px] font-bold text-money-positive">

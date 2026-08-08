@@ -38,6 +38,10 @@ export interface ReceptionCheckoutInput {
   printSale?: { lines: PrintSaleLineInput[]; amount: string } | null;
   workOrders?: Array<Omit<CreateWorkOrderInput, "branchId" | "customerId" | "clientRequestId">>;
   priceOverrideApproved?: boolean;
+  /** الاستقبال (٨/٨) — تأكيد الموظّف أن الأصناف غير المجرودة (رصيد سالب) **متوفّرة فيزيائياً**
+   *  في وضع الافتتاح، فيُسمح ببيعها بالسالب حتى لطلب توصيل COD (المندوب يحملها بيده). يُمرَّر
+   *  لـcreateSaleInTx (openingSellUnavailableConfirmed) وتبقى رِيلاته نافذة (افتتاح فعّال + تكلفة>0 + سقف). */
+  openingSellUnavailableConfirmed?: boolean;
   /** ش٠ (٥/٨، V1): تقريب نقدي IQD لأقرب ٢٥٠ — للبيع المباشر **الخالص** النقديّ فقط (بلا خدمات
    *  طباعة وبلا أوامر شغل). الواجهة تُقرّب أوّلاً وترسل المبالغ مقرَّبة، والخادم يعيد التقريب
    *  بنفس الدالة ويقيّد الفرق ADJUST (نمط POS حرفياً). السلة المختلطة عبر cashRoundingOverride
@@ -309,6 +313,8 @@ export async function checkoutReceptionInTx(
             reference: input.paymentReference?.trim() || null,
           },
           codDispatchPending: input.delivery != null,
+          // الاستقبال (٨/٨): يفتح السالب لطلب COD في وضع الافتتاح بتأكيد الموظّف — رِيلات الأمان في createSaleInTx.
+          openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
           clientRequestId: `${input.clientRequestId}-sale`,
           offlineCapture: input.offlineCapture ?? null,
           // البضاعة خرجت فعلاً أثناء الانقطاع والنقد قُبض؛ رفض التسجيل يجعل الدفاتر تكذب

@@ -337,6 +337,8 @@ export const receptionRouter = router({
       // ملاحظة ١.٨: الكوبون **مرفوض** على مسار التثبيت في v1 — يُطبَّق داخل createSaleInTx
       // فينسف expectedTotal وأرضية moneyLocked. الحقل موجود ليُرفض برسالةٍ صريحة لا صمتاً.
       couponCode: z.string().nullish(),
+      // الاستقبال (٨/٨): تأكيد الموظّف توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في وضع الافتتاح).
+      openingSellUnavailableConfirmed: z.boolean().optional(),
       managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -379,6 +381,7 @@ export const receptionRouter = router({
           cashRoundIQD: input.cashRoundIQD,
           deliveryFeeHeld: input.deliveryFeeHeld ?? null,
           delivery: input.delivery ?? null,
+          openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
           priceOverrideApproved: elevated || approvedBy != null,
           // ش٦ (§٩.٣): هويّة المُقِرّ — المدير المصادِق، أو الفاعل المرتفع نفسه (سلطة ذاتية).
           priceApprovedBy: approvedBy ?? (elevated ? ctx.user.id : null),

@@ -1100,7 +1100,7 @@ export default function Reception() {
     }
   }
 
-  async function handleSubmit(opts: { quickFullPay: boolean }) {
+  async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean }) {
     if (cart.length === 0) return;
     if (!shift) {
       notify.err("ابدأ الوردية أولاً قبل إتمام طلب العميل");
@@ -1340,6 +1340,8 @@ export default function Reception() {
               deliveryFeeHeld: orderFeeHeldD.gt(0) ? orderFeeHeldD.toFixed(2) : undefined,
               // مراجعة PR #495: الإسناد داخل نفس معاملة التثبيت (لا نداءً لاحقاً).
               delivery: deliveryPayload,
+              // الاستقبال (٨/٨): تأكيد توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح).
+              openingSellUnavailableConfirmed: opts.openingConfirmed === true,
               managerApproval: mgrCredsRef.current ?? undefined,
             });
             setActiveDraft(null);
@@ -1365,6 +1367,8 @@ export default function Reception() {
         deliveryFeeHeld: orderFeeHeldD.gt(0) ? orderFeeHeldD.toFixed(2) : undefined,
         // مراجعة PR #495: الإسناد داخل نفس معاملة البيع (ذرّية الفاتورة + عهدة المندوب).
         delivery: deliveryPayload,
+        // الاستقبال (٨/٨): تأكيد توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح).
+        openingSellUnavailableConfirmed: opts.openingConfirmed === true,
         // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
         managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
@@ -1580,7 +1584,25 @@ export default function Reception() {
       utils.workOrders.list.invalidate().catch(() => {});
       utils.shifts.current.invalidate().catch(() => {});
     } catch (e: unknown) {
-      // فخّ «النقرة الأولى» بعد قطعٍ صامت: المتصفّح لم يُحدِّث حالة الاتصال بعد، فيفشل النقل
+      // الاستقبال (٨/٨): حاصر البيع بالسالب في وضع الافتتاح — الصنف غير مجرود (رصيد سالب) وطلبٌ
+      // بتوصيل COD. أثناء الافتتاح السالب يعني «لم يُعدّ» لا «نافد»، والمندوب يحمل الصنف الموجود
+      // فعلياً. نعرض تأكيداً صريحاً (توفّر فيزيائيّ) مرّةً واحدة ثم نعيد بنفس opts + العلم.
+      const errMsg = e instanceof Error ? e.message : String((e as { message?: string } | null)?.message ?? "");
+      const isOpeningNegativeBlock = !checkoutCommitted && !opts.openingConfirmed
+        && (errMsg.includes("المخزون غير كافٍ") || errMsg.includes("البيع بالسالب"))
+        && errMsg.includes("الافتتاح");
+      if (isOpeningNegativeBlock) {
+        setSubmitting(false);
+        const ok = await confirm({
+          variant: "warning",
+          title: "صنفٌ غير مجرود في وضع الافتتاح",
+          description: "أحد الأصناف رصيده سالب (لم يُجرَد بعد). أكّد أنه **متوفّر فيزيائياً** لتسليمه — سيُباع بالسالب ويُصحَّح رصيده عند الجرد الافتتاحيّ. لا تؤكّد إن لم يكن الصنف موجوداً فعلاً.",
+          confirmText: "مؤكَّد — الصنف متوفّر، أكمِل البيع",
+        });
+        if (ok) void submitRef.current?.({ ...opts, openingConfirmed: true });
+        return;
+      }
+      // فخّ «النقرة الأولى» بعد قطعٍ صامت: المتصفّح لم يُحدِّث حالة الاتصال بعد, فيفشل النقل
       // بلا كود tRPC. تدهورٌ سلس: نلتقط بدل أن نُعيد خطأً غامضاً والنقد بيد الموظّف.
       // شرطٌ حاسم: **لم يلتزم شيء** (checkoutCommitted=false) — وإلا لَازدوجت العملية.
       const isTransportFailure = !checkoutCommitted
@@ -1758,7 +1780,7 @@ export default function Reception() {
   // إصلاح P2 (٢٣/٦/٢٦): F4 كان يُمسك إغلاقاً بياناتيّاً قديماً (payInput/method/customer/shift)
   // لأن الاعتماديّات لم تَشملها ⇒ نقرة F4 بعد تعديل المبلغ تَنفّذ بمبلغ قديم. الحل: ref يَحمل
   // أحدث `handleSubmit` ⇒ المُستَمع يَستدعي ref.current دائماً.
-  const submitRef = useRef<(opts: { quickFullPay: boolean }) => void>(() => {});
+  const submitRef = useRef<(opts: { quickFullPay: boolean; openingConfirmed?: boolean }) => void>(() => {});
   useEffect(() => {
     submitRef.current = handleSubmit;
   });
@@ -2497,6 +2519,7 @@ export default function Reception() {
         sumCustom={sumCustom}
         heldDelivery={heldDelivery}
         cashDueNow={cashDueNow}
+        orderDelivery={orderDelivery ? { fee: round2(D(orderDelivery.fee || 0)).toNumber(), feeCollection: orderDelivery.feeCollection, partyName: orderDelivery.partyName } : null}
         heldDeposit={round2(heldD).toNumber()}
         paid={paid}
         change={change}
