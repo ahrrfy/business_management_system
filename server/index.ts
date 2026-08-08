@@ -31,6 +31,11 @@ import {
   sendTrpcError,
   trpcAwareRateLimitHandler,
 } from "./middleware/trpcError";
+import {
+  isBackgroundJobRunner,
+  isClustered,
+  isMultiWorker,
+} from "./lib/clusterRole";
 import { printRouter } from "./printRoute";
 import { imageRouter } from "./imageRoute";
 import { backupRouter } from "./backupRoutes";
@@ -462,8 +467,15 @@ async function startServer() {
   // HOST يضيّق واجهة الاستماع: على VPS خلف nginx اضبط HOST=127.0.0.1 فلا يُكشف المنفذ للإنترنت
   // ولا يُلتفّ على ترويسات nginx الأمنية (G6). غير مضبوط ⇒ كل الواجهات (سلوك المتجر/التطوير كما كان).
   const host = process.env.HOST || undefined;
-  const port = await findAvailablePort(preferredPort, host);
-  if (port !== preferredPort) {
+  // في العنقود (cluster) يتشارك كل العمّال منفذاً واحداً عبر مقبض يوزّعه المعالج الرئيسيّ لـNode؛
+  // فحص توفّر المنفذ المنفصل (findAvailablePort) يلتبس بمشاركة المقبض بين العمّال ⇒ نربط مباشرةً
+  // على PORT. في fork (تطوير/عملية وحيدة) نُبقي الفحص: راحةُ التطوير + فشلٌ صريح في الإنتاج عند
+  // تثبيت nginx على المنفذ.
+  const clustered = isClustered();
+  const port = clustered
+    ? preferredPort
+    : await findAvailablePort(preferredPort, host);
+  if (!clustered && port !== preferredPort) {
     if (!isDev) {
       // nginx/العملاء مثبّتون على PORT — الانزياح الصامت يعني 502 صامتاً والتطبيق «online»؛ فشل صريح أوضح.
       logger.error(
@@ -490,47 +502,75 @@ async function startServer() {
     `Server running on http://${host ?? "localhost"}:${port}/ ${sentryEnabled ? "(Sentry on)" : ""}`,
   );
 
-  // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
-  // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
-  const { startMorningPushCron } =
-    await import("./services/morningPushScheduler");
-  startMorningPushCron();
-
-  // كنّاس صندوق واتساب الصادر (waOutbox) — إرسال فعلي + إعادة محاولة بتراجع أسّي + إعادة محاولة
-  // أحداث webhook الفاشلة (سباق ترتيب). لا cron في بيئة الاختبار (NODE_ENV=test) — راجع outboxSweeper.ts.
-  const { startWaOutboxSweeper } =
-    await import("./services/whatsapp/outboxSweeper");
-  startWaOutboxSweeper();
-
-  // إشعارات Android الأصلية: عامل صندوق موثوق يعيد المحاولة ولا يعمل دون إعداد FCM.
-  const { startNativePushOutboxWorker, stopNativePushOutboxWorker } =
-    await import("./services/nativePushOutboxWorker");
-  startNativePushOutboxWorker();
-
-  // ش٢ (ق٤): كنّاس مسوّدات المحطة — يطوي الفارغة المنقضية (٢٤س بلا نشاط) ليلاً وعلى الإقلاع؛
-  // **لا يمسّ المموّلة أبداً** (المال في receipts — I14). لا cron في بيئة الاختبار.
-  if (process.env.NODE_ENV !== "test") {
-    const { sweepExpiredDrafts } = await import("./services/reception");
-    const cron = (await import("node-cron")).default;
-    void sweepExpiredDrafts().catch(() => {
-      /* الكنّاس لا يُسقط الإقلاع */
-    });
-    cron.schedule("15 1 * * *", () => {
-      void sweepExpiredDrafts().catch(() => {
-        /* دورة قادمة */
-      });
-    });
-  }
-
-  // جسر أجهزة الحضور (بصمة الوجه/ZKTeco) — يُفعَّل بـHR_DEVICE_BRIDGE=1 (منفذ 7788 افتراضاً)
-  // أو HR_DEVICE_PORT لمنفذ مخصّص. غيابهما ⇒ صفر أثر (نمط CONTROL_DATABASE_URL). منفذ مستقل
-  // لأن الأجهزة تتكلم HTTP/WS عارياً. (resolveBridgeConfig مصدر حقيقة واحد مع bridgeStatus.)
+  // ── طبقة العمّال: الوظائف الخلفيّة تعمل في عاملٍ واحدٍ فقط ─────────────────────────────────
+  // في العنقود تعمل عدّة نسخ من الخادم على النوى؛ لو بدأت كلٌّ منها الكنّاسات والكرون لتكرّر
+  // الإرسال (واتساب/دفع) والمعالجة، ولتضارب منفذ جسر الحضور (7788) بين العمّال. لذا تُشغَّل هذه
+  // في العامل رقم 0 فقط (أو العملية الوحيدة في fork) — راجع lib/clusterRole.ts. تُرفَع مقابض
+  // الإيقاف للنطاق الخارجيّ ليستدعيها الإغلاق الرشيق بأمان أياً كان العامل.
+  let stopNativePushOutboxWorker: (() => void) | null = null;
   let hrBridge: { stop: () => Promise<void> } | null = null;
-  const { resolveBridgeConfig } = await import("./services/hrDevices/types");
-  const hrCfg = resolveBridgeConfig();
-  if (hrCfg.enabled) {
-    const { startHrDeviceBridge } = await import("./services/hrDevices/bridge");
-    hrBridge = startHrDeviceBridge(hrCfg.port);
+  if (isBackgroundJobRunner()) {
+    // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
+    // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
+    const { startMorningPushCron } = await import(
+      "./services/morningPushScheduler"
+    );
+    startMorningPushCron();
+
+    // كنّاس صندوق واتساب الصادر (waOutbox) — إرسال فعلي + إعادة محاولة بتراجع أسّي + إعادة محاولة
+    // أحداث webhook الفاشلة (سباق ترتيب). لا cron في بيئة الاختبار (NODE_ENV=test).
+    const { startWaOutboxSweeper } = await import(
+      "./services/whatsapp/outboxSweeper"
+    );
+    startWaOutboxSweeper();
+
+    // إشعارات Android الأصلية: عامل صندوق موثوق يعيد المحاولة ولا يعمل دون إعداد FCM.
+    const nativePush = await import("./services/nativePushOutboxWorker");
+    nativePush.startNativePushOutboxWorker();
+    stopNativePushOutboxWorker = nativePush.stopNativePushOutboxWorker;
+
+    // ش٢ (ق٤): كنّاس مسوّدات المحطة — يطوي الفارغة المنقضية (٢٤س بلا نشاط) ليلاً وعلى الإقلاع؛
+    // **لا يمسّ المموّلة أبداً** (المال في receipts — I14). لا cron في بيئة الاختبار.
+    if (process.env.NODE_ENV !== "test") {
+      const { sweepExpiredDrafts } = await import("./services/reception");
+      const cron = (await import("node-cron")).default;
+      void sweepExpiredDrafts().catch(() => {
+        /* الكنّاس لا يُسقط الإقلاع */
+      });
+      cron.schedule("15 1 * * *", () => {
+        void sweepExpiredDrafts().catch(() => {
+          /* دورة قادمة */
+        });
+      });
+    }
+
+    // جسر أجهزة الحضور (بصمة الوجه/ZKTeco) — يُفعَّل بـHR_DEVICE_BRIDGE=1 (منفذ 7788 افتراضاً).
+    // ⚠️ مفردٌ ذو **حالةٍ حيّة داخل العملية** (مقابس WebSocket + سجلّ أجهزةٍ في الذاكرة تقرأه
+    // نقاطُ hrDevices.bridgeStatus/enqueueCommand) ⇒ **غير متوافق مع عنقودٍ متعدّد العمّال**:
+    // (١) منفذ 7788 يتسابق بين العامل 0 القديم والجديد عند إعادة التحميل المتدحرجة (EADDRINUSE
+    // بلا إعادة محاولة ⇒ الجسر يبقى ساقطاً)؛ (٢) نقاطُ التحكّم تُخدَم من عمّالٍ لا يملكون الحالة
+    // الحيّة ⇒ حالةٌ خاطئة وأوامرُ ضائعة. حتى يُبنى تخزينٌ مشترك/توجيهٌ لمالك الجسر، نشغّله في
+    // وضع **العامل الواحد** فقط (WEB_INSTANCES=1) وإلّا نُبلّغ بوضوح ولا نبدؤه (لا كسرٌ صامت).
+    const { resolveBridgeConfig } = await import("./services/hrDevices/types");
+    const hrCfg = resolveBridgeConfig();
+    if (hrCfg.enabled && isMultiWorker()) {
+      logger.warn(
+        "جسر أجهزة الحضور مُعطَّل: غير متوافق مع عنقودٍ متعدّد العمّال (WEB_INSTANCES>1). " +
+          "شغّل erp-server بـWEB_INSTANCES=1، أو انشر الجسر كعمليةٍ مستقلّةٍ بحالةٍ مشتركة.",
+      );
+    } else if (hrCfg.enabled) {
+      const { startHrDeviceBridge } = await import(
+        "./services/hrDevices/bridge"
+      );
+      hrBridge = startHrDeviceBridge(hrCfg.port);
+    }
+    logger.info(
+      `الوظائف الخلفيّة بدأت على العامل ${process.env.NODE_APP_INSTANCE ?? "الوحيد"}.`,
+    );
+  } else {
+    logger.info(
+      `عامل ويب ${process.env.NODE_APP_INSTANCE} — تخطّى الوظائف الخلفيّة (تعمل على العامل 0).`,
+    );
   }
 
   // إيقاف رشيق: SIGTERM (من PM2/خدمة Windows عند إعادة التشغيل) وSIGINT (Ctrl+C) ⇒ أغلق
@@ -545,7 +585,7 @@ async function startServer() {
       process.exit(1);
     }, 10_000);
     try {
-      stopNativePushOutboxWorker();
+      stopNativePushOutboxWorker?.();
       if (hrBridge) await hrBridge.stop().catch(() => undefined);
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
