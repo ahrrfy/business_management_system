@@ -204,15 +204,22 @@ export default function PointOfSale() {
               Ctrl+1/2/3 لتَبديل الوَضع
             </span>
           )}
-          {visibleModes.some((mode) => mode.v === "RETAIL") && (
-            <Link
-              href="/invoices"
-              className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
-              title="عرض الفواتير المباعة وإعادة طباعتها"
-            >
-              <ReceiptText aria-hidden className="size-4" />
-              <span>الفواتير</span>
-            </Link>
+          {/* شريحة (٧/٨): محطة الاستقبال تملأ هذه المساحة بأزرارها الخاصّة (فواتير/طلبات/حجوزات/
+              وردية…) عبر portal من Reception.tsx — أغنى وأدقّ من رابط عامّ لقائمة فواتير الشركة
+              كاملةً (تلك تبقى الوجهة الصحيحة لتجزئة/طباعة). */}
+          {activeMode === "RECEPTION" ? (
+            <div id="pos-header-actions" className="flex shrink-0 items-center gap-1.5 overflow-x-auto" />
+          ) : (
+            visibleModes.some((mode) => mode.v === "RETAIL") && (
+              <Link
+                href="/invoices"
+                className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
+                title="عرض الفواتير المباعة وإعادة طباعتها"
+              >
+                <ReceiptText aria-hidden className="size-4" />
+                <span>الفواتير</span>
+              </Link>
+            )
           )}
           <Link
             href="/"

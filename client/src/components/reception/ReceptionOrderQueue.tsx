@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowRight, Check, Package, Store, Truck, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Check, Package, Store, Truck, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,7 @@ import { DispatchDialog, type DispatchParty } from "@/components/delivery/Dispat
 import { MarkPickedUpDialog } from "@/components/delivery/MarkPickedUpDialog";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
-import { fmt } from "@/lib/money";
+import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -47,7 +47,7 @@ const DISPATCH_GATE: RoleGate = { roles: ["cashier", "manager"] };
  * سُلِّمت اليوم)، وكل صفٍّ يحمل إجراءات ديناميكية بحسب حالته وطريقة تسليمه: استلام مباشر، إسناد
  * لمندوب، أو إعادة تصنيف الطريقة (السيناريو الثالث: زبونٌ غيّر رأيه بين الاستلام والتوصيل).
  */
-export default function ReceptionOrderQueue({ branchId, onClose }: { branchId: number; onClose: () => void }) {
+export default function ReceptionOrderQueue({ branchId }: { branchId: number }) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
@@ -103,14 +103,9 @@ export default function ReceptionOrderQueue({ branchId, onClose }: { branchId: n
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 pb-8">
-      <div className="mb-1 flex items-center justify-between rounded-xl border bg-card p-3">
-        <div>
-          <h1 className="font-extrabold">طابور الطلبات والتوصيل</h1>
-          <p className="text-xs text-muted-foreground">من الاستلام حتى التسليم — استلام مباشر أو إسناد لمندوب/شركة توصيل.</p>
-        </div>
-        <Button size="sm" variant="outline" onClick={onClose}>
-          <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
-        </Button>
+      <div className="mb-1 rounded-xl border bg-card p-3">
+        <h1 className="font-extrabold">طابور الطلبات والتوصيل</h1>
+        <p className="text-xs text-muted-foreground">من الاستلام حتى التسليم — استلام مباشر أو إسناد لمندوب/شركة توصيل.</p>
       </div>
 
       {active.isLoading ? (
@@ -278,7 +273,21 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
           {r.hasDelivery && r.deliveryAddress ? ` · ${r.deliveryAddress}` : ""}
         </p>
       </div>
-      <div className="text-left text-sm font-bold tabular-nums shrink-0" dir="ltr">{fmt(r.salePrice)} د.ع</div>
+      {/* إصلاح (٧/٨، طلب مالك): العربون المقبوض عند إنشاء الطلب كان يُجلَب في الاستعلام
+          (workOrders.deposit) ولا يُعرَض — الموظّف يفتح تفاصيل الطلب ليعرف كم دُفع/تبقّى.
+          الحقل ثابتٌ منذ الإنشاء (لا مسارَ تعديلٍ لاحقٍ عليه في الكود — التحقّق قبل العرض)،
+          فعرضه هنا مباشرةً آمنٌ ودقيق. */}
+      <div className="text-left shrink-0 text-xs" dir="ltr">
+        <div className="text-sm font-bold tabular-nums">{fmt(r.salePrice)} د.ع</div>
+        {D(r.deposit ?? "0").gt(0) && (
+          <div className="mt-0.5 space-y-0.5 text-[10px] font-semibold">
+            <div className="text-money-positive">عربون: {fmt(r.deposit ?? "0")}</div>
+            <div className="text-[var(--sem-warn)]">
+              متبقّي: {fmt(round2(D(r.salePrice).minus(D(r.deposit ?? "0"))).toFixed(2))}
+            </div>
+          </div>
+        )}
+      </div>
       <RowActions actions={actions} />
     </li>
   );
