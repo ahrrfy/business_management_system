@@ -50,7 +50,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -77,6 +77,7 @@ import online.alarabiya.superapp.model.accountingControls.ExchangeDraft
 import online.alarabiya.superapp.model.accountingControls.ExchangeOperationKind
 import online.alarabiya.superapp.model.accountingControls.PendingExchangeDeposit
 import online.alarabiya.superapp.model.accountingControls.ReconciliationCommand
+import online.alarabiya.superapp.ui.rtlIsolate
 
 private val ControlNavy = Color(0xFF362087)
 private val ControlBlue = Color(0xFF5B36D2)
@@ -159,7 +160,10 @@ fun AccountingControlsScreen(
     Scaffold(modifier.fillMaxSize(), containerColor = MaterialTheme.colorScheme.surface) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             ControlsHeader()
-            if (sections.size > 1) TabRow(sections.indexOf(state.section).coerceAtLeast(0)) {
+            if (sections.size > 1) ScrollableTabRow(
+                selectedTabIndex = sections.indexOf(state.section).coerceAtLeast(0),
+                edgePadding = 14.dp,
+            ) {
                 sections.forEach { section ->
                     Tab(
                         selected = state.section == section,
@@ -485,7 +489,11 @@ private fun YearEndWorkspace(state: AccountingControlsUiState, capabilities: Acc
                         MoneyTile("المصروف", snapshot.totalExpenses, Modifier.weight(1f))
                         MoneyTile("الصافي", snapshot.netProfit, Modifier.weight(1f))
                     }
-                    Text("Snapshot #${snapshot.id} • Retained Earnings ${snapshot.retainedEarningsEntryId ?: "لا قيد صفري"}", style = MaterialTheme.typography.bodySmall)
+                    val retainedEntry = snapshot.retainedEarningsEntryId?.let { rtlIsolate(it.toString()) } ?: "لا قيد صفري"
+                    Text(
+                        "لقطة ${rtlIsolate("#${snapshot.id}")} • الأرباح المحتجزة $retainedEntry",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             }
         }

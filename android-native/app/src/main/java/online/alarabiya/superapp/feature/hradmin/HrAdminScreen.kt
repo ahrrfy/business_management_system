@@ -51,7 +51,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -168,7 +168,10 @@ fun HrAdminScreen(
         Column(Modifier.fillMaxSize().padding(padding)) {
             HrHeader(capabilities)
             if (sections.size > 1) {
-                TabRow(selectedTabIndex = sections.indexOf(state.section).coerceAtLeast(0)) {
+                ScrollableTabRow(
+                    selectedTabIndex = sections.indexOf(state.section).coerceAtLeast(0),
+                    edgePadding = 14.dp,
+                ) {
                     sections.forEach { section ->
                         Tab(
                             selected = state.section == section,
@@ -267,7 +270,6 @@ private fun EmployeeList(state: HrAdminUiState, actions: HrAdminActions, modifie
             onValueChange = actions.employeeQuery,
             modifier = Modifier.fillMaxWidth(),
             label = { Text("اسم، هاتف، رقم وطني أو وظيفة") },
-            leadingIcon = { Icon(Icons.Rounded.Search, null) },
             trailingIcon = { IconButton(actions.employeeSearch, enabled = !state.locked) { Icon(Icons.Rounded.Search, "بحث") } },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { actions.employeeSearch() }),

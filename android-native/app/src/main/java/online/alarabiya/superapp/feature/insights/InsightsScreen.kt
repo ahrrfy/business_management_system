@@ -15,12 +15,14 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -56,6 +58,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.insights.AlertSeverity
@@ -71,6 +74,7 @@ import online.alarabiya.superapp.model.insights.SearchEntityType
 import online.alarabiya.superapp.model.insights.SearchInsight
 import online.alarabiya.superapp.model.insights.StoreInsights
 import online.alarabiya.superapp.model.insights.TopProductInsight
+import online.alarabiya.superapp.ui.ltrInputTextStyle
 
 private val InsightNavy = Color(0xFF362087)
 private val InsightBlue = Color(0xFF5B36D2)
@@ -81,6 +85,7 @@ private val InsightAmber = Color(0xFFEC2F86)
 fun InsightsRoute(
     viewModel: InsightsViewModel,
     onOpenTarget: (InsightTarget) -> Unit,
+    canOpenTarget: (InsightTarget) -> Boolean = { true },
     modifier: Modifier = Modifier,
 ) {
     InsightsScreen(
@@ -99,6 +104,7 @@ fun InsightsRoute(
         onSearch = viewModel::submitSearch,
         onSelect = viewModel::selectSearchResult,
         onOpenTarget = onOpenTarget,
+        canOpenTarget = canOpenTarget,
         onClearMessage = viewModel::clearMessage,
         modifier = modifier,
     )
@@ -121,6 +127,7 @@ fun InsightsScreen(
     onSearch: () -> Unit,
     onSelect: (InsightTarget?) -> Unit,
     onOpenTarget: (InsightTarget) -> Unit,
+    canOpenTarget: (InsightTarget) -> Boolean = { true },
     onClearMessage: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -161,6 +168,7 @@ fun InsightsScreen(
                             onSearch = onSearch,
                             onSelect = onSelect,
                             onOpenTarget = onOpenTarget,
+                            canOpenTarget = canOpenTarget,
                         )
                     }
                 }
@@ -245,38 +253,76 @@ private fun FilterPanel(
                     FilterChip(state.filter.preset == preset, { onPreset(preset) }, { Text(preset.label) })
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = state.filter.range.from,
-                    onValueChange = onFrom,
-                    label = { Text("من") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-                OutlinedTextField(
-                    value = state.filter.range.to,
-                    onValueChange = onTo,
-                    label = { Text("إلى") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-                Button(onClick = onApply, enabled = !state.refreshing) { Text("تطبيق") }
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                if (maxWidth < 520.dp) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        InsightDateField(state.filter.range.from, onFrom, "من", Modifier.fillMaxWidth())
+                        InsightDateField(state.filter.range.to, onTo, "إلى", Modifier.fillMaxWidth())
+                        Button(
+                            onClick = onApply,
+                            enabled = !state.refreshing,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        ) { Text("تطبيق") }
+                    }
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        InsightDateField(state.filter.range.from, onFrom, "من", Modifier.weight(1f))
+                        InsightDateField(state.filter.range.to, onTo, "إلى", Modifier.weight(1f))
+                        Button(onClick = onApply, enabled = !state.refreshing, modifier = Modifier.heightIn(min = 48.dp)) { Text("تطبيق") }
+                    }
+                }
             }
             if (state.section == InsightsSection.REPORTS) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (policy.canFilterBranch) OutlinedTextField(
-                        value = state.filter.branchId,
-                        onValueChange = onBranch,
-                        label = { Text("معرّف الفرع (اختياري)") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                    )
-                    FilterChip(state.filter.rankBy == "revenue", { onRank("revenue") }, { Text("حسب الإيراد") })
-                    FilterChip(state.filter.rankBy == "qty", { onRank("qty") }, { Text("حسب الكمية") })
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    if (maxWidth < 600.dp) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (policy.canFilterBranch) InsightBranchField(state.filter.branchId, onBranch, Modifier.fillMaxWidth())
+                            LazyRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(horizontal = 2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                item { FilterChip(state.filter.rankBy == "revenue", { onRank("revenue") }, { Text("حسب الإيراد") }) }
+                                item { FilterChip(state.filter.rankBy == "qty", { onRank("qty") }, { Text("حسب الكمية") }) }
+                            }
+                        }
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (policy.canFilterBranch) InsightBranchField(state.filter.branchId, onBranch, Modifier.weight(1f))
+                            FilterChip(state.filter.rankBy == "revenue", { onRank("revenue") }, { Text("حسب الإيراد") })
+                            FilterChip(state.filter.rankBy == "qty", { onRank("qty") }, { Text("حسب الكمية") })
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun InsightDateField(value: String, onValue: (String) -> Unit, label: String, modifier: Modifier) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValue,
+        label = { Text(label) },
+        singleLine = true,
+        modifier = modifier,
+        textStyle = ltrInputTextStyle(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+    )
+}
+
+@Composable
+private fun InsightBranchField(value: String, onValue: (String) -> Unit, modifier: Modifier) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValue,
+        label = { Text("معرّف الفرع (اختياري)") },
+        singleLine = true,
+        modifier = modifier,
+        textStyle = ltrInputTextStyle(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+    )
 }
 
 @Composable
@@ -491,15 +537,15 @@ private fun StatusPanel(store: StoreInsights) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SectionTitle("حالات الطلبات", store.statusBreakdown.values.sum().toString())
             store.statusBreakdown.entries.sortedByDescending { it.value }.forEach { (status, count) ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(storeStatusLabel(status), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(count.toString(), fontWeight = FontWeight.Bold)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(storeStatusLabel(status), Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(count.toString(), fontWeight = FontWeight.Bold, maxLines = 1)
                 }
             }
             HorizontalDivider()
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("إيراد الطلبات المسلّمة", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${store.kpis.deliveredRevenue.value} د.ع", fontWeight = FontWeight.Bold, color = InsightTeal)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("إيراد الطلبات المسلّمة", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${store.kpis.deliveredRevenue.value} د.ع", fontWeight = FontWeight.Bold, color = InsightTeal, maxLines = 1)
             }
         }
     }
@@ -518,24 +564,44 @@ private fun KpiTile(label: String, value: String, modifier: Modifier) {
 @Composable
 private fun FunnelPanel(steps: List<FunnelStep>) {
     Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SectionTitle("مسار التحويل", null)
-            val maximum = steps.maxOfOrNull(FunnelStep::count)?.coerceAtLeast(1) ?: 1
-            steps.forEach { step ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(step.label, Modifier.width(110.dp), style = MaterialTheme.typography.bodySmall)
-                    Box(Modifier.weight(1f).height(9.dp).background(MaterialTheme.colorScheme.outlineVariant, CircleShape)) {
-                        Box(
-                            Modifier.fillMaxWidth((step.count.toFloat() / maximum).coerceIn(0f, 1f))
-                                .height(9.dp).background(InsightTeal, CircleShape),
-                        )
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val compact = maxWidth < 420.dp
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SectionTitle("مسار التحويل", null)
+                val maximum = steps.maxOfOrNull(FunnelStep::count)?.coerceAtLeast(1) ?: 1
+                steps.forEach { step ->
+                    if (compact) {
+                        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text(step.label, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                FunnelBar(step.count, maximum, Modifier.weight(1f))
+                                Spacer(Modifier.width(8.dp))
+                                Text(step.count.toString(), fontWeight = FontWeight.Bold, maxLines = 1)
+                                step.conversion?.let { Text("  ${it.value}%", color = InsightTeal, style = MaterialTheme.typography.bodySmall, maxLines = 1) }
+                            }
+                        }
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(step.label, Modifier.weight(.34f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            FunnelBar(step.count, maximum, Modifier.weight(.66f))
+                            Spacer(Modifier.width(8.dp))
+                            Text(step.count.toString(), fontWeight = FontWeight.Bold, maxLines = 1)
+                            step.conversion?.let { Text("  ${it.value}%", color = InsightTeal, style = MaterialTheme.typography.bodySmall, maxLines = 1) }
+                        }
                     }
-                    Spacer(Modifier.width(8.dp))
-                    Text(step.count.toString(), fontWeight = FontWeight.Bold)
-                    step.conversion?.let { Text("  ${it.value}%", color = InsightTeal, style = MaterialTheme.typography.bodySmall) }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun FunnelBar(count: Int, maximum: Int, modifier: Modifier) {
+    Box(modifier.height(9.dp).background(MaterialTheme.colorScheme.outlineVariant, CircleShape)) {
+        Box(
+            Modifier.fillMaxWidth((count.toFloat() / maximum).coerceIn(0f, 1f))
+                .height(9.dp).background(InsightTeal, CircleShape),
+        )
     }
 }
 
@@ -570,9 +636,9 @@ private fun GovernoratesPanel(store: StoreInsights) {
             SectionTitle("التوزيع الجغرافي", store.byGovernorate.size.toString())
             store.byGovernorate.take(8).forEachIndexed { index, item ->
                 if (index > 0) HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(item.name)
-                    Text("${item.orders} طلب • ${item.revenue.value} د.ع", fontWeight = FontWeight.Medium)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(item.name, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text("${item.orders} طلب • ${item.revenue.value} د.ع", fontWeight = FontWeight.Medium, maxLines = 2)
                 }
             }
         }
@@ -589,6 +655,7 @@ private fun SearchContent(
     onSearch: () -> Unit,
     onSelect: (InsightTarget?) -> Unit,
     onOpenTarget: (InsightTarget) -> Unit,
+    canOpenTarget: (InsightTarget) -> Boolean,
 ) {
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 8.dp)) {
         OutlinedTextField(
@@ -621,7 +688,7 @@ private fun SearchContent(
                 Modifier.weight(.56f).fillMaxHeight(),
                 shape = RoundedCornerShape(topStart = 34.dp, bottomEnd = 34.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
-            ) { SearchDetail(state.selectedSearchResult, onOpenTarget, Modifier.padding(24.dp)) }
+            ) { SearchDetail(state.selectedSearchResult, onOpenTarget, canOpenTarget, Modifier.padding(24.dp)) }
         } else AnimatedContent(state.selectedSearchResult, label = "search-detail") { selected ->
             if (selected == null) SearchList(state.searchResults, state.selectedTarget, onSelect, Modifier.fillMaxSize())
             else Column(Modifier.fillMaxSize()) {
@@ -632,7 +699,7 @@ private fun SearchContent(
                     Modifier.fillMaxSize(),
                     shape = RoundedCornerShape(topStart = 34.dp, bottomEnd = 34.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
-                ) { SearchDetail(selected, onOpenTarget, Modifier.padding(22.dp)) }
+                ) { SearchDetail(selected, onOpenTarget, canOpenTarget, Modifier.padding(22.dp)) }
             }
         }
     }
@@ -675,7 +742,12 @@ private fun SearchList(
 }
 
 @Composable
-private fun SearchDetail(result: SearchInsight?, onOpen: (InsightTarget) -> Unit, modifier: Modifier) {
+private fun SearchDetail(
+    result: SearchInsight?,
+    onOpen: (InsightTarget) -> Unit,
+    canOpen: (InsightTarget) -> Boolean,
+    modifier: Modifier,
+) {
     if (result == null) {
         EmptyInsight("اختر نتيجة لعرضها", modifier.fillMaxSize())
         return
@@ -690,7 +762,11 @@ private fun SearchDetail(result: SearchInsight?, onOpen: (InsightTarget) -> Unit
         result.meta?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         Text("المعرّف ${result.target.id}", style = MaterialTheme.typography.labelMedium)
         Spacer(Modifier.weight(1f))
-        Button(onClick = { onOpen(result.target) }, modifier = Modifier.fillMaxWidth()) {
+        Button(
+            onClick = { onOpen(result.target) },
+            enabled = canOpen(result.target),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
             Text("عرض التفاصيل")
         }
     }
@@ -698,9 +774,9 @@ private fun SearchDetail(result: SearchInsight?, onOpen: (InsightTarget) -> Unit
 
 @Composable
 private fun SectionTitle(title: String, trailing: String?) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        trailing?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium) }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        trailing?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium, maxLines = 2) }
     }
 }
 

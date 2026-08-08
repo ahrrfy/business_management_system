@@ -135,6 +135,14 @@ beforeEach(async () => {
 });
 
 describe("superApp personal payroll isolation", () => {
+  it("advertises the personal workspace only for an account linked to an employee", async () => {
+    const linked = await caller(2).superApp.bootstrap();
+    const unlinked = await caller(99).superApp.bootstrap();
+
+    expect(linked.capabilities.hasPersonalWorkspace).toBe(true);
+    expect(unlinked.capabilities.hasPersonalWorkspace).toBe(false);
+  });
+
   it("derives history from the session employee and hides draft or peer rows", async () => {
     const rows = await caller(2).superApp.payrollHistory({ limit: 36 });
 

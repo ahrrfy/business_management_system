@@ -3,6 +3,11 @@ package online.alarabiya.superapp.core.network
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import online.alarabiya.superapp.BuildConfig
 import online.alarabiya.superapp.core.security.DeviceProofKey
 import online.alarabiya.superapp.core.security.NativeDeviceChallenge
@@ -11,8 +16,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.locks.ReentrantLock
-import kotlin.concurrent.withLock
+import java.security.MessageDigest
 
 class ApiException(
     message: String,
@@ -21,11 +25,14 @@ class ApiException(
     val appCode: String? = null,
     val correlationId: String? = null,
     val dbCode: String? = null,
+    val retryableTransportFailure: Boolean = false,
     cause: Throwable? = null,
 ) : Exception(message, cause)
 
 class TrpcClient(private val sessionStore: SecureSessionStore) {
     private val deviceProofKey = DeviceProofKey()
+    private val _usingCachedRead = MutableStateFlow(false)
+    val usingCachedRead: StateFlow<Boolean> = _usingCachedRead.asStateFlow()
 
     init {
         require(NativeEndpointPolicy.isAllowed(BuildConfig.ERP_BASE_URL, BuildConfig.ENVIRONMENT)) {
@@ -36,7 +43,9 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
     suspend fun query(procedure: String, input: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
         val envelope = inputEnvelope(input)
         val encoded = Uri.encode(envelope.toString())
-        requireObject(execute("GET", "/api/trpc/$procedure?batch=1&input=$encoded", null))
+        readThroughCache(procedure, envelope, "object") {
+            requireObject(execute("GET", "/api/trpc/$procedure?batch=1&input=$encoded", null))
+        } as JSONObject
     }
 
     suspend fun mutate(procedure: String, input: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
@@ -46,7 +55,9 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
     suspend fun queryArray(procedure: String, input: JSONObject? = null): JSONArray = withContext(Dispatchers.IO) {
         val envelope = inputEnvelope(input)
         val encoded = Uri.encode(envelope.toString())
-        requireArray(execute("GET", "/api/trpc/$procedure?batch=1&input=$encoded", null))
+        readThroughCache(procedure, envelope, "array") {
+            requireArray(execute("GET", "/api/trpc/$procedure?batch=1&input=$encoded", null))
+        } as JSONArray
     }
 
     suspend fun mutateArray(procedure: String, input: JSONObject? = null): JSONArray = withContext(Dispatchers.IO) {
@@ -60,7 +71,71 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
 
     private fun inputEnvelope(input: JSONObject?): JSONObject = TrpcInputSerializer.envelope(input)
 
-    private fun execute(method: String, path: String, body: String?): Any = requestLock.withLock {
+    private suspend fun readThroughCache(
+        procedure: String,
+        envelope: JSONObject,
+        kind: String,
+        remote: suspend () -> Any,
+    ): Any {
+        val cacheKey = OfflineReadCachePolicy.cacheKey(procedure, envelope.toString())
+        return try {
+            remote().also { result ->
+                _usingCachedRead.value = false
+                if (cacheKey != null) saveCachedRead(cacheKey, kind, result)
+            }
+        } catch (error: ApiException) {
+            val cached = if (error.retryableTransportFailure && cacheKey != null) {
+                loadCachedRead(cacheKey, kind)
+            } else {
+                null
+            }
+            if (cached == null) throw error
+            _usingCachedRead.value = true
+            cached
+        }
+    }
+
+    private fun saveCachedRead(cacheKey: String, kind: String, result: Any) {
+        val userId = cachedUserId() ?: return
+        val snapshot = JSONObject()
+            .put("savedAt", System.currentTimeMillis())
+            .put("userId", userId)
+            .put("kind", kind)
+            .put("payload", result)
+        sessionStore.saveQuerySnapshot(cacheKey, snapshot.toString())
+    }
+
+    private fun loadCachedRead(cacheKey: String, kind: String): Any? {
+        val userId = cachedUserId() ?: return null
+        val snapshot = sessionStore.loadQuerySnapshot(cacheKey)?.let { raw ->
+            runCatching { JSONObject(raw) }.getOrNull()
+        } ?: return null
+        if (!OfflineReadCachePolicy.accepts(snapshot, kind, userId, System.currentTimeMillis())) return null
+        return when (kind) {
+            "object" -> snapshot.optJSONObject("payload")
+            "array" -> snapshot.optJSONArray("payload")
+            else -> null
+        }
+    }
+
+    private fun cachedUserId(): Long? = sessionStore.loadUserSnapshot()?.let { raw ->
+        runCatching { JSONObject(raw).optLong("id", -1L) }.getOrNull()
+    }?.takeIf { it > 0L }
+
+    private suspend fun execute(method: String, path: String, body: String?): Any {
+        val request = {
+            IdempotentRequestRetryPolicy.execute(method) {
+                executeAttempt(method, path, body)
+            }
+        }
+        return if (NativeRequestSerializationPolicy.requiresSerialization(method)) {
+            mutationMutex.withLock { request() }
+        } else {
+            request()
+        }
+    }
+
+    private fun executeAttempt(method: String, path: String, body: String?): Any {
         val sessionCookie = sessionStore.loadCookie()
         val proofHeaders = when {
             procedureName(path) in AUTH_COMPLETION_PROCEDURES ->
@@ -103,7 +178,12 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         } catch (error: ApiException) {
             throw error
         } catch (error: Exception) {
-            throw ApiException("تعذر الاتصال بالخادم. تحقق من الإنترنت ثم أعد المحاولة.", cause = error)
+            val message = if (method.equals("GET", ignoreCase = true)) {
+                "تعذر الوصول إلى خادم الشركة حالياً. تحقق من اتصال الإنترنت ثم أعد المحاولة."
+            } else {
+                "تعذر تأكيد استجابة الخادم للعملية. تحقق من حالتها قبل إعادة الإرسال."
+            }
+            throw ApiException(message, retryableTransportFailure = true, cause = error)
         } finally {
             connection.disconnect()
         }
@@ -111,6 +191,12 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
 
     /** Fetches a credential-free, short-lived registration ticket without recursing through execute(). */
     private fun fetchNativeDeviceChallenge(): NativeDeviceChallenge {
+        return IdempotentRequestRetryPolicy.execute("GET") {
+            fetchNativeDeviceChallengeAttempt()
+        }
+    }
+
+    private fun fetchNativeDeviceChallengeAttempt(): NativeDeviceChallenge {
         val input = Uri.encode(inputEnvelope(null).toString())
         val path = "/api/trpc/auth.nativeDeviceChallenge?batch=1&input=$input"
         val connection = (URL(BuildConfig.ERP_BASE_URL + path).openConnection() as HttpURLConnection).apply {
@@ -138,7 +224,11 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         } catch (error: ApiException) {
             throw error
         } catch (error: Exception) {
-            throw ApiException("تعذر تهيئة إثبات الجهاز الآمن", cause = error)
+            throw ApiException(
+                "تعذر تهيئة إثبات الجهاز الآمن",
+                retryableTransportFailure = true,
+                cause = error,
+            )
         } finally {
             connection.disconnect()
         }
@@ -152,13 +242,12 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         ?: throw ApiException("جلسة التطبيق المحلية غير صالحة")
 
     private fun persistSessionCookie(connection: HttpURLConnection) {
-        val setCookie = connection.headerFields.entries
-            .firstOrNull { it.key?.equals("Set-Cookie", ignoreCase = true) == true }
-            ?.value
-            ?.firstOrNull()
-            ?: return
-        val pair = setCookie.substringBefore(';').trim()
-        if (pair.contains('=')) sessionStore.saveCookie(pair)
+        val pair = SessionCookieParser.findSessionCookie(
+            connection.headerFields.entries
+                .filter { it.key?.equals("Set-Cookie", ignoreCase = true) == true }
+                .flatMap { it.value.orEmpty() },
+        ) ?: return
+        sessionStore.saveCookie(pair)
     }
 
     private fun requireObject(value: Any): JSONObject = value as? JSONObject
@@ -167,8 +256,9 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
     private fun requireArray(value: Any): JSONArray = value as? JSONArray
         ?: throw ApiException("استجابة الخادم ليست قائمة كما يتطلب هذا الإجراء")
     private companion object {
-        // Native push and foreground UI use separate clients; serialize proof counters globally.
-        val requestLock = ReentrantLock()
+        // State-changing requests advance one server-side device-proof counter. Keep only those
+        // requests ordered; read-only requests are signed independently and may run concurrently.
+        val mutationMutex = Mutex()
         const val LOCKED_COOKIE_PREFIX = "__alrueya_locked__="
         val AUTH_COMPLETION_PROCEDURES = setOf(
             "auth.login",
@@ -179,6 +269,64 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
             "X-Alrueya-Client-Version" to "2",
             "X-Alrueya-Device-Proof-Version" to "1",
         )
+    }
+}
+
+internal object NativeRequestSerializationPolicy {
+    fun requiresSerialization(method: String): Boolean =
+        !method.equals("GET", ignoreCase = true) && !method.equals("HEAD", ignoreCase = true)
+}
+
+internal object SessionCookieParser {
+    private const val SESSION_COOKIE_NAME = "app_session_id"
+
+    fun findSessionCookie(headers: List<String>): String? = headers
+        .asSequence()
+        .map { it.substringBefore(';').trim() }
+        .filter { it.contains('=') }
+        .firstOrNull { it.substringBefore('=').trim() == SESSION_COOKIE_NAME }
+}
+
+internal object OfflineReadCachePolicy {
+    private const val MAX_AGE_MS = 24L * 60L * 60L * 1_000L
+    private const val CLOCK_SKEW_MS = 5L * 60L * 1_000L
+    private val cachedProcedures = setOf(
+        "branches.list",
+        "catalog.adminList",
+        "catalog.forPurchase",
+        "catalog.posList",
+        "customers.get",
+        "customers.search",
+        "inventory.movementsRich",
+        "inventory.onHand",
+        "inventory.pendingAdjustments",
+        "inventory.transferGet",
+        "inventory.transfersList",
+        "offline.catalogSnapshot",
+        "offline.stockSnapshot",
+        "stocktakes.get",
+        "stocktakes.list",
+        "stocktakes.monitor",
+        "tasks.get",
+        "tasks.list",
+    )
+
+    fun cacheKey(procedure: String, inputEnvelope: String): String? {
+        if (procedure !in cachedProcedures) return null
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("$procedure\n$inputEnvelope".toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { byte -> "%02x".format(byte) }
+    }
+
+    fun accepts(snapshot: JSONObject, kind: String, userId: Long, now: Long): Boolean {
+        if (snapshot.optString("kind") != kind || snapshot.optLong("userId", -1L) != userId) return false
+        val savedAt = snapshot.optLong("savedAt", -1L)
+        if (savedAt <= 0L || savedAt > now + CLOCK_SKEW_MS || now - savedAt > MAX_AGE_MS) return false
+        return when (kind) {
+            "object" -> snapshot.optJSONObject("payload") != null
+            "array" -> snapshot.optJSONArray("payload") != null
+            else -> false
+        }
     }
 }
 

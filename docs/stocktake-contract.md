@@ -25,10 +25,11 @@
 ## ١. المخطط (مُنجَز — لا تلمس schema.ts)
 
 في `drizzle/schema.ts` (مدفوع للقاعدتين): `stocktakeSessions`, `stocktakeAssignments`, `stocktakeItems`, `stocktakeCounts`, `stocktakeDecisions` + `branchStock.lastCountedAt`. اقرأ تعريفاتها من الملف نفسه (نهاية الملف). نقاط مفصلية:
-- `stocktakeItems`: لقطة `expectedQty` (int، وحدة أساس) + `unitCost` (decimal) لحظة الإنشاء؛ `UNIQUE(sessionId, variantId)`؛ حقول إعادة العدّ (`recountStatus: PENDING|DONE`, reason, requestedBy/At).
+- `stocktakeItems`: لقطة `expectedQty` (int، وحدة أساس) + `unitCost` (decimal) لحظة الإنشاء؛ `UNIQUE(sessionId, variantId)`؛ حقول إعادة العدّ؛ وختم مراجعة حي مُنسّخ (`reviewApprovedBy/At`, `reviewApprovedOperationId`, `reviewApprovedQty`, `reviewApprovedSnapshotHash`) وآخر سبب إعادة فتح.
+- `stocktakeItemReviewEvents`: سجل ذرّي append-only لكل `APPROVE/REOPEN` مع نسخة العملية/الكمية/البصمة والفاعل والسبب.
 - `stocktakeCounts`: `kind: FIRST|RECOUNT|VERIFY`، `qty` int أساس، `unitBreakdown` JSON نصي، `countedByName`، `isConflict`, `resolvedPick: FIRST|VERIFY`, `clientRequestId` + `UNIQUE(sessionId, clientRequestId)` (idempotency للأوفلاين).
 - `stocktakeDecisions`: `action: ADJUST|KEEP`, `finalQty`, `diffQty`, `value`, `reason: UNSPECIFIED|DAMAGE|LOSS_THEFT|ENTRY_ERROR|PRINT_WASTE`, `decidedBy` (NULL+`autoApplied` = تلقائي)، `UNIQUE(sessionId, variantId)`.
-- `stocktakeAssignments`: `method: PIN|USER`, `pinHash`, قفل PIN (`failedPinAttempts`, `lockedUntil`)، `status: ACTIVE|SUBMITTED`.
+- `stocktakeAssignments`: `method: PIN|USER`, `pinHash`, قفل PIN (`failedPinAttempts`, `lockedUntil`)، `status: ACTIVE|SUBMITTED|REMOVED`. الإزالة دورة حياة موثّقة (`addedBy`, `removedBy/At`, `removalReason`) لا حذفاً؛ تبقى العدّات مرتبطة بالعامل وتُبطل هويته فوراً.
 
 ## ٢. معادلات الأعمال (انقلها حرفياً — مصدرها `jrd-data.jsx` + README §٤)
 
@@ -71,11 +72,16 @@ requiresDualSign(item) = |value| > dualThreshold
 | `create` | `warehouseProcedure` | `{ name, branchId, scopeType: "FULL"\|"MOVING"\|"CATEGORY"\|"MANUAL", movingDays?, categoryIds?: number[], variantIds?: number[], blind?, thresholdPct?: string, thresholdValue?: string, dualThreshold?: string, directUnderThreshold?, waNotify?, dupPolicy?, notes?, assignments: [{ name, method:"PIN"\|"USER", userId?, zone?, variantIds?: number[] }] (min 1) }` | `{ sessionId, code, itemCount, assignments: [{ assignmentId, name, method, zone, pin?: string /*مرة واحدة*/, itemCount }] }` |
 | `list` | `warehouseProcedure` | `{ status?, branchId?, limit=50, offset=0 }?` | صفوف: `{ id, code, name, branchId, branchName, scopeType, scopeLabel, status, itemCount, countedCount, createdAt, createdByName, submittedAt, approvedAt }` |
 | `get` | `warehouseProcedure` | `{ sessionId }` | ترويسة الجلسة + التكليفات (بلا pinHash أبداً) + progress |
-| `monitor` | `warehouseProcedure` | `{ sessionId }` | `{ session, assignments: [{ id, name, method, zone, status, total, counted, lastActivityAt }], recentCounts: [{ variantLabel, qty, kind, byName, at }] (آخر ٢٠), pendingRecounts, conflicts }` — **بلا expectedQty/تكلفة** |
+| `monitor` | `warehouseProcedure` | `{ sessionId }` | `{ session, assignments: [{ id, name, method, userId, zone, status, total, counted, lastActivityAt, removedAt, removalReason }], progress:{total,counted}, recentCounts: [{ variantLabel, qty, kind, byName, at }] (آخر ٢٠), pendingRecounts, conflicts }` — **بلا expectedQty/تكلفة**؛ `progress` مصدره تقاطع نطاق الجلسة مع FIRST/RECOUNT وهو نفس تعريف القائمة/المتبقي/المراجعة |
+| `remaining` | `inventoryReadProcedure` | `{ sessionId, q?, assignmentId?, limit, offset }` | كشف غير المعدود المرقّم خادمياً: `{ assignmentMode:"SHARED", total, items: [{ productName, variantName, sku, barcode, baseUnit, assignmentName, zone }] }` — **بلا expectedQty/تكلفة**؛ البحث يشمل الباركود الأساسي والبديل |
+| `addWorker` | `inventoryManagerProcedure` | `{ sessionId, name, method:"PIN"\|"USER", userId?, zone? }` | يضيف عاملاً أثناء COUNTING فقط، يعيد PIN مرة واحدة إن كان خارجياً، ويعيد توزيع **توجيه** غير المعدود بالتساوي بلا تغيير العدّات |
+| `removeWorker` | `inventoryManagerProcedure` | `{ sessionId, assignmentId, reason (min 3) }` | يحوّل العامل إلى REMOVED، يبطل PIN/الكوكي/دخول الحساب، يحفظ عدّاته، ويعيد توجيه غير المعدود؛ يرفض إزالة آخر عامل نشط |
 | `review` | `managerProcedure` | `{ sessionId, autoAdjust?: boolean=true }` | §٤ أدناه |
 | `requestRecount` | `warehouseProcedure` | `{ sessionId, variantId, reason (min 3) }` | `{ ok }` |
 | `resolveConflict` | `managerProcedure` | `{ sessionId, variantId, pick: "FIRST"\|"VERIFY" }` | `{ ok }` |
 | `decide` | `managerProcedure` | `{ sessionId, variantId, action: "ADJUST"\|"KEEP", reason, note? }` | `{ ok }` |
+| `approveItems` | `inventoryManagerProcedure` | `{ sessionId, variantIds (max 500) }` | اعتماد إداري مرحلي أثناء COUNTING/REVIEW: `{ ok, approvedCount, refreshedCount, alreadyApprovedCount }`؛ يثبت كمية العد ورقم آخر عملية وبصمة SHA-256 للعد/الفرق/القرار، ولا حركة مخزون أو قيد حتى `approve` النهائي |
+| `reopenItemReview` | `inventoryManagerProcedure` | `{ sessionId, variantId, reason (min 3) }` | يلغي الاعتماد المرحلي بسبب إلزامي ويعيد المنتج للمراجعة بلا طلب إعادة عد تلقائي؛ الحدث محفوظ داخل معاملة الجرد |
 | `firstSign` | `managerProcedure` | `{ sessionId }` | `{ ok, firstSignByName, firstSignAt }` |
 | `approve` | `managerProcedure` | `{ sessionId }` | `{ ok, alreadyApproved?, adjustedCount, shortExpense, overGain }` |
 | `forceReview` | `managerProcedure` | `{ sessionId }` | إقفال العدّ يدوياً (تكليفات ACTIVE ⇒ SUBMITTED) |
@@ -92,6 +98,9 @@ requiresDualSign(item) = |value| > dualThreshold
 - `create`: دور warehouse غير المرتفع ⇒ `branchId` يُجبَر على فرعه، والحدود (`threshold*`) تُتجاهل وتُستعمل الافتراضيات (تعديل الحدود manager+ — README §٨). توزيع الأصناف: union(variantIds للتكليفات) يجب أن يساوي نطاق الجلسة؛ أصناف بلا تكليف ⇒ التكليف الأول. PIN: ٤ أرقام عشوائية (crypto) فريدة داخل الجلسة، تُخزَّن hash فقط.
 - `list/get/monitor/...`: دور warehouse يرى فرعه فقط (نمط scopedBranchId).
 - `review/report`: للمدير+ فقط (تكاليف وقيم).
+- المراجعة الحية: `review` و`decide` و`resolveConflict` و`approveItems` تعمل أثناء `COUNTING` للمدير؛ اعتماد الصنف مرحلياً يقفل تعديل عدّه. لا قرار أو فصل تعارض على منتج معتمد قبل `reopenItemReview` بسبب موثّق. `requestRecount` يسقط ختمه ويعيد فتحه للعامل. التسوية المخزنية والمحاسبية لا تقع إلا في `approve` النهائي على الجلسة كلها.
+- الاعتماد النهائي محجوب حتى: عدّ كامل نطاق الجلسة، لا إعادة عد/تعارض/قرار ناقص، وكل منتج معدود يحمل اعتماداً مرحلياً ببصمة مطابقة. فرق عالي القيمة راجعه المعتمد النهائي نفسه ⇒ رفض فصل مهام؛ يلزم مسؤول آخر إضافة إلى شرط التوقيعين القائم.
+- جدول `stocktakeItemReviewEvents` سجل ذرّي append-only لأحداث `APPROVE/REOPEN`، مستقل عن `auditLogs` العام ذي الكتابة best-effort. اعتمادات 0163 القديمة بلا بصمة تظهر «تحتاج إعادة تثبيت» ولا تمر للاعتماد النهائي حتى يعيد مدير تأكيدها.
 
 ## ٤. مخرج `review` (الشاشة الأهم تعتمد عليه حرفياً)
 
@@ -112,11 +121,15 @@ requiresDualSign(item) = |value| > dualThreshold
     adjustedCount: number|null, bookNow, diff: number|null, value: string|null,
     pct: number|null, withinThreshold, overThreshold, requiresDualSign,
     decision: { action, reason, note, decidedByName: string|null, autoApplied } | null,
+    reviewApproved: { byName, byUserId, at, snapshotQty, snapshotOperationId, isCurrent } | null,
+    readyForReviewApproval: boolean,
   }],
   totals: { total, counted, matched, over, short, overThr,
             netValue, shortValue, overValue },     // قيم نصية decimal
-  barriers: { notCounted, pendingRecounts, openConflicts, undecidedOverThreshold,
-              requiresDualSign: boolean, firstSigned: boolean, canApprove: boolean,
+  barriers: { notCounted, reviewApproved, staleReviewApprovals, readyForReviewApproval,
+              countedPendingReview, pendingRecounts, openConflicts, undecidedOverThreshold,
+              requiresDualSign: boolean, firstSigned: boolean, reviewerFinalSeparationBlocked: boolean,
+              canApprove: boolean,
               canFinalApprove: boolean /*التوقيع الثاني متاح لهذا المستخدم*/ },
   ledgerPreview: { shortExpense: string, overGain: string },
 }

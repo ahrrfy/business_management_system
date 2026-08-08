@@ -135,6 +135,7 @@ const StocktakeMonitor = lazy(() => import("@/pages/StocktakeMonitor"));
 const StocktakeReview = lazy(() => import("@/pages/StocktakeReview"));
 const StocktakeReport = lazy(() => import("@/pages/StocktakeReport"));
 const StocktakeCountSheets = lazy(() => import("@/pages/StocktakeCountSheets"));
+const StocktakeRemaining = lazy(() => import("@/pages/StocktakeRemaining"));
 const CountPortal = lazy(() => import("@/pages/CountPortal"));
 const MyStocktakes = lazy(() => import("@/pages/MyStocktakes"));
 const MyStocktakeWorkspace = lazy(() => import("@/pages/MyStocktakeWorkspace"));
@@ -303,6 +304,7 @@ export default function App() {
       <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>
       <Route path="/stocktakes"><Redirect to="/inventory?tab=stocktakes" /></Route>
       <Route path="/stocktakes/new"><Shell><StocktakeNew /></Shell></Route>
+      <Route path="/stocktakes/:id/remaining"><Shell><StocktakeRemaining /></Shell></Route>
       <Route path="/stocktakes/:id/review"><Shell><StocktakeReview /></Shell></Route>
       <Route path="/stocktakes/:id/report"><Shell><StocktakeReport /></Shell></Route>
       <Route path="/stocktakes/:id/sheets"><Shell><StocktakeCountSheets /></Shell></Route>

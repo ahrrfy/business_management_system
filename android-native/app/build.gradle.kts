@@ -1,3 +1,4 @@
+import groovy.json.JsonSlurper
 import org.gradle.api.GradleException
 import java.net.URI
 
@@ -17,6 +18,14 @@ fun configValue(gradleProperty: String, environmentVariable: String, fallback: S
         ?: fallback
 
 fun quoted(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
+// Play identity is deliberately not configurable from CI or a developer workstation. Keeping the
+// identity in one place prevents a staging/package override from producing an artifact that cannot
+// update the installed application.
+val productionApplicationId = "online.alarabiya.store"
+val productionVersionCode = 4
+val productionVersionName = "1.0.0"
+val expectedProductionEndpoint = "https://srv1548487.hstgr.cloud"
 
 fun httpsEndpoint(gradleProperty: String, environmentVariable: String, fallback: String): String =
     requireNotNull(configValue(gradleProperty, environmentVariable, fallback)).also { value ->
@@ -46,7 +55,7 @@ val stagingBaseUrl = httpsEndpoint("alrueyaStagingBaseUrl", "ALRUEYA_STAGING_BAS
 val productionBaseUrl = httpsEndpoint(
     "alrueyaProdBaseUrl",
     "ALRUEYA_PROD_BASE_URL",
-    "https://srv1548487.hstgr.cloud",
+    expectedProductionEndpoint,
 )
 val remotePushConfigured = when (
     val value = configValue("remotePushConfigured", "REMOTE_PUSH_CONFIGURED", "false")?.lowercase()
@@ -88,11 +97,11 @@ android {
 
     defaultConfig {
         // Preserve the installed Play application identity while replacing the legacy TWA client.
-        applicationId = "online.alarabiya.store"
+        applicationId = productionApplicationId
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.0.0"
+        versionCode = productionVersionCode
+        versionName = productionVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -108,14 +117,12 @@ android {
     productFlavors {
         create("dev") {
             dimension = "environment"
-            applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
             buildConfigField("String", "ERP_BASE_URL", quoted(devBaseUrl))
             buildConfigField("String", "ENVIRONMENT", quoted("dev"))
         }
         create("staging") {
             dimension = "environment"
-            applicationIdSuffix = ".staging"
             versionNameSuffix = "-staging"
             buildConfigField("String", "ERP_BASE_URL", quoted(stagingBaseUrl))
             buildConfigField("String", "ENVIRONMENT", quoted("staging"))
@@ -166,6 +173,26 @@ android {
     }
 
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+
+    testOptions {
+        animationsDisabled = true
+        managedDevices {
+            localDevices {
+                create("phoneApi35") {
+                    device = "Pixel 2"
+                    apiLevel = 35
+                    systemImageSource = "aosp"
+                }
+                create("tabletApi35") {
+                    // Nexus 7 keeps a real >= 600dp tablet viewport while avoiding the
+                    // 4 GB Nexus 9 emulator allocation that exhausts hosted CI runners.
+                    device = "Nexus 7 (2012)"
+                    apiLevel = 35
+                    systemImageSource = "aosp"
+                }
+            }
+        }
+    }
 }
 
 // Only dev/staging debug builds and the production release are valid deliverables. This makes it
@@ -203,18 +230,61 @@ val verifyReleaseSigning by tasks.registering {
     }
 }
 
+val verifyProductionReleaseInputs by tasks.registering {
+    group = "verification"
+    description = "Fails closed unless the Play identity, signing, endpoint, and Firebase client are production-ready."
+    dependsOn(verifyReleaseSigning)
+    doLast {
+        if (productionApplicationId != "online.alarabiya.store") {
+            throw GradleException("Unexpected production applicationId.")
+        }
+        if (productionVersionCode != 4 || productionVersionName != "1.0.0") {
+            throw GradleException("Unexpected production version contract.")
+        }
+        if (productionBaseUrl != expectedProductionEndpoint) {
+            throw GradleException("The production endpoint does not match the approved endpoint.")
+        }
+        if (!remotePushConfigured) {
+            throw GradleException("Production release requires REMOTE_PUSH_CONFIGURED=true.")
+        }
+
+        val firebaseConfig = file("google-services.json")
+        if (!firebaseConfig.isFile) {
+            throw GradleException("Production release requires app/google-services.json.")
+        }
+        val json = runCatching { JsonSlurper().parse(firebaseConfig) as? Map<*, *> }
+            .getOrElse { throw GradleException("app/google-services.json is not valid JSON.") }
+            ?: throw GradleException("app/google-services.json must contain a JSON object.")
+        val clients = json["client"] as? List<*>
+        val packageMatches = clients?.any { rawClient ->
+            val client = rawClient as? Map<*, *> ?: return@any false
+            val clientInfo = client["client_info"] as? Map<*, *> ?: return@any false
+            val androidClientInfo = clientInfo["android_client_info"] as? Map<*, *> ?: return@any false
+            androidClientInfo["package_name"] == productionApplicationId
+        }
+        if (packageMatches != true) {
+            throw GradleException("Firebase Android client does not match the production applicationId.")
+        }
+    }
+}
+
 // A production artifact is never allowed to exist unsigned. Lint and compilation tasks can still
 // run without secrets, but both Play (AAB) and direct-install (APK) packaging fail closed.
 tasks.matching {
     it.name == "bundleProdRelease" ||
         it.name == "assembleProdRelease" ||
-        it.name == "packageProdRelease"
+        it.name == "packageProdRelease" ||
+        it.name == "packageProdReleaseBundle" ||
+        it.name == "packageProdReleaseUniversalApk" ||
+        it.name == "signProdReleaseBundle" ||
+        it.name == "zipApksForProdRelease"
 }.configureEach {
-    dependsOn(verifyReleaseSigning)
+    dependsOn(verifyProductionReleaseInputs)
 }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2025.05.01")
+    val cameraXVersion = "1.6.1"
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
@@ -231,6 +301,11 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.navigation:navigation-compose:2.9.8")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("androidx.camera:camera-camera2:$cameraXVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraXVersion")
+    implementation("androidx.camera:camera-view:$cameraXVersion")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 
     // Firebase is inactive unless the release pipeline explicitly supplies google-services.json
     // and sets REMOTE_PUSH_CONFIGURED=true.

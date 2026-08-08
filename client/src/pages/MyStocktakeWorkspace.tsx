@@ -165,7 +165,16 @@ export default function MyStocktakeWorkspace() {
           }
           // رفض خادمي نهائي (أُقفل العدّ مثلاً) — لا معنى لإبقائها بالطابور.
           removeQueued(code, it.clientRequestId);
-          notify.warn("تعذّرت مزامنة عدّة محفوظة", errMsg(e));
+          const serverCode = (e as { data?: { code?: string } | null }).data?.code;
+          if (serverCode === "PRECONDITION_FAILED") {
+            notify.warn(
+              "استُبعدت عدّة محفوظة لأنها لم تعد صالحة",
+              `${errMsg(e)} — لم تُعَد المحاولة، وجرى تحديث حالة المنتج من الخادم.`,
+            );
+            await utils.count.state.invalidate({ sessionCode: code });
+          } else {
+            notify.warn("تعذّرت مزامنة عدّة محفوظة", errMsg(e));
+          }
         }
       }
     } finally {
@@ -210,6 +219,10 @@ export default function MyStocktakeWorkspace() {
         st.assignment.status === "SUBMITTED"
       )
         return;
+      if (item.reviewApproved) {
+        notify.info("اعتمدت الإدارة عدّ هذا المنتج مرحلياً — انتقل إلى المنتج التالي");
+        return;
+      }
       if (
         st.session.dupPolicy === "BLOCK" &&
         item.colleagueCounted &&
@@ -735,7 +748,7 @@ export default function MyStocktakeWorkspace() {
                 key={item.variantId}
                 type="button"
                 onClick={() => openItem(item)}
-                disabled={!canCount}
+                disabled={!canCount || item.reviewApproved}
                 className="flex w-full items-center gap-3 border-b px-4 py-3 text-right transition hover:bg-muted/50 disabled:cursor-default sm:px-5"
               >
                 <span className="min-w-0 flex-1">
@@ -752,7 +765,11 @@ export default function MyStocktakeWorkspace() {
                   </span>
                 </span>
                 <span className="shrink-0 text-xs sm:w-[130px] sm:text-sm">
-                  {queued ? (
+                  {item.reviewApproved ? (
+                    <span className="inline-flex items-center gap-1 text-[var(--stock-ok)]">
+                      <CheckCircle2 className="size-4" aria-hidden /> معتمد إدارياً
+                    </span>
+                  ) : queued ? (
                     <span className="inline-flex items-center gap-1 text-muted-foreground">
                       <Hourglass className="size-4" aria-hidden /> بانتظار المزامنة
                     </span>

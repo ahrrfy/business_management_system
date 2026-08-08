@@ -17,6 +17,9 @@ import androidx.core.view.WindowCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.remember
+import online.alarabiya.superapp.core.network.NetworkStatusMonitor
 import online.alarabiya.superapp.core.network.TrpcClient
 import online.alarabiya.superapp.core.notifications.NativeNotificationNavigationInbox
 import online.alarabiya.superapp.core.notifications.NativePushCoordinator
@@ -129,6 +132,10 @@ class MainActivity : FragmentActivity() {
                 // here avoids the pre-draw deadlock where the splash cancels the very traversal
                 // that was previously responsible for setting composeLaunchReady.
                 composeLaunchReady = true
+                // Some devices do not invoke the platform exit callback after a custom keep
+                // condition is released. Compose is already mounted at this point, so this is a
+                // safe fallback that prevents the branded hand-off from waiting forever.
+                if (!platformSplashExited.value) platformSplashExited.value = true
             }
             LaunchedEffect(state is AppSessionState.Ready) {
                 if (state is AppSessionState.Ready && !pushActivatedForSession) {
@@ -148,6 +155,12 @@ class MainActivity : FragmentActivity() {
                 }
             }
             AlrueyaTheme {
+                val networkStatus = remember {
+                    NetworkStatusMonitor.observe(applicationContext)
+                }.collectAsStateWithLifecycle(
+                    initialValue = NetworkStatusMonitor.isCurrentlyAvailable(applicationContext),
+                )
+                val cachedReadActive = api.usingCachedRead.collectAsStateWithLifecycle()
                 SuperAppRoot(
                     viewModel = viewModel,
                     launchAnimationReady = launchAnimationReady,
@@ -206,6 +219,8 @@ class MainActivity : FragmentActivity() {
                     legalSource = legalRepository,
                     systemSettingsSource = systemSettingsRepository,
                     notificationDestinations = NativeNotificationNavigationInbox.destinations,
+                    networkAvailable = networkStatus.value,
+                    cachedReadActive = cachedReadActive.value,
                 )
             }
         }
@@ -262,6 +277,7 @@ class MainActivity : FragmentActivity() {
         onNegative: () -> Unit,
     ) {
         if (!biometricAvailable() || biometricPromptInFlight) {
+            operation.cancel()
             onCancel()
             return
         }
@@ -276,7 +292,12 @@ class MainActivity : FragmentActivity() {
                     biometricPrompt = null
                     val cipher = result.cryptoObject?.cipher
                     val completed = try {
-                        cipher != null && sessionStore.completeBiometricOperation(operation, cipher)
+                        if (cipher == null) {
+                            operation.cancel()
+                            false
+                        } else {
+                            sessionStore.completeBiometricOperation(operation, cipher)
+                        }
                     } catch (_: BiometricSessionInvalidatedException) {
                         false
                     }
@@ -290,13 +311,21 @@ class MainActivity : FragmentActivity() {
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     biometricPromptInFlight = false
                     biometricPrompt = null
+                    operation.cancel()
                     if (errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON) onNegative()
                     else onCancel()
                 }
             },
         )
         biometricPrompt = prompt
-        prompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(operation.cipher))
+        try {
+            prompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(operation.cipher))
+        } catch (_: Exception) {
+            biometricPrompt = null
+            biometricPromptInFlight = false
+            operation.cancel()
+            onCancel()
+        }
     }
 
     override fun onResume() {

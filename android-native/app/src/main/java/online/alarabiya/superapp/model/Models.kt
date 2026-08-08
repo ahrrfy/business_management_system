@@ -45,6 +45,7 @@ data class AppBootstrap(
     val modules: List<ModuleAccess>,
     val branchId: Long?,
     val allBranches: Boolean,
+    val hasPersonalWorkspace: Boolean = true,
 )
 
 data class TaskSummary(

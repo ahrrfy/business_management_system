@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.collections.CollectionsCapabilities
 import online.alarabiya.superapp.model.collections.CreditDecision
 import online.alarabiya.superapp.model.collections.CreditDecisionStatus
+import online.alarabiya.superapp.ui.rtlIsolate
 
 private val Ink = Color(0xFF362087)
 private val Indigo = Color(0xFF5B36D2)
@@ -217,7 +218,6 @@ private fun CreditFilters(state: CollectionsUiState, actions: CollectionsActions
                 onValueChange = actions.customerIdFilter,
                 modifier = Modifier.weight(1f),
                 label = { Text("معرّف العميل") },
-                leadingIcon = { Icon(Icons.Rounded.Search, null) },
                 singleLine = true,
                 enabled = !state.locked,
                 shape = RoundedCornerShape(18.dp),
@@ -360,9 +360,9 @@ private fun CreditDetail(
 
 @Composable
 private fun DetailLine(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(12.dp)) {
+        Text(label, Modifier.weight(.42f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(rtlIsolate(value), Modifier.weight(.58f), fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
     }
 }
 

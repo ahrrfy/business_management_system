@@ -47,6 +47,11 @@ export interface CreateAppNotificationInput {
   entityType?: string | null;
   entityId?: number | null;
   requiresAction?: boolean;
+  /**
+   * true فقط عندما يكون العنوان والنص مُنشأين من باني حمولة آمنة لشاشة القفل ولا
+   * يحتويان بيانات مالية أو شخصية. الافتراضي false ويؤدي إلى الحجب.
+   */
+  lockScreenSafe?: boolean;
   /** false للأحداث التأكيدية التي يكفي ظهورها داخل التطبيق. */
   push?: boolean;
 }
@@ -221,7 +226,8 @@ function nativePayloadFor(
   if (!destination) return null;
   const notificationId = `np_${crypto.createHash("sha256").update(input.eventKey, "utf8").digest("base64url")}`;
   const sensitive =
-    input.kind === "PAYROLL_READY" || input.kind === "ATTENDANCE";
+    input.kind === "PAYROLL_READY" ||
+    (input.kind === "ATTENDANCE" && input.lockScreenSafe !== true);
   return normalizeNativePushPayload({
     notificationId,
     kind: input.kind,

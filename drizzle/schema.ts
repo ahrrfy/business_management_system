@@ -3636,9 +3636,14 @@ export const stocktakeAssignments = mysqlTable(
     userId: int("userId").references(() => users.id),
     pinHash: varchar("pinHash", { length: 255 }),
     zone: varchar("zone", { length: 120 }),
-    status: mysqlEnum("assignmentStatus", ["ACTIVE", "SUBMITTED"])
+    status: mysqlEnum("assignmentStatus", ["ACTIVE", "SUBMITTED", "REMOVED"])
       .default("ACTIVE")
       .notNull(),
+    // أثر دورة حياة العامل: الإزالة إبطال وصول وليست حذفاً للسجل أو للعدّات المنفّذة.
+    addedBy: int("addedBy").references(() => users.id),
+    removedBy: int("removedBy").references(() => users.id),
+    removedAt: timestamp("removedAt"),
+    removalReason: varchar("removalReason", { length: 255 }),
     // قفل محاولات PIN الفاشلة (نمط قفل الحساب 5/15د).
     failedPinAttempts: int("failedPinAttempts").default(0).notNull(),
     lockedUntil: timestamp("lockedUntil"),
@@ -3648,6 +3653,7 @@ export const stocktakeAssignments = mysqlTable(
   },
   (table) => ({
     sessionIdx: index("idx_stkassign_session").on(table.sessionId),
+    sessionStatusIdx: index("idx_stkassign_session_status").on(table.sessionId, table.status),
   }),
 );
 
@@ -3681,6 +3687,17 @@ export const stocktakeItems = mysqlTable(
     recountRequestedBy: int("recountRequestedBy").references(() => users.id),
     recountReason: varchar("recountReason", { length: 255 }),
     recountRequestedAt: timestamp("recountRequestedAt"),
+    // اعتماد مرحلي أثناء استمرار الجرد؛ التسوية المخزنية والمحاسبية تبقى عند الاعتماد النهائي.
+    reviewApprovedBy: int("reviewApprovedBy").references(() => users.id),
+    reviewApprovedAt: timestamp("reviewApprovedAt"),
+    // بصمة نسخة العد/القرار التي اعتمدها المدير.
+    reviewApprovedOperationId: bigint("reviewApprovedOperationId", { mode: "number" }),
+    reviewApprovedQty: int("reviewApprovedQty"),
+    reviewApprovedSnapshotHash: varchar("reviewApprovedSnapshotHash", { length: 64 }),
+    // آخر إعادة فتح صريحة؛ السجل الكامل append-only في stocktakeItemReviewEvents.
+    reviewReopenedBy: int("reviewReopenedBy"),
+    reviewReopenedAt: timestamp("reviewReopenedAt"),
+    reviewReopenReason: varchar("reviewReopenReason", { length: 255 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -3690,6 +3707,20 @@ export const stocktakeItems = mysqlTable(
     ),
     sessionIdx: index("idx_stkitem_session").on(table.sessionId),
     assignmentIdx: index("idx_stkitem_assignment").on(table.assignmentId),
+    sessionReviewApprovedIdx: index("idx_stkitem_session_review_approved").on(
+      table.sessionId,
+      table.reviewApprovedAt,
+    ),
+    reviewApprovedOperationFk: foreignKey({
+      name: "fk_stkitem_review_approved_operation",
+      columns: [table.reviewApprovedOperationId],
+      foreignColumns: [stocktakeCountOperations.id],
+    }).onDelete("set null"),
+    reviewReopenedByFk: foreignKey({
+      name: "fk_stkitem_review_reopened_by",
+      columns: [table.reviewReopenedBy],
+      foreignColumns: [users.id],
+    }),
   }),
 );
 
@@ -3748,6 +3779,87 @@ export const stocktakeCounts = mysqlTable(
 
 export type StocktakeCount = typeof stocktakeCounts.$inferSelect;
 export type InsertStocktakeCount = typeof stocktakeCounts.$inferInsert;
+
+/** Append-only idempotency ledger for count.submit across offline devices. */
+export const stocktakeCountOperations = mysqlTable(
+  "stocktakeCountOperations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    sessionId: bigint("sessionId", { mode: "number" })
+      .notNull()
+      .references(() => stocktakeSessions.id, { onDelete: "cascade" }),
+    variantId: bigint("variantId", { mode: "number" })
+      .notNull()
+      .references(() => productVariants.id),
+    assignmentId: bigint("assignmentId", { mode: "number" })
+      .notNull()
+      .references(() => stocktakeAssignments.id),
+    clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
+    requestQty: int("requestQty").notNull(),
+    requestUnitBreakdown: text("requestUnitBreakdown"),
+    resultKind: mysqlEnum("resultKind", ["FIRST", "RECOUNT", "VERIFY"]).notNull(),
+    resultVerifyMatch: boolean("resultVerifyMatch"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    requestUq: unique("uq_stkcountop_request").on(table.sessionId, table.clientRequestId),
+    assignmentCreatedIdx: index("idx_stkcountop_assignment_created").on(
+      table.assignmentId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type StocktakeCountOperation = typeof stocktakeCountOperations.$inferSelect;
+export type InsertStocktakeCountOperation = typeof stocktakeCountOperations.$inferInsert;
+
+/** سجل ذري append-only لكل اعتماد مرحلي أو إعادة فتح. */
+export const stocktakeItemReviewEvents = mysqlTable(
+  "stocktakeItemReviewEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    sessionId: bigint("sessionId", { mode: "number" }).notNull(),
+    variantId: bigint("variantId", { mode: "number" }).notNull(),
+    action: mysqlEnum("action", ["APPROVE", "REOPEN"]).notNull(),
+    snapshotOperationId: bigint("snapshotOperationId", { mode: "number" }),
+    snapshotQty: int("snapshotQty"),
+    snapshotHash: varchar("snapshotHash", { length: 64 }),
+    reason: varchar("reason", { length: 255 }),
+    actedBy: int("actedBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    sessionVariantCreatedIdx: index("idx_stk_review_event_session_variant_created").on(
+      table.sessionId,
+      table.variantId,
+      table.createdAt,
+    ),
+    actorCreatedIdx: index("idx_stk_review_event_actor_created").on(table.actedBy, table.createdAt),
+    sessionFk: foreignKey({
+      name: "fk_stk_review_event_session",
+      columns: [table.sessionId],
+      foreignColumns: [stocktakeSessions.id],
+    }).onDelete("cascade"),
+    variantFk: foreignKey({
+      name: "fk_stk_review_event_variant",
+      columns: [table.variantId],
+      foreignColumns: [productVariants.id],
+    }),
+    operationFk: foreignKey({
+      name: "fk_stk_review_event_operation",
+      columns: [table.snapshotOperationId],
+      foreignColumns: [stocktakeCountOperations.id],
+    }).onDelete("set null"),
+    actorFk: foreignKey({
+      name: "fk_stk_review_event_actor",
+      columns: [table.actedBy],
+      foreignColumns: [users.id],
+    }),
+  }),
+);
+
+export type StocktakeItemReviewEvent = typeof stocktakeItemReviewEvents.$inferSelect;
+export type InsertStocktakeItemReviewEvent = typeof stocktakeItemReviewEvents.$inferInsert;
 
 /** قرارات المراجعة: تسوية/إبقاء + سبب الفرق (تحليل الانكماش) — تُثبَّت قيمها النهائية عند الاعتماد. */
 export const stocktakeDecisions = mysqlTable(

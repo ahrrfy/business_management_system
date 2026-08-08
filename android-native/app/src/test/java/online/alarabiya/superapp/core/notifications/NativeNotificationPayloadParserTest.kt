@@ -1,5 +1,8 @@
 package online.alarabiya.superapp.core.notifications
 
+import online.alarabiya.superapp.core.navigation.NativeDestination
+import online.alarabiya.superapp.core.navigation.NativeFeatureIntent
+import online.alarabiya.superapp.core.navigation.NativeModule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -62,6 +65,72 @@ class NativeNotificationPayloadParserTest {
             )
             assertTrue("Expected rejection for $key", result is NativeNotificationParseResult.Rejected)
         }
+    }
+
+    @Test
+    fun acceptsOnlyTheRootOrDetailShapeDefinedForEachOperationalKind() {
+        val accepted = listOf(
+            "TASK_ASSIGNED" to "alrueya://app/tasks",
+            "TASK_ASSIGNED" to "alrueya://app/module/tasks/view/42",
+            "APPROVAL_REQUIRED" to "alrueya://app/approvals",
+            "ATTENDANCE" to "alrueya://app/module/hr/browse",
+            "ATTENDANCE_CHECK_IN" to "alrueya://app/module/hr/browse",
+            "ATTENDANCE_CHECK_OUT" to "alrueya://app/module/hr/browse",
+            "PAYROLL_READY" to "alrueya://app/profile",
+            "PAYROLL_READY" to "alrueya://app/module/hr/view/9",
+            "LEAVE_STATUS" to "alrueya://app/profile",
+            "LEAVE_STATUS" to "alrueya://app/module/hr/view/11",
+        )
+
+        accepted.forEach { (kind, destination) ->
+            val result = NativeNotificationPayloadParser.parse(
+                validPayload().toMutableMap().apply {
+                    put("kind", kind)
+                    put("destination", destination)
+                },
+            )
+            assertTrue("Expected $kind to accept $destination", result is NativeNotificationParseResult.Accepted)
+        }
+    }
+
+    @Test
+    fun rejectsKindDestinationConfusionEvenWhenTheUriItselfIsSafe() {
+        val rejected = listOf(
+            "TASK_ASSIGNED" to "alrueya://app/module/sales/view/42",
+            "TASK_ASSIGNED" to "alrueya://app/module/tasks/view/not-a-number",
+            "APPROVAL_REQUIRED" to "alrueya://app/home",
+            "ATTENDANCE" to "alrueya://app/module/hr/view/9",
+            "ATTENDANCE_CHECK_OUT" to "alrueya://app/profile",
+            "PAYROLL_READY" to "alrueya://app/module/tasks/view/42",
+            "SYSTEM" to "alrueya://app/home",
+        )
+
+        rejected.forEach { (kind, destination) ->
+            val result = NativeNotificationPayloadParser.parse(
+                validPayload().toMutableMap().apply {
+                    put("kind", kind)
+                    put("destination", destination)
+                },
+            )
+            assertEquals(
+                "Expected $kind to reject $destination",
+                "destination_not_allowed_for_kind",
+                (result as NativeNotificationParseResult.Rejected).reason,
+            )
+        }
+    }
+
+    @Test
+    fun allowlistRetainsTheTypedTaskEntity() {
+        val destination = NativeDestination.Feature(
+            NativeModule.TASKS,
+            NativeFeatureIntent.VIEW,
+            "42",
+        )
+
+        assertTrue(NativeNotificationPayloadParser.allowsDestination("TASK_ASSIGNED", destination))
+        assertEquals("42", destination.entityId)
+        assertEquals(NativeFeatureIntent.VIEW, destination.intent)
     }
 
     private fun validPayload(): Map<String, String> = mapOf(

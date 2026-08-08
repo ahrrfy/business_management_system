@@ -328,7 +328,7 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
   await validateAssignmentsInTx(tx, input);
   const { stockMap, costMap } = await snapshotStockCost(tx, input.branchId, scope.variantIds);
   const { sessionId, code } = await insertSession(tx, input, scope, actor);
-  const { assignmentIds, assignmentPins } = await insertAssignments(tx, sessionId, input.assignments);
+  const { assignmentIds, assignmentPins } = await insertAssignments(tx, sessionId, input.assignments, actor);
   const perAssignmentCount = await distributeAndInsertItems(
     tx, input, scope, sessionId, assignmentIds, stockMap, costMap,
   );
@@ -431,6 +431,7 @@ async function insertAssignments(
   tx: Tx,
   sessionId: number,
   assignments: CreateStocktakeInput["assignments"],
+  actor: StkActor,
 ): Promise<{ assignmentIds: number[]; assignmentPins: (string | undefined)[] }> {
   const usedPins = new Set<string>();
   const assignmentIds: number[] = [];
@@ -450,6 +451,7 @@ async function insertAssignments(
       pinHash,
       zone: a.zone ?? null,
       status: "ACTIVE",
+      addedBy: actor.userId,
     });
     assignmentIds.push(extractInsertId(aRes));
     assignmentPins.push(pin);

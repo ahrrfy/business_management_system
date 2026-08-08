@@ -34,6 +34,8 @@ export type PortalCountState = {
   counted: boolean;
   colleagueCounted: boolean;
   myCount: { qty: number; at: Date; unitBreakdown: string | null } | null;
+  /** ختم إداري مرحلي فقط — بلا اسم المدير أو أي قيمة دفترية. */
+  reviewApproved: boolean;
 };
 
 export type PortalItem = PortalCatalogItem & {
@@ -41,6 +43,7 @@ export type PortalItem = PortalCatalogItem & {
   counted: boolean;
   myCount: { qty: number; at: Date; unitBreakdown: string | null } | null;
   colleagueCounted: boolean;
+  reviewApproved: boolean;
 };
 
 export type PortalDynamic = {
@@ -78,6 +81,7 @@ export function mergePortalState(catalog: PortalCatalogItem[], dyn: PortalDynami
       counted: c?.counted ?? false,
       myCount: c?.myCount ?? null,
       colleagueCounted: c?.colleagueCounted ?? false,
+      reviewApproved: c?.reviewApproved ?? false,
     };
   });
 

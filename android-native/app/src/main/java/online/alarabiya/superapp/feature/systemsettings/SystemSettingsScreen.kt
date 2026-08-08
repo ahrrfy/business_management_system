@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -81,6 +82,7 @@ import online.alarabiya.superapp.model.systemsettings.TaxSettings
 import online.alarabiya.superapp.model.systemsettings.TemplateStatus
 import online.alarabiya.superapp.model.systemsettings.TriageMode
 import online.alarabiya.superapp.model.systemsettings.WhatsAppHubSettings
+import online.alarabiya.superapp.ui.rtlIsolate
 
 private val AdminNavy = Color(0xFF362087)
 private val AdminBlue = Color(0xFF5B36D2)
@@ -248,7 +250,11 @@ private fun BranchRow(branch: AdminBranch, capabilities: SystemSettingsCapabilit
         ValueLine("الرمز", branch.code)
         ValueLine("النوع", if (branch.type == BranchType.MAIN) "رئيسي" else "مبيعات")
         ValueLine("الحالة", if (branch.active) "نشط" else "معطل")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             OutlinedButton(onClick = { edit = true }, enabled = capabilities.canManageBranches && busyKey == null) { Icon(Icons.Rounded.Edit, null); Text("تعديل") }
             OutlinedButton(onClick = { confirmActive = !branch.active }, enabled = capabilities.canManageBranches && busyKey == null) {
                 Icon(Icons.Rounded.PowerSettingsNew, null); Text(if (branch.active) "تعطيل" else "تفعيل")
@@ -352,7 +358,11 @@ private fun IntegrationRow(integration: ChannelIntegration, state: SystemSetting
         ValueLine("مفتاح التطبيق", if (integration.hasAppSecret) "مهيأ" else "غير مهيأ")
         ValueLine("رمز الوصول", if (integration.hasAccessToken) "مهيأ" else "غير مهيأ")
         integration.lastError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             OutlinedButton(onClick = { edit = true }, enabled = capabilities.canManageIntegrations && state.crypto?.ready == true && state.busyKey == null) { Text("البيانات العامة") }
             OutlinedButton(onClick = { confirmation = "verify" }, enabled = capabilities.canManageIntegrations && state.busyKey == null) { Text("اختبار") }
             OutlinedButton(onClick = { confirmation = "enabled" }, enabled = capabilities.canManageIntegrations && state.busyKey == null) {
@@ -538,8 +548,9 @@ private fun AdminCard(title: String, icon: ImageVector, content: @Composable Col
     }
 }
 
-@Composable private fun ValueLine(label: String, value: String) = Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-    Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(value, fontWeight = FontWeight.SemiBold)
+@Composable private fun ValueLine(label: String, value: String) = Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    Text(label, Modifier.weight(.44f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text(rtlIsolate(value), Modifier.weight(.56f), fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
 }
 
 @Composable private fun MetricGrid(metrics: List<Pair<String, String>>) {

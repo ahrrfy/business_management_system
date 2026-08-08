@@ -22,12 +22,18 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
       - name: Require successful native CI for this exact commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          test "$GITHUB_REF" = "refs/heads/main"
           conclusion="$(gh run list --workflow=android-native-ci.yml --commit "$GITHUB_SHA" --status completed --limit 1 --json conclusion --jq '.[0].conclusion // "missing"')"
           test "$conclusion" = "success"
+      - name: Verify native release source contract
+        run: node scripts/verify-mobile-release-env.mjs
       - name: Recheck native Android source
         working-directory: android-native
         env:
@@ -40,6 +46,7 @@ jobs:
             :app:testDevDebugUnitTest \
             :app:lintDevDebug \
             :app:lintProdRelease \
+            :app:compileDevDebugAndroidTestKotlin \
             :app:assembleDevDebug
 
   signed-native-artifacts:
@@ -53,30 +60,38 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
       - name: Validate release inputs
         env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          GOOGLE_SERVICES_JSON_B64: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 }}
-          EXPECTED_UPLOAD_SHA256: ${{ vars.ANDROID_UPLOAD_SIGNING_SHA256 }}
-          PROD_BASE_URL: ${{ vars.ALRUEYA_PROD_BASE_URL }}
-        run: |
-          test -n "$KEYSTORE_B64"
-          test -n "$KEYSTORE_PASSWORD"
-          test -n "$KEY_ALIAS"
-          test -n "$KEY_PASSWORD"
-          test -n "$GOOGLE_SERVICES_JSON_B64"
-          test -n "$EXPECTED_UPLOAD_SHA256"
-          test "$PROD_BASE_URL" = "https://srv1548487.hstgr.cloud"
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_UPLOAD_SIGNING_SHA256: ${{ vars.ANDROID_UPLOAD_SIGNING_SHA256 }}
+          FIREBASE_GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 }}
+          FCM_PROJECT_ID: ${{ vars.FCM_PROJECT_ID || secrets.FCM_PROJECT_ID }}
+          FCM_SERVICE_ACCOUNT_JSON: ${{ secrets.FCM_SERVICE_ACCOUNT_JSON }}
+          INTEGRATIONS_ENCRYPTION_KEY: ${{ secrets.INTEGRATIONS_ENCRYPTION_KEY }}
+          TWO_FACTOR_ENFORCEMENT: ${{ vars.TWO_FACTOR_ENFORCEMENT }}
+          SUPER_APP_NATIVE_REQUIRED: ${{ vars.SUPER_APP_NATIVE_REQUIRED }}
+          NATIVE_PUSH_ENVIRONMENT: ${{ vars.NATIVE_PUSH_ENVIRONMENT }}
+          HR_DEVICE_BRIDGE: ${{ vars.HR_DEVICE_BRIDGE }}
+          HR_DEVICE_PORT: ${{ vars.HR_DEVICE_PORT }}
+          ALRUEYA_PROD_BASE_URL: ${{ vars.ALRUEYA_PROD_BASE_URL }}
+        run: node scripts/verify-mobile-release-env.mjs --release
       - name: Restore signing and Firebase configuration
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           GOOGLE_SERVICES_JSON_B64: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/android-upload.jks"
-          echo "$GOOGLE_SERVICES_JSON_B64" | base64 --decode > android-native/app/google-services.json
+          umask 077
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/android-upload.jks"
+          printf '%s' "$GOOGLE_SERVICES_JSON_B64" | base64 --decode > android-native/app/google-services.json
+          keytool -list -keystore "$RUNNER_TEMP/android-upload.jks" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
       - name: Build signed production APK and AAB
         working-directory: android-native
         env:
@@ -103,6 +118,11 @@ jobs:
           apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           aapt_path="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
           "$apksigner_path" verify --verbose "$apk"
+          # The Play upload certificate is intentionally self-signed. `-strict` returns exit code 4
+          # for that valid certificate chain, so verify the JAR signature itself and require the
+          # positive verification marker instead of treating the expected trust warning as damage.
+          jarsigner -verify -verbose -certs "$aab" > "$RUNNER_TEMP/aab-signature.txt"
+          grep -Fq 'jar verified.' "$RUNNER_TEMP/aab-signature.txt"
           "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='4' versionName='1.0.0'"
           unzip -p "$apk" 'classes*.dex' > "$RUNNER_TEMP/native-classes.dex"
           grep -aFq 'https://srv1548487.hstgr.cloud' "$RUNNER_TEMP/native-classes.dex"
@@ -127,3 +147,8 @@ jobs:
             native-android-SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
+      - name: Remove restored credentials
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/android-upload.jks"
+          rm -f android-native/app/google-services.json

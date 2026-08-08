@@ -62,29 +62,30 @@ class NativeNavigationRegistryTest {
             registry.authorize(NativeDestination.SelfService, NavigationPrincipal(authenticated = true)),
         )
         assertEquals(
-            AccessDecision.Allowed,
-            registry.authorize(NativeDestination.Collaboration, NavigationPrincipal(authenticated = true)),
+            AccessDecision.Denied(AccessDenialReason.CAPABILITY_NOT_AVAILABLE),
+            registry.authorize(
+                NativeDestination.SelfService,
+                NavigationPrincipal(authenticated = true, hasPersonalWorkspace = false),
+            ),
         )
-        assertEquals(
-            AccessDecision.Allowed,
-            registry.authorize(NativeDestination.AccountingControls, NavigationPrincipal(authenticated = true)),
+        val aggregateReader = NavigationPrincipal(
+            authenticated = true,
+            grants = mapOf(
+                NativeModule.TASKS to ModuleGrant.READ,
+                NativeModule.REPORTS to ModuleGrant.READ,
+                NativeModule.CAMPAIGNS to ModuleGrant.READ,
+                NativeModule.ASSETS to ModuleGrant.READ,
+                NativeModule.CRM to ModuleGrant.READ,
+                NativeModule.INVENTORY to ModuleGrant.READ,
+                NativeModule.PRODUCTS to ModuleGrant.READ,
+            ),
         )
-        assertEquals(
-            AccessDecision.Allowed,
-            registry.authorize(NativeDestination.Marketing, NavigationPrincipal(authenticated = true)),
-        )
-        assertEquals(
-            AccessDecision.Allowed,
-            registry.authorize(NativeDestination.Operations, NavigationPrincipal(authenticated = true)),
-        )
-        assertEquals(
-            AccessDecision.Allowed,
-            registry.authorize(NativeDestination.CrmWorkspace, NavigationPrincipal(authenticated = true)),
-        )
-        assertEquals(
-            AccessDecision.Allowed,
-            registry.authorize(NativeDestination.WarehouseTools, NavigationPrincipal(authenticated = true)),
-        )
+        assertEquals(AccessDecision.Allowed, registry.authorize(NativeDestination.Collaboration, aggregateReader))
+        assertEquals(AccessDecision.Allowed, registry.authorize(NativeDestination.AccountingControls, aggregateReader))
+        assertEquals(AccessDecision.Allowed, registry.authorize(NativeDestination.Marketing, aggregateReader))
+        assertEquals(AccessDecision.Allowed, registry.authorize(NativeDestination.Operations, aggregateReader))
+        assertEquals(AccessDecision.Allowed, registry.authorize(NativeDestination.CrmWorkspace, aggregateReader))
+        assertEquals(AccessDecision.Allowed, registry.authorize(NativeDestination.WarehouseTools, aggregateReader))
         val taskReader = NavigationPrincipal(
             authenticated = true,
             grants = mapOf(NativeModule.TASKS to ModuleGrant.READ),
@@ -140,5 +141,42 @@ class NativeNavigationRegistryTest {
         assertTrue(
             NativeDeepLinkCodec.parse("alrueya://app/module/collections/create") is DeepLinkResult.Rejected,
         )
+    }
+
+    @Test
+    fun `aggregate routes follow grants for custom roles`() {
+        val customRole = NavigationPrincipal(
+            authenticated = true,
+            role = "finance_specialist",
+            grants = mapOf(
+                NativeModule.COLLECTIONS to ModuleGrant.FULL,
+                NativeModule.REPORTS to ModuleGrant.READ,
+            ),
+        )
+
+        assertEquals(AccessDecision.Allowed, registry.authorize(NativeDestination.Collections, customRole))
+        assertEquals(AccessDecision.Allowed, registry.authorize(NativeDestination.Receivables, customRole))
+        assertEquals(AccessDecision.Allowed, registry.authorize(NativeDestination.Insights, customRole))
+        assertEquals(
+            AccessDecision.Denied(AccessDenialReason.MODULE_NOT_GRANTED),
+            registry.authorize(NativeDestination.Marketing, customRole),
+        )
+    }
+
+    @Test
+    fun `warehouse tools require inventory and product read grants`() {
+        val inventoryOnly = NavigationPrincipal(
+            authenticated = true,
+            grants = mapOf(NativeModule.INVENTORY to ModuleGrant.FULL),
+        )
+        val complete = inventoryOnly.copy(
+            grants = inventoryOnly.grants + (NativeModule.PRODUCTS to ModuleGrant.READ),
+        )
+
+        assertEquals(
+            AccessDecision.Denied(AccessDenialReason.MODULE_NOT_GRANTED),
+            registry.authorize(NativeDestination.WarehouseTools, inventoryOnly),
+        )
+        assertEquals(AccessDecision.Allowed, registry.authorize(NativeDestination.WarehouseTools, complete))
     }
 }

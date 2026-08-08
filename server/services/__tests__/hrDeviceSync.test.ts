@@ -33,6 +33,9 @@ const SN = "ZXRBTEST0001";
 
 beforeEach(async () => {
   await truncateTables([
+    "nativePushOutbox",
+    "appNotificationPreferences",
+    "appNotifications",
     "hrDeviceCommands",
     "hrAttendancePunches",
     "hrDeviceUsers",
@@ -50,7 +53,7 @@ beforeEach(async () => {
     // (الأربعاء=٥٠٠٠) وهو رقمٌ لم يُدخله أحد؛ إسنادُه للملفّ يجعل الحارس أقوى لا أضعف:
     // يُثبت أنّ الطيّ يسحب السعر من الموظف فعلاً.
     {
-      id: 1, firstName: "أحمد", fatherName: "علي", lastName: "الجبوري", payType: "hourly", employmentStatus: "active",
+      id: 1, userId: 1, firstName: "أحمد", fatherName: "علي", lastName: "الجبوري", payType: "hourly", employmentStatus: "active",
       dayRates: { الأحد: 5000, الاثنين: 5000, الثلاثاء: 5000, الأربعاء: 5000, الخميس: 5500, الجمعة: 7500, السبت: 6000 },
     },
     { id: 2, firstName: "زينب", fatherName: "حسن", lastName: "الربيعي", payType: "hourly", employmentStatus: "terminated" },
@@ -60,6 +63,7 @@ beforeEach(async () => {
     name: "جهاز الرئيسي",
     serialNumber: SN,
     protocol: "AIFACE_WS",
+    branchId: 1,
     enabled: true,
     migrated: true,
   });
@@ -143,6 +147,89 @@ describe("المخزن الخام (ج١)", () => {
 });
 
 describe("الطيّ إلى الحضور (ج٢–ج٤)", () => {
+  it("حركة الجهاز الفعلية تنشئ إشعار حضور/انصراف واحداً لكل حدث وصندوق Android آمناً", async () => {
+    const previousWorkplacePolicy = process.env.ATTENDANCE_PUSH_INCLUDE_WORKPLACE;
+    process.env.ATTENDANCE_PUSH_INCLUDE_WORKPLACE = "true";
+    try {
+      const today = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Baghdad",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(new Date());
+      const dev = await device();
+
+      await ingestPunches(dev, [
+        { enrollId: 7, punchAt: `${today} 08:05:00`, mode: "fp" },
+      ]);
+      expect((await processPendingFolds()).days).toBe(1);
+
+      let notices = await db()
+        .select()
+        .from(s.appNotifications)
+        .where(eq(s.appNotifications.userId, 1));
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toMatchObject({
+        kind: "ATTENDANCE",
+        title: "تم تسجيل الحضور",
+        body: expect.stringContaining("08:05 • مسجّل • الرئيسي • جهاز الرئيسي"),
+        entityType: "attendance",
+        requiresAction: false,
+      });
+      expect(notices[0].eventKey).toBe(
+        `attendance:1:${today}:ATTENDANCE_CHECK_IN`,
+      );
+      const [attendanceRow] = await db()
+        .select({ id: s.attendance.id })
+        .from(s.attendance)
+        .where(eq(s.attendance.employeeId, 1));
+      expect(notices[0].entityId).toBe(attendanceRow.id);
+
+      let outbox = await db().select().from(s.nativePushOutbox);
+      expect(outbox).toHaveLength(1);
+      expect(outbox[0].payload).toMatchObject({
+        kind: "ATTENDANCE",
+        title: "تم تسجيل الحضور",
+        body: expect.stringContaining("08:05 • مسجّل"),
+        destination: "alrueya://app/module/hr/browse",
+        sensitive: "false",
+      });
+      expect(JSON.stringify(outbox[0].payload)).not.toContain("أحمد");
+
+      // البصمة الأولى لا تُختلق منها حركة انصراف. وصول الحركة الثانية يعيد الطيّ،
+      // يصطدم حدث الحضور بالمفتاح نفسه، ثم يضيف الانصراف مرة واحدة فقط.
+      await ingestPunches(dev, [
+        { enrollId: 7, punchAt: `${today} 16:42:00`, mode: "fp" },
+      ]);
+      expect((await processPendingFolds()).days).toBe(1);
+      notices = await db()
+        .select()
+        .from(s.appNotifications)
+        .where(eq(s.appNotifications.userId, 1));
+      outbox = await db().select().from(s.nativePushOutbox);
+      expect(notices).toHaveLength(2);
+      expect(outbox).toHaveLength(2);
+      expect(notices.map((row) => row.title).sort()).toEqual(
+        ["تم تسجيل الحضور", "تم تسجيل الانصراف"].sort(),
+      );
+
+      // إعادة دفع الجهاز للسجلين لا تضاعف raw ولا app notification ولا outbox.
+      await ingestPunches(dev, [
+        { enrollId: 7, punchAt: `${today} 08:05:00`, mode: "fp" },
+        { enrollId: 7, punchAt: `${today} 16:42:00`, mode: "fp" },
+      ]);
+      expect((await processPendingFolds()).days).toBe(0);
+      expect(await db().select().from(s.appNotifications)).toHaveLength(2);
+      expect(await db().select().from(s.nativePushOutbox)).toHaveLength(2);
+    } finally {
+      if (previousWorkplacePolicy === undefined) {
+        delete process.env.ATTENDANCE_PUSH_INCLUDE_WORKPLACE;
+      } else {
+        process.env.ATTENDANCE_PUSH_INCLUDE_WORKPLACE = previousWorkplacePolicy;
+      }
+    }
+  });
+
   it("بصمتا دخول/خروج تصيران يوم حضور بساعات وأجر يوم الأربعاء (ج٢)", async () => {
     const dev = await device();
     await ingestPunches(dev, [

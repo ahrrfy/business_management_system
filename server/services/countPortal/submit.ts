@@ -4,7 +4,9 @@ import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import { and, eq } from "drizzle-orm";
 import {
   stocktakeAssignments,
+  stocktakeCountOperations,
   stocktakeCounts,
+  stocktakeDecisions,
   stocktakeItems,
   stocktakeSessions,
 } from "../../../drizzle/schema";
@@ -55,26 +57,6 @@ export async function submitCount(
   try {
     return await withTx(async (tx) => {
       // (٠) idempotency: نفس clientRequestId داخل الجلسة ⇒ أعد نتيجة العدّة الأولى بلا أثر.
-      const dupRows = await tx
-        .select()
-        .from(stocktakeCounts)
-        .where(
-          and(
-            eq(stocktakeCounts.sessionId, identity.session.id),
-            eq(stocktakeCounts.clientRequestId, input.clientRequestId)
-          )
-        )
-        .limit(1);
-      const dup = dupRows[0];
-      if (dup) {
-        return {
-          ok: true as const,
-          kind: dup.kind,
-          verifyMatch: dup.kind === "VERIFY" ? !dup.isConflict : null,
-          idempotent: true,
-        };
-      }
-
       // (١) الجلسة تحت قفل — يمنع السباق مع approve/forceReview/cancel.
       const sessionRows = await tx
         .select()
@@ -84,6 +66,31 @@ export async function submitCount(
         .limit(1);
       const session = sessionRows[0];
       if (!session) throw new TRPCError({ code: "NOT_FOUND", message: SESSION_UNAVAILABLE_MSG });
+
+      // Request ids live in a separate immutable ledger. Taking the session
+      // lock first serializes devices, and this locking read then observes the
+      // operation committed by a request that was ahead of us.
+      const dupRows = await tx
+        .select()
+        .from(stocktakeCountOperations)
+        .where(
+          and(
+            eq(stocktakeCountOperations.sessionId, identity.session.id),
+            eq(stocktakeCountOperations.clientRequestId, input.clientRequestId)
+          )
+        )
+        .for("update")
+        .limit(1);
+      const dup = dupRows[0];
+      if (dup) {
+        return {
+          ok: true as const,
+          kind: dup.resultKind,
+          verifyMatch: dup.resultVerifyMatch,
+          idempotent: true,
+        };
+      }
+
       if (session.status !== "COUNTING") {
         throw new TRPCError({ code: "BAD_REQUEST", message: COUNTING_ENDED_MSG });
       }
@@ -102,7 +109,7 @@ export async function submitCount(
       if (asg.status !== "ACTIVE") {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "سلّمت عدّك مسبقاً — لا يمكن تسجيل أو تعديل عدّات بعد التسليم.",
+          message: "تكليف الجرد غير نشط — لا يمكن تسجيل أو تعديل عدّات بعد التسليم أو إزالة العامل.",
         });
       }
       const myAssignmentId = Number(asg.id);
@@ -124,6 +131,12 @@ export async function submitCount(
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "هذا الصنف خارج نطاق جلسة الجرد — راجع مسؤول الجرد.",
+        });
+      }
+      if (item.reviewApprovedAt != null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "اعتمدت الإدارة عدّ هذا المنتج مرحلياً — لا يمكن تعديله إلا بعد طلب إعادة عدّ جديد.",
         });
       }
 
@@ -201,7 +214,7 @@ export async function submitCount(
 
         // آخر عدّ فعّال سجّلتُه أنا (RECOUNT إن وُجد وإلا FIRST) — «يمكنك تعديل العدّ قبل التسليم».
         if (myOwn) {
-          // تحديث عدّي الذاتي (qty/at/breakdown) — clientRequestId الجديد يلتقط إعادة إرسال التعديل.
+          // تحديث projection العدّ فقط؛ مفاتيح الطلب تبقى ثابتة في سجل العمليات.
           kind = myOwn.kind as "FIRST" | "RECOUNT";
           await tx
             .update(stocktakeCounts)
@@ -209,7 +222,6 @@ export async function submitCount(
               qty: input.qty,
               unitBreakdown: input.unitBreakdown ?? null,
               countedAt: now,
-              clientRequestId: input.clientRequestId,
             })
             .where(eq(stocktakeCounts.id, myOwn.id));
 
@@ -264,7 +276,6 @@ export async function submitCount(
                 qty: input.qty,
                 unitBreakdown: input.unitBreakdown ?? null,
                 countedAt: now,
-                clientRequestId: input.clientRequestId,
                 isConflict: !match,
                 // تعديل العدّ التحقّقي يُلغي حسماً سابقاً مبنياً على قيمة قديمة.
                 resolvedBy: null,
@@ -290,6 +301,29 @@ export async function submitCount(
         }
       }
 
+      // أي عدّ جديد/معدّل يغيّر أساس القرار الإداري؛ يسقط القرار السابق ويُعاد إلى المراجعة.
+      await tx
+        .delete(stocktakeDecisions)
+        .where(
+          and(
+            eq(stocktakeDecisions.sessionId, session.id),
+            eq(stocktakeDecisions.variantId, input.variantId),
+          ),
+        );
+
+      // Record the accepted request in the same transaction as the mutable
+      // projection. This row is append-only and is the sole replay authority.
+      await tx.insert(stocktakeCountOperations).values({
+        sessionId: session.id,
+        variantId: input.variantId,
+        assignmentId: asg.id,
+        clientRequestId: input.clientRequestId,
+        requestQty: input.qty,
+        requestUnitBreakdown: input.unitBreakdown ?? null,
+        resultKind: kind,
+        resultVerifyMatch: verifyMatch,
+      });
+
       // (٥) آخر نشاط للتكليف — يغذّي شاشة المتابعة الحية.
       await tx
         .update(stocktakeAssignments)
@@ -305,11 +339,11 @@ export async function submitCount(
       const db = requireDb();
       const rows = await db
         .select()
-        .from(stocktakeCounts)
+        .from(stocktakeCountOperations)
         .where(
           and(
-            eq(stocktakeCounts.sessionId, identity.session.id),
-            eq(stocktakeCounts.clientRequestId, input.clientRequestId)
+            eq(stocktakeCountOperations.sessionId, identity.session.id),
+            eq(stocktakeCountOperations.clientRequestId, input.clientRequestId)
           )
         )
         .limit(1);
@@ -317,8 +351,8 @@ export async function submitCount(
       if (dup) {
         return {
           ok: true,
-          kind: dup.kind,
-          verifyMatch: dup.kind === "VERIFY" ? !dup.isConflict : null,
+          kind: dup.resultKind,
+          verifyMatch: dup.resultVerifyMatch,
           idempotent: true,
         };
       }

@@ -251,8 +251,16 @@ export async function getPortalDynamic(identity: PortalIdentity): Promise<Portal
         qty: stocktakeCounts.qty,
         unitBreakdown: stocktakeCounts.unitBreakdown,
         countedAt: stocktakeCounts.countedAt,
+        reviewApprovedAt: stocktakeItems.reviewApprovedAt,
       })
       .from(stocktakeCounts)
+      .innerJoin(
+        stocktakeItems,
+        and(
+          eq(stocktakeItems.sessionId, stocktakeCounts.sessionId),
+          eq(stocktakeItems.variantId, stocktakeCounts.variantId),
+        ),
+      )
       .where(eq(stocktakeCounts.sessionId, session.id))
       .orderBy(asc(stocktakeCounts.id)),
     db
@@ -302,6 +310,7 @@ export async function getPortalDynamic(identity: PortalIdentity): Promise<Portal
       myCount: myLast
         ? { qty: myLast.qty, at: myLast.countedAt, unitBreakdown: myLast.unitBreakdown ?? null }
         : null,
+      reviewApproved: rows.some((c) => c.reviewApprovedAt != null),
     });
   }
 

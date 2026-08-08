@@ -18,9 +18,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.workorders.*
+import online.alarabiya.superapp.core.scanner.NativeScanField
+import online.alarabiya.superapp.ui.scanner.NativeScannerAction
 
 private val WorkGreen = Color(0xFF5B36D2)
 private val WorkOrange = Color(0xFFEC2F86)
@@ -74,7 +79,7 @@ private fun OrdersPane(state: WorkOrdersUiState, caps: WorkOrdersCapabilities, a
 private fun OrdersList(state: WorkOrdersUiState, caps: WorkOrdersCapabilities, actions: WorkOrdersViewModel) {
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Stats(state.counts) }
-        item { Search(state.orderQuery, actions::setOrderQuery, actions::refreshOrders, "رقم الأمر، العميل أو العنوان") }
+        item { Search(state.orderQuery, actions::setOrderQuery, actions::refreshOrders, "رقم الأمر، العميل أو العنوان", NativeScanField.DOCUMENT_REFERENCE) }
         item { Chips(listOf(null, WorkOrderStatus.RECEIVED, WorkOrderStatus.IN_PROGRESS, WorkOrderStatus.READY, WorkOrderStatus.DELIVERED), state.orderStatus, actions::setOrderStatus) { it?.label() ?: "الكل" } }
         item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Chips(WorkQueue.entries, state.queue, actions::setQueue) { it.label() }; if (caps.canCreateOrders) IconButton(actions::beginOrder) { Icon(Icons.Rounded.Add, "أمر جديد") } } }
         if (state.orders.isEmpty()) item { Empty("لا توجد أوامر مطابقة") }
@@ -148,7 +153,7 @@ private fun OrderActions(order: WorkOrderDetail, state: WorkOrdersUiState, caps:
 private fun ServicesPane(state: WorkOrdersUiState, actions: WorkOrdersViewModel) {
     val rows = state.printServices.filter { state.printQuery.isBlank() || listOf(it.productName, it.sku, it.categoryName).any { value -> value?.contains(state.printQuery, true) == true } }
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
-        item { Search(state.printQuery, actions::setPrintQuery, {}, "خدمة أو SKU") }
+        item { Search(state.printQuery, actions::setPrintQuery, {}, "خدمة أو SKU", NativeScanField.SKU_OR_BARCODE) }
         item { Chips(PriceTier.entries, state.printTier, actions::setPrintTier) { it.label() } }
         if (rows.isEmpty()) item { Empty("لا توجد خدمات طباعة في هذه الفئة") }
         items(rows, key = { "${it.variantId}:${it.productUnitId}" }) { service -> CurvedCard(MaterialTheme.colorScheme.primary) { Text(service.productName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Text("${service.categoryName ?: "خدمات"} · ${service.unitName} · ${service.sku}"); Text(service.price?.let { "$it د.ع" } ?: "سعر يحدده الكاشير في نقطة البيع", color = if (service.price == null) WorkOrange else WorkGreen, fontWeight = FontWeight.Bold) } }
@@ -192,7 +197,7 @@ private fun ProductionPane(state: WorkOrdersUiState, actions: WorkOrdersViewMode
 @Composable
 private fun ProductionList(state: WorkOrdersUiState, actions: WorkOrdersViewModel) {
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Search(state.productionQuery, actions::setProductionQuery, actions::refreshProductions, "رقم المستند أو الناتج") }
+        item { Search(state.productionQuery, actions::setProductionQuery, actions::refreshProductions, "رقم المستند أو الناتج", NativeScanField.DOCUMENT_REFERENCE) }
         item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Chips(listOf(null, ProductionStatus.CONFIRMED, ProductionStatus.CANCELLED), state.productionStatus, actions::setProductionStatus) { it?.label() ?: "الكل" }; IconButton(actions::beginRun) { Icon(Icons.Rounded.Add, "تشغيل وصفة") } } }
         if (state.productions.isEmpty()) item { Empty("لا توجد مستندات إنتاج") }
         items(state.productions, key = { it.id }) { production -> CurvedCard(if (production.status == ProductionStatus.CONFIRMED) WorkGreen else Color.Gray) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(production.number, fontWeight = FontWeight.Bold); Pill(production.status.label(), if (production.status == ProductionStatus.CONFIRMED) WorkGreen else Color.Gray) }; Text("${production.outputQty} ناتج · ${production.totalCost} د.ع"); TextButton({ actions.selectProduction(production.id) }, Modifier.align(Alignment.End)) { Text("التفاصيل") } } }
@@ -227,7 +232,24 @@ private fun ProductionDetailPane(detail: ProductionDetail?, actions: WorkOrdersV
 
 @Composable private fun ProductionLineCard(line: ProductionLine) { CurvedCard(MaterialTheme.colorScheme.primary) { Text(line.label, fontWeight = FontWeight.Bold); Text("${line.sku} · ${line.baseQuantity} وحدة"); line.lineCost?.let { Text("الكلفة $it") } } }
 @Composable private fun Stats(c: WorkOrderCounts) { LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(listOf("وارد" to c.received, "تنفيذ" to c.inProgress, "جاهز" to c.ready, "متأخر" to c.late)) { (label, value) -> Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(20.dp)) { Column(Modifier.width(108.dp).padding(14.dp)) { Text(value.toString(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary); Text(label) } } } } }
-@Composable private fun Search(value: String, change: (String) -> Unit, search: () -> Unit, label: String) { OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, trailingIcon = { IconButton(search) { Icon(Icons.Rounded.Search, "بحث") } }, singleLine = true, shape = RoundedCornerShape(18.dp)) }
+@Composable private fun Search(value: String, change: (String) -> Unit, search: () -> Unit, label: String, scanField: NativeScanField) {
+    OutlinedTextField(
+        value,
+        change,
+        Modifier.fillMaxWidth(),
+        label = { Text(label) },
+        trailingIcon = {
+            Row {
+                NativeScannerAction(scanField, { scanned -> change(scanned); search() })
+                IconButton(search) { Icon(Icons.Rounded.Search, "بحث") }
+            }
+        },
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { search() }),
+        singleLine = true,
+        shape = RoundedCornerShape(18.dp),
+    )
+}
 @Composable private fun Field(label: String, value: String, lines: Int = 1, change: (String) -> Unit) { OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, minLines = lines, maxLines = lines, shape = RoundedCornerShape(16.dp)) }
 @Composable private fun <T> Chips(values: List<T>, selected: T, choose: (T) -> Unit, label: (T) -> String) { LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) { items(values) { value -> FilterChip(selected == value, { choose(value) }, { Text(label(value)) }) } } }
 @Composable private fun CurvedCard(accent: Color, content: @Composable ColumnScope.() -> Unit) { Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(topStart = 28.dp, topEnd = 14.dp, bottomEnd = 28.dp, bottomStart = 14.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Box { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp), content = content); Box(Modifier.align(Alignment.CenterStart).fillMaxHeight().width(4.dp).background(accent)) } } }

@@ -19,9 +19,11 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -72,6 +74,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -358,17 +361,27 @@ private fun SelfServiceTabs(
     selected: SelfServiceSection,
     onSelect: (SelfServiceSection) -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(selected) {
+        val selectedIndex = PrimarySelfServiceSections.indexOf(selected).coerceAtLeast(0)
+        listState.animateScrollToItem(selectedIndex)
+    }
     Surface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
         color = SelfServiceLavender,
         shape = RoundedCornerShape(24.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, SelfServiceStroke),
     ) {
-        Row(Modifier.fillMaxWidth().padding(4.dp)) {
-            PrimarySelfServiceSections.forEach { section ->
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            items(PrimarySelfServiceSections, key = SelfServiceSection::name) { section ->
                 val active = section == selected
                 Surface(
-                    modifier = Modifier.weight(1f).heightIn(min = 58.dp)
+                    modifier = Modifier.width(70.dp).heightIn(min = 62.dp)
                         .clickable(role = Role.Tab) { onSelect(section) },
                     color = if (active) Color.White else Color.Transparent,
                     shape = RoundedCornerShape(18.dp),
@@ -384,7 +397,7 @@ private fun SelfServiceTabs(
                             section.label,
                             style = MaterialTheme.typography.labelMedium,
                             color = if (active) SelfServiceVioletDark else SelfServiceMuted,
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
@@ -453,7 +466,13 @@ fun PersonalProfileScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ProfileInfoCell("البريد", employee?.email ?: account.email, Modifier.weight(1f))
+                    ProfileInfoCell(
+                        label = "البريد",
+                        value = employee?.email ?: account.email,
+                        modifier = Modifier.weight(1f),
+                        compactValue = true,
+                        leftToRight = true,
+                    )
                     ProfileInfoCell("الهاتف", employee?.phone, Modifier.weight(1f))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -525,7 +544,17 @@ fun PersonalProfileScreen(
 }
 
 @Composable
-private fun ProfileInfoCell(label: String, value: String?, modifier: Modifier = Modifier) {
+private fun ProfileInfoCell(
+    label: String,
+    value: String?,
+    modifier: Modifier = Modifier,
+    compactValue: Boolean = false,
+    leftToRight: Boolean = false,
+) {
+    val displayedValue = value
+        ?.takeIf(String::isNotBlank)
+        ?.let { if (leftToRight && '@' in it) it.replace("@", "@\u200B") else it }
+        ?: "غير مسجل"
     Surface(
         modifier = modifier.heightIn(min = 78.dp),
         color = Color.White,
@@ -535,8 +564,15 @@ private fun ProfileInfoCell(label: String, value: String?, modifier: Modifier = 
         Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(label, style = MaterialTheme.typography.labelMedium, color = SelfServiceMuted)
             Text(
-                value?.takeIf(String::isNotBlank) ?: "غير مسجل",
-                style = MaterialTheme.typography.titleMedium,
+                displayedValue,
+                modifier = Modifier.fillMaxWidth(),
+                style = if (compactValue) {
+                    MaterialTheme.typography.bodyMedium.copy(
+                        textDirection = if (leftToRight) TextDirection.Ltr else TextDirection.ContentOrRtl,
+                    )
+                } else {
+                    MaterialTheme.typography.titleMedium
+                },
                 fontWeight = FontWeight.Bold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,

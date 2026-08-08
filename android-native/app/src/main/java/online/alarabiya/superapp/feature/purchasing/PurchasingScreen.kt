@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -82,6 +83,8 @@ import online.alarabiya.superapp.model.purchasing.ReminderQueueItem
 import online.alarabiya.superapp.model.purchasing.SupplierDetail
 import online.alarabiya.superapp.model.purchasing.SupplierDraft
 import online.alarabiya.superapp.model.purchasing.SupplierSummary
+import online.alarabiya.superapp.core.scanner.NativeScanField
+import online.alarabiya.superapp.ui.scanner.NativeScannerAction
 
 private val PurchaseInk = Color(0xFF362087)
 private val PurchaseGreen = Color(0xFF5B36D2)
@@ -212,7 +215,7 @@ fun PurchasingScreen(
 
 @Composable
 private fun PurchasingHeader(onBack: () -> Unit, onRefresh: () -> Unit, busy: Boolean) {
-    Box(Modifier.fillMaxWidth().height(134.dp).background(PurchaseInk).clip(RoundedCornerShape(bottomStart = 44.dp))) {
+    Box(Modifier.fillMaxWidth().heightIn(min = 134.dp).background(PurchaseInk).clip(RoundedCornerShape(bottomStart = 44.dp))) {
         Box(Modifier.size(180.dp).align(Alignment.TopStart).background(PurchaseGreen.copy(alpha = .25f), CircleShape))
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 22.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "رجوع", tint = Color.White) }
@@ -241,7 +244,12 @@ private fun PurchasingTabs(sections: List<PurchasingSection>, selected: Purchasi
 private fun SearchBar(query: String, onQuery: (String) -> Unit, onSearch: () -> Unit) {
     OutlinedTextField(
         value = query, onValueChange = onQuery, singleLine = true, placeholder = { Text("بحث موحد داخل القسم") },
-        trailingIcon = { IconButton(onClick = onSearch) { Icon(Icons.Rounded.Search, "بحث") } },
+        trailingIcon = {
+            Row {
+                NativeScannerAction(NativeScanField.DOCUMENT_REFERENCE, { scanned -> onQuery(scanned); onSearch() })
+                IconButton(onClick = onSearch) { Icon(Icons.Rounded.Search, "بحث") }
+            }
+        },
         shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
     )
 }

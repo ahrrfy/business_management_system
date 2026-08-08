@@ -22,7 +22,13 @@ class BiometricSessionOperation internal constructor(
     val cipher: Cipher,
     internal val mode: BiometricOperationMode,
     internal val payload: ByteArray,
-)
+) {
+    /** BiometricPrompt must return the exact CryptoObject prepared for this operation. */
+    internal fun accepts(authenticatedCipher: Cipher?): Boolean = authenticatedCipher === cipher
+
+    /** Erase the transient wrapped key input when the system prompt does not complete. */
+    internal fun cancel() = payload.fill(0)
+}
 
 class BiometricSessionInvalidatedException(cause: Throwable? = null) :
     SecurityException("Biometric session key is no longer valid", cause)
@@ -68,6 +74,29 @@ class SecureSessionStore(context: Context) {
 
     fun saveUserSnapshot(snapshot: String) = saveGeneralEncrypted(KEY_USER, snapshot)
     fun loadUserSnapshot(): String? = loadGeneralEncrypted(KEY_USER)
+    fun saveBootstrapSnapshot(snapshot: String) = saveGeneralEncrypted(KEY_BOOTSTRAP, snapshot)
+    fun loadBootstrapSnapshot(): String? = loadGeneralEncrypted(KEY_BOOTSTRAP)
+    fun saveWorkspaceSnapshot(snapshot: String) = saveGeneralEncrypted(KEY_WORKSPACE, snapshot)
+    fun loadWorkspaceSnapshot(): String? = loadGeneralEncrypted(KEY_WORKSPACE)
+
+    @Synchronized
+    fun saveQuerySnapshot(cacheKey: String, snapshot: String) {
+        if (!cacheKey.matches(QUERY_CACHE_KEY) || snapshot.toByteArray(Charsets.UTF_8).size > MAX_QUERY_CACHE_BYTES) return
+        val storageKey = KEY_QUERY_PREFIX + cacheKey
+        val index = loadQueryIndex().toMutableList().apply {
+            remove(cacheKey)
+            add(cacheKey)
+        }
+        while (index.size > MAX_QUERY_CACHE_ENTRIES) {
+            preferences.edit { remove(KEY_QUERY_PREFIX + index.removeAt(0)) }
+        }
+        saveGeneralEncrypted(storageKey, snapshot)
+        saveGeneralEncrypted(KEY_QUERY_INDEX, index.joinToString("\n"))
+    }
+
+    fun loadQuerySnapshot(cacheKey: String): String? =
+        cacheKey.takeIf { it.matches(QUERY_CACHE_KEY) }
+            ?.let { loadGeneralEncrypted(KEY_QUERY_PREFIX + it) }
 
     fun setBiometricEnabled(enabled: Boolean) {
         if (enabled) {
@@ -131,6 +160,11 @@ class SecureSessionStore(context: Context) {
      * strong biometric authentication for this exact operation.
      */
     fun completeBiometricOperation(operation: BiometricSessionOperation, authenticatedCipher: Cipher): Boolean {
+        if (!operation.accepts(authenticatedCipher)) {
+            operation.cancel()
+            invalidateBiometricSession()
+            return false
+        }
         return try {
             when (operation.mode) {
                 BiometricOperationMode.ENROLL -> {
@@ -172,7 +206,7 @@ class SecureSessionStore(context: Context) {
             invalidateBiometricSession()
             false
         } finally {
-            operation.payload.fill(0)
+            operation.cancel()
         }
     }
 
@@ -248,6 +282,13 @@ class SecureSessionStore(context: Context) {
         )
         String(cipher.doFinal(blob.ciphertext), Charsets.UTF_8)
     }.getOrNull()
+
+    private fun loadQueryIndex(): List<String> = loadGeneralEncrypted(KEY_QUERY_INDEX)
+        ?.lineSequence()
+        ?.filter { it.matches(QUERY_CACHE_KEY) }
+        ?.distinct()
+        ?.toList()
+        .orEmpty()
 
     private fun encryptWithKey(key: SecretKey, plaintext: ByteArray): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -364,10 +405,17 @@ class SecureSessionStore(context: Context) {
         const val KEY_DATA_KEY_STANDARD = "session_data_key_standard_v2"
         const val KEY_DATA_KEY_BIOMETRIC = "session_data_key_biometric_v2"
         const val KEY_USER = "user_snapshot"
+        const val KEY_BOOTSTRAP = "bootstrap_snapshot_v1"
+        const val KEY_WORKSPACE = "workspace_snapshot_v1"
+        const val KEY_QUERY_INDEX = "query_cache_index_v1"
+        const val KEY_QUERY_PREFIX = "query_cache_v1_"
         const val KEY_BIOMETRIC = "biometric_enabled"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val GCM_TAG_BITS = 128
         const val DATA_KEY_BYTES = 32
+        const val MAX_QUERY_CACHE_BYTES = 512 * 1024
+        const val MAX_QUERY_CACHE_ENTRIES = 48
         const val LOCKED_COOKIE_SENTINEL = "__alrueya_locked__=1"
+        val QUERY_CACHE_KEY = Regex("[a-f0-9]{64}")
     }
 }
