@@ -21,6 +21,12 @@
 
 require("dotenv").config();
 
+const configuredHrDevicePort = Number(process.env.HR_DEVICE_PORT || "0");
+const hrBridgeEnabled =
+  (process.env.HR_DEVICE_BRIDGE === "1" ||
+    (Number.isInteger(configuredHrDevicePort) && configuredHrDevicePort > 0)) &&
+  !process.env.CONTROL_DATABASE_URL;
+
 module.exports = {
   apps: [
     {
@@ -31,8 +37,8 @@ module.exports = {
       // عدّة عمّال يتقاسمون الطلبات على نوى المعالج ⇒ طاقةٌ أعلى تحت الذروة (٧ كاشيرات + كل
       // الموظفين والحسابات) + مقاومةُ انهيار (سقوطُ عاملٍ لا يُسقط الخدمة — الباقون يخدمون) +
       // إعادةُ تحميلٍ متدحرجة بلا انقطاع (pm2 reload). الكنّاسات والكرون تعمل في العامل 0 فقط
-      // (server/lib/clusterRole.ts) فلا تتكرّر. ⚠️ **جسر أجهزة الحضور** (حالةٌ حيّة داخل العملية)
-      // غير متوافقٍ مع عنقودٍ متعدّد العمّال ⇒ يُعطَّل تلقائياً ما لم WEB_INSTANCES=1 (راجع index.ts).
+      // (server/lib/clusterRole.ts) فلا تتكرّر. جسر أجهزة الحضور مفصول في erp-hr-bridge
+      // (عملية fork واحدة) ولا يملك erp-server منفذ الأجهزة أو وصلاتها الحيّة.
       // ⚠️ الخادم مشترك (سراج/أودو خطّ أحمر) — الافتراضي عاملَان (لا "max") كي لا نستنزف نوى
       // الجيران؛ ارفعه بحذر عبر WEB_INSTANCES=3 بعد مراقبة الحِمل. **ميزانية اتصالات القاعدة:**
       // كل عامل يفتح حتى DB_POOL_LIMIT اتصالاً **لكل شركة**؛ في الوضع الأحادي = (عدد العمّال ×
@@ -65,8 +71,7 @@ module.exports = {
         // طلب أصل عند فتح صفحة كانت تُشبع الخيوط الأربعة وتُعلّق الطلبات على «جار التحميل».
         UV_THREADPOOL_SIZE: "16",
         PORT: process.env.PORT || 3000,
-        // نُمرّر عدد العمّال المقصود إلى العملية نفسها كي يقرأه isMultiWorker() (يحجب جسر
-        // أجهزة الحضور ذا الحالة الحيّة عن العنقود متعدّد العمّال). يطابق `instances` أعلاه.
+        // يطابق عدد عمّال الويب المقصود في `instances` أعلاه.
         WEB_INSTANCES: String(process.env.WEB_INSTANCES || 2),
         DATABASE_URL: process.env.DATABASE_URL,
         JWT_SECRET: process.env.JWT_SECRET,
@@ -76,6 +81,31 @@ module.exports = {
       log_date_format: "YYYY-MM-DD HH:mm:ss",
       error_file: "logs/erp-error.log",
       out_file: "logs/erp-out.log",
+      merge_logs: true,
+    },
+    {
+      name: "erp-hr-bridge",
+      script: "scripts/hr-bridge-worker.mjs",
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: "fork",
+      watch: false,
+      autorestart: hrBridgeEnabled,
+      exp_backoff_restart_delay: 3000,
+      max_restarts: 10,
+      min_uptime: "10s",
+      kill_timeout: 11000,
+      env: {
+        NODE_ENV: "production",
+        TZ: "UTC",
+        DATABASE_URL: process.env.DATABASE_URL,
+        CONTROL_DATABASE_URL: process.env.CONTROL_DATABASE_URL,
+        HR_DEVICE_BRIDGE: process.env.HR_DEVICE_BRIDGE,
+        HR_DEVICE_PORT: process.env.HR_DEVICE_PORT,
+      },
+      log_date_format: "YYYY-MM-DD HH:mm:ss",
+      error_file: "logs/hr-bridge-error.log",
+      out_file: "logs/hr-bridge-out.log",
       merge_logs: true,
     },
     {

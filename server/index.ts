@@ -34,7 +34,6 @@ import {
 import {
   isBackgroundJobRunner,
   isClustered,
-  isMultiWorker,
 } from "./lib/clusterRole";
 import {
   createOverloadGuard,
@@ -547,11 +546,10 @@ async function startServer() {
 
   // ── طبقة العمّال: الوظائف الخلفيّة تعمل في عاملٍ واحدٍ فقط ─────────────────────────────────
   // في العنقود تعمل عدّة نسخ من الخادم على النوى؛ لو بدأت كلٌّ منها الكنّاسات والكرون لتكرّر
-  // الإرسال (واتساب/دفع) والمعالجة، ولتضارب منفذ جسر الحضور (7788) بين العمّال. لذا تُشغَّل هذه
+  // الإرسال (واتساب/دفع) والمعالجة. أمّا جسر الحضور فله عملية PM2 مستقلة، لذا تُشغَّل هذه
   // في العامل رقم 0 فقط (أو العملية الوحيدة في fork) — راجع lib/clusterRole.ts. تُرفَع مقابض
   // الإيقاف للنطاق الخارجيّ ليستدعيها الإغلاق الرشيق بأمان أياً كان العامل.
   let stopNativePushOutboxWorker: (() => void) | null = null;
-  let hrBridge: { stop: () => Promise<void> } | null = null;
   if (isBackgroundJobRunner()) {
     // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
     // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
@@ -587,26 +585,6 @@ async function startServer() {
       });
     }
 
-    // جسر أجهزة الحضور (بصمة الوجه/ZKTeco) — يُفعَّل بـHR_DEVICE_BRIDGE=1 (منفذ 7788 افتراضاً).
-    // ⚠️ مفردٌ ذو **حالةٍ حيّة داخل العملية** (مقابس WebSocket + سجلّ أجهزةٍ في الذاكرة تقرأه
-    // نقاطُ hrDevices.bridgeStatus/enqueueCommand) ⇒ **غير متوافق مع عنقودٍ متعدّد العمّال**:
-    // (١) منفذ 7788 يتسابق بين العامل 0 القديم والجديد عند إعادة التحميل المتدحرجة (EADDRINUSE
-    // بلا إعادة محاولة ⇒ الجسر يبقى ساقطاً)؛ (٢) نقاطُ التحكّم تُخدَم من عمّالٍ لا يملكون الحالة
-    // الحيّة ⇒ حالةٌ خاطئة وأوامرُ ضائعة. حتى يُبنى تخزينٌ مشترك/توجيهٌ لمالك الجسر، نشغّله في
-    // وضع **العامل الواحد** فقط (WEB_INSTANCES=1) وإلّا نُبلّغ بوضوح ولا نبدؤه (لا كسرٌ صامت).
-    const { resolveBridgeConfig } = await import("./services/hrDevices/types");
-    const hrCfg = resolveBridgeConfig();
-    if (hrCfg.enabled && isMultiWorker()) {
-      logger.warn(
-        "جسر أجهزة الحضور مُعطَّل: غير متوافق مع عنقودٍ متعدّد العمّال (WEB_INSTANCES>1). " +
-          "شغّل erp-server بـWEB_INSTANCES=1، أو انشر الجسر كعمليةٍ مستقلّةٍ بحالةٍ مشتركة.",
-      );
-    } else if (hrCfg.enabled) {
-      const { startHrDeviceBridge } = await import(
-        "./services/hrDevices/bridge"
-      );
-      hrBridge = startHrDeviceBridge(hrCfg.port);
-    }
     logger.info(
       `الوظائف الخلفيّة بدأت على العامل ${process.env.NODE_APP_INSTANCE ?? "الوحيد"}.`,
     );
@@ -629,7 +607,6 @@ async function startServer() {
     }, 10_000);
     try {
       stopNativePushOutboxWorker?.();
-      if (hrBridge) await hrBridge.stop().catch(() => undefined);
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
       clearTimeout(force);
