@@ -325,8 +325,9 @@ describe("G8 — أمانة COUNTER لأمر شغل تُقاس بإيصالات 
 });
 
 describe("G9 — التقاط أمانة الأجرة محروس خادمياً", () => {
-  it("deliveryFeeHeld بلا توصيل COUNTER يُرفض، وبمبلغ يخالف الأجرة يُرفض", async () => {
+  it("مع توصيل COURIER يُرفض، وبمبلغ يخالف أجرة COUNTER يُرفض، وبلا توصيل (إسناد مؤجَّل) يمرّ", async () => {
     const shift = await openReception();
+    // (أ) أمانة مع توصيل يقبض المندوب أجرته بنفسه = المندوب يقبضها مرتين ⇒ رفض.
     await expect(
       checkoutReception({
         branchId: 1, shiftId: shift.shiftId, customerId: 1,
@@ -334,9 +335,11 @@ describe("G9 — التقاط أمانة الأجرة محروس خادمياً"
         deliveryFeeHeld: "5000.00",
         clientRequestId: "g9-a",
         regularSale: { lines: [LINE], amount: "10000.00" },
+        delivery: { partyId: 1, fee: "5000.00", feeCollection: "COURIER" },
       }, CASHIER),
     ).rejects.toThrow(/مقبوضة في الاستقبال/);
 
+    // (ب) أمانة تخالف أجرة COUNTER ⇒ رفض (الفرق كان يعلق في الدرج بلا مسار ردّ).
     await expect(
       checkoutReception({
         branchId: 1, shiftId: shift.shiftId, customerId: 1,
@@ -347,6 +350,22 @@ describe("G9 — التقاط أمانة الأجرة محروس خادمياً"
         delivery: { partyId: 1, fee: "3000.00", feeCollection: "COUNTER" },
       }, CASHIER),
     ).rejects.toThrow(/يجب أن تساوي/);
+
+    // (ج) بلا توصيلٍ في التثبيت = الإسناد المؤجَّل من الطابور (ش٦/V15) — مشروع: الإيصال
+    // يُكتب الآن وdispatchInvoice يفرض المساواة لحظة الإسناد.
+    const ok = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, customerId: 1,
+      paymentMethod: "CASH", paidAmount: "10000.00",
+      deliveryFeeHeld: "5000.00",
+      clientRequestId: "g9-c",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+    }, CASHIER);
+    const invoiceId = ok.regularSale!.invoiceId;
+    const held = (await db().select().from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, `DLV-FEE-INV-${invoiceId}`)))[0];
+    expect(held).toBeTruthy();
+    expect(String(held.amount)).toBe("5000.00");
+    expect(held.direction).toBe("IN");
   });
 });
 

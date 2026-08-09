@@ -181,10 +181,19 @@ describe("delivery COD — money path", () => {
     expect(inv.paidAmount).toBe("7000.00"); // 2000 عربون + 5000
     await allReconcileClean();
 
-    // شطب المدير للعجز 3000 ⇒ عهدة=0 + خسارة.
-    await writeOffDeliveryShortfall({ branchId: 1, partyId, amount: "3000", reason: "نزاع غير قابل للتحصيل" }, MANAGER);
+    // شطب المدير للعجز 3000 — **موجَّهاً بالإرسالية** (حوكمة ٩/٨: عجز إرساليةٍ حيّة لا يُشطَب
+    // مجمّعاً كي لا تبقى زومبي تقبل توريداً لاحقاً يقلب الرصيد سالباً): يقفلها WRITTEN_OFF
+    // ويقيّد فاتورتها مسدَّدةً ويُصفّر العهدة كخسارة.
+    await expect(
+      writeOffDeliveryShortfall({ branchId: 1, partyId, amount: "3000", reason: "نزاع غير قابل للتحصيل" }, MANAGER),
+    ).rejects.toThrow(/السائبة/); // المجمّع محجوز للعهدة غير المرتبطة بإرساليات
+    await writeOffDeliveryShortfall({ branchId: 1, partyId, amount: "3000", reason: "نزاع غير قابل للتحصيل", consignmentId: disp.consignmentId }, MANAGER);
     expect(await partyBalance(partyId)).toBe("0.00");
     expect(await entryCount("DELIVERY_WRITEOFF", partyId)).toBe(1);
+    const cnAfter = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, disp.consignmentId)))[0];
+    expect(cnAfter.status).toBe("WRITTEN_OFF");
+    const invAfter = await invoice(disp.invoiceId);
+    expect(invAfter.status).toBe("PAID"); // الزبون دفع للمندوب — ذمّة الفاتورة تُقفل والخسارة على المكتبة
     await allReconcileClean();
   });
 
@@ -212,13 +221,27 @@ describe("delivery COD — money path", () => {
     await allReconcileClean();
   });
 
-  it("تسوية الجهة نقداً تخفض العهدة", async () => {
+  it("تسوية الجهة نقداً تخفض العهدة السائبة — والمدعومة بإرسالية مفتوحة تُرفض", async () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(true);
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
+    // حوكمة ٩/٨: عهدةُ إرساليةٍ مفتوحة لا تُسوَّى بمبلغٍ حرّ (تُورَّد بالإرسالية كي تُقيَّد فاتورتها).
     await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "5000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
     expect(await partyBalance(partyId)).toBe("3000.00");
+    await expect(settleDeliveryBalance({ branchId: 1, partyId, amount: "3000" }, CASHIER)).rejects.toThrow(/السائبة/);
+    // إكمال التوريد ⇒ عهدة صفر، ثم عهدة **سائبة** (نمط تحصيلات المتجر: قيد DISPATCH بلا إرسالية)
+    // هي نطاق التسوية الحرّة المشروع.
+    await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "3000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "3000" }] }, CASHIER);
+    expect(await partyBalance(partyId)).toBe("0.00");
+    await db().insert(s.accountingEntries).values({
+      entryType: "DELIVERY_DISPATCH", branchId: 1, deliveryPartyId: partyId,
+      amount: "3000.00", entryDate: sql`CURDATE()` as unknown as string,
+      notes: "عهدة تحصيلات متجر (تجهيزة اختبار)",
+    });
+    await db().update(s.deliveryParties)
+      .set({ currentBalance: sql`${s.deliveryParties.currentBalance} + 3000` })
+      .where(eq(s.deliveryParties.id, partyId));
     const set = await settleDeliveryBalance({ branchId: 1, partyId, amount: "3000" }, CASHIER);
     expect(set.partyBalanceAfter).toBe("0.00");
     expect(await partyBalance(partyId)).toBe("0.00");
