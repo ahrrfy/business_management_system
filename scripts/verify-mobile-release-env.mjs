@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const expected = Object.freeze({
   applicationId: "online.alarabiya.store",
-  versionCode: 4,
+  versionCode: 5,
   versionName: "1.0.0",
   productionBaseUrl: "https://srv1548487.hstgr.cloud",
 });
@@ -61,6 +61,13 @@ function verifySourceContract() {
   const serverIndex = fs.readFileSync(path.join(root, "server/index.ts"), "utf8");
   const serverReadiness = fs.readFileSync(path.join(root, "server/services/mobileProductionReadiness.ts"), "utf8");
   const productionEnvTemplate = fs.readFileSync(path.join(root, ".env.production.example"), "utf8");
+  const deviceProof = fs.readFileSync(
+    path.join(
+      root,
+      "android-native/app/src/main/java/online/alarabiya/superapp/core/security/DeviceProofKey.kt",
+    ),
+    "utf8",
+  );
 
   const requiredGradleFragments = [
     `val productionApplicationId = "${expected.applicationId}"`,
@@ -78,6 +85,16 @@ function verifySourceContract() {
     .map((match) => match[1]);
   if (applicationIdSuffixes.length !== 1 || applicationIdSuffixes[0] !== ".debug") {
     fail("only the debug build type may add an applicationId suffix");
+  }
+  for (const fragment of [
+    "fun requiresUnlockedDevice(apiLevel: Int): Boolean = apiLevel >= 35",
+    "KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE",
+    "KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT",
+    "KeyProperties.SECURITY_LEVEL_STRONGBOX",
+  ]) {
+    if (!deviceProof.includes(fragment)) {
+      fail("native device-proof compatibility or secure-hardware policy is incomplete");
+    }
   }
 
   for (const task of [
