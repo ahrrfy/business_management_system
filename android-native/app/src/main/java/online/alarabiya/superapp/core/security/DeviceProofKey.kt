@@ -130,9 +130,12 @@ class DeviceProofKey {
                 .setDigests(KeyProperties.DIGEST_SHA256)
                 .setUserAuthenticationRequired(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                // Emulators used by debug visual/API QA may not have a secure lock screen. The
-                // production flavor still requires both an unlocked device and hardware backing.
-                if (!BuildConfig.DEBUG) builder.setUnlockedDeviceRequired(true)
+                // Android 12-14 cannot create or use unlocked-device-required keys when a secure
+                // lock screen is absent. Android documents the issue as fixed in Android 15, so
+                // keep the authorization there without excluding otherwise supported tablets.
+                if (!BuildConfig.DEBUG && DeviceProofKeyPolicy.requiresUnlockedDevice(Build.VERSION.SDK_INT)) {
+                    builder.setUnlockedDeviceRequired(true)
+                }
                 builder.setIsStrongBoxBacked(useStrongBox)
             }
             return builder.build()
@@ -161,8 +164,7 @@ class DeviceProofKey {
         val keyInfo = KeyFactory.getInstance(keyPair.private.algorithm, KEYSTORE)
             .getKeySpec(keyPair.private, KeyInfo::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            keyInfo.securityLevel == KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT ||
-                keyInfo.securityLevel == KeyProperties.SECURITY_LEVEL_STRONGBOX
+            DeviceProofKeyPolicy.isSecureHardwareLevel(keyInfo.securityLevel)
         } else {
             @Suppress("DEPRECATION")
             keyInfo.isInsideSecureHardware
@@ -205,6 +207,18 @@ class DeviceProofKey {
         const val HEADER_NONCE = "X-Alrueya-Device-Nonce"
         const val HEADER_SIGNATURE = "X-Alrueya-Device-Signature"
     }
+}
+
+/** Pure policy kept outside Android Keystore calls so compatibility decisions are unit tested. */
+internal object DeviceProofKeyPolicy {
+    // setUnlockedDeviceRequired() has known Android 12-14 defects and is safe to enable from 15.
+    fun requiresUnlockedDevice(apiLevel: Int): Boolean = apiLevel >= 35
+
+    fun isSecureHardwareLevel(securityLevel: Int): Boolean = securityLevel in setOf(
+        KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE,
+        KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT,
+        KeyProperties.SECURITY_LEVEL_STRONGBOX,
+    )
 }
 
 /** Pure JVM contract used by Android device proof and its unit tests. */

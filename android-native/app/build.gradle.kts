@@ -23,7 +23,7 @@ fun quoted(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"
 // identity in one place prevents a staging/package override from producing an artifact that cannot
 // update the installed application.
 val productionApplicationId = "online.alarabiya.store"
-val productionVersionCode = 4
+val productionVersionCode = 5
 val productionVersionName = "1.0.0"
 val expectedProductionEndpoint = "https://srv1548487.hstgr.cloud"
 
@@ -238,7 +238,7 @@ val verifyProductionReleaseInputs by tasks.registering {
         if (productionApplicationId != "online.alarabiya.store") {
             throw GradleException("Unexpected production applicationId.")
         }
-        if (productionVersionCode != 4 || productionVersionName != "1.0.0") {
+        if (productionVersionCode != 5 || productionVersionName != "1.0.0") {
             throw GradleException("Unexpected production version contract.")
         }
         if (productionBaseUrl != expectedProductionEndpoint) {
