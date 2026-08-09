@@ -2,6 +2,7 @@
 //  - getARAging: شيخوخة الذمم المدينة لكل العملاء، بدلاء 0-30/31-60/61-90/90+.
 //  - getCustomerStatement: كشف حساب عميل (فواتير + دفعات + ملخّص).
 import { and, asc, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { accountingEntries, customers, invoices, orderPayments, receipts } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
@@ -239,20 +240,24 @@ async function customerOpeningBalance(customerId: number, from?: string) {
         sql`${accountingEntries.entryDate} < ${from}`
       )
     );
-  // COD-COURIER (مراجعة عدائية ١٢/٧): تحصيل المندوب لطلب متجر يرفع invoices.paidAmount ويكتب قيد
-  // PAYMENT_IN بلا إيصال درج (النقد بعهدة المندوب) — فلا يلتقطه payRow (receipts) رغم أنه سدّد الذمّة.
-  // بدونه يُرحَّل كامل total الفاتورة فيظهر العميل مديناً بما سدّده. نطرح هذه الدفعات صراحةً.
-  // الفلتر (customerId + invoiceId NOT NULL + receiptId NULL) يخصّ مسار تحصيل المندوب حصراً (دفعات
-  // البيع العادية لها receiptId، والسندات المستقلّة invoiceId=NULL) ⇒ لا ازدواج مع payRow.
+  // COD-COURIER (مراجعة عدائية ١٢/٧ + ٩/٨): تحصيلات المندوب تسدّد الذمّة دون أن يلتقطها payRow:
+  //   (أ) تحصيل طلب متجر — قيد PAYMENT_IN **بلا إيصال** إطلاقاً (النقد بعهدة المندوب).
+  //   (ب) توريد إرسالية استقبال (recordDeliveryRemittance) — قيد PAYMENT_IN مربوطٌ بإيصال درجٍ
+  //       **مجمَّع** (invoiceId=NULL، partyType=OTHER) لا يطابقه customerPaymentLink أبداً.
+  // بدونهما يُرحَّل كامل total الفاتورة فيظهر العميل مديناً بما سدّده للمندوب. البصمة المشتركة:
+  // قيد PAYMENT_IN بفاتورةٍ لكن **بلا إيصالٍ مربوطٍ بفاتورة** (دفعات البيع العادية إيصالها يحمل
+  // invoiceId فيلتقطها payRow) ⇒ لا ازدواج مع payRow بالبناء.
+  const codReceipts = alias(receipts, "codReceipts");
   const codPayRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
     .from(accountingEntries)
+    .leftJoin(codReceipts, eq(accountingEntries.receiptId, codReceipts.id))
     .where(
       and(
         eq(accountingEntries.entryType, "PAYMENT_IN"),
         eq(accountingEntries.customerId, customerId),
         sql`${accountingEntries.invoiceId} IS NOT NULL`,
-        sql`${accountingEntries.receiptId} IS NULL`,
+        sql`${codReceipts.invoiceId} IS NULL`,
         sql`${accountingEntries.entryDate} < ${fromTs}`
       )
     );
@@ -322,20 +327,23 @@ export async function getCustomerStatement(
     .where(and(...payConds))
     .orderBy(asc(receipts.createdAt), asc(receipts.id));
 
-  // COD-COURIER (مراجعة عدائية ١٢/٧): تحصيلات المندوب (PAYMENT_IN بلا إيصال) كدفعات مرئية في الكشف
-  // كي يظهر السداد كمستندٍ متتبَّع (لا فاتورة PAID بلا دفعة). نفس فلتر الفترة على entryDate. المعرّف
-  // سالبٌ لتمييزه عن معرّفات الإيصالات (لا تصادم مفتاح React).
+  // COD-COURIER (مراجعة عدائية ١٢/٧ + ٩/٨): تحصيلات المندوب كدفعات مرئية في الكشف كي يظهر
+  // السداد كمستندٍ متتبَّع (لا فاتورة PAID بلا دفعة) — تشمل تحصيل المتجر (بلا إيصال) **وتوريد
+  // إرسالية الاستقبال** (إيصاله مجمَّع بلا فاتورة فلا يظهر في payments؛ نفس بصمة codPayRow
+  // أعلاه حرفياً وإلا انحرف الكشف عن الرصيد المُرحَّل). المعرّف سالبٌ لتمييزه عن الإيصالات.
+  const codStmtReceipts = alias(receipts, "codStmtReceipts");
   const codPayConds = [
     eq(accountingEntries.entryType, "PAYMENT_IN"),
     eq(accountingEntries.customerId, customerId),
     sql`${accountingEntries.invoiceId} IS NOT NULL`,
-    sql`${accountingEntries.receiptId} IS NULL`,
+    sql`${codStmtReceipts.invoiceId} IS NULL`,
   ];
   if (from) codPayConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
   if (to) codPayConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   const codPayments = await db
     .select({ id: accountingEntries.id, invoiceId: accountingEntries.invoiceId, amount: accountingEntries.amount, createdAt: accountingEntries.entryDate, notes: accountingEntries.notes })
     .from(accountingEntries)
+    .leftJoin(codStmtReceipts, eq(accountingEntries.receiptId, codStmtReceipts.id))
     .where(and(...codPayConds));
 
   // مرتجع البيع الائتماني يخفض ذمة العميل بلا receipt. نعرض قيد RETURN نفسه

@@ -305,26 +305,37 @@ function SettleTab() {
   const get = (c: OpenConsignment) => rows[c.id] ?? { outcome: "COLLECTED" as const, collected: String(Math.max(0, Number(c.codAmount) - Number(c.collectedAmount))) };
 
   const totals = useMemo(() => {
-    let collected = 0, fees = 0, expected = 0;
+    // «العجز» = ما نقص عن الأسطر **المُدرَجة** في هذا التوريد (مطابقةً لدلالة الخادم بعد
+    // استثناء الأسطر الصفرية — مراجعة ٩/٨): الإرسالية المتروكة كلياً «تبقى بالطريق» ولا
+    // تدخل عجز هذا المستند، وإلا ناقض حوارُ التأكيد الإيصالَ المطبوع وسجلَّ التوريدات.
+    let collected = 0, fees = 0, expected = 0, leftInTransit = 0;
     for (const c of list) {
       const remaining = Math.max(0, Number(c.codAmount) - Number(c.collectedAmount));
-      expected += remaining;
       const st = get(c);
-      if (st.outcome === "COLLECTED") {
-        const col = Math.min(remaining, Math.max(0, Number(st.collected) || 0));
+      const col = st.outcome === "COLLECTED" ? Math.min(remaining, Math.max(0, Number(st.collected) || 0)) : 0;
+      if (col > 0) {
+        expected += remaining;
         collected += col;
-        if (col >= remaining && remaining > 0) fees += Number(c.deliveryFee ?? 0); // الأجرة عند التسليم الكامل
+        // الأجرة تُخصَم عند التسليم الكامل **وبشرط الخادم حرفياً** (مراجعة عدائية ٩/٨ — كانت
+        // الشاشة تخصم كل الأجور فتحسب صافياً يخالف الخادم لإرساليات COURIER (يقبضها المندوب
+        // بنفسه) والمصروفة سلفاً (feeSettledAt) ⇒ العدّ لا يطابق أبداً = طريق مسدود للتسوية).
+        const feeStillOwed = c.feeCollection !== "COURIER" && c.feeSettledAt == null;
+        if (col >= remaining && remaining > 0 && feeStillOwed) fees += Number(c.deliveryFee ?? 0);
+      } else if (remaining > 0) {
+        leftInTransit += 1;
       }
     }
-    return { collected, fees, net: collected - fees, shortfall: expected - collected, expected };
+    return { collected, fees, net: collected - fees, shortfall: expected - collected, expected, leftInTransit };
   }, [list, rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
+    // الأسطر الصفرية تُستثنى (٩/٨): غير المحصَّل ليس توريداً — يبقى بالطريق (كان الصفر يقلب
+    // الإرسالية PARTIAL كاذبةً ويقفل باب إرجاعها). الخادم يرفضها أيضاً — الاستثناء هنا أوضح.
     const lines = list
       .filter((c) => get(c).outcome === "COLLECTED")
       .map((c) => ({ consignmentId: c.id, collectedAmount: String(Math.max(0, Number(get(c).collected) || 0)) }))
-      .filter((l) => Number(l.collectedAmount) >= 0);
-    if (lines.length === 0) { notify.err("لا إرساليات للتسوية"); return; }
+      .filter((l) => Number(l.collectedAmount) > 0);
+    if (lines.length === 0) { notify.err("لا مبالغ للتوريد — أدخل المُحصَّل فعلاً؛ غير المحصَّل يبقى بالطريق"); return; }
     if (Math.abs(countedCash - totals.net) > 0.01) {
       notify.err(`النقد المعدود لا يطابق الصافي المتوقع. المعدود ${fmt(String(countedCash))} والمتوقع ${fmt(String(totals.net))} د.ع`);
       return;
@@ -332,7 +343,7 @@ function SettleTab() {
     const ok = await confirm({
       variant: "danger",
       title: "تأكيد تسوية تحصيلات المندوب",
-      description: `المُحصَّل ${fmt(String(totals.collected))} − الأجور ${fmt(String(totals.fees))} = صافٍ للمكتبة ${fmt(String(totals.net))} د.ع.${totals.shortfall > 0 ? ` يبقى العجز ${fmt(String(totals.shortfall))} د.ع ذمّةً على المندوب.` : ""}`,
+      description: `المُحصَّل ${fmt(String(totals.collected))} − الأجور ${fmt(String(totals.fees))} = صافٍ للمكتبة ${fmt(String(totals.net))} د.ع.${totals.shortfall > 0 ? ` يبقى العجز ${fmt(String(totals.shortfall))} د.ع ذمّةً على المندوب.` : ""}${totals.leftInTransit > 0 ? ` (${totals.leftInTransit} إرسالية تبقى بالطريق خارج هذا التوريد.)` : ""}`,
       confirmText: "تأكيد التسوية",
     });
     if (!ok) return;
@@ -362,6 +373,7 @@ function SettleTab() {
               <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
                 <tr>
                   <th className="p-3 text-right">الإرسالية</th>
+                  <th className="p-3 text-right">الفاتورة</th>
                   <th className="p-3 text-right">العميل</th>
                   <th className="p-3 text-left">المتوقَّع (COD)</th>
                   <th className="p-3 text-left">الأجرة</th>
@@ -373,12 +385,30 @@ function SettleTab() {
                 {list.map((c) => {
                   const st = get(c);
                   const remaining = Math.max(0, Number(c.codAmount) - Number(c.collectedAmount));
+                  // مرآة قاعدة الخادم (feeStillOwed): أجرة لا تُخصم من هذا التوريد تُعرَض موسومةً
+                  // لا رقماً صامتاً يُدخِله الموظف في حسبة العدّ خطأً.
+                  const feeStillOwed = c.feeCollection !== "COURIER" && c.feeSettledAt == null;
                   return (
                     <tr key={c.id} className="border-b last:border-0">
                       <td className="p-3 font-medium">{c.consignmentNumber}</td>
+                      {/* الربط البصري إرسالية↔فاتورة في أهم لحظة تحاسب — المندوب يحمل نسخ INV-… */}
+                      <td className="p-3">
+                        {c.invoiceId ? (
+                          <a className="font-mono text-xs text-primary hover:underline" dir="ltr" href={`/invoices/${c.invoiceId}`}>
+                            {c.invoiceNumber ?? `#${c.invoiceId}`}
+                          </a>
+                        ) : "—"}
+                      </td>
                       <td className="p-3">{c.customerName ?? c.recipientName ?? "عميل نقدي"}</td>
                       <td className="p-3 text-left tabular-nums" dir="ltr">{fmt(String(remaining))}</td>
-                      <td className="p-3 text-left tabular-nums text-muted-foreground" dir="ltr">{fmt(c.deliveryFee)}</td>
+                      <td className="p-3 text-left">
+                        <span className="tabular-nums text-muted-foreground" dir="ltr">{fmt(c.deliveryFee)}</span>
+                        {Number(c.deliveryFee ?? 0) > 0 && !feeStillOwed && (
+                          <span className="block text-[10px] font-bold text-muted-foreground">
+                            {c.feeCollection === "COURIER" ? "يقبضها المندوب — لا تُخصم" : "صُرفت سلفاً — لا تُخصم"}
+                          </span>
+                        )}
+                      </td>
                       <td className="p-3 text-center">
                         <div className="inline-flex gap-1">
                           <button

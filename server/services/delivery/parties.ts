@@ -117,7 +117,25 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
       else await assertNoOpenCourierOrders(tx, input.id); // فكّ الربط: امنعه ما دامت طلبات قيد التوصيل
       patch.userId = input.userId;
     }
-    if (input.branchId !== undefined) patch.branchId = input.branchId;
+    if (input.branchId !== undefined) {
+      // مراجعة عدائية ٩/٨ — نقل الجهة لفرعٍ آخر وعليها إرساليات مفتوحة يقفل توريدها للأبد:
+      // فرعُها الجديد يرفض («الإرسالية تخصّ فرعاً آخر») وفرعُ الإرسالية يرفض («الجهة لا تخصّ
+      // فرع التوريد») ⇒ المخرج الوحيد تسويةٌ حرّة تترك الفواتير غير مسدَّدة.
+      const cur = (await tx.select({ branchId: deliveryParties.branchId }).from(deliveryParties).where(eq(deliveryParties.id, input.id)).for("update").limit(1))[0];
+      if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+      const branchBefore = cur.branchId == null ? null : Number(cur.branchId);
+      const branchAfter = input.branchId == null ? null : Number(input.branchId);
+      if (branchBefore !== branchAfter) {
+        const open = (await tx
+          .select({ n: sql<number>`COUNT(*)` })
+          .from(deliveryConsignments)
+          .where(and(eq(deliveryConsignments.partyId, input.id), sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`)))[0];
+        if (Number(open?.n ?? 0) > 0) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُغيَّر فرع جهةٍ عليها إرساليات مفتوحة — سوِّها أو أرجِعها أولاً" });
+        }
+      }
+      patch.branchId = input.branchId;
+    }
     if (input.nationalId !== undefined) patch.nationalId = input.nationalId;
     if (input.vehicleInfo !== undefined) patch.vehicleInfo = input.vehicleInfo;
     if (input.defaultFee !== undefined) patch.defaultFee = toDbMoney(input.defaultFee ?? "0");
@@ -140,6 +158,16 @@ export async function setDeliveryPartyActive(id: number, isActive: boolean, _act
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعطيل جهة عليها عهدة قائمة — سوِّ الرصيد أولاً" });
       }
       await assertNoOpenCourierOrders(tx, id); // + طلبات متجر قيد التوصيل (العهدة=0 لا تحرسها)
+      // مراجعة عدائية ٩/٨: فحص الرصيد وحده لا يكفي — بياناتٌ تاريخية (تسوية حرّة قبل حارس
+      // العهدة السائبة) قد تُصفّر الرصيد وتُبقي إرساليات مفتوحة؛ تعطيلُ الجهة حينها يُخفيها
+      // عن كل مسارات التسوية وتبقى فواتيرها «غير مسدَّدة» في أعمار الذمم للأبد.
+      const openCn = (await tx
+        .select({ n: sql<number>`COUNT(*)` })
+        .from(deliveryConsignments)
+        .where(and(eq(deliveryConsignments.partyId, id), sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`)))[0];
+      if (Number(openCn?.n ?? 0) > 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعطيل جهة لها إرساليات مفتوحة — ورِّدها أو أرجِعها أو اشطبها موجَّهةً أولاً" });
+      }
     }
     await tx.update(deliveryParties).set({ isActive }).where(eq(deliveryParties.id, id));
     return { id };

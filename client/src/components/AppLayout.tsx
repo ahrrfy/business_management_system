@@ -153,7 +153,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const isCashier = role === "cashier";
   // طلبات المتجر التشغيلية والحجوزات والقنوات أصبحت داخل محطة الاستقبال؛ يبقى StoreHub
   // للإدارة (كتالوج/بنرات/إعدادات) ولا يُشتّت قائمة الكاشير اليومية.
-  const CASHIER_NAV = ["/pos", "/price-checker", "/tasks"];
+  // «/delivery» (٩/٨): الكاشير هو منفِّذ توريد المناديب الطبيعي وكان مخوَّلاً بلا مدخل مرئي
+  // (الوصول بالبحث فقط) ⇒ تتراكم التسويات أو تُنفَّذ من زرّ «تسوية» المجمّع الخطأ.
+  const CASHIER_NAV = ["/pos", "/price-checker", "/delivery", "/tasks"];
   const visibleNav = isCourier
     ? NAV_LINKS.filter((m) => m.roles?.includes("courier"))
     : isCashier

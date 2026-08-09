@@ -100,6 +100,11 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       if (cn.status !== "DISPATCHED" && cn.status !== "PARTIAL") throw new TRPCError({ code: "BAD_REQUEST", message: `إرسالية ${cn.consignmentNumber} غير قابلة للتسوية` });
       const collected = round2(money(line.collectedAmount));
       if (collected.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ سالب" });
+      // سطرٌ صفريّ يُستثنى كلياً (مراجعة عدائية ٩/٨): كان يقلب DISPATCHED إلى PARTIAL بصفر
+      // تحصيل ويختمها remittanceId ⇒ «حُصِّل جزئياً» كاذبة تُقفل باب returnConsignment
+      // («يُرجَع فقط إرسالٌ لم يُحصَّل منه شيء») على بضاعةٍ لم يُحصَّل منها شيء فعلاً.
+      // غير المحصَّل ليس توريداً — يبقى DISPATCHED كما هو (يُرجَع أو يُورَّد لاحقاً).
+      if (collected.isZero()) continue;
       const remaining = round2(money(cn.codAmount).minus(money(cn.collectedAmount)));
       if (collected.gt(remaining)) throw new TRPCError({ code: "BAD_REQUEST", message: `أكثر من المتبقّي للإرسالية ${cn.consignmentNumber}` });
       // مراجعة عدائية (٥/٨) — حزامٌ ثانٍ: السقف على متبقّي **الفاتورة** الحيّ لا الإرسالية وحدها.
@@ -142,6 +147,9 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       collectedTotal = collectedTotal.plus(collected);
       feesTotal = feesTotal.plus(fee);
       expectedTotal = expectedTotal.plus(remaining);
+    }
+    if (!work.length) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا مبالغ للتوريد — كل الأسطر صفرية. غير المحصَّل يبقى بالطريق (يُورَّد لاحقاً أو تُرجَع إرساليته)" });
     }
     collectedTotal = round2(collectedTotal);
     feesTotal = round2(feesTotal);
@@ -212,7 +220,10 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
         const inv = (await tx.select({ total: invoices.total, paidAmount: invoices.paidAmount, customerId: invoices.customerId }).from(invoices).where(eq(invoices.id, w.invoiceId)).limit(1))[0];
         // تسوية الفاتورة بالـCOD المُحصَّل كاملاً (PAYMENT_IN) — يربط إيصال IN الدفعة.
         await postEntry(tx, {
-          entryType: "PAYMENT_IN", branchId: input.branchId, invoiceId: w.invoiceId, receiptId: receiptInId,
+          // dedupeKey بنيويّ (٩/٨): كان القيد الوحيد في مسارات التوصيل بلا مفتاح — محميّاً بمظلّة
+          // idempotency التوريد وحدها؛ المفتاح يجعله محصَّناً بذاته كسائر قيود المنظومة.
+          entryType: "PAYMENT_IN", dedupeKey: `PAYMENT_IN:REMIT:${w.id}:${remittanceId}`,
+          branchId: input.branchId, invoiceId: w.invoiceId, receiptId: receiptInId,
           customerId: inv?.customerId != null ? Number(inv.customerId) : null,
           amount: w.collected, notes: `توريد ${remittanceNumber}`,
         });
@@ -242,7 +253,12 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
         await postEntry(tx, {
           entryType: passThrough ? "DELIVERY_FEE_HELD" : "DELIVERY_FEE",
           branchId: input.branchId, invoiceId: w.invoiceId, receiptId: receiptOutId,
-          deliveryPartyId: input.partyId, amount: w.fee,
+          deliveryPartyId: input.partyId,
+          // إشارة تبرئة الأمانة **سالبة** (٩/٨ — مرآة dispatch.ts وdispatchInvoice.ts حرفياً):
+          // القبض في الدرج +fee والصرف للمندوب −fee ⇒ Σ(DELIVERY_FEE_HELD) للمستند = 0 ⇔ مُبرَّأة.
+          // الفرع شبه ميت (COUNTER تُصرف لحظة الإرسال فيُختم feeSettledAt) لكن أيّ إرسالية قديمة
+          // feeSettledAt=null كانت ستقيّد +fee فوق قيد القبض = ضعف الأجرة التزاماً وهمياً للأبد.
+          amount: passThrough ? w.fee.neg() : w.fee,
           ...(passThrough ? {} : { cost: w.fee, profit: w.fee.neg() }),
           notes: `أجرة توصيل ${remittanceNumber}`,
         });
