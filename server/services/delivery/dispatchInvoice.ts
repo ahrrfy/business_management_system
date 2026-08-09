@@ -70,11 +70,14 @@ export async function dispatchInvoiceInTx(
           ))
       )[0];
       const heldD = round2(money(heldRow?.v ?? "0"));
-      if (feeD.lte(0) || heldD.lt(feeD)) {
+      // مراجعة عدائية ٩/٨ — **مساواة** لا سقفاً أدنى: أجرةٌ أقل من الأمانة (heldD > feeD) كانت
+      // تمرّ فتُبرَّأ الأمانة جزئياً ويبقى الفرق دنانير زبونٍ عالقة في الدرج بلا مسار للأبد
+      // (Σ FEE_HELD موجبة، التوريد لا يخصمها بعد ختم feeSettledAt والإرجاع يتخطّاها).
+      if (feeD.lte(0) || !heldD.eq(feeD)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: heldD.gt(0)
-            ? `أمانة الأجرة المقبوضة (${heldD.toFixed(2)}) لا تغطّي الأجرة (${feeD.toFixed(2)}) — صحّح المبلغ أو اختر «المندوب يقبضها»`
+            ? `أمانة الأجرة المقبوضة (${heldD.toFixed(2)}) يجب أن تساوي الأجرة (${feeD.toFixed(2)}) — اجعل الأجرة ${heldD.toFixed(2)} أو صحّح المقبوض`
             : "«مقبوضة في الاستقبال» تتطلّب قبض الأجرة مع الطلب نفسه (خانة أجرة التوصيل في السلّة) — أو اختر «المندوب يقبضها من الزبون» / «على المكتبة»",
         });
       }
@@ -119,6 +122,13 @@ export async function dispatchInvoiceInTx(
     if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُسنَد فاتورة ملغاة أو مرتجعة للتوصيل" });
     }
+    // مراجعة عدائية ٩/٨ — ازدواج عهدة عبر القناتين: فاتورة طلب متجر (ONLINE) عهدتها تُدار من
+    // مسار المتجر (تأكيد المندوب في «توصيلاتي» يرفعها بمفتاح ONLINE_COD_CUSTODY) — إسنادُها
+    // إرساليةً هنا يرفعها **ثانيةً** بمفتاح dedupe مختلف ⇒ رصيد المندوب ضعف النقد الذي بيده،
+    // وإرسالية لا تُسوَّى أبداً (متبقّي الفاتورة يصفر من الجهة الأخرى).
+    if (inv.sourceType === "ONLINE") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "فاتورة طلب متجر إلكتروني — إسناد المندوب من شاشة طلبات المتجر لا من هنا (عهدتها تُدار هناك)" });
+    }
     // حارس بنيويّ مساند لقيد uq_consignment_invoice: رسالةٌ مفهومة بدل خطأ قاعدة بيانات.
     const already = (await tx.select({ id: deliveryConsignments.id, n: deliveryConsignments.consignmentNumber })
       .from(deliveryConsignments).where(eq(deliveryConsignments.invoiceId, input.invoiceId)).limit(1))[0];
@@ -130,7 +140,10 @@ export async function dispatchInvoiceInTx(
     if (fee.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "أجرة التوصيل لا تصحّ أن تكون سالبة" });
 
     // COD = ما تبقّى على الفاتورة فقط (مالُنا). الأجرة **ليست** جزءاً منه — تمريرٌ للمندوب.
-    const codAmount = round2(money(inv.total).minus(money(inv.paidAmount ?? "0")));
+    // مراجعة عدائية ٩/٨: يُطرح returnedTotal أيضاً — مرتجعٌ جزئي قبل الإسناد كان يُنتج codAmount
+    // منتفخاً بقيمته ⇒ عهدة وهمية على المندوب لا يمكن توريدها (حزام التوريد يسقفها بمتبقّي
+    // الفاتورة الحيّ) فتعلق PARTIAL للأبد.
+    const codAmount = round2(money(inv.total).minus(money(inv.returnedTotal ?? "0")).minus(money(inv.paidAmount ?? "0")));
     if (codAmount.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة مدفوعةٌ بأكثر من قيمتها — راجعها قبل الإسناد" });
     const codPositive = codAmount.gt(0);
     // الأجرة تُصرَف الآن حين لا توريدَ يُنتظَر (نفس قاعدة dispatch.ts). بعد حظر COUNTER (ش٠)

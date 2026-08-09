@@ -8,40 +8,18 @@
 // على مبيعات التجزئة (§٩.٢).
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { deliveryConsignments, invoices, shifts } from "../../../drizzle/schema";
-import { getDb, type Tx } from "../../db";
+import { invoices, shifts } from "../../../drizzle/schema";
+import { getDb } from "../../db";
 import { retryOnDeadlock } from "../../lib/retryDeadlock";
+import { assertNoInTransitConsignment } from "../delivery/guards";
 import { processPayment } from "../sale/payment";
 import { getOpenShift } from "../shiftService";
 import { type Actor } from "../tx";
 import { assertTelecomCollectAllowed } from "./telecom";
 import type { CollectOnInvoiceInput } from "./types";
 
-/**
- * فاتورةٌ إرساليتها **بالطريق** مع المندوب لا تُحصَّل في الكاونتر (مراجعة عدائية ٥/٨): يزدوج
- * التحصيل مع توريد المندوب (paidAmount يتجاوز total، ذمّةٌ سالبة، قيدا PAYMENT_IN لبيعٍ واحد،
- * أو عهدةٌ لا تُغلق). التحصيل مسارُه التوريد؛ ولو عاد الزبون للكاونتر تُعاد الإرسالية أولاً.
- *
- * ⚠️ مراجعة PR #495 (سباق TOCTOU): كان الفحص قراءةً **قبل** معاملة الدفع — إسنادٌ متزامن يُنشئ
- * إرسالية DISPATCHED بعد القراءة وقبل قفل الفاتورة، فيمرّ القبض على فاتورةٍ كامل COD‏ها صار
- * عهدةً على مندوب. يُنفَّذ الآن كـ`preInsertCheck` **داخل** معاملة processPayment بعد قفل
- * الفاتورة `FOR UPDATE` — ونفس الصفّ يقفله `dispatchInvoiceInTx` ⇒ المساران متسلسلان حتماً.
- */
-async function assertNoInTransitConsignment(tx: Tx, invoiceId: number) {
-  const inTransit = (
-    await tx
-      .select({ n: deliveryConsignments.consignmentNumber, st: deliveryConsignments.status })
-      .from(deliveryConsignments)
-      .where(eq(deliveryConsignments.invoiceId, invoiceId))
-      .limit(1)
-  )[0];
-  if (inTransit && (inTransit.st === "DISPATCHED" || inTransit.st === "PARTIAL")) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: `الفاتورة بالطريق مع المندوب (إرسالية ${inTransit.n}) — التحصيل عبر توريد المندوب، أو أعد الإرسالية أولاً`,
-    });
-  }
-}
+// حارس «الإرسالية بالطريق» انتقل إلى delivery/guards.ts (٩/٨) — صار مشتركاً مع sales.pay
+// (كان هنا وحده ⇒ بابان لنفس الفاتورة أحدهما بلا حارس). السلوك والتعليق التاريخي هناك.
 
 export async function collectOnReceptionInvoice(
   input: CollectOnInvoiceInput,

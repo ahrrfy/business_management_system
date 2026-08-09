@@ -1,7 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { cashierProcedure, deliveryReadProcedure, managerProcedure, router, storeFulfillProcedure, workordersCashierProcedure } from "../trpc";
+import { cashierProcedure, deliveryReadProcedure, managerProcedure, router, storeFulfillProcedure, storeManagerProcedure, workordersCashierProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
+import { retryOnDeadlock } from "../lib/retryDeadlock";
 import {
   createDeliveryParty,
   dispatchInvoiceToDelivery,
@@ -12,8 +13,10 @@ import {
   listCourierAccounts,
   listDeliveryParties,
   listOpenConsignments,
+  listPartyRemittances,
   listReadyForDispatch,
   recordDeliveryRemittance,
+  recoverDeliveryWriteOff,
   returnConsignment,
   setDeliveryPartyActive,
   settleDeliveryBalance,
@@ -149,6 +152,20 @@ export const deliveryRouter = router({
       return getDeliveryPartyStatement(input.partyId, input.from, input.to);
     }),
 
+  // سجل توريدات جهة (٩/٨): أثر التوريد كان إيصالاً حرارياً يُطبع مرة واحدة — الآن يُسرَد ويُتتبَّع.
+  remittances: deliveryReadProcedure
+    .input(z.object({
+      partyId: z.number().int().positive(),
+      // YYYY-MM-DD حصراً — نصٌّ حرّ كان يبني Date غير صالح فيتفجّر 500 بدل BAD_REQUEST.
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").optional(),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").optional(),
+      limit: z.number().int().positive().max(300).optional(),
+    }))
+    .query(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      return listPartyRemittances(input.partyId, { from: input.from, to: input.to, limit: input.limit });
+    }),
+
   // ─── التحوّلات ───
   // إرسال طلب جاهز عبر مندوب (يُصدر فاتورة COD + عهدة) — مالٌ/نقد ⇒ cashierProcedure.
   dispatch: cashierProcedure
@@ -264,11 +281,13 @@ export const deliveryRouter = router({
       refundShiftId: z.number().int().positive().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      const res = await returnConsignment(input.consignmentId, {
+      // ٩/٨: ترتيب أقفال الإرجاع (إرسالية←جهة) يعاكس التوريد/الشطب (جهة←إرسالية) — تنافسٌ
+      // لحظي بينهما قد يُفصَل بـdeadlock من MySQL؛ إعادة المحاولة تمتصّه (نمط collect.ts).
+      const res = await retryOnDeadlock(() => returnConsignment(input.consignmentId, {
         ...actorOf(ctx),
         clientRequestId: input.clientRequestId,
         refundShiftId: input.refundShiftId ?? null,
-      });
+      }));
       await logAudit(ctx, { action: "delivery.return", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { invoiceId: (res as { invoiceId?: number }).invoiceId } });
       return res;
     }),
@@ -295,6 +314,8 @@ export const deliveryRouter = router({
     }),
 
   // شطب عجز عهدة (إبراء دَين) — مديرٌ فقط (SOD: القابض لا يُبرئ عجزه).
+  // ٩/٨: consignmentId يوجّه الشطب لإرسالية بعينها (يقفلها WRITTEN_OFF ويقيّد فاتورتها) —
+  // الشطب المجمّع محصور بالعهدة السائبة (الحارس في الخدمة).
   writeOff: managerProcedure
     .input(
       z.object({
@@ -302,13 +323,35 @@ export const deliveryRouter = router({
         branchId: z.number().int().positive().nullish(),
         amount: moneyStr,
         reason: z.string().min(3).max(500),
+        consignmentId: z.number().int().positive().nullish(),
         clientRequestId: z.string().max(64).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
       const branchId = effectiveBranch(ctx, input.branchId);
-      const res = await writeOffDeliveryShortfall({ branchId, partyId: input.partyId, amount: input.amount, reason: input.reason, clientRequestId: input.clientRequestId }, actorOf(ctx));
-      await logAudit(ctx, { action: "delivery.writeOff", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount, reason: input.reason } });
+      const res = await retryOnDeadlock(() => writeOffDeliveryShortfall({ branchId, partyId: input.partyId, amount: input.amount, reason: input.reason, consignmentId: input.consignmentId, clientRequestId: input.clientRequestId }, actorOf(ctx)));
+      await logAudit(ctx, { action: "delivery.writeOff", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount, reason: input.reason, consignmentId: input.consignmentId ?? null } });
+      return res;
+    }),
+
+  // استرداد عجز مشطوب (٩/٨) — نقدٌ عاد بعد شطبه (لم يكن له أي مسار: settle يرفض تجاوز العهدة
+  // الصفرية والتوريد يرفض الإرسالية المغلقة). يعكس الخسارة ويُدخل النقد الدرج. بوّابة مُبوَّبة
+  // بوحدة (store FULL + manager) لا دوراً خاماً — نمط authz-guard المعتمد للنقاط الجديدة.
+  recoverWriteOff: storeManagerProcedure
+    .input(
+      z.object({
+        partyId: z.number().int().positive(),
+        branchId: z.number().int().positive().nullish(),
+        amount: moneyStr,
+        shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        notes: z.string().max(500).nullish(),
+        clientRequestId: z.string().max(64).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const branchId = effectiveBranch(ctx, input.branchId);
+      const res = await recoverDeliveryWriteOff({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx));
+      await logAudit(ctx, { action: "delivery.recoverWriteOff", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount } });
       return res;
     }),
 });

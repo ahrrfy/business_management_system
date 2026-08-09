@@ -10,16 +10,15 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Badge } from "@/components/ui/badge";
 import { confirm } from "@/lib/confirm";
-import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { printDeliveryPartyStmt } from "@/lib/printing/printTemplates";
 import { ListToolbar, RowActions } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import DeliveryPartyDetail from "@/pages/DeliveryPartyDetail";
 
 type Party = RouterOutputs["delivery"]["listParties"][number];
 
@@ -45,37 +44,11 @@ export default function DeliveryParties() {
   const [settleFor, setSettleFor] = useState<Party | null>(null);
   const [writeOffFor, setWriteOffFor] = useState<Party | null>(null);
   // «ذمة قائمة»: رصيدٌ غير صفريّ (بذمّة المندوب/الجهة نقداً لم يُورَّد بعد) — محفوظ في querystring.
-  const [f, setF, resetF] = useUrlFilters({ outstandingOnly: "" });
-
-  const printStatement = async (party: Party) => {
-    const data = await utils.delivery.partyStatement.fetch({ partyId: party.id });
-    if (!data) return;
-    let bal = 0, totDispatch = 0, totSettled = 0, totFees = 0;
-    const txs: { date: string; ref: string; description: string; debit: string | null; credit: string | null; balance: string }[] = [];
-    for (const e of data.entries) {
-      const amt = Number(e.amount);
-      const date = fmtDate(e.entryDate);
-      // استخراج المرجع من الملاحظات: كان يتطابق حصراً مع بادئتَي CN-/DR- (إرسالية/ترحيل) فيُخفي
-      // مرجع طلبات المتجر ORD- (تحصيل COD من المندوب عبر courier.ts — يظهر بنفس نوع القيد
-      // DELIVERY_DISPATCH). أيّ بادئة حرفية لاتينية (٢-٦ أحرف) متبوعة بشَرطة تلتقط الأنماط الحالية
-      // والمستقبلية بلا تخصيص حرفَين ثابتَين.
-      const ref = (e.notes ?? "").match(/[A-Z]{2,6}-[A-Za-z0-9-]+/)?.[0] ?? "—";
-      if (e.type === "DELIVERY_DISPATCH") { bal += amt; totDispatch += amt; txs.push({ date, ref, description: "إرسالية (عهدة COD)", debit: e.amount, credit: null, balance: bal.toFixed(2) }); }
-      else if (e.type === "DELIVERY_REMIT") { bal -= amt; totSettled += amt; txs.push({ date, ref, description: "توريد/تسوية", debit: null, credit: e.amount, balance: bal.toFixed(2) }); }
-      else if (e.type === "DELIVERY_WRITEOFF") { bal -= amt; totSettled += amt; txs.push({ date, ref, description: "شطب عجز", debit: null, credit: e.amount, balance: bal.toFixed(2) }); }
-      else if (e.type === "DELIVERY_FEE") { totFees += amt; }
-    }
-    printDeliveryPartyStmt({
-      partyName: data.party.name,
-      partyType: data.party.partyType === "COMPANY" ? "شركة توصيل" : "مندوب",
-      partyPhone: data.party.phone ?? undefined,
-      transactions: txs,
-      totalDispatched: totDispatch.toFixed(2),
-      totalSettled: totSettled.toFixed(2),
-      totalFees: totFees.toFixed(2),
-      closingBalance: data.currentBalance,
-    });
-  };
+  // detail: لوحة تفاصيل الجهة (٩/٨) — في الرابط كي تفتحها روابط الفواتير مباشرة.
+  const [f, setF, resetF] = useUrlFilters({ outstandingOnly: "", detail: "" });
+  // ٩/٨: الكشف المطبوع السريع استُبدل بلوحة التفاصيل (كشف حيّ يشمل أمانات الأجرة التي كان
+  // الكشف القديم يُسقطها صامتاً + جمع Decimal بدل Number العائم + المرجع = رقم الفاتورة الفعلي).
+  const detailFor = f.detail ? (list.data ?? []).find((p) => String(p.id) === f.detail) ?? null : null;
 
   const kpis = useMemo(() => {
     const rows = list.data ?? [];
@@ -167,7 +140,12 @@ export default function DeliveryParties() {
                   const bal = Number(p.currentBalance ?? 0);
                   return (
                     <tr key={p.id} className="border-b last:border-0 hover:bg-muted/30">
-                      <td className="p-3 font-medium">{p.name}{p.phone && <span className="ms-2 text-xs text-muted-foreground" dir="ltr">{p.phone}</span>}</td>
+                      <td className="p-3 font-medium">
+                        <button type="button" className="font-bold text-primary hover:underline" onClick={() => setF({ detail: String(p.id) })}>
+                          {p.name}
+                        </button>
+                        {p.phone && <span className="ms-2 text-xs text-muted-foreground" dir="ltr">{p.phone}</span>}
+                      </td>
                       <td className="p-3">{p.partyType === "COMPANY" ? "شركة" : "مندوب"}</td>
                       <td className={cn("p-3 text-left tabular-nums font-bold", bal > 0 ? "text-destructive" : "")} dir="ltr">{fmt(p.currentBalance)}</td>
                       <td className="p-3 text-center tabular-nums">{p.openConsignments}</td>
@@ -190,10 +168,10 @@ export default function DeliveryParties() {
                           }}
                           actions={[
                             {
-                              key: "statement",
-                              kind: "print",
-                              label: "كشف",
-                              onSelect: () => printStatement(p),
+                              key: "detail",
+                              kind: "view",
+                              label: "تفاصيل وكشف",
+                              onSelect: () => setF({ detail: String(p.id) }),
                               gate: { module: "store", level: "READ" },
                             },
                             {
@@ -232,6 +210,13 @@ export default function DeliveryParties() {
       {showCreate && <CreatePartyDialog onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); utils.delivery.listParties.invalidate(); }} />}
       {settleFor && <SettleDialog party={settleFor} onClose={() => setSettleFor(null)} onDone={() => { setSettleFor(null); utils.delivery.listParties.invalidate(); }} />}
       {writeOffFor && <WriteOffDialog party={writeOffFor} onClose={() => setWriteOffFor(null)} onDone={() => { setWriteOffFor(null); utils.delivery.listParties.invalidate(); }} />}
+      {detailFor && (
+        <DeliveryPartyDetail
+          party={detailFor}
+          onClose={() => setF({ detail: "" })}
+          onChanged={() => { utils.delivery.listParties.invalidate(); utils.delivery.getParty.invalidate({ id: detailFor.id }); utils.delivery.partyStatement.invalidate(); }}
+        />
+      )}
     </div>
   );
 }
@@ -298,7 +283,14 @@ function SettleDialog({ party, onClose, onDone }: { party: Party; onClose: () =>
   const m = trpc.delivery.settle.useMutation({ onSuccess: () => { notify.ok("سُجِّلت التسوية"); onDone(); }, onError: (e) => notify.err(e) });
   return (
     <Modal title={`تسوية عهدة «${party.name}»`} onClose={onClose}>
-      <p className="mb-3 text-sm text-muted-foreground">العهدة الحالية: <span dir="ltr" className="font-bold tabular-nums">{fmt(party.currentBalance)} د.ع</span>. يدفع المندوب نقداً (يدخل درج وردية مفتوحة).</p>
+      <p className="mb-2 text-sm text-muted-foreground">العهدة الحالية: <span dir="ltr" className="font-bold tabular-nums">{fmt(party.currentBalance)} د.ع</span>. يدفع المندوب نقداً (يدخل درج وردية مفتوحة).</p>
+      {/* ٩/٨: الخادم يقصر هذا المسار على العهدة السائبة — نقد الإرساليات المفتوحة يُورَّد من
+          شاشة «تسوية المناديب» كي تُقيَّد فواتيره وتُخفَّض ذمم عملائه (لا فاتورة تبقى معلّقة). */}
+      {party.openConsignments > 0 && (
+        <p className="mb-3 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-2 text-xs font-bold text-[var(--sem-warn)]">
+          لهذه الجهة {party.openConsignments} إرسالية مفتوحة — نقدُها يُستلم من «إدارة التوصيل ← تسوية المناديب» (توريد بالإرسالية)، وهذا الحوار للعهدة السائبة فقط (عجوزات سابقة/تحصيلات متجر).
+        </p>
+      )}
       <label className="mb-1.5 block text-sm font-bold">المبلغ المُسدَّد (د.ع)</label>
       <MoneyInput value={amount} onChange={setAmount} className="mb-4 h-11 text-end text-lg font-bold tabular-nums" ariaLabel="مبلغ التسديد" />
       <div className="flex gap-2.5">
@@ -312,23 +304,62 @@ function SettleDialog({ party, onClose, onDone }: { party: Party; onClose: () =>
 function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () => void; onDone: () => void }) {
   const [amount, setAmount] = useState(String(Number(party.currentBalance ?? 0)));
   const [reason, setReason] = useState("");
+  // ٩/٨ — الشطب الموجَّه: عجز إرساليةٍ بعينها يُشطَب باختيارها فتُقفَل (WRITTEN_OFF) وتُقيَّد
+  // فاتورتُها وتُبرَّأ ذمّة عميلها (المندوب حصّل وضيّع — الزبون بريء). بدونه كانت الإرسالية
+  // تبقى «زومبي» في شاشة التوريد تقبل توريداً لاحقاً يقلب الرصيد سالباً. «عهدة سائبة» تبقى
+  // للعجوزات غير المرتبطة بإرسالية (الخادم يحرس الحالتين).
+  const [consignmentId, setConsignmentId] = useState<string>("");
+  const open = trpc.delivery.openConsignments.useQuery({ partyId: party.id });
+  const chosen = (open.data ?? []).find((c) => String(c.id) === consignmentId) ?? null;
+  const chosenRemaining = chosen ? Math.max(0, Number(chosen.codAmount) - Number(chosen.collectedAmount)) : null;
   // IDEMPOTENCY (تدقيق ٢/٧): مفتاح ثابت لكل جلسة حوار — النقر المزدوج لا يشطب العجز مرّتين.
   const [reqId] = useState(() => crypto.randomUUID());
   const m = trpc.delivery.writeOff.useMutation({ onSuccess: () => { notify.ok("شُطِب العجز"); onDone(); }, onError: (e) => notify.err(e) });
+  const effAmount = chosenRemaining != null ? chosenRemaining.toFixed(2) : amount;
   const submit = async () => {
-    const ok = await confirm({ variant: "danger", title: "شطب عجز عهدة", description: `سيُشطب ${fmt(amount)} د.ع من عهدة «${party.name}» كمصروف (خسارة) لا رجعة فيه.`, confirmText: "شطب", requireText: party.name });
-    if (ok) m.mutate({ partyId: party.id, amount, reason: reason.trim(), clientRequestId: reqId });
+    const ok = await confirm({
+      variant: "danger",
+      title: "شطب عجز عهدة",
+      description: chosen
+        ? `ستُقفل الإرسالية ${chosen.consignmentNumber} وتُقيَّد فاتورتها مسدَّدة، ويُشطب ${fmt(effAmount)} د.ع من عهدة «${party.name}» كخسارة لا رجعة فيها (الزبون دفع للمندوب والمندوب ضيّع النقد).`
+        : `سيُشطب ${fmt(effAmount)} د.ع من العهدة السائبة لـ«${party.name}» كمصروف (خسارة) لا رجعة فيه.`,
+      confirmText: "شطب",
+      requireText: party.name,
+    });
+    if (ok) m.mutate({ partyId: party.id, amount: effAmount, reason: reason.trim(), consignmentId: chosen ? chosen.id : undefined, clientRequestId: reqId });
   };
   return (
     <Modal title={`شطب عجز «${party.name}»`} onClose={onClose}>
       <p className="mb-3 text-sm text-destructive">إبراء دَين غير قابل للتحصيل — يُقيَّد خسارةً. (مدير فقط)</p>
+      <label className="mb-1.5 block text-sm font-bold">ما الذي يُشطب؟</label>
+      <select
+        className="mb-3 h-11 w-full rounded-md border bg-transparent px-3 text-sm"
+        value={consignmentId}
+        onChange={(e) => setConsignmentId(e.target.value)}
+      >
+        <option value="">عهدة سائبة (غير مرتبطة بإرسالية مفتوحة)</option>
+        {(open.data ?? []).map((c) => (
+          <option key={c.id} value={String(c.id)}>
+            إرسالية {c.consignmentNumber} — {c.invoiceNumber ?? ""} — متبقٍّ {fmt(String(Math.max(0, Number(c.codAmount) - Number(c.collectedAmount))))} د.ع
+          </option>
+        ))}
+      </select>
       <label className="mb-1.5 block text-sm font-bold">المبلغ المشطوب (د.ع)</label>
-      <MoneyInput value={amount} onChange={setAmount} className="mb-3 h-11 text-end text-lg font-bold tabular-nums" ariaLabel="مبلغ التعديل" allowNegative />
+      <MoneyInput
+        value={effAmount}
+        onChange={setAmount}
+        disabled={chosenRemaining != null}
+        className="mb-1 h-11 text-end text-lg font-bold tabular-nums"
+        ariaLabel="مبلغ التعديل"
+      />
+      {chosenRemaining != null && (
+        <p className="mb-2 text-xs text-muted-foreground">شطب الإرسالية يكون بكامل متبقّيها — تُقفل وتُقيَّد فاتورتها مسدَّدة وتُبرَّأ ذمّة العميل.</p>
+      )}
       <label className="mb-1.5 block text-sm font-bold">السبب</label>
       <Input value={reason} onChange={(e) => setReason(e.target.value)} className="mb-4 h-11" placeholder="سبب الشطب (٣ أحرف فأكثر)" />
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-        <Button className="flex-1 bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0 || reason.trim().length < 3} onClick={submit}>{m.isPending ? "جارٍ…" : "شطب"}</Button>
+        <Button className="flex-1 bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(effAmount) || Number(effAmount) <= 0 || reason.trim().length < 3} onClick={submit}>{m.isPending ? "جارٍ…" : "شطب"}</Button>
       </div>
     </Modal>
   );

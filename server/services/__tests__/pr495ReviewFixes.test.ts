@@ -23,6 +23,7 @@ import { collectDeposit, refundAppliedCollectionsForWorkOrder, refundDeposit } f
 import { promoteDraft, syncDraft } from "../reception/draft";
 import { commitDraft } from "../reception/commit";
 import { createWorkOrder } from "../workOrder/create";
+import { extractInsertId } from "../../lib/insertId";
 import { withTx } from "../tx";
 
 const TABLES = [
@@ -168,17 +169,32 @@ describe("R2 — أمانة أجرة التوصيل لا تُردّ مرّتين
     expect(Number(held?.v ?? 0)).toBe(0);
   });
 
-  it("أمانةٌ لم تُصرف بعد (COURIER) ⇒ تُردّ للزبون عند الإرجاع كما كانت", async () => {
+  it("أمانةٌ لم تُصرف بعد ⇒ تُردّ للزبون عند الإرجاع كما كانت (حالة تاريخية)", async () => {
     const shift = await openReception(2, 1);
+    // ٩/٨: التقاط أمانةٍ مع توصيل COURIER صار **مرفوضاً خادمياً** (أمانة يتيمة لا مسار تبرئة
+    // لها إن نجح التوصيل — المندوب يقبض أجرته من الزبون ثانيةً). سلوك الردّ في returns.ts يبقى
+    // ضرورياً للبيانات التاريخية السابقة للحارس ⇒ نبنيها مباشرةً في القاعدة كما كانت تُكتب.
     const r = await checkoutReception({
       branchId: 1, shiftId: shift.shiftId, customerId: 1,
       paymentMethod: "CASH", paidAmount: "0",
-      deliveryFeeHeld: "4000.00",
       clientRequestId: "r2-unsettled",
       regularSale: { lines: [LINE], amount: "10000.00" },
       delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = r.regularSale!.invoiceId;
+    const legacyFee = await db().insert(s.receipts).values({
+      branchId: 1, shiftId: shift.shiftId, invoiceId, direction: "IN", amount: "4000.00",
+      paymentMethod: "CASH", cashBucket: "DRAWER", status: "COMPLETED", partyType: "OTHER",
+      referenceNumber: `DLV-FEE-INV-${invoiceId}`,
+      description: "أجرة توصيل مقبوضة أمانةً (بيانات تاريخية)", createdBy: 2,
+    });
+    await db().insert(s.accountingEntries).values({
+      entryType: "DELIVERY_FEE_HELD", dedupeKey: `DELIVERY_FEE_HELD:INV:${invoiceId}`,
+      branchId: 1, invoiceId, receiptId: extractInsertId(legacyFee),
+      amount: "4000.00",
+      entryDate: sql`CURDATE()` as unknown as string,
+      notes: "أمانة أجرة توصيل — تاريخية",
+    });
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
     expect(cn.feeSettledAt).toBeNull();
 

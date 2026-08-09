@@ -376,6 +376,24 @@ export async function checkoutReceptionInTx(
     // ملاحظة الترتيب: تسبق الإسناد عمداً — dispatchInvoiceInTx يشترط وجودها لقبول COUNTER.
     const feeHeldD = round2(money(input.deliveryFeeHeld ?? "0"));
     if (feeHeldD.gt(0) && !completeReplay) {
+      // حارس خادميّ (مراجعة عدائية ٩/٨): حين يُرافق الالتقاطَ توصيلٌ في نفس التثبيت يجب أن
+      // تكون أجرته «مقبوضة في الاستقبال» وبنفس المبلغ — أمانةٌ مع توصيل COURIER = المندوب
+      // يقبض أجرته من الزبون ثانيةً والأمانة تعلق بلا تبرئة؛ ومبلغٌ يخالف الأجرة يترك فرقاً
+      // في الدرج بلا مسار ردّ. **بلا توصيلٍ في التثبيت يبقى الالتقاط مشروعاً** (الإسناد
+      // المؤجَّل من الطابور — ش٦/V15): dispatchInvoice يفرض المساواة مع الإيصال لحظة الإسناد،
+      // وإلغاء الطلب/الإرجاع يردّانها.
+      if (input.delivery && (input.delivery.feeCollection ?? "COURIER") !== "COUNTER") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "أمانة أجرة التوصيل تُقبَض فقط مع توصيلٍ أجرته «مقبوضة في الاستقبال» — أزل المبلغ أو اضبط التوصيل",
+        });
+      }
+      if (input.delivery && !feeHeldD.eq(round2(money(input.delivery.fee ?? "0")))) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `أمانة الأجرة المقبوضة (${feeHeldD.toFixed(2)}) يجب أن تساوي أجرة التوصيل (${round2(money(input.delivery.fee ?? "0")).toFixed(2)})`,
+        });
+      }
       const carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
       if (carrierInvoiceId == null) {
         throw new TRPCError({

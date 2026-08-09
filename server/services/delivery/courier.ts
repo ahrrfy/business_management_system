@@ -230,6 +230,25 @@ export async function confirmCourierDelivery(
     if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "فاتورة الطلب ملغاة/مرتجعة — راجع المدير" });
     }
+    // مراجعة عدائية ٩/٨ — الشقّ الثاني من حارس ازدواج العهدة (نظير رفض ONLINE في dispatchInvoice):
+    // لو أُسندت فاتورة الطلب إرساليةً من مسار الاستقبال (بيانات قديمة/التفاف API) فعهدتُها ودورةُ
+    // تحصيلها هناك — تأكيدُها هنا يرفع العهدة مرّةً ثانية بمفتاح dedupe مختلف لنقدٍ واحد.
+    // المفتوحة فقط (DISPATCHED/PARTIAL): إرسالية مغلقة (وُرِّدت/أُرجعت/شُطبت) لا خطرَ ازدواجٍ
+    // منها — التحصيل هنا يُشتقّ من متبقّي الفاتورة فيصير صفراً بعد التوريد؛ ورفضُها كان يقفل
+    // ختم DELIVERED على طلبٍ سُلِّم فعلاً إلى الأبد.
+    const cnDup = (
+      await tx
+        .select({ n: deliveryConsignments.consignmentNumber })
+        .from(deliveryConsignments)
+        .where(and(
+          eq(deliveryConsignments.invoiceId, Number(inv.id)),
+          inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]),
+        ))
+        .limit(1)
+    )[0];
+    if (cnDup) {
+      throw new TRPCError({ code: "CONFLICT", message: `فاتورة الطلب مُسنَدة لإرسالية استقبال بالطريق (${cnDup.n}) — تحصيلها عبر توريد المندوب هناك` });
+    }
 
     // القيمة المُحصَّلة تُشتقّ من **الفاتورة** (صافي − مسدَّد) لا من حالة الطلب ⇒ التأكيد idempotent
     // وغير قابل للحجب: لو أُقفلت الحالة DELIVERED دون تحصيل (مثلاً مسارٌ آخر)، هذا يُكمل التحصيل؛

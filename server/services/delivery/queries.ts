@@ -1,6 +1,6 @@
-// قراءات الشاشة: الجاهز للإرسال، الإرساليات المفتوحة/كاملة، كشف حساب جهة.
-import { and, desc, eq, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryParties, invoices, workOrders } from "../../../drizzle/schema";
+// قراءات الشاشة: الجاهز للإرسال، الإرساليات المفتوحة/كاملة، سجل التوريدات، كشف حساب جهة.
+import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { accountingEntries, customers, deliveryConsignments, deliveryParties, deliveryRemittances, invoices, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 
 /** أوامر الشغل الجاهزة (READY) القابلة للإرسال عبر مندوب — تبويب «جاهز للإرسال». */
@@ -35,7 +35,9 @@ export async function listReadyForDispatch(branchId: number | null) {
     .limit(200);
 }
 
-/** الإرساليات المفتوحة (DISPATCHED/PARTIAL) لجهة — لشاشة التسوية. */
+/** الإرساليات المفتوحة (DISPATCHED/PARTIAL) لجهة — لشاشة التسوية.
+ *  ٩/٨: + feeCollection/feeSettledAt (الشاشة كانت تخصم كل الأجور فتحسب صافياً يخالف الخادم
+ *  فتستحيل تسوية إرساليات COURIER/المصروفة سلفاً — طريق مسدود) + ختم تأكيد المندوب. */
 export async function listOpenConsignments(partyId: number) {
   const db = getDb();
   if (!db) return [];
@@ -48,6 +50,9 @@ export async function listOpenConsignments(partyId: number) {
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
       deliveryFee: deliveryConsignments.deliveryFee,
+      feeCollection: deliveryConsignments.feeCollection,
+      feeSettledAt: deliveryConsignments.feeSettledAt,
+      courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
       status: deliveryConsignments.status,
       endCustomerId: deliveryConsignments.endCustomerId,
       customerName: customers.name,
@@ -61,24 +66,90 @@ export async function listOpenConsignments(partyId: number) {
     .orderBy(deliveryConsignments.dispatchedAt);
 }
 
-/** كل إرساليات جهة (تبويب «قيد التوصيل» / تفاصيل الجهة). */
+/** كل إرساليات جهة (تبويب «إرساليات الجهة» في شاشة التفاصيل) — بأرقام فواتيرها وتوريداتها. */
 export async function listConsignmentsForParty(partyId: number, openOnly = false) {
   const db = getDb();
   if (!db) return [];
   const conds = [eq(deliveryConsignments.partyId, partyId)];
   if (openOnly) conds.push(sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`);
-  return db.select().from(deliveryConsignments).where(and(...conds)).orderBy(desc(deliveryConsignments.id)).limit(300);
+  return db
+    .select({
+      id: deliveryConsignments.id,
+      consignmentNumber: deliveryConsignments.consignmentNumber,
+      invoiceId: deliveryConsignments.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
+      invoiceStatus: invoices.status,
+      codAmount: deliveryConsignments.codAmount,
+      collectedAmount: deliveryConsignments.collectedAmount,
+      deliveryFee: deliveryConsignments.deliveryFee,
+      feeCollection: deliveryConsignments.feeCollection,
+      status: deliveryConsignments.status,
+      customerName: customers.name,
+      recipientName: deliveryConsignments.recipientName,
+      recipientPhone: deliveryConsignments.recipientPhone,
+      dispatchedAt: deliveryConsignments.dispatchedAt,
+      courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
+      settledAt: deliveryConsignments.settledAt,
+      remittanceId: deliveryConsignments.remittanceId,
+      remittanceNumber: deliveryRemittances.remittanceNumber,
+    })
+    .from(deliveryConsignments)
+    .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
+    .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
+    .leftJoin(deliveryRemittances, eq(deliveryConsignments.remittanceId, deliveryRemittances.id))
+    .where(and(...conds))
+    .orderBy(desc(deliveryConsignments.id))
+    .limit(300);
 }
 
-/** كشف حساب جهة توصيل: قيود العهدة (DISPATCH مدين، REMIT/WRITEOFF دائن) + أجور (FEE). */
+/** سجل توريدات جهة (٩/٨): كان أثر التوريد الوحيد إيصالاً حرارياً يُطبع مرة واحدة — سلسلة
+ *  invoice⇒consignment⇒remittance⇒receipt كاملة في القاعدة ومقطوعة في الشاشات. */
+export async function listPartyRemittances(partyId: number, opts?: { from?: string; to?: string; limit?: number }) {
+  const db = getDb();
+  if (!db) return [];
+  const conds = [eq(deliveryRemittances.partyId, partyId)];
+  if (opts?.from) conds.push(gte(deliveryRemittances.receivedAt, new Date(`${opts.from}T00:00:00Z`)));
+  if (opts?.to) conds.push(lte(deliveryRemittances.receivedAt, new Date(`${opts.to}T23:59:59Z`)));
+  return db
+    .select({
+      id: deliveryRemittances.id,
+      remittanceNumber: deliveryRemittances.remittanceNumber,
+      branchId: deliveryRemittances.branchId,
+      collectedTotal: deliveryRemittances.collectedTotal,
+      feesTotal: deliveryRemittances.feesTotal,
+      netRemitted: deliveryRemittances.netRemitted,
+      shortfallTotal: deliveryRemittances.shortfallTotal,
+      status: deliveryRemittances.status,
+      receivedAt: deliveryRemittances.receivedAt,
+      receivedByName: users.name,
+      shiftId: deliveryRemittances.shiftId,
+    })
+    .from(deliveryRemittances)
+    .leftJoin(users, eq(deliveryRemittances.receivedBy, users.id))
+    .where(and(...conds))
+    .orderBy(desc(deliveryRemittances.id))
+    .limit(Math.min(opts?.limit ?? 100, 300));
+}
+
+/** كشف حساب جهة توصيل: قيود العهدة (DISPATCH مدين، REMIT/WRITEOFF دائن) + أجور (FEE/FEE_HELD).
+ *  ٩/٨: + رقم الفاتورة (كان المرجع يُستخرج من نص الملاحظات بـregex هشّ في الواجهة). */
 export async function getDeliveryPartyStatement(partyId: number, from?: string, to?: string) {
   const db = getDb();
   if (!db) return null;
   const party = (await db.select().from(deliveryParties).where(eq(deliveryParties.id, partyId)).limit(1))[0];
   if (!party) return null;
+  // ساقا أمانة الأجرة (مراجعة عدائية ٩/٨): قيدُ **القبض** يُكتب لحظة البيع قبل معرفة الجهة
+  // (بلا deliveryPartyId) وقيدُ الصرف بعد الإسناد (به) — فلترةُ الجهة وحدها كانت تعرض الصرف
+  // بلا قبضه ⇒ «أمانات معلّقة Σ» سالبةٌ متراكمة كاذبة. نضمّ قيود FEE_HELD لفواتير إرساليات
+  // الجهة أيضاً (uq_consignment_invoice ⇒ الفاتورة لجهةٍ واحدة، لا ازدواج عبر الجهات).
   const conds = [
-    eq(accountingEntries.deliveryPartyId, partyId),
-    sql`${accountingEntries.entryType} IN ('DELIVERY_DISPATCH','DELIVERY_REMIT','DELIVERY_WRITEOFF','DELIVERY_FEE','DELIVERY_FEE_HELD')`,
+    sql`(
+      (${accountingEntries.deliveryPartyId} = ${partyId}
+        AND ${accountingEntries.entryType} IN ('DELIVERY_DISPATCH','DELIVERY_REMIT','DELIVERY_WRITEOFF','DELIVERY_FEE','DELIVERY_FEE_HELD'))
+      OR (${accountingEntries.entryType} = 'DELIVERY_FEE_HELD'
+        AND ${accountingEntries.deliveryPartyId} IS NULL
+        AND ${accountingEntries.invoiceId} IN (SELECT dc.invoiceId FROM deliveryConsignments dc WHERE dc.partyId = ${partyId}))
+    )`,
   ];
   if (from) conds.push(sql`${accountingEntries.entryDate} >= ${from}`);
   if (to) conds.push(sql`${accountingEntries.entryDate} <= ${to}`);
@@ -89,8 +160,12 @@ export async function getDeliveryPartyStatement(partyId: number, from?: string, 
       amount: accountingEntries.amount,
       entryDate: accountingEntries.entryDate,
       notes: accountingEntries.notes,
+      invoiceId: accountingEntries.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
+      receiptId: accountingEntries.receiptId,
     })
     .from(accountingEntries)
+    .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
     .where(and(...conds))
     .orderBy(accountingEntries.id);
   return {

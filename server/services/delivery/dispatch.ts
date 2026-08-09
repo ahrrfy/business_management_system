@@ -2,7 +2,7 @@
 //
 // READY → DELIVERED + إرسالية: فاتورة (customerId=NULL) + SALE + عهدة COD على الجهة (D3).
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNull, notLike, or } from "drizzle-orm";
+import { and, eq, isNull, notLike, or, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
@@ -103,11 +103,37 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     }
     // مَن قبض الأجرة: يتبع ما ثُبِّت على أمر الشغل في الاستقبال (COURIER افتراضياً).
     const feeCollection = (wo.deliveryFeeCollection ?? "COURIER") as "COURIER" | "COUNTER" | "SHOP";
-    if (feeCollection === "COUNTER" && fee.gt(round2(money(wo.deliveryCost ?? "0")))) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "أجرة المندوب تتجاوز الأجرة المقبوضة من الزبون في الاستقبال — سوّها قبل الإرسال",
-      });
+    if (feeCollection === "COUNTER") {
+      // مراجعة عدائية ٩/٨ — حارسان بدل فحص wo.deliveryCost الاسمي:
+      // (١) الأمانة تُقاس بصافي **إيصالات القبض الفعلية** (DLV-FEE-WO) لا بحقل الطلب — أمرٌ
+      //     قديم/قناة لا تلتقط الأمانة كان يصرف OUT نقداً بلا IN يقابله ⇒ المكتبة تدفع من
+      //     مالها أجرةً لم يدفعها الزبون قط وΣ(FEE_HELD) سالبة صامتة (مرآة حارس dispatchInvoice).
+      // (٢) **مساواة** لا سقف: COUNTER معناها «الزبون دفع أجرة المندوب سلفاً» — أجرةٌ أقل من
+      //     الأمانة كانت تُبرّئ جزءاً وتترك الفرق دنانير زبونٍ عالقة في الدرج بلا مسار ولا
+      //     تبويب للأبد (التوريد لا يخصمها بعد ختم feeSettledAt والإرجاع لا يردّها).
+      const heldRow = (
+        await tx
+          .select({ v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)` })
+          .from(receipts)
+          .where(and(
+            eq(receipts.workOrderId, Number(wo.id)),
+            eq(receipts.referenceNumber, `DLV-FEE-WO-${wo.id}`),
+            eq(receipts.status, "COMPLETED"),
+          ))
+      )[0];
+      const heldD = round2(money(heldRow?.v ?? "0"));
+      if (heldD.lte(0)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "«مقبوضة في الاستقبال» بلا إيصال قبض أمانة لهذا الطلب — اقبض الأجرة أولاً أو غيّر طريقة قبضها إلى «المندوب يقبضها» / «على المكتبة»",
+        });
+      }
+      if (!fee.eq(heldD)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `الأمانة المقبوضة من الزبون (${heldD.toFixed(2)}) يجب أن تساوي أجرة المندوب — اجعل الأجرة ${heldD.toFixed(2)} أو صحّح المقبوض قبل الإرسال`,
+        });
+      }
     }
 
     // مراجعة PR #495 — سقف عهدة المندوب: كان يُقرأ في مسار إسناد الفاتورة وحده، فبقي هذا المسار

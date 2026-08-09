@@ -34,12 +34,13 @@ export { dispatchToDelivery } from "./delivery/dispatch";
 export type { RemittanceLineInput, RemittanceInput } from "./delivery/remittance";
 export { recordDeliveryRemittance } from "./delivery/remittance";
 export { returnConsignment } from "./delivery/returns";
-export type { SettleInput, WriteOffInput } from "./delivery/settle";
-export { settleDeliveryBalance, writeOffDeliveryShortfall } from "./delivery/settle";
+export type { SettleInput, WriteOffInput, RecoverWriteOffInput } from "./delivery/settle";
+export { settleDeliveryBalance, writeOffDeliveryShortfall, recoverDeliveryWriteOff } from "./delivery/settle";
 export {
   listReadyForDispatch,
   listOpenConsignments,
   listConsignmentsForParty,
+  listPartyRemittances,
   getDeliveryPartyStatement,
 } from "./delivery/queries";
 // ٥/٨: إسناد فاتورةٍ قائمة (بيع مباشر بلا أمر شغل) للتوصيل — كان مستحيلاً بنيوياً.

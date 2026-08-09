@@ -634,6 +634,30 @@ export default function InvoiceDetail() {
                   )}
                 </div>
               )}
+              {/* ٩/٨ — خيط الإرسالية: الرقم + الحالة + الجهة برابطٍ لمركز التوصيل («وين طلبي؟»
+                  كان ينقطع هنا — الاسم والأجرة بلا رقم إرسالية ولا حالة ولا مسار متابعة). */}
+              {data.consignmentNumber && (
+                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1.5 rounded-md border px-2.5 py-2 text-sm">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Truck aria-hidden className="size-3.5 text-muted-foreground" />
+                    إرسالية <span className="font-mono font-bold" dir="ltr">{data.consignmentNumber}</span>
+                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
+                      data.consignmentStatus === "DELIVERED"
+                        ? "badge-status-active"
+                        : data.consignmentStatus === "RETURNED" || data.consignmentStatus === "WRITTEN_OFF" ? "badge-stock-out" : "badge-stock-low"
+                    }`}>
+                      {data.consignmentStatus === "DISPATCHED" ? "بالطريق"
+                        : data.consignmentStatus === "PARTIAL" ? "حُصِّل جزئياً"
+                        : data.consignmentStatus === "DELIVERED" ? "سُلِّمت"
+                        : data.consignmentStatus === "RETURNED" ? "أُرجعت"
+                        : data.consignmentStatus === "WRITTEN_OFF" ? "شُطبت" : data.consignmentStatus}
+                    </span>
+                  </span>
+                  <a className="text-xs font-bold text-primary hover:underline" href={`/delivery?tab=parties&detail=${data.deliveryPartyId ?? ""}`}>
+                    {data.courierName ?? "جهة التوصيل"} — كشف الجهة
+                  </a>
+                </div>
+              )}
               <SummaryRow label="المدفوع" value={data.paidAmount} />
               <SummaryRow
                 label="المتبقّي"
