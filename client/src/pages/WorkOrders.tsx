@@ -4,7 +4,8 @@ import { Link } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { AlertTriangle, Calendar, CheckCircle2, ChevronRight, FileText, Package, Printer, Receipt, Search, Timer, Truck, Wrench, X } from "lucide-react";
+import { AlertTriangle, Calendar, CheckCircle2, ChevronRight, FileText, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Search, Timer, Truck, Wrench, X } from "lucide-react";
+import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { notify } from "@/lib/notify";
@@ -12,17 +13,21 @@ import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { fmtAr, fmtInt, D, positiveDiff, round2 } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { fmtDate, fmtDateTime } from "@/lib/date";
+import { fmtDate, fmtDateTime, toDate } from "@/lib/date";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { printShippingLabel, type ShippingLabelData } from "@/lib/printing/shippingLabel";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
-import { RowActions } from "@/components/list";
+import { RowActions, type RowAction } from "@/components/list";
+import { DataTable } from "@/components/data-table/DataTable";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
 import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import CustomerPicker from "@/components/CustomerPicker";
 import {
   Dialog,
   DialogContent,
@@ -110,8 +115,11 @@ function initials(name: string | null | undefined): string {
 }
 function dueInfo(o: { status: string; dueDate: unknown }): { state: "done" | "ok" | "soon" | "late"; text: string } {
   if (o.status === "DELIVERED") return { state: "done", text: "سُلّم" };
-  if (!o.dueDate) return { state: "ok", text: "بلا موعد" };
-  const due = new Date(String(o.dueDate).slice(0, 10) + "T00:00:00");
+  // ⚠️ o.dueDate يصل عبر tRPC/superjson كائنَ Date حقيقياً (لا نصّاً) — String(Date) ينتج
+  // "Tue Sep 15 2026…" لا ISO، فيفشل new Date(...) صامتاً وينتج NaN. toDate() يتعامل مع
+  // Date/نصّ/YYYY-MM-DD محلياً بأمان (نفس دالة fmtDate المُتحقَّق منها).
+  const due = toDate(o.dueDate as string | number | Date | null | undefined);
+  if (!due) return { state: "ok", text: "بلا موعد" };
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate());
@@ -456,13 +464,168 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
   );
 }
 
+// ─────────────── تعديل تفاصيل الطلب (مديرٌ فأعلى — يقفل بعد DELIVERED/CANCELLED) ───────────────
+type EditForm = {
+  title: string;
+  customizationText: string;
+  salePrice: string;
+  dueDate: string;
+  priority: "LOW" | "NORMAL" | "URGENT";
+  customerId: number | null;
+  contactName: string;
+  contactPhone: string;
+  receptionChannel: "WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE" | "OTHER";
+  channelHandle: string;
+};
+
+function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: number | null; onClose: () => void; onSaved: () => void }) {
+  const detail = trpc.workOrders.get.useQuery({ workOrderId: workOrderId ?? 0 }, { enabled: workOrderId != null });
+  const [form, setForm] = useState<EditForm | null>(null);
+
+  // يعبّئ النموذج من بيانات الخادم عند فتح طلبٍ جديد — لا يُعيد الكتابة فوق تعديلات المستخدم
+  // الجارية إن أُعيد جلب نفس الطلب (invalidate) أثناء الفتح.
+  useEffect(() => {
+    const d = detail.data;
+    setForm(
+      d
+        ? {
+            title: d.title,
+            customizationText: d.customizationText ?? "",
+            salePrice: d.salePrice,
+            dueDate: d.dueDate ? String(d.dueDate).slice(0, 10) : "",
+            priority: (d.priority as EditForm["priority"]) ?? "NORMAL",
+            customerId: d.customerId ?? null,
+            contactName: d.contactName ?? "",
+            contactPhone: d.contactPhone ?? "",
+            receptionChannel: d.receptionChannel ?? "WALK_IN",
+            channelHandle: d.channelHandle ?? "",
+          }
+        : null,
+    );
+  }, [detail.data?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const update = trpc.workOrders.update.useMutation({
+    onSuccess: () => { notify.ok("حُفظ التعديل"); onSaved(); },
+    onError: (e) => notify.err(e),
+  });
+
+  if (workOrderId == null) return null;
+  const d = detail.data;
+  const locked = !!d && (d.status === "DELIVERED" || d.status === "CANCELLED");
+  const deposit = D(d?.deposit ?? 0);
+
+  function submit() {
+    if (!form) return;
+    const title = form.title.trim();
+    if (!title) { notify.err("عنوان الطلب مطلوب"); return; }
+    const priceD = D(form.salePrice);
+    if (priceD.lte(0)) { notify.err("السعر يجب أن يكون أكبر من صفر"); return; }
+    if (priceD.lt(deposit)) { notify.err(`السعر أقلّ من العربون المقبوض سلفاً (${fmtAr(deposit.toFixed(2))} د.ع)`); return; }
+    update.mutate({
+      workOrderId: workOrderId!,
+      title,
+      customizationText: form.customizationText.trim() || null,
+      salePrice: round2(priceD).toFixed(2),
+      dueDate: form.dueDate || null,
+      priority: form.priority,
+      customerId: form.customerId,
+      contactName: form.contactName.trim() || null,
+      contactPhone: form.contactPhone.trim() || null,
+      receptionChannel: form.receptionChannel,
+      channelHandle: form.channelHandle.trim() || null,
+    });
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>تعديل طلب الخدمة{d ? ` — ${d.orderNumber}` : ""}</DialogTitle>
+          <DialogDescription>
+            {locked
+              ? "هذا الطلب مُسلَّم أو مُلغى — لا يمكن تعديله بعد الآن."
+              : "يسري التعديل فوراً. الكمية والمواد المستهلَكة لا تُعدَّلان من هنا."}
+          </DialogDescription>
+        </DialogHeader>
+        {!d || !form ? (
+          <div className="py-8 text-center text-sm text-muted-foreground">{detail.isLoading ? "جارٍ التحميل…" : "تعذّر العثور على الطلب."}</div>
+        ) : locked ? (
+          <DialogFooter><button className="wob-btn wob-btn-ghost" onClick={onClose}>إغلاق</button></DialogFooter>
+        ) : (
+          <>
+            <div className="grid gap-3 py-1 max-h-[65vh] overflow-y-auto pe-1">
+              <div className="space-y-1">
+                <Label>عنوان الطلب</Label>
+                <input className={dlgInput} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+              </div>
+              <div className="space-y-1">
+                <Label>التخصيص/الملاحظات</Label>
+                <Textarea value={form.customizationText} onChange={(e) => setForm({ ...form, customizationText: e.target.value })} rows={3} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>سعر البيع</Label>
+                  <MoneyInput value={form.salePrice} onChange={(v) => setForm({ ...form, salePrice: v })} className={dlgInput} />
+                  {deposit.gt(0) && <p className="text-xs text-muted-foreground">لا يقلّ عن العربون المقبوض: {fmtAr(deposit.toFixed(2))} د.ع</p>}
+                </div>
+                <div className="space-y-1">
+                  <Label>موعد الاستحقاق</Label>
+                  <input type="date" className={dlgInput} value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>الأولوية</Label>
+                  <select className={dlgInput} value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value as EditForm["priority"] })}>
+                    {Object.entries(PRIORITIES).map(([k, p]) => <option key={k} value={k}>{p.label}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label>قناة الاستلام</Label>
+                  <select className={dlgInput} value={form.receptionChannel} onChange={(e) => setForm({ ...form, receptionChannel: e.target.value as EditForm["receptionChannel"] })}>
+                    {Object.entries(CHANNELS).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+                  </select>
+                </div>
+              </div>
+              {form.receptionChannel !== "WALK_IN" && (
+                <div className="space-y-1">
+                  <Label>معرّف القناة (رقم/حساب)</Label>
+                  <input className={dlgInput} value={form.channelHandle} onChange={(e) => setForm({ ...form, channelHandle: e.target.value })} />
+                </div>
+              )}
+              <CustomerPicker customerId={form.customerId} onCustomerChange={(id) => setForm({ ...form, customerId: id })} />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>اسم مرجعي (زبون عابر بلا سجلّ)</Label>
+                  <input className={dlgInput} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <Label>هاتف مرجعي</Label>
+                  <input className={dlgInput} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} />
+                </div>
+              </div>
+            </div>
+            <DialogFooter>
+              <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={update.isPending}>إلغاء</button>
+              <button className="wob-btn wob-btn-primary" disabled={update.isPending} onClick={submit}>
+                {update.isPending ? "جارٍ الحفظ…" : "حفظ التعديل"}
+              </button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─────────────── لوحة التفاصيل (Drawer) ───────────────
 function Drawer({
-  id, onClose, isManager, canDeliver, onAdvance, onCancel, onDeliver, onAssign, busy,
+  id, onClose, isManager, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, busy,
 }: {
   id: number; onClose: () => void; isManager: boolean; canDeliver: boolean;
   onAdvance: (id: number, to: Status) => void; onCancel: (d: Detail) => void;
-  onDeliver: (d: Detail) => void; onAssign: (id: number, staffId: number | null) => void; busy: boolean;
+  onDeliver: (d: Detail) => void; onAssign: (id: number, staffId: number | null) => void;
+  onEdit: (id: number) => void; busy: boolean;
 }) {
   const detail = trpc.workOrders.get.useQuery({ workOrderId: id });
   const timeline = trpc.workOrders.timeline.useQuery({ workOrderId: id });
@@ -654,6 +817,11 @@ function Drawer({
                 <button className="wob-btn wob-btn-ghost" disabled style={{ flex: 1, opacity: 0.6 }}><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> اكتمل الأمر</button>
               )}
               {isManager && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
+                <button className="wob-btn wob-btn-ghost" disabled={busy} onClick={() => onEdit(d.id)}>
+                  <Pencil aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تعديل
+                </button>
+              )}
+              {isManager && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
                 <button className="wob-btn wob-btn-danger" disabled={busy} onClick={() => onCancel(d)}>إلغاء الأمر</button>
               )}
               {d.status === "DELIVERED" && d.invoiceId && (
@@ -665,6 +833,170 @@ function Drawer({
         )}
       </div>
     </>
+  );
+}
+
+// ─────────────── عرض القائمة (جدولٌ حقيقي — بديل الكانبان لمراجعةٍ مالية/إدارية) ───────────────
+// طلب المالك (٩/٨): الكانبان يخدم الإنتاج/الفنّيين؛ يلزم عرضٌ يشبه شاشة «المبيعات» — جدولٌ يمكن
+// فرزه وفلترته، بأزرار تحكّمٍ وتعديل، دون حاجةٍ لفتح شاشة الاستقبال (التي تتطلّب وردية مفتوحة).
+function OrdersTable({
+  rows, isManager, canDeliver, onOpen, onEdit, onAdvance, onCancel,
+}: {
+  rows: WO[];
+  isManager: boolean;
+  canDeliver: boolean;
+  onOpen: (id: number) => void;
+  onEdit: (id: number) => void;
+  onAdvance: (order: WO, to: Status) => void;
+  onCancel: (order: Pick<WO, "id" | "title" | "orderNumber">) => void;
+}) {
+  const columns = useMemo<ColumnDef<WO, unknown>[]>(() => [
+    {
+      // نمط Invoices.tsx/Card: الرقم للنسخ، لا للتنقّل — «فتح التفاصيل» في قائمة الإجراءات.
+      accessorKey: "orderNumber",
+      header: "رقم الأمر",
+      cell: ({ row }) => <CopyInline value={row.original.orderNumber} successMessage="تم نَسخ رَقم الأَمر" />,
+    },
+    {
+      accessorKey: "createdAt",
+      header: "التاريخ",
+      cell: ({ row }) => fmtDate(row.original.createdAt),
+    },
+    {
+      id: "title",
+      header: "العنوان",
+      cell: ({ row }) => {
+        const o = row.original;
+        const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
+        return (
+          <div className="max-w-56">
+            <div className="truncate font-medium">{o.title}</div>
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              {fmtInt(o.quantity)} ×
+              <span className={`wob-pri ${pri.cls}`} style={{ padding: "0 4px" }}><span className="wob-pri-dot" />{pri.label}</span>
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      id: "customer",
+      header: "العميل",
+      cell: ({ row }) => row.original.customerName ?? "عميل نقدي",
+    },
+    {
+      accessorKey: "status",
+      header: "الحالة",
+      cell: ({ row }) => {
+        const o = row.original;
+        const hue = STATUS_HUE[o.status] ?? 255;
+        return (
+          <span
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
+            style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})` }}
+          >
+            {STATUS_LABEL[o.status] ?? o.status}
+          </span>
+        );
+      },
+    },
+    {
+      accessorKey: "salePrice",
+      header: "الإجمالي",
+      cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.salePrice)}</span>,
+    },
+    {
+      accessorKey: "deposit",
+      header: "العربون",
+      cell: ({ row }) => {
+        const dep = D(row.original.deposit ?? 0);
+        return dep.gt(0) ? <span dir="ltr" className="tabular-nums">{fmtAr(dep.toFixed(2))}</span> : <span className="text-muted-foreground">—</span>;
+      },
+    },
+    {
+      id: "remaining",
+      header: "المتبقي",
+      cell: ({ row }) => {
+        const o = row.original;
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return <span className="text-muted-foreground">—</span>;
+        const due = positiveDiff(o.salePrice, o.deposit ?? 0);
+        return (
+          <span dir="ltr" className={`tabular-nums font-medium ${due.gt(0) ? "text-amber-600" : "text-emerald-600"}`}>
+            {fmtAr(due.toFixed(2))}
+          </span>
+        );
+      },
+    },
+    {
+      id: "due",
+      header: "الاستحقاق",
+      cell: ({ row }) => {
+        const di = dueInfo(row.original);
+        return <span className={`wob-due wob-${di.state} whitespace-nowrap`}>{di.text}</span>;
+      },
+    },
+    {
+      id: "channel",
+      header: "القناة",
+      cell: ({ row }) => {
+        const ch = CHANNELS[row.original.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER;
+        return <span title={ch.label}>{ch.icon} {ch.label}</span>;
+      },
+    },
+    {
+      id: "assignee",
+      header: "المسؤول",
+      cell: ({ row }) => row.original.assigneeName ?? <span className="text-muted-foreground">غير مُسنَد</span>,
+    },
+    {
+      id: "actions",
+      header: "إجراءات",
+      enableSorting: false,
+      cell: ({ row }) => {
+        const o = row.original;
+        const isFinal = o.status === "DELIVERED" || o.status === "CANCELLED";
+        const next = NEXT[o.status as Status];
+        const actions: RowAction[] = [
+          { key: "open", kind: "view", label: "فتح التفاصيل", onSelect: () => onOpen(o.id) },
+          { key: "edit", kind: "edit", label: "تعديل", icon: Pencil, hidden: isFinal, onSelect: () => onEdit(o.id), gate: { managerOnly: true } },
+          { key: "print", kind: "print", label: "طباعة A4", onSelect: () => printWoFromCard(o) },
+          { key: "print-thermal", kind: "print", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o) },
+          { key: "print-label", kind: "print", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o) },
+        ];
+        if (next && (next !== "DELIVERED" || canDeliver)) {
+          actions.push({ key: "advance", kind: next === "DELIVERED" ? "pay" : "approve", label: ADV_LABEL[next], onSelect: () => onAdvance(o, next) });
+        }
+        if (isManager && !isFinal) {
+          actions.push({ key: "cancel", kind: "cancel", label: "إلغاء الأمر", variant: "destructive", onSelect: () => onCancel(o) });
+        }
+        return (
+          <RowActions
+            mode="menu"
+            label={`إجراءات ${o.orderNumber}`}
+            contact={{
+              phone: o.customerPhone,
+              alternativePhones: [o.deliveryPhone],
+              label: `واتساب ${o.customerName ?? "العميل"}`,
+              message: workOrderContactMessage(o),
+              gate: { module: "workorders", level: "READ" },
+            }}
+            actions={actions}
+          />
+        );
+      },
+    },
+  ], [isManager, canDeliver, onOpen, onEdit, onAdvance, onCancel]);
+
+  return (
+    <DataTable
+      columns={columns}
+      data={rows}
+      searchable={false}
+      emptyText="لا طلبات مطابقة للبحث/الفلاتر الحالية."
+      viewKey="work-orders-list"
+      getRowId={(r) => String(r.id)}
+      pageSize={50}
+    />
   );
 }
 
@@ -695,6 +1027,16 @@ export default function WorkOrders() {
   const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all" });
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
+  const [editTarget, setEditTarget] = useState<number | null>(null);
+  // طلب المالك (٩/٨): الكانبان يخدم الفنّيين/الإنتاج؛ يلزم عرضٌ جدوليّ للمراجعة المالية/الإدارية
+  // (فرز/فلترة كـ«المبيعات») بلا حاجة لفتح شاشة الاستقبال. يُتذكَّر الاختيار على هذا الجهاز.
+  const [view, setView] = useState<"board" | "list">(() => {
+    if (typeof window === "undefined") return "board";
+    return window.localStorage.getItem("wo-view") === "list" ? "list" : "board";
+  });
+  useEffect(() => {
+    window.localStorage.setItem("wo-view", view);
+  }, [view]);
   const [deliverOrder, setDeliverOrder] = useState<DeliverTarget | null>(null);
   const [drag, setDrag] = useState<{ order: WO; x: number; y: number; overCol: string | null } | null>(null);
 
@@ -868,7 +1210,7 @@ export default function WorkOrders() {
     window.addEventListener("pointerup", up);
   }
 
-  async function onCancelOrder(d: Detail) {
+  async function onCancelOrder(d: Pick<Detail, "id" | "title" | "orderNumber">) {
     if (!(await confirm({ variant: "danger", title: "إلغاء طلب الخدمة", description: `إلغاء «${d.title}» (${d.orderNumber})؟ تُعكَس المواد المخصومة للمخزون.`, confirmText: "إلغاء الطلب", cancelText: "تراجع" }))) return;
     cancel.mutate({ workOrderId: d.id });
   }
@@ -885,6 +1227,20 @@ export default function WorkOrders() {
           <div className="wob-sub">من الاستلام إلى التسليم — اسحب البطاقة بين المراحل. فاتورة تلقائية عند التسليم.</div>
         </div>
         <div className="wob-head-actions">
+          <div role="group" aria-label="طريقة العرض" className="wob-view-toggle">
+            <button
+              type="button"
+              aria-pressed={view === "board"}
+              onClick={() => setView("board")}
+              title="لوحة الإنتاج (كانبان)"
+            ><LayoutGrid aria-hidden className="size-4" /> لوحة</button>
+            <button
+              type="button"
+              aria-pressed={view === "list"}
+              onClick={() => setView("list")}
+              title="قائمة جدولية — للمراجعة والتحكّم"
+            ><Rows3 aria-hidden className="size-4" /> قائمة</button>
+          </div>
           <ShippingLabelSizeSelect />
           <button className="wob-btn wob-btn-ghost" disabled={boardLoading}
             onClick={() => exportRows<WO>(fetchAllForExport, {
@@ -966,6 +1322,17 @@ export default function WorkOrders() {
         {anyFilter && <button className="wob-chip-clear" onClick={resetF}>مسح الفلاتر <X aria-hidden className="size-3.5 inline-block align-text-bottom" /></button>}
       </div>
 
+      {view === "list" ? (
+        <OrdersTable
+          rows={filtered}
+          isManager={isManager}
+          canDeliver={canDeliver}
+          onOpen={setSel}
+          onEdit={setEditTarget}
+          onAdvance={attemptMove}
+          onCancel={onCancelOrder}
+        />
+      ) : (
       <div className="wob-board-wrap">
         {boardLoading ? (
           <div className="wob-empty-board">جارٍ التحميل…</div>
@@ -1020,8 +1387,9 @@ export default function WorkOrders() {
           </div>
         )}
       </div>
+      )}
 
-      {drag && (
+      {drag && view === "board" && (
         <div style={{ position: "fixed", left: drag.x, top: drag.y, zIndex: 9999, pointerEvents: "none" }}>
           <Card o={drag.order} ghost />
         </div>
@@ -1046,6 +1414,7 @@ export default function WorkOrders() {
           }}
           onDeliver={(d) => setDeliverOrder({ id: d.id, orderNumber: d.orderNumber, title: d.title, salePrice: d.salePrice, deposit: d.deposit ?? "0" })}
           onCancel={onCancelOrder}
+          onEdit={(id) => setEditTarget(id)}
           onAssign={async (id, staffId) => {
             if (!(await confirm({ variant: "info", title: "تغيير إسناد الأمر", description: staffId ? "إسناد هذا الأمر إلى الموظف المحدّد. متابعة؟" : "إلغاء إسناد هذا الأمر (سيصبح غير مُسنَد). متابعة؟", confirmText: "تأكيد الإسناد", cancelText: "تراجع" }))) return;
             assign.mutate({ workOrderId: id, assignedTo: staffId });
@@ -1062,6 +1431,12 @@ export default function WorkOrders() {
           if (!(await confirm({ variant: "danger", title: "تسليم الأمر وإصدار الفاتورة", description: `تسليم «${deliverOrder.title}» (${deliverOrder.orderNumber}) يُصدر فاتورة نهائية بمبلغ ${fmtAr(deliverOrder.salePrice)} د.ع ويحدّث المخزون والذمم — لا رجعة فيه. اكتب «تسليم» للتأكيد.`, confirmText: "تسليم وإصدار الفاتورة", cancelText: "تراجع", requireText: "تسليم" }))) return;
           deliver.mutate({ workOrderId: deliverOrder.id, payment });
         }}
+      />
+
+      <EditWorkOrderDialog
+        workOrderId={editTarget}
+        onClose={() => setEditTarget(null)}
+        onSaved={() => { setEditTarget(null); invalidateAll(); }}
       />
     </div>
   );

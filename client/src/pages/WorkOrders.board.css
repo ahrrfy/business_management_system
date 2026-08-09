@@ -57,6 +57,13 @@
 .wob-btn-danger { background: oklch(0.577 0.245 27.325 / 0.1); color: var(--s-late); border: 1px solid oklch(0.577 0.245 27.325 / 0.25); }
 .wob-btn-danger:hover:not(:disabled) { background: oklch(0.577 0.245 27.325 / 0.16); }
 
+/* ─── مبدّل العرض (لوحة/قائمة) — زوجٌ مدمَج بحدٍّ واحد، لا تراكب حدود .wob-btn-ghost ─── */
+.wob-view-toggle { display: inline-flex; height: 38px; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.wob-view-toggle button { display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; height: 100%; border: none; border-inline-start: 1px solid var(--border); background: var(--card); color: var(--fg); font-weight: 700; font-size: 13.5px; font-family: inherit; cursor: pointer; transition: background 0.15s, color 0.15s; }
+.wob-view-toggle button:first-child { border-inline-start: none; }
+.wob-view-toggle button[aria-pressed="true"] { background: var(--primary); color: var(--primary-fg); }
+.wob-view-toggle button:not([aria-pressed="true"]):hover { background: var(--muted); }
+
 /* ─── الإحصاءات ─── */
 .wob-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
 .wob-stat { background: var(--card); border: 1px solid var(--border); border-radius: var(--wob-radius); padding: 9px 13px; box-shadow: var(--shadow-card); position: relative; overflow: hidden; }

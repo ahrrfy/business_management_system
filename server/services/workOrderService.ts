@@ -12,6 +12,7 @@
 //   deliver    — READY → DELIVERED (فاتورة + دفعة + قيد SALE + ذمم).
 //   cancel     — إلغاء (يُعيد المواد + يسترد العربون).
 //   fulfillment — تصنيف/إعادة تصنيف طريقة التسليم (استلام مباشر ⇄ توصيل) قبل التسليم/الإرسال.
+//   update     — تصحيح تفاصيل/سعر/عميل/موعد طلبٍ لم يُسلَّم بعد.
 export type { WorkOrderMaterialInput, CreateWorkOrderInput } from "./workOrder/types";
 export { createWorkOrder } from "./workOrder/create";
 export { claimWorkOrder, startWorkOrder, markWorkOrderReady } from "./workOrder/lifecycle";
@@ -20,3 +21,5 @@ export { deliverWorkOrder } from "./workOrder/deliver";
 export { cancelWorkOrder } from "./workOrder/cancel";
 export type { UpdateWorkOrderDeliveryMethodInput } from "./workOrder/fulfillment";
 export { updateWorkOrderDeliveryMethod } from "./workOrder/fulfillment";
+export type { UpdateWorkOrderInput } from "./workOrder/update";
+export { updateWorkOrder } from "./workOrder/update";
