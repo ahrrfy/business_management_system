@@ -158,9 +158,13 @@ export async function popIclockCommand(
 }
 
 /** iclock: إتمام أمر بمعرّفه من ردّ devicecmd (Return=0 نجاح). */
-export async function completeIclockCommand(commandId: number, returnCode: number): Promise<void> {
+export async function completeIclockCommand(
+  deviceId: number,
+  commandId: number,
+  returnCode: number,
+): Promise<boolean> {
   const db = requireDb();
-  await db
+  const result = await db
     .update(hrDeviceCommands)
     .set({
       status: returnCode === 0 ? "done" : "failed",
@@ -168,5 +172,13 @@ export async function completeIclockCommand(commandId: number, returnCode: numbe
       error: returnCode === 0 ? null : `الجهاز أعاد رمز ${returnCode}`,
       doneAt: sql`CURRENT_TIMESTAMP`,
     })
-    .where(eq(hrDeviceCommands.id, commandId));
+    .where(
+      and(
+        eq(hrDeviceCommands.id, commandId),
+        eq(hrDeviceCommands.deviceId, deviceId),
+        eq(hrDeviceCommands.status, "sent"),
+      ),
+    );
+  const affectedRows = (result as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0;
+  return affectedRows === 1;
 }

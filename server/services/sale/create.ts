@@ -583,6 +583,7 @@ export async function createSaleInTx(
           // تَنشئ Approval تلقائياً، مرتبطة بهذا العميل + سقف=unpaid (تماماً)، single-use.
           const created = await (await import("../creditApprovalService")).createApproval(tx, {
             customerId: input.customerId,
+            branchId: input.branchId,
             maxAmount: unpaid.toFixed(2),
             approvedBy: input.managerOverrideByUserId,
             ttlMinutes: 5,
@@ -591,7 +592,10 @@ export async function createSaleInTx(
           effectiveApprovalId = created.id;
         }
         // SELECT FOR UPDATE داخل validateApproval ⇒ لا double-spend عبر سباق.
-        await validateApproval(tx, effectiveApprovalId!, input.customerId, unpaid);
+        await validateApproval(tx, effectiveApprovalId!, input.customerId, unpaid, {
+          branchId: input.branchId,
+          consumerUserId: actor.userId,
+        });
       } else {
         await assertCreditLimit(tx, input.customerId, unpaid, input.branchId);
       }

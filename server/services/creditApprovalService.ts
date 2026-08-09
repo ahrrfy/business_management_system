@@ -17,13 +17,14 @@
 import { TRPCError } from "@trpc/server";
 import type Decimal from "decimal.js";
 import { and, eq, gt, isNull } from "drizzle-orm";
-import { creditApprovals, customers } from "../../drizzle/schema";
+import { branches, creditApprovals, customers } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money } from "./money";
 
 export interface CreateApprovalInput {
   customerId: number;
+  branchId: number;
   maxAmount: string; // decimal as string
   approvedBy: number;
   ttlMinutes?: number; // default 60
@@ -33,6 +34,8 @@ export interface CreateApprovalInput {
 export interface ApprovalRow {
   id: number;
   customerId: number;
+  branchId: number;
+  approvedBy: number;
   maxAmount: string;
   expiresAt: Date;
   consumedAt: Date | null;
@@ -44,6 +47,14 @@ export async function createApproval(tx: Tx, input: CreateApprovalInput): Promis
   const expiresAt = new Date(Date.now() + ttl * 60 * 1000);
   if (money(input.maxAmount).lte(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "سقف الموافقة يجب أن يكون موجباً" });
+  }
+  const [branch] = await tx
+    .select({ id: branches.id, isActive: branches.isActive })
+    .from(branches)
+    .where(eq(branches.id, input.branchId))
+    .limit(1);
+  if (!branch || branch.isActive === false) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود أو غير نشط" });
   }
   // تدقيق ١٧/٧: كان يُدرِج بلا قراءة العميل ⇒ معرّف غير موجود يفشل بخطأ FK خام، وموافقة تُنشأ
   // لعميل معطَّل ثم تفشل عند البيع. نتحقّق داخل المعاملة.
@@ -58,6 +69,7 @@ export async function createApproval(tx: Tx, input: CreateApprovalInput): Promis
   }
   const res = await tx.insert(creditApprovals).values({
     customerId: input.customerId,
+    branchId: input.branchId,
     maxAmount: input.maxAmount,
     approvedBy: input.approvedBy,
     expiresAt,
@@ -76,6 +88,7 @@ export async function validateApproval(
   approvalId: number,
   expectedCustomerId: number,
   unpaid: Decimal,
+  usage: { branchId: number; consumerUserId: number },
 ): Promise<ApprovalRow> {
   // SELECT FOR UPDATE لمنع double-spend عبر سباق ⇒ المعاملتان لنفس approvalId تتسلسلان.
   // استخدم mapper المخطط للتواريخ؛ قراءة DATETIME كنص خام ثم new Date(text)
@@ -85,6 +98,8 @@ export async function validateApproval(
       .select({
         id: creditApprovals.id,
         customerId: creditApprovals.customerId,
+        branchId: creditApprovals.branchId,
+        approvedBy: creditApprovals.approvedBy,
         maxAmount: creditApprovals.maxAmount,
         expiresAt: creditApprovals.expiresAt,
         consumedAt: creditApprovals.consumedAt,
@@ -103,6 +118,20 @@ export async function validateApproval(
       message: `موافقة الائتمان لعميل آخر (${row.customerId})؛ الفاتورة لعميل ${expectedCustomerId}.`,
     });
   }
+  // الصفوف التاريخية التي تعذّر ترحيل نطاقها تُرفض، والقرار لا يعبر الفروع.
+  if (row.branchId == null || Number(row.branchId) !== Number(usage.branchId)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "موافقة الائتمان صادرة لفرع آخر أو بلا نطاق فرع صالح",
+    });
+  }
+  // فصل المهام: مُصدر القرار لا يستهلك القرار بنفسه في البيع.
+  if (Number(row.approvedBy) === Number(usage.consumerUserId)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "لا يمكن لمُصدر قرار الائتمان استهلاكه بنفسه — يلزم منفّذ بيع آخر",
+    });
+  }
   if (row.consumedAt) {
     throw new TRPCError({ code: "FORBIDDEN", message: "موافقة الائتمان مُستَهلَكة سابقاً (single-use)" });
   }
@@ -119,6 +148,8 @@ export async function validateApproval(
   return {
     id: Number(row.id),
     customerId: Number(row.customerId),
+    branchId: Number(row.branchId),
+    approvedBy: Number(row.approvedBy),
     maxAmount: String(row.maxAmount),
     expiresAt: exp,
     consumedAt: row.consumedAt ? new Date(row.consumedAt) : null,
@@ -134,13 +165,14 @@ export async function consumeApproval(tx: Tx, approvalId: number, invoiceId: num
 }
 
 /** قراءة الموافقات النشِطة لعميل (غير مستَهلَكة + غير منتهية). */
-export async function getActiveApprovalsForCustomer(tx: Tx, customerId: number) {
+export async function getActiveApprovalsForCustomer(tx: Tx, customerId: number, branchId: number) {
   return tx
     .select()
     .from(creditApprovals)
     .where(
       and(
         eq(creditApprovals.customerId, customerId),
+        eq(creditApprovals.branchId, branchId),
         isNull(creditApprovals.consumedAt),
         gt(creditApprovals.expiresAt, new Date()),
       ),

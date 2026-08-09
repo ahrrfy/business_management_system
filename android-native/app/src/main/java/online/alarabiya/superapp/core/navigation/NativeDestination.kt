@@ -88,8 +88,10 @@ sealed interface NativeDestination {
     data object Receivables : NativeDestination
     data object Collections : NativeDestination
     data object Insights : NativeDestination
+    data object Shifts : NativeDestination
     data object WorkOrders : NativeDestination
     data object WarehouseTools : NativeDestination
+    data object StoreAdmin : NativeDestination
     data object Profile : NativeDestination
 
     data class Module(val module: NativeModule) : NativeDestination

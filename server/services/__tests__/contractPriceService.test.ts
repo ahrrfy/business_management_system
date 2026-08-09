@@ -7,6 +7,7 @@ import { getDb } from "../../db";
 import { listForPos, lookupByBarcode } from "../catalogService";
 import {
   listContractPricesForCustomer,
+  listContractPricesForCustomerPage,
   removeContractPrice,
   resolveContractPrices,
   setContractPriceActive,
@@ -103,6 +104,71 @@ describe("upsert + تفرّد (UNIQUE عميل×وحدة)", () => {
   it("تعطيل/حذف سعر غير موجود ⇒ NOT_FOUND", async () => {
     await expect(setContractPriceActive(123, false)).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(removeContractPrice(123)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("contract price keyset pagination", () => {
+  it("returns dense pages with a stable total and rejects a cursor from another customer", async () => {
+    const variants = Array.from({ length: 205 }, (_, index) => ({
+      id: index + 10,
+      productId: 1,
+      sku: `PAGE-${String(index + 1).padStart(4, "0")}`,
+      costPrice: "10.00",
+    }));
+    const units = variants.map((variant) => ({
+      id: variant.id,
+      variantId: variant.id,
+      unitName: "piece",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    }));
+    await db().insert(s.productVariants).values(variants);
+    await db().insert(s.productUnits).values(units);
+
+    const sameUpdatedAt = new Date("2026-08-10T12:00:00.000Z");
+    await db().insert(s.customerContractPrices).values([
+      ...units.map((unit, index) => ({
+        customerId: 1,
+        productUnitId: unit.id,
+        price: `${index + 1}.00`,
+        isActive: true,
+        createdBy: 1,
+        updatedAt: sameUpdatedAt,
+      })),
+      ...units.slice(0, 5).map((unit, index) => ({
+        customerId: 2,
+        productUnitId: unit.id,
+        price: `${index + 1}.00`,
+        isActive: true,
+        createdBy: 1,
+        updatedAt: sameUpdatedAt,
+      })),
+    ]);
+
+    const first = await listContractPricesForCustomerPage({ customerId: 1, limit: 80 });
+    expect(first).toMatchObject({ total: 205, hasMore: true });
+    expect(first.rows).toHaveLength(80);
+    expect(first.nextCursor).toEqual(expect.any(String));
+
+    const collected = [...first.rows];
+    let cursor = first.nextCursor;
+    while (cursor) {
+      const page = await listContractPricesForCustomerPage({ customerId: 1, limit: 80, cursor });
+      expect(page.total).toBe(205);
+      collected.push(...page.rows);
+      cursor = page.nextCursor;
+    }
+    expect(collected).toHaveLength(205);
+    expect(new Set(collected.map((row) => row.id)).size).toBe(205);
+    expect(collected.map((row) => row.id)).toEqual([...collected.map((row) => row.id)].sort((a, b) => b - a));
+
+    await expect(
+      listContractPricesForCustomerPage({ customerId: 2, limit: 5, cursor: first.nextCursor }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const other = await listContractPricesForCustomerPage({ customerId: 2, limit: 10 });
+    expect(other.total).toBe(5);
+    expect(other.rows).toHaveLength(5);
+    expect(other.rows.every((row) => row.customerId === 2)).toBe(true);
   });
 });
 

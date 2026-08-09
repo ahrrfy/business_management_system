@@ -4,6 +4,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object SystemSettingsMappers {
+    fun kioskDevices(root: JSONArray): List<KioskDevice> = root.maps(::kioskDevice).filterNotNull()
+
+    fun oneTimeKioskToken(root: JSONObject, fallbackDeviceId: Long? = null): OneTimeKioskToken {
+        val id = root.optLong("id").takeIf { it > 0 } ?: fallbackDeviceId?.takeIf { it > 0 }
+            ?: error("لم يُرجع الخادم معرّف الجهاز")
+        val raw = root.optString("rawToken").takeIf(String::isNotBlank)
+            ?: error("لم يُرجع الخادم رمز التسجيل المؤقت")
+        return OneTimeKioskToken(id, raw, root.optString("tokenPrefix"))
+    }
     fun branches(root: JSONArray): List<AdminBranch> = root.maps(::branch)
     internal fun branches(rows: List<Any?>): List<AdminBranch> = rows.mapNotNull { it.stringMap()?.let(::branch) }
 
@@ -17,6 +26,13 @@ object SystemSettingsMappers {
     fun verify(root: JSONObject) = IntegrationVerifyResult(root.optBoolean("ok"), root.text("message"))
     fun sync(root: JSONObject) = TemplateSyncResult(root.optInt("synced"), root.optInt("approved"))
     fun health(root: JSONObject) = SystemHealth(root.optBoolean("ok"), root.nullableText("time"))
+
+    fun backups(root: JSONObject): List<BackupMetadata> =
+        root.optJSONArray("backups")?.maps(::backup).orEmpty()
+    internal fun backups(root: Map<String, Any?>): List<BackupMetadata> =
+        (root["backups"] as? List<*>)?.mapNotNull { it.stringMap()?.let(::backup) }.orEmpty()
+    fun createdBackup(root: JSONObject): BackupMetadata? =
+        root.optJSONObject("created")?.wireMap()?.let(::backup)?.takeIf { it.name.isNotBlank() }
 
     fun waHub(root: JSONObject): WhatsAppHubSettings = waHub(root.wireMap())
     internal fun waHub(root: Map<String, Any?>) = WhatsAppHubSettings(
@@ -99,6 +115,38 @@ object SystemSettingsMappers {
     private fun openingProgress(root: Map<String, Any?>) = OpeningProgress(
         root.long("branchId"), root.text("branchName"), root.int("totalVariants"), root.int("openedVariants"),
     )
+
+    private fun backup(root: Map<String, Any?>) = BackupMetadata(
+        name = root.text("name"),
+        sizeKb = root.long("sizeKb").coerceAtLeast(0L),
+        createdAt = root.text("createdAt"),
+    )
+
+    private fun kioskDevice(root: Map<String, Any?>): KioskDevice? {
+        val id = root.long("id").takeIf { it > 0 } ?: return null
+        val branchId = root.long("branchId").takeIf { it > 0 } ?: return null
+        return KioskDevice(
+            id = id,
+            branchId = branchId,
+            branchName = root.nullableText("branchName"),
+            label = root.text("label").ifBlank { "جهاز #$id" },
+            tokenPrefix = root.text("tokenPrefix"),
+            active = root.bool("isActive"),
+            lastSeenAt = root.nullableText("lastSeenAt"),
+            maskedLastSeenIp = maskIp(root.nullableText("lastSeenIp")),
+            createdAt = root.nullableText("createdAt"),
+        )
+    }
+
+    private fun maskIp(raw: String?): String? {
+        val value = raw?.trim()?.takeIf(String::isNotBlank) ?: return null
+        val parts = value.split('.')
+        if (parts.size == 4 && parts.all { part -> part.toIntOrNull()?.let { it in 0..255 } == true }) {
+            return "${parts[0]}.${parts[1]}.${parts[2]}.•••"
+        }
+        if (':' in value) return value.split(':').take(3).joinToString(":") + ":•••"
+        return "•••"
+    }
 }
 
 private fun <T> JSONArray.maps(mapper: (Map<String, Any?>) -> T): List<T> =

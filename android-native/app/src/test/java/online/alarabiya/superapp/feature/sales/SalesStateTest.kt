@@ -1,6 +1,10 @@
 package online.alarabiya.superapp.feature.sales
 
 import online.alarabiya.superapp.model.sales.CatalogSaleItem
+import online.alarabiya.superapp.model.sales.PaymentMethod
+import online.alarabiya.superapp.model.sales.ReturnCreation
+import online.alarabiya.superapp.model.sales.ReturnableInvoice
+import online.alarabiya.superapp.model.sales.SaleCreation
 import online.alarabiya.superapp.model.sales.SaleDetail
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -40,15 +44,59 @@ class SalesStateTest {
     }
 
     @Test
-    fun `confirmed sale clears cart and rotates idempotency key`() {
+    fun `server acknowledgement clears cart and rotates idempotency key before detail refresh`() {
         val initial = SalesUiState(saleRequestId = "request-fixed").add(item())
-        val detail = detail()
-        val confirmed = requireNotNull(initial.start(SalesBusy.SALE)).saleSucceeded(detail, "request-next")
+        val creation = SaleCreation(9, "INV-9", "10", "PAID", false)
+        val confirmed = requireNotNull(initial.start(SalesBusy.SALE)).saleCommitted(creation, "request-next")
 
         assertTrue(confirmed.cart.isEmpty())
         assertEquals("request-next", confirmed.saleRequestId)
         assertNotEquals(initial.saleRequestId, confirmed.saleRequestId)
-        assertSame(detail, confirmed.selectedSale)
+        assertSame(creation, confirmed.committedSale)
+        assertNull(confirmed.selectedSale)
+        assertTrue(confirmed.locked)
+
+        val detail = detail()
+        assertSame(detail, confirmed.saleDetailLoaded(detail).selectedSale)
+    }
+
+    @Test
+    fun `detail refresh failure cannot reopen committed sale`() {
+        val initial = SalesUiState(saleRequestId = "request-fixed").add(item())
+        val committed = requireNotNull(initial.start(SalesBusy.SALE))
+            .saleCommitted(SaleCreation(9, "INV-9", "10", "PAID", false), "request-next")
+            .followUpFailed("detail unavailable")
+
+        assertTrue(committed.cart.isEmpty())
+        assertEquals("request-next", committed.saleRequestId)
+        assertFalse(committed.locked)
+        assertEquals("detail unavailable", committed.error)
+    }
+
+    @Test
+    fun `return acknowledgement closes stale invoice and rotates request before refresh`() {
+        val invoice = ReturnableInvoice(9, "INV-9", 1, null, "10", "10", "PAID", "CASH", emptyList())
+        val initial = SalesUiState(
+            returnInvoice = invoice,
+            returnQuantities = mapOf(3L to 1),
+            returnRequestId = "return-fixed",
+        )
+        val committed = requireNotNull(initial.start(SalesBusy.RETURN_SUBMIT))
+            .returnCommitted(ReturnCreation(9, "4", false, false), "return-next")
+            .followUpFailed("refresh unavailable")
+
+        assertNull(committed.returnInvoice)
+        assertTrue(committed.returnQuantities.isEmpty())
+        assertEquals("return-next", committed.returnRequestId)
+        assertFalse(committed.locked)
+    }
+
+    @Test
+    fun `checkout remains closed until required initial dependencies loaded`() {
+        val partial = SalesUiState(catalogLoaded = true, shiftsLoaded = false, paymentMethod = PaymentMethod.CASH)
+        assertFalse(partial.checkoutDependenciesLoaded)
+        assertTrue(partial.copy(shiftsLoaded = true).checkoutDependenciesLoaded)
+        assertTrue(partial.copy(paymentMethod = PaymentMethod.CARD).checkoutDependenciesLoaded)
     }
 
     private fun item() = CatalogSaleItem(

@@ -4,6 +4,7 @@ import online.alarabiya.superapp.model.collaboration.AssignableStaff
 import online.alarabiya.superapp.model.collaboration.BroadcastPreview
 import online.alarabiya.superapp.model.collaboration.BroadcastResults
 import online.alarabiya.superapp.model.collaboration.BroadcastTemplate
+import online.alarabiya.superapp.model.collaboration.CollaborationBranch
 import online.alarabiya.superapp.model.collaboration.CreateBroadcastDraft
 import online.alarabiya.superapp.model.collaboration.CreateTaskDraft
 import online.alarabiya.superapp.model.collaboration.ServiceTypeOption
@@ -25,6 +26,9 @@ data class PendingTaskAction(
 data class CollaborationUiState(
     val section: CollaborationSection = CollaborationSection.TASKS,
     val branchId: Long? = null,
+    val branches: List<CollaborationBranch> = emptyList(),
+    val branchesLoading: Boolean = false,
+    val branchesLoaded: Boolean = false,
     val loading: Boolean = false,
     val loadingDetail: Boolean = false,
     val loadingMore: Boolean = false,

@@ -71,6 +71,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -361,6 +362,7 @@ private fun SelfServiceTabs(
     selected: SelfServiceSection,
     onSelect: (SelfServiceSection) -> Unit,
 ) {
+    val largeText = LocalDensity.current.fontScale >= 1.3f
     val listState = rememberLazyListState()
     LaunchedEffect(selected) {
         val selectedIndex = PrimarySelfServiceSections.indexOf(selected).coerceAtLeast(0)
@@ -381,7 +383,8 @@ private fun SelfServiceTabs(
             items(PrimarySelfServiceSections, key = SelfServiceSection::name) { section ->
                 val active = section == selected
                 Surface(
-                    modifier = Modifier.width(70.dp).heightIn(min = 62.dp)
+                    modifier = Modifier.width(if (largeText) 104.dp else 70.dp)
+                        .heightIn(min = if (largeText) 84.dp else 62.dp)
                         .clickable(role = Role.Tab) { onSelect(section) },
                     color = if (active) Color.White else Color.Transparent,
                     shape = RoundedCornerShape(18.dp),
@@ -397,7 +400,7 @@ private fun SelfServiceTabs(
                             section.label,
                             style = MaterialTheme.typography.labelMedium,
                             color = if (active) SelfServiceVioletDark else SelfServiceMuted,
-                            maxLines = 2,
+                            maxLines = if (largeText) 3 else 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
@@ -418,6 +421,7 @@ fun PersonalProfileScreen(
     onBiometricAction: () -> Unit,
     onNotificationAction: () -> Unit,
 ) {
+    val largeText = LocalDensity.current.fontScale >= 1.3f
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -465,19 +469,32 @@ fun PersonalProfileScreen(
         }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (largeText) Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     ProfileInfoCell(
                         label = "البريد",
                         value = employee?.email ?: account.email,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxWidth(),
                         compactValue = true,
                         leftToRight = true,
                     )
-                    ProfileInfoCell("الهاتف", employee?.phone, Modifier.weight(1f))
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ProfileInfoCell("تاريخ المباشرة", employee?.hireDate, Modifier.weight(1f))
-                    ProfileInfoCell("رصيد الإجازات", annualLeaveBalance?.let { "$it يوم" }, Modifier.weight(1f))
+                    ProfileInfoCell("الهاتف", employee?.phone, Modifier.fillMaxWidth())
+                    ProfileInfoCell("تاريخ المباشرة", employee?.hireDate, Modifier.fillMaxWidth())
+                    ProfileInfoCell("رصيد الإجازات", annualLeaveBalance?.let { "$it يوم" }, Modifier.fillMaxWidth())
+                } else {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ProfileInfoCell(
+                            label = "البريد",
+                            value = employee?.email ?: account.email,
+                            modifier = Modifier.weight(1f),
+                            compactValue = true,
+                            leftToRight = true,
+                        )
+                        ProfileInfoCell("الهاتف", employee?.phone, Modifier.weight(1f))
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ProfileInfoCell("تاريخ المباشرة", employee?.hireDate, Modifier.weight(1f))
+                        ProfileInfoCell("رصيد الإجازات", annualLeaveBalance?.let { "$it يوم" }, Modifier.weight(1f))
+                    }
                 }
             }
         }

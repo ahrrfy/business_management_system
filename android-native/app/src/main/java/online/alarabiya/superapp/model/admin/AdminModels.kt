@@ -87,8 +87,35 @@ data class AdminOverview(
     val users: List<AdminUser>,
     val totalUsers: Int,
     val activeAdminCount: Int,
+    val activeOwnerCount: Int,
     val roles: List<AdminRole>,
     val branches: List<AdminBranch>,
+)
+
+/** A deliberately narrow session projection: credentials, tokens and cookies never enter UI state. */
+data class AdminUserSession(
+    val id: Long,
+    val deviceLabel: String,
+    val maskedIpAddress: String?,
+    val createdAt: String,
+    val lastSeenAt: String,
+    val expiresAt: String,
+)
+
+data class EffectivePermission(
+    val key: String,
+    val label: String,
+    val level: AccessLevel,
+    val source: String,
+)
+
+data class UserPermissionProfile(
+    val userId: Long,
+    val effectiveRole: String,
+    val customRoleLabel: String?,
+    val customRoleInactive: Boolean,
+    val modules: List<EffectivePermission>,
+    val individualOverrides: Map<String, AccessLevel>,
 )
 
 sealed interface RoleAssignment {
@@ -143,6 +170,7 @@ data class AdminActionDecision(val allowed: Boolean, val reason: String? = null)
 data class AdminAccessPolicy(
     val actorId: Long,
     val actorRole: String,
+    val actorIsOwner: Boolean = false,
 ) {
     val canOpen: Boolean get() = actorRole.equals("admin", ignoreCase = true)
 
@@ -179,6 +207,25 @@ data class AdminAccessPolicy(
         return if (role.isCustom) allowed() else denied("القالب المدمج للعرض فقط")
     }
 
+    fun canManageIndividualPermissions(target: AdminUser): AdminActionDecision = ownerOnly(target)
+
+    fun canResetPassword(target: AdminUser): AdminActionDecision = ownerOnly(target)
+
+    fun canManageAccountSecurity(target: AdminUser, activeOwnerCount: Int): AdminActionDecision {
+        ownerOnly(target).takeUnless { it.allowed }?.let { return it }
+        if (target.isOwner && target.isActive && activeOwnerCount <= 1) {
+            return denied("لا يمكن تنفيذ الإجراء على آخر مالك نشط")
+        }
+        return allowed()
+    }
+
+    private fun ownerOnly(target: AdminUser): AdminActionDecision {
+        adminOnly().takeUnless { it.allowed }?.let { return it }
+        if (!actorIsOwner) return denied("هذا الإجراء محصور بمالك النظام")
+        if (target.id == actorId) return denied("استخدم إعدادات الأمان لحسابك الحالي")
+        return allowed()
+    }
+
     private fun adminOnly(): AdminActionDecision =
         if (canOpen) allowed() else denied("هذه المساحة لمدير النظام فقط")
 
@@ -189,6 +236,7 @@ data class AdminAccessPolicy(
         fun fromBootstrap(bootstrap: AppBootstrap) = AdminAccessPolicy(
             actorId = bootstrap.user.id,
             actorRole = bootstrap.user.role,
+            actorIsOwner = bootstrap.isOwner || bootstrap.user.isOwner,
         )
     }
 }

@@ -10,6 +10,7 @@ import java.util.UUID
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import online.alarabiya.superapp.core.network.ApiException
 import online.alarabiya.superapp.data.InventoryDataSource
 import online.alarabiya.superapp.model.inventory.AdjustmentDraft
 import online.alarabiya.superapp.model.inventory.AdjustmentRequest
@@ -34,15 +35,31 @@ import online.alarabiya.superapp.model.inventory.TransferDraft
 import online.alarabiya.superapp.model.inventory.TransferPage
 import online.alarabiya.superapp.model.inventory.TransferStatus
 
+enum class ExecutiveStockState { LOW, OUT }
+
+private const val INVENTORY_PAGE_SIZE = 100
+private const val MAX_EXECUTIVE_BALANCES = 5_000
+
 data class InventoryUiState(
     val section: InventorySection,
     val initializing: Boolean = false,
     val busyKey: String? = null,
     val error: String? = null,
     val message: String? = null,
+    /** Sections with at least one complete, successful server snapshot in this session. */
+    val loadedSections: Set<InventorySection> = emptySet(),
+    /** Sections whose displayed snapshot is current enough to permit operational actions. */
+    val freshSections: Set<InventorySection> = emptySet(),
+    /**
+     * Non-idempotent writes whose transport result was ambiguous. These remain locked for the
+     * lifetime of this workspace instead of inviting a duplicate adjustment or stocktake.
+     */
+    val outcomeUnknownSections: Set<InventorySection> = emptySet(),
+    val branchesFresh: Boolean = false,
     val branches: List<InventoryBranch> = emptyList(),
     val balanceQuery: String = "",
     val lowOnly: Boolean = false,
+    val executiveStockState: ExecutiveStockState? = null,
     val balances: List<StockBalance> = emptyList(),
     val movementQuery: String = "",
     val movementType: MovementType? = null,
@@ -68,22 +85,180 @@ data class InventoryUiState(
     val countAssignments: List<CountAssignment> = emptyList(),
     val selectedCount: CountSession? = null,
     val countQuery: String = "",
+) {
+    val visibleBalances: List<StockBalance>
+        get() = when (executiveStockState) {
+            ExecutiveStockState.LOW -> balances.filter(StockBalance::isLow)
+            ExecutiveStockState.OUT -> balances.filter { it.quantity <= 0 }
+            null -> balances
+        }
+
+    fun isLoaded(section: InventorySection): Boolean = section in loadedSections
+
+    fun isFresh(section: InventorySection): Boolean =
+        section in freshSections && section !in outcomeUnknownSections
+
+    fun canInteract(section: InventorySection): Boolean =
+        !initializing && busyKey == null && isFresh(section)
+}
+
+internal fun InventoryUiState.markFresh(section: InventorySection): InventoryUiState = copy(
+    loadedSections = loadedSections + section,
+    freshSections = freshSections + section,
 )
+
+internal fun InventoryUiState.markStale(section: InventorySection): InventoryUiState = copy(
+    freshSections = freshSections - section,
+)
+
+internal fun InventoryUiState.markOutcomeUnknown(section: InventorySection): InventoryUiState = copy(
+    freshSections = freshSections - section,
+    outcomeUnknownSections = outcomeUnknownSections + section,
+)
+
+private fun InventoryUiState.withReadResult(
+    section: InventorySection,
+    result: Result<*>?,
+): InventoryUiState = when {
+    result == null -> this
+    result.isSuccess -> markFresh(section)
+    else -> markStale(section)
+}
+
+private fun Result<*>?.combineRequired(
+    detail: Result<*>?,
+    detailRequired: Boolean,
+): Result<Unit>? = when {
+    this == null -> null
+    isFailure -> Result.failure(exceptionOrNull() ?: IllegalStateException("تعذر تحميل البيانات"))
+    detailRequired && detail?.isFailure != false -> Result.failure(
+        detail?.exceptionOrNull() ?: IllegalStateException("تعذر تحميل التفاصيل"),
+    )
+    else -> Result.success(Unit)
+}
+
+internal fun InventoryUiState.acknowledgeTransferStatus(
+    id: Long,
+    status: TransferStatus,
+): InventoryUiState = copy(
+    selectedTransfer = selectedTransfer?.takeIf { it.id == id }?.copy(status = status)
+        ?: selectedTransfer,
+    transfers = transfers.copy(
+        rows = transfers.rows.map { row -> if (row.id == id) row.copy(status = status) else row },
+    ),
+    receiveDraft = null,
+)
+
+internal fun InventoryUiState.acknowledgeAdjustment(
+    id: Long,
+    status: AdjustmentStatus,
+    rejectionReason: String? = null,
+): InventoryUiState = copy(
+    adjustments = adjustments.map { row ->
+        if (row.id == id) row.copy(status = status, rejectionReason = rejectionReason) else row
+    }.filter { row -> adjustmentStatus == AdjustmentStatus.UNKNOWN || row.status == adjustmentStatus },
+    rejectingAdjustmentId = null,
+    rejectionReason = "",
+)
+
+internal fun InventoryUiState.acknowledgeStocktakeStatus(
+    id: Long,
+    status: StocktakeStatus,
+): InventoryUiState = copy(
+    selectedStocktake = selectedStocktake?.takeIf { it.summary.id == id }?.let { detail ->
+        detail.copy(summary = detail.summary.copy(status = status))
+    } ?: selectedStocktake,
+    stocktakes = stocktakes.map { row -> if (row.id == id) row.copy(status = status) else row }
+        .filter { row -> stocktakeStatus == null || row.status == stocktakeStatus },
+    recountVariantId = null,
+    recountReason = "",
+    cancelStocktakeReason = "",
+)
+
+internal fun InventoryUiState.acknowledgeCount(
+    sessionCode: String,
+    variantId: Long,
+    quantity: Int,
+): InventoryUiState {
+    val session = selectedCount?.takeIf { it.code == sessionCode } ?: return this
+    val wasCounted = session.items.firstOrNull { it.variantId == variantId }?.counted == true
+    return copy(
+        selectedCount = session.copy(
+            counted = (session.counted + if (wasCounted) 0 else 1).coerceAtMost(session.total),
+            items = session.items.map { row ->
+                if (row.variantId == variantId) {
+                    row.copy(counted = true, myQuantity = quantity, recountReason = null)
+                } else {
+                    row
+                }
+            },
+        ),
+    )
+}
+
+internal fun InventoryUiState.applyExecutiveNavigation(arguments: Map<String, String>): InventoryUiState {
+    val stockState = when (arguments["stockState"]?.lowercase()) {
+        "low" -> ExecutiveStockState.LOW
+        "out" -> ExecutiveStockState.OUT
+        else -> return this
+    }
+    return copy(
+        section = InventorySection.BALANCES,
+        lowOnly = stockState == ExecutiveStockState.LOW,
+        executiveStockState = stockState,
+        error = null,
+        message = null,
+    )
+}
 
 private data class InitialInventory(
     val branches: Result<List<InventoryBranch>>?,
     val balances: Result<List<StockBalance>>?,
     val movements: Result<MovementPage>?,
     val transfers: Result<TransferPage>?,
+    val selectedTransfer: Result<TransferDetail>?,
     val adjustments: Result<List<AdjustmentRequest>>?,
     val stocktakes: Result<List<StocktakeSummary>>?,
+    val selectedStocktake: Result<StocktakeDetail>?,
     val counts: Result<List<CountAssignment>>,
+    val selectedCount: Result<CountSession>?,
 )
+
+internal data class CountRequestKey(
+    val sessionCode: String,
+    val variantId: Long,
+    val quantity: Int,
+)
+
+internal class CountRequestIdRegistry(
+    private val createId: () -> String = { UUID.randomUUID().toString() },
+) {
+    private val ids = mutableMapOf<CountRequestKey, String>()
+
+    fun idFor(sessionCode: String, variantId: Long, quantity: Int): String =
+        ids.getOrPut(CountRequestKey(sessionCode, variantId, quantity), createId)
+}
+
+private enum class MutationReplayPolicy {
+    /** A stable clientRequestId makes a repeated request safe after a fresh reconciliation read. */
+    IDEMPOTENT,
+
+    /** A state transition is locked until a fresh read proves its authoritative server state. */
+    MONOTONIC,
+
+    /** No idempotency/reconciliation contract exists; an ambiguous outcome locks the section. */
+    NON_IDEMPOTENT,
+}
+
+private typealias InventoryReducer = (InventoryUiState) -> InventoryUiState
 
 class InventoryViewModel(
     private val source: InventoryDataSource,
     val capabilities: InventoryCapabilities,
 ) : ViewModel() {
+    private var pendingExecutiveBalanceRefresh = false
+    private val countRequestIds = CountRequestIdRegistry()
+
     var state by mutableStateOf(
         InventoryUiState(section = capabilities.visibleSections.first()),
     )
@@ -94,36 +269,98 @@ class InventoryViewModel(
         state = state.copy(initializing = true, error = null, message = null)
         viewModelScope.launch {
             val scopedRead = capabilities.canRead && capabilities.branchId != null
+            val selectedTransferId = state.selectedTransfer?.id
+            val selectedStocktakeId = state.selectedStocktake?.summary?.id
+            val selectedCountCode = state.selectedCount?.code
             val result = coroutineScope {
                 val branches = async { if (capabilities.canWrite) runCatching { source.branches() } else null }
-                val balances = async { if (scopedRead) runCatching { source.balances() } else null }
+                val balances = async {
+                    if (scopedRead) runCatching { loadBalances() } else null
+                }
                 val movements = async { if (scopedRead) runCatching { source.movements() } else null }
                 val transfers = async { if (scopedRead) runCatching { source.transfers() } else null }
+                val selectedTransfer = async {
+                    if (scopedRead && selectedTransferId != null) runCatching { source.transfer(selectedTransferId) } else null
+                }
                 val adjustments = async { if (scopedRead) runCatching { source.adjustments() } else null }
                 val stocktakes = async { if (capabilities.canViewStocktakes && capabilities.branchId != null) runCatching { source.stocktakes() } else null }
+                val selectedStocktake = async {
+                    if (capabilities.canViewStocktakes && selectedStocktakeId != null) {
+                        runCatching { source.stocktake(selectedStocktakeId) }
+                    } else {
+                        null
+                    }
+                }
                 val counts = async { runCatching { source.countAssignments() } }
+                val selectedCount = async {
+                    selectedCountCode?.let { code -> runCatching { source.countSession(code) } }
+                }
                 InitialInventory(
-                    branches.await(), balances.await(), movements.await(), transfers.await(),
-                    adjustments.await(), stocktakes.await(), counts.await(),
+                    branches.await(), balances.await(), movements.await(), transfers.await(), selectedTransfer.await(),
+                    adjustments.await(), stocktakes.await(), selectedStocktake.await(), counts.await(), selectedCount.await(),
                 )
             }
             val firstError = listOf(
-                result.branches, result.balances, result.movements, result.transfers,
-                result.adjustments, result.stocktakes, result.counts,
+                result.branches, result.balances, result.movements, result.transfers, result.selectedTransfer,
+                result.adjustments, result.stocktakes, result.selectedStocktake, result.counts, result.selectedCount,
             ).firstNotNullOfOrNull { it?.exceptionOrNull() }
-            state = state.copy(
+            var next = state.copy(
                 initializing = false,
+                branchesFresh = result.branches?.isSuccess == true || !capabilities.canWrite,
                 branches = result.branches?.getOrNull() ?: state.branches,
                 balances = result.balances?.getOrNull() ?: state.balances,
                 movements = result.movements?.getOrNull() ?: state.movements,
                 transfers = result.transfers?.getOrNull() ?: state.transfers,
+                selectedTransfer = result.selectedTransfer?.getOrNull() ?: state.selectedTransfer,
                 adjustments = result.adjustments?.getOrNull() ?: state.adjustments,
                 stocktakes = result.stocktakes?.getOrNull() ?: state.stocktakes,
+                selectedStocktake = result.selectedStocktake?.getOrNull() ?: state.selectedStocktake,
                 countAssignments = result.counts.getOrNull() ?: state.countAssignments,
+                selectedCount = result.selectedCount?.getOrNull() ?: state.selectedCount,
                 error = firstError?.let(::userMessage)
                     ?: if (capabilities.canRead && capabilities.branchId == null) "لا يوجد فرع مرتبط بالجلسة؛ عُطّلت قراءات وكتابات المخزون بأمان" else null,
             )
+            val countsReadResult: Result<Unit> = if (
+                result.counts.isSuccess && (selectedCountCode == null || result.selectedCount?.isSuccess == true)
+            ) {
+                Result.success(Unit)
+            } else {
+                Result.failure(firstError ?: IllegalStateException("تعذر تحديث تكليفات الجرد"))
+            }
+            next = next.withReadResult(InventorySection.BALANCES, result.balances)
+                .withReadResult(InventorySection.MOVEMENTS, result.movements)
+                .withReadResult(
+                    InventorySection.TRANSFERS,
+                    result.transfers.combineRequired(result.selectedTransfer, selectedTransferId != null),
+                )
+                .withReadResult(InventorySection.ADJUSTMENTS, result.adjustments)
+                .withReadResult(
+                    InventorySection.STOCKTAKES,
+                    result.stocktakes.combineRequired(result.selectedStocktake, selectedStocktakeId != null),
+                )
+                .withReadResult(
+                    InventorySection.MY_COUNTS,
+                    countsReadResult,
+                )
+            val refreshedTransfer = next.selectedTransfer
+            if (refreshedTransfer != null && !capabilities.canReceive(refreshedTransfer)) {
+                next = next.copy(receiveDraft = null)
+            }
+            state = next
+            if (pendingExecutiveBalanceRefresh) {
+                pendingExecutiveBalanceRefresh = false
+                searchBalances()
+            }
         }
+    }
+
+    fun applyNavigationArguments(arguments: Map<String, String>) {
+        if (InventorySection.BALANCES !in capabilities.visibleSections) return
+        if (arguments["stockState"]?.lowercase() !in setOf("low", "out")) return
+        val next = state.applyExecutiveNavigation(arguments)
+        state = next
+        if (state.initializing || state.busyKey != null) pendingExecutiveBalanceRefresh = true
+        else searchBalances()
     }
 
     fun selectSection(section: InventorySection) {
@@ -134,43 +371,78 @@ class InventoryViewModel(
     fun clearFeedback() { state = state.copy(error = null, message = null) }
 
     fun setBalanceQuery(value: String) { state = state.copy(balanceQuery = value.take(120)) }
-    fun toggleLowOnly() { state = state.copy(lowOnly = !state.lowOnly); searchBalances() }
-    fun searchBalances() = launch("balances") {
-        state = state.copy(balances = source.balances(state.balanceQuery, state.lowOnly))
+    fun toggleLowOnly() {
+        state = if (state.executiveStockState != null) {
+            state.copy(lowOnly = false, executiveStockState = null)
+        } else {
+            state.copy(lowOnly = !state.lowOnly)
+        }
+        searchBalances()
+    }
+    fun searchBalances() = launchRead("balances", InventorySection.BALANCES) {
+        val rows = loadBalances()
+        return@launchRead { current -> current.copy(balances = rows) }
+    }
+
+    private suspend fun loadBalances(): List<StockBalance> {
+        val query = state.balanceQuery
+        val executiveStockState = state.executiveStockState
+        val lowOnly = executiveStockState == ExecutiveStockState.LOW ||
+            (executiveStockState == null && state.lowOnly)
+        if (executiveStockState == null) return source.balances(query, lowOnly)
+
+        // Executive decisions must not silently inspect only the first 100 rows. The API exposes
+        // offset pagination, so exhaust the same 5,000-row ceiling used by the authoritative report.
+        val rows = mutableListOf<StockBalance>()
+        var offset = 0
+        do {
+            val page = source.balances(query, lowOnly, offset)
+            rows += page
+            offset += page.size
+        } while (page.size == INVENTORY_PAGE_SIZE && rows.size < MAX_EXECUTIVE_BALANCES)
+        return rows
     }
 
     fun setMovementQuery(value: String) { state = state.copy(movementQuery = value.take(120)) }
     fun setMovementType(value: MovementType?) { state = state.copy(movementType = value); searchMovements() }
-    fun searchMovements() = launch("movements") {
-        state = state.copy(movements = source.movements(state.movementQuery, state.movementType))
+    fun searchMovements() = launchRead("movements", InventorySection.MOVEMENTS) {
+        val page = source.movements(state.movementQuery, state.movementType)
+        return@launchRead { current -> current.copy(movements = page) }
     }
     fun loadMoreMovements() {
         val cursor = state.movements.nextCursor ?: return
-        launch("movements:more") {
+        launchRead("movements:more", InventorySection.MOVEMENTS) {
             val next = source.movements(state.movementQuery, state.movementType, cursor)
-            state = state.copy(movements = next.copy(rows = state.movements.rows + next.rows))
+            return@launchRead { current -> current.copy(movements = next.copy(rows = current.movements.rows + next.rows)) }
         }
     }
 
     fun setTransferQuery(value: String) { state = state.copy(transferQuery = value.take(60)) }
     fun setTransferStatus(value: TransferStatus?) { state = state.copy(transferStatus = value); searchTransfers() }
-    fun searchTransfers() = launch("transfers") {
-        state = state.copy(transfers = source.transfers(state.transferQuery, state.transferStatus), selectedTransfer = null)
+    fun searchTransfers() = launchRead("transfers", InventorySection.TRANSFERS) {
+        val page = source.transfers(state.transferQuery, state.transferStatus)
+        return@launchRead { current -> current.copy(transfers = page, selectedTransfer = null, receiveDraft = null) }
     }
     fun loadMoreTransfers() {
         val cursor = state.transfers.nextCursor ?: return
-        launch("transfers:more") {
+        launchRead("transfers:more", InventorySection.TRANSFERS) {
             val next = source.transfers(state.transferQuery, state.transferStatus, cursor)
-            state = state.copy(transfers = next.copy(rows = state.transfers.rows + next.rows))
+            return@launchRead { current -> current.copy(transfers = next.copy(rows = current.transfers.rows + next.rows)) }
         }
     }
-    fun selectTransfer(id: Long) = launch("transfer:$id") {
-        state = state.copy(selectedTransfer = source.transfer(id), transferDraft = null, receiveDraft = null)
+    fun selectTransfer(id: Long) = launchRead("transfer:$id", InventorySection.TRANSFERS) {
+        val detail = source.transfer(id)
+        return@launchRead { current -> current.copy(selectedTransfer = detail, transferDraft = null, receiveDraft = null) }
     }
     fun closeTransferDetail() { state = state.copy(selectedTransfer = null, receiveDraft = null) }
 
     fun beginTransfer(item: StockBalance) {
-        if (!capabilities.canWrite) return
+        if (
+            !capabilities.canWrite ||
+            !state.canInteract(InventorySection.BALANCES) ||
+            !state.isFresh(InventorySection.TRANSFERS) ||
+            !state.branchesFresh
+        ) return
         state = state.copy(
             section = InventorySection.TRANSFERS,
             transferDraft = TransferDraft(
@@ -186,21 +458,29 @@ class InventoryViewModel(
     fun closeTransferDraft() { state = state.copy(transferDraft = null) }
     fun saveTransfer() {
         val draft = state.transferDraft ?: return
-        if (!capabilities.canWrite) return
+        if (!capabilities.canWrite || !state.branchesFresh) return
         InventoryValidation.transfer(draft, capabilities.branchId)?.let { return setError(it) }
-        launch("transfer:create", "تم إنشاء سند التحويل") {
-            val id = source.createTransfer(draft)
-            state = state.copy(
-                transferDraft = null,
-                transfers = source.transfers(state.transferQuery, state.transferStatus),
-                selectedTransfer = source.transfer(id),
-            )
-        }
+        launchMutation(
+            key = "transfer:create",
+            section = InventorySection.TRANSFERS,
+            success = "تم إنشاء سند التحويل",
+            replayPolicy = MutationReplayPolicy.IDEMPOTENT,
+            request = { source.createTransfer(draft) },
+            acknowledge = { current, _ -> current.copy(transferDraft = null, selectedTransfer = null) },
+            refresh = { id ->
+                val page = source.transfers(state.transferQuery, state.transferStatus)
+                val detail = source.transfer(id)
+                val reducer: InventoryReducer = { current ->
+                    current.copy(transfers = page, selectedTransfer = detail)
+                }
+                reducer
+            },
+        )
     }
 
     fun beginReceive() {
         val detail = state.selectedTransfer ?: return
-        if (!capabilities.canReceive(detail)) return
+        if (!capabilities.canReceive(detail) || !state.canInteract(InventorySection.TRANSFERS)) return
         state = state.copy(
             receiveDraft = ReceiveDraft(
                 transferId = detail.id,
@@ -216,36 +496,58 @@ class InventoryViewModel(
         val draft = state.receiveDraft ?: return
         if (!capabilities.canReceive(detail)) return
         InventoryValidation.receive(detail, draft)?.let { return setError(it) }
-        launch("transfer:receive", "تم استلام السند") {
-            source.receiveTransfer(detail, draft)
-            state = state.copy(
-                receiveDraft = null,
-                selectedTransfer = source.transfer(detail.id),
-                transfers = source.transfers(state.transferQuery, state.transferStatus),
-            )
-        }
+        launchMutation(
+            key = "transfer:receive",
+            section = InventorySection.TRANSFERS,
+            success = "تم استلام السند",
+            replayPolicy = MutationReplayPolicy.IDEMPOTENT,
+            request = { source.receiveTransfer(detail, draft) },
+            acknowledge = { current, _ -> current.acknowledgeTransferStatus(detail.id, TransferStatus.RECEIVED) },
+            refresh = {
+                val page = source.transfers(state.transferQuery, state.transferStatus)
+                val refreshed = source.transfer(detail.id)
+                val reducer: InventoryReducer = { current ->
+                    current.copy(transfers = page, selectedTransfer = refreshed, receiveDraft = null)
+                }
+                reducer
+            },
+        )
     }
     fun cancelTransfer() {
         val detail = state.selectedTransfer ?: return
         if (!capabilities.canCancel(detail)) return
-        launch("transfer:cancel", "تم إلغاء السند وإعادة الرصيد") {
-            source.cancelTransfer(detail.id)
-            state = state.copy(
-                selectedTransfer = source.transfer(detail.id),
-                transfers = source.transfers(state.transferQuery, state.transferStatus),
-            )
-        }
+        launchMutation(
+            key = "transfer:cancel",
+            section = InventorySection.TRANSFERS,
+            success = "تم إلغاء السند وإعادة الرصيد",
+            replayPolicy = MutationReplayPolicy.MONOTONIC,
+            request = { source.cancelTransfer(detail.id) },
+            acknowledge = { current, _ -> current.acknowledgeTransferStatus(detail.id, TransferStatus.CANCELLED) },
+            refresh = {
+                val page = source.transfers(state.transferQuery, state.transferStatus)
+                val refreshed = source.transfer(detail.id)
+                val reducer: InventoryReducer = { current ->
+                    current.copy(transfers = page, selectedTransfer = refreshed)
+                }
+                reducer
+            },
+        )
     }
 
     fun setAdjustmentStatus(value: AdjustmentStatus) {
         state = state.copy(adjustmentStatus = value)
         refreshAdjustments()
     }
-    fun refreshAdjustments() = launch("adjustments") {
-        state = state.copy(adjustments = source.adjustments(state.adjustmentStatus))
+    fun refreshAdjustments() = launchRead("adjustments", InventorySection.ADJUSTMENTS) {
+        val rows = source.adjustments(state.adjustmentStatus)
+        return@launchRead { current -> current.copy(adjustments = rows) }
     }
     fun beginAdjustment(item: StockBalance) {
-        if (!capabilities.canWrite) return
+        if (
+            !capabilities.canWrite ||
+            !state.canInteract(InventorySection.BALANCES) ||
+            !state.isFresh(InventorySection.ADJUSTMENTS)
+        ) return
         state = state.copy(
             section = InventorySection.ADJUSTMENTS,
             adjustmentDraft = AdjustmentDraft(item.variantId, item.label, item.quantity.toString()),
@@ -258,20 +560,65 @@ class InventoryViewModel(
         val draft = state.adjustmentDraft ?: return
         if (!capabilities.canWrite) return
         InventoryValidation.adjustment(draft, capabilities.branchId)?.let { return setError(it) }
-        launch("adjustment:create", "أُرسل طلب التسوية للاعتماد") {
-            source.requestAdjustment(draft)
-            state = state.copy(adjustmentDraft = null, adjustments = source.adjustments(state.adjustmentStatus))
-        }
+        val balance = state.balances.firstOrNull { it.variantId == draft.variantId }
+        launchMutation(
+            key = "adjustment:create",
+            section = InventorySection.ADJUSTMENTS,
+            success = "أُرسل طلب التسوية للاعتماد",
+            replayPolicy = MutationReplayPolicy.NON_IDEMPOTENT,
+            request = { source.requestAdjustment(draft) },
+            acknowledge = { current, id ->
+                val local = balance?.let { row ->
+                    AdjustmentRequest(
+                        id = id,
+                        variantId = row.variantId,
+                        branchId = requireNotNull(capabilities.branchId),
+                        productName = row.productName,
+                        variantName = row.variantName,
+                        sku = row.sku,
+                        expectedQuantity = row.quantity,
+                        currentQuantity = row.quantity,
+                        targetQuantity = requireNotNull(draft.targetQuantity.toIntOrNull()),
+                        status = AdjustmentStatus.PENDING_APPROVAL,
+                        notes = draft.notes.trim().takeIf(String::isNotEmpty),
+                        createdBy = capabilities.userId,
+                        createdByName = capabilities.userName,
+                        createdAt = null,
+                        rejectionReason = null,
+                    )
+                }
+                current.copy(
+                    adjustmentDraft = null,
+                    adjustments = if (
+                        local != null && current.adjustmentStatus == AdjustmentStatus.PENDING_APPROVAL
+                    ) listOf(local) + current.adjustments.filterNot { it.id == id } else current.adjustments,
+                )
+            },
+            refresh = {
+                val rows = source.adjustments(state.adjustmentStatus)
+                val reducer: InventoryReducer = { current -> current.copy(adjustments = rows) }
+                reducer
+            },
+        )
     }
     fun approveAdjustment(id: Long) {
         if (!capabilities.canManage) return
-        launch("adjustment:approve:$id", "تم اعتماد التسوية") {
-            source.approveAdjustment(id)
-            state = state.copy(adjustments = source.adjustments(state.adjustmentStatus))
-        }
+        launchMutation(
+            key = "adjustment:approve:$id",
+            section = InventorySection.ADJUSTMENTS,
+            success = "تم اعتماد التسوية",
+            replayPolicy = MutationReplayPolicy.MONOTONIC,
+            request = { source.approveAdjustment(id) },
+            acknowledge = { current, _ -> current.acknowledgeAdjustment(id, AdjustmentStatus.APPROVED) },
+            refresh = {
+                val rows = source.adjustments(state.adjustmentStatus)
+                val reducer: InventoryReducer = { current -> current.copy(adjustments = rows) }
+                reducer
+            },
+        )
     }
     fun beginRejectAdjustment(id: Long) {
-        if (!capabilities.canManage) return
+        if (!capabilities.canManage || !state.canInteract(InventorySection.ADJUSTMENTS)) return
         state = state.copy(rejectingAdjustmentId = id, rejectionReason = "", error = null)
     }
     fun setRejectionReason(value: String) { state = state.copy(rejectionReason = value.take(500)) }
@@ -279,26 +626,34 @@ class InventoryViewModel(
     fun confirmRejectAdjustment() {
         val id = state.rejectingAdjustmentId ?: return
         if (state.rejectionReason.trim().isEmpty()) return setError("سبب الرفض مطلوب")
-        launch("adjustment:reject:$id", "تم رفض طلب التسوية") {
-            source.rejectAdjustment(id, state.rejectionReason)
-            state = state.copy(
-                rejectingAdjustmentId = null,
-                rejectionReason = "",
-                adjustments = source.adjustments(state.adjustmentStatus),
-            )
-        }
+        val reason = state.rejectionReason
+        launchMutation(
+            key = "adjustment:reject:$id",
+            section = InventorySection.ADJUSTMENTS,
+            success = "تم رفض طلب التسوية",
+            replayPolicy = MutationReplayPolicy.MONOTONIC,
+            request = { source.rejectAdjustment(id, reason) },
+            acknowledge = { current, _ -> current.acknowledgeAdjustment(id, AdjustmentStatus.REJECTED, reason) },
+            refresh = {
+                val rows = source.adjustments(state.adjustmentStatus)
+                val reducer: InventoryReducer = { current -> current.copy(adjustments = rows) }
+                reducer
+            },
+        )
     }
 
     fun setStocktakeStatus(value: StocktakeStatus?) { state = state.copy(stocktakeStatus = value); refreshStocktakes() }
-    fun refreshStocktakes() = launch("stocktakes") {
-        state = state.copy(stocktakes = source.stocktakes(state.stocktakeStatus), selectedStocktake = null)
+    fun refreshStocktakes() = launchRead("stocktakes", InventorySection.STOCKTAKES) {
+        val rows = source.stocktakes(state.stocktakeStatus)
+        return@launchRead { current -> current.copy(stocktakes = rows, selectedStocktake = null) }
     }
-    fun selectStocktake(id: Long) = launch("stocktake:$id") {
-        state = state.copy(selectedStocktake = source.stocktake(id), stocktakeDraft = null)
+    fun selectStocktake(id: Long) = launchRead("stocktake:$id", InventorySection.STOCKTAKES) {
+        val detail = source.stocktake(id)
+        return@launchRead { current -> current.copy(selectedStocktake = detail, stocktakeDraft = null) }
     }
     fun closeStocktakeDetail() { state = state.copy(selectedStocktake = null) }
     fun beginStocktake() {
-        if (!capabilities.canCreateStocktake) return
+        if (!capabilities.canCreateStocktake || !state.canInteract(InventorySection.STOCKTAKES)) return
         state = state.copy(stocktakeDraft = StocktakeDraft(), selectedStocktake = null, error = null)
     }
     fun updateStocktakeDraft(draft: StocktakeDraft) { state = state.copy(stocktakeDraft = draft, error = null) }
@@ -306,17 +661,51 @@ class InventoryViewModel(
     fun saveStocktake() {
         val draft = state.stocktakeDraft ?: return
         InventoryValidation.stocktake(draft, capabilities.branchId)?.let { return setError(it) }
-        launch("stocktake:create", "تم إنشاء جلسة الجرد وتكليفك بها") {
-            val id = source.createStocktake(draft)
-            state = state.copy(
-                stocktakeDraft = null,
-                stocktakes = source.stocktakes(state.stocktakeStatus),
-                selectedStocktake = source.stocktake(id),
-                countAssignments = source.countAssignments(),
-            )
-        }
+        launchMutation(
+            key = "stocktake:create",
+            section = InventorySection.STOCKTAKES,
+            success = "تم إنشاء جلسة الجرد وتكليفك بها",
+            replayPolicy = MutationReplayPolicy.NON_IDEMPOTENT,
+            request = { source.createStocktake(draft) },
+            acknowledge = { current, id ->
+                val branchName = current.branches.firstOrNull { it.id == capabilities.branchId }?.name ?: "فرع الجلسة"
+                val summary = StocktakeSummary(
+                    id = id,
+                    code = "#$id",
+                    name = draft.name.trim(),
+                    branchId = requireNotNull(capabilities.branchId),
+                    branchName = branchName,
+                    scopeLabel = if (draft.scopeType == "FULL") "شامل" else "متحرك ${draft.movingDays} يوم",
+                    status = StocktakeStatus.COUNTING,
+                    itemCount = 0,
+                    countedCount = 0,
+                    createdAt = null,
+                    createdByName = capabilities.userName,
+                )
+                current.copy(
+                    stocktakeDraft = null,
+                    selectedStocktake = null,
+                    stocktakes = if (current.stocktakeStatus in setOf(null, StocktakeStatus.COUNTING)) {
+                        listOf(summary) + current.stocktakes.filterNot { it.id == id }
+                    } else {
+                        current.stocktakes
+                    },
+                )
+            },
+            refresh = { id ->
+                val rows = source.stocktakes(state.stocktakeStatus)
+                val detail = source.stocktake(id)
+                val assignments = source.countAssignments()
+                val reducer: InventoryReducer = { current ->
+                    current.copy(stocktakes = rows, selectedStocktake = detail, countAssignments = assignments)
+                        .markFresh(InventorySection.MY_COUNTS)
+                }
+                reducer
+            },
+        )
     }
     fun beginRecount(variantId: Long) {
+        if (!state.canInteract(InventorySection.STOCKTAKES)) return
         state = state.copy(recountVariantId = variantId, recountReason = "", error = null)
     }
     fun setRecountReason(value: String) { state = state.copy(recountReason = value.take(255)) }
@@ -325,10 +714,23 @@ class InventoryViewModel(
         val detail = state.selectedStocktake ?: return
         val variantId = state.recountVariantId ?: return
         if (state.recountReason.trim().length < 3) return setError("اكتب سبب إعادة العد")
-        launch("stocktake:recount", "تم طلب إعادة العد") {
-            source.requestRecount(detail.summary.id, variantId, state.recountReason)
-            state = state.copy(recountVariantId = null, recountReason = "", selectedStocktake = source.stocktake(detail.summary.id))
-        }
+        val reason = state.recountReason
+        launchMutation(
+            key = "stocktake:recount",
+            section = InventorySection.STOCKTAKES,
+            success = "تم طلب إعادة العد",
+            replayPolicy = MutationReplayPolicy.MONOTONIC,
+            request = { source.requestRecount(detail.summary.id, variantId, reason) },
+            acknowledge = { current, _ -> current.copy(recountVariantId = null, recountReason = "") },
+            refresh = {
+                val refreshed = source.stocktake(detail.summary.id)
+                val rows = source.stocktakes(state.stocktakeStatus)
+                val reducer: InventoryReducer = { current ->
+                    current.copy(selectedStocktake = refreshed, stocktakes = rows)
+                }
+                reducer
+            },
+        )
     }
     fun forceReview() = stocktakeAction("stocktake:review", "نُقلت الجلسة للمراجعة") { source.forceStocktakeReview(it) }
     fun firstSign() = stocktakeAction("stocktake:sign", "تم التوقيع الأول") { source.firstSignStocktake(it) }
@@ -337,65 +739,187 @@ class InventoryViewModel(
     fun cancelStocktake() {
         val detail = state.selectedStocktake ?: return
         if (!capabilities.canCancelStocktake) return
-        launch("stocktake:cancel", "تم إلغاء جلسة الجرد") {
-            source.cancelStocktake(detail.summary.id, state.cancelStocktakeReason)
-            state = state.copy(
-                cancelStocktakeReason = "",
-                selectedStocktake = source.stocktake(detail.summary.id),
-                stocktakes = source.stocktakes(state.stocktakeStatus),
-            )
-        }
+        val reason = state.cancelStocktakeReason
+        launchMutation(
+            key = "stocktake:cancel",
+            section = InventorySection.STOCKTAKES,
+            success = "تم إلغاء جلسة الجرد",
+            replayPolicy = MutationReplayPolicy.MONOTONIC,
+            request = { source.cancelStocktake(detail.summary.id, reason) },
+            acknowledge = { current, _ ->
+                current.acknowledgeStocktakeStatus(detail.summary.id, StocktakeStatus.CANCELLED)
+            },
+            refresh = {
+                val refreshed = source.stocktake(detail.summary.id)
+                val rows = source.stocktakes(state.stocktakeStatus)
+                val reducer: InventoryReducer = { current ->
+                    current.copy(selectedStocktake = refreshed, stocktakes = rows)
+                }
+                reducer
+            },
+        )
     }
 
     private fun stocktakeAction(key: String, message: String, action: suspend (Long) -> Unit) {
         val detail = state.selectedStocktake ?: return
         if (!capabilities.canManage) return
-        launch(key, message) {
-            action(detail.summary.id)
-            state = state.copy(
-                selectedStocktake = source.stocktake(detail.summary.id),
-                stocktakes = source.stocktakes(state.stocktakeStatus),
-            )
+        val acknowledgedStatus = when (key) {
+            "stocktake:review" -> StocktakeStatus.REVIEW
+            "stocktake:approve" -> StocktakeStatus.APPROVED
+            else -> null
         }
+        launchMutation(
+            key = key,
+            section = InventorySection.STOCKTAKES,
+            success = message,
+            replayPolicy = MutationReplayPolicy.MONOTONIC,
+            request = { action(detail.summary.id) },
+            acknowledge = { current, _ ->
+                acknowledgedStatus?.let { current.acknowledgeStocktakeStatus(detail.summary.id, it) } ?: current
+            },
+            refresh = {
+                val refreshed = source.stocktake(detail.summary.id)
+                val rows = source.stocktakes(state.stocktakeStatus)
+                val reducer: InventoryReducer = { current ->
+                    current.copy(selectedStocktake = refreshed, stocktakes = rows)
+                }
+                reducer
+            },
+        )
     }
 
-    fun refreshCountAssignments() = launch("counts") {
-        state = state.copy(countAssignments = source.countAssignments(), selectedCount = null)
+    fun refreshCountAssignments() = launchRead("counts", InventorySection.MY_COUNTS) {
+        val rows = source.countAssignments()
+        return@launchRead { current -> current.copy(countAssignments = rows, selectedCount = null) }
     }
-    fun selectCount(sessionCode: String) = launch("count:$sessionCode") {
-        state = state.copy(selectedCount = source.countSession(sessionCode), countQuery = "")
+    fun selectCount(sessionCode: String) = launchRead("count:$sessionCode", InventorySection.MY_COUNTS) {
+        val detail = source.countSession(sessionCode)
+        return@launchRead { current -> current.copy(selectedCount = detail, countQuery = "") }
     }
     fun closeCount() { state = state.copy(selectedCount = null) }
     fun setCountQuery(value: String) { state = state.copy(countQuery = value.take(120)) }
     fun submitCount(variantId: Long, quantity: String) {
         val count = state.selectedCount ?: return
         InventoryValidation.count(quantity)?.let { return setError(it) }
-        launch("count:submit:$variantId", "تم حفظ العدّة") {
-            source.submitCount(count.code, variantId, requireNotNull(quantity.toIntOrNull()), UUID.randomUUID().toString())
-            state = state.copy(selectedCount = source.countSession(count.code))
-        }
+        val parsedQuantity = requireNotNull(quantity.toIntOrNull())
+        val clientRequestId = countRequestIds.idFor(count.code, variantId, parsedQuantity)
+        launchMutation(
+            key = "count:submit:$variantId",
+            section = InventorySection.MY_COUNTS,
+            success = "تم حفظ العدّة",
+            replayPolicy = MutationReplayPolicy.IDEMPOTENT,
+            request = { source.submitCount(count.code, variantId, parsedQuantity, clientRequestId) },
+            acknowledge = { current, _ -> current.acknowledgeCount(count.code, variantId, parsedQuantity) },
+            refresh = {
+                val refreshed = source.countSession(count.code)
+                val reducer: InventoryReducer = { current -> current.copy(selectedCount = refreshed) }
+                reducer
+            },
+        )
     }
     fun finishCount() {
         val count = state.selectedCount ?: return
-        launch("count:finish", "تم تسليم العدّ") {
-            source.finishCount(count.code)
-            state = state.copy(selectedCount = null, countAssignments = source.countAssignments())
-        }
+        launchMutation(
+            key = "count:finish",
+            section = InventorySection.MY_COUNTS,
+            success = "تم تسليم العدّ",
+            replayPolicy = MutationReplayPolicy.MONOTONIC,
+            request = { source.finishCount(count.code) },
+            acknowledge = { current, _ ->
+                current.copy(
+                    selectedCount = null,
+                    countAssignments = current.countAssignments.filterNot { it.sessionCode == count.code },
+                )
+            },
+            refresh = {
+                val rows = source.countAssignments()
+                val reducer: InventoryReducer = { current -> current.copy(countAssignments = rows, selectedCount = null) }
+                reducer
+            },
+        )
     }
 
-    private fun launch(key: String, success: String? = null, block: suspend () -> Unit) {
-        if (state.busyKey != null) return
+    private fun launchRead(
+        key: String,
+        section: InventorySection,
+        block: suspend () -> InventoryReducer,
+    ) {
+        if (state.busyKey != null || state.initializing) return
         state = state.copy(busyKey = key, error = null, message = null)
         viewModelScope.launch {
             runCatching { block() }
-                .onSuccess { state = state.copy(busyKey = null, message = success) }
-                .onFailure { state = state.copy(busyKey = null, error = userMessage(it)) }
+                .onSuccess { reducer ->
+                    state = reducer(state).markFresh(section).copy(busyKey = null)
+                }
+                .onFailure { error ->
+                    state = state.markStale(section).copy(busyKey = null, error = userMessage(error))
+                }
+            drainPendingExecutiveRefresh()
         }
+    }
+
+    private fun <T> launchMutation(
+        key: String,
+        section: InventorySection,
+        success: String,
+        replayPolicy: MutationReplayPolicy,
+        request: suspend () -> T,
+        acknowledge: (InventoryUiState, T) -> InventoryUiState,
+        refresh: suspend (T) -> InventoryReducer,
+    ) {
+        if (!state.canInteract(section)) return
+        state = state.copy(busyKey = key, error = null, message = null)
+        viewModelScope.launch {
+            val response = runCatching { request() }
+            if (response.isFailure) {
+                val failure = requireNotNull(response.exceptionOrNull())
+                val ambiguous = isAmbiguousMutationFailure(failure)
+                var failed = state.copy(busyKey = null, error = userMessage(failure))
+                if (ambiguous) failed = failed.markStale(section)
+                if (ambiguous && replayPolicy == MutationReplayPolicy.NON_IDEMPOTENT) {
+                    failed = failed.markOutcomeUnknown(section).copy(
+                        error = "تعذر حسم نتيجة العملية. أُوقفت الكتابة في هذا القسم لمنع إنشاء عملية مكررة؛ تحقق من النظام ثم أعد فتح مساحة المخزون.",
+                    )
+                }
+                state = failed
+                drainPendingExecutiveRefresh()
+                return@launch
+            }
+
+            val value = response.getOrThrow()
+            // Commit the acknowledged server outcome first. The following read is reconciliation,
+            // never part of the write, so its failure cannot reopen the draft or repeat the action.
+            state = acknowledge(state, value).markStale(section).copy(message = success)
+            runCatching { refresh(value) }
+                .onSuccess { reducer ->
+                    state = reducer(state).markFresh(section).copy(busyKey = null, error = null, message = success)
+                }
+                .onFailure { refreshFailure ->
+                    state = state.copy(
+                        busyKey = null,
+                        message = success,
+                        error = "اكتملت العملية، لكن تعذر تحديث بيانات القسم. اضغط إعادة المحاولة قبل تنفيذ إجراء آخر: ${userMessage(refreshFailure)}",
+                    )
+                }
+            drainPendingExecutiveRefresh()
+        }
+    }
+
+    private fun drainPendingExecutiveRefresh() {
+        if (!pendingExecutiveBalanceRefresh || state.busyKey != null || state.initializing) return
+        pendingExecutiveBalanceRefresh = false
+        searchBalances()
     }
 
     private fun setError(message: String) { state = state.copy(error = message) }
     private fun userMessage(error: Throwable): String =
         error.message?.takeIf(String::isNotBlank) ?: "تعذر إكمال العملية"
+}
+
+private fun isAmbiguousMutationFailure(error: Throwable): Boolean = when (error) {
+    is IllegalArgumentException -> false
+    is ApiException -> error.retryableTransportFailure || error.status == null || error.status !in 400..499
+    else -> true
 }
 
 class InventoryViewModelFactory(

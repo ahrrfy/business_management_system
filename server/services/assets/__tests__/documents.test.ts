@@ -9,6 +9,7 @@ import { getDb } from "../../../db";
 import { addAssetDocument, createAsset, deleteAssetDocument, getAsset } from "../../assetsService";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" as const };
+const ADMIN_SCOPE = { branchId: null } as const;
 const TABLES = [
   "accountingEntries", "assetMaintenance", "assetCustodyLog", "assetDocuments",
   "fixedAssets", "suppliers", "auditLogs", "branches", "users",
@@ -50,9 +51,9 @@ beforeEach(async () => {
 describe("assets documents — رفع/حذف", () => {
   it("رفع مستند يظهر في getAsset().docs بعنوانه وصورته", async () => {
     const a = await mkAsset();
-    const doc = await addAssetDocument(a!.id, { title: "فاتورة الشراء", dataUrl: TINY });
+    const doc = await addAssetDocument(a!.id, { title: "فاتورة الشراء", dataUrl: TINY }, ACTOR);
     expect(doc.id).toBeGreaterThan(0);
-    const got = await getAsset(a!.id);
+    const got = await getAsset(a!.id, ADMIN_SCOPE);
     expect(got!.docs).toHaveLength(1);
     expect(got!.docs[0].title).toBe("فاتورة الشراء");
     expect(got!.docs[0].dataUrl).toBe(TINY);
@@ -60,24 +61,24 @@ describe("assets documents — رفع/حذف", () => {
 
   it("حذف مستند يزيله من الأصل", async () => {
     const a = await mkAsset();
-    const doc = await addAssetDocument(a!.id, { title: "كفالة", dataUrl: TINY });
-    const res = await deleteAssetDocument(doc.id);
+    const doc = await addAssetDocument(a!.id, { title: "كفالة", dataUrl: TINY }, ACTOR);
+    const res = await deleteAssetDocument(doc.id, ACTOR);
     expect(res.ok).toBe(true);
     expect(res.assetId).toBe(a!.id);
-    expect((await getAsset(a!.id))!.docs).toHaveLength(0);
+    expect((await getAsset(a!.id, ADMIN_SCOPE))!.docs).toHaveLength(0);
   });
 
   it("رفع لأصلٍ غير موجود ⇒ NOT_FOUND", async () => {
-    await expect(addAssetDocument(999999, { title: "x", dataUrl: TINY })).rejects.toThrow(/غير موجود/);
+    await expect(addAssetDocument(999999, { title: "x", dataUrl: TINY }, ACTOR)).rejects.toThrow(/غير موجود/);
   });
 
   it("حذف مستندٍ غير موجود ⇒ NOT_FOUND", async () => {
-    await expect(deleteAssetDocument(999999)).rejects.toThrow(/غير موجود/);
+    await expect(deleteAssetDocument(999999, ACTOR)).rejects.toThrow(/غير موجود/);
   });
 
   it("العنوان يُقلَّم فراغُه", async () => {
     const a = await mkAsset();
-    const doc = await addAssetDocument(a!.id, { title: "  فاتورة  ", dataUrl: TINY });
+    const doc = await addAssetDocument(a!.id, { title: "  فاتورة  ", dataUrl: TINY }, ACTOR);
     expect(doc.title).toBe("فاتورة");
   });
 });

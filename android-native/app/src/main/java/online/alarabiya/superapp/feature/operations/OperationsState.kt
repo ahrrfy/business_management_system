@@ -1,8 +1,12 @@
 package online.alarabiya.superapp.feature.operations
 
 import online.alarabiya.superapp.model.operations.AssetDetail
+import online.alarabiya.superapp.model.operations.AssetDisposalInput
+import online.alarabiya.superapp.model.operations.AssetDocument
+import online.alarabiya.superapp.model.operations.AssetFormOptions
 import online.alarabiya.superapp.model.operations.AssetStatus
 import online.alarabiya.superapp.model.operations.AssetSummary
+import online.alarabiya.superapp.model.operations.AssetUpsertInput
 import online.alarabiya.superapp.model.operations.ConsignmentNoteDetail
 import online.alarabiya.superapp.model.operations.ConsignmentNoteSummary
 import online.alarabiya.superapp.model.operations.ConsignmentNoteType
@@ -37,6 +41,62 @@ sealed interface PendingOperationsAction {
         override val key: String = "asset:maintenance:${asset.id}"
     }
 
+    data class CreateAsset(
+        val input: AssetUpsertInput,
+        val requestToken: String,
+    ) : PendingOperationsAction {
+        override val key: String = "asset:create:$requestToken"
+    }
+
+    data class UpdateAsset(
+        val asset: AssetSummary,
+        val input: AssetUpsertInput,
+    ) : PendingOperationsAction {
+        override val key: String = "asset:update:${asset.id}"
+    }
+
+    data class HandoverAsset(
+        val asset: AssetSummary,
+        val employeeId: Long,
+        val employeeName: String,
+        val note: String?,
+    ) : PendingOperationsAction {
+        override val key: String = "asset:handover:${asset.id}"
+    }
+
+    data class ReleaseAssetCustody(val asset: AssetSummary) : PendingOperationsAction {
+        override val key: String = "asset:custody-release:${asset.id}"
+    }
+
+    data class DisposeAsset(
+        val asset: AssetSummary,
+        val input: AssetDisposalInput,
+    ) : PendingOperationsAction {
+        override val key: String = "asset:dispose:${asset.id}"
+    }
+
+    data class AddAssetDocument(
+        val asset: AssetSummary,
+        val title: String,
+        val dataUrl: String,
+    ) : PendingOperationsAction {
+        override val key: String = "asset:document:add:${asset.id}"
+    }
+
+    data class DeleteAssetDocument(
+        val asset: AssetSummary,
+        val document: AssetDocument,
+    ) : PendingOperationsAction {
+        override val key: String = "asset:document:delete:${document.id}"
+    }
+
+    data class PostDepreciation(
+        val year: Int,
+        val month: Int,
+    ) : PendingOperationsAction {
+        override val key: String = "asset:depreciation:$year-${month.toString().padStart(2, '0')}"
+    }
+
     data class CreateConsignment(
         val note: ConsignmentNoteSummary,
         val type: ConsignmentNoteType,
@@ -49,6 +109,16 @@ sealed interface PendingOperationsAction {
     }
 }
 
+enum class AssetOverlay {
+    Create,
+    Edit,
+    Handover,
+    ReleaseCustody,
+    Dispose,
+    AddDocument,
+    PostDepreciation,
+}
+
 data class OperationsUiState(
     val section: OperationsSection = OperationsSection.Assets,
     val scope: OperationsScope,
@@ -59,8 +129,14 @@ data class OperationsUiState(
     val assetStatus: AssetStatus? = null,
     val assets: List<AssetSummary> = emptyList(),
     val assetsLoaded: Boolean = false,
+    val assetsFresh: Boolean = false,
     val selectedAssetId: Long? = null,
     val assetDetail: OperationsDetailState<AssetDetail> = OperationsDetailState.None,
+    val assetDetailFresh: Boolean = false,
+    val assetOptions: OperationsDetailState<AssetFormOptions> = OperationsDetailState.None,
+    val assetOptionsFresh: Boolean = false,
+    val assetOverlay: AssetOverlay? = null,
+    val outcomeUnknownAction: PendingOperationsAction? = null,
     val commissionPeriod: String = YearMonth.now().toString(),
     val commission: OperationsDetailState<MyCommissionStatus?> = OperationsDetailState.None,
     val consignmentType: ConsignmentNoteType? = null,
@@ -75,7 +151,35 @@ data class OperationsUiState(
     val busyKey: String? = null,
     val error: String? = null,
     val notice: String? = null,
-)
+) {
+    val assetMutationLocked: Boolean
+        get() = busyKey != null || outcomeUnknownAction != null || !assetsFresh
+
+    val selectedAssetFresh: Boolean
+        get() = selectedAssetId != null && assetDetailFresh && assetDetail is OperationsDetailState.Content
+
+    val outcomeReviewReady: Boolean
+        get() {
+            val action = outcomeUnknownAction ?: return false
+            if (!assetsFresh) return false
+            return when (action) {
+                is PendingOperationsAction.CreateAsset -> true
+                is PendingOperationsAction.DisposeAsset ->
+                    assets.none { it.id == action.asset.id } ||
+                        (selectedAssetId == action.asset.id && selectedAssetFresh)
+                is PendingOperationsAction.UpdateAsset -> selectedAssetId == action.asset.id && selectedAssetFresh
+                is PendingOperationsAction.HandoverAsset -> selectedAssetId == action.asset.id && selectedAssetFresh
+                is PendingOperationsAction.ReleaseAssetCustody -> selectedAssetId == action.asset.id && selectedAssetFresh
+                is PendingOperationsAction.AddAssetDocument -> selectedAssetId == action.asset.id && selectedAssetFresh
+                is PendingOperationsAction.DeleteAssetDocument -> selectedAssetId == action.asset.id && selectedAssetFresh
+                is PendingOperationsAction.ReturnAsset -> selectedAssetId == action.asset.id && selectedAssetFresh
+                is PendingOperationsAction.StartMaintenance -> selectedAssetId == action.asset.id && selectedAssetFresh
+                is PendingOperationsAction.PostDepreciation,
+                is PendingOperationsAction.CreateConsignment,
+                -> true
+            }
+        }
+}
 
 object OperationsStateFilter {
     fun assets(state: OperationsUiState): List<AssetSummary> {

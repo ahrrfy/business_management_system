@@ -106,6 +106,52 @@ class WarehouseToolsContractTest {
         assertEquals(2L, valid.branchId)
     }
 
+    @Test
+    fun mutationGatesRequireFreshAssignmentsSessionAndQueue() {
+        val item = item()
+        val session = session(item)
+        val base = WarehouseToolsUiState(
+            assignments = listOf(CountAssignment(session.code, session.name, 2, 4, "ACTIVE", "A", null)),
+            selectedCount = session,
+            selectedItem = item,
+            countDraft = draft(item, session),
+            assignmentsFresh = true,
+            countFresh = true,
+            pendingFresh = true,
+        )
+
+        assertTrue(canOpenWarehouseAssignment(base))
+        assertTrue(canBeginWarehouseCount(base, item))
+        assertTrue(canSubmitWarehouseCount(base))
+        assertFalse(canSubmitWarehouseCount(base.copy(countFresh = false)))
+        assertFalse(canSubmitWarehouseCount(base.copy(assignmentsFresh = false)))
+
+        val queued = PendingCount(session.code, item.variantId, 2, "[]", "queued-once", "now")
+        assertFalse(canBeginWarehouseCount(base.copy(pending = listOf(queued)), item))
+        assertTrue(canReplayWarehouseQueue(base.copy(pending = listOf(queued))))
+        assertFalse(canReplayWarehouseQueue(base.copy(pending = listOf(queued), pendingFresh = false)))
+        assertFalse(canReplayWarehouseQueue(base.copy(pending = listOf(queued), countFresh = false)))
+    }
+
+    @Test
+    fun localCountCommitIsMonotonicBeforeRefreshAndQueueFallbackPreservesEntries() {
+        val item = item()
+        val session = session(item)
+        val draft = draft(item, session)
+        val committed = session.commitCount(item, draft)
+
+        assertEquals(1, committed.mineCounted)
+        assertEquals(1, committed.sessionCounted)
+        assertEquals(27, committed.items.single().myCount?.quantity)
+        assertTrue(committed.items.single().counted)
+
+        val existing = PendingCount(session.code, 10, 1, "[]", "existing", "now")
+        val newlyQueued = PendingCount(session.code, item.variantId, 27, "[]", draft.clientRequestId, "now")
+        val preserved = preserveWarehouseQueue(listOf(existing), newlyQueued)
+        assertEquals(setOf("existing", draft.clientRequestId), preserved.map { it.clientRequestId }.toSet())
+        assertEquals(2, preserveWarehouseQueue(preserved, newlyQueued).size)
+    }
+
     private fun capabilities(products: String, branchId: Long?) = WarehouseCapabilities.fromBootstrap(AppBootstrap(
         user = UserIdentity(5, "موظف", null, null, "warehouse"),
         modules = listOf(ModuleAccess("products", "المنتجات", products)),
@@ -116,6 +162,13 @@ class WarehouseToolsContractTest {
     private fun item() = CountItem(
         variantId = 9, productName = "ورق", variantName = "A4", sku = "P-A4", counted = false, myCount = null,
         colleagueCounted = false, units = listOf(CountUnit("كرتون", "12", "BOX", emptyList()), CountUnit("قطعة", "1", "ONE", emptyList())), recountReason = null,
+    )
+
+    private fun draft(item: CountItem, session: CountSession) = CountDraft(
+        sessionCode = session.code,
+        variantId = item.variantId,
+        entries = listOf(CountUnitEntry("كرتون", "12", "2"), CountUnitEntry("قطعة", "1", "3")),
+        clientRequestId = "7f0fe832-b304-4e13-b37f-00cd88b334e0",
     )
 
     private fun session(item: CountItem) = CountSession(

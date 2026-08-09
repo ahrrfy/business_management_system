@@ -17,6 +17,15 @@ import online.alarabiya.superapp.model.hradmin.PayrollItem
 import online.alarabiya.superapp.model.hradmin.PayrollRun
 import online.alarabiya.superapp.model.hradmin.PayrollRunDetail
 import online.alarabiya.superapp.model.hradmin.PayrollStatus
+import online.alarabiya.superapp.model.hradmin.AttendanceEntry
+import online.alarabiya.superapp.model.hradmin.AttendancePage
+import online.alarabiya.superapp.model.hradmin.EmployeeAdvance
+import online.alarabiya.superapp.model.hradmin.EmployeePromotion
+import online.alarabiya.superapp.model.hradmin.FingerprintDevice
+import online.alarabiya.superapp.model.hradmin.HrLinkableUser
+import online.alarabiya.superapp.model.hradmin.CreateEmployeeAccountCommand
+import online.alarabiya.superapp.model.hradmin.PayrollLegalSettings
+import online.alarabiya.superapp.model.hradmin.IncomeTaxBracket
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -36,6 +45,16 @@ interface HrAdminDataSource {
     suspend fun setApplicantStage(applicant: JobApplicant, stage: ApplicantStage): JobApplicant
     suspend fun vacancies(): List<JobVacancy>
     suspend fun setVacancyPublished(vacancy: JobVacancy, published: Boolean): JobVacancy
+    suspend fun attendance(period: String, offset: Int = 0): AttendancePage
+    suspend fun fingerprintDevices(): List<FingerprintDevice>
+    suspend fun advances(): List<EmployeeAdvance>
+    suspend fun promotions(): List<EmployeePromotion>
+    suspend fun linkableUsers(employee: HrEmployee, query: String = ""): List<HrLinkableUser>
+    suspend fun linkEmployeeAccount(employee: HrEmployee, userId: Long): HrEmployee
+    suspend fun unlinkEmployeeAccount(employee: HrEmployee): HrEmployee
+    suspend fun createEmployeeAccount(employee: HrEmployee, command: CreateEmployeeAccountCommand): HrEmployee
+    suspend fun payrollLegalSettings(): PayrollLegalSettings
+    suspend fun updatePayrollLegalSettings(settings: PayrollLegalSettings): PayrollLegalSettings
 }
 
 class HrAdminRepository(
@@ -170,6 +189,94 @@ class HrAdminRepository(
             "recruitment.vacancyPublish",
             JSONObject().put("id", vacancy.id).put("isPublished", published),
         ).toVacancy()
+    }
+
+    override suspend fun attendance(period: String, offset: Int): AttendancePage {
+        requireCompanyRead()
+        require(PERIOD.matches(period)) { "الشهر يجب أن يكون بصيغة YYYY-MM" }
+        return api.query(
+            "attendance.list",
+            JSONObject().put("period", period).put("limit", PAGE_SIZE).put("offset", offset),
+        ).toAttendancePage()
+    }
+
+    override suspend fun fingerprintDevices(): List<FingerprintDevice> {
+        requireCompanyRead()
+        return api.queryArray("hrDevices.list").objects().mapNotNull(JSONObject::toFingerprintDeviceOrNull)
+    }
+
+    override suspend fun advances(): List<EmployeeAdvance> {
+        requireCompanyRead()
+        return api.queryArray("payroll.advancesList").objects().mapNotNull(JSONObject::toEmployeeAdvanceOrNull)
+    }
+
+    override suspend fun promotions(): List<EmployeePromotion> {
+        requireCompanyRead()
+        return api.queryArray("promotions.listPromotions").objects().mapNotNull(JSONObject::toEmployeePromotionOrNull)
+    }
+
+    override suspend fun linkableUsers(employee: HrEmployee, query: String): List<HrLinkableUser> {
+        requireAccountManagement(employee)
+        return api.queryArray(
+            "employees.linkableUsers",
+            JSONObject().put("employeeId", employee.id).put("q", query.trim()).put("limit", 50),
+        ).objects().mapNotNull { row ->
+            val id = row.optLong("id").takeIf { it > 0 } ?: return@mapNotNull null
+            HrLinkableUser(
+                id = id,
+                name = row.optString("name").ifBlank { "حساب #$id" },
+                identifier = row.nullableText("username") ?: row.nullableText("email") ?: "#$id",
+                role = row.optString("role"),
+            )
+        }.filterNot { it.id == capabilities.currentUserId }
+    }
+
+    override suspend fun linkEmployeeAccount(employee: HrEmployee, userId: Long): HrEmployee {
+        requireAccountManagement(employee)
+        require(employee.userId == null && userId > 0 && userId != capabilities.currentUserId) { "ربط الحساب غير مسموح" }
+        return api.mutate("employees.linkAccount", JSONObject().put("employeeId", employee.id).put("userId", userId))
+            .toEmployee().also { require(it.userId == userId) { "لم يؤكد الخادم ربط الحساب" } }
+    }
+
+    override suspend fun unlinkEmployeeAccount(employee: HrEmployee): HrEmployee {
+        requireAccountManagement(employee)
+        require(employee.userId != null && employee.userId != capabilities.currentUserId) { "فك ربط الحساب غير مسموح" }
+        return api.mutate("employees.unlinkAccount", JSONObject().put("employeeId", employee.id))
+            .toEmployee().also { require(it.userId == null) { "لم يؤكد الخادم فك الربط" } }
+    }
+
+    override suspend fun createEmployeeAccount(employee: HrEmployee, command: CreateEmployeeAccountCommand): HrEmployee {
+        requireAccountManagement(employee)
+        require(employee.userId == null && command.name.isNotBlank() && command.temporaryPassword.isNotBlank()) { "بيانات الحساب غير مكتملة" }
+        require(!command.email.isNullOrBlank() || !command.username.isNullOrBlank()) { "البريد أو اسم المستخدم مطلوب" }
+        val response = api.mutate(
+            "employees.createAccountFor",
+            JSONObject().put("employeeId", employee.id).put("name", command.name.trim())
+                .put("email", command.email ?: JSONObject.NULL).put("username", command.username ?: JSONObject.NULL)
+                .put("password", command.temporaryPassword).put("role", command.role)
+                .put("branchId", command.branchId ?: JSONObject.NULL).put("mustChangePassword", true),
+        )
+        val linked = response.optJSONObject("employee")?.toEmployee() ?: error("لم يؤكد الخادم إنشاء الحساب")
+        require(linked.userId == response.optJSONObject("credentials")?.optLong("userId")) { "استجابة ربط الحساب غير متطابقة" }
+        return linked
+    }
+
+    override suspend fun payrollLegalSettings(): PayrollLegalSettings {
+        requireCompanyRead()
+        return api.query("payroll.legalSettings").toPayrollLegalSettings()
+    }
+
+    override suspend fun updatePayrollLegalSettings(settings: PayrollLegalSettings): PayrollLegalSettings {
+        requireCompanyWrite()
+        validateLegalSettings(settings)
+        return api.mutate("payroll.updateLegalSettings", settings.toJson()).toPayrollLegalSettings()
+    }
+
+    private fun requireAccountManagement(employee: HrEmployee) {
+        require(capabilities.role.equals("admin", true) && capabilities.canManageEmployees && capabilities.acceptsEmployee(employee)) {
+            "إدارة حسابات الموظفين متاحة لمدير النظام فقط"
+        }
+        require(employee.userId != capabilities.currentUserId) { "لا يمكن إدارة ربط حسابك الحالي" }
     }
 
     private suspend fun payrollMutation(procedure: String, id: Long): PayrollRunDetail {
@@ -368,3 +475,124 @@ private fun JSONObject.nullableLong(key: String): Long? =
     if (!has(key) || isNull(key)) null else optLong(key).takeIf { it > 0 }
 
 private fun JSONObject.optMoney(key: String): String = nullableText(key) ?: "0"
+
+internal fun JSONObject.toAttendancePage(): AttendancePage {
+    val rows = optJSONArray("rows").objects().mapNotNull { row ->
+        val id = row.optLong("id").takeIf { it > 0 } ?: return@mapNotNull null
+        AttendanceEntry(
+            id = id,
+            employeeName = row.optString("employeeName").ifBlank { "موظف #${row.optLong("employeeId")}" },
+            attendanceDate = row.optString("attendanceDate"),
+            checkIn = row.nullableText("checkIn"),
+            checkOut = row.nullableText("checkOut"),
+            hours = row.optMoney("hours"),
+            status = row.optString("status", "PRESENT"),
+            source = row.optString("source", "manual"),
+        )
+    }
+    return AttendancePage(
+        rows = rows,
+        total = optInt("total", rows.size),
+        totalHours = optJSONObject("totals")?.optMoney("hours") ?: "0",
+    )
+}
+
+internal fun JSONObject.toFingerprintDeviceOrNull(): FingerprintDevice? {
+    val id = optLong("id").takeIf { it > 0 } ?: return null
+    val name = optString("name").takeIf(String::isNotBlank) ?: return null
+    return FingerprintDevice(
+        id = id,
+        name = name,
+        branchName = nullableText("branchName"),
+        location = nullableText("location"),
+        serialNumber = nullableText("serialNumber"),
+        protocol = nullableText("protocol"),
+        status = optString("status", "offline"),
+        lastSeenAt = nullableText("lastSeenAt"),
+        receivedPunches = optInt("receivedPunches"),
+        pendingPunches = optInt("pendingPunches"),
+    )
+}
+
+internal fun JSONObject.toEmployeeAdvanceOrNull(): EmployeeAdvance? {
+    val id = optLong("id").takeIf { it > 0 } ?: return null
+    val employeeId = optLong("employeeId").takeIf { it > 0 } ?: return null
+    return EmployeeAdvance(
+        id = id,
+        employeeId = employeeId,
+        employeeName = optString("employeeName").ifBlank { "موظف #$employeeId" },
+        amount = optMoney("amount"),
+        remainingAmount = nullableText("remainingAmount") ?: nullableText("balance") ?: "0",
+        monthlyDeduction = nullableText("monthlyDeduction"),
+        status = optString("status", "ACTIVE"),
+        grantedAt = nullableText("grantedAt") ?: nullableText("createdAt"),
+    )
+}
+
+internal fun JSONObject.toEmployeePromotionOrNull(): EmployeePromotion? {
+    val id = optLong("id").takeIf { it > 0 } ?: return null
+    val employeeId = optLong("employeeId").takeIf { it > 0 } ?: return null
+    return EmployeePromotion(
+        id = id,
+        employeeId = employeeId,
+        employeeName = optString("employeeName").ifBlank { "موظف #$employeeId" },
+        fromTitle = nullableText("fromTitle"),
+        toTitle = nullableText("toTitle"),
+        fromSalary = nullableText("fromSalary"),
+        toSalary = nullableText("toSalary"),
+        effectiveDate = optString("effectiveDate"),
+        status = optString("status", "pending"),
+    )
+}
+
+internal fun JSONObject.toPayrollLegalSettings(): PayrollLegalSettings = PayrollLegalSettings(
+    socialSecurityEnabled = optBoolean("socialSecurityEnabled"),
+    socialSecurityEmployeeRate = optString("socialSecurityEmployeeRate", "0"),
+    socialSecurityEmployerRate = optString("socialSecurityEmployerRate", "0"),
+    socialSecurityBase = optString("socialSecurityBase", "basic"),
+    incomeTaxEnabled = optBoolean("incomeTaxEnabled"),
+    incomeTaxBrackets = optJSONArray("incomeTaxBrackets").objects().map { bracket ->
+        IncomeTaxBracket(
+            upTo = bracket.nullableText("upTo"),
+            rate = bracket.optString("rate", "0"),
+        )
+    },
+    incomeTaxExemption = optString("incomeTaxExemption", "0"),
+    endOfServiceEnabled = optBoolean("endOfServiceEnabled"),
+    endOfServiceDaysPerYear = optString("endOfServiceDaysPerYear", "0"),
+    updatedBy = nullableLong("updatedBy"),
+    updatedAt = nullableText("updatedAt"),
+)
+
+private val DECIMAL = Regex("^\\d+(\\.\\d{1,2})?$")
+
+internal fun validateLegalSettings(value: PayrollLegalSettings) {
+    val decimals = buildList {
+        add(value.socialSecurityEmployeeRate)
+        add(value.socialSecurityEmployerRate)
+        add(value.incomeTaxExemption)
+        add(value.endOfServiceDaysPerYear)
+        value.incomeTaxBrackets.forEach { bracket ->
+            bracket.upTo?.let(::add)
+            add(bracket.rate)
+        }
+    }
+    require(decimals.all(DECIMAL::matches)) { "القيم المالية والنسب يجب أن تكون أرقاماً عشرية موجبة" }
+    require(value.socialSecurityBase in setOf("basic", "gross")) { "وعاء الضمان غير صالح" }
+    require(value.incomeTaxBrackets.size <= 20) { "عدد الشرائح الضريبية يتجاوز الحد" }
+}
+
+private fun PayrollLegalSettings.toJson() = JSONObject()
+    .put("socialSecurityEnabled", socialSecurityEnabled)
+    .put("socialSecurityEmployeeRate", socialSecurityEmployeeRate)
+    .put("socialSecurityEmployerRate", socialSecurityEmployerRate)
+    .put("socialSecurityBase", socialSecurityBase)
+    .put("incomeTaxEnabled", incomeTaxEnabled)
+    .put("incomeTaxBrackets", JSONArray().also { array ->
+        incomeTaxBrackets.forEach { bracket ->
+            array.put(JSONObject().put("upTo", bracket.upTo ?: JSONObject.NULL).put("rate", bracket.rate))
+        }
+    })
+    .put("incomeTaxExemption", incomeTaxExemption)
+    .put("endOfServiceEnabled", endOfServiceEnabled)
+    .put("endOfServiceDaysPerYear", endOfServiceDaysPerYear)

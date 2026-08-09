@@ -69,7 +69,10 @@ data class ApprovalAccessPolicy(private val writableKinds: Set<ApprovalKind>) {
         requests.filter { canManage(it.kind) }
 
     companion object {
-        fun fromBootstrap(bootstrap: AppBootstrap): ApprovalAccessPolicy {
+        fun fromBootstrap(
+            bootstrap: AppBootstrap,
+            effectiveBranchId: Long? = bootstrap.branchId,
+        ): ApprovalAccessPolicy {
             val fullModules = bootstrap.modules
                 .filter { it.access.equals("FULL", ignoreCase = true) }
                 .mapTo(mutableSetOf()) { it.key }
@@ -82,7 +85,7 @@ data class ApprovalAccessPolicy(private val writableKinds: Set<ApprovalKind>) {
                 if ("hr" in fullModules) add(ApprovalKind.LEAVE)
                 // vouchers.approve/reject explicitly reject sessions without an assigned branch,
                 // including an otherwise global admin session.
-                if (treasuryApprover && bootstrap.branchId != null && "treasury" in fullModules) {
+                if (treasuryApprover && effectiveBranchId != null && "treasury" in fullModules) {
                     add(ApprovalKind.VOUCHER)
                 }
                 if (manager && "gifts" in fullModules) add(ApprovalKind.GIFT)

@@ -59,6 +59,14 @@ import online.alarabiya.superapp.ui.scanner.NativeScannerAction
 
 @Composable
 internal fun QuotationsWorkspace(state: CrmUiState, capabilities: CrmCapabilities, actions: CrmActions) {
+    if (!state.quotationsLoaded) {
+        CrmRetryGate(
+            title = if (state.pendingQuotationRefreshId != null) "عرض السعر يحتاج تحديثاً" else "عروض الأسعار غير متاحة",
+            retryEnabled = !state.initializing && state.busyKey == null,
+            onRetry = actions.refresh,
+        )
+        return
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val secondary: (@Composable () -> Unit)? = when {
             state.quotationEditor != null -> ({
@@ -73,7 +81,7 @@ internal fun QuotationsWorkspace(state: CrmUiState, capabilities: CrmCapabilitie
                 QuotationDetailPane(
                     quotation = state.selectedQuotation,
                     canWrite = capabilities.sales.canWrite,
-                    busy = state.busyKey != null,
+                    busy = !state.canMutateSelectedQuotation,
                     onEdit = actions.beginEditQuotation,
                     onStatus = actions.setQuotationStatus,
                     onBack = actions.closeQuotationDetail,
@@ -114,13 +122,13 @@ private fun QuotationListPane(state: CrmUiState, canWrite: Boolean, actions: Crm
                     singleLine = true,
                     label = { Text("رقم العرض أو العميل") },
                     trailingIcon = {
-                        IconButton(onClick = actions.searchQuotations, enabled = state.busyKey == null) {
+                        IconButton(onClick = actions.searchQuotations, enabled = state.canCreateQuotation) {
                             Icon(Icons.Rounded.Search, contentDescription = "بحث")
                         }
                     },
                 )
                 if (canWrite) {
-                    IconButton(onClick = actions.beginCreateQuotation, enabled = state.busyKey == null) {
+                    IconButton(onClick = actions.beginCreateQuotation, enabled = state.canCreateQuotation) {
                         Icon(Icons.Rounded.Add, contentDescription = "عرض جديد")
                     }
                 }
@@ -132,6 +140,7 @@ private fun QuotationListPane(state: CrmUiState, canWrite: Boolean, actions: Crm
                     FilterChip(
                         selected = state.quotationStatus == null,
                         onClick = { actions.setQuotationFilter(null) },
+                        enabled = state.canCreateQuotation,
                         label = { Text("الكل") },
                     )
                 }
@@ -139,6 +148,7 @@ private fun QuotationListPane(state: CrmUiState, canWrite: Boolean, actions: Crm
                     FilterChip(
                         selected = state.quotationStatus == status,
                         onClick = { actions.setQuotationFilter(status) },
+                        enabled = state.canCreateQuotation,
                         label = { Text(status.label) },
                     )
                 }
@@ -146,12 +156,12 @@ private fun QuotationListPane(state: CrmUiState, canWrite: Boolean, actions: Crm
         }
         if (state.quotationPage.rows.isEmpty()) item { EmptyCrmState("لا توجد عروض مطابقة") }
         items(state.quotationPage.rows, key = { it.id }) { quotation ->
-            QuotationSummaryCard(quotation, state.busyKey == null) { actions.selectQuotation(quotation.id) }
+            QuotationSummaryCard(quotation, state.canCreateQuotation) { actions.selectQuotation(quotation.id) }
         }
         if (state.quotationPage.hasMore) item {
             OutlinedButton(
                 onClick = actions.loadMoreQuotations,
-                enabled = state.busyKey == null,
+                enabled = state.canCreateQuotation,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("تحميل المزيد") }
         }
@@ -265,7 +275,8 @@ private fun QuotationEditorPane(
     actions: CrmActions,
 ) {
     val draft = editor.draft
-    val busy = state.busyKey != null
+    val busy = state.busyKey != null ||
+        (editor.quotationId != null && !state.canMutateSelectedQuotation)
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(18.dp),

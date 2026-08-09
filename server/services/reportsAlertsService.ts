@@ -18,6 +18,7 @@ import {
   reconcileLedgerProfit,
 } from "./reconcileService";
 import { getAnomalyWatch } from "./reports/anomalyWatch";
+import { getAPAging } from "./reports/apAging";
 import { todayUtcDate, utcTodayStart } from "./businessDay";
 
 function rowsOf(res: unknown): any[] {
@@ -46,6 +47,7 @@ export interface AlertItem {
 export interface ManagementAlertsResult {
   alerts: AlertItem[];
   generatedAt: string;
+  sourceErrors: string[];
 }
 
 const SEV_ORDER: Record<AlertSeverity, number> = { critical: 0, warning: 1, info: 2 };
@@ -60,18 +62,20 @@ export async function getManagementAlerts(opts: {
 }): Promise<ManagementAlertsResult> {
   const db = getDb();
   const generatedAt = new Date().toISOString();
-  if (!db) return { alerts: [], generatedAt };
+  if (!db) return { alerts: [], generatedAt, sourceErrors: ["database"] };
   const branchId = opts.branchId;
   const branchInv = branchId ? sql`AND i.branchId = ${branchId}` : sql``;
   const branchWo = branchId ? sql`AND wo.branchId = ${branchId}` : sql``;
   const branchShift = branchId ? sql`AND s.branchId = ${branchId}` : sql``;
 
   const alerts: AlertItem[] = [];
+  const sourceErrors: string[] = [];
   let sourceFailureCount = 0;
-  const safe = async <T>(p: Promise<T>, fallback: T): Promise<T> => {
+  const safe = async <T>(source: string, p: Promise<T>, fallback: T): Promise<T> => {
     try {
       return await p;
     } catch {
+      sourceErrors.push(source);
       sourceFailureCount += 1;
       alerts.push({
         key: `report-source-failure-${sourceFailureCount}`,
@@ -88,6 +92,7 @@ export async function getManagementAlerts(opts: {
 
   // ── (أ) أعمار الذمم المدينة: شرائح 31-60 / 61-90 / +90 (عدد عملاء + مبلغ لكل شريحة) ──
   const arP = safe(
+    "receivablesAging",
     db.execute(sql`
       SELECT
         CAST(COALESCE(SUM(CASE WHEN bucket = 'd31_60' THEN amt ELSE 0 END), 0) AS CHAR) AS a31,
@@ -117,13 +122,14 @@ export async function getManagementAlerts(opts: {
   );
 
   // ── (ب) المخزون: نفد / منخفض ──
-  const stockP = safe(getStockStatus({ branchId, onlyAlerts: true, limit: 1 }), { rows: [], totals: { outCount: 0, lowCount: 0 } });
+  const stockP = safe("stockStatus", getStockStatus({ branchId, onlyAlerts: true, limit: 1 }), { rows: [], totals: { outCount: 0, lowCount: 0 } });
 
   // ── (ج) التعرّض الائتماني: المتجاوزون للحدّ ──
-  const creditP = safe(getCreditExposure({ branchId }), null);
+  const creditP = safe("creditExposure", getCreditExposure({ branchId }), null);
 
   // ── (د) فروقات الصندوق: ورديات مُغلقة (آخر ٣٠ يوماً) بفرق غير صفري ──
   const shiftP = safe(
+    "shiftVariance",
     db.execute(sql`
       SELECT COUNT(*) AS cnt, CAST(COALESCE(SUM(ABS(s.variance)), 0) AS CHAR) AS total
       FROM shifts s
@@ -137,6 +143,7 @@ export async function getManagementAlerts(opts: {
 
   // ── (هـ) أوامر شغل متأخرة (تجاوزت أجل التسليم ولم تُسلَّم) ──
   const woP = safe(
+    "workOrders",
     db.execute(sql`
       SELECT COUNT(*) AS cnt
       FROM workOrders wo
@@ -149,11 +156,18 @@ export async function getManagementAlerts(opts: {
 
   // ── (و) ذمم الموردين الدائنة (لنا عليهم نقد مستحقّ) — رصيد موجب ──
   const apP = safe(
-    db.execute(sql`
-      SELECT COUNT(*) AS cnt, CAST(COALESCE(SUM(currentBalance), 0) AS CHAR) AS total
-      FROM suppliers
-      WHERE isActive = TRUE AND currentBalance > 0
-    `),
+    "supplierPayables",
+    getAPAging({ branchId, limit: 10_000 }).then((rows) => {
+      // Preserve the company-wide decision's canonical supplier balance while
+      // using branch-attributable PO ledger balances for a scoped manager.
+      // Supplier.currentBalance has no branch dimension and must never be
+      // serialized into a branch-scoped alert.
+      const amountOf = (row: (typeof rows)[number]) =>
+        money(branchId == null ? row.currentBalance : row.unpaidTotal);
+      const payable = rows.filter((row) => amountOf(row).gt(0));
+      const total = payable.reduce((sum, row) => sum.plus(amountOf(row)), money(0));
+      return [[{ cnt: payable.length, total: toDbMoney(total) }]];
+    }),
     null,
   );
 
@@ -161,6 +175,7 @@ export async function getManagementAlerts(opts: {
   const branchStk = branchId ? sql`AND bs.branchId = ${branchId}` : sql``;
   const branchSale = branchId ? sql`AND i.branchId = ${branchId}` : sql``;
   const deadP = safe(
+    "deadStock",
     db.execute(sql`
       SELECT COUNT(*) AS cnt, CAST(COALESCE(SUM(t.val), 0) AS CHAR) AS total
       FROM (
@@ -189,12 +204,13 @@ export async function getManagementAlerts(opts: {
     // نافذة آخر ٧ أيام بحدود UTC حتميّة (تدقيق ١٧/٧، #٧) — كان البناء بمكوّناتٍ محلية يَنزاح على غير TZ=UTC.
     const todayYmd = todayUtcDate();
     const weekAgoYmd = new Date(utcTodayStart().getTime() - 6 * 86_400_000).toISOString().slice(0, 10);
-    return safe(getAnomalyWatch({ from: weekAgoYmd, to: todayYmd, branchId }), null);
+    return safe("anomalyWatch", getAnomalyWatch({ from: weekAgoYmd, to: todayYmd, branchId }), null);
   })();
 
   // ── (ح) انحراف أرصدة (reconcile) — admin فقط ──
   const reconP = opts.isAdmin
     ? safe(
+        "reconciliation",
         Promise.all([reconcileCustomerBalances(), reconcileSupplierBalances(), reconcileInventory(), reconcileLedgerProfit()]),
         null,
       )
@@ -293,5 +309,5 @@ export async function getManagementAlerts(opts: {
   }
 
   alerts.sort((a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity]);
-  return { alerts, generatedAt };
+  return { alerts, generatedAt, sourceErrors };
 }

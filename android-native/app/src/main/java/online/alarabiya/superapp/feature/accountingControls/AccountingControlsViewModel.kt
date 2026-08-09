@@ -27,18 +27,25 @@ class AccountingControlsViewModel(
         private set
 
     fun initialize() {
-        if (!state.initialized && !state.locked) loadSection(state.section, AccountingControlsBusy.INITIAL)
+        if (!state.currentSectionLoaded && !state.locked) {
+            loadSection(state.section, AccountingControlsBusy.INITIAL)
+        }
     }
 
     fun section(value: AccountingControlsSection) {
         if (!allowed(value)) return fail("هذه المساحة غير متاحة ضمن صلاحيات الجلسة")
         state = state.copy(section = value, error = null, notice = null, unlockPassword = "")
-        loadSection(value, when (value) {
-            AccountingControlsSection.ACCOUNTS -> AccountingControlsBusy.ACCOUNTS
-            AccountingControlsSection.EXCHANGE -> AccountingControlsBusy.EXCHANGE
-            AccountingControlsSection.PERIODS -> AccountingControlsBusy.PERIODS
-            AccountingControlsSection.YEAR_END -> AccountingControlsBusy.YEAR_END
-        })
+        loadSection(value, busyFor(value))
+    }
+
+    fun retryCurrentSection() {
+        if (!state.locked && allowed(state.section)) loadSection(state.section, busyFor(state.section))
+    }
+
+    fun refreshFinancialReconciliation() {
+        if (state.section == AccountingControlsSection.FINANCIAL_RECONCILIATION) {
+            loadFinancialReconciliation()
+        }
     }
 
     fun accountQuery(value: String) { state = state.copy(accountQuery = value.take(80)) }
@@ -73,13 +80,14 @@ class AccountingControlsViewModel(
     }
 
     fun submitExchange() {
+        if (!requireSuccessfulLoad(AccountingControlsSection.EXCHANGE)) return
         val houseId = state.selectedExchangeHouseId ?: return fail("اختر الصيرفة")
         val branchId = capabilities.branchId ?: return fail("لا يوجد فرع فعّال للعملية")
         if (!capabilities.canWriteExchange) return fail("صلاحية الصيرفة للقراءة فقط")
         val requestId = state.exchangeRequestId ?: UUID.randomUUID().toString()
         state = state.copy(exchangeRequestId = requestId)
         val draft = state.exchangeDraft
-        launch(AccountingControlsBusy.EXCHANGE_MUTATION) {
+        launchMutation(AccountingControlsBusy.EXCHANGE_MUTATION, AccountingControlsSection.EXCHANGE, "سُجلت حركة الصيرفة") {
             val result = source.executeExchange(
                 ExchangeCommand(
                     houseId = houseId,
@@ -93,29 +101,21 @@ class AccountingControlsViewModel(
                     clientRequestId = requestId,
                 ),
             )
-            val refreshed = refreshExchangeData(houseId)
-            val remainsPending = result.pendingApproval || refreshed.second.any { it.id == result.transactionId }
             state = state.copy(
-                exchangeHouses = refreshed.first,
-                pendingDeposits = refreshed.second,
-                exchangeStatement = refreshed.third,
                 exchangeDraft = ExchangeDraft(),
                 exchangeRequestId = null,
-                notice = if (remainsPending) "سُجل الإيداع وبانتظار اعتماد ثانٍ" else "سُجلت الحركة ${result.transactionNumber}",
+                notice = if (result.pendingApproval) "سُجل الإيداع وبانتظار اعتماد ثانٍ" else "سُجلت الحركة ${result.transactionNumber}",
             )
         }
     }
 
     fun approveDeposit(transactionId: Long) {
+        if (!requireSuccessfulLoad(AccountingControlsSection.EXCHANGE)) return
         if (!capabilities.canWriteExchange) return fail("لا توجد صلاحية اعتماد")
-        launch(AccountingControlsBusy.EXCHANGE_APPROVAL) {
+        launchMutation(AccountingControlsBusy.EXCHANGE_APPROVAL, AccountingControlsSection.EXCHANGE, "تم اعتماد إيداع الدولار") {
             source.approveExchangeDeposit(transactionId)
-            val selected = state.selectedExchangeHouseId
-            val refreshed = if (selected != null) refreshExchangeData(selected) else null
             state = state.copy(
-                exchangeHouses = refreshed?.first ?: source.exchangeHouses(state.exchangeQuery),
-                pendingDeposits = refreshed?.second ?: source.pendingExchangeDeposits(),
-                exchangeStatement = refreshed?.third ?: state.exchangeStatement,
+                pendingDeposits = state.pendingDeposits.filterNot { it.id == transactionId },
                 notice = "تم اعتماد إيداع الدولار",
             )
         }
@@ -126,6 +126,7 @@ class AccountingControlsViewModel(
     }
 
     fun reconcile() {
+        if (!requireSuccessfulLoad(AccountingControlsSection.EXCHANGE)) return
         launch(AccountingControlsBusy.RECONCILIATION) {
             state = state.copy(reconciliation = source.reconcileExchange(state.reconciliationDraft))
         }
@@ -137,24 +138,21 @@ class AccountingControlsViewModel(
     fun unlockPassword(value: String) { state = state.copy(unlockPassword = value.take(128)) }
 
     fun lockPeriod() {
+        if (!requireSuccessfulLoad(AccountingControlsSection.PERIODS)) return
         if (!capabilities.canGovernPeriods) return fail("هذا الإجراء لمدير النظام فقط")
-        launch(AccountingControlsBusy.PERIOD_MUTATION) {
+        launchMutation(AccountingControlsBusy.PERIOD_MUTATION, AccountingControlsSection.PERIODS, "تم إقفال الفترة") {
             source.lockPeriod(state.lockDate, state.lockNotes)
-            val status = source.activePeriodLock()
-            val history = source.periodHistory()
-            state = state.copy(activeLock = status, periodHistory = history, lockDate = "", lockNotes = "", notice = "تم إقفال الفترة")
+            state = state.copy(lockDate = "", lockNotes = "", notice = "تم إقفال الفترة")
         }
     }
 
     fun unlockPeriod() {
+        if (!requireSuccessfulLoad(AccountingControlsSection.PERIODS)) return
         if (!capabilities.canGovernPeriods) return fail("هذا الإجراء لمدير النظام فقط")
-        launch(AccountingControlsBusy.PERIOD_MUTATION) {
+        launchMutation(AccountingControlsBusy.PERIOD_MUTATION, AccountingControlsSection.PERIODS, "تم فتح الفترة") {
             val unlocked = source.unlockPeriod(state.unlockReason, state.unlockPassword)
-            val status = source.activePeriodLock()
-            val history = source.periodHistory()
             state = state.copy(
-                activeLock = status,
-                periodHistory = history,
+                activeLock = if (unlocked) null else state.activeLock,
                 unlockReason = "",
                 unlockPassword = "",
                 notice = if (unlocked) "تم فتح أحدث فترة مع حفظ الأثر التدقيقي" else "لا توجد فترة نشطة لفتحها",
@@ -166,14 +164,14 @@ class AccountingControlsViewModel(
     fun closeCompanyWide(value: Boolean) { state = state.copy(closeCompanyWide = value) }
 
     fun closeYear() {
+        if (!requireSuccessfulLoad(AccountingControlsSection.YEAR_END)) return
         if (!capabilities.canGovernPeriods) return fail("هذا الإجراء لمدير النظام فقط")
         val year = state.closeYearText.toIntOrNull() ?: return fail("أدخل سنة صحيحة")
         val branchId = if (state.closeCompanyWide) null else capabilities.branchId
             ?: return fail("لا يوجد فرع فعّال للإقفال الفرعي")
-        launch(AccountingControlsBusy.YEAR_CLOSE) {
+        launchMutation(AccountingControlsBusy.YEAR_CLOSE, AccountingControlsSection.YEAR_END, "تم إقفال السنة") {
             val result = source.closeYear(year, branchId)
             state = state.copy(
-                yearSnapshots = source.yearEndSnapshots(),
                 closeYearText = "",
                 notice = "أُقفلت سنة ${result.year} وثُبت صافي الربح ${result.netProfit}",
             )
@@ -184,6 +182,7 @@ class AccountingControlsViewModel(
 
     private fun loadSection(section: AccountingControlsSection, busy: AccountingControlsBusy) = when (section) {
         AccountingControlsSection.ACCOUNTS -> loadAccounts(busy)
+        AccountingControlsSection.FINANCIAL_RECONCILIATION -> loadFinancialReconciliation(busy)
         AccountingControlsSection.EXCHANGE -> loadExchange(busy)
         AccountingControlsSection.PERIODS -> loadPeriods(busy)
         AccountingControlsSection.YEAR_END -> loadYearEnd(busy)
@@ -191,19 +190,31 @@ class AccountingControlsViewModel(
 
     private fun loadAccounts(busy: AccountingControlsBusy = AccountingControlsBusy.ACCOUNTS) {
         if (!capabilities.canReadAccounts) return fail("لا توجد صلاحية للتقارير المالية")
-        launch(busy) { state = state.copy(initialized = true, accountGroups = source.accountTree()) }
+        launch(busy, AccountingControlsSection.ACCOUNTS) {
+            state = state.copy(accountGroups = source.accountTree())
+        }
+    }
+
+    private fun loadFinancialReconciliation(
+        busy: AccountingControlsBusy = AccountingControlsBusy.FINANCIAL_RECONCILIATION,
+    ) {
+        if (!capabilities.canReadFinancialReconciliation) {
+            return fail("المطابقة المالية الشاملة محصورة بمدير النظام أو المالك")
+        }
+        launch(busy, AccountingControlsSection.FINANCIAL_RECONCILIATION) {
+            state = state.copy(financialReconciliation = source.financialReconciliation())
+        }
     }
 
     private fun loadExchange(busy: AccountingControlsBusy = AccountingControlsBusy.EXCHANGE) {
         if (!capabilities.canReadExchange) return fail("عقد كشف الصيرفة الحالي غير مقيّد بالفرع")
-        launch(busy) {
+        launch(busy, AccountingControlsSection.EXCHANGE) {
             val loaded = coroutineScope {
                 val houses = async { source.exchangeHouses(state.exchangeQuery) }
                 val pending = async { source.pendingExchangeDeposits() }
                 houses.await() to pending.await()
             }
             state = state.copy(
-                initialized = true,
                 exchangeHouses = loaded.first,
                 pendingDeposits = loaded.second,
                 selectedExchangeHouseId = state.selectedExchangeHouseId?.takeIf { id -> loaded.first.any { it.id == id } },
@@ -213,19 +224,21 @@ class AccountingControlsViewModel(
 
     private fun loadPeriods(busy: AccountingControlsBusy = AccountingControlsBusy.PERIODS) {
         if (!capabilities.canGovernPeriods) return fail("إدارة الفترات محصورة بمدير النظام")
-        launch(busy) {
+        launch(busy, AccountingControlsSection.PERIODS) {
             val loaded = coroutineScope {
                 val status = async { source.activePeriodLock() }
                 val history = async { source.periodHistory() }
                 status.await() to history.await()
             }
-            state = state.copy(initialized = true, activeLock = loaded.first, periodHistory = loaded.second)
+            state = state.copy(activeLock = loaded.first, periodHistory = loaded.second)
         }
     }
 
     private fun loadYearEnd(busy: AccountingControlsBusy = AccountingControlsBusy.YEAR_END) {
         if (!capabilities.canGovernPeriods) return fail("الإقفال السنوي محصور بمدير النظام")
-        launch(busy) { state = state.copy(initialized = true, yearSnapshots = source.yearEndSnapshots()) }
+        launch(busy, AccountingControlsSection.YEAR_END) {
+            state = state.copy(yearSnapshots = source.yearEndSnapshots())
+        }
     }
 
     private suspend fun refreshExchangeData(houseId: Long): Triple<List<online.alarabiya.superapp.model.accountingControls.ExchangeHouse>, List<online.alarabiya.superapp.model.accountingControls.PendingExchangeDeposit>, online.alarabiya.superapp.model.accountingControls.ExchangeStatement> = coroutineScope {
@@ -237,26 +250,117 @@ class AccountingControlsViewModel(
 
     private fun allowed(section: AccountingControlsSection) = when (section) {
         AccountingControlsSection.ACCOUNTS -> capabilities.canReadAccounts
+        AccountingControlsSection.FINANCIAL_RECONCILIATION -> capabilities.canReadFinancialReconciliation
         AccountingControlsSection.EXCHANGE -> capabilities.canReadExchange
         AccountingControlsSection.PERIODS, AccountingControlsSection.YEAR_END -> capabilities.canGovernPeriods
     }
 
-    private fun launch(operation: AccountingControlsBusy, block: suspend () -> Unit) {
-        val started = state.start(operation) ?: return
+    private fun launch(
+        operation: AccountingControlsBusy,
+        successfulSection: AccountingControlsSection? = null,
+        block: suspend () -> Unit,
+    ) {
+        val started = state.start(operation, invalidateSection = successfulSection) ?: return
         state = started
         viewModelScope.launch {
             runCatching { block() }
-                .onSuccess { if (state.busy == operation) state = state.copy(busy = null, initialized = true) }
-                .onFailure { state = state.failed(message(it)) }
+                .onSuccess {
+                    if (state.busy == operation) {
+                        state = if (successfulSection == null) {
+                            state.copy(busy = null)
+                        } else {
+                            state.successfulLoad(successfulSection)
+                        }
+                    }
+                }
+                .onFailure { if (state.busy == operation) state = state.failed(message(it)) }
         }
+    }
+
+    private fun launchMutation(
+        operation: AccountingControlsBusy,
+        section: AccountingControlsSection,
+        success: String,
+        block: suspend () -> Unit,
+    ) {
+        val started = state.start(operation, invalidateSection = section) ?: return
+        state = started
+        viewModelScope.launch {
+            val mutation = runCatching { block() }
+            if (mutation.isFailure) {
+                if (state.busy == operation) state = state.failed(message(requireNotNull(mutation.exceptionOrNull())))
+                return@launch
+            }
+
+            if (state.busy != operation) return@launch
+            state = state.copy(notice = state.notice ?: success)
+            val reload = runCatching { refreshAfterMutation(section) }
+            state = if (reload.isSuccess) {
+                state.successfulLoad(section)
+            } else {
+                state.refreshAfterMutationFailed(message(requireNotNull(reload.exceptionOrNull())))
+            }
+        }
+    }
+
+    private suspend fun refreshAfterMutation(section: AccountingControlsSection) {
+        when (section) {
+            AccountingControlsSection.EXCHANGE -> {
+                val selected = state.selectedExchangeHouseId
+                if (selected != null) {
+                    val refreshed = refreshExchangeData(selected)
+                    state = state.copy(
+                        exchangeHouses = refreshed.first,
+                        pendingDeposits = refreshed.second,
+                        exchangeStatement = refreshed.third,
+                    )
+                } else {
+                    val refreshed = coroutineScope {
+                        val houses = async { source.exchangeHouses(state.exchangeQuery) }
+                        val pending = async { source.pendingExchangeDeposits() }
+                        houses.await() to pending.await()
+                    }
+                    state = state.copy(exchangeHouses = refreshed.first, pendingDeposits = refreshed.second)
+                }
+            }
+            AccountingControlsSection.PERIODS -> {
+                val refreshed = coroutineScope {
+                    val lock = async { source.activePeriodLock() }
+                    val history = async { source.periodHistory() }
+                    lock.await() to history.await()
+                }
+                state = state.copy(activeLock = refreshed.first, periodHistory = refreshed.second)
+            }
+            AccountingControlsSection.YEAR_END -> state = state.copy(yearSnapshots = source.yearEndSnapshots())
+            AccountingControlsSection.ACCOUNTS,
+            AccountingControlsSection.FINANCIAL_RECONCILIATION,
+            -> error("هذا القسم لا يملك إجراء تعديل أصلياً")
+        }
+    }
+
+    private fun requireSuccessfulLoad(section: AccountingControlsSection): Boolean {
+        if (state.canMutate(section)) return true
+        if (!state.hasSuccessfulLoad(section)) {
+            fail("تعذر تنفيذ الإجراء قبل تحميل بيانات المساحة بنجاح")
+        }
+        return false
     }
 
     private fun fail(value: String) { state = state.failed(value) }
     private fun message(error: Throwable) = error.message?.takeIf(String::isNotBlank) ?: "تعذر إكمال العملية"
 
     companion object {
+        private fun busyFor(section: AccountingControlsSection) = when (section) {
+            AccountingControlsSection.ACCOUNTS -> AccountingControlsBusy.ACCOUNTS
+            AccountingControlsSection.FINANCIAL_RECONCILIATION -> AccountingControlsBusy.FINANCIAL_RECONCILIATION
+            AccountingControlsSection.EXCHANGE -> AccountingControlsBusy.EXCHANGE
+            AccountingControlsSection.PERIODS -> AccountingControlsBusy.PERIODS
+            AccountingControlsSection.YEAR_END -> AccountingControlsBusy.YEAR_END
+        }
+
         private fun firstSection(capabilities: AccountingControlsCapabilities) = when {
             capabilities.canReadAccounts -> AccountingControlsSection.ACCOUNTS
+            capabilities.canReadFinancialReconciliation -> AccountingControlsSection.FINANCIAL_RECONCILIATION
             capabilities.canReadExchange -> AccountingControlsSection.EXCHANGE
             capabilities.canGovernPeriods -> AccountingControlsSection.PERIODS
             else -> AccountingControlsSection.ACCOUNTS

@@ -376,6 +376,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         if (!effectivePrintApprovalId && input.managerOverrideByUserId) {
           const created = await (await import("./creditApprovalService")).createApproval(tx, {
             customerId: input.customerId,
+            branchId: input.branchId,
             maxAmount: unpaid.toFixed(2),
             approvedBy: input.managerOverrideByUserId,
             ttlMinutes: 5,
@@ -383,7 +384,10 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
           });
           effectivePrintApprovalId = created.id;
         }
-        await validateApproval(tx, effectivePrintApprovalId!, input.customerId, unpaid);
+        await validateApproval(tx, effectivePrintApprovalId!, input.customerId, unpaid, {
+          branchId: input.branchId,
+          consumerUserId: actor.userId,
+        });
       } else if (customerCredit && customerCredit.limit.gt(0)) {
         const projected = customerCredit.balance.plus(unpaid);
         if (projected.gt(customerCredit.limit)) {

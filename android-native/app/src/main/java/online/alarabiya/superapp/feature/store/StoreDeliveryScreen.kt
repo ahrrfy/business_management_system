@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -27,11 +29,16 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AssignmentTurnedIn
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Cancel
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -84,7 +91,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import online.alarabiya.superapp.model.store.CourierDelivery
+import online.alarabiya.superapp.model.store.DeliveryMoney
+import online.alarabiya.superapp.model.store.DeliveryPartyAccount
+import online.alarabiya.superapp.model.store.DeliveryPartyDraft
 import online.alarabiya.superapp.model.store.DeliveryPartyOption
+import online.alarabiya.superapp.model.store.DeliveryPartyType
+import online.alarabiya.superapp.model.store.DeliveryWriteOffDraft
 import online.alarabiya.superapp.model.store.StoreOrderAction
 import online.alarabiya.superapp.model.store.StoreOrderDetail
 import online.alarabiya.superapp.model.store.StoreOrderPolicy
@@ -101,7 +113,9 @@ import online.alarabiya.superapp.ui.theme.Orange
 import online.alarabiya.superapp.ui.theme.OrangeSoft
 import online.alarabiya.superapp.ui.theme.Stroke
 import java.text.NumberFormat
+import java.math.BigDecimal
 import java.util.Locale
+import java.util.UUID
 
 @Composable
 fun StoreDeliveryScreen(
@@ -124,7 +138,11 @@ fun StoreDeliveryScreen(
         val tablet = maxWidth >= 840.dp
         Column(Modifier.fillMaxSize()) {
             StoreHeader(
-                title = if (state.mode == StoreDeliveryMode.Courier) "توصيلاتي" else "طلبات المتجر",
+                title = when (state.mode) {
+                    StoreDeliveryMode.Courier -> "توصيلاتي"
+                    StoreDeliveryMode.Orders -> "طلبات المتجر"
+                    StoreDeliveryMode.Parties -> "جهات التوصيل وذممها"
+                },
                 onBack = if (!tablet && state.selectedOrderId != null) ({ viewModel.selectOrder(null) }) else onBack,
                 onRefresh = viewModel::refresh,
                 refreshing = state.loading,
@@ -133,7 +151,10 @@ fun StoreDeliveryScreen(
                 externalError = null
                 viewModel.clearMessage()
             }
-            if (tablet) {
+            StoreModeSelector(state, viewModel)
+            if (state.mode == StoreDeliveryMode.Parties) {
+                PartyManagementPane(state, viewModel, tablet, Modifier.fillMaxSize())
+            } else if (tablet) {
                 Row(
                     Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(18.dp),
@@ -167,6 +188,33 @@ fun StoreDeliveryScreen(
             onDismiss = viewModel::dismissConfirmation,
             onConfirm = viewModel::confirmPendingAction,
         )
+    }
+}
+
+@Composable
+private fun StoreModeSelector(state: StoreDeliveryUiState, viewModel: StoreDeliveryViewModel) {
+    if (state.capabilities.courierSelfService || !state.capabilities.canManageDeliveryParties) return
+    LazyRow(
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        item {
+            FilterChip(
+                selected = state.mode == StoreDeliveryMode.Orders,
+                onClick = { viewModel.setMode(StoreDeliveryMode.Orders) },
+                label = { Text("الطلبات") },
+                enabled = !state.loading && state.busyAction == null && state.busyPartyAction == null,
+            )
+        }
+        item {
+            FilterChip(
+                selected = state.mode == StoreDeliveryMode.Parties,
+                onClick = { viewModel.setMode(StoreDeliveryMode.Parties) },
+                label = { Text("جهات التوصيل") },
+                enabled = !state.loading && state.busyAction == null && state.busyPartyAction == null,
+            )
+        }
     }
 }
 
@@ -207,6 +255,313 @@ private fun MessageStrip(error: String?, notice: String?, onClear: () -> Unit) {
         Icon(if (isError) Icons.Rounded.WarningAmber else Icons.Rounded.CheckCircle, null, tint = if (isError) Orange else Emerald)
         Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+@Composable
+private fun PartyManagementPane(
+    state: StoreDeliveryUiState,
+    viewModel: StoreDeliveryViewModel,
+    tablet: Boolean,
+    modifier: Modifier,
+) {
+    var editorParty by remember { mutableStateOf<DeliveryPartyAccount?>(null) }
+    var createParty by rememberSaveable { mutableStateOf(false) }
+    var activeConfirmation by remember { mutableStateOf<Pair<DeliveryPartyAccount, Boolean>?>(null) }
+    var writeOffParty by remember { mutableStateOf<DeliveryPartyAccount?>(null) }
+    val rows = StoreDeliveryStateFilter.managedParties(state)
+
+    Column(
+        modifier.padding(horizontal = if (tablet) 24.dp else 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        OutlinedTextField(
+            value = state.partyQuery,
+            onValueChange = viewModel::setPartyQuery,
+            modifier = Modifier.fillMaxWidth().testTag("delivery_party_search"),
+            leadingIcon = { Icon(Icons.Rounded.Search, null) },
+            label = { Text("بحث باسم الجهة أو الهاتف") },
+            singleLine = true,
+            shape = RoundedCornerShape(18.dp),
+        )
+        Button(
+            onClick = { createParty = true },
+            enabled = canMutateDeliveryParties(state),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("create_delivery_party"),
+        ) {
+            Icon(Icons.Rounded.Add, null)
+            Spacer(Modifier.width(8.dp))
+            Text("إضافة جهة توصيل")
+        }
+        when {
+            state.loading -> LoadingPane()
+            !state.partyCatalogReady -> RetryPane(viewModel::refresh)
+            !isStoreModeFresh(state, StoreDeliveryMode.Parties) -> RetryPane(viewModel::refresh)
+            state.partyCatalogReady && rows.isEmpty() -> EmptyPane(
+                if (state.partyQuery.isBlank()) "لا توجد جهات توصيل" else "لا توجد نتائج مطابقة",
+            )
+            state.partyCatalogReady && tablet -> {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(bottom = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    gridItems(rows, key = { it.id }) { party ->
+                        DeliveryPartyCard(
+                            party = party,
+                            enabled = canMutateDeliveryParties(state),
+                            canWriteOff = state.capabilities.canWriteOffDeliveryDebt,
+                            onEdit = { editorParty = party },
+                            onActive = { activeConfirmation = party to it },
+                            onWriteOff = { writeOffParty = party },
+                        )
+                    }
+                }
+            }
+            state.partyCatalogReady -> {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(bottom = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    items(rows, key = { it.id }) { party ->
+                        DeliveryPartyCard(
+                            party = party,
+                            enabled = canMutateDeliveryParties(state),
+                            canWriteOff = state.capabilities.canWriteOffDeliveryDebt,
+                            onEdit = { editorParty = party },
+                            onActive = { activeConfirmation = party to it },
+                            onWriteOff = { writeOffParty = party },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (createParty || editorParty != null) {
+        DeliveryPartyEditorDialog(
+            party = editorParty,
+            accounts = state.courierAccounts,
+            busy = state.busyPartyAction != null,
+            onDismiss = {
+                createParty = false
+                editorParty = null
+            },
+            onSave = {
+                viewModel.saveParty(it)
+                createParty = false
+                editorParty = null
+            },
+        )
+    }
+    activeConfirmation?.let { (party, active) ->
+        AlertDialog(
+            onDismissRequest = { if (state.busyPartyAction == null) activeConfirmation = null },
+            title = { Text(if (active) "تفعيل جهة التوصيل؟" else "تعطيل جهة التوصيل؟") },
+            text = {
+                Text(
+                    if (active) "ستعود «${party.name}» إلى الإسناد والعمليات المتاحة."
+                    else "سيتحقق الخادم من عدم وجود عهدة أو طلبات مفتوحة قبل التعطيل.",
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    viewModel.setPartyActive(party.id, active)
+                    activeConfirmation = null
+                }) { Text("تأكيد") }
+            },
+            dismissButton = { TextButton(onClick = { activeConfirmation = null }) { Text("إلغاء") } },
+        )
+    }
+    writeOffParty?.let { party ->
+        DeliveryWriteOffDialog(
+            party = party,
+            busy = state.busyPartyAction != null,
+            onDismiss = { if (state.busyPartyAction == null) writeOffParty = null },
+            onConfirm = {
+                viewModel.writeOff(it)
+                writeOffParty = null
+            },
+        )
+    }
+}
+
+@Composable
+private fun DeliveryPartyCard(
+    party: DeliveryPartyAccount,
+    enabled: Boolean,
+    canWriteOff: Boolean,
+    onEdit: () -> Unit,
+    onActive: (Boolean) -> Unit,
+    onWriteOff: () -> Unit,
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(22.dp)) {
+        Column(Modifier.fillMaxWidth().padding(17.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.clip(CircleShape).background(Mint).padding(10.dp)) {
+                    Icon(Icons.Rounded.LocalShipping, null, tint = EmeraldDark)
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(party.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(party.partyType.label, color = MutedInk)
+                }
+                Text(
+                    if (party.isActive) "نشطة" else "معطلة",
+                    color = if (party.isActive) Emerald else MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            HorizontalDivider(color = Stroke)
+            ValueLine("الذمة الحالية", formatMoney(party.currentBalance))
+            ValueLine("الشحنات المفتوحة", party.openConsignments.toString())
+            ValueLine("الأجرة الافتراضية", formatMoney(party.defaultFee))
+            party.floatLimit?.let { ValueLine("سقف العهدة", formatMoney(it)) }
+            party.phone?.let { ValueLine("الهاتف", it) }
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = onEdit, enabled = enabled) {
+                    Icon(Icons.Rounded.Edit, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("تعديل")
+                }
+                OutlinedButton(onClick = { onActive(!party.isActive) }, enabled = enabled) {
+                    Text(if (party.isActive) "تعطيل" else "تفعيل")
+                }
+                if (canWriteOff && DeliveryMoney.isPositive(party.currentBalance)) {
+                    OutlinedButton(onClick = onWriteOff, enabled = enabled) { Text("شطب عجز") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeliveryPartyEditorDialog(
+    party: DeliveryPartyAccount?,
+    accounts: List<online.alarabiya.superapp.model.store.CourierAccount>,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (DeliveryPartyDraft) -> Unit,
+) {
+    var type by rememberSaveable(party?.id) { mutableStateOf(party?.partyType ?: DeliveryPartyType.Individual) }
+    var name by rememberSaveable(party?.id) { mutableStateOf(party?.name.orEmpty()) }
+    var phone by rememberSaveable(party?.id) { mutableStateOf(party?.phone.orEmpty()) }
+    var userId by rememberSaveable(party?.id) { mutableStateOf(party?.userId) }
+    var defaultFee by rememberSaveable(party?.id) { mutableStateOf(party?.defaultFee ?: "0") }
+    var floatLimit by rememberSaveable(party?.id) { mutableStateOf(party?.floatLimit.orEmpty()) }
+    val draft = DeliveryPartyDraft(party?.id, type, name, phone, userId, defaultFee, floatLimit)
+    val availableAccounts = accounts.filter { it.linkedPartyId == null || it.linkedPartyId == party?.id }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text(if (party == null) "جهة توصيل جديدة" else "تعديل جهة التوصيل") },
+        text = {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                item {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(DeliveryPartyType.entries) { item ->
+                            FilterChip(
+                                selected = type == item,
+                                onClick = {
+                                    type = item
+                                    if (item == DeliveryPartyType.Company) userId = null
+                                },
+                                label = { Text(item.label) },
+                            )
+                        }
+                    }
+                }
+                item { OutlinedTextField(name, { name = it.take(255) }, Modifier.fillMaxWidth(), label = { Text("الاسم") }, singleLine = true) }
+                item { OutlinedTextField(phone, { phone = it.take(20) }, Modifier.fillMaxWidth(), label = { Text("الهاتف") }, singleLine = true) }
+                item { OutlinedTextField(defaultFee, { defaultFee = it.take(24) }, Modifier.fillMaxWidth(), label = { Text("أجرة التوصيل الافتراضية") }, singleLine = true) }
+                item { OutlinedTextField(floatLimit, { floatLimit = it.take(24) }, Modifier.fillMaxWidth(), label = { Text("سقف العهدة — اختياري") }, singleLine = true) }
+                if (type == DeliveryPartyType.Individual) {
+                    item { Text("حساب دخول المندوب — اختياري", fontWeight = FontWeight.Bold) }
+                    item {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            item { FilterChip(userId == null, { userId = null }, { Text("بلا حساب") }) }
+                            items(availableAccounts, key = { it.id }) { account ->
+                                FilterChip(userId == account.id, { userId = account.id }, { Text(account.name) })
+                            }
+                        }
+                    }
+                }
+                draft.validate()?.let { error -> item { Text(error, color = MaterialTheme.colorScheme.error) } }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSave(draft.normalized()) }, enabled = !busy && draft.validate() == null) {
+                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                else Text("حفظ")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("إلغاء") } },
+    )
+}
+
+@Composable
+private fun DeliveryWriteOffDialog(
+    party: DeliveryPartyAccount,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (DeliveryWriteOffDraft) -> Unit,
+) {
+    var amount by rememberSaveable(party.id) { mutableStateOf(party.currentBalance) }
+    var reason by rememberSaveable(party.id) { mutableStateOf("") }
+    var confirmation by rememberSaveable(party.id) { mutableStateOf("") }
+    val requestId = rememberSaveable(party.id) { UUID.randomUUID().toString() }
+    val draft = DeliveryWriteOffDraft(party.id, party.branchId, amount, party.currentBalance, reason, requestId)
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("شطب عجز «${party.name}»") },
+        text = {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item {
+                    Text(
+                        "إبراء دين غير قابل للتحصيل ويُسجّل خسارةً في التدقيق. لا يمكن التراجع عنه من التطبيق.",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                item { ValueLine("الذمة الحالية", formatMoney(party.currentBalance)) }
+                item { OutlinedTextField(amount, { amount = it.take(24) }, Modifier.fillMaxWidth(), label = { Text("المبلغ المشطوب") }, singleLine = true) }
+                item { OutlinedTextField(reason, { reason = it.take(500) }, Modifier.fillMaxWidth(), label = { Text("سبب الشطب") }, minLines = 2) }
+                item {
+                    Text("اكتب اسم الجهة للتأكيد: ${party.name}", fontWeight = FontWeight.Bold)
+                    OutlinedTextField(
+                        confirmation,
+                        { confirmation = it.take(255) },
+                        Modifier.fillMaxWidth().testTag("write_off_confirmation"),
+                        label = { Text("اسم الجهة") },
+                        singleLine = true,
+                    )
+                }
+                draft.validate()?.let { error -> item { Text(error, color = MaterialTheme.colorScheme.error) } }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(draft) },
+                enabled = !busy && draft.validate() == null && confirmation.trim() == party.name,
+                modifier = Modifier.testTag("confirm_delivery_write_off"),
+            ) {
+                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                else Text("شطب العجز")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("إلغاء") } },
+    )
 }
 
 @Composable
@@ -308,7 +663,7 @@ private fun StoreListPane(state: StoreDeliveryUiState, viewModel: StoreDeliveryV
         }
         when {
             state.loading -> LoadingPane()
-            state.error != null && state.orders.isEmpty() && state.courier == null -> RetryPane(viewModel::refresh)
+            !isStoreModeFresh(state) -> RetryPane(viewModel::refresh)
             state.mode == StoreDeliveryMode.Courier -> CourierList(state, viewModel)
             else -> OrdersList(state, viewModel)
         }
@@ -420,6 +775,7 @@ private fun StoreDetailPane(
         Box(Modifier.fillMaxSize()) {
             when {
                 state.selectedOrderId == null -> EmptyPane("اختر طلباً لعرض التفاصيل")
+                !isStoreModeFresh(state) -> RetryPane(viewModel::refresh)
                 state.mode == StoreDeliveryMode.Courier -> {
                     val delivery = (state.courier?.toDeliver.orEmpty() + state.courier?.delivered.orEmpty())
                         .firstOrNull { it.id == state.selectedOrderId }
@@ -490,7 +846,11 @@ private fun OrderDetail(
                 }
             }
         }
-        val actions = StoreOrderPolicy.allowedActions(detail.summary.status, state.capabilities)
+        val actions = if (isStoreModeFresh(state, StoreDeliveryMode.Orders)) {
+            StoreOrderPolicy.allowedActions(detail.summary.status, state.capabilities)
+        } else {
+            emptySet()
+        }
         if (StoreOrderAction.Dispatch in actions && state.parties.isNotEmpty()) {
             item {
                 DetailCard("إسناد التوصيل", Icons.Rounded.LocalShipping) {
@@ -546,7 +906,11 @@ private fun CourierDetail(
                 ValueLine("إجمالي الطلب", formatMoney(delivery.orderTotal))
             }
         }
-        val actions = StoreOrderPolicy.allowedActions(delivery.status, state.capabilities)
+        val actions = if (isStoreModeFresh(state, StoreDeliveryMode.Courier)) {
+            StoreOrderPolicy.allowedActions(delivery.status, state.capabilities)
+        } else {
+            emptySet()
+        }
         if (actions.isNotEmpty()) {
             item {
                 ActionButtons(actions, state.busyAction != null) { viewModel.requestAction(it, delivery.id) }
@@ -800,6 +1164,6 @@ private fun confirmationText(action: StoreOrderAction): String = when (action) {
 }
 
 private fun formatMoney(value: String): String {
-    val amount = value.toDoubleOrNull() ?: return "$value د.ع"
+    val amount = runCatching { BigDecimal(value.trim()) }.getOrNull() ?: return "$value د.ع"
     return "${NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ")).format(amount)} د.ع"
 }

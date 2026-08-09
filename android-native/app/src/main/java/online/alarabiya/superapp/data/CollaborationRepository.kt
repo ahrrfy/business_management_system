@@ -8,6 +8,7 @@ import online.alarabiya.superapp.model.collaboration.BroadcastPreview
 import online.alarabiya.superapp.model.collaboration.BroadcastResults
 import online.alarabiya.superapp.model.collaboration.BroadcastTemplate
 import online.alarabiya.superapp.model.collaboration.CollaborationCapabilities
+import online.alarabiya.superapp.model.collaboration.CollaborationBranch
 import online.alarabiya.superapp.model.collaboration.CollaborationMappers
 import online.alarabiya.superapp.model.collaboration.CollaborationValidation
 import online.alarabiya.superapp.model.collaboration.CreateBroadcastDraft
@@ -24,6 +25,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 interface CollaborationDataSource {
+    suspend fun branches(capabilities: CollaborationCapabilities): List<CollaborationBranch>
     suspend fun tasks(filter: TeamTaskFilter, capabilities: CollaborationCapabilities): TeamTaskPage
     suspend fun task(taskId: Long, expectedBranchId: Long): TeamTaskDetail
     suspend fun assignableStaff(branchId: Long, capabilities: CollaborationCapabilities): List<AssignableStaff>
@@ -64,6 +66,11 @@ private class TrpcCollaborationApi(private val client: TrpcClient) : Collaborati
 
 class CollaborationRepository internal constructor(private val api: CollaborationApi) : CollaborationDataSource {
     constructor(client: TrpcClient) : this(TrpcCollaborationApi(client))
+
+    override suspend fun branches(capabilities: CollaborationCapabilities): List<CollaborationBranch> {
+        require(capabilities.canSelectTaskBranch) { "لا توجد صلاحية لاختيار فرع مهام الفريق" }
+        return CollaborationMappers.branches(api.queryArray("branches.list"))
+    }
 
     override suspend fun tasks(filter: TeamTaskFilter, capabilities: CollaborationCapabilities): TeamTaskPage {
         require(capabilities.tasks.canRead) { "لا توجد صلاحية لعرض المهام" }

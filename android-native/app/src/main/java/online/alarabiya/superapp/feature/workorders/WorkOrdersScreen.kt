@@ -69,6 +69,10 @@ fun WorkOrdersScreen(state: WorkOrdersUiState, capabilities: WorkOrdersCapabilit
 
 @Composable
 private fun OrdersPane(state: WorkOrdersUiState, caps: WorkOrdersCapabilities, actions: WorkOrdersViewModel, tablet: Boolean) {
+    if (!state.ordersLoaded && state.selectedOrder == null) {
+        RefreshGate("تعذر تحميل أوامر الشغل بصورة موثوقة", state.initializing || state.busyKey != null, actions::retryOrders)
+        return
+    }
     val detail: @Composable () -> Unit = { when { state.orderDraft != null -> OrderEditor(state, actions); state.selectedOrder != null -> OrderDetailPane(state, caps, actions); else -> Empty("اختر أمر شغل لعرض تفاصيله") } }
     if (tablet) Row(Modifier.fillMaxSize().padding(18.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) { Box(Modifier.weight(.9f)) { OrdersList(state, caps, actions) }; Box(Modifier.weight(1.1f)) { detail() } }
     else if (state.orderDraft != null || state.selectedOrder != null) Box(Modifier.fillMaxSize().padding(18.dp)) { detail() }
@@ -77,13 +81,22 @@ private fun OrdersPane(state: WorkOrdersUiState, caps: WorkOrdersCapabilities, a
 
 @Composable
 private fun OrdersList(state: WorkOrdersUiState, caps: WorkOrdersCapabilities, actions: WorkOrdersViewModel) {
+    val visibleOrders = state.visibleOrders
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Stats(state.counts) }
         item { Search(state.orderQuery, actions::setOrderQuery, actions::refreshOrders, "رقم الأمر، العميل أو العنوان", NativeScanField.DOCUMENT_REFERENCE) }
         item { Chips(listOf(null, WorkOrderStatus.RECEIVED, WorkOrderStatus.IN_PROGRESS, WorkOrderStatus.READY, WorkOrderStatus.DELIVERED), state.orderStatus, actions::setOrderStatus) { it?.label() ?: "الكل" } }
-        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Chips(WorkQueue.entries, state.queue, actions::setQueue) { it.label() }; if (caps.canCreateOrders) IconButton(actions::beginOrder) { Icon(Icons.Rounded.Add, "أمر جديد") } } }
-        if (state.orders.isEmpty()) item { Empty("لا توجد أوامر مطابقة") }
-        items(state.orders, key = { it.id }) { order ->
+        if (state.overdueOnly) item {
+            FilterChip(
+                selected = true,
+                onClick = actions::clearOverdueFilter,
+                label = { Text("متأخرة عن موعد التسليم") },
+                leadingIcon = { Icon(Icons.Rounded.Schedule, null) },
+            )
+        }
+        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Chips(WorkQueue.entries, state.queue, actions::setQueue) { it.label() }; if (caps.canCreateOrders) IconButton(actions::beginOrder, enabled = state.canBeginOrder) { Icon(Icons.Rounded.Add, "أمر جديد") } } }
+        if (visibleOrders.isEmpty()) item { Empty("لا توجد أوامر مطابقة") }
+        items(visibleOrders, key = { it.id }) { order ->
             CurvedCard(statusColor(order.status)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(order.number, fontWeight = FontWeight.Bold); Pill(order.status.label(), statusColor(order.status)) }
                 Text(order.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -111,7 +124,7 @@ private fun OrderEditor(state: WorkOrdersUiState, actions: WorkOrdersViewModel) 
         if (draft.hasDelivery) { item { Field("عنوان التوصيل", draft.deliveryAddress, 2) { actions.updateOrderDraft(draft.copy(deliveryAddress = it)) } }; item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("الهاتف", draft.deliveryPhone) { actions.updateOrderDraft(draft.copy(deliveryPhone = it)) } }; Box(Modifier.weight(1f)) { Field("كلفة التوصيل", draft.deliveryCost) { actions.updateOrderDraft(draft.copy(deliveryCost = it)) } } } } }
         item { Field("ملاحظات", draft.notes, 2) { actions.updateOrderDraft(draft.copy(notes = it)) } }
         item { Info("ينشئ هذا المسار خدمة تخصيص خالصة دون خامات أو عربون؛ لا يخصم مخزوناً غير موثق.") }
-        item { Button(actions::saveOrder, Modifier.fillMaxWidth()) { Text("إنشاء أمر الشغل") } }
+        item { Button(actions::saveOrder, Modifier.fillMaxWidth(), enabled = state.canBeginOrder) { Text("إنشاء أمر الشغل") } }
     }
 }
 
@@ -123,14 +136,16 @@ private fun OrderDetailPane(state: WorkOrdersUiState, caps: WorkOrdersCapabiliti
         item { CurvedCard(statusColor(order.status)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(order.title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Pill(order.status.label(), statusColor(order.status)) }; order.customizationText?.let { Text(it) }; Text("${order.customerName ?: "خدمة مباشرة"} · ${order.quantity} وحدة"); Text("السعر ${order.salePrice} · العربون ${order.deposit} د.ع", fontWeight = FontWeight.SemiBold) } }
         if (order.materials.isNotEmpty()) { item { Label("الخامات") }; items(order.materials, key = { it.id }) { material -> CurvedCard(WorkGreen) { Text(material.label, fontWeight = FontWeight.Bold); Text("${material.sku} · ${material.baseQuantity} وحدة"); material.unitCost?.let { Text("كلفة الوحدة $it") } } } }
         if (order.hasDelivery) item { Info("توصيل · ${order.deliveryAddress ?: "العنوان غير مكتمل"} · ${order.deliveryPhone ?: "—"}") }
-        item { OrderActions(order, state, caps, actions) }
+        if (!state.selectedOrderFresh) item {
+            RefreshGate("تحتاج حالة الأمر إلى تحديث قبل تنفيذ إجراء جديد", state.busyKey != null, actions::retryOrders)
+        } else item { OrderActions(order, state, caps, actions) }
         if (order.timeline.isNotEmpty()) { item { Label("السجل التشغيلي") }; items(order.timeline, key = { it.id }) { event -> Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(event.action.actionLabel(), fontWeight = FontWeight.SemiBold); Text("${event.userName ?: "النظام"} · ${date(event.at)}", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
     }
 }
 
 @Composable
 private fun OrderActions(order: WorkOrderDetail, state: WorkOrdersUiState, caps: WorkOrdersCapabilities, actions: WorkOrdersViewModel) {
-    val allowed = caps.actionsFor(order)
+    val allowed = if (state.canMutateSelectedOrder) caps.actionsFor(order) else emptySet()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (WorkOrderAction.ASSIGN in allowed) {
             Text("إسناد المنفذ", fontWeight = FontWeight.SemiBold); Chips(listOf<StaffOption?>(null) + state.staff, state.staff.firstOrNull { it.id == order.assignedTo }, { actions.assign(it?.id) }) { it?.name ?: "إلغاء الإسناد" }
@@ -189,7 +204,11 @@ private fun PricingPane(state: WorkOrdersUiState, actions: WorkOrdersViewModel, 
 
 @Composable
 private fun ProductionPane(state: WorkOrdersUiState, actions: WorkOrdersViewModel, tablet: Boolean) {
-    val detail: @Composable () -> Unit = { when { state.runDraft != null -> RunEditor(state, actions); state.selectedProduction != null -> ProductionDetailPane(state.selectedProduction, actions); else -> Empty("اختر مستند إنتاج") } }
+    if (!state.productionsLoaded && state.selectedProduction == null) {
+        RefreshGate("تعذر تحميل مستندات ووصفات الإنتاج بصورة موثوقة", state.initializing || state.busyKey != null, actions::retryProductions)
+        return
+    }
+    val detail: @Composable () -> Unit = { when { state.runDraft != null -> RunEditor(state, actions); state.selectedProduction != null -> ProductionDetailPane(state, actions); else -> Empty("اختر مستند إنتاج") } }
     if (tablet) Row(Modifier.fillMaxSize().padding(18.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) { Box(Modifier.weight(.9f)) { ProductionList(state, actions) }; Box(Modifier.weight(1.1f)) { detail() } }
     else if (state.runDraft != null || state.selectedProduction != null) Box(Modifier.fillMaxSize().padding(18.dp)) { detail() } else ProductionList(state, actions)
 }
@@ -198,7 +217,7 @@ private fun ProductionPane(state: WorkOrdersUiState, actions: WorkOrdersViewMode
 private fun ProductionList(state: WorkOrdersUiState, actions: WorkOrdersViewModel) {
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Search(state.productionQuery, actions::setProductionQuery, actions::refreshProductions, "رقم المستند أو الناتج", NativeScanField.DOCUMENT_REFERENCE) }
-        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Chips(listOf(null, ProductionStatus.CONFIRMED, ProductionStatus.CANCELLED), state.productionStatus, actions::setProductionStatus) { it?.label() ?: "الكل" }; IconButton(actions::beginRun) { Icon(Icons.Rounded.Add, "تشغيل وصفة") } } }
+        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Chips(listOf(null, ProductionStatus.CONFIRMED, ProductionStatus.CANCELLED), state.productionStatus, actions::setProductionStatus) { it?.label() ?: "الكل" }; IconButton(actions::beginRun, enabled = state.canBeginRun) { Icon(Icons.Rounded.Add, "تشغيل وصفة") } } }
         if (state.productions.isEmpty()) item { Empty("لا توجد مستندات إنتاج") }
         items(state.productions, key = { it.id }) { production -> CurvedCard(if (production.status == ProductionStatus.CONFIRMED) WorkGreen else Color.Gray) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(production.number, fontWeight = FontWeight.Bold); Pill(production.status.label(), if (production.status == ProductionStatus.CONFIRMED) WorkGreen else Color.Gray) }; Text("${production.outputQty} ناتج · ${production.totalCost} د.ع"); TextButton({ actions.selectProduction(production.id) }, Modifier.align(Alignment.End)) { Text("التفاصيل") } } }
         if (state.productionHasMore) item { OutlinedButton(actions::loadMoreProductions, Modifier.fillMaxWidth()) { Text("عرض المزيد") } }
@@ -213,20 +232,24 @@ private fun RunEditor(state: WorkOrdersUiState, actions: WorkOrdersViewModel) {
         item { Text("الوصفة", fontWeight = FontWeight.SemiBold); Chips(listOf<RecipeSummary?>(null) + state.recipes, state.recipes.firstOrNull { it.id == draft.recipeId }, { actions.updateRunDraft(draft.copy(recipeId = it?.id)) }) { it?.name ?: "اختر وصفة" } }
         item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("حجم الدفعة", draft.batchQty) { actions.updateRunDraft(draft.copy(batchQty = it)) } }; Box(Modifier.weight(1f)) { Field("الهدر", draft.scrapQty) { actions.updateRunDraft(draft.copy(scrapQty = it)) } } } }
         item { Field("عمل لكل وحدة (اختياري)", draft.laborPerUnit) { actions.updateRunDraft(draft.copy(laborPerUnit = it)) } }
-        item { OutlinedButton(actions::previewRun, Modifier.fillMaxWidth()) { Text("معاينة الاستهلاك والكلفة") } }
-        state.runPreview?.let { preview -> item { CurvedCard(if (preview.anyShort) WorkOrange else WorkGreen) { Text(preview.outputName, fontWeight = FontWeight.Bold); Text("سليم ${preview.outputBase} · كلفة ${preview.totalCost}"); preview.inputs.forEach { line -> Text("${line.label}: ${line.required} / متاح ${line.available ?: "—"}", color = if (line.available != null && line.required > line.available) WorkOrange else MaterialTheme.colorScheme.onSurfaceVariant) } } }; item { Button(actions::createRun, Modifier.fillMaxWidth(), enabled = !preview.anyShort) { Text("ترحيل الإنتاج") } } }
+        item { OutlinedButton(actions::previewRun, Modifier.fillMaxWidth(), enabled = state.canBeginRun) { Text("معاينة الاستهلاك والكلفة") } }
+        state.runPreview?.let { preview -> item { CurvedCard(if (preview.anyShort) WorkOrange else WorkGreen) { Text(preview.outputName, fontWeight = FontWeight.Bold); Text("سليم ${preview.outputBase} · كلفة ${preview.totalCost}"); preview.inputs.forEach { line -> Text("${line.label}: ${line.required} / متاح ${line.available ?: "—"}", color = if (line.available != null && line.required > line.available) WorkOrange else MaterialTheme.colorScheme.onSurfaceVariant) } } }; item { Button(actions::createRun, Modifier.fillMaxWidth(), enabled = state.canBeginRun && !preview.anyShort) { Text("ترحيل الإنتاج") } } }
     }
 }
 
 @Composable
-private fun ProductionDetailPane(detail: ProductionDetail?, actions: WorkOrdersViewModel) {
-    requireNotNull(detail)
+private fun ProductionDetailPane(state: WorkOrdersUiState, actions: WorkOrdersViewModel) {
+    val detail = requireNotNull(state.selectedProduction)
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { PaneTitle(detail.number, actions::closeProduction) }
         item { CurvedCard(if (detail.status == ProductionStatus.CONFIRMED) WorkGreen else Color.Gray) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(detail.recipeName ?: "إنتاج يدوي", fontWeight = FontWeight.Bold); Pill(detail.status.label(), if (detail.status == ProductionStatus.CONFIRMED) WorkGreen else Color.Gray) }; Text("الكلفة ${detail.totalCost} · السليم ${detail.goodQty ?: "—"} · الهدر ${detail.scrapQty ?: "—"}") } }
         item { Label("المدخلات") }; items(detail.inputs, key = { it.id }) { line -> ProductionLineCard(line) }
         item { Label("المخرجات") }; items(detail.outputs, key = { it.id }) { line -> ProductionLineCard(line) }
-        if (detail.status == ProductionStatus.CONFIRMED) item { TextButton(actions::cancelProduction, Modifier.fillMaxWidth(), colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("عكس مستند الإنتاج") } }
+        if (!state.selectedProductionFresh) item {
+            RefreshGate("تحتاج حالة المستند إلى تحديث قبل تنفيذ إجراء جديد", state.busyKey != null, actions::retryProductions)
+        } else if (detail.status == ProductionStatus.CONFIRMED) item {
+            TextButton(actions::cancelProduction, Modifier.fillMaxWidth(), enabled = state.canMutateSelectedProduction, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("عكس مستند الإنتاج") }
+        }
     }
 }
 
@@ -255,6 +278,26 @@ private fun ProductionDetailPane(detail: ProductionDetail?, actions: WorkOrdersV
 @Composable private fun CurvedCard(accent: Color, content: @Composable ColumnScope.() -> Unit) { Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(topStart = 28.dp, topEnd = 14.dp, bottomEnd = 28.dp, bottomStart = 14.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Box { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp), content = content); Box(Modifier.align(Alignment.CenterStart).fillMaxHeight().width(4.dp).background(accent)) } } }
 @Composable private fun Pill(text: String, color: Color) { Surface(color = color.copy(alpha = .12f), shape = RoundedCornerShape(14.dp)) { Text(text, Modifier.padding(horizontal = 10.dp, vertical = 5.dp), color = color, fontWeight = FontWeight.Bold) } }
 @Composable private fun PaneTitle(text: String, back: () -> Unit) { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { IconButton(back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "رجوع") }; Text(text, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) } }
+@Composable private fun RefreshGate(text: String, loading: Boolean, retry: () -> Unit) {
+    Surface(
+        Modifier.fillMaxWidth().padding(18.dp),
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = .72f),
+        shape = RoundedCornerShape(24.dp),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Rounded.Refresh, null, tint = MaterialTheme.colorScheme.error)
+            Text(text, fontWeight = FontWeight.Bold)
+            Button(retry, Modifier.fillMaxWidth(), enabled = !loading) {
+                if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text("إعادة المحاولة")
+            }
+        }
+    }
+}
 @Composable private fun Empty(text: String) { Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f), shape = RoundedCornerShape(24.dp)) { Column(Modifier.padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Rounded.Print, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.height(8.dp)); Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
 @Composable private fun Info(text: String) { Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(18.dp)) { Text(text, Modifier.padding(14.dp)) } }
 @Composable private fun Label(text: String) { Text(text, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }

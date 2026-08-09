@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -33,6 +34,8 @@ import androidx.compose.material.icons.rounded.Inventory2
 import androidx.compose.material.icons.rounded.PriceChange
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -81,6 +84,8 @@ import online.alarabiya.superapp.model.products.ProductRow
 import online.alarabiya.superapp.model.products.ProductTier
 import online.alarabiya.superapp.model.products.ProductsCapabilities
 import online.alarabiya.superapp.model.products.ProductsSection
+import online.alarabiya.superapp.model.products.ProductCategory
+import online.alarabiya.superapp.model.products.ProductEditorDraft
 import online.alarabiya.superapp.core.scanner.NativeScanField
 import online.alarabiya.superapp.ui.rtlIsolate
 import online.alarabiya.superapp.ui.scanner.NativeScannerAction
@@ -98,6 +103,11 @@ fun ProductsRoute(viewModel: ProductsViewModel, capabilities: ProductsCapabiliti
             setActive = viewModel::setActive, waveDraft = viewModel::waveDraft, previewWave = viewModel::previewWave,
             applyWave = viewModel::applyWave, reconcileWaves = viewModel::reconcileWaves,
             printDraft = viewModel::printDraft, estimatePrint = viewModel::estimatePrint,
+            newProduct = viewModel::newProduct, editProduct = viewModel::editProduct, editorDraft = viewModel::editorDraft,
+            saveProduct = viewModel::saveProduct, closeEditor = viewModel::closeEditor,
+            createCategory = viewModel::createCategory, updateCategory = viewModel::updateCategory,
+            openBarcodes = viewModel::openBarcodes, closeBarcodes = viewModel::closeBarcodes,
+            addBarcodeAlias = viewModel::addBarcodeAlias, removeBarcodeAlias = viewModel::removeBarcodeAlias,
             retry = viewModel::initialize,
         ),
         modifier = modifier,
@@ -122,12 +132,24 @@ data class ProductsActions(
     val reconcileWaves: () -> Unit,
     val printDraft: (PrintEstimateDraft) -> Unit,
     val estimatePrint: () -> Unit,
+    val newProduct: () -> Unit,
+    val editProduct: (Long) -> Unit,
+    val editorDraft: (ProductEditorDraft) -> Unit,
+    val saveProduct: () -> Unit,
+    val closeEditor: () -> Unit,
+    val createCategory: (String, Long?) -> Unit,
+    val updateCategory: (ProductCategory) -> Unit,
+    val openBarcodes: (Long) -> Unit,
+    val closeBarcodes: () -> Unit,
+    val addBarcodeAlias: (String, String) -> Unit,
+    val removeBarcodeAlias: (Long) -> Unit,
     val retry: () -> Unit,
 )
 
 @Composable
 fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, actions: ProductsActions, modifier: Modifier = Modifier) {
     var confirmWave by remember { mutableStateOf(false) }
+    val catalogBlocked = capabilities.canBrowse && !state.catalogLoaded && state.section == ProductsSection.CATALOG
     val guardedActions = actions.copy(applyWave = { confirmWave = true })
     val sections = buildList {
         if (capabilities.canBrowse) add(ProductsSection.CATALOG)
@@ -143,9 +165,10 @@ fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, a
             ) {
                 sections.forEach { section -> Tab(state.section == section, { actions.section(section) }, enabled = !state.locked, text = { Text(section.label) }, icon = { Icon(section.icon, null) }) }
             }
-            state.error?.let { Banner(it, true, actions.retry) }
+            if (!catalogBlocked) state.error?.let { Banner(it, true, actions.retry) }
             state.notice?.let { Banner(it, false) }
             if (state.busy == ProductsBusy.INITIAL) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            else if (catalogBlocked) CatalogRetryGate(state.error, actions.retry)
             else when (state.section) {
                 ProductsSection.CATALOG -> CatalogWorkspace(state, capabilities, guardedActions)
                 ProductsSection.PRICE_WAVES -> WaveWorkspace(state, guardedActions)
@@ -164,6 +187,8 @@ fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, a
             dismissButton = { TextButton(onClick = { confirmWave = false }) { Text("إلغاء") } },
         )
     }
+    state.editor?.let { ProductEditorDialog(it, state.categories, !state.canMutateCatalog, actions) }
+    state.barcodeUnitId?.let { BarcodeAliasesDialog(state, actions) }
 }
 
 @Composable private fun ProductsHeader() {
@@ -175,19 +200,36 @@ fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, a
     }
 }
 
+@Composable
+private fun CatalogRetryGate(error: String?, retry: () -> Unit) {
+    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.widthIn(max = 520.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Rounded.Inventory2, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(44.dp))
+            Text("الكتالوج غير متاح", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            error?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Button(retry, Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("إعادة المحاولة") }
+        }
+    }
+}
+
 @Composable private fun CatalogWorkspace(state: ProductsUiState, capabilities: ProductsCapabilities, actions: ProductsActions) {
     BoxWithConstraints(Modifier.fillMaxSize().padding(16.dp)) {
         val wide = maxWidth >= 760.dp
         if (wide) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             ProductList(state, actions, Modifier.weight(.95f).fillMaxHeight())
-            ProductDetail(state.selected, state.tier, capabilities.canManage, state.locked, actions, Modifier.weight(1.05f).fillMaxHeight())
-        } else if (state.selected != null) ProductDetail(state.selected, state.tier, capabilities.canManage, state.locked, actions, Modifier.fillMaxSize(), true)
+            ProductDetail(state.selected, state.tier, capabilities.canManage, !state.canMutateCatalog, actions, Modifier.weight(1.05f).fillMaxHeight())
+        } else if (state.selected != null) ProductDetail(state.selected, state.tier, capabilities.canManage, !state.canMutateCatalog, actions, Modifier.fillMaxSize(), true)
         else ProductList(state, actions, Modifier.fillMaxSize())
     }
 }
 
 @Composable private fun ProductList(state: ProductsUiState, actions: ProductsActions, modifier: Modifier) {
     ProductsCard(modifier) {
+        Button(actions.newProduct, Modifier.fillMaxWidth(), enabled = state.canMutateCatalog) { Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(8.dp)); Text("إضافة منتج") }
         SectionTitle("الكتالوج", "${state.page.total} صف منتج ووحدة", Icons.Rounded.Inventory2)
         SearchField(state.query, actions.query, actions.search, "اسم أو SKU أو باركود", state.locked)
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -206,6 +248,7 @@ fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, a
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { actions.lookupBarcode() }), singleLine = true,
         )
         state.barcodeResult?.let { found ->
+            TextButton({ actions.openBarcodes(found.productUnitId) }, enabled = state.canMutateCatalog) { Text("إدارة الباركودات البديلة والملصقات") }
             Text("${found.label} • ${found.price ?: "بلا سعر"} • المتاح ${found.availableBase}", Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(14.dp)).padding(10.dp), color = MaterialTheme.colorScheme.onPrimaryContainer)
         }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -232,6 +275,7 @@ fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, a
             Status(if (detail.active) "نشط" else "معطل", if (detail.active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
         }
         detail.description?.let { Text(it) }
+        if (canManage) OutlinedButton({ actions.editProduct(detail.productId) }, enabled = !locked) { Icon(Icons.Rounded.Edit, null); Spacer(Modifier.width(8.dp)); Text("تعديل بيانات المنتج") }
         if (canManage) Row(Modifier.fillMaxWidth(), Arrangement.End, Alignment.CenterVertically) { Text(if (detail.active) "تعطيل المنتج" else "تفعيل المنتج"); Spacer(Modifier.width(8.dp)); Switch(detail.active, { actions.setActive(it) }, enabled = !locked) }
         Text("الوحدات والأسعار", fontWeight = FontWeight.Bold)
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -298,7 +342,7 @@ fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, a
         OutlinedTextField(draft.changeValue, { actions.waveDraft(draft.copy(changeValue = it)) }, Modifier.fillMaxWidth(), label = { Text("قيمة التغيير") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), enabled = !state.locked, singleLine = true)
         OutlinedTextField(draft.reason, { actions.waveDraft(draft.copy(reason = it)) }, Modifier.fillMaxWidth(), label = { Text("سبب التغيير") }, enabled = !state.locked)
         Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(draft.allowBelowCost, { actions.waveDraft(draft.copy(allowBelowCost = it)) }, enabled = !state.locked); Text("السماح بما دون الكلفة — قرار صريح") }
-        Button(actions.previewWave, Modifier.fillMaxWidth(), enabled = !state.locked) { Text("معاينة الأسعار") }
+        Button(actions.previewWave, Modifier.fillMaxWidth(), enabled = state.canMutateCatalog && !state.waveOutcomeUnknown) { Text("معاينة الأسعار") }
         if (state.waveOutcomeUnknown) {
             Text("نتيجة آخر تطبيق غير محسومة. إعادة التطبيق مقفلة حتى مطابقة السجل.", color = MaterialTheme.colorScheme.error)
             OutlinedButton(actions.reconcileWaves, Modifier.fillMaxWidth(), enabled = !state.locked) { Text("مطابقة السجل") }
@@ -415,6 +459,89 @@ fun ProductsScreen(state: ProductsUiState, capabilities: ProductsCapabilities, a
         )
         if (error && retry != null) TextButton(retry, Modifier.heightIn(min = 48.dp)) { Text("إعادة المحاولة") }
     }
+}
+
+@Composable
+private fun ProductEditorDialog(draft: ProductEditorDraft, categories: List<ProductCategory>, locked: Boolean, actions: ProductsActions) {
+    var newCategory by remember { mutableStateOf("") }
+    val variant = draft.variants.firstOrNull() ?: online.alarabiya.superapp.model.products.ProductVariantDraft()
+    val unit = variant.units.firstOrNull() ?: online.alarabiya.superapp.model.products.ProductUnitDraft()
+    fun variantChanged(value: online.alarabiya.superapp.model.products.ProductVariantDraft) = actions.editorDraft(draft.copy(variants = listOf(value)))
+    fun unitChanged(value: online.alarabiya.superapp.model.products.ProductUnitDraft) = variantChanged(variant.copy(units = listOf(value)))
+    AlertDialog(
+        onDismissRequest = actions.closeEditor,
+        title = { Text(if (draft.productId == null) "إضافة منتج" else "تعديل المنتج", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) },
+        text = {
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 590.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                item { OutlinedTextField(draft.name, { actions.editorDraft(draft.copy(name = it)) }, Modifier.fillMaxWidth(), label = { Text("اسم المنتج") }, singleLine = true) }
+                item { OutlinedTextField(draft.description, { actions.editorDraft(draft.copy(description = it)) }, Modifier.fillMaxWidth(), label = { Text("الوصف") }, minLines = 2) }
+                item {
+                    Text("الفئة", fontWeight = FontWeight.SemiBold)
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(draft.categoryId == null, { actions.editorDraft(draft.copy(categoryId = null)) }, label = { Text("بلا فئة") })
+                        categories.forEach { category -> FilterChip(draft.categoryId == category.id, { actions.editorDraft(draft.copy(categoryId = category.id)) }, label = { Text(category.name) }) }
+                    }
+                }
+                item {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(newCategory, { newCategory = it }, Modifier.weight(1f), label = { Text("فئة جديدة") }, singleLine = true)
+                        Spacer(Modifier.width(8.dp))
+                        Button({ actions.createCategory(newCategory, null); newCategory = "" }, enabled = newCategory.isNotBlank() && !locked) { Text("إضافة") }
+                    }
+                }
+                item { OutlinedTextField(variant.sku, { variantChanged(variant.copy(sku = it)) }, Modifier.fillMaxWidth(), label = { Text("SKU") }, singleLine = true) }
+                item { OutlinedTextField(variant.costPrice, { variantChanged(variant.copy(costPrice = it)) }, Modifier.fillMaxWidth(), label = { Text("التكلفة") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true) }
+                item { OutlinedTextField(unit.name, { unitChanged(unit.copy(name = it)) }, Modifier.fillMaxWidth(), label = { Text("اسم الوحدة") }, singleLine = true) }
+                item {
+                    OutlinedTextField(
+                        unit.barcode, { unitChanged(unit.copy(barcode = it)) }, Modifier.fillMaxWidth(), label = { Text("الباركود") }, singleLine = true,
+                        trailingIcon = { NativeScannerAction(NativeScanField.BARCODE, { unitChanged(unit.copy(barcode = it)) }, enabled = !locked) },
+                    )
+                }
+                item { OutlinedTextField(unit.retailPrice, { unitChanged(unit.copy(retailPrice = it)) }, Modifier.fillMaxWidth(), label = { Text("سعر التجزئة") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true) }
+                item { OutlinedTextField(unit.wholesalePrice, { unitChanged(unit.copy(wholesalePrice = it)) }, Modifier.fillMaxWidth(), label = { Text("سعر الجملة") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true) }
+                item { OutlinedTextField(unit.governmentPrice, { unitChanged(unit.copy(governmentPrice = it)) }, Modifier.fillMaxWidth(), label = { Text("السعر الحكومي") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true) }
+                if (draft.productId != null) item { OutlinedTextField(variant.costChangeReason, { variantChanged(variant.copy(costChangeReason = it)) }, Modifier.fillMaxWidth(), label = { Text("سبب تغيير التكلفة عند التغيير الكبير") }) }
+            }
+        },
+        confirmButton = { Button(actions.saveProduct, enabled = !locked) { Text("حفظ") } },
+        dismissButton = { TextButton(actions.closeEditor, enabled = !locked) { Text("إلغاء") } },
+    )
+}
+
+@Composable
+private fun BarcodeAliasesDialog(state: ProductsUiState, actions: ProductsActions) {
+    var barcode by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
+    val mutationEnabled = state.canMutateBarcodeAliases
+    AlertDialog(
+        onDismissRequest = actions.closeBarcodes,
+        title = { Text("الباركودات البديلة والملصقات", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    barcode,
+                    { barcode = it },
+                    Modifier.fillMaxWidth(),
+                    label = { Text("باركود بديل") },
+                    singleLine = true,
+                    enabled = mutationEnabled,
+                    trailingIcon = { NativeScannerAction(NativeScanField.BARCODE, { barcode = it }, enabled = mutationEnabled) },
+                )
+                OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), label = { Text("ملاحظة الملصق") }, singleLine = true, enabled = mutationEnabled)
+                Button({ actions.addBarcodeAlias(barcode, note); barcode = ""; note = "" }, Modifier.fillMaxWidth(), enabled = barcode.isNotBlank() && mutationEnabled) { Text("إضافة") }
+                LazyColumn(Modifier.heightIn(max = 260.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(state.barcodeAliases, key = { it.id }) { alias ->
+                        Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(14.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) { Text(rtlIsolate(alias.barcode), fontWeight = FontWeight.Bold); alias.note?.let { Text(it, style = MaterialTheme.typography.bodySmall) } }
+                            TextButton({ actions.removeBarcodeAlias(alias.id) }, enabled = mutationEnabled) { Text("حذف", color = MaterialTheme.colorScheme.error) }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(actions.closeBarcodes, enabled = !state.locked) { Text("تم") } },
+    )
 }
 
 private val ProductsSection.label get() = when (this) { ProductsSection.CATALOG -> "الكتالوج"; ProductsSection.PRICE_WAVES -> "موجات الأسعار"; ProductsSection.PRINT_PRICING -> "تسعير الطباعة" }

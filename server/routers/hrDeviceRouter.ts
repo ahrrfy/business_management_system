@@ -20,6 +20,7 @@ import { eq } from "drizzle-orm";
 import { employees } from "../../drizzle/schema";
 import { requireDb } from "../services/tx";
 import { isDupEntry, toArabicMessage } from "@shared/errorMap.ar";
+import { isExactHostNetwork } from "../services/hrDevices/bridgeSecurity";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -48,7 +49,12 @@ const deviceInput = z.object({
   location: z.string().trim().optional(),
   branchId: z.number().int().positive().nullish(),
   deviceCode: z.string().trim().optional(),
-  ip: z.string().trim().optional(),
+  ip: z
+    .string()
+    .trim()
+    .max(80)
+    .refine((value) => isExactHostNetwork(value), "أدخل عنوان IP واحداً صالحاً للجهاز")
+    .optional(),
   port: z.number().int().min(0).max(65535).nullish(),
   serverHost: z.string().trim().optional(),
   serverPort: z.number().int().min(0).max(65535).nullish(),

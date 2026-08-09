@@ -53,20 +53,40 @@ class AccountingControlsPolicyTest {
         assertFalse(admin.canWriteExchange)
     }
 
+    @Test
+    fun `comprehensive financial reconciliation follows admin procedure not report grant`() {
+        val admin = capabilities("admin", "NONE", "NONE", null)
+        val manager = capabilities("manager", "FULL", "FULL", 7)
+
+        assertTrue(admin.canReadFinancialReconciliation)
+        assertFalse(manager.canReadFinancialReconciliation)
+    }
+
+    @Test
+    fun `owner with stale non admin role receives administrator controls`() {
+        val owner = capabilities("manager", "NONE", "NONE", null, isOwner = true)
+
+        assertTrue(owner.isAdministrator)
+        assertTrue(owner.canReadFinancialReconciliation)
+        assertTrue(owner.canGovernPeriods)
+    }
+
     private fun capabilities(
         role: String,
         reports: String,
         treasury: String,
         branchId: Long?,
+        isOwner: Boolean = false,
     ) = AccountingControlsCapabilities.fromBootstrap(
         AppBootstrap(
-            user = UserIdentity(1, "Test", "test", null, role),
+            user = UserIdentity(1, "Test", "test", null, role, isOwner = isOwner),
             modules = listOf(
                 ModuleAccess("reports", "التقارير", reports),
                 ModuleAccess("treasury", "الخزينة", treasury),
             ),
             branchId = branchId,
-            allBranches = role == "admin",
+            allBranches = role == "admin" || isOwner,
+            isOwner = isOwner,
         ),
     )
 }

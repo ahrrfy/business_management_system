@@ -1,5 +1,6 @@
 import {
   PERMISSION_MODULES,
+  ROLE_TEMPLATES,
   ROLES,
   resolvePermissions,
   type AccessLevel,
@@ -57,8 +58,16 @@ import {
 import { createLeave, withdrawPendingLeave } from "../services/leaveService";
 import { listStockAdjustmentRequests } from "../services/inventory/adjustmentApproval";
 import { requireDb } from "../services/tx";
-import { router, selfServiceProcedure, superAppProcedure } from "../trpc";
+import {
+  canSeeCostForUser,
+  canViewReports,
+  router,
+  selfServiceProcedure,
+  superAppProcedure,
+} from "../trpc";
 import { detectAll as detectCatalogAnomalies } from "../services/catalogAnomalies/detectors";
+import { getTodayNetSales } from "../services/reports/todaySales";
+import { getAPAging } from "../services/reports/apAging";
 
 const leaveTypeKeys = LEAVE_TYPES.map((item) => item.key) as [
   string,
@@ -74,6 +83,53 @@ function isVisible(level: AccessLevel | undefined): boolean {
   return level === "FULL" || level === "READ";
 }
 
+type SuperAppAuthorityUser = {
+  role: string;
+  isOwner?: boolean;
+  branchId?: number | null;
+  permissionsOverride?: unknown;
+  roleLockedByInactiveCustomRole?: boolean;
+};
+
+/** Single authority contract shared by bootstrap and mobile operational pulses. */
+export function resolveSuperAppAuthority(user: SuperAppAuthorityUser) {
+  const ownerOrAdmin = user.isOwner === true || user.role === "admin";
+  const role = (ownerOrAdmin ? "admin" : user.role) as RoleKey;
+  // Server gates intentionally give admin unconditional module access. The mobile
+  // contract must not hide a module that the same session can open server-side.
+  // `isOwner` is the persisted authority invariant: a stale/custom base role
+  // must never turn the company owner into a branch-scoped pseudo-manager.
+  const permissions = ownerOrAdmin
+    ? { ...ROLE_TEMPLATES.admin }
+    : resolvePermissions(
+        role,
+        (user.permissionsOverride ?? null) as Record<string, AccessLevel> | null,
+      );
+  const allBranches = ownerOrAdmin;
+  const requestedBranchId = user.branchId == null ? null : Number(user.branchId);
+  const branchId = requestedBranchId != null && Number.isInteger(requestedBranchId) && requestedBranchId > 0
+    ? requestedBranchId
+    : null;
+  return {
+    role,
+    permissions,
+    scope: {
+      branchId,
+      allBranches,
+      // A manager is a branch manager. Missing assignment is an explicit empty
+      // scope, never an implicit company-wide scope.
+      effectiveBranchId: allBranches ? null : (branchId ?? -1),
+    },
+    capabilities: {
+      isOwner: user.isOwner === true,
+      canSeeCost: ownerOrAdmin || canSeeCostForUser(user),
+      canViewReports: ownerOrAdmin || canViewReports(user),
+      isExecutive: ownerOrAdmin || role === "manager",
+      roleDegraded: user.roleLockedByInactiveCustomRole === true,
+    },
+  };
+}
+
 function baghdadDate(): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Baghdad",
@@ -87,20 +143,83 @@ function baghdadDate(): string {
   return `${value.year}-${value.month}-${value.day}`;
 }
 
+/** Branch-safe customer summary. Party master balances are company-wide, so a
+ * branch view derives receivables from that branch's invoices instead. */
+export async function getScopedCustomerPulse(scopedBranchId: number | null) {
+  const db = requireDb();
+  if (scopedBranchId == null) {
+    const [row] = await db
+      .select({
+        count: sql<number>`count(*)`,
+        balance: sql<string>`coalesce(sum(case when ${customers.currentBalance} > 0 then ${customers.currentBalance} else 0 end), 0)`,
+      })
+      .from(customers)
+      .where(eq(customers.isActive, true));
+    return { count: Number(row?.count ?? 0), balance: String(row?.balance ?? "0") };
+  }
+
+  const [customerRow, balanceRow] = await Promise.all([
+    db
+      .select({ count: sql<number>`count(distinct ${customers.id})` })
+      .from(customers)
+      .innerJoin(invoices, eq(invoices.customerId, customers.id))
+      .where(and(eq(customers.isActive, true), eq(invoices.branchId, scopedBranchId)))
+      .then((rows) => rows[0]),
+    db
+      .select({
+        balance: sql<string>`coalesce(sum(greatest(${invoices.total} - ${invoices.paidAmount} - ${invoices.returnedTotal}, 0)), 0)`,
+      })
+      .from(invoices)
+      .innerJoin(customers, eq(invoices.customerId, customers.id))
+      .where(and(
+        eq(customers.isActive, true),
+        eq(invoices.branchId, scopedBranchId),
+        inArray(invoices.status, ["PENDING", "PARTIALLY_PAID"]),
+      ))
+      .then((rows) => rows[0]),
+  ]);
+  return {
+    count: Number(customerRow?.count ?? 0),
+    balance: String(balanceRow?.balance ?? "0"),
+  };
+}
+
+/** Branch-safe supplier summary. Global supplier balances cannot be allocated
+ * to a branch, so branch AP is derived from the canonical AP-aging ledger. */
+export async function getScopedSupplierPulse(scopedBranchId: number | null) {
+  const db = requireDb();
+  const countPromise = scopedBranchId == null
+    ? db
+        .select({ count: sql<number>`count(*)` })
+        .from(suppliers)
+        .where(eq(suppliers.isActive, true))
+        .then((rows) => rows[0])
+    : db
+        .select({ count: sql<number>`count(distinct ${suppliers.id})` })
+        .from(suppliers)
+        .innerJoin(purchaseOrders, eq(purchaseOrders.supplierId, suppliers.id))
+        .where(and(eq(suppliers.isActive, true), eq(purchaseOrders.branchId, scopedBranchId)))
+        .then((rows) => rows[0]);
+  const [countRow, agingRows] = await Promise.all([
+    countPromise,
+    getAPAging({ branchId: scopedBranchId ?? undefined, limit: 10_000 }),
+  ]);
+  const balance = agingRows.reduce((sum, row) => {
+    const value = scopedBranchId == null ? row.currentBalance : row.unpaidTotal;
+    const numeric = Number(value ?? 0);
+    return sum + (numeric > 0 ? numeric : 0);
+  }, 0);
+  return { count: Number(countRow?.count ?? 0), balance: String(balance) };
+}
+
 /**
  * Mobile BFF contract. It composes an allowed workspace for the current
  * session; domain routers remain the authority for all business mutations.
  */
 export const superAppRouter = router({
   bootstrap: superAppProcedure.query(async ({ ctx }) => {
-    const role = ctx.user.role as RoleKey;
-    const permissions = resolvePermissions(
-      role,
-      (ctx.user.permissionsOverride ?? null) as Record<
-        string,
-        AccessLevel
-      > | null,
-    );
+    const authority = resolveSuperAppAuthority(ctx.user);
+    const { role, permissions } = authority;
     const roleInfo = ROLES.find((item) => item.key === role);
     const db = requireDb();
     const [employeeLink] = await db
@@ -116,10 +235,11 @@ export const superAppRouter = router({
         role,
         roleLabel: ctx.user.customRoleLabel ?? roleInfo?.label ?? role,
         branchId: ctx.user.branchId ?? null,
+        isOwner: ctx.user.isOwner === true,
       },
       scope: {
-        branchId: ctx.user.branchId ?? null,
-        allBranches: role === "admin" || role === "manager",
+        branchId: authority.scope.branchId,
+        allBranches: authority.scope.allBranches,
       },
       modules: PERMISSION_MODULES.filter((module) =>
         isVisible(permissions[module.key]),
@@ -129,7 +249,7 @@ export const superAppRouter = router({
         access: permissions[module.key] as AccessLevel,
       })),
       capabilities: {
-        canSeeCost: Boolean(roleInfo?.canSeeCost),
+        ...authority.capabilities,
         hasPersonalWorkspace: Boolean(employeeLink),
         supportsNotifications: true,
       },
@@ -145,14 +265,8 @@ export const superAppRouter = router({
   modulePulse: superAppProcedure
     .input(z.object({ moduleKey: z.string().min(1).max(60) }))
     .query(async ({ ctx, input }) => {
-      const role = ctx.user.role as RoleKey;
-      const permissions = resolvePermissions(
-        role,
-        (ctx.user.permissionsOverride ?? null) as Record<
-          string,
-          AccessLevel
-        > | null,
-      );
+      const authority = resolveSuperAppAuthority(ctx.user);
+      const { role, permissions } = authority;
       const knownModule = PERMISSION_MODULES.some(
         (item) => item.key === input.moduleKey,
       );
@@ -164,8 +278,7 @@ export const superAppRouter = router({
       }
 
       const db = requireDb();
-      const allBranches = role === "admin" || role === "manager";
-      const scopedBranchId = allBranches ? null : (ctx.user.branchId ?? -1);
+      const scopedBranchId = authority.scope.effectiveBranchId;
       const today = baghdadDate();
       const todayStart = new Date(`${today}T00:00:00+03:00`);
       const tomorrowStart = new Date(
@@ -367,40 +480,21 @@ export const superAppRouter = router({
       }
 
       if (input.moduleKey === "sales") {
-        const [row] = await db
-          .select({
-            count: sql<number>`count(*)`,
-            total: sql<string>`coalesce(sum(${invoices.total}), 0)`,
-          })
-          .from(invoices)
-          .where(
-            and(
-              gte(invoices.invoiceDate, todayStart),
-              inArray(invoices.status, [
-                "PENDING",
-                "CONFIRMED",
-                "PAID",
-                "PARTIALLY_PAID",
-              ]),
-              scopedBranchId == null
-                ? undefined
-                : eq(invoices.branchId, scopedBranchId),
-            ),
-          );
+        const row = await getTodayNetSales(scopedBranchId ?? undefined);
         return {
           moduleKey: input.moduleKey,
           metrics: [
             metric(
               "today-count",
               "فواتير اليوم",
-              row?.count,
+              row.invoiceCount,
               "count",
               "/invoices",
             ),
             metric(
               "today-total",
               "مبيعات اليوم",
-              row?.total,
+              row.total,
               "money",
               "/reports/sales-hub",
             ),
@@ -478,27 +572,21 @@ export const superAppRouter = router({
       }
 
       if (input.moduleKey === "crm" || input.moduleKey === "collections") {
-        const [row] = await db
-          .select({
-            count: sql<number>`count(*)`,
-            balance: sql<string>`coalesce(sum(case when ${customers.currentBalance} > 0 then ${customers.currentBalance} else 0 end), 0)`,
-          })
-          .from(customers)
-          .where(eq(customers.isActive, true));
+        const row = await getScopedCustomerPulse(scopedBranchId);
         return {
           moduleKey: input.moduleKey,
           metrics: [
             metric(
               "active-customers",
               "عملاء نشطون",
-              row?.count,
+              row.count,
               "count",
               "/customers",
             ),
             metric(
               "receivables",
               "ذمم مدينة",
-              row?.balance,
+              row.balance,
               "money",
               "/ar-aging",
             ),
@@ -636,27 +724,21 @@ export const superAppRouter = router({
       }
 
       if (input.moduleKey === "suppliers") {
-        const [row] = await db
-          .select({
-            count: sql<number>`count(*)`,
-            balance: sql<string>`coalesce(sum(case when ${suppliers.currentBalance} > 0 then ${suppliers.currentBalance} else 0 end), 0)`,
-          })
-          .from(suppliers)
-          .where(eq(suppliers.isActive, true));
+        const row = await getScopedSupplierPulse(scopedBranchId);
         return {
           moduleKey: input.moduleKey,
           metrics: [
             metric(
               "active-suppliers",
               "موردون نشطون",
-              row?.count,
+              row.count,
               "count",
               "/suppliers",
             ),
             metric(
               "payables",
               "ذمم الموردين",
-              row?.balance,
+              row.balance,
               "money",
               "/ap-aging",
             ),
@@ -716,24 +798,7 @@ export const superAppRouter = router({
 
       if (input.moduleKey === "reports") {
         const [saleRow, expenseRow] = await Promise.all([
-          db
-            .select({ total: sql<string>`coalesce(sum(${invoices.total}), 0)` })
-            .from(invoices)
-            .where(
-              and(
-                gte(invoices.invoiceDate, todayStart),
-                inArray(invoices.status, [
-                  "PENDING",
-                  "CONFIRMED",
-                  "PAID",
-                  "PARTIALLY_PAID",
-                ]),
-                scopedBranchId == null
-                  ? undefined
-                  : eq(invoices.branchId, scopedBranchId),
-              ),
-            )
-            .then((rows) => rows[0]),
+          getTodayNetSales(scopedBranchId ?? undefined),
           db
             .select({
               total: sql<string>`coalesce(sum(${expenses.amount}), 0)`,
@@ -756,7 +821,7 @@ export const superAppRouter = router({
             metric(
               "sales",
               "مبيعات اليوم",
-              saleRow?.total,
+              saleRow.total,
               "money",
               "/reports/sales-hub",
             ),
@@ -1072,7 +1137,12 @@ export const superAppRouter = router({
             active: sql<number>`coalesce(sum(case when ${users.isActive} = true then 1 else 0 end), 0)`,
             locked: sql<number>`coalesce(sum(case when ${users.lockedUntil} >= ${now} then 1 else 0 end), 0)`,
           })
-          .from(users);
+          .from(users)
+          .where(
+            scopedBranchId == null
+              ? undefined
+              : eq(users.branchId, scopedBranchId),
+          );
         return {
           moduleKey: input.moduleKey,
           metrics: [
@@ -1087,7 +1157,14 @@ export const superAppRouter = router({
           db
             .select({ count: sql<number>`count(*)` })
             .from(branches)
-            .where(eq(branches.isActive, true))
+            .where(
+              and(
+                eq(branches.isActive, true),
+                scopedBranchId == null
+                  ? undefined
+                  : eq(branches.id, scopedBranchId),
+              ),
+            )
             .then((rows) => rows[0]),
           db
             .select({ count: sql<number>`count(*)` })
@@ -1467,13 +1544,7 @@ export const superAppRouter = router({
       const sourceLimit = Math.min(offset + limit, 500);
       const db = requireDb();
       const role = ctx.user.role as RoleKey;
-      const permissions = resolvePermissions(
-        role,
-        (ctx.user.permissionsOverride ?? null) as Record<
-          string,
-          AccessLevel
-        > | null,
-      );
+      const permissions = resolveSuperAppAuthority(ctx.user).permissions;
       if (role !== "admin" && ctx.user.branchId == null) return [];
       const branchId = role === "admin" ? null : Number(ctx.user.branchId);
       const canManage = role === "admin" || role === "manager";
@@ -1517,7 +1588,7 @@ export const superAppRouter = router({
           : Promise.resolve([]),
         permissions.treasury === "FULL" &&
         canTreasuryApprove &&
-        ctx.user.branchId != null
+        (role === "admin" || ctx.user.branchId != null)
           ? db
               .select({
                 id: receipts.id,
@@ -1532,7 +1603,7 @@ export const superAppRouter = router({
               .where(
                 and(
                   eq(receipts.approvalStatus, "PENDING_APPROVAL"),
-                  eq(receipts.branchId, Number(ctx.user.branchId)),
+                  ...(branchId == null ? [] : [eq(receipts.branchId, branchId)]),
                   isNull(receipts.invoiceId),
                 ),
               )
@@ -1672,13 +1743,7 @@ export const superAppRouter = router({
     .query(async ({ ctx, input }) => {
       const db = requireDb();
       const role = ctx.user.role as RoleKey;
-      const permissions = resolvePermissions(
-        role,
-        (ctx.user.permissionsOverride ?? null) as Record<
-          string,
-          AccessLevel
-        > | null,
-      );
+      const permissions = resolveSuperAppAuthority(ctx.user).permissions;
       const branchId =
         role === "admin"
           ? null
@@ -1787,7 +1852,7 @@ export const superAppRouter = router({
         if (
           permissions.treasury !== "FULL" ||
           !canTreasuryApprove ||
-          ctx.user.branchId == null
+          (role !== "admin" && ctx.user.branchId == null)
         )
           return notFound();
         const [row] = await db
@@ -1805,7 +1870,7 @@ export const superAppRouter = router({
             and(
               eq(receipts.id, input.id),
               eq(receipts.approvalStatus, "PENDING_APPROVAL"),
-              eq(receipts.branchId, Number(ctx.user.branchId)),
+              ...(branchId == null ? [] : [eq(receipts.branchId, branchId)]),
               isNull(receipts.invoiceId),
             ),
           )

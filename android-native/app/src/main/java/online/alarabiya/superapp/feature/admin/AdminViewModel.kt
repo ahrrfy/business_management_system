@@ -13,11 +13,13 @@ import online.alarabiya.superapp.model.admin.AdminAccessPolicy
 import online.alarabiya.superapp.model.admin.AdminRole
 import online.alarabiya.superapp.model.admin.AdminSection
 import online.alarabiya.superapp.model.admin.AdminUser
+import online.alarabiya.superapp.model.admin.AdminUserSession
 import online.alarabiya.superapp.model.admin.CreateAdminRoleCommand
 import online.alarabiya.superapp.model.admin.CreateAdminUserCommand
 import online.alarabiya.superapp.model.admin.RoleAssignment
 import online.alarabiya.superapp.model.admin.UpdateAdminRoleCommand
 import online.alarabiya.superapp.model.admin.UpdateAdminUserCommand
+import online.alarabiya.superapp.model.admin.AccessLevel
 
 class AdminViewModel(
     private val repository: AdminDataSource,
@@ -72,10 +74,100 @@ class AdminViewModel(
         state = state.copy(temporaryPassword = null)
     }
 
+    fun loadUserPermissions(target: AdminUser) {
+        if (!state.overviewLoaded) return deny("حدّث بيانات الحسابات قبل فتح الصلاحيات")
+        val decision = policy.canManageIndividualPermissions(target)
+        if (!decision.allowed) return deny(decision.reason.orEmpty())
+        if (state.permissionLoading) return
+        state = state.copy(permissionLoading = true, permissionProfile = null, error = null)
+        viewModelScope.launch {
+            runCatching { repository.loadUserPermissions(target.id) }
+                .onSuccess { state = state.copy(permissionLoading = false, permissionProfile = it) }
+                .onFailure { state = state.failed(it.userMessage()) }
+        }
+    }
+
+    fun clearUserPermissions() {
+        state = state.copy(permissionProfile = null, permissionLoading = false)
+    }
+
+    fun updateUserPermissions(target: AdminUser, overrides: Map<String, AccessLevel>) {
+        val decision = policy.canManageIndividualPermissions(target)
+        if (!decision.allowed) return deny(decision.reason.orEmpty())
+        mutate("permissions:${target.id}", "تم تحديث الصلاحيات الفردية وإبطال الجلسات القديمة") {
+            repository.updateUserPermissions(target.id, overrides)
+        }
+        clearUserPermissions()
+    }
+
+    fun resetPassword(target: AdminUser, temporaryPassword: String) {
+        val decision = policy.canResetPassword(target)
+        if (!decision.allowed) return deny(decision.reason.orEmpty())
+        mutate("password:${target.id}", "تمت إعادة كلمة المرور وإبطال الجلسات القديمة") {
+            repository.resetUserPassword(target.id, temporaryPassword)
+        }
+    }
+
+    fun loadAccountSecurity(target: AdminUser) {
+        if (!state.overviewLoaded) return deny("حدّث بيانات الحسابات قبل فتح إجراءات الأمان")
+        val decision = accountSecurityDecision(target)
+        if (!decision.allowed) return deny(decision.reason.orEmpty())
+        if (state.incidentLoading || state.busyKey != null) return
+        state = state.copy(
+            incidentUserId = target.id,
+            incidentSessions = emptyList(),
+            incidentLoading = true,
+            incidentFresh = false,
+            error = null,
+        )
+        viewModelScope.launch {
+            runCatching { repository.loadUserSessions(target.id) }
+                .onSuccess { sessions -> state = state.incidentLoaded(target.id, sessions) }
+                .onFailure { state = state.failed(it.userMessage()) }
+        }
+    }
+
+    fun clearAccountSecurity() {
+        state = state.copy(
+            incidentUserId = null,
+            incidentSessions = emptyList(),
+            incidentLoading = false,
+            incidentFresh = false,
+        )
+    }
+
+    fun revokeSession(target: AdminUser, sessionId: Long) {
+        val decision = accountSecurityDecision(target)
+        if (!decision.allowed) return deny(decision.reason.orEmpty())
+        incidentMutation(
+            "session:$sessionId",
+            "تم إنهاء الجلسة المحددة",
+            target,
+            localSessions = { sessions -> sessions.filterNot { it.id == sessionId } },
+        ) {
+            repository.revokeUserSession(target.id, sessionId)
+        }
+    }
+
+    fun revokeAllSessions(target: AdminUser) {
+        val decision = accountSecurityDecision(target)
+        if (!decision.allowed) return deny(decision.reason.orEmpty())
+        incidentMutation("sessions:${target.id}", "تم إنهاء جميع جلسات الحساب", target, clearSessions = true) {
+            repository.revokeAllUserSessions(target.id)
+        }
+    }
+
+    fun resetTwoFactor(target: AdminUser) {
+        val decision = accountSecurityDecision(target)
+        if (!decision.allowed) return deny(decision.reason.orEmpty())
+        incidentMutation("2fa:${target.id}", "تمت إعادة تهيئة المصادقة الثنائية وإنهاء الجلسات", target, clearSessions = true) {
+            repository.resetUserTwoFactor(target.id)
+        }
+    }
+
     fun refresh() {
         if (!policy.canOpen || state.loading || state.refreshing) return
-        val hasContent = state.overview != null
-        state = state.copy(loading = !hasContent, refreshing = hasContent, error = null, notice = null)
+        state = state.overviewLoadStarted()
         viewModelScope.launch {
             runCatching { repository.loadOverview(state.query, state.includeInactive) }
                 .onSuccess { state = state.overviewLoaded(it) }
@@ -154,18 +246,68 @@ class AdminViewModel(
     }
 
     private fun mutate(key: String, success: String, action: suspend () -> Unit) {
-        if (state.busyKey != null) return
-        state = state.copy(busyKey = key, error = null, notice = null)
+        if (!state.overviewLoaded || state.busyKey != null) {
+            return deny("حدّث البيانات قبل تنفيذ الإجراء")
+        }
+        state = state.mutationStarted(key)
         viewModelScope.launch {
-            runCatching { action() }
-                .onSuccess {
-                    state = state.copy(busyKey = null, notice = success)
-                    refresh()
-                    if (state.section == AdminSection.AUDIT) loadAudit(reset = true)
-                }
-                .onFailure { state = state.failed(it.userMessage()) }
+            val mutation = runCatching { action() }
+            if (mutation.isFailure) {
+                state = state.mutationRefreshFailed(requireNotNull(mutation.exceptionOrNull()).userMessage())
+                return@launch
+            }
+
+            state = state.mutationCommitted(success)
+            val refreshed = runCatching { repository.loadOverview(state.query, state.includeInactive) }
+            state = if (refreshed.isSuccess) {
+                state.overviewLoaded(refreshed.getOrThrow()).copy(busyKey = null, notice = success)
+            } else {
+                state.mutationRefreshFailed(
+                    "تم تنفيذ الإجراء، لكن تعذر تحديث البيانات. ${requireNotNull(refreshed.exceptionOrNull()).userMessage()}",
+                )
+            }
+            if (state.overviewLoaded && state.section == AdminSection.AUDIT) loadAudit(reset = true)
         }
     }
+
+    private fun incidentMutation(
+        key: String,
+        success: String,
+        target: AdminUser,
+        clearSessions: Boolean = false,
+        localSessions: (List<AdminUserSession>) -> List<AdminUserSession> = { it },
+        action: suspend () -> Unit,
+    ) {
+        if (!state.incidentFresh || state.incidentUserId != target.id || state.busyKey != null) {
+            return deny("حدّث جلسات الحساب قبل تنفيذ الإجراء")
+        }
+        state = state.incidentMutationStarted(key)
+        viewModelScope.launch {
+            val mutation = runCatching { action() }
+            if (mutation.isFailure) {
+                state = state.incidentRefreshFailed(requireNotNull(mutation.exceptionOrNull()).userMessage())
+                return@launch
+            }
+
+            state = state.copy(
+                incidentSessions = if (clearSessions) emptyList() else localSessions(state.incidentSessions),
+                notice = success,
+            )
+            val refreshed = runCatching { repository.loadUserSessions(target.id) }
+            state = if (refreshed.isSuccess) {
+                state.incidentLoaded(target.id, refreshed.getOrThrow()).copy(notice = success)
+            } else {
+                state.incidentRefreshFailed(
+                    "تم تنفيذ الإجراء، لكن تعذر تحديث الجلسات. ${requireNotNull(refreshed.exceptionOrNull()).userMessage()}",
+                )
+            }
+        }
+    }
+
+    private fun accountSecurityDecision(target: AdminUser) = policy.canManageAccountSecurity(
+        target,
+        state.overview?.activeOwnerCount ?: 0,
+    )
 
     private fun deny(message: String) {
         state = state.copy(error = message.ifBlank { "الإجراء غير مسموح" }, notice = null)

@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -13,17 +15,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreditScore
@@ -39,6 +45,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -63,9 +71,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import online.alarabiya.superapp.model.collections.CollectionsCapabilities
+import online.alarabiya.superapp.model.collections.CollectionsValidation
+import online.alarabiya.superapp.model.collections.CreditCustomerOption
 import online.alarabiya.superapp.model.collections.CreditDecision
 import online.alarabiya.superapp.model.collections.CreditDecisionStatus
 import online.alarabiya.superapp.ui.rtlIsolate
@@ -92,6 +105,16 @@ fun CollectionsRoute(viewModel: CollectionsViewModel, modifier: Modifier = Modif
             select = viewModel::select,
             cancelReason = viewModel::cancelReason,
             cancel = viewModel::cancelDecision,
+            openCreate = viewModel::openCreate,
+            closeCreate = viewModel::closeCreate,
+            createBranch = viewModel::createBranch,
+            customerQuery = viewModel::customerQuery,
+            searchCustomers = viewModel::searchCustomers,
+            selectCustomer = viewModel::selectCustomer,
+            createAmount = viewModel::createAmount,
+            createTtl = viewModel::createTtl,
+            createNotes = viewModel::createNotes,
+            create = viewModel::createDecision,
             clearMessage = viewModel::clearMessage,
         ),
         modifier = modifier,
@@ -108,6 +131,16 @@ data class CollectionsActions(
     val select: (Long?) -> Unit,
     val cancelReason: (String) -> Unit,
     val cancel: () -> Unit,
+    val openCreate: () -> Unit,
+    val closeCreate: () -> Unit,
+    val createBranch: (Long) -> Unit,
+    val customerQuery: (String) -> Unit,
+    val searchCustomers: () -> Unit,
+    val selectCustomer: (CreditCustomerOption) -> Unit,
+    val createAmount: (String) -> Unit,
+    val createTtl: (String) -> Unit,
+    val createNotes: (String) -> Unit,
+    val create: () -> Unit,
     val clearMessage: () -> Unit,
 )
 
@@ -119,9 +152,10 @@ fun CollectionsScreen(
     modifier: Modifier = Modifier,
 ) {
     var confirmCancel by remember { mutableStateOf(false) }
+    var confirmCreate by remember { mutableStateOf(false) }
     Scaffold(modifier.fillMaxSize(), containerColor = MaterialTheme.colorScheme.surface) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            CollectionsHeader(state.total, state.locked, actions.refresh)
+            CollectionsHeader(state.total, state.locked, capabilities, actions)
             state.error?.let { Feedback(it, true, actions.clearMessage) }
             state.notice?.let { Feedback(it, false, actions.clearMessage) }
             if (!capabilities.canReadCreditDecisions) {
@@ -132,6 +166,26 @@ fun CollectionsScreen(
                 CreditWorkspace(state, capabilities, actions) { confirmCancel = true }
             }
         }
+    }
+    if (state.createOpen) {
+        CreateDecisionDialog(state, capabilities, actions) { confirmCreate = true }
+    }
+    if (confirmCreate) {
+        AlertDialog(
+            onDismissRequest = { if (!state.locked) confirmCreate = false },
+            icon = { Icon(Icons.Rounded.CreditScore, null, tint = Indigo) },
+            title = { Text("تأكيد إصدار القرار", fontWeight = FontWeight.ExtraBold) },
+            text = {
+                Text("إصدار قرار ائتمان للعميل «${state.createDraft.customerName}» بسقف ${state.createDraft.maxAmount} ولمدة ${state.createDraft.ttlMinutes} دقيقة؟")
+            },
+            confirmButton = {
+                Button(
+                    onClick = { confirmCreate = false; actions.create() },
+                    enabled = !state.locked && CollectionsValidation.create(state.createDraft, capabilities) == null,
+                ) { Text("إصدار القرار") }
+            },
+            dismissButton = { OutlinedButton({ confirmCreate = false }) { Text("مراجعة") } },
+        )
     }
     if (confirmCancel) {
         AlertDialog(
@@ -151,7 +205,12 @@ fun CollectionsScreen(
 }
 
 @Composable
-private fun CollectionsHeader(total: Int, locked: Boolean, refresh: () -> Unit) {
+private fun CollectionsHeader(
+    total: Int,
+    locked: Boolean,
+    capabilities: CollectionsCapabilities,
+    actions: CollectionsActions,
+) {
     Box(
         Modifier.fillMaxWidth()
             .background(
@@ -166,11 +225,199 @@ private fun CollectionsHeader(total: Int, locked: Boolean, refresh: () -> Unit) 
                 Text("قرارات الائتمان", color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
                 Text("سجل الشركة • $total قراراً ضمن الفلتر", color = Color.White.copy(alpha = .76f))
             }
-            Surface(color = Color.White.copy(alpha = .13f), shape = RoundedCornerShape(22.dp, 22.dp, 8.dp, 22.dp)) {
-                IconButton(refresh, enabled = !locked) { Icon(Icons.Rounded.Refresh, "تحديث", tint = Color.White) }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (capabilities.canCreateCreditDecision) {
+                    Surface(color = Color.White, shape = RoundedCornerShape(22.dp, 22.dp, 8.dp, 22.dp)) {
+                        IconButton(actions.openCreate, enabled = !locked) { Icon(Icons.Rounded.Add, "قرار جديد", tint = Indigo) }
+                    }
+                }
+                Surface(color = Color.White.copy(alpha = .13f), shape = RoundedCornerShape(22.dp, 22.dp, 8.dp, 22.dp)) {
+                    IconButton(actions.refresh, enabled = !locked) { Icon(Icons.Rounded.Refresh, "تحديث", tint = Color.White) }
+                }
             }
         }
     }
+}
+
+@Composable
+private fun CreateDecisionDialog(
+    state: CollectionsUiState,
+    capabilities: CollectionsCapabilities,
+    actions: CollectionsActions,
+    review: () -> Unit,
+) {
+    var branchMenu by remember { mutableStateOf(false) }
+    val draft = state.createDraft
+    val selectedBranch = state.branches.firstOrNull { it.id == draft.branchId }
+    val validation = CollectionsValidation.create(draft, capabilities)
+    Dialog(onDismissRequest = actions.closeCreate) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(.96f).widthIn(max = 680.dp).imePadding(),
+            shape = RoundedCornerShape(topStart = 38.dp, topEnd = 16.dp, bottomStart = 18.dp, bottomEnd = 38.dp),
+            tonalElevation = 8.dp,
+            shadowElevation = 18.dp,
+        ) {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 760.dp).verticalScroll(rememberScrollState()).padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Box(
+                            Modifier.size(48.dp).background(Ice, RoundedCornerShape(20.dp, 20.dp, 8.dp, 20.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(Icons.Rounded.CreditScore, null, tint = Indigo) }
+                        Column {
+                            Text("قرار ائتمان جديد", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+                            Text("قرار مؤقت ومقيّد بفرع واحد", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    IconButton(actions.closeCreate, enabled = !state.locked) { Icon(Icons.Rounded.Close, "إغلاق") }
+                }
+
+                if (capabilities.canSelectBranch) {
+                    Box {
+                        OutlinedButton(
+                            onClick = { branchMenu = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !state.locked && state.branchesFresh,
+                            shape = RoundedCornerShape(18.dp),
+                        ) {
+                            Icon(Icons.Rounded.AccountBalance, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(selectedBranch?.name ?: "اختر الفرع", Modifier.weight(1f))
+                        }
+                        DropdownMenu(expanded = branchMenu, onDismissRequest = { branchMenu = false }) {
+                            state.branches.forEach { branch ->
+                                DropdownMenuItem(
+                                    text = { Text(branch.name) },
+                                    onClick = { branchMenu = false; actions.createBranch(branch.id) },
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    DetailLine("الفرع", selectedBranch?.name ?: "#${draft.branchId ?: "—"}")
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("العميل", fontWeight = FontWeight.Bold)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = state.customerQuery,
+                            onValueChange = actions.customerQuery,
+                            modifier = Modifier.weight(1f),
+                            label = { Text("اسم أو هاتف") },
+                            singleLine = true,
+                            enabled = !state.locked,
+                            shape = RoundedCornerShape(18.dp),
+                        )
+                        IconButton(actions.searchCustomers, enabled = !state.locked && draft.branchId != null) {
+                            if (state.busy == CollectionsBusy.CUSTOMERS) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                            else Icon(Icons.Rounded.Search, "بحث")
+                        }
+                    }
+                    if (state.customerOptionsFresh && state.customerOptions.isEmpty()) {
+                        Text("لا يوجد عميل مطابق ضمن نطاق الفرع", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    state.customerOptions.take(10).forEach { customer ->
+                        val selected = customer.id == draft.customerId
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().clickable(
+                                enabled = !state.locked,
+                                role = Role.RadioButton,
+                            ) { actions.selectCustomer(customer) },
+                            color = if (selected) Ice else MaterialTheme.colorScheme.surfaceContainerLow,
+                            shape = RoundedCornerShape(18.dp, 8.dp, 18.dp, 8.dp),
+                            border = if (selected) androidx.compose.foundation.BorderStroke(1.dp, Indigo) else null,
+                        ) {
+                            Row(Modifier.padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(customer.name, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    customer.phone?.let { Text(rtlIsolate(it), style = MaterialTheme.typography.bodySmall) }
+                                }
+                                Text("رصيد ${customer.currentBalance}", color = Indigo, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                }
+
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    if (maxWidth < 520.dp) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            CreateAmountField(draft.maxAmount, actions.createAmount, !state.locked, Modifier.fillMaxWidth())
+                            CreateTtlField(draft.ttlMinutes, actions.createTtl, !state.locked, Modifier.fillMaxWidth())
+                        }
+                    } else {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            CreateAmountField(draft.maxAmount, actions.createAmount, !state.locked, Modifier.weight(1f))
+                            CreateTtlField(draft.ttlMinutes, actions.createTtl, !state.locked, Modifier.weight(.72f))
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = draft.notes,
+                    onValueChange = actions.createNotes,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("ملاحظات") },
+                    minLines = 2,
+                    maxLines = 4,
+                    enabled = !state.locked,
+                    shape = RoundedCornerShape(18.dp),
+                )
+                validation?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                Button(
+                    onClick = review,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.locked && state.customerOptionsFresh && validation == null,
+                    shape = RoundedCornerShape(18.dp, 18.dp, 8.dp, 18.dp),
+                ) {
+                    if (state.busy == CollectionsBusy.CREATE) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                    else Text("مراجعة القرار", fontWeight = FontWeight.ExtraBold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CreateAmountField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean,
+    modifier: Modifier,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        label = { Text("السقف") },
+        suffix = { Text("د.ع") },
+        singleLine = true,
+        enabled = enabled,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        shape = RoundedCornerShape(18.dp),
+    )
+}
+
+@Composable
+private fun CreateTtlField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean,
+    modifier: Modifier,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        label = { Text("المدة") },
+        suffix = { Text("د") },
+        singleLine = true,
+        enabled = enabled,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        shape = RoundedCornerShape(18.dp),
+    )
 }
 
 @Composable
@@ -342,7 +589,7 @@ private fun CreditDetail(
                         Button(
                             onClick = confirmCancel,
                             modifier = Modifier.fillMaxWidth(),
-                            enabled = !state.locked && state.cancelReason.trim().length >= 5,
+                            enabled = !state.locked && state.catalogFresh && state.cancelReason.trim().length >= 5,
                         ) { Text("مراجعة الإلغاء") }
                     }
                 }

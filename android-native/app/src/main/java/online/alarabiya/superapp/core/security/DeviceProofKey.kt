@@ -2,10 +2,7 @@ package online.alarabiya.superapp.core.security
 
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
-import online.alarabiya.superapp.BuildConfig
-import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -27,7 +24,10 @@ class DeviceProofUnavailableException(cause: Throwable? = null) :
 
 /**
  * Owns a non-exportable P-256 signing key in Android Keystore. StrongBox is requested first and
- * falls back to the device TEE; production refuses a software-only key.
+ * falls back to the platform Android Keystore implementation. The server verifies possession of
+ * this key, but does not consume an Android key-attestation chain; rejecting an otherwise valid
+ * key based only on a vendor `KeyInfo` flag adds no server-verifiable security and locks out
+ * supported devices unnecessarily.
  */
 class DeviceProofKey {
     /** SHA-256(SPKI DER), base64url without padding — exactly the server session `dpk` format. */
@@ -82,7 +82,10 @@ class DeviceProofKey {
 
     fun clear() {
         runCatching {
-            KeyStore.getInstance(KEYSTORE).apply { load(null) }.deleteEntry(KEY_ALIAS)
+            KeyStore.getInstance(KEYSTORE).apply { load(null) }.run {
+                deleteEntry(KEY_ALIAS)
+                deleteEntry(LEGACY_KEY_ALIAS)
+            }
         }
         counter.set(System.currentTimeMillis())
     }
@@ -105,19 +108,29 @@ class DeviceProofKey {
     }
 
     private fun getOrCreateKeyPair(): KeyPair {
+        return loadExistingKeyPair()
+            ?: generateKeyPair(preferStrongBox = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+    }
+
+    private fun loadExistingKeyPair(): KeyPair? {
         val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        val privateKey = keyStore.getKey(KEY_ALIAS, null)
-        val publicKey = keyStore.getCertificate(KEY_ALIAS)?.publicKey
-        val pair = if (privateKey != null && publicKey != null) {
-            KeyPair(publicKey, privateKey as java.security.PrivateKey)
-        } else {
-            generateKeyPair(preferStrongBox = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+        if (!keyStore.containsAlias(KEY_ALIAS)) return null
+        return try {
+            val privateKey = keyStore.getKey(KEY_ALIAS, null) as? java.security.PrivateKey
+            val publicKey = keyStore.getCertificate(KEY_ALIAS)?.publicKey
+            if (privateKey == null || publicKey == null) {
+                keyStore.deleteEntry(KEY_ALIAS)
+                null
+            } else {
+                KeyPair(publicKey, privateKey)
+            }
+        } catch (_: Exception) {
+            // A lock-screen reset, firmware update, or vendor Keystore migration may invalidate
+            // an existing alias. It is an installation credential, so rotate it and let the next
+            // authenticated login bind the replacement key instead of bricking the application.
+            runCatching { keyStore.deleteEntry(KEY_ALIAS) }
+            null
         }
-        if (BuildConfig.ENVIRONMENT == "prod" && !isHardwareBacked(pair)) {
-            clear()
-            throw DeviceProofUnavailableException()
-        }
-        return pair
     }
 
     private fun generateKeyPair(preferStrongBox: Boolean): KeyPair {
@@ -130,12 +143,8 @@ class DeviceProofKey {
                 .setDigests(KeyProperties.DIGEST_SHA256)
                 .setUserAuthenticationRequired(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                // Android 12-14 cannot create or use unlocked-device-required keys when a secure
-                // lock screen is absent. Android documents the issue as fixed in Android 15, so
-                // keep the authorization there without excluding otherwise supported tablets.
-                if (!BuildConfig.DEBUG && DeviceProofKeyPolicy.requiresUnlockedDevice(Build.VERSION.SDK_INT)) {
-                    builder.setUnlockedDeviceRequired(true)
-                }
+                // Device proof must remain usable by background push registration. Bearer-session
+                // user presence is enforced separately through SecureSessionStore + CryptoObject.
                 builder.setIsStrongBoxBacked(useStrongBox)
             }
             return builder.build()
@@ -160,17 +169,6 @@ class DeviceProofKey {
         }
     }
 
-    private fun isHardwareBacked(keyPair: KeyPair): Boolean = runCatching {
-        val keyInfo = KeyFactory.getInstance(keyPair.private.algorithm, KEYSTORE)
-            .getKeySpec(keyPair.private, KeyInfo::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            DeviceProofKeyPolicy.isSecureHardwareLevel(keyInfo.securityLevel)
-        } else {
-            @Suppress("DEPRECATION")
-            keyInfo.isInsideSecureHardware
-        }
-    }.getOrDefault(false)
-
     private fun nextCounter(now: Long): Long {
         while (true) {
             val previous = counter.get()
@@ -190,7 +188,10 @@ class DeviceProofKey {
         // callers cannot emit the same or out-of-order proof counter.
         val counter = AtomicLong(System.currentTimeMillis())
         const val KEYSTORE = "AndroidKeyStore"
-        const val KEY_ALIAS = "alrueya_native_device_proof_v1"
+        // Rotate away from v1 aliases that may carry unlocked-device authorization and remain
+        // unusable even after installing the corrected client.
+        const val KEY_ALIAS = "alrueya_native_device_proof_v2"
+        const val LEGACY_KEY_ALIAS = "alrueya_native_device_proof_v1"
         const val CURVE = "secp256r1"
         const val SIGNATURE_ALGORITHM = "SHA256withECDSA"
         const val NONCE_BYTES = 16
@@ -209,17 +210,6 @@ class DeviceProofKey {
     }
 }
 
-/** Pure policy kept outside Android Keystore calls so compatibility decisions are unit tested. */
-internal object DeviceProofKeyPolicy {
-    // setUnlockedDeviceRequired() has known Android 12-14 defects and is safe to enable from 15.
-    fun requiresUnlockedDevice(apiLevel: Int): Boolean = apiLevel >= 35
-
-    fun isSecureHardwareLevel(securityLevel: Int): Boolean = securityLevel in setOf(
-        KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE,
-        KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT,
-        KeyProperties.SECURITY_LEVEL_STRONGBOX,
-    )
-}
 
 /** Pure JVM contract used by Android device proof and its unit tests. */
 internal object DeviceProofThumbprint {

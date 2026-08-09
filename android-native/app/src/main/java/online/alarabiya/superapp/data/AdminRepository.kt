@@ -8,11 +8,14 @@ import online.alarabiya.superapp.model.admin.AdminBranch
 import online.alarabiya.superapp.model.admin.AdminOverview
 import online.alarabiya.superapp.model.admin.AdminRole
 import online.alarabiya.superapp.model.admin.AdminUser
+import online.alarabiya.superapp.model.admin.AdminUserSession
 import online.alarabiya.superapp.model.admin.CreateAdminRoleCommand
 import online.alarabiya.superapp.model.admin.CreateAdminUserCommand
 import online.alarabiya.superapp.model.admin.RoleAssignment
 import online.alarabiya.superapp.model.admin.UpdateAdminRoleCommand
 import online.alarabiya.superapp.model.admin.UpdateAdminUserCommand
+import online.alarabiya.superapp.model.admin.EffectivePermission
+import online.alarabiya.superapp.model.admin.UserPermissionProfile
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -24,6 +27,13 @@ interface AdminDataSource {
     suspend fun updateUser(command: UpdateAdminUserCommand)
     suspend fun assignRole(userId: Long, assignment: RoleAssignment)
     suspend fun setUserActive(userId: Long, active: Boolean)
+    suspend fun loadUserPermissions(userId: Long): UserPermissionProfile
+    suspend fun updateUserPermissions(userId: Long, overrides: Map<String, AccessLevel>)
+    suspend fun resetUserPassword(userId: Long, temporaryPassword: String)
+    suspend fun loadUserSessions(userId: Long): List<AdminUserSession>
+    suspend fun revokeUserSession(userId: Long, sessionId: Long)
+    suspend fun revokeAllUserSessions(userId: Long)
+    suspend fun resetUserTwoFactor(userId: Long)
     suspend fun createRole(command: CreateAdminRoleCommand): Long
     suspend fun updateRole(command: UpdateAdminRoleCommand)
     suspend fun setRoleActive(roleId: Long, active: Boolean)
@@ -113,12 +123,35 @@ object AdminMapper {
         if (':' in value) return value.split(':').take(3).joinToString(":") + ":•••"
         return "•••"
     }
+
+    fun session(payload: JSONObject): AdminUserSession? {
+        val id = payload.optLong("id").takeIf { it > 0 } ?: return null
+        return AdminUserSession(
+            id = id,
+            deviceLabel = deviceLabel(payload.optString("userAgent")),
+            maskedIpAddress = maskIp(payload.nullableText("ipAddress")),
+            createdAt = payload.optString("createdAt"),
+            lastSeenAt = payload.optString("lastSeenAt"),
+            expiresAt = payload.optString("expiresAt"),
+        )
+    }
+
+    private fun deviceLabel(userAgent: String?): String {
+        val value = userAgent.orEmpty()
+        return when {
+            value.contains("Android", ignoreCase = true) -> "جهاز Android"
+            value.contains("iPhone", ignoreCase = true) || value.contains("iPad", ignoreCase = true) -> "جهاز Apple"
+            value.contains("Windows", ignoreCase = true) -> "جهاز Windows"
+            value.contains("Macintosh", ignoreCase = true) -> "جهاز Mac"
+            else -> "جهاز غير معروف"
+        }
+    }
 }
 
 /**
  * Native facade over the authoritative admin-only server contracts. It intentionally does not
- * expose self-registration, deletion, owner assignment, per-user permission overrides, password
- * reset, or raw audit values. Those capabilities need a separately reviewed privileged flow.
+ * expose self-registration, deletion, owner assignment, or raw audit values. Privileged
+ * permission/password operations remain owner-gated by the UI policy and server authentication.
  */
 class AdminRepository(private val api: TrpcClient) : AdminDataSource {
     override suspend fun loadOverview(query: String, includeInactive: Boolean): AdminOverview {
@@ -134,14 +167,15 @@ class AdminRepository(private val api: TrpcClient) : AdminDataSource {
             .mapNotNull { AdminMapper.user(it.toAdminUserPayload()) }
 
         // Dedicated guard snapshot: the UI never infers "last admin" from the filtered page.
-        val activeAdmins = api.query(
+        val activeGuardRows = api.query(
             "users.list",
             JSONObject()
-                .put("role", "admin")
                 .put("includeInactive", false)
                 .put("limit", SERVER_MAX_USERS)
                 .put("offset", 0),
-        ).optJSONArray("rows").objects().count { it.optBoolean("isActive") }
+        ).optJSONArray("rows").objects()
+        val activeAdmins = activeGuardRows.count { it.optBoolean("isActive") && it.optString("role") == "admin" }
+        val activeOwners = activeGuardRows.count { it.optBoolean("isActive") && it.optBoolean("isOwner") }
 
         val roleResponse = api.query("roles.list", JSONObject().put("includeInactive", true))
         val counts = roleResponse.optJSONObject("counts") ?: JSONObject()
@@ -160,6 +194,7 @@ class AdminRepository(private val api: TrpcClient) : AdminDataSource {
             users = users,
             totalUsers = usersResponse.optInt("total", users.size),
             activeAdminCount = activeAdmins,
+            activeOwnerCount = activeOwners,
             roles = roles,
             branches = branches,
         )
@@ -227,6 +262,72 @@ class AdminRepository(private val api: TrpcClient) : AdminDataSource {
     override suspend fun setUserActive(userId: Long, active: Boolean) {
         require(userId > 0) { "معرّف المستخدم غير صالح" }
         api.mutate("users.setActive", JSONObject().put("userId", userId).put("isActive", active))
+    }
+
+    override suspend fun loadUserPermissions(userId: Long): UserPermissionProfile {
+        require(userId > 0) { "معرّف المستخدم غير صالح" }
+        val effective = api.query("users.effectivePermissions", JSONObject().put("userId", userId))
+        val details = api.query("users.get", JSONObject().put("userId", userId))
+        val modules = effective.optJSONArray("modules").objects().mapNotNull { item ->
+            val key = item.optString("key").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            EffectivePermission(
+                key = key,
+                label = item.optString("label").takeIf(String::isNotBlank) ?: key,
+                level = AccessLevel.fromApi(item.optString("level")),
+                source = item.optString("source"),
+            )
+        }
+        return UserPermissionProfile(
+            userId = effective.optLong("userId").takeIf { it > 0 } ?: userId,
+            effectiveRole = effective.optString("effectiveRole"),
+            customRoleLabel = effective.nullableText("customRoleLabel"),
+            customRoleInactive = effective.optBoolean("customRoleInactive"),
+            modules = modules,
+            individualOverrides = details.optJSONObject("permissionsOverride").toPermissionMap(),
+        )
+    }
+
+    override suspend fun updateUserPermissions(userId: Long, overrides: Map<String, AccessLevel>) {
+        require(userId > 0) { "معرّف المستخدم غير صالح" }
+        api.mutate(
+            "users.update",
+            JSONObject().put("userId", userId).put(
+                "permissionsOverride",
+                if (overrides.isEmpty()) JSONObject.NULL else overrides.toJson(),
+            ),
+        )
+    }
+
+    override suspend fun resetUserPassword(userId: Long, temporaryPassword: String) {
+        require(userId > 0 && temporaryPassword.isNotBlank()) { "بيانات إعادة التعيين غير صالحة" }
+        api.mutate(
+            "users.resetPassword",
+            JSONObject()
+                .put("userId", userId)
+                .put("newPassword", temporaryPassword)
+                .put("mustChangePassword", true),
+        )
+    }
+
+    override suspend fun loadUserSessions(userId: Long): List<AdminUserSession> {
+        require(userId > 0) { "معرّف المستخدم غير صالح" }
+        return api.queryArray("users.sessions", JSONObject().put("userId", userId))
+            .objects().mapNotNull(AdminMapper::session)
+    }
+
+    override suspend fun revokeUserSession(userId: Long, sessionId: Long) {
+        require(userId > 0 && sessionId > 0) { "بيانات الجلسة غير صالحة" }
+        api.mutate("users.revokeSession", JSONObject().put("userId", userId).put("sessionId", sessionId))
+    }
+
+    override suspend fun revokeAllUserSessions(userId: Long) {
+        require(userId > 0) { "معرّف المستخدم غير صالح" }
+        api.mutate("users.revokeSessions", JSONObject().put("userId", userId))
+    }
+
+    override suspend fun resetUserTwoFactor(userId: Long) {
+        require(userId > 0) { "معرّف المستخدم غير صالح" }
+        api.mutate("users.resetTwoFactor", JSONObject().put("userId", userId))
     }
 
     override suspend fun createRole(command: CreateAdminRoleCommand): Long {

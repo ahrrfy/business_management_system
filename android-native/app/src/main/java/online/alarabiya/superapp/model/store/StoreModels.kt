@@ -1,5 +1,7 @@
 package online.alarabiya.superapp.model.store
 
+import java.math.BigDecimal
+
 enum class StoreOrderStatus(val wire: String, val label: String) {
     Pending("PENDING", "جديد"),
     Confirmed("CONFIRMED", "مؤكد"),
@@ -57,6 +59,103 @@ data class DeliveryPartyOption(
     val isActive: Boolean,
 )
 
+enum class DeliveryPartyType(val wire: String, val label: String) {
+    Individual("INDIVIDUAL", "مندوب فرد"),
+    Company("COMPANY", "شركة توصيل");
+
+    companion object {
+        fun fromWire(value: String?): DeliveryPartyType = entries.firstOrNull { it.wire == value } ?: Individual
+    }
+}
+
+data class DeliveryPartyAccount(
+    val id: Long,
+    val partyType: DeliveryPartyType,
+    val name: String,
+    val phone: String?,
+    val userId: Long?,
+    val branchId: Long?,
+    val defaultFee: String,
+    val currentBalance: String,
+    val floatLimit: String?,
+    val isActive: Boolean,
+    val openConsignments: Int,
+    val oldestOutstanding: String?,
+)
+
+data class CourierAccount(
+    val id: Long,
+    val name: String,
+    val username: String?,
+    val linkedPartyId: Long?,
+    val linkedPartyName: String?,
+)
+
+data class DeliveryPartyDraft(
+    val id: Long? = null,
+    val partyType: DeliveryPartyType = DeliveryPartyType.Individual,
+    val name: String = "",
+    val phone: String = "",
+    val userId: Long? = null,
+    val defaultFee: String = "0",
+    val floatLimit: String = "",
+) {
+    fun normalized() = copy(
+        name = name.trim(),
+        phone = phone.trim(),
+        userId = userId.takeIf { partyType == DeliveryPartyType.Individual },
+        defaultFee = DeliveryMoney.normalized(defaultFee) ?: defaultFee.trim(),
+        floatLimit = floatLimit.trim().let { DeliveryMoney.normalized(it) ?: it },
+    )
+
+    fun validate(): String? = when {
+        name.trim().isEmpty() -> "اسم جهة التوصيل مطلوب"
+        name.trim().length > 255 -> "الاسم يتجاوز 255 حرفاً"
+        phone.trim().length > 20 -> "رقم الهاتف يتجاوز 20 حرفاً"
+        DeliveryMoney.normalized(defaultFee) == null -> "أجرة التوصيل غير صالحة"
+        floatLimit.isNotBlank() && DeliveryMoney.normalized(floatLimit) == null -> "سقف العهدة غير صالح"
+        else -> null
+    }
+}
+
+data class DeliveryWriteOffDraft(
+    val partyId: Long,
+    val branchId: Long?,
+    val amount: String,
+    val currentBalance: String,
+    val reason: String,
+    val clientRequestId: String,
+) {
+    fun validate(): String? = when {
+        partyId <= 0 -> "جهة التوصيل غير صالحة"
+        branchId != null && branchId <= 0 -> "الفرع غير صالح"
+        !DeliveryMoney.isPositive(amount) -> "مبلغ الشطب غير صالح"
+        !DeliveryMoney.isPositive(currentBalance) -> "لا توجد ذمة قابلة للشطب"
+        !DeliveryMoney.isLessThanOrEqual(amount, currentBalance) -> "مبلغ الشطب يتجاوز الذمة الحالية"
+        reason.trim().length !in 3..500 -> "سبب الشطب يجب أن يكون بين 3 و500 حرف"
+        clientRequestId.isBlank() || clientRequestId.length > 64 -> "معرّف الطلب غير صالح"
+        else -> null
+    }
+}
+
+object DeliveryMoney {
+    private val wirePattern = Regex("^\\d+(\\.\\d{1,2})?$")
+
+    fun normalized(raw: String): String? {
+        val clean = raw.trim()
+        if (!wirePattern.matches(clean)) return null
+        return runCatching { BigDecimal(clean).setScale(2).toPlainString() }.getOrNull()
+    }
+
+    fun isPositive(raw: String): Boolean = normalized(raw)?.let { BigDecimal(it).signum() > 0 } == true
+
+    fun isLessThanOrEqual(left: String, right: String): Boolean {
+        val a = normalized(left)?.let(::BigDecimal) ?: return false
+        val b = normalized(right)?.let(::BigDecimal) ?: return false
+        return a <= b
+    }
+}
+
 data class CourierDelivery(
     val id: Long,
     val orderNumber: String,
@@ -90,6 +189,8 @@ data class StoreCapabilities(
     val canFulfillOrders: Boolean,
     val canDispatchOrders: Boolean,
     val courierSelfService: Boolean,
+    val canManageDeliveryParties: Boolean,
+    val canWriteOffDeliveryDebt: Boolean,
 ) {
     companion object {
         fun from(role: String, storeAccess: String?, courierAccess: String?): StoreCapabilities {
@@ -101,6 +202,8 @@ data class StoreCapabilities(
                 canFulfillOrders = storeLevel == "FULL",
                 canDispatchOrders = storeLevel == "FULL" && normalizedRole in setOf("admin", "manager"),
                 courierSelfService = normalizedRole == "courier" && courierLevel == "FULL",
+                canManageDeliveryParties = storeLevel in setOf("READ", "FULL") && normalizedRole in setOf("admin", "manager"),
+                canWriteOffDeliveryDebt = storeLevel in setOf("READ", "FULL") && normalizedRole in setOf("admin", "manager"),
             )
         }
     }

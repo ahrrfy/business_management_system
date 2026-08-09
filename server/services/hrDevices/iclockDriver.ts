@@ -9,32 +9,62 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { logger } from "../../logger";
 import { foldSoon } from "./attendanceFold";
 import { completeIclockCommand, popIclockCommand } from "./commands";
-import { resolveDeviceBySn, touchDevice } from "./registry";
+import { enabledDeviceIdentityRuntimeFailure, resolveDeviceBySn, touchDevice } from "./registry";
 import { ingestPunches, upsertDeviceUser } from "./punchStore";
 import type { RawPunch } from "./types";
+import {
+  authorizeDeviceIdentity,
+  requestDeviceCredential,
+  resolveBridgeSecurityConfig,
+  type BridgeSecurityConfig,
+} from "./bridgeSecurity";
 
-const MAX_BODY = 8 * 1024 * 1024; // دفعة سجلات كبيرة بعد انقطاع طويل — 8م.ب سقف كافٍ وآمن
-
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, maxBodyBytes: number, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
+    const advertised = Number(req.headers["content-length"] ?? 0);
+    if (Number.isFinite(advertised) && advertised > maxBodyBytes) {
+      reject(new Error("body too large"));
+      req.destroy();
+      return;
+    }
+    const timeout = setTimeout(() => {
+      reject(new Error("body timeout"));
+      req.destroy();
+    }, timeoutMs);
+    timeout.unref();
     req.on("data", (c: Buffer) => {
       size += c.length;
-      if (size > MAX_BODY) {
+      if (size > maxBodyBytes) {
         reject(new Error("body too large"));
         req.destroy();
         return;
       }
       chunks.push(c);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    req.on("end", () => {
+      clearTimeout(timeout);
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+    req.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
   });
 }
 
 function sendText(res: ServerResponse, body: string): void {
   res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end(body);
+}
+
+function sendFailure(res: ServerResponse, status: 403 | 503, body: "forbidden" | "retry"): void {
+  res.writeHead(status, {
+    "Content-Type": "text/plain",
+    Connection: "close",
+    ...(status === 503 ? { "Retry-After": "30" } : {}),
+  });
   res.end(body);
 }
 
@@ -117,20 +147,50 @@ function registryOptions(sn: string): string {
 }
 
 /** المدخل الوحيد: يعالج طلبات /iclock/* — يعيد true إن كان المسار له. */
-export async function handleIclock(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+export async function handleIclock(
+  req: IncomingMessage,
+  res: ServerResponse,
+  securityConfig: BridgeSecurityConfig = resolveBridgeSecurityConfig(),
+): Promise<boolean> {
   const url = new URL(req.url ?? "/", "http://device.local");
   if (!url.pathname.startsWith("/iclock/")) return false;
   const sn = (url.searchParams.get("SN") ?? "").trim();
   try {
-    if (!sn) {
-      sendText(res, "OK");
+    // السريال مفتاح ثقة وربط قاعدة البيانات؛ نرفض المحارف التحكمية/الطويلة قبل أي استعلام.
+    if (!sn || !/^[A-Za-z0-9._:-]{1,64}$/.test(sn)) {
+      if (req.method === "POST") sendFailure(res, 403, "forbidden");
+      else sendText(res, "OK");
       return true;
     }
-    const device = await resolveDeviceBySn(sn, "ZKTECO_PUSH");
+    const device = await resolveDeviceBySn(sn, "ZKTECO_PUSH", req.socket.remoteAddress);
     if (!device || !device.enabled) {
-      // غير معتمد: ردّ محايد بلا إعدادات — لا يُقبل منه شيء حتى يعتمده المدير.
-      sendText(res, "OK");
+      // لا نقرّ POST بالنجاح: بعض الأجهزة تحذف الدفعة بعد 200 OK، فتضيع بصمات ما قبل الاعتماد.
+      if (req.method === "POST") sendFailure(res, 403, "forbidden");
+      else sendText(res, "OK");
       return true;
+    }
+    const runtimeIdentityFailure = await enabledDeviceIdentityRuntimeFailure(securityConfig);
+    if (runtimeIdentityFailure) {
+      logger.error({ decision: "IDENTITY_PREFLIGHT_FAILED" }, "hrDevices/iclock: تدقيق هوية الأجهزة غير جاهز");
+      sendFailure(res, 503, "retry");
+      return true;
+    }
+    const identity = authorizeDeviceIdentity(
+      device,
+      sn,
+      { remoteAddress: req.socket.remoteAddress, credential: requestDeviceCredential(req) },
+      securityConfig,
+    );
+    if (!identity.authorized) {
+      logger.warn(
+        { sn, remote: req.socket.remoteAddress, decision: identity.decision },
+        "hrDevices/iclock: رفض هوية جهاز لا تطابق الربط المعتمد",
+      );
+      sendFailure(res, 403, "forbidden");
+      return true;
+    }
+    if (identity.decision === "LEGACY_MIGRATION") {
+      logger.warn({ sn, remote: req.socket.remoteAddress }, "hrDevices/iclock: قبول مؤقت بوضع هجرة الهوية القديمة");
     }
 
     if (url.pathname === "/iclock/cdata" && req.method === "GET") {
@@ -141,7 +201,7 @@ export async function handleIclock(req: IncomingMessage, res: ServerResponse): P
 
     if (url.pathname === "/iclock/cdata" && req.method === "POST") {
       const table = url.searchParams.get("table") ?? "";
-      const body = await readBody(req);
+      const body = await readBody(req, securityConfig.maxPayloadBytes, securityConfig.requestTimeoutMs);
       if (table === "ATTLOG") {
         const punches = parseAttlog(body);
         const { accepted, lastPunchAt } = await ingestPunches(device, punches);
@@ -170,11 +230,19 @@ export async function handleIclock(req: IncomingMessage, res: ServerResponse): P
     }
 
     if (url.pathname === "/iclock/devicecmd" && req.method === "POST") {
-      const body = await readBody(req);
+      const body = await readBody(req, securityConfig.maxPayloadBytes, securityConfig.requestTimeoutMs);
       // صيغة: ID=5&Return=0&CMD=CHECK — وقد تصل عدة أسطر.
       for (const line of body.split(/\r?\n/)) {
         const m = /ID=(\d+).*?Return=(-?\d+)/.exec(line);
-        if (m) await completeIclockCommand(Number(m[1]), Number(m[2]));
+        if (m) {
+          const completed = await completeIclockCommand(device.id, Number(m[1]), Number(m[2]));
+          if (!completed) {
+            logger.warn(
+              { deviceId: device.id, commandId: Number(m[1]) },
+              "hrDevices/iclock: تجاهل نتيجة أمر لا تخص الجهاز أو ليست قيد الإرسال",
+            );
+          }
+        }
       }
       await touchDevice(device.id);
       sendText(res, "OK");
@@ -185,8 +253,8 @@ export async function handleIclock(req: IncomingMessage, res: ServerResponse): P
     return true;
   } catch (e) {
     logger.error({ err: e, sn, path: url.pathname }, "hrDevices/iclock: فشل معالجة طلب");
-    // ردّ محايد كي لا يدخل الجهاز في حلقة إعادة محاولة عدوانية.
-    if (!res.headersSent) sendText(res, "OK");
+    // لا نرسل OK عند فشل التخزين/القراءة؛ 503 يبقي الدفعة لدى الجهاز كي يعيدها لاحقاً.
+    if (!res.headersSent) sendFailure(res, 503, "retry");
     return true;
   }
 }

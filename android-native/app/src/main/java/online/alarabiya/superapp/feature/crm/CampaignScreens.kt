@@ -36,8 +36,20 @@ import online.alarabiya.superapp.model.crm.CrmDashboard
 
 @Composable
 internal fun CampaignsWorkspace(state: CrmUiState, capabilities: CrmCapabilities, actions: CrmActions) {
+    if (!state.campaignsLoaded) {
+        CrmRetryGate(
+            title = if (state.campaignCreateOutcomeUnknown || state.campaignMutationOutcomeUnknown) {
+                "بيانات الحملات تحتاج تحديثاً"
+            } else {
+                "الحملات غير متاحة"
+            },
+            retryEnabled = !state.initializing && state.busyKey == null,
+            onRetry = actions.refresh,
+        )
+        return
+    }
     if (state.campaignEditor != null) {
-        CampaignEditorPane(state.campaignEditor, state.branches, capabilities, state.busyKey != null, actions)
+        CampaignEditorPane(state.campaignEditor, state.branches, capabilities, !state.canCreateCampaign, actions)
         return
     }
     LazyColumn(
@@ -53,7 +65,7 @@ internal fun CampaignsWorkspace(state: CrmUiState, capabilities: CrmCapabilities
                     Text("دورة اعتماد وتشغيل مرتبطة بصلاحية الحساب", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (capabilities.campaigns.canWrite) {
-                    IconButton(onClick = actions.beginCreateCampaign, enabled = state.busyKey == null) {
+                    IconButton(onClick = actions.beginCreateCampaign, enabled = state.canCreateCampaign) {
                         Icon(Icons.Rounded.Add, contentDescription = "حملة جديدة")
                     }
                 }
@@ -64,7 +76,7 @@ internal fun CampaignsWorkspace(state: CrmUiState, capabilities: CrmCapabilities
             CampaignCard(
                 campaign = campaign,
                 canWrite = capabilities.campaigns.canWrite,
-                enabled = state.busyKey == null,
+                enabled = state.canMutateCampaign,
                 onTransition = { actions.transitionCampaign(campaign, it) },
             )
         }

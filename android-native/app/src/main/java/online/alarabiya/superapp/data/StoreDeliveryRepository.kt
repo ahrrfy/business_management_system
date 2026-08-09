@@ -2,7 +2,12 @@ package online.alarabiya.superapp.data
 
 import online.alarabiya.superapp.core.network.TrpcClient
 import online.alarabiya.superapp.model.store.CourierWorkspace
+import online.alarabiya.superapp.model.store.CourierAccount
+import online.alarabiya.superapp.model.store.DeliveryMoney
+import online.alarabiya.superapp.model.store.DeliveryPartyAccount
+import online.alarabiya.superapp.model.store.DeliveryPartyDraft
 import online.alarabiya.superapp.model.store.DeliveryPartyOption
+import online.alarabiya.superapp.model.store.DeliveryWriteOffDraft
 import online.alarabiya.superapp.model.store.StoreMappers
 import online.alarabiya.superapp.model.store.StoreOrderDetail
 import online.alarabiya.superapp.model.store.StoreOrderFilter
@@ -26,6 +31,12 @@ interface StoreDeliveryDataSource {
     suspend fun courierWorkspace(): CourierWorkspace
     suspend fun confirmCourierDelivery(orderId: Long)
     suspend fun failCourierDelivery(orderId: Long, reason: String)
+    suspend fun managedParties(): List<DeliveryPartyAccount>
+    suspend fun courierAccounts(): List<CourierAccount>
+    suspend fun createParty(draft: DeliveryPartyDraft)
+    suspend fun updateParty(draft: DeliveryPartyDraft)
+    suspend fun setPartyActive(id: Long, active: Boolean)
+    suspend fun writeOff(draft: DeliveryWriteOffDraft)
 }
 
 class StoreDeliveryRepository(
@@ -97,7 +108,54 @@ class StoreDeliveryRepository(
         )
     }
 
+    override suspend fun managedParties(): List<DeliveryPartyAccount> =
+        StoreMappers.managedParties(api.queryArray("delivery.listParties", JSONObject()))
+
+    override suspend fun courierAccounts(): List<CourierAccount> =
+        StoreMappers.courierAccounts(api.queryArray("delivery.courierAccounts"))
+
+    override suspend fun createParty(draft: DeliveryPartyDraft) {
+        draft.validate()?.let { throw IllegalArgumentException(it) }
+        api.mutate("delivery.createParty", draft.normalized().toPartyInput(includeId = false))
+    }
+
+    override suspend fun updateParty(draft: DeliveryPartyDraft) {
+        require(draft.id != null && draft.id > 0) { "معرّف جهة التوصيل غير صالح" }
+        draft.validate()?.let { throw IllegalArgumentException(it) }
+        api.mutate("delivery.updateParty", draft.normalized().toPartyInput(includeId = true))
+    }
+
+    override suspend fun setPartyActive(id: Long, active: Boolean) {
+        require(id > 0) { "معرّف جهة التوصيل غير صالح" }
+        api.mutate("delivery.setPartyActive", JSONObject().put("id", id).put("isActive", active))
+    }
+
+    override suspend fun writeOff(draft: DeliveryWriteOffDraft) {
+        draft.validate()?.let { throw IllegalArgumentException(it) }
+        api.mutate(
+            "delivery.writeOff",
+            JSONObject()
+                .put("partyId", draft.partyId)
+                .putNullable("branchId", draft.branchId)
+                .put("amount", requireNotNull(DeliveryMoney.normalized(draft.amount)))
+                .put("reason", draft.reason.trim())
+                .put("clientRequestId", draft.clientRequestId),
+        )
+    }
+
     private companion object {
         val DATE = Regex("^\\d{4}-\\d{2}-\\d{2}$")
     }
 }
+
+private fun DeliveryPartyDraft.toPartyInput(includeId: Boolean): JSONObject = JSONObject().apply {
+    if (includeId) put("id", requireNotNull(id))
+    put("partyType", partyType.wire)
+    put("name", name)
+    putNullable("phone", phone.takeIf(String::isNotBlank))
+    putNullable("userId", userId)
+    put("defaultFee", requireNotNull(DeliveryMoney.normalized(defaultFee)))
+    putNullable("floatLimit", floatLimit.takeIf(String::isNotBlank)?.let { requireNotNull(DeliveryMoney.normalized(it)) })
+}
+
+private fun JSONObject.putNullable(key: String, value: Any?): JSONObject = put(key, value ?: JSONObject.NULL)

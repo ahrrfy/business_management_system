@@ -30,6 +30,68 @@ data class ProductsCapabilities(
 enum class ProductsSection { CATALOG, PRICE_WAVES, PRINT_PRICING }
 enum class ProductTier { RETAIL, WHOLESALE, GOVERNMENT }
 
+data class ProductCategory(val id: Long, val name: String, val parentId: Long? = null, val productCount: Int? = null)
+
+data class ProductUnitDraft(
+    val id: Long? = null,
+    val name: String = "حبة",
+    val factor: String = "1",
+    val barcode: String = "",
+    val retailPrice: String = "",
+    val wholesalePrice: String = "",
+    val governmentPrice: String = "",
+    val isBase: Boolean = true,
+    val isStoreSale: Boolean = true,
+)
+
+data class ProductVariantDraft(
+    val id: Long? = null,
+    val sku: String = "",
+    val name: String = "",
+    val color: String = "",
+    val size: String = "",
+    val costPrice: String = "0",
+    val costChangeReason: String = "",
+    val units: List<ProductUnitDraft> = listOf(ProductUnitDraft()),
+)
+
+data class ProductEditorDraft(
+    val productId: Long? = null,
+    val name: String = "",
+    val productType: String = "",
+    val brand: String = "",
+    val modelName: String = "",
+    val description: String = "",
+    val categoryId: Long? = null,
+    val active: Boolean = true,
+    val service: Boolean = false,
+    val variants: List<ProductVariantDraft> = listOf(ProductVariantDraft()),
+)
+
+data class BarcodeAlias(val id: Long, val barcode: String, val note: String?)
+
+object ProductEditorValidation {
+    private val decimal = Regex("^\\d+(\\.\\d{1,3})?$")
+    fun validate(draft: ProductEditorDraft): String? {
+        if (draft.name.trim().isEmpty()) return "اسم المنتج مطلوب"
+        if (draft.variants.isEmpty()) return "أضف متغيراً واحداً على الأقل"
+        draft.variants.forEachIndexed { index, variant ->
+            if (variant.sku.trim().isEmpty()) return "رمز SKU مطلوب للمتغير ${index + 1}"
+            if (!decimal.matches(variant.costPrice)) return "تكلفة المتغير ${index + 1} غير صالحة"
+            if (variant.units.isEmpty()) return "أضف وحدة واحدة على الأقل للمتغير ${index + 1}"
+            if (variant.units.count { it.isBase } != 1) return "حدد وحدة أساس واحدة للمتغير ${index + 1}"
+            variant.units.forEach { unit ->
+                if (unit.name.trim().isEmpty()) return "اسم الوحدة مطلوب"
+                if (!decimal.matches(unit.factor) || unit.factor.toDoubleOrNull() == 0.0) return "معامل الوحدة غير صالح"
+                listOf(unit.retailPrice, unit.wholesalePrice, unit.governmentPrice).filter(String::isNotBlank).forEach {
+                    if (!decimal.matches(it)) return "أحد أسعار البيع غير صالح"
+                }
+            }
+        }
+        return null
+    }
+}
+
 data class ProductRow(
     val productId: Long,
     val productName: String,

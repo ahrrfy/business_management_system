@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
+import org.json.JSONObject
 
 class AdminMapperTest {
     @Test
@@ -92,5 +93,31 @@ class AdminMapperTest {
         assertEquals("2001:db8:85a3:•••", AdminMapper.maskIp("2001:db8:85a3::8a2e:370:7334"))
         assertEquals("•••", AdminMapper.maskIp("internal-proxy-secret"))
         assertNull(AdminMapper.maskIp(null))
+    }
+
+    @Test
+    fun `session mapper exposes safe device summary without credentials`() {
+        val session = AdminMapper.session(
+            JSONObject()
+                .put("id", 44)
+                .put("userAgent", "Mozilla/5.0 (Linux; Android 15; SecretModel) bearer-secret")
+                .put("ipAddress", "10.20.30.40")
+                .put("createdAt", "2026-08-09T08:00:00Z")
+                .put("lastSeenAt", "2026-08-09T08:10:00Z")
+                .put("expiresAt", "2026-08-10T08:00:00Z")
+                .put("token", "must-not-leak")
+                .put("cookie", "must-not-leak"),
+        )
+
+        requireNotNull(session)
+        assertEquals("جهاز Android", session.deviceLabel)
+        assertEquals("10.20.30.•••", session.maskedIpAddress)
+        assertFalse(session.toString().contains("SecretModel"))
+        assertFalse(session.toString().contains("must-not-leak"))
+    }
+
+    @Test
+    fun `session mapper rejects invalid identifiers`() {
+        assertNull(AdminMapper.session(JSONObject().put("id", 0)))
     }
 }

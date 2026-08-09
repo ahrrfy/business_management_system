@@ -16,6 +16,9 @@ function validEnvironment(): NodeJS.ProcessEnv {
     TWO_FACTOR_ENFORCEMENT: "on",
     NATIVE_PUSH_ENVIRONMENT: "prod",
     HR_DEVICE_BRIDGE: "1",
+    HR_DEVICE_PORT: "7788",
+    HR_DEVICE_IP_ALLOWLIST: "192.168.50.10/32",
+    HR_DEVICE_LEGACY_IDENTITY_MIGRATION: "0",
     FCM_PROJECT_ID: "alrueya-prod",
     FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({
       project_id: "alrueya-prod",
@@ -53,6 +56,7 @@ describe("mobile production startup gate", () => {
     env.TWO_FACTOR_ENFORCEMENT = "off";
     env.NATIVE_PUSH_ENVIRONMENT = "dev";
     delete env.HR_DEVICE_BRIDGE;
+    delete env.HR_DEVICE_PORT;
 
     const result = checkMobileProductionReadiness(env);
     expect(result.ready).toBe(false);
@@ -67,5 +71,34 @@ describe("mobile production startup gate", () => {
       "MOBILE_PRODUCTION_NOT_READY:FCM_CONFIGURATION_INVALID",
     );
     expect(JSON.stringify(result)).not.toContain("short-secret");
+  });
+
+  it("rejects an enabled bridge with a universal network or repeated secret", () => {
+    const broad = validEnvironment();
+    broad.HR_DEVICE_IP_ALLOWLIST = "0.0.0.0/0";
+    expect(checkMobileProductionReadiness(broad).issues).toContain(
+      "ATTENDANCE_DEVICE_BRIDGE_INSECURE",
+    );
+
+    const repeated = validEnvironment();
+    delete repeated.HR_DEVICE_IP_ALLOWLIST;
+    repeated.HR_DEVICE_SHARED_SECRET = "abcd".repeat(8);
+    expect(checkMobileProductionReadiness(repeated).issues).toContain(
+      "ATTENDANCE_DEVICE_BRIDGE_INSECURE",
+    );
+
+    const migration = validEnvironment();
+    migration.HR_DEVICE_LEGACY_IDENTITY_MIGRATION = "1";
+    expect(checkMobileProductionReadiness(migration).issues).toContain(
+      "ATTENDANCE_DEVICE_BRIDGE_INSECURE",
+    );
+  });
+
+  it("rejects an invalid attendance bridge port instead of silently falling back", () => {
+    const env = validEnvironment();
+    env.HR_DEVICE_PORT = "99999";
+    expect(checkMobileProductionReadiness(env).issues).toContain(
+      "ATTENDANCE_DEVICE_BRIDGE_PORT_INVALID",
+    );
   });
 });

@@ -7,6 +7,7 @@ on:
     paths:
       - "android-native/**"
       - "scripts/verify-mobile-release-env.mjs"
+      - "scripts/verify-android-release-workflow-gate.mjs"
       - "package.json"
       - ".github/workflows/android-native-ci.yml"
       - ".github/workflows/android-release.yml"
@@ -15,6 +16,7 @@ on:
     paths:
       - "android-native/**"
       - "scripts/verify-mobile-release-env.mjs"
+      - "scripts/verify-android-release-workflow-gate.mjs"
       - "package.json"
       - ".github/workflows/android-native-ci.yml"
       - ".github/workflows/android-release.yml"

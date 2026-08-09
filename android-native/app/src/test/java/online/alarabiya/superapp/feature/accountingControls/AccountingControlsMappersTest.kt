@@ -3,16 +3,19 @@ package online.alarabiya.superapp.feature.accountingControls
 import online.alarabiya.superapp.data.toAccountGroupOrNull
 import online.alarabiya.superapp.data.toExchangeOperation
 import online.alarabiya.superapp.data.toExchangeStatement
+import online.alarabiya.superapp.data.toFinancialReconciliationReport
 import online.alarabiya.superapp.data.toReconciliation
 import online.alarabiya.superapp.data.toYearCloseResult
 import online.alarabiya.superapp.data.toYearEndSnapshotOrNull
 import online.alarabiya.superapp.model.accountingControls.AccountType
+import online.alarabiya.superapp.model.accountingControls.FinancialReconciliationAxis
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AccountingControlsMappersTest {
@@ -87,6 +90,54 @@ class AccountingControlsMappersTest {
         assertEquals("777.77", result.differenceIqd)
         assertFalse(result.matched)
         assertEquals(1, result.pendingCount)
+    }
+
+    @Test
+    fun `financial reconciliation keeps safe counts and discards sensitive rows`() {
+        val secret = "عميل سري للغاية"
+        val report = JSONObject()
+            .put("runAt", "2026-08-09T21:15:00.000Z")
+            .put("totalIssueCount", 2)
+            .put("balanced", false)
+            .put("sections", JSONObject()
+                .put("customers", JSONObject()
+                    .put("issueCount", 1)
+                    .put("balanced", false)
+                    .put("id", 88)
+                    .put("name", secret)
+                    .put("expected", "999999.00")
+                    .put("note", "تفاصيل سرية"))
+                .put("suppliers", JSONObject().put("issueCount", 0).put("balanced", true))
+                .put("delivery", JSONObject().put("issueCount", 1).put("balanced", false))
+                .put("inventory", JSONObject().put("issueCount", 0).put("balanced", true))
+                .put("ledger", JSONObject().put("issueCount", 0).put("balanced", true)))
+            .toFinancialReconciliationReport()
+
+        assertEquals(2, report.totalIssueCount)
+        assertFalse(report.balanced)
+        assertEquals(
+            1,
+            report.sections.single { it.axis == FinancialReconciliationAxis.CUSTOMERS }.issueCount,
+        )
+        assertFalse(report.toString().contains(secret))
+        assertFalse(report.toString().contains("999999.00"))
+    }
+
+    @Test
+    fun `financial reconciliation rejects incomplete response instead of false green`() {
+        val incomplete = JSONObject()
+            .put("runAt", "2026-08-09T21:15:00.000Z")
+            .put("totalIssueCount", 0)
+            .put("balanced", true)
+            .put("sections", JSONObject()
+                .put("customers", JSONObject().put("issueCount", 0).put("balanced", true))
+                .put("suppliers", JSONObject().put("issueCount", 0).put("balanced", true))
+                .put("delivery", JSONObject().put("issueCount", 0).put("balanced", true))
+                .put("inventory", JSONObject().put("issueCount", 0).put("balanced", true)))
+
+        assertThrows(IllegalStateException::class.java) {
+            incomplete.toFinancialReconciliationReport()
+        }
     }
 
     @Test

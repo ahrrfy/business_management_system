@@ -52,10 +52,14 @@ export const HR_DEVICE_DEFAULT_PORT = 7788;
  *   - غيابهما ⇒ معطَّل (صفر أثر، نمط CONTROL_DATABASE_URL)، ومعطَّل دائماً في وضع تعدد الشركات.
  */
 export function resolveBridgeConfig(): { enabled: boolean; port: number } {
-  const explicit = Number(process.env.HR_DEVICE_PORT || "0");
-  const hasExplicitPort = Number.isInteger(explicit) && explicit > 0;
+  const rawPort = process.env.HR_DEVICE_PORT?.trim() ?? "";
+  const explicit = Number(rawPort || "0");
+  const portWasSpecified = rawPort.length > 0;
+  const hasExplicitPort = Number.isInteger(explicit) && explicit > 0 && explicit <= 65_535;
   const enabled =
-    (process.env.HR_DEVICE_BRIDGE === "1" || hasExplicitPort) && !process.env.CONTROL_DATABASE_URL;
+    (!portWasSpecified || hasExplicitPort) &&
+    (process.env.HR_DEVICE_BRIDGE === "1" || hasExplicitPort) &&
+    !process.env.CONTROL_DATABASE_URL;
   return { enabled, port: hasExplicitPort ? explicit : HR_DEVICE_DEFAULT_PORT };
 }
 

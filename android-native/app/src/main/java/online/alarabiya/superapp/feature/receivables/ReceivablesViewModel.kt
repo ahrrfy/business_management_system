@@ -26,11 +26,19 @@ import online.alarabiya.superapp.model.receivables.ReminderFilter
 import online.alarabiya.superapp.model.receivables.ReminderLedger
 import online.alarabiya.superapp.model.receivables.ReminderQueueItem
 
+private data class ReceivablesCommit(
+    val notice: String,
+    val reduce: (ReceivablesUiState) -> ReceivablesUiState = { it },
+)
+
+private typealias ReceivablesReducer = (ReceivablesUiState) -> ReceivablesUiState
+
 class ReceivablesViewModel(
     private val repository: ReceivablesDataSource,
     val accessPolicy: ReceivablesAccessPolicy,
 ) : ViewModel() {
     private val initialBranch = accessPolicy.assignedBranchId?.toString().orEmpty()
+    private var pendingExecutiveRemindersRefresh = false
 
     var state by mutableStateOf(
         ReceivablesUiState(
@@ -46,10 +54,24 @@ class ReceivablesViewModel(
         if (accessPolicy.canRead(state.section)) load(state.section)
     }
 
+    fun applyNavigationArguments(arguments: Map<String, String>) {
+        val recognized = arguments["bucket"] in setOf("ar-30", "ar-60", "ar-90") ||
+            arguments["view"] == "creditExposure"
+        if (!recognized || !accessPolicy.canRead(ReceivablesSection.CUSTOMER_REMINDERS)) return
+        val next = state.applyExecutiveNavigation(
+            arguments = arguments,
+            canReadCustomerReminders = accessPolicy.canRead(ReceivablesSection.CUSTOMER_REMINDERS),
+        )
+        state = next
+        if (state.busy()) pendingExecutiveRemindersRefresh = true
+        else load(ReceivablesSection.CUSTOMER_REMINDERS, refresh = true)
+    }
+
     fun setSection(section: ReceivablesSection) {
         if (!accessPolicy.canRead(section) || section == state.section) return
         state = state.copy(
             section = section,
+            executiveView = if (section == ReceivablesSection.CUSTOMER_REMINDERS) state.executiveView else null,
             selectedPlanId = null,
             selectedPlan = null,
             selectedReminderId = null,
@@ -58,14 +80,14 @@ class ReceivablesViewModel(
             error = null,
             notice = null,
         )
-        if (section !in state.loadedSections) load(section)
+        if (!state.isFresh(section)) load(section, refresh = section in state.loadedSections)
     }
 
     fun refresh() = load(state.section, refresh = true)
 
     fun loadMore() {
         when {
-            state.loadingMore || state.loading || state.refreshing -> Unit
+            !state.canInteract(state.section) -> Unit
             state.section == ReceivablesSection.INSTALLMENTS && state.installmentHasMore -> load(state.section, append = true)
             state.section == ReceivablesSection.CARD_ACCOUNT && state.cardHasMore -> load(state.section, append = true)
         }
@@ -90,7 +112,10 @@ class ReceivablesViewModel(
             state = state.copy(selectedPlanId = null, selectedPlan = null, detailLoading = false)
             return
         }
-        if (state.installmentPlans.none { it.id == planId } || state.detailLoading) return
+        if (
+            !state.canInteract(ReceivablesSection.INSTALLMENTS) ||
+            state.installmentPlans.none { it.id == planId }
+        ) return
         state = state.copy(selectedPlanId = planId, selectedPlan = null, detailLoading = true, error = null)
         viewModelScope.launch {
             runCatching { repository.installmentPlan(planId) }
@@ -101,12 +126,12 @@ class ReceivablesViewModel(
                         detailLoading = false,
                     )
                 }
-                .onFailure { state = state.failed(it.userMessage()) }
+                .onFailure { state = state.failed(it.userMessage(), ReceivablesSection.INSTALLMENTS) }
         }
     }
 
     fun openNewPlan() {
-        if (!accessPolicy.canWrite(ReceivablesSection.INSTALLMENTS) || state.busy()) return
+        if (!accessPolicy.canWrite(ReceivablesSection.INSTALLMENTS) || !state.canInteract(ReceivablesSection.INSTALLMENTS)) return
         state = state.copy(
             newPlan = NewInstallmentPlan(branchId = accessPolicy.assignedBranchId?.toString() ?: state.installmentFilters.branchId),
             pendingAction = null,
@@ -135,6 +160,7 @@ class ReceivablesViewModel(
 
     fun requestCreatePlan() {
         val draft = state.newPlan ?: return
+        if (!state.canInteract(ReceivablesSection.INSTALLMENTS)) return
         val error = draft.validationError()
         state = if (error == null) state.copy(pendingAction = ReceivablesPendingAction.CreatePlan(draft), error = null)
         else state.copy(error = error)
@@ -147,7 +173,11 @@ class ReceivablesViewModel(
 
     fun requestCancelPlan() {
         val plan = state.selectedPlan?.summary ?: return
-        if (!accessPolicy.canWrite(ReceivablesSection.INSTALLMENTS) || plan.status != InstallmentStatus.ACTIVE) return
+        if (
+            !accessPolicy.canWrite(ReceivablesSection.INSTALLMENTS) ||
+            !state.canInteract(ReceivablesSection.INSTALLMENTS) ||
+            plan.status != InstallmentStatus.ACTIVE
+        ) return
         state = state.copy(pendingAction = ReceivablesPendingAction.CancelPlan(plan), error = null, notice = null)
     }
 
@@ -192,14 +222,20 @@ class ReceivablesViewModel(
     fun applyReminderFilter() {
         val filter = state.reminderFilter
         val error = filter.validationError(branchRequired = !filter.aggregate)
-        if (error != null) state = state.copy(error = error) else load(state.section, refresh = true)
+        if (error != null) state = state.copy(error = error)
+        else {
+            state = state.copy(executiveView = null, selectedReminderId = null)
+            load(state.section, refresh = true)
+        }
     }
 
     fun setReminderHistoryMode(history: Boolean) {
+        if (!state.canInteract(state.section)) return
         state = state.copy(reminderHistoryMode = history, selectedReminderId = null)
     }
 
     fun selectReminder(subjectId: Long?) {
+        if (!state.canInteract(state.section)) return
         state = if (subjectId == null || state.reminderQueue.any { it.subject.id == subjectId }) {
             state.copy(selectedReminderId = subjectId)
         } else state
@@ -207,7 +243,7 @@ class ReceivablesViewModel(
 
     fun requestReminder(item: ReminderQueueItem, kind: ReminderActionDraft.Kind) {
         val section = item.subject.ledger.section()
-        if (!accessPolicy.canWrite(section) || !canWriteCurrentReminderScope(item)) return
+        if (!accessPolicy.canWrite(section) || !state.canInteract(section) || !canWriteCurrentReminderScope(item)) return
         state = state.copy(
             pendingAction = ReceivablesPendingAction.Reminder(ReminderActionDraft(item, kind)),
             error = null,
@@ -230,7 +266,7 @@ class ReceivablesViewModel(
     }
 
     fun openReconciliation() {
-        if (!accessPolicy.canCreateReconciliation || state.busy()) return
+        if (!accessPolicy.canCreateReconciliation || !state.canInteract(ReceivablesSection.CARD_ACCOUNT)) return
         val branch = accessPolicy.assignedBranchId?.toString() ?: state.cardFilters.branchId
         state = state.copy(
             pendingAction = ReceivablesPendingAction.Reconcile(ReconciliationDraft(branchId = branch)),
@@ -241,7 +277,8 @@ class ReceivablesViewModel(
 
     fun confirmAction() {
         val action = state.pendingAction ?: return
-        if (state.submitting) return
+        val section = action.destination()
+        if (!state.canInteract(section)) return
         val error = action.validationError()
         if (error != null) {
             state = state.copy(error = error)
@@ -250,20 +287,18 @@ class ReceivablesViewModel(
         state = state.copy(submitting = true, error = null)
         viewModelScope.launch {
             runCatching { execute(action) }
-                .onSuccess { result ->
-                    val section = action.destination()
-                    state = state.copy(
-                        submitting = false,
-                        pendingAction = null,
-                        newPlan = null,
+                .onSuccess { committed ->
+                    // Persist the acknowledged outcome before reconciliation. A failed refresh may
+                    // hide the stale queue, but it must never reopen the action or invite a repeat.
+                    state = state.commit(section, committed.reduce).copy(
                         selectedPlan = null,
                         selectedPlanId = null,
                         selectedReminderId = null,
-                        notice = result,
+                        notice = committed.notice,
                     )
                     load(section, refresh = true, keepNotice = true)
                 }
-                .onFailure { state = state.failed(it.userMessage()) }
+                .onFailure { state = state.failed(it.userMessage(), section) }
         }
     }
 
@@ -271,23 +306,70 @@ class ReceivablesViewModel(
         state = state.copy(error = null, notice = null)
     }
 
-    private suspend fun execute(action: ReceivablesPendingAction): String = when (action) {
+    private suspend fun execute(action: ReceivablesPendingAction): ReceivablesCommit = when (action) {
         is ReceivablesPendingAction.CreatePlan -> {
             val id = repository.createInstallmentPlan(action.draft)
-            "أُنشئت خطة الأقساط #$id"
+            ReceivablesCommit("أُنشئت خطة الأقساط #$id")
         }
         is ReceivablesPendingAction.PayLine -> {
             val result = repository.payInstallment(action.line.id, action.method, action.note.takeIf(String::isNotBlank))
-            if (result.status == "PENDING_APPROVAL") "السند ${result.voucherNumber} بانتظار اعتماد مستقل"
-            else "تم تسجيل السداد بالسند ${result.voucherNumber}"
+            val notice = if (result.status == "PENDING_APPROVAL") {
+                "السند ${result.voucherNumber} بانتظار اعتماد مستقل"
+            } else {
+                "تم تسجيل السداد بالسند ${result.voucherNumber}"
+            }
+            ReceivablesCommit(notice) { current ->
+                val paid = result.status != "PENDING_APPROVAL"
+                val plans = current.installmentPlans.map { plan ->
+                    if (plan.id == action.line.planId && result.planCompleted) {
+                        plan.copy(status = InstallmentStatus.COMPLETED)
+                    } else {
+                        plan
+                    }
+                }
+                current.copy(
+                    installmentPlans = plans,
+                    dueInstallments = if (paid) current.dueInstallments.filterNot { it.lineId == action.line.id }
+                        else current.dueInstallments,
+                    selectedPlan = current.selectedPlan?.let { detail ->
+                        detail.copy(
+                            summary = plans.firstOrNull { it.id == detail.summary.id } ?: detail.summary,
+                            lines = detail.lines.map { line ->
+                                if (line.id == action.line.id && paid) {
+                                    line.copy(status = InstallmentLineStatus.PAID, receiptId = result.receiptId)
+                                } else {
+                                    line
+                                }
+                            },
+                        )
+                    },
+                )
+            }
         }
         is ReceivablesPendingAction.CancelPlan -> {
             repository.cancelInstallmentPlan(action.plan.id, action.reason)
-            "تم إلغاء الخطة"
+            ReceivablesCommit("تم إلغاء الخطة") { current ->
+                current.copy(
+                    installmentPlans = current.installmentPlans.map { plan ->
+                        if (plan.id == action.plan.id) plan.copy(status = InstallmentStatus.CANCELLED) else plan
+                    },
+                    dueInstallments = current.dueInstallments.filterNot { it.planId == action.plan.id },
+                    selectedPlan = current.selectedPlan?.takeIf { it.summary.id != action.plan.id },
+                )
+            }
         }
         is ReceivablesPendingAction.BounceCheck -> {
             val reversed = repository.bounceLegacyCheck(action.line.id, action.note.takeIf(String::isNotBlank))
-            if (reversed) "سُجّل ارتجاع الشيك وعُكس أثر التحصيل" else "سُجّل ارتجاع الشيك المعلّق"
+            val notice = if (reversed) "سُجّل ارتجاع الشيك وعُكس أثر التحصيل" else "سُجّل ارتجاع الشيك المعلّق"
+            ReceivablesCommit(notice) { current ->
+                current.copy(
+                    selectedPlan = current.selectedPlan?.let { detail ->
+                        detail.copy(lines = detail.lines.map { line ->
+                            if (line.id == action.line.id) line.copy(status = InstallmentLineStatus.BOUNCED) else line
+                        })
+                    },
+                )
+            }
         }
         is ReceivablesPendingAction.Reminder -> {
             val draft = action.draft
@@ -295,18 +377,23 @@ class ReceivablesViewModel(
             if (draft.kind == ReminderActionDraft.Kind.SEND_API) {
                 val result = repository.sendReminder(draft.item.snapshot(), branch)
                 if (!result.sent) throw IllegalStateException(result.reason ?: "لم يرسل الخادم التذكير")
-                "أُدرج التذكير للإرسال"
+                ReceivablesCommit("أُدرج التذكير للإرسال") { current -> current.afterReminderCommit(draft.item) }
             } else {
                 repository.skipReminder(
                     draft.item.snapshot(), branch, draft.reason,
                     draft.promisedDate.takeIf(String::isNotBlank),
                 )
-                if (draft.promisedDate.isBlank()) "سُجّل قرار عدم الإرسال" else "سُجّل موعد المتابعة"
+                val notice = if (draft.promisedDate.isBlank()) "سُجّل قرار عدم الإرسال" else "سُجّل موعد المتابعة"
+                ReceivablesCommit(notice) { current -> current.afterReminderCommit(draft.item) }
             }
         }
         is ReceivablesPendingAction.Reconcile -> {
-            repository.createCardReconciliation(action.draft)
-            "حُفظت لقطة المطابقة بحساب الخادم"
+            val reconciliation = repository.createCardReconciliation(action.draft)
+            ReceivablesCommit("حُفظت لقطة المطابقة بحساب الخادم") { current ->
+                current.copy(reconciliations = listOf(reconciliation) + current.reconciliations.filterNot {
+                    it.id == reconciliation.id
+                })
+            }
         }
     }
 
@@ -316,16 +403,31 @@ class ReceivablesViewModel(
         append: Boolean = false,
         keepNotice: Boolean = false,
     ) {
-        if (!accessPolicy.canRead(section) || state.loading || state.refreshing || state.loadingMore) return
+        if (!accessPolicy.canRead(section) || state.busy()) return
         if (section in setOf(ReceivablesSection.CUSTOMER_REMINDERS, ReceivablesSection.SUPPLIER_REMINDERS)) {
             val validation = state.reminderFilter.validationError(branchRequired = !state.reminderFilter.aggregate)
             if (validation != null) {
-                state = state.copy(error = null, notice = validation, loadedSections = state.loadedSections + section)
+                state = state.copy(
+                    freshSections = state.freshSections - section,
+                    error = validation,
+                    notice = null,
+                )
                 return
             }
         }
         val notice = state.notice
-        state = state.startLoading(refresh, append).let { if (keepNotice) it.copy(notice = notice) else it }
+        val safeBase = if (refresh) {
+            state.copy(
+                pendingAction = null,
+                newPlan = null,
+                selectedPlanId = null,
+                selectedPlan = null,
+                selectedReminderId = null,
+            )
+        } else {
+            state
+        }
+        state = safeBase.startLoading(refresh, append, section).let { if (keepNotice) it.copy(notice = notice) else it }
         viewModelScope.launch {
             runCatching {
                 when (section) {
@@ -333,62 +435,83 @@ class ReceivablesViewModel(
                     ReceivablesSection.CUSTOMER_REMINDERS -> loadReminders(ReminderLedger.RECEIVABLE)
                     ReceivablesSection.SUPPLIER_REMINDERS -> loadReminders(ReminderLedger.PAYABLE)
                     ReceivablesSection.CARD_ACCOUNT -> loadCard(append)
-                    ReceivablesSection.ACCOUNTS -> state = state.copy(accountGroups = repository.accountTree())
+                    ReceivablesSection.ACCOUNTS -> {
+                        val groups = repository.accountTree()
+                        val reducer: ReceivablesReducer = { current -> current.copy(accountGroups = groups) }
+                        reducer
+                    }
                 }
-            }.onSuccess {
-                state = state.finishLoading(section).let { if (keepNotice) it.copy(notice = notice) else it }
+            }.onSuccess { reducer ->
+                state = reducer(state).finishLoading(section).let { if (keepNotice) it.copy(notice = notice) else it }
+                if (pendingExecutiveRemindersRefresh) {
+                    pendingExecutiveRemindersRefresh = false
+                    load(ReceivablesSection.CUSTOMER_REMINDERS, refresh = true)
+                    return@onSuccess
+                }
                 val requested = state.section.takeIf {
                     it != section && it !in state.loadedSections && accessPolicy.canRead(it)
                 }
                 if (requested != null) load(requested)
-            }.onFailure { state = state.failed(it.userMessage()) }
+            }.onFailure {
+                state = state.failed(it.userMessage(), section)
+                if (pendingExecutiveRemindersRefresh) {
+                    pendingExecutiveRemindersRefresh = false
+                    load(ReceivablesSection.CUSTOMER_REMINDERS, refresh = true)
+                }
+            }
         }
     }
 
-    private suspend fun loadInstallments(append: Boolean) {
+    private suspend fun loadInstallments(append: Boolean): ReceivablesReducer {
         val offset = if (append) state.installmentPlans.size else 0
         val page = repository.installmentPlans(state.installmentFilters, offset)
         val branch = state.installmentFilters.branchId.toLongOrNull()
         val due = if (append) state.dueInstallments else repository.dueInstallments(branch, state.installmentFilters.dueDays)
-        state = state.copy(
-            installmentPlans = if (append) (state.installmentPlans + page.rows).distinctBy { it.id } else page.rows,
-            installmentHasMore = page.hasMore,
-            dueInstallments = due,
-        )
+        return { current ->
+            current.copy(
+                installmentPlans = if (append) (current.installmentPlans + page.rows).distinctBy { it.id } else page.rows,
+                installmentHasMore = page.hasMore,
+                dueInstallments = due,
+            )
+        }
     }
 
-    private suspend fun loadReminders(ledger: ReminderLedger) {
+    private suspend fun loadReminders(ledger: ReminderLedger): ReceivablesReducer {
         val filter = state.reminderFilter
         val branch = filter.branchIdOrNull()
-        state = state.copy(
-            reminderQueue = repository.reminderQueue(ledger, branch, filter.aggregate),
-            reminderHistory = repository.reminderHistory(ledger, branch, filter.aggregate),
-        )
+        val queue = repository.reminderQueue(ledger, branch, filter.aggregate)
+        val history = repository.reminderHistory(ledger, branch, filter.aggregate)
+        return { current -> current.copy(reminderQueue = queue, reminderHistory = history) }
     }
 
-    private suspend fun loadCard(append: Boolean) {
+    private suspend fun loadCard(append: Boolean): ReceivablesReducer {
         val offset = if (append) state.cardMovements.size else 0
         val page = repository.cardMovements(state.cardFilters, offset)
-        if (append) {
-            state = state.copy(
-                cardMovements = (state.cardMovements + page.rows).distinctBy { it.receiptId },
+        if (append) return { current ->
+            current.copy(
+                cardMovements = (current.cardMovements + page.rows).distinctBy { it.receiptId },
                 cardMovementCount = page.count,
                 cardHasMore = page.hasMore,
             )
-        } else {
-            val branch = state.cardFilters.branchId.toLongOrNull()
-            state = state.copy(
-                cardSummary = repository.cardSummary(branch),
+        }
+        val branch = state.cardFilters.branchId.toLongOrNull()
+        val summary = repository.cardSummary(branch)
+        val reconciliations = repository.cardReconciliations(branch)
+        return { current ->
+            current.copy(
+                cardSummary = summary,
                 cardMovements = page.rows,
                 cardMovementCount = page.count,
                 cardHasMore = page.hasMore,
-                reconciliations = repository.cardReconciliations(branch),
+                reconciliations = reconciliations,
             )
         }
     }
 
     private fun canActOnInstallment(line: InstallmentLine): Boolean =
-        accessPolicy.canWrite(ReceivablesSection.INSTALLMENTS) && state.selectedPlan?.lines?.any { it.id == line.id } == true
+        accessPolicy.canWrite(ReceivablesSection.INSTALLMENTS) &&
+            state.canInteract(ReceivablesSection.INSTALLMENTS) &&
+            state.selectedPlan?.lines?.any { it.id == line.id } == true
 
     private fun canWriteCurrentReminderScope(item: ReminderQueueItem): Boolean {
         val branchReady = state.reminderFilter.branchIdOrNull() != null
@@ -397,7 +520,7 @@ class ReceivablesViewModel(
     }
 }
 
-private fun ReceivablesUiState.busy() = loading || refreshing || loadingMore || submitting
+private fun ReceivablesUiState.busy() = loading || refreshing || loadingMore || submitting || detailLoading
 
 private fun ReminderLedger.section(): ReceivablesSection = when (this) {
     ReminderLedger.RECEIVABLE -> ReceivablesSection.CUSTOMER_REMINDERS

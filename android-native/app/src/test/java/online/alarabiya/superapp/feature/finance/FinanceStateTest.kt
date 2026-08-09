@@ -69,6 +69,32 @@ class FinanceStateTest {
         assertFalse(FinanceSection.EXPENSES in second.hasMoreSections)
     }
 
+    @Test
+    fun `writes require a fresh successfully loaded destination section`() {
+        val initial = FinanceUiState(section = FinanceSection.EXPENSES)
+        assertFalse(initial.canWrite(FinanceSection.EXPENSES))
+        val loaded = initial.finishLoading(FinanceSection.EXPENSES)
+        assertFalse(loaded.copy(staleSections = setOf(FinanceSection.EXPENSES)).canWrite(FinanceSection.EXPENSES))
+        assertEquals(true, loaded.canWrite(FinanceSection.EXPENSES))
+    }
+
+    @Test
+    fun `mutation commit closes composer and failed refresh keeps section stale`() {
+        val loaded = FinanceUiState(
+            section = FinanceSection.EXPENSES,
+            loadedSections = setOf(FinanceSection.EXPENSES),
+            composer = FinanceDraft(FinanceComposerKind.EXPENSE, "1", clientRequestId = "once"),
+            submitting = true,
+        )
+        val committed = loaded.mutationCommitted(FinanceSection.EXPENSES, "تمت")
+        assertNull(committed.composer)
+        assertFalse(committed.canWrite(FinanceSection.EXPENSES))
+        val refreshFailed = committed.loadFailed(FinanceSection.EXPENSES, "شبكة", afterMutation = true)
+        assertEquals("تمت العملية وتعذر تحديث العرض", refreshFailed.notice)
+        assertFalse(refreshFailed.canWrite(FinanceSection.EXPENSES))
+        assertEquals(true, refreshFailed.finishLoading(FinanceSection.EXPENSES).canWrite(FinanceSection.EXPENSES))
+    }
+
     private fun expense(id: Long) = ExpenseSummary(
         key = FinanceItemKey(FinanceItemKind.EXPENSE, id.toString()),
         category = "تشغيل",

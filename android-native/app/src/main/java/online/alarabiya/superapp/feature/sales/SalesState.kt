@@ -8,6 +8,7 @@ import online.alarabiya.superapp.model.sales.PriceTier
 import online.alarabiya.superapp.model.sales.RetailShift
 import online.alarabiya.superapp.model.sales.ReturnCreation
 import online.alarabiya.superapp.model.sales.ReturnableInvoice
+import online.alarabiya.superapp.model.sales.SaleCreation
 import online.alarabiya.superapp.model.sales.SaleDetail
 import online.alarabiya.superapp.model.sales.SalesCustomer
 import online.alarabiya.superapp.model.sales.SalesPage
@@ -24,9 +25,12 @@ data class SalesUiState(
     val catalog: List<CatalogSaleItem> = emptyList(),
     val customerQuery: String = "",
     val customers: List<SalesCustomer> = emptyList(),
+    val customersLoaded: Boolean = false,
     val selectedCustomer: SalesCustomer? = null,
     val priceTier: PriceTier = PriceTier.RETAIL,
     val openShifts: List<RetailShift> = emptyList(),
+    val catalogLoaded: Boolean = false,
+    val shiftsLoaded: Boolean = false,
     val selectedSaleShiftId: Long? = null,
     val cart: List<CartLine> = emptyList(),
     val collectedAmount: String = "",
@@ -34,6 +38,7 @@ data class SalesUiState(
     val paymentReference: String = "",
     val notes: String = "",
     val saleRequestId: String = UUID.randomUUID().toString(),
+    val committedSale: SaleCreation? = null,
     val salesQuery: String = "",
     val salesPage: SalesPage = SalesPage(emptyList(), null, false),
     val selectedSale: SaleDetail? = null,
@@ -46,6 +51,9 @@ data class SalesUiState(
     val returnRequestId: String = UUID.randomUUID().toString(),
 ) {
     val locked: Boolean get() = busy != null
+    val checkoutDependenciesLoaded: Boolean
+        get() = catalogLoaded && (selectedCustomer == null || customersLoaded) &&
+            (paymentMethod != PaymentMethod.CASH || shiftsLoaded)
 
     fun add(item: CatalogSaleItem): SalesUiState {
         if (!item.sellable || locked) return this
@@ -72,26 +80,45 @@ data class SalesUiState(
 
     fun failed(message: String): SalesUiState = copy(busy = null, error = message, notice = null)
 
-    fun saleSucceeded(detail: SaleDetail, nextRequestId: String): SalesUiState = copy(
-        busy = null,
+    /** Records the irreversible server acknowledgement before any follow-up query. */
+    fun saleCommitted(result: SaleCreation, nextRequestId: String): SalesUiState = copy(
+        busy = SalesBusy.DETAIL,
         cart = emptyList(),
         collectedAmount = "",
         paymentReference = "",
         notes = "",
         saleRequestId = nextRequestId,
-        selectedSale = detail,
+        committedSale = result,
+        selectedSale = null,
         section = SalesSection.HISTORY,
         error = null,
-        notice = "تم إنشاء الفاتورة ${detail.invoiceNumber}",
+        notice = "تم إنشاء الفاتورة ${result.invoiceNumber}",
     )
 
-    fun returnSucceeded(result: ReturnCreation, nextRequestId: String): SalesUiState = copy(
+    fun saleDetailLoaded(detail: SaleDetail): SalesUiState = copy(
         busy = null,
+        selectedSale = detail,
+        error = null,
+    )
+
+    /** A committed mutation remains committed even when its read-after-write refresh fails. */
+    fun followUpFailed(message: String): SalesUiState = copy(busy = null, error = message)
+
+    fun returnCommitted(result: ReturnCreation, nextRequestId: String): SalesUiState = copy(
+        busy = if (result.fullyReturned) null else SalesBusy.RETURN_LOAD,
+        returnInvoice = null,
         returnQuantities = emptyMap(),
         returnRefundAmount = "",
+        returnShiftId = null,
         returnRequestId = nextRequestId,
         error = null,
         notice = "تم تسجيل المرتجع بقيمة ${result.returnedTotal}",
+    )
+
+    fun returnInvoiceReloaded(invoice: ReturnableInvoice): SalesUiState = copy(
+        busy = null,
+        returnInvoice = invoice,
+        error = null,
     )
 
     companion object {

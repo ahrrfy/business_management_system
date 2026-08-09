@@ -204,6 +204,12 @@ fun ReceivablesScreen(
                     when {
                         !policy.canRead(state.section) -> EmptyState("لا تملك صلاحية الوصول", Modifier.fillMaxSize())
                         state.loading -> LoadingState()
+                        !state.isFresh(state.section) -> ReceivablesLoadGate(
+                            section = state.section,
+                            wasLoaded = state.section in state.loadedSections,
+                            retryEnabled = !state.refreshing && !state.loadingMore && !state.submitting && !state.detailLoading,
+                            retry = onRefresh,
+                        )
                         state.section == ReceivablesSection.INSTALLMENTS -> InstallmentsContent(
                             state, policy, wide, onSelectPlan, onOpenNewPlan, onRequestPay,
                             onRequestCancelPlan, onRequestBounce, onLoadMore,
@@ -220,13 +226,16 @@ fun ReceivablesScreen(
                 }
             }
         }
-        state.newPlan?.takeIf { state.pendingAction !is ReceivablesPendingAction.CreatePlan }?.let { draft ->
+        state.newPlan?.takeIf {
+            state.isFresh(ReceivablesSection.INSTALLMENTS) &&
+                state.pendingAction !is ReceivablesPendingAction.CreatePlan
+        }?.let { draft ->
             NewPlanDialog(
                 draft, state.submitting, onUpdateNewPlan, onAddPlanLine, onRemovePlanLine,
                 onUpdatePlanLine, onRequestCreatePlan, onCloseOverlay,
             )
         }
-        state.pendingAction?.let { action ->
+        state.pendingAction?.takeIf { state.isFresh(it.destinationSection()) }?.let { action ->
             ActionDialog(action, state.submitting, onUpdatePending, onConfirm, onCloseOverlay)
         }
     }
@@ -654,6 +663,7 @@ private fun RemindersContent(
         return
     }
     val canWrite = policy.canWrite(state.section)
+    val visibleQueue = state.visibleReminderQueue
     if (wide) Row(Modifier.fillMaxSize().padding(14.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         ReminderQueueList(state, onSelect, Modifier.weight(.45f).fillMaxHeight())
         Surface(
@@ -666,9 +676,9 @@ private fun RemindersContent(
         Modifier.fillMaxSize().padding(horizontal = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 28.dp),
     ) {
-        item { SectionTitle("قائمة اليوم", state.reminderQueue.size.toString()) }
-        if (state.reminderQueue.isEmpty()) item { CompactEmpty("لا توجد متابعة مستحقة اليوم") }
-        items(state.reminderQueue, key = { "${it.subject.ledger}-${it.subject.id}" }) { item ->
+        item { SectionTitle(state.executiveView?.label ?: "قائمة اليوم", visibleQueue.size.toString()) }
+        if (visibleQueue.isEmpty()) item { CompactEmpty("لا توجد متابعة مستحقة اليوم") }
+        items(visibleQueue, key = { "${it.subject.ledger}-${it.subject.id}" }) { item ->
             ReminderCard(item, canWrite && reminderScopeWritable(item, state.reminderFilter), onRequest)
         }
     }
@@ -676,10 +686,11 @@ private fun RemindersContent(
 
 @Composable
 private fun ReminderQueueList(state: ReceivablesUiState, onSelect: (Long?) -> Unit, modifier: Modifier) {
+    val visibleQueue = state.visibleReminderQueue
     LazyColumn(modifier, verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
-        item { SectionTitle("قائمة اليوم", state.reminderQueue.size.toString()) }
-        if (state.reminderQueue.isEmpty()) item { CompactEmpty("لا توجد متابعة مستحقة اليوم") }
-        items(state.reminderQueue, key = { "${it.subject.ledger}-${it.subject.id}" }) { item ->
+        item { SectionTitle(state.executiveView?.label ?: "قائمة اليوم", visibleQueue.size.toString()) }
+        if (visibleQueue.isEmpty()) item { CompactEmpty("لا توجد متابعة مستحقة اليوم") }
+        items(visibleQueue, key = { "${it.subject.ledger}-${it.subject.id}" }) { item ->
             Card(
                 Modifier.fillMaxWidth().clickable { onSelect(item.subject.id) },
                 shape = RoundedCornerShape(topStart = 22.dp, bottomEnd = 22.dp),
@@ -690,6 +701,49 @@ private fun ReminderQueueList(state: ReceivablesUiState, onSelect: (Long?) -> Un
         }
     }
 }
+
+@Composable
+private fun ReceivablesLoadGate(
+    section: ReceivablesSection,
+    wasLoaded: Boolean,
+    retryEnabled: Boolean,
+    retry: () -> Unit,
+) {
+    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .74f),
+            shape = RoundedCornerShape(28.dp),
+        ) {
+            Column(
+                Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(Icons.Rounded.WarningAmber, null, tint = ReceivableGold)
+                Text(
+                    if (wasLoaded) "تحتاج البيانات إلى تحديث" else "تعذر تحميل ${section.label}",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text("لا يمكن تنفيذ إجراء على قائمة أو تفاصيل غير محدثة.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(onClick = retry, enabled = retryEnabled) {
+                    Icon(Icons.Rounded.Refresh, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("إعادة المحاولة")
+                }
+            }
+        }
+    }
+}
+
+private val ExecutiveReceivablesView.label: String
+    get() = when (this) {
+        ExecutiveReceivablesView.AR_30 -> "ذمم 31–60 يوماً"
+        ExecutiveReceivablesView.AR_60 -> "ذمم 61–90 يوماً"
+        ExecutiveReceivablesView.AR_90 -> "ذمم أكثر من 90 يوماً"
+        ExecutiveReceivablesView.CREDIT_EXPOSURE -> "التعرض الائتماني"
+    }
 
 @Composable
 private fun ReminderCard(
@@ -1227,4 +1281,17 @@ private fun CardSource.label(): String = when (this) {
     CardSource.INVOICE_PAYMENT -> "فاتورة"
     CardSource.WORK_ORDER -> "أمر شغل"
     CardSource.OTHER -> "أخرى"
+}
+
+private fun ReceivablesPendingAction.destinationSection(): ReceivablesSection = when (this) {
+    is ReceivablesPendingAction.CreatePlan,
+    is ReceivablesPendingAction.PayLine,
+    is ReceivablesPendingAction.CancelPlan,
+    is ReceivablesPendingAction.BounceCheck -> ReceivablesSection.INSTALLMENTS
+    is ReceivablesPendingAction.Reminder -> if (draft.item.subject.ledger == ReminderLedger.RECEIVABLE) {
+        ReceivablesSection.CUSTOMER_REMINDERS
+    } else {
+        ReceivablesSection.SUPPLIER_REMINDERS
+    }
+    is ReceivablesPendingAction.Reconcile -> ReceivablesSection.CARD_ACCOUNT
 }

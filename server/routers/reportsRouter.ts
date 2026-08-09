@@ -17,12 +17,9 @@ import {
   getWIPReport,
 } from "../services/reportsService";
 import {
-  reconcileCustomerBalances,
-  reconcileSupplierBalances,
-  reconcileInventory,
-  reconcileLedgerProfit,
-  reconcileDeliveryFloat,
-} from "../services/reconcileService";
+  getFinancialReconciliationDetails,
+  toFinancialReconciliationSummary,
+} from "../services/reports/reconcileSummary";
 import { getCashFlow, getFinancialPosition, getGeneralLedger, getProfitAndLoss } from "../services/reportsFinancialService";
 import { getSalesRegister, getSalesByDimension } from "../services/reportsSalesService";
 import { getPurchasesReport, getPurchaseRegister } from "../services/reportsPurchasesService";
@@ -31,7 +28,7 @@ import { getInventoryValuation, getStockStatus } from "../services/reportsInvent
 import { getItemLedger, getAbcAnalysis } from "../services/reportsInventoryAnalyticsService";
 import { getTreasurySummary, getExpensesReport, getCashOrphansReport } from "../services/reportsTreasuryService";
 import { getDayCloseReconciliation } from "../services/reportsDayCloseService";
-import { getProductionReport, getWorkOrdersReport } from "../services/reportsProductionService";
+import { getProductionReport, getProductionReportPage, getWorkOrdersReport } from "../services/reportsProductionService";
 import { workOrderProfitability } from "../services/reports/workOrderProfitability";
 import { getMonthlyClosePack } from "../services/reports/monthlyClosePack";
 import { getCourierPerformance } from "../services/reports/courierPerformance";
@@ -405,14 +402,11 @@ export const reportsRouter = router({
     }),
 
   /** تدقيق التوافق المالي — للمشرف فقط. يكشف الانجراف الصامت في الأرصدة/المخزون/الدفتر. */
-  reconcile: adminProcedure.query(async () => ({
-    customers: await reconcileCustomerBalances(),
-    suppliers: await reconcileSupplierBalances(),
-    delivery: await reconcileDeliveryFloat(),
-    inventory: await reconcileInventory(),
-    ledger: await reconcileLedgerProfit(),
-    runAt: new Date().toISOString(),
-  })),
+  reconcile: adminProcedure.query(getFinancialReconciliationDetails),
+
+  /** إسقاط ملخّص للموبايل: نفس الفحص الشامل، بلا معرّفات أو أرصدة أو ملاحظات تفصيلية. */
+  reconcileSummary: adminProcedure.query(async () =>
+    toFinancialReconciliationSummary(await getFinancialReconciliationDetails())),
 
   /**
    * أكثر المنتجات مبيعاً — ترتيب بالإيراد أو الكمية، فلاتر زمن+فرع.
@@ -745,6 +739,31 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
       return getProductionReport({ from: input.from, to: input.to, branchId });
+    }),
+
+  /**
+   * Native/mobile production report — bounded rows plus authoritative totals.
+   * The legacy productionReport remains unchanged for the desktop client.
+   */
+  productionReportPage: reportsBranchScoped
+    .input(z.object({
+      from: ymdStr,
+      to: ymdStr,
+      branchId: z.number().int().positive().optional(),
+      limit: z.number().int().min(1).max(100).default(25),
+      offset: z.number().int().min(0).default(0),
+      cursor: z.number().int().positive().optional(),
+    }))
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return getProductionReportPage({
+        from: input.from,
+        to: input.to,
+        branchId,
+        limit: input.limit,
+        offset: input.offset,
+        cursor: input.cursor,
+      });
     }),
 
   /**

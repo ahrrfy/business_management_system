@@ -33,6 +33,50 @@ object CrmMappers {
         isActive = root.bool("isActive", default = true),
     )
 
+    fun customerFollowUpPage(root: JSONObject): CustomerFollowUpPage = customerFollowUpPage(root.toWireMap())
+
+    internal fun customerFollowUpPage(root: Map<String, Any?>): CustomerFollowUpPage = CustomerFollowUpPage(
+        rows = root.list("rows").mapNotNull(::customerFollowUp),
+        total = root.int("total"),
+    )
+
+    fun dueCustomerFollowUps(root: JSONArray): List<CustomerFollowUp> = dueCustomerFollowUps(root.toWireList())
+
+    internal fun dueCustomerFollowUps(root: List<Any?>): List<CustomerFollowUp> =
+        root.mapNotNull(::customerFollowUp)
+
+    fun contractPrices(root: JSONArray): List<CustomerContractPrice> = contractPrices(root.toWireList())
+
+    internal fun contractPrices(root: List<Any?>): List<CustomerContractPrice> = root.mapNotNull { value ->
+        value.asStringMap()?.let { row ->
+            CustomerContractPrice(
+                id = row.long("id"),
+                customerId = row.long("customerId"),
+                productUnitId = row.long("productUnitId"),
+                price = row.text("price", "0"),
+                isActive = row.bool("isActive", default = true),
+                note = row.nullableText("note"),
+                updatedAt = row.nullableText("updatedAt"),
+                productId = row.long("productId"),
+                productName = row.text("productName"),
+                variantName = row.nullableText("variantName"),
+                color = row.nullableText("color"),
+                size = row.nullableText("size"),
+                sku = row.text("sku"),
+                unitName = row.text("unitName"),
+            )
+        }
+    }
+
+    fun contractPricePage(root: JSONObject): CustomerContractPricePage = contractPricePage(root.toWireMap())
+
+    internal fun contractPricePage(root: Map<String, Any?>): CustomerContractPricePage = CustomerContractPricePage(
+        rows = contractPrices(root.list("rows")),
+        total = root.int("total"),
+        hasMore = root.bool("hasMore"),
+        nextCursor = root.nullableText("nextCursor"),
+    )
+
     fun quotationPage(root: JSONObject): QuotationPage = quotationPage(root.toWireMap())
 
     internal fun quotationPage(root: Map<String, Any?>): QuotationPage = QuotationPage(
@@ -170,6 +214,21 @@ object CrmMappers {
             legacyCode = row.nullableText("legacyCode"),
             isActive = row.bool("isActive", default = true),
         )
+    }
+
+    private fun customerFollowUp(value: Any?): CustomerFollowUp? = value.asStringMap()?.let { row ->
+        CustomerFollowUp(
+            id = row.long("id"),
+            customerId = row.long("customerId"),
+            customerName = row.nullableText("customerName"),
+            customerPhone = row.nullableText("customerPhone"),
+            note = row.text("note"),
+            followUpDate = row.nullableText("followUpDate"),
+            isResolved = row.bool("isResolved"),
+            createdByName = row.nullableText("createdByName"),
+            branchId = row.nullableLong("branchId"),
+            createdAt = row.nullableText("createdAt"),
+        ).takeIf { it.id > 0 && it.customerId > 0 }
     }
 }
 

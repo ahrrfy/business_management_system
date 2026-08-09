@@ -5117,6 +5117,9 @@ export const creditApprovals = mysqlTable(
     customerId: bigint("customerId", { mode: "number" })
       .notNull()
       .references(() => customers.id),
+    // نطاق القرار المالي. الصفوف التاريخية قد تبقى null بعد الترحيل إن تعذّر استنتاج
+    // فرعها، لكنها تُعامل فشلاً مغلقاً ولا تُستهلك. كل إنشاء جديد يفرض branchId خادمياً.
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     maxAmount: decimal("maxAmount", { precision: 15, scale: 2 }).notNull(),
     approvedBy: int("approvedBy")
       .notNull()
@@ -5131,6 +5134,7 @@ export const creditApprovals = mysqlTable(
   },
   (t) => ({
     customerExpiryIdx: index("idx_capp_customer").on(t.customerId, t.expiresAt),
+    branchExpiryIdx: index("idx_capp_branch_expiry").on(t.branchId, t.expiresAt),
   }),
 );
 export type CreditApproval = typeof creditApprovals.$inferSelect;

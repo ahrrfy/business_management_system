@@ -39,6 +39,7 @@ import androidx.compose.material.icons.rounded.Payments
 import androidx.compose.material.icons.rounded.PrivacyTip
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.TaskAlt
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.Button
@@ -47,6 +48,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -104,6 +106,8 @@ fun SettingsScreen(
     onSignOut: () -> Unit,
     onRetryLegal: () -> Unit,
     onOpenPrivacyLink: (String) -> Unit,
+    twoFactorVisible: Boolean,
+    onOpenTwoFactor: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     BoxWithConstraints(
@@ -117,6 +121,8 @@ fun SettingsScreen(
                 onSignOut,
                 onRetryLegal,
                 onOpenPrivacyLink,
+                twoFactorVisible,
+                onOpenTwoFactor,
             )
         } else {
             PhoneSettings(
@@ -126,6 +132,8 @@ fun SettingsScreen(
                 onSignOut,
                 onRetryLegal,
                 onOpenPrivacyLink,
+                twoFactorVisible,
+                onOpenTwoFactor,
             )
         }
     }
@@ -139,6 +147,8 @@ private fun PhoneSettings(
     onSignOut: () -> Unit,
     onRetryLegal: () -> Unit,
     onOpenPrivacyLink: (String) -> Unit,
+    twoFactorVisible: Boolean,
+    onOpenTwoFactor: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -155,7 +165,7 @@ private fun PhoneSettings(
                 onNotificationChange,
             )
         }
-        item { SecuritySection(state, onBiometricChange, onSignOut) }
+        item { SecuritySection(state, onBiometricChange, onSignOut, twoFactorVisible, onOpenTwoFactor) }
         item { PrivacySection(state.legal, onRetryLegal, onOpenPrivacyLink) }
         item { AboutSection(state.appVersion) }
     }
@@ -169,6 +179,8 @@ private fun TabletSettings(
     onSignOut: () -> Unit,
     onRetryLegal: () -> Unit,
     onOpenPrivacyLink: (String) -> Unit,
+    twoFactorVisible: Boolean,
+    onOpenTwoFactor: () -> Unit,
 ) {
     var selected by rememberSaveable { mutableStateOf(SettingsSection.Account) }
     Row(Modifier.fillMaxSize().padding(24.dp), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
@@ -177,10 +189,14 @@ private fun TabletSettings(
             color = Color.White,
             shape = RoundedCornerShape(30.dp),
         ) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                ScreenTitle()
-                Spacer(Modifier.height(10.dp))
-                SettingsSection.entries.forEach { section ->
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(20.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item { ScreenTitle() }
+                item { Spacer(Modifier.height(10.dp)) }
+                items(SettingsSection.entries, key = { it.name }) { section ->
                     SectionNavigationRow(
                         section = section,
                         selected = selected == section,
@@ -203,7 +219,7 @@ private fun TabletSettings(
                         state.notificationsError,
                         onNotificationChange,
                     )
-                    SettingsSection.Security -> SecuritySection(state, onBiometricChange, onSignOut)
+                    SettingsSection.Security -> SecuritySection(state, onBiometricChange, onSignOut, twoFactorVisible, onOpenTwoFactor)
                     SettingsSection.Privacy -> PrivacySection(state.legal, onRetryLegal, onOpenPrivacyLink)
                     SettingsSection.About -> AboutSection(state.appVersion)
                 }
@@ -336,6 +352,8 @@ private fun SecuritySection(
     state: SettingsUiState,
     onBiometricChange: (Boolean) -> Unit,
     onSignOut: () -> Unit,
+    twoFactorVisible: Boolean,
+    onOpenTwoFactor: () -> Unit,
 ) {
     SettingsCard("الأمان والجلسة", Icons.Rounded.Lock) {
         if (state.biometricAvailable) {
@@ -350,6 +368,17 @@ private fun SecuritySection(
             HorizontalDivider(color = Stroke)
         }
         ValueRow(Icons.Rounded.VerifiedUser, "الجلسة", "نشطة")
+        if (twoFactorVisible) {
+            OutlinedButton(
+                onClick = onOpenTwoFactor,
+                modifier = Modifier.fillMaxWidth().height(54.dp).testTag("open_two_factor"),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Icon(Icons.Rounded.Security, null)
+                Spacer(Modifier.width(8.dp))
+                Text("المصادقة الثنائية", style = MaterialTheme.typography.labelLarge)
+            }
+        }
         Button(
             onClick = onSignOut,
             modifier = Modifier.fillMaxWidth().height(54.dp).testTag("sign_out"),

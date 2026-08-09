@@ -1,14 +1,15 @@
 // لوحة المؤشّرات + تقرير العهد حسب الموظف + سجلّ الاستبعاد/الإخراج.
 import Decimal from "decimal.js";
-import { desc, eq, getTableColumns, inArray } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray } from "drizzle-orm";
 import { assetMaintenance, branches, fixedAssets } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
 import { sumMoney, toDateStr } from "../money";
+import type { CompanyBranchScope } from "../companyBranchScope";
 import { computeDepreciation } from "./depreciation";
 import { listAssets } from "./queries";
 
-export async function dashboard() {
-  const all = await listAssets({ includeDisposed: true });
+export async function dashboard(scope: CompanyBranchScope) {
+  const all = await listAssets({ includeDisposed: true }, scope);
   const live = all.filter((a) => a.status === "active" || a.status === "maintenance" || a.status === "retired");
 
   const totalAssets = live.length;
@@ -46,7 +47,8 @@ export async function dashboard() {
       assetCode: fixedAssets.code,
     })
     .from(assetMaintenance)
-    .leftJoin(fixedAssets, eq(assetMaintenance.assetId, fixedAssets.id))
+    .innerJoin(fixedAssets, eq(assetMaintenance.assetId, fixedAssets.id))
+    .where(scope.branchId == null ? undefined : eq(fixedAssets.branchId, scope.branchId))
     .orderBy(desc(assetMaintenance.maintDate))
     .limit(6);
 
@@ -78,8 +80,8 @@ export async function dashboard() {
 
 /* ----------------------------------------------------------- تقارير */
 /** تقرير العهد مجمّعاً حسب الموظف (للأصول بالخدمة/الصيانة فقط). */
-export async function custodyReport() {
-  const live = (await listAssets()).filter((a) => a.status === "active" || a.status === "maintenance");
+export async function custodyReport(scope: CompanyBranchScope) {
+  const live = (await listAssets(undefined, scope)).filter((a) => a.status === "active" || a.status === "maintenance");
   const byEmp = new Map<number, { employeeId: number; employeeName: string | null; count: number; value: number; items: typeof live }>();
   const unassigned: typeof live = [];
   for (const a of live) {
@@ -100,13 +102,20 @@ export async function custodyReport() {
 }
 
 /** سجلّ الاستبعاد/الإخراج مع نتيجة (ربح/خسارة) كل عملية. */
-export async function disposalLog() {
+export async function disposalLog(scope: CompanyBranchScope) {
   const db = requireDb();
   const rows = await db
     .select({ ...getTableColumns(fixedAssets), branchName: branches.name })
     .from(fixedAssets)
     .leftJoin(branches, eq(fixedAssets.branchId, branches.id))
-    .where(inArray(fixedAssets.status, ["disposed", "retired"]))
+    .where(
+      scope.branchId == null
+        ? inArray(fixedAssets.status, ["disposed", "retired"])
+        : and(
+            inArray(fixedAssets.status, ["disposed", "retired"]),
+            eq(fixedAssets.branchId, scope.branchId),
+          ),
+    )
     .orderBy(desc(fixedAssets.disposalDate));
   return rows.map((a) => {
     const dep = computeDepreciation(a);

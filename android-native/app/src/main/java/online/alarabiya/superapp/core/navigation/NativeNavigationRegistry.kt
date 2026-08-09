@@ -10,6 +10,7 @@ data class NavigationPrincipal(
     val grants: Map<NativeModule, ModuleGrant> = emptyMap(),
     val role: String? = null,
     val hasPersonalWorkspace: Boolean = true,
+    val isOwner: Boolean = false,
 ) {
     fun grantFor(module: NativeModule): ModuleGrant = grants[module] ?: ModuleGrant.NONE
 }
@@ -89,10 +90,27 @@ class NativeNavigationRegistry private constructor(
                 NativeModule.SALES to ModuleGrant.READ,
                 NativeModule.CAMPAIGNS to ModuleGrant.READ,
             )
-            NativeDestination.Insights -> principal.requireAny(
+            NativeDestination.Insights -> if (principal.role.equals("admin", ignoreCase = true)) {
+                // InsightsAccessPolicy exposes the USER search scope to administrators even when
+                // no business module grant is present. Authorization must mirror that visibility.
+                AccessDecision.Allowed
+            } else principal.requireAny(
                 NativeModule.REPORTS to ModuleGrant.READ,
                 NativeModule.STORE to ModuleGrant.READ,
+                NativeModule.PRODUCTS to ModuleGrant.READ,
+                NativeModule.SALES to ModuleGrant.READ,
+                NativeModule.PURCHASES to ModuleGrant.READ,
+                NativeModule.WORK_ORDERS to ModuleGrant.READ,
+                NativeModule.CRM to ModuleGrant.READ,
+                NativeModule.SUPPLIERS to ModuleGrant.READ,
+                NativeModule.EXPENSES to ModuleGrant.READ,
+                NativeModule.HR to ModuleGrant.READ,
             )
+            NativeDestination.Shifts -> if (
+                principal.isOwner || principal.role.equals("admin", ignoreCase = true) ||
+                (principal.role.equals("manager", ignoreCase = true) &&
+                    principal.grantFor(NativeModule.TREASURY).satisfies(ModuleGrant.READ))
+            ) AccessDecision.Allowed else AccessDecision.Denied(AccessDenialReason.MODULE_NOT_GRANTED)
             NativeDestination.WorkOrders -> principal.requireAny(
                 NativeModule.WORK_ORDERS to ModuleGrant.READ,
                 NativeModule.POS to ModuleGrant.FULL,
@@ -102,6 +120,10 @@ class NativeNavigationRegistry private constructor(
                 NativeModule.INVENTORY to ModuleGrant.READ,
                 NativeModule.PRODUCTS to ModuleGrant.READ,
             )
+            NativeDestination.StoreAdmin -> if (
+                (principal.role.equals("admin", true) || principal.role.equals("manager", true)) &&
+                principal.grantFor(NativeModule.STORE).satisfies(ModuleGrant.READ)
+            ) AccessDecision.Allowed else AccessDecision.Denied(AccessDenialReason.MODULE_NOT_GRANTED)
 
             NativeDestination.SelfService -> if (principal.hasPersonalWorkspace) {
                 AccessDecision.Allowed

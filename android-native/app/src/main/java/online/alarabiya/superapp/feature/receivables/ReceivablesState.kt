@@ -1,5 +1,6 @@
 package online.alarabiya.superapp.feature.receivables
 
+import java.math.BigDecimal
 import online.alarabiya.superapp.model.receivables.AccountGroup
 import online.alarabiya.superapp.model.receivables.CardFilters
 import online.alarabiya.superapp.model.receivables.CardMovement
@@ -33,9 +34,12 @@ sealed interface ReceivablesPendingAction {
     data class Reconcile(val draft: ReconciliationDraft) : ReceivablesPendingAction
 }
 
+enum class ExecutiveReceivablesView { AR_30, AR_60, AR_90, CREDIT_EXPOSURE }
+
 data class ReceivablesUiState(
     val section: ReceivablesSection,
     val loadedSections: Set<ReceivablesSection> = emptySet(),
+    val freshSections: Set<ReceivablesSection> = emptySet(),
     val loading: Boolean = false,
     val refreshing: Boolean = false,
     val loadingMore: Boolean = false,
@@ -54,6 +58,7 @@ data class ReceivablesUiState(
 
     val reminderFilter: ReminderFilter = ReminderFilter(),
     val reminderHistoryMode: Boolean = false,
+    val executiveView: ExecutiveReceivablesView? = null,
     val reminderQueue: List<ReminderQueueItem> = emptyList(),
     val reminderHistory: List<ReminderHistoryItem> = emptyList(),
     val selectedReminderId: Long? = null,
@@ -68,10 +73,31 @@ data class ReceivablesUiState(
     val accountGroups: List<AccountGroup> = emptyList(),
     val pendingAction: ReceivablesPendingAction? = null,
 ) {
-    val selectedReminder: ReminderQueueItem?
-        get() = reminderQueue.firstOrNull { it.subject.id == selectedReminderId }
+    fun isFresh(section: ReceivablesSection = this.section): Boolean = section in freshSections
 
-    fun startLoading(refresh: Boolean, append: Boolean = false): ReceivablesUiState = copy(
+    fun canInteract(section: ReceivablesSection = this.section): Boolean =
+        isFresh(section) && !loading && !refreshing && !loadingMore && !submitting && !detailLoading
+
+    val visibleReminderQueue: List<ReminderQueueItem>
+        get() = when (executiveView) {
+            ExecutiveReceivablesView.AR_30 -> reminderQueue.filter { it.daysOverdue in 31..60 }
+            ExecutiveReceivablesView.AR_60 -> reminderQueue.filter { it.daysOverdue in 61..90 }
+            ExecutiveReceivablesView.AR_90 -> reminderQueue.filter { it.daysOverdue >= 91 }
+            ExecutiveReceivablesView.CREDIT_EXPOSURE -> reminderQueue.sortedByDescending {
+                runCatching { BigDecimal(it.totalUnpaid.value) }.getOrDefault(BigDecimal.ZERO)
+            }
+            null -> reminderQueue
+        }
+
+    val selectedReminder: ReminderQueueItem?
+        get() = visibleReminderQueue.firstOrNull { it.subject.id == selectedReminderId }
+
+    fun startLoading(
+        refresh: Boolean,
+        append: Boolean = false,
+        section: ReceivablesSection = this.section,
+    ): ReceivablesUiState = copy(
+        freshSections = freshSections - section,
         loading = !refresh && !append,
         refreshing = refresh && !append,
         loadingMore = append,
@@ -81,13 +107,18 @@ data class ReceivablesUiState(
 
     fun finishLoading(section: ReceivablesSection): ReceivablesUiState = copy(
         loadedSections = loadedSections + section,
+        freshSections = freshSections + section,
         loading = false,
         refreshing = false,
         loadingMore = false,
         error = null,
     )
 
-    fun failed(message: String): ReceivablesUiState = copy(
+    fun failed(
+        message: String,
+        section: ReceivablesSection = this.section,
+    ): ReceivablesUiState = copy(
+        freshSections = freshSections - section,
         loading = false,
         refreshing = false,
         loadingMore = false,
@@ -95,4 +126,40 @@ data class ReceivablesUiState(
         detailLoading = false,
         error = message,
     )
+
+    fun commit(section: ReceivablesSection, reducer: (ReceivablesUiState) -> ReceivablesUiState): ReceivablesUiState =
+        reducer(this).copy(
+            freshSections = freshSections - section,
+            submitting = false,
+            pendingAction = null,
+            newPlan = null,
+        )
 }
+
+internal fun ReceivablesUiState.applyExecutiveNavigation(
+    arguments: Map<String, String>,
+    canReadCustomerReminders: Boolean,
+): ReceivablesUiState {
+    if (!canReadCustomerReminders) return this
+    val view = when {
+        arguments["bucket"] == "ar-30" -> ExecutiveReceivablesView.AR_30
+        arguments["bucket"] == "ar-60" -> ExecutiveReceivablesView.AR_60
+        arguments["bucket"] == "ar-90" -> ExecutiveReceivablesView.AR_90
+        arguments["view"] == "creditExposure" -> ExecutiveReceivablesView.CREDIT_EXPOSURE
+        else -> return this
+    }
+    return copy(
+        section = ReceivablesSection.CUSTOMER_REMINDERS,
+        executiveView = view,
+        reminderHistoryMode = false,
+        selectedReminderId = null,
+        pendingAction = null,
+        error = null,
+        notice = null,
+    )
+}
+
+internal fun ReceivablesUiState.afterReminderCommit(item: ReminderQueueItem): ReceivablesUiState = copy(
+    reminderQueue = reminderQueue.filterNot { it.subject == item.subject },
+    selectedReminderId = null,
+)

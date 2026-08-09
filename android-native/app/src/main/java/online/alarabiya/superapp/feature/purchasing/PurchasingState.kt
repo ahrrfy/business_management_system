@@ -32,6 +32,8 @@ sealed interface PurchasingConfirmation {
     }
 }
 
+enum class PurchasingExecutiveView { PAYABLES }
+
 data class PurchasingUiState(
     val section: PurchasingSection,
     val busyKey: String? = null,
@@ -46,6 +48,7 @@ data class PurchasingUiState(
     val returns: PurchaseReturnPage = PurchaseReturnPage(emptyList(), 0),
     val reminderQueue: List<ReminderQueueItem> = emptyList(),
     val reminderHistory: List<ReminderHistoryItem> = emptyList(),
+    val executiveView: PurchasingExecutiveView? = null,
     val confirmation: PurchasingConfirmation? = null,
 ) {
     val locked get() = busyKey != null
@@ -53,5 +56,30 @@ data class PurchasingUiState(
     fun start(key: String): PurchasingUiState? = if (locked) null else copy(busyKey = key, error = null, notice = null)
     fun fail(message: String) = copy(busyKey = null, error = message, notice = null)
     fun succeed(message: String? = null) = copy(busyKey = null, error = null, notice = message, confirmation = null)
-    fun switchTo(next: PurchasingSection) = copy(section = next, query = "", selectedOrder = null, selectedSupplier = null, confirmation = null, error = null, notice = null)
+    fun switchTo(next: PurchasingSection) = copy(section = next, query = "", selectedOrder = null, selectedSupplier = null, executiveView = null, confirmation = null, error = null, notice = null)
+}
+
+/** Returns the state one level up inside Purchasing, or null when the module itself should close. */
+internal fun PurchasingUiState.popNestedNavigation(): PurchasingUiState? = when {
+    confirmation != null -> copy(confirmation = null, error = null)
+    selectedOrder != null -> copy(selectedOrder = null, error = null)
+    selectedSupplier != null -> copy(selectedSupplier = null, error = null)
+    else -> null
+}
+
+internal fun PurchasingUiState.applyExecutiveNavigation(
+    arguments: Map<String, String>,
+    visibleSections: Collection<PurchasingSection>,
+): PurchasingUiState {
+    if (arguments["view"] != "payables" || PurchasingSection.REMINDERS !in visibleSections) return this
+    return copy(
+        section = PurchasingSection.REMINDERS,
+        query = "",
+        selectedOrder = null,
+        selectedSupplier = null,
+        executiveView = PurchasingExecutiveView.PAYABLES,
+        confirmation = null,
+        error = null,
+        notice = null,
+    )
 }

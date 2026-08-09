@@ -13,8 +13,11 @@ data class SystemSettingsCapabilities(
     val canReadWhatsAppHub: Boolean,
     val canUpdateWhatsAppHub: Boolean,
     val canReadSystemInfo: Boolean,
+    val canReadBackups: Boolean,
+    val canCreateBackup: Boolean,
     val canReadGovernance: Boolean,
     val canUpdateGovernance: Boolean,
+    val canManageKioskDevices: Boolean,
 ) {
     companion object {
         fun fromBootstrap(bootstrap: AppBootstrap): SystemSettingsCapabilities {
@@ -30,8 +33,11 @@ data class SystemSettingsCapabilities(
                 canReadWhatsAppHub = manager,
                 canUpdateWhatsAppHub = admin,
                 canReadSystemInfo = admin,
+                canReadBackups = admin,
+                canCreateBackup = admin,
                 canReadGovernance = true,
                 canUpdateGovernance = admin,
+                canManageKioskDevices = admin,
             )
         }
     }
@@ -166,6 +172,7 @@ data class WhatsAppHubSettings(
 data class SystemHealth(val ok: Boolean, val time: String?)
 data class SystemCounts(val branches: Int, val users: Int, val products: Int, val customers: Int, val invoices: Int)
 data class SafeBackupStatus(val count: Int, val totalKb: Long, val latest: String?)
+data class BackupMetadata(val name: String, val sizeKb: Long, val createdAt: String)
 data class PrinterStatus(val enabled: Boolean, val description: String?)
 data class ScheduleStatus(val dailyAt: String?, val offsiteConfigured: Boolean)
 /** Deliberately excludes database name/host, backup path, and destructive confirmation token. */
@@ -214,9 +221,33 @@ data class OpeningMode(
 
 data class OpeningProgress(val branchId: Long, val branchName: String, val totalVariants: Int, val openedVariants: Int)
 
+data class KioskDevice(
+    val id: Long,
+    val branchId: Long,
+    val branchName: String?,
+    val label: String,
+    val tokenPrefix: String,
+    val active: Boolean,
+    val lastSeenAt: String?,
+    val maskedLastSeenIp: String?,
+    val createdAt: String?,
+)
+
+data class KioskDeviceDraft(val branchId: Long = 0, val label: String = "") {
+    fun validate(): String? = when {
+        branchId <= 0 -> "حدد الفرع"
+        label.trim().isEmpty() -> "اسم الجهاز مطلوب"
+        label.trim().length > 120 -> "اسم الجهاز يتجاوز 120 حرفاً"
+        else -> null
+    }
+}
+
+/** Exists only for the one-time handoff flow and must never be persisted or logged. */
+data class OneTimeKioskToken(val deviceId: Long, val rawToken: String, val tokenPrefix: String)
+
 object NativeSystemSettingsBoundaries {
     const val SECRET_ROTATION = "إضافة أو تدوير مفاتيح التكامل تتم عبر قناة تشغيل آمنة خارج التطبيق."
     const val PERMANENT_DELETE = "حذف التكامل نهائياً غير متاح على الهاتف؛ استخدم التعطيل أو قناة الإدارة المراقبة."
-    const val MAINTENANCE = "النسخ والاستعادة وإعادة ضبط قاعدة البيانات إجراءات تشغيلية خارج التطبيق."
+    const val MAINTENANCE = "الاستعادة والحذف وإعادة ضبط قاعدة البيانات غير متاحة على الهاتف؛ التطبيق يتيح إنشاء النسخ ومراقبتها فقط."
     const val BUSINESS_HOURS = "تعديل جدول ساعات العمل ينتظر عقداً منظماً بدلاً من JSON حر."
 }

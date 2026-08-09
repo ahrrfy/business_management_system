@@ -28,7 +28,7 @@ Override the HTTPS endpoints with `ALRUEYA_DEV_BASE_URL`, `ALRUEYA_STAGING_BASE_
 `ALRUEYA_PROD_BASE_URL`, or their camel-case Gradle property equivalents.
 
 The Play update keeps the package ID `online.alarabiya.store`, `versionName 1.0.0`, and
-`versionCode 5`. Only debug builds add the `.debug` application ID suffix. A signed production
+`versionCode 6`. Only debug builds add the `.debug` application ID suffix. A signed production
 build reads signing values from environment variables or Gradle properties; never commit them:
 
 - `ANDROID_KEYSTORE_PATH` / `androidKeystorePath`
@@ -52,8 +52,10 @@ Firebase app configuration is absent or does not match `online.alarabiya.store`.
 bundle must never be uploaded as the native app.
 
 Before a production artifact is built, `scripts/verify-mobile-release-env.mjs --release` also
-requires a structurally valid Firebase server service account, a matching Firebase project ID, a
-32-byte `INTEGRATIONS_ENCRYPTION_KEY`, and `TWO_FACTOR_ENFORCEMENT=on`. It reports configuration
+requires a structurally valid dedicated Firebase server service account, a successful short-lived
+Google OAuth credential exchange, a matching Firebase project ID, a 32-byte cryptographic
+`INTEGRATIONS_ENCRYPTION_KEY` matching its separately protected SHA-256 fingerprint, and
+`TWO_FACTOR_ENFORCEMENT=on`. It reports configuration
 names and validation results only; secret values are never printed. These are release-readiness
 checks and do not copy server credentials into the Android artifact.
 
@@ -66,8 +68,15 @@ The manual GitHub release workflow is fail-closed. Configure these repository se
 Configure these repository variables:
 
 - `ANDROID_UPLOAD_SIGNING_SHA256`
+- `INTEGRATIONS_ENCRYPTION_KEY_SHA256` (SHA-256 of the decoded 32-byte key; keep it separate from the secret)
 - `ALRUEYA_PROD_BASE_URL=https://srv1548487.hstgr.cloud`
 - `FCM_PROJECT_ID` (a secret with the same name is also accepted)
 - `TWO_FACTOR_ENFORCEMENT=on`
 - `SUPER_APP_NATIVE_REQUIRED=1`, `NATIVE_PUSH_ENVIRONMENT=prod`
 - `HR_DEVICE_BRIDGE=1`, `HR_DEVICE_PORT=7788` (or the approved physical-device bridge port)
+- `HR_DEVICE_LEGACY_IDENTITY_MIGRATION=0`
+- `HR_DEVICE_IP_ALLOWLIST` with the real public/LAN source IPs or exact CIDRs observed by the server,
+  or a strong `HR_DEVICE_SHARED_SECRET` supplied as a repository secret. Production refuses to start
+  the bridge when neither control is valid.
+- `HR_DEVICE_IDENTITY_BINDINGS` is optional for explicitly mapping device serials to unique source
+  addresses or per-device keys. Devices sharing a NAT/source address require unique device keys.

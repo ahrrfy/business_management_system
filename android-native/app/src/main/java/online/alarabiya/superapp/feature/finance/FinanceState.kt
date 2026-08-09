@@ -103,6 +103,7 @@ data class FinanceUiState(
     val loading: Boolean = false,
     val refreshing: Boolean = false,
     val loadedSections: Set<FinanceSection> = emptySet(),
+    val staleSections: Set<FinanceSection> = emptySet(),
     val hasMoreSections: Set<FinanceSection> = emptySet(),
     val overview: TreasuryOverview? = null,
     val movements: List<FinanceMovement> = emptyList(),
@@ -147,6 +148,7 @@ data class FinanceUiState(
             loading = false,
             refreshing = false,
             loadedSections = loadedSections + section,
+            staleSections = staleSections - section,
             selectedKey = retained,
             detailLoadingKey = null,
             error = null,
@@ -184,6 +186,31 @@ data class FinanceUiState(
         detailLoadingKey = null,
         error = message,
     )
+
+    fun loadFailed(section: FinanceSection, message: String, afterMutation: Boolean = false) = failed(message).copy(
+        staleSections = staleSections + section,
+        notice = if (afterMutation) "تمت العملية وتعذر تحديث العرض" else notice,
+    )
+
+    fun mutationCommitted(section: FinanceSection, message: String) = copy(
+        section = section,
+        composer = null,
+        createConfirmation = null,
+        transferConfirmation = null,
+        submitting = false,
+        selectedKey = null,
+        staleSections = staleSections + section,
+        error = null,
+        notice = message,
+    )
+
+    fun transferCommitted(key: FinanceItemKey, status: String, message: String) = mutationCommitted(
+        FinanceSection.TRANSFERS,
+        message,
+    ).copy(transfers = transfers.map { if (it.key == key) it.copy(status = status) else it })
+
+    fun canWrite(section: FinanceSection): Boolean =
+        section in loadedSections && section !in staleSections && !loading && !refreshing && !submitting
 }
 
 fun FinanceUiState.select(key: FinanceItemKey?): FinanceUiState =

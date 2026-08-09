@@ -17,16 +17,19 @@ enum class ControlAccess {
 
 data class AccountingControlsCapabilities(
     val role: String,
+    val isOwner: Boolean,
     val branchId: Long?,
     val allBranches: Boolean,
     val reports: ControlAccess,
     val treasury: ControlAccess,
 ) {
-    val isAdministrator get() = role.lowercase() == "admin"
-    val canReadAccounts get() = reports.canRead && role.lowercase() in REPORT_ROLES
+    private val effectiveRole get() = if (isOwner) "admin" else role.lowercase()
+    val isAdministrator get() = effectiveRole == "admin"
+    val canReadAccounts get() = reports.canRead && effectiveRole in REPORT_ROLES
+    val canReadFinancialReconciliation get() = isAdministrator
     val canGovernPeriods get() = isAdministrator
-    val canReadExchange get() = treasury.canRead && role.lowercase() in COMPANY_TREASURY_ROLES
-    val canWriteExchange get() = treasury.canWrite && role.lowercase() in COMPANY_TREASURY_ROLES && branchId != null
+    val canReadExchange get() = treasury.canRead && effectiveRole in COMPANY_TREASURY_ROLES
+    val canWriteExchange get() = treasury.canWrite && effectiveRole in COMPANY_TREASURY_ROLES && branchId != null
 
     companion object {
         private val REPORT_ROLES = setOf("admin", "manager", "accountant", "auditor")
@@ -34,6 +37,7 @@ data class AccountingControlsCapabilities(
 
         fun fromBootstrap(value: AppBootstrap) = AccountingControlsCapabilities(
             role = value.user.role,
+            isOwner = value.isOwner || value.user.isOwner,
             branchId = value.branchId,
             allBranches = value.allBranches,
             reports = ControlAccess.wire(value.modules.firstOrNull { it.key == "reports" }?.access),
@@ -42,7 +46,32 @@ data class AccountingControlsCapabilities(
     }
 }
 
-enum class AccountingControlsSection { ACCOUNTS, EXCHANGE, PERIODS, YEAR_END }
+enum class AccountingControlsSection { ACCOUNTS, FINANCIAL_RECONCILIATION, EXCHANGE, PERIODS, YEAR_END }
+
+/**
+ * The five independent integrity checks returned by reports.reconcile. This is deliberately
+ * distinct from [ExchangeReconciliation], which compares one exchange-house statement.
+ */
+enum class FinancialReconciliationAxis { CUSTOMERS, SUPPLIERS, DELIVERY, INVENTORY, LEDGER }
+
+data class FinancialReconciliationSection(
+    val axis: FinancialReconciliationAxis,
+    val issueCount: Int,
+) {
+    val balanced get() = issueCount == 0
+}
+
+/**
+ * Privacy-minimised mobile projection of reports.reconcile. Entity identifiers, names, expected
+ * balances, actual balances and notes are intentionally discarded at the repository boundary.
+ */
+data class FinancialReconciliationReport(
+    val runAt: String,
+    val sections: List<FinancialReconciliationSection>,
+) {
+    val totalIssueCount get() = sections.sumOf(FinancialReconciliationSection::issueCount)
+    val balanced get() = totalIssueCount == 0
+}
 
 enum class AccountType { ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE }
 

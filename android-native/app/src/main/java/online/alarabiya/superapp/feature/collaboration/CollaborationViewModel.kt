@@ -27,7 +27,10 @@ class CollaborationViewModel(
 
     init {
         when {
-            capabilities.tasks.canRead && capabilities.branchId != null -> loadTasks()
+            capabilities.tasks.canRead -> {
+                if (capabilities.branchId != null) loadTasks()
+                if (capabilities.canSelectTaskBranch) loadBranches()
+            }
             capabilities.campaigns.canRead -> {
                 state = state.copy(section = CollaborationSection.BROADCASTS)
                 if (capabilities.canReadBroadcastsSafely) loadBroadcasts()
@@ -38,12 +41,46 @@ class CollaborationViewModel(
     fun selectSection(section: CollaborationSection) {
         if (state.section == section) return
         state = state.copy(section = section, error = null, notice = null)
-        if (section == CollaborationSection.BROADCASTS && state.broadcasts.isEmpty()) loadBroadcasts()
+        when {
+            section == CollaborationSection.BROADCASTS && state.broadcasts.isEmpty() -> loadBroadcasts()
+            section == CollaborationSection.TASKS && state.branchId == null &&
+                capabilities.canSelectTaskBranch && !state.branchesLoaded && !state.branchesLoading -> loadBranches()
+        }
+    }
+
+    fun loadBranches() {
+        if (!capabilities.canSelectTaskBranch || state.branchesLoading) return
+        state = state.copy(branchesLoading = true, branchesLoaded = false, error = null, notice = null)
+        viewModelScope.launch {
+            runCatching { source.branches(capabilities) }
+                .onSuccess { branches ->
+                    state = state.copy(
+                        branches = branches,
+                        branchesLoading = false,
+                        branchesLoaded = true,
+                        error = if (branches.isEmpty()) "لا توجد فروع متاحة لمساحة المهام" else null,
+                    )
+                }
+                .onFailure { error ->
+                    state = state.copy(
+                        branches = emptyList(),
+                        branchesLoading = false,
+                        branchesLoaded = false,
+                        error = userMessage(error),
+                    )
+                }
+        }
     }
 
     fun setBranch(branchId: Long) {
-        if ((!capabilities.allBranches && branchId != capabilities.branchId) || branchId <= 0) return
+        val authorized = when {
+            branchId <= 0 -> false
+            capabilities.canSelectTaskBranch -> state.branches.any { it.id == branchId }
+            else -> branchId == capabilities.branchId
+        }
+        if (!authorized) return fail("الفرع غير متاح لمساحة المهام")
         state = state.copy(
+            section = CollaborationSection.TASKS,
             branchId = branchId,
             taskFilter = state.taskFilter.copy(branchId = branchId, cursor = null),
             selectedTask = null,
@@ -58,6 +95,34 @@ class CollaborationViewModel(
     }
 
     fun applyTaskFilter() = loadTasks()
+
+    fun applyNavigationArguments(arguments: Map<String, String>) {
+        if (!capabilities.tasks.canRead) return
+        val overdue = arguments["overdue"].equals("true", ignoreCase = true) || arguments["overdue"] == "1"
+        if (!overdue) return
+        state = state.copy(
+            section = CollaborationSection.TASKS,
+            taskFilter = state.taskFilter.copy(overdue = true, branchId = state.branchId, cursor = null),
+            selectedTask = null,
+            error = null,
+            notice = null,
+        )
+        if (state.branchId != null) loadTasks()
+    }
+
+    fun consumeBack(): Boolean {
+        state = when {
+            state.pendingTaskAction != null -> state.copy(pendingTaskAction = null)
+            state.taskEditor != null -> state.copy(taskEditor = null)
+            state.broadcastEditor != null -> state.copy(broadcastEditor = null, broadcastPreview = null)
+            state.selectedTask != null || state.loadingDetail && state.section == CollaborationSection.TASKS ->
+                state.copy(selectedTask = null, loadingDetail = false)
+            state.selectedBroadcast != null || state.loadingDetail && state.section == CollaborationSection.BROADCASTS ->
+                state.copy(selectedBroadcast = null, broadcastResults = null, loadingDetail = false)
+            else -> return false
+        }
+        return true
+    }
 
     fun loadMoreTasks() {
         val cursor = state.nextTaskCursor ?: return
@@ -231,12 +296,15 @@ class CollaborationViewModel(
         viewModelScope.launch {
             runCatching { source.tasks(filter, capabilities) }
                 .onSuccess { page ->
+                    val filterChangedWhileLoading = !append &&
+                        state.taskFilter.copy(branchId = branch, cursor = null) != filter.copy(cursor = null)
                     state = state.copy(
                         loading = false,
                         loadingMore = false,
                         tasks = if (append) (state.tasks + page.rows).distinctBy { it.id } else page.rows,
                         nextTaskCursor = page.nextCursor,
                     )
+                    if (filterChangedWhileLoading) loadTasks()
                 }
                 .onFailure { state = state.copy(loading = false, loadingMore = false, error = userMessage(it)) }
         }

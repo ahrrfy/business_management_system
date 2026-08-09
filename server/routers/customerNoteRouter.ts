@@ -1,14 +1,17 @@
-import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import type { AuthUser } from "../context";
 import {
   createCustomerNote,
   deleteCustomerNote,
   dueTodayCustomerNotes,
-  listCustomerNotes,
+  dueTodayCustomerNotesPage,
+  listCustomerNotesPage,
   resolveCustomerNote,
   updateCustomerNote,
 } from "../services/customerNoteService";
 import { logAudit } from "../services/auditService";
+import { companyBranchScope, resolveTargetBranch } from "../services/companyBranchScope";
+import type { Actor } from "../services/tx";
 import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, router } from "../trpc";
 
 const followUpDate = z
@@ -16,6 +19,16 @@ const followUpDate = z
   .regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ المتابعة غير صالح")
   .nullish();
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
+
+function actorOf(user: AuthUser, targetBranchId?: number): Actor {
+  const scope = companyBranchScope(user);
+  return {
+    userId: user.id,
+    branchId: targetBranchId ?? scope.branchId ?? 0,
+    role: user.role,
+    isOwner: user.isOwner === true,
+  };
+}
 
 /**
  * ملاحظات متابعة العملاء — شريحة كاملة: list / dueToday / create / resolve / update / delete.
@@ -37,25 +50,21 @@ export const customerNoteRouter = router({
         to: ymd.optional(),
       })
     )
-    .query(async ({ input }) => {
-      const all = await listCustomerNotes({
-        customerId: input.customerId,
-        includeResolved: input.includeResolved,
-        limit: 500,
-      });
-      let rows = all;
-      const q = input.q?.trim().toLowerCase();
-      if (q) rows = rows.filter((r) => r.note.toLowerCase().includes(q));
-      if (input.from) rows = rows.filter((r) => new Date(r.createdAt).toISOString().slice(0, 10) >= input.from!);
-      if (input.to) rows = rows.filter((r) => new Date(r.createdAt).toISOString().slice(0, 10) <= input.to!);
-      const offset = input.offset ?? 0;
-      const limit = input.limit ?? 100;
-      const page = rows.slice(offset, offset + limit);
-      return { rows: page, total: rows.length };
-    }),
+    .query(({ input, ctx }) => listCustomerNotesPage(input, companyBranchScope(ctx.user))),
 
-  /** تذكيرات اليوم والمتأخرة — عبر كل العملاء، مدير فأعلى (رؤية إشرافية). */
-  dueToday: customersManagerProcedure.query(async () => dueTodayCustomerNotes()),
+  /** تذكيرات اليوم والمتأخرة — ضمن فرع المدير، والشركة كاملة للأدمن/المالك. */
+  dueToday: customersManagerProcedure.query(async ({ ctx }) => dueTodayCustomerNotes(companyBranchScope(ctx.user))),
+
+  /** Complete paginated CRM reminders; the legacy array remains bounded for compatibility. */
+  dueTodayPage: customersManagerProcedure
+    .input(
+      z.object({
+        limit: z.number().int().positive().max(200).default(100),
+        offset: z.number().int().min(0).default(0),
+        q: z.string().max(500).optional(),
+      }),
+    )
+    .query(({ input, ctx }) => dueTodayCustomerNotesPage(input, companyBranchScope(ctx.user))),
 
   create: customersCashierProcedure
     .input(
@@ -63,20 +72,16 @@ export const customerNoteRouter = router({
         customerId: z.number().int().positive(),
         note: z.string().min(1).max(2000),
         followUpDate,
-        // فرع اختياري — يلزم فقط حين لا فرع مُسنَد للمستخدم (أدمن/مدير بلا فرع). createCustomerNote
-        // يكتب branchId فعلياً على الملاحظة (خلافاً لبقية إجراءات هذا الراوتر التي تتجاهل actor.branchId)
-        // ⇒ التثبيت الصامت `?? 1` كان يُسيء نسب ملاحظة مدير بلا فرع للفرع ١ (نمط PR #288 محظور — §٤ ق١١).
+        // مدير الفرع يُثبّت خادمياً على فرعه؛ الأدمن/المالك يحددان الفرع صراحةً.
+        // لا fallback صامتاً إلى الفرع ١ لأي حساب بلا فرع.
         branchId: z.number().int().positive().optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const branchId = ctx.user.branchId != null ? Number(ctx.user.branchId) : input.branchId;
-      if (branchId == null) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "حدّد الفرع (branchId) — لا فرع مُسنَد لحسابك." });
-      }
+      const branchId = resolveTargetBranch(companyBranchScope(ctx.user), input.branchId, { required: true });
       const r = await createCustomerNote(
         { customerId: input.customerId, note: input.note, followUpDate: input.followUpDate },
-        { userId: ctx.user.id, branchId, role: ctx.user.role }
+        actorOf(ctx.user, branchId!)
       );
       await logAudit(ctx, { action: "customerNote.create", entityType: "customerNote", entityId: r.id, newValue: { customerId: input.customerId } });
       return r;
@@ -91,7 +96,7 @@ export const customerNoteRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await updateCustomerNote(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const res = await updateCustomerNote(input, actorOf(ctx.user));
       await logAudit(ctx, { action: "customerNote.update", entityType: "customerNote", entityId: input.noteId });
       return res;
     }),
@@ -99,7 +104,7 @@ export const customerNoteRouter = router({
   resolve: customersCashierProcedure
     .input(z.object({ noteId: z.number().int().positive(), isResolved: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await resolveCustomerNote(input.noteId, input.isResolved, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const res = await resolveCustomerNote(input.noteId, input.isResolved, actorOf(ctx.user));
       await logAudit(ctx, { action: "customerNote.resolve", entityType: "customerNote", entityId: input.noteId, newValue: { isResolved: input.isResolved } });
       return res;
     }),
@@ -107,7 +112,7 @@ export const customerNoteRouter = router({
   delete: customersManagerProcedure
     .input(z.object({ noteId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await deleteCustomerNote(input.noteId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const res = await deleteCustomerNote(input.noteId, actorOf(ctx.user));
       await logAudit(ctx, { action: "customerNote.delete", entityType: "customerNote", entityId: input.noteId });
       return res;
     }),

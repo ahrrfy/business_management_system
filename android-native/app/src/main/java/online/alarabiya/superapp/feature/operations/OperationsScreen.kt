@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -24,8 +26,10 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Build
@@ -113,8 +117,9 @@ fun OperationsScreen(
             OperationsHeader(
                 title = state.section.label,
                 onBack = when {
-                    !tablet && state.selectedAssetId != null -> ({ viewModel.selectAsset(null) })
-                    !tablet && state.selectedNoteId != null -> ({ viewModel.selectNote(null) })
+                    !tablet && (state.assetOverlay != null || state.pendingAction != null ||
+                        state.selectedAssetId != null || state.selectedNoteId != null) ->
+                        ({ if (!viewModel.handleNestedBack()) onBack() })
                     else -> onBack
                 },
                 onRefresh = viewModel::refresh,
@@ -181,6 +186,7 @@ fun OperationsScreen(
     state.pendingAction?.let { action ->
         ActionConfirmation(action, viewModel::dismissConfirmation, viewModel::confirmPendingAction)
     }
+    AssetLifecycleOverlays(state, viewModel)
 }
 
 @Composable
@@ -240,6 +246,7 @@ private fun MessageStrip(error: String?, notice: String?, onClear: () -> Unit) {
 @Composable
 private fun AssetListPane(state: OperationsUiState, viewModel: OperationsViewModel, modifier: Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(11.dp)) {
+        AssetRegisterActions(state, viewModel)
         SearchField(state.query, viewModel::setQuery, "بحث بالرمز أو الأصل أو صاحب العهدة", NativeScanField.SKU_OR_BARCODE)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             item {
@@ -383,22 +390,7 @@ private fun AssetDetailContent(
                 }
             }
         }
-        if (OperationsPolicy.canStartMaintenance(asset, state.capabilities)) {
-            item {
-                Button(onClick = onStartMaintenance, enabled = state.busyKey == null, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                    Icon(Icons.Rounded.Build, null)
-                    Spacer(Modifier.width(7.dp))
-                    Text("تسجيل صيانة دون مصروف")
-                }
-            }
-        }
-        if (OperationsPolicy.canReturnFromMaintenance(asset, state.capabilities)) {
-            item {
-                Button(onClick = viewModel::requestReturnAsset, enabled = state.busyKey == null, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                    Text("إعادة الأصل إلى الخدمة")
-                }
-            }
-        }
+        assetLifecycleItems(detail, state, viewModel, onStartMaintenance)
     }
 }
 
@@ -644,7 +636,14 @@ private fun MaintenanceDialog(
         onDismissRequest = onDismiss,
         title = { Text("صيانة دون مصروف", modifier = Modifier.semantics { heading() }) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState())
+                    .imePadding(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 Text("تغيّر حالة الأصل فقط. الصيانة المدفوعة تُنفّذ من المسار المالي المعتمد.", color = MutedInk)
                 OutlinedTextField(type, { type = it.take(255) }, Modifier.fillMaxWidth(), label = { Text("نوع الصيانة") })
                 OutlinedTextField(vendor, { vendor = it.take(255) }, Modifier.fillMaxWidth(), label = { Text("الجهة المنفذة — اختياري") })
@@ -684,7 +683,14 @@ private fun QuickConsignmentDialog(state: OperationsUiState, viewModel: Operatio
         onDismissRequest = viewModel::dismissQuickNote,
         title = { Text("سند سريع لنفس المودع", modifier = Modifier.semantics { heading() }) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState())
+                    .imePadding(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(ConsignmentNoteType.Deposit, ConsignmentNoteType.Withdraw).forEach { option ->
                         FilterChip(type == option, { type = option }, label = { Text(option.label) })
@@ -741,6 +747,25 @@ private fun ActionConfirmation(
     val (title, description) = when (action) {
         is PendingOperationsAction.ReturnAsset -> "إعادة الأصل" to "تأكيد إعادة ${action.asset.name} إلى الخدمة؟"
         is PendingOperationsAction.StartMaintenance -> "تسجيل الصيانة" to "تسجيل صيانة صفرية وتحويل ${action.asset.name} إلى حالة الصيانة؟"
+        is PendingOperationsAction.CreateAsset -> "إنشاء أصل" to
+            "إنشاء «${action.input.name}» بقيمة ${formatMoney(action.input.purchaseValue)} وترحيل قيد الاقتناء؟"
+        is PendingOperationsAction.UpdateAsset -> "تعديل الأصل" to
+            "حفظ تعديلات ${action.asset.name}؟ قد يعيد الخادم قيد الاقتناء ويصحح الإهلاك عند تغير البيانات المالية."
+        is PendingOperationsAction.HandoverAsset -> "تسليم العهدة" to
+            "نقل عهدة ${action.asset.name} إلى ${action.employeeName}؟"
+        is PendingOperationsAction.ReleaseAssetCustody -> "استرجاع العهدة" to
+            "إغلاق عهدة ${action.asset.name} الحالية وإعادته إلى الشركة بلا موظف مسؤول؟"
+        is PendingOperationsAction.DisposeAsset -> if (action.input.status == AssetStatus.Disposed) {
+            "استبعاد الأصل" to "استبعاد ${action.asset.name} وترحيل النقد والربح أو الخسارة؟ لا يمكن التراجع."
+        } else {
+            "إخراج الأصل" to "إخراج ${action.asset.name} من الخدمة وشطب قيمته المتبقية؟ لا يمكن التراجع."
+        }
+        is PendingOperationsAction.AddAssetDocument -> "رفع مستند" to
+            "إرفاق «${action.title}» بالأصل ${action.asset.name}؟"
+        is PendingOperationsAction.DeleteAssetDocument -> "حذف المستند" to
+            "حذف «${action.document.title}» نهائياً من ${action.asset.name}؟"
+        is PendingOperationsAction.PostDepreciation -> "ترحيل الإهلاك" to
+            "ترحيل إهلاك ${action.year}-${action.month.toString().padStart(2, '0')} للأصول ضمن نطاق الفرع؟"
         is PendingOperationsAction.CreateConsignment -> "إنشاء سند ${action.type.label}" to
             "${action.product.productName} — كمية ${action.quantity}. ستُسجّل حركة مخزون فعلية."
     }

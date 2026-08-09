@@ -15,6 +15,9 @@ import online.alarabiya.superapp.model.accountingControls.ExchangeReconciliation
 import online.alarabiya.superapp.model.accountingControls.ExchangeStatement
 import online.alarabiya.superapp.model.accountingControls.ExchangeStatementSummary
 import online.alarabiya.superapp.model.accountingControls.ExchangeTransaction
+import online.alarabiya.superapp.model.accountingControls.FinancialReconciliationAxis
+import online.alarabiya.superapp.model.accountingControls.FinancialReconciliationReport
+import online.alarabiya.superapp.model.accountingControls.FinancialReconciliationSection
 import online.alarabiya.superapp.model.accountingControls.LedgerAccount
 import online.alarabiya.superapp.model.accountingControls.PendingExchangeDeposit
 import online.alarabiya.superapp.model.accountingControls.PeriodHistoryEvent
@@ -26,6 +29,7 @@ import org.json.JSONObject
 
 interface AccountingControlsDataSource {
     suspend fun accountTree(): List<AccountGroup>
+    suspend fun financialReconciliation(): FinancialReconciliationReport
     suspend fun exchangeHouses(query: String = ""): List<ExchangeHouse>
     suspend fun exchangeStatement(houseId: Long): ExchangeStatement
     suspend fun pendingExchangeDeposits(): List<PendingExchangeDeposit>
@@ -47,6 +51,13 @@ class AccountingControlsRepository(
     override suspend fun accountTree(): List<AccountGroup> {
         require(capabilities.canReadAccounts) { "لا توجد صلاحية قراءة للتقارير وشجرة الحسابات" }
         return api.queryArray("accounts.tree").objects().mapNotNull(JSONObject::toAccountGroupOrNull)
+    }
+
+    override suspend fun financialReconciliation(): FinancialReconciliationReport {
+        require(capabilities.canReadFinancialReconciliation) {
+            "المطابقة المالية الشاملة محصورة بمدير النظام أو المالك"
+        }
+        return api.query("reports.reconcileSummary").toFinancialReconciliationReport()
     }
 
     override suspend fun exchangeHouses(query: String): List<ExchangeHouse> {
@@ -179,6 +190,32 @@ internal fun JSONObject.toAccountGroupOrNull(): AccountGroup? {
     val type = runCatching { AccountType.valueOf(optString("type")) }.getOrNull() ?: return null
     val label = optString("label").takeIf(String::isNotBlank) ?: return null
     return AccountGroup(type, label, optJSONArray("rows").objects().mapNotNull(JSONObject::toLedgerAccountOrNull))
+}
+
+internal fun JSONObject.toFinancialReconciliationReport(): FinancialReconciliationReport {
+    val runAt = nullableText("runAt") ?: error("وقت تشغيل المطابقة المالية مفقود")
+    val payload = optJSONObject("sections") ?: error("محاور المطابقة المالية مفقودة")
+    val axes = listOf(
+        "customers" to FinancialReconciliationAxis.CUSTOMERS,
+        "suppliers" to FinancialReconciliationAxis.SUPPLIERS,
+        "delivery" to FinancialReconciliationAxis.DELIVERY,
+        "inventory" to FinancialReconciliationAxis.INVENTORY,
+        "ledger" to FinancialReconciliationAxis.LEDGER,
+    )
+    val sections = axes.map { (key, axis) ->
+        val section = payload.optJSONObject(key) ?: error("محور المطابقة المالية مفقود: $key")
+        val issueCount = section.requiredNonNegativeInt("issueCount")
+        val balanced = section.opt("balanced") as? Boolean
+            ?: error("حالة محور المطابقة المالية مفقودة: $key")
+        require(balanced == (issueCount == 0)) { "حالة محور المطابقة المالية غير متسقة: $key" }
+        FinancialReconciliationSection(axis = axis, issueCount = issueCount)
+    }
+    val report = FinancialReconciliationReport(runAt = runAt, sections = sections)
+    val totalIssueCount = requiredNonNegativeInt("totalIssueCount")
+    val balanced = opt("balanced") as? Boolean ?: error("حالة المطابقة المالية مفقودة")
+    require(totalIssueCount == report.totalIssueCount) { "إجمالي المطابقة المالية غير متسق" }
+    require(balanced == report.balanced) { "حالة المطابقة المالية غير متسقة" }
+    return report
 }
 
 internal fun JSONObject.toLedgerAccountOrNull(): LedgerAccount? {
@@ -360,3 +397,12 @@ private fun JSONObject.nullableLong(key: String): Long? =
     if (!has(key) || isNull(key)) null else optLong(key).takeIf { it > 0 }
 
 private fun JSONObject.money(key: String): String = nullableText(key) ?: "0"
+
+private fun JSONObject.requiredNonNegativeInt(key: String): Int {
+    val value = opt(key) as? Number ?: error("قيمة مطلوبة مفقودة: $key")
+    val long = value.toLong()
+    require(value.toDouble() == long.toDouble() && long in 0..Int.MAX_VALUE.toLong()) {
+        "قيمة خارج النطاق: $key"
+    }
+    return long.toInt()
+}

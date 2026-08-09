@@ -6,6 +6,16 @@ import online.alarabiya.superapp.core.network.TrpcClient
 import online.alarabiya.superapp.model.insights.AlertSeverity
 import online.alarabiya.superapp.model.insights.CategoryProfitInsight
 import online.alarabiya.superapp.model.insights.FunnelStep
+import online.alarabiya.superapp.model.insights.AttendanceRowInsight
+import online.alarabiya.superapp.model.insights.AttendanceSummaryInsight
+import online.alarabiya.superapp.model.insights.CashFlowInsight
+import online.alarabiya.superapp.model.insights.FinancialLineInsight
+import online.alarabiya.superapp.model.insights.FinancialReportsInsight
+import online.alarabiya.superapp.model.insights.HrReportsInsight
+import online.alarabiya.superapp.model.insights.LedgerEntryInsight
+import online.alarabiya.superapp.model.insights.PayrollRunInsight
+import online.alarabiya.superapp.model.insights.ProfitLossInsight
+import online.alarabiya.superapp.model.insights.TrialBalanceInsight
 import online.alarabiya.superapp.model.insights.GovernorateInsight
 import online.alarabiya.superapp.model.insights.InsightDateRange
 import online.alarabiya.superapp.model.insights.InsightMoney
@@ -13,6 +23,8 @@ import online.alarabiya.superapp.model.insights.InsightTarget
 import online.alarabiya.superapp.model.insights.ManagementAlert
 import online.alarabiya.superapp.model.insights.PercentText
 import online.alarabiya.superapp.model.insights.ReportInsights
+import online.alarabiya.superapp.model.insights.ReportCatalogQuery
+import online.alarabiya.superapp.model.insights.ReportCatalogResult
 import online.alarabiya.superapp.model.insights.SearchEntityType
 import online.alarabiya.superapp.model.insights.SearchInsight
 import online.alarabiya.superapp.model.insights.SlowMoverInsight
@@ -122,6 +134,10 @@ object InsightsMapper {
 interface InsightsDataSource {
     suspend fun loadReports(range: InsightDateRange, branchId: Long?, rankBy: String): ReportInsights
     suspend fun loadStore(range: InsightDateRange): StoreInsights
+    suspend fun loadFinancial(range: InsightDateRange, branchId: Long?): FinancialReportsInsight
+    suspend fun loadHrReports(range: InsightDateRange, branchId: Long?): HrReportsInsight
+    suspend fun loadReportCatalog(query: ReportCatalogQuery): ReportCatalogResult =
+        error("كتالوج التقارير غير متاح في مصدر البيانات الحالي")
     suspend fun search(query: String, scopes: Set<SearchEntityType>): List<SearchInsight>
 }
 
@@ -142,6 +158,69 @@ interface InsightsDataSource {
  *   for nonstandard roles. Report screens therefore use the conservative standard-role policy.
  */
 class InsightsRepository(private val api: TrpcClient) : InsightsDataSource {
+    private val reportCatalog = NativeReportCatalogRepository(api)
+
+    override suspend fun loadReportCatalog(query: ReportCatalogQuery): ReportCatalogResult =
+        reportCatalog.load(query)
+
+    override suspend fun loadFinancial(range: InsightDateRange, branchId: Long?): FinancialReportsInsight {
+        require(range.validationError() == null) { range.validationError().orEmpty() }
+        val dated = JSONObject().put("from", range.from).put("to", range.to).also { branchId?.let { id -> it.put("branchId", id) } }
+        val snapshot = JSONObject().also { branchId?.let { id -> it.put("branchId", id) } }.put("asOf", range.to)
+        val pl = api.query("reports.profitAndLoss", dated).optJSONObject("current") ?: JSONObject()
+        val position = api.query("reports.financialPosition", snapshot)
+        val ledger = api.query("reports.generalLedger", JSONObject(dated.toString()).put("limit", 200).put("offset", 0))
+        val cash = api.query("reports.cashFlow", dated)
+        return FinancialReportsInsight(
+            profitLoss = ProfitLossInsight(
+                revenue = InsightMoney.fromServer(pl.nullableText("revenue")),
+                costOfSales = InsightMoney.fromServer(pl.nullableText("cogs")),
+                grossProfit = InsightMoney.fromServer(pl.nullableText("grossProfit")),
+                totalExpenses = InsightMoney.fromServer(pl.nullableText("totalExpenses")),
+                netProfit = InsightMoney.fromServer(pl.nullableText("netProfit")),
+                expenseLines = pl.optJSONArray("expenseLines").objects().map(::financialLine),
+            ),
+            trialBalance = TrialBalanceInsight(
+                totalAssets = InsightMoney.fromServer(position.nullableText("totalAssets")),
+                totalLiabilities = InsightMoney.fromServer(position.nullableText("totalLiabilities")),
+                equity = InsightMoney.fromServer(position.nullableText("equity")),
+                reconciled = position.optBoolean("arReconciled") && position.optBoolean("apReconciled"),
+                asOf = position.nullableText("asOf"),
+            ),
+            ledger = ledger.optJSONArray("rows").objects().mapNotNull(::ledgerEntry),
+            ledgerTotal = ledger.optInt("total"),
+            cashFlow = CashFlowInsight(
+                inflows = cash.optJSONArray("inflows").objects().map(::financialLine),
+                outflows = cash.optJSONArray("outflows").objects().map(::financialLine),
+                totalIn = InsightMoney.fromServer(cash.nullableText("totalIn")),
+                totalOut = InsightMoney.fromServer(cash.nullableText("totalOut")),
+                net = InsightMoney.fromServer(cash.nullableText("net")),
+            ),
+        )
+    }
+
+    override suspend fun loadHrReports(range: InsightDateRange, branchId: Long?): HrReportsInsight {
+        require(range.validationError() == null) { range.validationError().orEmpty() }
+        val attendanceInput = JSONObject().put("from", range.from).put("to", range.to).also { branchId?.let { id -> it.put("branchId", id) } }
+        val attendance = api.query("attendance.report", attendanceInput)
+        val payroll = api.query("payroll.summaryReport", JSONObject())
+        val totals = attendance.optJSONObject("totals") ?: JSONObject()
+        val payrollTotals = payroll.optJSONObject("totals") ?: JSONObject()
+        return HrReportsInsight(
+            attendance = AttendanceSummaryInsight(
+                rows = attendance.optJSONArray("rows").objects().map {
+                    AttendanceRowInsight(it.optString("date"), it.optString("employeeName"), it.optString("status"), it.optString("hours", "0"))
+                },
+                days = totals.optInt("days"), hours = totals.optString("hours", "0"),
+                present = totals.optInt("present"), absent = totals.optInt("absent"),
+            ),
+            payrollRuns = payroll.optJSONArray("rows").objects().mapNotNull {
+                it.optLong("id").takeIf { id -> id > 0 }?.let { id -> PayrollRunInsight(id, it.optString("period"), it.optString("status"), it.optInt("employees"), InsightMoney.fromServer(it.nullableText("gross")), InsightMoney.fromServer(it.nullableText("net"))) }
+            },
+            payrollGross = InsightMoney.fromServer(payrollTotals.nullableText("gross")),
+            payrollNet = InsightMoney.fromServer(payrollTotals.nullableText("net")),
+        )
+    }
     override suspend fun loadReports(
         range: InsightDateRange,
         branchId: Long?,
@@ -303,6 +382,24 @@ private fun JSONObject.toSearchPayload() = SearchPayload(
     meta = nullableText("meta"),
     rank = optInt("rank"),
 )
+
+private fun financialLine(json: JSONObject) = FinancialLineInsight(
+    key = json.optString("key"),
+    label = json.optString("label"),
+    amount = InsightMoney.fromServer(json.nullableText("amount")),
+)
+
+private fun ledgerEntry(json: JSONObject): LedgerEntryInsight? {
+    val id = json.optLong("id").takeIf { it > 0 } ?: return null
+    return LedgerEntryInsight(
+        id = id,
+        date = json.optString("entryDate"),
+        type = json.optString("entryType"),
+        party = json.nullableText("partyName"),
+        reference = json.nullableText("invoiceNumber") ?: json.nullableText("notes"),
+        amount = InsightMoney.fromServer(json.nullableText("amount")),
+    )
+}
 
 private fun JSONArray?.objects(): List<JSONObject> = buildList {
     if (this@objects == null) return@buildList

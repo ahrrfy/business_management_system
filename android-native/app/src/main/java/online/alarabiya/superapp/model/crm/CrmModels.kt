@@ -4,6 +4,7 @@ import online.alarabiya.superapp.model.AppBootstrap
 
 enum class CrmSection {
     Customers,
+    FollowUps,
     Quotations,
     Campaigns,
 }
@@ -33,6 +34,7 @@ data class CrmCapabilities(
     val visibleSections: List<CrmSection>
         get() = buildList {
             if (customers.canRead) add(CrmSection.Customers)
+            if (customers.canWrite) add(CrmSection.FollowUps)
             if (sales.canRead) add(CrmSection.Quotations)
             if (campaigns.canRead) add(CrmSection.Campaigns)
         }
@@ -109,6 +111,72 @@ data class CustomerDetail(
     val notes: String?,
     val waConsent: String?,
     val isActive: Boolean,
+)
+
+data class CustomerFollowUp(
+    val id: Long,
+    val customerId: Long,
+    val customerName: String?,
+    val customerPhone: String?,
+    val note: String,
+    val followUpDate: String?,
+    val isResolved: Boolean,
+    val createdByName: String?,
+    val branchId: Long?,
+    val createdAt: String?,
+)
+
+data class CustomerFollowUpPage(
+    val rows: List<CustomerFollowUp>,
+    val total: Int,
+)
+
+data class CustomerFollowUpDraft(
+    val noteId: Long? = null,
+    val note: String = "",
+    val followUpDate: String = "",
+)
+
+data class CustomerContractPrice(
+    val id: Long,
+    val customerId: Long,
+    val productUnitId: Long,
+    val price: String,
+    val isActive: Boolean,
+    val note: String?,
+    val updatedAt: String?,
+    val productId: Long,
+    val productName: String,
+    val variantName: String?,
+    val color: String?,
+    val size: String?,
+    val sku: String,
+    val unitName: String,
+) {
+    val productLabel: String
+        get() = listOfNotNull(productName, variantName, color, size, unitName)
+            .filter(String::isNotBlank)
+            .joinToString(" · ")
+}
+
+data class CustomerContractPricePage(
+    val rows: List<CustomerContractPrice>,
+    val total: Int,
+    val hasMore: Boolean,
+    val nextCursor: String?,
+)
+
+data class CustomerContractPriceMutation(
+    val id: Long,
+    val updated: Boolean,
+)
+
+data class CustomerContractPriceDraft(
+    val priceId: Long? = null,
+    val productUnitId: Long? = null,
+    val productLabel: String = "",
+    val price: String = "",
+    val note: String = "",
 )
 
 data class CustomerDraft(
@@ -367,6 +435,24 @@ object CrmValidation {
         if (draft.startsOn.isNotBlank() && draft.endsOn.isNotBlank() && draft.endsOn < draft.startsOn) {
             return "تاريخ نهاية الحملة يسبق بدايتها"
         }
+        return null
+    }
+
+    fun followUp(draft: CustomerFollowUpDraft): String? {
+        if (draft.note.trim().isEmpty()) return "نص المتابعة مطلوب"
+        if (draft.note.trim().length > 2000) return "نص المتابعة أطول من الحد المسموح"
+        if (draft.followUpDate.isNotBlank() && !date.matches(draft.followUpDate)) {
+            return "تاريخ المتابعة يجب أن يكون YYYY-MM-DD"
+        }
+        return null
+    }
+
+    fun contractPrice(draft: CustomerContractPriceDraft): String? {
+        if (draft.productUnitId == null || draft.productUnitId <= 0) return "اختر الصنف والوحدة"
+        if (!money.matches(draft.price) || draft.price.toBigDecimalOrNull()?.signum() != 1) {
+            return "السعر التعاقدي يجب أن يكون أكبر من صفر وبدقة منزلتين"
+        }
+        if (draft.note.length > 255) return "ملاحظة العقد أطول من الحد المسموح"
         return null
     }
 }

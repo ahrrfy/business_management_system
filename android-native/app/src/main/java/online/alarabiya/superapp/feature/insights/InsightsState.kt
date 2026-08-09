@@ -7,6 +7,8 @@ import online.alarabiya.superapp.model.insights.ReportInsights
 import online.alarabiya.superapp.model.insights.SearchEntityType
 import online.alarabiya.superapp.model.insights.SearchInsight
 import online.alarabiya.superapp.model.insights.StoreInsights
+import online.alarabiya.superapp.model.insights.FinancialReportsInsight
+import online.alarabiya.superapp.model.insights.HrReportsInsight
 
 data class InsightsUiState(
     val section: InsightsSection,
@@ -17,10 +19,14 @@ data class InsightsUiState(
     val searching: Boolean = false,
     val reports: ReportInsights? = null,
     val store: StoreInsights? = null,
+    val financial: FinancialReportsInsight? = null,
+    val hrReports: HrReportsInsight? = null,
+    val reportCatalog: ReportCatalogUiState = ReportCatalogUiState(),
     val searchQuery: String = "",
     val enabledScopes: Set<SearchEntityType> = emptySet(),
     val searchResults: List<SearchInsight> = emptyList(),
     val selectedTarget: InsightTarget? = null,
+    val focusedAlertKey: String? = null,
     val error: String? = null,
     val notice: String? = null,
 ) {

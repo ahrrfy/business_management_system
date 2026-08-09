@@ -1,11 +1,17 @@
 import { readFcmCredentials } from "./nativePushService";
+import {
+  productionSecurityFailure,
+  resolveBridgeSecurityConfig,
+} from "./hrDevices/bridgeSecurity";
 
 export type MobileReadinessIssue =
   | "FCM_CONFIGURATION_INVALID"
   | "TWO_FACTOR_ENCRYPTION_KEY_INVALID"
   | "TWO_FACTOR_ENFORCEMENT_DISABLED"
   | "NATIVE_PUSH_ENVIRONMENT_INVALID"
-  | "ATTENDANCE_DEVICE_BRIDGE_DISABLED";
+  | "ATTENDANCE_DEVICE_BRIDGE_DISABLED"
+  | "ATTENDANCE_DEVICE_BRIDGE_PORT_INVALID"
+  | "ATTENDANCE_DEVICE_BRIDGE_INSECURE";
 
 export interface MobileProductionReadiness {
   required: boolean;
@@ -55,10 +61,13 @@ export function checkMobileProductionReadiness(
   const devicePort = Number(env.HR_DEVICE_PORT ?? "0");
   const deviceBridgeEnabled =
     !env.CONTROL_DATABASE_URL &&
-    (env.HR_DEVICE_BRIDGE === "1" ||
-      (Number.isInteger(devicePort) && devicePort > 0));
+    env.HR_DEVICE_BRIDGE === "1";
   if (!deviceBridgeEnabled) {
     issues.push("ATTENDANCE_DEVICE_BRIDGE_DISABLED");
+  } else if (!Number.isInteger(devicePort) || devicePort < 1 || devicePort > 65_535) {
+    issues.push("ATTENDANCE_DEVICE_BRIDGE_PORT_INVALID");
+  } else if (productionSecurityFailure(resolveBridgeSecurityConfig(env), env)) {
+    issues.push("ATTENDANCE_DEVICE_BRIDGE_INSECURE");
   }
   return { required, ready: issues.length === 0, issues };
 }

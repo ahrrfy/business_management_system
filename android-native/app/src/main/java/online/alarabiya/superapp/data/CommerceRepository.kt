@@ -7,6 +7,9 @@ import online.alarabiya.superapp.model.commerce.ConfirmedDigitalCard
 import online.alarabiya.superapp.model.commerce.DigitalCard
 import online.alarabiya.superapp.model.commerce.DigitalCardCategory
 import online.alarabiya.superapp.model.commerce.DigitalSubscription
+import online.alarabiya.superapp.model.commerce.DigitalCardApproval
+import online.alarabiya.superapp.model.commerce.DigitalCardApprovalDecision
+import online.alarabiya.superapp.model.commerce.DigitalCardApprovalKind
 import online.alarabiya.superapp.model.commerce.GiftDetail
 import online.alarabiya.superapp.model.commerce.GiftDirection
 import online.alarabiya.superapp.model.commerce.GiftPage
@@ -30,6 +33,9 @@ interface CommerceDataSource {
     suspend fun digitalCards(branchId: Long, category: DigitalCardCategory, query: String): List<DigitalCard>
     suspend fun confirmDigitalCard(branchId: Long, offeringId: Long): ConfirmedDigitalCard
     suspend fun subscriptions(branchId: Long?, query: String, status: String?): List<DigitalSubscription>
+    suspend fun digitalCardApprovals(branchId: Long?): List<DigitalCardApproval>
+    suspend fun approveDigitalCard(item: DigitalCardApproval, decision: DigitalCardApprovalDecision)
+    suspend fun rejectDigitalCard(item: DigitalCardApproval, reason: String?)
 }
 
 class CommerceRepository(private val api: TrpcClient) : CommerceDataSource {
@@ -132,5 +138,162 @@ class CommerceRepository(private val api: TrpcClient) : CommerceDataSource {
         query.trim().takeIf(String::isNotEmpty)?.let { input.put("q", it.take(120)) }
         status?.takeIf { it in setOf("ACTIVE", "EXPIRED", "CANCELLED") }?.let { input.put("status", it) }
         return CommerceMappers.subscriptions(api.queryArray("digitalCards.subscriptions.list", input))
+    }
+
+    override suspend fun digitalCardApprovals(branchId: Long?): List<DigitalCardApproval> {
+        val branchInput = JSONObject().also { input -> branchId?.takeIf { it > 0 }?.let { input.put("branchId", it) } }
+        val reviews = api.queryArray("digitalCards.sales.needsReview", branchInput).let { values ->
+            buildList {
+                repeat(values.length()) { index ->
+                    val item = values.optJSONObject(index) ?: return@repeat
+                    when {
+                        item.optString("status") == "WRITEOFF_PENDING" -> add(
+                            DigitalCardApproval(
+                                id = item.getLong("id"),
+                                kind = DigitalCardApprovalKind.WRITEOFF,
+                                branchId = item.optLongOrNull("branchId"),
+                                branchName = item.optStringOrNull("branchName"),
+                                title = "شطب عملية بطاقة رقمية",
+                                description = item.optStringOrNull("writeoffReason"),
+                                amount = item.optStringOrNull("expectedTotal"),
+                                requesterId = item.optLongOrNull("writeoffRequestedBy"),
+                                requesterName = item.optStringOrNull("createdByName"),
+                                createdAt = item.optStringOrNull("createdAt"),
+                            ),
+                        )
+                        item.optString("resolutionStatus") == "PENDING" -> add(
+                            DigitalCardApproval(
+                                id = item.getLong("id"),
+                                kind = DigitalCardApprovalKind.REVIEW_RESOLUTION,
+                                branchId = item.optLongOrNull("branchId"),
+                                branchName = item.optStringOrNull("branchName"),
+                                title = "معالجة عملية تحتاج مراجعة",
+                                description = item.optStringOrNull("resolutionReason"),
+                                amount = item.optStringOrNull("expectedTotal"),
+                                requesterId = item.optLongOrNull("resolutionRequestedBy"),
+                                requesterName = item.optStringOrNull("createdByName"),
+                                createdAt = item.optStringOrNull("createdAt"),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+        val mismatches = api.queryArray(
+            "digitalCards.pricing.mismatchReports",
+            JSONObject().put("status", "OPEN").also { input ->
+                branchId?.takeIf { it > 0 }?.let { input.put("branchId", it) }
+            },
+        ).let { values ->
+            buildList {
+                repeat(values.length()) { index ->
+                    val item = values.optJSONObject(index) ?: return@repeat
+                    add(
+                        DigitalCardApproval(
+                            id = item.getLong("id"),
+                            kind = DigitalCardApprovalKind.PRICE_MISMATCH,
+                            branchId = item.optLongOrNull("branchId"),
+                            branchName = item.optStringOrNull("branchName"),
+                            title = item.optString("offeringName", "اختلاف سعر بطاقة"),
+                            description = item.optStringOrNull("notes"),
+                            amount = item.optStringOrNull("reportedProviderShare"),
+                            requesterId = item.optLongOrNull("reportedBy"),
+                            requesterName = null,
+                            createdAt = item.optStringOrNull("createdAt"),
+                            currentSellPrice = item.optStringOrNull("currentSellPrice"),
+                        ),
+                    )
+                }
+            }
+        }
+        val variances = api.queryArray(
+            "digitalCards.wallets.reconciliations",
+            JSONObject().put("status", "VARIANCE_OPEN"),
+        ).let { values ->
+            buildList {
+                repeat(values.length()) { index ->
+                    val item = values.optJSONObject(index) ?: return@repeat
+                    add(
+                        DigitalCardApproval(
+                            id = item.getLong("id"),
+                            kind = DigitalCardApprovalKind.WALLET_VARIANCE,
+                            branchId = null,
+                            branchName = item.optStringOrNull("branchName"),
+                            title = item.optString("walletName", "فرق رصيد محفظة"),
+                            description = item.optStringOrNull("notes"),
+                            amount = item.optStringOrNull("variance"),
+                            requesterId = item.optLongOrNull("countedBy"),
+                            requesterName = item.optStringOrNull("countedByName"),
+                            createdAt = item.optStringOrNull("createdAt"),
+                        ),
+                    )
+                }
+            }
+        }
+        return (reviews + mismatches + variances).sortedByDescending { it.createdAt.orEmpty() }
+    }
+
+    override suspend fun approveDigitalCard(item: DigitalCardApproval, decision: DigitalCardApprovalDecision) {
+        require(item.id > 0) { "معرّف طلب الاعتماد غير صالح" }
+        when (item.kind) {
+            DigitalCardApprovalKind.REVIEW_RESOLUTION ->
+                api.mutate(DigitalCardApprovalContract.approveProcedure(item.kind), JSONObject().put("intentId", item.id))
+            DigitalCardApprovalKind.WRITEOFF ->
+                api.mutate(DigitalCardApprovalContract.approveProcedure(item.kind), JSONObject().put("intentId", item.id))
+            DigitalCardApprovalKind.PRICE_MISMATCH -> {
+                val date = requireNotNull(decision.businessDate?.takeIf { it.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$")) }) {
+                    "تاريخ العمل مطلوب"
+                }
+                val sellPrice = requireNotNull(decision.sellPrice?.trim()?.takeIf { it.matches(Regex("^\\d+(?:\\.\\d{1,2})?$")) }) {
+                    "سعر البيع غير صالح"
+                }
+                api.mutate(
+                    DigitalCardApprovalContract.approveProcedure(item.kind),
+                    JSONObject().put("reportId", item.id).put("businessDate", date).put("sellPrice", sellPrice)
+                        .put("notes", decision.reason?.trim()?.take(500) ?: JSONObject.NULL),
+                )
+            }
+            DigitalCardApprovalKind.WALLET_VARIANCE ->
+                error("اعتماد فرق المحفظة يتطلب حركة التسوية المرتبطة من الخادم")
+        }
+    }
+
+    override suspend fun rejectDigitalCard(item: DigitalCardApproval, reason: String?) {
+        require(item.id > 0) { "معرّف طلب الاعتماد غير صالح" }
+        val cleanReason = reason?.trim()?.takeIf(String::isNotEmpty)?.take(500)
+        when (item.kind) {
+            DigitalCardApprovalKind.REVIEW_RESOLUTION -> {
+                require(!cleanReason.isNullOrBlank() && cleanReason.length >= 3) { "سبب الرفض مطلوب" }
+                api.mutate(DigitalCardApprovalContract.rejectProcedure(item.kind), JSONObject().put("intentId", item.id).put("reason", cleanReason))
+            }
+            DigitalCardApprovalKind.WRITEOFF ->
+                api.mutate(DigitalCardApprovalContract.rejectProcedure(item.kind), JSONObject().put("intentId", item.id).put("reason", cleanReason ?: JSONObject.NULL))
+            DigitalCardApprovalKind.PRICE_MISMATCH ->
+                api.mutate(DigitalCardApprovalContract.rejectProcedure(item.kind), JSONObject().put("reportId", item.id).put("notes", cleanReason ?: JSONObject.NULL))
+            DigitalCardApprovalKind.WALLET_VARIANCE ->
+                error("رفض فرق المحفظة يتطلب حركة التسوية المرتبطة من الخادم")
+        }
+    }
+}
+
+private fun JSONObject.optLongOrNull(key: String): Long? =
+    if (!has(key) || isNull(key)) null else optLong(key).takeIf { it > 0 }
+
+private fun JSONObject.optStringOrNull(key: String): String? =
+    if (!has(key) || isNull(key)) null else optString(key).trim().takeIf(String::isNotEmpty)
+
+internal object DigitalCardApprovalContract {
+    fun approveProcedure(kind: DigitalCardApprovalKind): String = when (kind) {
+        DigitalCardApprovalKind.REVIEW_RESOLUTION -> "digitalCards.sales.approveReviewResolution"
+        DigitalCardApprovalKind.WRITEOFF -> "digitalCards.sales.approveWriteoff"
+        DigitalCardApprovalKind.PRICE_MISMATCH -> "digitalCards.pricing.approveMismatch"
+        DigitalCardApprovalKind.WALLET_VARIANCE -> error("Variance approval needs a linked adjustment transaction")
+    }
+
+    fun rejectProcedure(kind: DigitalCardApprovalKind): String = when (kind) {
+        DigitalCardApprovalKind.REVIEW_RESOLUTION -> "digitalCards.sales.rejectReviewResolution"
+        DigitalCardApprovalKind.WRITEOFF -> "digitalCards.sales.rejectWriteoff"
+        DigitalCardApprovalKind.PRICE_MISMATCH -> "digitalCards.pricing.rejectMismatch"
+        DigitalCardApprovalKind.WALLET_VARIANCE -> error("Variance rejection has no server contract")
     }
 }

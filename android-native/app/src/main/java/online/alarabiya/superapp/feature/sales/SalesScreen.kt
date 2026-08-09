@@ -327,22 +327,77 @@ private fun CustomerPicker(state: SalesUiState, actions: SalesActions) {
 
 @Composable
 private fun CartRow(line: CartLine, locked: Boolean, actions: SalesActions) {
-    Row(Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(line.item.label, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text("السعر المرجعي ${line.item.serverPrice ?: "—"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    CartLineCard(line, locked, actions.quantity, actions.remove)
+}
+
+/** Visible to the narrow large-text instrumentation contract without exposing the whole screen. */
+@Composable
+internal fun CartLineCard(
+    line: CartLine,
+    locked: Boolean,
+    onQuantity: (Long, String) -> Unit,
+    onRemove: (Long) -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            Column(Modifier.weight(1f)) {
+                // Product identity is never ellipsized: with large accessibility fonts it wraps
+                // vertically instead of competing horizontally with quantity controls.
+                Text(line.item.label, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "السعر المرجعي ${line.item.serverPrice ?: "—"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(
+                onClick = { onRemove(line.item.productUnitId) },
+                enabled = !locked,
+            ) {
+                Icon(
+                    Icons.Rounded.Close,
+                    "إزالة ${line.item.label} من السلة",
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            }
         }
-        IconButton(onClick = { actions.quantity(line.item.productUnitId, ((line.quantity.toDoubleOrNull() ?: 1.0) - 1.0).coerceAtLeast(1.0).asQuantity()) }, enabled = !locked) { Icon(Icons.Rounded.Remove, "تقليل كمية ${line.item.label}") }
-        OutlinedTextField(
-            value = line.quantity,
-            onValueChange = { actions.quantity(line.item.productUnitId, it) },
-            modifier = Modifier.width(72.dp),
-            enabled = !locked,
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-        )
-        IconButton(onClick = { actions.quantity(line.item.productUnitId, ((line.quantity.toDoubleOrNull() ?: 0.0) + 1.0).asQuantity()) }, enabled = !locked) { Icon(Icons.Rounded.Add, "زيادة كمية ${line.item.label}") }
-        IconButton(onClick = { actions.remove(line.item.productUnitId) }, enabled = !locked) { Icon(Icons.Rounded.Close, "إزالة ${line.item.label} من السلة", tint = MaterialTheme.colorScheme.error) }
+
+        // A dedicated full-width control row remains usable at 320dp and fontScale 2.0. The input
+        // takes the remaining width instead of imposing the former fixed 72dp bottleneck.
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(
+                onClick = {
+                    onQuantity(
+                        line.item.productUnitId,
+                        ((line.quantity.toDoubleOrNull() ?: 1.0) - 1.0).coerceAtLeast(1.0).asQuantity(),
+                    )
+                },
+                enabled = !locked,
+            ) { Icon(Icons.Rounded.Remove, "تقليل كمية ${line.item.label}") }
+            OutlinedTextField(
+                value = line.quantity,
+                onValueChange = { onQuantity(line.item.productUnitId, it) },
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                enabled = !locked,
+                singleLine = true,
+                label = { Text("الكمية") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            )
+            IconButton(
+                onClick = {
+                    onQuantity(
+                        line.item.productUnitId,
+                        ((line.quantity.toDoubleOrNull() ?: 0.0) + 1.0).asQuantity(),
+                    )
+                },
+                enabled = !locked,
+            ) { Icon(Icons.Rounded.Add, "زيادة كمية ${line.item.label}") }
+        }
     }
 }
 
@@ -379,7 +434,8 @@ private fun PaymentPanel(state: SalesUiState, actions: SalesActions) {
     Button(
         onClick = actions.submitSale,
         modifier = Modifier.fillMaxWidth().height(54.dp),
-        enabled = !state.locked && state.cart.isNotEmpty() && (state.paymentMethod != PaymentMethod.CASH || state.selectedSaleShiftId != null),
+        enabled = !state.locked && state.checkoutDependenciesLoaded && state.cart.isNotEmpty() &&
+            (state.paymentMethod != PaymentMethod.CASH || state.selectedSaleShiftId != null),
         shape = RoundedCornerShape(topStart = 22.dp, bottomEnd = 22.dp, topEnd = 12.dp, bottomStart = 12.dp),
     ) {
         if (state.busy == SalesBusy.SALE) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)

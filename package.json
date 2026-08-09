@@ -21,7 +21,7 @@
     "audit:bundle": "node scripts/audit-build-budgets.mjs",
     "check:authz": "node scripts/authz-inventory.mjs --check",
     "check:authz:diff": "node scripts/authz-guard-diff.mjs",
-    "check:mobile-release": "node scripts/verify-mobile-release-env.mjs",
+    "check:mobile-release": "node scripts/verify-android-release-workflow-gate.mjs --selftest && node scripts/verify-mobile-release-env.mjs",
     "authz:baseline": "node scripts/authz-inventory.mjs --write-baseline",
     "check:guards": "pnpm check:emoji && pnpm check:money-schemas && pnpm check:form-inputs && pnpm check:branch && pnpm check:migrations && pnpm check:orphans && pnpm check:date-boundaries && pnpm check:colors && pnpm check:authz",
     "prepare": "husky",

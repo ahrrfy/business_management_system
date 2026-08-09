@@ -19,6 +19,8 @@ class InsightsPolicyTest {
         )
 
         assertTrue(policy.canRead(InsightsSection.REPORTS))
+        assertTrue(policy.canRead(InsightsSection.REPORT_CATALOG))
+        assertTrue(policy.canRead(InsightsSection.FINANCIAL))
         assertTrue(SearchEntityType.INVOICE in policy.searchScopes)
         assertTrue(SearchEntityType.EXPENSE in policy.searchScopes)
         assertFalse(SearchEntityType.USER in policy.searchScopes)
@@ -57,7 +59,22 @@ class InsightsPolicyTest {
 
         assertTrue(policy.canFilterBranch)
         assertTrue(policy.canRead(InsightsSection.REPORTS))
+        assertTrue(policy.canRead(InsightsSection.REPORT_CATALOG))
         assertTrue(SearchEntityType.USER in policy.searchScopes)
+    }
+
+    @Test
+    fun `accountant and auditor keep financial reports but not owner manager catalog`() {
+        assertTrue(policy("accountant", 2, module("reports", "READ")).canRead(InsightsSection.FINANCIAL))
+        assertFalse(policy("accountant", 2, module("reports", "READ")).canRead(InsightsSection.REPORT_CATALOG))
+        assertFalse(policy("auditor", 2, module("reports", "READ")).canRead(InsightsSection.REPORT_CATALOG))
+    }
+
+    @Test
+    fun `hr reports require hr read and an authorised reporting role`() {
+        assertTrue(policy("manager", 2, module("hr", "READ")).canRead(InsightsSection.HR_REPORTS))
+        assertFalse(policy("cashier", 2, module("hr", "READ")).canRead(InsightsSection.HR_REPORTS))
+        assertFalse(policy("manager", 2, module("hr", "NONE")).canRead(InsightsSection.HR_REPORTS))
     }
 
     private fun module(key: String, access: String) = ModuleAccess(key, key, access)

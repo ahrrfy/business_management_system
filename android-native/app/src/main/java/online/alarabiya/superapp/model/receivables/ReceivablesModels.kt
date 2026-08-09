@@ -369,7 +369,10 @@ data class ReceivablesAccessPolicy(
          * financial access, native uses only the server's standard role sets; custom explicit grants remain
          * unavailable until bootstrap carries provenance.
          */
-        fun fromBootstrap(bootstrap: AppBootstrap): ReceivablesAccessPolicy {
+        fun fromBootstrap(
+            bootstrap: AppBootstrap,
+            effectiveBranchId: Long? = bootstrap.branchId,
+        ): ReceivablesAccessPolicy {
             val levels = bootstrap.modules.associate { it.key to it.access.uppercase() }
             fun reads(module: String) = levels[module] in setOf("READ", "FULL")
             fun writes(module: String) = levels[module] == "FULL"
@@ -379,9 +382,9 @@ data class ReceivablesAccessPolicy(
             val installmentRole = role in setOf("admin", "manager", "accountant")
             val arRole = role in setOf("admin", "manager", "accountant")
             val apRole = role in setOf("admin", "manager", "warehouse", "purchasing")
-            val ownBranchReady = admin || role == "manager" || bootstrap.branchId != null
-            val reminderBranchReady = admin || bootstrap.branchId != null
-            val writeBranchReady = admin || bootstrap.branchId != null
+            val ownBranchReady = admin || role == "manager" || effectiveBranchId != null
+            val reminderBranchReady = admin || effectiveBranchId != null
+            val writeBranchReady = admin || effectiveBranchId != null
 
             val readable = buildSet {
                 if (installmentRole && reads("treasury") && ownBranchReady) add(ReceivablesSection.INSTALLMENTS)
@@ -400,7 +403,7 @@ data class ReceivablesAccessPolicy(
             return ReceivablesAccessPolicy(
                 readableSections = readable,
                 writableSections = writable,
-                assignedBranchId = bootstrap.branchId,
+                assignedBranchId = effectiveBranchId,
                 canFilterBranch = admin,
                 canCreateReconciliation = reportRole && reads("reports") &&
                     role in setOf("admin", "manager", "accountant") && writeBranchReady,

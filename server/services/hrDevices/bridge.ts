@@ -12,6 +12,14 @@ import { logger } from "../../logger";
 import { createAifaceSession } from "./aifaceDriver";
 import { handleIclock } from "./iclockDriver";
 import { sweepOffline } from "./registry";
+import {
+  isRequestAuthorized,
+  normalizeRemoteAddress,
+  PerIpRateLimiter,
+  productionSecurityFailure,
+  requestDeviceCredential,
+  resolveBridgeSecurityConfig,
+} from "./bridgeSecurity";
 
 export interface HrDeviceBridge {
   server: Server;
@@ -25,8 +33,33 @@ export function startHrDeviceBridge(port: number): HrDeviceBridge | null {
     return null;
   }
 
+  const security = resolveBridgeSecurityConfig();
+  const securityFailure = productionSecurityFailure(security);
+  if (securityFailure) {
+    logger.error(
+      { host: security.host, port },
+      `hrDevices: ${securityFailure}`,
+    );
+    return null;
+  }
+  const rateLimiter = new PerIpRateLimiter(security.maxRequestsPerMinute);
+  const wsPerIp = new Map<string, number>();
+
   const server = createServer((req, res) => {
-    void handleIclock(req, res).then((handled) => {
+    const remote = req.socket.remoteAddress;
+    if (!isRequestAuthorized(req, security)) {
+      logger.warn({ remote: normalizeRemoteAddress(remote) }, "hrDevices: رفض طلب غير مصرح");
+      res.writeHead(403, { "Content-Type": "text/plain", Connection: "close" });
+      res.end("forbidden");
+      return;
+    }
+    if (!rateLimiter.allow(remote)) {
+      logger.warn({ remote: normalizeRemoteAddress(remote) }, "hrDevices: تجاوز حد الطلبات");
+      res.writeHead(429, { "Content-Type": "text/plain", "Retry-After": "60", Connection: "close" });
+      res.end("too many requests");
+      return;
+    }
+    void handleIclock(req, res, security).then((handled) => {
       if (!handled) {
         res.writeHead(404, { "Content-Type": "text/plain" });
         res.end("not found");
@@ -36,25 +69,68 @@ export function startHrDeviceBridge(port: number): HrDeviceBridge | null {
 
   // maxPayload صريح: افتراضي ws ~١٠٠م.ب على مقبس غير مصادَق (قبل reg) = ثغرة إنهاك ذاكرة.
   // ٨م.ب تطابق سقف جسم iclock وتكفي أكبر دفعة سجلات واقعية.
-  const wss = new WebSocketServer({ server, maxPayload: 8 * 1024 * 1024 });
+  const wss = new WebSocketServer({
+    server,
+    maxPayload: security.maxPayloadBytes,
+    verifyClient: ({ req }, done) => {
+      const remote = normalizeRemoteAddress(req.socket.remoteAddress) || "unknown";
+      const connected = wsPerIp.get(remote) ?? 0;
+      const authorized = isRequestAuthorized(req, security);
+      const withinRate = rateLimiter.allow(req.socket.remoteAddress);
+      const accepted = authorized && withinRate && connected < security.maxWsConnectionsPerIp;
+      if (!accepted) logger.warn({ remote, authorized, withinRate, connected }, "hrDevices: رفض ترقية WebSocket");
+      done(accepted, accepted ? undefined : authorized ? 429 : 403);
+    },
+  });
   wss.on("connection", (socket, req) => {
-    const remote = req.socket.remoteAddress ?? "?";
+    const remote = normalizeRemoteAddress(req.socket.remoteAddress) || "?";
+    wsPerIp.set(remote, (wsPerIp.get(remote) ?? 0) + 1);
+    let messageChain = Promise.resolve();
     const session = createAifaceSession({
       sendText: (text) => socket.send(text),
       close: () => socket.close(),
       remote,
+      deviceCredential: requestDeviceCredential(req),
+      securityConfig: security,
     });
     logger.info({ remote }, "hrDevices: اتصال WebSocket جديد");
     socket.on("message", (data) => {
-      void session.handleMessage(data.toString());
+      if (!rateLimiter.allow(req.socket.remoteAddress)) {
+        logger.warn({ remote }, "hrDevices: تجاوز حد رسائل WebSocket");
+        socket.close(1008, "rate limit");
+        return;
+      }
+      // تسلسل الرسائل يمنع سباق reg/sendlog والأوامر داخل الجلسة الواحدة.
+      messageChain = messageChain
+        .then(() => session.handleMessage(data.toString()))
+        .catch((err) => logger.warn({ err, remote }, "hrDevices: فشل معالجة رسالة WebSocket"));
     });
     socket.on("close", () => {
+      const remaining = Math.max(0, (wsPerIp.get(remote) ?? 1) - 1);
+      if (remaining === 0) wsPerIp.delete(remote);
+      else wsPerIp.set(remote, remaining);
       void session.handleClose();
     });
     socket.on("error", (err) => {
       logger.warn({ err, remote }, "hrDevices: خطأ مقبس");
     });
   });
+
+  const heartbeat = setInterval(() => {
+    for (const client of Array.from(wss.clients)) {
+      const tracked = client as typeof client & { __hrAlive?: boolean };
+      if (tracked.__hrAlive === false) {
+        client.terminate();
+        continue;
+      }
+      tracked.__hrAlive = false;
+      client.once("pong", () => {
+        tracked.__hrAlive = true;
+      });
+      client.ping();
+    }
+  }, security.idleTimeoutMs);
+  heartbeat.unref();
 
   // كنس الأجهزة الصامتة كل دقيقتين: online تعني «أرسل شيئاً خلال آخر ١٠ دقائق» فعلاً.
   const sweeper = setInterval(() => {
@@ -66,8 +142,20 @@ export function startHrDeviceBridge(port: number): HrDeviceBridge | null {
     // منفذ مشغول ونحوه: الجسر يفشل وحده ولا يُسقط خادم النظام الرئيسي أبداً.
     logger.error({ err, port }, "hrDevices: تعذر تشغيل جسر الأجهزة");
   });
-  server.listen(port, () => {
-    logger.info(`hrDevices: جسر أجهزة الحضور يستمع على المنفذ ${port} (aiface WS + zk iclock)`);
+  server.requestTimeout = security.requestTimeoutMs;
+  server.headersTimeout = Math.min(security.requestTimeoutMs, 30_000);
+  server.keepAliveTimeout = 5_000;
+  server.maxHeadersCount = 40;
+  server.listen(port, security.host, () => {
+    logger.info(
+      {
+        host: security.host,
+        port,
+        allowlistConfigured: security.allowlist.length > 0,
+        gatewaySecretConfigured: Boolean(security.sharedSecret),
+      },
+      "hrDevices: جسر أجهزة الحضور يستمع (aiface WS + zk iclock)",
+    );
   });
 
   return {
@@ -75,6 +163,7 @@ export function startHrDeviceBridge(port: number): HrDeviceBridge | null {
     stop: () =>
       new Promise<void>((resolve) => {
         clearInterval(sweeper);
+        clearInterval(heartbeat);
         for (const client of Array.from(wss.clients)) client.terminate();
         wss.close(() => {
           server.close(() => resolve());

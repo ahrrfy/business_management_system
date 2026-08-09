@@ -58,9 +58,12 @@ class SalesViewModel(
             state = state.copy(
                 busy = null,
                 catalog = catalog?.getOrNull() ?: state.catalog,
+                catalogLoaded = catalog?.isSuccess == true,
                 salesPage = sales?.getOrNull() ?: state.salesPage,
                 customers = customers?.getOrNull() ?: state.customers,
+                customersLoaded = customers?.isSuccess == true,
                 openShifts = openShifts,
+                shiftsLoaded = shifts?.isSuccess == true,
                 selectedSaleShiftId = openShifts.firstOrNull { it.userId == capabilities.userId }?.id,
                 error = results.firstNotNullOfOrNull { it?.exceptionOrNull() }?.let(::userMessage),
             )
@@ -74,32 +77,46 @@ class SalesViewModel(
         state = state.copy(section = value, error = null, notice = null)
     }
 
-    fun catalogQuery(value: String) { state = state.copy(catalogQuery = value.take(120)) }
-    fun customerQuery(value: String) { state = state.copy(customerQuery = value.take(120)) }
-    fun salesQuery(value: String) { state = state.copy(salesQuery = value.take(200)) }
-    fun quantity(productUnitId: Long, value: String) { state = state.quantity(productUnitId, value) }
-    fun remove(productUnitId: Long) { state = state.remove(productUnitId) }
+    fun catalogQuery(value: String) { if (!state.locked) state = state.copy(catalogQuery = value.take(120)) }
+    fun customerQuery(value: String) { if (!state.locked) state = state.copy(customerQuery = value.take(120)) }
+    fun salesQuery(value: String) { if (!state.locked) state = state.copy(salesQuery = value.take(200)) }
+    fun quantity(productUnitId: Long, value: String) { if (!state.locked) state = state.quantity(productUnitId, value) }
+    fun remove(productUnitId: Long) { if (!state.locked) state = state.remove(productUnitId) }
     fun add(item: online.alarabiya.superapp.model.sales.CatalogSaleItem) { state = state.add(item) }
-    fun collectedAmount(value: String) { state = state.copy(collectedAmount = value.take(20), error = null) }
-    fun paymentReference(value: String) { state = state.copy(paymentReference = value.take(100), error = null) }
-    fun notes(value: String) { state = state.copy(notes = value.take(1_000), error = null) }
-    fun paymentMethod(value: PaymentMethod) { state = state.copy(paymentMethod = value, error = null) }
-    fun returnRefundAmount(value: String) { state = state.copy(returnRefundAmount = value.take(20), error = null) }
-    fun returnMethod(value: PaymentMethod) { state = state.copy(returnMethod = value, error = null) }
-    fun returnShift(value: Long?) { state = state.copy(returnShiftId = value, error = null) }
-    fun returnRestock(value: Boolean) { state = state.copy(returnRestock = value, error = null) }
+    fun collectedAmount(value: String) { if (!state.locked) state = state.copy(collectedAmount = value.take(20), error = null) }
+    fun paymentReference(value: String) { if (!state.locked) state = state.copy(paymentReference = value.take(100), error = null) }
+    fun notes(value: String) { if (!state.locked) state = state.copy(notes = value.take(1_000), error = null) }
+    fun paymentMethod(value: PaymentMethod) { if (!state.locked) state = state.copy(paymentMethod = value, error = null) }
+    fun returnRefundAmount(value: String) { if (!state.locked) state = state.copy(returnRefundAmount = value.take(20), error = null) }
+    fun returnMethod(value: PaymentMethod) { if (!state.locked) state = state.copy(returnMethod = value, error = null) }
+    fun returnShift(value: Long?) { if (!state.locked) state = state.copy(returnShiftId = value, error = null) }
+    fun returnRestock(value: Boolean) { if (!state.locked) state = state.copy(returnRestock = value, error = null) }
 
-    fun searchCatalog() = launch(SalesBusy.CATALOG) {
-        val branchId = capabilities.branchId ?: error("لا يوجد فرع فعّال")
-        state = state.copy(catalog = source.catalog(branchId, state.priceTier, state.catalogQuery, state.selectedCustomer?.id))
+    fun searchCatalog() {
+        if (state.locked) return
+        state = state.copy(catalog = emptyList(), catalogLoaded = false)
+        launch(SalesBusy.CATALOG) {
+            val branchId = capabilities.branchId ?: error("لا يوجد فرع فعّال")
+            state = state.copy(
+                catalog = source.catalog(branchId, state.priceTier, state.catalogQuery, state.selectedCustomer?.id),
+                catalogLoaded = true,
+            )
+        }
     }
 
     fun searchCustomers() = launch(SalesBusy.CUSTOMER) {
-        state = state.copy(customers = source.customers(state.customerQuery))
+        state = state.copy(customers = source.customers(state.customerQuery), customersLoaded = true)
     }
 
     fun selectCustomer(customer: online.alarabiya.superapp.model.sales.SalesCustomer?) {
-        state = state.copy(selectedCustomer = customer, priceTier = customer?.priceTier ?: PriceTier.RETAIL, error = null)
+        if (state.locked) return
+        state = state.copy(
+            selectedCustomer = customer,
+            priceTier = customer?.priceTier ?: PriceTier.RETAIL,
+            catalog = emptyList(),
+            catalogLoaded = false,
+            error = null,
+        )
         searchCatalog()
     }
 
@@ -122,7 +139,11 @@ class SalesViewModel(
     fun closeSale() { state = state.copy(selectedSale = null, error = null) }
 
     fun submitSale() {
+        if (state.locked) return
         val branchId = capabilities.branchId ?: return fail("لا يوجد فرع فعّال للبيع")
+        if (!state.checkoutDependenciesLoaded) {
+            return fail("لم تكتمل بيانات الكتالوج والوردية بعد. أعد المحاولة بعد اكتمال التحديث.")
+        }
         val submission = SaleSubmission(
             branchId = branchId,
             shiftId = if (state.paymentMethod == PaymentMethod.CASH) state.selectedSaleShiftId else null,
@@ -139,13 +160,23 @@ class SalesViewModel(
         val started = state.start(SalesBusy.SALE) ?: return
         state = started
         viewModelScope.launch {
-            runCatching {
-                val result = source.createSale(submission)
-                source.sale(result.invoiceId)
-            }.onSuccess { detail ->
-                state = state.saleSucceeded(detail, UUID.randomUUID().toString())
-                refreshHistorySilently()
-            }.onFailure { state = state.failed(userMessage(it)) }
+            val result = runCatching { source.createSale(submission) }
+                .getOrElse {
+                    state = state.failed(userMessage(it))
+                    return@launch
+                }
+
+            // The server has committed. Rotate the idempotency key and empty the cart before any
+            // non-authoritative detail/history refresh can fail.
+            state = state.saleCommitted(result, UUID.randomUUID().toString())
+            runCatching { source.sale(result.invoiceId) }
+                .onSuccess { state = state.saleDetailLoaded(it) }
+                .onFailure {
+                    state = state.followUpFailed(
+                        "تم إنشاء الفاتورة ${result.invoiceNumber}، وتعذر تحديث تفاصيلها الآن.",
+                    )
+                }
+            refreshHistorySilently()
         }
     }
 
@@ -163,12 +194,14 @@ class SalesViewModel(
     }
 
     fun returnQuantity(itemId: Long, value: Int) {
+        if (state.locked) return
         val invoice = state.returnInvoice ?: return
         val max = invoice.items.firstOrNull { it.invoiceItemId == itemId }?.remaining ?: return
         state = state.copy(returnQuantities = state.returnQuantities + (itemId to value.coerceIn(0, max)), error = null)
     }
 
     fun submitReturn() {
+        if (state.locked) return
         val invoice = state.returnInvoice ?: return fail("اختر فاتورة للمرتجع")
         val submission = ReturnSubmission(
             invoiceId = invoice.id,
@@ -183,13 +216,24 @@ class SalesViewModel(
         val started = state.start(SalesBusy.RETURN_SUBMIT) ?: return
         state = started
         viewModelScope.launch {
-            runCatching { source.createReturn(submission, invoice) }
-                .onSuccess { result ->
-                    state = state.returnSucceeded(result, UUID.randomUUID().toString())
-                    runCatching { source.returnableInvoice(invoice.id) }.getOrNull()?.let { state = state.copy(returnInvoice = it) }
-                    refreshHistorySilently()
+            val result = runCatching { source.createReturn(submission, invoice) }
+                .getOrElse {
+                    state = state.failed(userMessage(it))
+                    return@launch
                 }
-                .onFailure { state = state.failed(userMessage(it)) }
+
+            // The old remaining-quantity snapshot is no longer valid after this acknowledgement.
+            state = state.returnCommitted(result, UUID.randomUUID().toString())
+            if (!result.fullyReturned) {
+                runCatching { source.returnableInvoice(invoice.id) }
+                    .onSuccess { state = state.returnInvoiceReloaded(it) }
+                    .onFailure {
+                        state = state.followUpFailed(
+                            "تم تسجيل المرتجع، وتعذر تحديث الكميات المتبقية الآن.",
+                        )
+                    }
+            }
+            refreshHistorySilently()
         }
     }
 

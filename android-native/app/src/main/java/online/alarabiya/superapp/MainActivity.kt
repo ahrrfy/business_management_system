@@ -31,6 +31,7 @@ import online.alarabiya.superapp.core.security.SecureSessionStore
 import online.alarabiya.superapp.data.ApprovalsRepository
 import online.alarabiya.superapp.data.AccountingControlsRepository
 import online.alarabiya.superapp.data.AdminRepository
+import online.alarabiya.superapp.data.BranchDirectoryRepository
 import online.alarabiya.superapp.data.CrmRepository
 import online.alarabiya.superapp.data.ConversationsRepository
 import online.alarabiya.superapp.data.CommerceRepository
@@ -48,12 +49,16 @@ import online.alarabiya.superapp.data.ProductsRepository
 import online.alarabiya.superapp.data.ReceivablesRepository
 import online.alarabiya.superapp.data.SalesRepository
 import online.alarabiya.superapp.data.SelfServiceRepository
+import online.alarabiya.superapp.data.ShiftRepository
 import online.alarabiya.superapp.data.StoreDeliveryRepository
+import online.alarabiya.superapp.data.StoreAdminRepository
 import online.alarabiya.superapp.data.SuperAppRepository
 import online.alarabiya.superapp.data.SystemSettingsRepository
+import online.alarabiya.superapp.data.TwoFactorRepository
 import online.alarabiya.superapp.data.WorkOrdersRepository
 import online.alarabiya.superapp.data.WarehouseToolsRepository
 import online.alarabiya.superapp.data.EncryptedWarehouseStore
+import online.alarabiya.superapp.data.ExecutiveRepository
 import online.alarabiya.superapp.model.inventory.InventoryCapabilities
 import online.alarabiya.superapp.model.accountingControls.AccountingControlsCapabilities
 import online.alarabiya.superapp.model.collections.CollectionsCapabilities
@@ -106,7 +111,9 @@ class MainActivity : FragmentActivity() {
             NativePushCoordinator.revokeBeforeLogout(applicationContext)
         }
         val selfServiceRepository = SelfServiceRepository(api)
+        val shiftRepository = ShiftRepository(api)
         val approvalsRepository = ApprovalsRepository(api)
+        val branchDirectoryRepository = BranchDirectoryRepository(api)
         val adminRepository = AdminRepository(api)
         val crmRepository = CrmRepository(api)
         val conversationsRepository = ConversationsRepository(api)
@@ -115,12 +122,18 @@ class MainActivity : FragmentActivity() {
         val receivablesRepository = ReceivablesRepository(api)
         val salesRepository = SalesRepository(api)
         val storeDeliveryRepository = StoreDeliveryRepository(api)
+        val storeAdminRepository = StoreAdminRepository(api)
         val financeRepository = FinanceRepository(api)
         val insightsRepository = InsightsRepository(api)
         val productsRepository = ProductsRepository(api)
         val legalRepository = LegalRepository()
         val systemSettingsRepository = SystemSettingsRepository(api)
-        viewModel = ViewModelProvider(this, SuperAppViewModelFactory(repository))[SuperAppViewModel::class.java]
+        val twoFactorRepository = TwoFactorRepository(api)
+        val executiveRepository = ExecutiveRepository(api)
+        viewModel = ViewModelProvider(
+            this,
+            SuperAppViewModelFactory(repository, executiveRepository),
+        )[SuperAppViewModel::class.java]
 
         setContent {
             val state = viewModel.sessionState
@@ -169,9 +182,14 @@ class MainActivity : FragmentActivity() {
                     onBiometricUnlock = ::requestSessionUnlock,
                     onEnableBiometric = ::requestBiometricEnrollment,
                     selfServiceSource = selfServiceRepository,
+                    shiftSource = shiftRepository,
+                    branchDirectorySource = branchDirectoryRepository,
                     approvalsSource = approvalsRepository,
-                    accountingControlsSourceFactory = { bootstrap ->
-                        AccountingControlsRepository(api, AccountingControlsCapabilities.fromBootstrap(bootstrap))
+                    accountingControlsSourceFactory = { bootstrap, branchId ->
+                        AccountingControlsRepository(
+                            api,
+                            AccountingControlsCapabilities.fromBootstrap(bootstrap).copy(branchId = branchId),
+                        )
                     },
                     adminSource = adminRepository,
                     crmSource = crmRepository,
@@ -182,30 +200,37 @@ class MainActivity : FragmentActivity() {
                     collectionsSourceFactory = { bootstrap ->
                         CollectionsRepository(api, CollectionsCapabilities.fromBootstrap(bootstrap))
                     },
-                    marketingSourceFactory = { bootstrap ->
+                    marketingSourceFactory = { bootstrap, branchId ->
                         MarketingRepository(
                             api,
-                            MarketingScope(bootstrap.user.role, bootstrap.branchId),
+                            MarketingScope(bootstrap.user.role, branchId),
                         )
                     },
-                    operationsSourceFactory = { bootstrap ->
-                        OperationsRepository(api, OperationsScope(bootstrap.user.role, bootstrap.branchId))
+                    operationsSourceFactory = { bootstrap, branchId ->
+                        OperationsRepository(
+                            api,
+                            OperationsScope(
+                                bootstrap.user.role,
+                                branchId,
+                                bootstrap.isOwner || bootstrap.user.isOwner,
+                            ),
+                        )
                     },
-                    inventorySourceFactory = { bootstrap ->
-                        InventoryRepository(api, InventoryCapabilities.fromBootstrap(bootstrap))
+                    inventorySourceFactory = { bootstrap, branchId ->
+                        InventoryRepository(api, InventoryCapabilities.fromBootstrap(bootstrap).copy(branchId = branchId))
                     },
-                    hrAdminSourceFactory = { bootstrap ->
-                        HrAdminRepository(api, HrAdminCapabilities.fromBootstrap(bootstrap))
+                    hrAdminSourceFactory = { bootstrap, branchId ->
+                        HrAdminRepository(api, HrAdminCapabilities.fromBootstrap(bootstrap).copy(branchId = branchId))
                     },
                     salesSource = salesRepository,
-                    purchasingSourceFactory = { bootstrap ->
-                        PurchasingRepository(api, PurchasingCapabilities.fromBootstrap(bootstrap))
+                    purchasingSourceFactory = { bootstrap, branchId ->
+                        PurchasingRepository(api, PurchasingCapabilities.fromBootstrap(bootstrap).copy(branchId = branchId))
                     },
-                    workOrdersSourceFactory = { bootstrap ->
-                        WorkOrdersRepository(api, WorkOrdersCapabilities.fromBootstrap(bootstrap))
+                    workOrdersSourceFactory = { bootstrap, branchId ->
+                        WorkOrdersRepository(api, WorkOrdersCapabilities.fromBootstrap(bootstrap).copy(branchId = branchId))
                     },
-                    warehouseToolsSourceFactory = { bootstrap ->
-                        val capabilities = WarehouseCapabilities.fromBootstrap(bootstrap)
+                    warehouseToolsSourceFactory = { bootstrap, branchId ->
+                        val capabilities = WarehouseCapabilities.fromBootstrap(bootstrap).copy(branchId = branchId)
                         WarehouseToolsRepository(
                             api,
                             capabilities,
@@ -213,11 +238,13 @@ class MainActivity : FragmentActivity() {
                         )
                     },
                     storeDeliverySource = storeDeliveryRepository,
+                    storeAdminSource = storeAdminRepository,
                     financeSource = financeRepository,
                     insightsSource = insightsRepository,
                     productsSource = productsRepository,
                     legalSource = legalRepository,
                     systemSettingsSource = systemSettingsRepository,
+                    twoFactorSource = twoFactorRepository,
                     notificationDestinations = NativeNotificationNavigationInbox.destinations,
                     networkAvailable = networkStatus.value,
                     cachedReadActive = cachedReadActive.value,

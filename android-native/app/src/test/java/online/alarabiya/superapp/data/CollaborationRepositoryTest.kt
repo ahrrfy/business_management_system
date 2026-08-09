@@ -20,6 +20,32 @@ import org.junit.Test
 
 class CollaborationRepositoryTest {
     @Test
+    fun allBranchTaskScopeLoadsOnlyValidatedServerBranches() = runBlocking {
+        val api = FakeCollaborationApi().apply {
+            arrayResponses["branches.list"] = JSONArray()
+                .put(JSONObject().put("id", 7).put("name", "الكرادة").put("code", "BGD"))
+                .put(JSONObject().put("id", 0).put("name", "غير صالح"))
+        }
+
+        val branches = CollaborationRepository(api).branches(admin())
+
+        assertEquals(1, branches.size)
+        assertEquals(7L, branches.single().id)
+        assertEquals("الكرادة", branches.single().name)
+        assertEquals("branches.list", api.calls.single().procedure)
+    }
+
+    @Test
+    fun fixedBranchEmployeeCannotEnumerateCompanyBranches() = runBlocking {
+        val api = FakeCollaborationApi()
+
+        val failure = runCatching { CollaborationRepository(api).branches(employee()) }.exceptionOrNull()
+
+        assertTrue(failure is IllegalArgumentException)
+        assertTrue(api.calls.isEmpty())
+    }
+
+    @Test
     fun taskListUsesExactFiltersAndPreservesSelectedBranch() = runBlocking {
         val api = FakeCollaborationApi().apply {
             objectResponses["tasks.list"] = JSONObject()

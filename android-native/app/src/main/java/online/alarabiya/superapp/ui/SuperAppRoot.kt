@@ -1,5 +1,6 @@
 package online.alarabiya.superapp.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -100,6 +101,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -120,6 +122,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -156,6 +159,7 @@ import kotlinx.coroutines.flow.Flow
 import online.alarabiya.superapp.R
 import online.alarabiya.superapp.BuildConfig
 import online.alarabiya.superapp.core.navigation.AccessDecision
+import online.alarabiya.superapp.core.navigation.ExecutiveNavigation
 import online.alarabiya.superapp.core.navigation.ModuleGrant
 import online.alarabiya.superapp.core.navigation.NativeDestination
 import online.alarabiya.superapp.core.navigation.NativeFeatureIntent
@@ -168,6 +172,7 @@ import online.alarabiya.superapp.core.notifications.NativeNotificationNavigation
 import online.alarabiya.superapp.data.ApprovalsDataSource
 import online.alarabiya.superapp.data.AccountingControlsDataSource
 import online.alarabiya.superapp.data.AdminDataSource
+import online.alarabiya.superapp.data.BranchDirectoryDataSource
 import online.alarabiya.superapp.data.CommerceDataSource
 import online.alarabiya.superapp.data.CollaborationDataSource
 import online.alarabiya.superapp.data.CollectionsDataSource
@@ -185,8 +190,11 @@ import online.alarabiya.superapp.data.ProductsDataSource
 import online.alarabiya.superapp.data.ReceivablesDataSource
 import online.alarabiya.superapp.data.SalesDataSource
 import online.alarabiya.superapp.data.SelfServiceDataSource
+import online.alarabiya.superapp.data.ShiftDataSource
 import online.alarabiya.superapp.data.StoreDeliveryDataSource
+import online.alarabiya.superapp.data.StoreAdminDataSource
 import online.alarabiya.superapp.data.SystemSettingsDataSource
+import online.alarabiya.superapp.data.TwoFactorDataSource
 import online.alarabiya.superapp.data.WorkOrdersDataSource
 import online.alarabiya.superapp.data.WarehouseToolsDataSource
 import online.alarabiya.superapp.feature.approvals.ApprovalsRoute
@@ -248,13 +256,27 @@ import online.alarabiya.superapp.feature.selfservice.SelfServiceRoute
 import online.alarabiya.superapp.feature.selfservice.SelfServiceSection
 import online.alarabiya.superapp.feature.selfservice.SelfServiceViewModel
 import online.alarabiya.superapp.feature.selfservice.SelfServiceViewModelFactory
+import online.alarabiya.superapp.feature.shifts.ShiftScreen
+import online.alarabiya.superapp.feature.shifts.ShiftViewModel
 import online.alarabiya.superapp.feature.settings.SettingsScreen
 import online.alarabiya.superapp.feature.settings.SettingsStateMapper
 import online.alarabiya.superapp.feature.settings.SettingsUiState
 import online.alarabiya.superapp.feature.settings.SettingsViewModel
+import online.alarabiya.superapp.feature.security.AuthenticatorUriPolicy
+import online.alarabiya.superapp.feature.security.TwoFactorEntryPolicy
+import online.alarabiya.superapp.feature.security.TwoFactorScreen
+import online.alarabiya.superapp.feature.security.TwoFactorViewModel
 import online.alarabiya.superapp.feature.store.StoreDeliveryScreen
 import online.alarabiya.superapp.feature.store.StoreDeliveryViewModel
+import online.alarabiya.superapp.feature.storeadmin.StoreAdminRoute
+import online.alarabiya.superapp.feature.storeadmin.StoreAdminViewModel
+import online.alarabiya.superapp.model.storeadmin.StoreAdminCapabilities
 import online.alarabiya.superapp.feature.systemsettings.SystemSettingsRoute
+import online.alarabiya.superapp.feature.systemsettings.readableSections
+import online.alarabiya.superapp.feature.executive.ExecutiveHomeScreen
+import online.alarabiya.superapp.feature.executive.ExecutiveHomeState
+import online.alarabiya.superapp.feature.executive.ExecutiveManagementAction
+import online.alarabiya.superapp.model.ExecutiveDestinationKey
 import online.alarabiya.superapp.feature.systemsettings.SystemSettingsViewModel
 import online.alarabiya.superapp.feature.workorders.WorkOrdersRoute
 import online.alarabiya.superapp.model.workorders.WorkOrdersSection
@@ -297,6 +319,9 @@ import online.alarabiya.superapp.model.sales.SalesCapabilities
 import online.alarabiya.superapp.model.sales.SalesSection
 import online.alarabiya.superapp.model.selfservice.SelfServiceCapabilities
 import online.alarabiya.superapp.model.selfservice.NotificationPreferences
+import online.alarabiya.superapp.model.shifts.ShiftAccessPolicy
+import online.alarabiya.superapp.model.session.BranchDirectoryStatus
+import online.alarabiya.superapp.model.session.SessionBranchContext
 import online.alarabiya.superapp.model.store.StoreCapabilities
 import online.alarabiya.superapp.model.systemsettings.SystemSettingsCapabilities
 import online.alarabiya.superapp.model.workorders.WorkOrdersCapabilities
@@ -322,8 +347,10 @@ fun SuperAppRoot(
     onBiometricUnlock: () -> Unit,
     onEnableBiometric: () -> Unit,
     selfServiceSource: SelfServiceDataSource,
+    shiftSource: ShiftDataSource,
+    branchDirectorySource: BranchDirectoryDataSource,
     approvalsSource: ApprovalsDataSource,
-    accountingControlsSourceFactory: (AppBootstrap) -> AccountingControlsDataSource,
+    accountingControlsSourceFactory: (AppBootstrap, Long?) -> AccountingControlsDataSource,
     adminSource: AdminDataSource,
     crmSource: CrmDataSource,
     conversationsSource: ConversationsDataSource,
@@ -331,20 +358,22 @@ fun SuperAppRoot(
     collaborationSource: CollaborationDataSource,
     receivablesSource: ReceivablesDataSource,
     collectionsSourceFactory: (AppBootstrap) -> CollectionsDataSource,
-    marketingSourceFactory: (AppBootstrap) -> MarketingDataSource,
-    operationsSourceFactory: (AppBootstrap) -> OperationsDataSource,
-    inventorySourceFactory: (AppBootstrap) -> InventoryDataSource,
-    hrAdminSourceFactory: (AppBootstrap) -> HrAdminDataSource,
+    marketingSourceFactory: (AppBootstrap, Long?) -> MarketingDataSource,
+    operationsSourceFactory: (AppBootstrap, Long?) -> OperationsDataSource,
+    inventorySourceFactory: (AppBootstrap, Long?) -> InventoryDataSource,
+    hrAdminSourceFactory: (AppBootstrap, Long?) -> HrAdminDataSource,
     salesSource: SalesDataSource,
-    purchasingSourceFactory: (AppBootstrap) -> PurchasingDataSource,
-    workOrdersSourceFactory: (AppBootstrap) -> WorkOrdersDataSource,
-    warehouseToolsSourceFactory: (AppBootstrap) -> WarehouseToolsDataSource,
+    purchasingSourceFactory: (AppBootstrap, Long?) -> PurchasingDataSource,
+    workOrdersSourceFactory: (AppBootstrap, Long?) -> WorkOrdersDataSource,
+    warehouseToolsSourceFactory: (AppBootstrap, Long?) -> WarehouseToolsDataSource,
     storeDeliverySource: StoreDeliveryDataSource,
+    storeAdminSource: StoreAdminDataSource,
     financeSource: FinanceDataSource,
     insightsSource: InsightsDataSource,
     productsSource: ProductsDataSource,
     legalSource: LegalDataSource,
     systemSettingsSource: SystemSettingsDataSource,
+    twoFactorSource: TwoFactorDataSource,
     notificationDestinations: Flow<NativeNotificationNavigation>,
     networkAvailable: Boolean,
     cachedReadActive: Boolean,
@@ -387,12 +416,16 @@ fun SuperAppRoot(
                         )
                         is AppSessionState.Ready -> AppWorkspace(
                             state = state,
+                            executiveState = viewModel.executiveState,
+                            onRetryExecutive = viewModel::retryExecutive,
                             biometricAvailable = biometricAvailable,
                             onRefresh = viewModel::refresh,
                             onEnableBiometric = onEnableBiometric,
                             onDisableBiometric = viewModel::disableBiometric,
                             onLogout = viewModel::logout,
                             selfServiceSource = selfServiceSource,
+                            shiftSource = shiftSource,
+                            branchDirectorySource = branchDirectorySource,
                             approvalsSource = approvalsSource,
                             accountingControlsSourceFactory = accountingControlsSourceFactory,
                             adminSource = adminSource,
@@ -411,11 +444,13 @@ fun SuperAppRoot(
                             workOrdersSourceFactory = workOrdersSourceFactory,
                             warehouseToolsSourceFactory = warehouseToolsSourceFactory,
                             storeDeliverySource = storeDeliverySource,
+                            storeAdminSource = storeAdminSource,
                             financeSource = financeSource,
                             insightsSource = insightsSource,
                             productsSource = productsSource,
                             legalSource = legalSource,
                             systemSettingsSource = systemSettingsSource,
+                            twoFactorSource = twoFactorSource,
                             notificationDestinations = notificationDestinations,
                             networkAvailable = networkAvailable,
                             cachedReadActive = cachedReadActive,
@@ -478,10 +513,11 @@ private fun LockedScreen(userName: String?, onUnlock: () -> Unit, onPassword: ()
 @Composable
 private fun LoginScreen(
     state: AppSessionState.SignedOut,
-    onLogin: (String, String, Boolean) -> Unit,
+    onLogin: (String, String, Boolean, String?) -> Unit,
     onVerify: (String) -> Unit,
 ) {
     var identifier by rememberSaveable { mutableStateOf("") }
+    var companyCode by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var rememberDevice by rememberSaveable { mutableStateOf(true) }
@@ -515,6 +551,8 @@ private fun LoginScreen(
             state = state,
             identifier = identifier,
             onIdentifierChange = { identifier = it },
+            companyCode = companyCode,
+            onCompanyCodeChange = { companyCode = it },
             password = password,
             onPasswordChange = { password = it },
             code = code,
@@ -964,6 +1002,8 @@ private fun LoginForm(
     state: AppSessionState.SignedOut,
     identifier: String,
     onIdentifierChange: (String) -> Unit,
+    companyCode: String,
+    onCompanyCodeChange: (String) -> Unit,
     password: String,
     onPasswordChange: (String) -> Unit,
     code: String,
@@ -975,7 +1015,7 @@ private fun LoginForm(
     useRecoveryCode: Boolean,
     onRecoveryModeChange: (Boolean) -> Unit,
     errorFocusRequester: FocusRequester,
-    onLogin: (String, String, Boolean) -> Unit,
+    onLogin: (String, String, Boolean, String?) -> Unit,
     onVerify: (String) -> Unit,
 ) {
     val isTwoFactor = state.twoFactorTicket != null
@@ -1014,6 +1054,18 @@ private fun LoginForm(
                     Text(if (useRecoveryCode) "استخدام رمز التحقق" else "استخدام رمز الاسترداد")
                 }
             } else {
+                if (state.companyCodeRequired) {
+                    OutlinedTextField(
+                        value = companyCode,
+                        onValueChange = { onCompanyCodeChange(it.take(40)) },
+                        modifier = Modifier.fillMaxWidth().testTag("login_company_code"),
+                        label = { Text("رمز الشركة") },
+                        leadingIcon = { Icon(Icons.Rounded.BusinessCenter, null) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Next),
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp),
+                    )
+                }
                 OutlinedTextField(
                     value = identifier,
                     onValueChange = onIdentifierChange,
@@ -1042,7 +1094,9 @@ private fun LoginForm(
                     },
                     visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { onLogin(identifier, password, rememberDevice) }),
+                    keyboardActions = KeyboardActions(
+                        onDone = { onLogin(identifier, password, rememberDevice, companyCode.takeIf { it.isNotBlank() }) },
+                    ),
                     singleLine = true,
                     shape = RoundedCornerShape(18.dp),
                 )
@@ -1068,7 +1122,10 @@ private fun LoginForm(
             AuthError(state.error, errorFocusRequester, "login_error")
 
             Button(
-                onClick = { if (isTwoFactor) submitVerification() else onLogin(identifier, password, rememberDevice) },
+                onClick = {
+                    if (isTwoFactor) submitVerification()
+                    else onLogin(identifier, password, rememberDevice, companyCode.takeIf { it.isNotBlank() })
+                },
                 enabled = !state.submitting,
                 modifier = Modifier.fillMaxWidth().height(58.dp).testTag("login_submit"),
                 shape = RoundedCornerShape(19.dp),
@@ -1101,6 +1158,7 @@ private enum class NativeComposeRoute(val route: String, val screen: NativeScree
     Operations("native-operations", NativeScreen.OPERATIONS),
     Admin("native-admin", NativeScreen.ADMIN),
     Insights("native-insights", NativeScreen.INSIGHTS),
+    Shifts("native-shifts", NativeScreen.SHIFTS),
     WorkOrders("native-work-orders", NativeScreen.WORK_ORDERS),
     WarehouseTools("native-warehouse-tools", NativeScreen.WAREHOUSE_TOOLS),
     HrAdmin("native-hr-admin", NativeScreen.HR_ADMIN),
@@ -1109,6 +1167,7 @@ private enum class NativeComposeRoute(val route: String, val screen: NativeScree
     Sales("native-sales", NativeScreen.SALES),
     Purchasing("native-purchasing", NativeScreen.PURCHASING),
     StoreDelivery("native-store-delivery", NativeScreen.STORE_DELIVERY),
+    StoreAdmin("native-store-admin", NativeScreen.STORE_ADMIN),
     Finance("native-finance", NativeScreen.FINANCE),
     Receivables("native-receivables", NativeScreen.RECEIVABLES),
     Collections("native-collections", NativeScreen.COLLECTIONS),
@@ -1140,22 +1199,27 @@ private data class NativeServiceEntry(
 private data class PendingNativeNavigation(
     val destination: NativeDestination,
     val notificationKind: String? = null,
+    val arguments: Map<String, String> = emptyMap(),
 )
 
 @Composable
 internal fun AppWorkspace(
     state: AppSessionState.Ready,
+    executiveState: ExecutiveHomeState = ExecutiveHomeState.Loading,
+    onRetryExecutive: () -> Unit = {},
     biometricAvailable: Boolean,
     onRefresh: () -> Unit,
     onEnableBiometric: () -> Unit,
     onDisableBiometric: () -> Unit,
     onLogout: () -> Unit,
     selfServiceSource: SelfServiceDataSource,
+    shiftSource: ShiftDataSource? = null,
+    branchDirectorySource: BranchDirectoryDataSource? = null,
     approvalsSource: ApprovalsDataSource,
     notificationDestinations: Flow<NativeNotificationNavigation>,
     networkAvailable: Boolean = true,
     cachedReadActive: Boolean = false,
-    accountingControlsSourceFactory: ((AppBootstrap) -> AccountingControlsDataSource)? = null,
+    accountingControlsSourceFactory: ((AppBootstrap, Long?) -> AccountingControlsDataSource)? = null,
     adminSource: AdminDataSource? = null,
     crmSource: CrmDataSource? = null,
     conversationsSource: ConversationsDataSource? = null,
@@ -1163,59 +1227,125 @@ internal fun AppWorkspace(
     collaborationSource: CollaborationDataSource? = null,
     receivablesSource: ReceivablesDataSource? = null,
     collectionsSourceFactory: ((AppBootstrap) -> CollectionsDataSource)? = null,
-    marketingSourceFactory: ((AppBootstrap) -> MarketingDataSource)? = null,
-    operationsSourceFactory: ((AppBootstrap) -> OperationsDataSource)? = null,
-    inventorySourceFactory: ((AppBootstrap) -> InventoryDataSource)? = null,
-    hrAdminSourceFactory: ((AppBootstrap) -> HrAdminDataSource)? = null,
+    marketingSourceFactory: ((AppBootstrap, Long?) -> MarketingDataSource)? = null,
+    operationsSourceFactory: ((AppBootstrap, Long?) -> OperationsDataSource)? = null,
+    inventorySourceFactory: ((AppBootstrap, Long?) -> InventoryDataSource)? = null,
+    hrAdminSourceFactory: ((AppBootstrap, Long?) -> HrAdminDataSource)? = null,
     salesSource: SalesDataSource? = null,
-    purchasingSourceFactory: ((AppBootstrap) -> PurchasingDataSource)? = null,
-    workOrdersSourceFactory: ((AppBootstrap) -> WorkOrdersDataSource)? = null,
-    warehouseToolsSourceFactory: ((AppBootstrap) -> WarehouseToolsDataSource)? = null,
+    purchasingSourceFactory: ((AppBootstrap, Long?) -> PurchasingDataSource)? = null,
+    workOrdersSourceFactory: ((AppBootstrap, Long?) -> WorkOrdersDataSource)? = null,
+    warehouseToolsSourceFactory: ((AppBootstrap, Long?) -> WarehouseToolsDataSource)? = null,
     storeDeliverySource: StoreDeliveryDataSource? = null,
+    storeAdminSource: StoreAdminDataSource? = null,
     financeSource: FinanceDataSource? = null,
     insightsSource: InsightsDataSource? = null,
     productsSource: ProductsDataSource? = null,
     legalSource: LegalDataSource? = null,
     systemSettingsSource: SystemSettingsDataSource? = null,
+    twoFactorSource: TwoFactorDataSource? = null,
 ) {
     val navController = rememberNavController()
-    val principal = remember(state.bootstrap) { state.bootstrap.toNavigationPrincipal() }
-    val approvalPolicy = remember(state.bootstrap) { ApprovalAccessPolicy.fromBootstrap(state.bootstrap) }
-    val accountingControlsCapabilities = remember(state.bootstrap) { AccountingControlsCapabilities.fromBootstrap(state.bootstrap) }
-    val accountingControlsSource = remember(state.bootstrap, accountingControlsSourceFactory) {
-        accountingControlsSourceFactory?.invoke(state.bootstrap)
+    val initialBranchContext = remember(state.bootstrap) { SessionBranchContext.initial(state.bootstrap) }
+    var sessionBranchContext by remember(initialBranchContext.principal) {
+        mutableStateOf(initialBranchContext)
     }
-    val collaborationCapabilities = remember(state.bootstrap) { CollaborationCapabilities.fromBootstrap(state.bootstrap) }
-    val receivablesPolicy = remember(state.bootstrap) { ReceivablesAccessPolicy.fromBootstrap(state.bootstrap) }
+    var branchDirectoryRetry by remember(initialBranchContext.principal) { mutableIntStateOf(0) }
+    LaunchedEffect(initialBranchContext.principal, branchDirectorySource, branchDirectoryRetry) {
+        if (!initialBranchContext.principal.canSelectBranch) return@LaunchedEffect
+        val source = branchDirectorySource
+        if (source == null) {
+            sessionBranchContext = sessionBranchContext.failed("تعذر تحميل الفروع")
+            return@LaunchedEffect
+        }
+        sessionBranchContext = sessionBranchContext.loading()
+        sessionBranchContext = runCatching { source.availableBranches() }
+            .fold(
+                onSuccess = sessionBranchContext::loaded,
+                onFailure = { error ->
+                    sessionBranchContext.failed(error.message ?: "تعذر تحميل الفروع")
+                },
+            )
+    }
+    val effectiveBranchId = sessionBranchContext.effectiveBranchId
+    val principal = remember(state.bootstrap) { state.bootstrap.toNavigationPrincipal() }
+    val approvalPolicy = remember(state.bootstrap, effectiveBranchId) {
+        ApprovalAccessPolicy.fromBootstrap(state.bootstrap, effectiveBranchId)
+    }
+    val accountingControlsCapabilities = remember(state.bootstrap, effectiveBranchId) {
+        AccountingControlsCapabilities.fromBootstrap(state.bootstrap).copy(branchId = effectiveBranchId)
+    }
+    val accountingControlsSource = remember(state.bootstrap, effectiveBranchId, accountingControlsSourceFactory) {
+        accountingControlsSourceFactory?.invoke(state.bootstrap, effectiveBranchId)
+    }
+    val collaborationCapabilities = remember(state.bootstrap, effectiveBranchId) {
+        CollaborationCapabilities.fromBootstrap(state.bootstrap).copy(branchId = effectiveBranchId)
+    }
+    val shiftPolicy = remember(state.bootstrap) { ShiftAccessPolicy.fromBootstrap(state.bootstrap) }
+    val receivablesPolicy = remember(state.bootstrap, effectiveBranchId) {
+        ReceivablesAccessPolicy.fromBootstrap(state.bootstrap, effectiveBranchId)
+    }
     val collectionsCapabilities = remember(state.bootstrap) { CollectionsCapabilities.fromBootstrap(state.bootstrap) }
     val collectionsSource = remember(state.bootstrap, collectionsSourceFactory) {
         collectionsSourceFactory?.invoke(state.bootstrap)
     }
-    val crmCapabilities = remember(state.bootstrap) { CrmCapabilities.fromBootstrap(state.bootstrap) }
-    val commerceCapabilities = remember(state.bootstrap) { CommerceCapabilities.fromBootstrap(state.bootstrap) }
+    val crmCapabilities = remember(state.bootstrap, effectiveBranchId) {
+        state.bootstrap.toCrmCapabilities().copy(branchId = effectiveBranchId)
+    }
+    val commerceCapabilities = remember(state.bootstrap, effectiveBranchId) {
+        CommerceCapabilities.fromBootstrap(state.bootstrap).copy(branchId = effectiveBranchId)
+    }
     val marketingCapabilities = remember(state.bootstrap) { state.bootstrap.toMarketingCapabilities() }
-    val marketingScope = remember(state.bootstrap) { MarketingScope(state.bootstrap.user.role, state.bootstrap.branchId) }
-    val marketingSource = remember(state.bootstrap, marketingSourceFactory) { marketingSourceFactory?.invoke(state.bootstrap) }
-    val operationsScope = remember(state.bootstrap) { OperationsScope(state.bootstrap.user.role, state.bootstrap.branchId) }
-    val operationsCapabilities = remember(state.bootstrap) { state.bootstrap.toOperationsCapabilities() }
-    val operationsSource = remember(state.bootstrap, operationsSourceFactory) { operationsSourceFactory?.invoke(state.bootstrap) }
+    val marketingScope = remember(state.bootstrap, effectiveBranchId) {
+        MarketingScope(state.bootstrap.user.role, effectiveBranchId)
+    }
+    val marketingSource = remember(state.bootstrap, effectiveBranchId, marketingSourceFactory) {
+        marketingSourceFactory?.invoke(state.bootstrap, effectiveBranchId)
+    }
+    val operationsScope = remember(state.bootstrap, effectiveBranchId) {
+        OperationsScope(
+            state.bootstrap.user.role,
+            effectiveBranchId,
+            state.bootstrap.isOwner || state.bootstrap.user.isOwner,
+        )
+    }
+    val operationsCapabilities = remember(state.bootstrap, effectiveBranchId) {
+        state.bootstrap.toOperationsCapabilities(effectiveBranchId)
+    }
+    val operationsSource = remember(state.bootstrap, effectiveBranchId, operationsSourceFactory) {
+        operationsSourceFactory?.invoke(state.bootstrap, effectiveBranchId)
+    }
     val insightsPolicy = remember(state.bootstrap) { InsightsAccessPolicy.fromBootstrap(state.bootstrap) }
-    val inventorySource = remember(state.bootstrap, inventorySourceFactory) { inventorySourceFactory?.invoke(state.bootstrap) }
-    val hrAdminCapabilities = remember(state.bootstrap) { HrAdminCapabilities.fromBootstrap(state.bootstrap) }
-    val hrAdminSource = remember(state.bootstrap, hrAdminSourceFactory) { hrAdminSourceFactory?.invoke(state.bootstrap) }
-    val purchasingSource = remember(state.bootstrap, purchasingSourceFactory) { purchasingSourceFactory?.invoke(state.bootstrap) }
-    val workOrdersCapabilities = remember(state.bootstrap) { WorkOrdersCapabilities.fromBootstrap(state.bootstrap) }
-    val workOrdersSource = remember(state.bootstrap, workOrdersSourceFactory) { workOrdersSourceFactory?.invoke(state.bootstrap) }
-    val warehouseToolsCapabilities = remember(state.bootstrap) { WarehouseCapabilities.fromBootstrap(state.bootstrap) }
-    val warehouseToolsSource = remember(state.bootstrap, warehouseToolsSourceFactory) {
-        warehouseToolsSourceFactory?.invoke(state.bootstrap)
+    val inventorySource = remember(state.bootstrap, effectiveBranchId, inventorySourceFactory) {
+        inventorySourceFactory?.invoke(state.bootstrap, effectiveBranchId)
+    }
+    val hrAdminCapabilities = remember(state.bootstrap, effectiveBranchId) {
+        HrAdminCapabilities.fromBootstrap(state.bootstrap).copy(branchId = effectiveBranchId)
+    }
+    val hrAdminSource = remember(state.bootstrap, effectiveBranchId, hrAdminSourceFactory) {
+        hrAdminSourceFactory?.invoke(state.bootstrap, effectiveBranchId)
+    }
+    val purchasingSource = remember(state.bootstrap, effectiveBranchId, purchasingSourceFactory) {
+        purchasingSourceFactory?.invoke(state.bootstrap, effectiveBranchId)
+    }
+    val workOrdersCapabilities = remember(state.bootstrap, effectiveBranchId) {
+        WorkOrdersCapabilities.fromBootstrap(state.bootstrap).copy(branchId = effectiveBranchId)
+    }
+    val workOrdersSource = remember(state.bootstrap, effectiveBranchId, workOrdersSourceFactory) {
+        workOrdersSourceFactory?.invoke(state.bootstrap, effectiveBranchId)
+    }
+    val warehouseToolsCapabilities = remember(state.bootstrap, effectiveBranchId) {
+        WarehouseCapabilities.fromBootstrap(state.bootstrap).copy(branchId = effectiveBranchId)
+    }
+    val warehouseToolsSource = remember(state.bootstrap, effectiveBranchId, warehouseToolsSourceFactory) {
+        warehouseToolsSourceFactory?.invoke(state.bootstrap, effectiveBranchId)
     }
     val installedScreens = remember(
-        state.bootstrap,
-        adminSource, crmSource, conversationsSource, commerceSource, collaborationSource, receivablesSource, collectionsSource, marketingSource, operationsSource, accountingControlsSource, inventorySource, hrAdminSource, salesSource, purchasingSource, workOrdersSource, warehouseToolsSource, storeDeliverySource, financeSource, insightsSource, productsSource, legalSource, systemSettingsSource,
+        state.bootstrap, effectiveBranchId, sessionBranchContext.principal.canSelectBranch,
+        adminSource, crmSource, conversationsSource, commerceSource, collaborationSource, shiftSource, receivablesSource, collectionsSource, marketingSource, operationsSource, accountingControlsSource, inventorySource, hrAdminSource, salesSource, purchasingSource, workOrdersSource, warehouseToolsSource, storeDeliverySource, storeAdminSource, financeSource, insightsSource, productsSource, legalSource, systemSettingsSource,
     ) {
         buildSet {
             if (state.bootstrap.hasPersonalWorkspace) add(NativeScreen.SELF_SERVICE)
+            if (shiftSource != null && shiftPolicy.canReadManagement) add(NativeScreen.SHIFTS)
             add(NativeScreen.APPROVALS)
             if (
                 accountingControlsSource != null &&
@@ -1227,14 +1357,18 @@ internal fun AppWorkspace(
             if (crmSource != null && crmCapabilities.visibleSections.isNotEmpty()) add(NativeScreen.CRM)
             if (conversationsSource != null) {
                 val conversations = ConversationCapabilities.fromBootstrap(state.bootstrap)
-                if (!conversations.allBranches || conversations.branchId != null) add(NativeScreen.CONVERSATIONS)
+                if (
+                    conversations.access.canRead &&
+                    (effectiveBranchId != null || sessionBranchContext.principal.canSelectBranch)
+                ) add(NativeScreen.CONVERSATIONS)
             }
             if (commerceSource != null && commerceCapabilities.readableSections().isNotEmpty()) {
                 add(NativeScreen.COMMERCE)
             }
             if (
                 collaborationSource != null &&
-                ((collaborationCapabilities.tasks.canRead && collaborationCapabilities.branchId != null) ||
+                ((collaborationCapabilities.tasks.canRead &&
+                    (collaborationCapabilities.branchId != null || collaborationCapabilities.canSelectTaskBranch)) ||
                     collaborationCapabilities.canReadBroadcastsSafely)
             ) add(NativeScreen.COLLABORATION)
             if (receivablesSource != null && receivablesPolicy.readableSections.isNotEmpty()) {
@@ -1251,28 +1385,56 @@ internal fun AppWorkspace(
             if (operationsSource != null && operationsCapabilities.sections.isNotEmpty()) {
                 add(NativeScreen.OPERATIONS)
             }
-            if (inventorySource != null) add(NativeScreen.INVENTORY)
+            if (
+                inventorySource != null &&
+                (effectiveBranchId != null || sessionBranchContext.principal.canSelectBranch)
+            ) add(NativeScreen.INVENTORY)
             if (
                 hrAdminSource != null &&
                 (hrAdminCapabilities.canReadEmployees || hrAdminCapabilities.canReadCompanyHr)
             ) add(NativeScreen.HR_ADMIN)
-            if (salesSource != null) add(NativeScreen.SALES)
-            if (purchasingSource != null) add(NativeScreen.PURCHASING)
             if (
-                workOrdersSource != null && state.bootstrap.branchId != null &&
-                workOrdersCapabilities.sections.isNotEmpty()
+                salesSource != null &&
+                (effectiveBranchId != null || sessionBranchContext.principal.canSelectBranch)
+            ) add(NativeScreen.SALES)
+            if (
+                purchasingSource != null &&
+                (effectiveBranchId != null || sessionBranchContext.principal.canSelectBranch)
+            ) add(NativeScreen.PURCHASING)
+            if (
+                workOrdersSource != null &&
+                (effectiveBranchId != null || sessionBranchContext.principal.canSelectBranch) &&
+                (
+                    principal.grantFor(NativeModule.WORK_ORDERS).satisfies(ModuleGrant.READ) ||
+                    workOrdersCapabilities.workorders.canRead ||
+                    workOrdersCapabilities.pos.canWrite ||
+                    workOrdersCapabilities.inventory.canWrite ||
+                    workOrdersCapabilities.canUsePricing
+                )
             ) add(NativeScreen.WORK_ORDERS)
             if (
-                warehouseToolsSource != null && state.bootstrap.branchId != null &&
+                warehouseToolsSource != null &&
+                (effectiveBranchId != null || sessionBranchContext.principal.canSelectBranch) &&
                 principal.grantFor(NativeModule.INVENTORY).satisfies(ModuleGrant.READ) &&
                 principal.grantFor(NativeModule.PRODUCTS).satisfies(ModuleGrant.READ)
             ) add(NativeScreen.WAREHOUSE_TOOLS)
             if (storeDeliverySource != null) add(NativeScreen.STORE_DELIVERY)
+            if (storeAdminSource != null) {
+                val storeAccess = state.bootstrap.modules.firstOrNull { it.key == NativeModule.STORE.wireName }?.access
+                if (StoreAdminCapabilities.from(state.bootstrap.user.role, storeAccess).canRead) add(NativeScreen.STORE_ADMIN)
+            }
             if (financeSource != null) add(NativeScreen.FINANCE)
             if (insightsSource != null && insightsPolicy.readableSections.isNotEmpty()) add(NativeScreen.INSIGHTS)
-            if (productsSource != null) add(NativeScreen.PRODUCTS)
+            if (
+                productsSource != null &&
+                (effectiveBranchId != null || sessionBranchContext.principal.canSelectBranch)
+            ) add(NativeScreen.PRODUCTS)
             if (legalSource != null) add(NativeScreen.SETTINGS)
-            if (systemSettingsSource != null && state.bootstrap.user.role.equals("admin", ignoreCase = true)) {
+            if (
+                systemSettingsSource != null &&
+                SystemSettingsCapabilities.fromBootstrap(state.bootstrap).readableSections().isNotEmpty() &&
+                principal.grantFor(NativeModule.SETTINGS).satisfies(ModuleGrant.READ)
+            ) {
                 add(NativeScreen.SYSTEM_SETTINGS)
             }
         }
@@ -1298,8 +1460,34 @@ internal fun AppWorkspace(
     var pendingNavigation by remember(state.bootstrap.user.id) {
         mutableStateOf<PendingNativeNavigation?>(null)
     }
+    var pendingBranchNavigation by remember(initialBranchContext.principal) {
+        mutableStateOf<PendingNativeNavigation?>(null)
+    }
+    var branchPickerVisible by remember(initialBranchContext.principal) { mutableStateOf(false) }
 
-    fun navigate(destination: NativeDestination, notificationKind: String? = null) {
+    fun performNavigation(request: PendingNativeNavigation) {
+        val route = implementedRouteFor(
+            request.destination,
+            principal,
+            approvalPolicy,
+            installedScreens,
+            request.notificationKind,
+        ) ?: return
+        val feature = request.destination as? NativeDestination.Feature
+        pendingNavigation = when {
+            notificationSelfServiceSection(request.notificationKind, request.destination) != null -> request
+            request.arguments.isNotEmpty() -> request
+            feature != null && route.supportsFeatureLaunch(feature) -> request
+            else -> null
+        }
+        navController.navigateNative(route)
+    }
+
+    fun navigate(
+        destination: NativeDestination,
+        notificationKind: String? = null,
+        arguments: Map<String, String> = emptyMap(),
+    ) {
         val route = implementedRouteFor(
             destination,
             principal,
@@ -1307,17 +1495,23 @@ internal fun AppWorkspace(
             installedScreens,
             notificationKind,
         ) ?: return
-        val feature = destination as? NativeDestination.Feature
-        pendingNavigation = when {
-            notificationSelfServiceSection(notificationKind, destination) != null ->
-                PendingNativeNavigation(destination, notificationKind)
-            feature != null && route.supportsFeatureLaunch(feature) ->
-                PendingNativeNavigation(feature, notificationKind)
-            else -> null
+        val request = PendingNativeNavigation(destination, notificationKind, arguments)
+        if (
+            sessionBranchContext.requiresExplicitSelection &&
+            route.screen in sessionBranchRequiredScreens
+        ) {
+            pendingBranchNavigation = request
+            branchPickerVisible = true
+            return
         }
-        navController.navigateNative(route)
+        performNavigation(request)
     }
     val openDestination: (NativeDestination) -> Unit = { destination -> navigate(destination) }
+    val openExecutiveDestination: (ExecutiveDestinationKey, Map<String, String>) -> Unit = { key, arguments ->
+        ExecutiveNavigation.request(key, arguments).let { request ->
+            navigate(request.destination, arguments = request.arguments)
+        }
+    }
 
     LaunchedEffect(state.bootstrap.user.id, principal, approvalPolicy, notificationDestinations) {
         notificationDestinations.collect { target -> navigate(target.destination, target.kind) }
@@ -1331,6 +1525,19 @@ internal fun AppWorkspace(
             else -> currentRoute.screen?.let { it in NativeFeatureCatalog.reachableScreens(principal, installedScreens) } ?: true
         }
         if (!stillAllowed) navController.navigateNative(NativeComposeRoute.Home)
+    }
+
+    fun selectSessionBranch(branchId: Long) {
+        val next = sessionBranchContext.select(branchId)
+        if (next.effectiveBranchId == null) {
+            sessionBranchContext = next
+            return
+        }
+        sessionBranchContext = next
+        branchPickerVisible = false
+        val pending = pendingBranchNavigation
+        pendingBranchNavigation = null
+        pending?.let(::performNavigation)
     }
 
     BoxWithConstraints(
@@ -1355,6 +1562,14 @@ internal fun AppWorkspace(
                     tablet = expandedLayout,
                     services = services,
                     onOpen = openDestination,
+                    onOpenExecutive = openExecutiveDestination,
+                    executiveState = executiveState,
+                    onRetryExecutive = onRetryExecutive,
+                    sessionBranchContext = sessionBranchContext,
+                    onChangeSessionBranch = {
+                        pendingBranchNavigation = null
+                        branchPickerVisible = true
+                    },
                     pendingNavigation = pendingNavigation,
                     onNavigationConsumed = { pendingNavigation = null },
                     onRefresh = onRefresh,
@@ -1363,13 +1578,18 @@ internal fun AppWorkspace(
                     onDisableBiometric = onDisableBiometric,
                     onLogout = onLogout,
                     selfServiceSource = selfServiceSource,
+                    shiftSource = shiftSource,
+                    shiftPolicy = shiftPolicy,
                     approvalsSource = approvalsSource,
                     approvalPolicy = approvalPolicy,
                     accountingControlsSource = accountingControlsSource,
+                    accountingControlsCapabilities = accountingControlsCapabilities,
                     adminSource = adminSource,
                     crmSource = crmSource,
+                    crmCapabilities = crmCapabilities,
                     conversationsSource = conversationsSource,
                     commerceSource = commerceSource,
+                    commerceCapabilities = commerceCapabilities,
                     collaborationSource = collaborationSource,
                     collaborationCapabilities = collaborationCapabilities,
                     receivablesSource = receivablesSource,
@@ -1383,6 +1603,7 @@ internal fun AppWorkspace(
                     operationsCapabilities = operationsCapabilities,
                     inventorySource = inventorySource,
                     hrAdminSource = hrAdminSource,
+                    hrAdminCapabilities = hrAdminCapabilities,
                     salesSource = salesSource,
                     purchasingSource = purchasingSource,
                     workOrdersSource = workOrdersSource,
@@ -1390,12 +1611,14 @@ internal fun AppWorkspace(
                     warehouseToolsSource = warehouseToolsSource,
                     warehouseToolsCapabilities = warehouseToolsCapabilities,
                     storeDeliverySource = storeDeliverySource,
+                    storeAdminSource = storeAdminSource,
                     financeSource = financeSource,
                     insightsSource = insightsSource,
                     insightsPolicy = insightsPolicy,
                     productsSource = productsSource,
                     legalSource = legalSource,
                     systemSettingsSource = systemSettingsSource,
+                    twoFactorSource = twoFactorSource,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -1417,6 +1640,14 @@ internal fun AppWorkspace(
                     tablet = false,
                     services = services,
                     onOpen = openDestination,
+                    onOpenExecutive = openExecutiveDestination,
+                    executiveState = executiveState,
+                    onRetryExecutive = onRetryExecutive,
+                    sessionBranchContext = sessionBranchContext,
+                    onChangeSessionBranch = {
+                        pendingBranchNavigation = null
+                        branchPickerVisible = true
+                    },
                     pendingNavigation = pendingNavigation,
                     onNavigationConsumed = { pendingNavigation = null },
                     onRefresh = onRefresh,
@@ -1425,13 +1656,18 @@ internal fun AppWorkspace(
                     onDisableBiometric = onDisableBiometric,
                     onLogout = onLogout,
                     selfServiceSource = selfServiceSource,
+                    shiftSource = shiftSource,
+                    shiftPolicy = shiftPolicy,
                     approvalsSource = approvalsSource,
                     approvalPolicy = approvalPolicy,
                     accountingControlsSource = accountingControlsSource,
+                    accountingControlsCapabilities = accountingControlsCapabilities,
                     adminSource = adminSource,
                     crmSource = crmSource,
+                    crmCapabilities = crmCapabilities,
                     conversationsSource = conversationsSource,
                     commerceSource = commerceSource,
+                    commerceCapabilities = commerceCapabilities,
                     collaborationSource = collaborationSource,
                     collaborationCapabilities = collaborationCapabilities,
                     receivablesSource = receivablesSource,
@@ -1445,6 +1681,7 @@ internal fun AppWorkspace(
                     operationsCapabilities = operationsCapabilities,
                     inventorySource = inventorySource,
                     hrAdminSource = hrAdminSource,
+                    hrAdminCapabilities = hrAdminCapabilities,
                     salesSource = salesSource,
                     purchasingSource = purchasingSource,
                     workOrdersSource = workOrdersSource,
@@ -1452,12 +1689,14 @@ internal fun AppWorkspace(
                     warehouseToolsSource = warehouseToolsSource,
                     warehouseToolsCapabilities = warehouseToolsCapabilities,
                     storeDeliverySource = storeDeliverySource,
+                    storeAdminSource = storeAdminSource,
                     financeSource = financeSource,
                     insightsSource = insightsSource,
                     insightsPolicy = insightsPolicy,
                     productsSource = productsSource,
                     legalSource = legalSource,
                     systemSettingsSource = systemSettingsSource,
+                    twoFactorSource = twoFactorSource,
                     modifier = Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding()),
                 )
             }
@@ -1487,6 +1726,104 @@ internal fun AppWorkspace(
                 }
             }
         }
+        if (branchPickerVisible && sessionBranchContext.principal.canSelectBranch) {
+            SessionBranchPicker(
+                context = sessionBranchContext,
+                onSelect = ::selectSessionBranch,
+                onRetry = { branchDirectoryRetry += 1 },
+                onDismiss = {
+                    branchPickerVisible = false
+                    pendingBranchNavigation = null
+                },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SessionBranchPicker(
+    context: SessionBranchContext,
+    onSelect: (Long) -> Unit,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("session-branch-picker"),
+        containerColor = Canvas,
+        shape = RoundedCornerShape(topStart = 34.dp, topEnd = 34.dp),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text("اختر الفرع", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+            when (context.directoryStatus) {
+                BranchDirectoryStatus.IDLE,
+                BranchDirectoryStatus.LOADING,
+                -> Box(
+                    Modifier.fillMaxWidth().height(160.dp),
+                    contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator(color = Emerald) }
+
+                BranchDirectoryStatus.FAILED -> {
+                    Text(
+                        context.error ?: "تعذر تحميل الفروع",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Button(
+                        onClick = onRetry,
+                        modifier = Modifier.fillMaxWidth().testTag("session-branch-retry"),
+                    ) { Text("إعادة المحاولة") }
+                }
+
+                BranchDirectoryStatus.READY -> if (context.branches.isEmpty()) {
+                    Text("لا توجد فروع متاحة", style = MaterialTheme.typography.bodyLarge, color = MutedInk)
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(bottom = 18.dp),
+                    ) {
+                        items(context.branches, key = { it.id }) { branch ->
+                            val selected = context.selectedBranchId == branch.id
+                            Surface(
+                                modifier = Modifier.fillMaxWidth()
+                                    .testTag("session-branch-${branch.id}")
+                                    .clickable(role = Role.Button) { onSelect(branch.id) },
+                                shape = RoundedCornerShape(20.dp),
+                                color = if (selected) Emerald else Color.White,
+                                contentColor = if (selected) Color.White else Ink,
+                                tonalElevation = if (selected) 0.dp else 1.dp,
+                            ) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    Icon(Icons.Rounded.BusinessCenter, null)
+                                    Column(Modifier.weight(1f)) {
+                                        Text(branch.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                        branch.code?.let { code ->
+                                            Text(
+                                                code,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = if (selected) Color.White.copy(alpha = .76f) else MutedInk,
+                                            )
+                                        }
+                                    }
+                                    if (selected) Icon(Icons.Rounded.CheckCircle, null)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                BranchDirectoryStatus.NOT_REQUIRED -> Unit
+            }
+        }
     }
 }
 
@@ -1497,6 +1834,11 @@ private fun NativeWorkspaceNavHost(
     tablet: Boolean,
     services: List<NativeServiceEntry>,
     onOpen: (NativeDestination) -> Unit,
+    onOpenExecutive: (ExecutiveDestinationKey, Map<String, String>) -> Unit,
+    executiveState: ExecutiveHomeState,
+    onRetryExecutive: () -> Unit,
+    sessionBranchContext: SessionBranchContext,
+    onChangeSessionBranch: () -> Unit,
     pendingNavigation: PendingNativeNavigation?,
     onNavigationConsumed: () -> Unit,
     onRefresh: () -> Unit,
@@ -1505,13 +1847,18 @@ private fun NativeWorkspaceNavHost(
     onDisableBiometric: () -> Unit,
     onLogout: () -> Unit,
     selfServiceSource: SelfServiceDataSource,
+    shiftSource: ShiftDataSource?,
+    shiftPolicy: ShiftAccessPolicy,
     approvalsSource: ApprovalsDataSource,
     approvalPolicy: ApprovalAccessPolicy,
     accountingControlsSource: AccountingControlsDataSource?,
+    accountingControlsCapabilities: AccountingControlsCapabilities,
     adminSource: AdminDataSource?,
     crmSource: CrmDataSource?,
+    crmCapabilities: CrmCapabilities,
     conversationsSource: ConversationsDataSource?,
     commerceSource: CommerceDataSource?,
+    commerceCapabilities: CommerceCapabilities,
     collaborationSource: CollaborationDataSource?,
     collaborationCapabilities: CollaborationCapabilities,
     receivablesSource: ReceivablesDataSource?,
@@ -1525,6 +1872,7 @@ private fun NativeWorkspaceNavHost(
     operationsCapabilities: OperationsCapabilities,
     inventorySource: InventoryDataSource?,
     hrAdminSource: HrAdminDataSource?,
+    hrAdminCapabilities: HrAdminCapabilities,
     salesSource: SalesDataSource?,
     purchasingSource: PurchasingDataSource?,
     workOrdersSource: WorkOrdersDataSource?,
@@ -1532,27 +1880,79 @@ private fun NativeWorkspaceNavHost(
     warehouseToolsSource: WarehouseToolsDataSource?,
     warehouseToolsCapabilities: WarehouseCapabilities,
     storeDeliverySource: StoreDeliveryDataSource?,
+    storeAdminSource: StoreAdminDataSource?,
     financeSource: FinanceDataSource?,
     insightsSource: InsightsDataSource?,
     insightsPolicy: InsightsAccessPolicy,
     productsSource: ProductsDataSource?,
     legalSource: LegalDataSource?,
     systemSettingsSource: SystemSettingsDataSource?,
+    twoFactorSource: TwoFactorDataSource?,
     modifier: Modifier = Modifier,
 ) {
-    NavHost(
-        navController = navController,
-        startDestination = NativeComposeRoute.Home.route,
-        modifier = modifier,
-    ) {
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = NativeComposeRoute.entries.firstOrNull {
+        it.route == backStackEntry?.destination?.route
+    } ?: NativeComposeRoute.Home
+    val nestedBackCoordinator = remember { WorkspaceBackCoordinator() }
+    val effectiveBranchId = sessionBranchContext.effectiveBranchId
+    val navigateUp: () -> Unit = {
+        if (nestedBackCoordinator.consume(currentRoute)) {
+            Unit
+        } else if (!navController.popBackStack()) {
+            navController.navigateNative(NativeComposeRoute.Home)
+        }
+        Unit
+    }
+
+    BackHandler(enabled = currentRoute != NativeComposeRoute.Home, onBack = navigateUp)
+
+    Column(modifier) {
+        AnimatedVisibility(
+            visible = currentRoute != NativeComposeRoute.Home && !currentRoute.ownsWorkspaceHeader(),
+        ) {
+            WorkspaceUpBar(onNavigateUp = navigateUp)
+        }
+        NavHost(
+            navController = navController,
+            startDestination = NativeComposeRoute.Home.route,
+            modifier = Modifier.weight(1f),
+        ) {
         composable(NativeComposeRoute.Home.route) {
             Box(Modifier.fillMaxSize().testTag("native-route-home")) {
-                HomeScreen(state.bootstrap, state.workspace, tablet, services, onOpen, onRefresh)
+                if (state.bootstrap.hasExecutiveHome()) {
+                    val managementServices = services.sortedBy { service ->
+                        when (service.screen) {
+                            NativeScreen.APPROVALS -> 0
+                            NativeScreen.ADMIN -> 1
+                            NativeScreen.FINANCE -> 2
+                            NativeScreen.SALES -> 3
+                            NativeScreen.INVENTORY -> 4
+                            NativeScreen.HR_ADMIN -> 5
+                            NativeScreen.INSIGHTS -> 6
+                            NativeScreen.STORE_ADMIN -> 7
+                            else -> 20
+                        }
+                    }
+                    ExecutiveHomeScreen(
+                        state = executiveState,
+                        userName = state.bootstrap.user.name,
+                        roleLabel = state.bootstrap.user.roleLabel,
+                        tablet = tablet,
+                        managementActions = managementServices.take(6).map { ExecutiveManagementAction(it.label, it.icon) },
+                        onRetry = onRetryExecutive,
+                        onManagementAction = { index -> managementServices.getOrNull(index)?.destination?.let(onOpen) },
+                        onAllServices = { onOpen(NativeDestination.ModuleDirectory) },
+                        onOpen = onOpenExecutive,
+                    )
+                } else {
+                    HomeScreen(state.bootstrap, state.workspace, tablet, services, onOpen, onRefresh)
+                }
             }
         }
         composable(NativeComposeRoute.Modules.route) {
             Box(Modifier.fillMaxSize().testTag("native-route-services")) {
-                ModulesScreen(services, onOpen)
+                ModulesScreen(services, sessionBranchContext, onChangeSessionBranch, onOpen)
             }
         }
         composable(NativeComposeRoute.SelfService.route) {
@@ -1588,18 +1988,31 @@ private fun NativeWorkspaceNavHost(
         }
         composable(NativeComposeRoute.Approvals.route) {
             val featureViewModel: ApprovalsViewModel = viewModel(
-                key = "approvals-${state.bootstrap.user.id}",
+                key = "approvals-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = ApprovalsViewModelFactory(approvalsSource, approvalPolicy),
             )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Approvals, enabled = !tablet) {
+                when {
+                    featureViewModel.state.confirmation != null -> true.also { featureViewModel.cancelDecision() }
+                    featureViewModel.state.selectedKey != null -> true.also { featureViewModel.select(null) }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-approvals")) {
                 ApprovalsRoute(featureViewModel)
             }
         }
         if (accountingControlsSource != null) composable(NativeComposeRoute.AccountingControls.route) {
             val featureViewModel: AccountingControlsViewModel = viewModel(
-                key = "accounting-controls-${state.bootstrap.user.id}",
-                factory = AccountingControlsViewModelFactory(accountingControlsSource, state.bootstrap),
+                key = "accounting-controls-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
+                factory = NativeViewModelFactory {
+                    AccountingControlsViewModel(accountingControlsSource, accountingControlsCapabilities)
+                },
             )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.AccountingControls, enabled = !tablet) {
+                if (featureViewModel.state.selectedExchangeHouseId == null) false
+                else true.also { featureViewModel.selectExchangeHouse(null) }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-accounting-controls")) {
                 AccountingControlsRoute(featureViewModel)
             }
@@ -1609,14 +2022,21 @@ private fun NativeWorkspaceNavHost(
                 key = "admin-${state.bootstrap.user.id}",
                 factory = AdminViewModelFactory(adminSource, state.bootstrap),
             )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Admin, enabled = !tablet) {
+                when {
+                    featureViewModel.state.selectedUserId != null -> true.also { featureViewModel.selectUser(null) }
+                    featureViewModel.state.selectedRoleKey != null -> true.also { featureViewModel.selectRole(null) }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-admin")) {
                 AdminRoute(featureViewModel)
             }
         }
         if (crmSource != null) composable(NativeComposeRoute.Crm.route) {
-            val capabilities = remember(state.bootstrap) { state.bootstrap.toCrmCapabilities() }
+            val capabilities = crmCapabilities
             val featureViewModel: CrmViewModel = viewModel(
-                key = "crm-${state.bootstrap.user.id}",
+                key = "crm-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = CrmViewModelFactory(crmSource, capabilities),
             )
             LaunchedEffect(pendingNavigation) {
@@ -1634,24 +2054,43 @@ private fun NativeWorkspaceNavHost(
                 }
                 onNavigationConsumed()
             }
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Crm, enabled = !tablet) {
+                when {
+                    featureViewModel.state.customerEditor != null -> true.also { featureViewModel.closeCustomerEditor() }
+                    featureViewModel.state.quotationEditor != null -> true.also { featureViewModel.closeQuotationEditor() }
+                    featureViewModel.state.campaignEditor != null -> true.also { featureViewModel.closeCampaignEditor() }
+                    featureViewModel.state.selectedCustomer != null -> true.also { featureViewModel.closeCustomerDetail() }
+                    featureViewModel.state.selectedQuotation != null -> true.also { featureViewModel.closeQuotationDetail() }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-crm")) {
                 CrmRoute(featureViewModel, capabilities)
             }
         }
         if (conversationsSource != null) composable(NativeComposeRoute.Conversations.route) {
-            val capabilities = remember(state.bootstrap) { ConversationCapabilities.fromBootstrap(state.bootstrap) }
+            val capabilities = remember(state.bootstrap, effectiveBranchId) {
+                ConversationCapabilities.fromBootstrap(state.bootstrap).copy(branchId = effectiveBranchId)
+            }
             val featureViewModel: ConversationsViewModel = viewModel(
-                key = "conversations-${state.bootstrap.user.id}",
+                key = "conversations-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = ConversationsViewModelFactory(conversationsSource, capabilities),
             )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Conversations, enabled = !tablet) {
+                when {
+                    featureViewModel.state.pendingWhatsapp != null -> true.also { featureViewModel.dismissWhatsappHandoff() }
+                    featureViewModel.state.selectedId != null -> true.also { featureViewModel.select(null) }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-conversations")) {
                 ConversationsRoute(featureViewModel)
             }
         }
         if (commerceSource != null) composable(NativeComposeRoute.Commerce.route) {
-            val capabilities = remember(state.bootstrap) { CommerceCapabilities.fromBootstrap(state.bootstrap) }
+            val capabilities = commerceCapabilities
             val featureViewModel: CommerceViewModel = viewModel(
-                key = "commerce-${state.bootstrap.user.id}",
+                key = "commerce-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = CommerceViewModelFactory(commerceSource),
             )
             LaunchedEffect(pendingNavigation) {
@@ -1671,29 +2110,65 @@ private fun NativeWorkspaceNavHost(
                 }
                 onNavigationConsumed()
             }
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Commerce, enabled = !tablet) {
+                when {
+                    featureViewModel.state.giftDetail != null -> true.also { featureViewModel.closeGift() }
+                    featureViewModel.state.reservationDetail != null -> true.also { featureViewModel.closeReservation() }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-commerce")) {
                 CommerceRoute(featureViewModel, capabilities)
             }
         }
         if (collaborationSource != null) composable(NativeComposeRoute.Collaboration.route) {
             val featureViewModel: CollaborationViewModel = viewModel(
-                key = "collaboration-${state.bootstrap.user.id}",
+                key = "collaboration-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = CollaborationViewModelFactory(collaborationSource, collaborationCapabilities),
             )
             LaunchedEffect(pendingNavigation) {
-                pendingNavigation.featureEntity(NativeModule.TASKS)?.let(featureViewModel::selectTask)
-                    ?: return@LaunchedEffect
+                val pending = pendingNavigation ?: return@LaunchedEffect
+                val taskId = pending.featureEntity(NativeModule.TASKS)
+                when {
+                    taskId != null -> featureViewModel.selectTask(taskId)
+                    pending.destination == NativeDestination.Tasks && pending.arguments.isNotEmpty() ->
+                        featureViewModel.applyNavigationArguments(pending.arguments)
+                    else -> return@LaunchedEffect
+                }
                 onNavigationConsumed()
             }
+            WorkspaceNestedBackHandler(
+                coordinator = nestedBackCoordinator,
+                route = NativeComposeRoute.Collaboration,
+                enabled = !tablet,
+                handler = featureViewModel::consumeBack,
+            )
             Box(Modifier.fillMaxSize().testTag("native-route-collaboration")) {
                 CollaborationRoute(featureViewModel)
             }
         }
         if (receivablesSource != null) composable(NativeComposeRoute.Receivables.route) {
             val featureViewModel: ReceivablesViewModel = viewModel(
-                key = "receivables-${state.bootstrap.user.id}",
+                key = "receivables-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = ReceivablesViewModelFactory(receivablesSource, receivablesPolicy),
             )
+            LaunchedEffect(pendingNavigation) {
+                val pending = pendingNavigation ?: return@LaunchedEffect
+                if (pending.destination != NativeDestination.Receivables || pending.arguments.isEmpty()) {
+                    return@LaunchedEffect
+                }
+                featureViewModel.applyNavigationArguments(pending.arguments)
+                onNavigationConsumed()
+            }
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Receivables, enabled = !tablet) {
+                when {
+                    featureViewModel.state.pendingAction != null || featureViewModel.state.newPlan != null ->
+                        true.also { featureViewModel.closeOverlay() }
+                    featureViewModel.state.selectedPlanId != null -> true.also { featureViewModel.selectPlan(null) }
+                    featureViewModel.state.selectedReminderId != null -> true.also { featureViewModel.selectReminder(null) }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-receivables")) {
                 ReceivablesRoute(featureViewModel)
             }
@@ -1703,55 +2178,104 @@ private fun NativeWorkspaceNavHost(
                 key = "collections-${state.bootstrap.user.id}",
                 factory = CollectionsViewModelFactory(collectionsSource, state.bootstrap),
             )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Collections, enabled = !tablet) {
+                if (featureViewModel.state.selectedId == null) false
+                else true.also { featureViewModel.select(null) }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-collections")) {
                 CollectionsRoute(featureViewModel)
             }
         }
         if (marketingSource != null) composable(NativeComposeRoute.Marketing.route) {
             val featureViewModel: MarketingViewModel = viewModel(
-                key = "marketing-${state.bootstrap.user.id}",
+                key = "marketing-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = NativeViewModelFactory {
                     MarketingViewModel(marketingSource, marketingScope, marketingCapabilities)
                 },
             )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Marketing, enabled = !tablet) {
+                when {
+                    featureViewModel.state.selectedPromotionId != null -> true.also { featureViewModel.selectPromotion(null) }
+                    featureViewModel.state.selectedProgramId != null -> true.also { featureViewModel.selectProgram(null) }
+                    featureViewModel.state.selectedAnomalyKey != null -> true.also { featureViewModel.selectAnomaly(null) }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-marketing")) {
-                MarketingScreen(featureViewModel, onBack = { navController.popBackStack() })
+                MarketingScreen(featureViewModel, onBack = navigateUp)
             }
         }
         if (operationsSource != null) composable(NativeComposeRoute.Operations.route) {
             val featureViewModel: OperationsViewModel = viewModel(
-                key = "operations-${state.bootstrap.user.id}",
+                key = "operations-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = NativeViewModelFactory {
                     OperationsViewModel(operationsSource, operationsScope, operationsCapabilities)
                 },
             )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Operations, enabled = !tablet) {
+                featureViewModel.handleNestedBack()
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-operations")) {
-                OperationsScreen(featureViewModel, onBack = { navController.popBackStack() })
+                OperationsScreen(featureViewModel, onBack = navigateUp)
             }
         }
         if (inventorySource != null) composable(NativeComposeRoute.Inventory.route) {
-            val capabilities = remember(state.bootstrap) { InventoryCapabilities.fromBootstrap(state.bootstrap) }
+            val capabilities = remember(state.bootstrap, effectiveBranchId) {
+                InventoryCapabilities.fromBootstrap(state.bootstrap).copy(branchId = effectiveBranchId)
+            }
             val featureViewModel: InventoryViewModel = viewModel(
-                key = "inventory-${state.bootstrap.user.id}",
+                key = "inventory-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = InventoryViewModelFactory(inventorySource, capabilities),
             )
+            LaunchedEffect(pendingNavigation) {
+                val pending = pendingNavigation ?: return@LaunchedEffect
+                if (
+                    pending.destination != NativeDestination.Module(NativeModule.INVENTORY) ||
+                    pending.arguments.isEmpty()
+                ) return@LaunchedEffect
+                featureViewModel.applyNavigationArguments(pending.arguments)
+                onNavigationConsumed()
+            }
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Inventory, enabled = !tablet) {
+                when {
+                    featureViewModel.state.receiveDraft != null -> true.also { featureViewModel.closeReceiveDraft() }
+                    featureViewModel.state.transferDraft != null -> true.also { featureViewModel.closeTransferDraft() }
+                    featureViewModel.state.selectedTransfer != null -> true.also { featureViewModel.closeTransferDetail() }
+                    featureViewModel.state.adjustmentDraft != null -> true.also { featureViewModel.closeAdjustmentDraft() }
+                    featureViewModel.state.rejectingAdjustmentId != null -> true.also { featureViewModel.closeRejectAdjustment() }
+                    featureViewModel.state.stocktakeDraft != null -> true.also { featureViewModel.closeStocktakeDraft() }
+                    featureViewModel.state.recountVariantId != null -> true.also { featureViewModel.closeRecount() }
+                    featureViewModel.state.selectedStocktake != null -> true.also { featureViewModel.closeStocktakeDetail() }
+                    featureViewModel.state.selectedCount != null -> true.also { featureViewModel.closeCount() }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-inventory")) {
                 InventoryRoute(featureViewModel)
             }
         }
         if (hrAdminSource != null) composable(NativeComposeRoute.HrAdmin.route) {
             val featureViewModel: HrAdminViewModel = viewModel(
-                key = "hr-admin-${state.bootstrap.user.id}",
-                factory = HrAdminViewModelFactory(hrAdminSource, state.bootstrap),
+                key = "hr-admin-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
+                factory = NativeViewModelFactory { HrAdminViewModel(hrAdminSource, hrAdminCapabilities) },
             )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.HrAdmin, enabled = !tablet) {
+                when {
+                    featureViewModel.state.payrollDetail != null -> true.also { featureViewModel.selectPayroll(null) }
+                    featureViewModel.state.selectedEmployeeId != null -> true.also { featureViewModel.selectEmployee(null) }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-hr-admin")) {
                 HrAdminRoute(featureViewModel)
             }
         }
         if (salesSource != null) composable(NativeComposeRoute.Sales.route) {
-            val capabilities = remember(state.bootstrap) { SalesCapabilities.fromBootstrap(state.bootstrap) }
+            val capabilities = remember(state.bootstrap, effectiveBranchId) {
+                SalesCapabilities.fromBootstrap(state.bootstrap).copy(branchId = effectiveBranchId)
+            }
             val featureViewModel: SalesViewModel = viewModel(
-                key = "sales-${state.bootstrap.user.id}",
+                key = "sales-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = SalesViewModelFactory(salesSource, capabilities),
             )
             LaunchedEffect(pendingNavigation) {
@@ -1761,18 +2285,32 @@ private fun NativeWorkspaceNavHost(
                 featureViewModel.saleDetail(id)
                 onNavigationConsumed()
             }
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Sales, enabled = !tablet) {
+                if (featureViewModel.state.selectedSale == null) false
+                else true.also { featureViewModel.closeSale() }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-sales")) {
                 SalesRoute(featureViewModel, capabilities)
             }
         }
         if (purchasingSource != null) composable(NativeComposeRoute.Purchasing.route) {
-            val capabilities = remember(state.bootstrap) { PurchasingCapabilities.fromBootstrap(state.bootstrap) }
+            val capabilities = remember(state.bootstrap, effectiveBranchId) {
+                PurchasingCapabilities.fromBootstrap(state.bootstrap).copy(branchId = effectiveBranchId)
+            }
             val featureViewModel: PurchasingViewModel = viewModel(
-                key = "purchasing-${state.bootstrap.user.id}",
+                key = "purchasing-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = PurchasingViewModelFactory(purchasingSource, capabilities),
             )
             LaunchedEffect(pendingNavigation) {
                 val pending = pendingNavigation ?: return@LaunchedEffect
+                if (
+                    pending.destination == NativeDestination.Module(NativeModule.PURCHASES) &&
+                    pending.arguments.isNotEmpty()
+                ) {
+                    featureViewModel.applyNavigationArguments(pending.arguments)
+                    onNavigationConsumed()
+                    return@LaunchedEffect
+                }
                 val feature = pending.destination as? NativeDestination.Feature ?: return@LaunchedEffect
                 when (feature.module) {
                     NativeModule.PURCHASES -> {
@@ -1789,21 +2327,44 @@ private fun NativeWorkspaceNavHost(
                 }
                 onNavigationConsumed()
             }
+            WorkspaceNestedBackHandler(
+                coordinator = nestedBackCoordinator,
+                route = NativeComposeRoute.Purchasing,
+                enabled = !tablet,
+                handler = featureViewModel::consumeBack,
+            )
             Box(Modifier.fillMaxSize().testTag("native-route-purchasing")) {
-                PurchasingRoute(featureViewModel, onBack = { navController.popBackStack() })
+                PurchasingRoute(featureViewModel, onBack = navigateUp)
             }
         }
         if (workOrdersSource != null) composable(NativeComposeRoute.WorkOrders.route) {
             val featureViewModel: WorkOrdersViewModel = viewModel(
-                key = "work-orders-${state.bootstrap.user.id}",
+                key = "work-orders-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = WorkOrdersViewModelFactory(workOrdersSource, workOrdersCapabilities),
             )
             LaunchedEffect(pendingNavigation) {
-                pendingNavigation.featureEntity(NativeModule.WORK_ORDERS, "order")?.let { id ->
-                    featureViewModel.selectSection(WorkOrdersSection.ORDERS)
-                    featureViewModel.selectOrder(id)
-                } ?: return@LaunchedEffect
+                val pending = pendingNavigation ?: return@LaunchedEffect
+                val orderId = pending.featureEntity(NativeModule.WORK_ORDERS, "order")
+                when {
+                    orderId != null -> {
+                        featureViewModel.selectSection(WorkOrdersSection.ORDERS)
+                        featureViewModel.selectOrder(orderId)
+                    }
+                    pending.destination == NativeDestination.WorkOrders && pending.arguments.isNotEmpty() ->
+                        featureViewModel.applyNavigationArguments(pending.arguments)
+                    else -> return@LaunchedEffect
+                }
                 onNavigationConsumed()
+            }
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.WorkOrders, enabled = !tablet) {
+                when {
+                    featureViewModel.state.deliveryDraft != null -> true.also { featureViewModel.closeDelivery() }
+                    featureViewModel.state.orderDraft != null -> true.also { featureViewModel.closeOrderDraft() }
+                    featureViewModel.state.selectedOrder != null -> true.also { featureViewModel.closeOrder() }
+                    featureViewModel.state.runDraft != null -> true.also { featureViewModel.closeRun() }
+                    featureViewModel.state.selectedProduction != null -> true.also { featureViewModel.closeProduction() }
+                    else -> false
+                }
             }
             Box(Modifier.fillMaxSize().testTag("native-route-work-orders")) {
                 WorkOrdersRoute(featureViewModel)
@@ -1811,9 +2372,16 @@ private fun NativeWorkspaceNavHost(
         }
         if (warehouseToolsSource != null) composable(NativeComposeRoute.WarehouseTools.route) {
             val featureViewModel: WarehouseToolsViewModel = viewModel(
-                key = "warehouse-tools-${state.bootstrap.user.id}",
+                key = "warehouse-tools-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = WarehouseToolsViewModelFactory(warehouseToolsSource, warehouseToolsCapabilities),
             )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.WarehouseTools, enabled = !tablet) {
+                when {
+                    featureViewModel.state.selectedItem != null -> true.also { featureViewModel.closeCountEntry() }
+                    featureViewModel.state.selectedCount != null -> true.also { featureViewModel.closeCount() }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-warehouse-tools")) {
                 WarehouseToolsRoute(featureViewModel)
             }
@@ -1829,18 +2397,56 @@ private fun NativeWorkspaceNavHost(
                     ?: return@LaunchedEffect
                 onNavigationConsumed()
             }
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.StoreDelivery, enabled = !tablet) {
+                if (featureViewModel.state.selectedOrderId == null) false
+                else true.also { featureViewModel.selectOrder(null) }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-store-delivery")) {
-                StoreDeliveryScreen(featureViewModel, onBack = { navController.popBackStack() })
+                StoreDeliveryScreen(featureViewModel, onBack = navigateUp)
             }
         }
         if (financeSource != null) composable(NativeComposeRoute.Finance.route) {
-            val policy = remember(state.bootstrap) { FinanceAccessPolicy.fromBootstrap(state.bootstrap) }
+            val policy = remember(state.bootstrap, effectiveBranchId) {
+                FinanceAccessPolicy.fromBootstrap(state.bootstrap, effectiveBranchId)
+            }
             val featureViewModel: FinanceViewModel = viewModel(
-                key = "finance-${state.bootstrap.user.id}",
+                key = "finance-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = FinanceViewModelFactory(financeSource, policy),
             )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Finance, enabled = !tablet) {
+                when {
+                    featureViewModel.state.createConfirmation != null || featureViewModel.state.transferConfirmation != null ->
+                        true.also { featureViewModel.cancelConfirmation() }
+                    featureViewModel.state.composer != null -> true.also { featureViewModel.closeComposer() }
+                    featureViewModel.state.selectedKey != null -> true.also { featureViewModel.select(null) }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-finance")) {
                 FinanceRoute(featureViewModel)
+            }
+        }
+        if (shiftSource != null && shiftPolicy.canReadManagement) composable(NativeComposeRoute.Shifts.route) {
+            val featureViewModel: ShiftViewModel = viewModel(
+                key = "shifts-${state.bootstrap.user.id}",
+                factory = NativeViewModelFactory { ShiftViewModel(shiftSource, shiftPolicy) },
+            )
+            LaunchedEffect(pendingNavigation) {
+                val pending = pendingNavigation ?: return@LaunchedEffect
+                if (pending.destination != NativeDestination.Shifts || pending.arguments.isEmpty()) {
+                    return@LaunchedEffect
+                }
+                featureViewModel.applyNavigationArguments(pending.arguments)
+                onNavigationConsumed()
+            }
+            WorkspaceNestedBackHandler(
+                coordinator = nestedBackCoordinator,
+                route = NativeComposeRoute.Shifts,
+                enabled = !tablet,
+                handler = featureViewModel::consumeBack,
+            )
+            Box(Modifier.fillMaxSize().testTag("native-route-shifts")) {
+                ShiftScreen(featureViewModel)
             }
         }
         if (insightsSource != null) composable(NativeComposeRoute.Insights.route) {
@@ -1848,6 +2454,14 @@ private fun NativeWorkspaceNavHost(
                 key = "insights-${state.bootstrap.user.id}",
                 factory = InsightsViewModelFactory(insightsSource, insightsPolicy),
             )
+            LaunchedEffect(pendingNavigation) {
+                val pending = pendingNavigation ?: return@LaunchedEffect
+                if (pending.destination != NativeDestination.Insights || pending.arguments.isEmpty()) {
+                    return@LaunchedEffect
+                }
+                featureViewModel.applyNavigationArguments(pending.arguments)
+                onNavigationConsumed()
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-insights")) {
                 InsightsRoute(
                     viewModel = featureViewModel,
@@ -1857,11 +2471,21 @@ private fun NativeWorkspaceNavHost(
             }
         }
         if (productsSource != null) composable(NativeComposeRoute.Products.route) {
-            val capabilities = remember(state.bootstrap) { ProductsCapabilities.fromBootstrap(state.bootstrap) }
+            val capabilities = remember(state.bootstrap, effectiveBranchId) {
+                ProductsCapabilities.fromBootstrap(state.bootstrap).copy(branchId = effectiveBranchId)
+            }
             val featureViewModel: ProductsViewModel = viewModel(
-                key = "products-${state.bootstrap.user.id}",
+                key = "products-${state.bootstrap.user.id}-${effectiveBranchId ?: "none"}",
                 factory = ProductsViewModelFactory(productsSource, capabilities),
             )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.Products, enabled = !tablet) {
+                when {
+                    featureViewModel.state.barcodeUnitId != null -> true.also { featureViewModel.closeBarcodes() }
+                    featureViewModel.state.editor != null -> true.also { featureViewModel.closeEditor() }
+                    featureViewModel.state.selected != null -> true.also { featureViewModel.closeDetails() }
+                    else -> false
+                }
+            }
             Box(Modifier.fillMaxSize().testTag("native-route-products")) {
                 ProductsRoute(featureViewModel, capabilities)
             }
@@ -1873,6 +2497,8 @@ private fun NativeWorkspaceNavHost(
                     biometricAvailable = biometricAvailable,
                     selfServiceSource = selfServiceSource,
                     legalSource = legalSource,
+                    twoFactorSource = twoFactorSource,
+                    nestedBackCoordinator = nestedBackCoordinator,
                     onEnableBiometric = onEnableBiometric,
                     onDisableBiometric = onDisableBiometric,
                     onLogout = onLogout,
@@ -1889,6 +2515,60 @@ private fun NativeWorkspaceNavHost(
                 SystemSettingsRoute(featureViewModel, capabilities)
             }
         }
+        if (storeAdminSource != null) composable(NativeComposeRoute.StoreAdmin.route) {
+            val access = state.bootstrap.modules.firstOrNull { it.key == NativeModule.STORE.wireName }?.access
+            val capabilities = remember(state.bootstrap) {
+                StoreAdminCapabilities.from(state.bootstrap.user.role, access)
+            }
+            val featureViewModel: StoreAdminViewModel = viewModel(
+                key = "store-admin-${state.bootstrap.user.id}",
+                factory = NativeViewModelFactory { StoreAdminViewModel(storeAdminSource, capabilities) },
+            )
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.StoreAdmin, enabled = !tablet) {
+                when {
+                    featureViewModel.state.pendingDelete != null -> true.also { featureViewModel.cancelDelete() }
+                    featureViewModel.state.editor != null -> true.also { featureViewModel.closeEditor() }
+                    else -> false
+                }
+            }
+            Box(Modifier.fillMaxSize().testTag("native-route-store-admin")) {
+                StoreAdminRoute(featureViewModel, capabilities)
+            }
+        }
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceUpBar(onNavigateUp: () -> Unit) {
+    androidx.compose.runtime.CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().testTag("native-workspace-up-bar"),
+            color = Color.White,
+            shadowElevation = 2.dp,
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Start,
+            ) {
+                IconButton(
+                    onClick = onNavigateUp,
+                    modifier = Modifier.testTag("native-workspace-up"),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = "رجوع",
+                        tint = EmeraldDark,
+                    )
+                }
+                Text(
+                    "رجوع",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = EmeraldDark,
+                )
+            }
+        }
     }
 }
 
@@ -1898,14 +2578,52 @@ private fun NativeSettingsRoute(
     biometricAvailable: Boolean,
     selfServiceSource: SelfServiceDataSource,
     legalSource: LegalDataSource,
+    twoFactorSource: TwoFactorDataSource?,
+    nestedBackCoordinator: WorkspaceBackCoordinator,
     onEnableBiometric: () -> Unit,
     onDisableBiometric: () -> Unit,
     onLogout: () -> Unit,
 ) {
+    var showTwoFactor by remember(state.bootstrap.user.id) { mutableStateOf(false) }
     var preferences by remember(state.bootstrap.user.id) { mutableStateOf<NotificationPreferences?>(null) }
     var preferencesError by remember(state.bootstrap.user.id) { mutableStateOf<String?>(null) }
     var retry by remember(state.bootstrap.user.id) { mutableIntStateOf(0) }
     val uriHandler = LocalUriHandler.current
+    val twoFactorVisible = remember(state.bootstrap.user.role, twoFactorSource) {
+        twoFactorSource != null && TwoFactorEntryPolicy.visible(
+            authenticated = true,
+            role = state.bootstrap.user.role,
+        )
+    }
+    WorkspaceNestedBackHandler(
+        coordinator = nestedBackCoordinator,
+        route = NativeComposeRoute.Settings,
+        enabled = showTwoFactor,
+    ) {
+        showTwoFactor = false
+        true
+    }
+    if (showTwoFactor && twoFactorSource != null && twoFactorVisible) {
+        val twoFactorViewModel: TwoFactorViewModel = viewModel(
+            key = "two-factor-${state.bootstrap.user.id}",
+            factory = TwoFactorViewModel.factory(twoFactorSource),
+        )
+        TwoFactorScreen(
+            state = twoFactorViewModel.state,
+            onRefresh = twoFactorViewModel::refresh,
+            onStartEnrollment = twoFactorViewModel::startEnrollment,
+            onConfirmEnrollment = twoFactorViewModel::confirmEnrollment,
+            onRegenerateCodes = twoFactorViewModel::regenerateRecoveryCodes,
+            onDisable = twoFactorViewModel::disable,
+            onRecoveryCodesSaved = twoFactorViewModel::acknowledgeRecoveryCodes,
+            onOpenAuthenticator = { uri ->
+                if (AuthenticatorUriPolicy.canOpen(uri)) runCatching { uriHandler.openUri(uri) }
+                Unit
+            },
+            onBack = { showTwoFactor = false },
+        )
+        return
+    }
     LaunchedEffect(state.bootstrap.user.id, retry) {
         preferencesError = null
         runCatching { selfServiceSource.loadNotificationPreferences() }
@@ -1941,6 +2659,8 @@ private fun NativeSettingsRoute(
                     runCatching { uriHandler.openUri(url) }
                     Unit
                 },
+                twoFactorVisible = twoFactorVisible,
+                onOpenTwoFactor = { showTwoFactor = true },
             )
         }
         preferencesError != null -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
@@ -1962,6 +2682,88 @@ private class NativeViewModelFactory(
     override fun <T : ViewModel> create(modelClass: Class<T>): T = create() as T
 }
 
+private class WorkspaceBackCoordinator {
+    private data class Entry(val token: Any, val handler: () -> Boolean)
+    private val entries = mutableMapOf<NativeComposeRoute, Entry>()
+
+    fun register(route: NativeComposeRoute, token: Any, handler: () -> Boolean) {
+        entries[route] = Entry(token, handler)
+    }
+
+    fun unregister(route: NativeComposeRoute, token: Any) {
+        if (entries[route]?.token === token) entries.remove(route)
+    }
+
+    fun consume(route: NativeComposeRoute): Boolean = entries[route]?.handler?.invoke() == true
+}
+
+/** Native workspaces whose API contract cannot be entered without an explicit operational branch. */
+internal val sessionBranchRequiredScreens: Set<NativeScreen> = setOf(
+    NativeScreen.CONVERSATIONS,
+    NativeScreen.COLLABORATION,
+    NativeScreen.INVENTORY,
+    NativeScreen.SALES,
+    NativeScreen.PURCHASING,
+    NativeScreen.WORK_ORDERS,
+    NativeScreen.WAREHOUSE_TOOLS,
+    NativeScreen.PRODUCTS,
+)
+
+/**
+ * Compact screens that own at least one detail, editor, confirmation, or sub-flow layer.
+ * Keeping this list explicit makes adding a native screen without an up-contract a test failure.
+ */
+internal val compactNestedBackRouteNames: Set<String> = setOf(
+    "native-approvals",
+    "native-accounting-controls",
+    "native-admin",
+    "native-crm",
+    "native-conversations",
+    "native-commerce",
+    "native-collaboration",
+    "native-receivables",
+    "native-collections",
+    "native-marketing",
+    "native-operations",
+    "native-inventory",
+    "native-hr-admin",
+    "native-sales",
+    "native-purchasing",
+    "native-work-orders",
+    "native-warehouse-tools",
+    "native-store-delivery",
+    "native-store-admin",
+    "native-finance",
+    "native-shifts",
+    "native-products",
+    "native-profile",
+)
+
+@Composable
+private fun WorkspaceNestedBackHandler(
+    coordinator: WorkspaceBackCoordinator,
+    route: NativeComposeRoute,
+    enabled: Boolean = true,
+    handler: () -> Boolean,
+) {
+    require(route.route in compactNestedBackRouteNames) {
+        "Missing compact nested-back contract for ${route.route}"
+    }
+    val currentHandler by rememberUpdatedState(handler)
+    val token = remember { Any() }
+    DisposableEffect(coordinator, route, enabled) {
+        if (enabled) coordinator.register(route, token) { currentHandler() }
+        onDispose { coordinator.unregister(route, token) }
+    }
+}
+
+private fun NativeComposeRoute.ownsWorkspaceHeader(): Boolean = this in setOf(
+    NativeComposeRoute.Marketing,
+    NativeComposeRoute.Operations,
+    NativeComposeRoute.Purchasing,
+    NativeComposeRoute.StoreDelivery,
+)
+
 private fun NavHostController.navigateNative(route: NativeComposeRoute) {
     navigate(route.route) {
         launchSingleTop = true
@@ -1975,6 +2777,7 @@ private fun NavHostController.navigateNative(route: NativeComposeRoute) {
 private fun AppBootstrap.toNavigationPrincipal(): NavigationPrincipal = NavigationPrincipal(
     authenticated = true,
     role = user.role,
+    isOwner = isOwner || user.isOwner,
     hasPersonalWorkspace = hasPersonalWorkspace,
     grants = modules.mapNotNull { module ->
         val nativeModule = NativeModule.fromWireName(module.key) ?: return@mapNotNull null
@@ -2026,12 +2829,15 @@ private fun AppBootstrap.toMarketingCapabilities(): MarketingCapabilities = Mark
     catalogAnomaliesAccess = modules.firstOrNull { it.key == NativeModule.CATALOG_ANOMALIES.wireName }?.access,
 )
 
-private fun AppBootstrap.toOperationsCapabilities(): OperationsCapabilities = OperationsCapabilities.from(
+private fun AppBootstrap.toOperationsCapabilities(
+    effectiveBranchId: Long? = branchId,
+): OperationsCapabilities = OperationsCapabilities.from(
     role = user.role,
-    branchId = branchId,
+    branchId = effectiveBranchId,
     assetsAccess = modules.firstOrNull { it.key == NativeModule.ASSETS.wireName }?.access,
     consignmentAccess = modules.firstOrNull { it.key == NativeModule.CONSIGNMENTS.wireName }?.access,
     commissionsAccess = modules.firstOrNull { it.key == NativeModule.COMMISSIONS.wireName }?.access,
+    isOwner = isOwner || user.isOwner,
 )
 
 private fun marketingAccessLabel(bootstrap: AppBootstrap): ModuleGrant = listOf(
@@ -2060,6 +2866,7 @@ private fun crmAccessLabel(bootstrap: AppBootstrap): ModuleGrant = listOf(
 private fun compactServiceLabel(screen: NativeScreen, fallback: String): String = when (screen) {
     NativeScreen.ACCOUNTING_CONTROLS -> "المحاسبة"
     NativeScreen.CRM -> "العملاء"
+    NativeScreen.SHIFTS -> "الورديات"
     NativeScreen.WORK_ORDERS -> "الطباعة"
     NativeScreen.WAREHOUSE_TOOLS -> "المستودع"
     NativeScreen.COLLABORATION -> "الفريق"
@@ -2241,6 +3048,33 @@ private fun implementedServices(
         )
     }
 
+    if (NativeScreen.STORE_ADMIN in installed) {
+        val access = bootstrap.modules.firstOrNull { it.key == NativeModule.STORE.wireName }?.access
+        add(
+            NativeServiceEntry(
+                key = "store-admin",
+                label = "إدارة المتجر",
+                accessLabel = if (access.equals("FULL", true)) "إدارة" else "عرض",
+                screen = NativeScreen.STORE_ADMIN,
+                destination = NativeDestination.StoreAdmin,
+                icon = Icons.Rounded.BusinessCenter,
+            ),
+        )
+    }
+
+    if (NativeScreen.SHIFTS in installed) {
+        add(
+            NativeServiceEntry(
+                key = "shifts",
+                label = "الورديات",
+                accessLabel = "إدارة",
+                screen = NativeScreen.SHIFTS,
+                destination = NativeDestination.Shifts,
+                icon = Icons.Rounded.Schedule,
+            ),
+        )
+    }
+
     listOf(
         NativeScreen.INVENTORY,
         NativeScreen.SALES,
@@ -2322,10 +3156,12 @@ private fun implementedRouteFor(
         NativeDestination.Receivables -> NativeComposeRoute.Receivables.takeIf { NativeScreen.RECEIVABLES in installed }
         NativeDestination.Collections -> NativeComposeRoute.Collections.takeIf { NativeScreen.COLLECTIONS in installed }
         NativeDestination.Insights -> NativeComposeRoute.Insights.takeIf { NativeScreen.INSIGHTS in installed }
+        NativeDestination.Shifts -> NativeComposeRoute.Shifts.takeIf { NativeScreen.SHIFTS in installed }
         NativeDestination.WorkOrders -> NativeComposeRoute.WorkOrders.takeIf { NativeScreen.WORK_ORDERS in installed }
         NativeDestination.WarehouseTools -> NativeComposeRoute.WarehouseTools.takeIf {
             NativeScreen.WAREHOUSE_TOOLS in installed
         }
+        NativeDestination.StoreAdmin -> NativeComposeRoute.StoreAdmin.takeIf { NativeScreen.STORE_ADMIN in installed }
         is NativeDestination.Module -> if (destination.module == NativeModule.TASKS) {
             principal.teamTasksRoute(installed)
                 ?: NativeFeatureCatalog.resolve(destination, principal, installed)?.toComposeRoute()
@@ -2373,6 +3209,7 @@ private fun NativeComposeRoute.supportsFeatureLaunch(destination: NativeDestinat
             destination.module == NativeModule.WORK_ORDERS && destination.typedEntity("order") != null
         NativeComposeRoute.StoreDelivery ->
             destination.module == NativeModule.STORE && destination.typedEntity(null) != null
+        NativeComposeRoute.StoreAdmin -> false
         else -> false
     }
 
@@ -2425,6 +3262,7 @@ private fun NativeScreen.toComposeRoute(): NativeComposeRoute = when (this) {
     NativeScreen.SALES -> NativeComposeRoute.Sales
     NativeScreen.PURCHASING -> NativeComposeRoute.Purchasing
     NativeScreen.STORE_DELIVERY -> NativeComposeRoute.StoreDelivery
+    NativeScreen.STORE_ADMIN -> NativeComposeRoute.StoreAdmin
     NativeScreen.FINANCE -> NativeComposeRoute.Finance
     NativeScreen.RECEIVABLES -> NativeComposeRoute.Receivables
     NativeScreen.COLLECTIONS -> NativeComposeRoute.Collections
@@ -2436,6 +3274,7 @@ private fun NativeScreen.toComposeRoute(): NativeComposeRoute = when (this) {
     NativeScreen.OPERATIONS -> NativeComposeRoute.Operations
     NativeScreen.ADMIN -> NativeComposeRoute.Admin
     NativeScreen.INSIGHTS -> NativeComposeRoute.Insights
+    NativeScreen.SHIFTS -> NativeComposeRoute.Shifts
     NativeScreen.WORK_ORDERS -> NativeComposeRoute.WorkOrders
     NativeScreen.WAREHOUSE_TOOLS -> NativeComposeRoute.WarehouseTools
     NativeScreen.HR_ADMIN -> NativeComposeRoute.HrAdmin
@@ -2491,16 +3330,21 @@ private fun AppNavigationRail(
         modifier = Modifier.fillMaxHeight().width(104.dp),
         containerColor = Color.White,
     ) {
-        BrandMark(58.dp)
-        Spacer(Modifier.height(30.dp))
-        tabs.forEach { tab ->
-            NavigationRailItem(
-                modifier = Modifier.testTag("native-tab-${tab.route.route}"),
-                selected = tab == selected,
-                onClick = { onSelect(tab) },
-                icon = { NavIcon(tab, badge) },
-                label = { Text(tab.label, style = MaterialTheme.typography.labelMedium, maxLines = 1) },
-            )
+        Column(
+            Modifier.fillMaxHeight().verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            BrandMark(58.dp)
+            Spacer(Modifier.height(30.dp))
+            tabs.forEach { tab ->
+                NavigationRailItem(
+                    modifier = Modifier.testTag("native-tab-${tab.route.route}"),
+                    selected = tab == selected,
+                    onClick = { onSelect(tab) },
+                    icon = { NavIcon(tab, badge) },
+                    label = { Text(tab.label, style = MaterialTheme.typography.labelMedium, maxLines = 1) },
+                )
+            }
         }
     }
 }
@@ -2559,6 +3403,8 @@ private fun HomeScreen(
     }
 }
 
+private fun AppBootstrap.hasExecutiveHome(): Boolean = (isExecutive && !roleDegraded) || isOwner || user.isOwner
+
 @Composable
 private fun HomeFeed(
     bootstrap: AppBootstrap,
@@ -2568,17 +3414,27 @@ private fun HomeFeed(
     onRefresh: () -> Unit,
     modifier: Modifier,
 ) {
-    val largeText = LocalDensity.current.fontScale >= 1.5f
+    val density = LocalDensity.current
+    val largeText = density.fontScale >= 1.5f
+    var headerHeightPx by remember { mutableIntStateOf(0) }
+    val measuredHeaderHeight = with(density) { headerHeightPx.toDp() }
+    val feedTopPadding = maxOf(
+        264.dp,
+        measuredHeaderHeight.takeIf { headerHeightPx > 0 }?.minus(if (largeText) 16.dp else 62.dp) ?: 264.dp,
+    )
     Box(modifier.background(Canvas)) {
         Box(
-            Modifier.fillMaxWidth().heightIn(min = 326.dp).clip(HomeHeaderShape).background(
+            Modifier.fillMaxWidth().heightIn(min = 326.dp)
+                .onSizeChanged { headerHeightPx = it.height }
+                .testTag("native-home-header")
+                .clip(HomeHeaderShape).background(
                 Brush.verticalGradient(
                     colors = listOf(Color(0xFF2F1A77), EmeraldDark, Color(0xFF5B36D2)),
                 ),
             ),
         ) {
             Box(
-                Modifier.fillMaxSize().background(
+                Modifier.matchParentSize().background(
                     Brush.radialGradient(
                         colors = listOf(Color(0xFF9D83FF).copy(alpha = .32f), Color.Transparent),
                         radius = 620f,
@@ -2620,8 +3476,8 @@ private fun HomeFeed(
         }
 
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 264.dp, bottom = 28.dp),
+            modifier = Modifier.fillMaxSize().testTag("native-home-feed"),
+            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = feedTopPadding, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item { PriorityCard(workspace.tasks.firstOrNull()) }
@@ -2751,9 +3607,42 @@ private fun AttendanceValue(label: String, value: String) {
 @Composable
 private fun ModulesScreen(
     services: List<NativeServiceEntry>,
+    branchContext: SessionBranchContext,
+    onChangeBranch: () -> Unit,
     onOpen: (NativeDestination) -> Unit,
 ) {
     AppListScaffold("الخدمات", "${services.size} متاحة") {
+        if (branchContext.principal.canSelectBranch) {
+            item {
+                Surface(
+                    modifier = Modifier.fillMaxWidth()
+                        .testTag("session-branch-switcher")
+                        .clickable(role = Role.Button, onClick = onChangeBranch),
+                    shape = RoundedCornerShape(22.dp),
+                    color = Mint,
+                    contentColor = EmeraldDark,
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(Icons.Rounded.BusinessCenter, null)
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                branchContext.selectedBranch?.name ?: "اختر الفرع",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            branchContext.selectedBranch?.code?.let { code ->
+                                Text(code, style = MaterialTheme.typography.bodyMedium, color = MutedInk)
+                            }
+                        }
+                        Icon(Icons.Rounded.ChevronLeft, null)
+                    }
+                }
+            }
+        }
         itemsIndexed(services.chunked(2)) { rowIndex, pair ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 pair.forEachIndexed { columnIndex, service ->

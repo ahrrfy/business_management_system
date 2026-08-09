@@ -1,6 +1,8 @@
 package online.alarabiya.superapp.feature.inventory
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -58,6 +60,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -206,15 +209,33 @@ fun InventoryScreen(
         if (state.initializing) LinearProgressIndicator(Modifier.fillMaxWidth())
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val tablet = maxWidth >= 840.dp
-            when (state.section) {
-                InventorySection.BALANCES -> BalancesPane(state, capabilities, actions, tablet)
-                InventorySection.MOVEMENTS -> MovementsPane(state, actions)
-                InventorySection.TRANSFERS -> TransfersPane(state, capabilities, actions, tablet)
-                InventorySection.ADJUSTMENTS -> AdjustmentsPane(state, capabilities, actions)
-                InventorySection.STOCKTAKES -> StocktakesPane(state, capabilities, actions, tablet)
-                InventorySection.MY_COUNTS -> CountPane(state, actions, tablet)
+            if (!state.isFresh(state.section)) {
+                InventoryLoadGate(
+                    section = state.section,
+                    wasLoaded = state.isLoaded(state.section),
+                    outcomeUnknown = state.section in state.outcomeUnknownSections,
+                    retryEnabled = !state.initializing && state.busyKey == null,
+                    retry = actions.refresh,
+                )
+            } else {
+                Box(Modifier.fillMaxSize().alpha(if (state.busyKey == null) 1f else .58f)) {
+                    when (state.section) {
+                        InventorySection.BALANCES -> BalancesPane(state, capabilities, actions, tablet)
+                        InventorySection.MOVEMENTS -> MovementsPane(state, actions)
+                        InventorySection.TRANSFERS -> TransfersPane(state, capabilities, actions, tablet)
+                        InventorySection.ADJUSTMENTS -> AdjustmentsPane(state, capabilities, actions)
+                        InventorySection.STOCKTAKES -> StocktakesPane(state, capabilities, actions, tablet)
+                        InventorySection.MY_COUNTS -> CountPane(state, actions, tablet)
+                    }
+                }
             }
             state.busyKey?.let {
+                Box(
+                    Modifier.matchParentSize().clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {},
+                )
                 Surface(
                     modifier = Modifier.align(Alignment.BottomCenter).padding(18.dp),
                     color = MaterialTheme.colorScheme.inverseSurface,
@@ -224,6 +245,55 @@ fun InventoryScreen(
                     Row(Modifier.padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(10.dp)); Text("جارٍ مزامنة البيانات", color = MaterialTheme.colorScheme.inverseOnSurface)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InventoryLoadGate(
+    section: InventorySection,
+    wasLoaded: Boolean,
+    outcomeUnknown: Boolean,
+    retryEnabled: Boolean,
+    retry: () -> Unit,
+) {
+    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .72f),
+            shape = RoundedCornerShape(28.dp),
+        ) {
+            Column(
+                Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(Icons.Rounded.ErrorOutline, null, tint = Warning)
+                Text(
+                    when {
+                        outcomeUnknown -> "نتيجة عملية غير محسومة"
+                        wasLoaded -> "تحتاج البيانات إلى تحديث"
+                        else -> "تعذر تحميل ${section.label()}"
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    if (outcomeUnknown) {
+                        "أُوقفت إجراءات هذا القسم لمنع التكرار. تحقق من النظام ثم أعد فتح مساحة المخزون."
+                    } else {
+                        "لا يمكن تنفيذ إجراءات على بيانات غير محدثة."
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!outcomeUnknown) {
+                    Button(onClick = retry, enabled = retryEnabled) {
+                        Icon(Icons.Rounded.Refresh, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("إعادة المحاولة")
                     }
                 }
             }
@@ -256,26 +326,54 @@ private fun InventoryHeader(capabilities: InventoryCapabilities, state: Inventor
 
 @Composable
 private fun BalancesPane(state: InventoryUiState, capabilities: InventoryCapabilities, actions: InventoryActions, tablet: Boolean) {
-    val low = state.balances.count { it.isLow }
+    val visibleBalances = state.visibleBalances
+    val low = visibleBalances.count { it.isLow }
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             SummaryStrip(
-                listOf("الأصناف" to state.balances.size.toString(), "منخفض" to low.toString(), "الصلاحية" to if (capabilities.canWrite) "كاملة" else "قراءة"),
+                listOf("الأصناف" to visibleBalances.size.toString(), "منخفض" to low.toString(), "الصلاحية" to if (capabilities.canWrite) "كاملة" else "قراءة"),
                 tablet,
             )
         }
         item {
             SearchField(state.balanceQuery, actions.setBalanceQuery, actions.searchBalances, "اسم الصنف أو SKU", NativeScanField.SKU_OR_BARCODE)
             Spacer(Modifier.height(8.dp))
-            FilterChip(selected = state.lowOnly, onClick = actions.toggleLowOnly, label = { Text("دون حد إعادة الطلب") }, leadingIcon = { Icon(Icons.Rounded.FilterAlt, null) })
+            FilterChip(
+                selected = state.lowOnly || state.executiveStockState != null,
+                onClick = actions.toggleLowOnly,
+                label = {
+                    Text(
+                        when (state.executiveStockState) {
+                            ExecutiveStockState.OUT -> "نفد من المخزون"
+                            ExecutiveStockState.LOW -> "دون الحد الأدنى"
+                            null -> "دون حد إعادة الطلب"
+                        },
+                    )
+                },
+                leadingIcon = { Icon(Icons.Rounded.FilterAlt, null) },
+            )
         }
-        if (state.balances.isEmpty()) item { EmptyCard("لا توجد أرصدة مطابقة") }
-        items(state.balances, key = { it.variantId }) { balance -> BalanceCard(balance, capabilities.canWrite, actions) }
+        if (visibleBalances.isEmpty()) item { EmptyCard("لا توجد أرصدة مطابقة") }
+        items(visibleBalances, key = { it.variantId }) { balance ->
+            BalanceCard(
+                item = balance,
+                writable = capabilities.canWrite,
+                adjustmentEnabled = state.isFresh(InventorySection.ADJUSTMENTS),
+                transferEnabled = state.isFresh(InventorySection.TRANSFERS) && state.branchesFresh,
+                actions = actions,
+            )
+        }
     }
 }
 
 @Composable
-private fun BalanceCard(item: StockBalance, writable: Boolean, actions: InventoryActions) {
+private fun BalanceCard(
+    item: StockBalance,
+    writable: Boolean,
+    adjustmentEnabled: Boolean,
+    transferEnabled: Boolean,
+    actions: InventoryActions,
+) {
     OperationalCard(accent = if (item.isLow) Warning else Positive) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
@@ -293,8 +391,14 @@ private fun BalanceCard(item: StockBalance, writable: Boolean, actions: Inventor
         if (writable) {
             Spacer(Modifier.height(12.dp)); HorizontalDivider()
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = { actions.beginAdjustment(item) }) { Icon(Icons.Rounded.EditNote, null); Spacer(Modifier.width(6.dp)); Text("طلب تسوية") }
-                Button(onClick = { actions.beginTransfer(item) }) { Icon(Icons.Rounded.SyncAlt, null); Spacer(Modifier.width(6.dp)); Text("تحويل") }
+                TextButton(
+                    onClick = { actions.beginAdjustment(item) },
+                    enabled = adjustmentEnabled,
+                ) { Icon(Icons.Rounded.EditNote, null); Spacer(Modifier.width(6.dp)); Text("طلب تسوية") }
+                Button(
+                    onClick = { actions.beginTransfer(item) },
+                    enabled = transferEnabled,
+                ) { Icon(Icons.Rounded.SyncAlt, null); Spacer(Modifier.width(6.dp)); Text("تحويل") }
             }
         }
     }
@@ -378,7 +482,13 @@ private fun TransferEditor(state: InventoryUiState, capabilities: InventoryCapab
             EnumFilters(TransferReasons, draft.reason, { actions.updateTransferDraft(draft.copy(reason = it)) }, ::transferReasonLabel)
         }
         item { FormField("ملاحظات", draft.notes, 3) { actions.updateTransferDraft(draft.copy(notes = it)) } }
-        item { Button(onClick = actions.saveTransfer, modifier = Modifier.fillMaxWidth()) { Text("إنشاء سند التحويل") } }
+        item {
+            Button(
+                onClick = actions.saveTransfer,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = state.branchesFresh,
+            ) { Text("إنشاء سند التحويل") }
+        }
     }
 }
 

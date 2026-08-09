@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -36,6 +37,9 @@ import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material.icons.rounded.Devices
+import androidx.compose.material.icons.rounded.DeleteForever
+import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -69,6 +73,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.systemsettings.AdminBranch
+import online.alarabiya.superapp.model.systemsettings.BackupMetadata
 import online.alarabiya.superapp.model.systemsettings.BranchDraft
 import online.alarabiya.superapp.model.systemsettings.BranchType
 import online.alarabiya.superapp.model.systemsettings.ChannelIntegration
@@ -82,7 +87,14 @@ import online.alarabiya.superapp.model.systemsettings.TaxSettings
 import online.alarabiya.superapp.model.systemsettings.TemplateStatus
 import online.alarabiya.superapp.model.systemsettings.TriageMode
 import online.alarabiya.superapp.model.systemsettings.WhatsAppHubSettings
+import online.alarabiya.superapp.model.systemsettings.KioskDevice
+import online.alarabiya.superapp.model.systemsettings.KioskDeviceDraft
 import online.alarabiya.superapp.ui.rtlIsolate
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 private val AdminNavy = Color(0xFF362087)
 private val AdminBlue = Color(0xFF5B36D2)
@@ -112,27 +124,32 @@ fun SystemSettingsScreen(
         if (maxWidth >= 840.dp) {
             Row(Modifier.fillMaxSize().padding(24.dp), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
                 Surface(Modifier.width(284.dp).fillMaxHeight(), shape = RoundedCornerShape(30.dp), color = Color.White) {
-                    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Header(compact = true, loading = state.loading, onRefresh = { actions.refresh(capabilities) })
-                        Spacer(Modifier.height(12.dp))
-                        sections.forEach { section ->
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        item { Header(compact = true, loading = state.loading, canRefresh = state.busyKey == null && !state.loading, onRefresh = { actions.refresh(capabilities) }) }
+                        item { Spacer(Modifier.height(12.dp)) }
+                        items(sections, key = { it.name }) { section ->
                             FilterChip(
                                 selected = state.section == section,
                                 onClick = { actions.select(section, capabilities) },
+                                enabled = !state.loading && state.busyKey == null,
                                 label = { Text(section.label, modifier = Modifier.fillMaxWidth()) },
                                 leadingIcon = { Icon(section.icon, null) },
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
-                        Spacer(Modifier.weight(1f))
-                        SecurityBoundary()
+                        item { Spacer(Modifier.height(12.dp)) }
+                        item { SecurityBoundary() }
                     }
                 }
                 Content(state, capabilities, actions, Modifier.weight(1f).fillMaxHeight())
             }
         } else {
             Column(Modifier.fillMaxSize()) {
-                Header(compact = false, loading = state.loading, onRefresh = { actions.refresh(capabilities) })
+                Header(compact = false, loading = state.loading, canRefresh = state.busyKey == null && !state.loading, onRefresh = { actions.refresh(capabilities) })
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -141,6 +158,7 @@ fun SystemSettingsScreen(
                         FilterChip(
                             selected = state.section == section,
                             onClick = { actions.select(section, capabilities) },
+                            enabled = !state.loading && state.busyKey == null,
                             label = { Text(section.label) },
                             leadingIcon = { Icon(section.icon, null) },
                         )
@@ -150,21 +168,24 @@ fun SystemSettingsScreen(
             }
         }
     }
+    state.oneTimeKioskToken?.let { secret ->
+        OneTimeKioskTokenDialog(secret.rawToken, actions::acknowledgeKioskToken)
+    }
 }
 
 @Composable
-private fun Header(compact: Boolean, loading: Boolean, onRefresh: () -> Unit) {
+private fun Header(compact: Boolean, loading: Boolean, canRefresh: Boolean, onRefresh: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().background(if (compact) Color.Transparent else Color.White)
             .padding(horizontal = if (compact) 0.dp else 20.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column {
+        Column(Modifier.weight(1f)) {
             Text("مركز إدارة النظام", style = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = AdminNavy)
             Text("التشغيل والتكاملات والحوكمة", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        IconButton(onClick = onRefresh, enabled = !loading) {
+        IconButton(onClick = onRefresh, enabled = canRefresh) {
             if (loading) CircularProgressIndicator(Modifier.width(22.dp), strokeWidth = 2.dp)
             else Icon(Icons.Rounded.Refresh, "تحديث")
         }
@@ -184,15 +205,258 @@ private fun Content(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         state.message?.let { item { Notice(it, error = false) } }
-        state.error?.let { item { Notice(it, error = true) } }
-        when (state.section) {
-            SystemSettingsSection.Overview -> overviewItems(state)
-            SystemSettingsSection.Branches -> branchItems(state, capabilities, actions)
-            SystemSettingsSection.Integrations -> integrationItems(state, capabilities, actions)
-            SystemSettingsSection.WhatsApp -> whatsAppItems(state, capabilities, actions)
-            SystemSettingsSection.Governance -> governanceItems(state, capabilities, actions)
+        if (requiresSystemSectionLoadGate(state)) {
+            item { SystemSectionLoadGate(state, onRetry = { actions.refresh(capabilities) }) }
+        } else {
+            state.error?.let { item { Notice(it, error = true) } }
+            when (state.section) {
+                SystemSettingsSection.Overview -> overviewItems(state)
+                SystemSettingsSection.Backups -> backupItems(state, capabilities, actions)
+                SystemSettingsSection.Branches -> branchItems(state, capabilities, actions)
+                SystemSettingsSection.KioskDevices -> item { KioskDevicesPanel(state, capabilities, actions) }
+                SystemSettingsSection.Integrations -> integrationItems(state, capabilities, actions)
+                SystemSettingsSection.WhatsApp -> whatsAppItems(state, capabilities, actions)
+                SystemSettingsSection.Governance -> governanceItems(state, capabilities, actions)
+            }
         }
         item { Spacer(Modifier.height(20.dp)) }
+    }
+}
+
+@Composable
+private fun SystemSectionLoadGate(state: SystemSettingsUiState, onRetry: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.White,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 14.dp, bottomStart = 14.dp, bottomEnd = 28.dp),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (state.loading) {
+                CircularProgressIndicator()
+                Text("جارٍ تحميل البيانات المحدثة…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Icon(Icons.Rounded.Warning, null, tint = MaterialTheme.colorScheme.error)
+                Text(state.error ?: "لم تُحمّل بيانات هذا القسم.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(onClick = onRetry) {
+                    Icon(Icons.Rounded.Refresh, null)
+                    Spacer(Modifier.width(7.dp))
+                    Text("إعادة المحاولة")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KioskDevicesPanel(
+    state: SystemSettingsUiState,
+    capabilities: SystemSettingsCapabilities,
+    actions: SystemSettingsViewModel,
+) {
+    var create by rememberSaveable { mutableStateOf(false) }
+    var branchId by rememberSaveable { mutableLongStateOf(0L) }
+    var label by rememberSaveable { mutableStateOf("") }
+    var pendingRotate by remember { mutableStateOf<KioskDevice?>(null) }
+    var pendingActive by remember { mutableStateOf<KioskDevice?>(null) }
+    var pendingRemove by remember { mutableStateOf<KioskDevice?>(null) }
+    val loaded = SystemSettingsSection.KioskDevices in state.loaded
+    AdminCard("أجهزة قارئ الأسعار", Icons.Rounded.Devices) {
+        Text("إدارة أجهزة العرض المرتبطة بفروع الشركة.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Button(
+            onClick = { create = true },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = loaded && !state.loading && state.busyKey == null && capabilities.canManageKioskDevices,
+        ) { Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(7.dp)); Text("إضافة جهاز") }
+        when {
+            state.loading && !loaded -> Row(Modifier.fillMaxWidth(), Arrangement.Center) { CircularProgressIndicator() }
+            state.error != null && !loaded -> OutlinedButton(
+                onClick = { actions.refresh(capabilities) }, modifier = Modifier.fillMaxWidth(), enabled = !state.loading,
+            ) { Icon(Icons.Rounded.Refresh, null); Spacer(Modifier.width(7.dp)); Text("إعادة المحاولة") }
+            loaded && state.kioskDevices.isEmpty() -> Surface(color = AdminCanvas, shape = RoundedCornerShape(18.dp)) {
+                Text("لا توجد أجهزة مسجلة.", Modifier.fillMaxWidth().padding(18.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            loaded -> FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                state.kioskDevices.forEach { device ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().widthIn(max = 360.dp), color = AdminCanvas,
+                        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 12.dp, bottomStart = 12.dp, bottomEnd = 26.dp),
+                    ) {
+                        Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(device.label, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                                    Text(device.branchName ?: "فرع #${device.branchId}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Surface(color = if (device.active) AdminMint else MaterialTheme.colorScheme.errorContainer, shape = CircleShape) {
+                                    Text(if (device.active) "نشط" else "ملغى", Modifier.padding(horizontal = 9.dp, vertical = 5.dp), style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                            ValueLine("بادئة الرمز", rtlIsolate(device.tokenPrefix))
+                            ValueLine("آخر اتصال", device.lastSeenAt?.let(::backupDisplayTime) ?: "لم يتصل")
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                                OutlinedButton({ pendingRotate = device }, Modifier.weight(1f), enabled = state.busyKey == null) { Icon(Icons.Rounded.Key, null); Text(" تدوير") }
+                                OutlinedButton({ pendingActive = device }, Modifier.weight(1f), enabled = state.busyKey == null) { Text(if (device.active) "إلغاء" else "تفعيل") }
+                                IconButton({ pendingRemove = device }, enabled = state.busyKey == null) { Icon(Icons.Rounded.DeleteForever, "حذف", tint = MaterialTheme.colorScheme.error) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (create) AlertDialog(
+        onDismissRequest = { create = false },
+        title = { Text("إضافة جهاز قارئ أسعار") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Text("اختر الفرع")
+            state.branches.filter { it.active }.forEach { branch -> FilterChip(branchId == branch.id, { branchId = branch.id }, { Text(branch.name) }) }
+            OutlinedTextField(label, { label = it.take(120) }, label = { Text("اسم الجهاز") }, modifier = Modifier.fillMaxWidth())
+        } },
+        confirmButton = { Button({ create = false; actions.createKioskDevice(KioskDeviceDraft(branchId, label), capabilities) }, enabled = KioskDeviceDraft(branchId, label).validate() == null) { Text("إنشاء") } },
+        dismissButton = { OutlinedButton({ create = false }) { Text("رجوع") } },
+    )
+    pendingRotate?.let { device -> ConfirmDialog("تدوير رمز ${device.label}؟", "سيُبطل الرمز السابق فوراً ويظهر الرمز الجديد مرة واحدة فقط.", { pendingRotate = null }, { pendingRotate = null; actions.rotateKioskDevice(device, capabilities) }) }
+    pendingActive?.let { device -> ConfirmDialog(if (device.active) "إلغاء الجهاز؟" else "تفعيل الجهاز؟", if (device.active) "سيُبطل رمز الجهاز فوراً." else "سيُعاد السماح للجهاز بالاتصال.", { pendingActive = null }, { pendingActive = null; actions.setKioskDeviceActive(device, !device.active, capabilities) }) }
+    pendingRemove?.let { device -> ConfirmDialog("حذف ${device.label} نهائياً؟", "لن يمكن التراجع، وسيُبطل وصول الجهاز فوراً.", { pendingRemove = null }, { pendingRemove = null; actions.removeKioskDevice(device, capabilities) }) }
+}
+
+@Composable
+private fun OneTimeKioskTokenDialog(rawToken: String, onAcknowledge: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text("رمز تسجيل لمرة واحدة", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("احفظ الرمز الآن في قناة تشغيل آمنة. لن يظهر مرة أخرى بعد الإقرار.")
+                Surface(color = AdminCanvas, shape = RoundedCornerShape(14.dp)) {
+                    Text(rtlIsolate(rawToken), Modifier.fillMaxWidth().padding(14.dp), fontWeight = FontWeight.Bold)
+                }
+            }
+        },
+        confirmButton = { Button(onAcknowledge) { Text("تم الحفظ — إخفاء الرمز") } },
+    )
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.backupItems(
+    state: SystemSettingsUiState,
+    capabilities: SystemSettingsCapabilities,
+    actions: SystemSettingsViewModel,
+) {
+    item {
+        BackupPanel(state, capabilities, actions)
+    }
+}
+
+@Composable
+private fun BackupPanel(
+    state: SystemSettingsUiState,
+    capabilities: SystemSettingsCapabilities,
+    actions: SystemSettingsViewModel,
+) {
+    var confirmCreate by rememberSaveable { mutableStateOf(false) }
+    val creating = state.busyKey == "backup:create"
+    AdminCard("النسخ الاحتياطي التشغيلي", Icons.Rounded.CloudDone) {
+        Text(
+            "نسخ الخادم الجاهزة للحماية التشغيلية.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(
+            onClick = { confirmCreate = true },
+            enabled = canCreateOperationalBackup(state, capabilities),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (creating) {
+                CircularProgressIndicator(Modifier.width(20.dp), strokeWidth = 2.dp, color = Color.White)
+                Spacer(Modifier.width(8.dp))
+                Text("جارٍ إنشاء النسخة")
+            } else {
+                Text("إنشاء نسخة الآن")
+            }
+        }
+
+        when {
+            state.loading && !state.backupCatalogReady -> {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(Modifier.width(28.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text("جارٍ تحميل سجل النسخ")
+                }
+            }
+            state.error != null && !state.backupCatalogReady -> {
+                Notice(state.error, error = true)
+                OutlinedButton(
+                    onClick = { actions.refresh(capabilities) },
+                    enabled = !state.loading && state.busyKey == null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Rounded.Refresh, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("إعادة المحاولة")
+                }
+            }
+            state.backupCatalogReady && state.backups.isEmpty() -> {
+                Surface(color = AdminCanvas, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "لا توجد نسخ احتياطية حتى الآن.",
+                        Modifier.padding(18.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            state.backupCatalogReady -> BackupGrid(state.backups)
+        }
+        BoundaryText(NativeSystemSettingsBoundaries.MAINTENANCE)
+    }
+    if (confirmCreate) {
+        ConfirmDialog(
+            title = "إنشاء نسخة احتياطية الآن؟",
+            body = "سينشئ الخادم نسخة تشغيلية جديدة ويسجل العملية في سجل التدقيق.",
+            onDismiss = { confirmCreate = false },
+            onConfirm = {
+                confirmCreate = false
+                actions.createBackup(capabilities)
+            },
+        )
+    }
+}
+
+@Composable
+private fun BackupGrid(backups: List<BackupMetadata>) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val columns = if (maxWidth >= 720.dp) 2 else 1
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            backups.chunked(columns).forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    row.forEach { backup -> BackupMetadataCard(backup, Modifier.weight(1f)) }
+                    if (row.size < columns) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BackupMetadataCard(backup: BackupMetadata, modifier: Modifier = Modifier) {
+    Surface(modifier = modifier, color = AdminCanvas, shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Text(
+                rtlIsolate(backup.name),
+                fontWeight = FontWeight.Bold,
+                color = AdminNavy,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            ValueLine("الحجم", formatBackupSize(backup.sizeKb))
+            ValueLine("تاريخ الإنشاء", backupDisplayTime(backup.createdAt)?.let(::rtlIsolate) ?: "غير متاح")
+        }
     }
 }
 
@@ -229,21 +493,22 @@ private fun androidx.compose.foundation.lazy.LazyListScope.branchItems(
     capabilities: SystemSettingsCapabilities,
     actions: SystemSettingsViewModel,
 ) {
-    item { BranchEditor(capabilities, actions) }
-    items(state.branches, key = { it.id }) { branch -> BranchRow(branch, capabilities, state.busyKey, actions) }
+    val canWrite = canMutateLoadedSystemSection(state) && capabilities.canManageBranches
+    item { BranchEditor(canWrite, capabilities, actions) }
+    items(state.branches, key = { it.id }) { branch -> BranchRow(branch, canWrite, capabilities, state.busyKey, actions) }
 }
 
 @Composable
-private fun BranchEditor(capabilities: SystemSettingsCapabilities, actions: SystemSettingsViewModel) {
+private fun BranchEditor(canWrite: Boolean, capabilities: SystemSettingsCapabilities, actions: SystemSettingsViewModel) {
     var open by rememberSaveable { mutableStateOf(false) }
-    OutlinedButton(onClick = { open = true }, enabled = capabilities.canManageBranches, modifier = Modifier.fillMaxWidth()) {
+    OutlinedButton(onClick = { open = true }, enabled = canWrite, modifier = Modifier.fillMaxWidth()) {
         Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(8.dp)); Text("إضافة فرع")
     }
     if (open) BranchDialog(null, onDismiss = { open = false }) { actions.saveBranch(it, capabilities); open = false }
 }
 
 @Composable
-private fun BranchRow(branch: AdminBranch, capabilities: SystemSettingsCapabilities, busyKey: String?, actions: SystemSettingsViewModel) {
+private fun BranchRow(branch: AdminBranch, canWrite: Boolean, capabilities: SystemSettingsCapabilities, busyKey: String?, actions: SystemSettingsViewModel) {
     var edit by remember { mutableStateOf(false) }
     var confirmActive by remember { mutableStateOf<Boolean?>(null) }
     AdminCard(branch.name, Icons.Rounded.Business) {
@@ -255,8 +520,8 @@ private fun BranchRow(branch: AdminBranch, capabilities: SystemSettingsCapabilit
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedButton(onClick = { edit = true }, enabled = capabilities.canManageBranches && busyKey == null) { Icon(Icons.Rounded.Edit, null); Text("تعديل") }
-            OutlinedButton(onClick = { confirmActive = !branch.active }, enabled = capabilities.canManageBranches && busyKey == null) {
+            OutlinedButton(onClick = { edit = true }, enabled = canWrite && busyKey == null) { Icon(Icons.Rounded.Edit, null); Text("تعديل") }
+            OutlinedButton(onClick = { confirmActive = !branch.active }, enabled = canWrite && busyKey == null) {
                 Icon(Icons.Rounded.PowerSettingsNew, null); Text(if (branch.active) "تعطيل" else "تفعيل")
             }
         }
@@ -318,7 +583,7 @@ private fun NewIntegration(state: SystemSettingsUiState, capabilities: SystemSet
     var open by rememberSaveable { mutableStateOf(false) }
     OutlinedButton(
         onClick = { open = true },
-        enabled = capabilities.canManageIntegrations && state.crypto?.ready == true && state.branches.any { it.active },
+        enabled = capabilities.canManageIntegrations && state.crypto?.ready == true && state.branches.any { it.active } && state.busyKey == null,
         modifier = Modifier.fillMaxWidth(),
     ) { Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(8.dp)); Text("تهيئة قناة جديدة") }
     if (open) NewIntegrationDialog(state.branches.filter { it.active }, { open = false }) {
@@ -589,16 +854,38 @@ private fun AdminCard(title: String, icon: ImageVector, content: @Composable Col
 
 private val SystemSettingsSection.label: String get() = when (this) {
     SystemSettingsSection.Overview -> "الحالة"
+    SystemSettingsSection.Backups -> "النسخ الاحتياطي"
     SystemSettingsSection.Branches -> "الفروع"
+    SystemSettingsSection.KioskDevices -> "قارئ الأسعار"
     SystemSettingsSection.Integrations -> "التكاملات"
     SystemSettingsSection.WhatsApp -> "WhatsApp"
     SystemSettingsSection.Governance -> "الحوكمة"
 }
 private val SystemSettingsSection.icon: ImageVector get() = when (this) {
     SystemSettingsSection.Overview -> Icons.Rounded.Settings
+    SystemSettingsSection.Backups -> Icons.Rounded.CloudDone
     SystemSettingsSection.Branches -> Icons.Rounded.Business
+    SystemSettingsSection.KioskDevices -> Icons.Rounded.Devices
     SystemSettingsSection.Integrations -> Icons.Rounded.Hub
     SystemSettingsSection.WhatsApp -> Icons.AutoMirrored.Rounded.Chat
     SystemSettingsSection.Governance -> Icons.Rounded.Gavel
 }
 private val TriageMode.label: String get() = when (this) { TriageMode.AUTO_ALL -> "تلقائي"; TriageMode.KEYWORD_ONLY -> "كلمات"; TriageMode.MANUAL -> "يدوي" }
+
+internal fun backupDisplayTime(
+    raw: String,
+    zoneId: ZoneId = ZoneId.of("Asia/Baghdad"),
+): String? {
+    val instant = runCatching { Instant.parse(raw) }
+        .recoverCatching { OffsetDateTime.parse(raw).toInstant() }
+        .getOrNull() ?: return null
+    return DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ"))
+        .withZone(zoneId)
+        .format(instant)
+}
+
+private fun formatBackupSize(sizeKb: Long): String = when {
+    sizeKb >= 1024L * 1024L -> String.format(Locale.US, "%.1f GB", sizeKb / (1024.0 * 1024.0))
+    sizeKb >= 1024L -> String.format(Locale.US, "%.1f MB", sizeKb / 1024.0)
+    else -> "$sizeKb KB"
+}

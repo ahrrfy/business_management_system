@@ -2,6 +2,7 @@ package online.alarabiya.superapp.data
 
 import online.alarabiya.superapp.core.network.TrpcClient
 import online.alarabiya.superapp.model.systemsettings.AdminBranch
+import online.alarabiya.superapp.model.systemsettings.BackupMetadata
 import online.alarabiya.superapp.model.systemsettings.BranchDraft
 import online.alarabiya.superapp.model.systemsettings.ChannelIntegration
 import online.alarabiya.superapp.model.systemsettings.IntegrationCryptoStatus
@@ -16,6 +17,9 @@ import online.alarabiya.superapp.model.systemsettings.TaxSettings
 import online.alarabiya.superapp.model.systemsettings.TemplateSyncResult
 import online.alarabiya.superapp.model.systemsettings.WhatsAppHubSettings
 import online.alarabiya.superapp.model.systemsettings.WhatsAppTemplate
+import online.alarabiya.superapp.model.systemsettings.KioskDevice
+import online.alarabiya.superapp.model.systemsettings.KioskDeviceDraft
+import online.alarabiya.superapp.model.systemsettings.OneTimeKioskToken
 import org.json.JSONObject
 
 interface SystemSettingsDataSource {
@@ -33,11 +37,18 @@ interface SystemSettingsDataSource {
     suspend fun updateWhatsAppHub(settings: WhatsAppHubSettings)
     suspend fun health(): SystemHealth
     suspend fun systemInfo(): SafeSystemInfo
+    suspend fun backups(): List<BackupMetadata>
+    suspend fun backupNow(): BackupMetadata
     suspend fun taxSettings(): TaxSettings
     suspend fun updateTaxSettings(settings: TaxSettings)
     suspend fun openingMode(): OpeningMode
     suspend fun openingProgress(): List<OpeningProgress>
     suspend fun updateOpeningMode(mode: OpeningMode)
+    suspend fun kioskDevices(): List<KioskDevice>
+    suspend fun createKioskDevice(draft: KioskDeviceDraft): OneTimeKioskToken
+    suspend fun rotateKioskDevice(id: Long): OneTimeKioskToken
+    suspend fun setKioskDeviceActive(id: Long, active: Boolean)
+    suspend fun removeKioskDevice(id: Long)
 }
 
 class SystemSettingsRepository(private val api: TrpcClient) : SystemSettingsDataSource {
@@ -59,6 +70,36 @@ class SystemSettingsRepository(private val api: TrpcClient) : SystemSettingsData
     override suspend fun setBranchActive(id: Long, active: Boolean) {
         require(id > 0) { "معرّف الفرع غير صالح" }
         api.mutate("branches.setActive", JSONObject().put("id", id).put("isActive", active))
+    }
+
+    override suspend fun kioskDevices(): List<KioskDevice> =
+        SystemSettingsMappers.kioskDevices(api.queryArray("kiosk.devices.list"))
+
+    override suspend fun createKioskDevice(draft: KioskDeviceDraft): OneTimeKioskToken {
+        draft.validate()?.let { throw IllegalArgumentException(it) }
+        val response = api.mutate(
+            "kiosk.devices.create",
+            JSONObject().put("branchId", draft.branchId).put("label", draft.label.trim()),
+        )
+        return SystemSettingsMappers.oneTimeKioskToken(response)
+    }
+
+    override suspend fun rotateKioskDevice(id: Long): OneTimeKioskToken {
+        require(id > 0) { "معرّف الجهاز غير صالح" }
+        return SystemSettingsMappers.oneTimeKioskToken(
+            api.mutate("kiosk.devices.rotate", JSONObject().put("id", id)),
+            fallbackDeviceId = id,
+        )
+    }
+
+    override suspend fun setKioskDeviceActive(id: Long, active: Boolean) {
+        require(id > 0) { "معرّف الجهاز غير صالح" }
+        api.mutate("kiosk.devices.setActive", JSONObject().put("id", id).put("active", active))
+    }
+
+    override suspend fun removeKioskDevice(id: Long) {
+        require(id > 0) { "معرّف الجهاز غير صالح" }
+        api.mutate("kiosk.devices.remove", JSONObject().put("id", id))
     }
 
     override suspend fun cryptoStatus() = SystemSettingsMappers.crypto(api.query("integrations.cryptoReady"))
@@ -122,6 +163,10 @@ class SystemSettingsRepository(private val api: TrpcClient) : SystemSettingsData
 
     override suspend fun health() = SystemSettingsMappers.health(api.query("system.health"))
     override suspend fun systemInfo() = SystemSettingsMappers.safeSystemInfo(api.query("system.systemInfo"))
+    override suspend fun backups() = SystemSettingsMappers.backups(api.query("system.listBackups"))
+    override suspend fun backupNow(): BackupMetadata = requireNotNull(
+        SystemSettingsMappers.createdBackup(api.mutate("system.backupNow")),
+    ) { "لم يؤكد الخادم إنشاء ملف النسخة الاحتياطية" }
     override suspend fun taxSettings() = SystemSettingsMappers.tax(api.query("system.getTaxSettings"))
 
     override suspend fun updateTaxSettings(settings: TaxSettings) {

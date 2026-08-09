@@ -1,11 +1,12 @@
 // FI-02 الإهلاك الشهري: يُرحّل إهلاك شهرٍ واحد لكل أصل غير مُستبعَد (نهج catch-up + idempotent).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { eq, notInArray } from "drizzle-orm";
+import { and, eq, notInArray } from "drizzle-orm";
 import { fixedAssets } from "../../../drizzle/schema";
 import { postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { type Actor, requireDb, withTx } from "../tx";
+import { companyBranchScope } from "../companyBranchScope";
 import { computeDepreciation } from "./depreciation";
 import { loadForUpdate } from "./helpers";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -25,6 +26,7 @@ export interface DepreciationRunResult {
  * dedupeKey DEPR:<id>:<YYYY-MM> فريد ⇒ إعادة التشغيل لا تُكرّر القيد ولا المتراكم.
  */
 export async function postMonthlyDepreciation(year: number, month: number, actor: Actor): Promise<DepreciationRunResult> {
+  const scope = companyBranchScope(actor);
   const period = `${year}-${String(month).padStart(2, "0")}`;
   // صمّام (تدقيق ١٧/٧): يُمنع ترحيل إهلاك شهرٍ مستقبليّ. نهج catch-up كان يرحّل كامل الإهلاك المتبقّي
   // لكل الأصول دفعةً واحدة بقيود مؤرَّخة مستقبلاً عند خطأ كتابيّ في السنة (كان input.year يقبل حتى 2200).
@@ -43,13 +45,17 @@ export async function postMonthlyDepreciation(year: number, month: number, actor
   const db = requireDb();
   // #3 (تدقيق التثبيت): استبعاد 'retired' كـ'disposed' — الأصل المشطوب جُمِّد إهلاكه المتراكم وسُجِّلت
   // بقيّته خسارةً، فمواصلة إهلاكه تُكرّر الشطب (خسارة عند الشطب + إهلاك لاحق). كامن حتى تُوصَل postDepreciation.
-  const rows = await db.select({ id: fixedAssets.id }).from(fixedAssets).where(notInArray(fixedAssets.status, ["disposed", "retired"]));
+  const statusScope = notInArray(fixedAssets.status, ["disposed", "retired"]);
+  const rows = await db
+    .select({ id: fixedAssets.id })
+    .from(fixedAssets)
+    .where(scope.branchId == null ? statusScope : and(statusScope, eq(fixedAssets.branchId, scope.branchId)));
 
   let posted = 0;
   let total = new Decimal(0);
   for (const { id } of rows) {
     const dep = await withTx(async (tx) => {
-      const a = await loadForUpdate(tx, id);
+      const a = await loadForUpdate(tx, id, scope);
       if (a.status === "disposed" || a.status === "retired") return new Decimal(0);
       const target = money(
         computeDepreciation(

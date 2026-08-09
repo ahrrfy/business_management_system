@@ -25,6 +25,10 @@ const { resolveBridgeConfig } = await tsImport(
   "../server/services/hrDevices/types.ts",
   import.meta.url,
 );
+const { assertEnabledDeviceIdentityReadiness } = await tsImport(
+  "../server/services/hrDeviceService.ts",
+  import.meta.url,
+);
 
 const cfg = resolveBridgeConfig();
 if (!cfg.enabled) {
@@ -32,6 +36,16 @@ if (!cfg.enabled) {
     "hrDevices: عامل الجسر غير مفعّل (اضبط HR_DEVICE_BRIDGE=1 أو HR_DEVICE_PORT)",
   );
   process.exit(0);
+}
+
+try {
+  await assertEnabledDeviceIdentityReadiness();
+} catch (error) {
+  logger.error(
+    { err: error },
+    "hrDevices: فشل تدقيق ربط هويات الأجهزة المفعّلة قبل فتح المنفذ",
+  );
+  process.exit(1);
 }
 
 const bridge = startHrDeviceBridge(cfg.port);

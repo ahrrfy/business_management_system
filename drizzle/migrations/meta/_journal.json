@@ -1163,6 +1163,13 @@
       "when": 1787879419000,
       "tag": "0166_courier_delivered_at",
       "breakpoints": true
+    },
+    {
+      "idx": 167,
+      "version": "5",
+      "when": 1787879420000,
+      "tag": "0167_credit_approval_branch_scope",
+      "breakpoints": true
     }
   ]
 }
