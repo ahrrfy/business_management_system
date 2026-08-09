@@ -28,6 +28,7 @@ import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import CustomerPicker from "@/components/CustomerPicker";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import {
   Dialog,
   DialogContent,
@@ -601,7 +602,7 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
                 </div>
                 <div className="space-y-1">
                   <Label>هاتف مرجعي</Label>
-                  <input className={dlgInput} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} />
+                  <IntlPhoneInput value={form.contactPhone} onChange={(v) => setForm({ ...form, contactPhone: v })} />
                 </div>
               </div>
             </div>
@@ -921,7 +922,7 @@ function OrdersTable({
         if (o.status === "DELIVERED" || o.status === "CANCELLED") return <span className="text-muted-foreground">—</span>;
         const due = positiveDiff(o.salePrice, o.deposit ?? 0);
         return (
-          <span dir="ltr" className={`tabular-nums font-medium ${due.gt(0) ? "text-amber-600" : "text-emerald-600"}`}>
+          <span dir="ltr" className={`tabular-nums font-medium ${due.gt(0) ? "text-stock-low" : "text-money-positive"}`}>
             {fmtAr(due.toFixed(2))}
           </span>
         );
