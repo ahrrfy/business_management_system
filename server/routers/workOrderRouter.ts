@@ -21,6 +21,7 @@ import {
   deliverWorkOrder,
   markWorkOrderReady,
   startWorkOrder,
+  updateWorkOrder,
   updateWorkOrderDeliveryMethod,
 } from "../services/workOrderService";
 import { logAudit } from "../services/auditService";
@@ -421,6 +422,9 @@ export const workOrderRouter = router({
           customerId: workOrders.customerId,
           customerName: customers.name,
           customerPhone: sql<string | null>`COALESCE(NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+          // زبون عابر بلا سجلّ عميل — مرجعٌ نصّيّ فقط (يلزم شاشة التعديل لعرضه/تصحيحه).
+          contactName: workOrders.contactName,
+          contactPhone: workOrders.contactPhone,
           baseVariantId: workOrders.baseVariantId,
           materialsCost: workOrders.materialsCost,
           laborCost: workOrders.laborCost,
@@ -810,6 +814,44 @@ export const workOrderRouter = router({
         newValue: { hasDelivery: input.hasDelivery },
       });
       return res;
+    }),
+
+  /**
+   * تصحيح تفاصيل طلبٍ لم يُسلَّم بعد (سعر/عنوان/تخصيص/عميل/موعد/أولوية/قناة) — مديرٌ فأعلى فقط
+   * (نمط cancel/assign: أثرٌ مالي يستحقّ نفس مستوى الثقة). الكمية والمواد خارج النطاق عمداً —
+   * تغييرها بعد بدء التنفيذ يستلزم عكس حركة مخزون. الخدمة ترفض تحت DELIVERED/CANCELLED وتمنع
+   * خفض السعر دون العربون المقبوض سلفاً.
+   */
+  update: workordersManagerProcedure
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        title: z.string().trim().min(1).max(255).optional(),
+        customizationText: z.string().max(5000).nullish(),
+        salePrice: positiveMoneyString.optional(),
+        dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+        priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
+        customerId: z.number().int().positive().nullish(),
+        contactName: z.string().trim().max(255).nullish(),
+        contactPhone: z.string().trim().max(32).nullish(),
+        receptionChannel: z.enum(["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE", "OTHER"]).nullish(),
+        channelHandle: z.string().max(120).nullish(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { workOrderId, ...fields } = input;
+      const res = await updateWorkOrder(
+        { workOrderId, ...fields },
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role }
+      );
+      await logAudit(ctx, {
+        action: "workOrder.update",
+        entityType: "workOrder",
+        entityId: workOrderId,
+        oldValue: res.before,
+        newValue: res.patch,
+      });
+      return { ok: true, workOrderId };
     }),
 
   /**
