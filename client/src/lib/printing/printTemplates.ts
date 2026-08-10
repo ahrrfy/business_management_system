@@ -322,6 +322,7 @@ export interface WorkOrderPrintData {
   woDate?: string | null;
   dueDate?: string | null;
   status?: string | null;
+  employeeName?: string | null;
   customerName?: string | null;
   contactPerson?: string | null;
   customerPhone?: string | null;
@@ -362,6 +363,7 @@ export function printWorkOrder(d: WorkOrderPrintData): void {
     statusColor,
     customerName: d.customerName,
     customerPhone: d.customerPhone,
+    employeeName: d.employeeName,
     jobType: d.jobType,
     jobSpecs: d.specs,
     items: d.items.map((it) => ({
@@ -1032,6 +1034,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
     d.dueDate    ? ['موعد التسليم', esc(d.dueDate)]       : null,
     d.customerName  ? ['العميل', esc(d.customerName)]     : null,
     d.customerPhone ? ['الهاتف', esc(d.customerPhone)]    : null,
+    d.employeeName  ? ['الموظف', esc(d.employeeName)]      : null,
     d.status        ? ['الحالة', statusLabel]              : null,
   ].filter(Boolean) as [string, string][];
 
