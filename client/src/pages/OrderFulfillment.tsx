@@ -572,9 +572,13 @@ function DispatchModal({
           إرسال الطلب <span dir="ltr" className="tracking-wider">{order.orderNumber}</span>
         </div>
         <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          سيُنشأ فاتورة بيع بقيمة <b className="text-foreground">{money(order.total)} د.ع</b> على ذمّة{" "}
-          {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"} (تُحصَّل عند
-          التسليم COD)، ويُخصم المخزون، ثم يُسند الطلب للمندوب المُختار.
+          {/* ١٠/٨ تمرير كامل: order.total (بضاعة+شحن) = ما يُحصّله المندوب عند الباب، لا «قيمة
+              الفاتورة/الذمّة» — الفاتورة وذمّة العميل تُنشآن بقيمة البضاعة فقط، وأجرة التوصيل
+              يقبضها المندوب من الزبون ويحتفظ بها (خارج الفاتورة). لا تُلصِق الرقم بـ«فاتورة». */}
+          يُحصّل المندوب <b className="text-foreground">{money(order.total)} د.ع</b> عند التسليم (COD) من{" "}
+          {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"}: قيمة البضاعة
+          تُنشأ فاتورةً على ذمّته ويورّدها للمكتبة، وأجرة التوصيل يحتفظ بها المندوب. يُخصم المخزون ثم يُسند
+          الطلب للمندوب المُختار.
         </p>
 
         {partiesQ.isLoading ? (

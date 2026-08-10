@@ -284,17 +284,22 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect(await customerBalance(1)).toBe("20.00"); // الذمّة سليمة (لم تُيتَّم)
   });
 
-  it("أجرة الشحن في الفاتورة: invoice.total = subtotal + الأجرة، والمندوب يُحصّل الكامل", async () => {
+  // بيانات **قديمة** سابقة للتمرير الكامل (١٠/٨): الأجرة داخل الفاتورة (deliveryFee>0). هذا
+  // المُهيّئ (shippedOrder) يحقنها عبر createSale مباشرةً متجاوزاً dispatchOnlineOrder الحاليّ
+  // (الذي لم يعد يمرّرها). يبقى انحداراً يضمن معالجة الطلبات القديمة بصحّة: المندوب يحصّل
+  // الكامل ويورّده (الأجرة كانت إيراداً حينها). المسار الجديد (فاتورة بضاعةً فقط) يغطّيه
+  // اختبار «dispatchOnlineOrder (تمرير كامل ١٠/٨)» أدناه.
+  it("بيانات قديمة (أجرة داخل الفاتورة): invoice.total = subtotal + الأجرة، والمندوب يُحصّل الكامل ويورّده", async () => {
     const { partyA } = await seedParties();
-    const o = await shippedOrder(2, "ORD-FEE1", partyA, "3000"); // subtotal 20 + شحن 3000
+    const o = await shippedOrder(2, "ORD-FEE1", partyA, "3000"); // subtotal 20 + شحن 3000 (نمط قديم)
     expect(o.total).toBe("3020.00");
     const inv = await invoice(o.invoiceId);
-    expect(inv.total).toBe("3020.00"); // الأجرة على رأس الفاتورة (لا تُفقَد)
-    expect(await customerBalance(1)).toBe("3020.00"); // AR = order.total
+    expect(inv.total).toBe("3020.00"); // الأجرة على رأس الفاتورة (بيانات قديمة)
+    expect(await customerBalance(1)).toBe("3020.00"); // AR = order.total (قديم)
     const res = await confirmCourierDelivery({ onlineOrderId: o.orderId }, { userId: 3 });
-    expect(res.collected).toBe("3020.00"); // المندوب يُحصّل ما وافق عليه الزبون كاملاً
+    expect(res.collected).toBe("3020.00"); // يُحصّل ما وافق عليه الزبون كاملاً (قديم)
     expect(await customerBalance(1)).toBe("0.00");
-    expect(await partyBalance(partyA)).toBe("3020.00"); // عهدة = الكامل
+    expect(await partyBalance(partyA)).toBe("3020.00"); // عهدة = الكامل (قديم)
     expect((await invoice(o.invoiceId)).status).toBe("PAID");
     await reconcileClean();
   });
