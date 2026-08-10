@@ -90,8 +90,8 @@ async function seed() {
     { variantId: 1, branchId: 2, quantity: 10 },
   ]);
   await d.insert(s.customers).values([
-    { id: 1, name: "زبون ١", defaultPriceTier: "RETAIL", currentBalance: "0" },
-    { id: 2, name: "زبون ٢", defaultPriceTier: "RETAIL", currentBalance: "0" },
+    { id: 1, name: "زبون ١", phone: "+9647700000001", defaultPriceTier: "RETAIL", currentBalance: "0" },
+    { id: 2, name: "زبون ٢", phone: "+9647700000002", defaultPriceTier: "RETAIL", currentBalance: "0" },
   ]);
   // وردية مفتوحة للأدمن (ف١) — للنقد المباشر.
   await d.insert(s.shifts).values({
@@ -399,6 +399,7 @@ describe("workOrder.create — كاشير لا يُنشئ أمر شغل بفرع
     await expect(
       caller.workOrders.create({
         branchId: 1, // ❌ ليس فرع المستخدم
+        customerId: 1,
         title: "بطاقات أعمال",
         quantity: 100,
         salePrice: "50.00",
@@ -412,6 +413,7 @@ describe("workOrder.create — كاشير لا يُنشئ أمر شغل بفرع
     const caller = appRouter.createCaller(makeCtx(await userById(3)));
     const r = await caller.workOrders.create({
       branchId: 2,
+      customerId: 1,
       title: "كروت دعوة",
       quantity: 50,
       salePrice: "75.00",
