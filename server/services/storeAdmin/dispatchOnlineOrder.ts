@@ -14,6 +14,8 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { assertFloatLimit } from "../delivery/parties";
+import { money, round2 } from "../money";
 import { createSale } from "../saleService";
 import { returnSale } from "../returnService";
 import { withTx, type Actor } from "../tx";
@@ -97,6 +99,12 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
   if (!elevated && party.branchId != null && Number(party.branchId) !== actor.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "جهة توصيل تخصّ فرعاً آخر" });
   }
+  // سقف العهدة (مراجعة عدائية ٩/٨): كان مفروضاً على مساري إرسال الاستقبال وحدهما بينما مسار
+  // المتجر يراكم عهدةً بلا حدّ (ترتفع عند تأكيد المندوب). البوّابة الوقائية الصحيحة هنا —
+  // **قبل** خروج البضاعة: نتوقّع كامل قيمة الطلب نقداً بيد المندوب. (عند التأكيد لا حارس:
+  // النقد قُبض فعلاً ورفضُ تسجيله يجعل الدفاتر تكذب.) فحص استرشاديّ بلا قفل — سقفٌ إداريّ
+  // لا ثابت محاسبي، ومساره الحرج (التأكيد) يشتقّ مبلغه من الفاتورة لا من هذا الفحص.
+  assertFloatLimit(party, round2(money(order.total ?? "0")));
 
   // ① الفاتورة + المخزون + القيد عبر createSale (تُعاد لو سبق ربطها — استرداد).
   let invoiceId: number;

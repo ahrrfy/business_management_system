@@ -10,7 +10,7 @@ const pad2 = (n: number) => String(n).padStart(2, "0");
 
 /** يحوّل أي مدخل إلى Date صالح، أو null. تواريخ YYYY-MM-DD البحتة تُفسَّر **محلياً**
  *  (تجنّب انزياح يوم بسبب UTC مع توقيت العراق +3). */
-function toDate(v: DateInput): Date | null {
+export function toDate(v: DateInput): Date | null {
   if (v == null || v === "") return null;
   if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
   if (typeof v === "string") {

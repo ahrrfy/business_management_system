@@ -27,6 +27,7 @@ import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
+import { assertNoInTransitConsignment } from "../services/delivery/guards";
 import { canSeeCostForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
@@ -205,6 +206,11 @@ const salesListInput = z
     // بحث نصّي خادميّ: رقم الفاتورة أو اسم العميل. كان البحث محلّياً على الصفحة المُحمَّلة وحدها
     // (سقف ٢٠٠) ⇒ فاتورة أقدم تُعطي «لا نتائج» وهي موجودة. خادميّ ⇒ يطال كل المطابق للفلتر.
     q: z.string().trim().min(1).optional(),
+    // فلتر التوصيل (٩/٨): فاتورة COD بيد مندوب كانت تظهر «معلّقة/عميل نقدي» كأي بيع، ولا سبيل
+    // لمحاسبٍ لحصر «فواتير بيد المناديب غير المحصَّلة» من أي شاشة. OPEN=بالطريق، SETTLED=سُلِّمت
+    // أو أُغلقت بشطب موجَّه، RETURNED=أُرجعت، ANY=لها إرسالية، NONE=بلا توصيل.
+    delivery: z.enum(["ANY", "OPEN", "SETTLED", "RETURNED", "NONE"]).optional(),
+    deliveryPartyId: z.number().int().positive().optional(),
   })
   .optional();
 
@@ -253,6 +259,15 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
   }
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
   if (input?.shiftId) conds.push(eq(invoices.shiftId, input.shiftId));
+  // ⚠️ فلترا التوصيل يتطلّبان join على deliveryConsignments في **كل** مستهلك لهذه الشروط
+  // (list وlistPage وlistSummary) — قيد uq_consignment_invoice = صفّ واحد كحدّ أقصى لكل فاتورة
+  // ⇒ leftJoin لا يضاعف الصفوف والمجاميع تبقى صحيحة.
+  if (input?.delivery === "ANY") conds.push(isNotNull(deliveryConsignments.id));
+  else if (input?.delivery === "NONE") conds.push(sql`${deliveryConsignments.id} IS NULL`);
+  else if (input?.delivery === "OPEN") conds.push(sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`);
+  else if (input?.delivery === "SETTLED") conds.push(sql`${deliveryConsignments.status} IN ('DELIVERED','WRITTEN_OFF')`);
+  else if (input?.delivery === "RETURNED") conds.push(eq(deliveryConsignments.status, "RETURNED"));
+  if (input?.deliveryPartyId) conds.push(eq(deliveryConsignments.partyId, input.deliveryPartyId));
   // المدير/الأدمن يستطيعان اختيار موظف؛ الموظف العادي يبقى مُجبَراً على نفسه.
   if (scopedOwnerId == null && input?.salespersonId) conds.push(eq(invoices.createdBy, input.salespersonId));
   if (input?.q) {
@@ -413,7 +428,14 @@ export const saleRouter = router({
       }
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await processPayment({ ...input, enforceBranchId }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
+          // حارس «الإرسالية بالطريق» (مراجعة عدائية ٩/٨): كان في مسار الاستقبال وحده بينما هذه
+          // النقطة — الباب الثاني لنفس الفاتورة — تقبل تسديداً كاونترياً لفاتورةٍ كامل متبقّيها
+          // عهدةُ COD بيد مندوب ⇒ عهدة شبح لا مخرج لها إلا شطبٌ يزوّر خسارة. داخل preInsertCheck
+          // (بعد قفل الفاتورة FOR UPDATE) لنفس علّة TOCTOU الموثّقة في delivery/guards.ts.
+          const res = await processPayment(
+            { ...input, enforceBranchId, preInsertCheck: (tx) => assertNoInTransitConsignment(tx, input.invoiceId) },
+            { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role },
+          );
           await logAudit(ctx, { action: "sale.pay", entityType: "invoice", entityId: input.invoiceId, newValue: { amount: input.amount, method: input.method } });
           return res;
         } catch (e: any) {
@@ -660,19 +682,30 @@ export const saleRouter = router({
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
             // فاتورة COD لا تحمل العميل كطرف مدين، لكن نعرض عميل أمر الخدمة الأصلي
-            // كي لا تختفي طلبات واتساب تحت «عميل نقدي».
+            // كي لا تختفي طلبات واتساب تحت «عميل نقدي». ١٠/٨ (بلاغ المالك «كلها تظهر نقدي»):
+            // + الزبون العابر (contactName) ومستلم الإرسالية — فاتورة توصيلٍ هاتفية كانت
+            // تسقط على «عميل نقدي» رغم أن اسمه وهاتفه محفوظان.
             customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
-            customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
-            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''))`,
+            customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
+            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
             deviceId: invoices.posDeviceId,
+            // التوصيل (٩/٨): شارة «توصيل — بيد فلان» وفلترها في شاشة الفواتير. صفّ واحد كحدّ
+            // أقصى لكل فاتورة (uq_consignment_invoice) ⇒ لا مضاعفة صفوف.
+            consignmentId: deliveryConsignments.id,
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            consignmentStatus: deliveryConsignments.status,
+            deliveryPartyId: deliveryConsignments.partyId,
+            deliveryPartyName: deliveryParties.name,
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
           .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
           .leftJoin(users, eq(invoices.createdBy, users.id))
+          .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
+          .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
           .where(where)
           .orderBy(desc(invoices.id))
           .limit(lim)
@@ -715,12 +748,20 @@ export const saleRouter = router({
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
             deviceId: invoices.posDeviceId,
+            // التوصيل (٩/٨) — مرآة list حرفياً (نفس الشروط تتطلّب نفس الـjoin).
+            consignmentId: deliveryConsignments.id,
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            consignmentStatus: deliveryConsignments.status,
+            deliveryPartyId: deliveryConsignments.partyId,
+            deliveryPartyName: deliveryParties.name,
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
           .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
           .leftJoin(users, eq(invoices.createdBy, users.id))
+          .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
+          .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
           .where(where)
           .orderBy(desc(invoices.id))
           .limit(lim)
@@ -768,11 +809,13 @@ export const saleRouter = router({
               THEN CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
           })
           .from(invoices)
-          // join إلزاميّ: buildSalesListConds قد يُشير لـcustomers.searchNorm عند البحث بـq.
+          // join إلزاميّ: buildSalesListConds قد يُشير لـcustomers.searchNorm عند البحث بـq
+          // ولـdeliveryConsignments عند فلتر التوصيل (٩/٨).
           // leftJoin على مفتاح أجنبيّ أحاديّ ⇒ لا يُضاعف صفوف الفواتير ⇒ المجاميع تبقى صحيحة،
           // وcount يبقى مطابقاً تماماً لعدد صفوف list (نفس الشروط ونفس الجداول).
           .leftJoin(customers, eq(invoices.customerId, customers.id))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+          .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
           .where(conds.length ? and(...conds) : undefined)
       )[0];
       return {
@@ -794,9 +837,10 @@ export const saleRouter = router({
           sourceType: invoices.sourceType,
           branchId: invoices.branchId,
           // العميل هنا مرجع عرضٍ وتشغيل لفاتورة COD فقط؛ الطرف المالي يبقى جهة التوصيل.
+          // ١٠/٨: + الزبون العابر ومستلم الإرسالية (مرآة list — «عميل نقدي» للمجهول حقاً فقط).
           customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
-          customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
-          customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${workOrderInvoiceCustomer.phone})`,
+          customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
+          customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${workOrderInvoiceCustomer.phone}, NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
           customerBalance: sql<string | null>`COALESCE(${customers.currentBalance}, ${workOrderInvoiceCustomer.currentBalance})`,
           priceTier: invoices.priceTier,
           invoiceDate: invoices.invoiceDate,
@@ -832,6 +876,11 @@ export const saleRouter = router({
           courierFee: deliveryConsignments.deliveryFee,
           courierFeeCollection: deliveryConsignments.feeCollection,
           consignmentNumber: deliveryConsignments.consignmentNumber,
+          // ٩/٨: حالة الإرسالية وتوقيتاها — «وين طلبي؟» كان ينقطع خيطه هنا (الرقم بلا حالة).
+          consignmentStatus: deliveryConsignments.status,
+          consignmentDispatchedAt: deliveryConsignments.dispatchedAt,
+          consignmentSettledAt: deliveryConsignments.settledAt,
+          deliveryPartyId: deliveryConsignments.partyId,
           workOrderCreatedBy: workOrders.createdBy,
         })
         .from(invoices)

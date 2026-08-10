@@ -1,4 +1,4 @@
-import { CopyInline } from "@/components/CopyButton";
+﻿import { CopyInline } from "@/components/CopyButton";
 import { DataTable } from "@/components/data-table/DataTable";
 import { ListToolbar, RowActions, SelectionBar, useRowSelection } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -52,6 +52,22 @@ const BALANCE_FILTER = {
   UNPAID: "غير مدفوعة",
   SETTLED: "مسوّاة بالكامل",
 } as const;
+// فلتر التوصيل (٩/٨) — يطابق enum الخادم في salesListInput.delivery حرفياً.
+const DELIVERY_FILTER = {
+  OPEN: "توصيل — بيد المندوب (لم تُورَّد)",
+  SETTLED: "توصيل — سُلِّمت وسُوِّيت",
+  RETURNED: "توصيل — أُرجعت",
+  ANY: "كل فواتير التوصيل",
+  NONE: "بلا توصيل",
+} as const;
+// حالة الإرسالية كما تعود من الخادم — شارة عمود «التوصيل».
+const CONSIGNMENT_STATUS: Record<string, { label: string; cls: string }> = {
+  DISPATCHED: { label: "بالطريق", cls: "badge-stock-low" },
+  PARTIAL: { label: "حُصِّل جزئياً", cls: "badge-stock-low" },
+  DELIVERED: { label: "سُلِّمت", cls: "badge-status-active" },
+  RETURNED: { label: "أُرجعت", cls: "badge-stock-out" },
+  WRITTEN_OFF: { label: "شُطبت", cls: "badge-stock-out" },
+};
 
 function isDepositDue(row: Pick<Row, "sourceType" | "total" | "paidAmount" | "returnedTotal" | "status">) {
   if (row.status === "CANCELLED" || row.status === "RETURNED") return false;
@@ -64,6 +80,20 @@ function isDepositDue(row: Pick<Row, "sourceType" | "total" | "paidAmount" | "re
 const exportStatusLabel = (s: string) => (s === "CONFIRMED" ? "مؤكّدة" : invoiceStatusLabel(s));
 // فاتورة بلا عميل مسجَّل = بيع نقدي مباشر — المصطلح المعتمد «عميل نقدي» (لا شرطة غامضة).
 const custName = (n: string | null | undefined) => n ?? "عميل نقدي";
+// خلية التوصيل للتصدير/النسخ: «بالطريق — فلان (CN-…)» أو فارغة لغير الموصَّلة.
+const deliveryCell = (r: Pick<Row, "consignmentId" | "consignmentStatus" | "deliveryPartyName" | "consignmentNumber">) =>
+  r.consignmentId
+    ? `${CONSIGNMENT_STATUS[r.consignmentStatus ?? ""]?.label ?? r.consignmentStatus ?? ""} — ${r.deliveryPartyName ?? ""}${r.consignmentNumber ? ` (${r.consignmentNumber})` : ""}`
+    : "";
+// إرساليةٌ بالطريق ⇒ طريقة الدفع الحقيقية «عند الاستلام» لا ما اختير للسلة لحظة التثبيت
+// (بلاغ المالك ١٠/٨: فاتورة توصيلٍ لم يُقبض منها فلس كانت تعرض «نقدي» — المخزَّن هو طريقة
+// قبض العربون/التحصيل اللاحق، والعرض يجب أن يصدُق عن المتبقّي بيد المندوب).
+const codInTransit = (r: Pick<Row, "consignmentStatus">) =>
+  r.consignmentStatus === "DISPATCHED" || r.consignmentStatus === "PARTIAL";
+const paymentLabel = (r: Pick<Row, "consignmentStatus" | "paymentMethod" | "paidAmount">) =>
+  codInTransit(r)
+    ? (D(r.paidAmount).gt(0) ? `عند الاستلام (COD) — عربون ${paymentMethodLabel(r.paymentMethod)}` : "عند الاستلام (COD)")
+    : paymentMethodLabel(r.paymentMethod);
 
 /** فلتر عميل مدمج — بحث حيّ عبر customers.smartSearch (نمط CustomerPicker) مجرّداً من زرّ
  *  «+ عميل جديد» (سياق فلترة لا إدخال بيانات). الاسم المختار يُجلب بـcustomers.get — ضروري
@@ -155,6 +185,7 @@ export default function Invoices() {
     from: "", to: "", preset: "",
     status: "", sourceType: "", balanceState: "",
     salespersonId: "", paymentMethod: "", branchId: "", customerId: "",
+    delivery: "", deliveryPartyId: "",
     q: "",
   });
   // البحث خادميّ (رقم الفاتورة/اسم العميل): كان محلّياً على الصفحة المُحمَّلة وحدها ⇒ يقول
@@ -181,6 +212,9 @@ export default function Invoices() {
   const taxSettings = trpc.system.getTaxSettings.useQuery();
   const me = trpc.auth.me.useQuery();
   const salespeople = trpc.sales.salespeople.useQuery();
+  // جهات التوصيل — لفلتر «جهة التوصيل». تُجلب فقط حين يُفعَّل فلتر توصيل (لا طلب زائد لكل فتح
+  // شاشة)، وretry:false لأن بعض الأدوار بلا صلاحية store:READ (يُخفى المنتقي بدل خطأ متكرر).
+  const deliveryParties = trpc.delivery.listParties.useQuery({}, { enabled: !!f.delivery || !!f.deliveryPartyId, retry: false, staleTime: 60_000 });
 
   // فلتر الفرع وعموده — للمرتفعين العابرين للفروع فقط (الخادم يتجاهل branchId لغيرهم أصلاً:
   // scopedBranchId الحاكم مقدَّم في buildSalesListConds، فالإخفاء هنا عرضيّ لا أمنيّ).
@@ -217,15 +251,18 @@ export default function Invoices() {
       paymentMethod: (f.paymentMethod || undefined) as PaymentMethod | undefined,
       branchId: f.branchId ? Number(f.branchId) : undefined,
       customerId: f.customerId ? Number(f.customerId) : undefined,
+      delivery: (f.delivery || undefined) as keyof typeof DELIVERY_FILTER | undefined,
+      deliveryPartyId: f.deliveryPartyId ? Number(f.deliveryPartyId) : undefined,
       q: qDebounced || undefined,
     }),
-    [f.from, f.to, f.status, f.sourceType, f.balanceState, f.salespersonId, f.paymentMethod, f.branchId, f.customerId, qDebounced],
+    [f.from, f.to, f.status, f.sourceType, f.balanceState, f.salespersonId, f.paymentMethod, f.branchId, f.customerId, f.delivery, f.deliveryPartyId, qDebounced],
   );
 
   // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
   const activeFilterCount = [
     f.from || f.to, f.status, f.sourceType, f.balanceState,
     f.salespersonId, f.paymentMethod, f.customerId,
+    f.delivery, f.deliveryPartyId,
     isElevated ? f.branchId : "",
   ].filter(Boolean).length;
 
@@ -367,12 +404,13 @@ export default function Invoices() {
           { key: "invoiceDate", header: "التاريخ", map: (r) => fmtDate(r.invoiceDate) },
           { key: "customerName", header: "العميل", map: (r) => custName(r.customerName) },
           { key: "sourceType", header: "المصدر", map: (r) => sourceTypeLabel(r.sourceType) },
+          { key: "consignmentId", header: "التوصيل", map: (r) => deliveryCell(r) },
           { key: "salespersonName", header: "موظف المبيعات", map: (r) => r.salespersonName ?? "" },
           { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
           { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },
           { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
           { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
-          { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentMethodLabel(r.paymentMethod) },
+          { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentLabel(r) },
           { key: "status", header: "الحالة", map: (r) => exportStatusLabel(r.status) },
         ],
       });
@@ -396,6 +434,26 @@ export default function Invoices() {
         } as ColumnDef<Row, unknown>]
       : []),
     { accessorKey: "sourceType", header: "المصدر", cell: (c) => sourceTypeLabel(c.getValue() as string) },
+    {
+      id: "delivery",
+      header: "التوصيل",
+      cell: ({ row }) => {
+        const r = row.original;
+        if (!r.consignmentId) return <span className="text-muted-foreground">—</span>;
+        const st = CONSIGNMENT_STATUS[r.consignmentStatus ?? ""] ?? { label: r.consignmentStatus ?? "", cls: "bg-muted" };
+        return (
+          <div className="flex flex-col items-start gap-0.5">
+            <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${st.cls}`}>
+              توصيل — {st.label}
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              {r.deliveryPartyName ?? "—"}
+              {r.consignmentNumber ? <span className="ms-1 font-mono" dir="ltr">{r.consignmentNumber}</span> : null}
+            </span>
+          </div>
+        );
+      },
+    },
     { accessorKey: "salespersonName", header: "موظف المبيعات", cell: (c) => (c.getValue() as string) ?? "—" },
     {
       id: "shiftDevice",
@@ -412,7 +470,19 @@ export default function Invoices() {
     {
       accessorKey: "paymentMethod", header: "طريقة الدفع",
       cell: (c) => {
-        const m = c.getValue() as string | null;
+        const r = c.row.original;
+        // بالطريق مع المندوب ⇒ الحقيقة «عند الاستلام»؛ العربون المقبوض يُذكر بطريقته تحتها.
+        if (codInTransit(r)) {
+          return (
+            <div className="flex flex-col items-start gap-0.5">
+              <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold badge-stock-low">عند الاستلام (COD)</span>
+              {D(r.paidAmount).gt(0) && r.paymentMethod && (
+                <span className="text-[11px] text-muted-foreground">عربون: {paymentMethodLabel(r.paymentMethod)}</span>
+              )}
+            </div>
+          );
+        }
+        const m = r.paymentMethod;
         if (!m) return <span className="text-muted-foreground">—</span>;
         return <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(m)}`}>{paymentMethodLabel(m)}</span>;
       },
@@ -511,7 +581,7 @@ export default function Invoices() {
   // الصُفوف المُحَدَّدة + تَجهيز نَصّ TSV ومُلَخَّص واتساب لِزِرّ «نَسخ المُحَدَّد كَـ».
   // الفِكرة: TSV لِلَّصق في Excel، ومُلَخَّص نَصّي مُكَثَّف لِواتساب الإدارة.
   const TSV_HEADERS = useMemo(
-    () => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "موظف المبيعات", "الوردية", "محطة البيع", "الإجمالي", "المدفوع", "طريقة الدفع", "الحالة"],
+    () => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "التوصيل", "موظف المبيعات", "الوردية", "محطة البيع", "الإجمالي", "المدفوع", "طريقة الدفع", "الحالة"],
     [],
   );
   const selectedRows = useMemo(() => data.filter((r) => sel.isSelected(r.id)), [data, sel]);
@@ -522,12 +592,13 @@ export default function Invoices() {
       "التاريخ": fmtDate(r.invoiceDate),
       "العميل": custName(r.customerName),
       "المصدر": sourceTypeLabel(r.sourceType),
+      "التوصيل": deliveryCell(r),
       "موظف المبيعات": r.salespersonName ?? "",
       "الوردية": r.shiftId ?? "",
       "محطة البيع": r.deviceId ?? "",
       "الإجمالي": Number(r.total),
       "المدفوع": Number(r.paidAmount),
-      "طريقة الدفع": paymentMethodLabel(r.paymentMethod),
+      "طريقة الدفع": paymentLabel(r),
       "الحالة": exportStatusLabel(r.status),
     }));
     return formatTableAsTSV(TSV_HEADERS, rows);
@@ -613,6 +684,24 @@ export default function Invoices() {
                 {Object.entries(BALANCE_FILTER).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </AppSelect>
             </div>
+            <div className="space-y-1">
+              <Label htmlFor="inv-f-delivery" className="text-xs">التوصيل</Label>
+              <AppSelect id="inv-f-delivery" value={f.delivery || "ALL"} onValueChange={(v) => setF({ delivery: v === "ALL" ? "" : v })}>
+                <option value="ALL">— الكل (مع وبلا توصيل) —</option>
+                {Object.entries(DELIVERY_FILTER).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </AppSelect>
+            </div>
+            {(f.delivery || f.deliveryPartyId) && !deliveryParties.isError && (
+              <div className="space-y-1">
+                <Label htmlFor="inv-f-delivery-party" className="text-xs">جهة التوصيل</Label>
+                <AppSelect id="inv-f-delivery-party" value={f.deliveryPartyId || "ALL"} onValueChange={(v) => setF({ deliveryPartyId: v === "ALL" ? "" : v })}>
+                  <option value="ALL">— كل الجهات —</option>
+                  {(deliveryParties.data ?? []).map((p) => (
+                    <option key={p.id} value={String(p.id)}>{p.name}</option>
+                  ))}
+                </AppSelect>
+              </div>
+            )}
             {isElevated && (
               <div className="space-y-1">
                 <Label htmlFor="inv-f-branch" className="text-xs">الفرع</Label>
@@ -683,12 +772,13 @@ export default function Invoices() {
               { key: "invoiceDate", header: "التاريخ", map: (r) => fmtDate(r.invoiceDate) },
               { key: "customerName", header: "العميل", map: (r) => custName(r.customerName) },
               { key: "sourceType", header: "المصدر", map: (r) => sourceTypeLabel(r.sourceType) },
+              { key: "consignmentId", header: "التوصيل", map: (r) => deliveryCell(r) },
               { key: "salespersonName", header: "موظف المبيعات", map: (r) => r.salespersonName ?? "" },
               { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
               { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },
               { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
               { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
-              { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentMethodLabel(r.paymentMethod) },
+              { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentLabel(r) },
               { key: "status", header: "الحالة", map: (r) => exportStatusLabel(r.status) },
             ],
           });
