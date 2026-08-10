@@ -190,6 +190,18 @@ export default function PointOfSale() {
           {/* صدق الهوية: صاحب الدور المخصّص المحصور بقسمٍ (مثل «كاشير طباعة») يرى لماذا
               يظهر له قسم واحد — كان يظهر تبويب وحيد بلا تفسير فيبدو النظام «غير منطقي».
               والتخصيص الفرديّ (permissionsOverride بلا دور مخصّص) يُعلَن كذلك — نفس الفجوة بطريق ثانٍ. */}
+          {/* اسم المستخدم صاحب الحساب المفتوح (طلب المالك — كان يظهر الدور فقط بلا اسم) — يظهر
+              في كل الأوضاع بما فيها الاستقبال (نمط ترويسة POS.tsx). المصدر me.data.name من auth.me. */}
+          {me.data?.name && (
+            <div className="flex shrink-0 items-center gap-1.5" title={`المستخدم: ${me.data.name}`}>
+              <span className="grid size-6 shrink-0 place-items-center rounded-full bg-primary/15 text-[11px] font-black text-primary">
+                {me.data.name[0] ?? "م"}
+              </span>
+              <span className="hidden max-w-[140px] truncate text-xs font-extrabold text-foreground sm:block">
+                {me.data.name}
+              </span>
+            </div>
+          )}
           {me.data?.customRoleLabel ? (
             <span className="hidden text-[11px] font-medium text-muted-foreground sm:block">
               الدور: {me.data.customRoleLabel}

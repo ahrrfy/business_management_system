@@ -29,7 +29,7 @@ import { verifyPassword } from "../auth/password";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { correctSale, createSale, processPayment } from "../services/saleService";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
-import { canSeeCostForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
+import { canSeeCostForUser, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -934,7 +934,9 @@ export const saleRouter = router({
       };
     }),
 
-  get: salesReadProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+  // عرض/طباعة فاتورة: بوّابة invoiceViewProcedure (sales≥READ أو صلاحية الاستقبال workorders:FULL) —
+  // تُتيح لمشغّل الاستقبال إعادة طباعة فواتيره من طابور المحطة بلا فتح وحدة المبيعات كاملةً. محميّة بالفرع أدناه.
+  get: invoiceViewProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const inv = (
@@ -1011,11 +1013,21 @@ export const saleRouter = router({
     if (ctx.scopedBranchId && inv.branchId !== ctx.scopedBranchId) return null;
     // لا يفتح الكاشير فاتورة زميل عبر رابط مباشر، لكنه يفتح الفاتورة الناتجة من
     // أمر خدمة العملاء الذي أنشأه حتى إن قام موظف آخر بالإرسال أو التسليم.
-    if (
-      ctx.scopedOwnerId != null
+    const invoiceViewScope = invoiceViewScopeForUser(ctx.user);
+    if (invoiceViewScope === "reception") {
+      // Reception operators may reprint the branch reception queue, but the fallback must never
+      // become a read path into retail invoices or the wider sales module.
+      if (inv.shiftType !== "RECEPTION") return null;
+    } else if (
+      invoiceViewScope === "sales"
+      && ctx.scopedOwnerId != null
       && Number(inv.createdBy) !== ctx.scopedOwnerId
       && Number(inv.workOrderCreatedBy) !== ctx.scopedOwnerId
-    ) return null;
+    ) {
+      return null;
+    } else if (!invoiceViewScope) {
+      return null;
+    }
     const items = await db
       .select({
         id: invoiceItems.id,

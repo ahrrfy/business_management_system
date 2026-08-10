@@ -211,6 +211,9 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     hr: "NONE",
     commissions: "NONE",
     consignments: "NONE",
+    // sales يبقى NONE: طباعة فواتير الاستقبال لا تحتاج فتح وحدة المبيعات كاملةً (كان يكشف عروض
+    // الأسعار — مراجعة Codex). الطباعة/الجلب تمرّ ببوّابة invoiceViewProcedure التي تقبل صلاحية
+    // الاستقبال (workorders:FULL) نفسها، محميّةً بالفرع.
     pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "FULL", channels: "READ", treasury: "NONE",
     // FULL: طلبات خدمة الطباعة/الاستقبال هي عمله الأساسي (نمط workorders).
     tasks: "FULL",

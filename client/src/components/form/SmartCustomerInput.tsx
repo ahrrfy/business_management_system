@@ -35,6 +35,10 @@ export interface SmartCustomerInputProps {
   onChange: (v: SmartCustomerValue) => void;
   placeholder?: string;
   className?: string;
+  /** وضع «الاسم فقط» (طلب المالك): حين يُدار الهاتف خارجياً (قناة واتساب/اتصال عبر حقل ١١ خانة
+   *  منفصل)، يعرض هذا المكوّن حقلَ **اسمٍ واحداً** نظيفاً (بمسافات) بلا بحثٍ ولا حقلٍ ثانٍ مكرّر —
+   *  يزيل ازدواج «حقلين بنفس الاسم». المطابقة بالهاتف تتمّ خارجياً في شاشة الاستقبال. */
+  nameOnly?: boolean;
 }
 
 interface CustomerSummary {
@@ -53,7 +57,7 @@ const looksLikePhone = (text: string) => {
   return /^\d{6,15}$/.test(compact);
 };
 
-export function SmartCustomerInput({ value, onChange, placeholder, className }: SmartCustomerInputProps) {
+export function SmartCustomerInput({ value, onChange, placeholder, className, nameOnly }: SmartCustomerInputProps) {
   const [q, setQ] = useState(value.name || "");
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -149,13 +153,16 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
             setQ(v);
             setOpen(true);
             // أي تعديل يصبح مسوّدة فعلية للحفظ. الرقم يُحفظ كهاتف لا كاسم صامت.
+            // nameOnly (قناة): الهاتف مُدار خارجياً (حقل ١١ خانة) ⇒ لا نلتقطه من هذا الحقل بل نُبقيه؛
+            // ويبقى **البحث الذكيّ فعّالاً** فالكتابة تجد العملاء السابقين وتربطهم (يمنع ازدواج العميل).
             const typed = v.trim();
-            const phone = looksLikePhone(typed) ? typed : null;
+            const extPhone = value.phone;
+            const phone = nameOnly ? extPhone : looksLikePhone(typed) ? typed : null;
             onChange({
               customerId: null,
               name: v,
               phone,
-              isNew: typed.length > 0,
+              isNew: typed.length > 0 || (nameOnly === true && !!extPhone),
             });
           }}
           onFocus={() => setOpen(true)}
@@ -243,7 +250,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
       {/* الصندوق الرئيسي يلتقط رقماً أو اسماً — لا كليهما معاً. إن كتب المستخدم رقماً (فصار
           الرقم هو نفسه المعروض كـname بلا تمييز) نعرض حقلاً ثانياً صريحاً لاسم العميل، حتى لا
           يُحفظ عميلٌ جديد باسم هو رقم هاتفه فعلياً. */}
-      {value.isNew && !value.customerId && value.phone && (
+      {!nameOnly && value.isNew && !value.customerId && value.phone && (
         <div className="mt-2 space-y-1">
           <label htmlFor="smart-customer-name" className="text-[11px] font-medium text-muted-foreground">
             اسم العميل (اختياري)
@@ -251,7 +258,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
           <Input
             id="smart-customer-name"
             value={displayedNewCustomerName}
-            onChange={(e) => onChange({ ...value, name: e.target.value.trim() || value.phone! })}
+            onChange={(e) => onChange({ ...value, name: e.target.value || value.phone! })}
             placeholder="اكتب اسم العميل"
             className="h-8 text-xs"
           />

@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
+import { PhoneDigitsInput } from "@/components/form/PhoneDigitsInput";
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
@@ -2195,7 +2196,13 @@ export default function Reception() {
               اختيار قناة غير مباشرة، فتُستعاد المساحة لبقية الصفّ دائماً لا عند الحاجة فقط. */}
           <AppSelect
             value={channel}
-            onValueChange={(v) => setChannel(v as typeof channel)}
+            onValueChange={(v) => {
+              // تبديل القناة يمسح المعرّف/الرقم السابق (نصّ↔أرقام) والعميل المطابَق — وإلا بقي
+              // معرّفٌ قديمٌ خفيّ يُرسَل كرقم واتساب، أو عميلٌ مربوطٌ بقناةٍ أخرى (مراجعة Codex).
+              setChannel(v as typeof channel);
+              setChannelHandle("");
+              setCustomer({ customerId: null, name: "", phone: null, isNew: false });
+            }}
             aria-label="طريقة وصول الطلب"
             className="h-8 w-32 text-[11px] font-bold"
           >
@@ -2206,19 +2213,28 @@ export default function Reception() {
             <option value="PHONE">اتصال</option>
           </AppSelect>
           {channel !== "WALK_IN" && (
-            <Input
-              value={channelHandle}
-              onChange={(e) => setChannelHandle(e.target.value)}
-              placeholder={channel === "WHATSAPP" || channel === "PHONE" ? "رقم الهاتف" : "معرّف الحساب أو رقم الهاتف"}
-              className="h-8 w-40 text-xs"
-              dir="ltr"
-            />
+            channel === "WHATSAPP" || channel === "PHONE" ? (
+              // رقم الهاتف: ١١ خانة ذكيّة (طلب المالك) — رقمٌ لكل خانة، انتقال تلقائيّ، خضراء عند الصحّة.
+              <PhoneDigitsInput value={channelHandle} onChange={setChannelHandle} ariaLabel="رقم هاتف العميل" />
+            ) : (
+              // انستغرام/تيك توك: معرّف حسابٍ نصّيّ لا رقم.
+              <Input
+                value={channelHandle}
+                onChange={(e) => setChannelHandle(e.target.value)}
+                placeholder="معرّف الحساب"
+                className="h-8 w-40 text-xs"
+                dir="ltr"
+              />
+            )
           )}
+          {/* اسم فقط للقنوات (طلب المالك): الهاتف في الـ١١ خانة أعلاه، فحقلٌ واحدٌ للاسم (بمسافات)
+              بلا تكرار. للمباشر: حقل بحثٍ ذكيّ كامل (يجد العملاء السابقين). */}
           <SmartCustomerInput
             value={customer}
             onChange={setCustomer}
-            className="w-60"
-            placeholder={channel === "WALK_IN" ? "عميل نقدي أو ابحث عن عميل" : "يُملأ تلقائياً من رقم/معرّف القناة أعلاه"}
+            nameOnly={channel !== "WALK_IN"}
+            className="w-56"
+            placeholder={channel === "WALK_IN" ? "عميل نقدي أو ابحث عن عميل" : "اسم العميل (اختياري)"}
           />
           {customer.customerId && canReadCustomerContext && (
             <Button size="sm" variant="outline" className="h-8" onClick={() => setCustomerContextId(customer.customerId)}>
