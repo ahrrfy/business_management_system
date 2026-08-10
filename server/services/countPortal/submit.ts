@@ -3,6 +3,8 @@ import { TRPCError } from "@trpc/server";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import { and, eq } from "drizzle-orm";
 import {
+  products,
+  productVariants,
   stocktakeAssignments,
   stocktakeCountOperations,
   stocktakeCounts,
@@ -116,12 +118,19 @@ export async function submitCount(
 
       // (٣) الصنف ضمن نطاق الجلسة (تحقّق خادمي — لا ثقة بالواجهة).
       const itemRows = await tx
-        .select()
+        .select({
+          id: stocktakeItems.id,
+          recountStatus: stocktakeItems.recountStatus,
+          reviewApprovedAt: stocktakeItems.reviewApprovedAt,
+        })
         .from(stocktakeItems)
+        .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+        .innerJoin(products, eq(productVariants.productId, products.id))
         .where(
           and(
             eq(stocktakeItems.sessionId, session.id),
-            eq(stocktakeItems.variantId, input.variantId)
+            eq(stocktakeItems.variantId, input.variantId),
+            eq(products.isService, false),
           )
         )
         .for("update")

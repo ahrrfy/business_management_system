@@ -66,6 +66,8 @@ async function seedBase() {
     { id: 5, name: "بكج مدرسي", categoryId: 10, isActive: true, isBundle: true, isConsignment: false },
     // أمانة ⇒ يُستبعَد في OPENING فقط
     { id: 6, name: "كتاب المعلّم (أمانة)", categoryId: 20, isActive: true, isBundle: false, isConsignment: true },
+    // خدمة/كارت رقمي ⇒ يُستبعَد دائماً لأنه بلا رصيد مخزني
+    { id: 7, name: "كارت زين 5000", categoryId: 10, isActive: true, isService: true, isBundle: false, isConsignment: false },
   ]);
   await d.insert(s.productVariants).values([
     // ٣ متغيّرات (لون/قياس) للقلم — حبيبة الجرد
@@ -78,6 +80,7 @@ async function seedBase() {
     { id: 40, productId: 4, sku: "OLD-1", costPrice: "100.00", isActive: true }, // منتج معطَّل
     { id: 50, productId: 5, sku: "PKG-1", costPrice: "0.00", isActive: true }, // بكج
     { id: 60, productId: 6, sku: "CONS-1", costPrice: "3000.00", isActive: true }, // أمانة
+    { id: 80, productId: 7, sku: "DIGITAL-ZAIN-5000", costPrice: "0.00", isActive: true }, // خدمة
     // متغيّر معطَّل ⇒ يُستبعَد
     { id: 70, productId: 2, sku: "NB-100-OLD", costPrice: "1500.00", isActive: false },
   ]);
@@ -91,6 +94,7 @@ async function seedBase() {
     { id: 7, variantId: 50, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
     { id: 8, variantId: 60, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
     { id: 9, variantId: 70, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    { id: 10, variantId: 80, unitName: "بطاقة", conversionFactor: "1", isBaseUnit: true },
   ]);
 }
 
@@ -102,10 +106,10 @@ beforeEach(async () => {
 /* ─────────── FULL ─────────── */
 
 describe("previewScope — FULL", () => {
-  it("NORMAL: يشمل كل المتغيّرات النشطة لمنتجات نشطة، يستبعد البكج فقط (الأمانة تُشمَل)", async () => {
+  it("NORMAL: يشمل المتغيّرات المخزنية النشطة، ويستبعد الخدمات والبكج (الأمانة تُشمَل)", async () => {
     const r = await previewScope({ branchId: 1, sessionType: "NORMAL", scopeType: "FULL" });
     // 10,11,12 (قلم × ٣) + 20 (دفتر) + 30 (مسطرة) + 60 (أمانة) = ٦
-    // مستبعَد: 40 (منتج غير نشط) + 50 (بكج) + 70 (متغيّر غير نشط)
+    // مستبعَد: 40 (منتج غير نشط) + 50 (بكج) + 70 (متغيّر غير نشط) + 80 (خدمة)
     expect(r.variantCount).toBe(6);
     // ٤ منتجات أمّ (قلم/دفتر/مسطرة/أمانة)
     expect(r.productCount).toBe(4);
@@ -262,7 +266,7 @@ describe("previewScope — CATEGORY", () => {
 /* ─────────── حارس مطابقة resolveScope ─────────── */
 
 describe("previewScope — حارس مطابقة (regression)", () => {
-  it("FULL NORMAL: previewScope.variantCount == عدد المتغيّرات النشطة لمنتجات نشطة غير بكج", async () => {
+  it("FULL NORMAL: previewScope.variantCount == عدد المتغيّرات النشطة لمنتجات مخزنية غير بكج", async () => {
     // نحسب مباشرةً من DB نفس الشرط في resolveScope
     const rows = await db()
       .select({ id: s.productVariants.id })
@@ -272,6 +276,7 @@ describe("previewScope — حارس مطابقة (regression)", () => {
         and(
           eq(s.productVariants.isActive, true),
           eq(s.products.isActive, true),
+          eq(s.products.isService, false),
           eq(s.products.isBundle, false),
         ),
       );
@@ -294,6 +299,7 @@ describe("previewScope — حارس مطابقة (regression)", () => {
         and(
           eq(s.productVariants.isActive, true),
           eq(s.products.isActive, true),
+          eq(s.products.isService, false),
           eq(s.products.isBundle, false),
           eq(s.products.isConsignment, false),
         ),

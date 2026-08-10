@@ -3,7 +3,15 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
-import { branches, stocktakeCounts, stocktakeItems, stocktakeSessions, users } from "../../../drizzle/schema";
+import {
+  branches,
+  products,
+  productVariants,
+  stocktakeCounts,
+  stocktakeItems,
+  stocktakeSessions,
+  users,
+} from "../../../drizzle/schema";
 import type { DB, Tx } from "../../db";
 
 /** قراءة تعمل على القاعدة أو داخل معاملة (الاعتماد يعيد الحساب داخل tx). */
@@ -106,7 +114,9 @@ async function loadStocktakeProgressMap(db: DbLike, sessionIds: number[]): Promi
         inArray(stocktakeCounts.kind, ["FIRST", "RECOUNT"]),
       ),
     )
-    .where(inArray(stocktakeItems.sessionId, ids))
+    .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(and(inArray(stocktakeItems.sessionId, ids), eq(products.isService, false)))
     .groupBy(stocktakeItems.sessionId);
   for (const row of rows) {
     const total = Number(row.total);

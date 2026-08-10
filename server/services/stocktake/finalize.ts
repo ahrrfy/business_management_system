@@ -97,7 +97,9 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
       await tx
         .select({ variantId: stocktakeItems.variantId })
         .from(stocktakeItems)
-        .where(eq(stocktakeItems.sessionId, sessionId))
+        .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(and(eq(stocktakeItems.sessionId, sessionId), eq(products.isService, false)))
         .orderBy(asc(stocktakeItems.variantId))
     ).map((r) => Number(r.variantId));
     for (const part of chunk(lockIds)) {

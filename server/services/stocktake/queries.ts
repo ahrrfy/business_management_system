@@ -127,7 +127,15 @@ async function loadAssignmentProgress(db: DbLike, sessionId: number) {
       c: sql<number>`COUNT(DISTINCT ${stocktakeCounts.variantId})`,
     })
     .from(stocktakeCounts)
-    .where(and(eq(stocktakeCounts.sessionId, sessionId), inArray(stocktakeCounts.kind, ["FIRST", "RECOUNT"])))
+    .innerJoin(productVariants, eq(stocktakeCounts.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(
+      and(
+        eq(stocktakeCounts.sessionId, sessionId),
+        inArray(stocktakeCounts.kind, ["FIRST", "RECOUNT"]),
+        eq(products.isService, false),
+      ),
+    )
     .groupBy(stocktakeCounts.assignmentId);
   const countedByAsg = new Map(counted.map((r) => [Number(r.assignmentId), Number(r.c)]));
 
@@ -206,13 +214,14 @@ export async function monitorStocktakeSession(
   const recentWhere = q
     ? and(
         eq(stocktakeCounts.sessionId, sessionId),
+        eq(products.isService, false),
         or(
           sql`${products.name} LIKE ${likePattern} ESCAPE '!'`,
           sql`${productVariants.sku} LIKE ${likePattern} ESCAPE '!'`,
           sql`${productVariants.variantName} LIKE ${likePattern} ESCAPE '!'`
         )
       )
-    : eq(stocktakeCounts.sessionId, sessionId);
+    : and(eq(stocktakeCounts.sessionId, sessionId), eq(products.isService, false));
   const recentRaw = await db
     .select({
       id: stocktakeCounts.id,
@@ -254,7 +263,13 @@ export async function monitorStocktakeSession(
     .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(users, eq(stocktakeItems.recountRequestedBy, users.id))
-    .where(and(eq(stocktakeItems.sessionId, sessionId), eq(stocktakeItems.recountStatus, "PENDING")));
+    .where(
+      and(
+        eq(stocktakeItems.sessionId, sessionId),
+        eq(stocktakeItems.recountStatus, "PENDING"),
+        eq(products.isService, false),
+      ),
+    );
 
   // التعارضات المفتوحة (VERIFY مخالف بلا فصل) — مع العدّ الأول المقابل لعرض «زيد 510 / كرار 498».
   const conflictVerifies = await db
@@ -272,7 +287,8 @@ export async function monitorStocktakeSession(
       and(
         eq(stocktakeCounts.sessionId, sessionId),
         eq(stocktakeCounts.isConflict, true),
-        sql`${stocktakeCounts.resolvedPick} IS NULL`
+        sql`${stocktakeCounts.resolvedPick} IS NULL`,
+        eq(products.isService, false),
       )
     );
   const conflictFirsts = conflictVerifies.length
@@ -369,7 +385,11 @@ export async function getStocktakeRemainingItems(
   const q = opts.q?.trim() ?? "";
   const likePattern = `%${escLike(q)}%`;
   const effectiveCount = alias(stocktakeCounts, "stk_remaining_effective_count");
-  const filters = [eq(stocktakeItems.sessionId, sessionId), isNull(effectiveCount.id)];
+  const filters = [
+    eq(stocktakeItems.sessionId, sessionId),
+    eq(products.isService, false),
+    isNull(effectiveCount.id),
+  ];
   if (opts.assignmentId != null) filters.push(eq(stocktakeItems.assignmentId, opts.assignmentId));
   if (q) {
     filters.push(
@@ -511,12 +531,11 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
   const db = requireDb();
   const isOpening = input.sessionType === "OPENING";
 
-  // في OPENING نستبعد البكج والأمانة (كلاهما استبعاد تصميميّ من resolveScope + create.ts).
-  // في NORMAL نستبعد البكج فقط.
-  const notBundleCond = eq(products.isBundle, false);
+  // الخدمات (ومنها الكروت والاشتراكات) بلا رصيد مخزني فتُستبعَد دائماً.
+  const stockableCond = and(eq(products.isService, false), eq(products.isBundle, false))!;
   const scopeCond = isOpening
-    ? and(notBundleCond, eq(products.isConsignment, false))!
-    : notBundleCond;
+    ? and(stockableCond, eq(products.isConsignment, false))!
+    : stockableCond;
 
   // (١) استعلام أصناف النطاق الخام (قبل استبعاد المُفتتَح لـOPENING).
   let variantIds: number[] = [];

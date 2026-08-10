@@ -89,7 +89,9 @@ export async function getPortalPulse(identity: PortalIdentity) {
       crc: sql<number>`COALESCE(BIT_XOR(CRC32(CONCAT_WS(':', ${stocktakeCounts.id}, ${stocktakeCounts.qty}, ${stocktakeCounts.kind}, COALESCE(${stocktakeCounts.unitBreakdown}, ''), COALESCE(UNIX_TIMESTAMP(${stocktakeCounts.countedAt}), 0)))), 0)`,
     })
     .from(stocktakeCounts)
-    .where(eq(stocktakeCounts.sessionId, session.id));
+    .innerJoin(productVariants, eq(stocktakeCounts.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(and(eq(stocktakeCounts.sessionId, session.id), eq(products.isService, false)));
 
   // الأصناف: تتغيّر بإضافة/حذف، وبتحديث حالة إعادة العدّ (لا يُغيّر المعرّف ولا العدد).
   const [i] = await db
@@ -100,7 +102,9 @@ export async function getPortalPulse(identity: PortalIdentity) {
       lastRecountAt: sql<number>`COALESCE(MAX(UNIX_TIMESTAMP(${stocktakeItems.recountRequestedAt})), 0)`,
     })
     .from(stocktakeItems)
-    .where(eq(stocktakeItems.sessionId, session.id));
+    .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(and(eq(stocktakeItems.sessionId, session.id), eq(products.isService, false)));
 
   // حالتا الجلسة والتكليف تأتيان من الهوية المُحلَّلة سلفاً في كل نداء ⇒ بلا استعلامٍ إضافي.
   // التكليف داخل البصمة كي لا يتشارك عادّان على جهازٍ واحد وسماً واحداً بعد تبديل الدخول.
@@ -167,7 +171,7 @@ export async function getPortalCatalog(
     .from(stocktakeItems)
     .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(eq(stocktakeItems.sessionId, session.id))
+    .where(and(eq(stocktakeItems.sessionId, session.id), eq(products.isService, false)))
     .orderBy(asc(stocktakeItems.id));
 
   const variantIds = itemRows.map((r) => Number(r.variantId));
@@ -261,12 +265,16 @@ export async function getPortalDynamic(identity: PortalIdentity): Promise<Portal
           eq(stocktakeItems.variantId, stocktakeCounts.variantId),
         ),
       )
-      .where(eq(stocktakeCounts.sessionId, session.id))
+      .innerJoin(productVariants, eq(stocktakeCounts.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(and(eq(stocktakeCounts.sessionId, session.id), eq(products.isService, false)))
       .orderBy(asc(stocktakeCounts.id)),
     db
       .select({ total: sql<number>`COUNT(*)` })
       .from(stocktakeItems)
-      .where(eq(stocktakeItems.sessionId, session.id)),
+      .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(and(eq(stocktakeItems.sessionId, session.id), eq(products.isService, false))),
     // مهام إعادة العدّ قليلة ⇒ ضمُّها بأسمائها هنا أرخص من إقحام الأسماء في كل صنف.
     db
       .select({
@@ -278,7 +286,13 @@ export async function getPortalDynamic(identity: PortalIdentity): Promise<Portal
       .from(stocktakeItems)
       .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
       .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(and(eq(stocktakeItems.sessionId, session.id), eq(stocktakeItems.recountStatus, "PENDING")))
+      .where(
+        and(
+          eq(stocktakeItems.sessionId, session.id),
+          eq(stocktakeItems.recountStatus, "PENDING"),
+          eq(products.isService, false),
+        ),
+      )
       .orderBy(asc(stocktakeItems.id)),
   ]);
 
