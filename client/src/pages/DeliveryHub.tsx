@@ -269,6 +269,11 @@ function SettleTab() {
   const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "RETURNED"; collected: string }>>({});
   const [countedBreakdown, setCountedBreakdown] = useState<Record<number, number>>({});
   const [countedCash, setCountedCash] = useState(0);
+  // مفتاح idempotency **ثابت لكل جلسة توريد** (مراجعة عدائية ١٠/٨): كان UUID يُولَّد لحظة النقر
+  // فلا تلتقط طبقة الـidempotency الخادمية النقرَ المزدوج **للتوريد الجزئي** (الإرسالية تبقى
+  // PARTIAL بمتبقٍّ يقبل نفس المبلغ ثانيةً ⇒ إيصالا IN لنقدٍ واحد، فاتورة تُدفع زوراً، ذمّة
+  // عميل تُخصَم مرّتين). يتجدّد عند تغيير الجهة وبعد كل نجاح. (نمط SettleDialog/recoverWriteOff.)
+  const [remitReqId, setRemitReqId] = useState(() => crypto.randomUUID());
 
   const remit = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
@@ -278,6 +283,7 @@ function SettleTab() {
       setRows({});
       setCountedBreakdown({});
       setCountedCash(0);
+      setRemitReqId(crypto.randomUUID()); // توريدٌ تالٍ = مفتاحٌ جديد (لا replay للتالي)
       utils.delivery.openConsignments.invalidate();
       utils.delivery.listParties.invalidate();
     },
@@ -347,14 +353,14 @@ function SettleTab() {
       confirmText: "تأكيد التسوية",
     });
     if (!ok) return;
-    remit.mutate({ partyId: Number(partyId), lines, countedCash: countedCash.toFixed(2), clientRequestId: crypto.randomUUID() });
+    remit.mutate({ partyId: Number(partyId), lines, countedCash: countedCash.toFixed(2), clientRequestId: remitReqId });
   };
 
   return (
     <div className="space-y-4">
       <div className="rounded-xl border bg-card p-4">
         <label className="mb-1.5 block text-sm font-bold">اختر جهة التوصيل</label>
-        <select className="h-11 w-full max-w-md rounded-md border bg-transparent px-3 text-sm" value={partyId} onChange={(e) => { setPartyId(e.target.value); setRows({}); }}>
+        <select className="h-11 w-full max-w-md rounded-md border bg-transparent px-3 text-sm" value={partyId} onChange={(e) => { setPartyId(e.target.value); setRows({}); setRemitReqId(crypto.randomUUID()); }}>
           <option value="">— اختر —</option>
           {(parties.data ?? []).map((p) => (
             <option key={p.id} value={p.id}>{p.name} — بذمّته {fmt(p.currentBalance)} د.ع</option>

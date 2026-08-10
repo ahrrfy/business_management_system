@@ -317,7 +317,10 @@ export const deliveryRouter = router({
       // IDOR كتابة (F7): كاشير فرعٍ لا يُسوّي عهدة جهة فرعٍ آخر (وإلا يُحوّل نقدها لدرجه ويصفّر عهدتها).
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
-      const res = await settleDeliveryBalance({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx));
+      // retryOnDup (مراجعة نهائية ١٠/٨، مرآة recordRemittance): نقرتان متزامنتان بنفس المفتاح
+      // تجتازان checkIdempotency معاً فتصطدم الثانية بـER_DUP على قيد المفتاح — الإعادة تراه مُلتزَماً
+      // فتعيد النتيجة idempotent بدل خطأٍ للمستخدم.
+      const res = await retryOnDup(() => settleDeliveryBalance({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.settle", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount } });
       return res;
     }),
@@ -359,7 +362,8 @@ export const deliveryRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const branchId = effectiveBranch(ctx, input.branchId);
-      const res = await recoverDeliveryWriteOff({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx));
+      // retryOnDup (مراجعة نهائية ١٠/٨): كنظير settle — إعادة محاولة idempotent على سباق المفتاح.
+      const res = await retryOnDup(() => recoverDeliveryWriteOff({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.recoverWriteOff", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount } });
       return res;
     }),

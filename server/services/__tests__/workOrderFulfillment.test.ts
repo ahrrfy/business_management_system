@@ -4,15 +4,16 @@
  * حراسها: يُرفَض بعد DELIVERED/CANCELLED، يُرفَض عبر فرعٍ آخر، يتطلّب عنوان توصيل عند التفعيل،
  * لا يُعدَّل salePrice أبداً، ويحفظ deliveryPhone/deliveryCost بدلالة صريحة (لا تصفير صامت عند الحذف).
  */
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createWorkOrder } from "../workOrderService";
 import { updateWorkOrderDeliveryMethod } from "../workOrder/fulfillment";
+import { openShift } from "../shiftService";
 
 const TABLES = [
-  "idempotencyKeys", "accountingEntries", "receipts",
+  "idempotencyKeys", "accountingEntries", "receipts", "shifts",
   "workOrderMaterials", "workOrderImages", "workOrders",
   "productPrices", "productUnits", "productVariants", "products",
   "branches", "users",
@@ -158,5 +159,54 @@ describe("updateWorkOrderDeliveryMethod — إعادة تصنيف التسليم
     const wo = await loadWo(woId);
     expect(wo.hasDelivery).toBe(true);
     expect(wo.deliveryAddress).toBe("بغداد مجدداً");
+  });
+
+  // Fee-F1 (مراجعة نهائية ١٠/٨): أمانة أجرة COUNTER تُقبَض في الدرج عند الإنشاء ومبرِّئوها الإرسال
+  // أو الإلغاء فقط. التحوّل لاستلامٍ مباشر (hasDelivery:false) ثم التسليم كان يترك الأمانة عالقةً في
+  // الدرج للأبد (Σ FEE_HELD موجب دائم + نقد زبونٍ بلا مسار ردّ). الآن يردّها هذا المسار idempotent.
+  it("التحوّل لاستلام مباشر يردّ أمانة أجرة COUNTER غير المصروفة (نقداً من الدرج) — مرّةً واحدة", async () => {
+    const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, CASHIER_B1);
+    // أمر شغل بأجرة COUNTER (٥٠٠٠) + إيصال القبض الأمانة في الدرج — كما يتركه create.ts.
+    await db().insert(s.workOrders).values({
+      id: 950, orderNumber: "WO-950", title: "طباعة", branchId: 1,
+      status: "READY", hasDelivery: true, quantity: 1,
+      salePrice: "10000.00", materialsCost: "0.00", laborCost: "0.00", deposit: "0.00",
+      deliveryFeeCollection: "COUNTER", deliveryCost: "5000.00", deliveryAddress: "بغداد", createdBy: 2,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1, shiftId: shift.shiftId, workOrderId: 950,
+      direction: "IN", amount: "5000.00", paymentMethod: "CASH", cashBucket: "DRAWER",
+      status: "COMPLETED", partyType: "OTHER", referenceNumber: "DLV-FEE-WO-950", createdBy: 2,
+    });
+
+    const res = await updateWorkOrderDeliveryMethod(
+      { workOrderId: 950, hasDelivery: false, deliveryAddress: null, refundShiftId: shift.shiftId },
+      CASHIER_B1,
+    );
+    expect((res as { refundedFee: string }).refundedFee).toBe("5000.00");
+    expect((await loadWo(950)).hasDelivery).toBe(false);
+    // إيصال ردّ OUT بنفس مرجع الأمانة + قيد FEE_HELD سالب (Σ الأمانة عاد صفراً).
+    const outR = (await db().select().from(s.receipts)
+      .where(and(eq(s.receipts.referenceNumber, "DLV-FEE-WO-950"), eq(s.receipts.direction, "OUT"))))[0];
+    expect(outR).toBeTruthy();
+    expect(String(outR.amount)).toBe("5000.00");
+    const feeHeldNet = (await db()
+      .select({ v: sql<string>`COALESCE(SUM(${s.accountingEntries.amount}), 0)` })
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "DELIVERY_FEE_HELD")))[0];
+    expect(Number(feeHeldNet.v)).toBe(-5000); // قيد الردّ السالب وحده (لم نُدرِج قيد القبض الموجب في التجهيز)
+
+    // idempotent: تحوّلٌ ثانٍ (تذبذب التصنيف) لا يردّ مرّةً ثانية.
+    await updateWorkOrderDeliveryMethod({ workOrderId: 950, hasDelivery: true, deliveryAddress: "بغداد" }, CASHIER_B1);
+    const again = await updateWorkOrderDeliveryMethod(
+      { workOrderId: 950, hasDelivery: false, deliveryAddress: null, refundShiftId: shift.shiftId },
+      CASHIER_B1,
+    );
+    expect((again as { refundedFee: string }).refundedFee).toBe("0.00"); // Σ(IN−OUT)=0 ⇒ لا ردّ ثانٍ
+    const outCount = (await db()
+      .select({ n: sql<number>`COUNT(*)` })
+      .from(s.receipts)
+      .where(and(eq(s.receipts.referenceNumber, "DLV-FEE-WO-950"), eq(s.receipts.direction, "OUT"))))[0];
+    expect(Number(outCount.n)).toBe(1); // إيصال ردٍّ واحد فقط
   });
 });

@@ -155,6 +155,24 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     await reconcileClean();
   });
 
+  it("قيدا COD (تحصيل + عهدة) يحملان فرع الفاتورة — لا يسقطان من التقارير المُقيَّدة بالفرع", async () => {
+    // Balance-F1 (مراجعة نهائية ١٠/٨): كانا يُكتبان بلا branchId ⇒ يسقطان من كل SUM مُقيَّد بالفرع
+    // (صافي مبيعات الفرع يبدو مختلاًّ رغم صحّة الإجمالي). الآن = فرع الفاتورة (نظير dispatchInvoice).
+    const { partyA } = await seedParties();
+    const o = await shippedOrder(2, "ORD-BR1", partyA); // فاتورة على الفرع 1
+    await confirmCourierDelivery({ onlineOrderId: o.orderId }, { userId: 3 });
+    const codEntries = await db()
+      .select({ type: s.accountingEntries.entryType, branchId: s.accountingEntries.branchId })
+      .from(s.accountingEntries)
+      .where(and(
+        eq(s.accountingEntries.invoiceId, o.invoiceId),
+        sql`${s.accountingEntries.entryType} IN ('PAYMENT_IN','DELIVERY_DISPATCH')`,
+      ));
+    expect(codEntries).toHaveLength(2);
+    for (const e of codEntries) expect(Number(e.branchId)).toBe(1); // لا NULL
+    await reconcileClean();
+  });
+
   it("idempotency: تأكيد مزدوج ⇒ alreadyDelivered بلا ازدواج تحصيل", async () => {
     const { partyA } = await seedParties();
     const o = await shippedOrder(1, "ORD-C2", partyA);

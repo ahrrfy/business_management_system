@@ -11,6 +11,7 @@ import { router, salesManagerProcedure } from "../trpc";
 import { nonNegMoneyString } from "../lib/schemas";
 import { escLike } from "../lib/sqlLike";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { retryOnDeadlock } from "../lib/retryDeadlock";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على entryDate).
@@ -40,7 +41,10 @@ export const returnRouter = router({
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           // G8: تمرير role لتمكين فحص ملكية الفرع داخل returnSale (admin يتجاوز).
-          const res = await returnSale(input, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
+          // retryOnDeadlock (مراجعة نهائية ١٠/٨): returnSale يقفل فاتورة+مخزوناً+ذمّة عميل بترتيبٍ
+          // قد يعاكس إرسال/تسوية توصيلٍ متزامن على نفس الفاتورة (مسار «تعذّر التسليم» يستدعيه) ⇒
+          // deadlock عرضيّ من MySQL؛ يمتصّه هنا. سباق المفتاح (ER_DUP) يبقى للحلقة الخارجية.
+          const res = await retryOnDeadlock(() => returnSale(input, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role }));
           await logAudit(ctx, { action: "return.create", entityType: "invoice", entityId: input.invoiceId, newValue: { lines: input.lines.length, refund: input.refund?.amount } });
           return res;
         } catch (e: any) {

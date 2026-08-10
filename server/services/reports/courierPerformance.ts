@@ -208,7 +208,9 @@ export async function getCourierPerformance(
       cnWrittenOff: sql<number>`SUM(CASE WHEN ${deliveryConsignments.status} = 'WRITTEN_OFF' THEN 1 ELSE 0 END)`,
       cnOpen: sql<number>`SUM(CASE WHEN ${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL') THEN 1 ELSE 0 END)`,
       cnValue: sql<string>`COALESCE(SUM(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2))), 0)`,
-      cnAvgTurnHours: sql<string | null>`AVG(CASE WHEN ${deliveryConsignments.settledAt} IS NOT NULL THEN TIMESTAMPDIFF(HOUR, ${deliveryConsignments.dispatchedAt}, ${deliveryConsignments.settledAt}) END)`,
+      // GREATEST(...,0): توريدٌ مختومٌ بلحظةٍ سابقة للإرسال (انحراف ساعة الجهاز/بيانات قديمة) كان
+      // يعطي فرقاً سالباً يجرّ المتوسط لأسفل زوراً — نحصره بصفر (مراجعة نهائية ١٠/٨).
+      cnAvgTurnHours: sql<string | null>`AVG(CASE WHEN ${deliveryConsignments.settledAt} IS NOT NULL THEN GREATEST(TIMESTAMPDIFF(HOUR, ${deliveryConsignments.dispatchedAt}, ${deliveryConsignments.settledAt}), 0) END)`,
     })
     .from(deliveryConsignments)
     .where(and(...cnConds))
@@ -233,11 +235,25 @@ export async function getCourierPerformance(
   const cnMap = new Map(cnAgg.map((a) => [Number(a.partyId), a]));
   const rmMap = new Map(rmAgg.map((a) => [Number(a.partyId), a]));
   const onlineMap = new Map(agg.map((a) => [Number(a.partyId), a]));
-  if (!agg.length && !cnAgg.length && !rmAgg.length) return { rows: [], summary: empty };
+
+  // ١٠/٨ (مراجعة نهائية) — العهدة القائمة لقطةٌ لحظيةٌ لا تخصّ الفترة (كما تقول ترويسة التقرير)،
+  // لكنّ مجموعة الجهات كانت مبنيّةً من نشاط الفترة وحده ⇒ مندوبٌ يحمل عهدةً ولم ينشط في الفترة
+  // يسقط كلّياً فيُنقِص إجمالي العهدة عن حقيقته (لا يطابق «عائم التوصيل»). نضمّ كلّ جهةٍ برصيدٍ
+  // حيٍّ غير صفريّ كي يكتمل الإجمالي وتبرز العُهد الراكدة (صفوفها بمقاييس فترةٍ صفرية، تُرتَّب أسفل).
+  const heldParties = await db
+    .select({ id: deliveryParties.id })
+    .from(deliveryParties)
+    .where(sql`CAST(${deliveryParties.currentBalance} AS DECIMAL(15,2)) <> 0`);
+
+  if (!agg.length && !cnAgg.length && !rmAgg.length && !heldParties.length) return { rows: [], summary: empty };
 
   // بيانات الجهات (الاسم/النوع/الهاتف/العهدة الحالية/حساب الدخول المرتبط) للجهات الظاهرة في أي قناة.
   const partyIds = Array.from(new Set(
-    Array.from(onlineMap.keys()).concat(Array.from(cnMap.keys()), Array.from(rmMap.keys())),
+    Array.from(onlineMap.keys()).concat(
+      Array.from(cnMap.keys()),
+      Array.from(rmMap.keys()),
+      heldParties.map((p) => Number(p.id)),
+    ),
   ));
   const parties = await db
     .select({

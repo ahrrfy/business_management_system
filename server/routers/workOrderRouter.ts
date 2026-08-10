@@ -799,6 +799,8 @@ export const workOrderRouter = router({
         deliveryAddress: z.string().nullish(),
         deliveryPhone: z.string().max(20).nullish(),
         deliveryCost: nonNegMoneyString.nullish(),
+        // درج ردّ أمانة الأجرة عند التحوّل لاستلام مباشر — يُلزَم فقط حين يتعدّد الدرج المفتوح.
+        refundShiftId: z.number().int().positive().nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {

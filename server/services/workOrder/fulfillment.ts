@@ -9,6 +9,7 @@ import { workOrders } from "../../../drizzle/schema";
 import { money, round2 } from "../money";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { refundUnspentWorkOrderFeeHeld } from "./deliveryFeeRefund";
 
 export interface UpdateWorkOrderDeliveryMethodInput {
   workOrderId: number;
@@ -16,6 +17,8 @@ export interface UpdateWorkOrderDeliveryMethodInput {
   deliveryAddress?: string | null;
   deliveryPhone?: string | null;
   deliveryCost?: string | null;
+  /** درج ردّ أمانة الأجرة عند الانتقال لاستلام مباشر (يُلزَم فقط حين يتعدّد الدرج المفتوح). */
+  refundShiftId?: number | null;
 }
 
 export async function updateWorkOrderDeliveryMethod(
@@ -47,6 +50,20 @@ export async function updateWorkOrderDeliveryMethod(
           : "0.00"
         : wo.deliveryCost;
 
+    // مراجعة عدائية نهائية (١٠/٨): الانتقال إلى **استلام مباشر** يردّ أمانة أجرة التوصيل
+    // المقبوضة (COUNTER) غير المصروفة — وإلّا علِقت في الدرج للأبد (deliverWorkOrder التالي لا
+    // يمسّها). idempotent (dedupeKey) فلا تُردّ مرّتين، ونِتُّها صفر إن لم تكن هناك أمانة.
+    let refundedFee = "0.00";
+    if (!input.hasDelivery) {
+      refundedFee = await refundUnspentWorkOrderFeeHeld(tx, {
+        workOrderId: Number(wo.id),
+        branchId: Number(wo.branchId),
+        refundShiftId: input.refundShiftId ?? null,
+        actor,
+        reason: "ردّ أمانة أجرة توصيل (تحوّل لاستلام مباشر)",
+      });
+    }
+
     await tx
       .update(workOrders)
       .set({
@@ -57,6 +74,6 @@ export async function updateWorkOrderDeliveryMethod(
       })
       .where(eq(workOrders.id, Number(wo.id)));
 
-    return { workOrderId: Number(wo.id), hasDelivery: !!input.hasDelivery };
+    return { workOrderId: Number(wo.id), hasDelivery: !!input.hasDelivery, refundedFee };
   });
 }

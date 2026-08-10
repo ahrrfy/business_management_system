@@ -261,13 +261,19 @@ export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor
       throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع الاسترداد" });
     }
     if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
-    // السقف = صافي المشطوب تاريخياً (Σ الشطب − Σ استرداداته) **على نفس الفرع** — لا يُستردّ ما
-    // لم يُشطَب، وعكسُ الخسارة يقع على الفرع الذي حمل الخسارة أصلاً (مراجعة عدائية ٩/٨: جهة
+    // السقف = صافي **الخسارة المشطوبة** تاريخياً (Σ cost − Σ استرداداتها) **على نفس الفرع** — لا
+    // يُستردّ ما لم يُشطَب، وعكسُ الخسارة يقع على الفرع الذي حملها أصلاً (مراجعة عدائية ٩/٨: جهة
     // مشتركة branchId=NULL شُطبت على الرئيسي واستُردّت من فرع المبيعات = أرباح الفرعين تكذب
     // بالاتجاهين رغم اتزان مستوى الشركة).
+    //
+    // ⚠️ السقف بـ`cost` لا `amount` (مراجعة نهائية ١٠/٨): الشطب الموجَّه يقيّد `amount` بكامل
+    // متبقّي العهدة لكنّ `cost` (الخسارة الفعلية) = الجزء المدعوم بمتبقّي الفاتورة الحيّ فقط
+    // (`realPart`)، والفائض «عهدة زائدة بلا خسارة». الاسترداد يعكس خسارةً + يُدخل نقداً؛ سقفُه
+    // بـ`amount` كان يسمح باسترداد نقدٍ/عكسِ ربحٍ يفوق ما خُسِر فعلاً (نقدٌ وهميّ في الدرج + P&L
+    // منتفخ). بـ`cost` يُسقَف بالخسارة الحقيقية المتبقّية (الشطب المجمّع cost=amount ⇒ بلا تغيير).
     const woRow = (
       await tx
-        .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
+        .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.cost} AS DECIMAL(15,2))), 0)` })
         .from(accountingEntries)
         .where(and(
           eq(accountingEntries.entryType, "DELIVERY_WRITEOFF"),
@@ -279,7 +285,7 @@ export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor
     if (amount.gt(writtenOffNet)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `المبلغ يتجاوز صافي المشطوب لهذه الجهة على هذا الفرع (${writtenOffNet.toFixed(2)}) — الاسترداد يُسجَّل على فرع الشطب الأصلي`,
+        message: `المبلغ يتجاوز صافي الخسارة المشطوبة لهذه الجهة على هذا الفرع (${writtenOffNet.toFixed(2)}) — الاسترداد يُسجَّل على فرع الشطب الأصلي`,
       });
     }
 
