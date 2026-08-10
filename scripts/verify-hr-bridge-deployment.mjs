@@ -826,6 +826,26 @@ try {
     adoptionDumpContextSelftest.stdout,
     /disabled candidate \+ legacy rollback passed/,
   );
+  const adoptionDefinitionTransportSelftest = spawnSync(
+    process.execPath,
+    [
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "adopt-hr-bridge-legacy.mjs",
+      ),
+      "--selftest-legacy-definition",
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(
+    adoptionDefinitionTransportSelftest.status,
+    0,
+    adoptionDefinitionTransportSelftest.stderr,
+  );
+  assert.match(
+    adoptionDefinitionTransportSelftest.stdout,
+    /noisy stdout isolated/,
+  );
 
   assert.equal(fs.readFileSync(first.environmentPath, "utf8").includes(sentinel), true);
   for (const file of [first.manifestPath, second.manifestPath, path.join(releaseTools.runtimeRoot(fixtureRoot), "state.json")]) {

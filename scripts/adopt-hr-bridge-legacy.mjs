@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { execFileSync, spawnSync } from "node:child_process";
-import { userInfo } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { fileURLToPath } from "node:url";
 import { config as dotenvConfig } from "dotenv";
 import releaseTools from "./hr-bridge-release.cjs";
@@ -218,6 +218,7 @@ function loadLegacyDefinition(projectRoot) {
   const ecosystemPath = path.join(projectRoot, "ecosystem.config.cjs");
   const probe = String.raw`
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 const path = require("node:path");
 const root = path.resolve(process.argv[1]);
 const file = path.resolve(process.argv[2]);
@@ -249,7 +250,10 @@ const contract = {
   backoff: Number(app.exp_backoff_restart_delay || 0),
 };
 const definitionHash = crypto.createHash("sha256").update(JSON.stringify(contract)).digest("hex");
-process.stdout.write(JSON.stringify({ ...contract, definitionHash }));`;
+// stdout belongs to the legacy ecosystem and its dependencies (dotenv 17 logs
+// there by default). Keep the machine contract on a dedicated descriptor so
+// incidental startup output can never corrupt rollback attestation.
+fs.writeFileSync(3, JSON.stringify({ ...contract, definitionHash }));`;
   const result = spawnSync(
     process.execPath,
     ["-e", probe, projectRoot, ecosystemPath],
@@ -259,16 +263,57 @@ process.stdout.write(JSON.stringify({ ...contract, definitionHash }));`;
       timeout: 10_000,
       maxBuffer: 1024 * 1024,
       env: controlSubprocessEnvironment(),
+      stdio: ["ignore", "ignore", "pipe", "pipe"],
     },
   );
   if (result.error || result.status !== 0) {
     fail("HR_BRIDGE_LEGACY_RESTORE_DEFINITION_INVALID");
   }
   try {
-    return JSON.parse(result.stdout);
+    return JSON.parse(String(result.output?.[3] ?? ""));
   } catch {
     fail("HR_BRIDGE_LEGACY_RESTORE_DEFINITION_INVALID");
   }
+}
+
+function runLegacyDefinitionTransportSelftest() {
+  const fixtureRoot = fs.mkdtempSync(
+    path.join(tmpdir(), "hr-bridge-legacy-definition-selftest-"),
+  );
+  try {
+    const executable = path.join(fixtureRoot, "legacy-worker.mjs");
+    fs.writeFileSync(executable, "", { mode: 0o600 });
+    fs.writeFileSync(
+      path.join(fixtureRoot, "ecosystem.config.cjs"),
+      `process.stdout.write("dotenv-style startup chatter\\n");
+process.stderr.write("legacy diagnostic chatter\\n");
+module.exports = { apps: [{
+  name: "erp-hr-bridge",
+  script: "legacy-worker.mjs",
+  cwd: __dirname,
+  instances: 1,
+  exec_mode: "fork",
+  autorestart: true,
+  env: { NODE_ENV: "production", DATABASE_URL: "fixture" },
+}] };\n`,
+      { mode: 0o600 },
+    );
+
+    const definition = loadLegacyDefinition(fixtureRoot);
+    if (
+      definition.executable !== executable ||
+      definition.cwd !== fixtureRoot ||
+      definition.environmentKeys.join(",") !== "DATABASE_URL,NODE_ENV" ||
+      !/^[a-f0-9]{64}$/.test(definition.definitionHash)
+    ) {
+      fail("HR_BRIDGE_LEGACY_DEFINITION_TRANSPORT_SELFTEST_FAILED");
+    }
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+  console.log(
+    "hr bridge legacy definition transport selftest: noisy stdout isolated",
+  );
 }
 
 function environmentProjectionHash(environment, keys) {
@@ -884,6 +929,13 @@ function runDumpContextSelftest() {
 }
 
 async function dispatch() {
+  if (
+    process.argv.length === 3 &&
+    process.argv[2] === "--selftest-legacy-definition"
+  ) {
+    runLegacyDefinitionTransportSelftest();
+    return;
+  }
   if (
     process.argv.length === 3 &&
     process.argv[2] === "--selftest-dump-context"
