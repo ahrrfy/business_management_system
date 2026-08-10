@@ -537,7 +537,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                         onChange={(e) => setInvoiceQ(e.target.value)}
                         onKeyDown={(e) => invoiceBarcodeInput.handleKeyDown(e, setInvoiceQ)}
                         placeholder="ابحث برقم الفاتورة… (كل الفواتير المستحقّة، لا آخر ٥٠ فقط)"
-                        className={cn("ps-[4.9rem]", barcodeSearchInputClass)}
+                        className={barcodeSearchInputClass}
                       />
                       <BarcodeSearchCue />
                     </div>

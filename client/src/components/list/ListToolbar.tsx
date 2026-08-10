@@ -136,10 +136,15 @@ export function ListToolbar<T>({
         )}
       </div>
 
-      <div className="list-toolbar-actions flex flex-wrap items-end gap-2">
+      <div className="list-toolbar-actions flex w-full flex-wrap items-end gap-2 sm:w-auto">
         {search && (
-          <div className="relative min-w-48 flex-1 sm:flex-none">
-            <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <div className={cn("relative min-w-48 flex-1 sm:flex-none", search.barcode && "w-full sm:min-w-80")}>
+            <Search
+              className={cn(
+                "pointer-events-none absolute top-1/2 size-4 -translate-y-1/2 text-muted-foreground",
+                search.barcode ? "left-2" : "right-2",
+              )}
+            />
             <Input
               type="search"
               value={search.value}
@@ -151,7 +156,7 @@ export function ListToolbar<T>({
               aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
               className={cn(
                 "h-8 w-full pr-8 sm:w-56",
-                search.barcode && `ps-[4.9rem] ${barcodeSearchInputClass}`,
+                search.barcode && `pl-8 sm:w-80 ${barcodeSearchInputClass}`,
               )}
             />
             {search.barcode && <BarcodeSearchCue />}

@@ -823,8 +823,8 @@ export default function CountPortal() {
       )}
 
       {/* بحث + مسح */}
-      <div className="flex gap-2 px-4 py-3">
-        <div className="relative min-w-0 flex-1">
+      <div className="flex flex-col gap-2 px-4 py-3 sm:flex-row">
+        <div className="relative w-full min-w-0 flex-1 sm:min-w-72">
           <input
             ref={searchRef}
             value={q}
@@ -838,7 +838,7 @@ export default function CountPortal() {
               }
             }}
             placeholder="بحث بالاسم أو SKU أو رقم الباركود…"
-            className={cn("h-11 w-full min-w-0 rounded-xl px-3 ps-[4.9rem] text-sm focus:outline-none focus:ring-2 focus:ring-primary/30", barcodeSearchInputClass)}
+            className={cn("h-11 w-full min-w-0 rounded-xl px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30", barcodeSearchInputClass)}
           />
           <BarcodeSearchCue />
         </div>
@@ -849,7 +849,7 @@ export default function CountPortal() {
             setCameraOpen(true);
           }}
           disabled={!canCount}
-          className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground active:scale-95"
+          className="flex h-11 w-full shrink-0 items-center justify-center gap-1.5 rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground active:scale-95 sm:w-auto"
         >
           <Camera aria-hidden className="size-4" /> مسح
         </button>

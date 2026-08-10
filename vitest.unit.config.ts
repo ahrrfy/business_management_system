@@ -17,6 +17,7 @@ export default defineConfig({
       "client/src/lib/navVisibility.test.ts",
       "client/src/lib/cartDraft.test.ts",
       "client/src/lib/pwaUpdateLifecycle.test.ts",
+      "client/src/components/scan/BarcodeSearchCue.test.ts",
       "server/services/__tests__/couponService.test.ts",
       "server/services/__tests__/businessDay.test.ts",
       "server/services/__tests__/reconcileSummary.test.ts",

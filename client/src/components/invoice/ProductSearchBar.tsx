@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
 import type { InvoiceLine, InvoiceType, PriceTier } from "./types";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
-import { barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { barcodeSearchVisualClass } from "@/components/scan/BarcodeSearchCue";
 
 export interface ProductSearchBarProps {
   invoiceType: InvoiceType;
@@ -234,8 +234,8 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
 
   return (
     <div ref={wrapRef} className="relative">
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative w-full min-w-0 flex-1 sm:min-w-72">
           <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
             <Search aria-hidden className="size-4" />
           </span>
@@ -248,7 +248,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
               if (results.length > 0) setShowDrop(true);
             }}
             placeholder="ابحث بالاسم أو SKU أو امسح الباركود..."
-            className={`h-11 pe-10 ps-4 text-sm ${barcodeSearchInputClass}`}
+            className={`h-11 pe-10 ps-4 text-sm ${barcodeSearchVisualClass}`}
             aria-label="بحث المنتجات"
           />
           {query && (
@@ -265,10 +265,12 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
             </button>
           )}
         </div>
-        <div className="flex h-11 shrink-0 items-center gap-1.5 rounded-lg border border-primary/50 bg-primary/10 px-3 text-xs font-bold text-primary">
-          <Camera aria-hidden className="size-4" /> قارئ باركود
+        <div className="flex w-full shrink-0 gap-2 sm:w-auto">
+          <div className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-primary/50 bg-primary/10 px-3 text-xs font-bold text-primary sm:flex-none">
+            <Camera aria-hidden className="size-4" /> قارئ باركود
+          </div>
+          <div className="flex shrink-0 items-center rounded-md bg-muted px-2 py-1 text-[11px] font-semibold text-muted-foreground">F2 للبحث</div>
         </div>
-        <div className="shrink-0 rounded-md bg-muted px-2 py-1 text-[11px] font-semibold text-muted-foreground">F2 للبحث</div>
       </div>
 
       {showDrop && (
