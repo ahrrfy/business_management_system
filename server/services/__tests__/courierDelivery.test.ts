@@ -313,21 +313,31 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     await reconcileClean();
   });
 
-  it("dispatchOnlineOrder: طلبٌ مؤكَّد ⇒ فاتورة ONLINE + خصم مخزون + SHIPPED + أجرة على الفاتورة + مطابِقات نظيفة", async () => {
+  it("dispatchOnlineOrder (تمرير كامل ١٠/٨): الفاتورة والإيراد والعهدة بضاعةٌ فقط — الأجرة للمندوب خارج الدفاتر", async () => {
     const { partyA } = await seedParties();
     const stockBefore = await stockOf(1);
-    const o = await confirmedOrder(2, "ORD-DSP1", "3000"); // subtotal 20 + شحن 3000
+    const o = await confirmedOrder(2, "ORD-DSP1", "3000"); // subtotal 20 + شحن 3000 (يدفعه الزبون للمندوب)
     const res = await dispatchOnlineOrder({ onlineOrderId: o.orderId, partyId: partyA }, MANAGER);
-    expect(res.total).toBe("3020.00");
+    // قرار المالك (١٠/٨): المندوب خارجي والأجرة له ⇒ الفاتورة بضاعة فقط — كانت 3020 (الشحن
+    // إيراداً بهامش ١٠٠٪ يدخل وعاء العمولة بينما يُدفع للمندوب خارج النظام).
+    expect(res.total).toBe("20.00");
     const row = await order(o.orderId);
     expect(row.status).toBe("SHIPPED"); // المطالبة الذرّية تحت القفل ضبطت الحالة
+    expect(String(row.total)).toBe("3020.00"); // ما يدفعه الزبون للمندوب (بضاعة + أجرته) يبقى على الطلب
     expect(Number(row.invoiceId)).toBe(res.invoiceId);
     expect(Number(row.deliveryPartyId)).toBe(partyA);
     const inv = await invoice(res.invoiceId);
-    expect(inv.total).toBe("3020.00"); // الأجرة على رأس الفاتورة (لا تُفقَد)
+    expect(inv.total).toBe("20.00");
     expect(inv.sourceType).toBe("ONLINE");
-    expect(await customerBalance(1)).toBe("3020.00"); // AR = order.total (COD)
+    expect(await customerBalance(1)).toBe("20.00"); // AR = البضاعة (الأجرة ليست ذمّةً لنا)
     expect(await stockOf(1)).toBe(stockBefore - 2); // خُصم المخزون فعلاً
+    // قيد SALE بلا أجرة الشحن — وعاء العمولة يستثنيها بنيوياً.
+    const revRows = await db().select({ v: s.accountingEntries.revenue }).from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, res.invoiceId));
+    expect(revRows.reduce((t, r) => t + Number(r.v), 0)).toBe(20);
+    // تأكيد المندوب: العهدة = البضاعة وحدها (أجرته قبضها لنفسه).
+    await confirmCourierDelivery({ onlineOrderId: o.orderId }, { userId: 3 });
+    expect(await partyBalance(partyA)).toBe("20.00");
+    expect((await invoice(res.invoiceId)).status).toBe("PAID");
     await reconcileClean();
   });
 

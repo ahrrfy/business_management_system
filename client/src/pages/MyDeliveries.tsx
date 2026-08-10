@@ -85,12 +85,13 @@ export default function MyDeliveries() {
     }
     // طلب متجر: تأكيد + تحصيل COD يرفع عهدتك.
     const due = Number(row.codDue);
+    const fee = Number(row.courierFee ?? 0);
     const ok = await confirm({
       variant: due > 0 ? "warning" : "info",
       title: "تأكيد التسليم والتحصيل",
       description:
         due > 0
-          ? `أكّد استلام العميل للطلب ${row.orderNumber} وتحصيلك ${money(row.codDue)} د.ع نقداً. سيُضاف المبلغ إلى ما بذمّتك حتى تُورّده للمتجر.`
+          ? `أكّد استلام العميل للطلب ${row.orderNumber} وتحصيلك ${money(row.codDue)} د.ع نقداً${fee > 0 ? ` (+ أجرتك ${money(row.courierFee)} د.ع تقبضها من الزبون وتبقى لك)` : ""}. سيُضاف مبلغ التوريد إلى ما بذمّتك حتى تُورّده للمتجر.`
           : `أكّد استلام العميل للطلب ${row.orderNumber} (مدفوع مسبقاً — لا تحصيل).`,
       confirmText: "تم التسليم",
     });
@@ -222,6 +223,10 @@ function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy
         <div className="shrink-0 text-left">
           <div className="text-[11px] text-muted-foreground">المطلوب تحصيله</div>
           <div className="text-lg font-extrabold tabular-nums text-teal-700 dark:text-teal-400" dir="ltr">{money(row.codDue)} د.ع</div>
+          {/* ١٠/٨ (تمرير كامل): أجرة المندوب تُقبض من الزبون فوق المبلغ وتبقى له — لا تُورَّد. */}
+          {Number(row.courierFee) > 0 && (
+            <div className="text-[11px] font-bold text-muted-foreground" dir="rtl">+ أجرتك: <span dir="ltr" className="tabular-nums">{money(row.courierFee)}</span> (تبقى لك)</div>
+          )}
         </div>
       </div>
 

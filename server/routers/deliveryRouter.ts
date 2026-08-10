@@ -9,6 +9,7 @@ import {
   dispatchToDelivery,
   getDeliveryParty,
   getDeliveryPartyStatement,
+  getPartyStoreInTransit,
   listConsignmentsForParty,
   listCourierAccounts,
   listDeliveryParties,
@@ -150,6 +151,14 @@ export const deliveryRouter = router({
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
       return getDeliveryPartyStatement(input.partyId, input.from, input.to);
+    }),
+
+  // طرود متجر بالطريق لجهة (١٠/٨) — فجوة الرؤية بين توقيتَي العهدة في القناتين.
+  storeInTransit: deliveryReadProcedure
+    .input(z.object({ partyId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      return getPartyStoreInTransit(input.partyId);
     }),
 
   // سجل توريدات جهة (٩/٨): أثر التوريد كان إيصالاً حرارياً يُطبع مرة واحدة — الآن يُسرَد ويُتتبَّع.

@@ -58,7 +58,7 @@ import {
 } from "../services/reportsProductionService";
 import { workOrderProfitability } from "../services/reports/workOrderProfitability";
 import { getMonthlyClosePack } from "../services/reports/monthlyClosePack";
-import { getCourierPerformance } from "../services/reports/courierPerformance";
+import { getConsignmentAging, getCourierPerformance } from "../services/reports/courierPerformance";
 import { getCreditExposure } from "../services/reportsCreditExposureService";
 import { getManagementAlerts } from "../services/reportsAlertsService";
 import { getAnomalyWatch } from "../services/reports/anomalyWatch";
@@ -1098,6 +1098,15 @@ export const reportsRouter = router({
         to: input?.to,
         branchId,
       });
+    }),
+
+  /** أعمار الإرساليات المفتوحة (١٠/٨) — نظير أعمار الذمم لعُهد المناديب: دلاء زمنية من تاريخ
+   *  الإرسال بقيمة متبقّي COD لكل جهة. نفس بوّابة التقارير + عزل الفرع. */
+  consignmentAging: reportsBranchScoped
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getConsignmentAging({ branchId });
     }),
 
   // ─────────────────────── تقارير مركز واتساب (S6، T6.1) ───────────────────────
