@@ -504,9 +504,17 @@ function verifySourceContract() {
   const deployScript = fs.readFileSync(path.join(root, "scripts/deploy.mjs"), "utf8");
   const bridgeRuntimeGate = fs.readFileSync(path.join(root, "scripts/verify-hr-bridge-runtime.mjs"), "utf8");
   const bridgeArtifactGate = fs.readFileSync(path.join(root, "scripts/verify-hr-bridge-artifact.mjs"), "utf8");
-  const bridgeBootstrap = fs.readFileSync(path.join(root, "scripts/hr-bridge-worker.mjs"), "utf8");
+  const bridgeRelease = fs.readFileSync(path.join(root, "scripts/hr-bridge-release.cjs"), "utf8");
+  const bridgeActivation = fs.readFileSync(path.join(root, "scripts/hr-bridge-activation.cjs"), "utf8");
+  const bridgePm2App = fs.readFileSync(path.join(root, "scripts/hr-bridge-pm2-app.cjs"), "utf8");
+  const bridgePm2Config = fs.readFileSync(path.join(root, "scripts/hr-bridge-pm2.config.cjs"), "utf8");
+  const bridgeBootstrap = fs.readFileSync(
+    path.join(root, "scripts/hr-bridge-release-worker.mjs"),
+    "utf8",
+  );
   const bridgePolicy = fs.readFileSync(path.join(root, "scripts/hr-bridge-runtime-policy.cjs"), "utf8");
   const bridgeWorker = fs.readFileSync(path.join(root, "server/hr-bridge-worker.ts"), "utf8");
+  const bridgeReadiness = fs.readFileSync(path.join(root, "server/services/hrDevices/readiness.ts"), "utf8");
   const bridgeImplementation = fs.readFileSync(path.join(root, "server/services/hrDevices/bridge.ts"), "utf8");
   const packageJson = fs.readFileSync(path.join(root, "package.json"), "utf8");
   const ecosystem = fs.readFileSync(path.join(root, "ecosystem.config.cjs"), "utf8");
@@ -655,8 +663,17 @@ function verifySourceContract() {
   }
   for (const fragment of [
     "--preflight",
+    "--after-pull",
     "--update-env",
-    "scripts/hr-bridge-worker.mjs",
+    "assertRepository",
+    "recoverInterruptedActivation",
+    "activateBridgeRelease",
+    "pm2ConfigPath",
+    'args.push("--expect-disabled")',
+    "HR_BRIDGE_ACTIVATION_FAILED_ROLLBACK_FAILED",
+    "HR_BRIDGE_LEGACY_ADOPTION_REQUIRED",
+    "acquirePrePullLock",
+    "PM2_VERSION_UNSUPPORTED",
     "DEPLOY_IDENTITY_INVALID",
     "sudo -iu deploy",
   ]) {
@@ -671,31 +688,96 @@ function verifySourceContract() {
   ) {
     fail("attendance bridge worker must load identity readiness from the isolated startup module");
   }
+  for (const fragment of [
+    "enabledDeviceIdentityRuntimeFailure",
+    "resolveBridgeSecurityConfig",
+    "HR_DEVICE_IDENTITY_NOT_READY",
+  ]) {
+    if (!bridgeReadiness.includes(fragment)) fail("attendance bridge readiness module is incomplete");
+  }
   for (const fragment of ["await startHrDeviceBridge", "options.onReady()", "HR_BRIDGE_DB_READINESS_TIMEOUT"]) {
     if (!bridgeWorker.includes(fragment)) fail("attendance bridge worker does not prove listener readiness");
   }
   for (const fragment of ['server.once("listening"', "HR_DEVICE_BRIDGE_LISTEN_TIMEOUT", "await listenForBridge"]) {
     if (!bridgeImplementation.includes(fragment)) fail("attendance bridge TCP listen contract is incomplete");
   }
-  for (const fragment of ["../dist/hr-bridge-worker.js", "HR_BRIDGE_STARTUP_TIMEOUT", 'process.send("ready")']) {
+  for (const fragment of [
+    'path.join(projectRoot, "dist", "hr-bridge-worker.cjs")',
+    "pathToFileURL(artifactPath)",
+    "HR_BRIDGE_MUTABLE_SOURCE_RUNTIME_FORBIDDEN",
+    "hr-bridge-release.json",
+    "hr-bridge-environment.json",
+    "hr-bridge-mode.cjs",
+    "HR_BRIDGE_RELEASE_RUNTIME_MARKER_INVALID",
+    "HR_BRIDGE_MANAGED_ENVIRONMENT_REQUIRED",
+    "HR_BRIDGE_ENV_SANITIZED",
+    "HR_BRIDGE_EXTERNAL_RUNTIME_REQUIRE_BLOCKED",
+    "HR_BRIDGE_STARTUP_TIMEOUT",
+    'process.send("ready")',
+  ]) {
     if (!bridgeBootstrap.includes(fragment)) fail("attendance bridge bootstrap watchdog/readiness is incomplete");
   }
-  for (const fragment of ["startupTimeoutMs", "pm2ListenTimeoutMs", "runtimeStableSamples"]) {
+  for (const fragment of [
+    "startupTimeoutMs",
+    "pm2Version",
+    "pm2ListenTimeoutMs",
+    "runtimeStableSamples",
+    "disabledExitCode",
+    "allowedEnvironmentKeys",
+    "pm2EnvironmentMetadataKeys",
+  ]) {
     if (!bridgePolicy.includes(fragment)) fail("attendance bridge lifecycle policy is incomplete");
   }
   for (const fragment of [
     "server/hr-bridge-worker.ts",
     "scripts/verify-hr-bridge-runtime.mjs --selftest",
     "scripts/verify-hr-bridge-artifact.mjs",
+    "scripts/verify-hr-bridge-deployment.mjs",
+    "hr-bridge-optional-module-stub.cjs",
   ]) {
     if (!packageJson.includes(fragment)) fail("production build does not compile and verify the attendance bridge artifact");
   }
   for (const fragment of [
-    'script: "scripts/hr-bridge-worker.mjs"',
-    "wait_ready: true",
-    "listen_timeout: hrBridgePolicy.pm2ListenTimeoutMs",
+    "artifactSmokeBridgeApp",
+    "HR_BRIDGE_ECOSYSTEM_ARTIFACT_SMOKE",
   ]) {
-    if (!ecosystem.includes(fragment)) fail("PM2 attendance bridge readiness policy is incomplete");
+    if (!ecosystem.includes(fragment)) fail("mutable ecosystem bridge isolation policy is incomplete");
+  }
+  for (const fragment of [
+    "wait_ready: true",
+    "listen_timeout: policy.pm2ListenTimeoutMs",
+    'filter_env: [""]',
+    "stop_exit_codes: [policy.disabledExitCode]",
+  ]) {
+    if (!bridgePm2App.includes(fragment)) fail("PM2 attendance bridge readiness policy is incomplete");
+  }
+  for (const fragment of [
+    "hr-bridge-release.json",
+    "hr-bridge-worker.mjs",
+    "hr-bridge-environment.json",
+    "hr-bridge-mode.cjs",
+    "allowedEnvironmentKeys",
+  ]) {
+    if (!bridgePm2Config.includes(fragment)) fail("immutable PM2 bridge definition is incomplete");
+  }
+  for (const fragment of [
+    "beginActivation",
+    "markActivationPhase",
+    "commitActivation",
+    "loadReleaseEnvironment",
+    "HR_BRIDGE_RELEASE_CANDIDATE_MODE_MISMATCH",
+    "establishBaseline",
+    "fsyncSync",
+  ]) {
+    if (!bridgeRelease.includes(fragment)) fail("attendance bridge release journal is incomplete");
+  }
+  for (const fragment of [
+    "restorePrior",
+    "rollback-saved",
+    "HR_BRIDGE_ACTIVATION_FAILED_ROLLBACK_FAILED",
+    "adoptLegacyBridgeBaseline",
+  ]) {
+    if (!bridgeActivation.includes(fragment)) fail("attendance bridge automatic rollback is incomplete");
   }
   if (
     bridgeBootstrap.includes("tsx/esm/api") ||
@@ -705,13 +787,25 @@ function verifySourceContract() {
   ) {
     fail("attendance bridge production startup must not interpret TypeScript at runtime");
   }
-  for (const fragment of ["hr-bridge-worker.mjs", "hr-bridge-worker.js", "spawnSync", "timeout: 10_000"]) {
+  for (const fragment of [
+    "hr-bridge-release-worker.mjs",
+    "hr-bridge-worker.cjs",
+    "HR_BRIDGE_RELEASE_ISOLATION_SMOKE_FAILED",
+    "spawnSync",
+    "timeout: 10_000",
+    "HR_BRIDGE_ENVIRONMENT_ISOLATION_SMOKE_FAILED",
+    "HR_BRIDGE_NATIVE_REQUIRE_GUARD_SMOKE_FAILED",
+  ]) {
     if (!bridgeArtifactGate.includes(fragment)) fail("attendance bridge compiled-artifact smoke gate is incomplete");
   }
   for (const fragment of [
     "erp-hr-bridge",
     "PM2_BRIDGE_NOT_ONLINE",
     "BRIDGE_PORT_NOT_LISTENING",
+    "PM2_BRIDGE_ENV_LEAK",
+    "PM2_BRIDGE_MANAGED_ENVIRONMENT_MISSING",
+    "PM2_BRIDGE_RELEASE_PATH_MISMATCH",
+    "BRIDGE_DISABLED_PORT_STILL_LISTENING",
     '"-ltnp"',
     "runtimeStableSamples",
   ]) {

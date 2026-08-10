@@ -29,6 +29,13 @@ export interface HrDeviceBridge {
 
 export interface HrDeviceBridgeStartOptions {
   listenTimeoutMs?: number;
+  /** منفذ حقن لاختبار تصريف طلبات iClock؛ الإنتاج يستخدم المعالج الحقيقي. */
+  iclockHandler?: typeof handleIclock;
+  /** منفذ حقن للاختبار الحتمي؛ الإنتاج يستخدم المصنع الحقيقي دائماً. */
+  sessionFactory?: typeof createAifaceSession;
+  /** منفذا حقن لاختبار تصريف مهمة الصيانة من دون انتظار مؤقت الإنتاج. */
+  sweep?: typeof sweepOffline;
+  sweepIntervalMs?: number;
 }
 
 const DEFAULT_LISTEN_TIMEOUT_MS = 10_000;
@@ -95,8 +102,20 @@ export async function startHrDeviceBridge(
   const security = assertHrDeviceBridgeStartupConfig(port);
   const rateLimiter = new PerIpRateLimiter(security.maxRequestsPerMinute);
   const wsPerIp = new Map<string, number>();
+  const sessionDrainers = new Set<() => Promise<void>>();
+  const httpTasks = new Set<Promise<void>>();
+  let httpRequestsAccepting = true;
 
   const server = createServer((req, res) => {
+    if (!httpRequestsAccepting) {
+      res.writeHead(503, {
+        "Content-Type": "text/plain",
+        "Retry-After": "5",
+        Connection: "close",
+      });
+      res.end("retry");
+      return;
+    }
     const remote = req.socket.remoteAddress;
     if (!isRequestAuthorized(req, security)) {
       logger.warn(
@@ -120,12 +139,48 @@ export async function startHrDeviceBridge(
       res.end("too many requests");
       return;
     }
-    void handleIclock(req, res, security).then((handled) => {
-      if (!handled) {
-        res.writeHead(404, { "Content-Type": "text/plain" });
-        res.end("not found");
-      }
-    });
+    const abortController = new AbortController();
+    const abortRequest = () => abortController.abort();
+    const abortOnPrematureClose = () => {
+      if (!res.writableFinished) abortRequest();
+    };
+    req.once("aborted", abortRequest);
+    res.once("close", abortOnPrematureClose);
+    if (req.aborted || res.destroyed) abortRequest();
+
+    let tracked!: Promise<void>;
+    tracked = (options.iclockHandler ?? handleIclock)(
+      req,
+      res,
+      security,
+      abortController.signal,
+    )
+      .then((handled) => {
+        if (!handled && !res.headersSent && !res.destroyed) {
+          res.writeHead(404, { "Content-Type": "text/plain" });
+          res.end("not found");
+        }
+      })
+      .catch((error) => {
+        logger.warn(
+          { err: error, remote: normalizeRemoteAddress(remote) },
+          "hrDevices: فشل طلب iClock",
+        );
+        if (!res.headersSent && !res.destroyed && !res.writableEnded) {
+          res.writeHead(503, {
+            "Content-Type": "text/plain",
+            "Retry-After": "30",
+            Connection: "close",
+          });
+          res.end("retry");
+        }
+      })
+      .finally(() => {
+        req.off("aborted", abortRequest);
+        res.off("close", abortOnPrematureClose);
+        httpTasks.delete(tracked);
+      });
+    httpTasks.add(tracked);
   });
 
   // maxPayload صريح: افتراضي ws ~١٠٠م.ب على مقبس غير مصادَق (قبل reg) = ثغرة إنهاك ذاكرة.
@@ -158,13 +213,31 @@ export async function startHrDeviceBridge(
     const remote = normalizeRemoteAddress(req.socket.remoteAddress) || "?";
     wsPerIp.set(remote, (wsPerIp.get(remote) ?? 0) + 1);
     let messageChain = Promise.resolve();
-    const session = createAifaceSession({
+    const session = (options.sessionFactory ?? createAifaceSession)({
       sendText: (text) => socket.send(text),
       close: () => socket.close(),
       remote,
       deviceCredential: requestDeviceCredential(req),
       securityConfig: security,
     });
+    let drainPromise: Promise<void> | null = null;
+    const drainSession = (): Promise<void> => {
+      if (drainPromise) return drainPromise;
+
+      // close listeners لا تنتظر Promise؛ نسلسل الإغلاق بعد آخر رسالة صراحةً كي لا
+      // تُسجّل رسالة reg رابطاً لمقبس مات، وكي تعود أوامر inflight إلى queued قبل closeDb.
+      drainPromise = messageChain
+        .then(() => session.handleClose())
+        .catch((err) =>
+          logger.warn(
+            { err, remote },
+            "hrDevices: فشل تصريف جلسة WebSocket عند الإغلاق",
+          ),
+        )
+        .finally(() => sessionDrainers.delete(drainSession));
+      return drainPromise;
+    };
+    sessionDrainers.add(drainSession);
     logger.info({ remote }, "hrDevices: اتصال WebSocket جديد");
     socket.on("message", (data) => {
       if (!rateLimiter.allow(req.socket.remoteAddress)) {
@@ -183,7 +256,7 @@ export async function startHrDeviceBridge(
       const remaining = Math.max(0, (wsPerIp.get(remote) ?? 1) - 1);
       if (remaining === 0) wsPerIp.delete(remote);
       else wsPerIp.set(remote, remaining);
-      void session.handleClose();
+      void drainSession();
     });
     socket.on("error", (err) => {
       logger.warn({ err, remote }, "hrDevices: خطأ مقبس");
@@ -207,11 +280,22 @@ export async function startHrDeviceBridge(
   heartbeat.unref();
 
   // كنس الأجهزة الصامتة كل دقيقتين: online تعني «أرسل شيئاً خلال آخر ١٠ دقائق» فعلاً.
-  const sweeper = setInterval(() => {
-    void sweepOffline(600).catch((e) =>
-      logger.warn({ err: e }, "hrDevices: فشل كنس offline"),
-    );
-  }, 120_000);
+  // نمنع التداخل ونتعقب المهمة كي لا تُغلق DB وهي ما زالت تكتب حالة الأجهزة.
+  const maintenanceTasks = new Set<Promise<void>>();
+  const launchSweep = (): void => {
+    if (maintenanceTasks.size > 0) return;
+    let tracked!: Promise<void>;
+    tracked = (options.sweep ?? sweepOffline)(600)
+      .catch((e) =>
+        logger.warn({ err: e }, "hrDevices: فشل كنس offline"),
+      )
+      .finally(() => maintenanceTasks.delete(tracked));
+    maintenanceTasks.add(tracked);
+  };
+  const sweeper = setInterval(
+    launchSweep,
+    options.sweepIntervalMs ?? 120_000,
+  );
   sweeper.unref();
 
   server.on("error", (err) => {
@@ -222,31 +306,52 @@ export async function startHrDeviceBridge(
   server.headersTimeout = Math.min(security.requestTimeoutMs, 30_000);
   server.keepAliveTimeout = 5_000;
   server.maxHeadersCount = 40;
-  let stopped = false;
-  const stop = () =>
-    new Promise<void>((resolve) => {
-      if (stopped) {
-        resolve();
-        return;
-      }
-      stopped = true;
+  let stopPromise: Promise<void> | null = null;
+  const stop = (): Promise<void> => {
+    if (stopPromise) return stopPromise;
+
+    stopPromise = (async () => {
+      httpRequestsAccepting = false;
       clearInterval(sweeper);
       clearInterval(heartbeat);
-      for (const client of Array.from(wss.clients)) client.terminate();
-
-      const closeHttpServer = () => {
+      // لا توجد await قبل إيقاف القبول وأخذ snapshot؛ لذلك لا تستطيع جلسة جديدة
+      // أن تتسلل خارج مجموعة التصريف.
+      const drains = Array.from(sessionDrainers);
+      const maintenance = Array.from(maintenanceTasks);
+      const requests = Array.from(httpTasks);
+      const webSocketClosed = new Promise<void>((resolve) => {
+        try {
+          wss.close(() => resolve());
+        } catch (error) {
+          logger.warn({ err: error }, "hrDevices: تعذر إغلاق WebSocketServer");
+          resolve();
+        }
+      });
+      const httpClosed = new Promise<void>((resolve) => {
         if (!server.listening) {
           resolve();
           return;
         }
-        server.close(() => resolve());
-      };
-      try {
-        wss.close(() => closeHttpServer());
-      } catch {
-        closeHttpServer();
-      }
-    });
+        try {
+          server.close(() => resolve());
+        } catch (error) {
+          logger.warn({ err: error }, "hrDevices: تعذر إغلاق HTTP server");
+          resolve();
+        }
+      });
+
+      for (const client of Array.from(wss.clients)) client.terminate();
+      await Promise.all([
+        webSocketClosed,
+        httpClosed,
+        ...drains.map((drain) => drain()),
+        ...maintenance,
+        ...requests,
+      ]);
+    })();
+
+    return stopPromise;
+  };
 
   try {
     await listenForBridge(

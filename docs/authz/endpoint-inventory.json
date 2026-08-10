@@ -14560,7 +14560,7 @@
     {
       "kind": "interval",
       "file": "server/hr-bridge-worker.ts",
-      "line": 105
+      "line": 144
     },
     {
       "kind": "cron",
@@ -14585,12 +14585,12 @@
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 193
+      "line": 266
     },
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 210
+      "line": 295
     },
     {
       "kind": "cron",

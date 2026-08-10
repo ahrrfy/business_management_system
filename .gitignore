@@ -5,6 +5,7 @@
 # Build outputs
 dist/
 build/
+.runtime/
 
 # Environment variables — استثناء كل ‎.env.* بقوّة (يشمل ‎.env.production الشائع)
 # مع استثناء صريح للقوالب المنشورة فقط. سدّ فخّ التزام أسرار حيّة (تدقيق ١٤/٦/٢٦).
