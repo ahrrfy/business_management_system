@@ -27,7 +27,7 @@ import { users } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
 import { logAudit, logAuditTx } from "../services/auditService";
-import { createSale, processPayment } from "../services/saleService";
+import { correctSale, createSale, processPayment } from "../services/saleService";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
 import { canSeeCostForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
@@ -638,6 +638,91 @@ export const saleRouter = router({
 
         return { invoiceId: input.invoiceId };
       });
+    }),
+
+  /**
+   * تصحيح الفاتورة الكامل (0168) — «عكسٌ كامل + إعادة إصدار» بفاتورةٍ جديدة مربوطة (SUPERSEDED).
+   * يختلف عن `correct` أعلاه (تصحيحٌ بيانيّ محدود: ملاحظات/استحقاق/طريقة الدفع بلا مسّ البنود/الدفتر).
+   * هذا يعكس قيود SALE/COGS/المخزون/الذمم ثم يُعيد إصدارها بالبنود/الأسعار/الكميات المصحّحة.
+   * مديريّ فقط (قرار المالك §١٠، مرآة المرتجع). موافقة المدير تُغطّي تجاوز الائتمان/البيع تحت التكلفة.
+   * التفصيل: docs/invoice-correction-design-2026-08-10.md. الخدمة correctSale (مُتحقَّقةٌ باختبارات).
+   */
+  reissue: salesManagerProcedure
+    .input(
+      z.object({
+        originalInvoiceId: z.number().int().positive(),
+        customerId: z.number().int().positive().nullish(),
+        contactName: z.string().trim().max(255).nullish(),
+        contactPhone: z.string().trim().max(32).nullish(),
+        priceTier: tier.nullish(),
+        lines: z.array(lineSchema).min(1),
+        invoiceDiscount: nonNegMoneyString.nullish(),
+        deliveryFee: nonNegMoneyString.nullish(),
+        taxRatePercent: z.string().nullish(),
+        dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").nullish(),
+        notes: z.string().max(5000).nullish(),
+        // دفعةٌ إضافية تُحصَّل الآن عند زيادة المصحّح على المقبوض سلفاً (نقص).
+        additionalPayment: z.object({
+          amount: positiveMoneyString,
+          method,
+          reference: z.string().trim().min(1).max(100).nullish(),
+        }).nullish(),
+        // الفرق الزائد (المصحّح < المقبوض): رصيد دائن للعميل أو استرداد نقديّ (قرار المالك الهجين).
+        overpayHandling: z.enum(["CREDIT", "CASH_REFUND"]).optional(),
+        overpayRefundShiftId: z.number().int().positive().nullish(),
+        reason: z.string().trim().min(3, "اكتب سبب التصحيح").max(500),
+        clientRequestId: z.string().min(1).max(80).optional(),
+        // موافقة مدير لتجاوز حدّ الائتمان أو البيع تحت التكلفة في السطور المصحّحة.
+        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0, role: ctx.user.role };
+      let approvedBy: number | null = null;
+      const { managerApproval, reason: _reason, ...correctionInput } = input;
+      if (managerApproval) {
+        approvedBy = await verifyManagerApproval(managerApproval, ctx, actor.branchId);
+      }
+      const priceOverrideApprovedBy: number | null = approvedBy ?? (elevated ? ctx.user.id : null);
+      const effectiveInput = {
+        ...correctionInput,
+        creditApproved: approvedBy != null,
+        managerOverrideByUserId: approvedBy ?? undefined,
+        priceOverrideApproved: priceOverrideApprovedBy != null,
+      };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await correctSale(effectiveInput, actor);
+          if (!res.idempotentReplay) {
+            await logAudit(ctx, {
+              action: "sale.reissue",
+              entityType: "invoice",
+              entityId: res.originalInvoiceId,
+              oldValue: { originalInvoiceId: res.originalInvoiceId },
+              newValue: {
+                reason: input.reason,
+                correctedInvoiceId: res.correctedInvoiceId,
+                correctedInvoiceNumber: res.correctedInvoiceNumber,
+                total: res.total,
+                overpay: res.overpay,
+                overpayHandled: res.overpayHandled ?? null,
+                creditApprovedBy: approvedBy,
+              },
+            });
+          }
+          return res;
+        } catch (e: any) {
+          if (isDupEntry(e) && attempt < 2) continue;
+          if (e instanceof TRPCError) throw e;
+          logger.error(
+            { err: { message: e?.message, code: e?.code, sqlMessage: e?.sqlMessage, sql: e?.sql }, userId: actor.userId, originalInvoiceId: input.originalInvoiceId },
+            "sale.reissue فشل بخطأ غير متوقّع (السبب الجذري أدناه)",
+          );
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تصحيح الفاتورة" });
+        }
+      }
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام التصحيح (تكرار)" });
     }),
 
   /** سجل تصحيحات الفاتورة للمدير/المالك فقط. */

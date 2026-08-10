@@ -12,3 +12,6 @@ export type { SaleLineInput, CreateSaleInput, CreateSaleResult } from "./sale/ty
 export { createSale } from "./sale/create";
 export type { ProcessPaymentInput } from "./sale/payment";
 export { processPayment } from "./sale/payment";
+//   correct  — correctSale: تصحيح فاتورة مُثبَّتة (عكس كامل + إعادة إصدار، 0168).
+export type { CorrectSaleInput, CorrectSaleResult } from "./sale/correct";
+export { correctSale } from "./sale/correct";
