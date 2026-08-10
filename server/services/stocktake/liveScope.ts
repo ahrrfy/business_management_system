@@ -15,6 +15,7 @@ import {
 import { toDbMoney } from "../money";
 import { withTx } from "../tx";
 import { chunk } from "./internal";
+import { loadOpeningPurchaseLinkedVariantIds } from "./openingEligibility";
 
 export interface LiveScopeSyncResult {
   sessionsChecked: number;
@@ -24,7 +25,7 @@ export interface LiveScopeSyncResult {
 /**
  * يلحق كل متغيّر مؤهل لم يدخل بعد بجلسة FULL نشطة.
  *
- * OPENING: لا بكج/أمانة ولا صنف خُتم openedAt له في الفرع.
+ * OPENING: لا بكج/أمانة، ولا صنف خُتم openedAt له، ولا صنف مرتبط بمشتريات الفرع.
  * NORMAL: يطابق تماماً نطاق FULL الأصلي (كل منتج/متغيّر نشط عدا البكج).
  *
  * قفل صف الجلسة يحمي سباق «إنهاء العد → المراجعة»؛ وقيد
@@ -95,7 +96,19 @@ export async function syncActiveFullStocktakeScopes(): Promise<LiveScopeSyncResu
         );
 
       if (!candidates.length) continue;
-      const items = candidates.map((candidate) => ({
+      const purchasedSet = isOpening
+        ? await loadOpeningPurchaseLinkedVariantIds(
+            tx,
+            Number(locked.branchId),
+            candidates.map((candidate) => Number(candidate.variantId)),
+          )
+        : new Set<number>();
+      const eligibleCandidates = candidates.filter(
+        (candidate) => !purchasedSet.has(Number(candidate.variantId)),
+      );
+      if (!eligibleCandidates.length) continue;
+
+      const items = eligibleCandidates.map((candidate) => ({
         sessionId,
         assignmentId: Number(assignment.id),
         variantId: Number(candidate.variantId),

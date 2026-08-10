@@ -86,9 +86,9 @@ export interface ApplyMovementArgs {
    */
   allowNegativeUnopened?: boolean;
   /**
-   * بضاعة الأمانة (ش٢): ختم `openedAt` بعد الحركة (COALESCE — مرّة واحدة) — إيداع الأمانة «افتتاحٌ»
-   * للرصيد بكمية موثَّقة موقَّعة، فلا يُترَك الصنف قابلاً للبيع بالسالب أثناء نافذة الافتتاح. يطابق فرع
-   * OPENING في setStock. يُفعَّل من مسار سند الإيداع فقط.
+   * ختم `openedAt` بعد الحركة (COALESCE — مرّة واحدة) عند دخول رصيد موثَّق من استلام شراء أو إيداع
+   * أمانة. كلاهما «افتتاحٌ» فعلي للرصيد في الفرع، فلا يُترَك الصنف قابلاً للبيع بالسالب أو للجرد
+   * الافتتاحي بعد ذلك. يطابق فرع OPENING في setStock.
    */
   stampOpened?: boolean;
 }
@@ -165,7 +165,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   const movementId = extractInsertId(res);
 
   // كتابة نسبية تحت القفل: تشفى ذاتياً ولا تطمس تحديثاً متزامناً (بخلاف الكتابة المطلقة السابقة).
-  // بضاعة الأمانة: ختم openedAt ذرّياً مع تحديث الكمية (COALESCE — أول ختم فقط) عند الإيداع.
+  // استلام الشراء/إيداع الأمانة: ختم openedAt ذرّياً مع تحديث الكمية (COALESCE — أول ختم فقط).
   await tx
     .update(branchStock)
     .set(

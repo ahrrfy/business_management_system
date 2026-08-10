@@ -1184,6 +1184,13 @@
       "when": 1787879422000,
       "tag": "0169_invoice_correction_links",
       "breakpoints": true
+    },
+    {
+      "idx": 170,
+      "version": "5",
+      "when": 1787879423000,
+      "tag": "0170_opening_stocktake_exclude_purchases",
+      "breakpoints": true
     }
   ]
 }

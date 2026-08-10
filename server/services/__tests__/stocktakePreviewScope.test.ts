@@ -20,12 +20,15 @@ const TABLES = [
   "stocktakeAssignments",
   "stocktakeSessions",
   "openingModeSettings",
+  "purchaseOrderItems",
+  "purchaseOrders",
   "inventoryMovements",
   "branchStock",
   "productUnits",
   "productVariants",
   "products",
   "categories",
+  "suppliers",
   "branches",
   "users",
 ];
@@ -52,6 +55,7 @@ async function seedBase() {
   await d.insert(s.users).values([
     { id: 1, openId: "u_admin", name: "المدير", role: "admin", loginMethod: "local" },
   ]);
+  await d.insert(s.suppliers).values({ id: 1, name: "مورد الاختبار" });
   await d.insert(s.categories).values([
     { id: 10, name: "قرطاسية" },
     { id: 20, name: "ورق" },
@@ -175,6 +179,69 @@ describe("previewScope — FULL", () => {
     const r = await previewScope({ branchId: 1, sessionType: "OPENING", scopeType: "FULL" });
     expect(r.variantCount).toBe(5); // بلا استبعاد للفرع ١
     expect(r.excludedOpened).toBe(0);
+  });
+
+  it("المشتريات: OPENING يستبعد المرتبط بأمر غير ملغى في الفرع نفسه ويعرض عدّاده؛ NORMAL لا يتأثر", async () => {
+    await db().insert(s.purchaseOrders).values([
+      {
+        id: 101,
+        poNumber: "PO-PREVIEW-OTHER-BRANCH",
+        supplierId: 1,
+        branchId: 2,
+        subtotal: "100.00",
+        total: "100.00",
+        status: "DRAFT",
+        createdBy: 1,
+      },
+      {
+        id: 102,
+        poNumber: "PO-PREVIEW-CANCELLED",
+        supplierId: 1,
+        branchId: 1,
+        subtotal: "100.00",
+        total: "100.00",
+        status: "CANCELLED",
+        createdBy: 1,
+      },
+    ]);
+    await db().insert(s.purchaseOrderItems).values([
+      { purchaseOrderId: 101, variantId: 20, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
+      { purchaseOrderId: 102, variantId: 30, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
+    ]);
+
+    // أمر الفرع الآخر والأمر الملغى لا يستبعدان شيئاً من افتتاح الفرع ١.
+    const beforeSameBranchPurchase = await previewScope({ branchId: 1, sessionType: "OPENING", scopeType: "FULL" });
+    expect(beforeSameBranchPurchase.variantCount).toBe(5);
+    expect(beforeSameBranchPurchase.excludedPurchased).toBe(0);
+
+    await db().insert(s.purchaseOrders).values({
+      id: 103,
+      poNumber: "PO-PREVIEW-SAME-BRANCH",
+      supplierId: 1,
+      branchId: 1,
+      subtotal: "100.00",
+      total: "100.00",
+      status: "DRAFT",
+      createdBy: 1,
+    });
+    await db().insert(s.purchaseOrderItems).values({
+      purchaseOrderId: 103,
+      variantId: 10,
+      quantity: "1",
+      baseQuantity: 1,
+      unitPrice: "100.00",
+      total: "100.00",
+    });
+
+    const opening = await previewScope({ branchId: 1, sessionType: "OPENING", scopeType: "FULL" });
+    expect(opening.variantCount).toBe(4);
+    expect(opening.productCount).toBe(3); // يبقى للقلم المتغيّران 11 و12.
+    expect(opening.excludedPurchased).toBe(1);
+
+    const normal = await previewScope({ branchId: 1, sessionType: "NORMAL", scopeType: "FULL" });
+    expect(normal.variantCount).toBe(6);
+    expect(normal.productCount).toBe(4);
+    expect(normal.excludedPurchased).toBe(0);
   });
 });
 

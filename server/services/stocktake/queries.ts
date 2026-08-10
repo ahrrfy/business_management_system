@@ -26,6 +26,7 @@ import {
   loadStocktakeProgressMap,
   type DbLike,
 } from "./internal";
+import { loadOpeningPurchaseLinkedVariantIds } from "./openingEligibility";
 
 const SCOPE_FALLBACK_LABEL: Record<string, string> = {
   FULL: "جرد شامل للفرع",
@@ -515,6 +516,8 @@ export interface PreviewScopeResult {
   productCount: number;
   /** OPENING فقط: عدد المتغيّرات المستبعَدة من النطاق لأنّها مُفتتَحة سلفاً (openedAt≠NULL). */
   excludedOpened: number;
+  /** OPENING فقط: عدد المتغيّرات المستبعَدة لارتباطها بقائمة مشتريات غير ملغاة في الفرع. */
+  excludedPurchased: number;
   /** OPENING فقط: عدد الأصناف المستبعَدة لأنّها من بضاعة الأمانة (لا تُفتتَح إلا بسند إيداع). */
   excludedConsignment: number;
   /** OPENING فقط: عدد الأصناف المستبعَدة لأنّها بكج (تُجرَد عبر مكوّناتها). */
@@ -571,7 +574,14 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
     // CATEGORY
     const catIds = (input.categoryIds ?? []).filter((n) => Number.isInteger(n) && n > 0);
     if (!catIds.length) {
-      return { variantCount: 0, productCount: 0, excludedOpened: 0, excludedConsignment: 0, excludedBundle: 0 };
+      return {
+        variantCount: 0,
+        productCount: 0,
+        excludedOpened: 0,
+        excludedPurchased: 0,
+        excludedConsignment: 0,
+        excludedBundle: 0,
+      };
     }
     const rows = await db
       .select({ id: productVariants.id, productId: productVariants.productId })
@@ -589,7 +599,20 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
     productIds = rows.map((r) => Number(r.productId));
   }
 
-  // (٢) OPENING: استبعاد المُفتتَح مسبقاً (openedAt≠NULL) — يطابق create.ts:290-315.
+  // (٢) OPENING: استبعاد كل صنف ارتبط بقائمة مشتريات غير ملغاة في الفرع — يطابق create.ts.
+  let excludedPurchased = 0;
+  if (isOpening && variantIds.length) {
+    const purchasedSet = await loadOpeningPurchaseLinkedVariantIds(db, input.branchId, variantIds);
+    excludedPurchased = purchasedSet.size;
+    if (excludedPurchased) {
+      const filtered = variantIds.filter((v) => !purchasedSet.has(v));
+      const keptSet = new Set(filtered);
+      productIds = productIds.filter((_, i) => keptSet.has(variantIds[i]));
+      variantIds = filtered;
+    }
+  }
+
+  // (٣) OPENING: استبعاد المُفتتَح مسبقاً (openedAt≠NULL) — يطابق create.ts.
   let excludedOpened = 0;
   if (isOpening && variantIds.length) {
     const openedSet = new Set<number>();
@@ -616,7 +639,7 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
     }
   }
 
-  // (٣) OPENING: عدّادات مقياس شفافيّة — كم استُبعد بسبب الأمانة/البكج؟ استعلام قصير ينفَّذ فقط
+  // (٤) OPENING: عدّادات مقياس شفافيّة — كم استُبعد بسبب الأمانة/البكج؟ استعلام قصير ينفَّذ فقط
   // عند OPENING لكيلا يُثقل الـwizard في NORMAL.
   let excludedConsignment = 0;
   let excludedBundle = 0;
@@ -653,6 +676,7 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
     variantCount: variantIds.length,
     productCount: uniqueProducts,
     excludedOpened,
+    excludedPurchased,
     excludedConsignment,
     excludedBundle,
   };
