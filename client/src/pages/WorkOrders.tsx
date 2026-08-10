@@ -7,7 +7,7 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { AlertTriangle, Calendar, CheckCircle2, ChevronRight, FileText, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Search, Timer, Truck, Wrench, X } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
@@ -20,7 +20,7 @@ import { printShippingLabel, type ShippingLabelData } from "@/lib/printing/shipp
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { RowActions, type RowAction } from "@/components/list";
 import { DataTable } from "@/components/data-table/DataTable";
-import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
@@ -29,6 +29,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import CustomerPicker from "@/components/CustomerPicker";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import {
   Dialog,
   DialogContent,
@@ -88,6 +89,19 @@ const PRIORITIES: Record<string, { label: string; cls: string; rank: number }> =
   URGENT: { label: "عاجل", cls: "wob-urgent", rank: 3 },
   NORMAL: { label: "عادي", cls: "wob-normal", rank: 2 },
   LOW: { label: "منخفض", cls: "wob-low", rank: 1 },
+};
+function WorkOrderChannelMark({ channel, className = "size-3.5" }: { channel: string | null | undefined; className?: string }) {
+  if (channel === "WHATSAPP") {
+    return <WhatsAppIcon className={`${className} text-[var(--brand-whatsapp)]`} />;
+  }
+  const ch = CHANNELS[channel ?? "WALK_IN"] ?? CHANNELS.OTHER;
+  return <span aria-hidden>{ch.icon}</span>;
+}
+const PAYMENT_METHOD_LABEL: Record<string, string> = {
+  CASH: "نقدي",
+  CARD: "بطاقة",
+  TRANSFER: "تحويل",
+  WALLET: "محفظة",
 };
 const TL_LABEL: Record<string, string> = {
   "workOrder.create": "استُلم الطلب",
@@ -161,6 +175,7 @@ function printWoFromCard(o: WO) {
     woDate: o.createdAt ? String(o.createdAt).slice(0, 10) : undefined,
     dueDate: o.dueDate ? String(o.dueDate).slice(0, 10) : undefined,
     status: o.status,
+    employeeName: o.createdByName?.trim() || "موظف الخدمة",
     customerName: o.customerName,
     customerPhone: o.customerPhone,
     jobType: o.title,
@@ -205,6 +220,7 @@ function printWoThermalFromCard(o: WO) {
     orderDate: o.createdAt ? String(o.createdAt).slice(0, 10) : undefined,
     dueDate: o.dueDate ? String(o.dueDate).slice(0, 10) : undefined,
     status: o.status,
+    employeeName: o.createdByName?.trim() || "موظف الخدمة",
     customerName: o.customerName ?? undefined,
     customerPhone: o.customerPhone ?? undefined,
     jobTitle: o.title,
@@ -217,7 +233,7 @@ function printWoThermalFromCard(o: WO) {
   });
 }
 
-function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPending }: {
+function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPending, onOpenCustomer }: {
   o: WO;
   onPointerDown?: (e: React.PointerEvent) => void;
   dragging?: boolean;
@@ -227,6 +243,7 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
   /** بَيانات الفنّيين من `assignableStaff` (name قد يَكون null في DB ⇒ يُعرَض «بلا اسم»). */
   staff?: { id: number; name: string | null; role: string }[];
   assignPending?: boolean;
+  onOpenCustomer?: (customerId: number) => void;
 }) {
   const pr = progressOf(o.status);
   const di = dueInfo(o);
@@ -254,7 +271,7 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
         )}
         {/* شارة قَناة المَصدر — مَوضوعة في رأس البطاقة per README §5.2 (لإبراز جانب المبيعات). */}
         <span className="wob-ch-chip" title={`القناة: ${ch.label}`}>
-          <span aria-hidden>{ch.icon}</span>
+          <WorkOrderChannelMark channel={o.receptionChannel} />
           <span className="wob-ch-chip-l">{ch.label}</span>
         </span>
         <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>
@@ -272,6 +289,13 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
                 gate: { module: "workorders", level: "READ" },
               }}
               actions={[
+                ...(o.customerId && onOpenCustomer ? [{
+                  key: "customer-360",
+                  kind: "view" as const,
+                  label: "بطاقة العميل ٣٦٠° وكل طلباته",
+                  onSelect: () => onOpenCustomer(Number(o.customerId)),
+                  gate: { module: "crm" as const, level: "READ" as const },
+                }] : []),
                 { key: "print", kind: "print", label: "طباعة A4", onSelect: () => printWoFromCard(o), gate: { module: "workorders", level: "READ" } },
                 { key: "print-thermal", kind: "print", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o), gate: { module: "workorders", level: "READ" } },
                 { key: "print-label", kind: "print", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o), gate: { module: "workorders", level: "READ" } },
@@ -288,8 +312,16 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
         <div className="wob-info">
           <div className="wob-card-title">{o.title}</div>
           <div className="wob-cust">{o.customerName ?? "عميل نقدي"}</div>
+          {o.customerPhone && <div className="wob-cust-phone" dir="ltr">{o.customerPhone}</div>}
         </div>
       </div>
+      {o.customizationText && <div className="wob-card-specs">{o.customizationText}</div>}
+      {o.hasDelivery && (
+        <div className="wob-card-delivery">
+          <Package aria-hidden className="size-3.5 shrink-0" />
+          <span className="truncate">{o.deliveryAddress ?? "توصيل للعميل"}</span>
+        </div>
+      )}
       <div className="wob-meta">
         <span className="wob-meta-pill"><span className="wob-ml">الكمية </span>{fmtInt(o.quantity)}</span>
         <span className="wob-meta-pill"><span className="wob-ml">السعر </span>{fmtAr(o.salePrice)} <span className="wob-ml">د.ع</span></span>
@@ -326,9 +358,9 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
             phone={o.customerPhone}
             alternativePhones={[o.deliveryPhone]}
             message={workOrderContactMessage(o)}
-            label={`واتساب ${o.customerName ?? "العميل"}`}
-            size="icon-sm"
-            iconOnly
+            label="مراسلة"
+            size="sm"
+            appearance="solid"
             className="wob-wa"
           />
         </span>
@@ -621,12 +653,13 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
 
 // ─────────────── لوحة التفاصيل (Drawer) ───────────────
 function Drawer({
-  id, onClose, isManager, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, busy,
+  id, onClose, isManager, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, onOpenCustomer, busy,
 }: {
   id: number; onClose: () => void; isManager: boolean; canDeliver: boolean;
   onAdvance: (id: number, to: Status) => void; onCancel: (d: Detail) => void;
   onDeliver: (d: Detail) => void; onAssign: (id: number, staffId: number | null) => void;
   onEdit: (id: number) => void; busy: boolean;
+  onOpenCustomer?: (customerId: number) => void;
 }) {
   const detail = trpc.workOrders.get.useQuery({ workOrderId: id });
   const timeline = trpc.workOrders.timeline.useQuery({ workOrderId: id });
@@ -686,12 +719,28 @@ function Drawer({
             <div className="wob-dr-body">
               <div>
                 <div className="wob-kv">
-                  <div><div className="wob-k">العميل</div><div className="wob-v">{d.customerName ?? "عميل نقدي"}</div></div>
-                  <div><div className="wob-k">قناة الاستلام</div><div className="wob-v">{ch?.icon} {ch?.label}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</div></div>
+                  <div>
+                    <div className="wob-k">العميل</div>
+                    <div className="wob-v">
+                      {d.customerId && onOpenCustomer ? (
+                        <button type="button" className="text-primary hover:underline" onClick={() => onOpenCustomer(Number(d.customerId))}>
+                          {d.customerName ?? `عميل #${d.customerId}`} · بطاقة ٣٦٠°
+                        </button>
+                      ) : "عميل نقدي"}
+                    </div>
+                  </div>
+                  {d.customerPhone && <div><div className="wob-k">هاتف العميل</div><div className="wob-v" dir="ltr">{d.customerPhone}</div></div>}
+                  <div><div className="wob-k">قناة الاستلام</div><div className="wob-v inline-flex items-center gap-1"><WorkOrderChannelMark channel={d.receptionChannel} /> {ch?.label}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</div></div>
                   <div><div className="wob-k">الكمية</div><div className="wob-v">{fmtInt(d.quantity)}</div></div>
                   <div><div className="wob-k">سعر البيع</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.salePrice)} د.ع</div></div>
                   {Number(d.deposit ?? 0) > 0 && <div><div className="wob-k">العربون</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.deposit)} د.ع</div></div>}
+                  {Number(d.deposit ?? 0) > 0 && <div><div className="wob-k">طريقة دفع العربون</div><div className="wob-v">{PAYMENT_METHOD_LABEL[d.paymentMethod ?? ""] ?? d.paymentMethod ?? "—"}</div></div>}
+                  {d.paymentReference && <div><div className="wob-k">مرجع الدفع</div><div className="wob-v" dir="ltr">{d.paymentReference}</div></div>}
                   <div><div className="wob-k">الاستحقاق</div><div className="wob-v">{fmtDate(d.dueDate)}</div></div>
+                  <div><div className="wob-k">أنشأ الطلب</div><div className="wob-v">{d.createdByName ?? "—"}</div></div>
+                  <div><div className="wob-k">وقت الاستلام</div><div className="wob-v">{fmtDateTime(d.createdAt)}</div></div>
+                  {d.hasDelivery && <div><div className="wob-k">هاتف التوصيل</div><div className="wob-v" dir="ltr">{d.deliveryPhone ?? d.customerPhone ?? "—"}</div></div>}
+                  {d.hasDelivery && <div style={{ gridColumn: "1 / -1" }}><div className="wob-k">عنوان التوصيل</div><div className="wob-v">{d.deliveryAddress ?? "—"}</div></div>}
                   {d.materialsCost != null && <div><div className="wob-k">كلفة المواد</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.materialsCost)} د.ع</div></div>}
                   {d.laborCost != null && <div><div className="wob-k">كلفة العمالة</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.laborCost)} د.ع</div></div>}
                   <div style={{ gridColumn: "1 / -1" }}>
@@ -709,6 +758,12 @@ function Drawer({
                 </div>
                 {d.customizationText && (
                   <div className="wob-note"><span style={{ fontWeight: 700 }}>التخصيص/الملاحظات: </span>{d.customizationText}</div>
+                )}
+                {d.paymentReceiptUrl && (
+                  <a href={d.paymentReceiptUrl} target="_blank" rel="noreferrer" className="mt-3 block rounded-xl border bg-card p-2 hover:border-primary">
+                    <div className="mb-2 text-xs font-bold text-muted-foreground">صورة إيصال العربون — اضغط للتكبير</div>
+                    <img src={d.paymentReceiptUrl} alt="إيصال دفع العربون" className="max-h-44 w-full rounded-lg object-contain" />
+                  </a>
                 )}
               </div>
 
@@ -776,7 +831,9 @@ function Drawer({
                 woDate: d.createdAt ? String(d.createdAt).slice(0, 10) : undefined,
                 dueDate: d.dueDate ? String(d.dueDate).slice(0, 10) : undefined,
                 status: d.status,
+                employeeName: d.createdByName?.trim() || "موظف الخدمة",
                 customerName: d.customerName,
+                customerPhone: d.customerPhone,
                 jobType: d.title,
                 specs: d.customizationText,
                 items: [{ name: `${d.title} (${d.quantity} نسخة)`, unit: "مهمة", quantity: 1, unitPrice: d.salePrice, total: d.salePrice }],
@@ -791,6 +848,7 @@ function Drawer({
                   orderDate: d.createdAt ? String(d.createdAt).slice(0, 10) : undefined,
                   dueDate: d.dueDate ? String(d.dueDate).slice(0, 10) : undefined,
                   status: d.status,
+                  employeeName: d.createdByName?.trim() || "موظف الخدمة",
                   customerName: d.customerName ?? undefined,
                   customerPhone: d.customerPhone ?? undefined,
                   jobTitle: d.title,
@@ -809,6 +867,7 @@ function Drawer({
                 alternativePhones={[d.deliveryPhone]}
                 message={workOrderContactMessage(d)}
                 label="راسل العميل"
+                appearance="solid"
                 className="wob-wa-lg"
               />
               {next ? (next !== "DELIVERED" || canDeliver) && (
@@ -1016,6 +1075,8 @@ export default function WorkOrders() {
   // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const canDeliver = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager"]);
+  const canReadCustomerContext = !!me.data?.role &&
+    hasModuleAccess(me.data.role, (me.data.permissionsOverride ?? null) as PermissionMap | null, "crm", "READ");
   // قائمة الموظَّفين القابِلين للإسناد — مَرفوعة لصَفحة WorkOrders كَي تُستعمَل
   // في الإسناد inline على بطاقات «طابور وارد» (بَدل فَتح الـDrawer لِكل أَمر).
   // مَفعَّلة لِلمَدير فَقط لِتَوافق صَلاحية `assignableStaff` على الخادم.
@@ -1038,6 +1099,7 @@ export default function WorkOrders() {
   useEffect(() => {
     window.localStorage.setItem("wo-view", view);
   }, [view]);
+  const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [deliverOrder, setDeliverOrder] = useState<DeliverTarget | null>(null);
   const [drag, setDrag] = useState<{ order: WO; x: number; y: number; overCol: string | null } | null>(null);
 
@@ -1378,6 +1440,7 @@ export default function WorkOrders() {
                         }
                         staff={s.key === "INBOX" && isManager ? assignableStaff.data : undefined}
                         assignPending={assign.isPending}
+                        onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
                       />
                     ))}
                     {list.length === 0 && <div className="wob-col-empty">— لا أوامر —</div>}
@@ -1420,6 +1483,7 @@ export default function WorkOrders() {
             if (!(await confirm({ variant: "info", title: "تغيير إسناد الأمر", description: staffId ? "إسناد هذا الأمر إلى الموظف المحدّد. متابعة؟" : "إلغاء إسناد هذا الأمر (سيصبح غير مُسنَد). متابعة؟", confirmText: "تأكيد الإسناد", cancelText: "تراجع" }))) return;
             assign.mutate({ workOrderId: id, assignedTo: staffId });
           }}
+          onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
         />
       )}
 
@@ -1433,12 +1497,19 @@ export default function WorkOrders() {
           deliver.mutate({ workOrderId: deliverOrder.id, payment });
         }}
       />
-
       <EditWorkOrderDialog
         workOrderId={editTarget}
         onClose={() => setEditTarget(null)}
         onSaved={() => { setEditTarget(null); invalidateAll(); }}
       />
+      {canReadCustomerContext && customerContextId != null && (
+        <Contact360Panel
+          kind="customer"
+          id={customerContextId}
+          onClose={() => setCustomerContextId(null)}
+          onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }}
+        />
+      )}
     </div>
   );
 }
