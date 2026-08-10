@@ -1,7 +1,8 @@
-// «وضع الافتتاح» (ش٢ ١٩/٧) — حارس البيع بالسالب المشروط في createSale/applyMovement:
-// نقدي كامل من قناة POS + صنف غير مُفتتَح + تكلفة مُدخلة + ضمن سقف الكمية ⇒ يمرّ بالسالب؛
-// وكل ما عداه (آجل/جزئي/غير نقدي/ORDER/مُفتتَح/بلا تكلفة/فوق السقف/نافذة منقضية) صارم كما كان،
-// مع رسائل رفض مُثراة وقناة الأوفلاين (allowNegativeStock) مستقلة لا تتراكب.
+// «وضع الافتتاح» (ش٢ ١٩/٧ + توسعة قرار المالك ١٠/٨) — حارس البيع بالسالب في createSale/applyMovement:
+// أثناء النافذة الفعّالة تعمل **كل قنوات الاستقبال/التنفيذ** (POS/ORDER/WORKORDER) بالسالب للصنف
+// غير المُفتتَح، وبأيّ طريقة دفع (نقدي/بطاقة/آجل/جزئي) مع إعفاء حاجز الائتمان — والدَّين يُرحَّل
+// ذمّةً كاملة على العميل. الحُرّاس الصنفية تبقى صارمة: تكلفة مُدخلة (>0) + سقف الكمية + غير مُفتتَح +
+// استثناء الأمانة. خارج النافذة يعود كل شيء صارماً (ائتماناً ومخزوناً). الأوفلاين مستقلّ لا يتراكب.
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -152,29 +153,52 @@ describe("حارس البيع بالسالب المشروط — وضع الاف�
     expect(entry.profit).toBe("18.00");
   });
 
-  it("البيع الآجل (بلا دفعة) يُرفض برسالة مُثراة تشرح شرط السداد الكامل", async () => {
+  it("توسعة ١٠/٨: البيع الآجل (بلا دفعة) أثناء النافذة يمرّ بالسالب ويُرحَّل ذمّةً كاملة على العميل", async () => {
     await enableOpeningMode();
     await db().insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: null });
-    await expectConflict(
-      createSale(
-        { branchId: 1, customerId: 1, sourceType: "POS", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }] },
-        actor,
-      ),
-      /سداداً كاملاً نقداً أو بالبطاقة/,
+    const res = await createSale(
+      { branchId: 1, customerId: 1, sourceType: "POS", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }] },
+      actor,
     );
-    expect(await stockOf(1)).toBe(0);
+    expect(res.negativeDips).toEqual([{ variantId: 1, newQuantity: -2 }]);
+    expect(await stockOf(1)).toBe(-2);
+    const [cust] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
+    expect(cust.currentBalance).toBe("20.00"); // كامل الدَّين ذمّة (لم يُخفَ) = 2 × 10.00
   });
 
-  it("الدفعة الجزئية (عربون نقدي) تُرفض — unpaid > 0", async () => {
+  it("توسعة ١٠/٨: الدفعة الجزئية أثناء النافذة تمرّ بالسالب والباقي ذمّة", async () => {
     await enableOpeningMode();
     await db().insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: null });
-    await expectConflict(
-      createSale(
-        { branchId: 1, customerId: 1, sourceType: "POS", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "5.00", method: "CASH" } },
-        actor,
-      ),
-      /سداداً كاملاً نقداً أو بالبطاقة/,
+    await createSale(
+      { branchId: 1, customerId: 1, sourceType: "POS", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "5.00", method: "CASH" } },
+      actor,
     );
+    expect(await stockOf(1)).toBe(-2);
+    const [cust] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
+    expect(cust.currentBalance).toBe("15.00"); // 20 − 5 مدفوع = 15 ذمّة
+  });
+
+  it("توسعة ١٠/٨: إعفاء الائتمان — عميل نقدي-فقط (creditLimit=0) يُفوتَر آجلاً داخل النافذة ويُرفض خارجها", async () => {
+    await db().insert(s.customers).values({ id: 1, name: "نقدي", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: "0" });
+    // خارج النافذة: حاجز الائتمان يرفض قبل أي خصم مخزون (FORBIDDEN).
+    let err: unknown = null;
+    try {
+      await createSale(
+        { branchId: 1, customerId: 1, sourceType: "POS", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] },
+        actor,
+      );
+    } catch (e) { err = e; }
+    expect((err as TRPCError)?.code).toBe("FORBIDDEN");
+    expect(await stockOf(1)).toBe(0);
+    // داخل النافذة: يُعفى ويُرحَّل ذمّةً كاملة.
+    await enableOpeningMode();
+    await createSale(
+      { branchId: 1, customerId: 1, sourceType: "POS", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] },
+      actor,
+    );
+    expect(await stockOf(1)).toBe(-1);
+    const [cust] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
+    expect(cust.currentBalance).toBe("10.00");
   });
 
   it("الدفع بالبطاقة كاملاً يُعد سداداً فورياً ويمرّ بالسالب دون إدخاله في درج النقد", async () => {
@@ -192,15 +216,26 @@ describe("حارس البيع بالسالب المشروط — وضع الاف�
     expect(receipt.cashBucket).toBeNull();
   });
 
-  it("قناة ORDER (تحويل عرض سعر) لا تستفيد من الوضع", async () => {
+  it("توسعة ١٠/٨: قناة ORDER (تحويل عرض سعر) تستفيد الآن من الوضع وتمرّ بالسالب", async () => {
     await enableOpeningMode();
     await db().insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: null });
+    const res = await createSale(
+      { branchId: 1, customerId: 1, sourceType: "ORDER", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
+      actor,
+    );
+    expect(res.negativeDips).toEqual([{ variantId: 1, newQuantity: -2 }]);
+    expect(await stockOf(1)).toBe(-2);
+  });
+
+  it("قناة ONLINE (المتجر) تبقى خارج نطاق الوضع — تُرفض بالسالب برسالة «خارج النطاق»", async () => {
+    await enableOpeningMode();
+    await db().insert(s.customers).values({ id: 1, name: "متجر", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: null });
     await expectConflict(
       createSale(
-        { branchId: 1, customerId: 1, sourceType: "ORDER", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
+        { branchId: 1, customerId: 1, sourceType: "ONLINE", shiftId: 1, priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
         actor,
       ),
-      /سداداً كاملاً نقداً أو بالبطاقة/,
+      /خارج النطاق/,
     );
   });
 

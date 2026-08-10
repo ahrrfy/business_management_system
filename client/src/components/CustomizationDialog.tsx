@@ -320,6 +320,24 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
                 onChange={(v) => upd("deposit", v)}
                 className="text-sm"
               />
+              {/* زبون موثوق بلا عربون (قرار المالك ١٠/٨): زرّ يصفّر العربون بنقرة — الطلب يصير ذمّةً
+                  تُحصَّل عند التسليم. «عربون كامل» يعيد ملء المبلغ للحالة المعتادة. */}
+              <div className="flex gap-1.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => upd("deposit", "0")}
+                  className="rounded-md border px-2 py-1 text-[11px] font-bold text-muted-foreground hover:bg-muted"
+                >
+                  بدون عربون
+                </button>
+                <button
+                  type="button"
+                  onClick={() => upd("deposit", grandWithDelivery.toFixed(2))}
+                  className="rounded-md border px-2 py-1 text-[11px] font-bold text-muted-foreground hover:bg-muted"
+                >
+                  عربون كامل
+                </button>
+              </div>
             </div>
             <div className="flex items-center justify-between text-xs pt-1 border-t">
               <span className="text-muted-foreground">المتبقّي بعد العربون:</span>

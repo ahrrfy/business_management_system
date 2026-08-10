@@ -6,6 +6,7 @@ import { customers, productVariants, workOrderMaterials, workOrders } from "../.
 import { logger } from "../../logger";
 import { applyMovement } from "../inventoryService";
 import { money, round2 } from "../money";
+import { readOpeningWindowState } from "../openingModeService";
 import { type Actor, requireDb, withTx } from "../tx";
 import { flowNotify } from "../whatsapp";
 import { assertOperatorOwns, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
@@ -49,6 +50,11 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
       : [];
     const costMap = new Map(costRows.map((v) => [Number(v.id), v.costPrice]));
 
+    // وضع الافتتاح (قرار المالك ١٠/٨): أثناء النافذة الفعّالة يُسمح باستهلاك مواد صنفٍ **غير مُفتتَح**
+    // بالسالب حتى يُجرَد افتتاحياً — وإلا توقّف كاشير التنفيذ إذ لا مواد مجرودة بعد. الحُرّاس الصنفية
+    // تبقى: تكلفة>0 (سلامة COGS) + ضمن سقف السطر + openedAt IS NULL (يُفحص داخل applyMovement).
+    const opening = await readOpeningWindowState(tx);
+
     let materialsCost = new Decimal(0);
     for (const m of mats) {
       // Snapshot unit cost from variant.costPrice at consumption.
@@ -56,15 +62,30 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
       const lineCost = round2(unitCost.times(m.baseQuantity));
       materialsCost = materialsCost.plus(lineCost);
       await tx.update(workOrderMaterials).set({ unitCost: unitCost.toFixed(2) }).where(eq(workOrderMaterials.id, Number(m.id)));
-      await applyMovement(tx, {
-        variantId: Number(m.variantId),
-        branchId: Number(wo.branchId),
-        baseQuantity: m.baseQuantity,
-        movementType: "OUT",
-        referenceType: "WORK_ORDER",
-        referenceId: workOrderId,
-        createdBy: actor.userId,
-      });
+      const allowNegativeUnopened = opening.active && unitCost.gt(0) && m.baseQuantity <= opening.maxQty;
+      try {
+        await applyMovement(tx, {
+          variantId: Number(m.variantId),
+          branchId: Number(wo.branchId),
+          baseQuantity: m.baseQuantity,
+          movementType: "OUT",
+          referenceType: "WORK_ORDER",
+          referenceId: workOrderId,
+          createdBy: actor.userId,
+          allowNegativeUnopened,
+        });
+      } catch (e) {
+        // إثراء رسالة الرفض أثناء نافذة الافتتاح: يشرح لماذا لم يُسمح باستهلاك المادة بالسالب.
+        if (e instanceof TRPCError && e.code === "CONFLICT" && e.message.includes("المخزون غير كافٍ") && opening.active) {
+          const hint = !unitCost.gt(0)
+            ? "بدء التنفيذ بالسالب في وضع الافتتاح يتطلّب تكلفة مُدخلة للمادة — أدخِل تكلفتها أولاً"
+            : m.baseQuantity > opening.maxQty
+              ? `كمية المادة تتجاوز سقف السطر السالب في وضع الافتتاح (${opening.maxQty} وحدة أساس)`
+              : "المادة مُفتتَحة (مجرودة) — رصيدها مثبّت والاستهلاك فوقه يخضع للفحص الصارم";
+          throw new TRPCError({ code: "CONFLICT", message: `${e.message} — ${hint}` });
+        }
+        throw e;
+      }
     }
     materialsCost = round2(materialsCost);
 

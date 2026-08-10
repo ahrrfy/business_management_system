@@ -226,6 +226,10 @@ export default function Reception() {
   const [numMode, setNumMode] = useState<NumMode>("PAY");
   const [payInput, setPayInput] = useState("");
   const [method, setMethod] = useState<PayMethod>("CASH");
+  // «بيع آجل بلا دفع» (قرار المالك ١٠/٨): للزبون الموثوق نُنشئ طلباً/فاتورة بلا عربون، والدَّين
+  // يُسجَّل ذمّةً تُحصَّل لاحقاً. أثناء «وضع الافتتاح» يُعفى من سقف الائتمان خادمياً؛ خارجه يظلّ
+  // محكوماً بسقف ائتمان العميل (نقدي فقط = يُرفض ما لم يُمنَح سقف).
+  const [deferred, setDeferred] = useState(false);
   const [paymentReference, setPaymentReference] = useState(""); // P2 fix: مرجع البطاقة للعرابين
   const [showInbox, setShowInbox] = useState(false);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
@@ -540,13 +544,26 @@ export default function Reception() {
     const printLines = directLines.filter((c) => c.row.isPrintService);
     const customItems = cart.filter(isCustomKind);
 
-    // عربون كل صنف مخصّص: Quick = كامل سعر الصنف+التوصيل؛ غير ذلك = ما حفظه في النافذة.
+    // «بيع آجل بلا دفع»: يتطلّب عميلاً محدداً (لا ذمّة بلا صاحب). خدمات الطباعة تتطلّب دفعاً
+    // (محرّك التسعير) ⇒ تُستثنى من الآجل هنا — تُباع منفصلةً مدفوعةً أو تُزال من السلة.
+    if (deferred) {
+      if (!customer.customerId && !customer.name.trim()) {
+        notify.err("البيع الآجل يتطلّب عميلاً محدداً — اختر العميل أو أدخِل اسمه");
+        return;
+      }
+      if (printLines.length > 0) {
+        notify.err("خدمات الطباعة تتطلّب دفعاً — أزِلها من السلة أو أنشئ لها فاتورة منفصلة مدفوعة");
+        return;
+      }
+    }
+
+    // عربون كل صنف مخصّص: آجل ⇒ صفر؛ Quick = كامل سعر الصنف+التوصيل؛ غير ذلك = ما حفظه في النافذة.
     // إصلاح P1: salePrice على workOrder = lineTotal + deliveryCost. deliverWorkOrder يَحسب
     // إجمالي الفاتورة من wo.salePrice وحده ويَرفض deposit > salePrice ⇒ إن استَبعَدنا التوصيل
     // فأمر التسليم المدفوع كاملاً يَفشل، وإن لم يَفشل فالتوصيل بلا إيراد فعلاً.
     const customWithDeposits = customItems.map((c) => {
       const full = D(customLineGrand(c));
-      const deposit = opts.quickFullPay ? full.toFixed(2) : (c.custom?.deposit || "0");
+      const deposit = deferred ? "0" : opts.quickFullPay ? full.toFixed(2) : (c.custom?.deposit || "0");
       return { c, depositStr: deposit, salePriceStr: full.toFixed(2) };
     });
 
@@ -559,7 +576,7 @@ export default function Reception() {
     // العربون الكامل لكل صنف لـcreateWorkOrder الذي يَقيّده receipt(IN)+PAYMENT_IN فوراً.
     // النتيجة: نَقد غير مَقبوض فعلاً يَدخل الدفتر ⇒ تَسوية صندوق/AR مشوَّهة. الفحص الآن
     // يَستلزم تَغطية إجمالي العَرابين أيضاً (المُدخَل ≥ المتوقَّع).
-    if (!opts.quickFullPay && inputPaidD.lt(expectedTotalD)) {
+    if (!deferred && !opts.quickFullPay && inputPaidD.lt(expectedTotalD)) {
       notify.err(`المبلغ المُدخَل (${fmt(inputPaidD.toFixed(2))}) أقلّ من المتوقَّع (${fmt(expectedTotalD.toFixed(2))} = بيع + عرابين). عدّل العرابين من النوافذ أو أكمِل المبلغ.`);
       return;
     }
@@ -604,7 +621,8 @@ export default function Reception() {
           sourceType: "POS",
           customerId: customerId ?? undefined,
           lines,
-          payment: { amount: saleAmount, method },
+          // آجل ⇒ لا دفع الآن (المبلغ كله ذمّة على العميل)؛ وإلا الدفع الكامل المعتاد.
+          payment: { amount: deferred ? "0" : saleAmount, method },
           clientRequestId: `${reqIdRef.current}-sale`,
         });
         invoiceId = res.invoiceId ?? null;
@@ -622,9 +640,9 @@ export default function Reception() {
           })),
           subtotal: saleAmount,
           total: saleAmount,
-          paid: saleAmount,
+          paid: deferred ? "0.00" : saleAmount,
           change: 0,
-          paymentMethod: PAY_METHOD_LABEL[method],
+          paymentMethod: deferred ? "آجل (بلا دفع)" : PAY_METHOD_LABEL[method],
         });
       }
 
@@ -1511,6 +1529,19 @@ export default function Reception() {
             )}
           </div>
 
+          {/* بيع آجل بلا دفع — للزبون الموثوق (قرار المالك ١٠/٨) */}
+          <div className="flex-shrink-0 px-3 pb-1">
+            <label className="flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-bold cursor-pointer hover:bg-muted">
+              <input
+                type="checkbox"
+                checked={deferred}
+                onChange={(e) => setDeferred(e.target.checked)}
+                className="size-4"
+              />
+              بيع آجل (بلا دفع الآن) — للزبون الموثوق
+            </label>
+          </div>
+
           {/* مؤشّر فكّة/متبقّي */}
           <div className="flex flex-shrink-0 items-center justify-between border-t px-3 py-1.5 text-xs">
             {isChange && paid > 0 && (
@@ -1530,7 +1561,11 @@ export default function Reception() {
               </>
             )}
             {!isChange && !isOwing && (
-              <span className="text-muted-foreground">المتوقّع الآن: <span className="font-bold tabular-nums" dir="ltr">{fmt(expectedNow)} د.ع</span></span>
+              deferred ? (
+                <span className="font-bold text-[var(--sem-warn)]">بيع آجل — يُسجَّل ذمّةً على العميل</span>
+              ) : (
+                <span className="text-muted-foreground">المتوقّع الآن: <span className="font-bold tabular-nums" dir="ltr">{fmt(expectedNow)} د.ع</span></span>
+              )
             )}
           </div>
 
@@ -1538,7 +1573,8 @@ export default function Reception() {
           <div className="flex-shrink-0 space-y-1.5 px-3 pb-3 pt-1">
             <button
               type="button"
-              disabled={cart.length === 0 || submitting || !shift}
+              disabled={cart.length === 0 || submitting || !shift || deferred}
+              title={deferred ? "معطّل في وضع البيع الآجل" : ""}
               onClick={() => void handleSubmit({ quickFullPay: true })}
               className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-sm font-black text-white shadow-md transition hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
@@ -1552,6 +1588,8 @@ export default function Reception() {
             >
               {submitting ? (
                 "جارٍ الإرسال…"
+              ) : deferred ? (
+                <><Check aria-hidden className="size-4" /> حفظ آجل (بلا دفع) — ذمّة على العميل</>
               ) : sumCustom > 0 && sumDirect > 0 ? (
                 <><Printer aria-hidden className="size-4" /> إرسال أوامر الشغل ودفع البيع</>
               ) : sumCustom > 0 ? (

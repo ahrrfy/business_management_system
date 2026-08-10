@@ -12,6 +12,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, count, eq, isNotNull, sql } from "drizzle-orm";
 import { branchStock, branches, openingModeSettings, products, productVariants } from "../../drizzle/schema";
+import type { Tx } from "../db";
 import { requireDb, withTx } from "./tx";
 
 const DAY_MS = 86_400_000;
@@ -73,6 +74,22 @@ export async function isOpeningWindowActive(
   const rows = await runner.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1);
   const view = toView(rows[0]);
   return { active: view.active, settings: view };
+}
+
+/**
+ * قراءة حالة النافذة داخل معاملة بيعٍ/تنفيذٍ جارية (استعلام صفٍّ واحد، بلا كتابة) — حارسٌ
+ * مالي/مخزني موحّد لمسارات: البيع (`sale/create.ts`)، بدء أمر الشغل (`workOrder/lifecycle.ts`)،
+ * تسليمه (`workOrder/deliver.ts`). يعيد الفعالية + سقف كمية السطر السالب معاً.
+ *
+ * توسعة قرار المالك (١٠/٨): أثناء النافذة الفعّالة، قنوات الاستقبال/التنفيذ تعمل بالسالب
+ * وبلا حاجز عربون/سقف ائتمان للأصناف **غير المُفتتَحة** — مؤقّتٌ ينتهي بانتهاء النافذة، والدَّين
+ * يُسجَّل ذمّةً كاملة (يُرخَّى الحاجز لا التسجيل). الحُرّاس الصنفية تبقى: تكلفة>0 + سقف السطر +
+ * غير مُفتتَح (يُفحص `openedAt IS NULL` داخل `applyMovement` تحت القفل) + استثناء بضاعة الأمانة.
+ */
+export async function readOpeningWindowState(tx: Tx): Promise<{ active: boolean; maxQty: number }> {
+  const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
+  const active = !!(om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now());
+  return { active, maxQty: om?.maxNegativeQtyPerLine ?? DEFAULTS.maxNegativeQtyPerLine };
 }
 
 export interface UpdateOpeningModeInput {
