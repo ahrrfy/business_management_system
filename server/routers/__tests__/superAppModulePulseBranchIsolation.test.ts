@@ -191,8 +191,8 @@ describe("super app module pulse branch isolation", () => {
     expect(modules).toMatchObject({ users: "FULL", settings: "FULL" });
   });
 
-  it("does not serialize command-center slices disabled by the effective capability map", async () => {
-    const result = await caller(1, {
+  it("rejects command-center access when the effective reports grant is disabled", async () => {
+    const request = caller(1, {
       permissionsOverride: {
         reports: "NONE",
         sales: "NONE",
@@ -208,21 +208,7 @@ describe("super app module pulse branch isolation", () => {
       },
     }).executive.commandCenter();
 
-    expect(Object.values(result.capabilities).every((value) => value === false)).toBe(true);
-    expect(result.metrics).toEqual({
-      lowStockCount: null,
-      overdueAR: null,
-      salesPulse: null,
-      morningBrief: {
-        arRemindersDue: null,
-        promisedToday: null,
-        overdueWorkOrders: null,
-        myOpenTasks: null,
-        overdueTasks: null,
-      },
-    });
-    expect(result.operationalSnapshot).toEqual({ salesToday: null, treasury: null });
-    expect(result.decisions).toEqual([]);
+    await expect(request).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("uses the same bounded net-sales definition in module pulse and command center", async () => {

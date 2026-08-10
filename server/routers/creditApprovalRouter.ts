@@ -10,7 +10,7 @@ import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, isNotNull, isNull, like, sql } from "drizzle-orm";
 import { z } from "zod";
-import { managerProcedure, requireModule, router } from "../trpc";
+import { protectedProcedure, requireModule, router } from "../trpc";
 import { withTx } from "../services/tx";
 import { getDb } from "../db";
 import { branches, creditApprovals, customers, invoices, users } from "../../drizzle/schema";
@@ -23,7 +23,7 @@ import { money } from "../services/money";
 import { escLike } from "../lib/sqlLike";
 
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (موجب، منزلتان عشريتان كحدّ أقصى)");
-const creditManagerProcedure = managerProcedure.use(requireModule("collections", "FULL"));
+const creditManagerProcedure = protectedProcedure.use(requireModule("collections", "FULL"));
 // حالة مُشتقّة من الأعمدة القائمة (creditApprovalService.ts خارج نطاق هذه الشريحة — لا عمود حالة
 // صريح في المخطّط): ACTIVE = غير مُستهلَكة + لم تنتهِ؛ EXPIRED = غير مُستهلَكة + انتهت؛
 // CONSUMED = استُهلِكت بفاتورة فعلية (consumedByInvoiceId)؛ CANCELLED = أُلغيت يدوياً (consumedAt

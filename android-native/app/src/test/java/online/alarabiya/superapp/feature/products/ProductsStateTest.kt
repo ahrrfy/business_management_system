@@ -89,14 +89,17 @@ class ProductsStateTest {
     fun `active and category commits update local state before refresh`() {
         val detail = ProductDetails(7, "دفتر", null, null, null, null, true, false, false, emptyList())
         val category = ProductCategory(3, "قرطاسية")
-        val committed = requireNotNull(ProductsUiState(selected = detail).start(ProductsBusy.ACTIVE))
+        val acknowledged = requireNotNull(ProductsUiState(selected = detail).start(ProductsBusy.ACTIVE))
             .productActiveCommitted(7, false)
             .categoryCreated(category)
-            .committedRefreshFailed("refresh failed")
 
-        assertFalse(requireNotNull(committed.selected).active)
-        assertTrue(category in committed.categories)
-        assertFalse(committed.locked)
+        assertFalse(requireNotNull(acknowledged.selected).active)
+        assertTrue(category in acknowledged.categories)
+
+        val stale = acknowledged.committedRefreshFailed("refresh failed")
+        assertNull(stale.selected)
+        assertFalse(stale.catalogLoaded)
+        assertFalse(stale.locked)
     }
 
     @Test

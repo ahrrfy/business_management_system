@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import type { AccessLevel } from "@shared/permissions";
 import { z } from "zod";
-import { protectedProcedure, requireModule, router } from "../trpc";
+import { reportViewerProcedure, router } from "../trpc";
 import { getDashboardMetrics, type DashboardMetricsResult } from "../services/reports/dashboard";
 import { getManagementAlerts, type AlertItem } from "../services/reportsAlertsService";
 import { getDashboard as getTreasuryDashboard } from "../services/treasuryService";
@@ -130,7 +130,7 @@ const emptyMetrics = (): DashboardMetricsResult => ({
 });
 
 export const executiveRouter = router({
-  commandCenter: protectedProcedure.use(requireModule("reports", "READ"))
+  commandCenter: reportViewerProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
       assertExecutiveAccess(ctx.user);

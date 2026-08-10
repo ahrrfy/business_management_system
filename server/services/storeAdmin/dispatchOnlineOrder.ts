@@ -132,10 +132,9 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         notes: `طلب متجر ${order.orderNumber}`,
         clientRequestId: `online-dispatch:${order.id}`,
         priceOverrideApproved: true, // الموظف المُرسِل يُقرّ السعر المتّفق عليه مسبقاً
-        // COD: العميل نقديٌّ (سقف ائتمان 0)؛ المدير المُرسِل يُقرّ الائتمان المؤقّت حتى تحصيل الدفع
-        // عند الاستلام (تُصفّى الذمّة بتسجيل السداد). الإسناد لمدير فقط ⇒ التوثيق الذاتي صالح.
-        creditApproved: true,
-        managerOverrideByUserId: actor.userId,
+        // لا تُنشئ موافقةً ذاتية باسم المُرسِل؛ حدّ ائتمان العميل يبقى نافذاً، والعميل بلا حدّ
+        // (creditLimit=null) يمرّ طبيعياً. تجاوز الحد يحتاج قراراً مستقلاً من مُصدر آخر.
+        creditApproved: false,
       },
       actor
     );

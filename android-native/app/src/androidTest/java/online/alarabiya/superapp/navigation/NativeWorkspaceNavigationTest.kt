@@ -593,7 +593,7 @@ private object FakeInventorySource {
     val dataSource: InventoryDataSource = Proxy.newProxyInstance(
         InventoryDataSource::class.java.classLoader,
         arrayOf(InventoryDataSource::class.java),
-    ) { _, method, args ->
+    ) { proxy, method, args ->
         when (method.name) {
             "branches", "adjustments", "stocktakes", "countAssignments" -> emptyList<Any>()
             "balances" -> {
@@ -616,6 +616,8 @@ private object FakeInventorySource {
             }
             "movements" -> MovementPage(emptyList(), false, null)
             "transfers" -> TransferPage(emptyList(), null)
+            "equals" -> proxy === args?.getOrNull(0)
+            "hashCode" -> System.identityHashCode(proxy)
             "toString" -> "FakeInventorySource"
             else -> error("Unexpected inventory call: ${method.name}")
         }

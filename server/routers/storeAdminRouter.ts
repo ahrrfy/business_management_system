@@ -103,8 +103,8 @@ const ordersRouter = router({
   /** جهات التوصيل النشطة (لمنتقي الإسناد عند الإرسال). */
   parties: storeReadProcedure.query(({ ctx }) => listDeliveryParties({ branchId: ctx.scopedBranchId, activeOnly: true })),
 
-  /** إرسال طلب مؤكَّد ⇒ فاتورة (خصم مخزون + قيد) + إسناد لجهة توصيل. مدير فقط: يُقرّ ائتمان COD
-   *  المؤقّت للعميل النقدي (managerOverrideByUserId يجب أن يكون مديراً مُتحقَّقاً — الكاشير محجوب). */
+  /** إرسال طلب مؤكَّد ⇒ فاتورة (خصم مخزون + قيد) + إسناد لجهة توصيل، مع إبقاء حدّ
+   *  ائتمان العميل نافذاً ومنع الموافقة الذاتية من مُنفّذ الإرسال. */
   dispatch: storeManagerProcedure
     .input(z.object({ id: z.number().int().positive(), partyId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
