@@ -1,4 +1,4 @@
-import { CopyInline } from "@/components/CopyButton";
+﻿import { CopyInline } from "@/components/CopyButton";
 import { DataTable } from "@/components/data-table/DataTable";
 import { ListToolbar, RowActions, SelectionBar, useRowSelection } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -85,6 +85,15 @@ const deliveryCell = (r: Pick<Row, "consignmentId" | "consignmentStatus" | "deli
   r.consignmentId
     ? `${CONSIGNMENT_STATUS[r.consignmentStatus ?? ""]?.label ?? r.consignmentStatus ?? ""} — ${r.deliveryPartyName ?? ""}${r.consignmentNumber ? ` (${r.consignmentNumber})` : ""}`
     : "";
+// إرساليةٌ بالطريق ⇒ طريقة الدفع الحقيقية «عند الاستلام» لا ما اختير للسلة لحظة التثبيت
+// (بلاغ المالك ١٠/٨: فاتورة توصيلٍ لم يُقبض منها فلس كانت تعرض «نقدي» — المخزَّن هو طريقة
+// قبض العربون/التحصيل اللاحق، والعرض يجب أن يصدُق عن المتبقّي بيد المندوب).
+const codInTransit = (r: Pick<Row, "consignmentStatus">) =>
+  r.consignmentStatus === "DISPATCHED" || r.consignmentStatus === "PARTIAL";
+const paymentLabel = (r: Pick<Row, "consignmentStatus" | "paymentMethod" | "paidAmount">) =>
+  codInTransit(r)
+    ? (D(r.paidAmount).gt(0) ? `عند الاستلام (COD) — عربون ${paymentMethodLabel(r.paymentMethod)}` : "عند الاستلام (COD)")
+    : paymentMethodLabel(r.paymentMethod);
 
 /** فلتر عميل مدمج — بحث حيّ عبر customers.smartSearch (نمط CustomerPicker) مجرّداً من زرّ
  *  «+ عميل جديد» (سياق فلترة لا إدخال بيانات). الاسم المختار يُجلب بـcustomers.get — ضروري
@@ -401,7 +410,7 @@ export default function Invoices() {
           { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },
           { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
           { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
-          { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentMethodLabel(r.paymentMethod) },
+          { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentLabel(r) },
           { key: "status", header: "الحالة", map: (r) => exportStatusLabel(r.status) },
         ],
       });
@@ -461,7 +470,19 @@ export default function Invoices() {
     {
       accessorKey: "paymentMethod", header: "طريقة الدفع",
       cell: (c) => {
-        const m = c.getValue() as string | null;
+        const r = c.row.original;
+        // بالطريق مع المندوب ⇒ الحقيقة «عند الاستلام»؛ العربون المقبوض يُذكر بطريقته تحتها.
+        if (codInTransit(r)) {
+          return (
+            <div className="flex flex-col items-start gap-0.5">
+              <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold badge-stock-low">عند الاستلام (COD)</span>
+              {D(r.paidAmount).gt(0) && r.paymentMethod && (
+                <span className="text-[11px] text-muted-foreground">عربون: {paymentMethodLabel(r.paymentMethod)}</span>
+              )}
+            </div>
+          );
+        }
+        const m = r.paymentMethod;
         if (!m) return <span className="text-muted-foreground">—</span>;
         return <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(m)}`}>{paymentMethodLabel(m)}</span>;
       },
@@ -577,7 +598,7 @@ export default function Invoices() {
       "محطة البيع": r.deviceId ?? "",
       "الإجمالي": Number(r.total),
       "المدفوع": Number(r.paidAmount),
-      "طريقة الدفع": paymentMethodLabel(r.paymentMethod),
+      "طريقة الدفع": paymentLabel(r),
       "الحالة": exportStatusLabel(r.status),
     }));
     return formatTableAsTSV(TSV_HEADERS, rows);
@@ -757,7 +778,7 @@ export default function Invoices() {
               { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },
               { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
               { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
-              { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentMethodLabel(r.paymentMethod) },
+              { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentLabel(r) },
               { key: "status", header: "الحالة", map: (r) => exportStatusLabel(r.status) },
             ],
           });

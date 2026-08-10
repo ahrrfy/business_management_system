@@ -682,10 +682,12 @@ export const saleRouter = router({
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
             // فاتورة COD لا تحمل العميل كطرف مدين، لكن نعرض عميل أمر الخدمة الأصلي
-            // كي لا تختفي طلبات واتساب تحت «عميل نقدي».
+            // كي لا تختفي طلبات واتساب تحت «عميل نقدي». ١٠/٨ (بلاغ المالك «كلها تظهر نقدي»):
+            // + الزبون العابر (contactName) ومستلم الإرسالية — فاتورة توصيلٍ هاتفية كانت
+            // تسقط على «عميل نقدي» رغم أن اسمه وهاتفه محفوظان.
             customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
-            customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
-            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''))`,
+            customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
+            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
             deviceId: invoices.posDeviceId,
@@ -835,9 +837,10 @@ export const saleRouter = router({
           sourceType: invoices.sourceType,
           branchId: invoices.branchId,
           // العميل هنا مرجع عرضٍ وتشغيل لفاتورة COD فقط؛ الطرف المالي يبقى جهة التوصيل.
+          // ١٠/٨: + الزبون العابر ومستلم الإرسالية (مرآة list — «عميل نقدي» للمجهول حقاً فقط).
           customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
-          customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
-          customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${workOrderInvoiceCustomer.phone})`,
+          customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
+          customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${workOrderInvoiceCustomer.phone}, NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
           customerBalance: sql<string | null>`COALESCE(${customers.currentBalance}, ${workOrderInvoiceCustomer.currentBalance})`,
           priceTier: invoices.priceTier,
           invoiceDate: invoices.invoiceDate,

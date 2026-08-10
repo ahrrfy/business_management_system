@@ -532,7 +532,18 @@ export default function InvoiceDetail() {
           <CardTitle className="text-base flex items-center justify-between gap-2">
             <CopyInline value={data.invoiceNumber} />
             <div className="flex items-center gap-2">
-              {data.paymentMethod && (
+              {/* بالطريق مع المندوب ⇒ الحقيقة «عند الاستلام» لا طريقة السلة المخزَّنة (بلاغ
+                  المالك ١٠/٨: فاتورة توصيل بلا أي قبضٍ كانت تتصدّر بشارة «نقدي»). */}
+              {(data.consignmentStatus === "DISPATCHED" || data.consignmentStatus === "PARTIAL") ? (
+                <span
+                  className="text-xs rounded-full px-2.5 py-0.5 font-semibold badge-stock-low"
+                  title={D(data.paidAmount).gt(0) && data.paymentMethod
+                    ? `المتبقّي يُحصَّل عند الاستلام — المقبوض سلفاً بطريقة: ${paymentMethodLabel(data.paymentMethod)}`
+                    : "تُحصَّل عند الاستلام عبر المندوب ثم تُورَّد"}
+                >
+                  عند الاستلام (COD)
+                </span>
+              ) : data.paymentMethod && (
                 <span
                   className={`text-xs rounded-full px-2.5 py-0.5 font-semibold ${paymentMethodClass(data.paymentMethod)}`}
                   title="طريقة الدفع المسجّلة على هذه الفاتورة"
