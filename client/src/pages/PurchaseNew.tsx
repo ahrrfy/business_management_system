@@ -379,7 +379,7 @@ export default function PurchaseNew() {
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
         {/* عمود المنتجات: ارتفاع سخيّ ثابت كي يعرض الجدولُ المشتركُ (بتمريره الداخليّ) صفوفاً
             كثيرة بدل صفّين — بديلاً عن الحبس السابق بارتفاع الإطار. */}
-        <div className="flex min-w-0 flex-1 flex-col gap-2 h-[60vh] min-h-[420px]">
+        <div className="flex min-w-0 flex-1 flex-col gap-2 h-[60vh] min-h-[420px] print:h-auto print:min-h-fit">
           <ProductTable
             items={state.items}
             dispatch={dispatch}
