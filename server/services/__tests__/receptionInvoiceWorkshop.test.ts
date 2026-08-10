@@ -247,7 +247,7 @@ describe("C — تسديد دفعة من المحطة (reception.collectOnInvoic
 });
 
 describe("R — بوّابة طابور القراءة وإعادة الطباعة", () => {
-  it("warehouse/auditor ممنوعان، والكاشير ومشغّل الطباعة يقرآن الفاتورة", async () => {
+  it("warehouse/auditor ممنوعان؛ الكاشير ومشغّل الطباعة يقرآن فواتير الاستقبال دون فواتير التجزئة", async () => {
     const rec = await openReception();
     await directSale(rec.shiftId, "r1-sale");
 
@@ -258,6 +258,8 @@ describe("R — بوّابة طابور القراءة وإعادة الطباع
     const cashierCaller = await callerFor(2);
     const ok = await cashierCaller.reception.invoiceQueue({ sinceDays: 7 });
     expect(ok.rows.length).toBe(1);
+    const cashInvoice = await cashierCaller.sales.get({ invoiceId: ok.rows[0].id });
+    expect(cashInvoice?.invoiceNumber).toBe(ok.rows[0].invoiceNumber);
 
     const printCaller = await callerFor(8);
     const printable = await printCaller.reception.invoiceQueue({ sinceDays: 7 });
