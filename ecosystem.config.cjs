@@ -20,12 +20,7 @@
 // INTEGRATIONS_ENCRYPTION_KEY في `.env` (أو env هذا القسم مباشرة) — غير مضبوطة افتراضياً.
 
 require("dotenv").config();
-
-const configuredHrDevicePort = Number(process.env.HR_DEVICE_PORT || "0");
-const hrBridgeEnabled =
-  (process.env.HR_DEVICE_BRIDGE === "1" ||
-    (Number.isInteger(configuredHrDevicePort) && configuredHrDevicePort > 0)) &&
-  !process.env.CONTROL_DATABASE_URL;
+const hrBridgePolicy = require("./scripts/hr-bridge-runtime-policy.cjs");
 
 module.exports = {
   apps: [
@@ -85,15 +80,23 @@ module.exports = {
     },
     {
       name: "erp-hr-bridge",
+      // Bootstrap JS يسلّح watchdog قبل import للحزمة المبنية، فلا يمكن لتعليق التحميل
+      // أن يبقى online صامتاً. لا يوجد TypeScript loader داخل مسار الإنتاج.
       script: "scripts/hr-bridge-worker.mjs",
       cwd: __dirname,
       instances: 1,
       exec_mode: "fork",
       watch: false,
-      autorestart: hrBridgeEnabled,
+      autorestart: true,
+      // الخروج 0 يعني «معطّل عمداً» أو إيقافاً رشيقاً؛ كل فشل (1) يُعاد تشغيله.
+      stop_exit_codes: [0],
       exp_backoff_restart_delay: 3000,
       max_restarts: 10,
-      min_uptime: "10s",
+      min_uptime: hrBridgePolicy.minUptimeMs,
+      wait_ready: true,
+      // PM2 ينتظر ready، لكنه fail-open عند انتهاء مهلة الانتظار؛ لذلك يخرج watchdog قبلها
+      // بـ15ث، وتبقى بوابة PM2+PID+TCP الخارجية إلزامية قبل pm2 save.
+      listen_timeout: hrBridgePolicy.pm2ListenTimeoutMs,
       kill_timeout: 11000,
       env: {
         NODE_ENV: "production",
@@ -106,11 +109,13 @@ module.exports = {
         HR_DEVICE_IP_ALLOWLIST: process.env.HR_DEVICE_IP_ALLOWLIST,
         HR_DEVICE_SHARED_SECRET: process.env.HR_DEVICE_SHARED_SECRET,
         HR_DEVICE_IDENTITY_BINDINGS: process.env.HR_DEVICE_IDENTITY_BINDINGS,
-        HR_DEVICE_LEGACY_IDENTITY_MIGRATION: process.env.HR_DEVICE_LEGACY_IDENTITY_MIGRATION,
+        HR_DEVICE_LEGACY_IDENTITY_MIGRATION:
+          process.env.HR_DEVICE_LEGACY_IDENTITY_MIGRATION,
         HR_DEVICE_MAX_PAYLOAD_BYTES: process.env.HR_DEVICE_MAX_PAYLOAD_BYTES,
         HR_DEVICE_REQUEST_TIMEOUT_MS: process.env.HR_DEVICE_REQUEST_TIMEOUT_MS,
         HR_DEVICE_IDLE_TIMEOUT_MS: process.env.HR_DEVICE_IDLE_TIMEOUT_MS,
-        HR_DEVICE_RATE_LIMIT_PER_MINUTE: process.env.HR_DEVICE_RATE_LIMIT_PER_MINUTE,
+        HR_DEVICE_RATE_LIMIT_PER_MINUTE:
+          process.env.HR_DEVICE_RATE_LIMIT_PER_MINUTE,
         HR_DEVICE_MAX_WS_PER_IP: process.env.HR_DEVICE_MAX_WS_PER_IP,
       },
       log_date_format: "YYYY-MM-DD HH:mm:ss",

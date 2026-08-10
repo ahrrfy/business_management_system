@@ -1,97 +1,66 @@
+#!/usr/bin/env node
+
 /**
- * العملية الوحيدة المالكة لجسر أجهزة الحضور.
+ * Bootstrap إنتاجي صغير لجسر الحضور.
  *
- * تُشغَّل كـ PM2 fork واحد مستقل عن عنقود erp-server، لأن منفذ الأجهزة ووصلات
- * WebSocket حالتها حيّة داخل العملية ولا يجوز توزيعها بين عمّال الويب.
+ * يبدأ الـwatchdog قبل تحميل الحزمة كي يغطي تعليق الاستيراد غير المتزامن، ثم يحمّل
+ * JavaScript مبنياً مسبقاً. التعليق المتزامن يمسكه verifier الخارجي (PM2+TCP).
+ * لا يُشغَّل TypeScript أو tsx داخل عملية الإنتاج.
  */
 import "dotenv/config";
-import { tsImport } from "tsx/esm/api";
+import { randomUUID } from "node:crypto";
+import process from "node:process";
+import policy from "./hr-bridge-runtime-policy.cjs";
 
-const { logger } = await tsImport("../server/logger.ts", import.meta.url);
-const { closeDb } = await tsImport("../server/db.ts", import.meta.url);
-const { startHrDeviceBridge } = await tsImport(
-  "../server/services/hrDevices/bridge.ts",
-  import.meta.url,
-);
-const { pumpCommands } = await tsImport(
-  "../server/services/hrDevices/commands.ts",
-  import.meta.url,
-);
-const { onlineDeviceIds } = await tsImport(
-  "../server/services/hrDevices/registry.ts",
-  import.meta.url,
-);
-const { resolveBridgeConfig } = await tsImport(
-  "../server/services/hrDevices/types.ts",
-  import.meta.url,
-);
-const { assertEnabledDeviceIdentityReadiness } = await tsImport(
-  "../server/services/hrDeviceService.ts",
-  import.meta.url,
-);
+const bootId = randomUUID();
+const bootStartedAt = Date.now();
+const preflightOnly = process.argv.includes("--preflight");
 
-const cfg = resolveBridgeConfig();
-if (!cfg.enabled) {
-  logger.info(
-    "hrDevices: عامل الجسر غير مفعّل (اضبط HR_DEVICE_BRIDGE=1 أو HR_DEVICE_PORT)",
+function checkpoint(phase, details = {}) {
+  process.stdout.write(
+    `${JSON.stringify({
+      phase,
+      bootId,
+      pid: process.pid,
+      elapsedMs: Date.now() - bootStartedAt,
+      ...details,
+    })}\n`,
   );
-  process.exit(0);
 }
+
+checkpoint("HR_BRIDGE_BOOT", { mode: preflightOnly ? "preflight" : "runtime" });
+
+// يجب أن يبقى referenced كي يقتل import/startup غير المتزامن إذا لم يكتمل.
+const startupWatchdog = setTimeout(() => {
+  checkpoint("HR_BRIDGE_STARTUP_TIMEOUT", {
+    timeoutMs: policy.startupTimeoutMs,
+  });
+  process.exit(1);
+}, policy.startupTimeoutMs);
 
 try {
-  await assertEnabledDeviceIdentityReadiness();
+  const { runHrBridgeWorker } = await import("../dist/hr-bridge-worker.js");
+  checkpoint("HR_BRIDGE_MODULES_LOADED");
+
+  const result = await runHrBridgeWorker({
+    bootId,
+    preflightOnly,
+    databaseTimeoutMs: policy.databaseReadinessTimeoutMs,
+    listenTimeoutMs: policy.tcpListenTimeoutMs,
+    shutdownTimeoutMs: policy.shutdownTimeoutMs,
+    onReady: () => {
+      if (typeof process.send === "function") process.send("ready");
+      checkpoint("HR_BRIDGE_READY_SENT");
+    },
+  });
+
+  clearTimeout(startupWatchdog);
+  if (result !== "running") process.exit(0);
 } catch (error) {
-  logger.error(
-    { err: error },
-    "hrDevices: فشل تدقيق ربط هويات الأجهزة المفعّلة قبل فتح المنفذ",
-  );
+  clearTimeout(startupWatchdog);
+  checkpoint("HR_BRIDGE_STARTUP_FAILED", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+  // الخروج القسري مقصود: قد تكون عملية DB المعلّقة ما زالت تمسك event loop.
   process.exit(1);
 }
-
-const bridge = startHrDeviceBridge(cfg.port);
-if (!bridge) {
-  logger.error("hrDevices: تعذّر إنشاء عامل الجسر المستقل");
-  process.exit(1);
-}
-
-// enqueueCommand يُكتب من أي عامل ويب إلى قاعدة البيانات. هذه النبضة تجعل
-// العملية المالكة للمقبس تلتقط الأمر سريعاً حتى إن كان الجهاز متصلاً وخاملاً.
-const commandPump = setInterval(() => {
-  for (const deviceId of onlineDeviceIds()) pumpCommands(deviceId);
-}, 1_000);
-commandPump.unref();
-
-let shuttingDown = false;
-async function shutdown(signal, exitCode = 0) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  clearInterval(commandPump);
-  logger.info({ signal }, "hrDevices: إيقاف عامل الجسر المستقل");
-
-  const force = setTimeout(() => {
-    logger.error("hrDevices: تجاوز مهلة إيقاف عامل الجسر (10ث)");
-    process.exit(1);
-  }, 10_000);
-  force.unref();
-
-  try {
-    await bridge.stop();
-    await closeDb();
-    clearTimeout(force);
-    process.exit(exitCode);
-  } catch (error) {
-    logger.error({ err: error }, "hrDevices: فشل الإيقاف الرشيق لعامل الجسر");
-    process.exit(1);
-  }
-}
-
-// فشل الاستماع (مثل EADDRINUSE) يجب أن يُسقط العملية كي يعيد PM2 تشغيلها؛
-// الاكتفاء بسجل خطأ يترك عملية تبدو online بينما منفذ 7788 متوقف.
-bridge.server.once("error", () => void shutdown("bridge-error", 1));
-process.on("SIGTERM", () => void shutdown("SIGTERM"));
-process.on("SIGINT", () => void shutdown("SIGINT"));
-
-logger.info(
-  { port: cfg.port },
-  "hrDevices: بدأ عامل الجسر المستقل (عملية واحدة)",
-);
