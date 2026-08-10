@@ -139,7 +139,7 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
     .innerJoin(stocktakeAssignments, eq(stocktakeItems.assignmentId, stocktakeAssignments.id))
     .leftJoin(requester, eq(stocktakeItems.recountRequestedBy, requester.id))
     .leftJoin(reviewApprover, eq(stocktakeItems.reviewApprovedBy, reviewApprover.id))
-    .where(eq(stocktakeItems.sessionId, sessionId))
+    .where(and(eq(stocktakeItems.sessionId, sessionId), eq(products.isService, false)))
     .orderBy(asc(stocktakeItems.id));
   // عدّة وحدات أساس لمتغيّر = صفوف مكرّرة من الـjoin ⇒ أول صف يفوز.
   const items: typeof itemRows = [];
