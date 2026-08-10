@@ -487,7 +487,7 @@ function SettingsTab({ party, isManager, canRecover, onChanged }: { party: Party
           <h3 className="mb-1 font-extrabold">استرداد عجز مشطوب</h3>
           <p className="mb-3 text-xs text-muted-foreground">
             المندوب أعاد نقداً سبق شطبُه خسارةً: يدخل النقد الدرج وتُعكس الخسارة من الأرباح.
-            السقف = صافي المشطوب تاريخياً لهذه الجهة.
+            السقف = صافي الخسارة المشطوبة تاريخياً لهذه الجهة (لا يشمل تصفية العهدة الزائدة عن الفاتورة).
           </p>
           <label className="block text-sm font-bold">المبلغ المسترَدّ (د.ع)
             <MoneyInput value={recoverAmount} onChange={setRecoverAmount} className="mt-1 h-10 text-end tabular-nums" ariaLabel="مبلغ الاسترداد" />

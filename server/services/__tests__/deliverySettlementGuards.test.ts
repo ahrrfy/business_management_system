@@ -191,7 +191,7 @@ describe("G3 — الشطب الموجَّه يقفل الإرسالية وال�
 });
 
 describe("G4 — استرداد عجز مشطوب", () => {
-  it("النقد يدخل الدرج، الخسارة تُعكَس (Σ WRITEOFF=0)، الرصيد لا يُمسّ، والسقف = صافي المشطوب", async () => {
+  it("النقد يدخل الدرج، الخسارة تُعكَس (Σ WRITEOFF=0)، الرصيد لا يُمسّ، والسقف = صافي الخسارة المشطوبة", async () => {
     const shift = await openReception();
     const { consignmentId } = await dispatchedCreditInvoice(shift.shiftId, "g4");
     await writeOffDeliveryShortfall(
@@ -199,10 +199,10 @@ describe("G4 — استرداد عجز مشطوب", () => {
       MANAGER,
     );
 
-    // استرداد فوق المشطوب يُرفض.
+    // استرداد فوق المشطوب يُرفض (السقف = صافي الخسارة المشطوبة cost — هنا = amount إذ لا جزء وهميّ).
     await expect(
       recoverDeliveryWriteOff({ branchId: 1, partyId: 1, amount: "15000.00", clientRequestId: "g4-x" }, MANAGER),
-    ).rejects.toThrow(/يتجاوز صافي المشطوب/);
+    ).rejects.toThrow(/يتجاوز صافي الخسارة المشطوبة/);
 
     const r = await recoverDeliveryWriteOff({ branchId: 1, partyId: 1, amount: "10000.00", clientRequestId: "g4-r" }, MANAGER);
     expect(r.recovered).toBe("10000.00");
@@ -440,6 +440,40 @@ describe("G14 — استرداد العجز المشطوب محصور بفرع �
     await expect(
       recoverDeliveryWriteOff({ branchId: 2, partyId: 1, amount: "10000.00", clientRequestId: "g14-r" }, MANAGER),
     ).rejects.toThrow(/على هذا الفرع/);
+  });
+});
+
+describe("G15 — استرداد العجز المشطوب مسقوفٌ بالخسارة الفعلية (cost) لا بكامل المبلغ", () => {
+  it("شطبٌ بجزءٍ وهميّ (amount 10,000 / cost 7,000): الاسترداد فوق 7,000 يُرفض، و7,000 يمرّ ويصفّر الخسارة", async () => {
+    // Custody-F3: الشطب الموجَّه لإرساليةٍ انحرف صافي فاتورتها (مرتجع 3,000 بعد الإسناد) يقيّد
+    // amount=10,000 (كامل العهدة) لكنّ cost=7,000 (الخسارة الحقيقية = المدعوم بالفاتورة الحيّة).
+    // النقد الحقيقيّ الذي قد يُستردّ = 7,000؛ سقفُ الاسترداد بـcost لا amount يمنع استرداد نقدٍ وهميّ.
+    const shift = await openReception();
+    const { invoiceId, consignmentId } = await dispatchedCreditInvoice(shift.shiftId, "g15");
+    await db().update(s.invoices).set({ returnedTotal: "3000.00" }).where(eq(s.invoices.id, invoiceId));
+    await db().update(s.customers).set({ currentBalance: "7000.00" }).where(eq(s.customers.id, 1));
+    await writeOffDeliveryShortfall(
+      { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع بعد انحراف", consignmentId, clientRequestId: "g15-w" },
+      MANAGER,
+    );
+    // الاسترداد بكامل amount (10,000) يتجاوز صافي الخسارة (cost 7,000) ⇒ يُرفض (كان يمرّ بسقف amount).
+    await expect(
+      recoverDeliveryWriteOff({ branchId: 1, partyId: 1, amount: "10000.00", clientRequestId: "g15-x" }, MANAGER),
+    ).rejects.toThrow(/يتجاوز صافي الخسارة المشطوبة/);
+    // الاسترداد بالخسارة الحقيقية (7,000) يمرّ.
+    const r = await recoverDeliveryWriteOff({ branchId: 1, partyId: 1, amount: "7000.00", clientRequestId: "g15-r" }, MANAGER);
+    expect(r.recovered).toBe("7000.00");
+    // صافي الخسارة (Σ cost على WRITEOFF) عاد صفراً؛ الرصيد لم يُمسّ.
+    const costNet = (await db()
+      .select({ v: sql<string>`COALESCE(SUM(${s.accountingEntries.cost}), 0)` })
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "DELIVERY_WRITEOFF")))[0];
+    expect(Number(costNet.v)).toBe(0);
+    expect(await partyBalance()).toBe("0.00");
+    // ولا استرداد إضافيّ (الجزء الوهميّ 3,000 لم يكن خسارةً/نقداً قط).
+    await expect(
+      recoverDeliveryWriteOff({ branchId: 1, partyId: 1, amount: "3000.00", clientRequestId: "g15-y" }, MANAGER),
+    ).rejects.toThrow(/يتجاوز صافي الخسارة المشطوبة/);
   });
 });
 
