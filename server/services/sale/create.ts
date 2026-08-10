@@ -543,7 +543,9 @@ export async function createSaleInTx(
     // هذا هو الترتيب الحاسم: لولاه لرُفض زبونٌ عابر سدّد عربوناً كاملاً بحجّة «البيع الآجل
     // يتطلب عميلاً» بينما ماله محبوسٌ في receipts (الحاصرة ١.١).
     const preCollectedD = round2(money(input.preCollected?.amount ?? "0"));
-    if (preCollectedD.gt(effectiveTotalD)) {
+    // تصحيح الفاتورة (0168): allowPreCollectedOverpay يرفع هذا الحارس فقط (يضبطه correctSale داخلياً)
+    // — overpay-down يقصُر paidNow على الإجمالي (سطر أدناه) والفائض يُردّ/يُرصَّد خارجياً بعد الترحيل.
+    if (!input.allowPreCollectedOverpay && preCollectedD.gt(effectiveTotalD)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `المقبوض سلفاً (${preCollectedD.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}) — خلل توزيع، راجع الطلب المحفوظ.`,

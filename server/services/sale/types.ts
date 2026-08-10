@@ -134,6 +134,11 @@ export interface CreateSaleInput {
    *  رفض التسجيل يجعل الدفاتر تكذب (قرار مالك ١٨/٧: تسجيل بوسم مراجعة لا تعليق).
    *  يضبطه offline.replaySale فقط، والوسم = originatedOffline + تقرير المبيعات الأوفلاين. */
   allowNegativeStock?: boolean;
+  /** تصحيح الفاتورة (٠١٦٨ — داخليّ بحت، يضبطه `correctSale` فقط، لا يقبله أيّ راوتر): يسمح بأن
+   *  يتجاوز `preCollected` مستحقَّ الفاتورة (حالة overpay-down: التصحيح لأقلّ من المقبوض سلفاً).
+   *  الحارس الاعتياديّ يرفض ذلك؛ هنا يُقصَر `paidNow` على الإجمالي كالمعتاد، والفائض يعالجه
+   *  `correctSale` بعد إعادة الترحيل (ردّاً نقدياً أو رصيداً دائناً — قرار المالك الهجين). */
+  allowPreCollectedOverpay?: boolean;
 }
 
 export interface CreateSaleResult {

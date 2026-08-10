@@ -10,6 +10,7 @@ import { adjustCustomerBalance, adjustDeliveryBalance, adjustSupplierBalance, co
 import { money, round2, toDbMoney } from "./money";
 import { computeExpectedCash, openShiftIdTx, resolveBranchCashShiftTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
+import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
 
@@ -28,8 +29,9 @@ export interface ReturnSaleInput {
   clientRequestId?: string | null;
 }
 
-export async function returnSale(input: ReturnSaleInput, actor: Actor) {
-  return withTx(async (tx) => {
+/** جسم عكس المرتجع داخل معاملةٍ قائمة — يُعاد استعماله من correctSale (تصحيح الفاتورة)
+ *  لعكسٍ كاملٍ ذرّيّ بلا فتح معاملةٍ ثانية. الغلاف العام returnSale يبقى بلا تغيير سلوكيّ. */
+export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Actor) {
     // Idempotency: تكرار الطلب نفسه يُعاد تشغيله بنتيجة المرتجع الأول بلا استرداد مكرّر.
     // قبل أي replay نتحقّق أنّ المفتاح يخصّ نفس الفاتورة والفرع وبنفس بصمة المرتجع
     // (لا يصحّ أن يُرجع مفتاحٌ مُستعمَلٌ لفاتورة مغايرة نجاحاً صامتاً بـreturnedTotal=0).
@@ -655,7 +657,10 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
       returnedTotal: returnedTotal.toFixed(2),
       fullyReturned,
     };
-  });
+}
+
+export async function returnSale(input: ReturnSaleInput, actor: Actor) {
+  return withTx((tx) => returnSaleInTx(tx, input, actor));
 }
 
 export interface ListSalesReturnsInput {
