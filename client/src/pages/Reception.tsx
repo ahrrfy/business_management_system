@@ -2196,7 +2196,13 @@ export default function Reception() {
               اختيار قناة غير مباشرة، فتُستعاد المساحة لبقية الصفّ دائماً لا عند الحاجة فقط. */}
           <AppSelect
             value={channel}
-            onValueChange={(v) => setChannel(v as typeof channel)}
+            onValueChange={(v) => {
+              // تبديل القناة يمسح المعرّف/الرقم السابق (نصّ↔أرقام) والعميل المطابَق — وإلا بقي
+              // معرّفٌ قديمٌ خفيّ يُرسَل كرقم واتساب، أو عميلٌ مربوطٌ بقناةٍ أخرى (مراجعة Codex).
+              setChannel(v as typeof channel);
+              setChannelHandle("");
+              setCustomer({ customerId: null, name: "", phone: null, isNew: false });
+            }}
             aria-label="طريقة وصول الطلب"
             className="h-8 w-32 text-[11px] font-bold"
           >

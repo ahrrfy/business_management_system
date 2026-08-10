@@ -323,6 +323,25 @@ export const posCashierProcedure = moduleProcedure(["cashier", "manager"], "pos"
 export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
 export const salesCashierProcedure = moduleProcedure(["cashier", "manager"], "sales", "FULL");
 export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL");
+// عرض/طباعة فاتورةٍ واحدة (طلب المالك — خدمة العملاء تطبع/تعيد طباعة فواتيرها): يسمح بـsales≥READ
+// **أو** صلاحية الاستقبال (workorders:FULL). مشغّل الاستقبال يُنشئ الفواتير فيطبعها، بلا فتح وحدة
+// المبيعات كاملةً (عروض الأسعار تبقى محميّة على salesReadProcedure). محميّة بالفرع (branchScoped +
+// فلتر الفرع داخل الاستعلام يُرجِع null لفاتورة فرعٍ آخر ⇒ لا IDOR). دورٌ-محايد: يعمل لأيّ دور استقبال.
+export const invoiceViewProcedure = branchScopedProcedure.use(
+  t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    if (ctx.user.role === "admin") return next({ ctx: { ...ctx, user: ctx.user } });
+    const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
+      | Record<string, AccessLevel>
+      | null
+      | undefined;
+    const map = resolvePermissions(ctx.user.role as RoleKey, override);
+    const canSalesRead = map.sales === "FULL" || map.sales === "READ";
+    const canReception = map.workorders === "FULL";
+    if (!canSalesRead && !canReception) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    return next({ ctx: { ...ctx, user: ctx.user } });
+  }),
+);
 // purchases — «مسؤول مشتريات» قالبه purchases=FULL ووصفه المعلن «أوامر شراء وموردون».
 export const purchasesReadProcedure = branchScopedProcedure.use(requireModule("purchases", "READ"));
 export const purchasesManagerProcedure = moduleProcedure(["manager", "purchasing"], "purchases", "FULL");

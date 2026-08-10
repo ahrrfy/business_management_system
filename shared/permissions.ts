@@ -211,10 +211,10 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     hr: "NONE",
     commissions: "NONE",
     consignments: "NONE",
-    // sales=READ (طلب المالك — خدمة العملاء تطبع/تعيد طباعة فواتيرها): الطباعة تمرّ بـsales.get
-    // (salesReadProcedure يشترط sales≥READ)، وكان sales=NONE يحجب القائمة والجلب وأزرار الطباعة.
-    // READ = قراءة/طباعة فقط (لا إنشاء بيع، ولا تظهر التكلفة/الربح — canSeeCost يبقى لغير المرتفع false).
-    pos: "NONE", sales: "READ", purchases: "NONE", inventory: "NONE", workorders: "FULL", channels: "READ", treasury: "NONE",
+    // sales يبقى NONE: طباعة فواتير الاستقبال لا تحتاج فتح وحدة المبيعات كاملةً (كان يكشف عروض
+    // الأسعار — مراجعة Codex). الطباعة/الجلب تمرّ ببوّابة invoiceViewProcedure التي تقبل صلاحية
+    // الاستقبال (workorders:FULL) نفسها، محميّةً بالفرع.
+    pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "FULL", channels: "READ", treasury: "NONE",
     // FULL: طلبات خدمة الطباعة/الاستقبال هي عمله الأساسي (نمط workorders).
     tasks: "FULL",
     customers: "READ", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",

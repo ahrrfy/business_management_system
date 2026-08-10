@@ -29,7 +29,7 @@ import { verifyPassword } from "../auth/password";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { correctSale, createSale, processPayment } from "../services/saleService";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
-import { canSeeCostForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
+import { canSeeCostForUser, invoiceViewProcedure, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -934,7 +934,9 @@ export const saleRouter = router({
       };
     }),
 
-  get: salesReadProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+  // عرض/طباعة فاتورة: بوّابة invoiceViewProcedure (sales≥READ أو صلاحية الاستقبال workorders:FULL) —
+  // تُتيح لمشغّل الاستقبال إعادة طباعة فواتيره من طابور المحطة بلا فتح وحدة المبيعات كاملةً. محميّة بالفرع أدناه.
+  get: invoiceViewProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const inv = (

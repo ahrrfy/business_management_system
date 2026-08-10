@@ -143,35 +143,6 @@ export function SmartCustomerInput({ value, onChange, placeholder, className, na
    */
   const displayedNewCustomerName = value.name === value.phone ? "" : value.name;
 
-  // وضع «الاسم فقط» (طلب المالك): حقلُ اسمٍ واحدٌ نظيف يقبل المسافات — الهاتف مُدار خارجياً (١١ خانة
-  // في شاشة الاستقبال). يزيل ازدواج «حقلين بنفس الاسم» ودمجَ الأحرف (لا trim فوريّ).
-  if (nameOnly) {
-    // مُستخرَجٌ خارج JSX (نفس حيلة displayedNewCustomerName أعلاه): ذكرُ value.phone داخل value={…}
-    // يُطابق إشارةَ حارس الهاتف (check-form-inputs) زوراً — الاستخراج يزيلها بلا أي تغييرٍ سلوكيّ.
-    const shownName = value.name === value.phone ? "" : value.name;
-    const phoneFallback = value.phone ?? "";
-    const phoneKnown = !!value.phone;
-    const showSaveHint = value.isNew && value.name.trim().length > 0 && value.name !== value.phone;
-    return (
-      <div className={cn("relative", className)}>
-        <Input
-          value={shownName}
-          onChange={(e) => {
-            const name = e.target.value; // بلا trim فوريّ ⇒ المسافة مقبولة (القصّ عند الحفظ لا عند كل ضغطة).
-            onChange({ ...value, customerId: null, name: name || phoneFallback, isNew: name.trim().length > 0 || phoneKnown });
-          }}
-          placeholder={placeholder || "اسم العميل (اختياري)"}
-          aria-label="اسم العميل"
-        />
-        {showSaveHint && (
-          <div className="mt-1 text-[11px] text-primary">
-            سيُحفظ «{value.name.trim()}» تلقائياً كعميل جديد عند حفظ الأمر.
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
     <div ref={wrapRef} className={cn("relative", className)}>
       <div className="relative">
@@ -182,13 +153,16 @@ export function SmartCustomerInput({ value, onChange, placeholder, className, na
             setQ(v);
             setOpen(true);
             // أي تعديل يصبح مسوّدة فعلية للحفظ. الرقم يُحفظ كهاتف لا كاسم صامت.
+            // nameOnly (قناة): الهاتف مُدار خارجياً (حقل ١١ خانة) ⇒ لا نلتقطه من هذا الحقل بل نُبقيه؛
+            // ويبقى **البحث الذكيّ فعّالاً** فالكتابة تجد العملاء السابقين وتربطهم (يمنع ازدواج العميل).
             const typed = v.trim();
-            const phone = looksLikePhone(typed) ? typed : null;
+            const extPhone = value.phone;
+            const phone = nameOnly ? extPhone : looksLikePhone(typed) ? typed : null;
             onChange({
               customerId: null,
               name: v,
               phone,
-              isNew: typed.length > 0,
+              isNew: typed.length > 0 || (nameOnly === true && !!extPhone),
             });
           }}
           onFocus={() => setOpen(true)}
@@ -276,7 +250,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className, na
       {/* الصندوق الرئيسي يلتقط رقماً أو اسماً — لا كليهما معاً. إن كتب المستخدم رقماً (فصار
           الرقم هو نفسه المعروض كـname بلا تمييز) نعرض حقلاً ثانياً صريحاً لاسم العميل، حتى لا
           يُحفظ عميلٌ جديد باسم هو رقم هاتفه فعلياً. */}
-      {value.isNew && !value.customerId && value.phone && (
+      {!nameOnly && value.isNew && !value.customerId && value.phone && (
         <div className="mt-2 space-y-1">
           <label htmlFor="smart-customer-name" className="text-[11px] font-medium text-muted-foreground">
             اسم العميل (اختياري)

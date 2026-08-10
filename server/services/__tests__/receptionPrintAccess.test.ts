@@ -1,26 +1,27 @@
-// م١ (طلب المالك) — دور خدمة العملاء (print_operator) يقرأ/يطبع فواتيره ويعيد طباعتها:
-// قالبه صار sales=READ (كان NONE يحجب sales.get/list وأزرار الطباعة)، وطابور فواتير المحطة
-// انتقل لبوّابة exec التي تُدرجه. القراءة فقط — لا إنشاء بيع؛ وطفرات المال تبقى على بوّابة الكاشير.
+// م١ (طلب المالك) — خدمة العملاء تطبع/تعيد طباعة فواتيرها عبر بوّابة invoiceViewProcedure
+// (sales≥READ **أو** صلاحية الاستقبال workorders:FULL) — بلا فتح وحدة المبيعات كاملةً، فعروض
+// الأسعار تبقى محميّة على salesReadProcedure (مراجعة Codex). دورٌ-محايد: يعمل لأيّ دور استقبال.
 // (اختبار وحداتٍ نقيّ على خريطة الصلاحيات — لا قاعدة بيانات.)
 import { describe, expect, it } from "vitest";
-import { ROLE_TEMPLATES, moduleAccessAllowed, POS_STATION_GATES } from "@shared/permissions";
+import { ROLE_TEMPLATES } from "@shared/permissions";
 
-const SALES_LIST = ["cashier", "manager", "sales_rep", "print_operator"] as const;
+// مرآة منطق invoiceViewProcedure (server/trpc.ts): يمرّ إن sales≥READ أو workorders===FULL.
+const canViewInvoice = (sales: string, workorders: string) =>
+  sales === "FULL" || sales === "READ" || workorders === "FULL";
 
-describe("م١ — خدمة العملاء تقرأ/تطبع الفواتير (print_operator)", () => {
-  it("قالب print_operator صار sales=READ (كان NONE) — يفكّ جلب/طباعة الفاتورة", () => {
-    expect(ROLE_TEMPLATES.print_operator.sales).toBe("READ");
+describe("م١ — خدمة العملاء تطبع فواتيرها (invoiceViewProcedure)", () => {
+  it("print_operator: sales يبقى NONE (لا توسيع وحدة المبيعات — حماية عروض الأسعار من مراجعة Codex)", () => {
+    expect(ROLE_TEMPLATES.print_operator.sales).toBe("NONE");
   });
 
-  it("يجتاز sales≥READ (salesReadProcedure) ولا يجتاز sales=FULL — قراءة/طباعة فقط لا إنشاء بيع", () => {
-    expect(moduleAccessAllowed("print_operator", null, "sales", "READ", SALES_LIST)).toBe(true);
-    expect(moduleAccessAllowed("print_operator", null, "sales", "FULL", SALES_LIST)).toBe(false);
+  it("print_operator يجتاز عرض/طباعة الفاتورة عبر صلاحية الاستقبال (workorders:FULL) رغم sales:NONE", () => {
+    expect(ROLE_TEMPLATES.print_operator.workorders).toBe("FULL");
+    expect(canViewInvoice(ROLE_TEMPLATES.print_operator.sales, ROLE_TEMPLATES.print_operator.workorders)).toBe(true);
   });
 
-  it("طابور فواتير المحطة (workordersExecProcedure) يُدرج print_operator ⇒ يجتاز؛ والبوّابة القديمة (cashier فقط) كانت تحجبه", () => {
-    const execList = POS_STATION_GATES.RECEPTION.allowedRoles; // cashier, manager, print_operator
-    expect(moduleAccessAllowed("print_operator", null, "workorders", "FULL", execList)).toBe(true);
-    expect(moduleAccessAllowed("print_operator", null, "workorders", "FULL", ["cashier", "manager"])).toBe(false);
+  it("دورٌ بلا مبيعات ولا استقبال ⇒ لا يجتاز؛ والكاشير (sales:FULL) يجتاز", () => {
+    expect(canViewInvoice("NONE", "NONE")).toBe(false);
+    expect(canViewInvoice(ROLE_TEMPLATES.cashier.sales, ROLE_TEMPLATES.cashier.workorders)).toBe(true);
   });
 
   it("لا انحدار: print_operator ما زال crm=FULL (يحفظ العملاء — م٢) و workorders=FULL", () => {
@@ -28,8 +29,8 @@ describe("م١ — خدمة العملاء تقرأ/تطبع الفواتير (p
     expect(ROLE_TEMPLATES.print_operator.workorders).toBe("FULL");
   });
 
-  it("لا انحدار: أدوارٌ أخرى لا تتأثّر — cashier يبقى sales=FULL، والمدير كذلك", () => {
-    expect(ROLE_TEMPLATES.cashier.sales).toBe("FULL");
-    expect(moduleAccessAllowed("cashier", null, "sales", "READ", SALES_LIST)).toBe(true);
+  it("لا انحدار: reception_clerk (موظف استقبال) يجتاز — sales=READ + workorders=FULL", () => {
+    const recep = ROLE_TEMPLATES.cashier; // reception_clerk أساسه cashier + sales:READ override
+    expect(canViewInvoice("READ", recep.workorders)).toBe(true);
   });
 });
