@@ -708,6 +708,74 @@ export default function AnomalyWatch() {
               </tbody>
             </table>
           </SectionCard>
+
+          {/* D13 (توصيل ١٠/٨) — عهدة مناديب متقادمة (لقطة راهنة لا تتقيد بالفترة) */}
+          <SectionCard
+            title="عُهد توصيل متقادمة"
+            subtitle="نقدٌ بيد مندوب/شركة لم يُورَّد: العلم عند عمر ≥١٤ يوماً لأقدم إرسالية مفتوحة، أو عهدة ≥٢٠٠ ألف. لقطة حالةٍ راهنة — لا تتقيد بفترة التقرير."
+            count={aw.kpis.flaggedDeliveryCustody}
+          >
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-xs text-muted-foreground">
+                  <th className={thCls}>الجهة</th>
+                  <th className={thCls}>العهدة</th>
+                  <th className={thCls}>إرساليات مفتوحة</th>
+                  <th className={thCls}>أقدم (يوم)</th>
+                  <th className={thCls}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {aw.deliveryCustodyAging.rows.length === 0 ? (
+                  <TableEmptyRow colSpan={5} message="لا عُهد توصيل قائمة الآن." />
+                ) : (
+                  aw.deliveryCustodyAging.rows.map((r, i) => (
+                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
+                      <td className={tdCls}>{r.partyName}</td>
+                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{fmtAr(r.balance)}</td>
+                      <td className={numCls} dir="ltr">{r.openCount}</td>
+                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.oldestDays ?? "—"}</td>
+                      <FlagCell flagged={r.flagged} />
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </SectionCard>
+
+          {/* D14 (توصيل ١٠/٨) — توريدات بعجز متكرّرة لنفس الجهة */}
+          <SectionCard
+            title="توريدات توصيل بعجز متكرّر"
+            subtitle="توريدُ أقلَّ من المتوقّع مرةً قد يكون ظرفاً؛ تكرارُه لنفس الجهة (≥٣ بالفترة) نمطُ «سلّم أقل» يستوجب المتابعة."
+            count={aw.kpis.flaggedDeliveryShortRemits}
+          >
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-xs text-muted-foreground">
+                  <th className={thCls}>الجهة</th>
+                  <th className={thCls}>توريدات الفترة</th>
+                  <th className={thCls}>منها بعجز</th>
+                  <th className={thCls}>مجموع العجز</th>
+                  <th className={thCls}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {aw.deliveryShortRemits.rows.length === 0 ? (
+                  <TableEmptyRow colSpan={5} message="لا توريدات بعجز في الفترة." />
+                ) : (
+                  aw.deliveryShortRemits.rows.map((r, i) => (
+                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
+                      <td className={tdCls}>{r.partyName}</td>
+                      <td className={numCls} dir="ltr">{r.remitCount}</td>
+                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.shortCount}</td>
+                      <td className={cn(numCls, "text-money-negative")} dir="ltr">{fmtAr(r.shortfallTotal)}</td>
+                      <FlagCell flagged={r.flagged} />
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </SectionCard>
         </div>
       )}
     </ReportShell>

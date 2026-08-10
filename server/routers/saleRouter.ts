@@ -13,6 +13,7 @@ import {
   deliveryParties,
   invoiceItems,
   invoices,
+  onlineOrders,
   productUnits,
   productVariants,
   products,
@@ -38,6 +39,18 @@ import { withTx } from "../services/tx";
 // الطلب. نصل الفاتورة بأمرها عبر invoiceId (علاقة 1:1) كي تبقى مرئية لصاحب الطلب
 // الأصلي أيضاً، من دون توسيع كشف فواتير الموظفين الآخرين.
 const workOrderInvoiceCustomer = alias(customers, "workOrderInvoiceCustomer");
+// ١٠/٨ — توصيل قناة المتجر: طلب المتجر بلا إرسالية (عهدته عند تأكيد المندوب) — بدونه كانت
+// فاتورة متجرٍ بيد مندوب تظهر «بلا توصيل» في القائمة والفلتر. جهة الطلب لها alias مستقل.
+const onlineDeliveryParty = alias(deliveryParties, "onlineDeliveryParty");
+// حالة توصيل موحَّدة للعرض/الفلتر: الإرسالية أولاً، وإلا اشتقاق من حالة طلب المتجر المُسنَد.
+const unifiedConsignmentStatus = sql<string | null>`COALESCE(${deliveryConsignments.status},
+  CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN
+    CASE ${onlineOrders.status}
+      WHEN 'SHIPPED' THEN 'DISPATCHED'
+      WHEN 'DELIVERED' THEN 'DELIVERED'
+      WHEN 'CANCELLED' THEN CASE WHEN ${onlineOrders.cancelReason} IS NOT NULL THEN 'RETURNED' END
+    END
+  END)`;
 
 // تحصين verifyManagerApproval ضدّ تخمين كلمة المرور:
 // (١) حدّ معدّل بالبريد المُحاوَل: ≤ ٥ محاولات / ٦٠ ثانية.
@@ -259,15 +272,16 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
   }
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
   if (input?.shiftId) conds.push(eq(invoices.shiftId, input.shiftId));
-  // ⚠️ فلترا التوصيل يتطلّبان join على deliveryConsignments في **كل** مستهلك لهذه الشروط
-  // (list وlistPage وlistSummary) — قيد uq_consignment_invoice = صفّ واحد كحدّ أقصى لكل فاتورة
-  // ⇒ leftJoin لا يضاعف الصفوف والمجاميع تبقى صحيحة.
-  if (input?.delivery === "ANY") conds.push(isNotNull(deliveryConsignments.id));
-  else if (input?.delivery === "NONE") conds.push(sql`${deliveryConsignments.id} IS NULL`);
-  else if (input?.delivery === "OPEN") conds.push(sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`);
-  else if (input?.delivery === "SETTLED") conds.push(sql`${deliveryConsignments.status} IN ('DELIVERED','WRITTEN_OFF')`);
-  else if (input?.delivery === "RETURNED") conds.push(eq(deliveryConsignments.status, "RETURNED"));
-  if (input?.deliveryPartyId) conds.push(eq(deliveryConsignments.partyId, input.deliveryPartyId));
+  // ⚠️ فلترا التوصيل يتطلّبان join على deliveryConsignments **وonlineOrders** في كل مستهلك
+  // لهذه الشروط (list وlistPage وlistSummary) — uq_consignment_invoice + طلبٌ واحد لكل فاتورة
+  // (online-dispatch:{orderId} idempotent) ⇒ leftJoin لا يضاعف الصفوف والمجاميع تبقى صحيحة.
+  // ١٠/٨: قناة المتجر بلا إرسالية — تُشتقّ حالتها من الطلب المُسنَد (unifiedConsignmentStatus).
+  if (input?.delivery === "ANY") conds.push(sql`(${deliveryConsignments.id} IS NOT NULL OR ${onlineOrders.deliveryPartyId} IS NOT NULL)`);
+  else if (input?.delivery === "NONE") conds.push(sql`(${deliveryConsignments.id} IS NULL AND ${onlineOrders.deliveryPartyId} IS NULL)`);
+  else if (input?.delivery === "OPEN") conds.push(sql`${unifiedConsignmentStatus} IN ('DISPATCHED','PARTIAL')`);
+  else if (input?.delivery === "SETTLED") conds.push(sql`${unifiedConsignmentStatus} IN ('DELIVERED','WRITTEN_OFF')`);
+  else if (input?.delivery === "RETURNED") conds.push(sql`${unifiedConsignmentStatus} = 'RETURNED'`);
+  if (input?.deliveryPartyId) conds.push(sql`COALESCE(${deliveryConsignments.partyId}, ${onlineOrders.deliveryPartyId}) = ${input.deliveryPartyId}`);
   // المدير/الأدمن يستطيعان اختيار موظف؛ الموظف العادي يبقى مُجبَراً على نفسه.
   if (scopedOwnerId == null && input?.salespersonId) conds.push(eq(invoices.createdBy, input.salespersonId));
   if (input?.q) {
@@ -694,10 +708,11 @@ export const saleRouter = router({
             // التوصيل (٩/٨): شارة «توصيل — بيد فلان» وفلترها في شاشة الفواتير. صفّ واحد كحدّ
             // أقصى لكل فاتورة (uq_consignment_invoice) ⇒ لا مضاعفة صفوف.
             consignmentId: deliveryConsignments.id,
-            consignmentNumber: deliveryConsignments.consignmentNumber,
-            consignmentStatus: deliveryConsignments.status,
-            deliveryPartyId: deliveryConsignments.partyId,
-            deliveryPartyName: deliveryParties.name,
+            // ١٠/٨ — قناة المتجر بلا إرسالية: المرجع = رقم الطلب، والحالة تُشتقّ من الطلب المُسنَد.
+            consignmentNumber: sql<string | null>`COALESCE(${deliveryConsignments.consignmentNumber}, CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN ${onlineOrders.orderNumber} END)`,
+            consignmentStatus: unifiedConsignmentStatus,
+            deliveryPartyId: sql<number | null>`COALESCE(${deliveryConsignments.partyId}, ${onlineOrders.deliveryPartyId})`,
+            deliveryPartyName: sql<string | null>`COALESCE(${deliveryParties.name}, ${onlineDeliveryParty.name})`,
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
@@ -706,6 +721,8 @@ export const saleRouter = router({
           .leftJoin(users, eq(invoices.createdBy, users.id))
           .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
           .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
+          .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
+          .leftJoin(onlineDeliveryParty, eq(onlineDeliveryParty.id, onlineOrders.deliveryPartyId))
           .where(where)
           .orderBy(desc(invoices.id))
           .limit(lim)
@@ -750,10 +767,11 @@ export const saleRouter = router({
             deviceId: invoices.posDeviceId,
             // التوصيل (٩/٨) — مرآة list حرفياً (نفس الشروط تتطلّب نفس الـjoin).
             consignmentId: deliveryConsignments.id,
-            consignmentNumber: deliveryConsignments.consignmentNumber,
-            consignmentStatus: deliveryConsignments.status,
-            deliveryPartyId: deliveryConsignments.partyId,
-            deliveryPartyName: deliveryParties.name,
+            // ١٠/٨ — قناة المتجر بلا إرسالية: المرجع = رقم الطلب، والحالة تُشتقّ من الطلب المُسنَد.
+            consignmentNumber: sql<string | null>`COALESCE(${deliveryConsignments.consignmentNumber}, CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN ${onlineOrders.orderNumber} END)`,
+            consignmentStatus: unifiedConsignmentStatus,
+            deliveryPartyId: sql<number | null>`COALESCE(${deliveryConsignments.partyId}, ${onlineOrders.deliveryPartyId})`,
+            deliveryPartyName: sql<string | null>`COALESCE(${deliveryParties.name}, ${onlineDeliveryParty.name})`,
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
@@ -762,6 +780,8 @@ export const saleRouter = router({
           .leftJoin(users, eq(invoices.createdBy, users.id))
           .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
           .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
+          .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
+          .leftJoin(onlineDeliveryParty, eq(onlineDeliveryParty.id, onlineOrders.deliveryPartyId))
           .where(where)
           .orderBy(desc(invoices.id))
           .limit(lim)
@@ -816,6 +836,7 @@ export const saleRouter = router({
           .leftJoin(customers, eq(invoices.customerId, customers.id))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
           .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
+          .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
           .where(conds.length ? and(...conds) : undefined)
       )[0];
       return {
@@ -872,15 +893,17 @@ export const saleRouter = router({
           deliveryWaivedAmount: invoices.deliveryWaivedAmount,
           // إفصاح توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا على الفاتورة (تمريرٌ
           // لا إيراد) — نُرجعها للعرض/الطباعة فقط كي تُظهر الفاتورة «يدفع الزبون شاملاً التوصيل».
-          courierName: deliveryParties.name,
-          courierFee: deliveryConsignments.deliveryFee,
-          courierFeeCollection: deliveryConsignments.feeCollection,
+          // ١٠/٨ — قناة المتجر (تمرير كامل): الأجرة = shippingCost على الطلب، للفواتير الجديدة
+          // فقط (invoices.deliveryFee=0)؛ القديمة شحنُها داخل total فعرضُها «شاملاً» يضاعفه.
+          courierName: sql<string | null>`COALESCE(${deliveryParties.name}, ${onlineDeliveryParty.name})`,
+          courierFee: sql<string | null>`COALESCE(${deliveryConsignments.deliveryFee}, CASE WHEN CAST(${invoices.deliveryFee} AS DECIMAL(15,2)) > 0 THEN NULL ELSE ${onlineOrders.shippingCost} END)`,
+          courierFeeCollection: sql<"COURIER" | "COUNTER" | "SHOP" | null>`COALESCE(${deliveryConsignments.feeCollection}, CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN 'COURIER' END)`,
           consignmentNumber: deliveryConsignments.consignmentNumber,
           // ٩/٨: حالة الإرسالية وتوقيتاها — «وين طلبي؟» كان ينقطع خيطه هنا (الرقم بلا حالة).
-          consignmentStatus: deliveryConsignments.status,
+          consignmentStatus: unifiedConsignmentStatus,
           consignmentDispatchedAt: deliveryConsignments.dispatchedAt,
           consignmentSettledAt: deliveryConsignments.settledAt,
-          deliveryPartyId: deliveryConsignments.partyId,
+          deliveryPartyId: sql<number | null>`COALESCE(${deliveryConsignments.partyId}, ${onlineOrders.deliveryPartyId})`,
           workOrderCreatedBy: workOrders.createdBy,
         })
         .from(invoices)
@@ -891,6 +914,8 @@ export const saleRouter = router({
         .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
         .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
         .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
+        .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
+        .leftJoin(onlineDeliveryParty, eq(onlineDeliveryParty.id, onlineOrders.deliveryPartyId))
         .where(eq(invoices.id, input.invoiceId))
         .limit(1)
     )[0];

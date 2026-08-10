@@ -121,6 +121,7 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
               <span className="text-muted-foreground">نقد بذمّتها: </span>
               <b className={cn("tabular-nums", Number(party.currentBalance) > 0 ? "text-destructive" : "")} dir="ltr">{fmt(party.currentBalance)} د.ع</b>
             </div>
+            <StoreInTransitChip partyId={party.id} />
             <Button variant="ghost" size="icon" onClick={onClose} aria-label="إغلاق"><X aria-hidden className="size-4" /></Button>
           </div>
         </div>
@@ -137,6 +138,19 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
         {tab === "statement" && <StatementTab party={party} />}
         {tab === "settings" && <SettingsTab party={party} isManager={isManager} canRecover={canRecover} onChanged={onChanged} />}
       </div>
+    </div>
+  );
+}
+
+/** طرود متجر «مع المندوب» لم تُؤكَّد بعد (١٠/٨): عهدة المتجر تُرفع عند التأكيد لا الإرسال —
+ *  ما بيده فعلياً كان غير ظاهر في أي عهدة أو كشف. */
+function StoreInTransitChip({ partyId }: { partyId: number }) {
+  const q = trpc.delivery.storeInTransit.useQuery({ partyId }, { staleTime: 30_000 });
+  if (!q.data || q.data.count === 0) return null;
+  return (
+    <div className="rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-sm" title="طلبات متجر مُرسَلة معه لم يؤكَّد تسليمها — قيمتها ليست ضمن «نقد بذمّتها» بعد (تُضاف عند تأكيد التسليم)">
+      <span className="text-[var(--sem-warn)] font-bold">طرود متجر بالطريق: {q.data.count}</span>
+      <b className="ms-1.5 tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(q.data.value)} د.ع</b>
     </div>
   );
 }

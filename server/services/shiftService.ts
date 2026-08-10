@@ -418,6 +418,22 @@ export async function getShiftReport(shiftId: number) {
   const heldRow = Array.isArray(heldData) ? heldData[0] : undefined;
   const heldDeposits = { count: Number(heldRow?.c ?? 0), total: String(heldRow?.t ?? "0.00") };
 
+  // توصيل (١٠/٨) — إفصاح Z: توريدات المناديب وأجور التوصيل كانت تذوب في «نقدي وارد/صادر»
+  // فيتضخّم وارد الوردية بلا تمييز بين مبيعات الدرج وتحصيل عُهدٍ قديمة، ويستحيل تتبّع «أين
+  // دخل توريد فلان؟» إلا بفتح الإيصالات واحداً واحداً. بصمات المراجع: توريد DR-، تسوية/استرداد
+  // DLV-SETTLE-/DLV-RECOVER-، أجور الإرسال CN- (OUT) وأمانات DLV-FEE- (OUT). إفصاح عرضٍ فقط —
+  // لا يمسّ expectedCash ولا المطابقة.
+  const dlvRows = await db
+    .select({
+      inCount: sql<number>`SUM(CASE WHEN ${receipts.direction} = 'IN' AND (${receipts.referenceNumber} LIKE 'DR-%' OR ${receipts.referenceNumber} LIKE 'DLV-SETTLE-%' OR ${receipts.referenceNumber} LIKE 'DLV-RECOVER-%') THEN 1 ELSE 0 END)`,
+      inTotal: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND (${receipts.referenceNumber} LIKE 'DR-%' OR ${receipts.referenceNumber} LIKE 'DLV-SETTLE-%' OR ${receipts.referenceNumber} LIKE 'DLV-RECOVER-%') THEN ${receipts.amount} ELSE 0 END), 0)`,
+      outCount: sql<number>`SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} LIKE 'DR-%' OR ${receipts.referenceNumber} LIKE 'CN-%' OR ${receipts.referenceNumber} LIKE 'DLV-FEE-%') THEN 1 ELSE 0 END)`,
+      outTotal: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} LIKE 'DR-%' OR ${receipts.referenceNumber} LIKE 'CN-%' OR ${receipts.referenceNumber} LIKE 'DLV-FEE-%') THEN ${receipts.amount} ELSE 0 END), 0)`,
+    })
+    .from(receipts)
+    .where(eq(receipts.shiftId, shiftId));
+  const dlv = dlvRows[0];
+
   // أوفلاين (ش٤) — «مبيعات مُزامنة لاحقاً»: فواتير أوفلاينية رُحِّلت **بعد** إغلاق الوردية
   // (createdAt > closedAt). تفسّر زيادة الدرج عند العدّ (النقد قُبض قبل الإغلاق والفاتورة
   // وصلت بعده) فلا يُتَّهم الكاشير بفائض مجهول ولا يُساء قراءة Z-report.
@@ -450,6 +466,10 @@ export async function getShiftReport(shiftId: number) {
     heldDepositsTotal: heldDeposits.total,
     lateSyncedCount: lateSynced.count,
     lateSyncedTotal: lateSynced.total,
+    deliveryInCount: Number(dlv?.inCount ?? 0),
+    deliveryInTotal: String(dlv?.inTotal ?? "0.00"),
+    deliveryOutCount: Number(dlv?.outCount ?? 0),
+    deliveryOutTotal: String(dlv?.outTotal ?? "0.00"),
   };
 }
 

@@ -2066,6 +2066,20 @@ export default function Reception() {
                           `${fmt(Number(reportQ.data?.heldDepositsTotal ?? 0))} د.ع`,
                         ] as [string, string]]
                       : []),
+                    // توصيل (١٠/٨): توريدات المناديب وأجورهم كانت تذوب في «نقدي وارد/صادر» —
+                    // السطران يفسّران وارداً متضخماً ليس مبيعات هذا الدرج وصادرَ أجورٍ ليس مصروفاً عاماً.
+                    ...(Number(reportQ.data?.deliveryInCount ?? 0) > 0
+                      ? [[
+                          `منها توريدات مناديب (${reportQ.data?.deliveryInCount})`,
+                          `${fmt(Number(reportQ.data?.deliveryInTotal ?? 0))} د.ع`,
+                        ] as [string, string]]
+                      : []),
+                    ...(Number(reportQ.data?.deliveryOutCount ?? 0) > 0
+                      ? [[
+                          `مدفوعات توصيل صادرة (${reportQ.data?.deliveryOutCount})`,
+                          `${fmt(Number(reportQ.data?.deliveryOutTotal ?? 0))} د.ع`,
+                        ] as [string, string]]
+                      : []),
                     ["المبلغ عند بدء الوردية", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
                     ...(showRecExpected
                       ? [["المبلغ المفترض وجوده في الدرج", `${fmt(recExpected)} د.ع`] as [string, string]]
