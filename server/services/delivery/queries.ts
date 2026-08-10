@@ -1,6 +1,6 @@
 // قراءات الشاشة: الجاهز للإرسال، الإرساليات المفتوحة/كاملة، سجل التوريدات، كشف حساب جهة.
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryParties, deliveryRemittances, invoices, users, workOrders } from "../../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, deliveryParties, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 
 /** أوامر الشغل الجاهزة (READY) القابلة للإرسال عبر مندوب — تبويب «جاهز للإرسال». */
@@ -129,6 +129,25 @@ export async function listPartyRemittances(partyId: number, opts?: { from?: stri
     .where(and(...conds))
     .orderBy(desc(deliveryRemittances.id))
     .limit(Math.min(opts?.limit ?? 100, 300));
+}
+
+/** طرود متجر «مع المندوب» (SHIPPED) لجهة — فجوة الرؤية بين القناتين (١٠/٨): عهدة المتجر
+ *  تُرفَع عند تأكيد المندوب لا عند الإرسال، فما بيده من طرودٍ لم تُؤكَّد كان غير ظاهر في
+ *  أي عهدة أو كشف. القيمة = متبقّي الفاتورة (البضاعة — بعد التمرير الكامل لا تشمل الأجرة). */
+export async function getPartyStoreInTransit(partyId: number) {
+  const db = getDb();
+  if (!db) return { count: 0, value: "0.00" };
+  const row = (
+    await db
+      .select({
+        count: sql<number>`COUNT(*)`,
+        value: sql<string>`COALESCE(SUM(GREATEST(CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)), 0)), 0)`,
+      })
+      .from(onlineOrders)
+      .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
+      .where(and(eq(onlineOrders.deliveryPartyId, partyId), eq(onlineOrders.status, "SHIPPED")))
+  )[0];
+  return { count: Number(row?.count ?? 0), value: String(row?.value ?? "0.00") };
 }
 
 /** كشف حساب جهة توصيل: قيود العهدة (DISPATCH مدين، REMIT/WRITEOFF دائن) + أجور (FEE/FEE_HELD).
