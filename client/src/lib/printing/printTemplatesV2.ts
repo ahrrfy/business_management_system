@@ -652,6 +652,7 @@ export interface WorkOrderV2Data {
 
   customerName?: string | null;
   customerPhone?: string | null;
+  employeeName?: string | null;
 
   jobType?: string | null;
   jobSpecs?: string | null;
@@ -694,6 +695,7 @@ export function printWorkOrderV2(d: WorkOrderV2Data): boolean {
       title: 'تفاصيل العمل',
       variant: 'gray',
       fields: [
+        ...(d.employeeName ? [{ label: 'الموظف', value: d.employeeName }] : []),
         ...(d.jobType ? [{ label: 'نوع العمل', value: d.jobType }] : []),
         ...(d.jobSpecs ? [{ label: 'المواصفات', value: d.jobSpecs }] : []),
       ],

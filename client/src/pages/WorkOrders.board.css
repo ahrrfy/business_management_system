@@ -132,7 +132,10 @@
 .wob-info { min-width: 0; flex: 1; }
 .wob-card-title { font-weight: 700; font-size: 14px; line-height: 1.35; margin-bottom: 4px; text-wrap: pretty; }
 .wob-cust { font-size: 12.5px; color: var(--muted-fg); display: flex; align-items: center; gap: 5px; }
+.wob-cust-phone { margin-top: 2px; font-size: 11px; color: var(--muted-fg); text-align: right; }
 .wob-cust .wob-ch { font-size: 13px; }
+.wob-card-specs { margin-top: 9px; padding: 7px 8px; border-radius: 8px; background: var(--muted); color: var(--muted-fg); font-size: 11.5px; line-height: 1.45; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.wob-card-delivery { display: flex; align-items: center; gap: 5px; margin-top: 7px; color: var(--s-amber); font-size: 11.5px; font-weight: 700; }
 
 .wob-meta { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 12px; flex-wrap: wrap; }
 .wob-meta-pill { background: var(--muted); border-radius: 7px; padding: 3px 8px; font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
@@ -158,9 +161,11 @@
 .wob-avatar.wob-unassigned { background: var(--muted); color: var(--muted-fg); border: 1px dashed var(--border-strong); }
 .wob-who { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .wob-who-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wob-wa { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 8px; background: var(--brand-whatsapp); color: #fff; text-decoration: none; flex-shrink: 0; box-shadow: 0 1px 4px color-mix(in oklch, var(--brand-whatsapp) 50%, transparent); }
+.wob-wa { display: inline-flex; align-items: center; justify-content: center; width: auto; min-width: 78px; height: 30px; padding-inline: 9px; gap: 5px; border-radius: 8px; background: var(--brand-whatsapp); color: #fff; font-size: 11.5px; font-weight: 800; text-decoration: none; flex-shrink: 0; box-shadow: 0 1px 4px color-mix(in oklch, var(--brand-whatsapp) 50%, transparent); }
+.wob-wa svg { width: 17px; height: 17px; color: #fff; }
 .wob-wa:hover { filter: brightness(1.06); }
 .wob-wa-lg { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 18px; border-radius: 10px; font-weight: 700; font-size: 14px; background: var(--brand-whatsapp); color: #fff; text-decoration: none; box-shadow: 0 2px 8px color-mix(in oklch, var(--brand-whatsapp) 40%, transparent); }
+.wob-wa-lg svg { color: #fff; }
 .wob-wa-lg:hover { filter: brightness(1.08); }
 
 /* ─── الدرج (لوحة التفاصيل) ─── */

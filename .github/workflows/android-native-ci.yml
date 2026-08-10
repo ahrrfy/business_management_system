@@ -13,13 +13,9 @@ on:
       - ".github/workflows/android-release.yml"
   push:
     branches: [main]
-    paths:
-      - "android-native/**"
-      - "scripts/verify-mobile-release-env.mjs"
-      - "scripts/verify-android-release-workflow-gate.mjs"
-      - "package.json"
-      - ".github/workflows/android-native-ci.yml"
-      - ".github/workflows/android-release.yml"
+    # بوابة الإصدار تشترط Native Android CI ناجحاً لنفس SHA الحالي لـmain. لذلك يجب
+    # تشغيله على كل push إلى main حتى لو كان الدمج Web/Server فقط؛ وإلا يصبح إنشاء
+    # artifact موقع مستحيلاً لأن ذلك الـSHA لن يملك تشغيل Android مؤهلاً.
 
 permissions:
   contents: read

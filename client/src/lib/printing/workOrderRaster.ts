@@ -17,6 +17,7 @@ export interface WorkOrderReceiptData {
   orderDate?: string | null;
   dueDate?: string | null;
   status?: string | null;
+  employeeName?: string | null;
   customerName?: string | null;
   customerPhone?: string | null;
   jobTitle?: string | null;
@@ -167,6 +168,7 @@ export async function workOrderToCanvas(
   if (d.dueDate)   infoRow("موعد التسليم:", d.dueDate);
   if (d.customerName) infoRow("العميل:", d.customerName);
   if (d.customerPhone) infoRow("الهاتف:", d.customerPhone);
+  if (d.employeeName) infoRow("الموظف:", d.employeeName);
   if (d.status) infoRow("الحالة:", STATUS_AR[d.status] ?? d.status);
 
   y += 4; dashedLine(ctx, y); y += 28;
