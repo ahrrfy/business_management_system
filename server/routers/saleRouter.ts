@@ -746,7 +746,9 @@ export const saleRouter = router({
           and(
             eq(auditLogs.entityType, "invoice"),
             eq(auditLogs.entityId, String(input.invoiceId)),
-            eq(auditLogs.action, "sale.invoiceCorrect"),
+            // التصحيح البيانيّ الخفيف (sale.invoiceCorrect) + التصحيح الكامل عكس/إعادة إصدار
+            // (sale.reissue) — كلاهما يظهر في سجلّ الفاتورة كي لا يختفي أخطرُهما أثراً.
+            inArray(auditLogs.action, ["sale.invoiceCorrect", "sale.reissue"]),
           ),
         )
         .orderBy(desc(auditLogs.id));

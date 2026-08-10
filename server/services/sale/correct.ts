@@ -132,7 +132,38 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     const originalPaid = round2(money(inv.paidAmount));
     const originalCustomerId = inv.customerId != null ? Number(inv.customerId) : null;
 
-    // ── ٢) العكس الكامل عبر منطق المرتجع المُختبَر (كل البنود، بلا ردٍّ نقديّ، مع إعادة للمخزون) ──
+    // ── حارس النقل الماليّ (ذكاءٌ حاكمٌ يمنع الخطأ بالبناء) ──
+    //    التصحيح ينقل المقبوض للفاتورة الجديدة عبر إيصالات القبض القابلة للفصل (IN مكتمل، عدا
+    //    أمانة أجرة التوصيل). لكن `paidAmount` قد يُموَّل من عربونٍ (orderPayments) إيصالُ أمّه
+    //    غير مختومٍ بهذه الفاتورة (عربونٌ متعدّد الأهداف/على أمر شغل/مرتجَع جزئياً — راجع
+    //    reception/deposits.ts + returnService.ts). حينها detachedSum < paidAmount، فيُعيد
+    //    الترحيلُ تحميلَ الفرق ذمّةً وهميّةً على العميل. الحلّ: لا نُصحّح إن اختلّ المجموع — بل
+    //    نوجّه لإلغاءٍ كامل ثمّ إعادة بيع. (المجموع محسوبٌ قبل أيّ تعديل ⇒ رفضٌ فاشلٌ نظيف.)
+    const payRcpts = await tx.select({ id: receipts.id, amount: receipts.amount }).from(receipts).where(and(
+      eq(receipts.invoiceId, input.originalInvoiceId),
+      eq(receipts.direction, "IN"),
+      eq(receipts.status, "COMPLETED"),
+      sql`NOT EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD')`,
+    ));
+    const detachedIds = payRcpts.map((r) => Number(r.id));
+    const detachedSum = round2(payRcpts.reduce((s, r) => s.plus(money(r.amount)), new Decimal(0)));
+    if (!detachedSum.equals(originalPaid)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `تعذّر التصحيح: المدفوع المسجَّل (${originalPaid.toFixed(2)}) لا يطابق إيصالات القبض القابلة للنقل (${detachedSum.toFixed(2)}) — قد يكون بعضه من عربونٍ مرتبطٍ بغير هذه الفاتورة. عالِجها بإلغاءٍ كامل ثمّ إعادة بيع.`,
+      });
+    }
+    // منع تغيير العميل عند وجود مدفوعات: المقبوض يخصّ العميل الأصليّ؛ نقله لعميلٍ آخر يُشوّه الذمم
+    //    (يُعيد للأصل ويُرصّد الجديد بلا إيصالٍ للأصل). لتغيير العميل: إلغاءٌ كامل ثمّ إعادة بيع.
+    const targetCustomerId = input.customerId != null ? Number(input.customerId) : null;
+    if (originalPaid.gt(0) && Number(targetCustomerId ?? 0) !== Number(originalCustomerId ?? 0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يُغيَّر العميل في تصحيحٍ عليه مدفوعات — المقبوض يخصّ العميل الأصليّ. لتغييره: ألغِ الفاتورة وأعِد البيع.",
+      });
+    }
+
+    // ── ٢) العكس الكامل عبر منطق المرتجع المُختبَر (كل البنود، بلا ردٍّ نقديّ, مع إعادة للمخزون) ──
     const items = await tx.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, input.originalInvoiceId));
     if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة بلا بنودٍ لتصحيحها" });
     // returnedTotal=0 مضمونٌ أعلاه ⇒ المتبقّي القابل للعكس = كامل الكمية الأساس.
@@ -145,16 +176,7 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
       await adjustCustomerBalance(tx, originalCustomerId, originalPaid);
     }
 
-    // ── ٤) فصل إيصالات القبض عن الأصل (تُعاد ختمها بالجديدة عبر preCollected) ──
-    //    إيصالات IN مكتملة، باستثناء أمانة أجرة التوصيل (قيد DELIVERY_FEE_HELD) — دفاعٌ صريح.
-    const payRcpts = await tx.select({ id: receipts.id, amount: receipts.amount }).from(receipts).where(and(
-      eq(receipts.invoiceId, input.originalInvoiceId),
-      eq(receipts.direction, "IN"),
-      eq(receipts.status, "COMPLETED"),
-      sql`NOT EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD')`,
-    ));
-    const detachedIds = payRcpts.map((r) => Number(r.id));
-    const detachedSum = round2(payRcpts.reduce((s, r) => s.plus(money(r.amount)), new Decimal(0)));
+    // ── ٤) فصل إيصالات القبض عن الأصل (المجموع مُتحقَّقٌ = المدفوع أعلاه؛ تُعاد ختمها عبر preCollected) ──
     if (detachedIds.length) {
       await tx.update(receipts).set({ invoiceId: null }).where(inArray(receipts.id, detachedIds));
     }
@@ -196,6 +218,19 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     }, actor);
     const newId = repost.invoiceId;
     const newTotal = round2(money(repost.total));
+
+    // حارس: الدفعة الإضافية لا تتجاوز الفرق المستحقّ (النقص) — الزائد لن يُردّ (createSaleInTx يقصر
+    //    المدفوع بالإجمالي فيُبتَلع الفائض بلا استرداد). حصِّل الفرق فقط. (الرفض هنا يُرجِع الترحيل ذرّياً.)
+    if (input.additionalPayment) {
+      const addAmt = round2(money(input.additionalPayment.amount));
+      const shortfall = round2(Decimal.max(new Decimal(0), newTotal.minus(detachedSum)));
+      if (addAmt.gt(shortfall)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `الدفعة الإضافية (${addAmt.toFixed(2)}) تتجاوز الفرق المستحقّ (${shortfall.toFixed(2)}) — حصِّل الفرق فقط.`,
+        });
+      }
+    }
 
     // ── ٨) ربط الفاتورتين (نسب التصحيح ثنائية الاتجاه) ──
     await tx.update(invoices).set({ correctionOfInvoiceId: input.originalInvoiceId }).where(eq(invoices.id, newId));

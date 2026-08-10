@@ -235,4 +235,34 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
       overpayHandling: "CREDIT", priceOverrideApproved: true,
     }, admin)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
+
+  it("حارس النقل الماليّ: مدفوعٌ لا تُغطّيه إيصالات القبض القابلة للنقل (عربونٌ غير مختوم) ⇒ رفضٌ بلا مسٍّ للأصل", async () => {
+    await seed({ withCustomer: true });
+    const sale = await createSale({ branchId: 1, customerId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "POS",
+      lines: [line(1)], payment: { amount: "1000", method: "CASH" } }, admin);
+    // نُحاكي عربوناً موّل paidAmount لكن إيصالَ أمّه غير مختومٍ بهذه الفاتورة (invoiceId=NULL).
+    await db().update(s.receipts).set({ invoiceId: null })
+      .where(sql`${s.receipts.invoiceId}=${sale.invoiceId} AND ${s.receipts.direction}='IN'`);
+    await expect(correctSale({ originalInvoiceId: sale.invoiceId, customerId: 1, lines: [line(1)] }, admin))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    // الرفض قبل أيّ تعديل ⇒ الأصل لم يُستبدَل ولم تُصفَّر ذمّة العميل زوراً.
+    expect((await getInvoice(sale.invoiceId)).status).not.toBe("SUPERSEDED");
+  });
+
+  it("حارس العميل: تغيير العميل في تصحيحٍ عليه مدفوعات ⇒ يُرفَض (المقبوض يخصّ الأصليّ)", async () => {
+    await seed({ withCustomer: true });
+    await db().insert(s.customers).values({ id: 2, name: "عميل ٢", currentBalance: "0", creditLimit: "9999999.00" });
+    const sale = await createSale({ branchId: 1, customerId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "POS",
+      lines: [line(1)], payment: { amount: "1000", method: "CASH" } }, admin);
+    await expect(correctSale({ originalInvoiceId: sale.invoiceId, customerId: 2, lines: [line(1)] }, admin))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("حارس الدفعة الإضافية: تحصيلٌ يتجاوز الفرق المستحقّ ⇒ يُرفَض (حصِّل الفرق فقط)", async () => {
+    await seed();
+    const sale = await cashSale(1); // ١٠٠٠ مدفوعٌ كاملاً ⇒ لا نقص
+    await expect(correctSale({ originalInvoiceId: sale.invoiceId, lines: [line(1)],
+      additionalPayment: { amount: "500", method: "CASH" } }, admin))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
 });
