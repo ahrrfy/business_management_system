@@ -202,15 +202,16 @@ docker exec -i erp-mysql mysql -uroot -p<pw> < backups/<ملف-النسخة>.sql
 
 ## ٧. التحديثات اللاحقة (نشر إصدار جديد) — `pnpm prod:deploy`
 
-**الطريقة المعتمدة: أمرٌ ذرّيّ واحد** (`scripts/deploy.mjs`). بعد دمج التغييرات على `main` وخُضرة CI، ادخل الخادم بمستخدم `deploy` ونفّذه من مجلّد المشروع:
+**الطريقة المعتمدة: أمرٌ ذرّيّ واحد** (`scripts/deploy.mjs`). بعد دمج التغييرات على `main` وخُضرة CI، شغّله بهوية `deploy` نفسها التي تملك `pm2-deploy.service`:
 
 ```bash
-ssh deploy@<الخادم>
-cd ~/erp
-pnpm prod:deploy
+ssh root@<الخادم>
+sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
 ```
 
-السكربت يشغّل **٧ خطوات بالترتيب الآمن، ويتوقّف فوراً عند أوّل فشل** (لا يُكمل ما بعده) — والخادم القديم يبقى يعمل حتى لحظة الخطوة ٧:
+> **PM2 خاص بكل مستخدم.** السكربت يرفض `root` أو `HOME/PM2_HOME` غير المطابق لـ`deploy`، كي لا يُنشئ daemon ثانياً يبدو فارغاً أو ينازع الخدمة الحقيقية على المنفذ.
+
+السكربت يشغّل **١١ خطوة بالترتيب الآمن، ويتوقّف فوراً عند أوّل فشل** (لا يُكمل ما بعده). عامل الجسر القديم لا يُبدّل قبل نجاح بناء وفحص النسخة الجديدة:
 
 | # | الخطوة | الأمر الفعليّ | الغاية |
 |---|--------|--------------|--------|
@@ -219,10 +220,14 @@ pnpm prod:deploy
 | ٣ | نسخة احتياطية طازجة | `pnpm db:backup` | قبل أيّ تغيير مخطّط — شبكة أمان الاستعادة |
 | ٤ | الهجرات الجديدة فقط | `pnpm db:migrate:safe` | بوّابة: ترفض التطبيق بلا نسخة طازجة (<١٠د)؛ تطبّق SQL المولَّد عبر drizzle migrator (لا `db:push` عارياً) |
 | ٥ | تحقّق مطابقة المخطّط | `pnpm db:verify` | يفحص الفهارس/الأعمدة الحرجة — يمسك انحراف المخطّط قبل التشغيل |
-| ٦ | بناء الإنتاج | `pnpm build` | يبني الواجهة (vite) والخادم (esbuild) |
-| ٧ | إعادة تشغيل الخادم | `pm2 reload erp-server` | إعادة تحميل بلا انقطاع تقريباً (لا إسقاط اتصالات) |
+| ٦ | بناء الإنتاج | `pnpm build` | يبني الواجهة والخادم وعامل الجسر إلى `dist`، ثم smoke test يمنع أي runtime TypeScript |
+| ٧ | preflight للجسر | `node scripts/hr-bridge-worker.mjs --preflight` | يحمّل artifact ويفحص config والأمن وDB وهويات الأجهزة ثم يغلق DB، بلا فتح المنفذ |
+| ٨ | إعادة تحميل الويب | `pm2 reload ecosystem.config.cjs --only erp-server --update-env` | يقرأ تعريف ecosystem وبيئة النشر الجديدة، بلا انقطاع تقريباً |
+| ٩ | تبديل عامل الجسر | `pm2 startOrReload ecosystem.config.cjs --only erp-hr-bridge --update-env` | PM2 ينتظر إشارة ready التي لا تُرسل إلا بعد نجاح DB وTCP |
+| ١٠ | بوابة الاستقرار | `node scripts/verify-hr-bridge-runtime.mjs` | يثبت PM2+PID+المنفذ نفسه، بلا restart، حتى `min_uptime`؛ لا يثق بحالة online وحدها |
+| ١١ | تثبيت تعريف PM2 | `pm2 save` | لا يُحدّث dump الإقلاع إلا بعد اجتياز كل البوابات |
 
-**عند الفشل** يطبع «⛔ فشل: «الخطوة» — توقّفت الخطوات اللاحقة» ويخرج بكود 1؛ الخطوات ٤+ لم تُنفَّذ بعد فشلٍ سابق، والخادم القديم لم يُمسّ. للاستعادة إن لزم بعد فشل هجرة: `pnpm db:restore <أحدث-نسخة>`.
+**عند الفشل** يطبع «⛔ فشل: «الخطوة» — توقّفت الخطوات اللاحقة» ويخرج بكود 1 ولا ينفّذ `pm2 save`. لا تنفّذ `db:restore` تلقائياً عند فشل إقلاع/PM2؛ الاستعادة قرار منفصل لا يُتخذ إلا بعد إثبات تلف بيانات.
 
 **بعد النجاح — تحقّق حيّ فوريّ** (يطبعه السكربت نفسه):
 ```bash
@@ -233,11 +238,16 @@ curl -sf https://srv1548487.hstgr.cloud/api/print/status || pm2 logs erp-server 
 
 **المسار اليدويّ** (مرجعٌ للتشخيص — إن أردت تنفيذ خطوةً-خطوة، بنفس ترتيب السكربت):
 ```bash
-cd ~/erp && git pull --ff-only origin main
+sudo -iu deploy
+cd /home/deploy/erp && git pull --ff-only origin main
 pnpm install --frozen-lockfile
 pnpm db:backup && pnpm db:migrate:safe && pnpm db:verify
 pnpm build
-pm2 reload erp-server
+node scripts/hr-bridge-worker.mjs --preflight
+pm2 reload ecosystem.config.cjs --only erp-server --update-env
+pm2 startOrReload ecosystem.config.cjs --only erp-hr-bridge --update-env
+node scripts/verify-hr-bridge-runtime.mjs
+pm2 save
 ```
 
 ## ٨. قائمة تحقّق ما بعد النشر

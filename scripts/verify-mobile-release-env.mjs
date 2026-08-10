@@ -503,7 +503,13 @@ function verifySourceContract() {
   const serverReadiness = fs.readFileSync(path.join(root, "server/services/mobileProductionReadiness.ts"), "utf8");
   const deployScript = fs.readFileSync(path.join(root, "scripts/deploy.mjs"), "utf8");
   const bridgeRuntimeGate = fs.readFileSync(path.join(root, "scripts/verify-hr-bridge-runtime.mjs"), "utf8");
-  const bridgeWorker = fs.readFileSync(path.join(root, "scripts/hr-bridge-worker.mjs"), "utf8");
+  const bridgeArtifactGate = fs.readFileSync(path.join(root, "scripts/verify-hr-bridge-artifact.mjs"), "utf8");
+  const bridgeBootstrap = fs.readFileSync(path.join(root, "scripts/hr-bridge-worker.mjs"), "utf8");
+  const bridgePolicy = fs.readFileSync(path.join(root, "scripts/hr-bridge-runtime-policy.cjs"), "utf8");
+  const bridgeWorker = fs.readFileSync(path.join(root, "server/hr-bridge-worker.ts"), "utf8");
+  const bridgeImplementation = fs.readFileSync(path.join(root, "server/services/hrDevices/bridge.ts"), "utf8");
+  const packageJson = fs.readFileSync(path.join(root, "package.json"), "utf8");
+  const ecosystem = fs.readFileSync(path.join(root, "ecosystem.config.cjs"), "utf8");
   const productionEnvTemplate = fs.readFileSync(path.join(root, ".env.production.example"), "utf8");
   const deviceProof = fs.readFileSync(
     path.join(
@@ -647,10 +653,62 @@ function verifySourceContract() {
   if (!deployScript.includes("scripts/verify-hr-bridge-runtime.mjs")) {
     fail("production deployment does not execute the attendance bridge runtime gate");
   }
+  for (const fragment of [
+    "--preflight",
+    "--update-env",
+    "scripts/hr-bridge-worker.mjs",
+    "DEPLOY_IDENTITY_INVALID",
+    "sudo -iu deploy",
+  ]) {
+    if (!deployScript.includes(fragment)) fail("production deployment bridge preflight/update policy is incomplete");
+  }
   if (!bridgeWorker.includes("assertEnabledDeviceIdentityReadiness")) {
     fail("attendance bridge worker does not audit enabled device identity bindings before listen");
   }
-  for (const fragment of ["erp-hr-bridge", "PM2_BRIDGE_NOT_ONLINE", "BRIDGE_PORT_NOT_LISTENING", '"-ltnp"']) {
+  for (const fragment of ["await startHrDeviceBridge", "options.onReady()", "HR_BRIDGE_DB_READINESS_TIMEOUT"]) {
+    if (!bridgeWorker.includes(fragment)) fail("attendance bridge worker does not prove listener readiness");
+  }
+  for (const fragment of ['server.once("listening"', "HR_DEVICE_BRIDGE_LISTEN_TIMEOUT", "await listenForBridge"]) {
+    if (!bridgeImplementation.includes(fragment)) fail("attendance bridge TCP listen contract is incomplete");
+  }
+  for (const fragment of ["../dist/hr-bridge-worker.js", "HR_BRIDGE_STARTUP_TIMEOUT", 'process.send("ready")']) {
+    if (!bridgeBootstrap.includes(fragment)) fail("attendance bridge bootstrap watchdog/readiness is incomplete");
+  }
+  for (const fragment of ["startupTimeoutMs", "pm2ListenTimeoutMs", "runtimeStableSamples"]) {
+    if (!bridgePolicy.includes(fragment)) fail("attendance bridge lifecycle policy is incomplete");
+  }
+  for (const fragment of [
+    "server/hr-bridge-worker.ts",
+    "scripts/verify-hr-bridge-runtime.mjs --selftest",
+    "scripts/verify-hr-bridge-artifact.mjs",
+  ]) {
+    if (!packageJson.includes(fragment)) fail("production build does not compile and verify the attendance bridge artifact");
+  }
+  for (const fragment of [
+    'script: "scripts/hr-bridge-worker.mjs"',
+    "wait_ready: true",
+    "listen_timeout: hrBridgePolicy.pm2ListenTimeoutMs",
+  ]) {
+    if (!ecosystem.includes(fragment)) fail("PM2 attendance bridge readiness policy is incomplete");
+  }
+  if (
+    bridgeBootstrap.includes("tsx/esm/api") ||
+    bridgeBootstrap.includes("tsImport(") ||
+    bridgeWorker.includes("tsx/esm/api") ||
+    bridgeWorker.includes("tsImport(")
+  ) {
+    fail("attendance bridge production startup must not interpret TypeScript at runtime");
+  }
+  for (const fragment of ["hr-bridge-worker.mjs", "hr-bridge-worker.js", "spawnSync", "timeout: 10_000"]) {
+    if (!bridgeArtifactGate.includes(fragment)) fail("attendance bridge compiled-artifact smoke gate is incomplete");
+  }
+  for (const fragment of [
+    "erp-hr-bridge",
+    "PM2_BRIDGE_NOT_ONLINE",
+    "BRIDGE_PORT_NOT_LISTENING",
+    '"-ltnp"',
+    "runtimeStableSamples",
+  ]) {
     if (!bridgeRuntimeGate.includes(fragment)) fail("attendance bridge runtime gate is incomplete");
   }
 }
