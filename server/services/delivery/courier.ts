@@ -281,8 +281,11 @@ export async function confirmCourierDelivery(
       // عهدة المندوب↑ (يحمل النقد حتى يُورّده للمتجر).
       await adjustDeliveryBalance(tx, partyId, collected);
       // قيد تسوية ذمّة العميل (بلا إيصال درج — النقد بعهدة المندوب لا الدرج).
+      // branchId = فرع الفاتورة (نظير dispatchInvoice) — بدونه يسقط القيد من كل تقرير/مطابقة
+      // مُقيَّدة بالفرع، فيبدو صافي المبيعات المفرَّع مختلاًّ رغم صحّة الإجمالي (مراجعة عدائية ٩/٨).
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
+        branchId: Number(inv.branchId),
         invoiceId: inv.id,
         customerId: order.customerId != null ? Number(order.customerId) : null,
         deliveryPartyId: partyId,
@@ -293,6 +296,7 @@ export async function confirmCourierDelivery(
       // قيد عهدة المندوب (نظير DELIVERY_DISPATCH لمسار أوامر الشغل — يظهر في كشف عهدة المندوب).
       await postEntry(tx, {
         entryType: "DELIVERY_DISPATCH",
+        branchId: Number(inv.branchId),
         invoiceId: inv.id,
         deliveryPartyId: partyId,
         amount: collected,

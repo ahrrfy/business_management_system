@@ -1,4 +1,13 @@
 // قراءات الشاشة: الجاهز للإرسال، الإرساليات المفتوحة/كاملة، سجل التوريدات، كشف حساب جهة.
+//
+// عزل الفرع (مراجعة نهائية ١٠/٨ — قرارٌ متعمَّد لا ثغرة): دوالّ القراءة بالمعرّف (open/consignments/
+// remittances/statement/storeInTransit) تُرشِّح بـ`partyId` وحده **عمداً**. حدُّ العزل هو **ملكية
+// الجهة** (`assertPartyInScope` في الراوتر): جهةٌ مملوكةٌ لفرعٍ (`branchId != null`) لا يقرؤها غير
+// فرعها؛ والجهةُ المشتركة (`branchId = null`) مرئيّةٌ للجميع **بحكم كونها مشتركة**. المندوب عابرٌ
+// لفروع طلباته بالتصميم (راجع courier.ts)، وشاشةُ التسوية يجب أن تُظهر **كلّ** ما يحمله المندوب عبر
+// الفروع وإلّا استحال توريدُ جهةٍ مشتركةٍ كوحدة. لذا ترشيحُ هذه القراءات بفرع القارئ **يكسر** التوريد
+// عبر-الفرعي المشروع — وليس تحسيناً أمنياً. (الجهة المملوكة لفرعٍ لا تتلقّى إرسالية فرعٍ آخر أصلاً:
+// كلّ مسارات الإسناد تمرّ بـ`assertPartyInScope` على فرع الفاعل.)
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryParties, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
