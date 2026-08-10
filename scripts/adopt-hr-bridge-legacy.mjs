@@ -283,6 +283,7 @@ function runLegacyDefinitionTransportSelftest() {
   try {
     const executable = path.join(fixtureRoot, "legacy-worker.mjs");
     fs.writeFileSync(executable, "", { mode: 0o600 });
+    fs.writeFileSync(path.join(fixtureRoot, ".env"), "", { mode: 0o600 });
     fs.writeFileSync(
       path.join(fixtureRoot, "ecosystem.config.cjs"),
       `process.stdout.write("dotenv-style startup chatter\\n");
@@ -294,6 +295,7 @@ module.exports = { apps: [{
   instances: 1,
   exec_mode: "fork",
   autorestart: true,
+  stop_exit_codes: [0],
   env: { NODE_ENV: "production", DATABASE_URL: "fixture" },
 }] };\n`,
       { mode: 0o600 },
@@ -308,11 +310,24 @@ module.exports = { apps: [{
     ) {
       fail("HR_BRIDGE_LEGACY_DEFINITION_TRANSPORT_SELFTEST_FAILED");
     }
+    assertLegacyDefinition(
+      fixtureRoot,
+      { executable },
+      {
+        pm2_env: {
+          env: { NODE_ENV: "production", DATABASE_URL: "fixture" },
+          instances: 1,
+          exec_mode: "fork_mode",
+          autorestart: true,
+          stop_exit_codes: 0,
+        },
+      },
+    );
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
   console.log(
-    "hr bridge legacy definition transport selftest: noisy stdout isolated",
+    "hr bridge legacy definition transport selftest: noisy stdout and scalar stop exit code normalized",
   );
 }
 
@@ -322,6 +337,30 @@ function environmentProjectionHash(environment, keys) {
     .filter(([, value]) => value !== undefined)
     .map(([key, value]) => [key, String(value)]);
   return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+}
+
+function normalizeStopExitCodes(value) {
+  const values = value == null ? [] : Array.isArray(value) ? value : [value];
+  const normalized = values.map((entry) => {
+    if (typeof entry === "number") {
+      return Number.isSafeInteger(entry) ? entry : null;
+    }
+    if (typeof entry !== "string" || !/^-?\d+$/.test(entry)) return null;
+    const parsed = Number(entry);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  });
+  if (normalized.some((entry) => entry == null)) return null;
+  return [...new Set(normalized)].sort((left, right) => left - right);
+}
+
+function stopExitCodesMatch(actual, expected) {
+  const normalizedActual = normalizeStopExitCodes(actual);
+  const normalizedExpected = normalizeStopExitCodes(expected);
+  return (
+    normalizedActual != null &&
+    normalizedExpected != null &&
+    JSON.stringify(normalizedActual) === JSON.stringify(normalizedExpected)
+  );
 }
 
 function assertLegacyDefinition(projectRoot, legacy, row = null) {
@@ -361,8 +400,10 @@ function assertLegacyDefinition(projectRoot, legacy, row = null) {
       Boolean(pm2Env.wait_ready) !== definition.waitReady ||
       Number(pm2Env.listen_timeout || 0) !== definition.listenTimeout ||
       Number(pm2Env.kill_timeout || 0) !== definition.killTimeout ||
-      JSON.stringify(pm2Env.stop_exit_codes ?? []) !==
-        JSON.stringify(definition.stopExitCodes) ||
+      !stopExitCodesMatch(
+        pm2Env.stop_exit_codes,
+        definition.stopExitCodes,
+      ) ||
       Number(pm2Env.max_restarts || 0) !== definition.maxRestarts ||
       Number(pm2Env.min_uptime || 0) !== definition.minUptime ||
       Number(pm2Env.exp_backoff_restart_delay || 0) !== definition.backoff
@@ -532,8 +573,10 @@ function fsyncPm2Dump(projectRoot, expected) {
       Number(matches[0]?.listen_timeout) !==
         sourcePolicy.pm2ListenTimeoutMs ||
       Number(matches[0]?.kill_timeout) !== sourcePolicy.pm2KillTimeoutMs ||
-      JSON.stringify(matches[0]?.stop_exit_codes) !==
-        JSON.stringify([sourcePolicy.disabledExitCode]) ||
+      !stopExitCodesMatch(
+        matches[0]?.stop_exit_codes,
+        [sourcePolicy.disabledExitCode],
+      ) ||
       Number(matches[0]?.max_restarts) !== 10 ||
       Number(matches[0]?.min_uptime) !== sourcePolicy.minUptimeMs ||
       Number(matches[0]?.exp_backoff_restart_delay) !== 3000
