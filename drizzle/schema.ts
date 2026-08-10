@@ -1316,6 +1316,10 @@ export const invoices = mysqlTable(
       "PARTIALLY_PAID",
       "CANCELLED",
       "RETURNED",
+      // تصحيح الفاتورة (0168): الأصل يصير SUPERSEDED عند تصحيحه (عكسٌ كامل + إعادة إصدار
+      // بفاتورةٍ جديدة). يخرج من القوائم النشطة كـCANCELLED/RETURNED، والعمولة/التقارير مشتقّةٌ
+      // من الدفتر لا من الحالة فلا تتأثّر (base.ts:17-18). مربوطٌ بالجديدة عبر correctedByInvoiceId.
+      "SUPERSEDED",
     ])
       .default("PENDING")
       .notNull(),
@@ -1359,6 +1363,17 @@ export const invoices = mysqlTable(
       length: 255,
     }),
     cancelledAt: timestamp("cancelledAt"),
+    // تصحيح الفاتورة (0168) — نسب التصحيح ثنائيّة الاتجاه (FK ذاتيّ، ON DELETE SET NULL):
+    //   correctionOfInvoiceId: تُوضَع على الفاتورة **المصحّحة الجديدة** ⇒ تشير إلى الأصل.
+    //   correctedByInvoiceId : تُوضَع على **الأصل** (SUPERSEDED) ⇒ تشير إلى المصحّحة الجديدة.
+    correctionOfInvoiceId: bigint("correctionOfInvoiceId", { mode: "number" }).references(
+      (): AnyMySqlColumn => invoices.id,
+      { onDelete: "set null" },
+    ),
+    correctedByInvoiceId: bigint("correctedByInvoiceId", { mode: "number" }).references(
+      (): AnyMySqlColumn => invoices.id,
+      { onDelete: "set null" },
+    ),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -1369,6 +1384,9 @@ export const invoices = mysqlTable(
     dateIdx: index("idx_invoice_date").on(table.invoiceDate),
     statusIdx: index("idx_invoice_status").on(table.status),
     sourceIdx: index("idx_invoice_source").on(table.sourceType),
+    // تصحيح الفاتورة (0168): بحث نسب التصحيح (الأصل↔المصحّحة) بلا مسحٍ كامل.
+    correctionOfIdx: index("idx_invoice_correction_of").on(table.correctionOfInvoiceId),
+    correctedByIdx: index("idx_invoice_corrected_by").on(table.correctedByInvoiceId),
     // G11 (١٩/٦/٢٦): composite indexes للتقارير الأكثر استعمالاً — AR aging و Daily Sales.
     statusCustomerIdx: index("idx_invoice_status_customer").on(
       table.status,
