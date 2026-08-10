@@ -42,6 +42,10 @@ export interface ReceptionCheckoutInput {
    *  في وضع الافتتاح، فيُسمح ببيعها بالسالب حتى لطلب توصيل COD (المندوب يحملها بيده). يُمرَّر
    *  لـcreateSaleInTx (openingSellUnavailableConfirmed) وتبقى رِيلاته نافذة (افتتاح فعّال + تكلفة>0 + سقف). */
   openingSellUnavailableConfirmed?: boolean;
+  /** بيع مباشر آجل (قرار المالك ١٠/٨): يسمح بأن يقلّ المقبوض عن إجمالي البضاعة/الطباعة **بلا توصيل**
+   *  حين يوجد عميلٌ مسجَّل — المتبقّي يصير ذمّةً على العميل (AR) عبر createSaleInTx (حدّ الائتمان
+   *  نافذٌ فيها). علَمٌ صريح لتفادي ذمّةٍ صامتة عند إدخالٍ خاطئ؛ بلا عميلٍ يبقى الحاجز صارماً. */
+  deferredDirect?: boolean;
   /** ش٠ (٥/٨، V1): تقريب نقدي IQD لأقرب ٢٥٠ — للبيع المباشر **الخالص** النقديّ فقط (بلا خدمات
    *  طباعة وبلا أوامر شغل). الواجهة تُقرّب أوّلاً وترسل المبالغ مقرَّبة، والخادم يعيد التقريب
    *  بنفس الدالة ويقيّد الفرق ADJUST (نمط POS حرفياً). السلة المختلطة عبر cashRoundingOverride
@@ -187,7 +191,11 @@ export async function checkoutReceptionInTx(
       const applied = round2(money(input.paidAmount ?? "0").plus(preTotalD));
       // ش٧: طلبٌ يُسنَد للتوصيل في نفس المعاملة ⇒ **لا يُشترط تغطية البيع المباشر نقداً**
       // (الزبون يدفع للمندوب). المتبقّي يصير عهدةً عليه أدناه، والدرج يبقى على المقبوض فعلاً.
-      if (!input.delivery && applied.lt(directTotal)) {
+      // بيع مباشر آجل (قرار المالك ١٠/٨): يُرخّى هذا الحاجز حين يوجد عميلٌ مسجَّل والعلَم الصريح
+      // مرفوع — المتبقّي يصير ذمّةً على العميل عبر createSaleInTx (حدّ الائتمان نافذٌ فيها). بلا
+      // عميلٍ (أو بلا علَم) يبقى صارماً: لا ذمّةٌ بلا صاحب، ولا ذمّةٌ صامتةٌ من إدخالٍ خاطئ.
+      const allowDeferredDirect = input.deferredDirect === true && input.customerId != null;
+      if (!input.delivery && applied.lt(directTotal) && !allowDeferredDirect) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: `المبلغ المقبوض يجب أن يغطي البيع المباشر أولاً (${directTotal.toFixed(2)})`,

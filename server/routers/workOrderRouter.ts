@@ -120,6 +120,9 @@ const receptionCheckoutSchema = z.object({
   }).nullish(),
   // الاستقبال (٨/٨): تأكيد الموظّف توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في وضع الافتتاح).
   openingSellUnavailableConfirmed: z.boolean().optional(),
+  // بيع مباشر آجل (قرار المالك ١٠/٨): المقبوض أقلّ من إجمالي البضاعة/الطباعة بلا توصيل ⇒ المتبقّي
+  // ذمّةٌ على العميل المسجَّل (حدّ الائتمان نافذ). علَمٌ صريح؛ بلا عميلٍ يبقى الحاجز صارماً.
+  deferredDirect: z.boolean().optional(),
   // ش١ (م٦): اعتماد مديرٍ للخصم اليدويّ >١٠٪ (بريد+كلمة مرور، verifyManagerApproval نفسها) —
   // يمنح priceOverrideApproved للكاشير كما يمنحه sales.create تماماً.
   managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
