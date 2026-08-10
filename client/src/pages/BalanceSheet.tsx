@@ -61,6 +61,8 @@ export default function BalanceSheet() {
       // مراجعة PR #495: يشمل عرابين الطلبات المحفوظة المفتوحة (تُفصَّل في السطر التالي).
       { label: "سُلف عملاء (عرابين طلبات خدمة)", v: p.customerAdvances },
       { label: "ما نَدين به للصرّافين", v: p.exchangeCredit },
+      // ١٠/٨ — أجرة توصيل قُبضت في الدرج أمانةً للمندوب ولم تُصرف له بعد (نقدها ضمن «النقد»).
+      { label: "أمانات أجور توصيل معلّقة", v: p.deliveryFeeHeldLiability },
     ].filter((r) => D(r.v).gt(0));
     return { assets, liabilities };
   }, [p]);

@@ -80,10 +80,11 @@ function isDepositDue(row: Pick<Row, "sourceType" | "total" | "paidAmount" | "re
 const exportStatusLabel = (s: string) => (s === "CONFIRMED" ? "مؤكّدة" : invoiceStatusLabel(s));
 // فاتورة بلا عميل مسجَّل = بيع نقدي مباشر — المصطلح المعتمد «عميل نقدي» (لا شرطة غامضة).
 const custName = (n: string | null | undefined) => n ?? "عميل نقدي";
-// خلية التوصيل للتصدير/النسخ: «بالطريق — فلان (CN-…)» أو فارغة لغير الموصَّلة.
-const deliveryCell = (r: Pick<Row, "consignmentId" | "consignmentStatus" | "deliveryPartyName" | "consignmentNumber">) =>
-  r.consignmentId
-    ? `${CONSIGNMENT_STATUS[r.consignmentStatus ?? ""]?.label ?? r.consignmentStatus ?? ""} — ${r.deliveryPartyName ?? ""}${r.consignmentNumber ? ` (${r.consignmentNumber})` : ""}`
+// خلية التوصيل للتصدير/النسخ: «بالطريق — فلان (CN-…/ORD-…)» أو فارغة لغير الموصَّلة.
+// ١٠/٨: المفتاح consignmentStatus (موحَّد خادمياً) — يشمل طلبات المتجر المُسنَدة بلا إرسالية.
+const deliveryCell = (r: Pick<Row, "consignmentStatus" | "deliveryPartyName" | "consignmentNumber">) =>
+  r.consignmentStatus
+    ? `${CONSIGNMENT_STATUS[r.consignmentStatus]?.label ?? r.consignmentStatus} — ${r.deliveryPartyName ?? ""}${r.consignmentNumber ? ` (${r.consignmentNumber})` : ""}`
     : "";
 // إرساليةٌ بالطريق ⇒ طريقة الدفع الحقيقية «عند الاستلام» لا ما اختير للسلة لحظة التثبيت
 // (بلاغ المالك ١٠/٨: فاتورة توصيلٍ لم يُقبض منها فلس كانت تعرض «نقدي» — المخزَّن هو طريقة
@@ -404,7 +405,7 @@ export default function Invoices() {
           { key: "invoiceDate", header: "التاريخ", map: (r) => fmtDate(r.invoiceDate) },
           { key: "customerName", header: "العميل", map: (r) => custName(r.customerName) },
           { key: "sourceType", header: "المصدر", map: (r) => sourceTypeLabel(r.sourceType) },
-          { key: "consignmentId", header: "التوصيل", map: (r) => deliveryCell(r) },
+          { key: "consignmentStatus", header: "التوصيل", map: (r) => deliveryCell(r) },
           { key: "salespersonName", header: "موظف المبيعات", map: (r) => r.salespersonName ?? "" },
           { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
           { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },
@@ -439,8 +440,8 @@ export default function Invoices() {
       header: "التوصيل",
       cell: ({ row }) => {
         const r = row.original;
-        if (!r.consignmentId) return <span className="text-muted-foreground">—</span>;
-        const st = CONSIGNMENT_STATUS[r.consignmentStatus ?? ""] ?? { label: r.consignmentStatus ?? "", cls: "bg-muted" };
+        if (!r.consignmentStatus) return <span className="text-muted-foreground">—</span>;
+        const st = CONSIGNMENT_STATUS[r.consignmentStatus] ?? { label: r.consignmentStatus, cls: "bg-muted" };
         return (
           <div className="flex flex-col items-start gap-0.5">
             <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${st.cls}`}>
@@ -772,7 +773,7 @@ export default function Invoices() {
               { key: "invoiceDate", header: "التاريخ", map: (r) => fmtDate(r.invoiceDate) },
               { key: "customerName", header: "العميل", map: (r) => custName(r.customerName) },
               { key: "sourceType", header: "المصدر", map: (r) => sourceTypeLabel(r.sourceType) },
-              { key: "consignmentId", header: "التوصيل", map: (r) => deliveryCell(r) },
+              { key: "consignmentStatus", header: "التوصيل", map: (r) => deliveryCell(r) },
               { key: "salespersonName", header: "موظف المبيعات", map: (r) => r.salespersonName ?? "" },
               { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
               { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },

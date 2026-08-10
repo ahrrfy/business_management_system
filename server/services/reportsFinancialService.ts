@@ -584,6 +584,8 @@ export interface FinancialPosition {
    * المستبعَد كي يبقى لكل دينارٍ تبويبٌ ظاهر لا حذفٌ صامت.
    */
   deliveryFloatCustomerBacked: string;
+  /** ١٠/٨ — أمانات أجور توصيل قُبضت في الدرج ولم تُصرف للمندوب بعد (خصم؛ نقدها ضمن «النقد»). */
+  deliveryFeeHeldLiability: string;
   totalAssets: string;
   totalLiabilities: string;
   equity: string;
@@ -610,6 +612,7 @@ export async function getFinancialPosition(
     arDebit: zero, arCredit: zero, inventory: zero, fixedAssets: zero,
     apCredit: zero, apDebit: zero, customerAdvances: zero, draftAdvances: zero,
     exchangeDebit: zero, exchangeCredit: zero, deliveryFloat: zero, deliveryFloatCustomerBacked: zero,
+    deliveryFeeHeldLiability: zero,
     totalAssets: zero, totalLiabilities: zero, equity: zero,
     branchScoped: !!opts.branchId,
     arReconciled: true, apReconciled: true, arDriftCount: 0, apDriftCount: 0,
@@ -842,14 +845,28 @@ export async function getFinancialPosition(
     ? deliveryFloatGross.sub(deliveryFloatCustomerBackedRaw)
     : money(0);
   const deliveryFloatCustomerBacked = deliveryFloatGross.sub(deliveryFloat);
+  // ١٠/٨ — أمانات أجور التوصيل المعلّقة (خصم): أجرةٌ قُبضت في الدرج أمانةً للمندوب ولم تُصرف
+  // له بعد. النقد ضمن أصل «النقد» بلا التزامٍ مقابل ⇒ كانت حقوق الملكية تنتفخ بمقدارها مؤقتاً.
+  // = Σ(DELIVERY_FEE_HELD) الموجبة صافياً (القبض + والصرف/الردّ − ⇒ الصافي = المعلّق)، بحدّ
+  // أدنى صفر (بياناتٌ قديمة قبل توحيد الإشارة قد تُسوّي سالباً — لا خصم سالب).
+  const feeHeldRow = rowsOf(await db.execute(sql`
+    SELECT CAST(COALESCE(SUM(amount), 0) AS CHAR) AS v
+    FROM accountingEntries
+    WHERE entryType = 'DELIVERY_FEE_HELD'
+    ${bId ? sql`AND branchId = ${bId}` : sql``}
+    ${asOf ? sql`AND entryDate <= ${asOf}` : sql``}
+  `))[0] ?? { v: "0" };
+  const feeHeldNet = money(feeHeldRow.v ?? 0);
+  const deliveryFeeHeldLiability = feeHeldNet.gt(0) ? feeHeldNet : money(0);
 
   // الأصول = نقد + مدينون + سُلف للموردين (ذمة لنا) + مخزون + أصول ثابتة + رصيدنا لدى الصرّافين
   //          + عهدة مناديب التوصيل (مالُ فواتيرَ بالطريق).
   const totalAssets = cash.add(card).add(cheque).add(transfer).add(wallet).add(telecom)
     .add(digitalWalletAsset).add(arDebit).add(apDebit).add(inventory).add(fixedAssets)
     .add(exchangeDebit).add(deliveryFloat);
-  // الخصوم = دائنون + سُلف العملاء على الذمم + عرابين أوامر الشغل (FIN-05) + ما نَدين به للصرّافين.
-  const totalLiabilities = apCredit.add(arCredit).add(customerAdvances).add(exchangeCredit);
+  // الخصوم = دائنون + سُلف العملاء على الذمم + عرابين أوامر الشغل (FIN-05) + ما نَدين به للصرّافين
+  //          + أمانات أجور توصيل معلّقة (١٠/٨ — نقدها داخل «النقد» والتزامها للمندوب).
+  const totalLiabilities = apCredit.add(arCredit).add(customerAdvances).add(exchangeCredit).add(deliveryFeeHeldLiability);
   const equity = totalAssets.sub(totalLiabilities);
 
   // FI-02: حارس انحراف مرئي (قراءة فقط). الأرقام أعلاه تبقى من currentBalance؛ هذه إشارةٌ فقط.
@@ -888,6 +905,7 @@ export async function getFinancialPosition(
     exchangeCredit: toDbMoney(exchangeCredit),
     deliveryFloat: toDbMoney(deliveryFloat),
     deliveryFloatCustomerBacked: toDbMoney(deliveryFloatCustomerBacked),
+    deliveryFeeHeldLiability: toDbMoney(deliveryFeeHeldLiability),
     totalAssets: toDbMoney(totalAssets),
     totalLiabilities: toDbMoney(totalLiabilities),
     equity: toDbMoney(equity),

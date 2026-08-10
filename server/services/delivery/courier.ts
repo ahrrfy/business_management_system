@@ -49,6 +49,8 @@ export interface MyDeliveryRow {
   orderTotal: string;
   /** المبلغ المتبقّي تحصيله (صافي الفاتورة − مسدَّد للمتجر، أو codAmount − collectedAmount للإرسالية). */
   codDue: string;
+  /** ١٠/٨ (تمرير كامل): أجرة المندوب — يقبضها من الزبون **فوق** codDue ويحتفظ بها (لا تُورَّد). */
+  courierFee: string;
   createdAt: Date;
 }
 
@@ -89,6 +91,9 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
       invTotal: invoices.total,
       invPaid: invoices.paidAmount,
       invReturned: invoices.returnedTotal,
+      // ١٠/٨ (تمرير كامل): الأجرة للمندوب — للفواتير الجديدة فقط (deliveryFee=0)؛ القديمة
+      // شحنُها داخل codDue أصلاً فلا أجرة إضافية فوقه.
+      shippingCost: sql<string>`CASE WHEN CAST(${invoices.deliveryFee} AS DECIMAL(15,2)) > 0 THEN '0.00' ELSE COALESCE(${onlineOrders.shippingCost}, '0.00') END`,
     })
     .from(onlineOrders)
     .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
@@ -114,6 +119,7 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
       address: r.address ?? null,
       orderTotal: String(r.orderTotal),
       codDue: toDbMoney(due),
+      courierFee: toDbMoney(money(r.shippingCost ?? "0")),
       createdAt: r.createdAt,
     };
     (r.status === "DELIVERED" ? delivered : toDeliver).push(row);
@@ -136,6 +142,8 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
       recipientName: deliveryConsignments.recipientName,
       recipientPhone: deliveryConsignments.recipientPhone,
       deliveryAddress: deliveryConsignments.deliveryAddress,
+      deliveryFee: deliveryConsignments.deliveryFee,
+      feeCollection: deliveryConsignments.feeCollection,
       invTotal: invoices.total,
       custName: customers.name,
       custPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
@@ -164,6 +172,8 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
       address: r.deliveryAddress ?? null,
       orderTotal: String(r.invTotal ?? toDbMoney(due)),
       codDue: toDbMoney(due),
+      // COURIER = يقبض أجرته من الزبون بنفسه فوق COD؛ COUNTER/SHOP لا يقبض من الزبون شيئاً فوقه.
+      courierFee: toDbMoney(r.feeCollection === "COURIER" ? money(r.deliveryFee ?? "0") : money(0)),
       createdAt: r.createdAt,
     };
     (r.courierDeliveredAt ? delivered : toDeliver).push(row);

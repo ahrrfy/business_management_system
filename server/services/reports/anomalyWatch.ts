@@ -49,6 +49,12 @@ const FLAG_TELECOM_MIN_TOTAL = new Decimal("100000");
 const FLAG_OTHERS_COLLECT_PER_USER = 5;
 /** D12 (ش٦): خفض إجمالي مسوّدةٍ مموّلة بعد القبض — يُعلَّم الفاعل عند ≥ هذا العدد بالفترة. */
 const FLAG_FUNDED_REDUCED_PER_USER = 3;
+/** D13 (توصيل ١٠/٨): عهدة مندوبٍ متقادمة — يُعلَّم مَن أقدمُ إرساليةٍ مفتوحةٍ له ≥ هذه الأيام. */
+const FLAG_DELIVERY_CUSTODY_AGE_DAYS = 14;
+/** D13: أو عهدة ≥ هذا المبلغ (د.ع) بعمر ≥ نصف الحدّ — نقد كبير بيد مندوب لا يُنتظر أسبوعين. */
+const FLAG_DELIVERY_CUSTODY_IQD = new Decimal("200000");
+/** D14 (توصيل ١٠/٨): تكرار توريداتٍ بعجز (SHORT) لنفس الجهة بالفترة — نمط «سلّم أقل» المزمن. */
+const FLAG_DELIVERY_SHORT_REMITS = 3;
 /** حدّ أسوأ أسطر البيع دون الكلفة المعروضة. */
 const WORST_LINES_LIMIT = 10;
 
@@ -195,6 +201,25 @@ export interface FundedReducedRow {
   flagged: boolean;
 }
 
+/** D13 (توصيل): عهدة جهةٍ متقادمة — لقطة حالةٍ راهنة (لا تتقيد بنطاق التاريخ، كنمط D10). */
+export interface DeliveryCustodyAgingRow {
+  partyId: number;
+  partyName: string;
+  balance: string;
+  openCount: number;
+  oldestDays: number | null;
+  flagged: boolean;
+}
+/** D14 (توصيل): توريدات بعجز متكرّرة لنفس الجهة بالفترة. */
+export interface DeliveryShortRemitRow {
+  partyId: number;
+  partyName: string;
+  remitCount: number;
+  shortCount: number;
+  shortfallTotal: string;
+  flagged: boolean;
+}
+
 export interface AnomalyWatchResult {
   generatedAt: string;
   from: string;
@@ -213,6 +238,8 @@ export interface AnomalyWatchResult {
     fundedStaleDrafts: number;
     flaggedOthersCollectors: number;
     flaggedFundedReducers: number;
+    flaggedDeliveryCustody: number;
+    flaggedDeliveryShortRemits: number;
   };
   belowCost: { cashiers: BelowCostCashierRow[]; worstLines: BelowCostLineRow[] };
   discounts: { rows: DiscountCashierRow[]; scopeAvgRatePct: string };
@@ -226,6 +253,8 @@ export interface AnomalyWatchResult {
   fundedStaleDrafts: { rows: FundedStaleDraftRow[] };
   othersCollections: { rows: OthersCollectRow[] };
   fundedReductions: { rows: FundedReducedRow[] };
+  deliveryCustodyAging: { rows: DeliveryCustodyAgingRow[] };
+  deliveryShortRemits: { rows: DeliveryShortRemitRow[] };
 }
 
 const UNKNOWN_USER = "غير معروف";
@@ -269,6 +298,8 @@ export async function getAnomalyWatch(opts: {
       fundedStaleDrafts: 0,
       flaggedOthersCollectors: 0,
       flaggedFundedReducers: 0,
+      flaggedDeliveryCustody: 0,
+      flaggedDeliveryShortRemits: 0,
     },
     belowCost: { cashiers: [], worstLines: [] },
     discounts: { rows: [], scopeAvgRatePct: "0.00" },
@@ -282,6 +313,8 @@ export async function getAnomalyWatch(opts: {
     fundedStaleDrafts: { rows: [] },
     othersCollections: { rows: [] },
     fundedReductions: { rows: [] },
+    deliveryCustodyAging: { rows: [] },
+    deliveryShortRemits: { rows: [] },
   };
   if (!db) return empty;
 
@@ -625,7 +658,49 @@ export async function getAnomalyWatch(opts: {
     null,
   );
 
-  const [belowCashRes, belowLinesRes, discRes, retSellersRes, retProcRes, shortRes, revRes, gapsRes, consignWithdrawRes, cancelledFundedRes, telecomShareRes, fundedStaleRes, othersCollectRes, fundedReducedRes] =
+  // ── D13 (توصيل): عهدة جهةٍ متقادمة — لقطة راهنة (نمط D10): كل جهةٍ رصيدها موجب مع عمر
+  //    أقدم إرساليةٍ مفتوحة. عهدة المتجر بلا إرساليات ⇒ oldestDays قد يكون NULL والرصيد موجباً
+  //    (تُعلَّم بالمبلغ وحده عند تجاوزه الحدّ — نقدٌ محصَّل بيد المندوب بلا توريد).
+  const deliveryCustodyP = safe(
+    db.execute(sql`
+      SELECT p.id AS partyId, p.name AS partyName,
+        CAST(p.currentBalance AS CHAR) AS balance,
+        COALESCE(c.openCount, 0) AS openCount,
+        c.oldestDays AS oldestDays
+      FROM deliveryParties p
+      LEFT JOIN (
+        SELECT partyId, COUNT(*) AS openCount, MAX(TIMESTAMPDIFF(DAY, dispatchedAt, NOW())) AS oldestDays
+        FROM deliveryConsignments
+        WHERE consignmentStatus IN ('DISPATCHED','PARTIAL')
+        GROUP BY partyId
+      ) c ON c.partyId = p.id
+      WHERE p.currentBalance > 0
+        ${branchId ? sql`AND (p.branchId = ${branchId} OR p.branchId IS NULL)` : sql``}
+      ORDER BY p.currentBalance DESC
+      LIMIT 100
+    `),
+    null,
+  );
+
+  // ── D14 (توصيل): توريدات بعجز متكرّرة لنفس الجهة بالفترة — «سلّم أقل» المزمن.
+  const deliveryShortP = safe(
+    db.execute(sql`
+      SELECT r.partyId AS partyId, p.name AS partyName,
+        COUNT(*) AS remitCount,
+        SUM(CASE WHEN r.deliveryRemittanceStatus = 'SHORT' THEN 1 ELSE 0 END) AS shortCount,
+        CAST(COALESCE(SUM(r.shortfallTotal), 0) AS CHAR) AS shortfallTotal
+      FROM deliveryRemittances r
+      LEFT JOIN deliveryParties p ON p.id = r.partyId
+      WHERE r.receivedAt >= ${fromTs} AND r.receivedAt < ${toTs}
+        ${branchId ? sql`AND r.branchId = ${branchId}` : sql``}
+      GROUP BY r.partyId, p.name
+      HAVING SUM(CASE WHEN r.deliveryRemittanceStatus = 'SHORT' THEN 1 ELSE 0 END) > 0
+      ORDER BY shortCount DESC
+    `),
+    null,
+  );
+
+  const [belowCashRes, belowLinesRes, discRes, retSellersRes, retProcRes, shortRes, revRes, gapsRes, consignWithdrawRes, cancelledFundedRes, telecomShareRes, fundedStaleRes, othersCollectRes, fundedReducedRes, deliveryCustodyRes, deliveryShortRes] =
     await Promise.all([
       belowCostCashiersP,
       belowCostLinesP,
@@ -641,6 +716,8 @@ export async function getAnomalyWatch(opts: {
       fundedStaleP,
       othersCollectP,
       fundedReducedP,
+      deliveryCustodyP,
+      deliveryShortP,
     ]);
 
   // ── D1: تجميع ──
@@ -834,6 +911,31 @@ export async function getAnomalyWatch(opts: {
     flagged: Number(r.eventCount ?? 0) >= FLAG_FUNDED_REDUCED_PER_USER,
   }));
 
+  // ── D13/D14 (توصيل ١٠/٨): تجميع ──
+  const deliveryCustodyRows: DeliveryCustodyAgingRow[] = rowsOf(deliveryCustodyRes).map((r) => {
+    const balance = money(r.balance ?? 0);
+    const oldestDays = r.oldestDays == null ? null : Number(r.oldestDays);
+    return {
+      partyId: Number(r.partyId),
+      partyName: r.partyName ?? UNKNOWN_USER,
+      balance: toDbMoney(balance),
+      openCount: Number(r.openCount ?? 0),
+      oldestDays,
+      flagged:
+        (oldestDays != null && oldestDays >= FLAG_DELIVERY_CUSTODY_AGE_DAYS)
+        || (balance.gte(FLAG_DELIVERY_CUSTODY_IQD)
+          && (oldestDays == null || oldestDays >= FLAG_DELIVERY_CUSTODY_AGE_DAYS / 2)),
+    };
+  });
+  const deliveryShortRows: DeliveryShortRemitRow[] = rowsOf(deliveryShortRes).map((r) => ({
+    partyId: Number(r.partyId),
+    partyName: r.partyName ?? UNKNOWN_USER,
+    remitCount: Number(r.remitCount ?? 0),
+    shortCount: Number(r.shortCount ?? 0),
+    shortfallTotal: toDbMoney(money(r.shortfallTotal ?? 0)),
+    flagged: Number(r.shortCount ?? 0) >= FLAG_DELIVERY_SHORT_REMITS,
+  }));
+
   return {
     generatedAt,
     from: opts.from,
@@ -852,6 +954,8 @@ export async function getAnomalyWatch(opts: {
       fundedStaleDrafts: fundedStaleRows.length,
       flaggedOthersCollectors: othersCollectRows.filter((r) => r.flagged).length,
       flaggedFundedReducers: fundedReducedRows.filter((r) => r.flagged).length,
+      flaggedDeliveryCustody: deliveryCustodyRows.filter((r) => r.flagged).length,
+      flaggedDeliveryShortRemits: deliveryShortRows.filter((r) => r.flagged).length,
     },
     belowCost: { cashiers: belowCostCashiers, worstLines },
     discounts: { rows: discountRows, scopeAvgRatePct: pct(discScopeAvg) },
@@ -865,5 +969,7 @@ export async function getAnomalyWatch(opts: {
     fundedStaleDrafts: { rows: fundedStaleRows },
     othersCollections: { rows: othersCollectRows },
     fundedReductions: { rows: fundedReducedRows },
+    deliveryCustodyAging: { rows: deliveryCustodyRows },
+    deliveryShortRemits: { rows: deliveryShortRows },
   };
 }
