@@ -7,11 +7,11 @@
       "query": 410
     },
     "byAuthority": {
-      "module-gate": 368,
+      "module-gate": 369,
       "module-map": 254,
       "admin": 74,
       "raw-role": 55,
-      "none": 54,
+      "none": 53,
       "self-assignment": 14,
       "platform": 5,
       "device-bootstrap": 1,
@@ -55,9 +55,9 @@
       "NO_BRANCH_SCOPE": 129,
       "SENSITIVE_ACTION": 105,
       "ADMIN_ONLY": 77,
-      "RAW_ROLE_GATE": 70,
+      "RAW_ROLE_GATE": 65,
       "UNAUTHENTICATED": 32,
-      "READ_WITHOUT_MODULE_GATE": 31,
+      "READ_WITHOUT_MODULE_GATE": 30,
       "WRITE_WITHOUT_MODULE_GATE": 23,
       "HANDLER_ROLE_CHECK": 5
     },
@@ -3163,11 +3163,11 @@
       "authority": "module-map",
       "module": "collections",
       "level": "FULL",
-      "roles": "manager",
+      "roles": "",
       "branch": "none",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
-      "flags": "RAW_ROLE_GATE|NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
       "loc": "server/routers/creditApprovalRouter.ts:264"
     },
     {
@@ -3180,11 +3180,11 @@
       "authority": "module-map",
       "module": "collections",
       "level": "FULL",
-      "roles": "manager",
+      "roles": "",
       "branch": "none",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "RAW_ROLE_GATE|NO_BRANCH_SCOPE|LOCAL_GATE",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
       "loc": "server/routers/creditApprovalRouter.ts:69"
     },
     {
@@ -3197,11 +3197,11 @@
       "authority": "module-map",
       "module": "collections",
       "level": "FULL",
-      "roles": "manager",
+      "roles": "",
       "branch": "none",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "RAW_ROLE_GATE|NO_BRANCH_SCOPE|LOCAL_GATE",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
       "loc": "server/routers/creditApprovalRouter.ts:156"
     },
     {
@@ -3214,11 +3214,11 @@
       "authority": "module-map",
       "module": "collections",
       "level": "FULL",
-      "roles": "manager",
+      "roles": "",
       "branch": "none",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "RAW_ROLE_GATE|NO_BRANCH_SCOPE|LOCAL_GATE",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
       "loc": "server/routers/creditApprovalRouter.ts:200"
     },
     {
@@ -3231,11 +3231,11 @@
       "authority": "module-map",
       "module": "collections",
       "level": "FULL",
-      "roles": "manager",
+      "roles": "",
       "branch": "none",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "RAW_ROLE_GATE|NO_BRANCH_SCOPE|LOCAL_GATE",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
       "loc": "server/routers/creditApprovalRouter.ts:191"
     },
     {
@@ -5896,15 +5896,15 @@
       "proposedPermission": "reports.executive.command_center",
       "name": "commandCenter",
       "kind": "query",
-      "procedure": "protectedProcedure",
-      "authority": "none",
+      "procedure": "reportViewerProcedure",
+      "authority": "module-gate",
       "module": "reports",
       "level": "READ",
-      "roles": "",
-      "branch": "none",
+      "roles": "manager|accountant|auditor",
+      "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "READ_WITHOUT_MODULE_GATE",
+      "flags": "",
       "loc": "server/routers/executiveRouter.ts:133"
     },
     {
