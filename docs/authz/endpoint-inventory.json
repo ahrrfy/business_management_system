@@ -34,7 +34,7 @@
       "crm": 30,
       "workorders": 29,
       "campaigns": 28,
-      "sales": 25,
+      "sales": 24,
       "assets": 16,
       "commissions": 16,
       "suppliers": 13,
@@ -48,7 +48,8 @@
       "consignments": 4,
       "courier": 4,
       "expenses": 4,
-      "pos": 3
+      "pos": 3,
+      "sales|workorders": 1
     },
     "flagCounts": {
       "LOCAL_GATE": 135,
@@ -63,7 +64,7 @@
     },
     "expressRoutes": 15,
     "expressMounts": 9,
-    "jobs": 9,
+    "jobs": 10,
     "routerFiles": 90,
     "proposedPermissions": 708,
     "proposedDomains": {
@@ -9475,7 +9476,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/receptionRouter.ts:146"
+      "loc": "server/routers/receptionRouter.ts:148"
     },
     {
       "surface": "trpc",
@@ -9492,7 +9493,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/receptionRouter.ts:112"
+      "loc": "server/routers/receptionRouter.ts:114"
     },
     {
       "surface": "trpc",
@@ -9509,7 +9510,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/receptionRouter.ts:429"
+      "loc": "server/routers/receptionRouter.ts:431"
     },
     {
       "surface": "trpc",
@@ -9526,7 +9527,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/receptionRouter.ts:333"
+      "loc": "server/routers/receptionRouter.ts:335"
     },
     {
       "surface": "trpc",
@@ -9543,7 +9544,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/receptionRouter.ts:286"
+      "loc": "server/routers/receptionRouter.ts:288"
     },
     {
       "surface": "trpc",
@@ -9560,7 +9561,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/receptionRouter.ts:293"
+      "loc": "server/routers/receptionRouter.ts:295"
     },
     {
       "surface": "trpc",
@@ -9577,7 +9578,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/receptionRouter.ts:264"
+      "loc": "server/routers/receptionRouter.ts:266"
     },
     {
       "surface": "trpc",
@@ -9594,7 +9595,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/receptionRouter.ts:309"
+      "loc": "server/routers/receptionRouter.ts:311"
     },
     {
       "surface": "trpc",
@@ -9602,16 +9603,16 @@
       "proposedPermission": "workorders.reception.invoice_queue",
       "name": "invoiceQueue",
       "kind": "query",
-      "procedure": "workordersCashierProcedure",
+      "procedure": "workordersExecProcedure",
       "authority": "module-gate",
       "module": "workorders",
       "level": "FULL",
-      "roles": "cashier|manager",
+      "roles": "cashier|manager|print_operator",
       "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/receptionRouter.ts:90"
+      "loc": "server/routers/receptionRouter.ts:92"
     },
     {
       "surface": "trpc",
@@ -9628,7 +9629,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/receptionRouter.ts:252"
+      "loc": "server/routers/receptionRouter.ts:254"
     },
     {
       "surface": "trpc",
@@ -9645,7 +9646,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: refund",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/receptionRouter.ts:196"
+      "loc": "server/routers/receptionRouter.ts:198"
     },
     {
       "surface": "trpc",
@@ -11047,16 +11048,16 @@
       "proposedPermission": "sales.sale.view",
       "name": "get",
       "kind": "query",
-      "procedure": "salesReadProcedure",
+      "procedure": "invoiceViewProcedure",
       "authority": "module-map",
-      "module": "sales",
-      "level": "READ",
+      "module": "sales|workorders",
+      "level": "READ|FULL",
       "roles": "",
       "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:937"
+      "loc": "server/routers/saleRouter.ts:939"
     },
     {
       "surface": "trpc",
@@ -14557,6 +14558,11 @@
   ],
   "jobs": [
     {
+      "kind": "interval",
+      "file": "server/hr-bridge-worker.ts",
+      "line": 105
+    },
+    {
       "kind": "cron",
       "file": "server/index.ts",
       "line": 581
@@ -14579,12 +14585,12 @@
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 119
+      "line": 193
     },
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 136
+      "line": 210
     },
     {
       "kind": "cron",

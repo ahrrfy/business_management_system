@@ -147,6 +147,16 @@ const PROCEDURES = {
     roles: [],
     branch: "scoped",
   },
+  // بوابة قراءة فاتورة مفردة للطباعة: sales>=READ أو workorders=FULL، مع عزل الفرع.
+  // تُسجَّل كسلطة مركبة كي لا يصنّف الحارس الإجراءَ كبوابة مجهولة، من دون توسيع
+  // صلاحية وحدة المبيعات لمشغّل الاستقبال.
+  invoiceViewProcedure: {
+    authority: "module-map",
+    module: "sales|workorders",
+    level: "READ|FULL",
+    roles: [],
+    branch: "scoped",
+  },
   salesCashierProcedure: {
     authority: "module-gate",
     module: "sales",
