@@ -262,7 +262,7 @@ describe("R — بوّابة طابور القراءة وإعادة الطباع
     const printCaller = await callerFor(8);
     const printable = await printCaller.reception.invoiceQueue({ sinceDays: 7 });
     expect(printable.rows).toHaveLength(1);
-    const invoice = await printCaller.sales.get({ invoiceId: printable.rows[0].invoiceId });
+    const invoice = await printCaller.sales.get({ invoiceId: printable.rows[0].id });
     expect(invoice?.invoiceNumber).toBe(printable.rows[0].invoiceNumber);
   });
 });
