@@ -11,7 +11,7 @@
  * أصلٍ صفرية كبقية `DIGITAL_WALLET_*`. الدفاتر تُظهر الخسارة ولا تُخفيها.
  *
  * **لماذا باعتمادٍ ثنائيّ:** الشطب بابُ إخفاء عجزٍ بفاعلٍ واحد — لذا طالبٌ ثمّ معتمِدٌ آخر
- * (admin مُستثنى للتصحيح الإداريّ، نفس اصطلاح `approveAdjustment` و`approveStockAdjustment`).
+ * (مالك النظام وحده مستثنى بصفته المرجع النهائي).
  * الطلب **لا يمسّ مالاً إطلاقاً**؛ كل الأثر المالي في الاعتماد وحده وداخل معاملة واحدة.
  *
  * **مساران بحسب نمط التسوية** (كلاهما ينتهي بنفس الخسارة، ويختلفان في مصدرها):
@@ -154,8 +154,8 @@ export async function approveWriteoff(
   if (intent.status !== "WRITEOFF_PENDING") {
     throw new TRPCError({ code: "CONFLICT", message: "لا طلب شطبٍ معلّقاً على هذه النيّة" });
   }
-  // فصل المهام: المُعتمِد ≠ الطالب. admin مُستثنى (نفس اصطلاح بقية الوحدات).
-  if (Number(intent.writeoffRequestedBy) === actor.userId && actor.role !== "admin") {
+  // فصل المهام: المُعتمِد ≠ الطالب. مالك النظام وحده مستثنى بصفته المرجع النهائي.
+  if (Number(intent.writeoffRequestedBy) === actor.userId && !actor.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يعتمد الشطب من طلبه — يلزم مديرٌ آخر" });
   }
 
@@ -172,22 +172,28 @@ export async function approveWriteoff(
     .select({
       id: digitalProviders.id,
       supplierId: digitalProviders.supplierId,
-      settlementMode: digitalProviders.settlementMode,
     })
     .from(digitalProviders)
     .where(inArray(digitalProviders.id, providerIds));
   const modeById = new Map(providers.map((p) => [Number(p.id), p]));
+  const issuedByProvider = new Map<number, ReturnType<typeof money>>();
+  for (const item of items) {
+    const providerId = Number(item.providerId);
+    issuedByProvider.set(
+      providerId,
+      (issuedByProvider.get(providerId) ?? money(0)).plus(money(item.providerShare)),
+    );
+  }
 
   /* ② أ — المسبق: استهلاك الحجز وخفض الرصيد بالحصة (مطابقةً لما خصمه الجهاز فعلاً). */
   const reservations = await tx
     .select()
     .from(digitalWalletReservations)
-    .where(
-      and(
-        eq(digitalWalletReservations.intentId, input.intentId),
-        eq(digitalWalletReservations.status, "ACTIVE"),
-      ),
-    );
+    .where(eq(digitalWalletReservations.intentId, input.intentId));
+  if (reservations.some((reservation) => reservation.status !== "ACTIVE")) {
+    throw new TRPCError({ code: "CONFLICT", message: "A wallet reservation for this intent was already processed" });
+  }
+  const prepaidProviderIds = new Set<number>();
 
   // قفلٌ بترتيب walletId تصاعدياً — نفس اصطلاح `prepare`/`approveReversal` (منع deadlock).
   for (const r of [...reservations].sort((a, b) => Number(a.walletId) - Number(b.walletId))) {
@@ -195,6 +201,7 @@ export async function approveWriteoff(
     const [w] = await tx
       .select({
         id: digitalWallets.id,
+        providerId: digitalWallets.providerId,
         branchId: digitalWallets.branchId,
         currentBalance: digitalWallets.currentBalance,
         reservedBalance: digitalWallets.reservedBalance,
@@ -204,54 +211,91 @@ export async function approveWriteoff(
       .for("update");
     if (!w) throw new TRPCError({ code: "NOT_FOUND", message: "المحفظة غير موجودة" });
 
-    const amount = money(r.amount);
-    const nextBalance = money(w.currentBalance).minus(amount);
-    const nextReserved = money(w.reservedBalance).minus(amount);
+    const providerId = Number(w.providerId);
+    if (prepaidProviderIds.has(providerId)) {
+      throw new TRPCError({ code: "CONFLICT", message: `Provider ${providerId} is linked to multiple wallets in one intent` });
+    }
+    if (Number(w.branchId) !== branchId) {
+      throw new TRPCError({ code: "CONFLICT", message: "Wallet reservation belongs to another branch" });
+    }
+    prepaidProviderIds.add(providerId);
+
+    const reservedAmount = money(r.amount);
+    const issuedAmount = issuedByProvider.get(providerId) ?? money(0);
+    if (issuedAmount.gt(reservedAmount)) {
+      throw new TRPCError({ code: "CONFLICT", message: "Issued provider share exceeds its wallet reservation" });
+    }
+    const nextBalance = money(w.currentBalance).minus(issuedAmount);
+    const nextReserved = money(w.reservedBalance).minus(reservedAmount);
     if (nextBalance.lt(0)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الشطب يجعل رصيد المحفظة سالباً — راجِع الحركات" });
     }
+    if (nextReserved.lt(0)) {
+      throw new TRPCError({ code: "CONFLICT", message: "Reserved wallet balance is smaller than the intent reservation" });
+    }
 
-    await tx.insert(digitalWalletTransactions).values({
-      walletId,
-      branchId: Number(w.branchId),
-      type: "WRITEOFF",
-      direction: "OUT",
-      amount: toDbMoney(amount),
-      balanceAfter: toDbMoney(nextBalance),
-      transactionNumber: `DWO-${input.intentId}-${walletId}`,
-      clientRequestId: `WOFF:${input.intentId}:${walletId}`,
-      createdBy: actor.userId,
-      approvedBy: actor.userId,
-      approvedAt: new Date(),
-      notes: `شطب نيّة عالقة #${input.intentId} — ${reason}`.trim(),
-    });
+    if (issuedAmount.gt(0)) {
+      await tx.insert(digitalWalletTransactions).values({
+        walletId,
+        branchId: Number(w.branchId),
+        type: "WRITEOFF",
+        direction: "OUT",
+        amount: toDbMoney(issuedAmount),
+        balanceAfter: toDbMoney(nextBalance),
+        transactionNumber: `DWO-${input.intentId}-${walletId}`,
+        clientRequestId: `WOFF:${input.intentId}:${walletId}`,
+        createdBy: actor.userId,
+        approvedBy: actor.userId,
+        approvedAt: new Date(),
+        notes: `شطب نيّة عالقة #${input.intentId} — ${reason}`.trim(),
+      });
+    }
 
     await tx
       .update(digitalWallets)
       .set({
         currentBalance: toDbMoney(nextBalance),
-        // الحجز يُستهلَك لا يُطلَق: المال خرج فعلاً، ولو أُطلق لعاد الرصيد المتاح كذباً.
-        reservedBalance: toDbMoney(nextReserved.lt(0) ? money(0) : nextReserved),
+        // Consume only confirmed successes; release the unused part of the reservation.
+        reservedBalance: toDbMoney(nextReserved),
       })
       .where(eq(digitalWallets.id, walletId));
 
     await tx
       .update(digitalWalletReservations)
-      .set({ status: "CONSUMED", consumedAt: new Date() })
+      .set(issuedAmount.gt(0)
+        ? { amount: toDbMoney(issuedAmount), status: "CONSUMED", consumedAt: new Date() }
+        : { status: "RELEASED", releasedAt: new Date() })
       .where(eq(digitalWalletReservations.id, Number(r.id)));
   }
 
   /* ② ب — الآجل: ذمّة المزوّد ترتفع بالحصة (سيُطالبنا بكرتٍ أصدره). */
-  const postpaidBySupplier = new Map<number, ReturnType<typeof money>>();
+  const postpaidByProvider = new Map<number, { supplierId: number; amount: ReturnType<typeof money> }>();
   for (const i of items) {
-    const p = modeById.get(Number(i.providerId));
-    if (!p || p.settlementMode !== "POSTPAID") continue;
-    const sid = Number(p.supplierId);
-    postpaidBySupplier.set(sid, (postpaidBySupplier.get(sid) ?? money(0)).plus(money(i.providerShare)));
+    const providerId = Number(i.providerId);
+    if (prepaidProviderIds.has(providerId)) continue;
+    const provider = modeById.get(providerId);
+    if (!provider) throw new TRPCError({ code: "NOT_FOUND", message: "Digital-card provider is missing" });
+    const previous = postpaidByProvider.get(providerId);
+    postpaidByProvider.set(providerId, {
+      supplierId: Number(provider.supplierId),
+      amount: (previous?.amount ?? money(0)).plus(money(i.providerShare)),
+    });
   }
-  // ترتيب supplierId تصاعدياً — نفس اصطلاح منع الـdeadlock في مسار الأمانة والتثبيت.
-  for (const supplierId of Array.from(postpaidBySupplier.keys()).sort((a, b) => a - b)) {
-    await adjustSupplierBalance(tx, supplierId, postpaidBySupplier.get(supplierId)!);
+  for (const providerId of Array.from(postpaidByProvider.keys()).sort((a, b) => a - b)) {
+    const payable = postpaidByProvider.get(providerId)!;
+    await postEntry(tx, {
+      entryType: "PURCHASE",
+      supplierId: payable.supplierId,
+      branchId,
+      amount: payable.amount,
+      revenue: money(0),
+      cost: money(0),
+      profit: money(0),
+      dedupeKey: `DIGITAL:APWOFF:${input.intentId}:${providerId}`,
+      notes: `استحقاق مزوّد لكروت مشطوبة من نيّة #${input.intentId}`,
+      createdBy: actor.userId,
+    });
+    await adjustSupplierBalance(tx, payable.supplierId, payable.amount);
   }
 
   /* ② ج — القيد: خسارةٌ بمقدار الحصة كاملةً، أياً كان مصدرها. */
@@ -296,7 +340,7 @@ export async function rejectWriteoff(
   if (intent.status !== "WRITEOFF_PENDING") {
     throw new TRPCError({ code: "CONFLICT", message: "لا طلب شطبٍ معلّقاً على هذه النيّة" });
   }
-  if (Number(intent.writeoffRequestedBy) === actor.userId && actor.role !== "admin") {
+  if (Number(intent.writeoffRequestedBy) === actor.userId && !actor.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يبتّ في الطلب من قدّمه — يلزم مديرٌ آخر" });
   }
 

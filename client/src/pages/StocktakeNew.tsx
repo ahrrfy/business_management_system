@@ -20,8 +20,7 @@
  *    لكل الأدوار المخوّلة؛ الإدخال اليدوي لمعرّف الحساب يبقى بديلاً عند فشل التحميل.
  *  - الفئات (CATEGORY): trpc.catalog.categories — النطاق مفعَّل، والخادم يحلّ منتجات الفئات لحظة الإنشاء.
  *
- * التوزيع على التكليفات: MANUAL وحده يُرسل variantIds صريحة (كتل متساوية محلياً)؛
- * FULL/MOVING/CATEGORY لا يرسلون variantIds إطلاقاً — الخادم يوزّع غير المُسنَد كتلاً متساوية على كل التكليفات.
+ * جميع العاملين يرون نطاق الجرد المشترك نفسه؛ المنطقة وصفٌ للتوجيه الميداني فقط.
  */
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
@@ -35,6 +34,8 @@ import { notify } from "@/lib/notify";
 import { internalUrl } from "@/lib/siteHosts";
 import { trpc } from "@/lib/trpc";
 import { openWhatsApp } from "@/lib/whatsapp";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Check, AlertTriangle, Printer } from "lucide-react";
@@ -162,7 +163,7 @@ export default function StocktakeNew() {
   const [pickQ, setPickQ] = useState("");
 
   const [workers, setWorkers] = useState<WorkerRow[]>([
-    { key: "w1", name: "", method: "PIN", userId: "", zone: "" },
+    { key: "w1", name: "", method: "USER", userId: "", zone: "" },
   ]);
 
   const [thresholdPct, setThresholdPct] = useState(DEFAULT_THRESHOLD_PCT);
@@ -181,6 +182,17 @@ export default function StocktakeNew() {
 
   const [created, setCreated] = useState<CreateResult | null>(null);
 
+  // حارس مغادرة أثناء معالجٍ جارٍ: خطوةٌ متقدّمة أو تحديدٌ فعليّ (اسم/عمّال/منتجات) يعني عملاً
+  // لم يُحفظ بعد — إغلاق التبويب/تحديث الصفحة سيهدره (الجلسة تُنشأ فقط عند «إنشاء الجلسة»).
+  const isWizardDirty =
+    !created &&
+    (step > 0 ||
+      name.trim() !== "" ||
+      manualIds.length > 0 ||
+      categoryIds.length > 0 ||
+      workers.some((w) => w.name.trim() !== ""));
+  useUnsavedGuard(isWizardDirty);
+
   /* الفرع الافتراضي: فرع المستخدم ثم أول فرع. دور المخزن مُقيَّد بفرعه (الخادم يُجبره أيضاً). */
   const branches = branchesQ.data ?? [];
   const effectiveBranchId =
@@ -190,12 +202,15 @@ export default function StocktakeNew() {
     (branches[0]?.id ?? 0);
   const branchName = branches.find((b) => b.id === effectiveBranchId)?.name ?? "—";
 
-  /* منتجات الفرع — لمنتقي MANUAL فقط (بحث محلي فوق حمولة واحدة).
+  /* منتجات الفرع — لمنتقي MANUAL فقط. بحثٌ خادميّ (لا حدّ ١٠٠٠ محليّ يُخفي صامتاً ما وراءه في فروعٍ
+     كبيرة) — نفس الاستعلام يقبل `q` أصلاً (نمط شاشة المخزون). بلا نصّ بحث نعرض أوّل صفحة (٢٠٠)
+     كنقطة انطلاق؛ اكتب للبحث عن أي صنفٍ آخر.
      عدّاد النطاق نفسه لم يعد يعتمد onHand: كان يعدّ صفوف branchStock السابقة فقط ⇒ يُخفي
      الأصناف التي لم تُلامَس بحركة بعد، وفارقٌ قاتلٌ في الجرد الافتتاحي. صار العدّاد يُحسب
      خادمياً عبر `stocktakes.previewScopeCount` بنفس منطق resolveScope حرفياً. */
+  const debouncedPickQ = useDebouncedValue(pickQ, 250);
   const onHandQ = trpc.inventory.onHand.useQuery(
-    { branchId: effectiveBranchId, limit: 1000 },
+    { branchId: effectiveBranchId, q: debouncedPickQ.trim() || undefined, limit: 200 },
     { enabled: effectiveBranchId > 0 && scopeType === "MANUAL" }
   );
   const onHand = onHandQ.data ?? [];
@@ -240,19 +255,8 @@ export default function StocktakeNew() {
           ? null
           : (previewCount?.variantCount ?? null);
 
-  /* قائمة المنتقي (MANUAL) مفلترة محلياً. */
-  const pickList = useMemo(() => {
-    const q = pickQ.trim().toLowerCase();
-    const rows = !q
-      ? onHand
-      : onHand.filter(
-          (r) =>
-            (r.productName ?? "").toLowerCase().includes(q) ||
-            (r.variantName ?? "").toLowerCase().includes(q) ||
-            (r.sku ?? "").toLowerCase().includes(q)
-        );
-    return rows.slice(0, 200);
-  }, [onHand, pickQ]);
+  /* قائمة المنتقي (MANUAL) — البحث خادميّ الآن (onHandQ أعلاه)، فالنتيجة جاهزة بلا فلترة محلية. */
+  const pickList = onHand;
 
   /* منتجات مختارة غير ظاهرة في قائمة الفرع الحالي (prefill من شاشة أخرى مثلاً). */
   const unknownSelected = useMemo(() => {
@@ -260,21 +264,7 @@ export default function StocktakeNew() {
     return manualIds.filter((id) => !known.has(id));
   }, [onHand, manualIds]);
 
-  /* توزيع المنتجات على العمّال — لنطاق MANUAL فقط: كتل متتالية بالتساوي (بترتيب الاختيار).
-     FULL/MOVING/CATEGORY لا تُرسَل لهم variantIds إطلاقاً — الخادم يوزّع غير المُسنَد
-     كتلاً متساوية على كل التكليفات لحظة الإنشاء. */
   const validWorkers = workers.filter((w) => w.name.trim() !== "");
-  const distribution = useMemo<number[][] | null>(() => {
-    if (scopeType !== "MANUAL") return null;
-    const ids = manualIds;
-    const n = Math.max(validWorkers.length, 1);
-    const chunks: number[][] = Array.from({ length: n }, () => []);
-    const size = Math.ceil(ids.length / n) || 1;
-    ids.forEach((id, i) => {
-      chunks[Math.min(Math.floor(i / size), n - 1)].push(id);
-    });
-    return chunks;
-  }, [scopeType, manualIds, validWorkers.length]);
 
   /* ─── التحقق لكل خطوة ─── */
   const stepError = (): string | null => {
@@ -286,7 +276,7 @@ export default function StocktakeNew() {
       // الافتتاحي المشروع عندما لم يكن للفرع أيّ رصيد سابق بعد).
       if ((scopeType === "FULL" || scopeType === "MOVING") && previewCount && previewCount.variantCount === 0) {
         return isOpeningSession
-          ? "لا شيء يُجرَد افتتاحياً — كلّ الأصناف مُفتتَحة سلفاً أو الكتالوج فارغ."
+          ? "لا شيء يُجرَد افتتاحياً — كلّ المنتجات مُفتتَحة سلفاً أو الكتالوج فارغ."
           : "لا منتجات ضمن هذا النطاق — راجع النطاق أو الفرع.";
       }
       return null;
@@ -329,17 +319,11 @@ export default function StocktakeNew() {
       notify.warn(err);
       return;
     }
-    const assignments = validWorkers.map((w, i) => ({
+    const assignments = validWorkers.map((w) => ({
       name: w.name.trim(),
       method: w.method,
       userId: w.method === "USER" ? Number(w.userId) : undefined,
       zone: w.zone.trim() || undefined,
-      // التوزيع الصريح لنطاق MANUAL فقط (distribution = null لغيره)؛
-      // FULL/MOVING/CATEGORY: الخادم يوزّع غير المُسنَد كتلاً متساوية على كل التكليفات.
-      variantIds:
-        distribution && validWorkers.length > 1 && (distribution[i]?.length ?? 0) > 0
-          ? distribution[i]
-          : undefined,
     }));
 
     createMut.mutate({
@@ -425,7 +409,7 @@ export default function StocktakeNew() {
                   </Label>
                   <p className="text-xs text-muted-foreground">
                     يثبّت العدّ كرصيد افتتاحي بلا قيود عجز/زيادة على الأرباح، ويُقفل البيع بالسالب على كل
-                    صنف يُجرد. توقيعان إلزاميان، والأصناف المجرودة افتتاحياً سابقاً تُستبعد تلقائياً.
+                    منتج يُجرد. توقيعان إلزاميان، والمنتجات المجرودة افتتاحياً سابقاً تُستبعد تلقائياً.
                     {!openingWindowActive && " — يتطلب تفعيل «وضع الافتتاح» من الإعدادات أولاً."}
                   </p>
                 </div>
@@ -622,7 +606,7 @@ export default function StocktakeNew() {
 
             <div className="space-y-2 rounded-lg bg-muted/60 px-4 py-3 text-sm">
               <div className="flex items-center justify-between">
-                <span className="font-semibold">أصناف ضمن النطاق:</span>
+                <span className="font-semibold">منتجات ضمن النطاق:</span>
                 {scopeCount == null ? (
                   <span className="inline-block rounded-full border bg-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground">
                     جارٍ الحساب…
@@ -633,7 +617,7 @@ export default function StocktakeNew() {
                       scopeCount > 0 ? "badge-status-pending" : "badge-stock-out"
                     }`}
                   >
-                    {nf(scopeCount)} صنفاً (متغيّراً)
+                    {nf(scopeCount)} منتجاً (متغيّراً)
                   </span>
                 )}
               </div>
@@ -656,14 +640,14 @@ export default function StocktakeNew() {
               {/* استبعاد OPENING: شفافيّة — لماذا العدد أقلّ من المتوقّع في الجرد الافتتاحي. */}
               {isOpeningSession && previewCount && previewCount.excludedOpened > 0 && (
                 <p className="text-xs text-muted-foreground">
-                  استُبعد {nf(previewCount.excludedOpened)} صنفاً مُفتتَحاً مسبقاً — يُجرَد جرداً دورياً لا افتتاحياً.
+                  استُبعد {nf(previewCount.excludedOpened)} منتجاً مُفتتَحاً مسبقاً — يُجرَد جرداً دورياً لا افتتاحياً.
                 </p>
               )}
               {isOpeningSession && scopeType === "FULL" && previewCount && (previewCount.excludedBundle > 0 || previewCount.excludedConsignment > 0) && (
                 <p className="text-xs text-muted-foreground">
-                  استُبعد أيضاً: {previewCount.excludedBundle > 0 ? `${nf(previewCount.excludedBundle)} صنفاً بكجاً` : ""}
+                  استُبعد أيضاً: {previewCount.excludedBundle > 0 ? `${nf(previewCount.excludedBundle)} منتجاً بكجاً` : ""}
                   {previewCount.excludedBundle > 0 && previewCount.excludedConsignment > 0 ? " · " : ""}
-                  {previewCount.excludedConsignment > 0 ? `${nf(previewCount.excludedConsignment)} صنف أمانة (يُفتتَح بسند إيداع)` : ""}.
+                  {previewCount.excludedConsignment > 0 ? `${nf(previewCount.excludedConsignment)} منتج أمانة (يُفتتَح بسند إيداع)` : ""}.
                 </p>
               )}
             </div>
@@ -676,12 +660,10 @@ export default function StocktakeNew() {
         <Card>
           <CardContent className="space-y-4 p-5">
             <p className="text-sm text-muted-foreground">
-              قسّم النطاق بين العمّال — نطاقات «شامل / متحركة / فئة» يوزّعها الخادم كتلاً متساوية على كل
-              العمّال لحظة الإنشاء، و«منتجات مختارة» تُوزَّع هنا بالتساوي حسب ترتيب الاختيار. عامل «الرابط
-              الخارجي» يدخل برمز PIN دون حساب — مناسب للعمّال الموسميين.
+              لا تُقسَّم المنتجات على العاملين: كل عامل يرى النطاق نفسه، وتستخدم المنطقة لتوجيهه ميدانياً.
+              عامل «الرابط الخارجي» يدخل برمز PIN دون حساب — مناسب للعمّال الموسميين.
             </p>
             {workers.map((w, idx) => {
-              const dist = distribution?.[validWorkers.findIndex((v) => v.key === w.key)] ?? null;
               return (
                 <div key={w.key} className="space-y-3 rounded-lg border p-4">
                   <div className="flex flex-wrap items-end gap-3">
@@ -728,9 +710,7 @@ export default function StocktakeNew() {
                       <span className="inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold badge-status-pending">
                         {w.name.trim() === ""
                           ? "—"
-                          : dist
-                            ? `${nf(dist.length)} منتجاً`
-                            : "يُوزَّع بالتساوي عند الإنشاء"}
+                          : "يرى جميع المنتجات المشتركة"}
                       </span>
                       {workers.length > 1 && (
                         <Button
@@ -751,7 +731,15 @@ export default function StocktakeNew() {
                         className="max-w-sm"
                         value={w.userId}
                         onValueChange={(v) =>
-                          setWorkers(workers.map((x) => (x.key === w.key ? { ...x, userId: v } : x)))
+                          setWorkers(
+                            workers.map((x) => {
+                              if (x.key !== w.key) return x;
+                              // يكفي اختيار الحساب في التكليف الداخلي؛ ننسخ اسمه
+                              // تلقائياً ما لم يكتب المسؤول اسماً مخصصاً للعرض.
+                              const selectedUser = userOptions.find((u) => String(u.id) === v);
+                              return { ...x, userId: v, name: x.name.trim() || selectedUser?.name || "" };
+                            }),
+                          )
                         }
                       >
                         <option value="">— اختر حساباً —</option>
@@ -779,7 +767,7 @@ export default function StocktakeNew() {
               onClick={() =>
                 setWorkers([
                   ...workers,
-                  { key: `w${workers.length + 1}-${Date.now()}`, name: "", method: "PIN", userId: "", zone: "" },
+                  { key: `w${workers.length + 1}-${Date.now()}`, name: "", method: "USER", userId: "", zone: "" },
                 ])
               }
             >
@@ -960,11 +948,11 @@ export default function StocktakeNew() {
                   v={
                     scopeType === "MOVING"
                       ? `${SCOPE_TYPE_LABEL.MOVING} — آخر ${nf(Number(movingDays))} يوماً${
-                          scopeCount != null ? ` (${nf(scopeCount)} صنفاً)` : ""
+                          scopeCount != null ? ` (${nf(scopeCount)} منتجاً)` : ""
                         }`
                       : scopeCount == null
                         ? SCOPE_TYPE_LABEL[scopeType]
-                        : `${SCOPE_TYPE_LABEL[scopeType]} — ${nf(scopeCount)} صنفاً`
+                        : `${SCOPE_TYPE_LABEL[scopeType]} — ${nf(scopeCount)} منتجاً`
                   }
                 />
                 <SummaryRow k="عمّال الجرد" v={validWorkers.map((w) => w.name.trim()).join("، ") || "—"} />

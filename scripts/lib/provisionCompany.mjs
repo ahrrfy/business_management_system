@@ -64,10 +64,23 @@ export async function provisionCompany(opts) {
   const dbPassword = randomBytes(24).toString("base64url");
 
   function runRootMysql(sql) {
-    execFileSync("docker", ["exec", opts.dbContainer, "mysql", "-uroot", `-p${opts.rootPw}`, "-e", sql], {
-      stdio: ["ignore", "ignore", "pipe"],
+    // أمان (تدقيق ٣/٨): كلمة مرور الجذر عبر MYSQL_PWD (docker exec -e VAR بلا قيمة يسحبها من
+    // بيئة عميل docker)، والـSQL عبر stdin — لا `-p` ولا `-e` على سطر الأوامر. كلاهما كان
+    // يكشف كلمة مرور الجذر وكلمات مرور قواعد الشركات في `ps aux`/`/proc/<pid>/cmdline` لأي
+    // مستخدم محلّي على خادم مشترك أثناء نافذة التنفيذ. نفس نمط restore.mjs/backup.mjs (BC-04).
+    execFileSync("docker", ["exec", "-i", "-e", "MYSQL_PWD", opts.dbContainer, "mysql", "-uroot"], {
+      input: sql,
+      stdio: ["pipe", "ignore", "pipe"],
+      env: { ...process.env, MYSQL_PWD: opts.rootPw },
     });
   }
+
+  // أمان (تدقيق ٣/٨): في عبارة `GRANT ... ON db.*` يعامل MySQL `_` و`%` في اسم القاعدة كأحرف
+  // بدل، والتنصيص بـbacktick لا يُلغي ذلك — يلزم تهريبها `\_`/`\%` صراحةً (توثيق MySQL). بلا
+  // تهريب، منح `erp_co_<code>` نمطٌ لا اسمٌ حرفيّ: كود `trol` ⇒ `erp_co_trol` يطابق قاعدة
+  // التحكّم `erp_control` ⇒ مستخدم الشركة يملك ALL PRIVILEGES على أسرار كل الشركات. التهريب
+  // للـGRANT فقط؛ CREATE DATABASE/USER يُعاملان الاسم حرفياً بلا بدل.
+  const grantDbName = dbName.replace(/([_%])/g, "\\$1");
 
   log(`• توفير قاعدة "${dbName}" + مستخدم مخصّص "${dbUser}" (أقل امتياز: هذه القاعدة فقط)…`);
   try {
@@ -75,7 +88,7 @@ export async function provisionCompany(opts) {
       `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;` +
         `CREATE USER IF NOT EXISTS '${dbUser}'@'%' IDENTIFIED BY '${dbPassword}';` +
         `ALTER USER '${dbUser}'@'%' IDENTIFIED BY '${dbPassword}';` +
-        `GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${dbUser}'@'%';` +
+        `GRANT ALL PRIVILEGES ON \`${grantDbName}\`.* TO '${dbUser}'@'%';` +
         `FLUSH PRIVILEGES;`
     );
   } catch (e) {
@@ -128,7 +141,14 @@ export async function provisionCompany(opts) {
 
   log("• تسجيل الشركة في قاعدة التحكّم…");
   const payloadFile = path.join(os.tmpdir(), `erp-company-new-${randomBytes(6).toString("hex")}.json`);
-  writeFileSync(payloadFile, JSON.stringify({ code, name: opts.name, dbHost: opts.dbHost, dbPort: opts.dbPort, dbName, dbUser, dbPassword }));
+  // أمان (تدقيق ٣/٨): `mode:0o600` — الحمولة تحوي كلمة مرور قاعدة الشركة نصّاً؛ بلا mode صريح
+  // تُنشأ بـumask الافتراضي (عادة 0644 مقروء للعالم) فيقرؤها أي مستخدم محلّي على خادم مشترك
+  // خلال النافذة قبل unlinkSync. نمط backup.mjs (`mode:0o600` على ملف .sql).
+  writeFileSync(
+    payloadFile,
+    JSON.stringify({ code, name: opts.name, dbHost: opts.dbHost, dbPort: opts.dbPort, dbName, dbUser, dbPassword }),
+    { mode: 0o600 }
+  );
   let companyId;
   try {
     const out = execFileSync(

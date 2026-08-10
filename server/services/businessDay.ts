@@ -19,6 +19,7 @@
 import { TRPCError } from "@trpc/server";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+const BAGHDAD_UTC_OFFSET_MS = 3 * 60 * 60 * 1000;
 
 /** يتحقّق من صيغة YYYY-MM-DD ومن كون التاريخ حقيقياً (لا 2026-02-31). */
 export function parseBusinessYmd(ymd: string): { y: number; m: number; d: number } {
@@ -64,6 +65,26 @@ export function utcDayRange(from: string, to: string): { start: Date; endExclusi
 
 /** تاريخ «اليوم» بتوقيت بغداد (+03:00) YYYY-MM-DD — لمنطق «فعّال اليوم» (اليوم الفعليّ للمتجر)،
  *  دلالةٌ مقصودة تختلف عن يوم UTC قرب منتصف الليل. لا تستعملها لفلترة أعمدة UTC. */
-export function baghdadToday(): string {
-  return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
+export function baghdadToday(now: Date = new Date()): string {
+  return new Date(now.getTime() + BAGHDAD_UTC_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * UTC instants enclosing the civil calendar day currently visible in Baghdad.
+ *
+ * This is intentionally separate from the ERP-wide UTC business-day helpers:
+ * mobile/executive "today" surfaces use the company's local Baghdad date, but
+ * timestamps remain stored and compared as UTC instants. The returned interval
+ * is half-open so an invoice at the next Baghdad midnight is never double-counted.
+ */
+export function baghdadTodayUtcRange(now: Date = new Date()): {
+  start: Date;
+  endExclusive: Date;
+} {
+  const { y, m, d } = parseBusinessYmd(baghdadToday(now));
+  const startMs = Date.UTC(y, m - 1, d) - BAGHDAD_UTC_OFFSET_MS;
+  return {
+    start: new Date(startMs),
+    endExclusive: new Date(startMs + 24 * 60 * 60 * 1000),
+  };
 }

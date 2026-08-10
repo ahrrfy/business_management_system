@@ -8,17 +8,26 @@ import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledge
 import { money, toDbMoney } from "../money";
 import { openShiftIdTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
+import type { Tx } from "../../db";
 import type { PaymentMethod } from "./types";
 
 export interface ProcessPaymentInput {
   invoiceId: number;
   amount: string;
   method: PaymentMethod;
+  reference?: string | null;
   shiftId?: number | null;
   /** إن حُدِّد، يُرفض الدفع على فاتورة فرعٍ مغاير (عزل الفروع لغير المدير). */
   enforceBranchId?: number | null;
   /** Idempotency: نفس الـmagic key يُعاد تشغيله بنتيجة العملية الأولى (لا تكرّر دفعة عند النقر المزدوج). */
   clientRequestId?: string | null;
+  /**
+   * فحصٌ حارس يُنفَّذ **داخل** معاملة الدفع بعد مسار الـreplay وقبل إدراج الإيصال (ش٥):
+   * فحصه في معاملةٍ مستقلّة قبل النداء يفتح TOCTOU (الحارس يلتزم ويحرّر أقفال فجوته قبل أن
+   * يُدرَج الإيصال ⇒ كودُ كارتٍ يُقبَض مرّتين تحت التزامن)، ويصطدم بإيصال العملية نفسها عند
+   * إعادة الإرسال المشروعة. هنا يتخطّاه الـreplay وتبقى أقفاله حيّةً حتى التزام الإدراج.
+   */
+  preInsertCheck?: (tx: Tx) => Promise<void>;
 }
 
 /** Record a later payment against a credit invoice; updates status + AR. */
@@ -50,6 +59,9 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
             message: "تعارض idempotency: المفتاح مستعمَل لدفعة بطريقة سداد مختلفة",
           });
         }
+        if ((r.referenceNumber ?? null) !== (input.reference?.trim() || null)) {
+          throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: مرجع عملية الدفع مختلف" });
+        }
         // أعِد قراءة الفاتورة لإرجاع حالتها الحديثة (replay آمن، لا كتابة).
         const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
         if (input.enforceBranchId != null && inv && Number(inv.branchId) !== input.enforceBranchId) {
@@ -78,6 +90,10 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الفاتورة مدفوعة بالكامل" });
     }
     const amount = money(input.amount);
+    const paymentReference = input.reference?.trim() || null;
+    if (input.method !== "CASH" && !paymentReference) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
+    }
     if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
     const remaining = money(inv.total)
       .minus(money(inv.returnedTotal ?? "0"))
@@ -107,6 +123,16 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       if (s.status !== "OPEN") {
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الوردية مغلقة" });
       }
+      // لا يكفي أن تكون الوردية مفتوحة ومملوكة للفاعل: يجب أن تكون درجاً من
+      // الفرع نفسه للفـاتورة. من دون ذلك يمكن تمرير وردية فرعٍ آخر فتُسجّل
+      // مقبوضات الفرع A في Z-report للفرع B (مع receipt.branchId=A)، وهو
+      // انحراف نقدي لا يمكن تسويته على مستوى الفرع.
+      if (Number(s.branchId) !== Number(inv.branchId)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "الوردية لا تخص فرع الفاتورة",
+        });
+      }
       const role = actor.role;
       if (role !== "admin" && role !== "manager") {
         if (Number(s.userId) !== Number(actor.userId)) {
@@ -126,6 +152,7 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
         message: "يَلزم وردية مفتوحة للبيع النقدي",
       });
     }
+    if (input.preInsertCheck) await input.preInsertCheck(tx);
     const rRes = await tx.insert(receipts).values({
       invoiceId: input.invoiceId,
       branchId: Number(inv.branchId),
@@ -135,6 +162,7 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       direction: "IN",
       amount: toDbMoney(amount),
       paymentMethod: input.method,
+      referenceNumber: paymentReference,
       status: "COMPLETED",
       createdBy: actor.userId,
     });

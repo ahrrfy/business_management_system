@@ -8,6 +8,7 @@ import {
   products,
   productVariants,
   stocktakeAssignments,
+  stocktakeCounts,
   stocktakeDecisions,
   stocktakeItems,
   stocktakeSessions,
@@ -18,7 +19,7 @@ import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import type { StkActor } from "./types";
-import { assertBranchAccess, chunk, lockSession } from "./internal";
+import { assertBranchAccess, chunk, loadStocktakeProgress, lockSession } from "./internal";
 import { loadReviewCore, willAdjust } from "./reviewCore";
 
 export interface ApproveResult {
@@ -96,7 +97,9 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
       await tx
         .select({ variantId: stocktakeItems.variantId })
         .from(stocktakeItems)
-        .where(eq(stocktakeItems.sessionId, sessionId))
+        .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(and(eq(stocktakeItems.sessionId, sessionId), eq(products.isService, false)))
         .orderBy(asc(stocktakeItems.variantId))
     ).map((r) => Number(r.variantId));
     for (const part of chunk(lockIds)) {
@@ -112,6 +115,13 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     const { rows, directUnderThreshold } = await loadReviewCore(tx, sessionId, true);
 
     // (٢) الحواجز.
+    const notCounted = rows.filter((r) => r.rawCount == null);
+    if (notCounted.length) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `لا اعتماد نهائياً قبل عدّ كل منتجات النطاق — المتبقي ${notCounted.length} منتجاً`,
+      });
+    }
     const pendingRecounts = rows.filter((r) => r.recount?.status === "PENDING");
     if (pendingRecounts.length) {
       throw new TRPCError({
@@ -136,6 +146,17 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
         message: `${undecided.length} فرقاً يحتاج قراراً صريحاً (تسوية/إبقاء) قبل الاعتماد`,
       });
     }
+    const unapprovedReviewRows = rows.filter((r) => !r.reviewApproved?.isCurrent);
+    if (unapprovedReviewRows.length) {
+      const stale = unapprovedReviewRows.filter((r) => r.reviewApproved != null).length;
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          stale > 0
+            ? `${unapprovedReviewRows.length} منتجاً يحتاج إعادة تثبيت الاعتماد المرحلي (${stale} بصمة قديمة)`
+            : `${unapprovedReviewRows.length} منتجاً معدوداً لم يُعتمد مرحلياً بعد`,
+      });
+    }
 
     // (٣) التوقيعان: عنصر سيُسوّى |قيمته| > dualThreshold ⇒ توقيع أول موجود + المعتمد شخص مختلف.
     // الجلسة الافتتاحية: توقيعان إلزاميان دائماً (حتى بصفر فروقات — الاعتماد يؤسّس الأرصدة ويختم
@@ -152,6 +173,18 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "وقّعتَ التوقيع الأول — الاعتماد النهائي يلزم أن يكون من مسؤول آخر",
+        });
+      }
+      const reviewedHighValueByFinalApprover = rows.filter(
+        (r) =>
+          r.requiresDualSign &&
+          willAdjust(r, directUnderThreshold) &&
+          r.reviewApproved?.byUserId === actor.userId,
+      );
+      if (reviewedHighValueByFinalApprover.length) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: `فصل المهام: راجعتَ ${reviewedHighValueByFinalApprover.length} فرقاً عالي القيمة مرحلياً — الاعتماد النهائي لمسؤول آخر`,
         });
       }
     }
@@ -382,6 +415,13 @@ export async function forceStocktakeReview(sessionId: number, _actor: StkActor):
     if (s.status !== "COUNTING") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "إقفال العدّ متاح على جلسة قيد العدّ فقط" });
     }
+    const { total, counted } = await loadStocktakeProgress(tx, sessionId);
+    if (counted < total) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `لا يمكن إنهاء العدّ قبل عدّ كل المنتجات (${counted}/${total})`,
+      });
+    }
     const now = new Date();
     await tx
       .update(stocktakeAssignments)
@@ -425,6 +465,7 @@ export async function regenerateStocktakePin(
         id: stocktakeAssignments.id,
         sessionId: stocktakeAssignments.sessionId,
         method: stocktakeAssignments.method,
+        status: stocktakeAssignments.status,
         sessionStatus: stocktakeSessions.status,
         branchId: stocktakeSessions.branchId,
       })
@@ -437,6 +478,7 @@ export async function regenerateStocktakePin(
     if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "تكليف الجرد غير موجود" });
     assertBranchAccess(Number(a.branchId), opts.restrictBranchId);
     if (a.method !== "PIN") throw new TRPCError({ code: "BAD_REQUEST", message: "هذا التكليف بحساب داخلي — لا PIN له" });
+    if (a.status !== "ACTIVE") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تجديد PIN لعامل غير نشط" });
     if (a.sessionStatus !== "COUNTING") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "إعادة توليد PIN متاحة أثناء العدّ فقط" });
     }

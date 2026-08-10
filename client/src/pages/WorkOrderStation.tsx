@@ -2,20 +2,25 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState } from "@/components/PageState";
-import { Check, CheckCircle2, ChevronRight, CornerDownLeft, Layers, MessageSquare, Ruler, Truck, Timer as TimerIcon } from "lucide-react";
+import { Banknote, CalendarDays, Check, CheckCircle2, ChevronRight, ClipboardList, CornerDownLeft, Layers, MapPin, Phone, Ruler, Truck, Timer as TimerIcon, UserRound } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
 import { confirm } from "@/lib/confirm";
-import { fmtDate } from "@/lib/date";
-import { fmtInt } from "@/lib/money";
+import { fmtDate, fmtDateTime } from "@/lib/date";
+import { fmtAr, fmtInt, positiveDiff } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
+import { normalizeSearchText } from "@shared/searchNormalize";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 
 /**
  * محطة فني التنفيذ — `/work-orders/station` (دور print_operator + الكاشير/المدير).
  *
- * الغرض: ينفّذ الفني أوامره المُسنَدة إليه فقط، ويسحب من الطابور العام المشترك. لا تسعير ولا تكلفة
- * (إخفاءٌ متّسق مع canSeeCost — الخادم يُخفي materialsCost/laborCost/unitCost عن الفني أصلاً).
+ * الغرض: ينفّذ الفني أوامره المُسنَدة إليه فقط، ويسحب من الطابور العام المشترك، مع كل تفاصيل
+ * العميل والتنفيذ والتسليم والدفع التشغيلية. تبقى تكاليف المواد/العمالة الداخلية محجوبة خادمياً
+ * عن غير المخوّلين عبر canSeeCost.
  *
  * السلامة: الإجراء النهائي هنا = «جاهز للتسليم» (markReady). التسليم وإصدار الفاتورة وقبض النقد
  * يبقيان للكاشير/المدير (cashierProcedure) — أقلّ امتياز، فلا يُصدر الفني فواتير ولا يمسّ الصندوق.
@@ -38,15 +43,29 @@ const PRIORITIES: Record<string, { label: string; cls: string }> = {
   NORMAL: { label: "عادي", cls: "badge-status-pending border-transparent" },
   LOW: { label: "منخفض", cls: "badge-status-active border-transparent" },
 };
+const PAYMENT_METHOD_LABEL: Record<string, string> = {
+  CASH: "نقدي",
+  CARD: "بطاقة",
+  TRANSFER: "تحويل",
+  WALLET: "محفظة",
+};
 const STATUS_LABEL: Record<string, string> = {
-  RECEIVED: "بانتظار البدء", IN_PROGRESS: "قيد التنفيذ", READY: "جاهز للتسليم", DELIVERED: "مُسلَّم", CANCELLED: "ملغى",
+  RECEIVED: "مُستلَم", IN_PROGRESS: "قيد التنفيذ", READY: "جاهز للتسليم", DELIVERED: "مُسلَّم", CANCELLED: "ملغى",
 };
 const STAGES: { key: string; label: string }[] = [
-  { key: "RECEIVED", label: "مسحوب" },
+  { key: "RECEIVED", label: "مُستلَم" },
   { key: "IN_PROGRESS", label: "قيد التنفيذ" },
   { key: "READY", label: "جاهز للتسليم" },
 ];
 const STAGE_INDEX: Record<string, number> = { RECEIVED: 0, IN_PROGRESS: 1, READY: 2, DELIVERED: 3 };
+
+function ChannelMark({ channel, className = "size-4" }: { channel: string | null | undefined; className?: string }) {
+  if (channel === "WHATSAPP") {
+    return <WhatsAppIcon className={`${className} text-[var(--brand-whatsapp)]`} />;
+  }
+  const ch = CHANNELS[channel ?? "WALK_IN"] ?? CHANNELS.OTHER;
+  return <span role="img" aria-label={ch.label}>{ch.icon}</span>;
+}
 
 function pad2(n: number) { return String(n).padStart(2, "0"); }
 function fmtElapsed(ms: number): string {
@@ -93,9 +112,10 @@ function ElapsedTimer({ startAt, endAt }: { startAt: Date | null; endAt: Date | 
 }
 
 /** يَستخرج الحُقول المُنسَّقة `[Tag] value` من customizationText الذي تَكتبه Reception
- *  عبر composeCustomizationText. يَدعم: المقاس، الخامة، توصيل (العنوان). */
-function parseCustomSpecs(text: string | null | undefined): { size: string | null; material: string | null; delivery: string | null; raw: string } {
-  if (!text) return { size: null, material: null, delivery: null, raw: "" };
+ *  عبر composeCustomizationText، أو WorkOrderNew.tsx (طريقة التسليم). يَدعم: المقاس، الخامة،
+ *  توصيل (العنوان)، طريقة التسليم (استلام من المحل/توصيل للعميل/شحن سريع). */
+function parseCustomSpecs(text: string | null | undefined): { size: string | null; material: string | null; delivery: string | null; deliveryMethod: string | null; raw: string } {
+  if (!text) return { size: null, material: null, delivery: null, deliveryMethod: null, raw: "" };
   const lines = text.split(/\r?\n/);
   const get = (tag: string) => {
     for (const ln of lines) {
@@ -108,6 +128,7 @@ function parseCustomSpecs(text: string | null | undefined): { size: string | nul
     size: get("المقاس"),
     material: get("الخامة"),
     delivery: get("توصيل"),
+    deliveryMethod: get("طريقة التسليم"),
     // raw يُبقي الأَسطر بَلا الـtag prefix كَمُلاحظات حُرّة (لِعَرضها في كَتلة منفصلة).
     raw: lines.filter((ln) => !/^\[[^\]]+\]/.test(ln)).join("\n").trim(),
   };
@@ -128,7 +149,7 @@ function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClic
       </div>
       <div className="font-medium text-sm mt-0.5 line-clamp-1">{o.title}</div>
       <div className="flex items-center justify-between mt-1 text-[11px] text-muted-foreground">
-        <span title={ch.label}><span role="img" aria-label={ch.label}>{ch.icon}</span> {o.customerName ?? "عميل نقدي"}</span>
+        <span title={ch.label} className="inline-flex min-w-0 items-center gap-1"><ChannelMark channel={o.receptionChannel} className="size-3.5" /> <span className="truncate">{o.customerName ?? "عميل نقدي"}</span></span>
         {mine ? <span>{STATUS_LABEL[o.status]}</span> : <span className="text-stock-low">سحب ←</span>}
       </div>
     </button>
@@ -195,6 +216,16 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
   const ch = CHANNELS[d.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER;
   const pri = PRIORITIES[d.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
   const cur = STAGE_INDEX[d.status] ?? 0;
+  const remainingDue = positiveDiff(d.salePrice, d.deposit ?? 0);
+  const contactMessage = buildWorkOrderStatusMessage({
+    orderNumber: d.orderNumber,
+    title: d.title,
+    status: d.status,
+    customerName: d.customerName,
+    quantity: d.quantity,
+    dueDate: d.dueDate ? String(d.dueDate) : null,
+    amountDue: d.status === "READY" ? remainingDue.toString() : null,
+  });
 
   async function doStart() {
     if (!(await confirm({ variant: "warning", title: "بدء التنفيذ", description: `بدء تنفيذ «${d!.title}» يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟`, confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
@@ -211,7 +242,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <div className="font-mono text-[11px] text-muted-foreground" dir="ltr">{d.orderNumber}</div>
-          <h2 className="text-xl font-bold"><span role="img" aria-label={ch.label}>{ch.icon}</span> {d.title}</h2>
+          <h2 className="flex items-center gap-2 text-xl font-bold"><ChannelMark channel={d.receptionChannel} className="size-5" /> {d.title}</h2>
           <div className="flex items-center gap-2 mt-1 text-sm text-muted-foreground">
             <Badge variant="outline" className={pri.cls}>{pri.label}</Badge>
             <span>{ch.label}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</span>
@@ -227,6 +258,55 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* المحتوى */}
         <div className="lg:col-span-2 space-y-4">
+          <Card className="border-primary/20 shadow-sm">
+            <CardHeader className="pb-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle className="inline-flex items-center gap-2 text-sm">
+                  <ClipboardList aria-hidden className="size-4 text-primary" />
+                  بيانات العميل والأمر
+                </CardTitle>
+                <WhatsAppShare
+                  phone={d.customerPhone}
+                  alternativePhones={[d.deliveryPhone]}
+                  message={contactMessage}
+                  label="مراسلة العميل"
+                  appearance="solid"
+                  disabledReason="لا يوجد رقم صالح للعميل أو مستلم التوصيل"
+                />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"><UserRound aria-hidden className="size-3.5" /> العميل</div>
+                  <div className="mt-1 font-bold">{d.customerName ?? "عميل نقدي"}</div>
+                </div>
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"><Phone aria-hidden className="size-3.5" /> هاتف التواصل</div>
+                  <div className="mt-1 font-bold" dir="ltr">{d.customerPhone ?? d.deliveryPhone ?? "—"}</div>
+                </div>
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"><UserRound aria-hidden className="size-3.5" /> استلم الطلب</div>
+                  <div className="mt-1 font-bold">{d.createdByName ?? "—"}</div>
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">{fmtDateTime(d.createdAt)}</div>
+                </div>
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"><UserRound aria-hidden className="size-3.5" /> الفني المنفذ</div>
+                  <div className="mt-1 font-bold">{d.assigneeName ?? "غير مُسنَد"}</div>
+                </div>
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"><ChannelMark channel={d.receptionChannel} className="size-3.5" /> قناة الاستلام</div>
+                  <div className="mt-1 font-bold">{ch.label}</div>
+                  {d.channelHandle && <div className="mt-0.5 text-[11px] text-muted-foreground" dir="ltr">{d.channelHandle}</div>}
+                </div>
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"><CalendarDays aria-hidden className="size-3.5" /> موعد التسليم</div>
+                  <div className="mt-1 font-bold">{fmtDate(d.dueDate)}</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           {/* مواصفات التنفيذ — شَبكة 2×2 per spec §5.3: المقاس/الخامة/الكمية/التسليم.
               المقاس والخامة والتوصيل تُستخرَج من customizationText المُنسَّق (Reception)؛
               الكَمية من العَمود المُخصَّص؛ نصّ المُلاحظات الحُرّ (إن وُجد) كَتلةٌ مُنفصلة. */}
@@ -251,9 +331,10 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
                     </div>
                     <div className="rounded-lg border bg-muted/20 p-3">
                       <div className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Truck aria-hidden className="size-3.5" /> التَسليم</div>
-                      <div className={`font-bold text-base mt-1 ${specs.delivery ? "text-[var(--status-pending)]" : ""}`}>
-                        {specs.delivery ?? "استلام من المَطبعة"}
+                      <div className={`font-bold text-base mt-1 ${d.hasDelivery || specs.delivery || specs.deliveryMethod ? "text-[var(--status-pending)]" : ""}`}>
+                        {d.hasDelivery ? "توصيل للعميل" : (specs.deliveryMethod ?? "استلام من المَطبعة")}
                       </div>
+                      {(d.deliveryAddress || specs.delivery) && <div className="text-[11px] text-muted-foreground mt-0.5">{d.deliveryAddress ?? specs.delivery}</div>}
                     </div>
                   </div>
                   {specs.raw && (
@@ -266,6 +347,35 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
               </Card>
             );
           })()}
+
+          {d.hasDelivery && (
+            <Card className="border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)]">
+              <CardHeader className="pb-2">
+                <CardTitle className="inline-flex items-center gap-2 text-sm">
+                  <Truck aria-hidden className="size-4 text-[var(--sem-warn)]" />
+                  تفاصيل التوصيل
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                <div>
+                  <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"><MapPin aria-hidden className="size-3.5" /> العنوان</div>
+                  <div className="mt-1 whitespace-pre-wrap font-bold">{d.deliveryAddress ?? "—"}</div>
+                </div>
+                <div>
+                  <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"><Phone aria-hidden className="size-3.5" /> هاتف المستلم</div>
+                  <div className="mt-1 font-bold" dir="ltr">{d.deliveryPhone ?? d.customerPhone ?? "—"}</div>
+                </div>
+                {d.consignmentNumber && (
+                  <div className="sm:col-span-2 rounded-lg border bg-card p-2.5">
+                    <span className="text-muted-foreground">الإرسالية: </span>
+                    <span className="font-bold" dir="ltr">{d.consignmentNumber}</span>
+                    {d.deliveryPartyName ? <span> · {d.deliveryPartyName}</span> : null}
+                    {d.consignmentStatus ? <span className="text-muted-foreground"> · {d.consignmentStatus}</span> : null}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {/* صور نموذج العمل */}
           {d.images && d.images.length > 0 && (
@@ -308,31 +418,61 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
             </CardContent>
           </Card>
 
-          {/* لوحة محادثة مع خدمة العملاء — stub per spec §5.3.
-              التَكامل الفِعلي يَنتظر backend القنوات (شَريحة #5 المؤجَّلة).
-              حالياً نَعرض إرشاد للفنّي يُحوّله للقَناة الأَصلية حسب receptionChannel. */}
-          <Card className="border-dashed">
+          <Card className="border-[color-mix(in_oklch,var(--brand-whatsapp)_35%,transparent)] bg-[color-mix(in_oklch,var(--brand-whatsapp)_4%,transparent)]">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm inline-flex items-center gap-2">
-                <MessageSquare aria-hidden className="size-4 text-muted-foreground" />
-                محادثة مع خِدمة العُملاء
+                <WhatsAppIcon className="size-5 text-[var(--brand-whatsapp)]" />
+                التواصل بشأن أمر الشغل
               </CardTitle>
             </CardHeader>
-            <CardContent className="text-sm space-y-2">
-              <div className="text-muted-foreground">
-                للتَواصل بِخصوص هذا الأَمر، يَصِله خِدمة العُملاء عبر:
-                <span className="font-medium text-foreground"> {ch.icon} {ch.label}</span>
-                {d.channelHandle && <span className="font-mono text-xs ms-1" dir="ltr">· {d.channelHandle}</span>}
+            <CardContent className="flex flex-wrap items-center justify-between gap-3 text-sm">
+              <div>
+                <div className="font-bold">{d.customerName ?? "العميل"}</div>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  القناة الأصلية: <span className="inline-flex items-center gap-1"><ChannelMark channel={d.receptionChannel} className="size-3.5" /> {ch.label}</span>
+                  {d.channelHandle ? <span dir="ltr"> · {d.channelHandle}</span> : null}
+                </div>
               </div>
-              <div className="text-xs text-muted-foreground bg-muted/30 border border-dashed rounded-md p-2">
-                المحادثة الموحَّدة داخل النِظام تَأتي في تَكامل القنوات لاحقاً — حالياً اِستعمل القناة الأَصلية أو راسِل خِدمة العُملاء مُباشرة.
-              </div>
+              <WhatsAppShare
+                phone={d.customerPhone}
+                alternativePhones={[d.deliveryPhone]}
+                message={contactMessage}
+                label="فتح واتساب"
+                appearance="solid"
+                disabledReason="لا يوجد رقم صالح للعميل أو مستلم التوصيل"
+              />
             </CardContent>
           </Card>
         </div>
 
         {/* العمود الجانبي: المؤقّت + المراحل + الإجراء */}
         <div className="space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="inline-flex items-center gap-2 text-sm">
+                <Banknote aria-hidden className="size-4 text-primary" />
+                الحساب والدفع
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">إجمالي الطلب</span><span className="font-bold tabular-nums" dir="ltr">{fmtAr(d.salePrice)} د.ع</span></div>
+              <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">العربون</span><span className="font-bold tabular-nums text-money-positive" dir="ltr">{fmtAr(d.deposit ?? 0)} د.ع</span></div>
+              <div className="flex items-center justify-between gap-3 border-t pt-2"><span className="font-bold">المتبقّي</span><span className="font-extrabold tabular-nums" dir="ltr">{fmtAr(remainingDue.toString())} د.ع</span></div>
+              {Number(d.deposit ?? 0) > 0 && (
+                <div className="rounded-lg border bg-muted/20 p-2.5 text-xs">
+                  <div><span className="text-muted-foreground">طريقة الدفع: </span><span className="font-bold">{PAYMENT_METHOD_LABEL[d.paymentMethod ?? ""] ?? d.paymentMethod ?? "—"}</span></div>
+                  {d.paymentReference && <div className="mt-1"><span className="text-muted-foreground">المرجع: </span><span className="font-mono" dir="ltr">{d.paymentReference}</span></div>}
+                </div>
+              )}
+              {d.paymentReceiptUrl && (
+                <a href={d.paymentReceiptUrl} target="_blank" rel="noreferrer" className="block rounded-lg border p-2 transition-colors hover:border-primary">
+                  <div className="mb-1.5 text-xs font-bold text-muted-foreground">إيصال العربون — اضغط للتكبير</div>
+                  <img src={d.paymentReceiptUrl} alt="إيصال دفع العربون" className="max-h-40 w-full rounded-md object-contain" />
+                </a>
+              )}
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm inline-flex items-center gap-2">
@@ -402,8 +542,16 @@ export default function WorkOrderStation() {
   const mineQ = trpc.workOrders.list.useQuery({ statuses: [...ACTIVE_STATUSES], assignedToMe: true, limit: 200 });
   const queueQ = trpc.workOrders.list.useQuery({ statuses: ["RECEIVED"], unassignedOnly: true, limit: 200 });
 
-  const mine = mineQ.data ?? [];
-  const queue = queueQ.data ?? [];
+  const mineAll = mineQ.data ?? [];
+  const queueAll = queueQ.data ?? [];
+
+  // بحث محلي سريع بقائمتَي المحطة (رقم الأمر/العنوان/العميل) — القائمتان محدودتان بطبيعتهما
+  // (عمل نشط فقط) فالفلترة المحلية كافية بلا جولة خادم إضافية.
+  const [search, setSearch] = useState("");
+  const nq = normalizeSearchText(search.trim());
+  const matches = (o: WO) => !nq || normalizeSearchText(`${o.orderNumber} ${o.title} ${o.customerName ?? ""}`).includes(nq);
+  const mine = useMemo(() => mineAll.filter(matches), [mineAll, nq]);
+  const queue = useMemo(() => queueAll.filter(matches), [queueAll, nq]);
 
   useEffect(() => {
     if (selId == null && mine.length) setSelId(mine[0].id);
@@ -423,11 +571,23 @@ export default function WorkOrderStation() {
           <Link href="/work-orders" className="text-xs text-muted-foreground">اللوحة ←</Link>
         </div>
 
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="ابحث برقم الأمر/العنوان/العميل…"
+          dir="auto"
+          className="h-9"
+        />
+
         <div>
           <div className="text-xs font-semibold text-muted-foreground mb-1.5">أوامري ({mine.length})</div>
           <div className="space-y-2">
             {mine.map((o) => <OrderRow key={o.id} o={o} mine active={selId === o.id} onClick={() => setSelId(o.id)} />)}
-            {mine.length === 0 && <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">لا أوامر مُسنَدة إليك — اسحب من الطابور العام أدناه.</div>}
+            {mine.length === 0 && (
+              <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">
+                {mineAll.length === 0 ? "لا أوامر مُسنَدة إليك — اسحب من الطابور العام أدناه." : "لا نتائج مطابقة للبحث."}
+              </div>
+            )}
           </div>
         </div>
 
@@ -446,7 +606,11 @@ export default function WorkOrderStation() {
                 >سحب</Button>
               </div>
             ))}
-            {queue.length === 0 && <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">الطابور فارغ.</div>}
+            {queue.length === 0 && (
+              <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">
+                {queueAll.length === 0 ? "الطابور فارغ." : "لا نتائج مطابقة للبحث."}
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -4,11 +4,18 @@ import { useMemo, useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+
+/** اليوم YYYY-MM-DD محلياً — لا toISOString (ينزاح قرب منتصف الليل ببغداد UTC+3). */
+function todayYmd(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+}
 
 type Pos = RouterOutputs["reports"]["financialPosition"];
 
@@ -21,7 +28,7 @@ function buildRows(p: Pos) {
   return [
     { label: "النقد (تقديريّ)", debit: p.cash, credit: "0" },
     { label: "مقبوضات البطاقة/البنك", debit: p.card, credit: "0" },
-    { label: "شيكات قيد التحصيل", debit: p.check, credit: "0" },
+    { label: "صكوك قيد التحصيل", debit: p.check, credit: "0" },
     { label: "تحويلات مصرفية", debit: p.transfer, credit: "0" },
     { label: "محافظ إلكترونية", debit: p.wallet, credit: "0" },
     { label: "الذمم المدينة (عملاء)", debit: p.arDebit, credit: "0" },
@@ -38,8 +45,14 @@ function buildRows(p: Pos) {
 
 export default function TrialBalance() {
   const [branchId, setBranchId] = useState<number | "">("");
+  // «كما في تاريخ» — فارغ يعني اللقطة الحيّة الآن (بلا تغيير سلوكيّ افتراضاً). كان هذا المنتقي
+  // غائباً تماماً فتبقى اللقطة «اليوم» دائماً مهما احتاج المستخدم (أصلح من الجذر عبر reports.financialPosition.asOf).
+  const [asOf, setAsOf] = useState("");
   const branches = trpc.branches.list.useQuery();
-  const q = trpc.reports.financialPosition.useQuery({ branchId: branchId ? Number(branchId) : undefined });
+  const q = trpc.reports.financialPosition.useQuery({
+    branchId: branchId ? Number(branchId) : undefined,
+    asOf: asOf || undefined,
+  });
   const p = q.data;
   const rows = useMemo(() => (p ? buildRows(p) : []), [p]);
 
@@ -72,10 +85,10 @@ export default function TrialBalance() {
     printReportDoc({
       title: "ميزان المراجعة",
       headerExtra: [
-        { label: "كما في", value: fmtDate(new Date()) },
+        { label: "كما في", value: p.asOf ? fmtDate(new Date(`${p.asOf}T00:00:00`)) : fmtDate(new Date()) },
         { label: "الفرع", value: branchLabel },
       ],
-      note: NOTE,
+      note: p.historicalNote ? `${NOTE} ${p.historicalNote}` : NOTE,
       columns: [
         { key: "label", label: "الحساب" },
         { key: "debit", label: "مدين", align: "left" },
@@ -98,19 +111,25 @@ export default function TrialBalance() {
     <ReportShell
       title="معادلة المركز المالي"
       description="عرض مشتق للأصول والخصوم، وليس ميزان مراجعة محاسبياً من قيود مزدوجة."
-      note={NOTE}
+      note={p?.historicalNote ? `${NOTE} ${p.historicalNote}` : NOTE}
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
       exportDisabled={!p}
       printDisabled={!p}
       filters={
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-muted-foreground">الفرع</label>
-          <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
-            <option value="">الكل (الشركة)</option>
-            {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-          </select>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">الفرع</label>
+            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+              <option value="">الكل (الشركة)</option>
+              {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">كما في تاريخ</label>
+            <Input type="date" dir="ltr" value={asOf} max={todayYmd()} onChange={(e) => setAsOf(e.target.value)} className="h-9 w-40" />
+          </div>
         </div>
       }
     >

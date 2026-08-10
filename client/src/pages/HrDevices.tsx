@@ -13,6 +13,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { RowActions } from "@/components/list/RowActions";
 import { ListToolbar } from "@/components/list/ListToolbar";
+import { FilterField } from "@/components/list/FilterField";
 import { ErrorState, LoadingState, TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
@@ -28,18 +29,20 @@ import {
   Plus,
   Radio,
   ScanFace,
+  Search,
   Server,
   Trash2,
   Users,
+  X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const PAID_PROVIDER = { provider: "IraqSoft — مزوّد خارجي", host: "api-iraqsoft.com", port: 7788 };
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const emptyForm = { name: "", serialNumber: "", protocol: "AIFACE_WS", model: "", location: "", branchId: "", deviceCode: "" };
+const emptyForm = { name: "", serialNumber: "", protocol: "AIFACE_WS", model: "", location: "", branchId: "", deviceCode: "", ip: "" };
 
 /** توقيت مقروء ببغداد — أو «—». */
 function fmtTime(v: string | Date | null | undefined): string {
@@ -67,15 +70,41 @@ export default function HrDevices() {
   const [guideOpen, setGuideOpen] = useState(false);
   const [unmatchedOnly, setUnmatchedOnly] = useState(false);
   const [punchOffset, setPunchOffset] = useState(0);
+  // فلاتر طابور البصمات — جهاز/موظف/مدى تاريخ (فوق deviceId/unmatchedOnly الموجودَين أصلاً).
+  const [punchDeviceId, setPunchDeviceId] = useState("");
+  const [punchEmployeeId, setPunchEmployeeId] = useState("");
+  const [punchDateFrom, setPunchDateFrom] = useState("");
+  const [punchDateTo, setPunchDateTo] = useState("");
+  const punchFiltersActive = !!(punchDeviceId || punchEmployeeId || punchDateFrom || punchDateTo);
+  function resetPunchFilters() {
+    setPunchDeviceId(""); setPunchEmployeeId(""); setPunchDateFrom(""); setPunchDateTo("");
+  }
 
   const punches = trpc.hrDevices.punchesList.useQuery(
-    { unmatchedOnly, limit: 25, offset: punchOffset },
+    {
+      unmatchedOnly,
+      deviceId: punchDeviceId ? Number(punchDeviceId) : undefined,
+      employeeId: punchEmployeeId ? Number(punchEmployeeId) : undefined,
+      dateFrom: punchDateFrom || undefined,
+      dateTo: punchDateTo || undefined,
+      limit: 25,
+      offset: punchOffset,
+    },
     { refetchInterval: 30_000 }
   );
+  // أي تغيير فلترٍ يعيد الترقيم إلى الصفحة الأولى.
+  useEffect(() => setPunchOffset(0), [unmatchedOnly, punchDeviceId, punchEmployeeId, punchDateFrom, punchDateTo]);
+
   const deviceUsers = trpc.hrDevices.deviceUsers.useQuery(
     { deviceId: mapDeviceId ?? 0 },
     { enabled: mapDeviceId != null }
   );
+  const [deviceUserQuery, setDeviceUserQuery] = useState("");
+  const visibleDeviceUsers = useMemo(() => {
+    const q = deviceUserQuery.trim().toLocaleLowerCase("ar");
+    const rows = deviceUsers.data ?? [];
+    return q ? rows.filter((u) => [u.name, String(u.enrollId)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
+  }, [deviceUsers.data, deviceUserQuery]);
 
   const refresh = async () => {
     await Promise.all([
@@ -131,7 +160,7 @@ export default function HrDevices() {
   const [query, setQuery] = useState("");
   const visibleDevices = useMemo(() => {
     const q = query.trim().toLocaleLowerCase("ar");
-    return q ? devices.filter((d) => [d.name, d.serialNumber, d.branchName, d.location, d.model, d.status].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : devices;
+    return q ? devices.filter((d) => [d.name, d.serialNumber, d.ip, d.branchName, d.location, d.model, d.status].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : devices;
   }, [devices, query]);
   const total = devices.length;
   const connectedEver = devices.filter((d) => d.lastHandshakeAt).length;
@@ -158,6 +187,7 @@ export default function HrDevices() {
       location: form.location.trim() || undefined,
       branchId: form.branchId ? Number(form.branchId) : undefined,
       deviceCode: form.deviceCode.trim() || undefined,
+      ip: form.ip.trim() || undefined,
     });
   };
 
@@ -198,15 +228,15 @@ export default function HrDevices() {
           </div>
 
           <div className="grid md:grid-cols-[1fr_auto_1fr] gap-3 items-stretch">
-            <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 p-3.5">
+            <div className="rounded-lg border p-3.5" style={{ borderColor: "color-mix(in oklch, var(--sem-warn) 42%, transparent)", background: "var(--sem-warn-bg)" }}>
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-amber-700 dark:text-amber-400">المزوّد الحالي (مدفوع)</span>
-                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-amber-200 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                <span className="text-xs font-semibold text-[var(--sem-warn)]">المزوّد الحالي (مدفوع)</span>
+                <span className="badge-stock-low inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium">
                   يُلغى
                 </span>
               </div>
               <div className="text-[13px] font-bold mb-1">{PAID_PROVIDER.provider}</div>
-              <div className="text-[11px] text-amber-700/80 dark:text-amber-400/80 space-y-1" dir="ltr">
+              <div className="text-[11px] text-[var(--sem-warn)] space-y-1" dir="ltr">
                 <div className="flex items-center gap-1.5">
                   <Radio className="size-3" /> {PAID_PROVIDER.host}:{PAID_PROVIDER.port}
                 </div>
@@ -220,17 +250,18 @@ export default function HrDevices() {
             </div>
 
             <div
-              className={`rounded-lg border-2 p-3.5 ${bridgeOn ? "border-emerald-500 bg-emerald-500/[0.07]" : "border-rose-300 bg-rose-50 dark:bg-rose-950/20 dark:border-rose-800"}`}
+              className="rounded-lg border-2 p-3.5"
+              style={
+                bridgeOn
+                  ? { borderColor: "var(--status-active)", background: "color-mix(in oklch, var(--status-active) 7%, transparent)" }
+                  : { borderColor: "color-mix(in oklch, var(--sem-neg) 42%, transparent)", background: "var(--sem-neg-bg)" }
+              }
             >
               <div className="flex items-center justify-between mb-2">
-                <span
-                  className={`text-xs font-semibold ${bridgeOn ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}
-                >
+                <span className="text-xs font-semibold" style={{ color: bridgeOn ? "var(--status-active)" : "var(--sem-neg)" }}>
                   جسر الاستقبال على خادمك
                 </span>
-                <span
-                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${bridgeOn ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"}`}
-                >
+                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${bridgeOn ? "badge-status-active" : "badge-stock-out"}`}>
                   {bridgeOn ? "يعمل" : "غير مفعَّل"}
                 </span>
               </div>
@@ -260,13 +291,13 @@ export default function HrDevices() {
                 </span>
               </div>
               <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
-                <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
+                <div className="h-full rounded-full bg-[var(--status-active)] transition-all" style={{ width: `${pct}%` }} />
               </div>
             </div>
           </div>
 
           {total > 0 && connectedEver === total && bridgeOn && (
-            <div className="rounded-md p-2.5 text-[12px] flex items-center gap-2 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+            <div className="rounded-md p-2.5 text-[12px] flex items-center gap-2" style={{ background: "color-mix(in oklch, var(--status-active) 10%, transparent)", color: "var(--status-active)" }}>
               <BadgeCheck className="size-4 shrink-0" /> كل الأجهزة تتكلم مع خادمك مباشرة. لم يعد الاشتراك الخارجي
               مطلوباً — يمكنك إلغاؤه بأمان.
             </div>
@@ -322,7 +353,7 @@ export default function HrDevices() {
                       <td className="p-2">
                         <div className="flex items-center gap-2">
                           <span
-                            className={`size-9 rounded-lg grid place-items-center shrink-0 ${online ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950" : "bg-rose-50 text-rose-500 dark:bg-rose-950"}`}
+                            className={`size-9 rounded-lg grid place-items-center shrink-0 ${online ? "badge-status-active" : "badge-stock-out"}`}
                           >
                             <ScanFace className="size-5" />
                           </span>
@@ -332,6 +363,7 @@ export default function HrDevices() {
                               {d.serialNumber ?? d.model ?? "—"}
                               {d.firmware ? ` · ${d.firmware}` : ""}
                             </div>
+                            {d.ip ? <div className="text-[10px] text-muted-foreground" dir="ltr">IP {d.ip}</div> : null}
                           </div>
                         </div>
                       </td>
@@ -344,7 +376,7 @@ export default function HrDevices() {
                           <span
                             className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${online ? "badge-status-active" : "badge-stock-out"}`}
                           >
-                            <span className={`size-1.5 rounded-full ${online ? "bg-emerald-500" : "bg-rose-500"}`} />
+                            <span className="size-1.5 rounded-full" style={{ background: online ? "var(--status-active)" : "var(--stock-out)" }} />
                             {online ? "متصل" : "منقطع"}
                           </span>
                         ) : (
@@ -429,20 +461,44 @@ export default function HrDevices() {
 
       {/* البصمات الخام */}
       <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">البصمات الواردة</CardTitle>
-          <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-            <input
-              type="checkbox"
-              className="accent-primary"
-              checked={unmatchedOnly}
-              onChange={(e) => {
-                setUnmatchedOnly(e.target.checked);
-                setPunchOffset(0);
-              }}
-            />
-            غير المربوطة بموظف فقط
-          </label>
+        <CardHeader className="space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <CardTitle className="text-base">البصمات الواردة</CardTitle>
+            <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="accent-primary"
+                checked={unmatchedOnly}
+                onChange={(e) => setUnmatchedOnly(e.target.checked)}
+              />
+              غير المربوطة بموظف فقط
+            </label>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <FilterField label="الجهاز">
+              <select className={selectCls} value={punchDeviceId} onChange={(e) => setPunchDeviceId(e.target.value)} aria-label="الجهاز">
+                <option value="">كل الأجهزة</option>
+                {devices.map((d) => <option key={d.id} value={String(d.id)}>{d.name}</option>)}
+              </select>
+            </FilterField>
+            <FilterField label="الموظف">
+              <select className={selectCls} value={punchEmployeeId} onChange={(e) => setPunchEmployeeId(e.target.value)} aria-label="الموظف">
+                <option value="">كل الموظفين</option>
+                {employeeOptions.map((emp) => <option key={emp.id} value={String(emp.id)}>{emp.name}</option>)}
+              </select>
+            </FilterField>
+            <FilterField label="من تاريخ">
+              <Input type="date" dir="ltr" value={punchDateFrom} onChange={(e) => setPunchDateFrom(e.target.value)} className="h-9 w-36" aria-label="من تاريخ" />
+            </FilterField>
+            <FilterField label="إلى تاريخ">
+              <Input type="date" dir="ltr" value={punchDateTo} onChange={(e) => setPunchDateTo(e.target.value)} className="h-9 w-36" aria-label="إلى تاريخ" />
+            </FilterField>
+            {punchFiltersActive && (
+              <Button variant="ghost" size="sm" onClick={resetPunchFilters} className="text-muted-foreground">
+                <X aria-hidden className="size-4" /> مسح الفلاتر
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
@@ -467,18 +523,18 @@ export default function HrDevices() {
                     <td className="p-2 text-center text-xs tabular-nums">{p.enrollId}</td>
                     <td className="p-2 text-xs">
                       {p.employeeName ?? (
-                        <span className="text-amber-600 dark:text-amber-400">غير مربوط — اربطه من زر «الربط»</span>
+                        <span className="text-[var(--sem-warn)]">غير مربوط — اربطه من زر «الربط»</span>
                       )}
                     </td>
                     <td className="p-2 text-center text-xs">{p.mode ?? "—"}</td>
                     <td className="p-2 text-center text-xs">
                       {p.processedAt ? (
                         p.processNote ? (
-                          <span className="text-rose-600 dark:text-rose-400" title={p.processNote}>
+                          <span className="text-[var(--sem-neg)]" title={p.processNote}>
                             مركونة
                           </span>
                         ) : (
-                          <span className="text-emerald-600 dark:text-emerald-400">في الحضور</span>
+                          <span className="text-[var(--sem-pos)]">في الحضور</span>
                         )
                       ) : (
                         <span className="text-muted-foreground">بالانتظار</span>
@@ -521,7 +577,10 @@ export default function HrDevices() {
       </Card>
 
       {/* حوار ربط مستخدمي الجهاز بالموظفين */}
-      <Dialog open={mapDeviceId != null} onOpenChange={(o) => !o && setMapDeviceId(null)}>
+      <Dialog
+        open={mapDeviceId != null}
+        onOpenChange={(o) => { if (!o) { setMapDeviceId(null); setDeviceUserQuery(""); } }}
+      >
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>ربط مستخدمي الجهاز بالموظفين</DialogTitle>
@@ -530,6 +589,17 @@ export default function HrDevices() {
             كل رقم في الجهاز يقابله موظف في النظام — بعد الربط تُحتسب بصماته حضوراً تلقائياً (حتى السابقة منها).
             إن كانت القائمة فارغة اسحب المستخدمين من الجهاز بزر «المستخدمون».
           </p>
+          <div className="relative">
+            <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="search"
+              value={deviceUserQuery}
+              onChange={(e) => setDeviceUserQuery(e.target.value)}
+              placeholder="بحث بالرقم أو الاسم في الجهاز…"
+              aria-label="بحث في مستخدمي الجهاز"
+              className="h-8 w-full pr-8"
+            />
+          </div>
           <div className="max-h-[50vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50 sticky top-0">
@@ -541,7 +611,7 @@ export default function HrDevices() {
                 </tr>
               </thead>
               <tbody>
-                {(deviceUsers.data ?? []).map((u) => (
+                {visibleDeviceUsers.map((u) => (
                   <tr key={u.id} className="border-t">
                     <td className="p-2 text-center tabular-nums">{u.enrollId}</td>
                     <td className="p-2 text-xs">{u.name ?? "—"}</td>
@@ -569,10 +639,12 @@ export default function HrDevices() {
                     </td>
                   </tr>
                 ))}
-                {!deviceUsers.isLoading && (deviceUsers.data?.length ?? 0) === 0 && (
+                {!deviceUsers.isLoading && visibleDeviceUsers.length === 0 && (
                   <tr>
                     <td colSpan={4} className="p-4 text-center text-xs text-muted-foreground">
-                      لا مستخدمون مسحوبون بعد — أرسل أمر «المستخدمون» من جدول الأجهزة ثم افتح هذا الحوار.
+                      {(deviceUsers.data?.length ?? 0) === 0
+                        ? "لا مستخدمون مسحوبون بعد — أرسل أمر «المستخدمون» من جدول الأجهزة ثم افتح هذا الحوار."
+                        : "لا نتائج مطابقة للبحث."}
                     </td>
                   </tr>
                 )}
@@ -674,6 +746,16 @@ export default function HrDevices() {
                 ))}
               </select>
             </div>
+            <div className="space-y-1 sm:col-span-2">
+              <Label htmlFor="d-ip">عنوان IP الدقيق الخاص بالجهاز</Label>
+              <Input
+                id="d-ip"
+                dir="ltr"
+                value={form.ip}
+                onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))}
+                placeholder="مثال: عنوان الجهاز داخل شبكة الحضور"
+              />
+            </div>
             <div className="space-y-1">
               <Label htmlFor="d-model">الطراز</Label>
               <Input
@@ -720,8 +802,8 @@ export default function HrDevices() {
             </div>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            تسجيل الرقم التسلسلي مسبقاً يجعل الجهاز معتمداً لحظة أول اتصال. بدونه سيظهر «بانتظار الاعتماد» عند
-            اتصاله وتعتمده بزر واحد.
+            عند التسجيل المسبق يلزم ربط الرقم التسلسلي بعنوان جهاز فريد. الشبكات المشتركة أو NAT تحتاج
+            مفتاح جهاز خاصاً في إعداد الخادم. لا تُقبل بصمات الجهاز المكتشف قبل الاعتماد.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpenAdd(false)}>

@@ -10,5 +10,7 @@ export * as intentService from "./intentService";
 export * as finalizeService from "./finalizeService";
 export * as walletOpsService from "./walletOpsService";
 export * as dashboardService from "./dashboardService";
+export * as subscriptionService from "./subscriptionService";
 export * as reversalService from "./reversalService";
 export * as writeoffService from "./writeoffService";
+export * as reviewResolutionService from "./reviewResolutionService";

@@ -59,6 +59,44 @@ async function wo(opts: { title: string; branchId?: number; status?: string; ass
 }
 
 describe("workOrders.list — ترشيح محطة التنفيذ خادمياً", () => {
+  it("يعرض للفني كل تفاصيل التشغيل والدفع والتوصيل مع إبقاء التكلفة الداخلية محجوبة", async () => {
+    const created = await createWorkOrder({
+      branchId: 1,
+      baseVariantId: null,
+      title: "لوحة محل",
+      customizationText: "[المقاس] 2×1 م\n[الخامة] فلكس\nتعتمد الألوان المرفقة",
+      quantity: 2,
+      salePrice: "100000.00",
+      deposit: "40000.00",
+      paymentMethod: "TRANSFER",
+      paymentReference: "WO-TRX-1",
+      paymentReceiptUrl: "data:image/png;base64,cGF5bWVudA==",
+      hasDelivery: true,
+      deliveryAddress: "بغداد — المنصور",
+      deliveryPhone: "07701234567",
+      dueDate: "2026-08-20",
+      assignedTo: 2,
+    }, { userId: 1, branchId: 1 });
+
+    const list = await caller(opCtx(2)).workOrders.list({ assignedToMe: true, limit: 10 });
+    expect(list[0].customizationText).toContain("[المقاس] 2×1 م");
+
+    const detail = await caller(opCtx(2)).workOrders.get({ workOrderId: created.workOrderId });
+    expect(detail).toMatchObject({
+      customerPhone: "07701234567",
+      paymentMethod: "TRANSFER",
+      paymentReference: "WO-TRX-1",
+      hasDelivery: true,
+      deliveryAddress: "بغداد — المنصور",
+      deliveryPhone: "07701234567",
+      assigneeName: "فني ١",
+      createdByName: "admin",
+    });
+    expect(detail?.paymentReceiptUrl).toContain("data:image/png;base64");
+    expect(detail?.materialsCost).toBeNull();
+    expect(detail?.laborCost).toBeNull();
+  });
+
   it("م١: عملٌ نشط قديم يبقى ظاهراً رغم تراكم تاريخٍ أحدث يتجاوز limit (كان يسقط بصمت)", async () => {
     // أقدم أمر = نشط ومُسنَد لفنّي ١ ... ثمّ ١٢ أمراً مُسلَّماً أحدثَ منه.
     const oldActive = await wo({ title: "أمر نشط قديم", status: "IN_PROGRESS", assignedTo: 2 });

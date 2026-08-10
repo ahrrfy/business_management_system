@@ -220,7 +220,7 @@ describe("#1ب idempotency للمصروف وإنشاء أمر الشغل (الن
     expect((await db().select().from(s.accountingEntries)).filter((e) => e.entryType === "PAYMENT_OUT")).toHaveLength(1);
   });
   it("workOrders.create: نفس clientRequestId ⇒ أمر/عربون واحد", async () => {
-    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", phone: "+9647700000001", defaultPriceTier: "RETAIL", currentBalance: "0" });
     await openShift({ branchId: 1, openingBalance: "0" }, actor);
     const input = { branchId: 1, customerId: 1, baseVariantId: 1, title: "لوحة", salePrice: "20.00", deposit: "5.00", paymentMethod: "CASH" as const, clientRequestId: "wo-key-1" };
     const r1 = await caller().workOrders.create(input as any);

@@ -94,6 +94,20 @@ export interface DayCloseReconciliationResult {
   driftCount: number;    // ورديات مغلقة فرقها ≠ صفر
   overCount: number;     // فائض (drift > 0)
   shortCount: number;    // عجز (drift < 0)
+  /** ش٦ — بنود الاستقبال في إقفال اليوم: عرابين معلّقة (لقطة حاضرة لا يوم) + خصم كل موظف. */
+  receptionExtras: {
+    /** مسوّدات OPEN مموّلة الآن — مالُ زبائن محتجزٌ بلا مستندٍ نهائيّ (عرابين غير مُسلَّمة). */
+    fundedDrafts: { count: number; heldNet: string };
+    /** متوسّط الخصم اليدويّ (رأس الفاتورة) لكل موظفٍ لفواتير اليوم — بحدود بيانات الرأس. */
+    discountByUser: Array<{
+      userId: number | null;
+      userName: string;
+      invoiceCount: number;
+      subtotal: string;
+      manualDiscount: string;
+      avgRatePct: string;
+    }>;
+  };
 }
 
 interface ReceiptAgg {
@@ -129,6 +143,7 @@ export async function getDayCloseReconciliation(opts: {
     shifts: [],
     totals: emptyTotals,
     balancedCount: 0, driftCount: 0, overCount: 0, shortCount: 0,
+    receptionExtras: { fundedDrafts: { count: 0, heldNet: "0.00" }, discountByUser: [] },
   };
 
   const db = getDb();
@@ -294,10 +309,72 @@ export async function getDayCloseReconciliation(opts: {
     };
   });
 
+  // ش٦ — بنود الاستقبال: (١) لقطة حاضرة للمسوّدات المموّلة OPEN (مالٌ محتجزٌ بلا مستند —
+  // «عرابين غير مُسلَّمة»)؛ (٢) متوسّط الخصم اليدويّ (رأس الفاتورة) لكل موظفٍ لفواتير اليوم.
+  const rowsOf = (res: unknown): any[] => {
+    const data = (res as any)?.[0] ?? res;
+    return Array.isArray(data) ? data : [];
+  };
+  const branchDraftCond = opts.branchId != null ? sql`AND d.branchId = ${opts.branchId}` : sql``;
+  const branchInvCond = opts.branchId != null ? sql`AND i.branchId = ${opts.branchId}` : sql``;
+  const [fundedRes, discRes] = await Promise.all([
+    db.execute(sql`
+      SELECT COUNT(*) AS c, CAST(COALESCE(SUM(h.heldNet), 0) AS CHAR) AS t
+      FROM (
+        SELECT d.id,
+          -- تدقيق ٦/٨ (ث١٣): البسط كان يقتصر على HELD بينما المقام يطرح **كل** الردود —
+          -- فقبضٌ رُدَّ كاملاً (يصير REFUNDED) يُطرح بلا أن يُجمع أصلُه ⇒ الرقم يُبخَس أو
+          -- يصير سالباً فيسقط الطلب من التقرير كلّه. الحالتان معاً كتعريف heldNetOfDraft.
+          (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op
+            WHERE op.draftId = d.id AND op.orderPayKind = 'COLLECTION'
+              AND op.orderPayStatus IN ('HELD','REFUNDED'))
+          - (SELECT COALESCE(SUM(op.amount), 0) FROM orderPayments op
+            WHERE op.draftId = d.id AND op.orderPayKind = 'REFUND') AS heldNet
+        FROM receptionDrafts d
+        WHERE d.draftStatus = 'OPEN' AND d.moneyLocked = 1 ${branchDraftCond}
+      ) h
+      WHERE h.heldNet > 0
+    `).catch(() => null),
+    db.execute(sql`
+      SELECT i.createdBy AS userId, u.name AS userName,
+        COUNT(*) AS invoiceCount,
+        CAST(COALESCE(SUM(i.subtotal), 0) AS CHAR) AS subtotal,
+        CAST(COALESCE(SUM(i.discountAmount), 0) AS CHAR) AS manualDiscount
+      FROM invoices i
+      LEFT JOIN users u ON u.id = i.createdBy
+      WHERE i.createdAt >= ${start} AND i.createdAt < ${endExclusive}
+        AND i.invoiceStatus NOT IN ('CANCELLED')
+        ${branchInvCond}
+      GROUP BY i.createdBy, u.name
+      HAVING SUM(i.discountAmount) > 0
+      ORDER BY SUM(i.discountAmount) DESC
+    `).catch(() => null),
+  ]);
+  const fundedRow = rowsOf(fundedRes)[0];
+  const discountByUser = rowsOf(discRes).map((r) => {
+    const sub = money(r.subtotal ?? 0);
+    const disc = money(r.manualDiscount ?? 0);
+    return {
+      userId: r.userId == null ? null : Number(r.userId),
+      userName: r.userName ?? "غير معروف",
+      invoiceCount: Number(r.invoiceCount ?? 0),
+      subtotal: toDbMoney(sub),
+      manualDiscount: toDbMoney(disc),
+      avgRatePct: sub.gt(0) ? disc.div(sub).times(100).toDecimalPlaces(2).toFixed(2) : "0.00",
+    };
+  });
+
   return {
     date: opts.date,
     branchId: opts.branchId ?? null,
     shifts: lines,
+    receptionExtras: {
+      fundedDrafts: {
+        count: Number(fundedRow?.c ?? 0),
+        heldNet: toDbMoney(money(fundedRow?.t ?? 0)),
+      },
+      discountByUser,
+    },
     totals: {
       shiftCount: lines.length,
       openCount,

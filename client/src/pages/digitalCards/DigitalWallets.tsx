@@ -104,10 +104,14 @@ export default function DigitalWallets() {
   }
 
   async function toggle(w: WalletRow) {
+    if (w.isActive && (!D(w.currentBalance).isZero() || !D(w.reservedBalance).isZero())) {
+      notify.err("لا يمكن تعطيل المحفظة قبل تصفير الرصيد وإنهاء كل الحجوزات");
+      return;
+    }
     if (w.isActive && !(await confirm({
       variant: "danger",
       title: "تعطيل المحفظة",
-      description: `لن تُستهلك «${w.name}» في مبيعات جديدة. الرصيد الحالي ${fmtAr(w.currentBalance)} يبقى مسجّلاً كما هو. متابعة؟`,
+      description: `لن تُستخدم «${w.name}» في مبيعات جديدة. لا يُسمح بالتعطيل إلا بعد تصفير الرصيد والحجوزات وإنهاء الحركات المعلقة. متابعة؟`,
       confirmText: "تعطيل",
     }))) return;
     toggleMut.mutate({ id: w.id, isActive: !w.isActive });
@@ -119,8 +123,8 @@ export default function DigitalWallets() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="محافظ المزوّدين"
-        description="رصيدنا المدفوع مسبقاً لدى كل مزوّد في كل فرع. «المحجوز» رصيدٌ تحفظه عمليات بيع جارية لم تُثبَّت بعد، والمتاح = الرصيد − المحجوز. الإيداع والسحب من شاشة الحركات."
+        title="أرصدة أجهزة المزوّدين"
+        description="يعرض ما دفعناه مسبقاً لكل جهاز مزوّد، وما عُلّق لعمليات بيع لم تكتمل، وما يمكن البيع به الآن."
         actions={
           <Button size="sm" onClick={openAdd} disabled={prepaidProviders.length === 0}>
             <Plus className="size-4" /> محفظة جديدة
@@ -188,8 +192,8 @@ export default function DigitalWallets() {
                   <th className="p-2 text-start">المزوّد</th>
                   <th className="p-2 text-start">الفرع</th>
                   <th className="p-2 text-start">الرصيد</th>
-                  <th className="p-2 text-start">المحجوز</th>
-                  <th className="p-2 text-start">المتاح</th>
+                  <th className="p-2 text-start">معلّق لعمليات بيع</th>
+                  <th className="p-2 text-start">متاح للبيع</th>
                   <th className="p-2 text-center">الحالة</th>
                   <th className="p-2 text-center">إجراء</th>
                 </tr>
@@ -217,14 +221,18 @@ export default function DigitalWallets() {
                           {
                             key: "deposit",
                             kind: "pay",
-                            label: "إيداع رصيد",
+                            label: "تسجيل شحن رصيد",
+                            disabled: !w.isActive,
+                            disabledReason: "المحفظة معطّلة",
                             onSelect: () => setMoving({ wallet: w, mode: "deposit" }),
                             gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },
                           {
                             key: "withdraw",
                             kind: "pay",
-                            label: "سحب رصيد",
+                            label: "تسجيل سحب رصيد",
+                            disabled: !w.isActive,
+                            disabledReason: "المحفظة معطّلة",
                             onSelect: () => setMoving({ wallet: w, mode: "withdraw" }),
                             gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },
@@ -238,14 +246,18 @@ export default function DigitalWallets() {
                           {
                             key: "reconcile",
                             kind: "approve",
-                            label: "مطابقة يومية",
+                            label: "مطابقة مع الجهاز",
+                            disabled: !w.isActive,
+                            disabledReason: "المحفظة معطّلة؛ كشف الحساب متاح للقراءة",
                             onSelect: () => setReconciling(w),
                             gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },
                           {
                             key: "adjust",
                             kind: "approve",
-                            label: "طلب تعديل رصيد",
+                            label: "طلب تصحيح الرصيد",
+                            disabled: !w.isActive,
+                            disabledReason: "المحفظة معطّلة",
                             onSelect: () => setAdjusting(w),
                             gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },
@@ -261,8 +273,10 @@ export default function DigitalWallets() {
                             kind: "approve",
                             label: w.isActive ? "تعطيل" : "تفعيل",
                             variant: w.isActive ? "destructive" : "default",
-                            disabled: toggleMut.isPending,
-                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                            disabled: toggleMut.isPending || (w.isActive && (!D(w.currentBalance).isZero() || !D(w.reservedBalance).isZero())),
+                            disabledReason: toggleMut.isPending
+                              ? "توجد عملية تحديث قيد التنفيذ"
+                              : "صفّر الرصيد وأنهِ الحجوزات أولاً",
                             onSelect: () => void toggle(w),
                             gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
                           },

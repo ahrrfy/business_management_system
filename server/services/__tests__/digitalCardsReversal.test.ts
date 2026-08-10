@@ -20,11 +20,11 @@ const actor = { userId: 1, branchId: 1, role: "cashier" };
 const mgr = { userId: 2, branchId: 1, role: "manager" };
 /** مديرٌ ثانٍ — ردّ الخسارة يشترط معتمِداً غير الطالب (SOD، هجرة 0132). */
 const mgr2 = { userId: 3, branchId: 1, role: "manager" };
-const adminUser = { userId: 4, branchId: 1, role: "admin" };
+const ownerUser = { userId: 4, branchId: 1, role: "admin", isOwner: true };
 const DATE = "2026-07-29";
 
 const TABLES = [
-  "digitalSaleDetails", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
+  "digitalSubscriptionContracts", "digitalSaleDetails", "digitalSaleExecutionClaims", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
   "digitalWalletTransactions", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWallets", "digitalProviders",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "idempotencyKeys",
@@ -40,7 +40,7 @@ async function seedBase() {
     { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
     { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
     { id: 3, openId: "u3", name: "مدير ثانٍ", role: "manager", loginMethod: "local" },
-    { id: 4, openId: "u4", name: "أدمن", role: "admin", loginMethod: "local" },
+    { id: 4, openId: "u4", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 }
@@ -92,13 +92,18 @@ async function sell(offerings: { offeringId: number; priced: { pv: number; price
     paymentMethod: "CASH", cartFingerprint: `fp${id}`,
     lines: offerings.map((o, i) => ({
       lineKey: `lk-${id}-${i}`, offeringId: o.offeringId, priceVersionId: o.priced.pv, expectedSellPrice: o.priced.price,
+      providerReference: `REF-REV-${id}-${i}`,
     })),
   }, actor));
   const items = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
   for (const it of items) {
-    await withTx((tx) => intentService.markExecution(tx, {
-      intentId: r.intentId, intentItemId: Number(it.id), status: "SUCCESS", providerReference: `R-${id}-${it.id}`,
-    }, actor));
+    await withTx(async (tx) => {
+      const claimToken = `reversal-claim-${id}-${it.id}`;
+      await intentService.claimExecution(tx, { intentId: r.intentId, intentItemId: Number(it.id), claimToken }, actor);
+      return intentService.markExecution(tx, {
+        intentId: r.intentId, intentItemId: Number(it.id), claimToken, status: "SUCCESS", providerReference: it.providerReference,
+      }, actor);
+    });
   }
   const total = offerings.reduce((a, o) => a + Number(o.priced.price), 0);
   return withTx((tx) => finalizeService.finalize(tx, {
@@ -337,6 +342,34 @@ describe("ش١٢ — الحوكمة والذرّية", () => {
       .where(eq(s.auditLogs.action, "digitalCards.reversal.approved"));
     expect(logs).toHaveLength(1);
   });
+
+  it("reversal cancels the subscription contract tied to the reversed invoice item", async () => {
+    const { sale, ids } = await issued();
+    const [detail] = await db().select().from(s.digitalSaleDetails)
+      .where(eq(s.digitalSaleDetails.id, ids[0]));
+    await db().insert(s.customers).values({ id: 10, name: "Student" });
+    await db().insert(s.digitalSubscriptionContracts).values({
+      offeringId: Number(detail.offeringId),
+      branchId: 1,
+      invoiceId: sale.invoiceId,
+      invoiceItemId: Number(detail.invoiceItemId),
+      studentCustomerId: 10,
+      studentNameSnapshot: "Student",
+      durationDays: 30,
+      startsAt: new Date("2026-08-01T00:00:00Z"),
+      expiresAt: new Date("2026-08-31T00:00:00Z"),
+      createdBy: 1,
+    });
+
+    await withTx((tx) => reversalService.approveReversal(tx, {
+      invoiceId: sale.invoiceId,
+      detailIds: ids,
+      reason: "provider cancelled the issued subscription",
+    }, mgr));
+
+    const [contract] = await db().select().from(s.digitalSubscriptionContracts);
+    expect(contract.status).toBe("CANCELLED");
+  });
 });
 
 /**
@@ -390,10 +423,10 @@ describe("ش١٢ — ردّ الخسارة بفصل المهام", () => {
     expect(Number(net.profit)).toBe(-13400);
   });
 
-  it("L2: الأدمن مُستثنى من SOD", async () => {
+  it("L2: مالك النظام وحده مستثنى من الاعتماد الثاني", async () => {
     const { sale, ids } = await issued();
-    await withTx((tx) => reversalService.requestLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "سبب" }, adminUser));
-    await withTx((tx) => reversalService.lossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids }, adminUser));
+    await withTx((tx) => reversalService.requestLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "سبب" }, ownerUser));
+    await withTx((tx) => reversalService.lossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids }, ownerUser));
     const d = await reversalService.reversibleDetails(db(), sale.invoiceId);
     expect(d[0].fulfillmentStatus).toBe("LOSS_REFUND");
   });

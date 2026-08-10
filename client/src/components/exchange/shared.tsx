@@ -29,6 +29,20 @@ export function BalanceTag({ value, unit }: { value: string | number | null | un
   );
 }
 
+/**
+ * صافي التعرّض بعملة واحدة (دينار) = رصيد الدينار + رصيد الدولار × متوسط كلفته المرجّح.
+ * تقريبٌ إعلاميّ (WAVG لا سعر السوق اللحظي) — يهدف لإعطاء رقمٍ واحدٍ مفهوم عوض عمودين منفصلين
+ * قد يُخطئ قارؤهما تقدير الصورة الكاملة عند تضخّم أحد الرصيدين سلباً والآخر إيجاباً.
+ */
+export function netExposureIqd(house: Pick<ExchangeRow, "balanceIqd" | "balanceUsd" | "usdCostRate">): string {
+  return D(house.balanceIqd).plus(D(house.balanceUsd).times(D(house.usdCostRate))).toFixed(2);
+}
+
+/** عرض صافي التعرّض الموحَّد — نفس دلالة BalanceTag (لنا/علينا) بعملة الدينار وحدها. */
+export function NetExposureTag({ house }: { house: Pick<ExchangeRow, "balanceIqd" | "balanceUsd" | "usdCostRate"> }) {
+  return <BalanceTag value={netExposureIqd(house)} unit="د.ع" />;
+}
+
 /** مُعرّف طلب فريد لكل عملية (idempotency) — يُعاد توليده لكل محاولة جديدة. */
 export function newClientRequestId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;

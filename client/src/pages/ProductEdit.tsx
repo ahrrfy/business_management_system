@@ -38,7 +38,20 @@ import SimpleProductEditForm from "@/components/product/SimpleProductEditForm";
 import BundleRecipeCard from "@/components/product/BundleRecipeCard";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { confirm } from "@/lib/confirm";
+import { notify } from "@/lib/notify";
 import { CategoryOptionList } from "@/lib/categoryTree";
 import { checkVariantSanity } from "@shared/priceSanity";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -141,10 +154,29 @@ export default function ProductEdit() {
   // simple-edit-view: المنتج البسيط (متغيّر واحد بلا لون/قياس) يُحرَّر بنموذج نظيف افتراضياً؛
   // «advanced» يفتح محرّر المتغيّرات (لإضافة ألوان/قياسات/صور).
   const [advanced, setAdvanced] = useState(false);
+  // بدائل الباركود (توسعة ٣/٨): حوار مستقلّ لكل (متغيّر × وحدة) — يُحفَظ فوراً عبر
+  // addUnitBarcodeAlias/removeUnitBarcodeAlias القائمتين، بلا انتظار زرّ «حفظ التعديلات».
+  const [aliasDialog, setAliasDialog] = useState<{ variantId: number; unitName: string; label: string } | null>(null);
 
   const branches = useMemo(() => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })), [branchesQ.data]);
   const myBranch = me.data?.branchId ?? 1;
   const branchId = pickedBranch ?? branches[0]?.id ?? myBranch;
+
+  // حارس فقد البيانات: أوّل تغيير حقيقي بعد اكتمال التعبئة من الخادم يُعلَّم النموذج «متّسخاً» —
+  // يتجاهل عمداً التغييرات التي تُحدِثها التعبئة نفسها (skipNextDirtyCheck يسقط أوّل تشغيلة).
+  const [touched, setTouched] = useState(false);
+  const skipNextDirtyCheck = useRef(true);
+  useEffect(() => {
+    if (!hydrated) { skipNextDirtyCheck.current = true; return; }
+    if (skipNextDirtyCheck.current) { skipNextDirtyCheck.current = false; return; }
+    setTouched(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    hydrated, costPrice, units, variants, images, colors, sizes, categoryId,
+    originalName, productType, brand, modelName, description,
+    isCustomizable, isService, isActive, consignment, baseSku,
+  ]);
+  useUnsavedGuard(touched);
 
   // ── تعبئة من الـAPI مرّة واحدة ──
   useEffect(() => {
@@ -249,7 +281,10 @@ export default function ProductEdit() {
     onSuccess: async (res) => {
       setError("");
       const added = (res as { added?: number }).added ?? 0;
+      const aliasWarnings = (res as { aliasWarnings?: string[] }).aliasWarnings ?? [];
       setDone(added ? `تم الحفظ — أُضيف ${toArabicDigits(added)} متغيّر جديد.` : "تم حفظ التعديلات بنجاح.");
+      if (aliasWarnings.length) notify.warn(`تنبيه بدائل الباركود: ${aliasWarnings.join(" — ")}`);
+      setTouched(false);
       await Promise.all([
         utils.catalog.getForVariantEdit.invalidate({ productId }),
         utils.catalog.posList.invalidate(),
@@ -260,6 +295,8 @@ export default function ProductEdit() {
     },
     onError: (e) => { setError(e.message); setDone(""); },
   });
+
+  useSaveShortcuts({ onSave: () => void save(), enabled: !update.isPending });
 
   /* ── الوحدات ── */
   const addUnit = () => setUnits((u) => [...u, { id: unitSeq.current++, name: "", factor: "", isBase: false, sellInStore: false, retail: "", wholesale: "" }]);
@@ -353,7 +390,7 @@ export default function ProductEdit() {
   function validateLocal(): string | null {
     if (!composedName && !originalName.trim()) return "اسم المنتج مطلوب (نوع/ماركة/موديل).";
     if (!costPrice.trim()) return "سعر التكلفة المشترك مطلوب.";
-    if (consignment.isConsignment && !consignment.consignorId) return "صنف الأمانة يلزمه مودِع — اختر المودِع.";
+    if (consignment.isConsignment && !consignment.consignorId) return "منتج الأمانة يلزمه مودِع — اختر المودِع.";
     if (units.some((u) => !u.name.trim())) return "كل وحدة في القالب تحتاج اسماً.";
     // اسم الوحدة مفتاح مطابقة في مسار الحفظ (unitBarcodes[u.name.trim()]) ⇒ وحدتان بنفس الاسم تتصادمان
     // فيُطمَس باركود/سعر إحداهما (والخادم assertEditUniqueness يرفض لاحقاً) — نمسكه هنا برسالةٍ أوضح وأبكر
@@ -504,7 +541,15 @@ export default function ProductEdit() {
         actions={
           <div className="flex items-center gap-2">
             {isSimple && (
-              <Button type="button" variant="outline" size="sm" onClick={() => { if (window.confirm("العودة للتحرير المبسّط تتجاهل أي تعديلات غير محفوظة هنا. متابعة؟")) setAdvanced(false); }} title="العودة للتحرير المبسّط">
+              <Button type="button" variant="outline" size="sm" onClick={async () => {
+                const ok = await confirm({
+                  variant: "warning",
+                  title: "العودة للتحرير المبسّط",
+                  description: "العودة للتحرير المبسّط تتجاهل أي تعديلات غير محفوظة هنا. متابعة؟",
+                  confirmText: "متابعة",
+                });
+                if (ok) setAdvanced(false);
+              }} title="العودة للتحرير المبسّط">
                 تحرير مبسّط
               </Button>
             )}
@@ -602,7 +647,7 @@ export default function ProductEdit() {
           </Field>
           <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً."><div className="flex items-center gap-2 h-9"><Switch checked={isService} onCheckedChange={setIsService} /><span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة"}</span></div></Field>
           <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
-          <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "مخفي"}</span></div></Field>
+          <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "معطّل"}</span></div></Field>
         </CardContent>
       </Card>
 
@@ -688,6 +733,53 @@ export default function ProductEdit() {
         </CardContent>
       </Card>
 
+      {/* بدائل الباركود (توسعة ٣/٨): متاحة فقط للمتغيّرات المحفوظة فعلياً (db:) — المتغيّر الجديد
+          غير المحفوظ لا يملك productUnitId بعد؛ يُحفظ أولاً ثم يظهر هنا. تُحفَظ فوراً بلا انتظار
+          «حفظ التعديلات». */}
+      {variants.some((v) => v.id.startsWith(DB_PREFIX) && v.isActive) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">بدائل الباركود</CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">
+              باركودات إضافية تُشير لنفس الوحدة (نفس السعر والمخزون) — لمسّاح لا يقرأ نوعاً معيّناً، أو لباركود مصنّعٍ قديم. تُحفَظ فوراً.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {variants.filter((v) => v.id.startsWith(DB_PREFIX) && v.isActive).map((v) => {
+              const withBarcode = units.filter((u) => (v.unitBarcodes[u.id] || "").trim());
+              return (
+                <div key={v.id} className="flex flex-wrap items-center gap-2 rounded-md border p-2">
+                  <span className="text-sm font-medium min-w-[8rem]">{v.color || v.sku}</span>
+                  {withBarcode.length === 0 ? (
+                    <span className="text-xs text-muted-foreground">لا باركود أساسيّ بعد لهذا المتغيّر — أضِفه في جدول المتغيّرات أعلاه أوّلاً.</span>
+                  ) : (
+                    withBarcode.map((u) => (
+                      <Button
+                        key={u.id}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setAliasDialog({ variantId: Number(v.id.slice(DB_PREFIX.length)), unitName: u.name, label: `${v.color || v.sku} — ${u.name || "وحدة"}` })}
+                      >
+                        {u.name || "وحدة"}: بدائل
+                      </Button>
+                    ))
+                  )}
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
+      {aliasDialog && (
+        <BarcodeAliasDialog
+          variantId={aliasDialog.variantId}
+          unitName={aliasDialog.unitName}
+          label={aliasDialog.label}
+          onClose={() => setAliasDialog(null)}
+        />
+      )}
+
       {/* صور المنتج المشتركة (على مستوى المنتج) — تُعرَض في المتجر/الكشك والمعاينة. لكل لون صورته المستقلّة
           في صفّ المتغيّر أعلاه؛ هذه صور عامّة للمنتج كاملاً. */}
       <Card>
@@ -734,5 +826,90 @@ export default function ProductEdit() {
       <ImportModal open={importOpen} onOpenChange={setImportOpen} units={units} onImport={applyImport} />
       <LabelPrintModal open={printOpen} onOpenChange={setPrintOpen} variants={variants} units={units} baseName={originalName || composedName} baseRetail={baseRetail} />
     </div>
+  );
+}
+
+/**
+ * حوار إدارة بدائل الباركود لوحدةٍ واحدة — يحلّ (variantId + unitName) إلى productUnitId عبر
+ * `resolveProductUnitId` ثمّ يقرأ/يكتب مباشرةً عبر `listUnitBarcodes`/`addUnitBarcodeAlias`/
+ * `removeUnitBarcodeAlias` (نفس الإجراءات المستقلّة القائمة أصلاً في catalogRouter.ts — تفحص
+ * التفرّد وتكتب فوراً، ذرّيّةٌ بذاتها). مستقلٌّ تماماً عن نموذج التعديل الرئيسيّ وزرّ حفظه.
+ */
+function BarcodeAliasDialog({
+  variantId, unitName, label, onClose,
+}: { variantId: number; unitName: string; label: string; onClose: () => void }) {
+  const utils = trpc.useUtils();
+  const unitIdQ = trpc.catalog.resolveProductUnitId.useQuery({ variantId, unitName }, { enabled: variantId > 0 });
+  const productUnitId = unitIdQ.data ?? null;
+  const listQ = trpc.catalog.listUnitBarcodes.useQuery(
+    { productUnitId: productUnitId ?? 0 },
+    { enabled: productUnitId != null },
+  );
+  const [code, setCode] = useState("");
+  const [note, setNote] = useState("");
+  const add = trpc.catalog.addUnitBarcodeAlias.useMutation({
+    onSuccess: () => { setCode(""); setNote(""); void listQ.refetch(); void utils.catalog.listUnitBarcodesMany.invalidate(); notify.ok("أُضيف الباركود البديل"); },
+    onError: (e) => notify.err(e),
+  });
+  const remove = trpc.catalog.removeUnitBarcodeAlias.useMutation({
+    onSuccess: () => { void listQ.refetch(); void utils.catalog.listUnitBarcodesMany.invalidate(); },
+    onError: (e) => notify.err(e),
+  });
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>بدائل الباركود — {label}</DialogTitle>
+          <DialogDescription>باركودات إضافية تُشير لنفس السلعة/الوحدة (نفس السعر والمخزون). تُحفظ فوراً بلا حاجة لزرّ «حفظ التعديلات».</DialogDescription>
+        </DialogHeader>
+        {productUnitId == null ? (
+          <p className="text-sm text-muted-foreground">جارٍ التحديد…</p>
+        ) : (
+          <div className="space-y-3">
+            <div className="text-xs text-muted-foreground">
+              الباركود الأساسيّ: <span className="font-mono" dir="ltr">{listQ.data?.primary ?? "—"}</span>
+            </div>
+            <div className="space-y-1.5">
+              {listQ.isLoading ? (
+                <p className="text-xs text-muted-foreground">جارٍ التحميل…</p>
+              ) : (listQ.data?.aliases ?? []).length === 0 ? (
+                <p className="text-xs text-muted-foreground">لا بدائل بعد.</p>
+              ) : (
+                (listQ.data?.aliases ?? []).map((a) => (
+                  <div key={a.id} className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-sm">
+                    <span className="font-mono" dir="ltr">{a.barcode}</span>
+                    <span className="flex-1 truncate text-xs text-muted-foreground">{a.note ?? ""}</span>
+                    <Button type="button" size="sm" variant="ghost" className="text-destructive" disabled={remove.isPending} onClick={() => remove.mutate({ id: a.id })}>
+                      حذف
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="flex items-end gap-2">
+              <div className="flex-1 space-y-1">
+                <Label>باركود بديل جديد</Label>
+                <Input value={code} onChange={(e) => setCode(e.target.value)} dir="ltr" placeholder="مثال: 6212442744532" />
+              </div>
+              <div className="flex-1 space-y-1">
+                <Label>ملاحظة (اختياري)</Label>
+                <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="مثال: باركود المصنّع القديم" />
+              </div>
+              <Button
+                type="button"
+                disabled={!code.trim() || add.isPending}
+                onClick={() => productUnitId && add.mutate({ productUnitId, barcode: code.trim(), note: note.trim() || undefined })}
+              >
+                {add.isPending ? "جارٍ الإضافة…" : "إضافة"}
+              </Button>
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose}>إغلاق</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

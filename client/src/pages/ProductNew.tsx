@@ -347,7 +347,7 @@ export default function ProductNew() {
     if (dupBc) return `باركود مكرّر داخل النموذج: ${dupBc} — لكل وحدة/لون/بديل باركود فريد.`;
     // بضاعة الأمانة: التلازم يُتحقَّق خادمياً أيضاً، لكن رسالة أبكر أوضح للمستخدم.
     if (consignment.isConsignment && !consignment.consignorId)
-      return "صنف الأمانة يلزمه مودِع — اختر المودِع أو أطفئ «بضاعة أمانة».";
+      return "منتج الأمانة يلزمه مودِع — اختر المودِع أو أطفئ «بضاعة أمانة».";
     // حرّاس عقلانية الأسعار — يمنع «حادثة SINARLINE ٣٠/٧» (تكلفة أُدخلت 16162 بينما البيع 2000 ⇒
     // «بيع تحت التكلفة» يوقف كل فاتورة تحوي الصنف). المصدر: shared/priceSanity.ts (يُشارَك خادمياً).
     for (const v of variants) {
@@ -667,7 +667,7 @@ export default function ProductNew() {
           <Field label="الحالة (المنتج كاملاً)">
             <div className="flex items-center gap-2 h-9">
               <Switch checked={isActive} onCheckedChange={setIsActive} />
-              <span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "مخفي"}</span>
+              <span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "معطّل"}</span>
             </div>
           </Field>
         </CardContent>

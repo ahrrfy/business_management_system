@@ -1,0 +1,240 @@
+/*
+ * مقياس الراحة التشغيلي للنظام.
+ *
+ * هذه الرموز تفصل «حجم الاستخدام» عن ألوان الهوية: تبقى لوحة الألوان الحالية
+ * كما هي، بينما تصبح الحقول والأزرار والصفوف قابلة للقراءة والضغط باستمرار.
+ */
+:root {
+  --ui-space-1: 0.25rem;
+  --ui-space-2: 0.5rem;
+  --ui-space-3: 0.75rem;
+  --ui-space-4: 1rem;
+  --ui-space-6: 1.5rem;
+  --ui-space-8: 2rem;
+
+  --ui-control-sm: 2.5rem;
+  --ui-control: 2.75rem;
+  --ui-control-lg: 3rem;
+  --ui-control-critical: 3.25rem;
+  --ui-table-head: 2.75rem;
+  --ui-table-row: 3rem;
+
+  --ui-icon-sm: 1rem;
+  --ui-icon: 1.25rem;
+  --ui-icon-lg: 1.5rem;
+
+  --ui-radius-control: 0.625rem;
+  --ui-radius-card: 0.875rem;
+  --ui-radius-dialog: 1.125rem;
+  --ui-shadow-surface: 0 1px 2px rgb(15 23 42 / 0.08);
+  --ui-shadow-float: 0 12px 30px -16px rgb(15 23 42 / 0.28);
+  --ui-shadow-dialog: 0 24px 64px -24px rgb(15 23 42 / 0.45);
+}
+
+body {
+  /* وزن 600 لكل النص كان يطمس الفرق بين المتن والعناوين في ساعات العمل الطويلة. */
+  font-weight: 500;
+}
+
+:is([data-slot="button"], [data-slot="input"], [data-slot="select-trigger"]) {
+  touch-action: manipulation;
+}
+
+/* أدوات القوائم كثيرة الاستخدام تبقى مريحة حتى إن طلبت صفحة قديمة قياساً مضغوطاً. */
+.list-toolbar-actions :is([data-slot="button"], [data-slot="input"], [data-slot="select-trigger"]) {
+  min-height: var(--ui-control);
+}
+
+/* عند عرض 1024–1279px لا نستهلك ربع الشاشة بشريط جانبي دائم. يبقى الدرج متاحاً من الرأس. */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .app-shell {
+    flex-direction: column !important;
+  }
+
+  .app-shell > aside.app-sidebar {
+    display: none !important;
+  }
+
+  .app-shell > header {
+    position: sticky;
+    z-index: 40;
+    top: 0;
+    right: auto;
+    left: auto;
+    display: flex !important;
+    width: 100%;
+    min-height: 4rem;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklch, var(--card) 96%, transparent);
+    box-shadow: var(--ui-shadow-surface);
+  }
+
+  .app-shell > .app-main {
+    width: 100%;
+    min-width: 0;
+    padding: 1.25rem !important;
+  }
+
+  /* ٨/٨ — في هذا المدى يعلو المحتوى رأسٌ لاصقٌ ٤rem؛ ارتفاع لوحة الكانبان (calc(100vh - 3rem))
+     كان يتجاهله فتفيض. نطرح الرأس + حشو 1.25rem×2. */
+  .wob {
+    height: calc(100vh - 4rem - 2.5rem);
+  }
+}
+
+/* ٨/٨ — على سطح المكتب (≥1280) الشريط الجانبي أطول من الشاشة كان يمطّ الغلاف (min-h-screen
+   ينمو لأطول ابن) فيصير المحتوى الرئيس بطول الشريط، وتظهر **مساحةٌ ميّتة** أسفل صفحاتٍ ذات
+   ارتفاعٍ ثابت كلوحة كانبان أوامر الشغل، وتتمرّر الصفحة كلّها. نحصر الغلاف بارتفاع الشاشة
+   ونجعل الشريط الجانبي والمحتوى يتمرّران **داخلياً** ⇒ اللوحة تملأ الشاشة بلا فراغٍ ولا تمرير
+   للصفحة كاملة (main أصلاً overflow:auto — هذا يكمّل نيّة التصميم). */
+@media (min-width: 1280px) {
+  .app-shell {
+    height: 100vh;
+    overflow: hidden;
+  }
+  aside.app-sidebar {
+    height: 100vh;
+    overflow-y: auto;
+  }
+}
+
+/* لا يجوز أن تصبح هوية التطبيق وتسميات التنقل نصاً مجهرياً على الهاتف. */
+.mobile-app-brand small,
+.mobile-app-nav span {
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+/* نقطة البيع سطح مستقل؛ حلقة التركيز يجب أن تتغلب أيضاً على outline:none اليدوي. */
+.pos-workspace :is(button, a[href], input, select, textarea):focus-visible {
+  outline: 3px solid var(--ring) !important;
+  outline-offset: 2px !important;
+}
+
+.pos-modebar {
+  min-height: 3.5rem;
+}
+
+.pos-modebar :is(button, a[href]) {
+  min-height: var(--ui-control);
+}
+
+/* رؤوس أوضاع الكاشير اليدوية تحتوي أزراراً لا تمر عبر Button المشترك. */
+.retail-pos-surface button,
+.print-pos-surface button {
+  min-height: var(--ui-control);
+  touch-action: manipulation;
+}
+
+.pos-workspace button[aria-label] {
+  min-inline-size: var(--ui-control);
+}
+
+.pos-workspace[data-pos-mode="RECEPTION"] :is(button, input, select, [role="combobox"]) {
+  min-height: var(--ui-control);
+  touch-action: manipulation;
+}
+
+/* استقبال العملاء: منع اختفاء الإجراءات على 1024px من دون لمس منطق الشاشة الجاري تطويره. */
+@media (max-width: 1199px) {
+  [data-pos-mode="RECEPTION"] [aria-label="تسلسل إنشاء الطلب"] + div + div {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  [data-pos-mode="RECEPTION"] [aria-label="تسلسل إنشاء الطلب"] + div + div > span {
+    flex-basis: auto;
+  }
+
+  [data-pos-mode="RECEPTION"] [aria-label="تسلسل إنشاء الطلب"] + div + div > div:nth-child(2) {
+    min-width: 17.5rem;
+  }
+
+  [data-pos-mode="RECEPTION"] [aria-label="تسلسل إنشاء الطلب"] + div + div > div:last-child {
+    margin-inline-start: 0;
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}
+
+/* إبقاء طريقة الدفع في أول المنطقة المرئية بالاستقبال، مع ثباتها أثناء تمرير التفاصيل الثانوية. */
+[data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"] {
+  display: flex;
+  flex-direction: column;
+}
+
+[data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
+  > div:has(> div > button:nth-child(4)):not(:has(> div > button:nth-child(5))) {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  order: -1;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+
+/* في الارتفاعات المعتادة للكاشير نحذف الملخص المكرر فقط، ونبقي المبلغ وطرق الدفع والأفعال. */
+@media (max-height: 820px) {
+  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div:first-child > div:last-child {
+    display: none;
+  }
+
+  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
+    > div:first-child {
+    padding-block: 0;
+  }
+
+  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
+    > div:has(> div > button:nth-child(4)):not(:has(> div > button:nth-child(5))) button {
+    min-height: var(--ui-control);
+    flex-direction: row;
+    gap: 0.375rem;
+    padding-block: 0.125rem;
+  }
+
+  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
+    > div:has(> div > button:nth-child(4)):not(:has(> div > button:nth-child(5))) {
+    padding-block: 0;
+  }
+
+  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
+    > div:has(> div > button:nth-child(4)):not(:has(> div > button:nth-child(5))) > div:first-child {
+    display: none;
+  }
+
+  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
+    > div:has(> div > button:nth-child(5)) {
+    padding-block: 0.125rem;
+  }
+
+  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
+    > div:has(> div > button:nth-child(5)) > div {
+    gap: 0.25rem;
+  }
+
+  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div:last-child {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem 0.75rem;
+  }
+
+  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div:last-child > * + * {
+    margin-block-start: 0 !important;
+  }
+}
+
+/* قارئ السعر يُصغّر لوحة 1920×1080 كاملة؛ نرفع النصوص الثانوية قبل التصغير عند 1024px. */
+@media (max-width: 1100px) {
+  .kioskpc-root :is(.logo-text span, .kiosk-tag, .price-unit, .banner-progress .counter, .qr-text span, .kpc-ph-sub) {
+    font-size: 27px;
+  }
+}
+
+@media (max-width: 800px) {
+  .kioskpc-root :is(.logo-text span, .kiosk-tag, .price-unit, .banner-progress .counter, .qr-text span, .kpc-ph-sub) {
+    font-size: 36px;
+  }
+}

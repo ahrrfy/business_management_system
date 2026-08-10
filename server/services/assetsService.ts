@@ -30,7 +30,7 @@ export { createAsset } from "./assets/create";
 export type { UpdateAssetInput } from "./assets/update";
 export { updateAsset } from "./assets/update";
 export type { MaintenanceInput } from "./assets/lifecycle";
-export { handoverCustody, addMaintenance, returnFromMaintenance } from "./assets/lifecycle";
+export { handoverCustody, returnCustody, addMaintenance, returnFromMaintenance } from "./assets/lifecycle";
 export type { DisposeInput } from "./assets/dispose";
 export { disposeAsset } from "./assets/dispose";
 export type { AddAssetDocumentInput } from "./assets/documents";

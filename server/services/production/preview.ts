@@ -37,6 +37,9 @@ export async function runPreview(args: {
           outputName: products.name,
           outputSku: productVariants.sku,
           outputUnitName: productUnits.unitName,
+          outputUnitVariantId: productUnits.variantId,
+          outputUnitIsBase: productUnits.isBaseUnit,
+          outputUnitIsActive: productUnits.isActive,
           outputCost: productVariants.costPrice,
           laborPerOutputBase: productionRecipes.laborPerOutputBase,
           wasteStdPct: productionRecipes.wasteStdPct,
@@ -51,6 +54,9 @@ export async function runPreview(args: {
     )[0];
     if (!head) throw new TRPCError({ code: "NOT_FOUND", message: "الوصفة غير موجودة" });
     if (!head.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الوصفة معطّلة" });
+    if (Number(head.outputUnitVariantId) !== Number(head.outputVariantId) || !head.outputUnitIsBase || !head.outputUnitIsActive) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "وحدة ناتج الوصفة غير صالحة للإنتاج؛ يجب أن تكون الوحدة الأساسية النشطة للصنف الناتج" });
+    }
 
     const batch = Math.max(0, Math.trunc(Number(args.batchQty) || 0));
     if (batch <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "عدد الدفعة يجب أن يكون موجباً" });

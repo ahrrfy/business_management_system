@@ -2,7 +2,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { eq, inArray, sql } from "drizzle-orm";
-import { customers, productVariants, workOrderMaterials, workOrders } from "../../../drizzle/schema";
+import { customers, products, productVariants, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { logger } from "../../logger";
 import { applyMovement } from "../inventoryService";
 import { money, round2 } from "../money";
@@ -41,37 +41,59 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
     // Deterministic lock order: ascending variantId.
     mats.sort((a, b) => Number(a.variantId) - Number(b.variantId));
 
-    // Batch-load all variant costs in one query instead of N queries inside the loop.
+    // Batch-load variant costs + consignment flag in one query instead of N queries inside the loop.
     const variantIds = mats.map((m) => Number(m.variantId));
-    const costRows = variantIds.length > 0
-      ? await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice })
+    const infoRows = variantIds.length > 0
+      ? await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice, isConsignment: products.isConsignment })
           .from(productVariants)
+          .innerJoin(products, eq(productVariants.productId, products.id))
           .where(inArray(productVariants.id, variantIds))
       : [];
-    const costMap = new Map(costRows.map((v) => [Number(v.id), v.costPrice]));
+    const costMap = new Map(infoRows.map((v) => [Number(v.id), v.costPrice]));
+    // Codex P1: بضاعة الأمانة تُستثنى من السالب — استهلاكُ مادةِ أمانةٍ لم تُودَع يُلفّق استهلاكاً
+    // لبضاعةٍ ليست لنا (مرآة استثناء الأمانة في مسار البيع).
+    const consignSet = new Set(infoRows.filter((v) => v.isConsignment).map((v) => Number(v.id)));
 
     // وضع الافتتاح (قرار المالك ١٠/٨): أثناء النافذة الفعّالة يُسمح باستهلاك مواد صنفٍ **غير مُفتتَح**
     // بالسالب حتى يُجرَد افتتاحياً — وإلا توقّف كاشير التنفيذ إذ لا مواد مجرودة بعد. الحُرّاس الصنفية
-    // تبقى: تكلفة>0 (سلامة COGS) + ضمن سقف السطر + openedAt IS NULL (يُفحص داخل applyMovement).
+    // تبقى: تكلفة>0 (سلامة COGS) + سقف السطر + غير مُفتتَح (openedAt IS NULL يُفحص داخل applyMovement) +
+    // استثناء الأمانة.
     const opening = await readOpeningWindowState(tx);
 
+    // لقطة تكلفة كل سطر (قد تتكرّر الأصناف) + **تجميع الكمية لكل صنف** قبل فحص السقف والحركة —
+    // مرآةً لمسار البيع: حركةٌ واحدة لكل صنف بترتيب variantId (منع deadlock)، والسقف على الإجمالي لا
+    // على السطر (Codex P2: صفّان مكرّران بـ100 لصنفٍ واحد كانا يتجاوزان سقف 100 فيهبط الرصيد −200).
     let materialsCost = new Decimal(0);
+    const aggregated = new Map<number, number>();
     for (const m of mats) {
-      // Snapshot unit cost from variant.costPrice at consumption.
-      const unitCost = round2(money(costMap.get(Number(m.variantId)) ?? "0"));
+      const vid = Number(m.variantId);
+      const unitCost = round2(money(costMap.get(vid) ?? "0"));
       const lineCost = round2(unitCost.times(m.baseQuantity));
       materialsCost = materialsCost.plus(lineCost);
       await tx.update(workOrderMaterials).set({ unitCost: unitCost.toFixed(2) }).where(eq(workOrderMaterials.id, Number(m.id)));
-      const allowNegativeUnopened = opening.active && unitCost.gt(0) && m.baseQuantity <= opening.maxQty;
+      aggregated.set(vid, (aggregated.get(vid) ?? 0) + m.baseQuantity);
+    }
+    materialsCost = round2(materialsCost);
+
+    const sortedVariantIds = Array.from(aggregated.keys()).sort((a, b) => a - b);
+    for (const vid of sortedVariantIds) {
+      const qty = aggregated.get(vid)!;
+      if (qty <= 0) continue;
+      const unitCost = round2(money(costMap.get(vid) ?? "0"));
+      const allowNegativeUnopened =
+        opening.active && unitCost.gt(0) && qty <= opening.maxQty && !consignSet.has(vid);
       try {
         await applyMovement(tx, {
-          variantId: Number(m.variantId),
+          variantId: vid,
           branchId: Number(wo.branchId),
-          baseQuantity: m.baseQuantity,
+          baseQuantity: qty,
           movementType: "OUT",
           referenceType: "WORK_ORDER",
           referenceId: workOrderId,
           createdBy: actor.userId,
+          // Codex P2: وسم الحركة عند السماح بالسالب في وضع الافتتاح (مرآة مسار البيع) — أثرٌ دائم
+          // يُبيّن أن الحركة المخزنية السالبة صُرّح بها بالنافذة المؤقّتة حتى بعد إغلاقها.
+          notes: allowNegativeUnopened ? "وضع الافتتاح — استهلاك مادة أمر شغل مسموح بالسالب لصنف غير مُفتتَح" : undefined,
           allowNegativeUnopened,
         });
       } catch (e) {
@@ -79,15 +101,16 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
         if (e instanceof TRPCError && e.code === "CONFLICT" && e.message.includes("المخزون غير كافٍ") && opening.active) {
           const hint = !unitCost.gt(0)
             ? "بدء التنفيذ بالسالب في وضع الافتتاح يتطلّب تكلفة مُدخلة للمادة — أدخِل تكلفتها أولاً"
-            : m.baseQuantity > opening.maxQty
+            : qty > opening.maxQty
               ? `كمية المادة تتجاوز سقف السطر السالب في وضع الافتتاح (${opening.maxQty} وحدة أساس)`
-              : "المادة مُفتتَحة (مجرودة) — رصيدها مثبّت والاستهلاك فوقه يخضع للفحص الصارم";
+              : consignSet.has(vid)
+                ? "مادة بضاعة أمانة لا تُستهلك بالسالب — تُودَع أولاً بسند إيداع"
+                : "المادة مُفتتَحة (مجرودة) — رصيدها مثبّت والاستهلاك فوقه يخضع للفحص الصارم";
           throw new TRPCError({ code: "CONFLICT", message: `${e.message} — ${hint}` });
         }
         throw e;
       }
     }
-    materialsCost = round2(materialsCost);
 
     await tx
       .update(workOrders)

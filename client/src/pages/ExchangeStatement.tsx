@@ -1,7 +1,7 @@
 // تبويب «كشف الحساب» — حركات الصيرفة بعملتيها + رصيد جارٍ (لقطة بعد كل عملية) + ملخّص.
 import { useCallback, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
-import { FileText, Undo2 } from "lucide-react";
+import { FileText, Printer, Undo2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -12,8 +12,9 @@ import { trpc } from "@/lib/trpc";
 import { D, fmtAr } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
-import { selectCls, type ExchangeRow } from "@/components/exchange/shared";
-import { RowActions } from "@/components/list";
+import { netExposureIqd, selectCls, type ExchangeRow } from "@/components/exchange/shared";
+import { RowActions, type RowAction } from "@/components/list";
+import { printExchangeSlipSmart, type ExchangeSlipData } from "@/lib/printing/printExchangeSlip";
 
 const TYPE_AR: Record<string, string> = {
   DEPOSIT: "إيداع",
@@ -30,12 +31,19 @@ type TxnRow = {
   currency: string;
   iqdAmount: string;
   usdAmount: string;
+  exchangeRate: string;
+  commission: string;
   fxDiff: string;
   commissionIqd: string;
+  supplierName: string | null;
+  voucherNumber: string | null;
   balanceIqdAfter: string;
   balanceUsdAfter: string;
   status: string;
+  notes: string | null;
   createdAt: string;
+  createdByName: string | null;
+  branchName: string | null;
 };
 
 const fmtDT = (d: string) => fmtDateTime(d);
@@ -76,6 +84,38 @@ export default function ExchangeStatement() {
     [reverseMut],
   );
 
+  // طباعة سند العملية (حراري ٨٠مم أو A4) — متاحة لكل الأصناف بما فيها المعكوسة/الافتتاحية (توثيق).
+  const doPrint = useCallback(
+    async (t: TxnRow, mode: "thermal" | "a4") => {
+      const house = houseRows.find((h) => h.id === houseId);
+      if (!house) return;
+      const data: ExchangeSlipData = {
+        txnNumber: t.txnNumber,
+        type: t.type as ExchangeSlipData["type"],
+        currency: t.currency as ExchangeSlipData["currency"],
+        status: t.status as ExchangeSlipData["status"],
+        createdAt: fmtDT(t.createdAt),
+        houseName: house.name,
+        housePhone: house.phone,
+        branchName: t.branchName,
+        createdByName: t.createdByName,
+        iqdAmount: t.iqdAmount,
+        usdAmount: t.usdAmount,
+        exchangeRate: t.exchangeRate,
+        commission: t.commission,
+        fxDiff: t.fxDiff,
+        supplierName: t.supplierName,
+        voucherNumber: t.voucherNumber,
+        balanceIqdAfter: t.balanceIqdAfter,
+        balanceUsdAfter: t.balanceUsdAfter,
+        notes: t.notes,
+      };
+      const res = await printExchangeSlipSmart(data, mode);
+      if ("ok" in res && !res.ok) notify.err("تعذّر فتح نافذة الطباعة — تأكّد من السماح بالنوافذ المنبثقة.");
+    },
+    [houseRows, houseId],
+  );
+
   const cols: ColumnDef<TxnRow>[] = useMemo(
     () => [
       { header: "التاريخ", accessorKey: "createdAt", cell: ({ row }) => <span dir="ltr" className="text-xs text-muted-foreground">{fmtDT(row.original.createdAt)}</span> },
@@ -98,28 +138,39 @@ export default function ExchangeStatement() {
         header: "إجراء", id: "action",
         cell: ({ row }) => {
           const t = row.original;
-          if (t.status === "REVERSED") return <span className="text-xs text-money-negative">معكوسة</span>;
-          if (t.type === "OPENING") return <span className="text-muted-foreground">—</span>;
+          const canReverse = t.status === "ACTIVE" && t.type !== "OPENING";
+          const actions: RowAction[] = [];
+          if (canReverse) {
+            actions.push({
+              key: "reverse",
+              kind: "reverse",
+              label: "عكس",
+              icon: Undo2,
+              variant: "destructive",
+              disabled: reverseMut.isPending,
+              disabledReason: "توجد عملية عكس قيد التنفيذ",
+              onSelect: () => void doReverse(t.id, t.txnNumber),
+              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+            });
+          }
+          actions.push({
+            key: "print-thermal", kind: "print", label: "طباعة حرارية", icon: Printer,
+            onSelect: () => void doPrint(t, "thermal"),
+          });
+          actions.push({
+            key: "print-a4", kind: "print", label: "طباعة A4", icon: FileText,
+            onSelect: () => void doPrint(t, "a4"),
+          });
           return (
-            <RowActions
-              mode="inline"
-              actions={[{
-                key: "reverse",
-                kind: "reverse",
-                label: "عكس",
-                icon: Undo2,
-                variant: "destructive",
-                disabled: reverseMut.isPending,
-                disabledReason: "توجد عملية عكس قيد التنفيذ",
-                onSelect: () => void doReverse(t.id, t.txnNumber),
-                gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
-              }]}
-            />
+            <div className="flex items-center justify-center gap-2">
+              {t.status === "REVERSED" && <span className="text-xs text-money-negative shrink-0">معكوسة</span>}
+              <RowActions actions={actions} />
+            </div>
           );
         },
       },
     ],
-    [doReverse, reverseMut.isPending],
+    [doReverse, doPrint, reverseMut.isPending],
   );
 
   const sum = st.data?.summary;
@@ -129,7 +180,7 @@ export default function ExchangeStatement() {
       <PageHeader
         icon={<FileText className="h-5 w-5 text-primary" />}
         title="كشف حساب الصيرفة"
-        description="كل حركات الصيرفة (إيداع/سحب/شراء/تسديد) مع رصيد جارٍ بعملتيه."
+        description="كل حركات الصيرفة (إيداع/سحب/شراء/تسديد) مع الرصيد بعد كل حركة بعملتيه."
       />
 
       <Card className="p-3">
@@ -153,9 +204,17 @@ export default function ExchangeStatement() {
       </Card>
 
       {houseId > 0 && sum && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
           <StatCard label="الرصيد الحالي (دينار)" value={fmtAr(sum.currentBalanceIqd)} tone={D(sum.currentBalanceIqd).isNegative() ? "negative" : "positive"} />
           <StatCard label="الرصيد الحالي (دولار)" value={fmtAr(sum.currentBalanceUsd)} sub="$" tone={D(sum.currentBalanceUsd).isNegative() ? "negative" : "positive"} />
+          {st.data?.house && (
+            <StatCard
+              label="صافي التعرّض الموحَّد"
+              value={fmtAr(netExposureIqd(st.data.house))}
+              sub="بسعر التكلفة المرجَّح"
+              tone={D(netExposureIqd(st.data.house)).isNegative() ? "negative" : "positive"}
+            />
+          )}
           <StatCard label="إجمالي الإيداعات (دينار)" value={fmtAr(sum.totalDepositIqd)} sub="د.ع" />
           <StatCard label="إجمالي الإيداعات (دولار)" value={fmtAr(sum.totalDepositUsd)} sub="$" />
           <StatCard label="إجمالي التسديدات" value={fmtAr(sum.totalSettledIqd)} sub="د.ع" />

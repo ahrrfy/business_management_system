@@ -21,6 +21,7 @@
     "audit:bundle": "node scripts/audit-build-budgets.mjs",
     "check:authz": "node scripts/authz-inventory.mjs --check",
     "check:authz:diff": "node scripts/authz-guard-diff.mjs",
+    "check:mobile-release": "node scripts/verify-android-release-workflow-gate.mjs --selftest && node scripts/verify-mobile-release-env.mjs",
     "authz:baseline": "node scripts/authz-inventory.mjs --write-baseline",
     "check:guards": "pnpm check:emoji && pnpm check:money-schemas && pnpm check:form-inputs && pnpm check:branch && pnpm check:migrations && pnpm check:orphans && pnpm check:date-boundaries && pnpm check:colors && pnpm check:authz",
     "prepare": "husky",
@@ -100,6 +101,8 @@
     "@trpc/client": "^11.6.0",
     "@trpc/react-query": "^11.6.0",
     "@trpc/server": "^11.6.0",
+    "@zxing/browser": "0.1.5",
+    "@zxing/library": "0.21.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
@@ -121,7 +124,7 @@
     "jose": "6.1.0",
     "lucide-react": "^0.453.0",
     "mysql2": "^3.15.0",
-    "nanoid": "^5.1.5",
+    "nanoid": "^5.1.16",
     "next-themes": "^0.4.6",
     "node-cron": "^4.6.0",
     "node-thermal-printer": "^4.6.0",
@@ -183,10 +186,13 @@
       "@opentelemetry/core@<2.8.0": ">=2.8.0",
       "esbuild@<0.25.0": "0.25.12",
       "esbuild@>=0.26.0 <0.28.1": "0.28.1",
-      "brace-expansion@<5.0.8": "5.0.8",
+      "brace-expansion@<5.0.9": "5.0.9",
       "body-parser@1.20.5": "1.20.6",
-      "fast-uri@<3.1.4": "3.1.4",
-      "postcss@<8.5.18": ">=8.5.18"
+      "fast-uri@<3.1.5": "3.1.5",
+      "ip-address@<10.3.1": "10.3.1",
+      "nanoid@>=3.0.0 <3.3.17": "3.3.17",
+      "nanoid@>=5.0.0 <5.1.16": "5.1.16",
+      "postcss@<8.5.23": ">=8.5.23"
     }
   }
 }

@@ -15,12 +15,18 @@ import {
   authenticatePin,
   COUNT_COOKIE_NAME,
   finishAssignment,
+  getPortalCatalog,
+  getPortalDynamic,
+  getPortalPulse,
   getPortalState,
   resolvePortalIdentity,
   submitCount,
   type PortalIdentity,
 } from "../countPortalService";
+import { mergePortalState } from "../../../shared/countPortalMerge";
 import {
+  approveStocktakeItems,
+  removeStocktakeWorker,
   computeStocktakeReview,
   createStocktakeSession,
   monitorStocktakeSession,
@@ -31,7 +37,9 @@ import {
 const actor = { userId: 1 };
 
 const TABLES = [
+  "stocktakeItemReviewEvents",
   "stocktakeDecisions",
+  "stocktakeCountOperations",
   "stocktakeCounts",
   "stocktakeItems",
   "stocktakeAssignments",
@@ -135,6 +143,27 @@ function submit(identity: PortalIdentity, variantId: number, qty: number, opts: 
   });
 }
 
+/**
+ * يحاكي عقد الراوتر `count.state` حرفياً (غلاف ETag + فصل الكتالوج) — أي انحرافٍ بينه وبين
+ * `countPortalRouter.state` يجعل هذه الاختبارات تحرس عقداً غير المستعمَل فعلاً.
+ */
+async function portalState(
+  identity: PortalIdentity,
+  knownVersion?: string,
+  knownCatalogVersion?: string,
+) {
+  const { v, cv } = await getPortalPulse(identity);
+  if (knownVersion && knownVersion === v) {
+    return { v, cv, changed: false as const, catalog: null, dynamic: null };
+  }
+  const catalogFresh = knownCatalogVersion === cv;
+  const [dynamic, catalog] = await Promise.all([
+    getPortalDynamic(identity),
+    catalogFresh ? Promise.resolve(null) : getPortalCatalog(identity),
+  ]);
+  return { v, cv, changed: true as const, catalog: catalog?.items ?? null, dynamic };
+}
+
 async function countRowsOf(sessionId: number, variantId: number) {
   const rows = await db()
     .select()
@@ -211,6 +240,37 @@ describe("مصادقة البوابة", () => {
     await expectTrpc(authenticatePin(user1 as any, { sessionCode: r.code }), "FORBIDDEN", /تكليف/);
   });
 
+  it("إزالة العامل تُبطل PIN والكوكي القديم فوراً دون حذف التكليف", async () => {
+    const r = await mkPortalSession();
+    const pin = r.assignments[0].pin!;
+    const auth = await authenticatePin(null, { sessionCode: r.code, pin });
+    const cookieCtx = {
+      req: { headers: { cookie: `${COUNT_COOKIE_NAME}=${auth.token}` } },
+      user: null,
+    } as any;
+    expect((await resolvePortalIdentity(cookieCtx, r.code)).assignment.name).toBe("عامل أ");
+
+    await removeStocktakeWorker(
+      {
+        sessionId: r.sessionId,
+        assignmentId: r.assignments[0].assignmentId,
+        reason: "استبدال العامل أثناء الجرد",
+      },
+      actor,
+    );
+    await expectTrpc(authenticatePin(null, { sessionCode: r.code, pin }), "UNAUTHORIZED");
+    await expectTrpc(resolvePortalIdentity(cookieCtx, r.code), "UNAUTHORIZED");
+    await expectTrpc(finishAssignment({
+      session: auth.session,
+      assignment: auth.assignment,
+      countedByName: auth.assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    }), "UNAUTHORIZED");
+    const row = await assignmentRow(r.assignments[0].assignmentId);
+    expect(row.status).toBe("REMOVED");
+  });
+
   it("PIN خاطئ متكرّر لا يقفل التكليفات (المنع موكول لحدّ معدّل IP في server/index.ts)", async () => {
     // إصلاح أمني: كان PIN خاطئ يزيد العدّاد على كل تكليفات PIN في الجلسة ويقفلها جميعها بعد ٥ ⇒
     // مهاجم على رابط عام يخمّن الرمز (وكان تسلسلياً) ⇒ يشلّ كل عمّال العدّ الميدانيين (DoS تشغيلي).
@@ -279,12 +339,13 @@ describe("الجرد الأعمى (state)", () => {
       "isMine",
       "myCount",
       "productName",
+      "reviewApproved",
       "sku",
       "units",
       "variantId",
       "variantName",
     ]);
-    expect(item1.isMine).toBe(false);
+    expect(item1.isMine).toBe(true);
     expect(item1.counted).toBe(true);
     expect(item1.colleagueCounted).toBe(true);
     expect(item1.myCount).toBeNull();
@@ -307,7 +368,7 @@ describe("الجرد الأعمى (state)", () => {
     const mine = stateA.items.find((i) => i.variantId === 1)!;
     expect(mine.isMine).toBe(true);
     expect(mine.myCount).toMatchObject({ qty: 10, unitBreakdown: '{"قطعة":10}' });
-    expect(stateA.progress).toEqual({ mine: { counted: 1, total: 1 }, session: { counted: 1, total: 2 } });
+    expect(stateA.progress).toEqual({ mine: { counted: 1, total: 2 }, session: { counted: 1, total: 2 } });
     expect(stateA.session.code).toBe(r.code);
     expect(stateA.assignment.name).toBe("عامل أ");
   });
@@ -339,6 +400,36 @@ describe("الجرد الأعمى (state)", () => {
     expect(row.kindUsed).toBe("RECOUNT");
     expect(rv.barriers.pendingRecounts).toBe(0);
   });
+
+  it("لا يعرض خدمة متبقية من جلسة قديمة للعامل ويرفض عدّها", async () => {
+    const r = await mkPortalSession();
+    const identity = await loginPin(r.code, r.assignments[0].pin!);
+    await db().insert(s.products).values({
+      id: 6,
+      name: "اشتراك تعليمي",
+      productType: "DIGITAL_CARD",
+      isService: true,
+    });
+    await db().insert(s.productVariants).values({
+      id: 6,
+      productId: 6,
+      sku: "SERVICE-SUBSCRIPTION",
+      costPrice: "0.00",
+    });
+    await db().insert(s.stocktakeItems).values({
+      sessionId: r.sessionId,
+      assignmentId: r.assignments[0].assignmentId,
+      variantId: 6,
+      branchId: 1,
+      expectedQty: 0,
+      unitCost: "0.00",
+    });
+
+    const state = await getPortalState(identity);
+    expect(state.items.map((item) => item.variantId)).not.toContain(6);
+    expect(state.progress.session.total).toBe(2);
+    await expectTrpc(submit(identity, 6, 1), "NOT_FOUND", /خارج نطاق/);
+  });
 });
 
 describe("تسجيل العدّات (submit)", () => {
@@ -365,6 +456,29 @@ describe("تسجيل العدّات (submit)", () => {
     expect(rows[0].qty).toBe(8);
   });
 
+  it("الاعتماد المرحلي يقفل تعديل العدّ حتى تطلب الإدارة إعادة عدّ", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    await submit(idA, 1, 100);
+    await approveStocktakeItems({ sessionId: r.sessionId, variantIds: [1] }, actor);
+
+    const [approvedItem] = await db()
+      .select()
+      .from(s.stocktakeItems)
+      .where(and(eq(s.stocktakeItems.sessionId, r.sessionId), eq(s.stocktakeItems.variantId, 1)));
+    expect(Number(approvedItem.reviewApprovedOperationId)).toBeGreaterThan(0);
+    expect(approvedItem.reviewApprovedQty).toBe(100);
+    expect(approvedItem.reviewApprovedSnapshotHash).toMatch(/^[a-f0-9]{64}$/);
+
+    await expectTrpc(submit(idA, 1, 101), "PRECONDITION_FAILED", /اعتمدت الإدارة/);
+    const state = await getPortalState(idA);
+    expect(state.items.find((i) => i.variantId === 1)?.reviewApproved).toBe(true);
+
+    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 1, reason: "إعادة تحقق ميداني" }, actor);
+    const recount = await submit(idA, 1, 101);
+    expect(recount.kind).toBe("RECOUNT");
+  });
+
   it("idempotency: تكرار نفس clientRequestId ⇒ نجاح بلا أثر والكمية الأولى تبقى", async () => {
     const r = await mkPortalSession();
     const idA = await loginPin(r.code, r.assignments[0].pin!);
@@ -381,11 +495,45 @@ describe("تسجيل العدّات (submit)", () => {
     expect(rows[0].qty).toBe(7);
   });
 
+  it("multi-device replay: an older request cannot overwrite a newer count", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const olderRequestId = randomUUID();
+    const newerRequestId = randomUUID();
+
+    await submit(idA, 1, 5, { rid: olderRequestId });
+    await submit(idA, 1, 8, { rid: newerRequestId });
+
+    // Device A comes back online after device B already submitted the newer
+    // value. Replaying A must return its recorded result without touching the
+    // mutable count projection.
+    const delayedReplay = await submit(idA, 1, 5, { rid: olderRequestId });
+    expect(delayedReplay).toMatchObject({ kind: "FIRST", idempotent: true });
+
+    const rows = await countRowsOf(r.sessionId, 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].qty).toBe(8);
+
+    const operations = await db()
+      .select()
+      .from(s.stocktakeCountOperations)
+      .where(eq(s.stocktakeCountOperations.sessionId, r.sessionId));
+    const orderedOperations = operations.sort((a, b) => Number(a.id) - Number(b.id));
+    expect(orderedOperations.map((operation) => operation.clientRequestId)).toEqual([
+      olderRequestId,
+      newerRequestId,
+    ]);
+    expect(orderedOperations.map((operation) => operation.requestQty)).toEqual([5, 8]);
+  });
+
   it("dupPolicy=BLOCK: عدّ صنف زميل مرفوض برسالة واضحة ولا صفّ يُكتب", async () => {
     const r = await mkPortalSession({ dupPolicy: "BLOCK" });
     const idB = await loginPin(r.code, r.assignments[1].pin!);
-    await expectTrpc(submit(idB, 1, 10), "CONFLICT", /منطقة زميلك/);
-    expect(await countRowsOf(r.sessionId, 1)).toHaveLength(0);
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const first = await submit(idB, 1, 10);
+    expect(first.kind).toBe("FIRST");
+    expect(await countRowsOf(r.sessionId, 1)).toHaveLength(1);
+    await expectTrpc(submit(idA, 1, 11), "CONFLICT");
     // وصنفه هو يُقبل طبيعياً.
     const own = await submit(idB, 2, 50);
     expect(own.kind).toBe("FIRST");
@@ -474,16 +622,16 @@ describe("التسليم (finish)", () => {
 
     // تسليم أ: الجلسة ما زالت قيد العدّ.
     const f1 = await finishAssignment(idA);
-    expect(f1).toMatchObject({ ok: true, sessionMovedToReview: false, alreadySubmitted: false });
+    expect(f1).toMatchObject({ ok: true, sessionMovedToReview: true, alreadySubmitted: false });
     let sess = (await db().select().from(s.stocktakeSessions).where(eq(s.stocktakeSessions.id, r.sessionId)))[0];
-    expect(sess.status).toBe("COUNTING");
+    expect(sess.status).toBe("REVIEW");
 
     // أ سلّم ⇒ لا يعدّل عدّاته بعد التسليم.
-    await expectTrpc(submit(idA, 1, 11), "BAD_REQUEST", /سلّمت/);
+    await expectTrpc(submit(idA, 1, 11), "BAD_REQUEST");
 
     // تسليم ب (الأخير) ⇒ الجلسة REVIEW آلياً مع submittedAt.
     const f2 = await finishAssignment(idB);
-    expect(f2).toMatchObject({ ok: true, sessionMovedToReview: true });
+    expect(f2).toMatchObject({ ok: true, sessionMovedToReview: false, alreadySubmitted: true });
     sess = (await db().select().from(s.stocktakeSessions).where(eq(s.stocktakeSessions.id, r.sessionId)))[0];
     expect(sess.status).toBe("REVIEW");
     expect(sess.submittedAt).not.toBeNull();
@@ -505,5 +653,170 @@ describe("التسليم (finish)", () => {
     const stateB = await getPortalState(freshB);
     expect(stateB.session.status).toBe("REVIEW");
     expect(stateB.assignment.status).toBe("SUBMITTED");
+  });
+});
+
+// ─────────────────────────── نبضة النسخة (pulse) ───────────────────────────
+// العقد: الوسم يتبدّل **كلّما تبدّل شيءٌ يظهر في state**، ويثبت إن لم يتبدّل شيء.
+// الخطر الذي تحرسه هذه الاختبارات: وسمٌ يُغفل تغييراً ⇒ شاشة العادّ تتجمّد صامتةً،
+// وهو عطلٌ أسوأ من البطء الذي أتت النبضة لتعالجه.
+describe("نبضة النسخة (pulse)", () => {
+  it("ثابتة بلا تغيير، وتتبدّل عند كل حدثٍ يظهر في state", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const idB = await loginPin(r.code, r.assignments[1].pin!);
+
+    // (١) ثبات: نداءان متتاليان بلا أي حدث ⇒ نفس الوسم بالضبط (وإلّا لأبطلنا الكاش عبثاً
+    //     في كل استقصاء وعاد الحمل الذي نعالجه).
+    const v0 = (await getPortalPulse(idA)).v;
+    expect((await getPortalPulse(idA)).v).toBe(v0);
+
+    // (٢) عدّة جديدة مني ⇒ يتبدّل.
+    await submit(idA, 1, 10);
+    const v1 = (await getPortalPulse(idA)).v;
+    expect(v1).not.toBe(v0);
+
+    // (٣) تحديث عدّتي نفسها (لا صفّ جديد — نفس الصفّ تتغيّر كميته) ⇒ يجب أن يتبدّل أيضاً،
+    //     لأنّ state يعرض الكمية الجديدة. هذه الحالة تسقط لو اكتُفي بـMAX(id) وحده.
+    await submit(idA, 1, 25);
+    const v2 = (await getPortalPulse(idA)).v;
+    expect(v2).not.toBe(v1);
+
+    // (٤) عدّة زميل ⇒ يتبدّل عند الطرفين (state يُظهر colleagueCounted وتقدّم الجلسة).
+    await submit(idB, 2, 7);
+    const v3 = (await getPortalPulse(idA)).v;
+    expect(v3).not.toBe(v2);
+
+    // (٥) طلب إعادة عدّ إداريّ: لا صفّ عدّاتٍ جديد ولا صفّ أصنافٍ جديد — تحديث حالة فقط.
+    //     يظهر في state.recountTasks ⇒ يجب أن يتبدّل الوسم.
+    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 1, reason: "فرق كبير" }, actor);
+    const v4 = (await getPortalPulse(idA)).v;
+    expect(v4).not.toBe(v3);
+
+    // (٦) تسليم التكليف ⇒ assignment.status يتبدّل في state ⇒ الوسم يتبدّل.
+    await finishAssignment(idA);
+    const freshA = await resolvePortalIdentity(
+      { req: { headers: { cookie: `${COUNT_COOKIE_NAME}=${idA.token ?? ""}` } }, user: null } as any,
+      r.code,
+    ).catch(() => null);
+    if (freshA) expect((await getPortalPulse(freshA)).v).not.toBe(v4);
+  });
+
+  it("لا تكشف أي بيانات: الوسم أرقامٌ وحالاتٌ فقط — بلا أسماء ولا كميات (الجرد الأعمى)", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    await submit(idA, 1, 4242, { unitBreakdown: '{"قطعة":4242}' });
+
+    const { v, cv } = await getPortalPulse(idA);
+    // وسمان لا غير: حالة (`v`) وكتالوج (`cv`) — لا حقل بياناتٍ ثالث يتسلّل مع الوقت.
+    expect(Object.keys(await getPortalPulse(idA)).sort()).toEqual(["cv", "v"]);
+    // لا اسم منتجٍ ولا كمية عدّةٍ في أيٍّ منهما.
+    for (const tag of [v, cv]) {
+      expect(tag).not.toMatch(/قلم|جاف/);
+      expect(tag).not.toContain("4242");
+      expect(tag).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    }
+  });
+
+  it("الوسم مُفتَّح ومبهم: لا بنية جبرية تُعكَس لاستخراج عدّة الزميل (ثغرة CRC الخام)", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const idB = await loginPin(r.code, r.assignments[1].pin!);
+
+    const before = (await getPortalPulse(idA)).v;
+    await submit(idB, 2, 777);
+    const after = (await getPortalPulse(idA)).v;
+
+    // يتبدّل (فيعرف «أ» أنّ شيئاً جرى) لكن بلا أي مسارٍ لاستخراج المقدار.
+    expect(after).not.toBe(before);
+    expect(after).not.toContain("777");
+
+    // ⛔ الصيغة الأولى أعادت تجميعاتٍ خاماً مفصولةً بـ«:» فكان XOR/الطرح بين وسمين
+    // متتاليين يعطي بصمة الصفّ المُضاف وحده ⇒ تُخمَّن الكمية بالقوة الغاشمة. الوسم الآن
+    // HMAC واحد: لا فواصل، ولا أجزاء عددية، وطولٌ ثابت لا يتغيّر بحجم الجلسة.
+    expect(after).not.toContain(":");
+    expect(Number.isNaN(Number(after))).toBe(true);
+    expect(after).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(after.length).toBe(before.length);
+  });
+
+  it("غلاف ETag: knownVersion مطابق ⇒ بلا حمولة؛ ومخالف/غائب ⇒ الحمولة", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    await submit(idA, 1, 10);
+
+    // بلا وسمٍ معروف ⇒ كتالوج + متغيّر + الوسمان.
+    const full = await portalState(idA);
+    expect(full.changed).toBe(true);
+    expect(full.catalog?.length).toBeGreaterThan(0);
+    expect(full.dynamic?.counts.length).toBeGreaterThan(0);
+
+    // بالوسم نفسه ⇒ «بلا تغيير» وبلا أي حمولة (مصدر التوفير الأول).
+    const same = await portalState(idA, full.v, full.cv);
+    expect(same).toMatchObject({ changed: false, catalog: null, dynamic: null, v: full.v });
+
+    // بعد عدّةٍ جديدة ⇒ وسمٌ جديد وحمولة.
+    await submit(idA, 2, 3);
+    const afterChange = await portalState(idA, full.v, full.cv);
+    expect(afterChange.changed).toBe(true);
+    expect(afterChange.v).not.toBe(full.v);
+  });
+
+  it("الدلتا: العدّ لا يُبدّل وسم الكتالوج ⇒ لا يُعاد إرسال الأصناف (٨٣٪ من الحمولة)", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const first = await portalState(idA);
+    const catalogCv = first.cv!;
+    expect(first.catalog).not.toBeNull();
+
+    // عدّةٌ جديدة تُبدّل وسم الحالة `v` لكن **لا** تمسّ الكتالوج.
+    await submit(idA, 1, 12);
+    const afterCount = await portalState(idA, first.v, catalogCv);
+    expect(afterCount.changed).toBe(true);
+    expect(afterCount.v).not.toBe(first.v);
+    expect(afterCount.cv).toBe(catalogCv); // الكتالوج لم يتبدّل…
+    expect(afterCount.catalog).toBeNull(); // …فلم يُعَد إرساله — جوهر الدلتا.
+    expect(afterCount.dynamic?.counts).toEqual([
+      expect.objectContaining({ variantId: 1, counted: true }),
+    ]);
+
+    // وعميلٌ بلا كتالوج مخزَّن (أو بوسمٍ قديم) يستلمه كاملاً — فلا يعلق بحالةٍ ناقصة.
+    const stranger = await portalState(idA, undefined, "cv-قديم");
+    expect(stranger.catalog?.length).toBeGreaterThan(0);
+  });
+
+  it("وسم الكتالوج من النبضة = وسمه من الكتالوج نفسه (وإلّا ضاع التوفير صامتاً)", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+
+    // الراوتر يقارن `cv` القادم من النبضة (رخيص) بما لدى العميل، ولا يبني الكتالوج إلّا
+    // عند الاختلاف. فلو انحرفت صيغتا الوسم لما تطابقا أبداً ⇒ يُبنى الكتالوج ويُرسَل في
+    // **كل** دورة، فيعود الحمل كما كان بلا أي اختبارٍ أحمر يكشف ذلك.
+    const pulse = await getPortalPulse(idA);
+    const cat = await getPortalCatalog(idA);
+    expect(pulse.cv).toBe(cat.cv);
+
+    // ويبقيان متطابقين بعد العدّ (العدّ لا يمسّ الكتالوج).
+    await submit(idA, 1, 5);
+    const pulse2 = await getPortalPulse(idA);
+    const cat2 = await getPortalCatalog(idA);
+    expect(pulse2.cv).toBe(cat2.cv);
+    expect(pulse2.cv).toBe(pulse.cv);
+    expect(pulse2.v).not.toBe(pulse.v);
+  });
+
+  it("التركيب المشترك يعيد إنتاج getPortalState حرفياً (لا انحراف بين الخادم والعميل)", async () => {
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+    const idB = await loginPin(r.code, r.assignments[1].pin!);
+    await submit(idA, 1, 9, { unitBreakdown: '{"قطعة":9}' });
+    await submit(idB, 2, 4);
+    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 2, reason: "تدقيق" }, actor);
+
+    // نفس الدالّة النقيّة التي يستعملها العميل لإعادة التركيب.
+    const [cat, dyn] = await Promise.all([getPortalCatalog(idA), getPortalDynamic(idA)]);
+    const rebuilt = mergePortalState(cat.items, dyn);
+    const direct = await getPortalState(idA);
+    expect(rebuilt).toEqual(direct);
   });
 });

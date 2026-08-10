@@ -10,13 +10,14 @@ import { TablePager } from "@/components/table/TablePager";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { WEEK_DAYS } from "@shared/hr";
-import { Clock, Fingerprint, Moon, PenLine, TriangleAlert, Wallet } from "lucide-react";
+import { Clock, Fingerprint, Moon, PenLine, RefreshCw, TriangleAlert, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 
@@ -67,14 +68,58 @@ function StatCard({ label, value, sub, icon, accent }: { label: string; value: s
 
 const emptyForm = () => ({ employeeId: "", attendanceDate: today(), hours: "", checkIn: "", checkOut: "" });
 
+/**
+ * نطاق السجلّ — **يفتح على اليوم** بقرار المالك (١/٨): «سجلّ الحضور يجب أن يكون الافتراضيّ
+ * تاريخ اليوم مع إمكانية البحث والاستعلام عن بقية التواريخ». فتحُ الشهر كاملاً كان يُغرق
+ * الشاشة بصفوفٍ لا تخصّ اللحظة، ومراجعةُ الصباح تخصّ اليوم.
+ */
+const RANGES = [
+  { key: "today", label: "اليوم" },
+  { key: "yesterday", label: "أمس" },
+  { key: "week", label: "آخر ٧ أيام" },
+  { key: "month", label: "الشهر" },
+  { key: "custom", label: "مدى مخصّص" },
+] as const;
+type RangeKey = (typeof RANGES)[number]["key"];
+
+/** تاريخ اليوم **بتوقيت الجهاز** لا UTC: تواريخ البصمات توقيتُ حائطٍ محليّ، وقبل الثالثة
+ *  فجراً كان UTC يُرجع «أمس» فيفتح السجلّ على يومٍ فارغ. */
+function todayLocal(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function shiftDays(ymd: string, n: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const t = new Date(y, m - 1, d + n);
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+}
+/** حدّا المدى لكل نطاق — `null` يعني «بلا حدّ» (الشهر يُمرَّر بـperiod). */
+function rangeBounds(key: RangeKey, from: string, to: string): { dateFrom?: string; dateTo?: string } {
+  const t = todayLocal();
+  if (key === "today") return { dateFrom: t, dateTo: t };
+  if (key === "yesterday") return { dateFrom: shiftDays(t, -1), dateTo: shiftDays(t, -1) };
+  if (key === "week") return { dateFrom: shiftDays(t, -6), dateTo: t };
+  if (key === "custom") return { dateFrom: from || undefined, dateTo: to || undefined };
+  return {}; // الشهر
+}
+
 export default function Attendance() {
   const [, navigate] = useLocation();
-  const [employeeId, setEmployeeId] = useState("");
-  const [period, setPeriod] = useState(currentMonth());
-  const [source, setSource] = useState("");
-  // طابور التصحيح: أيام ينقصها إغلاق (نُسيت بصمة الخروج) — تُصحَّح قبل إغلاق الشهر.
-  const [reviewOnly, setReviewOnly] = useState(false);
-  const [query, setQuery] = useState("");
+  // فلاتر محفوظة في querystring (تعيش مع فتح بطاقة موظف والرجوع، وتُشارَك رابطاً).
+  const [f, setF, resetF] = useUrlFilters({
+    employeeId: "", period: currentMonth(), range: "today", customFrom: todayLocal(), customTo: todayLocal(),
+    source: "", reviewOnly: "", q: "",
+  });
+  const range = f.range as RangeKey;
+  /*
+   * «اليوم» يتقدّم عند منتصف الليل المحليّ (Codex P2): شاشة الحضور تبقى مفتوحةً ليلاً،
+   * وحدودُ المدى كانت تُشتقّ مرّةً واحدة فتبقى معلّقةً على الأمس حتى يلمس المستخدم فلتراً.
+   */
+  const [dayTick, setDayTick] = useState(todayLocal());
+  useEffect(() => {
+    const t = setInterval(() => setDayTick((prev) => { const now = todayLocal(); return now === prev ? prev : now; }), 60_000);
+    return () => clearInterval(t);
+  }, []);
 
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(emptyForm());
@@ -83,19 +128,38 @@ export default function Attendance() {
   const opts = trpc.attendance.formOptions.useQuery();
 
   // فلتر البطاقات (بلا بحث): البطاقات مؤشّرُ الشهر/الفلتر — سلوك محفوظ كما كان.
+  const bounds = useMemo(() => rangeBounds(range, f.customFrom, f.customTo), [range, f.customFrom, f.customTo, dayTick]);
+  /** مدىً مخصّصٌ فُرِّغ حقلاه = «بلا حدّ» صراحةً ⇒ لا يُمرَّر الشهر المخفيّ فيُقيّد صامتاً. */
+  const customUnbounded = range === "custom" && !bounds.dateFrom && !bounds.dateTo;
   const filterInput = useMemo(
     () => ({
-      employeeId: employeeId ? Number(employeeId) : undefined,
-      period: period || undefined,
-      source: (source || undefined) as "fingerprint" | "manual" | undefined,
-      needsReviewOnly: reviewOnly || undefined,
+      employeeId: f.employeeId ? Number(f.employeeId) : undefined,
+      // المدى يتقدّم على الشهر خادمياً؛ نُمرّر الشهر ليبقى نطاقُ زرّ الإصلاح معلوماً — إلا
+      // في مدىً مخصّصٍ فارغ الحقلين، فإرسالُه هناك يُقيّد بشهرٍ مخفيٍّ لا يراه المستخدم.
+      period: customUnbounded ? undefined : f.period || undefined,
+      ...bounds,
+      source: (f.source || undefined) as "fingerprint" | "manual" | undefined,
+      needsReviewOnly: f.reviewOnly === "1" || undefined,
     }),
-    [employeeId, period, source, reviewOnly],
+    [f.employeeId, f.period, bounds, customUnbounded, f.source, f.reviewOnly],
   );
+  /** الشهر الذي يُصلحه زرّ إعادة الاحتساب — من نهاية المدى المعروض (وإلا الشهر المختار). */
+  const activePeriod = (bounds.dateTo || bounds.dateFrom || f.period).slice(0, 7);
+  const rangeLabel =
+    range === "month"
+      ? monthLabel(f.period)
+      : bounds.dateFrom && bounds.dateFrom === bounds.dateTo
+        ? bounds.dateFrom
+        : `${bounds.dateFrom ?? "…"} ← ${bounds.dateTo ?? "…"}`;
+
+  // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
+  const activeFilterCount = [
+    f.employeeId, range !== "today" ? f.range : "", f.source, f.reviewOnly === "1" ? "1" : "",
+  ].filter(Boolean).length;
 
   // البحث خادميّ الآن (اسم/تاريخ/يوم): كان يُصفّي الصفوف المُحمَّلة وحدها (سقف ٣٠٠) ⇒ يقول
   // «لا نتائج» عن سجلٍّ موجود خارج السقف. debounce ليكتب المستخدم بلا طلبٍ لكل حرف.
-  const dq = useDebouncedValue(query.trim(), 300);
+  const dq = useDebouncedValue(f.q.trim(), 300);
   const listInput = useMemo(() => ({ ...filterInput, q: dq || undefined }), [filterInput, dq]);
 
   // الترقيم خادميّ: كانت تُحمَّل كل السجلّات المطابقة دفعةً — وبإفراغ منتقي الشهر تُمسح كل
@@ -115,10 +179,47 @@ export default function Attendance() {
   const totalAmount = D(summary.data?.amount ?? 0);
   const fingerprintCount = summary.data?.fingerprintCount ?? 0;
   const manualCount = summary.data?.manualCount ?? 0;
+  /*
+   * مجاميعُ جزئية تُعلَن جزئيةً (Codex P1): المسح الحيّ محدودٌ بسقف، ونطاقٌ يتجاوزه يُنتج
+   * مبلغاً ناقصاً. عرضُه كرقمٍ نهائيّ كذبٌ ماليّ صامت — نسبقه بـ«≥» ونشرحه.
+   */
+  const partialTotals = !!summary.data?.capped || !!list.data?.totals.capped;
+  const approx = (v: string) => (partialTotals ? `≥ ${v}` : v);
 
   // مجاميع ذيل الجدول تتبع المطابق للفلتر **والبحث** (لا الصفحة) — خادمية بنفس شروط الصفوف.
   const visHours = D(list.data?.totals.hours ?? 0);
   const visAmount = D(list.data?.totals.amount ?? 0);
+
+  /*
+   * صفوفٌ سعرُها المخزَّن يخالف ملفّ الموظف الآن — لقطةٌ كُتبت قبل ضبط جدوله أو قبل تعديل
+   * راتبه. الأعمدة تعرض المُشتقّ الحيّ (ما سيُدفع فعلاً)، والمجاميع من المخزَّن ⇒ لا بدّ من
+   * إعادة احتساب ليتطابقا — ولأنّ لقطة الساعيّ هي وعاء أجره في المسيّر فعلاً.
+   */
+  const staleCount = list.data?.staleCount ?? 0;
+  /** الأشهر التي فيها لقطاتٌ قديمة فعلاً — قد تتعدّد إن عبَر المدى حدَّ الشهر. */
+  const stalePeriods = list.data?.stalePeriods ?? [];
+  const recompute = trpc.attendance.recomputeRates.useMutation({ onError: (e) => notify.err(e) });
+  const [fixing, setFixing] = useState(false);
+
+  /** يُصلح **كلّ** شهرٍ فيه لقطاتٌ قديمة — لا شهرَ نهاية المدى وحده. */
+  async function fixStalePeriods() {
+    if (!stalePeriods.length || fixing) return;
+    setFixing(true);
+    try {
+      let updated = 0;
+      for (const p of stalePeriods) {
+        const r = await recompute.mutateAsync({ period: p, employeeId: f.employeeId ? Number(f.employeeId) : undefined });
+        updated += r.updated;
+      }
+      notify.ok(updated > 0 ? `أُعيد احتساب ${updated} صفّاً في ${stalePeriods.length} شهراً` : "كل الأسعار مطابقة لملفّات الموظفين");
+      await Promise.all([utils.attendance.list.invalidate(), utils.attendance.summary.invalidate()]);
+    } catch {
+      // notify.err عُرِضت في onError — نُبطّل الكاش كي يظهر ما نجح إصلاحُه قبل الفشل.
+      await Promise.all([utils.attendance.list.invalidate(), utils.attendance.summary.invalidate()]);
+    } finally {
+      setFixing(false);
+    }
+  }
 
   const record = trpc.attendance.record.useMutation({
     onSuccess: async () => {
@@ -152,21 +253,65 @@ export default function Attendance() {
         title="الحضور والانصراف"
         description="نظام احتساب بالساعة — أجر اليوم = ساعات الحضور × سعر ساعة ذلك اليوم. المصدر: أجهزة البصمة."
         actions={
-          <Button asChild variant="outline" size="sm">
-            <Link href="/hr/devices"><Fingerprint className="size-4" /> أجهزة البصمة</Link>
-          </Button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button asChild variant="outline" size="sm">
+              <Link href="/reports/attendance-monthly"><Clock className="size-4" /> التقرير الشهريّ</Link>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <Link href="/hr/devices"><Fingerprint className="size-4" /> أجهزة البصمة</Link>
+            </Button>
+          </div>
         }
       />
 
       {/* مؤشرات */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label={`إجمالي ساعات ${monthLabel(period)}`} value={totalHours.toNumber().toLocaleString("en-US")} sub="للموظفين بالساعة" icon={<Clock className="size-5" />} />
-        <StatCard label="المبلغ المستحق" value={iqd(totalAmount.toFixed(2))} sub="د.ع — قبل الاستقطاع" accent="var(--status-active, #16a34a)" icon={<Wallet className="size-5" />} />
+        <StatCard label={`إجمالي ساعات ${rangeLabel}`} value={approx(totalHours.toNumber().toLocaleString("en-US"))} sub={partialTotals ? "مجموعٌ جزئيّ — ضيّق النطاق" : "حسب النطاق المختار"} icon={<Clock className="size-5" />} />
+        <StatCard label="المبلغ المستحق" value={approx(iqd(totalAmount.toFixed(2)))} sub={partialTotals ? "مجموعٌ جزئيّ — ضيّق النطاق" : "د.ع — قبل الاستقطاع"} accent="var(--status-active, #16a34a)" icon={<Wallet className="size-5" />} />
         <StatCard label="سجلات بصمة" value={fingerprintCount.toLocaleString("en-US")} sub="مزامنة تلقائية" icon={<Fingerprint className="size-5" />} />
         <StatCard label="إدخالات يدوية" value={manualCount.toLocaleString("en-US")} sub="تحتاج توثيقاً" accent="var(--stock-low, #d97706)" icon={<PenLine className="size-5" />} />
       </div>
 
-      <NightShiftSettingsCard />
+      <AttendanceSettingsCard />
+
+      {/* نطاقٌ تجاوز سقف المسح الحيّ ⇒ المجاميع جزئية. لا تُعرَض رقماً نهائياً صامتاً. */}
+      {partialTotals && (
+        <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs">
+          <TriangleAlert aria-hidden className="size-4 mt-0.5 shrink-0 text-[var(--sem-warn)]" />
+          <span className="leading-relaxed">
+            <span className="font-medium text-[var(--sem-warn)]">المجاميع جزئية</span> — النطاق المختار
+            يتجاوز سقف الاحتساب الحيّ، فالساعات والمبالغ أعلاه وفي ذيل الجدول محسوبةٌ على جزءٍ من
+            الصفوف فقط (لذلك سُبقت بعلامة «≥»). ضيّق النطاق أو فلتر بموظفٍ للحصول على رقمٍ نهائيّ.
+          </span>
+        </div>
+      )}
+
+      {/* لقطاتٌ قديمة: السعر المخزَّن يخالف ملفّ الموظف الآن ⇒ المجاميع أعلاه من المخزَّن
+          والأعمدة من الملفّ. زرٌّ واحدٌ يُطابقهما — وهو ضروريّ للساعيّ (لقطتُه وعاءُ أجره). */}
+      {staleCount > 0 && (
+        <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs">
+          <TriangleAlert aria-hidden className="size-4 mt-0.5 shrink-0 text-[var(--sem-warn)]" />
+          <div className="flex-1 leading-relaxed">
+            <span className="font-medium text-[var(--sem-warn)]">
+              {staleCount}{list.data?.staleScanCapped ? "+" : ""} صفّاً بسعرٍ مخزَّنٍ قديم
+            </span> —
+            في {stalePeriods.length > 1 ? stalePeriods.map(monthLabel).join(" و") : monthLabel(stalePeriods[0] ?? activePeriod)} —
+            كُتب قبل ضبط جدول دوام الموظف أو قبل تعديل راتبه.
+            العدّ يشمل <span className="font-medium">الشهر كلَّه</span> لا اليوم المعروض ولا الصفحة،
+            لأن الإصلاح شهريّ. الأعمدة
+            تعرض سعر ملفّ الموظف الآن (وهو ما سيُدفع)، والمخزَّن مشطوبٌ بجانبه.
+            <span className="block mt-0.5 text-muted-foreground">
+              أشهرُ المسيّرات المُقفَلة مستثناة — لقطتُها هي ما صُرف فعلاً فتبقى كما هي.
+            </span>
+          </div>
+          <Button size="sm" variant="outline" disabled={fixing} onClick={() => void fixStalePeriods()}>
+            <RefreshCw aria-hidden className="size-3.5" />
+            {fixing
+              ? "جارٍ…"
+              : `إعادة احتساب ${stalePeriods.length > 1 ? `${stalePeriods.length} أشهر` : monthLabel(stalePeriods[0] ?? activePeriod)}`}
+          </Button>
+        </div>
+      )}
 
       {/* سجل الحضور */}
       <Card>
@@ -175,29 +320,50 @@ export default function Attendance() {
             title="سجل الحضور"
             count={total}
             loading={list.isLoading}
-            search={{ value: query, onChange: setQuery, placeholder: "بحث باسم الموظف أو اليوم…" }}
+            search={{ value: f.q, onChange: (v) => setF({ q: v }), placeholder: "بحث باسم الموظف أو اليوم…" }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetF}
             filters={
               <>
-                <select className={selectCls} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} aria-label="الموظف">
-                  <option value="">كل الموظفين بالساعة</option>
+                <select className={selectCls} value={f.employeeId} onChange={(e) => setF({ employeeId: e.target.value })} aria-label="الموظف">
+                  <option value="">كل الموظفين</option>
                   {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
                 </select>
-                <select className={selectCls} value={period} onChange={(e) => setPeriod(e.target.value)} aria-label="الشهر">
-                  {recentMonths().map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+                {/* النطاق — يفتح على «اليوم» بقرار المالك، وبقيةُ التواريخ باستعلامٍ صريح. */}
+                <select className={selectCls} value={range} onChange={(e) => setF({ range: e.target.value })} aria-label="النطاق">
+                  {RANGES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
                 </select>
-                <select className={selectCls} value={source} onChange={(e) => setSource(e.target.value)} aria-label="المصدر">
+                {range === "month" && (
+                  <select className={selectCls} value={f.period} onChange={(e) => setF({ period: e.target.value })} aria-label="الشهر">
+                    {recentMonths().map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+                  </select>
+                )}
+                {range === "custom" && (
+                  <>
+                    <input type="date" className={selectCls} dir="ltr" value={f.customFrom} max={f.customTo || undefined}
+                      onChange={(e) => setF({ customFrom: e.target.value })} aria-label="من تاريخ" />
+                    <input type="date" className={selectCls} dir="ltr" value={f.customTo} min={f.customFrom || undefined}
+                      onChange={(e) => setF({ customTo: e.target.value })} aria-label="إلى تاريخ" />
+                  </>
+                )}
+                {range !== "month" && range !== "custom" && (
+                  <span className="inline-flex items-center h-8 px-2 rounded-md border text-xs tabular-nums text-muted-foreground" dir="ltr">
+                    {rangeLabel}
+                  </span>
+                )}
+                <select className={selectCls} value={f.source} onChange={(e) => setF({ source: e.target.value })} aria-label="المصدر">
                   <option value="">كل المصادر</option>
                   <option value="fingerprint">بصمة</option>
                   <option value="manual">يدوي</option>
                 </select>
                 <label className="flex items-center gap-2 h-8 text-sm">
-                  <input type="checkbox" className="size-4" checked={reviewOnly} onChange={(e) => setReviewOnly(e.target.checked)} />
+                  <input type="checkbox" className="size-4" checked={f.reviewOnly === "1"} onChange={(e) => setF({ reviewOnly: e.target.checked ? "1" : "" })} />
                   <span className="text-muted-foreground">يحتاج تصحيح فقط</span>
                 </label>
               </>
             }
             exportSpec={{
-              filename: `الحضور-${period}`,
+              filename: `الحضور-${rangeLabel.replace(/\s*←\s*/, "_")}`,
               rows,
               // كل الصفحات المطابقة للفلتر **والبحث** — لا الصفحة المعروضة (وإلا خالف الملفُ
               // ما تراه العين بصمت، وهو ما كان يحدث فعلاً عند تجاوز سقف الـ٣٠٠).
@@ -264,8 +430,26 @@ export default function Attendance() {
                       <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkIn ? new Date(r.checkIn).toISOString().slice(11, 16) : "—"}</td>
                       <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkOut ? new Date(r.checkOut).toISOString().slice(11, 16) : "—"}</td>
                       <td className="p-2.5 text-center tabular-nums">{Number(r.hours ?? 0)}</td>
-                      <td className={`p-2.5 text-right tabular-nums ${weekend ? "text-[var(--stock-low)] font-medium" : ""}`} dir="ltr">{iqd(r.hourlyRate)}</td>
-                      <td className="p-2.5 text-right tabular-nums font-semibold" dir="ltr">{iqd(r.amount)}</td>
+                      {/* السعر مُشتقٌّ من ملفّ الموظف الآن — والمخزَّن المخالف يُعرَض مشطوباً لا يُخفى. */}
+                      <td className={`p-2.5 text-right tabular-nums ${weekend ? "text-[var(--stock-low)] font-medium" : ""}`} dir="ltr">
+                        {iqd(r.hourlyRate)}
+                        {r.rateStale && (
+                          <span className="block text-[10px] text-[var(--sem-warn)] line-through" title="السعر المخزَّن قديم — أعد الاحتساب">
+                            {iqd(r.storedHourlyRate)}
+                          </span>
+                        )}
+                        {r.rateBasis === "none" && (
+                          <span className="block text-[10px] text-[var(--sem-warn)]" title="لا سعر ساعةٍ ولا راتب في ملفّ هذا الموظف">
+                            بلا سعر في الملف
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-2.5 text-right tabular-nums font-semibold" dir="ltr">
+                        {iqd(r.amount)}
+                        {r.rateStale && (
+                          <span className="block text-[10px] font-normal text-[var(--sem-warn)] line-through">{iqd(r.storedAmount)}</span>
+                        )}
+                      </td>
                       <td className="p-2.5 text-center">
                         {r.source === "fingerprint" ? (
                           <span className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Fingerprint className="size-3.5" /> بصمة</span>
@@ -283,14 +467,14 @@ export default function Attendance() {
                   <tr><td colSpan={9}><ErrorState message="تعذّر تحميل سجلّات الحضور." onRetry={() => list.refetch()} /></td></tr>
                 )}
                 {!list.isLoading && !list.isError && rows.length === 0 && (
-                  <TableEmptyRow colSpan={9} message={query ? "لا سجلات مطابقة للبحث." : "لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً."} />
+                  <TableEmptyRow colSpan={9} message={f.q ? "لا سجلات مطابقة للبحث." : "لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً."} />
                 )}
                 {rows.length > 0 && (
                   <tr className="border-t-2 border-border bg-muted/40 font-bold">
                     <td className="p-2.5" colSpan={5}>الإجمالي</td>
-                    <td className="p-2.5 text-center tabular-nums">{visHours.toNumber().toLocaleString("en-US")}</td>
+                    <td className="p-2.5 text-center tabular-nums">{approx(visHours.toNumber().toLocaleString("en-US"))}</td>
                     <td></td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(visAmount.toFixed(2))}</td>
+                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{approx(iqd(visAmount.toFixed(2)))}</td>
                     <td></td>
                   </tr>
                 )}
@@ -364,66 +548,66 @@ export default function Attendance() {
  * لكلٍّ ⇒ صفر ساعات وصفر أجر لليلة عمل كاملة؛ ومع تفعيله تُغلق بصمةُ الفجر وردية أمس.
  * تغييره لا يُعيد حساب الماضي (مسيّرات سابقة قد تكون بُنيت على الأرقام القديمة).
  */
-function NightShiftSettingsCard() {
+function AttendanceSettingsCard() {
   const utils = trpc.useUtils();
   const q = trpc.attendance.settings.useQuery();
   const [open, setOpen] = useState(false);
-  const save = trpc.attendance.updateSettings.useMutation({
-    onSuccess: async () => { notify.ok("حُفظت إعدادات احتساب الحضور"); await utils.attendance.settings.invalidate(); setOpen(false); },
-    onError: (e) => notify.err(e),
-  });
   const s = q.data;
-  const [enabled, setEnabled] = useState(false);
-  const [cutoff, setCutoff] = useState(8);
   const [payOn, setPayOn] = useState(false);
   const [payFrom, setPayFrom] = useState("");
   const [maxDaily, setMaxDaily] = useState(12);
-  // جدول أسبوعيّ: ساعات كل يوم، وصفرٌ = راحة (يوحّد المفهومين — الجمعة قد تكون قصيرة).
-  const [sched, setSched] = useState<Record<string, { hours: number; rate?: number | null }>>({});
+
   useEffect(() => {
     if (!open || !s) return;
-    setEnabled(!!s.nightShiftEnabled);
-    setCutoff(Number(s.nightShiftCutoffHour ?? 8));
     setPayOn(!!s.attendancePayEnabled);
     setPayFrom(s.attendancePayFrom ? String(s.attendancePayFrom).slice(0, 10) : "");
     setMaxDaily(Number(s.maxDailyHours ?? 12));
-    setSched(
-      s.defaultWorkSchedule && typeof s.defaultWorkSchedule === "object"
-        ? ({ ...(s.defaultWorkSchedule as Record<string, { hours: number; rate?: number | null }>) })
-        : Object.fromEntries(WEEK_DAYS.map((d) => [d, { hours: d === "الجمعة" ? 0 : 8 }])),
-    );
   }, [open, s]);
 
+  const save = trpc.attendance.updateSettings.useMutation({
+    onSuccess: async () => {
+      notify.ok("حُفظت إعدادات الاحتساب");
+      setOpen(false);
+      await utils.attendance.settings.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
   return (
-    <Card>
-      <CardContent className="p-3 flex items-center justify-between gap-3 flex-wrap text-sm">
-        <div className="flex items-center gap-2">
-          <Moon aria-hidden className="size-4 text-muted-foreground" />
-          <span>الأجر بالحضور:</span>
-          <span className={s?.attendancePayEnabled ? "font-medium text-[var(--status-active,#16a34a)]" : "text-muted-foreground"}>
-            {q.isLoading ? "…" : s?.attendancePayEnabled ? `مفعَّل من ${String(s.attendancePayFrom ?? "").slice(0, 10)}` : "معطَّل"}
-          </span>
-          <span className="text-muted-foreground">·</span>
-          <span>الوردية الليلية:</span>
-          <span className={s?.nightShiftEnabled ? "font-medium" : "text-muted-foreground"}>
-            {q.isLoading ? "…" : s?.nightShiftEnabled ? `حتى ${s.nightShiftCutoffHour}:00` : "معطَّلة"}
-          </span>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => setOpen(true)}>تعديل</Button>
-      </CardContent>
+    <>
+      <Card>
+        <CardContent className="p-3 flex items-center justify-between gap-3 flex-wrap text-sm">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Clock className="size-4 text-muted-foreground" />
+            <span>الأجر بالحضور:</span>
+            <span className={s?.attendancePayEnabled ? "font-medium text-[var(--status-active,#16a34a)]" : "text-muted-foreground"}>
+              {q.isLoading ? "…" : s?.attendancePayEnabled ? `مفعَّل من ${String(s.attendancePayFrom ?? "").slice(0, 10)}` : "معطَّل"}
+            </span>
+            <span className="text-muted-foreground">·</span>
+            <span>سقف اليوم:</span>
+            <span className="font-medium tabular-nums" dir="ltr">{q.isLoading ? "…" : `${Number(s?.maxDailyHours ?? 12)} ساعة`}</span>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setOpen(true)}>تعديل</Button>
+        </CardContent>
+      </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>إعدادات احتساب الحضور والأجر</DialogTitle></DialogHeader>
-          <div className="space-y-3 text-sm max-h-[70vh] overflow-y-auto">
+          <div className="space-y-3 text-sm">
+            <p className="text-xs text-muted-foreground rounded-md border p-2 leading-relaxed">
+              ساعات كل يوم وسعر ساعته تُضبط <span className="font-medium">في بطاقة كل موظف</span> — لا هنا،
+              فلكلٍّ جدولُه. هذه الشاشة للإعدادات العامّة التي لا تخصّ موظفاً بعينه.
+            </p>
+
             <div className="rounded-md border p-3 space-y-2">
               <label className="flex items-start gap-2">
                 <input type="checkbox" className="size-4 mt-0.5" checked={payOn} onChange={(e) => setPayOn(e.target.checked)} />
                 <span>
                   <span className="font-medium">الأجر بالحضور (للموظفين الشهريّين)</span>
                   <span className="block text-xs text-muted-foreground mt-0.5 leading-relaxed">
-                    سعر ساعة الموظف = راتبه ÷ ساعات دوامه في الشهر، وأجرُه = ساعات حضوره الفعلية × ذلك السعر.
-                    الغياب بلا أجر، والإجازة المدفوعة يوم دوامٍ كامل، وبلا راتب لا تُحتسب.
+                    أجر اليوم = ساعاته المحتسَبة × سعر ساعته، والمستحقّ = مجموع أيام الشهر. الغياب بلا أجر،
+                    والإجازة المدفوعة يوم دوامٍ كامل، والساعات فوق المقرَّر أوفر تايم.
                   </span>
                 </span>
               </label>
@@ -435,83 +619,30 @@ function NightShiftSettingsCard() {
                   جهاز الحضور — ولا بيانات فيها — غياباً كاملاً فتُصفَّر رواتبها.
                 </p>
               </div>
-              <div className="space-y-1">
-                <Label>جدول الدوام الأسبوعيّ (افتراضي)</Label>
-                <div className="rounded-md border divide-y">
-                  <div className="grid grid-cols-3 gap-2 bg-muted/50 px-2 py-1 text-[11px] font-medium">
-                    <span>اليوم</span><span className="text-center">ساعات الدوام</span><span className="text-center">سعر الساعة (د.ع)</span>
-                  </div>
-                  {WEEK_DAYS.map((d) => (
-                    <div key={d} className="grid grid-cols-3 gap-2 items-center px-2 py-1.5">
-                      <span className="text-xs">{d}</span>
-                      <Input
-                        type="number" min={0} max={24} step="0.5" dir="ltr" className="h-8 text-center"
-                        disabled={!payOn}
-                        value={sched[d]?.hours ?? 0}
-                        onChange={(ev) => setSched((p) => ({ ...p, [d]: { ...(p[d] ?? {}), hours: Number(ev.target.value) } }))}
-                      />
-                      <Input
-                        type="number" min={0} step="250" dir="ltr" className="h-8 text-center"
-                        placeholder="مُشتقّ من الراتب"
-                        disabled={!payOn || !(sched[d]?.hours > 0)}
-                        value={sched[d]?.rate ?? ""}
-                        onChange={(ev) => setSched((p) => ({ ...p, [d]: { ...(p[d] ?? { hours: 0 }), rate: ev.target.value === "" ? null : Number(ev.target.value) } }))}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  <span className="font-medium">صفر ساعة = يوم راحة.</span> وسعر الساعة هو أصل الحساب: أجر اليوم =
-                  ساعاته المحتسَبة × سعره، والراتب المستحقّ = مجموع أيام الشهر. تركُ السعر فارغاً يشتقّه من حقل
-                  راتب الموظف ÷ ساعات شهره. والساعات فوق المقرَّر اليوميّ تُحتسب <span className="font-medium">أوفر تايم</span> ببندٍ مستقلّ.
-                  مجموع الأسبوع: <span className="font-medium tabular-nums" dir="ltr">{WEEK_DAYS.reduce((t, d) => t + (Number(sched[d]?.hours) || 0), 0)}</span> ساعة.
-                  يمكن تخصيص جدولٍ لكل موظف من بطاقته.
-                </p>
-              </div>
             </div>
 
-            {/* حارس الساعات غير المعقولة — يعمل دائماً، مستقلّاً عن تفعيل الأجر بالحضور. */}
             <div className="rounded-md border p-3 space-y-1">
               <Label htmlFor="max-daily">حارس الساعات — سقف اليوم الواحد</Label>
               <Input id="max-daily" type="number" min={1} max={24} step="0.5" dir="ltr" value={maxDaily} onChange={(e) => setMaxDaily(Number(e.target.value))} />
               <p className="text-xs text-muted-foreground leading-relaxed">
-                يومٌ تتجاوز بصماتُه هذا السقف يُقصّ عنده ويُوسَم «يحتاج تصحيح» بدل أن يُدفَع كاملاً.
-                لا يوجد دوامٌ ١٦ أو ١٨ أو ٢٠ ساعة — مثلُه غالباً بصمةُ خروجٍ منسيّة أو خللٌ في ساعة
-                الجهاز، فيُدفَع أجرُ عملٍ لم يقع ويدخل الأوفر تايم فيُضاعَف. صحّح الأوقات من كشف
-                حضور الموظف ليُرفع الوسم.
+                يومٌ تتجاوز بصماتُه هذا السقف يُقصّ عنده ويُوسَم «يحتاج تصحيح». ومعه تعمل حرّاسٌ أخرى:
+                خروجٌ قبل دخول · بصمة مكرّرة بأقلّ من ٥ دقائق · يومٌ أقلّ من نصف المقرَّر · بصمة خروجٍ ناقصة.
+                كلُّها وسمٌ لا منع — القيمة تبقى وتظهر في طابور التصحيح.
               </p>
             </div>
 
-            <div className="rounded-md border p-3 space-y-2">
-            <label className="flex items-start gap-2">
-              <input type="checkbox" className="size-4 mt-0.5" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-              <span>
-                <span className="font-medium">اعتبر بصمة الفجر إغلاقاً لوردية أمس</span>
-                <span className="block text-xs text-muted-foreground mt-0.5">
-                  بدونها تُسجَّل وردية 22:00 ← 06:00 يومين ببصمة واحدة لكلٍّ، فتُحتسب صفر ساعات وصفر أجر لليلة عمل كاملة.
-                </span>
-              </span>
-            </label>
-            <div className="space-y-1">
-              <Label htmlFor="ns-cutoff">ساعة الفصل (صباحاً)</Label>
-              <Input id="ns-cutoff" type="number" min={1} max={12} dir="ltr" value={cutoff} disabled={!enabled} onChange={(e) => setCutoff(Number(e.target.value))} />
-              <p className="text-xs text-muted-foreground">
-                أيّ بصمة قبل هذه الساعة تُغلق وردية اليوم السابق إن كانت مفتوحة. بعدها تُعدّ بدايةَ يومٍ جديد.
-              </p>
-            </div>
-            </div>
             <p className="text-xs text-muted-foreground border-t pt-2">
               التغيير لا يُعيد حساب أيام مسجَّلة سابقاً — يسري على ما يصل بعده.
             </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
-            <Button disabled={save.isPending} onClick={() => save.mutate({ nightShiftEnabled: enabled, nightShiftCutoffHour: cutoff, attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, defaultWorkSchedule: sched, maxDailyHours: maxDaily })}>
+            <Button disabled={save.isPending} onClick={() => save.mutate({ attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, maxDailyHours: maxDaily })}>
               {save.isPending ? "جارٍ الحفظ…" : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </>
   );
 }

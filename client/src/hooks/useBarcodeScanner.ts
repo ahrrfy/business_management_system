@@ -13,6 +13,7 @@
  * @param thresholdMs — الفاصل الزمني الأقصى بين أحرف الماسح (افتراضي 80ms)
  */
 import { useEffect, useCallback } from "react";
+import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 
 const INPUT_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
@@ -42,7 +43,7 @@ export function useBarcodeScanner(
       const captured = buf;
       buf = "";
       if (captured.length >= minLength) {
-        stableOnScan(captured);
+        stableOnScan(normalizeBarcodeScannerInput(captured));
       }
     };
 

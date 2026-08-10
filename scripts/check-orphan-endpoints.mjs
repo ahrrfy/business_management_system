@@ -48,6 +48,10 @@ function extractProcedures(file) {
 // المتداخلة: trpc.commissions.runs.approve ⇒ المقطع «approve» يُعدّ مستهلَكاً). ميلٌ متعمَّد نحو
 // «مستهلَك» (أقلّ إيجابيات كاذبة): إجراءٌ يُعدّ حيّاً إن ظهر اسمه الورقيّ كأيّ مقطعٍ في سلسلة trpc.
 const usedSegments = new Set();
+function addUsedProcedure(procedure) {
+  for (const seg of procedure.split(".")) usedSegments.add(seg);
+}
+
 function walkClient(dir) {
   for (const name of readdirSync(dir)) {
     const fp = path.join(dir, name);
@@ -56,12 +60,34 @@ function walkClient(dir) {
     else if (/\.(ts|tsx)$/.test(name) && !name.endsWith(".test.ts") && !name.endsWith(".test.tsx")) {
       const src = readFileSync(fp, "utf8");
       for (const m of src.matchAll(/\b(?:trpc|utils)\.((?:\w+\.)*\w+)/g)) {
-        for (const seg of m[1].split(".")) usedSegments.add(seg);
+        addUsedProcedure(m[1]);
       }
     }
   }
 }
 walkClient(path.join(REPO, "client", "src"));
+
+// The native Android app is a first-class tRPC consumer too. Keep this scan
+// deliberately narrow: production Kotlin sources and the two transport forms
+// used by TrpcClient (typed helpers and an explicit /api/trpc route).
+function walkAndroidClient(dir) {
+  if (!existsSync(dir)) return;
+  for (const name of readdirSync(dir)) {
+    const fp = path.join(dir, name);
+    const st = statSync(fp);
+    if (st.isDirectory()) walkAndroidClient(fp);
+    else if (name.endsWith(".kt")) {
+      const src = readFileSync(fp, "utf8");
+      for (const m of src.matchAll(/\.(?:query|mutate|queryArray|mutateArray|queryObject|mutateObject|queryList|mutateList)\s*\(\s*"([\w.]+)"/g)) {
+        addUsedProcedure(m[1]);
+      }
+      for (const m of src.matchAll(/\/api\/trpc\/([\w.]+)/g)) {
+        addUsedProcedure(m[1]);
+      }
+    }
+  }
+}
+walkAndroidClient(path.join(REPO, "android-native", "app", "src", "main", "java"));
 
 // (٤) احسب اليتامى: إجراء خادميّ اسمه الورقيّ لا يظهر في أيّ سلسلة trpc واجهية.
 const orphans = [];

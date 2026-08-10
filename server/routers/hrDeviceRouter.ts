@@ -20,9 +20,11 @@ import { eq } from "drizzle-orm";
 import { employees } from "../../drizzle/schema";
 import { requireDb } from "../services/tx";
 import { isDupEntry, toArabicMessage } from "@shared/errorMap.ar";
+import { isExactHostNetwork } from "../services/hrDevices/bridgeSecurity";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
+const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
 
 /**
  * سريان الربط: التاريخ الصريح إن أُعطي، وإلا تاريخ مباشرة الموظف.
@@ -47,7 +49,12 @@ const deviceInput = z.object({
   location: z.string().trim().optional(),
   branchId: z.number().int().positive().nullish(),
   deviceCode: z.string().trim().optional(),
-  ip: z.string().trim().optional(),
+  ip: z
+    .string()
+    .trim()
+    .max(80)
+    .refine((value) => isExactHostNetwork(value), "أدخل عنوان IP واحداً صالحاً للجهاز")
+    .optional(),
   port: z.number().int().min(0).max(65535).nullish(),
   serverHost: z.string().trim().optional(),
   serverPort: z.number().int().min(0).max(65535).nullish(),
@@ -91,16 +98,54 @@ export const hrDeviceRouter = router({
 
   bridgeStatus: hrRead.query(() => svc.bridgeStatus()),
 
+  /**
+   * فلترا موظف/مدى تاريخ فوق `hrDeviceService.listPunches` — الخدمة (خارج ملكية هذه الشريحة)
+   * تدعم deviceId/unmatchedOnly بترقيمٍ حقيقيّ على مستوى SQL فقط؛ الموظف والتاريخ يُطبَّقان هنا
+   * بمسحٍ تراكميّ فوق صفحات الخدمة (٢٠٠ الحدّ الأقصى لكل نداء) حتى تُشبَع نافذة (offset,limit)
+   * المطلوبة أو يُبلَغ صمّام أمان (٤٠٠٠ سجلّ) — الطابور مرتّبٌ الأحدث أولاً فالمسح يبدأ من هناك.
+   */
   punchesList: hrRead
     .input(
       z.object({
         deviceId: z.number().int().positive().optional(),
         unmatchedOnly: z.boolean().optional(),
+        employeeId: z.number().int().positive().optional(),
+        dateFrom: dateStr.optional(),
+        dateTo: dateStr.optional(),
         limit: z.number().int().min(1).max(200).optional(),
         offset: z.number().int().min(0).optional(),
       })
     )
-    .query(({ input }) => svc.listPunches(input)),
+    .query(async ({ input }) => {
+      const limit = input.limit ?? 25;
+      const targetOffset = input.offset ?? 0;
+      if (input.employeeId == null && !input.dateFrom && !input.dateTo) {
+        return svc.listPunches({ deviceId: input.deviceId, unmatchedOnly: input.unmatchedOnly, limit, offset: targetOffset });
+      }
+
+      const SCAN_PAGE = 200;
+      const SCAN_CAP = 4000;
+      type PunchRow = Awaited<ReturnType<typeof svc.listPunches>>["rows"][number];
+      const matched: PunchRow[] = [];
+      let scanOffset = 0;
+      let serviceHasMore = true;
+      while (matched.length < targetOffset + limit + 1 && serviceHasMore && scanOffset < SCAN_CAP) {
+        const page = await svc.listPunches({ deviceId: input.deviceId, unmatchedOnly: input.unmatchedOnly, limit: SCAN_PAGE, offset: scanOffset });
+        for (const r of page.rows) {
+          if (input.employeeId != null && r.employeeId !== input.employeeId) continue;
+          const day = r.punchAt ? new Date(r.punchAt as unknown as string).toISOString().slice(0, 10) : null;
+          if (input.dateFrom && (!day || day < input.dateFrom)) continue;
+          if (input.dateTo && (!day || day > input.dateTo)) continue;
+          matched.push(r);
+        }
+        scanOffset += page.rows.length;
+        serviceHasMore = page.hasMore;
+      }
+      return {
+        rows: matched.slice(targetOffset, targetOffset + limit),
+        hasMore: matched.length > targetOffset + limit || serviceHasMore,
+      };
+    }),
 
   deviceUsers: hrRead
     .input(z.object({ deviceId: z.number().int().positive() }))

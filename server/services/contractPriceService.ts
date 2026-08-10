@@ -4,7 +4,7 @@
 // عند غياب unitPriceOverride صريح) — النقطتان تستهلكان `resolveContractPrices` نفسها = مصدر
 // حقيقة واحد، فلا ينجرف المعروض عن المفروض.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray, lt, or } from "drizzle-orm";
 import {
   customerContractPrices,
   customers,
@@ -35,40 +35,130 @@ export interface ContractPriceListRow {
   /** سعر الفئة الحالي لفئة العميل الافتراضية — يُجلَب في الراوتر/الشاشة عند الحاجة، ليس هنا. */
 }
 
+const contractPriceListSelection = {
+  id: customerContractPrices.id,
+  customerId: customerContractPrices.customerId,
+  productUnitId: customerContractPrices.productUnitId,
+  price: customerContractPrices.price,
+  isActive: customerContractPrices.isActive,
+  note: customerContractPrices.note,
+  updatedAt: customerContractPrices.updatedAt,
+  productId: products.id,
+  productName: products.name,
+  variantName: productVariants.variantName,
+  color: productVariants.color,
+  size: productVariants.size,
+  sku: productVariants.sku,
+  unitName: productUnits.unitName,
+};
+
+function normalizeContractPriceRows(rows: ContractPriceListRow[]): ContractPriceListRow[] {
+  return rows.map((row) => ({
+    ...row,
+    id: Number(row.id),
+    customerId: Number(row.customerId),
+    productUnitId: Number(row.productUnitId),
+    productId: Number(row.productId),
+    isActive: !!row.isActive,
+  }));
+}
+
 /** كل الأسعار التعاقدية لعميل (النشطة والمعطَّلة — شاشة الإدارة تحتاج كليهما لإعادة التفعيل). */
 export async function listContractPricesForCustomer(customerId: number): Promise<ContractPriceListRow[]> {
   const db = requireDb();
   const rows = await db
-    .select({
-      id: customerContractPrices.id,
-      customerId: customerContractPrices.customerId,
-      productUnitId: customerContractPrices.productUnitId,
-      price: customerContractPrices.price,
-      isActive: customerContractPrices.isActive,
-      note: customerContractPrices.note,
-      updatedAt: customerContractPrices.updatedAt,
-      productId: products.id,
-      productName: products.name,
-      variantName: productVariants.variantName,
-      color: productVariants.color,
-      size: productVariants.size,
-      sku: productVariants.sku,
-      unitName: productUnits.unitName,
-    })
+    .select(contractPriceListSelection)
     .from(customerContractPrices)
     .innerJoin(productUnits, eq(customerContractPrices.productUnitId, productUnits.id))
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(eq(customerContractPrices.customerId, customerId))
-    .orderBy(desc(customerContractPrices.updatedAt));
-  return rows.map((r) => ({
-    ...r,
-    id: Number(r.id),
-    customerId: Number(r.customerId),
-    productUnitId: Number(r.productUnitId),
-    productId: Number(r.productId),
-    isActive: !!r.isActive,
-  }));
+    .orderBy(desc(customerContractPrices.updatedAt), desc(customerContractPrices.id));
+  return normalizeContractPriceRows(rows);
+}
+
+export interface ContractPricePageInput {
+  customerId: number;
+  limit?: number;
+  cursor?: string | null;
+}
+
+interface ContractPriceCursorPayload {
+  v: 1;
+  customerId: number;
+  updatedAt: string;
+  id: number;
+}
+
+function encodeContractPriceCursor(row: { customerId: number; updatedAt: Date; id: number }): string {
+  const payload: ContractPriceCursorPayload = {
+    v: 1,
+    customerId: Number(row.customerId),
+    updatedAt: row.updatedAt.toISOString(),
+    id: Number(row.id),
+  };
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function decodeContractPriceCursor(cursor: string, expectedCustomerId: number): { updatedAt: Date; id: number } {
+  try {
+    const payload = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Partial<ContractPriceCursorPayload>;
+    const updatedAt = new Date(String(payload.updatedAt ?? ""));
+    if (
+      payload.v !== 1 ||
+      payload.customerId !== expectedCustomerId ||
+      !Number.isInteger(payload.id) ||
+      Number(payload.id) <= 0 ||
+      Number.isNaN(updatedAt.getTime())
+    ) {
+      throw new Error("invalid cursor");
+    }
+    return { updatedAt, id: Number(payload.id) };
+  } catch {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مؤشر صفحة أسعار العقود غير صالح" });
+  }
+}
+
+/** Stable keyset page ordered by updatedAt DESC, id DESC. `total` is the full customer total. */
+export async function listContractPricesForCustomerPage(input: ContractPricePageInput) {
+  const db = requireDb();
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+  const conditions = [eq(customerContractPrices.customerId, input.customerId)];
+  if (input.cursor) {
+    const cursor = decodeContractPriceCursor(input.cursor, input.customerId);
+    const seek = or(
+      lt(customerContractPrices.updatedAt, cursor.updatedAt),
+      and(eq(customerContractPrices.updatedAt, cursor.updatedAt), lt(customerContractPrices.id, cursor.id)),
+    );
+    if (seek) conditions.push(seek);
+  }
+
+  const [rawRows, totals] = await Promise.all([
+    db
+      .select(contractPriceListSelection)
+      .from(customerContractPrices)
+      .innerJoin(productUnits, eq(customerContractPrices.productUnitId, productUnits.id))
+      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(and(...conditions))
+      .orderBy(desc(customerContractPrices.updatedAt), desc(customerContractPrices.id))
+      .limit(limit + 1),
+    db
+      .select({ total: count() })
+      .from(customerContractPrices)
+      .where(eq(customerContractPrices.customerId, input.customerId)),
+  ]);
+
+  const hasMore = rawRows.length > limit;
+  const pageRows = rawRows.slice(0, limit);
+  const rows = normalizeContractPriceRows(pageRows);
+  const last = rows.at(-1);
+  return {
+    rows,
+    total: Number(totals[0]?.total ?? 0),
+    hasMore,
+    nextCursor: hasMore && last ? encodeContractPriceCursor(last) : null,
+  };
 }
 
 export interface UpsertContractPriceInput {

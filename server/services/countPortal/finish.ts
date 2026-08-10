@@ -1,8 +1,9 @@
 // تسليم التكليف (finish) — تنتقل الجلسة آلياً لـREVIEW عند تسليم آخر تكليف.
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { stocktakeAssignments, stocktakeSessions } from "../../../drizzle/schema";
 import { withTx } from "../tx";
+import { loadStocktakeProgress } from "../stocktake/internal";
 import type { PortalIdentity } from "./identity";
 import { SESSION_UNAVAILABLE_MSG, IDENTITY_EXPIRED_MSG, COUNTING_ENDED_MSG } from "./shared";
 
@@ -42,8 +43,21 @@ export async function finishAssignment(identity: PortalIdentity): Promise<Finish
     if (me.status === "SUBMITTED") {
       return { ok: true as const, sessionMovedToReview: false, alreadySubmitted: true };
     }
+    if (me.status !== "ACTIVE") {
+      throw new TRPCError({ code: "UNAUTHORIZED", message: IDENTITY_EXPIRED_MSG });
+    }
     if (session.status !== "COUNTING") {
       throw new TRPCError({ code: "BAD_REQUEST", message: COUNTING_ENDED_MSG });
+    }
+
+    // The shared session only moves to review after every scoped product has a
+    // first/recount value. Worker hand-off alone must never close it early.
+    const { total, counted } = await loadStocktakeProgress(tx, Number(session.id));
+    if (counted < total) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `لا يمكن رفع الجرد للمراجعة قبل عدّ كل المنتجات (${counted}/${total})`,
+      });
     }
 
     const now = new Date();
@@ -53,16 +67,15 @@ export async function finishAssignment(identity: PortalIdentity): Promise<Finish
       .where(eq(stocktakeAssignments.id, me.id));
 
     // آخر تكليف يُسلَّم ⇒ الجلسة تنتقل آلياً لقيد المراجعة.
-    const allSubmitted = assignments.every(
-      (a) => Number(a.id) === Number(me.id) || a.status === "SUBMITTED"
-    );
-    if (allSubmitted) {
-      await tx
-        .update(stocktakeSessions)
-        .set({ status: "REVIEW", submittedAt: now })
-        .where(eq(stocktakeSessions.id, session.id));
-    }
+    await tx
+      .update(stocktakeAssignments)
+      .set({ status: "SUBMITTED", submittedAt: now, lastActivityAt: now })
+      .where(and(eq(stocktakeAssignments.sessionId, session.id), eq(stocktakeAssignments.status, "ACTIVE")));
+    await tx
+      .update(stocktakeSessions)
+      .set({ status: "REVIEW", submittedAt: now })
+      .where(eq(stocktakeSessions.id, session.id));
 
-    return { ok: true as const, sessionMovedToReview: allSubmitted, alreadySubmitted: false };
+    return { ok: true as const, sessionMovedToReview: true, alreadySubmitted: false };
   });
 }

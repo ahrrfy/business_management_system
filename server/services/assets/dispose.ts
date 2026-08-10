@@ -6,6 +6,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
+import { companyBranchScope } from "../companyBranchScope";
 import { computeDepreciation } from "./depreciation";
 import { loadForUpdate } from "./helpers";
 import { getAsset } from "./queries";
@@ -19,8 +20,9 @@ export interface DisposeInput {
 
 /** إخراج من الخدمة (retired) أو استبعاد ببيع/خردة (disposed) مع احتساب الربح/الخسارة. */
 export async function disposeAsset(assetId: number, input: DisposeInput, actor: Actor) {
+  const scope = companyBranchScope(actor);
   await withTx(async (tx) => {
-    const a = await loadForUpdate(tx, assetId);
+    const a = await loadForUpdate(tx, assetId, scope);
     if (a.status === "disposed") throw new Error("الأصل مُستبعَد سلفاً");
     await tx
       .update(assetCustodyLog)
@@ -131,5 +133,5 @@ export async function disposeAsset(assetId: number, input: DisposeInput, actor: 
       })
       .where(eq(fixedAssets.id, assetId));
   });
-  return getAsset(assetId);
+  return getAsset(assetId, scope);
 }

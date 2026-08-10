@@ -41,4 +41,35 @@ if (latestFiles.length !== 1) {
   fail(`migration number ${String(latestPrefix).padStart(4, "0")} is used by ${latestFiles.length} files`);
 }
 
+// ── تصادم ترقيم الهجرات مع origin/main (استقرار سير العمل، ٧/٨/٢٦) ────────────────────────
+// العلّة المتكرّرة: فرعان متوازيان يأخذان الرقم نفسه (0152 مثلاً)، فلا يظهر التصادم إلّا **عند
+// الدمج** — تعارضٌ في `_journal.json` يوقف الـPR ويستهلك جلسةً كاملة لحلّه (حدث فعلاً على هذا
+// المستودع، راجع commit «حلّ تصادم ترقيم الهجرات»). الفحص المحلّي أعلاه لا يراه لأنّه لا ينظر
+// خارج الفرع إطلاقاً. هنا نقارن بالجانب الآخر **قبل** الدفع فيُعاد الترقيم بثوانٍ.
+//
+// يتخطّى بصمتٍ حين لا يكون `origin/main` متاحاً (بيئة CI ذات fetch-depth=1، أو مستودعٌ بلا
+// ريموت) — حارسٌ يفشل مفتوحاً: لا يمنع عملاً مشروعاً بسبب غياب مرجعٍ لا يملكه.
+try {
+  const { execFileSync } = await import("node:child_process");
+  const mainJournalRaw = execFileSync(
+    "git",
+    ["show", "origin/main:drizzle/migrations/meta/_journal.json"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+  );
+  const mainTags = (JSON.parse(mainJournalRaw).entries ?? []).map((e) => String(e.tag));
+  const mainByPrefix = new Map(mainTags.map((tag) => [tag.slice(0, 4), tag]));
+  const collisions = tags
+    .map((tag) => ({ tag, prefix: tag.slice(0, 4), main: mainByPrefix.get(tag.slice(0, 4)) }))
+    .filter((row) => row.main && row.main !== row.tag);
+  if (collisions.length) {
+    const lines = collisions.map((c) => `  • ${c.prefix}: فرعك «${c.tag}» ⟂ origin/main «${c.main}»`);
+    fail(
+      `تصادم ترقيم هجرات مع origin/main (سيتعارض عند الدمج حتماً):\n${lines.join("\n")}\n` +
+      `  أعِد ترقيم هجرتك إلى رقمٍ بعد آخر رقمٍ على main، وحدّث اسم الملف ومدخل _journal.json معاً.`,
+    );
+  }
+} catch {
+  // لا origin/main محلياً (CI بعمق ١، أو بلا ريموت) ⇒ تخطٍّ صامت.
+}
+
 console.log(`Migration journal check passed through ${tags.at(-1)}.`);

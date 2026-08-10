@@ -22,8 +22,10 @@ import { Link, useLocation } from "wouter";
 
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
 import { D, round2, toBase } from "@/lib/money";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -115,8 +117,8 @@ export default function SalesInvoiceNew() {
   // حرّاً بتبديلها يدوياً بعدها (لا نُعيد التهيئة عند كل جلب/إعادة رسم).
   const taxDefaultsAppliedRef = useRef(false);
   const taxSettingsQuery = trpc.system.getTaxSettings.useQuery();
-  // «وضع الافتتاح» (ش٥): هذه الشاشة تمرّ بقناة POS نفسها (sourceType الافتراضي) ⇒ بيعٌ مسدّد بالكامل نقداً أو بالبطاقة
-  // منها يستفيد من السالب المشروط أيضاً — لافتة توضيحية كي لا يبدو ذلك سلوكاً غريباً.
+  // «وضع الافتتاح» (ش٥ + توسعة ١٠/٨): هذه الشاشة تمرّ بقناة POS نفسها ⇒ يستفيد من السالب المشروط
+  // بيعُها المسدَّد كاملاً نقداً/بطاقةً **وكذلك الآجل لعميلٍ محدَّد** (يُسجَّل ذمّةً) — لافتة توضيحية.
   const openingModeQuery = trpc.system.getOpeningMode.useQuery(undefined, { staleTime: 60_000 });
   useEffect(() => {
     if (!taxDefaultsAppliedRef.current && taxSettingsQuery.data) {
@@ -231,10 +233,30 @@ export default function SalesInvoiceNew() {
         variantId: l.variantId,
         productUnitId: l.productUnitId,
         quantity: D(l.qty).toString(),
-        unitPriceOverride: round2(D(l.price)).toFixed(2),
-        discountPercent: l.discountType === "percent" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
-        discountAmount: l.discountType === "amount" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
+        // الهدية: نُعلن النيّة فقط ولا نُرسل سعراً/خصماً — الخادم يُصفّرهما بنفسه ويُرحّل التكلفة
+        // قيدَ GIFT_OUT. إرسال سعرٍ هنا يفتح باب «هديةٍ بسعر» لو انحرفت الشاشة يوماً.
+        ...(l.isGift
+          ? { isGift: true as const }
+          : {
+              unitPriceOverride: round2(D(l.price)).toFixed(2),
+              discountPercent: l.discountType === "percent" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
+              discountAmount: l.discountType === "amount" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
+            }),
       })),
+      // أجرة التوصيل (0152) — ثلاث حالات صريحة لا اثنتان:
+      //   مدفوع  ⇒ deliveryFee > 0 (إيرادُ شحنٍ يدخل الإجمالي)
+      //   مجّانيّ ⇒ deliveryFree=true + القيمة المُتنازَل عنها (بلا إيراد ولا إجمالي)
+      //   بلا توصيل ⇒ لا شيء يُرسَل إطلاقاً
+      ...(state.shippingFree
+        ? {
+            deliveryFree: true as const,
+            ...(D(state.shipping || "0").gt(0)
+              ? { deliveryWaivedAmount: round2(D(state.shipping)).toFixed(2) }
+              : {}),
+          }
+        : D(totals.shipping).gt(0)
+          ? { deliveryFee: totals.shipping }
+          : {}),
       // خصم إجمالي كمبلغ (calcTotals يحوّل النسبة إلى مبلغ). يُرسَل فقط إن كان موجباً.
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
       // العراق VAT=0% افتراضياً — الضريبة اختيارية على مستوى الفاتورة، تُطبَّق فقط عند تفعيلها
@@ -256,6 +278,11 @@ export default function SalesInvoiceNew() {
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
+    // قرار المالك (٦/٨/٢٦): «مجاني» يلزمه مقدار الأجرة — يُطبَع للزبون ويُحصى في التقارير.
+    // الخادم يمنعه أيضاً؛ هذا الحارس ليوفّر على الموظّف رحلةَ ذهابٍ وإياب.
+    if (state.shippingFree && !D(state.shipping || "0").gt(0)) {
+      return "أدخِل قيمة أجرة التوصيل قبل جعله مجّانياً — تُطبَع للزبون وتُحصى في التقارير.";
+    }
     for (const l of state.items) {
       if (!D(l.qty).gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
       if (D(l.price).lt(0)) return `السعر في «${l.name}» غير صالح.`;
@@ -377,7 +404,7 @@ export default function SalesInvoiceNew() {
         copyInvoiceItems(state.items);
         dispatch({ type: "CLEAR_ITEMS" });
         setPasteAvailable(true);
-        notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+        notify.ok("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
         return;
       case "paste": {
         const items = takeInvoiceItems();
@@ -397,11 +424,24 @@ export default function SalesInvoiceNew() {
     }
   }
 
+  // حارس فقد البيانات (نمط ExpenseNew.tsx): بند واحد فأكثر أو عميل مُحدَّد أو ملاحظة مكتوبة تكفي
+  // لاعتبار الفاتورة "قيد الإدخال" — يعترض تحديث/إغلاق التبويب فقط (beforeunload)، أما Esc/F12
+  // الداخليان فيُحرَسان أدناه بتأكيدٍ صريح (وليس هذا الهوك، الذي لا يعترض تنقّل SPA الداخلي).
+  const isDirty = useMemo(
+    () => state.items.length > 0 || state.entityId != null || state.notes.trim() !== "",
+    [state.items, state.entityId, state.notes],
+  );
+  useUnsavedGuard(isDirty);
+
   /* ─── اختصارات لوحة المفاتيح (F2/F4/F9/F12/Esc) ───────────────────── */
   const containerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const isTypingTarget = (el: EventTarget | null) =>
       !!el && (el as HTMLElement).matches?.("input, textarea, select, [contenteditable='true']");
+    // هل حوار تأكيدٍ (ConfirmHost) مفتوح فعلاً؟ — يمنع إعادة إطلاق تأكيد «مسح/مغادرة» جديد أثناء
+    // إغلاق تأكيدٍ سابق بنفس ضغطة Esc (نمط anyOverlayOpen في useSaveShortcuts.ts).
+    const confirmDialogOpen = () =>
+      typeof document !== "undefined" && !!document.querySelector('[role="alertdialog"][data-state="open"]');
 
     const onKey = (e: KeyboardEvent) => {
       // أثناء فتح حوار الموافقة: Esc يغلقه فقط.
@@ -438,24 +478,40 @@ export default function SalesInvoiceNew() {
       }
       if (e.key === "F12") {
         e.preventDefault();
-        handleReset();
+        if (confirmDialogOpen()) return;
+        if (!isDirty) { handleReset(); return; }
+        void confirm({
+          variant: "warning",
+          title: "مسح الفاتورة الحالية",
+          description: "توجد بيانات لم تُحفَظ في هذه الفاتورة (بنود/عميل/ملاحظات). المسح سيُفقدها نهائياً. متابعة؟",
+          confirmText: "مسح",
+        }).then((ok) => { if (ok) handleReset(); });
         return;
       }
       if (e.key === "Escape" && !isTypingTarget(e.target) && !bulkOpen) {
         e.preventDefault();
-        navigate("/invoices");
+        if (confirmDialogOpen()) return;
+        if (!isDirty) { navigate("/invoices"); return; }
+        void confirm({
+          variant: "warning",
+          title: "مغادرة الفاتورة الحالية",
+          description: "توجد بيانات لم تُحفَظ في هذه الفاتورة (بنود/عميل/ملاحظات). المغادرة ستُفقدها. متابعة؟",
+          confirmText: "مغادرة",
+        }).then((ok) => { if (ok) navigate("/invoices"); });
         return;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, bulkOpen, creditPrompt, create.isPending]);
+  }, [state, bulkOpen, creditPrompt, create.isPending, isDirty]);
 
   const typeInfo = INVOICE_TYPES[INVOICE_TYPE];
 
+  // بندٌ بسعر صفر **غير** موسومٍ هديةً = خطأ إدخال (سعر ناقص) يستحقّ التنبيه. أمّا الهدية فمجّانيّتها
+  // مقصودة ومصنَّفة (تُرحَّل تكلفتها مصروفَ هدايا) ⇒ لا تُنذَر.
   const hasZeroPriceLine = useMemo(
-    () => state.items.some((l) => D(l.price).lte(0)),
+    () => state.items.some((l) => !l.isGift && D(l.price).lte(0)),
     [state.items]
   );
 
@@ -488,8 +544,8 @@ export default function SalesInvoiceNew() {
         <div className="flex items-center gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
           <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
           <span>
-            وضع الافتتاح فعّال حتى نهاية يوم {openingModeQuery.data.endsAtYmd} — البيع المسدّد بالكامل نقداً أو بالبطاقة
-            لصنف غير مجرود افتتاحياً يُسجَّل ولو نفد رصيده (ينزل بالسالب)؛ الآجل وغير النقدي صارمان.
+            وضع الافتتاح فعّال حتى نهاية يوم {openingModeQuery.data.endsAtYmd} — منتجٌ غير مجرود افتتاحياً يُسجَّل ولو نفد
+            رصيده (ينزل بالسالب): بسدادٍ كامل نقداً/بطاقةً، أو آجلاً لعميلٍ محدَّد (يُسجَّل ذمّةً كاملة). البيع بلا عميلٍ يبقى صارماً.
           </span>
         </div>
       )}
@@ -511,6 +567,9 @@ export default function SalesInvoiceNew() {
             tier={state.tier}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
+            /* هدايا الفاتورة (0149): مفتاح «هدية» لكلّ سطر — يُصفّر قيمته في الفاتورة وتُرحَّل
+               تكلفته مصروفَ هدايا في الدفتر (قيد GIFT_OUT) لا خسارةَ بيعٍ مبهمة. */
+            allowGiftLines
             /* حصص ضريبة الفاتورة (توزيع تناسبي، عرض فقط) — تظهر كعمود حين taxEnabled=true. */
             taxShares={taxShares}
             onOpenBulkPicker={() => setBulkOpen(true)}
@@ -528,13 +587,17 @@ export default function SalesInvoiceNew() {
         </div>
 
         <aside className="flex w-80 shrink-0 flex-col gap-2">
-          {/* الشحن/المصاريف الأخرى غير مدعومة في sales.create ⇒ نُخفيها لئلّا تُضخّم
-              الإجمالي المعروض و«ادفع الكل» بمبلغ لا يُحفظ (خسارة مالية صامتة). */}
+          {/* أجرة التوصيل صارت مدعومة في sales.create (تُحفَظ في `invoices.deliveryFee` وتدخل
+              قيد SALE إيراداً بلا تكلفة، ويعكسها المرتجع الكامل) ⇒ أُظهرت مع مفتاح «مجاني».
+              «مصاريف أخرى» تبقى مخفيّة: الخادم لا يحفظها، وإظهارها يُضخّم الإجمالي المعروض
+              و«ادفع الكل» بمبلغٍ لا يُحفَظ (خسارة مالية صامتة). */}
           <TotalsPanel
+            shippingLabel="أجرة التوصيل"
+            allowFreeShipping
             items={state.items}
             state={state}
             dispatch={dispatch}
-            showShipping={false}
+            showShipping
             showOtherExpenses={false}
             showTaxToggle
           />

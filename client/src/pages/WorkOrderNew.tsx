@@ -16,6 +16,10 @@ import { D, fmt } from "@/lib/money";
 import { esc } from "@/lib/printing/brand";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 
@@ -89,8 +93,14 @@ export default function WorkOrderNew() {
   const staff = trpc.workOrders.assignableStaff.useQuery();
   const utils = trpc.useUtils();
 
+  // منتقي فرع صريح (نمط PR #288 في Reception.tsx): فرع المستخدم المُسنَد يُستعمَل صامتاً؛ الأدمن/
+  // المدير بلا فرع مُسنَد يلزمه اختيارٌ صريح قبل الحفظ — بدل فرعٍ أوّل في القائمة يُختار صامتاً
+  // (كان يُنشئ الأمر ويقبض عربوناً نقدياً في فرعٍ عشوائي لا يقصده المستخدم).
   const [branchId, setBranchId] = useState<number | "">("");
-  const effectiveBranch = branchId || me.data?.branchId || (branches.data?.[0] ? Number(branches.data[0].id) : 1);
+  const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
+  const noAssignedBranch = me.data != null && me.data.branchId == null;
+  const needsBranchChoice = noAssignedBranch && isElevatedRole && branchId === "";
+  const effectiveBranch = branchId || me.data?.branchId || 0;
 
   // السلامة المخزنية/المحاسبية: الأصناف الجاهزة (السلّة) تُباع بفاتورة بيع مستقلّة عبر saleRouter
   // (خصم مخزون + COGS + قيد SALE)، لا داخل طلب الخدمة. يلزم وردية مفتوحة كنقطة البيع.
@@ -119,8 +129,8 @@ export default function WorkOrderNew() {
   );
 
   // قراءة الباركود الفوريّة عند Enter ⇒ بحث دقيق ثم إضافة مباشرة.
-  function handleBarcodeEnter() {
-    const code = search.trim();
+  function handleBarcodeEnter(rawCode = search) {
+    const code = rawCode.trim();
     if (!code) return;
     utils.catalog.byBarcode.fetch({ barcode: code, branchId: Number(effectiveBranch), tier: "RETAIL" }).then((row) => {
       if (row) {
@@ -141,6 +151,7 @@ export default function WorkOrderNew() {
       }
     }).catch(() => { /* ignore: لو فشل، ندع المستخدم يبحث يدوياً */ });
   }
+  const barcodeInput = useBarcodeInput((code) => handleBarcodeEnter(code));
 
   function addRow(r: SearchResult) {
     setCart((prev) => {
@@ -286,7 +297,7 @@ export default function WorkOrderNew() {
 
   async function handleSave(opts: { print: boolean }) {
     setError("");
-    if (!effectiveBranch) return setError("اختر الفرع.");
+    if (!effectiveBranch) return setError("اختر الفرع أولاً.");
     if (!hasCart && !hasCustom) return setError("أضف منتجاً جاهزاً للسلّة أو أدخل خدمة تخصيص بسعر.");
     if (hasCustom && !salePrice.trim()) return setError("سعر بيع خدمة التخصيص مطلوب.");
     if (paymentMethod === "CARD" && !paymentReference.trim()) return setError("رقم العملية المرجعي مطلوب للبطاقة.");
@@ -304,7 +315,7 @@ export default function WorkOrderNew() {
 
     // تأكيد نهائيّ — يصف الوثيقتين والمبلغ المقبوض فوراً (بيع كامل + عربون) ولا رجعة فيه.
     const parts: string[] = [];
-    if (hasCart) parts.push(`فاتورة بيع للأصناف الجاهزة بقيمة ${fmt(saleTotal.toFixed(2))} د.ع تُدفع كاملة`);
+    if (hasCart) parts.push(`فاتورة بيع للمنتجات الجاهزة بقيمة ${fmt(saleTotal.toFixed(2))} د.ع تُدفع كاملة`);
     if (hasCustom) parts.push(`طلب خدمة بقيمة ${fmt(customTotal.toFixed(2))} د.ع بعربون ${fmt(depositD.toFixed(2))} د.ع`);
     if (!(await confirm({
       variant: "danger",
@@ -338,7 +349,7 @@ export default function WorkOrderNew() {
         // إنشاء أمر الشغل تُعيد الفاتورة نفسها (idempotent) بدل فاتورة بيع مكرّرة بخصم مخزون ونقد مزدوجين.
         await utils.shifts.current.invalidate();
       } catch (e: any) {
-        setError(e?.message || "تعذّر إتمام بيع الأصناف الجاهزة.");
+        setError(e?.message || "تعذّر إتمام بيع المنتجات الجاهزة.");
         return;
       }
     }
@@ -358,7 +369,18 @@ export default function WorkOrderNew() {
       // أمر التخصيص خدمةٌ خالصة بلا منتج أساس (الأصناف الجاهزة بيعت بفاتورتها).
       baseVariantId: null,
       title: title.trim() || "طلب خدمة",
-      customizationText: customizationText.trim() || null,
+      // علّة (٣/٨): deliveryMethod كان يُختار في الواجهة (القسم ٤) ولا يُرسَل للخادم إطلاقاً —
+      // لا عمود مخصّص له في workOrders (الجدول لا يملك deliveryMethod، والراوتر لا يقرأه). يُطوى
+      // كسطر مُهيكَل `[طريقة التسليم]` ضمن customizationText (نمط composeCustomizationText في
+      // CustomizationDialog.tsx: `[المقاس]`/`[الخامة]`/`[توصيل]`) — يظهر لاحقاً في تفاصيل الأمر
+      // ومحطة التنفيذ بدل أن يُفقَد صامتاً. لا يُسجَّل حين الافتراضي («استلام من المحل») تفادياً للتكرار.
+      customizationText:
+        [
+          customizationText.trim(),
+          deliveryMethod !== DELIVERY_METHODS[0] ? `[طريقة التسليم] ${deliveryMethod}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n") || null,
       quantity: Math.max(1, parseInt(quantity || "1", 10) || 1),
       materials: [],
       laborCost: D(laborCost || "0").toFixed(2),
@@ -384,10 +406,10 @@ export default function WorkOrderNew() {
     } as any, { context: { shouldPrint: opts.print } } as any);
   }
 
-  function exportImage() {
-    // تصدير ملخص بصري: نولّد بطاقة HTML نظيفة ثم نطبعها أو نحوّلها لـPNG عبر canvas بسيط.
-    // الحلّ الكامل (html2canvas) ثقيل؛ هنا نفتح نافذة طباعة تتضمّن الملخّص، يستطيع المستخدم
-    // «حفظ كصورة» عبر طباعة-إلى-PDF ثم تحويل، أو يستخدم الزرّ المستقبلي «تنزيل PNG».
+  /** معاينة/طباعة ملخّص طلب الخدمة — نافذة طباعة بلا اتصال (لا يُنشئ ملف صورة فعلياً؛ يستطيع
+   *  المستخدم «حفظ كصورة/PDF» من حوار طباعة المتصفّح نفسه). ⚠️ تسمية الزرّين كانت «تحميل كصورة»
+   *  توحي بتنزيل ملف صورة مباشر — أُصلحت (٣/٨) لمطابقة السلوك الفعليّ (معاينة قابلة للطباعة). */
+  function previewAndPrint() {
     const w = window.open("", "_blank", "width=720,height=900");
     if (!w) return;
     const rows = cart.map((c) => `<tr><td>${esc(c.productName)}</td><td>${esc(c.unitName)}</td><td>${c.quantity}</td><td>${esc(fmt(c.unitPrice))}</td></tr>`).join("");
@@ -410,6 +432,23 @@ export default function WorkOrderNew() {
   // التركيز التلقائي على البحث عند فتح الصفحة لتسريع العمل.
   useEffect(() => { barcodeRef.current?.focus(); }, []);
 
+  // اختصارات: Ctrl+S يحفظ (بلا طباعة، نمط الزرّ الأساسي). بلا Esc — النموذج مكتظّ بعناصر
+  // <select> أصلية (الفرع/المنفّذ/طريقة التسليم) لا تُكتشَف حالتها فيتعارض إغلاقها مع إلغاء النموذج
+  // (نفس تحذير CustomerNew.tsx). حارس فقدان البيانات لكل حقلٍ أدخله المستخدم فعلياً.
+  useSaveShortcuts({
+    onSave: () => void handleSave({ print: false }),
+    enabled: !createWO.isPending && !createSale.isPending && !createCustomer.isPending,
+  });
+  useUnsavedGuard(
+    hasCart ||
+      title.trim() !== "" ||
+      customizationText.trim() !== "" ||
+      customerSel.name.trim() !== "" ||
+      designImages.length > 0 ||
+      depositD.gt(0) ||
+      salePrice.trim() !== "",
+  );
+
   const channelDef = CHANNELS.find((c) => c.v === channel)!;
   const customerNeedsPhone = customerSel.isNew && !customerSel.phone;
 
@@ -419,7 +458,7 @@ export default function WorkOrderNew() {
         title="طلب خدمة جديد"
         actions={
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={exportImage}>تحميل/طباعة كصورة</Button>
+            <Button variant="outline" size="sm" onClick={previewAndPrint}>معاينة وطباعة</Button>
             <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع</Link>
           </div>
         }
@@ -526,9 +565,15 @@ export default function WorkOrderNew() {
                   value={search}
                   dir="auto"
                   onChange={(e) => setSearch(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleBarcodeEnter(); } }}
+                  onKeyDown={(e) => {
+                    barcodeInput.handleKeyDown(e, setSearch);
+                    if (e.defaultPrevented) return;
+                    if (e.key === "Enter") { e.preventDefault(); handleBarcodeEnter(); }
+                  }}
                   placeholder="امسح الباركود (Enter للإضافة) أو ابحث بالاسم/الـSKU"
+                  className={cn("ps-[4.9rem]", barcodeSearchInputClass)}
                 />
+                <BarcodeSearchCue />
                 {posList.isFetching && (
                   <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">…</span>
                 )}
@@ -559,16 +604,18 @@ export default function WorkOrderNew() {
               )}
             </div>
             <div className="space-y-1">
-              <Label>الفرع</Label>
+              <Label>الفرع {needsBranchChoice && <span className="text-destructive">*</span>}</Label>
               <select
                 className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring"
-                value={effectiveBranch}
+                value={needsBranchChoice ? "" : effectiveBranch}
                 onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
               >
+                {needsBranchChoice && <option value="">— اختر الفرع —</option>}
                 {(branches.data ?? []).map((b: any) => (
                   <option key={b.id} value={b.id}>{b.name}</option>
                 ))}
               </select>
+              {needsBranchChoice && <p className="text-[11px] text-destructive">يلزم اختيار الفرع قبل الحفظ.</p>}
             </div>
           </div>
 
@@ -827,7 +874,7 @@ export default function WorkOrderNew() {
                   ))}
                 </div>
               )}
-              <p className="text-[11px] text-muted-foreground">على أمر التخصيص فقط — الأصناف الجاهزة تُدفع كاملةً بفاتورتها.</p>
+              <p className="text-[11px] text-muted-foreground">على أمر التخصيص فقط — المنتجات الجاهزة تُدفع كاملةً بفاتورتها.</p>
             </div>
             {paymentMethod === "CARD" && (
               <div className="space-y-1">
@@ -859,7 +906,7 @@ export default function WorkOrderNew() {
               <div className="flex justify-between"><span>إجمالي السلّة</span><span dir="ltr">{fmt(cartSubtotal.toFixed(2))} د.ع</span></div>
               {discount.gt(0) && <div className="flex justify-between text-money-positive"><span>− خصم</span><span dir="ltr">{fmt(discount.toFixed(2))} د.ع</span></div>}
               <div className="flex justify-between font-bold border-t pt-1"><span>يُدفع كاملاً الآن</span><span dir="ltr">{fmt(saleTotal.toFixed(2))} د.ع</span></div>
-              {!shift && hasCart && <p className="text-[11px] text-destructive">يلزم وردية مفتوحة لبيع الأصناف الجاهزة.</p>}
+              {!shift && hasCart && <p className="text-[11px] text-destructive">يلزم وردية مفتوحة لبيع المنتجات الجاهزة.</p>}
             </div>
             {/* بطاقة أمر التخصيص */}
             <div className={cn("rounded-md border p-3 space-y-1", hasCustom ? "bg-violet-500/5 border-violet-500/30" : "bg-muted/20 opacity-60")}>
@@ -880,14 +927,14 @@ export default function WorkOrderNew() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex flex-wrap gap-2">
-        <Button onClick={() => handleSave({ print: false })} disabled={createWO.isPending || createSale.isPending || createCustomer.isPending}>
-          {createWO.isPending || createSale.isPending ? "جارٍ الحفظ…" : "حفظ"}
+        <Button onClick={() => handleSave({ print: false })} disabled={!effectiveBranch || createWO.isPending || createSale.isPending || createCustomer.isPending}>
+          {!effectiveBranch ? "اختر الفرع أولاً" : createWO.isPending || createSale.isPending ? "جارٍ الحفظ…" : "حفظ"}
         </Button>
-        <Button variant="default" onClick={() => handleSave({ print: true })} disabled={createWO.isPending || createSale.isPending}>
+        <Button variant="default" onClick={() => handleSave({ print: true })} disabled={!effectiveBranch || createWO.isPending || createSale.isPending}>
           <Printer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> حفظ وطباعة
         </Button>
-        <Button variant="outline" onClick={exportImage}>
-          <Send aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تحميل كصورة
+        <Button variant="outline" onClick={previewAndPrint}>
+          <Send aria-hidden className="size-4 inline-block align-text-bottom me-1" /> معاينة وطباعة
         </Button>
         <Link href="/work-orders"><Button variant="ghost">إلغاء</Button></Link>
       </div>

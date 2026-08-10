@@ -20,6 +20,10 @@ import { labelContentOf, solveLabelLayout, PART_LABEL_AR } from "@/lib/printing/
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { cn } from "@/lib/utils";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Check, Info, Layers, Tag, TriangleAlert, X } from "lucide-react";
@@ -120,9 +124,42 @@ function renderItemFor(q: QueueItem, tier: LabelTier): LabelRenderItem {
   );
 }
 
+/**
+ * مسوّدة قائمة الطباعة في localStorage (نمط مسودة POS — `loadPosTabsDraft`/`savePosTabsDraft`):
+ * تنقّلٌ عرَضيّ أو تحديث الصفحة كان يُفرغ عملَ تحضير عشرات المنتجات بلا تحذير. القيمة كاملةً
+ * (سعر/باركود/عدد) لقطةٌ وقت الإضافة — قد تصبح قديمة إن تغيّر السعر لاحقاً، مقبولٌ لمسوّدة
+ * (يُعاد التحقّق الفعليّ عند الطباعة الفعلية من `printLabels`، لا من التخزين المحليّ).
+ */
+const QUEUE_STORAGE_KEY = "barcodeLabels.queue.v1";
+
+function loadQueueDraft(): QueueItem[] {
+  try {
+    const raw = localStorage.getItem(QUEUE_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as QueueItem[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveQueueDraft(queue: QueueItem[]): void {
+  try {
+    if (queue.length === 0) localStorage.removeItem(QUEUE_STORAGE_KEY);
+    else localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queue));
+  } catch {
+    /* تخزين محلّي ممتلئ/محجوب — نتجاهل، القائمة تبقى في الذاكرة لهذه الجلسة */
+  }
+}
+
 export default function BarcodeLabels() {
   const me = trpc.auth.me.useQuery();
-  const branchId = me.data?.branchId ?? 1;
+  const canPickBranch = me.data?.role === "admin" || me.data?.role === "manager";
+  // منتقي فرع صريح (نمط PR #288): افتراضي فرع المستخدم إن مُسنَد؛ وإلا يلزم اختياراً صريحاً —
+  // كان `?? 1` صامتاً يعرض مخزون الفرع ١ لأدمن بلا فرع مُسنَد فيُظهر «= المخزون» رقماً خاطئاً.
+  const [pickedBranch, setPickedBranch] = useState<number | "">("");
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
+  const branchId = pickedBranch === "" ? (me.data?.branchId != null ? Number(me.data.branchId) : null) : Number(pickedBranch);
   const utils = trpc.useUtils();
 
   const [search, setSearch] = useState("");
@@ -136,12 +173,18 @@ export default function BarcodeLabels() {
   // تحميل كسول غير محدود: نبدأ بصفحة ونزيدها بالتمرير ⇒ لا قصّ صامت لنتائج البحث.
   const SEARCH_PAGE = 200;
   const [searchLimit, setSearchLimit] = useState(SEARCH_PAGE);
-  const [queue, setQueue] = useState<QueueItem[]>([]);
+  // مسوّدة محفوظة محلياً (نمط مسودة POS) — تُحمَّل مرّةً عند فتح الشاشة فلا يفقدها تحديثٌ عرَضيّ.
+  const [queue, setQueue] = useState<QueueItem[]>(loadQueueDraft);
   // مرآة حيّة للقائمة تُقرأ تزامنياً داخل المعالجات (انظر `addRows`). تُحدَّث في كل رسم.
   const queueRef = useRef<QueueItem[]>(queue);
   queueRef.current = queue;
   // مفتاح الصفّ: عدّادٌ في ref لا حالة — لا يحتاج رسماً، ولا يتصادم عند نداءين في نفس اللحظة.
-  const seqRef = useRef(1);
+  // يبدأ فوق أعلى مفتاحٍ محمَّل من المسوّدة كي لا يتصادم مع صفوفها المُستعادة.
+  const seqRef = useRef(1 + queue.reduce((m, q) => Math.max(m, q.key), 0));
+
+  // احفظ المسوّدة عند أي تغيير، وحذّر من مغادرة الصفحة (إغلاق تبويب/تحديث) وفيها قائمةٌ غير مُصدَّرة.
+  useEffect(() => { saveQueueDraft(queue); }, [queue]);
+  useUnsavedGuard(queue.length > 0);
   const [showName, setShowName] = useState(true);
   const [showPrice, setShowPrice] = useState(true);
   // فئة السعر المطبوع. كانت مسمَّرةً على RETAIL ⇒ تعذّرت طباعة ملصق رفٍّ بسعر جملة/حكومي
@@ -241,8 +284,8 @@ export default function BarcodeLabels() {
   }
 
   const results = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: term, limit: searchLimit },
-    { enabled: canSearch, placeholderData: keepPreviousData, staleTime: 15_000 }
+    { branchId: branchId ?? 0, tier, query: term, limit: searchLimit },
+    { enabled: canSearch && branchId != null, placeholderData: keepPreviousData, staleTime: 15_000 }
   );
   const maybeMoreSearch = (results.data?.length ?? 0) >= searchLimit;
   function handleSearchScroll(e: React.UIEvent<HTMLDivElement>) {
@@ -267,12 +310,13 @@ export default function BarcodeLabels() {
   const stalePricingKey = staleTargets.map((q) => q.productUnitId).join(",");
   const isRepricing = staleTargets.length > 0;
   useEffect(() => {
-    if (!stalePricingKey) return;
+    if (!stalePricingKey || branchId == null) return;
+    const bId = branchId;
     const ids = stalePricingKey.split(",").map(Number);
     let cancelled = false;
     void (async () => {
       try {
-        const rows = await utils.catalog.byUnitIds.fetch({ branchId, tier, productUnitIds: ids });
+        const rows = await utils.catalog.byUnitIds.fetch({ branchId: bId, tier, productUnitIds: ids });
         if (cancelled) return;
         const byUnit = new Map(rows.map((r) => [r.productUnitId, r]));
         setQueue((prev) =>
@@ -285,7 +329,7 @@ export default function BarcodeLabels() {
           })
         );
       } catch {
-        if (!cancelled) setError("تعذّر إعادة تسعير بعض الأصناف لهذه الفئة — بدّل الفئة ثانيةً لإعادة المحاولة.");
+        if (!cancelled) setError("تعذّر إعادة تسعير بعض المنتجات لهذه الفئة — بدّل الفئة ثانيةً لإعادة المحاولة.");
       }
     })();
     return () => { cancelled = true; };
@@ -324,6 +368,7 @@ export default function BarcodeLabels() {
   /** «أضِف كلّ الألوان/الوحدات»: كلّ صفوف (متغيّر × وحدة) لهذا المنتج دفعةً واحدة. */
   async function addWholeProduct(row: PosRow) {
     setError(""); setInfo("");
+    if (branchId == null) { setError("اختر الفرع أولاً."); return; }
     // نلتقط الفئة وقت الطلب: لو بدّلها المستخدم أثناء الجلب، نُثبّت الصفوف بفئة جلبها الحقيقيّة
     // فيلتقطها أثر إعادة التسعير لاحقاً بدل وسمها بفئةٍ لم تُسعَّر بها.
     const fetchTier = tier;
@@ -342,6 +387,7 @@ export default function BarcodeLabels() {
   async function tryResolveBarcode(code: string) {
     const looksLikeBarcode = /^[0-9A-Za-z_-]{4,}$/.test(code);
     if (!looksLikeBarcode) return false;
+    if (branchId == null) { setError("اختر الفرع أولاً."); return false; }
     try {
       const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
       if (row) { addRow(row); return true; }
@@ -351,7 +397,13 @@ export default function BarcodeLabels() {
     }
     return false;
   }
+  const barcodeInput = useBarcodeInput((code) => {
+    setSearch(code);
+    void tryResolveBarcode(code);
+  });
   function onSearchKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    barcodeInput.handleKeyDown(e, setSearch);
+    if (e.defaultPrevented) return;
     if (e.key === "Enter") {
       e.preventDefault();
       const data = results.data;
@@ -470,8 +522,35 @@ export default function BarcodeLabels() {
       <PageHeader
         title="طباعة ملصقات الباركود"
         description="ابحث عن منتج وأضفه. للمنتجات بلا باركود مصنّعي يُولَّد باركود داخلي (ALR…) — احفظه ليصبح قابلاً للمسح في الكاشير، ثم اطبع الملصقات."
-        actions={<Link href="/products" className="text-sm text-muted-foreground">المنتجات ←</Link>}
+        actions={
+          <div className="flex items-center gap-3">
+            {canPickBranch && (
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                الفرع (يصحّح المخزون المعروض):
+                <select
+                  value={pickedBranch === "" ? "" : String(pickedBranch)}
+                  onChange={(e) => setPickedBranch(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="h-8 rounded-md border border-input bg-transparent px-2 text-xs text-foreground"
+                >
+                  <option value="">
+                    {me.data?.branchId != null ? "— فرعي —" : "— اختر —"}
+                  </option>
+                  {(branchesQ.data ?? []).map((b) => (
+                    <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <Link href="/products" className="text-sm text-muted-foreground">المنتجات ←</Link>
+          </div>
+        }
       />
+
+      {branchId == null && (
+        <div role="alert" className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-sm text-[var(--sem-warn)]">
+          {canPickBranch ? "اختر الفرع أعلاه أولاً — يحدّد مخزون «= المخزون» ونتائج البحث." : "لا فرع مُسنَد لحسابك — تواصل مع الإدارة."}
+        </div>
+      )}
 
       {/* الإعدادات | المعاينة — عمودان على ≥lg */}
       <div className="grid gap-4 lg:grid-cols-2 items-start">
@@ -599,7 +678,7 @@ export default function BarcodeLabels() {
             {previewFit.overflow ? (
               <div
                 role="alert"
-                className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+                className="mt-3 flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]"
               >
                 <TriangleAlert aria-hidden className="size-4 shrink-0 mt-0.5" />
                 <p>
@@ -647,9 +726,12 @@ export default function BarcodeLabels() {
               value={search}
               onChange={(e) => { setSearch(e.target.value); setSearchLimit(SEARCH_PAGE); }}
               onKeyDown={onSearchKeyDown}
-              placeholder="ابحث بالاسم/SKU أو امسح الباركود — Enter يحلّ الباركود حرفياً"
+              placeholder={branchId == null ? "اختر الفرع أولاً…" : "ابحث بالاسم/SKU أو امسح الباركود — Enter يحلّ الباركود حرفياً"}
+              disabled={branchId == null}
               autoFocus
+              className={cn("ps-[4.9rem]", barcodeSearchInputClass)}
             />
+            <BarcodeSearchCue />
             {search.trim() && (
               <div
                 className="absolute z-10 mt-1 w-full bg-popover border rounded-md shadow max-h-72 overflow-auto"

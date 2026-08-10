@@ -1,14 +1,14 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement } from "./inventoryService";
-import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
+import { adjustCustomerBalance, adjustDeliveryBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, round2, toDbMoney } from "./money";
-import { openShiftIdTx } from "./shiftService";
+import { computeExpectedCash, openShiftIdTx, resolveBranchCashShiftTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
@@ -22,7 +22,7 @@ export interface ReturnLineInput {
 export interface ReturnSaleInput {
   invoiceId: number;
   lines: ReturnLineInput[];
-  refund?: { amount: string; method: PaymentMethod } | null;
+  refund?: { amount: string; method: PaymentMethod; shiftId?: number | null } | null;
   restock?: boolean;
   /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة المرتجع الأول (لا استرداد/إرجاع مزدوج). */
   clientRequestId?: string | null;
@@ -175,6 +175,10 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
 
     let returnedGrossNet = new Decimal(0);
     let returnedCost = new Decimal(0);
+    // هدايا الفاتورة (0149): تكلفة البنود المُهداة المُرجَعة تُجمَع **منفصلةً**. تكلفتها لم تدخل قيد
+    // SALE أصلاً (دخلت قيد GIFT_OUT)، فعكسُها داخل قيد RETURN يُلغي تكلفةً لم تُسجَّل هناك قطّ ⇒
+    // ربحٌ منفوخ من العدم. تُعكَس في قيد GIFT_OUT سالبٍ أدناه — كلٌّ يُعكَس في وعائه.
+    let returnedGiftCost = new Decimal(0);
 
     // bundles (٧/٧/٢٦): إن كان أحد البنود المُرجَعة بكجاً، لا نطبّق applyMovement على البكج نفسه
     // (لا branchStock له) — نُوسّع مكوّناته من الوصفة الحالية ونعيدها للمخزون. تجميع لكل المتغيّرات
@@ -217,7 +221,11 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     for (const { line, item } of work) {
       const portion = new Decimal(line.baseQuantity).dividedBy(item.baseQuantity);
       returnedGrossNet = returnedGrossNet.plus(money(item.total).times(portion));
-      returnedCost = returnedCost.plus(round2(money(item.unitCost).times(line.baseQuantity)));
+      // سطر الهدية: `item.total` صفر ⇒ لا إيراد يُعكَس (لا استرداد نقديّ — لم يُدفع شيء)، وتكلفته
+      // تذهب لوعاء الهدايا لا لوعاء COGS.
+      const lineCost = round2(money(item.unitCost).times(line.baseQuantity));
+      if (item.isGift) returnedGiftCost = returnedGiftCost.plus(lineCost);
+      else returnedCost = returnedCost.plus(lineCost);
 
       const itemVariantId = Number(item.variantId);
       const kind = kindByVariant.get(itemVariantId) ?? "STOCKED";
@@ -322,6 +330,10 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     // (restock=true) فيتعادل ازديادُ المخزون مع نقصان COGS. أمّا الإيراد/الضريبة/الذمة فتُعكَس
     // في الحالتين (العميل أُسترِدّ/أُسقطت ذمّته بصرف النظر عن مصير البضاعة المُعادة).
     const reversedCost = restock ? returnedCost : new Decimal(0);
+    // هدايا الفاتورة (0149): مرآةُ القاعدة نفسها على وعاء الهدايا — الهديةُ العائدة إلى الرفّ
+    // (restock=true) يُعكَس مصروفها، والتالفةُ/غير العائدة تبقى مصروفاً (البضاعة ذهبت فعلاً).
+    returnedGiftCost = round2(returnedGiftCost);
+    const reversedGiftCost = restock ? returnedGiftCost : new Decimal(0);
 
     // RETURN ledger entry: negative values + منفّذ مستقلّ عن بائع الفاتورة.
     const returnOperatorName = await userNameSnapshot(tx, actor.userId);
@@ -338,6 +350,25 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
       createdBy: actor.userId,
       createdByNameSnapshot: returnOperatorName,
     });
+
+    // هدايا الفاتورة (0149): عكسُ مصروف الهدية بقيد GIFT_OUT سالبٍ (تكلفة سالبة ⇒ ربحٌ موجب يُلغي
+    // الخصمَ الأصليّ) — نظير عكس النثرية/التلف في `expenseService.cancelExpense`. بلا `dedupeKey`:
+    // المرتجعات الجزئية المتعدّدة على الفاتورة نفسها مشروعة، وكلٌّ يعكس حصّته.
+    if (reversedGiftCost.gt(0)) {
+      await postEntry(tx, {
+        entryType: "GIFT_OUT",
+        branchId: Number(inv.branchId),
+        invoiceId: input.invoiceId,
+        customerId: inv.customerId,
+        revenue: new Decimal(0),
+        cost: reversedGiftCost.neg(),
+        profit: reversedGiftCost,
+        amount: reversedGiftCost.neg(),
+        createdBy: actor.userId,
+        createdByNameSnapshot: returnOperatorName,
+        notes: "عكس هدايا ضمن مرتجع بيع",
+      });
+    }
 
     // بضاعة الأمانة (ش٣): عكس التزام المودِع — **دائماً** (restock أو تالف)، بقيدٍ PURCHASE سالب بنفس
     // invoiceId ⇒ يدخل فلتر خصم العمولة فيستردّ حصّة البائع (صافي وعائه = 0). §٥ حاصرة ١.
@@ -407,7 +438,13 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     }
     // سقف الاسترداد بالطريقة نفسها: المتاح = Σ(IN بهذه الطريقة) − Σ(OUT بهذه الطريقة)،
     // فلا يُسترَدّ نقداً ما دُفع بطاقةً (يُفرّغ الصندوق) ولا يتجاوز المقبوض فعلاً بتلك الطريقة.
+    // ش٥ (قرار مالك ٦/٨): المقبوض **رصيد زين** يُستردّ **نقداً** — TELECOM ليست طريقة استرداد
+    // (لا سكّة ردٍّ لرصيدٍ شُحن؛ OUT بزين يُنقص الحساب المشتقّ زوراً)، فبِلا هذا الضمّ كانت
+    // فاتورة زينٍ خالصة مرتجعُها بلا أيّ مسار استردادٍ بنيوياً (سقف كل طريقةٍ صفر). حصص زين
+    // تدخل سقف النقد وحده، وOUT النقدية السابقة تُنقصه فلا استهلاك مزدوج. مرآة سياسة ردّ
+    // العربون في reception/deposits.ts. المرتجع أصلاً مديريّ (م٧) وحدّ الدرج أدناه قائم.
     const refundMethod = input.refund?.method;
+    const capMethods: string[] = refundMethod === "CASH" ? ["CASH", "TELECOM"] : refundMethod ? [refundMethod] : [];
     let methodAvailable = new Decimal(0);
     if (refundMethod) {
       const mr = await tx
@@ -419,28 +456,96 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
         .where(
           and(
             eq(receipts.invoiceId, input.invoiceId),
-            eq(receipts.paymentMethod, refundMethod),
+            inArray(receipts.paymentMethod, capMethods as never),
             eq(receipts.status, "COMPLETED"),
+            // تدقيق ٦/٨ (ث٣/ث٥/ث١٢): إيصال **أمانة أجرة التوصيل** مختومٌ بالفاتورة تشغيلياً
+            // لكنّه مالُ طرفٍ ثالث (لم يمسّ paidAmount) — احتسابُه «مقبوضاً نقداً على الفاتورة»
+            // كان يفتح رداً نقدياً على فاتورةٍ لم يُدفَع منها دينارٌ نقداً (مدفوعة بالبطاقة مثلاً)
+            // ويستهلك أمانة المندوب استرداداً. البصمة البنيوية: له قيد DELIVERY_FEE_HELD.
+            sql`NOT EXISTS (
+              SELECT 1 FROM accountingEntries ae
+              WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD'
+            )`,
           ),
         );
       methodAvailable = money(mr[0]?.inSum ?? "0").minus(money(mr[0]?.outSum ?? "0"));
+      // ش٤ (مراجعة عدائية): حصص العرابين المُطبَّقة على هذه الفاتورة (orderPayments APPLICATION)
+      // تدخل paidAmount بينما إيصال أمّها **غير مختوم** بالفاتورة (مُشظّى بين هدفين، أو مشوبٌ
+      // بردٍّ جزئيّ) فلا يراه inSum ⇒ فاتورةٌ PAID كان مرتجعُها غير قابلٍ للاسترداد بنيوياً
+      // (refundCap=0) ومال الزبون العابر يُحتجز بلا مسار. تُضمّ الحصّة بطريقة قبض أمّها، مع
+      // استبعاد ما إيصال أمّه مختومٌ بهذه الفاتورة (محسوبٌ في inSum سلفاً — لا ازدواج).
+      // outSum القائم (إيصالات OUT المختومة) يظلّ يُنقص السقف بعد كل استرداد فلا استهلاك مزدوج.
+      const appRes = await tx.execute(sql`
+        SELECT CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS v
+        FROM orderPayments app
+        JOIN orderPayments coll ON coll.id = app.parentPaymentId
+        LEFT JOIN receipts pr ON pr.id = coll.receiptId
+        WHERE app.orderPayKind = 'APPLICATION'
+          AND (
+            (app.orderPayAppliedKind = 'INVOICE' AND app.appliedId = ${input.invoiceId})
+            OR (app.orderPayAppliedKind = 'WORKORDER' AND app.appliedId IN (
+              SELECT wo.id FROM workOrders wo WHERE wo.invoiceId = ${input.invoiceId}
+            ))
+          )
+          AND coll.orderPayMethod IN (${sql.join(capMethods.map((m) => sql`${m}`), sql`, `)})
+          AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${input.invoiceId})
+      `);
+      const appData = (appRes as unknown as [Array<{ v: string }>])[0] ?? appRes;
+      const appRow = Array.isArray(appData) ? appData[0] : undefined;
+      methodAvailable = methodAvailable.plus(money(appRow?.v ?? "0"));
+
+      // قرار المالك (٦/٨/٢٦) — **ما حصّله المندوب وورّده مالٌ نقديّ وصلنا فعلاً**: إيصال
+      // التوريد مجمَّعٌ لعدّة فواتير بلا invoiceId، فكان المُحصَّل عبر المندوب غير مرئيٍّ
+      // لسقف الاسترداد ⇒ زبونٌ عابر دفع للمندوب وأعاد البضاعة **لا يستطيع استرداد ديناره
+      // من الشاشة إطلاقاً** (سقفه صفر). نضمّ هنا حصّة هذه الفاتورة من الإرسالية المُحصَّلة
+      // (collectedAmount) للسقف النقديّ — بحدّ ما تبقّى منها فعلاً بعد أيّ استردادٍ سابق
+      // (outSum أعلاه يُنقصه، فلا استهلاك مزدوج).
+      if (refundMethod === "CASH") {
+        const cnRes = await tx.execute(sql`
+          SELECT CAST(COALESCE(SUM(cn.collectedAmount), 0) AS CHAR) AS v
+          FROM deliveryConsignments cn
+          WHERE cn.invoiceId = ${input.invoiceId}
+            AND cn.consignmentStatus IN ('DELIVERED','PARTIAL')
+        `);
+        const cnData = (cnRes as unknown as [Array<{ v: string }>])[0] ?? cnRes;
+        const cnRow = Array.isArray(cnData) ? cnData[0] : undefined;
+        methodAvailable = methodAvailable.plus(money(cnRow?.v ?? "0"));
+      }
     }
     const refundCap = Decimal.min(returnedTotal, methodAvailable);
     if (requestedRefund.gt(refundCap)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = الأقل من قيمة المرتجع والمقبوض بهذه الطريقة)`,
+        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = الأقل من قيمة المرتجع والمقبوض بهذه الطريقة${refundMethod === "CASH" ? " — المقبوض رصيدَ زين يُستردّ نقداً ويدخل هذا السقف" : ""})`,
       });
     }
     const cashRefund = requestedRefund;
 
     if (cashRefund.gt(0)) {
-      // انسب الاسترداد النقدي لوردية الموظّف المفتوحة (وإلا فالـZ-report يُظهر عجزاً وهمياً).
-      const shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
-      // G9 (١٩/٦/٢٦): استرداد نقدي بلا وردية مفتوحة كان يكتب receipt بـshiftId=null
-      // ⇒ يخرج النقد من الدُرج لكن لا يدخل تسوية Z-report ⇒ عجز وهمي عند الإغلاق.
-      if (input.refund!.method === "CASH" && shiftId == null) {
-        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "افتح وردية أولاً لاسترداد نقدي" });
+      // انسب الاسترداد إلى وردية الدرج الذي خرج منه النقد فعلياً — لا وردية الفاعل بالضرورة.
+      // المرتجعات salesManagerProcedure ⇒ مُنفِّذ الاسترداد غالباً مديرٌ قد يختلف عن الكاشير الذي
+      // يُشغّل الدرج الحقيقيّ؛ ربطه بوردية الفاعل (لو خلَت، G9 ١٩/٦/٢٦) كان يُخفي الاسترداد عن
+      // Z-report صاحب الدرج فيظهر له عجزٌ لا يفهم سببه عند الإغلاق. resolveBranchCashShiftTx يبحث
+      // في ورديات الفرع المفتوحة كلّها (لا الفاعل فقط)، ويتطلّب اختياراً صريحاً (refund.shiftId)
+      // حين يتعدّد الدرج المفتوح. غير النقد لا يمسّ صندوقاً فيبقى على النمط القديم (معلوماتيّ بحت).
+      let shiftId: number | null;
+      if (input.refund!.method === "CASH") {
+        const resolved = await resolveBranchCashShiftTx(tx, Number(inv.branchId), input.refund!.shiftId ?? null);
+        shiftId = resolved.shiftId;
+        // حدّ الدرج (نمط cashDropService — لا يُسحَب أكثر من النقد الحاليّ فيه): سقف الفاتورة
+        // (refundCap أعلاه) وحده لا يكفي — يضمن فقط أن المسترَد ≤ ما دُفع بهذه الطريقة على هذه
+        // الفاتورة، لا أنّ الدرج المستهدَف يحمل هذا المبلغ *الآن* (سحبٌ نقديّ أو مصروفٌ سابقٌ في
+        // نفس الوردية قد يكون أنقص الدرج فعلياً). بلا هذا الحدّ يُطلَب من الكاشير تسليم نقدٍ لا يملكه
+        // فعلياً في درجه أثناء العمل، لا أن يُكتشَف الخلل لاحقاً عند الإغلاق فقط.
+        const currentDrawerCash = await computeExpectedCash(tx, shiftId, resolved.openingBalance);
+        if (cashRefund.gt(currentDrawerCash)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `المبلغ يتجاوز النقد المتوفّر حالياً في هذا الدرج (المتاح ${currentDrawerCash.toFixed(2)} < المطلوب ${cashRefund.toFixed(2)}) — راجع الدرج أو اختر درجاً/طريقة استرداد أخرى.`,
+          });
+        }
+      } else {
+        shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
       }
       const rRes = await tx.insert(receipts).values({
         invoiceId: input.invoiceId,
@@ -490,6 +595,54 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     // AR: the portion not refunded in cash is dropped from the customer's balance.
     if (inv.customerId) {
       await adjustCustomerBalance(tx, Number(inv.customerId), returnedTotal.minus(cashRefund).neg());
+    }
+
+    // قرار المالك (٦/٨/٢٦) — **مرتجعٌ لفاتورةٍ بيد مندوب: تُخصَم عهدته بقيمة ما عاد**.
+    // الحالة الواقعية: المندوب حصّل جزءاً من الفاتورة وأعاد باقي البضاعة. قبل هذا كان
+    // المتبقّي يبقى عهدةً عليه **بلا نقدٍ يقابله** — ومخرجاه الوحيدان يكذبان: شطبٌ يُسجَّل
+    // خسارةً (والبضاعة عندنا!) أو تسويةٌ يدفع فيها من جيبه ما لم يقبضه. الآن تُعكَس عهدته
+    // بمقدار الأقلّ من (قيمة المرتجع، ما تبقّى في عهدته عن هذه الفاتورة)، ويُخفَّض COD
+    // الإرسالية بالمثل فلا يُطالَب بتحصيله لاحقاً.
+    const cnRows = await tx
+      .select({
+        id: deliveryConsignments.id,
+        number: deliveryConsignments.consignmentNumber,
+        partyId: deliveryConsignments.partyId,
+        codAmount: deliveryConsignments.codAmount,
+        collectedAmount: deliveryConsignments.collectedAmount,
+        status: deliveryConsignments.status,
+      })
+      .from(deliveryConsignments)
+      .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
+      .for("update")
+      .limit(1);
+    const cn = cnRows[0];
+    if (cn && (cn.status === "DISPATCHED" || cn.status === "PARTIAL")) {
+      const outstanding = round2(money(cn.codAmount).minus(money(cn.collectedAmount)));
+      const relief = Decimal.min(returnedTotal, outstanding);
+      if (relief.gt(0)) {
+        await adjustDeliveryBalance(tx, Number(cn.partyId), relief.neg());
+        await postEntry(tx, {
+          entryType: "DELIVERY_REMIT",
+          dedupeKey: `DELIVERY_RETURN_RELIEF:INV:${input.invoiceId}:${toDbMoney(newReturnedTotal)}`,
+          branchId: Number(inv.branchId),
+          invoiceId: input.invoiceId,
+          deliveryPartyId: Number(cn.partyId),
+          amount: relief,
+          notes: `عكس عهدةٍ عن بضاعةٍ عادت — مرتجع فاتورة (إرسالية ${cn.number})`,
+        });
+        // COD الفعّال يُخفَّض فلا يُطالَب المندوب بتحصيل ما رجع؛ والإرسالية تُقفل إن صفر المتبقّي.
+        const newCod = round2(money(cn.codAmount).minus(relief));
+        await tx
+          .update(deliveryConsignments)
+          .set({
+            codAmount: toDbMoney(newCod),
+            ...(newCod.lte(money(cn.collectedAmount))
+              ? { status: "DELIVERED" as const, settledAt: new Date() }
+              : {}),
+          })
+          .where(eq(deliveryConsignments.id, Number(cn.id)));
+      }
     }
 
     // Idempotency: سجّل المفتاح بعد نجاح الكتابة (refId = الفاتورة).
@@ -546,6 +699,7 @@ export async function listSalesReturns(input: ListSalesReturnsInput = {}) {
       invoiceNumber: invoices.invoiceNumber,
       customerId: accountingEntries.customerId,
       customerName: customers.name,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       amount: accountingEntries.amount,
       notes: accountingEntries.notes,
       createdAt: accountingEntries.createdAt,

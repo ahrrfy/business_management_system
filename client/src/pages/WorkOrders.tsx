@@ -1,23 +1,35 @@
 import "./WorkOrders.board.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, Calendar, CheckCircle2, ChevronRight, FileText, Package, Printer, Receipt, Search, Timer, Wrench, X } from "lucide-react";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
+import { AlertTriangle, Calendar, CheckCircle2, ChevronRight, FileText, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Search, Timer, Truck, Wrench, X } from "lucide-react";
+import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { fmtAr, fmtInt, D, positiveDiff, round2 } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { fmtDate, fmtDateTime } from "@/lib/date";
+import { fmtDate, fmtDateTime, toDate } from "@/lib/date";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { printShippingLabel, type ShippingLabelData } from "@/lib/printing/shippingLabel";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
-import { RowActions } from "@/components/list";
+import { RowActions, type RowAction } from "@/components/list";
+import { DataTable } from "@/components/data-table/DataTable";
+import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
+import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import CustomerPicker from "@/components/CustomerPicker";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import {
   Dialog,
   DialogContent,
@@ -60,7 +72,9 @@ const COLUMNS: { key: ColKey; label: string; hint: string; hue: number; status: 
   { key: "CLAIMED", label: "مسحوب", hint: "مُسنَد لفنّي — لم يبدأ", hue: 235, status: "RECEIVED", match: (o) => o.status === "RECEIVED" && !!o.assignedTo },
   { key: "IN_PROGRESS", label: "قيد التنفيذ", hint: "تحت الإنتاج الآن", hue: 250, status: "IN_PROGRESS", match: (o) => o.status === "IN_PROGRESS" },
   { key: "READY", label: "جاهز للتسليم", hint: "جاهز — بانتظار العميل", hue: 293, status: "READY", match: (o) => o.status === "READY" },
-  { key: "DELIVERED", label: "مُسلَّم", hint: "اكتمل وصدرت الفاتورة", hue: 155, status: "DELIVERED", match: (o) => o.status === "DELIVERED" },
+  // «مُسلَّم» تُجلب باستعلام منفصل محدود بالأحدث (DELIVERED_LIMIT) — التاريخ يتراكم بلا سقف،
+  // والعدّاد الحقيقي يأتي من workOrders.counts لا من طول القائمة.
+  { key: "DELIVERED", label: "مُسلَّم", hint: "اكتمل وصدرت الفاتورة — يُعرض الأحدث", hue: 155, status: "DELIVERED", match: (o) => o.status === "DELIVERED" },
 ];
 
 const CHANNELS: Record<string, { label: string; icon: string }> = {
@@ -75,6 +89,19 @@ const PRIORITIES: Record<string, { label: string; cls: string; rank: number }> =
   URGENT: { label: "عاجل", cls: "wob-urgent", rank: 3 },
   NORMAL: { label: "عادي", cls: "wob-normal", rank: 2 },
   LOW: { label: "منخفض", cls: "wob-low", rank: 1 },
+};
+function WorkOrderChannelMark({ channel, className = "size-3.5" }: { channel: string | null | undefined; className?: string }) {
+  if (channel === "WHATSAPP") {
+    return <WhatsAppIcon className={`${className} text-[var(--brand-whatsapp)]`} />;
+  }
+  const ch = CHANNELS[channel ?? "WALK_IN"] ?? CHANNELS.OTHER;
+  return <span aria-hidden>{ch.icon}</span>;
+}
+const PAYMENT_METHOD_LABEL: Record<string, string> = {
+  CASH: "نقدي",
+  CARD: "بطاقة",
+  TRANSFER: "تحويل",
+  WALLET: "محفظة",
 };
 const TL_LABEL: Record<string, string> = {
   "workOrder.create": "استُلم الطلب",
@@ -103,8 +130,11 @@ function initials(name: string | null | undefined): string {
 }
 function dueInfo(o: { status: string; dueDate: unknown }): { state: "done" | "ok" | "soon" | "late"; text: string } {
   if (o.status === "DELIVERED") return { state: "done", text: "سُلّم" };
-  if (!o.dueDate) return { state: "ok", text: "بلا موعد" };
-  const due = new Date(String(o.dueDate).slice(0, 10) + "T00:00:00");
+  // ⚠️ o.dueDate يصل عبر tRPC/superjson كائنَ Date حقيقياً (لا نصّاً) — String(Date) ينتج
+  // "Tue Sep 15 2026…" لا ISO، فيفشل new Date(...) صامتاً وينتج NaN. toDate() يتعامل مع
+  // Date/نصّ/YYYY-MM-DD محلياً بأمان (نفس دالة fmtDate المُتحقَّق منها).
+  const due = toDate(o.dueDate as string | number | Date | null | undefined);
+  if (!due) return { state: "ok", text: "بلا موعد" };
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate());
@@ -114,20 +144,27 @@ function dueInfo(o: { status: string; dueDate: unknown }): { state: "done" | "ok
   if (days === 1) return { state: "soon", text: "غداً" };
   return { state: "ok", text: `باقٍ ${days} يوم` };
 }
-function isLate(o: { status: string; dueDate: unknown }) { return dueInfo(o).state === "late"; }
 function progressOf(status: string) { const i = STAGE_INDEX[status] ?? 0; return { idx: i, pct: Math.round((i / 3) * 100) }; }
-function waUrl(phone: string, customer: string | null, o: { orderNumber: string; title: string; status: string; dueDate: unknown }) {
-  const msg = encodeURIComponent(
-    `مرحباً ${customer ?? ""}،\nطلب خدمة رقم: ${o.orderNumber}\nالعمل: ${o.title}\nالحالة: ${STATUS_LABEL[o.status] ?? o.status}\nالاستحقاق: ${o.dueDate ? String(o.dueDate).slice(0, 10) : "—"}\nشكراً — المطبعة`
-  );
-  return `https://wa.me/${String(phone).replace(/[^\d]/g, "")}?text=${msg}`;
+function workOrderContactMessage(o: {
+  orderNumber: string;
+  title: string;
+  status: string;
+  customerName: string | null;
+  quantity?: number | null;
+  dueDate: unknown;
+  salePrice?: string | number | null;
+  deposit?: string | number | null;
+}) {
+  return buildWorkOrderStatusMessage({
+    orderNumber: o.orderNumber,
+    title: o.title,
+    status: o.status,
+    customerName: o.customerName,
+    quantity: o.quantity,
+    dueDate: o.dueDate ? String(o.dueDate) : null,
+    amountDue: o.status === "READY" ? D(o.salePrice ?? 0).minus(D(o.deposit ?? 0)).toString() : null,
+  });
 }
-
-const WaIcon = ({ size = 13 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
-  </svg>
-);
 
 // ─────────────── البطاقة ───────────────
 /** طباعة طلب الخدمة من بيانات البطاقة — نفس قالب printWorkOrder المستعمل في الـDrawer
@@ -138,6 +175,7 @@ function printWoFromCard(o: WO) {
     woDate: o.createdAt ? String(o.createdAt).slice(0, 10) : undefined,
     dueDate: o.dueDate ? String(o.dueDate).slice(0, 10) : undefined,
     status: o.status,
+    employeeName: o.createdByName?.trim() || "موظف الخدمة",
     customerName: o.customerName,
     customerPhone: o.customerPhone,
     jobType: o.title,
@@ -182,15 +220,20 @@ function printWoThermalFromCard(o: WO) {
     orderDate: o.createdAt ? String(o.createdAt).slice(0, 10) : undefined,
     dueDate: o.dueDate ? String(o.dueDate).slice(0, 10) : undefined,
     status: o.status,
+    employeeName: o.createdByName?.trim() || "موظف الخدمة",
     customerName: o.customerName ?? undefined,
     customerPhone: o.customerPhone ?? undefined,
     jobTitle: o.title,
     quantity: o.quantity ? `${o.quantity} نسخة` : undefined,
     total: o.salePrice,
+    paidUpfront: Number(o.deposit ?? 0) > 0 ? o.deposit : null,
+    balanceDue: Number(o.deposit ?? 0) > 0
+      ? String(Math.max(0, Number(o.salePrice) - Number(o.deposit ?? 0)))
+      : null,
   });
 }
 
-function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPending }: {
+function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPending, onOpenCustomer }: {
   o: WO;
   onPointerDown?: (e: React.PointerEvent) => void;
   dragging?: boolean;
@@ -200,6 +243,7 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
   /** بَيانات الفنّيين من `assignableStaff` (name قد يَكون null في DB ⇒ يُعرَض «بلا اسم»). */
   staff?: { id: number; name: string | null; role: string }[];
   assignPending?: boolean;
+  onOpenCustomer?: (customerId: number) => void;
 }) {
   const pr = progressOf(o.status);
   const di = dueInfo(o);
@@ -227,7 +271,7 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
         )}
         {/* شارة قَناة المَصدر — مَوضوعة في رأس البطاقة per README §5.2 (لإبراز جانب المبيعات). */}
         <span className="wob-ch-chip" title={`القناة: ${ch.label}`}>
-          <span aria-hidden>{ch.icon}</span>
+          <WorkOrderChannelMark channel={o.receptionChannel} />
           <span className="wob-ch-chip-l">{ch.label}</span>
         </span>
         <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>
@@ -237,11 +281,25 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
             <RowActions
               mode="menu"
               label={`إجراءات ${o.orderNumber}`}
+              contact={{
+                phone: o.customerPhone,
+                alternativePhones: [o.deliveryPhone],
+                label: `واتساب ${o.customerName ?? "العميل"}`,
+                message: workOrderContactMessage(o),
+                gate: { module: "workorders", level: "READ" },
+              }}
               actions={[
-                { key: "print", label: "طباعة A4", onSelect: () => printWoFromCard(o) },
-                { key: "print-thermal", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o) },
-                { key: "print-label", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o) },
-                { key: "open", label: "فتح التفاصيل", href: `/work-orders/${o.id}` },
+                ...(o.customerId && onOpenCustomer ? [{
+                  key: "customer-360",
+                  kind: "view" as const,
+                  label: "بطاقة العميل ٣٦٠° وكل طلباته",
+                  onSelect: () => onOpenCustomer(Number(o.customerId)),
+                  gate: { module: "crm" as const, level: "READ" as const },
+                }] : []),
+                { key: "print", kind: "print", label: "طباعة A4", onSelect: () => printWoFromCard(o), gate: { module: "workorders", level: "READ" } },
+                { key: "print-thermal", kind: "print", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o), gate: { module: "workorders", level: "READ" } },
+                { key: "print-label", kind: "print", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o), gate: { module: "workorders", level: "READ" } },
+                { key: "open", kind: "view", label: "فتح التفاصيل", href: `/work-orders/${o.id}`, gate: { module: "workorders", level: "READ" } },
               ]}
             />
           </span>
@@ -254,11 +312,32 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
         <div className="wob-info">
           <div className="wob-card-title">{o.title}</div>
           <div className="wob-cust">{o.customerName ?? "عميل نقدي"}</div>
+          {o.customerPhone && <div className="wob-cust-phone" dir="ltr">{o.customerPhone}</div>}
         </div>
       </div>
+      {o.customizationText && <div className="wob-card-specs">{o.customizationText}</div>}
+      {o.hasDelivery && (
+        <div className="wob-card-delivery">
+          <Package aria-hidden className="size-3.5 shrink-0" />
+          <span className="truncate">{o.deliveryAddress ?? "توصيل للعميل"}</span>
+        </div>
+      )}
       <div className="wob-meta">
         <span className="wob-meta-pill"><span className="wob-ml">الكمية </span>{fmtInt(o.quantity)}</span>
         <span className="wob-meta-pill"><span className="wob-ml">السعر </span>{fmtAr(o.salePrice)} <span className="wob-ml">د.ع</span></span>
+        {/* ٨/٨ — شارة التوصيل: يظهر التوصيل في التنفيذ (كان «غير موجود بالتنفيذ»). الأجرة تمريرٌ
+            لا إيراد ⇒ تُعرَض للعِلم فقط. العنوان في التلميح. */}
+        {o.hasDelivery && (
+          <span
+            className="wob-deliv"
+            title={o.deliveryAddress ? `توصيل إلى: ${o.deliveryAddress}` : "توصيل"}
+          >
+            <Truck aria-hidden className="size-3.5" />
+            {Number(o.deliveryCost ?? 0) > 0
+              ? <>توصيل <span dir="ltr">{fmtAr(o.deliveryCost)}</span></>
+              : "توصيل"}
+          </span>
+        )}
         <span className={`wob-due wob-${di.state}`} style={{ marginInlineStart: "auto", display: "inline-flex", alignItems: "center", gap: 4 }}>{late ? <Timer aria-hidden className="size-3.5" /> : <Calendar aria-hidden className="size-3.5" />} {di.text}</span>
       </div>
       <div className="wob-prog">
@@ -274,12 +353,17 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
           )}
           <span className="wob-who-name">{o.assigneeName ?? "غير مُسنَد"}</span>
         </div>
-        {o.customerPhone && (
-          <a className="wob-wa" href={waUrl(o.customerPhone, o.customerName, o)} target="_blank" rel="noopener noreferrer"
-            title={`واتساب: ${o.customerName ?? ""}`} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-            <WaIcon />
-          </a>
-        )}
+        <span onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+          <WhatsAppShare
+            phone={o.customerPhone}
+            alternativePhones={[o.deliveryPhone]}
+            message={workOrderContactMessage(o)}
+            label="مراسلة"
+            size="sm"
+            appearance="solid"
+            className="wob-wa"
+          />
+        </span>
       </div>
       {/* شَريط إسناد inline لعَمود «طابور وارد» فَقط — مَدير فَقط، per README §5.2. */}
       {inboxAssign && staff && !ghost && (
@@ -317,12 +401,14 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
 }
 
 // ─────────────── الإحصاءات ───────────────
-function Stats({ orders }: { orders: WO[] }) {
-  const active = orders.filter((o) => o.status !== "DELIVERED" && o.status !== "CANCELLED").length;
-  const late = orders.filter((o) => isLate(o)).length;
-  const inProg = orders.filter((o) => o.status === "IN_PROGRESS").length;
-  const ready = orders.filter((o) => o.status === "READY").length;
-  const delivered = orders.filter((o) => o.status === "DELIVERED").length;
+// من عدّ الخادم (workOrders.counts) لا من صفوف الشاشة: القائمة تجلب النشطة كاملةً لكن «مُسلَّم»
+// محدودة بالأحدث، فالعدّ من الصفوف كان سيَعرض نافذة العرض لا الحقيقة.
+function Stats({ counts }: { counts?: RouterOutputs["workOrders"]["counts"] }) {
+  const active = (counts?.received ?? 0) + (counts?.inProgress ?? 0) + (counts?.ready ?? 0);
+  const late = counts?.late ?? 0;
+  const inProg = counts?.inProgress ?? 0;
+  const ready = counts?.ready ?? 0;
+  const delivered = counts?.delivered ?? 0;
   const cards: { c: string; label: React.ReactNode; val: number; sub: string }[] = [
     { c: "var(--primary)", label: (<><Receipt aria-hidden className="size-4 inline-block align-text-bottom me-1" /> أوامر نشطة</>), val: active, sub: "قيد المعالجة الآن" },
     { c: "oklch(0.577 0.245 27.325)", label: (<><Timer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> متأخرة عن الاستحقاق</>), val: late, sub: "تحتاج تدخّلاً فورياً" },
@@ -345,15 +431,17 @@ function Stats({ orders }: { orders: WO[] }) {
 
 // ─────────────── حوار التسليم (مالي — تأكيد صريح) ───────────────
 const dlgInput = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverTarget | null; onClose: () => void; onConfirm: (payment?: { amount: string; method: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" }) => void; pending: boolean }) {
+function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverTarget | null; onClose: () => void; onConfirm: (payment?: { amount: string; method: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; reference?: string }) => void; pending: boolean }) {
   const [amount, setAmount] = useState("");
   const [methodV, setMethodV] = useState<"CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">("CASH");
+  const [reference, setReference] = useState("");
   useEffect(() => {
     if (order) {
       // تعبئة المتبقّي تلقائياً = سعر البيع − العربون المقبوض (لا طرح يدويّ من الموظّف).
       const dueInit = positiveDiff(order.salePrice, order.deposit ?? 0);
       setAmount(dueInit.gt(0) ? dueInit.toFixed(2) : "");
       setMethodV("CASH");
+      setReference("");
     }
   }, [order?.id]); // eslint-disable-line
   if (!order) return null;
@@ -380,6 +468,13 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
             <label className="text-sm font-medium">المبلغ المدفوع الآن (الافتراضي = الرصيد المستحق؛ أقل = آجل)</label>
             <MoneyInput value={amount} onChange={setAmount} className={dlgInput} placeholder={`0 – ${fmtAr(due.toFixed(2))}`} />
           </div>
+          {methodV !== "CASH" && (
+            <div className="space-y-1">
+              <label className="text-sm font-medium">مرجع العملية <span className="text-destructive">*</span></label>
+              <input className={dlgInput} value={reference} onChange={(e) => setReference(e.target.value)} placeholder="رقم موافقة البطاقة أو رقم التحويل" />
+              <p className="text-xs text-muted-foreground">لا تُحفظ دفعة إلكترونية بلا مرجع قابل للمطابقة.</p>
+            </div>
+          )}
           <div className="space-y-1">
             <label className="text-sm font-medium">طريقة الدفع</label>
             <select className={dlgInput} value={methodV} onChange={(e) => setMethodV(e.target.value as typeof methodV)}>
@@ -392,8 +487,8 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
         </div>
         <DialogFooter>
           <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={pending}>إلغاء</button>
-          <button className="wob-btn wob-btn-primary" disabled={pending}
-            onClick={() => onConfirm(amtD.gt(0) ? { amount: round2(amtD).toFixed(2), method: methodV } : undefined)}>
+          <button className="wob-btn wob-btn-primary" disabled={pending || (amtD.gt(0) && methodV !== "CASH" && !reference.trim())}
+            onClick={() => onConfirm(amtD.gt(0) ? { amount: round2(amtD).toFixed(2), method: methodV, reference: methodV === "CASH" ? undefined : reference.trim() } : undefined)}>
             {pending ? "جارٍ…" : "تسليم وإصدار الفاتورة"}
           </button>
         </DialogFooter>
@@ -402,13 +497,169 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
   );
 }
 
+// ─────────────── تعديل تفاصيل الطلب (مديرٌ فأعلى — يقفل بعد DELIVERED/CANCELLED) ───────────────
+type EditForm = {
+  title: string;
+  customizationText: string;
+  salePrice: string;
+  dueDate: string;
+  priority: "LOW" | "NORMAL" | "URGENT";
+  customerId: number | null;
+  contactName: string;
+  contactPhone: string;
+  receptionChannel: "WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE" | "OTHER";
+  channelHandle: string;
+};
+
+function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: number | null; onClose: () => void; onSaved: () => void }) {
+  const detail = trpc.workOrders.get.useQuery({ workOrderId: workOrderId ?? 0 }, { enabled: workOrderId != null });
+  const [form, setForm] = useState<EditForm | null>(null);
+
+  // يعبّئ النموذج من بيانات الخادم عند فتح طلبٍ جديد — لا يُعيد الكتابة فوق تعديلات المستخدم
+  // الجارية إن أُعيد جلب نفس الطلب (invalidate) أثناء الفتح.
+  useEffect(() => {
+    const d = detail.data;
+    setForm(
+      d
+        ? {
+            title: d.title,
+            customizationText: d.customizationText ?? "",
+            salePrice: d.salePrice,
+            dueDate: d.dueDate ? String(d.dueDate).slice(0, 10) : "",
+            priority: (d.priority as EditForm["priority"]) ?? "NORMAL",
+            customerId: d.customerId ?? null,
+            contactName: d.contactName ?? "",
+            contactPhone: d.contactPhone ?? "",
+            receptionChannel: d.receptionChannel ?? "WALK_IN",
+            channelHandle: d.channelHandle ?? "",
+          }
+        : null,
+    );
+  }, [detail.data?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const update = trpc.workOrders.update.useMutation({
+    onSuccess: () => { notify.ok("حُفظ التعديل"); onSaved(); },
+    onError: (e) => notify.err(e),
+  });
+
+  if (workOrderId == null) return null;
+  const d = detail.data;
+  const locked = !!d && (d.status === "DELIVERED" || d.status === "CANCELLED");
+  const deposit = D(d?.deposit ?? 0);
+
+  function submit() {
+    if (!form) return;
+    const title = form.title.trim();
+    if (!title) { notify.err("عنوان الطلب مطلوب"); return; }
+    const priceD = D(form.salePrice);
+    if (priceD.lte(0)) { notify.err("السعر يجب أن يكون أكبر من صفر"); return; }
+    if (priceD.lt(deposit)) { notify.err(`السعر أقلّ من العربون المقبوض سلفاً (${fmtAr(deposit.toFixed(2))} د.ع)`); return; }
+    update.mutate({
+      workOrderId: workOrderId!,
+      title,
+      customizationText: form.customizationText.trim() || null,
+      salePrice: round2(priceD).toFixed(2),
+      dueDate: form.dueDate || null,
+      priority: form.priority,
+      customerId: form.customerId,
+      contactName: form.contactName.trim() || null,
+      contactPhone: form.contactPhone.trim() || null,
+      receptionChannel: form.receptionChannel,
+      channelHandle: form.channelHandle.trim() || null,
+    });
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>تعديل طلب الخدمة{d ? ` — ${d.orderNumber}` : ""}</DialogTitle>
+          <DialogDescription>
+            {locked
+              ? "هذا الطلب مُسلَّم أو مُلغى — لا يمكن تعديله بعد الآن."
+              : "يسري التعديل فوراً. الكمية والمواد المستهلَكة لا تُعدَّلان من هنا."}
+          </DialogDescription>
+        </DialogHeader>
+        {!d || !form ? (
+          <div className="py-8 text-center text-sm text-muted-foreground">{detail.isLoading ? "جارٍ التحميل…" : "تعذّر العثور على الطلب."}</div>
+        ) : locked ? (
+          <DialogFooter><button className="wob-btn wob-btn-ghost" onClick={onClose}>إغلاق</button></DialogFooter>
+        ) : (
+          <>
+            <div className="grid gap-3 py-1 max-h-[65vh] overflow-y-auto pe-1">
+              <div className="space-y-1">
+                <Label>عنوان الطلب</Label>
+                <input className={dlgInput} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+              </div>
+              <div className="space-y-1">
+                <Label>التخصيص/الملاحظات</Label>
+                <Textarea value={form.customizationText} onChange={(e) => setForm({ ...form, customizationText: e.target.value })} rows={3} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>سعر البيع</Label>
+                  <MoneyInput value={form.salePrice} onChange={(v) => setForm({ ...form, salePrice: v })} className={dlgInput} />
+                  {deposit.gt(0) && <p className="text-xs text-muted-foreground">لا يقلّ عن العربون المقبوض: {fmtAr(deposit.toFixed(2))} د.ع</p>}
+                </div>
+                <div className="space-y-1">
+                  <Label>موعد الاستحقاق</Label>
+                  <input type="date" className={dlgInput} value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>الأولوية</Label>
+                  <select className={dlgInput} value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value as EditForm["priority"] })}>
+                    {Object.entries(PRIORITIES).map(([k, p]) => <option key={k} value={k}>{p.label}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label>قناة الاستلام</Label>
+                  <select className={dlgInput} value={form.receptionChannel} onChange={(e) => setForm({ ...form, receptionChannel: e.target.value as EditForm["receptionChannel"] })}>
+                    {Object.entries(CHANNELS).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+                  </select>
+                </div>
+              </div>
+              {form.receptionChannel !== "WALK_IN" && (
+                <div className="space-y-1">
+                  <Label>معرّف القناة (رقم/حساب)</Label>
+                  <input className={dlgInput} value={form.channelHandle} onChange={(e) => setForm({ ...form, channelHandle: e.target.value })} />
+                </div>
+              )}
+              <CustomerPicker customerId={form.customerId} onCustomerChange={(id) => setForm({ ...form, customerId: id })} />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>اسم مرجعي (زبون عابر بلا سجلّ)</Label>
+                  <input className={dlgInput} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <Label>هاتف مرجعي</Label>
+                  <IntlPhoneInput value={form.contactPhone} onChange={(v) => setForm({ ...form, contactPhone: v })} />
+                </div>
+              </div>
+            </div>
+            <DialogFooter>
+              <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={update.isPending}>إلغاء</button>
+              <button className="wob-btn wob-btn-primary" disabled={update.isPending} onClick={submit}>
+                {update.isPending ? "جارٍ الحفظ…" : "حفظ التعديل"}
+              </button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─────────────── لوحة التفاصيل (Drawer) ───────────────
 function Drawer({
-  id, onClose, isManager, canDeliver, onAdvance, onCancel, onDeliver, onAssign, busy,
+  id, onClose, isManager, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, onOpenCustomer, busy,
 }: {
   id: number; onClose: () => void; isManager: boolean; canDeliver: boolean;
   onAdvance: (id: number, to: Status) => void; onCancel: (d: Detail) => void;
-  onDeliver: (d: Detail) => void; onAssign: (id: number, staffId: number | null) => void; busy: boolean;
+  onDeliver: (d: Detail) => void; onAssign: (id: number, staffId: number | null) => void;
+  onEdit: (id: number) => void; busy: boolean;
+  onOpenCustomer?: (customerId: number) => void;
 }) {
   const detail = trpc.workOrders.get.useQuery({ workOrderId: id });
   const timeline = trpc.workOrders.timeline.useQuery({ workOrderId: id });
@@ -468,12 +719,28 @@ function Drawer({
             <div className="wob-dr-body">
               <div>
                 <div className="wob-kv">
-                  <div><div className="wob-k">العميل</div><div className="wob-v">{d.customerName ?? "عميل نقدي"}</div></div>
-                  <div><div className="wob-k">قناة الاستلام</div><div className="wob-v">{ch?.icon} {ch?.label}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</div></div>
+                  <div>
+                    <div className="wob-k">العميل</div>
+                    <div className="wob-v">
+                      {d.customerId && onOpenCustomer ? (
+                        <button type="button" className="text-primary hover:underline" onClick={() => onOpenCustomer(Number(d.customerId))}>
+                          {d.customerName ?? `عميل #${d.customerId}`} · بطاقة ٣٦٠°
+                        </button>
+                      ) : "عميل نقدي"}
+                    </div>
+                  </div>
+                  {d.customerPhone && <div><div className="wob-k">هاتف العميل</div><div className="wob-v" dir="ltr">{d.customerPhone}</div></div>}
+                  <div><div className="wob-k">قناة الاستلام</div><div className="wob-v inline-flex items-center gap-1"><WorkOrderChannelMark channel={d.receptionChannel} /> {ch?.label}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</div></div>
                   <div><div className="wob-k">الكمية</div><div className="wob-v">{fmtInt(d.quantity)}</div></div>
                   <div><div className="wob-k">سعر البيع</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.salePrice)} د.ع</div></div>
                   {Number(d.deposit ?? 0) > 0 && <div><div className="wob-k">العربون</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.deposit)} د.ع</div></div>}
+                  {Number(d.deposit ?? 0) > 0 && <div><div className="wob-k">طريقة دفع العربون</div><div className="wob-v">{PAYMENT_METHOD_LABEL[d.paymentMethod ?? ""] ?? d.paymentMethod ?? "—"}</div></div>}
+                  {d.paymentReference && <div><div className="wob-k">مرجع الدفع</div><div className="wob-v" dir="ltr">{d.paymentReference}</div></div>}
                   <div><div className="wob-k">الاستحقاق</div><div className="wob-v">{fmtDate(d.dueDate)}</div></div>
+                  <div><div className="wob-k">أنشأ الطلب</div><div className="wob-v">{d.createdByName ?? "—"}</div></div>
+                  <div><div className="wob-k">وقت الاستلام</div><div className="wob-v">{fmtDateTime(d.createdAt)}</div></div>
+                  {d.hasDelivery && <div><div className="wob-k">هاتف التوصيل</div><div className="wob-v" dir="ltr">{d.deliveryPhone ?? d.customerPhone ?? "—"}</div></div>}
+                  {d.hasDelivery && <div style={{ gridColumn: "1 / -1" }}><div className="wob-k">عنوان التوصيل</div><div className="wob-v">{d.deliveryAddress ?? "—"}</div></div>}
                   {d.materialsCost != null && <div><div className="wob-k">كلفة المواد</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.materialsCost)} د.ع</div></div>}
                   {d.laborCost != null && <div><div className="wob-k">كلفة العمالة</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.laborCost)} د.ع</div></div>}
                   <div style={{ gridColumn: "1 / -1" }}>
@@ -491,6 +758,12 @@ function Drawer({
                 </div>
                 {d.customizationText && (
                   <div className="wob-note"><span style={{ fontWeight: 700 }}>التخصيص/الملاحظات: </span>{d.customizationText}</div>
+                )}
+                {d.paymentReceiptUrl && (
+                  <a href={d.paymentReceiptUrl} target="_blank" rel="noreferrer" className="mt-3 block rounded-xl border bg-card p-2 hover:border-primary">
+                    <div className="mb-2 text-xs font-bold text-muted-foreground">صورة إيصال العربون — اضغط للتكبير</div>
+                    <img src={d.paymentReceiptUrl} alt="إيصال دفع العربون" className="max-h-44 w-full rounded-lg object-contain" />
+                  </a>
                 )}
               </div>
 
@@ -558,7 +831,9 @@ function Drawer({
                 woDate: d.createdAt ? String(d.createdAt).slice(0, 10) : undefined,
                 dueDate: d.dueDate ? String(d.dueDate).slice(0, 10) : undefined,
                 status: d.status,
+                employeeName: d.createdByName?.trim() || "موظف الخدمة",
                 customerName: d.customerName,
+                customerPhone: d.customerPhone,
                 jobType: d.title,
                 specs: d.customizationText,
                 items: [{ name: `${d.title} (${d.quantity} نسخة)`, unit: "مهمة", quantity: 1, unitPrice: d.salePrice, total: d.salePrice }],
@@ -573,6 +848,7 @@ function Drawer({
                   orderDate: d.createdAt ? String(d.createdAt).slice(0, 10) : undefined,
                   dueDate: d.dueDate ? String(d.dueDate).slice(0, 10) : undefined,
                   status: d.status,
+                  employeeName: d.createdByName?.trim() || "موظف الخدمة",
                   customerName: d.customerName ?? undefined,
                   customerPhone: d.customerPhone ?? undefined,
                   jobTitle: d.title,
@@ -586,14 +862,24 @@ function Drawer({
                 title="ملصق شحن يُلصَق على الطرد (بالقياس المحفوظ — الافتراضي ٨٠×١٢٠مم)"
                 onClick={() => printWoShippingLabel(d)}
               ><Package aria-hidden className="size-4 inline-block align-text-bottom me-1" /> ملصق شحن</button>
-              {d.customerPhone && (
-                <a className="wob-wa-lg" href={waUrl(d.customerPhone, d.customerName, d)} target="_blank" rel="noopener noreferrer"><WaIcon size={18} /> راسل العميل</a>
-              )}
+              <WhatsAppShare
+                phone={d.customerPhone}
+                alternativePhones={[d.deliveryPhone]}
+                message={workOrderContactMessage(d)}
+                label="راسل العميل"
+                appearance="solid"
+                className="wob-wa-lg"
+              />
               {next ? (next !== "DELIVERED" || canDeliver) && (
                 <button className="wob-btn wob-btn-primary" style={{ flex: 1 }} disabled={busy}
                   onClick={() => (next === "DELIVERED" ? onDeliver(d) : onAdvance(d.id, next))}>{ADV_LABEL[next]}</button>
               ) : (
                 <button className="wob-btn wob-btn-ghost" disabled style={{ flex: 1, opacity: 0.6 }}><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> اكتمل الأمر</button>
+              )}
+              {isManager && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
+                <button className="wob-btn wob-btn-ghost" disabled={busy} onClick={() => onEdit(d.id)}>
+                  <Pencil aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تعديل
+                </button>
               )}
               {isManager && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
                 <button className="wob-btn wob-btn-danger" disabled={busy} onClick={() => onCancel(d)}>إلغاء الأمر</button>
@@ -610,10 +896,177 @@ function Drawer({
   );
 }
 
+// ─────────────── عرض القائمة (جدولٌ حقيقي — بديل الكانبان لمراجعةٍ مالية/إدارية) ───────────────
+// طلب المالك (٩/٨): الكانبان يخدم الإنتاج/الفنّيين؛ يلزم عرضٌ يشبه شاشة «المبيعات» — جدولٌ يمكن
+// فرزه وفلترته، بأزرار تحكّمٍ وتعديل، دون حاجةٍ لفتح شاشة الاستقبال (التي تتطلّب وردية مفتوحة).
+function OrdersTable({
+  rows, isManager, canDeliver, onOpen, onEdit, onAdvance, onCancel,
+}: {
+  rows: WO[];
+  isManager: boolean;
+  canDeliver: boolean;
+  onOpen: (id: number) => void;
+  onEdit: (id: number) => void;
+  onAdvance: (order: WO, to: Status) => void;
+  onCancel: (order: Pick<WO, "id" | "title" | "orderNumber">) => void;
+}) {
+  const columns = useMemo<ColumnDef<WO, unknown>[]>(() => [
+    {
+      // نمط Invoices.tsx/Card: الرقم للنسخ، لا للتنقّل — «فتح التفاصيل» في قائمة الإجراءات.
+      accessorKey: "orderNumber",
+      header: "رقم الأمر",
+      cell: ({ row }) => <CopyInline value={row.original.orderNumber} successMessage="تم نَسخ رَقم الأَمر" />,
+    },
+    {
+      accessorKey: "createdAt",
+      header: "التاريخ",
+      cell: ({ row }) => fmtDate(row.original.createdAt),
+    },
+    {
+      id: "title",
+      header: "العنوان",
+      cell: ({ row }) => {
+        const o = row.original;
+        const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
+        return (
+          <div className="max-w-56">
+            <div className="truncate font-medium">{o.title}</div>
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              {fmtInt(o.quantity)} ×
+              <span className={`wob-pri ${pri.cls}`} style={{ padding: "0 4px" }}><span className="wob-pri-dot" />{pri.label}</span>
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      id: "customer",
+      header: "العميل",
+      cell: ({ row }) => row.original.customerName ?? "عميل نقدي",
+    },
+    {
+      accessorKey: "status",
+      header: "الحالة",
+      cell: ({ row }) => {
+        const o = row.original;
+        const hue = STATUS_HUE[o.status] ?? 255;
+        return (
+          <span
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
+            style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})` }}
+          >
+            {STATUS_LABEL[o.status] ?? o.status}
+          </span>
+        );
+      },
+    },
+    {
+      accessorKey: "salePrice",
+      header: "الإجمالي",
+      cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.salePrice)}</span>,
+    },
+    {
+      accessorKey: "deposit",
+      header: "العربون",
+      cell: ({ row }) => {
+        const dep = D(row.original.deposit ?? 0);
+        return dep.gt(0) ? <span dir="ltr" className="tabular-nums">{fmtAr(dep.toFixed(2))}</span> : <span className="text-muted-foreground">—</span>;
+      },
+    },
+    {
+      id: "remaining",
+      header: "المتبقي",
+      cell: ({ row }) => {
+        const o = row.original;
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return <span className="text-muted-foreground">—</span>;
+        const due = positiveDiff(o.salePrice, o.deposit ?? 0);
+        return (
+          <span dir="ltr" className={`tabular-nums font-medium ${due.gt(0) ? "text-stock-low" : "text-money-positive"}`}>
+            {fmtAr(due.toFixed(2))}
+          </span>
+        );
+      },
+    },
+    {
+      id: "due",
+      header: "الاستحقاق",
+      cell: ({ row }) => {
+        const di = dueInfo(row.original);
+        return <span className={`wob-due wob-${di.state} whitespace-nowrap`}>{di.text}</span>;
+      },
+    },
+    {
+      id: "channel",
+      header: "القناة",
+      cell: ({ row }) => {
+        const ch = CHANNELS[row.original.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER;
+        return <span title={ch.label}>{ch.icon} {ch.label}</span>;
+      },
+    },
+    {
+      id: "assignee",
+      header: "المسؤول",
+      cell: ({ row }) => row.original.assigneeName ?? <span className="text-muted-foreground">غير مُسنَد</span>,
+    },
+    {
+      id: "actions",
+      header: "إجراءات",
+      enableSorting: false,
+      cell: ({ row }) => {
+        const o = row.original;
+        const isFinal = o.status === "DELIVERED" || o.status === "CANCELLED";
+        const next = NEXT[o.status as Status];
+        const actions: RowAction[] = [
+          { key: "open", kind: "view", label: "فتح التفاصيل", onSelect: () => onOpen(o.id) },
+          { key: "edit", kind: "edit", label: "تعديل", icon: Pencil, hidden: isFinal, onSelect: () => onEdit(o.id), gate: { managerOnly: true } },
+          { key: "print", kind: "print", label: "طباعة A4", onSelect: () => printWoFromCard(o) },
+          { key: "print-thermal", kind: "print", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o) },
+          { key: "print-label", kind: "print", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o) },
+        ];
+        if (next && (next !== "DELIVERED" || canDeliver)) {
+          actions.push({ key: "advance", kind: next === "DELIVERED" ? "pay" : "approve", label: ADV_LABEL[next], onSelect: () => onAdvance(o, next) });
+        }
+        if (isManager && !isFinal) {
+          actions.push({ key: "cancel", kind: "cancel", label: "إلغاء الأمر", variant: "destructive", onSelect: () => onCancel(o) });
+        }
+        return (
+          <RowActions
+            mode="menu"
+            label={`إجراءات ${o.orderNumber}`}
+            contact={{
+              phone: o.customerPhone,
+              alternativePhones: [o.deliveryPhone],
+              label: `واتساب ${o.customerName ?? "العميل"}`,
+              message: workOrderContactMessage(o),
+              gate: { module: "workorders", level: "READ" },
+            }}
+            actions={actions}
+          />
+        );
+      },
+    },
+  ], [isManager, canDeliver, onOpen, onEdit, onAdvance, onCancel]);
+
+  return (
+    <DataTable
+      columns={columns}
+      data={rows}
+      searchable={false}
+      emptyText="لا طلبات مطابقة للبحث/الفلاتر الحالية."
+      viewKey="work-orders-list"
+      getRowId={(r) => String(r.id)}
+      pageSize={50}
+    />
+  );
+}
+
+// الحالات النشطة — مرآة WO_ACTIVE_STATUSES في workOrderRouter (الحالات غير النهائية).
+const ACTIVE_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
+/** حدّ «مُسلَّم» المعروضة في العمود — الأحدث فقط؛ الإجمالي الحقيقي من workOrders.counts. */
+const DELIVERED_LIMIT = 50;
+
 // ─────────────── الصفحة ───────────────
 export default function WorkOrders() {
-  const listInput = { limit: 200 };
-  const rows = trpc.workOrders.list.useQuery(listInput);
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const isManager = me.data?.role === "admin" || me.data?.role === "manager";
@@ -622,29 +1075,65 @@ export default function WorkOrders() {
   // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const canDeliver = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager"]);
+  const canReadCustomerContext = !!me.data?.role &&
+    hasModuleAccess(me.data.role, (me.data.permissionsOverride ?? null) as PermissionMap | null, "crm", "READ");
   // قائمة الموظَّفين القابِلين للإسناد — مَرفوعة لصَفحة WorkOrders كَي تُستعمَل
   // في الإسناد inline على بطاقات «طابور وارد» (بَدل فَتح الـDrawer لِكل أَمر).
   // مَفعَّلة لِلمَدير فَقط لِتَوافق صَلاحية `assignableStaff` على الخادم.
   const assignableStaff = trpc.workOrders.assignableStaff.useQuery(undefined, { enabled: isManager });
+  // منتقي الفرع — القائمة تدعم branchId للمرتفعين (المدير/الأدمن يقرآن كل الفروع؛ غيرهما مُجبَر بفرعه خادمياً).
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: isManager });
 
-  const [q, setQ] = useState("");
-  const [fPri, setFPri] = useState("");
-  const [fCh, setFCh] = useState("");
+  // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
+  // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all" });
+  const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
+  const [editTarget, setEditTarget] = useState<number | null>(null);
+  // طلب المالك (٩/٨): الكانبان يخدم الفنّيين/الإنتاج؛ يلزم عرضٌ جدوليّ للمراجعة المالية/الإدارية
+  // (فرز/فلترة كـ«المبيعات») بلا حاجة لفتح شاشة الاستقبال. يُتذكَّر الاختيار على هذا الجهاز.
+  const [view, setView] = useState<"board" | "list">(() => {
+    if (typeof window === "undefined") return "board";
+    return window.localStorage.getItem("wo-view") === "list" ? "list" : "board";
+  });
+  useEffect(() => {
+    window.localStorage.setItem("wo-view", view);
+  }, [view]);
+  const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [deliverOrder, setDeliverOrder] = useState<DeliverTarget | null>(null);
   const [drag, setDrag] = useState<{ order: WO; x: number; y: number; overCol: string | null } | null>(null);
 
   const colRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<{ order: WO; startX: number; startY: number; ox: number; oy: number; moved: boolean } | null>(null);
 
+  // فلاتر خادمية مشتركة بين القائمتين والعدّادات والتصدير — بناء واحد فلا تنحرف الأرقام عن الجدول.
+  const serverFilters = {
+    q: dq.trim() || undefined,
+    from: f.from || undefined,
+    to: f.to || undefined,
+    assignedTo: f.tech !== "all" ? Number(f.tech) : undefined,
+    branchId: isManager && f.branch !== "all" ? Number(f.branch) : undefined,
+  };
+  // العلة الجوهرية سابقاً: list({limit:200}) واحدة desc(id) — «مُسلَّم» المتراكمة بلا سقف كانت تملأ
+  // النافذة فيسقط عملٌ نشط من اللوحة بصمت. الحل (نمط WorkOrderStation المُصلَح): استعلامان منفصلان —
+  // النشطة كاملةً (مجموعة صغيرة بطبيعتها) و«مُسلَّم» محدودة بالأحدث.
+  const activeInput = { statuses: [...ACTIVE_STATUSES], limit: 500, ...serverFilters };
+  const deliveredInput = { statuses: ["DELIVERED" as const], limit: DELIVERED_LIMIT, ...serverFilters };
+  const activeQ = trpc.workOrders.list.useQuery(activeInput, { enabled: me.data != null });
+  const deliveredQ = trpc.workOrders.list.useQuery(deliveredInput, { enabled: me.data != null });
+  const countsQ = trpc.workOrders.counts.useQuery(serverFilters, { enabled: me.data != null });
+  const serverCounts = countsQ.data;
+
   const invalidateAll = () => Promise.all([
     utils.workOrders.list.invalidate(),
+    utils.workOrders.counts.invalidate(),
     utils.workOrders.get.invalidate(),
     utils.workOrders.timeline.invalidate(),
     utils.inventory.movements.invalidate(),
   ]);
+  // التفاؤل على استعلام النشطة فقط — الانتقال إلى «مُسلَّم» يمرّ بحوار التسليم ثم invalidateAll.
   const optimisticMove = (id: number, to: Status) =>
-    utils.workOrders.list.setData(listInput, (old) => old?.map((o) => (o.id === id ? { ...o, status: to } : o)));
+    utils.workOrders.list.setData(activeInput, (old) => old?.map((o) => (o.id === id ? { ...o, status: to } : o)));
 
   const start = trpc.workOrders.start.useMutation({
     onSuccess: () => { notify.warn("بدأ التنفيذ", "خُصمت المواد من المخزون تلقائياً."); invalidateAll(); },
@@ -668,19 +1157,44 @@ export default function WorkOrders() {
   });
   const busy = start.isPending || markReady.isPending || deliver.isPending || cancel.isPending || assign.isPending;
 
-  const all = rows.data ?? [];
+  const all = useMemo(() => [...(activeQ.data ?? []), ...(deliveredQ.data ?? [])], [activeQ.data, deliveredQ.data]);
+  // الأولوية/القناة ترشيح عميلي (لا يدعمهما الخادم)؛ q تُطبَّق فورياً هنا أيضاً فوق الترشيح الخادمي
+  // المُبطَّأ (debounce) — استجابة لحظية بلا وميض نتائج قديمة.
   const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+    const needle = f.q.trim().toLowerCase();
     return all.filter((o) => {
-      if (fPri && o.priority !== fPri) return false;
-      if (fCh && o.receptionChannel !== fCh) return false;
+      if (f.pri !== "all" && o.priority !== f.pri) return false;
+      if (f.ch !== "all" && o.receptionChannel !== f.ch) return false;
       if (needle) {
         const hay = [o.orderNumber, o.title, o.customerName ?? ""].join(" ").toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
     });
-  }, [all, q, fPri, fCh]);
+  }, [all, f.q, f.pri, f.ch]);
+
+  /** تصدير كامل عبر cursor (الشكل مصفوفة صرفة): صفحات 200 حتى صفحة ناقصة، بسقف أمان. */
+  async function fetchAllForExport(): Promise<WO[]> {
+    const out: WO[] = [];
+    let cursor: number | undefined;
+    for (let i = 0; i < 200; i++) {
+      const pageRows = await utils.workOrders.list.fetch({ limit: 200, cursor, ...serverFilters });
+      out.push(...pageRows);
+      if (pageRows.length < 200) break;
+      cursor = Number(pageRows[pageRows.length - 1].id);
+    }
+    // نطبّق فلاتر العميل نفسها (أولوية/قناة/بحث لحظي) — التصدير يطابق ما تعرضه اللوحة.
+    const needle = f.q.trim().toLowerCase();
+    return out.filter((o) => {
+      if (f.pri !== "all" && o.priority !== f.pri) return false;
+      if (f.ch !== "all" && o.receptionChannel !== f.ch) return false;
+      if (needle) {
+        const hay = [o.orderNumber, o.title, o.customerName ?? ""].join(" ").toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      return true;
+    });
+  }
 
   const byCol = useMemo(() => {
     const m: Record<string, WO[]> = {};
@@ -759,25 +1273,40 @@ export default function WorkOrders() {
     window.addEventListener("pointerup", up);
   }
 
-  async function onCancelOrder(d: Detail) {
+  async function onCancelOrder(d: Pick<Detail, "id" | "title" | "orderNumber">) {
     if (!(await confirm({ variant: "danger", title: "إلغاء طلب الخدمة", description: `إلغاء «${d.title}» (${d.orderNumber})؟ تُعكَس المواد المخصومة للمخزون.`, confirmText: "إلغاء الطلب", cancelText: "تراجع" }))) return;
     cancel.mutate({ workOrderId: d.id });
   }
 
-  const anyFilter = q || fPri || fCh;
+  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all";
   const boardEmpty = filtered.length === 0;
+  const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
 
   return (
     <div className="wob">
       <div className="wob-topbar">
         <div>
-          <div className="wob-title">طلبات خدمة العملاء</div>
+          <div className="wob-title">أوامر الشغل</div>
           <div className="wob-sub">من الاستلام إلى التسليم — اسحب البطاقة بين المراحل. فاتورة تلقائية عند التسليم.</div>
         </div>
         <div className="wob-head-actions">
+          <div role="group" aria-label="طريقة العرض" className="wob-view-toggle">
+            <button
+              type="button"
+              aria-pressed={view === "board"}
+              onClick={() => setView("board")}
+              title="لوحة الإنتاج (كانبان)"
+            ><LayoutGrid aria-hidden className="size-4" /> لوحة</button>
+            <button
+              type="button"
+              aria-pressed={view === "list"}
+              onClick={() => setView("list")}
+              title="قائمة جدولية — للمراجعة والتحكّم"
+            ><Rows3 aria-hidden className="size-4" /> قائمة</button>
+          </div>
           <ShippingLabelSizeSelect />
-          <button className="wob-btn wob-btn-ghost" disabled={filtered.length === 0}
-            onClick={() => exportRows(filtered, {
+          <button className="wob-btn wob-btn-ghost" disabled={boardLoading}
+            onClick={() => exportRows<WO>(fetchAllForExport, {
               filename: "طلبات-خدمة-العملاء",
               columns: [
                 { key: "orderNumber", header: "رقم الأمر" },
@@ -792,33 +1321,86 @@ export default function WorkOrders() {
                 { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
               ],
             })}><FileText aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تصدير Excel</button>
-          <Link href="/work-orders/new" className="wob-btn wob-btn-primary">＋ طلب خدمة جديد</Link>
+          <Link href="/pos?mode=RECEPTION" className="wob-btn wob-btn-primary">شاشة الاستقبال الموحدة</Link>
         </div>
       </div>
 
-      <Stats orders={all} />
+      <Stats counts={serverCounts} />
 
       <div className="wob-toolbar">
         <div className="wob-search">
           <span className="wob-si"><Search aria-hidden className="size-4" /></span>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="بحث (رقم / عنوان / عميل)" />
+          <input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث (رقم / عنوان / عميل)" />
         </div>
-        <select className="wob-sel" value={fPri} onChange={(e) => setFPri(e.target.value)}>
-          <option value="">كل الأولويات</option>
+        {isManager && (
+          <AppSelect
+            value={f.branch}
+            onValueChange={(v) => setF({ branch: v })}
+            className="w-auto min-w-36"
+            aria-label="فلتر الفرع"
+          >
+            <option value="all">كل الفروع</option>
+            {(branchesQ.data ?? []).map((b) => (
+              <option key={Number(b.id)} value={String(Number(b.id))}>{b.name}</option>
+            ))}
+          </AppSelect>
+        )}
+        <AppSelect value={f.pri} onValueChange={(v) => setF({ pri: v })} className="w-auto min-w-32" aria-label="فلتر الأولوية">
+          <option value="all">كل الأولويات</option>
           {Object.entries(PRIORITIES).map(([k, p]) => <option key={k} value={k}>{p.label}</option>)}
-        </select>
-        <select className="wob-sel" value={fCh} onChange={(e) => setFCh(e.target.value)}>
-          <option value="">كل القنوات</option>
+        </AppSelect>
+        <AppSelect value={f.ch} onValueChange={(v) => setF({ ch: v })} className="w-auto min-w-32" aria-label="فلتر القناة">
+          <option value="all">كل القنوات</option>
           {Object.entries(CHANNELS).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
-        </select>
-        {anyFilter && <button className="wob-chip-clear" onClick={() => { setQ(""); setFPri(""); setFCh(""); }}>مسح الفلاتر <X aria-hidden className="size-3.5 inline-block align-text-bottom" /></button>}
+        </AppSelect>
+        {isManager && (assignableStaff.data?.length ?? 0) > 0 && (
+          <AppSelect value={f.tech} onValueChange={(v) => setF({ tech: v })} className="w-auto min-w-32" aria-label="فلتر الفنّي">
+            <option value="all">كل الفنّيين</option>
+            {(assignableStaff.data ?? []).map((s) => (
+              <option key={s.id} value={String(s.id)}>{s.name ?? "بلا اسم"}</option>
+            ))}
+          </AppSelect>
+        )}
+        {/* نطاق تاريخ الاستلام (createdAt) — شامل لليوم بحدود UTC خادمياً. */}
+        <div className="wob-date-range" aria-label="نطاق تاريخ الاستلام">
+          <span>من</span>
+          <input
+            type="date"
+            className="wob-sel wob-date"
+            value={f.from}
+            onChange={(e) => setF({ from: e.target.value })}
+            aria-label="من تاريخ"
+            title="من تاريخ الاستلام"
+          />
+          <span>إلى</span>
+          <input
+            type="date"
+            className="wob-sel wob-date"
+            value={f.to}
+            onChange={(e) => setF({ to: e.target.value })}
+            aria-label="إلى تاريخ"
+            title="إلى تاريخ الاستلام"
+          />
+        </div>
+        {anyFilter && <button className="wob-chip-clear" onClick={resetF}>مسح الفلاتر <X aria-hidden className="size-3.5 inline-block align-text-bottom" /></button>}
       </div>
 
+      {view === "list" ? (
+        <OrdersTable
+          rows={filtered}
+          isManager={isManager}
+          canDeliver={canDeliver}
+          onOpen={setSel}
+          onEdit={setEditTarget}
+          onAdvance={attemptMove}
+          onCancel={onCancelOrder}
+        />
+      ) : (
       <div className="wob-board-wrap">
-        {rows.isLoading ? (
+        {boardLoading ? (
           <div className="wob-empty-board">جارٍ التحميل…</div>
         ) : boardEmpty ? (
-          <div className="wob-empty-board">{anyFilter ? "لا طلبات مطابقة للبحث/الفلاتر الحالية." : "لا طلبات خدمة بعد. ابدأ بـ«طلب خدمة جديد»."}</div>
+          <div className="wob-empty-board">{anyFilter ? "لا طلبات مطابقة للبحث/الفلاتر الحالية." : "لا أوامر شغل بعد. تُنشأ الطلبات من شاشة الاستقبال الموحدة."}</div>
         ) : (
           <div className="wob-board">
             {COLUMNS.map((s) => {
@@ -832,7 +1414,13 @@ export default function WorkOrders() {
                       <div className="wob-col-title">{s.label}</div>
                       <div className="wob-col-hint">{s.hint}</div>
                     </div>
-                    <span className="wob-col-count">{list.length}</span>
+                    {/* عمود «مُسلَّم» يعرض نافذة الأحدث فقط — العدّاد من الخادم يحمل الإجمالي الحقيقي.
+                        يُستعمل فقط حين لا ترشيح عميلي (أولوية/قناة) وإلا خالف العدّادُ المحتوى المعروض. */}
+                    <span className="wob-col-count">
+                      {s.key === "DELIVERED" && serverCounts != null && f.pri === "all" && f.ch === "all"
+                        ? fmtInt(serverCounts.delivered)
+                        : list.length}
+                    </span>
                   </div>
                   <div className={`wob-col-body ${isOver ? "wob-drop-on" : ""}`} ref={(el) => { colRefs.current[s.key] = el; }}>
                     {list.map((o) => (
@@ -852,6 +1440,7 @@ export default function WorkOrders() {
                         }
                         staff={s.key === "INBOX" && isManager ? assignableStaff.data : undefined}
                         assignPending={assign.isPending}
+                        onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
                       />
                     ))}
                     {list.length === 0 && <div className="wob-col-empty">— لا أوامر —</div>}
@@ -862,8 +1451,9 @@ export default function WorkOrders() {
           </div>
         )}
       </div>
+      )}
 
-      {drag && (
+      {drag && view === "board" && (
         <div style={{ position: "fixed", left: drag.x, top: drag.y, zIndex: 9999, pointerEvents: "none" }}>
           <Card o={drag.order} ghost />
         </div>
@@ -888,10 +1478,12 @@ export default function WorkOrders() {
           }}
           onDeliver={(d) => setDeliverOrder({ id: d.id, orderNumber: d.orderNumber, title: d.title, salePrice: d.salePrice, deposit: d.deposit ?? "0" })}
           onCancel={onCancelOrder}
+          onEdit={(id) => setEditTarget(id)}
           onAssign={async (id, staffId) => {
             if (!(await confirm({ variant: "info", title: "تغيير إسناد الأمر", description: staffId ? "إسناد هذا الأمر إلى الموظف المحدّد. متابعة؟" : "إلغاء إسناد هذا الأمر (سيصبح غير مُسنَد). متابعة؟", confirmText: "تأكيد الإسناد", cancelText: "تراجع" }))) return;
             assign.mutate({ workOrderId: id, assignedTo: staffId });
           }}
+          onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
         />
       )}
 
@@ -905,6 +1497,19 @@ export default function WorkOrders() {
           deliver.mutate({ workOrderId: deliverOrder.id, payment });
         }}
       />
+      <EditWorkOrderDialog
+        workOrderId={editTarget}
+        onClose={() => setEditTarget(null)}
+        onSaved={() => { setEditTarget(null); invalidateAll(); }}
+      />
+      {canReadCustomerContext && customerContextId != null && (
+        <Contact360Panel
+          kind="customer"
+          id={customerContextId}
+          onClose={() => setCustomerContextId(null)}
+          onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }}
+        />
+      )}
     </div>
   );
 }

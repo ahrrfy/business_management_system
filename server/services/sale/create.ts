@@ -1,7 +1,7 @@
 // إنشاء فاتورة بيع ذرّياً: idempotency + تسعير/تحويل الأسطر + بوّابة أقل-من-التكلفة +
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { couponRedemptions, coupons, customers, invoiceItemBundleComponents, invoiceItems, invoices, openingModeSettings, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
 import {
   computeInvoiceCost,
@@ -21,6 +21,7 @@ import {
   getBundleDefinitions,
   type VariantKind,
 } from "../bundleService";
+import { GIFT_APPROVAL_THRESHOLD } from "../gifts/outbound";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
 import { resolveContractPrices } from "../contractPriceService";
 import {
@@ -42,9 +43,8 @@ import { readOpeningWindowState } from "../openingModeService";
 import { userNameSnapshot } from "../userSnapshot";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
 
-// قنوات الاستقبال/التنفيذ المشمولة بتوسعة «وضع الافتتاح» (قرار المالك ١٠/٨): البيع المباشر (POS)
-// والطلبات (ORDER: تحويل عرض سعر/حجز) وأوامر الشغل (WORKORDER: تسليم/توصيل COD). ONLINE (المتجر)
-// خارج النطاق — سلوكها ومخاطرها مختلفة. الأوفلاين مسار مستقلّ تماماً (allowNegativeStock).
+// قنوات الاستقبال/التنفيذ المشمولة بإعفاء الائتمان في «وضع الافتتاح» (قرار المالك ١٠/٨):
+// البيع المباشر (POS) والطلبات (ORDER) وأوامر الشغل (WORKORDER). ONLINE (المتجر) خارج النطاق.
 const OPENING_RECEPTION_CHANNELS = new Set(["POS", "ORDER", "WORKORDER"]);
 
 /**
@@ -52,7 +52,21 @@ const OPENING_RECEPTION_CHANNELS = new Set(["POS", "ORDER", "WORKORDER"]);
  * تصدير داخلي فقط: يستعمله `createSale` (المغلّف) و`digitalCards.sales.finalize` (تركيب).
  * لا يُعرَض عبر الراوتر مباشرة.
  */
-export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Actor): Promise<CreateSaleResult> {
+/** رمز غير قابل للإنشاء من حمولة tRPC؛ يفتح منتجات DIGITAL_CARD لمسار التثبيت الموثوق فقط. */
+export const DIGITAL_SALE_CAPABILITY = Symbol("DIGITAL_SALE_CAPABILITY");
+
+export async function createSaleInTx(
+  tx: Tx,
+  input: CreateSaleInput,
+  actor: Actor,
+  capability?: typeof DIGITAL_SALE_CAPABILITY,
+): Promise<CreateSaleResult> {
+    // This namespace is generated only by the trusted digital-card finalizer.  Check it
+    // before idempotency lookup so a public POS request cannot replay an existing
+    // digital invoice merely by guessing its sourceId.
+    if (capability !== DIGITAL_SALE_CAPABILITY && input.clientRequestId?.startsWith("DIGITAL_INTENT:")) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح الطلب محجوز لمسار البطاقات الرقمية" });
+    }
     // 1. Idempotency: replay the existing invoice for a repeated clientRequestId.
     //    SALES-04 (تدقيق ٢٣/٦/٢٦): البصمة كانت قاصرة على branchId ⇒ كاشير يُعيد استعمال المفتاح
     //    على بيع مختلف فيستلم فاتورة بيعٍ سابق ولا يُسجَّل البيع الجديد ⇒ منفذ سرقة نقد. الحلّ على
@@ -208,12 +222,31 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         id: productVariants.id,
         costPrice: productVariants.costPrice,
         isActive: productVariants.isActive,
+        productType: products.productType,
       })
       .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productVariants.id, uniqueVariantIds));
-    const variantById = new Map<number, { costPrice: string; isActive: boolean | null }>();
+    const variantById = new Map<number, { costPrice: string; isActive: boolean | null; productType: string | null }>();
     for (const r of variantRows) {
-      variantById.set(Number(r.id), { costPrice: String(r.costPrice), isActive: r.isActive });
+      variantById.set(Number(r.id), {
+        costPrice: String(r.costPrice),
+        isActive: r.isActive,
+        productType: r.productType ?? null,
+      });
+    }
+    const containsDigitalCard = Array.from(variantById.values()).some((v) => v.productType === "DIGITAL_CARD");
+    if (containsDigitalCard && capability !== DIGITAL_SALE_CAPABILITY) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "البطاقات الرقمية تُباع من مسار الإصدار المخصّص فقط — لا تُضاف كصنف عادي",
+      });
+    }
+    if (capability === DIGITAL_SALE_CAPABILITY && Array.from(variantById.values()).some((v) => v.productType !== "DIGITAL_CARD")) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "مسار تثبيت البطاقات الرقمية لا يقبل أصنافاً عادية",
+      });
     }
     // بضاعة الأمانة (ش٣): خريطة variantId → consignorId للأصناف الموسومة أمانةً — لالتقاط التزام المودِع
     // لحظة البيع (قيد PURCHASE يتيم) ولاستثنائها من البيع بالسالب في المسار الحيّ. راجع design §٢-ب/§٥-ج.
@@ -330,14 +363,22 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         : kind === "BUNDLE"
           ? snapshotUnitCost(bundleUnitCosts.get(l.variantId) ?? "0")
           : snapshotUnitCost(v.costPrice);
-      const lineRes = computeLineTotal({
-        unitPrice,
-        quantity: money(l.quantity),
-        discountPercent: l.discountPercent,
-        discountAmount: l.discountAmount,
-      });
+      // هدايا الفاتورة (0149): السطر المُهدى مجّانيّ **بقرار خادميّ** — لا نثق بسعرٍ/خصمٍ وارد من
+      // الشاشة. السعر صفر والخصم صفر (خصمٌ على مجّانٍ لا معنى له، وحسابُه يفتح باب خصمٍ سالب)،
+      // بينما `unitCost` أعلاه يبقى لقطة WAVG الحقيقية — هي أساس مصروف الهدية في قيد GIFT_OUT.
+      const isGift = l.isGift === true;
+      const lineRes = isGift
+        ? computeLineTotal({ unitPrice: money(0), quantity: money(l.quantity) })
+        : computeLineTotal({
+            unitPrice,
+            quantity: money(l.quantity),
+            discountPercent: l.discountPercent,
+            discountAmount: l.discountAmount,
+          });
       // H6: انحراف صافي السطر عن مرجعه لأسفل بأكثر من العتبة ⇒ يستوجب تفويض مدير (يُفرَض بعد الحلقة).
-      if (lineDiscountExceedsThreshold(refUnit, money(l.quantity), lineRes.total)) manualDiscountGateTriggered = true;
+      // الهدية مُستثناة: مجّانيّتها **مقصودة ومصنَّفة** (قيد GIFT_OUT + بوّابة عتبة الهدايا أدناه)،
+      // لا انحرافُ تسعيرٍ مستتر — وإلّا لَطالبت كلُّ هديةٍ بتفويضٍ بحجّة «خصم ١٠٠٪».
+      if (!isGift && lineDiscountExceedsThreshold(refUnit, money(l.quantity), lineRes.total)) manualDiscountGateTriggered = true;
 
       // promotions v2 (idempotent verification): إن مرّر POS `promotionId`، نُعيد الحلّ خادمياً
       // ونتحقّق أن `expectedPromoDiscount = discountForUnit × qty` يتّسق مع `discountAmount` (± 1 IQD).
@@ -345,7 +386,8 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       // العرض والحفظ) ⇒ نعامل الخصم كيدوي بلا رفض — يحمي البيع من فشل بسبب تعديل عرض بين وقتين.
       let recordedPromotionId: number | null = null;
       let recordedPromoDiscount = "0.00";
-      if (l.promotionId != null && kind !== "BUNDLE") {
+      // الهدية خارج العروض: خصمها صفر (السعر صفر أصلاً) فلا عرضَ يُثبَّت عليها.
+      if (l.promotionId != null && kind !== "BUNDLE" && !isGift) {
         const productId = productIdByVariant.get(l.variantId);
         if (productId != null && productId > 0) {
           const categoryId = categoryByProduct.get(productId) ?? null;
@@ -388,8 +430,10 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         discountAmount: lineRes.discountAmount,
         total: lineRes.total,
         kind,
+        isGift,
         promotionId: recordedPromotionId,
         promotionDiscount: recordedPromoDiscount,
+        internalLineToken: l.internalLineToken?.trim() || null,
       });
     }
 
@@ -412,15 +456,48 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       taxRatePercent: input.taxRatePercent,
       deliveryFee: input.deliveryFee,
     });
+    // هدايا الفاتورة (0149): فصلُ وعاءين. `costTotal` (⇐ `invoices.costTotal` وقيد SALE) يبقى
+    // **تكلفة البنود المدفوعة وحدها** — فالثابت القائم «SALE.cost = invoices.costTotal» يظلّ سارياً
+    // ويظلّ كلُّ قارئٍ قائمٍ صحيحاً بلا مساس (COALESCE(ic.cost, i.costTotal) في تقارير المبيعات،
+    // عكس التكلفة الكامل في مرتجع التوصيل، تحليل ربحية أوامر الشغل). وتكلفة الهدايا تُرحَّل وحدها
+    // في قيد GIFT_OUT (§١١.ب) مصروفَ هدايا وترويج — الاعتراف بها مرّةً واحدةً لا مرّتين.
+    const paidLines = computed.filter((c) => !c.isGift);
+    const giftLines = computed.filter((c) => c.isGift);
     const costTotal = computeInvoiceCost(
-      computed.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))
+      paidLines.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))
     );
+    const giftCost = computeInvoiceCost(
+      giftLines.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))
+    );
+
+    // إفصاح التوصيل المجّاني (0152): «مجّانيّ» = أجرةٌ صفر حتماً. الحسم خادميّ لا من الشاشة:
+    // عَلَمٌ مع أجرةٍ موجبة تناقضٌ (فاتورةٌ تقول «مجاناً» وتقبض) ⇒ الأجرة تُغلِّب والعَلَم يسقط.
+    // القيمة المُتنازَل عنها إفصاحيّة بحتة: تُعرَض للزبون وتُحصى في التقارير ولا تدخل إيراداً
+    // ولا قيداً — الإيراد يبقى `deliveryFee` وحده (صفرٌ في هذه الحالة).
+    const deliveryFeeD = round2(money(input.deliveryFee ?? "0"));
+    const isFreeDelivery = input.deliveryFree === true && deliveryFeeD.lte(0);
+    const waivedDelivery = round2(money(input.deliveryWaivedAmount ?? "0"));
+    if (waivedDelivery.lt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "قيمة التوصيل المُتنازَل عنها لا تصحّ أن تكون سالبة" });
+    }
+    // قرار المالك (٦/٨/٢٦): **القيمة إلزامية عند تفعيل «مجاني»**. كانت اختيارية فتُخزَّن صفراً،
+    // فتضيع فائدة القياس («كم أهديتُ توصيلاً وبكم؟») على تلك الفواتير وتُطبَع «مجاناً» بلا مقدار.
+    // الإلزام هنا لا في الشاشة وحدها: الشاشة تُرشِد، والخادم يمنع — فلا تتسرّب فاتورةٌ ناقصة
+    // الإفصاح من أيّ قناة (استيراد/أوفلاين/تكامل مستقبليّ).
+    if (isFreeDelivery && waivedDelivery.lte(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "أدخِل قيمة أجرة التوصيل قبل جعله مجّانياً — تُطبَع للزبون وتُحصى في التقارير",
+      });
+    }
 
     // 6.b SALES-01/02 — بوّابة البيع بأقل من التكلفة (سدّ حرج: كاشير يبيع بسعر/خصم صفر).
     //     المنطق مشترك في billing.isInvoiceBelowCost ⇒ لا تَنجرف سياسة POS عن قناة الطباعة.
-    //     أيُّ بند/فاتورة تحت COGS يَلزمه موافقة مدير (الراوتر يَمنح المدير/الأدمن السلطة ذاتياً)؛
-    //     الهدايا (تكلفة=صفر) تَبقى مسموحة.
-    const belowCost = isInvoiceBelowCost(computed, totals.subtotal, totals.discountAmount, costTotal);
+    //     أيُّ بند/فاتورة تحت COGS يَلزمه موافقة مدير (الراوتر يَمنح المدير/الأدمن السلطة ذاتياً).
+    //     تُفحَص **البنود المدفوعة** وحدها مقابل `costTotal` (وهو تكلفتها وحدها) — سطر الهدية
+    //     مجّانيّ عمداً وتكلفته خارج هذا الوعاء، فإقحامه هنا يجعل كلّ فاتورةٍ فيها هديةٌ «تحت
+    //     التكلفة» زوراً. حوكمتُه بوّابةُ عتبة الهدايا أدناه لا هذه.
+    const belowCost = isInvoiceBelowCost(paidLines, totals.subtotal, totals.discountAmount, costTotal);
     // H6/H7: بوّابة الخصم اليدويّ فوق التكلفة — تُفرَض على قناة POS الحيّة فقط، لا على إعادة تشغيل
     // الأوفلاين (offlineCapture): بيعٌ اكتمل والتقاطُه لا يُعاد حظره — يُوسَم للمراجعة لا غير. المرتفعون
     // والقنوات المُقِرّة سلفاً (بث/عرض سعر) يمرّون عبر priceOverrideApproved كما في بوّابة تحت-التكلفة.
@@ -432,28 +509,67 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       throw new TRPCError({ code: "FORBIDDEN", message: `${reason} يتطلب موافقة مدير.` });
     }
 
+    // 6.ج حوكمة الهدايا داخل الفاتورة: تُستعار عتبةُ سند الهدية المستقلّ نفسها
+    //     (`GIFT_APPROVAL_THRESHOLD`) فلا تصير الفاتورة باباً خلفياً يلتفّ على حوكمة وحدة الهدايا
+    //     (إهداءٌ بلا سقف من شاشة البيع). المعيار **تكلفةُ** الهدية لا سعرُها (السعر صفر دائماً).
+    //     تحت العتبة يمرّ الكاشير مباشرةً؛ فوقها يفتح حوارُ اعتماد المدير نفسه (priceOverrideApproved).
+    const giftCostD = money(giftCost);
+    if (giftCostD.gt(money(GIFT_APPROVAL_THRESHOLD)) && !input.priceOverrideApproved) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: `تكلفة الهدايا في هذه الفاتورة (${giftCostD.toFixed(2)}) تتجاوز حدّ الإهداء بلا تفويض (${money(GIFT_APPROVAL_THRESHOLD).toFixed(2)} د.ع) — يتطلب موافقة مدير.`,
+      });
+    }
+
     // 7. تقريب نقدي IQD للبيع النقدي الكامل: يُقرَّب الإجمالي لفئة 250، فالنقد المستلم = الإجمالي المقرّب
     //    (لا فائض/عجز وهمي عند الرفع، ولا رفض بيع نقدي عند الخفض). الفرق يُسجَّل قيد ADJUST لاحقاً.
     const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
     const grandTotalD = money(totals.total);
-    const effectiveTotalD = roundCash ? roundCashIQD(grandTotalD) : grandTotalD;
+    // ش٦ — تقريب السلّة المختلطة: هذه الفاتورة تحمل فرق تقريب السلّة كلّها (checkoutReception
+    // يضبطه حصراً). مراجعة PR #495: الفرق **يُشتقّ خادمياً** من إجماليّ الأسطر المحسوب هنا
+    // ومجموعِ بقيّة السلّة كما حسبه الخادم — لا مبلغَ من العميل (كان يُقبل أيّ رقمٍ ضمن ٢٤٩
+    // ديناراً = خصمٌ غير معتمد يتخطّى بوّابتَي «تحت التكلفة» و«الخصم اليدويّ»).
+    let overrideD: ReturnType<typeof money> | null = null;
+    if (input.cashRoundingBasketOthers != null && input.payment?.method === "CASH") {
+      const basketRawD = round2(grandTotalD.plus(money(input.cashRoundingBasketOthers)));
+      const deltaD = roundCashIQD(basketRawD).minus(basketRawD); // |الفرق| ≤ ١٢٥ حتماً
+      const cand = round2(grandTotalD.plus(deltaD));
+      if (cand.gt(0)) overrideD = cand;
+    }
+    const effectiveTotalD = overrideD ?? (roundCash ? roundCashIQD(grandTotalD) : grandTotalD);
     const cashRoundingAdj = effectiveTotalD.minus(grandTotalD); // ± (صفر إن لا تقريب)
     const tendered = money(input.payment?.amount ?? "0");
+    // ش٤ (§٧.٢): المقبوض سلفاً (عرابين المسوّدة) يدخل الحساب **قبل** حرّاس الآجل/الائتمان —
+    // هذا هو الترتيب الحاسم: لولاه لرُفض زبونٌ عابر سدّد عربوناً كاملاً بحجّة «البيع الآجل
+    // يتطلب عميلاً» بينما ماله محبوسٌ في receipts (الحاصرة ١.١).
+    const preCollectedD = round2(money(input.preCollected?.amount ?? "0"));
+    if (preCollectedD.gt(effectiveTotalD)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `المقبوض سلفاً (${preCollectedD.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}) — خلل توزيع، راجع الطلب المحفوظ.`,
+      });
+    }
     // SALES-05 (تدقيق ٢/٧): كان paidNow يُفرَض = الإجمالي المقرّب عند roundCash متجاهلاً المبلغ
     // المُسلَّم ⇒ بيع آجل جزئي بعلم cashRoundIQD=true يُسجَّل «مدفوعاً بالكامل» فتُمحى ذمة العميل
     // (والنقد الوهمي يظهر عجزاً بدرج الكاشير). الآن: التقريب يطبَّق على الإجمالي دائماً، لكن نعامل
     // البيع كمدفوعٍ بالكامل (paidNow = الإجمالي المقرّب) فقط إذا كان المُسلَّم يغطّي الإجمالي فعلاً؛
     // وإلا فهي دفعة جزئية ⇒ paidNow = المُسلَّم بالضبط والباقي ذمّة على العميل.
-    if (input.payment?.method !== "CASH" && tendered.gt(effectiveTotalD)) {
+    if (input.payment?.method !== "CASH" && preCollectedD.plus(tendered).gt(effectiveTotalD)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `المبلغ المدفوع (${tendered.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
+        message: `المبلغ المدفوع (${preCollectedD.plus(tendered).toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
       });
     }
     // الزيادة النقدية هي باقي للعميل، لا paidAmount ولا receipt ولا نقداً باقياً في الدرج.
-    const paidNow = tendered.gt(effectiveTotalD) ? effectiveTotalD : tendered;
+    // paidNow = إجمالي المسدَّد على الفاتورة (سلفاً + الآن)؛ الإيصال الجديد للجزء الجديد وحده.
+    const totalTenderedD = preCollectedD.plus(tendered);
+    const paidNow = totalTenderedD.gt(effectiveTotalD) ? effectiveTotalD : totalTenderedD;
+    const newMoneyD = round2(paidNow.minus(preCollectedD));
     const unpaid = effectiveTotalD.minus(paidNow);
-    if (unpaid.gt(0) && !input.customerId) {
+    // ش٧ (قرار المالك ٦/٨): متبقّي فاتورة التوصيل COD ليس بيعاً آجلاً على زبونٍ عابر — إنّه
+    // **عهدةٌ على المندوب** تُرفع في نفس المعاملة (dispatchInvoiceInTx). الاستثناء محصورٌ
+    // بالعلم الداخليّ الذي ترفعه الخدمةُ المُسنِدة وحدها؛ حدّ ائتمان العميل المسجَّل يبقى نافذاً.
+    if (unpaid.gt(0) && !input.customerId && !input.codDispatchPending) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
     }
     // 7.b فحص حدّ الائتمان (H4): null=بلا حدّ، 0=حظر آجل، >0=فحص الإسقاط.
@@ -467,6 +583,7 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       unpaid.gt(0) &&
       !!input.customerId &&
       !input.allowNegativeStock &&
+      input.codDispatchPending !== true && // COD يبقى محكوماً بحدّ ائتمان العميل المسجَّل (main).
       OPENING_RECEPTION_CHANNELS.has(input.sourceType ?? "POS") &&
       (await readOpeningWindowState(tx)).active;
     if (openingCreditWaiver) {
@@ -486,6 +603,7 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
           // تَنشئ Approval تلقائياً، مرتبطة بهذا العميل + سقف=unpaid (تماماً)، single-use.
           const created = await (await import("../creditApprovalService")).createApproval(tx, {
             customerId: input.customerId,
+            branchId: input.branchId,
             maxAmount: unpaid.toFixed(2),
             approvedBy: input.managerOverrideByUserId,
             ttlMinutes: 5,
@@ -494,7 +612,10 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
           effectiveApprovalId = created.id;
         }
         // SELECT FOR UPDATE داخل validateApproval ⇒ لا double-spend عبر سباق.
-        await validateApproval(tx, effectiveApprovalId!, input.customerId, unpaid);
+        await validateApproval(tx, effectiveApprovalId!, input.customerId, unpaid, {
+          branchId: input.branchId,
+          consumerUserId: actor.userId,
+        });
       } else {
         await assertCreditLimit(tx, input.customerId, unpaid, input.branchId);
       }
@@ -526,11 +647,19 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       // أجرة الشحن كإيراد (مُضمَّنة في total ومُعترَف بها في revenue أدناه) — تُخزَّن صراحةً ليعكسها
       // المرتجع الكامل بدقّة (returnService) فيبقى Σ(revenue)=Σ(profit)=0.
       deliveryFee: toDbMoney(round2(money(input.deliveryFee ?? "0"))),
+      // إفصاح التوصيل المجّاني (0152): يُحسَم **خادمياً** — «مجّانيّ» تعني أجرةً صفراً حتماً،
+      // فلو وردت أجرةٌ موجبة مع العَلَم فالأجرة تُغلِّب والعَلَم يسقط (لا فاتورةٌ تقول «مجاناً»
+      // وتقبض أجرةً في آنٍ واحد). والقيمة المُتنازَل عنها لا تُخزَّن إلّا مع المجّانيّة الفعلية.
+      deliveryFree: isFreeDelivery,
+      deliveryWaivedAmount: toDbMoney(isFreeDelivery ? waivedDelivery : money(0)),
       status,
       paidAmount: toDbMoney(paidNow),
       paymentMethod: input.payment?.method ?? null,
       paymentDate: paidNow.gt(0) ? new Date() : null,
       notes: input.notes ?? null,
+      // ٥/٨ — زبونٌ عابر: مرجعٌ نصّيّ على الفاتورة بلا إنشاء عميل (customerId يبقى NULL ⇒ لا AR).
+      contactName: input.contactName?.trim() || null,
+      contactPhone: input.contactPhone?.trim() || null,
       // أوفلاين (ش٣): وسم المنشأ + الرقم المؤقّت المطبوع + لحظة الالتقاط الحقيقية —
       // يضبطها offline.replaySale حصراً (saleRouter لا يعرض offlineCapture).
       originatedOffline: !!input.offlineCapture,
@@ -548,6 +677,7 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
     }
 
     // 9. Items.
+    const createdLineItems: { lineToken: string; invoiceItemId: number }[] = [];
     for (const c of computed) {
       const itemInsRes = await tx.insert(invoiceItems).values({
         invoiceId,
@@ -562,11 +692,18 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         // promotions v2: الأثر متجمّد على المستند — تعديل عرضٍ لاحقاً لا يمسّ سجلّ فواتير سابقة.
         promotionId: c.promotionId,
         promotionDiscount: c.promotionDiscount,
+        // هدايا الفاتورة (0149): وسمُ السطر المُهدى. `unitCost` أعلاه يحمل تكلفته الحقيقية كاملةً
+        // (لقطة WAVG) — مصدرُ مصروف الهدية ومصدرُ عكسِه عند الإرجاع.
+        isGift: c.isGift,
       });
+      const insertedInvoiceItemId = extractInsertId(itemInsRes);
+      if (c.internalLineToken) {
+        createdLineItems.push({ lineToken: c.internalLineToken, invoiceItemId: insertedInvoiceItemId });
+      }
       // gstack B6: لقطة مكوّنات البكج لحظة البيع. المرتجع يقرأ منها حصراً بدل الوصفة الحيّة —
       // يحمي من انحراف مخزون صامت لو عُدّلت الوصفة بين البيع والإرجاع.
       if (c.kind === "BUNDLE") {
-        const invoiceItemId = extractInsertId(itemInsRes);
+        const invoiceItemId = insertedInvoiceItemId;
         const def = bundleDefs.get(c.variantId) ?? [];
         for (const bc of def) {
           await tx.insert(invoiceItemBundleComponents).values({
@@ -619,18 +756,36 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
     }
     const sortedVariantIds = Array.from(aggregated.keys()).sort((a, b) => a - b);
 
-    // «وضع الافتتاح» — توسعة قرار المالك (١٠/٨): كان مقصوراً على بيع POS مسدّدٍ بالكامل نقداً/بطاقة،
-    // فتوقّفت الطلبات وأوامر الشغل والتوصيل والبيع الآجل حتى الجرد الافتتاحي. الآن يشمل **كل قنوات
-    // الاستقبال/التنفيذ** (POS/ORDER/WORKORDER) وبأيّ طريقة دفع (نقدي/بطاقة/آجل/جزئي) — لأنّ
-    // إعفاء الائتمان أعلاه يجعل الطلب الآجل بلا عربون مساراً مشروعاً.
+    // «وضع الافتتاح» (ش٢ ١٩/٧): بيعٌ مسدّد بالكامل نقداً أو بالبطاقة من قناة POS
+    // يُسمح له بالنزول تحت الصفر للصنف. البطاقة سداد فوري كامل مثل النقد، لكن أثرها
+    // المالي يبقى في خزينة البطاقة ولا يدخل درج الكاشير.
     // **غير المُفتتَح** (openedAt IS NULL — يُفحص داخل applyMovement تحت القفل) حتى يُجرَد افتتاحياً.
-    // شرطا الأمان الصنفيان يبقيان كما هما (مراجعة عدائية ١٨/٧): تكلفة مُدخلة (>0) — سالبٌ بلا COGS =
-    // تسريب غير قابل للكشف — وسقف كمية للسطر يصدّ خطأ الإدخال والاحتيال. قناة الأوفلاين
-    // (allowNegativeStock) مستقلة تماماً ولا تتراكب. القراءة كسولة: البيع المكتفي المخزون لا يدفع
-    // أي استعلام إضافي.
+    // شرطا الأمان الصنفيان (مراجعة عدائية ١٨/٧): تكلفة مُدخلة (>0) — سالبٌ بلا COGS = تسريب غير
+    // قابل للكشف — وسقف كمية للسطر يصدّ خطأ الإدخال والاحتيال. قناة الأوفلاين (allowNegativeStock)
+    // مستقلة تماماً ولا تتراكب. القراءة كسولة: البيع العادي المكتفي المخزون لا يدفع أي استعلام إضافي.
+    // الأهليّة الأساس: بيعٌ مسدَّدٌ بالكامل في الكاونتر (نقداً/بطاقة، unpaid<=0).
+    // امتداد الاستقبال (٨/٨): طلب توصيل COD (codDispatchPending) لا يُسدَّد في الكاونتر
+    // (المندوب يقبض من الزبون) فـunpaid>0 دائماً — لكن في وضع الافتتاح السالب يعني «غير مجرود»
+    // لا «نافد»، والمندوب يحمل الصنف الموجود فعلياً. فنسمح به **بتأكيد توفّرٍ فيزيائيّ صريح**
+    // من الموظّف؛ تبقى رِيلات الأمان (تكلفة>0 + سقف الكمية + استثناء الأمانة) نافذةً كما هي أدناه.
+    // توسعة قرار المالك (١٠/٨): من «POS مسدّد كاملاً» إلى **كل قنوات الاستقبال/التنفيذ**.
+    // نُبقي شروط main الأدقّ للـPOS (كاونتر مسدّد نقداً/بطاقة + COD بتأكيد التوفّر) كما هي دون
+    // تخفيف، ونُضيف: قنوات ORDER/WORKORDER (بأي دفع) + بيع POS آجل لعميلٍ محدَّد (البيع الآجل من
+    // الاستقبال). الريلات الصنفية أدناه (تكلفة>0 + سقف + غير مُفتتَح + استثناء الأمانة) تبقى نافذة.
     const openingBaseEligible =
       !input.allowNegativeStock &&
-      OPENING_RECEPTION_CHANNELS.has(input.sourceType ?? "POS");
+      (
+        input.sourceType === "ORDER" ||
+        input.sourceType === "WORKORDER" ||
+        ((input.sourceType ?? "POS") === "POS" &&
+          (
+            ((input.payment?.method === "CASH" || input.payment?.method === "CARD") && unpaid.lte(0))
+            || (input.codDispatchPending === true && input.openingSellUnavailableConfirmed === true)
+            // بيع POS آجل من الاستقبال لعميلٍ محدَّد (توسعة ١٠/٨) — يُستثنى COD صراحةً كي يبقى
+            // محكوماً بحارس تأكيد التوفّر الفيزيائيّ الخاصّ به (main ٨/٨)، لا يتجاوزه حملُه عميلاً.
+            || (unpaid.gt(0) && !!input.customerId && input.codDispatchPending !== true)
+          ))
+      );
     const readOpeningWindow = async () => {
       const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
       return om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now()
@@ -684,8 +839,10 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         if (e instanceof TRPCError && e.code === "CONFLICT" && e.message.includes("المخزون غير كافٍ")) {
           const win = openingWindow ?? (await readOpeningWindow());
           if (win) {
-            const hint = !openingBaseEligible
-              ? "وضع الافتتاح فعّال، لكن البيع بالسالب للصنف غير المجرود متاحٌ لقنوات الاستقبال والتنفيذ فقط (بيع مباشر/طلب/أمر شغل) — هذه القناة خارج النطاق"
+            const hint = (input.codDispatchPending === true && input.openingSellUnavailableConfirmed !== true)
+              ? "طلب توصيل COD لصنفٍ غير مجرود أثناء الافتتاح يتطلّب تأكيد توفّره فيزيائياً صراحةً قبل الإرسال"
+              : !openingBaseEligible
+              ? "وضع الافتتاح فعّال، لكن البيع بالسالب للصنف غير المجرود متاحٌ لقنوات الاستقبال/التنفيذ فقط (بيع مباشر مسدّد أو آجل لعميلٍ محدَّد، أو طلب/أمر شغل) — هذه القناة/الحالة خارج النطاق"
               : qty > win.maxQty
                 ? `الكمية تتجاوز سقف السطر السالب في وضع الافتتاح (${win.maxQty} وحدة أساس)`
                 : !money(deductCosts.get(vid) ?? "0").gt(0)
@@ -713,6 +870,26 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       taxAmount: money(totals.taxAmount),
       amount: money(totals.total),
     });
+
+    // 11.ب هدايا الفاتورة (0149): قيدٌ واحدٌ لتكلفة كلّ البنود المُهداة — مصروف هدايا وترويج
+    // (إيراد=0، ربح=−التكلفة) مطابقٌ تماماً لقيد سند الهدية المستقلّ في `gifts/outbound.ts` فلا
+    // تنجرف القناتان. يحمل `invoiceId` للتتبّع (أيّ فاتورةٍ أهدت ماذا) ويبقى مع ذلك **خارج وعاء
+    // العمولة** لأنّ الوعاء يفلتر `entryType IN ('SALE','RETURN')` — فالبائع لا يُكافأ على إهداء
+    // ولا يُعاقَب به. `dedupeKey` حارسٌ بنيويّ: قيد هدايا واحد لكل فاتورة (نظير SALE:${invoiceId}).
+    if (giftCostD.gt(0)) {
+      await postEntry(tx, {
+        entryType: "GIFT_OUT",
+        dedupeKey: `GIFT:INV:${invoiceId}`,
+        branchId: input.branchId,
+        invoiceId,
+        customerId: input.customerId ?? null,
+        revenue: money(0),
+        cost: giftCostD,
+        profit: round2(money(0).minus(giftCostD)),
+        amount: giftCostD,
+        notes: "هدايا ضمن فاتورة بيع",
+      });
+    }
 
     // 11.أ بضاعة الأمانة (ش٣): التقاط التزام المودِع لحظة البيع. طريقة الإجمالي — قيد SALE أعلاه لم يُمسّ
     // (revenue كامل، الربح=الهامش لأن الحصة داخل unitCost). لكل مودِع: قيد PURCHASE **يتيم** بـinvoiceId
@@ -756,7 +933,9 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
     }
 
     // 12. Payment + AR.
-    if (paidNow.gt(0)) {
+    //     ش٤ (I5): الإيصال والقيد للجزء **الجديد** وحده (newMoneyD) — المقبوض سلفاً له إيصاله
+    //     وقيده منذ لحظة القبض (deposits.ts)، وإنشاء ثانٍ له = نقدٌ وهميّ يمنع إغلاق الوردية.
+    if (newMoneyD.gt(0)) {
       const rRes = await tx.insert(receipts).values({
         invoiceId,
         branchId: input.branchId,
@@ -765,8 +944,9 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         // مرآة لنمط voucherService — يَحرس مستقبلاً صيَغ reconcile/cashOrphans التي تَفلتر بـcashBucket.
         cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
         direction: "IN",
-        amount: toDbMoney(paidNow),
+        amount: toDbMoney(newMoneyD),
         paymentMethod: input.payment!.method,
+        referenceNumber: input.payment!.reference?.trim() || null,
         status: "COMPLETED",
         createdBy: actor.userId,
       });
@@ -777,8 +957,15 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
         invoiceId,
         receiptId,
         customerId: input.customerId ?? null,
-        amount: paidNow,
+        amount: newMoneyD,
       });
+    }
+    // إيصالات المقبوض سلفاً المُمرَّرة صراحةً تُختم بالفاتورة فقط (append-only — نمط deliver.ts).
+    for (const preReceiptId of input.preCollected?.receiptIds ?? []) {
+      await tx
+        .update(receipts)
+        .set({ invoiceId })
+        .where(and(eq(receipts.id, preReceiptId), sql`${receipts.invoiceId} IS NULL`));
     }
     if (input.customerId) {
       await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));
@@ -790,7 +977,10 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       total: toDbMoney(effectiveTotalD),
       status,
       priceOverride: belowCost || manualDiscountGateTriggered,
+      // هدايا الفاتورة: تكلفة ما أُهدي (للأثر التدقيقيّ في الراوتر — مَن أهدى وبكم).
+      ...(giftCostD.gt(0) ? { giftCost: giftCostD.toFixed(2) } : {}),
       ...(negativeDips.length ? { negativeDips } : {}),
+      ...(createdLineItems.length ? { createdLineItems } : {}),
     };
 }
 
@@ -802,7 +992,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
   // حماية flowNotify الداخلية — فشله (لأي سبب) **لا يُسقِط** بيعاً ناجحاً بالفعل (القاعدة الحاكمة،
   // راجع server/services/whatsapp/flowNotify.ts).
   try {
-    await notifyPurchaseThanks(input, result);
+    await notifySaleCustomerAfterCommit(input, result);
   } catch (e) {
     logger.warn(
       { err: e instanceof Error ? e.message : String(e), invoiceId: result.invoiceId },
@@ -814,7 +1004,8 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
 }
 
 /** يجلب هاتف/اسم عميل الفاتورة (إن عُرف) ويستدعي flowNotify — لا شيء إن لا عميل/لا هاتف. */
-async function notifyPurchaseThanks(input: CreateSaleInput, result: CreateSaleResult): Promise<void> {
+/** Post-commit customer acknowledgement, reusable by composite sale flows. */
+export async function notifySaleCustomerAfterCommit(input: CreateSaleInput, result: CreateSaleResult): Promise<void> {
   if (!input.customerId) return;
   const db = requireDb();
   const cust = (

@@ -21,16 +21,41 @@
 
 require("dotenv").config();
 
+const configuredHrDevicePort = Number(process.env.HR_DEVICE_PORT || "0");
+const hrBridgeEnabled =
+  (process.env.HR_DEVICE_BRIDGE === "1" ||
+    (Number.isInteger(configuredHrDevicePort) && configuredHrDevicePort > 0)) &&
+  !process.env.CONTROL_DATABASE_URL;
+
 module.exports = {
   apps: [
     {
       name: "erp-server",
       script: "dist/index.js",
       cwd: __dirname,
-      instances: 1,
-      exec_mode: "fork",
+      // ── توزيع الأحمال داخل الخادم (cluster) ────────────────────────────────────────────
+      // عدّة عمّال يتقاسمون الطلبات على نوى المعالج ⇒ طاقةٌ أعلى تحت الذروة (٧ كاشيرات + كل
+      // الموظفين والحسابات) + مقاومةُ انهيار (سقوطُ عاملٍ لا يُسقط الخدمة — الباقون يخدمون) +
+      // إعادةُ تحميلٍ متدحرجة بلا انقطاع (pm2 reload). الكنّاسات والكرون تعمل في العامل 0 فقط
+      // (server/lib/clusterRole.ts) فلا تتكرّر. جسر أجهزة الحضور مفصول في erp-hr-bridge
+      // (عملية fork واحدة) ولا يملك erp-server منفذ الأجهزة أو وصلاتها الحيّة.
+      // ⚠️ الخادم مشترك (سراج/أودو خطّ أحمر) — الافتراضي عاملَان (لا "max") كي لا نستنزف نوى
+      // الجيران؛ ارفعه بحذر عبر WEB_INSTANCES=3 بعد مراقبة الحِمل. **ميزانية اتصالات القاعدة:**
+      // كل عامل يفتح حتى DB_POOL_LIMIT اتصالاً **لكل شركة**؛ في الوضع الأحادي = (عدد العمّال ×
+      // DB_POOL_LIMIT)، وفي وضع تعدّد الشركات (CONTROL_DATABASE_URL) = (عدد العمّال × عدد الشركات
+      // × DB_POOL_LIMIT). احرص أن يبقى دون max_connections في MySQL (الافتراضي 151): ٢×٢٠=٤٠ آمن
+      // أحاديّاً، لكن ٢ عامل × ٤ شركات × ٢٠ = ١٦٠ يتجاوزه ⇒ اخفض DB_POOL_LIMIT أو ارفع max_connections.
+      instances: process.env.WEB_INSTANCES || 2,
+      exec_mode: "cluster",
       watch: false,
-      max_memory_restart: "512M",
+      // ⚠️ مؤقّت (٤/٨/٢٦): رُفع من 512M إلى 1024M. السقف القديم كان يُعاد ضربه **كل ٦٠ ثانية**
+      // في الإنتاج (‏`[PM2][WORKER] … exceeds --max-memory-restart` عند ~٦٠٠م)، فيُعاد تشغيل
+      // الخادم ١٥–٢٣ مرّة/ساعة وتُسقَط الطلبات الجارية — بلا أيّ انهيارٍ حقيقيّ (صفر خروجٍ بكودٍ
+      // غير صفر). العملية تبدأ ~٣٠٠م وتبلغ ٦٠٠م خلال دقيقة، وهو نموٌّ أسرع من أن يكون تسرّباً
+      // بطيئاً؛ الفرضية أنّ ٥١٢م أدنى من سلوك V8 الطبيعيّ (يؤجّل الكنس الكبير حتى ضغطٍ أعلى)
+      // فيقاتل PM2 جامعَ المهملات لا تسرّباً. الخادم ١٦ﺟ ومتاحٌ منه ~١٣ﺟ ⇒ 1024M آمنٌ بفارق واسع.
+      // يبقى **محدوداً عمداً** كي يظلّ تسرّبٌ حقيقيّ مكشوفاً (إن عاد الضرب فالنموّ حقيقيّ لا كسل GC).
+      max_memory_restart: "1024M",
       // أعِد التشغيل تلقائياً عند الانهيار (مع تأخير متزايد).
       restart_delay: 3000,
       max_restarts: 10,
@@ -46,6 +71,8 @@ module.exports = {
         // طلب أصل عند فتح صفحة كانت تُشبع الخيوط الأربعة وتُعلّق الطلبات على «جار التحميل».
         UV_THREADPOOL_SIZE: "16",
         PORT: process.env.PORT || 3000,
+        // يطابق عدد عمّال الويب المقصود في `instances` أعلاه.
+        WEB_INSTANCES: String(process.env.WEB_INSTANCES || 2),
         DATABASE_URL: process.env.DATABASE_URL,
         JWT_SECRET: process.env.JWT_SECRET,
         // عمداً بلا CONTROL_DATABASE_URL/DB_ROOT_PW/docker — خادم الويب لا يوفّر شركات أبداً.
@@ -54,6 +81,41 @@ module.exports = {
       log_date_format: "YYYY-MM-DD HH:mm:ss",
       error_file: "logs/erp-error.log",
       out_file: "logs/erp-out.log",
+      merge_logs: true,
+    },
+    {
+      name: "erp-hr-bridge",
+      script: "scripts/hr-bridge-worker.mjs",
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: "fork",
+      watch: false,
+      autorestart: hrBridgeEnabled,
+      exp_backoff_restart_delay: 3000,
+      max_restarts: 10,
+      min_uptime: "10s",
+      kill_timeout: 11000,
+      env: {
+        NODE_ENV: "production",
+        TZ: "UTC",
+        DATABASE_URL: process.env.DATABASE_URL,
+        CONTROL_DATABASE_URL: process.env.CONTROL_DATABASE_URL,
+        HR_DEVICE_BRIDGE: process.env.HR_DEVICE_BRIDGE,
+        HR_DEVICE_PORT: process.env.HR_DEVICE_PORT,
+        HR_DEVICE_HOST: process.env.HR_DEVICE_HOST,
+        HR_DEVICE_IP_ALLOWLIST: process.env.HR_DEVICE_IP_ALLOWLIST,
+        HR_DEVICE_SHARED_SECRET: process.env.HR_DEVICE_SHARED_SECRET,
+        HR_DEVICE_IDENTITY_BINDINGS: process.env.HR_DEVICE_IDENTITY_BINDINGS,
+        HR_DEVICE_LEGACY_IDENTITY_MIGRATION: process.env.HR_DEVICE_LEGACY_IDENTITY_MIGRATION,
+        HR_DEVICE_MAX_PAYLOAD_BYTES: process.env.HR_DEVICE_MAX_PAYLOAD_BYTES,
+        HR_DEVICE_REQUEST_TIMEOUT_MS: process.env.HR_DEVICE_REQUEST_TIMEOUT_MS,
+        HR_DEVICE_IDLE_TIMEOUT_MS: process.env.HR_DEVICE_IDLE_TIMEOUT_MS,
+        HR_DEVICE_RATE_LIMIT_PER_MINUTE: process.env.HR_DEVICE_RATE_LIMIT_PER_MINUTE,
+        HR_DEVICE_MAX_WS_PER_IP: process.env.HR_DEVICE_MAX_WS_PER_IP,
+      },
+      log_date_format: "YYYY-MM-DD HH:mm:ss",
+      error_file: "logs/hr-bridge-error.log",
+      out_file: "logs/hr-bridge-out.log",
       merge_logs: true,
     },
     {

@@ -13,7 +13,7 @@ import { branches, branchStock, inventoryMovements, productVariants, products, s
 import type { Tx } from "../db";
 import { getDb } from "../db";
 import { applyMovement } from "./inventoryService";
-import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
 import { money } from "./money";
 import { extractInsertId } from "../lib/insertId";
@@ -75,7 +75,27 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
   }
 
   // idempotency: نقرة مزدوجة/إعادة شبكية بنفس المفتاح تعيد السند الأول بدل خصم المصدر مرّتين.
-  const existing = await findIdempotentRefId(tx, "inventory.transferCreate", a.clientRequestId);
+  // A clientRequestId identifies one *specific* dispatch.  Replaying it with a
+  // different destination or line quantities must not silently return the
+  // earlier transfer: that would make the caller believe its new request was
+  // fulfilled while the stock movement belongs to another document.
+  const createRequestHash = a.clientRequestId
+    ? idempotencyHash({
+        fromBranchId: a.fromBranchId,
+        toBranchId: a.toBranchId,
+        items: [...a.items]
+          .map((item) => ({ variantId: item.variantId, baseQuantity: item.baseQuantity }))
+          .sort((left, right) => left.variantId - right.variantId),
+        reason: a.reason ?? null,
+        notes: a.notes?.trim() || null,
+      })
+    : null;
+  const existing = await checkIdempotency(
+    tx,
+    "inventory.transferCreate",
+    a.clientRequestId,
+    createRequestHash,
+  );
   if (existing != null) {
     const doc = (await tx.select().from(stockTransfers).where(eq(stockTransfers.id, existing)).limit(1))[0];
     return { transferId: existing, transferNumber: doc?.transferNumber ?? "", lines: a.items.length, idempotentReplay: true as const };
@@ -139,7 +159,7 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
   }
 
   if (a.clientRequestId) {
-    await recordIdempotencyKey(tx, "inventory.transferCreate", a.clientRequestId, transferId);
+    await recordIdempotencyKey(tx, "inventory.transferCreate", a.clientRequestId, transferId, createRequestHash);
   }
   return { transferId, transferNumber, lines: a.items.length, idempotentReplay: false as const };
 }
@@ -158,8 +178,40 @@ export interface ReceiveTransferArgs {
  * استلام واحد نهائي يغلق السند (لا استلام على دفعات — فرعان بنفس المدينة).
  */
 export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
-  const replay = await findIdempotentRefId(tx, "inventory.transferReceive", a.clientRequestId);
-  if (replay != null) return { transferId: a.transferId, idempotentReplay: true as const, discrepancyUnits: 0 };
+  // Receipt idempotency must be bound to both this transfer and the exact
+  // received quantities.  A reused key used to return a false success for a
+  // different transfer (or a changed shortage declaration), leaving that
+  // transfer unreceived without alerting the cashier.
+  const receiveRequestHash = a.clientRequestId
+    ? idempotencyHash({
+        transferId: a.transferId,
+        lines: [...a.lines]
+          .map((line) => ({
+            lineId: line.lineId,
+            quantityReceived: line.quantityReceived,
+            note: line.note?.trim() || null,
+          }))
+          .sort((left, right) => left.lineId - right.lineId),
+        receiveNotes: a.receiveNotes?.trim() || null,
+      })
+    : null;
+  const replay = await checkIdempotency(
+    tx,
+    "inventory.transferReceive",
+    a.clientRequestId,
+    receiveRequestHash,
+  );
+  if (replay != null) {
+    // Older records did not carry a hash, so retain a document-identity guard
+    // while they remain in the database.
+    if (replay !== a.transferId) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "معرّف طلب الاستلام استُخدم لسند تحويل آخر — استعمل معرّفاً جديداً",
+      });
+    }
+    return { transferId: a.transferId, idempotentReplay: true as const, discrepancyUnits: 0 };
+  }
 
   const doc = (
     await tx.select().from(stockTransfers).where(eq(stockTransfers.id, a.transferId)).for("update").limit(1)
@@ -277,7 +329,7 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
     .where(eq(stockTransfers.id, a.transferId));
 
   if (a.clientRequestId) {
-    await recordIdempotencyKey(tx, "inventory.transferReceive", a.clientRequestId, a.transferId);
+    await recordIdempotencyKey(tx, "inventory.transferReceive", a.clientRequestId, a.transferId, receiveRequestHash);
   }
   return {
     transferId: a.transferId,

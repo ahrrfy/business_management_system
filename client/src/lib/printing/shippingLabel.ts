@@ -38,6 +38,8 @@ export interface ShippingLabelData {
   deliveryPartyName?: string | null;
   createdAt?: Date | string | null;
   items: ShippingLabelItem[];
+  /** رابط عام موقّع للملصق؛ عند المسح يفتح ملخص الطلب بدلاً من نص باركود غير مفيد. */
+  qrUrl?: string | null;
 }
 
 function fmtDate(d: Date | string | null | undefined): string {
@@ -64,7 +66,7 @@ export async function shippingLabelHtml(
   }
   let qr = "";
   try {
-    qr = await qrCodeSvg(o.orderNumber, { margin: 0 });
+    qr = await qrCodeSvg(o.qrUrl || o.orderNumber, { margin: 1 });
   } catch {
     qr = "";
   }
@@ -88,16 +90,16 @@ ${CAIRO_FONT}
   .row{display:flex;align-items:center;justify-content:space-between;gap:2mm}
   /* ترويسة المُرسِل */
   .from{display:flex;align-items:flex-start;justify-content:space-between;gap:2mm;padding-bottom:1.5mm;border-bottom:2px solid #000}
-  .from-co{font-weight:900;font-size:11pt;line-height:1.1}
-  .from-sub{font-weight:600;font-size:7.5pt;line-height:1.25}
-  .from-r{text-align:left;font-weight:800;font-size:7.5pt;line-height:1.3;white-space:nowrap}
+  .from-co{font-weight:900;font-size:12.5pt;line-height:1.1}
+  .from-sub{font-weight:700;font-size:8.5pt;line-height:1.3}
+  .from-r{text-align:left;font-weight:900;font-size:9pt;line-height:1.35;white-space:nowrap}
   /* المستلِم */
   .to{padding:2mm 0;border-bottom:2px solid #000}
   .to-tag{display:inline-block;background:#000;color:#fff;font-weight:900;font-size:8pt;padding:0.4mm 2mm;border-radius:1mm;margin-bottom:1mm}
   .to-name{font-weight:900;font-size:17pt;line-height:1.1;word-break:break-word}
-  .to-phone{font-weight:900;font-size:15pt;line-height:1.15;letter-spacing:0.5px;font-variant-numeric:tabular-nums;direction:ltr;text-align:right}
-  .to-gov{font-weight:900;font-size:12pt;margin-top:0.5mm}
-  .to-addr{font-weight:600;font-size:10.5pt;line-height:1.25;margin-top:0.5mm;
+  .to-phone{font-weight:900;font-size:16pt;line-height:1.15;letter-spacing:0.5px;font-variant-numeric:tabular-nums;direction:ltr;text-align:right}
+  .to-gov{font-weight:900;font-size:12.5pt;margin-top:0.5mm}
+  .to-addr{font-weight:700;font-size:11pt;line-height:1.3;margin-top:0.5mm;
     display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
   /* صندوق COD */
   .cod{margin:2mm 0;border:3px solid #000;border-radius:1.5mm;padding:1.5mm 2mm;display:flex;align-items:center;justify-content:space-between;gap:2mm}
@@ -105,19 +107,21 @@ ${CAIRO_FONT}
   .cod-l small{display:block;font-weight:700;font-size:7pt}
   .cod-v{font-weight:900;font-size:26pt;line-height:1;white-space:nowrap;font-variant-numeric:tabular-nums;direction:ltr}
   .cod-v u{text-decoration:none;font-size:12pt;font-weight:800;margin-inline-start:1mm}
-  /* الباركود */
-  .bc{flex:1 1 auto;display:flex;flex-direction:column;align-items:stretch;justify-content:center;min-height:0;gap:0.5mm}
-  .bc-svg{flex:1 1 auto;min-height:12mm;display:flex;align-items:center;justify-content:center}
+  /* الأصناف هي مرجع التجهيز؛ أعلى من الباركود الذي يظل مرجعاً ثانوياً صغيراً. */
+  .items{margin:0 0 1.5mm;padding:1.2mm 1.5mm;background:#f3f3f3;border:1px solid #000;border-radius:1mm;font-size:8.5pt;line-height:1.35}
+  .items b{font-weight:900}.items-list{font-weight:700;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+  /* الباركود: مرجع بصري احتياطي، لا يستهلك الملصق على حساب الاسم والعنوان والأصناف. */
+  .bc{flex:0 0 17mm;display:flex;flex-direction:column;align-items:stretch;justify-content:center;min-height:0;gap:0.4mm}
+  .bc-svg{height:12mm;display:flex;align-items:center;justify-content:center}
   .bc-svg svg{width:100%;height:100%;display:block}
   .bc-no{text-align:center;font-weight:900;font-size:14pt;letter-spacing:1px;font-variant-numeric:tabular-nums}
   /* التذييل: QR + بيانات + المحتويات */
   .ft{display:flex;align-items:stretch;gap:2mm;padding-top:1.5mm;border-top:2px solid #000}
-  .ft-qr{width:18mm;height:18mm;flex:0 0 auto}
+  .ft-qr{width:16mm;height:16mm;flex:0 0 auto}
   .ft-qr svg{width:100%;height:100%;display:block}
-  .ft-info{flex:1 1 auto;min-width:0;font-size:8pt;line-height:1.3}
+  .ft-info{flex:1 1 auto;min-width:0;font-size:8.5pt;line-height:1.35}
   .ft-info b{font-weight:900}
-  .ft-c{margin-top:0.8mm;font-weight:600;font-size:7.5pt;line-height:1.2;
-    display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+  .ft-c{margin-top:0.6mm;font-weight:700;font-size:7.5pt;line-height:1.2}
 </style></head>
 <body>
   <div class="pg">
@@ -125,7 +129,7 @@ ${CAIRO_FONT}
     <div class="from">
       <div>
         <div class="from-co">${esc(CO.short)}</div>
-        <div class="from-sub">${esc(CO.subtitle)} — ${esc(CO.address)}</div>
+        <div class="from-sub">${esc(CO.address)}</div>
       </div>
       <div class="from-r">المُرسِل<br>${esc(CO.phones[1]?.n ?? CO.phones[0]?.n ?? "")}</div>
     </div>
@@ -133,7 +137,7 @@ ${CAIRO_FONT}
     <div class="to">
       <span class="to-tag">المستلِم</span>
       <div class="row" style="align-items:flex-start">
-        <div class="to-name" style="flex:1 1 auto">${esc(o.customerName ?? "زبون")}</div>
+        <div class="to-name" style="flex:1 1 auto">${esc(o.customerName ?? "عميل")}</div>
         ${o.customerPhone ? `<div class="to-phone">${esc(o.customerPhone)}</div>` : ""}
       </div>
       ${govName ? `<div class="to-gov">${esc(govName)}</div>` : ""}
@@ -145,6 +149,8 @@ ${CAIRO_FONT}
       <div class="cod-v">${esc(fmt(o.total))}<u>د.ع</u></div>
     </div>
 
+    <div class="items"><b>أصناف التجهيز (${itemCount}):</b> <span class="items-list">${esc(contents || "—")}</span></div>
+
     <div class="bc">
       ${barcode ? `<div class="bc-svg">${barcode}</div>` : ""}
       <div class="bc-no">${esc(o.orderNumber)}</div>
@@ -153,9 +159,9 @@ ${CAIRO_FONT}
     <div class="ft">
       ${qr ? `<div class="ft-qr">${qr}</div>` : ""}
       <div class="ft-info">
-        <div><b>التاريخ:</b> ${esc(fmtDate(o.createdAt))} &nbsp; <b>الأصناف:</b> ${itemCount}</div>
+        <div><b>الطلب:</b> ${esc(o.orderNumber)} &nbsp; <b>التاريخ:</b> ${esc(fmtDate(o.createdAt))}</div>
         ${o.deliveryPartyName ? `<div><b>المندوب:</b> ${esc(o.deliveryPartyName)}</div>` : ""}
-        <div class="ft-c"><b>المحتويات:</b> ${esc(contents || "—")}</div>
+        <div class="ft-c">امسح QR لفتح معلومات الطلب</div>
       </div>
     </div>
   </div>

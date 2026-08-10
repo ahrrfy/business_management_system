@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { connectivity, useConnectivity } from "@/lib/offline/connectivity";
 import {
   flushOutbox,
@@ -11,7 +11,8 @@ import {
   setOfflineSaleEnabled,
   subscribeOutbox,
   type OutboxSummary,
-  type ReplaySaleApi,
+  type ReplayApiMap,
+  type ReplayArgs,
 } from "@/lib/offline/outbox";
 import { getOfflineProfile, setOfflinePin, type OfflineProfile } from "@/lib/offline/pinLock";
 import { getMeta, requestPersistentStorage, type OfflineOutboxItem } from "@/lib/offline/db";
@@ -57,16 +58,21 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
   const [mgrPwd, setMgrPwd] = useState("");
   const [approvalBusy, setApprovalBusy] = useState(false);
 
-  const api: ReplaySaleApi = useCallback(
-    (args) =>
-      utils.client.offline.replaySale.mutate({
-        ...(args.payload as never as object),
-        capturedAt: args.capturedAt,
-        offlineReceiptNumber: args.offlineReceiptNumber,
-        deviceId: args.deviceId,
-      } as never),
-    [utils],
-  );
+  // خريطة الترحيل الكاملة: الشارة عامّة (تُركَّب في كلّ شاشات الكاشير) فتُفرّغ **كلّ** الأنواع،
+  // لا نوع الشاشة التي تحملها وحده — وإلا بقي عنصرُ استقبالٍ عالقاً لأن الكاشير فتح التجزئة.
+  const api: ReplayApiMap = useMemo(() => {
+    const common = (args: ReplayArgs) => ({
+      ...(args.payload as never as object),
+      capturedAt: args.capturedAt,
+      offlineReceiptNumber: args.offlineReceiptNumber,
+      deviceId: args.deviceId,
+    });
+    return {
+      SALE: (args) => utils.client.offline.replaySale.mutate(common(args) as never),
+      PRINT_SALE: (args) => utils.client.offline.replayPrintSale.mutate(common(args) as never),
+      RECEPTION: (args) => utils.client.offline.replayReception.mutate(common(args) as never),
+    };
+  }, [utils]);
 
   const refresh = useCallback(() => {
     void readOutboxSummary().then(setSummary);
@@ -393,14 +399,20 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
                             disabled={!mgrEmail || !mgrPwd || approvalBusy || offline}
                             onClick={() => {
                               setApprovalBusy(true);
-                              const approvalApi: ReplaySaleApi = (args) =>
-                                utils.client.offline.replaySale.mutate({
-                                  ...(args.payload as never as object),
-                                  capturedAt: args.capturedAt,
-                                  offlineReceiptNumber: args.offlineReceiptNumber,
-                                  deviceId: args.deviceId,
-                                  managerApproval: { email: mgrEmail, password: mgrPwd },
-                                } as never);
+                              // اعتماد المدير يجب أن يسلك **مسار نوع العنصر** لا مسار التجزئة
+                              // دائماً — وإلا رُحِّلت سلّة استقبالٍ معلَّقة عبر عقدٍ لا يقبلها.
+                              const withApproval = (args: ReplayArgs) => ({
+                                ...(args.payload as never as object),
+                                capturedAt: args.capturedAt,
+                                offlineReceiptNumber: args.offlineReceiptNumber,
+                                deviceId: args.deviceId,
+                                managerApproval: { email: mgrEmail, password: mgrPwd },
+                              });
+                              const approvalApi: ReplayApiMap = {
+                                SALE: (args) => utils.client.offline.replaySale.mutate(withApproval(args) as never),
+                                PRINT_SALE: (args) => utils.client.offline.replayPrintSale.mutate(withApproval(args) as never),
+                                RECEPTION: (args) => utils.client.offline.replayReception.mutate(withApproval(args) as never),
+                              };
                               void replayParkedWithApproval(item.clientRequestId, approvalApi).then((r) => {
                                 setApprovalBusy(false);
                                 if (r.ok) {

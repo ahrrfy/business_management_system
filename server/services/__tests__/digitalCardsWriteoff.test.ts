@@ -14,7 +14,7 @@ import {
  *
  * الثوابت المحروسة هنا:
  *   I1 — الطلب **لا يمسّ مالاً**: لا رصيد ولا حجز ولا قيد.
- *   I2 — SOD: لا يعتمد الشطبَ مَن طلبه (admin مُستثنى).
+ *   I2 — SOD: لا يعتمد الشطبَ مَن طلبه (مالك النظام وحده مستثنى).
  *   I3 — المسبق: الرصيد ينزل بالحصة والحجز يُستهلَك (لا يُطلَق) ⇒ المتاح لا يتضخّم كذباً.
  *   I4 — الآجل: ذمّة المزوّد ترتفع بالحصة (لا محفظة ولا حجز).
  *   I5 — القيد خسارة صريحة: revenue=0، cost=الحصة، profit=−الحصة (لا حركة أصلٍ صفرية).
@@ -24,11 +24,11 @@ import {
 const cashier = { userId: 1, branchId: 1, role: "cashier" };
 const manager = { userId: 2, branchId: 1, role: "manager" };
 const manager2 = { userId: 3, branchId: 1, role: "manager" };
-const admin = { userId: 4, branchId: 1, role: "admin" };
+const owner = { userId: 4, branchId: 1, role: "admin", isOwner: true };
 const DATE = "2026-07-30";
 
 const TABLES = [
-  "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
+  "digitalSaleExecutionClaims", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
   "digitalPriceChangeReports", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWalletTransactions", "digitalWallets", "digitalProviders",
   "accountingEntries", "shifts", "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "products",
@@ -43,7 +43,7 @@ async function seedBase() {
     { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
     { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
     { id: 3, openId: "u3", name: "مدير ثانٍ", role: "manager", loginMethod: "local" },
-    { id: 4, openId: "u4", name: "أدمن", role: "admin", loginMethod: "local" },
+    { id: 4, openId: "u4", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 }
@@ -94,12 +94,16 @@ async function stuckIntent(offeringId: number, priced: { pv: number; price: stri
   const r = await withTx((tx) => intentService.prepare(tx, {
     clientRequestId: `woff-req-${seq}-${Math.random().toString(36).slice(2, 8)}`,
     branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: `fp-${seq}`,
-    lines: [{ lineKey: `lk-${seq}`, offeringId, priceVersionId: priced.pv, expectedSellPrice: priced.price }],
+    lines: [{ lineKey: `lk-${seq}`, offeringId, priceVersionId: priced.pv, expectedSellPrice: priced.price, providerReference: `REF-WOFF-${seq}` }],
   }, cashier));
   const [item] = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
-  await withTx((tx) => intentService.markExecution(tx, {
-    intentId: r.intentId, intentItemId: Number(item.id), status: "SUCCESS", providerReference: `REF-${seq}`,
-  }, cashier));
+  await withTx(async (tx) => {
+    const claimToken = `writeoff-claim-${seq}-${item.id}`;
+    await intentService.claimExecution(tx, { intentId: r.intentId, intentItemId: Number(item.id), claimToken }, cashier);
+    return intentService.markExecution(tx, {
+      intentId: r.intentId, intentItemId: Number(item.id), claimToken, status: "SUCCESS", providerReference: item.providerReference,
+    }, cashier);
+  });
   await db().update(s.digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(s.digitalSaleIntents.id, r.intentId));
   return r.intentId;
 }
@@ -160,7 +164,7 @@ describe("الشطب — الطلب (بلا أثرٍ ماليّ)", () => {
     // نيّةٌ مثبَّتة (PREPARED هنا كافية للدلالة على «خارج المراجعة»)
     const other = await withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "woff-other-1", branchId: 1, shiftId: 1, paymentMethod: "CASH",
-      cartFingerprint: "fp-other", lines: [{ lineKey: "lk-other", offeringId, priceVersionId: priced.get(offeringId)!.pv, expectedSellPrice: priced.get(offeringId)!.price }],
+      cartFingerprint: "fp-other", lines: [{ lineKey: "lk-other", offeringId, priceVersionId: priced.get(offeringId)!.pv, expectedSellPrice: priced.get(offeringId)!.price, providerReference: "REF-WOFF-OTHER" }],
     }, cashier));
     await expect(
       withTx((tx) => writeoffService.requestWriteoff(tx, { intentId: other.intentId, reason: "محاولة" }, manager)),
@@ -176,7 +180,7 @@ describe("الشطب — الطلب (بلا أثرٍ ماليّ)", () => {
 
     const r = await withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "woff-none-1", branchId: 1, shiftId: 1, paymentMethod: "CASH",
-      cartFingerprint: "fp-none", lines: [{ lineKey: "lk-none", offeringId, priceVersionId: p.pv, expectedSellPrice: p.price }],
+      cartFingerprint: "fp-none", lines: [{ lineKey: "lk-none", offeringId, priceVersionId: p.pv, expectedSellPrice: p.price, providerReference: "REF-WOFF-NONE" }],
     }, cashier));
     await db().update(s.digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(s.digitalSaleIntents.id, r.intentId));
 
@@ -216,15 +220,15 @@ describe("الشطب — الاعتماد (SOD وكلّ الأثر المالي)
     expect((await intentRow(intentId)).status).toBe("WRITTEN_OFF");
   });
 
-  it("I2: الأدمن مُستثنى من SOD (تصحيح إداريّ)", async () => {
+  it("I2: مالك النظام مستثنى من الاعتماد الثاني بصفته المرجع النهائي", async () => {
     const { providerId } = await mkProvider("PREPAID", "آسياسيل");
     const walletId = await mkWallet(providerId, "100000");
     const offeringId = await mkOffering(providerId, walletId);
     const priced = await publish(providerId, [{ offeringId, providerShare: "9500" }]);
     const intentId = await stuckIntent(offeringId, priced.get(offeringId)!);
 
-    await withTx((tx) => writeoffService.requestWriteoff(tx, { intentId, reason: "لم يُسلَّم" }, admin));
-    await withTx((tx) => writeoffService.approveWriteoff(tx, { intentId }, admin));
+    await withTx((tx) => writeoffService.requestWriteoff(tx, { intentId, reason: "لم يُسلَّم" }, owner));
+    await withTx((tx) => writeoffService.approveWriteoff(tx, { intentId }, owner));
     expect((await intentRow(intentId)).status).toBe("WRITTEN_OFF");
   });
 
@@ -263,6 +267,68 @@ describe("الشطب — الاعتماد (SOD وكلّ الأثر المالي)
     expect(entries[0].invoiceId).toBeNull();
   });
 
+  it("PREPAID partial success charges only successful cards and releases the remainder", async () => {
+    const { providerId } = await mkProvider("PREPAID", "Partial provider");
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "9500" }]);
+    const price = priced.get(offeringId)!;
+    const prepared = await withTx((tx) => intentService.prepare(tx, {
+      clientRequestId: "woff-partial-success",
+      branchId: 1,
+      shiftId: 1,
+      paymentMethod: "CASH",
+      cartFingerprint: "partial-success",
+      lines: [
+        { lineKey: "partial-ok", offeringId, priceVersionId: price.pv, expectedSellPrice: price.price, providerReference: "PARTIAL-OK" },
+        { lineKey: "partial-failed", offeringId, priceVersionId: price.pv, expectedSellPrice: price.price, providerReference: "PARTIAL-FAILED" },
+      ],
+    }, cashier));
+    const intentItems = await db().select().from(s.digitalSaleIntentItems)
+      .where(eq(s.digitalSaleIntentItems.intentId, prepared.intentId));
+    const okItem = intentItems.find((item) => item.lineKey === "partial-ok")!;
+    const failedItem = intentItems.find((item) => item.lineKey === "partial-failed")!;
+    await withTx(async (tx) => {
+      const claimToken = `writeoff-partial-ok-${okItem.id}`;
+      await intentService.claimExecution(tx, { intentId: prepared.intentId, intentItemId: Number(okItem.id), claimToken }, cashier);
+      return intentService.markExecution(tx, {
+        intentId: prepared.intentId,
+        intentItemId: Number(okItem.id),
+        claimToken,
+        status: "SUCCESS",
+        providerReference: "PARTIAL-OK",
+      }, cashier);
+    });
+    await withTx(async (tx) => {
+      const claimToken = `writeoff-partial-failed-${failedItem.id}`;
+      await intentService.claimExecution(tx, { intentId: prepared.intentId, intentItemId: Number(failedItem.id), claimToken }, cashier);
+      return intentService.markExecution(tx, {
+        intentId: prepared.intentId,
+        intentItemId: Number(failedItem.id),
+        claimToken,
+        status: "FAILED",
+        providerReference: null,
+      }, cashier);
+    });
+
+    await withTx((tx) => writeoffService.requestWriteoff(tx, {
+      intentId: prepared.intentId,
+      reason: "second card was not issued",
+    }, manager));
+    await withTx((tx) => writeoffService.approveWriteoff(tx, { intentId: prepared.intentId }, manager2));
+
+    const wallet = await walletRow(walletId);
+    expect(wallet.currentBalance).toBe("90500.00");
+    expect(wallet.reservedBalance).toBe("0.00");
+    const [reservation] = await db().select().from(s.digitalWalletReservations)
+      .where(eq(s.digitalWalletReservations.intentId, prepared.intentId));
+    expect(reservation.amount).toBe("9500.00");
+    expect(reservation.status).toBe("CONSUMED");
+    const [walletTx] = await db().select().from(s.digitalWalletTransactions)
+      .where(eq(s.digitalWalletTransactions.type, "WRITEOFF"));
+    expect(walletTx.amount).toBe("9500.00");
+  });
+
   it("I4: الآجل — ذمّة المزوّد ترتفع بالحصة ولا محفظة تُمسّ", async () => {
     const { providerId, supplierId } = await mkProvider("POSTPAID", "كورك آجل");
     const offeringId = await mkOffering(providerId, null);
@@ -278,6 +344,11 @@ describe("الشطب — الاعتماد (SOD وكلّ الأثر المالي)
     const entries = await writeoffEntries();
     expect(entries[0].cost).toBe("7000.00");
     expect(entries[0].profit).toBe("-7000.00");
+    const [payable] = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.dedupeKey, `DIGITAL:APWOFF:${intentId}:${providerId}`));
+    expect(Number(payable.supplierId)).toBe(supplierId);
+    expect(payable.entryType).toBe("PURCHASE");
+    expect(payable.amount).toBe("7000.00");
     // لا حركة محفظة إطلاقاً في المسار الآجل.
     expect(await db().select().from(s.digitalWalletTransactions)).toHaveLength(0);
   });

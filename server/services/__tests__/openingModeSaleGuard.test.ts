@@ -201,6 +201,60 @@ describe("حارس البيع بالسالب المشروط — وضع الاف�
     expect(cust.currentBalance).toBe("10.00");
   });
 
+  it("الاستقبال (٨/٨): طلب توصيل COD (unpaid>0) يُرفض بالسالب بلا تأكيد فيزيائيّ", async () => {
+    await enableOpeningMode();
+    await db().insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: null });
+    await expectConflict(
+      createSale(
+        {
+          branchId: 1, customerId: 1, sourceType: "POS", shiftId: 1, priceTier: "RETAIL",
+          lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+          payment: { amount: "0.00", method: "CASH" }, // COD: المندوب يقبض ⇒ unpaid>0
+          codDispatchPending: true,
+        } as Parameters<typeof createSale>[0],
+        actor,
+      ),
+      /تأكيد توفّره فيزيائياً/,
+    );
+    expect(await stockOf(1)).toBe(0);
+  });
+
+  it("الاستقبال (٨/٨): طلب توصيل COD مع تأكيد التوفّر الفيزيائيّ يمرّ بالسالب في وضع الافتتاح", async () => {
+    await enableOpeningMode();
+    await db().insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: null });
+    const res = await createSale(
+      {
+        branchId: 1, customerId: 1, sourceType: "POS", shiftId: 1, priceTier: "RETAIL",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+        payment: { amount: "0.00", method: "CASH" },
+        codDispatchPending: true,
+        openingSellUnavailableConfirmed: true, // الموظّف أكّد توفّر الصنف غير المجرود فيزيائياً
+      } as Parameters<typeof createSale>[0],
+      actor,
+    );
+    expect(res.negativeDips).toEqual([{ variantId: 1, newQuantity: -2 }]);
+    expect(await stockOf(1)).toBe(-2);
+  });
+
+  it("الاستقبال (٨/٨): التأكيد الفيزيائيّ لا يفتح السالب لصنفٍ مُفتتَح (مجرود)", async () => {
+    await enableOpeningMode();
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1, openedAt: new Date() });
+    await db().insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: null });
+    await expectConflict(
+      createSale(
+        {
+          branchId: 1, customerId: 1, sourceType: "POS", shiftId: 1, priceTier: "RETAIL",
+          lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }],
+          payment: { amount: "0.00", method: "CASH" },
+          codDispatchPending: true, openingSellUnavailableConfirmed: true,
+        } as Parameters<typeof createSale>[0],
+        actor,
+      ),
+      /مُفتتَح \(مجرود\)/,
+    );
+    expect(await stockOf(1)).toBe(1);
+  });
+
   it("الدفع بالبطاقة كاملاً يُعد سداداً فورياً ويمرّ بالسالب دون إدخاله في درج النقد", async () => {
     await enableOpeningMode();
     const res = await createSale(

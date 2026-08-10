@@ -13,6 +13,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import {
   auditLogs,
   branches,
@@ -61,6 +62,12 @@ async function lockWallet(tx: Tx, walletId: number) {
   return w;
 }
 
+function assertWalletBranch(branchId: number, actor: Actor): void {
+  if (actor.role !== "admin" && Number(actor.branchId) !== branchId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "رصيد جهاز المزوّد يخص فرعاً آخر" });
+  }
+}
+
 /** يُنشئ حركة محفظة ويُحدّث الرصيد ذرّياً. القلب المشترك لكل عمليات ش٩. */
 async function applyWalletMovement(
   tx: Tx,
@@ -79,6 +86,7 @@ async function applyWalletMovement(
   actor: Actor,
 ): Promise<{ transactionId: number; balanceAfter: string }> {
   const w = await lockWallet(tx, input.walletId);
+  assertWalletBranch(Number(w.branchId), actor);
   if (!w.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: `المحفظة «${w.name}» معطَّلة` });
 
   const delta = signedAmount(input.type, input.direction, input.amount);
@@ -282,6 +290,9 @@ export async function requestAdjustment(
   actor: Actor,
 ): Promise<{ transactionId: number }> {
   const w = await lockWallet(tx, input.walletId);
+  if (!w.isActive) {
+    throw new TRPCError({ code: "CONFLICT", message: "المحفظة معطّلة ولا تقبل تعديلات جديدة" });
+  }
   const amount = money(input.amount);
   if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون أكبر من صفر" });
   const reason = input.reason.trim();
@@ -324,8 +335,8 @@ export async function approveAdjustment(
   if (pending.status !== "PENDING_APPROVAL") {
     throw new TRPCError({ code: "CONFLICT", message: "الطلب عولِج مسبقاً" });
   }
-  // فصل المهام: المُعتمِد ≠ الطالب. admin مُستثنى للتصحيح الإداريّ (نفس اصطلاح الوحدات الأخرى).
-  if (Number(pending.createdBy) === actor.userId && actor.role !== "admin") {
+  // فصل المهام: المُعتمِد ≠ الطالب. مالك النظام وحده مستثنى بصفته المرجع النهائي.
+  if (Number(pending.createdBy) === actor.userId && !actor.isOwner) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "لا يعتمد التعديل من طلبه — يلزم مديرٌ آخر",
@@ -334,6 +345,7 @@ export async function approveAdjustment(
 
   const walletId = Number(pending.walletId);
   const w = await lockWallet(tx, walletId);
+  assertWalletBranch(Number(w.branchId), actor);
   const delta = signedAmount(pending.type, pending.direction, pending.amount);
   const next = money(w.currentBalance).plus(delta);
   if (next.lt(0)) {
@@ -400,6 +412,8 @@ export async function statement(
   db: DB,
   input: { walletId: number; from?: string; to?: string; limit?: number },
 ) {
+  const creator = alias(users, "digitalWalletCreator");
+  const approver = alias(users, "digitalWalletApprover");
   const conds = [eq(digitalWalletTransactions.walletId, input.walletId)];
   if (input.from) conds.push(gte(digitalWalletTransactions.createdAt, new Date(`${input.from}T00:00:00Z`)));
   if (input.to) conds.push(lt(digitalWalletTransactions.createdAt, new Date(`${input.to}T00:00:00Z`)));
@@ -417,10 +431,17 @@ export async function statement(
       receiptId: digitalWalletTransactions.receiptId,
       notes: digitalWalletTransactions.notes,
       createdAt: digitalWalletTransactions.createdAt,
-      createdByName: users.name,
+      createdBy: digitalWalletTransactions.createdBy,
+      createdByName: creator.name,
+      createdByUsername: creator.username,
+      approvedBy: digitalWalletTransactions.approvedBy,
+      approvedByName: approver.name,
+      approvedByUsername: approver.username,
+      approvedAt: digitalWalletTransactions.approvedAt,
     })
     .from(digitalWalletTransactions)
-    .leftJoin(users, eq(digitalWalletTransactions.createdBy, users.id))
+    .leftJoin(creator, eq(digitalWalletTransactions.createdBy, creator.id))
+    .leftJoin(approver, eq(digitalWalletTransactions.approvedBy, approver.id))
     .where(and(...conds))
     .orderBy(desc(digitalWalletTransactions.id))
     .limit(Math.min(input.limit ?? 200, 500));
@@ -467,6 +488,7 @@ export async function reconcile(
   actor: Actor,
 ): Promise<{ reconciliationId: number; expectedBalance: string; variance: string; status: string }> {
   const w = await lockWallet(tx, input.walletId);
+  assertWalletBranch(Number(w.branchId), actor);
   const expected = money(w.currentBalance);
   const actual = money(input.actualBalance);
   if (actual.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد الفعليّ لا يكون سالباً" });
@@ -510,6 +532,8 @@ export async function reconcile(
 }
 
 export async function listReconciliations(db: DB, filters: { walletId?: number; branchId?: number | null; status?: string }) {
+  const counter = alias(users, "digitalReconciliationCounter");
+  const reviewer = alias(users, "digitalReconciliationReviewer");
   const conds = [];
   if (filters.walletId != null) conds.push(eq(digitalWalletReconciliations.walletId, filters.walletId));
   if (filters.branchId != null) conds.push(eq(digitalWalletReconciliations.branchId, filters.branchId));
@@ -528,11 +552,20 @@ export async function listReconciliations(db: DB, filters: { walletId?: number; 
       variance: digitalWalletReconciliations.variance,
       status: digitalWalletReconciliations.status,
       notes: digitalWalletReconciliations.notes,
+      countedBy: digitalWalletReconciliations.countedBy,
+      countedByName: counter.name,
+      countedByUsername: counter.username,
+      reviewedBy: digitalWalletReconciliations.reviewedBy,
+      reviewedByName: reviewer.name,
+      reviewedByUsername: reviewer.username,
+      reviewedAt: digitalWalletReconciliations.reviewedAt,
       createdAt: digitalWalletReconciliations.createdAt,
     })
     .from(digitalWalletReconciliations)
     .innerJoin(digitalWallets, eq(digitalWalletReconciliations.walletId, digitalWallets.id))
     .innerJoin(branches, eq(digitalWalletReconciliations.branchId, branches.id))
+    .leftJoin(counter, eq(digitalWalletReconciliations.countedBy, counter.id))
+    .leftJoin(reviewer, eq(digitalWalletReconciliations.reviewedBy, reviewer.id))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(digitalWalletReconciliations.businessDate))
     .limit(200);
@@ -550,11 +583,22 @@ export async function resolveVariance(
     .where(eq(digitalWalletReconciliations.id, input.reconciliationId))
     .for("update");
   if (!rec) throw new TRPCError({ code: "NOT_FOUND", message: "المطابقة غير موجودة" });
+  assertWalletBranch(Number(rec.branchId), actor);
   if (rec.status !== "VARIANCE_OPEN") {
     throw new TRPCError({ code: "CONFLICT", message: "لا فرق مفتوحاً في هذه المطابقة" });
   }
   const [adj] = await tx
-    .select({ id: digitalWalletTransactions.id, walletId: digitalWalletTransactions.walletId, status: digitalWalletTransactions.status, type: digitalWalletTransactions.type })
+    .select({
+      id: digitalWalletTransactions.id,
+      walletId: digitalWalletTransactions.walletId,
+      status: digitalWalletTransactions.status,
+      type: digitalWalletTransactions.type,
+      amount: digitalWalletTransactions.amount,
+      direction: digitalWalletTransactions.direction,
+      notes: digitalWalletTransactions.notes,
+      createdAt: digitalWalletTransactions.createdAt,
+      approvedAt: digitalWalletTransactions.approvedAt,
+    })
     .from(digitalWalletTransactions)
     .where(eq(digitalWalletTransactions.id, input.adjustmentTransactionId))
     .limit(1);
@@ -565,14 +609,60 @@ export async function resolveVariance(
     throw new TRPCError({ code: "BAD_REQUEST", message: "التعديل يخصّ محفظةً أخرى" });
   }
 
+  const variance = money(rec.variance);
+  const expectedDirection = variance.gt(0) ? "IN" : "OUT";
+  if (variance.isZero() || adj.direction !== expectedDirection || !money(adj.amount).eq(variance.abs())) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "التعديل لا يطابق فرق المطابقة في المبلغ أو الاتجاه",
+    });
+  }
+  const usedMarker = /\[RECONCILIATION:\d+\]/;
+  if (usedMarker.test(adj.notes ?? "")) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "استُخدم هذا التعديل سابقاً لإغلاق مطابقة أخرى",
+    });
+  }
+  if (!adj.approvedAt || adj.createdAt < rec.createdAt) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "يجب أن يكون التعديل معتمداً ومُنشأً لمعالجة هذه المطابقة",
+    });
+  }
+
+  const adjustmentMarker = `[RECONCILIATION:${input.reconciliationId}]`;
+  const reconciliationMarker = `[ADJUSTMENT:${input.adjustmentTransactionId}]`;
+  await tx
+    .update(digitalWalletTransactions)
+    .set({ notes: [adj.notes?.trim(), adjustmentMarker].filter(Boolean).join(" ") })
+    .where(eq(digitalWalletTransactions.id, input.adjustmentTransactionId));
+
   await tx
     .update(digitalWalletReconciliations)
-    .set({ status: "RESOLVED", reviewedBy: actor.userId, reviewedAt: new Date() })
+    .set({
+      status: "RESOLVED",
+      reviewedBy: actor.userId,
+      reviewedAt: new Date(),
+      notes: [rec.notes?.trim(), reconciliationMarker].filter(Boolean).join(" "),
+    })
     .where(eq(digitalWalletReconciliations.id, input.reconciliationId));
   await auditLog(tx, actor, "digitalCards.wallet.varianceResolved", Number(rec.walletId), {
     reconciliationId: input.reconciliationId,
     adjustmentTransactionId: input.adjustmentTransactionId,
   });
+}
+
+/** اعتماد طلب تصحيح مطابق وإغلاق فرق الرصيد في معاملة واحدة. */
+export async function approveAndResolveVariance(
+  tx: Tx,
+  input: { reconciliationId: number; adjustmentTransactionId: number },
+  actor: Actor,
+): Promise<{ transactionId: number; balanceAfter: string }> {
+  const approved = await approveAdjustment(tx, { transactionId: input.adjustmentTransactionId }, actor);
+  // إذا لم يطابق الطلبُ الفرقَ أو المحفظةَ تتراجع المعاملة كلها، بما فيها الاعتماد وحركة الرصيد.
+  await resolveVariance(tx, input, actor);
+  return approved;
 }
 
 /* ────────── تنبيه الرصيد المنخفض ────────── */

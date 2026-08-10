@@ -7,6 +7,8 @@ import { and, eq } from "drizzle-orm";
 import {
   digitalProviders,
   digitalWallets,
+  digitalWalletReservations,
+  digitalWalletTransactions,
   branches,
   suppliers,
   auditLogs,
@@ -15,6 +17,7 @@ import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { money } from "../money";
 
 /* ────────── Types ────────── */
 export interface CreateWalletInput {
@@ -153,10 +156,16 @@ export async function updateWallet(
   actor: Actor,
 ): Promise<void> {
   const [existing] = await tx
-    .select({ id: digitalWallets.id })
+    .select({
+      id: digitalWallets.id,
+      isActive: digitalWallets.isActive,
+      currentBalance: digitalWallets.currentBalance,
+      reservedBalance: digitalWallets.reservedBalance,
+    })
     .from(digitalWallets)
     .where(eq(digitalWallets.id, input.id))
-    .limit(1);
+    .limit(1)
+    .for("update");
   if (!existing) {
     throw new TRPCError({ code: "NOT_FOUND", message: "المحفظة غير موجودة" });
   }
@@ -169,6 +178,50 @@ export async function updateWallet(
     set.name = name;
   }
   if (input.isActive !== undefined) {
+    if (existing.isActive && !input.isActive) {
+      if (!money(existing.currentBalance).isZero()) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "لا يمكن تعطيل المحفظة وفيها رصيد؛ صفّر الرصيد بسحبٍ مالي موثّق أولاً",
+        });
+      }
+      if (!money(existing.reservedBalance).isZero()) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "لا يمكن تعطيل المحفظة وفيها رصيد محجوز لمبيعات قيد التنفيذ",
+        });
+      }
+
+      const [activeReservation] = await tx
+        .select({ id: digitalWalletReservations.id })
+        .from(digitalWalletReservations)
+        .where(and(
+          eq(digitalWalletReservations.walletId, input.id),
+          eq(digitalWalletReservations.status, "ACTIVE"),
+        ))
+        .limit(1);
+      if (activeReservation) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "لا يمكن تعطيل المحفظة لوجود حجز بيع فعّال عليها",
+        });
+      }
+
+      const [pendingTransaction] = await tx
+        .select({ id: digitalWalletTransactions.id })
+        .from(digitalWalletTransactions)
+        .where(and(
+          eq(digitalWalletTransactions.walletId, input.id),
+          eq(digitalWalletTransactions.status, "PENDING_APPROVAL"),
+        ))
+        .limit(1);
+      if (pendingTransaction) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "لا يمكن تعطيل المحفظة وفيها حركة تنتظر الاعتماد",
+        });
+      }
+    }
     set.isActive = input.isActive;
   }
 

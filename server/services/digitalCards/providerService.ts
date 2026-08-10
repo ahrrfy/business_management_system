@@ -150,7 +150,13 @@ export async function updateProvider(
     set.providerType = assertEnum(input.providerType, PROVIDER_TYPES, "نوع المزوّد");
   }
   if (input.settlementMode !== undefined) {
-    set.settlementMode = assertEnum(input.settlementMode, SETTLEMENT_MODES, "نمط التسوية");
+    const settlementMode = assertEnum(input.settlementMode, SETTLEMENT_MODES, "نمط التسوية");
+    if (settlementMode !== existing.settlementMode) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "لا يمكن تغيير طريقة تسوية المزوّد بعد إنشائه؛ أنشئ مزوّداً جديداً حفاظاً على سلامة الأرصدة والقيود",
+      });
+    }
   }
   if (input.recognitionMode !== undefined) {
     set.recognitionMode = assertEnum(input.recognitionMode, RECOGNITION_MODES, "نمط الاعتراف");

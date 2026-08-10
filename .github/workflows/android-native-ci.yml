@@ -1,0 +1,103 @@
+name: Native Android CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "android-native/**"
+      - "scripts/verify-mobile-release-env.mjs"
+      - "scripts/verify-android-release-workflow-gate.mjs"
+      - "package.json"
+      - ".github/workflows/android-native-ci.yml"
+      - ".github/workflows/android-release.yml"
+  push:
+    branches: [main]
+    paths:
+      - "android-native/**"
+      - "scripts/verify-mobile-release-env.mjs"
+      - "scripts/verify-android-release-workflow-gate.mjs"
+      - "package.json"
+      - ".github/workflows/android-native-ci.yml"
+      - ".github/workflows/android-release.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-android-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-android-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Verify native release source contract
+        run: node scripts/verify-mobile-release-env.mjs
+      - name: Test, lint, and assemble the native app
+        working-directory: android-native
+        env:
+          ALRUEYA_DEV_BASE_URL: http://10.0.2.2:3000
+          ALRUEYA_PROD_BASE_URL: https://srv1548487.hstgr.cloud
+          REMOTE_PUSH_CONFIGURED: "false"
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon \
+            :app:testDevDebugUnitTest \
+            :app:lintDevDebug \
+            :app:lintProdRelease \
+            :app:compileDevDebugAndroidTestKotlin \
+            :app:assembleDevDebug
+
+  native-android-device-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Enable KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run native smoke tests on phone
+        working-directory: android-native
+        env:
+          ALRUEYA_DEV_BASE_URL: http://10.0.2.2:3000
+          REMOTE_PUSH_CONFIGURED: "false"
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:phoneApi35DevDebugAndroidTest \
+            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+      - name: Run native smoke tests on tablet
+        working-directory: android-native
+        env:
+          ALRUEYA_DEV_BASE_URL: http://10.0.2.2:3000
+          REMOTE_PUSH_CONFIGURED: "false"
+        run: |
+          ./gradlew --no-daemon :app:tabletApi35DevDebugAndroidTest \
+            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+      - name: Upload instrumentation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-device-test-reports
+          path: |
+            android-native/app/build/reports/androidTests/managedDevice/
+            android-native/app/build/outputs/androidTest-results/managedDevice/
+          if-no-files-found: warn

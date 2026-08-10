@@ -1,18 +1,23 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { cashierProcedure, deliveryReadProcedure, managerProcedure, router } from "../trpc";
+import { cashierProcedure, deliveryReadProcedure, managerProcedure, router, storeFulfillProcedure, storeManagerProcedure, workordersCashierProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
+import { retryOnDeadlock } from "../lib/retryDeadlock";
 import {
   createDeliveryParty,
+  dispatchInvoiceToDelivery,
   dispatchToDelivery,
   getDeliveryParty,
   getDeliveryPartyStatement,
+  getPartyStoreInTransit,
   listConsignmentsForParty,
   listCourierAccounts,
   listDeliveryParties,
   listOpenConsignments,
+  listPartyRemittances,
   listReadyForDispatch,
   recordDeliveryRemittance,
+  recoverDeliveryWriteOff,
   returnConsignment,
   setDeliveryPartyActive,
   settleDeliveryBalance,
@@ -148,6 +153,28 @@ export const deliveryRouter = router({
       return getDeliveryPartyStatement(input.partyId, input.from, input.to);
     }),
 
+  // طرود متجر بالطريق لجهة (١٠/٨) — فجوة الرؤية بين توقيتَي العهدة في القناتين.
+  storeInTransit: deliveryReadProcedure
+    .input(z.object({ partyId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      return getPartyStoreInTransit(input.partyId);
+    }),
+
+  // سجل توريدات جهة (٩/٨): أثر التوريد كان إيصالاً حرارياً يُطبع مرة واحدة — الآن يُسرَد ويُتتبَّع.
+  remittances: deliveryReadProcedure
+    .input(z.object({
+      partyId: z.number().int().positive(),
+      // YYYY-MM-DD حصراً — نصٌّ حرّ كان يبني Date غير صالح فيتفجّر 500 بدل BAD_REQUEST.
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").optional(),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").optional(),
+      limit: z.number().int().positive().max(300).optional(),
+    }))
+    .query(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      return listPartyRemittances(input.partyId, { from: input.from, to: input.to, limit: input.limit });
+    }),
+
   // ─── التحوّلات ───
   // إرسال طلب جاهز عبر مندوب (يُصدر فاتورة COD + عهدة) — مالٌ/نقد ⇒ cashierProcedure.
   dispatch: cashierProcedure
@@ -168,6 +195,37 @@ export const deliveryRouter = router({
       // NUMBERING-RACE (تدقيق ٢/٧): ترقيم الإرسالية يعتمد قيداً فريداً كحارس أخير — نعيد المحاولة على التصادم.
       const res = await retryOnDup(() => dispatchToDelivery(input, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.dispatch", entityType: "deliveryConsignment", entityId: res.consignmentId, newValue: { workOrderId: input.workOrderId, partyId: input.partyId, codAmount: res.codAmount } });
+      return res;
+    }),
+
+  // ش١ (٥/٨): receptionQueue انتقل إلى reception.invoiceQueue (راوتر المحطة الجديد) بترقيمٍ
+  // keyset وفلاتر — حُذف هنا في نفس الـPR (حارس check:orphans: نقلٌ = حذفُ القديم معاً).
+
+  // 5/8: isnad fatura qa'ima lil-tawseel (bay' mubashir bila amr shughl).
+  // Nafs bawwabat receptionQueue (workorders=FULL) — a'la min delivery.dispatch al-qadim
+  // (cashierProcedure kham) wa-la tuda''if shay'an qa'iman.
+  dispatchInvoice: workordersCashierProcedure
+    .input(
+      z.object({
+        invoiceId: z.number().int().positive(),
+        partyId: z.number().int().positive(),
+        deliveryFee: moneyStr.nullish(),
+        feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
+        recipientName: z.string().max(255).nullish(),
+        recipientPhone: z.string().max(20).nullish(),
+        deliveryAddress: z.string().max(1000).nullish(),
+        clientRequestId: z.string().max(64).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
+      const res = await retryOnDup(() => dispatchInvoiceToDelivery(input, actorOf(ctx)));
+      await logAudit(ctx, {
+        action: "delivery.dispatchInvoice",
+        entityType: "deliveryConsignment",
+        entityId: res.consignmentId,
+        newValue: { invoiceId: input.invoiceId, partyId: input.partyId, codAmount: res.codAmount, deliveryFee: res.deliveryFee },
+      });
       return res;
     }),
 
@@ -194,6 +252,7 @@ export const deliveryRouter = router({
               seen.add(line.consignmentId);
             });
           }),
+        countedCash: moneyStr,
         clientRequestId: z.string().max(64).nullish(),
       }),
     )
@@ -202,17 +261,42 @@ export const deliveryRouter = router({
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
       const res = await retryOnDup(() =>
-        recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
+        recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, countedCash: input.countedCash, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
       );
       await logAudit(ctx, { action: "delivery.remit", entityType: "deliveryRemittance", entityId: res.remittanceId, newValue: { partyId: input.partyId, collectedTotal: res.collectedTotal, feesTotal: res.feesTotal, netRemitted: res.netRemitted, shortfallTotal: res.shortfallTotal } });
       return res;
     }),
 
-  // إرجاع إرسالية (عكس بيع + مخزون + عهدة) — مديرٌ فقط (إجراء تصحيحيّ).
-  returnConsignment: managerProcedure
-    .input(z.object({ consignmentId: z.number().int().positive(), clientRequestId: z.string().max(64).nullish() }))
+  // إرجاع إرسالية (عكس بيع + مخزون + عهدة + ذمّة العميل).
+  // قرار المالك (٦/٨/٢٦): **موظّف التسوية يُنفّذها** لا المدير وحده — هذه ليست «مرتجع زبون»
+  // (م٧) بل بضاعةٌ لم تُسلَّم أصلاً وعادت مع المندوب، وحصرُها بالمدير كان يوقف التسوية حتى
+  // يحضر. الضبط بالإفصاح: كل إرجاعٍ يُسجَّل في التدقيق باسم فاعله (logAudit أدناه)، والعملية
+  // محصورةٌ بنيوياً بإرساليةٍ لم يُحصَّل منها شيء وفاتورةٍ لم يُرجَع منها سلفاً.
+  //
+  // القرار كان **مُعلَّقاً** (أُعيدت مؤقّتاً لـmanagerProcedure) لأنّ الفتح المباشر تركها بلا
+  // عزل فرع: بخلاف remit/settle المجاورتين لا تستدعي assertPartyInScope ولا تقارن الخدمةُ
+  // actor.branchId بفرع الإرسالية ⇒ كاشير فرعٍ يعكس فاتورة فرعٍ آخر ومخزونه ويسحب من درجه
+  // (مراجعة Codex على PR #495). **وقد نُفِّذ الآن بالشكل الصحيح المطلوب حرفياً**:
+  //   (١) بوّابة **وحدة** لا دورٍ خام: `storeFulfillProcedure` = مفتاح `store=FULL` (قالب
+  //       الكاشير يملكه والمنح/التقييد الصريح يُطاع) + فرعٌ مُسنَد إلزاميّ ⇒ authz-guard أخضر.
+  //   (٢) فحص ملكية الفرع **داخل** `returnConsignment` قبل الردّ الـidempotent وقبل المعاملة
+  //       المدمِّرة (الجهة تُشتقّ من الإرسالية لا من المدخل، فلا يحميها حارسٌ راوتريّ).
+  returnConsignment: storeFulfillProcedure
+    .input(z.object({
+      consignmentId: z.number().int().positive(),
+      clientRequestId: z.string().max(64).nullish(),
+      // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
+      // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه ردّ العربون فعلياً.
+      refundShiftId: z.number().int().positive().optional(),
+    }))
     .mutation(async ({ input, ctx }) => {
-      const res = await returnConsignment(input.consignmentId, { ...actorOf(ctx), clientRequestId: input.clientRequestId });
+      // ٩/٨: ترتيب أقفال الإرجاع (إرسالية←جهة) يعاكس التوريد/الشطب (جهة←إرسالية) — تنافسٌ
+      // لحظي بينهما قد يُفصَل بـdeadlock من MySQL؛ إعادة المحاولة تمتصّه (نمط collect.ts).
+      const res = await retryOnDeadlock(() => returnConsignment(input.consignmentId, {
+        ...actorOf(ctx),
+        clientRequestId: input.clientRequestId,
+        refundShiftId: input.refundShiftId ?? null,
+      }));
       await logAudit(ctx, { action: "delivery.return", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { invoiceId: (res as { invoiceId?: number }).invoiceId } });
       return res;
     }),
@@ -239,6 +323,8 @@ export const deliveryRouter = router({
     }),
 
   // شطب عجز عهدة (إبراء دَين) — مديرٌ فقط (SOD: القابض لا يُبرئ عجزه).
+  // ٩/٨: consignmentId يوجّه الشطب لإرسالية بعينها (يقفلها WRITTEN_OFF ويقيّد فاتورتها) —
+  // الشطب المجمّع محصور بالعهدة السائبة (الحارس في الخدمة).
   writeOff: managerProcedure
     .input(
       z.object({
@@ -246,13 +332,35 @@ export const deliveryRouter = router({
         branchId: z.number().int().positive().nullish(),
         amount: moneyStr,
         reason: z.string().min(3).max(500),
+        consignmentId: z.number().int().positive().nullish(),
         clientRequestId: z.string().max(64).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
       const branchId = effectiveBranch(ctx, input.branchId);
-      const res = await writeOffDeliveryShortfall({ branchId, partyId: input.partyId, amount: input.amount, reason: input.reason, clientRequestId: input.clientRequestId }, actorOf(ctx));
-      await logAudit(ctx, { action: "delivery.writeOff", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount, reason: input.reason } });
+      const res = await retryOnDeadlock(() => writeOffDeliveryShortfall({ branchId, partyId: input.partyId, amount: input.amount, reason: input.reason, consignmentId: input.consignmentId, clientRequestId: input.clientRequestId }, actorOf(ctx)));
+      await logAudit(ctx, { action: "delivery.writeOff", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount, reason: input.reason, consignmentId: input.consignmentId ?? null } });
+      return res;
+    }),
+
+  // استرداد عجز مشطوب (٩/٨) — نقدٌ عاد بعد شطبه (لم يكن له أي مسار: settle يرفض تجاوز العهدة
+  // الصفرية والتوريد يرفض الإرسالية المغلقة). يعكس الخسارة ويُدخل النقد الدرج. بوّابة مُبوَّبة
+  // بوحدة (store FULL + manager) لا دوراً خاماً — نمط authz-guard المعتمد للنقاط الجديدة.
+  recoverWriteOff: storeManagerProcedure
+    .input(
+      z.object({
+        partyId: z.number().int().positive(),
+        branchId: z.number().int().positive().nullish(),
+        amount: moneyStr,
+        shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        notes: z.string().max(500).nullish(),
+        clientRequestId: z.string().max(64).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const branchId = effectiveBranch(ctx, input.branchId);
+      const res = await recoverDeliveryWriteOff({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx));
+      await logAudit(ctx, { action: "delivery.recoverWriteOff", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount } });
       return res;
     }),
 });

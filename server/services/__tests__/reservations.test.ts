@@ -184,4 +184,29 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     await expect(convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor)).rejects.toThrow();
     expect(await onHand(variantId)).toBe(7); // خُصم مرّة واحدة (10−3)
   });
+
+  it("تحويل الحجز ببطاقة/تحويل يرفض المرجع الفارغ ويسجّل المرجع الصحيح خارج عدّ النقدية", async () => {
+    const { variantId, baseUnitId } = await mkProduct("RSV-PAY-REF", 5);
+    const r = await createReservation(
+      { branchId: 1, contactPhone: "07700000012", lines: [{ variantId, productUnitId: baseUnitId, quantity: 1 }] },
+      actor,
+    );
+
+    await expect(convertReservationToSale({
+      reservationId: r.reservationId,
+      payment: { amount: "1500", method: "CARD" },
+    }, actor)).rejects.toThrow(/مرجع/);
+    expect(await onHand(variantId)).toBe(5);
+    expect(await reserved(variantId)).toBe(1);
+
+    const conv = await convertReservationToSale({
+      reservationId: r.reservationId,
+      payment: { amount: "1500", method: "TRANSFER", reference: "TRX-RES-1001" },
+    }, actor);
+    expect(conv.status).toBe("PAID");
+    const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, conv.invoiceId)))[0];
+    expect(receipt.paymentMethod).toBe("TRANSFER");
+    expect(receipt.referenceNumber).toBe("TRX-RES-1001");
+    expect(receipt.shiftId).toBeNull();
+  });
 });

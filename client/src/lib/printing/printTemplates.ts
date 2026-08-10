@@ -89,7 +89,15 @@ export interface InvoicePrintData {
     /** حصة السطر من ضريبة الفاتورة (اختياري، decimal-string 2dp). عند وجود قيمة موجبة واحدة
      *  على الأقلّ بين البنود، يُدرَج عمود «الضريبة» في جدول العناصر بجانب «المبلغ». */
     taxAmount?: string | number | null;
+    /** هدايا الفاتورة (0149): سطرٌ مُهدىً — يُطبَع «مجاناً» بدل صفرٍ يُقرأ خطأَ تسعير. */
+    isGift?: boolean | null;
   }[];
+  /** إفصاح التوصيل (0152): أجرةٌ مقبوضة / توصيلٌ مُهدىً بقيمته / لا توصيل. */
+  deliveryFee?: string | number | null;
+  deliveryFree?: boolean | null;
+  deliveryWaivedAmount?: string | number | null;
+  /** ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة — عرضٌ فقط. */
+  courierDelivery?: { partyName: string; fee: string | number; feeCollection: "COURIER" | "COUNTER" | "SHOP" } | null;
   subtotal: string | number;
   discountAmount?: string | number | null;
   taxAmount?: string | number | null;
@@ -134,7 +142,12 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
       unitPrice: it.unitPrice,
       taxAmount: it.taxAmount ?? null,
       total: it.total,
+      isGift: it.isGift ?? null,
     })),
+    deliveryFee: d.deliveryFee ?? null,
+    deliveryFree: d.deliveryFree ?? null,
+    deliveryWaivedAmount: d.deliveryWaivedAmount ?? null,
+    courierDelivery: d.courierDelivery ?? null,
     subtotal: d.subtotal,
     discountAmount: d.discountAmount ?? null,
     taxAmount: d.taxAmount ?? null,
@@ -181,10 +194,18 @@ export interface QuotationPrintData {
   total: string | number;
 }
 
-export function printQuotation(d: QuotationPrintData): void {
-  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printQuotationV2 بالتصميم المرجعي (٦ أعمدة صنف/وحدة/كمية/سعر/ضريبة/إجمالي،
+export async function printQuotation(d: QuotationPrintData): Promise<void> {
+  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printQuotationV2 بالتصميم المرجعي (٦ أعمدة منتج/وحدة/كمية/سعر/ضريبة/إجمالي،
   // شروط في صندوق أخضر داخلي، توقيعا العميل والممثّل التجاري). description القديم يُلحَق باسم المنتج.
+  const qrPayload = [
+    CO.sub,
+    `عرض سعر: ${d.quoteNumber}`,
+    ...(d.quoteDate ? [`التاريخ: ${d.quoteDate}`] : []),
+    `الإجمالي: ${fmtC(d.total)}`,
+  ].join('\n');
+  const qrSvg = await qrCodeSvg(qrPayload, { size: 88, margin: 1 }).catch(() => '');
   printQuotationV2({
+    qrSvg: qrSvg || null,
     quoteNumber: d.quoteNumber,
     quoteDate: d.quoteDate,
     validUntil: d.validUntil,
@@ -301,6 +322,7 @@ export interface WorkOrderPrintData {
   woDate?: string | null;
   dueDate?: string | null;
   status?: string | null;
+  employeeName?: string | null;
   customerName?: string | null;
   contactPerson?: string | null;
   customerPhone?: string | null;
@@ -341,6 +363,7 @@ export function printWorkOrder(d: WorkOrderPrintData): void {
     statusColor,
     customerName: d.customerName,
     customerPhone: d.customerPhone,
+    employeeName: d.employeeName,
     jobType: d.jobType,
     jobSpecs: d.specs,
     items: d.items.map((it) => ({
@@ -851,6 +874,14 @@ export interface ReceiptBrowserData {
   digitalDetails?: DigitalReceiptDetail[] | null;
   /** إخفاء وسط أرقام الهواتف في النسخة المطبوعة (افتراضياً مُفعَّل). */
   maskPhones?: boolean;
+  /** ٨/٨ — كتلة التوصيل على الإيصال: تُظهر الجهة والأجرة ومَن يقبضها و«الإجمالي الذي يدفعه
+   *  الزبون» بشفافية. الأجرة تمريرٌ لا إيراد ⇒ لا تدخل `total` أبداً؛ هنا **إفصاحٌ** للزبون فقط. */
+  delivery?: {
+    partyName: string;
+    fee: string | number;
+    feeCollection: "COURIER" | "COUNTER" | "SHOP";
+    address?: string | null;
+  } | null;
 }
 
 export function printBrowserReceipt(d: ReceiptBrowserData): void {
@@ -880,13 +911,32 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     ? `<div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>` +
       digitalBlocks.map(b => `
         <div style="font-size:10px;margin-bottom:1.5mm;">
-          <div style="font-weight:700;margin-bottom:0.5mm;">${esc(b.lineName)}</div>
+          <div style="font-weight:900;font-size:11px;margin-bottom:0.7mm;">${esc(b.lineName)}</div>
           ${b.rows.map(r => `<div style="display:flex;justify-content:space-between;gap:2mm;">
-            <span style="color:#444;">${esc(r.label)}</span>
-            <span style="font-weight:600;direction:${/هاتف|مرجع/.test(r.label) ? 'ltr' : 'rtl'};">${esc(r.value)}</span>
+            <span style="font-weight:700;color:#222;">${esc(r.label)}</span>
+            <span style="font-weight:900;direction:${/هاتف|رقم|ID/.test(r.label) ? 'ltr' : 'rtl'};">${esc(r.value)}</span>
           </div>`).join('')}
         </div>`).join('')
     : '';
+
+  // ٨/٨ — كتلة التوصيل على الإيصال: إفصاحٌ للزبون (الجهة/الأجرة/مَن يقبض/يدفع الزبون). الأجرة
+  // خارج `total` دائماً (تمريرٌ لا إيراد) — «يدفع الزبون» = الإجمالي + الأجرة (إلا SHOP فمجّاني).
+  const deliveryHtml = d.delivery ? (() => {
+    const dl = d.delivery!;
+    const fee = Number(dl.fee || 0);
+    const shop = dl.feeCollection === "SHOP";
+    const pays = Number(d.total || 0) + (shop ? 0 : fee);
+    const who = dl.feeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : shop ? "على المكتبة — مجاناً للزبون" : "يقبضها المندوب من الزبون";
+    return `
+  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
+  <div style="font-size:10.5px;border:1.5px solid #000;border-radius:3px;padding:2mm;">
+    <div style="text-align:center;font-weight:900;font-size:12px;margin-bottom:1mm;">التوصيل</div>
+    <div style="display:flex;justify-content:space-between;"><span>الجهة:</span><span style="font-weight:800;">${esc(dl.partyName)}</span></div>
+    ${dl.address ? `<div style="display:flex;justify-content:space-between;gap:2mm;"><span>العنوان:</span><span style="text-align:left;">${esc(dl.address)}</span></div>` : ''}
+    <div style="display:flex;justify-content:space-between;"><span>أجرة التوصيل:</span><span style="font-weight:800;">${shop ? "مجاناً" : fmt(fee)} <span style="font-weight:600;font-size:8.5px;">(${who})</span></span></div>
+    ${shop ? '' : `<div style="display:flex;justify-content:space-between;font-weight:900;font-size:13px;margin-top:1mm;padding-top:1mm;border-top:1px dashed #000;"><span>يدفع الزبون شاملاً التوصيل:</span><span>${fmt(pays)} د.ع</span></div>`}
+  </div>`;
+  })() : '';
 
   const body = `
   <div style="text-align:center;margin-bottom:2mm;">
@@ -930,6 +980,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     ${d.change != null ? `<div style="display:flex;justify-content:space-between;"><span>الباقي:</span><span>${fmt(d.change)}</span></div>` : ''}
     ${Number(d.credit ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>آجل/ذمة:</span><span>${fmt(d.credit)}</span></div>` : ''}
   </div>
+  ${deliveryHtml}
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
   <div style="text-align:center;margin:3mm 0 1mm;">
     <div style="font-size:12px;font-weight:900;">شكراً لتسوقكم معنا</div>
@@ -983,6 +1034,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
     d.dueDate    ? ['موعد التسليم', esc(d.dueDate)]       : null,
     d.customerName  ? ['العميل', esc(d.customerName)]     : null,
     d.customerPhone ? ['الهاتف', esc(d.customerPhone)]    : null,
+    d.employeeName  ? ['الموظف', esc(d.employeeName)]      : null,
     d.status        ? ['الحالة', statusLabel]              : null,
   ].filter(Boolean) as [string, string][];
 
@@ -1044,6 +1096,14 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
     <span style="font-size:13px;font-weight:900;">${fmtC(d.total)}</span>
   </div>
 
+  ${d.paidUpfront != null && Number(d.paidUpfront) > 0 ? `
+  <div style="display:flex;justify-content:space-between;font-size:10.5px;font-weight:700;padding:0.5mm 0;">
+    <span>مدفوع مقدماً:</span><span>${fmtC(d.paidUpfront)}</span>
+  </div>
+  <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:900;padding:1mm 0;border-bottom:1.5px solid #000;margin-bottom:1mm;">
+    <span>المتبقّي عند الاستلام:</span><span>${fmtC(d.balanceDue ?? Math.max(0, Number(d.total) - Number(d.paidUpfront)))}</span>
+  </div>` : ''}
+
   ${notesHtml}
 
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
@@ -1080,7 +1140,7 @@ function calcDuration(openedAt: Date | string | null, closedAt: Date): string {
 
 // ترجمة طرق الدفع
 const METHOD_AR: Record<string, string> = {
-  CASH: 'نقدي', CARD: 'بطاقة', CHECK: 'صك', TRANSFER: 'تحويل', WALLET: 'محفظة',
+  CASH: 'نقدي', CARD: 'بطاقة', CHECK: 'صك', TRANSFER: 'تحويل', WALLET: 'محفظة', TELECOM: 'رصيد زين',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1227,6 +1287,9 @@ export interface ShiftCloseData {
   countedCash: string | number;
   /** من r.variance */
   variance: string | number;
+  /** ش٤ (I14) — عرابين محجوزة لطلبات لم تُثبَّت قُبضت على هذه الوردية (إفصاح، اختياري). */
+  heldDepositsCount?: number | null;
+  heldDepositsTotal?: string | number | null;
 }
 
 export function printShiftCloseBrowser(d: ShiftCloseData): void {
@@ -1328,6 +1391,10 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
   ${returns > 0 ? `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
     <span style="font-weight:600;color:#333;">المرتجعات</span>
     <span style="font-weight:800;direction:ltr;">${fmt(returns)} د.ع</span>
+  </div>` : ''}
+  ${Number(d.heldDepositsCount ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+    <span style="font-weight:600;color:#333;">عرابين محجوزة لطلبات لم تُثبَّت (${d.heldDepositsCount})</span>
+    <span style="font-weight:800;direction:ltr;">${fmt(d.heldDepositsTotal ?? 0)} د.ع</span>
   </div>` : ''}
 
   <!-- صافي المبيعات — معكوس -->

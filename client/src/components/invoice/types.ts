@@ -39,6 +39,12 @@ export interface InvoiceLine {
   discount: string;
   discountType: DiscountType;
   note: string;
+  /**
+   * هدايا الفاتورة (0149، فاتورة البيع فقط): سطرٌ مُهدىً — يُعرَض ويُطبَع بقيمة صفر ولا يدخل
+   * المجموع الفرعيّ، ويُخصَم من المخزون كسائر البنود. اختياريّ كي لا تتأثّر بقيّة المحرّرات
+   * (شراء/عرض سعر/مرتجع) التي تُنشئ أسطراً بلا هذا الحقل. التسعير والتكلفة يحسمهما الخادم.
+   */
+  isGift?: boolean;
 }
 
 export interface InvoiceState {
@@ -65,6 +71,12 @@ export interface InvoiceState {
   globalDiscount: string;
   globalDiscountType: DiscountType;
   shipping: string;
+  /**
+   * إفصاح التوصيل المجّاني (0152، فاتورة البيع): `true` = وُصِّل الطلب وأُهديت أجرته، وقيمة
+   * `shipping` حينها هي **المُتنازَل عنه** لا مبلغٌ يُقبض. يميّز «توصيل مجّاني» عن «بلا توصيل»
+   * (كلاهما كان صفراً). لا يدخل الإجمالي ولا الإيراد — إفصاحٌ للزبون وللتقارير.
+   */
+  shippingFree: boolean;
   otherExpenses: string;
   paidAmount: string;
   /** تفعيل ضريبة على مستوى الفاتورة (اختياري — العراق VAT=0% افتراضياً). */
@@ -116,7 +128,7 @@ export const TIER_OPTIONS: Array<{ value: PriceTier; label: string }> = [
 ];
 
 export const PAYMENT_TERMS: Array<{ value: PaymentTerm; label: string }> = [
-  { value: "CASH",        label: "نقداً" },
+  { value: "CASH",        label: "نقدي" },
   { value: "CREDIT",      label: "آجل (ذمة)" },
   { value: "INSTALLMENT", label: "أقساط" },
 ];

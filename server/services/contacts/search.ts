@@ -84,7 +84,12 @@ export async function searchContacts(ctx: ContactsSearchCtx, input: ContactsSear
           );
         }
         const rows = await db
-          .select({ id: customers.id, name: customers.name, phone: customers.phone, city: customers.city })
+          .select({
+            id: customers.id,
+            name: customers.name,
+            phone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+            city: customers.city,
+          })
           .from(customers)
           .where(and(eq(customers.isActive, true), or(...orConds)))
           .orderBy(asc(customers.name))
@@ -121,7 +126,12 @@ export async function searchContacts(ctx: ContactsSearchCtx, input: ContactsSear
           );
         }
         const rows = await db
-          .select({ id: suppliers.id, name: suppliers.name, phone: suppliers.phone, city: suppliers.city })
+          .select({
+            id: suppliers.id,
+            name: suppliers.name,
+            phone: sql<string | null>`COALESCE(NULLIF(${suppliers.whatsapp}, ''), NULLIF(${suppliers.phone}, ''), NULLIF(${suppliers.phone2}, ''), NULLIF(${suppliers.phone3}, ''))`,
+            city: suppliers.city,
+          })
           .from(suppliers)
           .where(and(eq(suppliers.isActive, true), or(...orConds)))
           .orderBy(asc(suppliers.name))
@@ -159,7 +169,7 @@ export async function searchContacts(ctx: ContactsSearchCtx, input: ContactsSear
           .select({
             id: deliveryParties.id,
             name: deliveryParties.name,
-            phone: deliveryParties.phone,
+            phone: sql<string | null>`COALESCE(NULLIF(${deliveryParties.phone}, ''), NULLIF(${deliveryParties.phone2}, ''))`,
             currentBalance: deliveryParties.currentBalance,
             branchId: deliveryParties.branchId,
           })

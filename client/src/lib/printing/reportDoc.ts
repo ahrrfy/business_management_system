@@ -49,6 +49,8 @@ export interface ReportDocInput {
   showIndex?: boolean;
   /** نصّ يظهر حين لا صفوف (بدل جدول فارغ). */
   emptyText?: string;
+  /** أفقي للجداول العريضة كي تبقى التفاصيل مقروءة على A4. */
+  orientation?: "portrait" | "landscape";
 }
 
 /** تنويه احترافي (شريط خفيف) — يُستعمل للافتراضات/حدود التقرير. */
@@ -80,5 +82,5 @@ export function printReportDoc(input: ReportDocInput): boolean {
   const summary = input.summary && input.summary.length ? docSummary(input.summary) : "";
 
   const body = `${head}${note}${meta}${table}${summary}${docFooter()}`;
-  return openPrintWindow(wrapA4Doc(input.title, body));
+  return openPrintWindow(wrapA4Doc(input.title, body, { orientation: input.orientation }));
 }

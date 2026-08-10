@@ -9,13 +9,19 @@
  * فقط باسم «حصة الضريبة» بجانب «الإجمالي»؛ خلاف ذلك يُخفى العمود تماماً.
  */
 import type { Dispatch } from "react";
-import { Package, ShoppingCart, X } from "lucide-react";
+import { AlertTriangle, Gift, Package, ShoppingCart, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { calcLineTotal, calcMargin, fmtNum } from "./totals";
 import { ProductSearchBar } from "./ProductSearchBar";
 import type { Currency, InvoiceAction, InvoiceLine, InvoiceType, PriceTier } from "./types";
+
+export interface PurchasePriceInsight {
+  lastPurchase: { price: string; supplierId: number; supplierName: string; purchaseOrderId: number; orderDate: Date | string };
+  lowestPurchase: { price: string; supplierId: number; supplierName: string; purchaseOrderId: number; orderDate: Date | string };
+  selectedSupplierLastPurchase?: { price: string; supplierId: number; supplierName: string; purchaseOrderId: number; orderDate: Date | string };
+}
 
 export interface ProductTableProps {
   items: InvoiceLine[];
@@ -27,6 +33,7 @@ export interface ProductTableProps {
   showCost: boolean;
   purchaseCurrency?: Currency;
   purchaseRate?: string;
+  purchasePriceInsights?: Record<string, PurchasePriceInsight>;
   /**
    * حصص الضريبة الموزَّعة لكل سطر (عرض فقط). مصفوفة نصوص decimal 2dp بطول `items` بالضبط
    * (يحسبها الأب عبر `allocateLineTax(items.map(i => ({total: calcLineTotal(i)})), totals.totalTax,
@@ -34,6 +41,11 @@ export interface ProductTableProps {
    * يظهر فقط حين taxShares مصفوفة بنفس طول items وفيها قيمة موجبة على الأقلّ. أُهمِل ⇒ لا عمود.
    */
   taxShares?: string[] | null;
+  /**
+   * هدايا الفاتورة (0149): إظهار عمود «هدية» بمفتاحٍ لكلّ سطر (فاتورة البيع فقط — الخادم لا يقبل
+   * `isGift` إلّا في `sales.create`). الافتراضي false فلا تتأثّر شاشات الشراء/عرض السعر/المرتجع.
+   */
+  allowGiftLines?: boolean;
   onOpenBulkPicker: () => void;
   /** Toast hook. */
   onNotify?: (msg: string, kind: "error" | "info") => void;
@@ -122,7 +134,9 @@ export function ProductTable({
   showCost,
   purchaseCurrency = "IQD",
   purchaseRate = "",
+  purchasePriceInsights,
   taxShares,
+  allowGiftLines = false,
   onOpenBulkPicker,
   onNotify,
 }: ProductTableProps) {
@@ -138,10 +152,19 @@ export function ProductTable({
     Array.isArray(taxShares) &&
     taxShares.length === items.length &&
     taxShares.some((s) => Number(s) > 0);
-  // عدد الأعمدة لصفّ «السلة فارغة»: ١٠ ثابتة + (تكلفة+هامش) + (حصة ضريبة).
-  const colCount = 10 + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0) + (showIqdEquivalent ? 1 : 0);
+  // عدد الأعمدة لصفّ «السلة فارغة»: ١٠ ثابتة + (تكلفة+هامش) + (حصة ضريبة) + (هدية).
+  const colCount =
+    10 + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0) + (showIqdEquivalent ? 1 : 0) + (allowGiftLines ? 1 : 0);
 
   const totalQty = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
+
+  const priceAsIqd = (price: string) => {
+    const numeric = Number(price);
+    if (!Number.isFinite(numeric)) return null;
+    if (purchaseCurrency !== "USD") return numeric;
+    const rate = Number(purchaseRate);
+    return Number.isFinite(rate) && rate > 0 ? numeric * rate : null;
+  };
 
   // حالة المخزون لكل صنف (مَشابهة POS/Reception). الـPurchase لا تَنطبق عليه دلالياً.
   // الطلب الكلّي لكل variant عبر كل وحداته في السلّة (رصيد الفرع مُشترك بين القطعة/الدرزن/الكرتون).
@@ -226,6 +249,7 @@ export function ProductTable({
               <th className={cn(th, "w-24")}>{isPurchase ? `سعر الشراء ${purchaseCurrency === "USD" ? "$" : "د.ع"}` : "السعر"}</th>
               <th className={cn(th, "w-32")}>الكمية</th>
               <th className={cn(th, "w-20")}>خصم %</th>
+              {allowGiftLines && <th className={cn(th, "w-14")}>هدية</th>}
               {showTaxCol && <th className={cn(th, "w-24")}>حصة الضريبة</th>}
               {showCostCol && <th className={cn(th, "w-16")}>هامش%</th>}
               <th className={cn(th, "w-28")}>الإجمالي</th>
@@ -248,6 +272,16 @@ export function ProductTable({
               const margin = calcMargin(item);
               const marginNum = Number(margin);
               const stock = stockState(item);
+              const purchaseInsight = isPurchase
+                ? purchasePriceInsights?.[`${item.variantId}:${item.productUnitId}`]
+                : undefined;
+              const enteredPriceIqd = priceAsIqd(item.costBase || item.price);
+              const lowestPriceIqd = purchaseInsight ? Number(purchaseInsight.lowestPurchase.price) : null;
+              const supplierLastPriceIqd = purchaseInsight?.selectedSupplierLastPurchase
+                ? Number(purchaseInsight.selectedSupplierLastPurchase.price)
+                : null;
+              const isAboveHistoricalLow = enteredPriceIqd != null && lowestPriceIqd != null && enteredPriceIqd > lowestPriceIqd;
+              const isBelowHistoricalLow = enteredPriceIqd != null && lowestPriceIqd != null && enteredPriceIqd > 0 && enteredPriceIqd < lowestPriceIqd;
               return (
                 <tr
                   key={`${item.productUnitId}-${idx}`}
@@ -276,6 +310,36 @@ export function ProductTable({
                       )}
                     </div>
                     <div className="mt-0.5 text-[11px] text-muted-foreground">{item.sku}</div>
+                    {purchaseInsight && (
+                      <div className="mt-1.5 space-y-0.5 text-[10px] leading-4" dir="rtl">
+                        <div className="text-muted-foreground">
+                          آخر شراء: <span dir="ltr" className="font-bold tabular-nums">{fmtNum(purchaseInsight.lastPurchase.price)}</span> د.ع
+                          <span> من {purchaseInsight.lastPurchase.supplierName}</span>
+                        </div>
+                        {purchaseInsight.selectedSupplierLastPurchase && (
+                          <div className="text-muted-foreground">
+                            آخر سعر من المورد الحالي: <span dir="ltr" className="font-bold tabular-nums">{fmtNum(purchaseInsight.selectedSupplierLastPurchase.price)}</span> د.ع
+                          </div>
+                        )}
+                        {isAboveHistoricalLow && (
+                          <div className="flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-400">
+                            <AlertTriangle aria-hidden className="size-3 shrink-0" />
+                            الأرخص سابقاً: {purchaseInsight.lowestPurchase.supplierName} بـ <span dir="ltr">{fmtNum(purchaseInsight.lowestPurchase.price)}</span> د.ع
+                            <span>(فرق {fmtNum(enteredPriceIqd! - lowestPriceIqd!)} د.ع)</span>
+                          </div>
+                        )}
+                        {isBelowHistoricalLow && (
+                          <div className="font-semibold text-emerald-700 dark:text-emerald-400">
+                            سعر ممتاز: أقل من أدنى شراء سابق بـ <span dir="ltr">{fmtNum(lowestPriceIqd! - enteredPriceIqd!)}</span> د.ع
+                          </div>
+                        )}
+                        {!isAboveHistoricalLow && supplierLastPriceIqd != null && enteredPriceIqd != null && enteredPriceIqd > supplierLastPriceIqd && (
+                          <div className="font-semibold text-amber-700 dark:text-amber-400">
+                            أعلى من آخر سعر لهذا المورد بـ <span dir="ltr">{fmtNum(enteredPriceIqd - supplierLastPriceIqd)}</span> د.ع
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className={cn(td, "text-xs text-muted-foreground")}>{item.unit}</td>
                   <td className={td}>
@@ -297,7 +361,13 @@ export function ProductTable({
                     </td>
                   )}
                   <td className={td}>
-                    {readOnlyPricing ? (
+                    {item.isGift ? (
+                      // السطر المُهدى: لا حقلَ سعرٍ أصلاً (الخادم يُصفّره) — نُظهر الحالة لا مُدخَلاً
+                      // يوهم بإمكان التسعير. السعر المخزَّن في الحالة يبقى كما هو ليعود عند إلغاء الإهداء.
+                      <span className="badge-status-active inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-extrabold">
+                        <Gift aria-hidden className="size-3" /> مجاناً
+                      </span>
+                    ) : readOnlyPricing ? (
                       <span dir="ltr" className="text-sm font-bold tabular-nums">{fmtNum(item.price)}</span>
                     ) : (
                       <InlineNumberInput
@@ -321,7 +391,10 @@ export function ProductTable({
                     />
                   </td>
                   <td className={td}>
-                    {readOnlyPricing ? (
+                    {item.isGift ? (
+                      // خصمٌ على مجّانٍ لا معنى له — نُعطّل الحقل بدل تركه يوهم بأثرٍ لا يقع.
+                      <span className="text-xs text-muted-foreground">—</span>
+                    ) : readOnlyPricing ? (
                       <span className="text-xs text-muted-foreground tabular-nums">{fmtNum(item.discount)}%</span>
                     ) : (
                       <InlineNumberInput
@@ -333,6 +406,24 @@ export function ProductTable({
                       />
                     )}
                   </td>
+                  {allowGiftLines && (
+                    <td className={td}>
+                      <Button
+                        type="button"
+                        variant={item.isGift ? "default" : "outline"}
+                        size="icon"
+                        aria-pressed={item.isGift === true}
+                        aria-label={item.isGift ? `إلغاء إهداء ${item.name}` : `إهداء ${item.name} مجاناً`}
+                        title={item.isGift ? "إلغاء الإهداء (يعود السعر)" : "اجعل هذا الصنف هديةً مجانية"}
+                        className="h-8 w-8"
+                        onClick={() =>
+                          dispatch({ type: "UPDATE_ITEM", idx, field: "isGift", value: !item.isGift })
+                        }
+                      >
+                        <Gift aria-hidden className="size-4" />
+                      </Button>
+                    </td>
+                  )}
                   {showTaxCol && (
                     <td className={cn(td, "text-xs font-semibold text-muted-foreground")} dir="ltr">
                       {fmtNum(taxShares![idx])}

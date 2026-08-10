@@ -1,10 +1,10 @@
 import { Suspense, useEffect, useMemo } from "react";
 import { Link, useLocation, useSearch } from "wouter";
-import { ShoppingCart, Printer, Palette, Lock, Home, ReceiptText } from "lucide-react";
+import { CalendarClock, ShoppingCart, Printer, Palette, Lock, Home, ReceiptText } from "lucide-react";
 import { lazyWithRetry } from "@/lib/lazyWithRetry";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { type PermissionMap, type RoleKey } from "@shared/permissions";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { type Mode, canSeeMode } from "./pos/posModeGates";
 
 /**
@@ -34,6 +34,10 @@ import { type Mode, canSeeMode } from "./pos/posModeGates";
 const POS = lazyWithRetry(() => import("@/pages/POS"));
 const PrintPOS = lazyWithRetry(() => import("@/pages/PrintPOS"));
 const Reception = lazyWithRetry(() => import("@/pages/Reception"));
+const ReservationsWorkspace = lazyWithRetry(() =>
+  import("@/pages/ReservationsHub").then((m) => ({ default: () => <m.default embedded /> })),
+);
+const RESERVATION_READ_ROLES = ["admin", "manager", "accountant", "cashier", "warehouse", "sales_rep", "auditor"] as const;
 
 // عزل الصلاحيات بين الأقسام (٢٣/٧/٢٦): بوّابة كل تبويب مُعرَّفة في posModeGates (سياسةٌ نقيّة قابلة
 // للاختبار) — RETAIL→sales ، PRINT_SERVICES→pos ، RECEPTION→workorders، موحَّدةٌ مع بوّابات الخادم
@@ -61,8 +65,8 @@ const MODES: {
   },
   {
     v: "RECEPTION",
-    label: "استقبال أوامر شغل",
-    subtitle: "تصميم • أمر شغل • قنوات",
+    label: "خدمة العملاء",
+    subtitle: "بيع • طلبات • حجوزات",
     Icon: Palette,
     activeCls: "border-violet-500 bg-violet-50 text-violet-700",
   },
@@ -81,6 +85,10 @@ export default function PointOfSale() {
   // تَقييم activeMode، فيَبقى RETAIL مَركَّباً والـtabs «تَعمل بَصرياً» بلا تَأثير.
   const search = useSearch();
   const activeMode = useMemo(() => readMode(search), [search]);
+  const reservationsWorkspace = useMemo(
+    () => new URLSearchParams(search).get("workspace") === "reservations",
+    [search],
+  );
 
   const me = trpc.auth.me.useQuery();
   const myRole = me.data?.role as RoleKey | undefined;
@@ -95,7 +103,18 @@ export default function PointOfSale() {
     [meLoading, myRole, myPerms],
   );
   const activeModeMeta = MODES.find((m) => m.v === activeMode);
-  const accessDenied = !meLoading && activeModeMeta != null && !canSeeMode(activeModeMeta.v, myRole, myPerms);
+  const canReadReservations = !meLoading && moduleAccessAllowed(
+    myRole ?? "user",
+    myPerms,
+    "reservations",
+    "READ",
+    RESERVATION_READ_ROLES,
+  );
+  const accessDenied = !meLoading && (
+    reservationsWorkspace
+      ? !canReadReservations
+      : activeModeMeta != null && !canSeeMode(activeModeMeta.v, myRole, myPerms)
+  );
 
   function setMode(next: Mode) {
     if (next === activeMode) return;
@@ -136,9 +155,9 @@ export default function PointOfSale() {
   }, [meLoading, accessDenied, visibleModes, navigate]);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background" dir="rtl">
+    <div className="pos-workspace flex h-dvh flex-col overflow-hidden bg-background" dir="rtl" data-pos-mode={activeMode}>
       {/* شريط الأوضاع — مَوحَّد عبر الأوضاع الثلاثة */}
-      <div className="flex h-12 flex-shrink-0 items-center gap-2 border-b bg-card px-3">
+      <div className="pos-modebar flex flex-shrink-0 items-center gap-2 overflow-x-auto border-b bg-card px-3 py-1.5">
         <div className="flex items-center gap-1.5" role="tablist" aria-label="أوضاع نقطة البيع">
           {visibleModes.map((m) => {
             const active = m.v === activeMode;
@@ -150,7 +169,7 @@ export default function PointOfSale() {
                 aria-selected={active}
                 onClick={() => setMode(m.v)}
                 className={cn(
-                  "inline-flex h-9 items-center gap-2 rounded-lg border-2 px-3 text-sm font-bold transition-all",
+                  "inline-flex h-[var(--ui-control)] items-center gap-2 rounded-lg border-2 px-3 text-sm font-bold transition-all",
                   active ? m.activeCls : "border-transparent bg-muted/40 hover:bg-muted",
                 )}
                 title={`${m.label} — ${m.subtitle}`}
@@ -160,8 +179,14 @@ export default function PointOfSale() {
               </button>
             );
           })}
+          {reservationsWorkspace && (
+            <span className="inline-flex h-[var(--ui-control)] items-center gap-2 rounded-lg border-2 border-primary bg-primary/10 px-3 text-sm font-bold text-primary">
+              <CalendarClock aria-hidden className="size-4" />
+              حجوزات خدمة العملاء
+            </span>
+          )}
         </div>
-        <div className="ms-auto flex items-center gap-3">
+        <div className="pos-modebar-meta ms-auto flex shrink-0 items-center gap-3">
           {/* صدق الهوية: صاحب الدور المخصّص المحصور بقسمٍ (مثل «كاشير طباعة») يرى لماذا
               يظهر له قسم واحد — كان يظهر تبويب وحيد بلا تفسير فيبدو النظام «غير منطقي».
               والتخصيص الفرديّ (permissionsOverride بلا دور مخصّص) يُعلَن كذلك — نفس الفجوة بطريق ثانٍ. */}
@@ -179,19 +204,26 @@ export default function PointOfSale() {
               Ctrl+1/2/3 لتَبديل الوَضع
             </span>
           )}
-          {visibleModes.some((mode) => mode.v === "RETAIL") && (
-            <Link
-              href="/invoices"
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
-              title="عرض الفواتير المباعة وإعادة طباعتها"
-            >
-              <ReceiptText aria-hidden className="size-4" />
-              <span>الفواتير</span>
-            </Link>
+          {/* شريحة (٧/٨): محطة الاستقبال تملأ هذه المساحة بأزرارها الخاصّة (فواتير/طلبات/حجوزات/
+              وردية…) عبر portal من Reception.tsx — أغنى وأدقّ من رابط عامّ لقائمة فواتير الشركة
+              كاملةً (تلك تبقى الوجهة الصحيحة لتجزئة/طباعة). */}
+          {activeMode === "RECEPTION" ? (
+            <div id="pos-header-actions" className="flex shrink-0 items-center gap-1.5 overflow-x-auto" />
+          ) : (
+            visibleModes.some((mode) => mode.v === "RETAIL") && (
+              <Link
+                href="/invoices"
+                className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
+                title="عرض الفواتير المباعة وإعادة طباعتها"
+              >
+                <ReceiptText aria-hidden className="size-4" />
+                <span>الفواتير</span>
+              </Link>
+            )
           )}
           <Link
             href="/"
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
+            className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
             title="العودة إلى الرئيسية"
           >
             <Home aria-hidden className="size-4" />
@@ -216,9 +248,15 @@ export default function PointOfSale() {
               </div>
             }
           >
-            {activeMode === "RETAIL" && <POS />}
-            {activeMode === "PRINT_SERVICES" && <PrintPOS />}
-            {activeMode === "RECEPTION" && <Reception />}
+            {reservationsWorkspace && !canSeeMode("RECEPTION", myRole, myPerms) ? (
+              <ReservationsWorkspace />
+            ) : (
+              <>
+                {activeMode === "RETAIL" && <POS />}
+                {activeMode === "PRINT_SERVICES" && <PrintPOS />}
+                {activeMode === "RECEPTION" && <Reception />}
+              </>
+            )}
           </Suspense>
         )}
       </div>

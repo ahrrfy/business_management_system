@@ -2,8 +2,8 @@
 // منتقي عميل → جدول أسعاره التعاقدية (نشطة/معطَّلة) → إضافة سطر: بحث منتج (وحدة قياس محدَّدة
 // من نتيجة البحث نفسها — كل صف نتيجة = متغيّر×وحدة) ثم سعر MoneyInput. السعر التعاقدي النشط
 // يتقدّم على سعر الفئة في POS وفي فرض الخادم معاً (resolveContractPrices واحدة للنقطتين).
-import { useState } from "react";
-import { FileSignature, Plus, X } from "lucide-react";
+import { useMemo, useState } from "react";
+import { FileSignature, Plus, Printer, Search, X } from "lucide-react";
 import CustomerPicker from "@/components/CustomerPicker";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
@@ -17,8 +17,11 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
+import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
+import { esc } from "@/lib/printing/brand";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { normalizeSearchText } from "@shared/searchNormalize";
 
 type ContractRow = RouterOutputs["customers"]["contractPricesList"][number];
 
@@ -35,7 +38,16 @@ function variantLabel(r: ContractRow): string {
 export default function ContractPrices() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const branchId = me.data?.branchId ?? 1;
+  const branches = trpc.branches.list.useQuery();
+  // منتقي فرع صريح (نمط PR #288 في Reception.tsx): سياق البحث عن المنتج (مخزون/معاينة سعر) فقط
+  // — الجدول التعاقدي نفسه بلا فرع في المخطّط (customerContractPrices عميلٌ واحد لكل الفروع).
+  // فرع المستخدم المُسنَد يُستعمَل صامتاً؛ الأدمن/المدير بلا فرع يختار صراحةً قبل تفعيل البحث
+  // (بدل فرعٍ ١ صامت يُبنى عليه معاينة سعر/مخزون من فرعٍ قد لا يقصده).
+  const [pickedBranch, setPickedBranch] = useState<number | null>(null);
+  const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
+  const noAssignedBranch = me.data != null && me.data.branchId == null;
+  const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
+  const branchId = Number(me.data?.branchId ?? pickedBranch ?? 1);
 
   const [customerId, setCustomerId] = useState<number | null>(null);
   const customer = trpc.customers.get.useQuery(
@@ -49,6 +61,17 @@ export default function ContractPrices() {
     { enabled: customerId != null },
   );
   const rows = list.data ?? [];
+
+  // بحث/فلتر محلي بجدول الأسعار التعاقدية (منتج/SKU/ملاحظة) — القائمة كاملة لعميل واحد فمعالجتها
+  // محلية بلا حاجة لجولة خادم إضافية.
+  const [q, setQ] = useState("");
+  const filteredRows = useMemo(() => {
+    const nq = normalizeSearchText(q.trim());
+    if (!nq) return rows;
+    return rows.filter((r) =>
+      normalizeSearchText(`${variantLabel(r)} ${r.sku} ${r.unitName} ${r.note ?? ""}`).includes(nq),
+    );
+  }, [rows, q]);
 
   // ── سطر الإضافة: وحدة مختارة من البحث + سعر تعاقدي + ملاحظة ──────────────────
   const [picked, setPicked] = useState<InvoiceLine | null>(null);
@@ -108,13 +131,74 @@ export default function ContractPrices() {
     remove.mutate({ id: r.id });
   }
 
+  /** طباعة/تصدير ملحق الأسعار التعاقدية — مستند A4 بسيط يُرفَق بالعقد الحكومي (الأسعار النشطة
+   * فقط — المعطَّلة لا تسري على البيع فلا معنى لإدراجها في ملحق يُوقَّع). التصدير عبر «طباعة
+   * إلى PDF» من نافذة المتصفّح (نمط مبسّط مطابق لتصدير طلب الخدمة في WorkOrderNew.tsx). */
+  function printAddendum() {
+    const active = rows.filter((r) => r.isActive);
+    if (customerId == null || active.length === 0) return notify.err("لا أسعار تعاقدية نشطة لطباعتها");
+    const w = window.open("", "_blank", "width=900,height=1000");
+    if (!w) return;
+    const trRows = active
+      .map(
+        (r) => `<tr><td>${esc(variantLabel(r))}</td><td dir="ltr">${esc(r.sku)}</td><td>${esc(r.unitName)}</td><td class="num">${esc(fmtMoney(r.price))}</td><td>${esc(r.note ?? "—")}</td></tr>`,
+      )
+      .join("");
+    w.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ملحق الأسعار التعاقدية</title>
+      <style>
+        body{font-family:Cairo,sans-serif;padding:28px;color:#222}
+        h1{margin:0 0 4px;font-size:20px}
+        .muted{color:#666;font-size:12.5px;margin:0 0 16px}
+        table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px}
+        th,td{border:1px solid #ccc;padding:6px 8px;text-align:right}
+        thead{background:#f4f4f5}
+        td.num{text-align:left;direction:ltr;font-weight:600}
+        .sign{display:flex;justify-content:space-between;margin-top:56px;font-size:13px}
+        .sign div{width:40%;border-top:1px solid #999;padding-top:6px;text-align:center}
+      </style>
+      </head><body>
+      <h1>ملحق الأسعار التعاقدية</h1>
+      <p class="muted">العميل: ${esc(customer.data?.name ?? "")} · تاريخ الطباعة: ${esc(new Date().toLocaleDateString("ar-IQ"))}</p>
+      <table><thead><tr><th>المنتج</th><th>SKU</th><th>الوحدة</th><th>السعر التعاقدي (د.ع)</th><th>ملاحظة</th></tr></thead>
+      <tbody>${trRows}</tbody></table>
+      <div class="sign"><div>توقيع العميل / الجهة</div><div>توقيع المخوَّل بالمكتبة</div></div>
+      <script>setTimeout(()=>window.print(),300)</script>
+      </body></html>`);
+    w.document.close();
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
         title="التسعير التعاقدي"
         description="أسعار خاصة بعميل (عقود الدوائر الحكومية) تتقدّم على فئات التسعير في الكاشير والفواتير."
         icon={<FileSignature aria-hidden className="size-6" />}
+        actions={
+          customerId != null && rows.some((r) => r.isActive) ? (
+            <Button variant="outline" size="sm" onClick={printAddendum}>
+              <Printer aria-hidden className="size-4" /> طباعة ملحق الأسعار
+            </Button>
+          ) : undefined
+        }
       />
+
+      {needsBranchChoice && (
+        <Card>
+          <CardContent className="pt-4 space-y-1.5">
+            <Label htmlFor="cp-branch">الفرع <span className="text-destructive">*</span></Label>
+            <select
+              id="cp-branch"
+              className="h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              value={pickedBranch ?? ""}
+              onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">— اختر الفرع —</option>
+              {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+            <p className="text-[11px] text-muted-foreground">يحدّد سياق معاينة السعر/المخزون أثناء البحث عن المنتج — الأسعار التعاقدية نفسها ليست مرتبطة بفرع.</p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="pb-2">
@@ -145,7 +229,9 @@ export default function ContractPrices() {
             {/* ── إضافة/تحديث سطر تعاقدي ── */}
             <div className="rounded-lg border bg-muted/20 p-3 space-y-3">
               <div className="text-sm font-bold">إضافة سعر تعاقدي</div>
-              {picked == null ? (
+              {needsBranchChoice ? (
+                <p className="text-xs text-[var(--sem-warn)]">اختر الفرع أعلاه أولاً لتفعيل البحث عن المنتج.</p>
+              ) : picked == null ? (
                 <ProductSearchBar
                   invoiceType="SALE"
                   branchId={branchId}
@@ -194,6 +280,12 @@ export default function ContractPrices() {
             </div>
 
             {/* ── جدول الأسعار التعاقدية ── */}
+            {rows.length > 0 && (
+              <div className="relative max-w-xs">
+                <Search aria-hidden className="size-4 absolute top-1/2 -translate-y-1/2 start-3 text-muted-foreground pointer-events-none" />
+                <Input className="ps-9" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ابحث بالمنتج/SKU/ملاحظة…" dir="auto" />
+              </div>
+            )}
             {list.isLoading ? (
               <LoadingState />
             ) : (
@@ -207,14 +299,18 @@ export default function ContractPrices() {
                       <th className="px-3 py-2 font-semibold text-left">السعر التعاقدي</th>
                       <th className="px-3 py-2 font-semibold">الحالة</th>
                       <th className="px-3 py-2 font-semibold">ملاحظة</th>
+                      <th className="px-3 py-2 font-semibold">آخر تحديث</th>
                       <th className="px-3 py-2 font-semibold">إجراءات</th>
                     </tr>
                   </thead>
                   <tbody>
                     {rows.length === 0 && (
-                      <TableEmptyRow colSpan={7} message="لا أسعار تعاقدية لهذا العميل — أضِف أول سطر أعلاه." />
+                      <TableEmptyRow colSpan={8} message="لا أسعار تعاقدية لهذا العميل — أضِف أول سطر أعلاه." />
                     )}
-                    {rows.map((r) => (
+                    {rows.length > 0 && filteredRows.length === 0 && (
+                      <TableEmptyRow colSpan={8} message="لا نتائج مطابقة للبحث." />
+                    )}
+                    {filteredRows.map((r) => (
                       <tr key={r.id} className={`border-t ${r.isActive ? "" : "opacity-60"}`}>
                         <td className="px-3 py-2">{variantLabel(r)}</td>
                         <td className="px-3 py-2 text-muted-foreground" dir="ltr">{r.sku}</td>
@@ -223,13 +319,14 @@ export default function ContractPrices() {
                         <td className="px-3 py-2">
                           <span
                             className={`rounded-full px-2 py-0.5 text-xs ${
-                              r.isActive ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"
+                              r.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"
                             }`}
                           >
                             {r.isActive ? "نشط" : "معطَّل"}
                           </span>
                         </td>
                         <td className="px-3 py-2 text-xs text-muted-foreground">{r.note ?? "—"}</td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground" dir="ltr">{fmtDateTime(r.updatedAt)}</td>
                         <td className="px-3 py-2">
                           <RowActions
                             actions={[

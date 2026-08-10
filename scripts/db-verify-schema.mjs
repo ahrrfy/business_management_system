@@ -83,6 +83,8 @@ try {
     ["promotions", "idx_promo_application"],
     ["coupons", "uq_coupon_hash"],
     ["couponRedemptions", "uq_coupon_redemption_invoice"],
+    ["invoices", "idx_invoice_shift"], // ش٠ استقبال (0153): طابور المحطة keyset — غيابه مسح كامل
+    ["orderPayments", "uq_orderpay_receipt"], // ش٤ (0155): الإصلاح البنيوي لالتقاط الإيصال الظنّي
   ];
   const [idxRows] = await conn.query(
     "SELECT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? GROUP BY TABLE_NAME, INDEX_NAME",
@@ -104,7 +106,18 @@ try {
   //    طريقة قديمة (drizzle-kit migrate) كانت تُسجّل هجراتٍ «مُطبَّقة» دون تنفيذ SQL فعلاً ⇒ انحراف
   //    صامت (كائن غائب رغم تسجيل الهجرة) لم يكن db:verify يمسكه ⇒ ثقة كاذبة. نفحصها صراحةً هنا.
   //    (هجرة 0041 المصالحة تُعيد إنشاء أي مفقود idempotently.)
-  const CRITICAL_TABLES = ["voucherCategories", "exchangeHouses", "exchangeTransactions", "crmCampaigns", "couponPrograms", "coupons", "couponRedemptions"];
+  const CRITICAL_TABLES = [
+    "voucherCategories", "exchangeHouses", "exchangeTransactions", "crmCampaigns", "couponPrograms", "coupons", "couponRedemptions",
+    // D4 digital cards.  The latest Drizzle snapshot is intentionally frozen
+    // before these migrations, so the generic snapshot check above cannot see
+    // a partially applied digital-cards rollout.  Missing any of these tables
+    // otherwise presents to the POS as an empty catalogue rather than a
+    // deploy-time schema error.
+    "digitalProviders", "digitalWallets", "digitalWalletTransactions", "digitalOfferings",
+    "digitalOfferingBranches", "digitalPriceBatches", "digitalPriceVersions", "digitalCurrentPrices",
+    "digitalSaleIntents", "digitalWalletReservations", "digitalSaleIntentItems", "digitalSaleDetails",
+    "digitalWalletReconciliations", "digitalSubscriptionContracts",
+  ];
   const CRITICAL_COLUMNS = [
     ["products", "searchNorm"], ["customers", "searchNorm"], ["suppliers", "searchNorm"], // 0035/0039
     ["receipts", "voucherCategoryId"], ["receipts", "counterpartyName"], ["receipts", "voucherDate"], // 0036
@@ -114,6 +127,17 @@ try {
     ["purchaseOrders", "poCurrency"], ["purchaseOrders", "usdTotal"], ["purchaseOrders", "agreedRate"], // 0038
     ["promotions", "campaignId"], ["promotions", "promotionApplicationMode"], // 0076 CRM
     ["invoices", "taxRatePercent"], ["quotations", "taxRatePercent"], ["purchaseOrders", "taxRatePercent"], // 0123
+    // D4: the POS catalogue requires an offering-to-branch mapping and a
+    // materialized current price.  Check the key fields as well as the tables
+    // so a stale/baselined production database cannot make enabled cards
+    // silently disappear for cashiers.
+    ["digitalOfferings", "isActive"], ["digitalOfferings", "subscriptionDurationDays"],
+    ["digitalOfferingBranches", "branchId"], ["digitalOfferingBranches", "walletId"],
+    ["digitalPriceBatches", "status"], ["digitalPriceVersions", "validUntil"],
+    ["digitalCurrentPrices", "priceVersionId"],
+    ["digitalSaleIntents", "status"], ["digitalSaleIntentItems", "providerId"],
+    ["digitalSaleDetails", "fulfillmentStatus"],
+    ["digitalSubscriptionContracts", "expiresAt"],
   ];
   const missingCritTables = CRITICAL_TABLES.filter((t) => !actual[t]);
   const missingCritCols = CRITICAL_COLUMNS.filter(([t, c]) => !actual[t] || !actual[t].has(c)).map(([t, c]) => `${t}.${c}`);
@@ -127,8 +151,25 @@ try {
     process.exit(1);
   }
 
+  // ── ش٥ (I23): كل قيمة enum جديدة تصل الإنتاج فعلاً — TELECOM على receipts.paymentMethod.
+  //    توسيع enum على عمود قائم لا يمثّله push، وهجرة migrator فاشلة صامتاً كانت ستترك القيمة
+  //    غائبة ⇒ كلّ قبض رصيد اتصال يسقط بخطأ بيانات. الفحص هنا يُفشل النشر **قبل** pm2 reload.
+  const [telecomRows] = await conn.query(
+    "SELECT COLUMN_TYPE AS t FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'receipts' AND COLUMN_NAME = 'paymentMethod'",
+    [dbName],
+  );
+  const telecomType = String(telecomRows?.[0]?.t ?? "");
+  if (!telecomType.includes("TELECOM")) {
+    console.error("⛔ قيمة enum مفقودة: receipts.paymentMethod بلا 'TELECOM' (هجرة 0156 لم تصل فعلياً).");
+    console.error("   COLUMN_TYPE الحالي:", telecomType || "(غير موجود)");
+    console.error("   عالِج: طبّق 0154 (migrator) أو extras/0154 (CI push).");
+    await conn.end();
+    process.exit(1);
+  }
+
   console.log(`✓ تحقّق المخطط: ${Object.keys(expected).length} جدولاً مطابقة لـ snapshot (${snapFiles[snapFiles.length - 1]}).`);
   console.log(`✓ تحقّق الفهارس: ${CRITICAL_INDEXES.length} فهرساً حرجاً موجودة.`);
+  console.log("✓ تحقّق enum: receipts.paymentMethod يحوي TELECOM (I23).");
   console.log(`✓ تحقّق كائنات ما بعد 0034: ${CRITICAL_TABLES.length} جدولاً + ${CRITICAL_COLUMNS.length} عموداً (سدّ النقطة العمياء).`);
   await conn.end();
 } catch (e) {

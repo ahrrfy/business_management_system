@@ -3,7 +3,11 @@
  *
  * مصدر البيانات: onlineOrders (+ بنودها) مباشرةً — لا يمسّ التكلفة/الربح إطلاقاً (خطّ §٦ الأحمر)،
  * بل إيراد الطلبات وعددها ومتوسّطها ونِسب التسليم/الإلغاء وأعلى المنتجات والتوزيع الجغرافيّ.
- * الإيراد = Σ total للطلبات **غير الملغاة** (قيمة مؤكَّدة/قيد التنفيذ)، والمُسلَّم منفصلٌ (نقدٌ مُحقَّق).
+ * الإيراد = Σ **subtotal** (قيمة البضاعة) للطلبات **غير الملغاة**، والمُسلَّم منفصلٌ (نقدٌ مُحقَّق).
+ * ١٠/٨ (التمرير الكامل): أجرة الشحن (total − subtotal) يقبضها المندوب الخارجيّ من الزبون
+ * ويحتفظ بها — ليست إيراد المكتبة، فتُستبعَد من كل مقاييس «الإيراد/النقد المحقَّق» هنا كي لا
+ * يتضخّم رقمُ الأداء بمال تمرير (كان يجمع total فيتجاوز إيراد الدفتر بمقدار الشحن). subtotal
+ * = البضاعة للطلب القديم والجديد معاً ⇒ الإصلاح متّسق تاريخياً.
  * النطاق الزمنيّ بحبيبة يوم بغداد (UTC+3): الحدود تُحسب كلحظات UTC فيبقى الفلتر على العمود مفهرَساً.
  * عزل الفرع: يُمرَّر scopedBranchId (null للمرتفعين ⇒ كل المتجر)، كبقيّة راوتر الطلبات.
  */
@@ -94,8 +98,8 @@ export async function getStoreAnalytics(input: {
       totalOrders: sql<number>`COUNT(*)`,
       cancelledOrders: sql<number>`COALESCE(SUM(${onlineOrders.status} = 'CANCELLED'), 0)`,
       deliveredOrders: sql<number>`COALESCE(SUM(${onlineOrders.status} = 'DELIVERED'), 0)`,
-      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} <> 'CANCELLED' THEN ${onlineOrders.total} ELSE 0 END), 0)`,
-      deliveredRevenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} = 'DELIVERED' THEN ${onlineOrders.total} ELSE 0 END), 0)`,
+      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
+      deliveredRevenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} = 'DELIVERED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
     })
     .from(onlineOrders)
     .where(where);
@@ -123,7 +127,7 @@ export async function getStoreAnalytics(input: {
     .select({
       ymd: sql<string>`DATE(${onlineOrders.orderDate} + INTERVAL 3 HOUR)`,
       orders: sql<number>`COUNT(*)`,
-      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} <> 'CANCELLED' THEN ${onlineOrders.total} ELSE 0 END), 0)`,
+      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
     })
     .from(onlineOrders)
     .where(where)
@@ -166,7 +170,7 @@ export async function getStoreAnalytics(input: {
     .select({
       governorate: sql<string>`COALESCE(NULLIF(${onlineOrders.governorate}, ''), 'غير محدَّد')`,
       orders: sql<number>`COUNT(*)`,
-      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} <> 'CANCELLED' THEN ${onlineOrders.total} ELSE 0 END), 0)`,
+      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
     })
     .from(onlineOrders)
     .where(where)

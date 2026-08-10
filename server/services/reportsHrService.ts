@@ -128,12 +128,14 @@ export interface AttendanceReportResult {
 
 /**
  * صفوف الحضور في نطاق [from,to] (attendanceDate BETWEEN، حدّان شاملان) مع اسم الموظف،
- * مفلترة اختيارياً بموظف. الساعات/المبالغ بـdecimal. presentُ = PRESENT+LATE، absent = ABSENT.
+ * مفلترة اختيارياً بموظف و/أو فرع. الساعات/المبالغ بـdecimal. presentُ = PRESENT+LATE، absent = ABSENT.
  */
 export async function getAttendanceReport(opts: {
   from: string;
   to: string;
   employeeId?: number;
+  /** فرعٌ بعينه (اختياري) — الجدول e.branchId عبر الـJOIN القائم أصلاً. */
+  branchId?: number;
 }): Promise<AttendanceReportResult> {
   const db = getDb();
   const empty: AttendanceReportResult = {
@@ -143,6 +145,7 @@ export async function getAttendanceReport(opts: {
   if (!db) return empty;
 
   const empCond = opts.employeeId ? sql`AND a.employeeId = ${opts.employeeId}` : sql``;
+  const branchCond = opts.branchId ? sql`AND e.branchId = ${opts.branchId}` : sql``;
 
   const raw = rowsOf(
     await db.execute(sql`
@@ -157,6 +160,7 @@ export async function getAttendanceReport(opts: {
       JOIN employees e ON e.id = a.employeeId
       WHERE a.attendanceDate >= ${opts.from} AND a.attendanceDate <= ${opts.to}
         ${empCond}
+        ${branchCond}
       ORDER BY a.attendanceDate DESC, a.id DESC
     `),
   );

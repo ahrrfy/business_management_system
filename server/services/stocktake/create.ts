@@ -67,6 +67,7 @@ export interface CreateAssignmentInput {
   method: "PIN" | "USER";
   userId?: number;
   zone?: string;
+  /** @deprecated products are shared by all stocktake workers. */
   variantIds?: number[];
 }
 
@@ -110,22 +111,21 @@ async function resolveScope(
   tx: Tx,
   input: CreateStocktakeInput
 ): Promise<{ variantIds: number[]; label: string; detail: Record<string, unknown> }> {
-  // gstack B7 (٧/٧/٢٦): البكجات بلا branchStock ⇒ حاجز setStock في finalize يرفضها فيُسقط اعتماد
-  // الجرد كاملاً ذرّياً. نستبعدها من كل النطاقات هنا (نقطة الدخول الوحيدة) — البكج «يُجرَد» عبر
-  // مكوّناته لا كوحدة قائمة بذاتها.
+  // المنتجات الخدمية (ومنها البطاقات الرقمية والاشتراكات) لا تملك مخزوناً مادياً، والبكجات
+  // تُجرَد عبر مكوّناتها لا كوحدة قائمة بذاتها؛ لذلك يُستبعَد الاثنان من كل نطاقات الجرد.
   // بضاعة الأمانة (ش٤): تُستبعَد من الجرد **الافتتاحي** (OPENING) — تُفتتَح بسند إيداع لا بجرد افتتاحيّ
   // (لا تأسيس عهدة بضاعة الغير بلا توقيع مودِع). الجرد العادي (NORMAL) يشملها. §٥-د.
-  const notBundleCond =
+  const stockableProductCond =
     input.sessionType === "OPENING"
-      ? and(eq(products.isBundle, false), eq(products.isConsignment, false))!
-      : eq(products.isBundle, false);
+      ? and(eq(products.isService, false), eq(products.isBundle, false), eq(products.isConsignment, false))!
+      : and(eq(products.isService, false), eq(products.isBundle, false))!;
 
   if (input.scopeType === "FULL") {
     const rows = await tx
       .select({ id: productVariants.id })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(and(eq(productVariants.isActive, true), eq(products.isActive, true), notBundleCond));
+      .where(and(eq(productVariants.isActive, true), eq(products.isActive, true), stockableProductCond));
     const ids = rows.map((r) => Number(r.id));
     return { variantIds: ids, label: `جرد شامل للفرع (${ids.length} صنفاً)`, detail: {} };
   }
@@ -143,7 +143,7 @@ async function resolveScope(
           eq(inventoryMovements.branchId, input.branchId),
           gte(inventoryMovements.createdAt, since),
           eq(productVariants.isActive, true),
-          notBundleCond
+          stockableProductCond
         )
       );
     const ids = rows.map((r) => Number(r.id));
@@ -165,7 +165,7 @@ async function resolveScope(
       .select({ id: productVariants.id })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(and(inArray(products.categoryId, catIds), eq(productVariants.isActive, true), eq(products.isActive, true), notBundleCond));
+      .where(and(inArray(products.categoryId, catIds), eq(productVariants.isActive, true), eq(products.isActive, true), stockableProductCond));
     const ids = rows.map((r) => Number(r.id));
     const names = catRows.map((c) => c.name).join("، ");
     return { variantIds: ids, label: `فئة: ${names} (${ids.length} صنفاً)`, detail: { categoryIds: catIds } };
@@ -175,19 +175,38 @@ async function resolveScope(
   const wanted = Array.from(new Set(input.variantIds ?? []));
   if (!wanted.length) throw new TRPCError({ code: "BAD_REQUEST", message: "اختر صنفاً واحداً على الأقل لنطاق الجرد" });
   const found = await (async () => {
-    const out: Array<{ id: number; isBundle: boolean; productName: string; sku: string }> = [];
+    const out: Array<{ id: number; isBundle: boolean; isService: boolean; productName: string; sku: string }> = [];
     for (const part of chunk(wanted)) {
       const rows = await tx
-        .select({ id: productVariants.id, isBundle: products.isBundle, productName: products.name, sku: productVariants.sku })
+        .select({
+          id: productVariants.id,
+          isBundle: products.isBundle,
+          isService: products.isService,
+          productName: products.name,
+          sku: productVariants.sku,
+        })
         .from(productVariants)
         .innerJoin(products, eq(productVariants.productId, products.id))
         .where(inArray(productVariants.id, part));
-      out.push(...rows.map((r) => ({ id: Number(r.id), isBundle: !!r.isBundle, productName: r.productName, sku: r.sku })));
+      out.push(...rows.map((r) => ({
+        id: Number(r.id),
+        isBundle: !!r.isBundle,
+        isService: !!r.isService,
+        productName: r.productName,
+        sku: r.sku,
+      })));
     }
     return out;
   })();
   if (found.length !== wanted.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "بعض الأصناف المختارة غير موجودة في النظام" });
+  }
+  const serviceHit = found.find((f) => f.isService);
+  if (serviceHit) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `لا يُجرَد المنتج الخدمي: «${serviceHit.productName} — ${serviceHit.sku}». الخدمات والكروت والاشتراكات بلا رصيد مخزني.`,
+    });
   }
   // gstack B7: رفض صريح لو كانت الأصناف المختارة يدوياً تحوي بكجاً — رسالة تسمّي المخالف.
   const bundleHit = found.find((f) => f.isBundle);
@@ -324,14 +343,12 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
           : "نطاق الجرد لا يحوي أي صنف — راجع النطاق المحدد",
     });
   }
-  const scopeSet = new Set(scope.variantIds);
-
-  const claimed = await validateAssignmentsInTx(tx, input, scopeSet);
+  await validateAssignmentsInTx(tx, input);
   const { stockMap, costMap } = await snapshotStockCost(tx, input.branchId, scope.variantIds);
   const { sessionId, code } = await insertSession(tx, input, scope, actor);
-  const { assignmentIds, assignmentPins } = await insertAssignments(tx, sessionId, input.assignments);
+  const { assignmentIds, assignmentPins } = await insertAssignments(tx, sessionId, input.assignments, actor);
   const perAssignmentCount = await distributeAndInsertItems(
-    tx, input, scope, sessionId, assignmentIds, claimed, stockMap, costMap,
+    tx, input, scope, sessionId, assignmentIds, stockMap, costMap,
   );
 
   return {
@@ -349,13 +366,12 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
   };
 }
 
-/** تحقّق التكليفات: USER يلزمه userId موجود وفعّال وغير مكرّر؛ أصناف التكليف ضمن النطاق وبلا ازدواج.
- *  يُعيد خريطة `variantId → فهرس التكليف` لما ادّعاه كل تكليف صراحةً. */
+/** تحقّق التكليفات: USER يلزمه userId موجود وفعّال وغير مكرّر.
+ *  قوائم variantIds القديمة مقبولة للتوافق فقط ولا تمنح ملكية للمنتجات. */
 async function validateAssignmentsInTx(
   tx: Tx,
   input: CreateStocktakeInput,
-  scopeSet: Set<number>,
-): Promise<Map<number, number>> {
+): Promise<void> {
   const userIds = input.assignments.filter((a) => a.method === "USER").map((a) => a.userId);
   if (userIds.some((u) => !u)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "تكليف بحساب داخلي بلا مستخدم محدد" });
@@ -373,19 +389,6 @@ async function validateAssignmentsInTx(
       if (!activeIds.has(u)) throw new TRPCError({ code: "BAD_REQUEST", message: "مستخدم التكليف غير موجود أو معطَّل" });
     }
   }
-  const claimed = new Map<number, number>(); // variantId → فهرس التكليف
-  input.assignments.forEach((a, idx) => {
-    for (const v of a.variantIds ?? []) {
-      if (!scopeSet.has(v)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `تكليف «${a.name}» يتضمن صنفاً خارج نطاق الجلسة` });
-      }
-      if (claimed.has(v)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "صنف واحد مُكلَّف لأكثر من عامل — كل صنف لمنطقة واحدة" });
-      }
-      claimed.set(v, idx);
-    }
-  });
-  return claimed;
 }
 
 /** لقطة الرصيد الدفتري + التكلفة لكل أصناف النطاق (دفعات inArray ≤1000 — لا فصم للجلسة). */
@@ -446,6 +449,7 @@ async function insertAssignments(
   tx: Tx,
   sessionId: number,
   assignments: CreateStocktakeInput["assignments"],
+  actor: StkActor,
 ): Promise<{ assignmentIds: number[]; assignmentPins: (string | undefined)[] }> {
   const usedPins = new Set<string>();
   const assignmentIds: number[] = [];
@@ -465,6 +469,7 @@ async function insertAssignments(
       pinHash,
       zone: a.zone ?? null,
       status: "ACTIVE",
+      addedBy: actor.userId,
     });
     assignmentIds.push(extractInsertId(aRes));
     assignmentPins.push(pin);
@@ -473,11 +478,8 @@ async function insertAssignments(
 }
 
 /**
- * توزيع الأصناف: المُدّعى لتكليفه يبقى له؛ وغير المُكلَّف بأي تكليف يُوزَّع كتلاً متتالية
- * متساوية (±1) على كل التكليفات بترتيب variantId تصاعدياً (تكليف واحد ⇒ يستلم الكل =
- * السلوك القديم نفسه). السبب: «الباقي للتكليف الأول» ينهار على جرد شامل حقيقي —
- * الواجهة ترسل ≤1000 معرّف للتكليفات بينما النطاق قد يبلغ آلاف الأصناف فيُغرَق الأول بها كلها.
- * يُدرج صفوف الأصناف على دفعات (≤1000) ويُعيد عدّاد أصناف كل تكليف.
+ * ينشئ قائمة نطاق مشتركة واحدة. assignmentId إلزام تقني في المخطط القديم فقط،
+ * ولا يقيّد رؤية العامل أو حقه في عدّ أي منتج. يُعاد حجم النطاق لكل عامل كمرجع.
  */
 async function distributeAndInsertItems(
   tx: Tx,
@@ -485,25 +487,16 @@ async function distributeAndInsertItems(
   scope: StkScope,
   sessionId: number,
   assignmentIds: number[],
-  claimed: Map<number, number>,
   stockMap: Map<number, number>,
   costMap: Map<number, string>,
 ): Promise<number[]> {
-  const unclaimed = scope.variantIds.filter((v) => !claimed.has(v)).sort((a, b) => a - b);
-  const blockBase = Math.floor(unclaimed.length / input.assignments.length);
-  const blockExtra = unclaimed.length % input.assignments.length;
-  for (let idx = 0, cursor = 0; idx < input.assignments.length; idx++) {
-    const size = blockBase + (idx < blockExtra ? 1 : 0);
-    for (const v of unclaimed.slice(cursor, cursor + size)) claimed.set(v, idx);
-    cursor += size;
-  }
-  const perAssignmentCount = new Array(input.assignments.length).fill(0) as number[];
+  // assignmentId remains NOT NULL for backwards-compatible storage only. It is
+  // never consulted to restrict what a worker can see or count.
+  const technicalAssignmentId = assignmentIds[0];
   const itemRows = scope.variantIds.map((variantId) => {
-    const idx = claimed.get(variantId)!; // كل صنف صار مملوكاً: ادّعاءً أو بالتوزيع الكتلي
-    perAssignmentCount[idx] += 1;
     return {
       sessionId,
-      assignmentId: assignmentIds[idx],
+      assignmentId: technicalAssignmentId,
       variantId,
       branchId: input.branchId,
       expectedQty: stockMap.get(variantId) ?? 0,
@@ -513,5 +506,5 @@ async function distributeAndInsertItems(
   for (const part of chunk(itemRows, 1000)) {
     await tx.insert(stocktakeItems).values(part);
   }
-  return perAssignmentCount;
+  return input.assignments.map(() => scope.variantIds.length);
 }

@@ -5,7 +5,7 @@
 // lockedUntil يبقى مدعوماً للقفل اليدوي الإداري من إدارة الجرد.
 import { TRPCError } from "@trpc/server";
 import { parse as parseCookie } from "cookie";
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import {
   stocktakeAssignments,
   stocktakeSessions,
@@ -80,7 +80,8 @@ export async function authenticatePin(
       .where(
         and(
           eq(stocktakeAssignments.sessionId, session.id),
-          eq(stocktakeAssignments.method, "PIN")
+          eq(stocktakeAssignments.method, "PIN"),
+          eq(stocktakeAssignments.status, "ACTIVE"),
         )
       );
 
@@ -138,7 +139,8 @@ export async function authenticatePin(
       and(
         eq(stocktakeAssignments.sessionId, session.id),
         eq(stocktakeAssignments.method, "USER"),
-        eq(stocktakeAssignments.userId, user.id)
+        eq(stocktakeAssignments.userId, user.id),
+        eq(stocktakeAssignments.status, "ACTIVE"),
       )
     )
     .limit(1);
@@ -175,7 +177,8 @@ export async function resolvePortalIdentity(
       .where(
         and(
           eq(stocktakeAssignments.id, payload.aid),
-          eq(stocktakeAssignments.sessionId, session.id)
+          eq(stocktakeAssignments.sessionId, session.id),
+          ne(stocktakeAssignments.status, "REMOVED"),
         )
       )
       .limit(1);
@@ -200,7 +203,8 @@ export async function resolvePortalIdentity(
         and(
           eq(stocktakeAssignments.sessionId, session.id),
           eq(stocktakeAssignments.method, "USER"),
-          eq(stocktakeAssignments.userId, ctx.user.id)
+          eq(stocktakeAssignments.userId, ctx.user.id),
+          ne(stocktakeAssignments.status, "REMOVED"),
         )
       )
       .limit(1);

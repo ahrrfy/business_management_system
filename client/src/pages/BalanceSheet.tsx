@@ -4,23 +4,35 @@ import { useMemo, useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
+/** اليوم YYYY-MM-DD محلياً — لا toISOString (ينزاح قرب منتصف الليل ببغداد UTC+3). */
+function todayYmd(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+}
+
 type Pos = RouterOutputs["reports"]["financialPosition"];
 
 const NOTE =
-  "ميزانية مبسّطة/مشتقّة (بانتظار دليل حسابات كامل): المقبوضات المعتمدة مصنفة حسب وسيلة الدفع ولا تُعامل البطاقات والتحويلات والشيكات والمحافظ كنقد بالصندوق، الأصول بالتكلفة (بلا إهلاك متراكم)، وحقوق الملكية = الأصول − الخصوم. الذمم على مستوى الشركة؛ وسائل الدفع والمخزون حسب الفرع.";
+  "ميزانية مبسّطة/مشتقّة (بانتظار دليل حسابات كامل): المقبوضات المعتمدة مصنفة حسب وسيلة الدفع ولا تُعامل البطاقات والتحويلات والصكوك والمحافظ كنقد بالصندوق، الأصول بالتكلفة (بلا إهلاك متراكم)، وحقوق الملكية = الأصول − الخصوم. الذمم على مستوى الشركة؛ وسائل الدفع والمخزون حسب الفرع.";
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function BalanceSheet() {
   const [branchId, setBranchId] = useState<number | "">("");
+  // «كما في تاريخ» — فارغ يعني اللقطة الحيّة الآن (بلا تغيير سلوكيّ افتراضاً).
+  const [asOf, setAsOf] = useState("");
   const branches = trpc.branches.list.useQuery();
-  const q = trpc.reports.financialPosition.useQuery({ branchId: branchId ? Number(branchId) : undefined });
+  const q = trpc.reports.financialPosition.useQuery({
+    branchId: branchId ? Number(branchId) : undefined,
+    asOf: asOf || undefined,
+  });
   const p = q.data;
 
   const sections = useMemo(() => {
@@ -28,9 +40,15 @@ export default function BalanceSheet() {
     const assets = [
       { label: "النقد المقبوض فعلياً", v: p.cash },
       { label: "مقبوضات البطاقات", v: p.card },
-      { label: "الشيكات المقبوضة", v: p.check },
+      { label: "الصكوك المقبوضة", v: p.check },
       { label: "التحويلات المصرفية", v: p.transfer },
       { label: "المحافظ الإلكترونية", v: p.wallet },
+      // مراجعة PR #495: بنودٌ يحتسبها إجمالي الأصول ولم تكن معروضةً في الجدول (فلا يجمع لمجموعه) —
+      // رصيد زين وعهدة المناديب ورصيدنا لدى الصرّافين. «لا دينار بلا مسار وتبويب».
+      { label: "رصيد زين (اتصالات)", v: p.telecom },
+      { label: "رصيدنا لدى مزوّدي البطاقات", v: p.digitalWalletAsset },
+      { label: "عهدة مناديب التوصيل (غير المدعومة بذمّة)", v: p.deliveryFloat },
+      { label: "رصيدنا لدى الصرّافين", v: p.exchangeDebit },
       { label: "الذمم المدينة (عملاء)", v: p.arDebit },
       { label: "سُلف للموردين", v: p.apDebit },
       { label: "المخزون (بالتكلفة)", v: p.inventory },
@@ -40,10 +58,28 @@ export default function BalanceSheet() {
       { label: "الذمم الدائنة (موردون)", v: p.apCredit },
       { label: "سُلف العملاء", v: p.arCredit },
       // FIN-05: عرابين طلبات خدمة العملاء غير المُسلَّمة — التزامٌ يقابل النقد الداخل (الخدمة لم تُنجَز بعد).
+      // مراجعة PR #495: يشمل عرابين الطلبات المحفوظة المفتوحة (تُفصَّل في السطر التالي).
       { label: "سُلف عملاء (عرابين طلبات خدمة)", v: p.customerAdvances },
+      { label: "ما نَدين به للصرّافين", v: p.exchangeCredit },
+      // ١٠/٨ — أجرة توصيل قُبضت في الدرج أمانةً للمندوب ولم تُصرف له بعد (نقدها ضمن «النقد»).
+      { label: "أمانات أجور توصيل معلّقة", v: p.deliveryFeeHeldLiability },
     ].filter((r) => D(r.v).gt(0));
     return { assets, liabilities };
   }, [p]);
+
+  // مراجعة PR #495 — إفصاحٌ نصّي عن البندين اللذين يسهل أن يُقرآ خطأً: الجزء المستبعَد من عهدة
+  // المناديب (لأنّه ذمّةُ عميلٍ محسوبةٌ سلفاً — منعُ ازدواج)، وحصّة عرابين الطلبات المحفوظة.
+  const disclosure = p
+    ? [
+        D(p.deliveryFloatCustomerBacked).gt(0)
+          ? `من عهدة المناديب ${fmtAr(p.deliveryFloatCustomerBacked)} مدعومةٌ بذمّة عميلٍ مسجَّل ⇒ معروضةٌ ضمن «الذمم المدينة» ولا تُحتسب أصلاً مرّتين.`
+          : "",
+        D(p.draftAdvances).gt(0)
+          ? `ومن «سُلف العملاء» ${fmtAr(p.draftAdvances)} عرابينُ طلباتٍ محفوظةٍ ما زالت مفتوحة.`
+          : "",
+      ].filter(Boolean).join(" ")
+    : "";
+  const fullNote = [NOTE, disclosure, p?.historicalNote ?? ""].filter(Boolean).join(" ");
 
   const kpis: KpiItem[] = p
     ? [
@@ -83,10 +119,10 @@ export default function BalanceSheet() {
     printReportDoc({
       title: "الميزانية العمومية",
       headerExtra: [
-        { label: "كما في", value: fmtDate(new Date()) },
+        { label: "كما في", value: p.asOf ? fmtDate(new Date(`${p.asOf}T00:00:00`)) : fmtDate(new Date()) },
         { label: "الفرع", value: branchLabel },
       ],
-      note: NOTE,
+      note: fullNote,
       columns: [
         { key: "label", label: "البند" },
         { key: "amount", label: "القيمة", align: "left" },
@@ -105,19 +141,25 @@ export default function BalanceSheet() {
     <ReportShell
       title="الميزانية العمومية"
       description="لقطة مبسّطة: أصول / خصوم / حقوق ملكية."
-      note={NOTE}
+      note={fullNote}
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
       exportDisabled={!p}
       printDisabled={!p}
       filters={
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-muted-foreground">الفرع</label>
-          <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
-            <option value="">الكل (الشركة)</option>
-            {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-          </select>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">الفرع</label>
+            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+              <option value="">الكل (الشركة)</option>
+              {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">كما في تاريخ</label>
+            <Input type="date" dir="ltr" value={asOf} max={todayYmd()} onChange={(e) => setAsOf(e.target.value)} className="h-9 w-40" />
+          </div>
         </div>
       }
     >

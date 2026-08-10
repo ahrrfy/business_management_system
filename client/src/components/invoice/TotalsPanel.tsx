@@ -3,7 +3,7 @@
  * Ported from `_design-bundle/project/invoice-footer.jsx#TotalsPanel`.
  */
 import type { Dispatch } from "react";
-import { Calculator, CreditCard, Lock, Package, Percent, Truck } from "lucide-react";
+import { Calculator, CreditCard, Gift, Lock, Package, Percent, Truck } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,11 @@ export interface TotalsPanelProps {
    *  proportional refund so the panel's total, paid-placeholder and «الكل» button reflect what the server
    *  actually refunds — not the editor-derived value (which ignores the invoice-level discount/tax). */
   overrideGrandTotal?: string;
+  /** تسمية سطر الشحن. فاتورة البيع تسمّيه «أجرة التوصيل» (إيراد يُقبض من الزبون)، بخلاف الشراء
+   *  حيث «مصاريف شحن» (تكلفة نتحمّلها) — نفس الحقل بدلالتين متعاكستين. */
+  shippingLabel?: string;
+  /** true = إظهار مفتاح «مجاني» بجانب أجرة التوصيل (فاتورة البيع). Default false للشاشات الأخرى. */
+  allowFreeShipping?: boolean;
 }
 
 export function TotalsPanel({
@@ -42,8 +47,13 @@ export function TotalsPanel({
   showDiscount = true,
   showPayment = true,
   overrideGrandTotal,
+  shippingLabel = "مصاريف شحن",
+  allowFreeShipping = false,
 }: TotalsPanelProps) {
   const t = calcTotals(items, state);
+  // (0152) «مجاني» صار حالةً صريحة لا استنتاجاً من الصفر — فالصفر كان يخلط «أُهديت الأجرة»
+  // بـ«لا توصيل أصلاً». والمبلغ المُدخَل يبقى ظاهراً ليُطبَع «مجاناً — قيمته X».
+  const isFreeShipping = state.shippingFree === true;
   const currSym = state.currency === "USD" ? "$" : "د.ع";
   const effectiveGrandTotal = overrideGrandTotal ?? t.grandTotal;
   const grandTotalNum = Number(effectiveGrandTotal);
@@ -152,15 +162,46 @@ export function TotalsPanel({
         {showShipping && (
           <div className={rowCls}>
             <span className={cn(labelCls, "inline-flex items-center gap-1.5")}>
-              <Truck aria-hidden className="size-4" /> مصاريف شحن
+              <Truck aria-hidden className="size-4" /> {shippingLabel}
             </span>
-            <MoneyInput
-              value={state.shipping || ""}
-              onChange={(value) => dispatch({ type: "SET_FIELD", field: "shipping", value })}
-              placeholder="0"
-              className="h-7 w-24 text-center text-xs font-bold"
-            />
+            <div className="flex items-center gap-1.5">
+              {/* «مجاني»: يُصفّر الأجرة فلا يُسجَّل إيراد توصيل أصلاً (لا خصمَ صوريّ على إيرادٍ وهميّ).
+                  مفتاحٌ لا زرّ: يُظهر الحالة الحاليّة ويسمح بالرجوع. */}
+              {allowFreeShipping && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={isFreeShipping ? "default" : "outline"}
+                  aria-pressed={isFreeShipping}
+                  className="h-7 px-2 text-[11px] font-bold"
+                  onClick={() => dispatch({ type: "SET_FIELD", field: "shippingFree", value: !isFreeShipping })}
+                >
+                  <Gift aria-hidden className="size-3.5" />
+                  مجاني
+                </Button>
+              )}
+              <MoneyInput
+                value={state.shipping || ""}
+                onChange={(value) => dispatch({ type: "SET_FIELD", field: "shipping", value })}
+                placeholder="0"
+                className="h-7 w-24 text-center text-xs font-bold"
+              />
+            </div>
           </div>
+        )}
+        {/* شفافيةٌ للموظّف: يرى بالضبط ما سيُطبَع للزبون في كلّ حالة. */}
+        {showShipping && allowFreeShipping && isFreeShipping && (
+          <p
+            className={cn(
+              "pb-1.5 text-[11px] font-semibold",
+              Number(state.shipping || "0") > 0 ? "text-muted-foreground" : "text-destructive",
+            )}
+            role={Number(state.shipping || "0") > 0 ? undefined : "alert"}
+          >
+            {Number(state.shipping || "0") > 0
+              ? `سيُطبَع على الفاتورة: «التوصيل مجاناً — قيمته ${fmtNum(state.shipping)} ${currSym}» ولن يُضاف للإجمالي.`
+              : "أدخِل قيمة الأجرة — إلزامية عند الإهداء كي تُطبَع للزبون وتُحصى في التقارير."}
+          </p>
         )}
 
         {/* Other expenses */}

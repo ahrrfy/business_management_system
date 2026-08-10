@@ -162,7 +162,7 @@ export async function getStocktakeCountSheets(sessionId: number, opts: { restric
     .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(productUnits, and(eq(productUnits.variantId, stocktakeItems.variantId), eq(productUnits.isBaseUnit, true)))
-    .where(eq(stocktakeItems.sessionId, sessionId))
+    .where(and(eq(stocktakeItems.sessionId, sessionId), eq(products.isService, false)))
     .orderBy(asc(products.name), asc(productVariants.id));
 
   const byAssignment = new Map<number, { productName: string; variantName: string | null; sku: string; barcode: string | null; baseUnit: string | null }[]>();

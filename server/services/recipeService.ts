@@ -17,6 +17,7 @@ import {
   products,
   productionRecipeLines,
   productionRecipes,
+  type ProductUnit,
 } from "../../drizzle/schema";
 import { convertToBaseQuantity } from "./inventoryService";
 import { money, round2 } from "./money";
@@ -62,6 +63,25 @@ function validateRecipeShape(input: CreateRecipeInput) {
     }
   }
   return name;
+}
+
+/** Validates unit ownership and preserves the runner's base-output-unit contract. */
+async function validateRecipeUnits(tx: any, input: CreateRecipeInput): Promise<void> {
+  const unitIds = [input.outputProductUnitId, ...input.lines.map((l) => l.inputProductUnitId).filter((id): id is number => id != null)];
+  type CheckedUnit = Pick<ProductUnit, "id" | "variantId" | "isBaseUnit" | "isActive">;
+  const units = await tx.select({ id: productUnits.id, variantId: productUnits.variantId, isBaseUnit: productUnits.isBaseUnit, isActive: productUnits.isActive })
+    .from(productUnits).where(inArray(productUnits.id, Array.from(new Set(unitIds)))) as CheckedUnit[];
+  const byId = new Map<number, CheckedUnit>(units.map((u) => [Number(u.id), u]));
+  const output = byId.get(input.outputProductUnitId);
+  if (!output || Number(output.variantId) !== input.outputVariantId) throw new TRPCError({ code: "BAD_REQUEST", message: "وحدة الناتج لا تخص الصنف الناتج" });
+  if (!output.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "وحدة الناتج معطّلة" });
+  if (!output.isBaseUnit) throw new TRPCError({ code: "BAD_REQUEST", message: "وصفة الإنتاج تُعرّف لكل وحدة ناتج أساسية؛ اختر الوحدة الأساسية للناتج" });
+  for (const line of input.lines) {
+    if (line.inputProductUnitId == null) continue;
+    const unit = byId.get(line.inputProductUnitId);
+    if (!unit || Number(unit.variantId) !== line.inputVariantId) throw new TRPCError({ code: "BAD_REQUEST", message: "وحدة المكوّن لا تخص صنف المكوّن" });
+    if (!unit.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "وحدة أحد المكوّنات معطّلة" });
+  }
 }
 
 /** قائمة الوصفات (اسم المنتج الناتج + عدّاد المكوّنات). */
@@ -173,6 +193,7 @@ export async function createRecipe(input: CreateRecipeInput, actor: Actor) {
     const existing = await tx.select({ id: productVariants.id }).from(productVariants).where(inArray(productVariants.id, varIds));
     const existSet = new Set(existing.map((v: any) => Number(v.id)));
     for (const id of varIds) if (!existSet.has(id)) throw new TRPCError({ code: "NOT_FOUND", message: `صنف #${id} غير موجود` });
+    await validateRecipeUnits(tx, input);
 
     const insRes = await tx.insert(productionRecipes).values({
       name,
@@ -208,6 +229,7 @@ export async function updateRecipe(id: number, input: CreateRecipeInput) {
     const existing = await tx.select({ id: productVariants.id }).from(productVariants).where(inArray(productVariants.id, varIds));
     const existSet = new Set(existing.map((v: any) => Number(v.id)));
     for (const vid of varIds) if (!existSet.has(vid)) throw new TRPCError({ code: "NOT_FOUND", message: `صنف #${vid} غير موجود` });
+    await validateRecipeUnits(tx, input);
 
     await tx
       .update(productionRecipes)

@@ -8,7 +8,7 @@
 import { z } from "zod";
 import { courierProcedure, router } from "../trpc";
 import { logAudit } from "../services/auditService";
-import { confirmCourierDelivery, failCourierDelivery, listMyDeliveries } from "../services/deliveryService";
+import { confirmConsignmentDelivery, confirmCourierDelivery, failCourierDelivery, listMyDeliveries } from "../services/deliveryService";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 export const courierRouter = router({
@@ -33,6 +33,23 @@ export const courierRouter = router({
         entityType: "onlineOrder",
         entityId: input.onlineOrderId,
         newValue: { collected: res.collected, custodyAfter: res.custodyAfter },
+      });
+      return res;
+    }),
+
+  /**
+   * تأكيد تسليم إرسالية استقبال — ختمٌ تشغيليّ بحت (courierDeliveredAt) لا يمسّ المال.
+   * التسوية تبقى بيد الموظّف عبر توريد المندوب (delivery.recordRemittance) دون تغيير.
+   */
+  confirmConsignmentDelivery: courierProcedure
+    .input(z.object({ consignmentId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await confirmConsignmentDelivery({ consignmentId: input.consignmentId }, { userId: ctx.user.id });
+      await logAudit(ctx, {
+        action: "courier.confirmConsignmentDelivery",
+        entityType: "deliveryConsignment",
+        entityId: input.consignmentId,
+        newValue: { deliveredAt: res.deliveredAt, alreadyDelivered: res.alreadyDelivered ?? false },
       });
       return res;
     }),

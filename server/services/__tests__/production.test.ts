@@ -222,9 +222,40 @@ describe("الإنتاج: idempotency وحارس التحويل الذاتي", (
     expect(r.totalCost).toBe("500.00"); // 500 @ 1
     expect(await stock(1)).toBe(100000 - 500);
   });
+
+  it("يرفض وحدة سطر لا تخص صنفه ولو أُرسلت كمية أساسية", async () => {
+    await expect(createProduction({ branchId: 1, inputs: [{ variantId: 1, productUnitId: 3, baseQuantity: 100 }], outputs: [{ variantId: 2, baseQuantity: 10 }] }, actor)).rejects.toThrow();
+    expect(await db().select().from(s.productionOrders)).toHaveLength(0);
+    expect(await stock(1)).toBe(100000);
+  });
+
+  it("يرفض تحويل خدمة إلى إنتاج مخزني غير قابل للعكس", async () => {
+    await db().insert(s.products).values({ id: 6, name: "خدمة طباعة", isService: true });
+    await db().insert(s.productVariants).values({ id: 6, productId: 6, sku: "PRINT-SVC", costPrice: "0.00" });
+    await expect(createProduction({ branchId: 1, inputs: [{ variantId: 1, baseQuantity: 100 }], outputs: [{ variantId: 6, baseQuantity: 10 }] }, actor)).rejects.toThrow();
+    expect(await db().select().from(s.productionOrders)).toHaveLength(0);
+    expect(await stock(1)).toBe(100000);
+  });
 });
 
 describe("الإنتاج: الوصفات", () => {
+  it("يرفض وحدة ناتج غير أساسية أو وحدة مكوّن لصنف آخر", async () => {
+    await db().insert(s.productUnits).values({ id: 4, variantId: 2, unitName: "حزمة", conversionFactor: "10" });
+    await expect(createRecipe({ name: "ناتج بوحدة غير أساسية", outputVariantId: 2, outputProductUnitId: 4, lines: [{ inputVariantId: 1, qtyPerOutputBase: "30" }] }, actor)).rejects.toThrow();
+    await expect(createRecipe({ name: "مكوّن بوحدة أجنبية", outputVariantId: 2, outputProductUnitId: 3, lines: [{ inputVariantId: 1, inputProductUnitId: 3, qtyPerOutputBase: "30" }] }, actor)).rejects.toThrow();
+    expect(await db().select().from(s.productionRecipes)).toHaveLength(0);
+  });
+
+  it("يوقف الوصفة القديمة ذات وحدة الناتج المعيبة قبل الاستهلاك", async () => {
+    await db().insert(s.productUnits).values({ id: 4, variantId: 2, unitName: "حزمة", conversionFactor: "10" });
+    await db().insert(s.productionRecipes).values({ id: 99, name: "وصفة قديمة معطوبة", outputVariantId: 2, outputProductUnitId: 4, laborPerOutputBase: "0", wasteStdPct: "0", isActive: true });
+    await db().insert(s.productionRecipeLines).values({ recipeId: 99, inputVariantId: 1, qtyPerOutputBase: "30" });
+    await expect(runPreview({ recipeId: 99, batchQty: 10, branchId: 1 })).rejects.toThrow();
+    await expect(createProduction({ branchId: 1, run: { recipeId: 99, batchQty: 10 } }, actor)).rejects.toThrow();
+    expect(await db().select().from(s.productionOrders)).toHaveLength(0);
+    expect(await stock(1)).toBe(100000);
+  });
+
   it("recipePreview يحجّم المدخلات ويحسب الكلفة، و createProduction يخزّن linkedRecipeId", async () => {
     const rec = await createRecipe({
       name: "ملزمة منهج X",

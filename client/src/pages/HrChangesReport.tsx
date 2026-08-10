@@ -1,10 +1,14 @@
 // تقرير التغييرات الوظيفية — قائمتا الترقيات وإنهاء الخدمات في قسمين.
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). يكشف رواتب/تسويات ⇒ صلاحية hr/READ خادمياً.
+import { useMemo, useState } from "react";
+import { Link } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell } from "@/components/reports/ReportShell";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { FilterField } from "@/components/list";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -22,10 +26,25 @@ const STATUS_CLS: Record<string, string> = {
 };
 
 export default function HrChangesReport() {
-  const q = trpc.promotions.report.useQuery();
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [query, setQuery] = useState("");
+  const q = trpc.promotions.report.useQuery({ from: from || undefined, to: to || undefined });
 
-  const promotions = q.data?.promotions ?? [];
-  const terminations = q.data?.terminations ?? [];
+  const allPromotions = q.data?.promotions ?? [];
+  const allTerminations = q.data?.terminations ?? [];
+
+  const matches = (v: string) => v.toLocaleLowerCase("ar").includes(query.trim().toLocaleLowerCase("ar"));
+  const promotions = useMemo(
+    () => (query.trim() ? allPromotions.filter((p) => [p.employeeName, p.fromTitle, p.toTitle].some((v) => matches(v ?? ""))) : allPromotions),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allPromotions, query],
+  );
+  const terminations = useMemo(
+    () => (query.trim() ? allTerminations.filter((t) => [t.employeeName, t.type].some((v) => matches(v ?? ""))) : allTerminations),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allTerminations, query],
+  );
   const hasAny = promotions.length > 0 || terminations.length > 0;
 
   function onExport() {
@@ -111,6 +130,30 @@ export default function HrChangesReport() {
       exportDisabled={!hasAny}
       printDisabled={!hasAny}
     >
+      {/* الفلاتر */}
+      <Card>
+        <CardContent className="p-3 flex flex-wrap items-end gap-2">
+          <FilterField label="بحث" className="min-w-48">
+            <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="اسم الموظف أو المسمّى/النوع…" className="h-8" aria-label="بحث" />
+          </FilterField>
+          <FilterField label="من تاريخ">
+            <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-36" aria-label="من تاريخ" />
+          </FilterField>
+          <FilterField label="إلى تاريخ">
+            <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-36" aria-label="إلى تاريخ" />
+          </FilterField>
+          {(query || from || to) && (
+            <button
+              type="button"
+              className="text-xs text-muted-foreground hover:underline"
+              onClick={() => { setQuery(""); setFrom(""); setTo(""); }}
+            >
+              مسح الفلاتر
+            </button>
+          )}
+        </CardContent>
+      </Card>
+
       {/* الترقيات */}
       <Card>
         <CardContent className="p-0">
@@ -136,7 +179,9 @@ export default function HrChangesReport() {
                 <tbody>
                   {promotions.map((p, i) => (
                     <tr key={i} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">{p.employeeName}</td>
+                      <td className="p-2.5 text-right">
+                        <Link href={`/hr/employees/${p.employeeId}`} className="font-medium hover:underline">{p.employeeName}</Link>
+                      </td>
                       <td className="p-2.5 text-right text-muted-foreground">{p.fromTitle ?? "—"}</td>
                       <td className="p-2.5 text-right font-medium">{p.toTitle}</td>
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{p.effectiveDate}</td>
@@ -179,7 +224,9 @@ export default function HrChangesReport() {
                 <tbody>
                   {terminations.map((t, i) => (
                     <tr key={i} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">{t.employeeName}</td>
+                      <td className="p-2.5 text-right">
+                        <Link href={`/hr/employees/${t.employeeId}`} className="font-medium hover:underline">{t.employeeName}</Link>
+                      </td>
                       <td className="p-2.5 text-right">{t.type}</td>
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{t.lastDay}</td>
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(t.settlement)}</td>

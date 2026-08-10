@@ -20,7 +20,7 @@ const DIM_LABEL: Record<Dimension, string> = {
   paymentMethod: "طريقة دفع",
   cashier: "كاشير",
   // بند 9 (٧/٧): بُعد الصنف — ربحية على مستوى بنود الفواتير (المحصَّل/المتبقّي خاصيّتا فاتورة فتُخفيان).
-  product: "صنف",
+  product: "منتج",
 };
 const DIM_OPTIONS = Object.keys(DIM_LABEL) as Dimension[];
 

@@ -19,7 +19,7 @@ const selectCls =
 const dateCls = selectCls;
 
 const NOTE =
-  "الأرقام لطلبات المتجر الإلكتروني (COD) المُسنَدة لكل جهة، حسب تاريخ الطلب في الفترة. «المتعذّر» = طلبٌ سجّل له المندوب «تعذّر التسليم» (أُعيدت بضاعته وأُلغي). معدّل التعذّر = المتعذّر ÷ (المُسلَّم + المتعذّر). «العهدة القائمة» لقطة لحظية للنقد المُحصَّل ولم يُورَّد بعد (لا تخصّ الفترة).";
+  "قناتان لكل جهة: طلبات المتجر الإلكتروني (بتاريخ الطلب) وإرساليات الاستقبال/الفواتير (بتاريخ الإرسال). «المتعذّر» = طلب متجر سجّل له المندوب «تعذّر التسليم». زمن الدوران = متوسط الساعات من الإرسال إلى التوريد للإرساليات المُسوّاة. «العهدة القائمة» لقطة لحظية (لا تخصّ الفترة).";
 
 function ymdLocal(d: Date): string {
   const y = d.getFullYear();
@@ -52,9 +52,9 @@ export default function CourierPerformanceReport() {
   const kpis: KpiItem[] = summary
     ? [
         { label: "جهات نشطة", value: fmtAr(summary.parties), tone: "info", hint: "في الفترة" },
-        { label: "مُسلَّمة", value: fmtAr(summary.delivered), tone: "positive", hint: `قيد التوصيل ${fmtAr(summary.inTransit)}` },
-        { label: "متعذّرة", value: fmtAr(summary.failed), tone: summary.failed > 0 ? "negative" : "default", hint: `معدّل ${summary.failRate}%` },
-        { label: "COD المُحصَّل", value: formatIqd(summary.codCollected), tone: "info" },
+        { label: "متجر: مُسلَّمة", value: fmtAr(summary.delivered), tone: "positive", hint: `قيد التوصيل ${fmtAr(summary.inTransit)} · متعذّر ${fmtAr(summary.failed)} (${summary.failRate}%)` },
+        { label: "استقبال: إرساليات", value: fmtAr(summary.cnAssigned), tone: "info", hint: `سُلِّم ${fmtAr(summary.cnDelivered)} · مفتوح ${fmtAr(summary.cnOpen)}` },
+        { label: "عجز توريدات الفترة", value: formatIqd(summary.remitShortfall), tone: Number(summary.remitShortfall) > 0 ? "negative" : "default" },
         { label: "عهدة قائمة الآن", value: formatIqd(summary.custodyOutstanding), tone: Number(summary.custodyOutstanding) > 0 ? "warning" : "default" },
       ]
     : [];
@@ -143,6 +143,48 @@ export default function CourierPerformanceReport() {
         cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.codCollected)}</span>,
       },
       {
+        id: "cnAssigned",
+        header: "إرساليات استقبال",
+        accessorFn: (r) => Number(r.cnAssigned),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums">{row.original.cnAssigned > 0 ? fmtAr(row.original.cnAssigned) : "—"}</span>
+        ),
+      },
+      {
+        id: "cnDelivered",
+        header: "سُلِّم/مرتجع",
+        accessorFn: (r) => Number(r.cnDelivered),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums">
+            {row.original.cnAssigned > 0
+              ? `${fmtAr(row.original.cnDelivered)} / ${fmtAr(row.original.cnReturned + row.original.cnWrittenOff)}`
+              : "—"}
+          </span>
+        ),
+      },
+      {
+        id: "cnAvgTurnHours",
+        header: "زمن الدوران",
+        accessorFn: (r) => Number(r.cnAvgTurnHours ?? 0),
+        cell: ({ row }) => {
+          const h = row.original.cnAvgTurnHours;
+          if (h == null) return <span className="text-muted-foreground">—</span>;
+          return <span dir="ltr" className="tabular-nums">{h >= 48 ? `${fmtAr(Math.round(h / 24))} يوم` : `${fmtAr(h)} س`}</span>;
+        },
+      },
+      {
+        id: "remitShortfall",
+        header: "عجز التوريد",
+        accessorFn: (r) => Number(r.remitShortfall),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums text-money-negative">
+            {Number(row.original.remitShortfall) > 0
+              ? `${fmtAr(row.original.remitShortfall)} (${fmtAr(row.original.remitShortCount)})`
+              : "—"}
+          </span>
+        ),
+      },
+      {
         id: "custodyOutstanding",
         header: "عهدة قائمة",
         accessorFn: (r) => Number(r.custodyOutstanding),
@@ -175,6 +217,13 @@ export default function CourierPerformanceReport() {
         { key: "failRate", header: "معدّل التعذّر %", map: (r) => r.failRate },
         { key: "deliveredValue", header: "قيمة المُسلَّم", money: true, map: (r) => Number(r.deliveredValue) },
         { key: "codCollected", header: "COD المُحصَّل", money: true, map: (r) => Number(r.codCollected) },
+        { key: "cnAssigned", header: "إرساليات استقبال", map: (r) => r.cnAssigned },
+        { key: "cnDelivered", header: "سُلِّم (استقبال)", map: (r) => r.cnDelivered },
+        { key: "cnReturned", header: "مرتجع/مشطوب", map: (r) => r.cnReturned + r.cnWrittenOff },
+        { key: "cnOpen", header: "مفتوح (استقبال)", map: (r) => r.cnOpen },
+        { key: "cnValue", header: "قيمة إرساليات الفترة", money: true, map: (r) => Number(r.cnValue) },
+        { key: "cnAvgTurnHours", header: "زمن الدوران (ساعة)", map: (r) => r.cnAvgTurnHours ?? "" },
+        { key: "remitShortfall", header: "عجز التوريد", money: true, map: (r) => Number(r.remitShortfall) },
         { key: "custodyOutstanding", header: "عهدة قائمة", money: true, map: (r) => Number(r.custodyOutstanding) },
         { key: "phone", header: "الهاتف", map: (r) => r.phone ?? "" },
       ],

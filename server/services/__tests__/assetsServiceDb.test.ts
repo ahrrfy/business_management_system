@@ -10,6 +10,7 @@ import { addMaintenance, createAsset, disposalLog, disposeAsset, getAsset, hando
 import { computeDepreciation } from "../assets/depreciation";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" as const };
+const ADMIN_SCOPE = { branchId: null } as const;
 // FI-01: createAsset يأخذ Actor الآن (لترحيل قيد الاقتناء) — مُغلِّف يُمرّره عن كل الاختبارات القائمة.
 const mkAsset = (input: Parameters<typeof createAsset>[0]) => createAsset(input, ACTOR);
 
@@ -77,7 +78,7 @@ describe("assetsService — createAsset (DB)", () => {
 describe("assetsService — handoverCustody (DB)", () => {
   it("يُغلق العهدة القديمة ويفتح جديدة ويحدّث صاحب العهدة", async () => {
     const a = await mkAsset({ name: "لابتوب", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1000000", usefulLifeYears: 5, custodianId: 1 });
-    const after = await handoverCustody(a!.id, 2, "نقل");
+    const after = await handoverCustody(a!.id, 2, "نقل", ACTOR);
     expect(after!.custodianId).toBe(2);
     const open = after!.custody.filter((c) => c.toDate === null);
     expect(open).toHaveLength(1);
@@ -87,7 +88,7 @@ describe("assetsService — handoverCustody (DB)", () => {
 
   it("يرفض التسليم لنفس صاحب العهدة الحالي (لا سجلّ عهدة صفري)", async () => {
     const a = await mkAsset({ name: "لابتوب", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1000000", usefulLifeYears: 5, custodianId: 1 });
-    await expect(handoverCustody(a!.id, 1)).rejects.toThrow();
+    await expect(handoverCustody(a!.id, 1, undefined, ACTOR)).rejects.toThrow();
   });
 });
 
@@ -101,14 +102,14 @@ describe("assetsService — dispose + disposalLog (DB, انحدار)", () => {
     });
     await disposeAsset(a!.id, { kind: "disposed", date: "2024-01-01", reason: "بيع", value: "700000" }, ACTOR);
 
-    const row = (await disposalLog()).find((r) => r.id === a!.id);
+    const row = (await disposalLog(ADMIN_SCOPE)).find((r) => r.id === a!.id);
     expect(row).toBeTruthy();
     expect(row!.bookValue).toBeGreaterThan(700000); // ليست التخريدية 100,000
     expect(row!.proceeds).toBe(700000);
     // FIN-14: gain صار نصاً (Decimal.toString) منعاً لخطأ float ⇒ نلفّه بـNumber للمقارنة العددية.
     expect(Number(row!.gain!)).toBeLessThan(0); // خسارة حقيقية، لا الربح الوهمي +600,000 قبل الإصلاح
 
-    const fresh = await getAsset(a!.id);
+    const fresh = await getAsset(a!.id, ADMIN_SCOPE);
     expect(fresh!.status).toBe("disposed");
     expect(fresh!.custodianId).toBeNull();
     expect(fresh!.custody.filter((c) => c.toDate === null)).toHaveLength(0); // العهدة أُغلقت
@@ -147,17 +148,17 @@ describe("assetsService — updateAsset (DB)", () => {
     });
     const up = await updateAsset(a!.id, {
       name: "لابتوب مُحدَّث", category: "display", brand: "Dell", serial: "SN-9",
-      branchId: 2, location: "مكتب جديد", purchaseDate: "2023-02-01",
+      branchId: 1, location: "مكتب جديد", purchaseDate: "2023-02-01",
       purchaseValue: "1200000", salvageValue: "150000", usefulLifeYears: 6,
       depreciationMethod: "db", condition: "جيد", warrantyEnd: "2026-02-01",
-    });
+    }, ACTOR);
     expect(up!.name).toBe("لابتوب مُحدَّث");
     expect(up!.category).toBe("display");
     expect(Number(up!.purchaseValue)).toBe(1200000);
     expect(Number(up!.salvageValue)).toBe(150000);
     expect(up!.usefulLifeYears).toBe(6);
     expect(up!.depreciationMethod).toBe("db");
-    expect(up!.branchId).toBe(2);
+    expect(up!.branchId).toBe(1);
     expect(up!.custodianId).toBe(1); // العهدة لها مسارها (handover) ولا تتغيّر بالتعديل
   });
 
@@ -183,14 +184,14 @@ describe("assetsService — updateAsset (DB)", () => {
     sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(Number(sup.currentBalance)).toBe(1200000);
     // القيمة المُرسمَلة الجديدة تُغذّي الإهلاك.
-    expect(Number((await getAsset(a!.id))!.purchaseValue)).toBe(1200000);
+    expect(Number((await getAsset(a!.id, ADMIN_SCOPE))!.purchaseValue)).toBe(1200000);
   });
 
   it("يرفض تعديل أصل مُستبعَد", async () => {
     const a = await mkAsset({ name: "قديم", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", salvageValue: "50000", usefulLifeYears: 4, depreciationMethod: "sl" });
     await disposeAsset(a!.id, { kind: "disposed", date: "2024-01-01", reason: "خردة", value: "0" }, ACTOR);
     await expect(
-      updateAsset(a!.id, { name: "محاولة", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", usefulLifeYears: 4 }),
+      updateAsset(a!.id, { name: "محاولة", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", usefulLifeYears: 4 }, ACTOR),
     ).rejects.toThrow();
   });
 });

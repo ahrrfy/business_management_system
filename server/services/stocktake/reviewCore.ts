@@ -1,6 +1,6 @@
 // محرّك المراجعة: إعادة الحساب الكامل (٦ استعلامات بلا N+1) + الحدود + الإجماليات + الحواجز.
 // المعادلات حرفياً من العقد §٢ (docs/stocktake-contract.md).
-import { and, asc, eq, gt, inArray } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   branchStock,
@@ -9,6 +9,7 @@ import {
   productUnits,
   productVariants,
   stocktakeAssignments,
+  stocktakeCountOperations,
   stocktakeCounts,
   stocktakeDecisions,
   stocktakeItems,
@@ -20,6 +21,7 @@ import { signedMoveQty } from "../inventoryService";
 import { money, toDbMoney } from "../money";
 import { requireDb } from "../tx";
 import { chunk, loadSessionHeader, type DbLike } from "./internal";
+import { stocktakeReviewSnapshotHash } from "./reviewSnapshot";
 
 /** تسمية عربية لنوع حركة المخزون (لعرض «حركة بعد العدّ»). */
 const MOVE_LABEL: Record<string, string> = {
@@ -75,10 +77,22 @@ export interface ReviewRow {
     decidedByName: string | null;
     autoApplied: boolean;
   } | null;
+  /** اعتماد إداري مرحلي للصف أثناء استمرار العدّ؛ الترحيل يبقى عند اعتماد الجلسة النهائي. */
+  reviewApproved: {
+    byName: string;
+    byUserId: number | null;
+    at: Date;
+    snapshotQty: number | null;
+    snapshotOperationId: number | null;
+    isCurrent: boolean;
+  } | null;
+  readyForReviewApproval: boolean;
   /** داخلي للاعتماد (لا يظهر في عقد الواجهة لكنه غير ضار). */
   unitCost: string;
   decidedBy: number | null;
   openConflict: boolean;
+  latestCountOperationId: number | null;
+  reviewSnapshotHash: string | null;
 }
 
 /**
@@ -96,6 +110,7 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
 
   // (٢) الأصناف + المتغيّر/المنتج/الوحدة الأساس/التكليف/طالب إعادة العدّ.
   const requester = alias(users, "stkRecountReq");
+  const reviewApprover = alias(users, "stkReviewApprover");
   const itemRows = await db
     .select({
       variantId: stocktakeItems.variantId,
@@ -104,6 +119,12 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
       recountStatus: stocktakeItems.recountStatus,
       recountReason: stocktakeItems.recountReason,
       recountRequestedByName: requester.name,
+      reviewApprovedBy: stocktakeItems.reviewApprovedBy,
+      reviewApprovedAt: stocktakeItems.reviewApprovedAt,
+      reviewApprovedByName: reviewApprover.name,
+      reviewApprovedOperationId: stocktakeItems.reviewApprovedOperationId,
+      reviewApprovedQty: stocktakeItems.reviewApprovedQty,
+      reviewApprovedSnapshotHash: stocktakeItems.reviewApprovedSnapshotHash,
       assignmentName: stocktakeAssignments.name,
       zone: stocktakeAssignments.zone,
       productName: products.name,
@@ -117,7 +138,8 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
     .leftJoin(productUnits, and(eq(productUnits.variantId, stocktakeItems.variantId), eq(productUnits.isBaseUnit, true)))
     .innerJoin(stocktakeAssignments, eq(stocktakeItems.assignmentId, stocktakeAssignments.id))
     .leftJoin(requester, eq(stocktakeItems.recountRequestedBy, requester.id))
-    .where(eq(stocktakeItems.sessionId, sessionId))
+    .leftJoin(reviewApprover, eq(stocktakeItems.reviewApprovedBy, reviewApprover.id))
+    .where(and(eq(stocktakeItems.sessionId, sessionId), eq(products.isService, false)))
     .orderBy(asc(stocktakeItems.id));
   // عدّة وحدات أساس لمتغيّر = صفوف مكرّرة من الـjoin ⇒ أول صف يفوز.
   const items: typeof itemRows = [];
@@ -159,6 +181,21 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
       resolvedPick: c.resolvedPick ?? null,
     });
     countsByVariant.set(v, list);
+  }
+
+  // رقم آخر طلب عدّ مقبول لكل منتج هو «إصدار» العدّ عند اعتماد المراجع.
+  // تبقى null للبيانات التاريخية/اختبارات الخدمة التي أُنشئت قبل سجل العمليات.
+  const latestOperationByVariant = new Map<number, number>();
+  const operationRows = await db
+    .select({
+      variantId: stocktakeCountOperations.variantId,
+      operationId: sql<number>`MAX(${stocktakeCountOperations.id})`,
+    })
+    .from(stocktakeCountOperations)
+    .where(eq(stocktakeCountOperations.sessionId, sessionId))
+    .groupBy(stocktakeCountOperations.variantId);
+  for (const op of operationRows) {
+    latestOperationByVariant.set(Number(op.variantId), Number(op.operationId));
   }
 
   // (٤) أرصدة الآن (bookNow) لكل أصناف الجلسة.
@@ -343,6 +380,37 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
         }
       : null;
 
+    const latestCountOperationId = latestOperationByVariant.get(v) ?? null;
+    const reviewSnapshotHash =
+      rawCount != null && kindUsed != null && diff != null
+        ? stocktakeReviewSnapshotHash({
+            variantId: v,
+            rawCount,
+            kindUsed,
+            diff,
+            countOperationId: latestCountOperationId,
+            decision: decision && !decision.autoApplied
+              ? { action: decision.action, reason: decision.reason, note: decision.note }
+              : null,
+          })
+        : null;
+    const reviewApprovalCurrent =
+      it.reviewApprovedAt != null &&
+      it.reviewApprovedSnapshotHash != null &&
+      (s.status === "APPROVED" ||
+        (reviewSnapshotHash != null &&
+          it.reviewApprovedSnapshotHash === reviewSnapshotHash &&
+          it.reviewApprovedQty === rawCount &&
+          (it.reviewApprovedOperationId == null
+            ? latestCountOperationId == null
+            : Number(it.reviewApprovedOperationId) === latestCountOperationId)));
+
+    const readyForReviewApproval =
+      rawCount != null &&
+      it.recountStatus !== "PENDING" &&
+      !openConflict &&
+      (diff === 0 || decision != null || (withinThreshold && directUnderThreshold));
+
     return {
       variantId: v,
       productName: String(it.productName ?? ""),
@@ -370,9 +438,23 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
       overThreshold,
       requiresDualSign,
       decision,
+      reviewApproved: it.reviewApprovedAt
+        ? {
+            byName: it.reviewApprovedByName ?? "—",
+            byUserId: it.reviewApprovedBy == null ? null : Number(it.reviewApprovedBy),
+            at: it.reviewApprovedAt,
+            snapshotQty: it.reviewApprovedQty,
+            snapshotOperationId:
+              it.reviewApprovedOperationId == null ? null : Number(it.reviewApprovedOperationId),
+            isCurrent: reviewApprovalCurrent,
+          }
+        : null,
+      readyForReviewApproval,
       unitCost,
       decidedBy: d?.decidedBy == null ? null : Number(d.decidedBy),
       openConflict,
+      latestCountOperationId,
+      reviewSnapshotHash,
     };
   });
 
@@ -442,6 +524,10 @@ function buildBarriers(
   viewerId?: number
 ) {
   const notCounted = rows.filter((r) => r.rawCount == null).length;
+  const reviewApproved = rows.filter((r) => r.reviewApproved?.isCurrent).length;
+  const staleReviewApprovals = rows.filter((r) => r.reviewApproved != null && !r.reviewApproved.isCurrent).length;
+  const readyForReviewApproval = rows.filter((r) => !r.reviewApproved?.isCurrent && r.readyForReviewApproval).length;
+  const countedPendingReview = rows.filter((r) => r.rawCount != null && !r.reviewApproved?.isCurrent).length;
   const pendingRecounts = rows.filter((r) => r.recount?.status === "PENDING").length;
   const openConflicts = rows.filter((r) => r.openConflict).length;
   // يحتاج قراراً صريحاً: يتجاوز الحد دائماً؛ وكل فرق ≠0 عندما تكون التسوية المباشرة معطّلة.
@@ -455,12 +541,43 @@ function buildBarriers(
   const requiresDualSign =
     s.sessionType === "OPENING" || rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
   const firstSigned = s.firstSignBy != null;
+  const reviewerFinalSeparationBlocked =
+    viewerId != null &&
+    rows.some(
+      (r) =>
+        r.requiresDualSign &&
+        willAdjust(r, directUnderThreshold) &&
+        r.reviewApproved?.byUserId === Number(viewerId),
+    );
   const canApprove =
-    s.status === "REVIEW" && pendingRecounts === 0 && openConflicts === 0 && undecidedOverThreshold === 0;
+    s.status === "REVIEW" &&
+    notCounted === 0 &&
+    pendingRecounts === 0 &&
+    openConflicts === 0 &&
+    undecidedOverThreshold === 0 &&
+    countedPendingReview === 0;
   const canFinalApprove =
     canApprove &&
-    (!requiresDualSign || (firstSigned && viewerId != null && Number(s.firstSignBy) !== Number(viewerId)));
-  return { notCounted, pendingRecounts, openConflicts, undecidedOverThreshold, requiresDualSign, firstSigned, canApprove, canFinalApprove };
+    (!requiresDualSign ||
+      (firstSigned &&
+        viewerId != null &&
+        Number(s.firstSignBy) !== Number(viewerId) &&
+        !reviewerFinalSeparationBlocked));
+  return {
+    notCounted,
+    reviewApproved,
+    staleReviewApprovals,
+    readyForReviewApproval,
+    countedPendingReview,
+    pendingRecounts,
+    openConflicts,
+    undecidedOverThreshold,
+    requiresDualSign,
+    firstSigned,
+    reviewerFinalSeparationBlocked,
+    canApprove,
+    canFinalApprove,
+  };
 }
 
 function buildReviewSession(s: Awaited<ReturnType<typeof loadSessionHeader>>) {
@@ -496,7 +613,9 @@ export async function computeStocktakeReview(
   const { s, rows, directUnderThreshold } = await loadReviewCore(db, sessionId, autoAdjust);
   return {
     session: buildReviewSession(s),
-    rows: rows.map(({ decidedBy: _db2, openConflict: _oc, ...pub }) => pub),
+    rows: rows.map(
+      ({ decidedBy: _db2, openConflict: _oc, latestCountOperationId: _op, reviewSnapshotHash: _hash, ...pub }) => pub,
+    ),
     totals: buildTotals(rows),
     barriers: buildBarriers(rows, s, directUnderThreshold, opts.viewerId),
     // افتتاحي: لا قيد عجز/زيادة يُرحَّل أصلاً — معاينة صفرية كي لا تعِد الشاشة بقيدٍ لن يقع.
