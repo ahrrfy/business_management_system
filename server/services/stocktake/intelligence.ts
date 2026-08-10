@@ -54,7 +54,14 @@ export async function getCycleSuggestions(opts: { branchId?: number | null } = {
     })
     .from(productVariants)
     .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(and(eq(productVariants.isActive, true), eq(products.isActive, true)));
+    .where(
+      and(
+        eq(productVariants.isActive, true),
+        eq(products.isActive, true),
+        eq(products.isService, false),
+        eq(products.isBundle, false),
+      ),
+    );
 
   // (٢) استهلاك OUT آخر سنة (مجمّع — لا N+1).
   const outConds = [eq(inventoryMovements.movementType, "OUT"), gte(inventoryMovements.createdAt, since)];

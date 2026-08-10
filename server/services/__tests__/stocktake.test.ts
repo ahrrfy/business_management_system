@@ -196,6 +196,48 @@ beforeEach(async () => {
 });
 
 describe("الإنشاء واللقطة", () => {
+  it("يستبعد الخدمات والكروت والاشتراكات من الجرد ويرفض اختيارها يدوياً", async () => {
+    await db().insert(s.products).values({
+      id: 6,
+      name: "كارت زين 5000",
+      productType: "DIGITAL_CARD",
+      isService: true,
+    });
+    await db().insert(s.productVariants).values({
+      id: 6,
+      productId: 6,
+      sku: "DIGITAL-ZAIN-5000",
+      costPrice: "0.00",
+    });
+
+    const full = await mkSession({ scopeType: "FULL" });
+    expect(full.itemCount).toBe(5);
+    expect(
+      (await db().select({ variantId: s.stocktakeItems.variantId }).from(s.stocktakeItems))
+        .map((row) => Number(row.variantId)),
+    ).not.toContain(6);
+
+    await expectTrpc(
+      mkSession({ variantIds: [6] }),
+      "BAD_REQUEST",
+      /المنتج الخدمي|الخدمات والكروت والاشتراكات/,
+    );
+
+    // دفاع للجلسات القديمة أو لإعادة تصنيف منتج أثناء جلسة مفتوحة.
+    await db().insert(s.stocktakeItems).values({
+      sessionId: full.sessionId,
+      assignmentId: full.assignments[0].assignmentId,
+      variantId: 6,
+      branchId: 1,
+      expectedQty: 0,
+      unitCost: "0.00",
+    });
+    expect((await getStocktakeRemainingItems(full.sessionId, { q: "كارت زين" })).items).toHaveLength(0);
+    expect((await computeStocktakeReview(full.sessionId, { viewerId: actor.userId })).rows.map((r) => r.variantId))
+      .not.toContain(6);
+    expect((await listStocktakeSessions()).find((row) => row.id === full.sessionId)?.itemCount).toBe(5);
+  });
+
   it("اللقطة الذرّية: expectedQty من رصيد الفرع وunitCost من تكلفة المتغيّر — ولا تتأثر بتغيير لاحق", async () => {
     await setStockRow(1, 50);
     // المتغيّر 2 بلا صفّ رصيد ⇒ اللقطة 0. المتغيّر 3 برصيد 20.
@@ -307,19 +349,26 @@ describe("الإنشاء واللقطة", () => {
 describe("النطاق الحي للجرد الشامل", () => {
   it("يلحق المتغيّرات الجديدة بجلسة FULL قيد العد فقط، ولا يلمس جلسة المراجعة", async () => {
     const session = await mkSession({ scopeType: "FULL" });
-    await db().insert(s.products).values({ id: 6, name: "صنف أضيف أثناء الجرد" });
-    await db().insert(s.productVariants).values({ id: 6, productId: 6, sku: "LIVE-6", costPrice: "77.00" });
+    await db().insert(s.products).values([
+      { id: 6, name: "صنف أضيف أثناء الجرد" },
+      { id: 7, name: "اشتراك رقمي أضيف أثناء الجرد", isService: true, productType: "DIGITAL_CARD" },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 6, productId: 6, sku: "LIVE-6", costPrice: "77.00" },
+      { id: 7, productId: 7, sku: "LIVE-SERVICE", costPrice: "0.00" },
+    ]);
 
     const first = await syncActiveFullStocktakeScopes();
     expect(first.itemsAdded).toBe(1);
     const items = await db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId));
     expect(items.map((i) => Number(i.variantId))).toContain(6);
+    expect(items.map((i) => Number(i.variantId))).not.toContain(7);
     expect(items.find((i) => Number(i.variantId) === 6)?.expectedQty).toBe(0);
     expect(items.find((i) => Number(i.variantId) === 6)?.unitCost).toBe("77.00");
 
     await db().update(s.stocktakeSessions).set({ status: "REVIEW" }).where(eq(s.stocktakeSessions.id, session.sessionId));
-    await db().insert(s.products).values({ id: 7, name: "بعد المراجعة" });
-    await db().insert(s.productVariants).values({ id: 7, productId: 7, sku: "LIVE-7", costPrice: "88.00" });
+    await db().insert(s.products).values({ id: 8, name: "بعد المراجعة" });
+    await db().insert(s.productVariants).values({ id: 8, productId: 8, sku: "LIVE-8", costPrice: "88.00" });
     expect((await syncActiveFullStocktakeScopes()).itemsAdded).toBe(0);
   });
 

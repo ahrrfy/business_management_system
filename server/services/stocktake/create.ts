@@ -111,22 +111,21 @@ async function resolveScope(
   tx: Tx,
   input: CreateStocktakeInput
 ): Promise<{ variantIds: number[]; label: string; detail: Record<string, unknown> }> {
-  // gstack B7 (٧/٧/٢٦): البكجات بلا branchStock ⇒ حاجز setStock في finalize يرفضها فيُسقط اعتماد
-  // الجرد كاملاً ذرّياً. نستبعدها من كل النطاقات هنا (نقطة الدخول الوحيدة) — البكج «يُجرَد» عبر
-  // مكوّناته لا كوحدة قائمة بذاتها.
+  // المنتجات الخدمية (ومنها البطاقات الرقمية والاشتراكات) لا تملك مخزوناً مادياً، والبكجات
+  // تُجرَد عبر مكوّناتها لا كوحدة قائمة بذاتها؛ لذلك يُستبعَد الاثنان من كل نطاقات الجرد.
   // بضاعة الأمانة (ش٤): تُستبعَد من الجرد **الافتتاحي** (OPENING) — تُفتتَح بسند إيداع لا بجرد افتتاحيّ
   // (لا تأسيس عهدة بضاعة الغير بلا توقيع مودِع). الجرد العادي (NORMAL) يشملها. §٥-د.
-  const notBundleCond =
+  const stockableProductCond =
     input.sessionType === "OPENING"
-      ? and(eq(products.isBundle, false), eq(products.isConsignment, false))!
-      : eq(products.isBundle, false);
+      ? and(eq(products.isService, false), eq(products.isBundle, false), eq(products.isConsignment, false))!
+      : and(eq(products.isService, false), eq(products.isBundle, false))!;
 
   if (input.scopeType === "FULL") {
     const rows = await tx
       .select({ id: productVariants.id })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(and(eq(productVariants.isActive, true), eq(products.isActive, true), notBundleCond));
+      .where(and(eq(productVariants.isActive, true), eq(products.isActive, true), stockableProductCond));
     const ids = rows.map((r) => Number(r.id));
     return { variantIds: ids, label: `جرد شامل للفرع (${ids.length} صنفاً)`, detail: {} };
   }
@@ -144,7 +143,7 @@ async function resolveScope(
           eq(inventoryMovements.branchId, input.branchId),
           gte(inventoryMovements.createdAt, since),
           eq(productVariants.isActive, true),
-          notBundleCond
+          stockableProductCond
         )
       );
     const ids = rows.map((r) => Number(r.id));
@@ -166,7 +165,7 @@ async function resolveScope(
       .select({ id: productVariants.id })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(and(inArray(products.categoryId, catIds), eq(productVariants.isActive, true), eq(products.isActive, true), notBundleCond));
+      .where(and(inArray(products.categoryId, catIds), eq(productVariants.isActive, true), eq(products.isActive, true), stockableProductCond));
     const ids = rows.map((r) => Number(r.id));
     const names = catRows.map((c) => c.name).join("، ");
     return { variantIds: ids, label: `فئة: ${names} (${ids.length} صنفاً)`, detail: { categoryIds: catIds } };
@@ -176,19 +175,38 @@ async function resolveScope(
   const wanted = Array.from(new Set(input.variantIds ?? []));
   if (!wanted.length) throw new TRPCError({ code: "BAD_REQUEST", message: "اختر صنفاً واحداً على الأقل لنطاق الجرد" });
   const found = await (async () => {
-    const out: Array<{ id: number; isBundle: boolean; productName: string; sku: string }> = [];
+    const out: Array<{ id: number; isBundle: boolean; isService: boolean; productName: string; sku: string }> = [];
     for (const part of chunk(wanted)) {
       const rows = await tx
-        .select({ id: productVariants.id, isBundle: products.isBundle, productName: products.name, sku: productVariants.sku })
+        .select({
+          id: productVariants.id,
+          isBundle: products.isBundle,
+          isService: products.isService,
+          productName: products.name,
+          sku: productVariants.sku,
+        })
         .from(productVariants)
         .innerJoin(products, eq(productVariants.productId, products.id))
         .where(inArray(productVariants.id, part));
-      out.push(...rows.map((r) => ({ id: Number(r.id), isBundle: !!r.isBundle, productName: r.productName, sku: r.sku })));
+      out.push(...rows.map((r) => ({
+        id: Number(r.id),
+        isBundle: !!r.isBundle,
+        isService: !!r.isService,
+        productName: r.productName,
+        sku: r.sku,
+      })));
     }
     return out;
   })();
   if (found.length !== wanted.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "بعض الأصناف المختارة غير موجودة في النظام" });
+  }
+  const serviceHit = found.find((f) => f.isService);
+  if (serviceHit) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `لا يُجرَد المنتج الخدمي: «${serviceHit.productName} — ${serviceHit.sku}». الخدمات والكروت والاشتراكات بلا رصيد مخزني.`,
+    });
   }
   // gstack B7: رفض صريح لو كانت الأصناف المختارة يدوياً تحوي بكجاً — رسالة تسمّي المخالف.
   const bundleHit = found.find((f) => f.isBundle);

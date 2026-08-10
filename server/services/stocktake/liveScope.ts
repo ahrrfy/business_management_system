@@ -87,6 +87,7 @@ export async function syncActiveFullStocktakeScopes(): Promise<LiveScopeSyncResu
           and(
             eq(products.isActive, true),
             eq(productVariants.isActive, true),
+            eq(products.isService, false),
             eq(products.isBundle, false),
             isNull(stocktakeItems.id),
             ...(isOpening ? [eq(products.isConsignment, false), isNull(branchStock.openedAt)] : []),

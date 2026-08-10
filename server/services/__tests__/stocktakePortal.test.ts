@@ -400,6 +400,36 @@ describe("الجرد الأعمى (state)", () => {
     expect(row.kindUsed).toBe("RECOUNT");
     expect(rv.barriers.pendingRecounts).toBe(0);
   });
+
+  it("لا يعرض خدمة متبقية من جلسة قديمة للعامل ويرفض عدّها", async () => {
+    const r = await mkPortalSession();
+    const identity = await loginPin(r.code, r.assignments[0].pin!);
+    await db().insert(s.products).values({
+      id: 6,
+      name: "اشتراك تعليمي",
+      productType: "DIGITAL_CARD",
+      isService: true,
+    });
+    await db().insert(s.productVariants).values({
+      id: 6,
+      productId: 6,
+      sku: "SERVICE-SUBSCRIPTION",
+      costPrice: "0.00",
+    });
+    await db().insert(s.stocktakeItems).values({
+      sessionId: r.sessionId,
+      assignmentId: r.assignments[0].assignmentId,
+      variantId: 6,
+      branchId: 1,
+      expectedQty: 0,
+      unitCost: "0.00",
+    });
+
+    const state = await getPortalState(identity);
+    expect(state.items.map((item) => item.variantId)).not.toContain(6);
+    expect(state.progress.session.total).toBe(2);
+    await expectTrpc(submit(identity, 6, 1), "NOT_FOUND", /خارج نطاق/);
+  });
 });
 
 describe("تسجيل العدّات (submit)", () => {
