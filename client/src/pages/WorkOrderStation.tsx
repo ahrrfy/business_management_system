@@ -349,10 +349,10 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
           })()}
 
           {d.hasDelivery && (
-            <Card className="border-amber-500/30 bg-amber-500/[0.03]">
+            <Card className="border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)]">
               <CardHeader className="pb-2">
                 <CardTitle className="inline-flex items-center gap-2 text-sm">
-                  <Truck aria-hidden className="size-4 text-amber-600" />
+                  <Truck aria-hidden className="size-4 text-[var(--sem-warn)]" />
                   تفاصيل التوصيل
                 </CardTitle>
               </CardHeader>
