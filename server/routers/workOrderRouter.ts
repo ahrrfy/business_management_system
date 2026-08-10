@@ -35,6 +35,8 @@ import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { money } from "../services/money";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
+import { withTx } from "../services/tx";
+import { workOrderFeeHeldNet } from "../services/workOrder/deliveryFeeRefund";
 import { checkoutReception } from "../services/receptionCheckoutService";
 import { logger } from "../logger";
 import { upsertConversation } from "../services/conversationService";
@@ -907,6 +909,23 @@ export const workOrderRouter = router({
    * التسليم/الإرسال الفعلي (الخدمة ترفض بعد DELIVERED/CANCELLED). لا تُعدَّل salePrice هنا أبداً —
    * فرق التسعير عند إعادة التصنيف تنبيهٌ واجهيٌّ للموظف فقط (قرار المالك)، لا تعديل تلقائي.
    */
+  /** أمانة أجرة التوصيل (COUNTER) المحتجزة غير المصروفة لأمر شغل — يقرؤها حوار إعادة التصنيف
+   *  ليُظهر مبلغ الردّ ويطلب تأكيد صرفه للزبون قبل التحويل لاستلامٍ مباشر (لا حركة نقدٍ صامتة). */
+  deliveryFeeHeld: workordersReadProcedure
+    .input(z.object({ workOrderId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      return withTx(async (tx) => {
+        const wo = (await tx.select({ branchId: workOrders.branchId }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1))[0];
+        if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
+        const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+        if (!elevated && Number(wo.branchId) !== ctx.user.branchId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "طلب الخدمة لا يخصّ فرعك" });
+        }
+        const net = await workOrderFeeHeldNet(tx, input.workOrderId);
+        return { net: net.toFixed(2), branchId: Number(wo.branchId) };
+      });
+    }),
+
   setDeliveryMethod: workordersCashierProcedure
     .input(
       z.object({
@@ -915,19 +934,32 @@ export const workOrderRouter = router({
         deliveryAddress: z.string().nullish(),
         deliveryPhone: z.string().max(20).nullish(),
         deliveryCost: nonNegMoneyString.nullish(),
+        // درج ردّ أمانة الأجرة عند التحوّل لاستلام مباشر (يُلزَم فقط حين يتعدّد الدرج المفتوح).
+        refundShiftId: z.number().int().positive().nullish(),
+        // تأكيد الكاشير صرفَ أمانة الأجرة نقداً للزبون — إلزاميّ خادمياً حين توجد أمانةٌ تُردّ.
+        confirmFeeRefund: z.boolean().optional(),
+        // اعتماد مدير لردّ الأمانة عبر ورديةٍ غير وردية القبض (بريد+كلمة مرور، نفس verifyManagerApproval).
+        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await updateWorkOrderDeliveryMethod(input, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
-        role: ctx.user.role,
-      });
+      const { managerApproval, ...rest } = input;
+      // اعتماد مدير (اختياريّ) — يُجيز ردّ الأمانة عبر ورديةٍ غير وردية القبض؛ نفس قفل التخمين
+      // والتدقيق اللذين يستعملهما sales.create/reception حرفياً. غيابه ⇒ الحوكمة داخل المساعد تقرّر.
+      let authorizedByManager = false;
+      if (managerApproval) {
+        await verifyManagerApproval(managerApproval, ctx, ctx.user.branchId ?? 1);
+        authorizedByManager = true;
+      }
+      const res = await updateWorkOrderDeliveryMethod(
+        { ...rest, authorizedByManager },
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
+      );
       await logAudit(ctx, {
         action: "workOrder.setDeliveryMethod",
         entityType: "workOrder",
         entityId: input.workOrderId,
-        newValue: { hasDelivery: input.hasDelivery },
+        newValue: { hasDelivery: input.hasDelivery, refundedFee: res.refundedFee },
       });
       return res;
     }),

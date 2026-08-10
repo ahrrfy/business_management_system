@@ -12,11 +12,12 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { DispatchDialog, type DispatchParty } from "@/components/delivery/DispatchDialog";
 import { MarkPickedUpDialog } from "@/components/delivery/MarkPickedUpDialog";
+import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 
 type QueueRow = RouterOutputs["workOrders"]["list"][number];
@@ -63,6 +64,9 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
   const [dispatchTarget, setDispatchTarget] = useState<QueueRow | null>(null);
   const [pickupTarget, setPickupTarget] = useState<QueueRow | null>(null);
   const [reclassifyTarget, setReclassifyTarget] = useState<QueueRow | null>(null);
+  // ردّ أمانة أجرة توصيلٍ عبر ورديةٍ غير وردية القبض ⇒ الخادم يرفض (FORBIDDEN «اعتماد مدير»):
+  // نلتقط بيانات المحاولة ونطلب اعتماد مدير ثم نعيدها معه (نمط DraftPaymentsDialog حرفياً).
+  const [reclassifyMgrAsk, setReclassifyMgrAsk] = useState<RouterInputs["workOrders"]["setDeliveryMethod"] | null>(null);
 
   const invalidateAll = () => {
     void utils.workOrders.list.invalidate();
@@ -86,12 +90,22 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     onError: (e) => notify.err(e),
   });
   const setDeliveryMethod = trpc.workOrders.setDeliveryMethod.useMutation({
-    onSuccess: () => {
-      notify.ok("حُدِّثت طريقة التسليم");
+    onSuccess: (r) => {
+      notify.ok("حُدِّثت طريقة التسليم", Number(r.refundedFee) > 0 ? `رُدّت أمانة الأجرة ${fmt(r.refundedFee)} د.ع نقداً للزبون` : undefined);
       setReclassifyTarget(null);
+      setReclassifyMgrAsk(null);
       invalidateAll();
     },
-    onError: (e) => notify.err(e),
+    onError: (e, vars) => {
+      // ردّ أمانةٍ نقديّة عبر ورديةٍ أخرى/بعد الإغلاق يلزمه مدير: نطلب اعتماده ونعيد المحاولة
+      // بدل رسالة خطأ عابرة (نميّزه عن FORBIDDEN عزل الفرع بوسم الرسالة «اعتماد مدير»).
+      const code = (e as { data?: { code?: string } }).data?.code;
+      if (code === "FORBIDDEN" && /اعتماد مدير/.test(e.message)) {
+        setReclassifyMgrAsk(vars);
+        return;
+      }
+      notify.err(e);
+    },
   });
 
   if (active.isError) return <ErrorState onRetry={() => active.refetch()} />;
@@ -189,6 +203,19 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           setDeliveryMethod.mutate({ workOrderId: ord.id, ...payload });
         }}
       />
+
+      {reclassifyMgrAsk && (
+        <ManagerApprovalDialog
+          title="اعتماد مدير — ردّ أمانة أجرة التوصيل"
+          description="ردّ أمانة الأجرة النقديّة عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض يحتاج مديراً (تُفحص بياناته على الخادم وتُسجَّل باسمه)."
+          onCancel={() => setReclassifyMgrAsk(null)}
+          onApprove={(email, password) => {
+            const vars = reclassifyMgrAsk;
+            setReclassifyMgrAsk(null);
+            setDeliveryMethod.mutate({ ...vars, managerApproval: { email, password } });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -298,12 +325,23 @@ function ReclassifyDialog({ order, pending, onClose, onConfirm }: {
   order: QueueRow | null;
   pending: boolean;
   onClose: () => void;
-  onConfirm: (payload: { hasDelivery: boolean; deliveryAddress?: string | null; deliveryPhone?: string | null; deliveryCost?: string | null }) => void;
+  onConfirm: (payload: { hasDelivery: boolean; deliveryAddress?: string | null; deliveryPhone?: string | null; deliveryCost?: string | null; confirmFeeRefund?: boolean; refundShiftId?: number | null }) => void;
 }) {
   const [hasDelivery, setHasDelivery] = useState(false);
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
   const [cost, setCost] = useState("0");
+  const [confirmRefund, setConfirmRefund] = useState(false);
+  const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
+
+  // أمانة أجرة التوصيل (COUNTER) المحتجزة نقداً — تُقرأ لإظهار الردّ وطلب تأكيد صرفه للزبون قبل
+  // التحوّل لاستلامٍ مباشر (لا حركة نقدٍ صامتة — مراجعة Codex على PR #531).
+  const feeHeldQ = trpc.workOrders.deliveryFeeHeld.useQuery(
+    { workOrderId: order?.id ?? 0 },
+    { enabled: !!order, staleTime: 0 },
+  );
+  const heldNet = Number(feeHeldQ.data?.net ?? "0");
+  const branchId = feeHeldQ.data?.branchId ?? null;
 
   useEffect(() => {
     if (order) {
@@ -311,8 +349,19 @@ function ReclassifyDialog({ order, pending, onClose, onConfirm }: {
       setAddress(order.deliveryAddress ?? "");
       setPhone(order.deliveryPhone ?? order.customerPhone ?? "");
       setCost(order.deliveryCost ?? "0");
+      setConfirmRefund(false);
+      setRefundShiftId(null);
     }
   }, [order?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // التحوّل من توصيل ⇒ استلام مباشر مع أمانةٍ محتجزة يستلزم ردّها نقداً للزبون (تأكيدٌ إلزاميّ).
+  const mustRefundFee = !hasDelivery && heldNet > 0;
+  const openShiftsQ = trpc.treasury.getOpenShifts.useQuery(
+    { branchId: branchId ?? 0 },
+    { enabled: mustRefundFee && branchId != null },
+  );
+  const drawerShifts = openShiftsQ.data ?? [];
+  const needShiftPick = mustRefundFee && drawerShifts.length > 1;
 
   if (!order) return null;
   const originalHasDelivery = !!order.hasDelivery;
@@ -322,11 +371,15 @@ function ReclassifyDialog({ order, pending, onClose, onConfirm }: {
 
   const submit = () => {
     if (hasDelivery && !address.trim()) { notify.err("عنوان التوصيل مطلوب عند تفعيل التوصيل"); return; }
+    if (mustRefundFee && !confirmRefund) { notify.err("أكّد تسليم أمانة الأجرة للزبون أولاً"); return; }
+    if (needShiftPick && refundShiftId == null) { notify.err("اختر درج الردّ النقديّ"); return; }
     onConfirm({
       hasDelivery,
       deliveryAddress: hasDelivery ? address.trim() : null,
       deliveryPhone: phone.trim() || null,
       deliveryCost: hasDelivery ? (cost || "0") : "0",
+      confirmFeeRefund: mustRefundFee ? true : undefined,
+      refundShiftId: mustRefundFee ? (refundShiftId ?? undefined) : undefined,
     });
   };
 
@@ -385,9 +438,40 @@ function ReclassifyDialog({ order, pending, onClose, onConfirm }: {
           </p>
         )}
 
+        {/* أمانة أجرة توصيل COUNTER مقبوضة نقداً: التحوّل لاستلامٍ مباشر يردّها للزبون — نُظهر المبلغ
+            ونطلب تأكيد صرفه صراحةً قبل الحفظ (لا حركة نقدٍ صامتة تُحدث عجز درجٍ عند الإقفال). */}
+        {mustRefundFee && (
+          <div className="mb-4 space-y-2.5 rounded-lg border border-amber-300 bg-amber-50 p-3">
+            <p className="flex items-start gap-1.5 text-xs text-amber-800">
+              <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+              <span>على هذا الطلب أمانة أجرة توصيل <b className="tabular-nums" dir="ltr">{fmt(heldNet)}</b> د.ع مقبوضة نقداً — بالحفظ تُردّ نقداً من الدرج. <b>سلّمها للزبون.</b></span>
+            </p>
+            {needShiftPick && (
+              <div className="space-y-1">
+                <Label className="text-[11px] text-amber-900">أكثر من درجٍ مفتوح — من أيّ درجٍ يخرج النقد؟</Label>
+                <select
+                  aria-label="درج ردّ الأمانة النقدي"
+                  className="h-9 w-full rounded-md border bg-card px-2 text-xs font-bold"
+                  value={refundShiftId != null ? String(refundShiftId) : ""}
+                  onChange={(e) => setRefundShiftId(e.target.value ? Number(e.target.value) : null)}
+                >
+                  <option value="">اختر الدرج…</option>
+                  {drawerShifts.map((sh) => (
+                    <option key={sh.shiftId} value={String(sh.shiftId)}>{sh.userName} — وردية #{sh.shiftId}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <label className="flex items-center gap-2 text-xs font-bold text-amber-900">
+              <input type="checkbox" checked={confirmRefund} onChange={(e) => setConfirmRefund(e.target.checked)} className="size-4 accent-amber-600" aria-label="تأكيد تسليم أمانة الأجرة للزبون" />
+              سلّمتُ مبلغ الأمانة للزبون نقداً
+            </label>
+          </div>
+        )}
+
         <div className="flex gap-2.5">
           <Button variant="outline" className="flex-1" onClick={onClose} disabled={pending}>إلغاء</Button>
-          <Button className="flex-1" onClick={submit} disabled={pending}>{pending ? "جارٍ…" : "حفظ"}</Button>
+          <Button className="flex-1" onClick={submit} disabled={pending || (mustRefundFee && !confirmRefund)}>{pending ? "جارٍ…" : "حفظ"}</Button>
         </div>
       </div>
     </div>
