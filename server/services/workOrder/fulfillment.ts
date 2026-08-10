@@ -9,6 +9,7 @@ import { workOrders } from "../../../drizzle/schema";
 import { money, round2 } from "../money";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { refundWorkOrderDeliveryFeeHeld, workOrderFeeHeldNet } from "./deliveryFeeRefund";
 
 export interface UpdateWorkOrderDeliveryMethodInput {
   workOrderId: number;
@@ -16,6 +17,12 @@ export interface UpdateWorkOrderDeliveryMethodInput {
   deliveryAddress?: string | null;
   deliveryPhone?: string | null;
   deliveryCost?: string | null;
+  /** درج ردّ أمانة الأجرة عند التحوّل لاستلام مباشر (يُلزَم فقط حين يتعدّد الدرج المفتوح). */
+  refundShiftId?: number | null;
+  /** تأكيد الكاشير صرفَ الأمانة نقداً للزبون — إلزاميّ حين توجد أمانةٌ تُردّ (لا حركة نقدٍ صامتة). */
+  confirmFeeRefund?: boolean;
+  /** اعتماد مدير (verifyManagerApproval بالراوتر) — يُجيز ردّ الأمانة عبر ورديةٍ غير وردية القبض. */
+  authorizedByManager?: boolean;
 }
 
 export async function updateWorkOrderDeliveryMethod(
@@ -47,6 +54,34 @@ export async function updateWorkOrderDeliveryMethod(
           : "0.00"
         : wo.deliveryCost;
 
+    // مراجعة نهائية (١٠/٨) — التحوّل إلى **استلام مباشر** يردّ أمانة أجرة التوصيل (COUNTER) المقبوضة
+    // نقداً وغير المصروفة، وإلّا علِقت في الدرج للأبد (deliverWorkOrder التالي لا يمسّها ⇒ Σ FEE_HELD
+    // موجب دائم + نقد زبونٍ بلا مسار ردّ). ثلاثة ضوابط: (١) تأكيدٌ صريحٌ من الكاشير أنّه سيصرفها
+    // للزبون (لا حركة نقدٍ صامتة تُحدث عجز درجٍ عند الإقفال)، (٢) حوكمة refundDeposit داخل المساعد
+    // (اعتماد مدير للردّ عبر-الوردية)، (٣) إعادة الوسم COURIER كي لا يرفض مسارُ الإرسال الطلبَ إن
+    // أُعيد توصيلاً (dispatchToDelivery يرفض COUNTER بصافي أمانةٍ صفر). idempotent بصافي الأمانة.
+    let refundedFee = "0.00";
+    if (!input.hasDelivery) {
+      const feeHeldNet = await workOrderFeeHeldNet(tx, Number(wo.id));
+      if (feeHeldNet.gt(0)) {
+        if (input.confirmFeeRefund !== true) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `على هذا الطلب أمانة أجرة توصيل ${feeHeldNet.toFixed(2)} مقبوضة نقداً — بالتحويل لاستلامٍ مباشر تُردّ نقداً للزبون. أكّد تسليمها له أولاً.`,
+          });
+        }
+        const r = await refundWorkOrderDeliveryFeeHeld(tx, {
+          workOrderId: Number(wo.id),
+          branchId: Number(wo.branchId),
+          actor,
+          refundShiftId: input.refundShiftId ?? null,
+          authorizedByManager: input.authorizedByManager,
+          reason: "ردّ أمانة أجرة توصيل (تحوّل لاستلام مباشر)",
+        });
+        refundedFee = r.refunded;
+      }
+    }
+
     await tx
       .update(workOrders)
       .set({
@@ -54,9 +89,12 @@ export async function updateWorkOrderDeliveryMethod(
         deliveryAddress: input.deliveryAddress?.trim() || null,
         deliveryPhone: input.deliveryPhone?.trim() || null,
         deliveryCost,
+        // بعد ردّ أمانة COUNTER: أعِد وسم التحصيل إلى COURIER (المندوب يقبض من الزبون) كي لا يتوقّع
+        // مسارُ الإرسال أمانةً محتجزةً إن أُعيد الطلب توصيلاً لاحقاً.
+        ...(money(refundedFee).gt(0) ? { deliveryFeeCollection: "COURIER" as const } : {}),
       })
       .where(eq(workOrders.id, Number(wo.id)));
 
-    return { workOrderId: Number(wo.id), hasDelivery: !!input.hasDelivery };
+    return { workOrderId: Number(wo.id), hasDelivery: !!input.hasDelivery, refundedFee };
   });
 }
