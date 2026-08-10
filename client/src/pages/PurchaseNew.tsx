@@ -198,8 +198,11 @@ export default function PurchaseNew() {
       notes: state.notes.trim() || undefined,
       // USD: أسعار البنود نفسها بالدولار، والخادم يحوّلها إلى التكلفة الدينارية بسعر التثبيت.
       agreedCurrency: state.currency,
-      // فاتورة المورد بالدولار تشمل الضريبة أيضاً؛ الشحن/الكمرك أدناه مسجّلان بالدينار منفصلين.
-      usdTotal: state.currency === "USD" ? round2(D(totals.grandTotal)).toFixed(2) : undefined,
+      // ملاحظة (إصلاح رسالة «لا يطابق مجموع البنود»): لا نُرسل usdTotal. حين يوجد «سعر التثبيت»
+      // (إلزاميّ للدولار في هذه الشاشة) يشتقّ الخادمُ إجماليَّ الدولار من البنود نفسها (usdGoods +
+      // الضريبة) بترتيب تقريبٍ سطريٍّ محدَّد؛ وأسعار البنود تُرسَل بمنزلتين عشريّتين (nonNegMoneyString)
+      // بينما كانت الواجهة تشتقّ usdTotal من أسعارٍ كاملة الدقّة (مثل 4.1666) ⇒ الإجماليان يختلفان
+      // بفروق تقريبٍ بحتة فيرفض الحارسُ الحفظَ زوراً. المرجع الوحيد هو حساب الخادم من البنود.
       agreedRate: state.currency === "USD" ? safeMoney(state.agreedRate).toFixed(4) : undefined,
       // landed-cost: الشحن/الكمرك (تُرسَل فقط إن كانت موجبة — الخادم يوزّعها بنسبة القيمة ويُرسمِلها).
       // safeMoney: قيمة وسيطة غير مكتملة («.») ⇒ صفر بدل رمي D() الخام أثناء الحفظ.
@@ -340,7 +343,10 @@ export default function PurchaseNew() {
   const meta = INVOICE_TYPES[INVOICE_TYPE];
 
   return (
-    <div ref={containerRef} dir="rtl" className="flex h-full flex-col gap-3">
+    // تدفّق طبيعيّ (لا حبس بارتفاع الإطار): كان `h-full` يضغط المحرّرَ داخل ٧٢٠px فيبقى للجدول
+    // صفّان فقط وتُقتَطع بطاقةُ الشحن/الإجراءات أسفل الشريط الجانبي. الآن تنمو الصفحة بمحتواها
+    // ويُمرِّرها `<main overflow-auto>` — فيَظهر الجدولُ كبيراً وكلُّ حقول الشريط الجانبي كاملةً.
+    <div ref={containerRef} dir="rtl" className="flex flex-col gap-3">
       {/* Title bar */}
       <div className="flex items-center justify-between">
         <h1 className="flex items-center gap-2 text-xl font-extrabold">
@@ -367,9 +373,13 @@ export default function PurchaseNew() {
       {/* Header card (document metadata + supplier + terms + PO reference) */}
       <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
 
-      {/* Body: products on the right, totals/actions/terms on the left (RTL → aside on left) */}
-      <div className="flex min-h-0 flex-1 gap-3">
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
+      {/* Body: products on the right, totals/actions/terms on the left (RTL → aside on left).
+          يتراصّ عمودياً على الشاشات الضيّقة ويصير صفّاً على الواسعة؛ الشريط الجانبي بارتفاعه
+          الطبيعيّ (items-start) فلا تُقتَطع بطاقةُ الشحن/الكمرك ولا الإجراءات. */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+        {/* عمود المنتجات: ارتفاع سخيّ ثابت كي يعرض الجدولُ المشتركُ (بتمريره الداخليّ) صفوفاً
+            كثيرة بدل صفّين — بديلاً عن الحبس السابق بارتفاع الإطار. */}
+        <div className="flex min-w-0 flex-1 flex-col gap-2 h-[60vh] min-h-[420px]">
           <ProductTable
             items={state.items}
             dispatch={dispatch}
@@ -393,7 +403,7 @@ export default function PurchaseNew() {
           />
         </div>
 
-        <aside className="flex w-80 shrink-0 flex-col gap-2">
+        <aside className="flex w-full shrink-0 flex-col gap-2 lg:w-80">
           {/* landed-cost (تدقيق ١٧/٧، خطر #2 — الآن مُنفَّذ لا مُخفى): الشحن/الكمرك يُحفظان ويُرسمَلان
               في تكلفة المخزون (WAVG) عند الاستلام ويُضافان إلى ذمّة المورّد — لا مصروف P&L. باقي حقول
               المحرّر (خصم/مصاريف أخرى/دفع) تبقى مخفيّة لأنّ createOrder لا يحفظها؛ الدفع عند الاستلام. */}
@@ -480,15 +490,17 @@ export default function PurchaseNew() {
           {state.currency === "USD" && landed.rate.gt(0) && (
             <section className="rounded-xl border bg-card px-4 py-3 text-sm">
               <div className="flex justify-between text-muted-foreground">
-                <span>إجمالي فاتورة المورد</span>
-                <span dir="ltr" className="font-bold text-foreground">{fmtAr(totals.subtotal)} $</span>
+                <span>إجمالي فاتورة المورد (دولار)</span>
+                <span dir="ltr" className="font-bold text-foreground">{fmtAr(totals.grandTotal)} $</span>
               </div>
               <div className="mt-1 flex justify-between text-muted-foreground">
-                <span>المعادل المثبت</span>
-                <span dir="ltr" className="font-bold text-foreground">{fmtAr(landed.goodsIqd.toFixed(2))} د.ع</span>
+                <span>سعر التثبيت</span>
+                <span dir="ltr" className="font-bold text-foreground">{fmtAr(state.agreedRate)} د.ع/$</span>
               </div>
+              {/* التكلفة بالدينار = فاتورة المورد × سعر التثبيت. الشحن/الكمرك **ليسا** ضمنها
+                  (مصروفُ نقلٍ مستقلٌّ لحظة الاستلام، قرار المالك ٥/٨) — لذا لا نقول «مع الشحن». */}
               <div className="mt-1 flex justify-between border-t pt-2 font-bold">
-                <span>تكلفة المخزون مع الشحن</span>
+                <span>التكلفة بالدينار</span>
                 <span dir="ltr">{fmtAr(landed.grand.toFixed(2))} د.ع</span>
               </div>
             </section>
