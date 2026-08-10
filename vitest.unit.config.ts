@@ -25,6 +25,7 @@ export default defineConfig({
       "server/services/__tests__/globalSearchRbac.test.ts",
       "server/services/hrDevices/__tests__/bridgeSecurity.test.ts",
       "server/services/hrDevices/__tests__/bridgeGate.test.ts",
+      "server/services/hrDevices/__tests__/runtimeTasks.test.ts",
       "server/routers/__tests__/superAppAuthority.test.ts",
     ],
   },

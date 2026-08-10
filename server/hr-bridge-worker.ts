@@ -1,17 +1,25 @@
 /**
  * دورة حياة عامل جسر أجهزة الحضور.
  *
- * هذا الملف entrypoint مستقل يُجمَّع إلى dist/hr-bridge-worker.js. جميع الاستيرادات
+ * هذا الملف entrypoint مستقل يُجمَّع إلى dist/hr-bridge-worker.cjs. جميع الاستيرادات
  * ثابتة، لذلك توجد نسخة واحدة فقط من registry وDB داخل العملية ولا يوجد runtime TS loader.
  */
 import { closeDb } from "./db";
 import { logger } from "./logger";
+import policy from "../scripts/hr-bridge-runtime-policy.cjs";
 import { assertEnabledDeviceIdentityReadiness } from "./services/hrDevices/readiness";
 import {
   assertHrDeviceBridgeStartupConfig,
   startHrDeviceBridge,
 } from "./services/hrDevices/bridge";
-import { pumpCommands } from "./services/hrDevices/commands";
+import {
+  pumpCommands,
+  stopAndDrainCommandPumps,
+} from "./services/hrDevices/commands";
+import {
+  foldSoon,
+  stopAndDrainAttendanceFolds,
+} from "./services/hrDevices/attendanceFold";
 import { onlineDeviceIds } from "./services/hrDevices/registry";
 import { resolveBridgeConfig } from "./services/hrDevices/types";
 
@@ -46,6 +54,18 @@ function withTimeout<T>(
   });
 }
 
+function assertManagedEnvironmentIsolated(): void {
+  if (process.env.HR_BRIDGE_LOAD_DOTENV !== "0") {
+    throw new Error("HR_BRIDGE_MANAGED_ENVIRONMENT_REQUIRED");
+  }
+  const allowed = new Set(policy.allowedEnvironmentKeys);
+  const unexpected = Object.keys(process.env).filter((key) => !allowed.has(key));
+  if (unexpected.length > 0) {
+    // لا نطبع الأسماء أو القيم؛ العدد كافٍ للتشخيص ولا يوسّع كشف أسرار البيئة.
+    throw new Error(`HR_BRIDGE_ENVIRONMENT_NOT_ISOLATED:${unexpected.length}`);
+  }
+}
+
 export async function runHrBridgeWorker(
   options: HrBridgeWorkerOptions,
 ): Promise<WorkerResult> {
@@ -65,7 +85,6 @@ export async function runHrBridgeWorker(
 
   const cfg = resolveBridgeConfig();
   if (!cfg.enabled) {
-    if (options.preflightOnly) throw new Error("HR_DEVICE_BRIDGE_DISABLED");
     checkpoint("HR_BRIDGE_DISABLED");
     logger.info(
       "hrDevices: عامل الجسر غير مفعّل (اضبط HR_DEVICE_BRIDGE=1 أو HR_DEVICE_PORT)",
@@ -76,6 +95,11 @@ export async function runHrBridgeWorker(
   assertHrDeviceBridgeStartupConfig(cfg.port);
   checkpoint("HR_BRIDGE_CONFIG_OK", { port: cfg.port });
 
+  if (!options.preflightOnly) {
+    assertManagedEnvironmentIsolated();
+    checkpoint("HR_BRIDGE_ENVIRONMENT_OK");
+  }
+
   checkpoint("HR_BRIDGE_DB_CHECK_START");
   await withTimeout(
     assertEnabledDeviceIdentityReadiness(),
@@ -85,11 +109,26 @@ export async function runHrBridgeWorker(
   checkpoint("HR_BRIDGE_DB_CHECK_OK");
 
   if (options.preflightOnly) {
-    await withTimeout(
-      closeDb(),
-      options.databaseTimeoutMs,
-      "HR_BRIDGE_DB_CLOSE_TIMEOUT",
-    );
+    let probe: Awaited<ReturnType<typeof startHrDeviceBridge>> | null = null;
+    try {
+      // المنفذ 0 يجعل النواة تختار منفذاً عابراً: نثبت أن HR_DEVICE_HOST صالح
+      // وأن العملية قادرة على bind بلا مزاحمة العامل القديم على منفذ الإنتاج.
+      checkpoint("HR_BRIDGE_BIND_PROBE_START");
+      probe = await startHrDeviceBridge(0, {
+        listenTimeoutMs: options.listenTimeoutMs,
+      });
+      checkpoint("HR_BRIDGE_BIND_PROBE_OK");
+    } finally {
+      try {
+        await probe?.stop();
+      } finally {
+        await withTimeout(
+          closeDb(),
+          options.databaseTimeoutMs,
+          "HR_BRIDGE_DB_CLOSE_TIMEOUT",
+        );
+      }
+    }
     checkpoint("HR_BRIDGE_PREFLIGHT_OK");
     return "preflight-complete";
   }
@@ -123,7 +162,11 @@ export async function runHrBridgeWorker(
     }, options.shutdownTimeoutMs);
 
     try {
-      await bridge.stop();
+      // أغلق بوابة claims لـAiface/iClock تزامنياً قبل أول await؛ ثم أوقف ingress وانتظر كل
+      // جلسة/claim/sweep، وبعدها استنزف طيّ الحضور قبل إغلاق pool قاعدة البيانات.
+      const commandDrain = stopAndDrainCommandPumps();
+      await Promise.all([bridge.stop(), commandDrain]);
+      await stopAndDrainAttendanceFolds();
       await closeDb();
       clearTimeout(force);
       checkpoint("HR_BRIDGE_SHUTDOWN_OK", { signal });
@@ -141,6 +184,10 @@ export async function runHrBridgeWorker(
   bridge.server.once("error", () => void shutdown("bridge-error", 1));
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
   process.once("SIGINT", () => void shutdown("SIGINT"));
+
+  // ثبّت معالجات الإغلاق أولاً، ثم ابدأ reconciliation. بذلك لا توجد نافذة يشرع
+  // فيها fold باستخدام DB قبل أن يصبح SIGTERM/SIGINT قادراً على استنزافه.
+  foldSoon();
 
   // لا تُرسل الجاهزية إلا بعد نجاح DB وTCP وتثبيت معالجات الإغلاق ومضخة الأوامر.
   options.onReady();

@@ -19,8 +19,41 @@
 // (يُلغي كامل الفصل الأمني الذي بُني من أجله). يتطلّب DB_CONTAINER/DB_ROOT_PW/
 // INTEGRATIONS_ENCRYPTION_KEY في `.env` (أو env هذا القسم مباشرة) — غير مضبوطة افتراضياً.
 
-require("dotenv").config();
-const hrBridgePolicy = require("./scripts/hr-bridge-runtime-policy.cjs");
+const path = require("node:path");
+const dotenv = require("dotenv");
+const artifactSmoke =
+  process.env.HR_BRIDGE_ECOSYSTEM_ARTIFACT_SMOKE === "1";
+dotenv.config({ quiet: true });
+// The mutable root ecosystem never launches the production bridge. A source
+// definition exists only while the build gate inspects its PM2 contract.
+let artifactSmokeBridgeApp = null;
+if (artifactSmoke) {
+  const policy = require("./scripts/hr-bridge-runtime-policy.cjs");
+  const createHrBridgePm2App = require("./scripts/hr-bridge-pm2-app.cjs");
+  const bridgeFileEnvironment = {};
+  const bridgeEnvironmentResult = dotenv.config({
+    path: path.join(__dirname, ".env.example"),
+    processEnv: bridgeFileEnvironment,
+    quiet: true,
+  });
+  if (bridgeEnvironmentResult.error) {
+    throw new Error("HR_BRIDGE_ENV_FILE_NOT_READABLE");
+  }
+  const artifactEnvironment = Object.fromEntries(
+    policy.allowedEnvironmentKeys
+      .filter((key) => typeof bridgeFileEnvironment[key] === "string")
+      .map((key) => [key, bridgeFileEnvironment[key]]),
+  );
+  artifactEnvironment.NODE_ENV = "production";
+  artifactEnvironment.TZ = "UTC";
+  artifactEnvironment.HR_BRIDGE_LOAD_DOTENV = "0";
+  artifactSmokeBridgeApp = createHrBridgePm2App({
+    projectRoot: __dirname,
+    script: "scripts/hr-bridge-release-worker.mjs",
+    policy,
+    deploymentEnvironment: artifactEnvironment,
+  });
+}
 
 module.exports = {
   apps: [
@@ -78,51 +111,7 @@ module.exports = {
       out_file: "logs/erp-out.log",
       merge_logs: true,
     },
-    {
-      name: "erp-hr-bridge",
-      // Bootstrap JS يسلّح watchdog قبل import للحزمة المبنية، فلا يمكن لتعليق التحميل
-      // أن يبقى online صامتاً. لا يوجد TypeScript loader داخل مسار الإنتاج.
-      script: "scripts/hr-bridge-worker.mjs",
-      cwd: __dirname,
-      instances: 1,
-      exec_mode: "fork",
-      watch: false,
-      autorestart: true,
-      // الخروج 0 يعني «معطّل عمداً» أو إيقافاً رشيقاً؛ كل فشل (1) يُعاد تشغيله.
-      stop_exit_codes: [0],
-      exp_backoff_restart_delay: 3000,
-      max_restarts: 10,
-      min_uptime: hrBridgePolicy.minUptimeMs,
-      wait_ready: true,
-      // PM2 ينتظر ready، لكنه fail-open عند انتهاء مهلة الانتظار؛ لذلك يخرج watchdog قبلها
-      // بـ15ث، وتبقى بوابة PM2+PID+TCP الخارجية إلزامية قبل pm2 save.
-      listen_timeout: hrBridgePolicy.pm2ListenTimeoutMs,
-      kill_timeout: 11000,
-      env: {
-        NODE_ENV: "production",
-        TZ: "UTC",
-        DATABASE_URL: process.env.DATABASE_URL,
-        CONTROL_DATABASE_URL: process.env.CONTROL_DATABASE_URL,
-        HR_DEVICE_BRIDGE: process.env.HR_DEVICE_BRIDGE,
-        HR_DEVICE_PORT: process.env.HR_DEVICE_PORT,
-        HR_DEVICE_HOST: process.env.HR_DEVICE_HOST,
-        HR_DEVICE_IP_ALLOWLIST: process.env.HR_DEVICE_IP_ALLOWLIST,
-        HR_DEVICE_SHARED_SECRET: process.env.HR_DEVICE_SHARED_SECRET,
-        HR_DEVICE_IDENTITY_BINDINGS: process.env.HR_DEVICE_IDENTITY_BINDINGS,
-        HR_DEVICE_LEGACY_IDENTITY_MIGRATION:
-          process.env.HR_DEVICE_LEGACY_IDENTITY_MIGRATION,
-        HR_DEVICE_MAX_PAYLOAD_BYTES: process.env.HR_DEVICE_MAX_PAYLOAD_BYTES,
-        HR_DEVICE_REQUEST_TIMEOUT_MS: process.env.HR_DEVICE_REQUEST_TIMEOUT_MS,
-        HR_DEVICE_IDLE_TIMEOUT_MS: process.env.HR_DEVICE_IDLE_TIMEOUT_MS,
-        HR_DEVICE_RATE_LIMIT_PER_MINUTE:
-          process.env.HR_DEVICE_RATE_LIMIT_PER_MINUTE,
-        HR_DEVICE_MAX_WS_PER_IP: process.env.HR_DEVICE_MAX_WS_PER_IP,
-      },
-      log_date_format: "YYYY-MM-DD HH:mm:ss",
-      error_file: "logs/hr-bridge-error.log",
-      out_file: "logs/hr-bridge-out.log",
-      merge_logs: true,
-    },
+    ...(artifactSmokeBridgeApp ? [artifactSmokeBridgeApp] : []),
     {
       name: "erp-provision-worker",
       script: "scripts/company-provision-worker.mjs",

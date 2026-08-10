@@ -11,7 +11,7 @@
  *   - **الخطأ العابر لا يُفقِد يوماً:** فشل DB مؤقّت لا يوسم البصمة معالَجة (تُعاد المحاولة)؛
  *     فقط الأخطاء النهائية (منتهي خدمة/غير موجود) توسَم لتُستبعد نهائياً.
  *   - **لا تسقط طلبات الطيّ:** نداءٌ أثناء طيٍّ جارٍ يرفع علم إعادة تشغيل فيُعاد بعد الفراغ،
- *     والحلقة تستنزف كل المعلَّق دفعةً بعد دفعة (لا سقف يترك بقيةً غير مطويّة).
+ *     وبلوغ سقف الدفعات يسلّم البقية إلى دورة متابعة منسّقة بدلاً من تركها معلّقة.
  * ========================================================================== */
 import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import {
@@ -97,7 +97,10 @@ async function loadFoldSettings(): Promise<{ maxDailyHours: number }> {
   }
 }
 
-let folding = false;
+type FoldResult = { days: number; parked: number };
+
+let activeFoldRun: Promise<FoldResult> | null = null;
+let foldRequestsAccepting = true;
 let rerunRequested = false;
 let retryTimer: NodeJS.Timeout | null = null;
 
@@ -110,7 +113,7 @@ function safeFoldErrorCode(error: unknown): string {
 }
 
 function scheduleFoldRetry(): void {
-  if (process.env.NODE_ENV === "test" || retryTimer) return;
+  if (!foldRequestsAccepting || retryTimer) return;
   retryTimer = setTimeout(() => {
     retryTimer = null;
     foldSoon();
@@ -287,36 +290,96 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
 }
 
 /**
- * معالجة كل المعلَّق حتى الاستنزاف. متسلسلة عبر علم `folding` (قفل منطقي)، ونداء أثناء الجريان
+ * معالجة كل المعلَّق حتى الاستنزاف. متسلسلة عبر `activeFoldRun`، ونداء أثناء الجريان
  * يرفع `rerunRequested` فيُعاد تشغيلها بعد الفراغ — لا يُسقط أيّ طلب طيّ.
  */
-export async function processPendingFolds(): Promise<{ days: number; parked: number }> {
-  if (folding) {
-    rerunRequested = true;
-    return { days: 0, parked: 0 };
-  }
-  folding = true;
+async function runPendingFolds(): Promise<FoldResult> {
   let days = 0;
   let parked = 0;
-  try {
-    do {
-      rerunRequested = false;
-      // استنزاف: كرّر ما دام هناك معلَّق (سقف أمان ضد حلقة لا تنتهي بخطأ عابر متكرّر).
-      for (let guard = 0; guard < 1000; guard++) {
-        const r = await foldOneBatch();
-        days += r.days;
-        parked += r.parked;
-        // توقّف حين لا يوجد معلَّق أصلاً، أو حين لم يتقدّم شيء (كل المتبقّي عابر الخطأ) لتفادي الدوران.
-        if (!r.processedAny || r.days + r.parked === 0) break;
+  do {
+    rerunRequested = false;
+    let reachedBatchCap = true;
+    // استنزاف: كرّر ما دام هناك معلَّق (سقف أمان ضد حلقة لا تنتهي بخطأ عابر متكرّر).
+    for (let guard = 0; guard < 1000; guard++) {
+      const r = await foldOneBatch();
+      days += r.days;
+      parked += r.parked;
+      // shutdown ينتظر الدفعة التي بدأت فقط؛ لا نحجز مهلة العامل باستنزاف backlog كامل.
+      if (!foldRequestsAccepting) return { days, parked };
+      // توقّف حين لا يوجد معلَّق أصلاً، أو حين لم يتقدّم شيء (كل المتبقّي عابر الخطأ) لتفادي الدوران.
+      if (!r.processedAny || r.days + r.parked === 0) {
+        reachedBatchCap = false;
+        break;
       }
-    } while (rerunRequested);
-  } finally {
-    folding = false;
-  }
+    }
+    if (reachedBatchCap && foldRequestsAccepting) {
+      // حرّر الدورة الحالية كي تمنح event loop فرصة للإشارة/الإغلاق، ثم دع finally
+      // يبدأ continuation مملوكة بالمنسّق. بذلك لا يترك سقف الحماية backlog بلا trigger.
+      rerunRequested = true;
+      return { days, parked };
+    }
+  } while (foldRequestsAccepting && rerunRequested);
   return { days, parked };
+}
+
+export function processPendingFolds(): Promise<FoldResult> {
+  if (!foldRequestsAccepting) return Promise.resolve({ days: 0, parked: 0 });
+  if (activeFoldRun) {
+    rerunRequested = true;
+    return Promise.resolve({ days: 0, parked: 0 });
+  }
+
+  // طلب صريح جديد يتقدّم على retry مؤجل سابق؛ لا نترك مؤقتاً قديماً يشغّل دورة زائدة.
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+
+  let run!: Promise<FoldResult>;
+  run = (async (): Promise<FoldResult> => {
+    try {
+      return await runPendingFolds();
+    } catch (error) {
+      // يشمل requireDb وأول SELECT وتجميع اليوم، لا الأخطاء داخل recordAttendance فقط.
+      // الفشل العابر عند startup لا يعتمد بعد الآن على وصول بصمة لاحقة كي يُعاد.
+      scheduleFoldRetry();
+      throw error;
+    } finally {
+      if (activeFoldRun === run) {
+        // لا await بين تحرير الملكية وفحص الطلب المعلّق: إمّا أن الطلب وصل قبل هذه
+        // القطعة فيُعاد تشغيله هنا، أو يصل بعدها فيرى activeFoldRun=null ويبدأ بنفسه.
+        activeFoldRun = null;
+        if (foldRequestsAccepting && rerunRequested && !retryTimer) {
+          rerunRequested = false;
+          void processPendingFolds().catch((error) =>
+            logger.error(
+              { err: error },
+              "hrDevices: فشل إعادة تشغيل الطيّ بعد طلب متزامن",
+            ),
+          );
+        }
+      }
+    }
+  })();
+  activeFoldRun = run;
+  return run;
 }
 
 /** تشغيل الطيّ في الخلفية بأمان (بعد كل دفعة استلام) — الفشل يُسجَّل ولا يُسقط المقبس. */
 export function foldSoon(): void {
+  if (!foldRequestsAccepting) return;
   void processPendingFolds().catch((e) => logger.error({ err: e }, "hrDevices: فشل الطيّ الخلفي"));
+}
+
+/** يمنع طلبات/retries جديدة وينتظر الطي الجاري قبل إغلاق DB. */
+export async function stopAndDrainAttendanceFolds(): Promise<void> {
+  foldRequestsAccepting = false;
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  while (activeFoldRun) {
+    const run = activeFoldRun;
+    await run.catch(() => undefined);
+  }
 }

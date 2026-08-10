@@ -2,7 +2,11 @@ import { once } from "node:events";
 import { createServer, request } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { startHrDeviceBridge, type HrDeviceBridge } from "../bridge";
+import {
+  startHrDeviceBridge,
+  type HrDeviceBridge,
+  type HrDeviceBridgeStartOptions,
+} from "../bridge";
 
 let bridge: HrDeviceBridge | null = null;
 const original = {
@@ -43,11 +47,21 @@ afterEach(async () => {
   else process.env.NODE_ENV = original.nodeEnv;
 });
 
-async function startProtectedBridge(): Promise<number> {
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function startProtectedBridge(
+  options: HrDeviceBridgeStartOptions = {},
+): Promise<number> {
   process.env.HR_DEVICE_HOST = "127.0.0.1";
   process.env.HR_DEVICE_IP_ALLOWLIST = "127.0.0.1";
   process.env.HR_DEVICE_SHARED_SECRET = "test-gateway-secret";
-  bridge = await startHrDeviceBridge(0);
+  bridge = await startHrDeviceBridge(0, options);
   expect(bridge.server.listening).toBe(true);
   const address = bridge.server.address();
   if (!address || typeof address === "string")
@@ -132,6 +146,141 @@ describe("بوابة شبكة جسر الحضور", () => {
     } finally {
       await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }
+  });
+
+  it("ينتظر الرسائل وإعادة أوامر inflight قبل اكتمال الإيقاف", async () => {
+    const messageStarted = deferred();
+    const releaseMessage = deferred();
+    const closeStarted = deferred();
+    const releaseClose = deferred();
+    const events: string[] = [];
+
+    const port = await startProtectedBridge({
+      sessionFactory: () => ({
+        handleMessage: async () => {
+          events.push("message:start");
+          messageStarted.resolve();
+          await releaseMessage.promise;
+          events.push("message:end");
+        },
+        handleClose: async () => {
+          events.push("close:start");
+          closeStarted.resolve();
+          await releaseClose.promise;
+          events.push("close:end");
+        },
+        device: () => null,
+      }),
+    });
+
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${port}/?token=test-gateway-secret`,
+    );
+    socket.on("error", () => undefined);
+    await once(socket, "open");
+    socket.send('{"cmd":"reg"}');
+    await messageStarted.promise;
+
+    const stopping = bridge!.stop();
+    const repeatedStop = bridge!.stop();
+    let settled = false;
+    void stopping.then(() => {
+      settled = true;
+    });
+
+    try {
+      expect(repeatedStop).toBe(stopping);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(events).toEqual(["message:start"]);
+
+      releaseMessage.resolve();
+      await closeStarted.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(events).toEqual(["message:start", "message:end", "close:start"]);
+    } finally {
+      releaseMessage.resolve();
+      releaseClose.resolve();
+      await stopping;
+      bridge = null;
+    }
+
+    expect(events).toEqual([
+      "message:start",
+      "message:end",
+      "close:start",
+      "close:end",
+    ]);
+  });
+
+  it("ينتظر كنس الصيانة الجاري قبل اكتمال الإيقاف", async () => {
+    const sweepStarted = deferred();
+    const releaseSweep = deferred();
+    const sweep = async () => {
+      sweepStarted.resolve();
+      await releaseSweep.promise;
+    };
+
+    await startProtectedBridge({ sweep, sweepIntervalMs: 1 });
+    await sweepStarted.promise;
+
+    const stopping = bridge!.stop();
+    let settled = false;
+    void stopping.then(() => {
+      settled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+
+    releaseSweep.resolve();
+    await stopping;
+    bridge = null;
+    expect(settled).toBe(true);
+  });
+
+  it("ينتظر معالج iClock حتى بعد قطع العميل للمقبس", async () => {
+    const handlerStarted = deferred();
+    const requestAborted = deferred();
+    const releaseHandler = deferred();
+    const port = await startProtectedBridge({
+      iclockHandler: async (_req, _res, _security, signal) => {
+        handlerStarted.resolve();
+        if (signal?.aborted) requestAborted.resolve();
+        else
+          signal?.addEventListener(
+            "abort",
+            () => requestAborted.resolve(),
+            { once: true },
+          );
+        await releaseHandler.promise;
+        return true;
+      },
+    });
+
+    const clientRequest = request({
+      host: "127.0.0.1",
+      port,
+      path: "/iclock/getrequest?SN=TEST&token=test-gateway-secret",
+    });
+    clientRequest.on("error", () => undefined);
+    clientRequest.end();
+    await handlerStarted.promise;
+    clientRequest.destroy();
+    await requestAborted.promise;
+
+    const stopping = bridge!.stop();
+    let settled = false;
+    void stopping.then(() => {
+      settled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+
+    releaseHandler.resolve();
+    await stopping;
+    bridge = null;
+    expect(settled).toBe(true);
   });
 
   it("ترفض HTTP بلا سر وتقبل ZK بالسر دون تغيير البروتوكول", async () => {

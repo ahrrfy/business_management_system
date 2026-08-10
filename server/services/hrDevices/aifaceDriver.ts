@@ -300,12 +300,15 @@ export function createAifaceSession(transport: AifaceTransport): AifaceSession {
       }
     },
     async handleClose(): Promise<void> {
-      if (link) {
-        await requeueInflight(link).catch(() => undefined);
-        removeLink(link);
-      }
+      const closingLink = link;
       link = null;
       device = null;
+      if (closingLink) {
+        // عزل الوصلة متزامن قبل أي DB await، كي لا تبدأ pump جديدة على مقبس ميت.
+        // removeLink يحذف بالهوية فقط، فلا يمس وصلة أحدث لنفس الجهاز.
+        removeLink(closingLink);
+        await requeueInflight(closingLink);
+      }
     },
   };
 }

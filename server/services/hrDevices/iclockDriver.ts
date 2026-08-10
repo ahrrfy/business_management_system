@@ -8,7 +8,11 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import { logger } from "../../logger";
 import { foldSoon } from "./attendanceFold";
-import { completeIclockCommand, popIclockCommand } from "./commands";
+import {
+  completeIclockCommand,
+  popIclockCommand,
+  requeueIclockCommand,
+} from "./commands";
 import { enabledDeviceIdentityRuntimeFailure, resolveDeviceBySn, touchDevice } from "./registry";
 import { ingestPunches, upsertDeviceUser } from "./punchStore";
 import type { RawPunch } from "./types";
@@ -55,6 +59,9 @@ function readBody(req: IncomingMessage, maxBodyBytes: number, timeoutMs: number)
 }
 
 function sendText(res: ServerResponse, body: string): void {
+  if (res.destroyed || res.writableEnded) {
+    throw new Error("ICLOCK_RESPONSE_UNAVAILABLE");
+  }
   res.writeHead(200, { "Content-Type": "text/plain" });
   res.end(body);
 }
@@ -151,9 +158,11 @@ export async function handleIclock(
   req: IncomingMessage,
   res: ServerResponse,
   securityConfig: BridgeSecurityConfig = resolveBridgeSecurityConfig(),
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const url = new URL(req.url ?? "/", "http://device.local");
   if (!url.pathname.startsWith("/iclock/")) return false;
+  if (signal?.aborted) return true;
   const sn = (url.searchParams.get("SN") ?? "").trim();
   try {
     // السريال مفتاح ثقة وربط قاعدة البيانات؛ نرفض المحارف التحكمية/الطويلة قبل أي استعلام.
@@ -224,8 +233,17 @@ export async function handleIclock(
 
     if (url.pathname === "/iclock/getrequest" && req.method === "GET") {
       await touchDevice(device.id);
-      const next = await popIclockCommand(device.id);
-      sendText(res, next ? formatIclockCommand(next.id, next.cmd) : "OK");
+      const next = await popIclockCommand(device.id, signal);
+      if (signal?.aborted || req.aborted || res.destroyed) {
+        if (next) await requeueIclockCommand(device.id, next.id);
+        return true;
+      }
+      try {
+        sendText(res, next ? formatIclockCommand(next.id, next.cmd) : "OK");
+      } catch (error) {
+        if (next) await requeueIclockCommand(device.id, next.id);
+        throw error;
+      }
       return true;
     }
 
@@ -254,7 +272,9 @@ export async function handleIclock(
   } catch (e) {
     logger.error({ err: e, sn, path: url.pathname }, "hrDevices/iclock: فشل معالجة طلب");
     // لا نرسل OK عند فشل التخزين/القراءة؛ 503 يبقي الدفعة لدى الجهاز كي يعيدها لاحقاً.
-    if (!res.headersSent) sendFailure(res, 503, "retry");
+    if (!res.headersSent && !res.destroyed && !res.writableEnded) {
+      sendFailure(res, 503, "retry");
+    }
     return true;
   }
 }
