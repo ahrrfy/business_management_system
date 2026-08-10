@@ -556,7 +556,10 @@ export async function createSaleInTx(
     // (والنقد الوهمي يظهر عجزاً بدرج الكاشير). الآن: التقريب يطبَّق على الإجمالي دائماً، لكن نعامل
     // البيع كمدفوعٍ بالكامل (paidNow = الإجمالي المقرّب) فقط إذا كان المُسلَّم يغطّي الإجمالي فعلاً؛
     // وإلا فهي دفعة جزئية ⇒ paidNow = المُسلَّم بالضبط والباقي ذمّة على العميل.
-    if (input.payment?.method !== "CASH" && preCollectedD.plus(tendered).gt(effectiveTotalD)) {
+    // تصحيح الفاتورة (0168): allowPreCollectedOverpay يرفع هذا الحارس الثاني أيضاً — overpay-down
+    // بلا دفعةٍ جديدة (method=undefined≠CASH) كان يُرمى هنا؛ paidNow يُقصَر على الإجمالي أدناه
+    // والفائض يُردّ/يُرصَّد في correctSale.
+    if (!input.allowPreCollectedOverpay && input.payment?.method !== "CASH" && preCollectedD.plus(tendered).gt(effectiveTotalD)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `المبلغ المدفوع (${preCollectedD.plus(tendered).toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
