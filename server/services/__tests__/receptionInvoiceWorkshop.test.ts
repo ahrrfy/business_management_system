@@ -247,7 +247,7 @@ describe("C — تسديد دفعة من المحطة (reception.collectOnInvoic
 });
 
 describe("R — بوّابة طابور القراءة وإعادة الطباعة", () => {
-  it("warehouse/auditor ممنوعان، والكاشير ومشغّل الطباعة يقرآن الفاتورة", async () => {
+  it("warehouse/auditor ممنوعان؛ الكاشير يقرأ ويطبع؛ ومشغّل الطباعة يرى الطابور وجلبُه محكومٌ بعزل الموظّف", async () => {
     const rec = await openReception();
     await directSale(rec.shiftId, "r1-sale");
 
@@ -258,11 +258,17 @@ describe("R — بوّابة طابور القراءة وإعادة الطباع
     const cashierCaller = await callerFor(2);
     const ok = await cashierCaller.reception.invoiceQueue({ sinceDays: 7 });
     expect(ok.rows.length).toBe(1);
+    // الكاشير مُنشئ الفاتورة (rec) ⇒ يجلبها للطباعة (invoiceViewProcedure + عزل الموظّف يطابق).
+    const cashInvoice = await cashierCaller.sales.get({ invoiceId: ok.rows[0].id });
+    expect(cashInvoice?.invoiceNumber).toBe(ok.rows[0].invoiceNumber);
 
+    // مشغّل الطباعة (uid 8) يرى الطابور، لكن sales.get عبر invoiceViewProcedure محكومٌ بعزل
+    // الموظّف (scopedOwnerId): يطبع فواتيره هو (طلب المالك «فواتيري»)، وفاتورةُ زميلٍ (أنشأها
+    // الكاشير هنا) تعود null — سياسة عزل الموظّف الثابتة، لا تُضعَّف.
     const printCaller = await callerFor(8);
     const printable = await printCaller.reception.invoiceQueue({ sinceDays: 7 });
     expect(printable.rows).toHaveLength(1);
     const invoice = await printCaller.sales.get({ invoiceId: printable.rows[0].id });
-    expect(invoice?.invoiceNumber).toBe(printable.rows[0].invoiceNumber);
+    expect(invoice).toBeNull();
   });
 });
