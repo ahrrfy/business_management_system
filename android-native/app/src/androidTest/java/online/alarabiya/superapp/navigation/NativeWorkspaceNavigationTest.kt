@@ -657,12 +657,14 @@ private object FakePurchasingSource {
     val dataSource: PurchasingDataSource = Proxy.newProxyInstance(
         PurchasingDataSource::class.java.classLoader,
         arrayOf(PurchasingDataSource::class.java),
-    ) { _, method, args ->
+    ) { proxy, method, args ->
         when (method.name) {
             "orders", "catalog", "reminderQueue", "reminderHistory" -> emptyList<Any>()
             "suppliers" -> SupplierPage(emptyList(), 0)
             "returns" -> PurchaseReturnPage(emptyList(), 0)
             "order" -> order.also { check((args?.firstOrNull() as? Long) == 91L) }
+            "equals" -> proxy === args?.getOrNull(0)
+            "hashCode" -> System.identityHashCode(proxy)
             "toString" -> "FakePurchasingSource"
             else -> error("Unexpected purchasing call: ${method.name}")
         }
