@@ -3,11 +3,16 @@ import { z } from "zod";
 import {
   cancelExpense,
   createExpense,
+  getExpenseTrace,
   listExpenses,
 } from "../services/expenseService";
 import { logAudit } from "../services/auditService";
-import { ymdDate } from "../lib/schemas";
-import { expensesManagerProcedure, expensesReadProcedure, router } from "../trpc";
+import { nonNegMoneyString, ymdDate } from "../lib/schemas";
+import {
+  expensesManagerProcedure,
+  expensesReadProcedure,
+  router,
+} from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const category = z.enum([
@@ -22,7 +27,13 @@ const category = z.enum([
 ]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const status = z.enum(["ACTIVE", "CANCELLED"]);
-const recurringFreq = z.enum(["DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY"]);
+const recurringFreq = z.enum([
+  "DAILY",
+  "WEEKLY",
+  "MONTHLY",
+  "QUARTERLY",
+  "YEARLY",
+]);
 
 export const expenseRouter = router({
   list: expensesReadProcedure
@@ -38,21 +49,43 @@ export const expenseRouter = router({
           // فلترة إضافية: طريقة الدفع (مطابقة يوم البطاقات) + مصدر الصرف (نقدي/مخزون).
           paymentMethod: method.optional(),
           source: z.enum(["CASH", "STOCK"]).optional(),
+          fundingKind: z
+            .enum(["DRAWER", "TREASURY", "NON_CASH", "STOCK"])
+            .optional(),
+          createdBy: z.number().int().positive().optional(),
+          shiftId: z.number().int().positive().optional(),
+          amount: nonNegMoneyString.optional(),
           limit: z.number().int().positive().max(1000).default(200),
           offset: z.number().int().nonnegative().optional(),
           // S3 (٣٠/٦): cursor (id) اختياري لـkeyset — يتجاوز COUNT الكامل.
           cursor: z.number().int().positive().optional(),
         })
-        .optional()
+        .optional(),
     )
     .query(async ({ input, ctx }) =>
       // عزل الفرع + عزل الموظف: غير المدير يرى مصروفات فرعه التي أنشأها هو فقط.
       listExpenses({
         ...(input ?? {}),
         ...(ctx.scopedBranchId ? { branchId: ctx.scopedBranchId } : {}),
-        createdBy: ctx.scopedOwnerId,
-      })
+        createdBy: ctx.scopedOwnerId ?? input?.createdBy ?? null,
+      }),
     ),
+
+  /** تفاصيل التتبع الكاملة لمصروف واحد، بنفس عزل الفرع/المالك المطبق على القائمة. */
+  trace: expensesReadProcedure
+    .input(z.object({ expenseId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      const trace = await getExpenseTrace(input.expenseId, {
+        branchId: ctx.scopedBranchId ?? undefined,
+        createdBy: ctx.scopedOwnerId,
+      });
+      if (!trace)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "المصروف غير موجود",
+        });
+      return trace;
+    }),
 
   // P0 financial integrity: a cashier must never be able to turn a drawer
   // shortage into an "expense" and thereby reduce the shift's expected cash.
@@ -67,6 +100,7 @@ export const expenseRouter = router({
         // STOCK لا يرسل مبلغاً (يُحتسب من الكلفة) ⇒ افتراضي "0".
         amount: z.string().default("0"),
         paymentMethod: method,
+        cashSource: z.enum(["OWN_DRAWER", "TREASURY"]).nullish(),
         description: z.string().nullish(),
         referenceNumber: z.string().nullish(),
         // v3-add-screens.
@@ -84,12 +118,12 @@ export const expenseRouter = router({
               productUnitId: z.number().int().positive().nullish(),
               quantity: z.string().optional(),
               baseQuantity: z.number().int().positive().optional(),
-            })
+            }),
           )
           .optional(),
         // idempotency: نقرة مزدوجة على «أضف مصروفاً» ⇒ مصروف واحد.
         clientRequestId: z.string().min(1).max(80).optional(),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       // F4 (تدقيق ١٤/٦/٢٦): قبل الإصلاح كان `ctx.user.branchId ?? input.branchId` يسمح
@@ -100,21 +134,41 @@ export const expenseRouter = router({
       let branchId = input.branchId;
       if (!elevated) {
         if (ctx.user.branchId == null) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "لا فرع مُسنَد لهذا المستخدم",
+          });
         }
         branchId = Number(ctx.user.branchId);
       }
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createExpense({ ...input, branchId }, { userId: ctx.user.id, branchId, role: ctx.user.role });
+          const res = await createExpense(
+            { ...input, branchId },
+            { userId: ctx.user.id, branchId, role: ctx.user.role },
+          );
           if (!(res as { idempotent?: boolean }).idempotent) {
-            await logAudit(ctx, { action: "expense.create", entityType: "expense", entityId: (res as { expenseId?: number })?.expenseId, newValue: { category: input.category, amount: input.amount, payee: input.payee ?? null, branchId } });
+            await logAudit(ctx, {
+              action: "expense.create",
+              entityType: "expense",
+              entityId: (res as { expenseId?: number })?.expenseId,
+              newValue: {
+                category: input.category,
+                amount: input.amount,
+                payee: input.payee ?? null,
+                branchId,
+                cashSource: input.cashSource ?? null,
+              },
+            });
           }
           return res;
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تسجيل المصروف" });
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "تعذّر تسجيل المصروف",
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر تسجيل المصروف" });
@@ -125,10 +179,21 @@ export const expenseRouter = router({
     .input(z.object({ expenseId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا فرع مُسنَد لهذا المستخدم",
+        });
       }
-      const res = await cancelExpense(input.expenseId, { userId: ctx.user.id, branchId: Number(ctx.user.branchId), role: ctx.user.role });
-      await logAudit(ctx, { action: "expense.cancel", entityType: "expense", entityId: input.expenseId });
+      const res = await cancelExpense(input.expenseId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId),
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "expense.cancel",
+        entityType: "expense",
+        entityId: input.expenseId,
+      });
       return res;
     }),
 });
