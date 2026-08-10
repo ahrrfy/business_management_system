@@ -385,8 +385,8 @@ export default function BundleForm() {
         <CardContent className="space-y-3">
           {/* — الحقل الذكيّ الموحّد (باركود + نصّ) + فئة + إضافة متعدّدة — */}
           <div className="rounded-md border bg-muted/20 p-3 space-y-2">
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1 min-w-0">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="relative w-full min-w-0 flex-1 sm:min-w-72">
                 <Search aria-hidden className="absolute end-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
                 <Input
                   ref={pickerInputRef}
@@ -398,7 +398,7 @@ export default function BundleForm() {
                   // وبنصٍّ قصير خالص العربية لا يتراكب مع أيقونة البحث. (الأرقام تبقى مقروءة LTR ضمن RTL.)
                   dir="rtl"
                   className={cn(
-                    "pe-9 ps-[4.9rem]",
+                    "pl-9",
                     barcodeSearchInputClass,
                     flash === "ok" && "border-emerald-500 ring-1 ring-emerald-500",
                     flash === "err" && "border-red-500 ring-1 ring-red-500",
@@ -408,7 +408,7 @@ export default function BundleForm() {
                 <BarcodeSearchCue />
               </div>
               <select
-                className="h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm min-w-[130px]"
+                className="h-9 w-full min-w-[130px] rounded-md border border-input bg-transparent px-3 py-1 text-sm sm:w-auto"
                 value={pickerCategoryId}
                 onChange={(e) => setPickerCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
                 aria-label="فلترة بالفئة"
@@ -422,6 +422,7 @@ export default function BundleForm() {
                 onClick={() => { setBulkOpen(true); setBulkSelected(new Map()); setBulkPicker(""); setBulkCategoryId(""); }}
                 aria-label="إضافة عدّة مكوّنات دفعةً"
                 title="اختر عدّة منتجات دفعةً واحدة (كالفواتير المتقدّمة)"
+                className="w-full sm:w-auto"
               >
                 <ListPlus aria-hidden className="size-4 me-1" /> إضافة متعدّدة
               </Button>

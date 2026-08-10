@@ -729,7 +729,7 @@ export default function BarcodeLabels() {
               placeholder={branchId == null ? "اختر الفرع أولاً…" : "ابحث بالاسم/SKU أو امسح الباركود — Enter يحلّ الباركود حرفياً"}
               disabled={branchId == null}
               autoFocus
-              className={cn("ps-[4.9rem]", barcodeSearchInputClass)}
+              className={barcodeSearchInputClass}
             />
             <BarcodeSearchCue />
             {search.trim() && (

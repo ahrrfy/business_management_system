@@ -2281,9 +2281,9 @@ export default function Reception() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
         <span className="shrink-0 text-xs font-extrabold">٢. أضف ما يريده العميل</span>
-        <div className="relative max-w-[640px] flex-1">
+        <div className="relative w-full flex-1 sm:max-w-[640px] sm:min-w-72">
           <Search aria-hidden className="pointer-events-none absolute inset-y-0 end-3 my-auto size-4 text-muted-foreground" />
           <input
             ref={searchRef}
@@ -2302,7 +2302,7 @@ export default function Reception() {
               }
             }}
             placeholder="امسح الباركود أو ابحث بالاسم / SKU…  (F2)"
-            className={cn("h-11 w-full rounded-xl border-[1.5px] px-4 pe-11 ps-[4.9rem] text-sm font-semibold outline-none focus:border-primary", barcodeSearchInputClass)}
+            className={cn("h-11 w-full rounded-xl border-[1.5px] px-4 pl-11 text-sm font-semibold outline-none focus:border-primary", barcodeSearchInputClass)}
           />
           <BarcodeSearchCue />
           {showDrop && debounced.trim().length >= 2 && (

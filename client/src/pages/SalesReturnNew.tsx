@@ -503,7 +503,7 @@ export default function SalesReturnNew() {
       {/* شريط أدوات المرجع — بحث حيّ برقم الفاتورة (جزئي) أو اسم العميل + زر تحميل البنود. */}
       <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-xl border bg-card px-4 py-2.5 text-sm">
         <span className="font-semibold text-muted-foreground">المرجع:</span>
-        <div ref={refBoxRef} className="relative w-64">
+        <div ref={refBoxRef} className="relative w-full sm:w-80">
           <Input
             ref={searchRef}
             dir="ltr"
@@ -524,7 +524,7 @@ export default function SalesReturnNew() {
               }
             }}
             placeholder="اكتب رقم الفاتورة أو جزءاً منه…"
-            className={cn("h-9 ps-[4.9rem] font-mono", barcodeSearchInputClass)}
+            className={cn("h-9 font-mono", barcodeSearchInputClass)}
           />
           <BarcodeSearchCue />
           {refOpen && debouncedRefQuery.length >= 2 && (

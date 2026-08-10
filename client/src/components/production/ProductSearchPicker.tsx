@@ -54,7 +54,7 @@ export function ProductSearchPicker({
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => barcodeInput.handleKeyDown(e, setQ)}
           placeholder={placeholder ?? "ابحث بالاسم/SKU/الباركود…"}
-          className={cn("ps-[4.9rem]", barcodeSearchInputClass)}
+          className={barcodeSearchInputClass}
         />
         <BarcodeSearchCue />
         {q.trim() && (variants.length > 0 || res.isFetching) && (

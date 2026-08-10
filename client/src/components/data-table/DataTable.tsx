@@ -319,9 +319,9 @@ export function DataTable<T, K = string>({
       {(showSearch || toolbar || table.getAllLeafColumns().length > 5) && (
         <div className="flex items-center gap-2 justify-between flex-wrap">
           {showSearch ? (
-            <div className="relative w-full max-w-xs">
+            <div className={cn("relative w-full", barcodeSearch ? "max-w-sm" : "max-w-xs")}>
               <Input
-                className={cn(barcodeSearch && `ps-[4.9rem] ${barcodeSearchInputClass}`)}
+                className={cn(barcodeSearch && barcodeSearchInputClass)}
                 placeholder={searchPlaceholder}
                 value={serverSearch ? serverSearch.value : globalFilter}
                 onChange={(e) => {

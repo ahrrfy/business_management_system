@@ -699,10 +699,10 @@ export default function MyStocktakeWorkspace() {
                 الكمية الفعلية.
               </CardDescription>
             </div>
-            <div className="flex w-full items-center gap-2 sm:w-auto">
-              <div className="relative min-w-0 flex-1 sm:w-80 sm:flex-none">
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+              <div className="relative w-full min-w-0 flex-1 sm:w-80 sm:flex-none">
                 <Search
-                  className="absolute right-3 top-3 size-4 text-muted-foreground"
+                  className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground"
                   aria-hidden
                 />
                 <Input
@@ -717,13 +717,13 @@ export default function MyStocktakeWorkspace() {
                     }
                   }}
                   placeholder="بحث بالاسم أو SKU أو رقم الباركود…"
-                  className={cn("h-11 pr-9 ps-[4.9rem]", barcodeSearchInputClass)}
+                  className={cn("h-11 pl-9", barcodeSearchInputClass)}
                 />
                 <BarcodeSearchCue />
               </div>
               <Button
                 type="button"
-                className="h-11 shrink-0 gap-1.5"
+                className="h-11 w-full shrink-0 gap-1.5 sm:w-auto"
                 disabled={!canCount}
                 onClick={() => setCameraOpen(true)}
               >

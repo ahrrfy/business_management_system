@@ -571,7 +571,7 @@ export default function WorkOrderNew() {
                     if (e.key === "Enter") { e.preventDefault(); handleBarcodeEnter(); }
                   }}
                   placeholder="امسح الباركود (Enter للإضافة) أو ابحث بالاسم/الـSKU"
-                  className={cn("ps-[4.9rem]", barcodeSearchInputClass)}
+                  className={barcodeSearchInputClass}
                 />
                 <BarcodeSearchCue />
                 {posList.isFetching && (
