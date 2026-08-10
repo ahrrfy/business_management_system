@@ -44,10 +44,11 @@ import {
 } from "@shared/permissions";
 import { InvoiceDigitalCards } from "@/components/digitalCards/InvoiceDigitalCards";
 import { useEffect, useState } from "react";
-import { Link, useParams, useSearch } from "wouter";
+import { Link, useLocation, useParams, useSearch } from "wouter";
 import {
   ChevronDown,
   FileText,
+  FileWarning,
   Gift,
   History,
   Package,
@@ -144,6 +145,7 @@ function SummaryRow({
 export default function InvoiceDetail() {
   const params = useParams();
   const search = useSearch();
+  const [, navigate] = useLocation();
   const invoiceId = Number(params.id);
   const utils = trpc.useUtils();
   const inv = trpc.sales.get.useQuery(
@@ -281,6 +283,16 @@ export default function InvoiceDetail() {
     );
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
+  // «تصحيح كامل» (عكس وإعادة إصدار، 0168) — أضيق من «تعديل البيانات»: يُقصَر على فاتورة بيعٍ
+  // حيّة بلا مرتجعات ولا توصيلٍ نشط ولا أمر شغل (الخادم يرفض البقية برسالةٍ واضحة؛ هذا فلترٌ
+  // بصريّ يمنع رحلةً تنتهي برفض). المُصحَّحة سابقاً (SUPERSEDED) والملغاة مستبعَدتان.
+  const canFullCorrect =
+    canCorrectInvoice &&
+    data.status !== "CANCELLED" &&
+    data.status !== "SUPERSEDED" &&
+    D(data.returnedTotal ?? "0").isZero() &&
+    data.sourceType !== "WORKORDER" &&
+    !data.consignmentNumber;
 
   function openCorrection() {
     setCorrectionNotes(data.notes ?? "");
@@ -484,10 +496,20 @@ export default function InvoiceDetail() {
               remaining: remaining.toFixed(2),
             })}
           />
+          {canFullCorrect && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate(`/invoices/${invoiceId}/correct`)}
+            >
+              <FileWarning aria-hidden className="size-4" />
+              تصحيح كامل
+            </Button>
+          )}
           {canCorrectInvoice && (
             <Button variant="outline" size="sm" onClick={openCorrection}>
               <Pencil aria-hidden className="size-4" />
-              تصحيح الفاتورة
+              تعديل البيانات
             </Button>
           )}
           <Button

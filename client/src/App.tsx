@@ -283,6 +283,8 @@ export default function App() {
       <Route path="/barcode-labels"><Redirect to="/inventory?tab=barcodes" /></Route>
       <Route path="/invoices"><Shell><SalesHub /></Shell></Route>
       <Route path="/sales/new"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
+      {/* تصحيح الفاتورة (0168): نفس شاشة البيع في وضع التصحيح (عكس + إعادة إصدار) — مديريّ فقط. */}
+      <Route path="/invoices/:id/correct"><Shell><RequireRole roles={["admin","manager"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
       <Route path="/invoices/:id"><Shell><InvoiceDetail /></Shell></Route>
       <Route path="/quotations"><Redirect to="/crm?tab=quotations" /></Route>
       {/* إنشاء عرض السعر salesManagerProcedure(["manager"],"sales","FULL") — مرآة بوّابة الخادم (الكاشير كان يصل لمحرّر يفشل حفظه بـ403) */}
