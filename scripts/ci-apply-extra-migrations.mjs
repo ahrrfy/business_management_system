@@ -107,6 +107,9 @@ const EXTRA_MIGRATIONS = [
   // 6/8 (0157): TELECOM 'ala receipts.paymentMethod — nafs qissat 0150 (push la
   // yuwassi' enum). 'amud mukhtalif 'an 0150/0129 lakin al-qa'ida wahida: al-akhir.
   "drizzle/migrations/extras/0157_receipt_payment_method_telecom.sql",
+  // 10/8 (0169): SUPERSEDED 'ala invoices.invoiceStatus (tashih al-fatura) — nafs
+  // qissat 0150/0157 (push la yuwassi' enum). yabqa akhir al-qa'ima.
+  "drizzle/migrations/extras/0169_invoice_status_superseded.sql",
 ];
 
 const url = process.env.DATABASE_URL;
