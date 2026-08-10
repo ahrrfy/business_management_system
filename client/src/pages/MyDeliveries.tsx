@@ -171,7 +171,12 @@ export default function MyDeliveries() {
                     <SourceTag kind={row.kind} />
                     <span className="text-muted-foreground">{row.customerName ?? ""}</span>
                   </span>
-                  <span className="tabular-nums text-muted-foreground" dir="ltr">{money(row.orderTotal)} د.ع</span>
+                  {/* ١٠/٨: orderTotal = ما دفعه الزبون عند الباب (بضاعة + أجرتك) — نوسمه كي لا
+                      يُقرأ رقماً مغايراً لما ورّدته (البضاعة وحدها). */}
+                  <span className="flex flex-col items-end">
+                    <span className="tabular-nums text-muted-foreground" dir="ltr">{money(row.orderTotal)} د.ع</span>
+                    <span className="text-[10px] text-muted-foreground">قبضته من الزبون عند الباب</span>
+                  </span>
                 </div>
               ))}
             </section>

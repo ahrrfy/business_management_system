@@ -25,12 +25,16 @@ function db() {
 let orderSeq = 0;
 async function seedOrder(o: {
   branchId: number; status: s.OnlineOrder["status"]; total: string; date: string; gov?: string | null;
+  /** أجرة شحن (تمرير كامل): total = subtotal + shipping؛ الإيراد يجب أن يعتمد subtotal لا total. */
+  shipping?: string;
 }) {
   orderSeq++;
+  const shipping = o.shipping ?? "0";
+  const subtotal = (Number(o.total) - Number(shipping)).toFixed(2);
   const res = await db().insert(s.onlineOrders).values({
     orderNumber: `ORD-${String(orderSeq).padStart(4, "0")}`,
     customerId: 1, branchId: o.branchId,
-    subtotal: o.total, shippingCost: "0", taxAmount: "0", total: o.total,
+    subtotal, shippingCost: shipping, taxAmount: "0", total: o.total,
     status: o.status, orderDate: new Date(o.date), governorate: o.gov ?? null,
   });
   return extractInsertId(res);
@@ -111,6 +115,23 @@ describe("getStoreAnalytics — المؤشّرات", () => {
     const a = await getStoreAnalytics({ scopedBranchId: null, fromYmd: FROM, toYmd: TO });
     expect(a.kpis.totalOrders).toBe(6); // + طلب الفرع الآخر
     expect(a.kpis.revenue).toBe("124999.00"); // 25000 + 99999
+  });
+
+  it("التمرير الكامل (١٠/٨): الإيراد = البضاعة (subtotal) لا إجمالي الطلب — الشحن للمندوب مُستبعَد", async () => {
+    // طلبان بشحن ٥٬٠٠٠ لكلٍّ: إجمالي الطلب (بضاعة+شحن) = ما يدفعه الزبون للمندوب؛ إيراد المكتبة
+    // = البضاعة وحدها. لولا الإصلاح لجُمع total فتضخّم الإيراد بمقدار الشحن (مالُ تمرير).
+    const d = await seedOrder({ branchId: STORE, status: "DELIVERED", total: "15000", shipping: "5000", date: "2026-07-03T10:00:00Z", gov: "بغداد" });
+    await seedOrder({ branchId: STORE, status: "CONFIRMED", total: "25000", shipping: "5000", date: "2026-07-03T11:00:00Z", gov: "بغداد" });
+    await seedItem(d, 1, 1, "10000");
+    const a = await getStoreAnalytics({ scopedBranchId: STORE, fromYmd: FROM, toYmd: TO });
+    // البضاعة: 10,000 (مُسلَّم) + 20,000 (مؤكَّد) = 30,000 — لا 40,000 (الذي يشمل شحن 10,000).
+    expect(a.kpis.revenue).toBe("30000.00");
+    expect(a.kpis.deliveredRevenue).toBe("10000.00"); // بضاعة المُسلَّم وحدها لا 15,000
+    expect(a.kpis.aov).toBe("15000.00"); // 30,000 / 2
+    const day = a.trend.find((t) => t.ymd === "2026-07-03")!;
+    expect(day.revenue).toBe("30000.00"); // الاتّجاه أيضاً بالبضاعة
+    const byGov = Object.fromEntries(a.byGovernorate.map((g) => [g.governorate, g]));
+    expect(byGov["بغداد"].revenue).toBe("30000.00"); // التوزيع الجغرافيّ أيضاً
   });
 });
 
