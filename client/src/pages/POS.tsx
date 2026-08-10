@@ -1990,7 +1990,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
       {openingActive && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: C.amberSoft, borderBottom: `1px solid ${C.border}`, fontSize: 12, fontWeight: 700, color: "#7a5200", flexShrink: 0 }}>
           <AlertTriangle aria-hidden size={13} />
-          وضع الافتتاح فعّال{openingEndsYmd ? ` حتى نهاية يوم ${openingEndsYmd}` : ""} — المنتج غير المجرود يُباع بسداد كامل نقداً أو بالبطاقة حتى لو نفد (ينزل بالسالب حتى جرده الافتتاحي)؛ الآجل والدفعة الجزئية صارمان.
+          وضع الافتتاح فعّال{openingEndsYmd ? ` حتى نهاية يوم ${openingEndsYmd}` : ""} — المنتج غير المجرود يُباع حتى لو نفد رصيده (ينزل بالسالب حتى جرده الافتتاحي): نقداً/بطاقةً بسدادٍ كامل، أو آجلاً لعميلٍ محدَّد (يُسجَّل ذمّةً كاملة). البيع بلا عميلٍ محدَّد يبقى صارماً.
         </div>
       )}
 

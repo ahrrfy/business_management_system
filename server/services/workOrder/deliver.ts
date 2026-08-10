@@ -7,6 +7,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
+import { readOpeningWindowState } from "../openingModeService";
 import { linkSoleTargetCollectionsToInvoice } from "../reception/deposits";
 import { openShiftIdTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
@@ -71,8 +72,10 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       throw new TRPCError({ code: "BAD_REQUEST", message: "طلب الخدمة الآجل يتطلب عميلاً محدداً" });
 
     // H5: فحص حدّ الائتمان على الجزء الآجل قبل إنشاء الفاتورة (يَرمي FORBIDDEN عند التجاوز).
+    // وضع الافتتاح (قرار المالك ١٠/٨): أثناء النافذة الفعّالة يُعفى تسليم أمر الشغل من حاجز الائتمان —
+    // الجزء الآجل يُرحَّل ذمّةً على العميل (AR) كالمعتاد دون رفض. مؤقّتٌ وينتهي بانتهاء النافذة.
     const unpaidPortion = round2(salePrice.minus(totalPaid));
-    if (wo.customerId && unpaidPortion.gt(0)) {
+    if (wo.customerId && unpaidPortion.gt(0) && !(await readOpeningWindowState(tx)).active) {
       await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId));
     }
 

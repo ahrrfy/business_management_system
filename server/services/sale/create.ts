@@ -39,8 +39,13 @@ import { getUnitPrice, tryGetUnitPrice, resolveTier, type PriceTier } from "../p
 import { type Actor, requireDb, withTx } from "../tx";
 import type { Tx } from "../../db";
 import { flowNotify } from "../whatsapp";
+import { readOpeningWindowState } from "../openingModeService";
 import { userNameSnapshot } from "../userSnapshot";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
+
+// قنوات الاستقبال/التنفيذ المشمولة بإعفاء الائتمان في «وضع الافتتاح» (قرار المالك ١٠/٨):
+// البيع المباشر (POS) والطلبات (ORDER) وأوامر الشغل (WORKORDER). ONLINE (المتجر) خارج النطاق.
+const OPENING_RECEPTION_CHANNELS = new Set(["POS", "ORDER", "WORKORDER"]);
 
 /**
  * نواة البيع الذرّية — تعمل داخل معاملة موجودة.
@@ -571,7 +576,22 @@ export async function createSaleInTx(
     //     B5 (١٩/٦/٢٦): الموافقة لم تعد blanket — تحتاج إمّا (أ) creditApprovalId جاهز، أو (ب) managerOverrideByUserId
     //     يكون الـrouter قد وثّق هويته. الخدمة في حالة (ب) تُنشئ approval ذرّياً داخل نفس withTx.
     let effectiveApprovalId = input.creditApprovalId;
-    if (unpaid.gt(0) && input.customerId) {
+    // وضع الافتتاح — إعفاء حاجز الائتمان (قرار المالك ١٠/٨): أثناء النافذة الفعّالة تُعفى قنوات
+    // الاستقبال/التنفيذ من فحص السقف/الموافقة. الدَّين يُرحَّل ذمّةً كاملة على العميل (AR) لكنه لا
+    // يُرفض — يُرخَّى الحاجز لا التسجيل. مؤقّتٌ وينتهي بانتهاء النافذة (البيع الآجل يظلّ يتطلّب عميلاً).
+    const openingCreditWaiver =
+      unpaid.gt(0) &&
+      !!input.customerId &&
+      !input.allowNegativeStock &&
+      input.codDispatchPending !== true && // COD يبقى محكوماً بحدّ ائتمان العميل المسجَّل (main).
+      OPENING_RECEPTION_CHANNELS.has(input.sourceType ?? "POS") &&
+      (await readOpeningWindowState(tx)).active;
+    if (openingCreditWaiver) {
+      logger.info(
+        { customerId: input.customerId, unpaid: unpaid.toFixed(2), sourceType: input.sourceType ?? "POS" },
+        "sale: إعفاء حدّ الائتمان أثناء وضع الافتتاح — الذمّة تُرحَّل على العميل كاملةً",
+      );
+    } else if (unpaid.gt(0) && input.customerId) {
       if (input.creditApproved) {
         if (!input.creditApprovalId && !input.managerOverrideByUserId) {
           throw new TRPCError({
@@ -748,12 +768,23 @@ export async function createSaleInTx(
     // (المندوب يقبض من الزبون) فـunpaid>0 دائماً — لكن في وضع الافتتاح السالب يعني «غير مجرود»
     // لا «نافد»، والمندوب يحمل الصنف الموجود فعلياً. فنسمح به **بتأكيد توفّرٍ فيزيائيّ صريح**
     // من الموظّف؛ تبقى رِيلات الأمان (تكلفة>0 + سقف الكمية + استثناء الأمانة) نافذةً كما هي أدناه.
+    // توسعة قرار المالك (١٠/٨): من «POS مسدّد كاملاً» إلى **كل قنوات الاستقبال/التنفيذ**.
+    // نُبقي شروط main الأدقّ للـPOS (كاونتر مسدّد نقداً/بطاقة + COD بتأكيد التوفّر) كما هي دون
+    // تخفيف، ونُضيف: قنوات ORDER/WORKORDER (بأي دفع) + بيع POS آجل لعميلٍ محدَّد (البيع الآجل من
+    // الاستقبال). الريلات الصنفية أدناه (تكلفة>0 + سقف + غير مُفتتَح + استثناء الأمانة) تبقى نافذة.
     const openingBaseEligible =
       !input.allowNegativeStock &&
-      (input.sourceType ?? "POS") === "POS" &&
       (
-        ((input.payment?.method === "CASH" || input.payment?.method === "CARD") && unpaid.lte(0))
-        || (input.codDispatchPending === true && input.openingSellUnavailableConfirmed === true)
+        input.sourceType === "ORDER" ||
+        input.sourceType === "WORKORDER" ||
+        ((input.sourceType ?? "POS") === "POS" &&
+          (
+            ((input.payment?.method === "CASH" || input.payment?.method === "CARD") && unpaid.lte(0))
+            || (input.codDispatchPending === true && input.openingSellUnavailableConfirmed === true)
+            // بيع POS آجل من الاستقبال لعميلٍ محدَّد (توسعة ١٠/٨) — يُستثنى COD صراحةً كي يبقى
+            // محكوماً بحارس تأكيد التوفّر الفيزيائيّ الخاصّ به (main ٨/٨)، لا يتجاوزه حملُه عميلاً.
+            || (unpaid.gt(0) && !!input.customerId && input.codDispatchPending !== true)
+          ))
       );
     const readOpeningWindow = async () => {
       const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
@@ -792,7 +823,7 @@ export async function createSaleInTx(
           referenceType: "INVOICE",
           referenceId: invoiceId,
           createdBy: actor.userId,
-          notes: openingAllow ? "وضع الافتتاح — بيع مسدّد بالكامل مسموح بالسالب لصنف غير مُفتتَح" : undefined,
+          notes: openingAllow ? "وضع الافتتاح — بيع/طلب لقناة استقبال مسموح بالسالب لصنف غير مُفتتَح" : undefined,
           // أوفلاين (ش٣): البيع الملتقَط دون اتصال يُسجَّل ولو هبط الرصيد تحت الصفر — البضاعة
           // خرجت فعلاً (قرار مالك: سالب موسوم بـoriginatedOffline، يظهر في تقرير المراجعة).
           // **استثناء بضاعة الأمانة (§٥-ج، مرآة حارس وضع الافتتاح أعلاه):** لا بيع بالسالب لصنف
@@ -808,8 +839,10 @@ export async function createSaleInTx(
         if (e instanceof TRPCError && e.code === "CONFLICT" && e.message.includes("المخزون غير كافٍ")) {
           const win = openingWindow ?? (await readOpeningWindow());
           if (win) {
-            const hint = !openingBaseEligible
-              ? "وضع الافتتاح فعّال، لكن البيع بالسالب للصنف غير المجرود يتطلّب سداداً كاملاً نقداً أو بالبطاقة من قناة البيع المباشر — الآجل والدفعة الجزئية وطرق الدفع الأخرى وقنوات الطلبات تبقى صارمة"
+            const hint = (input.codDispatchPending === true && input.openingSellUnavailableConfirmed !== true)
+              ? "طلب توصيل COD لصنفٍ غير مجرود أثناء الافتتاح يتطلّب تأكيد توفّره فيزيائياً صراحةً قبل الإرسال"
+              : !openingBaseEligible
+              ? "وضع الافتتاح فعّال، لكن البيع بالسالب للصنف غير المجرود متاحٌ لقنوات الاستقبال/التنفيذ فقط (بيع مباشر مسدّد أو آجل لعميلٍ محدَّد، أو طلب/أمر شغل) — هذه القناة/الحالة خارج النطاق"
               : qty > win.maxQty
                 ? `الكمية تتجاوز سقف السطر السالب في وضع الافتتاح (${win.maxQty} وحدة أساس)`
                 : !money(deductCosts.get(vid) ?? "0").gt(0)
