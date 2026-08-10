@@ -5,8 +5,18 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Input } from "@/components/ui/input";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import {
+  ShiftCashReconciliation,
+  adaptShiftCashReconciliation,
+} from "@/components/financial";
 import { useClipboard } from "@/hooks/useClipboard";
 import { formatZReportAsText } from "@/lib/copy/formatters";
 import { fmtDateTime } from "@/lib/date";
@@ -32,7 +42,10 @@ const PAGE = 50;
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const STATUS_LABEL: Record<string, string> = { OPEN: "مفتوحة", CLOSED: "مغلقة" };
+const STATUS_LABEL: Record<string, string> = {
+  OPEN: "مفتوحة",
+  CLOSED: "مغلقة",
+};
 const STATUS_CLS: Record<string, string> = {
   OPEN: "badge-status-pending",
   CLOSED: "badge-status-active",
@@ -43,8 +56,7 @@ const SHIFT_TYPE_LABEL: Record<string, string> = {
   PRINT_SERVICES: "خدمات طباعة",
 };
 
-const fmtDT = (d: string | number | Date | null | undefined) =>
-  fmtDateTime(d);
+const fmtDT = (d: string | number | Date | null | undefined) => fmtDateTime(d);
 
 // نوع الصفّ صريحاً (الإجراء يُعيد {rows,total}) — حسمٌ يُجنّب فشل استدلال T في fetchAllPaged.
 type Row = RouterOutputs["shifts"]["list"]["rows"][number];
@@ -54,8 +66,12 @@ export default function Shifts() {
   const debouncedQuery = useDebouncedValue(query.trim(), 250);
   const [branchId, setBranchId] = useState<number | "">("");
   const [status, setStatus] = useState<"" | "OPEN" | "CLOSED">("");
-  const [shiftType, setShiftType] = useState<"" | "RETAIL" | "RECEPTION" | "PRINT_SERVICES">("");
-  const [varianceState, setVarianceState] = useState<"" | "WITH_VARIANCE" | "MATCHED" | "UNRECONCILED">("");
+  const [shiftType, setShiftType] = useState<
+    "" | "RETAIL" | "RECEPTION" | "PRINT_SERVICES"
+  >("");
+  const [varianceState, setVarianceState] = useState<
+    "" | "WITH_VARIANCE" | "MATCHED" | "UNRECONCILED"
+  >("");
   // فلتر الفترة خادمي (openedAt) — أسماء dateFrom/dateTo لتفادي تصادم from/to الترقيم أدناه.
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -91,10 +107,14 @@ export default function Shifts() {
 
   const branchName = useMemo(() => {
     const m = new Map((branches.data ?? []).map((b) => [Number(b.id), b.name]));
-    return (id: number | null | undefined) => (id != null ? m.get(Number(id)) ?? `#${id}` : "—");
+    return (id: number | null | undefined) =>
+      id != null ? (m.get(Number(id)) ?? `#${id}`) : "—";
   }, [branches.data]);
 
-  const setFilter = <T,>(fn: (v: T) => void, v: T) => { fn(v); setPage(0); };
+  const setFilter = <T,>(fn: (v: T) => void, v: T) => {
+    fn(v);
+    setPage(0);
+  };
 
   // الفرق: موجب = فائض (أخضر)، سالب = عجز (أحمر)، صفر/غير محسوب = محايد.
   const varianceCls = (v: string | null) => {
@@ -119,9 +139,19 @@ export default function Shifts() {
     { shiftId: closingShiftId ?? 0 },
     { enabled: closingShiftId != null },
   );
-  const closeExpected = closeReportQ.data ? D(closeReportQ.data.expectedCash) : null;
-  const closeDiff = closeExpected != null && closeCounted ? D(closeCounted).minus(closeExpected) : null;
+  const closeExpected = closeReportQ.data
+    ? D(closeReportQ.data.expectedCash)
+    : null;
+  const closeDiff =
+    closeExpected != null && closeCounted
+      ? D(closeCounted).minus(closeExpected)
+      : null;
   const closeHasVariance = closeDiff != null && closeDiff.abs().gt("0.005");
+  const closeReconciliation = adaptShiftCashReconciliation(closeReportQ.data, {
+    countedCash: closeCounted || null,
+    variance: closeDiff?.toFixed(2) ?? null,
+    isMatched: closeDiff == null ? null : !closeHasVariance,
+  });
 
   const closeShiftM = trpc.shifts.close.useMutation({
     onSuccess: async () => {
@@ -142,10 +172,18 @@ export default function Shifts() {
     setPrinting(shiftId);
     try {
       const rep = await utils.shifts.report.fetch({ shiftId });
-      if (!rep) { notify.err("تعذّر جلب تقرير الوردية"); return; }
+      if (!rep) {
+        notify.err("تعذّر جلب تقرير الوردية");
+        return;
+      }
       const sh = rep.shift as {
-        openingBalance: string; expectedCash: string | null; countedCash: string | null; variance: string | null;
-        status: string; openedAt: string | Date; closedAt: string | Date | null;
+        openingBalance: string;
+        expectedCash: string | null;
+        countedCash: string | null;
+        variance: string | null;
+        status: string;
+        openedAt: string | Date;
+        closedAt: string | Date | null;
       };
       const open = sh.status === "OPEN";
       // اسم الكاشير واسم الفرع من صف الوردية المعروض
@@ -154,43 +192,43 @@ export default function Shifts() {
       const bName = branchName(row?.branchId);
 
       const payments = (rep.payments ?? []).map((p) => ({
-        method:    p.method,
+        method: p.method,
         direction: p.direction as "IN" | "OUT",
-        count:     Number(p.count),
-        total:     p.total,
+        count: Number(p.count),
+        total: p.total,
       }));
 
       if (open) {
         // وردية مفتوحة: تقرير مبدئي بالتصميم الجديد (النقد المتوقع = الرصيد الافتتاحي مبدئياً)
         await printShiftClose({
           shiftId,
-          openedAt:       sh.openedAt,
-          closedAt:       new Date(),
+          openedAt: sh.openedAt,
+          closedAt: new Date(),
           cashierName,
-          branchName:     bName,
+          branchName: bName,
           openingBalance: sh.openingBalance,
-          invoiceCount:   rep.invoiceCount,
-          salesTotal:     rep.salesTotal,
+          invoiceCount: rep.invoiceCount,
+          salesTotal: rep.salesTotal,
           payments,
-          expectedCash:   sh.expectedCash ?? sh.openingBalance,
-          countedCash:    sh.countedCash  ?? "0",
-          variance:       sh.variance     ?? "0",
+          expectedCash: sh.expectedCash ?? sh.openingBalance,
+          countedCash: sh.countedCash ?? "0",
+          variance: sh.variance ?? "0",
         });
       } else {
         // وردية مغلقة: Z-Report نهائي
         await printShiftClose({
           shiftId,
-          openedAt:       sh.openedAt,
-          closedAt:       sh.closedAt ? new Date(sh.closedAt) : new Date(),
+          openedAt: sh.openedAt,
+          closedAt: sh.closedAt ? new Date(sh.closedAt) : new Date(),
           cashierName,
-          branchName:     bName,
+          branchName: bName,
           openingBalance: sh.openingBalance,
-          invoiceCount:   rep.invoiceCount,
-          salesTotal:     rep.salesTotal,
+          invoiceCount: rep.invoiceCount,
+          salesTotal: rep.salesTotal,
           payments,
-          expectedCash:   sh.expectedCash ?? "0",
-          countedCash:    sh.countedCash  ?? "0",
-          variance:       sh.variance     ?? "0",
+          expectedCash: sh.expectedCash ?? "0",
+          countedCash: sh.countedCash ?? "0",
+          variance: sh.variance ?? "0",
         });
       }
     } catch (e) {
@@ -205,10 +243,17 @@ export default function Shifts() {
     setCopying(shiftId);
     try {
       const rep = await utils.shifts.report.fetch({ shiftId });
-      if (!rep) { notify.err("تعذّر جلب تقرير الوردية"); return; }
+      if (!rep) {
+        notify.err("تعذّر جلب تقرير الوردية");
+        return;
+      }
       const sh = rep.shift as {
-        openingBalance: string; expectedCash: string | null; countedCash: string | null; variance: string | null;
-        openedAt: string | Date; closedAt: string | Date | null;
+        openingBalance: string;
+        expectedCash: string | null;
+        countedCash: string | null;
+        variance: string | null;
+        openedAt: string | Date;
+        closedAt: string | Date | null;
       };
       // النَقد الداخل/الخارج = مَجموع الحَركات النَقدِية (CASH) حَسَب الاتجاه.
       let cashIn = D(0);
@@ -237,8 +282,14 @@ export default function Shifts() {
     }
   }
 
-  const activeFilterCount = [branchId, status, shiftType, varianceState, dateFrom, dateTo]
-    .filter((value) => value !== "").length;
+  const activeFilterCount = [
+    branchId,
+    status,
+    shiftType,
+    varianceState,
+    dateFrom,
+    dateTo,
+  ].filter((value) => value !== "").length;
   const anyFilter = query.trim() !== "" || activeFilterCount > 0;
 
   function resetFilters() {
@@ -264,17 +315,28 @@ export default function Shifts() {
           : varianceState === "UNRECONCILED"
             ? "المطابقة: غير محسوبة"
             : null,
-    ].filter(Boolean).join(" · ");
+    ]
+      .filter(Boolean)
+      .join(" · ");
 
     const opened = printReportDoc({
       title: "سجلّ الورديات",
       headerExtra: [
-        { label: "الفرع", value: branchId ? branchName(Number(branchId)) : "كل الفروع" },
+        {
+          label: "الفرع",
+          value: branchId ? branchName(Number(branchId)) : "كل الفروع",
+        },
         {
           label: "الفترة",
-          value: dateFrom || dateTo ? `${dateFrom || "البداية"} — ${dateTo || "اليوم"}` : "كل الفترات",
+          value:
+            dateFrom || dateTo
+              ? `${dateFrom || "البداية"} — ${dateTo || "اليوم"}`
+              : "كل الفترات",
         },
-        { label: "نطاق الطباعة", value: total === 0 ? "لا نتائج" : `${from}–${to} من ${total}` },
+        {
+          label: "نطاق الطباعة",
+          value: total === 0 ? "لا نتائج" : `${from}–${to} من ${total}`,
+        },
         ...(filterLabels ? [{ label: "الفلاتر", value: filterLabels }] : []),
       ],
       note: "تطبع هذه النسخة الصفحة المعروضة المطابقة للفلاتر. استخدم تصدير Excel للحصول على جميع الصفوف المطابقة.",
@@ -301,7 +363,10 @@ export default function Shifts() {
         status: STATUS_LABEL[row.status] ?? row.status,
       })),
     });
-    if (!opened) notify.err("حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
+    if (!opened)
+      notify.err(
+        "حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.",
+      );
   }
   const from = total === 0 ? 0 : page * PAGE + 1;
   const to = Math.min((page + 1) * PAGE, total);
@@ -335,7 +400,16 @@ export default function Shifts() {
             filters={
               <>
                 <FilterField label="الحالة">
-                  <select className={selectCls} value={status} onChange={(e) => setFilter(setStatus, e.target.value as "" | "OPEN" | "CLOSED")}>
+                  <select
+                    className={selectCls}
+                    value={status}
+                    onChange={(e) =>
+                      setFilter(
+                        setStatus,
+                        e.target.value as "" | "OPEN" | "CLOSED",
+                      )
+                    }
+                  >
                     <option value="">الكل</option>
                     <option value="OPEN">مفتوحة</option>
                     <option value="CLOSED">مغلقة</option>
@@ -345,7 +419,16 @@ export default function Shifts() {
                   <select
                     className={selectCls}
                     value={shiftType}
-                    onChange={(e) => setFilter(setShiftType, e.target.value as "" | "RETAIL" | "RECEPTION" | "PRINT_SERVICES")}
+                    onChange={(e) =>
+                      setFilter(
+                        setShiftType,
+                        e.target.value as
+                          | ""
+                          | "RETAIL"
+                          | "RECEPTION"
+                          | "PRINT_SERVICES",
+                      )
+                    }
                   >
                     <option value="">الكل</option>
                     <option value="RETAIL">تجزئة</option>
@@ -357,7 +440,16 @@ export default function Shifts() {
                   <select
                     className={selectCls}
                     value={varianceState}
-                    onChange={(e) => setFilter(setVarianceState, e.target.value as "" | "WITH_VARIANCE" | "MATCHED" | "UNRECONCILED")}
+                    onChange={(e) =>
+                      setFilter(
+                        setVarianceState,
+                        e.target.value as
+                          | ""
+                          | "WITH_VARIANCE"
+                          | "MATCHED"
+                          | "UNRECONCILED",
+                      )
+                    }
                   >
                     <option value="">الكل</option>
                     <option value="WITH_VARIANCE">بفرق نقدي</option>
@@ -366,10 +458,21 @@ export default function Shifts() {
                   </select>
                 </FilterField>
                 <FilterField label="الفرع">
-                  <select className={selectCls} value={branchId} onChange={(e) => setFilter(setBranchId, e.target.value ? Number(e.target.value) : "")}>
+                  <select
+                    className={selectCls}
+                    value={branchId}
+                    onChange={(e) =>
+                      setFilter(
+                        setBranchId,
+                        e.target.value ? Number(e.target.value) : "",
+                      )
+                    }
+                  >
                     <option value="">كل الفروع</option>
                     {(branches.data ?? []).map((b) => (
-                      <option key={b.id} value={b.id}>{b.name}</option>
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
                     ))}
                   </select>
                 </FilterField>
@@ -395,7 +498,8 @@ export default function Shifts() {
                     onChange={(e) => {
                       const value = e.target.value;
                       setFilter(setDateTo, value);
-                      if (value && dateFrom && value < dateFrom) setDateFrom(value);
+                      if (value && dateFrom && value < dateFrom)
+                        setDateFrom(value);
                     }}
                   />
                 </FilterField>
@@ -420,160 +524,292 @@ export default function Shifts() {
                         limit,
                         offset,
                       })
-                      .then((r) => ({ rows: (r.rows ?? []) as Row[], total: r.total })),
+                      .then((r) => ({
+                        rows: (r.rows ?? []) as Row[],
+                        total: r.total,
+                      })),
                   { pageSize: 200 },
                 ),
               columns: [
                 { key: "id", header: "رقم الوردية" },
-                { key: "userName", header: "الموظف", map: (r) => r.userName ?? `#${r.userId}` },
-                { key: "branch", header: "الفرع", map: (r) => branchName(r.branchId) },
-                { key: "shiftType", header: "نوع الوردية", map: (r) => SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType },
-                { key: "openedAt", header: "فُتحت", map: (r) => fmtDT(r.openedAt) },
-                { key: "closedAt", header: "أُغلقت", map: (r) => fmtDT(r.closedAt) },
-                { key: "openingBalance", header: "الافتتاحي", map: (r) => Number(r.openingBalance ?? 0) },
-                { key: "expectedCash", header: "المتوقع", map: (r) => (r.expectedCash != null ? Number(r.expectedCash) : "") },
-                { key: "countedCash", header: "المعدود", map: (r) => (r.countedCash != null ? Number(r.countedCash) : "") },
-                { key: "variance", header: "الفرق", map: (r) => (r.variance != null ? Number(r.variance) : "") },
-                { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
+                {
+                  key: "userName",
+                  header: "الموظف",
+                  map: (r) => r.userName ?? `#${r.userId}`,
+                },
+                {
+                  key: "branch",
+                  header: "الفرع",
+                  map: (r) => branchName(r.branchId),
+                },
+                {
+                  key: "shiftType",
+                  header: "نوع الوردية",
+                  map: (r) => SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType,
+                },
+                {
+                  key: "openedAt",
+                  header: "فُتحت",
+                  map: (r) => fmtDT(r.openedAt),
+                },
+                {
+                  key: "closedAt",
+                  header: "أُغلقت",
+                  map: (r) => fmtDT(r.closedAt),
+                },
+                {
+                  key: "openingBalance",
+                  header: "الافتتاحي",
+                  map: (r) => Number(r.openingBalance ?? 0),
+                },
+                {
+                  key: "expectedCash",
+                  header: "المتوقع",
+                  map: (r) =>
+                    r.expectedCash != null ? Number(r.expectedCash) : "",
+                },
+                {
+                  key: "countedCash",
+                  header: "المعدود",
+                  map: (r) =>
+                    r.countedCash != null ? Number(r.countedCash) : "",
+                },
+                {
+                  key: "variance",
+                  header: "الفرق",
+                  map: (r) => (r.variance != null ? Number(r.variance) : ""),
+                },
+                {
+                  key: "status",
+                  header: "الحالة",
+                  map: (r) => STATUS_LABEL[r.status] ?? r.status,
+                },
               ],
             }}
           />
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2">#</th>
-                <th className="p-2">الموظف</th>
-                <th className="p-2">الفرع</th>
-                <th className="p-2">النوع</th>
-                <th className="p-2">فُتحت</th>
-                <th className="p-2">أُغلقت</th>
-                <th className="p-2 text-right">الافتتاحي</th>
-                <th className="p-2 text-right">المتوقع</th>
-                <th className="p-2 text-right">المعدود</th>
-                <th className="p-2 text-right">الفرق</th>
-                <th className="p-2 text-center">الحالة</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-t">
-                  <td className="p-2 tabular-nums" dir="ltr">{r.id}</td>
-                  <td className="p-2 font-medium">{r.userName ?? `#${r.userId}`}</td>
-                  <td className="p-2">{branchName(r.branchId)}</td>
-                  <td className="p-2 whitespace-nowrap text-xs">{SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType}</td>
-                  <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDT(r.openedAt)}</td>
-                  <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDT(r.closedAt)}</td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.openingBalance)}</td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{r.expectedCash != null ? fmt(r.expectedCash) : "—"}</td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{r.countedCash != null ? fmt(r.countedCash) : "—"}</td>
-                  <td className={`p-2 text-right font-semibold tabular-nums ${varianceCls(r.variance)}`} dir="ltr">
-                    {r.variance != null ? fmt(r.variance) : "—"}
-                  </td>
-                  <td className="p-2 text-center">
-                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}>
-                      {STATUS_LABEL[r.status] ?? r.status}
-                    </span>
-                  </td>
-                  <td className="p-2 text-center">
-                    {/* زر Z-report + نَسخ مُلَخَّص نَصّي (RowActions inline). */}
-                    <RowActions
-                      mode="inline"
-                      actions={[
-                        {
-                          key: "invoices",
-                          kind: "view",
-                          label: "الفواتير",
-                          icon: Receipt,
-                          onSelect: () => setInvoicesShiftId(r.id),
-                          gate: { module: "sales", level: "READ" },
-                        },
-                        {
-                          key: "zreport",
-                          kind: "print",
-                          label: printing === r.id ? "جارٍ…" : "Z-report",
-                          icon: Printer,
-                          disabled: printing === r.id,
-                          disabledReason: "التقرير قيد التحضير",
-                          onSelect: () => void reprintZ(r.id),
-                          gate: { module: "treasury", level: "READ" },
-                        },
-                        {
-                          key: "copy",
-                          kind: "export",
-                          label: copying === r.id ? "جارٍ…" : "نسخ",
-                          icon: Copy,
-                          disabled: copying === r.id,
-                          disabledReason: "الملخص قيد التحضير",
-                          onSelect: () => void copyZ(r.id),
-                          gate: { module: "treasury", level: "READ" },
-                        },
-                        {
-                          key: "close",
-                          kind: "reverse",
-                          label: "إغلاق",
-                          icon: Lock,
-                          hidden: r.status !== "OPEN" || !isElevated,
-                          onSelect: () => openCloseDialog(r.id),
-                          gate: { roles: ["cashier", "manager"], module: "treasury", level: "READ" },
-                        },
-                      ]}
-                    />
-                  </td>
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="p-2">#</th>
+                  <th className="p-2">الموظف</th>
+                  <th className="p-2">الفرع</th>
+                  <th className="p-2">النوع</th>
+                  <th className="p-2">فُتحت</th>
+                  <th className="p-2">أُغلقت</th>
+                  <th className="p-2 text-right">الافتتاحي</th>
+                  <th className="p-2 text-right">المتوقع</th>
+                  <th className="p-2 text-right">المعدود</th>
+                  <th className="p-2 text-right">الفرق</th>
+                  <th className="p-2 text-center">الحالة</th>
+                  <th className="p-2 text-center">إجراء</th>
                 </tr>
-              ))}
-              {!list.isLoading && rows.length === 0 && (
-                <TableEmptyRow
-                  colSpan={12}
-                  message={total === 0 && !anyFilter ? "لا ورديات بعد. تُفتح الورديات من نقطة البيع." : "لا ورديات مطابقة. غيّر الفلتر."}
-                />
-              )}
-              {list.isLoading && (
-                <tr><td colSpan={12}><LoadingState /></td></tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id} className="border-t">
+                    <td className="p-2 tabular-nums" dir="ltr">
+                      {r.id}
+                    </td>
+                    <td className="p-2 font-medium">
+                      {r.userName ?? `#${r.userId}`}
+                    </td>
+                    <td className="p-2">{branchName(r.branchId)}</td>
+                    <td className="p-2 whitespace-nowrap text-xs">
+                      {SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType}
+                    </td>
+                    <td
+                      className="p-2 text-xs whitespace-nowrap tabular-nums"
+                      dir="ltr"
+                    >
+                      {fmtDT(r.openedAt)}
+                    </td>
+                    <td
+                      className="p-2 text-xs whitespace-nowrap tabular-nums"
+                      dir="ltr"
+                    >
+                      {fmtDT(r.closedAt)}
+                    </td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">
+                      {fmt(r.openingBalance)}
+                    </td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">
+                      {r.expectedCash != null ? fmt(r.expectedCash) : "—"}
+                    </td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">
+                      {r.countedCash != null ? fmt(r.countedCash) : "—"}
+                    </td>
+                    <td
+                      className={`p-2 text-right font-semibold tabular-nums ${varianceCls(r.variance)}`}
+                      dir="ltr"
+                    >
+                      {r.variance != null ? fmt(r.variance) : "—"}
+                    </td>
+                    <td className="p-2 text-center">
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}
+                      >
+                        {STATUS_LABEL[r.status] ?? r.status}
+                      </span>
+                    </td>
+                    <td className="p-2 text-center">
+                      {/* زر Z-report + نَسخ مُلَخَّص نَصّي (RowActions inline). */}
+                      <RowActions
+                        mode="inline"
+                        actions={[
+                          {
+                            key: "invoices",
+                            kind: "view",
+                            label: "الفواتير",
+                            icon: Receipt,
+                            onSelect: () => setInvoicesShiftId(r.id),
+                            gate: { module: "sales", level: "READ" },
+                          },
+                          {
+                            key: "zreport",
+                            kind: "print",
+                            label: printing === r.id ? "جارٍ…" : "Z-report",
+                            icon: Printer,
+                            disabled: printing === r.id,
+                            disabledReason: "التقرير قيد التحضير",
+                            onSelect: () => void reprintZ(r.id),
+                            gate: { module: "treasury", level: "READ" },
+                          },
+                          {
+                            key: "copy",
+                            kind: "export",
+                            label: copying === r.id ? "جارٍ…" : "نسخ",
+                            icon: Copy,
+                            disabled: copying === r.id,
+                            disabledReason: "الملخص قيد التحضير",
+                            onSelect: () => void copyZ(r.id),
+                            gate: { module: "treasury", level: "READ" },
+                          },
+                          {
+                            key: "close",
+                            kind: "reverse",
+                            label: "إغلاق",
+                            icon: Lock,
+                            hidden: r.status !== "OPEN" || !isElevated,
+                            onSelect: () => openCloseDialog(r.id),
+                            gate: {
+                              roles: ["cashier", "manager"],
+                              module: "treasury",
+                              level: "READ",
+                            },
+                          },
+                        ]}
+                      />
+                    </td>
+                  </tr>
+                ))}
+                {!list.isLoading && rows.length === 0 && (
+                  <TableEmptyRow
+                    colSpan={12}
+                    message={
+                      total === 0 && !anyFilter
+                        ? "لا ورديات بعد. تُفتح الورديات من نقطة البيع."
+                        : "لا ورديات مطابقة. غيّر الفلتر."
+                    }
+                  />
+                )}
+                {list.isLoading && (
+                  <tr>
+                    <td colSpan={12}>
+                      <LoadingState />
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </ScrollTableShell>
         </CardContent>
       </Card>
 
       <div className="flex items-center justify-between text-sm">
         <span className="text-muted-foreground" dir="ltr">
-          {total === 0 ? "لا صفوف" : `${from}–${to} / ${total.toLocaleString("ar-IQ-u-nu-latn")}`}
+          {total === 0
+            ? "لا صفوف"
+            : `${from}–${to} / ${total.toLocaleString("ar-IQ-u-nu-latn")}`}
         </span>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>السابق</Button>
-          <Button variant="outline" size="sm" disabled={(page + 1) * PAGE >= total} onClick={() => setPage((p) => p + 1)}>التالي</Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            السابق
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={(page + 1) * PAGE >= total}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            التالي
+          </Button>
         </div>
       </div>
 
       {/* إغلاق وردية عن بُعد (admin/manager) — لموظّف نسي إغلاق ورديته. نفس حوكمة نوافذ POS/
           الاستقبال/الطباعة تماماً: لا إغلاق بفرق (closeShift الخادمية ترفضه دون استثناء). */}
-      <Dialog open={closingShiftId != null} onOpenChange={(open) => { if (!open) { setClosingShiftId(null); setCloseCounted(""); } }}>
-        <DialogContent className="sm:max-w-sm">
+      <Dialog
+        open={closingShiftId != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setClosingShiftId(null);
+            setCloseCounted("");
+          }
+        }}
+      >
+        <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-6xl">
           <DialogHeader>
-            <DialogTitle>إغلاق وردية #{closingShiftId} — {closingRow?.userName ?? ""}</DialogTitle>
+            <DialogTitle>
+              إغلاق وردية #{closingShiftId} — {closingRow?.userName ?? ""}
+            </DialogTitle>
           </DialogHeader>
           {closeReportQ.isLoading ? (
             <LoadingState />
           ) : (
             <>
-              {([
-                ["عدد الفواتير", `${closeReportQ.data?.invoiceCount ?? 0}`],
-                ["إجمالي المبيعات", `${fmt(Number(closeReportQ.data?.salesTotal ?? 0))} د.ع`],
-                ["الرصيد الافتتاحي", `${fmt(Number(closeReportQ.data?.shift.openingBalance ?? 0))} د.ع`],
-                ...(closeExpected != null ? [["النقد المتوقّع بالصندوق", `${fmt(closeExpected.toNumber())} د.ع`] as [string, string]] : []),
-              ] as [string, string][]).map(([l, v]) => (
-                <div key={l} className="flex justify-between border-b py-2 text-sm">
-                  <span className="text-muted-foreground">{l}</span>
-                  <span className="font-bold tabular-nums" dir="ltr">{v}</span>
+              <div className="rounded-xl border bg-muted/30 px-4 py-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-semibold">
+                    ملخص الفواتير (للمعلومة فقط)
+                  </span>
+                  <span className="tabular-nums" dir="ltr">
+                    {closeReportQ.data?.invoiceCount ?? 0} فاتورة ·{" "}
+                    {fmt(Number(closeReportQ.data?.salesTotal ?? 0))} د.ع
+                  </span>
                 </div>
-              ))}
-              <div className="space-y-1.5">
-                <label htmlFor="close-counted-cash" className="block text-sm font-bold">النقد المعدود (د.ع)</label>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  هذا الإجمالي لا يدخل معادلة الإغلاق؛ التسوية أدناه مبنية على
+                  إيصالات النقد الفعلية لهذه الوردية.
+                </p>
+              </div>
+              <ShiftCashReconciliation
+                data={closeReconciliation}
+                defaultExpandedKeys={[
+                  "cashSales",
+                  "cashReturns",
+                  "cashExpenses",
+                  "cashDrops",
+                ]}
+                formatMoney={(value) =>
+                  value == null || value === "" ? "—" : fmt(String(value))
+                }
+                formatDateTime={(value) => fmtDT(value)}
+              />
+              <div className="space-y-1.5 rounded-xl border p-4">
+                <label
+                  htmlFor="close-counted-cash"
+                  className="block text-sm font-bold"
+                >
+                  النقد المعدود (د.ع)
+                </label>
                 <MoneyInput
                   id="close-counted-cash"
                   value={closeCounted}
@@ -582,25 +818,47 @@ export default function Shifts() {
                   ariaLabel="النقد المعدود عند إغلاق الوردية"
                   className="h-11 text-center text-lg font-extrabold"
                 />
+                {closeDiff != null && (
+                  <div
+                    className={`flex items-center gap-1 text-sm font-bold ${varianceCls(closeDiff.toFixed(2))}`}
+                  >
+                    <span>
+                      الفرق: {closeDiff.gte(0) ? "+" : ""}
+                      {fmt(closeDiff.toNumber())} د.ع
+                    </span>
+                    {closeDiff.isZero() && (
+                      <Check aria-hidden className="size-3.5" />
+                    )}
+                  </div>
+                )}
               </div>
-              {closeDiff != null && (
-                <div className={`flex items-center gap-1 text-sm font-bold ${varianceCls(closeDiff.toFixed(2))}`}>
-                  <span>الفرق: {closeDiff.gte(0) ? "+" : ""}{fmt(closeDiff.toNumber())} د.ع</span>
-                  {closeDiff.isZero() && <Check aria-hidden className="size-3.5" />}
-                </div>
-              )}
               {closeHasVariance && (
                 <div className="rounded-xl border border-destructive/60 bg-destructive/10 p-3 text-xs font-bold text-destructive">
-                  لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الافتتاحي مضافاً إليه صافي المبيعات النقدية المسجّلة. راجع الفواتير والمرتجعات لهذه الوردية أولاً.
+                  لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الافتتاحي مضافاً
+                  إليه صافي المبيعات النقدية المسجّلة. راجع الفواتير والمرتجعات
+                  لهذه الوردية أولاً.
                 </div>
               )}
             </>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setClosingShiftId(null)}>إلغاء</Button>
+            <Button variant="outline" onClick={() => setClosingShiftId(null)}>
+              إلغاء
+            </Button>
             <Button
-              disabled={!closeCounted || closeShiftM.isPending || closeHasVariance || closeExpected == null}
-              onClick={() => closingShiftId != null && closeShiftM.mutate({ shiftId: closingShiftId, countedCash: closeCounted })}
+              disabled={
+                !closeCounted ||
+                closeShiftM.isPending ||
+                closeHasVariance ||
+                closeExpected == null
+              }
+              onClick={() =>
+                closingShiftId != null &&
+                closeShiftM.mutate({
+                  shiftId: closingShiftId,
+                  countedCash: closeCounted,
+                })
+              }
             >
               {closeShiftM.isPending ? "جارٍ الإغلاق…" : "إغلاق"}
             </Button>
@@ -609,11 +867,17 @@ export default function Shifts() {
       </Dialog>
 
       {/* فواتير الوردية — قائمة مضمَّنة لتحقيق الفروقات النقدية بلا مغادرة الشاشة (سطراً بسطر). */}
-      <Dialog open={invoicesShiftId != null} onOpenChange={(open) => { if (!open) setInvoicesShiftId(null); }}>
+      <Dialog
+        open={invoicesShiftId != null}
+        onOpenChange={(open) => {
+          if (!open) setInvoicesShiftId(null);
+        }}
+      >
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              فواتير وردية #{invoicesShiftId} — {invoicesShiftRow?.userName ?? ""}
+              فواتير وردية #{invoicesShiftId} —{" "}
+              {invoicesShiftRow?.userName ?? ""}
             </DialogTitle>
           </DialogHeader>
           {invoicesShiftQ.isLoading ? (
@@ -623,7 +887,11 @@ export default function Shifts() {
               <div className="text-xs text-muted-foreground">
                 {invoicesShiftQ.data?.length ?? 0} فاتورة — الإجمالي{" "}
                 <b className="tabular-nums" dir="ltr">
-                  {fmt((invoicesShiftQ.data ?? []).reduce((s, r) => s.plus(D(r.total)), D(0)).toString())}
+                  {fmt(
+                    (invoicesShiftQ.data ?? [])
+                      .reduce((s, r) => s.plus(D(r.total)), D(0))
+                      .toString(),
+                  )}
                 </b>{" "}
                 د.ع
               </div>
@@ -643,21 +911,44 @@ export default function Shifts() {
                   <tbody>
                     {(invoicesShiftQ.data ?? []).map((inv) => (
                       <tr key={inv.id} className="border-t">
-                        <td className="p-2 font-medium tabular-nums" dir="ltr">{inv.invoiceNumber}</td>
-                        <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDT(inv.invoiceDate)}</td>
-                        <td className="p-2 text-xs">{inv.paymentMethod ? paymentMethodLabel(inv.paymentMethod) : "—"}</td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(inv.total)}</td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(inv.paidAmount)}</td>
-                        <td className="p-2 text-center text-xs">{invoiceStatusLabel(inv.status)}</td>
+                        <td className="p-2 font-medium tabular-nums" dir="ltr">
+                          {inv.invoiceNumber}
+                        </td>
+                        <td
+                          className="p-2 text-xs whitespace-nowrap tabular-nums"
+                          dir="ltr"
+                        >
+                          {fmtDT(inv.invoiceDate)}
+                        </td>
+                        <td className="p-2 text-xs">
+                          {inv.paymentMethod
+                            ? paymentMethodLabel(inv.paymentMethod)
+                            : "—"}
+                        </td>
+                        <td className="p-2 text-right tabular-nums" dir="ltr">
+                          {fmt(inv.total)}
+                        </td>
+                        <td className="p-2 text-right tabular-nums" dir="ltr">
+                          {fmt(inv.paidAmount)}
+                        </td>
+                        <td className="p-2 text-center text-xs">
+                          {invoiceStatusLabel(inv.status)}
+                        </td>
                         <td className="p-2 text-center">
-                          <Link href={`/invoices/${inv.id}`} className="text-primary underline-offset-2 hover:underline">
+                          <Link
+                            href={`/invoices/${inv.id}`}
+                            className="text-primary underline-offset-2 hover:underline"
+                          >
                             فتح
                           </Link>
                         </td>
                       </tr>
                     ))}
                     {(invoicesShiftQ.data ?? []).length === 0 && (
-                      <TableEmptyRow colSpan={7} message="لا فواتير على هذه الوردية." />
+                      <TableEmptyRow
+                        colSpan={7}
+                        message="لا فواتير على هذه الوردية."
+                      />
                     )}
                   </tbody>
                 </table>
@@ -665,7 +956,9 @@ export default function Shifts() {
             </>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setInvoicesShiftId(null)}>إغلاق</Button>
+            <Button variant="outline" onClick={() => setInvoicesShiftId(null)}>
+              إغلاق
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

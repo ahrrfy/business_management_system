@@ -4,11 +4,12 @@ import { CashFlowChart } from "@/components/treasury/CashFlowChart";
 import { OpenShiftsPanel } from "@/components/treasury/OpenShiftsPanel";
 import { PaymentMethodDonut } from "@/components/treasury/PaymentMethodDonut";
 import { TreasuryKpiCard } from "@/components/treasury/TreasuryKpiCard";
+import { FinancialSourceBadge } from "@/components/financial";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { DataTable } from "@/components/data-table/DataTable";
-import { fmtDateTime } from "@/lib/date";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { newClientRequestId } from "@/lib/countQueue";
@@ -45,8 +46,7 @@ const PERIOD_AR: Record<Period, string> = {
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const fmtDT = (d: string | number | Date | null | undefined) =>
-  fmtDateTime(d);
+const fmtDT = (d: string | number | Date | null | undefined) => fmtDateTime(d);
 
 const fmtRelativeShort = (iso: string) => {
   const then = new Date(iso).getTime();
@@ -61,6 +61,7 @@ const fmtRelativeShort = (iso: string) => {
 
 interface MovementRow {
   id: string;
+  rawId: number;
   source: "RECEIPT" | "EXPENSE";
   direction: "IN" | "OUT";
   amount: string;
@@ -71,8 +72,38 @@ interface MovementRow {
   branchName: string | null;
   description: string | null;
   voucherNumber: string | null;
+  status: string | null;
+  approvalStatus: string | null;
+  approvedAt: string | null;
+  shiftId: number | null;
+  shiftOwnerId: number | null;
+  shiftOwnerName: string | null;
+  createdBy: number | null;
+  createdByName: string | null;
+  approvedBy: number | null;
+  approvedByName: string | null;
+  referenceNumber: string | null;
+  invoiceId: number | null;
+  workOrderId: number | null;
+  reservationId: number | null;
+  expenseId: number | null;
+  expensePayee: string | null;
+  expenseCategory: string | null;
+  costCenter: string | null;
+  ledgerEntryId: number | null;
+  documentDate: string | null;
+  integrityWarnings: string[];
   createdAt: string;
 }
+
+const MOVEMENT_WARNING_LABEL: Record<string, string> = {
+  DESCRIPTION_MISSING: "لا يوجد شرح للعملية",
+  ACTOR_MISSING: "منفذ العملية غير موثق",
+  CASH_SOURCE_MISSING: "مصدر النقد غير محدد",
+  DRAWER_WITHOUT_SHIFT: "حركة درج بلا وردية",
+  TREASURY_WITH_SHIFT: "حركة خزينة مرتبطة بورديّة",
+  LEDGER_ENTRY_MISSING: "لا يوجد قيد محاسبي مرتبط",
+};
 
 const MOV_PAGE = 20;
 
@@ -123,7 +154,9 @@ export default function Treasury() {
     { refetchInterval: 30_000 },
   );
   // أي تغيير في فلاتر جدول الحركات يعيدنا للصفحة الأولى (وإلا بقي offset قديماً على مجموعة أصغر).
-  useEffect(() => { setMovPage(0); }, [branchId, movFrom, movTo]);
+  useEffect(() => {
+    setMovPage(0);
+  }, [branchId, movFrom, movTo]);
   const openShifts = trpc.treasury.getOpenShifts.useQuery(
     { branchId: branchId ? Number(branchId) : undefined },
     { refetchInterval: 30_000 },
@@ -166,7 +199,10 @@ export default function Treasury() {
 
   const fundTreasuryM = trpc.treasury.fundTreasury.useMutation({
     onSuccess: (r) => {
-      notify.ok("تم تمويل الخزينة", `السند ${r.referenceNumber} — الرصيد بعده ${fmtAr(r.treasuryBalanceAfter)} د.ع`);
+      notify.ok(
+        "تم تمويل الخزينة",
+        `السند ${r.referenceNumber} — الرصيد بعده ${fmtAr(r.treasuryBalanceAfter)} د.ع`,
+      );
       setFundOpen(false);
       setFundAmount("");
       setFundDesc("");
@@ -189,76 +225,199 @@ export default function Treasury() {
     setFundNotes("");
     setFundOpen(true);
   };
-  const fundAmountValid = /^\d+(\.\d{1,2})?$/.test(fundAmount) && Number(fundAmount) > 0;
+  const fundAmountValid =
+    /^\d+(\.\d{1,2})?$/.test(fundAmount) && Number(fundAmount) > 0;
 
   const movementCols: ColumnDef<MovementRow>[] = useMemo(
     () => [
       {
-        header: "الاتجاه",
-        accessorKey: "direction",
+        header: "المستند والروابط",
+        accessorKey: "id",
         cell: ({ row }) => (
-          <span
-            className={
-              row.original.direction === "IN"
-                ? "inline-flex items-center gap-1 text-money-positive"
-                : "inline-flex items-center gap-1 text-money-negative"
-            }
-          >
-            {row.original.direction === "IN" ? (
-              <ArrowDownLeft className="h-3.5 w-3.5" />
-            ) : (
-              <ArrowUpRight className="h-3.5 w-3.5" />
+          <div className="min-w-32 space-y-0.5 text-[11px]" dir="ltr">
+            <div className="font-mono font-semibold">
+              {row.original.source === "RECEIPT" ? "R" : "EXP"}#
+              {row.original.rawId}
+            </div>
+            {row.original.voucherNumber && (
+              <div className="font-mono">{row.original.voucherNumber}</div>
             )}
-            {row.original.direction === "IN" ? "وارد" : "صادر"}
-          </span>
+            <div className="flex flex-wrap gap-x-2 text-muted-foreground">
+              {row.original.expenseId && (
+                <span>EXP#{row.original.expenseId}</span>
+              )}
+              {row.original.invoiceId && (
+                <span>INV#{row.original.invoiceId}</span>
+              )}
+              {row.original.workOrderId && (
+                <span>WO#{row.original.workOrderId}</span>
+              )}
+              {row.original.reservationId && (
+                <span>RSV#{row.original.reservationId}</span>
+              )}
+              {row.original.ledgerEntryId && (
+                <span>JE#{row.original.ledgerEntryId}</span>
+              )}
+            </div>
+            {row.original.referenceNumber && (
+              <div
+                className="max-w-44 truncate text-muted-foreground"
+                title={row.original.referenceNumber}
+              >
+                مرجع: {row.original.referenceNumber}
+              </div>
+            )}
+          </div>
         ),
       },
       {
-        header: "المبلغ",
+        header: "الاتجاه والمبلغ",
         accessorKey: "amount",
         cell: ({ row }) => (
-          <span className="tabular-nums font-medium" dir="ltr">
-            {fmtAr(row.original.amount)}
-          </span>
-        ),
-      },
-      { header: "الطريقة", accessorKey: "paymentMethodLabel" },
-      {
-        header: "مكان النقد",
-        accessorKey: "cashBucket",
-        cell: ({ row }) =>
-          row.original.cashBucket ? (
+          <div className="space-y-1">
             <span
               className={
-                row.original.cashBucket === "DRAWER"
-                  ? "text-[11px] badge-status-active rounded px-1.5 py-0.5"
-                  : "text-[11px] badge-status-done rounded px-1.5 py-0.5"
+                row.original.direction === "IN"
+                  ? "inline-flex items-center gap-1 text-money-positive"
+                  : "inline-flex items-center gap-1 text-money-negative"
               }
             >
-              {row.original.cashBucket === "DRAWER" ? "درج" : "خزينة"}
+              {row.original.direction === "IN" ? (
+                <ArrowDownLeft className="h-3.5 w-3.5" />
+              ) : (
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              )}
+              {row.original.direction === "IN" ? "وارد" : "صادر"}
             </span>
-          ) : (
-            <span className="text-muted-foreground text-xs">—</span>
-          ),
-      },
-      { header: "الفرع", accessorKey: "branchName", cell: ({ row }) => row.original.branchName ?? "—" },
-      {
-        header: "الوصف",
-        accessorKey: "description",
-        cell: ({ row }) => (
-          <span className="text-xs text-muted-foreground line-clamp-1">
-            {row.original.voucherNumber ? `${row.original.voucherNumber} — ` : ""}
-            {row.original.description ?? "—"}
-          </span>
+            <div className="tabular-nums font-bold" dir="ltr">
+              {fmtAr(row.original.amount)}
+            </div>
+          </div>
         ),
       },
       {
-        header: "الوقت",
+        header: "البيان والمستفيد",
+        accessorKey: "description",
+        cell: ({ row }) => (
+          <div className="max-w-64 space-y-1 text-xs">
+            <p
+              className={
+                row.original.description
+                  ? "line-clamp-2"
+                  : "font-medium text-destructive"
+              }
+            >
+              {row.original.description || "لا يوجد شرح للعملية"}
+            </p>
+            <p className="text-muted-foreground">
+              المستفيد: {row.original.expensePayee || "—"}
+            </p>
+            {(row.original.expenseCategory || row.original.costCenter) && (
+              <p className="text-[11px] text-muted-foreground">
+                {[row.original.expenseCategory, row.original.costCenter]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            )}
+          </div>
+        ),
+      },
+      {
+        header: "المصدر / الوردية",
+        accessorKey: "cashBucket",
+        cell: ({ row }) => (
+          <div className="min-w-40 space-y-1.5 text-xs">
+            <FinancialSourceBadge
+              compact
+              source={row.original.cashBucket ?? row.original.paymentMethod}
+              paymentMethod={row.original.paymentMethod}
+              cashBucket={row.original.cashBucket}
+            />
+            <div>{row.original.branchName ?? "—"}</div>
+            {row.original.cashBucket === "DRAWER" ? (
+              <div className="text-[11px] text-muted-foreground">
+                وردية #{row.original.shiftId ?? "—"} · صاحب الدرج:{" "}
+                {row.original.shiftOwnerName ?? "غير موثق"}
+              </div>
+            ) : (
+              <div className="text-[11px] text-muted-foreground">
+                {row.original.cashBucket === "TREASURY"
+                  ? "الخزينة الإدارية"
+                  : "لا يوجد موقع نقدي"}
+              </div>
+            )}
+          </div>
+        ),
+      },
+      {
+        header: "المسؤولية والاعتماد",
+        accessorKey: "createdByName",
+        cell: ({ row }) => (
+          <div className="min-w-40 space-y-1 text-xs">
+            <div>
+              نفّذ:{" "}
+              <span className="font-medium">
+                {row.original.createdByName ?? "غير موثق"}
+              </span>
+              {row.original.createdBy != null && (
+                <span
+                  className="font-mono text-[10px] text-muted-foreground"
+                  dir="ltr"
+                >
+                  {" "}
+                  #{row.original.createdBy}
+                </span>
+              )}
+            </div>
+            <div className="text-muted-foreground">
+              اعتمد: {row.original.approvedByName ?? "—"}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {row.original.approvalStatus ?? "بلا مسار اعتماد"}
+            </div>
+          </div>
+        ),
+      },
+      {
+        header: "الحالة والتوقيت",
         accessorKey: "createdAt",
         cell: ({ row }) => (
-          <span className="text-xs text-muted-foreground tabular-nums" dir="ltr">
-            {fmtRelativeShort(row.original.createdAt)}
-          </span>
+          <div className="min-w-36 space-y-1 text-xs">
+            <div className="font-medium">{row.original.status ?? "—"}</div>
+            <div dir="ltr">
+              {row.original.documentDate
+                ? fmtDate(row.original.documentDate)
+                : "—"}
+            </div>
+            <div className="text-[11px] text-muted-foreground" dir="ltr">
+              نُفذت: {fmtDT(row.original.createdAt)}
+            </div>
+            {row.original.approvedAt && (
+              <div className="text-[11px] text-muted-foreground" dir="ltr">
+                اعتُمدت: {fmtDT(row.original.approvedAt)}
+              </div>
+            )}
+          </div>
+        ),
+      },
+      {
+        header: "التدقيق",
+        accessorKey: "integrityWarnings",
+        cell: ({ row }) => (
+          <div className="flex max-w-52 flex-wrap gap-1">
+            {row.original.integrityWarnings.length ? (
+              row.original.integrityWarnings.map((warning) => (
+                <span
+                  key={warning}
+                  className="rounded-full badge-status-cancelled px-2 py-0.5 text-[10px]"
+                >
+                  {MOVEMENT_WARNING_LABEL[warning] ?? warning}
+                </span>
+              ))
+            ) : (
+              <span className="text-xs text-muted-foreground">سليم</span>
+            )}
+          </div>
         ),
       },
     ],
@@ -285,14 +444,136 @@ export default function Treasury() {
       exportRows(allRows, {
         filename: "حركات-الخزينة",
         columns: [
-          { key: "createdAt", header: "الوقت", map: (r) => fmtDT(r.createdAt) },
-          { key: "direction", header: "الاتجاه", map: (r) => (r.direction === "IN" ? "وارد" : "صادر") },
+          {
+            key: "source",
+            header: "نوع المستند",
+            map: (r) => (r.source === "RECEIPT" ? "إيصال" : "مصروف"),
+          },
+          { key: "rawId", header: "معرّف المستند", map: (r) => r.rawId },
+          {
+            key: "voucherNumber",
+            header: "رقم السند",
+            map: (r) => r.voucherNumber ?? "",
+          },
+          {
+            key: "referenceNumber",
+            header: "المرجع",
+            map: (r) => r.referenceNumber ?? "",
+          },
+          {
+            key: "invoiceId",
+            header: "الفاتورة",
+            map: (r) => r.invoiceId ?? "",
+          },
+          {
+            key: "workOrderId",
+            header: "أمر الشغل",
+            map: (r) => r.workOrderId ?? "",
+          },
+          {
+            key: "reservationId",
+            header: "الحجز",
+            map: (r) => r.reservationId ?? "",
+          },
+          {
+            key: "expenseId",
+            header: "المصروف",
+            map: (r) => r.expenseId ?? "",
+          },
+          {
+            key: "ledgerEntryId",
+            header: "القيد المحاسبي",
+            map: (r) => r.ledgerEntryId ?? "",
+          },
+          {
+            key: "documentDate",
+            header: "تاريخ المستند",
+            map: (r) => (r.documentDate ? fmtDate(r.documentDate) : ""),
+          },
+          {
+            key: "createdAt",
+            header: "وقت التنفيذ",
+            map: (r) => fmtDT(r.createdAt),
+          },
+          {
+            key: "direction",
+            header: "الاتجاه",
+            map: (r) => (r.direction === "IN" ? "وارد" : "صادر"),
+          },
           { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
           { key: "paymentMethodLabel", header: "الطريقة" },
-          { key: "cashBucket", header: "مكان النقد", map: (r) => (r.cashBucket === "DRAWER" ? "درج" : r.cashBucket === "TREASURY" ? "خزينة" : "—") },
-          { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "—" },
-          { key: "voucherNumber", header: "السند", map: (r) => r.voucherNumber ?? "" },
-          { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
+          {
+            key: "cashBucket",
+            header: "مكان النقد",
+            map: (r) =>
+              r.cashBucket === "DRAWER"
+                ? "درج"
+                : r.cashBucket === "TREASURY"
+                  ? "خزينة"
+                  : "—",
+          },
+          {
+            key: "branchName",
+            header: "الفرع",
+            map: (r) => r.branchName ?? "—",
+          },
+          { key: "shiftId", header: "الوردية", map: (r) => r.shiftId ?? "" },
+          {
+            key: "shiftOwnerName",
+            header: "صاحب الدرج",
+            map: (r) => r.shiftOwnerName ?? "",
+          },
+          {
+            key: "description",
+            header: "الوصف",
+            map: (r) => r.description ?? "",
+          },
+          {
+            key: "expensePayee",
+            header: "المستفيد",
+            map: (r) => r.expensePayee ?? "",
+          },
+          {
+            key: "expenseCategory",
+            header: "الفئة",
+            map: (r) => r.expenseCategory ?? "",
+          },
+          {
+            key: "costCenter",
+            header: "مركز التكلفة",
+            map: (r) => r.costCenter ?? "",
+          },
+          {
+            key: "createdByName",
+            header: "نفّذ العملية",
+            map: (r) =>
+              r.createdByName ?? (r.createdBy ? `#${r.createdBy}` : ""),
+          },
+          {
+            key: "approvedByName",
+            header: "اعتمد العملية",
+            map: (r) =>
+              r.approvedByName ?? (r.approvedBy ? `#${r.approvedBy}` : ""),
+          },
+          {
+            key: "approvalStatus",
+            header: "حالة الاعتماد",
+            map: (r) => r.approvalStatus ?? "",
+          },
+          {
+            key: "approvedAt",
+            header: "وقت الاعتماد",
+            map: (r) => (r.approvedAt ? fmtDT(r.approvedAt) : ""),
+          },
+          { key: "status", header: "الحالة", map: (r) => r.status ?? "" },
+          {
+            key: "integrityWarnings",
+            header: "ملاحظات التدقيق",
+            map: (r) =>
+              r.integrityWarnings
+                .map((warning) => MOVEMENT_WARNING_LABEL[warning] ?? warning)
+                .join("؛ "),
+          },
         ],
       });
     } catch (e) {
@@ -303,18 +584,27 @@ export default function Treasury() {
   }
 
   const totalDrawerAll = useMemo(
-    () => dashboard.data?.drawerBalances.reduce((s, r) => s + Number(r.expectedCash), 0) ?? 0,
+    () =>
+      dashboard.data?.drawerBalances.reduce(
+        (s, r) => s + Number(r.expectedCash),
+        0,
+      ) ?? 0,
     [dashboard.data],
   );
   const totalTreasuryAll = useMemo(
-    () => dashboard.data?.treasuryBalances.reduce((s, r) => s + Number(r.balance), 0) ?? 0,
+    () =>
+      dashboard.data?.treasuryBalances.reduce(
+        (s, r) => s + Number(r.balance),
+        0,
+      ) ?? 0,
     [dashboard.data],
   );
 
   const comparisonRows = useMemo(() => {
     if (!dashboard.data) return [];
     const t = new Map<number, number>();
-    for (const r of dashboard.data.treasuryBalances) t.set(r.branchId, Number(r.balance));
+    for (const r of dashboard.data.treasuryBalances)
+      t.set(r.branchId, Number(r.balance));
     return dashboard.data.drawerBalances.map((r) => ({
       branchId: r.branchId,
       branchName: r.branchName,
@@ -324,7 +614,7 @@ export default function Treasury() {
   }, [dashboard.data]);
 
   return (
-    <div className="space-y-4 max-w-[1400px] mx-auto" dir="rtl">
+    <div className="mx-auto max-w-[1600px] space-y-4" dir="rtl">
       {/* ═══ Header / Toolbar ═══ */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
@@ -348,7 +638,9 @@ export default function Treasury() {
             <select
               className={selectCls}
               value={branchId}
-              onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+              onChange={(e) =>
+                setBranchId(e.target.value ? Number(e.target.value) : "")
+              }
             >
               <option value="">كل الفروع</option>
               {branches.data?.map((b) => (
@@ -358,14 +650,23 @@ export default function Treasury() {
               ))}
             </select>
           )}
-          <select className={selectCls} value={period} onChange={(e) => setPeriod(e.target.value as Period)}>
+          <select
+            className={selectCls}
+            value={period}
+            onChange={(e) => setPeriod(e.target.value as Period)}
+          >
             {(["today", "yesterday", "week", "month"] as const).map((p) => (
               <option key={p} value={p}>
                 {PERIOD_AR[p]}
               </option>
             ))}
           </select>
-          <Button size="sm" variant="outline" onClick={refreshAll} title="تحديث">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={refreshAll}
+            title="تحديث"
+          >
             <RefreshCcw className="h-3.5 w-3.5 me-1" />
             تحديث
           </Button>
@@ -400,7 +701,13 @@ export default function Treasury() {
           </Button>
         </Link>
         {(isAdmin || isManager) && (
-          <Button size="sm" variant="outline" className="gap-1.5" onClick={openFund} title="إيداع رأس مال / رصيد افتتاحيّ في الخزينة">
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            onClick={openFund}
+            title="إيداع رأس مال / رصيد افتتاحيّ في الخزينة"
+          >
             <Vault className="h-4 w-4" />
             تمويل الخزينة
           </Button>
@@ -434,13 +741,20 @@ export default function Treasury() {
                         {handover.referenceNumber}
                       </span>
                       <span className="text-xs text-muted-foreground">
-                        {handover.source === "CASH_DROP" ? "سحب أثناء الوردية" : "تسليم إغلاق وردية"}
+                        {handover.source === "CASH_DROP"
+                          ? "سحب أثناء الوردية"
+                          : "تسليم إغلاق وردية"}
                       </span>
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       <div>
-                        الموظف الذي سُحب من ورديته: <span className="font-medium text-foreground">{handover.sourceEmployeeName ?? "غير مسجّل"}</span>
-                        {handover.sourceShiftId != null && <> · وردية #{handover.sourceShiftId}</>}
+                        الموظف الذي سُحب من ورديته:{" "}
+                        <span className="font-medium text-foreground">
+                          {handover.sourceEmployeeName ?? "غير مسجّل"}
+                        </span>
+                        {handover.sourceShiftId != null && (
+                          <> · وردية #{handover.sourceShiftId}</>
+                        )}
                       </div>
                       <div className="mt-0.5 tabular-nums" dir="ltr">
                         وقت السحب: {fmtDT(handover.createdAt)}
@@ -452,7 +766,9 @@ export default function Treasury() {
                   </div>
                   <Button
                     size="sm"
-                    onClick={() => acceptHandover.mutate({ receiptId: handover.id })}
+                    onClick={() =>
+                      acceptHandover.mutate({ receiptId: handover.id })
+                    }
                     disabled={acceptHandover.isPending}
                     className="gap-1.5"
                   >
@@ -524,10 +840,17 @@ export default function Treasury() {
       {/* ═══ صف ٢: المخطّط الزمني + الدونات ═══ */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <div className="lg:col-span-2">
-          <CashFlowChart data={cashFlow.data ?? []} loading={cashFlow.isLoading} />
+          <CashFlowChart
+            data={cashFlow.data ?? []}
+            loading={cashFlow.isLoading}
+          />
         </div>
         <div>
-          <PaymentMethodDonut data={breakdown.data ?? []} loading={breakdown.isLoading} direction="in" />
+          <PaymentMethodDonut
+            data={breakdown.data ?? []}
+            loading={breakdown.isLoading}
+            direction="in"
+          />
         </div>
       </div>
 
@@ -542,14 +865,21 @@ export default function Treasury() {
               </div>
             ))
           : (dashboard.data?.drawerBalances ?? []).map((dr) => {
-              const tr = dashboard.data?.treasuryBalances.find((t) => t.branchId === dr.branchId);
-              const branchType = (branches.data?.find((b) => b.id === dr.branchId)?.type ?? null) as
-                | "MAIN"
-                | "SALES"
-                | null;
-              const alerts: Array<{ severity: "warning" | "danger" | "info"; text: string }> = [];
+              const tr = dashboard.data?.treasuryBalances.find(
+                (t) => t.branchId === dr.branchId,
+              );
+              const branchType = (branches.data?.find(
+                (b) => b.id === dr.branchId,
+              )?.type ?? null) as "MAIN" | "SALES" | null;
+              const alerts: Array<{
+                severity: "warning" | "danger" | "info";
+                text: string;
+              }> = [];
               if (dr.openShiftsCount === 0) {
-                alerts.push({ severity: "info", text: "لا ورديات مفتوحة في هذا الفرع الآن" });
+                alerts.push({
+                  severity: "info",
+                  text: "لا ورديات مفتوحة في هذا الفرع الآن",
+                });
               }
               if (!hideTreasury && tr && Number(tr.balance) < 0) {
                 alerts.push({
@@ -568,7 +898,9 @@ export default function Treasury() {
                     opening: dr.totalOpening,
                     openShifts: dr.openShiftsCount,
                   }}
-                  treasury={!hideTreasury && tr ? { balance: tr.balance } : null}
+                  treasury={
+                    !hideTreasury && tr ? { balance: tr.balance } : null
+                  }
                   alerts={alerts}
                 />
               );
@@ -586,34 +918,71 @@ export default function Treasury() {
 
       {/* ═══ صف ٥: جدول الحركات + الورديات ═══ */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-        <div className="lg:col-span-7 rounded-md border bg-card p-4">
+        <div className="rounded-md border bg-card p-4 lg:col-span-8">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <h3 className="text-sm font-semibold">آخر الحركات النقدية</h3>
             <span className="text-xs text-muted-foreground">
               <Building2 className="inline h-3 w-3" />{" "}
-              {branchId ? branches.data?.find((b) => b.id === branchId)?.name : "كل الفروع المرئيّة"}
+              {branchId
+                ? branches.data?.find((b) => b.id === branchId)?.name
+                : "كل الفروع المرئيّة"}
             </span>
           </div>
           {/* مدى تاريخ اختياري — بلا فلتر يبقى السلوك القديم (آخر ٢٠ حركة). */}
           <div className="mb-3 flex flex-wrap items-end gap-2">
             <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-muted-foreground">من تاريخ</label>
-              <Input type="date" dir="ltr" className="h-8 w-36" value={movFrom}
-                onChange={(e) => { const v = e.target.value; setMovFrom(v); if (v && movTo && v > movTo) setMovTo(v); }} />
+              <label className="text-[11px] text-muted-foreground">
+                من تاريخ
+              </label>
+              <Input
+                type="date"
+                dir="ltr"
+                className="h-8 w-36"
+                value={movFrom}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setMovFrom(v);
+                  if (v && movTo && v > movTo) setMovTo(v);
+                }}
+              />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-muted-foreground">إلى تاريخ</label>
-              <Input type="date" dir="ltr" className="h-8 w-36" value={movTo}
-                onChange={(e) => { const v = e.target.value; setMovTo(v); if (v && movFrom && v < movFrom) setMovFrom(v); }} />
+              <label className="text-[11px] text-muted-foreground">
+                إلى تاريخ
+              </label>
+              <Input
+                type="date"
+                dir="ltr"
+                className="h-8 w-36"
+                value={movTo}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setMovTo(v);
+                  if (v && movFrom && v < movFrom) setMovFrom(v);
+                }}
+              />
             </div>
             {(movFrom || movTo) && (
-              <Button variant="ghost" size="sm" className="gap-1" onClick={() => { setMovFrom(""); setMovTo(""); }}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1"
+                onClick={() => {
+                  setMovFrom("");
+                  setMovTo("");
+                }}
+              >
                 <X className="h-3 w-3" />
                 مسح المدى
               </Button>
             )}
-            <Button variant="outline" size="sm" className="mr-auto" disabled={movExporting || !(movements.data?.rows.length)}
-              onClick={() => void exportMovements()}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mr-auto"
+              disabled={movExporting || !movements.data?.rows.length}
+              onClick={() => void exportMovements()}
+            >
               {movExporting ? "جارٍ التحضير…" : "تصدير Excel"}
             </Button>
           </div>
@@ -626,71 +995,152 @@ export default function Treasury() {
             pageSize={MOV_PAGE}
           />
           <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-            <span dir="ltr">{movPage * MOV_PAGE + 1}–{movPage * MOV_PAGE + (movements.data?.rows.length ?? 0)}</span>
+            <span dir="ltr">
+              {movPage * MOV_PAGE + 1}–
+              {movPage * MOV_PAGE + (movements.data?.rows.length ?? 0)}
+            </span>
             <div className="flex gap-2">
-              <Button variant="outline" size="sm" disabled={movPage === 0} onClick={() => setMovPage((p) => Math.max(0, p - 1))}>السابق</Button>
-              <Button variant="outline" size="sm" disabled={!movements.data?.hasMore} onClick={() => setMovPage((p) => p + 1)}>التالي</Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={movPage === 0}
+                onClick={() => setMovPage((p) => Math.max(0, p - 1))}
+              >
+                السابق
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!movements.data?.hasMore}
+                onClick={() => setMovPage((p) => p + 1)}
+              >
+                التالي
+              </Button>
             </div>
           </div>
         </div>
-        <div className="lg:col-span-5">
-          <OpenShiftsPanel shifts={openShifts.data ?? []} loading={openShifts.isLoading} />
+        <div className="lg:col-span-4">
+          <OpenShiftsPanel
+            shifts={openShifts.data ?? []}
+            loading={openShifts.isLoading}
+          />
         </div>
       </div>
 
       {/* تمويل الخزينة (imprest، ٢٨/٧/٢٦) — إيداع رأس مال / رصيد افتتاحيّ يُموّل عهد الورديات. */}
       {fundOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" dir="rtl" onClick={() => setFundOpen(false)}>
-          <div className="w-full max-w-md rounded-lg border bg-card p-5 shadow-xl" role="dialog" aria-modal="true" aria-label="تمويل الخزينة" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          dir="rtl"
+          onClick={() => setFundOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-lg border bg-card p-5 shadow-xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label="تمويل الخزينة"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="mb-1 flex items-center gap-2">
               <Vault className="h-5 w-5 text-primary" />
               <h2 className="text-base font-bold">تمويل الخزينة</h2>
             </div>
             <p className="mb-4 text-xs text-muted-foreground">
-              إيداع رأس مال / رصيد افتتاحيّ في خزينة الفرع — يُموّل عهد الورديات. يُسجَّل بسند وقيدٍ للتدقيق.
+              إيداع رأس مال / رصيد افتتاحيّ في خزينة الفرع — يُموّل عهد
+              الورديات. يُسجَّل بسند وقيدٍ للتدقيق.
             </p>
             <div className="grid gap-3">
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">الفرع</label>
+                <label className="mb-1 block text-xs text-muted-foreground">
+                  الفرع
+                </label>
                 {isAdmin ? (
-                  <select className={selectCls + " w-full"} value={fundBranch} onChange={(e) => setFundBranch(e.target.value ? Number(e.target.value) : "")}>
+                  <select
+                    className={selectCls + " w-full"}
+                    value={fundBranch}
+                    onChange={(e) =>
+                      setFundBranch(
+                        e.target.value ? Number(e.target.value) : "",
+                      )
+                    }
+                  >
                     <option value="">— اختر الفرع —</option>
                     {(branches.data ?? []).map((b) => (
-                      <option key={b.id} value={b.id}>{b.name}</option>
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
                     ))}
                   </select>
                 ) : (
                   <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
-                    {(branches.data ?? []).find((b) => Number(b.id) === Number(fundBranch))?.name ?? (fundBranch ? `فرع #${fundBranch}` : "—")}
+                    {(branches.data ?? []).find(
+                      (b) => Number(b.id) === Number(fundBranch),
+                    )?.name ?? (fundBranch ? `فرع #${fundBranch}` : "—")}
                   </div>
                 )}
               </div>
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">المبلغ (د.ع)</label>
-                <MoneyInput value={fundAmount} onChange={setFundAmount} placeholder="0"
-                  className={selectCls + " w-full text-right font-bold"} ariaLabel="مبلغ تمويل الخزينة" />
+                <label className="mb-1 block text-xs text-muted-foreground">
+                  المبلغ (د.ع)
+                </label>
+                <MoneyInput
+                  value={fundAmount}
+                  onChange={setFundAmount}
+                  placeholder="0"
+                  className={selectCls + " w-full text-right font-bold"}
+                  ariaLabel="مبلغ تمويل الخزينة"
+                />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">التبرير / المصدر (إلزامي)</label>
-                <input value={fundDesc} maxLength={500} placeholder="مثال: إيداع رأس مال أوّليّ من المالك"
-                  onChange={(e) => setFundDesc(e.target.value)} className={selectCls + " w-full"} />
+                <label className="mb-1 block text-xs text-muted-foreground">
+                  التبرير / المصدر (إلزامي)
+                </label>
+                <input
+                  value={fundDesc}
+                  maxLength={500}
+                  placeholder="مثال: إيداع رأس مال أوّليّ من المالك"
+                  onChange={(e) => setFundDesc(e.target.value)}
+                  className={selectCls + " w-full"}
+                />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">ملاحظة (اختياري)</label>
-                <input value={fundNotes} maxLength={500} onChange={(e) => setFundNotes(e.target.value)} className={selectCls + " w-full"} />
+                <label className="mb-1 block text-xs text-muted-foreground">
+                  ملاحظة (اختياري)
+                </label>
+                <input
+                  value={fundNotes}
+                  maxLength={500}
+                  onChange={(e) => setFundNotes(e.target.value)}
+                  className={selectCls + " w-full"}
+                />
               </div>
             </div>
             <div className="mt-5 flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => setFundOpen(false)}>إلغاء</Button>
-              <Button className="flex-1"
-                disabled={fundTreasuryM.isPending || !fundBranch || !fundAmountValid || !fundDesc.trim()}
-                onClick={() => fundTreasuryM.mutate({
-                  branchId: Number(fundBranch),
-                  amount: fundAmount,
-                  description: fundDesc.trim(),
-                  notes: fundNotes.trim() || null,
-                  clientRequestId: fundReqId,
-                })}>
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => setFundOpen(false)}
+              >
+                إلغاء
+              </Button>
+              <Button
+                className="flex-1"
+                disabled={
+                  fundTreasuryM.isPending ||
+                  !fundBranch ||
+                  !fundAmountValid ||
+                  !fundDesc.trim()
+                }
+                onClick={() =>
+                  fundTreasuryM.mutate({
+                    branchId: Number(fundBranch),
+                    amount: fundAmount,
+                    description: fundDesc.trim(),
+                    notes: fundNotes.trim() || null,
+                    clientRequestId: fundReqId,
+                  })
+                }
+              >
                 {fundTreasuryM.isPending ? "جارٍ التمويل…" : "تمويل الخزينة"}
               </Button>
             </div>
