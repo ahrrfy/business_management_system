@@ -580,6 +580,17 @@ function verifySourceContract() {
   if (!nativeCi.includes('- "scripts/verify-android-release-workflow-gate.mjs"')) {
     fail("native CI path filters do not cover release gate changes");
   }
+  const normalizedNativeCi = nativeCi.replace(/\r\n/g, "\n");
+  const nativePushTrigger = normalizedNativeCi.match(
+    /\n  push:\n([\s\S]*?)\n\npermissions:/,
+  )?.[1];
+  if (
+    !nativePushTrigger ||
+    !/^    branches:\s*\[main\]\s*$/m.test(nativePushTrigger) ||
+    /^    paths(?:-ignore)?:\s*$/m.test(nativePushTrigger)
+  ) {
+    fail("native CI must run on every main push so the exact-SHA release gate can succeed");
+  }
   for (const fragment of [
     'file: "ci.yml"',
     'file: "security.yml"',
