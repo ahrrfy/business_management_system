@@ -282,6 +282,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         referenceType: "PURCHASE_ORDER",
         referenceId: input.purchaseOrderId,
         createdBy: actor.userId,
+        stampOpened: true,
       });
       await tx
         .update(purchaseOrderItems)

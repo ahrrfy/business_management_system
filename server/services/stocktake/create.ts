@@ -23,6 +23,7 @@ import { withTx } from "../tx";
 import { extractInsertId } from "../../lib/insertId";
 import type { StkActor } from "./types";
 import { chunk } from "./internal";
+import { loadOpeningPurchaseLinkedVariantIds } from "./openingEligibility";
 
 /** PIN رباعي عشوائي مشفّر التوليد (crypto) فريد ضمن المجموعة المُمرَّرة. */
 function generateUniquePin(used: Set<string>): string {
@@ -304,7 +305,28 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
   // النطاق.
   const scope = await resolveScope(tx, input);
 
-  // (د) الافتتاح مرّة واحدة لكل (صنف×فرع): الصنف المُفتتَح (openedAt ≠ NULL) لا يدخل جلسة OPENING —
+  // (د) الجرد الافتتاحي يؤسس فقط الرصيد الذي لم يدخل مسار المشتريات. الارتباط بقائمة مشتريات
+  // غير ملغاة في الفرع كافٍ للاستبعاد مهما كانت حالتها؛ فالمنتج صار ذا مصدر شرائي معلوم.
+  if (sessionType === "OPENING") {
+    const purchasedSet = await loadOpeningPurchaseLinkedVariantIds(
+      tx,
+      input.branchId,
+      scope.variantIds,
+    );
+    if (purchasedSet.size) {
+      if (input.scopeType === "MANUAL") {
+        // اختيار يدوي صريح ⇒ رفض ناطق كي لا يختفي صنف قصده المستخدم بلا تفسير.
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `${purchasedSet.size} من الأصناف المختارة مرتبطة بقائمة مشتريات غير ملغاة في هذا الفرع — لا تدخل الجرد الافتتاحي`,
+        });
+      }
+      scope.variantIds = scope.variantIds.filter((v) => !purchasedSet.has(v));
+      scope.label = `${scope.label} — استُبعد ${purchasedSet.size} صنفاً مرتبطاً بالمشتريات`;
+    }
+  }
+
+  // (هـ) الافتتاح مرّة واحدة لكل (صنف×فرع): الصنف المُفتتَح (openedAt ≠ NULL) لا يدخل جلسة OPENING —
   // إعادة افتتاحه = إعادة تأسيس رصيده بلا أي قيد دفتري (باب محو عجز حقيقي). يُجرَد دورياً بكامل قيوده.
   if (sessionType === "OPENING") {
     const openedSet = new Set<number>();
@@ -339,7 +361,7 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
       code: "BAD_REQUEST",
       message:
         sessionType === "OPENING"
-          ? "كل أصناف النطاق مُفتتَحة مسبقاً — لا شيء يُجرَد افتتاحياً"
+          ? "كل أصناف النطاق مستبعَدة من الجرد الافتتاحي لأنها مرتبطة بالمشتريات أو مُفتتَحة مسبقاً"
           : "نطاق الجرد لا يحوي أي صنف — راجع النطاق المحدد",
     });
   }

@@ -2,12 +2,16 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like } from "drizzle-orm";
-import { productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../../drizzle/schema";
+import { branches, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { convertToBaseQuantity } from "../inventoryService";
 import { money, round2, sumMoney, toDateStr, toDbMoney } from "../money";
-import { withTx, type Actor } from "../tx";
+import {
+  removeVariantsFromActiveOpeningStocktakes,
+  restoreVariantsToActiveOpeningStocktakes,
+} from "../stocktake/openingEligibility";
+import { requireDb, withTx, type Actor } from "../tx";
 import { assertPurchaseBranch } from "./internal";
 import type { CreatePurchaseOrderInput } from "./types";
 
@@ -21,6 +25,16 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       const existing = await findIdempotentRefId(tx, "purchase.create", input.clientRequestId);
       if (existing != null) return { purchaseOrderId: existing, idempotent: true };
     }
+
+    // نفس قفل الفرع الذي تبدأ به جلسة الجرد: يمنع سباق «التقاط نطاق OPENING ↔ إنشاء قائمة شراء».
+    // إن سبق الجردُ، ينظف أمر الشراء العنصر الموجود أدناه؛ وإن سبق الشراءُ، يراه فلتر الجرد بعد القفل.
+    const [branch] = await tx
+      .select({ id: branches.id })
+      .from(branches)
+      .where(eq(branches.id, input.branchId))
+      .for("update")
+      .limit(1);
+    if (!branch) throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود" });
 
     if (!input.items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء بلا أصناف" });
 
@@ -181,6 +195,8 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     for (const r of rows) {
       await tx.insert(purchaseOrderItems).values({ purchaseOrderId, ...r });
     }
+    // قائمة الشراء غير الملغاة تخرج الصنف فوراً من أي جرد افتتاحي نشط في الفرع، حتى لو بدأ العد.
+    await removeVariantsFromActiveOpeningStocktakes(tx, input.branchId, uniqueVariantIds);
     // IDEM-06: سجّل مفتاح الـidempotency — طلب متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK).
     if (input.clientRequestId) await recordIdempotencyKey(tx, "purchase.create", input.clientRequestId, purchaseOrderId);
     return { purchaseOrderId, poNumber, total: total.toFixed(2) };
@@ -193,7 +209,29 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
  * أمرٌ استُلمت منه بضاعة يُعالَج بمرتجع شراء لا بالإلغاء.
  */
 export async function cancelPurchaseOrder(purchaseOrderId: number, actor: Actor & { role?: string }) {
+  // Resolve the immutable branch before opening the transaction. A normal read
+  // inside a MySQL REPEATABLE READ transaction would freeze a snapshot *before*
+  // waiting on the branch lock and could miss a concurrently committed second
+  // purchase order. The transactional first read below is therefore the branch
+  // locking read, and all later eligibility reads observe everything committed
+  // before that lock was acquired.
+  const initialPo = (
+    await requireDb().select().from(purchaseOrders).where(eq(purchaseOrders.id, purchaseOrderId)).limit(1)
+  )[0];
+  if (!initialPo) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+  assertPurchaseBranch(initialPo, actor);
+
   return withTx(async (tx) => {
+    const branch = (
+      await tx
+        .select({ id: branches.id })
+        .from(branches)
+        .where(eq(branches.id, initialPo.branchId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!branch) throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود" });
+
     const po = (
       await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, purchaseOrderId)).for("update").limit(1)
     )[0];
@@ -204,7 +242,10 @@ export async function cancelPurchaseOrder(purchaseOrderId: number, actor: Actor 
     }
 
     const items = await tx
-      .select({ receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity })
+      .select({
+        variantId: purchaseOrderItems.variantId,
+        receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity,
+      })
       .from(purchaseOrderItems)
       .where(eq(purchaseOrderItems.purchaseOrderId, purchaseOrderId));
     if (items.some((i) => (i.receivedBaseQuantity ?? 0) > 0)) {
@@ -216,6 +257,11 @@ export async function cancelPurchaseOrder(purchaseOrderId: number, actor: Actor 
     }
 
     await tx.update(purchaseOrders).set({ status: "CANCELLED" }).where(eq(purchaseOrders.id, purchaseOrderId));
+    await restoreVariantsToActiveOpeningStocktakes(
+      tx,
+      Number(po.branchId),
+      items.map((item) => Number(item.variantId)),
+    );
     return { purchaseOrderId, status: "CANCELLED" as const };
   });
 }

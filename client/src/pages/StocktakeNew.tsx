@@ -226,7 +226,7 @@ export default function StocktakeNew() {
 
   /* عدّاد النطاق الحقيقي (يعكس ما سيُنشأ فعلاً عند الضغط على «إنشاء»):
      FULL/MOVING/CATEGORY يُحسبان خادمياً؛ MANUAL يُحسب في العميل من الاختيار.
-     يستبعد المُفتتَح في OPENING، والبكج دائماً، والأمانة في OPENING فقط — مطابقة كاملة
+     يستبعد المُفتتَح والمرتبط بالمشتريات في OPENING، والبكج دائماً، والأمانة في OPENING فقط — مطابقة كاملة
      لـcreate.ts:resolveScope. الشرط `enabled`: CATEGORY لا يُستدعى إلا بعد اختيار فئة (يوفّر
      roundtrip فارغاً) — MANUAL محلي فيتخطّى الاستعلام. */
   const previewCountQ = trpc.stocktakes.previewScopeCount.useQuery(
@@ -641,6 +641,11 @@ export default function StocktakeNew() {
               {isOpeningSession && previewCount && previewCount.excludedOpened > 0 && (
                 <p className="text-xs text-muted-foreground">
                   استُبعد {nf(previewCount.excludedOpened)} منتجاً مُفتتَحاً مسبقاً — يُجرَد جرداً دورياً لا افتتاحياً.
+                </p>
+              )}
+              {isOpeningSession && previewCount && previewCount.excludedPurchased > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  استُبعد {nf(previewCount.excludedPurchased)} صنفاً مرتبطاً بقائمة مشتريات غير ملغاة في هذا الفرع — لا يدخل الجرد الافتتاحي.
                 </p>
               )}
               {isOpeningSession && scopeType === "FULL" && previewCount && (previewCount.excludedBundle > 0 || previewCount.excludedConsignment > 0) && (

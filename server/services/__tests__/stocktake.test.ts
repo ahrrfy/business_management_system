@@ -49,6 +49,9 @@ const TABLES = [
   "stocktakeItems",
   "stocktakeAssignments",
   "stocktakeSessions",
+  "openingModeSettings",
+  "purchaseOrderItems",
+  "purchaseOrders",
   "accountingEntries",
   "inventoryMovements",
   "branchStock",
@@ -59,6 +62,7 @@ const TABLES = [
   "products",
   "auditLogs",
   "categories",
+  "suppliers",
   "branches",
   "users",
 ];
@@ -87,6 +91,7 @@ async function seedBase() {
     { id: 1, openId: "local_admin", name: "أحمد المدير", role: "admin", loginMethod: "local" },
     { id: 2, openId: "local_manager", name: "سالم المشرف", role: "manager", loginMethod: "local" },
   ]);
+  await d.insert(s.suppliers).values({ id: 1, name: "مورد الاختبار" });
   await d.insert(s.products).values([
     { id: 1, name: "قلم جاف" },
     { id: 2, name: "دفتر 100 ورقة" },
@@ -399,6 +404,57 @@ describe("النطاق الحي للجرد الشامل", () => {
     expect(variantIds).not.toContain(7);
     expect(variantIds).not.toContain(8);
     expect(variantIds).not.toContain(9);
+  });
+
+  it("الجرد الافتتاحي الحي لا يُلحق المرتبط بأمر شراء غير ملغى، ويُلحق المرتبط بأمر ملغى", async () => {
+    await db().insert(s.openingModeSettings).values({ id: 1, enabled: true, endsAt: new Date(Date.now() + 86_400_000) });
+    const session = await createStocktakeSession(
+      { name: "افتتاح حي مع مشتريات", branchId: 1, scopeType: "FULL", sessionType: "OPENING", assignments: [{ name: "عامل", method: "PIN" }] },
+      { userId: 1, role: "admin" },
+    );
+    await db().insert(s.products).values([
+      { id: 6, name: "مرتبط بأمر شراء مسودة" },
+      { id: 7, name: "مرتبط بأمر شراء ملغى" },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 6, productId: 6, sku: "OPEN-PO-DRAFT", costPrice: "10.00" },
+      { id: 7, productId: 7, sku: "OPEN-PO-CANCELLED", costPrice: "10.00" },
+    ]);
+    await db().insert(s.purchaseOrders).values([
+      {
+        id: 101,
+        poNumber: "PO-LIVE-DRAFT",
+        supplierId: 1,
+        branchId: 1,
+        subtotal: "100.00",
+        total: "100.00",
+        status: "DRAFT",
+        createdBy: 1,
+      },
+      {
+        id: 102,
+        poNumber: "PO-LIVE-CANCELLED",
+        supplierId: 1,
+        branchId: 1,
+        subtotal: "100.00",
+        total: "100.00",
+        status: "CANCELLED",
+        createdBy: 1,
+      },
+    ]);
+    await db().insert(s.purchaseOrderItems).values([
+      { purchaseOrderId: 101, variantId: 6, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
+      { purchaseOrderId: 102, variantId: 7, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
+    ]);
+
+    expect((await syncActiveFullStocktakeScopes()).itemsAdded).toBe(1);
+    const items = await db()
+      .select({ variantId: s.stocktakeItems.variantId })
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, session.sessionId));
+    const variantIds = items.map((i) => Number(i.variantId));
+    expect(variantIds).not.toContain(6);
+    expect(variantIds).toContain(7);
   });
 });
 

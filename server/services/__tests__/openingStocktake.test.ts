@@ -16,6 +16,7 @@ import {
   firstSignStocktake,
   forceStocktakeReview,
 } from "../stocktakeService";
+import { cancelPurchaseOrder, createPurchaseOrder } from "../purchaseService";
 import type { CreateStocktakeInput } from "../stocktake/create";
 
 const ADMIN = { userId: 1, role: "admin" };
@@ -33,6 +34,8 @@ const TABLES = [
   "stocktakeAssignments",
   "stocktakeSessions",
   "openingModeSettings",
+  "purchaseOrderItems",
+  "purchaseOrders",
   "accountingEntries",
   "inventoryMovements",
   "branchStock",
@@ -40,6 +43,7 @@ const TABLES = [
   "productVariants",
   "products",
   "auditLogs",
+  "suppliers",
   "branches",
   "users",
 ];
@@ -67,6 +71,7 @@ async function seedBase() {
     { id: 3, openId: "u_mgr2", name: "مدير ثانٍ", role: "manager", loginMethod: "local" },
     { id: 4, openId: "u_wh", name: "أمين مخزن", role: "warehouse", loginMethod: "local" },
   ]);
+  await d.insert(s.suppliers).values({ id: 1, name: "مورد الاختبار" });
   await d.insert(s.products).values([
     { id: 1, name: "قلم جاف" },
     { id: 2, name: "دفتر 100 ورقة" },
@@ -211,13 +216,322 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
     expect(inScope.map((r) => Number(r.variantId)).sort()).toEqual([2, 3, 4]);
   });
 
+  it("المشتريات: MANUAL يرفض المرتبط في الفرع؛ وFULL يستبعده فقط إذا كان الأمر غير ملغى وفي الفرع نفسه", async () => {
+    await enableOpeningMode();
+    await db().insert(s.purchaseOrders).values([
+      {
+        id: 101,
+        poNumber: "PO-OPEN-SAME-BRANCH",
+        supplierId: 1,
+        branchId: 1,
+        subtotal: "100.00",
+        total: "100.00",
+        status: "DRAFT",
+        createdBy: 1,
+      },
+      {
+        id: 102,
+        poNumber: "PO-OPEN-OTHER-BRANCH",
+        supplierId: 1,
+        branchId: 2,
+        subtotal: "100.00",
+        total: "100.00",
+        status: "DRAFT",
+        createdBy: 1,
+      },
+      {
+        id: 103,
+        poNumber: "PO-OPEN-CANCELLED",
+        supplierId: 1,
+        branchId: 1,
+        subtotal: "100.00",
+        total: "100.00",
+        status: "CANCELLED",
+        createdBy: 1,
+      },
+    ]);
+    await db().insert(s.purchaseOrderItems).values([
+      { purchaseOrderId: 101, variantId: 1, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
+      { purchaseOrderId: 102, variantId: 2, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
+      { purchaseOrderId: 103, variantId: 3, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
+    ]);
+
+    await expectTrpc(mkOpening({ variantIds: [1] }), "BAD_REQUEST", /فاتورة مشتريات|أمر شراء|مرتبطة.*مشتريات/);
+
+    const res = await mkOpening({ scopeType: "FULL", variantIds: undefined });
+    expect(res.itemCount).toBe(3);
+    const inScope = await db()
+      .select({ variantId: s.stocktakeItems.variantId })
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, res.sessionId));
+    // ١ مرتبط بـDRAFT في الفرع نفسه فيُستبعد؛ ٢ مشتراه في فرع آخر و٣ أمره ملغى فيبقيان مؤهلَين.
+    expect(inScope.map((r) => Number(r.variantId)).sort()).toEqual([2, 3, 4]);
+  });
+
+  it("إنشاء قائمة شراء أثناء جلسة افتتاحية نشطة يزيل الصنف وعدّه فوراً", async () => {
+    await enableOpeningMode();
+    const session = await mkOpening({ variantIds: [1] });
+    const assignmentId = await firstAssignmentId(session.sessionId);
+    await insertCount(session.sessionId, 1, assignmentId, 7);
+
+    await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "100.00" }],
+      },
+      { userId: 1, branchId: 1 },
+    );
+
+    const [items, counts] = await Promise.all([
+      db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId)),
+      db().select().from(s.stocktakeCounts).where(eq(s.stocktakeCounts.sessionId, session.sessionId)),
+    ]);
+    expect(items).toHaveLength(0);
+    expect(counts).toHaveLength(0);
+  });
+
+  it("إلغاء قائمة الشراء يعيد الصنف إلى نطاق MANUAL النشط بلقطة الرصيد والتكلفة الحالية", async () => {
+    await enableOpeningMode();
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 5 });
+    const session = await mkOpening({ variantIds: [1] });
+    const assignmentId = await firstAssignmentId(session.sessionId);
+
+    const po = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "100.00" }],
+      },
+      { userId: ADMIN.userId, branchId: 1 },
+    );
+    expect(
+      await db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId)),
+    ).toHaveLength(0);
+
+    await db().update(s.branchStock).set({ quantity: 19 }).where(
+      and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 1)),
+    );
+    await db().update(s.productVariants).set({ costPrice: "333.00" }).where(eq(s.productVariants.id, 1));
+    await cancelPurchaseOrder(po.purchaseOrderId, { userId: ADMIN.userId, branchId: 1 });
+
+    const [restored] = await db()
+      .select()
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, session.sessionId));
+    expect(Number(restored.variantId)).toBe(1);
+    expect(Number(restored.assignmentId)).toBe(assignmentId);
+    expect(restored.expectedQty).toBe(19);
+    expect(restored.unitCost).toBe("333.00");
+  });
+
+  it("إلغاء قائمة لا يعيد الصنف ما دام مرتبطاً بقائمة شراء أخرى غير ملغاة", async () => {
+    await enableOpeningMode();
+    const session = await mkOpening({ variantIds: [1] });
+    const makePo = () => createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT" as const,
+        items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "100.00" }],
+      },
+      { userId: ADMIN.userId, branchId: 1 },
+    );
+    const first = await makePo();
+    const second = await makePo();
+
+    await cancelPurchaseOrder(first.purchaseOrderId, { userId: ADMIN.userId, branchId: 1 });
+    expect(
+      await db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId)),
+    ).toHaveLength(0);
+
+    await cancelPurchaseOrder(second.purchaseOrderId, { userId: ADMIN.userId, branchId: 1 });
+    const restored = await db()
+      .select({ variantId: s.stocktakeItems.variantId })
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, session.sessionId));
+    expect(restored.map((row) => Number(row.variantId))).toEqual([1]);
+  });
+
+  it("إلغاء القائمة يعيد جلسة REVIEW المتأثرة إلى COUNTING ويفتح تكليفاتها", async () => {
+    await enableOpeningMode();
+    const session = await mkOpening({ variantIds: [1] });
+    const assignmentId = await firstAssignmentId(session.sessionId);
+    const signedAt = new Date();
+    await db()
+      .update(s.stocktakeAssignments)
+      .set({ status: "SUBMITTED", submittedAt: signedAt })
+      .where(eq(s.stocktakeAssignments.id, assignmentId));
+    await db()
+      .update(s.stocktakeSessions)
+      .set({ status: "REVIEW", submittedAt: signedAt, firstSignBy: MGR.userId, firstSignAt: signedAt })
+      .where(eq(s.stocktakeSessions.id, session.sessionId));
+
+    const po = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "100.00" }],
+      },
+      { userId: ADMIN.userId, branchId: 1 },
+    );
+    await cancelPurchaseOrder(po.purchaseOrderId, { userId: ADMIN.userId, branchId: 1 });
+
+    const [sessionRow] = await db()
+      .select({
+        status: s.stocktakeSessions.status,
+        submittedAt: s.stocktakeSessions.submittedAt,
+        firstSignBy: s.stocktakeSessions.firstSignBy,
+        firstSignAt: s.stocktakeSessions.firstSignAt,
+      })
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, session.sessionId));
+    expect(sessionRow).toMatchObject({
+      status: "COUNTING",
+      submittedAt: null,
+      firstSignBy: null,
+      firstSignAt: null,
+    });
+
+    const [assignment] = await db()
+      .select({ status: s.stocktakeAssignments.status, submittedAt: s.stocktakeAssignments.submittedAt })
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, assignmentId));
+    expect(assignment).toMatchObject({ status: "ACTIVE", submittedAt: null });
+    expect(
+      await db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId)),
+    ).toHaveLength(1);
+  });
+
+  it("تنظيف مشتريات جلسة REVIEW يحذف التوابع ويُبطل التوقيع الأول", async () => {
+    await enableOpeningMode();
+    const session = await mkOpening({ variantIds: [1] });
+    const assignmentId = await firstAssignmentId(session.sessionId);
+    await insertCount(session.sessionId, 1, assignmentId, 7);
+
+    const operationId = 7_001;
+    const snapshotHash = "a".repeat(64);
+    const signedAt = new Date();
+    await db().insert(s.stocktakeCountOperations).values({
+      id: operationId,
+      sessionId: session.sessionId,
+      variantId: 1,
+      assignmentId,
+      clientRequestId: randomUUID(),
+      requestQty: 7,
+      resultKind: "FIRST",
+    });
+    await db()
+      .update(s.stocktakeItems)
+      .set({
+        reviewApprovedBy: MGR.userId,
+        reviewApprovedAt: signedAt,
+        reviewApprovedOperationId: operationId,
+        reviewApprovedQty: 7,
+        reviewApprovedSnapshotHash: snapshotHash,
+      })
+      .where(
+        and(
+          eq(s.stocktakeItems.sessionId, session.sessionId),
+          eq(s.stocktakeItems.variantId, 1),
+        ),
+      );
+    await db().insert(s.stocktakeItemReviewEvents).values({
+      sessionId: session.sessionId,
+      variantId: 1,
+      action: "APPROVE",
+      snapshotOperationId: operationId,
+      snapshotQty: 7,
+      snapshotHash,
+      actedBy: MGR.userId,
+    });
+    await db().insert(s.stocktakeDecisions).values({
+      sessionId: session.sessionId,
+      variantId: 1,
+      action: "KEEP",
+      finalQty: 7,
+      diffQty: 7,
+      value: "1750.00",
+      decidedBy: MGR.userId,
+    });
+    await db()
+      .update(s.stocktakeAssignments)
+      .set({ status: "SUBMITTED", submittedAt: signedAt })
+      .where(eq(s.stocktakeAssignments.id, assignmentId));
+    await db()
+      .update(s.stocktakeSessions)
+      .set({
+        status: "REVIEW",
+        submittedAt: signedAt,
+        firstSignBy: MGR.userId,
+        firstSignAt: signedAt,
+      })
+      .where(eq(s.stocktakeSessions.id, session.sessionId));
+
+    await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "1",
+            unitPrice: "100.00",
+          },
+        ],
+      },
+      { userId: ADMIN.userId, branchId: 1 },
+    );
+
+    const [sessionRow] = await db()
+      .select({
+        status: s.stocktakeSessions.status,
+        firstSignBy: s.stocktakeSessions.firstSignBy,
+        firstSignAt: s.stocktakeSessions.firstSignAt,
+      })
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, session.sessionId));
+    expect(sessionRow.status).toBe("REVIEW");
+    expect(sessionRow.firstSignBy).toBeNull();
+    expect(sessionRow.firstSignAt).toBeNull();
+
+    const [items, counts, operations, decisions, reviewEvents] = await Promise.all([
+      db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId)),
+      db().select().from(s.stocktakeCounts).where(eq(s.stocktakeCounts.sessionId, session.sessionId)),
+      db()
+        .select()
+        .from(s.stocktakeCountOperations)
+        .where(eq(s.stocktakeCountOperations.sessionId, session.sessionId)),
+      db()
+        .select()
+        .from(s.stocktakeDecisions)
+        .where(eq(s.stocktakeDecisions.sessionId, session.sessionId)),
+      db()
+        .select()
+        .from(s.stocktakeItemReviewEvents)
+        .where(eq(s.stocktakeItemReviewEvents.sessionId, session.sessionId)),
+    ]);
+    for (const rows of [items, counts, operations, decisions, reviewEvents]) {
+      expect(rows).toHaveLength(0);
+    }
+  });
+
   it("كل النطاق مُفتتَح ⇒ رفض برسالة واضحة", async () => {
     await enableOpeningMode();
     const now = new Date();
     await db()
       .insert(s.branchStock)
       .values([1, 2, 3, 4].map((v) => ({ variantId: v, branchId: 1, quantity: 5, openedAt: now })));
-    await expectTrpc(mkOpening({ scopeType: "FULL", variantIds: undefined }), "BAD_REQUEST", /كل أصناف النطاق مُفتتَحة/);
+    await expectTrpc(
+      mkOpening({ scopeType: "FULL", variantIds: undefined }),
+      "BAD_REQUEST",
+      /كل أصناف النطاق مستبعَدة.*مُفتتَحة/,
+    );
   });
 
   it("الحصر المتبادل: جلسة نشطة تمنع الافتتاحية والعكس — وفرع آخر لا يتأثر", async () => {
