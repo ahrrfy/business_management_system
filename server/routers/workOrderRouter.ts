@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import {
   auditLogs,
@@ -36,6 +37,16 @@ import { money } from "../services/money";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { checkoutReception } from "../services/receptionCheckoutService";
 import { logger } from "../logger";
+import { upsertConversation } from "../services/conversationService";
+import { normalizeIraqPhoneE164 } from "../lib/phone";
+
+const workOrderCreatorUser = alias(users, "workOrderCreatorUser");
+const workOrderCreatorDisplayName = sql<string | null>`COALESCE(
+  NULLIF(TRIM(${workOrderCreatorUser.name}), ''),
+  NULLIF(TRIM(${workOrderCreatorUser.username}), ''),
+  NULLIF(TRIM(${workOrderCreatorUser.email}), ''),
+  CONCAT('مستخدم #', ${workOrders.createdBy})
+)`;
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 // ش٥: TELECOM (رصيد زين) — على مسار الاستقبال حصراً وخلف ضوابط telecom.ts داخل الخدمة.
@@ -145,6 +156,13 @@ const receptionCheckoutSchema = z.object({
   if (!input.regularSale && !input.printSale && input.workOrders.length === 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "السلة فارغة" });
   }
+  if (input.workOrders.length > 0 && input.customerId == null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["customerId"],
+      message: "أوامر الشغل تتطلب عميلاً محفوظاً مع اسم ورقم هاتف",
+    });
+  }
   const hasPayment = money(input.paidAmount ?? "0").gt(0) || !!input.regularSale || !!input.printSale || input.workOrders.some((order) => money(order.deposit ?? "0").gt(0));
   if (hasPayment && input.paymentMethod !== "CASH" && !input.paymentReference?.trim()) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["paymentReference"], message: "مرجع الدفع مطلوب" });
@@ -156,6 +174,59 @@ const receptionCheckoutSchema = z.object({
     }
   }
 });
+
+/**
+ * يربط عميل أمر الشغل بمحادثة واتساب جاهزة في صندوق القنوات. الربط أثر تشغيلي لاحق
+ * للالتزام المالي؛ فشله لا يُرجع أمراً/فاتورة التزما فعلاً، لذلك يستعمله المستهلكون best-effort.
+ */
+async function ensureWorkOrderWhatsAppConversation(input: {
+  branchId: number;
+  customerId: number | null | undefined;
+  receptionChannel?: string | null;
+  channelHandle?: string | null;
+}) {
+  if (input.customerId == null) return;
+  const db = getDb();
+  if (!db) return;
+  const customer = (await db.select({
+    name: customers.name,
+    phone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+  }).from(customers).where(eq(customers.id, input.customerId)).limit(1))[0];
+  if (!customer) return;
+  const rawPhone = input.receptionChannel === "WHATSAPP" && input.channelHandle?.trim()
+    ? input.channelHandle.trim()
+    : customer.phone;
+  if (!rawPhone || rawPhone.replace(/\D/g, "").length < 6) return;
+  const handle = normalizeIraqPhoneE164(rawPhone).replace(/^\+/, "");
+  if (!handle) return;
+  await upsertConversation({
+    branchId: input.branchId,
+    channel: "WHATSAPP",
+    channelHandle: handle,
+    customerId: input.customerId,
+    displayName: customer.name,
+  });
+}
+
+/** حاجز خادمي: المعرّف وحده لا يكفي؛ أمر الشغل يجب أن يبقى قابلاً للاتصال حتى مع عميل قديم. */
+async function assertWorkOrderCustomerReady(customerId: number) {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const customer = (await db.select({
+    id: customers.id,
+    isActive: customers.isActive,
+    phone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+  }).from(customers).where(eq(customers.id, customerId)).limit(1))[0];
+  if (!customer || !customer.isActive) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "العميل غير موجود أو معطّل" });
+  }
+  if (!customer.phone || customer.phone.replace(/\D/g, "").length < 6) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "رقم هاتف العميل مطلوب قبل حفظ أمر الشغل",
+    });
+  }
+}
 
 /** حالات أمر الشغل — مطابقة حرفياً لـmysqlEnum("workOrderStatus") في drizzle/schema.ts:1443. */
 const woStatus = z.enum(["RECEIVED", "IN_PROGRESS", "READY", "DELIVERED", "CANCELLED"]);
@@ -288,8 +359,10 @@ export const workOrderRouter = router({
       const rows = await db
         .select({
           id: workOrders.id,
+          customerId: workOrders.customerId,
           orderNumber: workOrders.orderNumber,
           title: workOrders.title,
+          customizationText: workOrders.customizationText,
           quantity: workOrders.quantity,
           status: workOrders.status,
           priority: workOrders.priority,
@@ -298,6 +371,8 @@ export const workOrderRouter = router({
           deposit: workOrders.deposit,
           dueDate: workOrders.dueDate,
           createdAt: workOrders.createdAt,
+          createdBy: workOrders.createdBy,
+          createdByName: workOrderCreatorDisplayName,
           assignedTo: workOrders.assignedTo,
           assigneeName: users.name,
           customerName: customers.name,
@@ -317,6 +392,7 @@ export const workOrderRouter = router({
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
+        .leftJoin(workOrderCreatorUser, eq(workOrders.createdBy, workOrderCreatorUser.id))
         .leftJoin(users, eq(workOrders.assignedTo, users.id))
         .leftJoin(deliveryConsignments, eq(deliveryConsignments.workOrderId, workOrders.id))
         .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
@@ -430,6 +506,9 @@ export const workOrderRouter = router({
           laborCost: workOrders.laborCost,
           salePrice: workOrders.salePrice,
           deposit: workOrders.deposit,
+          paymentMethod: workOrders.paymentMethod,
+          paymentReference: workOrders.paymentReference,
+          paymentReceiptUrl: workOrders.paymentReceiptUrl,
           dueDate: workOrders.dueDate,
           invoiceId: workOrders.invoiceId,
           hasDelivery: workOrders.hasDelivery,
@@ -438,6 +517,8 @@ export const workOrderRouter = router({
           deliveryCost: workOrders.deliveryCost,
           assignedTo: workOrders.assignedTo,
           assigneeName: users.name,
+          createdBy: workOrders.createdBy,
+          createdByName: workOrderCreatorDisplayName,
           // شَريحة #4: مؤقّت تَنفيذ حَقيقي بَدل اشتقاق من auditLogs.
           workStartedAt: workOrders.workStartedAt,
           workSeconds: workOrders.workSeconds,
@@ -453,6 +534,7 @@ export const workOrderRouter = router({
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
+        .leftJoin(workOrderCreatorUser, eq(workOrders.createdBy, workOrderCreatorUser.id))
         .leftJoin(users, eq(workOrders.assignedTo, users.id))
         .leftJoin(deliveryConsignments, eq(deliveryConsignments.workOrderId, workOrders.id))
         .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
@@ -622,6 +704,9 @@ export const workOrderRouter = router({
       }
 
       const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      if (input.customerId != null && input.workOrders.length > 0) {
+        await assertWorkOrderCustomerReady(input.customerId);
+      }
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role };
       const { branchId: _branchId, managerApproval, ...checkoutInput } = input;
       // ش١ (م٦): كاشير بخصمٍ >١٠٪ يلتقط اعتماد المدير استباقياً في الواجهة ويُتحقَّق منه هنا —
@@ -653,6 +738,20 @@ export const workOrderRouter = router({
         }
       }
       if (!result) throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد أرقام مستندات فريدة" });
+
+      if (input.customerId != null && input.workOrders.length > 0) {
+        const source = input.workOrders.find((order) => order.receptionChannel === "WHATSAPP") ?? input.workOrders[0];
+        try {
+          await ensureWorkOrderWhatsAppConversation({
+            branchId: effectiveBranchId,
+            customerId: input.customerId,
+            receptionChannel: source.receptionChannel,
+            channelHandle: source.channelHandle,
+          });
+        } catch (error) {
+          logger.error({ error, customerId: input.customerId }, "work order WhatsApp conversation link failed after reception commit");
+        }
+      }
 
       // التدقيق أثرٌ لاحق، وليس جزءاً من نتيجة الالتزام المالي. فشله لا يجوز أن يوهم الكاشير
       // بأن المعاملة تراجعت فيعيد قبضها؛ نسجّل العطل تشغيلياً ونُرجع النجاح الملتزم.
@@ -750,6 +849,13 @@ export const workOrderRouter = router({
         }
         effectiveBranchId = Number(ctx.user.branchId);
       }
+      if (input.customerId == null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "أمر الشغل يتطلب عميلاً محفوظاً مع اسم ورقم هاتف",
+        });
+      }
+      await assertWorkOrderCustomerReady(input.customerId);
       const enforcedInput = { ...input, branchId: effectiveBranchId };
 
       // أعد المحاولة على سباق idempotency (طلبان متزامنان بنفس المفتاح ⇒ الثاني يُعيد الأول).
@@ -760,6 +866,16 @@ export const workOrderRouter = router({
             branchId: effectiveBranchId,
             role: ctx.user.role,
           });
+          try {
+            await ensureWorkOrderWhatsAppConversation({
+              branchId: effectiveBranchId,
+              customerId: input.customerId,
+              receptionChannel: input.receptionChannel,
+              channelHandle: input.channelHandle,
+            });
+          } catch (error) {
+            logger.error({ error, customerId: input.customerId }, "work order WhatsApp conversation link failed after create commit");
+          }
           if (!(res as { idempotent?: boolean }).idempotent) {
             await logAudit(ctx, {
               action: "workOrder.create",
@@ -799,8 +915,6 @@ export const workOrderRouter = router({
         deliveryAddress: z.string().nullish(),
         deliveryPhone: z.string().max(20).nullish(),
         deliveryCost: nonNegMoneyString.nullish(),
-        // درج ردّ أمانة الأجرة عند التحوّل لاستلام مباشر — يُلزَم فقط حين يتعدّد الدرج المفتوح.
-        refundShiftId: z.number().int().positive().nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {

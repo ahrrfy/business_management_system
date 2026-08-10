@@ -235,25 +235,11 @@ export async function getCourierPerformance(
   const cnMap = new Map(cnAgg.map((a) => [Number(a.partyId), a]));
   const rmMap = new Map(rmAgg.map((a) => [Number(a.partyId), a]));
   const onlineMap = new Map(agg.map((a) => [Number(a.partyId), a]));
-
-  // ١٠/٨ (مراجعة نهائية) — العهدة القائمة لقطةٌ لحظيةٌ لا تخصّ الفترة (كما تقول ترويسة التقرير)،
-  // لكنّ مجموعة الجهات كانت مبنيّةً من نشاط الفترة وحده ⇒ مندوبٌ يحمل عهدةً ولم ينشط في الفترة
-  // يسقط كلّياً فيُنقِص إجمالي العهدة عن حقيقته (لا يطابق «عائم التوصيل»). نضمّ كلّ جهةٍ برصيدٍ
-  // حيٍّ غير صفريّ كي يكتمل الإجمالي وتبرز العُهد الراكدة (صفوفها بمقاييس فترةٍ صفرية، تُرتَّب أسفل).
-  const heldParties = await db
-    .select({ id: deliveryParties.id })
-    .from(deliveryParties)
-    .where(sql`CAST(${deliveryParties.currentBalance} AS DECIMAL(15,2)) <> 0`);
-
-  if (!agg.length && !cnAgg.length && !rmAgg.length && !heldParties.length) return { rows: [], summary: empty };
+  if (!agg.length && !cnAgg.length && !rmAgg.length) return { rows: [], summary: empty };
 
   // بيانات الجهات (الاسم/النوع/الهاتف/العهدة الحالية/حساب الدخول المرتبط) للجهات الظاهرة في أي قناة.
   const partyIds = Array.from(new Set(
-    Array.from(onlineMap.keys()).concat(
-      Array.from(cnMap.keys()),
-      Array.from(rmMap.keys()),
-      heldParties.map((p) => Number(p.id)),
-    ),
+    Array.from(onlineMap.keys()).concat(Array.from(cnMap.keys()), Array.from(rmMap.keys())),
   ));
   const parties = await db
     .select({
