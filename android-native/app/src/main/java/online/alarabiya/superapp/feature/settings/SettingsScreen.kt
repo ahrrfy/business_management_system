@@ -151,7 +151,7 @@ private fun PhoneSettings(
     onOpenTwoFactor: () -> Unit,
 ) {
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().testTag("settings-phone-list"),
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 22.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {

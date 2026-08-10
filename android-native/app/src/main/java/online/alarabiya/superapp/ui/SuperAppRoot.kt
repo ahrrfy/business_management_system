@@ -1905,8 +1905,6 @@ private fun NativeWorkspaceNavHost(
         Unit
     }
 
-    BackHandler(enabled = currentRoute != NativeComposeRoute.Home, onBack = navigateUp)
-
     Column(modifier) {
         AnimatedVisibility(
             visible = currentRoute != NativeComposeRoute.Home && !currentRoute.ownsWorkspaceHeader(),
@@ -2536,6 +2534,10 @@ private fun NativeWorkspaceNavHost(
             }
         }
         }
+        // Compose Navigation installs its own back callback from inside NavHost. Registering
+        // our callback afterwards gives nested feature state (detail/editor/confirmation)
+        // first refusal before the route itself is popped.
+        BackHandler(enabled = currentRoute != NativeComposeRoute.Home, onBack = navigateUp)
     }
 }
 

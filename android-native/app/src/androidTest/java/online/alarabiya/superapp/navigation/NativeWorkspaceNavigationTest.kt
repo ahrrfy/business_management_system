@@ -141,10 +141,14 @@ class NativeWorkspaceNavigationTest {
         compose.onNodeWithTag("native-tab-native-services").performClick()
         compose.onNodeWithTag("native-service-store-admin").performClick()
         assertTrue(compose.onAllNodes(hasTestTag("native-route-store-admin")).fetchSemanticsNodes().isNotEmpty())
-
-        compose.onNodeWithTag("native-tab-native-services").performClick()
-        compose.onNodeWithTag("native-route-services").assertIsDisplayed()
         compose.onNodeWithTag("native-workspace-up").assertIsDisplayed()
+
+        compose.onNodeWithTag("native-workspace-up").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodes(hasTestTag("native-route-services")).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("native-workspace-up").assertIsDisplayed()
+        compose.onNodeWithTag("native-service-self-service").assertIsDisplayed()
         compose.onNodeWithTag("native-service-self-service").performClick()
         compose.onNodeWithTag("native-route-self-service").assertIsDisplayed()
 
@@ -327,7 +331,7 @@ class NativeWorkspaceNavigationTest {
 
         compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
         compose.waitForIdle()
-        compose.onNodeWithTag("native-route-purchasing").assertIsDisplayed()
+        assertTrue(compose.onAllNodes(hasTestTag("native-route-purchasing")).fetchSemanticsNodes().isNotEmpty())
         assertTrue(compose.onAllNodes(hasText(FakePurchasingSource.orderNumber)).fetchSemanticsNodes().isEmpty())
 
         compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
@@ -376,16 +380,14 @@ class NativeWorkspaceNavigationTest {
         setWorkspace(legalSource = FakeLegalSource, twoFactorSource = FakeTwoFactorSource)
 
         compose.onNodeWithTag("native-tab-native-profile").performClick()
-        compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodes(hasTestTag("open_two_factor")).fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.onNodeWithTag("settings-phone-list").performScrollToNode(hasTestTag("open_two_factor"))
+        compose.onNodeWithTag("open_two_factor").assertIsDisplayed()
         compose.onNodeWithTag("open_two_factor").performClick()
         compose.onNodeWithTag("two_factor_back").assertIsDisplayed()
 
         compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
-        compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodes(hasTestTag("open_two_factor")).fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.onNodeWithTag("settings-phone-list").performScrollToNode(hasTestTag("open_two_factor"))
+        compose.onNodeWithTag("open_two_factor").assertIsDisplayed()
         compose.onNodeWithTag("native-route-profile").assertIsDisplayed()
 
         compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
