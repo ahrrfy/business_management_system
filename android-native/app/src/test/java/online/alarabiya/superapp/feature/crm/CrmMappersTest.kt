@@ -167,4 +167,73 @@ class CrmMappersTest {
         assertEquals(3, dashboard.campaignsActive)
         assertEquals("250000.00", dashboard.redemptionDiscount)
     }
+
+    @Test
+    fun mapsBranchScopedFollowUpsAndKeepsContractMoneyAsDecimalStrings() {
+        val page = CrmMappers.customerFollowUpPage(
+            mapOf(
+                "total" to 1,
+                "rows" to listOf(
+                    mapOf(
+                        "id" to 71,
+                        "customerId" to 41,
+                        "note" to "اتصال بشأن العقد",
+                        "followUpDate" to "2026-08-10",
+                        "isResolved" to false,
+                        "branchId" to 7,
+                        "createdByName" to "مدير الفرع",
+                    ),
+                ),
+            ),
+        )
+        val due = CrmMappers.customerFollowUpPage(
+            mapOf(
+                "total" to 143,
+                "rows" to listOf(
+                    mapOf(
+                        "id" to 71,
+                        "customerId" to 41,
+                        "customerName" to "شركة بغداد الحديثة",
+                        "customerPhone" to "+9647701234567",
+                        "note" to "اتصال بشأن العقد",
+                        "followUpDate" to "2026-08-10",
+                        "branchId" to 7,
+                    ),
+                ),
+            ),
+        )
+        val contracts = CrmMappers.contractPricePage(
+            mapOf(
+                "total" to 101,
+                "hasMore" to true,
+                "nextCursor" to "opaque-cursor",
+                "rows" to listOf(
+                    mapOf(
+                        "id" to 9,
+                        "customerId" to 41,
+                        "productUnitId" to 8,
+                        "price" to "125000.50",
+                        "isActive" to true,
+                        "note" to "عقد 2026/14",
+                        "productId" to 2,
+                        "productName" to "ورق",
+                        "variantName" to "A4",
+                        "sku" to "P-A4",
+                        "unitName" to "كرتون",
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(7L, page.rows.single().branchId)
+        assertEquals(143, due.total)
+        assertEquals("شركة بغداد الحديثة", due.rows.single().customerName)
+        assertFalse(due.rows.single().isResolved)
+        assertEquals(101, contracts.total)
+        assertTrue(contracts.hasMore)
+        assertEquals("opaque-cursor", contracts.nextCursor)
+        assertEquals("125000.50", contracts.rows.single().price)
+        assertTrue(contracts.rows.single().productLabel.contains("ورق"))
+        assertEquals(8L, contracts.rows.single().productUnitId)
+    }
 }

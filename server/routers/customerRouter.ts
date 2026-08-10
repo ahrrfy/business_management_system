@@ -12,6 +12,7 @@ import {
 } from "../services/customerService";
 import {
   listContractPricesForCustomer,
+  listContractPricesForCustomerPage,
   removeContractPrice,
   setContractPriceActive,
   upsertContractPrice,
@@ -264,6 +265,17 @@ export const customerRouter = router({
   contractPricesList: customersManagerProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
     .query(({ input }) => listContractPricesForCustomer(input.customerId)),
+
+  /** Cursor-paginated contract prices; the legacy array endpoint remains compatible. */
+  contractPricesPage: customersManagerProcedure
+    .input(
+      z.object({
+        customerId: z.number().int().positive(),
+        limit: z.number().int().positive().max(100).default(50),
+        cursor: z.string().max(1000).nullish(),
+      }),
+    )
+    .query(({ input }) => listContractPricesForCustomerPage(input)),
 
   /** إضافة/تحديث سعر تعاقدي (UNIQUE عميل×وحدة يحسم السباق — التحديث لا يُنشئ صفاً ثانياً). */
   contractPriceUpsert: customersManagerProcedure

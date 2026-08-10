@@ -16,7 +16,25 @@ object OperationsMappers {
         val summary = assetSummary(root) ?: throw IllegalArgumentException("Invalid asset payload")
         return AssetDetail(
             summary = summary,
+            brand = root.textOrNull("brand"),
+            serial = root.textOrNull("serial"),
+            supplierId = root.longOrNull("supplierId"),
             supplierName = root.textOrNull("supplierName"),
+            salvageValue = root.text("salvageValue", "0"),
+            usefulLifeYears = root.int("usefulLifeYears").coerceAtLeast(1),
+            depreciationMethod = DepreciationMethod.fromWire(root.textOrNull("depreciationMethod")),
+            accumulatedDepreciation = root.text("accumulated", root.text("accumulatedDepreciation", "0")),
+            maintenanceTotal = root.text("maintTotal", "0"),
+            disposalDate = root.textOrNull("disposalDate"),
+            disposalReason = root.textOrNull("disposalReason"),
+            disposalValue = root.textOrNull("disposalValue"),
+            documents = root.list("docs").mapNotNull { raw ->
+                val row = raw.asMap() ?: return@mapNotNull null
+                val id = row.long("id")
+                val title = row.text("title")
+                if (id <= 0 || title.isBlank()) return@mapNotNull null
+                AssetDocument(id = id, title = title, dataUrl = row.textOrNull("dataUrl"))
+            },
             maintenance = root.list("maintenance").mapNotNull { raw ->
                 val row = raw.asMap() ?: return@mapNotNull null
                 val id = row.long("id")
@@ -49,11 +67,73 @@ object OperationsMappers {
 
     fun scopedAssetDetail(summary: AssetSummary): AssetDetail = AssetDetail(
         summary = summary,
+        brand = null,
+        serial = null,
+        supplierId = null,
         supplierName = null,
+        salvageValue = "0",
+        usefulLifeYears = 1,
+        depreciationMethod = DepreciationMethod.StraightLine,
+        accumulatedDepreciation = "0",
+        maintenanceTotal = "0",
+        disposalDate = null,
+        disposalReason = null,
+        disposalValue = null,
+        documents = emptyList(),
         maintenance = emptyList(),
         custody = emptyList(),
         limitedToScopedSummary = true,
     )
+
+    fun assetFormOptions(root: JSONObject): AssetFormOptions = assetFormOptions(root.toWireMap())
+
+    internal fun assetFormOptions(root: Map<String, Any?>): AssetFormOptions = AssetFormOptions(
+        employees = root.list("employees").mapNotNull { raw ->
+            val row = raw.asMap() ?: return@mapNotNull null
+            val id = row.long("id")
+            val name = row.text("name")
+            if (id <= 0 || name.isBlank()) return@mapNotNull null
+            AssetFormOption(
+                id = id,
+                name = name,
+                branchId = row.longOrNull("branchId"),
+                subtitle = row.textOrNull("position"),
+            )
+        },
+        branches = root.list("branches").mapNotNull { raw ->
+            val row = raw.asMap() ?: return@mapNotNull null
+            val id = row.long("id")
+            val name = row.text("name")
+            if (id <= 0 || name.isBlank()) null else AssetFormOption(id = id, name = name)
+        },
+        suppliers = root.list("suppliers").mapNotNull { raw ->
+            val row = raw.asMap() ?: return@mapNotNull null
+            val id = row.long("id")
+            val name = row.text("name")
+            if (id <= 0 || name.isBlank()) null else AssetFormOption(id = id, name = name)
+        },
+    )
+
+    fun assetDocument(root: JSONObject): AssetDocument = assetDocument(root.toWireMap())
+
+    internal fun assetDocument(root: Map<String, Any?>): AssetDocument {
+        val id = root.long("id")
+        val title = root.text("title")
+        require(id > 0 && title.isNotBlank()) { "Invalid asset document payload" }
+        return AssetDocument(id = id, title = title, dataUrl = root.textOrNull("dataUrl"))
+    }
+
+    fun depreciationResult(root: JSONObject): AssetDepreciationResult = depreciationResult(root.toWireMap())
+
+    internal fun depreciationResult(root: Map<String, Any?>): AssetDepreciationResult {
+        val period = root.text("period")
+        require(Regex("^\\d{4}-(0[1-9]|1[0-2])$").matches(period)) { "Invalid depreciation payload" }
+        return AssetDepreciationResult(
+            period = period,
+            assetsPosted = root.int("assetsPosted").coerceAtLeast(0),
+            totalDepreciation = root.text("totalDepreciation", "0"),
+        )
+    }
 
     fun myCommission(root: JSONObject): MyCommissionStatus = myCommission(root.toWireMap())
 

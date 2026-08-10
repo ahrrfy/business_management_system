@@ -90,21 +90,18 @@ class FinanceViewModel(
             runCatching { repository.create(command) }
                 .onSuccess { receipt ->
                     val destination = sectionFor(draft.kind)
-                    state = state.copy(
-                        section = destination,
-                        composer = null,
-                        createConfirmation = null,
-                        submitting = false,
-                        notice = receipt.reference?.let { "تم إنشاء العملية $it" } ?: "تم إنشاء العملية المالية",
+                    state = state.mutationCommitted(
+                        destination,
+                        receipt.reference?.let { "تم إنشاء العملية $it" } ?: "تم إنشاء العملية المالية",
                     )
-                    load(destination, refresh = true, keepNotice = true)
+                    load(destination, refresh = true, keepNotice = true, afterMutation = true)
                 }
                 .onFailure { state = state.failed(it.userMessage()) }
         }
     }
 
     fun requestTransferAction(key: FinanceItemKey, action: TransferAction) {
-        if (!accessPolicy.canReceiveOrCancelTransfer || state.submitting) return
+        if (!accessPolicy.canReceiveOrCancelTransfer || state.submitting || !state.canWrite(FinanceSection.TRANSFERS)) return
         val transfer = state.transfers.firstOrNull { it.key == key } ?: return
         val allowed = when (action) {
             TransferAction.RECEIVE -> accessPolicy.canReceive(transfer)
@@ -122,7 +119,7 @@ class FinanceViewModel(
 
     fun confirmTransferAction() {
         val pending = state.transferConfirmation ?: return
-        if (state.submitting || !accessPolicy.canReceiveOrCancelTransfer) return
+        if (state.submitting || !accessPolicy.canReceiveOrCancelTransfer || !state.canWrite(FinanceSection.TRANSFERS)) return
         val id = pending.transferKey.numericId() ?: return
         if (pending.action == TransferAction.CANCEL && pending.reason.trim().length < 3) {
             state = state.copy(error = "سبب الإلغاء مطلوب (3 أحرف على الأقل)")
@@ -136,13 +133,12 @@ class FinanceViewModel(
                     TransferAction.CANCEL -> repository.cancelTransfer(id, pending.reason)
                 }
             }.onSuccess {
-                state = state.copy(
-                    submitting = false,
-                    transferConfirmation = null,
-                    selectedKey = null,
-                    notice = if (pending.action == TransferAction.RECEIVE) "تم استلام التحويل" else "تم إلغاء التحويل",
+                state = state.transferCommitted(
+                    pending.transferKey,
+                    status = if (pending.action == TransferAction.RECEIVE) "RECEIVED" else "CANCELLED",
+                    message = if (pending.action == TransferAction.RECEIVE) "تم استلام التحويل" else "تم إلغاء التحويل",
                 )
-                load(FinanceSection.TRANSFERS, refresh = true, keepNotice = true)
+                load(FinanceSection.TRANSFERS, refresh = true, keepNotice = true, afterMutation = true)
             }.onFailure { state = state.failed(it.userMessage()) }
         }
     }
@@ -156,6 +152,7 @@ class FinanceViewModel(
         refresh: Boolean = false,
         keepNotice: Boolean = false,
         append: Boolean = false,
+        afterMutation: Boolean = false,
     ) {
         if (!accessPolicy.canRead(section) || state.loading || state.refreshing) return
         state = state.startLoading(refresh).let { if (keepNotice) it.copy(notice = state.notice) else it }
@@ -194,15 +191,19 @@ class FinanceViewModel(
                     .takeIf { it != section && it !in state.loadedSections && accessPolicy.canRead(it) }
                 if (requestedWhileLoading != null) load(requestedWhileLoading)
             }
-                .onFailure { state = state.failed(it.userMessage()) }
+                .onFailure { state = state.loadFailed(section, it.userMessage(), afterMutation) }
         }
     }
 
-    private fun canCompose(kind: FinanceComposerKind) = when (kind) {
+    private fun canCompose(kind: FinanceComposerKind): Boolean {
+        val section = sectionFor(kind)
+        if (!state.canWrite(section)) return false
+        return when (kind) {
         FinanceComposerKind.VOUCHER -> accessPolicy.canWrite(FinanceSection.VOUCHERS)
         FinanceComposerKind.EXPENSE -> accessPolicy.canWrite(FinanceSection.EXPENSES)
         FinanceComposerKind.TRANSFER -> accessPolicy.canWrite(FinanceSection.TRANSFERS)
         FinanceComposerKind.FUNDING -> accessPolicy.canFundTreasury
+        }
     }
 
     private fun sectionFor(kind: FinanceComposerKind) = when (kind) {

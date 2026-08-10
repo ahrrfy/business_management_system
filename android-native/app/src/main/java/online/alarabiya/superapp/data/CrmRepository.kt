@@ -10,7 +10,12 @@ import online.alarabiya.superapp.model.crm.CrmDashboard
 import online.alarabiya.superapp.model.crm.CrmMappers
 import online.alarabiya.superapp.model.crm.CrmValidation
 import online.alarabiya.superapp.model.crm.CustomerDetail
+import online.alarabiya.superapp.model.crm.CustomerContractPricePage
+import online.alarabiya.superapp.model.crm.CustomerContractPriceMutation
+import online.alarabiya.superapp.model.crm.CustomerContractPriceDraft
 import online.alarabiya.superapp.model.crm.CustomerDraft
+import online.alarabiya.superapp.model.crm.CustomerFollowUpDraft
+import online.alarabiya.superapp.model.crm.CustomerFollowUpPage
 import online.alarabiya.superapp.model.crm.CustomerPage
 import online.alarabiya.superapp.model.crm.PriceTier
 import online.alarabiya.superapp.model.crm.QuotationDetail
@@ -26,6 +31,16 @@ interface CrmDataSource {
     suspend fun createCustomer(draft: CustomerDraft): Long
     suspend fun updateCustomer(customerId: Long, draft: CustomerDraft)
     suspend fun setCustomerActive(customerId: Long, active: Boolean)
+    suspend fun customerFollowUps(customerId: Long, includeResolved: Boolean = true, offset: Int = 0): CustomerFollowUpPage
+    suspend fun dueCustomerFollowUps(offset: Int = 0): CustomerFollowUpPage
+    suspend fun createCustomerFollowUp(customerId: Long, branchId: Long, draft: CustomerFollowUpDraft): Long
+    suspend fun updateCustomerFollowUp(draft: CustomerFollowUpDraft)
+    suspend fun resolveCustomerFollowUp(noteId: Long, resolved: Boolean)
+    suspend fun deleteCustomerFollowUp(noteId: Long)
+    suspend fun contractPrices(customerId: Long, cursor: String? = null): CustomerContractPricePage
+    suspend fun upsertContractPrice(customerId: Long, draft: CustomerContractPriceDraft): CustomerContractPriceMutation
+    suspend fun setContractPriceActive(priceId: Long, active: Boolean)
+    suspend fun deleteContractPrice(priceId: Long)
     suspend fun quotations(query: String, status: QuotationStatus? = null, cursor: Long? = null): QuotationPage
     suspend fun quotation(quotationId: Long): QuotationDetail
     suspend fun catalog(branchId: Long, tier: PriceTier, query: String, customerId: Long?): List<CatalogOption>
@@ -81,6 +96,102 @@ class CrmRepository(private val api: TrpcClient) : CrmDataSource {
             if (active) "customers.activate" else "customers.deactivate",
             JSONObject().put("customerId", customerId),
         )
+    }
+
+    override suspend fun customerFollowUps(
+        customerId: Long,
+        includeResolved: Boolean,
+        offset: Int,
+    ): CustomerFollowUpPage {
+        require(customerId > 0) { "معرّف العميل غير صالح" }
+        return CrmMappers.customerFollowUpPage(
+            api.query(
+                "customerNotes.list",
+                CrmOperationsWire.followUpList(customerId, includeResolved, offset),
+            ),
+        )
+    }
+
+    override suspend fun dueCustomerFollowUps(offset: Int): CustomerFollowUpPage =
+        CrmMappers.customerFollowUpPage(
+            api.query(
+                "customerNotes.dueTodayPage",
+                CrmOperationsWire.dueFollowUps(offset),
+            ),
+        )
+
+    override suspend fun createCustomerFollowUp(
+        customerId: Long,
+        branchId: Long,
+        draft: CustomerFollowUpDraft,
+    ): Long {
+        require(customerId > 0) { "معرّف العميل غير صالح" }
+        require(branchId > 0) { "اختر فرع الجلسة" }
+        CrmValidation.followUp(draft)?.let { throw IllegalArgumentException(it) }
+        val result = api.mutate(
+            "customerNotes.create",
+            CrmOperationsWire.followUpCreate(customerId, branchId, draft),
+        )
+        return result.optLong("id").also { require(it > 0) { "لم يُرجع الخادم معرّف المتابعة" } }
+    }
+
+    override suspend fun updateCustomerFollowUp(draft: CustomerFollowUpDraft) {
+        val noteId = requireNotNull(draft.noteId).also { require(it > 0) { "معرّف المتابعة غير صالح" } }
+        CrmValidation.followUp(draft)?.let { throw IllegalArgumentException(it) }
+        api.mutate(
+            "customerNotes.update",
+            CrmOperationsWire.followUpUpdate(noteId, draft),
+        )
+    }
+
+    override suspend fun resolveCustomerFollowUp(noteId: Long, resolved: Boolean) {
+        require(noteId > 0) { "معرّف المتابعة غير صالح" }
+        api.mutate(
+            "customerNotes.resolve",
+            JSONObject().put("noteId", noteId).put("isResolved", resolved),
+        )
+    }
+
+    override suspend fun deleteCustomerFollowUp(noteId: Long) {
+        require(noteId > 0) { "معرّف المتابعة غير صالح" }
+        api.mutate("customerNotes.delete", JSONObject().put("noteId", noteId))
+    }
+
+    override suspend fun contractPrices(customerId: Long, cursor: String?): CustomerContractPricePage {
+        require(customerId > 0) { "معرّف العميل غير صالح" }
+        return CrmMappers.contractPricePage(
+            api.query(
+                "customers.contractPricesPage",
+                CrmOperationsWire.contractPricePage(customerId, cursor),
+            ),
+        )
+    }
+
+    override suspend fun upsertContractPrice(
+        customerId: Long,
+        draft: CustomerContractPriceDraft,
+    ): CustomerContractPriceMutation {
+        require(customerId > 0) { "معرّف العميل غير صالح" }
+        CrmValidation.contractPrice(draft)?.let { throw IllegalArgumentException(it) }
+        val result = api.mutate(
+            "customers.contractPriceUpsert",
+            CrmOperationsWire.contractUpsert(customerId, draft),
+        )
+        val id = result.optLong("id").also { require(it > 0) { "لم يُرجع الخادم معرّف السعر التعاقدي" } }
+        return CustomerContractPriceMutation(id = id, updated = result.optBoolean("updated", false))
+    }
+
+    override suspend fun setContractPriceActive(priceId: Long, active: Boolean) {
+        require(priceId > 0) { "معرّف السعر التعاقدي غير صالح" }
+        api.mutate(
+            "customers.contractPriceSetActive",
+            JSONObject().put("id", priceId).put("isActive", active),
+        )
+    }
+
+    override suspend fun deleteContractPrice(priceId: Long) {
+        require(priceId > 0) { "معرّف السعر التعاقدي غير صالح" }
+        api.mutate("customers.contractPriceRemove", JSONObject().put("id", priceId))
     }
 
     override suspend fun quotations(query: String, status: QuotationStatus?, cursor: Long?): QuotationPage {
@@ -201,3 +312,37 @@ class CrmRepository(private val api: TrpcClient) : CrmDataSource {
 
 private fun JSONObject.putNullable(key: String, value: String): JSONObject =
     put(key, value.trim().takeIf(String::isNotEmpty) ?: JSONObject.NULL)
+
+internal object CrmOperationsWire {
+    fun followUpList(customerId: Long, includeResolved: Boolean, offset: Int): JSONObject = JSONObject()
+        .put("customerId", customerId)
+        .put("includeResolved", includeResolved)
+        .put("limit", 100)
+        .put("offset", offset.coerceAtLeast(0))
+
+    fun followUpCreate(customerId: Long, branchId: Long, draft: CustomerFollowUpDraft): JSONObject = JSONObject()
+        .put("customerId", customerId)
+        .put("branchId", branchId)
+        .put("note", draft.note.trim())
+        .putNullable("followUpDate", draft.followUpDate)
+
+    fun dueFollowUps(offset: Int): JSONObject = JSONObject()
+        .put("limit", 100)
+        .put("offset", offset.coerceAtLeast(0))
+
+    fun followUpUpdate(noteId: Long, draft: CustomerFollowUpDraft): JSONObject = JSONObject()
+        .put("noteId", noteId)
+        .put("note", draft.note.trim())
+        .putNullable("followUpDate", draft.followUpDate)
+
+    fun contractUpsert(customerId: Long, draft: CustomerContractPriceDraft): JSONObject = JSONObject()
+        .put("customerId", customerId)
+        .put("productUnitId", requireNotNull(draft.productUnitId))
+        .put("price", draft.price.trim())
+        .putNullable("note", draft.note)
+
+    fun contractPricePage(customerId: Long, cursor: String?): JSONObject = JSONObject()
+        .put("customerId", customerId)
+        .put("limit", 100)
+        .put("cursor", cursor ?: JSONObject.NULL)
+}

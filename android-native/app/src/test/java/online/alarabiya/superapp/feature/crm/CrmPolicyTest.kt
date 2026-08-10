@@ -9,6 +9,8 @@ import online.alarabiya.superapp.model.crm.CrmCapabilities
 import online.alarabiya.superapp.model.crm.CrmSection
 import online.alarabiya.superapp.model.crm.CrmValidation
 import online.alarabiya.superapp.model.crm.CustomerDraft
+import online.alarabiya.superapp.model.crm.CustomerContractPriceDraft
+import online.alarabiya.superapp.model.crm.CustomerFollowUpDraft
 import online.alarabiya.superapp.model.crm.QuotationDraft
 import online.alarabiya.superapp.model.crm.QuotationLineDraft
 import online.alarabiya.superapp.model.crm.WhatsappIntentSanitizer
@@ -40,6 +42,20 @@ class CrmPolicyTest {
         assertFalse(capabilities.customers.canWrite)
         assertTrue(capabilities.sales.canWrite)
         assertEquals(listOf(CrmSection.Customers, CrmSection.Quotations), capabilities.visibleSections)
+    }
+
+    @Test
+    fun fullCustomerAuthorityExposesNativeFollowUpWorkspace() {
+        val capabilities = CrmCapabilities.fromBootstrap(
+            AppBootstrap(
+                user = UserIdentity(1, "مدير", null, null, "manager"),
+                modules = listOf(ModuleAccess("crm", "العملاء", "FULL")),
+                branchId = 2,
+                allBranches = false,
+            ),
+        )
+
+        assertEquals(listOf(CrmSection.Customers, CrmSection.FollowUps), capabilities.visibleSections)
     }
 
     @Test
@@ -103,5 +119,22 @@ class CrmPolicyTest {
             status = CampaignStatus.ACTIVE,
         )
         assertEquals(listOf(CampaignStatus.PAUSED, CampaignStatus.ENDED), active.allowedTransitions())
+    }
+
+    @Test
+    fun followUpAndContractDraftsFailClosedBeforeNetworkMutation() {
+        assertEquals("نص المتابعة مطلوب", CrmValidation.followUp(CustomerFollowUpDraft()))
+        assertEquals(
+            "تاريخ المتابعة يجب أن يكون YYYY-MM-DD",
+            CrmValidation.followUp(CustomerFollowUpDraft(note = "اتصال", followUpDate = "10/08/2026")),
+        )
+        assertNull(CrmValidation.followUp(CustomerFollowUpDraft(note = "اتصال", followUpDate = "2026-08-10")))
+
+        assertEquals("اختر الصنف والوحدة", CrmValidation.contractPrice(CustomerContractPriceDraft()))
+        assertEquals(
+            "السعر التعاقدي يجب أن يكون أكبر من صفر وبدقة منزلتين",
+            CrmValidation.contractPrice(CustomerContractPriceDraft(productUnitId = 8, price = "0")),
+        )
+        assertNull(CrmValidation.contractPrice(CustomerContractPriceDraft(productUnitId = 8, price = "125000.50")))
     }
 }

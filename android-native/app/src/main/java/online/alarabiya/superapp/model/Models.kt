@@ -9,6 +9,7 @@ data class UserIdentity(
     val roleLabel: String = role,
     val mustChangePassword: Boolean = false,
     val mustEnrollTwoFactor: Boolean = false,
+    val isOwner: Boolean = false,
 )
 
 data class TwoFactorStatus(
@@ -46,6 +47,11 @@ data class AppBootstrap(
     val branchId: Long?,
     val allBranches: Boolean,
     val hasPersonalWorkspace: Boolean = true,
+    val canSeeCost: Boolean = false,
+    val canViewReports: Boolean = false,
+    val isExecutive: Boolean = false,
+    val roleDegraded: Boolean = false,
+    val isOwner: Boolean = false,
 )
 
 data class TaskSummary(

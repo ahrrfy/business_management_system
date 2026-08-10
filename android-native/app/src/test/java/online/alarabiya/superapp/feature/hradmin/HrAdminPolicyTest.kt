@@ -16,6 +16,17 @@ import org.junit.Test
 
 class HrAdminPolicyTest {
     @Test
+    fun `failed initial load stays retryable and payroll writes require fresh section`() {
+        val initial = HrAdminUiState(section = online.alarabiya.superapp.model.hradmin.HrAdminSection.PAYROLL)
+        val failed = initial.failed("شبكة", online.alarabiya.superapp.model.hradmin.HrAdminSection.PAYROLL)
+        assertFalse(failed.initialized)
+        assertFalse(failed.isFresh(online.alarabiya.superapp.model.hradmin.HrAdminSection.PAYROLL))
+        val loaded = failed.sectionLoaded(online.alarabiya.superapp.model.hradmin.HrAdminSection.PAYROLL)
+        assertTrue(loaded.initialized)
+        assertTrue(loaded.isFresh(online.alarabiya.superapp.model.hradmin.HrAdminSection.PAYROLL))
+        assertFalse(loaded.copy(staleSections = setOf(online.alarabiya.superapp.model.hradmin.HrAdminSection.PAYROLL)).isFresh(online.alarabiya.superapp.model.hradmin.HrAdminSection.PAYROLL))
+    }
+    @Test
     fun `manager keeps the established global hr scope`() {
         val policy = HrAdminCapabilities.fromBootstrap(bootstrap("manager", "FULL", 7))
 

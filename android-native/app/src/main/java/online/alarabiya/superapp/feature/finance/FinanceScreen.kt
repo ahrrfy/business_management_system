@@ -129,7 +129,7 @@ fun FinanceScreen(
         Scaffold(
             modifier = modifier.fillMaxSize(),
             floatingActionButton = {
-                composerFor(state.section, policy)?.let { kind ->
+                composerFor(state.section, policy)?.takeIf { state.canWrite(state.section) }?.let { kind ->
                     FloatingActionButton(
                         onClick = { onOpenComposer(kind) },
                         containerColor = FinanceOrange,
@@ -139,7 +139,7 @@ fun FinanceScreen(
             },
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
-                FinanceHeader(state, onRefresh, policy.canFundTreasury) {
+                FinanceHeader(state, onRefresh, policy.canFundTreasury && state.canWrite(FinanceSection.OVERVIEW)) {
                     onOpenComposer(FinanceComposerKind.FUNDING)
                 }
                 FinanceTabs(policy.readableSections, state.section, onSection)

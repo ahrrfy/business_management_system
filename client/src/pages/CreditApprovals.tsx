@@ -26,7 +26,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { Check, History, Plus, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type Tab = "create" | "log";
 type ApprovalStatus = "" | "ACTIVE" | "EXPIRED" | "CONSUMED" | "CANCELLED";
@@ -48,6 +48,11 @@ function deriveStatus(r: { expiresAt: string | Date; consumedAt: string | Date |
 
 export default function CreditApprovalsPage() {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const canPickBranch = me.data?.role === "admin";
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
+  const [pickedBranchId, setPickedBranchId] = useState<number | null>(null);
+  const effectiveBranchId = me.data?.branchId != null ? Number(me.data.branchId) : pickedBranchId;
   const [tab, setTab] = useState<Tab>("create");
   const [customerSearch, setCustomerSearch] = useState("");
   const [customerId, setCustomerId] = useState<number | null>(null);
@@ -55,12 +60,22 @@ export default function CreditApprovalsPage() {
   const [ttlMinutes, setTtlMinutes] = useState(60);
   const [notes, setNotes] = useState("");
   const [createdId, setCreatedId] = useState<number | null>(null);
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+
+  useEffect(() => {
+    if (canPickBranch && pickedBranchId == null && branches.data?.[0]?.id) {
+      setPickedBranchId(Number(branches.data[0].id));
+    }
+  }, [branches.data, canPickBranch, pickedBranchId]);
 
   // قائمة عملاء سريعة للاختيار (search مع filter اسم)
-  const customers = trpc.customers.search.useQuery({ q: customerSearch || undefined, limit: 20 });
+  const customers = trpc.creditApproval.customerOptions.useQuery(
+    { branchId: effectiveBranchId ?? undefined, q: customerSearch || undefined, limit: 20 },
+    { enabled: effectiveBranchId != null },
+  );
   const active = trpc.creditApproval.listForCustomer.useQuery(
-    { customerId: customerId ?? 0 },
-    { enabled: !!customerId },
+    { customerId: customerId ?? 0, branchId: effectiveBranchId ?? undefined },
+    { enabled: !!customerId && effectiveBranchId != null },
   );
 
   const createMut = trpc.creditApproval.create.useMutation({
@@ -71,6 +86,7 @@ export default function CreditApprovalsPage() {
       utils.creditApproval.list.invalidate();
       setMaxAmount("");
       setNotes("");
+      setClientRequestId(crypto.randomUUID());
     },
     onError: (e) => notify.err(e),
   });
@@ -105,6 +121,24 @@ export default function CreditApprovalsPage() {
             <CardHeader className="font-semibold">إنشاء موافقة جديدة</CardHeader>
             <CardContent className="space-y-3">
               <div className="grid gap-3 md:grid-cols-2 items-start">
+                {canPickBranch && (
+                  <div className="grid gap-2 md:col-span-2">
+                    <label className="text-sm font-medium">الفرع</label>
+                    <AppSelect
+                      value={effectiveBranchId?.toString() ?? ""}
+                      onValueChange={(value) => {
+                        setPickedBranchId(Number(value));
+                        setCustomerId(null);
+                        setCustomerSearch("");
+                      }}
+                      aria-label="فرع قرار الائتمان"
+                    >
+                      {(branches.data ?? []).map((branch) => (
+                        <option key={branch.id} value={branch.id}>{branch.name}</option>
+                      ))}
+                    </AppSelect>
+                  </div>
+                )}
                 <div className="grid gap-2 md:col-span-2">
                   <label className="text-sm font-medium">العميل</label>
                   <input
@@ -169,6 +203,7 @@ export default function CreditApprovalsPage() {
               <Button
                 onClick={async () => {
                   if (!customerId) return notify.err("اختر عميلاً");
+                  if (!effectiveBranchId) return notify.err("اختر الفرع");
                   if (!/^\d+(\.\d{1,2})?$/.test(maxAmount)) return notify.err("سقف غير صالح");
                   const customerName =
                     customers.data?.rows?.find((c: any) => Number(c.id) === customerId)?.name ?? `#${customerId}`;
@@ -181,9 +216,16 @@ export default function CreditApprovalsPage() {
                     }))
                   )
                     return;
-                  createMut.mutate({ customerId, maxAmount, ttlMinutes, notes: notes.trim() || undefined });
+                  createMut.mutate({
+                    customerId,
+                    branchId: effectiveBranchId,
+                    maxAmount,
+                    ttlMinutes,
+                    notes: notes.trim() || undefined,
+                    clientRequestId,
+                  });
                 }}
-                disabled={createMut.isPending}
+                disabled={createMut.isPending || effectiveBranchId == null}
               >
                 إنشاء الموافقة
               </Button>

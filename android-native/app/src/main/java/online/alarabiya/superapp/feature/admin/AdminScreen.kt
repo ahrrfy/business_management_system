@@ -88,12 +88,14 @@ import online.alarabiya.superapp.model.admin.AdminBranch
 import online.alarabiya.superapp.model.admin.AdminRole
 import online.alarabiya.superapp.model.admin.AdminSection
 import online.alarabiya.superapp.model.admin.AdminUser
+import online.alarabiya.superapp.model.admin.AdminUserSession
 import online.alarabiya.superapp.ui.rtlIsolate
 import online.alarabiya.superapp.model.admin.CreateAdminRoleCommand
 import online.alarabiya.superapp.model.admin.CreateAdminUserCommand
 import online.alarabiya.superapp.model.admin.RoleAssignment
 import online.alarabiya.superapp.model.admin.UpdateAdminRoleCommand
 import online.alarabiya.superapp.model.admin.UpdateAdminUserCommand
+import online.alarabiya.superapp.model.admin.UserPermissionProfile
 import online.alarabiya.superapp.ui.theme.Canvas
 import online.alarabiya.superapp.ui.theme.Emerald
 import online.alarabiya.superapp.ui.theme.EmeraldDark
@@ -107,6 +109,9 @@ private sealed interface AdminDialogState {
     data class EditUser(val user: AdminUser) : AdminDialogState
     data class AssignRole(val user: AdminUser) : AdminDialogState
     data class UserStatus(val user: AdminUser, val active: Boolean) : AdminDialogState
+    data class Permissions(val user: AdminUser) : AdminDialogState
+    data class ResetPassword(val user: AdminUser) : AdminDialogState
+    data class AccountSecurity(val user: AdminUser) : AdminDialogState
     data object CreateRole : AdminDialogState
     data class EditRole(val role: AdminRole) : AdminDialogState
     data class RoleStatus(val role: AdminRole, val active: Boolean) : AdminDialogState
@@ -131,6 +136,15 @@ fun AdminRoute(viewModel: AdminViewModel, modifier: Modifier = Modifier) {
         onUpdateUser = viewModel::updateUser,
         onAssignRole = viewModel::assignRole,
         onSetUserActive = viewModel::setUserActive,
+        onLoadPermissions = viewModel::loadUserPermissions,
+        onClearPermissions = viewModel::clearUserPermissions,
+        onUpdatePermissions = viewModel::updateUserPermissions,
+        onResetPassword = viewModel::resetPassword,
+        onLoadAccountSecurity = viewModel::loadAccountSecurity,
+        onClearAccountSecurity = viewModel::clearAccountSecurity,
+        onRevokeSession = viewModel::revokeSession,
+        onRevokeAllSessions = viewModel::revokeAllSessions,
+        onResetTwoFactor = viewModel::resetTwoFactor,
         onCreateRole = viewModel::createRole,
         onUpdateRole = viewModel::updateRole,
         onSetRoleActive = viewModel::setRoleActive,
@@ -157,6 +171,15 @@ fun AdminScreen(
     onUpdateUser: (UpdateAdminUserCommand) -> Unit,
     onAssignRole: (AdminUser, RoleAssignment) -> Unit,
     onSetUserActive: (AdminUser, Boolean) -> Unit,
+    onLoadPermissions: (AdminUser) -> Unit,
+    onClearPermissions: () -> Unit,
+    onUpdatePermissions: (AdminUser, Map<String, AccessLevel>) -> Unit,
+    onResetPassword: (AdminUser, String) -> Unit,
+    onLoadAccountSecurity: (AdminUser) -> Unit,
+    onClearAccountSecurity: () -> Unit,
+    onRevokeSession: (AdminUser, Long) -> Unit,
+    onRevokeAllSessions: (AdminUser) -> Unit,
+    onResetTwoFactor: (AdminUser) -> Unit,
     onCreateRole: (CreateAdminRoleCommand) -> Unit,
     onUpdateRole: (AdminRole, UpdateAdminRoleCommand) -> Unit,
     onSetRoleActive: (AdminRole, Boolean) -> Unit,
@@ -167,15 +190,16 @@ fun AdminScreen(
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Scaffold(containerColor = Canvas, modifier = modifier.fillMaxSize()) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
-                AdminHeader(state, onRefresh)
-                AdminTabs(state.section, onSection)
-                state.error?.let { MessageBanner(it, true, onDismissMessage) }
-                state.notice?.let { MessageBanner(it, false, onDismissMessage) }
+                AdminHeader(state, onRefresh, policy.canOpen)
                 if (!policy.canOpen) {
                     AccessDenied()
-                } else if (state.loading && state.overview == null) {
-                    LoadingPane(Modifier.fillMaxSize())
+                } else if (!state.overviewLoaded) {
+                    if (state.loading || state.refreshing || state.busyKey != null) LoadingPane(Modifier.fillMaxSize())
+                    else AdminInitialLoadFailure(state.error, state.notice, onRefresh)
                 } else {
+                    AdminTabs(state.section, onSection)
+                    state.error?.let { MessageBanner(it, true, onDismissMessage) }
+                    state.notice?.let { MessageBanner(it, false, onDismissMessage) }
                     BoxWithConstraints(Modifier.fillMaxSize()) {
                         val tablet = maxWidth >= 840.dp
                         when (state.section) {
@@ -188,6 +212,19 @@ fun AdminScreen(
                                 onEdit = { dialog = AdminDialogState.EditUser(it) },
                                 onAssign = { dialog = AdminDialogState.AssignRole(it) },
                                 onStatus = { user, active -> dialog = AdminDialogState.UserStatus(user, active) },
+                                policy = policy,
+                                onPermissions = { user ->
+                                    onLoadPermissions(user)
+                                    dialog = AdminDialogState.Permissions(user)
+                                },
+                                onResetPassword = { user ->
+                                    onRequestPassword()
+                                    dialog = AdminDialogState.ResetPassword(user)
+                                },
+                                onAccountSecurity = { user ->
+                                    onLoadAccountSecurity(user)
+                                    dialog = AdminDialogState.AccountSecurity(user)
+                                },
                             )
                             AdminSection.ROLES -> RolesWorkspace(
                                 state, tablet, onSelectRole,
@@ -247,6 +284,44 @@ fun AdminScreen(
                 onDismiss = { dialog = null },
                 onConfirm = { onSetUserActive(current.user, current.active); dialog = null },
             )
+            is AdminDialogState.Permissions -> PermissionOverridesDialog(
+                user = current.user,
+                profile = state.permissionProfile,
+                loading = state.permissionLoading,
+                busy = state.busyKey != null,
+                onDismiss = { onClearPermissions(); dialog = null },
+                onConfirm = { overrides ->
+                    onUpdatePermissions(current.user, overrides)
+                    dialog = null
+                },
+            )
+            is AdminDialogState.ResetPassword -> ResetPasswordDialog(
+                user = current.user,
+                password = state.temporaryPassword,
+                loading = state.passwordLoading,
+                busy = state.busyKey != null,
+                onRefresh = onRequestPassword,
+                onDismiss = { onConsumePassword(); dialog = null },
+                onConfirm = { password ->
+                    onResetPassword(current.user, password)
+                    onConsumePassword()
+                    dialog = null
+                },
+            )
+            is AdminDialogState.AccountSecurity -> AccountSecurityDialog(
+                user = current.user,
+                sessions = state.incidentSessions,
+                loading = state.incidentLoading,
+                fresh = state.incidentFresh,
+                busy = state.busyKey != null,
+                error = state.error,
+                notice = state.notice,
+                onDismiss = { onClearAccountSecurity(); dialog = null },
+                onRetry = { onLoadAccountSecurity(current.user) },
+                onRevokeSession = { onRevokeSession(current.user, it) },
+                onRevokeAll = { onRevokeAllSessions(current.user) },
+                onResetTwoFactor = { onResetTwoFactor(current.user) },
+            )
             AdminDialogState.CreateRole -> RoleEditorDialog(
                 role = null,
                 roles = state.roles,
@@ -278,7 +353,7 @@ fun AdminScreen(
 }
 
 @Composable
-private fun AdminHeader(state: AdminUiState, onRefresh: () -> Unit) {
+private fun AdminHeader(state: AdminUiState, onRefresh: () -> Unit, canOpen: Boolean) {
     Surface(
         color = EmeraldDark,
         contentColor = Color.White,
@@ -295,13 +370,15 @@ private fun AdminHeader(state: AdminUiState, onRefresh: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text("الحوكمة وإدارة الوصول", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.semantics { heading() })
                 Text(
-                    "${state.overview?.totalUsers ?: 0} حساب • ${state.overview?.roles?.count { it.isCustom } ?: 0} أدوار مخصّصة",
+                    state.overview?.takeIf { state.overviewLoaded }
+                        ?.let { "${it.totalUsers} حساب • ${it.roles.count { role -> role.isCustom }} أدوار مخصّصة" }
+                        ?: "إدارة الحسابات والصلاحيات",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White.copy(.72f),
                 )
             }
-            IconButton(onClick = onRefresh, enabled = !state.refreshing) {
-                if (state.refreshing) CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+            IconButton(onClick = onRefresh, enabled = canOpen && !state.loading && !state.refreshing && state.busyKey == null) {
+                if (state.loading || state.refreshing) CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
                 else Icon(Icons.Rounded.Refresh, "تحديث")
             }
         }
@@ -349,12 +426,16 @@ private fun UsersWorkspace(
     onEdit: (AdminUser) -> Unit,
     onAssign: (AdminUser) -> Unit,
     onStatus: (AdminUser, Boolean) -> Unit,
+    policy: AdminAccessPolicy,
+    onPermissions: (AdminUser) -> Unit,
+    onResetPassword: (AdminUser) -> Unit,
+    onAccountSecurity: (AdminUser) -> Unit,
 ) {
     if (tablet) {
         Row(Modifier.fillMaxSize().padding(20.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             UserDirectory(state, onQuery, onSearch, onIncludeInactive, onSelect, onCreate, Modifier.weight(.46f))
             AdminDetailSurface(Modifier.weight(.54f)) {
-                state.selectedUser?.let { UserDetail(it, state, onEdit, onAssign, onStatus) }
+                state.selectedUser?.let { UserDetail(it, state, policy, onEdit, onAssign, onStatus, onPermissions, onResetPassword, onAccountSecurity) }
                     ?: EmptySelection("اختر حساباً لعرض صلاحياته وإجراءاته", Icons.Rounded.People)
             }
         }
@@ -366,7 +447,7 @@ private fun UsersWorkspace(
                 Text("كل المستخدمين")
             }
             AdminDetailSurface(Modifier.fillMaxSize()) {
-                UserDetail(selectedUser, state, onEdit, onAssign, onStatus)
+                UserDetail(selectedUser, state, policy, onEdit, onAssign, onStatus, onPermissions, onResetPassword, onAccountSecurity)
             }
         }
     } else {
@@ -451,9 +532,13 @@ private fun UserRow(user: AdminUser, selected: Boolean, onClick: () -> Unit) {
 private fun UserDetail(
     user: AdminUser,
     state: AdminUiState,
+    policy: AdminAccessPolicy,
     onEdit: (AdminUser) -> Unit,
     onAssign: (AdminUser) -> Unit,
     onStatus: (AdminUser, Boolean) -> Unit,
+    onPermissions: (AdminUser) -> Unit,
+    onResetPassword: (AdminUser) -> Unit,
+    onAccountSecurity: (AdminUser) -> Unit,
 ) {
     LazyColumn(
         Modifier.fillMaxSize().padding(22.dp),
@@ -495,6 +580,32 @@ private fun UserDetail(
                 OutlinedButton(onClick = { onAssign(user) }, modifier = Modifier.weight(1f), enabled = state.busyKey == null) {
                     Icon(Icons.Rounded.VpnKey, null); Spacer(Modifier.width(6.dp)); Text("تعيين دور")
                 }
+            }
+        }
+        if (policy.actorIsOwner && user.id != policy.actorId) item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = { onPermissions(user) },
+                    modifier = Modifier.weight(1f),
+                    enabled = state.busyKey == null,
+                ) { Icon(Icons.Rounded.Security, null); Spacer(Modifier.width(6.dp)); Text("صلاحيات فردية") }
+                OutlinedButton(
+                    onClick = { onResetPassword(user) },
+                    modifier = Modifier.weight(1f),
+                    enabled = state.busyKey == null,
+                ) { Icon(Icons.Rounded.VpnKey, null); Spacer(Modifier.width(6.dp)); Text("إعادة كلمة المرور") }
+            }
+        }
+        if (policy.canManageAccountSecurity(user, state.overview?.activeOwnerCount ?: 0).allowed) item {
+            OutlinedButton(
+                onClick = { onAccountSecurity(user) },
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                enabled = state.busyKey == null,
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Icon(Icons.Rounded.Shield, null)
+                Spacer(Modifier.width(7.dp))
+                Text("استجابة حوادث الحساب")
             }
         }
         item {
@@ -818,6 +929,122 @@ private fun RoleEditorDialog(
 }
 
 @Composable
+private fun AdminInitialLoadFailure(message: String?, notice: String?, onRetry: () -> Unit) {
+    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().widthIn(max = 560.dp),
+            color = Color.White,
+            shape = RoundedCornerShape(topStart = 30.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 30.dp),
+            tonalElevation = 2.dp,
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(Icons.Rounded.Security, null, Modifier.size(46.dp), tint = MaterialTheme.colorScheme.error)
+                Text("تعذر فتح مركز الحوكمة", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                notice?.let { Text(it, color = EmeraldDark, fontWeight = FontWeight.Bold) }
+                Text(message ?: "تعذر تحميل الحسابات والأدوار.", color = MutedInk)
+                Button(onClick = onRetry) {
+                    Icon(Icons.Rounded.Refresh, null)
+                    Spacer(Modifier.width(7.dp))
+                    Text("إعادة المحاولة")
+                }
+            }
+        }
+    }
+}
+
+private sealed interface IncidentConfirmation {
+    data class RevokeOne(val session: AdminUserSession) : IncidentConfirmation
+    data object RevokeAll : IncidentConfirmation
+    data object ResetTwoFactor : IncidentConfirmation
+}
+
+@Composable
+private fun PermissionOverridesDialog(
+    user: AdminUser,
+    profile: UserPermissionProfile?,
+    loading: Boolean,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (Map<String, AccessLevel>) -> Unit,
+) {
+    var overrides by remember(profile?.userId) { mutableStateOf(profile?.individualOverrides.orEmpty()) }
+    FormDialog("الصلاحيات الفردية — ${user.name}", onDismiss) {
+        when {
+            loading -> LoadingPane(Modifier.fillMaxWidth().height(160.dp))
+            profile == null -> Text("تعذر تحميل الصلاحيات", color = MaterialTheme.colorScheme.error)
+            else -> {
+                Text(
+                    "الدور الفعلي: ${profile.customRoleLabel ?: profile.effectiveRole}",
+                    color = MutedInk,
+                )
+                if (profile.customRoleInactive) {
+                    Text("الدور المخصّص غير نشط؛ راجع إسناد الدور قبل الحفظ.", color = Orange)
+                }
+                profile.modules.forEach { module ->
+                    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).background(Color.White).padding(12.dp)) {
+                        Text(module.label, fontWeight = FontWeight.Bold)
+                        Text("الفعلي: ${module.level.label}", color = MutedInk, style = MaterialTheme.typography.bodySmall)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                            item {
+                                FilterChip(
+                                    selected = module.key !in overrides,
+                                    onClick = { overrides = overrides - module.key },
+                                    label = { Text("حسب الدور") },
+                                )
+                            }
+                            items(AccessLevel.entries) { level ->
+                                FilterChip(
+                                    selected = overrides[module.key] == level,
+                                    onClick = { overrides = overrides + (module.key to level) },
+                                    label = { Text(level.label) },
+                                )
+                            }
+                        }
+                    }
+                }
+                Text("الحفظ يبطل جلسات الحساب القديمة لتطبيق الصلاحيات فوراً.", color = MutedInk, style = MaterialTheme.typography.bodySmall)
+                Button(
+                    onClick = { onConfirm(overrides) },
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("تأكيد الصلاحيات") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ResetPasswordDialog(
+    user: AdminUser,
+    password: String?,
+    loading: Boolean,
+    busy: Boolean,
+    onRefresh: () -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    FormDialog("إعادة كلمة المرور — ${user.name}", onDismiss) {
+        Text("ستنتهي كل جلسات الحساب، وسيُلزم المستخدم بتغيير الكلمة عند أول دخول.", color = MutedInk)
+        DetailCard("كلمة المرور المؤقتة", Icons.Rounded.VpnKey) {
+            when {
+                loading -> CircularProgressIndicator(Modifier.size(24.dp))
+                password != null -> Text(password, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                else -> TextButton(onClick = onRefresh) { Text("توليد كلمة آمنة") }
+            }
+        }
+        Button(
+            onClick = { password?.let(onConfirm) },
+            enabled = !busy && !loading && !password.isNullOrBlank(),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("إعادة التعيين وإبطال الجلسات") }
+    }
+}
+
+@Composable
 private fun RoleChoices(roles: List<AdminRole>, selected: RoleAssignment, onSelect: (RoleAssignment) -> Unit) {
     roles.forEach { role ->
         val assignment = role.id?.let { RoleAssignment.Custom(it, role.baseRole) } ?: RoleAssignment.BuiltIn(role.baseRole)
@@ -857,6 +1084,123 @@ private fun PermissionEditorRow(module: String, value: AccessLevel, onChange: (A
                 FilterChip(selected = value == level, onClick = { onChange(level) }, label = { Text(level.label) })
             }
         }
+    }
+}
+
+@Composable
+private fun AccountSecurityDialog(
+    user: AdminUser,
+    sessions: List<AdminUserSession>,
+    loading: Boolean,
+    fresh: Boolean,
+    busy: Boolean,
+    error: String?,
+    notice: String?,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
+    onRevokeSession: (Long) -> Unit,
+    onRevokeAll: () -> Unit,
+    onResetTwoFactor: () -> Unit,
+) {
+    var confirmation by remember(user.id) { mutableStateOf<IncidentConfirmation?>(null) }
+    FormDialog("أمان حساب ${user.name}", onDismiss) {
+        Text(
+            "الجلسات النشطة وإجراءات استعادة السيطرة على الحساب.",
+            color = MutedInk,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        error?.let {
+            Surface(color = Color(0xFFFFECEC), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                Text(it, Modifier.padding(12.dp), color = Color(0xFF9F1D1D), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        notice?.let {
+            Surface(color = Mint, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                Text(it, Modifier.padding(12.dp), color = EmeraldDark, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        when {
+            loading -> LoadingPane(Modifier.fillMaxWidth().height(150.dp))
+            !fresh -> OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.Refresh, null)
+                Spacer(Modifier.width(8.dp))
+                Text("إعادة المحاولة")
+            }
+            sessions.isEmpty() -> EmptySelection("لا توجد جلسات نشطة", Icons.Rounded.Security)
+            else -> sessions.forEach { session ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color.White,
+                    shape = RoundedCornerShape(18.dp),
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.Security, null, tint = EmeraldDark)
+                            Spacer(Modifier.width(8.dp))
+                            Text(session.deviceLabel, Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                            TextButton(
+                                onClick = { confirmation = IncidentConfirmation.RevokeOne(session) },
+                                enabled = fresh && !busy,
+                            ) { Text("إنهاء") }
+                        }
+                        session.maskedIpAddress?.let { DetailValue("عنوان الشبكة", rtlIsolate(it)) }
+                        DetailValue("آخر نشاط", rtlIsolate(session.lastSeenAt.ifBlank { session.createdAt }))
+                        DetailValue("تنتهي", rtlIsolate(session.expiresAt))
+                    }
+                }
+            }
+        }
+        HorizontalDivider(color = Stroke)
+        OutlinedButton(
+            onClick = { confirmation = IncidentConfirmation.RevokeAll },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = fresh && !busy && sessions.isNotEmpty(),
+        ) { Text("إنهاء جميع الجلسات") }
+        Button(
+            onClick = { confirmation = IncidentConfirmation.ResetTwoFactor },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = fresh && !busy,
+            shape = RoundedCornerShape(16.dp),
+        ) { Text("إعادة تهيئة المصادقة الثنائية") }
+    }
+
+    val pending = confirmation
+    if (pending != null) {
+        val title: String
+        val message: String
+        val confirm: String
+        when (pending) {
+            is IncidentConfirmation.RevokeOne -> {
+                title = "إنهاء الجلسة؟"
+                message = "سيُطلب من هذا الجهاز تسجيل الدخول من جديد."
+                confirm = "إنهاء الجلسة"
+            }
+            IncidentConfirmation.RevokeAll -> {
+                title = "إنهاء جميع الجلسات؟"
+                message = "سيتم تسجيل خروج الحساب من جميع الأجهزة فوراً."
+                confirm = "إنهاء الجميع"
+            }
+            IncidentConfirmation.ResetTwoFactor -> {
+                title = "إعادة تهيئة المصادقة الثنائية؟"
+                message = "ستُلغى وسيلة المصادقة الحالية وتنتهي جميع الجلسات. سيُلزم المستخدم بإعدادها من جديد."
+                confirm = "إعادة التهيئة"
+            }
+        }
+        ConfirmDialog(
+            title = title,
+            message = message,
+            confirm = confirm,
+            destructive = true,
+            onDismiss = { confirmation = null },
+            onConfirm = {
+                when (pending) {
+                    is IncidentConfirmation.RevokeOne -> onRevokeSession(pending.session.id)
+                    IncidentConfirmation.RevokeAll -> onRevokeAll()
+                    IncidentConfirmation.ResetTwoFactor -> onResetTwoFactor()
+                }
+                confirmation = null
+            },
+        )
     }
 }
 

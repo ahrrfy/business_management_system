@@ -49,6 +49,47 @@ object StoreMappers {
         }
     }
 
+    fun managedParties(root: JSONArray): List<DeliveryPartyAccount> = managedParties(root.toWireList())
+
+    internal fun managedParties(root: List<Any?>): List<DeliveryPartyAccount> = root.mapNotNull { value ->
+        value.asStringMap()?.let { party ->
+            val id = party.long("id")
+            val name = party.text("name")
+            if (id <= 0 || name.isBlank()) null
+            else DeliveryPartyAccount(
+                id = id,
+                partyType = DeliveryPartyType.fromWire(party.nullableText("partyType")),
+                name = name,
+                phone = party.nullableText("phone"),
+                userId = party.nullableLong("userId"),
+                branchId = party.nullableLong("branchId"),
+                defaultFee = party.text("defaultFee", "0"),
+                currentBalance = party.text("currentBalance", "0"),
+                floatLimit = party.nullableText("floatLimit"),
+                isActive = party.bool("isActive"),
+                openConsignments = party.int("openConsignments").coerceAtLeast(0),
+                oldestOutstanding = party.nullableText("oldestOutstanding"),
+            )
+        }
+    }
+
+    fun courierAccounts(root: JSONArray): List<CourierAccount> = courierAccounts(root.toWireList())
+
+    internal fun courierAccounts(root: List<Any?>): List<CourierAccount> = root.mapNotNull { value ->
+        value.asStringMap()?.let { account ->
+            val id = account.long("id")
+            val name = account.text("name")
+            if (id <= 0 || name.isBlank()) null
+            else CourierAccount(
+                id = id,
+                name = name,
+                username = account.nullableText("username"),
+                linkedPartyId = account.nullableLong("linkedPartyId"),
+                linkedPartyName = account.nullableText("linkedPartyName"),
+            )
+        }
+    }
+
     fun counts(root: JSONObject): Map<StoreOrderStatus, Int> = counts(root.toWireMap())
 
     internal fun counts(root: Map<String, Any?>): Map<StoreOrderStatus, Int> = StoreOrderStatus.entries.associateWith {

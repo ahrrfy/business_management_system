@@ -48,6 +48,28 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         } as JSONObject
     }
 
+    /**
+     * Executes an object query whose server contract explicitly permits a JSON `null` result.
+     *
+     * Callers must opt into this surface instead of interpreting an [ApiException] message from
+     * [query]. Non-object, non-null results remain contract violations and still fail closed.
+     */
+    suspend fun queryNullableObject(
+        procedure: String,
+        input: JSONObject? = null,
+    ): JSONObject? = withContext(Dispatchers.IO) {
+        val envelope = inputEnvelope(input)
+        val encoded = Uri.encode(envelope.toString())
+        val result = execute(
+            method = "GET",
+            path = "/api/trpc/$procedure?batch=1&input=$encoded",
+            body = null,
+            allowNullResult = true,
+        )
+        _usingCachedRead.value = false
+        TrpcResultType.objectOrNull(result)
+    }
+
     suspend fun mutate(procedure: String, input: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
         requireObject(execute("POST", "/api/trpc/$procedure?batch=1", inputEnvelope(input).toString()))
     }
@@ -122,10 +144,15 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         runCatching { JSONObject(raw).optLong("id", -1L) }.getOrNull()
     }?.takeIf { it > 0L }
 
-    private suspend fun execute(method: String, path: String, body: String?): Any {
+    private suspend fun execute(
+        method: String,
+        path: String,
+        body: String?,
+        allowNullResult: Boolean = false,
+    ): Any? {
         val request = {
             IdempotentRequestRetryPolicy.execute(method) {
-                executeAttempt(method, path, body)
+                executeAttempt(method, path, body, allowNullResult)
             }
         }
         return if (NativeRequestSerializationPolicy.requiresSerialization(method)) {
@@ -135,7 +162,12 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         }
     }
 
-    private fun executeAttempt(method: String, path: String, body: String?): Any {
+    private fun executeAttempt(
+        method: String,
+        path: String,
+        body: String?,
+        allowNullResult: Boolean,
+    ): Any? {
         val sessionCookie = sessionStore.loadCookie()
         val proofHeaders = when {
             procedureName(path) in AUTH_COMPLETION_PROCEDURES ->
@@ -174,7 +206,11 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val payload = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             if (payload.isBlank()) throw ApiException("لم يصل رد صالح من الخادم", status)
-            return TrpcEnvelopeParser.parse(payload, status)
+            return if (allowNullResult) {
+                TrpcEnvelopeParser.parseNullable(payload, status)
+            } else {
+                TrpcEnvelopeParser.parse(payload, status)
+            }
         } catch (error: ApiException) {
             throw error
         } catch (error: Exception) {
@@ -224,11 +260,7 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         } catch (error: ApiException) {
             throw error
         } catch (error: Exception) {
-            throw ApiException(
-                "تعذر تهيئة إثبات الجهاز الآمن",
-                retryableTransportFailure = true,
-                cause = error,
-            )
+            throw nativeChallengeTransportError(error)
         } finally {
             connection.disconnect()
         }
@@ -250,10 +282,10 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         sessionStore.saveCookie(pair)
     }
 
-    private fun requireObject(value: Any): JSONObject = value as? JSONObject
+    private fun requireObject(value: Any?): JSONObject = value as? JSONObject
         ?: throw ApiException("استجابة الخادم ليست كائناً كما يتطلب هذا الإجراء")
 
-    private fun requireArray(value: Any): JSONArray = value as? JSONArray
+    private fun requireArray(value: Any?): JSONArray = value as? JSONArray
         ?: throw ApiException("استجابة الخادم ليست قائمة كما يتطلب هذا الإجراء")
     private companion object {
         // State-changing requests advance one server-side device-proof counter. Keep only those
@@ -271,6 +303,12 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         )
     }
 }
+
+internal fun nativeChallengeTransportError(error: Throwable): ApiException = ApiException(
+    "تعذر الوصول إلى خادم الشركة لتهيئة الجهاز. تحقق من الإنترنت ثم أعد المحاولة.",
+    retryableTransportFailure = true,
+    cause = error,
+)
 
 internal object NativeRequestSerializationPolicy {
     fun requiresSerialization(method: String): Boolean =
@@ -346,8 +384,27 @@ internal object TrpcInputSerializer {
     }
 }
 
+internal object TrpcResultType {
+    fun objectOrNull(value: Any?): JSONObject? = when (value) {
+        null -> null
+        is JSONObject -> value
+        else -> throw ApiException("استجابة الخادم ليست كائناً أو قيمة فارغة كما يتطلب هذا الإجراء")
+    }
+}
+
 internal object TrpcEnvelopeParser {
     fun parse(payload: String, status: Int): Any {
+        val json = parseResult(payload, status)
+        if (json === JSONObject.NULL) throw ApiException("استجابة الخادم غير مكتملة", status)
+        return json
+    }
+
+    fun parseNullable(payload: String, status: Int): Any? {
+        val json = parseResult(payload, status)
+        return if (json === JSONObject.NULL) null else json
+    }
+
+    private fun parseResult(payload: String, status: Int): Any {
         val item = when (val first = payload.trim().firstOrNull()) {
             '[' -> JSONArray(payload).optJSONObject(0)
             '{' -> JSONObject(payload)
@@ -376,7 +433,6 @@ internal object TrpcEnvelopeParser {
             ?.optJSONObject("data")
             ?.opt("json")
             ?: throw ApiException("استجابة الخادم غير مكتملة", status)
-        if (json == JSONObject.NULL) throw ApiException("استجابة الخادم غير مكتملة", status)
         return json
     }
 }

@@ -1170,6 +1170,13 @@
       "when": 1787879420000,
       "tag": "0167_stocktake_exclude_services",
       "breakpoints": true
+    },
+    {
+      "idx": 168,
+      "version": "5",
+      "when": 1787879421000,
+      "tag": "0168_credit_approval_branch_scope",
+      "breakpoints": true
     }
   ]
 }

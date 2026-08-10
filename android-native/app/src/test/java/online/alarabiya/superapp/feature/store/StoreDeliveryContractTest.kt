@@ -1,11 +1,17 @@
 package online.alarabiya.superapp.feature.store
 
 import online.alarabiya.superapp.model.store.CourierWorkspace
+import online.alarabiya.superapp.model.store.DeliveryMoney
+import online.alarabiya.superapp.model.store.DeliveryPartyAccount
+import online.alarabiya.superapp.model.store.DeliveryPartyDraft
+import online.alarabiya.superapp.model.store.DeliveryPartyType
+import online.alarabiya.superapp.model.store.DeliveryWriteOffDraft
 import online.alarabiya.superapp.model.store.PhoneSanitizer
 import online.alarabiya.superapp.model.store.StoreCapabilities
 import online.alarabiya.superapp.model.store.StoreMappers
 import online.alarabiya.superapp.model.store.StoreOrderAction
 import online.alarabiya.superapp.model.store.StoreOrderFilter
+import online.alarabiya.superapp.model.store.StoreOrderDetail
 import online.alarabiya.superapp.model.store.StoreOrderPolicy
 import online.alarabiya.superapp.model.store.StoreOrderStatus
 import online.alarabiya.superapp.model.store.StoreOrderSummary
@@ -81,6 +87,34 @@ class StoreDeliveryContractTest {
     }
 
     @Test
+    fun `maps delivery party debt and courier accounts without floating point conversion`() {
+        val party = StoreMappers.managedParties(
+            listOf(
+                mapOf(
+                    "id" to 12,
+                    "partyType" to "COMPANY",
+                    "name" to "النخبة للتوصيل",
+                    "phone" to "07701234567",
+                    "branchId" to 3,
+                    "defaultFee" to "3500.25",
+                    "currentBalance" to "9007199254740993.99",
+                    "floatLimit" to "10000000000000000.00",
+                    "isActive" to true,
+                    "openConsignments" to 4,
+                ),
+            ),
+        ).single()
+        val account = StoreMappers.courierAccounts(
+            listOf(mapOf("id" to 8, "name" to "مندوب الكرخ", "username" to "courier8", "linkedPartyId" to 12)),
+        ).single()
+
+        assertEquals(DeliveryPartyType.Company, party.partyType)
+        assertEquals("9007199254740993.99", party.currentBalance)
+        assertEquals(4, party.openConsignments)
+        assertEquals(12L, account.linkedPartyId)
+    }
+
+    @Test
     fun `search filters only the currently loaded rows`() {
         val orders = listOf(
             summary(1, "WEB-100", "أحمد", "07701111111", "بغداد"),
@@ -123,18 +157,179 @@ class StoreDeliveryContractTest {
         val courier = StoreCapabilities.from("courier", null, "FULL")
 
         assertTrue(reader.canReadOrders)
+        assertFalse(reader.canManageDeliveryParties)
         assertTrue(StoreOrderPolicy.allowedActions(StoreOrderStatus.Pending, reader).isEmpty())
         assertEquals(
             setOf(StoreOrderAction.StartProcessing, StoreOrderAction.Cancel),
             StoreOrderPolicy.allowedActions(StoreOrderStatus.Confirmed, fulfiller),
         )
         assertTrue(StoreOrderAction.Dispatch in StoreOrderPolicy.allowedActions(StoreOrderStatus.Confirmed, manager))
+        assertTrue(manager.canManageDeliveryParties)
+        assertTrue(manager.canWriteOffDeliveryDebt)
         assertFalse(StoreOrderAction.Dispatch in StoreOrderPolicy.allowedActions(StoreOrderStatus.Confirmed, fulfiller))
         assertEquals(
             setOf(StoreOrderAction.CourierDelivered, StoreOrderAction.CourierFailed),
             StoreOrderPolicy.allowedActions(StoreOrderStatus.Shipped, courier),
         )
         assertTrue(StoreOrderPolicy.allowedActions(StoreOrderStatus.Delivered, courier).isEmpty())
+        assertFalse(courier.canManageDeliveryParties)
+    }
+
+    @Test
+    fun `party writes stay closed until a successful manager load`() {
+        val capabilities = StoreCapabilities.from("manager", "FULL", null)
+        val initial = StoreDeliveryUiState(
+            mode = StoreDeliveryMode.Parties,
+            capabilities = capabilities,
+            loading = false,
+        )
+        assertFalse(canMutateDeliveryParties(initial))
+        val fresh = initial.copy(partyCatalogReady = true, freshModes = setOf(StoreDeliveryMode.Parties))
+        assertFalse(canMutateDeliveryParties(initial.copy(partyCatalogReady = true)))
+        assertTrue(canMutateDeliveryParties(fresh))
+        assertFalse(canMutateDeliveryParties(fresh.copy(loading = true)))
+        assertFalse(canMutateDeliveryParties(fresh.copy(busyPartyAction = "party:update")))
+        assertFalse(
+            canMutateDeliveryParties(
+                fresh.copy(capabilities = StoreCapabilities.from("cashier", "FULL", null)),
+            ),
+        )
+    }
+
+    @Test
+    fun `order actions require a fresh matching detail and commit terminal state before refresh`() {
+        val capabilities = StoreCapabilities.from("manager", "FULL", null)
+        val order = summary(7, "WEB-7", "أحمد", "07701111111", "بغداد").copy(status = StoreOrderStatus.Confirmed)
+        val detail = StoreOrderDetail(order, 1, "الكرادة", "0.00", null, emptyList())
+        val state = StoreDeliveryUiState(
+            mode = StoreDeliveryMode.Orders,
+            capabilities = capabilities,
+            loading = false,
+            orders = listOf(order),
+            counts = mapOf(StoreOrderStatus.Confirmed to 1, StoreOrderStatus.Processing to 0),
+            selectedOrderId = order.id,
+            detail = StoreDetailState.Content(detail),
+            freshModes = setOf(StoreDeliveryMode.Orders),
+        )
+        val pending = PendingStoreAction(StoreOrderAction.StartProcessing, order.id)
+
+        assertTrue(canRequestStoreAction(state, pending))
+        assertFalse(canRequestStoreAction(state.copy(freshModes = emptySet()), pending))
+        assertFalse(
+            canRequestStoreAction(
+                state.copy(detail = StoreDetailState.Content(detail.copy(summary = order.copy(status = StoreOrderStatus.Pending)))),
+                pending,
+            ),
+        )
+
+        val committed = state.commitStoreAction(pending, null)
+        assertEquals(StoreOrderStatus.Processing, committed.orders.single().status)
+        assertEquals(StoreOrderStatus.Processing, (committed.detail as StoreDetailState.Content).order.summary.status)
+        assertEquals(0, committed.counts[StoreOrderStatus.Confirmed])
+        assertEquals(1, committed.counts[StoreOrderStatus.Processing])
+        assertFalse(isStoreModeFresh(committed))
+        assertFalse(canRequestStoreAction(committed, pending))
+    }
+
+    @Test
+    fun `courier completion is monotonic and cannot be repeated on a stale workspace`() {
+        val workspace = courierWorkspace(delivered = false)
+        val delivery = workspace.toDeliver.single()
+        val state = StoreDeliveryUiState(
+            mode = StoreDeliveryMode.Courier,
+            capabilities = StoreCapabilities.from("courier", null, "FULL"),
+            loading = false,
+            courier = workspace,
+            selectedOrderId = delivery.id,
+            freshModes = setOf(StoreDeliveryMode.Courier),
+        )
+        val pending = PendingStoreAction(StoreOrderAction.CourierDelivered, delivery.id)
+
+        assertTrue(canRequestStoreAction(state, pending))
+        val committed = state.commitStoreAction(pending, null)
+        assertTrue(committed.courier!!.toDeliver.isEmpty())
+        assertEquals(StoreOrderStatus.Delivered, committed.courier.delivered.single().status)
+        assertFalse(canRequestStoreAction(committed, pending))
+    }
+
+    @Test
+    fun `late list and detail responses cannot overwrite a newer filter or generation`() {
+        val filter = StoreOrderFilter(status = StoreOrderStatus.Confirmed)
+        val order = summary(3, "WEB-3", "ليلى", "07802222222", "البصرة").copy(status = StoreOrderStatus.Confirmed)
+        val state = StoreDeliveryUiState(
+            mode = StoreDeliveryMode.Orders,
+            capabilities = StoreCapabilities.from("manager", "FULL", null),
+            loading = false,
+            filter = filter,
+            orders = listOf(order),
+            selectedOrderId = order.id,
+            freshModes = setOf(StoreDeliveryMode.Orders),
+        )
+
+        assertTrue(acceptsOrderResponse(state, 9, 9, filter))
+        assertTrue(acceptsOrderResponse(state.copy(filter = filter.copy(query = "أحمد")), 9, 9, filter))
+        assertFalse(acceptsOrderResponse(state, 8, 9, filter))
+        assertFalse(acceptsOrderResponse(state, 9, 9, filter.copy(status = StoreOrderStatus.Pending)))
+        assertTrue(acceptsOrderDetail(state, order.id, order.status, 5, 5, 9, 9))
+        assertFalse(acceptsOrderDetail(state, order.id, order.status, 4, 5, 9, 9))
+        assertTrue(isCurrentOrderDetailRequest(state, order.id, 5, 5, 9, 9))
+        assertFalse(acceptsOrderDetail(state, order.id, StoreOrderStatus.Pending, 5, 5, 9, 9))
+    }
+
+    @Test
+    fun `party mutations preserve a monotonic local result then close writes until retry`() {
+        val existing = party(4, "مندوب الكرخ", "07701111111").copy(currentBalance = "1000.00")
+        val state = StoreDeliveryUiState(
+            mode = StoreDeliveryMode.Parties,
+            capabilities = StoreCapabilities.from("manager", "FULL", null),
+            loading = false,
+            partyCatalogReady = true,
+            managedParties = listOf(existing),
+            freshModes = setOf(StoreDeliveryMode.Parties),
+        )
+        val updated = state.commitPartyActive(existing.id, false)
+        assertFalse(updated.managedParties.single().isActive)
+        assertFalse(canMutateDeliveryParties(updated))
+
+        val writtenOff = state.commitPartyWriteOff(existing.id, "250.25")
+        assertEquals("749.75", writtenOff.managedParties.single().currentBalance)
+        assertFalse(canMutateDeliveryParties(writtenOff))
+    }
+
+    @Test
+    fun `money and write off contracts use exact decimal strings and strong bounds`() {
+        assertEquals("9007199254740993.99", DeliveryMoney.normalized("9007199254740993.99"))
+        assertEquals("12.30", DeliveryMoney.normalized("12.3"))
+        assertNull(DeliveryMoney.normalized("1e3"))
+        assertNull(DeliveryMoney.normalized("12.345"))
+        assertTrue(DeliveryMoney.isLessThanOrEqual("999.99", "1000.00"))
+        assertFalse(DeliveryMoney.isLessThanOrEqual("1000.01", "1000.00"))
+
+        assertNull(DeliveryPartyDraft(name = "مندوب", defaultFee = "3500.25", floatLimit = "100000").validate())
+        assertTrue(DeliveryPartyDraft(name = "مندوب", defaultFee = "3.141").validate()!!.contains("غير صالحة"))
+
+        val valid = DeliveryWriteOffDraft(4, 2, "500.25", "1000.00", "دين غير قابل للتحصيل", "writeoff-4-once")
+        assertNull(valid.validate())
+        assertTrue(valid.copy(amount = "1000.01").validate()!!.contains("يتجاوز"))
+        assertTrue(valid.copy(reason = "لا").validate()!!.contains("3 و500"))
+        assertTrue(valid.copy(clientRequestId = "").validate()!!.contains("الطلب"))
+    }
+
+    @Test
+    fun `delivery party search remains inside the loaded branch scoped catalog`() {
+        val capabilities = StoreCapabilities.from("manager", "FULL", null)
+        val state = StoreDeliveryUiState(
+            mode = StoreDeliveryMode.Parties,
+            capabilities = capabilities,
+            loading = false,
+            partyCatalogReady = true,
+            partyQuery = "الكرخ",
+            managedParties = listOf(
+                party(1, "مندوب الكرخ", "07701111111"),
+                party(2, "شركة البصرة", "07802222222"),
+            ),
+        )
+        assertEquals(listOf(1L), StoreDeliveryStateFilter.managedParties(state).map { it.id })
     }
 
     @Test
@@ -223,4 +418,19 @@ class StoreDeliveryContractTest {
         )
         return CourierWorkspace(true, "مندوب", "0", listOf(row), emptyList())
     }
+
+    private fun party(id: Long, name: String, phone: String) = DeliveryPartyAccount(
+        id = id,
+        partyType = DeliveryPartyType.Individual,
+        name = name,
+        phone = phone,
+        userId = null,
+        branchId = 1,
+        defaultFee = "0",
+        currentBalance = "0",
+        floatLimit = null,
+        isActive = true,
+        openConsignments = 0,
+        oldestOutstanding = null,
+    )
 }

@@ -42,7 +42,7 @@ const PAID_PROVIDER = { provider: "IraqSoft — مزوّد خارجي", host: "a
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const emptyForm = { name: "", serialNumber: "", protocol: "AIFACE_WS", model: "", location: "", branchId: "", deviceCode: "" };
+const emptyForm = { name: "", serialNumber: "", protocol: "AIFACE_WS", model: "", location: "", branchId: "", deviceCode: "", ip: "" };
 
 /** توقيت مقروء ببغداد — أو «—». */
 function fmtTime(v: string | Date | null | undefined): string {
@@ -160,7 +160,7 @@ export default function HrDevices() {
   const [query, setQuery] = useState("");
   const visibleDevices = useMemo(() => {
     const q = query.trim().toLocaleLowerCase("ar");
-    return q ? devices.filter((d) => [d.name, d.serialNumber, d.branchName, d.location, d.model, d.status].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : devices;
+    return q ? devices.filter((d) => [d.name, d.serialNumber, d.ip, d.branchName, d.location, d.model, d.status].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : devices;
   }, [devices, query]);
   const total = devices.length;
   const connectedEver = devices.filter((d) => d.lastHandshakeAt).length;
@@ -187,6 +187,7 @@ export default function HrDevices() {
       location: form.location.trim() || undefined,
       branchId: form.branchId ? Number(form.branchId) : undefined,
       deviceCode: form.deviceCode.trim() || undefined,
+      ip: form.ip.trim() || undefined,
     });
   };
 
@@ -362,6 +363,7 @@ export default function HrDevices() {
                               {d.serialNumber ?? d.model ?? "—"}
                               {d.firmware ? ` · ${d.firmware}` : ""}
                             </div>
+                            {d.ip ? <div className="text-[10px] text-muted-foreground" dir="ltr">IP {d.ip}</div> : null}
                           </div>
                         </div>
                       </td>
@@ -744,6 +746,16 @@ export default function HrDevices() {
                 ))}
               </select>
             </div>
+            <div className="space-y-1 sm:col-span-2">
+              <Label htmlFor="d-ip">عنوان IP الدقيق الخاص بالجهاز</Label>
+              <Input
+                id="d-ip"
+                dir="ltr"
+                value={form.ip}
+                onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))}
+                placeholder="مثال: عنوان الجهاز داخل شبكة الحضور"
+              />
+            </div>
             <div className="space-y-1">
               <Label htmlFor="d-model">الطراز</Label>
               <Input
@@ -790,8 +802,8 @@ export default function HrDevices() {
             </div>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            تسجيل الرقم التسلسلي مسبقاً يجعل الجهاز معتمداً لحظة أول اتصال. بدونه سيظهر «بانتظار الاعتماد» عند
-            اتصاله وتعتمده بزر واحد.
+            عند التسجيل المسبق يلزم ربط الرقم التسلسلي بعنوان جهاز فريد. الشبكات المشتركة أو NAT تحتاج
+            مفتاح جهاز خاصاً في إعداد الخادم. لا تُقبل بصمات الجهاز المكتشف قبل الاعتماد.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpenAdd(false)}>

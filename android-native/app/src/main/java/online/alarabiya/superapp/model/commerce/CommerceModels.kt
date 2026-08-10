@@ -25,6 +25,8 @@ data class CommerceCapabilities(
     val role: String,
     val branchId: Long?,
     val allBranches: Boolean,
+    val actorId: Long,
+    val isOwner: Boolean,
 ) {
     private val elevated: Boolean get() = role.lowercase() in setOf("admin", "manager")
 
@@ -45,6 +47,10 @@ data class CommerceCapabilities(
     val canReadDigitalSubscriptions: Boolean
         get() = digitalCards.canRead && role.lowercase() in setOf("admin", "manager", "accountant", "auditor")
 
+    /** بوابة محافظة لقرارات البطاقات الحساسة؛ الخادم يبقى المرجع النهائي للصلاحية وSOD. */
+    val canReviewDigitalCardApprovals: Boolean
+        get() = digitalCards.canWrite && (isOwner || role.equals("admin", ignoreCase = true))
+
     companion object {
         fun fromBootstrap(bootstrap: AppBootstrap): CommerceCapabilities {
             val access = bootstrap.modules.associate { it.key to CommerceAccess.fromWire(it.access) }
@@ -56,10 +62,43 @@ data class CommerceCapabilities(
                 role = bootstrap.user.role,
                 branchId = bootstrap.branchId,
                 allBranches = bootstrap.allBranches,
+                actorId = bootstrap.user.id,
+                isOwner = bootstrap.isOwner || bootstrap.user.isOwner,
             )
         }
     }
 }
+
+enum class DigitalCardApprovalKind {
+    REVIEW_RESOLUTION,
+    WRITEOFF,
+    PRICE_MISMATCH,
+    WALLET_VARIANCE,
+}
+
+data class DigitalCardApproval(
+    val id: Long,
+    val kind: DigitalCardApprovalKind,
+    val branchId: Long?,
+    val branchName: String?,
+    val title: String,
+    val description: String?,
+    val amount: String?,
+    val requesterId: Long?,
+    val requesterName: String?,
+    val createdAt: String?,
+    val currentSellPrice: String? = null,
+) {
+    fun canDecide(capabilities: CommerceCapabilities): Boolean =
+        capabilities.canReviewDigitalCardApprovals &&
+            (capabilities.isOwner || requesterId == null || requesterId != capabilities.actorId)
+}
+
+data class DigitalCardApprovalDecision(
+    val reason: String? = null,
+    val businessDate: String? = null,
+    val sellPrice: String? = null,
+)
 
 data class CommerceBranch(val id: Long, val name: String, val code: String?)
 
@@ -249,4 +288,8 @@ object NativeCommerceBlockers {
         "The digital-card sale requires an external provider executor between prepare and markExecution; native execution is not implemented."
     const val CUSTOM_RETAIL_STATION =
         "AppBootstrap does not expose effective POS station evidence, so custom-role retail grants cannot be proven natively."
+    const val DIGITAL_CARD_APPROVAL_DISCOVERY =
+        "The server has no global pending endpoint for reversal loss-refunds, wallet adjustments, or pricing big-change drafts; native code must not scan every invoice, wallet, provider, and date."
+    const val WALLET_VARIANCE_APPROVAL =
+        "Variance approval requires an adjustmentTransactionId that the reconciliation list does not return; the server must expose the linked pending adjustment."
 }

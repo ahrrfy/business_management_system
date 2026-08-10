@@ -24,8 +24,10 @@ class NativeDeepLinkCodecTest {
             add(NativeDestination.Receivables)
             add(NativeDestination.Collections)
             add(NativeDestination.Insights)
+            add(NativeDestination.Shifts)
             add(NativeDestination.WorkOrders)
             add(NativeDestination.WarehouseTools)
+            add(NativeDestination.StoreAdmin)
             add(NativeDestination.Profile)
             registry.modules.forEach { module ->
                 add(NativeDestination.Module(module))
@@ -47,6 +49,20 @@ class NativeDeepLinkCodecTest {
             assertFalse(encoded.contains("http", ignoreCase = true))
             assertEquals(DeepLinkResult.Accepted(destination), NativeDeepLinkCodec.parse(encoded))
         }
+    }
+
+    @Test
+    fun `store administration link is explicit and cannot be confused with store operations`() {
+        val admin = NativeDeepLinkCodec.encode(NativeDestination.StoreAdmin)
+        val operations = NativeDeepLinkCodec.encode(NativeDestination.Module(NativeModule.STORE))
+
+        assertEquals("alrueya://app/store-admin", admin)
+        assertEquals("alrueya://app/module/store", operations)
+        assertEquals(DeepLinkResult.Accepted(NativeDestination.StoreAdmin), NativeDeepLinkCodec.parse(admin))
+        assertEquals(
+            DeepLinkResult.Accepted(NativeDestination.Module(NativeModule.STORE)),
+            NativeDeepLinkCodec.parse(operations),
+        )
     }
 
     @Test

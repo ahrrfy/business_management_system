@@ -43,6 +43,9 @@ value class PercentText private constructor(val value: String) {
 
 enum class InsightsSection(val label: String) {
     REPORTS("مؤشرات الإدارة"),
+    REPORT_CATALOG("كتالوج التقارير"),
+    FINANCIAL("التقارير المالية"),
+    HR_REPORTS("الحضور والرواتب"),
     STORE("تحليلات المتجر"),
     SEARCH("البحث العام"),
 }
@@ -138,6 +141,18 @@ data class ReportInsights(
     val mayBeTruncated: Boolean,
 )
 
+data class FinancialLineInsight(val key: String, val label: String, val amount: InsightMoney)
+data class ProfitLossInsight(val revenue: InsightMoney, val costOfSales: InsightMoney, val grossProfit: InsightMoney, val totalExpenses: InsightMoney, val netProfit: InsightMoney, val expenseLines: List<FinancialLineInsight>)
+data class TrialBalanceInsight(val totalAssets: InsightMoney, val totalLiabilities: InsightMoney, val equity: InsightMoney, val reconciled: Boolean, val asOf: String?)
+data class LedgerEntryInsight(val id: Long, val date: String, val type: String, val party: String?, val reference: String?, val amount: InsightMoney)
+data class CashFlowInsight(val inflows: List<FinancialLineInsight>, val outflows: List<FinancialLineInsight>, val totalIn: InsightMoney, val totalOut: InsightMoney, val net: InsightMoney)
+data class FinancialReportsInsight(val profitLoss: ProfitLossInsight, val trialBalance: TrialBalanceInsight, val ledger: List<LedgerEntryInsight>, val ledgerTotal: Int, val cashFlow: CashFlowInsight)
+
+data class AttendanceRowInsight(val date: String, val employeeName: String, val status: String, val hours: String)
+data class AttendanceSummaryInsight(val rows: List<AttendanceRowInsight>, val days: Int, val hours: String, val present: Int, val absent: Int)
+data class PayrollRunInsight(val id: Long, val period: String, val status: String, val employees: Int, val gross: InsightMoney, val net: InsightMoney)
+data class HrReportsInsight(val attendance: AttendanceSummaryInsight, val payrollRuns: List<PayrollRunInsight>, val payrollGross: InsightMoney, val payrollNet: InsightMoney)
+
 data class StoreKpis(
     val totalOrders: Int,
     val activeOrders: Int,
@@ -205,6 +220,7 @@ data class InsightsAccessPolicy(
             val elevated = role == "admin" || role == "manager"
             val reportsRole = role in setOf("admin", "manager", "accountant", "auditor")
             val reportsAllowed = reads("reports") && reportsRole && (role == "admin" || bootstrap.branchId != null)
+            val hrReportsAllowed = reads("hr") && role in setOf("admin", "manager", "accountant", "auditor")
             val storeAllowed = reads("store") && (elevated || bootstrap.branchId != null)
 
             val scopes = SearchEntityType.entries.filterTo(mutableSetOf()) { type ->
@@ -219,6 +235,9 @@ data class InsightsAccessPolicy(
             return InsightsAccessPolicy(
                 readableSections = buildSet {
                     if (reportsAllowed) add(InsightsSection.REPORTS)
+                    if (reportsAllowed && elevated) add(InsightsSection.REPORT_CATALOG)
+                    if (reportsAllowed) add(InsightsSection.FINANCIAL)
+                    if (hrReportsAllowed) add(InsightsSection.HR_REPORTS)
                     if (storeAllowed) add(InsightsSection.STORE)
                     if (scopes.isNotEmpty()) add(InsightsSection.SEARCH)
                 },

@@ -62,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
@@ -76,6 +77,7 @@ import online.alarabiya.superapp.model.collaboration.BroadcastAction
 import online.alarabiya.superapp.model.collaboration.BroadcastActionPolicy
 import online.alarabiya.superapp.model.collaboration.BroadcastTemplate
 import online.alarabiya.superapp.model.collaboration.CollaborationCapabilities
+import online.alarabiya.superapp.model.collaboration.CollaborationBranch
 import online.alarabiya.superapp.model.collaboration.CreateBroadcastDraft
 import online.alarabiya.superapp.model.collaboration.CreateTaskDraft
 import online.alarabiya.superapp.model.collaboration.ServiceTypeOption
@@ -103,6 +105,8 @@ fun CollaborationRoute(viewModel: CollaborationViewModel, modifier: Modifier = M
         capabilities = viewModel.capabilities,
         actions = CollaborationActions(
             selectSection = viewModel::selectSection,
+            setBranch = viewModel::setBranch,
+            retryBranches = viewModel::loadBranches,
             setTaskFilter = viewModel::setTaskFilter,
             applyTaskFilter = viewModel::applyTaskFilter,
             loadMoreTasks = viewModel::loadMoreTasks,
@@ -131,6 +135,8 @@ fun CollaborationRoute(viewModel: CollaborationViewModel, modifier: Modifier = M
 
 data class CollaborationActions(
     val selectSection: (CollaborationSection) -> Unit,
+    val setBranch: (Long) -> Unit,
+    val retryBranches: () -> Unit,
     val setTaskFilter: (TeamTaskFilter) -> Unit,
     val applyTaskFilter: () -> Unit,
     val loadMoreTasks: () -> Unit,
@@ -200,11 +206,24 @@ fun CollaborationScreen(
                     }
                 }
             }
+            if (state.section == CollaborationSection.TASKS && capabilities.canSelectTaskBranch) {
+                BranchSelector(
+                    branches = state.branches,
+                    selectedId = state.branchId,
+                    loading = state.branchesLoading,
+                    onSelect = actions.setBranch,
+                    onRetry = actions.retryBranches,
+                )
+            }
             state.error?.let { InlineStatus(it, true) }
             state.notice?.let { InlineStatus(it, false, actions.clearNotice) }
             when {
                 tabs.isEmpty() -> EmptyWorkspace("لا توجد صلاحية لمساحة الفريق", Modifier.weight(1f))
-                state.section == CollaborationSection.TASKS && state.branchId == null -> BranchRequired(Modifier.weight(1f))
+                state.section == CollaborationSection.TASKS && state.branchId == null -> BranchRequired(
+                    canRetry = capabilities.canSelectTaskBranch && !state.branchesLoading && !state.branchesLoaded,
+                    onRetry = actions.retryBranches,
+                    modifier = Modifier.weight(1f),
+                )
                 state.section == CollaborationSection.TASKS -> TasksWorkspace(state, capabilities, actions, Modifier.weight(1f))
                 else -> BroadcastsWorkspace(state, capabilities, actions, Modifier.weight(1f))
             }
@@ -862,10 +881,63 @@ private fun EmptyWorkspace(text: String, modifier: Modifier) {
 }
 
 @Composable
-private fun BranchRequired(modifier: Modifier) {
+private fun BranchRequired(canRetry: Boolean, onRetry: () -> Unit, modifier: Modifier) {
     Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Icon(Icons.Rounded.WarningAmber, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
         Text("اختر الفرع", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text("لعرض مهام الفريق", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (canRetry) {
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(onClick = onRetry, modifier = Modifier.testTag("collaboration-branch-retry")) {
+                Icon(Icons.Rounded.Refresh, null)
+                Spacer(Modifier.width(6.dp))
+                Text("إعادة تحميل الفروع")
+            }
+        }
+    }
+}
+
+@Composable
+private fun BranchSelector(
+    branches: List<CollaborationBranch>,
+    selectedId: Long?,
+    loading: Boolean,
+    onSelect: (Long) -> Unit,
+    onRetry: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = branches.firstOrNull { it.id == selectedId }
+    Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
+        OutlinedButton(
+            onClick = {
+                if (branches.isEmpty()) onRetry() else expanded = true
+            },
+            enabled = !loading,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("collaboration-branch-selector"),
+        ) {
+            if (loading) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(selected?.name ?: if (loading) "جارٍ تحميل الفروع" else "اختر فرع المهام")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            branches.forEach { branch ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(branch.name, fontWeight = FontWeight.SemiBold)
+                            branch.code?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelect(branch.id)
+                    },
+                    modifier = Modifier.testTag("collaboration-branch-${branch.id}"),
+                )
+            }
+        }
     }
 }
 

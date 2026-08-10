@@ -70,6 +70,9 @@ android-native/**/*.apk
 android-native/**/*.aab
 android-native/**/*.idsig
 
+# Local emulator/screenshots/test evidence generated during native QA.
+/artifacts/
+
 # Image studio — أصول @imgly ML (استضافة ذاتية، تُهيَّأ مرّة، ~40MB، لا تُلتزم)
 client/public/imgly-assets/
 

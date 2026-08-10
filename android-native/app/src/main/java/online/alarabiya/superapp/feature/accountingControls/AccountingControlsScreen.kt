@@ -20,22 +20,34 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.FactCheck
+import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Inventory2
+import androidx.compose.material.icons.rounded.LocalShipping
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Payments
+import androidx.compose.material.icons.rounded.PeopleAlt
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Storefront
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -53,6 +65,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,17 +77,28 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.LayoutDirection
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import online.alarabiya.superapp.model.accountingControls.AccountGroup
 import online.alarabiya.superapp.model.accountingControls.AccountingControlsCapabilities
 import online.alarabiya.superapp.model.accountingControls.AccountingControlsSection
 import online.alarabiya.superapp.model.accountingControls.ExchangeCurrency
 import online.alarabiya.superapp.model.accountingControls.ExchangeDraft
 import online.alarabiya.superapp.model.accountingControls.ExchangeOperationKind
+import online.alarabiya.superapp.model.accountingControls.FinancialReconciliationAxis
+import online.alarabiya.superapp.model.accountingControls.FinancialReconciliationReport
+import online.alarabiya.superapp.model.accountingControls.FinancialReconciliationSection
 import online.alarabiya.superapp.model.accountingControls.PendingExchangeDeposit
 import online.alarabiya.superapp.model.accountingControls.ReconciliationCommand
 import online.alarabiya.superapp.ui.rtlIsolate
@@ -83,6 +107,11 @@ private val ControlNavy = Color(0xFF362087)
 private val ControlBlue = Color(0xFF5B36D2)
 private val ControlMint = Color(0xFFF0ECFF)
 private val ControlAmber = Color(0xFFEC2F86)
+
+internal enum class PeriodWorkspaceLayout { SPLIT, STACKED }
+
+internal fun periodWorkspaceLayout(widthDp: Float, fontScale: Float): PeriodWorkspaceLayout =
+    if (widthDp >= 760f && fontScale < 1.8f) PeriodWorkspaceLayout.SPLIT else PeriodWorkspaceLayout.STACKED
 
 @Composable
 fun AccountingControlsRoute(viewModel: AccountingControlsViewModel, modifier: Modifier = Modifier) {
@@ -101,6 +130,7 @@ fun AccountingControlsRoute(viewModel: AccountingControlsViewModel, modifier: Mo
             approveDeposit = viewModel::approveDeposit,
             reconciliationDraft = viewModel::reconciliationDraft,
             reconcile = viewModel::reconcile,
+            refreshFinancialReconciliation = viewModel::refreshFinancialReconciliation,
             lockDate = viewModel::lockDate,
             lockNotes = viewModel::lockNotes,
             lockPeriod = viewModel::lockPeriod,
@@ -110,6 +140,7 @@ fun AccountingControlsRoute(viewModel: AccountingControlsViewModel, modifier: Mo
             closeYearText = viewModel::closeYearText,
             closeCompanyWide = viewModel::closeCompanyWide,
             closeYear = viewModel::closeYear,
+            retryCurrentSection = viewModel::retryCurrentSection,
             clearMessage = viewModel::clearMessage,
         ),
         modifier = modifier,
@@ -127,6 +158,7 @@ data class AccountingControlsActions(
     val approveDeposit: (Long) -> Unit,
     val reconciliationDraft: (ReconciliationCommand) -> Unit,
     val reconcile: () -> Unit,
+    val refreshFinancialReconciliation: () -> Unit,
     val lockDate: (String) -> Unit,
     val lockNotes: (String) -> Unit,
     val lockPeriod: () -> Unit,
@@ -136,6 +168,7 @@ data class AccountingControlsActions(
     val closeYearText: (String) -> Unit,
     val closeCompanyWide: (Boolean) -> Unit,
     val closeYear: () -> Unit,
+    val retryCurrentSection: () -> Unit,
     val clearMessage: () -> Unit,
 )
 
@@ -148,54 +181,117 @@ fun AccountingControlsScreen(
     actions: AccountingControlsActions,
     modifier: Modifier = Modifier,
 ) {
-    var confirmation by remember { mutableStateOf<Confirmation?>(null) }
-    val sections = buildList {
-        if (capabilities.canReadAccounts) add(AccountingControlsSection.ACCOUNTS)
-        if (capabilities.canReadExchange) add(AccountingControlsSection.EXCHANGE)
-        if (capabilities.canGovernPeriods) {
-            add(AccountingControlsSection.PERIODS)
-            add(AccountingControlsSection.YEAR_END)
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+        var confirmation by remember { mutableStateOf<Confirmation?>(null) }
+        val sections = buildList {
+            if (capabilities.canReadAccounts) add(AccountingControlsSection.ACCOUNTS)
+            if (capabilities.canReadFinancialReconciliation) {
+                add(AccountingControlsSection.FINANCIAL_RECONCILIATION)
+            }
+            if (capabilities.canReadExchange) add(AccountingControlsSection.EXCHANGE)
+            if (capabilities.canGovernPeriods) {
+                add(AccountingControlsSection.PERIODS)
+                add(AccountingControlsSection.YEAR_END)
+            }
         }
-    }
-    Scaffold(modifier.fillMaxSize(), containerColor = MaterialTheme.colorScheme.surface) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            ControlsHeader()
-            if (sections.size > 1) ScrollableTabRow(
-                selectedTabIndex = sections.indexOf(state.section).coerceAtLeast(0),
-                edgePadding = 14.dp,
-            ) {
-                sections.forEach { section ->
-                    Tab(
-                        selected = state.section == section,
-                        onClick = { actions.section(section) },
-                        enabled = !state.locked,
-                        text = { Text(section.label()) },
-                        icon = { Icon(section.icon(), null) },
-                    )
+        Scaffold(modifier.fillMaxSize(), containerColor = MaterialTheme.colorScheme.surface) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding)) {
+                ControlsHeader()
+                if (sections.size > 1) ScrollableTabRow(
+                    selectedTabIndex = sections.indexOf(state.section).coerceAtLeast(0),
+                    edgePadding = 14.dp,
+                ) {
+                    sections.forEach { section ->
+                        Tab(
+                            selected = state.section == section,
+                            onClick = { actions.section(section) },
+                            enabled = !state.locked,
+                            text = { Text(section.label()) },
+                            icon = { Icon(section.icon(), null) },
+                        )
+                    }
+                }
+                if (sections.isEmpty()) {
+                    EmptyState("لا توجد صلاحية للضوابط المحاسبية")
+                } else if (!state.currentSectionLoaded && (state.busy != null || state.error == null)) {
+                    SectionLoading()
+                } else if (!state.currentSectionLoaded && state.error != null) {
+                    SectionLoadFailure(state.error, state.notice, actions.retryCurrentSection)
+                } else when (state.section) {
+                    AccountingControlsSection.ACCOUNTS -> WorkspaceWithFeedback(state, actions) {
+                        AccountsWorkspace(state, actions)
+                    }
+                    AccountingControlsSection.FINANCIAL_RECONCILIATION -> WorkspaceWithFeedback(state, actions) {
+                        FinancialReconciliationWorkspace(state, actions)
+                    }
+                    AccountingControlsSection.EXCHANGE -> WorkspaceWithFeedback(state, actions) {
+                        ExchangeWorkspace(state, capabilities, actions) { confirmation = it }
+                    }
+                    AccountingControlsSection.PERIODS -> WorkspaceWithFeedback(state, actions) {
+                        PeriodsWorkspace(state, actions) { confirmation = it }
+                    }
+                    AccountingControlsSection.YEAR_END -> WorkspaceWithFeedback(state, actions) {
+                        YearEndWorkspace(state, capabilities, actions) { confirmation = it }
+                    }
                 }
             }
-            state.error?.let { Feedback(it, true, actions.clearMessage) }
-            state.notice?.let { Feedback(it, false, actions.clearMessage) }
-            if (state.busy == AccountingControlsBusy.INITIAL) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            } else if (sections.isEmpty()) {
-                EmptyState("لا توجد صلاحية للضوابط المحاسبية")
-            } else when (state.section) {
-                AccountingControlsSection.ACCOUNTS -> AccountsWorkspace(state, actions)
-                AccountingControlsSection.EXCHANGE -> ExchangeWorkspace(state, capabilities, actions) { confirmation = it }
-                AccountingControlsSection.PERIODS -> PeriodsWorkspace(state, actions) { confirmation = it }
-                AccountingControlsSection.YEAR_END -> YearEndWorkspace(state, capabilities, actions) { confirmation = it }
-            }
+        }
+        confirmation?.let { request ->
+            AlertDialog(
+                onDismissRequest = { if (!state.locked) confirmation = null },
+                title = { Text(request.title, fontWeight = FontWeight.ExtraBold) },
+                text = { Text(request.body) },
+                confirmButton = { Button({ confirmation = null; request.action() }) { Text("تأكيد") } },
+                dismissButton = { OutlinedButton({ confirmation = null }) { Text("رجوع") } },
+            )
         }
     }
-    confirmation?.let { request ->
-        AlertDialog(
-            onDismissRequest = { if (!state.locked) confirmation = null },
-            title = { Text(request.title, fontWeight = FontWeight.ExtraBold) },
-            text = { Text(request.body) },
-            confirmButton = { Button({ confirmation = null; request.action() }) { Text("تأكيد") } },
-            dismissButton = { OutlinedButton({ confirmation = null }) { Text("رجوع") } },
-        )
+}
+
+@Composable
+private fun WorkspaceWithFeedback(
+    state: AccountingControlsUiState,
+    actions: AccountingControlsActions,
+    content: @Composable () -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        state.error?.let { Feedback(it, true, actions.clearMessage) }
+        state.notice?.let { Feedback(it, false, actions.clearMessage) }
+        Box(Modifier.weight(1f).fillMaxWidth()) { content() }
+    }
+}
+
+@Composable
+private fun SectionLoading() {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            CircularProgressIndicator()
+            Text("جارٍ تحميل البيانات", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun SectionLoadFailure(error: String, notice: String?, retry: () -> Unit) {
+    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.fillMaxWidth().background(
+                MaterialTheme.colorScheme.errorContainer,
+                RoundedCornerShape(28.dp, 12.dp, 28.dp, 12.dp),
+            ).padding(22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Rounded.WarningAmber, null, Modifier.size(44.dp), tint = MaterialTheme.colorScheme.error)
+            Text("تعذر تحميل مساحة العمل", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+            notice?.let { Text(it, color = ControlBlue, fontWeight = FontWeight.Bold) }
+            Text(error, color = MaterialTheme.colorScheme.onErrorContainer)
+            Button(onClick = retry) {
+                Icon(Icons.Rounded.Refresh, null)
+                Spacer(Modifier.width(8.dp))
+                Text("إعادة المحاولة")
+            }
+        }
     }
 }
 
@@ -211,7 +307,7 @@ private fun ControlsHeader() {
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("الضوابط المحاسبية", color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
-                Text("مرجع الحسابات، الصيرفة والإقفال", color = Color.White.copy(alpha = .76f))
+                Text("الحسابات، التوافق، الصيرفة والإقفال", color = Color.White.copy(alpha = .76f))
             }
             Surface(color = Color.White.copy(alpha = .13f), shape = RoundedCornerShape(22.dp, 22.dp, 8.dp, 22.dp)) {
                 Icon(Icons.Rounded.AccountBalance, null, tint = Color.White, modifier = Modifier.padding(13.dp).size(29.dp))
@@ -257,6 +353,160 @@ private fun AccountGroupHeader(group: AccountGroup) {
     Row(Modifier.fillMaxWidth().background(ControlMint, RoundedCornerShape(18.dp, 7.dp, 18.dp, 7.dp)).padding(10.dp), Arrangement.SpaceBetween) {
         Text(group.label, fontWeight = FontWeight.ExtraBold, color = ControlNavy)
         Text("${group.rows.size} حساب", color = ControlBlue)
+    }
+}
+
+@Composable
+private fun FinancialReconciliationWorkspace(
+    state: AccountingControlsUiState,
+    actions: AccountingControlsActions,
+) {
+    val report = state.financialReconciliation
+    if (report == null) {
+        Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(Icons.AutoMirrored.Rounded.FactCheck, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outline)
+                Text("لا توجد نتيجة مطابقة", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedButton(actions.refreshFinancialReconciliation) {
+                    Icon(Icons.Rounded.Refresh, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("إعادة الفحص")
+                }
+            }
+        }
+        return
+    }
+    val refreshing = state.busy == AccountingControlsBusy.FINANCIAL_RECONCILIATION
+    BoxWithConstraints(Modifier.fillMaxSize().padding(14.dp)) {
+        val wide = periodWorkspaceLayout(maxWidth.value, LocalDensity.current.fontScale) == PeriodWorkspaceLayout.SPLIT
+        if (wide) {
+            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                FinancialReconciliationSummary(
+                    report = report,
+                    refreshing = refreshing,
+                    refresh = actions.refreshFinancialReconciliation,
+                    modifier = Modifier.weight(.78f),
+                )
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.weight(1.22f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    gridItems(report.sections, key = { it.axis }) { section ->
+                        FinancialReconciliationSectionCard(section, Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        } else {
+            LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item {
+                    FinancialReconciliationSummary(
+                        report = report,
+                        refreshing = refreshing,
+                        refresh = actions.refreshFinancialReconciliation,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                items(report.sections, key = { it.axis }) { section ->
+                    FinancialReconciliationSectionCard(section, Modifier.fillMaxWidth())
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FinancialReconciliationSummary(
+    report: FinancialReconciliationReport,
+    refreshing: Boolean,
+    refresh: () -> Unit,
+    modifier: Modifier,
+) {
+    Card(
+        modifier,
+        shape = RoundedCornerShape(topStart = 34.dp, topEnd = 14.dp, bottomStart = 14.dp, bottomEnd = 34.dp),
+        elevation = CardDefaults.cardElevation(3.dp),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(ControlNavy, ControlBlue))).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(Modifier.size(52.dp).background(Color.White.copy(alpha = .14f), RoundedCornerShape(20.dp, 20.dp, 8.dp, 20.dp)), contentAlignment = Alignment.Center) {
+                Icon(if (report.balanced) Icons.Rounded.CheckCircle else Icons.Rounded.WarningAmber, null, tint = Color.White)
+            }
+            Column {
+                Text("المطابقة المالية الشاملة", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+                Text("الذمم والعهد والمخزون والدفتر", color = Color.White.copy(alpha = .76f))
+            }
+            Text(
+                if (report.balanced) "متوازن" else rtlIsolate("${report.totalIssueCount} انحراف"),
+                color = Color.White,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Black,
+            )
+            Text(
+                "آخر فحص  ${rtlIsolate(formatReconciliationRunAt(report.runAt))}",
+                color = Color.White.copy(alpha = .78f),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Button(
+                onClick = refresh,
+                enabled = !refreshing,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = ControlNavy),
+            ) {
+                if (refreshing) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = ControlNavy)
+                } else {
+                    Icon(Icons.Rounded.Refresh, null)
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(if (refreshing) "جارٍ الفحص" else "إعادة الفحص")
+            }
+        }
+    }
+}
+
+@Composable
+private fun FinancialReconciliationSectionCard(
+    section: FinancialReconciliationSection,
+    modifier: Modifier,
+) {
+    Card(
+        modifier,
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 10.dp, bottomStart = 10.dp, bottomEnd = 26.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        elevation = CardDefaults.cardElevation(1.dp),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(48.dp).background(
+                    if (section.balanced) ControlMint else MaterialTheme.colorScheme.errorContainer,
+                    RoundedCornerShape(19.dp, 19.dp, 7.dp, 19.dp),
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    section.axis.icon(),
+                    null,
+                    tint = if (section.balanced) ControlBlue else MaterialTheme.colorScheme.error,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(section.axis.label(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold)
+                Text(
+                    if (section.balanced) "متوازن" else "يتطلب مراجعة",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            StatusPill(
+                if (section.balanced) "0" else rtlIsolate(section.issueCount.toString()),
+                section.balanced,
+            )
+        }
     }
 }
 
@@ -383,13 +633,13 @@ private fun ExchangeOperationForm(state: AccountingControlsUiState, actions: Acc
 private fun ReconciliationForm(state: AccountingControlsUiState, actions: AccountingControlsActions) {
     val draft = state.reconciliationDraft
     Column(Modifier.fillMaxWidth().background(ControlMint, RoundedCornerShape(20.dp, 8.dp, 20.dp, 8.dp)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        Subheading("مطابقة كشف خارجي", "قراءة خادمية فقط؛ لا تنشئ تسوية")
+        Subheading("مطابقة كشف الصيرفة", "رصيد جهة واحدة؛ لا تنشئ تسوية")
         Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(7.dp)) {
             OutlinedTextField(draft.statedIqd, { actions.reconciliationDraft(draft.copy(statedIqd = it)) }, Modifier.weight(1f), label = { Text("رصيد IQD") }, singleLine = true, enabled = !state.locked)
             OutlinedTextField(draft.statedUsd, { actions.reconciliationDraft(draft.copy(statedUsd = it)) }, Modifier.weight(1f), label = { Text("رصيد USD") }, singleLine = true, enabled = !state.locked)
         }
         OutlinedTextField(draft.asOfDate, { actions.reconciliationDraft(draft.copy(asOfDate = it)) }, Modifier.fillMaxWidth(), label = { Text("تاريخ قطع اختياري YYYY-MM-DD") }, singleLine = true, enabled = !state.locked)
-        OutlinedButton(actions.reconcile, Modifier.fillMaxWidth(), enabled = !state.locked && draft.statedIqd.isNotBlank() && draft.statedUsd.isNotBlank()) { Text("مطابقة") }
+        OutlinedButton(actions.reconcile, Modifier.fillMaxWidth(), enabled = !state.locked && draft.statedIqd.isNotBlank() && draft.statedUsd.isNotBlank()) { Text("مطابقة كشف الصيرفة") }
         state.reconciliation?.let { result ->
             Text(if (result.matched) "متطابق" else "فرق IQD ${result.differenceIqd} • USD ${result.differenceUsd}", color = if (result.matched) ControlBlue else MaterialTheme.colorScheme.error, fontWeight = FontWeight.ExtraBold)
             if (result.pendingCount > 0) Text("${result.pendingCount} حركات بعد تاريخ القطع تفسّر فروق التوقيت", style = MaterialTheme.typography.bodySmall)
@@ -414,20 +664,26 @@ private fun PendingDepositCard(pending: PendingExchangeDeposit, canApprove: Bool
 @Composable
 private fun PeriodsWorkspace(state: AccountingControlsUiState, actions: AccountingControlsActions, confirm: (Confirmation) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize().padding(14.dp)) {
-        val wide = maxWidth >= 760.dp
+        val wide = periodWorkspaceLayout(maxWidth.value, LocalDensity.current.fontScale) == PeriodWorkspaceLayout.SPLIT
         if (wide) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            PeriodControl(state, actions, confirm, Modifier.weight(.85f).fillMaxHeight())
-            PeriodHistory(state, Modifier.weight(1.15f).fillMaxHeight())
+            PeriodControl(state, actions, confirm, Modifier.weight(.85f).fillMaxHeight(), bounded = true)
+            PeriodHistory(state, Modifier.weight(1.15f).fillMaxHeight(), bounded = true)
         } else LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            item { PeriodControl(state, actions, confirm, Modifier.fillMaxWidth().height(420.dp)) }
-            item { PeriodHistory(state, Modifier.fillMaxWidth().height(480.dp)) }
+            item { PeriodControl(state, actions, confirm, Modifier.fillMaxWidth(), bounded = false) }
+            item { PeriodHistory(state, Modifier.fillMaxWidth(), bounded = false) }
         }
     }
 }
 
 @Composable
-private fun PeriodControl(state: AccountingControlsUiState, actions: AccountingControlsActions, confirm: (Confirmation) -> Unit, modifier: Modifier) {
-    ControlsCard(modifier) {
+private fun PeriodControl(
+    state: AccountingControlsUiState,
+    actions: AccountingControlsActions,
+    confirm: (Confirmation) -> Unit,
+    modifier: Modifier,
+    bounded: Boolean,
+) {
+    ControlsCard(modifier, fillContent = bounded, scrollContent = bounded) {
         SectionTitle("حالة الفترة", "القفل يمنع القيود بتاريخ يساوي القطع أو يسبقه", Icons.Rounded.Lock)
         state.activeLock?.let { lock ->
             Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(20.dp, 8.dp, 20.dp, 8.dp)) {
@@ -452,18 +708,28 @@ private fun PeriodControl(state: AccountingControlsUiState, actions: AccountingC
 }
 
 @Composable
-private fun PeriodHistory(state: AccountingControlsUiState, modifier: Modifier) {
-    ControlsCard(modifier) {
+private fun PeriodHistory(state: AccountingControlsUiState, modifier: Modifier, bounded: Boolean) {
+    ControlsCard(modifier, fillContent = bounded) {
         SectionTitle("الأثر التدقيقي", "قفل وفتح محفوظان من سجل التدقيق", Icons.Rounded.History)
-        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(state.periodHistory, key = { it.id }) { event ->
-                Column(Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp)).padding(11.dp)) {
-                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text(if (event.action == "period.lock") "إقفال" else "فتح", fontWeight = FontWeight.Bold); Text(event.cutoffDate ?: "—", color = ControlBlue) }
-                    Text(listOfNotNull(event.userName, event.createdAt).joinToString(" • "), style = MaterialTheme.typography.bodySmall)
-                    (event.reason ?: event.notes)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                }
+        if (bounded) {
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(state.periodHistory, key = { it.id }) { event -> PeriodHistoryRow(event) }
             }
+        } else {
+            state.periodHistory.forEach { event -> PeriodHistoryRow(event) }
         }
+    }
+}
+
+@Composable
+private fun PeriodHistoryRow(event: online.alarabiya.superapp.model.accountingControls.PeriodHistoryEvent) {
+    Column(Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp)).padding(11.dp)) {
+        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+            Text(if (event.action == "period.lock") "إقفال" else "فتح", fontWeight = FontWeight.Bold)
+            Text(event.cutoffDate ?: "—", color = ControlBlue)
+        }
+        Text(listOfNotNull(event.userName, event.createdAt).joinToString(" • "), style = MaterialTheme.typography.bodySmall)
+        (event.reason ?: event.notes)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
 
@@ -501,13 +767,22 @@ private fun YearEndWorkspace(state: AccountingControlsUiState, capabilities: Acc
 }
 
 @Composable
-private fun ControlsCard(modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
+private fun ControlsCard(
+    modifier: Modifier,
+    fillContent: Boolean = true,
+    scrollContent: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     Card(
         modifier,
         shape = RoundedCornerShape(topStart = 30.dp, topEnd = 13.dp, bottomStart = 13.dp, bottomEnd = 30.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.cardElevation(2.dp),
-    ) { Column(Modifier.fillMaxSize().padding(15.dp), verticalArrangement = Arrangement.spacedBy(11.dp), content = content) }
+    ) {
+        val base = if (fillContent) Modifier.fillMaxSize() else Modifier.fillMaxWidth()
+        val contentModifier = if (scrollContent) base.verticalScroll(rememberScrollState()) else base
+        Column(contentModifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(11.dp), content = content)
+    }
 }
 
 @Composable
@@ -554,6 +829,7 @@ private fun EmptyState(text: String) {
 
 private fun AccountingControlsSection.label() = when (this) {
     AccountingControlsSection.ACCOUNTS -> "الحسابات"
+    AccountingControlsSection.FINANCIAL_RECONCILIATION -> "التوافق الشامل"
     AccountingControlsSection.EXCHANGE -> "الصيرفة"
     AccountingControlsSection.PERIODS -> "الفترات"
     AccountingControlsSection.YEAR_END -> "الإقفال السنوي"
@@ -561,10 +837,35 @@ private fun AccountingControlsSection.label() = when (this) {
 
 private fun AccountingControlsSection.icon(): ImageVector = when (this) {
     AccountingControlsSection.ACCOUNTS -> Icons.Rounded.AccountTree
+    AccountingControlsSection.FINANCIAL_RECONCILIATION -> Icons.AutoMirrored.Rounded.FactCheck
     AccountingControlsSection.EXCHANGE -> Icons.Rounded.Payments
     AccountingControlsSection.PERIODS -> Icons.Rounded.Lock
     AccountingControlsSection.YEAR_END -> Icons.Rounded.AccountBalance
 }
+
+private fun FinancialReconciliationAxis.label() = when (this) {
+    FinancialReconciliationAxis.CUSTOMERS -> "ذمم العملاء"
+    FinancialReconciliationAxis.SUPPLIERS -> "ذمم الموردين"
+    FinancialReconciliationAxis.DELIVERY -> "عهدة التوصيل"
+    FinancialReconciliationAxis.INVENTORY -> "أرصدة المخزون"
+    FinancialReconciliationAxis.LEDGER -> "قيود الدفتر"
+}
+
+private fun FinancialReconciliationAxis.icon(): ImageVector = when (this) {
+    FinancialReconciliationAxis.CUSTOMERS -> Icons.Rounded.PeopleAlt
+    FinancialReconciliationAxis.SUPPLIERS -> Icons.Rounded.Storefront
+    FinancialReconciliationAxis.DELIVERY -> Icons.Rounded.LocalShipping
+    FinancialReconciliationAxis.INVENTORY -> Icons.Rounded.Inventory2
+    FinancialReconciliationAxis.LEDGER -> Icons.AutoMirrored.Rounded.ReceiptLong
+}
+
+private fun formatReconciliationRunAt(raw: String): String = runCatching {
+    val instant = runCatching { Instant.parse(raw) }
+        .getOrElse { OffsetDateTime.parse(raw).toInstant() }
+    DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ"))
+        .withZone(ZoneId.of("Asia/Baghdad"))
+        .format(instant)
+}.getOrDefault(raw)
 
 private fun ExchangeOperationKind.label() = when (this) {
     ExchangeOperationKind.DEPOSIT -> "إيداع"

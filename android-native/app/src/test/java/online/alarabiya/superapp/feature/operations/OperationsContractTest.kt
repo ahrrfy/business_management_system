@@ -22,6 +22,8 @@ class OperationsContractTest {
         val manager = OperationsScope(role = "manager", branchId = 4)
         val warehouse = OperationsScope(role = "warehouse", branchId = 7)
         val admin = OperationsScope(role = "admin", branchId = null)
+        val selectedAdmin = OperationsScope(role = "admin", branchId = 9)
+        val owner = OperationsScope(role = "employee", branchId = null, isOwner = true)
 
         assertEquals(4L, manager.effectiveBranch(99))
         assertTrue(manager.acceptsBranch(4))
@@ -29,6 +31,10 @@ class OperationsContractTest {
         assertFalse(warehouse.acceptsBranch(null))
         assertEquals(12L, admin.effectiveBranch(12))
         assertTrue(admin.acceptsBranch(900))
+        assertEquals(9L, selectedAdmin.effectiveBranch(12))
+        assertTrue(selectedAdmin.acceptsBranch(9))
+        assertFalse(selectedAdmin.acceptsBranch(12))
+        assertTrue(owner.isAdmin)
     }
 
     @Test
@@ -42,6 +48,7 @@ class OperationsContractTest {
         assertFalse(warehouse.canManageAssetState)
         assertFalse(warehouse.canReadConsignmentLineDetails)
         assertTrue(manager.canManageAssetState)
+        assertTrue(manager.canPostDepreciation)
         assertFalse(manager.canReadConsignmentLineDetails)
         assertFalse(accountant.canManageAssetState)
         assertTrue(admin.canReadConsignmentLineDetails)
@@ -157,9 +164,11 @@ class OperationsContractTest {
     }
 
     @Test
-    fun `documented gaps include server scope cost and maker checker blockers`() {
+    fun `documented gaps record closed scope and remaining idempotency blockers`() {
         val text = OperationsApiGaps.current.joinToString(" ")
-        assertTrue(text.contains("IDOR"))
+        assertTrue(text.contains("عزل assets.list/get/formOptions"))
+        assertTrue(text.contains("assets.returnCustody"))
+        assertTrue(text.contains("clientRequestId"))
         assertTrue(text.contains("unitShareSnapshot"))
         assertTrue(text.contains("maker-checker"))
     }

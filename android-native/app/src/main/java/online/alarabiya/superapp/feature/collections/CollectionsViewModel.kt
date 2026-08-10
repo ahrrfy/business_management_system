@@ -10,8 +10,12 @@ import kotlinx.coroutines.launch
 import online.alarabiya.superapp.data.CollectionsDataSource
 import online.alarabiya.superapp.model.AppBootstrap
 import online.alarabiya.superapp.model.collections.CancelCreditDecisionCommand
+import online.alarabiya.superapp.model.collections.CreateCreditDecisionDraft
 import online.alarabiya.superapp.model.collections.CollectionsCapabilities
+import online.alarabiya.superapp.model.collections.CollectionsValidation
+import online.alarabiya.superapp.model.collections.CreditCustomerOption
 import online.alarabiya.superapp.model.collections.CreditDecisionStatus
+import java.util.UUID
 
 class CollectionsViewModel(
     private val source: CollectionsDataSource,
@@ -21,7 +25,14 @@ class CollectionsViewModel(
         private set
 
     fun initialize() {
-        if (!state.initialized && !state.locked) load(CollectionsBusy.INITIAL)
+        if (state.initialized || state.locked) return
+        launch(CollectionsBusy.INITIAL) {
+            val branches = source.branches()
+            val initialBranch = capabilities.branchId ?: branches.firstOrNull()?.id
+            state = state.branchesLoaded(branches).copy(createDraft = freshDraft(initialBranch))
+            val page = source.creditDecisions(state.status, state.appliedCustomerId, 0, PAGE_SIZE)
+            state = state.loaded(page.rows, page.total, page.hasMore, append = false)
+        }
     }
 
     fun status(value: CreditDecisionStatus) {
@@ -71,19 +82,124 @@ class CollectionsViewModel(
         val selected = state.selected ?: return fail("اختر قرار ائتمان")
         if (selected.status != CreditDecisionStatus.ACTIVE) return fail("القرار غير نشط")
         if (!capabilities.canCancelActiveDecision) return fail("لا توجد صلاحية إلغاء")
+        if (!state.initialized || !state.catalogFresh) return fail("حدّث القائمة بنجاح قبل الإلغاء")
         val reason = state.cancelReason
-        launch(CollectionsBusy.CANCEL) {
-            source.cancelCreditDecision(CancelCreditDecisionCommand(selected.id, reason))
-            val page = source.creditDecisions(state.status, state.appliedCustomerId, 0, PAGE_SIZE)
-            state = state.copy(
-                initialized = true,
-                rows = page.rows,
-                total = page.total,
-                hasMore = page.hasMore,
-                selectedId = null,
-                cancelReason = "",
-                notice = "أُلغي قرار الائتمان #${selected.id} وحُفظ السبب في سجل التدقيق",
-            )
+        val started = state.start(CollectionsBusy.CANCEL) ?: return
+        state = started
+        viewModelScope.launch {
+            runCatching { source.cancelCreditDecision(CancelCreditDecisionCommand(selected.id, reason)) }
+                .onFailure { state = state.failed(message(it)) }
+                .onSuccess {
+                    state = state.cancellationCommitted(selected.id)
+                    state = state.copy(busy = CollectionsBusy.LIST)
+                    runCatching { source.creditDecisions(state.status, state.appliedCustomerId, 0, PAGE_SIZE) }
+                        .onSuccess { page -> state = state.loaded(page.rows, page.total, page.hasMore, append = false) }
+                        .onFailure { state = state.refreshFailedAfterMutation(message(it)) }
+                }
+        }
+    }
+
+    fun openCreate() {
+        if (state.locked || !capabilities.canCreateCreditDecision) return
+        if (!state.catalogFresh || !state.branchesFresh) return fail("حدّث بيانات القرارات والفروع قبل الإصدار")
+        val branchId = capabilities.branchId ?: state.createDraft.branchId ?: state.branches.firstOrNull()?.id
+        if (branchId == null) return fail("لا يوجد فرع نشط لإصدار القرار")
+        state = state.copy(
+            createOpen = true,
+            createDraft = freshDraft(branchId),
+            customerQuery = "",
+            customerOptions = emptyList(),
+            customerOptionsFresh = false,
+            error = null,
+            notice = null,
+        )
+        searchCustomers()
+    }
+
+    fun closeCreate() {
+        if (state.locked) return
+        state = state.copy(createOpen = false, customerOptions = emptyList(), customerOptionsFresh = false, error = null)
+    }
+
+    fun createBranch(id: Long) {
+        if (state.locked || !capabilities.canSelectBranch || state.branches.none { it.id == id }) return
+        state = state.copy(
+            createDraft = state.createDraft.copy(branchId = id, customerId = null, customerName = ""),
+            customerOptions = emptyList(),
+            customerOptionsFresh = false,
+            error = null,
+        )
+        searchCustomers()
+    }
+
+    fun customerQuery(value: String) {
+        state = state.copy(customerQuery = value.take(120), customerOptionsFresh = false, error = null)
+    }
+
+    fun searchCustomers() {
+        val branchId = state.createDraft.branchId ?: return fail("اختر الفرع")
+        val started = state.start(CollectionsBusy.CUSTOMERS) ?: return
+        state = started.copy(customerOptionsFresh = false)
+        viewModelScope.launch {
+            runCatching { source.customerOptions(branchId, state.customerQuery) }
+                .onSuccess { rows -> state = state.customerOptionsLoaded(rows) }
+                .onFailure {
+                    state = state.copy(
+                        busy = null,
+                        customerOptions = emptyList(),
+                        customerOptionsFresh = false,
+                        error = message(it),
+                    )
+                }
+        }
+    }
+
+    fun selectCustomer(customer: CreditCustomerOption) {
+        if (state.locked || state.customerOptions.none { it.id == customer.id }) return
+        state = state.copy(
+            createDraft = state.createDraft.copy(customerId = customer.id, customerName = customer.name),
+            error = null,
+        )
+    }
+
+    fun createAmount(value: String) {
+        state = state.copy(createDraft = state.createDraft.copy(maxAmount = value.filter { it.isDigit() || it == '.' }.take(18)), error = null)
+    }
+
+    fun createTtl(value: String) {
+        state = state.copy(createDraft = state.createDraft.copy(ttlMinutes = value.filter(Char::isDigit).take(4)), error = null)
+    }
+
+    fun createNotes(value: String) {
+        state = state.copy(createDraft = state.createDraft.copy(notes = value.take(255)), error = null)
+    }
+
+    fun createDecision() {
+        if (state.locked) return
+        if (!state.customerOptionsFresh) return fail("حدّث قائمة العملاء واختر العميل منها")
+        if (state.customerOptions.none { it.id == state.createDraft.customerId }) return fail("اختر عميلاً من نتائج الفرع")
+        val command = CollectionsValidation.command(state.createDraft, capabilities)
+            ?: return fail(CollectionsValidation.create(state.createDraft, capabilities) ?: "بيانات القرار غير مكتملة")
+        val started = state.start(CollectionsBusy.CREATE) ?: return
+        state = started
+        viewModelScope.launch {
+            runCatching { source.createCreditDecision(command) }
+                .onFailure {
+                    // قد تكون الاستجابة ضاعت بعد الالتزام؛ نبقي UUID نفسه ليعيد الخادم النتيجة بلا تكرار.
+                    state = state.copy(
+                        busy = null,
+                        catalogFresh = false,
+                        error = message(it),
+                        notice = "تعذر تأكيد النتيجة؛ أعد الإرسال بنفس الطلب أو حدّث السجل",
+                    )
+                }
+                .onSuccess { decision ->
+                    state = state.creationCommitted(decision, freshDraft(command.branchId))
+                    state = state.copy(busy = CollectionsBusy.LIST)
+                    runCatching { source.creditDecisions(state.status, state.appliedCustomerId, 0, PAGE_SIZE) }
+                        .onSuccess { page -> state = state.loaded(page.rows, page.total, page.hasMore, append = false) }
+                        .onFailure { state = state.refreshFailedAfterMutation(message(it)) }
+                }
         }
     }
 
@@ -94,14 +210,7 @@ class CollectionsViewModel(
         launch(operation) {
             val offset = if (append) state.rows.size else 0
             val page = source.creditDecisions(state.status, state.appliedCustomerId, offset, PAGE_SIZE)
-            val rows = if (append) (state.rows + page.rows).distinctBy { it.id } else page.rows
-            state = state.copy(
-                initialized = true,
-                rows = rows,
-                total = page.total,
-                hasMore = offset + page.rows.size < page.total,
-                selectedId = state.selectedId?.takeIf { id -> rows.any { it.id == id } },
-            )
+            state = state.loaded(page.rows, page.total, offset + page.rows.size < page.total, append)
         }
     }
 
@@ -117,6 +226,11 @@ class CollectionsViewModel(
 
     private fun fail(message: String) { state = state.failed(message) }
     private fun message(error: Throwable) = error.message?.takeIf(String::isNotBlank) ?: "تعذر إكمال العملية"
+
+    private fun freshDraft(branchId: Long?) = CreateCreditDecisionDraft(
+        branchId = branchId,
+        clientRequestId = UUID.randomUUID().toString(),
+    )
 
     companion object { private const val PAGE_SIZE = 50 }
 }

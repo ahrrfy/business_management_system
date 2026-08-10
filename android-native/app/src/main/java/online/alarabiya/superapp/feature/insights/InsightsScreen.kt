@@ -2,6 +2,7 @@ package online.alarabiya.superapp.feature.insights
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -56,20 +57,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.insights.AlertSeverity
+import online.alarabiya.superapp.model.insights.CashOrphanCategory
 import online.alarabiya.superapp.model.insights.CategoryProfitInsight
 import online.alarabiya.superapp.model.insights.FunnelStep
+import online.alarabiya.superapp.model.insights.FinancialReportsInsight
+import online.alarabiya.superapp.model.insights.HrReportsInsight
 import online.alarabiya.superapp.model.insights.InsightTarget
 import online.alarabiya.superapp.model.insights.InsightsAccessPolicy
 import online.alarabiya.superapp.model.insights.InsightsSection
 import online.alarabiya.superapp.model.insights.ManagementAlert
 import online.alarabiya.superapp.model.insights.PeriodPreset
 import online.alarabiya.superapp.model.insights.ReportInsights
+import online.alarabiya.superapp.model.insights.ReportCatalogKind
 import online.alarabiya.superapp.model.insights.SearchEntityType
 import online.alarabiya.superapp.model.insights.SearchInsight
 import online.alarabiya.superapp.model.insights.StoreInsights
@@ -99,6 +105,13 @@ fun InsightsRoute(
         onBranch = viewModel::setBranch,
         onRank = viewModel::setRankBy,
         onApply = viewModel::applyFilter,
+        onCatalogSelect = viewModel::selectCatalogReport,
+        onCatalogSearch = viewModel::setCatalogSearch,
+        onCatalogVariantId = viewModel::setCatalogVariantId,
+        onCatalogOrphanCategory = viewModel::setCatalogOrphanCategory,
+        onCatalogLoad = { viewModel.loadSelectedCatalogReport(page = 0) },
+        onCatalogPrevious = viewModel::previousCatalogPage,
+        onCatalogNext = viewModel::nextCatalogPage,
         onSearchQuery = viewModel::setSearchQuery,
         onToggleScope = viewModel::toggleScope,
         onSearch = viewModel::submitSearch,
@@ -122,6 +135,13 @@ fun InsightsScreen(
     onBranch: (String) -> Unit,
     onRank: (String) -> Unit,
     onApply: () -> Unit,
+    onCatalogSelect: (ReportCatalogKind?) -> Unit,
+    onCatalogSearch: (String) -> Unit,
+    onCatalogVariantId: (String) -> Unit,
+    onCatalogOrphanCategory: (CashOrphanCategory) -> Unit,
+    onCatalogLoad: () -> Unit,
+    onCatalogPrevious: () -> Unit,
+    onCatalogNext: () -> Unit,
     onSearchQuery: (String) -> Unit,
     onToggleScope: (SearchEntityType) -> Unit,
     onSearch: () -> Unit,
@@ -157,7 +177,25 @@ fun InsightsScreen(
                     when {
                         !policy.canRead(state.section) -> EmptyInsight("لا تملك صلاحية الوصول", Modifier.fillMaxSize())
                         state.loading -> LoadingInsight()
-                        state.section == InsightsSection.REPORTS -> ReportsContent(state.reports, wide)
+                        state.section == InsightsSection.REPORTS -> ReportsContent(
+                            state.reports,
+                            wide,
+                            state.focusedAlertKey,
+                        )
+                        state.section == InsightsSection.REPORT_CATALOG -> ReportCatalogContent(
+                            state = state.reportCatalog,
+                            range = state.filter.range,
+                            wide = wide,
+                            onSelect = onCatalogSelect,
+                            onSearch = onCatalogSearch,
+                            onVariantId = onCatalogVariantId,
+                            onOrphanCategory = onCatalogOrphanCategory,
+                            onLoad = onCatalogLoad,
+                            onPrevious = onCatalogPrevious,
+                            onNext = onCatalogNext,
+                        )
+                        state.section == InsightsSection.FINANCIAL -> FinancialContent(state.financial, wide)
+                        state.section == InsightsSection.HR_REPORTS -> HrReportsContent(state.hrReports, wide)
                         state.section == InsightsSection.STORE -> StoreContent(state.store, wide)
                         else -> SearchContent(
                             state = state,
@@ -201,8 +239,8 @@ private fun InsightsHeader(state: InsightsUiState, onRefresh: () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
-            IconButton(onClick = onRefresh, enabled = !state.refreshing && !state.searching) {
-                if (state.refreshing || state.searching) CircularProgressIndicator(
+            IconButton(onClick = onRefresh, enabled = !state.refreshing && !state.searching && !state.reportCatalog.loading) {
+                if (state.refreshing || state.searching || state.reportCatalog.loading) CircularProgressIndicator(
                     Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White,
                 ) else Icon(Icons.Rounded.Refresh, contentDescription = "تحديث")
             }
@@ -260,7 +298,7 @@ private fun FilterPanel(
                         InsightDateField(state.filter.range.to, onTo, "إلى", Modifier.fillMaxWidth())
                         Button(
                             onClick = onApply,
-                            enabled = !state.refreshing,
+                            enabled = !state.refreshing && !state.reportCatalog.loading,
                             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                         ) { Text("تطبيق") }
                     }
@@ -268,16 +306,20 @@ private fun FilterPanel(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         InsightDateField(state.filter.range.from, onFrom, "من", Modifier.weight(1f))
                         InsightDateField(state.filter.range.to, onTo, "إلى", Modifier.weight(1f))
-                        Button(onClick = onApply, enabled = !state.refreshing, modifier = Modifier.heightIn(min = 48.dp)) { Text("تطبيق") }
+                        Button(
+                            onClick = onApply,
+                            enabled = !state.refreshing && !state.reportCatalog.loading,
+                            modifier = Modifier.heightIn(min = 48.dp),
+                        ) { Text("تطبيق") }
                     }
                 }
             }
-            if (state.section == InsightsSection.REPORTS) {
+            if (state.section in setOf(InsightsSection.REPORTS, InsightsSection.REPORT_CATALOG, InsightsSection.FINANCIAL, InsightsSection.HR_REPORTS)) {
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
                     if (maxWidth < 600.dp) {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (policy.canFilterBranch) InsightBranchField(state.filter.branchId, onBranch, Modifier.fillMaxWidth())
-                            LazyRow(
+                            if (state.section == InsightsSection.REPORTS) LazyRow(
                                 modifier = Modifier.fillMaxWidth(),
                                 contentPadding = PaddingValues(horizontal = 2.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -289,8 +331,10 @@ private fun FilterPanel(
                     } else {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             if (policy.canFilterBranch) InsightBranchField(state.filter.branchId, onBranch, Modifier.weight(1f))
-                            FilterChip(state.filter.rankBy == "revenue", { onRank("revenue") }, { Text("حسب الإيراد") })
-                            FilterChip(state.filter.rankBy == "qty", { onRank("qty") }, { Text("حسب الكمية") })
+                            if (state.section == InsightsSection.REPORTS) {
+                                FilterChip(state.filter.rankBy == "revenue", { onRank("revenue") }, { Text("حسب الإيراد") })
+                                FilterChip(state.filter.rankBy == "qty", { onRank("qty") }, { Text("حسب الكمية") })
+                            }
                         }
                     }
                 }
@@ -326,7 +370,7 @@ private fun InsightBranchField(value: String, onValue: (String) -> Unit, modifie
 }
 
 @Composable
-private fun ReportsContent(reports: ReportInsights?, wide: Boolean) {
+private fun ReportsContent(reports: ReportInsights?, wide: Boolean, focusedAlertKey: String?) {
     if (reports == null) {
         EmptyInsight("لا تتوفر مؤشرات للفترة الحالية", Modifier.fillMaxSize())
         return
@@ -335,7 +379,7 @@ private fun ReportsContent(reports: ReportInsights?, wide: Boolean) {
         Modifier.fillMaxSize().padding(18.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        AlertsPanel(reports.alerts, Modifier.weight(.38f).fillMaxHeight())
+        AlertsPanel(reports.alerts, focusedAlertKey, Modifier.weight(.38f).fillMaxHeight())
         ReportLists(reports, Modifier.weight(.62f).fillMaxHeight())
     } else LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp),
@@ -343,7 +387,8 @@ private fun ReportsContent(reports: ReportInsights?, wide: Boolean) {
         contentPadding = PaddingValues(bottom = 28.dp),
     ) {
         item { SectionTitle("تحتاج المتابعة الآن", reports.alerts.size.toString()) }
-        items(reports.alerts, key = ManagementAlert::key) { AlertCard(it) }
+        val orderedAlerts = reports.alerts.focusedFirst(focusedAlertKey)
+        items(orderedAlerts, key = ManagementAlert::key) { AlertCard(it, it.key == focusedAlertKey) }
         item { SectionTitle("الأكثر مبيعاً", reports.topProducts.size.toString()) }
         items(reports.topProducts, key = TopProductInsight::productId) { ProductCard(it) }
         item { SectionTitle("ربحية الفئات", reports.categoryProfit.size.toString()) }
@@ -355,12 +400,74 @@ private fun ReportsContent(reports: ReportInsights?, wide: Boolean) {
 }
 
 @Composable
-private fun AlertsPanel(alerts: List<ManagementAlert>, modifier: Modifier) {
+private fun FinancialContent(report: FinancialReportsInsight?, wide: Boolean) {
+    if (report == null) { EmptyInsight("لا توجد بيانات مالية للفترة المحددة", Modifier.fillMaxSize()); return }
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = if (wide) 24.dp else 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 28.dp),
+    ) {
+        item { SectionTitle("الأرباح والخسائر", report.profitLoss.netProfit.value) }
+        item {
+            InsightMetricCard("صافي الربح", report.profitLoss.netProfit.value,
+                "الإيرادات ${report.profitLoss.revenue.value}  •  تكلفة المبيعات ${report.profitLoss.costOfSales.value}")
+        }
+        items(report.profitLoss.expenseLines, key = { "expense-${it.key}" }) {
+            InsightMetricCard(it.label, it.amount.value, "مصروف تشغيلي")
+        }
+        item { SectionTitle("ميزان المراجعة", if (report.trialBalance.reconciled) "متطابق" else "يتطلب مراجعة") }
+        item { InsightMetricCard("إجمالي الأصول", report.trialBalance.totalAssets.value, "الخصوم ${report.trialBalance.totalLiabilities.value}  •  حقوق الملكية ${report.trialBalance.equity.value}") }
+        item { SectionTitle("التدفق النقدي", report.cashFlow.net.value) }
+        item { InsightMetricCard("صافي التدفق", report.cashFlow.net.value, "داخل ${report.cashFlow.totalIn.value}  •  خارج ${report.cashFlow.totalOut.value}") }
+        item { SectionTitle("دفتر الأستاذ", report.ledgerTotal.toString()) }
+        if (report.ledger.isEmpty()) item { EmptyInsight("لا توجد قيود ضمن الفترة", Modifier.fillMaxWidth().height(160.dp)) }
+        items(report.ledger, key = { "ledger-${it.id}" }) {
+            InsightMetricCard(it.party ?: it.type, it.amount.value, listOfNotNull(it.date, it.reference).joinToString("  •  "))
+        }
+    }
+}
+
+@Composable
+private fun HrReportsContent(report: HrReportsInsight?, wide: Boolean) {
+    if (report == null) { EmptyInsight("لا توجد بيانات حضور أو رواتب للفترة المحددة", Modifier.fillMaxSize()); return }
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = if (wide) 24.dp else 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 28.dp),
+    ) {
+        item { SectionTitle("الحضور والانصراف", report.attendance.days.toString()) }
+        item { InsightMetricCard("ملخص الحضور", "${report.attendance.present} حاضر", "${report.attendance.absent} غائب  •  ${report.attendance.hours} ساعة") }
+        if (report.attendance.rows.isEmpty()) item { EmptyInsight("لا توجد سجلات حضور ضمن الفترة", Modifier.fillMaxWidth().height(150.dp)) }
+        items(report.attendance.rows, key = { "attendance-${it.date}-${it.employeeName}" }) {
+            InsightMetricCard(it.employeeName, it.status, "${it.date}  •  ${it.hours} ساعة")
+        }
+        item { SectionTitle("ملخص الرواتب", report.payrollRuns.size.toString()) }
+        item { InsightMetricCard("إجمالي صافي الرواتب", report.payrollNet.value, "الإجمالي ${report.payrollGross.value}") }
+        if (report.payrollRuns.isEmpty()) item { EmptyInsight("لا توجد مسيرات رواتب", Modifier.fillMaxWidth().height(150.dp)) }
+        items(report.payrollRuns, key = { "payroll-${it.id}" }) {
+            InsightMetricCard("مسير ${it.period}", it.net.value, "${it.employees} موظف  •  ${it.status}")
+        }
+    }
+}
+
+@Composable
+private fun InsightMetricCard(title: String, value: String, supporting: String) {
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(topStart = 22.dp, bottomEnd = 22.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = InsightBlue)
+            if (supporting.isNotBlank()) Text(supporting, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun AlertsPanel(alerts: List<ManagementAlert>, focusedAlertKey: String?, modifier: Modifier) {
     Surface(modifier, shape = RoundedCornerShape(topStart = 34.dp, bottomEnd = 34.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
         LazyColumn(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item { SectionTitle("تحتاج المتابعة الآن", alerts.size.toString()) }
             if (alerts.isEmpty()) item { EmptyInsight("لا توجد تنبيهات نشطة", Modifier.fillMaxWidth().height(180.dp)) }
-            items(alerts, key = ManagementAlert::key) { AlertCard(it) }
+            items(alerts.focusedFirst(focusedAlertKey), key = ManagementAlert::key) {
+                AlertCard(it, it.key == focusedAlertKey)
+            }
         }
     }
 }
@@ -379,15 +486,17 @@ private fun ReportLists(reports: ReportInsights, modifier: Modifier) {
 }
 
 @Composable
-private fun AlertCard(alert: ManagementAlert) {
+private fun AlertCard(alert: ManagementAlert, focused: Boolean = false) {
     val color = when (alert.severity) {
         AlertSeverity.CRITICAL -> MaterialTheme.colorScheme.error
         AlertSeverity.WARNING -> InsightAmber
         AlertSeverity.INFO -> InsightBlue
     }
     Card(
+        modifier = Modifier.testTag("insights-alert-${alert.key}"),
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 10.dp, bottomStart = 10.dp, bottomEnd = 24.dp),
         colors = CardDefaults.cardColors(containerColor = color.copy(alpha = .08f)),
+        border = BorderStroke(if (focused) 2.dp else 0.dp, if (focused) color else Color.Transparent),
     ) {
         Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(42.dp).background(color.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
@@ -401,6 +510,11 @@ private fun AlertCard(alert: ManagementAlert) {
             alert.amount?.let { Text("${it.value} د.ع", fontWeight = FontWeight.Bold) }
         }
     }
+}
+
+private fun List<ManagementAlert>.focusedFirst(key: String?): List<ManagementAlert> {
+    if (key == null || none { it.key == key }) return this
+    return sortedByDescending { it.key == key }
 }
 
 @Composable
@@ -806,6 +920,9 @@ private fun InsightMessage(message: String, error: Boolean, onDismiss: () -> Uni
 
 private fun InsightsSection.icon(): ImageVector = when (this) {
     InsightsSection.REPORTS -> Icons.Rounded.Analytics
+    InsightsSection.REPORT_CATALOG -> Icons.Rounded.Category
+    InsightsSection.FINANCIAL -> Icons.AutoMirrored.Rounded.TrendingUp
+    InsightsSection.HR_REPORTS -> Icons.Rounded.Analytics
     InsightsSection.STORE -> Icons.Rounded.Storefront
     InsightsSection.SEARCH -> Icons.Rounded.Search
 }

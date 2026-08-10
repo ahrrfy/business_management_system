@@ -17,10 +17,19 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createAifaceSession } from "../hrDevices/aifaceDriver";
 import { processPendingFolds } from "../hrDevices/attendanceFold";
-import { enqueueCommand } from "../hrDevices/commands";
-import { formatIclockCommand, parseAttlog, parseOperlogUsers } from "../hrDevices/iclockDriver";
+import { completeIclockCommand, enqueueCommand, popIclockCommand } from "../hrDevices/commands";
+import {
+  formatIclockCommand,
+  handleIclock,
+  parseAttlog,
+  parseOperlogUsers,
+} from "../hrDevices/iclockDriver";
 import { ingestPunches, mapDeviceUserToEmployee, upsertDeviceUser } from "../hrDevices/punchStore";
 import { resolveDeviceBySn } from "../hrDevices/registry";
+import { assertEnabledDeviceIdentityReadiness, updateDevice } from "../hrDeviceService";
+import { resolveBridgeSecurityConfig } from "../hrDevices/bridgeSecurity";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 import { truncateTables } from "./__testUtils__";
 
 function db() {
@@ -66,6 +75,7 @@ beforeEach(async () => {
     branchId: 1,
     enabled: true,
     migrated: true,
+    ip: "127.0.0.1",
   });
   await d.insert(s.hrDeviceUsers).values({ deviceId: 10, enrollId: 7, name: "احمد جهاز", employeeId: 1 });
 });
@@ -89,7 +99,7 @@ async function recordAttendanceManual() {
 }
 
 /** ناقل وهمي لسائق aiface: يلتقط المُرسَل ويتيح فحصه — لا مقابس حقيقية في الاختبار. */
-function fakeTransport() {
+function fakeTransport(remote = "127.0.0.1") {
   const sent: Array<Record<string, unknown>> = [];
   let closed = false;
   return {
@@ -100,8 +110,47 @@ function fakeTransport() {
       close: () => {
         closed = true;
       },
+      remote,
     },
   };
+}
+
+function fakeIclockHttp(
+  path: string,
+  remoteAddress: string,
+  options: { method?: string; body?: string; contentLength?: number; failRead?: boolean } = {},
+) {
+  let status = 0;
+  let body = "";
+  const response = {
+    headersSent: false,
+    writeHead(code: number) {
+      status = code;
+      this.headersSent = true;
+      return this;
+    },
+    end(chunk?: unknown) {
+      body = chunk == null ? "" : String(chunk);
+      return this;
+    },
+  } as unknown as ServerResponse;
+  const request = new Readable({
+    read() {
+      if (options.failRead) {
+        this.destroy(new Error("simulated read failure"));
+        return;
+      }
+      if (options.body) this.push(options.body);
+      this.push(null);
+    },
+  }) as unknown as IncomingMessage;
+  Object.assign(request, {
+    url: path,
+    method: options.method ?? "GET",
+    headers: options.contentLength == null ? {} : { "content-length": String(options.contentLength) },
+    socket: { remoteAddress },
+  });
+  return { request, response, result: () => ({ status, body }) };
 }
 
 /** انتظار شرطٍ تحققه عمليات خلفية fire-and-forget (دفع الأوامر) — مهلة قصيرة حاسمة. */
@@ -114,6 +163,42 @@ async function waitFor(cond: () => boolean, ms = 2000): Promise<void> {
 }
 
 describe("المخزن الخام (ج١)", () => {
+  it("لا يسمح لتعديل إداري بإزالة ربط الهوية من جهاز مفعّل", async () => {
+    const previousBindings = process.env.HR_DEVICE_IDENTITY_BINDINGS;
+    const previousMigration = process.env.HR_DEVICE_LEGACY_IDENTITY_MIGRATION;
+    delete process.env.HR_DEVICE_IDENTITY_BINDINGS;
+    process.env.HR_DEVICE_LEGACY_IDENTITY_MIGRATION = "0";
+    try {
+      await expect(updateDevice(10, { name: "جهاز الرئيسي", ip: null })).rejects.toThrow(
+        "لا يمكن إزالة ربط الهوية",
+      );
+      expect((await device()).ip).toBe("127.0.0.1");
+    } finally {
+      if (previousBindings === undefined) delete process.env.HR_DEVICE_IDENTITY_BINDINGS;
+      else process.env.HR_DEVICE_IDENTITY_BINDINGS = previousBindings;
+      if (previousMigration === undefined) delete process.env.HR_DEVICE_LEGACY_IDENTITY_MIGRATION;
+      else process.env.HR_DEVICE_LEGACY_IDENTITY_MIGRATION = previousMigration;
+    }
+  });
+
+  it("يفشل preflight إذا اشترك جهازان مفعّلان في IP بلا مفتاحين فريدين", async () => {
+    await db().insert(s.hrFingerprintDevices).values({
+      id: 11,
+      name: "جهاز ثانٍ",
+      serialNumber: "DUP-IP-2",
+      protocol: "ZKTECO_PUSH",
+      enabled: true,
+      migrated: true,
+      ip: "127.0.0.1/32",
+    });
+    await expect(assertEnabledDeviceIdentityReadiness()).rejects.toThrow("يشتركان في IP");
+    const { sent, transport, isClosed } = fakeTransport("127.0.0.1");
+    const session = createAifaceSession(transport);
+    await session.handleMessage(JSON.stringify({ cmd: "reg", sn: SN, devinfo: {} }));
+    expect(sent[0]).toMatchObject({ ret: "reg", result: false, reason: 2 });
+    expect(isClosed()).toBe(true);
+  });
+
   it("إعادة دفع نفس البصمة لا تضاعف الصفوف، والربط يُحلّ عند الاستلام", async () => {
     const dev = await device();
     const batch = [
@@ -455,12 +540,90 @@ describe("سائق iclock (ج٦)", () => {
   });
 
   it("جهاز ZK يسجّل نفسه تلقائياً معطَّلاً بنفس بوابة القبول", async () => {
-    const row = await resolveDeviceBySn("ZKTEST777", "ZKTECO_PUSH");
+    const row = await resolveDeviceBySn("ZKTEST777", "ZKTECO_PUSH", "::ffff:192.168.50.12");
     expect(row?.enabled).toBe(false);
     expect(row?.protocol).toBe("ZKTECO_PUSH");
+    expect(row?.ip).toBe("192.168.50.12");
     // إعادة الحل لا تنشئ صفاً ثانياً (سباق التسجيل يحسمه القيد الفريد)
     const again = await resolveDeviceBySn("ZKTEST777", "ZKTECO_PUSH");
     expect(again?.id).toBe(row?.id);
+  });
+
+  it("مسار WS/Aiface لا يسمح لعميل مخوّل للجسر بانتحال SN جهاز مفعّل من عنوان آخر", async () => {
+    const { sent, transport, isClosed } = fakeTransport("127.0.0.2");
+    const session = createAifaceSession(transport);
+    await session.handleMessage(JSON.stringify({ cmd: "reg", sn: SN, devinfo: {} }));
+    expect(sent[0]).toMatchObject({ ret: "reg", result: false, reason: 2 });
+    expect(isClosed()).toBe(true);
+    const dev = await device();
+    expect(dev.lastHandshakeAt).toBeNull();
+  });
+
+  it("مسار HTTP/iClock يرفض SN صحيحاً قادماً من هوية جهاز أخرى", async () => {
+    const http = fakeIclockHttp(`/iclock/cdata?SN=${SN}`, "127.0.0.2");
+    expect(
+      await handleIclock(http.request, http.response, resolveBridgeSecurityConfig()),
+    ).toBe(true);
+    expect(http.result()).toEqual({ status: 403, body: "forbidden" });
+    const dev = await device();
+    expect(dev.lastHandshakeAt).toBeNull();
+  });
+
+  it("iClock لا يرسل 200 لبصمات جهاز غير معتمد أو لفشل قراءة/سقف الدفعة", async () => {
+    const unknown = fakeIclockHttp(
+      "/iclock/cdata?SN=UNAPPROVED-1&table=ATTLOG",
+      "127.0.0.3",
+      { method: "POST", body: "7\t2026-07-01 08:00:00\t0\t1" },
+    );
+    await handleIclock(unknown.request, unknown.response, resolveBridgeSecurityConfig());
+    expect(unknown.result()).toEqual({ status: 403, body: "forbidden" });
+
+    const failedRead = fakeIclockHttp(
+      `/iclock/cdata?SN=${SN}&table=ATTLOG`,
+      "127.0.0.1",
+      { method: "POST", failRead: true },
+    );
+    await handleIclock(failedRead.request, failedRead.response, resolveBridgeSecurityConfig());
+    expect(failedRead.result()).toEqual({ status: 503, body: "retry" });
+
+    const oversized = fakeIclockHttp(
+      `/iclock/cdata?SN=${SN}&table=ATTLOG`,
+      "127.0.0.1",
+      { method: "POST", contentLength: 70_000 },
+    );
+    await handleIclock(
+      oversized.request,
+      oversized.response,
+      resolveBridgeSecurityConfig({ HR_DEVICE_MAX_PAYLOAD_BYTES: "65536" }),
+    );
+    expect(oversized.result()).toEqual({ status: 503, body: "retry" });
+  });
+
+  it("لا يستطيع جهاز إكمال أمر جهاز آخر ولا إعادة كتابة أمر مكتمل", async () => {
+    await db().insert(s.hrFingerprintDevices).values({
+      id: 11,
+      name: "جهاز ثانٍ",
+      serialNumber: "ZK-SECOND",
+      protocol: "ZKTECO_PUSH",
+      enabled: true,
+      migrated: true,
+      ip: "127.0.0.2",
+    });
+    const commandId = await enqueueCommand(10, "reboot", null, 1);
+    expect(await popIclockCommand(10)).toMatchObject({ id: commandId, cmd: "reboot" });
+
+    expect(await completeIclockCommand(11, commandId, 0)).toBe(false);
+    let [command] = await db().select().from(s.hrDeviceCommands).where(eq(s.hrDeviceCommands.id, commandId));
+    expect(command.status).toBe("sent");
+
+    expect(await completeIclockCommand(10, commandId, 0)).toBe(true);
+    [command] = await db().select().from(s.hrDeviceCommands).where(eq(s.hrDeviceCommands.id, commandId));
+    expect(command.status).toBe("done");
+
+    expect(await completeIclockCommand(10, commandId, -9)).toBe(false);
+    [command] = await db().select().from(s.hrDeviceCommands).where(eq(s.hrDeviceCommands.id, commandId));
+    expect(command.status).toBe("done");
+    expect((command.result as { returnCode?: number }).returnCode).toBe(0);
   });
 });
 

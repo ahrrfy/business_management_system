@@ -65,8 +65,10 @@ object NativeDeepLinkCodec {
             listOf("receivables") -> NativeDestination.Receivables
             listOf("collections") -> NativeDestination.Collections
             listOf("insights") -> NativeDestination.Insights
+            listOf("shifts") -> NativeDestination.Shifts
             listOf("work-orders") -> NativeDestination.WorkOrders
             listOf("warehouse-tools") -> NativeDestination.WarehouseTools
+            listOf("store-admin") -> NativeDestination.StoreAdmin
             listOf("profile") -> NativeDestination.Profile
             else -> when (val result = parseModuleDestination(segments, registry)) {
                 is ModuleParseResult.Accepted -> result.destination
@@ -92,8 +94,10 @@ object NativeDeepLinkCodec {
             NativeDestination.Receivables -> listOf("receivables")
             NativeDestination.Collections -> listOf("collections")
             NativeDestination.Insights -> listOf("insights")
+            NativeDestination.Shifts -> listOf("shifts")
             NativeDestination.WorkOrders -> listOf("work-orders")
             NativeDestination.WarehouseTools -> listOf("warehouse-tools")
+            NativeDestination.StoreAdmin -> listOf("store-admin")
             NativeDestination.Profile -> listOf("profile")
             is NativeDestination.Module -> listOf("module", destination.module.wireName)
             is NativeDestination.Feature -> buildList {

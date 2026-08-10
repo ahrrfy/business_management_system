@@ -1,6 +1,8 @@
 package online.alarabiya.superapp.feature.collections
 
 import online.alarabiya.superapp.data.toCreditDecisionOrNull
+import online.alarabiya.superapp.data.toCreditCustomerOptionOrNull
+import online.alarabiya.superapp.data.toCreditBranchOptionOrNull
 import online.alarabiya.superapp.model.collections.CreditDecisionPage
 import online.alarabiya.superapp.model.collections.CreditDecisionStatus
 import org.json.JSONObject
@@ -17,6 +19,8 @@ class CollectionsMappersTest {
             .put("id", 91)
             .put("customerId", 8)
             .put("customerName", "عميل")
+            .put("branchId", 3)
+            .put("branchName", "الكرادة")
             .put("customerPhone", "07700000000")
             .put("maxAmount", "123456.78")
             .put("approvedBy", 4)
@@ -29,7 +33,25 @@ class CollectionsMappersTest {
 
         assertEquals("123456.78", decision?.maxAmount)
         assertEquals(CreditDecisionStatus.EXPIRED, decision?.status)
+        assertEquals(3L, decision?.branchId)
+        assertEquals("الكرادة", decision?.branchName)
         assertNull(decision?.consumedByInvoiceId)
+    }
+
+    @Test
+    fun `typed customer and branch options reject malformed identities and preserve money strings`() {
+        val customer = JSONObject()
+            .put("id", 8)
+            .put("name", "عميل الفرع")
+            .put("phone", "+9647700000000")
+            .put("currentBalance", "1234567890123.45")
+            .toCreditCustomerOptionOrNull()
+        val branch = JSONObject().put("id", 3).put("name", "الكرادة").put("code", "KR").toCreditBranchOptionOrNull()
+
+        assertEquals("1234567890123.45", customer?.currentBalance)
+        assertEquals("KR", branch?.code)
+        assertNull(JSONObject().put("id", 0).put("name", "عميل").toCreditCustomerOptionOrNull())
+        assertNull(JSONObject().put("id", 3).put("name", " ").toCreditBranchOptionOrNull())
     }
 
     @Test

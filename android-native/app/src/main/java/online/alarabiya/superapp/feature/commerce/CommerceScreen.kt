@@ -22,6 +22,7 @@ import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.CardGiftcard
 import androidx.compose.material.icons.rounded.CreditCard
 import androidx.compose.material.icons.rounded.EventAvailable
+import androidx.compose.material.icons.rounded.FactCheck
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -58,6 +59,9 @@ import online.alarabiya.superapp.model.commerce.CommerceCapabilities
 import online.alarabiya.superapp.model.commerce.DigitalCard
 import online.alarabiya.superapp.model.commerce.DigitalCardAvailability
 import online.alarabiya.superapp.model.commerce.DigitalSubscription
+import online.alarabiya.superapp.model.commerce.DigitalCardApproval
+import online.alarabiya.superapp.model.commerce.DigitalCardApprovalDecision
+import online.alarabiya.superapp.model.commerce.DigitalCardApprovalKind
 import online.alarabiya.superapp.model.commerce.GiftDetail
 import online.alarabiya.superapp.model.commerce.GiftDirection
 import online.alarabiya.superapp.model.commerce.GiftSummary
@@ -67,6 +71,7 @@ import online.alarabiya.superapp.model.commerce.ReservationSummary
 import online.alarabiya.superapp.ui.rtlIsolate
 import java.text.NumberFormat
 import java.util.Locale
+import java.time.LocalDate
 
 @Composable
 fun CommerceRoute(
@@ -97,6 +102,8 @@ fun CommerceRoute(
         onExtendReservation = { id, hours -> viewModel.extendReservation(id, hours, capabilities) },
         onConvertReservation = { viewModel.convertReservation(it, capabilities) },
         onConfirmCard = { viewModel.confirmCard(it, capabilities) },
+        onApproveDigitalCard = { item, decision -> viewModel.approveDigitalCard(item, decision, capabilities) },
+        onRejectDigitalCard = { item, reason -> viewModel.rejectDigitalCard(item, reason, capabilities) },
         modifier = modifier,
     )
 }
@@ -118,6 +125,8 @@ fun CommerceScreen(
     onExtendReservation: (Long, Int) -> Unit,
     onConvertReservation: (Long) -> Unit,
     onConfirmCard: (Long) -> Unit,
+    onApproveDigitalCard: (DigitalCardApproval, DigitalCardApprovalDecision) -> Unit,
+    onRejectDigitalCard: (DigitalCardApproval, String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val readableSections = capabilities.readableSections()
@@ -176,6 +185,7 @@ fun CommerceScreen(
                 value = state.query,
                 onValueChange = onQueryChange,
                 label = { Text("بحث") },
+                enabled = !state.loading && state.busyKey == null,
                 singleLine = true,
                 modifier = Modifier.weight(1f),
             )
@@ -189,12 +199,13 @@ fun CommerceScreen(
                     FilterChip(
                         selected = state.branchId == branch.id,
                         onClick = { onBranchChange(branch.id) },
+                        enabled = !state.loading && state.busyKey == null,
                         label = { Text(branch.name) },
                     )
                 }
             }
         }
-        state.message?.let { InlineMessage(it, false) }
+        state.notice?.let { InlineMessage(it, false) }
         state.error?.let { InlineMessage(it, true) }
         Box(Modifier.fillMaxWidth().weight(1f)) {
             if (state.loading) {
@@ -205,7 +216,7 @@ fun CommerceScreen(
                         detail = state.giftDetail,
                         rows = state.gifts?.rows.orEmpty(),
                         capabilities = capabilities,
-                        busy = state.busyKey != null,
+                        locked = !state.canAct(CommerceSection.Gifts),
                         onOpen = onOpenGift,
                         onClose = onCloseGift,
                         onApprove = onApproveGift,
@@ -215,7 +226,7 @@ fun CommerceScreen(
                         rows = state.reservations?.rows.orEmpty(),
                         conversion = state.lastConversion,
                         capabilities = capabilities,
-                        busy = state.busyKey != null,
+                        locked = !state.canAct(CommerceSection.Reservations),
                         onOpen = onOpenReservation,
                         onClose = onCloseReservation,
                         onCancel = onCancelReservation,
@@ -225,10 +236,17 @@ fun CommerceScreen(
                     CommerceSection.DigitalCards -> DigitalCardsContent(
                         cards = state.digitalCards,
                         confirmed = state.confirmedCard,
-                        busy = state.busyKey != null,
+                        locked = !state.canAct(CommerceSection.DigitalCards),
                         onConfirm = onConfirmCard,
                     )
                     CommerceSection.Subscriptions -> SubscriptionsContent(state.subscriptions)
+                    CommerceSection.Approvals -> DigitalCardApprovalsContent(
+                        rows = state.approvals,
+                        capabilities = capabilities,
+                        locked = !state.canAct(CommerceSection.Approvals),
+                        onApprove = onApproveDigitalCard,
+                        onReject = onRejectDigitalCard,
+                    )
                 }
             }
         }
@@ -236,17 +254,158 @@ fun CommerceScreen(
 }
 
 @Composable
+private fun DigitalCardApprovalsContent(
+    rows: List<DigitalCardApproval>,
+    capabilities: CommerceCapabilities,
+    locked: Boolean,
+    onApprove: (DigitalCardApproval, DigitalCardApprovalDecision) -> Unit,
+    onReject: (DigitalCardApproval, String?) -> Unit,
+) {
+    var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    var action by rememberSaveable { mutableStateOf<String?>(null) }
+    val current = rows.firstOrNull { "${it.kind}:${it.id}" == selected }
+    if (rows.isEmpty()) {
+        Empty("لا توجد اعتمادات معلّقة")
+        return
+    }
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        items(rows, key = { "${it.kind}:${it.id}" }) { item ->
+            SectionCard {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(item.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(approvalKindLabel(item.kind), color = MaterialTheme.colorScheme.primary)
+                        item.branchName?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                    item.amount?.let { Text(formatMoney(it), fontWeight = FontWeight.Bold) }
+                }
+                item.description?.let { Text(it, maxLines = 3, overflow = TextOverflow.Ellipsis) }
+                item.requesterName?.let { Text("مقدم الطلب: $it", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                if (item.kind == DigitalCardApprovalKind.WALLET_VARIANCE) {
+                    Text("بانتظار ربط حركة التسوية من الخادم", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else if (!item.canDecide(capabilities)) {
+                    Text("يتطلب اعتماد مستخدم آخر", color = MaterialTheme.colorScheme.error)
+                } else {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { selected = "${item.kind}:${item.id}"; action = "approve" },
+                            enabled = !locked,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("اعتماد") }
+                        OutlinedButton(
+                            onClick = { selected = "${item.kind}:${item.id}"; action = "reject" },
+                            enabled = !locked,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("رفض") }
+                    }
+                }
+            }
+        }
+    }
+    if (current != null && action != null) {
+        DigitalCardDecisionDialog(
+            item = current,
+            approve = action == "approve",
+            onDismiss = { selected = null; action = null },
+            onConfirm = { approved, decision ->
+                selected = null
+                action = null
+                if (approved) onApprove(current, decision) else onReject(current, decision.reason)
+            },
+        )
+    }
+}
+
+@Composable
+private fun DigitalCardDecisionDialog(
+    item: DigitalCardApproval,
+    approve: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (Boolean, DigitalCardApprovalDecision) -> Unit,
+) {
+    var reason by rememberSaveable(item.id, approve) { mutableStateOf("") }
+    var businessDate by rememberSaveable(item.id) { mutableStateOf(LocalDate.now().toString()) }
+    var sellPrice by rememberSaveable(item.id) { mutableStateOf(item.currentSellPrice.orEmpty()) }
+    val mismatchApproval = approve && item.kind == DigitalCardApprovalKind.PRICE_MISMATCH
+    val validBusinessDate = businessDate.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$"))
+    val validSellPrice = sellPrice.matches(Regex("^\\d+(?:\\.\\d{1,2})?$"))
+    val reviewRejection = !approve && item.kind == DigitalCardApprovalKind.REVIEW_RESOLUTION
+    val canSubmit = when {
+        mismatchApproval -> validBusinessDate && validSellPrice
+        reviewRejection -> reason.trim().length in 3..500
+        else -> true
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (approve) "تأكيد الاعتماد" else "تأكيد الرفض") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(item.title)
+                if (mismatchApproval) {
+                    OutlinedTextField(
+                        value = businessDate,
+                        onValueChange = { businessDate = it.take(10) },
+                        label = { Text("تاريخ العمل YYYY-MM-DD") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = sellPrice,
+                        onValueChange = { sellPrice = it.filter { char -> char.isDigit() || char == '.' }.take(20) },
+                        label = { Text("سعر البيع النافذ") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (!approve || mismatchApproval) {
+                    OutlinedTextField(
+                        value = reason,
+                        onValueChange = { reason = it.take(500) },
+                        label = { Text(if (approve) "ملاحظات" else "سبب الرفض") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = canSubmit,
+                onClick = {
+                    onConfirm(
+                        approve,
+                        DigitalCardApprovalDecision(
+                            reason = reason.trim().takeIf(String::isNotEmpty),
+                            businessDate = businessDate.takeIf { mismatchApproval },
+                            sellPrice = sellPrice.takeIf { mismatchApproval },
+                        ),
+                    )
+                },
+            ) { Text(if (approve) "اعتماد" else "رفض") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("رجوع") } },
+    )
+}
+
+private fun approvalKindLabel(kind: DigitalCardApprovalKind): String = when (kind) {
+    DigitalCardApprovalKind.REVIEW_RESOLUTION -> "معالجة مراجعة"
+    DigitalCardApprovalKind.WRITEOFF -> "شطب خسارة"
+    DigitalCardApprovalKind.PRICE_MISMATCH -> "اختلاف تسعير"
+    DigitalCardApprovalKind.WALLET_VARIANCE -> "فرق محفظة"
+}
+
+@Composable
 private fun GiftsContent(
     detail: GiftDetail?,
     rows: List<GiftSummary>,
     capabilities: CommerceCapabilities,
-    busy: Boolean,
+    locked: Boolean,
     onOpen: (Long) -> Unit,
     onClose: () -> Unit,
     onApprove: (Long) -> Unit,
 ) {
     if (detail != null) {
-        GiftDetailContent(detail, capabilities, busy, onClose, onApprove)
+        GiftDetailContent(detail, capabilities, locked, onClose, onApprove)
         return
     }
     if (rows.isEmpty()) return Empty("لا توجد سندات هدايا ضمن النطاق")
@@ -262,7 +421,7 @@ private fun GiftsContent(
                 }
                 gift.reason?.let { Text(it) }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = { onOpen(gift.id) }, enabled = !busy) { Text("التفاصيل") }
+                    TextButton(onClick = { onOpen(gift.id) }, enabled = !locked) { Text("التفاصيل") }
                 }
             }
         }
@@ -273,7 +432,7 @@ private fun GiftsContent(
 private fun GiftDetailContent(
     detail: GiftDetail,
     capabilities: CommerceCapabilities,
-    busy: Boolean,
+    locked: Boolean,
     onClose: () -> Unit,
     onApprove: (Long) -> Unit,
 ) {
@@ -289,7 +448,7 @@ private fun GiftDetailContent(
                 DetailRow("الغرض", if (detail.sellable) "قابل للبيع" else "استخدام داخلي")
                 detail.reason?.let { DetailRow("السبب", it) }
                 if (detail.direction == GiftDirection.OUT && detail.status.name == "PENDING_APPROVAL" && capabilities.canApproveGifts) {
-                    Button(onClick = { confirmApproval = true }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                    Button(onClick = { confirmApproval = true }, enabled = !locked, modifier = Modifier.fillMaxWidth()) {
                         Text("اعتماد الهدية")
                     }
                 }
@@ -320,7 +479,7 @@ private fun ReservationsContent(
     rows: List<ReservationSummary>,
     conversion: ReservationConversion?,
     capabilities: CommerceCapabilities,
-    busy: Boolean,
+    locked: Boolean,
     onOpen: (Long) -> Unit,
     onClose: () -> Unit,
     onCancel: (Long, String?) -> Unit,
@@ -328,7 +487,7 @@ private fun ReservationsContent(
     onConvert: (Long) -> Unit,
 ) {
     if (detail != null) {
-        ReservationDetailContent(detail, conversion, capabilities, busy, onClose, onCancel, onExtend, onConvert)
+        ReservationDetailContent(detail, conversion, capabilities, locked, onClose, onCancel, onExtend, onConvert)
         return
     }
     if (rows.isEmpty()) return Empty("لا توجد حجوزات ضمن النطاق")
@@ -343,7 +502,7 @@ private fun ReservationsContent(
                     Status(reservationStatusLabel(reservation.status.name), MaterialTheme.colorScheme.primary)
                 }
                 DetailRow("ينتهي", reservation.expiresAt ?: "—")
-                TextButton(onClick = { onOpen(reservation.id) }, enabled = !busy, modifier = Modifier.align(Alignment.End)) {
+                TextButton(onClick = { onOpen(reservation.id) }, enabled = !locked, modifier = Modifier.align(Alignment.End)) {
                     Text("فتح الحجز")
                 }
             }
@@ -356,7 +515,7 @@ private fun ReservationDetailContent(
     detail: ReservationDetail,
     conversion: ReservationConversion?,
     capabilities: CommerceCapabilities,
-    busy: Boolean,
+    locked: Boolean,
     onClose: () -> Unit,
     onCancel: (Long, String?) -> Unit,
     onExtend: (Long, Int) -> Unit,
@@ -397,11 +556,11 @@ private fun ReservationDetailContent(
         }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (detail.canCancel(capabilities)) OutlinedButton(onClick = { action = "cancel" }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("إلغاء") }
-                if (detail.canExtend(capabilities)) OutlinedButton(onClick = { action = "extend" }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("تمديد") }
+                if (detail.canCancel(capabilities)) OutlinedButton(onClick = { action = "cancel" }, enabled = !locked, modifier = Modifier.weight(1f)) { Text("إلغاء") }
+                if (detail.canExtend(capabilities)) OutlinedButton(onClick = { action = "extend" }, enabled = !locked, modifier = Modifier.weight(1f)) { Text("تمديد") }
             }
             if (detail.canConvert(capabilities)) {
-                Button(onClick = { action = "convert" }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = { action = "convert" }, enabled = !locked, modifier = Modifier.fillMaxWidth()) {
                     Text("تحويل إلى فاتورة")
                 }
             }
@@ -440,7 +599,7 @@ private fun ReservationDetailContent(
 private fun DigitalCardsContent(
     cards: List<DigitalCard>,
     confirmed: DigitalCard?,
-    busy: Boolean,
+    locked: Boolean,
     onConfirm: (Long) -> Unit,
 ) {
     if (cards.isEmpty()) return Empty("لا توجد بطاقات متاحة لهذا الفرع")
@@ -468,7 +627,7 @@ private fun DigitalCardsContent(
                 if (card.requiresStudentData) Text("يتطلب بيانات الطالب", color = MaterialTheme.colorScheme.secondary)
                 OutlinedButton(
                     onClick = { onConfirm(card.offeringId) },
-                    enabled = !busy && card.canConfirm,
+                    enabled = !locked && card.canConfirm,
                     modifier = Modifier.align(Alignment.End),
                 ) { Text("تأكيد السعر") }
             }
@@ -575,6 +734,7 @@ private val CommerceSection.label: String
         CommerceSection.Reservations -> "الحجوزات"
         CommerceSection.DigitalCards -> "البطاقات"
         CommerceSection.Subscriptions -> "الاشتراكات"
+        CommerceSection.Approvals -> "الاعتمادات"
     }
 
 private val CommerceSection.icon: ImageVector
@@ -583,6 +743,7 @@ private val CommerceSection.icon: ImageVector
         CommerceSection.Reservations -> Icons.Rounded.EventAvailable
         CommerceSection.DigitalCards -> Icons.Rounded.CreditCard
         CommerceSection.Subscriptions -> Icons.AutoMirrored.Rounded.ReceiptLong
+        CommerceSection.Approvals -> Icons.Rounded.FactCheck
     }
 
 private val moneyFormat = NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ")).apply { maximumFractionDigits = 0 }

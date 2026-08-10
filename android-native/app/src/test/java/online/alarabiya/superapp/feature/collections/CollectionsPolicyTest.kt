@@ -14,6 +14,8 @@ class CollectionsPolicyTest {
         assertTrue(policy("admin").canReadCreditDecisions)
         assertTrue(policy("manager").canReadCreditDecisions)
         assertTrue(policy("manager").canCancelActiveDecision)
+        assertTrue(policy("manager").canCreateCreditDecision)
+        assertTrue(policy("admin").canSelectBranch)
     }
 
     @Test

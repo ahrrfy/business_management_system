@@ -7,6 +7,7 @@ import online.alarabiya.superapp.model.accountingControls.ExchangeDraft
 import online.alarabiya.superapp.model.accountingControls.ExchangeHouse
 import online.alarabiya.superapp.model.accountingControls.ExchangeReconciliation
 import online.alarabiya.superapp.model.accountingControls.ExchangeStatement
+import online.alarabiya.superapp.model.accountingControls.FinancialReconciliationReport
 import online.alarabiya.superapp.model.accountingControls.PendingExchangeDeposit
 import online.alarabiya.superapp.model.accountingControls.PeriodHistoryEvent
 import online.alarabiya.superapp.model.accountingControls.ReconciliationCommand
@@ -15,6 +16,7 @@ import online.alarabiya.superapp.model.accountingControls.YearEndSnapshot
 enum class AccountingControlsBusy {
     INITIAL,
     ACCOUNTS,
+    FINANCIAL_RECONCILIATION,
     EXCHANGE,
     EXCHANGE_STATEMENT,
     EXCHANGE_MUTATION,
@@ -32,7 +34,9 @@ data class AccountingControlsUiState(
     val busy: AccountingControlsBusy? = null,
     val error: String? = null,
     val notice: String? = null,
+    val successfulLoads: Set<AccountingControlsSection> = emptySet(),
     val accountGroups: List<AccountGroup> = emptyList(),
+    val financialReconciliation: FinancialReconciliationReport? = null,
     val accountQuery: String = "",
     val exchangeQuery: String = "",
     val exchangeHouses: List<ExchangeHouse> = emptyList(),
@@ -54,6 +58,7 @@ data class AccountingControlsUiState(
     val closeCompanyWide: Boolean = true,
 ) {
     val locked get() = busy != null
+    val currentSectionLoaded get() = hasSuccessfulLoad(section)
     val selectedExchangeHouse get() = exchangeHouses.firstOrNull { it.id == selectedExchangeHouseId }
     val filteredAccountGroups: List<AccountGroup>
         get() {
@@ -64,14 +69,38 @@ data class AccountingControlsUiState(
             }.filter { it.rows.isNotEmpty() }
         }
 
-    fun start(operation: AccountingControlsBusy): AccountingControlsUiState? =
-        if (locked) null else copy(busy = operation, error = null, notice = null)
+    fun start(
+        operation: AccountingControlsBusy,
+        invalidateSection: AccountingControlsSection? = null,
+    ): AccountingControlsUiState? =
+        if (locked) null else copy(
+            busy = operation,
+            error = null,
+            notice = null,
+            successfulLoads = invalidateSection?.let { successfulLoads - it } ?: successfulLoads,
+        )
+
+    fun successfulLoad(section: AccountingControlsSection) = copy(
+        initialized = true,
+        busy = null,
+        error = null,
+        successfulLoads = successfulLoads + section,
+    )
+
+    fun hasSuccessfulLoad(section: AccountingControlsSection) = section in successfulLoads
+    fun canMutate(section: AccountingControlsSection) =
+        this.section == section && hasSuccessfulLoad(section) && !locked
 
     fun failed(message: String) = copy(
-        initialized = true,
         busy = null,
         error = message,
         notice = null,
+        unlockPassword = "",
+    )
+
+    fun refreshAfterMutationFailed(message: String) = copy(
+        busy = null,
+        error = "تم تنفيذ الإجراء، لكن تعذر تحديث بيانات المساحة: $message",
         unlockPassword = "",
     )
 }

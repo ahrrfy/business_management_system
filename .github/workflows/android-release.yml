@@ -25,13 +25,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Require successful native CI for this exact commit
+      - name: Require successful CI, security, and native gates for current main SHA
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          test "$GITHUB_REF" = "refs/heads/main"
-          conclusion="$(gh run list --workflow=android-native-ci.yml --commit "$GITHUB_SHA" --status completed --limit 1 --json conclusion --jq '.[0].conclusion // "missing"')"
-          test "$conclusion" = "success"
+        run: node scripts/verify-android-release-workflow-gate.mjs
       - name: Verify native release source contract
         run: node scripts/verify-mobile-release-env.mjs
       - name: Recheck native Android source
@@ -63,6 +60,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Reconfirm exact-SHA gates before restoring signing credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-android-release-workflow-gate.mjs
       - name: Validate release inputs
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -74,11 +75,16 @@ jobs:
           FCM_PROJECT_ID: ${{ vars.FCM_PROJECT_ID || secrets.FCM_PROJECT_ID }}
           FCM_SERVICE_ACCOUNT_JSON: ${{ secrets.FCM_SERVICE_ACCOUNT_JSON }}
           INTEGRATIONS_ENCRYPTION_KEY: ${{ secrets.INTEGRATIONS_ENCRYPTION_KEY }}
+          INTEGRATIONS_ENCRYPTION_KEY_SHA256: ${{ vars.INTEGRATIONS_ENCRYPTION_KEY_SHA256 }}
           TWO_FACTOR_ENFORCEMENT: ${{ vars.TWO_FACTOR_ENFORCEMENT }}
           SUPER_APP_NATIVE_REQUIRED: ${{ vars.SUPER_APP_NATIVE_REQUIRED }}
           NATIVE_PUSH_ENVIRONMENT: ${{ vars.NATIVE_PUSH_ENVIRONMENT }}
           HR_DEVICE_BRIDGE: ${{ vars.HR_DEVICE_BRIDGE }}
           HR_DEVICE_PORT: ${{ vars.HR_DEVICE_PORT }}
+          HR_DEVICE_IP_ALLOWLIST: ${{ vars.HR_DEVICE_IP_ALLOWLIST }}
+          HR_DEVICE_SHARED_SECRET: ${{ secrets.HR_DEVICE_SHARED_SECRET }}
+          HR_DEVICE_IDENTITY_BINDINGS: ${{ secrets.HR_DEVICE_IDENTITY_BINDINGS }}
+          HR_DEVICE_LEGACY_IDENTITY_MIGRATION: ${{ vars.HR_DEVICE_LEGACY_IDENTITY_MIGRATION }}
           ALRUEYA_PROD_BASE_URL: ${{ vars.ALRUEYA_PROD_BASE_URL }}
         run: node scripts/verify-mobile-release-env.mjs --release
       - name: Restore signing and Firebase configuration
@@ -123,19 +129,26 @@ jobs:
           # positive verification marker instead of treating the expected trust warning as damage.
           jarsigner -verify -verbose -certs "$aab" > "$RUNNER_TEMP/aab-signature.txt"
           grep -Fq 'jar verified.' "$RUNNER_TEMP/aab-signature.txt"
-          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='5' versionName='1.0.0'"
+          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='6' versionName='1.0.0'"
           unzip -p "$apk" 'classes*.dex' > "$RUNNER_TEMP/native-classes.dex"
           grep -aFq 'https://srv1548487.hstgr.cloud' "$RUNNER_TEMP/native-classes.dex"
           actual="$("$apksigner_path" verify --print-certs "$apk" | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+          aab_actual="$(keytool -printcert -jarfile "$aab" | sed -n 's/^[[:space:]]*SHA256: //p' | head -n 1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
           expected="$(printf '%s' "$EXPECTED_UPLOAD_SHA256" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
           test -n "$actual"
+          test -n "$aab_actual"
           test "$actual" = "$expected"
+          test "$aab_actual" = "$expected"
       - name: Record checksums
         run: |
           sha256sum \
             android-native/app/build/outputs/bundle/prodRelease/app-prod-release.aab \
             android-native/app/build/outputs/apk/prod/release/app-prod-release.apk \
             > native-android-SHA256SUMS.txt
+      - name: Reconfirm exact-SHA gates before publishing artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-android-release-workflow-gate.mjs
       - name: Upload verified artifacts
         uses: actions/upload-artifact@v4
         with:

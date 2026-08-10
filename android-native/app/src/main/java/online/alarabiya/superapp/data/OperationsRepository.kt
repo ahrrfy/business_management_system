@@ -1,10 +1,14 @@
 package online.alarabiya.superapp.data
 
-import online.alarabiya.superapp.core.network.ApiException
 import online.alarabiya.superapp.core.network.TrpcClient
+import online.alarabiya.superapp.model.operations.AssetDepreciationResult
 import online.alarabiya.superapp.model.operations.AssetDetail
+import online.alarabiya.superapp.model.operations.AssetDisposalInput
+import online.alarabiya.superapp.model.operations.AssetDocument
+import online.alarabiya.superapp.model.operations.AssetFormOptions
 import online.alarabiya.superapp.model.operations.AssetStatus
 import online.alarabiya.superapp.model.operations.AssetSummary
+import online.alarabiya.superapp.model.operations.AssetUpsertInput
 import online.alarabiya.superapp.model.operations.ConsignmentNoteDetail
 import online.alarabiya.superapp.model.operations.ConsignmentNoteType
 import online.alarabiya.superapp.model.operations.ConsignmentPage
@@ -34,8 +38,17 @@ data class ConsignmentQuery(
 interface OperationsDataSource {
     suspend fun listAssets(query: AssetQuery): List<AssetSummary>
     suspend fun assetDetail(summary: AssetSummary): AssetDetail
-    suspend fun startWarrantyMaintenance(asset: AssetSummary, type: String, vendor: String?, note: String?, date: String?)
-    suspend fun returnFromMaintenance(asset: AssetSummary)
+    suspend fun assetFormOptions(): AssetFormOptions
+    suspend fun createAsset(input: AssetUpsertInput): AssetDetail
+    suspend fun updateAsset(asset: AssetSummary, input: AssetUpsertInput): AssetDetail
+    suspend fun handoverAsset(asset: AssetSummary, employeeId: Long, note: String?): AssetDetail
+    suspend fun releaseAssetCustody(asset: AssetSummary): AssetDetail
+    suspend fun disposeAsset(asset: AssetSummary, input: AssetDisposalInput): AssetDetail
+    suspend fun addAssetDocument(asset: AssetSummary, title: String, dataUrl: String): AssetDocument
+    suspend fun deleteAssetDocument(asset: AssetSummary, documentId: Long): Long
+    suspend fun postAssetDepreciation(year: Int, month: Int): AssetDepreciationResult
+    suspend fun startWarrantyMaintenance(asset: AssetSummary, type: String, vendor: String?, note: String?, date: String?): AssetDetail
+    suspend fun returnFromMaintenance(asset: AssetSummary): AssetDetail
     suspend fun myCommission(period: String? = null): MyCommissionStatus?
     suspend fun listConsignments(query: ConsignmentQuery): ConsignmentPage
     suspend fun consignmentDetail(summary: online.alarabiya.superapp.model.operations.ConsignmentNoteSummary): ConsignmentNoteDetail
@@ -59,12 +72,107 @@ class OperationsRepository(
 
     override suspend fun assetDetail(summary: AssetSummary): AssetDetail {
         requireAssetInScope(summary)
-        if (!scope.isAdmin) return OperationsMappers.scopedAssetDetail(summary)
         val detail = OperationsMappers.assetDetail(
             api.query("assets.get", JSONObject().put("id", summary.id)),
         )
-        require(detail.summary.id == summary.id) { "استجابة الأصل لا تطابق الطلب" }
+        require(detail.summary.id == summary.id && scope.acceptsBranch(detail.summary.branchId)) {
+            "استجابة الأصل خارج نطاق الفرع"
+        }
         return detail
+    }
+
+    override suspend fun assetFormOptions(): AssetFormOptions {
+        val options = OperationsMappers.assetFormOptions(api.query("assets.formOptions"))
+        val effectiveBranch = scope.effectiveBranch()
+        return options.copy(
+            employees = options.employees.filter { employee ->
+                effectiveBranch == null || employee.branchId == effectiveBranch
+            },
+            branches = options.branches.filter { branch ->
+                effectiveBranch == null || branch.id == effectiveBranch
+            },
+        )
+    }
+
+    override suspend fun createAsset(input: AssetUpsertInput): AssetDetail {
+        require(input.id == null) { "طلب إنشاء الأصل غير صالح" }
+        val scoped = input.copy(branchId = scope.effectiveBranch(input.branchId))
+        OperationsValidation.asset(scoped, scope)?.let { error(it) }
+        return OperationsMappers.assetDetail(api.mutate("assets.create", scoped.assetJson(includeId = false, includeCustodian = true)))
+            .also { requireAssetInScope(it.summary) }
+    }
+
+    override suspend fun updateAsset(asset: AssetSummary, input: AssetUpsertInput): AssetDetail {
+        requireAssetInScope(asset)
+        require(input.id == asset.id) { "طلب تعديل الأصل لا يطابق الأصل المحدد" }
+        require(asset.status != AssetStatus.Disposed) { "لا يمكن تعديل أصل مستبعد" }
+        val scoped = input.copy(branchId = scope.effectiveBranch(input.branchId))
+        OperationsValidation.asset(scoped, scope)?.let { error(it) }
+        return OperationsMappers.assetDetail(api.mutate("assets.update", scoped.assetJson(includeId = true, includeCustodian = false)))
+            .also { require(it.summary.id == asset.id); requireAssetInScope(it.summary) }
+    }
+
+    override suspend fun handoverAsset(asset: AssetSummary, employeeId: Long, note: String?): AssetDetail {
+        requireAssetInScope(asset)
+        require(employeeId > 0 && employeeId != asset.custodianId) { "اختر موظفاً مستلماً مختلفاً" }
+        val body = JSONObject().put("assetId", asset.id).put("employeeId", employeeId)
+        note?.trim()?.takeIf(String::isNotEmpty)?.let { body.put("note", it.take(500)) }
+        return OperationsMappers.assetDetail(api.mutate("assets.handover", body))
+            .also { require(it.summary.id == asset.id); requireAssetInScope(it.summary) }
+    }
+
+    override suspend fun releaseAssetCustody(asset: AssetSummary): AssetDetail {
+        requireAssetInScope(asset)
+        require(asset.custodianId != null) { "الأصل غير مسند بعهدة" }
+        return OperationsMappers.assetDetail(
+            api.mutate("assets.returnCustody", JSONObject().put("assetId", asset.id)),
+        )
+            .also { require(it.summary.id == asset.id); requireAssetInScope(it.summary) }
+    }
+
+    override suspend fun disposeAsset(asset: AssetSummary, input: AssetDisposalInput): AssetDetail {
+        requireAssetInScope(asset)
+        require(input.assetId == asset.id) { "طلب الاستبعاد لا يطابق الأصل المحدد" }
+        OperationsValidation.disposal(input)?.let { error(it) }
+        val body = JSONObject()
+            .put("assetId", asset.id)
+            .put("kind", input.status.wire)
+            .put("date", input.date)
+        input.reason?.trim()?.takeIf(String::isNotEmpty)?.let { body.put("reason", it.take(500)) }
+        input.value?.let { body.put("value", it) }
+        return OperationsMappers.assetDetail(api.mutate("assets.dispose", body))
+            .also { require(it.summary.id == asset.id); requireAssetInScope(it.summary) }
+    }
+
+    override suspend fun addAssetDocument(
+        asset: AssetSummary,
+        title: String,
+        dataUrl: String,
+    ): AssetDocument {
+        requireAssetInScope(asset)
+        val cleanTitle = title.trim()
+        require(cleanTitle.isNotEmpty() && cleanTitle.length <= 255) { "عنوان المستند مطلوب" }
+        require(dataUrl.length in 16..3_500_000 && dataUrl.startsWith("data:image/")) { "صورة المستند غير صالحة" }
+        return OperationsMappers.assetDocument(
+            api.mutate(
+                "assets.addDocument",
+                JSONObject().put("assetId", asset.id).put("title", cleanTitle).put("dataUrl", dataUrl),
+            ),
+        ).copy(dataUrl = dataUrl)
+    }
+
+    override suspend fun deleteAssetDocument(asset: AssetSummary, documentId: Long): Long {
+        requireAssetInScope(asset)
+        require(documentId > 0) { "المستند غير صالح" }
+        val result = api.mutate("assets.deleteDocument", JSONObject().put("docId", documentId))
+        return result.optLong("assetId", 0L).also { require(it == asset.id) { "استجابة حذف المستند لا تطابق الأصل" } }
+    }
+
+    override suspend fun postAssetDepreciation(year: Int, month: Int): AssetDepreciationResult {
+        require(year in 2000..2200 && month in 1..12) { "فترة الإهلاك غير صالحة" }
+        return OperationsMappers.depreciationResult(
+            api.mutate("assets.postDepreciation", JSONObject().put("year", year).put("month", month)),
+        )
     }
 
     override suspend fun startWarrantyMaintenance(
@@ -73,7 +181,7 @@ class OperationsRepository(
         vendor: String?,
         note: String?,
         date: String?,
-    ) {
+    ): AssetDetail {
         requireAssetInScope(asset)
         require(asset.status == AssetStatus.Active) { "الأصل ليس بالخدمة" }
         val cleanType = type.trim()
@@ -87,23 +195,22 @@ class OperationsRepository(
         vendor?.trim()?.takeIf(String::isNotEmpty)?.let { input.put("vendor", it.take(255)) }
         note?.trim()?.takeIf(String::isNotEmpty)?.let { input.put("note", it.take(500)) }
         date?.let { input.put("maintDate", it) }
-        api.mutate("assets.addMaintenance", input)
+        return OperationsMappers.assetDetail(api.mutate("assets.addMaintenance", input))
+            .also { require(it.summary.id == asset.id); requireAssetInScope(it.summary) }
     }
 
-    override suspend fun returnFromMaintenance(asset: AssetSummary) {
+    override suspend fun returnFromMaintenance(asset: AssetSummary): AssetDetail {
         requireAssetInScope(asset)
         require(asset.status == AssetStatus.Maintenance) { "الأصل ليس في الصيانة" }
-        api.mutate("assets.returnFromMaintenance", JSONObject().put("assetId", asset.id))
+        return OperationsMappers.assetDetail(
+            api.mutate("assets.returnFromMaintenance", JSONObject().put("assetId", asset.id)),
+        ).also { require(it.summary.id == asset.id); requireAssetInScope(it.summary) }
     }
 
     override suspend fun myCommission(period: String?): MyCommissionStatus? {
         val input = period?.takeIf(PERIOD::matches)?.let { JSONObject().put("period", it) }
-        return try {
-            OperationsMappers.myCommission(api.query("commissions.performance.myStatus", input))
-        } catch (error: ApiException) {
-            // myStatus يعيد null عند عدم وجود خطة، بينما عميل tRPC الحالي لا يدعم JSON null.
-            if (error.message == "استجابة الخادم غير مكتملة") null else throw error
-        }
+        val root = api.queryNullableObject("commissions.performance.myStatus", input) ?: return null
+        return OperationsMappers.myCommission(root)
     }
 
     override suspend fun listConsignments(query: ConsignmentQuery): ConsignmentPage {
@@ -173,6 +280,26 @@ class OperationsRepository(
     private fun requireAssetInScope(asset: AssetSummary) {
         require(asset.id > 0 && scope.acceptsBranch(asset.branchId)) { "الأصل خارج نطاق الفرع" }
     }
+
+    private fun AssetUpsertInput.assetJson(includeId: Boolean, includeCustodian: Boolean): JSONObject =
+        JSONObject().apply {
+            if (includeId) put("id", requireNotNull(id))
+            put("name", name.trim())
+            put("category", category.wire)
+            brand?.trim()?.takeIf(String::isNotEmpty)?.let { put("brand", it.take(255)) }
+            serial?.trim()?.takeIf(String::isNotEmpty)?.let { put("serial", it.take(255)) }
+            branchId?.let { put("branchId", it) }
+            location?.trim()?.takeIf(String::isNotEmpty)?.let { put("location", it.take(255)) }
+            if (includeCustodian) custodianId?.let { put("custodianId", it) }
+            supplierId?.let { put("supplierId", it) }
+            put("purchaseDate", purchaseDate)
+            put("purchaseValue", purchaseValue)
+            put("salvageValue", salvageValue)
+            put("usefulLifeYears", usefulLifeYears)
+            put("depreciationMethod", depreciationMethod.wire)
+            condition?.trim()?.takeIf(String::isNotEmpty)?.let { put("condition", it.take(255)) }
+            warrantyEnd?.let { put("warrantyEnd", it) }
+        }
 
     private companion object {
         val DATE = Regex("^\\d{4}-\\d{2}-\\d{2}$")

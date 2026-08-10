@@ -21,6 +21,8 @@ import androidx.compose.material.icons.automirrored.rounded.Assignment
 import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -70,6 +72,33 @@ fun CrmRoute(
             closeCustomerEditor = viewModel::closeCustomerEditor,
             saveCustomer = viewModel::saveCustomer,
             setCustomerActive = viewModel::setCustomerActive,
+            refreshDueFollowUps = viewModel::refreshDueFollowUps,
+            loadMoreDueFollowUps = viewModel::loadMoreDueFollowUps,
+            openFollowUpCustomer = viewModel::openFollowUpCustomer,
+            resolveDueFollowUp = viewModel::resolveDueFollowUp,
+            refreshCustomerOperations = viewModel::refreshCustomerOperations,
+            toggleResolvedFollowUps = viewModel::toggleResolvedFollowUps,
+            loadMoreCustomerFollowUps = viewModel::loadMoreCustomerFollowUps,
+            beginCreateFollowUp = viewModel::beginCreateFollowUp,
+            beginEditFollowUp = viewModel::beginEditFollowUp,
+            updateFollowUpDraft = viewModel::updateFollowUpDraft,
+            closeFollowUpEditor = viewModel::closeFollowUpEditor,
+            saveFollowUp = viewModel::saveFollowUp,
+            setFollowUpResolved = viewModel::setFollowUpResolved,
+            requestDeleteFollowUp = viewModel::requestDeleteFollowUp,
+            confirmDeleteFollowUp = viewModel::confirmDeleteFollowUp,
+            beginCreateContractPrice = viewModel::beginCreateContractPrice,
+            loadMoreContractPrices = viewModel::loadMoreContractPrices,
+            beginEditContractPrice = viewModel::beginEditContractPrice,
+            updateContractPriceDraft = viewModel::updateContractPriceDraft,
+            setContractCatalogQuery = viewModel::setContractCatalogQuery,
+            searchContractCatalog = viewModel::searchContractCatalog,
+            selectContractCatalogOption = viewModel::selectContractCatalogOption,
+            closeContractPriceEditor = viewModel::closeContractPriceEditor,
+            saveContractPrice = viewModel::saveContractPrice,
+            setContractPriceActive = viewModel::setContractPriceActive,
+            requestDeleteContractPrice = viewModel::requestDeleteContractPrice,
+            confirmDeleteContractPrice = viewModel::confirmDeleteContractPrice,
             setQuotationQuery = viewModel::setQuotationQuery,
             setQuotationFilter = viewModel::setQuotationFilter,
             searchQuotations = viewModel::searchQuotations,
@@ -118,9 +147,9 @@ fun CrmScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text("العلاقات والمبيعات", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("العملاء • عروض الأسعار • الحملات", color = MaterialTheme.colorScheme.onPrimary.copy(alpha = .72f))
+                    Text("العملاء • المتابعات • عروض الأسعار • الحملات", color = MaterialTheme.colorScheme.onPrimary.copy(alpha = .72f))
                 }
                 IconButton(
                     onClick = actions.refresh,
@@ -163,6 +192,7 @@ fun CrmScreen(
             }
             else -> when (state.section) {
                 CrmSection.Customers -> CustomersWorkspace(state, capabilities, actions)
+                CrmSection.FollowUps -> FollowUpsWorkspace(state, capabilities, actions)
                 CrmSection.Quotations -> QuotationsWorkspace(state, capabilities, actions)
                 CrmSection.Campaigns -> CampaignsWorkspace(state, capabilities, actions)
             }
@@ -185,6 +215,33 @@ data class CrmActions(
     val closeCustomerEditor: () -> Unit,
     val saveCustomer: () -> Unit,
     val setCustomerActive: (Boolean) -> Unit,
+    val refreshDueFollowUps: () -> Unit,
+    val loadMoreDueFollowUps: () -> Unit,
+    val openFollowUpCustomer: (Long) -> Unit,
+    val resolveDueFollowUp: (online.alarabiya.superapp.model.crm.CustomerFollowUp) -> Unit,
+    val refreshCustomerOperations: () -> Unit,
+    val toggleResolvedFollowUps: () -> Unit,
+    val loadMoreCustomerFollowUps: () -> Unit,
+    val beginCreateFollowUp: () -> Unit,
+    val beginEditFollowUp: (online.alarabiya.superapp.model.crm.CustomerFollowUp) -> Unit,
+    val updateFollowUpDraft: (online.alarabiya.superapp.model.crm.CustomerFollowUpDraft) -> Unit,
+    val closeFollowUpEditor: () -> Unit,
+    val saveFollowUp: () -> Unit,
+    val setFollowUpResolved: (online.alarabiya.superapp.model.crm.CustomerFollowUp, Boolean) -> Unit,
+    val requestDeleteFollowUp: (Long?) -> Unit,
+    val confirmDeleteFollowUp: () -> Unit,
+    val beginCreateContractPrice: () -> Unit,
+    val loadMoreContractPrices: () -> Unit,
+    val beginEditContractPrice: (online.alarabiya.superapp.model.crm.CustomerContractPrice) -> Unit,
+    val updateContractPriceDraft: (online.alarabiya.superapp.model.crm.CustomerContractPriceDraft) -> Unit,
+    val setContractCatalogQuery: (String) -> Unit,
+    val searchContractCatalog: () -> Unit,
+    val selectContractCatalogOption: (online.alarabiya.superapp.model.crm.CatalogOption) -> Unit,
+    val closeContractPriceEditor: () -> Unit,
+    val saveContractPrice: () -> Unit,
+    val setContractPriceActive: (online.alarabiya.superapp.model.crm.CustomerContractPrice, Boolean) -> Unit,
+    val requestDeleteContractPrice: (Long?) -> Unit,
+    val confirmDeleteContractPrice: () -> Unit,
     val setQuotationQuery: (String) -> Unit,
     val setQuotationFilter: (online.alarabiya.superapp.model.crm.QuotationStatus?) -> Unit,
     val searchQuotations: () -> Unit,
@@ -241,6 +298,26 @@ internal fun EmptyCrmState(text: String) {
 }
 
 @Composable
+internal fun CrmRetryGate(
+    title: String,
+    retryEnabled: Boolean,
+    onRetry: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Button(
+            onClick = onRetry,
+            enabled = retryEnabled,
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+        ) { Text("إعادة المحاولة") }
+    }
+}
+
+@Composable
 private fun InlineCrmMessage(text: String, error: Boolean) {
     Text(
         text,
@@ -276,6 +353,7 @@ internal fun launchExternalWhatsApp(context: Context, rawPhone: String?, message
 private val CrmSection.label: String
     get() = when (this) {
         CrmSection.Customers -> "العملاء"
+        CrmSection.FollowUps -> "المتابعات"
         CrmSection.Quotations -> "عروض الأسعار"
         CrmSection.Campaigns -> "الحملات"
     }
@@ -283,6 +361,7 @@ private val CrmSection.label: String
 private val CrmSection.icon: ImageVector
     get() = when (this) {
         CrmSection.Customers -> Icons.Rounded.Groups
+        CrmSection.FollowUps -> Icons.Rounded.Schedule
         CrmSection.Quotations -> Icons.AutoMirrored.Rounded.Assignment
         CrmSection.Campaigns -> Icons.Rounded.Campaign
     }

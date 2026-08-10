@@ -25,6 +25,17 @@ export type TrpcContext = {
   platformAdmin: PlatformAdmin | null;
 };
 
+/** Normalize the one persisted company owner to the effective admin contract. */
+export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
+  if (!user.isOwner) return user;
+  user.role = "admin" as User["role"];
+  user.permissionsOverride = null;
+  user.customRoleLabel = null;
+  user.customRoleKey = null;
+  user.roleLockedByInactiveCustomRole = false;
+  return user;
+}
+
 /**
  * يحلّ الدور المخصّص (إن وُجد) إلى آلية الصلاحيات القائمة:
  *  role ← baseRole (للبوّابات الخشنة + قاعدة requireModule)،
@@ -71,7 +82,15 @@ export async function createContext(
     const sessionCtx = await getSessionContext(opts.req);
     user = sessionCtx.user as AuthUser | null;
     sessionId = sessionCtx.sessionId;
-    if (user) await resolveCustomRole(user);
+    if (user?.isOwner) {
+      // The persisted owner flag is the system authority invariant. Normalize
+      // the request context before any router/middleware sees it so a stale
+      // base/custom role or restrictive override cannot split owner access
+      // between the mobile BFF and the underlying operational APIs.
+      normalizeOwnerAuthority(user);
+    } else if (user) {
+      await resolveCustomRole(user);
+    }
   } catch {
     user = null;
     sessionId = null;

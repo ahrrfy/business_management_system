@@ -8,15 +8,28 @@
 import { logger } from "../../logger";
 import { foldSoon } from "./attendanceFold";
 import { completeInflight, pumpCommands, requeueInflight, requeueStaleSentCommands } from "./commands";
-import { registerLink, removeLink, resolveDeviceBySn, touchDevice } from "./registry";
+import {
+  enabledDeviceIdentityRuntimeFailure,
+  registerLink,
+  removeLink,
+  resolveDeviceBySn,
+  touchDevice,
+} from "./registry";
 import { ingestPunches, upsertDeviceUser } from "./punchStore";
 import type { DeviceLink, DeviceRow, RawPunch } from "./types";
 import { baghdadNow } from "./types";
+import {
+  authorizeDeviceIdentity,
+  resolveBridgeSecurityConfig,
+  type BridgeSecurityConfig,
+} from "./bridgeSecurity";
 
 export interface AifaceTransport {
   sendText: (text: string) => void;
   close: () => void;
   remote?: string;
+  deviceCredential?: string;
+  securityConfig?: BridgeSecurityConfig;
 }
 
 export interface AifaceSession {
@@ -70,6 +83,7 @@ function pickNumber(o: Record<string, unknown>, keys: string[]): number | undefi
 export function createAifaceSession(transport: AifaceTransport): AifaceSession {
   let device: DeviceRow | null = null;
   let link: DeviceLink | null = null;
+  const securityConfig = transport.securityConfig ?? resolveBridgeSecurityConfig();
 
   const send = (obj: Record<string, unknown>) => {
     try {
@@ -81,13 +95,39 @@ export function createAifaceSession(transport: AifaceTransport): AifaceSession {
 
   async function onReg(msg: Record<string, unknown>): Promise<void> {
     const sn = String(msg.sn ?? "").trim();
-    const row = sn ? await resolveDeviceBySn(sn, "AIFACE_WS") : null;
+    const validSn = /^[A-Za-z0-9._:-]{1,64}$/.test(sn);
+    const row = validSn ? await resolveDeviceBySn(sn, "AIFACE_WS", transport.remote) : null;
     if (!row || !row.enabled) {
       // مجهول أو غير معتمد: يُرفض التسجيل (الصف أُنشئ معطَّلاً ليعتمده المدير من الشاشة).
       send({ ret: "reg", result: false, reason: 1 });
       logger.warn({ sn, remote: transport.remote }, "hrDevices/aiface: رفض تسجيل جهاز غير معتمد");
       transport.close();
       return;
+    }
+    const runtimeIdentityFailure = await enabledDeviceIdentityRuntimeFailure(securityConfig);
+    if (runtimeIdentityFailure) {
+      send({ ret: "reg", result: false, reason: 2 });
+      logger.error({ decision: "IDENTITY_PREFLIGHT_FAILED" }, "hrDevices/aiface: تدقيق هوية الأجهزة غير جاهز");
+      transport.close();
+      return;
+    }
+    const identity = authorizeDeviceIdentity(
+      row,
+      sn,
+      { remoteAddress: transport.remote, credential: transport.deviceCredential ?? "" },
+      securityConfig,
+    );
+    if (!identity.authorized) {
+      send({ ret: "reg", result: false, reason: 2 });
+      logger.warn(
+        { sn, remote: transport.remote, decision: identity.decision },
+        "hrDevices/aiface: رفض هوية جهاز لا تطابق الربط المعتمد",
+      );
+      transport.close();
+      return;
+    }
+    if (identity.decision === "LEGACY_MIGRATION") {
+      logger.warn({ sn, remote: transport.remote }, "hrDevices/aiface: قبول مؤقت بوضع هجرة الهوية القديمة");
     }
     const devinfo = (msg.devinfo && typeof msg.devinfo === "object" ? msg.devinfo : {}) as Record<string, unknown>;
     device = row;
@@ -225,6 +265,13 @@ export function createAifaceSession(transport: AifaceTransport): AifaceSession {
         const parsed = JSON.parse(text) as unknown;
         if (!parsed || typeof parsed !== "object") return;
         msg = parsed as Record<string, unknown>;
+        // دفعة غير منطقية قد تحجز الذاكرة/قاعدة البيانات طويلاً؛ إغلاق الوصلة بلا إقرار
+        // يجعل الجهاز يعيد إرسالها بعد الاتصال بدلاً من إسقاط سجلات بصمت.
+        if (Array.isArray(msg.record) && msg.record.length > 20_000) {
+          logger.warn({ count: msg.record.length, remote: transport.remote }, "hrDevices/aiface: دفعة تتجاوز الحد");
+          transport.close();
+          return;
+        }
       } catch {
         logger.warn({ sample: text.slice(0, 120), remote: transport.remote }, "hrDevices/aiface: رسالة غير JSON");
         return;

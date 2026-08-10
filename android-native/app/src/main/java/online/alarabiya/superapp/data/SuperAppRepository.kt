@@ -25,7 +25,7 @@ class SuperAppRepository(
     private val sessionStore: SecureSessionStore,
     private val beforeLogout: suspend () -> Boolean = { true },
 ) {
-    @Volatile private var singleTenantContractConfirmed = false
+    @Volatile private var tenancyMode: TenancyMode? = null
 
     fun hasSession(): Boolean = !sessionStore.loadCookie().isNullOrBlank()
     fun isBiometricEnabled(): Boolean = sessionStore.isBiometricEnabled()
@@ -36,27 +36,38 @@ class SuperAppRepository(
     }?.takeIf { it.isNotBlank() }
 
     fun cachedUser(): UserIdentity? = sessionStore.loadUserSnapshot()?.let { snapshot ->
-        runCatching { parseLoginUser(JSONObject(snapshot)) }.getOrNull()
+        runCatching { parseUserIdentity(JSONObject(snapshot)) }.getOrNull()
     }
 
-    suspend fun verifyRuntimeContract() = ensureSingleTenantContract()
+    suspend fun verifyRuntimeContract(): TenancyMode = resolveTenancyMode()
 
-    suspend fun login(identifier: String, password: String, remember: Boolean): LoginOutcome {
-        ensureSingleTenantContract()
+    suspend fun login(
+        identifier: String,
+        password: String,
+        remember: Boolean,
+        companyCode: String? = null,
+    ): LoginOutcome {
+        val mode = resolveTenancyMode()
+        val cleanCompanyCode = companyCode?.trim()?.takeIf { it.isNotEmpty() }
+        if (mode.companyCodeRequired && cleanCompanyCode == null) {
+            throw ApiException(
+                message = "رمز الشركة مطلوب",
+                code = "BAD_REQUEST",
+                appCode = "COMPANY_CODE_REQUIRED",
+            )
+        }
+        val input = buildLoginInput(identifier, password, remember, cleanCompanyCode)
         val json = api.mutate(
             "auth.login",
-            JSONObject()
-                .put("identifier", identifier.trim())
-                .put("password", password)
-                .put("remember", remember),
+            input,
         )
         if (json.optBoolean("requiresTwoFactor")) {
             return LoginOutcome.TwoFactorRequired(json.getString("ticket"))
         }
-        return LoginOutcome.Success(parseLoginUser(json).also(::cacheUser))
+        return LoginOutcome.Success(parseUserIdentity(json).also(::cacheUser))
     }
 
-    suspend fun currentUser(): UserIdentity = parseLoginUser(api.query("auth.me")).also(::cacheUser)
+    suspend fun currentUser(): UserIdentity = parseUserIdentity(api.query("auth.me")).also(::cacheUser)
 
     suspend fun changePassword(oldPassword: String, newPassword: String) {
         api.mutate(
@@ -106,7 +117,7 @@ class SuperAppRepository(
         val input = JSONObject().put("ticket", ticket)
         if (clean.length == 6 && clean.all(Char::isDigit)) input.put("code", clean)
         else input.put("recoveryCode", clean)
-        val user = parseLoginUser(api.mutate("auth.twoFactorVerify", input))
+        val user = parseUserIdentity(api.mutate("auth.twoFactorVerify", input))
         cacheUser(user)
         return LoginOutcome.Success(user)
     }
@@ -121,31 +132,7 @@ class SuperAppRepository(
     }
 
     private fun parseBootstrap(root: JSONObject): AppBootstrap {
-        val userJson = root.getJSONObject("user")
-        val user = UserIdentity(
-            id = userJson.getLong("id"),
-            name = userJson.optString("name"),
-            username = null,
-            email = null,
-            role = userJson.getString("role"),
-            roleLabel = userJson.optString("roleLabel", userJson.getString("role")),
-        )
-        cacheUser(user)
-        val scope = root.optJSONObject("scope") ?: JSONObject()
-        val capabilities = root.optJSONObject("capabilities") ?: JSONObject()
-        return AppBootstrap(
-            user = user,
-            modules = root.optJSONArray("modules").objects().map { item ->
-                ModuleAccess(
-                    key = item.getString("key"),
-                    label = item.getString("label"),
-                    access = item.getString("access"),
-                )
-            },
-            branchId = scope.nullableLong("branchId"),
-            allBranches = scope.optBoolean("allBranches"),
-            hasPersonalWorkspace = capabilities.optBoolean("hasPersonalWorkspace", false),
-        )
+        return parseBootstrapContract(root).also { cacheUser(it.user) }
     }
 
     suspend fun loadWorkspace(): PersonalWorkspace {
@@ -161,12 +148,7 @@ class SuperAppRepository(
     }
 
     fun loadCachedHome(): Pair<AppBootstrap, PersonalWorkspace>? {
-        val bootstrapEnvelope = sessionStore.loadBootstrapSnapshot()?.let { snapshot ->
-            runCatching { JSONObject(snapshot) }.getOrNull()
-        } ?: return null
-        if (!CachedSnapshotPolicy.isFresh(bootstrapEnvelope, System.currentTimeMillis())) return null
-        val bootstrapRoot = bootstrapEnvelope.optJSONObject("payload") ?: return null
-        val bootstrap = runCatching { parseBootstrap(bootstrapRoot) }.getOrNull() ?: return null
+        val bootstrap = loadCachedBootstrap() ?: return null
         val workspaceEnvelope = sessionStore.loadWorkspaceSnapshot()?.let { snapshot ->
             runCatching { JSONObject(snapshot) }.getOrNull()
         } ?: return null
@@ -175,6 +157,15 @@ class SuperAppRepository(
         val workspaceRoot = workspaceEnvelope.optJSONObject("payload") ?: return null
         val workspace = runCatching { parseWorkspace(workspaceRoot) }.getOrNull() ?: return null
         return bootstrap to workspace
+    }
+
+    fun loadCachedBootstrap(): AppBootstrap? {
+        val bootstrapEnvelope = sessionStore.loadBootstrapSnapshot()?.let { snapshot ->
+            runCatching { JSONObject(snapshot) }.getOrNull()
+        } ?: return null
+        if (!CachedSnapshotPolicy.isFresh(bootstrapEnvelope, System.currentTimeMillis())) return null
+        val bootstrapRoot = bootstrapEnvelope.optJSONObject("payload") ?: return null
+        return runCatching { parseBootstrap(bootstrapRoot) }.getOrNull()
     }
 
     private fun parseWorkspace(root: JSONObject): PersonalWorkspace {
@@ -258,50 +249,93 @@ class SuperAppRepository(
 
     fun clearLocalSession() = api.clearSession()
 
-    private fun parseLoginUser(item: JSONObject) = UserIdentity(
-        id = item.getLong("id"),
-        name = item.optString("name"),
-        username = item.nullableString("username"),
-        email = item.nullableString("email"),
-        role = item.optString("role"),
-        roleLabel = item.optString("roleLabel", item.optString("role")),
-        mustChangePassword = item.optBoolean("mustChangePassword"),
-        mustEnrollTwoFactor = when {
-            item.has("mustEnrollTwoFactor") -> item.optBoolean("mustEnrollTwoFactor")
-            else -> item.optBoolean("mustEnroll2FA")
-        },
-    )
-
     private fun cacheUser(user: UserIdentity) {
-        sessionStore.saveUserSnapshot(
-            JSONObject()
-                .put("id", user.id)
-                .put("name", user.name)
-                .put("username", user.username ?: JSONObject.NULL)
-                .put("email", user.email ?: JSONObject.NULL)
-                .put("role", user.role)
-                .put("roleLabel", user.roleLabel)
-                .put("mustChangePassword", user.mustChangePassword)
-                .put("mustEnrollTwoFactor", user.mustEnrollTwoFactor)
-                .toString(),
-        )
+        sessionStore.saveUserSnapshot(encodeUserIdentity(user).toString())
     }
 
-    private suspend fun ensureSingleTenantContract() {
-        if (singleTenantContractConfirmed) return
+    private suspend fun resolveTenancyMode(): TenancyMode {
+        tenancyMode?.let { return it }
         val mode = api.query("auth.tenancyMode")
-        val multiTenant = mode.optBoolean("multiTenant", true)
-        val explicitMode = mode.optString("mode")
-        if (multiTenant || (explicitMode.isNotBlank() && explicitMode != "single")) {
-            throw ApiException(
-                message = "هذا الإصدار مخصص لبيئة شركة واحدة. حدّث التطبيق أو راجع مسؤول النظام.",
-                code = "PRECONDITION_FAILED",
-                appCode = "UNSUPPORTED_TENANCY_MODE",
-            )
-        }
-        singleTenantContractConfirmed = true
+        val resolved = TenancyMode.fromJson(mode)
+        tenancyMode = resolved
+        return resolved
     }
 }
+
+internal fun parseUserIdentity(item: JSONObject) = UserIdentity(
+    id = item.getLong("id"),
+    name = item.optString("name"),
+    username = item.nullableString("username"),
+    email = item.nullableString("email"),
+    role = item.optString("role"),
+    roleLabel = item.optString("roleLabel", item.optString("role")),
+    mustChangePassword = item.optBoolean("mustChangePassword"),
+    mustEnrollTwoFactor = when {
+        item.has("mustEnrollTwoFactor") -> item.optBoolean("mustEnrollTwoFactor")
+        else -> item.optBoolean("mustEnroll2FA")
+    },
+    isOwner = item.optBoolean("isOwner", false),
+)
+
+internal fun encodeUserIdentity(user: UserIdentity) = JSONObject()
+    .put("id", user.id)
+    .put("name", user.name)
+    .put("username", user.username ?: JSONObject.NULL)
+    .put("email", user.email ?: JSONObject.NULL)
+    .put("role", user.role)
+    .put("roleLabel", user.roleLabel)
+    .put("mustChangePassword", user.mustChangePassword)
+    .put("mustEnrollTwoFactor", user.mustEnrollTwoFactor)
+    .put("isOwner", user.isOwner)
+
+internal fun parseBootstrapContract(root: JSONObject): AppBootstrap {
+    val userJson = root.getJSONObject("user")
+    val user = parseUserIdentity(userJson)
+    val scope = root.optJSONObject("scope") ?: JSONObject()
+    val capabilities = root.optJSONObject("capabilities") ?: JSONObject()
+    return AppBootstrap(
+        user = user,
+        modules = root.optJSONArray("modules").objects().map { item ->
+            ModuleAccess(item.getString("key"), item.getString("label"), item.getString("access"))
+        },
+        branchId = scope.nullableLong("branchId"),
+        allBranches = scope.optBoolean("allBranches"),
+        hasPersonalWorkspace = capabilities.optBoolean("hasPersonalWorkspace", false),
+        canSeeCost = capabilities.optBoolean("canSeeCost", false),
+        canViewReports = capabilities.optBoolean("canViewReports", false),
+        isExecutive = capabilities.optBoolean("isExecutive", false),
+        roleDegraded = capabilities.optBoolean("roleDegraded", false),
+        isOwner = capabilities.optBoolean("isOwner", user.isOwner),
+    )
+}
+
+data class TenancyMode(
+    val multiTenant: Boolean,
+    val companyCodeRequired: Boolean,
+) {
+    companion object {
+        internal fun fromJson(mode: JSONObject): TenancyMode {
+            val multiTenantFlag = mode.optBoolean("multiTenant", true)
+            val explicitMode = mode.optString("mode")
+            val multiTenant = multiTenantFlag || explicitMode == "multi"
+            return TenancyMode(
+                multiTenant = multiTenant,
+                companyCodeRequired = mode.optBoolean("companyCodeRequired", multiTenant),
+            )
+        }
+    }
+}
+
+internal fun buildLoginInput(
+    identifier: String,
+    password: String,
+    remember: Boolean,
+    companyCode: String?,
+): JSONObject = JSONObject()
+    .put("identifier", identifier.trim())
+    .put("password", password)
+    .put("remember", remember)
+    .also { input -> companyCode?.trim()?.takeIf { it.isNotEmpty() }?.let { input.put("companyCode", it) } }
 
 internal object CachedSnapshotPolicy {
     private const val MAX_AGE_MS = 24L * 60L * 60L * 1_000L

@@ -22,6 +22,14 @@ class PurchasingViewModel(
     private val source: PurchasingDataSource,
     val capabilities: PurchasingCapabilities,
 ) : ViewModel() {
+    private sealed interface PendingDetail {
+        data class Order(val id: Long) : PendingDetail
+        data class Supplier(val id: Long) : PendingDetail
+    }
+
+    private var pendingExecutivePayablesRefresh = false
+    private var pendingDetail: PendingDetail? = null
+
     var state by mutableStateOf(PurchasingUiState(capabilities.visibleSections.first()))
         private set
 
@@ -51,7 +59,20 @@ class PurchasingViewModel(
                 reminderHistory = (result[5]?.getOrNull() as? List<online.alarabiya.superapp.model.purchasing.ReminderHistoryItem>) ?: state.reminderHistory,
                 error = error?.let(::userMessage),
             )
+            if (pendingExecutivePayablesRefresh) {
+                pendingExecutivePayablesRefresh = false
+                search()
+            } else {
+                drainPendingDetail()
+            }
         }
+    }
+
+    fun applyNavigationArguments(arguments: Map<String, String>) {
+        if (arguments["view"] != "payables" || PurchasingSection.REMINDERS !in capabilities.visibleSections) return
+        val next = state.applyExecutiveNavigation(arguments, capabilities.visibleSections)
+        state = next
+        if (state.locked) pendingExecutivePayablesRefresh = true else search()
     }
 
     fun selectSection(section: PurchasingSection) { if (section in capabilities.visibleSections) state = state.switchTo(section) }
@@ -68,10 +89,31 @@ class PurchasingViewModel(
         }
     }
 
-    fun selectOrder(id: Long) = launch("order:$id") { state = state.copy(selectedOrder = source.order(id), selectedSupplier = null) }
+    fun selectOrder(id: Long) {
+        if (state.locked) {
+            pendingDetail = PendingDetail.Order(id)
+            return
+        }
+        launch("order:$id") { state = state.copy(selectedOrder = source.order(id), selectedSupplier = null) }
+    }
     fun closeOrder() { state = state.copy(selectedOrder = null) }
-    fun selectSupplier(id: Long) = launch("supplier:$id") { state = state.copy(selectedSupplier = source.supplier(id), selectedOrder = null) }
+    fun selectSupplier(id: Long) {
+        if (state.locked) {
+            pendingDetail = PendingDetail.Supplier(id)
+            return
+        }
+        launch("supplier:$id") { state = state.copy(selectedSupplier = source.supplier(id), selectedOrder = null) }
+    }
     fun closeSupplier() { state = state.copy(selectedSupplier = null) }
+    fun consumeBack(): Boolean {
+        if (pendingDetail != null) {
+            pendingDetail = null
+            return true
+        }
+        val next = state.popNestedNavigation() ?: return false
+        state = next
+        return true
+    }
     fun loadCatalog(branchId: Long) = launch("catalog:$branchId") { state = state.copy(catalog = source.catalog(branchId)) }
 
     fun createSupplier(draft: SupplierDraft) = launch("supplier:create", "تم حفظ المورد") {
@@ -151,8 +193,28 @@ class PurchasingViewModel(
             runCatching { block() }
                 .onSuccess { state = state.succeed(success) }
                 .onFailure { state = state.fail(userMessage(it)) }
+            if (pendingExecutivePayablesRefresh) {
+                pendingExecutivePayablesRefresh = false
+                search()
+            } else {
+                drainPendingDetail()
+            }
         }
     }
+
+    private fun drainPendingDetail() {
+        when (val pending = pendingDetail ?: return) {
+            is PendingDetail.Order -> {
+                pendingDetail = null
+                selectOrder(pending.id)
+            }
+            is PendingDetail.Supplier -> {
+                pendingDetail = null
+                selectSupplier(pending.id)
+            }
+        }
+    }
+
     private fun userMessage(error: Throwable) = error.message?.takeIf(String::isNotBlank) ?: "تعذر إكمال العملية"
 }
 

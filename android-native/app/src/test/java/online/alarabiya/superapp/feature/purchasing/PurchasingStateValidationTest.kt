@@ -13,6 +13,9 @@ import online.alarabiya.superapp.model.purchasing.PurchasingSection
 import online.alarabiya.superapp.model.purchasing.PurchasingValidation
 import online.alarabiya.superapp.model.purchasing.ReceiveLineDraft
 import online.alarabiya.superapp.model.purchasing.ReturnSettlement
+import online.alarabiya.superapp.model.purchasing.SupplierDetail
+import online.alarabiya.superapp.model.purchasing.SupplierKind
+import online.alarabiya.superapp.model.purchasing.SupplierSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -72,5 +75,31 @@ class PurchasingStateValidationTest {
         val busy = requireNotNull(state.start("load"))
         assertNull(busy.start("duplicate"))
         assertEquals(PurchasingSection.SUPPLIERS, busy.succeed().switchTo(PurchasingSection.SUPPLIERS).section)
+    }
+
+    @Test
+    fun `nested back clears compact order and supplier before leaving purchasing`() {
+        val order = PurchaseOrderDetail(
+            PurchaseOrderSummary(
+                1, "PO-1", null, 2, "مورد", 7, null, null, null, null,
+                online.alarabiya.superapp.model.purchasing.Currency.IQD,
+                null, null, null, null, PurchaseStatus.DRAFT,
+            ),
+            null, null, null, null, emptyList(),
+        )
+        val supplier = SupplierDetail(
+            SupplierSummary(
+                2, "مورد", null, null, null, null, null, null, null,
+                SupplierKind.REGULAR, true,
+            ),
+            null, null, null, null, null, null, null, null, null, null, null, null,
+        )
+
+        val orderParent = PurchasingUiState(PurchasingSection.ORDERS, selectedOrder = order).popNestedNavigation()
+        val supplierParent = PurchasingUiState(PurchasingSection.SUPPLIERS, selectedSupplier = supplier).popNestedNavigation()
+
+        assertNull(requireNotNull(orderParent).selectedOrder)
+        assertNull(requireNotNull(supplierParent).selectedSupplier)
+        assertNull(PurchasingUiState(PurchasingSection.ORDERS).popNestedNavigation())
     }
 }

@@ -58,7 +58,71 @@ data class HrAdminCapabilities(
     }
 }
 
-enum class HrAdminSection { EMPLOYEES, PAYROLL, LEAVES, RECRUITMENT }
+enum class HrAdminSection {
+    EMPLOYEES,
+    ATTENDANCE,
+    DEVICES,
+    PAYROLL,
+    ADVANCES,
+    PROMOTIONS,
+    LEAVES,
+    RECRUITMENT,
+}
+
+data class AttendanceEntry(
+    val id: Long,
+    val employeeName: String,
+    val attendanceDate: String,
+    val checkIn: String?,
+    val checkOut: String?,
+    val hours: String,
+    val status: String,
+    val source: String,
+)
+
+data class AttendancePage(
+    val rows: List<AttendanceEntry>,
+    val total: Int,
+    val totalHours: String,
+)
+
+data class FingerprintDevice(
+    val id: Long,
+    val name: String,
+    val branchName: String?,
+    val location: String?,
+    val serialNumber: String?,
+    val protocol: String?,
+    val status: String,
+    val lastSeenAt: String?,
+    val receivedPunches: Int,
+    val pendingPunches: Int,
+) {
+    val online: Boolean get() = status.equals("online", ignoreCase = true)
+}
+
+data class EmployeeAdvance(
+    val id: Long,
+    val employeeId: Long,
+    val employeeName: String,
+    val amount: String,
+    val remainingAmount: String,
+    val monthlyDeduction: String?,
+    val status: String,
+    val grantedAt: String?,
+)
+
+data class EmployeePromotion(
+    val id: Long,
+    val employeeId: Long,
+    val employeeName: String,
+    val fromTitle: String?,
+    val toTitle: String?,
+    val fromSalary: String?,
+    val toSalary: String?,
+    val effectiveDate: String,
+    val status: String,
+)
 
 enum class EmploymentStatus(val wire: String) {
     ACTIVE("active"),
@@ -114,6 +178,33 @@ object HrAdminPolicies {
 }
 
 data class HrEmployeePage(val rows: List<HrEmployee>, val total: Int)
+
+data class HrLinkableUser(val id: Long, val name: String, val identifier: String, val role: String)
+
+data class CreateEmployeeAccountCommand(
+    val name: String,
+    val email: String?,
+    val username: String?,
+    val temporaryPassword: String,
+    val role: String,
+    val branchId: Long?,
+)
+
+data class IncomeTaxBracket(val upTo: String?, val rate: String)
+
+data class PayrollLegalSettings(
+    val socialSecurityEnabled: Boolean,
+    val socialSecurityEmployeeRate: String,
+    val socialSecurityEmployerRate: String,
+    val socialSecurityBase: String,
+    val incomeTaxEnabled: Boolean,
+    val incomeTaxBrackets: List<IncomeTaxBracket>,
+    val incomeTaxExemption: String,
+    val endOfServiceEnabled: Boolean,
+    val endOfServiceDaysPerYear: String,
+    val updatedBy: Long?,
+    val updatedAt: String?,
+)
 
 enum class PayrollStatus(val wire: String) {
     DRAFT("draft"),

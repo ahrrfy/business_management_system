@@ -175,24 +175,30 @@ private fun CountsPane(state: WarehouseToolsUiState, actions: WarehouseToolsView
     if (session == null) {
         LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
             item { SectionTitle("تكليفاتي", "جلسات USER المسندة إلى حسابك", Icons.AutoMirrored.Rounded.FactCheck) }
+            if (!state.assignmentsFresh && !state.initializing) {
+                item { Info("يلزم تحديث التكليفات بنجاح قبل فتح جلسة أو تسجيل حركة.") }
+                item { Button(actions::initialize, Modifier.fillMaxWidth()) { Text("إعادة المحاولة") } }
+            }
             if (state.assignments.isEmpty()) item { Empty("لا توجد جلسات عد مسندة للحساب") }
-            items(state.assignments, key = { it.assignmentId }) { assignment -> AssignmentCard(assignment) { actions.selectAssignment(assignment) } }
+            items(state.assignments, key = { it.assignmentId }) { assignment ->
+                AssignmentCard(assignment, canOpenWarehouseAssignment(state)) { actions.selectAssignment(assignment) }
+            }
         }
         return
     }
     val list: @Composable () -> Unit = { CountItems(state, actions) }
-    val detail: @Composable () -> Unit = { state.selectedItem?.let { CountEditor(session, it, requireNotNull(state.countDraft), actions) } ?: CountSummary(session, state.pending, actions) }
+    val detail: @Composable () -> Unit = { state.selectedItem?.let { CountEditor(state, session, it, requireNotNull(state.countDraft), actions) } ?: CountSummary(state, session, actions) }
     if (tablet) Row(Modifier.fillMaxSize().padding(18.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) { Box(Modifier.weight(.9f)) { list() }; Box(Modifier.weight(1.1f)) { detail() } }
     else if (state.selectedItem != null) Box(Modifier.fillMaxSize().padding(18.dp)) { detail() } else list()
 }
 
 @Composable
-private fun AssignmentCard(value: CountAssignment, open: () -> Unit) {
+private fun AssignmentCard(value: CountAssignment, enabled: Boolean, open: () -> Unit) {
     CurvedCard(if (value.status == "ACTIVE") WarehouseBlue else Color.Gray) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(value.sessionCode, fontWeight = FontWeight.Bold); Pill(if (value.status == "ACTIVE") "نشط" else "مسلّم", if (value.status == "ACTIVE") WarehouseTeal else Color.Gray) }
         Text(value.sessionName, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Text(listOfNotNull(value.zone, compact(value.lastActivityAt)).joinToString(" · "), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        TextButton(open, Modifier.align(Alignment.End)) { Text("فتح بوابة العد") }
+        TextButton(open, Modifier.align(Alignment.End), enabled = enabled) { Text("فتح بوابة العد") }
     }
 }
 
@@ -209,19 +215,21 @@ private fun CountItems(state: WarehouseToolsUiState, actions: WarehouseToolsView
         items(rows, key = { it.variantId }) { item -> CurvedCard(if (item.myCount != null) WarehouseTeal else if (item.recountReason != null) WarehouseAmber else WarehouseBlue) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(item.label, Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis); item.myCount?.let { Pill(it.quantity.toString(), WarehouseTeal) } }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { if (item.recountReason != null) Pill("إعادة عد", WarehouseAmber); if (item.colleagueCounted) Pill("معدود من زميل", WarehouseBlue) }
-            TextButton({ actions.beginCount(item) }, Modifier.align(Alignment.End), enabled = session.canCount(item)) { Text(if (item.myCount == null) "تسجيل العد" else "تعديل عدّي") }
+            TextButton({ actions.beginCount(item) }, Modifier.align(Alignment.End), enabled = canBeginWarehouseCount(state, item)) { Text(if (item.myCount == null) "تسجيل العد" else "تعديل عدّي") }
         } }
     }
 }
 
 @Composable
-private fun CountSummary(session: CountSession, pending: List<PendingCount>, actions: WarehouseToolsViewModel) {
+private fun CountSummary(state: WarehouseToolsUiState, session: CountSession, actions: WarehouseToolsViewModel) {
     var confirmFinish by remember(session.code) { mutableStateOf(false) }
+    val pending = state.pending
     LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { SectionTitle("ملخص العد", session.code, Icons.Rounded.Inventory) }
         item { CurvedCard(WarehouseTeal) { Text("تقدمي", color = MaterialTheme.colorScheme.onSurfaceVariant); Text("${session.mineCounted} / ${session.mineTotal}", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold); Text("الجلسة ${session.sessionCounted} / ${session.sessionTotal}") } }
         if (pending.isNotEmpty()) item { Info("توجد ${pending.count { it.status == PendingCountStatus.QUEUED }} عدّات مشفرة بانتظار المزامنة.") }
-        item { Button({ confirmFinish = true }, Modifier.fillMaxWidth(), enabled = session.active && session.sessionCounted == session.sessionTotal && pending.isEmpty()) { Text("رفع الجرد للمراجعة") } }
+        if (!state.countFresh) item { Info("العرض يحتاج تحديثاً ناجحاً قبل أي حركة جديدة.") }
+        item { Button({ confirmFinish = true }, Modifier.fillMaxWidth(), enabled = canFinishWarehouseCount(state)) { Text("رفع الجرد للمراجعة") } }
     }
     ConfirmationDialog(
         visible = confirmFinish,
@@ -234,14 +242,15 @@ private fun CountSummary(session: CountSession, pending: List<PendingCount>, act
 }
 
 @Composable
-private fun CountEditor(session: CountSession, item: CountItem, draft: CountDraft, actions: WarehouseToolsViewModel) {
+private fun CountEditor(state: WarehouseToolsUiState, session: CountSession, item: CountItem, draft: CountDraft, actions: WarehouseToolsViewModel) {
     var confirmSubmit by remember(session.code, item.variantId, draft.clientRequestId) { mutableStateOf(false) }
     val quantityBase = runCatching { WarehouseValidation.submission(draft).quantityBase }.getOrNull()
     LazyColumn(verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(actions::closeCountEntry) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "رجوع") }; Column { Text(item.label, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("يُرسل الإجمالي بالوحدة الأساس", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
         item { CurvedCard(WarehouseBlue) { draft.entries.forEachIndexed { index, entry -> OutlinedTextField(entry.quantity, { actions.updateUnitQuantity(index, it) }, Modifier.fillMaxWidth(), label = { Text("${entry.unitName} × ${entry.factor}") }, singleLine = true, shape = RoundedCornerShape(16.dp)) } } }
         item { Info(if (session.blind) "الجرد أعمى؛ لا يعرض التطبيق الرصيد الدفتري أو كمية الزميل." else "تُرسل العدّة ضمن جلسة ${session.code}.") }
-        item { Button({ confirmSubmit = true }, Modifier.fillMaxWidth(), enabled = session.active) { Text("تسجيل العد") } }
+        if (!state.countFresh || !state.pendingFresh) item { Info("حدّث الجلسة قبل تسجيل العد.") }
+        item { Button({ confirmSubmit = true }, Modifier.fillMaxWidth(), enabled = canSubmitWarehouseCount(state)) { Text("تسجيل العد") } }
     }
     ConfirmationDialog(
         visible = confirmSubmit,
@@ -258,8 +267,12 @@ private fun CountEditor(session: CountSession, item: CountItem, draft: CountDraf
 private fun OfflinePane(state: WarehouseToolsUiState, actions: WarehouseToolsViewModel) {
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { SectionTitle("الاستمرارية", "بيانات العمل محفوظة بأمان على هذا الجهاز", Icons.Rounded.OfflineBolt) }
+        if (!state.pendingFresh || !state.assignmentsFresh) {
+            item { Info("يلزم تحديث التكليفات والطابور بنجاح قبل إرسال أو حذف أي عملية.") }
+            item { Button(actions::initialize, Modifier.fillMaxWidth(), enabled = !state.initializing) { Text("إعادة المحاولة") } }
+        }
         item { CurvedCard(WarehouseBlue) { Text("لقطة القراءة", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text(state.snapshot?.let { "${it.items.size} وحدة · ${compact(it.syncedAt)}" } ?: "لم تُنزّل لقطة بعد"); Button(actions::syncSnapshot, Modifier.fillMaxWidth()) { Text("تحديث الكتالوج ورصيد الفرع") } } }
-        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Column { Text("طابور العد", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("إرسال مرتب دون تكرار", color = MaterialTheme.colorScheme.onSurfaceVariant) }; if (state.pending.any { it.status == PendingCountStatus.QUEUED }) FilledTonalButton(actions::replayPending) { Text("مزامنة") } } }
+        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Column { Text("طابور العد", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("إرسال مرتب دون تكرار", color = MaterialTheme.colorScheme.onSurfaceVariant) }; if (state.pending.any { it.status == PendingCountStatus.QUEUED }) FilledTonalButton(actions::replayPending, enabled = canReplayWarehouseQueue(state)) { Text("مزامنة") } } }
         if (state.pending.isEmpty()) item { Empty("لا توجد عمليات معلقة") }
         items(state.pending, key = { it.clientRequestId }) { pending ->
             var confirmDiscard by remember(pending.clientRequestId) { mutableStateOf(false) }
@@ -267,7 +280,7 @@ private fun OfflinePane(state: WarehouseToolsUiState, actions: WarehouseToolsVie
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(pending.sessionCode, fontWeight = FontWeight.Bold); Pill(if (pending.status == PendingCountStatus.QUEUED) "بانتظار الإرسال" else "مرفوضة", if (pending.status == PendingCountStatus.QUEUED) WarehouseAmber else MaterialTheme.colorScheme.error) }
                 Text("صنف ${pending.variantId} · ${pending.quantityBase} وحدة أساس")
                 pending.lastError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (pending.status == PendingCountStatus.REJECTED) TextButton({ confirmDiscard = true }, Modifier.align(Alignment.End)) { Text("حذف الإدخال") }
+                if (pending.status == PendingCountStatus.REJECTED) TextButton({ confirmDiscard = true }, Modifier.align(Alignment.End), enabled = canDiscardWarehousePending(state, pending.clientRequestId)) { Text("حذف الإدخال") }
             }
             ConfirmationDialog(
                 visible = confirmDiscard,

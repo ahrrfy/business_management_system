@@ -27,6 +27,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -46,15 +47,26 @@ import online.alarabiya.superapp.model.crm.CustomerDraft
 import online.alarabiya.superapp.model.crm.CustomerSummary
 import online.alarabiya.superapp.model.crm.CustomerType
 import online.alarabiya.superapp.model.crm.PriceTier
+import online.alarabiya.superapp.ui.ltrInputTextStyle
+import online.alarabiya.superapp.ui.rtlIsolate
 
 @Composable
 internal fun CustomersWorkspace(state: CrmUiState, capabilities: CrmCapabilities, actions: CrmActions) {
+    if (!state.customersLoaded) {
+        CrmRetryGate(
+            title = if (state.pendingCustomerRefreshId != null) "بيانات العميل تحتاج تحديثاً" else "بيانات العملاء غير متاحة",
+            retryEnabled = !state.initializing && state.busyKey == null,
+            onRetry = actions.refresh,
+        )
+        return
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val secondary: (@Composable () -> Unit)? = when {
             state.customerEditor != null -> ({
                 CustomerEditorPane(
                     editor = state.customerEditor,
-                    busy = state.busyKey != null,
+                    busy = state.busyKey != null ||
+                        (state.customerEditor.customerId != null && !state.canMutateSelectedCustomer),
                     onChange = actions.updateCustomerDraft,
                     onSave = actions.saveCustomer,
                     onClose = actions.closeCustomerEditor,
@@ -63,11 +75,9 @@ internal fun CustomersWorkspace(state: CrmUiState, capabilities: CrmCapabilities
             state.selectedCustomer != null -> ({
                 CustomerDetailPane(
                     customer = state.selectedCustomer,
-                    canWrite = capabilities.customers.canWrite,
-                    busy = state.busyKey != null,
-                    onEdit = actions.beginEditCustomer,
-                    onSetActive = actions.setCustomerActive,
-                    onBack = actions.closeCustomerDetail,
+                    state = state,
+                    capabilities = capabilities,
+                    actions = actions,
                 )
             })
             else -> null
@@ -109,13 +119,13 @@ private fun CustomerListPane(state: CrmUiState, canWrite: Boolean, actions: CrmA
                     singleLine = true,
                     label = { Text("اسم أو هاتف أو رقم قديم") },
                     trailingIcon = {
-                        IconButton(onClick = actions.searchCustomers, enabled = state.busyKey == null) {
+                        IconButton(onClick = actions.searchCustomers, enabled = state.canCreateCustomer) {
                             Icon(Icons.Rounded.Search, contentDescription = "بحث")
                         }
                     },
                 )
                 if (canWrite) {
-                    IconButton(onClick = actions.beginCreateCustomer, enabled = state.busyKey == null) {
+                    IconButton(onClick = actions.beginCreateCustomer, enabled = state.canCreateCustomer) {
                         Icon(Icons.Rounded.Add, contentDescription = "عميل جديد")
                     }
                 }
@@ -131,18 +141,19 @@ private fun CustomerListPane(state: CrmUiState, canWrite: Boolean, actions: CrmA
                 FilterChip(
                     selected = state.includeInactiveCustomers,
                     onClick = actions.toggleInactiveCustomers,
+                    enabled = state.canCreateCustomer,
                     label = { Text("إظهار المعطّلين") },
                 )
             }
         }
         if (state.customerPage.rows.isEmpty()) item { EmptyCrmState("لا توجد نتائج مطابقة") }
         items(state.customerPage.rows, key = { it.id }) { customer ->
-            CustomerSummaryCard(customer, state.busyKey == null) { actions.selectCustomer(customer.id) }
+            CustomerSummaryCard(customer, state.canCreateCustomer) { actions.selectCustomer(customer.id) }
         }
         if (state.customerPage.rows.size < state.customerPage.total) item {
             OutlinedButton(
                 onClick = actions.loadMoreCustomers,
-                enabled = state.busyKey == null,
+                enabled = state.canCreateCustomer,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("تحميل المزيد") }
         }
@@ -160,12 +171,12 @@ private fun CustomerSummaryCard(customer: CustomerSummary, enabled: Boolean, onC
                 Text(customer.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 CrmStatus(if (customer.isActive) "نشط" else "معطّل")
             }
-            customer.phone?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            customer.phone?.let { Text(rtlIsolate(it), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Text(
                 listOfNotNull(customer.customerType.wire, customer.city, customer.district).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
             )
-            customer.currentBalance?.let { Text("الرصيد: $it", color = MaterialTheme.colorScheme.primary) }
+            customer.currentBalance?.let { Text(rtlIsolate("الرصيد: $it د.ع"), color = MaterialTheme.colorScheme.primary) }
         }
     }
 }
@@ -173,13 +184,12 @@ private fun CustomerSummaryCard(customer: CustomerSummary, enabled: Boolean, onC
 @Composable
 private fun CustomerDetailPane(
     customer: CustomerDetail,
-    canWrite: Boolean,
-    busy: Boolean,
-    onEdit: () -> Unit,
-    onSetActive: (Boolean) -> Unit,
-    onBack: () -> Unit,
+    state: CrmUiState,
+    capabilities: CrmCapabilities,
+    actions: CrmActions,
 ) {
     val context = LocalContext.current
+    val busy = !state.canMutateSelectedCustomer
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(18.dp),
@@ -187,23 +197,23 @@ private fun CustomerDetailPane(
     ) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "رجوع") }
+                IconButton(onClick = actions.closeCustomerDetail) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "رجوع") }
                 Text(customer.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                if (canWrite) IconButton(onClick = onEdit, enabled = !busy) { Icon(Icons.Rounded.Edit, contentDescription = "تعديل") }
+                if (capabilities.customers.canWrite) IconButton(onClick = actions.beginEditCustomer, enabled = !busy) { Icon(Icons.Rounded.Edit, contentDescription = "تعديل") }
             }
         }
         item {
             CrmCard {
                 DetailValue("النوع", customer.customerType.wire)
                 DetailValue("فئة السعر", customer.priceTier.label)
-                DetailValue("الهاتف", customer.phone ?: "—")
-                customer.phone2?.let { DetailValue("هاتف إضافي", it) }
-                customer.phone3?.let { DetailValue("هاتف إضافي", it) }
-                DetailValue("واتساب", customer.whatsapp ?: "—")
+                DetailValue("الهاتف", customer.phone?.let(::rtlIsolate) ?: "—")
+                customer.phone2?.let { DetailValue("هاتف إضافي", rtlIsolate(it)) }
+                customer.phone3?.let { DetailValue("هاتف إضافي", rtlIsolate(it)) }
+                DetailValue("واتساب", customer.whatsapp?.let(::rtlIsolate) ?: "—")
                 DetailValue("العنوان", listOfNotNull(customer.city, customer.district, customer.address).joinToString("، ").ifBlank { "—" })
                 customer.notes?.let { DetailValue("ملاحظات", it) }
-                customer.currentBalance?.let { DetailValue("الرصيد الجاري", it) }
-                customer.creditLimit?.let { DetailValue("سقف الائتمان", it) }
+                customer.currentBalance?.let { DetailValue("الرصيد الجاري", rtlIsolate("$it د.ع")) }
+                customer.creditLimit?.let { DetailValue("سقف الائتمان", rtlIsolate("$it د.ع")) }
                 customer.waConsent?.let { DetailValue("موافقة واتساب", it) }
             }
         }
@@ -224,9 +234,17 @@ private fun CustomerDetailPane(
                 Text("فتح محادثة واتساب")
             }
         }
-        if (canWrite) item {
+        item {
+            CustomerOperationsPanel(
+                customer = customer,
+                state = state,
+                capabilities = capabilities,
+                actions = actions,
+            )
+        }
+        if (capabilities.customers.canWrite) item {
             OutlinedButton(
-                onClick = { onSetActive(!customer.isActive) },
+                onClick = { actions.setCustomerActive(!customer.isActive) },
                 enabled = !busy,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(if (customer.isActive) "تعطيل العميل" else "تفعيل العميل") }
@@ -262,8 +280,8 @@ private fun CustomerEditorPane(
         item {
             CrmCard {
                 EditorField(draft.name, { onChange(draft.copy(name = it)) }, "اسم العميل *")
-                EditorField(draft.phone, { onChange(draft.copy(phone = it)) }, "الهاتف")
-                EditorField(draft.whatsapp, { onChange(draft.copy(whatsapp = it)) }, "واتساب")
+                EditorField(draft.phone, { onChange(draft.copy(phone = it)) }, "الهاتف", leftToRight = true)
+                EditorField(draft.whatsapp, { onChange(draft.copy(whatsapp = it)) }, "واتساب", leftToRight = true)
                 EditorField(draft.city, { onChange(draft.copy(city = it)) }, "المدينة")
                 EditorField(draft.district, { onChange(draft.copy(district = it)) }, "المنطقة")
                 EditorField(draft.address, { onChange(draft.copy(address = it)) }, "العنوان", singleLine = false)
@@ -299,7 +317,13 @@ private fun CustomerEditorPane(
 }
 
 @Composable
-private fun EditorField(value: String, onChange: (String) -> Unit, label: String, singleLine: Boolean = true) {
+private fun EditorField(
+    value: String,
+    onChange: (String) -> Unit,
+    label: String,
+    singleLine: Boolean = true,
+    leftToRight: Boolean = false,
+) {
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
@@ -307,6 +331,7 @@ private fun EditorField(value: String, onChange: (String) -> Unit, label: String
         modifier = Modifier.fillMaxWidth(),
         singleLine = singleLine,
         minLines = if (singleLine) 1 else 2,
+        textStyle = if (leftToRight) ltrInputTextStyle() else LocalTextStyle.current,
     )
 }
 

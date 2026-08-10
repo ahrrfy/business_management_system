@@ -19,8 +19,12 @@ export default defineConfig({
       "client/src/lib/pwaUpdateLifecycle.test.ts",
       "server/services/__tests__/couponService.test.ts",
       "server/services/__tests__/businessDay.test.ts",
+      "server/services/__tests__/reconcileSummary.test.ts",
       "server/services/__tests__/permissionParity.test.ts",
       "server/services/__tests__/globalSearchRbac.test.ts",
+      "server/services/hrDevices/__tests__/bridgeSecurity.test.ts",
+      "server/services/hrDevices/__tests__/bridgeGate.test.ts",
+      "server/routers/__tests__/superAppAuthority.test.ts",
     ],
   },
 });

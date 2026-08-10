@@ -9,6 +9,7 @@ enum class NativeScreen {
     SALES,
     PURCHASING,
     STORE_DELIVERY,
+    STORE_ADMIN,
     FINANCE,
     RECEIVABLES,
     COLLECTIONS,
@@ -20,6 +21,7 @@ enum class NativeScreen {
     CONVERSATIONS,
     ADMIN,
     INSIGHTS,
+    SHIFTS,
     WORK_ORDERS,
     WAREHOUSE_TOOLS,
     HR_ADMIN,
@@ -52,6 +54,7 @@ object NativeFeatureCatalog {
         NativeFeatureDefinition("sales", "المبيعات ونقطة البيع", NativeScreen.SALES, setOf(NativeModule.SALES)),
         NativeFeatureDefinition("purchasing", "المشتريات والموردون", NativeScreen.PURCHASING, setOf(NativeModule.PURCHASES, NativeModule.SUPPLIERS)),
         NativeFeatureDefinition("store", "المتجر والتوصيل", NativeScreen.STORE_DELIVERY, setOf(NativeModule.STORE, NativeModule.COURIER)),
+        NativeFeatureDefinition("store-admin", "إدارة المتجر", NativeScreen.STORE_ADMIN, emptySet()),
         NativeFeatureDefinition("finance", "المالية والخزينة", NativeScreen.FINANCE, setOf(NativeModule.TREASURY, NativeModule.EXPENSES, NativeModule.REPORTS)),
         NativeFeatureDefinition("receivables", "المستحقات والمتابعة", NativeScreen.RECEIVABLES, emptySet()),
         NativeFeatureDefinition("collections", "قرارات التحصيل", NativeScreen.COLLECTIONS, setOf(NativeModule.COLLECTIONS)),
@@ -73,6 +76,7 @@ object NativeFeatureCatalog {
         NativeFeatureDefinition("conversations", "المحادثات", NativeScreen.CONVERSATIONS, setOf(NativeModule.CHANNELS)),
         NativeFeatureDefinition("admin", "إدارة النظام", NativeScreen.ADMIN, setOf(NativeModule.USERS)),
         NativeFeatureDefinition("insights", "التحليلات والبحث", NativeScreen.INSIGHTS, emptySet()),
+        NativeFeatureDefinition("shifts", "الورديات والتسوية", NativeScreen.SHIFTS, emptySet()),
         NativeFeatureDefinition("work-orders", "الطباعة والإنتاج", NativeScreen.WORK_ORDERS, setOf(NativeModule.WORK_ORDERS)),
         NativeFeatureDefinition("warehouse-tools", "أدوات المستودع", NativeScreen.WAREHOUSE_TOOLS, emptySet()),
         NativeFeatureDefinition("hr-admin", "إدارة الموارد البشرية", NativeScreen.HR_ADMIN, setOf(NativeModule.HR)),
@@ -129,7 +133,7 @@ object NativeFeatureCatalog {
             NativeScreen.ADMIN -> principal.role.equals("admin", ignoreCase = true) &&
                 entryDestination(screen, principal, registry) != null
             NativeScreen.HR_ADMIN -> entryDestination(screen, principal, registry) != null
-            NativeScreen.SYSTEM_SETTINGS -> principal.role.equals("admin", ignoreCase = true) &&
+            NativeScreen.SYSTEM_SETTINGS -> principal.grantFor(NativeModule.SETTINGS).satisfies(ModuleGrant.READ) &&
                 entryDestination(screen, principal, registry) != null
             NativeScreen.INSIGHTS -> principal.role.equals("admin", ignoreCase = true) || listOf(
                 NativeModule.REPORTS,
@@ -143,9 +147,12 @@ object NativeFeatureCatalog {
                 NativeModule.EXPENSES,
                 NativeModule.HR,
             ).any { principal.grantFor(it).satisfies(ModuleGrant.READ) }
+            NativeScreen.SHIFTS -> registry.authorize(NativeDestination.Shifts, principal) == AccessDecision.Allowed
             NativeScreen.WORK_ORDERS -> principal.authenticated
             NativeScreen.WAREHOUSE_TOOLS -> principal.grantFor(NativeModule.INVENTORY).satisfies(ModuleGrant.READ) &&
                 principal.grantFor(NativeModule.PRODUCTS).satisfies(ModuleGrant.READ)
+            NativeScreen.STORE_ADMIN -> (principal.role.equals("admin", true) || principal.role.equals("manager", true)) &&
+                principal.grantFor(NativeModule.STORE).satisfies(ModuleGrant.READ)
             NativeScreen.APPROVALS -> registry.authorize(NativeDestination.Approvals, principal) == AccessDecision.Allowed
             else -> entryDestination(screen, principal, registry) != null
         }
@@ -171,8 +178,10 @@ object NativeFeatureCatalog {
             NativeDestination.Receivables -> NativeScreen.RECEIVABLES
             NativeDestination.Collections -> NativeScreen.COLLECTIONS
             NativeDestination.Insights -> NativeScreen.INSIGHTS
+            NativeDestination.Shifts -> NativeScreen.SHIFTS
             NativeDestination.WorkOrders -> NativeScreen.WORK_ORDERS
             NativeDestination.WarehouseTools -> NativeScreen.WAREHOUSE_TOOLS
+            NativeDestination.StoreAdmin -> NativeScreen.STORE_ADMIN
             NativeDestination.Profile -> NativeScreen.SETTINGS
             is NativeDestination.Module -> if (destination.module == NativeModule.POS) {
                 resolvePos(destination, principal, installed)

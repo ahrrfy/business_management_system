@@ -14,6 +14,9 @@ import online.alarabiya.superapp.model.insights.InsightsAccessPolicy
 import online.alarabiya.superapp.model.insights.InsightsFilter
 import online.alarabiya.superapp.model.insights.InsightsSection
 import online.alarabiya.superapp.model.insights.PeriodPreset
+import online.alarabiya.superapp.model.insights.CashOrphanCategory
+import online.alarabiya.superapp.model.insights.ReportCatalogKind
+import online.alarabiya.superapp.model.insights.ReportCatalogQuery
 import online.alarabiya.superapp.model.insights.SearchEntityType
 
 class InsightsViewModel(
@@ -34,12 +37,58 @@ class InsightsViewModel(
 
     fun setSection(section: InsightsSection) {
         if (!accessPolicy.canRead(section) || section == state.section) return
-        state = state.copy(section = section, selectedTarget = null, error = null, notice = null)
+        state = state.copy(section = section, selectedTarget = null, focusedAlertKey = null, error = null, notice = null)
         if (section != InsightsSection.SEARCH && section !in state.loadedSections) load(section)
     }
 
+    /** Applies a command-centre focus without inventing a route or losing the server argument. */
+    fun applyNavigationArguments(arguments: Map<String, String>) {
+        val rawSection = arguments["section"]
+        val targetSection = when (rawSection) {
+            "financial" -> InsightsSection.FINANCIAL
+            "catalog", "reportCatalog" -> InsightsSection.REPORT_CATALOG
+            "hr" -> InsightsSection.HR_REPORTS
+            "store" -> InsightsSection.STORE
+            "search" -> InsightsSection.SEARCH
+            // managementAlerts, anomalies and reconciliation are currently represented by
+            // authoritative alert cards returned with the management reports payload.
+            "managementAlerts", "anomalies", "reconciliation", "reports", null -> InsightsSection.REPORTS
+            else -> InsightsSection.REPORTS
+        }
+        val readableTarget = targetSection.takeIf(accessPolicy::canRead)
+            ?: InsightsSection.REPORTS.takeIf(accessPolicy::canRead)
+            ?: return
+        val inferredFocus = arguments["focus"] ?: when {
+            arguments["stockState"] == "out" -> "stock-out"
+            arguments["stockState"] == "low" -> "stock-low"
+            arguments["stockState"] == "dead" -> "dead-stock"
+            arguments["bucket"] in setOf("ar-30", "ar-60", "ar-90") -> arguments["bucket"]
+            arguments["view"] == "creditExposure" -> "credit-exposure"
+            arguments["view"] == "payables" -> "ap-due"
+            arguments["variance"].isTrue() -> "shift-variance"
+            arguments["overdue"].isTrue() -> "wo-late"
+            rawSection == "anomalies" -> "anomaly-watch"
+            rawSection == "reconciliation" -> "reconcile-drift"
+            else -> null
+        }
+        state = state.copy(
+            section = readableTarget,
+            focusedAlertKey = inferredFocus,
+            selectedTarget = null,
+            error = null,
+            notice = null,
+        )
+        if (readableTarget != InsightsSection.SEARCH && readableTarget !in state.loadedSections) {
+            load(readableTarget)
+        }
+    }
+
     fun refresh() {
-        if (state.section == InsightsSection.SEARCH) submitSearch() else load(state.section, refresh = true)
+        when (state.section) {
+            InsightsSection.SEARCH -> submitSearch()
+            InsightsSection.REPORT_CATALOG -> loadSelectedCatalogReport(state.reportCatalog.page)
+            else -> load(state.section, refresh = true)
+        }
     }
 
     fun setPreset(preset: PeriodPreset) {
@@ -70,6 +119,10 @@ class InsightsViewModel(
 
     fun applyFilter() {
         if (state.section == InsightsSection.SEARCH) return
+        if (state.section == InsightsSection.REPORT_CATALOG) {
+            loadSelectedCatalogReport(page = 0)
+            return
+        }
         val error = state.filter.validationError(forStore = state.section == InsightsSection.STORE)
         if (error != null) {
             state = state.copy(error = error)
@@ -80,6 +133,74 @@ class InsightsViewModel(
 
     fun setSearchQuery(value: String) {
         state = state.copy(searchQuery = value.take(200), error = null)
+    }
+
+    fun selectCatalogReport(kind: ReportCatalogKind?) {
+        if (!accessPolicy.canRead(InsightsSection.REPORT_CATALOG)) return
+        state = state.copy(reportCatalog = state.reportCatalog.select(kind))
+        if (kind != null && !kind.requiresVariant) loadSelectedCatalogReport(page = 0)
+    }
+
+    fun setCatalogSearch(value: String) {
+        if (state.reportCatalog.loading) return
+        state = state.copy(
+            reportCatalog = state.reportCatalog.copy(search = value.take(200)).invalidate(),
+        )
+    }
+
+    fun setCatalogVariantId(value: String) {
+        if (state.reportCatalog.loading) return
+        state = state.copy(
+            reportCatalog = state.reportCatalog.copy(variantId = value.filter(Char::isDigit).take(18)).invalidate(),
+        )
+    }
+
+    fun setCatalogOrphanCategory(value: CashOrphanCategory) {
+        if (state.reportCatalog.loading || state.reportCatalog.orphanCategory == value) return
+        state = state.copy(
+            reportCatalog = state.reportCatalog.copy(orphanCategory = value).invalidate(),
+        )
+        loadSelectedCatalogReport(page = 0)
+    }
+
+    fun loadSelectedCatalogReport(page: Int = 0) {
+        if (!accessPolicy.canRead(InsightsSection.REPORT_CATALOG) || state.reportCatalog.loading) return
+        val selected = state.reportCatalog.selected ?: return
+        val branch = if (accessPolicy.canFilterBranch) state.filter.branchId.toLongOrNull() else accessPolicy.branchId
+        val query = ReportCatalogQuery(
+            kind = selected,
+            range = state.filter.range,
+            branchId = branch,
+            search = state.reportCatalog.search.trim(),
+            variantId = state.reportCatalog.variantId.toLongOrNull(),
+            orphanCategory = state.reportCatalog.orphanCategory,
+            page = page,
+        )
+        val validation = query.validationError()
+        if (validation != null) {
+            state = state.copy(reportCatalog = state.reportCatalog.copy(error = validation))
+            return
+        }
+        state = state.copy(reportCatalog = state.reportCatalog.loading(query))
+        viewModelScope.launch {
+            runCatching { repository.loadReportCatalog(query) }
+                .onSuccess { value ->
+                    state = state.copy(reportCatalog = state.reportCatalog.loaded(query, value))
+                }
+                .onFailure { error ->
+                    state = state.copy(reportCatalog = state.reportCatalog.failed(query, error.userMessage()))
+                }
+        }
+    }
+
+    fun previousCatalogPage() {
+        val info = state.reportCatalog.result?.pageInfo ?: return
+        if (info.hasPrevious) loadSelectedCatalogReport((info.page - 1).coerceAtLeast(0))
+    }
+
+    fun nextCatalogPage() {
+        val info = state.reportCatalog.result?.pageInfo ?: return
+        if (info.hasNext) loadSelectedCatalogReport(info.page + 1)
     }
 
     fun toggleScope(scope: SearchEntityType) {
@@ -123,7 +244,17 @@ class InsightsViewModel(
     }
 
     private fun updateFilter(transform: InsightsFilter.() -> InsightsFilter) {
-        if (!state.loading && !state.refreshing) state = state.copy(filter = state.filter.transform(), error = null)
+        if (!state.loading && !state.refreshing && !state.reportCatalog.loading) {
+            state = state.copy(
+                filter = state.filter.transform(),
+                reportCatalog = if (state.section == InsightsSection.REPORT_CATALOG) {
+                    state.reportCatalog.invalidate()
+                } else {
+                    state.reportCatalog
+                },
+                error = null,
+            )
+        }
     }
 
     private fun load(section: InsightsSection, refresh: Boolean = false) {
@@ -144,6 +275,15 @@ class InsightsViewModel(
                             reports = repository.loadReports(filter.range, branch, filter.rankBy),
                         )
                     }
+                    InsightsSection.REPORT_CATALOG -> Unit
+                    InsightsSection.FINANCIAL -> {
+                        val branch = if (accessPolicy.canFilterBranch) filter.branchId.toLongOrNull() else accessPolicy.branchId
+                        state = state.copy(financial = repository.loadFinancial(filter.range, branch))
+                    }
+                    InsightsSection.HR_REPORTS -> {
+                        val branch = if (accessPolicy.canFilterBranch) filter.branchId.toLongOrNull() else accessPolicy.branchId
+                        state = state.copy(hrReports = repository.loadHrReports(filter.range, branch))
+                    }
                     InsightsSection.STORE -> state = state.copy(store = repository.loadStore(filter.range))
                     InsightsSection.SEARCH -> Unit
                 }
@@ -157,6 +297,8 @@ class InsightsViewModel(
         }
     }
 }
+
+private fun String?.isTrue(): Boolean = equals("true", ignoreCase = true) || this == "1"
 
 private fun Throwable.userMessage(): String = message?.takeIf(String::isNotBlank)
     ?: "تعذّر تحميل التحليلات"

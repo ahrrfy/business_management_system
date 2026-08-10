@@ -22,6 +22,7 @@ data class CollaborationCapabilities(
     val allBranches: Boolean,
     val tasks: CollaborationAccess,
     val campaigns: CollaborationAccess,
+    val isOwner: Boolean = false,
 ) {
     private val normalizedRole get() = role.lowercase()
     val canWriteTasks: Boolean
@@ -33,7 +34,9 @@ data class CollaborationCapabilities(
     /** `branchScopedProcedure` deliberately gives admin/manager global read scope. */
     val canReadBroadcastsSafely: Boolean
         get() = campaigns.canRead
-    val elevatedTasks: Boolean get() = normalizedRole == "admin" || normalizedRole == "manager"
+    val elevatedTasks: Boolean get() = isOwner || normalizedRole == "admin" || normalizedRole == "manager"
+    val canSelectTaskBranch: Boolean
+        get() = tasks.canRead && allBranches && elevatedTasks
 
     companion object {
         private val TASK_WRITE_ROLES = setOf("cashier", "manager", "sales_rep", "print_operator")
@@ -46,10 +49,17 @@ data class CollaborationCapabilities(
                 allBranches = bootstrap.allBranches,
                 tasks = modules["tasks"] ?: CollaborationAccess.NONE,
                 campaigns = modules["campaigns"] ?: CollaborationAccess.NONE,
+                isOwner = bootstrap.isOwner || bootstrap.user.isOwner,
             )
         }
     }
 }
+
+data class CollaborationBranch(
+    val id: Long,
+    val name: String,
+    val code: String?,
+)
 
 enum class TaskKind(val wire: String, val label: String) {
     SERVICE_REQUEST("SERVICE_REQUEST", "طلب خدمة"),
@@ -321,6 +331,15 @@ object CollaborationValidation {
 }
 
 object CollaborationMappers {
+    fun branches(json: JSONArray): List<CollaborationBranch> = json.objects { branch ->
+        CollaborationBranch(
+            id = branch.optLong("id"),
+            name = branch.optString("name").trim(),
+            code = branch.stringOrNull("code"),
+        )
+    }.filter { branch -> branch.id > 0 && branch.name.isNotEmpty() }
+        .distinctBy(CollaborationBranch::id)
+
     fun taskPage(json: JSONObject) = TeamTaskPage(
         rows = json.optJSONArray("rows").objects(::taskSummary),
         hasMore = json.optBoolean("hasMore"),

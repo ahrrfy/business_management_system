@@ -164,6 +164,69 @@ class NativeNavigationRegistryTest {
     }
 
     @Test
+    fun `insights authorization matches every module that can make insights visible`() {
+        val readableModules = setOf(
+            NativeModule.REPORTS,
+            NativeModule.STORE,
+            NativeModule.PRODUCTS,
+            NativeModule.SALES,
+            NativeModule.PURCHASES,
+            NativeModule.WORK_ORDERS,
+            NativeModule.CRM,
+            NativeModule.SUPPLIERS,
+            NativeModule.EXPENSES,
+            NativeModule.HR,
+        )
+
+        readableModules.forEach { module ->
+            val principal = NavigationPrincipal(
+                authenticated = true,
+                grants = mapOf(module to ModuleGrant.READ),
+            )
+            assertEquals(
+                "$module must never expose an Insights action that authorization then drops",
+                AccessDecision.Allowed,
+                registry.authorize(NativeDestination.Insights, principal),
+            )
+        }
+        assertEquals(
+            "administrator USER search is visible without a module grant",
+            AccessDecision.Allowed,
+            registry.authorize(
+                NativeDestination.Insights,
+                NavigationPrincipal(authenticated = true, role = "admin"),
+            ),
+        )
+        assertEquals(
+            AccessDecision.Denied(AccessDenialReason.MODULE_NOT_GRANTED),
+            registry.authorize(
+                NativeDestination.Insights,
+                NavigationPrincipal(authenticated = true, grants = mapOf(NativeModule.TASKS to ModuleGrant.READ)),
+            ),
+        )
+    }
+
+    @Test
+    fun `shift management route mirrors owner admin and treasury manager visibility`() {
+        val noGrantManager = NavigationPrincipal(authenticated = true, role = "manager")
+        val treasuryManager = noGrantManager.copy(grants = mapOf(NativeModule.TREASURY to ModuleGrant.READ))
+
+        assertEquals(
+            AccessDecision.Denied(AccessDenialReason.MODULE_NOT_GRANTED),
+            registry.authorize(NativeDestination.Shifts, noGrantManager),
+        )
+        assertEquals(AccessDecision.Allowed, registry.authorize(NativeDestination.Shifts, treasuryManager))
+        assertEquals(
+            AccessDecision.Allowed,
+            registry.authorize(NativeDestination.Shifts, NavigationPrincipal(authenticated = true, role = "admin")),
+        )
+        assertEquals(
+            AccessDecision.Allowed,
+            registry.authorize(NativeDestination.Shifts, NavigationPrincipal(authenticated = true, isOwner = true)),
+        )
+    }
+
+    @Test
     fun `warehouse tools require inventory and product read grants`() {
         val inventoryOnly = NavigationPrincipal(
             authenticated = true,

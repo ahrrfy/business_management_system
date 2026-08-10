@@ -1,11 +1,13 @@
 // إنشاء أصل: ترقيم AST-#### + قيد اقتناء (AP لمورّد أو نقد خزينة) + عهدة ابتدائية اختيارية.
 import { desc, eq } from "drizzle-orm";
-import { assetCustodyLog, employees, fixedAssets, receipts } from "../../../drizzle/schema";
+import { TRPCError } from "@trpc/server";
+import { assetCustodyLog, branches, employees, fixedAssets, kioskDevices, receipts } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
+import { companyBranchScope, resolveTargetBranch } from "../companyBranchScope";
 import { getAsset } from "./queries";
 
 /** الرمز التالي AST-#### — قراءة مرتّبة تحت قفل FOR UPDATE تُضيّق السباق، وقيد UNIQUE هو الحارس النهائي. */
@@ -40,7 +42,30 @@ export interface CreateAssetInput {
 }
 
 export async function createAsset(input: CreateAssetInput, actor: Actor) {
+  const scope = companyBranchScope(actor);
+  const targetBranchId = resolveTargetBranch(scope, input.branchId, { required: false });
   const id = await withTx(async (tx) => {
+    if (targetBranchId != null) {
+      const [branch] = await tx
+        .select({ id: branches.id })
+        .from(branches)
+        .where(eq(branches.id, targetBranchId))
+        .for("update")
+        .limit(1);
+      if (!branch) throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود" });
+    }
+    if (input.linkedDeviceId != null) {
+      const [device] = await tx
+        .select({ branchId: kioskDevices.branchId })
+        .from(kioskDevices)
+        .where(eq(kioskDevices.id, input.linkedDeviceId))
+        .for("update")
+        .limit(1);
+      if (!device) throw new TRPCError({ code: "BAD_REQUEST", message: "جهاز البصمة غير موجود" });
+      if (targetBranchId == null || Number(device.branchId) !== targetBranchId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "جهاز البصمة تابع لفرع مختلف" });
+      }
+    }
     const code = await nextAssetCode(tx);
     const [res] = await tx.insert(fixedAssets).values({
       code,
@@ -48,7 +73,7 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
       category: input.category as never,
       brand: input.brand ?? null,
       serial: input.serial ?? null,
-      branchId: input.branchId ?? null,
+      branchId: targetBranchId,
       location: input.location ?? null,
       custodianId: input.custodianId ?? null,
       supplierId: input.supplierId ?? null,
@@ -67,7 +92,7 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
     // اقتناء الأصل يُرحَّل للدفتر فيُقابله التزام/نقد ⇒ لا تُنفَخ حقوق الملكية (أصل بلا مصدر تمويل).
     // مورّد ⇒ ذمم دائنة AP + قيد PURCHASE (يُسدَّد لاحقاً بسند). بلا مورّد ⇒ نقد PAYMENT_OUT من الخزينة.
     const value = money(input.purchaseValue);
-    const acqBranch = input.branchId ?? actor.branchId ?? null;
+    const acqBranch = targetBranchId;
     const acqDate = new Date(input.purchaseDate);
     if (value.gt(0)) {
       if (input.supplierId) {
@@ -98,11 +123,12 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
         .select({ status: employees.employmentStatus, branchId: employees.branchId })
         .from(employees)
         .where(eq(employees.id, input.custodianId))
+        .for("update")
         .limit(1);
       if (!emp) throw new Error("الموظف (صاحب العهدة) غير موجود");
       if (emp.status !== "active") throw new Error("لا يمكن تسليم عهدة لموظف ليس على رأس العمل");
-      const assetBranch = input.branchId ?? null;
-      if (assetBranch != null && emp.branchId != null && Number(assetBranch) !== Number(emp.branchId)) {
+      const assetBranch = targetBranchId;
+      if (assetBranch != null && (emp.branchId == null || Number(assetBranch) !== Number(emp.branchId))) {
         throw new Error("لا يمكن تسليم عهدة لموظف من فرع مختلف عن فرع الأصل");
       }
       await tx.insert(assetCustodyLog).values({
@@ -115,5 +141,5 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
     }
     return newId;
   });
-  return getAsset(id);
+  return getAsset(id, scope);
 }

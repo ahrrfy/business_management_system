@@ -215,7 +215,10 @@ data class FinanceAccessPolicy(
         )
 
     companion object {
-        fun fromBootstrap(bootstrap: AppBootstrap): FinanceAccessPolicy {
+        fun fromBootstrap(
+            bootstrap: AppBootstrap,
+            effectiveBranchId: Long? = bootstrap.branchId,
+        ): FinanceAccessPolicy {
             val levels = bootstrap.modules.associate { it.key to it.access.uppercase() }
             fun reads(module: String) = levels[module] == "READ" || levels[module] == "FULL"
             fun writes(module: String) = levels[module] == "FULL"
@@ -238,12 +241,12 @@ data class FinanceAccessPolicy(
                 }
             }
             val writable = buildSet {
-                if (writes("treasury") && treasuryOperator && bootstrap.branchId != null) {
+                if (writes("treasury") && treasuryOperator && effectiveBranchId != null) {
                     add(FinanceSection.VOUCHERS)
                 }
                 // cashTransferService enforces admin/manager even though the router uses the broader
                 // treasury gateway that also admits accountants.
-                if (writes("treasury") && manager && (role == "admin" || bootstrap.branchId != null)) {
+                if (writes("treasury") && manager && (role == "admin" || effectiveBranchId != null)) {
                     add(FinanceSection.TRANSFERS)
                 }
                 // expenses.create is currently guarded by expensesManagerProcedure.
@@ -252,9 +255,9 @@ data class FinanceAccessPolicy(
             return FinanceAccessPolicy(
                 readableSections = readable,
                 writableSections = writable,
-                canFundTreasury = writes("treasury") && manager && (role == "admin" || bootstrap.branchId != null),
+                canFundTreasury = writes("treasury") && manager && (role == "admin" || effectiveBranchId != null),
                 canReceiveOrCancelTransfer = FinanceSection.TRANSFERS in writable,
-                branchId = bootstrap.branchId,
+                branchId = effectiveBranchId,
                 canSelectBranch = role == "admin",
                 userId = bootstrap.user.id,
                 isAdministrator = role == "admin",

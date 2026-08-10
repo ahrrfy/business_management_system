@@ -50,6 +50,44 @@ class AdminPolicyTest {
         assertTrue(policy.canEditRole(role(id = 12, system = false)).allowed)
     }
 
+    @Test
+    fun `admin who is not owner cannot manage individual overrides or reset passwords`() {
+        val policy = AdminAccessPolicy(actorId = 1, actorRole = "admin", actorIsOwner = false)
+        val target = user(2, "manager")
+
+        assertFalse(policy.canManageIndividualPermissions(target).allowed)
+        assertFalse(policy.canResetPassword(target).allowed)
+    }
+
+    @Test
+    fun `owner can manage another account but not own credential through admin flow`() {
+        val policy = AdminAccessPolicy(actorId = 1, actorRole = "admin", actorIsOwner = true)
+
+        assertTrue(policy.canManageIndividualPermissions(user(2, "manager")).allowed)
+        assertTrue(policy.canResetPassword(user(2, "manager")).allowed)
+        assertFalse(policy.canManageIndividualPermissions(user(1, "admin")).allowed)
+        assertFalse(policy.canResetPassword(user(1, "admin")).allowed)
+    }
+
+    @Test
+    fun `account incident response is owner only and never targets self`() {
+        val owner = AdminAccessPolicy(actorId = 1, actorRole = "admin", actorIsOwner = true)
+        val admin = AdminAccessPolicy(actorId = 1, actorRole = "admin", actorIsOwner = false)
+
+        assertTrue(owner.canManageAccountSecurity(user(2, "manager"), activeOwnerCount = 1).allowed)
+        assertFalse(owner.canManageAccountSecurity(user(1, "admin"), activeOwnerCount = 1).allowed)
+        assertFalse(admin.canManageAccountSecurity(user(2, "manager"), activeOwnerCount = 1).allowed)
+    }
+
+    @Test
+    fun `account incident response protects last active owner`() {
+        val policy = AdminAccessPolicy(actorId = 1, actorRole = "admin", actorIsOwner = true)
+        val target = user(2, "admin").copy(isOwner = true)
+
+        assertFalse(policy.canManageAccountSecurity(target, activeOwnerCount = 1).allowed)
+        assertTrue(policy.canManageAccountSecurity(target, activeOwnerCount = 2).allowed)
+    }
+
     private fun user(id: Long, role: String) = AdminUser(
         id = id,
         name = "مستخدم $id",

@@ -14,12 +14,15 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -35,6 +38,10 @@ import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Payments
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Fingerprint
+import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.TrendingUp
+import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -68,6 +75,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.hradmin.ApplicantStage
@@ -83,6 +92,8 @@ import online.alarabiya.superapp.model.hradmin.LeaveStatus
 import online.alarabiya.superapp.model.hradmin.PayrollRun
 import online.alarabiya.superapp.model.hradmin.PayrollRunDetail
 import online.alarabiya.superapp.model.hradmin.PayrollStatus
+import online.alarabiya.superapp.model.hradmin.CreateEmployeeAccountCommand
+import online.alarabiya.superapp.model.hradmin.PayrollLegalSettings
 
 private val HrInk = Color(0xFF362087)
 private val HrTeal = Color(0xFF5B36D2)
@@ -106,18 +117,28 @@ fun HrAdminRoute(
             selectEmployee = viewModel::selectEmployee,
             employeeStatus = viewModel::setEmployeeStatus,
             terminateEmployee = viewModel::terminateEmployee,
+            loadLinkableUsers = viewModel::loadLinkableUsers,
+            clearAccountManager = viewModel::clearAccountManager,
+            linkEmployeeAccount = viewModel::linkEmployeeAccount,
+            unlinkEmployeeAccount = viewModel::unlinkEmployeeAccount,
+            createEmployeeAccount = viewModel::createEmployeeAccount,
             payrollPeriod = viewModel::payrollPeriod,
             generatePayroll = viewModel::generatePayroll,
             selectPayroll = viewModel::selectPayroll,
             approvePayroll = viewModel::approvePayroll,
             payPayroll = viewModel::payPayroll,
             cancelPayroll = viewModel::cancelPayroll,
+            loadLegalSettings = viewModel::loadLegalSettings,
+            updateLegalSettings = viewModel::updateLegalSettings,
             leaveFilter = viewModel::leaveFilter,
             decideLeave = viewModel::decideLeave,
             applicantFilter = viewModel::applicantFilter,
             applicantStage = viewModel::setApplicantStage,
             vacancyPublished = viewModel::setVacancyPublished,
+            attendancePeriod = viewModel::attendancePeriod,
+            refreshAttendance = viewModel::refreshAttendance,
             clearMessage = viewModel::clearMessage,
+            retry = viewModel::retry,
         ),
         modifier = modifier,
     )
@@ -132,18 +153,28 @@ data class HrAdminActions(
     val selectEmployee: (Long?) -> Unit,
     val employeeStatus: (EmploymentStatus) -> Unit,
     val terminateEmployee: (String, String) -> Unit,
+    val loadLinkableUsers: (String) -> Unit,
+    val clearAccountManager: () -> Unit,
+    val linkEmployeeAccount: (Long) -> Unit,
+    val unlinkEmployeeAccount: () -> Unit,
+    val createEmployeeAccount: (CreateEmployeeAccountCommand) -> Unit,
     val payrollPeriod: (String) -> Unit,
     val generatePayroll: () -> Unit,
     val selectPayroll: (Long?) -> Unit,
     val approvePayroll: () -> Unit,
     val payPayroll: () -> Unit,
     val cancelPayroll: () -> Unit,
+    val loadLegalSettings: () -> Unit,
+    val updateLegalSettings: (PayrollLegalSettings) -> Unit,
     val leaveFilter: (LeaveStatus?) -> Unit,
     val decideLeave: (LeaveRequest, LeaveStatus) -> Unit,
     val applicantFilter: (ApplicantStage?) -> Unit,
     val applicantStage: (JobApplicant, ApplicantStage) -> Unit,
     val vacancyPublished: (JobVacancy, Boolean) -> Unit,
+    val attendancePeriod: (String) -> Unit,
+    val refreshAttendance: () -> Unit,
     val clearMessage: () -> Unit,
+    val retry: () -> Unit,
 )
 
 private data class Confirmation(val title: String, val body: String, val action: () -> Unit)
@@ -160,6 +191,10 @@ fun HrAdminScreen(
         if (capabilities.canReadEmployees) add(HrAdminSection.EMPLOYEES)
         if (capabilities.canReadCompanyHr) {
             add(HrAdminSection.PAYROLL)
+            add(HrAdminSection.ATTENDANCE)
+            add(HrAdminSection.DEVICES)
+            add(HrAdminSection.ADVANCES)
+            add(HrAdminSection.PROMOTIONS)
             add(HrAdminSection.LEAVES)
             add(HrAdminSection.RECRUITMENT)
         }
@@ -183,7 +218,14 @@ fun HrAdminScreen(
                     }
                 }
             }
-            state.error?.let { Feedback(it, true, actions.clearMessage) }
+            state.error?.let {
+                Feedback(it, true, actions.clearMessage)
+                if (!state.isFresh(state.section)) {
+                    OutlinedButton(actions.retry, Modifier.fillMaxWidth().padding(horizontal = 16.dp), enabled = !state.locked) {
+                        Text("إعادة المحاولة")
+                    }
+                }
+            }
             state.notice?.let { Feedback(it, false, actions.clearMessage) }
             if (state.busy == HrAdminBusy.INITIAL) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -195,6 +237,10 @@ fun HrAdminScreen(
                     HrAdminSection.PAYROLL -> PayrollWorkspace(state, capabilities, actions) { confirmation = it }
                     HrAdminSection.LEAVES -> LeaveWorkspace(state, capabilities, actions) { confirmation = it }
                     HrAdminSection.RECRUITMENT -> RecruitmentWorkspace(state, capabilities, actions) { confirmation = it }
+                    HrAdminSection.ATTENDANCE -> AttendanceWorkspace(state, actions)
+                    HrAdminSection.DEVICES -> DevicesWorkspace(state)
+                    HrAdminSection.ADVANCES -> AdvancesWorkspace(state)
+                    HrAdminSection.PROMOTIONS -> PromotionsWorkspace(state)
                 }
             }
         }
@@ -251,10 +297,10 @@ private fun EmployeeWorkspace(state: HrAdminUiState, capabilities: HrAdminCapabi
         if (wide) {
             Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 EmployeeList(state, actions, Modifier.weight(.95f).fillMaxHeight())
-                EmployeeDetail(state.selectedEmployee, capabilities, state.locked, actions, Modifier.weight(1.05f).fillMaxHeight())
+                EmployeeDetail(state, capabilities, actions, Modifier.weight(1.05f).fillMaxHeight())
             }
         } else if (state.selectedEmployee != null) {
-            EmployeeDetail(state.selectedEmployee, capabilities, state.locked, actions, Modifier.fillMaxSize(), true)
+            EmployeeDetail(state, capabilities, actions, Modifier.fillMaxSize(), true)
         } else {
             EmployeeList(state, actions, Modifier.fillMaxSize())
         }
@@ -317,13 +363,15 @@ private fun EmployeeRow(employee: HrEmployee, locked: Boolean, select: () -> Uni
 
 @Composable
 private fun EmployeeDetail(
-    employee: HrEmployee?,
+    state: HrAdminUiState,
     capabilities: HrAdminCapabilities,
-    locked: Boolean,
     actions: HrAdminActions,
     modifier: Modifier,
     back: Boolean = false,
 ) {
+    val employee = state.selectedEmployee
+    val locked = state.locked
+    var showAccount by remember(employee?.id) { mutableStateOf(false) }
     var showTermination by remember(employee?.id) { mutableStateOf(false) }
     var terminationDate by remember(employee?.id) { mutableStateOf("") }
     var terminationReason by remember(employee?.id) { mutableStateOf("") }
@@ -379,6 +427,16 @@ private fun EmployeeDetail(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (capabilities.role.equals("admin", true) && employee.userId != capabilities.currentUserId) {
+                OutlinedButton(
+                    onClick = {
+                        showAccount = true
+                        if (employee.userId == null) actions.loadLinkableUsers("")
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !locked,
+                ) { Text(if (employee.userId == null) "ربط حساب النظام" else "إدارة الحساب المرتبط") }
+            }
         }
     }
     if (showTermination && employee != null) {
@@ -428,18 +486,160 @@ private fun EmployeeDetail(
             },
         )
     }
+    if (showAccount && employee != null) {
+        AccountLinkDialog(
+            employee = employee,
+            state = state,
+            onDismiss = { showAccount = false; actions.clearAccountManager() },
+            onLink = actions.linkEmployeeAccount,
+            onUnlink = actions.unlinkEmployeeAccount,
+            onCreate = actions.createEmployeeAccount,
+        )
+    }
+}
+
+@Composable
+private fun AccountLinkDialog(
+    employee: HrEmployee,
+    state: HrAdminUiState,
+    onDismiss: () -> Unit,
+    onLink: (Long) -> Unit,
+    onUnlink: () -> Unit,
+    onCreate: (CreateEmployeeAccountCommand) -> Unit,
+) {
+    var confirmUnlink by remember { mutableStateOf(false) }
+    var username by remember(employee.id) { mutableStateOf("") }
+    var password by remember(employee.id) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("حساب ${employee.fullName}", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()).imePadding(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (state.busy == HrAdminBusy.EMPLOYEE_ACCOUNT) CircularProgressIndicator()
+                else if (employee.userId != null) {
+                    Text("الحساب المرتبط #${employee.userId}")
+                    Text("فك الربط لا يحذف الحساب، لكنه يفصل وصوله عن سجل الموظف.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton({ confirmUnlink = true }, enabled = !state.locked) { Text("فك الربط") }
+                } else {
+                    Text("حسابات نشطة وغير مرتبطة", fontWeight = FontWeight.SemiBold)
+                    if (state.linkableUsers.isEmpty()) Text("لا توجد حسابات قابلة للربط", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    state.linkableUsers.take(8).forEach { user ->
+                        OutlinedButton({ onLink(user.id) }, Modifier.fillMaxWidth(), enabled = !state.locked) {
+                            Text("${user.name} — ${user.identifier}")
+                        }
+                    }
+                    Text("أو إنشاء حساب جديد", fontWeight = FontWeight.SemiBold)
+                    OutlinedTextField(username, { username = it.take(64) }, label = { Text("اسم المستخدم") }, singleLine = true)
+                    OutlinedTextField(
+                        password,
+                        { password = it.take(128) },
+                        label = { Text("كلمة مرور مؤقتة") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    )
+                    Button(
+                        onClick = {
+                            onCreate(CreateEmployeeAccountCommand(employee.fullName, employee.email, username, password, "cashier", employee.branchId))
+                        },
+                        enabled = !state.locked && username.isNotBlank() && password.isNotBlank(),
+                    ) { Text("إنشاء وربط") }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { OutlinedButton(onDismiss) { Text("إغلاق") } },
+    )
+    if (confirmUnlink) {
+        AlertDialog(
+            onDismissRequest = { confirmUnlink = false },
+            title = { Text("فك ربط الحساب؟") },
+            text = { Text("سيبقى الحساب موجوداً، لكنه لن يعود مرتبطاً بهذا الموظف.") },
+            confirmButton = { Button({ confirmUnlink = false; onUnlink() }) { Text("تأكيد فك الربط") } },
+            dismissButton = { OutlinedButton({ confirmUnlink = false }) { Text("رجوع") } },
+        )
+    }
 }
 
 @Composable
 private fun PayrollWorkspace(state: HrAdminUiState, capabilities: HrAdminCapabilities, actions: HrAdminActions, confirm: (Confirmation) -> Unit) {
-    BoxWithConstraints(Modifier.fillMaxSize().padding(14.dp)) {
-        val wide = maxWidth >= 760.dp
-        if (wide) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            PayrollList(state, capabilities.canManageCompanyHr, actions, confirm, Modifier.weight(.8f).fillMaxHeight())
-            PayrollDetail(state.payrollDetail, capabilities, state.locked, actions, confirm, Modifier.weight(1.2f).fillMaxHeight())
-        } else if (state.payrollDetail != null) {
-            PayrollDetail(state.payrollDetail, capabilities, state.locked, actions, confirm, Modifier.fillMaxSize(), true)
-        } else PayrollList(state, capabilities.canManageCompanyHr, actions, confirm, Modifier.fillMaxSize())
+    var showLegal by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+            onClick = { showLegal = true; actions.loadLegalSettings() },
+            enabled = !state.locked,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("الإعدادات القانونية للرواتب") }
+        BoxWithConstraints(Modifier.weight(1f)) {
+            val wide = maxWidth >= 760.dp
+            if (wide) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                PayrollList(state, capabilities.canManageCompanyHr, actions, confirm, Modifier.weight(.8f).fillMaxHeight())
+                PayrollDetail(state.payrollDetail, capabilities, state.locked, actions, confirm, Modifier.weight(1.2f).fillMaxHeight())
+            } else if (state.payrollDetail != null) {
+                PayrollDetail(state.payrollDetail, capabilities, state.locked, actions, confirm, Modifier.fillMaxSize(), true)
+            } else PayrollList(state, capabilities.canManageCompanyHr, actions, confirm, Modifier.fillMaxSize())
+        }
+    }
+    if (showLegal) LegalSettingsDialog(state, capabilities, { showLegal = false }, actions.updateLegalSettings)
+}
+
+@Composable
+private fun LegalSettingsDialog(
+    state: HrAdminUiState,
+    capabilities: HrAdminCapabilities,
+    onDismiss: () -> Unit,
+    onSave: (PayrollLegalSettings) -> Unit,
+) {
+    val loaded = state.legalSettings
+    var draft by remember(loaded) { mutableStateOf(loaded) }
+    var confirmSave by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("الإعدادات القانونية للرواتب", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState())
+                    .imePadding(),
+                verticalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                when {
+                    state.busy == HrAdminBusy.LEGAL_SETTINGS && loaded == null -> CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
+                    loaded == null -> Text("تعذر تحميل الإعدادات الحالية. أغلق النافذة وأعد المحاولة.")
+                    else -> {
+                        val value = draft ?: loaded
+                        Row(verticalAlignment = Alignment.CenterVertically) { Text("الضمان الاجتماعي", Modifier.weight(1f)); Switch(value.socialSecurityEnabled, { draft = value.copy(socialSecurityEnabled = it) }) }
+                        OutlinedTextField(value.socialSecurityEmployeeRate, { draft = value.copy(socialSecurityEmployeeRate = it) }, Modifier.fillMaxWidth(), label = { Text("نسبة الموظف %") }, singleLine = true)
+                        OutlinedTextField(value.socialSecurityEmployerRate, { draft = value.copy(socialSecurityEmployerRate = it) }, Modifier.fillMaxWidth(), label = { Text("نسبة الشركة %") }, singleLine = true)
+                        Row(verticalAlignment = Alignment.CenterVertically) { Text("ضريبة الدخل", Modifier.weight(1f)); Switch(value.incomeTaxEnabled, { draft = value.copy(incomeTaxEnabled = it) }) }
+                        OutlinedTextField(value.incomeTaxExemption, { draft = value.copy(incomeTaxExemption = it) }, Modifier.fillMaxWidth(), label = { Text("الإعفاء الشهري") }, singleLine = true)
+                        Row(verticalAlignment = Alignment.CenterVertically) { Text("نهاية الخدمة", Modifier.weight(1f)); Switch(value.endOfServiceEnabled, { draft = value.copy(endOfServiceEnabled = it) }) }
+                        OutlinedTextField(value.endOfServiceDaysPerYear, { draft = value.copy(endOfServiceDaysPerYear = it) }, Modifier.fillMaxWidth(), label = { Text("أيام الاستحقاق لكل سنة") }, singleLine = true)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { confirmSave = true },
+                enabled = capabilities.canManageCompanyHr && state.legalSettingsLoaded && draft != null && !state.locked,
+            ) { Text("مراجعة وحفظ") }
+        },
+        dismissButton = { OutlinedButton(onDismiss) { Text("إغلاق") } },
+    )
+    if (confirmSave && loaded != null && draft != null) {
+        AlertDialog(
+            onDismissRequest = { confirmSave = false },
+            title = { Text("تأكيد تحديث إعدادات الرواتب") },
+            text = { Text("قبل: ضمان ${loaded.socialSecurityEmployeeRate}%، إعفاء ${loaded.incomeTaxExemption}، نهاية خدمة ${loaded.endOfServiceDaysPerYear} يوم.\nبعد: ضمان ${draft!!.socialSecurityEmployeeRate}%، إعفاء ${draft!!.incomeTaxExemption}، نهاية خدمة ${draft!!.endOfServiceDaysPerYear} يوم.") },
+            confirmButton = { Button({ confirmSave = false; onSave(requireNotNull(draft)) }) { Text("تأكيد الحفظ") } },
+            dismissButton = { OutlinedButton({ confirmSave = false }) { Text("رجوع") } },
+        )
     }
 }
 
@@ -666,6 +866,102 @@ private fun VacanciesPanel(state: HrAdminUiState, capabilities: HrAdminCapabilit
 }
 
 @Composable
+private fun AttendanceWorkspace(state: HrAdminUiState, actions: HrAdminActions) {
+    HrCard(Modifier.fillMaxSize().padding(14.dp)) {
+        SectionTitle("الحضور والانصراف", "السجل الفعلي القادم من أجهزة الشركة", Icons.Rounded.Schedule)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = state.attendancePeriod,
+                onValueChange = actions.attendancePeriod,
+                modifier = Modifier.weight(1f),
+                label = { Text("الشهر YYYY-MM") },
+                singleLine = true,
+                enabled = !state.locked,
+            )
+            Button(actions.refreshAttendance, enabled = !state.locked) { Text("تحديث") }
+        }
+        Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp)) {
+            MetricTile("السجلات", state.attendance?.total ?: 0, Modifier.weight(1f))
+            MoneyTile("إجمالي الساعات", state.attendance?.totalHours ?: "0", Modifier.weight(1f), true)
+        }
+        if (state.busy == HrAdminBusy.ATTENDANCE) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        } else if (state.attendance?.rows.isNullOrEmpty()) {
+            EmptyState("لا توجد سجلات حضور في الشهر المحدد")
+        } else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(state.attendance?.rows.orEmpty(), key = { it.id }) { row ->
+                Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(20.dp, 9.dp, 20.dp, 9.dp)).padding(13.dp)) {
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                        Text(row.employeeName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        StatusPill(if (row.source == "fingerprint") "بصمة" else "يدوي", row.source == "fingerprint")
+                    }
+                    Text(row.attendanceDate, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("دخول ${row.checkIn ?: "—"}  •  خروج ${row.checkOut ?: "—"}  •  ${row.hours} ساعة", style = MaterialTheme.typography.bodyLarge)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DevicesWorkspace(state: HrAdminUiState) {
+    HrCard(Modifier.fillMaxSize().padding(14.dp)) {
+        SectionTitle("أجهزة البصمة", "حالة الربط والاستقبال من الخادم", Icons.Rounded.Fingerprint)
+        if (state.busy == HrAdminBusy.DEVICES) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        else if (state.devices.isEmpty()) EmptyState("لا توجد أجهزة بصمة مسجلة")
+        else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(state.devices, key = { it.id }) { device ->
+                Column(Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(24.dp, 10.dp, 24.dp, 10.dp)).padding(14.dp)) {
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                        Text(device.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold)
+                        StatusPill(if (device.online) "متصل" else "غير متصل", device.online)
+                    }
+                    Text(listOfNotNull(device.branchName, device.location, device.serialNumber).joinToString(" • ").ifBlank { "بيانات الموقع غير مسجلة" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("مستلم ${device.receivedPunches}  •  يحتاج مطابقة ${device.pendingPunches}", style = MaterialTheme.typography.bodyLarge)
+                    device.lastSeenAt?.let { Text("آخر اتصال $it", style = MaterialTheme.typography.bodyMedium) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdvancesWorkspace(state: HrAdminUiState) {
+    HrCard(Modifier.fillMaxSize().padding(14.dp)) {
+        SectionTitle("سلف الموظفين", "الأرصدة والاستقطاعات المعتمدة", Icons.Rounded.AccountBalanceWallet)
+        if (state.busy == HrAdminBusy.ADVANCES) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        else if (state.advances.isEmpty()) EmptyState("لا توجد سلف مسجلة")
+        else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            items(state.advances, key = { it.id }) { advance ->
+                Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(20.dp)).padding(13.dp)) {
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text(advance.employeeName, fontWeight = FontWeight.ExtraBold); StatusPill(advance.status, advance.status == "ACTIVE") }
+                    Text("المبلغ ${advance.amount} د.ع  •  المتبقي ${advance.remainingAmount} د.ع", style = MaterialTheme.typography.bodyLarge)
+                    advance.monthlyDeduction?.let { Text("الاستقطاع الشهري $it د.ع", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PromotionsWorkspace(state: HrAdminUiState) {
+    HrCard(Modifier.fillMaxSize().padding(14.dp)) {
+        SectionTitle("الترقيات", "التغييرات الوظيفية ومسار الاعتماد", Icons.Rounded.TrendingUp)
+        if (state.busy == HrAdminBusy.PROMOTIONS) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        else if (state.promotions.isEmpty()) EmptyState("لا توجد ترقيات مسجلة")
+        else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            items(state.promotions, key = { it.id }) { promotion ->
+                Column(Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(22.dp, 10.dp, 22.dp, 10.dp)).padding(13.dp)) {
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text(promotion.employeeName, fontWeight = FontWeight.ExtraBold); StatusPill(promotion.status, promotion.status == "approved") }
+                    Text("${promotion.fromTitle ?: "—"}  ←  ${promotion.toTitle ?: "—"}", style = MaterialTheme.typography.titleMedium)
+                    Text("تاريخ السريان ${promotion.effectiveDate}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun HrCard(modifier: Modifier, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
     Card(
         modifier,
@@ -747,6 +1043,10 @@ private fun EmptyState(text: String) {
 }
 
 private fun HrAdminSection.label() = when (this) {
+    HrAdminSection.ATTENDANCE -> "الحضور"
+    HrAdminSection.DEVICES -> "الأجهزة"
+    HrAdminSection.ADVANCES -> "السلف"
+    HrAdminSection.PROMOTIONS -> "الترقيات"
     HrAdminSection.EMPLOYEES -> "الموظفون"
     HrAdminSection.PAYROLL -> "الرواتب"
     HrAdminSection.LEAVES -> "الإجازات"
@@ -754,6 +1054,10 @@ private fun HrAdminSection.label() = when (this) {
 }
 
 private fun HrAdminSection.icon(): ImageVector = when (this) {
+    HrAdminSection.ATTENDANCE -> Icons.Rounded.Schedule
+    HrAdminSection.DEVICES -> Icons.Rounded.Fingerprint
+    HrAdminSection.ADVANCES -> Icons.Rounded.AccountBalanceWallet
+    HrAdminSection.PROMOTIONS -> Icons.Rounded.TrendingUp
     HrAdminSection.EMPLOYEES -> Icons.Rounded.Groups
     HrAdminSection.PAYROLL -> Icons.Rounded.Payments
     HrAdminSection.LEAVES -> Icons.Rounded.CalendarMonth

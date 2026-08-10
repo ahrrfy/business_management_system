@@ -429,12 +429,62 @@ class NativeFeatureCatalogTest {
             NativeScreen.SYSTEM_SETTINGS,
             NativeFeatureCatalog.resolve(NativeDestination.Module(NativeModule.SETTINGS), administrator, installed),
         )
-        assertNull(
+        assertEquals(
+            NativeScreen.SYSTEM_SETTINGS,
             NativeFeatureCatalog.resolve(
                 NativeDestination.Module(NativeModule.SETTINGS),
                 administrator.copy(role = "manager"),
                 installed,
             ),
+        )
+        assertNull(
+            NativeFeatureCatalog.resolve(
+                NativeDestination.Module(NativeModule.SETTINGS),
+                administrator.copy(role = "manager", grants = emptyMap()),
+                installed,
+            ),
+        )
+    }
+
+    @Test
+    fun `shifts is standalone and reachable only through the management policy`() {
+        val installed = setOf(NativeScreen.SHIFTS)
+        val manager = NavigationPrincipal(
+            authenticated = true,
+            role = "manager",
+            grants = mapOf(NativeModule.TREASURY to ModuleGrant.READ),
+        )
+
+        assertTrue(NativeFeatureCatalog.definition(NativeScreen.SHIFTS).modules.isEmpty())
+        assertEquals(
+            NativeScreen.SHIFTS,
+            NativeFeatureCatalog.resolve(NativeDestination.Shifts, manager, installed),
+        )
+        assertNull(
+            NativeFeatureCatalog.resolve(
+                NativeDestination.Shifts,
+                NavigationPrincipal(authenticated = true, role = "manager"),
+                installed,
+            ),
+        )
+    }
+
+    @Test
+    fun `store operations and store administration resolve to distinct native surfaces`() {
+        val principal = NavigationPrincipal(
+            authenticated = true,
+            role = "manager",
+            grants = mapOf(NativeModule.STORE to ModuleGrant.FULL),
+        )
+        val installed = setOf(NativeScreen.STORE_DELIVERY, NativeScreen.STORE_ADMIN)
+
+        assertEquals(
+            NativeScreen.STORE_DELIVERY,
+            NativeFeatureCatalog.resolve(NativeDestination.Module(NativeModule.STORE), principal, installed),
+        )
+        assertEquals(
+            NativeScreen.STORE_ADMIN,
+            NativeFeatureCatalog.resolve(NativeDestination.StoreAdmin, principal, installed),
         )
     }
 }
