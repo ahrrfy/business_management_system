@@ -264,5 +264,28 @@ describe("R — بوّابة طابور القراءة وإعادة الطباع
     expect(printable.rows).toHaveLength(1);
     const invoice = await printCaller.sales.get({ invoiceId: printable.rows[0].id });
     expect(invoice?.invoiceNumber).toBe(printable.rows[0].invoiceNumber);
+
+    const retail = await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RETAIL" },
+      { userId: 2, branchId: 1 },
+    );
+    await db().insert(s.invoices).values({
+      id: 901,
+      invoiceNumber: "INV-RET-901",
+      sourceType: "POS",
+      sourceId: "r1-retail",
+      branchId: 1,
+      shiftId: retail.shiftId,
+      priceTier: "RETAIL",
+      subtotal: "5000.00",
+      taxAmount: "0.00",
+      discountAmount: "0.00",
+      total: "5000.00",
+      costTotal: "0.00",
+      status: "PAID",
+      paidAmount: "5000.00",
+      createdBy: 2,
+    });
+    await expect(printCaller.sales.get({ invoiceId: 901 })).resolves.toBeNull();
   });
 });
