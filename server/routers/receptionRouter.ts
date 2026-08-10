@@ -86,10 +86,9 @@ function assertDraftImages(lines: Array<{ designImages?: string | null }>) {
 }
 
 export const receptionRouter = router({
-  /** طابور فواتير المحطة: keyset + فلاتر (§٨.٥ — الافتراض «ورديتي» يقرّره العميل بتمرير shiftIds).
-   *  يبقى على workordersCashierProcedure: أيّ دور استقبالٍ فعليّ (workorders:FULL يفتح الوردية ويُتمّ
-   *  الطلبات) يمرّ أصلاً؛ وإعادة الطباعة تجري عبر sales.get (invoiceViewProcedure) لا هنا. */
-  invoiceQueue: workordersCashierProcedure
+  /** طابور فواتير المحطة: قراءة/إعادة طباعة فقط. بوابة exec تُدرج مشغّل الطباعة وتبقي
+   *  القبض/الاسترداد والطفرات المالية أدناه خلف workordersCashierProcedure. */
+  invoiceQueue: workordersExecProcedure
     .input(
       z.object({
         branchId: z.number().int().positive().nullish(),

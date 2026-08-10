@@ -13,7 +13,7 @@
  *       (تأكيد المالك: الموظّف يُحاسَب على ما استلمه هو)، وidempotency لا يزدوج.
  *  C2 — الحصر البنيويّ: فاتورة وردية RETAIL تُرفض FORBIDDEN (ليست باباً على مبيعات التجزئة).
  *  C3 — نقديّ بلا وردية مفتوحة ⇒ PRECONDITION_FAILED برسالة «درجك أنت».
- *  R1 (I19) — بوّابة الطابور: warehouse/auditor/print_operator ⇒ FORBIDDEN، والكاشير يمرّ.
+ *  R1 — بوّابة الطابور: warehouse/auditor ⇒ FORBIDDEN، والكاشير ومشغّل الطباعة يمران للقراءة فقط.
  */
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -246,17 +246,23 @@ describe("C — تسديد دفعة من المحطة (reception.collectOnInvoic
   });
 });
 
-describe("R — بوّابة الطابور (I19: صفر توسيع صلاحيات)", () => {
-  it("warehouse/auditor/print_operator ⇒ FORBIDDEN، والكاشير يمرّ", async () => {
+describe("R — بوّابة طابور القراءة وإعادة الطباعة", () => {
+  it("warehouse/auditor ممنوعان، والكاشير ومشغّل الطباعة يقرآن الفاتورة", async () => {
     const rec = await openReception();
     await directSale(rec.shiftId, "r1-sale");
 
-    for (const uid of [6, 7, 8]) {
+    for (const uid of [6, 7]) {
       const caller = await callerFor(uid);
       await expect(caller.reception.invoiceQueue({ sinceDays: 7 })).rejects.toMatchObject({ code: "FORBIDDEN" });
     }
     const cashierCaller = await callerFor(2);
     const ok = await cashierCaller.reception.invoiceQueue({ sinceDays: 7 });
     expect(ok.rows.length).toBe(1);
+
+    const printCaller = await callerFor(8);
+    const printable = await printCaller.reception.invoiceQueue({ sinceDays: 7 });
+    expect(printable.rows).toHaveLength(1);
+    const invoice = await printCaller.sales.get({ invoiceId: printable.rows[0].invoiceId });
+    expect(invoice?.invoiceNumber).toBe(printable.rows[0].invoiceNumber);
   });
 });
