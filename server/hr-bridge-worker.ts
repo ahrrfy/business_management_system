@@ -6,7 +6,7 @@
  */
 import { closeDb } from "./db";
 import { logger } from "./logger";
-import { assertEnabledDeviceIdentityReadiness } from "./services/hrDeviceService";
+import { assertEnabledDeviceIdentityReadiness } from "./services/hrDevices/readiness";
 import {
   assertHrDeviceBridgeStartupConfig,
   startHrDeviceBridge,

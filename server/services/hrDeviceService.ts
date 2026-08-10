@@ -18,7 +18,7 @@ import {
 import { fullEmployeeName } from "@shared/hr";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
-import { enabledDeviceIdentityRuntimeFailure, onlineDeviceIds } from "./hrDevices/registry";
+import { onlineDeviceIds } from "./hrDevices/registry";
 import { resolveBridgeConfig } from "./hrDevices/types";
 import {
   enabledDeviceIdentityFailure,
@@ -167,11 +167,7 @@ async function assertCandidateIdentityReady(candidate: {
   if (failure) throw new TRPCError({ code: "BAD_REQUEST", message: failure });
 }
 
-/** يفشل عامل الجسر قبل listen إذا كانت أي هوية مفعّلة غير مكتملة أو مشتركة. */
-export async function assertEnabledDeviceIdentityReadiness(): Promise<void> {
-  const failure = await enabledDeviceIdentityRuntimeFailure(resolveBridgeSecurityConfig());
-  if (failure) throw new Error(`HR_DEVICE_IDENTITY_NOT_READY:${failure}`);
-}
+export { assertEnabledDeviceIdentityReadiness } from "./hrDevices/readiness";
 
 function toValues(input: DeviceInput) {
   return {

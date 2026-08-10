@@ -665,6 +665,12 @@ function verifySourceContract() {
   if (!bridgeWorker.includes("assertEnabledDeviceIdentityReadiness")) {
     fail("attendance bridge worker does not audit enabled device identity bindings before listen");
   }
+  if (
+    !bridgeWorker.includes("./services/hrDevices/readiness")
+    || bridgeWorker.includes("./services/hrDeviceService")
+  ) {
+    fail("attendance bridge worker must load identity readiness from the isolated startup module");
+  }
   for (const fragment of ["await startHrDeviceBridge", "options.onReady()", "HR_BRIDGE_DB_READINESS_TIMEOUT"]) {
     if (!bridgeWorker.includes(fragment)) fail("attendance bridge worker does not prove listener readiness");
   }
