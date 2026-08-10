@@ -10,7 +10,10 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
-import { reconcileCustomerBalances, reconcileSupplierBalances } from "./reconcileService";
+import {
+  reconcileCustomerBalances,
+  reconcileSupplierBalances,
+} from "./reconcileService";
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
 function rowsOf(res: unknown): any[] {
@@ -19,7 +22,10 @@ function rowsOf(res: unknown): any[] {
 }
 
 /** نسبة مئوية بقسمة آمنة (صفر المقام ⇒ "0.00"). */
-function marginPct(numerator: ReturnType<typeof money>, denominator: ReturnType<typeof money>): string {
+function marginPct(
+  numerator: ReturnType<typeof money>,
+  denominator: ReturnType<typeof money>,
+): string {
   if (denominator.isZero()) return "0.00";
   return numerator.div(denominator).times(100).toDecimalPlaces(2).toString();
 }
@@ -61,11 +67,21 @@ export interface ProfitLossResult {
 
 // مُصدَّرة (تدقيق ١٧/٧): مصدر الحقيقة الوحيد لصيغة الربح — يستعملها الإقفال السنوي (yearEndService)
 // كي لا تنحرف أرقام الإقفال عن قائمة الدخل المعروضة للمالك.
-export async function plSnapshot(from: string, to: string, branchId?: number): Promise<PLSnapshot> {
+export async function plSnapshot(
+  from: string,
+  to: string,
+  branchId?: number,
+): Promise<PLSnapshot> {
   const db = getDb();
   const empty: PLSnapshot = {
-    revenue: "0", cogs: "0", grossProfit: "0", grossMarginPct: "0.00",
-    expenseLines: [], totalExpenses: "0", netProfit: "0", netMarginPct: "0.00",
+    revenue: "0",
+    cogs: "0",
+    grossProfit: "0",
+    grossMarginPct: "0.00",
+    expenseLines: [],
+    totalExpenses: "0",
+    netProfit: "0",
+    netMarginPct: "0.00",
   };
   if (!db) return empty;
 
@@ -269,26 +285,41 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
     label: EXPENSE_CATEGORY_AR[String(r.category)] ?? String(r.category),
     amount: toDbMoney(money(r.amount ?? 0)),
   }));
-  let totalExpenses = exRows.reduce((acc, r) => acc.add(money(r.amount ?? 0)), money(0));
+  let totalExpenses = exRows.reduce(
+    (acc, r) => acc.add(money(r.amount ?? 0)),
+    money(0),
+  );
 
   const payroll = money(pr.amount ?? 0);
   // العكس في فترة لاحقة يجب أن يظهر كتخفيض مصروف، لا أن يختفي لأن صافي الفترة سالب.
   if (!payroll.isZero()) {
-    expenseLines.push({ key: "PAYROLL", label: "رواتب (مسيّر الرواتب)", amount: toDbMoney(payroll) });
+    expenseLines.push({
+      key: "PAYROLL",
+      label: "رواتب (مسيّر الرواتب)",
+      amount: toDbMoney(payroll),
+    });
     totalExpenses = totalExpenses.add(payroll);
   }
 
   // خسائر المخزون (نثرية + تلف إنتاج) — سطر مستقلّ يضمن عدم تضخيم صافي الربح بإغفالها.
   const stockLoss = money(sl.amount ?? 0);
   if (stockLoss.gt(0)) {
-    expenseLines.push({ key: "STOCK_LOSS", label: "نثرية وتلف (مخزون)", amount: toDbMoney(stockLoss) });
+    expenseLines.push({
+      key: "STOCK_LOSS",
+      label: "نثرية وتلف (مخزون)",
+      amount: toDbMoney(stockLoss),
+    });
     totalExpenses = totalExpenses.add(stockLoss);
   }
 
   // GIFT_OUT (G-م٢): هدايا وترويج للعملاء بالكلفة — سطر مصروف مستقلّ يَخفض صافي الربح.
   const giftExpense = money(gf.amount ?? 0);
   if (giftExpense.gt(0)) {
-    expenseLines.push({ key: "GIFTS", label: "هدايا وترويج", amount: toDbMoney(giftExpense) });
+    expenseLines.push({
+      key: "GIFTS",
+      label: "هدايا وترويج",
+      amount: toDbMoney(giftExpense),
+    });
     totalExpenses = totalExpenses.add(giftExpense);
   }
 
@@ -305,21 +336,33 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
   // خسائر شحن/كمرك مرتجعات الشراء — سطر مستقلّ يَخفض صافي الربح (الشحن الوارد غير مسترد عند الإرجاع).
   const purchReturnLandedLoss = money(prl.amount ?? 0);
   if (purchReturnLandedLoss.gt(0)) {
-    expenseLines.push({ key: "PURCH_RETURN_LANDED", label: "خسائر شحن/كمرك مرتجعات الشراء", amount: toDbMoney(purchReturnLandedLoss) });
+    expenseLines.push({
+      key: "PURCH_RETURN_LANDED",
+      label: "خسائر شحن/كمرك مرتجعات الشراء",
+      amount: toDbMoney(purchReturnLandedLoss),
+    });
     totalExpenses = totalExpenses.add(purchReturnLandedLoss);
   }
 
   // FI-02: مصروف إهلاك الأصول الثابتة (غير نقديّ) — سطر مستقلّ يَخفض صافي الربح.
   const depExpense = money(dep.amount ?? 0);
   if (depExpense.gt(0)) {
-    expenseLines.push({ key: "DEPRECIATION", label: "إهلاك الأصول الثابتة", amount: toDbMoney(depExpense) });
+    expenseLines.push({
+      key: "DEPRECIATION",
+      label: "إهلاك الأصول الثابتة",
+      amount: toDbMoney(depExpense),
+    });
     totalExpenses = totalExpenses.add(depExpense);
   }
 
   // delivery-cod: أجور توصيل وعجز مناديب — سطر مستقلّ يَخفض صافي الربح (وإلا يُبالَغ في الربح).
   const deliveryLoss = money(dl.amount ?? 0);
   if (deliveryLoss.gt(0)) {
-    expenseLines.push({ key: "DELIVERY_COST", label: "أجور توصيل وعجز مناديب", amount: toDbMoney(deliveryLoss) });
+    expenseLines.push({
+      key: "DELIVERY_COST",
+      label: "أجور توصيل وعجز مناديب",
+      amount: toDbMoney(deliveryLoss),
+    });
     totalExpenses = totalExpenses.add(deliveryLoss);
   }
 
@@ -328,14 +371,22 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
   const disposalPL = money(dpl.amount ?? 0); // موجب=ربح، سالب=خسارة
   if (!disposalPL.isZero()) {
     const expenseEffect = disposalPL.neg();
-    expenseLines.push({ key: "ASSET_DISPOSAL_PL", label: "صافي ربح/خسارة بيع أصول", amount: toDbMoney(expenseEffect) });
+    expenseLines.push({
+      key: "ASSET_DISPOSAL_PL",
+      label: "صافي ربح/خسارة بيع أصول",
+      amount: toDbMoney(expenseEffect),
+    });
     totalExpenses = totalExpenses.add(expenseEffect);
   }
 
   // exchange-house: عمولات صيرفة — سطر مصروف مستقلّ.
   const exchangeFee = money(xf.amount ?? 0);
   if (exchangeFee.gt(0)) {
-    expenseLines.push({ key: "EXCHANGE_FEE", label: "عمولات صيرفة", amount: toDbMoney(exchangeFee) });
+    expenseLines.push({
+      key: "EXCHANGE_FEE",
+      label: "عمولات صيرفة",
+      amount: toDbMoney(exchangeFee),
+    });
     totalExpenses = totalExpenses.add(exchangeFee);
   }
 
@@ -343,7 +394,11 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
   const exchangeFx = money(xfx.amount ?? 0); // موجب=مكسب
   if (!exchangeFx.isZero()) {
     const expenseEffect = exchangeFx.neg();
-    expenseLines.push({ key: "EXCHANGE_FX_DIFF", label: "صافي فرق صرف العملات", amount: toDbMoney(expenseEffect) });
+    expenseLines.push({
+      key: "EXCHANGE_FX_DIFF",
+      label: "صافي فرق صرف العملات",
+      amount: toDbMoney(expenseEffect),
+    });
     totalExpenses = totalExpenses.add(expenseEffect);
   }
 
@@ -352,7 +407,11 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
   const stocktakePL = money(stk.amount ?? 0);
   if (!stocktakePL.isZero()) {
     const expenseEffect = stocktakePL.neg();
-    expenseLines.push({ key: "STOCKTAKE_ADJUST", label: "تسويات الجرد (عجز/زيادة)", amount: toDbMoney(expenseEffect) });
+    expenseLines.push({
+      key: "STOCKTAKE_ADJUST",
+      label: "تسويات الجرد (عجز/زيادة)",
+      amount: toDbMoney(expenseEffect),
+    });
     totalExpenses = totalExpenses.add(expenseEffect);
   }
 
@@ -360,7 +419,11 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
   const iqdRoundPL = money(iqd.amount ?? 0);
   if (!iqdRoundPL.isZero()) {
     const expenseEffect = iqdRoundPL.neg();
-    expenseLines.push({ key: "IQD_ROUNDING", label: "تقريب النقد العراقي", amount: toDbMoney(expenseEffect) });
+    expenseLines.push({
+      key: "IQD_ROUNDING",
+      label: "تقريب النقد العراقي",
+      amount: toDbMoney(expenseEffect),
+    });
     totalExpenses = totalExpenses.add(expenseEffect);
   }
 
@@ -369,7 +432,11 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
   const revalPL = money(revalRow.amount ?? 0);
   if (!revalPL.isZero()) {
     const expenseEffect = revalPL.neg();
-    expenseLines.push({ key: "INVENTORY_REVALUATION", label: "إعادة تقييم المخزون", amount: toDbMoney(expenseEffect) });
+    expenseLines.push({
+      key: "INVENTORY_REVALUATION",
+      label: "إعادة تقييم المخزون",
+      amount: toDbMoney(expenseEffect),
+    });
     totalExpenses = totalExpenses.add(expenseEffect);
   }
 
@@ -401,7 +468,11 @@ export async function getProfitAndLoss(opts: {
   };
   if (opts.compareFrom && opts.compareTo) {
     result.comparePeriod = { from: opts.compareFrom, to: opts.compareTo };
-    result.previous = await plSnapshot(opts.compareFrom, opts.compareTo, opts.branchId);
+    result.previous = await plSnapshot(
+      opts.compareFrom,
+      opts.compareTo,
+      opts.branchId,
+    );
   }
   return result;
 }
@@ -412,6 +483,7 @@ export interface LedgerRow {
   id: number;
   entryDate: string;
   entryType: string;
+  branchId: number | null;
   branchName: string | null;
   revenue: string;
   cost: string;
@@ -422,6 +494,27 @@ export interface LedgerRow {
   invoiceNumber: string | null;
   purchaseOrderId: number | null;
   notes: string | null;
+  receiptId: number | null;
+  voucherNumber: string | null;
+  receiptReferenceNumber: string | null;
+  receiptDirection: "IN" | "OUT" | null;
+  paymentMethod: string | null;
+  cashBucket: "DRAWER" | "TREASURY" | null;
+  receiptStatus: string | null;
+  receiptApprovalStatus: string | null;
+  receiptBranchId: number | null;
+  shiftId: number | null;
+  shiftOwnerName: string | null;
+  createdBy: number | null;
+  createdByName: string | null;
+  receiptCreatedBy: number | null;
+  receiptCreatedByName: string | null;
+  approvedBy: number | null;
+  approvedByName: string | null;
+  approvedAt: string | null;
+  createdAt: string;
+  dedupeKey: string | null;
+  integrityWarnings: string[];
 }
 
 export interface GeneralLedgerResult {
@@ -431,11 +524,37 @@ export interface GeneralLedgerResult {
 }
 
 const LEDGER_ENTRY_TYPES = [
-  "SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "GIFT_OUT",
-  "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF",
-  "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF",
-  "DIGITAL_WALLET_DEPOSIT", "DIGITAL_WALLET_WITHDRAWAL", "DIGITAL_WALLET_CONSUMPTION",
-  "DIGITAL_WALLET_REVERSAL", "DIGITAL_WALLET_ADJUSTMENT", "DIGITAL_WRITEOFF",
+  "SALE",
+  "PURCHASE",
+  "PAYMENT_IN",
+  "PAYMENT_OUT",
+  "RETURN",
+  "ADJUST",
+  "OPENING",
+  "INTERNAL_USE",
+  "WASTAGE",
+  "GIFT_OUT",
+  "CASH_HANDOVER",
+  "CASH_TRANSFER_OUT",
+  "CASH_TRANSFER_IN",
+  "SHIFT_FLOAT_OUT",
+  "TREASURY_FUNDING",
+  "DELIVERY_DISPATCH",
+  "DELIVERY_REMIT",
+  "DELIVERY_FEE",
+  "DELIVERY_WRITEOFF",
+  "EXCHANGE_DEPOSIT",
+  "EXCHANGE_WITHDRAW",
+  "EXCHANGE_FX_BUY",
+  "EXCHANGE_SETTLE",
+  "EXCHANGE_FEE",
+  "EXCHANGE_FX_DIFF",
+  "DIGITAL_WALLET_DEPOSIT",
+  "DIGITAL_WALLET_WITHDRAWAL",
+  "DIGITAL_WALLET_CONSUMPTION",
+  "DIGITAL_WALLET_REVERSAL",
+  "DIGITAL_WALLET_ADJUSTMENT",
+  "DIGITAL_WRITEOFF",
 ] as const;
 
 export async function getGeneralLedger(opts: {
@@ -449,16 +568,31 @@ export async function getGeneralLedger(opts: {
   offset?: number;
 }): Promise<GeneralLedgerResult> {
   const db = getDb();
-  if (!db) return { rows: [], total: 0, totals: { revenue: "0", cost: "0", profit: "0", amount: "0" } };
+  if (!db)
+    return {
+      rows: [],
+      total: 0,
+      totals: { revenue: "0", cost: "0", profit: "0", amount: "0" },
+    };
 
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), 2000);
   const offset = Math.max(opts.offset ?? 0, 0);
 
-  const conds = [sql`ae.entryDate >= ${opts.from}`, sql`ae.entryDate <= ${opts.to}`];
+  const conds = [
+    sql`ae.entryDate >= ${opts.from}`,
+    sql`ae.entryDate <= ${opts.to}`,
+  ];
   if (opts.branchId) conds.push(sql`ae.branchId = ${opts.branchId}`);
-  const types = (opts.entryTypes ?? []).filter((t) => (LEDGER_ENTRY_TYPES as readonly string[]).includes(t));
+  const types = (opts.entryTypes ?? []).filter((t) =>
+    (LEDGER_ENTRY_TYPES as readonly string[]).includes(t),
+  );
   if (types.length) {
-    conds.push(sql`ae.entryType IN (${sql.join(types.map((t) => sql`${t}`), sql`, `)})`);
+    conds.push(
+      sql`ae.entryType IN (${sql.join(
+        types.map((t) => sql`${t}`),
+        sql`, `,
+      )})`,
+    );
   }
   const q = opts.q?.trim();
   if (q) {
@@ -475,12 +609,13 @@ export async function getGeneralLedger(opts: {
   }
   const where = sql.join(conds, sql` AND `);
 
-  const rows = rowsOf(
+  const rawRows = rowsOf(
     await db.execute(sql`
       SELECT
         ae.id AS id,
         DATE_FORMAT(ae.entryDate, '%Y-%m-%d') AS entryDate,
         ae.entryType AS entryType,
+        ae.branchId AS branchId,
         b.name AS branchName,
         CAST(ae.revenue AS CHAR) AS revenue,
         CAST(ae.cost AS CHAR) AS cost,
@@ -490,17 +625,69 @@ export async function getGeneralLedger(opts: {
         ae.invoiceId AS invoiceId,
         i.invoiceNumber AS invoiceNumber,
         ae.purchaseOrderId AS purchaseOrderId,
-        ae.notes AS notes
+        ae.notes AS notes,
+        ae.receiptId AS receiptId,
+        r.voucherNumber AS voucherNumber,
+        r.referenceNumber AS receiptReferenceNumber,
+        r.direction AS receiptDirection,
+        r.paymentMethod AS paymentMethod,
+        r.cashBucket AS cashBucket,
+        r.receiptStatus AS receiptStatus,
+        r.receiptApprovalStatus AS receiptApprovalStatus,
+        r.branchId AS receiptBranchId,
+        r.shiftId AS shiftId,
+        shiftOwner.name AS shiftOwnerName,
+        ae.createdBy AS createdBy,
+        COALESCE(entryUser.name, ae.createdByNameSnapshot) AS createdByName,
+        r.createdBy AS receiptCreatedBy,
+        receiptUser.name AS receiptCreatedByName,
+        r.approvedBy AS approvedBy,
+        approver.name AS approvedByName,
+        DATE_FORMAT(r.approvedAt, '%Y-%m-%d %H:%i:%s') AS approvedAt,
+        DATE_FORMAT(ae.createdAt, '%Y-%m-%d %H:%i:%s') AS createdAt,
+        ae.dedupeKey AS dedupeKey
       FROM accountingEntries ae
       LEFT JOIN branches b ON b.id = ae.branchId
       LEFT JOIN customers c ON c.id = ae.customerId
       LEFT JOIN suppliers s ON s.id = ae.supplierId
       LEFT JOIN invoices i ON i.id = ae.invoiceId
+      LEFT JOIN receipts r ON r.id = ae.receiptId
+      LEFT JOIN users entryUser ON entryUser.id = ae.createdBy
+      LEFT JOIN users receiptUser ON receiptUser.id = r.createdBy
+      LEFT JOIN users approver ON approver.id = r.approvedBy
+      LEFT JOIN shifts sh ON sh.id = r.shiftId
+      LEFT JOIN users shiftOwner ON shiftOwner.id = sh.userId
       WHERE ${where}
       ORDER BY ae.entryDate DESC, ae.id DESC
       LIMIT ${limit} OFFSET ${offset}
     `),
-  ) as LedgerRow[];
+  ) as Array<Omit<LedgerRow, "integrityWarnings">>;
+
+  const rows: LedgerRow[] = rawRows.map((row) => {
+    const integrityWarnings: string[] = [];
+    if (!row.createdBy && !row.createdByName && !row.receiptCreatedBy)
+      integrityWarnings.push("ACTOR_MISSING");
+    if (row.receiptId && !row.receiptStatus)
+      integrityWarnings.push("RECEIPT_MISSING");
+    if (
+      row.paymentMethod === "CASH" &&
+      row.cashBucket === "DRAWER" &&
+      !row.shiftId
+    ) {
+      integrityWarnings.push("DRAWER_SHIFT_MISSING");
+    }
+    if (row.receiptApprovalStatus && row.receiptApprovalStatus !== "APPROVED") {
+      integrityWarnings.push("APPROVAL_INCOMPLETE");
+    }
+    if (
+      row.branchId &&
+      row.receiptBranchId &&
+      row.branchId !== row.receiptBranchId
+    ) {
+      integrityWarnings.push("BRANCH_MISMATCH");
+    }
+    return { ...row, integrityWarnings };
+  });
 
   const totalsRow = rowsOf(
     await db.execute(sql`
@@ -603,20 +790,41 @@ export interface FinancialPosition {
 }
 
 export async function getFinancialPosition(
-  opts: { branchId?: number; verify?: boolean; asOf?: string } = {}
+  opts: { branchId?: number; verify?: boolean; asOf?: string } = {},
 ): Promise<FinancialPosition> {
   const db = getDb();
   const zero = "0";
   const empty: FinancialPosition = {
-    cash: zero, card: zero, check: zero, transfer: zero, wallet: zero, telecom: zero, digitalWalletAsset: zero,
-    arDebit: zero, arCredit: zero, inventory: zero, fixedAssets: zero,
-    apCredit: zero, apDebit: zero, customerAdvances: zero, draftAdvances: zero,
-    exchangeDebit: zero, exchangeCredit: zero, deliveryFloat: zero, deliveryFloatCustomerBacked: zero,
+    cash: zero,
+    card: zero,
+    check: zero,
+    transfer: zero,
+    wallet: zero,
+    telecom: zero,
+    digitalWalletAsset: zero,
+    arDebit: zero,
+    arCredit: zero,
+    inventory: zero,
+    fixedAssets: zero,
+    apCredit: zero,
+    apDebit: zero,
+    customerAdvances: zero,
+    draftAdvances: zero,
+    exchangeDebit: zero,
+    exchangeCredit: zero,
+    deliveryFloat: zero,
+    deliveryFloatCustomerBacked: zero,
     deliveryFeeHeldLiability: zero,
-    totalAssets: zero, totalLiabilities: zero, equity: zero,
+    totalAssets: zero,
+    totalLiabilities: zero,
+    equity: zero,
     branchScoped: !!opts.branchId,
-    arReconciled: true, apReconciled: true, arDriftCount: 0, apDriftCount: 0,
-    asOf: opts.asOf ?? null, historicalNote: null,
+    arReconciled: true,
+    apReconciled: true,
+    arDriftCount: 0,
+    apDriftCount: 0,
+    asOf: opts.asOf ?? null,
+    historicalNote: null,
   };
   if (!db) return empty;
 
@@ -635,10 +843,18 @@ export async function getFinancialPosition(
 
   let ar: { d?: string; c?: string };
   let ap: { c?: string; d?: string };
-  let cashRow: { cash?: string; card?: string; cheque?: string; transfer?: string; wallet?: string; telecom?: string };
+  let cashRow: {
+    cash?: string;
+    card?: string;
+    cheque?: string;
+    transfer?: string;
+    wallet?: string;
+    telecom?: string;
+  };
 
   if (isHistorical) {
-    ar = rowsOf(await db.execute(sql`
+    ar = rowsOf(
+      await db.execute(sql`
       SELECT
         CAST(COALESCE(SUM(CASE WHEN t.net > 0 THEN t.net ELSE 0 END), 0) AS CHAR) AS d,
         CAST(COALESCE(SUM(CASE WHEN t.net < 0 THEN -t.net ELSE 0 END), 0) AS CHAR) AS c
@@ -659,9 +875,11 @@ export async function getFinancialPosition(
           ))
         GROUP BY ae.customerId
       ) t
-    `))[0] ?? { d: "0", c: "0" };
+    `),
+    )[0] ?? { d: "0", c: "0" };
 
-    ap = rowsOf(await db.execute(sql`
+    ap = rowsOf(
+      await db.execute(sql`
       SELECT
         CAST(COALESCE(SUM(CASE WHEN t.net > 0 THEN t.net ELSE 0 END), 0) AS CHAR) AS c,
         CAST(COALESCE(SUM(CASE WHEN t.net < 0 THEN -t.net ELSE 0 END), 0) AS CHAR) AS d
@@ -678,9 +896,11 @@ export async function getFinancialPosition(
         WHERE ae.supplierId IS NOT NULL AND ae.entryDate <= ${asOf}
         GROUP BY ae.supplierId
       ) t
-    `))[0] ?? { c: "0", d: "0" };
+    `),
+    )[0] ?? { c: "0", d: "0" };
 
-    cashRow = rowsOf(await db.execute(sql`
+    cashRow = rowsOf(
+      await db.execute(sql`
       SELECT
         CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'CASH' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS cash,
         CAST(COALESCE(SUM(CASE WHEN r.paymentMethod = 'CARD' THEN CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END ELSE 0 END), 0) AS CHAR) AS card,
@@ -695,23 +915,36 @@ export async function getFinancialPosition(
       WHERE r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
         AND COALESCE(ae.entryDate, DATE(r.createdAt)) <= ${asOf}
         ${bId ? sql`AND r.branchId = ${bId}` : sql``}
-    `))[0] ?? { cash: "0", card: "0", cheque: "0", transfer: "0", wallet: "0", telecom: "0" };
+    `),
+    )[0] ?? {
+      cash: "0",
+      card: "0",
+      cheque: "0",
+      transfer: "0",
+      wallet: "0",
+      telecom: "0",
+    };
   } else {
-    ar = rowsOf(await db.execute(sql`
+    ar = rowsOf(
+      await db.execute(sql`
       SELECT
         CAST(COALESCE(SUM(CASE WHEN currentBalance > 0 THEN currentBalance ELSE 0 END), 0) AS CHAR) AS d,
         CAST(COALESCE(SUM(CASE WHEN currentBalance < 0 THEN -currentBalance ELSE 0 END), 0) AS CHAR) AS c
       FROM customers
-    `))[0] ?? { d: "0", c: "0" };
+    `),
+    )[0] ?? { d: "0", c: "0" };
 
-    ap = rowsOf(await db.execute(sql`
+    ap = rowsOf(
+      await db.execute(sql`
       SELECT
         CAST(COALESCE(SUM(CASE WHEN currentBalance > 0 THEN currentBalance ELSE 0 END), 0) AS CHAR) AS c,
         CAST(COALESCE(SUM(CASE WHEN currentBalance < 0 THEN -currentBalance ELSE 0 END), 0) AS CHAR) AS d
       FROM suppliers
-    `))[0] ?? { c: "0", d: "0" };
+    `),
+    )[0] ?? { c: "0", d: "0" };
 
-    cashRow = rowsOf(await db.execute(sql`
+    cashRow = rowsOf(
+      await db.execute(sql`
       SELECT
         CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CASH' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS cash,
         CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CARD' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS card,
@@ -723,14 +956,23 @@ export async function getFinancialPosition(
       FROM receipts
       WHERE receiptStatus = 'COMPLETED' AND receiptApprovalStatus = 'APPROVED'
         ${bId ? sql`AND branchId = ${bId}` : sql``}
-    `))[0] ?? { cash: "0", card: "0", cheque: "0", transfer: "0", wallet: "0", telecom: "0" };
+    `),
+    )[0] ?? {
+      cash: "0",
+      card: "0",
+      cheque: "0",
+      transfer: "0",
+      wallet: "0",
+      telecom: "0",
+    };
   }
 
   // رصيد محافظ المزوّد أصل نقدي مستقل عن وسيلة دفع العملاء المسماة WALLET أعلاه.
   // لا نستبعد المحافظ المعطلة: التعطيل لا يمحو أصلاً قائماً. وعند اللقطة التاريخية
   // نعيد بناء الرصيد من الحركات المعتمدة بدلاً من قراءة الرصيد الحي.
   const digitalWalletRow = isHistorical
-    ? rowsOf(await db.execute(sql`
+    ? (rowsOf(
+        await db.execute(sql`
         SELECT CAST(COALESCE(SUM(
           CASE WHEN dwt.direction = 'IN' THEN dwt.amount ELSE -dwt.amount END
         ), 0) AS CHAR) AS v
@@ -739,29 +981,36 @@ export async function getFinancialPosition(
         WHERE dwt.status = 'ACTIVE'
           AND DATE(COALESCE(dwt.approvedAt, dwt.createdAt)) <= ${asOf}
           ${bId ? sql`AND dw.branchId = ${bId}` : sql``}
-      `))[0] ?? { v: "0" }
-    : rowsOf(await db.execute(sql`
+      `),
+      )[0] ?? { v: "0" })
+    : (rowsOf(
+        await db.execute(sql`
         SELECT CAST(COALESCE(SUM(dw.currentBalance), 0) AS CHAR) AS v
         FROM digitalWallets dw
         WHERE 1 = 1 ${bId ? sql`AND dw.branchId = ${bId}` : sql``}
-      `))[0] ?? { v: "0" };
+      `),
+      )[0] ?? { v: "0" });
 
   // بضاعة الأمانة (ش٤): تُستبعَد من أصول المخزون — ليست ملك المكتبة (تظهر التزاماً في AP بعد البيع فقط).
-  const inv = rowsOf(await db.execute(sql`
+  const inv = rowsOf(
+    await db.execute(sql`
     SELECT CAST(COALESCE(SUM(bs.quantity * pv.costPrice), 0) AS CHAR) AS v
     FROM branchStock bs
       JOIN productVariants pv ON pv.id = bs.variantId
       JOIN products p ON p.id = pv.productId
     WHERE p.isConsignment = false ${bId ? sql`AND bs.branchId = ${bId}` : sql``}
-  `))[0] ?? { v: "0" };
+  `),
+  )[0] ?? { v: "0" };
 
   // FI-02: الأصول بصافي القيمة الدفترية NBV = التكلفة − الإهلاك المتراكم المُرحَّل (postMonthlyDepreciation).
   // #2 (تدقيق التثبيت): استبعاد 'retired' أيضاً — الأصل المشطوب سُجِّلت قيمته الدفترية المتبقّية خسارةً
   // في P&L عند الشطب، فبقاؤه في مجموع الأصول بـNBV يضخّم الأصول ويناقض الخسارة المُعترَف بها.
-  const fa = rowsOf(await db.execute(sql`
+  const fa = rowsOf(
+    await db.execute(sql`
     SELECT CAST(COALESCE(SUM(purchaseValue - accumulatedDepreciation), 0) AS CHAR) AS v
     FROM fixedAssets WHERE assetStatus NOT IN ('disposed', 'retired') ${bId ? sql`AND branchId = ${bId}` : sql``}
-  `))[0] ?? { v: "0" };
+  `),
+  )[0] ?? { v: "0" };
 
   // FIN-05 (تدقيق ٢٠/٦ — نظير FI-01 لأوامر الشغل): العربون المقبوض على أمر شغل غير مُسلَّم يَرفع النقد
   // (أصل) عند الإنشاء عبر receipt(IN)+PAYMENT_IN، لكنه ليس إيراداً بعد (الخدمة لم تُنجَز) ⇒ بلا التزام
@@ -770,35 +1019,41 @@ export async function getFinancialPosition(
   // (عندها يُضمّ العربون لـinvoice.paidAmount ويُعترَف إيراداً عبر قيد SALE) ولا CANCELLED (عندها
   // يُسترَدّ العربون نقداً receipt(OUT) فيخرج من النقد). شرط invoiceId IS NULL حارسٌ مزدوج ضدّ احتساب
   // عربون رُبِط بفاتورة مُسلَّمة (لا ازدواج). نطابق عمود workOrders.deposit الحقيقيّ. عزل الفرع كباقي البنود.
-  const wa = rowsOf(await db.execute(sql`
+  const wa = rowsOf(
+    await db.execute(sql`
     SELECT CAST(COALESCE(SUM(deposit), 0) AS CHAR) AS v
     FROM workOrders
     WHERE workOrderStatus IN ('RECEIVED', 'IN_PROGRESS', 'READY')
       AND invoiceId IS NULL
       ${bId ? sql`AND branchId = ${bId}` : sql``}
-  `))[0] ?? { v: "0" };
+  `),
+  )[0] ?? { v: "0" };
 
   // مراجعة PR #495 (ش٤ — عرابين الطلبات المحفوظة): صافي المحتجَز على مسوّدات **مفتوحة**
   // = Σ(COLLECTION) − Σ(REFUND). المال في الدرج/البطاقة فعلاً (أصلٌ مُحتسَب أعلاه) والخدمة لم
   // تُقدَّم ⇒ التزامُ «سُلفة عميل» تماماً كعربون أمر الشغل (FIN-05). المسوّدة المُثبَّتة تخرج
   // تلقائياً (صار المال `paidAmount` على فاتورتها فالإيراد اعتُرف به)، والملغاة رُدَّ عربونها نقداً.
   // أسماء أعمدة DB الحرفية (mysqlEnum أوّل معامل = اسم العمود): orderPayKind / draftStatus.
-  const da = rowsOf(await db.execute(sql`
+  const da = rowsOf(
+    await db.execute(sql`
     SELECT CAST(COALESCE(SUM(CASE WHEN op.orderPayKind = 'COLLECTION' THEN op.amount ELSE -op.amount END), 0) AS CHAR) AS v
     FROM orderPayments op
       JOIN receptionDrafts d ON d.id = op.draftId
     WHERE d.draftStatus = 'OPEN' AND op.orderPayKind IN ('COLLECTION', 'REFUND')
       ${bId ? sql`AND op.branchId = ${bId}` : sql``}
-  `))[0] ?? { v: "0" };
+  `),
+  )[0] ?? { v: "0" };
 
   // exchange-house: صافي أرصدتنا لدى الصرّافين على مستوى الشركة (دينار + دولار مُقيَّماً بمتوسط الكلفة).
   // موجب لكل صيرفة ⇒ أصل (أموالنا لديها)، سالب ⇒ خصم (نَدين لها). نظير AR/AP — بلا عزل فرع.
-  const ex = rowsOf(await db.execute(sql`
+  const ex = rowsOf(
+    await db.execute(sql`
     SELECT
       CAST(COALESCE(SUM(CASE WHEN net > 0 THEN net ELSE 0 END), 0) AS CHAR) AS d,
       CAST(COALESCE(SUM(CASE WHEN net < 0 THEN -net ELSE 0 END), 0) AS CHAR) AS c
     FROM (SELECT (balanceIqd + balanceUsd * usdCostRate) AS net FROM exchangeHouses WHERE isActive = TRUE) t
-  `))[0] ?? { d: "0", c: "0" };
+  `),
+  )[0] ?? { d: "0", c: "0" };
 
   const cash = money(cashRow.cash ?? 0);
   const card = money(cashRow.card ?? 0);
@@ -820,28 +1075,34 @@ export async function getFinancialPosition(
   const exchangeDebit = money(ex.d ?? 0); // أموالنا لدى الصرّافين (أصل).
   const exchangeCredit = money(ex.c ?? 0); // ما نَدين به للصرّافين (خصم).
   // تدقيق ٦/٨ (ث٨): عهدة مناديب التوصيل — نقدٌ/تحصيلٌ بيد المندوب لم يُورَّد بعد (أصل).
-  const dfRow = rowsOf(await db.execute(sql`
+  const dfRow = rowsOf(
+    await db.execute(sql`
     SELECT CAST(COALESCE(SUM(CASE WHEN currentBalance > 0 THEN currentBalance ELSE 0 END), 0) AS CHAR) AS v
     FROM deliveryParties
     ${bId ? sql`WHERE branchId = ${bId} OR branchId IS NULL` : sql``}
-  `))[0] ?? { v: "0" };
+  `),
+  )[0] ?? { v: "0" };
   // مراجعة PR #495 (ازدواج): الجزء المدعوم بعميلٍ مسجَّل من عهدة المناديب محسوبٌ سلفاً في
   // `arDebit` (البيع الآجل رفع `customers.currentBalance` بنفس المبلغ، والتوريد يخفض الاثنين
   // معاً). المتبقّي على الإرساليات الحيّة (DISPATCHED/PARTIAL) لفواتيرَ ذاتِ عميلٍ مسجَّل
   // يُستبعَد من الأصل هنا فلا يُحتسب ديناران لدينارٍ واحد بالطريق.
-  const dfDupRow = rowsOf(await db.execute(sql`
+  const dfDupRow = rowsOf(
+    await db.execute(sql`
     SELECT CAST(COALESCE(SUM(GREATEST(dc.codAmount - dc.collectedAmount, 0)), 0) AS CHAR) AS v
     FROM deliveryConsignments dc
       JOIN invoices i ON i.id = dc.invoiceId
     WHERE dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL')
       AND i.customerId IS NOT NULL
       ${bId ? sql`AND dc.branchId = ${bId}` : sql``}
-  `))[0] ?? { v: "0" };
+  `),
+  )[0] ?? { v: "0" };
   const deliveryFloatGross = money(dfRow.v ?? 0);
   const deliveryFloatCustomerBackedRaw = money(dfDupRow.v ?? 0);
   // الحدّ الأدنى صفر: العهدة قد تشمل عجزاً/تحصيلاً لطلبات متجرٍ لا يقابله صفٌّ هنا، والطرح
   // لا يصحّ أن ينقلب أصلاً سالباً. نُفصح عن المُستبعَد فعلياً (المقصوص) لا عن الخام.
-  const deliveryFloat = deliveryFloatGross.sub(deliveryFloatCustomerBackedRaw).gt(0)
+  const deliveryFloat = deliveryFloatGross
+    .sub(deliveryFloatCustomerBackedRaw)
+    .gt(0)
     ? deliveryFloatGross.sub(deliveryFloatCustomerBackedRaw)
     : money(0);
   const deliveryFloatCustomerBacked = deliveryFloatGross.sub(deliveryFloat);
@@ -849,24 +1110,40 @@ export async function getFinancialPosition(
   // له بعد. النقد ضمن أصل «النقد» بلا التزامٍ مقابل ⇒ كانت حقوق الملكية تنتفخ بمقدارها مؤقتاً.
   // = Σ(DELIVERY_FEE_HELD) الموجبة صافياً (القبض + والصرف/الردّ − ⇒ الصافي = المعلّق)، بحدّ
   // أدنى صفر (بياناتٌ قديمة قبل توحيد الإشارة قد تُسوّي سالباً — لا خصم سالب).
-  const feeHeldRow = rowsOf(await db.execute(sql`
+  const feeHeldRow = rowsOf(
+    await db.execute(sql`
     SELECT CAST(COALESCE(SUM(amount), 0) AS CHAR) AS v
     FROM accountingEntries
     WHERE entryType = 'DELIVERY_FEE_HELD'
     ${bId ? sql`AND branchId = ${bId}` : sql``}
     ${asOf ? sql`AND entryDate <= ${asOf}` : sql``}
-  `))[0] ?? { v: "0" };
+  `),
+  )[0] ?? { v: "0" };
   const feeHeldNet = money(feeHeldRow.v ?? 0);
   const deliveryFeeHeldLiability = feeHeldNet.gt(0) ? feeHeldNet : money(0);
 
   // الأصول = نقد + مدينون + سُلف للموردين (ذمة لنا) + مخزون + أصول ثابتة + رصيدنا لدى الصرّافين
   //          + عهدة مناديب التوصيل (مالُ فواتيرَ بالطريق).
-  const totalAssets = cash.add(card).add(cheque).add(transfer).add(wallet).add(telecom)
-    .add(digitalWalletAsset).add(arDebit).add(apDebit).add(inventory).add(fixedAssets)
-    .add(exchangeDebit).add(deliveryFloat);
+  const totalAssets = cash
+    .add(card)
+    .add(cheque)
+    .add(transfer)
+    .add(wallet)
+    .add(telecom)
+    .add(digitalWalletAsset)
+    .add(arDebit)
+    .add(apDebit)
+    .add(inventory)
+    .add(fixedAssets)
+    .add(exchangeDebit)
+    .add(deliveryFloat);
   // الخصوم = دائنون + سُلف العملاء على الذمم + عرابين أوامر الشغل (FIN-05) + ما نَدين به للصرّافين
   //          + أمانات أجور توصيل معلّقة (١٠/٨ — نقدها داخل «النقد» والتزامها للمندوب).
-  const totalLiabilities = apCredit.add(arCredit).add(customerAdvances).add(exchangeCredit).add(deliveryFeeHeldLiability);
+  const totalLiabilities = apCredit
+    .add(arCredit)
+    .add(customerAdvances)
+    .add(exchangeCredit)
+    .add(deliveryFeeHeldLiability);
   const equity = totalAssets.sub(totalLiabilities);
 
   // FI-02: حارس انحراف مرئي (قراءة فقط). الأرقام أعلاه تبقى من currentBalance؛ هذه إشارةٌ فقط.
@@ -922,10 +1199,19 @@ export async function getFinancialPosition(
 /* ============================ التدفّق النقدي (أساس نقدي مباشر) ============================ */
 
 const PAY_METHOD_AR: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
+  CASH: "نقدي",
+  CARD: "بطاقة",
+  CHECK: "صك",
+  TRANSFER: "تحويل",
+  WALLET: "محفظة",
+  TELECOM: "رصيد زين",
 };
 
-export interface CashFlowLine { key: string; label: string; amount: string }
+export interface CashFlowLine {
+  key: string;
+  label: string;
+  amount: string;
+}
 export interface CashFlowResult {
   period: { from: string; to: string };
   inflows: CashFlowLine[];
@@ -935,10 +1221,19 @@ export interface CashFlowResult {
   net: string;
 }
 
-export async function getCashFlow(opts: { from: string; to: string; branchId?: number }): Promise<CashFlowResult> {
+export async function getCashFlow(opts: {
+  from: string;
+  to: string;
+  branchId?: number;
+}): Promise<CashFlowResult> {
   const db = getDb();
   const base: CashFlowResult = {
-    period: { from: opts.from, to: opts.to }, inflows: [], outflows: [], totalIn: "0", totalOut: "0", net: "0",
+    period: { from: opts.from, to: opts.to },
+    inflows: [],
+    outflows: [],
+    totalIn: "0",
+    totalOut: "0",
+    net: "0",
   };
   if (!db) return base;
 
@@ -949,7 +1244,8 @@ export async function getCashFlow(opts: { from: string; to: string; branchId?: n
   // الباقي — مع COALESCE احتياطيٍّ على DATE(r.createdAt) لأي إيصال نادر بلا قيد دفتر مرتبط (لا يُسقَط
   // صفّ أبداً، فلا يتغيّر مجموع النقد، بل يتّسق التبويب الزمنيّ فقط). LEFT JOIN يحفظ مجموعة الإيصالات
   // كما هي تماماً (قائدةً)، والربط على entryType النقديّ (PAYMENT_IN/OUT) يطابق قيد الإيصال الوحيد.
-  const rows = rowsOf(await db.execute(sql`
+  const rows = rowsOf(
+    await db.execute(sql`
     SELECT r.direction AS direction, r.paymentMethod AS method, CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
     FROM receipts r
     LEFT JOIN accountingEntries ae
@@ -960,7 +1256,8 @@ export async function getCashFlow(opts: { from: string; to: string; branchId?: n
       AND COALESCE(ae.entryDate, DATE(r.createdAt)) <= ${opts.to}
       ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}
     GROUP BY r.direction, r.paymentMethod
-  `));
+  `),
+  );
 
   const inflows: CashFlowLine[] = [];
   const outflows: CashFlowLine[] = [];
@@ -968,9 +1265,18 @@ export async function getCashFlow(opts: { from: string; to: string; branchId?: n
   let totalOut = money(0);
   for (const r of rows) {
     const amt = money(r.amount ?? 0);
-    const line: CashFlowLine = { key: String(r.method), label: PAY_METHOD_AR[String(r.method)] ?? String(r.method), amount: toDbMoney(amt) };
-    if (r.direction === "IN") { inflows.push(line); totalIn = totalIn.add(amt); }
-    else { outflows.push(line); totalOut = totalOut.add(amt); }
+    const line: CashFlowLine = {
+      key: String(r.method),
+      label: PAY_METHOD_AR[String(r.method)] ?? String(r.method),
+      amount: toDbMoney(amt),
+    };
+    if (r.direction === "IN") {
+      inflows.push(line);
+      totalIn = totalIn.add(amt);
+    } else {
+      outflows.push(line);
+      totalOut = totalOut.add(amt);
+    }
   }
 
   return {

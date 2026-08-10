@@ -3,8 +3,8 @@
 // الأمان: قفل ثنائي على cashTransfers بـ.for("update") + IDOR (الـreceiver في toBranchId).
 
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, like, lte, or, sql } from "drizzle-orm";
-import { branches, cashTransfers, receipts } from "../../drizzle/schema";
+import { and, desc, eq, gte, inArray, like, lte, or, sql } from "drizzle-orm";
+import { branches, cashTransfers, receipts, users } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
@@ -28,12 +28,19 @@ export interface SendTransferResult {
   sentReceiptId: number;
 }
 
-async function nextTransferNumber(tx: Tx, fromBranchId: number): Promise<string> {
+async function nextTransferNumber(
+  tx: Tx,
+  fromBranchId: number,
+): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `CT-${fromBranchId}-${ymd}-`;
   const lockName = `cash_transfer:${fromBranchId}:${ymd}`;
-  const lockRes: any = await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`);
-  const lockedRow = Array.isArray(lockRes) ? lockRes[0]?.[0] : lockRes?.rows?.[0];
+  const lockRes: any = await tx.execute(
+    sql`SELECT GET_LOCK(${lockName}, 5) AS locked`,
+  );
+  const lockedRow = Array.isArray(lockRes)
+    ? lockRes[0]?.[0]
+    : lockRes?.rows?.[0];
   if (!lockedRow || Number(lockedRow.locked) !== 1) {
     throw new Error(`transfer numbering lock timeout for ${lockName}`);
   }
@@ -60,7 +67,10 @@ async function nextTransferNumber(tx: Tx, fromBranchId: number): Promise<string>
 }
 
 /** يَحسب رصيد TREASURY الحالي لفرع معيّن. تَكلفة استعلام واحد. */
-export async function getTreasuryBalance(tx: Tx, branchId: number): Promise<ReturnType<typeof money>> {
+export async function getTreasuryBalance(
+  tx: Tx,
+  branchId: number,
+): Promise<ReturnType<typeof money>> {
   const rows: any = await tx.execute(sql`
     SELECT CAST(COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE -amount END), 0) AS CHAR) AS balance
     FROM receipts
@@ -84,13 +94,24 @@ export async function sendTransfer(
     //    الآن: نتحقّق أنّ التحويل المخزَّن يَطابق (from, to, amount) قبل إرجاعه — وإلا CONFLICT
     //    صريح يَكشف للمستخدم أنّ المفتاح يخصّ تحويلاً مغايراً (نمط voucherService.137-147).
     if (input.clientRequestId) {
-      const existing = await findIdempotentRefId(tx, "cashTransfer.send", input.clientRequestId);
+      const existing = await findIdempotentRefId(
+        tx,
+        "cashTransfer.send",
+        input.clientRequestId,
+      );
       if (existing != null) {
         const t = (
-          await tx.select().from(cashTransfers).where(eq(cashTransfers.id, existing)).limit(1)
+          await tx
+            .select()
+            .from(cashTransfers)
+            .where(eq(cashTransfers.id, existing))
+            .limit(1)
         )[0];
         if (!t) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "transfer idempotency missing" });
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "transfer idempotency missing",
+          });
         }
         const requestedAmount = money(input.amount);
         if (
@@ -100,7 +121,8 @@ export async function sendTransfer(
         ) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمَل لتحويل بفرع/مبلغ مختلف",
+            message:
+              "تعارض idempotency: المفتاح مستعمَل لتحويل بفرع/مبلغ مختلف",
           });
         }
         return {
@@ -113,17 +135,32 @@ export async function sendTransfer(
 
     // 2. Validate
     if (input.fromBranchId === input.toBranchId) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التحويل لنفس الفرع" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن التحويل لنفس الفرع",
+      });
     }
     const amount = money(input.amount);
     if (amount.isZero() || amount.isNegative()) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يَجب أن يَكون موجباً" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "المبلغ يَجب أن يَكون موجباً",
+      });
     }
     const fromBranch = (
-      await tx.select().from(branches).where(eq(branches.id, input.fromBranchId)).for("update").limit(1)
+      await tx
+        .select()
+        .from(branches)
+        .where(eq(branches.id, input.fromBranchId))
+        .for("update")
+        .limit(1)
     )[0];
     const toBranch = (
-      await tx.select().from(branches).where(eq(branches.id, input.toBranchId)).limit(1)
+      await tx
+        .select()
+        .from(branches)
+        .where(eq(branches.id, input.toBranchId))
+        .limit(1)
     )[0];
     if (!fromBranch || !toBranch) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "فرع غير موجود" });
@@ -132,7 +169,10 @@ export async function sendTransfer(
     // 3. الصلاحية: admin/manager فقط + admin له صلاحية cross-branch.
     if (actor.role !== "admin") {
       if (actor.role !== "manager") {
-        throw new TRPCError({ code: "FORBIDDEN", message: "إرسال التحويل النقدي للمدير فأعلى" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "إرسال التحويل النقدي للمدير فأعلى",
+        });
       }
       if (Number(actor.branchId) !== input.fromBranchId) {
         throw new TRPCError({
@@ -149,7 +189,10 @@ export async function sendTransfer(
         code: "PRECONDITION_FAILED",
         message: `التحويل مرفوض: الرصيد النقدي المتاح ${available.toFixed(2)} د.ع أقلّ من المطلوب ${amount.toFixed(2)} د.ع. لا يجوز نقل نقد مادي غير موجود.`,
         cause: {
-          balanceWarning: { available: available.toFixed(2), requested: amount.toFixed(2) },
+          balanceWarning: {
+            available: available.toFixed(2),
+            requested: amount.toFixed(2),
+          },
         } as never,
       });
     }
@@ -203,7 +246,12 @@ export async function sendTransfer(
 
     // 10. تَسجيل idempotency.
     if (input.clientRequestId) {
-      await recordIdempotencyKey(tx, "cashTransfer.send", input.clientRequestId, transferId);
+      await recordIdempotencyKey(
+        tx,
+        "cashTransfer.send",
+        input.clientRequestId,
+        transferId,
+      );
     }
 
     return { transferId, transferNumber, sentReceiptId };
@@ -224,7 +272,8 @@ export async function receiveTransfer(
       .for("update")
       .limit(1);
     const t = rows[0];
-    if (!t) throw new TRPCError({ code: "NOT_FOUND", message: "التحويل غير موجود" });
+    if (!t)
+      throw new TRPCError({ code: "NOT_FOUND", message: "التحويل غير موجود" });
     if (t.status !== "IN_TRANSIT") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -235,10 +284,16 @@ export async function receiveTransfer(
     // 2. الصلاحية + IDOR.
     if (actor.role !== "admin") {
       if (actor.role !== "manager") {
-        throw new TRPCError({ code: "FORBIDDEN", message: "الاستلام للمدير فأعلى" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "الاستلام للمدير فأعلى",
+        });
       }
       if (Number(actor.branchId) !== Number(t.toBranchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك استلام تحويل لفرع غير فرعك" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا يمكنك استلام تحويل لفرع غير فرعك",
+        });
       }
     }
 
@@ -307,23 +362,33 @@ export async function cancelTransfer(
       .for("update")
       .limit(1);
     const t = rows[0];
-    if (!t) throw new TRPCError({ code: "NOT_FOUND", message: "التحويل غير موجود" });
+    if (!t)
+      throw new TRPCError({ code: "NOT_FOUND", message: "التحويل غير موجود" });
     if (t.status === "RECEIVED") {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يمكن إلغاء تحويل مستلَم — أنشئ تحويلاً عكسياً بدلاً من ذلك",
+        message:
+          "لا يمكن إلغاء تحويل مستلَم — أنشئ تحويلاً عكسياً بدلاً من ذلك",
       });
     }
     if (t.status === "CANCELLED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "التحويل مُلغى مسبقاً" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "التحويل مُلغى مسبقاً",
+      });
     }
 
     // الصلاحية: المُرسِل نفسه أو admin، أو manager في فرع الإرسال.
     if (actor.role !== "admin") {
-      const isManagerOfSource = actor.role === "manager" && Number(actor.branchId) === Number(t.fromBranchId);
+      const isManagerOfSource =
+        actor.role === "manager" &&
+        Number(actor.branchId) === Number(t.fromBranchId);
       const isSender = actor.userId === Number(t.sentBy);
       if (!isManagerOfSource && !isSender) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إلغاء هذا التحويل" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا يمكنك إلغاء هذا التحويل",
+        });
       }
     }
 
@@ -392,7 +457,8 @@ export async function listTransfers(
 
   const effectiveBranch = scopedBranchId ?? input.branchId ?? null;
   const direction = input.direction ?? "ALL";
-  const limit = input.limit && input.limit > 0 && input.limit <= 200 ? input.limit : 50;
+  const limit =
+    input.limit && input.limit > 0 && input.limit <= 200 ? input.limit : 50;
   const offset = input.offset && input.offset >= 0 ? input.offset : 0;
 
   const conds = [];
@@ -411,8 +477,10 @@ export async function listTransfers(
     }
   }
   if (input.status) conds.push(eq(cashTransfers.status, input.status));
-  if (input.from) conds.push(gte(cashTransfers.sentAt, new Date(input.from + "T00:00:00Z")));
-  if (input.to) conds.push(lte(cashTransfers.sentAt, new Date(input.to + "T23:59:59Z")));
+  if (input.from)
+    conds.push(gte(cashTransfers.sentAt, new Date(input.from + "T00:00:00Z")));
+  if (input.to)
+    conds.push(lte(cashTransfers.sentAt, new Date(input.to + "T23:59:59Z")));
 
   const where = conds.length > 0 ? and(...conds) : undefined;
 
@@ -430,27 +498,92 @@ export async function listTransfers(
     branchIds.add(Number(r.fromBranchId));
     branchIds.add(Number(r.toBranchId));
   }
-  const branchList =
-    branchIds.size > 0
-      ? await db.select().from(branches)
-      : [];
-  const branchMap = new Map(branchList.map((b) => [Number(b.id), b.name] as const));
+  const branchList = branchIds.size > 0 ? await db.select().from(branches) : [];
+  const branchMap = new Map(
+    branchList.map((b) => [Number(b.id), b.name] as const),
+  );
 
-  return rows.map((r) => ({
-    id: Number(r.id),
-    transferNumber: r.transferNumber,
-    fromBranchId: Number(r.fromBranchId),
-    fromBranchName: branchMap.get(Number(r.fromBranchId)) ?? "—",
-    toBranchId: Number(r.toBranchId),
-    toBranchName: branchMap.get(Number(r.toBranchId)) ?? "—",
-    amount: r.amount,
-    status: r.status,
-    sentBy: Number(r.sentBy),
-    sentAt: r.sentAt instanceof Date ? r.sentAt.toISOString() : String(r.sentAt),
-    receivedBy: r.receivedBy ? Number(r.receivedBy) : null,
-    receivedAt: r.receivedAt instanceof Date ? r.receivedAt.toISOString() : r.receivedAt,
-    cancelledAt: r.cancelledAt instanceof Date ? r.cancelledAt.toISOString() : r.cancelledAt,
-    notes: r.notes,
-    cancellationReason: r.cancellationReason,
-  }));
+  const userIds = new Set<number>();
+  for (const r of rows) {
+    userIds.add(Number(r.sentBy));
+    if (r.receivedBy != null) userIds.add(Number(r.receivedBy));
+    if (r.cancelledBy != null) userIds.add(Number(r.cancelledBy));
+  }
+  const userList = userIds.size
+    ? await db
+        .select({ id: users.id, name: users.name })
+        .from(users)
+        .where(inArray(users.id, Array.from(userIds)))
+    : [];
+  const userMap = new Map(
+    userList.map((user) => [Number(user.id), user.name] as const),
+  );
+
+  return rows.map((r) => {
+    const warnings: string[] = [];
+    if (r.sentReceiptId == null) warnings.push("SENT_RECEIPT_MISSING");
+    if (!userMap.get(Number(r.sentBy))) warnings.push("SENDER_MISSING");
+    if (r.status === "RECEIVED") {
+      if (r.receivedReceiptId == null)
+        warnings.push("RECEIVED_RECEIPT_MISSING");
+      if (r.receivedBy == null || r.receivedAt == null)
+        warnings.push("RECEIVER_MISSING");
+    }
+    if (r.status === "CANCELLED") {
+      if (r.reversalReceiptId == null)
+        warnings.push("REVERSAL_RECEIPT_MISSING");
+      if (r.cancelledBy == null || r.cancelledAt == null)
+        warnings.push("CANCELLER_MISSING");
+      if (!r.cancellationReason?.trim())
+        warnings.push("CANCELLATION_REASON_MISSING");
+    }
+    return {
+      id: Number(r.id),
+      transferNumber: r.transferNumber,
+      fromBranchId: Number(r.fromBranchId),
+      fromBranchName: branchMap.get(Number(r.fromBranchId)) ?? "—",
+      toBranchId: Number(r.toBranchId),
+      toBranchName: branchMap.get(Number(r.toBranchId)) ?? "—",
+      amount: r.amount,
+      status: r.status,
+      sentBy: Number(r.sentBy),
+      sentByName: userMap.get(Number(r.sentBy)) ?? null,
+      sentAt:
+        r.sentAt instanceof Date ? r.sentAt.toISOString() : String(r.sentAt),
+      receivedBy: r.receivedBy ? Number(r.receivedBy) : null,
+      receivedByName: r.receivedBy
+        ? (userMap.get(Number(r.receivedBy)) ?? null)
+        : null,
+      receivedAt:
+        r.receivedAt instanceof Date
+          ? r.receivedAt.toISOString()
+          : r.receivedAt,
+      cancelledBy: r.cancelledBy ? Number(r.cancelledBy) : null,
+      cancelledByName: r.cancelledBy
+        ? (userMap.get(Number(r.cancelledBy)) ?? null)
+        : null,
+      cancelledAt:
+        r.cancelledAt instanceof Date
+          ? r.cancelledAt.toISOString()
+          : r.cancelledAt,
+      sentReceiptId: r.sentReceiptId ? Number(r.sentReceiptId) : null,
+      receivedReceiptId: r.receivedReceiptId
+        ? Number(r.receivedReceiptId)
+        : null,
+      reversalReceiptId: r.reversalReceiptId
+        ? Number(r.reversalReceiptId)
+        : null,
+      notes: r.notes,
+      cancellationReason: r.cancellationReason,
+      createdAt:
+        r.createdAt instanceof Date
+          ? r.createdAt.toISOString()
+          : String(r.createdAt),
+      updatedAt:
+        r.updatedAt instanceof Date
+          ? r.updatedAt.toISOString()
+          : String(r.updatedAt),
+      integrityWarnings: warnings,
+    };
+  });
 }
