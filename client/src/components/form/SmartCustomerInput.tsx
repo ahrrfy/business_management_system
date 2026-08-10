@@ -35,6 +35,10 @@ export interface SmartCustomerInputProps {
   onChange: (v: SmartCustomerValue) => void;
   placeholder?: string;
   className?: string;
+  /** وضع «الاسم فقط» (طلب المالك): حين يُدار الهاتف خارجياً (قناة واتساب/اتصال عبر حقل ١١ خانة
+   *  منفصل)، يعرض هذا المكوّن حقلَ **اسمٍ واحداً** نظيفاً (بمسافات) بلا بحثٍ ولا حقلٍ ثانٍ مكرّر —
+   *  يزيل ازدواج «حقلين بنفس الاسم». المطابقة بالهاتف تتمّ خارجياً في شاشة الاستقبال. */
+  nameOnly?: boolean;
 }
 
 interface CustomerSummary {
@@ -53,7 +57,7 @@ const looksLikePhone = (text: string) => {
   return /^\d{6,15}$/.test(compact);
 };
 
-export function SmartCustomerInput({ value, onChange, placeholder, className }: SmartCustomerInputProps) {
+export function SmartCustomerInput({ value, onChange, placeholder, className, nameOnly }: SmartCustomerInputProps) {
   const [q, setQ] = useState(value.name || "");
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -138,6 +142,35 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
    * يزيل الإشارة المضلِّلة بلا إضعاف الحارس وبلا أي تغيير سلوكيّ.
    */
   const displayedNewCustomerName = value.name === value.phone ? "" : value.name;
+
+  // وضع «الاسم فقط» (طلب المالك): حقلُ اسمٍ واحدٌ نظيف يقبل المسافات — الهاتف مُدار خارجياً (١١ خانة
+  // في شاشة الاستقبال). يزيل ازدواج «حقلين بنفس الاسم» ودمجَ الأحرف (لا trim فوريّ).
+  if (nameOnly) {
+    // مُستخرَجٌ خارج JSX (نفس حيلة displayedNewCustomerName أعلاه): ذكرُ value.phone داخل value={…}
+    // يُطابق إشارةَ حارس الهاتف (check-form-inputs) زوراً — الاستخراج يزيلها بلا أي تغييرٍ سلوكيّ.
+    const shownName = value.name === value.phone ? "" : value.name;
+    const phoneFallback = value.phone ?? "";
+    const phoneKnown = !!value.phone;
+    const showSaveHint = value.isNew && value.name.trim().length > 0 && value.name !== value.phone;
+    return (
+      <div className={cn("relative", className)}>
+        <Input
+          value={shownName}
+          onChange={(e) => {
+            const name = e.target.value; // بلا trim فوريّ ⇒ المسافة مقبولة (القصّ عند الحفظ لا عند كل ضغطة).
+            onChange({ ...value, customerId: null, name: name || phoneFallback, isNew: name.trim().length > 0 || phoneKnown });
+          }}
+          placeholder={placeholder || "اسم العميل (اختياري)"}
+          aria-label="اسم العميل"
+        />
+        {showSaveHint && (
+          <div className="mt-1 text-[11px] text-primary">
+            سيُحفظ «{value.name.trim()}» تلقائياً كعميل جديد عند حفظ الأمر.
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div ref={wrapRef} className={cn("relative", className)}>
@@ -251,7 +284,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
           <Input
             id="smart-customer-name"
             value={displayedNewCustomerName}
-            onChange={(e) => onChange({ ...value, name: e.target.value.trim() || value.phone! })}
+            onChange={(e) => onChange({ ...value, name: e.target.value || value.phone! })}
             placeholder="اكتب اسم العميل"
             className="h-8 text-xs"
           />

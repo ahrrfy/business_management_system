@@ -86,8 +86,10 @@ function assertDraftImages(lines: Array<{ designImages?: string | null }>) {
 }
 
 export const receptionRouter = router({
-  /** طابور فواتير المحطة: keyset + فلاتر (§٨.٥ — الافتراض «ورديتي» يقرّره العميل بتمرير shiftIds). */
-  invoiceQueue: workordersCashierProcedure
+  /** طابور فواتير المحطة: keyset + فلاتر (§٨.٥ — الافتراض «ورديتي» يقرّره العميل بتمرير shiftIds).
+   *  قراءةٌ فقط (عرض/إعادة طباعة) ⇒ بوّابة exec التي تُدرج print_operator (خدمة العملاء) — طلب المالك:
+   *  خدمة العملاء ترى/تطبع فواتيرها. **طفرات المال أدناه تبقى على workordersCashierProcedure** (الفصل المالي محفوظ). */
+  invoiceQueue: workordersExecProcedure
     .input(
       z.object({
         branchId: z.number().int().positive().nullish(),
