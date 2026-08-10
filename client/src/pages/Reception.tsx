@@ -276,6 +276,9 @@ export default function Reception() {
   // م٤: لوحة الأرقام صارت لوحة **مبلغٍ** خالصة — أوضاع الكمية/الخصم حُذفت (الكمية داخل الصفّ،
   // والخصم Popover في خلية السعر). لا وضعيّة خفيّة بعد اليوم: اللوحة تعني المبلغ دائماً.
   const [payInput, setPayInput] = useState("");
+  // بيع مباشر آجل (قرار المالك ١٠/٨): المقبوض أقلّ من إجمالي البضاعة الجاهزة ⇒ المتبقّي ذمّة على
+  // العميل المسجَّل. يتطلّب عميلاً مسجَّلاً، ومسارٌ مباشر (لا مسوّدة/توصيل). حدّ الائتمان يُفرَض خادمياً.
+  const [deferred, setDeferred] = useState(false);
   const [method, setMethod] = useState<PayMethod>("CASH");
   const [paymentReference, setPaymentReference] = useState(""); // P2 fix: مرجع البطاقة للعرابين
   const [showInbox, setShowInbox] = useState(false);
@@ -678,6 +681,7 @@ export default function Reception() {
     setCart([]);
     setSelKey(null);
     setPayInput("");
+    setDeferred(false);
   }
 
   // ───── الباركود ───────────────────────────────────────────────────────────
@@ -1211,7 +1215,15 @@ export default function Reception() {
     // طلبٌ يُسنَد لمندوبٍ **الدفعُ فيه عند الاستلام**، فاشتراط تغطية البضاعة نقداً الآن كان
     // يستحيل معه بيعُ COD أصلاً (وإدخالُ المبلغ لإسكات الحارس يسجّله نقداً في الدرج ⇒ عهدةُ
     // المندوب صفر ونقدٌ لم يُقبَض). المتبقّي يصير عهدةً عليه داخل نفس معاملة التثبيت.
-    if (!orderDelivery && appliedPaidD.plus(heldD).lt(directFloorD)) {
+    // بيع مباشر آجل (قرار المالك ١٠/٨): المتبقّي على البضاعة الجاهزة يصير ذمّةً على العميل المسجَّل.
+    // مسار مباشر حصراً (لا مسوّدة — توزيعها يفترض دفعاً كاملاً، ولا توصيل — يُحصَّل عند الاستلام)،
+    // ويلزمه عميلٌ مسجَّل (لا ذمّة بلا صاحب — createSaleInTx يرفض الآجل بلا customerId).
+    if (deferred) {
+      if (activeDraft) { notify.err("البيع الآجل غير متاح للطلب المحفوظ — ثبّته مباشرةً بلا حفظ مسوّدة"); return; }
+      if (orderDelivery) { notify.err("طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"); return; }
+      if (!customer.customerId) { notify.err("البيع الآجل يتطلّب عميلاً مسجَّلاً — اختره أو احفظه كعميل أولاً"); return; }
+    }
+    if (!orderDelivery && !deferred && appliedPaidD.plus(heldD).lt(directFloorD)) {
       notify.err(`المبلغ المقبوض (مع العربون السابق) يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(directFloorD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
       return;
     }
@@ -1422,6 +1434,9 @@ export default function Reception() {
         delivery: deliveryPayload,
         // الاستقبال (٨/٨): تأكيد توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح).
         openingSellUnavailableConfirmed: opts.openingConfirmed === true,
+        // بيع مباشر آجل (قرار المالك ١٠/٨): المقبوض أقلّ من البضاعة الجاهزة بلا توصيل ⇒ المتبقّي ذمّة
+        // على العميل المسجَّل (حدّ الائتمان نافذ خادمياً). مسار مباشر فقط (لا مسوّدة، لا توصيل).
+        deferredDirect: deferred,
         // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
         managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
@@ -1654,6 +1669,7 @@ export default function Reception() {
       setSelKey(null);
       setPayInput("");
       setPaymentReference("");
+      setDeferred(false);
       setCustomer({ customerId: null, name: "", phone: null, isNew: false });
       setChannel("WALK_IN");
       setChannelHandle("");
@@ -2596,6 +2612,22 @@ export default function Reception() {
       {/* ─ لوحة الدفع — شريطٌ ثابتٌ حافّة-لحافّة أسفل الصفحة (خارج حشوة عمود السلة) ─
           آخر عنصرٍ في عمود الصفحة الجذر (flex-col)؛ منطقة السلة أعلاه وحدها flex-1/تُمرَّر،
           فزرّا الدفع لا يُدفَعان خارج الشاشة أبداً مهما ضاق الارتفاع أو تغيّر تكبير المتصفّح. */}
+      {/* بيع مباشر آجل (قرار المالك ١٠/٨) — يظهر فقط حين يصلح: عميلٌ مسجَّل + بضاعة جاهزة +
+          لا مسوّدة (توزيعها يفترض دفعاً كاملاً) + لا توصيل (يُحصَّل عند الاستلام). حدّ الائتمان خادميّ. */}
+      {customer.customerId != null && !activeDraft && !orderDelivery && sumDirect > 0 && (
+        <div className="flex-shrink-0 border-t bg-[var(--sem-warn-bg)] px-3 py-1.5">
+          <label className="flex items-center gap-2 text-xs font-bold cursor-pointer text-[var(--sem-warn)]">
+            <input
+              type="checkbox"
+              checked={deferred}
+              onChange={(e) => setDeferred(e.target.checked)}
+              className="size-4"
+            />
+            بيع آجل — المتبقّي على البضاعة الجاهزة يُسجَّل ذمّةً على {customer.name?.trim() || "العميل"}
+          </label>
+        </div>
+      )}
+
       <PaymentPanel
         payInput={payInput}
         setPayInput={setPayInput}
