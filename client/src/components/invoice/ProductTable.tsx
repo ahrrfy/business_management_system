@@ -13,6 +13,7 @@ import { AlertTriangle, Gift, Package, ShoppingCart, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { D, round2 } from "@/lib/money";
 import { calcLineTotal, calcMargin, fmtNum } from "./totals";
 import { ProductSearchBar } from "./ProductSearchBar";
 import type { Currency, InvoiceAction, InvoiceLine, InvoiceType, PriceTier } from "./types";
@@ -57,12 +58,15 @@ function InlineNumberInput({
   width = "w-20",
   max,
   suffix,
+  onBlur,
 }: {
   value: string | number;
   onChange: (v: string) => void;
   width?: string;
   max?: number;
   suffix?: string;
+  /** يُستدعى عند مغادرة الحقل — لتطبيع القيمة (مثل قصّ سعر الدولار إلى منزلتين/سنتين). */
+  onBlur?: () => void;
 }) {
   return (
     <div className="flex items-center justify-center gap-1">
@@ -81,6 +85,7 @@ function InlineNumberInput({
             else onChange(v);
           }
         }}
+        onBlur={onBlur}
         className={cn("h-8 text-center text-sm font-bold", width)}
       />
       {suffix && <span className="text-[11px] text-muted-foreground">{suffix}</span>}
@@ -145,16 +150,22 @@ export function ProductTable({
   // تناسبياً من إجماليّات بنود الفاتورة المصدر المخزَّنة، فتحريرهما وهمٌ يضلّل الموظّف.
   const readOnlyPricing = invoiceType === "SALE_RETURN";
   const showCostCol = showCost && !isPurchase;
+  // خصم البند مخفيّ في الشراء: خدمة الشراء (`createPurchaseOrder`) تتجاهله تماماً (التكلفة = سعر
+  // الوحدة كاملاً) ⇒ إظهاره يوهم بأثرٍ لا يقع ويجعل الإجمالي المعروض ≠ المحفوظ. البيع يُبقيه.
+  const showDiscountCol = !isPurchase;
   const showIqdEquivalent = isPurchase && purchaseCurrency === "USD" && Number(purchaseRate) > 0;
+  // سعر الشراء بالدولار = سنتات (منزلتان). نطبّعه عند مغادرة الحقل كي يطابق ما يُرسَل للخادم
+  // (`nonNegMoneyString` يقصّه لمنزلتين) فيصير المعروض = المخزَّن (لا فرق تقريبٍ صامت).
+  const normalizeUsdPurchasePrice = isPurchase && purchaseCurrency === "USD";
   // عمود «حصة الضريبة» يظهر فقط حين يمرِّر الأبُ حصصاً بطول items وفيها قيمة موجبة واحدة على
   // الأقلّ (لا نُظهر عموداً كامل الأصفار حين تكون الضريبة غير مفعَّلة أو صفريّة).
   const showTaxCol =
     Array.isArray(taxShares) &&
     taxShares.length === items.length &&
     taxShares.some((s) => Number(s) > 0);
-  // عدد الأعمدة لصفّ «السلة فارغة»: ١٠ ثابتة + (تكلفة+هامش) + (حصة ضريبة) + (هدية).
+  // عدد الأعمدة لصفّ «السلة فارغة»: ٩ ثابتة + (خصم) + (تكلفة+هامش) + (حصة ضريبة) + (معادل د.ع) + (هدية).
   const colCount =
-    10 + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0) + (showIqdEquivalent ? 1 : 0) + (allowGiftLines ? 1 : 0);
+    9 + (showDiscountCol ? 1 : 0) + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0) + (showIqdEquivalent ? 1 : 0) + (allowGiftLines ? 1 : 0);
 
   const totalQty = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
 
@@ -190,7 +201,7 @@ export function ProductTable({
   const td = "px-2 py-2.5 text-center text-sm align-middle";
 
   return (
-    <section className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-xl border bg-card">
+    <section className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-xl border bg-card print:overflow-visible">
       <div className="shrink-0 border-b px-3.5 py-3">
         <ProductSearchBar
           invoiceType={invoiceType}
@@ -236,7 +247,7 @@ export function ProductTable({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto print:overflow-visible">
         <table className="w-full border-collapse">
           <thead>
             <tr>
@@ -248,7 +259,7 @@ export function ProductTable({
               {showCostCol && <th className={cn(th, "w-20")}>التكلفة</th>}
               <th className={cn(th, "w-24")}>{isPurchase ? `سعر الشراء ${purchaseCurrency === "USD" ? "$" : "د.ع"}` : "السعر"}</th>
               <th className={cn(th, "w-32")}>الكمية</th>
-              <th className={cn(th, "w-20")}>خصم %</th>
+              {showDiscountCol && <th className={cn(th, "w-20")}>خصم %</th>}
               {allowGiftLines && <th className={cn(th, "w-14")}>هدية</th>}
               {showTaxCol && <th className={cn(th, "w-24")}>حصة الضريبة</th>}
               {showCostCol && <th className={cn(th, "w-16")}>هامش%</th>}
@@ -381,6 +392,24 @@ export function ProductTable({
                             dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: v });
                           }
                         }}
+                        onBlur={
+                          normalizeUsdPurchasePrice
+                            ? () => {
+                                // سعر الدولار = سنتات: نقصّه لمنزلتين عند المغادرة فيطابق ما يُرسَل ويُخزَّن
+                                // (لا يبقى 4.1666 يُعرَض بينما يُحفظ 4.17). القيم الوسيطة («.») ⇒ تجاهُل آمن.
+                                const raw = item.costBase || item.price || "0";
+                                let rounded: string;
+                                try {
+                                  rounded = round2(D(raw)).toFixed(2);
+                                } catch {
+                                  return;
+                                }
+                                if (rounded === raw) return;
+                                dispatch({ type: "UPDATE_ITEM", idx, field: "costBase", value: rounded });
+                                dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: rounded });
+                              }
+                            : undefined
+                        }
                       />
                     )}
                   </td>
@@ -390,22 +419,24 @@ export function ProductTable({
                       onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "qty", value: v })}
                     />
                   </td>
-                  <td className={td}>
-                    {item.isGift ? (
-                      // خصمٌ على مجّانٍ لا معنى له — نُعطّل الحقل بدل تركه يوهم بأثرٍ لا يقع.
-                      <span className="text-xs text-muted-foreground">—</span>
-                    ) : readOnlyPricing ? (
-                      <span className="text-xs text-muted-foreground tabular-nums">{fmtNum(item.discount)}%</span>
-                    ) : (
-                      <InlineNumberInput
-                        value={item.discount}
-                        width="w-14"
-                        max={100}
-                        suffix="%"
-                        onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "discount", value: v })}
-                      />
-                    )}
-                  </td>
+                  {showDiscountCol && (
+                    <td className={td}>
+                      {item.isGift ? (
+                        // خصمٌ على مجّانٍ لا معنى له — نُعطّل الحقل بدل تركه يوهم بأثرٍ لا يقع.
+                        <span className="text-xs text-muted-foreground">—</span>
+                      ) : readOnlyPricing ? (
+                        <span className="text-xs text-muted-foreground tabular-nums">{fmtNum(item.discount)}%</span>
+                      ) : (
+                        <InlineNumberInput
+                          value={item.discount}
+                          width="w-14"
+                          max={100}
+                          suffix="%"
+                          onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "discount", value: v })}
+                        />
+                      )}
+                    </td>
+                  )}
                   {allowGiftLines && (
                     <td className={td}>
                       <Button
