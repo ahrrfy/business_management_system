@@ -18,10 +18,12 @@ import { ingestPunches, upsertDeviceUser } from "./punchStore";
 import type { RawPunch } from "./types";
 import {
   authorizeDeviceIdentity,
+  normalizeRemoteAddress,
   requestDeviceCredential,
   resolveBridgeSecurityConfig,
   type BridgeSecurityConfig,
 } from "./bridgeSecurity";
+import { tryAutoAdoptOrigin } from "./originTrust";
 
 function readBody(req: IncomingMessage, maxBodyBytes: number, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -171,7 +173,7 @@ export async function handleIclock(
       else sendText(res, "OK");
       return true;
     }
-    const device = await resolveDeviceBySn(sn, "ZKTECO_PUSH", req.socket.remoteAddress);
+    let device = await resolveDeviceBySn(sn, "ZKTECO_PUSH", req.socket.remoteAddress);
     if (!device || !device.enabled) {
       // لا نقرّ POST بالنجاح: بعض الأجهزة تحذف الدفعة بعد 200 OK، فتضيع بصمات ما قبل الاعتماد.
       if (req.method === "POST") sendFailure(res, 403, "forbidden");
@@ -184,19 +186,37 @@ export async function handleIclock(
       sendFailure(res, 503, "retry");
       return true;
     }
-    const identity = authorizeDeviceIdentity(
-      device,
-      sn,
-      { remoteAddress: req.socket.remoteAddress, credential: requestDeviceCredential(req) },
-      securityConfig,
-    );
+    const identityContext = {
+      remoteAddress: req.socket.remoteAddress,
+      credential: requestDeviceCredential(req),
+    };
+    let identity = authorizeDeviceIdentity(device, sn, identityContext, securityConfig);
     if (!identity.authorized) {
-      logger.warn(
-        { sn, remote: req.socket.remoteAddress, decision: identity.decision },
-        "hrDevices/iclock: رفض هوية جهاز لا تطابق الربط المعتمد",
-      );
-      sendFailure(res, 403, "forbidden");
-      return true;
+      // نفس مسار التعافي المطبَّق على AiFace — وإلّا بقي بروتوكولٌ مدعومٌ بلا اعتمادٍ تلقائيّ
+      // ولا حتى ظهورٍ في طابور الشاشة عند تغيّر عنوان المتجر (مراجعة عادية).
+      const auto = await tryAutoAdoptOrigin({
+        device: { id: device.id, branchId: device.branchId ?? null },
+        serialNumber: sn,
+        ip: req.socket.remoteAddress ?? "",
+        decision: identity.decision,
+        security: securityConfig,
+      });
+      if (auto.adopted) {
+        device = { ...device, ip: normalizeRemoteAddress(req.socket.remoteAddress) };
+        identity = authorizeDeviceIdentity(device, sn, identityContext, securityConfig);
+        logger.warn(
+          { sn, remote: req.socket.remoteAddress, reason: auto.reason },
+          "hrDevices/iclock: اعتماد تلقائي لعنوان جديد بقرينة جلسة موظّف مُصادَقة",
+        );
+      }
+      if (!identity.authorized) {
+        logger.warn(
+          { sn, remote: req.socket.remoteAddress, decision: identity.decision, autoTrust: auto.reason },
+          "hrDevices/iclock: رفض هوية جهاز لا تطابق الربط المعتمد",
+        );
+        sendFailure(res, 403, "forbidden");
+        return true;
+      }
     }
     if (identity.decision === "LEGACY_MIGRATION") {
       logger.warn({ sn, remote: req.socket.remoteAddress }, "hrDevices/iclock: قبول مؤقت بوضع هجرة الهوية القديمة");

@@ -1191,6 +1191,13 @@
       "when": 1787879423000,
       "tag": "0170_opening_stocktake_exclude_purchases",
       "breakpoints": true
+    },
+    {
+      "idx": 171,
+      "version": "5",
+      "when": 1787879424000,
+      "tag": "0171_hr_device_origin_trust",
+      "breakpoints": true
     }
   ]
 }

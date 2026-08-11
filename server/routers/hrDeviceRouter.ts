@@ -20,7 +20,13 @@ import { eq } from "drizzle-orm";
 import { employees } from "../../drizzle/schema";
 import { requireDb } from "../services/tx";
 import { isDupEntry, toArabicMessage } from "@shared/errorMap.ar";
-import { isExactHostNetwork } from "../services/hrDevices/bridgeSecurity";
+import { isExactHostNetwork, resolveBridgeSecurityConfig } from "../services/hrDevices/bridgeSecurity";
+import {
+  adoptDeviceOrigin,
+  getOriginAttempt,
+  listPendingOriginAttempts,
+  resolveOriginAttempt,
+} from "../services/hrDevices/originTrust";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -260,6 +266,103 @@ export const hrDeviceRouter = router({
         oldValue: { name: res.name, serialNumber: res.serialNumber },
       });
       return res;
+    }),
+
+  /* ── مصادر الاتصال («العنوان يُتعلَّم لا يُكتَب») ─────────────────────────────
+   * مزوّد الإنترنت يغيّر عنوان المتجر العامّ دورياً فتصدّ بوّابةُ الهويّة الجهازَ. الاعتماد
+   * تلقائيّ متى عزّزته جلسةُ موظّفٍ مُصادَقة (originTrust)؛ وهذه الإجراءات هي المسار
+   * الاحتياطيّ المرئيّ حين تغيب القرينة — بدل SSH وتعديلٍ يدويّ على الإنتاج. */
+
+  /** محاولات الاتصال المعلّقة من عناوين غير موثوقة — للعرض في شاشة الأجهزة. */
+  pendingOrigins: hrRead.query(() => listPendingOriginAttempts(20)),
+
+  /** اعتماد عنوانٍ جديد لجهاز بنقرة (مدير) — يسري فوراً بلا إعادة تشغيل الجسر. */
+  trustOrigin: hrWrite
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        /** إلزاميّ للمصدر المحجوب عند البوّابة الأولى (بلا رقم تسلسليّ) — يختاره المدير. */
+        deviceId: z.number().int().positive().optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const attempt = await getOriginAttempt(input.id);
+      if (!attempt) throw new TRPCError({ code: "NOT_FOUND", message: "المحاولة غير موجودة" });
+      if (attempt.resolvedAt) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "المحاولة محسومة مسبقاً" });
+      }
+      const deviceId = attempt.deviceId ?? input.deviceId ?? null;
+      if (deviceId == null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "اختر الجهاز الذي يخصّه هذا العنوان قبل الاعتماد.",
+        });
+      }
+      const device = await svc.getDevice(deviceId);
+      if (!device) throw new TRPCError({ code: "NOT_FOUND", message: "الجهاز غير موجود" });
+      if (!device.enabled) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "اعتمد الجهاز أولاً من قائمة الأجهزة." });
+      }
+      // ربطٌ صريح في .env يتجاهل عمود `ip` تماماً ⇒ كتابته هنا وعدٌ كاذب: الشاشة تقول
+      // «سيتصل» والجهاز يبقى مرفوضاً. نرفض برسالةٍ تدلّ على مكان الإصلاح الحقيقيّ.
+      const serial = device.serialNumber?.trim();
+      if (serial && resolveBridgeSecurityConfig().deviceIdentityBindings[serial]) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "هذا الجهاز مربوطٌ صراحةً في إعدادات الخادم (HR_DEVICE_IDENTITY_BINDINGS) — عدّل الربط هناك؛ تعديل العنوان هنا لن يُغيّر شيئاً.",
+        });
+      }
+      try {
+        await adoptDeviceOrigin({
+          deviceId,
+          serialNumber: serial || attempt.serialNumber,
+          ip: attempt.ip,
+          resolution: "MANUAL",
+          resolvedBy: Number(ctx.user.id),
+        });
+      } catch (e) {
+        const raw = e instanceof Error ? e.message : String(e);
+        if (raw.startsWith("HR_ORIGIN_ADOPT_CONFLICT:")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: raw.split(":").slice(1).join(":") });
+        }
+        throw e;
+      }
+      // المصدر المحجوب سُجّل برقمٍ تسلسليّ فارغ؛ حسمُه يحتاج مفتاحه هو لا سريال الجهاز.
+      await resolveOriginAttempt({
+        serialNumber: attempt.serialNumber,
+        ip: attempt.ip,
+        resolution: "MANUAL",
+        resolvedBy: Number(ctx.user.id),
+      });
+      await logAudit(ctx, {
+        action: "hrDevice.trustOrigin",
+        entityType: "hrFingerprintDevice",
+        entityId: deviceId,
+        newValue: { ip: attempt.ip, serialNumber: serial ?? null, attempts: attempt.attemptCount },
+      });
+      return { ok: true as const, ip: attempt.ip };
+    }),
+
+  /** صرف محاولة (ليست جهازنا) — تختفي من الطابور ولا تُمنح أيّ ثقة. */
+  dismissOrigin: hrWrite
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const attempt = await getOriginAttempt(input.id);
+      if (!attempt) throw new TRPCError({ code: "NOT_FOUND", message: "المحاولة غير موجودة" });
+      await resolveOriginAttempt({
+        serialNumber: attempt.serialNumber,
+        ip: attempt.ip,
+        resolution: "DISMISSED",
+        resolvedBy: Number(ctx.user.id),
+      });
+      await logAudit(ctx, {
+        action: "hrDevice.dismissOrigin",
+        entityType: "hrFingerprintDevice",
+        entityId: attempt.deviceId ?? 0,
+        oldValue: { ip: attempt.ip, serialNumber: attempt.serialNumber },
+      });
+      return { ok: true as const };
     }),
 
   /** تشغيل الطيّ يدوياً (زر «معالجة الآن» — مفيد بعد ربط دفعة مستخدمين). */

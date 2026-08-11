@@ -189,6 +189,22 @@ function toValues(input: DeviceInput) {
   };
 }
 
+/**
+ * تعديلٌ جزئيّ: يُبقي كل حقلٍ لم يُرسَل كما هو في القاعدة. مقصودٌ أن يختلف عن `toValues`
+ * (المستعمل في الإنشاء حيث الغياب = «بلا قيمة» فعلاً) — الشاشة تُرسل حقول التعريف فقط،
+ * وبقيّة الأعمدة يكتبها الجهاز نفسه عند المصافحة فلا يجوز لتعديلٍ بشريّ أن يدهسها.
+ */
+function toPatch(input: DeviceInput) {
+  const all = toValues(input) as Record<string, unknown>;
+  const provided = input as unknown as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const key of Object.keys(all)) {
+    // `name` إلزاميّ في العقد ويُرسَل دائماً؛ البقيّة تُكتب فقط إن حملها الطلب صراحةً.
+    if (key === "name" || provided[key] !== undefined) patch[key] = all[key];
+  }
+  return patch;
+}
+
 export async function createDevice(input: DeviceInput) {
   if (input.serialNumber?.trim() && !hasSecureIdentityBinding(input.serialNumber, input.ip)) {
     throw new TRPCError({
@@ -224,7 +240,13 @@ export async function updateDevice(id: number, input: DeviceInput) {
   if (d.enabled) {
     await assertCandidateIdentityReady({ id, serialNumber: nextSerialNumber, ip: nextIp });
   }
-  await db.update(hrFingerprintDevices).set(toValues(input)).where(eq(hrFingerprintDevices.id, id));
+  // ⚠️ دمجٌ لا استبدال (مراجعة عادية): `toValues` يحوّل الحقول الغائبة إلى null/0/"offline"،
+  // فتعديلُ الاسم وحده كان يمسح `serverHost`/`serverPort` (بيانات الهجرة) ويصفّر العدّادات
+  // الحيّة (`usersCount`/`recordsCount`/`firmware`) ويعيد الحالة «منقطع». نكتب المُرسَل فقط.
+  await db
+    .update(hrFingerprintDevices)
+    .set(toPatch(input))
+    .where(eq(hrFingerprintDevices.id, id));
   return getDevice(id);
 }
 

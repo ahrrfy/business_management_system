@@ -20,9 +20,11 @@ import type { DeviceLink, DeviceRow, RawPunch } from "./types";
 import { baghdadNow } from "./types";
 import {
   authorizeDeviceIdentity,
+  normalizeRemoteAddress,
   resolveBridgeSecurityConfig,
   type BridgeSecurityConfig,
 } from "./bridgeSecurity";
+import { tryAutoAdoptOrigin } from "./originTrust";
 
 export interface AifaceTransport {
   sendText: (text: string) => void;
@@ -96,7 +98,7 @@ export function createAifaceSession(transport: AifaceTransport): AifaceSession {
   async function onReg(msg: Record<string, unknown>): Promise<void> {
     const sn = String(msg.sn ?? "").trim();
     const validSn = /^[A-Za-z0-9._:-]{1,64}$/.test(sn);
-    const row = validSn ? await resolveDeviceBySn(sn, "AIFACE_WS", transport.remote) : null;
+    let row = validSn ? await resolveDeviceBySn(sn, "AIFACE_WS", transport.remote) : null;
     if (!row || !row.enabled) {
       // مجهول أو غير معتمد: يُرفض التسجيل (الصف أُنشئ معطَّلاً ليعتمده المدير من الشاشة).
       send({ ret: "reg", result: false, reason: 1 });
@@ -111,20 +113,41 @@ export function createAifaceSession(transport: AifaceTransport): AifaceSession {
       transport.close();
       return;
     }
-    const identity = authorizeDeviceIdentity(
-      row,
-      sn,
-      { remoteAddress: transport.remote, credential: transport.deviceCredential ?? "" },
-      securityConfig,
-    );
+    const identityContext = {
+      remoteAddress: transport.remote,
+      credential: transport.deviceCredential ?? "",
+    };
+    let identity = authorizeDeviceIdentity(row, sn, identityContext, securityConfig);
     if (!identity.authorized) {
-      send({ ret: "reg", result: false, reason: 2 });
-      logger.warn(
-        { sn, remote: transport.remote, decision: identity.decision },
-        "hrDevices/aiface: رفض هوية جهاز لا تطابق الربط المعتمد",
-      );
-      transport.close();
-      return;
+      // «العنوان يُتعلَّم لا يُكتَب»: مزوّد الإنترنت يغيّر عنوان المتجر دورياً، فلا يجوز أن
+      // يكون التعافي SSHاً وتعديلاً يدوياً. نعتمد العنوان الجديد **فقط** إن عزّزته جلسةُ
+      // موظّفٍ مُصادَقٍ حيّة من الفرع نفسه (راجع originTrust.ts)، ثمّ **نُعيد تمرير البوّابة
+      // نفسها** على الصفّ المُحدَّث — لا التفاف عليها ولا ثقةَ مبنيّة على نيّتنا.
+      const auto = await tryAutoAdoptOrigin({
+        device: { id: row.id, branchId: row.branchId ?? null },
+        serialNumber: sn,
+        ip: transport.remote ?? "",
+        decision: identity.decision,
+        security: securityConfig,
+      });
+      if (auto.adopted) {
+        const previousIp = row.ip;
+        row = { ...row, ip: normalizeRemoteAddress(transport.remote) };
+        identity = authorizeDeviceIdentity(row, sn, identityContext, securityConfig);
+        logger.warn(
+          { sn, remote: transport.remote, previousIp, reason: auto.reason, decision: identity.decision },
+          "hrDevices/aiface: اعتماد تلقائي لعنوان جديد بقرينة جلسة موظّف مُصادَقة",
+        );
+      }
+      if (!identity.authorized) {
+        send({ ret: "reg", result: false, reason: 2 });
+        logger.warn(
+          { sn, remote: transport.remote, decision: identity.decision, autoTrust: auto.reason },
+          "hrDevices/aiface: رفض هوية جهاز لا تطابق الربط المعتمد",
+        );
+        transport.close();
+        return;
+      }
     }
     if (identity.decision === "LEGACY_MIGRATION") {
       logger.warn({ sn, remote: transport.remote }, "hrDevices/aiface: قبول مؤقت بوضع هجرة الهوية القديمة");

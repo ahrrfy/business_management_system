@@ -26,11 +26,13 @@ import {
   DownloadCloud,
   Link2,
   ListChecks,
+  Pencil,
   Plus,
   Radio,
   ScanFace,
   Search,
   Server,
+  ShieldQuestion,
   Trash2,
   Users,
   X,
@@ -65,6 +67,8 @@ export default function HrDevices() {
   const opts = trpc.employees.formOptions.useQuery();
 
   const [openAdd, setOpenAdd] = useState(false);
+  /** null = إضافة جهاز جديد · رقم = تعديل جهازٍ قائم (نفس النموذج، فلا ازدواج شاشات). */
+  const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState({ ...emptyForm });
   const [mapDeviceId, setMapDeviceId] = useState<number | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
@@ -106,18 +110,53 @@ export default function HrDevices() {
     return q ? rows.filter((u) => [u.name, String(u.enrollId)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
   }, [deviceUsers.data, deviceUserQuery]);
 
+  // طابور المصادر المعلّقة: يُحدَّث كل دقيقة كي يظهر العنوان الجديد بلا انتظار إعادة تحميل —
+  // الانقطاع الذي دام ٨ ساعات سببه أنّ الرفض كان يُدفن في ملفّ سجلٍّ لا يراه أحد.
+  const originsQuery = trpc.hrDevices.pendingOrigins.useQuery(undefined, { refetchInterval: 60_000 });
+  const pendingOrigins = originsQuery.data ?? [];
+  /** الجهاز الذي اختاره المدير لمصدرٍ محجوبٍ بلا رقم تسلسليّ (مفتاحه معرّف المحاولة). */
+  const [originDevice, setOriginDevice] = useState<Record<number, string>>({});
+
   const refresh = async () => {
     await Promise.all([
       utils.hrDevices.list.invalidate(),
       utils.hrDevices.punchesList.invalidate(),
       utils.hrDevices.deviceUsers.invalidate(),
+      utils.hrDevices.pendingOrigins.invalidate(),
     ]);
   };
+
+  const trustOrigin = trpc.hrDevices.trustOrigin.useMutation({
+    onSuccess: async (r) => {
+      notify.ok(`اعتُمد العنوان ${r.ip} — سيتصل الجهاز خلال ثوانٍ`);
+      await refresh();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const dismissOrigin = trpc.hrDevices.dismissOrigin.useMutation({
+    onSuccess: async () => {
+      notify.ok("صُرفت المحاولة");
+      await refresh();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const create = trpc.hrDevices.create.useMutation({
     onSuccess: async () => {
       notify.ok("تمت إضافة الجهاز — وجّهه لخادمك وسيتصل تلقائياً");
       setOpenAdd(false);
+      setForm({ ...emptyForm });
+      await refresh();
+    },
+    onError: (e) => notify.err(e),
+  });
+  // كان الخادم يملك `update` بلا أيّ شاشة تستدعيها ⇒ تعديل عنوان الجهاز مستحيلٌ من النظام،
+  // وهو ما جعل عطل ١١/٨/٢٦ (تغيّر عنوان المتجر) يتطلّب SSH وتعديلاً يدوياً على الإنتاج.
+  const update = trpc.hrDevices.update.useMutation({
+    onSuccess: async () => {
+      notify.ok("حُدِّثت بيانات الجهاز — تسري فوراً بلا إعادة تشغيل");
+      setOpenAdd(false);
+      setEditId(null);
       setForm({ ...emptyForm });
       await refresh();
     },
@@ -179,7 +218,7 @@ export default function HrDevices() {
       notify.warn("اسم الجهاز مطلوب");
       return;
     }
-    create.mutate({
+    const payload = {
       name: form.name.trim(),
       serialNumber: form.serialNumber.trim() || undefined,
       protocol: form.protocol as "AIFACE_WS" | "ZKTECO_PUSH",
@@ -188,7 +227,35 @@ export default function HrDevices() {
       branchId: form.branchId ? Number(form.branchId) : undefined,
       deviceCode: form.deviceCode.trim() || undefined,
       ip: form.ip.trim() || undefined,
+    };
+    if (editId != null) update.mutate({ id: editId, ...payload });
+    else create.mutate(payload);
+  };
+
+  /** يفتح نفس نموذج الإضافة بحالة تعديل مملوءة من صفّ الجهاز. */
+  const startEdit = (d: {
+    id: number;
+    name: string;
+    serialNumber: string | null;
+    protocol: string | null;
+    model: string | null;
+    location: string | null;
+    branchId: number | null;
+    deviceCode: string | null;
+    ip: string | null;
+  }) => {
+    setForm({
+      name: d.name ?? "",
+      serialNumber: d.serialNumber ?? "",
+      protocol: d.protocol ?? "AIFACE_WS",
+      model: d.model ?? "",
+      location: d.location ?? "",
+      branchId: d.branchId != null ? String(d.branchId) : "",
+      deviceCode: d.deviceCode ?? "",
+      ip: d.ip ?? "",
     });
+    setEditId(d.id);
+    setOpenAdd(true);
   };
 
   return (
@@ -305,6 +372,93 @@ export default function HrDevices() {
         </CardContent>
       </Card>
 
+      {/* مصادر تنتظر قراراً — «العنوان يُتعلَّم لا يُكتَب».
+          مزوّد الإنترنت يغيّر عنوان المتجر دورياً فيُصَدّ الجهاز؛ الاعتماد تلقائيّ متى عزّزته
+          جلسةُ موظّفٍ مُصادَقة، وهذه البطاقة هي المسار المرئيّ حين تغيب القرينة. لا تظهر إطلاقاً
+          في الحالة الطبيعية. */}
+      {pendingOrigins.length > 0 && (
+        <Card>
+          <CardContent
+            className="p-4 space-y-3"
+            style={{ borderInlineStartWidth: 3, borderInlineStartColor: "var(--sem-warn)" }}
+          >
+            <div className="flex items-start gap-2">
+              <ShieldQuestion aria-hidden className="size-4 mt-0.5 shrink-0" style={{ color: "var(--sem-warn)" }} />
+              <div>
+                <div className="text-sm font-semibold">جهاز يحاول الاتصال من عنوان جديد</div>
+                <p className="text-[12px] text-muted-foreground leading-relaxed">
+                  تغيّر عنوان الإنترنت لدى المتجر عادةً سببُ ذلك. اعتمد العنوان إن كان جهازك — يسري فوراً
+                  وتنساب البصمات المخزَّنة. لا تعتمد عنواناً لا تعرفه.
+                </p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {pendingOrigins.map((o) => (
+                <div key={o.id} className="rounded-md border p-2.5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-medium truncate">
+                      {o.deviceName ?? (o.serialNumber ? "جهاز غير معروف" : "مصدر مجهول — لم يُعرّف نفسه")}
+                      {o.serialNumber ? (
+                        <span className="text-muted-foreground font-normal" dir="ltr">
+                          {" "}
+                          {o.serialNumber}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">
+                      من العنوان <span dir="ltr" className="font-mono">{o.ip}</span> · {o.attemptCount} محاولة · آخرها{" "}
+                      {fmtTime(o.lastSeenAt)}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {/* مصدرٌ صُدّ قبل أن يُعرّف نفسه ⇒ لا رقم تسلسليّ: يختار المديرُ الجهاز صراحةً. */}
+                    {o.deviceId == null && (
+                      <select
+                        className={selectCls + " w-44"}
+                        aria-label="الجهاز الذي يخصّه هذا العنوان"
+                        value={originDevice[o.id] ?? ""}
+                        onChange={(e) => setOriginDevice((m) => ({ ...m, [o.id]: e.target.value }))}
+                      >
+                        <option value="">— اختر الجهاز —</option>
+                        {devices
+                          .filter((d) => d.enabled)
+                          .map((d) => (
+                            <option key={d.id} value={String(d.id)}>
+                              {d.name}
+                            </option>
+                          ))}
+                      </select>
+                    )}
+                    <Button
+                      size="sm"
+                      disabled={
+                        trustOrigin.isPending || (o.deviceId == null && !originDevice[o.id])
+                      }
+                      onClick={() =>
+                        trustOrigin.mutate({
+                          id: o.id,
+                          ...(o.deviceId == null ? { deviceId: Number(originDevice[o.id]) } : {}),
+                        })
+                      }
+                    >
+                      اعتماد العنوان
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={dismissOrigin.isPending}
+                      onClick={() => dismissOrigin.mutate({ id: o.id })}
+                    >
+                      ليس جهازي
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* جدول الأجهزة */}
       <Card>
         <CardHeader>
@@ -419,6 +573,7 @@ export default function HrDevices() {
                           align="start"
                           actions={[
                             { key: "approve", kind: "approve", label: "اعتماد", icon: BadgeCheck, hidden: d.enabled, gate: { module: "hr", level: "FULL" }, disabled: approve.isPending, disabledReason: "جارٍ اعتماد الجهاز", onSelect: () => approve.mutate({ id: d.id }) },
+                            { key: "edit", kind: "edit", label: "تعديل الجهاز (الاسم/الفرع/العنوان)", icon: Pencil, gate: { module: "hr", level: "FULL" }, onSelect: () => startEdit(d) },
                             { key: "map", kind: "edit", label: "ربط المستخدمين بالموظفين", icon: Link2, hidden: !d.enabled, gate: { module: "hr", level: "FULL" }, onSelect: () => setMapDeviceId(d.id) },
                             { key: "logs", kind: "export", label: "سحب السجل", icon: DownloadCloud, hidden: !d.enabled, gate: { module: "hr", level: "FULL" }, disabled: command.isPending, disabledReason: "الجهاز ينفّذ أمراً آخر", onSelect: () => command.mutate({ deviceId: d.id, cmd: "getalllog" }) },
                             { key: "users", kind: "export", label: "سحب المستخدمين", icon: Users, hidden: !d.enabled, gate: { module: "hr", level: "FULL" }, disabled: command.isPending, disabledReason: "الجهاز ينفّذ أمراً آخر", onSelect: () => command.mutate({ deviceId: d.id, cmd: "getuserlist" }) },
@@ -704,12 +859,15 @@ export default function HrDevices() {
         open={openAdd}
         onOpenChange={(o) => {
           setOpenAdd(o);
-          if (!o) setForm({ ...emptyForm });
+          if (!o) {
+            setForm({ ...emptyForm });
+            setEditId(null);
+          }
         }}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>إضافة جهاز حضور</DialogTitle>
+            <DialogTitle>{editId != null ? "تعديل جهاز حضور" : "إضافة جهاز حضور"}</DialogTitle>
           </DialogHeader>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1 sm:col-span-2">
@@ -809,8 +967,8 @@ export default function HrDevices() {
             <Button variant="outline" onClick={() => setOpenAdd(false)}>
               إلغاء
             </Button>
-            <Button disabled={create.isPending} onClick={submit}>
-              {create.isPending ? "جارٍ…" : "إضافة"}
+            <Button disabled={create.isPending || update.isPending} onClick={submit}>
+              {create.isPending || update.isPending ? "جارٍ…" : editId != null ? "حفظ" : "إضافة"}
             </Button>
           </DialogFooter>
         </DialogContent>
