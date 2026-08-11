@@ -1205,6 +1205,13 @@
       "when": 1787879425000,
       "tag": "0172_double_entry_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "5",
+      "when": 1787879426000,
+      "tag": "0173_month_close_requests",
+      "breakpoints": true
     }
   ]
 }

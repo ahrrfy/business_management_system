@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
+import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { Printer, FileSpreadsheet, TrendingUp, ShoppingCart, Wallet, ReceiptText, Scale, Wrench, CircleAlert, CircleCheck, TriangleAlert } from "lucide-react";
 
@@ -98,6 +99,33 @@ export default function MonthlyClosePack() {
     branchId: branchId ? Number(branchId) : undefined,
   });
   const rd = readiness.data;
+
+  // ش٥ب: طلب الإقفال واعتماده (Maker-Checker). الطابور محصورٌ بمديرٍ فأعلى ⇒ لا يُطلَب لغيرهم
+  // (الشاشة نفسها مرئيّةٌ للمحاسب/المدقّق عبر بوّابة التقارير).
+  const canRequest = isAdmin || me.data?.role === "manager";
+  const requests = trpc.periodLock.closeRequests.useQuery(undefined, { enabled: canRequest });
+  const pendingForMonth = requests.data?.find((r) => r.month === month && r.status === "PENDING_APPROVAL");
+  const approvedForMonth = requests.data?.find((r) => r.month === month && r.status === "APPROVED");
+  const [rejectReason, setRejectReason] = useState("");
+
+  const afterDecision = () => {
+    void requests.refetch();
+    void readiness.refetch();
+    setRejectReason("");
+  };
+  const mRequest = trpc.periodLock.requestClose.useMutation({
+    onSuccess: () => { notify.ok("أُرسل طلب الإقفال — بانتظار اعتماد الإدارة."); afterDecision(); },
+    onError: (e) => notify.err(e),
+  });
+  const mApprove = trpc.periodLock.approveClose.useMutation({
+    onSuccess: (r) => { notify.ok(`أُقفل شهر ${r.month}.`); afterDecision(); },
+    onError: (e) => notify.err(e),
+  });
+  const mReject = trpc.periodLock.rejectClose.useMutation({
+    onSuccess: () => { notify.ok("رُفض الطلب."); afterDecision(); },
+    onError: (e) => notify.err(e),
+  });
+  const busy = mRequest.isPending || mApprove.isPending || mReject.isPending;
 
   // لقطة الذمم كما في نهاية الشهر المختار — تستبدل «لقطة الآن» بالحسّاسة للتاريخ (reports.financialPosition
   // اكتسبت asOf لهذا الغرض بالضبط). لا تُطلَب إلا بعد توفّر period.to من الاستعلام الأول.
@@ -228,6 +256,63 @@ export default function MonthlyClosePack() {
                 ? "لا يُقفَل الشهر ما دام بندٌ حاجزٌ قائماً — عالجه ثم أعِد الفحص."
                 : "لا مانع من الإقفال. بنود التنبيه لا تحجب."}
             </p>
+
+            {canRequest && (
+              <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+                {approvedForMonth ? (
+                  <span className="text-xs text-muted-foreground">
+                    هذا الشهر مُقفَلٌ باعتماد الطلب رقم {approvedForMonth.id}.
+                  </span>
+                ) : pendingForMonth ? (
+                  <>
+                    <span className="text-xs text-muted-foreground">
+                      طلب إقفالٍ معلَّق (طلبه {pendingForMonth.requestedByName}) — بانتظار اعتماد الإدارة.
+                    </span>
+                    {isAdmin && (
+                      <>
+                        <Button
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => mApprove.mutate({ requestId: pendingForMonth.id })}
+                        >
+                          اعتماد الإقفال
+                        </Button>
+                        <input
+                          className={selectCls}
+                          placeholder="سبب الرفض"
+                          value={rejectReason}
+                          onChange={(e) => setRejectReason(e.target.value)}
+                          aria-label="سبب رفض طلب الإقفال"
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy || rejectReason.trim().length < 5}
+                          onClick={() => mReject.mutate({ requestId: pendingForMonth.id, reason: rejectReason.trim() })}
+                        >
+                          رفض
+                        </Button>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      size="sm"
+                      disabled={busy || rd.blocked}
+                      onClick={() => mRequest.mutate({ month })}
+                    >
+                      طلب إقفال الشهر
+                    </Button>
+                    <span className="text-xs text-muted-foreground">
+                      {rd.blocked
+                        ? "مُعطَّل حتى تُعالَج البنود الحاجزة."
+                        : "يُرسَل للإدارة لاعتماده — الطالب لا يعتمد طلبه."}
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

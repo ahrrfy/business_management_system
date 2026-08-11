@@ -8331,3 +8331,39 @@ export const doubleEntrySettings = mysqlTable("doubleEntrySettings", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 export type DoubleEntrySettings = typeof doubleEntrySettings.$inferSelect;
+
+/**
+ * طلبات إقفال الشهر (ش٥ب، هجرة 0173) — قرار المالك (١١/٨): **المدير يطلُب، والأدمن/المالك يُقفل**،
+ * و**لا تجاوز للحاجز إطلاقاً**. السبب من الكود لا افتراضاً: `lockPeriod` عامٌّ على الشركة كلّها
+ * (`financialPeriods` بلا branchId) ومحصورٌ بـadminProcedure منذ بنائه ⇒ فتحُه للمدير إضعافُ ضابط.
+ *
+ * بلا `branchId` عمداً: القفل عامّ فالطلب عامّ، والجاهزية تُحسب لكل الفروع حتماً (جاهزيةٌ مُنطَّقةٌ
+ * بفرع الطالب كانت ستُجيز الإقفال وفرعٌ آخر فيه وردية مفتوحة).
+ */
+export const monthCloseRequests = mysqlTable(
+  "monthCloseRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    month: varchar("month", { length: 7 }).notNull(),
+    status: mysqlEnum("monthCloseStatus", ["PENDING_APPROVAL", "APPROVED", "REJECTED"])
+      .default("PENDING_APPROVAL")
+      .notNull(),
+    /** لقطة الجاهزية وقت الطلب (JSON) — **للتدقيق فقط**؛ الاعتماد يُعيد الفحص حيّاً. */
+    readinessSnapshot: text("readinessSnapshot").notNull(),
+    requestedBy: int("requestedBy")
+      .notNull()
+      .references(() => users.id),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    decidedBy: int("decidedBy").references(() => users.id),
+    decidedAt: timestamp("decidedAt"),
+    rejectionReason: varchar("rejectionReason", { length: 500 }),
+    /** financialPeriods.id الناتج عن الاعتماد — أثرٌ مباشر من الطلب إلى القفل الذي أنتجه. */
+    lockedPeriodId: bigint("lockedPeriodId", { mode: "number" }),
+    /** حارس «طلبٌ معلَّقٌ واحدٌ لكل شهر»: الشهر عند الإنشاء، NULL عند الحسم (نمط shifts.openGuard). */
+    pendingGuard: varchar("pendingGuard", { length: 7 }).unique("uq_month_close_pending"),
+  },
+  (t) => ({
+    statusRequestedIdx: index("idx_mcr_status_requested").on(t.status, t.requestedAt),
+  }),
+);
+export type MonthCloseRequest = typeof monthCloseRequests.$inferSelect;
