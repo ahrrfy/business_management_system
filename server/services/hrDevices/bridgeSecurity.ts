@@ -14,6 +14,15 @@ export interface BridgeSecurityConfig {
   requestTimeoutMs: number;
   idleTimeoutMs: number;
   maxRequestsPerMinute: number;
+  /**
+   * ميزانية **رسائل الجلسة المُصادَقة** (بعد نجاح reg) — منفصلة عن ميزانية الاتصال أعلاه.
+   *
+   * سبب الفصل (رُصد حيّاً ١١/٨/٢٦): كان عدّادٌ واحد يخدم الطلبات وترقيات WebSocket ورسائل
+   * الجلسة معاً. فحين عاد الجهاز بعد انقطاعٍ ورفع متراكم ٨ ساعات (دفعاتٍ من ٢٠ بصمة عدّة
+   * مرّات في الثانية) استهلك الميزانية، فأُغلق مقبسه، **ثمّ مُنع من إعادة الاتصال** لأنّ
+   * الترقية تشرب من العدّاد المستنزَف نفسه ⇒ تفريغٌ مشروع يحجب نفسه دورةً بعد دورة.
+   */
+  maxSessionMessagesPerMinute: number;
   maxWsConnectionsPerIp: number;
 }
 
@@ -182,6 +191,14 @@ export function resolveBridgeSecurityConfig(env: NodeJS.ProcessEnv = process.env
     requestTimeoutMs: boundedInteger(env.HR_DEVICE_REQUEST_TIMEOUT_MS, 30_000, 5_000, 120_000),
     idleTimeoutMs: boundedInteger(env.HR_DEVICE_IDLE_TIMEOUT_MS, 180_000, 30_000, 30 * 60_000),
     maxRequestsPerMinute: boundedInteger(env.HR_DEVICE_RATE_LIMIT_PER_MINUTE, 240, 10, 10_000),
+    // ٣٠٠٠/دقيقة = ٥٠ رسالة/ثانية؛ الرسالة تحمل حتى ٢٠ بصمة ⇒ ~٦٠ ألف بصمة/دقيقة. هامشٌ
+    // واسع فوق أعلى تفريغٍ واقعيّ (رُصد ٥–١٠ رسائل/ثانية)، ويبقى سقفاً يحمي من جهازٍ معطوب.
+    maxSessionMessagesPerMinute: boundedInteger(
+      env.HR_DEVICE_SESSION_RATE_LIMIT_PER_MINUTE,
+      3_000,
+      60,
+      100_000,
+    ),
     maxWsConnectionsPerIp: boundedInteger(env.HR_DEVICE_MAX_WS_PER_IP, 4, 1, 100),
   };
 }

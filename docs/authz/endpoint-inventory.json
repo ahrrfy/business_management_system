@@ -14636,17 +14636,17 @@
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 283
+      "line": 298
     },
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 312
+      "line": 327
     },
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 335
+      "line": 350
     },
     {
       "kind": "cron",
