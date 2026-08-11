@@ -75,6 +75,15 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
       .where(eq(products.id, input.productId));
 
     for (const v of input.variants) {
+      // Codex جولة٧ P1: ارفض معرّفَ/اسمَ وحدةٍ مكرّراً في الطلب **قبل** أيّ فحص — وإلّا كتب المُحدِّث الصفّ
+      // نفسه مرّتين (الثانية تَجُبّ الأولى) فيُفقَد الأساس رغم اجتياز فحص «أساسٍ واحد» والحارس.
+      const submittedIds = v.units.filter((u) => u.id != null).map((u) => Number(u.id));
+      if (new Set(submittedIds).size !== submittedIds.length)
+        throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku}: معرّف وحدةٍ مكرّرٌ في الطلب` });
+      const submittedNames = v.units.map((u) => u.unitName.trim());
+      if (new Set(submittedNames).size !== submittedNames.length)
+        throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku}: اسم وحدةٍ مكرّرٌ في الطلب` });
+
       if (!v.units.some((u) => u.isBaseUnit))
         throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} يحتاج وحدة أساس واحدة` });
       if (v.units.filter((u) => u.isBaseUnit).length > 1)

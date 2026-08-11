@@ -282,6 +282,46 @@ describe("updateProductWithVariants — الكتابة", () => {
     ).rejects.toThrow(/تبديل وحدة الأساس/);
   });
 
+  it("#2 (Codex جولة٧ P1): المسار الحامل للمعرّف — معرّف وحدةٍ مكرّرٌ في الطلب ⇒ يُرفض (يمنع كتابةً مزدوجةً تُفقِد الأساس)", async () => {
+    await expect(
+      updateProduct(
+        {
+          productId: 1,
+          name: "دفتر",
+          variants: [
+            {
+              id: 1,
+              sku: "NB-100",
+              costPrice: "550",
+              units: [
+                { id: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+                { id: 1, unitName: "قطعة-مكرّر", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+              ],
+            },
+          ],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/معرّف وحدةٍ مكرّر/);
+  });
+
+  it("#2 (Codex جولة٧ P1): مسار القالب — اسم وحدةٍ مكرّرٌ في القالب ⇒ يُرفض", async () => {
+    await expect(
+      updateProductWithVariants(
+        {
+          productId: 1,
+          name: "دفتر",
+          unitTemplate: [
+            { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+            { unitName: "قطعة", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+          ],
+          variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: {} }],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/اسم وحدةٍ مكرّر/);
+  });
+
   it("إضافة متغيّر جديد (بلا id) ⇒ صفّ جديد + added=1، والقديم يبقى كما هو", async () => {
     const r = await updateProductWithVariants(
       {

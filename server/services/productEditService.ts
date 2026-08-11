@@ -462,6 +462,10 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
     const baseUnits = input.unitTemplate.filter((u) => u.isBaseUnit).length;
     if (baseUnits !== 1) throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد وحدة أساس واحدة فقط في قالب الوحدات" });
     if (input.unitTemplate.some((u) => !u.unitName.trim())) throw new TRPCError({ code: "BAD_REQUEST", message: "كل وحدة في القالب تحتاج اسماً" });
+    // Codex جولة٧ P1: ارفض اسمَ وحدةٍ مكرّراً في القالب — `upsertVariantUnits` يطابق بالاسم فيُعالج المكرّر
+    // مرّتين (يُدرِج/يُحدِّث الصفّ نفسه) فقد يُفقَد الأساس أو يلتبس، متجاوزاً حارس ثبات الأساس.
+    const tplNames = input.unitTemplate.map((u) => u.unitName.trim());
+    if (new Set(tplNames).size !== tplNames.length) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم وحدةٍ مكرّرٌ في قالب الوحدات" });
     // تحقّق معامل التحويل خادمياً (تدقيق ١٧/٧): الأساس ١، غير الأساس عدد صحيح > ١ (كان الحارس واجهياً فقط).
     assertValidUnitFactors(input.unitTemplate);
     if (input.variants.some((v) => !v.sku.trim())) throw new TRPCError({ code: "BAD_REQUEST", message: "كل متغيّر يحتاج SKU" });
