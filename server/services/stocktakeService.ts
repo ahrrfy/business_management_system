@@ -32,3 +32,4 @@ export * from "./stocktake/intelligence";
 export * from "./stocktake/report";
 export * from "./stocktake/liveScope";
 export * from "./stocktake/assignments";
+export * from "./stocktake/valuationIntegrity";

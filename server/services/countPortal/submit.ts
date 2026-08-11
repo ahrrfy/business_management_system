@@ -1,9 +1,13 @@
 // تسجيل عدّة (submit) داخل withTx واحدة — العقد §٥ من docs/stocktake-contract.md.
 import { TRPCError } from "@trpc/server";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
+import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
+import Decimal from "decimal.js";
 import {
   products,
+  productUnitBarcodes,
+  productUnits,
   productVariants,
   stocktakeAssignments,
   stocktakeCountOperations,
@@ -14,7 +18,40 @@ import {
 } from "../../../drizzle/schema";
 import { requireDb, withTx } from "../tx";
 import type { PortalIdentity } from "./identity";
-import { SESSION_UNAVAILABLE_MSG, IDENTITY_EXPIRED_MSG, COUNTING_ENDED_MSG } from "./shared";
+import {
+  SESSION_UNAVAILABLE_MSG,
+  IDENTITY_EXPIRED_MSG,
+  COUNTING_ENDED_MSG,
+} from "./shared";
+
+function scannerPrefix(code: string | null | undefined): number | null {
+  const digits = String(code ?? "").replace(/\D/g, "");
+  // الباركود القصير قد يساوي كمية مشروعة مصادفةً؛ حادثة HID المثبتة تخص أكواداً طويلة.
+  if (digits.length < 8) return null;
+  const prefix = Number(digits.slice(0, 7));
+  return Number.isSafeInteger(prefix) ? prefix : null;
+}
+
+function parseUnitBreakdown(
+  raw: string | null | undefined,
+): Record<string, number> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (
+        typeof value === "number" &&
+        Number.isSafeInteger(value) &&
+        value >= 0
+      )
+        out[key] = value;
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
 
 export type SubmitCountInput = {
   variantId: number;
@@ -46,14 +83,20 @@ export type SubmitCountResult = {
  */
 export async function submitCount(
   identity: PortalIdentity,
-  input: SubmitCountInput
+  input: SubmitCountInput,
 ): Promise<SubmitCountResult> {
   // حراسة دفاعية (zod في الراوتر يضمنها أيضاً).
   if (!Number.isInteger(input.qty) || input.qty < 0) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية يجب أن تكون عدداً صحيحاً غير سالب." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "الكمية يجب أن تكون عدداً صحيحاً غير سالب.",
+    });
   }
   if (input.unitBreakdown && input.unitBreakdown.length > 500) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "تفصيل الوحدات أطول من المسموح." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "تفصيل الوحدات أطول من المسموح.",
+    });
   }
 
   try {
@@ -67,7 +110,11 @@ export async function submitCount(
         .for("update")
         .limit(1);
       const session = sessionRows[0];
-      if (!session) throw new TRPCError({ code: "NOT_FOUND", message: SESSION_UNAVAILABLE_MSG });
+      if (!session)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: SESSION_UNAVAILABLE_MSG,
+        });
 
       // Request ids live in a separate immutable ledger. Taking the session
       // lock first serializes devices, and this locking read then observes the
@@ -78,8 +125,8 @@ export async function submitCount(
         .where(
           and(
             eq(stocktakeCountOperations.sessionId, identity.session.id),
-            eq(stocktakeCountOperations.clientRequestId, input.clientRequestId)
-          )
+            eq(stocktakeCountOperations.clientRequestId, input.clientRequestId),
+          ),
         )
         .for("update")
         .limit(1);
@@ -94,7 +141,10 @@ export async function submitCount(
       }
 
       if (session.status !== "COUNTING") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: COUNTING_ENDED_MSG });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: COUNTING_ENDED_MSG,
+        });
       }
 
       // (٢) التكليف ACTIVE تحت قفل.
@@ -106,12 +156,16 @@ export async function submitCount(
         .limit(1);
       const asg = asgRows[0];
       if (!asg || Number(asg.sessionId) !== Number(session.id)) {
-        throw new TRPCError({ code: "UNAUTHORIZED", message: IDENTITY_EXPIRED_MSG });
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: IDENTITY_EXPIRED_MSG,
+        });
       }
       if (asg.status !== "ACTIVE") {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "تكليف الجرد غير نشط — لا يمكن تسجيل أو تعديل عدّات بعد التسليم أو إزالة العامل.",
+          message:
+            "تكليف الجرد غير نشط — لا يمكن تسجيل أو تعديل عدّات بعد التسليم أو إزالة العامل.",
         });
       }
       const myAssignmentId = Number(asg.id);
@@ -122,16 +176,20 @@ export async function submitCount(
           id: stocktakeItems.id,
           recountStatus: stocktakeItems.recountStatus,
           reviewApprovedAt: stocktakeItems.reviewApprovedAt,
+          sku: productVariants.sku,
         })
         .from(stocktakeItems)
-        .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+        .innerJoin(
+          productVariants,
+          eq(stocktakeItems.variantId, productVariants.id),
+        )
         .innerJoin(products, eq(productVariants.productId, products.id))
         .where(
           and(
             eq(stocktakeItems.sessionId, session.id),
             eq(stocktakeItems.variantId, input.variantId),
             eq(products.isService, false),
-          )
+          ),
         )
         .for("update")
         .limit(1);
@@ -145,9 +203,102 @@ export async function submitCount(
       if (item.reviewApprovedAt != null) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "اعتمدت الإدارة عدّ هذا المنتج مرحلياً — لا يمكن تعديله إلا بعد طلب إعادة عدّ جديد.",
+          message:
+            "اعتمدت الإدارة عدّ هذا المنتج مرحلياً — لا يمكن تعديله إلا بعد طلب إعادة عدّ جديد.",
         });
       }
+
+      // حارس تضخم الكمية من قارئ HID: عند فتح بطاقة الكمية يكون قارئ الباركود العام معطلاً
+      // والحقل مركزاً، فتدخل أرقام الباركود ثم تقصها الواجهة إلى أول 7 أرقام. نرفض البصمة
+      // خادمياً قبل أي كتابة، مع مراعاة معامل الوحدة والباركودات البديلة.
+      const units = await tx
+        .select({
+          id: productUnits.id,
+          unitName: productUnits.unitName,
+          factor: productUnits.conversionFactor,
+          barcode: productUnits.barcode,
+        })
+        .from(productUnits)
+        .where(
+          and(
+            eq(productUnits.variantId, input.variantId),
+            eq(productUnits.isActive, true),
+          ),
+        );
+      const aliases = await tx
+        .select({
+          unitName: productUnits.unitName,
+          factor: productUnits.conversionFactor,
+          barcode: productUnitBarcodes.barcode,
+        })
+        .from(productUnitBarcodes)
+        .innerJoin(
+          productUnits,
+          eq(productUnitBarcodes.productUnitId, productUnits.id),
+        )
+        .where(
+          and(
+            eq(productUnits.variantId, input.variantId),
+            eq(productUnits.isActive, true),
+          ),
+        );
+      const breakdown = parseUnitBreakdown(input.unitBreakdown);
+      const candidates = [
+        ...units.map((unit) => ({
+          unitName: unit.unitName,
+          factor: unit.factor,
+          code: unit.barcode,
+        })),
+        ...aliases.map((unit) => ({
+          unitName: unit.unitName,
+          factor: unit.factor,
+          code: unit.barcode,
+        })),
+        { unitName: null, factor: "1", code: item.sku },
+      ];
+      const scannerLike = candidates.some((candidate) => {
+        const prefix = scannerPrefix(candidate.code);
+        if (prefix == null) return false;
+        if (candidate.unitName && breakdown?.[candidate.unitName] === prefix)
+          return true;
+        const baseQty = new Decimal(prefix).times(String(candidate.factor));
+        return (
+          baseQty.isInteger() &&
+          baseQty.abs().lte(Number.MAX_SAFE_INTEGER) &&
+          baseQty.toNumber() === input.qty
+        );
+      });
+      if (scannerLike) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "الكمية تطابق بداية باركود المنتج ويُحتمل أن الماسح كتب داخل حقل العدد. امسح الحقل وأعد العدّ يدوياً؛ وللكمية الكبيرة المشروعة اطلب تحقق مسؤول الجرد.",
+        });
+      }
+      const candidateDigest = createHash("sha256")
+        .update(
+          JSON.stringify(
+            candidates
+              .map((candidate) => ({
+                code: String(candidate.code ?? ""),
+                factor: new Decimal(String(candidate.factor)).toString(),
+                unitName: candidate.unitName ?? null,
+              }))
+              .sort((a, b) =>
+                JSON.stringify(a).localeCompare(JSON.stringify(b)),
+              ),
+          ),
+          "utf8",
+        )
+        .digest("hex");
+      const guardedUnitBreakdown = JSON.stringify({
+        ...(breakdown ?? {}),
+        __stocktakeScannerGuard: {
+          version: 1,
+          qty: input.qty,
+          candidateDigest,
+        },
+      });
 
       // (٤) عدّات الصنف الحالية تحت قفل (تمنع سباق عدَّين متزامنين على نفس الصنف).
       const counts = await tx
@@ -156,15 +307,17 @@ export async function submitCount(
         .where(
           and(
             eq(stocktakeCounts.sessionId, session.id),
-            eq(stocktakeCounts.variantId, input.variantId)
-          )
+            eq(stocktakeCounts.variantId, input.variantId),
+          ),
         )
         .for("update");
       counts.sort((a, b) => Number(a.id) - Number(b.id));
 
       const first = counts.find((c) => c.kind === "FIRST") ?? null;
       const recounts = counts.filter((c) => c.kind === "RECOUNT");
-      const latestRecount = recounts.length ? recounts[recounts.length - 1] : null;
+      const latestRecount = recounts.length
+        ? recounts[recounts.length - 1]
+        : null;
       // العدّ الفعّال = آخر RECOUNT إن وُجد وإلا FIRST (نفس قاعدة rawCount في المراجعة).
       const effectiveRow = latestRecount ?? first;
 
@@ -182,7 +335,7 @@ export async function submitCount(
           assignmentId: asg.id,
           kind: "RECOUNT",
           qty: input.qty,
-          unitBreakdown: input.unitBreakdown ?? null,
+          unitBreakdown: guardedUnitBreakdown,
           countedByName: identity.countedByName,
           countedByUserId: identity.countedByUserId,
           countedAt: now,
@@ -200,8 +353,8 @@ export async function submitCount(
             and(
               eq(stocktakeCounts.sessionId, session.id),
               eq(stocktakeCounts.variantId, input.variantId),
-              eq(stocktakeCounts.isConflict, true)
-            )
+              eq(stocktakeCounts.isConflict, true),
+            ),
           );
       } else {
         const myOwn =
@@ -210,7 +363,7 @@ export async function submitCount(
             .find(
               (c) =>
                 Number(c.assignmentId) === myAssignmentId &&
-                (c.kind === "FIRST" || c.kind === "RECOUNT")
+                (c.kind === "FIRST" || c.kind === "RECOUNT"),
             ) ?? null;
 
         if (effectiveRow && !myOwn && session.dupPolicy === "BLOCK") {
@@ -229,7 +382,7 @@ export async function submitCount(
             .update(stocktakeCounts)
             .set({
               qty: input.qty,
-              unitBreakdown: input.unitBreakdown ?? null,
+              unitBreakdown: guardedUnitBreakdown,
               countedAt: now,
             })
             .where(eq(stocktakeCounts.id, myOwn.id));
@@ -259,7 +412,7 @@ export async function submitCount(
             assignmentId: asg.id,
             kind: "FIRST",
             qty: input.qty,
-            unitBreakdown: input.unitBreakdown ?? null,
+            unitBreakdown: guardedUnitBreakdown,
             countedByName: identity.countedByName,
             countedByUserId: identity.countedByUserId,
             countedAt: now,
@@ -273,7 +426,9 @@ export async function submitCount(
           const match = input.qty === effectiveRow.qty;
           const myVerify =
             counts.find(
-              (c) => c.kind === "VERIFY" && Number(c.assignmentId) === myAssignmentId
+              (c) =>
+                c.kind === "VERIFY" &&
+                Number(c.assignmentId) === myAssignmentId,
             ) ?? null;
           // سدّ أوراكل الاستنتاج (مراجعة أمنية): نتيجة التطابق تُكشف لأول إرسال فقط —
           // تكرار تعديل التحقّقي مع رؤية match/لا-match يتيح استنتاج كمية الزميل بالتقريب.
@@ -283,7 +438,7 @@ export async function submitCount(
               .update(stocktakeCounts)
               .set({
                 qty: input.qty,
-                unitBreakdown: input.unitBreakdown ?? null,
+                unitBreakdown: guardedUnitBreakdown,
                 countedAt: now,
                 isConflict: !match,
                 // تعديل العدّ التحقّقي يُلغي حسماً سابقاً مبنياً على قيمة قديمة.
@@ -299,7 +454,7 @@ export async function submitCount(
               assignmentId: asg.id,
               kind: "VERIFY",
               qty: input.qty,
-              unitBreakdown: input.unitBreakdown ?? null,
+              unitBreakdown: guardedUnitBreakdown,
               countedByName: identity.countedByName,
               countedByUserId: identity.countedByUserId,
               countedAt: now,
@@ -328,7 +483,7 @@ export async function submitCount(
         assignmentId: asg.id,
         clientRequestId: input.clientRequestId,
         requestQty: input.qty,
-        requestUnitBreakdown: input.unitBreakdown ?? null,
+        requestUnitBreakdown: guardedUnitBreakdown,
         resultKind: kind,
         resultVerifyMatch: verifyMatch,
       });
@@ -352,8 +507,8 @@ export async function submitCount(
         .where(
           and(
             eq(stocktakeCountOperations.sessionId, identity.session.id),
-            eq(stocktakeCountOperations.clientRequestId, input.clientRequestId)
-          )
+            eq(stocktakeCountOperations.clientRequestId, input.clientRequestId),
+          ),
         )
         .limit(1);
       const dup = rows[0];

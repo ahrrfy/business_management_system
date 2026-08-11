@@ -130,6 +130,7 @@
     "stocktakeRouter.list@server/routers/stocktakeRouter.ts",
     "stocktakeRouter.log@server/routers/stocktakeRouter.ts",
     "stocktakeRouter.monitor@server/routers/stocktakeRouter.ts",
+    "stocktakeRouter.refreshOpeningValuationBasis@server/routers/stocktakeRouter.ts",
     "stocktakeRouter.regeneratePin@server/routers/stocktakeRouter.ts",
     "stocktakeRouter.report@server/routers/stocktakeRouter.ts",
     "stocktakeRouter.requestRecount@server/routers/stocktakeRouter.ts",

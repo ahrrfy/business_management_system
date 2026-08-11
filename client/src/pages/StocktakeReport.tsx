@@ -6,7 +6,11 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import {
+  LoadingState,
+  ErrorState,
+  TableEmptyRow,
+} from "@/components/PageState";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { exportRows } from "@/lib/export";
 import { fmtDate, fmtDateTime } from "@/lib/date";
@@ -59,6 +63,7 @@ type ReportData = {
     branchName?: string | null;
     scopeType?: string | null;
     scopeLabel?: string | null;
+    sessionType?: "NORMAL" | "OPENING";
     status: string;
     blind?: boolean;
     thresholdPct?: string | number | null;
@@ -72,14 +77,13 @@ type ReportData = {
   };
   assignments?: { name: string; zone?: string | null }[];
   rows: ReportRow[];
+  ledger?: { shortExpense: string; overGain: string };
 };
 
 // ─── أدوات عرض ───
 
-const dOnly = (v?: string | Date | null): string =>
-  fmtDate(v);
-const dts = (v?: string | Date | null): string =>
-  fmtDateTime(v);
+const dOnly = (v?: string | Date | null): string => fmtDate(v);
+const dts = (v?: string | Date | null): string => fmtDateTime(v);
 
 const signedInt = (n: number): string =>
   n > 0 ? `+${fmtInt(n)}` : n < 0 ? `−${fmtInt(Math.abs(n))}` : "0";
@@ -91,49 +95,84 @@ const signedMoney = (v: string | number | null | undefined): string => {
   return dv.isNegative() ? `−${s}` : dv.gt(0) ? `+${s}` : s;
 };
 
-const decisionLabelOf = (r: ReportRow): string => {
+const decisionLabelOf = (r: ReportRow, isOpening = false): string => {
   const dn = r.decision;
   if (!dn) return "—";
-  const base = dn.autoApplied || !dn.decidedByName ? "تسوية تلقائية ضمن الحدّ" : `تسوية بقرار: ${dn.decidedByName}`;
+  const base = isOpening
+    ? dn.autoApplied || !dn.decidedByName
+      ? "تثبيت رصيد افتتاحي"
+      : `تثبيت افتتاحي بقرار: ${dn.decidedByName}`
+    : dn.autoApplied || !dn.decidedByName
+      ? "تسوية تلقائية ضمن الحدّ"
+      : `تسوية بقرار: ${dn.decidedByName}`;
   return dn.note ? `${base} — ${dn.note}` : base;
 };
 
 export default function StocktakeReport() {
   const params = useParams();
   const sessionId = Number(params.id);
-  const q = trpc.stocktakes.report.useQuery({ sessionId }, { enabled: Number.isFinite(sessionId) });
+  const q = trpc.stocktakes.report.useQuery(
+    { sessionId },
+    { enabled: Number.isFinite(sessionId) },
+  );
   const data = q.data as unknown as ReportData | undefined;
 
   // إعادة احتساب أقسام المحضر من الصفوف (decimal.js للمجاميع المالية — العقد §٢ و§٦ خطوة القيد)
   const calc = useMemo(() => {
     if (!data) return null;
+    const isOpening = data.session.sessionType === "OPENING";
     const diffOf = (r: ReportRow): number => r.decision?.diffQty ?? r.diff ?? 0;
-    const finalOf = (r: ReportRow): number => r.decision?.finalQty ?? r.adjustedCount ?? r.rawCount ?? 0;
-    const valueOf = (r: ReportRow): string | number => r.decision?.value ?? r.value ?? 0;
+    const finalOf = (r: ReportRow): number =>
+      r.decision?.finalQty ?? r.adjustedCount ?? r.rawCount ?? 0;
+    const valueOf = (r: ReportRow): string | number =>
+      r.decision?.value ?? r.value ?? 0;
     const bookOf = (r: ReportRow): number =>
       r.decision?.finalQty != null && r.decision?.diffQty != null
         ? r.decision.finalQty - r.decision.diffQty
-        : r.bookNow ?? 0;
+        : (r.bookNow ?? 0);
 
-    const counted = data.rows.filter((r) => r.rawCount != null || r.decision != null);
-    const adjusted = counted.filter((r) => r.decision?.action === "ADJUST" && diffOf(r) !== 0);
-    const kept = counted.filter((r) => r.decision?.action === "KEEP" && diffOf(r) !== 0);
+    const counted = data.rows.filter(
+      (r) => r.rawCount != null || r.decision != null,
+    );
+    const adjusted = counted.filter(
+      (r) => r.decision?.action === "ADJUST" && diffOf(r) !== 0,
+    );
+    const kept = counted.filter(
+      (r) => r.decision?.action === "KEEP" && diffOf(r) !== 0,
+    );
     const matched = counted.filter((r) => diffOf(r) === 0);
     const over = counted.filter((r) => diffOf(r) > 0).length;
     const short = counted.filter((r) => diffOf(r) < 0).length;
 
-    const netValue = round2(counted.reduce((a, r) => a.plus(D(valueOf(r))), D(0))).toFixed(2);
+    const netValue = round2(
+      counted.reduce((a, r) => a.plus(D(valueOf(r))), D(0)),
+    ).toFixed(2);
     const adjNetQty = adjusted.reduce((a, r) => a + diffOf(r), 0);
-    const adjNetValue = round2(adjusted.reduce((a, r) => a.plus(D(valueOf(r))), D(0))).toFixed(2);
-    const shortExpense = round2(
-      adjusted.filter((r) => diffOf(r) < 0).reduce((a, r) => a.plus(D(valueOf(r)).abs()), D(0)),
+    const adjNetValue = round2(
+      adjusted.reduce((a, r) => a.plus(D(valueOf(r))), D(0)),
     ).toFixed(2);
-    const overGain = round2(
-      adjusted.filter((r) => diffOf(r) > 0).reduce((a, r) => a.plus(D(valueOf(r))), D(0)),
-    ).toFixed(2);
+    const shortExpense = isOpening
+      ? "0.00"
+      : (data.ledger?.shortExpense ??
+        round2(
+          adjusted
+            .filter((r) => diffOf(r) < 0)
+            .reduce((a, r) => a.plus(D(valueOf(r)).abs()), D(0)),
+        ).toFixed(2));
+    const overGain = isOpening
+      ? "0.00"
+      : (data.ledger?.overGain ??
+        round2(
+          adjusted
+            .filter((r) => diffOf(r) > 0)
+            .reduce((a, r) => a.plus(D(valueOf(r))), D(0)),
+        ).toFixed(2));
 
-    const reasonMap = new Map<string, { n: number; qty: number; value: ReturnType<typeof D> }>();
-    for (const r of adjusted) {
+    const reasonMap = new Map<
+      string,
+      { n: number; qty: number; value: ReturnType<typeof D> }
+    >();
+    for (const r of isOpening ? [] : adjusted) {
       const key = r.decision?.reason ?? "UNSPECIFIED";
       const cur = reasonMap.get(key) ?? { n: 0, qty: 0, value: D(0) };
       cur.n += 1;
@@ -149,28 +188,72 @@ export default function StocktakeReport() {
       value: round2(v.value).toFixed(2),
     }));
 
-    const iraPct = counted.length ? ((matched.length / counted.length) * 100).toFixed(1) : null;
+    const iraPct =
+      !isOpening && counted.length
+        ? ((matched.length / counted.length) * 100).toFixed(1)
+        : null;
 
     return {
-      diffOf, finalOf, valueOf, bookOf,
-      counted, adjusted, kept, matched, over, short,
-      netValue, adjNetQty, adjNetValue, shortExpense, overGain, byReason, iraPct,
+      diffOf,
+      finalOf,
+      valueOf,
+      bookOf,
+      counted,
+      adjusted,
+      kept,
+      matched,
+      over,
+      short,
+      netValue,
+      adjNetQty,
+      adjNetValue,
+      shortExpense,
+      overGain,
+      byReason,
+      iraPct,
     };
   }, [data]);
 
-  if (!Number.isFinite(sessionId)) return <div className="p-10 text-center text-muted-foreground">جلسة غير صالحة.</div>;
+  if (!Number.isFinite(sessionId))
+    return (
+      <div className="p-10 text-center text-muted-foreground">
+        جلسة غير صالحة.
+      </div>
+    );
   if (q.isLoading) return <LoadingState />;
-  if (q.error) return <ErrorState message={`تعذّر تحميل المحضر: ${q.error.message}`} onRetry={() => q.refetch()} />;
-  if (!data || !calc) return <div className="p-10 text-center text-muted-foreground">الجلسة غير موجودة.</div>;
+  if (q.error)
+    return (
+      <ErrorState
+        message={`تعذّر تحميل المحضر: ${q.error.message}`}
+        onRetry={() => q.refetch()}
+      />
+    );
+  if (!data || !calc)
+    return (
+      <div className="p-10 text-center text-muted-foreground">
+        الجلسة غير موجودة.
+      </div>
+    );
 
   const s = data.session;
-  const scopeLabel = s.scopeLabel ?? STOCKTAKE_SCOPE_LABEL[s.scopeType ?? ""] ?? s.scopeType ?? "—";
+  const isOpening = s.sessionType === "OPENING";
+  const reasonLabelOf = (row: ReportRow) =>
+    isOpening && (!row.decision || row.decision.reason === "UNSPECIFIED")
+      ? "تأسيس رصيد افتتاحي"
+      : (STOCKTAKE_REASON_LABEL[row.decision?.reason ?? "UNSPECIFIED"] ??
+        "غير محدد");
+  const scopeLabel =
+    s.scopeLabel ??
+    STOCKTAKE_SCOPE_LABEL[s.scopeType ?? ""] ??
+    s.scopeType ??
+    "—";
   const statusLabel = STOCKTAKE_STATUS_LABEL[s.status] ?? s.status;
   const workerNames = (data.assignments ?? []).map((a) => a.name);
 
   function doPrint() {
     if (!data || !calc) return;
     printStocktakeReport({
+      sessionType: s.sessionType ?? "NORMAL",
       code: s.code,
       name: s.name,
       branchName: s.branchName ?? "—",
@@ -192,7 +275,7 @@ export default function StocktakeReport() {
         matched: calc.matched.length,
         over: calc.over,
         short: calc.short,
-        netValue: calc.netValue,
+        netValue: calc.adjNetValue,
       },
       adjusted: calc.adjusted.map((r) => ({
         productName: r.productName,
@@ -203,8 +286,8 @@ export default function StocktakeReport() {
         adjustedQty: calc.finalOf(r),
         diff: calc.diffOf(r),
         value: calc.valueOf(r),
-        reasonLabel: STOCKTAKE_REASON_LABEL[r.decision?.reason ?? "UNSPECIFIED"] ?? "غير محدد",
-        decisionLabel: decisionLabelOf(r),
+        reasonLabel: reasonLabelOf(r),
+        decisionLabel: decisionLabelOf(r, isOpening),
       })),
       adjustedNetQty: calc.adjNetQty,
       adjustedNetValue: calc.adjNetValue,
@@ -214,24 +297,43 @@ export default function StocktakeReport() {
         diff: calc.diffOf(r),
         decisionLabel: `قرار: ${r.decision?.decidedByName ?? "—"}${r.decision?.note ? ` — ${r.decision.note}` : ""}`,
       })),
-      matchedNames: calc.matched.map((r) => `${r.productName}${r.variantName ? ` ${r.variantName}` : ""}`),
-      byReason: calc.byReason.map((r) => ({ reasonLabel: r.label, itemCount: r.n, netQty: r.qty, netValue: r.value })),
+      matchedNames: calc.matched.map(
+        (r) => `${r.productName}${r.variantName ? ` ${r.variantName}` : ""}`,
+      ),
+      byReason: calc.byReason.map((r) => ({
+        reasonLabel: r.label,
+        itemCount: r.n,
+        netQty: r.qty,
+        netValue: r.value,
+      })),
       ledger: { shortExpense: calc.shortExpense, overGain: calc.overGain },
-      ira: { pct: calc.iraPct, matched: calc.matched.length, counted: calc.counted.length },
+      ira: {
+        pct: calc.iraPct,
+        matched: calc.matched.length,
+        counted: calc.counted.length,
+      },
     });
   }
 
   const waMessage = [
-    `*محضر جرد وتسوية — ${s.code}*`,
+    `*${isOpening ? "محضر تأسيس أرصدة افتتاحية" : "محضر جرد وتسوية"} — ${s.code}*`,
     `المكتبة العربية — ${s.branchName ?? "—"}`,
     `${s.name} (${scopeLabel})`,
-    s.approved ? `اعتُمد: ${dts(s.approved.at)} (${s.approved.byName})` : `الحالة: ${statusLabel}`,
+    s.approved
+      ? `اعتُمد: ${dts(s.approved.at)} (${s.approved.byName})`
+      : `الحالة: ${statusLabel}`,
     "",
-    `معدودة: ${fmtInt(calc.counted.length)} · مطابقة: ${fmtInt(calc.matched.length)}`,
-    `زيادة: ${fmtInt(calc.over)} · نقص: ${fmtInt(calc.short)}`,
-    `صافي قيمة التسوية: ${signedMoney(calc.netValue)}`,
-    calc.iraPct != null ? `دقة المخزون (IRA): ${calc.iraPct}٪` : "",
-  ].filter(Boolean).join("\n");
+    `معدودة: ${fmtInt(calc.counted.length)} · ${isOpening ? "بلا تغيير عن السابق" : "مطابقة"}: ${fmtInt(calc.matched.length)}`,
+    `${isOpening ? "تغيير موجب" : "زيادة"}: ${fmtInt(calc.over)} · ${isOpening ? "تغيير سالب" : "نقص"}: ${fmtInt(calc.short)}`,
+    `${isOpening ? "قيمة التغيير الافتتاحي بالتكلفة" : "صافي قيمة التسوية"}: ${signedMoney(calc.adjNetValue)}`,
+    isOpening
+      ? "الأثر المحاسبي والنقدي: صفر"
+      : calc.iraPct != null
+        ? `دقة المخزون (IRA): ${calc.iraPct}٪`
+        : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   return (
     <div className="space-y-4">
@@ -239,8 +341,10 @@ export default function StocktakeReport() {
       <PageHeader
         title={
           <span className="flex items-center gap-2">
-            محضر جرد وتسوية
-            <Badge variant={s.status === "APPROVED" ? "default" : "secondary"}>{statusLabel}</Badge>
+            {isOpening ? "محضر تأسيس أرصدة افتتاحية" : "محضر جرد وتسوية"}
+            <Badge variant={s.status === "APPROVED" ? "default" : "secondary"}>
+              {statusLabel}
+            </Badge>
           </span>
         }
         actions={
@@ -251,7 +355,11 @@ export default function StocktakeReport() {
             <Link href="/stocktakes">
               <Button variant="outline">قائمة الجلسات</Button>
             </Link>
-            <WhatsAppShare message={waMessage} label="مشاركة الملخص" size="default" />
+            <WhatsAppShare
+              message={waMessage}
+              label="مشاركة الملخص"
+              size="default"
+            />
             <Button
               variant="outline"
               size="sm"
@@ -263,18 +371,35 @@ export default function StocktakeReport() {
                     {
                       key: "name",
                       header: "المنتج",
-                      map: (r) => `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
+                      map: (r) =>
+                        `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
                     },
                     { key: "sku", header: "SKU", map: (r) => r.sku ?? "" },
-                    { key: "book", header: "الرصيد الدفتري", map: (r) => calc.bookOf(r) },
-                    { key: "actual", header: "المعدود المصحَّح", map: (r) => calc.finalOf(r) },
-                    { key: "diff", header: "الفرق", map: (r) => calc.diffOf(r) },
+                    {
+                      key: "book",
+                      header: "الرصيد الدفتري",
+                      map: (r) => calc.bookOf(r),
+                    },
+                    {
+                      key: "actual",
+                      header: "المعدود المصحَّح",
+                      map: (r) => calc.finalOf(r),
+                    },
+                    {
+                      key: "diff",
+                      header: "الفرق",
+                      map: (r) => calc.diffOf(r),
+                    },
                     {
                       key: "reason",
                       header: "السبب",
-                      map: (r) => STOCKTAKE_REASON_LABEL[r.decision?.reason ?? "UNSPECIFIED"] ?? "غير محدد",
+                      map: (r) => reasonLabelOf(r),
                     },
-                    { key: "value", header: "قيمة الفرق", map: (r) => Number(calc.valueOf(r)) },
+                    {
+                      key: "value",
+                      header: "قيمة الفرق",
+                      map: (r) => Number(calc.valueOf(r)),
+                    },
                   ],
                 })
               }
@@ -299,15 +424,23 @@ export default function StocktakeReport() {
         {/* ترويسة */}
         <div className="flex items-start justify-between border-b-2 border-foreground pb-4">
           <div className="flex items-center gap-3">
-            <div className="grid size-12 place-items-center rounded-lg bg-primary text-xl font-bold text-primary-foreground">ر</div>
+            <div className="grid size-12 place-items-center rounded-lg bg-primary text-xl font-bold text-primary-foreground">
+              ر
+            </div>
             <div>
               <p className="text-lg font-bold">الرؤية العربية للتجارة العامة</p>
-              <p className="text-xs text-muted-foreground">المكتبة العربية للطباعة والقرطاسية — {s.branchName ?? "—"}</p>
+              <p className="text-xs text-muted-foreground">
+                المكتبة العربية للطباعة والقرطاسية — {s.branchName ?? "—"}
+              </p>
             </div>
           </div>
           <div className="text-left">
-            <p className="text-xl font-bold">محضر جرد وتسوية</p>
-            <p className="font-mono text-sm text-muted-foreground" dir="ltr">{s.code}</p>
+            <p className="text-xl font-bold">
+              {isOpening ? "محضر تأسيس أرصدة افتتاحية" : "محضر جرد وتسوية"}
+            </p>
+            <p className="font-mono text-sm text-muted-foreground" dir="ltr">
+              {s.code}
+            </p>
           </div>
         </div>
 
@@ -320,11 +453,25 @@ export default function StocktakeReport() {
             ["أنشأها", `${s.createdByName ?? "—"} · ${dOnly(s.createdAt)}`],
             ["عمّال الجرد", workerNames.length ? workerNames.join("، ") : "—"],
             ["تسليم العدّ", dts(s.submittedAt)],
-            ["التوقيع الأول", s.firstSign ? `${s.firstSign.byName} · ${dts(s.firstSign.at)}` : "—"],
-            ["اعتمدها", s.approved ? `${s.approved.byName} · ${dts(s.approved.at)}` : "—"],
-            ["الحدود", `${fmtInt(Number(s.thresholdPct ?? 0))}٪ أو ${fmt(s.thresholdValue ?? 0)} د.ع · توقيعان فوق ${fmt(s.dualThreshold ?? 0)} د.ع`],
+            [
+              "التوقيع الأول",
+              s.firstSign
+                ? `${s.firstSign.byName} · ${dts(s.firstSign.at)}`
+                : "—",
+            ],
+            [
+              "اعتمدها",
+              s.approved ? `${s.approved.byName} · ${dts(s.approved.at)}` : "—",
+            ],
+            [
+              "الحدود",
+              `${fmtInt(Number(s.thresholdPct ?? 0))}٪ أو ${fmt(s.thresholdValue ?? 0)} د.ع · توقيعان فوق ${fmt(s.dualThreshold ?? 0)} د.ع`,
+            ],
           ].map(([k, v]) => (
-            <div key={k} className="flex justify-between gap-2 border-b border-dashed py-1">
+            <div
+              key={k}
+              className="flex justify-between gap-2 border-b border-dashed py-1"
+            >
               <dt className="text-muted-foreground">{k}</dt>
               <dd className="font-semibold text-left">{v}</dd>
             </div>
@@ -335,191 +482,366 @@ export default function StocktakeReport() {
         <div className="mt-5 grid grid-cols-2 gap-2 text-center sm:grid-cols-5">
           {[
             ["منتجات معدودة", fmtInt(calc.counted.length)],
-            ["مطابقة", fmtInt(calc.matched.length)],
-            ["زيادة", fmtInt(calc.over)],
-            ["نقص", fmtInt(calc.short)],
-            ["صافي قيمة التسوية", signedMoney(calc.netValue)],
+            [
+              isOpening ? "بلا تغيير عن السابق" : "مطابقة",
+              fmtInt(calc.matched.length),
+            ],
+            [isOpening ? "تغيير موجب" : "زيادة", fmtInt(calc.over)],
+            [isOpening ? "تغيير سالب" : "نقص", fmtInt(calc.short)],
+            [
+              isOpening
+                ? "قيمة التغيير الافتتاحي بالتكلفة"
+                : "صافي قيمة التسوية",
+              signedMoney(calc.adjNetValue),
+            ],
           ].map(([k, v]) => (
             <div key={k} className="rounded-lg border bg-muted/40 px-2 py-2.5">
               <p className="text-[11px] text-muted-foreground">{k}</p>
-              <p className="mt-0.5 text-base font-bold tabular-nums" dir="ltr">{v}</p>
+              <p className="mt-0.5 text-base font-bold tabular-nums" dir="ltr">
+                {v}
+              </p>
             </div>
           ))}
         </div>
 
         {/* أولاً — الفروقات المُسوّاة */}
-        <h3 className="mb-2 mt-6 text-sm font-bold">أولاً — الفروقات المُسوّاة ({fmtInt(calc.adjusted.length)})</h3>
+        <h3 className="mb-2 mt-6 text-sm font-bold">
+          أولاً —{" "}
+          {isOpening ? "التغييرات الافتتاحية المثبتة" : "الفروقات المُسوّاة"} (
+          {fmtInt(calc.adjusted.length)})
+        </h3>
         <div className="overflow-x-auto">
-        <table className="w-full min-w-[640px] border-collapse text-sm">
-          <thead>
-            <tr className="border-y-2 border-foreground text-right text-xs">
-              <th className="py-1.5 pl-2 font-bold">المنتج</th>
-              <th className="px-2 py-1.5 text-center font-bold">الدفتري</th>
-              <th className="px-2 py-1.5 text-center font-bold">المعدود المصحَّح</th>
-              <th className="px-2 py-1.5 text-center font-bold">الفرق</th>
-              <th className="px-2 py-1.5 text-center font-bold">قيمة الفرق</th>
-              <th className="px-2 py-1.5 font-bold">السبب</th>
-              <th className="py-1.5 pr-2 font-bold">القرار</th>
-            </tr>
-          </thead>
-          <tbody>
-            {calc.adjusted.map((r) => {
-              const diff = calc.diffOf(r);
-              return (
-                <tr key={r.variantId} className="border-b">
-                  <td className="py-1.5 pl-2">
-                    {r.productName}{r.variantName ? ` — ${r.variantName}` : ""}{r.baseUnit ? <span className="text-xs text-muted-foreground"> ({r.baseUnit})</span> : null}{" "}
-                    <span className="font-mono text-[10px] text-muted-foreground" dir="ltr">{r.sku ?? ""}</span>
-                  </td>
-                  <td className="px-2 py-1.5 text-center font-mono tabular-nums" dir="ltr">{fmtInt(calc.bookOf(r))}</td>
-                  <td className="px-2 py-1.5 text-center font-mono tabular-nums" dir="ltr">{fmtInt(calc.finalOf(r))}</td>
-                  <td className={`px-2 py-1.5 text-center font-mono font-bold tabular-nums ${diff < 0 ? "text-money-negative" : "text-money-positive"}`} dir="ltr">
-                    {signedInt(diff)}
-                  </td>
-                  <td className="px-2 py-1.5 text-center font-mono tabular-nums" dir="ltr">{signedMoney(calc.valueOf(r))}</td>
-                  <td className="px-2 py-1.5 text-xs">{STOCKTAKE_REASON_LABEL[r.decision?.reason ?? "UNSPECIFIED"] ?? "غير محدد"}</td>
-                  <td className="py-1.5 pr-2 text-xs">{decisionLabelOf(r)}</td>
-                </tr>
-              );
-            })}
-            {calc.adjusted.length === 0 && (
-              <TableEmptyRow colSpan={7} message="لا تسويات — الجرد مطابق." />
-            )}
-          </tbody>
-          {calc.adjusted.length > 0 && (
-            <tfoot>
-              <tr className="border-t-2 border-foreground font-bold">
-                <td className="py-2 pl-2" colSpan={3}>صافي قيمة التسوية (بالتكلفة)</td>
-                <td className="px-2 py-2 text-center font-mono tabular-nums" dir="ltr">{signedInt(calc.adjNetQty)}</td>
-                <td className="px-2 py-2 text-center font-mono tabular-nums" dir="ltr">{signedMoney(calc.adjNetValue)}</td>
-                <td colSpan={2}></td>
+          <table className="w-full min-w-[640px] border-collapse text-sm">
+            <thead>
+              <tr className="border-y-2 border-foreground text-right text-xs">
+                <th className="py-1.5 pl-2 font-bold">المنتج</th>
+                <th className="px-2 py-1.5 text-center font-bold">
+                  {isOpening ? "الرصيد السابق" : "الدفتري"}
+                </th>
+                <th className="px-2 py-1.5 text-center font-bold">
+                  {isOpening ? "الرصيد المعتمد" : "المعدود المصحَّح"}
+                </th>
+                <th className="px-2 py-1.5 text-center font-bold">الفرق</th>
+                <th className="px-2 py-1.5 text-center font-bold">
+                  {isOpening ? "قيمة التغيير" : "قيمة الفرق"}
+                </th>
+                <th className="px-2 py-1.5 font-bold">السبب</th>
+                <th className="py-1.5 pr-2 font-bold">القرار</th>
               </tr>
-            </tfoot>
-          )}
-        </table>
+            </thead>
+            <tbody>
+              {calc.adjusted.map((r) => {
+                const diff = calc.diffOf(r);
+                return (
+                  <tr key={r.variantId} className="border-b">
+                    <td className="py-1.5 pl-2">
+                      {r.productName}
+                      {r.variantName ? ` — ${r.variantName}` : ""}
+                      {r.baseUnit ? (
+                        <span className="text-xs text-muted-foreground">
+                          {" "}
+                          ({r.baseUnit})
+                        </span>
+                      ) : null}{" "}
+                      <span
+                        className="font-mono text-[10px] text-muted-foreground"
+                        dir="ltr"
+                      >
+                        {r.sku ?? ""}
+                      </span>
+                    </td>
+                    <td
+                      className="px-2 py-1.5 text-center font-mono tabular-nums"
+                      dir="ltr"
+                    >
+                      {fmtInt(calc.bookOf(r))}
+                    </td>
+                    <td
+                      className="px-2 py-1.5 text-center font-mono tabular-nums"
+                      dir="ltr"
+                    >
+                      {fmtInt(calc.finalOf(r))}
+                    </td>
+                    <td
+                      className={`px-2 py-1.5 text-center font-mono font-bold tabular-nums ${diff < 0 ? "text-money-negative" : "text-money-positive"}`}
+                      dir="ltr"
+                    >
+                      {signedInt(diff)}
+                    </td>
+                    <td
+                      className="px-2 py-1.5 text-center font-mono tabular-nums"
+                      dir="ltr"
+                    >
+                      {signedMoney(calc.valueOf(r))}
+                    </td>
+                    <td className="px-2 py-1.5 text-xs">{reasonLabelOf(r)}</td>
+                    <td className="py-1.5 pr-2 text-xs">
+                      {decisionLabelOf(r, isOpening)}
+                    </td>
+                  </tr>
+                );
+              })}
+              {calc.adjusted.length === 0 && (
+                <TableEmptyRow
+                  colSpan={7}
+                  message={
+                    isOpening
+                      ? "لا تغييرات افتتاحية مثبتة — الرصيد المعتمد يساوي الرصيد السابق."
+                      : "لا تسويات — الجرد مطابق."
+                  }
+                />
+              )}
+            </tbody>
+            {calc.adjusted.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-foreground font-bold">
+                  <td className="py-2 pl-2" colSpan={3}>
+                    {isOpening
+                      ? "صافي قيمة التغيير الافتتاحي (بالتكلفة)"
+                      : "صافي قيمة التسوية (بالتكلفة)"}
+                  </td>
+                  <td
+                    className="px-2 py-2 text-center font-mono tabular-nums"
+                    dir="ltr"
+                  >
+                    {signedInt(calc.adjNetQty)}
+                  </td>
+                  <td
+                    className="px-2 py-2 text-center font-mono tabular-nums"
+                    dir="ltr"
+                  >
+                    {signedMoney(calc.adjNetValue)}
+                  </td>
+                  <td colSpan={2}></td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
         </div>
 
         {/* ثانياً — فروقات أُبقي رصيدها */}
         {calc.kept.length > 0 && (
           <>
-            <h3 className="mb-2 mt-5 text-sm font-bold">ثانياً — فروقات أُبقي رصيدها الدفتري ({fmtInt(calc.kept.length)})</h3>
+            <h3 className="mb-2 mt-5 text-sm font-bold">
+              ثانياً — فروقات أُبقي رصيدها الدفتري ({fmtInt(calc.kept.length)})
+            </h3>
             <div className="overflow-x-auto">
-            <table className="w-full min-w-[480px] border-collapse text-sm">
-              <tbody>
-                {calc.kept.map((r) => (
-                  <tr key={r.variantId} className="border-b">
-                    <td className="py-1.5 pl-2">{r.productName}{r.variantName ? ` — ${r.variantName}` : ""}</td>
-                    <td className="px-2 py-1.5 text-center font-mono tabular-nums" dir="ltr">{signedInt(calc.diffOf(r))}</td>
-                    <td className="py-1.5 pr-2 text-xs text-muted-foreground">
-                      قرار: {r.decision?.decidedByName ?? "—"}{r.decision?.note ? ` — ${r.decision.note}` : ""}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              <table className="w-full min-w-[480px] border-collapse text-sm">
+                <tbody>
+                  {calc.kept.map((r) => (
+                    <tr key={r.variantId} className="border-b">
+                      <td className="py-1.5 pl-2">
+                        {r.productName}
+                        {r.variantName ? ` — ${r.variantName}` : ""}
+                      </td>
+                      <td
+                        className="px-2 py-1.5 text-center font-mono tabular-nums"
+                        dir="ltr"
+                      >
+                        {signedInt(calc.diffOf(r))}
+                      </td>
+                      <td className="py-1.5 pr-2 text-xs text-muted-foreground">
+                        قرار: {r.decision?.decidedByName ?? "—"}
+                        {r.decision?.note ? ` — ${r.decision.note}` : ""}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </>
         )}
 
-        {/* المنتجات المطابقة */}
+        {/* المنتجات المطابقة / بلا تغيير في الافتتاحي */}
         <h3 className="mb-2 mt-5 text-sm font-bold">
-          {calc.kept.length > 0 ? "ثالثاً" : "ثانياً"} — المنتجات المطابقة ({fmtInt(calc.matched.length)})
+          {calc.kept.length > 0 ? "ثالثاً" : "ثانياً"} —{" "}
+          {isOpening
+            ? "المنتجات بلا تغيير عن الرصيد السابق"
+            : "المنتجات المطابقة"}{" "}
+          ({fmtInt(calc.matched.length)})
         </h3>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          {calc.matched.map((r) => `${r.productName}${r.variantName ? ` ${r.variantName}` : ""}`).join(" · ") || "—"}
+          {calc.matched
+            .map(
+              (r) =>
+                `${r.productName}${r.variantName ? ` ${r.variantName}` : ""}`,
+            )
+            .join(" · ") || "—"}
         </p>
 
         {/* تحليل الانكماش حسب السبب */}
-        {calc.byReason.length > 0 && (
+        {!isOpening && calc.byReason.length > 0 && (
           <>
-            <h3 className="mb-2 mt-6 text-sm font-bold">تحليل الفروقات حسب السبب (الانكماش)</h3>
+            <h3 className="mb-2 mt-6 text-sm font-bold">
+              تحليل الفروقات حسب السبب (الانكماش)
+            </h3>
             <div className="overflow-x-auto">
-            <table className="w-full max-w-lg min-w-[420px] border-collapse text-sm">
-              <thead>
-                <tr className="border-y-2 border-foreground text-right text-xs">
-                  <th className="py-1.5 pl-2 font-bold">السبب</th>
-                  <th className="px-2 py-1.5 text-center font-bold">منتجات</th>
-                  <th className="px-2 py-1.5 text-center font-bold">صافي الكمية</th>
-                  <th className="px-2 py-1.5 text-center font-bold">صافي القيمة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {calc.byReason.map((r) => (
-                  <tr key={r.reason} className="border-b">
-                    <td className="py-1.5 pl-2">{r.label}</td>
-                    <td className="px-2 py-1.5 text-center tabular-nums">{fmtInt(r.n)}</td>
-                    <td className="px-2 py-1.5 text-center font-mono tabular-nums" dir="ltr">{signedInt(r.qty)}</td>
-                    <td className="px-2 py-1.5 text-center font-mono tabular-nums" dir="ltr">{signedMoney(r.value)}</td>
+              <table className="w-full max-w-lg min-w-[420px] border-collapse text-sm">
+                <thead>
+                  <tr className="border-y-2 border-foreground text-right text-xs">
+                    <th className="py-1.5 pl-2 font-bold">السبب</th>
+                    <th className="px-2 py-1.5 text-center font-bold">
+                      منتجات
+                    </th>
+                    <th className="px-2 py-1.5 text-center font-bold">
+                      صافي الكمية
+                    </th>
+                    <th className="px-2 py-1.5 text-center font-bold">
+                      صافي القيمة
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {calc.byReason.map((r) => (
+                    <tr key={r.reason} className="border-b">
+                      <td className="py-1.5 pl-2">{r.label}</td>
+                      <td className="px-2 py-1.5 text-center tabular-nums">
+                        {fmtInt(r.n)}
+                      </td>
+                      <td
+                        className="px-2 py-1.5 text-center font-mono tabular-nums"
+                        dir="ltr"
+                      >
+                        {signedInt(r.qty)}
+                      </td>
+                      <td
+                        className="px-2 py-1.5 text-center font-mono tabular-nums"
+                        dir="ltr"
+                      >
+                        {signedMoney(r.value)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </>
         )}
 
         {/* القيد المحاسبي + IRA */}
-        <div className="mt-5 grid gap-3 sm:grid-cols-[1.5fr_1fr]">
-          <div className="rounded-lg border bg-muted/40 p-3.5">
-            <p className="mb-1.5 text-sm font-bold">
-              القيد المحاسبي الآلي (مرجع <span className="font-mono" dir="ltr">{s.code}</span>)
-            </p>
-            {D(calc.shortExpense).gt(0) || D(calc.overGain).gt(0) ? (
-              <div className="max-w-md space-y-1 text-sm">
-                {D(calc.shortExpense).gt(0) && (
-                  <p className="flex justify-between">
-                    <span>مصروف عجز مخزون (مدين)</span>
-                    <span className="font-mono font-bold text-money-negative" dir="ltr">{fmt(calc.shortExpense)} د.ع</span>
-                  </p>
-                )}
-                {D(calc.overGain).gt(0) && (
-                  <p className="flex justify-between">
-                    <span>تسوية زيادة مخزون (دائن)</span>
-                    <span className="font-mono font-bold text-money-positive" dir="ltr">{fmt(calc.overGain)} د.ع</span>
-                  </p>
-                )}
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground">لا قيد محاسبياً — لا فروقات مُسوّاة بقيمة.</p>
-            )}
-            <p className="mt-1.5 text-[11px] text-muted-foreground">
-              العجز يظهر مصروفاً صريحاً في الدفتر — لا يُدفن في التسوية، فتبقى الأرباح صادقة.
+        {isOpening ? (
+          <div className="mt-5 rounded-lg border border-money-positive/40 bg-money-positive/10 p-4 text-money-positive">
+            <p className="font-bold">الأثر المحاسبي والنقدي: صفر</p>
+            <p className="mt-1 text-xs">
+              ثُبتت الكميات بحركات OPENING فقط؛ لم يُنشأ قيد عجز/زيادة أو قبض أو
+              صرف أو أثر صندوق أو مصرف أو ذمم. مؤشر IRA وتحليل الانكماش غير
+              مطبقين على تأسيس الرصيد الافتتاحي.
             </p>
           </div>
-          <div className="badge-status-active rounded-lg border p-3.5 text-center">
-            <p className="text-xs text-muted-foreground">مؤشر دقة المخزون (IRA) لهذه الجلسة</p>
-            <p className="mt-1 text-2xl font-black" dir="ltr">
-              {calc.iraPct != null ? `${calc.iraPct}٪` : "—"}
-            </p>
-            <p className="text-[11px] text-muted-foreground">
-              مطابقة {fmtInt(calc.matched.length)} من {fmtInt(calc.counted.length)} معدودة
-            </p>
+        ) : (
+          <div className="mt-5 grid gap-3 sm:grid-cols-[1.5fr_1fr]">
+            <div className="rounded-lg border bg-muted/40 p-3.5">
+              <p className="mb-1.5 text-sm font-bold">
+                القيد المحاسبي الآلي (مرجع{" "}
+                <span className="font-mono" dir="ltr">
+                  {s.code}
+                </span>
+                )
+              </p>
+              {D(calc.shortExpense).gt(0) || D(calc.overGain).gt(0) ? (
+                <div className="max-w-md space-y-1 text-sm">
+                  {D(calc.shortExpense).gt(0) && (
+                    <p className="flex justify-between">
+                      <span>مصروف عجز مخزون (مدين)</span>
+                      <span
+                        className="font-mono font-bold text-money-negative"
+                        dir="ltr"
+                      >
+                        {fmt(calc.shortExpense)} د.ع
+                      </span>
+                    </p>
+                  )}
+                  {D(calc.overGain).gt(0) && (
+                    <p className="flex justify-between">
+                      <span>تسوية زيادة مخزون (دائن)</span>
+                      <span
+                        className="font-mono font-bold text-money-positive"
+                        dir="ltr"
+                      >
+                        {fmt(calc.overGain)} د.ع
+                      </span>
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  لا قيد محاسبياً — لا فروقات مُسوّاة بقيمة.
+                </p>
+              )}
+              <p className="mt-1.5 text-[11px] text-muted-foreground">
+                العجز يظهر مصروفاً صريحاً في الدفتر — لا يُدفن في التسوية، فتبقى
+                الأرباح صادقة.
+              </p>
+            </div>
+            <div className="badge-status-active rounded-lg border p-3.5 text-center">
+              <p className="text-xs text-muted-foreground">
+                مؤشر دقة المخزون (IRA) لهذه الجلسة
+              </p>
+              <p className="mt-1 text-2xl font-black" dir="ltr">
+                {calc.iraPct != null ? `${calc.iraPct}٪` : "—"}
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                مطابقة {fmtInt(calc.matched.length)} من{" "}
+                {fmtInt(calc.counted.length)} معدودة
+              </p>
+            </div>
           </div>
-        </div>
+        )}
 
         <p className="mt-5 rounded-lg bg-muted/50 p-3 text-xs leading-relaxed text-muted-foreground">
-          نُفّذت التسوية بحركات ADJUST ذرّية بمرجع <span className="font-mono" dir="ltr">{s.code}</span> في سجلّ
-          حركات المخزون، وحُدِّثت الأرصدة لحظة الاعتماد. الحدّ المعتمد للتسوية المباشرة:{" "}
-          {fmtInt(Number(s.thresholdPct ?? 0))}٪ أو {fmt(s.thresholdValue ?? 0)} د.ع. الحركات الواقعة بعد عدّ أي منتج
-          صُحِّحت آلياً قبل احتساب الفرق.
+          {isOpening ? (
+            <>
+              ثُبتت الأرصدة الافتتاحية بحركات OPENING ذرّية بمرجع{" "}
+              <span className="font-mono" dir="ltr">
+                {s.code}
+              </span>
+              ، بلا قيد عجز/زيادة أو أثر على الأرباح أو النقد.
+            </>
+          ) : (
+            <>
+              نُفّذت التسوية بحركات ADJUST ذرّية بمرجع{" "}
+              <span className="font-mono" dir="ltr">
+                {s.code}
+              </span>{" "}
+              في سجلّ حركات المخزون، وحُدِّثت الأرصدة لحظة الاعتماد. الحدّ
+              المعتمد للتسوية المباشرة: {fmtInt(Number(s.thresholdPct ?? 0))}٪
+              أو {fmt(s.thresholdValue ?? 0)} د.ع.
+            </>
+          )}
         </p>
 
         {/* تواقيع */}
         <div className="mt-10 grid grid-cols-3 gap-8 text-center text-sm">
           {[
-            ["عدّ وأعدّ", workerNames.length ? workerNames.join("، ") : "—", dts(s.submittedAt)],
+            [
+              "عدّ وأعدّ",
+              workerNames.length ? workerNames.join("، ") : "—",
+              dts(s.submittedAt),
+            ],
             [
               "توقيع أول (راجع ودقّق)",
               s.firstSign?.byName ?? s.approved?.byName ?? "—",
-              s.firstSign ? dts(s.firstSign.at) : s.approved ? dts(s.approved.at) : "",
+              s.firstSign
+                ? dts(s.firstSign.at)
+                : s.approved
+                  ? dts(s.approved.at)
+                  : "",
             ],
-            ["توقيع نهائي (اعتمد)", s.approved?.byName ?? "—", s.approved ? dts(s.approved.at) : ""],
+            [
+              "توقيع نهائي (اعتمد)",
+              s.approved?.byName ?? "—",
+              s.approved ? dts(s.approved.at) : "",
+            ],
           ].map(([k, who, when]) => (
             <div key={k}>
               <p className="font-bold">{k}</p>
               <p className="mt-1 text-xs text-muted-foreground">{who}</p>
-              {when ? <p className="text-[10px] text-muted-foreground">{when}</p> : null}
-              <div className="mt-10 border-t border-foreground pt-1 text-xs text-muted-foreground">التوقيع</div>
+              {when ? (
+                <p className="text-[10px] text-muted-foreground">{when}</p>
+              ) : null}
+              <div className="mt-10 border-t border-foreground pt-1 text-xs text-muted-foreground">
+                التوقيع
+              </div>
             </div>
           ))}
         </div>

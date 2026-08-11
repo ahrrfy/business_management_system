@@ -19,8 +19,22 @@ import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import type { StkActor } from "./types";
-import { assertBranchAccess, chunk, loadStocktakeProgress, lockSession } from "./internal";
+import {
+  assertBranchAccess,
+  chunk,
+  loadStocktakeProgress,
+  lockSession,
+} from "./internal";
 import { loadReviewCore, willAdjust } from "./reviewCore";
+import {
+  assertNoCountInputAnomalies,
+  findCountInputAnomalies,
+} from "./countIntegrity";
+import {
+  assertOpeningValuationSafe,
+  buildOpeningValuationIntegrity,
+  lockOpeningValuationVariants,
+} from "./valuationIntegrity";
 
 export interface ApproveResult {
   ok: true;
@@ -37,15 +51,27 @@ export interface ApproveResult {
  * قرارات تلقائية (ADJUST ضمن الحد + KEEP للمطابق — يلزم لسجل IRA)، قيدا دفتر بـdedupeKey،
  * ثم lastCountedAt لكل معدود وختم الجلسة APPROVED.
  */
-export async function approveStocktake(sessionId: number, actor: StkActor): Promise<ApproveResult> {
+export async function approveStocktake(
+  sessionId: number,
+  actor: StkActor,
+): Promise<ApproveResult> {
   return withTx(async (tx) => {
     // (١) قفل الجلسة. APPROVED ⇒ نجاح بلا أثر (idempotent — حماية النقر المزدوج/إعادة الشبكة).
     const s = await lockSession(tx, sessionId);
     if (s.status === "APPROVED") {
-      return { ok: true as const, alreadyApproved: true, adjustedCount: 0, shortExpense: "0.00", overGain: "0.00" };
+      return {
+        ok: true as const,
+        alreadyApproved: true,
+        adjustedCount: 0,
+        shortExpense: "0.00",
+        overGain: "0.00",
+      };
     }
     if (s.status !== "REVIEW") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الاعتماد متاح على جلسة قيد المراجعة فقط" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الاعتماد متاح على جلسة قيد المراجعة فقط",
+      });
     }
 
     // ── حوكمة الاعتماد: فصل المهام (SOD) على **كل** الجلسات + قيد نافذة الافتتاح ──
@@ -55,17 +81,29 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     const isOpening = s.sessionType === "OPENING";
     if (isOpening) {
       // (أ) اعتماد الجرد الافتتاحي محصور بنافذة وضع الافتتاح — بعدها تبقى القناة (بلا قيدَي عجز/زيادة) مغلقة حكماً.
-      const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
-      const windowActive = !!om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now();
+      const om = (
+        await tx
+          .select()
+          .from(openingModeSettings)
+          .where(eq(openingModeSettings.id, 1))
+          .limit(1)
+      )[0];
+      const windowActive =
+        !!om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now();
       if (!windowActive) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "وضع الافتتاح غير فعّال — مدّد النافذة من الإعدادات لاعتماد الجلسة، أو ألغِها وأعد الجرد دورياً",
+          message:
+            "وضع الافتتاح غير فعّال — مدّد النافذة من الإعدادات لاعتماد الجلسة، أو ألغِها وأعد الجرد دورياً",
         });
       }
     }
     // (ب) SOD-04: منشئ الجلسة لا يعتمدها — لكل الجلسات (admin مُستثنى للتصحيح الإداري).
-    if (actor.role !== "admin" && s.createdBy != null && Number(s.createdBy) === actor.userId) {
+    if (
+      actor.role !== "admin" &&
+      s.createdBy != null &&
+      Number(s.createdBy) === actor.userId
+    ) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "أنشأتَ هذه الجلسة — الاعتماد النهائي لمسؤول آخر (فصل المهام)",
@@ -87,7 +125,8 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
       if (myAssignment[0]) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "كُلّفتَ بالعدّ في هذه الجلسة — الاعتماد النهائي لمسؤول آخر (فصل المهام)",
+          message:
+            "كُلّفتَ بالعدّ في هذه الجلسة — الاعتماد النهائي لمسؤول آخر (فصل المهام)",
         });
       }
     }
@@ -100,22 +139,47 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
       await tx
         .select({ variantId: stocktakeItems.variantId })
         .from(stocktakeItems)
-        .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+        .innerJoin(
+          productVariants,
+          eq(stocktakeItems.variantId, productVariants.id),
+        )
         .innerJoin(products, eq(productVariants.productId, products.id))
-        .where(and(eq(stocktakeItems.sessionId, sessionId), eq(products.isService, false)))
+        .where(
+          and(
+            eq(stocktakeItems.sessionId, sessionId),
+            eq(products.isService, false),
+          ),
+        )
         .orderBy(asc(stocktakeItems.variantId))
     ).map((r) => Number(r.variantId));
     for (const part of chunk(lockIds)) {
       await tx
         .select({ id: branchStock.id })
         .from(branchStock)
-        .where(and(eq(branchStock.branchId, Number(s.branchId)), inArray(branchStock.variantId, part)))
+        .where(
+          and(
+            eq(branchStock.branchId, Number(s.branchId)),
+            inArray(branchStock.variantId, part),
+          ),
+        )
         .orderBy(asc(branchStock.variantId))
         .for("update");
     }
 
+    // ترتيب الأقفال الحاكم: session → branchStock → productVariants. للجرد الافتتاحي نثبت
+    // تكاليف الكتالوج حتى نهاية المعاملة، فلا يمكن أن يمر اعتماد على خليط تكاليف قديم/جديد.
+    if (isOpening) await lockOpeningValuationVariants(tx, sessionId);
+
     // (٤ قبل ٢) أعد الحساب داخل المعاملة — لا ثقة بحسابات شاشة المراجعة.
-    const { rows, directUnderThreshold } = await loadReviewCore(tx, sessionId, true);
+    const { rows, directUnderThreshold } = await loadReviewCore(
+      tx,
+      sessionId,
+      true,
+    );
+    assertNoCountInputAnomalies(await findCountInputAnomalies(tx, rows));
+    assertOpeningValuationSafe(
+      await buildOpeningValuationIntegrity(tx, s, rows),
+    );
 
     // (٢) الحواجز.
     const notCounted = rows.filter((r) => r.rawCount == null);
@@ -149,9 +213,13 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
         message: `${undecided.length} فرقاً يحتاج قراراً صريحاً (تسوية/إبقاء) قبل الاعتماد`,
       });
     }
-    const unapprovedReviewRows = rows.filter((r) => !r.reviewApproved?.isCurrent);
+    const unapprovedReviewRows = rows.filter(
+      (r) => !r.reviewApproved?.isCurrent,
+    );
     if (unapprovedReviewRows.length) {
-      const stale = unapprovedReviewRows.filter((r) => r.reviewApproved != null).length;
+      const stale = unapprovedReviewRows.filter(
+        (r) => r.reviewApproved != null,
+      ).length;
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message:
@@ -166,18 +234,24 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     // openedAt بلا أي قيد دفتري، فهو أخفى قناة تزوير محتملة ويحتاج أربع عيون حكماً).
     // (٣) التوقيعان: عنصر سيُسوّى |قيمته| > dualThreshold ⇒ توقيع أول موجود + المعتمد شخص مختلف.
     // الجلسة الافتتاحية: توقيعان إلزاميان دائماً (حتى بصفر فروقات — الاعتماد يؤسّس الأرصدة ويختم openedAt).
-    const dualNeeded = isOpening || rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
+    const dualNeeded =
+      isOpening ||
+      rows.some(
+        (r) => r.requiresDualSign && willAdjust(r, directUnderThreshold),
+      );
     if (dualNeeded) {
       if (s.firstSignBy == null) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "فروقات تتجاوز حدّ التوقيعين — يلزم توقيع أول ثم اعتماد نهائي من مسؤول آخر",
+          message:
+            "فروقات تتجاوز حدّ التوقيعين — يلزم توقيع أول ثم اعتماد نهائي من مسؤول آخر",
         });
       }
       if (Number(s.firstSignBy) === actor.userId) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "وقّعتَ التوقيع الأول — الاعتماد النهائي يلزم أن يكون من مسؤول آخر",
+          message:
+            "وقّعتَ التوقيع الأول — الاعتماد النهائي يلزم أن يكون من مسؤول آخر",
         });
       }
       const reviewedHighValueByFinalApprover = rows.filter(
@@ -211,16 +285,24 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
       const vids = Array.from(new Set(rows.map((r) => Number(r.variantId))));
       if (vids.length) {
         const crows = await tx
-          .select({ vid: productVariants.id, isConsign: products.isConsignment, cId: products.consignorId })
-          .from(productVariants).innerJoin(products, eq(productVariants.productId, products.id))
+          .select({
+            vid: productVariants.id,
+            isConsign: products.isConsignment,
+            cId: products.consignorId,
+          })
+          .from(productVariants)
+          .innerJoin(products, eq(productVariants.productId, products.id))
           .where(inArray(productVariants.id, vids));
-        for (const cr of crows) if (cr.isConsign && cr.cId != null && !isOpening) consignByVariant.set(Number(cr.vid), Number(cr.cId));
+        for (const cr of crows)
+          if (cr.isConsign && cr.cId != null && !isOpening)
+            consignByVariant.set(Number(cr.vid), Number(cr.cId));
       }
     }
     const consignShortByConsignor = new Map<number, ReturnType<typeof money>>();
 
     for (const r of rows) {
-      if (r.rawCount == null || r.adjustedCount == null || r.diff == null) continue; // غير معدود ⇒ يبقى دفترياً بلا قرار
+      if (r.rawCount == null || r.adjustedCount == null || r.diff == null)
+        continue; // غير معدود ⇒ يبقى دفترياً بلا قرار
 
       let action: "ADJUST" | "KEEP";
       let decidedBy: number | null;
@@ -232,7 +314,8 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
         action = "KEEP";
         decidedBy = r.decision && !r.decision.autoApplied ? r.decidedBy : null;
         autoApplied = !(r.decision && !r.decision.autoApplied);
-        reason = (r.decision?.reason as DecisionUpsert["reason"]) ?? "UNSPECIFIED";
+        reason =
+          (r.decision?.reason as DecisionUpsert["reason"]) ?? "UNSPECIFIED";
         note = r.decision?.note ?? null;
       } else if (r.decision) {
         action = r.decision.action;
@@ -249,7 +332,10 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
         note = null;
       } else {
         // مستحيل منطقياً بعد حاجز undecided — حارس دفاعي.
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "حالة قرار غير متوقعة أثناء الاعتماد" });
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "حالة قرار غير متوقعة أثناء الاعتماد",
+        });
       }
 
       if (action === "ADJUST" && r.diff !== 0) {
@@ -284,7 +370,11 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
           if (r.diff < 0) {
             // العجز خسارة على المكتبة في الحالتين (يبقى ضمن SHORT). لأصناف الأمانة: + استحقاق للمودِع.
             shortExpense = shortExpense.plus(v.abs());
-            if (cId != null) consignShortByConsignor.set(cId, (consignShortByConsignor.get(cId) ?? money(0)).plus(v.abs()));
+            if (cId != null)
+              consignShortByConsignor.set(
+                cId,
+                (consignShortByConsignor.get(cId) ?? money(0)).plus(v.abs()),
+              );
           } else if (cId == null) {
             // زيادة صنف أمانة تُستبعَد من OVER (بضاعة المودِع الزائدة ليست ربحاً لنا).
             overGain = overGain.plus(v);
@@ -360,13 +450,20 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     // بضاعة الأمانة (ش٤ تحسين): استحقاق عجز الأمانة لكل مودِع — قيد PURCHASE يتيم (بلا invoiceId ⇒ خارج
     // فلتر العمولة) بقيمة العجز من **نفس لقطة قيد SHORT** (r.value = unitCost لحظة الإنشاء) + رفع رصيده.
     // بترتيب supplierId (منع deadlock). dedupeKey يمنع الازدواج على إعادة الاعتماد.
-    for (const cId of Array.from(consignShortByConsignor.keys()).sort((a, b) => a - b)) {
+    for (const cId of Array.from(consignShortByConsignor.keys()).sort(
+      (a, b) => a - b,
+    )) {
       const amount = consignShortByConsignor.get(cId)!;
       if (amount.lte(0)) continue;
       await postEntry(tx, {
-        entryType: "PURCHASE", supplierId: cId, invoiceId: null, branchId: Number(s.branchId),
-        amount, notes: `جرد ${s.code} — استحقاق عجز أمانة`,
-        dedupeKey: `CONSIG:STK:${sessionId}:${cId}`, entryDate: now,
+        entryType: "PURCHASE",
+        supplierId: cId,
+        invoiceId: null,
+        branchId: Number(s.branchId),
+        amount,
+        notes: `جرد ${s.code} — استحقاق عجز أمانة`,
+        dedupeKey: `CONSIG:STK:${sessionId}:${cId}`,
+        entryDate: now,
       });
       await adjustSupplierBalance(tx, cId, amount);
     }
@@ -375,7 +472,9 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     // upsert لا UPDATE: صنف عُدّ صفراً بلا صفّ branchStock يبقى بلا صفّ فيظلّ «لم يُجرد» زوراً.
     // افتتاحي: نفس الـupsert يختم openedAt لكل معدود (حتى KEEP والمعدود صفراً بلا setStock —
     // عدُّه = تثبيت أساسه ⇒ يُقفل عليه البيع بالسالب فوراً)؛ COALESCE يصون افتتاحاً أسبق.
-    const countedVariantIds = rows.filter((r) => r.rawCount != null).map((r) => r.variantId);
+    const countedVariantIds = rows
+      .filter((r) => r.rawCount != null)
+      .map((r) => r.variantId);
     for (const part of chunk(countedVariantIds)) {
       if (!part.length) continue;
       await tx
@@ -392,7 +491,9 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
         .onDuplicateKeyUpdate({
           set: {
             lastCountedAt: now,
-            ...(isOpening ? { openedAt: sql`COALESCE(${branchStock.openedAt}, ${now})` } : {}),
+            ...(isOpening
+              ? { openedAt: sql`COALESCE(${branchStock.openedAt}, ${now})` }
+              : {}),
           },
         });
     }
@@ -413,12 +514,18 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
 }
 
 /** إقفال العدّ يدوياً: كل التكليفات ACTIVE ⇒ SUBMITTED والجلسة ⇒ REVIEW (مراجعة جزئية مسموحة). */
-export async function forceStocktakeReview(sessionId: number, _actor: StkActor): Promise<{ ok: true }> {
+export async function forceStocktakeReview(
+  sessionId: number,
+  _actor: StkActor,
+): Promise<{ ok: true }> {
   return withTx(async (tx) => {
     const s = await lockSession(tx, sessionId);
     if (s.status === "REVIEW") return { ok: true as const }; // idempotent
     if (s.status !== "COUNTING") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "إقفال العدّ متاح على جلسة قيد العدّ فقط" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "إقفال العدّ متاح على جلسة قيد العدّ فقط",
+      });
     }
     const { total, counted } = await loadStocktakeProgress(tx, sessionId);
     if (counted < total) {
@@ -431,8 +538,16 @@ export async function forceStocktakeReview(sessionId: number, _actor: StkActor):
     await tx
       .update(stocktakeAssignments)
       .set({ status: "SUBMITTED", submittedAt: now })
-      .where(and(eq(stocktakeAssignments.sessionId, sessionId), eq(stocktakeAssignments.status, "ACTIVE")));
-    await tx.update(stocktakeSessions).set({ status: "REVIEW", submittedAt: now }).where(eq(stocktakeSessions.id, sessionId));
+      .where(
+        and(
+          eq(stocktakeAssignments.sessionId, sessionId),
+          eq(stocktakeAssignments.status, "ACTIVE"),
+        ),
+      );
+    await tx
+      .update(stocktakeSessions)
+      .set({ status: "REVIEW", submittedAt: now })
+      .where(eq(stocktakeSessions.id, sessionId));
     return { ok: true as const };
   });
 }
@@ -440,20 +555,28 @@ export async function forceStocktakeReview(sessionId: number, _actor: StkActor):
 /** إلغاء جلسة (أدمن): لا أثر مخزونياً — الجلسة لم تُسوَّ بعد. المعتمدة لا تُلغى. */
 export async function cancelStocktakeSession(
   args: { sessionId: number; reason?: string },
-  actor: StkActor
+  actor: StkActor,
 ): Promise<{ ok: true }> {
   return withTx(async (tx) => {
     const s = await lockSession(tx, args.sessionId);
     if (s.status === "CANCELLED") return { ok: true as const }; // idempotent
     if (s.status === "APPROVED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء جلسة معتمدة — التسوية نُفّذت فعلاً" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن إلغاء جلسة معتمدة — التسوية نُفّذت فعلاً",
+      });
     }
     const notes = args.reason?.trim()
       ? `${s.notes ? `${s.notes}\n` : ""}سبب الإلغاء: ${args.reason.trim()}`
       : s.notes;
     await tx
       .update(stocktakeSessions)
-      .set({ status: "CANCELLED", cancelledBy: actor.userId, cancelledAt: new Date(), notes })
+      .set({
+        status: "CANCELLED",
+        cancelledBy: actor.userId,
+        cancelledAt: new Date(),
+        notes,
+      })
       .where(eq(stocktakeSessions.id, args.sessionId));
     return { ok: true as const };
   });
@@ -462,7 +585,7 @@ export async function cancelStocktakeSession(
 /** إعادة توليد PIN لتكليف خارجي: يُصفِّر قفل المحاولات ويعيد النص مرة واحدة فقط. */
 export async function regenerateStocktakePin(
   assignmentId: number,
-  opts: { restrictBranchId?: number | null } = {}
+  opts: { restrictBranchId?: number | null } = {},
 ): Promise<{ pin: string }> {
   return withTx(async (tx) => {
     const rows = await tx
@@ -475,37 +598,76 @@ export async function regenerateStocktakePin(
         branchId: stocktakeSessions.branchId,
       })
       .from(stocktakeAssignments)
-      .innerJoin(stocktakeSessions, eq(stocktakeAssignments.sessionId, stocktakeSessions.id))
+      .innerJoin(
+        stocktakeSessions,
+        eq(stocktakeAssignments.sessionId, stocktakeSessions.id),
+      )
       .where(eq(stocktakeAssignments.id, assignmentId))
       .for("update")
       .limit(1);
     const a = rows[0];
-    if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "تكليف الجرد غير موجود" });
+    if (!a)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "تكليف الجرد غير موجود",
+      });
     assertBranchAccess(Number(a.branchId), opts.restrictBranchId);
-    if (a.method !== "PIN") throw new TRPCError({ code: "BAD_REQUEST", message: "هذا التكليف بحساب داخلي — لا PIN له" });
-    if (a.status !== "ACTIVE") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تجديد PIN لعامل غير نشط" });
+    if (a.method !== "PIN")
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "هذا التكليف بحساب داخلي — لا PIN له",
+      });
+    if (a.status !== "ACTIVE")
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن تجديد PIN لعامل غير نشط",
+      });
     if (a.sessionStatus !== "COUNTING") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "إعادة توليد PIN متاحة أثناء العدّ فقط" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "إعادة توليد PIN متاحة أثناء العدّ فقط",
+      });
     }
 
     // فرادة PIN داخل الجلسة: لا نملك النصوص (hash فقط) ⇒ نتحقق بـverifyPassword ضد بقية التكليفات.
     const siblings = await tx
-      .select({ id: stocktakeAssignments.id, pinHash: stocktakeAssignments.pinHash })
+      .select({
+        id: stocktakeAssignments.id,
+        pinHash: stocktakeAssignments.pinHash,
+      })
       .from(stocktakeAssignments)
-      .where(and(eq(stocktakeAssignments.sessionId, Number(a.sessionId)), eq(stocktakeAssignments.method, "PIN")));
+      .where(
+        and(
+          eq(stocktakeAssignments.sessionId, Number(a.sessionId)),
+          eq(stocktakeAssignments.method, "PIN"),
+        ),
+      );
     let pin = "";
     outer: for (let i = 0; i < 100; i++) {
       pin = String(randomInt(0, 10000)).padStart(4, "0");
       for (const sib of siblings) {
-        if (Number(sib.id) !== assignmentId && sib.pinHash && verifyPassword(pin, sib.pinHash)) continue outer;
+        if (
+          Number(sib.id) !== assignmentId &&
+          sib.pinHash &&
+          verifyPassword(pin, sib.pinHash)
+        )
+          continue outer;
       }
       break;
     }
-    if (!pin) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر توليد رمز PIN فريد" });
+    if (!pin)
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "تعذّر توليد رمز PIN فريد",
+      });
 
     await tx
       .update(stocktakeAssignments)
-      .set({ pinHash: hashPassword(pin), failedPinAttempts: 0, lockedUntil: null })
+      .set({
+        pinHash: hashPassword(pin),
+        failedPinAttempts: 0,
+        lockedUntil: null,
+      })
       .where(eq(stocktakeAssignments.id, assignmentId));
     return { pin };
   });
