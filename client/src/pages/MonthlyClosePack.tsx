@@ -11,7 +11,7 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { Printer, FileSpreadsheet, TrendingUp, ShoppingCart, Wallet, ReceiptText, Scale, Wrench } from "lucide-react";
+import { Printer, FileSpreadsheet, TrendingUp, ShoppingCart, Wallet, ReceiptText, Scale, Wrench, CircleAlert, CircleCheck, TriangleAlert } from "lucide-react";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -91,6 +91,13 @@ export default function MonthlyClosePack() {
     branchId: branchId ? Number(branchId) : undefined,
   });
   const d = q.data;
+
+  // ش٥: جاهزية الإقفال — استعلامٌ مستقلّ يظهر ولو كانت الحزمة ما زالت تُحمَّل (هو البوّابة لا الملخّص).
+  const readiness = trpc.reports.monthCloseReadiness.useQuery({
+    month,
+    branchId: branchId ? Number(branchId) : undefined,
+  });
+  const rd = readiness.data;
 
   // لقطة الذمم كما في نهاية الشهر المختار — تستبدل «لقطة الآن» بالحسّاسة للتاريخ (reports.financialPosition
   // اكتسبت asOf لهذا الغرض بالضبط). لا تُطلَب إلا بعد توفّر period.to من الاستعلام الأول.
@@ -185,6 +192,45 @@ export default function MonthlyClosePack() {
           </div>
         )}
       </div>
+
+      {rd && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-base">
+              {rd.blocked ? (
+                <CircleAlert aria-hidden className="size-4 text-destructive" />
+              ) : (
+                <CircleCheck aria-hidden className="size-4" />
+              )}
+              جاهزية الإقفال
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {rd.items.map((it) => (
+              <div key={it.key} className="flex items-start gap-2">
+                {it.status === "BLOCK" ? (
+                  <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
+                ) : it.status === "WARN" ? (
+                  <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                ) : (
+                  <CircleCheck aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                )}
+                <div>
+                  <div className={it.status === "BLOCK" ? "font-medium text-destructive" : "font-medium"}>
+                    {it.label}
+                  </div>
+                  <div className="text-xs text-muted-foreground">{it.detail}</div>
+                </div>
+              </div>
+            ))}
+            <p className="pt-1 text-xs text-muted-foreground">
+              {rd.blocked
+                ? "لا يُقفَل الشهر ما دام بندٌ حاجزٌ قائماً — عالجه ثم أعِد الفحص."
+                : "لا مانع من الإقفال. بنود التنبيه لا تحجب."}
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {q.isLoading ? (
         <LoadingState />

@@ -40,6 +40,7 @@ import {
 import { getDayCloseReconciliation } from "../services/reportsDayCloseService";
 import { getProductionReport, getProductionReportPage, getWorkOrdersReport } from "../services/reportsProductionService";
 import { workOrderProfitability } from "../services/reports/workOrderProfitability";
+import { getMonthCloseReadiness } from "../services/reports/monthCloseReadiness";
 import { getMonthlyClosePack } from "../services/reports/monthlyClosePack";
 import { getConsignmentAging, getCourierPerformance } from "../services/reports/courierPerformance";
 import { getCreditExposure } from "../services/reportsCreditExposureService";
@@ -788,6 +789,23 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
       return getMonthlyClosePack({ month: input.month, branchId });
+    }),
+
+  /** ش٥ (١١/٨): جاهزية الإقفال الشهري — البنود الحاجزة والتنبيهية التي تحكم زرّ الإقفال.
+   *  قراءةٌ محضة. نفس بوّابة حزمة الإقفال وعزلها (تُعرَض بجانبها في الشاشة نفسها).
+   *  تصنيف المالك: وردياتٌ مفتوحة وسنداتٌ معلَّقة تحجب؛ الباقي تنبيه. */
+  monthCloseReadiness: reportsBranchScoped
+    .input(
+      z.object({
+        month: z
+          .string()
+          .regex(/^\d{4}-(0[1-9]|1[0-2])$/, "صيغة الشهر YYYY-MM"),
+        branchId: z.number().int().positive().optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return getMonthCloseReadiness({ month: input.month, branchId });
     }),
 
   /** تقرير المشتريات — ملخّص حسب المورّد (أوامر مؤكَّدة/مستلَمة). manager + عزل الفرع. */
