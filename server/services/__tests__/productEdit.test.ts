@@ -253,6 +253,35 @@ describe("updateProductWithVariants — الكتابة", () => {
     ).rejects.toThrow(/تبديل وحدة الأساس/);
   });
 
+  it("#2 (Codex جولة٦ P1): أساسٌ قديمٌ مستورَد (وحدةٌ معاملها ١ بلا عَلَم isBaseUnit) + رصيد ⇒ تبديله يُرفض", async () => {
+    // نمط بيانات الاستيراد القديم (reorder.ts:213): لا عَلَم أساسٍ، لكن الوحدة معاملها ١ هي الأساس الفعليّ.
+    await db().insert(s.products).values({ id: 6, name: "مستورد قديم" });
+    await db().insert(s.productVariants).values({ id: 6, productId: 6, sku: "LEG-6", costPrice: "100" });
+    await db().insert(s.productUnits).values([
+      { id: 60, variantId: 6, unitName: "قطعة", conversionFactor: "1", isBaseUnit: false, barcode: "BC-LEG-P" },
+      { id: 61, variantId: 6, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "BC-LEG-D" },
+    ]);
+    await db().insert(s.branchStock).values({ variantId: 6, branchId: 1, quantity: 24 });
+    await expect(
+      updateProductWithVariants(
+        { productId: 6, unitTemplate: [{ unitName: "درزن", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] }], variants: [{ id: 6, sku: "LEG-6", costPrice: "100", unitBarcodes: { درزن: "BC-LEG-D" } }] },
+        actor,
+      ),
+    ).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
+  it("#2 (Codex جولة٦ P2): اسمُ أساسٍ مكرّرٌ (نشطٌ + معطَّلٌ بنفس الاسم) ⇒ إبقاؤه يُرفض (المُحدِّث غير المرتَّب قد يُعطّل الحاليّ)", async () => {
+    // صفٌّ معطَّلٌ تاريخيٌّ اسمه «قطعة» بجانب الأساس النشط «قطعة» (id=1). find غير المرتَّب في upsertVariantUnits
+    // قد يختار المعطَّل فيُعيد تفعيله ويُعطّل id=1 ⇒ تتدلّى مراجعه. الحارس يرفض الالتباس.
+    await db().insert(s.productUnits).values({ id: 90, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isActive: false });
+    await expect(
+      updateProductWithVariants(
+        { productId: 1, name: "دفتر", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+        actor,
+      ),
+    ).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
   it("إضافة متغيّر جديد (بلا id) ⇒ صفّ جديد + added=1، والقديم يبقى كما هو", async () => {
     const r = await updateProductWithVariants(
       {
