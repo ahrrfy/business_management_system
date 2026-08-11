@@ -37,8 +37,10 @@ import {
 } from "../stocktakeService";
 import { withTx } from "../tx";
 
-const actor = { userId: 1 };
-const actor2 = { userId: 2 };
+// userId 1 = admin (مُستثنى من فصل المهام)، userId 2 = manager (يخضع له). الدور يُمرَّر في
+// الإنتاج دائماً (stocktakeRouter: approve/create يمرّران ctx.user.role) — تثبيته هنا يطابق الواقع.
+const actor = { userId: 1, role: "admin" };
+const actor2 = { userId: 2, role: "manager" };
 
 // قائمة truncate: جداول الجرد الخمسة + كل جداول الأساس التي تمسّها الاختبارات.
 const TABLES = [
@@ -642,6 +644,52 @@ describe("حواجز الاعتماد", () => {
     const sess = (await db().select().from(s.stocktakeSessions).where(eq(s.stocktakeSessions.id, r.sessionId)))[0];
     expect(Number(sess.firstSignBy)).toBe(1);
     expect(Number(sess.approvedBy)).toBe(2);
+  });
+});
+
+describe("فصل المهام على الجرد الدوري NORMAL (تدقيق ١١/٨ — H2)", () => {
+  it("منشئ الجلسة الدورية (غير admin) لا يعتمدها بنفسه — والمعتمد الآخر ينهيها", async () => {
+    await setStockRow(1, 100);
+    const r = await createStocktakeSession(
+      { name: "دوري", branchId: 1, scopeType: "MANUAL", variantIds: [1], assignments: [{ name: "عامل", method: "PIN" }] },
+      actor2, // منشئ = مدير (يخضع لفصل المهام)
+    );
+    await insertCount(r.sessionId, 1, r.assignments[0].assignmentId, 99); // ‎−1 × 100 (تحت كل الحدود)
+    await forceStocktakeReview(r.sessionId, actor2);
+    await approveAllReadyItems(r.sessionId, actor2);
+    await expectTrpc(approveStocktake(r.sessionId, actor2), "FORBIDDEN", /أنشأتَ هذه الجلسة/);
+    // معتمِد آخر (admin) ينهيها بلا مشكلة.
+    const ok = await approveStocktake(r.sessionId, actor);
+    expect(ok.ok).toBe(true);
+    expect(await stockOf(1)).toBe(99);
+  });
+
+  it("من كُلّف بالعدّ (تكليف USER) لا يعتمد الجلسة الدورية", async () => {
+    await setStockRow(1, 100);
+    const r = await createStocktakeSession(
+      {
+        name: "دوري",
+        branchId: 1,
+        scopeType: "MANUAL",
+        variantIds: [1],
+        assignments: [{ name: "المدير يعدّ", method: "USER", userId: actor2.userId }],
+      },
+      actor, // منشئ = admin
+    );
+    await insertCount(r.sessionId, 1, r.assignments[0].assignmentId, 99);
+    await forceStocktakeReview(r.sessionId, actor);
+    await approveAllReadyItems(r.sessionId, actor);
+    await expectTrpc(approveStocktake(r.sessionId, actor2), "FORBIDDEN", /كُلّفتَ بالعدّ/);
+  });
+
+  it("admin مُستثنى: يُنشئ ويعتمد جلسة دورية صغيرة وحده", async () => {
+    await setStockRow(1, 100);
+    const r = await mkSession({ variantIds: [1] });
+    await insertCount(r.sessionId, 1, r.assignments[0].assignmentId, 99);
+    await forceStocktakeReview(r.sessionId, actor);
+    await approveAllReadyItems(r.sessionId);
+    const ok = await approveStocktake(r.sessionId, actor);
+    expect(ok.ok).toBe(true);
   });
 });
 

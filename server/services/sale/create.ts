@@ -223,16 +223,20 @@ export async function createSaleInTx(
         costPrice: productVariants.costPrice,
         isActive: productVariants.isActive,
         productType: products.productType,
+        // تدقيق ١١/٨ (H4): تعطيل المنتج نفسه يجب أن يمنع البيع أيضاً — كان الحارس يفحص المتغيّر فقط،
+        // فمنتجٌ عطّله المالك بمتغيّراتٍ نشطة يظلّ يُباع خادمياً عبر API/سلة قديمة/إعادة تشغيل أوفلاين.
+        productActive: products.isActive,
       })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productVariants.id, uniqueVariantIds));
-    const variantById = new Map<number, { costPrice: string; isActive: boolean | null; productType: string | null }>();
+    const variantById = new Map<number, { costPrice: string; isActive: boolean | null; productType: string | null; productActive: boolean | null }>();
     for (const r of variantRows) {
       variantById.set(Number(r.id), {
         costPrice: String(r.costPrice),
         isActive: r.isActive,
         productType: r.productType ?? null,
+        productActive: r.productActive,
       });
     }
     const containsDigitalCard = Array.from(variantById.values()).some((v) => v.productType === "DIGITAL_CARD");
@@ -341,8 +345,8 @@ export async function createSaleInTx(
     for (const l of input.lines) {
       const v = variantById.get(l.variantId);
       if (!v) throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${l.variantId} غير موجود` });
-      if (v.isActive === false) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${l.variantId} معطّل` });
+      if (v.isActive === false || v.productActive === false) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `الصنف ${l.variantId} معطّل — لا يُباع` });
       }
 
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);

@@ -21,6 +21,7 @@ const TABLES = [
   "accountingEntries",
   "stockAdjustmentRequests",
   "inventoryMovements",
+  "openingModeSettings",
   "branchStock",
   "productVariants",
   "products",
@@ -63,6 +64,12 @@ beforeEach(async () => {
 async function stockOf(variantId: number, branchId: number) {
   const [r] = await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, variantId), eq(s.branchStock.branchId, branchId)));
   return Number(r?.q ?? 0);
+}
+
+async function enableOpeningMode() {
+  await db()
+    .insert(s.openingModeSettings)
+    .values({ id: 1, enabled: true, endsAt: new Date(Date.now() + 7 * 86_400_000), maxNegativeQtyPerLine: 100 });
 }
 
 describe("تسوية المخزون بفصل مهام (#٦ الشريحة ٢)", () => {
@@ -131,6 +138,49 @@ describe("تسوية المخزون بفصل مهام (#٦ الشريحة ٢)", 
     const res = await approveStockAdjustment(requestId, ADMIN);
     expect(res.delta).toBe(5);
     expect(await stockOf(1, 1)).toBe(25);
+  });
+
+  it("H3 (تدقيق ١١/٨): أثناء الافتتاح، تسوية صنفٍ غير مُفتتَح = تثبيت افتتاحيّ بصفر أثر P&L + ختم openedAt", async () => {
+    await enableOpeningMode();
+    // الصنف ١ مبذور برصيد 20 وopenedAt=NULL (غير مُفتتَح).
+    const { requestId } = await requestStockAdjustment({ variantId: 1, branchId: 1, targetQuantity: 15 }, WH1);
+    const res = await approveStockAdjustment(requestId, MGR1);
+    expect(res.delta).toBe(-5);
+    expect(await stockOf(1, 1)).toBe(15);
+    // صفر قيد ADJUST (لا ربح/خسارة وهمي — كالجرد الافتتاحي).
+    const ents = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
+    expect(ents.length).toBe(0);
+    // openedAt مختوم + الحركة بمرجع OPENING.
+    const [row] = await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+    expect(row.openedAt).not.toBeNull();
+    const [mv] = await db().select().from(s.inventoryMovements).where(eq(s.inventoryMovements.referenceType, "OPENING"));
+    expect(mv).toBeTruthy();
+  });
+
+  it("H3: أثناء الافتتاح، صنفٌ مُفتتَح (openedAt مختوم) ⇒ تسوية عادية بقيد ADJUST (P&L حقيقي)", async () => {
+    await enableOpeningMode();
+    await db().update(s.branchStock).set({ openedAt: new Date() }).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+    const { requestId } = await requestStockAdjustment({ variantId: 1, branchId: 1, targetQuantity: 15 }, WH1);
+    const res = await approveStockAdjustment(requestId, MGR1);
+    expect(res.delta).toBe(-5);
+    const ents = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
+    expect(ents.length).toBe(1); // صنفٌ مُثبَّت ⇒ الفرق عجزٌ حقيقيّ يضرب الدخل
+    expect(ents[0].profit).toBe("-25.00"); // 5 قطع × 5.00
+  });
+
+  it("H3 (مراجعة Codex): صنفٌ له مصدرٌ (أمانة) لا يُثبَّت OPENING أثناء الافتتاح بل ADJUST عاديّ", async () => {
+    // openedAt IS NULL وحده لا يكفي للتثبيت الافتتاحيّ بصفر P&L — الصنف ذو المصدر (أمانة/أمر شراء غير
+    // ملغى) يبقى على مسار ADJUST كي لا يزدوج تأسيسه مع مصدره لاحقاً. هنا نختبر فرع الأمانة.
+    await enableOpeningMode();
+    await db().update(s.products).set({ isConsignment: true }).where(eq(s.products.id, 1));
+    const { requestId } = await requestStockAdjustment({ variantId: 1, branchId: 1, targetQuantity: 15 }, WH1);
+    const res = await approveStockAdjustment(requestId, MGR1);
+    expect(res.delta).toBe(-5);
+    // مسار ADJUST العاديّ (قيد P&L) لا تثبيت افتتاحيّ بصفر أثر، وopenedAt يبقى فارغاً (لم يمرّ بمسار OPENING).
+    const ents = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
+    expect(ents.length).toBe(1);
+    const [row] = await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+    expect(row.openedAt).toBeNull();
   });
 
   it("القائمة تُظهر المعلَّق مع اسم الصنف والرصيد الحاليّ", async () => {
