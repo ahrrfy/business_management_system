@@ -21,7 +21,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { openShift } from "../shiftService";
+import { closeShift, openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
 import { commitDraft, promoteDraft } from "../reception";
 
@@ -91,8 +91,10 @@ describe("ش٣ — تثبيت المسوّدة", () => {
     }, CASHIER);
     expect(r1.idempotentReplay).toBe(false);
     expect(r1.regularSale).not.toBeNull();
+    expect(r1.regularSale?.shiftId).toBe(shift.shiftId);
     expect(r1.workOrders.length).toBe(1);
     expect(r1.workOrders[0].orderNumber).toMatch(/^WO-1-/);
+    expect(r1.workOrders[0].deposit).toBe("45000.00");
 
     // فاتورة البيع المباشر: 2×1000 مدفوعة كاملاً؛ العربون الفائض 45000 ذهب لأمر الشغل.
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, r1.regularSale!.invoiceId)))[0];
@@ -113,14 +115,19 @@ describe("ش٣ — تثبيت المسوّدة", () => {
       .where(and(eq(s.receipts.shiftId, shift.shiftId), eq(s.receipts.cashBucket, "DRAWER"), eq(s.receipts.direction, "IN")));
     expect(Number(drawer[0].n)).toBe(47000);
 
-    // I8: إعادة التثبيت (شبكة انقطعت بعد الالتزام) ⇒ نفس الأرقام مُعادةً بناءً — لا ازدواج.
+    // I8: أُغلقت الوردية الأصلية وفتح الموظف أخرى قبل إعادة المحاولة بعد انقطاع الشبكة.
+    // النتيجة المعاد بناؤها يجب أن تحمل وردية الفاتورة المحفوظة، لا الوردية الحية الجديدة.
+    await closeShift({ shiftId: shift.shiftId, countedCash: "47000.00" }, CASHIER);
+    const retryShift = await openReception();
     const r2 = await commitDraft({
-      draftId: p.draftId, version: 0, expectedTotal: "47000.00", shiftId: shift.shiftId,
+      draftId: p.draftId, version: 0, expectedTotal: "47000.00", shiftId: retryShift.shiftId,
       collectNow: { amount: "47000.00", method: "CASH" },
     }, CASHIER);
     expect(r2.idempotentReplay).toBe(true);
     expect(r2.regularSale?.invoiceId).toBe(r1.regularSale!.invoiceId);
     expect(r2.regularSale?.invoiceNumber).toBe(r1.regularSale!.invoiceNumber);
+    expect(r2.regularSale?.shiftId).toBe(shift.shiftId);
+    expect(r2.regularSale?.shiftId).not.toBe(retryShift.shiftId);
     expect(r2.workOrders).toEqual(r1.workOrders); // لا مصفوفة فارغة (ملاحظة ٢.١٠)
     expect((await db().select().from(s.invoices)).length).toBe(1);
     expect((await db().select().from(s.workOrders)).length).toBe(1);
