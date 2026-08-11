@@ -517,11 +517,24 @@ export default function Reception() {
   // خدمات الطباعة المُوجَّهة للاستقبال تُباع عبر مسار createPrintSale المدقَّق (خصم مواد + COGS).
   const printSaleM = trpc.printPos.createSale.useMutation();
 
-  async function handleSubmit(opts: { quickFullPay: boolean }) {
+  async function handleSubmit(opts: { quickFullPay: boolean; deferred?: boolean }) {
     if (cart.length === 0) return;
     if (!shift) {
       notify.err("لا توجد وردية خدمة زبائن مفتوحة — افتح الوردية أولاً");
       return;
+    }
+    // ش٤ (١١/٨): «بيع آجل بلا عربون» — نداءُ handleSubmit مع deferred=true. شروطُ التفعيل خادميّة
+    // (createSale يفرض customerId + assertCreditLimit) + محلياً هنا: لا مخصّصات (WO تحتاج عربوناً
+    // للجدولة) + عميلٌ مسجَّل. المطلب يعود للمالك: «كاشير يبيع لعميلٍ عائد بلا دفع، تُسدَّد لاحقاً».
+    if (opts.deferred) {
+      if (!customer.customerId && !customer.isNew) {
+        notify.err("البيع الآجل يتطلّب عميلاً مسجَّلاً — اختر أو أضِف عميلاً أولاً");
+        return;
+      }
+      if (cart.some(isCustomKind)) {
+        notify.err("البيع الآجل لا يشمل الأصناف المخصّصة (تحتاج عربوناً للجدولة)");
+        return;
+      }
     }
     // P2: مرجع البطاقة إلزاميّ عند وجود مخصَّص (createWorkOrder يَرفض CARD بلا مرجع).
     if (hasCustom && method === "CARD" && !paymentReference.trim()) {
@@ -553,13 +566,15 @@ export default function Reception() {
     // الدفع المتوقّع لهذا التنفيذ.
     const expectedDepositsD = customWithDeposits.reduce((s, x) => s.plus(D(x.depositStr)), D(0));
     const expectedTotalD = round2(sumDirectD.plus(expectedDepositsD));
-    const inputPaidD = opts.quickFullPay ? expectedTotalD : paidD;
+    const inputPaidD = opts.deferred ? D(0) : opts.quickFullPay ? expectedTotalD : paidD;
 
     // إصلاح P1 (٢٣/٦/٢٦): الفحص السابق كان يَتحقّق من تَغطية البيع المباشر فقط، بَينما يَرسل
     // العربون الكامل لكل صنف لـcreateWorkOrder الذي يَقيّده receipt(IN)+PAYMENT_IN فوراً.
     // النتيجة: نَقد غير مَقبوض فعلاً يَدخل الدفتر ⇒ تَسوية صندوق/AR مشوَّهة. الفحص الآن
     // يَستلزم تَغطية إجمالي العَرابين أيضاً (المُدخَل ≥ المتوقَّع).
-    if (!opts.quickFullPay && inputPaidD.lt(expectedTotalD)) {
+    // ش٤ (١١/٨): وضع «آجل بلا عربون» يعبر هذا الحارس — البيع بلا payment والرصيد يُقيَّد ذمّةً
+    // على العميل (createSale يفرض assertCreditLimit كحاجزٍ ماليّ).
+    if (!opts.quickFullPay && !opts.deferred && inputPaidD.lt(expectedTotalD)) {
       notify.err(`المبلغ المُدخَل (${fmt(inputPaidD.toFixed(2))}) أقلّ من المتوقَّع (${fmt(expectedTotalD.toFixed(2))} = بيع + عرابين). عدّل العرابين من النوافذ أو أكمِل المبلغ.`);
       return;
     }
@@ -604,7 +619,9 @@ export default function Reception() {
           sourceType: "POS",
           customerId: customerId ?? undefined,
           lines,
-          payment: { amount: saleAmount, method },
+          // ش٤: وضع الآجل يحذف payment كاملاً ⇒ createSale يُنشئ فاتورة UNPAID + قيد على ذمّة العميل
+          //     (يفرض assertCreditLimit خادمياً). خلاف ذلك: دفع كامل كالسابق.
+          payment: opts.deferred ? undefined : { amount: saleAmount, method },
           clientRequestId: `${reqIdRef.current}-sale`,
         });
         invoiceId = res.invoiceId ?? null;
@@ -787,7 +804,7 @@ export default function Reception() {
   // إصلاح P2 (٢٣/٦/٢٦): F4 كان يُمسك إغلاقاً بياناتيّاً قديماً (payInput/method/customer/shift)
   // لأن الاعتماديّات لم تَشملها ⇒ نقرة F4 بعد تعديل المبلغ تَنفّذ بمبلغ قديم. الحل: ref يَحمل
   // أحدث `handleSubmit` ⇒ المُستَمع يَستدعي ref.current دائماً.
-  const submitRef = useRef<(opts: { quickFullPay: boolean }) => void>(() => {});
+  const submitRef = useRef<(opts: { quickFullPay: boolean; deferred?: boolean }) => void>(() => {});
   useEffect(() => {
     submitRef.current = handleSubmit;
   });
@@ -801,6 +818,10 @@ export default function Reception() {
       } else if (e.key === "F4") {
         e.preventDefault();
         submitRef.current?.({ quickFullPay: false });
+      } else if (e.key === "F6") {
+        // ش٤: بيع آجل بلا عربون (يشترط عميلاً مسجَّلاً + سلعاً غير مخصّصة — يفرضها handleSubmit)
+        e.preventDefault();
+        submitRef.current?.({ quickFullPay: false, deferred: true });
       } else if (e.key === "Escape") {
         if (showInbox) setShowInbox(false);
         else if (showDrop) setShowDrop(false);
@@ -1556,7 +1577,20 @@ export default function Reception() {
                 <><Check aria-hidden className="size-4" /> إتمام الدفع وطباعة</>
               )}
             </button>
-            <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F2 بحث</div>
+            {/* ش٤ (١١/٨): زرّ «بيع آجل بلا عربون» — يظهر عند: سلعٌ عاديّة فقط (لا مخصّصات) + عميلٌ
+                مسجَّل. الخادم يفرض assertCreditLimit ⇒ يفشل بوضوحٍ إن لم يُضبَط سقف ائتمانٍ للعميل. */}
+            {sumCustom === 0 && cart.length > 0 && (customer.customerId || customer.isNew) && (
+              <button
+                type="button"
+                disabled={submitting || !shift}
+                onClick={() => void handleSubmit({ quickFullPay: false, deferred: true })}
+                className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-amber-500 bg-amber-50 text-xs font-bold text-amber-700 transition hover:bg-amber-100 disabled:opacity-40"
+                title="ينشئ فاتورة بلا دفع — يُقيَّد المبلغ ذمّةً على العميل (يشترط سقف ائتمان)"
+              >
+                <FileText aria-hidden className="size-3.5" /> بيع آجل بلا عربون
+              </button>
+            )}
+            <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F6 آجل · F2 بحث</div>
           </div>
         </div>
       </div>
