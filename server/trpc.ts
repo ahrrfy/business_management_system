@@ -117,6 +117,30 @@ function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, m
   });
 }
 
+/**
+ * بوّابة «أيّ واحدة» (١١/٨) — تعبر إن حقّق المستخدم أيّ (module, minLevel, allowedRoles) من القائمة.
+ * الحاجة: شاشة الاستقبال (Reception.tsx) تنادي داخلياً `sales.create`/`printPos.createSale`/`sale.pay`
+ * لكن قالب «موظف استقبال» يقصّ `sales:NONE, pos:NONE` عمداً لعزل التبويبات — النتيجة FORBIDDEN
+ * على شاشته الخاصة. الحلّ: بوّابات البيع/الكاشير تقبل أيضاً `workorders:FULL` (مسار الاستقبال)،
+ * فيعبر موظف الاستقبال (cashier + sales:NONE + workorders:FULL) بلا فتح تبويب RETAIL/PRINT_SERVICES
+ * له (POS_STATION_GATES تبقى صارمة بالوحدة الخاصّة بكلّ تبويب).
+ */
+type ModuleGateSpec = { moduleKey: string; minLevel: AccessLevel; allowedRoles: readonly string[] };
+function requireModuleGateAny(gates: readonly ModuleGateSpec[]) {
+  return t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
+      | Record<string, AccessLevel>
+      | null
+      | undefined;
+    const ok = gates.some((g) =>
+      moduleAccessAllowed(ctx.user!.role, override, g.moduleKey, g.minLevel, g.allowedRoles),
+    );
+    if (!ok) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    return next({ ctx: { ...ctx, user: ctx.user } });
+  });
+}
+
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
 export const managerProcedure = t.procedure.use(requireRole("manager"));
 
@@ -240,11 +264,22 @@ function moduleProcedure(allowedRoles: readonly string[], moduleKey: string, min
   return t.procedure.use(requireModuleGate(allowedRoles, moduleKey, minLevel)).use(requireOwnBranch);
 }
 
-// pos (نقطة بيع خدمات الطباعة — printPos)
-export const posCashierProcedure = moduleProcedure(["cashier", "manager"], "pos", "FULL");
+/** بوّابة «أيّ واحدة» + إلزام فرع مُسنَد لغير admin/manager — للمسارات المشتركة بين قسمَي نقطة البيع. */
+function moduleProcedureAny(gates: readonly ModuleGateSpec[]) {
+  return t.procedure.use(requireModuleGateAny(gates)).use(requireOwnBranch);
+}
+
+// pos (نقطة بيع خدمات الطباعة — printPos) + مسار الاستقبال (workorders:FULL)
+export const posCashierProcedure = moduleProcedureAny([
+  { moduleKey: "pos", minLevel: "FULL", allowedRoles: ["cashier", "manager"] },
+  { moduleKey: "workorders", minLevel: "FULL", allowedRoles: ["cashier", "manager", "print_operator"] },
+]);
 // sales
 export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
-export const salesCashierProcedure = moduleProcedure(["cashier", "manager"], "sales", "FULL");
+export const salesCashierProcedure = moduleProcedureAny([
+  { moduleKey: "sales", minLevel: "FULL", allowedRoles: ["cashier", "manager"] },
+  { moduleKey: "workorders", minLevel: "FULL", allowedRoles: ["cashier", "manager", "print_operator"] },
+]);
 export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL");
 // purchases — «مسؤول مشتريات» قالبه purchases=FULL ووصفه المعلن «أوامر شراء وموردون».
 export const purchasesReadProcedure = branchScopedProcedure.use(requireModule("purchases", "READ"));

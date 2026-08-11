@@ -1111,10 +1111,6 @@ export default function Reception() {
               {printerReady && <Check aria-hidden className="size-3.5" strokeWidth={3} />}
             </button>
           )}
-          <div className="flex items-center gap-1.5 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-1.5 text-xs font-bold text-violet-700">
-            <span className="size-2 animate-pulse rounded-full bg-violet-500" />
-            وردية خدمة الزبائن #{shift.id}
-          </div>
           <Button size="sm" variant="outline" onClick={() => setClosing(true)}>
             إغلاق الوردية
           </Button>

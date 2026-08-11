@@ -174,11 +174,6 @@ export default function PointOfSale() {
               صلاحيات مخصّصة
             </span>
           ) : null}
-          {visibleModes.length > 1 && (
-            <span className="hidden text-[11px] text-muted-foreground sm:block">
-              Ctrl+1/2/3 لتَبديل الوَضع
-            </span>
-          )}
           {visibleModes.some((mode) => mode.v === "RETAIL") && (
             <Link
               href="/invoices"

@@ -1,5 +1,5 @@
 import { EntityPicker } from "@/components/invoice/EntityPicker";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -86,10 +86,22 @@ export default function SalesReturns() {
             title="المرتجعات"
             count={total}
             loading={list.isLoading}
+            activeFilterCount={
+              (customerId !== "" ? 1 : 0) +
+              (branchId !== "" ? 1 : 0) +
+              (dateFrom ? 1 : 0) +
+              (dateTo ? 1 : 0)
+            }
+            onResetFilters={() => {
+              setCustomerId("");
+              setBranchId("");
+              setDateFrom("");
+              setDateTo("");
+              setPage(0);
+            }}
             filters={
               <>
-                {/* بحث خادميّ بدل قائمة مقصوصة عند ٥٠٠ (العميل ٥٠١ كان غير قابل للاختيار). */}
-                <div className="min-w-[200px]">
+                <FilterField label="العميل" className="min-w-[200px]">
                   <EntityPicker
                     type="SALE_RETURN"
                     selectedId={customerId === "" ? null : Number(customerId)}
@@ -97,19 +109,25 @@ export default function SalesReturns() {
                     placeholder="— كل العملاء —"
                     clearLabel="عرض كل العملاء"
                   />
-                </div>
-                <select
-                  className={selectCls}
-                  value={branchId}
-                  onChange={(e) => setFilter(setBranchId, e.target.value ? Number(e.target.value) : "")}
-                >
-                  <option value="">— كل الفروع —</option>
-                  {(branches.data ?? []).map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-                <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(0); }} title="من تاريخ" />
-                <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(0); }} title="إلى تاريخ" />
+                </FilterField>
+                <FilterField label="الفرع">
+                  <select
+                    className={selectCls}
+                    value={branchId}
+                    onChange={(e) => setFilter(setBranchId, e.target.value ? Number(e.target.value) : "")}
+                  >
+                    <option value="">— كل الفروع —</option>
+                    {(branches.data ?? []).map((b) => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
+                </FilterField>
+                <FilterField label="من تاريخ">
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(0); }} />
+                </FilterField>
+                <FilterField label="إلى تاريخ">
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(0); }} />
+                </FilterField>
               </>
             }
             exportSpec={{
