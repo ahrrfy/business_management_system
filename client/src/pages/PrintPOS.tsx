@@ -332,7 +332,8 @@ export default function PrintPOS() {
         printDate: fmtDate(now),
         printTime: fmtTime(now),
         cashier: me.data?.name ?? undefined, customer: p?.customerName,
-        shiftId: shift?.id ?? null,
+        // Codex P2: تفضيل shiftId من الفاتورة المُثبَّتة (idempotent replay بعد إغلاق وردية).
+        shiftId: (r as { shiftId?: number | null }).shiftId ?? shift?.id ?? null,
         lines: p?.lines ?? [],
         total: p?.cashTotal ?? 0, received: p?.received ?? 0, change: p?.change ?? 0,
         credit: p?.credit ?? 0, method: METHOD_LABEL[p?.method ?? "CASH"], isCredit: p?.isCredit ?? false,

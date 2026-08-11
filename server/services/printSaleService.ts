@@ -97,6 +97,9 @@ export interface CreatePrintSaleInput {
 export interface CreatePrintSaleResult {
   invoiceId: number;
   invoiceNumber: string;
+  /** G3 (١١/٨): shiftId المُثبَّت على الفاتورة الفعليّة (سواء أُنشئت الآن أو idempotent replay).
+   *  للإيصال المطبوع كي يحمل رقم الوردية الحقيقيّة، لا الحيّة عند الفاعل بعد إغلاق الأصليّة. */
+  shiftId?: number | null;
   total: string;
   status: "PENDING" | "PARTIALLY_PAID" | "PAID";
   idempotentReplay?: boolean;
@@ -159,6 +162,8 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         return {
           invoiceId: Number(ex.id),
           invoiceNumber: ex.invoiceNumber,
+          // G3: shiftId من الفاتورة الأصليّة (لا الحيّة عند الفاعل) للـidempotent replay.
+          shiftId: ex.shiftId ?? null,
           total: ex.total,
           status: ex.status as CreatePrintSaleResult["status"],
           idempotentReplay: true,
@@ -544,7 +549,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));
     }
 
-    return { invoiceId, invoiceNumber, total: toDbMoney(effectiveTotalD), status, priceOverride: belowCost };
+    return { invoiceId, invoiceNumber, shiftId: input.shiftId ?? null, total: toDbMoney(effectiveTotalD), status, priceOverride: belowCost };
 }
 
 /** Public wrapper for callers that need a standalone atomic print sale. */

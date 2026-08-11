@@ -1531,16 +1531,29 @@ export default function Reception() {
         price: round2(D(effectivePrice(c))).toFixed(2),
         total: round2(D(lineTotal(c))).toFixed(2),
       });
-      // G3 (١١/٨): heldDeposits = مجموع العرابين المحتجزة على أوامر الشغل المرتبطة (customWithDeposits)
-      // — يظهر على إيصال البيع كإفصاحٍ منفصلٍ فيعرف الزبون رصيده المحتجز الذي يُخصم عند التسليم.
-      const heldDepositsSum = customWithDeposits.reduce((s, x) => s.plus(D(x.depositStr)), D(0));
+      // G3 (١١/٨) — إصلاح Codex P2:
+      // (١) heldDeposits من ردّ الخادم لا الحالة المحلّية: `customWithDeposits[i].depositStr` مسوّدة
+      //     "0.00" دائماً — الخادم يوزّع العرابين الحقيقيّة ويعيدها في `result.workOrders[i].deposit`
+      //     (نفس النمط المستعمل أدناه لتذكرة أمر الشغل السطر ١٥٨٤).
+      // (٢) shiftId من الفاتورة المُثبَّتة لا من scope الحيّ: عند idempotent replay بعد إغلاق الوردية
+      //     الأصليّة وفتح جديدة، `result.regularSale.shiftId` يحمل رقم الوردية الحقيقيّة للفاتورة.
+      //     الرجوع لـ`shift?.id` احتياطاً لمسار الأمر الشغل الخالص (لا فاتورة).
+      const heldDepositsSum = (result.workOrders ?? []).reduce(
+        (s, wo) => s.plus(D((wo as { deposit?: string } | undefined)?.deposit ?? "0")),
+        D(0),
+      );
+      const persistedShiftId =
+        (result as { regularSale?: { shiftId?: number | null } }).regularSale?.shiftId ??
+        (result as { printSale?: { shiftId?: number | null } }).printSale?.shiftId ??
+        shift?.id ??
+        null;
       const receiptHead = {
         date: fmtDate(printedAt),
         time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
         cashierName: me.data?.name ?? "موظف الخدمة",
         customerName: receiptCustomerName,
         paymentMethod: PAY_METHOD_LABEL[method],
-        shiftId: shift?.id ?? null,
+        shiftId: persistedShiftId,
         heldDeposits: heldDepositsSum.gt(0) ? heldDepositsSum.toFixed(2) : null,
       };
       // ٨/٨ — إفصاح التوصيل على إيصال البيع المباشر: كان لا يُطبَع إطلاقاً («لم تظهر بالطباعة»).

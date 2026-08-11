@@ -130,8 +130,15 @@ export async function receiptToCanvas(
 
   // تقدير سخي للارتفاع ثم قصّ للمستعمل فعلياً بعد الرسم.
   // ش١٠: تفاصيل الكروت تُضاف للتقدير وإلا قُصَّ الإيصال قبلها (عنوانٌ ٣٠px + ٥ أسطر × ٢٥px + هامش).
+  // Codex P2 (١١/٨): G3 أضاف حقولاً اختياريّة قد تدفع القدم عبر السقف على إيصالٍ قصير مع توصيل
+  // ومتبقٍّ آجل — الرسم خارج الكانفاس يُطرح والارتفاع المُعاد مقصورٌ على estH فتضيع كتلة سياسة
+  // الإرجاع مع كل عناصر ما تحتها. نُضيف نافذة سخيّة لكل حقل جديد يظهر (الوردية ٣٠px + عربون
+  // محتجز ٣٠px + كتلة «متبقٍّ آجل» ٦٤px) — القصّ النهائي يُبقي الفعليّ فقط فلا هدر ورق.
   const digitalRows = (d.digitalDetails ?? []).length;
-  const estH = 1400 + d.items.length * 96 + digitalRows * 190;
+  const shiftRowH = d.shiftId != null ? 30 : 0;
+  const heldRowH = Number(d.heldDeposits ?? 0) > 0 ? 30 : 0;
+  const creditBlockH = Number(d.credit ?? 0) > 0 ? 64 : 0; // كتلة «متبقٍّ (آجل)» مع الفاصل المتقطّع
+  const estH = 1400 + d.items.length * 96 + digitalRows * 190 + shiftRowH + heldRowH + creditBlockH;
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = estH;

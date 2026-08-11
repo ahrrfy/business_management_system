@@ -923,7 +923,8 @@ export default function POS() {
         printTime: fmtTime(now),
         cashierName: ctx.cashierName,
         customerName: ctx.customerName,
-        shiftId: shift?.id ?? null,
+        // Codex P2: تفضيل shiftId من الفاتورة المُثبَّتة (idempotent replay بعد إغلاق وردية).
+        shiftId: (r as { shiftId?: number | null }).shiftId ?? shift?.id ?? null,
         lines: ctx.lines,
         total: ctx.total, received: ctx.received, change: ctx.change,
         credit: ctx.credit, isCredit: ctx.isCredit,

@@ -144,6 +144,10 @@ export interface CreateSaleInput {
 export interface CreateSaleResult {
   invoiceId: number;
   invoiceNumber: string;
+  /** G3 (١١/٨): shiftId المُثبَّت على الفاتورة الفعليّة — سواء أُنشئت الآن أو أُعيدت من idempotent
+   *  replay. يتيح للإيصال المطبوع أن يحمل رقم الوردية الحقيقيّة للمعاملة (لا الوردية الحيّة
+   *  للفاعل التي قد تكون انفتحت بعد إغلاق الأصليّة). Codex P2 على PR #553. */
+  shiftId?: number | null;
   total: string;
   status: "PENDING" | "PARTIALLY_PAID" | "PAID";
   idempotentReplay?: boolean;

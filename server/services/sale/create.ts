@@ -144,6 +144,10 @@ export async function createSaleInTx(
         return {
           invoiceId: Number(ex.id),
           invoiceNumber: ex.invoiceNumber,
+          // G3 (١١/٨): shiftId المُثبَّت على الفاتورة الأصليّة — لا shiftId الحاليّ للفاعل. الإعادة
+          // الـidempotent بعد إغلاق وردية وفتح أخرى تحتاج هذا لكي يطبع الإيصال الوردية الحقيقيّة
+          // للمعاملة (Codex P2 على PR #553).
+          shiftId: ex.shiftId ?? null,
           total: ex.total,
           status: ex.status as CreateSaleResult["status"],
           idempotentReplay: true,
@@ -983,6 +987,8 @@ export async function createSaleInTx(
     return {
       invoiceId,
       invoiceNumber,
+      // G3: نُعيد shiftId المُثبَّت الآن — يطابق مسار الـidempotent replay أعلاه.
+      shiftId: input.shiftId ?? null,
       total: toDbMoney(effectiveTotalD),
       status,
       priceOverride: belowCost || manualDiscountGateTriggered,
