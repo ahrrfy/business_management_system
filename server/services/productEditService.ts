@@ -248,6 +248,8 @@ export interface UpdateVariantRow {
   colorHex?: string | null;
   size?: string | null;
   costPrice: string;
+  /** سبب تغيير التكلفة (priceSanity L1.7) — إلزاميّ للتغيّرات الكبيرة، يُلتقَط في أثر product.costChange. */
+  costChangeReason?: string | null;
   /** سعر خاص لمفرد وحدة الأساس لهذا المتغيّر — فارغ ⇒ يتبع سعر القالب المشترك. */
   baseRetail?: string;
   minStock?: number;
@@ -536,7 +538,9 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       const colorHexPatch = v.colorHex !== undefined ? { colorHex: v.colorHex?.trim() || null } : {};
       let variantId: number;
       if (v.id) {
-        const owned = (await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1))[0];
+        // .for("update"): نقفل صفّ المتغيّر قبل قراءة التكلفة القديمة وتحديثها، فيتسلسل تعديلان متزامنان
+        // ولا يُسجَّل «قبل» بائتٌ في أثر التكلفة (Codex — تعديلان 100→150 ثمّ 150→200 لا 100→200).
+        const owned = (await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1).for("update"))[0];
         if (!owned) throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} لا يخصّ هذا المنتج` });
         variantId = v.id;
         // تدقيق ١١/٨ (#2 — بعد ٣ جولات مراجعة Codex): وحدة الأساس **ثابتةٌ** لمتغيّرٍ قائم — يُرفَض تبديلها
@@ -546,7 +550,7 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         await tx.update(productVariants).set({ ...vals, ...colorHexPatch }).where(eq(productVariants.id, variantId));
         // H3 (تدقيق ٢٧/٧): تغيّر التكلفة على صنفٍ له رصيد يُعيد تقييم المخزون ⇒ قيد إعادة تقييم يفسّر
         // حركة حقوق الملكية في قائمة الدخل ويمرّ على حارس الفترة (صفريّ الأثر إن كان الفرق/الرصيد صفراً).
-        await postCostRevaluation(tx, variantId, owned.costPrice, vals.costPrice, actor);
+        await postCostRevaluation(tx, variantId, owned.costPrice, vals.costPrice, actor, v.costChangeReason);
       } else {
         const res = await tx.insert(productVariants).values({ productId: input.productId, ...vals, colorHex: v.colorHex?.trim() || null });
         variantId = extractInsertId(res);

@@ -27,6 +27,8 @@ export interface UpdateProductVariantInput {
   color?: string | null;
   size?: string | null;
   costPrice: string;
+  /** سبب تغيير التكلفة (priceSanity L1.7) — يُلتقَط في أثر product.costChange. */
+  costChangeReason?: string | null;
   units: UpdateProductUnitInput[];
 }
 
@@ -109,7 +111,8 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
       await assertBaseUnitStable(tx, v.id, { by: "id", unitId: baseU?.id ?? null });
 
       // Variant header. H3 (تدقيق ٢٧/٧): نلتقط التكلفة القديمة قبل التحديث لإصدار قيد إعادة تقييم.
-      const oldV = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, v.id)).limit(1))[0];
+      // .for("update"): قفل صفّ المتغيّر قبل قراءة/تحديث التكلفة ⇒ لا «قبل» بائتٌ في أثر التكلفة عند التزامن (Codex).
+      const oldV = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, v.id)).limit(1).for("update"))[0];
       await tx
         .update(productVariants)
         .set({
@@ -121,7 +124,7 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
         })
         .where(eq(productVariants.id, v.id));
       // تغيّر التكلفة على صنفٍ له رصيد ⇒ قيد إعادة تقييم (يفسّر حركة الحقوق + حارس الفترة)؛ صفريّ الأثر إن كان الفرق/الرصيد صفراً.
-      await postCostRevaluation(tx, v.id, oldV?.costPrice, toDbMoney(v.costPrice), actor);
+      await postCostRevaluation(tx, v.id, oldV?.costPrice, toDbMoney(v.costPrice), actor, v.costChangeReason);
 
       // تحقّق معامل التحويل خادمياً (تدقيق ١٧/٧): الأساس ١، غير الأساس عدد صحيح > ١.
       assertValidUnitFactors(v.units);

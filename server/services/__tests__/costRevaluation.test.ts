@@ -114,15 +114,23 @@ describe("postCostRevaluation — أثر تدقيقٍ مُهيكَل لتغيي�
     return db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "product.costChange"));
   }
 
-  it("تغيّر التكلفة ⇒ سطر auditLogs بالقبل/البعد + الفاعل + الكيان", async () => {
-    await withTx((tx) => postCostRevaluation(tx, 1, "100.00", "150.00", actor));
+  it("تغيّر التكلفة ⇒ سطر auditLogs بالقبل/البعد + الفاعل + الفرع + السبب", async () => {
+    await withTx((tx) => postCostRevaluation(tx, 1, "100.00", "150.00", actor, "تصحيح تكلفة استيراد"));
     const a = await costAudits();
     expect(a).toHaveLength(1);
     expect(a[0].entityType).toBe("productVariant");
     expect(a[0].entityId).toBe("1");
     expect(Number(a[0].userId)).toBe(1);
+    expect(Number(a[0].branchId)).toBe(1); // فرعُ الفاعل — يظهر تحت فلتر الفرع (Codex)
     expect((a[0].oldValue as { costPrice: string }).costPrice).toBe("100.00");
-    expect((a[0].newValue as { costPrice: string }).costPrice).toBe("150.00");
+    expect((a[0].newValue as { costPrice: string; reason: string | null }).costPrice).toBe("150.00");
+    expect((a[0].newValue as { reason: string | null }).reason).toBe("تصحيح تكلفة استيراد"); // السبب مُلتقَط
+  });
+
+  it("بلا سبب ⇒ reason = null في السجلّ", async () => {
+    await withTx((tx) => postCostRevaluation(tx, 1, "100.00", "150.00", actor));
+    const a = await costAudits();
+    expect((a[0].newValue as { reason: string | null }).reason).toBeNull();
   });
 
   it("لا فرق في التكلفة ⇒ لا سطر تدقيق (مطابقٌ لعدم إصدار قيد)", async () => {
