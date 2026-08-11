@@ -74,10 +74,25 @@ async function reset() {
 /** بذرة أساس خاصة بالاختبار: فرع + مستخدمان + ٣ متغيّرات (الأول بوحدتين وباركودين + بديل لوحدة القطعة). */
 async function seedBase() {
   const d = db();
-  await d.insert(s.branches).values([{ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" }]);
+  await d
+    .insert(s.branches)
+    .values([{ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
-    { id: 1, openId: "local_admin", name: "أحمد المدير", role: "admin", loginMethod: "local" },
-    { id: 2, openId: "local_user", name: "كريم المخزن", role: "warehouse", branchId: 1, loginMethod: "local" },
+    {
+      id: 1,
+      openId: "local_admin",
+      name: "أحمد المدير",
+      role: "admin",
+      loginMethod: "local",
+    },
+    {
+      id: 2,
+      openId: "local_user",
+      name: "كريم المخزن",
+      role: "warehouse",
+      branchId: 1,
+      loginMethod: "local",
+    },
   ]);
   await d.insert(s.products).values([
     { id: 1, name: "قلم جاف" },
@@ -90,13 +105,41 @@ async function seedBase() {
     { id: 3, productId: 3, sku: "INK-1", costPrice: "10000.00" },
   ]);
   await d.insert(s.productUnits).values([
-    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "BC-PEN-1" },
-    { id: 2, variantId: 1, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "BC-PEN-12" },
-    { id: 3, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
-    { id: 4, variantId: 3, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    {
+      id: 1,
+      variantId: 1,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+      barcode: "BC-PEN-1",
+    },
+    {
+      id: 2,
+      variantId: 1,
+      unitName: "درزن",
+      conversionFactor: "12",
+      isBaseUnit: false,
+      barcode: "BC-PEN-12",
+    },
+    {
+      id: 3,
+      variantId: 2,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
+    {
+      id: 4,
+      variantId: 3,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
   ]);
   // باركود بديل لوحدة القطعة — يجب أن يصل لبوابة العدّ ليتعرّف عليه مسح العدّاد (كما في الكاشير).
-  await d.insert(s.productUnitBarcodes).values([{ productUnitId: 1, barcode: "BC-PEN-ALT" }]);
+  await d
+    .insert(s.productUnitBarcodes)
+    .values([{ productUnitId: 1, barcode: "BC-PEN-ALT" }]);
   await d.insert(s.branchStock).values([
     { variantId: 1, branchId: 1, quantity: 100 },
     { variantId: 2, branchId: 1, quantity: 50 },
@@ -113,17 +156,25 @@ async function mkPortalSession(over: Partial<CreateStocktakeInput> = {}) {
       scopeType: "MANUAL",
       variantIds: [1, 2],
       assignments: [
-        { name: "عامل أ", method: "PIN", zone: "رف القرطاسية", variantIds: [1] },
+        {
+          name: "عامل أ",
+          method: "PIN",
+          zone: "رف القرطاسية",
+          variantIds: [1],
+        },
         { name: "عامل ب", method: "PIN", zone: "رف الدفاتر", variantIds: [2] },
       ],
       ...over,
     },
-    actor
+    actor,
   );
 }
 
 /** دخول البوابة بـPIN وبناء هوية العدّ كما يفعل الراوتر. */
-async function loginPin(sessionCode: string, pin: string): Promise<PortalIdentity> {
+async function loginPin(
+  sessionCode: string,
+  pin: string,
+): Promise<PortalIdentity> {
   const r = await authenticatePin(null, { sessionCode, pin });
   return {
     session: r.session,
@@ -134,7 +185,12 @@ async function loginPin(sessionCode: string, pin: string): Promise<PortalIdentit
   };
 }
 
-function submit(identity: PortalIdentity, variantId: number, qty: number, opts: { rid?: string; unitBreakdown?: string } = {}) {
+function submit(
+  identity: PortalIdentity,
+  variantId: number,
+  qty: number,
+  opts: { rid?: string; unitBreakdown?: string } = {},
+) {
   return submitCount(identity, {
     variantId,
     qty,
@@ -161,19 +217,35 @@ async function portalState(
     getPortalDynamic(identity),
     catalogFresh ? Promise.resolve(null) : getPortalCatalog(identity),
   ]);
-  return { v, cv, changed: true as const, catalog: catalog?.items ?? null, dynamic };
+  return {
+    v,
+    cv,
+    changed: true as const,
+    catalog: catalog?.items ?? null,
+    dynamic,
+  };
 }
 
 async function countRowsOf(sessionId: number, variantId: number) {
   const rows = await db()
     .select()
     .from(s.stocktakeCounts)
-    .where(and(eq(s.stocktakeCounts.sessionId, sessionId), eq(s.stocktakeCounts.variantId, variantId)));
+    .where(
+      and(
+        eq(s.stocktakeCounts.sessionId, sessionId),
+        eq(s.stocktakeCounts.variantId, variantId),
+      ),
+    );
   return rows.sort((a, b) => Number(a.id) - Number(b.id));
 }
 
 async function assignmentRow(assignmentId: number) {
-  return (await db().select().from(s.stocktakeAssignments).where(eq(s.stocktakeAssignments.id, assignmentId)))[0];
+  return (
+    await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, assignmentId))
+  )[0];
 }
 
 async function expectTrpc(p: Promise<unknown>, code: string, msg?: RegExp) {
@@ -201,21 +273,33 @@ describe("مصادقة البوابة", () => {
     const r = await mkPortalSession();
     const pinA = r.assignments[0].pin!;
 
-    const auth = await authenticatePin(null, { sessionCode: r.code, pin: pinA });
+    const auth = await authenticatePin(null, {
+      sessionCode: r.code,
+      pin: pinA,
+    });
     expect(auth.mode).toBe("PIN");
     expect(auth.assignment.name).toBe("عامل أ");
     expect(auth.token).toBeTruthy();
 
     // التوكن في الكوكي يحلّ الهوية للجلسة نفسها (كما يفعل state/submit في الراوتر).
-    const ctx = { req: { headers: { cookie: `${COUNT_COOKIE_NAME}=${auth.token}` } }, user: null } as any;
+    const ctx = {
+      req: { headers: { cookie: `${COUNT_COOKIE_NAME}=${auth.token}` } },
+      user: null,
+    } as any;
     const identity = await resolvePortalIdentity(ctx, r.code);
     expect(Number(identity.assignment.id)).toBe(r.assignments[0].assignmentId);
     expect(identity.mode).toBe("PIN");
 
-    await expectTrpc(authenticatePin(null, { sessionCode: "CNT-2099-9999", pin: pinA }), "NOT_FOUND");
     await expectTrpc(
-      resolvePortalIdentity({ req: { headers: {} }, user: null } as any, r.code),
-      "UNAUTHORIZED"
+      authenticatePin(null, { sessionCode: "CNT-2099-9999", pin: pinA }),
+      "NOT_FOUND",
+    );
+    await expectTrpc(
+      resolvePortalIdentity(
+        { req: { headers: {} }, user: null } as any,
+        r.code,
+      ),
+      "UNAUTHORIZED",
     );
   });
 
@@ -226,18 +310,29 @@ describe("مصادقة البوابة", () => {
         { name: "عامل ب", method: "PIN", variantIds: [2] },
       ],
     });
-    const user2 = (await db().select().from(s.users).where(eq(s.users.id, 2)))[0];
+    const user2 = (
+      await db().select().from(s.users).where(eq(s.users.id, 2))
+    )[0];
     const auth = await authenticatePin(user2 as any, { sessionCode: r.code });
     expect(auth.mode).toBe("USER");
     expect(auth.token).toBeNull();
     expect(Number(auth.assignment.id)).toBe(r.assignments[0].assignmentId);
 
-    const identity = await resolvePortalIdentity({ req: { headers: {} }, user: user2 } as any, r.code);
+    const identity = await resolvePortalIdentity(
+      { req: { headers: {} }, user: user2 } as any,
+      r.code,
+    );
     expect(identity.mode).toBe("USER");
     expect(identity.countedByUserId).toBe(2);
 
-    const user1 = (await db().select().from(s.users).where(eq(s.users.id, 1)))[0];
-    await expectTrpc(authenticatePin(user1 as any, { sessionCode: r.code }), "FORBIDDEN", /تكليف/);
+    const user1 = (
+      await db().select().from(s.users).where(eq(s.users.id, 1))
+    )[0];
+    await expectTrpc(
+      authenticatePin(user1 as any, { sessionCode: r.code }),
+      "FORBIDDEN",
+      /تكليف/,
+    );
   });
 
   it("إزالة العامل تُبطل PIN والكوكي القديم فوراً دون حذف التكليف", async () => {
@@ -248,7 +343,9 @@ describe("مصادقة البوابة", () => {
       req: { headers: { cookie: `${COUNT_COOKIE_NAME}=${auth.token}` } },
       user: null,
     } as any;
-    expect((await resolvePortalIdentity(cookieCtx, r.code)).assignment.name).toBe("عامل أ");
+    expect(
+      (await resolvePortalIdentity(cookieCtx, r.code)).assignment.name,
+    ).toBe("عامل أ");
 
     await removeStocktakeWorker(
       {
@@ -258,15 +355,21 @@ describe("مصادقة البوابة", () => {
       },
       actor,
     );
-    await expectTrpc(authenticatePin(null, { sessionCode: r.code, pin }), "UNAUTHORIZED");
+    await expectTrpc(
+      authenticatePin(null, { sessionCode: r.code, pin }),
+      "UNAUTHORIZED",
+    );
     await expectTrpc(resolvePortalIdentity(cookieCtx, r.code), "UNAUTHORIZED");
-    await expectTrpc(finishAssignment({
-      session: auth.session,
-      assignment: auth.assignment,
-      countedByName: auth.assignment.name,
-      countedByUserId: null,
-      mode: "PIN",
-    }), "UNAUTHORIZED");
+    await expectTrpc(
+      finishAssignment({
+        session: auth.session,
+        assignment: auth.assignment,
+        countedByName: auth.assignment.name,
+        countedByUserId: null,
+        mode: "PIN",
+      }),
+      "UNAUTHORIZED",
+    );
     const row = await assignmentRow(r.assignments[0].assignmentId);
     expect(row.status).toBe("REMOVED");
   });
@@ -284,7 +387,10 @@ describe("مصادقة البوابة", () => {
 
     // ١٠ فشلات متتالية لا تقفل التكليف ولا تزيد العدّاد على الصفّ (الحماية بحدّ IP).
     for (let i = 0; i < 10; i++) {
-      await expectTrpc(authenticatePin(null, { sessionCode: r.code, pin: wrong }), "UNAUTHORIZED");
+      await expectTrpc(
+        authenticatePin(null, { sessionCode: r.code, pin: wrong }),
+        "UNAUTHORIZED",
+      );
     }
     const a = await assignmentRow(aid);
     expect(a.failedPinAttempts).toBe(0);
@@ -310,7 +416,11 @@ describe("مصادقة البوابة", () => {
       .where(eq(s.stocktakeAssignments.id, aid));
 
     // كل تكليفات PIN مقفلة ⇒ رسالة قفل صريحة حتى مع الرمز الصحيح.
-    await expectTrpc(authenticatePin(null, { sessionCode: r.code, pin }), "TOO_MANY_REQUESTS", /15 دقيقة/);
+    await expectTrpc(
+      authenticatePin(null, { sessionCode: r.code, pin }),
+      "TOO_MANY_REQUESTS",
+      /15 دقيقة/,
+    );
 
     // انقضاء القفل ⇒ الرمز الصحيح يدخل.
     await db()
@@ -360,15 +470,26 @@ describe("الجرد الأعمى (state)", () => {
     // ومع البدائل (productUnitBarcodes) كي يتعرّف مسح البوابة على أيّ باركود ملصوق.
     expect(item1.units).toEqual([
       { unitName: "درزن", factor: 12, barcode: "BC-PEN-12", aliases: [] },
-      { unitName: "قطعة", factor: 1, barcode: "BC-PEN-1", aliases: ["BC-PEN-ALT"] },
+      {
+        unitName: "قطعة",
+        factor: 1,
+        barcode: "BC-PEN-1",
+        aliases: ["BC-PEN-ALT"],
+      },
     ]);
 
     // منظور أ: يرى كميته هو فقط (myCount) مع تفصيل الوحدات.
     const stateA = await getPortalState(idA);
     const mine = stateA.items.find((i) => i.variantId === 1)!;
     expect(mine.isMine).toBe(true);
-    expect(mine.myCount).toMatchObject({ qty: 10, unitBreakdown: '{"قطعة":10}' });
-    expect(stateA.progress).toEqual({ mine: { counted: 1, total: 2 }, session: { counted: 1, total: 2 } });
+    expect(mine.myCount).toMatchObject({
+      qty: 10,
+      unitBreakdown: '{"قطعة":10}',
+    });
+    expect(stateA.progress).toEqual({
+      mine: { counted: 1, total: 2 },
+      session: { counted: 1, total: 2 },
+    });
     expect(stateA.session.code).toBe(r.code);
     expect(stateA.assignment.name).toBe("عامل أ");
   });
@@ -378,10 +499,18 @@ describe("الجرد الأعمى (state)", () => {
     const idA = await loginPin(r.code, r.assignments[0].pin!);
     await submit(idA, 1, 10);
 
-    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 1, reason: "فرق كبير عن المتوقع" }, actor);
+    await requestStocktakeRecount(
+      { sessionId: r.sessionId, variantId: 1, reason: "فرق كبير عن المتوقع" },
+      actor,
+    );
     const stateA = await getPortalState(idA);
     expect(stateA.recountTasks).toEqual([
-      { variantId: 1, productName: "قلم جاف", variantName: null, reason: "فرق كبير عن المتوقع" },
+      {
+        variantId: 1,
+        productName: "قلم جاف",
+        variantName: null,
+        reason: "فرق كبير عن المتوقع",
+      },
     ]);
 
     const res = await submit(idA, 1, 12);
@@ -390,7 +519,12 @@ describe("الجرد الأعمى (state)", () => {
       await db()
         .select()
         .from(s.stocktakeItems)
-        .where(and(eq(s.stocktakeItems.sessionId, r.sessionId), eq(s.stocktakeItems.variantId, 1)))
+        .where(
+          and(
+            eq(s.stocktakeItems.sessionId, r.sessionId),
+            eq(s.stocktakeItems.variantId, 1),
+          ),
+        )
     )[0];
     expect(item.recountStatus).toBe("DONE");
 
@@ -433,12 +567,68 @@ describe("الجرد الأعمى (state)", () => {
 });
 
 describe("تسجيل العدّات (submit)", () => {
+  it("يرفض بصمة قارئ الباركود في خانة الكمية قبل أي كتابة، مع الوحدة والباركود البديل", async () => {
+    await db()
+      .update(s.productUnits)
+      .set({ barcode: "6218934005884" })
+      .where(eq(s.productUnits.id, 1));
+    await db()
+      .update(s.productUnits)
+      .set({ barcode: "1304702807" })
+      .where(eq(s.productUnits.id, 2));
+    await db()
+      .update(s.productUnitBarcodes)
+      .set({ barcode: "6266680123456" })
+      .where(eq(s.productUnitBarcodes.productUnitId, 1));
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+
+    await expectTrpc(
+      submit(idA, 1, 6_218_934),
+      "PRECONDITION_FAILED",
+      /الماسح كتب داخل حقل العدد/,
+    );
+    await expectTrpc(
+      submit(idA, 1, 1_304_702 * 12, {
+        unitBreakdown: JSON.stringify({ درزن: 1_304_702 }),
+      }),
+      "PRECONDITION_FAILED",
+      /الماسح كتب داخل حقل العدد/,
+    );
+    await expectTrpc(
+      submit(idA, 1, 6_266_680),
+      "PRECONDITION_FAILED",
+      /الماسح كتب داخل حقل العدد/,
+    );
+    expect(await countRowsOf(r.sessionId, 1)).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.stocktakeCountOperations)
+        .where(eq(s.stocktakeCountOperations.sessionId, r.sessionId)),
+    ).toHaveLength(0);
+
+    // العدّ البشري الصحيح لا يطابق البصمة ويُقبل طبيعياً.
+    const accepted = await submit(idA, 1, 77);
+    expect(accepted).toMatchObject({
+      ok: true,
+      kind: "FIRST",
+      idempotent: false,
+    });
+    expect((await countRowsOf(r.sessionId, 1))[0].qty).toBe(77);
+  });
+
   it("النطاق: صنف خارج أصناف الجلسة يُرفض ولا يُكتب شيء", async () => {
     const r = await mkPortalSession(); // النطاق {1,2} — الصنف 3 موجود في النظام لكنه خارج الجلسة
     const idA = await loginPin(r.code, r.assignments[0].pin!);
     await expectTrpc(submit(idA, 3, 7), "NOT_FOUND", /خارج نطاق/);
     await expectTrpc(submit(idA, 9999, 7), "NOT_FOUND");
-    expect(await db().select().from(s.stocktakeCounts).where(eq(s.stocktakeCounts.sessionId, r.sessionId))).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.stocktakeCounts)
+        .where(eq(s.stocktakeCounts.sessionId, r.sessionId)),
+    ).toHaveLength(0);
   });
 
   it("تحديث FIRST الذاتي: لا يكرّر صفاً — نفس الصف تتحدّث كميته", async () => {
@@ -460,21 +650,38 @@ describe("تسجيل العدّات (submit)", () => {
     const r = await mkPortalSession();
     const idA = await loginPin(r.code, r.assignments[0].pin!);
     await submit(idA, 1, 100);
-    await approveStocktakeItems({ sessionId: r.sessionId, variantIds: [1] }, actor);
+    await approveStocktakeItems(
+      { sessionId: r.sessionId, variantIds: [1] },
+      actor,
+    );
 
     const [approvedItem] = await db()
       .select()
       .from(s.stocktakeItems)
-      .where(and(eq(s.stocktakeItems.sessionId, r.sessionId), eq(s.stocktakeItems.variantId, 1)));
+      .where(
+        and(
+          eq(s.stocktakeItems.sessionId, r.sessionId),
+          eq(s.stocktakeItems.variantId, 1),
+        ),
+      );
     expect(Number(approvedItem.reviewApprovedOperationId)).toBeGreaterThan(0);
     expect(approvedItem.reviewApprovedQty).toBe(100);
     expect(approvedItem.reviewApprovedSnapshotHash).toMatch(/^[a-f0-9]{64}$/);
 
-    await expectTrpc(submit(idA, 1, 101), "PRECONDITION_FAILED", /اعتمدت الإدارة/);
+    await expectTrpc(
+      submit(idA, 1, 101),
+      "PRECONDITION_FAILED",
+      /اعتمدت الإدارة/,
+    );
     const state = await getPortalState(idA);
-    expect(state.items.find((i) => i.variantId === 1)?.reviewApproved).toBe(true);
+    expect(state.items.find((i) => i.variantId === 1)?.reviewApproved).toBe(
+      true,
+    );
 
-    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 1, reason: "إعادة تحقق ميداني" }, actor);
+    await requestStocktakeRecount(
+      { sessionId: r.sessionId, variantId: 1, reason: "إعادة تحقق ميداني" },
+      actor,
+    );
     const recount = await submit(idA, 1, 101);
     expect(recount.kind).toBe("RECOUNT");
   });
@@ -518,12 +725,15 @@ describe("تسجيل العدّات (submit)", () => {
       .select()
       .from(s.stocktakeCountOperations)
       .where(eq(s.stocktakeCountOperations.sessionId, r.sessionId));
-    const orderedOperations = operations.sort((a, b) => Number(a.id) - Number(b.id));
-    expect(orderedOperations.map((operation) => operation.clientRequestId)).toEqual([
-      olderRequestId,
-      newerRequestId,
+    const orderedOperations = operations.sort(
+      (a, b) => Number(a.id) - Number(b.id),
+    );
+    expect(
+      orderedOperations.map((operation) => operation.clientRequestId),
+    ).toEqual([olderRequestId, newerRequestId]);
+    expect(orderedOperations.map((operation) => operation.requestQty)).toEqual([
+      5, 8,
     ]);
-    expect(orderedOperations.map((operation) => operation.requestQty)).toEqual([5, 8]);
   });
 
   it("dupPolicy=BLOCK: عدّ صنف زميل مرفوض برسالة واضحة ولا صفّ يُكتب", async () => {
@@ -553,7 +763,10 @@ describe("تسجيل العدّات (submit)", () => {
     expect(rows).toHaveLength(2);
     expect(rows[1].isConflict).toBe(false);
     let rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
-    expect(rv.rows.find((x) => x.variantId === 1)!.verify).toMatchObject({ qty: 10, match: true });
+    expect(rv.rows.find((x) => x.variantId === 1)!.verify).toMatchObject({
+      qty: 10,
+      match: true,
+    });
 
     // تعديل العدّ التحقّقي لقيمة مخالفة ⇒ نفس الصف، isConflict=true، يحجب الاعتماد.
     // verifyMatch=null على التعديل (سدّ أوراكل استنتاج كمية الزميل بالتقريب) — التطابق يُكشف
@@ -563,7 +776,9 @@ describe("تسجيل العدّات (submit)", () => {
     rows = await countRowsOf(r.sessionId, 1);
     expect(rows).toHaveLength(2); // لا صفّ ثالثاً — تحديث للتحقّقي نفسه
     expect(rows[1].isConflict).toBe(true);
-    expect((await monitorStocktakeSession(r.sessionId)).conflicts).toHaveLength(1);
+    expect((await monitorStocktakeSession(r.sessionId)).conflicts).toHaveLength(
+      1,
+    );
     rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
     expect(rv.barriers.openConflicts).toBe(1);
     expect(rv.rows.find((x) => x.variantId === 1)!.conflict).toMatchObject({
@@ -575,13 +790,20 @@ describe("تسجيل العدّات (submit)", () => {
     });
 
     // طلب إعادة عدّ ⇒ العدّ الثالث (RECOUNT) يحسم: يمسح التعارض ويصبح هو rawCount.
-    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 1, reason: "تعارض عدَّين" }, actor);
+    await requestStocktakeRecount(
+      { sessionId: r.sessionId, variantId: 1, reason: "تعارض عدَّين" },
+      actor,
+    );
     const third = await submit(idA, 1, 11);
     expect(third.kind).toBe("RECOUNT");
 
     rows = await countRowsOf(r.sessionId, 1);
     expect(rows).toHaveLength(3); // FIRST + VERIFY + RECOUNT — العدّات تبقى موثَّقة دائماً
-    expect(rows.map((x) => x.kind).sort()).toEqual(["FIRST", "RECOUNT", "VERIFY"]);
+    expect(rows.map((x) => x.kind).sort()).toEqual([
+      "FIRST",
+      "RECOUNT",
+      "VERIFY",
+    ]);
     expect(rows.every((x) => !x.isConflict)).toBe(true);
 
     rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
@@ -590,7 +812,9 @@ describe("تسجيل العدّات (submit)", () => {
     expect(row.kindUsed).toBe("RECOUNT");
     expect(row.conflict).toBeNull();
     expect(rv.barriers.openConflicts).toBe(0);
-    expect((await monitorStocktakeSession(r.sessionId)).conflicts).toHaveLength(0);
+    expect((await monitorStocktakeSession(r.sessionId)).conflicts).toHaveLength(
+      0,
+    );
   });
 
   it("VERIFY على صنف زميل لم يُعدّ بعد ⇒ يُسجَّل FIRST باسمي (لا تحقّقي بلا أصل)", async () => {
@@ -609,7 +833,10 @@ describe("التسليم (finish)", () => {
     const r = await mkPortalSession();
     const idA = await loginPin(r.code, r.assignments[0].pin!);
     // ب يحتفظ بتوكنه لإعادة حلّ هويته بعد REVIEW (كما يفعل الراوتر في كل طلب).
-    const authB = await authenticatePin(null, { sessionCode: r.code, pin: r.assignments[1].pin! });
+    const authB = await authenticatePin(null, {
+      sessionCode: r.code,
+      pin: r.assignments[1].pin!,
+    });
     const idB: PortalIdentity = {
       session: authB.session,
       assignment: authB.assignment,
@@ -622,8 +849,17 @@ describe("التسليم (finish)", () => {
 
     // تسليم أ: الجلسة ما زالت قيد العدّ.
     const f1 = await finishAssignment(idA);
-    expect(f1).toMatchObject({ ok: true, sessionMovedToReview: true, alreadySubmitted: false });
-    let sess = (await db().select().from(s.stocktakeSessions).where(eq(s.stocktakeSessions.id, r.sessionId)))[0];
+    expect(f1).toMatchObject({
+      ok: true,
+      sessionMovedToReview: true,
+      alreadySubmitted: false,
+    });
+    let sess = (
+      await db()
+        .select()
+        .from(s.stocktakeSessions)
+        .where(eq(s.stocktakeSessions.id, r.sessionId))
+    )[0];
     expect(sess.status).toBe("REVIEW");
 
     // أ سلّم ⇒ لا يعدّل عدّاته بعد التسليم.
@@ -631,24 +867,49 @@ describe("التسليم (finish)", () => {
 
     // تسليم ب (الأخير) ⇒ الجلسة REVIEW آلياً مع submittedAt.
     const f2 = await finishAssignment(idB);
-    expect(f2).toMatchObject({ ok: true, sessionMovedToReview: false, alreadySubmitted: true });
-    sess = (await db().select().from(s.stocktakeSessions).where(eq(s.stocktakeSessions.id, r.sessionId)))[0];
+    expect(f2).toMatchObject({
+      ok: true,
+      sessionMovedToReview: false,
+      alreadySubmitted: true,
+    });
+    sess = (
+      await db()
+        .select()
+        .from(s.stocktakeSessions)
+        .where(eq(s.stocktakeSessions.id, r.sessionId))
+    )[0];
     expect(sess.status).toBe("REVIEW");
     expect(sess.submittedAt).not.toBeNull();
-    const asgs = await db().select().from(s.stocktakeAssignments).where(eq(s.stocktakeAssignments.sessionId, r.sessionId));
+    const asgs = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.sessionId, r.sessionId));
     expect(asgs.every((a) => a.status === "SUBMITTED")).toBe(true);
 
     // إعادة التسليم idempotent، والعدّ بعد انتهاء مرحلة العدّ مرفوض، والدخول الجديد مرفوض.
     const f3 = await finishAssignment(idB);
-    expect(f3).toMatchObject({ ok: true, sessionMovedToReview: false, alreadySubmitted: true });
+    expect(f3).toMatchObject({
+      ok: true,
+      sessionMovedToReview: false,
+      alreadySubmitted: true,
+    });
     await expectTrpc(submit(idB, 2, 51), "BAD_REQUEST");
-    await expectTrpc(authenticatePin(null, { sessionCode: r.code, pin: r.assignments[0].pin! }), "NOT_FOUND");
+    await expectTrpc(
+      authenticatePin(null, {
+        sessionCode: r.code,
+        pin: r.assignments[0].pin!,
+      }),
+      "NOT_FOUND",
+    );
 
     // state يبقى متاحاً بعد REVIEW (يعرض «سلّمت العدّ»): الهوية تُحلّ من الكوكي في كل طلب
     // (نفس مسار الراوتر) فتأتي حالة الجلسة/التكليف طازجة من القاعدة.
     const freshB = await resolvePortalIdentity(
-      { req: { headers: { cookie: `${COUNT_COOKIE_NAME}=${authB.token}` } }, user: null } as any,
-      r.code
+      {
+        req: { headers: { cookie: `${COUNT_COOKIE_NAME}=${authB.token}` } },
+        user: null,
+      } as any,
+      r.code,
     );
     const stateB = await getPortalState(freshB);
     expect(stateB.session.status).toBe("REVIEW");
@@ -689,14 +950,20 @@ describe("نبضة النسخة (pulse)", () => {
 
     // (٥) طلب إعادة عدّ إداريّ: لا صفّ عدّاتٍ جديد ولا صفّ أصنافٍ جديد — تحديث حالة فقط.
     //     يظهر في state.recountTasks ⇒ يجب أن يتبدّل الوسم.
-    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 1, reason: "فرق كبير" }, actor);
+    await requestStocktakeRecount(
+      { sessionId: r.sessionId, variantId: 1, reason: "فرق كبير" },
+      actor,
+    );
     const v4 = (await getPortalPulse(idA)).v;
     expect(v4).not.toBe(v3);
 
     // (٦) تسليم التكليف ⇒ assignment.status يتبدّل في state ⇒ الوسم يتبدّل.
     await finishAssignment(idA);
     const freshA = await resolvePortalIdentity(
-      { req: { headers: { cookie: `${COUNT_COOKIE_NAME}=${idA.token ?? ""}` } }, user: null } as any,
+      {
+        req: { headers: { cookie: `${COUNT_COOKIE_NAME}=${idA.token ?? ""}` } },
+        user: null,
+      } as any,
       r.code,
     ).catch(() => null);
     if (freshA) expect((await getPortalPulse(freshA)).v).not.toBe(v4);
@@ -753,7 +1020,12 @@ describe("نبضة النسخة (pulse)", () => {
 
     // بالوسم نفسه ⇒ «بلا تغيير» وبلا أي حمولة (مصدر التوفير الأول).
     const same = await portalState(idA, full.v, full.cv);
-    expect(same).toMatchObject({ changed: false, catalog: null, dynamic: null, v: full.v });
+    expect(same).toMatchObject({
+      changed: false,
+      catalog: null,
+      dynamic: null,
+      v: full.v,
+    });
 
     // بعد عدّةٍ جديدة ⇒ وسمٌ جديد وحمولة.
     await submit(idA, 2, 3);
@@ -811,10 +1083,16 @@ describe("نبضة النسخة (pulse)", () => {
     const idB = await loginPin(r.code, r.assignments[1].pin!);
     await submit(idA, 1, 9, { unitBreakdown: '{"قطعة":9}' });
     await submit(idB, 2, 4);
-    await requestStocktakeRecount({ sessionId: r.sessionId, variantId: 2, reason: "تدقيق" }, actor);
+    await requestStocktakeRecount(
+      { sessionId: r.sessionId, variantId: 2, reason: "تدقيق" },
+      actor,
+    );
 
     // نفس الدالّة النقيّة التي يستعملها العميل لإعادة التركيب.
-    const [cat, dyn] = await Promise.all([getPortalCatalog(idA), getPortalDynamic(idA)]);
+    const [cat, dyn] = await Promise.all([
+      getPortalCatalog(idA),
+      getPortalDynamic(idA),
+    ]);
     const rebuilt = mergePortalState(cat.items, dyn);
     const direct = await getPortalState(idA);
     expect(rebuilt).toEqual(direct);

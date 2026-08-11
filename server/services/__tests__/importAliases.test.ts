@@ -75,7 +75,7 @@ describe("importProducts — بدائل الباركود (ذهاب-إياب)", (
     const r = await importProducts(
       [
         row({ rowNumber: 1, barcode: "1000000000001", barcodeAliases: "2000000000001، 2000000000002" }),
-        row({ rowNumber: 2, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "1000000000002", barcodeAliases: "2000000000003,2000000000004" }),
+        row({ rowNumber: 2, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "1000000000002", barcodeAliases: "2000000000003,2000000000004", retailPrice: "24.00" }),
       ],
       {},
       actor,
@@ -177,13 +177,13 @@ describe("importProducts — بدائل الباركود (ذهاب-إياب)", (
   it("R5ب: منتج موجود بوحدتين — بدائل على وحدة غير الأساس تُدمَج على الوحدة الصحيحة", async () => {
     const twoUnits = [
       row({ rowNumber: 1, barcode: "9000000000001" }),
-      row({ rowNumber: 2, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "9000000000002" }),
+      row({ rowNumber: 2, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "9000000000002", retailPrice: "24.00" }),
     ];
     await importProducts(twoUnits, {}, actor);
     const r = await importProducts(
       [
         twoUnits[0],
-        row({ rowNumber: 2, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "9000000000002", barcodeAliases: "9100000000001" }),
+        row({ rowNumber: 2, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "9000000000002", barcodeAliases: "9100000000001", retailPrice: "24.00" }),
       ],
       {},
       actor,

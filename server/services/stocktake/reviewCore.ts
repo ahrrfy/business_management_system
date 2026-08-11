@@ -21,7 +21,18 @@ import { signedMoveQty } from "../inventoryService";
 import { money, toDbMoney } from "../money";
 import { requireDb } from "../tx";
 import { chunk, loadSessionHeader, type DbLike } from "./internal";
-import { stocktakeReviewSnapshotHash } from "./reviewSnapshot";
+import {
+  findCountInputAnomalies,
+  type CountInputAnomaly,
+} from "./countIntegrity";
+import {
+  stocktakeReviewSnapshotHash,
+  stocktakeReviewSnapshotLegacyHash,
+} from "./reviewSnapshot";
+import {
+  buildOpeningValuationIntegrity,
+  type OpeningValuationIntegrity,
+} from "./valuationIntegrity";
 
 /** تسمية عربية لنوع حركة المخزون (لعرض «حركة بعد العدّ»). */
 const MOVE_LABEL: Record<string, string> = {
@@ -38,6 +49,7 @@ interface CountRow {
   variantId: number;
   kind: "FIRST" | "RECOUNT" | "VERIFY";
   qty: number;
+  unitBreakdown: string | null;
   countedByName: string;
   countedAt: Date;
   isConflict: boolean;
@@ -54,12 +66,27 @@ export interface ReviewRow {
   assignmentName: string;
   expectedQty: number;
   rawCount: number | null;
+  /** Internal detector input; stripped from the public review response. */
+  countUnitBreakdown: string | null;
+  /** True only when the breakdown came from an append-only count operation. */
+  countGuardAttested: boolean;
   kindUsed: "FIRST" | "RECOUNT" | null;
   countedByName: string | null;
   countedAt: Date | null;
-  recount: { status: "PENDING" | "DONE"; reason: string | null; requestedByName: string | null; qty2: number | null } | null;
+  recount: {
+    status: "PENDING" | "DONE";
+    reason: string | null;
+    requestedByName: string | null;
+    qty2: number | null;
+  } | null;
   verify: { qty: number; byName: string; at: Date; match: boolean } | null;
-  conflict: { qty1: number | null; by1: string | null; qty2: number; by2: string; resolvedPick: "FIRST" | "VERIFY" | null } | null;
+  conflict: {
+    qty1: number | null;
+    by1: string | null;
+    qty2: number;
+    by2: string;
+    resolvedPick: "FIRST" | "VERIFY" | null;
+  } | null;
   movesAfter: { type: string; qty: number; ref: string; at: Date }[];
   netAfter: number;
   adjustedCount: number | null;
@@ -103,7 +130,11 @@ export interface ReviewRow {
  *   adjustedCount = rawCount + netAfter (عند autoAdjust)
  *   diff = adjustedCount − bookNow ، value = diff × unitCost(لقطة) ، pct = |diff|/expectedQty×100
  */
-async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean) {
+async function loadReviewCore(
+  db: DbLike,
+  sessionId: number,
+  autoAdjust: boolean,
+) {
   // (١) الجلسة.
   const s = await loadSessionHeader(db, sessionId);
   const branchId = Number(s.branchId);
@@ -133,13 +164,33 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
       baseUnit: productUnits.unitName,
     })
     .from(stocktakeItems)
-    .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+    .innerJoin(
+      productVariants,
+      eq(stocktakeItems.variantId, productVariants.id),
+    )
     .innerJoin(products, eq(productVariants.productId, products.id))
-    .leftJoin(productUnits, and(eq(productUnits.variantId, stocktakeItems.variantId), eq(productUnits.isBaseUnit, true)))
-    .innerJoin(stocktakeAssignments, eq(stocktakeItems.assignmentId, stocktakeAssignments.id))
+    .leftJoin(
+      productUnits,
+      and(
+        eq(productUnits.variantId, stocktakeItems.variantId),
+        eq(productUnits.isBaseUnit, true),
+      ),
+    )
+    .innerJoin(
+      stocktakeAssignments,
+      eq(stocktakeItems.assignmentId, stocktakeAssignments.id),
+    )
     .leftJoin(requester, eq(stocktakeItems.recountRequestedBy, requester.id))
-    .leftJoin(reviewApprover, eq(stocktakeItems.reviewApprovedBy, reviewApprover.id))
-    .where(and(eq(stocktakeItems.sessionId, sessionId), eq(products.isService, false)))
+    .leftJoin(
+      reviewApprover,
+      eq(stocktakeItems.reviewApprovedBy, reviewApprover.id),
+    )
+    .where(
+      and(
+        eq(stocktakeItems.sessionId, sessionId),
+        eq(products.isService, false),
+      ),
+    )
     .orderBy(asc(stocktakeItems.id));
   // عدّة وحدات أساس لمتغيّر = صفوف مكرّرة من الـjoin ⇒ أول صف يفوز.
   const items: typeof itemRows = [];
@@ -158,6 +209,7 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
       variantId: stocktakeCounts.variantId,
       kind: stocktakeCounts.kind,
       qty: stocktakeCounts.qty,
+      unitBreakdown: stocktakeCounts.unitBreakdown,
       countedByName: stocktakeCounts.countedByName,
       countedAt: stocktakeCounts.countedAt,
       isConflict: stocktakeCounts.isConflict,
@@ -175,6 +227,7 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
       variantId: v,
       kind: c.kind,
       qty: c.qty,
+      unitBreakdown: c.unitBreakdown ?? null,
       countedByName: c.countedByName,
       countedAt: c.countedAt,
       isConflict: !!c.isConflict,
@@ -186,16 +239,25 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
   // رقم آخر طلب عدّ مقبول لكل منتج هو «إصدار» العدّ عند اعتماد المراجع.
   // تبقى null للبيانات التاريخية/اختبارات الخدمة التي أُنشئت قبل سجل العمليات.
   const latestOperationByVariant = new Map<number, number>();
+  const guardedBreakdownByCount = new Map<string, string | null>();
   const operationRows = await db
     .select({
+      id: stocktakeCountOperations.id,
       variantId: stocktakeCountOperations.variantId,
-      operationId: sql<number>`MAX(${stocktakeCountOperations.id})`,
+      requestQty: stocktakeCountOperations.requestQty,
+      requestUnitBreakdown: stocktakeCountOperations.requestUnitBreakdown,
+      resultKind: stocktakeCountOperations.resultKind,
     })
     .from(stocktakeCountOperations)
     .where(eq(stocktakeCountOperations.sessionId, sessionId))
-    .groupBy(stocktakeCountOperations.variantId);
+    .orderBy(asc(stocktakeCountOperations.id));
   for (const op of operationRows) {
-    latestOperationByVariant.set(Number(op.variantId), Number(op.operationId));
+    const variantId = Number(op.variantId);
+    latestOperationByVariant.set(variantId, Number(op.id));
+    guardedBreakdownByCount.set(
+      `${variantId}:${op.resultKind}:${op.requestQty}`,
+      op.requestUnitBreakdown ?? null,
+    );
   }
 
   // (٤) أرصدة الآن (bookNow) لكل أصناف الجلسة.
@@ -203,9 +265,17 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
   const stockNow = new Map<number, number>();
   for (const part of chunk(variantIds)) {
     const rows = await db
-      .select({ variantId: branchStock.variantId, quantity: branchStock.quantity })
+      .select({
+        variantId: branchStock.variantId,
+        quantity: branchStock.quantity,
+      })
       .from(branchStock)
-      .where(and(eq(branchStock.branchId, branchId), inArray(branchStock.variantId, part)));
+      .where(
+        and(
+          eq(branchStock.branchId, branchId),
+          inArray(branchStock.variantId, part),
+        ),
+      );
     for (const r of rows) stockNow.set(Number(r.variantId), r.quantity);
   }
 
@@ -216,7 +286,8 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
   let minCountedAt: Date | null = null;
   for (const list of Array.from(countsByVariant.values())) {
     for (const c of list) {
-      if (!minCountedAt || c.countedAt < minCountedAt) minCountedAt = c.countedAt;
+      if (!minCountedAt || c.countedAt < minCountedAt)
+        minCountedAt = c.countedAt;
     }
   }
   type MoveRow = {
@@ -246,18 +317,26 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
           and(
             eq(inventoryMovements.branchId, branchId),
             inArray(inventoryMovements.variantId, part),
-            gt(inventoryMovements.createdAt, minCountedAt)
-          )
+            gt(inventoryMovements.createdAt, minCountedAt),
+          ),
         )
         .orderBy(asc(inventoryMovements.createdAt), asc(inventoryMovements.id));
       for (const m of rows) {
         // تسوية الجلسة نفسها — بمرجعها الدوري (STOCKTAKE) أو الافتتاحي (OPENING بreferenceId=الجلسة):
         // بعد الاعتماد تُستبعد من netAfter كي لا يلوّث الاعتمادُ السابق إعادةَ الحساب/التقرير.
         // (حركات OPENING بلا referenceId — إنشاء منتج/استيراد — تدخل الحساب: تدفّق حقيقي.)
-        if ((m.referenceType === "STOCKTAKE" || m.referenceType === "OPENING") && Number(m.referenceId) === sessionId) continue;
+        if (
+          (m.referenceType === "STOCKTAKE" || m.referenceType === "OPENING") &&
+          Number(m.referenceId) === sessionId
+        )
+          continue;
         const v = Number(m.variantId);
         const list = movesByVariant.get(v) ?? [];
-        list.push({ ...m, variantId: v, referenceId: m.referenceId == null ? null : Number(m.referenceId) });
+        list.push({
+          ...m,
+          variantId: v,
+          referenceId: m.referenceId == null ? null : Number(m.referenceId),
+        });
         movesByVariant.set(v, list);
       }
     }
@@ -280,7 +359,9 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
     .from(stocktakeDecisions)
     .leftJoin(users, eq(stocktakeDecisions.decidedBy, users.id))
     .where(eq(stocktakeDecisions.sessionId, sessionId));
-  const decisionMap = new Map(decisionRows.map((d) => [Number(d.variantId), d]));
+  const decisionMap = new Map(
+    decisionRows.map((d) => [Number(d.variantId), d]),
+  );
 
   // ── الحساب لكل صنف ──
   const thresholdPct = money(String(s.thresholdPct));
@@ -310,25 +391,37 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
       used = recount;
       kindUsed = "RECOUNT";
     } else if (first) {
-      if (verify && verify.isConflict && verify.resolvedPick === "VERIFY") used = verify;
+      if (verify && verify.isConflict && verify.resolvedPick === "VERIFY")
+        used = verify;
       else used = first;
       kindUsed = "FIRST";
     }
     const rawCount = used ? used.qty : null;
 
     // تعارض مفتوح = VERIFY مخالف بلا فصل وبلا RECOUNT لاحق (العدّ الثالث يمسح التعارض).
-    const openConflict = !!(verify && verify.isConflict && !verify.resolvedPick && !recount);
-    const conflict = verify && verify.isConflict
-      ? {
-          qty1: first ? first.qty : null,
-          by1: first ? first.countedByName : null,
-          qty2: verify.qty,
-          by2: verify.countedByName,
-          resolvedPick: verify.resolvedPick,
-        }
-      : null;
+    const openConflict = !!(
+      verify &&
+      verify.isConflict &&
+      !verify.resolvedPick &&
+      !recount
+    );
+    const conflict =
+      verify && verify.isConflict
+        ? {
+            qty1: first ? first.qty : null,
+            by1: first ? first.countedByName : null,
+            qty2: verify.qty,
+            by2: verify.countedByName,
+            resolvedPick: verify.resolvedPick,
+          }
+        : null;
     const verifyObj = verify
-      ? { qty: verify.qty, byName: verify.countedByName, at: verify.countedAt, match: first ? verify.qty === first.qty : false }
+      ? {
+          qty: verify.qty,
+          byName: verify.countedByName,
+          at: verify.countedAt,
+          match: first ? verify.qty === first.qty : false,
+        }
       : null;
     const recountObj = it.recountStatus
       ? {
@@ -340,31 +433,45 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
       : null;
 
     // الحركات بعد لحظة العدّ الفعّال (الإشارة حسب نوع الحركة — تطابق inventoryService).
-    const allMoves = used ? (movesByVariant.get(v) ?? []).filter((m) => m.createdAt > used!.countedAt) : [];
+    const allMoves = used
+      ? (movesByVariant.get(v) ?? []).filter(
+          (m) => m.createdAt > used!.countedAt,
+        )
+      : [];
     const movesAfter = allMoves.map((m) => ({
       type: MOVE_LABEL[m.movementType] ?? m.movementType,
       qty: signedMoveQty(m.movementType, m.quantity, m.notes),
-      ref: m.referenceType ? `${m.referenceType}${m.referenceId != null ? `#${m.referenceId}` : ""}` : "—",
+      ref: m.referenceType
+        ? `${m.referenceType}${m.referenceId != null ? `#${m.referenceId}` : ""}`
+        : "—",
       at: m.createdAt,
     }));
     const netAfter = movesAfter.reduce((acc, m) => acc + m.qty, 0);
 
-    const adjustedCount = rawCount == null ? null : rawCount + (autoAdjust ? netAfter : 0);
+    const adjustedCount =
+      rawCount == null ? null : rawCount + (autoAdjust ? netAfter : 0);
     const bookNow = stockNow.get(v) ?? 0;
     const diff = adjustedCount == null ? null : adjustedCount - bookNow;
     const unitCost = String(it.unitCost ?? "0");
     const valueDec = diff == null ? null : money(unitCost).times(diff);
     const value = valueDec == null ? null : toDbMoney(valueDec);
     // النسبة الخام للمقارنة بالحدّ (التقريب للعرض فقط — تقريبها قبل المقارنة يُمرّر 5.004% كـ«ضمن 5%»).
-    const pctRaw = diff == null || it.expectedQty === 0 ? null : money(Math.abs(diff)).div(it.expectedQty).times(100);
+    const pctRaw =
+      diff == null || it.expectedQty === 0
+        ? null
+        : money(Math.abs(diff)).div(it.expectedQty).times(100);
     const pct = pctRaw == null ? null : pctRaw.toDecimalPlaces(2).toNumber();
     // «ضمن الحد»: pct≤حد النسبة (يُعفى إن تعذّر حسابه expectedQty=0 — كنموذج jrd-data) و|القيمة|≤حد القيمة.
     const pctOk = pctRaw == null || pctRaw.lte(thresholdPct);
     const valueOk = valueDec != null && valueDec.abs().lte(thresholdValue);
     // افتتاحي: كل فرق «ضمن الحد» (تسوية تلقائية بلا قرار صنفي) وكل فرق ≠0 يتطلب التوقيعين
     // (يُبقي شاشة المراجعة متّسقة مع إجبار التوقيعين الجلسي في firstSign/finalize).
-    const withinThreshold = isOpening ? diff != null : diff != null && pctOk && valueOk;
-    const overThreshold = isOpening ? false : diff != null && diff !== 0 && !withinThreshold;
+    const withinThreshold = isOpening
+      ? diff != null
+      : diff != null && pctOk && valueOk;
+    const overThreshold = isOpening
+      ? false
+      : diff != null && diff !== 0 && !withinThreshold;
     const requiresDualSign = isOpening
       ? diff != null && diff !== 0
       : valueDec != null && valueDec.abs().gt(dualThreshold);
@@ -381,35 +488,59 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
       : null;
 
     const latestCountOperationId = latestOperationByVariant.get(v) ?? null;
-    const reviewSnapshotHash =
+    const countGuardKey = used == null ? null : `${v}:${used.kind}:${used.qty}`;
+    const countGuardAttested =
+      countGuardKey != null && guardedBreakdownByCount.has(countGuardKey);
+    const snapshotInput =
       rawCount != null && kindUsed != null && diff != null
-        ? stocktakeReviewSnapshotHash({
+        ? {
             variantId: v,
             rawCount,
             kindUsed,
             diff,
             countOperationId: latestCountOperationId,
-            decision: decision && !decision.autoApplied
-              ? { action: decision.action, reason: decision.reason, note: decision.note }
-              : null,
-          })
+            decision:
+              decision && !decision.autoApplied
+                ? {
+                    action: decision.action,
+                    reason: decision.reason,
+                    note: decision.note,
+                  }
+                : null,
+          }
         : null;
+    const reviewSnapshotHash = snapshotInput
+      ? stocktakeReviewSnapshotHash({
+          ...snapshotInput,
+          unitCost: toDbMoney(money(unitCost)),
+          value: value ?? "0.00",
+        })
+      : null;
+    // انتقال آمن: الاعتمادات القديمة v1 تبقى صالحة للصفوف التي لم تُحدَّث تكلفتها؛ مسار تحديث
+    // الأساس يفتح الصفوف المتغيّرة صراحةً. كل اعتماد جديد يُكتب v2 الحساس للتكلفة والقيمة.
+    const legacyReviewSnapshotHash = snapshotInput
+      ? stocktakeReviewSnapshotLegacyHash(snapshotInput)
+      : null;
     const reviewApprovalCurrent =
       it.reviewApprovedAt != null &&
       it.reviewApprovedSnapshotHash != null &&
       (s.status === "APPROVED" ||
         (reviewSnapshotHash != null &&
-          it.reviewApprovedSnapshotHash === reviewSnapshotHash &&
+          (it.reviewApprovedSnapshotHash === reviewSnapshotHash ||
+            it.reviewApprovedSnapshotHash === legacyReviewSnapshotHash) &&
           it.reviewApprovedQty === rawCount &&
           (it.reviewApprovedOperationId == null
             ? latestCountOperationId == null
-            : Number(it.reviewApprovedOperationId) === latestCountOperationId)));
+            : Number(it.reviewApprovedOperationId) ===
+              latestCountOperationId)));
 
     const readyForReviewApproval =
       rawCount != null &&
       it.recountStatus !== "PENDING" &&
       !openConflict &&
-      (diff === 0 || decision != null || (withinThreshold && directUnderThreshold));
+      (diff === 0 ||
+        decision != null ||
+        (withinThreshold && directUnderThreshold));
 
     return {
       variantId: v,
@@ -421,6 +552,13 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
       assignmentName: it.assignmentName,
       expectedQty: it.expectedQty,
       rawCount,
+      countUnitBreakdown:
+        used == null
+          ? null
+          : countGuardAttested
+            ? (guardedBreakdownByCount.get(countGuardKey!) ?? null)
+            : (used.unitBreakdown ?? null),
+      countGuardAttested,
       kindUsed,
       countedByName: used ? used.countedByName : null,
       countedAt: used ? used.countedAt : null,
@@ -441,11 +579,14 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
       reviewApproved: it.reviewApprovedAt
         ? {
             byName: it.reviewApprovedByName ?? "—",
-            byUserId: it.reviewApprovedBy == null ? null : Number(it.reviewApprovedBy),
+            byUserId:
+              it.reviewApprovedBy == null ? null : Number(it.reviewApprovedBy),
             at: it.reviewApprovedAt,
             snapshotQty: it.reviewApprovedQty,
             snapshotOperationId:
-              it.reviewApprovedOperationId == null ? null : Number(it.reviewApprovedOperationId),
+              it.reviewApprovedOperationId == null
+                ? null
+                : Number(it.reviewApprovedOperationId),
             isCurrent: reviewApprovalCurrent,
           }
         : null,
@@ -514,21 +655,34 @@ function buildLedgerPreview(rows: ReviewRow[], directUnderThreshold: boolean) {
     if ((r.diff ?? 0) < 0) shortExpense = shortExpense.plus(v.abs());
     else overGain = overGain.plus(v);
   }
-  return { shortExpense: toDbMoney(shortExpense), overGain: toDbMoney(overGain) };
+  return {
+    shortExpense: toDbMoney(shortExpense),
+    overGain: toDbMoney(overGain),
+  };
 }
 
 function buildBarriers(
   rows: ReviewRow[],
   s: Awaited<ReturnType<typeof loadSessionHeader>>,
   directUnderThreshold: boolean,
-  viewerId?: number
+  valuationIntegrity: OpeningValuationIntegrity,
+  countInputAnomalies: CountInputAnomaly[],
+  viewerId?: number,
 ) {
   const notCounted = rows.filter((r) => r.rawCount == null).length;
   const reviewApproved = rows.filter((r) => r.reviewApproved?.isCurrent).length;
-  const staleReviewApprovals = rows.filter((r) => r.reviewApproved != null && !r.reviewApproved.isCurrent).length;
-  const readyForReviewApproval = rows.filter((r) => !r.reviewApproved?.isCurrent && r.readyForReviewApproval).length;
-  const countedPendingReview = rows.filter((r) => r.rawCount != null && !r.reviewApproved?.isCurrent).length;
-  const pendingRecounts = rows.filter((r) => r.recount?.status === "PENDING").length;
+  const staleReviewApprovals = rows.filter(
+    (r) => r.reviewApproved != null && !r.reviewApproved.isCurrent,
+  ).length;
+  const readyForReviewApproval = rows.filter(
+    (r) => !r.reviewApproved?.isCurrent && r.readyForReviewApproval,
+  ).length;
+  const countedPendingReview = rows.filter(
+    (r) => r.rawCount != null && !r.reviewApproved?.isCurrent,
+  ).length;
+  const pendingRecounts = rows.filter(
+    (r) => r.recount?.status === "PENDING",
+  ).length;
   const openConflicts = rows.filter((r) => r.openConflict).length;
   // يحتاج قراراً صريحاً: يتجاوز الحد دائماً؛ وكل فرق ≠0 عندما تكون التسوية المباشرة معطّلة.
   const undecidedOverThreshold = rows.filter((r) => {
@@ -539,7 +693,8 @@ function buildBarriers(
   // افتتاحي: التوقيعان إلزاميان دائماً على مستوى الجلسة (حتى لو تطابق كل عدٍّ مع الدفتر —
   // الاعتماد يختم openedAt ويؤسّس الأرصدة بلا أي قيد دفتري، فهو أخفى قناة تحتاج أربع عيون).
   const requiresDualSign =
-    s.sessionType === "OPENING" || rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
+    s.sessionType === "OPENING" ||
+    rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
   const firstSigned = s.firstSignBy != null;
   const reviewerFinalSeparationBlocked =
     viewerId != null &&
@@ -551,6 +706,8 @@ function buildBarriers(
     );
   const canApprove =
     s.status === "REVIEW" &&
+    valuationIntegrity.blockingCount === 0 &&
+    countInputAnomalies.length === 0 &&
     notCounted === 0 &&
     pendingRecounts === 0 &&
     openConflicts === 0 &&
@@ -575,6 +732,9 @@ function buildBarriers(
     requiresDualSign,
     firstSigned,
     reviewerFinalSeparationBlocked,
+    valuationBlockingAnomalies: valuationIntegrity.blockingCount,
+    valuationReviewRows: valuationIntegrity.mismatchCount,
+    countInputAnomalies: countInputAnomalies.length,
     canApprove,
     canFinalApprove,
   };
@@ -598,26 +758,56 @@ function buildReviewSession(s: Awaited<ReturnType<typeof loadSessionHeader>>) {
     createdAt: s.createdAt,
     createdByName: s.createdByName ?? "—",
     submittedAt: s.submittedAt,
-    firstSign: s.firstSignBy ? { byName: s.firstSignByName ?? "—", at: s.firstSignAt } : null,
-    approved: s.approvedBy ? { byName: s.approvedByName ?? "—", at: s.approvedAt } : null,
+    firstSign: s.firstSignBy
+      ? { byName: s.firstSignByName ?? "—", at: s.firstSignAt }
+      : null,
+    approved: s.approvedBy
+      ? { byName: s.approvedByName ?? "—", at: s.approvedAt }
+      : null,
   };
 }
 
 /** مخرج شاشة المراجعة — العقد §٤ حرفياً. الصفوف لا تتضمن أسراراً إضافية للمدير+. */
 export async function computeStocktakeReview(
   sessionId: number,
-  opts: { autoAdjust?: boolean; viewerId?: number } = {}
+  opts: { autoAdjust?: boolean; viewerId?: number } = {},
 ) {
   const db = requireDb();
   const autoAdjust = opts.autoAdjust ?? true;
-  const { s, rows, directUnderThreshold } = await loadReviewCore(db, sessionId, autoAdjust);
+  const { s, rows, directUnderThreshold } = await loadReviewCore(
+    db,
+    sessionId,
+    autoAdjust,
+  );
+  const valuationIntegrity = await buildOpeningValuationIntegrity(db, s, rows);
+  const countInputAnomalies = await findCountInputAnomalies(db, rows);
   return {
     session: buildReviewSession(s),
     rows: rows.map(
-      ({ decidedBy: _db2, openConflict: _oc, latestCountOperationId: _op, reviewSnapshotHash: _hash, ...pub }) => pub,
+      ({
+        decidedBy: _db2,
+        openConflict: _oc,
+        latestCountOperationId: _op,
+        reviewSnapshotHash: _hash,
+        countUnitBreakdown: _breakdown,
+        countGuardAttested: _attested,
+        ...pub
+      }) => pub,
     ),
     totals: buildTotals(rows),
-    barriers: buildBarriers(rows, s, directUnderThreshold, opts.viewerId),
+    barriers: buildBarriers(
+      rows,
+      s,
+      directUnderThreshold,
+      valuationIntegrity,
+      countInputAnomalies,
+      opts.viewerId,
+    ),
+    valuationIntegrity,
+    countIntegrity: {
+      blockingCount: countInputAnomalies.length,
+      rows: countInputAnomalies,
+    },
     // افتتاحي: لا قيد عجز/زيادة يُرحَّل أصلاً — معاينة صفرية كي لا تعِد الشاشة بقيدٍ لن يقع.
     ledgerPreview:
       s.sessionType === "OPENING"
@@ -625,7 +815,6 @@ export async function computeStocktakeReview(
         : buildLedgerPreview(rows, directUnderThreshold),
   };
 }
-
 
 // تصدير داخلي للحزمة فقط (يستهلكه reviewActions/finalize/report) — لا يُعاد تصديره من البرميل
 // stocktakeService.ts ⇒ يبقى خارج الواجهة العامة.

@@ -3,7 +3,7 @@
 // بمرجع OPENING، ختم openedAt (حتى المعدود صفراً بلا صفّ)، توقيعان دائماً (إصلاح حاصرة التوقيع
 // الأول)، SOD (منشئ≠معتمد، عادّ≠معتمد، admin مُستثنى)، الهدف السالب، وانحدار الجرد الدوري.
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { TRPCError } from "@trpc/server";
 import * as s from "../../../drizzle/schema";
@@ -15,6 +15,8 @@ import {
   createStocktakeSession,
   firstSignStocktake,
   forceStocktakeReview,
+  getStocktakeReport,
+  refreshOpeningValuationBasis,
 } from "../stocktakeService";
 import { cancelPurchaseOrder, createPurchaseOrder } from "../purchaseService";
 import type { CreateStocktakeInput } from "../stocktake/create";
@@ -66,10 +68,34 @@ async function seedBase() {
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
   await d.insert(s.users).values([
-    { id: 1, openId: "u_admin", name: "المدير العام", role: "admin", loginMethod: "local" },
-    { id: 2, openId: "u_mgr", name: "مدير أول", role: "manager", loginMethod: "local" },
-    { id: 3, openId: "u_mgr2", name: "مدير ثانٍ", role: "manager", loginMethod: "local" },
-    { id: 4, openId: "u_wh", name: "أمين مخزن", role: "warehouse", loginMethod: "local" },
+    {
+      id: 1,
+      openId: "u_admin",
+      name: "المدير العام",
+      role: "admin",
+      loginMethod: "local",
+    },
+    {
+      id: 2,
+      openId: "u_mgr",
+      name: "مدير أول",
+      role: "manager",
+      loginMethod: "local",
+    },
+    {
+      id: 3,
+      openId: "u_mgr2",
+      name: "مدير ثانٍ",
+      role: "manager",
+      loginMethod: "local",
+    },
+    {
+      id: 4,
+      openId: "u_wh",
+      name: "أمين مخزن",
+      role: "warehouse",
+      loginMethod: "local",
+    },
   ]);
   await d.insert(s.suppliers).values({ id: 1, name: "مورد الاختبار" });
   await d.insert(s.products).values([
@@ -85,10 +111,34 @@ async function seedBase() {
     { id: 4, productId: 4, sku: "ERS-1", costPrice: "250.00" },
   ]);
   await d.insert(s.productUnits).values([
-    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
-    { id: 2, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
-    { id: 3, variantId: 3, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
-    { id: 4, variantId: 4, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    {
+      id: 1,
+      variantId: 1,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
+    {
+      id: 2,
+      variantId: 2,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
+    {
+      id: 3,
+      variantId: 3,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
+    {
+      id: 4,
+      variantId: 4,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
   ]);
 }
 beforeEach(async () => {
@@ -96,10 +146,18 @@ beforeEach(async () => {
   await seedBase();
 });
 
-async function enableOpeningMode(over: Partial<typeof s.openingModeSettings.$inferInsert> = {}) {
+async function enableOpeningMode(
+  over: Partial<typeof s.openingModeSettings.$inferInsert> = {},
+) {
   await db()
     .insert(s.openingModeSettings)
-    .values({ id: 1, enabled: true, endsAt: new Date(Date.now() + 7 * DAY_MS), maxNegativeQtyPerLine: 100, ...over });
+    .values({
+      id: 1,
+      enabled: true,
+      endsAt: new Date(Date.now() + 7 * DAY_MS),
+      maxNegativeQtyPerLine: 100,
+      ...over,
+    });
 }
 async function expireOpeningWindow() {
   await db()
@@ -108,7 +166,10 @@ async function expireOpeningWindow() {
     .where(eq(s.openingModeSettings.id, 1));
 }
 
-async function mkOpening(over: Partial<CreateStocktakeInput> = {}, actor = MGR) {
+async function mkOpening(
+  over: Partial<CreateStocktakeInput> = {},
+  actor = MGR,
+) {
   return createStocktakeSession(
     {
       name: "جرد افتتاحي اختباري",
@@ -123,24 +184,37 @@ async function mkOpening(over: Partial<CreateStocktakeInput> = {}, actor = MGR) 
   );
 }
 
-async function insertCount(sessionId: number, variantId: number, assignmentId: number, qty: number, at?: Date) {
-  await db().insert(s.stocktakeCounts).values({
-    sessionId,
-    variantId,
-    assignmentId,
-    kind: "FIRST",
-    qty,
-    countedByName: "عامل الاختبار",
-    countedAt: at ?? new Date(Date.now() - 5_000),
-    isConflict: false,
-    clientRequestId: randomUUID(),
-  });
+async function insertCount(
+  sessionId: number,
+  variantId: number,
+  assignmentId: number,
+  qty: number,
+  at?: Date,
+) {
+  await db()
+    .insert(s.stocktakeCounts)
+    .values({
+      sessionId,
+      variantId,
+      assignmentId,
+      kind: "FIRST",
+      qty,
+      countedByName: "عامل الاختبار",
+      countedAt: at ?? new Date(Date.now() - 5_000),
+      isConflict: false,
+      clientRequestId: randomUUID(),
+    });
 }
 
 async function approveAllReadyItems(sessionId: number, actor = MGR) {
-  const review = await computeStocktakeReview(sessionId, { viewerId: actor.userId });
-  const ids = review.rows.filter((r) => r.readyForReviewApproval && !r.reviewApproved?.isCurrent).map((r) => r.variantId);
-  if (ids.length) await approveStocktakeItems({ sessionId, variantIds: ids }, actor);
+  const review = await computeStocktakeReview(sessionId, {
+    viewerId: actor.userId,
+  });
+  const ids = review.rows
+    .filter((r) => r.readyForReviewApproval && !r.reviewApproved?.isCurrent)
+    .map((r) => r.variantId);
+  if (ids.length)
+    await approveStocktakeItems({ sessionId, variantIds: ids }, actor);
 }
 
 async function firstAssignmentId(sessionId: number): Promise<number> {
@@ -155,7 +229,12 @@ async function stockRow(variantId: number, branchId = 1) {
   const [r] = await db()
     .select()
     .from(s.branchStock)
-    .where(and(eq(s.branchStock.variantId, variantId), eq(s.branchStock.branchId, branchId)));
+    .where(
+      and(
+        eq(s.branchStock.variantId, variantId),
+        eq(s.branchStock.branchId, branchId),
+      ),
+    );
   return r ?? null;
 }
 
@@ -163,7 +242,12 @@ async function openingMovements(sessionId: number) {
   return db()
     .select()
     .from(s.inventoryMovements)
-    .where(and(eq(s.inventoryMovements.referenceType, "OPENING"), eq(s.inventoryMovements.referenceId, sessionId)));
+    .where(
+      and(
+        eq(s.inventoryMovements.referenceType, "OPENING"),
+        eq(s.inventoryMovements.referenceId, sessionId),
+      ),
+    );
 }
 
 async function expectTrpc(p: Promise<unknown>, code: string, msg?: RegExp) {
@@ -180,7 +264,11 @@ async function expectTrpc(p: Promise<unknown>, code: string, msg?: RegExp) {
 
 describe("بوابات إنشاء الجلسة الافتتاحية", () => {
   it("تُرفض والوضع مطفأ — القناة محصورة بنافذة الافتتاح", async () => {
-    await expectTrpc(mkOpening(), "PRECONDITION_FAILED", /وضع الافتتاح غير فعّال/);
+    await expectTrpc(
+      mkOpening(),
+      "PRECONDITION_FAILED",
+      /وضع الافتتاح غير فعّال/,
+    );
   });
 
   it("تُرفض من أمين المخزن حتى والنافذة فعّالة — نوع الجلسة قرار حوكمي لمدير فأعلى", async () => {
@@ -203,8 +291,17 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
   it("MANUAL بصنف مُفتتَح يُرفض ناطقاً؛ وFULL يستبعد المُفتتَح تلقائياً", async () => {
     await enableOpeningMode();
     // افتتاح الصنف ١ مسبقاً.
-    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 10, openedAt: new Date() });
-    await expectTrpc(mkOpening({ variantIds: [1, 2] }), "BAD_REQUEST", /سبق افتتاحها/);
+    await db().insert(s.branchStock).values({
+      variantId: 1,
+      branchId: 1,
+      quantity: 10,
+      openedAt: new Date(),
+    });
+    await expectTrpc(
+      mkOpening({ variantIds: [1, 2] }),
+      "BAD_REQUEST",
+      /سبق افتتاحها/,
+    );
 
     const res = await mkOpening({ scopeType: "FULL", variantIds: undefined });
     // FULL على ٤ متغيّرات − المُفتتَح (١) = ٣.
@@ -218,45 +315,74 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
 
   it("المشتريات: MANUAL يرفض المرتبط في الفرع؛ وFULL يستبعده فقط إذا كان الأمر غير ملغى وفي الفرع نفسه", async () => {
     await enableOpeningMode();
-    await db().insert(s.purchaseOrders).values([
-      {
-        id: 101,
-        poNumber: "PO-OPEN-SAME-BRANCH",
-        supplierId: 1,
-        branchId: 1,
-        subtotal: "100.00",
-        total: "100.00",
-        status: "DRAFT",
-        createdBy: 1,
-      },
-      {
-        id: 102,
-        poNumber: "PO-OPEN-OTHER-BRANCH",
-        supplierId: 1,
-        branchId: 2,
-        subtotal: "100.00",
-        total: "100.00",
-        status: "DRAFT",
-        createdBy: 1,
-      },
-      {
-        id: 103,
-        poNumber: "PO-OPEN-CANCELLED",
-        supplierId: 1,
-        branchId: 1,
-        subtotal: "100.00",
-        total: "100.00",
-        status: "CANCELLED",
-        createdBy: 1,
-      },
-    ]);
-    await db().insert(s.purchaseOrderItems).values([
-      { purchaseOrderId: 101, variantId: 1, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
-      { purchaseOrderId: 102, variantId: 2, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
-      { purchaseOrderId: 103, variantId: 3, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
-    ]);
+    await db()
+      .insert(s.purchaseOrders)
+      .values([
+        {
+          id: 101,
+          poNumber: "PO-OPEN-SAME-BRANCH",
+          supplierId: 1,
+          branchId: 1,
+          subtotal: "100.00",
+          total: "100.00",
+          status: "DRAFT",
+          createdBy: 1,
+        },
+        {
+          id: 102,
+          poNumber: "PO-OPEN-OTHER-BRANCH",
+          supplierId: 1,
+          branchId: 2,
+          subtotal: "100.00",
+          total: "100.00",
+          status: "DRAFT",
+          createdBy: 1,
+        },
+        {
+          id: 103,
+          poNumber: "PO-OPEN-CANCELLED",
+          supplierId: 1,
+          branchId: 1,
+          subtotal: "100.00",
+          total: "100.00",
+          status: "CANCELLED",
+          createdBy: 1,
+        },
+      ]);
+    await db()
+      .insert(s.purchaseOrderItems)
+      .values([
+        {
+          purchaseOrderId: 101,
+          variantId: 1,
+          quantity: "1",
+          baseQuantity: 1,
+          unitPrice: "100.00",
+          total: "100.00",
+        },
+        {
+          purchaseOrderId: 102,
+          variantId: 2,
+          quantity: "1",
+          baseQuantity: 1,
+          unitPrice: "100.00",
+          total: "100.00",
+        },
+        {
+          purchaseOrderId: 103,
+          variantId: 3,
+          quantity: "1",
+          baseQuantity: 1,
+          unitPrice: "100.00",
+          total: "100.00",
+        },
+      ]);
 
-    await expectTrpc(mkOpening({ variantIds: [1] }), "BAD_REQUEST", /فاتورة مشتريات|أمر شراء|مرتبطة.*مشتريات/);
+    await expectTrpc(
+      mkOpening({ variantIds: [1] }),
+      "BAD_REQUEST",
+      /فاتورة مشتريات|أمر شراء|مرتبطة.*مشتريات/,
+    );
 
     const res = await mkOpening({ scopeType: "FULL", variantIds: undefined });
     expect(res.itemCount).toBe(3);
@@ -279,14 +405,27 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
         supplierId: 1,
         branchId: 1,
         status: "DRAFT",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "100.00" }],
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "1",
+            unitPrice: "100.00",
+          },
+        ],
       },
       { userId: 1, branchId: 1 },
     );
 
     const [items, counts] = await Promise.all([
-      db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId)),
-      db().select().from(s.stocktakeCounts).where(eq(s.stocktakeCounts.sessionId, session.sessionId)),
+      db()
+        .select()
+        .from(s.stocktakeItems)
+        .where(eq(s.stocktakeItems.sessionId, session.sessionId)),
+      db()
+        .select()
+        .from(s.stocktakeCounts)
+        .where(eq(s.stocktakeCounts.sessionId, session.sessionId)),
     ]);
     expect(items).toHaveLength(0);
     expect(counts).toHaveLength(0);
@@ -294,7 +433,9 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
 
   it("إلغاء قائمة الشراء يعيد الصنف إلى نطاق MANUAL النشط بلقطة الرصيد والتكلفة الحالية", async () => {
     await enableOpeningMode();
-    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 5 });
+    await db()
+      .insert(s.branchStock)
+      .values({ variantId: 1, branchId: 1, quantity: 5 });
     const session = await mkOpening({ variantIds: [1] });
     const assignmentId = await firstAssignmentId(session.sessionId);
 
@@ -303,19 +444,38 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
         supplierId: 1,
         branchId: 1,
         status: "DRAFT",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "100.00" }],
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "1",
+            unitPrice: "100.00",
+          },
+        ],
       },
       { userId: ADMIN.userId, branchId: 1 },
     );
     expect(
-      await db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId)),
+      await db()
+        .select()
+        .from(s.stocktakeItems)
+        .where(eq(s.stocktakeItems.sessionId, session.sessionId)),
     ).toHaveLength(0);
 
-    await db().update(s.branchStock).set({ quantity: 19 }).where(
-      and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 1)),
-    );
-    await db().update(s.productVariants).set({ costPrice: "333.00" }).where(eq(s.productVariants.id, 1));
-    await cancelPurchaseOrder(po.purchaseOrderId, { userId: ADMIN.userId, branchId: 1 });
+    await db()
+      .update(s.branchStock)
+      .set({ quantity: 19 })
+      .where(
+        and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 1)),
+      );
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "333.00" })
+      .where(eq(s.productVariants.id, 1));
+    await cancelPurchaseOrder(po.purchaseOrderId, {
+      userId: ADMIN.userId,
+      branchId: 1,
+    });
 
     const [restored] = await db()
       .select()
@@ -330,24 +490,41 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
   it("إلغاء قائمة لا يعيد الصنف ما دام مرتبطاً بقائمة شراء أخرى غير ملغاة", async () => {
     await enableOpeningMode();
     const session = await mkOpening({ variantIds: [1] });
-    const makePo = () => createPurchaseOrder(
-      {
-        supplierId: 1,
-        branchId: 1,
-        status: "DRAFT" as const,
-        items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "100.00" }],
-      },
-      { userId: ADMIN.userId, branchId: 1 },
-    );
+    const makePo = () =>
+      createPurchaseOrder(
+        {
+          supplierId: 1,
+          branchId: 1,
+          status: "DRAFT" as const,
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "1",
+              unitPrice: "100.00",
+            },
+          ],
+        },
+        { userId: ADMIN.userId, branchId: 1 },
+      );
     const first = await makePo();
     const second = await makePo();
 
-    await cancelPurchaseOrder(first.purchaseOrderId, { userId: ADMIN.userId, branchId: 1 });
+    await cancelPurchaseOrder(first.purchaseOrderId, {
+      userId: ADMIN.userId,
+      branchId: 1,
+    });
     expect(
-      await db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId)),
+      await db()
+        .select()
+        .from(s.stocktakeItems)
+        .where(eq(s.stocktakeItems.sessionId, session.sessionId)),
     ).toHaveLength(0);
 
-    await cancelPurchaseOrder(second.purchaseOrderId, { userId: ADMIN.userId, branchId: 1 });
+    await cancelPurchaseOrder(second.purchaseOrderId, {
+      userId: ADMIN.userId,
+      branchId: 1,
+    });
     const restored = await db()
       .select({ variantId: s.stocktakeItems.variantId })
       .from(s.stocktakeItems)
@@ -366,7 +543,12 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
       .where(eq(s.stocktakeAssignments.id, assignmentId));
     await db()
       .update(s.stocktakeSessions)
-      .set({ status: "REVIEW", submittedAt: signedAt, firstSignBy: MGR.userId, firstSignAt: signedAt })
+      .set({
+        status: "REVIEW",
+        submittedAt: signedAt,
+        firstSignBy: MGR.userId,
+        firstSignAt: signedAt,
+      })
       .where(eq(s.stocktakeSessions.id, session.sessionId));
 
     const po = await createPurchaseOrder(
@@ -374,11 +556,21 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
         supplierId: 1,
         branchId: 1,
         status: "DRAFT",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "100.00" }],
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "1",
+            unitPrice: "100.00",
+          },
+        ],
       },
       { userId: ADMIN.userId, branchId: 1 },
     );
-    await cancelPurchaseOrder(po.purchaseOrderId, { userId: ADMIN.userId, branchId: 1 });
+    await cancelPurchaseOrder(po.purchaseOrderId, {
+      userId: ADMIN.userId,
+      branchId: 1,
+    });
 
     const [sessionRow] = await db()
       .select({
@@ -397,12 +589,18 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
     });
 
     const [assignment] = await db()
-      .select({ status: s.stocktakeAssignments.status, submittedAt: s.stocktakeAssignments.submittedAt })
+      .select({
+        status: s.stocktakeAssignments.status,
+        submittedAt: s.stocktakeAssignments.submittedAt,
+      })
       .from(s.stocktakeAssignments)
       .where(eq(s.stocktakeAssignments.id, assignmentId));
     expect(assignment).toMatchObject({ status: "ACTIVE", submittedAt: null });
     expect(
-      await db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId)),
+      await db()
+        .select()
+        .from(s.stocktakeItems)
+        .where(eq(s.stocktakeItems.sessionId, session.sessionId)),
     ).toHaveLength(1);
   });
 
@@ -500,22 +698,29 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
     expect(sessionRow.firstSignBy).toBeNull();
     expect(sessionRow.firstSignAt).toBeNull();
 
-    const [items, counts, operations, decisions, reviewEvents] = await Promise.all([
-      db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, session.sessionId)),
-      db().select().from(s.stocktakeCounts).where(eq(s.stocktakeCounts.sessionId, session.sessionId)),
-      db()
-        .select()
-        .from(s.stocktakeCountOperations)
-        .where(eq(s.stocktakeCountOperations.sessionId, session.sessionId)),
-      db()
-        .select()
-        .from(s.stocktakeDecisions)
-        .where(eq(s.stocktakeDecisions.sessionId, session.sessionId)),
-      db()
-        .select()
-        .from(s.stocktakeItemReviewEvents)
-        .where(eq(s.stocktakeItemReviewEvents.sessionId, session.sessionId)),
-    ]);
+    const [items, counts, operations, decisions, reviewEvents] =
+      await Promise.all([
+        db()
+          .select()
+          .from(s.stocktakeItems)
+          .where(eq(s.stocktakeItems.sessionId, session.sessionId)),
+        db()
+          .select()
+          .from(s.stocktakeCounts)
+          .where(eq(s.stocktakeCounts.sessionId, session.sessionId)),
+        db()
+          .select()
+          .from(s.stocktakeCountOperations)
+          .where(eq(s.stocktakeCountOperations.sessionId, session.sessionId)),
+        db()
+          .select()
+          .from(s.stocktakeDecisions)
+          .where(eq(s.stocktakeDecisions.sessionId, session.sessionId)),
+        db()
+          .select()
+          .from(s.stocktakeItemReviewEvents)
+          .where(eq(s.stocktakeItemReviewEvents.sessionId, session.sessionId)),
+      ]);
     for (const rows of [items, counts, operations, decisions, reviewEvents]) {
       expect(rows).toHaveLength(0);
     }
@@ -526,7 +731,14 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
     const now = new Date();
     await db()
       .insert(s.branchStock)
-      .values([1, 2, 3, 4].map((v) => ({ variantId: v, branchId: 1, quantity: 5, openedAt: now })));
+      .values(
+        [1, 2, 3, 4].map((v) => ({
+          variantId: v,
+          branchId: 1,
+          quantity: 5,
+          openedAt: now,
+        })),
+      );
     await expectTrpc(
       mkOpening({ scopeType: "FULL", variantIds: undefined }),
       "BAD_REQUEST",
@@ -537,19 +749,35 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
   it("الحصر المتبادل: جلسة نشطة تمنع الافتتاحية والعكس — وفرع آخر لا يتأثر", async () => {
     await enableOpeningMode();
     const normal = await createStocktakeSession(
-      { name: "دوري", branchId: 1, scopeType: "MANUAL", variantIds: [4], assignments: [{ name: "ع", method: "PIN" }] },
+      {
+        name: "دوري",
+        branchId: 1,
+        scopeType: "MANUAL",
+        variantIds: [4],
+        assignments: [{ name: "ع", method: "PIN" }],
+      },
       MGR,
     );
     await expectTrpc(mkOpening(), "CONFLICT", /جلسة جرد نشطة/);
 
     // الفرع الآخر حرّ.
-    const other = await mkOpening({ branchId: 2, scopeType: "MANUAL", variantIds: [1, 2] });
+    const other = await mkOpening({
+      branchId: 2,
+      scopeType: "MANUAL",
+      variantIds: [1, 2],
+    });
     expect(other.sessionId).toBeGreaterThan(0);
 
     // وأثناء الافتتاحية النشطة (فرع ٢) لا تُنشأ جلسة أخرى عليه.
     await expectTrpc(
       createStocktakeSession(
-        { name: "دوري٢", branchId: 2, scopeType: "MANUAL", variantIds: [3], assignments: [{ name: "ع", method: "PIN" }] },
+        {
+          name: "دوري٢",
+          branchId: 2,
+          scopeType: "MANUAL",
+          variantIds: [3],
+          assignments: [{ name: "ع", method: "PIN" }],
+        },
         MGR,
       ),
       "CONFLICT",
@@ -560,10 +788,447 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
 });
 
 describe("اعتماد الجلسة الافتتاحية — المسار الذهبي", () => {
+  it("ينقذ تضخم خلط تكلفة اللتر بوحدة الأساس ذرياً، ويفتح الاعتمادات بلا لمس المخزون أو النقد", async () => {
+    await enableOpeningMode();
+    // حادثة V65 المصغّرة: لقطة 11,500 (تكلفة لتر) ثم تصحيح كتالوج الأساس إلى 0.92.
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "11500.00" })
+      .where(eq(s.productVariants.id, 1));
+    await db().insert(s.productUnits).values({
+      id: 10,
+      variantId: 1,
+      unitName: "لتر",
+      conversionFactor: "12500",
+      isBaseUnit: false,
+    });
+    const res = await mkOpening({ variantIds: [1] });
+    const aid = await firstAssignmentId(res.sessionId);
+    await insertCount(res.sessionId, 1, aid, 750_000);
+    await approveAllReadyItems(res.sessionId, MGR);
+    await forceStocktakeReview(res.sessionId, MGR);
+    await firstSignStocktake(res.sessionId, MGR);
+
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "0.92" })
+      .where(eq(s.productVariants.id, 1));
+    const inflated = await computeStocktakeReview(res.sessionId, {
+      viewerId: MGR2.userId,
+    });
+    expect(inflated.totals.netValue).toBe("8625000000.00");
+    expect(inflated.valuationIntegrity.blockingCount).toBe(1);
+    expect(inflated.valuationIntegrity.currentBaseNetValue).toBe("690000.00");
+    expect(inflated.valuationIntegrity.inflationDelta).toBe("8624310000.00");
+    expect(inflated.barriers.canApprove).toBe(false);
+    await expectTrpc(
+      approveStocktake(res.sessionId, MGR2),
+      "PRECONDITION_FAILED",
+      /تضخم تكلفة\/وحدة/,
+    );
+
+    // سلطة الإنقاذ مزدوجة ومغلقة: حتى استدعاء الخدمة مباشرةً لا يسمح للمدير
+    // العادي، ولا يغيّر اللقطة أو الاعتماد أو التوقيع عند الرفض.
+    await expectTrpc(
+      refreshOpeningValuationBasis(
+        {
+          sessionId: res.sessionId,
+          expectedDigest: inflated.valuationIntegrity.digest,
+          reason: "محاولة مدير غير عام يجب أن تُرفض بلا أي أثر",
+        },
+        MGR,
+      ),
+      "FORBIDDEN",
+      /للمدير العام فقط/,
+    );
+    const [rejectedItem] = await db()
+      .select()
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, res.sessionId));
+    const [rejectedSession] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, res.sessionId));
+    expect(rejectedItem.unitCost).toBe("11500.00");
+    expect(rejectedItem.reviewApprovedAt).not.toBeNull();
+    expect(rejectedSession.firstSignBy).toBe(MGR.userId);
+    expect(await openingMovements(res.sessionId)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+
+    const countsBefore = await db()
+      .select()
+      .from(s.stocktakeCounts)
+      .where(eq(s.stocktakeCounts.sessionId, res.sessionId));
+    const refreshed = await refreshOpeningValuationBasis(
+      {
+        sessionId: res.sessionId,
+        expectedDigest: inflated.valuationIntegrity.digest,
+        reason: "تصحيح تكلفة اللتر إلى تكلفة وحدة الأساس بعد مراجعة المصدر",
+      },
+      ADMIN,
+    );
+    expect(refreshed.changedCount).toBe(1);
+    expect(refreshed.reopenedCount).toBe(1);
+    expect(refreshed.oldNetValue).toBe("8625000000.00");
+    expect(refreshed.newNetValue).toBe("690000.00");
+
+    const [item] = await db()
+      .select()
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, res.sessionId));
+    expect(item.unitCost).toBe("0.92");
+    expect(item.reviewApprovedAt).toBeNull();
+    expect(item.reviewApprovedSnapshotHash).toBeNull();
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, res.sessionId));
+    expect(session.firstSignBy).toBeNull();
+    expect(
+      await db()
+        .select()
+        .from(s.stocktakeCounts)
+        .where(eq(s.stocktakeCounts.sessionId, res.sessionId)),
+    ).toEqual(countsBefore);
+    expect(await openingMovements(res.sessionId)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await db().select().from(s.branchStock)).toHaveLength(0);
+
+    const after = await computeStocktakeReview(res.sessionId, {
+      viewerId: MGR2.userId,
+    });
+    expect(after.totals.netValue).toBe("690000.00");
+    expect(after.valuationIntegrity.mismatchCount).toBe(0);
+    expect(after.barriers.countedPendingReview).toBe(1);
+    expect(after.session.firstSign).toBeNull();
+
+    // مسودة المحضر تعرض التنفيذ الفعّال قبل finalize ولا تخلط قيمة التغيير
+    // بقيمة كامل الرصيد: 750,000 × 0.92 = 690,000.
+    const draftReport = await getStocktakeReport(res.sessionId);
+    expect(draftReport.rows[0].decision).toMatchObject({
+      action: "ADJUST",
+      autoApplied: true,
+    });
+    expect(draftReport.rows[0].value).toBe("690000.00");
+    expect(draftReport.ledger).toEqual({
+      shortExpense: "0.00",
+      overGain: "0.00",
+    });
+
+    // لا اعتماد على توقيع/بصمة قديمين: مراجعة وتوقيعان جديدان، مع بقاء أثر النقد والدفتر صفراً.
+    await approveAllReadyItems(res.sessionId, MGR);
+    await firstSignStocktake(res.sessionId, MGR);
+    const approved = await approveStocktake(res.sessionId, MGR2);
+    expect(approved.shortExpense).toBe("0.00");
+    expect(approved.overGain).toBe("0.00");
+    expect((await stockRow(1))?.quantity).toBe(750_000);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    const finalReport = await getStocktakeReport(res.sessionId);
+    expect(finalReport.rows[0].value).toBe("690000.00");
+    expect(finalReport.ledger).toEqual({
+      shortExpense: "0.00",
+      overGain: "0.00",
+    });
+  });
+
+  it("يرفض بصمة معاينة قديمة ولا ينفذ تحديثاً جزئياً", async () => {
+    await enableOpeningMode();
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "11500.00" })
+      .where(eq(s.productVariants.id, 1));
+    const res = await mkOpening({ variantIds: [1] });
+    const aid = await firstAssignmentId(res.sessionId);
+    await insertCount(res.sessionId, 1, aid, 100_000);
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "0.92" })
+      .where(eq(s.productVariants.id, 1));
+    const preview = await computeStocktakeReview(res.sessionId);
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "1.00" })
+      .where(eq(s.productVariants.id, 1));
+
+    await expectTrpc(
+      refreshOpeningValuationBasis(
+        {
+          sessionId: res.sessionId,
+          expectedDigest: preview.valuationIntegrity.digest,
+          reason: "محاولة ببصمة قديمة يجب أن تتراجع بالكامل",
+        },
+        ADMIN,
+      ),
+      "CONFLICT",
+      /تغيّرت بيانات الجرد أو التكلفة/,
+    );
+    const [item] = await db()
+      .select({ unitCost: s.stocktakeItems.unitCost })
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, res.sessionId));
+    expect(item.unitCost).toBe("11500.00");
+    expect(await db().select().from(s.auditLogs)).toHaveLength(0);
+  });
+
+  it("تبطل بصمة الإنقاذ إذا تغير عد صف سليم التكلفة داخل نطاق الجلسة", async () => {
+    await enableOpeningMode();
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "11500.00" })
+      .where(eq(s.productVariants.id, 1));
+    const res = await mkOpening({ variantIds: [1, 2] });
+    const aid = await firstAssignmentId(res.sessionId);
+    await insertCount(res.sessionId, 1, aid, 100_000);
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "0.92" })
+      .where(eq(s.productVariants.id, 1));
+    const preview = await computeStocktakeReview(res.sessionId);
+
+    // الصنف الثاني لا يملك اختلاف تكلفة، لكنه جزء من الإجمالي الذي عاينه المسؤول.
+    await insertCount(res.sessionId, 2, aid, 12);
+    await expectTrpc(
+      refreshOpeningValuationBasis(
+        {
+          sessionId: res.sessionId,
+          expectedDigest: preview.valuationIntegrity.digest,
+          reason: "يجب رفض المعاينة القديمة بعد تغير أي صف في النطاق",
+        },
+        ADMIN,
+      ),
+      "CONFLICT",
+      /تغيّرت بيانات الجرد أو التكلفة/,
+    );
+    const [item] = await db()
+      .select({ unitCost: s.stocktakeItems.unitCost })
+      .from(s.stocktakeItems)
+      .where(
+        and(
+          eq(s.stocktakeItems.sessionId, res.sessionId),
+          eq(s.stocktakeItems.variantId, 1),
+        ),
+      );
+    expect(item.unitCost).toBe("11500.00");
+  });
+
+  it("يحجب فرقاً بملايين عند نسبة 9× حتى مع dualThreshold مرتفع جداً", async () => {
+    await enableOpeningMode();
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "9000.00" })
+      .where(eq(s.productVariants.id, 1));
+    const res = await mkOpening({
+      variantIds: [1],
+      dualThreshold: "9000000000.00",
+    });
+    await insertCount(
+      res.sessionId,
+      1,
+      await firstAssignmentId(res.sessionId),
+      2_000,
+    );
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "1000.00" })
+      .where(eq(s.productVariants.id, 1));
+
+    const review = await computeStocktakeReview(res.sessionId, {
+      viewerId: MGR.userId,
+    });
+    expect(review.valuationIntegrity.inflationDelta).toBe("16000000.00");
+    expect(review.valuationIntegrity.blockingCount).toBe(1);
+    expect(review.barriers.valuationBlockingAnomalies).toBe(1);
+  });
+
+  it("يحجب التضخم الموزع على صفوف دون السقف الفردي عند تجاوز المجموع المطلق", async () => {
+    await enableOpeningMode();
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "9000.00" })
+      .where(inArray(s.productVariants.id, [1, 2]));
+    const res = await mkOpening({ variantIds: [1, 2] });
+    const aid = await firstAssignmentId(res.sessionId);
+    await insertCount(res.sessionId, 1, aid, 1_500);
+    await insertCount(res.sessionId, 2, aid, 1_500);
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "5000.00" })
+      .where(inArray(s.productVariants.id, [1, 2]));
+
+    const review = await computeStocktakeReview(res.sessionId, {
+      viewerId: MGR.userId,
+    });
+    expect(review.valuationIntegrity.rows).toHaveLength(2);
+    expect(review.valuationIntegrity.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          blocking: true,
+          reason: "MATERIAL_AGGREGATE_MISMATCH",
+        }),
+      ]),
+    );
+    expect(review.valuationIntegrity.blockingCount).toBe(2);
+  });
+
+  it("يفشل إنقاذ تكلفة الأساس الصفرية مغلقاً ويحافظ على اللقطة والاعتماد والعد بلا أي أثر مخزني أو مالي", async () => {
+    await enableOpeningMode();
+    const res = await mkOpening({ variantIds: [1] });
+    const aid = await firstAssignmentId(res.sessionId);
+    await insertCount(res.sessionId, 1, aid, 1_000);
+    await approveAllReadyItems(res.sessionId, MGR);
+    await forceStocktakeReview(res.sessionId, MGR);
+    await firstSignStocktake(res.sessionId, MGR);
+
+    const [itemBefore] = await db()
+      .select()
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, res.sessionId));
+    const countsBefore = await db()
+      .select()
+      .from(s.stocktakeCounts)
+      .where(eq(s.stocktakeCounts.sessionId, res.sessionId));
+    const [sessionBefore] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, res.sessionId));
+
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "0.00" })
+      .where(eq(s.productVariants.id, 1));
+    const preview = await computeStocktakeReview(res.sessionId, {
+      viewerId: MGR2.userId,
+    });
+    expect(preview.valuationIntegrity.rows).toEqual([
+      expect.objectContaining({
+        variantId: 1,
+        reason: "ZERO_BASE_COST",
+        blocking: true,
+        snapshotUnitCost: "250.00",
+        currentBaseUnitCost: "0.00",
+      }),
+    ]);
+
+    await expectTrpc(
+      refreshOpeningValuationBasis(
+        {
+          sessionId: res.sessionId,
+          expectedDigest: preview.valuationIntegrity.digest,
+          reason: "لا يجوز استبدال تقييم قائم بصفر قبل تصحيح الكتالوج",
+        },
+        ADMIN,
+      ),
+      "PRECONDITION_FAILED",
+      /تكلفة أساس صفرية|لن يحوّل.*إلى صفر/,
+    );
+
+    const [itemAfter] = await db()
+      .select()
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, res.sessionId));
+    expect(itemAfter.unitCost).toBe(itemBefore.unitCost);
+    expect(itemAfter.reviewApprovedBy).toBe(itemBefore.reviewApprovedBy);
+    expect(itemAfter.reviewApprovedAt?.getTime()).toBe(
+      itemBefore.reviewApprovedAt?.getTime(),
+    );
+    expect(itemAfter.reviewApprovedSnapshotHash).toBe(
+      itemBefore.reviewApprovedSnapshotHash,
+    );
+    expect(
+      await db()
+        .select()
+        .from(s.stocktakeCounts)
+        .where(eq(s.stocktakeCounts.sessionId, res.sessionId)),
+    ).toEqual(countsBefore);
+    const [sessionAfter] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, res.sessionId));
+    expect(sessionAfter.firstSignBy).toBe(sessionBefore.firstSignBy);
+    expect(sessionAfter.firstSignAt?.getTime()).toBe(
+      sessionBefore.firstSignAt?.getTime(),
+    );
+    expect(await openingMovements(res.sessionId)).toHaveLength(0);
+    expect(await db().select().from(s.branchStock)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.stocktakeDecisions)
+        .where(eq(s.stocktakeDecisions.sessionId, res.sessionId)),
+    ).toHaveLength(0);
+  });
+
+  it("يحجب ZERO_BASE_COST قبل العد ولا يسمح باعتماد الكمية إذا وصلت لاحقاً", async () => {
+    await enableOpeningMode();
+    const res = await mkOpening({ variantIds: [1] });
+    const aid = await firstAssignmentId(res.sessionId);
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "0.00" })
+      .where(eq(s.productVariants.id, 1));
+
+    const beforeCount = await computeStocktakeReview(res.sessionId, {
+      viewerId: MGR.userId,
+    });
+    expect(beforeCount.rows[0].rawCount).toBeNull();
+    expect(beforeCount.valuationIntegrity.rows).toEqual([
+      expect.objectContaining({
+        variantId: 1,
+        reason: "ZERO_BASE_COST",
+        blocking: true,
+        snapshotUnitCost: "250.00",
+        currentBaseUnitCost: "0.00",
+      }),
+    ]);
+    await expectTrpc(
+      refreshOpeningValuationBasis(
+        {
+          sessionId: res.sessionId,
+          expectedDigest: beforeCount.valuationIntegrity.digest,
+          reason: "محاولة صفر اللقطة قبل وصول العد يجب أن تُرفض",
+        },
+        ADMIN,
+      ),
+      "PRECONDITION_FAILED",
+      /تكلفة أساس صفرية|لن يحوّل.*إلى صفر/,
+    );
+    const [untouched] = await db()
+      .select()
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, res.sessionId));
+    expect(untouched.unitCost).toBe("250.00");
+    expect(untouched.reviewApprovedAt).toBeNull();
+    expect(
+      await db()
+        .select()
+        .from(s.stocktakeCounts)
+        .where(eq(s.stocktakeCounts.sessionId, res.sessionId)),
+    ).toHaveLength(0);
+
+    await insertCount(res.sessionId, 1, aid, 1_000);
+    await expectTrpc(
+      approveStocktakeItems({ sessionId: res.sessionId, variantIds: [1] }, MGR),
+      "PRECONDITION_FAILED",
+      /تضخم تكلفة\/وحدة/,
+    );
+    const [afterCount] = await db()
+      .select()
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, res.sessionId));
+    expect(afterCount.unitCost).toBe("250.00");
+    expect(afterCount.reviewApprovedAt).toBeNull();
+    expect(await openingMovements(res.sessionId)).toHaveLength(0);
+    expect(await db().select().from(s.branchStock)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+  });
+
   it("حركات OPENING بمرجع الجلسة + صفر قيود دفتر + openedAt للجميع (حتى المعدود صفراً بلا صفّ) + توقيعان", async () => {
     await enableOpeningMode();
     // الصنف ٣ عليه رصيد دفتري قديم ١٠ (أُدخل يدوياً بلا افتتاح) — العدّ ٧ يصحّحه بلا أي قيد.
-    await db().insert(s.branchStock).values({ variantId: 3, branchId: 1, quantity: 10 });
+    await db()
+      .insert(s.branchStock)
+      .values({ variantId: 3, branchId: 1, quantity: 10 });
 
     const res = await mkOpening(); // [1,2,3] بمنشئ MGR
     const aid = await firstAssignmentId(res.sessionId);
@@ -587,8 +1252,10 @@ describe("اعتماد الجلسة الافتتاحية — المسار الذ
     expect((await stockRow(3))?.quantity).toBe(7);
 
     // openedAt للجميع — بما فيهم المعدود صفراً (أُنشئ صفّه upsert).
-    for (const v of [1, 2, 3]) expect((await stockRow(v))?.openedAt).not.toBeNull();
-    for (const v of [1, 2, 3]) expect((await stockRow(v))?.lastCountedAt).not.toBeNull();
+    for (const v of [1, 2, 3])
+      expect((await stockRow(v))?.openedAt).not.toBeNull();
+    for (const v of [1, 2, 3])
+      expect((await stockRow(v))?.lastCountedAt).not.toBeNull();
 
     // حركات بمرجع OPENING + referenceId = الجلسة (لإعادة بناء «من فتتح» ولاستبعاد netAfter).
     const moves = await openingMovements(res.sessionId);
@@ -612,7 +1279,11 @@ describe("اعتماد الجلسة الافتتاحية — المسار الذ
     await insertCount(res.sessionId, 4, aid, 0); // يطابق الدفتر (لا صفّ = 0)
     await forceStocktakeReview(res.sessionId, MGR);
     await approveAllReadyItems(res.sessionId, MGR);
-    await expectTrpc(approveStocktake(res.sessionId, MGR2), "PRECONDITION_FAILED", /توقيع أول/);
+    await expectTrpc(
+      approveStocktake(res.sessionId, MGR2),
+      "PRECONDITION_FAILED",
+      /توقيع أول/,
+    );
     // والتوقيع الأول مقبول رغم صفر الفروقات (الاعتماد يختم openedAt — يحتاج أربع عيون).
     await firstSignStocktake(res.sessionId, MGR);
     const ok = await approveStocktake(res.sessionId, MGR2);
@@ -628,16 +1299,20 @@ describe("اعتماد الجلسة الافتتاحية — المسار الذ
     await insertCount(res.sessionId, 1, aid, 5, countAt);
 
     // بيعٌ لاحق للعدّ تجاوز المعدود (٨ قطع) — محاكاة حركة بيع بالسالب (ش٢ لاحقاً): حركة OUT + رصيد -8.
-    await db().insert(s.inventoryMovements).values({
-      variantId: 1,
-      branchId: 1,
-      movementType: "OUT",
-      quantity: 8,
-      referenceType: "INVOICE",
-      referenceId: 999,
-      createdAt: new Date(Date.now() - 10_000),
-    });
-    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: -8 });
+    await db()
+      .insert(s.inventoryMovements)
+      .values({
+        variantId: 1,
+        branchId: 1,
+        movementType: "OUT",
+        quantity: 8,
+        referenceType: "INVOICE",
+        referenceId: 999,
+        createdAt: new Date(Date.now() - 10_000),
+      });
+    await db()
+      .insert(s.branchStock)
+      .values({ variantId: 1, branchId: 1, quantity: -8 });
 
     await forceStocktakeReview(res.sessionId, MGR);
     await approveAllReadyItems(res.sessionId, MGR);
@@ -661,13 +1336,22 @@ describe("اعتماد الجلسة الافتتاحية — المسار الذ
     await approveAllReadyItems(res.sessionId, MGR);
     await firstSignStocktake(res.sessionId, MGR);
     await expireOpeningWindow();
-    await expectTrpc(approveStocktake(res.sessionId, MGR2), "PRECONDITION_FAILED", /مدّد النافذة/);
+    await expectTrpc(
+      approveStocktake(res.sessionId, MGR2),
+      "PRECONDITION_FAILED",
+      /مدّد النافذة/,
+    );
   });
 });
 
 describe("فصل المهام في الاعتماد الافتتاحي", () => {
-  async function readySession(assignments?: CreateStocktakeInput["assignments"]) {
-    const res = await mkOpening({ variantIds: [1], assignments: assignments ?? [{ name: "عامل أ", method: "PIN" }] });
+  async function readySession(
+    assignments?: CreateStocktakeInput["assignments"],
+  ) {
+    const res = await mkOpening({
+      variantIds: [1],
+      assignments: assignments ?? [{ name: "عامل أ", method: "PIN" }],
+    });
     const aid = await firstAssignmentId(res.sessionId);
     await insertCount(res.sessionId, 1, aid, 15);
     await forceStocktakeReview(res.sessionId, MGR);
@@ -679,9 +1363,17 @@ describe("فصل المهام في الاعتماد الافتتاحي", () => {
     await enableOpeningMode();
     const a = await readySession();
     await firstSignStocktake(a.sessionId, MGR2);
-    await expectTrpc(approveStocktake(a.sessionId, MGR), "FORBIDDEN", /أنشأتَ هذه الجلسة/);
+    await expectTrpc(
+      approveStocktake(a.sessionId, MGR),
+      "FORBIDDEN",
+      /أنشأتَ هذه الجلسة/,
+    );
     // الموقّع الأول نفسه لا يعتمد (السلوك القائم محفوظ).
-    await expectTrpc(approveStocktake(a.sessionId, MGR2), "FORBIDDEN", /مسؤول آخر/);
+    await expectTrpc(
+      approveStocktake(a.sessionId, MGR2),
+      "FORBIDDEN",
+      /مسؤول آخر/,
+    );
     // admin يعبر استثناء المنشئ (جلسة أنشأها admin نفسه).
     const b = await (async () => {
       const r = await mkOpening({ branchId: 2, variantIds: [2] }, ADMIN);
@@ -698,19 +1390,27 @@ describe("فصل المهام في الاعتماد الافتتاحي", () => {
 
   it("من كُلّف بالعدّ (تكليف USER) لا يعتمد", async () => {
     await enableOpeningMode();
-    const a = await readySession([{ name: "المدير الثاني يعدّ", method: "USER", userId: MGR2.userId }]);
+    const a = await readySession([
+      { name: "المدير الثاني يعدّ", method: "USER", userId: MGR2.userId },
+    ]);
     await firstSignStocktake(a.sessionId, MGR);
-    await expectTrpc(approveStocktake(a.sessionId, MGR2), "FORBIDDEN", /كُلّفتَ بالعدّ/);
+    await expectTrpc(
+      approveStocktake(a.sessionId, MGR2),
+      "FORBIDDEN",
+      /كُلّفتَ بالعدّ/,
+    );
   });
 });
 
 describe("انحدار: الجرد الدوري لم يتغيّر سلوكه أثناء وضع الافتتاح الفعّال", () => {
   it("جلسة NORMAL: قيدا عجز/زيادة بمفاتيح STOCKTAKE:* يُرحَّلان كما هما وحركاتها بمرجع STOCKTAKE", async () => {
     await enableOpeningMode(); // الوضع فعّال — يجب ألا يسرّب سلوكه للجرد الدوري
-    await db().insert(s.branchStock).values([
-      { variantId: 1, branchId: 1, quantity: 50 },
-      { variantId: 2, branchId: 1, quantity: 100 },
-    ]);
+    await db()
+      .insert(s.branchStock)
+      .values([
+        { variantId: 1, branchId: 1, quantity: 50 },
+        { variantId: 2, branchId: 1, quantity: 100 },
+      ]);
     const res = await createStocktakeSession(
       {
         name: "دوري",
@@ -732,14 +1432,25 @@ describe("انحدار: الجرد الدوري لم يتغيّر سلوكه أ�
     expect(ok.shortExpense).toBe("500.00");
     expect(ok.overGain).toBe("1500.00");
 
-    const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
+    const entries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "ADJUST"));
     const keys = entries.map((e) => String(e.dedupeKey)).sort();
-    expect(keys).toEqual([`STOCKTAKE:${res.sessionId}:OVER`, `STOCKTAKE:${res.sessionId}:SHORT`]);
+    expect(keys).toEqual([
+      `STOCKTAKE:${res.sessionId}:OVER`,
+      `STOCKTAKE:${res.sessionId}:SHORT`,
+    ]);
 
     const stMoves = await db()
       .select()
       .from(s.inventoryMovements)
-      .where(and(eq(s.inventoryMovements.referenceType, "STOCKTAKE"), eq(s.inventoryMovements.referenceId, res.sessionId)));
+      .where(
+        and(
+          eq(s.inventoryMovements.referenceType, "STOCKTAKE"),
+          eq(s.inventoryMovements.referenceId, res.sessionId),
+        ),
+      );
     expect(stMoves.length).toBe(2);
 
     // الجرد الدوري لا يفتتح: openedAt يبقى فارغاً (يُعدّ lastCountedAt فقط).

@@ -355,6 +355,8 @@ export const purchasesWarehouseProcedure = moduleProcedure(["warehouse", "manage
 export const inventoryReadProcedure = branchScopedProcedure.use(requireModule("inventory", "READ"));
 export const inventoryWarehouseProcedure = moduleProcedure(["warehouse", "manager"], "inventory", "FULL");
 export const inventoryManagerProcedure = moduleProcedure(["manager"], "inventory", "FULL");
+/** إنقاذ مخزني شديد الحساسية: بوابة inventory:FULL ثم admin و2FA مركزياً. */
+export const inventoryAdminProcedure = inventoryManagerProcedure.use(requireAdmin);
 // أسماء توافقية للراوترات القائمة؛ سلطة ملف العميل انتقلت فعلياً إلى وحدة CRM.
 export const customersReadProcedure = protectedProcedure.use(requireModule("crm", "READ"));
 // print_operator (٧/٨): مرآة POS_STATION_GATES.RECEPTION بالضبط (shared/permissions.ts) — نفس

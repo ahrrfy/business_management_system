@@ -13,7 +13,12 @@ import {
 import { money, toDbMoney } from "../money";
 import { requireDb } from "../tx";
 import { assertBranchAccess, loadSessionHeader } from "./internal";
-import { buildReviewSession, loadReviewCore, willAdjust, type ReviewRow } from "./reviewCore";
+import {
+  buildReviewSession,
+  loadReviewCore,
+  willAdjust,
+  type ReviewRow,
+} from "./reviewCore";
 
 /**
  * بيانات المحضر النهائي. للجلسة المعتمدة المرجع هو «القرارات المثبَّتة» (finalQty/diffQty/value
@@ -21,7 +26,11 @@ import { buildReviewSession, loadReviewCore, willAdjust, type ReviewRow } from "
  */
 export async function getStocktakeReport(sessionId: number) {
   const db = requireDb();
-  const { s, rows, directUnderThreshold } = await loadReviewCore(db, sessionId, true);
+  const { s, rows, directUnderThreshold } = await loadReviewCore(
+    db,
+    sessionId,
+    true,
+  );
   const approved = s.status === "APPROVED";
 
   // قرارات مخزّنة (المرجع بعد الاعتماد).
@@ -43,26 +52,50 @@ export async function getStocktakeReport(sessionId: number) {
     .where(eq(stocktakeDecisions.sessionId, sessionId));
   const storedMap = new Map(stored.map((d) => [Number(d.variantId), d]));
 
-  const reportRows = rows.map(({ decidedBy: _db2, openConflict: _oc, ...r }) => {
-    const d = storedMap.get(r.variantId);
-    if (approved && d) {
-      // قيم لحظة الاعتماد هي الحقيقة التاريخية للمحضر.
-      return {
-        ...r,
-        adjustedCount: d.finalQty ?? r.adjustedCount,
-        diff: d.diffQty ?? r.diff,
-        value: d.value == null ? r.value : String(d.value),
-        decision: {
-          action: d.action,
-          reason: d.reason,
-          note: d.note,
-          decidedByName: d.decidedBy == null ? null : (d.decidedByName ?? "—"),
-          autoApplied: !!d.autoApplied,
-        },
-      };
-    }
-    return r;
-  });
+  const reportRows = rows.map(
+    ({ decidedBy: _db2, openConflict: _oc, ...r }) => {
+      const d = storedMap.get(r.variantId);
+      if (approved && d) {
+        // قيم لحظة الاعتماد هي الحقيقة التاريخية للمحضر.
+        return {
+          ...r,
+          adjustedCount: d.finalQty ?? r.adjustedCount,
+          diff: d.diffQty ?? r.diff,
+          value: d.value == null ? r.value : String(d.value),
+          decision: {
+            action: d.action,
+            reason: d.reason,
+            note: d.note,
+            decidedByName:
+              d.decidedBy == null ? null : (d.decidedByName ?? "—"),
+            autoApplied: !!d.autoApplied,
+          },
+        };
+      }
+      // مسودة المحضر يجب أن تعكس ما سينفّذه finalize فعلاً، لا القرارات
+      // المخزّنة فقط. هذا حاسم في OPENING لأن الفروق المباشرة تُثبَّت
+      // تلقائياً ولا تُكتب قراراتها إلا لحظة الاعتماد النهائي.
+      if (
+        !approved &&
+        r.decision == null &&
+        r.diff != null &&
+        r.diff !== 0 &&
+        willAdjust(r as unknown as ReviewRow, directUnderThreshold)
+      ) {
+        return {
+          ...r,
+          decision: {
+            action: "ADJUST" as const,
+            reason: "UNSPECIFIED",
+            note: null,
+            decidedByName: null,
+            autoApplied: true,
+          },
+        };
+      }
+      return r;
+    },
+  );
 
   // إجماليات المحضر: من القيم المعروضة نفسها (المخزّنة للمعتمدة، الحيّة للمعاينة).
   let counted = 0;
@@ -89,24 +122,37 @@ export async function getStocktakeReport(sessionId: number) {
 
   // تحليل الانكماش حسب السبب: التسويات المنفَّذة فقط (action=ADJUST و diff≠0).
   const shrinkMap = new Map<string, { count: number; value: Decimal }>();
-  for (const r of reportRows) {
-    if (!r.decision || r.decision.action !== "ADJUST" || r.diff == null || r.diff === 0) continue;
-    const key = r.decision.reason;
-    const agg = shrinkMap.get(key) ?? { count: 0, value: money(0) };
-    agg.count += 1;
-    agg.value = agg.value.plus(money(r.value ?? 0));
-    shrinkMap.set(key, agg);
+  if (s.sessionType !== "OPENING") {
+    for (const r of reportRows) {
+      if (
+        !r.decision ||
+        r.decision.action !== "ADJUST" ||
+        r.diff == null ||
+        r.diff === 0
+      )
+        continue;
+      const key = r.decision.reason;
+      const agg = shrinkMap.get(key) ?? { count: 0, value: money(0) };
+      agg.count += 1;
+      agg.value = agg.value.plus(money(r.value ?? 0));
+      shrinkMap.set(key, agg);
+    }
   }
 
   // قيد الدفتر: عجز/زيادة المسوّى فعلاً (يطابق dedupeKey STOCKTAKE:<id>:SHORT/:OVER).
   let shortExpense = money(0);
   let overGain = money(0);
-  for (const r of reportRows) {
-    const adjusted = r.decision ? r.decision.action === "ADJUST" : !approved && willAdjust(r as unknown as ReviewRow, directUnderThreshold);
-    if (!adjusted || r.diff == null || r.diff === 0) continue;
-    const v = money(r.value ?? 0);
-    if (r.diff < 0) shortExpense = shortExpense.plus(v.abs());
-    else overGain = overGain.plus(v);
+  if (s.sessionType !== "OPENING") {
+    for (const r of reportRows) {
+      const adjusted = r.decision
+        ? r.decision.action === "ADJUST"
+        : !approved &&
+          willAdjust(r as unknown as ReviewRow, directUnderThreshold);
+      if (!adjusted || r.diff == null || r.diff === 0) continue;
+      const v = money(r.value ?? 0);
+      if (r.diff < 0) shortExpense = shortExpense.plus(v.abs());
+      else overGain = overGain.plus(v);
+    }
   }
 
   return {
@@ -127,12 +173,18 @@ export async function getStocktakeReport(sessionId: number) {
       count: agg.count,
       value: toDbMoney(agg.value),
     })),
-    ledger: { shortExpense: toDbMoney(shortExpense), overGain: toDbMoney(overGain) },
+    ledger: {
+      shortExpense: toDbMoney(shortExpense),
+      overGain: toDbMoney(overGain),
+    },
   };
 }
 
 /** قوائم العدّ الورقية — عمياء بالكامل: صنف/باركود/وحدة فقط، بلا expectedQty ولا تكلفة. */
-export async function getStocktakeCountSheets(sessionId: number, opts: { restrictBranchId?: number | null } = {}) {
+export async function getStocktakeCountSheets(
+  sessionId: number,
+  opts: { restrictBranchId?: number | null } = {},
+) {
   const db = requireDb();
   const s = await loadSessionHeader(db, sessionId);
   assertBranchAccess(Number(s.branchId), opts.restrictBranchId);
@@ -159,13 +211,36 @@ export async function getStocktakeCountSheets(sessionId: number, opts: { restric
       baseUnit: productUnits.unitName,
     })
     .from(stocktakeItems)
-    .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+    .innerJoin(
+      productVariants,
+      eq(stocktakeItems.variantId, productVariants.id),
+    )
     .innerJoin(products, eq(productVariants.productId, products.id))
-    .leftJoin(productUnits, and(eq(productUnits.variantId, stocktakeItems.variantId), eq(productUnits.isBaseUnit, true)))
-    .where(and(eq(stocktakeItems.sessionId, sessionId), eq(products.isService, false)))
+    .leftJoin(
+      productUnits,
+      and(
+        eq(productUnits.variantId, stocktakeItems.variantId),
+        eq(productUnits.isBaseUnit, true),
+      ),
+    )
+    .where(
+      and(
+        eq(stocktakeItems.sessionId, sessionId),
+        eq(products.isService, false),
+      ),
+    )
     .orderBy(asc(products.name), asc(productVariants.id));
 
-  const byAssignment = new Map<number, { productName: string; variantName: string | null; sku: string; barcode: string | null; baseUnit: string | null }[]>();
+  const byAssignment = new Map<
+    number,
+    {
+      productName: string;
+      variantName: string | null;
+      sku: string;
+      barcode: string | null;
+      baseUnit: string | null;
+    }[]
+  >();
   const dedup = new Set<number>();
   for (const r of itemRows) {
     const v = Number(r.variantId);
@@ -195,7 +270,12 @@ export async function getStocktakeCountSheets(sessionId: number, opts: { restric
       createdByName: s.createdByName ?? "—",
     },
     sheets: asg.map((a) => ({
-      assignment: { id: Number(a.id), name: a.name, method: a.method, zone: a.zone },
+      assignment: {
+        id: Number(a.id),
+        name: a.name,
+        method: a.method,
+        zone: a.zone,
+      },
       items: byAssignment.get(Number(a.id)) ?? [],
     })),
   };
