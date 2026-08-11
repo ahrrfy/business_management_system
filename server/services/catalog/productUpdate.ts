@@ -2,6 +2,7 @@
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
+import { assertBaseUnitSwapSafe } from "./baseUnitGuard";
 import { extractInsertId } from "../../lib/insertId";
 import { assertValidUnitFactors } from "./unitFactors";
 import { toDbMoney } from "../money";
@@ -96,6 +97,10 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
 
       // تحقّق معامل التحويل خادمياً (تدقيق ١٧/٧): الأساس ١، غير الأساس عدد صحيح > ١.
       assertValidUnitFactors(v.units);
+
+      // تدقيق ١١/٨ (#2 — مراجعة Codex): نفس حارس المسار الحديث — امنع تبديل هويّة وحدة الأساس لمتغيّرٍ
+      // له رصيدٌ أو حركاتٌ سابقة (يُفسد تفسير الأرصدة/الحركات المخزَّنة بالأساس)، فلا يتسرّب عبر هذا المسار.
+      if (v.id) await assertBaseUnitSwapSafe(tx, v.id, v.units.find((u) => u.isBaseUnit)?.unitName ?? "");
 
       // Existing units for this variant.
       const existing = await tx.select().from(productUnits).where(eq(productUnits.variantId, v.id));

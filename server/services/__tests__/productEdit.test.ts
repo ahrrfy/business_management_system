@@ -12,6 +12,8 @@ import { getProductForVariantEdit, updateProductWithVariants } from "../productE
 const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
+  "inventoryMovements",
+  "accountingEntries",
   "branchStock",
   "productPrices",
   "productUnits",
@@ -116,6 +118,39 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(rows[0].costPrice).toBe("550.00");
     const prod = (await db().select().from(s.products).where(eq(s.products.id, 1)))[0];
     expect(prod.name).toBe("دفتر ١٠٠ ورقة (مُحدَّث)");
+  });
+
+  const swapToBase = (unitName: string) => ({
+    productId: 1,
+    unitTemplate: [{ unitName, conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] }],
+    variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { [unitName]: "BC-U-1" } }],
+  });
+
+  it("#2 (مراجعة Codex): تبديل وحدة الأساس لصنفٍ برصيد يُرفض", async () => {
+    // الصنف ١ مبذور برصيد 40 (branchStock) بوحدة الأساس «قطعة».
+    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/رصيدٌ أو حركات/);
+    const [bs] = await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1));
+    expect(bs.quantity).toBe(40); // ذرّية
+  });
+
+  it("#2 (مراجعة Codex P1): صفر رصيدٍ لكن حركةٌ تاريخية ⇒ التبديل مرفوض (الحركات مخزَّنة بالأساس)", async () => {
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
+    await db().insert(s.inventoryMovements).values({ variantId: 1, branchId: 1, movementType: "OUT", quantity: 5, referenceType: "INVOICE", createdBy: 1 });
+    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/رصيدٌ أو حركات/);
+  });
+
+  it("#2: صفر رصيدٍ وبلا حركاتٍ سابقة ⇒ التبديل مسموح", async () => {
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
+    const r = await updateProductWithVariants(swapToBase("درزن"), actor);
+    expect(r).toBeTruthy();
+  });
+
+  it("#2: إعادة تسمية لا تبدّل الهويّة ⇒ لا يتأثّر التعديل العاديّ برصيد (نفس الأساس «قطعة»)", async () => {
+    const r = await updateProductWithVariants(
+      { productId: 1, name: "دفتر", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    );
+    expect(r.added).toBe(0); // الأساس ما زال «قطعة» فلا يُفعَّل الحارس
   });
 
   it("إضافة متغيّر جديد (بلا id) ⇒ صفّ جديد + added=1، والقديم يبقى كما هو", async () => {

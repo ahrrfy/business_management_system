@@ -14,6 +14,7 @@ import { branchStock, productImages, productPrices, productUnits, productVariant
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
+import { assertBaseUnitSwapSafe } from "./catalog/baseUnitGuard";
 import { assertConsignmentValid } from "./catalog/productCreate";
 import { postCostRevaluation } from "./costRevaluation";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
@@ -513,6 +514,8 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       .where(eq(products.id, input.productId));
 
     let added = 0;
+    // تدقيق ١١/٨ (#2): اسم وحدة الأساس الجديدة (القالب مشترك) — الحارس يفحص كل متغيّرٍ قائمٍ به رصيد/حركة.
+    const newBaseName = input.unitTemplate.find((u) => u.isBaseUnit)!.unitName;
     for (const v of input.variants) {
       const vals = {
         sku: v.sku.trim(),
@@ -541,6 +544,9 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         variantId = extractInsertId(res);
         added++;
       }
+      // تدقيق ١١/٨ (#2 — بعد مراجعة Codex): امنع تبديل هويّة وحدة الأساس لمتغيّرٍ قائمٍ له رصيدٌ أو
+      // حركاتٌ سابقة (يُفسد تفسير الأرصدة/الحركات المخزَّنة بالأساس) — قبل upsert الوحدات، تحت قفل الرصيد.
+      if (v.id) await assertBaseUnitSwapSafe(tx, variantId, newBaseName);
       await upsertVariantUnits(tx, variantId, input.unitTemplate, v.unitBarcodes, v.baseRetail);
 
       // product-variants: توفيق صورة اللون. image=undefined ⇒ لا نلمسها؛ string ⇒ تُعيَّن؛ null/"" ⇒ تُزال.
