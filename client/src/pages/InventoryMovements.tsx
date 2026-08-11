@@ -2,21 +2,11 @@ import { CopyInline } from "@/components/CopyButton";
 import { RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -24,20 +14,11 @@ import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 /* ============================ Constants & helpers ============================ */
 
 type MovementType = "IN" | "OUT" | "ADJUST" | "RETURN" | "TRANSFER_IN" | "TRANSFER_OUT";
-type ManualType = "IN" | "OUT" | "RETURN";
-type Reason =
-  | "STOCK_TAKE"
-  | "DAMAGE"
-  | "SAMPLE"
-  | "INTERNAL_USE"
-  | "GIFT"
-  | "CORRECTION"
-  | "OTHER";
 
 const MTYPE_LABEL: Record<MovementType, string> = {
   IN: "وارد",
@@ -48,15 +29,6 @@ const MTYPE_LABEL: Record<MovementType, string> = {
   TRANSFER_OUT: "تحويل صادر",
 };
 
-const REASON_LABEL: Record<Reason, string> = {
-  STOCK_TAKE: "جرد",
-  DAMAGE: "تالف",
-  SAMPLE: "عيّنة",
-  INTERNAL_USE: "استخدام داخلي",
-  GIFT: "إهداء",
-  CORRECTION: "تصحيح",
-  OTHER: "أخرى",
-};
 
 // تعريب referenceType (نصّ خام في DB يُكتَب من عشرات نقاط الخدمة) — القيم غير المدرَجة تُعرَض
 // كما هي (fallback في MovementRefBadge أدناه)، فلا تُخفي حركةً بمرجعٍ نادر عن الفلتر أو العرض.
@@ -115,19 +87,17 @@ function TypeBadge({ type }: { type: MovementType }) {
   );
 }
 
-function signedQty(type: MovementType, qty: number): string {
-  const abs = Math.abs(qty);
-  if (POSITIVE_TYPES.has(type)) return `+${fmtInt(abs)}`;
-  if (NEGATIVE_TYPES.has(type)) return `−${fmtInt(abs)}`;
-  // ADJUST: الخادم يخزّن abs(delta) بلا إشارة (انظر setStock في inventoryService) —
-  // لا نتظاهر بإشارة لا نعرفها؛ الاتجاه يُستنبط من notes ("من X إلى Y").
-  return fmtInt(abs);
+// الكمية الموقَّعة تأتي من الخادم (signedQty عبر signedMoveQty — نفس مصدر الكاردكس/الجرد)، تشمل اتجاه
+// ADJUST المستنبَط من علامة «(فرق ±D)». هنا نُنسّق العرض فقط — لا تخمين اتجاه في العميل (تدقيق ١١/٨).
+function fmtSignedQty(signed: number): string {
+  if (signed > 0) return `+${fmtInt(signed)}`;
+  if (signed < 0) return `−${fmtInt(Math.abs(signed))}`;
+  return fmtInt(0);
 }
 
 /* ============================ Page ============================ */
 
 type RichRow = RouterOutputs["inventory"]["movementsRich"]["rows"][number];
-type PosRow = RouterOutputs["catalog"]["posList"][number];
 
 const PAGE_SIZE = 50;
 
@@ -136,7 +106,6 @@ export default function InventoryMovements() {
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
   const canPickBranch = role === "admin" || role === "manager";
-  const canCreateManual = role === "admin" || role === "manager" || role === "warehouse";
   const myBranch = me.data?.branchId ?? 1;
 
   /* ----- filters ----- */
@@ -192,109 +161,7 @@ export default function InventoryMovements() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = page + 1;
 
-  /* ----- manual movement dialog ----- */
-  const [open, setOpen] = useState(false);
-  const [mSearch, setMSearch] = useState("");
-  const [mPicked, setMPicked] = useState<PosRow | null>(null);
-  const [mType, setMType] = useState<ManualType>("IN");
-  const [mProductUnitId, setMProductUnitId] = useState<number | "">("");
-  const [mQty, setMQty] = useState("");
-  const [mReason, setMReason] = useState<Reason>("STOCK_TAKE");
-  const [mNotes, setMNotes] = useState("");
-  const [mError, setMError] = useState("");
-  const [pageMsg, setPageMsg] = useState("");
   const [exporting, setExporting] = useState(false);
-
-  // For manual movement: warehouse user is locked to own branch; admin/manager use picked branch (or own if none picked).
-  const manualBranchId = canPickBranch ? (branchId ?? myBranch) : myBranch;
-  const manualBranchName =
-    (branches.data ?? []).find((b) => Number(b.id) === Number(manualBranchId))?.name ??
-    (me.data?.branchId === manualBranchId ? "فرعي" : `فرع #${manualBranchId}`);
-
-  const searchResults = trpc.catalog.posList.useQuery(
-    { branchId: Number(manualBranchId), tier: "RETAIL", query: mSearch, limit: 200 },
-    { enabled: open && mSearch.trim().length > 0 }
-  );
-
-  // Unique variants from search (one row per variant; pick base unit when available).
-  const searchVariants = useMemo(() => {
-    const byVariant = new Map<number, PosRow>();
-    for (const r of searchResults.data ?? []) {
-      const cur = byVariant.get(r.variantId);
-      if (!cur || (r.isBaseUnit && !cur.isBaseUnit)) {
-        byVariant.set(r.variantId, r);
-      }
-    }
-    return Array.from(byVariant.values());
-  }, [searchResults.data]);
-
-  // For the picked variant, list its units (so user can pick the unit for quantity entry).
-  const pickedVariantUnits = useMemo(() => {
-    if (!mPicked) return [];
-    const all = searchResults.data ?? [];
-    const sameVariant = all.filter((r) => r.variantId === mPicked.variantId);
-    if (sameVariant.length > 0) return sameVariant;
-    // fallback: just the picked row itself
-    return [mPicked];
-  }, [mPicked, searchResults.data]);
-
-  function resetDialog() {
-    setMSearch("");
-    setMPicked(null);
-    setMType("IN");
-    setMProductUnitId("");
-    setMQty("");
-    setMReason("STOCK_TAKE");
-    setMNotes("");
-    setMError("");
-  }
-
-  // idempotency (تدقيق ١٧/٧): مفتاح ثابت لكل محاولة حركة — يُبقى عند الفشل (إعادة المحاولة لا تكرّر
-  // الخصم/الإضافة) ويتجدّد بعد النجاح فقط.
-  const manualReqIdRef = useRef<string>(crypto.randomUUID());
-  const createManual = trpc.inventory.createManualMovement.useMutation({
-    onSuccess: async () => {
-      manualReqIdRef.current = crypto.randomUUID();
-      setPageMsg("تمت إضافة الحركة بنجاح.");
-      setOpen(false);
-      resetDialog();
-      await Promise.all([
-        utils.inventory.movementsRich.invalidate(),
-        utils.inventory.onHand.invalidate(),
-        utils.inventory.movements.invalidate(),
-      ]);
-      // auto-clear toast after 4s
-      setTimeout(() => setPageMsg(""), 4000);
-    },
-    onError: (e) => setMError(e.message),
-  });
-
-  async function submitManual() {
-    setMError("");
-    if (!mPicked) return setMError("اختر متغيّراً أولاً.");
-    if (!mProductUnitId) return setMError("اختر الوحدة.");
-    const n = Number(mQty);
-    if (!Number.isFinite(n) || n <= 0) return setMError("الكمية يجب أن تكون رقماً موجباً.");
-    if (
-      !(await confirm({
-        variant: "warning",
-        title: "تأكيد إضافة حركة يدوية",
-        description: "إضافة حركة يدوية قد تؤثّر على الأرصدة. تأكّد من البيانات.",
-        confirmText: "حفظ",
-      }))
-    )
-      return;
-    createManual.mutate({
-      variantId: mPicked.variantId,
-      branchId: Number(manualBranchId),
-      movementType: mType,
-      productUnitId: Number(mProductUnitId),
-      quantity: String(n),
-      reason: mReason,
-      notes: mNotes.trim() || undefined,
-      clientRequestId: manualReqIdRef.current,
-    });
-  }
 
   /* ----- export ----- */
   // تصدير كل النتائج المطابقة للفلاتر (لا الصفحة المعروضة): يكرّر offset عبر movementsRich
@@ -321,7 +188,9 @@ export default function InventoryMovements() {
         { key: "sku", header: "SKU" },
         { key: "movementType", header: "النوع", map: (r) => MTYPE_LABEL[r.movementType as MovementType] ?? r.movementType },
         // Excel: كمية مطلقة كرقم خام (للفرز/الجمع)؛ الاتجاه عبر عمود النوع.
-        { key: "quantity", header: "الكمية", map: (r) => Math.abs(r.quantity) },
+        // Excel: الكمية **الموقَّعة** (تدقيق ١١/٨) — تُجمَع إلى صافي تغيّر الرصيد وتطابق الشاشة/الطباعة
+        // (كانت قيمةً مطلقةً تتجاهل الاتجاه فلا يصحّ جمعها).
+        { key: "signedQty", header: "الكمية (موقَّعة)", map: (r) => r.signedQty },
         { key: "branchName", header: "الفرع" },
         { key: "relatedBranchName", header: "فرع مرتبط", map: (r) => r.relatedBranchName ?? "" },
         {
@@ -344,26 +213,9 @@ export default function InventoryMovements() {
     <div className="space-y-4" dir="rtl">
       <PageHeader
         title="حركات المخزون"
-        description="السجلّ الكامل للوارد والصادر، التحويلات، التسويات، والمرتجعات. أنشئ حركات يدوية للجرد والتالف."
-        actions={
-          canCreateManual ? (
-            <Button
-              onClick={() => {
-                resetDialog();
-                setOpen(true);
-              }}
-            >
-              + حركة يدوية
-            </Button>
-          ) : undefined
-        }
+        description="السجلّ الكامل للوارد والصادر، التحويلات، التسويات، والمرتجعات — للقراءة والتدقيق. لإضافة مخزون استعمل الشراء أو المرتجعات، ولأيّ تصحيح استعمل «تسوية الرصيد» من شاشة المخزون (يعتمده مسؤول آخر)."
       />
 
-      {pageMsg && (
-        <div className="rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm p-2">
-          {pageMsg}
-        </div>
-      )}
 
       {/* Filters */}
       <Card>
@@ -519,7 +371,7 @@ export default function InventoryMovements() {
                       date: fmtDate(r.createdAt),
                       product: variantLine(r).primary,
                       type: MTYPE_LABEL[t] ?? r.movementType,
-                      qty: signedQty(t, r.quantity),
+                      qty: fmtSignedQty(r.signedQty),
                       branch: r.relatedBranchName
                         ? `${r.branchName} ← ${r.relatedBranchName}`
                         : r.branchName,
@@ -576,15 +428,15 @@ export default function InventoryMovements() {
                     </td>
                     <td
                       className={`p-2 text-center tabular-nums font-semibold ${
-                        POSITIVE_TYPES.has(t)
+                        r.signedQty > 0
                           ? "text-money-positive"
-                          : NEGATIVE_TYPES.has(t)
+                          : r.signedQty < 0
                           ? "text-money-negative"
-                          : "text-[var(--stock-low)]"
+                          : "text-muted-foreground"
                       }`}
                       dir="ltr"
                     >
-                      {signedQty(t, r.quantity)}
+                      {fmtSignedQty(r.signedQty)}
                     </td>
                     <td className="p-2 text-xs">
                       {r.branchName}
@@ -674,178 +526,6 @@ export default function InventoryMovements() {
         </div>
       </Card>
 
-      {/* Manual movement dialog */}
-      <Dialog
-        open={open}
-        onOpenChange={(v) => {
-          setOpen(v);
-          if (!v) resetDialog();
-        }}
-      >
-        <DialogContent className="sm:max-w-3xl" dir="rtl">
-          <DialogHeader>
-            <DialogTitle>حركة مخزون يدوية</DialogTitle>
-            <DialogDescription>
-              للجرد، التالف، العيّنات، الإهداء، أو التصحيح. تُسجَّل كحركة تدقيق على الفرع{" "}
-              <span className="font-semibold">{manualBranchName}</span>.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-3">
-            {/* Variant search */}
-            <div className="space-y-1">
-              <Label>ابحث عن متغيّر (اسم/SKU/باركود)</Label>
-              <div className="relative">
-                <Input
-                  value={mSearch}
-                  onChange={(e) => setMSearch(e.target.value)}
-                  placeholder="اكتب للبحث…"
-                />
-                {mSearch.trim() && (searchVariants.length > 0 || searchResults.isFetching) && (
-                  <div className="absolute z-10 mt-1 w-full bg-popover border rounded-md shadow max-h-60 overflow-auto">
-                    {searchResults.isFetching && (
-                      <div className="p-2 text-xs text-muted-foreground text-center">
-                        جارٍ البحث…
-                      </div>
-                    )}
-                    {searchVariants.map((v) => (
-                      <button
-                        key={v.variantId}
-                        type="button"
-                        className="block w-full text-right px-3 py-2 text-sm hover:bg-accent"
-                        onClick={() => {
-                          setMPicked(v);
-                          setMProductUnitId(v.productUnitId);
-                          setMSearch("");
-                        }}
-                      >
-                        <div className="font-medium">{variantLine(v).primary}</div>
-                        <div className="text-xs text-muted-foreground font-mono flex justify-between" dir="ltr">
-                          <span>{v.sku}</span>
-                          <span>متاح {fmtInt(v.stockBase)}</span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Picked variant card */}
-            {mPicked && (
-              <div className="rounded-md bg-muted/40 p-3 text-sm">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium">{variantLine(mPicked).primary}</div>
-                    <div className="text-xs text-muted-foreground font-mono" dir="ltr">
-                      {mPicked.sku}
-                    </div>
-                  </div>
-                  <div className="text-left">
-                    <div className="text-xs text-muted-foreground">المتاح</div>
-                    <div className="font-semibold tabular-nums" dir="ltr">
-                      {fmtInt(mPicked.stockBase)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Form grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              <div className="space-y-1">
-                <Label>النوع *</Label>
-                <select
-                  className={selectCls}
-                  value={mType}
-                  onChange={(e) => setMType(e.target.value as ManualType)}
-                >
-                  <option value="IN">وارد</option>
-                  <option value="RETURN">مرتجع</option>
-                </select>
-                {/* فصل مهام #٦: الشطب (OUT) يمرّ بتسوية معتمَدة لا حركةً فوريّة. */}
-                <p className="text-[11px] text-muted-foreground">للشطب/النقص استعمل «تسوية الرصيد» من شاشة المخزون (يعتمده مديرٌ آخر).</p>
-              </div>
-
-              <div className="space-y-1">
-                <Label>الوحدة *</Label>
-                <select
-                  className={selectCls}
-                  value={mProductUnitId === "" ? "" : String(mProductUnitId)}
-                  onChange={(e) =>
-                    setMProductUnitId(e.target.value ? Number(e.target.value) : "")
-                  }
-                  disabled={!mPicked}
-                >
-                  <option value="">— اختر —</option>
-                  {pickedVariantUnits.map((u) => (
-                    <option key={u.productUnitId} value={u.productUnitId}>
-                      {u.unitName}
-                      {u.isBaseUnit ? " (أساس)" : ` × ${u.conversionFactor}`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <Label>الكمية *</Label>
-                <Input
-                  dir="ltr"
-                  value={mQty}
-                  onChange={(e) => setMQty(e.target.value)}
-                  placeholder="0"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label>السبب *</Label>
-                <select
-                  className={selectCls}
-                  value={mReason}
-                  onChange={(e) => setMReason(e.target.value as Reason)}
-                >
-                  {(Object.keys(REASON_LABEL) as Reason[]).map((r) => (
-                    <option key={r} value={r}>
-                      {REASON_LABEL[r]}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1 md:col-span-2 lg:col-span-3">
-                <Label>ملاحظات (اختياري — حتى 500 حرف)</Label>
-                <Textarea
-                  rows={2}
-                  value={mNotes}
-                  onChange={(e) => setMNotes(e.target.value.slice(0, 500))}
-                  placeholder="تفاصيل إضافية…"
-                />
-              </div>
-            </div>
-
-            {mError && <p className="text-sm text-destructive">{mError}</p>}
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setOpen(false);
-                resetDialog();
-              }}
-              disabled={createManual.isPending}
-            >
-              إلغاء
-            </Button>
-            <Button
-              onClick={submitManual}
-              disabled={createManual.isPending || !mPicked || !mProductUnitId || !mQty}
-            >
-              {createManual.isPending ? "جارٍ الحفظ…" : "حفظ الحركة"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

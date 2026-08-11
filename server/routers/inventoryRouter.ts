@@ -21,6 +21,7 @@ import {
 } from "../services/transferService";
 import { countReorderAlerts, createReorderDraft, listReorderAlerts, setReorderThresholds } from "../services/inventory/reorder";
 import { countSeasonBelowTarget, listSeasonPlan, searchSeasonCandidates, setSeasonTarget } from "../services/inventory/seasonPlanning";
+import { signedMoveQty } from "../services/inventoryService";
 import {
   requestStockAdjustment,
   approveStockAdjustment,
@@ -767,6 +768,9 @@ export const inventoryRouter = router({
           relatedBranchId: r.relatedBranchId == null ? null : Number(r.relatedBranchId),
           referenceId: r.referenceId == null ? null : Number(r.referenceId),
           createdBy: r.createdBy == null ? null : Number(r.createdBy),
+          // تدقيق ١١/٨ (S2): الكمية الموقَّعة من مصدر الحقيقة الخادميّ (signedMoveQty — نفس الكاردكس/الجرد)،
+          // تشمل اتجاه ADJUST المستنبَط من علامة «(فرق ±D)» في notes. للعرض/الطباعة/التصدير الموقَّع بلا تخمينٍ عميليّ.
+          signedQty: signedMoveQty(r.movementType, r.quantity, r.notes),
         })),
         total,
         hasMore,
