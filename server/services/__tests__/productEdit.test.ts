@@ -322,6 +322,52 @@ describe("updateProductWithVariants — الكتابة", () => {
     ).rejects.toThrow(/اسم وحدةٍ مكرّر/);
   });
 
+  it("#2 (Codex جولة٨ P1): المسار الحامل للمعرّف — وحدةٌ بمعرّفٍ يخصّ متغيّراً آخر ⇒ يُرفض (لا تعطيل أساسٍ أجنبيّ)", async () => {
+    // id=3 يخصّ المتغيّر 2 (قلم حبر). تمريره ضمن وحدات المتغيّر 1 كان يُحدِّثه بالمعرّف فيُعطّل أساسه.
+    await expect(
+      updateProduct(
+        {
+          productId: 1,
+          name: "دفتر",
+          variants: [
+            {
+              id: 1,
+              sku: "NB-100",
+              costPrice: "550",
+              units: [
+                { id: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+                { id: 3, unitName: "دخيل", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+              ],
+            },
+          ],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/لا تخصّه/);
+  });
+
+  it("#2 (Codex جولة٨ P2): متغيّرٌ بأكثر من وحدة أساسٍ نشطةٍ متساويةِ الأولويّة (شاذّ) ⇒ أيّ تعديلٍ يُرفض", async () => {
+    await db().update(s.productUnits).set({ isBaseUnit: true }).where(eq(s.productUnits.id, 2)); // درزن أيضاً أساسٌ نشط
+    await expect(
+      updateProductWithVariants(
+        { productId: 1, name: "دفتر", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+        actor,
+      ),
+    ).rejects.toThrow(/أكثر من وحدة أساس/);
+  });
+
+  it("#2 (Codex جولة٨ P1): متغيّرٌ برصيدٍ بلا أيّ وحدة (يتيمٌ/استيرادٌ ناقص) ⇒ تعيين أساسٍ أوّل مرّة يُرفض", async () => {
+    await db().insert(s.products).values({ id: 7, name: "يتيم" });
+    await db().insert(s.productVariants).values({ id: 7, productId: 7, sku: "ORPH-7", costPrice: "100" });
+    await db().insert(s.branchStock).values({ variantId: 7, branchId: 1, quantity: 10 }); // رصيدٌ بلا وحدات
+    await expect(
+      updateProductWithVariants(
+        { productId: 7, unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "500.00" }] }], variants: [{ id: 7, sku: "ORPH-7", costPrice: "100", unitBarcodes: {} }] },
+        actor,
+      ),
+    ).rejects.toThrow(/تعيين الأساس/);
+  });
+
   it("إضافة متغيّر جديد (بلا id) ⇒ صفّ جديد + added=1، والقديم يبقى كما هو", async () => {
     const r = await updateProductWithVariants(
       {
