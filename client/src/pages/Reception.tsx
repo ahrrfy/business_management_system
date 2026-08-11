@@ -56,6 +56,7 @@ import ReceptionOrderQueue from "@/components/reception/ReceptionOrderQueue";
 import { ReceptionInvoiceQueue } from "@/components/reception/ReceptionInvoiceQueue";
 import { DraftStrip } from "@/components/reception/DraftStrip";
 import { printDraftTicket } from "@/lib/printing/draftTicket";
+import { receptionCheckoutReceiptMeta } from "@/lib/printing/receptionReceiptMeta";
 // تفكيك §١٣ ش١ (٥/٨): الأنواع/الدوال النقيّة والمكوّنات الثقيلة (السلة/الدفع/الإيصال) صارت
 // وحدات مستقلّة تحت components/reception — نقلٌ حرفيّ بصفر تغيير سلوكي.
 import {
@@ -1538,23 +1539,15 @@ export default function Reception() {
       // (٢) shiftId من الفاتورة المُثبَّتة لا من scope الحيّ: عند idempotent replay بعد إغلاق الوردية
       //     الأصليّة وفتح جديدة، `result.regularSale.shiftId` يحمل رقم الوردية الحقيقيّة للفاتورة.
       //     الرجوع لـ`shift?.id` احتياطاً لمسار الأمر الشغل الخالص (لا فاتورة).
-      const heldDepositsSum = (result.workOrders ?? []).reduce(
-        (s, wo) => s.plus(D((wo as { deposit?: string } | undefined)?.deposit ?? "0")),
-        D(0),
-      );
-      const persistedShiftId =
-        (result as { regularSale?: { shiftId?: number | null } }).regularSale?.shiftId ??
-        (result as { printSale?: { shiftId?: number | null } }).printSale?.shiftId ??
-        shift?.id ??
-        null;
+      const receiptServerMeta = receptionCheckoutReceiptMeta(result, shift?.id);
       const receiptHead = {
         date: fmtDate(printedAt),
         time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
         cashierName: me.data?.name ?? "موظف الخدمة",
         customerName: receiptCustomerName,
         paymentMethod: PAY_METHOD_LABEL[method],
-        shiftId: persistedShiftId,
-        heldDeposits: heldDepositsSum.gt(0) ? heldDepositsSum.toFixed(2) : null,
+        shiftId: receiptServerMeta.shiftId,
+        heldDeposits: receiptServerMeta.heldDeposits,
       };
       // ٨/٨ — إفصاح التوصيل على إيصال البيع المباشر: كان لا يُطبَع إطلاقاً («لم تظهر بالطباعة»).
       // يُوضَع على الفاتورة الحاملة للإرسالية (البضاعة إن وُجِدت وإلّا الطباعة). الأجرة تمريرٌ لا

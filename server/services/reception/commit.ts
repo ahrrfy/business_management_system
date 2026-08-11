@@ -53,8 +53,8 @@ export interface CommitDraftResult {
   draftId: number;
   draftNumber: string;
   idempotentReplay: boolean;
-  regularSale: { invoiceId: number; invoiceNumber: string } | null;
-  printSale: { invoiceId: number; invoiceNumber: string } | null;
+  regularSale: { invoiceId: number; invoiceNumber: string; shiftId: number | null } | null;
+  printSale: { invoiceId: number; invoiceNumber: string; shiftId: number | null } | null;
   /** deposit (ش٤): العربون الموزَّع على الأمر (P+N) — تطبعه التذكرة «مدفوعٌ مقدماً». */
   workOrders: Array<{ workOrderId: number; orderNumber: string; deposit: string }>;
   /** ش٤: تخصيصات المقبوض سلفاً على المستندات (I4) — للعرض والإثبات، لا لحساب لاحق. */
@@ -255,12 +255,14 @@ async function rebuildResult(
   const bySource = async (suffix: string) => {
     const row = (
       await tx
-        .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber })
+        .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber, shiftId: invoices.shiftId })
         .from(invoices)
         .where(eq(invoices.sourceId, `${draft.commitRequestId}${suffix}`))
         .limit(1)
     )[0];
-    return row ? { invoiceId: Number(row.id), invoiceNumber: row.invoiceNumber } : null;
+    return row
+      ? { invoiceId: Number(row.id), invoiceNumber: row.invoiceNumber, shiftId: row.shiftId == null ? null : Number(row.shiftId) }
+      : null;
   };
   const regularSale = await bySource("-sale");
   const printSale = await bySource("-print");
@@ -451,10 +453,18 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       draftNumber: draft.draftNumber,
       idempotentReplay: false,
       regularSale: result.regularSale
-        ? { invoiceId: result.regularSale.invoiceId, invoiceNumber: result.regularSale.invoiceNumber }
+        ? {
+            invoiceId: result.regularSale.invoiceId,
+            invoiceNumber: result.regularSale.invoiceNumber,
+            shiftId: result.regularSale.shiftId ?? null,
+          }
         : null,
       printSale: result.printSale
-        ? { invoiceId: result.printSale.invoiceId, invoiceNumber: result.printSale.invoiceNumber }
+        ? {
+            invoiceId: result.printSale.invoiceId,
+            invoiceNumber: result.printSale.invoiceNumber,
+            shiftId: result.printSale.shiftId ?? null,
+          }
         : null,
       workOrders: result.workOrders.map((w) => ({ workOrderId: w.workOrderId, orderNumber: w.orderNumber, deposit: w.deposit })),
       appliedPayments,

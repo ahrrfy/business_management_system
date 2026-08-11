@@ -138,7 +138,11 @@ export async function receiptToCanvas(
   const shiftRowH = d.shiftId != null ? 30 : 0;
   const heldRowH = Number(d.heldDeposits ?? 0) > 0 ? 30 : 0;
   const creditBlockH = Number(d.credit ?? 0) > 0 ? 64 : 0; // كتلة «متبقٍّ (آجل)» مع الفاصل المتقطّع
-  const estH = 1400 + d.items.length * 96 + digitalRows * 190 + shiftRowH + heldRowH + creditBlockH;
+  // هامش رسم إضافي يحمي التذييل من بلوغ سقف اللوحة عند اجتماع الشعار والباركود والتوصيل
+  // والحقول الجديدة. لا يهدر ورقاً: الارتفاع المعاد أدناه يُقصّ إلى y الفعلي بعد اكتمال الرسم.
+  const drawingHeadroom = 256;
+  const estH = 1400 + d.items.length * 96 + digitalRows * 190
+    + shiftRowH + heldRowH + creditBlockH + drawingHeadroom;
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = estH;

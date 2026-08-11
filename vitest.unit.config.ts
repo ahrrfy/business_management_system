@@ -9,6 +9,9 @@ export default defineConfig({
     include: [
       "client/src/lib/printing/couponCard.test.ts",
       "client/src/lib/printing/barcode.test.ts",
+      "client/src/lib/printing/invoiceReceipt.test.ts",
+      "client/src/lib/printing/receiptRaster.test.ts",
+      "client/src/lib/printing/receptionReceiptMeta.test.ts",
       "client/src/lib/printing/labelDesign.test.ts",
       "client/src/lib/printing/labelLayout.test.ts",
       "client/src/lib/printing/labelItem.test.ts",

@@ -1,6 +1,6 @@
 // اختبارات لفّ نص أسماء الأصناف في الراسم الحراري المُعلَّم (الجزء النقي — بلا Canvas حقيقي)
-import { describe, expect, it } from "vitest";
-import { wrapLines } from "./receiptRaster";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { receiptToCanvas, wrapLines } from "./receiptRaster";
 
 /** قياس زائف: عرض كل محرف = 10px ⇒ maxW=100 يستوعب 10 محارف */
 const ctx = { measureText: (s: string) => ({ width: s.length * 10 }) };
@@ -33,5 +33,44 @@ describe("wrapLines — لفّ أسماء الأصناف", () => {
 
   it("نص فارغ يعيد سطراً فارغاً واحداً (لا ينهار)", () => {
     expect(wrapLines(ctx, "", 100)).toEqual([""]);
+  });
+});
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe("receiptToCanvas — سعة الإيصال", () => {
+  it("لا يقصّ تذييل إيصال قصير يجمع الوردية والعربون والآجل والتوصيل", async () => {
+    const context = {
+      save: vi.fn(), restore: vi.fn(), fillRect: vi.fn(), drawImage: vi.fn(), fillText: vi.fn(),
+      setLineDash: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+      arcTo: vi.fn(), closePath: vi.fn(),
+      measureText: (s: string) => ({ width: s.length * 10 }),
+      fillStyle: "", strokeStyle: "", lineWidth: 1, textAlign: "start", font: "",
+      textBaseline: "alphabetic", direction: "rtl",
+    };
+    const canvas = { width: 0, height: 0, getContext: () => context };
+    vi.stubGlobal("document", {
+      fonts: { load: () => Promise.resolve([]) },
+      createElement: () => canvas,
+    });
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+
+    const drawn = await receiptToCanvas({
+      receiptNumber: "INV-CLIP-1", date: "2026-08-11", time: "18:30",
+      cashierName: "موظف الخدمة", customerName: "عميل الاختبار", shiftId: 12,
+      items: [{ name: "دفتر", quantity: 1, price: "1000", total: "1000" }],
+      subtotal: "1000", total: "1000", paymentMethod: "نقدي", paid: "250", change: "0",
+      heldDeposits: "500", credit: "750",
+      delivery: {
+        partyName: "مندوب الاختبار", fee: "250", feeCollection: "COURIER",
+        address: "بغداد — عنوان اختبار كامل",
+      },
+    });
+
+    expect(drawn).not.toBeNull();
+    expect(drawn!.height).toBeLessThan(canvas.height);
   });
 });
