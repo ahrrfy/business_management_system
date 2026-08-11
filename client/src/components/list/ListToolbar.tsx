@@ -113,111 +113,10 @@ export function ListToolbar<T>({
     exportRows(() => fetchAll().finally(() => setExporting(false)), opts);
   }
 
-  // فَصل الفلاتر عن الإجراءات في صفَّين مُنفصلَين: الفلاتر تَنشغل بالبحث/التَقييد، والإجراءات
-  // بالتَصدير/الاستيراد/الطباعة/الإضافة. حين لا فلاتر ولا بحث ولا زرّ مسحٍ نُبقي كلّ شيء بصفٍّ واحد
-  // (شاشات القائمة الخالية من الفلاتر لا تحتاج فراغاً عمودياً إضافياً).
-  const hasFilters = Boolean(search || filters || activeFilterCount > 0 || onResetFilters);
-  const hasActions = Boolean(onImport || onRefresh || exportSpec || onPrint || add || children);
-
-  const searchNode = search && (
-    <div className="relative min-w-48 flex-1 sm:flex-none">
-      <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
-      <Input
-        type="search"
-        value={search.value}
-        onChange={(e) => search.onChange(e.target.value)}
-        placeholder={search.placeholder ?? "بحث…"}
-        aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
-        className="h-8 w-full pr-8 sm:w-64"
-      />
-    </div>
-  );
-
-  const filterRowNode = hasFilters && (
-    <div className="list-toolbar-filters flex flex-wrap items-end gap-x-3 gap-y-2">
-      {searchNode}
-      {filters}
-      {activeFilterCount > 0 && (
-        <span className="inline-flex h-8 items-center gap-1 rounded-md bg-primary/10 px-2.5 text-xs font-semibold text-primary">
-          <SlidersHorizontal aria-hidden className="size-3.5" />
-          {activeFilterCount.toLocaleString("ar-IQ-u-nu-latn")} فلاتر
-        </span>
-      )}
-      {onResetFilters && (activeFilterCount > 0 || Boolean(search?.value.trim())) && (
-        <Button variant="ghost" size="sm" onClick={onResetFilters} className="text-muted-foreground">
-          <X aria-hidden className="size-4" />
-          مسح الفلاتر
-        </Button>
-      )}
-    </div>
-  );
-
-  const actionsNode = hasActions && (
-    <div className="list-toolbar-actions flex flex-wrap items-center gap-2">
-      {onImport && (
-        <Button variant="outline" size="sm" onClick={onImport}>
-          <Upload className="size-4" />
-          {importLabel}
-        </Button>
-      )}
-      {onRefresh && (
-        <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}>
-          <RefreshCcw aria-hidden className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
-          {refreshing ? "جارٍ التحديث…" : refreshLabel}
-        </Button>
-      )}
-      {exportSpec &&
-        (formats.length > 1 ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" disabled={exportDisabled}>
-                {exporting ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
-                {exporting ? "جارٍ التحضير…" : "تصدير"}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {formats.includes("xlsx") && (
-                <DropdownMenuItem onSelect={() => doExport("xlsx")}>Excel (.xlsx)</DropdownMenuItem>
-              )}
-              {formats.includes("csv") && (
-                <DropdownMenuItem onSelect={() => doExport("csv")}>CSV (.csv)</DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={exportDisabled}
-            onClick={() => doExport(formats[0])}
-          >
-            {exporting ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
-            {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
-          </Button>
-        ))}
-      {onPrint && (
-        <Button variant="outline" size="sm" onClick={onPrint} disabled={printDisabled}>
-          <Printer className="size-4" />
-          {printLabel}
-        </Button>
-      )}
-      {add &&
-        ("href" in add ? (
-          <Button asChild size="sm">
-            <Link href={add.href}>
-              <Plus className="size-4" />
-              {add.label ?? "إضافة"}
-            </Link>
-          </Button>
-        ) : (
-          <Button size="sm" onClick={add.onClick}>
-            <Plus className="size-4" />
-            {add.label ?? "إضافة"}
-          </Button>
-        ))}
-      {children}
-    </div>
-  );
+  // فَصل الفلاتر عن الإجراءات في صفَّين مُنفصلَين: الفلاتر تنشغل بالبحث/التَقييد، والإجراءات
+  // بالتصدير/الاستيراد/الطباعة/الإضافة. صندوق الفلاتر يظهر فقط عند وجود فلاترٍ فعليّة (لا يظهر
+  // فراغٌ عمودي على شاشات القائمة البسيطة).
+  const showFilterRow = Boolean(search || filters || activeFilterCount > 0 || onResetFilters);
 
   return (
     <div className="flex flex-col gap-3">
@@ -230,11 +129,96 @@ export function ListToolbar<T>({
             </span>
           )}
         </div>
-        {actionsNode}
+        <div className="list-toolbar-actions flex flex-wrap items-center gap-2">
+          {onImport && (
+            <Button variant="outline" size="sm" onClick={onImport}>
+              <Upload className="size-4" />
+              {importLabel}
+            </Button>
+          )}
+          {onRefresh && (
+            <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}>
+              <RefreshCcw aria-hidden className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
+              {refreshing ? "جارٍ التحديث…" : refreshLabel}
+            </Button>
+          )}
+          {exportSpec &&
+            (formats.length > 1 ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={exportDisabled}>
+                    {exporting ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
+                    {exporting ? "جارٍ التحضير…" : "تصدير"}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {formats.includes("xlsx") && (
+                    <DropdownMenuItem onSelect={() => doExport("xlsx")}>Excel (.xlsx)</DropdownMenuItem>
+                  )}
+                  {formats.includes("csv") && (
+                    <DropdownMenuItem onSelect={() => doExport("csv")}>CSV (.csv)</DropdownMenuItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <Button variant="outline" size="sm" disabled={exportDisabled} onClick={() => doExport(formats[0])}>
+                {exporting ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
+                {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
+              </Button>
+            ))}
+          {onPrint && (
+            <Button variant="outline" size="sm" onClick={onPrint} disabled={printDisabled}>
+              <Printer className="size-4" />
+              {printLabel}
+            </Button>
+          )}
+          {add &&
+            ("href" in add ? (
+              <Button asChild size="sm">
+                <Link href={add.href}>
+                  <Plus className="size-4" />
+                  {add.label ?? "إضافة"}
+                </Link>
+              </Button>
+            ) : (
+              <Button size="sm" onClick={add.onClick}>
+                <Plus className="size-4" />
+                {add.label ?? "إضافة"}
+              </Button>
+            ))}
+          {children}
+        </div>
       </div>
-      {filterRowNode && (
+      {showFilterRow && (
         <div className="rounded-lg border border-border/60 bg-muted/30 p-2.5">
-          {filterRowNode}
+          <div className="list-toolbar-filters flex flex-wrap items-end gap-x-3 gap-y-2">
+            {search && (
+              <div className="relative min-w-48 flex-1 sm:flex-none">
+                <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="search"
+                  value={search.value}
+                  onChange={(e) => search.onChange(e.target.value)}
+                  placeholder={search.placeholder ?? "بحث…"}
+                  aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
+                  className="h-8 w-full pr-8 sm:w-64"
+                />
+              </div>
+            )}
+            {filters}
+            {activeFilterCount > 0 && (
+              <span className="inline-flex h-8 items-center gap-1 rounded-md bg-primary/10 px-2.5 text-xs font-semibold text-primary">
+                <SlidersHorizontal aria-hidden className="size-3.5" />
+                {activeFilterCount.toLocaleString("ar-IQ-u-nu-latn")} فلاتر
+              </span>
+            )}
+            {onResetFilters && (activeFilterCount > 0 || Boolean(search?.value.trim())) && (
+              <Button variant="ghost" size="sm" onClick={onResetFilters} className="text-muted-foreground">
+                <X aria-hidden className="size-4" />
+                مسح الفلاتر
+              </Button>
+            )}
+          </div>
         </div>
       )}
     </div>

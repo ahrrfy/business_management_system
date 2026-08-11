@@ -153,7 +153,7 @@ export default function PointOfSale() {
                   "inline-flex h-9 items-center gap-2 rounded-lg border-2 px-3 text-sm font-bold transition-all",
                   active ? m.activeCls : "border-transparent bg-muted/40 hover:bg-muted",
                 )}
-                title={`${m.label} — ${m.subtitle}`}
+                title={`${m.label} — ${m.subtitle} (Ctrl+${MODES.indexOf(m) + 1})`}
               >
                 <m.Icon aria-hidden className="size-4" />
                 <span>{m.label}</span>

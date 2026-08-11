@@ -70,6 +70,20 @@ export default function SalesReturns() {
   const from = total === 0 ? 0 : page * PAGE + 1;
   const to = Math.min((page + 1) * PAGE, total);
 
+  const activeFilterCount =
+    (customerId !== "" ? 1 : 0) +
+    (branchId !== "" ? 1 : 0) +
+    (dateFrom ? 1 : 0) +
+    (dateTo ? 1 : 0);
+
+  const resetFilters = () => {
+    setCustomerId("");
+    setBranchId("");
+    setDateFrom("");
+    setDateTo("");
+    setPage(0);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -86,19 +100,8 @@ export default function SalesReturns() {
             title="المرتجعات"
             count={total}
             loading={list.isLoading}
-            activeFilterCount={
-              (customerId !== "" ? 1 : 0) +
-              (branchId !== "" ? 1 : 0) +
-              (dateFrom ? 1 : 0) +
-              (dateTo ? 1 : 0)
-            }
-            onResetFilters={() => {
-              setCustomerId("");
-              setBranchId("");
-              setDateFrom("");
-              setDateTo("");
-              setPage(0);
-            }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetFilters}
             filters={
               <>
                 <FilterField label="العميل" className="min-w-[200px]">
@@ -213,9 +216,7 @@ export default function SalesReturns() {
               {!list.isLoading && !list.isError && rows.length === 0 && (
                 <tr>
                   <td colSpan={9} className="p-6 text-center text-muted-foreground">
-                    {total === 0 && !customerId && !branchId && !dateFrom && !dateTo
-                      ? "لا مرتجعات بيع بعد."
-                      : "لا مرتجعات مطابقة. غيّر الفلتر."}
+                    {activeFilterCount === 0 ? "لا مرتجعات بيع بعد." : "لا مرتجعات مطابقة. غيّر الفلتر."}
                   </td>
                 </tr>
               )}

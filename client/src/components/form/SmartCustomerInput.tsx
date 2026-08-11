@@ -1,9 +1,10 @@
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { BalanceBadge } from "@/components/BalanceBadge";
 import { trpc } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
 import { cn } from "@/lib/utils";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 
 /**
@@ -125,11 +126,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
             setQ(v);
             setOpen(true);
             // أيّ تعديل يفقد ربط العميل القائم؛ يبقى الاسم فقط كـ«جديد محتمل».
-            if (value.customerId) {
-              onChange({ customerId: null, name: v, phone: null, isNew: v.trim().length > 0 });
-            } else {
-              onChange({ customerId: null, name: v, phone: null, isNew: v.trim().length > 0 });
-            }
+            onChange({ customerId: null, name: v, phone: null, isNew: v.trim().length > 0 });
           }}
           onFocus={() => setOpen(true)}
           placeholder={placeholder || "ابحث بالاسم أو الرقم — يتعرّف على الزبائن السابقين"}
@@ -195,38 +192,25 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
         </div>
       )}
 
-      {/* بطاقة إحصائيّة للعميل المختار. الرصيد الجاري يُعرَض بلونٍ دلاليّ:
-          موجب = ذمّة مدينة (على العميل)، سالب = دائن (له عنده). صفر أو null ⇒ لا شارة. */}
-      {selectedExisting && selectedStats && (() => {
-        const bal = Number(selectedStats.currentBalance ?? 0);
-        return (
-          <div className="mt-2 rounded-md border bg-muted/30 p-2 flex flex-wrap items-center gap-3 text-xs">
-            {Math.abs(bal) >= 1 && (
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-bold",
-                  bal > 0 ? "bg-destructive/10 text-destructive" : "bg-emerald-500/10 text-emerald-700",
-                )}
-                title={bal > 0 ? "ذمّة على العميل" : "دائن (للعميل رصيد لدينا)"}
-              >
-                {bal > 0 ? "عليه" : "له"}: <span dir="ltr">{Math.abs(bal).toLocaleString("en-US")}</span> د.ع
-              </span>
-            )}
-            <span><span className="text-muted-foreground">الطلبات:</span> <span dir="ltr">{selectedStats.orderCount ?? 0}</span></span>
-            {selectedStats.lastOrderAt && (
-              <span>
-                <span className="text-muted-foreground">آخر طلب:</span> <span dir="ltr">{fmtDate(selectedStats.lastOrderAt)}</span>
-              </span>
-            )}
-            {selectedStats.totalSpent && (
-              <span>
-                <span className="text-muted-foreground">إجمالي الإنفاق:</span>{" "}
-                <span dir="ltr">{Number(selectedStats.totalSpent).toLocaleString("en-US")}</span> د.ع
-              </span>
-            )}
-          </div>
-        );
-      })()}
+      {/* بطاقة إحصائيّة للعميل المختار — الرصيد الجاري عبر BalanceBadge المُوحَّد
+          (توكنات دلاليّة + اتّجاه «لنا عليه/له علينا» بنفس دلالة كشف الحساب والفواتير). */}
+      {selectedExisting && selectedStats && (
+        <div className="mt-2 rounded-md border bg-muted/30 p-2 flex flex-wrap items-center gap-3 text-xs">
+          <BalanceBadge amount={selectedStats.currentBalance} entityType="customer" />
+          <span><span className="text-muted-foreground">الطلبات:</span> <span dir="ltr">{selectedStats.orderCount ?? 0}</span></span>
+          {selectedStats.lastOrderAt && (
+            <span>
+              <span className="text-muted-foreground">آخر طلب:</span> <span dir="ltr">{fmtDate(selectedStats.lastOrderAt)}</span>
+            </span>
+          )}
+          {selectedStats.totalSpent && (
+            <span>
+              <span className="text-muted-foreground">إجمالي الإنفاق:</span>{" "}
+              <span dir="ltr">{Number(selectedStats.totalSpent).toLocaleString("en-US")}</span> د.ع
+            </span>
+          )}
+        </div>
+      )}
 
       {value.isNew && !value.customerId && trimmed && (
         <div className="mt-2 text-[11px] text-primary">
