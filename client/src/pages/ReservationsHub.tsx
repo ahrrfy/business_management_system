@@ -2,7 +2,7 @@
 // الخادم جاهز: server/routers/reservationsRouter.ts + server/services/reservations/*. هذا يستهلكه فقط.
 // حجز ناعم (ATP): الإنشاء يعرض تحذير «فوق المتاح» (overbooked) لا يمنع — قرار المالك. العربون/التحويل R-م٤/م٥.
 import { useEffect, useState } from "react";
-import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Search, ShoppingCart, Trash2, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, Search, ShoppingCart, Trash2, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
@@ -30,6 +30,7 @@ import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
 import { cn } from "@/lib/utils";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import { printReservationTicket } from "@/lib/printing/reservationTicket";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -389,6 +390,23 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                               gate: { module: "reservations", level: "READ" },
                             },
                             {
+                              // B (١٢/٨): طباعة تذكرة حجز حراريّة — جلب التفاصيل عبر utils ثمّ printDoc.
+                              // تكامل الطباعة الوظيفيّ للحجوزات كان مفقوداً على `main` قبل هذا الالتزام.
+                              key: "print",
+                              kind: "view",
+                              label: "طباعة تذكرة الحجز",
+                              icon: Printer,
+                              onSelect: async () => {
+                                try {
+                                  const detail = await utils.reservations.get.fetch({ id: Number(r.id) });
+                                  printReservationTicket(detail);
+                                } catch (e) {
+                                  notify.err(e, "تعذّرت طباعة التذكرة");
+                                }
+                              },
+                              gate: { module: "reservations", level: "READ" },
+                            },
+                            {
                               key: "convert",
                               kind: "create",
                               label: "تحويل إلى فاتورة",
@@ -586,7 +604,17 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
               )}
             </div>
           ) : null}
-          <DialogFooter>
+          <DialogFooter className="gap-2 sm:gap-2">
+            {/* B (١٢/٨): زرّ طباعة داخل الحوار — بارزٌ عند فتح التفاصيل، لا حاجة للعودة لمنسدل الصفّ. */}
+            {detail.data && (
+              <Button
+                variant="outline"
+                onClick={() => detail.data && printReservationTicket(detail.data)}
+              >
+                <Printer className="size-4 me-1" aria-hidden />
+                طباعة تذكرة حرارية
+              </Button>
+            )}
             <Button variant="outline" onClick={() => setDetailId(null)}>إغلاق</Button>
           </DialogFooter>
         </DialogContent>
