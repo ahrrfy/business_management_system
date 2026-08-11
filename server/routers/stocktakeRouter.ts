@@ -42,6 +42,7 @@ import {
 import {
   adminProcedure,
   canSeeCostForUser,
+  inventoryAdminProcedure,
   inventoryManagerProcedure,
   inventoryReadProcedure,
   managerProcedure,
@@ -474,7 +475,7 @@ export const stocktakeRouter = router({
    * إنقاذ تقييم افتتاحي فقط: الخادم يعيد اشتقاق كل التكاليف الحية تحت الأقفال ولا يقبل سعراً
    * أو قائمة أصناف من العميل. العملية تفتح الاعتمادات المتأثرة وتبطل التوقيع في معاملة واحدة.
    */
-  refreshOpeningValuationBasis: adminProcedure
+  refreshOpeningValuationBasis: inventoryAdminProcedure
     .input(
       z.object({
         sessionId: idNum,

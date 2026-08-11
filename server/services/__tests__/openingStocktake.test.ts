@@ -827,6 +827,34 @@ describe("اعتماد الجلسة الافتتاحية — المسار الذ
       /تضخم تكلفة\/وحدة/,
     );
 
+    // سلطة الإنقاذ مزدوجة ومغلقة: حتى استدعاء الخدمة مباشرةً لا يسمح للمدير
+    // العادي، ولا يغيّر اللقطة أو الاعتماد أو التوقيع عند الرفض.
+    await expectTrpc(
+      refreshOpeningValuationBasis(
+        {
+          sessionId: res.sessionId,
+          expectedDigest: inflated.valuationIntegrity.digest,
+          reason: "محاولة مدير غير عام يجب أن تُرفض بلا أي أثر",
+        },
+        MGR,
+      ),
+      "FORBIDDEN",
+      /للمدير العام فقط/,
+    );
+    const [rejectedItem] = await db()
+      .select()
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, res.sessionId));
+    const [rejectedSession] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, res.sessionId));
+    expect(rejectedItem.unitCost).toBe("11500.00");
+    expect(rejectedItem.reviewApprovedAt).not.toBeNull();
+    expect(rejectedSession.firstSignBy).toBe(MGR.userId);
+    expect(await openingMovements(res.sessionId)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+
     const countsBefore = await db()
       .select()
       .from(s.stocktakeCounts)

@@ -289,6 +289,14 @@ export async function refreshOpeningValuationBasis(
   args: { sessionId: number; expectedDigest: string; reason: string },
   actor: StkActor,
 ): Promise<RefreshOpeningValuationResult> {
+  // دفاع في العمق: حتى الاستدعاء الداخلي المباشر للخدمة لا يتجاوز سلطة الإنقاذ.
+  // بوابة الراوتر تضيف inventory:FULL + admin؛ وهذه الطبقة تمنع أي مسار خدمة بديل.
+  if (actor.role !== "admin") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "إنقاذ أساس تكلفة الجرد متاح للمدير العام فقط",
+    });
+  }
   return withTx(async (tx) => {
     const session = await lockSession(tx, args.sessionId);
     if (session.sessionType !== "OPENING") {

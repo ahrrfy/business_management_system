@@ -213,6 +213,15 @@ const PROCEDURES = {
     roles: ["manager"],
     branch: "required",
   },
+  // مركّبة runtime: inventoryManagerProcedure ثم requireAdmin. نسجلها module-gate
+  // لأن شرط admin تشديد إضافي داخل البوابة، لا مسار كتابة إداري خارج حوكمة الوحدة.
+  inventoryAdminProcedure: {
+    authority: "module-gate",
+    module: "inventory",
+    level: "FULL",
+    roles: ["admin"],
+    branch: false,
+  },
   customersReadProcedure: {
     authority: "module-map",
     module: "crm",
