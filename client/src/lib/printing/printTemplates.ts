@@ -882,6 +882,12 @@ export interface ReceiptBrowserData {
     feeCollection: "COURIER" | "COUNTER" | "SHOP";
     address?: string | null;
   } | null;
+  /** G3 (١١/٨): رقم الوردية التي أُنشئت أو قُبضت عليها الفاتورة — مرجعٌ تشغيليّ في الترويسة.
+   *  اختياريٌّ للتوافق الرجعي؛ يُمرَّر من كل بناة الإيصالات (POS/PrintPOS/Reception/reprint). */
+  shiftId?: number | null;
+  /** G3: مجموع العرابين المحتجزة على أوامر شغلٍ مرتبطة بهذه الفاتورة — إفصاحٌ منفصلٌ في كتلة
+   *  الإجماليات كي يعرف الزبون أنّ لديه رصيداً محجوزاً سيُخصم عند التسليم. */
+  heldDeposits?: string | number | null;
 }
 
 export function printBrowserReceipt(d: ReceiptBrowserData): void {
@@ -950,11 +956,12 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
   <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:1mm;">
     <span>رقم: <strong>${esc(d.receiptNumber)}</strong></span><span>${esc(d.date)}</span>
   </div>
-  <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:1mm;">
-    ${d.cashierName ? `<span>الكاشير: ${esc(d.cashierName)}</span>` : '<span></span>'}
+  <div style="display:flex;justify-content:space-between;font-size:10.5px;font-weight:700;margin-bottom:1mm;">
+    ${d.cashierName ? `<span>الكاشير: <strong>${esc(d.cashierName)}</strong></span>` : '<span></span>'}
     ${d.time ? `<span>الوقت: ${esc(d.time)}</span>` : '<span></span>'}
   </div>
-  ${d.customerName ? `<div style="font-size:10px;margin-bottom:1mm;">العميل: <strong>${esc(d.customerName)}</strong></div>` : ''}
+  ${d.shiftId != null ? `<div style="display:flex;justify-content:space-between;font-size:10px;font-weight:700;margin-bottom:1mm;"><span>الوردية: <strong>#${d.shiftId}</strong></span><span></span></div>` : ''}
+  ${d.customerName ? `<div style="font-size:11px;font-weight:800;margin-bottom:1mm;">العميل: <strong>${esc(d.customerName)}</strong></div>` : ''}
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
   <table style="width:100%;font-size:10px;border-collapse:collapse;">
     <thead><tr style="border-bottom:1px solid #000;">
@@ -976,9 +983,10 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
       <span>الإجمالي:</span><span>${fmt(d.total)} د.ع</span>
     </div>
     ${d.paymentMethod ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>طريقة الدفع:</span><span>${esc(d.paymentMethod)}</span></div>` : ''}
-    ${d.paid != null ? `<div style="display:flex;justify-content:space-between;"><span>المدفوع:</span><span>${fmt(d.paid)}</span></div>` : ''}
-    ${d.change != null ? `<div style="display:flex;justify-content:space-between;"><span>الباقي:</span><span>${fmt(d.change)}</span></div>` : ''}
-    ${Number(d.credit ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>آجل/ذمة:</span><span>${fmt(d.credit)}</span></div>` : ''}
+    ${d.paid != null ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>المدفوع:</span><span>${fmt(d.paid)}</span></div>` : ''}
+    ${d.change != null ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>الباقي:</span><span>${fmt(d.change)}</span></div>` : ''}
+    ${Number(d.heldDeposits ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>عربون محتجز:</span><span>${fmt(d.heldDeposits)}</span></div>` : ''}
+    ${Number(d.credit ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:900;font-size:12.5px;padding:1mm 0;border-top:1px dashed #666;margin-top:1mm;"><span>متبقٍّ (آجل):</span><span>${fmt(d.credit)} د.ع</span></div>` : ''}
   </div>
   ${deliveryHtml}
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>

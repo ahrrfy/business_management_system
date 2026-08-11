@@ -172,7 +172,7 @@ export default function PointOfSale() {
                   "inline-flex h-[var(--ui-control)] items-center gap-2 rounded-lg border-2 px-3 text-sm font-bold transition-all",
                   active ? m.activeCls : "border-transparent bg-muted/40 hover:bg-muted",
                 )}
-                title={`${m.label} — ${m.subtitle}`}
+                title={`${m.label} — ${m.subtitle} (Ctrl+${MODES.indexOf(m) + 1})`}
               >
                 <m.Icon aria-hidden className="size-4" />
                 <span>{m.label}</span>
@@ -211,14 +211,11 @@ export default function PointOfSale() {
               صلاحيات مخصّصة
             </span>
           ) : null}
-          {visibleModes.length > 1 && (
-            <span className="hidden text-[11px] text-muted-foreground sm:block">
-              Ctrl+1/2/3 لتَبديل الوَضع
-            </span>
-          )}
           {/* شريحة (٧/٨): محطة الاستقبال تملأ هذه المساحة بأزرارها الخاصّة (فواتير/طلبات/حجوزات/
               وردية…) عبر portal من Reception.tsx — أغنى وأدقّ من رابط عامّ لقائمة فواتير الشركة
-              كاملةً (تلك تبقى الوجهة الصحيحة لتجزئة/طباعة). */}
+              كاملةً (تلك تبقى الوجهة الصحيحة لتجزئة/طباعة). ملاحظة: اختصار Ctrl+1/2/3 يبقى نافذاً
+              في useEffect أدناه — التلميح المرئيّ حُذف بطلب المالك (شغلٌ بصريّ)؛ العناوين على الأزرار
+              تحمله عبر `title` كي يبقى قابلاً للاكتشاف عند التحويم. */}
           {activeMode === "RECEPTION" ? (
             <div id="pos-header-actions" className="flex shrink-0 items-center gap-1.5 overflow-x-auto" />
           ) : (

@@ -16,6 +16,9 @@ export interface InvoiceReceiptSource {
   invoiceDate: DateInput;
   customerName?: string | null;
   salespersonName?: string | null;
+  /** G3 (١١/٨): رقم الوردية التي أُنشئت عليها الفاتورة — يُطبع في ترويسة إيصال إعادة الطباعة
+   *  ليوثّق أصل المعاملة (invoices.shiftId). */
+  shiftId?: number | null;
   subtotal: string | number;
   discountAmount?: string | number | null;
   taxAmount?: string | number | null;
@@ -54,6 +57,7 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     time: fmtTime(d.invoiceDate),
     cashierName: d.salespersonName ?? null,
     customerName: d.customerName ?? null,
+    shiftId: d.shiftId ?? null,
     items: d.items.map((item) => ({
       name: [
         item.productName ?? "منتج",

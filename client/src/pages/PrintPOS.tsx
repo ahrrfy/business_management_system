@@ -65,6 +65,8 @@ type Receipt = {
   printTime: string;
   cashier?: string;
   customer?: string;
+  /** G3 (١١/٨): رقم وردية الطباعة — يُطبع في ترويسة الإيصال. */
+  shiftId?: number | null;
   lines: { name: string; unit: string; qty: number; price: number; total: number }[];
   total: number;
   received: number;
@@ -121,6 +123,7 @@ function brandedReceipt(r: Receipt): ReceiptBrowserData {
   return {
     receiptNumber: r.num, date: r.printDate, time: r.printTime,
     cashierName: r.cashier ?? null, customerName: r.customer ?? null,
+    shiftId: r.shiftId ?? null,
     items: r.lines.map((l) => ({ name: `${l.name} (${l.unit})`, quantity: l.qty, price: l.price, total: l.total })),
     subtotal: r.total, total: r.total, paid: r.received,
     change: r.isCredit ? null : r.change, credit: r.isCredit ? r.credit : null,
@@ -329,6 +332,8 @@ export default function PrintPOS() {
         printDate: fmtDate(now),
         printTime: fmtTime(now),
         cashier: me.data?.name ?? undefined, customer: p?.customerName,
+        // Codex P2: تفضيل shiftId من الفاتورة المُثبَّتة (idempotent replay بعد إغلاق وردية).
+        shiftId: (r as { shiftId?: number | null }).shiftId ?? shift?.id ?? null,
         lines: p?.lines ?? [],
         total: p?.cashTotal ?? 0, received: p?.received ?? 0, change: p?.change ?? 0,
         credit: p?.credit ?? 0, method: METHOD_LABEL[p?.method ?? "CASH"], isCredit: p?.isCredit ?? false,
@@ -434,6 +439,7 @@ export default function PrintPOS() {
       printTime: fmtTime(now),
       cashier: me.data?.name ?? undefined,
       customer: selectedCustomer?.name,
+      shiftId: shift?.id ?? null,
       lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
       total: cashTotal,
       received: paid,
