@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { productUnits } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 
@@ -40,24 +40,30 @@ export async function assertBaseUnitStable(tx: Tx, variantId: number, intended: 
   const vid = Number(variantId);
   if (!Number.isInteger(vid) || vid <= 0) return;
 
+  // صفّ الأساس المرجعيّ: نُفضّل النشط، وإلّا فأحدث صفّ أساسٍ مُعطَّل (Codex جولة٤ P1) — فالأرصدة/الحركات
+  // تبقى مُقوَّمةً بالأساس **حتى لو عُطِّل صفّه**؛ فمتغيّرٌ برصيدٍ وأساسٍ معطَّلٍ ليس «جديداً». يُعتبَر جديداً
+  // (فيُسمح بتثبيت أساسه) فقط إن لم يكن له صفّ أساسٍ إطلاقاً (لا نشطٌ ولا معطَّل).
   const curBase = (
     await tx
       .select({ id: productUnits.id, name: productUnits.unitName })
       .from(productUnits)
-      .where(and(eq(productUnits.variantId, vid), eq(productUnits.isBaseUnit, true), eq(productUnits.isActive, true)))
+      .where(and(eq(productUnits.variantId, vid), eq(productUnits.isBaseUnit, true)))
+      .orderBy(desc(productUnits.isActive), desc(productUnits.id))
       .limit(1)
   )[0];
-  if (!curBase) return; // متغيّرٌ جديدٌ بلا أساسٍ نشط ⇒ يُسمح بتثبيت أساسه أوّل مرّة.
+  if (!curBase) return; // لا صفّ أساسٍ إطلاقاً ⇒ متغيّرٌ جديدٌ تماماً ⇒ يُسمح بتثبيت أساسه أوّل مرّة.
 
   // تغيّرت هويّة الأساس؟
   //  • المسار الحامل للمعرّف: معرّفٌ مختلفٌ عن صفّ الأساس الحاليّ (أو صفٌّ جديدٌ id=null) ⇒ تبديل.
   //    نفس المعرّف (ولو باسمٍ جديد) = إعادة تسميةٍ في مكانها ⇒ آمنة.
-  //  • مسار القالب: `upsertVariantUnits` يُبقي صفّ الأساس أساساً نشطاً فقط إن حمل القالبُ أساساً **بنفس
-  //    الاسم** (يطابقه بالاسم)؛ فأيّ اسمٍ آخر ⇒ يُعطَّل الصفّ القديم ويُستبدَل بجديد ⇒ تغيير هويّة.
+  //  • مسار القالب: يطابق `upsertVariantUnits` القالبَ بالقائم بـ`unitName === name.trim()` (اسمٌ مقصوصٌ
+  //    مُرسَل مقابل اسمٍ مخزَّنٍ **خام**، بلا قصٍّ للمخزَّن — Codex جولة٤ P2)؛ فيُبقي صفّ الأساس أساساً فقط إن
+  //    ساوى الاسمُ المخزَّن الخام الاسمَ المُرسَل المقصوص. نطابق دلالته حرفاً (لا نقصّ المخزَّن) وإلّا مرّ
+  //    اسمٌ مخزَّنٌ بمسافةٍ زائدةٍ من الحارس بينما يستبدله المُحدِّث فتتدلّى مراجع productUnitId.
   const changed =
     intended.unitId != null
       ? Number(intended.unitId) !== Number(curBase.id)
-      : (intended.unitName ?? "").trim() !== (curBase.name ?? "").trim();
+      : (curBase.name ?? "") !== (intended.unitName ?? "").trim();
   if (!changed) return;
 
   throw new TRPCError({

@@ -150,10 +150,36 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(r.added).toBe(0); // الأساس ما زال «قطعة» فلا يُفعَّل الحارس
   });
 
-  it("#2: متغيّرٌ بلا أساسٍ نشطٍ بعد ⇒ يُسمح بتثبيت أساسه أوّل مرّة", async () => {
-    await db().update(s.productUnits).set({ isActive: false }).where(eq(s.productUnits.id, 1)); // تعطيل أساس «قطعة»
-    const r = await updateProductWithVariants(swapToBase("درزن"), actor);
+  it("#2 (Codex جولة٤ P1): أساسٌ **معطَّل** مع رصيدٍ + ترقية أخرى ⇒ يُرفض (الرصيد ما زال مُقوَّماً بالأساس القديم)", async () => {
+    // تعطيل صفّ الأساس «قطعة» لا يجعل المتغيّر «جديداً» — رصيده 40 ما زال مُقوَّماً بالأساس القديم.
+    await db().update(s.productUnits).set({ isActive: false }).where(eq(s.productUnits.id, 1));
+    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/تبديل وحدة الأساس/);
+    const [bs] = await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1));
+    expect(bs.quantity).toBe(40);
+  });
+
+  it("#2: متغيّرٌ بلا أيّ صفّ أساسٍ إطلاقاً (جديدٌ تماماً) ⇒ يُسمح بتثبيت أساسه أوّل مرّة", async () => {
+    await db().insert(s.products).values({ id: 5, name: "منتج بلا وحدات" });
+    await db().insert(s.productVariants).values({ id: 5, productId: 5, sku: "V5", costPrice: "100" }); // بلا productUnits
+    const r = await updateProductWithVariants(
+      { productId: 5, unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "500.00" }] }], variants: [{ id: 5, sku: "V5", costPrice: "100", unitBarcodes: {} }] },
+      actor,
+    );
     expect(r).toBeTruthy();
+    const base = (await db().select().from(s.productUnits).where(and(eq(s.productUnits.variantId, 5), eq(s.productUnits.isBaseUnit, true))))[0];
+    expect(base?.unitName).toBe("قطعة");
+  });
+
+  it("#2 (Codex جولة٤ P2): اسم الأساس المخزَّن بمسافةٍ زائدة + قالبٌ مقصوص ⇒ يُرفض (upsertVariantUnits يستبدل الصفّ فتتدلّى مراجعه)", async () => {
+    // اسمٌ مخزَّنٌ خامٌ بمسافةٍ زائدة (يكتبه المسار الحامل للمعرّف بلا قصّ). القالب المقصوص «قطعة» لا يطابقه
+    // في upsertVariantUnits (يقارن الخام) فيُدرِج صفّاً جديداً ويُعطّل القديم ⇒ يجب أن يرفض الحارس مسبقاً.
+    await db().update(s.productUnits).set({ unitName: "قطعة " }).where(eq(s.productUnits.id, 1));
+    await expect(
+      updateProductWithVariants(
+        { productId: 1, name: "دفتر", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+        actor,
+      ),
+    ).rejects.toThrow(/تبديل وحدة الأساس/);
   });
 
   it("#2 (المسار الحامل للمعرّف): إعادة تسمية الأساس **في مكانه** (نفس المعرّف) ⇒ مسموحة (الصفّ يبقى، مراجعه سليمة)", async () => {
