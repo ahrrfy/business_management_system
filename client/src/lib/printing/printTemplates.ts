@@ -847,6 +847,12 @@ export interface ReceiptBrowserData {
   credit?: string | number | null;
   /** طريقة الدفع كنصّ جاهز للعرض (نقدي/بطاقة/تحويل/محفظة/صك) — تظهر في كتلة الإجماليات */
   paymentMethod?: string | null;
+  /** ش٦ (١١/٨): رقم الوردية — يُطبع في ترويسة الإيصال كمرجع تشغيليّ (مطابقة العائد لوردية الكاشير). */
+  shiftId?: number | null;
+  /** ش٦: طريقة الاستلام — «تسليم داخل المتجر» / «توصيل إلى العنوان» — يُوضّح دورة الطلب. */
+  deliveryMethod?: string | null;
+  /** ش٦: مجموع العرابين المحتجزة (على أوامر شغلٍ مرتبطة) — يظهر إفصاحاً منفصلاً في الإجماليات. */
+  heldDeposits?: string | number | null;
   /** البطاقات الرقمية (ش١٠): تفاصيل كل كرت — بلا أيّ حقلٍ ماليّ داخليّ (§١٢.٢). */
   digitalDetails?: DigitalReceiptDetail[] | null;
   /** إخفاء وسط أرقام الهواتف في النسخة المطبوعة (افتراضياً مُفعَّل). */
@@ -900,11 +906,15 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
   <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:1mm;">
     <span>رقم: <strong>${esc(d.receiptNumber)}</strong></span><span>${esc(d.date)}</span>
   </div>
-  <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:1mm;">
-    ${d.cashierName ? `<span>الكاشير: ${esc(d.cashierName)}</span>` : '<span></span>'}
+  <div style="display:flex;justify-content:space-between;font-size:10.5px;font-weight:700;margin-bottom:1mm;">
+    ${d.cashierName ? `<span>الكاشير: <strong>${esc(d.cashierName)}</strong></span>` : '<span></span>'}
     ${d.time ? `<span>الوقت: ${esc(d.time)}</span>` : '<span></span>'}
   </div>
-  ${d.customerName ? `<div style="font-size:10px;margin-bottom:1mm;">العميل: <strong>${esc(d.customerName)}</strong></div>` : ''}
+  ${d.shiftId != null || d.deliveryMethod ? `<div style="display:flex;justify-content:space-between;font-size:10px;font-weight:700;margin-bottom:1mm;">
+    ${d.shiftId != null ? `<span>الوردية: <strong>#${d.shiftId}</strong></span>` : '<span></span>'}
+    ${d.deliveryMethod ? `<span>${esc(d.deliveryMethod)}</span>` : '<span></span>'}
+  </div>` : ''}
+  ${d.customerName ? `<div style="font-size:11px;font-weight:800;margin-bottom:1mm;">العميل: <strong>${esc(d.customerName)}</strong></div>` : ''}
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
   <table style="width:100%;font-size:10px;border-collapse:collapse;">
     <thead><tr style="border-bottom:1px solid #000;">
@@ -917,18 +927,19 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
   </table>
   ${digitalHtml}
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
-  <div style="font-size:10.5px;">
+  <div style="font-size:11px;font-weight:700;">
     <div style="display:flex;justify-content:space-between;"><span>المجموع:</span><span>${fmt(d.subtotal)}</span></div>
     ${Number(d.discount ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;"><span>الخصم:</span><span>-${fmt(d.discount)}</span></div>` : ''}
     ${Number(d.tax ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;"><span>الضريبة:</span><span>${fmt(d.tax)}</span></div>` : ''}
-    <div style="display:flex;justify-content:space-between;font-weight:900;font-size:14px;margin:1.5mm 0;
+    <div style="display:flex;justify-content:space-between;font-weight:900;font-size:15px;margin:1.5mm 0;
       padding:1.5mm 0;border-top:1px solid #000;border-bottom:1px solid #000;">
       <span>الإجمالي:</span><span>${fmt(d.total)} د.ع</span>
     </div>
     ${d.paymentMethod ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>طريقة الدفع:</span><span>${esc(d.paymentMethod)}</span></div>` : ''}
-    ${d.paid != null ? `<div style="display:flex;justify-content:space-between;"><span>المدفوع:</span><span>${fmt(d.paid)}</span></div>` : ''}
-    ${d.change != null ? `<div style="display:flex;justify-content:space-between;"><span>الباقي:</span><span>${fmt(d.change)}</span></div>` : ''}
-    ${Number(d.credit ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>آجل/ذمة:</span><span>${fmt(d.credit)}</span></div>` : ''}
+    ${d.paid != null ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>المدفوع:</span><span>${fmt(d.paid)}</span></div>` : ''}
+    ${d.change != null ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>الباقي:</span><span>${fmt(d.change)}</span></div>` : ''}
+    ${Number(d.heldDeposits ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>عربون محتجز:</span><span>${fmt(d.heldDeposits)}</span></div>` : ''}
+    ${Number(d.credit ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:900;font-size:12.5px;padding:1mm 0;border-top:1px dashed #666;margin-top:1mm;"><span>متبقٍّ (آجل):</span><span>${fmt(d.credit)} د.ع</span></div>` : ''}
   </div>
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
   <div style="text-align:center;margin:3mm 0 1mm;">

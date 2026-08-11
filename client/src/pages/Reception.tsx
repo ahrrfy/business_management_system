@@ -656,9 +656,12 @@ export default function Reception() {
           })),
           subtotal: saleAmount,
           total: saleAmount,
-          paid: saleAmount,
+          // ش٤ + ش٦: البيع الآجل ⇒ paid=0 + credit=المجموع (ذمّة على العميل). خلاف ذلك: مدفوع كاملاً.
+          paid: opts.deferred ? "0" : saleAmount,
           change: 0,
-          paymentMethod: PAY_METHOD_LABEL[method],
+          credit: opts.deferred ? saleAmount : null,
+          paymentMethod: opts.deferred ? "آجل — لا دفع الآن" : PAY_METHOD_LABEL[method],
+          shiftId: shift.id,
         });
       }
 
@@ -698,6 +701,7 @@ export default function Reception() {
           paid: printAmount,
           change: 0,
           paymentMethod: PAY_METHOD_LABEL[method],
+          shiftId: shift.id,
         });
       }
 
