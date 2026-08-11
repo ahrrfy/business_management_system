@@ -35,6 +35,13 @@ function normalizedInteger(value) {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
+function normalizedStopExitCodes(value) {
+  const values = value == null ? [] : Array.isArray(value) ? value : [value];
+  const normalized = values.map(normalizedInteger);
+  if (normalized.some((entry) => entry == null)) return null;
+  return [...new Set(normalized)].sort((left, right) => left - right);
+}
+
 function normalizedBoolean(value) {
   if (value === true || value === "true" || value === 1 || value === "1") {
     return true;
@@ -185,13 +192,14 @@ function auditLifecycle(definition, expected) {
     return failure("HR_BRIDGE_PM2_LIFECYCLE_MISMATCH");
   }
 
-  if (!Array.isArray(definition.stop_exit_codes)) {
-    return failure("HR_BRIDGE_PM2_LIFECYCLE_MISMATCH");
-  }
-  const stopExitCodes = definition.stop_exit_codes.map(normalizedInteger);
+  const stopExitCodes = normalizedStopExitCodes(definition.stop_exit_codes);
+  const expectedStopExitCodes = normalizedStopExitCodes(
+    expected.stopExitCodes,
+  );
   if (
-    stopExitCodes.some((value) => value == null) ||
-    JSON.stringify(stopExitCodes) !== JSON.stringify(expected.stopExitCodes)
+    stopExitCodes == null ||
+    expectedStopExitCodes == null ||
+    JSON.stringify(stopExitCodes) !== JSON.stringify(expectedStopExitCodes)
   ) {
     return failure("HR_BRIDGE_PM2_LIFECYCLE_MISMATCH");
   }
@@ -361,7 +369,9 @@ function runSelftest() {
     max_restarts: 10,
     restart_delay: "0",
     exp_backoff_restart_delay: "3000",
-    stop_exit_codes: ["78"],
+    // PM2 7 normalizes a single configured array member to a scalar after
+    // start/resurrect. The runtime contract must attest semantics, not shape.
+    stop_exit_codes: "78",
   };
   const options = {
     release,
@@ -375,6 +385,10 @@ function runSelftest() {
   assert.deepEqual(auditLiveBridgePm2Rows(live, options), OK);
   assert.deepEqual(auditDumpBridgePm2Rows(dump, options), OK);
   assert.equal(assertLiveBridgePm2Rows(live, options), true);
+
+  const arrayStopExitCodes = structuredClone(live);
+  arrayStopExitCodes[0].pm2_env.stop_exit_codes = [78];
+  assert.deepEqual(auditLiveBridgePm2Rows(arrayStopExitCodes, options), OK);
 
   const drifted = structuredClone(live);
   drifted[0].pm2_env.max_restarts = 11;

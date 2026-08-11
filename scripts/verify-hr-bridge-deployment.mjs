@@ -844,7 +844,7 @@ try {
   );
   assert.match(
     adoptionDefinitionTransportSelftest.stdout,
-    /noisy stdout isolated/,
+    /noisy stdout and scalar stop exit code normalized/,
   );
 
   assert.equal(fs.readFileSync(first.environmentPath, "utf8").includes(sentinel), true);
