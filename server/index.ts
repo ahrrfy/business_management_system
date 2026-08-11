@@ -585,6 +585,12 @@ async function startServer() {
       });
     }
 
+    // كنّاس الحجوزات المنتهية (١٢/٨) — كلّ ٥ دقائق UTC. الفحص الكسول في list/get لا يكفي:
+    // لو لم يفتح أحدٌ شاشة الحجوزات لأيّام، تبقى المنتهية ACTIVE وتحبس مخزوناً بلا داعٍ.
+    // شكوى المالك «الحجز يبقى نشطاً بعد الانقضاء» تُغلَق فقط بالكنس المستقلّ عن المستخدم.
+    const { startReservationsSweeper } = await import("./services/reservations/sweeper");
+    startReservationsSweeper();
+
     logger.info(
       `الوظائف الخلفيّة بدأت على العامل ${process.env.NODE_APP_INSTANCE ?? "الوحيد"}.`,
     );
