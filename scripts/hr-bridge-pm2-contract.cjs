@@ -35,6 +35,10 @@ function normalizedInteger(value) {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
+function normalizedPm2DefaultInteger(value, defaultValue) {
+  return value === undefined ? defaultValue : normalizedInteger(value);
+}
+
 function normalizedStopExitCodes(value) {
   const values = value == null ? [] : Array.isArray(value) ? value : [value];
   const normalized = values.map(normalizedInteger);
@@ -177,7 +181,11 @@ function readRowShape(row, source) {
 
 function auditLifecycle(definition, expected) {
   if (
-    normalizedInteger(definition.instances) !== expected.instances ||
+    // PM2 7 omits default-valued fields from some persisted/live shapes.
+    // Absence means the documented runtime default; an explicit drift still
+    // fails closed below.
+    normalizedPm2DefaultInteger(definition.instances, 1) !==
+      expected.instances ||
     normalizedExecMode(definition.exec_mode) !== expected.execMode ||
     normalizedBoolean(definition.autorestart) !== expected.autorestart ||
     normalizedBoolean(definition.wait_ready) !== expected.waitReady ||
@@ -185,7 +193,8 @@ function auditLifecycle(definition, expected) {
     normalizedInteger(definition.kill_timeout) !== expected.killTimeout ||
     normalizedInteger(definition.min_uptime) !== expected.minUptime ||
     normalizedInteger(definition.max_restarts) !== expected.maxRestarts ||
-    normalizedInteger(definition.restart_delay) !== expected.restartDelay ||
+    normalizedPm2DefaultInteger(definition.restart_delay, 0) !==
+      expected.restartDelay ||
     normalizedInteger(definition.exp_backoff_restart_delay) !==
       expected.backoffRestartDelay
   ) {
@@ -389,6 +398,22 @@ function runSelftest() {
   const arrayStopExitCodes = structuredClone(live);
   arrayStopExitCodes[0].pm2_env.stop_exit_codes = [78];
   assert.deepEqual(auditLiveBridgePm2Rows(arrayStopExitCodes, options), OK);
+
+  const pm2DefaultedLive = structuredClone(live);
+  delete pm2DefaultedLive[0].pm2_env.restart_delay;
+  assert.deepEqual(auditLiveBridgePm2Rows(pm2DefaultedLive, options), OK);
+
+  const pm2DefaultedDump = structuredClone(dump);
+  delete pm2DefaultedDump[0].instances;
+  delete pm2DefaultedDump[0].restart_delay;
+  assert.deepEqual(auditDumpBridgePm2Rows(pm2DefaultedDump, options), OK);
+
+  const explicitDefaultDrift = structuredClone(pm2DefaultedDump);
+  explicitDefaultDrift[0].instances = 2;
+  assert.equal(
+    auditDumpBridgePm2Rows(explicitDefaultDrift, options).code,
+    "HR_BRIDGE_PM2_LIFECYCLE_MISMATCH",
+  );
 
   const drifted = structuredClone(live);
   drifted[0].pm2_env.max_restarts = 11;
