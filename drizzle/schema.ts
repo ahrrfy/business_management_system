@@ -204,6 +204,9 @@ export const userSessions = mysqlTable(
       table.revokedAt,
       table.expiresAt,
     ),
+    // مسحٌ زمنيّ عامّ (غير مقيَّد بمستخدم) يستعمله جسر أجهزة الحضور كل ٣٠ث لاشتقاق عناوين
+    // «شبكات العمل» الحيّة؛ الفهارس الأخرى تبدأ بـuserId فلا تخدمه (0171).
+    lastSeenIdx: index("idx_user_sessions_last_seen").on(table.lastSeenAt),
   }),
 );
 

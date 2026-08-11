@@ -30,12 +30,29 @@ import {
 import { requireDb } from "../tx";
 import { logger } from "../../logger";
 import { isIP } from "node:net";
-import { normalizeRemoteAddress, type BridgeSecurityConfig } from "./bridgeSecurity";
+import {
+  enabledDeviceIdentityFailure,
+  normalizeRemoteAddress,
+  resolveBridgeSecurityConfig,
+  type BridgeSecurityConfig,
+} from "./bridgeSecurity";
 
 /** نافذة اعتبار جلسة الموظّف «قرينةً حيّة» على أنّ العنوان عنوان المتجر. */
 const DEFAULT_TRUST_WINDOW_HOURS = 12;
-/** سقف مجموعة العناوين المُتعلَّمة — حارس ضدّ انتفاخها بجلسات موظّفين من منازلهم. */
-const MAX_LEARNED_ORIGINS = 100;
+/**
+ * ⭐ عدد **الموظّفين المتمايزين** المطلوب من العنوان الواحد ليُعتبر «شبكة عمل» لا شبكةَ فرد.
+ *
+ * (مراجعة عدائية — الثغرة الأخطر): جلسةُ موظّفٍ **واحد** ليست دليلاً على شبكة المتجر؛ فقد
+ * يفتح النظام من منزله أو من بيانات هاتفه. لو اكتفينا بواحدة لأمكن لموظّفٍ يعرف الرقم
+ * التسلسليّ (وهو مطبوعٌ على الجهاز) أن يُعزّز عنوانه المنزليّ ثمّ ينتحل الجهاز **ويحقن
+ * بصمات حضورٍ وهميّة وهو غائب**. شبكةُ المتجر يعمل منها عدّة موظّفين في آنٍ واحد، والمنزل
+ * موظّفٌ واحد ⇒ العتبة تفرّق بينهما بلا عتادٍ ولا إعدادٍ إضافيّ.
+ *
+ * عند عدم بلوغ العتبة لا يضيع التعافي: تظهر المحاولة في الشاشة لاعتمادٍ يدويّ بنقرة.
+ */
+const DEFAULT_MIN_WITNESSES = 2;
+/** سقف العناوين المشتقّة من الجلسات (عناوين الأجهزة المخزَّنة لا تخضع للسقف — أنظر أدناه). */
+const MAX_LEARNED_SESSION_ORIGINS = 100;
 /** عمر ذاكرة العناوين الموثوقة داخل عملية الجسر (البوّابة الأولى تُستشار بشكل متزامن). */
 const ORIGIN_CACHE_TTL_MS = 30_000;
 
@@ -43,6 +60,7 @@ export interface OriginTrustConfig {
   /** الاعتماد التلقائي بالقرينة — مفتاح إيقاف: HR_DEVICE_ORIGIN_AUTOTRUST=0. */
   autoTrust: boolean;
   windowHours: number;
+  minWitnesses: number;
 }
 
 export function resolveOriginTrustConfig(
@@ -50,6 +68,7 @@ export function resolveOriginTrustConfig(
 ): OriginTrustConfig {
   const raw = env.HR_DEVICE_ORIGIN_AUTOTRUST?.trim();
   const hours = Number(env.HR_DEVICE_ORIGIN_TRUST_WINDOW_HOURS);
+  const witnesses = Number(env.HR_DEVICE_ORIGIN_MIN_WITNESSES);
   return {
     // مُفعَّل افتراضياً: الغرض كلّه إنهاء التدخّل اليدويّ. الإيقاف قرارٌ صريح.
     autoTrust: raw !== "0" && raw?.toLowerCase() !== "false",
@@ -57,6 +76,11 @@ export function resolveOriginTrustConfig(
       Number.isFinite(hours) && hours >= 1 && hours <= 720
         ? hours
         : DEFAULT_TRUST_WINDOW_HOURS,
+    // لا نسمح بالنزول تحت ١ إطلاقاً؛ و١ يعني «ثِق بجلسةٍ واحدة» — قرارٌ صريحٌ لمالكٍ يقبل أثره.
+    minWitnesses:
+      Number.isInteger(witnesses) && witnesses >= 1 && witnesses <= 20
+        ? witnesses
+        : DEFAULT_MIN_WITNESSES,
   };
 }
 
@@ -84,15 +108,37 @@ export function resetLearnedOriginsForTest(): void {
  * ترفض قبل رسالة `reg`. وهي لا تمنح ثقةً بذاتها: البوّابة الثانية تظلّ تطالب برقمٍ تسلسليّ
  * مطابقٍ وقرينةٍ صريحة قبل أيّ اعتماد.
  */
-export async function loadLearnedOrigins(windowHours: number): Promise<Set<string>> {
+export async function loadLearnedOrigins(
+  windowHours: number,
+  minWitnesses = DEFAULT_MIN_WITNESSES,
+): Promise<Set<string>> {
   const db = requireDb();
-  const rows = (await db.execute(sql`
-    SELECT DISTINCT \`ip\` AS ip FROM (
-      SELECT d.\`ip\` AS \`ip\`
-        FROM \`hrFingerprintDevices\` d
-       WHERE d.\`enabled\` = 1 AND d.\`ip\` IS NOT NULL AND d.\`ip\` <> ''
-      UNION
-      SELECT s.\`ipAddress\` AS \`ip\`
+  const out = new Set<string>();
+  const add = (raw: string | null | undefined) => {
+    const ip = normalizeRemoteAddress(raw ?? undefined);
+    // العنوان المخزَّن قد يكون بصيغة CIDR مضيفٍ واحد (x/32) — نأخذ الجزء العنوانيّ فقط.
+    const bare = ip.split("/")[0];
+    if (bare && isIP(bare) !== 0) out.add(bare);
+  };
+  const unwrap = <T>(rows: unknown): T[] =>
+    (Array.isArray((rows as unknown[])?.[0]) ? (rows as T[][])[0] : (rows as T[])) ?? [];
+
+  // (١) عناوين الأجهزة المُفعَّلة — **بلا سقف**: هي مصدر الحقيقة القائم وقليلةُ العدد،
+  // وإخضاعها لسقفٍ مشتركٍ غير مرتَّب كان قد يُسقط عنوان جهازٍ عامل (مراجعة عدائية).
+  const deviceRows = unwrap<{ ip: string | null }>(
+    await db.execute(sql`
+      SELECT \`ip\` FROM \`hrFingerprintDevices\`
+       WHERE \`enabled\` = 1 AND \`ip\` IS NOT NULL AND \`ip\` <> ''
+    `),
+  );
+  for (const row of deviceRows) add(row?.ip);
+
+  // (٢) عناوين «شبكات عمل» مشتقّة من الجلسات: يلزمها **عدّة موظّفين متمايزين** من العنوان
+  // نفسه (لا موظّفٌ واحد من منزله)، والسقف يُطبَّق **بعد الترتيب بالأحدث** فلا يُقصى عنوانٌ
+  // طازج لصالح آخر قديم.
+  const sessionRows = unwrap<{ ip: string | null }>(
+    await db.execute(sql`
+      SELECT s.\`ipAddress\` AS \`ip\`, MAX(s.\`lastSeenAt\`) AS \`seenAt\`
         FROM \`userSessions\` s
         JOIN \`users\` u ON u.\`id\` = s.\`userId\`
        WHERE s.\`ipAddress\` IS NOT NULL AND s.\`ipAddress\` <> ''
@@ -105,23 +151,23 @@ export async function loadLearnedOrigins(windowHours: number): Promise<Set<strin
                 WHERE hd.\`enabled\` = 1
                   AND (hd.\`branchId\` IS NULL OR hd.\`branchId\` = u.\`branchId\`)
              )
-    ) AS origins
-    LIMIT ${MAX_LEARNED_ORIGINS}
-  `)) as unknown as Array<Array<{ ip: string | null }>> | Array<{ ip: string | null }>;
-  // mysql2 يعيد [rows, fields]؛ drizzle execute يمرّرها كما هي في بعض الإصدارات.
-  const list = (Array.isArray(rows[0]) ? rows[0] : rows) as Array<{ ip: string | null }>;
-  const out = new Set<string>();
-  for (const row of list) {
-    const ip = normalizeRemoteAddress(row?.ip ?? undefined);
-    if (ip && isIP(ip) !== 0) out.add(ip);
-  }
+       GROUP BY s.\`ipAddress\`
+      HAVING COUNT(DISTINCT s.\`userId\`) >= ${minWitnesses}
+       ORDER BY \`seenAt\` DESC
+       LIMIT ${MAX_LEARNED_SESSION_ORIGINS}
+    `),
+  );
+  for (const row of sessionRows) add(row?.ip);
   return out;
 }
 
 /** تحديث الذاكرة (يستدعيه الجسر دورياً) — يفشل مفتوحاً: خطأ القاعدة يُبقي آخر مجموعة صالحة. */
-export async function refreshLearnedOrigins(windowHours: number): Promise<void> {
+export async function refreshLearnedOrigins(
+  windowHours: number,
+  minWitnesses = DEFAULT_MIN_WITNESSES,
+): Promise<void> {
   try {
-    learnedOrigins = await loadLearnedOrigins(windowHours);
+    learnedOrigins = await loadLearnedOrigins(windowHours, minWitnesses);
     learnedAt = Date.now();
   } catch (err) {
     logger.warn({ err }, "hrDevices/originTrust: تعذّر تحديث العناوين المُتعلَّمة");
@@ -142,12 +188,13 @@ export async function isOriginCorroborated(
   branchId: number | null,
   ip: string,
   windowHours: number,
+  minWitnesses = DEFAULT_MIN_WITNESSES,
 ): Promise<boolean> {
   const clean = normalizeRemoteAddress(ip);
   if (!clean || isIP(clean) === 0) return false;
   const db = requireDb();
   const rows = (await db.execute(sql`
-    SELECT COUNT(*) AS n
+    SELECT COUNT(DISTINCT s.\`userId\`) AS n
       FROM \`userSessions\` s
       JOIN \`users\` u ON u.\`id\` = s.\`userId\`
        -- الجلسات قد تُخزَّن بصيغة IPv4 المُغلَّفة (::ffff:x) بينما الجسر يرى الصيغة المجرّدة؛
@@ -160,7 +207,8 @@ export async function isOriginCorroborated(
        ${branchId != null ? sql`AND u.\`branchId\` = ${branchId}` : sql``}
   `)) as unknown as Array<Array<{ n: number }>> | Array<{ n: number }>;
   const list = (Array.isArray(rows[0]) ? rows[0] : rows) as Array<{ n: number }>;
-  return Number(list?.[0]?.n ?? 0) > 0;
+  // **موظّفون متمايزون** لا جلسات: عشر جلسات لموظّفٍ واحد من منزله تبقى شاهداً واحداً.
+  return Number(list?.[0]?.n ?? 0) >= minWitnesses;
 }
 
 /* ── سجلّ المحاولات (الرؤية + الاعتماد بنقرة) ─────────────────────────────── */
@@ -176,8 +224,9 @@ export async function recordOriginAttempt(input: {
   decision: string;
 }): Promise<void> {
   const ip = normalizeRemoteAddress(input.ip);
+  // الرقم التسلسليّ الفارغ مقصود: مصدرٌ صدّته البوّابة الأولى قبل أن يُعرّف نفسه.
   const sn = input.serialNumber.trim();
-  if (!sn || !ip || isIP(ip) === 0) return;
+  if (!ip || isIP(ip) === 0) return;
   try {
     const db = requireDb();
     await db
@@ -211,7 +260,7 @@ export async function resolveOriginAttempt(input: {
 }): Promise<void> {
   const ip = normalizeRemoteAddress(input.ip);
   const sn = input.serialNumber.trim();
-  if (!sn || !ip) return;
+  if (!ip) return;
   try {
     const db = requireDb();
     await db
@@ -242,10 +291,39 @@ export async function adoptDeviceOrigin(input: {
   ip: string;
   resolution: "AUTO" | "MANUAL";
   resolvedBy?: number | null;
+  security?: BridgeSecurityConfig;
 }): Promise<void> {
   const ip = normalizeRemoteAddress(input.ip);
   if (!ip || isIP(ip) === 0) throw new Error("HR_ORIGIN_IP_INVALID");
   const db = requireDb();
+
+  // ⚠️ حارسٌ إلزاميّ (مراجعة عادية): الاعتماد يمرّ من نفس تدقيق `updateDevice` العامّ. لو
+  // تبنّينا عنواناً يملكه جهازٌ مُفعَّلٌ آخر بلا مفتاحٍ مميِّز، لصار جهازان يتشاركان عنواناً
+  // واحداً ⇒ `enabledDeviceIdentityRuntimeFailure` يفشل بعدها عند **كلّ** تسجيل فيُسقط
+  // الأجهزة جميعاً — عطلٌ أوسع من الذي نعالجه. الفحص استشرافيّ قبل الكتابة لا بعدها.
+  const security = input.security ?? resolveBridgeSecurityConfig();
+  const enabled = await db
+    .select({
+      id: hrFingerprintDevices.id,
+      serialNumber: hrFingerprintDevices.serialNumber,
+      ip: hrFingerprintDevices.ip,
+    })
+    .from(hrFingerprintDevices)
+    .where(eq(hrFingerprintDevices.enabled, true));
+  const prospective = enabled.map((row) =>
+    row.id === input.deviceId ? { ...row, ip } : row,
+  );
+  const failure = enabledDeviceIdentityFailure(prospective, security);
+  if (failure) {
+    await recordOriginAttempt({
+      deviceId: input.deviceId,
+      serialNumber: input.serialNumber,
+      ip,
+      decision: "WOULD_CONFLICT",
+    });
+    throw new Error(`HR_ORIGIN_ADOPT_CONFLICT:${failure}`);
+  }
+
   await db
     .update(hrFingerprintDevices)
     .set({ ip })
@@ -357,13 +435,61 @@ export async function tryAutoAdoptOrigin(input: {
     input.device.branchId,
     input.ip,
     cfg.windowHours,
+    cfg.minWitnesses,
   );
   if (!corroborated) return { adopted: false, reason: "NOT_CORROBORATED" };
-  await adoptDeviceOrigin({
-    deviceId: input.device.id,
-    serialNumber: input.serialNumber,
-    ip: input.ip,
-    resolution: "AUTO",
-  });
+  try {
+    await adoptDeviceOrigin({
+      deviceId: input.device.id,
+      serialNumber: input.serialNumber,
+      ip: input.ip,
+      resolution: "AUTO",
+      security: input.security,
+    });
+  } catch (err) {
+    // تعارض ثابت الهوية (عنوانٌ يملكه جهازٌ آخر): لا نتبنّى — والمحاولة تبقى مرئيّة للمدير.
+    logger.warn({ err, sn: input.serialNumber, ip: input.ip }, "hrDevices/originTrust: تعذّر الاعتماد التلقائي");
+    return { adopted: false, reason: "ADOPT_CONFLICT" };
+  }
   return { adopted: true, reason: "CORROBORATED_BY_SESSION" };
+}
+
+/* ── رصد المحجوب عند البوّابة الأولى ──────────────────────────────────────── */
+
+/** خنقٌ في الذاكرة: الجهاز المصدود يقرع كلّ ~٢٠٠م.ث، فلا نكتب صفاً لكل محاولة. */
+const blockedSeenAt = new Map<string, number>();
+const BLOCKED_RECORD_THROTTLE_MS = 60_000;
+/** الوسم المحجوز للمصدر المجهول الرقم التسلسليّ (البوّابة الأولى ترفض قبل رسالة reg). */
+export const UNKNOWN_ORIGIN_SERIAL = "";
+
+export function resetBlockedOriginThrottleForTest(): void {
+  blockedSeenAt.clear();
+}
+
+/**
+ * تسجيل عنوانٍ صدّته **البوّابة الأولى** — أي قبل أن يُعرّف الجهاز نفسه، فلا رقم تسلسليّ لدينا.
+ *
+ * (مراجعة عادية — ثغرة حقيقية): بدون هذا، الحالةُ التي بُني لها المسار اليدويّ أصلاً — تغيّر
+ * العنوان **بلا أيّ جلسة موظّفٍ تُعزّزه** (ليلاً مثلاً) — لا تُنتج أيّ صفٍّ في الطابور، فتبقى
+ * الشاشة فارغةً بينما الجهاز يقرع بلا انقطاع. الآن تظهر بطاقةٌ بالعنوان وعدد المحاولات،
+ * ويسند المديرُ العنوانَ لجهازه بنقرة.
+ */
+export async function recordBlockedOrigin(ip: string | undefined): Promise<void> {
+  const clean = normalizeRemoteAddress(ip ?? undefined);
+  if (!clean || isIP(clean) === 0) return;
+  const now = Date.now();
+  const last = blockedSeenAt.get(clean) ?? 0;
+  if (now - last < BLOCKED_RECORD_THROTTLE_MS) return;
+  blockedSeenAt.set(clean, now);
+  if (blockedSeenAt.size > 1000) {
+    for (const [key, at] of Array.from(blockedSeenAt)) {
+      if (now - at > BLOCKED_RECORD_THROTTLE_MS) blockedSeenAt.delete(key);
+    }
+  }
+  await recordOriginAttempt({
+    deviceId: null,
+    serialNumber: UNKNOWN_ORIGIN_SERIAL,
+    ip: clean,
+    decision: "NETWORK_BLOCKED",
+  });
 }

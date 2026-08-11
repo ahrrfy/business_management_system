@@ -114,6 +114,8 @@ export default function HrDevices() {
   // الانقطاع الذي دام ٨ ساعات سببه أنّ الرفض كان يُدفن في ملفّ سجلٍّ لا يراه أحد.
   const originsQuery = trpc.hrDevices.pendingOrigins.useQuery(undefined, { refetchInterval: 60_000 });
   const pendingOrigins = originsQuery.data ?? [];
+  /** الجهاز الذي اختاره المدير لمصدرٍ محجوبٍ بلا رقم تسلسليّ (مفتاحه معرّف المحاولة). */
+  const [originDevice, setOriginDevice] = useState<Record<number, string>>({});
 
   const refresh = async () => {
     await Promise.all([
@@ -395,10 +397,13 @@ export default function HrDevices() {
                 <div key={o.id} className="rounded-md border p-2.5 flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-[13px] font-medium truncate">
-                      {o.deviceName ?? "جهاز غير معروف"}{" "}
-                      <span className="text-muted-foreground font-normal" dir="ltr">
-                        {o.serialNumber}
-                      </span>
+                      {o.deviceName ?? (o.serialNumber ? "جهاز غير معروف" : "مصدر مجهول — لم يُعرّف نفسه")}
+                      {o.serialNumber ? (
+                        <span className="text-muted-foreground font-normal" dir="ltr">
+                          {" "}
+                          {o.serialNumber}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="text-[11px] text-muted-foreground">
                       من العنوان <span dir="ltr" className="font-mono">{o.ip}</span> · {o.attemptCount} محاولة · آخرها{" "}
@@ -406,10 +411,35 @@ export default function HrDevices() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
+                    {/* مصدرٌ صُدّ قبل أن يُعرّف نفسه ⇒ لا رقم تسلسليّ: يختار المديرُ الجهاز صراحةً. */}
+                    {o.deviceId == null && (
+                      <select
+                        className={selectCls + " w-44"}
+                        aria-label="الجهاز الذي يخصّه هذا العنوان"
+                        value={originDevice[o.id] ?? ""}
+                        onChange={(e) => setOriginDevice((m) => ({ ...m, [o.id]: e.target.value }))}
+                      >
+                        <option value="">— اختر الجهاز —</option>
+                        {devices
+                          .filter((d) => d.enabled)
+                          .map((d) => (
+                            <option key={d.id} value={String(d.id)}>
+                              {d.name}
+                            </option>
+                          ))}
+                      </select>
+                    )}
                     <Button
                       size="sm"
-                      disabled={trustOrigin.isPending || o.deviceId == null}
-                      onClick={() => trustOrigin.mutate({ id: o.id })}
+                      disabled={
+                        trustOrigin.isPending || (o.deviceId == null && !originDevice[o.id])
+                      }
+                      onClick={() =>
+                        trustOrigin.mutate({
+                          id: o.id,
+                          ...(o.deviceId == null ? { deviceId: Number(originDevice[o.id]) } : {}),
+                        })
+                      }
                     >
                       اعتماد العنوان
                     </Button>

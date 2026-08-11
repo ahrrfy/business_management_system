@@ -24,8 +24,11 @@ import {
   isOriginCorroborated,
   listPendingOriginAttempts,
   loadLearnedOrigins,
+  recordBlockedOrigin,
+  resetBlockedOriginThrottleForTest,
   resolveOriginTrustConfig,
 } from "../hrDevices/originTrust";
+import { updateDevice } from "../hrDeviceService";
 import { truncateTables } from "./__testUtils__";
 
 function db() {
@@ -58,6 +61,15 @@ async function seedSession(opts: {
       expiresAt: new Date(now + (opts.expiresInMs ?? 86_400_000)),
       revokedAt: opts.revoked ? new Date(now - 1000) : null,
     });
+}
+
+/** «شبكة عمل»: عدّة موظّفين متمايزين من العنوان نفسه — العتبة التي تفرّقها عن منزل فرد. */
+async function seedWitnesses(
+  ip: string,
+  userIds: number[],
+  opts: { lastSeenAgoMs?: number; expiresInMs?: number; revoked?: boolean } = {},
+) {
+  for (const userId of userIds) await seedSession({ userId, ip, ...opts });
 }
 
 function fakeTransport(remote: string) {
@@ -113,6 +125,8 @@ beforeEach(async () => {
     { id: 1, openId: "a", name: "موظّف الفرع", role: "cashier", loginMethod: "local", branchId: 1, isActive: true },
     { id: 2, openId: "b", name: "موظّف فرعٍ آخر", role: "cashier", loginMethod: "local", branchId: 2, isActive: true },
     { id: 3, openId: "c", name: "معطَّل", role: "cashier", loginMethod: "local", branchId: 1, isActive: false },
+    { id: 4, openId: "d", name: "زميل الفرع", role: "cashier", loginMethod: "local", branchId: 1, isActive: true },
+    { id: 5, openId: "e", name: "زميل فرعٍ آخر", role: "cashier", loginMethod: "local", branchId: 2, isActive: true },
   ]);
   await d.insert(s.hrFingerprintDevices).values({
     id: 10,
@@ -142,48 +156,64 @@ describe("ث١ — البوّابة الأولى تقبل العنوان الم�
     expect(isRemoteAllowed("8.8.8.8", [], new Set())).toBe(true);
   });
 
-  it("التعلُّم يجمع عنوان الجهاز المُفعَّل + عنوان جلسة موظّف فرعه", async () => {
-    await seedSession({ userId: 1, ip: NEW_IP });
+  it("التعلُّم يجمع عنوان الجهاز المُفعَّل + عنوان «شبكة عمل» بشهودٍ متعدّدين", async () => {
+    await seedWitnesses(NEW_IP, [1, 4]);
     const learned = await loadLearnedOrigins(WINDOW_HOURS);
-    expect(learned.has(OLD_IP)).toBe(true); // عنوان الجهاز المخزَّن
-    expect(learned.has(NEW_IP)).toBe(true); // العنوان الجديد من جلسة الموظّف
+    expect(learned.has(OLD_IP)).toBe(true); // عنوان الجهاز المخزَّن — لا يخضع لأيّ سقف
+    expect(learned.has(NEW_IP)).toBe(true); // العنوان الجديد من شبكة العمل
+  });
+
+  it("عنوان موظّفٍ واحدٍ (منزله) لا يدخل التعلُّم، وعنوان الجهاز يبقى دائماً", async () => {
+    await seedSession({ userId: 1, ip: "5.5.5.5" });
+    const learned = await loadLearnedOrigins(WINDOW_HOURS);
+    expect(learned.has("5.5.5.5")).toBe(false);
+    expect(learned.has(OLD_IP)).toBe(true);
   });
 });
 
 describe("ث٢ — القرينة صادقة", () => {
-  it("جلسة حيّة لموظّف فرع الجهاز تُعزّز", async () => {
-    await seedSession({ userId: 1, ip: NEW_IP });
+  it("شبكة عمل (موظّفان متمايزان) تُعزّز", async () => {
+    await seedWitnesses(NEW_IP, [1, 4]);
     await expect(isOriginCorroborated(1, NEW_IP, WINDOW_HOURS)).resolves.toBe(true);
   });
 
-  it("جلسة ملغاة أو منتهية أو راكدة لا تُعزّز", async () => {
-    await seedSession({ userId: 1, ip: NEW_IP, revoked: true });
+  it("⭐ موظّفٌ واحدٌ لا يُعزّز — ولو بجلساتٍ متعدّدة (يمنع انتحال الجهاز من منزل موظّف)", async () => {
+    await seedSession({ userId: 1, ip: NEW_IP });
+    await seedSession({ userId: 1, ip: NEW_IP });
+    await seedSession({ userId: 1, ip: NEW_IP });
+    await expect(isOriginCorroborated(1, NEW_IP, WINDOW_HOURS)).resolves.toBe(false);
+    // العتبة قابلة للضبط لمن يقبل أثرها صراحةً.
+    await expect(isOriginCorroborated(1, NEW_IP, WINDOW_HOURS, 1)).resolves.toBe(true);
+  });
+
+  it("جلسات ملغاة أو منتهية أو راكدة لا تُعزّز", async () => {
+    await seedWitnesses(NEW_IP, [1, 4], { revoked: true });
     await expect(isOriginCorroborated(1, NEW_IP, WINDOW_HOURS)).resolves.toBe(false);
 
     await truncateTables(["userSessions"]);
-    await seedSession({ userId: 1, ip: NEW_IP, expiresInMs: -1000 });
+    await seedWitnesses(NEW_IP, [1, 4], { expiresInMs: -1000 });
     await expect(isOriginCorroborated(1, NEW_IP, WINDOW_HOURS)).resolves.toBe(false);
 
     await truncateTables(["userSessions"]);
-    await seedSession({ userId: 1, ip: NEW_IP, lastSeenAgoMs: 24 * 3600_000 });
+    await seedWitnesses(NEW_IP, [1, 4], { lastSeenAgoMs: 24 * 3600_000 });
     await expect(isOriginCorroborated(1, NEW_IP, WINDOW_HOURS)).resolves.toBe(false);
   });
 
-  it("جلسة موظّفٍ من فرعٍ آخر أو موظّفٍ معطَّل لا تُعزّز فرع الجهاز", async () => {
-    await seedSession({ userId: 2, ip: NEW_IP });
-    await seedSession({ userId: 3, ip: NEW_IP });
+  it("موظّفو فرعٍ آخر أو موظّفٌ معطَّل لا يُعزّزون فرع الجهاز", async () => {
+    await seedWitnesses(NEW_IP, [2, 5]); // الفرع ٢
+    await seedSession({ userId: 3, ip: NEW_IP }); // معطَّل
     await expect(isOriginCorroborated(1, NEW_IP, WINDOW_HOURS)).resolves.toBe(false);
   });
 
   it("صيغة IPv4 المُغلَّفة في الجلسة تطابق الصيغة المجرّدة التي يراها الجسر", async () => {
-    await seedSession({ userId: 1, ip: `::ffff:${NEW_IP}` });
+    await seedWitnesses(`::ffff:${NEW_IP}`, [1, 4]);
     await expect(isOriginCorroborated(1, NEW_IP, WINDOW_HOURS)).resolves.toBe(true);
   });
 });
 
 describe("ث٣/ث٤ — الاعتماد التلقائي والرصد", () => {
   it("عنوانٌ جديد مُعزَّز ⇒ يُقبل التسجيل ويُحدَّث عنوان الجهاز وتُحسم المحاولة تلقائياً", async () => {
-    await seedSession({ userId: 1, ip: NEW_IP });
+    await seedWitnesses(NEW_IP, [1, 4]);
     const t = await reg(NEW_IP);
 
     expect(t.sent[0]).toMatchObject({ ret: "reg", result: true });
@@ -226,7 +256,7 @@ describe("ث٥/ث٦ — حدود التلقائية", () => {
     process.env.HR_DEVICE_IDENTITY_BINDINGS = JSON.stringify({
       [SN]: { allowlist: [`${OLD_IP}/32`] },
     });
-    await seedSession({ userId: 1, ip: NEW_IP });
+    await seedWitnesses(NEW_IP, [1, 4]);
     const t = await reg(NEW_IP);
     expect(t.sent[0]).toMatchObject({ ret: "reg", result: false });
     expect((await deviceRow()).ip).toBe(OLD_IP);
@@ -236,7 +266,7 @@ describe("ث٥/ث٦ — حدود التلقائية", () => {
   it("مفتاح الإيقاف يُعطّل الاعتماد التلقائيّ ويُبقي الرصد", async () => {
     process.env.HR_DEVICE_ORIGIN_AUTOTRUST = "0";
     expect(resolveOriginTrustConfig().autoTrust).toBe(false);
-    await seedSession({ userId: 1, ip: NEW_IP });
+    await seedWitnesses(NEW_IP, [1, 4]);
     const t = await reg(NEW_IP);
     expect(t.sent[0]).toMatchObject({ ret: "reg", result: false });
     expect((await deviceRow()).ip).toBe(OLD_IP);
@@ -247,5 +277,82 @@ describe("ث٥/ث٦ — حدود التلقائية", () => {
     delete process.env.HR_DEVICE_ORIGIN_AUTOTRUST;
     expect(resolveOriginTrustConfig().autoTrust).toBe(true);
     expect(resolveOriginTrustConfig().windowHours).toBe(12);
+    expect(resolveOriginTrustConfig().minWitnesses).toBe(2);
+  });
+});
+
+/* ── ثوابت أضافتها المراجعة العدائية ─────────────────────────────────────── */
+
+describe("ث٧ — المصدر المحجوب عند البوّابة الأولى يظهر في الطابور", () => {
+  it("يُرصَد بلا رقم تسلسليّ (وإلّا بقيت حالةُ «لا قرينة» بلا أثرٍ مرئيّ إطلاقاً)", async () => {
+    resetBlockedOriginThrottleForTest();
+    await recordBlockedOrigin(NEW_IP);
+    const pending = await listPendingOriginAttempts();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ ip: NEW_IP, serialNumber: "", decision: "NETWORK_BLOCKED", deviceId: null });
+  });
+
+  it("مخنوقٌ في الذاكرة: إلحاح الجهاز (٥ مرّات/ثانية) لا يكتب صفاً لكل محاولة", async () => {
+    resetBlockedOriginThrottleForTest();
+    for (let i = 0; i < 25; i += 1) await recordBlockedOrigin(NEW_IP);
+    const rows = await db().select().from(s.hrDeviceOriginAttempts);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].attemptCount).toBe(1); // كُتب مرّة واحدة فعلاً — لا ٢٥
+  });
+});
+
+describe("ث٨ — الاعتماد لا يخرق ثابت الهوية العامّ", () => {
+  it("عنوانٌ يملكه جهازٌ مُفعَّلٌ آخر بلا مفتاح ⇒ يُرفض التبنّي (وإلّا سقطت الأجهزة كلّها)", async () => {
+    await db().insert(s.hrFingerprintDevices).values({
+      id: 11,
+      name: "جهاز ثانٍ",
+      serialNumber: "ZXRBORIGIN02",
+      protocol: "AIFACE_WS",
+      branchId: 1,
+      enabled: true,
+      migrated: true,
+      ip: NEW_IP, // العنوان الذي سيحاول جهازنا تبنّيه
+    });
+    await seedWitnesses(NEW_IP, [1, 4]);
+
+    const t = await reg(NEW_IP);
+    expect(t.sent[0]).toMatchObject({ ret: "reg", result: false });
+    expect((await deviceRow()).ip).toBe(OLD_IP); // لم يُمسّ
+
+    const rows = await db().select().from(s.hrDeviceOriginAttempts);
+    expect(rows.some((r) => r.decision === "WOULD_CONFLICT")).toBe(true);
+  });
+});
+
+describe("ث٩ — التعديل الجزئيّ لا يمسح ما لم يُرسَل", () => {
+  it("تعديل الاسم وحده يُبقي بيانات الهجرة والعدّادات الحيّة", async () => {
+    await db()
+      .update(s.hrFingerprintDevices)
+      .set({
+        serverHost: "hr.alarabiya.online",
+        serverPort: 7788,
+        usersCount: 63,
+        recordsCount: 37206,
+        firmware: "AiF43H_v1.21",
+        status: "online",
+      })
+      .where(eq(s.hrFingerprintDevices.id, 10));
+
+    await updateDevice(10, { name: "البصمة — المدخل" } as Parameters<typeof updateDevice>[1]);
+
+    const row = await deviceRow();
+    expect(row.name).toBe("البصمة — المدخل");
+    expect(row.serverHost).toBe("hr.alarabiya.online");
+    expect(row.serverPort).toBe(7788);
+    expect(row.usersCount).toBe(63);
+    expect(row.recordsCount).toBe(37206);
+    expect(row.firmware).toBe("AiF43H_v1.21");
+    expect(row.status).toBe("online");
+    expect(row.ip).toBe(OLD_IP); // لم يُرسَل ⇒ لم يُمسّ
+  });
+
+  it("تعديل العنوان صراحةً يكتبه (المسار الذي كان مستحيلاً من الشاشة)", async () => {
+    await updateDevice(10, { name: "البصمة الرئيسية", ip: NEW_IP } as Parameters<typeof updateDevice>[1]);
+    expect((await deviceRow()).ip).toBe(NEW_IP);
   });
 });

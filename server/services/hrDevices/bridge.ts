@@ -23,6 +23,7 @@ import {
 } from "./bridgeSecurity";
 import {
   cachedLearnedOrigins,
+  recordBlockedOrigin,
   refreshLearnedOrigins,
   resolveOriginTrustConfig,
 } from "./originTrust";
@@ -201,11 +202,22 @@ export async function startHrDeviceBridge(
       const withinRate = rateLimiter.allow(req.socket.remoteAddress);
       const accepted =
         authorized && withinRate && connected < security.maxWsConnectionsPerIp;
-      if (!accepted)
+      if (!accepted) {
         logger.warn(
           { remote, authorized, withinRate, connected },
           "hrDevices: رفض ترقية WebSocket",
         );
+        // مصدرٌ صُدّ **قبل** أن يُعرّف نفسه ⇒ لا رقم تسلسليّ. نرصده (مخنوقاً في الذاكرة) كي
+        // يظهر في الشاشة، وإلّا بقيت الحالةُ التي بُني لها المسار اليدويّ بلا أيّ أثرٍ مرئيّ.
+        if (!authorized) {
+          const tracked = recordBlockedOrigin(req.socket.remoteAddress)
+            .catch((err) =>
+              logger.warn({ err, remote }, "hrDevices: تعذّر رصد مصدر محجوب"),
+            )
+            .finally(() => maintenanceTasks.delete(tracked));
+          maintenanceTasks.add(tracked);
+        }
+      }
       done(accepted, accepted ? undefined : authorized ? 429 : 403);
     },
   });
@@ -307,10 +319,17 @@ export async function startHrDeviceBridge(
   // عنوانُ المتجر الجديد (بعد تغيير المزوّد) البوّابةَ الأولى بلا SSH ولا إعادة تشغيل.
   // مفصولٌ عن الكنّاس عمداً: دورته أقصر (٣٠ث) لأنّه مسار تعافٍ من انقطاع، لا صيانة.
   const originTrust = resolveOriginTrustConfig();
+  // حارس تداخل: تدهورُ القاعدة قد يُبطئ الاستعلام فوق دورة الـ٣٠ث؛ بلا هذا الحارس تتراكم
+  // نداءات بلا سقف فتستنزف مجمّع الاتصالات ويعلق الإيقاف بانتظارها (مراجعة عادية).
+  let originRefreshInFlight: Promise<void> | null = null;
   const refreshOrigins = () => {
-    const tracked = refreshLearnedOrigins(originTrust.windowHours).finally(() =>
-      maintenanceTasks.delete(tracked),
-    );
+    if (originRefreshInFlight) return;
+    const tracked = refreshLearnedOrigins(originTrust.windowHours, originTrust.minWitnesses)
+      .finally(() => {
+        originRefreshInFlight = null;
+        maintenanceTasks.delete(tracked);
+      });
+    originRefreshInFlight = tracked;
     maintenanceTasks.add(tracked);
   };
   const originRefresher = setInterval(refreshOrigins, 30_000);
@@ -374,7 +393,7 @@ export async function startHrDeviceBridge(
 
   // تحميلٌ أوّليّ قبل فتح المنفذ: الجهاز المصدود يقرع كلّ ~٢٠٠م.ث، فلو انتظرنا الدورة
   // الأولى (٣٠ث) لضاعت مئات المحاولات بلا سبب. فاشلٌ مفتوحاً (يبتلع خطأه داخلياً).
-  await refreshLearnedOrigins(originTrust.windowHours);
+  await refreshLearnedOrigins(originTrust.windowHours, originTrust.minWitnesses);
 
   try {
     await listenForBridge(

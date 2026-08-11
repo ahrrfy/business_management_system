@@ -31,3 +31,8 @@ CREATE TABLE `hrDeviceOriginAttempts` (
 );
 --> statement-breakpoint
 CREATE INDEX `idx_hr_origin_pending` ON `hrDeviceOriginAttempts` (`resolvedAt`,`lastSeenAt`);
+--> statement-breakpoint
+-- الجسر يمسح نافذة الجلسات الحيّة عند الإقلاع وكل ٣٠ث. فهارس userSessions القائمة تبدأ كلّها
+-- بـuserId فلا تخدم مسحاً زمنياً عامّاً، وصفوف الجلسات تبقى بعد انتهائها/إبطالها ⇒ السجلّ ينمو
+-- ويتحوّل تحديثُ ذاكرةٍ صغير إلى مسحٍ كاملٍ متكرّر. الفهرس الزمنيّ يقصر المسح على النافذة.
+CREATE INDEX `idx_user_sessions_last_seen` ON `userSessions` (`lastSeenAt`);

@@ -6331,7 +6331,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:312"
+      "loc": "server/routers/hrDeviceRouter.ts:348"
     },
     {
       "surface": "trpc",
@@ -6484,7 +6484,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:333"
+      "loc": "server/routers/hrDeviceRouter.ts:369"
     },
     {
       "surface": "trpc",
@@ -14636,17 +14636,17 @@
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 271
+      "line": 283
     },
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 300
+      "line": 312
     },
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 316
+      "line": 335
     },
     {
       "kind": "cron",
