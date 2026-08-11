@@ -14,7 +14,7 @@ import { branchStock, productImages, productPrices, productUnits, productVariant
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
-import { assertBaseUnitSwapSafe } from "./catalog/baseUnitGuard";
+import { assertBaseUnitStable } from "./catalog/baseUnitGuard";
 import { assertConsignmentValid } from "./catalog/productCreate";
 import { postCostRevaluation } from "./costRevaluation";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
@@ -535,10 +535,10 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         const owned = (await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1))[0];
         if (!owned) throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} لا يخصّ هذا المنتج` });
         variantId = v.id;
-        // تدقيق ١١/٨ (#2 — بعد مراجعة Codex): امنع تبديل **هويّة** وحدة الأساس لمتغيّرٍ قائمٍ له ارتباطٌ
-        // مُقوَّمٌ بالأساس (رصيد/حركة/بكج/حجز/أمر مفتوح) — **قبل** تحديث صفّ المتغيّر كي يُقفَل branchStock
-        // أوّلاً (يوافق ترتيب قفل مسارات الاستلام ⇒ لا جمود) ويتسلسل مع applyMovement.
-        await assertBaseUnitSwapSafe(tx, variantId, { unitName: newBaseName });
+        // تدقيق ١١/٨ (#2 — بعد ٣ جولات مراجعة Codex): وحدة الأساس **ثابتةٌ** لمتغيّرٍ قائم — يُرفَض تبديلها
+        // أو إعادة تسميتها (مسار القالب يُدرِج صفّاً جديداً ويُعطّل القديم عند تغيّر الاسم ⇒ تفسيرٌ مقلوبٌ
+        // للكمّيات أو مراجع وحدةٍ متدلّية في العروض/الطلبات). مقارنةٌ ساكنةٌ بلا قفل — التصحيح بمتغيّرٍ جديد.
+        await assertBaseUnitStable(tx, variantId, { unitName: newBaseName });
         await tx.update(productVariants).set({ ...vals, ...colorHexPatch }).where(eq(productVariants.id, variantId));
         // H3 (تدقيق ٢٧/٧): تغيّر التكلفة على صنفٍ له رصيد يُعيد تقييم المخزون ⇒ قيد إعادة تقييم يفسّر
         // حركة حقوق الملكية في قائمة الدخل ويمرّ على حارس الفترة (صفريّ الأثر إن كان الفرق/الرصيد صفراً).

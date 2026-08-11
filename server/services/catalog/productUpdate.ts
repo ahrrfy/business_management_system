@@ -2,7 +2,7 @@
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
-import { assertBaseUnitSwapSafe } from "./baseUnitGuard";
+import { assertBaseUnitStable } from "./baseUnitGuard";
 import { extractInsertId } from "../../lib/insertId";
 import { assertValidUnitFactors } from "./unitFactors";
 import { toDbMoney } from "../money";
@@ -80,12 +80,11 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
       if (v.units.filter((u) => u.isBaseUnit).length > 1)
         throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} يحتاج وحدة أساس واحدة فقط` });
 
-      // تدقيق ١١/٨ (#2 — مراجعة Codex): نفس حارس المسار الحديث — امنع تبديل **هويّة** وحدة الأساس لمتغيّرٍ
-      // له ارتباطٌ مُقوَّمٌ بالأساس (رصيد/حركة/بكج/حجز/أمر مفتوح)، فلا يتسرّب عبر هذا المسار. **قبل** تحديث
-      // صفّ المتغيّر (يقفل branchStock أوّلاً ⇒ ترتيب قفلٍ موحّد بلا جمود). الهويّة بمعرّف الصفّ المُرسَل:
-      // نفس الصفّ (إعادة تسمية) آمنٌ، وترقية صفٍّ قائمٍ آخر تبديلٌ يُرفَض على صنفٍ مرتبط.
+      // تدقيق ١١/٨ (#2 — بعد ٣ جولات مراجعة Codex): نفس حارس المسار الحديث — وحدة الأساس ثابتةٌ لمتغيّرٍ
+      // قائم. الهويّة بمعرّف الصفّ المُرسَل: نفس الصفّ (ولو أُعيدت تسميته **في مكانه** هنا) آمنٌ، وترقية
+      // صفٍّ قائمٍ آخر (أو صفٍّ جديد) إلى الأساس تبديلٌ يُرفَض. مقارنةٌ ساكنةٌ بلا قفل.
       const baseU = v.units.find((u) => u.isBaseUnit);
-      await assertBaseUnitSwapSafe(tx, v.id, { unitId: baseU?.id ?? null, unitName: baseU?.unitName });
+      await assertBaseUnitStable(tx, v.id, { unitId: baseU?.id ?? null, unitName: baseU?.unitName });
 
       // Variant header. H3 (تدقيق ٢٧/٧): نلتقط التكلفة القديمة قبل التحديث لإصدار قيد إعادة تقييم.
       const oldV = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, v.id)).limit(1))[0];
