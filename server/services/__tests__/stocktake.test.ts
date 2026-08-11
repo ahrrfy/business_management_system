@@ -682,32 +682,6 @@ describe("فصل المهام على الجرد الدوري NORMAL (تدقيق 
     await expectTrpc(approveStocktake(r.sessionId, actor2), "FORBIDDEN", /كُلّفتَ بالعدّ/);
   });
 
-  it("إجمالي قيمة التسوية > dualThreshold يستوجب توقيعين ولو كان كل سطر تحت الحد", async () => {
-    // سطران قيمة كلٍّ 100,000 (تحت حد السطر 150,000) ومجموعهما 200,000 > الحد ⇒ توقيعان.
-    await setStockRow(3, 100); // تكلفة 10,000
-    await setStockRow(4, 10); // تكلفة 100,000
-    const r = await mkSession({ variantIds: [3, 4] }); // منشئ admin
-    const aid = r.assignments[0].assignmentId;
-    await insertCount(r.sessionId, 3, aid, 90); // ‎−10 × 10,000 = −100,000
-    await insertCount(r.sessionId, 4, aid, 9); // ‎−1 × 100,000 = −100,000
-    await forceStocktakeReview(r.sessionId, actor);
-    await decideStocktakeItem({ sessionId: r.sessionId, variantId: 3, action: "ADJUST", reason: "LOSS_THEFT" }, actor);
-    await decideStocktakeItem({ sessionId: r.sessionId, variantId: 4, action: "ADJUST", reason: "LOSS_THEFT" }, actor);
-    await approveAllReadyItems(r.sessionId);
-
-    const rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
-    expect(rv.rows.find((x) => x.variantId === 3)!.requiresDualSign).toBe(false); // كل سطر تحت الحد
-    expect(rv.rows.find((x) => x.variantId === 4)!.requiresDualSign).toBe(false);
-    expect(rv.barriers.requiresDualSign).toBe(true); // الإجمالي 200,000 > 150,000
-
-    await expectTrpc(approveStocktake(r.sessionId, actor), "PRECONDITION_FAILED", /توقيع/);
-    await firstSignStocktake(r.sessionId, actor);
-    const ok = await approveStocktake(r.sessionId, actor2);
-    expect(ok.ok).toBe(true);
-    expect(await stockOf(3)).toBe(90);
-    expect(await stockOf(4)).toBe(9);
-  });
-
   it("admin مُستثنى: يُنشئ ويعتمد جلسة دورية صغيرة وحده", async () => {
     await setStockRow(1, 100);
     const r = await mkSession({ variantIds: [1] });

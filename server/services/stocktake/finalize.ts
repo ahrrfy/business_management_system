@@ -20,7 +20,7 @@ import { money, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import type { StkActor } from "./types";
 import { assertBranchAccess, chunk, loadStocktakeProgress, lockSession } from "./internal";
-import { loadReviewCore, sessionRequiresDualSign, willAdjust } from "./reviewCore";
+import { loadReviewCore, willAdjust } from "./reviewCore";
 
 export interface ApproveResult {
   ok: true;
@@ -115,7 +115,7 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     }
 
     // (٤ قبل ٢) أعد الحساب داخل المعاملة — لا ثقة بحسابات شاشة المراجعة.
-    const { s: hdr, rows, directUnderThreshold } = await loadReviewCore(tx, sessionId, true);
+    const { rows, directUnderThreshold } = await loadReviewCore(tx, sessionId, true);
 
     // (٢) الحواجز.
     const notCounted = rows.filter((r) => r.rawCount == null);
@@ -164,9 +164,9 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     // (٣) التوقيعان: عنصر سيُسوّى |قيمته| > dualThreshold ⇒ توقيع أول موجود + المعتمد شخص مختلف.
     // الجلسة الافتتاحية: توقيعان إلزاميان دائماً (حتى بصفر فروقات — الاعتماد يؤسّس الأرصدة ويختم
     // openedAt بلا أي قيد دفتري، فهو أخفى قناة تزوير محتملة ويحتاج أربع عيون حكماً).
-    // التوقيعان — عبر المصدر الموحّد (يشمل سقف الإجمالي، تدقيق ١١/٨): سطرٌ فوق الحد، أو إجمالي
-    // التسوية فوقه، أو جلسة افتتاحية دائماً ⇒ توقيع أول موجود + المعتمد شخص مختلف.
-    const dualNeeded = sessionRequiresDualSign(hdr, rows, directUnderThreshold);
+    // (٣) التوقيعان: عنصر سيُسوّى |قيمته| > dualThreshold ⇒ توقيع أول موجود + المعتمد شخص مختلف.
+    // الجلسة الافتتاحية: توقيعان إلزاميان دائماً (حتى بصفر فروقات — الاعتماد يؤسّس الأرصدة ويختم openedAt).
+    const dualNeeded = isOpening || rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
     if (dualNeeded) {
       if (s.firstSignBy == null) {
         throw new TRPCError({

@@ -168,6 +168,21 @@ describe("تسوية المخزون بفصل مهام (#٦ الشريحة ٢)", 
     expect(ents[0].profit).toBe("-25.00"); // 5 قطع × 5.00
   });
 
+  it("H3 (مراجعة Codex): صنفٌ له مصدرٌ (أمانة) لا يُثبَّت OPENING أثناء الافتتاح بل ADJUST عاديّ", async () => {
+    // openedAt IS NULL وحده لا يكفي للتثبيت الافتتاحيّ بصفر P&L — الصنف ذو المصدر (أمانة/أمر شراء غير
+    // ملغى) يبقى على مسار ADJUST كي لا يزدوج تأسيسه مع مصدره لاحقاً. هنا نختبر فرع الأمانة.
+    await enableOpeningMode();
+    await db().update(s.products).set({ isConsignment: true }).where(eq(s.products.id, 1));
+    const { requestId } = await requestStockAdjustment({ variantId: 1, branchId: 1, targetQuantity: 15 }, WH1);
+    const res = await approveStockAdjustment(requestId, MGR1);
+    expect(res.delta).toBe(-5);
+    // مسار ADJUST العاديّ (قيد P&L) لا تثبيت افتتاحيّ بصفر أثر، وopenedAt يبقى فارغاً (لم يمرّ بمسار OPENING).
+    const ents = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
+    expect(ents.length).toBe(1);
+    const [row] = await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+    expect(row.openedAt).toBeNull();
+  });
+
   it("القائمة تُظهر المعلَّق مع اسم الصنف والرصيد الحاليّ", async () => {
     await requestStockAdjustment({ variantId: 1, branchId: 1, targetQuantity: 15 }, WH1);
     const list = await listStockAdjustmentRequests({ branchId: 1, status: "PENDING_APPROVAL" });

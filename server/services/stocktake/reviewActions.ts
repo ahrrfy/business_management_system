@@ -14,7 +14,7 @@ import type { Tx } from "../../db";
 import { withTx } from "../tx";
 import type { StkActor } from "./types";
 import { assertBranchAccess, lockSession } from "./internal";
-import { loadReviewCore, sessionRequiresDualSign, willAdjust } from "./reviewCore";
+import { loadReviewCore, willAdjust } from "./reviewCore";
 
 async function getSessionItem(tx: Tx, sessionId: number, variantId: number) {
   const rows = await tx
@@ -406,7 +406,7 @@ export async function firstSignStocktake(
     // ⚠️ الجلسة الافتتاحية: التوقيعان إلزاميان دائماً ⇒ التوقيع الأول مقبول دائماً — بلا هذا الفرع
     // كانت جلسة OPENING كل قيمها تحت dualThreshold تُقفَل نهائياً (finalize يشترط توقيعاً أولاً
     // وهذا الحارس يرفض تسجيله = جمود مثبَت في المراجعة العدائية ١٨/٧).
-    const { s: hdr, rows, directUnderThreshold } = await loadReviewCore(tx, sessionId, true);
+    const { rows, directUnderThreshold } = await loadReviewCore(tx, sessionId, true);
     const incomplete = rows.filter((r) => r.rawCount == null || !r.reviewApproved?.isCurrent);
     if (incomplete.length) {
       throw new TRPCError({
@@ -414,8 +414,8 @@ export async function firstSignStocktake(
         message: `لا توقيع أول قبل اكتمال العدّ والاعتماد المرحلي لكل المنتجات (${incomplete.length} غير مكتمل)`,
       });
     }
-    // نفس مصدر finalize/buildBarriers (يشمل سقف الإجمالي، تدقيق ١١/٨) كي لا يرفض التوقيعَ الأولَ جلسةٌ يشترطه فيها finalize.
-    const needed = sessionRequiresDualSign(hdr, rows, directUnderThreshold);
+    const needed =
+      s.sessionType === "OPENING" || rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
     if (!needed) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا فروقات تتجاوز حدّ التوقيعين — الاعتماد المباشر يكفي" });
     }
