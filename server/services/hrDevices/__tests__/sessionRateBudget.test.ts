@@ -50,6 +50,9 @@ afterEach(async () => {
   restore("HR_DEVICE_RATE_LIMIT_PER_MINUTE", original.rate);
   restore("HR_DEVICE_SESSION_RATE_LIMIT_PER_MINUTE", original.sessionRate);
   restore("NODE_ENV", original.nodeEnv);
+  // إعادته إلزامية: `beforeEach` يحذفه، وتركُه محذوفاً يُبقي بقية اختبارات العامل نفسه في
+  // وضع قاعدةٍ مختلف فتصير النتائج مرهونةً بالترتيب (نمط bridgeGate.test.ts).
+  restore("CONTROL_DATABASE_URL", original.controlDatabaseUrl);
 });
 
 /** جلسة مزيّفة تُبلّغ «مُسجَّلة» أو لا — البوّابة تختار الميزانية بناءً على `device()`. */

@@ -25,6 +25,9 @@ const allowedEnvironmentKeys = Object.freeze([
   "HR_DEVICE_REQUEST_TIMEOUT_MS",
   "HR_DEVICE_IDLE_TIMEOUT_MS",
   "HR_DEVICE_RATE_LIMIT_PER_MINUTE",
+  // بلا هذا المفتاح تُنقّى قيمة المشغّل قبل إقلاع العامل المعزول فيعود الإعداد للافتراضي
+  // صامتاً — أي «ضبطٌ مُعلَنٌ لا يعمل». أيّ HR_DEVICE_* جديد يجب أن يُدرَج هنا أيضاً.
+  "HR_DEVICE_SESSION_RATE_LIMIT_PER_MINUTE",
   "HR_DEVICE_MAX_WS_PER_IP",
   "ATTENDANCE_PUSH_INCLUDE_WORKPLACE",
   "NATIVE_PUSH_ENVIRONMENT",
