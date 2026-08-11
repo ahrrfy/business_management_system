@@ -270,15 +270,21 @@ function moduleProcedureAny(gates: readonly ModuleGateSpec[]) {
 }
 
 // pos (نقطة بيع خدمات الطباعة — printPos) + مسار الاستقبال (workorders:FULL)
+// ⚠️ **البديل الثاني حكرٌ على cashier/manager**. `print_operator` قالبه sales:NONE, pos:NONE, treasury:NONE
+// عمداً — لا يفتح وردية (treasuryCashierProcedure يحجب shift.open) لكنّ `createSale`/`processPayment`
+// يشترطان shift لـCASH فقط ⇒ CARD/CHECK/TRANSFER/WALLET/DEFERRED تمرّ بـshiftId=null. لو أُضيف
+// print_operator هنا لأنشأ فواتير CARD/DEFERRED خارج أيّ درج (بضاعة تخرج، إيرادٌ يُقيَّد، صفر أثر
+// forensic في Z). التبويب يبقى مرئياً له عبر POS_STATION_GATES (workorders:FULL كافٍ للعرض)،
+// لكنّه لن يعبر عقد البيع/التسديد — يستقبل ويوثّق أمر الشغل فقط.
 export const posCashierProcedure = moduleProcedureAny([
   { moduleKey: "pos", minLevel: "FULL", allowedRoles: ["cashier", "manager"] },
-  { moduleKey: "workorders", minLevel: "FULL", allowedRoles: ["cashier", "manager", "print_operator"] },
+  { moduleKey: "workorders", minLevel: "FULL", allowedRoles: ["cashier", "manager"] },
 ]);
 // sales
 export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
 export const salesCashierProcedure = moduleProcedureAny([
   { moduleKey: "sales", minLevel: "FULL", allowedRoles: ["cashier", "manager"] },
-  { moduleKey: "workorders", minLevel: "FULL", allowedRoles: ["cashier", "manager", "print_operator"] },
+  { moduleKey: "workorders", minLevel: "FULL", allowedRoles: ["cashier", "manager"] },
 ]);
 export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL");
 // purchases — «مسؤول مشتريات» قالبه purchases=FULL ووصفه المعلن «أوامر شراء وموردون».

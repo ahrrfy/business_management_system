@@ -11,6 +11,7 @@ import {
   canUseStation,
   deriveEffectiveAccess,
   diffFromTemplate,
+  moduleAccessAllowed,
   visibleStations,
 } from "@shared/permissions";
 import { hashPassword } from "../../auth/password";
@@ -92,5 +93,44 @@ describe("ش٣ — قلب الافتراضي الآمن (خاصية الأمان
     // قلب الافتراضي من cashier إلى user يضمن: يستحيل أن يرى حسابٌ الأقسام بلا إسنادٍ صريح لدورٍ قياسيّ.
     expect(deriveEffectiveAccess("user", null).station).toBe("NONE");
     expect(deriveEffectiveAccess("cashier", null).stations).toEqual(["RETAIL", "PRINT_SERVICES", "RECEPTION"]);
+  });
+});
+
+/**
+ * ش٣ — بوّابة `moduleProcedureAny` (١١/٨): تعبر بمسارٍ بديل عبر `workorders:FULL` كي يستطيع «موظف
+ * الاستقبال» (cashier + sales:NONE + pos:NONE) استعمالَ عقود Reception.tsx الداخليّة
+ * (sales.create/pay + printPos.createSale). المسار البديل **حكرٌ على cashier/manager** — منع
+ * `print_operator` صراحةً لأنّه لا يفتح وردية (treasuryCashierProcedure) لكنّ عقود البيع/التسديد
+ * تشترط الوردية لـCASH فقط ⇒ لو أُضيف هنا لأنشأ فواتير CARD/DEFERRED خارج أيّ درج (بضاعة تخرج
+ * بلا أثرٍ forensic في Z).
+ */
+describe("ش٣ — بوّابة الاستقبال البديلة (workorders:FULL) — حدود دقيقة", () => {
+  const recepOverride = diffFromTemplate(
+    "cashier",
+    SECTION_CASHIER_ROLES.find((r) => r.key === "reception_clerk")!.permissions,
+  );
+
+  it("موظف الاستقبال (cashier+override) يعبر البديل على sales/pos عبر workorders", () => {
+    // البوّابة الرئيسة sales/pos ترفض (sales/pos = NONE بعد الoverride):
+    expect(moduleAccessAllowed("cashier", recepOverride, "sales", "FULL", ["cashier", "manager"])).toBe(false);
+    expect(moduleAccessAllowed("cashier", recepOverride, "pos", "FULL", ["cashier", "manager"])).toBe(false);
+    // البوّابة البديلة workorders تعبر (cashier في القائمة + workorders:FULL من قالب cashier):
+    expect(moduleAccessAllowed("cashier", recepOverride, "workorders", "FULL", ["cashier", "manager"])).toBe(true);
+  });
+
+  it("فنّي المطبعة (print_operator) لا يعبر البديل — ممنوعٌ من عقود البيع/التسديد", () => {
+    // القالب الحقيقيّ لـprint_operator بلا override:
+    expect(moduleAccessAllowed("print_operator", null, "sales", "FULL", ["cashier", "manager"])).toBe(false);
+    expect(moduleAccessAllowed("print_operator", null, "pos", "FULL", ["cashier", "manager"])).toBe(false);
+    // البديل عبر workorders — allowedRoles حكرٌ على cashier/manager (لا print_operator):
+    expect(moduleAccessAllowed("print_operator", null, "workorders", "FULL", ["cashier", "manager"])).toBe(false);
+    // لضمان أنّ الحجب سببه allowedRoles لا موديل الصلاحية: workorders في قالبه FULL أصلاً.
+    expect(ROLE_TEMPLATES.print_operator.workorders).toBe("FULL");
+  });
+
+  it("كاشير عاديّ (بلا override) يعبر الجانبَين — لا انحدار", () => {
+    expect(moduleAccessAllowed("cashier", null, "sales", "FULL", ["cashier", "manager"])).toBe(true);
+    expect(moduleAccessAllowed("cashier", null, "pos", "FULL", ["cashier", "manager"])).toBe(true);
+    expect(moduleAccessAllowed("cashier", null, "workorders", "FULL", ["cashier", "manager"])).toBe(true);
   });
 });
