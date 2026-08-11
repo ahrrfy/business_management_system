@@ -141,6 +141,34 @@ function requireModuleGateAny(gates: readonly ModuleGateSpec[]) {
   });
 }
 
+/**
+ * بوّابة «أيّ واحدة» لـrequireModule (بلا قيد أدوار) — ش٤-أ (١١/٨). القراءات المشتركة كانت تقصر
+ * على وحدةٍ واحدة (`requireModule("sales","READ")`)؛ موظف الاستقبال (sales:NONE, workorders:FULL)
+ * محبوسٌ من `sales.get`/`sales.list` رغم أنّه يحتاجها لسيناريو «تسديد عميلٍ عائد» (فتح فاتورة سابقة).
+ * الحلّ: مسار بديل بـ`workorders:FULL` مقصورٌ صراحةً على cashier/manager (منع print_operator تماشياً
+ * مع فلسفة `moduleProcedureAny` الأمنية — راجع ٥f3ae631). لا قيد أدوار على المسار الأصليّ (يطابق
+ * `requireModule` سلوكياً: أيّ دورٍ بمستواه يمرّ) — يبقى auditor/user/accountant/warehouse... كما كانوا.
+ */
+type ReadGateSpec = { moduleKey: string; minLevel: AccessLevel; allowedRoles?: readonly string[] };
+function requireModuleAny(gates: readonly ReadGateSpec[]) {
+  return t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    if (ctx.user.role === "admin") return next({ ctx: { ...ctx, user: ctx.user } });
+    const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
+      | Record<string, AccessLevel>
+      | null
+      | undefined;
+    const map = resolvePermissions(ctx.user.role as RoleKey, override);
+    const ok = gates.some((g) => {
+      if (g.allowedRoles && !g.allowedRoles.includes(ctx.user!.role)) return false;
+      const level = map[g.moduleKey] ?? "NONE";
+      return level === "FULL" || (g.minLevel === "READ" && level === "READ");
+    });
+    if (!ok) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    return next({ ctx: { ...ctx, user: ctx.user } });
+  });
+}
+
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
 export const managerProcedure = t.procedure.use(requireRole("manager"));
 
@@ -280,8 +308,12 @@ export const posCashierProcedure = moduleProcedureAny([
   { moduleKey: "pos", minLevel: "FULL", allowedRoles: ["cashier", "manager"] },
   { moduleKey: "workorders", minLevel: "FULL", allowedRoles: ["cashier", "manager"] },
 ]);
-// sales
-export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
+// sales — ش٤-أ (١١/٨): يقبل أيضاً workorders:FULL (لعزل reception_clerk) كي يفتح فواتيره ويحتسبها
+// (السيناريو الحرج: «العميل عاد اليوم التالي، الكاشير الأصليّ في إجازة، الآخر يقبض ذمّته»).
+export const salesReadProcedure = branchScopedProcedure.use(requireModuleAny([
+  { moduleKey: "sales", minLevel: "READ" },
+  { moduleKey: "workorders", minLevel: "FULL", allowedRoles: ["cashier", "manager"] },
+]));
 export const salesCashierProcedure = moduleProcedureAny([
   { moduleKey: "sales", minLevel: "FULL", allowedRoles: ["cashier", "manager"] },
   { moduleKey: "workorders", minLevel: "FULL", allowedRoles: ["cashier", "manager"] },

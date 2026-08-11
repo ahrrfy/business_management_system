@@ -72,7 +72,13 @@ const NAV_LINKS: NavLink[] = [
   // الخادم tasksReadProcedure (requireModule("tasks","READ") — لا قائمة أدوار صريحة هناك أيضاً).
   { href: "/tasks", label: "المهام والتذاكر", icon: ListChecks, module: "tasks" },
   { href: "/reservations", label: "الحجوزات", icon: CalendarClock, module: "reservations" },
-  { href: "/invoices", label: "المبيعات", icon: Receipt },
+  // ش٧-ج (١١/٨): moduleAny يطابق `salesReadProcedure` الخادميّة (sales:READ **أو** workorders:FULL
+  // لـcashier/manager). موظف الاستقبال (cashier + sales:NONE + workorders:FULL) يرى الرابط ⇒ سيناريو
+  // «كاشير في إجازة» يعمل. كاشير الطباعة (sales:NONE, workorders:NONE) يبقى محجوباً — لا رابطٌ ميّت.
+  { href: "/invoices", label: "المبيعات", icon: Receipt, moduleAny: [
+    { module: "sales", level: "READ" },
+    { module: "workorders", level: "FULL", roles: ["cashier", "manager"] },
+  ] },
   // (ب) يومي مالي/تشغيلي
   // الخزينة: كل تبويباتها مُقيَّدة (treasury/expenses ≥ READ في TreasuryHub) — بلا قيدٍ هنا يهبط
   // أمين المخزن/الفني على hub بلا تبويبات = صفحة فارغة (نفس مبدأ الأصول/الموارد أدناه).
@@ -148,7 +154,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   // لا يرى «طلبات المتجر»)، وإطفاء وحدةٍ من شاشة «الأدوار» يُسقط بندها هنا فوراً. العزل الحقيقي
   // خادميّ كما هو؛ وبقية الشاشات المسموحة تبقى بلوغاً بالبحث (Ctrl+K) — تركيزٌ لا حجبٌ جديد.
   const isCashier = role === "cashier";
-  const CASHIER_NAV = ["/pos", "/price-checker", "/tasks", "/reservations", "/store-admin"];
+  // ش٧-ج (١١/٨): «الفواتير» في القائمة البيضاء — يُقاطَع مع canSeeGate + بوّابة الخادم `salesReadProcedure`
+  // (تقبل الآن sales:READ **أو** workorders:FULL) فيراها كلٌّ من الكاشير العاديّ وموظف الاستقبال. النقيّ من
+  // الأدوار بلا صلاحية القراءة يبقى محجوباً (خادميّاً + بصرياً عبر canSeeGate).
+  const CASHIER_NAV = ["/pos", "/price-checker", "/tasks", "/reservations", "/store-admin", "/invoices"];
   const visibleNav = isCourier
     ? NAV_LINKS.filter((m) => m.roles?.includes("courier"))
     : isCashier

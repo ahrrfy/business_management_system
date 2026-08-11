@@ -4,7 +4,7 @@ import { ShoppingCart, Printer, Palette, Lock, Home, ReceiptText } from "lucide-
 import { lazyWithRetry } from "@/lib/lazyWithRetry";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasModuleAccess, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { type Mode, canSeeMode } from "./pos/posModeGates";
 
 /**
@@ -174,7 +174,10 @@ export default function PointOfSale() {
               صلاحيات مخصّصة
             </span>
           ) : null}
-          {visibleModes.some((mode) => mode.v === "RETAIL") && (
+          {/* ش٧-ج (١١/٨): يظهر الرابط لكل من يفتحه خادمياً (`salesReadProcedure`) — sales:READ للتجزئة،
+              أو workorders:FULL لموظف الاستقبال (سيناريو «العميل عاد اليوم التالي، الكاشير الأصليّ في إجازة»). */}
+          {(hasModuleAccess(myRole ?? "", myPerms, "sales", "READ") ||
+            ((myRole === "cashier" || myRole === "manager") && hasModuleAccess(myRole, myPerms, "workorders", "FULL"))) && (
             <Link
               href="/invoices"
               className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"

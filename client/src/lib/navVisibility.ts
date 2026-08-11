@@ -18,6 +18,10 @@ export type RoleGate = {
   module?: string;
   /** المستوى الأدنى المطلوب مع module (الافتراضي READ). */
   level?: AccessLevel;
+  /** بديلٌ بمسارات متعدّدة (١١/٨) — أيّ (module, level, roles?) تعبر تُظهر العنصر. مثال: `/invoices`
+   *  يعبر بـ`sales:READ` أو (لـcashier/manager) بـ`workorders:FULL` — يحاكي `requireModuleAny` الخادميّة
+   *  فيرى موظف الاستقبال (sales:NONE, workorders:FULL) الرابط دون تسريبه لطلبات الفصل (print_cashier). */
+  moduleAny?: Array<{ module: string; level?: AccessLevel; roles?: RoleKey[] }>;
 };
 
 /**
@@ -50,6 +54,15 @@ export function canSeeGate(
     return gate.roles
       ? moduleAccessAllowed(role ?? "", override, gate.module, lvl, gate.roles)
       : hasModuleAccess(role ?? "", override, gate.module, lvl);
+  }
+  // moduleAny — أيّ (module, level, roles?) تعبر تكفي (مرآة requireModuleAny الخادميّة، ش٤-أ).
+  if (gate.moduleAny && gate.moduleAny.length > 0) {
+    return gate.moduleAny.some((g) => {
+      const lvl = g.level ?? "READ";
+      return g.roles
+        ? moduleAccessAllowed(role ?? "", override, g.module, lvl, g.roles)
+        : hasModuleAccess(role ?? "", override, g.module, lvl);
+    });
   }
   // لا قيد دور ولا وحدة ⇒ مرئي للكل.
   return !hasRoleConstraint;
