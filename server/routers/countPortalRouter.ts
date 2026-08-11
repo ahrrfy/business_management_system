@@ -195,6 +195,7 @@ export const countPortalRouter = router({
           .min(0, "الكمية لا تكون سالبة")
           .max(99_999_999, "الكمية أكبر من المعقول — راجع الإدخال"),
         unitBreakdown: z.string().max(500).optional(),
+        scannerGuardOverride: z.boolean().optional(),
         clientRequestId: z.string().uuid(),
       })
     )
@@ -204,6 +205,7 @@ export const countPortalRouter = router({
         variantId: input.variantId,
         qty: input.qty,
         unitBreakdown: input.unitBreakdown ?? null,
+        scannerGuardOverride: input.scannerGuardOverride,
         clientRequestId: input.clientRequestId,
       });
       // لا نكرّر سطر التدقيق عند إعادة مزامنة نفس العدّة (idempotent replay).
@@ -217,6 +219,8 @@ export const countPortalRouter = router({
             qty: input.qty,
             kind: res.kind,
             verifyMatch: res.verifyMatch,
+            scannerGuardOverrideRequested:
+              input.scannerGuardOverride === true,
             countedByName: identity.countedByName,
             assignmentId: identity.assignment.id,
             clientRequestId: input.clientRequestId,

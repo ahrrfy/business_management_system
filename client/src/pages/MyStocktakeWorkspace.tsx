@@ -60,6 +60,7 @@ type CountItem = State["items"][number];
 type CountUnit = CountItem["units"][number];
 /** نوع العدّة كما تُسمّيها بوابة العدّ: أول عدّ · إعادة عدّ مطلوبة · عدّ تحقّقي فوق عدّ زميل. */
 type CountMode = "FIRST" | "RECOUNT" | "VERIFY";
+type SubmitResult = RouterOutputs["count"]["submit"];
 
 /** مطابقة حرفية لباركود الوحدة — الأساسيّ أو أيّ بديل (فضاء تفرّد واحد كما في الكاشير). */
 function unitHasBarcode(unit: CountUnit, value: string) {
@@ -299,66 +300,83 @@ export default function MyStocktakeWorkspace() {
     const item = selected;
     const mode = selectedMode;
     const clientRequestId = newClientRequestId();
-    submit.mutate(
-      {
-        sessionCode: code,
-        variantId: item.variantId,
-        qty,
-        unitBreakdown,
-        clientRequestId,
-      },
-      {
-        onSuccess: async (res) => {
-          // عدّة مباشرة نجحت ⇒ أي نسخة معلّقة قديمة لنفس المنتج صارت لاغية.
-          const stale = peekAll(code).find((q) => q.variantId === item.variantId);
-          if (stale) removeQueued(code, stale.clientRequestId);
-          setQueueCount(queueSize(code));
-          setOnline(true);
-          setSelected(null);
-          setScannedUnit(null);
-          // الخادم هو الحَكَم في نوع العدّة ونتيجة المطابقة — لا الواجهة.
-          const kind = res.kind ?? mode;
-          if (kind === "VERIFY") {
-            if (res.verifyMatch === false)
-              notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
-            else if (res.verifyMatch === true)
-              notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
-            else notify.ok("سُجّل العدّ التحقّقي");
-          } else if (kind === "RECOUNT") {
-            notify.ok("سُجّلت إعادة العدّ");
-          } else {
-            notify.ok("سُجّلت الكمية");
-          }
-          await utils.count.state.invalidate({ sessionCode: code });
-        },
-        onError: (error) => {
-          if (!isNetworkError(error)) {
-            // رفض خادميّ (سياسة الجلسة، إقفال العدّ…) — البطاقة تبقى مفتوحة برسالة الخادم.
-            notify.err(error);
+    const payload = {
+      sessionCode: code,
+      variantId: item.variantId,
+      qty,
+      unitBreakdown,
+      clientRequestId,
+    };
+    const onAccepted = async (res: SubmitResult) => {
+      // عدّة مباشرة نجحت ⇒ أي نسخة معلّقة قديمة لنفس المنتج صارت لاغية.
+      const stale = peekAll(code).find((q) => q.variantId === item.variantId);
+      if (stale) removeQueued(code, stale.clientRequestId);
+      setQueueCount(queueSize(code));
+      setOnline(true);
+      setSelected(null);
+      setScannedUnit(null);
+      // الخادم هو الحَكَم في نوع العدّة ونتيجة المطابقة — لا الواجهة.
+      const kind = res.kind ?? mode;
+      if (kind === "VERIFY") {
+        if (res.verifyMatch === false)
+          notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
+        else if (res.verifyMatch === true)
+          notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
+        else notify.ok("سُجّل العدّ التحقّقي");
+      } else if (kind === "RECOUNT") {
+        notify.ok("سُجّلت إعادة العدّ");
+      } else {
+        notify.ok("سُجّلت الكمية");
+      }
+      await utils.count.state.invalidate({ sessionCode: code });
+    };
+    submit.mutate(payload, {
+      onSuccess: onAccepted,
+      onError: async (error) => {
+        if (!isNetworkError(error)) {
+          if (errMsg(error).includes("يلزم تأكيد مسؤول الجرد")) {
+            const approved = await confirm({
+              variant: "warning",
+              title: "تثبيت كمية استثنائية",
+              description:
+                "هذه الكمية تطابق بصمة رقمية من باركود الصنف. أكّد فقط بعد عدّ مستقل والتأكد أن الماسح لم يكتب داخل حقل الكمية. سيُسجّل حسابك داخل إثبات الخادم.",
+              confirmText: "تأكيد الكمية بعد إعادة العدّ",
+            });
+            if (!approved) return;
+            submit.mutate(
+              { ...payload, scannerGuardOverride: true },
+              {
+                onSuccess: onAccepted,
+                onError: (overrideError) => notify.err(overrideError),
+              },
+            );
             return;
           }
-          setOnline(false);
-          const persisted = enqueue(code, {
-            clientRequestId,
-            variantId: item.variantId,
-            qty,
-            unitBreakdown,
-            queuedAt: new Date().toISOString(),
-          });
-          setQueueCount(queueSize(code));
-          setSelected(null);
-          setScannedUnit(null);
-          if (persisted) {
-            notify.info(
-              "لا اتصال — حُفظت الكمية على الجهاز",
-              "ستُزامَن تلقائياً عند عودة الاتصال",
-            );
-          } else {
-            notify.err("تعذّر الحفظ على هذا الجهاز — أعد المحاولة عند توفّر الاتصال");
-          }
-        },
+          // رفض خادميّ (سياسة الجلسة، إقفال العدّ…) — البطاقة تبقى مفتوحة برسالة الخادم.
+          notify.err(error);
+          return;
+        }
+        setOnline(false);
+        const persisted = enqueue(code, {
+          clientRequestId,
+          variantId: item.variantId,
+          qty,
+          unitBreakdown,
+          queuedAt: new Date().toISOString(),
+        });
+        setQueueCount(queueSize(code));
+        setSelected(null);
+        setScannedUnit(null);
+        if (persisted) {
+          notify.info(
+            "لا اتصال — حُفظت الكمية على الجهاز",
+            "ستُزامَن تلقائياً عند عودة الاتصال",
+          );
+        } else {
+          notify.err("تعذّر الحفظ على هذا الجهاز — أعد المحاولة عند توفّر الاتصال");
+        }
       },
-    );
+    });
   };
 
   const submitAssignment = async () => {

@@ -1040,6 +1040,52 @@ describe("اعتماد الجلسة الافتتاحية — المسار الذ
     expect(review.barriers.valuationBlockingAnomalies).toBe(1);
   });
 
+  it("يبقي حدّي نسبة التقييم 0.1× و10× ضمن المجال المسموح", async () => {
+    await enableOpeningMode();
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "1000.00" })
+      .where(eq(s.productVariants.id, 1));
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "100.00" })
+      .where(eq(s.productVariants.id, 2));
+    const res = await mkOpening({ variantIds: [1, 2] });
+    const aid = await firstAssignmentId(res.sessionId);
+    await insertCount(res.sessionId, 1, aid, 2_000);
+    await insertCount(res.sessionId, 2, aid, 2_000);
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "100.00" })
+      .where(eq(s.productVariants.id, 1));
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "1000.00" })
+      .where(eq(s.productVariants.id, 2));
+
+    const review = await computeStocktakeReview(res.sessionId, {
+      viewerId: MGR.userId,
+    });
+    expect(review.valuationIntegrity.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          variantId: 1,
+          costRatio: "10.0000",
+          blocking: false,
+          reason: "COST_CHANGED",
+        }),
+        expect.objectContaining({
+          variantId: 2,
+          costRatio: "0.1000",
+          blocking: false,
+          reason: "COST_CHANGED",
+        }),
+      ]),
+    );
+    expect(review.valuationIntegrity.blockingCount).toBe(0);
+    expect(review.barriers.valuationBlockingAnomalies).toBe(0);
+  });
+
   it("يحجب التضخم الموزع على صفوف دون السقف الفردي عند تجاوز المجموع المطلق", async () => {
     await enableOpeningMode();
     await db()

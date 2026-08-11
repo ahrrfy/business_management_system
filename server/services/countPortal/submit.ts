@@ -15,6 +15,7 @@ import {
   stocktakeDecisions,
   stocktakeItems,
   stocktakeSessions,
+  users,
 } from "../../../drizzle/schema";
 import { requireDb, withTx } from "../tx";
 import type { PortalIdentity } from "./identity";
@@ -59,6 +60,8 @@ export type SubmitCountInput = {
   qty: number;
   /** تفصيل الإدخال متعدد الوحدات (JSON نصي ≤ 500 حرف) — للتدقيق فقط. */
   unitBreakdown?: string | null;
+  /** إقرار صريح من مسؤول USER مكلّف بعد إعادة عدّ الكمية المشتبه بها يدوياً. */
+  scannerGuardOverride?: boolean;
   /** مفتاح idempotency لمزامنة طابور الأوفلاين (uuid). */
   clientRequestId: string;
 };
@@ -219,12 +222,7 @@ export async function submitCount(
           barcode: productUnits.barcode,
         })
         .from(productUnits)
-        .where(
-          and(
-            eq(productUnits.variantId, input.variantId),
-            eq(productUnits.isActive, true),
-          ),
-        );
+        .where(eq(productUnits.variantId, input.variantId));
       const aliases = await tx
         .select({
           unitName: productUnits.unitName,
@@ -237,10 +235,7 @@ export async function submitCount(
           eq(productUnitBarcodes.productUnitId, productUnits.id),
         )
         .where(
-          and(
-            eq(productUnits.variantId, input.variantId),
-            eq(productUnits.isActive, true),
-          ),
+          eq(productUnits.variantId, input.variantId),
         );
       const breakdown = parseUnitBreakdown(input.unitBreakdown);
       const candidates = [
@@ -268,11 +263,32 @@ export async function submitCount(
           baseQty.toNumber() === input.qty
         );
       });
-      if (scannerLike) {
+      let scannerOverrideByUserId: number | null = null;
+      if (
+        scannerLike &&
+        input.scannerGuardOverride === true &&
+        identity.mode === "USER" &&
+        identity.countedByUserId != null &&
+        asg.method === "USER" &&
+        asg.userId != null &&
+        Number(asg.userId) === Number(identity.countedByUserId)
+      ) {
+        const supervisor = (
+          await tx
+            .select({ role: users.role })
+            .from(users)
+            .where(eq(users.id, Number(asg.userId)))
+            .limit(1)
+        )[0];
+        if (supervisor?.role === "manager" || supervisor?.role === "admin") {
+          scannerOverrideByUserId = Number(asg.userId);
+        }
+      }
+      if (scannerLike && scannerOverrideByUserId == null) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message:
-            "الكمية تطابق بداية باركود المنتج ويُحتمل أن الماسح كتب داخل حقل العدد. امسح الحقل وأعد العدّ يدوياً؛ وللكمية الكبيرة المشروعة اطلب تحقق مسؤول الجرد.",
+            "الكمية تطابق بداية باركود المنتج ويُحتمل أن الماسح كتب داخل حقل العدد. امسح الحقل وأعد العدّ يدوياً؛ وللكمية المشروعة يلزم تأكيد مسؤول الجرد من حساب USER مكلّف برتبة manager أو admin.",
         });
       }
       const candidateDigest = createHash("sha256")
@@ -297,6 +313,12 @@ export async function submitCount(
           version: 1,
           qty: input.qty,
           candidateDigest,
+          ...(scannerOverrideByUserId == null
+            ? {}
+            : {
+                override: "SUPERVISOR_USER",
+                authorizedByUserId: scannerOverrideByUserId,
+              }),
         },
       });
 

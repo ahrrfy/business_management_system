@@ -29,6 +29,7 @@ import {
   removeStocktakeWorker,
   computeStocktakeReview,
   createStocktakeSession,
+  getStocktakeReport,
   monitorStocktakeSession,
   requestStocktakeRecount,
   type CreateStocktakeInput,
@@ -189,12 +190,17 @@ function submit(
   identity: PortalIdentity,
   variantId: number,
   qty: number,
-  opts: { rid?: string; unitBreakdown?: string } = {},
+  opts: {
+    rid?: string;
+    unitBreakdown?: string;
+    scannerGuardOverride?: boolean;
+  } = {},
 ) {
   return submitCount(identity, {
     variantId,
     qty,
     unitBreakdown: opts.unitBreakdown ?? null,
+    scannerGuardOverride: opts.scannerGuardOverride,
     clientRequestId: opts.rid ?? randomUUID(),
   });
 }
@@ -616,6 +622,136 @@ describe("تسجيل العدّات (submit)", () => {
       idempotent: false,
     });
     expect((await countRowsOf(r.sessionId, 1))[0].qty).toBe(77);
+  });
+
+  it("يفحص باركود الوحدة المعطّلة وبدائلها قبل إثبات سلامة العد", async () => {
+    await db()
+      .update(s.productUnits)
+      .set({ isActive: false, barcode: "1304702807" })
+      .where(eq(s.productUnits.id, 2));
+    await db().insert(s.productUnitBarcodes).values({
+      productUnitId: 2,
+      barcode: "6266680123456",
+    });
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+
+    await expectTrpc(
+      submit(idA, 1, 1_304_702 * 12),
+      "PRECONDITION_FAILED",
+      /الماسح كتب داخل حقل العدد/,
+    );
+    await expectTrpc(
+      submit(idA, 1, 6_266_680 * 12, {
+        unitBreakdown: JSON.stringify({ درزن: 6_266_680 }),
+      }),
+      "PRECONDITION_FAILED",
+      /الماسح كتب داخل حقل العدد/,
+    );
+    expect(await countRowsOf(r.sessionId, 1)).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.stocktakeCountOperations)
+        .where(eq(s.stocktakeCountOperations.sessionId, r.sessionId)),
+    ).toHaveLength(0);
+  });
+
+  it("يسمح لمسؤول USER مكلّف بتثبيت كمية مشروعة تطابق بصمة الباركود ويخفي الإثبات عن التقرير", async () => {
+    await db()
+      .update(s.productUnits)
+      .set({ barcode: "000007712345" })
+      .where(eq(s.productUnits.id, 1));
+    const r = await mkPortalSession({
+      assignments: [
+        { name: "عامل أ", method: "PIN", variantIds: [1] },
+        {
+          name: "أحمد المدير",
+          method: "USER",
+          userId: 1,
+          variantIds: [1],
+        },
+        {
+          name: "كريم المخزن",
+          method: "USER",
+          userId: 2,
+          variantIds: [1],
+        },
+      ],
+    });
+    const worker = await loginPin(r.code, r.assignments[0].pin!);
+    await expectTrpc(
+      submit(worker, 1, 77),
+      "PRECONDITION_FAILED",
+      /مسؤول الجرد.*manager.*admin/,
+    );
+
+    const adminUser = (
+      await db().select().from(s.users).where(eq(s.users.id, 1))
+    )[0];
+    const auth = await authenticatePin(adminUser as any, {
+      sessionCode: r.code,
+    });
+    const supervisor: PortalIdentity = {
+      session: auth.session,
+      assignment: auth.assignment,
+      countedByName: auth.assignment.name,
+      countedByUserId: 1,
+      mode: "USER",
+    };
+    await expectTrpc(
+      submit(supervisor, 1, 77),
+      "PRECONDITION_FAILED",
+      /يلزم تأكيد مسؤول الجرد/,
+    );
+
+    const warehouseUser = (
+      await db().select().from(s.users).where(eq(s.users.id, 2))
+    )[0];
+    const warehouseAuth = await authenticatePin(warehouseUser as any, {
+      sessionCode: r.code,
+    });
+    await expectTrpc(
+      submit(
+        {
+          session: warehouseAuth.session,
+          assignment: warehouseAuth.assignment,
+          countedByName: warehouseAuth.assignment.name,
+          countedByUserId: 2,
+          mode: "USER",
+        },
+        1,
+        77,
+        { scannerGuardOverride: true },
+      ),
+      "PRECONDITION_FAILED",
+      /manager.*admin/,
+    );
+
+    await expect(
+      submit(supervisor, 1, 77, { scannerGuardOverride: true }),
+    ).resolves.toMatchObject({
+      ok: true,
+      kind: "FIRST",
+    });
+
+    const rows = await countRowsOf(r.sessionId, 1);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].unitBreakdown)).toMatchObject({
+      __stocktakeScannerGuard: {
+        version: 1,
+        qty: 77,
+        override: "SUPERVISOR_USER",
+        authorizedByUserId: 1,
+      },
+    });
+    const review = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
+    expect(review.countIntegrity.blockingCount).toBe(0);
+
+    const report = await getStocktakeReport(r.sessionId);
+    expect(report.rows[0]).not.toHaveProperty("countUnitBreakdown");
+    expect(report.rows[0]).not.toHaveProperty("countGuardAttested");
+    expect(JSON.stringify(report.rows)).not.toContain("__stocktakeScannerGuard");
   });
 
   it("النطاق: صنف خارج أصناف الجلسة يُرفض ولا يُكتب شيء", async () => {

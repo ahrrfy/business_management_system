@@ -139,7 +139,7 @@ export async function buildOpeningValuationIntegrity(
     const ratio = currentCost.gt(0) ? snapshotCost.div(currentCost) : null;
     const extremeRatio =
       ratio != null &&
-      (ratio.gte(MATERIAL_RATIO) || ratio.lte(money(1).div(MATERIAL_RATIO)));
+      (ratio.gt(MATERIAL_RATIO) || ratio.lt(money(1).div(MATERIAL_RATIO)));
     const absoluteMaterialMismatch = delta.abs().gte(ABSOLUTE_VALUE_DELTA_CAP);
     const ratioMaterialMismatch =
       extremeRatio && delta.abs().gte(RATIO_MATERIAL_FLOOR);
