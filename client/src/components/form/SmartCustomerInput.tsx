@@ -1,11 +1,12 @@
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { BalanceBadge } from "@/components/BalanceBadge";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { trpc } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { Phone, X } from "lucide-react";
 
 /**
  * حقل عميل ذكي — v3-add-screens.
@@ -36,6 +37,9 @@ export interface SmartCustomerInputProps {
   onChange: (v: SmartCustomerValue) => void;
   placeholder?: string;
   className?: string;
+  /** ش٥-ب (١١/٨): يعرض حقل هاتفٍ اختياريّاً تحت الصندوق عند «عميل جديد» (isNew).
+   *  يُمرَّر خارجياً في `value.phone` ⇒ الاستدعاء الخارجي `customers.create` يلتقطه تلقائياً. */
+  capturePhoneOnNew?: boolean;
 }
 
 interface CustomerSummary {
@@ -51,7 +55,7 @@ interface CustomerSummary {
   isFrequent?: boolean;
 }
 
-export function SmartCustomerInput({ value, onChange, placeholder, className }: SmartCustomerInputProps) {
+export function SmartCustomerInput({ value, onChange, placeholder, className, capturePhoneOnNew }: SmartCustomerInputProps) {
   const [q, setQ] = useState(value.name || "");
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -213,8 +217,23 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
       )}
 
       {value.isNew && !value.customerId && trimmed && (
-        <div className="mt-2 text-[11px] text-primary">
-          سيُحفظ «{trimmed}» تلقائياً كعميل جديد عند حفظ الأمر.
+        <div className="mt-2 space-y-1.5">
+          <div className="text-[11px] text-primary">
+            سيُحفظ «{trimmed}» تلقائياً كعميل جديد عند حفظ الأمر.
+          </div>
+          {/* ش٥-ب: التقاط الهاتف اختياريّ — الخانة تُمرَّر لـcreateCustomer في نداء الحفظ اللاحق. */}
+          {capturePhoneOnNew && (
+            <div className="flex items-center gap-1.5">
+              <Phone aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+              <IntlPhoneInput
+                value={value.phone ?? ""}
+                onChange={(e164) => onChange({ ...value, phone: e164 || null })}
+                placeholder="770 123 4567"
+                className="h-8 text-xs"
+                ariaLabel="هاتف العميل الجديد (اختياريّ)"
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

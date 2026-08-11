@@ -1184,7 +1184,7 @@ export default function Reception() {
               )}
             </div>
             <div className="flex items-center gap-2">
-              <SmartCustomerInput value={customer} onChange={setCustomer} className="w-56" placeholder="عميل نقدي" />
+              <SmartCustomerInput value={customer} onChange={setCustomer} className="w-56" placeholder="عميل نقدي" capturePhoneOnNew />
               {/* ش٧: يُفتح فقط لعميلٍ مسجَّل — يعرض فواتيره غير المسدّدة مع حقل قبضٍ سطريّ. */}
               {customer.customerId != null && (
                 <Button
