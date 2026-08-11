@@ -390,20 +390,16 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                               gate: { module: "reservations", level: "READ" },
                             },
                             {
-                              // B (١٢/٨): طباعة تذكرة حجز حراريّة — جلب التفاصيل عبر utils ثمّ printDoc.
-                              // تكامل الطباعة الوظيفيّ للحجوزات كان مفقوداً على `main` قبل هذا الالتزام.
+                              // B (١٢/٨): طباعة تذكرة حجز حراريّة — تفتح حوار التفاصيل ثمّ الطباعة
+                              // منه (ملاحظة Codex P2 على PR #557): استدعاءُ `printDoc` بعد await شبكيّ
+                              // يفقد **user activation** فيرفض المتصفّح `window.open` في المسار الاحتياطي
+                              // (لا جسر ولا WebUSB). زرّ الطباعة في تذييل الحوار يُطلقه بعد اكتمال جلب
+                              // التفاصيل ⇒ ضغطة زرٍّ متزامنةٌ حديثة الـactivation، وبيانات كاملة جاهزة.
                               key: "print",
                               kind: "view",
                               label: "طباعة تذكرة الحجز",
                               icon: Printer,
-                              onSelect: async () => {
-                                try {
-                                  const detail = await utils.reservations.get.fetch({ id: Number(r.id) });
-                                  printReservationTicket(detail);
-                                } catch (e) {
-                                  notify.err(e, "تعذّرت طباعة التذكرة");
-                                }
-                              },
+                              onSelect: () => setDetailId(Number(r.id)),
                               gate: { module: "reservations", level: "READ" },
                             },
                             {

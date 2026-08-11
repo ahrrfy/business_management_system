@@ -49,21 +49,20 @@ const STATUS_LABEL: Record<string, string> = {
  * لا رمي إن فشلت الطابعة — `printDoc` يبتلع الخطأ (تدهور سلس)، وشاشة الحجوزات تُبقي الحوار.
  */
 export function printReservationTicket(res: ReservationTicketSource): void {
+  // جدول ذو **صفَّين اثنين لكل سطر** (وصف كاملٌ يميناً + الإجمالي يساراً) عمداً — راسم الحراريّ
+  // `docToRaster` يرسم `r[0]` و`r[r.length-1]` فقط ويسقط ما بينهما. لو استعملنا ٤ أعمدة (منتج/كمية/
+  // سعر/إجمالي) لكانت التذكرة الحراريّة تُظهر المنتج والإجمالي وتُخفي الكمية والسعر — كارثة عمليّة
+  // لكاشير يسلّم البضاعة (لا يعرف كم يعطي). الآن الوصف يضمّ الكمية × السعر داخله (Codex P2 على #557).
   const items = res.lines.map((l) => {
+    const attrs = [l.color, l.size, l.variantName].filter(Boolean).join(" · ");
+    const price = l.quotedUnitPrice != null ? fmt(l.quotedUnitPrice) : "غير مُسعَّر";
+    const qtyPrice = `${l.quantity} × ${price}${l.unitName ? ` / ${l.unitName}` : ""}`;
     const desc = [
-      l.productName,
-      [l.color, l.size, l.variantName].filter(Boolean).join(" · ") || null,
-    ]
-      .filter(Boolean)
-      .join(" — ");
-    const priceCell = l.quotedUnitPrice != null ? fmt(l.quotedUnitPrice) : "غير مُسعَّر";
+      l.productName + (attrs ? ` — ${attrs}` : ""),
+      qtyPrice,
+    ].join("\n");
     const totalCell = l.lineTotal != null ? fmt(l.lineTotal) : "—";
-    return [
-      desc + (l.unitName ? ` (${l.unitName})` : ""),
-      String(l.quantity),
-      priceCell,
-      totalCell,
-    ];
+    return [desc, totalCell];
   });
 
   const meta: string[] = [];
@@ -89,7 +88,7 @@ export function printReservationTicket(res: ReservationTicketSource): void {
     title: "تذكرة حجز",
     subtitle: res.reservationNumber,
     meta,
-    columns: ["المنتج", "الكمية", "السعر", "الإجمالي"],
+    columns: ["المنتج — الكمية × السعر", "الإجمالي"],
     rows: items,
     totals,
     footer:

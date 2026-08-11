@@ -20,18 +20,21 @@ const reservationsRead = branchScopedProcedure.use(requireModule("reservations",
 const reservationsWrite = branchScopedProcedure.use(requireModule("reservations", "FULL"));
 
 /**
- * فحصٌ كسول لانتهاء الحجوزات — يُشغَّل قبل كلّ قراءة (list/get) بحدّ ٥٠ حجزاً كي لا يُبطئ الردّ.
- * `expireDueReservations` idempotent (تعالج المنتهية فقط) فتشغيلها المتكرّر آمن، والتقييد ٥٠
- * يترك السحب الكامل لكرون خلفيّ لاحقاً. شكوى المالك (١٢/٨): «الحجز يبقى نشطاً بعد الانقضاء» —
- * كان `expireDueReservations` معرَّفة لكن **غير مستدعاة أبداً** (لا كرون ولا فحصٌ كسول)، فالتذكرة
- * تبقى ACTIVE حتى يُلمَسها إلغاءٌ يدويّ. `.catch(err → log)` يمنع فشل الفحص من إسقاط القراءة.
+ * فحصٌ كسول لانتهاء **حجزٍ بعينه** — يُشغَّل قبل `get` بفلتر id فيعالَج المطلوب حتماً وحده.
+ * ملاحظات Codex على PR #557:
+ * - **P1**: الكنسُ العامّ بحدّ ٥٠ قد يُعالج ٥٠ صفّاً من فرعٍ آخر بينما الحجز المطلوب يبقى ACTIVE.
+ *   بفلتر id نضمن معالجة المطلوب حصراً.
+ * - **P2 (deadlock)**: الكنس العام يقفل `reservations` قبل `reservationStock`، بينما `createReservation`
+ *   يقفل `reservationStock` قبل `reservations` (numbering) — تعارض ممكن تحت الحمل. كنسُ id واحدٍ
+ *   لا يمرّ بذلك المسار على تعدّد الصفوف. الكرون الخلفيّ يتولّى الدفعات العامّة (لا في مسار الطلب).
+ * - `list` لا يستدعي هذه الدالة إطلاقاً (نعتمد الكرون كلّ ٥د) — فرق العرض الأقصى ٥ دقائق مقبول.
  */
-async function sweepExpired(): Promise<void> {
+async function sweepExpiredById(reservationId: number): Promise<void> {
   try {
-    const res = await expireDueReservations(50);
-    if (res.expired > 0) logger.info({ expired: res.expired }, "reservations.lazy-sweep: expired stale reservations");
+    const res = await expireDueReservations({ reservationId, limit: 1 });
+    if (res.expired > 0) logger.info({ reservationId }, "reservations.lazy-sweep(id) expired one");
   } catch (err) {
-    logger.warn({ err: err instanceof Error ? err.message : String(err) }, "reservations.lazy-sweep failed (non-fatal)");
+    logger.warn({ err: err instanceof Error ? err.message : String(err), reservationId }, "reservations.lazy-sweep(id) failed (non-fatal)");
   }
 }
 
@@ -66,8 +69,8 @@ export const reservationsRouter = router({
         .optional(),
     )
     .query(async ({ ctx, input }) => {
-      // فحصٌ كسول قبل القراءة كي لا تظهر الحجوزات المنتهية بحالة ACTIVE (شكوى المالك ١٢/٨).
-      await sweepExpired();
+      // `list` لا يستدعي كنسَ الانتهاء بعد الآن — الكرون الخلفيّ (`reservationsSweeper` كلّ ٥د)
+      // يتكفّل بالدفعات العامّة، فلا يُدخل مسارُ القراءة عالي التردّد سباقَ أقفال مع `createReservation`.
       const db = requireDb();
       const conds: (SQL | undefined)[] = [];
       // عزل الفرع: غير المرتفع (scopedBranchId مضبوط) يرى فرعه فقط؛ المرتفع يفلتر بـbranchId اختيارياً.
@@ -107,8 +110,9 @@ export const reservationsRouter = router({
   get: reservationsRead
     .input(z.object({ id: z.number().int().positive() }))
     .query(async ({ ctx, input }) => {
-      // فحصٌ كسول: أيّ حجزٍ فُتحت تفاصيله بعد انقضاء مدّته يُصبح EXPIRED قبل عرضه (لا يبقى ACTIVE).
-      await sweepExpired();
+      // فحصٌ كسول محدَّد بالـid: أيّ حجزٍ فُتحت تفاصيله بعد انقضاء مدّته يُصبح EXPIRED قبل عرضه —
+      // لا يبقى ACTIVE. الفلتر بـid يمنع كنسَ صفوف عشوائيّة ويُلغي تعارض الأقفال مع createReservation.
+      await sweepExpiredById(input.id);
       const db = requireDb();
       const head = (
         await db.select().from(reservations).where(eq(reservations.id, input.id)).limit(1)

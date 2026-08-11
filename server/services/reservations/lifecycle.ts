@@ -86,14 +86,30 @@ export async function extendReservation(id: number, hours: number, actor: Actor)
 
 /**
  * كنّاس الانتهاء: يُنهي الحجوزات المنتهية (نشطة ∧ expiresAt < NOW) ويحرّر محجوزها.
- * يُستدعى من node-cron + فحص lazy عند القراءة (R-م٤/م٥). idempotent (يعالج المنتهية فقط).
+ * يُستدعى من node-cron (بلا فلتر — دفعة عامّة) ومن get (بفلتر id — سطرٌ واحد فقط، لا خطر deadlock).
+ * idempotent (يعالج المنتهية فقط).
+ *
+ * `opts.reservationId` (Codex P1 على PR #557): بدلاً من كنس ٥٠ صفّاً عشوائياً من فرعٍ آخر عند قراءة
+ * حجزٍ بعينه، نمرّ بفلتر id فيُعالَج المطلوب حتماً — وحده. يمنع أيضاً الـdeadlock (Codex P2):
+ * `createReservation` يقفل `reservationStock` قبل `reservations` (numbering)، بينما الكنّاس العام
+ * يقفل `reservations` قبل `reservationStock` (release) — تعارضٌ محتمل تحت الحمل. كنسُ id واحدٍ
+ * صفٍّ لن يتعارض إلا مع تعديلاتٍ على ذلك الصفّ بعينه، وذلك مقبول (retryOnDeadlock من الاستدعاء).
  */
-export async function expireDueReservations(limit = 200): Promise<{ expired: number }> {
+export async function expireDueReservations(
+  limitOrOpts: number | { limit?: number; reservationId?: number } = 200,
+): Promise<{ expired: number }> {
+  const opts = typeof limitOrOpts === "number" ? { limit: limitOrOpts } : limitOrOpts;
+  const limit = opts.limit ?? 200;
   return withTx(async (tx) => {
+    const conds = [
+      inArray(reservations.status, ["ACTIVE", "PARTIALLY_FULFILLED"]),
+      lt(reservations.expiresAt, sql`NOW()`),
+    ];
+    if (opts.reservationId != null) conds.push(eq(reservations.id, opts.reservationId));
     const due = await tx
       .select({ id: reservations.id, branchId: reservations.branchId, status: reservations.status })
       .from(reservations)
-      .where(and(inArray(reservations.status, ["ACTIVE", "PARTIALLY_FULFILLED"]), lt(reservations.expiresAt, sql`NOW()`)))
+      .where(and(...conds))
       .for("update")
       .limit(limit);
     let expired = 0;
