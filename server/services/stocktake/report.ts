@@ -53,7 +53,13 @@ export async function getStocktakeReport(sessionId: number) {
   const storedMap = new Map(stored.map((d) => [Number(d.variantId), d]));
 
   const reportRows = rows.map(
-    ({ decidedBy: _db2, openConflict: _oc, ...r }) => {
+    ({
+      decidedBy: _db2,
+      openConflict: _oc,
+      countUnitBreakdown: _breakdown,
+      countGuardAttested: _attested,
+      ...r
+    }) => {
       const d = storedMap.get(r.variantId);
       if (approved && d) {
         // قيم لحظة الاعتماد هي الحقيقة التاريخية للمحضر.

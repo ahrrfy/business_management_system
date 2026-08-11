@@ -326,7 +326,7 @@ export default function StocktakeReview() {
         setValuationRefreshReason("");
         notify.ok(
           `صُحّح أساس تكلفة ${nf(r.changedCount)} منتج دون لمس الكميات أو النقد`,
-          `انخفض التقييم من ${money(r.oldNetValue)} إلى ${money(r.newNetValue)}، وأُعيد فتح ${nf(r.reopenedCount)} اعتماد للمراجعة.`,
+          `تغيّر التقييم من ${money(r.oldNetValue)} إلى ${money(r.newNetValue)}، وأُعيد فتح ${nf(r.reopenedCount)} اعتماد للمراجعة.`,
         );
         await invalidate();
       },
