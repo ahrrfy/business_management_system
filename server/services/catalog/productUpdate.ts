@@ -2,6 +2,7 @@
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
+import { assertBaseUnitStable } from "./baseUnitGuard";
 import { extractInsertId } from "../../lib/insertId";
 import { assertValidUnitFactors } from "./unitFactors";
 import { toDbMoney } from "../money";
@@ -74,10 +75,38 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
       .where(eq(products.id, input.productId));
 
     for (const v of input.variants) {
+      // Codex جولة٧ P1: ارفض معرّفَ/اسمَ وحدةٍ مكرّراً في الطلب **قبل** أيّ فحص — وإلّا كتب المُحدِّث الصفّ
+      // نفسه مرّتين (الثانية تَجُبّ الأولى) فيُفقَد الأساس رغم اجتياز فحص «أساسٍ واحد» والحارس.
+      const submittedIds = v.units.filter((u) => u.id != null).map((u) => Number(u.id));
+      if (new Set(submittedIds).size !== submittedIds.length)
+        throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku}: معرّف وحدةٍ مكرّرٌ في الطلب` });
+      const submittedNames = v.units.map((u) => u.unitName.trim());
+      if (new Set(submittedNames).size !== submittedNames.length)
+        throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku}: اسم وحدةٍ مكرّرٌ في الطلب` });
+
+      // Codex جولة٨ P1: كلّ معرّف وحدةٍ مُرسَلٍ يجب أن يخصّ **هذا** المتغيّر — وإلّا فمعرّفٌ أجنبيٌّ (أو معرّف
+      // أساس متغيّرٍ آخر في طلبٍ متعدّد) تُحدِّثه الحلقةُ بالمعرّف فتُعطّل أساسَ ذاك بعد اجتياز حارسه. نفحص
+      // الملكيّة **قبل** الحارس والكتابة.
+      const ownedUnitIds = new Set(
+        (await tx.select({ id: productUnits.id }).from(productUnits).where(eq(productUnits.variantId, v.id))).map((u) => Number(u.id)),
+      );
+      for (const u of v.units) {
+        if (u.id != null && !ownedUnitIds.has(Number(u.id)))
+          throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku}: الوحدة (${u.id}) لا تخصّه` });
+      }
+
       if (!v.units.some((u) => u.isBaseUnit))
         throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} يحتاج وحدة أساس واحدة` });
       if (v.units.filter((u) => u.isBaseUnit).length > 1)
         throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} يحتاج وحدة أساس واحدة فقط` });
+
+      // تدقيق ١١/٨ (#2 — بعد ٣ جولات مراجعة Codex): نفس حارس المسار الحديث — وحدة الأساس ثابتةٌ لمتغيّرٍ
+      // قائم. الهويّة بمعرّف الصفّ المُرسَل: نفس الصفّ (ولو أُعيدت تسميته **في مكانه** هنا) آمنٌ، وترقية
+      // صفٍّ قائمٍ آخر (أو صفٍّ جديد) إلى الأساس تبديلٌ يُرفَض. مقارنةٌ ساكنةٌ بلا قفل.
+      // by:"id" — هذا المسار يُحدِّث بالمعرّف (إعادة تسميةٍ في مكانها آمنة)؛ فغيابُ المعرّف (صفٌّ جديد)
+      // استبدالٌ يُرفَض، ولا نرجع لمقارنة الاسم (Codex جولة٥ P1).
+      const baseU = v.units.find((u) => u.isBaseUnit);
+      await assertBaseUnitStable(tx, v.id, { by: "id", unitId: baseU?.id ?? null });
 
       // Variant header. H3 (تدقيق ٢٧/٧): نلتقط التكلفة القديمة قبل التحديث لإصدار قيد إعادة تقييم.
       const oldV = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, v.id)).limit(1))[0];
