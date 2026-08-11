@@ -12,6 +12,10 @@ import { getProductForVariantEdit, updateProductWithVariants } from "../productE
 const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
+  "purchaseOrderItems",
+  "purchaseOrders",
+  "reservationStock",
+  "bundleComponents",
   "inventoryMovements",
   "accountingEntries",
   "branchStock",
@@ -20,6 +24,7 @@ const TABLES = [
   "productImages",
   "productVariants",
   "products",
+  "suppliers",
   "branches",
   "users",
 ];
@@ -126,9 +131,9 @@ describe("updateProductWithVariants — الكتابة", () => {
     variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { [unitName]: "BC-U-1" } }],
   });
 
-  it("#2 (مراجعة Codex): تبديل وحدة الأساس لصنفٍ برصيد يُرفض", async () => {
-    // الصنف ١ مبذور برصيد 40 (branchStock) بوحدة الأساس «قطعة».
-    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/رصيدٌ أو حركات/);
+  it("#2 (مراجعة Codex): ترقية وحدةٍ قائمةٍ (درزن) إلى الأساس لصنفٍ برصيد = تبديل هويّةٍ يُرفض", async () => {
+    // الصنف ١ مبذور برصيد 40 (branchStock) بوحدة الأساس «قطعة»؛ «درزن» وحدةٌ قائمةٌ غير أساس ⇒ ترقيتها تبديل.
+    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/تبديل وحدة الأساس/);
     const [bs] = await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1));
     expect(bs.quantity).toBe(40); // ذرّية
   });
@@ -136,13 +141,22 @@ describe("updateProductWithVariants — الكتابة", () => {
   it("#2 (مراجعة Codex P1): صفر رصيدٍ لكن حركةٌ تاريخية ⇒ التبديل مرفوض (الحركات مخزَّنة بالأساس)", async () => {
     await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
     await db().insert(s.inventoryMovements).values({ variantId: 1, branchId: 1, movementType: "OUT", quantity: 5, referenceType: "INVOICE", createdBy: 1 });
-    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/رصيدٌ أو حركات/);
+    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/تبديل وحدة الأساس/);
   });
 
-  it("#2: صفر رصيدٍ وبلا حركاتٍ سابقة ⇒ التبديل مسموح", async () => {
+  it("#2: صفر رصيدٍ وبلا أيّ ارتباطٍ سابق ⇒ التبديل مسموح", async () => {
     await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
     const r = await updateProductWithVariants(swapToBase("درزن"), actor);
     expect(r).toBeTruthy();
+  });
+
+  // ⟵ إصلاح الإيجابيّة الكاذبة (Codex P2): الكشف بالهويّة لا بالاسم. إعادة تسمية الأساس إلى اسمٍ **جديدٍ
+  // كليّاً** (بمِعامل ١ = نفس حجم الأساس) ليست تبديلاً — تُقبَل حتى مع رصيد. الحارس السابق (باسم) كان يرفضها.
+  it("#2 (Codex P2): إعادة تسمية الأساس إلى اسمٍ جديدٍ (حبة) مع رصيدٍ ⇒ مسموحة (لا تبديل هويّة)", async () => {
+    const r = await updateProductWithVariants(swapToBase("حبة"), actor);
+    expect(r).toBeTruthy();
+    const [bs] = await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1));
+    expect(bs.quantity).toBe(40); // الرصيد بلا مساس — نفس حجم الأساس ماديّاً
   });
 
   it("#2: إعادة تسمية لا تبدّل الهويّة ⇒ لا يتأثّر التعديل العاديّ برصيد (نفس الأساس «قطعة»)", async () => {
@@ -151,6 +165,37 @@ describe("updateProductWithVariants — الكتابة", () => {
       actor,
     );
     expect(r.added).toBe(0); // الأساس ما زال «قطعة» فلا يُفعَّل الحارس
+  });
+
+  // ⟵ تغطية Codex P1#2: المخازن المُقوَّمة بالأساس بلا رصيد/حركة (بكج/حجز/أمر مفتوح) تمنع التبديل أيضاً.
+  it("#2 (Codex P1#2): بكج بلا رصيد/حركة لكن له وصفة مكوّنات ⇒ تبديل الأساس مرفوض", async () => {
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
+    // الصنف ١ مكوّنٌ في وصفة بكجٍ (componentBaseQuantity مُقوَّم بأساسه) — لا رصيد ولا حركة له.
+    await db().insert(s.bundleComponents).values({ bundleVariantId: 2, componentVariantId: 1, componentBaseQuantity: 3 });
+    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
+  it("#2 (Codex P1#2): حجزٌ محجوز (reservedBase>0) بلا رصيد/حركة ⇒ تبديل الأساس مرفوض", async () => {
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
+    await db().insert(s.reservationStock).values({ variantId: 1, branchId: 1, reservedBase: 5 });
+    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
+  it("#2 (Codex P1#2): بند أمر شراءٍ مفتوح (لم يُستلَم) بلا رصيد/حركة ⇒ تبديل الأساس مرفوض", async () => {
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
+    await db().insert(s.suppliers).values({ id: 1, name: "مورّد" });
+    await db().insert(s.purchaseOrders).values({ id: 1, poNumber: "PO-1", supplierId: 1, branchId: 1, subtotal: "1000", total: "1000", status: "CONFIRMED" });
+    await db().insert(s.purchaseOrderItems).values({ purchaseOrderId: 1, variantId: 1, quantity: "1", baseQuantity: 12, unitPrice: "1000", total: "1000", receivedBaseQuantity: 0 });
+    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
+  it("#2 (Codex P1#2): أمر شراءٍ ملغى لا يمنع ⇒ التبديل مسموح (بلا رصيد/حركة)", async () => {
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
+    await db().insert(s.suppliers).values({ id: 1, name: "مورّد" });
+    await db().insert(s.purchaseOrders).values({ id: 1, poNumber: "PO-1", supplierId: 1, branchId: 1, subtotal: "1000", total: "1000", status: "CANCELLED" });
+    await db().insert(s.purchaseOrderItems).values({ purchaseOrderId: 1, variantId: 1, quantity: "1", baseQuantity: 12, unitPrice: "1000", total: "1000", receivedBaseQuantity: 0 });
+    const r = await updateProductWithVariants(swapToBase("درزن"), actor);
+    expect(r).toBeTruthy();
   });
 
   it("إضافة متغيّر جديد (بلا id) ⇒ صفّ جديد + added=1، والقديم يبقى كما هو", async () => {

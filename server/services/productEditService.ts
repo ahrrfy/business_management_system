@@ -535,6 +535,10 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         const owned = (await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1))[0];
         if (!owned) throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} لا يخصّ هذا المنتج` });
         variantId = v.id;
+        // تدقيق ١١/٨ (#2 — بعد مراجعة Codex): امنع تبديل **هويّة** وحدة الأساس لمتغيّرٍ قائمٍ له ارتباطٌ
+        // مُقوَّمٌ بالأساس (رصيد/حركة/بكج/حجز/أمر مفتوح) — **قبل** تحديث صفّ المتغيّر كي يُقفَل branchStock
+        // أوّلاً (يوافق ترتيب قفل مسارات الاستلام ⇒ لا جمود) ويتسلسل مع applyMovement.
+        await assertBaseUnitSwapSafe(tx, variantId, { unitName: newBaseName });
         await tx.update(productVariants).set({ ...vals, ...colorHexPatch }).where(eq(productVariants.id, variantId));
         // H3 (تدقيق ٢٧/٧): تغيّر التكلفة على صنفٍ له رصيد يُعيد تقييم المخزون ⇒ قيد إعادة تقييم يفسّر
         // حركة حقوق الملكية في قائمة الدخل ويمرّ على حارس الفترة (صفريّ الأثر إن كان الفرق/الرصيد صفراً).
@@ -544,9 +548,6 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         variantId = extractInsertId(res);
         added++;
       }
-      // تدقيق ١١/٨ (#2 — بعد مراجعة Codex): امنع تبديل هويّة وحدة الأساس لمتغيّرٍ قائمٍ له رصيدٌ أو
-      // حركاتٌ سابقة (يُفسد تفسير الأرصدة/الحركات المخزَّنة بالأساس) — قبل upsert الوحدات، تحت قفل الرصيد.
-      if (v.id) await assertBaseUnitSwapSafe(tx, variantId, newBaseName);
       await upsertVariantUnits(tx, variantId, input.unitTemplate, v.unitBarcodes, v.baseRetail);
 
       // product-variants: توفيق صورة اللون. image=undefined ⇒ لا نلمسها؛ string ⇒ تُعيَّن؛ null/"" ⇒ تُزال.
