@@ -106,7 +106,13 @@ export async function startHrDeviceBridge(
   options: HrDeviceBridgeStartOptions = {},
 ): Promise<HrDeviceBridge> {
   const security = assertHrDeviceBridgeStartupConfig(port);
+  // عدّادان منفصلان عمداً: الأوّل للاتصال (طلبات HTTP + ترقيات WebSocket) والثاني لرسائل
+  // الجلسة بعد نجاح `reg`. خلطهما كان يجعل تفريغ المتراكم يستنزف ميزانية إعادة الاتصال
+  // فيمنع الجهاز من العودة بعد إغلاقه — أي أنّ عملاً مشروعاً يحجب نفسه.
   const rateLimiter = new PerIpRateLimiter(security.maxRequestsPerMinute);
+  const sessionMessageLimiter = new PerIpRateLimiter(
+    security.maxSessionMessagesPerMinute,
+  );
   const wsPerIp = new Map<string, number>();
   const sessionDrainers = new Set<() => Promise<void>>();
   const httpTasks = new Set<Promise<void>>();
@@ -257,8 +263,17 @@ export async function startHrDeviceBridge(
     sessionDrainers.add(drainSession);
     logger.info({ remote }, "hrDevices: اتصال WebSocket جديد");
     socket.on("message", (data) => {
-      if (!rateLimiter.allow(req.socket.remoteAddress)) {
-        logger.warn({ remote }, "hrDevices: تجاوز حد رسائل WebSocket");
+      // الجلسة التي اجتازت `reg` جهازٌ مُثبَتُ الهوية ⇒ ميزانيةٌ سخيّة تكفي تفريغ المتراكم.
+      // وما قبل `reg` يبقى على الميزانية الصارمة المشتركة (لا تخفيف لمجهول).
+      const registered = session.device() != null;
+      const limiter = registered ? sessionMessageLimiter : rateLimiter;
+      if (!limiter.allow(req.socket.remoteAddress)) {
+        logger.warn(
+          { remote, registered },
+          "hrDevices: تجاوز حد رسائل WebSocket",
+        );
+        // الإغلاق يبقى صمّام الأمان؛ البصمات لا تضيع (الجهاز يعيد الدفع، والإدراج idempotent
+        // بقيد uq_punch_sn_enroll_time)، وإعادة الاتصال لم تعد محجوبة بعد فصل العدّادين.
         socket.close(1008, "rate limit");
         return;
       }
