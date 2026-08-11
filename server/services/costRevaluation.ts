@@ -1,6 +1,6 @@
 import Decimal from "decimal.js";
 import { and, eq, ne } from "drizzle-orm";
-import { branchStock, productVariants, products } from "../../drizzle/schema";
+import { auditLogs, branchStock, productVariants, products } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { postEntry } from "./ledgerService";
 import { money } from "./money";
@@ -33,6 +33,19 @@ export async function postCostRevaluation(
 ): Promise<void> {
   const delta = money(newCost ?? 0).minus(money(oldCost ?? 0));
   if (delta.isZero()) return;
+
+  // تدقيق ٢٧/٧ (تكملة H3/H4 تحت WAVG): أثرٌ **مُدقَّقٌ مُهيكَل** لتغيير التكلفة اليدويّ (قبل/بعد) على
+  // حقلٍ ماليٍّ حسّاس — مكمِّلٌ لقيد إعادة التقييم أدناه. يُكتَب **داخل المعاملة** فيرتدّ التعديلُ إن فشل
+  // السجلّ (ضابطٌ حاكمٌ لا يجوز نجاحه بلا أثر)، ويسبق فحص الأمانة كي يُدقَّق تعديلُ «حصّة المودِع» أيضاً
+  // (وإن استُثني من قيد إعادة التقييم). الاستدعاء محصورٌ بمساري التعديل اليدويّ لا بتحديث WAVG الآليّ.
+  await tx.insert(auditLogs).values({
+    userId: actor.userId,
+    action: "product.costChange",
+    entityType: "productVariant",
+    entityId: String(variantId),
+    oldValue: { costPrice: money(oldCost ?? 0).toFixed(2) },
+    newValue: { costPrice: money(newCost ?? 0).toFixed(2) },
+  });
 
   // بضاعة الأمانة مستثناةٌ من أصل المخزون في الميزانية (isConsignment=false) — ليست ملك المكتبة،
   // فتعديل «حصّة المودِع» ليس إعادة تقييمٍ لأصلٍ لدينا ⇒ لا قيد (وإلّا سطرُ ربح/خسارةٍ بلا أصلٍ مقابل).

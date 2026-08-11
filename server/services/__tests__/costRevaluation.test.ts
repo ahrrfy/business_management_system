@@ -16,6 +16,7 @@ import { truncateTables } from "./__testUtils__";
 import { withTx } from "../tx";
 
 const TABLES = [
+  "auditLogs",
   "accountingEntries",
   "productPrices",
   "productUnits",
@@ -105,6 +106,42 @@ describe("postCostRevaluation — قيد إعادة تقييم عند تغيّر
     await withTx((tx) => postCostRevaluation(tx, 1, "100.00", "150.00", actor));
     await withTx((tx) => postCostRevaluation(tx, 1, "150.00", "150.00", actor));
     expect(await revalEntries()).toHaveLength(1);
+  });
+});
+
+describe("postCostRevaluation — أثر تدقيقٍ مُهيكَل لتغيير التكلفة (تكملة H3/H4 تحت WAVG)", () => {
+  async function costAudits() {
+    return db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "product.costChange"));
+  }
+
+  it("تغيّر التكلفة ⇒ سطر auditLogs بالقبل/البعد + الفاعل + الكيان", async () => {
+    await withTx((tx) => postCostRevaluation(tx, 1, "100.00", "150.00", actor));
+    const a = await costAudits();
+    expect(a).toHaveLength(1);
+    expect(a[0].entityType).toBe("productVariant");
+    expect(a[0].entityId).toBe("1");
+    expect(Number(a[0].userId)).toBe(1);
+    expect((a[0].oldValue as { costPrice: string }).costPrice).toBe("100.00");
+    expect((a[0].newValue as { costPrice: string }).costPrice).toBe("150.00");
+  });
+
+  it("لا فرق في التكلفة ⇒ لا سطر تدقيق (مطابقٌ لعدم إصدار قيد)", async () => {
+    await withTx((tx) => postCostRevaluation(tx, 1, "100.00", "100.00", actor));
+    expect(await costAudits()).toHaveLength(0);
+  });
+
+  it("رصيد صفر (لا قيد إعادة تقييم) ⇒ التغيير يبقى مُدقَّقاً", async () => {
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
+    await withTx((tx) => postCostRevaluation(tx, 1, "100.00", "200.00", actor));
+    expect(await revalEntries()).toHaveLength(0); // لا رصيد ⇒ لا قيد
+    expect(await costAudits()).toHaveLength(1); // لكنّ التغيير مُدقَّق
+  });
+
+  it("صنف أمانة (مُستثنى من قيد إعادة التقييم) ⇒ تعديل الحصّة يبقى مُدقَّقاً", async () => {
+    await db().update(s.products).set({ isConsignment: true }).where(eq(s.products.id, 1));
+    await withTx((tx) => postCostRevaluation(tx, 1, "100.00", "160.00", actor));
+    expect(await revalEntries()).toHaveLength(0); // أمانة ⇒ لا قيد
+    expect(await costAudits()).toHaveLength(1); // لكنّ تعديل الحصّة مُدقَّق (الأثر يسبق فحص الأمانة)
   });
 });
 
