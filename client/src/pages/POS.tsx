@@ -111,6 +111,8 @@ type Receipt = {
   printTime?: string;
   cashierName?: string;
   customerName?: string;
+  /** G3 (١١/٨): رقم الوردية — يُطبع في ترويسة الإيصال لتوثيق أصل المعاملة (invoices.shiftId). */
+  shiftId?: number | null;
   lines: { name: string; unit: string; qty: number; price: number; disc?: number; total: number }[];
   total: number;
   received: number;
@@ -298,6 +300,7 @@ function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     time: r.printTime ?? null,
     cashierName: r.cashierName ?? null,
     customerName: r.customerName ?? null,
+    shiftId: r.shiftId ?? null,
     items: r.lines.map((l) => ({
       name: `${l.name} (${l.unit})${l.disc ? ` −${l.disc}%` : ""}`,
       quantity: l.qty,
@@ -695,6 +698,7 @@ export default function POS() {
         printDate: fmtDate(now),
         printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
         cashierName: me.data?.name ?? undefined,
+        shiftId: shift?.id ?? null,
         lines: [],
         total: Number(r.total),
         received: Number(r.total),
@@ -919,6 +923,7 @@ export default function POS() {
         printTime: fmtTime(now),
         cashierName: ctx.cashierName,
         customerName: ctx.customerName,
+        shiftId: shift?.id ?? null,
         lines: ctx.lines,
         total: ctx.total, received: ctx.received, change: ctx.change,
         credit: ctx.credit, isCredit: ctx.isCredit,
@@ -1115,6 +1120,7 @@ export default function POS() {
       printTime: fmtTime(now),
       cashierName: ctx.cashierName,
       customerName: ctx.customerName,
+      shiftId: shift?.id ?? null,
       lines: ctx.lines,
       total: ctx.total, received: ctx.received, change: ctx.change,
       credit: ctx.credit, isCredit: ctx.isCredit,

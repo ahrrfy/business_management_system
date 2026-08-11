@@ -1531,12 +1531,17 @@ export default function Reception() {
         price: round2(D(effectivePrice(c))).toFixed(2),
         total: round2(D(lineTotal(c))).toFixed(2),
       });
+      // G3 (١١/٨): heldDeposits = مجموع العرابين المحتجزة على أوامر الشغل المرتبطة (customWithDeposits)
+      // — يظهر على إيصال البيع كإفصاحٍ منفصلٍ فيعرف الزبون رصيده المحتجز الذي يُخصم عند التسليم.
+      const heldDepositsSum = customWithDeposits.reduce((s, x) => s.plus(D(x.depositStr)), D(0));
       const receiptHead = {
         date: fmtDate(printedAt),
         time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
         cashierName: me.data?.name ?? "موظف الخدمة",
         customerName: receiptCustomerName,
         paymentMethod: PAY_METHOD_LABEL[method],
+        shiftId: shift?.id ?? null,
+        heldDeposits: heldDepositsSum.gt(0) ? heldDepositsSum.toFixed(2) : null,
       };
       // ٨/٨ — إفصاح التوصيل على إيصال البيع المباشر: كان لا يُطبَع إطلاقاً («لم تظهر بالطباعة»).
       // يُوضَع على الفاتورة الحاملة للإرسالية (البضاعة إن وُجِدت وإلّا الطباعة). الأجرة تمريرٌ لا
@@ -2523,11 +2528,10 @@ export default function Reception() {
               <HandCoins aria-hidden className="size-4" />
               <span className="hidden lg:inline">سحب نقدي</span>
             </button>
-            <div className="flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 text-sm font-bold text-violet-700">
-              <span className="size-2 animate-pulse rounded-full bg-violet-500" />
-              الوردية #{shift.id}
-            </div>
-            <Button size="sm" variant="outline" onClick={() => setClosing(true)}>
+            {/* G1 (طلب المالك): شارة «الوردية #{id}» حُذفت — كانت مكرِّرةً لزرّ «إنهاء الوردية»
+                المجاور (وجوده يعني وردية مفتوحة). رقم الوردية يبقى مرئياً في نافذة الإغلاق
+                (عنوان الحوار وZ-report) وعلى الإيصال المطبوع الجديد (G3 أدناه — حقل `shiftId`). */}
+            <Button size="sm" variant="outline" onClick={() => setClosing(true)} title={`إنهاء وردية الاستقبال #${shift.id}`}>
               إنهاء الوردية
             </Button>
           </>,

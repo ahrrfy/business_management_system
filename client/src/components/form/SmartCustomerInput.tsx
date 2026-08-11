@@ -1,5 +1,6 @@
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { BalanceBadge } from "@/components/BalanceBadge";
 import { trpc } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
 import { cn } from "@/lib/utils";
@@ -48,6 +49,8 @@ interface CustomerSummary {
   orderCount?: number | null;
   lastOrderAt?: string | null;
   totalSpent?: string | null;
+  /** الرصيد الجاري (مقنَّع خادمياً لغير المدير — يعود "0" فيُخفي BalanceBadge). */
+  currentBalance?: string | null;
   isVip?: boolean;
   isFrequent?: boolean;
 }
@@ -229,9 +232,13 @@ export function SmartCustomerInput({ value, onChange, placeholder, className, na
         </div>
       )}
 
-      {/* بطاقة إحصائيّة للعميل المختار. */}
+      {/* بطاقة إحصائيّة للعميل المختار. G2 (١١/٨): شارة الرصيد الجاري تُعرض عبر BalanceBadge
+          الموحَّد — «لنا عليه ٤٥٠٠ د.ع» أو «له علينا» بلونٍ دلاليّ. مقنَّع خادمياً لغير المدير
+          (maskCustomerSensitive في server/lib/redact.ts:63 يعيد "0") ⇒ BalanceBadge لا يعرض
+          الشارة عند 0 (بلا showZero)، فالكاشير آمنٌ من رؤية أرقام الذمم. */}
       {selectedExisting && selectedStats && (
-        <div className="mt-2 rounded-md border bg-muted/30 p-2 flex flex-wrap gap-3 text-xs">
+        <div className="mt-2 rounded-md border bg-muted/30 p-2 flex flex-wrap items-center gap-3 text-xs">
+          <BalanceBadge amount={selectedStats.currentBalance} entityType="customer" />
           <span><span className="text-muted-foreground">الطلبات:</span> <span dir="ltr">{selectedStats.orderCount ?? 0}</span></span>
           {selectedStats.lastOrderAt && (
             <span>

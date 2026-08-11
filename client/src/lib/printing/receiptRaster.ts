@@ -183,10 +183,10 @@ export async function receiptToCanvas(
     /* رقم غير قابل للترميز ⇒ إيصال بلا باركود */
   }
 
-  // ───── ٣) صفوف المعلومات ─────
+  // ───── ٣) صفوف المعلومات — G3 (١١/٨) رُفع الوزن الأساس 600→700 + سطرا الوردية والعميل بارزَين ─────
   y += 32;
-  const metaRow = (right: string, left: string) => {
-    ctx.font = "600 21px Cairo, sans-serif";
+  const metaRow = (right: string, left: string, strong = false) => {
+    ctx.font = `${strong ? "800" : "700"} 21px Cairo, sans-serif`;
     if (right) {
       ctx.textAlign = "right";
       ctx.fillText(right, W - PAD, y);
@@ -199,7 +199,8 @@ export async function receiptToCanvas(
   };
   metaRow(`رقم: ${d.receiptNumber}`, d.date);
   if (d.cashierName || d.time) metaRow(d.cashierName ? `الكاشير: ${d.cashierName}` : "", d.time ? `الوقت: ${d.time}` : "");
-  if (d.customerName) metaRow(`العميل: ${d.customerName}`, "");
+  if (d.shiftId != null) metaRow(`الوردية: #${d.shiftId}`, "");
+  if (d.customerName) metaRow(`العميل: ${d.customerName}`, "", true);
 
   y += 2;
   dashedLine(ctx, y);
@@ -295,9 +296,17 @@ export async function receiptToCanvas(
   y += 34;
 
   if (d.paymentMethod) totRow("طريقة الدفع:", d.paymentMethod, true);
-  if (d.paid != null) totRow("المدفوع:", fmt(d.paid));
-  if (d.change != null) totRow("الباقي:", fmt(d.change));
-  if (Number(d.credit ?? 0) > 0) totRow("آجل/ذمة:", fmt(d.credit), true);
+  if (d.paid != null) totRow("المدفوع:", fmt(d.paid), true);
+  if (d.change != null) totRow("الباقي:", fmt(d.change), true);
+  if (Number(d.heldDeposits ?? 0) > 0) totRow("عربون محتجز:", fmt(d.heldDeposits), true);
+  // G3: «متبقٍّ (آجل)» — سطرٌ خاصّ بارز مع خطٍّ متقطّع أعلاه، أكبر خطاً من بقيّة الإجماليات.
+  if (Number(d.credit ?? 0) > 0) {
+    y += 4; dashedLine(ctx, y); y += 30;
+    ctx.font = "900 26px Cairo, sans-serif";
+    ctx.textAlign = "right"; ctx.fillText("متبقٍّ (آجل):", W - PAD, y);
+    ctx.textAlign = "left"; ctx.fillText(`${fmt(d.credit)} د.ع`, PAD, y);
+    y += 30;
+  }
 
   // ٨/٨ — كتلة التوصيل: إفصاحٌ للزبون (الجهة/الأجرة/مَن يقبض/يدفع الزبون). الأجرة خارج `total`
   // دائماً (تمريرٌ لا إيراد) — «يدفع الزبون» = الإجمالي + الأجرة (إلا SHOP فمجّاني).
