@@ -20,7 +20,7 @@ import { money, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import type { StkActor } from "./types";
 import { assertBranchAccess, chunk, loadStocktakeProgress, lockSession } from "./internal";
-import { loadReviewCore, willAdjust } from "./reviewCore";
+import { loadReviewCore, sessionRequiresDualSign, willAdjust } from "./reviewCore";
 
 export interface ApproveResult {
   ok: true;
@@ -48,10 +48,13 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
       throw new TRPCError({ code: "BAD_REQUEST", message: "الاعتماد متاح على جلسة قيد المراجعة فقط" });
     }
 
-    // ── حوكمة اعتماد «الجرد الافتتاحي» (مراجعة عدائية ١٨/٧) ──
+    // ── حوكمة الاعتماد: فصل المهام (SOD) على **كل** الجلسات + قيد نافذة الافتتاح ──
+    // تدقيق عدائي ١١/٨: كان فصل المهام محصوراً بالجرد الافتتاحي (if isOpening) فقط، فجلسة NORMAL
+    // كان فاعلٌ واحد يُنشئها ويَعُدّها ويعتمدها ويُرحّل قيود عجز/زيادة (SHORT/OVER) على قائمة الدخل
+    // بلا رقيبٍ ثانٍ (تغطية اختلاس/نفخ ربح). نُقلت الحُرّاس (ب)(ج) خارج الشرط لتشمل كل الجلسات.
     const isOpening = s.sessionType === "OPENING";
     if (isOpening) {
-      // (أ) الاعتماد محصور بنافذة وضع الافتتاح — بعدها تبقى القناة (بلا قيدَي عجز/زيادة) مغلقة حكماً.
+      // (أ) اعتماد الجرد الافتتاحي محصور بنافذة وضع الافتتاح — بعدها تبقى القناة (بلا قيدَي عجز/زيادة) مغلقة حكماً.
       const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
       const windowActive = !!om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now();
       if (!windowActive) {
@@ -60,32 +63,32 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
           message: "وضع الافتتاح غير فعّال — مدّد النافذة من الإعدادات لاعتماد الجلسة، أو ألغِها وأعد الجرد دورياً",
         });
       }
-      // (ب) SOD مرآة تسوية المخزون (SOD-04): منشئ الجلسة لا يعتمدها (admin مُستثنى للتصحيح الإداري).
-      if (actor.role !== "admin" && s.createdBy != null && Number(s.createdBy) === actor.userId) {
+    }
+    // (ب) SOD-04: منشئ الجلسة لا يعتمدها — لكل الجلسات (admin مُستثنى للتصحيح الإداري).
+    if (actor.role !== "admin" && s.createdBy != null && Number(s.createdBy) === actor.userId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "أنشأتَ هذه الجلسة — الاعتماد النهائي لمسؤول آخر (فصل المهام)",
+      });
+    }
+    // (ج) من كُلّف بالعدّ (تكليف USER) لا يعتمد — لكل الجلسات (تركّز العدّ والاعتماد بيدٍ واحدة يفرغ الرقابة).
+    if (actor.role !== "admin") {
+      const myAssignment = await tx
+        .select({ id: stocktakeAssignments.id })
+        .from(stocktakeAssignments)
+        .where(
+          and(
+            eq(stocktakeAssignments.sessionId, sessionId),
+            eq(stocktakeAssignments.method, "USER"),
+            eq(stocktakeAssignments.userId, actor.userId),
+          ),
+        )
+        .limit(1);
+      if (myAssignment[0]) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "أنشأتَ هذه الجلسة الافتتاحية — الاعتماد النهائي لمسؤول آخر (فصل المهام)",
+          message: "كُلّفتَ بالعدّ في هذه الجلسة — الاعتماد النهائي لمسؤول آخر (فصل المهام)",
         });
-      }
-      // (ج) من كُلّف بالعدّ (تكليف USER) لا يعتمد — تركّز العدّ والاعتماد بيدٍ واحدة يفرغ الرقابة.
-      if (actor.role !== "admin") {
-        const myAssignment = await tx
-          .select({ id: stocktakeAssignments.id })
-          .from(stocktakeAssignments)
-          .where(
-            and(
-              eq(stocktakeAssignments.sessionId, sessionId),
-              eq(stocktakeAssignments.method, "USER"),
-              eq(stocktakeAssignments.userId, actor.userId),
-            ),
-          )
-          .limit(1);
-        if (myAssignment[0]) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "كُلّفتَ بالعدّ في هذه الجلسة — الاعتماد النهائي لمسؤول آخر (فصل المهام)",
-          });
-        }
       }
     }
 
@@ -112,7 +115,7 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     }
 
     // (٤ قبل ٢) أعد الحساب داخل المعاملة — لا ثقة بحسابات شاشة المراجعة.
-    const { rows, directUnderThreshold } = await loadReviewCore(tx, sessionId, true);
+    const { s: hdr, rows, directUnderThreshold } = await loadReviewCore(tx, sessionId, true);
 
     // (٢) الحواجز.
     const notCounted = rows.filter((r) => r.rawCount == null);
@@ -161,7 +164,9 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     // (٣) التوقيعان: عنصر سيُسوّى |قيمته| > dualThreshold ⇒ توقيع أول موجود + المعتمد شخص مختلف.
     // الجلسة الافتتاحية: توقيعان إلزاميان دائماً (حتى بصفر فروقات — الاعتماد يؤسّس الأرصدة ويختم
     // openedAt بلا أي قيد دفتري، فهو أخفى قناة تزوير محتملة ويحتاج أربع عيون حكماً).
-    const dualNeeded = isOpening || rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
+    // التوقيعان — عبر المصدر الموحّد (يشمل سقف الإجمالي، تدقيق ١١/٨): سطرٌ فوق الحد، أو إجمالي
+    // التسوية فوقه، أو جلسة افتتاحية دائماً ⇒ توقيع أول موجود + المعتمد شخص مختلف.
+    const dualNeeded = sessionRequiresDualSign(hdr, rows, directUnderThreshold);
     if (dualNeeded) {
       if (s.firstSignBy == null) {
         throw new TRPCError({

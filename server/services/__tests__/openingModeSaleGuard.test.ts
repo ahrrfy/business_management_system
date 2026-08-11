@@ -391,6 +391,20 @@ describe("حارس البيع بالسالب المشروط — وضع الاف�
     expect(moved.newQuantity).toBe(-1);
   });
 
+  it("H4 (تدقيق ١١/٨): منتجٌ معطَّل (products.isActive=false) يُرفض بيعه حتى بمتغيّرٍ نشط", async () => {
+    // تعطيل المنتج نفسه مع بقاء المتغيّر نشطاً — كان يُباع خادمياً (API/سلة قديمة) قبل الإصلاح.
+    await db().update(s.products).set({ isActive: false }).where(eq(s.products.id, 1));
+    let err: TRPCError | null = null;
+    try {
+      await cashSale("1", "10.00");
+    } catch (e) {
+      err = e as TRPCError;
+    }
+    expect(err?.code).toBe("BAD_REQUEST");
+    expect(err?.message).toMatch(/معطّل/);
+    expect((await db().select().from(s.invoices)).length).toBe(0); // ذرّية: لا فاتورة
+  });
+
   it("TRANSFER_OUT لا يتأثر بوضع الافتتاح إطلاقاً", async () => {
     await enableOpeningMode();
     let err: unknown = null;

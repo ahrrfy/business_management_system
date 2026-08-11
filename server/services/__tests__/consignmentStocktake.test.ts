@@ -14,7 +14,7 @@ import { approveStocktake, approveStocktakeItems, createStocktakeSession, decide
  *   بلا invoiceId كأنه بِيع بلا إيراد) ⇒ يرفع رصيد المودِع، ويبقى **خارج وعاء العمولة**.
  *   زيادة صنف أمانة = تُستبعَد من قيد OVER (بضاعة المودِع الزائدة ليست ربحنا) بلا استحقاق.
  */
-const actor = { userId: 1, branchId: 1 };
+const actor = { userId: 1, branchId: 1, role: "admin" }; // userId 1 = admin (مُستثنى من SOD الاعتماد)
 const TABLES = [
   "stocktakeItemReviewEvents", "stocktakeDecisions", "stocktakeCountOperations", "stocktakeCounts", "stocktakeItems", "stocktakeAssignments", "stocktakeSessions",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "idempotencyKeys",

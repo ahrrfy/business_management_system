@@ -468,6 +468,30 @@ function willAdjust(row: ReviewRow, directUnderThreshold: boolean): boolean {
   return row.withinThreshold && directUnderThreshold;
 }
 
+/**
+ * هل تحتاج الجلسة توقيعين قبل الاعتماد؟ مصدر الحقيقة الوحيد لحواجز التوقيع المزدوج الثلاثة
+ * (buildBarriers للعرض، firstSign للتسجيل، finalize للإنفاذ). وُحِّد ١١/٨ بعد اكتشاف انجرافٍ
+ * بينها كان يُحدث جموداً (finalize يشترط توقيعاً أولاً وfirstSign يرفض تسجيله):
+ *   - افتتاحي: دائماً (الاعتماد يختم openedAt ويؤسّس الأرصدة بلا قيد دفتري ⇒ أربع عيون).
+ *   - سطرٌ واحد قيمته > dualThreshold.
+ *   - **إجمالي** قيمة التسوية > dualThreshold (كان السقف لكل سطر فقط ⇒ آلاف الأسطر الصغيرة
+ *     تتجاوز مجتمعةً بلا توقيعٍ ثانٍ — تدقيق ١١/٨).
+ */
+function sessionRequiresDualSign(
+  s: Awaited<ReturnType<typeof loadSessionHeader>>,
+  rows: ReviewRow[],
+  directUnderThreshold: boolean,
+): boolean {
+  if (s.sessionType === "OPENING") return true;
+  if (rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold))) return true;
+  const dualThresholdVal = money(String(s.dualThreshold));
+  const totalAdjustValue = rows.reduce(
+    (acc, r) => (willAdjust(r, directUnderThreshold) ? acc.plus(money(r.value ?? 0).abs()) : acc),
+    money(0),
+  );
+  return totalAdjustValue.gt(dualThresholdVal);
+}
+
 function buildTotals(rows: ReviewRow[]) {
   let counted = 0;
   let matched = 0;
@@ -536,10 +560,10 @@ function buildBarriers(
     if (r.recount?.status === "PENDING" || r.openConflict) return false; // محسوبة في حاجزها
     return r.overThreshold || !directUnderThreshold;
   }).length;
-  // افتتاحي: التوقيعان إلزاميان دائماً على مستوى الجلسة (حتى لو تطابق كل عدٍّ مع الدفتر —
-  // الاعتماد يختم openedAt ويؤسّس الأرصدة بلا أي قيد دفتري، فهو أخفى قناة تحتاج أربع عيون).
-  const requiresDualSign =
-    s.sessionType === "OPENING" || rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
+  // التوقيعان — مصدرٌ واحد (sessionRequiresDualSign) يشترك فيه finalize وfirstSign أيضاً كي لا
+  // تتباعد الحواجز الثلاثة (كان بينها انجرافٌ يسبّب جموداً — تدقيق ١١/٨): افتتاحي دائماً، أو سطرٌ
+  // فوق الحد، أو إجمالي التسوية فوقه.
+  const requiresDualSign = sessionRequiresDualSign(s, rows, directUnderThreshold);
   const firstSigned = s.firstSignBy != null;
   const reviewerFinalSeparationBlocked =
     viewerId != null &&
@@ -629,4 +653,4 @@ export async function computeStocktakeReview(
 
 // تصدير داخلي للحزمة فقط (يستهلكه reviewActions/finalize/report) — لا يُعاد تصديره من البرميل
 // stocktakeService.ts ⇒ يبقى خارج الواجهة العامة.
-export { loadReviewCore, willAdjust, buildReviewSession };
+export { loadReviewCore, willAdjust, buildReviewSession, sessionRequiresDualSign };
