@@ -39,6 +39,22 @@ function getSecret(): Uint8Array {
  * فقد مكوّن IP هو **إلزام المقارنة لكل طلب HTTP حقيقي** في verifySession أدناه
  * (لا يستطيع مهاجم «تجريد» UA للإفلات من المقارنة — غيابه يعطي بصمة مختلفة فيُرفض).
  */
+/**
+ * عنوان العميل الحقيقي بصيغة مجرّدة (بلا بادئة IPv4 المُغلَّفة ولا نطاق الواجهة). يعتمد
+ * `req.ip` فيحترم `trust proxy` المشروط في server/index.ts ⇒ عنوان الزبون خلف nginx/Cloudflare
+ * لا عنوان الوسيط. مُطابقٌ لدلالة `getClientIp` في authRouter كي لا تختلف صيغة العمود بين
+ * الإنشاء والتحديث (اختلافها يكسر مطابقة قرينة الثقة في جسر أجهزة الحضور).
+ */
+function currentRequestIp(
+  req: Request | { ip?: string; socket?: { remoteAddress?: string } } | null | undefined,
+): string | null {
+  const raw = (req as { ip?: string; socket?: { remoteAddress?: string } } | null | undefined);
+  const value = raw?.ip ?? raw?.socket?.remoteAddress ?? "";
+  const withoutZone = value.split("%")[0];
+  const clean = withoutZone.startsWith("::ffff:") ? withoutZone.slice(7) : withoutZone;
+  return clean ? clean.slice(0, 45) : null;
+}
+
 function getRequestUserAgent(req: Request | { headers?: Record<string, unknown> } | null | undefined): string {
   if (!req) return "";
   const anyReq = req as { headers?: Record<string, unknown> };
@@ -284,9 +300,18 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
       }
     }
     // لمسة last-seen مُلطَّفة (best-effort، لا تُعطِّل الطلب إن فشلت) — لا كتابة على كل طلب.
+    //
+    // نُحدِّث معها `ipAddress` إن تغيّر: (١) شاشة «الجلسات النشطة» كانت تعرض عنوان لحظة الدخول
+    // فتُضلّل بعد أسابيع من بقاء الجلسة مفتوحة؛ (٢) والأهمّ — جسر أجهزة الحضور يستنتج «عنوان
+    // المتجر الحاليّ» من هذه الأعمدة ليعتمد تلقائياً عنوان الجهاز بعد أن يغيّره المزوّد
+    // (server/services/hrDevices/originTrust.ts). عنوانٌ متجمّد هنا = تعافٍ لا يعمل هناك.
     if (Date.now() - srow.lastSeenAt.getTime() > LAST_SEEN_TOUCH_MS) {
+      const observedIp = currentRequestIp(req);
       db.update(userSessions)
-        .set({ lastSeenAt: new Date() })
+        .set({
+          lastSeenAt: new Date(),
+          ...(observedIp && observedIp !== srow.ipAddress ? { ipAddress: observedIp } : {}),
+        })
         .where(eq(userSessions.id, srow.id))
         .catch((e: unknown) => logger.warn({ err: e, sessionId: srow.id }, "session.touch_last_seen_failed"));
     }

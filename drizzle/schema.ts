@@ -4906,6 +4906,47 @@ export type InsertHrFingerprintDevice =
   typeof hrFingerprintDevices.$inferInsert;
 
 /**
+ * محاولات الاتصال الواردة من **مصدر (عنوان) غير موثوق** — أساس مبدأ «العنوان يُتعلَّم لا يُكتَب».
+ *
+ * سبب الوجود (عطل ١١/٨/٢٦): مزوّد الإنترنت يغيّر عنوان المتجر العامّ دورياً (‎.9.235 ⇒ ‎.10.138
+ * ⇒ ‎.10.103)، فتصدّ بوّابتا الأمان الجهازَ **بصمت**؛ ولأنّ العنوان الموثوق مكتوبٌ يدوياً في
+ * مكانين (‎.env بلا شاشة + عمود ip بلا شاشة) كان التعافي يتطلّب SSH. هذا الجدول يحوّل المحاولة
+ * المرفوضة من سطرِ سجلٍّ يُدفن إلى **واقعةٍ مرئية قابلة للحسم**: تُعتمَد تلقائياً متى عزّزتها
+ * جلسةُ موظّفٍ مُصادَقٍ من العنوان نفسه (نفس حدّ الثقة، مُحدَّثاً بدل أن يتعفّن)، وإلّا ظهرت
+ * في الشاشة لاعتمادٍ بنقرة.
+ *
+ * القيد الفريد (serialNumber, ip) = صفٌّ واحد لكلّ مصدر مهما تكرّرت المحاولات — الجهاز يقرع
+ * كلّ ~٢٠٠م.ث عند الرفض، فلولاه لأُغرق الجدول بآلاف الصفوف في ساعة.
+ */
+export const hrDeviceOriginAttempts = mysqlTable(
+  "hrDeviceOriginAttempts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** الجهاز المطابق للرقم التسلسلي إن وُجد (null = رقم تسلسليّ مجهول تماماً). */
+    deviceId: bigint("deviceId", { mode: "number" }).references(
+      () => hrFingerprintDevices.id,
+    ),
+    serialNumber: varchar("serialNumber", { length: 64 }).notNull(),
+    ip: varchar("ip", { length: 64 }).notNull(),
+    /** قرار البوّابة وقت آخر محاولة: IP_MISMATCH | UNBOUND | NETWORK_BLOCKED | SERIAL_MISMATCH… */
+    decision: varchar("decision", { length: 32 }).notNull(),
+    attemptCount: int("attemptCount").default(1).notNull(),
+    firstSeenAt: timestamp("firstSeenAt").defaultNow().notNull(),
+    lastSeenAt: timestamp("lastSeenAt").defaultNow().notNull(),
+    /** null = معلّقة تنتظر قراراً؛ غير null = حُسمت (اعتماداً أو صرفاً). */
+    resolvedAt: timestamp("resolvedAt"),
+    /** AUTO = اعتُمد بقرينة جلسة مُصادَقة · MANUAL = اعتمده مدير من الشاشة · DISMISSED = صُرف. */
+    resolution: varchar("resolution", { length: 16 }),
+    resolvedBy: int("resolvedBy").references(() => users.id),
+  },
+  (t) => ({
+    originUq: unique("uq_hr_origin_sn_ip").on(t.serialNumber, t.ip),
+    pendingIdx: index("idx_hr_origin_pending").on(t.resolvedAt, t.lastSeenAt),
+  }),
+);
+export type HrDeviceOriginAttempt = typeof hrDeviceOriginAttempts.$inferSelect;
+
+/**
  * البصمات الخام كما وصلت من الأجهزة — «التخزين الخام أولاً»: لا تضيع بصمة أبداً ولا تتكرّر.
  * القيد الفريد (serialNumber, enrollId, punchAt) = idempotency: الجهاز يعيد دفع سجلاته
  * بعد كل انقطاع، والإدراج المكرَّر يُهمَل بصمت (نمط uq_invoice_source في المبيعات).

@@ -1,14 +1,14 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 834,
+    "trpcTotal": 837,
     "byKind": {
-      "mutation": 419,
-      "query": 415
+      "mutation": 421,
+      "query": 416
     },
     "byAuthority": {
       "module-gate": 373,
-      "module-map": 258,
+      "module-map": 261,
       "admin": 74,
       "raw-role": 55,
       "none": 53,
@@ -18,13 +18,13 @@
       "token": 1
     },
     "bySensitivity": {
-      "LOW": 414,
-      "MEDIUM": 314,
+      "LOW": 415,
+      "MEDIUM": 316,
       "HIGH": 106
     },
     "byModule": {
       "(none)": 204,
-      "hr": 77,
+      "hr": 80,
       "digital_cards": 75,
       "reports": 59,
       "treasury": 52,
@@ -52,8 +52,8 @@
       "sales|workorders": 1
     },
     "flagCounts": {
-      "LOCAL_GATE": 135,
-      "NO_BRANCH_SCOPE": 129,
+      "LOCAL_GATE": 138,
+      "NO_BRANCH_SCOPE": 132,
       "SENSITIVE_ACTION": 106,
       "ADMIN_ONLY": 77,
       "RAW_ROLE_GATE": 65,
@@ -64,11 +64,11 @@
     },
     "expressRoutes": 15,
     "expressMounts": 9,
-    "jobs": 10,
+    "jobs": 11,
     "routerFiles": 90,
-    "proposedPermissions": 708,
+    "proposedPermissions": 711,
     "proposedDomains": {
-      "hr": 83,
+      "hr": 86,
       "inventory": 67,
       "catalog": 63,
       "reports": 62,
@@ -6229,7 +6229,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/hrDeviceRouter.ts:232"
+      "loc": "server/routers/hrDeviceRouter.ts:238"
     },
     {
       "surface": "trpc",
@@ -6246,7 +6246,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:99"
+      "loc": "server/routers/hrDeviceRouter.ts:105"
     },
     {
       "surface": "trpc",
@@ -6263,7 +6263,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:227"
+      "loc": "server/routers/hrDeviceRouter.ts:233"
     },
     {
       "surface": "trpc",
@@ -6280,7 +6280,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:76"
+      "loc": "server/routers/hrDeviceRouter.ts:82"
     },
     {
       "surface": "trpc",
@@ -6297,7 +6297,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: delete",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/hrDeviceRouter.ts:252"
+      "loc": "server/routers/hrDeviceRouter.ts:258"
     },
     {
       "surface": "trpc",
@@ -6314,7 +6314,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:150"
+      "loc": "server/routers/hrDeviceRouter.ts:156"
+    },
+    {
+      "surface": "trpc",
+      "router": "hrDeviceRouter",
+      "proposedPermission": "hr.hr_device.dismiss_origin",
+      "name": "dismissOrigin",
+      "kind": "mutation",
+      "procedure": "hrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/hrDeviceRouter.ts:312"
     },
     {
       "surface": "trpc",
@@ -6331,7 +6348,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:189"
+      "loc": "server/routers/hrDeviceRouter.ts:195"
     },
     {
       "surface": "trpc",
@@ -6348,7 +6365,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:199"
+      "loc": "server/routers/hrDeviceRouter.ts:205"
     },
     {
       "surface": "trpc",
@@ -6365,7 +6382,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:72"
+      "loc": "server/routers/hrDeviceRouter.ts:78"
     },
     {
       "surface": "trpc",
@@ -6382,7 +6399,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:70"
+      "loc": "server/routers/hrDeviceRouter.ts:76"
     },
     {
       "surface": "trpc",
@@ -6399,7 +6416,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:160"
+      "loc": "server/routers/hrDeviceRouter.ts:166"
     },
     {
       "surface": "trpc",
@@ -6416,7 +6433,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:91"
+      "loc": "server/routers/hrDeviceRouter.ts:97"
     },
     {
       "surface": "trpc",
@@ -6433,7 +6450,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:74"
+      "loc": "server/routers/hrDeviceRouter.ts:80"
+    },
+    {
+      "surface": "trpc",
+      "router": "hrDeviceRouter",
+      "proposedPermission": "hr.hr_device.pending_origins",
+      "name": "pendingOrigins",
+      "kind": "query",
+      "procedure": "hrRead",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "READ",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/hrDeviceRouter.ts:277"
     },
     {
       "surface": "trpc",
@@ -6450,7 +6484,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:266"
+      "loc": "server/routers/hrDeviceRouter.ts:333"
     },
     {
       "surface": "trpc",
@@ -6467,7 +6501,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:107"
+      "loc": "server/routers/hrDeviceRouter.ts:113"
+    },
+    {
+      "surface": "trpc",
+      "router": "hrDeviceRouter",
+      "proposedPermission": "hr.hr_device.trust_origin",
+      "name": "trustOrigin",
+      "kind": "mutation",
+      "procedure": "hrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/hrDeviceRouter.ts:280"
     },
     {
       "surface": "trpc",
@@ -6484,7 +6535,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:194"
+      "loc": "server/routers/hrDeviceRouter.ts:200"
     },
     {
       "surface": "trpc",
@@ -6501,7 +6552,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/hrDeviceRouter.ts:82"
+      "loc": "server/routers/hrDeviceRouter.ts:88"
     },
     {
       "surface": "trpc",
@@ -14585,12 +14636,17 @@
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 266
+      "line": 271
     },
     {
       "kind": "interval",
       "file": "server/services/hrDevices/bridge.ts",
-      "line": 295
+      "line": 300
+    },
+    {
+      "kind": "interval",
+      "file": "server/services/hrDevices/bridge.ts",
+      "line": 316
     },
     {
       "kind": "cron",

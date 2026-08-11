@@ -263,10 +263,23 @@ function matchesEntry(ip: string, entry: string): boolean {
   }
 }
 
-export function isRemoteAllowed(address: string | undefined, allowlist: string[]): boolean {
+/**
+ * بوّابة الشبكة. `learnedOrigins` (اختياريّ) = عناوين **مُتعلَّمة من القاعدة**: عناوين الأجهزة
+ * المُفعَّلة + عناوين جلسات الموظّفين المُصادَقة الحيّة (راجع `originTrust.ts`). وجودها يحلّ
+ * علّة «مزوّد الإنترنت غيّر عنوان المتجر ⇒ انقطاع صامت حتى تعديل ‎.env يدوياً بـSSH».
+ *
+ * ⚠️ لا تمنح هذه المجموعة ثقةً بذاتها: هي بوّابةُ **وصولٍ شبكيّ** فقط، وتظلّ بوّابة الهويّة
+ * (`authorizeDeviceIdentity`) تطالب برقمٍ تسلسليّ مطابقٍ وربطٍ صحيح قبل قبول أيّ بصمة.
+ */
+export function isRemoteAllowed(
+  address: string | undefined,
+  allowlist: string[],
+  learnedOrigins?: ReadonlySet<string>,
+): boolean {
   if (allowlist.length === 0) return true;
   const ip = normalizeRemoteAddress(address);
-  return allowlist.some((entry) => matchesEntry(ip, entry));
+  if (allowlist.some((entry) => matchesEntry(ip, entry))) return true;
+  return Boolean(ip) && Boolean(learnedOrigins?.has(ip));
 }
 
 export function constantTimeSecretEquals(actual: string, expected: string): boolean {
@@ -301,9 +314,13 @@ export function requestDeviceCredential(req: IncomingMessage): string {
   }
 }
 
-export function isRequestAuthorized(req: IncomingMessage, config: BridgeSecurityConfig): boolean {
+export function isRequestAuthorized(
+  req: IncomingMessage,
+  config: BridgeSecurityConfig,
+  learnedOrigins?: ReadonlySet<string>,
+): boolean {
   return (
-    isRemoteAllowed(req.socket.remoteAddress, config.allowlist) &&
+    isRemoteAllowed(req.socket.remoteAddress, config.allowlist, learnedOrigins) &&
     constantTimeSecretEquals(requestSecret(req), config.sharedSecret)
   );
 }
