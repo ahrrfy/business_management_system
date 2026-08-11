@@ -228,6 +228,31 @@ describe("updateProductWithVariants — الكتابة", () => {
     ).rejects.toThrow(/تبديل وحدة الأساس/);
   });
 
+  it("#2 (Codex جولة٥ P1): المسار الحامل للمعرّف — صفّ أساسٍ جديدٌ (بلا id) بنفس اسم الأساس ⇒ يُرفض (استبدالٌ يُدلّي مراجعه)", async () => {
+    // يحذف صفّ الأساس القديم (id=1) ويُدرِج «قطعة» جديدةً بلا id ⇒ productUpdate يُعطّل id=1 ويُدرِج بديلاً؛
+    // فلا يُخدَع الحارس بتطابق الاسم — غيابُ المعرّف في هذا المسار = استبدالٌ يُرفَض (لا مقارنةَ اسمٍ احتياطية).
+    await expect(
+      updateProduct(
+        {
+          productId: 1,
+          name: "دفتر",
+          variants: [
+            {
+              id: 1,
+              sku: "NB-100",
+              costPrice: "550",
+              units: [
+                { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+                { id: 2, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+              ],
+            },
+          ],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
   it("إضافة متغيّر جديد (بلا id) ⇒ صفّ جديد + added=1، والقديم يبقى كما هو", async () => {
     const r = await updateProductWithVariants(
       {

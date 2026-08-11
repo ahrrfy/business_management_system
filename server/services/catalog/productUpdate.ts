@@ -83,8 +83,10 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
       // تدقيق ١١/٨ (#2 — بعد ٣ جولات مراجعة Codex): نفس حارس المسار الحديث — وحدة الأساس ثابتةٌ لمتغيّرٍ
       // قائم. الهويّة بمعرّف الصفّ المُرسَل: نفس الصفّ (ولو أُعيدت تسميته **في مكانه** هنا) آمنٌ، وترقية
       // صفٍّ قائمٍ آخر (أو صفٍّ جديد) إلى الأساس تبديلٌ يُرفَض. مقارنةٌ ساكنةٌ بلا قفل.
+      // by:"id" — هذا المسار يُحدِّث بالمعرّف (إعادة تسميةٍ في مكانها آمنة)؛ فغيابُ المعرّف (صفٌّ جديد)
+      // استبدالٌ يُرفَض، ولا نرجع لمقارنة الاسم (Codex جولة٥ P1).
       const baseU = v.units.find((u) => u.isBaseUnit);
-      await assertBaseUnitStable(tx, v.id, { unitId: baseU?.id ?? null, unitName: baseU?.unitName });
+      await assertBaseUnitStable(tx, v.id, { by: "id", unitId: baseU?.id ?? null });
 
       // Variant header. H3 (تدقيق ٢٧/٧): نلتقط التكلفة القديمة قبل التحديث لإصدار قيد إعادة تقييم.
       const oldV = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, v.id)).limit(1))[0];

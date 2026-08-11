@@ -538,7 +538,7 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         // تدقيق ١١/٨ (#2 — بعد ٣ جولات مراجعة Codex): وحدة الأساس **ثابتةٌ** لمتغيّرٍ قائم — يُرفَض تبديلها
         // أو إعادة تسميتها (مسار القالب يُدرِج صفّاً جديداً ويُعطّل القديم عند تغيّر الاسم ⇒ تفسيرٌ مقلوبٌ
         // للكمّيات أو مراجع وحدةٍ متدلّية في العروض/الطلبات). مقارنةٌ ساكنةٌ بلا قفل — التصحيح بمتغيّرٍ جديد.
-        await assertBaseUnitStable(tx, variantId, { unitName: newBaseName });
+        await assertBaseUnitStable(tx, variantId, { by: "name", unitName: newBaseName });
         await tx.update(productVariants).set({ ...vals, ...colorHexPatch }).where(eq(productVariants.id, variantId));
         // H3 (تدقيق ٢٧/٧): تغيّر التكلفة على صنفٍ له رصيد يُعيد تقييم المخزون ⇒ قيد إعادة تقييم يفسّر
         // حركة حقوق الملكية في قائمة الدخل ويمرّ على حارس الفترة (صفريّ الأثر إن كان الفرق/الرصيد صفراً).
