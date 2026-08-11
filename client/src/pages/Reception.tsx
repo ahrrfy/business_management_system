@@ -32,6 +32,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
@@ -230,6 +231,14 @@ export default function Reception() {
   const [showInbox, setShowInbox] = useState(false);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
+  // ش٧ (١١/٨): تبويب «فواتير العميل» — يفكّ سيناريو «الكاشير الأصليّ في إجازة، الثاني يقبض ذمّةً
+  // من فاتورة أمس». يعرض فواتير العميل غير المُسدَّدة + حقل قبضٍ سطريّ لكلٍّ منها. الدفع يعبر
+  // sales.pay ⇒ يُقيَّد تلقائياً على درج وردية القابض الحاليّة (لا الأصليّة).
+  const [showCustomerInvoices, setShowCustomerInvoices] = useState(false);
+  const [payingInvId, setPayingInvId] = useState<number | null>(null);
+  const [payingAmount, setPayingAmount] = useState("");
+  const [payingMethod, setPayingMethod] = useState<PayMethod>("CASH");
+  const [payingRef, setPayingRef] = useState("");
   const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
   const [channelHandle, setChannelHandle] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -516,6 +525,14 @@ export default function Reception() {
   const woM = trpc.workOrders.create.useMutation();
   // خدمات الطباعة المُوجَّهة للاستقبال تُباع عبر مسار createPrintSale المدقَّق (خصم مواد + COGS).
   const printSaleM = trpc.printPos.createSale.useMutation();
+
+  // ش٧: قائمة فواتير العميل — تُفعَّل فقط عند فتح النافذة + وجود عميل. تُصفَّى للـUNPAID/PARTIALLY_PAID
+  // على مستوى العرض (sales.list يُعيد كل الحالات؛ الحقل status متاحٌ في العائد).
+  const custInvoicesQ = trpc.sales.list.useQuery(
+    { customerId: customer.customerId ?? undefined, limit: 30 },
+    { enabled: showCustomerInvoices && customer.customerId != null, staleTime: 5_000 },
+  );
+  const payM = trpc.sales.pay.useMutation();
 
   async function handleSubmit(opts: { quickFullPay: boolean; deferred?: boolean }) {
     if (cart.length === 0) return;
@@ -1164,6 +1181,18 @@ export default function Reception() {
             </div>
             <div className="flex items-center gap-2">
               <SmartCustomerInput value={customer} onChange={setCustomer} className="w-56" placeholder="عميل نقدي" />
+              {/* ش٧: يُفتح فقط لعميلٍ مسجَّل — يعرض فواتيره غير المسدّدة مع حقل قبضٍ سطريّ. */}
+              {customer.customerId != null && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowCustomerInvoices(true)}
+                  className="gap-1 border-primary/40 text-primary hover:bg-primary/5"
+                  title="فواتير هذا العميل — تسديد ذمم"
+                >
+                  <FileText aria-hidden className="size-3.5" /> فواتيره
+                </Button>
+              )}
               {cart.length > 0 && (
                 <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
                   تفريغ
@@ -1584,7 +1613,7 @@ export default function Reception() {
                 type="button"
                 disabled={submitting || !shift}
                 onClick={() => void handleSubmit({ quickFullPay: false, deferred: true })}
-                className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-amber-500 bg-amber-50 text-xs font-bold text-amber-700 transition hover:bg-amber-100 disabled:opacity-40"
+                className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-[var(--sem-warning)] bg-[var(--sem-warning)]/10 text-xs font-bold text-[var(--sem-warning)] transition hover:bg-[var(--sem-warning)]/20 disabled:opacity-40"
                 title="ينشئ فاتورة بلا دفع — يُقيَّد المبلغ ذمّةً على العميل (يشترط سقف ائتمان)"
               >
                 <FileText aria-hidden className="size-3.5" /> بيع آجل بلا عربون
@@ -1594,6 +1623,155 @@ export default function Reception() {
           </div>
         </div>
       </div>
+
+      {/* ش٧ (١١/٨): نافذة «فواتير هذا العميل» — تفتحها بعد اختيار عميلٍ مسجَّل. تعرض غير المسدَّد
+          + قبضٌ سطريّ يعبر sales.pay (يُقيَّد على درج القابض الحاليّ لا الأصليّ ⇒ حلّ سيناريو
+          «الكاشير الأصليّ في إجازة»). */}
+      <Dialog open={showCustomerInvoices} onOpenChange={(o) => { if (!o) { setShowCustomerInvoices(false); setPayingInvId(null); } }}>
+        <DialogContent className="max-w-2xl" dir="rtl">
+          <DialogHeader>
+            <DialogTitle className="text-base font-extrabold">
+              فواتير {customer.name || "العميل"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
+            {custInvoicesQ.isLoading && (
+              <div className="p-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</div>
+            )}
+            {custInvoicesQ.isError && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {custInvoicesQ.error?.message || "تعذّر تحميل الفواتير"}
+              </div>
+            )}
+            {custInvoicesQ.data && (() => {
+              const openInvoices = custInvoicesQ.data.filter(
+                (r) => r.status !== "PAID" && r.status !== "CANCELLED" && r.status !== "RETURNED",
+              );
+              if (openInvoices.length === 0) {
+                return (
+                  <div className="p-6 text-center text-sm text-muted-foreground">
+                    لا فواتير مستحقّة لهذا العميل
+                  </div>
+                );
+              }
+              return openInvoices.map((r) => {
+                const total = D(r.total ?? "0");
+                const paid = D(r.paidAmount ?? "0");
+                const remaining = round2(total.minus(paid));
+                const isPaying = payingInvId === r.id;
+                return (
+                  <div
+                    key={r.id}
+                    className={cn(
+                      "rounded-lg border p-3 text-sm",
+                      isPaying ? "border-primary/60 bg-primary/5" : "border-border bg-card",
+                    )}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-3">
+                        <span className="font-black tabular-nums" dir="ltr">#{r.invoiceNumber}</span>
+                        <span className="text-xs text-muted-foreground" dir="ltr">{fmtDate(r.invoiceDate)}</span>
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{r.status}</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="text-xs">
+                          <span className="text-muted-foreground">إجمالي:</span>{" "}
+                          <span className="font-bold tabular-nums" dir="ltr">{fmt(r.total)}</span>
+                        </div>
+                        <div className="text-sm">
+                          <span className="text-[var(--sem-warning)]">متبقّي:</span>{" "}
+                          <span className="font-black tabular-nums text-[var(--sem-warning)]" dir="ltr">{fmt(remaining.toFixed(2))}</span>
+                        </div>
+                        {!isPaying ? (
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              setPayingInvId(r.id);
+                              setPayingAmount(remaining.toFixed(2));
+                              setPayingMethod("CASH");
+                              setPayingRef("");
+                            }}
+                          >
+                            دفع
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="ghost" onClick={() => setPayingInvId(null)}>إلغاء</Button>
+                        )}
+                      </div>
+                    </div>
+                    {isPaying && (
+                      <div className="mt-3 space-y-2 border-t pt-3">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="mb-1 block text-[11px] font-bold text-muted-foreground">المبلغ</label>
+                            <MoneyInput
+                              value={payingAmount}
+                              onChange={setPayingAmount}
+                              className="h-10 text-end text-base font-black"
+                              ariaLabel="مبلغ التسديد"
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-[11px] font-bold text-muted-foreground">الطريقة</label>
+                            <select
+                              value={payingMethod}
+                              onChange={(e) => setPayingMethod(e.target.value as PayMethod)}
+                              className="h-10 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                            >
+                              <option value="CASH">نقدي</option>
+                              <option value="CARD">بطاقة</option>
+                              <option value="TRANSFER">تحويل</option>
+                            </select>
+                          </div>
+                        </div>
+                        {/* المرجع (رقم البطاقة/التحويل) اختياريّ للتوثيق البشريّ — sales.pay لا يُخزّنه
+                            حالياً (نفس نمط InvoiceDetail.tsx). أُبقيَ ظاهراً لتذكير الكاشير بالمطابقة اليدويّة. */}
+                        {payingMethod !== "CASH" && (
+                          <Input
+                            value={payingRef}
+                            onChange={(e) => setPayingRef(e.target.value)}
+                            placeholder="رقم العملية / المرجع (للتوثيق البشريّ فقط)"
+                            className="h-9 text-xs"
+                            dir="ltr"
+                          />
+                        )}
+                        <Button
+                          size="sm"
+                          className="h-10 w-full font-bold"
+                          disabled={payM.isPending || !payingAmount || D(payingAmount || "0").lte(0)}
+                          onClick={async () => {
+                            const amt = D(payingAmount || "0");
+                            if (amt.lte(0)) { notify.err("المبلغ يجب أن يكون أكبر من صفر"); return; }
+                            if (amt.gt(remaining)) { notify.err("المبلغ يتجاوز المتبقّي على الفاتورة"); return; }
+                            try {
+                              await payM.mutateAsync({
+                                invoiceId: r.id,
+                                amount: amt.toFixed(2),
+                                method: payingMethod,
+                                shiftId: shift.id,
+                                clientRequestId: `pay-${r.id}-${Date.now()}`,
+                              });
+                              notify.ok(`تمّ استلام ${fmt(amt.toFixed(2))} د.ع على فاتورة #${r.invoiceNumber}`);
+                              setPayingInvId(null);
+                              await custInvoicesQ.refetch();
+                              // تحديث بطاقة رصيد العميل في SmartCustomerInput (currentBalance):
+                              await utils.customers.smartSearch.invalidate();
+                            } catch (e: any) {
+                              notify.err(e?.message || "تعذّر إتمام التسديد");
+                            }
+                          }}
+                        >
+                          {payM.isPending ? "جارٍ الاستلام…" : `استلام ${fmt(D(payingAmount || "0").toFixed(2))} د.ع`}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                );
+              });
+            })()}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* ─── نافذة التخصيص ─── */}
       {showCustomization && (
