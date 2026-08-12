@@ -630,6 +630,7 @@ function InvoiceDispatchDialog({
             value={partyId}
             onValueChange={(v) => {
               setPartyId(v);
+              setAssignedUserId("");
               const p = parties.find((x) => String(x.id) === v);
               if (p) setFee(p.defaultFee ?? "0");
             }}

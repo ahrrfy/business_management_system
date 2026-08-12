@@ -29,9 +29,9 @@ async function seed() {
   ]);
   await d.insert(s.users).values([
     { id: 1, openId: "adm", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
-    { id: 2, openId: "e1", name: "منفّذ ف١", role: "cashier", loginMethod: "local", branchId: 1 },
-    { id: 3, openId: "e2", name: "منفّذ ف٢", role: "cashier", loginMethod: "local", branchId: 2 },
-    { id: 4, openId: "sh", name: "منفّذ مشترك", role: "cashier", loginMethod: "local", branchId: null },
+    { id: 2, openId: "e1", name: "منفّذ ف١", role: "print_operator", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "e2", name: "منفّذ ف٢", role: "print_operator", loginMethod: "local", branchId: 2 },
+    { id: 4, openId: "sh", name: "منفّذ مشترك", role: "print_operator", loginMethod: "local", branchId: null },
   ]);
 }
 function caller(role: string, branchId: number, id: number) {

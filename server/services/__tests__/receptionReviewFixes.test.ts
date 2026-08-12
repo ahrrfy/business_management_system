@@ -5,8 +5,8 @@
  * المُثبَت:
  *  F1 — فاتورة إرساليتها بالطريق (DISPATCHED) ⇒ collectOnReceptionInvoice يُرفض
  *       PRECONDITION_FAILED (التحصيل مساره توريد المندوب — لا ازدواج قبضٍ لبيعٍ واحد).
- *  F2 — حزام التوريد الثاني: مرتجعٌ جزئيّ بعد الإرسال يجعل «متبقّي الفاتورة الحيّ» أقلّ من
- *       codAmount المُلتقَط ⇒ توريد المبلغ الكامل يُرفض (كان يمرّ فيرفع paidAmount فوق الحق).
+ *  F2 — حزام التوريد الثاني: توريدُ نقد إرسالية تاريخية بعد مرتجع جزئي لا يرفع paidAmount
+ *       فوق متبقّي الفاتورة الحيّ، حتى لو كان codAmount الملتقَط أكبر.
  *  F3 — تثبيت مسوّدة ببند تخصيصٍ أجرتُه «مقبوضة في الاستقبال» (COUNTER) ⇒ BAD_REQUEST
  *       (createWorkOrderInTx كان سيكتب إيصال نقدٍ لم يُقبَض ⇒ عجزُ إغلاقٍ حتميّ).
  *  F4 — تسليم أمر شغلٍ والمنفّذ بلا وردية استقبال (RETAIL فقط) ⇒ فاتورة التسليم بلا shiftId
@@ -111,8 +111,8 @@ describe("F1 — لا تسديد كاونتر لفاتورةٍ بالطريق م
   });
 });
 
-describe("F2 — حزام التوريد: المُحصَّل مسقوفٌ بمتبقّي الفاتورة الحيّ لا بcodAmount الملتقَط", () => {
-  it("مرتجع جزئي بعد الإرسال ⇒ توريد codAmount الكامل يُرفض PRECONDITION_FAILED بلا أي كتابة", async () => {
+describe("F2 — حزام التوريد: قيد الفاتورة مسقوف بمتبقّيها الحيّ", () => {
+  it("إرسالية تاريخية سُلّمت ثم حدث مرتجع جزئي ⇒ توريد النقد الكامل لا يرفع الفاتورة فوق صافيها", async () => {
     const rec = await openReception(); // درج المستلم
     await creditInvoiceOnReception(rec.shiftId, 602);
     const { id: partyId } = await createDeliveryParty(
@@ -123,31 +123,28 @@ describe("F2 — حزام التوريد: المُحصَّل مسقوفٌ بمت
     );
     expect(dispatched.codAmount).toBe("10000.00");
 
-    // مرتجعٌ جزئيّ عولج بعد خروج الإرسالية ⇒ حقّ الفاتورة الحيّ 5000 فقط.
+    // لقطة تاريخية: التسليم سبق نموذج المرحلة الثانية، ولذلك بقيت الفاتورة غير مسددة
+    // رغم أن COD صار في عهدة المندوب. ثم عولج مرتجع جزئي فصار حق الفاتورة الحي 5000 فقط.
+    const deliveredAt = new Date("2026-08-05T12:00:00.000Z");
+    await db().update(s.deliveryConsignments).set({
+      parcelStatus: "DELIVERED",
+      courierDeliveredAt: deliveredAt,
+      custodyRecognizedAt: deliveredAt,
+    }).where(eq(s.deliveryConsignments.id, dispatched.consignmentId));
+    await db().update(s.deliveryParties).set({ currentBalance: "10000.00" }).where(eq(s.deliveryParties.id, partyId));
     await db().update(s.invoices).set({ returnedTotal: "5000.00" }).where(eq(s.invoices.id, 602));
+    await db().update(s.customers).set({ currentBalance: "5000.00" }).where(eq(s.customers.id, 1));
 
-    await expect(recordDeliveryRemittance({
+    const ok = await recordDeliveryRemittance({
       branchId: 1, partyId,
       lines: [{ consignmentId: dispatched.consignmentId, collectedAmount: "10000.00" }],
       countedCash: "10000.00",
       clientRequestId: "rf-f2-r",
-    }, CASHIER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
-
-    // ذرّية: لا توريد ولا قبض ولا مساس بالفاتورة.
-    expect((await db().select().from(s.deliveryRemittances)).length).toBe(0);
-    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, 602)))[0];
-    expect(inv.paidAmount).toBe("0.00");
-
-    // التوريد بالمتبقّي الحيّ (5000) يمرّ.
-    const ok = await recordDeliveryRemittance({
-      branchId: 1, partyId,
-      lines: [{ consignmentId: dispatched.consignmentId, collectedAmount: "5000.00" }],
-      countedCash: "5000.00",
-      clientRequestId: "rf-f2-r2",
     }, CASHIER);
     expect(ok).toBeTruthy();
     const after = (await db().select().from(s.invoices).where(eq(s.invoices.id, 602)))[0];
-    expect(after.paidAmount).toBe("5000.00"); // 5000 + 5000 مرتجع = 10000 — لا تجاوز
+    expect(after.paidAmount).toBe("5000.00"); // 5000 مدفوع + 5000 مرتجع = الإجمالي، بلا تجاوز
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, partyId)))[0].currentBalance)).toBe(0);
   });
 });
 
