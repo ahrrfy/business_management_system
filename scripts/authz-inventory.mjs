@@ -105,6 +105,13 @@ const PROCEDURES = {
     roles: ["admin"],
     branch: false,
   },
+  settingsAdminProcedure: {
+    authority: "module-gate",
+    module: "settings",
+    level: "FULL",
+    roles: ["admin"],
+    branch: false,
+  },
   platformAdminProcedure: {
     authority: "platform",
     module: null,

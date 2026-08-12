@@ -60,7 +60,7 @@ import {
 } from "../services/reports/whatsappReports";
 import { money, toDbMoney } from "../services/money";
 import {
-  adminProcedure,
+  adminProcedure, settingsAdminProcedure,
   canViewReports,
   protectedProcedure,
   reportViewerProcedure,
@@ -532,8 +532,8 @@ export const reportsRouter = router({
       });
     }),
 
-  /** تدقيق التوافق المالي — للمشرف فقط. يكشف الانجراف الصامت في الأرصدة/المخزون/الدفتر. */
-  reconcile: adminProcedure.query(getFinancialReconciliationDetails),
+  // مطابقة الدفتر المزدوج والتحكم بوضعه في نهاية الراوتر لإبقاء جرد الصلاحيات مستقراً.
+  // النقل تنظيمي فقط؛ كلا الإجرائين يظلان ضمن reportsRouter وخلف adminProcedure.
 
   /** إسقاط ملخّص للموبايل: نفس الفحص الشامل، بلا معرّفات أو أرصدة أو ملاحظات تفصيلية. */
   reconcileSummary: adminProcedure.query(async () =>
@@ -1198,5 +1198,38 @@ export const reportsRouter = router({
         to: input.to,
         branchId,
       });
+    }),
+
+  /** مطابقة شهر/فرع + حالة بوابة ACTIVE الحيّة. التحميل الكسول يبقي هذا الراوتر الضخم مستقراً. */
+  reconcile: adminProcedure
+    .input(z.object({
+      month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "صيغة الشهر YYYY-MM").optional(),
+      branchId: z.number().int().positive().optional(),
+    }).optional())
+    .query(async ({ input }) => {
+      const [{ reconcileDoubleEntry }, { canActivate }] = await Promise.all([
+        import("../services/reconcileService"),
+        import("../services/accounting/activationGate"),
+      ]);
+      const month = input?.month ?? new Date().toISOString().slice(0, 7);
+      const [details, doubleEntry, activation] = await Promise.all([
+        getFinancialReconciliationDetails(),
+        reconcileDoubleEntry({ month, branchId: input?.branchId ?? null }),
+        canActivate(),
+      ]);
+      return { ...details, doubleEntry, activation };
+    }),
+
+  /** OFF→SHADOW فقط يدوياً؛ SHADOW→ACTIVE يفوّض حصراً للبوابة داخل المعاملة. */
+  setDoubleEntryMode: settingsAdminProcedure
+    .input(z.object({ target: z.enum(["SHADOW", "ACTIVE"]) }))
+    .mutation(async ({ input, ctx }) => {
+      const [{ withTx }, { activateDoubleEntry, startDoubleEntryShadow }] = await Promise.all([
+        import("../services/tx"),
+        import("../services/accounting/doubleEntrySettings"),
+      ]);
+      return withTx(async (tx) => input.target === "SHADOW"
+        ? startDoubleEntryShadow(tx, { actorId: ctx.user.id, auditContext: ctx })
+        : activateDoubleEntry(tx, { actorId: ctx.user.id, auditContext: ctx }));
     }),
 });
