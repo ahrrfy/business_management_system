@@ -647,6 +647,7 @@
 "trpc","roleRouter","remove","iam.role.delete","mutation","adminProcedure","admin","","","admin","none","HIGH","فعل حسّاس: remove","ADMIN_ONLY|SENSITIVE_ACTION","server/routers/roleRouter.ts:107"
 "trpc","roleRouter","setActive","iam.role.update","mutation","adminProcedure","admin","","","admin","none","MEDIUM","كتابة","ADMIN_ONLY","server/routers/roleRouter.ts:95"
 "trpc","roleRouter","update","iam.role.update","mutation","adminProcedure","admin","","","admin","none","MEDIUM","كتابة","ADMIN_ONLY","server/routers/roleRouter.ts:59"
+"trpc","saleRouter","cancel","sales.sale.void","mutation","salesManagerProcedure","module-gate","sales","FULL","manager","required","HIGH","فعل حسّاس: cancel","SENSITIVE_ACTION","server/routers/saleRouter.ts:1108"
 "trpc","saleRouter","correct","sales.sale.correct","mutation","salesManagerProcedure","module-gate","sales","FULL","manager","required","MEDIUM","كتابة","","server/routers/saleRouter.ts:466"
 "trpc","saleRouter","correctionHistory","sales.sale.correction_history","query","salesManagerProcedure","module-gate","sales","FULL","manager","required","LOW","قراءة","","server/routers/saleRouter.ts:729"
 "trpc","saleRouter","create","sales.sale.create","mutation","salesCashierProcedure","module-gate","sales","FULL","cashier|manager","required","MEDIUM","كتابة","","server/routers/saleRouter.ts:304"

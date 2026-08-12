@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 843,
+    "trpcTotal": 844,
     "byKind": {
-      "mutation": 425,
+      "mutation": 426,
       "query": 418
     },
     "byAuthority": {
-      "module-gate": 374,
+      "module-gate": 375,
       "module-map": 262,
       "admin": 76,
       "raw-role": 57,
@@ -20,7 +20,7 @@
     "bySensitivity": {
       "LOW": 417,
       "MEDIUM": 317,
-      "HIGH": 109
+      "HIGH": 110
     },
     "byModule": {
       "(none)": 208,
@@ -34,7 +34,7 @@
       "crm": 29,
       "workorders": 29,
       "campaigns": 28,
-      "sales": 24,
+      "sales": 25,
       "assets": 16,
       "commissions": 16,
       "suppliers": 13,
@@ -55,7 +55,7 @@
     "flagCounts": {
       "LOCAL_GATE": 138,
       "NO_BRANCH_SCOPE": 132,
-      "SENSITIVE_ACTION": 109,
+      "SENSITIVE_ACTION": 110,
       "ADMIN_ONLY": 79,
       "RAW_ROLE_GATE": 67,
       "UNAUTHENTICATED": 32,
@@ -67,7 +67,7 @@
     "expressMounts": 9,
     "jobs": 12,
     "routerFiles": 90,
-    "proposedPermissions": 717,
+    "proposedPermissions": 718,
     "proposedDomains": {
       "hr": 86,
       "inventory": 68,
@@ -76,7 +76,7 @@
       "treasury": 60,
       "iam": 40,
       "store": 40,
-      "sales": 39,
+      "sales": 40,
       "admin": 36,
       "crm": 32,
       "workorders": 29,
@@ -11127,6 +11127,23 @@
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
       "loc": "server/routers/roleRouter.ts:59"
+    },
+    {
+      "surface": "trpc",
+      "router": "saleRouter",
+      "proposedPermission": "sales.sale.void",
+      "name": "cancel",
+      "kind": "mutation",
+      "procedure": "salesManagerProcedure",
+      "authority": "module-gate",
+      "module": "sales",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: cancel",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/saleRouter.ts:1108"
     },
     {
       "surface": "trpc",
