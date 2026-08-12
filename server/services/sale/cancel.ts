@@ -28,9 +28,11 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   accountingEntries,
   digitalSaleDetails,
+  installmentPlans,
   invoiceItemBundleComponents,
   invoiceItems,
   invoices,
+  onlineOrders,
   productVariants,
   products,
   receipts,
@@ -41,10 +43,10 @@ import { applyMovement } from "../inventoryService";
 import { classifyVariants } from "../bundleService";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
+import { assertPeriodOpen } from "../periodLockService";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
 import { withTx, type Actor } from "../tx";
 import { userNameSnapshot } from "../userSnapshot";
-import { nextVoucherNumber } from "../voucher/helpers";
 
 // ملاحظة: EXCHANGE ممنوع (مسار الصيرفة له خدمة مخصّصة كما في voucherService)، وWALLET/CHECK/
 // TRANSFER تُمرَّر بلا shift-guard إن غاب — النقد وحده يستوجب shiftIdForCashTx.
@@ -78,6 +80,9 @@ export interface CancelSaleResult {
 export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<CancelSaleResult> {
   return withTx(async (tx) => {
     // ═══ Idempotency: تكرار المفتاح ⇒ إرجاع نتيجة الإلغاء الأول (لا استرداد/عكس مزدوج) ═══
+    // Codex P2 (١٢/٨): نُعيد بناء تفاصيل الاسترداد الحقيقية من الإيصال الذي كُتب — لا صفراً وهمياً.
+    // كان الـreplay يُشعِر العميل «إلغاء بلا استرداد» في حين أن العملية الأولى قد سدّدت مبلغاً وأصدرت
+    // إيصال صرف؛ فرقٌ بين التقرير والوقائع يخلّف انطباعاً بسرقة أو ازدواج فحص.
     if (input.clientRequestId?.trim()) {
       const existingRefId = await findIdempotentRefId(tx, "sale.cancel", input.clientRequestId);
       if (existingRefId != null) {
@@ -89,13 +94,28 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         }
         const rInv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
         if (!rInv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
-        // نُعيد صياغة النتيجة من الحالة المخزَّنة — الاسترداد قد يكون صفراً (لم يُدفع أصلاً).
+        // ابحث عن إيصال الصرف الذي أُنشئ لهذه الفاتورة (الأحدث) بعد لحظة الإلغاء — يمثّل الاسترداد الفعلي.
+        // إن غاب (لم يُدفع أصلاً) ⇒ صفر واستعمال null. لا نستعمل voucherNumber لأننا لا نضعه (P1 #1).
+        const priorRefund = (
+          await tx
+            .select({ amount: receipts.amount, id: receipts.id })
+            .from(receipts)
+            .where(
+              and(
+                eq(receipts.invoiceId, input.invoiceId),
+                eq(receipts.direction, "OUT"),
+                eq(receipts.status, "COMPLETED"),
+              ),
+            )
+            .orderBy(sql`${receipts.id} DESC`)
+            .limit(1)
+        )[0];
         return {
           invoiceId: input.invoiceId,
           invoiceNumber: rInv.invoiceNumber,
           cancelledAt: rInv.cancelledAt ?? new Date(),
-          refundAmount: "0.00",
-          refundVoucherNumber: null,
+          refundAmount: priorRefund ? money(priorRefund.amount).toFixed(2) : "0.00",
+          refundVoucherNumber: null, // انظر P1 #1: لا نضع voucherNumber على إيصال الاسترداد.
           idempotentReplay: true,
         };
       }
@@ -115,9 +135,40 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         message: "الفاتورة مُرتجَعة بالكامل — لا حاجة للإلغاء (المخزون والذمة مُصفَّران)",
       });
     }
+    // Codex P1 (١٢/٨) — حارس الفترة على تاريخ الفاتورة الأصليّ: فاتورة داخل شهرٍ مُقفَلٍ لا تُلغى بيومٍ لاحق
+    // مفتوح (assertPeriodOpen على new Date() لا يمنعه) لأن الحالة CANCELLED رجعياً تحذفها من تقارير
+    // شهر الإصدار (monthlyClosePack يفلتر CANCELLED) فتتغيّر أرقام شهرٍ مُغلَق ماليّاً بلا فتح صريح.
+    await assertPeriodOpen(tx, inv.invoiceDate);
     // ملكية الفرع: مدير فرع لا يُلغي فاتورة فرع آخر (تُخرج نقداً من صندوقه/خزينته لفاتورة لا تخصّه).
     if (actor.role !== "admin" && Number(inv.branchId) !== Number(actor.branchId)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+    }
+    // Codex P1 (١٢/٨) — فصل المهام Maker/Checker: مُصدِر الفاتورة لا يُلغيها بنفسه (isOwner يعبُر لأنه
+    // السلطة النهائية للتصحيح الإداري؛ admin كذلك بسلطته المتحيّزة الموثّقة عبر أثر تدقيقٍ منفصل).
+    // كان الراوتر يمرّر مديراً باعه ثم ألغاه = فتحُ بابٍ لتنفيذ+إلغاء بيدٍ واحدة (فقد الرقابة الازدواجية).
+    if (actor.role !== "admin" && !actor.isOwner && Number(actor.userId) === Number(inv.createdBy)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "لا يجوز إلغاء فاتورةٍ أصدرتها بنفسك — يلزم مدير آخر (فصل المهام)",
+      });
+    }
+    // Codex P1 (١٢/٨) — خطة الأقساط ACTIVE مرتبطة بالفاتورة تبقى صالحة للتحصيل بعد الإلغاء
+    // (installmentService.payLine يُنشئ سنداً بـinvoiceId=null بقصد فيتّسق مع فواتير ملغاة سابقاً)
+    // فيستمرّ التحصيل على التزامٍ سبق إلغاؤه. الحلّ: أرفض حتى تُلغى الخطة يدوياً (قرار محاسبيّ خارج نطاق هذا).
+    if (inv.customerId) {
+      const activePlan = (
+        await tx
+          .select({ id: installmentPlans.id })
+          .from(installmentPlans)
+          .where(and(eq(installmentPlans.invoiceId, input.invoiceId), eq(installmentPlans.status, "ACTIVE")))
+          .limit(1)
+      )[0];
+      if (activePlan) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "الفاتورة مرتبطة بخطة أقساطٍ نشطة — ألغِ الخطة أولاً ثم أعِد المحاولة",
+        });
+      }
     }
     // فاتورة أمر شغل: المواد استُهلكت لحظة إنشاء أمر الشغل، وإعادتها للمخزون تخلق مخزوناً وهمياً
     // لمنتج مُخصَّص لا يُباع من الرفّ. مسار إلغاء أمر الشغل يعالج ذلك بشكل صحيح.
@@ -162,7 +213,18 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
     const taxAmount = money(inv.taxAmount);
     const deliveryFee = money(inv.deliveryFee ?? "0");
     const saleRevenue = subtotal.minus(discountAmount).plus(deliveryFee);
-    const saleAmount = money(inv.total);
+    // Codex P2 (١٢/٨) — تقريب IQD: `inv.total` يحمل الإجمالي المُقرَّب فقط، بينما قيد SALE الأصلي يحمل
+    // الإجمالي الخام (subtotal + tax) وقيد ADJUST يحمل فارق التقريب. لو استعملنا `inv.total` كأساس
+    // للأمانة على `amount` ثم عكسنا قيد ADJUST المنفصل يصير Σ(amount) = فارق التقريب لا صفراً.
+    // الحلّ: نقرأ قيد SALE فعلياً (amount الخام قبل التقريب) — يطابق ما تفعله returnService.fullyReturned.
+    const saleEntry = (
+      await tx
+        .select({ amount: accountingEntries.amount })
+        .from(accountingEntries)
+        .where(and(eq(accountingEntries.invoiceId, input.invoiceId), eq(accountingEntries.entryType, "SALE")))
+        .limit(1)
+    )[0];
+    const saleAmount = saleEntry ? money(saleEntry.amount) : money(inv.total);
 
     // قيود RETURN مُخزَّنة بقيم سالبة ⇒ عكسها بـ.neg() يعطي التراكم الموجب.
     const priorRet = (
@@ -242,12 +304,15 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         stockOps.push({ variantId: Number(w.item.variantId), baseQuantity: w.remainingBase });
       }
       restockedCost = restockedCost.plus(round2(money(w.item.unitCost).times(w.remainingBase)));
-      // كل البند صار مُرتجَعاً بعد الإلغاء (الكميّة كلها returnedRestockedBaseQuantity).
+      // Codex P2 (١٢/٨): لا نطمس returnedRestockedBaseQuantity — نضيف إليها المُعاد الآن فقط
+      // (كان الاستبدال بـbaseQuantity يزعم أن كل الوحدات عادت للرفّ حتى تلك المُرتجَعة سابقاً كتالف
+      // ⇒ يخالف حركة المخزون والدفتر: إجمالي الحركات RETURN إعادةً = المُعاد الفعلي، والتقارير المستنِدة
+      // على المُعاد صفر تُبالغ). بينما returnedBaseQuantity يمثّل «الكميّة الملغاة من البند» فيصير كلها.
       await tx
         .update(invoiceItems)
         .set({
           returnedBaseQuantity: w.item.baseQuantity,
-          returnedRestockedBaseQuantity: w.item.baseQuantity,
+          returnedRestockedBaseQuantity: (w.item.returnedRestockedBaseQuantity ?? 0) + w.remainingBase,
         })
         .where(eq(invoiceItems.id, Number(w.item.id)));
     }
@@ -358,11 +423,24 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
       }
     }
 
-    // ═══ ٨) الاسترداد: سند صرف OUT بجهة صرفٍ مُصرَّحة ═══
-    // inv.paidAmount حالياً يعكس (paid − priorRefunds) لأن كل مرتجع جزئي سابق خفّضه.
-    // ⇒ refundable = inv.paidAmount مباشرةً (ما زال محبوساً كنقدٍ متاحٍ للاسترداد).
-    const refundable = money(inv.paidAmount);
-    let refundVoucherNumber: string | null = null;
+    // ═══ ٨) الاسترداد: إيصال صرف OUT بجهة صرفٍ مُصرَّحة (بلا voucherNumber) ═══
+    // Codex P1 (١٢/٨): جمع كل المقبوضات المرتبطة بالفاتورة (IN) − ما استُرِدّ (OUT) كأساسٍ للاسترداد،
+    // بدل الاعتماد على inv.paidAmount وحده. voucher/create.ts يخفض ذمّة العميل عند سند قبضٍ مرتبط
+    // بفاتورة لكنه لا يرفع invoices.paidAmount ⇒ إن اعتمدنا paidAmount وحده يبقى قسمٌ من نقد العميل
+    // غير مُسترَدٍّ فتنقلب ذمّته لدائن (فائض ائتمان). النموذج الصحيح: كل حركة receipt IN/OUT مرتبطة
+    // بالفاتورة تدخل الحساب، مطابقةً لما تراه voucher-linked flows ونماذج التحصيل الفعلية.
+    const receiptSums = (
+      await tx
+        .select({
+          inSum: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE 0 END), 0)`,
+          outSum: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`,
+        })
+        .from(receipts)
+        .where(and(eq(receipts.invoiceId, input.invoiceId), eq(receipts.status, "COMPLETED")))
+    )[0];
+    const totalIn = money(receiptSums?.inSum ?? "0");
+    const totalOutPrior = money(receiptSums?.outSum ?? "0");
+    const refundable = totalIn.minus(totalOutPrior);
     let refundAmount = new Decimal(0);
     if (refundable.gt(0)) {
       // تحديد الوردية والدلو: النقد يمرّ shiftIdForCashTx (يضمن ورديةً للكاشير ويعطي TREASURY للمدير/الأدمن
@@ -377,9 +455,11 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
       }
 
-      // رقم سند تسلسليّ للاسترداد — يظهر في `vouchers.list` (يفلتر voucherNumber != null).
-      refundVoucherNumber = await nextVoucherNumber(tx, "PAYMENT", Number(inv.branchId));
-
+      // Codex P1 #1 + P2 #4 (١٢/٨): **لا voucherNumber** على إيصال استرداد الإلغاء — تسميته سنداً في
+      // vouchers.list يفتح مسار voucher/cancel.ts العام (يعكس النقد ويعدّل رصيد العميل تاركاً حالة
+      // الفاتورة CANCELLED وpaidAmount=0 ⇒ ازدواج عكسٍ ينقلب ائتماناً وهميّاً)، كما يُصنَّف تحت
+      // «expensesCash» في تقرير إغلاق اليوم بدل «returnsCash» (الشرط: voucherNumber IS NULL).
+      // نمط returnService.receipt هو المرجعية (بلا voucherNumber، مصنَّف كمرتجع، غير قابل للـcancel العام).
       const rRes = await tx.insert(receipts).values({
         invoiceId: input.invoiceId,
         branchId: Number(inv.branchId),
@@ -389,7 +469,6 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         amount: toDbMoney(refundable),
         paymentMethod: input.refundPaymentMethod,
         status: "COMPLETED",
-        voucherNumber: refundVoucherNumber,
         partyType: inv.customerId ? "CUSTOMER" : "OTHER",
         partyId: inv.customerId ?? null,
         description: `استرداد إلغاء فاتورة ${inv.invoiceNumber}`,
@@ -409,11 +488,26 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
     }
 
     // ═══ ٩) تصفير ذمّة العميل عن هذه الفاتورة ═══
-    // مساهمة الفاتورة في AR قبل الإلغاء: remainingAmount (المتبقّي غير المُرتجَع بعد المرتجعات الجزئية).
-    // نُسقطها بمقدار (remainingAmount − refundAmount) — تُطابق نمط returnService.fullyReturned تحديداً.
+    // مساهمة الفاتورة في AR قبل الإلغاء: (remainingAmount − nonInvoicePaidPortion) — لكن نتّبع النمط
+    // المُثبَت في returnService: نُسقط بمقدار (remainingAmount − refundAmount). refundAmount الآن يشمل
+    // كامل ما قُبض على الفاتورة (voucher-linked receipts + الكاشير) ⇒ AR يعود لصفر بلا فائض ائتماني.
     if (inv.customerId) {
       const arDrop = remainingAmount.minus(refundAmount);
       await adjustCustomerBalance(tx, Number(inv.customerId), arDrop.neg());
+    }
+
+    // Codex P2 (١٢/٨) — مزامنة الطلب الإلكتروني: فاتورة ONLINE مرتبطة بطلب في `onlineOrders`؛ الإلغاء
+    // بلا مزامنة يترك الطلب SHIPPED/DELIVERED بينما المخزون رجع والقيد عُكس ⇒ طوابير المندوبين وتحليلات
+    // المتجر تُظهر طلباً حيّاً مقابل فاتورةٍ ملغاة، وتأكيد المندوب اللاحق يرفض «الفاتورة ملغاة» فيبقى
+    // الطلب عالقاً حتى تدخّلٍ يدوي. نُحدّث للحالة CANCELLED بنفس المعاملة (ذرّياً).
+    if (inv.sourceType === "ONLINE") {
+      await tx
+        .update(onlineOrders)
+        .set({
+          status: "CANCELLED",
+          cancelReason: input.reason?.trim() || "إلغاء فاتورة",
+        })
+        .where(and(eq(onlineOrders.invoiceId, input.invoiceId), sql`${onlineOrders.status} != 'CANCELLED'`));
     }
 
     // ═══ ١٠) وسم CANCELLED مع لقطة تدقيق ═══
@@ -442,7 +536,7 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
       invoiceNumber: inv.invoiceNumber,
       cancelledAt,
       refundAmount: refundAmount.toFixed(2),
-      refundVoucherNumber,
+      refundVoucherNumber: null,
     };
   });
 }

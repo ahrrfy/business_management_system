@@ -22,6 +22,8 @@ const managerOtherBranch = { userId: 3, branchId: 2, role: "manager" as const };
 const TABLES = [
   "idempotencyKeys",
   "financialPeriods",
+  "installmentLines",
+  "installmentPlans",
   "accountingEntries",
   "receipts",
   "inventoryMovements",
@@ -162,9 +164,9 @@ describe("cancelSale — ثابت ١ + ٢: صافي الدفتر صفر + رصي
 });
 
 describe("cancelSale — ثابت ٣: استرداد بجهة صرف نقديّ + PAYMENT_OUT", () => {
-  it("بيعٌ نقديّ كامل ⇒ إلغاء ⇒ سند صرفٍ OUT بمبلغ paidAmount + PAYMENT_OUT + المخزون يعود", async () => {
+  it("بيعٌ نقديّ كامل (مندوب) ⇒ إلغاء (مدير آخر) ⇒ إيصال صرفٍ OUT بمبلغ paidAmount + PAYMENT_OUT + المخزون يعود", async () => {
     await setStock(1, 1, 10);
-    // بيع نقديّ كامل: paidNow = 5000
+    // بيع نقديّ كامل: paidNow = 5000. البائع = admin. الملغي = manager (SOD مُحترمة).
     const sale = await createSale(
       {
         branchId: 1,
@@ -174,19 +176,21 @@ describe("cancelSale — ثابت ٣: استرداد بجهة صرف نقديّ 
         lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
         payment: { amount: "5000.00", method: "CASH" },
       },
-      manager,
+      { userId: 2, branchId: 1, role: "manager" as const }, // manager as seller (owns shift 1)
     );
     const invBefore = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
     expect(invBefore.paidAmount).toBe("5000.00");
 
+    // الملغي = admin (مختلف عن البائع manager) ⇒ SOD مُحترمة.
     const res = await cancelSale(
       { invoiceId: sale.invoiceId, refundPaymentMethod: "CASH", reason: "طلب زبون" },
-      manager,
+      admin,
     );
     expect(res.refundAmount).toBe("5000.00");
-    expect(res.refundVoucherNumber).toBeTruthy();
+    // Codex P1 #1 (١٢/٨): لا voucherNumber على إيصال الاسترداد (يبقى ضمن returnsCash لا expensesCash).
+    expect(res.refundVoucherNumber).toBeNull();
 
-    // receipts.direction=OUT بالمبلغ الصحيح + طريقة الدفع + shiftId (drawer) + voucherNumber.
+    // receipts.direction=OUT بالمبلغ الصحيح + طريقة الدفع + بلا voucherNumber.
     const outs = await db()
       .select()
       .from(s.receipts)
@@ -194,9 +198,9 @@ describe("cancelSale — ثابت ٣: استرداد بجهة صرف نقديّ 
     expect(outs).toHaveLength(1);
     expect(outs[0].amount).toBe("5000.00");
     expect(outs[0].paymentMethod).toBe("CASH");
-    expect(outs[0].cashBucket).toBe("DRAWER"); // مدير له وردية مفتوحة
-    expect(outs[0].shiftId).toBe(1);
-    expect(outs[0].voucherNumber).toBe(res.refundVoucherNumber);
+    // admin بلا وردية مفتوحة ⇒ TREASURY (لا DRAWER لأن admin ليس مالك shift 1).
+    expect(outs[0].cashBucket).toBe("TREASURY");
+    expect(outs[0].voucherNumber).toBeNull();
     expect(outs[0].partyType).toBe("CUSTOMER");
 
     // قيد PAYMENT_OUT مرتبط بالفاتورة.
@@ -252,7 +256,8 @@ describe("cancelSale — ثابت ٣: استرداد بجهة صرف نقديّ 
     expect(outs).toHaveLength(1);
     expect(outs[0].paymentMethod).toBe("TRANSFER");
     expect(outs[0].cashBucket).toBeNull(); // TRANSFER لا يمسّ صندوقاً
-    expect(outs[0].voucherNumber).toBeTruthy();
+    // Codex P1 #1 (١٢/٨): لا voucherNumber على إيصال استرداد الإلغاء.
+    expect(outs[0].voucherNumber).toBeNull();
 
     // صافي الدفتر صفر.
     expect(money(await sumCol(sale.invoiceId, "revenue")).isZero()).toBe(true);
@@ -393,5 +398,180 @@ describe("cancelSale — ثابت ٤: الحراس (رفض خارج الفترة
     expect(r2.idempotentReplay).toBe(true);
     expect(await stockOf(1, 1)).toBe(stockAfter1);
     expect(await sumCol(sale.invoiceId, "revenue")).toBe(revAfter1);
+  });
+});
+
+describe("cancelSale — إصلاحات مراجعة Codex (١٢/٨)", () => {
+  it("P1: SOD — مدير أنشأ البيع لا يستطيع إلغاءه بنفسه (admin يعبُر)", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      manager, // createdBy = 2
+    );
+    // نفس المدير يحاول الإلغاء ⇒ رفض SOD.
+    await expect(
+      cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" }, manager),
+    ).rejects.toThrow(/فصل المهام|أصدرتها بنفسك/);
+    // admin يعبُر (السلطة النهائية).
+    const res = await cancelSale(
+      { invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" },
+      admin,
+    );
+    expect(res.invoiceId).toBe(sale.invoiceId);
+  });
+
+  it("P1: فاتورة في شهرٍ مُقفَل تُرفَض حتى لو الإلغاء بيومٍ مفتوح", async () => {
+    await setStock(1, 1, 10);
+    // أنشئ فاتورة وأضبط تاريخها لأمس عمداً.
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      admin,
+    );
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await db().update(s.invoices).set({ invoiceDate: yesterday }).where(eq(s.invoices.id, sale.invoiceId));
+    // أقفل الفترة على تاريخ أمس (يوم إصدار الفاتورة داخل الفترة المُقفَلة).
+    const cutoff = yesterday.toISOString().slice(0, 10);
+    await db().transaction(async (tx) => {
+      await lockPeriod(tx as any, { cutoffDate: cutoff, lockedBy: 1 });
+    });
+    // الإلغاء بيوم لاحق مفتوح ⇒ رفض (لأنّ تاريخ الفاتورة داخل المُقفَل).
+    await expect(
+      cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" }, admin),
+    ).rejects.toThrow(/الفترة المالية مُقفَلة/);
+  });
+
+  it("P1: خطة أقساط ACTIVE تمنع الإلغاء", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      admin,
+    );
+    await db().insert(s.installmentPlans).values({
+      customerId: 1,
+      invoiceId: sale.invoiceId,
+      branchId: 1,
+      totalAmount: "1000.00",
+      status: "ACTIVE",
+      createdBy: 1,
+    });
+    await expect(
+      cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" }, admin),
+    ).rejects.toThrow(/خطة أقساط|ألغِ الخطة أولاً/);
+  });
+
+  it("P1: مقبوضاتُ سندٍ خارجيّ مرتبطة بالفاتورة تدخل مبلغ الاسترداد (لا تترك ائتماناً وهميّاً)", async () => {
+    await setStock(1, 1, 10);
+    // بيع آجل: paidAmount=0
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }],
+      },
+      admin,
+    );
+    // محاكاة سند قبض خارجيّ مرتبط بالفاتورة (لا يرفع inv.paidAmount — نمط voucher/create.ts).
+    // ٥٠٠ TRANSFER من العميل.
+    await db().insert(s.receipts).values({
+      invoiceId: sale.invoiceId,
+      branchId: 1,
+      direction: "IN",
+      amount: "500.00",
+      paymentMethod: "TRANSFER",
+      status: "COMPLETED",
+      partyType: "CUSTOMER",
+      partyId: 1,
+      createdBy: 1,
+    });
+    // خفض ذمة العميل يدوياً (voucher/create يفعلها) — العميل بلا حدّ ائتماني (المستهلك للفاتورة كاملها ٣٠٠٠).
+    await db().update(s.customers).set({ currentBalance: "2500.00" }).where(eq(s.customers.id, 1));
+
+    // الإلغاء ⇒ يجب أن يشمل الاسترداد ٥٠٠ (المدفوع عبر السند) لا صفراً.
+    const res = await cancelSale(
+      { invoiceId: sale.invoiceId, refundPaymentMethod: "TRANSFER" },
+      admin,
+    );
+    expect(res.refundAmount).toBe("500.00");
+    // ذمّة العميل تعود لصفر (كانت 2500 وحدة).
+    expect(money(await customerBalance(1)).toFixed(2)).toBe("0.00");
+  });
+
+  it("P2: مرتجع تالفٍ سابق ⇒ الإلغاء يزيد returnedRestockedBaseQuantity بالمتبقّي فقط لا بكل الكميّة", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
+      },
+      admin,
+    );
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    // مرتجع جزئي بـrestock=false (تالف) لوحدتين ⇒ returnedRestockedBaseQuantity يبقى صفراً.
+    await returnSale(
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }],
+        refund: null,
+        restock: false,
+      },
+      admin,
+    );
+    const midItem = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, Number(item.id))))[0];
+    expect(midItem.returnedBaseQuantity).toBe(2);
+    expect(midItem.returnedRestockedBaseQuantity).toBe(0);
+
+    // إلغاء ⇒ المتبقّي (٣) يعود للمخزون. returnedRestockedBaseQuantity يزداد بـ٣ لا يقفز لـ٥.
+    await cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" }, admin);
+    const finalItem = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, Number(item.id))))[0];
+    expect(finalItem.returnedBaseQuantity).toBe(5); // كل البند مُرتجَع
+    expect(finalItem.returnedRestockedBaseQuantity).toBe(3); // فقط الـ٣ التي عادت فعلاً
+    // المخزون: 10 − 5 (بيع) + 3 (إلغاء) = 8 (الوحدتان التالفتان لم تعودا).
+    expect(await stockOf(1, 1)).toBe(8);
+  });
+
+  it("P2: replay بعد استرداد فعليّ يعيد بناء refundAmount الحقيقيّ (لا صفراً وهمياً)", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        shiftId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+        payment: { amount: "2000.00", method: "CASH" },
+      },
+      manager,
+    );
+    const key = "cancel-refund-" + Date.now();
+    const r1 = await cancelSale(
+      { invoiceId: sale.invoiceId, refundPaymentMethod: "CASH", clientRequestId: key },
+      admin,
+    );
+    expect(r1.refundAmount).toBe("2000.00");
+    // Replay ⇒ يعيد نفس refundAmount من الإيصال المخزَّن (لا 0.00 كما كان قبل الإصلاح).
+    const r2 = await cancelSale(
+      { invoiceId: sale.invoiceId, refundPaymentMethod: "CASH", clientRequestId: key },
+      admin,
+    );
+    expect(r2.idempotentReplay).toBe(true);
+    expect(r2.refundAmount).toBe("2000.00");
   });
 });
