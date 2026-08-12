@@ -5,7 +5,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ListToolbar } from "@/components/list";
+import { FilterField, ListToolbar } from "@/components/list";
 import { fmtDate } from "@/lib/date";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -63,13 +63,20 @@ export default function AssetDisposalLog() {
             search={{ value: f.q, onChange: (v) => setF({ q: v }), placeholder: "بحث بالأصل/الرمز…" }}
             filters={
               <>
-                <AppSelect value={f.type} onValueChange={(v) => setF({ type: v })} className="h-8 w-40" size="sm" placeholder="كل الأنواع">
-                  <option value="">كل الأنواع</option>
-                  <option value="disposed">مُستبعَد (بيع/خردة)</option>
-                  <option value="retired">خارج الخدمة</option>
-                </AppSelect>
-                <Input type="date" value={f.from} max={f.to || undefined} onChange={(e) => setF({ from: e.target.value })} className="h-8 w-36" aria-label="من تاريخ" />
-                <Input type="date" value={f.to} min={f.from || undefined} onChange={(e) => setF({ to: e.target.value })} className="h-8 w-36" aria-label="إلى تاريخ" />
+                {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
+                <FilterField label="النوع">
+                  <AppSelect value={f.type} onValueChange={(v) => setF({ type: v })} className="h-8 w-40" size="sm">
+                    <option value="">كل الأنواع</option>
+                    <option value="disposed">مُستبعَد (بيع/خردة)</option>
+                    <option value="retired">خارج الخدمة</option>
+                  </AppSelect>
+                </FilterField>
+                <FilterField label="من تاريخ">
+                  <Input type="date" value={f.from} max={f.to || undefined} onChange={(e) => setF({ from: e.target.value })} className="h-8 w-36" />
+                </FilterField>
+                <FilterField label="إلى تاريخ">
+                  <Input type="date" value={f.to} min={f.from || undefined} onChange={(e) => setF({ to: e.target.value })} className="h-8 w-36" />
+                </FilterField>
               </>
             }
             onResetFilters={filtersActive ? resetF : undefined}

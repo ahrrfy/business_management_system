@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { ListToolbar } from "@/components/list";
+import { FilterField, ListToolbar } from "@/components/list";
 import { trpc } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { AssetStatusBadge, CategoryIcon, iqd } from "@/lib/assets/ui";
@@ -59,19 +59,27 @@ export default function AssetRegister() {
             refreshing={list.isFetching}
             filters={
               <>
-                <select className={selectCls} value={f.category} onChange={(e) => setF({ category: e.target.value })} aria-label="الفئة">
-                  <option value="">كل الفئات</option>
-                  {ASSET_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-                </select>
-                <select className={selectCls} value={f.branchId} onChange={(e) => setF({ branchId: e.target.value })} aria-label="الفرع">
-                  <option value="">كل الفروع</option>
-                  {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
-                </select>
-                <select className={selectCls} value={f.status} onChange={(e) => setF({ status: e.target.value })} aria-label="الحالة">
-                  <option value="">كل الحالات</option>
-                  {ASSET_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-                </select>
-                <label className="flex items-center gap-2 h-8 text-sm">
+                {/* FilterField يُظهر التسمية دائماً بصرياً — aria-label وحده لا يُرى إلا في قارئ الشاشة
+                    فيضيع معنى الحقل للمستخدم البصريّ عند الاختيار (نمط PR #559/#566). */}
+                <FilterField label="الفئة">
+                  <select className={selectCls} value={f.category} onChange={(e) => setF({ category: e.target.value })} aria-label="الفئة">
+                    <option value="">كل الفئات</option>
+                    {ASSET_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+                  </select>
+                </FilterField>
+                <FilterField label="الفرع">
+                  <select className={selectCls} value={f.branchId} onChange={(e) => setF({ branchId: e.target.value })} aria-label="الفرع">
+                    <option value="">كل الفروع</option>
+                    {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+                  </select>
+                </FilterField>
+                <FilterField label="الحالة">
+                  <select className={selectCls} value={f.status} onChange={(e) => setF({ status: e.target.value })} aria-label="الحالة">
+                    <option value="">كل الحالات</option>
+                    {ASSET_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                  </select>
+                </FilterField>
+                <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input type="checkbox" className="size-4" checked={f.includeDisposed === "1"} onChange={(e) => setF({ includeDisposed: e.target.checked ? "1" : "" })} />
                   <span className="text-muted-foreground">يشمل المُستبعَد</span>
                 </label>
