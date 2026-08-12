@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 838,
+    "trpcTotal": 839,
     "byKind": {
-      "mutation": 422,
+      "mutation": 423,
       "query": 416
     },
     "byAuthority": {
-      "module-gate": 374,
+      "module-gate": 375,
       "module-map": 261,
       "admin": 74,
       "raw-role": 55,
@@ -20,7 +20,7 @@
     "bySensitivity": {
       "LOW": 415,
       "MEDIUM": 317,
-      "HIGH": 106
+      "HIGH": 107
     },
     "byModule": {
       "(none)": 204,
@@ -34,7 +34,7 @@
       "crm": 30,
       "workorders": 29,
       "campaigns": 28,
-      "sales": 24,
+      "sales": 25,
       "assets": 16,
       "commissions": 16,
       "suppliers": 13,
@@ -54,7 +54,7 @@
     "flagCounts": {
       "LOCAL_GATE": 138,
       "NO_BRANCH_SCOPE": 132,
-      "SENSITIVE_ACTION": 106,
+      "SENSITIVE_ACTION": 107,
       "ADMIN_ONLY": 77,
       "RAW_ROLE_GATE": 65,
       "UNAUTHENTICATED": 32,
@@ -64,9 +64,9 @@
     },
     "expressRoutes": 15,
     "expressMounts": 9,
-    "jobs": 11,
+    "jobs": 12,
     "routerFiles": 90,
-    "proposedPermissions": 712,
+    "proposedPermissions": 713,
     "proposedDomains": {
       "hr": 86,
       "inventory": 68,
@@ -75,7 +75,7 @@
       "treasury": 60,
       "iam": 40,
       "store": 40,
-      "sales": 39,
+      "sales": 40,
       "admin": 36,
       "crm": 32,
       "workorders": 29,
@@ -10785,7 +10785,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/reservationsRouter.ts:192"
+      "loc": "server/routers/reservationsRouter.ts:217"
     },
     {
       "surface": "trpc",
@@ -10802,7 +10802,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:219"
+      "loc": "server/routers/reservationsRouter.ts:244"
     },
     {
       "surface": "trpc",
@@ -10819,7 +10819,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:155"
+      "loc": "server/routers/reservationsRouter.ts:180"
     },
     {
       "surface": "trpc",
@@ -10836,7 +10836,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE|HANDLER_ROLE_CHECK|RAW_ROLE_GATE",
-      "loc": "server/routers/reservationsRouter.ts:205"
+      "loc": "server/routers/reservationsRouter.ts:230"
     },
     {
       "surface": "trpc",
@@ -10853,7 +10853,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:88"
+      "loc": "server/routers/reservationsRouter.ts:110"
     },
     {
       "surface": "trpc",
@@ -10870,7 +10870,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:36"
+      "loc": "server/routers/reservationsRouter.ts:56"
     },
     {
       "surface": "trpc",
@@ -11041,6 +11041,23 @@
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
       "loc": "server/routers/roleRouter.ts:59"
+    },
+    {
+      "surface": "trpc",
+      "router": "saleRouter",
+      "proposedPermission": "sales.sale.void",
+      "name": "cancel",
+      "kind": "mutation",
+      "procedure": "salesManagerProcedure",
+      "authority": "module-gate",
+      "module": "sales",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: cancel",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/saleRouter.ts:1108"
     },
     {
       "surface": "trpc",
@@ -14674,6 +14691,11 @@
       "kind": "interval",
       "file": "server/services/nativePushOutboxWorker.ts",
       "line": 275
+    },
+    {
+      "kind": "cron",
+      "file": "server/services/reservations/sweeper.ts",
+      "line": 35
     },
     {
       "kind": "cron",
