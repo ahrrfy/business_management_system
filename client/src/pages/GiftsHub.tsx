@@ -68,14 +68,21 @@ export default function GiftsHub() {
   const [listFilters, setListFilters, resetListFilters] = useUrlFilters({
     dir: "ALL", status: "ALL", branch: "", from: "", to: "", q: "", page: "0",
   });
-  const dirFilter = (listFilters.dir || "ALL") as DirFilter;
-  const statusFilter = (listFilters.status || "ALL") as StatusFilter;
-  const listBranchId: number | "" = listFilters.branch === "" ? "" : Number(listFilters.branch);
+  // تصحيح قيم URL (Codex P2): querystring يمكن أن يحمل قيماً باطلة (مشاركة/تعديل يدوي).
+  // enum غير معروف أو رقم غير صالح ⇒ رجوع للافتراضي بدل تمرير قيمة تكسر Zod schema في gifts.list.
+  const dirFilter: DirFilter =
+    listFilters.dir === "IN" || listFilters.dir === "OUT" || listFilters.dir === "ALL" ? listFilters.dir : "ALL";
+  const statusFilter: StatusFilter =
+    listFilters.status === "ALL" || listFilters.status in STATUS_AR ? (listFilters.status as StatusFilter) : "ALL";
+  const branchNum = Number(listFilters.branch);
+  const listBranchId: number | "" =
+    listFilters.branch !== "" && Number.isFinite(branchNum) && branchNum > 0 ? branchNum : "";
   const listFrom = listFilters.from;
   const listTo = listFilters.to;
   const query = listFilters.q;
   const qDebounced = useDebouncedValue(query.trim(), 300);
-  const page = Number(listFilters.page) || 0;
+  const pageNum = Number(listFilters.page);
+  const page = Number.isFinite(pageNum) && pageNum >= 0 ? Math.floor(pageNum) : 0;
   const setDirFilter = (v: DirFilter) => setListFilters({ dir: v, page: "0" });
   const setStatusFilter = (v: StatusFilter) => setListFilters({ status: v, page: "0" });
   const setListBranchId = (v: number | "") => setListFilters({ branch: v === "" ? "" : String(v), page: "0" });
@@ -406,7 +413,7 @@ export default function GiftsHub() {
             filters={
               <>
                 {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
-                <FilterField label="الاتجاه">
+                <FilterField label="الاتجاه" asGroup>
                   <div className="flex gap-1">
                     {([
                       ["ALL", "الكل"],

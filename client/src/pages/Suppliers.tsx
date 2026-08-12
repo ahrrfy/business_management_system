@@ -46,11 +46,15 @@ export default function Suppliers() {
   const canDelete = me.data?.role === "admin" || me.data?.role === "manager";
   // فلاتر في querystring — تعيش مع فتح تفاصيل المورّد والرجوع، ويمكن مشاركتها رابطاً.
   const [filters, setFilters, resetFilters] = useUrlFilters({ q: "", inactive: "", kind: "", page: "0" });
+  // تصحيح قيم URL (Codex P2): querystring يمكن أن يحمل قيماً باطلة (مشاركة/تعديل يدوي) ⇒
+  // fall-back للافتراضي بدل تمرير قيمة تكسر عقد الخادم (Zod schema يرفضها فيُفشِل list كاملاً).
   const q = filters.q;
   const includeInactive = filters.inactive === "1";
   // بضاعة الأمانة (٢٠/٧): فلتر نوع الطرف — الكل / موردون اعتياديون / مودِعو أمانة.
-  const kind = (filters.kind || "") as "" | "REGULAR" | "CONSIGNOR";
-  const page = Number(filters.page) || 0;
+  const kind: "" | "REGULAR" | "CONSIGNOR" =
+    filters.kind === "REGULAR" || filters.kind === "CONSIGNOR" ? filters.kind : "";
+  const pageNum = Number(filters.page);
+  const page = Number.isFinite(pageNum) && pageNum >= 0 ? Math.floor(pageNum) : 0;
   const setQ = (v: string) => setFilters({ q: v, page: "0" });
   const setIncludeInactive = (v: boolean) => setFilters({ inactive: v ? "1" : "", page: "0" });
   const setKind = (v: "" | "REGULAR" | "CONSIGNOR") => setFilters({ kind: v, page: "0" });
@@ -168,7 +172,7 @@ export default function Suppliers() {
             filters={
               <>
                 {/* FilterField يُظهر التسمية بصرياً — aria-label على radiogroup لا يُرى (نمط PR #559/#566). */}
-                <FilterField label="نوع الطرف">
+                <FilterField label="نوع الطرف" asGroup>
                   <div className="flex items-center gap-1" role="radiogroup" aria-label="نوع الطرف">
                     {([
                       { v: "", label: "الكل" },

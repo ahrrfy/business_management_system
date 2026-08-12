@@ -35,15 +35,26 @@ export default function SalesReturns() {
   const [filters, setFilters, resetFilters] = useUrlFilters({
     customerId: "", branchId: "", createdBy: "", dateFrom: "", dateTo: "", q: "", page: "0",
   });
-  const customerId = filters.customerId === "" ? ("" as const) : Number(filters.customerId);
-  const branchId = filters.branchId === "" ? ("" as const) : Number(filters.branchId);
-  const createdBy = filters.createdBy === "" ? ("" as const) : Number(filters.createdBy);
-  const dateFrom = filters.dateFrom;
-  const dateTo = filters.dateTo;
+  // تصحيح قيم URL (Codex P2): querystring يمكن أن يحمل قيماً باطلة (مشاركة/تعديل يدوي) ⇒
+  // returns.list.useQuery يفشل بـZod (positive int expected) على قيمة غير رقمية.
+  // fall-back للـ"" (كل العملاء/الفروع) بدل قيمة تُفشِل الاستعلام كاملاً.
+  const toPosInt = (s: string): number | "" => {
+    if (s === "") return "";
+    const n = Number(s);
+    return Number.isFinite(n) && n > 0 && Number.isInteger(n) ? n : "";
+  };
+  const YMD = /^\d{4}-\d{2}-\d{2}$/;
+  const toYmd = (s: string) => (YMD.test(s) ? s : "");
+  const customerId = toPosInt(filters.customerId);
+  const branchId = toPosInt(filters.branchId);
+  const createdBy = toPosInt(filters.createdBy);
+  const dateFrom = toYmd(filters.dateFrom);
+  const dateTo = toYmd(filters.dateTo);
   const q = filters.q;
   // بحث خادمي برقم الفاتورة (ممهَّل — لا طلب لكل حرف).
   const dq = useDebouncedValue(q, 250);
-  const page = Number(filters.page) || 0;
+  const pageNum = Number(filters.page);
+  const page = Number.isFinite(pageNum) && pageNum >= 0 ? Math.floor(pageNum) : 0;
   const setCustomerId = (v: number | "") => setFilters({ customerId: v === "" ? "" : String(v), page: "0" });
   const setBranchId = (v: number | "") => setFilters({ branchId: v === "" ? "" : String(v), page: "0" });
   const setCreatedBy = (v: number | "") => setFilters({ createdBy: v === "" ? "" : String(v), page: "0" });

@@ -64,7 +64,9 @@ export default function Returns() {
   // فلاتر في querystring — تعيش مع فتح تفاصيل الفاتورة والرجوع، ويمكن مشاركتها رابطاً (نمط بقيّة القاعدة).
   const [filters, setFilters, resetFilters] = useUrlFilters({ q: "", status: "" });
   const q = filters.q;
-  const statusFilter = filters.status;
+  // تصحيح قيمة URL (Codex P2): status enum معروف مسبقاً؛ قيمة غريبة (مشاركة/تعديل يدوي) تفشل
+  // sales.listPage.useQuery صامتاً بخطأ Zod ⇒ رجوع للافتراضي (كل الحالات) بدل قائمةٍ فارغةٍ مضلِّلة.
+  const statusFilter = filters.status in INVOICE_STATUS ? filters.status : "";
   const setQ = (v: string) => setFilters({ q: v });
   const setStatusFilter = (v: string) => setFilters({ status: v });
   // #5 (تدقيق التثبيت): idempotency للمرتجع — الشاشة كانت ترسل create.mutate بلا clientRequestId
