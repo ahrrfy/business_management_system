@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BalanceCell } from "@/components/BalanceBadge";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ImportDialog } from "@/components/import/ImportDialog";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, TableEmptyRow } from "@/components/PageState";
 import { OperationsSummary } from "@/components/operations/OperationsSummary";
@@ -156,30 +156,33 @@ export default function Suppliers() {
               placeholder: "بحث (اسم/هاتف/مدينة/رقم قديم)",
             }}
             filters={
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-1" role="radiogroup" aria-label="نوع الطرف">
-                  {([
-                    { v: "", label: "الكل" },
-                    { v: "REGULAR", label: "موردون" },
-                    { v: "CONSIGNOR", label: "مودِعو أمانة" },
-                  ] as const).map((t) => (
-                    <button
-                      key={t.v}
-                      type="button"
-                      role="radio"
-                      aria-checked={kind === t.v}
-                      onClick={() => { setKind(t.v); setPage(0); }}
-                      className={`h-8 rounded-md border px-2.5 text-xs transition-colors ${
-                        kind === t.v
-                          ? t.v === "CONSIGNOR" ? "border-amber-400 bg-amber-50 text-amber-900" : "border-primary bg-primary/10 text-foreground"
-                          : "border-input text-muted-foreground hover:bg-muted"
-                      }`}
-                    >
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-                <label className="flex items-center gap-2 h-8 text-sm">
+              <>
+                {/* FilterField يُظهر التسمية بصرياً — aria-label على radiogroup لا يُرى (نمط PR #559/#566). */}
+                <FilterField label="نوع الطرف">
+                  <div className="flex items-center gap-1" role="radiogroup" aria-label="نوع الطرف">
+                    {([
+                      { v: "", label: "الكل" },
+                      { v: "REGULAR", label: "موردون" },
+                      { v: "CONSIGNOR", label: "مودِعو أمانة" },
+                    ] as const).map((t) => (
+                      <button
+                        key={t.v}
+                        type="button"
+                        role="radio"
+                        aria-checked={kind === t.v}
+                        onClick={() => { setKind(t.v); setPage(0); }}
+                        className={`h-8 rounded-md border px-2.5 text-xs transition-colors ${
+                          kind === t.v
+                            ? t.v === "CONSIGNOR" ? "border-amber-400 bg-amber-50 text-amber-900" : "border-primary bg-primary/10 text-foreground"
+                            : "border-input text-muted-foreground hover:bg-muted"
+                        }`}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </FilterField>
+                <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input
                     type="checkbox"
                     className="size-4"
@@ -188,7 +191,7 @@ export default function Suppliers() {
                   />
                   <span className="text-muted-foreground">عرض المعطّلين</span>
                 </label>
-              </div>
+              </>
             }
             exportSpec={{
               filename: "الموردون",

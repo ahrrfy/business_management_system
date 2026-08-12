@@ -1,6 +1,6 @@
 import { AlertTriangle } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -325,19 +325,22 @@ export default function Returns() {
               barcode: true,
             }}
             filters={
+              // FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566).
               // قيمة «ALL» الحارسة: Radix يرفض بند القيمة الفارغة فلا يمكن الرجوع لـ«كل الحالات» بدونها.
-              <AppSelect
-                size="sm"
-                className="w-44"
-                aria-label="فلتر حالة الفاتورة"
-                value={statusFilter || "ALL"}
-                onValueChange={(v) => setStatusFilter(v === "ALL" ? "" : v)}
-              >
-                <option value="ALL">كل الحالات</option>
-                {Object.entries(INVOICE_STATUS).map(([v, label]) => (
-                  <option key={v} value={v}>{label}</option>
-                ))}
-              </AppSelect>
+              <FilterField label="حالة الفاتورة">
+                <AppSelect
+                  size="sm"
+                  className="w-44"
+                  aria-label="فلتر حالة الفاتورة"
+                  value={statusFilter || "ALL"}
+                  onValueChange={(v) => setStatusFilter(v === "ALL" ? "" : v)}
+                >
+                  <option value="ALL">كل الحالات</option>
+                  {Object.entries(INVOICE_STATUS).map(([v, label]) => (
+                    <option key={v} value={v}>{label}</option>
+                  ))}
+                </AppSelect>
+              </FilterField>
             }
             exportSpec={{
               filename: "فواتير-للمرتجعات",

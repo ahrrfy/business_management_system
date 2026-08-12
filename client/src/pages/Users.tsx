@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, TableEmptyRow, TableSkeleton } from "@/components/PageState";
@@ -185,27 +185,32 @@ export default function Users() {
             }}
             filters={
               <>
-                <AppSelect
-                  size="sm"
-                  value={role || "ALL"}
-                  onValueChange={(v) => { setF({ role: v === "ALL" ? "" : v }); setPage(0); }}
-                  aria-label="الدور"
-                  className="h-8 w-auto min-w-32"
-                >
-                  <option value="ALL">كل الأدوار</option>
-                  {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-                </AppSelect>
-                <AppSelect
-                  size="sm"
-                  value={branchId || "ALL"}
-                  onValueChange={(v) => { setF({ branchId: v === "ALL" ? "" : v }); setPage(0); }}
-                  aria-label="الفرع"
-                  className="h-8 w-auto min-w-32"
-                >
-                  <option value="ALL">كل الفروع</option>
-                  {(branches.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
-                </AppSelect>
-                <label className="flex items-center gap-2 h-8 text-sm">
+                {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
+                <FilterField label="الدور">
+                  <AppSelect
+                    size="sm"
+                    value={role || "ALL"}
+                    onValueChange={(v) => { setF({ role: v === "ALL" ? "" : v }); setPage(0); }}
+                    aria-label="الدور"
+                    className="h-8 w-auto min-w-32"
+                  >
+                    <option value="ALL">كل الأدوار</option>
+                    {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                  </AppSelect>
+                </FilterField>
+                <FilterField label="الفرع">
+                  <AppSelect
+                    size="sm"
+                    value={branchId || "ALL"}
+                    onValueChange={(v) => { setF({ branchId: v === "ALL" ? "" : v }); setPage(0); }}
+                    aria-label="الفرع"
+                    className="h-8 w-auto min-w-32"
+                  >
+                    <option value="ALL">كل الفروع</option>
+                    {(branches.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+                  </AppSelect>
+                </FilterField>
+                <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input type="checkbox" className="size-4" checked={includeInactive}
                     onChange={(e) => { setF({ inactive: e.target.checked ? "1" : "" }); setPage(0); }} />
                   <span className="text-muted-foreground">عرض المعطّلين</span>
