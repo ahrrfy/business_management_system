@@ -224,6 +224,11 @@ export const usersAdminProcedure = t.procedure
   .use(requireAdmin)
   .use(requireModuleGate(["admin"], "users", "FULL"));
 
+/** إعدادات حاكمة على مستوى الشركة: admin فعلي + settings/FULL + 2FA، لا مدير فرع ولو مُنح override. */
+export const settingsAdminProcedure = t.procedure
+  .use(requireAdmin)
+  .use(requireModuleGate(["admin"], "settings", "FULL"));
+
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
 export const managerProcedure = t.procedure.use(requireRole("manager"));
 

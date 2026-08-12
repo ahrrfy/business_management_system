@@ -1,4 +1,5 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
+import { and, eq, gte, inArray, lte, sql, type SQL } from "drizzle-orm";
 import {
   accountingEntries,
   branchStock,
@@ -6,12 +7,16 @@ import {
   deliveryParties,
   inventoryMovements,
   invoices,
+  journalEntries,
+  journalLines,
   openingModeSettings,
   receipts,
   suppliers,
 } from "../../drizzle/schema";
-import { getDb } from "../db";
-import { money } from "./money";
+import { getDb, type Tx } from "../db";
+import { cashRoleFor } from "./accounting/shadowHook";
+import { postingLinesFor } from "./accounting/postingEngine";
+import { money, round2 } from "./money";
 import { entryNotHoldReceiptCond } from "./reception/holdReceipts";
 
 export interface ReconcileResult {
@@ -22,6 +27,292 @@ export interface ReconcileResult {
   drift: string;
   /** توسيم اختياري: «متوقع — وضع الافتتاح» للسالب غير المُفتتَح أثناء النافذة الفعّالة (١٨/٧). */
   note?: string;
+}
+
+export interface DoubleEntryRoleReconciliation {
+  role: string;
+  /** صافي الدور المتوقع من الدفتر المبسّط: المدين − الدائن. */
+  expected: string;
+  /** صافي الدور المكتوب فعلاً في journalLines: المدين − الدائن. */
+  actual: string;
+  drift: string;
+}
+
+export interface DoubleEntryReconciliation {
+  scope: {
+    kind: "MONTH" | "SHADOW_WINDOW";
+    month: string | null;
+    branchId: number | null;
+    from: string;
+    to: string;
+  };
+  sourceEntryCount: number;
+  journalEntryCount: number;
+  postedCount: number;
+  gapCount: number;
+  missingCount: number;
+  extraCount: number;
+  /** رأس يومية مرتبط بالمصدر لكنه منسوب إلى فرع أو تاريخ قيد مختلف. */
+  scopeMismatchCount: number;
+  unreconstructableCount: number;
+  /** مجموع القيم المطلقة لانحراف الأدوار. */
+  drift: string;
+  /** اختلال مجموع اليومية نفسها؛ دفاعٌ ثانٍ عن assertBalanced. */
+  journalImbalance: string;
+  roles: DoubleEntryRoleReconciliation[];
+  ok: boolean;
+}
+
+export interface ReconcileDoubleEntryInput {
+  /** الشهر بصيغة YYYY-MM. */
+  month: string;
+  /** فرعٌ بعينه، أو null/غياب لكل الفروع. */
+  branchId?: number | null;
+}
+
+type QueryExecutor = NonNullable<ReturnType<typeof getDb>> | Tx;
+
+const CASH_BUCKET_ENTRY_TYPES = new Set(["PAYMENT_IN", "PAYMENT_OUT"]);
+
+function monthDates(month: string): { from: Date; to: Date; fromYmd: string; toYmd: string } {
+  const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(month);
+  if (!match) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "صيغة الشهر يجب أن تكون YYYY-MM." });
+  }
+  const year = Number(match[1]);
+  const monthNumber = Number(match[2]);
+  const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  const fromYmd = `${month}-01`;
+  const toYmd = `${month}-${String(lastDay).padStart(2, "0")}`;
+  return {
+    from: new Date(`${fromYmd}T00:00:00.000Z`),
+    to: new Date(`${toYmd}T00:00:00.000Z`),
+    fromYmd,
+    toYmd,
+  };
+}
+
+function addNet(target: Map<string, ReturnType<typeof money>>, role: string, debit: string, credit: string) {
+  const delta = money(debit).minus(money(credit));
+  target.set(role, (target.get(role) ?? money(0)).plus(delta));
+}
+
+async function runDoubleEntryReconciliation(
+  executor: QueryExecutor | null,
+  input: {
+    sourceWhere: SQL;
+    journalWhere: SQL;
+    scope: DoubleEntryReconciliation["scope"];
+  },
+): Promise<DoubleEntryReconciliation> {
+  if (!executor) {
+    return {
+      scope: input.scope,
+      sourceEntryCount: 0,
+      journalEntryCount: 0,
+      postedCount: 0,
+      gapCount: 0,
+      missingCount: 0,
+      extraCount: 0,
+      scopeMismatchCount: 0,
+      unreconstructableCount: 0,
+      drift: "0.00",
+      journalImbalance: "0.00",
+      roles: [],
+      ok: true,
+    };
+  }
+
+  const sourceRows = await executor
+    .select({
+      id: accountingEntries.id,
+      branchId: accountingEntries.branchId,
+      entryDate: accountingEntries.entryDate,
+      entryType: accountingEntries.entryType,
+      revenue: accountingEntries.revenue,
+      cost: accountingEntries.cost,
+      amount: accountingEntries.amount,
+      taxAmount: accountingEntries.taxAmount,
+      customerId: accountingEntries.customerId,
+      supplierId: accountingEntries.supplierId,
+      paymentMethod: receipts.paymentMethod,
+    })
+    .from(accountingEntries)
+    .leftJoin(receipts, eq(accountingEntries.receiptId, receipts.id))
+    .where(input.sourceWhere);
+
+  const heads = await executor
+    .select({
+      id: journalEntries.id,
+      entryId: journalEntries.entryId,
+      branchId: journalEntries.branchId,
+      entryDate: journalEntries.entryDate,
+      status: journalEntries.status,
+    })
+    .from(journalEntries)
+    .where(input.journalWhere);
+
+  const actualLines = await executor
+    .select({
+      role: journalLines.role,
+      debit: journalLines.debit,
+      credit: journalLines.credit,
+    })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalLines.journalId, journalEntries.id))
+    .where(and(input.journalWhere, eq(journalEntries.status, "POSTED")));
+
+  const expectedByRole = new Map<string, ReturnType<typeof money>>();
+  let unreconstructableCount = 0;
+  for (const row of sourceRows) {
+    try {
+      let cashRole: "CASH" | "CARD_BANK" | undefined;
+      if (CASH_BUCKET_ENTRY_TYPES.has(row.entryType)) {
+        const resolved = cashRoleFor(row.paymentMethod);
+        if (resolved == null) throw new Error("دلو النقد غير قابل لإعادة البناء");
+        cashRole = resolved;
+      }
+      const party = row.customerId != null
+        ? "CUSTOMER"
+        : row.supplierId != null
+          ? "SUPPLIER"
+          : null;
+      const lines = postingLinesFor({
+        entryType: row.entryType,
+        revenue: String(row.revenue ?? "0"),
+        cost: String(row.cost ?? "0"),
+        amount: String(row.amount ?? "0"),
+        taxAmount: String(row.taxAmount ?? "0"),
+        party,
+        cashRole,
+      });
+      for (const line of lines) addNet(expectedByRole, line.role, line.debit, line.credit);
+    } catch {
+      unreconstructableCount += 1;
+    }
+  }
+
+  const actualByRole = new Map<string, ReturnType<typeof money>>();
+  let totalDebit = money(0);
+  let totalCredit = money(0);
+  for (const line of actualLines) {
+    const debit = String(line.debit ?? "0");
+    const credit = String(line.credit ?? "0");
+    addNet(actualByRole, line.role, debit, credit);
+    totalDebit = totalDebit.plus(money(debit));
+    totalCredit = totalCredit.plus(money(credit));
+  }
+
+  const roles = Array.from(new Set(Array.from(expectedByRole.keys()).concat(Array.from(actualByRole.keys()))))
+    .sort()
+    .map((role): DoubleEntryRoleReconciliation => {
+      const expected = round2(expectedByRole.get(role) ?? money(0));
+      const actual = round2(actualByRole.get(role) ?? money(0));
+      return {
+        role,
+        expected: expected.toFixed(2),
+        actual: actual.toFixed(2),
+        drift: round2(expected.minus(actual).abs()).toFixed(2),
+      };
+    });
+
+  const sourceIds = new Set(sourceRows.map((row) => Number(row.id)));
+  const journalSourceIds = new Set(heads.map((row) => Number(row.entryId)));
+  const sourceById = new Map(sourceRows.map((row) => [Number(row.id), row]));
+  const missingCount = sourceRows.reduce((count, row) => count + (journalSourceIds.has(Number(row.id)) ? 0 : 1), 0);
+  const extraCount = heads.reduce((count, row) => count + (sourceIds.has(Number(row.entryId)) ? 0 : 1), 0);
+  const scopeMismatchCount = heads.reduce((count, head) => {
+    const source = sourceById.get(Number(head.entryId));
+    if (!source) return count;
+    const sourceDate = source.entryDate.toISOString().slice(0, 10);
+    const journalDate = head.entryDate.toISOString().slice(0, 10);
+    return count + (source.branchId !== head.branchId || sourceDate !== journalDate ? 1 : 0);
+  }, 0);
+  const gapCount = heads.filter((row) => row.status === "UNMAPPED").length;
+  const postedCount = heads.filter((row) => row.status === "POSTED").length;
+  const drift = round2(roles.reduce((sum, row) => sum.plus(money(row.drift)), money(0)));
+  const journalImbalance = round2(totalDebit.minus(totalCredit).abs());
+  const ok = gapCount === 0
+    && missingCount === 0
+    && extraCount === 0
+    && scopeMismatchCount === 0
+    && unreconstructableCount === 0
+    && drift.isZero()
+    && journalImbalance.isZero();
+
+  return {
+    scope: input.scope,
+    sourceEntryCount: sourceRows.length,
+    journalEntryCount: heads.length,
+    postedCount,
+    gapCount,
+    missingCount,
+    extraCount,
+    scopeMismatchCount,
+    unreconstructableCount,
+    drift: drift.toFixed(2),
+    journalImbalance: journalImbalance.toFixed(2),
+    roles,
+    ok,
+  };
+}
+
+/**
+ * مطابقة الدفتر المزدوج داخل شهرٍ وفرعٍ محدّدين. المقارنة مستقلّة عن أسطر اليومية: تُعيد تشغيل
+ * خريطة الحدث على الدفتر المبسّط، ثم تقارن صافي كل دور بما كُتب فعلاً. بذلك تكشف السطر المعدّل،
+ * الرأس المفقود، والفجوة — لا تكتفي بثابت Σمدين=Σدائن الذي قد يمرّ رغم تبديل حسابين.
+ */
+export async function reconcileDoubleEntry(
+  input: ReconcileDoubleEntryInput,
+  options?: { tx?: Tx },
+): Promise<DoubleEntryReconciliation> {
+  const range = monthDates(input.month);
+  const branchId = input.branchId ?? null;
+  const sourceWhere = and(
+    gte(accountingEntries.entryDate, range.from),
+    lte(accountingEntries.entryDate, range.to),
+    branchId == null ? undefined : eq(accountingEntries.branchId, branchId),
+  ) as SQL;
+  const journalWhere = and(
+    gte(journalEntries.entryDate, range.from),
+    lte(journalEntries.entryDate, range.to),
+    branchId == null ? undefined : eq(journalEntries.branchId, branchId),
+  ) as SQL;
+  return runDoubleEntryReconciliation(options?.tx ?? getDb(), {
+    sourceWhere,
+    journalWhere,
+    scope: {
+      kind: "MONTH",
+      month: input.month,
+      branchId,
+      from: range.fromYmd,
+      to: range.toYmd,
+    },
+  });
+}
+
+/** نافذة المراقبة الفعلية للبوابة: createdAt منذ بدء SHADOW، فتستثني قيود اليوم السابقة للتفعيل. */
+export async function reconcileDoubleEntryShadowWindow(
+  input: { from: Date; to: Date },
+  options?: { tx?: Tx },
+): Promise<DoubleEntryReconciliation> {
+  return runDoubleEntryReconciliation(options?.tx ?? getDb(), {
+    sourceWhere: and(
+      gte(accountingEntries.createdAt, input.from),
+      lte(accountingEntries.createdAt, input.to),
+    ) as SQL,
+    journalWhere: and(
+      gte(journalEntries.createdAt, input.from),
+      lte(journalEntries.createdAt, input.to),
+    ) as SQL,
+    scope: {
+      kind: "SHADOW_WINDOW",
+      month: null,
+      branchId: null,
+      from: input.from.toISOString(),
+      to: input.to.toISOString(),
+    },
+  });
 }
 
 /**
