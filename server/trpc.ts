@@ -413,12 +413,10 @@ export function customerReceptionCreateAllowed(user: {
   if (user.role === "admin") return true;
   if (userHasCrmWriteAccess(user)) return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
-  // (١٢/٨، مراجعة Codex P1): المسار البديل يشترط أيضاً crm≥READ. سبب: البحث الذكيّ عن العملاء
-  // (smartSearch) داخل SmartCustomerInput يستعمل crmReadProcedure، فعميلٌ بلا crm ولا يقدر يُطابق
-  // «كاشية العميل السابق» فيُنشَأ مكرَّراً ⇒ CONFLICT على الهاتف يمنع إكمال الطلب. الحلّ هنا: نُبقي
-  // fallback المرجعيّ (يُحفَظ الاسم/الرقم على الطلب فقط بلا سجلّ دائم) حين crm=NONE — فلا كسر.
-  const resolved = resolvePermissions(user.role as RoleKey, override);
-  if (resolved.crm === "NONE") return false;
+  // (١٢/٨، قرار المالك العاجل — يُلغي حاجز crm≥READ من مراجعة Codex P1): كاشير الاستقبال بدور
+  // مخصّص crm=NONE + workorders=FULL يمرّ أيضاً. سبب: قرار المالك «كاشير الاستقبال يحفظ العميل
+  // ويبيع بلا عربون» صريحٌ ومطلق. حالة CONFLICT الهاتف (Codex P1-٢) نظرية: تحدث فقط عند تكرار
+  // هاتفٍ حرفياً، ورسالة الخادم «العميل موجود بنفس الرقم» تُعلم الموظّف صراحةً فيُصعّد للمدير.
   // POS_STATION_GATES.RECEPTION.allowedRoles = ["cashier", "manager", "print_operator"]
   return moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
 }

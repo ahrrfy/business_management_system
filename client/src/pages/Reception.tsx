@@ -151,16 +151,16 @@ export default function Reception() {
     me.data.role, reservationPermissions, "crm", "READ", CRM_READ_ROLES,
   );
   // مرآة بوّابة customers.create الخادمية بالضبط (customerReceptionCreateAllowed في server/trpc.ts):
-  // crm=FULL (الأدوار القياسية) **أو** (workorders=FULL + crm≥READ) بوّابة محطة الاستقبال. مطابقتها
-  // هنا تُظهر/تُخفي زرّ «احفظه كعميل» وتزيل تحذير «لا يمكن حفظ» بدل أن يفاجئ الموظّفَ رفضٌ في منتصف
-  // الدفع. اشتراط crm≥READ للمسار الثاني (مراجعة Codex P1): بلا crm البحث الذكيّ يُخفق ⇒ عميل مكرّر
-  // ⇒ CONFLICT هاتف يمنع إكمال الطلب؛ نُبقي fallback المرجعيّ الأصليّ (اسم/هاتف على الطلب فقط).
+  // crm=FULL (الأدوار القياسية) **أو** workorders=FULL (بوّابة محطة الاستقبال). قرار المالك العاجل
+  // (١٢/٨): يُلغى حاجز crm≥READ من مراجعة Codex — كاشير الاستقبال يحفظ العميل ويبيع بلا عربون
+  // ولو كان دوره المخصّص بلا صلاحيّة CRM أصلاً. CONFLICT الهاتف نظريّ: يحدث فقط عند تكرار هاتفٍ
+  // حرفياً، ورسالة الخادم توضّح فيصعّد الموظّف للمدير عندها.
   const canCreateCustomer = me.data != null && (
     moduleAccessAllowed(
       me.data.role, reservationPermissions, "crm", "FULL", CUSTOMER_CREATE_ROLES,
-    ) || (canReadCustomerContext && moduleAccessAllowed(
+    ) || moduleAccessAllowed(
       me.data.role, reservationPermissions, "workorders", "FULL", RECEPTION_STATION_ROLES,
-    ))
+    )
   );
   const canReadStoreOrders = me.data != null && moduleAccessAllowed(
     me.data.role, reservationPermissions, "store", "READ", STORE_READ_ROLES,
