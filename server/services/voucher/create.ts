@@ -5,7 +5,10 @@ import { customers, idempotencyKeys, invoices, receipts, suppliers } from "../..
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
+import { utcDayStart } from "../businessDay";
 import { money, toDateStr, toDbMoney } from "../money";
+import { assertPeriodOpen } from "../periodLockService";
+import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
 import { getApprovalThreshold } from "./thresholds";
@@ -158,6 +161,16 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       if (input.voucherType === "RECEIPT") forcePendingApproval = true;
     }
 
+    const voucherDate = (input.voucherDate?.trim() || toDateStr()).slice(0, 10);
+    if (voucherDate > toDateStr()) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `لا يجوز تأريخ السند في المستقبل (${voucherDate})` });
+    }
+
+    // بوابة الفرع تتسلسل مع اعتماد إقفال الشركة. نعيد فحص تاريخ السند بعد نيلها حتى لا
+    // يُنشأ PENDING_APPROVAL بأثر رجعي بعد أن التزم القفل في أثناء الانتظار.
+    await lockBranchMonthCloseGate(tx, input.branchId);
+    await assertPeriodOpen(tx, utcDayStart(voucherDate));
+
     const voucherNumber = await nextVoucherNumber(tx, input.voucherType, input.branchId);
     // مالك النظام (isOwner) يتجاوز كل اعتماد ثنائي — هو الجهة النهائية.
     // عتبة Maker-Checker على الصرف (OUT) فقط — القبض (IN) مال داخل للشركة،
@@ -180,11 +193,6 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       } else {
         shiftId = await openShiftIdTx(tx, actor.userId, input.branchId);
       }
-    }
-
-    const voucherDate = (input.voucherDate?.trim() || toDateStr()).slice(0, 10);
-    if (voucherDate > toDateStr()) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: `لا يجوز تأريخ السند في المستقبل (${voucherDate})` });
     }
 
     const rRes = await tx.insert(receipts).values({

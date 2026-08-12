@@ -12,7 +12,9 @@ import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import { accountingEntries } from "../../drizzle/schema";
 import type { Tx } from "../db";
+import { shadowRepost } from "./accounting/shadowHook";
 import { localTodayDate } from "./dateRange";
+import { postEntry } from "./ledgerService";
 import { money, round2, toDbMoney } from "./money";
 import { assertPeriodOpen } from "./periodLockService";
 
@@ -65,16 +67,18 @@ export async function postOpeningEntry(
   amount: string,
   notes = "رصيد افتتاحي",
 ): Promise<void> {
-  await assertPeriodOpen(tx, localTodayDate());
-  await tx.insert(accountingEntries).values({
+  // يمرّ عبر postEntry (منفذ الدفتر الوحيد) لا بإدراجٍ مباشر: الإدراج المباشر كان يتجاوز
+  // نقطةَ الحقن المركزية — حارس الفترة الموحَّد وخطّاف الدفتر المزدوج (P2) — فيسقط الرصيد
+  // الافتتاحيّ من ميزان المراجعة بصمت. القيم أدناه مطابقةٌ حرفياً للإدراج السابق.
+  await postEntry(tx, {
     entryType: "OPENING",
     customerId: party === "CUSTOMER" ? partyId : null,
     supplierId: party === "SUPPLIER" ? partyId : null,
-    revenue: toDbMoney("0"),
-    cost: toDbMoney("0"),
-    profit: toDbMoney("0"),
-    taxAmount: toDbMoney("0"),
-    amount,
+    revenue: money("0"),
+    cost: money("0"),
+    profit: money("0"),
+    taxAmount: money("0"),
+    amount: money(amount),
     // localTodayDate() يمنع انزياح OPENING ليوم سابق (عمود DATE على توقيت بغداد +٣).
     entryDate: localTodayDate(),
     notes,
@@ -132,9 +136,19 @@ export async function upsertOpeningEntry(
     // تعديل/حذف قيدٍ قائم ⇒ افحص فترة القيد نفسه (لا اليوم): لا يُمسّ رصيدٌ افتتاحيّ في فترة مُقفَلة.
     await assertPeriodOpen(tx, new Date(existing.entryDate as unknown as string));
     if (target.isZero()) {
+      // القيد المزدوج (P2) يُجرَف معه بـON DELETE CASCADE ⇒ لا شيء إضافيّ هنا.
       await tx.delete(accountingEntries).where(eq(accountingEntries.id, existing.id));
     } else {
       await tx.update(accountingEntries).set({ amount: toDbMoney(target) }).where(eq(accountingEntries.id, existing.id));
+      // تغيّر المبلغ **بعد** الإدراج ⇒ أعِد بناء القيد المزدوج، وإلّا بقي على المبلغ القديم
+      // فخالف الدفتر بصمت. (هذا المسار الوحيد في النظام الذي يُعدّل مبلغ قيدٍ مُدرَج.)
+      await shadowRepost(tx, existing.id, {
+        entryType: "OPENING",
+        customerId: party === "CUSTOMER" ? partyId : null,
+        supplierId: party === "SUPPLIER" ? partyId : null,
+        amount: target,
+        entryDate: new Date(existing.entryDate as unknown as string),
+      });
     }
   } else {
     // لا قيد سابق ⇒ أنشئ (postOpeningEntry يفحص فترة اليوم بنفسه).
