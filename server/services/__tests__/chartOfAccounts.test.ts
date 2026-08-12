@@ -28,8 +28,11 @@ beforeEach(async () => {
 describe("شجرة الحسابات (P0) — بذرٌ ذاتيّ من CHART_ACCOUNTS", () => {
   it("٣١ حساباً؛ ٢٦ مربوطاً بـsystemRole و٥ رؤوس بلا ربط", async () => {
     const all = await listAccounts();
-    expect(all).toHaveLength(31);
-    expect(all.filter((a) => a.systemRole != null)).toHaveLength(26);
+    // ٣١ → ٤٢ بعد الدفعة الكاملة (هجرتا 0174/0175): ١١ حساباً جديداً تقابل أرصدةً يتتبّعها
+    // النظام فعلاً (الخزينة · نقدٌ في الطريق · عهدة المناديب · محفظتا الصيرفة · مزوّدو الكروت ·
+    // مستحقّات المناديب · جاري المالك · فرق الصرف · فروق التقريب · الهدايا). الرؤوس الخمسة بلا ربط.
+    expect(all).toHaveLength(42);
+    expect(all.filter((a) => a.systemRole != null)).toHaveLength(37);
     expect(all.filter((a) => a.systemRole == null)).toHaveLength(5); // الرؤوس الخمسة
   });
 

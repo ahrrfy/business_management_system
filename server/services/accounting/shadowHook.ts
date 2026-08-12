@@ -13,6 +13,7 @@ import {
   getDoubleEntryMode,
   writeJournal,
   writeJournalGap,
+  writeJournalNoEntry,
 } from "./journalStore";
 import { MAPPED_ENTRY_TYPES, postingLinesFor } from "./postingEngine";
 import type { Tx } from "../../db";
@@ -68,8 +69,10 @@ export async function shadowPost(tx: Tx, entryId: number, e: EntryInput): Promis
     }
 
     // دلو النقد لا يُخمَّن: موضعُ قبضٍ/صرفٍ لم يمرّر طريقته يصير فجوةً صارخة بدل تصنيفٍ خاطئٍ صامت.
+    // يُستثنى تحصيل المندوب: لا نقد عندنا أصلاً (ذمّة ← عهدة)، فلا دلوَ يُحدَّد.
+    const viaCourier = e.deliveryPartyId != null;
     let cashRole: "CASH" | "CARD_BANK" | undefined;
-    if (CASH_BUCKET_TYPES.has(e.entryType)) {
+    if (CASH_BUCKET_TYPES.has(e.entryType) && !viaCourier) {
       const resolved = cashRoleFor(e.paymentMethod);
       if (resolved === null) {
         await writeJournalGap(
@@ -89,7 +92,13 @@ export async function shadowPost(tx: Tx, entryId: number, e: EntryInput): Promis
       taxAmount: e.taxAmount?.toString(),
       party: partyOf(e),
       cashRole,
+      hasDeliveryParty: viaCourier,
     });
+    // خريطةٌ تُعيد صفر أسطر = قرارٌ محاسبيّ بأن الحدث لا يستحقّ قيداً (لا عجزٌ عنه) ⇒ NO_ENTRY.
+    if (lines.length === 0) {
+      await writeJournalNoEntry(tx, entryId, entryDate, branchId, `لا قيدَ مزدوجاً لهذا الحدث عمداً: ${e.entryType}`);
+      return;
+    }
     await writeJournal(tx, entryId, entryDate, branchId, lines);
   } catch (err) {
     // الفجوة هي شبكة الأمان: تُسجَّل بدل الرمية. وإن فشل تسجيلُها أيضاً ⇒ صمتٌ تامّ، فالبديل

@@ -98,25 +98,34 @@ describe("محرّك القيود المزدوجة (P1) — التوازن وا�
     expect(netByRole(postingLinesFor({ entryType: "OPENING", amount: "-1000", party: "CUSTOMER" }))).toMatchObject({ AR: -1000, OPENING_EQUITY: 1000 });
   });
 
-  it("نوعٌ غير مُخطَّطٍ بعد ⇒ UnmappedEntryTypeError (لا تخمين على النواة المالية)", () => {
-    expect(() => postingLinesFor({ entryType: "EXCHANGE_DEPOSIT", amount: "1000" })).toThrow(UnmappedEntryTypeError);
-    expect(MAPPED_ENTRY_TYPES.has("EXCHANGE_DEPOSIT")).toBe(false);
+  it("نوعٌ خارج EntryType أصلاً ⇒ UnmappedEntryTypeError (لا تخمين على النواة المالية)", () => {
+    // تحديثُ نطاق (١٢/٨): بعد الدفعة الكاملة صارت أنواع EntryType الـ٣١ كلّها مُخطَّطة، فلم يبقَ
+    // نوعٌ حقيقيٌّ يَرمي. الحارس يبقى لما هو **خارج** العقد أصلاً (نوعٌ مُختلَق/مُخطئ).
+    expect(() => postingLinesFor({ entryType: "NOT_A_REAL_TYPE", amount: "1000" })).toThrow(UnmappedEntryTypeError);
+    expect(MAPPED_ENTRY_TYPES.has("EXCHANGE_DEPOSIT")).toBe(true);
     expect(MAPPED_ENTRY_TYPES.has("SALE")).toBe(true);
   });
 
-  it("الصدق في النطاق: الحالات المحمَّلة غير المدعومة تَرمي بدل التخمين الصامت", () => {
-    // مرتجع شراء (مورّد) ليس عكس بيع ⇒ يَرمي.
-    expect(() => postingLinesFor({ entryType: "RETURN", revenue: "-10000", cost: "-6000", amount: "-10000", party: "SUPPLIER" })).toThrow(UnmappedEntryTypeError);
-    // قبضٌ من غير عميل (ردّ مورّد) ⇒ يَرمي؛ وبلا طرفٍ أصلاً ⇒ يَرمي.
+  it("الصدق في النطاق: ما بقي غير مدعومٍ يَرمي بدل التخمين الصامت", () => {
+    // قبضٌ من مورّد (ردٌّ منه) ⇒ ما زال يَرمي: الطرف المقابل غير محدَّد بلا مُدخلٍ إضافيّ.
     expect(() => postingLinesFor({ entryType: "PAYMENT_IN", amount: "3000", party: "SUPPLIER" })).toThrow(UnmappedEntryTypeError);
     expect(() => postingLinesFor({ entryType: "PAYMENT_IN", amount: "3000" })).toThrow(UnmappedEntryTypeError);
-    // صرفٌ لغير مورّد (ردّ عميل/مصروف) ⇒ يَرمي؛ وبلا طرفٍ ⇒ يَرمي.
-    expect(() => postingLinesFor({ entryType: "PAYMENT_OUT", amount: "2000", party: "CUSTOMER" })).toThrow(UnmappedEntryTypeError);
-    expect(() => postingLinesFor({ entryType: "PAYMENT_OUT", amount: "2000" })).toThrow(UnmappedEntryTypeError);
     // رصيد افتتاحيّ بلا طرف عميل/مورّد (صيرفة مثلاً) ⇒ يَرمي (لا افتراض AR صامت).
     expect(() => postingLinesFor({ entryType: "OPENING", amount: "4000" })).toThrow(UnmappedEntryTypeError);
-    // مبلغٌ سالبٌ على نوعٍ غير مرتجعٍ (عكسٌ مخزَّن سالباً) ⇒ يَرمي (لا مدين/دائن سالب).
+    // مبلغٌ سالبٌ على نوعٍ غير موقَّعٍ ولا مرتجع ⇒ يَرمي (لا مدين/دائن سالب).
     expect(() => postingLinesFor({ entryType: "PURCHASE", amount: "-5000" })).toThrow(UnmappedEntryTypeError);
     expect(() => postingLinesFor({ entryType: "PAYMENT_OUT", amount: "-2000", party: "SUPPLIER" })).toThrow(UnmappedEntryTypeError);
+  });
+
+  it("ما صار مُخطَّطاً في الدفعة الكاملة لم يعد يَرمي — وأسطرُه في الحسابات الصحيحة", () => {
+    // مرتجع شراء: عكسُ شراءٍ (ذمم موردين مدينة / مخزون دائن) لا عكسُ بيع.
+    expect(netByRole(postingLinesFor({ entryType: "RETURN", revenue: "-10000", cost: "-6000", amount: "-10000", party: "SUPPLIER" })))
+      .toMatchObject({ AP: 10000, INVENTORY: -10000 });
+    // ردُّ عميلٍ نقداً: ذمّته تُدان بالمردود والصندوق يُدائن.
+    expect(netByRole(postingLinesFor({ entryType: "PAYMENT_OUT", amount: "2000", party: "CUSTOMER", cashRole: "CASH" })))
+      .toMatchObject({ AR: 2000, CASH: -2000 });
+    // صرفٌ بلا طرف ⇒ مصروفٌ تشغيليّ.
+    expect(netByRole(postingLinesFor({ entryType: "PAYMENT_OUT", amount: "2000", cashRole: "CASH" })))
+      .toMatchObject({ OPERATING_EXPENSE: 2000, CASH: -2000 });
   });
 });

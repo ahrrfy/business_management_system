@@ -14,7 +14,7 @@ export interface SeedAccount {
 
 export const CHART_ACCOUNTS: SeedAccount[] = [
   { id: 1, code: "1000", name: "الأصول", type: "ASSET", parentId: null, systemRole: null, sortOrder: 10 },
-  { id: 2, code: "1100", name: "الصندوق", type: "ASSET", parentId: 1, systemRole: "CASH", sortOrder: 11 },
+  { id: 2, code: "1100", name: "الصندوق (درج الكاشير)", type: "ASSET", parentId: 1, systemRole: "CASH", sortOrder: 11 },
   { id: 3, code: "1150", name: "البطاقة / البنك", type: "ASSET", parentId: 1, systemRole: "CARD_BANK", sortOrder: 12 },
   { id: 4, code: "1200", name: "المخزون", type: "ASSET", parentId: 1, systemRole: "INVENTORY", sortOrder: 13 },
   { id: 5, code: "1300", name: "ذمم العملاء (مدينون)", type: "ASSET", parentId: 1, systemRole: "AR", sortOrder: 14 },
@@ -44,4 +44,19 @@ export const CHART_ACCOUNTS: SeedAccount[] = [
   { id: 29, code: "5500", name: "مصروفات تشغيلية عامة", type: "EXPENSE", parentId: 24, systemRole: "OPERATING_EXPENSE", sortOrder: 55 },
   { id: 30, code: "5600", name: "خسائر (تالف / شحن غير مسترد / فروق)", type: "EXPENSE", parentId: 24, systemRole: "LOSSES", sortOrder: 56 },
   { id: 31, code: "5900", name: "مصروفات أخرى", type: "EXPENSE", parentId: 24, systemRole: "OTHER_EXPENSE", sortOrder: 59 },
+  // ── الدفعة الكاملة (١٢/٨، هجرة 0174): حسابات الأنواع الـ٢٥ الباقية. كلها تقابل أرصدةً
+  //    يتتبّعها النظام فعلاً بأعمدة مستقلّة، فالقيد يعكس مكان المال لا تجريداً محاسبياً.
+  { id: 32, code: "1110", name: "الخزينة الإدارية", type: "ASSET", parentId: 1, systemRole: "TREASURY_CASH", sortOrder: 17 },
+  { id: 33, code: "1120", name: "نقدٌ في الطريق (بين الفروع)", type: "ASSET", parentId: 1, systemRole: "CASH_IN_TRANSIT", sortOrder: 18 },
+  { id: 34, code: "1160", name: "عهدة المناديب", type: "ASSET", parentId: 1, systemRole: "DELIVERY_FLOAT", sortOrder: 19 },
+  { id: 35, code: "1170", name: "رصيدٌ لدى الصيرفة (دينار)", type: "ASSET", parentId: 1, systemRole: "EXCHANGE_WALLET_IQD", sortOrder: 20 },
+  { id: 36, code: "1175", name: "رصيدٌ لدى الصيرفة (دولار)", type: "ASSET", parentId: 1, systemRole: "EXCHANGE_WALLET_USD", sortOrder: 21 },
+  { id: 37, code: "1180", name: "رصيدٌ لدى مزوّدي الكروت", type: "ASSET", parentId: 1, systemRole: "DIGITAL_WALLET", sortOrder: 22 },
+  { id: 38, code: "2400", name: "مستحقّات المناديب (أجور تحصيل)", type: "LIABILITY", parentId: 8, systemRole: "COURIER_PAYABLE", sortOrder: 24 },
+  // جاري المالك لا رأس المال: رأس المال مساهمةٌ **دائمة**، وتمويل الخزينة هنا يدخل ويخرج تشغيلياً
+  // ⇒ قيدُه على رأس المال يُضخّمه بكل إيداعٍ مؤقّت فيكذب الميزان. التزامٌ قابلٌ للردّ (قرار المحاسب ١٢/٨).
+  { id: 42, code: "2500", name: "جاري المالك", type: "LIABILITY", parentId: 8, systemRole: "OWNER_CURRENT", sortOrder: 25 },
+  { id: 39, code: "4600", name: "أرباح/خسائر الصرف المحقَّقة", type: "REVENUE", parentId: 17, systemRole: "FX_GAIN_LOSS", sortOrder: 46 },
+  { id: 40, code: "4700", name: "فروق التقريب", type: "REVENUE", parentId: 17, systemRole: "ROUNDING_DIFF", sortOrder: 47 },
+  { id: 41, code: "5700", name: "هدايا وترويج", type: "EXPENSE", parentId: 24, systemRole: "GIFTS_PROMO", sortOrder: 57 },
 ];

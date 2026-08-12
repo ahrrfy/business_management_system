@@ -1212,6 +1212,20 @@
       "when": 1787879426000,
       "tag": "0173_month_close_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 174,
+      "version": "5",
+      "when": 1787879427000,
+      "tag": "0174_chart_accounts_full_maps",
+      "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "5",
+      "when": 1787879428000,
+      "tag": "0175_journal_no_entry_status",
+      "breakpoints": true
     }
   ]
 }

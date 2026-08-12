@@ -8281,7 +8281,10 @@ export const journalEntries = mysqlTable(
       .references(() => accountingEntries.id, { onDelete: "cascade" }),
     entryDate: date("entryDate").notNull(),
     branchId: bigint("branchId", { mode: "number" }),
-    status: mysqlEnum("status", ["POSTED", "UNMAPPED"]).default("POSTED").notNull(),
+    // NO_ENTRY (هجرة 0175): حدثٌ **لا يستحقّ قيداً مزدوجاً عمداً** — لا فجوة. أوضحُ مثالٍ: إرسال
+    // COD يرفع سجلّ عهدة المندوب تشغيلياً، لكن لا أصلَ جديد ينشأ (العميل ما زال المَدين والمندوب
+    // وكيلٌ لم يقبض). خلطُه بالفجوة كان سيُبقي بوّابة ACTIVE مقفلةً إلى الأبد بلا سبب.
+    status: mysqlEnum("status", ["POSTED", "UNMAPPED", "NO_ENTRY"]).default("POSTED").notNull(),
     unmappedReason: varchar("unmappedReason", { length: 255 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },

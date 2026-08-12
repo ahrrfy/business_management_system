@@ -149,7 +149,23 @@ describe("shadowHook — خطّاف الدفتر المزدوج (ش١)", () => {
     expect(j.reason).toContain("غير مُمرَّرة");
   });
 
-  it("٦) نوعٌ غير مُخطَّط (GIFT_OUT) ⇒ العملية تنجح والفجوة تُسجَّل (س٣ — الاختبار الحاسم)", async () => {
+  it("٦) حالةٌ يعجز المحرّك عنها ⇒ العملية تنجح والفجوة تُسجَّل (س٣ — الاختبار الحاسم)", async () => {
+    // تحديثُ نطاق (١٢/٨): بعد الدفعة الكاملة صارت أنواع EntryType الـ٣١ كلّها مُخطَّطة، فلم يعد
+    // GIFT_OUT صالحاً مُحفِّزاً. الثابت نفسه يبقى ويُختبَر بحالةٍ ما زالت تعجز فعلاً: رصيدٌ
+    // افتتاحيّ بلا طرف عميل/مورّد (رصيد صيرفة) — المحرّك يرفض افتراض AR صامتاً.
+    await seedBase("SHADOW");
+    await withTx(async (tx) => {
+      await postEntry(tx, { entryType: "OPENING", branchId: 1, amount: money("500.00") });
+    });
+
+    // العملية المالية تمّت (لم تُرمَ رميةٌ تُسقط المعاملة).
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
+    const [j] = await journals();
+    expect(j.status).toBe("UNMAPPED");
+    expect(j.reason).toContain("OPENING");
+  });
+
+  it("٦ب) الهدية صارت مُخطَّطة ⇒ قيدٌ متوازن على حساب الهدايا لا فجوة", async () => {
     await seedBase("SHADOW");
     await withTx(async (tx) => {
       await postEntry(tx, {
@@ -160,11 +176,10 @@ describe("shadowHook — خطّاف الدفتر المزدوج (ش١)", () => {
       });
     });
 
-    // العملية المالية تمّت (لم تُرمَ رميةٌ تُسقط المعاملة).
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
     const [j] = await journals();
-    expect(j.status).toBe("UNMAPPED");
-    expect(j.reason).toContain("GIFT_OUT");
+    expect(j.status).toBe("POSTED");
+    expect(j.lines.find((l) => l.role === "GIFTS_PROMO")?.debit).toBe(20);
+    expect(j.lines.find((l) => l.role === "INVENTORY")?.credit).toBe(20);
   });
 
   it("٧) تراجُع المعاملة يتراجع معه القيد المزدوج ⇒ لا قيدَ يتيم (س٤)", async () => {

@@ -82,6 +82,27 @@ export async function writeJournalGap(
 }
 
 /**
+ * يسجّل حدثاً **لا يستحقّ قيداً مزدوجاً عمداً** — وهو غير الفجوة تماماً. الفجوة عجزٌ يُقفل بوّابة
+ * ACTIVE؛ وهذا قرارٌ محاسبيّ صريح (مثاله إرسال COD: سجلّ عهدةٍ تشغيليّ بلا أصلٍ جديد ينشأ).
+ * يُكتَب صفٌّ ليبقى الأثر كاملاً: كل حدثٍ ماليٍّ له سطرٌ في دفتر القيود ولو بلا أسطر.
+ */
+export async function writeJournalNoEntry(
+  tx: Tx,
+  entryId: number,
+  entryDate: Date,
+  branchId: number | null,
+  reason: string,
+): Promise<void> {
+  await tx.insert(journalEntries).values({
+    entryId,
+    entryDate,
+    branchId,
+    status: "NO_ENTRY",
+    unmappedReason: reason.slice(0, 255),
+  });
+}
+
+/**
  * يحذف القيد المزدوج لحدثٍ ماليّ (أسطرُه تُجرَف بـ`ON DELETE CASCADE`). يصمت إن لم يوجد قيد.
  * يُستعمل قبل إعادة كتابة قيدٍ تغيّر مبلغُه — `upsertOpeningEntry` يُعدّل مبالغ قيودٍ قائمة،
  * فلولا الحذف-ثمّ-الكتابة لبقي القيد المزدوج بائتاً يخالف الدفتر.
