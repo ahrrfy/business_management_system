@@ -200,7 +200,8 @@ export const reservationsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران؛ المدير يحجز بفرعه المُسنَد فقط.
+      const elevated = ctx.user.role === "admin";
       if (!elevated && Number(ctx.user.branchId) !== input.branchId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع الحجز لفرع آخر" });
       }

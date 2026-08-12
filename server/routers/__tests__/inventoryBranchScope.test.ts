@@ -1,6 +1,6 @@
-// عزل المدير في المخزون — «قراءة الكل، كتابة فرعه» (قرار المالك ٢٣/٧).
-// قبل الإصلاح كانت الحالة معكوسة: المدير يكتب أيّ فرع (elevated) لكن يُرفَض قراءةُ فرعٍ آخر (throw ٢٣/٦).
-// بعده: القراءة عبر الفروع مسموحة للمدير (إشراف)، والكتابة (تحويل/تسوية/…) مقصورةٌ على فرعه.
+// عزل المدير في المخزون — «قراءة/كتابة فرعه فقط» (قرار المالك ١٢/٨/٢٦ يعكس ٢٣/٧).
+// ١٢/٨: لا عبورَ للمدير بين الفروع إطلاقاً — لا قراءةً ولا كتابةً. المالك (isOwner→admin) والأدمن يعبُران.
+// (سابقاً ٢٣/٧ كان المدير يقرأ كلَّ الفروع؛ أُلغي.) عزل القراءة مُوسَّعٌ في managerBranchIsolation.test.ts.
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -37,21 +37,9 @@ function makeCtx(user: any) { return { req: { headers: {} }, res: { cookie() {},
 async function userById(id: number) { return (await db().select().from(s.users).where(eq(s.users.id, id)).limit(1))[0]; }
 beforeEach(async () => { await reset(); await seed(); });
 
-describe("عزل المدير في المخزون — «قراءة الكل، كتابة فرعه» (قرار المالك ٢٣/٧)", () => {
-  it("قراءة الكل: مدير ف١ يقرأ مخزون ف٢ عبر onHand — لا يُرفَض (كان FORBIDDEN)", async () => {
-    const caller = appRouter.createCaller(makeCtx(await userById(4)));
-    const rows = await caller.inventory.onHand({ branchId: 2 });
-    expect(Array.isArray(rows)).toBe(true);
-    expect(rows.length).toBeGreaterThanOrEqual(1); // رأى رصيد ف٢ (variant 1)
-  });
-
-  it("قراءة الكل: مدير ف١ يقرأ stockByBranch لف٢ — كل الصفوف من ف٢", async () => {
-    const caller = appRouter.createCaller(makeCtx(await userById(4)));
-    const rows = await caller.inventory.stockByBranch({ branchId: 2 });
-    expect(rows.length).toBeGreaterThanOrEqual(1);
-    expect(rows.every((r: any) => Number(r.branchId) === 2)).toBe(true);
-  });
-
+describe("عزل المدير في المخزون — «قراءة/كتابة فرعه فقط» (قرار المالك ١٢/٨ يعكس ٢٣/٧)", () => {
+  // عزل القراءة (المدير يقرأ فرعه فقط، لا يعبُر) مُغطّى في managerBranchIsolation.test.ts (stockByBranch).
+  // هنا ثابت الكتابة: لا يُحوّل المدير من فرعٍ ليس فرعه (transferService)، والأدمن يعبُر.
   it("كتابة فرعه: مدير ف١ لا يُحوّل **من** ف٢ (فرعٌ ليس له) — FORBIDDEN", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(4)));
     await expect(

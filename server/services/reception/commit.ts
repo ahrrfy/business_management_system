@@ -314,7 +314,8 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       await tx.select().from(receptionDrafts).where(eq(receptionDrafts.id, input.draftId)).for("update").limit(1)
     )[0];
     if (!draft) throw new TRPCError({ code: "NOT_FOUND", message: "المسوّدة غير موجودة" });
-    const elevated = actor.role === "admin" || actor.role === "manager";
+    // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير مقيَّدٌ بفرعه.
+    const elevated = actor.role === "admin";
     if (!elevated && (actor.branchId == null || Number(draft.branchId) !== Number(actor.branchId))) {
       throw new TRPCError({ code: "FORBIDDEN", message: "المسوّدة تخصّ فرعاً آخر" });
     }

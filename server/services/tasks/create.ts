@@ -6,6 +6,7 @@ import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
 import { withTx } from "../tx";
 import { nextTaskNumber } from "./helpers";
+import { canCrossBranches } from "../../lib/branchAuthority";
 
 export type TaskKind = "SERVICE_REQUEST" | "SUPPORT" | "INQUIRY" | "FOLLOW_UP" | "INTERNAL";
 export type TaskPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
@@ -49,14 +50,16 @@ export async function createTask(input: CreateTaskInput, actor: CreateTaskActor,
 
     if (input.assignedTo != null) {
       const assignee = (await t
-        .select({ id: users.id, branchId: users.branchId, role: users.role, isActive: users.isActive })
+        .select({ id: users.id, branchId: users.branchId, role: users.role, isActive: users.isActive, isOwner: users.isOwner })
         .from(users)
         .where(eq(users.id, input.assignedTo))
         .limit(1))[0];
       if (!assignee || !assignee.isActive) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير موجود أو معطّل" });
       }
-      const elevatedAssignee = assignee.role === "admin" || assignee.role === "manager";
+      // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن وحدهما عابرا الفروع؛ مدير الفرع مقيَّدٌ بفرعه.
+      // المُسنَد إليه صفٌّ خام غير مُطبَّع ⇒ نستشير isOwner صراحةً عبر canCrossBranches (P2 مراجعة Codex).
+      const elevatedAssignee = canCrossBranches({ role: assignee.role, isOwner: assignee.isOwner });
       if (!elevatedAssignee && Number(assignee.branchId) !== input.branchId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إسناد المهمة إلى موظف من فرع آخر" });
       }

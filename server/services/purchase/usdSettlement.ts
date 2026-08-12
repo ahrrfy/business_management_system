@@ -44,7 +44,9 @@ export async function settlePurchaseUsdDirect(
     if (po.agreedCurrency !== "USD" || !po.usdTotal || !po.agreedRate) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة المحددة ليست فاتورة مورد بالدولار" });
     }
-    if (actor.branchId != null && Number(po.branchId) !== Number(actor.branchId) && actor.role !== "admin" && actor.role !== "manager") {
+    // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ كان
+    // `&& role !== "manager"` يُعفي المدير فيسدّد فاتورة فرعٍ آخر.
+    if (actor.branchId != null && Number(po.branchId) !== Number(actor.branchId) && actor.role !== "admin") {
       throw new TRPCError({ code: "FORBIDDEN", message: "فاتورة الشراء تخص فرعاً آخر" });
     }
 

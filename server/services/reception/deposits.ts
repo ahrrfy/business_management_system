@@ -129,7 +129,7 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
     if (draft.status !== "OPEN") {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الطلب لم يعد مفتوحاً — لا يُقبض عربون على طلبٍ مُثبَّت/ملغى" });
     }
-    const elevated = actor.role === "admin" || actor.role === "manager";
+    const elevated = actor.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
     if (!elevated && Number(draft.branchId) !== Number(actor.branchId)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
     }
@@ -288,7 +288,7 @@ export async function refundDeposit(
       await tx.select().from(orderPayments).where(eq(orderPayments.id, input.paymentId)).for("update").limit(1)
     )[0]!;
 
-    const elevated = actor.role === "admin" || actor.role === "manager";
+    const elevated = actor.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
     if (!elevated && Number(draft.branchId) !== Number(actor.branchId)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
     }
@@ -427,7 +427,7 @@ export async function listDraftPayments(draftId: number, actor?: (Actor & { role
           .limit(1)
       )[0];
       if (!draft) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب المحفوظ غير موجود" });
-      const elevated = actor.role === "admin" || actor.role === "manager";
+      const elevated = actor.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
       if (!elevated && Number(draft.branchId) !== Number(actor.branchId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
       }

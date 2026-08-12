@@ -25,10 +25,10 @@ import { checkVariantSanity, classifySeverity, type UnitPricing } from "../../sh
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
 
 // IDOR (تدقيق ٢/٧): posList/adminList/byBarcode كانت تثق بـbranchId العميل ⇒ أي مستخدم مصادَق
-// يقرأ مخزون أي فرع بتمرير معرّفه. نُقيّد غير المرتفعين (كاشير/مخزن/…) بفرعهم المُسنَد؛ المدير/الأدمن
-// يعبُران الفروع (شرعيّ). المنتجات/الأسعار مشتركة على مستوى الشركة؛ المحجوب هو كمية مخزون الفرع.
+// يقرأ مخزون أي فرع بتمرير معرّفه. عزل مدير الفرع (قرار المالك ١٢/٨): غير العابر (كاشير/مخزن/مدير)
+// يُقيَّد بفرعه المُسنَد؛ المالك/الأدمن وحدهما يعبُران. المنتجات/الأسعار مشتركة؛ المحجوب كمية مخزون الفرع.
 function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, requested: number): number {
-  const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+  const elevated = ctx.user.role === "admin";
   if (elevated) return requested;
   // عزل صارم (تدقيق ١٧/٧): غير المرتفع بلا فرع مُسنَد كان يقرأ مخزون الفرع المطلوب من العميل ⇒ تسريب
   // كميات أي فرع عبر posList/adminList/byBarcode. نرفض بدل الوثوق بمدخل العميل (اتفاقية scopedBranch).

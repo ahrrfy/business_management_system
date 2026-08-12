@@ -54,7 +54,7 @@ export default function Inventory() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
-  const canPickBranch = role === "admin" || role === "manager";
+  const canPickBranch = role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يختاران فرعاً
   const canAdjust = role === "admin" || role === "manager" || role === "warehouse";
   // التسوية المضمّنة سطر-بسطر للمدير فقط — المسار المعتمد للجميع صار جلسة جرد موثّقة.
   const canInlineAdjust = role === "admin" || role === "manager";

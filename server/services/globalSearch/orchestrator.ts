@@ -2,7 +2,7 @@
 import { getDb } from "../../db";
 import type { SearchEntityType, SearchResult, GlobalSearchInput } from "./types";
 import { classifyQuery } from "./types";
-import { canSeeType, isElevated, MASTER_DATA_TYPES, BRANCH_SCOPED_TYPES, ADMIN_TYPES } from "./rbac";
+import { canSeeType, MASTER_DATA_TYPES, BRANCH_SCOPED_TYPES, ADMIN_TYPES } from "./rbac";
 import { searchEmployees, searchUsers } from "./searchHr";
 import { searchProducts, searchCustomers, searchSuppliers } from "./searchMasterData";
 import { searchInvoices, searchQuotations, searchWorkOrders, searchPurchaseOrders, searchExpenses } from "./searchDocuments";
@@ -15,9 +15,10 @@ export async function globalSearch(input: GlobalSearchInput): Promise<SearchResu
   if (!query) return [];
 
   const perEntityLimit = Math.min(Math.max(input.perEntityLimit ?? 6, 1), 20);
-  const elevated = isElevated(input.role);
-  // قصر الفرع: لـelevated نمرّر null (يبحث في كل الفروع)، لغيرهم نقيّد بفرعه.
-  const scopedBranchId = elevated ? null : input.branchId;
+  // قصر الفرع (قرار المالك ١٢/٨: عزل مدير الفرع): المالك/الأدمن فقط يبحثان كلَّ الفروع (null)؛
+  // مدير الفرع وغيره مقيَّدون بفرعهم (input.role مُطبَّع ⇒ owner=admin). isElevated في rbac.ts يبقى
+  // لسلطة رؤية أنواع المستندات (المدير يراها) لا للفرع — فصلٌ متعمَّد بين السلطة والعزل.
+  const scopedBranchId = input.role === "admin" ? null : input.branchId;
 
   const override = input.permissionsOverride ?? null;
   const requested = new Set<SearchEntityType>(

@@ -32,6 +32,10 @@ export async function recordPurchaseBonusGift(input: RecordPurchaseBonusInput, a
       .limit(1)
   )[0];
   if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+  // عزل مدير الفرع (قرار المالك ١٢/٨): بونص الشراء يُقيَّد بفرع الفاعل — المالك/الأدمن وحدهما يعبُران.
+  if (actor.role !== "admin" && Number(po.branchId) !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "أمر الشراء يخصّ فرعاً آخر" });
+  }
 
   // حلّ وحدة الأساس لكل متغيّر (الكمية بوحدة الأساس ⇒ نمرّر وحدة الأساس بمعاملٍ 1 لـ receiveInboundGift).
   const variantIds = Array.from(new Set(bonus.map((b) => b.variantId)));

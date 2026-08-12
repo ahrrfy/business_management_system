@@ -50,7 +50,8 @@ export const printPosRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المدير يُجبَر على فرعه (لا يُصدَّق branchId القادم من العميل — منع IDOR).
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران؛ المدير يبيع بفرعه المُسنَد فقط.
+      const elevated = ctx.user.role === "admin";
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا الكاشير" });
       }

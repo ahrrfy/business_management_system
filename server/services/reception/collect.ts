@@ -60,7 +60,9 @@ export async function collectOnReceptionInvoice(
     });
   }
 
-  const elevated = actor.role === "admin" || actor.role === "manager";
+  // عزل مدير الفرع (قرار المالك ١٢/٨): enforceBranchId يُفرَض على المدير أيضاً (المالك/الأدمن فقط بلا قيد،
+  // owner مُطبَّع ⇒ admin) — كان `|| manager` يجعله null فيُحصّل المدير على فاتورة فرعٍ آخر (بطاقة/تحويل).
+  const elevated = actor.role === "admin";
   const result = await retryOnDeadlock(() => processPayment(
     {
       invoiceId: input.invoiceId,

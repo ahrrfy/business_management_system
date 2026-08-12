@@ -995,11 +995,14 @@ async function lockIntent(tx: Tx, intentId: number) {
 }
 
 function assertActorOwnsIntent(intent: { createdBy: number; branchId: number }, actor: Actor): void {
-  const elevated = actor.role === "admin" || actor.role === "manager";
-  if (!elevated && Number(intent.createdBy) !== actor.userId) {
+  // المشرف (المالك/الأدمن/المدير) يرى نيّات موظّفي نطاقه لا ما أنشأه هو فقط (عزل السجلّ الفرديّ للكاشير).
+  const supervisor = actor.role === "admin" || actor.role === "manager";
+  if (!supervisor && Number(intent.createdBy) !== actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة لمستخدم آخر" });
   }
-  if (!elevated && Number(intent.branchId) !== Number(actor.branchId)) {
+  // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران الفروع (owner مُطبَّع ⇒ admin)؛
+  // المدير مقيَّدٌ بفرعه — كان `|| manager` يُعفيه فيمسّ نيّة فرعٍ آخر.
+  if (actor.role !== "admin" && Number(intent.branchId) !== Number(actor.branchId)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة تخص فرعاً آخر" });
   }
 }

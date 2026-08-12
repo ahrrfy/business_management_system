@@ -95,8 +95,9 @@ export const tasksRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      // عزل الفرع (نمط workOrders.create): غير المرتفع لا يُنشئ مهمة خارج فرعه.
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير
+      // لا يُنشئ مهمّة خارج فرعه المُسنَد (كان `|| manager` يُعفيه).
+      const elevated = ctx.user.role === "admin";
       if (!elevated && Number(ctx.user.branchId) !== input.branchId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع إنشاء مهمة لفرع آخر" });
       }

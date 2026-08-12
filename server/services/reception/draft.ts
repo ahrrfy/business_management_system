@@ -424,7 +424,8 @@ export async function sweepExpiredDrafts(): Promise<number> {
 }
 
 function assertDraftBranch(row: { branchId: number | string }, actor: Actor & { role?: string }) {
-  const elevated = actor.role === "admin" || actor.role === "manager";
+  // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير مقيَّدٌ بفرعه.
+  const elevated = actor.role === "admin";
   if (elevated) return;
   if (actor.branchId == null || Number(row.branchId) !== Number(actor.branchId)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "المسوّدة تخصّ فرعاً آخر" });

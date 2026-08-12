@@ -133,7 +133,7 @@ export interface IraStatsResult {
  * شهرياً (آخر ٦ أشهر) لكل فرع: matched/counted من stocktakeDecisions.diffQty=0،
  * ودقة كل عامل بإسناد كل صنف معدود لصاحب العدّ الفعّال (RECOUNT الأحدث وإلا FIRST/فصل التعارض).
  */
-export async function getIraStats(): Promise<IraStatsResult> {
+export async function getIraStats(restrictBranchId?: number | null): Promise<IraStatsResult> {
   const db = requireDb();
   // أول الشهر قبل ٥ أشهر بـUTC (النافذة = ٦ أشهر شاملةً الحاليّ). البناء بـDate.UTC حتميّ ومستقلّ
   // عن منطقة عملية Node (تدقيق ١٧/٧، #٧) — كان setDate/setHours/setMonth المحليّة تَنزاح على غير TZ=UTC.
@@ -156,6 +156,8 @@ export async function getIraStats(): Promise<IraStatsResult> {
         eq(stocktakeSessions.status, "APPROVED"),
         eq(stocktakeSessions.sessionType, "NORMAL"),
         gte(stocktakeSessions.approvedAt, monthStart),
+        // عزل مدير الفرع (قرار المالك ١٢/٨): يُمرَّر فرع المدير فيُحصَر IRA به؛ المالك/الأدمن null = كلّ الفروع.
+        restrictBranchId != null ? eq(stocktakeSessions.branchId, restrictBranchId) : undefined,
       ),
     );
 

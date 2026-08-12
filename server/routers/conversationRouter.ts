@@ -30,10 +30,10 @@ const channelEnum = z.enum(["WHATSAPP", "INSTAGRAM", "TIKTOK", "STORE", "PHONE",
  * IDOR: نَفحص branchId المحادثة قَبل أَي تَعديل ⇒ مَنع كاشير الفَرع X مِن تَعديل مُحادثات الفَرع Y.
  */
 
-/** يَستخرج scopedBranchId مِن ctx.user (للـcashierProcedure الذي لا يَحقنها).
- *  مدير/أدمن ⇒ null (لا قَيد فرع)؛ غَيرهما ⇒ branchId الإلزامي (مَفروض في requireOwnBranch). */
+/** يَستخرج scopedBranchId مِن ctx.user (للـcashierProcedure الذي لا يَحقنها). عزل مدير الفرع (قرار
+ *  المالك ١٢/٨): المالك/الأدمن ⇒ null (عبور الفروع، owner مُطبَّع ⇒ admin)؛ مدير الفرع وغيره ⇒ فرعهم. */
 function deriveScopedBranchId(ctxUser: { role: string; branchId?: number | string | null }): number | null {
-  const elevated = ctxUser.role === "admin" || ctxUser.role === "manager";
+  const elevated = ctxUser.role === "admin";
   if (elevated) return null;
   return ctxUser.branchId != null ? Number(ctxUser.branchId) : null;
 }

@@ -38,9 +38,10 @@ export async function loadReservation(tx: Tx, id: number) {
   return rows[0];
 }
 
-/** عزل الفرع (نمط tasks/workOrders): غير المرتفع لا يمسّ حجز فرع آخر. */
+/** عزل الفرع (قرار المالك ١٢/٨: عزل مدير الفرع): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛
+ *  المدير مقيَّدٌ بفرعه فلا يمسّ حجز فرعٍ آخر. */
 export function assertReservationBranch(res: { branchId: number | string }, actor: Actor & { role?: string }) {
-  const elevated = actor.role === "admin" || actor.role === "manager";
+  const elevated = actor.role === "admin";
   if (elevated) return;
   if (Number(res.branchId) !== actor.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "الحجز لا يخصّ فرعك" });

@@ -71,7 +71,8 @@ const statusEnum = z.enum(["COUNTING", "REVIEW", "APPROVED", "CANCELLED"]);
 function restrictedBranchOf(ctx: {
   user: { role: string; branchId: number | null };
 }): number | null {
-  if (ctx.user.role === "admin" || ctx.user.role === "manager") return null;
+  // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط بلا قيد؛ مدير الفرع يُجبَر على فرعه (كان يعبُر).
+  if (ctx.user.role === "admin") return null;
   const b = ctx.user.branchId;
   if (b == null) {
     throw new TRPCError({
@@ -631,7 +632,7 @@ export const stocktakeRouter = router({
       return rows.map(({ annualValue: _hidden, ...safe }) => safe);
     }),
 
-  ira: managerProcedure.query(async () => getIraStats()),
+  ira: managerProcedure.query(async ({ ctx }) => getIraStats(restrictedBranchOf(ctx))),
 
   stats: warehouseProcedure.query(async ({ ctx }) => {
     return getStocktakeStats({ restrictBranchId: restrictedBranchOf(ctx) });

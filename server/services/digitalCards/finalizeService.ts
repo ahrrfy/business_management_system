@@ -94,11 +94,12 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
   if (!intent) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
 
   // العزل والملكية يسبقان replay: لا تكشف فاتورة/طباعة نيّةٍ لمستخدم أو فرع آخر.
-  const elevated = actor.role === "admin" || actor.role === "manager";
-  if (!elevated && Number(intent.createdBy) !== actor.userId) {
+  // المشرف (المالك/الأدمن/المدير) يرى نيّات نطاقه؛ عزل مدير الفرع (قرار المالك ١٢/٨): الفرع للمالك/الأدمن فقط.
+  const supervisor = actor.role === "admin" || actor.role === "manager";
+  if (!supervisor && Number(intent.createdBy) !== actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة لمستخدم آخر" });
   }
-  if (!elevated && Number(intent.branchId) !== Number(actor.branchId)) {
+  if (actor.role !== "admin" && Number(intent.branchId) !== Number(actor.branchId)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة تخصّ فرعاً آخر" });
   }
   if (input.paymentMethod !== intent.paymentMethod) {
@@ -205,7 +206,7 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       message: "حجز المحفظة لهذه النيّة عولج مسبقاً — لا تُنشأ فاتورة ثانية",
     });
   }
-  if (intent.status === "NEEDS_REVIEW" && !elevated) {
+  if (intent.status === "NEEDS_REVIEW" && !supervisor) {
     throw new TRPCError({ code: "FORBIDDEN", message: "إكمال نيّة المراجعة قرارٌ مديريّ" });
   }
 

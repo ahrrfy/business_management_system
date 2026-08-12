@@ -342,7 +342,9 @@ export const saleRouter = router({
       // G1 (تدقيق ١٤/٦/٢٦): قبل الإصلاح كان `ctx.user.branchId ?? input.branchId` يسمح
       // لكاشير بـbranchId=null أن يحقن أي input.branchId (بيع في فرع آخر — IDOR مالي).
       // الآن: throw FORBIDDEN صريح (نمط F4 expense.create).
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير
+      // يبيع بفرعه المُسنَد فقط (كان `|| manager` يسمح له بالبيع على فرعٍ آخر عبر input.branchId).
+      const elevated = ctx.user.role === "admin";
       let effectiveBranchId = input.branchId;
       if (!elevated) {
         if (ctx.user.branchId == null) {
@@ -421,7 +423,10 @@ export const saleRouter = router({
       // عزل الفرع: غير المدير يُرفض دفعه على فاتورة فرع آخر (منع IDOR).
       // G1 (تدقيق ١٤/٦/٢٦): استبدل `?? -1` برميٍ صريح. كان -1 يجعل enforceBranchId يطابق
       // عدم وجود فاتورة (silent failure)؛ الآن: FORBIDDEN مباشر لكاشير بلا فرع.
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      // عزل مدير الفرع (قرار المالك ١٢/٨): enforceBranchId يُفرَض على المدير أيضاً (المالك/الأدمن فقط
+      // بلا قيد، owner مُطبَّع ⇒ admin) — كان `|| manager` يجعله null فيُسدَّد على فاتورة فرعٍ آخر
+      // (بطاقة/تحويل؛ النقد محميّ بالوردية). نظير reception.collect.
+      const elevated = ctx.user.role === "admin";
       let enforceBranchId: number | null = null;
       if (!elevated) {
         if (ctx.user.branchId == null) {

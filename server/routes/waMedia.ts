@@ -13,6 +13,7 @@ import { getUserFromRequest } from "../auth/session";
 import { resolveCustomRole } from "../context";
 import { logger } from "../logger";
 import { getMediaForServing } from "../services/whatsapp/mediaService";
+import { canCrossBranches } from "../lib/branchAuthority";
 
 /**
  * أنواع الوسائط المسموح عرضها inline — قائمة بيضاء صريحة (نمط `ALLOWED_MIME` في
@@ -62,7 +63,9 @@ export function waMediaRouter(): Router {
     const authUser = user as typeof user & { customRoleLabel?: string | null };
     await resolveCustomRole(authUser);
     const role = authUser.role as string;
-    const elevated = role === "admin" || role === "manager";
+    // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران وسائط الفروع. هذا المسار REST لا
+    // يُطبِّع المالك (لا normalizeOwnerAuthority) ⇒ نستشير isOwner صراحةً عبر canCrossBranches (P2 Codex).
+    const elevated = canCrossBranches(authUser);
     if (role !== "admin") {
       const map: PermissionMap = resolvePermissions(
         role as RoleKey,

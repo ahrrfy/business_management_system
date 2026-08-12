@@ -44,7 +44,7 @@ export default function ConsignmentNotes() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
-  const isElevated = role === "admin" || role === "manager";
+  const isElevated = role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يختاران فرعاً
   // إزالة «?? 1» (نمط PR #288): بلا فرع مُسنَد يختار المرتفع فرع السند صراحةً — لا إسناد صامت للفرع ١
   // (السند حركة مخزون موقَّعة؛ فرع خاطئ = أرصدة أمانة منحرفة). من له فرع مُسنَد يبقى عليه.
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);

@@ -31,9 +31,10 @@ export async function loadTask(tx: Tx, id: number) {
   return rows[0];
 }
 
-/** عزل الفرع: admin/manager يعبُران؛ غيرهما يُرفَض إن كانت المهمة لفرع آخر (نمط assertWorkOrderBranch). */
+/** عزل الفرع (قرار المالك ١٢/٨: عزل مدير الفرع): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛
+ *  المدير مقيَّدٌ بفرعه فيُرفَض إن كانت المهمة لفرعٍ آخر (نمط assertWorkOrderBranch). */
 export function assertTaskBranch(task: { branchId: number | string }, actor: Actor & { role?: string }) {
-  const elevated = actor.role === "admin" || actor.role === "manager";
+  const elevated = actor.role === "admin";
   if (elevated) return;
   if (Number(task.branchId) !== actor.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "المهمة لا تخصّ فرعك" });

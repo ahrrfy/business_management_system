@@ -37,14 +37,16 @@ function actorOf(ctx: { user: { id: number; branchId?: number | null; role?: str
   };
 }
 function effectiveBranch(ctx: { user: { role?: string; branchId?: number | null } }, requested?: number | null) {
-  const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-  return elevated ? (requested ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : 0)) : Number(ctx.user.branchId);
+  // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يختاران فرعاً (owner مُطبَّع ⇒ admin)؛
+  // مدير الفرع يُثبَّت على فرعه المُسنَد (يُتجاهَل requested) — كان `|| manager` يُمرِّر أيّ فرع (ثغرة writeOff).
+  const crossBranch = ctx.user.role === "admin";
+  return crossBranch ? (requested ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : 0)) : Number(ctx.user.branchId);
 }
 // نطاق فرع الفاعل لفحص الملكية (مثيل ctx.scopedBranchId لكن على cashierProcedure الذي لا يوفّره):
-// المرتفعون (admin/manager) عابرو الفروع ⇒ null؛ غيرهم مقيَّدون بفرعهم (requireOwnBranch يضمن branchId).
+// المالك/الأدمن عابرا الفروع ⇒ null؛ مدير الفرع وغيره مقيَّدون بفرعهم (قرار المالك ١٢/٨؛ requireOwnBranch يضمن branchId).
 function scopedBranchOf(ctx: { user: { role?: string; branchId?: number | null } }): number | null {
-  const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-  return elevated ? null : (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+  const crossBranch = ctx.user.role === "admin";
+  return crossBranch ? null : (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
 }
 
 // IDOR (تدقيق ٢/٧): قراءات جهة التوصيل بالمعرّف (getParty/consignments/partyStatement) كانت تمرّر
