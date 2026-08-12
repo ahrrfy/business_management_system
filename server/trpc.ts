@@ -372,20 +372,30 @@ export const customersManagerProcedure = moduleProcedure(["manager"], "crm", "FU
 // وأدوار الاستقبال المخصّصة (حين تُعدَّل crm يدوياً إلى READ) كانت تنكسر رغم إبقاء workorders=FULL.
 // هذا هو نفس تعايُش (sales‖workorders) في invoiceViewProcedure أعلاه — قرارٌ متعمَّد بأنّ الوصول
 // لمحطة الاستقبال يستتبع القدرة على حفظ عميلها.
-export function customerReceptionCreateAllowed(user: {
+export function userHasCrmWriteAccess(user: {
   role: string;
   permissionsOverride?: unknown;
 }): boolean {
   if (user.role === "admin") return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
-  if (moduleAccessAllowed(user.role, override, "crm", "FULL", ["cashier", "manager", "sales_rep", "print_operator"])) {
-    return true;
-  }
+  return moduleAccessAllowed(user.role, override, "crm", "FULL", ["cashier", "manager", "sales_rep", "print_operator"]);
+}
+
+export function customerReceptionCreateAllowed(user: {
+  role: string;
+  permissionsOverride?: unknown;
+}): boolean {
+  if (user.role === "admin") return true;
+  if (userHasCrmWriteAccess(user)) return true;
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  // (١٢/٨، مراجعة Codex P1): المسار البديل يشترط أيضاً crm≥READ. سبب: البحث الذكيّ عن العملاء
+  // (smartSearch) داخل SmartCustomerInput يستعمل crmReadProcedure، فعميلٌ بلا crm ولا يقدر يُطابق
+  // «كاشية العميل السابق» فيُنشَأ مكرَّراً ⇒ CONFLICT على الهاتف يمنع إكمال الطلب. الحلّ هنا: نُبقي
+  // fallback المرجعيّ (يُحفَظ الاسم/الرقم على الطلب فقط بلا سجلّ دائم) حين crm=NONE — فلا كسر.
+  const resolved = resolvePermissions(user.role as RoleKey, override);
+  if (resolved.crm === "NONE") return false;
   // POS_STATION_GATES.RECEPTION.allowedRoles = ["cashier", "manager", "print_operator"]
-  if (moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"])) {
-    return true;
-  }
-  return false;
+  return moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
 }
 
 export const customersReceptionCreateProcedure = branchScopedProcedure.use(
