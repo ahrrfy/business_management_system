@@ -12,12 +12,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { isDupEntry } from "../../../shared/errorMap.ar";
 import { getDb } from "../../db";
+import { todayUtcDate } from "../businessDay";
 import { getActiveLock } from "../periodLockService";
 import {
   approveMonthClose,
   rejectMonthClose,
   requestMonthClose,
 } from "../reports/monthCloseRequest";
+import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
+import { createVoucher } from "../voucherService";
 import { withTx } from "../tx";
 import { truncateTables } from "./__testUtils__";
 
@@ -33,6 +36,7 @@ function db() {
 
 async function reset() {
   await truncateTables([
+    "idempotencyKeys",
     "monthCloseRequests",
     "financialPeriods",
     "journalLines",
@@ -73,6 +77,18 @@ async function rowOf(id: number) {
 beforeEach(reset);
 
 describe("طلب إقفال الشهر واعتماده (ش٥ب)", () => {
+  it("٠أ) requestMonthClose ترفض الشهر الجاري والمستقبلي وفق يوم الأعمال UTC", async () => {
+    const currentMonth = todayUtcDate().slice(0, 7);
+    const [year, month] = currentMonth.split("-").map(Number);
+    const futureMonth = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 7);
+
+    await expect(withTx(async (tx) => requestMonthClose(tx, { month: currentMonth, requestedBy: MGR })))
+      .rejects.toMatchObject({ code: "BAD_REQUEST", message: "لا يُقفَل شهرٌ لم ينتهِ بعد." });
+    await expect(withTx(async (tx) => requestMonthClose(tx, { month: futureMonth, requestedBy: MGR })))
+      .rejects.toMatchObject({ code: "BAD_REQUEST", message: "لا يُقفَل شهرٌ لم ينتهِ بعد." });
+    expect(await db().select().from(s.monthCloseRequests)).toHaveLength(0);
+  });
+
   it("١) شهرٌ سالك ⇒ الطلب يُسجَّل معلَّقاً بلقطة جاهزية", async () => {
     const { id } = await req();
     const row = await rowOf(id);
@@ -132,6 +148,43 @@ describe("طلب إقفال الشهر واعتماده (ش٥ب)", () => {
     await withTx(async (tx) => expect(await getActiveLock(tx)).toBeNull()); // لم يُقفَل شيء
   });
 
+  it("٦ب) وردية تُفتَح بالتزامن مع الاعتماد تتسلسل قبله؛ يراها الفحص داخل tx ولا يُقفَل شيء", async () => {
+    const { id } = await req();
+    let releaseWriter!: () => void;
+    let markInserted!: () => void;
+    const inserted = new Promise<void>((resolve) => { markInserted = resolve; });
+    const holdWriter = new Promise<void>((resolve) => { releaseWriter = resolve; });
+
+    const writer = withTx(async (tx) => {
+      await lockBranchMonthCloseGate(tx, 2);
+      await tx.insert(s.shifts).values({
+        userId: MGR,
+        branchId: 2,
+        status: "OPEN",
+        openedAt: new Date("2026-07-31T23:59:00Z"),
+        openGuard: `${MGR}:2:concurrent-close-test`,
+        openingBalance: "0",
+      });
+      markInserted();
+      await holdWriter;
+    });
+    await inserted;
+
+    const approval = withTx(async (tx) => approveMonthClose(tx, { requestId: id, decidedBy: ADMIN }));
+    // إن كانت بوابة الشركة غير مشتركة، قد يكتمل الاعتماد بينما كتابة الوردية غير ملتزمة.
+    const premature = await Promise.race([
+      approval.then(() => "resolved", () => "rejected"),
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 75)),
+    ]);
+    expect(premature).toBe("blocked");
+
+    releaseWriter();
+    await writer;
+    await expect(approval).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect((await rowOf(id)).status).toBe("PENDING_APPROVAL");
+    await withTx(async (tx) => expect(await getActiveLock(tx)).toBeNull());
+  });
+
   it("٧) رفضٌ بسببٍ ⇒ REJECTED ويحرّر الشهر لطلبٍ جديد", async () => {
     const { id } = await req();
     await withTx(async (tx) =>
@@ -162,5 +215,25 @@ describe("طلب إقفال الشهر واعتماده (ش٥ب)", () => {
     await openShift(2); // فرع المبيعات، والطالب مدير الرئيسي
     await expect(req()).rejects.toThrow(TRPCError);
     expect(await db().select().from(s.monthCloseRequests)).toHaveLength(0);
+  });
+
+  it("١١) بعد التزام الإقفال لا يُنشأ سند معلّق بأثر رجعي داخل الشهر المقفَل", async () => {
+    const { id } = await req();
+    await withTx(async (tx) => approveMonthClose(tx, { requestId: id, decidedBy: ADMIN }));
+
+    await expect(createVoucher({
+      voucherType: "PAYMENT",
+      branchId: 1,
+      amount: "2000000.00",
+      paymentMethod: "TRANSFER",
+      partyType: "OTHER",
+      counterpartyName: "طرف اختبار",
+      description: "سند رجعي بعد الإقفال",
+      referenceNumber: "MONTH-CLOSE-RACE-1",
+      voucherDate: "2026-07-15",
+      clientRequestId: "month-close-backdated-pending",
+    }, { userId: MGR, branchId: 1, role: "manager" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 });

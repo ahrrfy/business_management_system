@@ -15,7 +15,9 @@ import { and, desc, eq } from "drizzle-orm";
 import { monthCloseRequests, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
+import { todayUtcDate } from "../businessDay";
 import { lockPeriod } from "../periodLockService";
+import { lockCompanyMonthCloseGate } from "./monthCloseGate";
 import { getMonthCloseReadiness } from "./monthCloseReadiness";
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -41,16 +43,19 @@ function monthCutoff(month: string): string {
   return `${month}-${String(lastDay).padStart(2, "0")}`;
 }
 
-function assertMonth(month: string): void {
+function assertCloseableMonth(month: string): void {
   if (!MONTH_RE.test(month)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "صيغة الشهر غير صالحة (YYYY-MM)." });
+  }
+  if (monthCutoff(month) >= todayUtcDate()) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُقفَل شهرٌ لم ينتهِ بعد." });
   }
 }
 
 /** يرمي إن كان الشهر محجوزاً، ويعيد اللقطة إن كان سالكاً. */
-async function assertReadyOrThrow(month: string) {
+async function assertReadyOrThrow(month: string, options?: { tx?: Tx; lockBlockers?: boolean }) {
   // branchId=null دائماً: القفل عامّ ⇒ الجاهزية عامّة (الثابت ١).
-  const readiness = await getMonthCloseReadiness({ month, branchId: null });
+  const readiness = await getMonthCloseReadiness({ month, branchId: null }, options);
   if (readiness.blocked) {
     const blockers = readiness.items.filter((i) => i.status === "BLOCK").map((i) => i.label).join(" · ");
     throw new TRPCError({
@@ -69,8 +74,8 @@ export async function requestMonthClose(
   tx: Tx,
   input: { month: string; requestedBy: number },
 ): Promise<{ id: number }> {
-  assertMonth(input.month);
-  const readiness = await assertReadyOrThrow(input.month);
+  assertCloseableMonth(input.month);
+  const readiness = await assertReadyOrThrow(input.month, { tx });
 
   const res = await tx.insert(monthCloseRequests).values({
     month: input.month,
@@ -107,8 +112,10 @@ export async function approveMonthClose(
     });
   }
 
-  // الثابت ٢: الفحص حيٌّ لا مخزَّن — قد تُفتَح وردية بين الطلب والاعتماد.
-  await assertReadyOrThrow(req.month);
+  // الثابت ٢: بوابة الشركة تتسلسل مع كتّاب الورديات/السندات، ثم يُعاد الفحص حيّاً
+  // وبـFOR UPDATE داخل **نفس** معاملة الاعتماد؛ لا اتصال منفصل ولا لقطة MVCC قديمة.
+  await lockCompanyMonthCloseGate(tx);
+  await assertReadyOrThrow(req.month, { tx, lockBlockers: true });
 
   const { id: periodId } = await lockPeriod(tx, {
     cutoffDate: monthCutoff(req.month),

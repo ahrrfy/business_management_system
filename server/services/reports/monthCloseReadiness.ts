@@ -21,7 +21,7 @@ import {
   stockAdjustmentRequests,
   stocktakeSessions,
 } from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, type Tx } from "../../db";
 
 export type ReadinessStatus = "OK" | "BLOCK" | "WARN";
 
@@ -63,11 +63,18 @@ function nextDay(to: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-async function countOf(table: Parameters<NonNullable<ReturnType<typeof getDb>>["select"]> extends never ? never : any, where: SQL | undefined): Promise<number> {
-  const db = getDb();
+type QueryExecutor = NonNullable<ReturnType<typeof getDb>> | Tx;
+
+async function countOf(db: QueryExecutor | null, table: any, where: SQL | undefined): Promise<number> {
   if (!db) return 0;
   const rows = await db.select({ n: sql<number>`COUNT(*)` }).from(table).where(where);
   return Number(rows[0]?.n ?? 0);
+}
+
+/** قراءة حاجزٍ حيّة داخل معاملة الاعتماد مع قفل الصفوف المطابقة، لا لقطة MVCC قديمة. */
+async function lockedCountOf(tx: Tx, table: any, where: SQL | undefined): Promise<number> {
+  const rows = await tx.select({ id: table.id }).from(table).where(where).for("update");
+  return rows.length;
 }
 
 function mk(
@@ -82,57 +89,62 @@ function mk(
 
 export async function getMonthCloseReadiness(
   input: MonthCloseReadinessInput,
+  options?: { tx?: Tx; lockBlockers?: boolean },
 ): Promise<MonthCloseReadinessResult> {
   const { from, to } = monthRange(input.month);
   const branchId = input.branchId ?? null;
   const upper = nextDay(to);
+  const db = options?.tx ?? getDb();
 
   const withBranch = (col: SQL | undefined, branchCol: any): SQL | undefined =>
     branchId == null ? col : (and(col, eq(branchCol, branchId)) as SQL);
 
-  const [openShifts, pendingVouchers, activeStocktakes, pendingAdjustments, ledgerGaps] =
-    await Promise.all([
-      // ورديةٌ ما زالت مفتوحةً وقد فُتحت في الشهر أو قبله ⇒ نقدُ الشهر لم يُعَدّ بعد.
-      countOf(
-        shifts,
-        withBranch(and(eq(shifts.status, "OPEN"), lt(shifts.openedAt, new Date(`${upper}T00:00:00Z`))) as SQL, shifts.branchId),
-      ),
-      // سندٌ معلَّقٌ مؤرَّخٌ في الشهر أو قبله: اعتمادُه بعد القفل سيصطدم بـassertPeriodOpen فيتعذّر
-      // اعتمادُه أبداً. لذلك يحجب — وقايةً لا تزيّناً. (المؤرَّخ بعد الشهر لا يُمَسّ.)
-      countOf(
-        receipts,
-        withBranch(
-          and(
-            eq(receipts.approvalStatus, "PENDING_APPROVAL"),
-            isNotNull(receipts.voucherNumber),
-            sql`COALESCE(${receipts.voucherDate}, DATE(${receipts.createdAt})) <= ${to}`,
-          ) as SQL,
-          receipts.branchId,
-        ),
-      ),
-      // جلسةٌ نشطةٌ الآن (لا تُنطَّق بتاريخ: النشِطة نشِطةٌ أياً كان شهر إنشائها).
-      countOf(
-        stocktakeSessions,
-        withBranch(inArray(stocktakeSessions.status, ["COUNTING", "REVIEW"]) as SQL, stocktakeSessions.branchId),
-      ),
-      countOf(
-        stockAdjustmentRequests,
-        withBranch(eq(stockAdjustmentRequests.status, "PENDING_APPROVAL") as SQL, stockAdjustmentRequests.branchId),
-      ),
-      // أحداثٌ ماليّةٌ في الشهر لم يُرحَّل لها قيدٌ مزدوج (نوعٌ غير مُخطَّط أو دلو نقدٍ ملتبس).
-      countOf(
-        journalEntries,
-        withBranch(
-          // عمود DATE بنمط Date في drizzle ⇒ تُمرَّر كائنات Date لا نصوصاً.
-          and(
-            eq(journalEntries.status, "UNMAPPED"),
-            gte(journalEntries.entryDate, new Date(`${from}T00:00:00Z`)),
-            lte(journalEntries.entryDate, new Date(`${to}T00:00:00Z`)),
-          ) as SQL,
-          journalEntries.branchId,
-        ),
-      ),
-    ]);
+  const openShiftWhere = withBranch(
+    and(eq(shifts.status, "OPEN"), lt(shifts.openedAt, new Date(`${upper}T00:00:00Z`))) as SQL,
+    shifts.branchId,
+  );
+  const pendingVoucherWhere = withBranch(
+    and(
+      eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+      isNotNull(receipts.voucherNumber),
+      sql`COALESCE(${receipts.voucherDate}, DATE(${receipts.createdAt})) <= ${to}`,
+    ) as SQL,
+    receipts.branchId,
+  );
+
+  // في الاعتماد: القفلان الحاجزان قراءتان حاليتان FOR UPDATE داخل tx نفسها.
+  // في شاشة الجاهزية/إنشاء الطلب: تبقى القراءة الخفيفة العادية بلا أقفال.
+  const openShifts = options?.tx && options.lockBlockers
+    ? await lockedCountOf(options.tx, shifts, openShiftWhere)
+    : await countOf(db, shifts, openShiftWhere);
+  const pendingVouchers = options?.tx && options.lockBlockers
+    ? await lockedCountOf(options.tx, receipts, pendingVoucherWhere)
+    : await countOf(db, receipts, pendingVoucherWhere);
+
+  // التحذيرات لا تحجب الإقفال؛ تُقرأ من المنفّذ نفسه لضمان لقطة متّسقة بلا أقفال إضافية.
+  const activeStocktakes = await countOf(
+    db,
+    stocktakeSessions,
+    withBranch(inArray(stocktakeSessions.status, ["COUNTING", "REVIEW"]) as SQL, stocktakeSessions.branchId),
+  );
+  const pendingAdjustments = await countOf(
+    db,
+    stockAdjustmentRequests,
+    withBranch(eq(stockAdjustmentRequests.status, "PENDING_APPROVAL") as SQL, stockAdjustmentRequests.branchId),
+  );
+  const ledgerGaps = await countOf(
+    db,
+    journalEntries,
+    withBranch(
+      // عمود DATE بنمط Date في drizzle ⇒ تُمرَّر كائنات Date لا نصوصاً.
+      and(
+        eq(journalEntries.status, "UNMAPPED"),
+        gte(journalEntries.entryDate, new Date(`${from}T00:00:00Z`)),
+        lte(journalEntries.entryDate, new Date(`${to}T00:00:00Z`)),
+      ) as SQL,
+      journalEntries.branchId,
+    ),
+  );
 
   const items: ReadinessItem[] = [
     mk("openShifts", "ورديات مفتوحة", openShifts, "BLOCK",
