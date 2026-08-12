@@ -27,7 +27,7 @@ import { normalizeSearchText } from "../../shared/searchNormalize";
 import { money, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
-import { normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
+import { canonicalIraqiMobile, normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
 import { signedOpeningBalance, postOpeningEntry, upsertOpeningEntry, type OpeningDirection } from "./openingBalance";
 import { assertPeriodOpen } from "./periodLockService";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
@@ -188,6 +188,135 @@ export async function createCustomer(input: CreateCustomerInput, _actor: Actor) 
       if (prior) return { customerId: prior.id, idempotentReplay: true };
     }
     throw e;
+  }
+}
+
+export type ReceptionCustomerResolution = {
+  status: "NEEDS_NAME" | "RESOLVED";
+  customerId: number | null;
+  name: string | null;
+  phone: string;
+  defaultPriceTier: PriceTier;
+  created: boolean;
+  /** الاستقبال يعدّ الهوية مكتملة فقط برقم موبايل عراقي صارم وعميل فعّال. */
+  deferredEligible: boolean;
+};
+
+/**
+ * نقطة هوية العميل الضيّقة لمحطة الاستقبال.
+ *
+ * لا تكشف قائمة CRM ولا الأرصدة: تبحث بالهاتف القانوني فقط، تعيد عميلًا واحدًا، أو تطلب الاسم ثم
+ * تنشئه. مفتاح الإنشاء مشتق من الهاتف نفسه؛ لذلك طلبان متزامنان على الرقم ذاته يصطدمان بالقيد
+ * الفريد لـclientRequestId ويعودان بالسجل نفسه بدل إنشاء عميلين.
+ */
+export async function resolveReceptionCustomerByPhone(
+  input: { phone: string; name?: string | null },
+  actor: Actor,
+): Promise<ReceptionCustomerResolution> {
+  const phone = canonicalIraqiMobile(input.phone);
+  if (!phone) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "رقم الهاتف العراقي مطلوب بصيغة 07 متبوعاً بتسعة أرقام",
+    });
+  }
+
+  const findExisting = async () => {
+    const db = getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+    return (
+      await db
+        .select({
+          id: customers.id,
+          name: customers.name,
+          phone: customers.phone,
+          defaultPriceTier: customers.defaultPriceTier,
+          isActive: customers.isActive,
+        })
+        .from(customers)
+        .where(or(
+          eq(customers.phone, phone),
+          eq(customers.phone2, phone),
+          eq(customers.phone3, phone),
+          eq(customers.whatsapp, phone),
+        ))
+        .orderBy(desc(customers.isActive), desc(customers.id))
+        .limit(1)
+    )[0];
+  };
+
+  const existing = await findExisting();
+  if (existing) {
+    if (existing.isActive === false) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "هذا الرقم مرتبط بعميل معطّل — اطلب من المدير إعادة تفعيله قبل البيع",
+      });
+    }
+    return {
+      status: "RESOLVED",
+      customerId: Number(existing.id),
+      name: existing.name,
+      phone,
+      defaultPriceTier: existing.defaultPriceTier as PriceTier,
+      created: false,
+      deferredEligible: true,
+    };
+  }
+
+  const name = input.name?.trim() || "";
+  if (!name) {
+    return {
+      status: "NEEDS_NAME",
+      customerId: null,
+      name: null,
+      phone,
+      defaultPriceTier: "RETAIL",
+      created: false,
+      deferredEligible: false,
+    };
+  }
+  if (name.length < 2) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب اسم العميل بحرفين على الأقل" });
+  }
+
+  try {
+    const created = await createCustomer({
+      name,
+      phone,
+      customerType: "فرد",
+      defaultPriceTier: "RETAIL",
+      creditLimit: "0",
+      clientRequestId: `reception-phone:${phone.slice(1)}`,
+    }, actor);
+    const row = await getCustomer(created.customerId);
+    if (!row) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر قراءة العميل بعد إنشائه" });
+    return {
+      status: "RESOLVED",
+      customerId: Number(row.id),
+      name: row.name,
+      phone,
+      defaultPriceTier: row.defaultPriceTier as PriceTier,
+      created: !created.idempotentReplay,
+      deferredEligible: true,
+    };
+  } catch (error) {
+    // سباق رقم مع عملية قديمة لا تحمل مفتاحنا: أعد قراءة الهاتف بعد التزام الفائز.
+    if (error instanceof TRPCError && error.code === "CONFLICT") {
+      const won = await findExisting();
+      if (won && won.isActive !== false) {
+        return {
+          status: "RESOLVED",
+          customerId: Number(won.id),
+          name: won.name,
+          phone,
+          defaultPriceTier: won.defaultPriceTier as PriceTier,
+          created: false,
+          deferredEligible: true,
+        };
+      }
+    }
+    throw error;
   }
 }
 

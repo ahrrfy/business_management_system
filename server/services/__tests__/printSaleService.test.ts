@@ -38,7 +38,7 @@ async function seed() {
   ]);
   await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
   await d.insert(s.customers).values([
-    { id: 1, name: "عميل آجل", defaultPriceTier: "RETAIL", creditLimit: "0", currentBalance: "0" },
+    { id: 1, name: "عميل آجل", defaultPriceTier: "RETAIL", creditLimit: "5000", currentBalance: "0" },
     { id: 2, name: "عميل بسقف", defaultPriceTier: "RETAIL", creditLimit: "1000", currentBalance: "0" },
   ]);
   // منتجات: مادتان مخزنيتان (ورق/حبر) + خدمتان (PRINT_SERVICE).

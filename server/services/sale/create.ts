@@ -662,6 +662,10 @@ export async function createSaleInTx(
     // وضع الافتتاح — إعفاء حاجز الائتمان (قرار المالك ١٠/٨): أثناء النافذة الفعّالة تُعفى قنوات
     // الاستقبال/التنفيذ من فحص السقف/الموافقة. الدَّين يُرحَّل ذمّةً كاملة على العميل (AR) لكنه لا
     // يُرفض — يُرخَّى الحاجز لا التسجيل. مؤقّتٌ وينتهي بانتهاء النافذة (البيع الآجل يظلّ يتطلّب عميلاً).
+    const receptionDeferredWaiver =
+      unpaid.gt(0) &&
+      !!input.customerId &&
+      input.receptionDeferredAuthorized === true;
     const openingCreditWaiver =
       unpaid.gt(0) &&
       !!input.customerId &&
@@ -669,7 +673,12 @@ export async function createSaleInTx(
       input.codDispatchPending !== true && // COD يبقى محكوماً بحدّ ائتمان العميل المسجَّل (main).
       OPENING_RECEPTION_CHANNELS.has(input.sourceType ?? "POS") &&
       (await readOpeningWindowState(tx)).active;
-    if (openingCreditWaiver) {
+    if (receptionDeferredWaiver) {
+      logger.info(
+        { customerId: input.customerId, unpaid: unpaid.toFixed(2), sourceType: input.sourceType },
+        "sale: بيع استقبال بدون عربون — تفويض هوية العميل محقق داخل checkoutReception",
+      );
+    } else if (openingCreditWaiver) {
       logger.info(
         { customerId: input.customerId, unpaid: unpaid.toFixed(2), sourceType: input.sourceType ?? "POS" },
         "sale: إعفاء حدّ الائتمان أثناء وضع الافتتاح — الذمّة تُرحَّل على العميل كاملةً",

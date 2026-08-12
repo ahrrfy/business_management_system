@@ -7,6 +7,7 @@ import {
   findSimilarCustomers,
   getCustomer,
   listCustomers,
+  resolveReceptionCustomerByPhone,
   smartSearchCustomers,
   updateCustomer,
 } from "../services/customerService";
@@ -137,6 +138,33 @@ export const customerRouter = router({
       const qrPayload = customerBarcodeSet({ id: c.id, name: c.name }).qrPayload;
       const masked = maskCustomerSensitive(c, ctx.user.role);
       return { ...masked, qrPayload };
+    }),
+
+  /**
+   * هوية عميل الاستقبال: بحثٌ ضيّق برقم عراقي كامل ثم إنشاءٌ اختياري بالاسم.
+   * يعمل عبر بوابة محطة الاستقبال نفسها حتى لو كان الدور المخصّص بلا CRM READ، ولا يكشف قائمة
+   * العملاء أو الأرصدة أو أي حقول مالية.
+   */
+  receptionResolveByPhone: customersReceptionCreateProcedure
+    .input(z.object({
+      phone: z.string().trim().min(1).max(32),
+      name: z.string().trim().min(2).max(255).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const result = await resolveReceptionCustomerByPhone(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      if (result.created && result.customerId != null) {
+        await logAudit(ctx, {
+          action: "customer.receptionResolveCreate",
+          entityType: "customer",
+          entityId: result.customerId,
+          newValue: { name: result.name, phone: result.phone, deferredEligible: true },
+        });
+      }
+      return result;
     }),
 
   // (١٢/٨، اصلاح عاجل بطلب المالك): استُبدلت customersCashierProcedure بـcustomersReceptionCreateProcedure

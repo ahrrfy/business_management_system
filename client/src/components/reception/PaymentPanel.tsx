@@ -14,7 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { PAY_METHOD_LABEL, QUICK_AMTS, type PayMethod } from "./cartMath";
+import { PAY_METHOD_LABEL, type PayMethod } from "./cartMath";
 
 /**
  * لوحة الدفع لشاشة الاستقبال — **شريطٌ أفقيٌّ ثابتٌ أسفل الصفحة** (إعادة بناء ٧/٨، طلب مالك
@@ -28,6 +28,8 @@ import { PAY_METHOD_LABEL, QUICK_AMTS, type PayMethod } from "./cartMath";
  */
 export interface PaymentPanelProps {
   payInput: string; setPayInput: (v: string) => void;
+  deferred: boolean; setDeferred: (value: boolean) => void;
+  deferredAvailable: boolean; deferredCustomerName: string | null;
   method: PayMethod; setMethod: (m: PayMethod) => void;
   paymentReference: string; setPaymentReference: (v: string) => void;
   needPaymentRef: boolean;
@@ -45,7 +47,7 @@ export interface PaymentPanelProps {
   depositMenuOpen: boolean; setDepositMenuOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   /** خيارات «عربون» المنسدلة محسوبة في الصفحة (label + المبلغ المعروض + onPick). */
   depositOptions: Array<{ label: string; amountLabel: string; onPick: () => void }>;
-  payAll: () => void; setQuickAmt: (v: number) => void;
+  payAll: () => void;
   couponCode: string | null; couponLabel: string | null;
   couponInput: string; setCouponInput: (v: string) => void;
   couponOpen: boolean; setCouponOpen: (v: boolean) => void;
@@ -56,6 +58,8 @@ export interface PaymentPanelProps {
 
 export function PaymentPanel({
   payInput, setPayInput,
+  deferred, setDeferred,
+  deferredAvailable, deferredCustomerName,
   method, setMethod,
   paymentReference, setPaymentReference,
   needPaymentRef,
@@ -65,7 +69,7 @@ export function PaymentPanel({
   hasCustom,
   depositMenuOpen, setDepositMenuOpen,
   depositOptions,
-  payAll, setQuickAmt,
+  payAll,
   couponCode, couponLabel,
   couponInput, setCouponInput,
   couponOpen, setCouponOpen,
@@ -145,15 +149,71 @@ export function PaymentPanel({
             <span className="text-lg font-black tabular-nums text-amber-700" dir="ltr">{fmt(remaining)}</span>
           </span>
         )}
-        <span className={cn("rounded-md border px-1.5 py-0.5 text-[10px] font-extrabold", method === "CASH" ? "text-muted-foreground" : "border-[var(--sem-info)]/50 bg-[var(--sem-info-bg)] text-[var(--sem-info)]")}>
-          {PAY_METHOD_LABEL[method]}
+        <span className={cn(
+          "rounded-md border px-1.5 py-0.5 text-[10px] font-extrabold",
+          deferred
+            ? "border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+            : method === "CASH" ? "text-muted-foreground" : "border-[var(--sem-info)]/50 bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
+        )}>
+          {deferred ? "بدون عربون" : PAY_METHOD_LABEL[method]}
         </span>
       </div>
+
+      {deferred && (
+        <div className="grid grid-cols-[auto_auto_1fr] items-center gap-x-4 rounded-lg border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-[var(--sem-warn)]">
+          <div>
+            <div className="text-[9px] font-bold opacity-80">المدفوع الآن</div>
+            <div className="text-base font-black tabular-nums" dir="ltr">0 د.ع</div>
+          </div>
+          <div>
+            <div className="text-[9px] font-bold opacity-80">المتبقّي ذمّة</div>
+            <div className="text-base font-black tabular-nums" dir="ltr">{fmt(expectedNow)} د.ع</div>
+          </div>
+          <div className="text-end text-[11px] font-extrabold">
+            سيُسجَّل المبلغ ديناً على {deferredCustomerName || "العميل المرتبط"} · بلا إيصال قبض أو حركة درج
+          </div>
+        </div>
+      )}
 
       {/* صفّ الإجراءات: مبلغ مدفوع + رقائق سريعة | طريقة الدفع | عربون/كوبون | زرّا الإتمام.
           pe-28 يحجز حافّة الشريط اليسرى فارغةً — شارة مزامنة الأوفلاين (fixed bottom-3 left-3
           مشتركة بكل شاشات الكاشير) تطفو فوق تلك الزاوية بالضبط في أي شاشةٍ بشريطٍ سفليّ حافّة-لحافّة. */}
       <div className="flex flex-wrap items-center gap-2 pe-28">
+        <div className="flex h-10 shrink-0 items-center rounded-lg border bg-muted/40 p-1" aria-label="طريقة التحصيل">
+          <button
+            type="button"
+            aria-pressed={!deferred}
+            onClick={() => setDeferred(false)}
+            className={cn(
+              "h-8 rounded-md px-3 text-xs font-black transition-colors",
+              !deferred ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            دفع الآن
+          </button>
+          <button
+            type="button"
+            aria-pressed={deferred}
+            disabled={!deferredAvailable}
+            title={deferredAvailable ? "تسجيل كامل المبلغ ذمّة على العميل" : "اربط عميلاً بهاتف عراقي أولاً"}
+            onClick={() => {
+              setPayInput("");
+              setDeferred(true);
+            }}
+            className={cn(
+              "h-8 rounded-md px-3 text-xs font-black transition-colors",
+              deferred
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : deferredAvailable
+                  ? "text-primary hover:bg-primary/10"
+                  : "cursor-not-allowed text-muted-foreground/45",
+            )}
+          >
+            بدون عربون
+          </button>
+        </div>
+
+        {!deferred && <>
         {/* المبلغ المدفوع — حقلٌ نصّي حقيقي (لوحة المفاتيح تكتب مباشرة، بلا حاسبة إضافية). */}
         <div className="flex h-10 items-center gap-2 rounded-lg border-[1.5px] bg-muted/40 px-3 focus-within:border-primary">
           <span className="shrink-0 text-xs text-muted-foreground">المدفوع</span>
@@ -174,17 +234,6 @@ export function PaymentPanel({
             )}
           />
         </div>
-        {QUICK_AMTS.map((v) => (
-          <button
-            key={v}
-            type="button"
-            onClick={() => setQuickAmt(v)}
-            className="h-10 rounded-lg border-[1.5px] bg-card px-2.5 text-xs font-bold tabular-nums hover:bg-muted"
-            dir="ltr"
-          >
-            {v.toLocaleString("en-US")}
-          </button>
-        ))}
         <button
           type="button"
           onClick={payAll}
@@ -308,26 +357,31 @@ export function PaymentPanel({
             )}
           </div>
         )}
+        </>}
 
         {/* زرّا الإتمام — يتّجهان لأقصى الشريط، جنباً إلى جنب، ثابتان دائماً (البار لا يُقصّ). */}
         <div className="ms-auto flex items-center gap-2">
           <span className="hidden text-[10px] text-muted-foreground lg:inline">F4 دفع · F2 بحث</span>
+          {!deferred && (
+            <button
+              type="button"
+              disabled={cartEmpty || submitting || !hasShift}
+              onClick={() => onSubmit({ quickFullPay: true })}
+              className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-4 text-sm font-black text-white shadow-md transition-colors hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+            >
+              <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
+            </button>
+          )}
           <button
             type="button"
-            disabled={cartEmpty || submitting || !hasShift}
-            onClick={() => onSubmit({ quickFullPay: true })}
-            className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-4 text-sm font-black text-white shadow-md transition-colors hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
-          >
-            <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
-          </button>
-          <button
-            type="button"
-            disabled={cartEmpty || submitting || !hasShift}
+            disabled={cartEmpty || submitting || !hasShift || (deferred && !deferredAvailable)}
             onClick={() => onSubmit({ quickFullPay: false })}
-            className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+            className="inline-flex h-11 min-w-48 items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
           >
             {submitting ? (
               "جارٍ الإرسال…"
+            ) : deferred ? (
+              <><Printer aria-hidden className="size-4" /> إتمام بدون عربون وطباعة</>
             ) : sumCustom > 0 && sumDirect > 0 ? (
               <><Printer aria-hidden className="size-4" /> تثبيت البيع وإرسال الطباعة</>
             ) : sumCustom > 0 ? (

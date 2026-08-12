@@ -71,6 +71,8 @@ export interface CreatePrintSaleInput {
   /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق).
    *  B5: إن كانت true يجب توفير creditApprovalId أو managerOverrideByUserId. */
   creditApproved?: boolean;
+  /** تفويض داخلي من checkoutReception فقط؛ ليس حقلاً في printPosRouter. */
+  receptionDeferredAuthorized?: boolean;
   /** B5: معرّف صفّ creditApprovals (سقف صريح + تاريخ انتهاء + single-use). */
   creditApprovalId?: number;
   /** B5: userId لمدير وُثِّقَت هويته خادمياً ⇒ تُنشأ Approval ذرّياً داخل withTx. */
@@ -198,12 +200,15 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
 
     // ٣. فئة التسعير الفعّالة + قفل العميل (يُسلسِل البيوع الآجلة فلا يتجاوز اثنان حدّ الائتمان معاً).
     let customerTier: PriceTier | null = null;
-    let customerCredit: { limit: Decimal; balance: Decimal } | null = null;
+    let customerCredit: { limit: Decimal | null; balance: Decimal } | null = null;
     if (input.customerId) {
       const c = await tx.select().from(customers).where(eq(customers.id, input.customerId)).for("update").limit(1);
       if (!c[0]) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
       customerTier = c[0].defaultPriceTier as PriceTier;
-      customerCredit = { limit: money(c[0].creditLimit ?? "0"), balance: money(c[0].currentBalance ?? "0") };
+      customerCredit = {
+        limit: c[0].creditLimit == null ? null : money(c[0].creditLimit),
+        balance: money(c[0].currentBalance ?? "0"),
+      };
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
 
@@ -371,7 +376,9 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     // B5 (١٩/٦/٢٦): الموافقة لم تعد blanket — تحتاج (أ) creditApprovalId أو (ب) managerOverrideByUserId.
     let effectivePrintApprovalId = input.creditApprovalId;
     if (unpaid.gt(0) && input.customerId) {
-      if (input.creditApproved) {
+      if (input.receptionDeferredAuthorized === true) {
+        // التفويض لا يأتي من printPosRouter؛ checkoutReception وحدها تضبطه بعد قفل هوية العميل.
+      } else if (input.creditApproved) {
         if (!input.creditApprovalId && !input.managerOverrideByUserId) {
           throw new TRPCError({
             code: "FORBIDDEN",
@@ -393,7 +400,13 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
           branchId: input.branchId,
           consumerUserId: actor.userId,
         });
-      } else if (customerCredit && customerCredit.limit.gt(0)) {
+      } else if (customerCredit?.limit != null) {
+        if (customerCredit.limit.lte(0)) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "هذا العميل نقدي فقط (حد الائتمان صفر)",
+          });
+        }
         const projected = customerCredit.balance.plus(unpaid);
         if (projected.gt(customerCredit.limit)) {
           throw new TRPCError({

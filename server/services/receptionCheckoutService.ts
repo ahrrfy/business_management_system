@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { auditLogs, invoices, receipts, shifts } from "../../drizzle/schema";
+import { auditLogs, customers, invoices, receipts, shifts } from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
 import { postEntry } from "./ledgerService";
 import type { SaleLineInput, PaymentMethod } from "./sale/types";
@@ -15,6 +15,7 @@ import { withTx, type Actor } from "./tx";
 import { findIdempotentRefId } from "./idempotency";
 import { money, round2 } from "./money";
 import { assertTelecomCollectAllowed } from "./reception/telecom";
+import { canonicalIraqiMobile } from "../lib/phone";
 
 export interface ReceptionCheckoutInput {
   branchId: number;
@@ -43,8 +44,8 @@ export interface ReceptionCheckoutInput {
    *  لـcreateSaleInTx (openingSellUnavailableConfirmed) وتبقى رِيلاته نافذة (افتتاح فعّال + تكلفة>0 + سقف). */
   openingSellUnavailableConfirmed?: boolean;
   /** بيع مباشر آجل (قرار المالك ١٠/٨): يسمح بأن يقلّ المقبوض عن إجمالي البضاعة/الطباعة **بلا توصيل**
-   *  حين يوجد عميلٌ مسجَّل — المتبقّي يصير ذمّةً على العميل (AR) عبر createSaleInTx (حدّ الائتمان
-   *  نافذٌ فيها). علَمٌ صريح لتفادي ذمّةٍ صامتة عند إدخالٍ خاطئ؛ بلا عميلٍ يبقى الحاجز صارماً. */
+   *  حين يوجد عميلٌ فعّال بهوية مكتملة (اسم + هاتف عراقي) — المتبقّي يصير ذمّةً على العميل (AR).
+   *  التفويض محصور بهذه المعاملة ويُسجَّل تدقيقياً؛ بلا عميلٍ موثّق يبقى الحاجز صارماً. */
   deferredDirect?: boolean;
   /** ش٠ (٥/٨، V1): تقريب نقدي IQD لأقرب ٢٥٠ — للبيع المباشر **الخالص** النقديّ فقط (بلا خدمات
    *  طباعة وبلا أوامر شغل). الواجهة تُقرّب أوّلاً وترسل المبالغ مقرَّبة، والخادم يعيد التقريب
@@ -154,6 +155,37 @@ export async function checkoutReceptionInTx(
       if (actor.role !== "admin" && actor.role !== "manager" && Number(current.userId) !== Number(actor.userId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع التسجيل على وردية مستخدم آخر" });
       }
+    }
+
+    // «بدون عربون» سياسة استقبال وليست تجاوزاً عاماً للائتمان: نُقفل العميل داخل معاملة التثبيت
+    // ونتحقق من كونه فعّالاً وذا اسم وهاتف عراقي كامل. بعدها فقط نمرّر تفويضاً داخلياً لخدمتَي
+    // البيع والطباعة؛ الراوترات العامة لا تستطيع إرسال هذا التفويض.
+    let receptionDeferredAuthorized = false;
+    if (!completeReplay && input.deferredDirect === true) {
+      if (input.delivery) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "خيار بدون عربون لا يُجمع مع طلب التوصيل" });
+      }
+      if (input.customerId == null) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "خيار بدون عربون يتطلب عميلاً محفوظاً ومربوطاً" });
+      }
+      const customer = (
+        await tx
+          .select({ id: customers.id, name: customers.name, phone: customers.phone, isActive: customers.isActive })
+          .from(customers)
+          .where(eq(customers.id, input.customerId))
+          .for("update")
+          .limit(1)
+      )[0];
+      if (!customer || customer.isActive === false) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "العميل غير موجود أو معطّل" });
+      }
+      if (customer.name.trim().length < 2 || !canonicalIraqiMobile(customer.phone)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "بدون عربون متاح فقط لعميل فعّال باسمه ورقم هاتف عراقي مكتمل",
+        });
+      }
+      receptionDeferredAuthorized = true;
     }
 
     // ش٥ (§٩.٤): رصيد زين على أيّ قبضٍ جديد في السلة — خلف ضوابطه (كودٌ أحاديّ + سقفان + قفل
@@ -329,6 +361,7 @@ export async function checkoutReceptionInTx(
           // (قرار المالك ١٨/٧: تسجيل بوسم مراجعة لا تعليق). الوسم = originatedOffline.
           allowNegativeStock: input.offlineCapture != null,
           creditApproved: false,
+          receptionDeferredAuthorized,
           priceOverrideApproved: input.priceOverrideApproved === true,
         }, actor)
       : null;
@@ -355,6 +388,7 @@ export async function checkoutReceptionInTx(
           clientRequestId: `${input.clientRequestId}-print`,
           offlineCapture: input.offlineCapture ?? null,
           creditApproved: false,
+          receptionDeferredAuthorized,
           priceOverrideApproved: input.priceOverrideApproved === true,
         }, actor)
       : null;
@@ -376,6 +410,27 @@ export async function checkoutReceptionInTx(
     } else {
       regularSale = await buildSale(null);
       printSale = await buildPrint(null);
+    }
+
+    if (!completeReplay && receptionDeferredAuthorized) {
+      const deferredAmount = round2(
+        money(regularSale?.total ?? "0")
+          .minus(saleApplied)
+          .plus(money(printSale?.total ?? "0").minus(printApplied)),
+      );
+      await tx.insert(auditLogs).values({
+        userId: actor.userId,
+        branchId: input.branchId,
+        action: "reception.deferredDirect",
+        entityType: "receptionCheckout",
+        entityId: input.clientRequestId,
+        newValue: JSON.stringify({
+          customerId: input.customerId,
+          deferredAmount: deferredAmount.toFixed(2),
+          regularInvoiceId: regularSale?.invoiceId ?? null,
+          printInvoiceId: printSale?.invoiceId ?? null,
+        }),
+      });
     }
 
     // ش٦ (V15) — أمانة أجرة توصيل الطلب: إيصال IN نقديّ + قيد DELIVERY_FEE_HELD مربوطان

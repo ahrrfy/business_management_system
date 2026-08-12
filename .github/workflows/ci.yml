@@ -64,6 +64,8 @@ jobs:
         run: pnpm db:push
       - name: تَطبيق هَجرات يَدوية إضافية (GENERATED columns إلخ)
         run: node scripts/ci-apply-extra-migrations.mjs
+      - name: Verify production-critical schema contracts
+        run: pnpm db:verify
       - name: تهيئة قاعدة التحكّم (تعدّد الشركات)
         run: node scripts/bootstrap-control-db.mjs
         env:
