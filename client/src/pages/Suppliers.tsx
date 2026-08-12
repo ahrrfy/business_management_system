@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BalanceCell } from "@/components/BalanceBadge";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ImportDialog } from "@/components/import/ImportDialog";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, TableEmptyRow } from "@/components/PageState";
 import { OperationsSummary } from "@/components/operations/OperationsSummary";
@@ -16,6 +16,7 @@ import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useMemo, useState } from "react";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
@@ -43,11 +44,22 @@ export default function Suppliers() {
   // الحذف النهائيّ: suppliers.delete = managerProcedure (أدمن/مدير) — عمليةٌ لا رجعة فيها لتنظيف
   // أخطاء الإدخال الأوّليّ، والحارس الخادميّ يرفض أيّ مورّدٍ له حركة (يوجّه للتعطيل).
   const canDelete = me.data?.role === "admin" || me.data?.role === "manager";
-  const [q, setQ] = useState("");
-  const [includeInactive, setIncludeInactive] = useState(false);
+  // فلاتر في querystring — تعيش مع فتح تفاصيل المورّد والرجوع، ويمكن مشاركتها رابطاً.
+  const [filters, setFilters, resetFilters] = useUrlFilters({ q: "", inactive: "", kind: "", page: "0" });
+  // تصحيح قيم URL (Codex P2): querystring يمكن أن يحمل قيماً باطلة (مشاركة/تعديل يدوي) ⇒
+  // fall-back للافتراضي بدل تمرير قيمة تكسر عقد الخادم (Zod schema يرفضها فيُفشِل list كاملاً).
+  const q = filters.q;
+  const includeInactive = filters.inactive === "1";
   // بضاعة الأمانة (٢٠/٧): فلتر نوع الطرف — الكل / موردون اعتياديون / مودِعو أمانة.
-  const [kind, setKind] = useState<"" | "REGULAR" | "CONSIGNOR">("");
-  const [page, setPage] = useState(0);
+  const kind: "" | "REGULAR" | "CONSIGNOR" =
+    filters.kind === "REGULAR" || filters.kind === "CONSIGNOR" ? filters.kind : "";
+  const pageNum = Number(filters.page);
+  const page = Number.isFinite(pageNum) && pageNum >= 0 ? Math.floor(pageNum) : 0;
+  const setQ = (v: string) => setFilters({ q: v, page: "0" });
+  const setIncludeInactive = (v: boolean) => setFilters({ inactive: v ? "1" : "", page: "0" });
+  const setKind = (v: "" | "REGULAR" | "CONSIGNOR") => setFilters({ kind: v, page: "0" });
+  const setPage = (updater: number | ((p: number) => number)) =>
+    setFilters({ page: String(typeof updater === "function" ? updater(page) : updater) });
   const [importOpen, setImportOpen] = useState(false);
   const importMut = trpc.imports.suppliers.useMutation();
   const limit = 50;
@@ -155,31 +167,36 @@ export default function Suppliers() {
               onChange: (v) => { setQ(v); setPage(0); },
               placeholder: "بحث (اسم/هاتف/مدينة/رقم قديم)",
             }}
+            activeFilterCount={[kind, includeInactive ? "1" : ""].filter(Boolean).length}
+            onResetFilters={resetFilters}
             filters={
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-1" role="radiogroup" aria-label="نوع الطرف">
-                  {([
-                    { v: "", label: "الكل" },
-                    { v: "REGULAR", label: "موردون" },
-                    { v: "CONSIGNOR", label: "مودِعو أمانة" },
-                  ] as const).map((t) => (
-                    <button
-                      key={t.v}
-                      type="button"
-                      role="radio"
-                      aria-checked={kind === t.v}
-                      onClick={() => { setKind(t.v); setPage(0); }}
-                      className={`h-8 rounded-md border px-2.5 text-xs transition-colors ${
-                        kind === t.v
-                          ? t.v === "CONSIGNOR" ? "border-amber-400 bg-amber-50 text-amber-900" : "border-primary bg-primary/10 text-foreground"
-                          : "border-input text-muted-foreground hover:bg-muted"
-                      }`}
-                    >
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-                <label className="flex items-center gap-2 h-8 text-sm">
+              <>
+                {/* FilterField يُظهر التسمية بصرياً — aria-label على radiogroup لا يُرى (نمط PR #559/#566). */}
+                <FilterField label="نوع الطرف" asGroup>
+                  <div className="flex items-center gap-1" role="radiogroup" aria-label="نوع الطرف">
+                    {([
+                      { v: "", label: "الكل" },
+                      { v: "REGULAR", label: "موردون" },
+                      { v: "CONSIGNOR", label: "مودِعو أمانة" },
+                    ] as const).map((t) => (
+                      <button
+                        key={t.v}
+                        type="button"
+                        role="radio"
+                        aria-checked={kind === t.v}
+                        onClick={() => { setKind(t.v); setPage(0); }}
+                        className={`h-8 rounded-md border px-2.5 text-xs transition-colors ${
+                          kind === t.v
+                            ? t.v === "CONSIGNOR" ? "border-amber-400 bg-amber-50 text-amber-900" : "border-primary bg-primary/10 text-foreground"
+                            : "border-input text-muted-foreground hover:bg-muted"
+                        }`}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </FilterField>
+                <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input
                     type="checkbox"
                     className="size-4"
@@ -188,7 +205,7 @@ export default function Suppliers() {
                   />
                   <span className="text-muted-foreground">عرض المعطّلين</span>
                 </label>
-              </div>
+              </>
             }
             exportSpec={{
               filename: "الموردون",

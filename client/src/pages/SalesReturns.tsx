@@ -1,5 +1,5 @@
 import { EntityPicker } from "@/components/invoice/EntityPicker";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { ErrorState } from "@/components/PageState";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
@@ -10,9 +10,10 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link } from "wouter";
 
 // حسم النوع صراحةً: returns.list يُعيد {rows,total} ⇒ صفّ الجدول/التصدير = عنصر rows.
@@ -29,16 +30,39 @@ const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function SalesReturns() {
-  const [customerId, setCustomerId] = useState<number | "">("");
-  const [branchId, setBranchId] = useState<number | "">("");
-  const [createdBy, setCreatedBy] = useState<number | "">("");
-  // فلتر الفترة خادمي (entryDate) — أسماء dateFrom/dateTo لتفادي تصادم from/to الترقيم أدناه.
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // فلاتر في querystring — تعيش مع فتح تفاصيل الفاتورة والرجوع، ويمكن مشاركتها رابطاً.
+  // كل القيم نصوص؛ ""=افتراضي يُحذف من الـURL. Numeric filters تُحوَّل عند الاستخدام.
+  const [filters, setFilters, resetFilters] = useUrlFilters({
+    customerId: "", branchId: "", createdBy: "", dateFrom: "", dateTo: "", q: "", page: "0",
+  });
+  // تصحيح قيم URL (Codex P2): querystring يمكن أن يحمل قيماً باطلة (مشاركة/تعديل يدوي) ⇒
+  // returns.list.useQuery يفشل بـZod (positive int expected) على قيمة غير رقمية.
+  // fall-back للـ"" (كل العملاء/الفروع) بدل قيمة تُفشِل الاستعلام كاملاً.
+  const toPosInt = (s: string): number | "" => {
+    if (s === "") return "";
+    const n = Number(s);
+    return Number.isFinite(n) && n > 0 && Number.isInteger(n) ? n : "";
+  };
+  const YMD = /^\d{4}-\d{2}-\d{2}$/;
+  const toYmd = (s: string) => (YMD.test(s) ? s : "");
+  const customerId = toPosInt(filters.customerId);
+  const branchId = toPosInt(filters.branchId);
+  const createdBy = toPosInt(filters.createdBy);
+  const dateFrom = toYmd(filters.dateFrom);
+  const dateTo = toYmd(filters.dateTo);
+  const q = filters.q;
   // بحث خادمي برقم الفاتورة (ممهَّل — لا طلب لكل حرف).
-  const [q, setQ] = useState("");
   const dq = useDebouncedValue(q, 250);
-  const [page, setPage] = useState(0);
+  const pageNum = Number(filters.page);
+  const page = Number.isFinite(pageNum) && pageNum >= 0 ? Math.floor(pageNum) : 0;
+  const setCustomerId = (v: number | "") => setFilters({ customerId: v === "" ? "" : String(v), page: "0" });
+  const setBranchId = (v: number | "") => setFilters({ branchId: v === "" ? "" : String(v), page: "0" });
+  const setCreatedBy = (v: number | "") => setFilters({ createdBy: v === "" ? "" : String(v), page: "0" });
+  const setDateFrom = (v: string) => setFilters({ dateFrom: v, page: "0" });
+  const setDateTo = (v: string) => setFilters({ dateTo: v, page: "0" });
+  const setQ = (v: string) => setFilters({ q: v, page: "0" });
+  const setPage = (updater: number | ((p: number) => number)) =>
+    setFilters({ page: String(typeof updater === "function" ? updater(page) : updater) });
 
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
@@ -73,10 +97,9 @@ export default function SalesReturns() {
   const noteText = (n: string | null | undefined) =>
     n && !n.startsWith("saleReturn:") && !n.startsWith("sale.return:") ? n : "—";
 
-  const setFilter = (fn: (v: number | "") => void, v: number | "") => {
-    fn(v);
-    setPage(0);
-  };
+  // اتساق مع بقية ListToolbar: عدّ الفلاتر النشطة (باستثناء q — يظهر في مربع البحث).
+  // resetFilters و setPage=0 يتكفّل بهما useUrlFilters + setters الجديدة أعلاه.
+  const activeFilterCount = [filters.customerId, filters.branchId, filters.createdBy, filters.dateFrom, filters.dateTo].filter(Boolean).length;
 
   const from = total === 0 ? 0 : page * PAGE + 1;
   const to = Math.min((page + 1) * PAGE, total);
@@ -99,46 +122,57 @@ export default function SalesReturns() {
             loading={list.isLoading}
             search={{
               value: q,
-              onChange: (v) => { setQ(v); setPage(0); },
+              onChange: setQ,
               placeholder: "بحث برقم الفاتورة",
               barcode: true,
             }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetFilters}
             filters={
               <>
-                {/* بحث خادميّ بدل قائمة مقصوصة عند ٥٠٠ (العميل ٥٠١ كان غير قابل للاختيار). */}
-                <div className="min-w-[200px]">
+                {/* FilterField يُظهر التسمية دائماً — placeholder/title وحدهما يختفيان عند الاختيار
+                    فيضيع معنى الحقل (نمط PR #559). */}
+                <FilterField label="العميل" className="min-w-[200px]">
+                  {/* بحث خادميّ بدل قائمة مقصوصة عند ٥٠٠ (العميل ٥٠١ كان غير قابل للاختيار). */}
                   <EntityPicker
                     type="SALE_RETURN"
                     selectedId={customerId === "" ? null : Number(customerId)}
-                    onSelect={(id) => setFilter(setCustomerId, id ?? "")}
+                    onSelect={(id) => setCustomerId(id ?? "")}
                     placeholder="— كل العملاء —"
                     clearLabel="عرض كل العملاء"
                   />
-                </div>
-                <select
-                  className={selectCls}
-                  value={branchId}
-                  onChange={(e) => setFilter(setBranchId, e.target.value ? Number(e.target.value) : "")}
-                >
-                  <option value="">— كل الفروع —</option>
-                  {(branches.data ?? []).map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-                <AppSelect
-                  size="sm"
-                  className="h-8 w-44"
-                  value={createdBy === "" ? "ALL" : String(createdBy)}
-                  onValueChange={(v) => setFilter(setCreatedBy, v === "ALL" ? "" : Number(v))}
-                  placeholder="— منفّذ المرتجع —"
-                >
-                  <option value="ALL">— كل المنفّذين —</option>
-                  {(performers.data ?? []).map((p) => (
-                    <option key={p.id} value={String(p.id)}>{p.name}</option>
-                  ))}
-                </AppSelect>
-                <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(0); }} title="من تاريخ" />
-                <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(0); }} title="إلى تاريخ" />
+                </FilterField>
+                <FilterField label="الفرع">
+                  <select
+                    className={selectCls}
+                    value={branchId}
+                    onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+                  >
+                    <option value="">— كل الفروع —</option>
+                    {(branches.data ?? []).map((b) => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
+                </FilterField>
+                <FilterField label="منفّذ المرتجع">
+                  <AppSelect
+                    size="sm"
+                    className="h-8 w-44"
+                    value={createdBy === "" ? "ALL" : String(createdBy)}
+                    onValueChange={(v) => setCreatedBy(v === "ALL" ? "" : Number(v))}
+                  >
+                    <option value="ALL">— كل المنفّذين —</option>
+                    {(performers.data ?? []).map((p) => (
+                      <option key={p.id} value={String(p.id)}>{p.name}</option>
+                    ))}
+                  </AppSelect>
+                </FilterField>
+                <FilterField label="من تاريخ">
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+                </FilterField>
+                <FilterField label="إلى تاريخ">
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+                </FilterField>
               </>
             }
             exportSpec={{

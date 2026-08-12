@@ -1,6 +1,6 @@
 import { AlertTriangle } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -16,6 +16,7 @@ import { D, fmt, round2 } from "@/lib/money";
 import { POS_METHODS, type PaymentMethod } from "@/lib/paymentMethod";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearch } from "wouter";
 
@@ -60,8 +61,14 @@ export default function Returns() {
   const [manualRefund, setManualRefund] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
-  const [q, setQ] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("");
+  // فلاتر في querystring — تعيش مع فتح تفاصيل الفاتورة والرجوع، ويمكن مشاركتها رابطاً (نمط بقيّة القاعدة).
+  const [filters, setFilters, resetFilters] = useUrlFilters({ q: "", status: "" });
+  const q = filters.q;
+  // تصحيح قيمة URL (Codex P2): status enum معروف مسبقاً؛ قيمة غريبة (مشاركة/تعديل يدوي) تفشل
+  // sales.listPage.useQuery صامتاً بخطأ Zod ⇒ رجوع للافتراضي (كل الحالات) بدل قائمةٍ فارغةٍ مضلِّلة.
+  const statusFilter = filters.status in INVOICE_STATUS ? filters.status : "";
+  const setQ = (v: string) => setFilters({ q: v });
+  const setStatusFilter = (v: string) => setFilters({ status: v });
   // #5 (تدقيق التثبيت): idempotency للمرتجع — الشاشة كانت ترسل create.mutate بلا clientRequestId
   // (بخلاف SalesReturnNew) ⇒ على شبكة جوّال متذبذبة (CGNAT): commit ينجح لكن الاستجابة تنتهي مهلتها،
   // فيضغط المستخدم مرّةً ثانية ⇒ مرتجع مكرَّر (RETURN restock مكرَّر + adjustCustomerBalance مكرَّر
@@ -324,20 +331,25 @@ export default function Returns() {
               placeholder: "بحث (رقم الفاتورة/اسم العميل)",
               barcode: true,
             }}
+            activeFilterCount={statusFilter ? 1 : 0}
+            onResetFilters={resetFilters}
             filters={
+              // FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566).
               // قيمة «ALL» الحارسة: Radix يرفض بند القيمة الفارغة فلا يمكن الرجوع لـ«كل الحالات» بدونها.
-              <AppSelect
-                size="sm"
-                className="w-44"
-                aria-label="فلتر حالة الفاتورة"
-                value={statusFilter || "ALL"}
-                onValueChange={(v) => setStatusFilter(v === "ALL" ? "" : v)}
-              >
-                <option value="ALL">كل الحالات</option>
-                {Object.entries(INVOICE_STATUS).map(([v, label]) => (
-                  <option key={v} value={v}>{label}</option>
-                ))}
-              </AppSelect>
+              <FilterField label="حالة الفاتورة">
+                <AppSelect
+                  size="sm"
+                  className="w-44"
+                  aria-label="فلتر حالة الفاتورة"
+                  value={statusFilter || "ALL"}
+                  onValueChange={(v) => setStatusFilter(v === "ALL" ? "" : v)}
+                >
+                  <option value="ALL">كل الحالات</option>
+                  {Object.entries(INVOICE_STATUS).map(([v, label]) => (
+                    <option key={v} value={v}>{label}</option>
+                  ))}
+                </AppSelect>
+              </FilterField>
             }
             exportSpec={{
               filename: "فواتير-للمرتجعات",

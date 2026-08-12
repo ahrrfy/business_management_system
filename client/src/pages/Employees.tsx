@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { ListToolbar } from "@/components/list";
+import { FilterField, ListToolbar } from "@/components/list";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
@@ -78,19 +78,26 @@ export default function Employees() {
             onResetFilters={resetF}
             filters={
               <>
-                <select className={selectCls} value={f.department} onChange={(e) => { setF({ department: e.target.value }); }} aria-label="القسم">
-                  <option value="">كل الأقسام</option>
-                  {HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
-                </select>
-                <select className={selectCls} value={f.branchId} onChange={(e) => { setF({ branchId: e.target.value }); }} aria-label="الفرع">
-                  <option value="">كل الفروع</option>
-                  {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
-                </select>
-                <select className={selectCls} value={f.status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
-                  <option value="">كل الحالات</option>
-                  {EMPLOYMENT_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-                </select>
-                <label className="flex items-center gap-2 h-8 text-sm">
+                {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
+                <FilterField label="القسم">
+                  <select className={selectCls} value={f.department} onChange={(e) => { setF({ department: e.target.value }); }} aria-label="القسم">
+                    <option value="">كل الأقسام</option>
+                    {HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                </FilterField>
+                <FilterField label="الفرع">
+                  <select className={selectCls} value={f.branchId} onChange={(e) => { setF({ branchId: e.target.value }); }} aria-label="الفرع">
+                    <option value="">كل الفروع</option>
+                    {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+                  </select>
+                </FilterField>
+                <FilterField label="الحالة">
+                  <select className={selectCls} value={f.status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
+                    <option value="">كل الحالات</option>
+                    {EMPLOYMENT_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                  </select>
+                </FilterField>
+                <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input type="checkbox" className="size-4" checked={includeInactive} onChange={(e) => setF({ includeInactive: e.target.checked ? "1" : "" })} />
                   <span className="text-muted-foreground">يشمل المعطّلين</span>
                 </label>

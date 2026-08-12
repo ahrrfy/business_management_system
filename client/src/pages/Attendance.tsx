@@ -4,7 +4,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { ListToolbar } from "@/components/list";
+import { FilterField, ListToolbar } from "@/components/list";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
 import { PageHeader } from "@/components/PageHeader";
@@ -325,38 +325,51 @@ export default function Attendance() {
             onResetFilters={resetF}
             filters={
               <>
-                <select className={selectCls} value={f.employeeId} onChange={(e) => setF({ employeeId: e.target.value })} aria-label="الموظف">
-                  <option value="">كل الموظفين</option>
-                  {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
-                </select>
-                {/* النطاق — يفتح على «اليوم» بقرار المالك، وبقيةُ التواريخ باستعلامٍ صريح. */}
-                <select className={selectCls} value={range} onChange={(e) => setF({ range: e.target.value })} aria-label="النطاق">
-                  {RANGES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
-                </select>
-                {range === "month" && (
-                  <select className={selectCls} value={f.period} onChange={(e) => setF({ period: e.target.value })} aria-label="الشهر">
-                    {recentMonths().map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+                {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
+                <FilterField label="الموظف">
+                  <select className={selectCls} value={f.employeeId} onChange={(e) => setF({ employeeId: e.target.value })} aria-label="الموظف">
+                    <option value="">كل الموظفين</option>
+                    {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
                   </select>
+                </FilterField>
+                {/* النطاق — يفتح على «اليوم» بقرار المالك، وبقيةُ التواريخ باستعلامٍ صريح. */}
+                <FilterField label="النطاق">
+                  <select className={selectCls} value={range} onChange={(e) => setF({ range: e.target.value })} aria-label="النطاق">
+                    {RANGES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+                  </select>
+                </FilterField>
+                {range === "month" && (
+                  <FilterField label="الشهر">
+                    <select className={selectCls} value={f.period} onChange={(e) => setF({ period: e.target.value })} aria-label="الشهر">
+                      {recentMonths().map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+                    </select>
+                  </FilterField>
                 )}
                 {range === "custom" && (
                   <>
-                    <input type="date" className={selectCls} dir="ltr" value={f.customFrom} max={f.customTo || undefined}
-                      onChange={(e) => setF({ customFrom: e.target.value })} aria-label="من تاريخ" />
-                    <input type="date" className={selectCls} dir="ltr" value={f.customTo} min={f.customFrom || undefined}
-                      onChange={(e) => setF({ customTo: e.target.value })} aria-label="إلى تاريخ" />
+                    <FilterField label="من تاريخ">
+                      <input type="date" className={selectCls} dir="ltr" value={f.customFrom} max={f.customTo || undefined}
+                        onChange={(e) => setF({ customFrom: e.target.value })} aria-label="من تاريخ" />
+                    </FilterField>
+                    <FilterField label="إلى تاريخ">
+                      <input type="date" className={selectCls} dir="ltr" value={f.customTo} min={f.customFrom || undefined}
+                        onChange={(e) => setF({ customTo: e.target.value })} aria-label="إلى تاريخ" />
+                    </FilterField>
                   </>
                 )}
                 {range !== "month" && range !== "custom" && (
-                  <span className="inline-flex items-center h-8 px-2 rounded-md border text-xs tabular-nums text-muted-foreground" dir="ltr">
+                  <span className="inline-flex items-center h-8 px-2 rounded-md border text-xs tabular-nums text-muted-foreground self-end" dir="ltr">
                     {rangeLabel}
                   </span>
                 )}
-                <select className={selectCls} value={f.source} onChange={(e) => setF({ source: e.target.value })} aria-label="المصدر">
-                  <option value="">كل المصادر</option>
-                  <option value="fingerprint">بصمة</option>
-                  <option value="manual">يدوي</option>
-                </select>
-                <label className="flex items-center gap-2 h-8 text-sm">
+                <FilterField label="المصدر">
+                  <select className={selectCls} value={f.source} onChange={(e) => setF({ source: e.target.value })} aria-label="المصدر">
+                    <option value="">كل المصادر</option>
+                    <option value="fingerprint">بصمة</option>
+                    <option value="manual">يدوي</option>
+                  </select>
+                </FilterField>
+                <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input type="checkbox" className="size-4" checked={f.reviewOnly === "1"} onChange={(e) => setF({ reviewOnly: e.target.checked ? "1" : "" })} />
                   <span className="text-muted-foreground">يحتاج تصحيح فقط</span>
                 </label>

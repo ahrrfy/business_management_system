@@ -5,6 +5,7 @@ import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, Megaphone, Me
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { RowActions } from "@/components/list/RowActions";
+import { FilterField } from "@/components/list";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { TablePager } from "@/components/table/TablePager";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -62,15 +64,33 @@ export default function GiftsHub() {
   const [mode, setMode] = useState<Mode>("list");
 
   // ── فلاتر سجلّ السندات (list) — كلّها خادمية عبر gifts.list؛ لا فلترة محلية تُخفي صفحات الخادم ──
-  const [dirFilter, setDirFilter] = useState<DirFilter>("ALL");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
-  const [listBranchId, setListBranchId] = useState<number | "">(""); // للمرتفعين فقط
-  const [listFrom, setListFrom] = useState("");
-  const [listTo, setListTo] = useState("");
-  const [query, setQuery] = useState("");
+  // فلاتر في querystring — تعيش مع فتح تفاصيل السند والرجوع، ويمكن مشاركتها رابطاً (نمط بقيّة القاعدة).
+  const [listFilters, setListFilters, resetListFilters] = useUrlFilters({
+    dir: "ALL", status: "ALL", branch: "", from: "", to: "", q: "", page: "0",
+  });
+  // تصحيح قيم URL (Codex P2): querystring يمكن أن يحمل قيماً باطلة (مشاركة/تعديل يدوي).
+  // enum غير معروف أو رقم غير صالح ⇒ رجوع للافتراضي بدل تمرير قيمة تكسر Zod schema في gifts.list.
+  const dirFilter: DirFilter =
+    listFilters.dir === "IN" || listFilters.dir === "OUT" || listFilters.dir === "ALL" ? listFilters.dir : "ALL";
+  const statusFilter: StatusFilter =
+    listFilters.status === "ALL" || listFilters.status in STATUS_AR ? (listFilters.status as StatusFilter) : "ALL";
+  const branchNum = Number(listFilters.branch);
+  const listBranchId: number | "" =
+    listFilters.branch !== "" && Number.isFinite(branchNum) && branchNum > 0 ? branchNum : "";
+  const listFrom = listFilters.from;
+  const listTo = listFilters.to;
+  const query = listFilters.q;
   const qDebounced = useDebouncedValue(query.trim(), 300);
-  const [page, setPage] = useState(0);
-  useEffect(() => { setPage(0); }, [dirFilter, statusFilter, listBranchId, listFrom, listTo, qDebounced]);
+  const pageNum = Number(listFilters.page);
+  const page = Number.isFinite(pageNum) && pageNum >= 0 ? Math.floor(pageNum) : 0;
+  const setDirFilter = (v: DirFilter) => setListFilters({ dir: v, page: "0" });
+  const setStatusFilter = (v: StatusFilter) => setListFilters({ status: v, page: "0" });
+  const setListBranchId = (v: number | "") => setListFilters({ branch: v === "" ? "" : String(v), page: "0" });
+  const setListFrom = (v: string) => setListFilters({ from: v, page: "0" });
+  const setListTo = (v: string) => setListFilters({ to: v, page: "0" });
+  const setQuery = (v: string) => setListFilters({ q: v, page: "0" });
+  const setPage = (updater: number | ((p: number) => number)) =>
+    setListFilters({ page: String(typeof updater === "function" ? updater(page) : updater) });
 
   // ── حالة النموذج (مشتركة بين الوارد والصادر) ──
   const [formBranchId, setFormBranchId] = useState<number | null>(null);
@@ -367,7 +387,7 @@ export default function GiftsHub() {
             loading={list.isLoading}
             search={{ value: query, onChange: setQuery, placeholder: "رقم السند، السبب أو رقم عرض المورّد…" }}
             activeFilterCount={[dirFilter !== "ALL", statusFilter !== "ALL", listBranchId !== "", listFrom, listTo].filter(Boolean).length}
-            onResetFilters={() => { setQuery(""); setDirFilter("ALL"); setStatusFilter("ALL"); setListBranchId(""); setListFrom(""); setListTo(""); }}
+            onResetFilters={resetListFilters}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
             onPrint={() => window.print()}
@@ -391,35 +411,46 @@ export default function GiftsHub() {
               ],
             }}
             filters={
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex gap-1">
-                  {([
-                    ["ALL", "الكل"],
-                    ["IN", "واردة"],
-                    ["OUT", "صادرة"],
-                  ] as [DirFilter, string][]).map(([k, lbl]) => (
-                    <Button key={k} size="sm" variant={dirFilter === k ? "default" : "outline"} onClick={() => setDirFilter(k)}>
-                      {lbl}
-                    </Button>
-                  ))}
-                </div>
-                <AppSelect value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)} className="h-8 w-40" size="sm" aria-label="فلتر الحالة">
-                  <option value="ALL">كل الحالات</option>
-                  {Object.entries(STATUS_AR).map(([k, lbl]) => (
-                    <option key={k} value={k}>{lbl}</option>
-                  ))}
-                </AppSelect>
-                {elevated && (
-                  <AppSelect value={listBranchId === "" ? "" : String(listBranchId)} onValueChange={(v) => setListBranchId(v === "" ? "" : Number(v))} className="h-8 w-36" size="sm" aria-label="فلتر الفرع">
-                    <option value="">كل الفروع</option>
-                    {(branches.data ?? []).map((b) => (
-                      <option key={b.id} value={b.id}>{b.name}</option>
+              <>
+                {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
+                <FilterField label="الاتجاه" asGroup>
+                  <div className="flex gap-1">
+                    {([
+                      ["ALL", "الكل"],
+                      ["IN", "واردة"],
+                      ["OUT", "صادرة"],
+                    ] as [DirFilter, string][]).map(([k, lbl]) => (
+                      <Button key={k} size="sm" variant={dirFilter === k ? "default" : "outline"} onClick={() => setDirFilter(k)}>
+                        {lbl}
+                      </Button>
+                    ))}
+                  </div>
+                </FilterField>
+                <FilterField label="الحالة">
+                  <AppSelect value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)} className="h-8 w-40" size="sm" aria-label="فلتر الحالة">
+                    <option value="ALL">كل الحالات</option>
+                    {Object.entries(STATUS_AR).map(([k, lbl]) => (
+                      <option key={k} value={k}>{lbl}</option>
                     ))}
                   </AppSelect>
+                </FilterField>
+                {elevated && (
+                  <FilterField label="الفرع">
+                    <AppSelect value={listBranchId === "" ? "" : String(listBranchId)} onValueChange={(v) => setListBranchId(v === "" ? "" : Number(v))} className="h-8 w-36" size="sm" aria-label="فلتر الفرع">
+                      <option value="">كل الفروع</option>
+                      {(branches.data ?? []).map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </AppSelect>
+                  </FilterField>
                 )}
-                <Input type="date" value={listFrom} onChange={(e) => setListFrom(e.target.value)} className="h-8 w-36" aria-label="من تاريخ" />
-                <Input type="date" value={listTo} onChange={(e) => setListTo(e.target.value)} className="h-8 w-36" aria-label="إلى تاريخ" />
-              </div>
+                <FilterField label="من تاريخ">
+                  <Input type="date" value={listFrom} onChange={(e) => setListFrom(e.target.value)} className="h-8 w-36" />
+                </FilterField>
+                <FilterField label="إلى تاريخ">
+                  <Input type="date" value={listTo} onChange={(e) => setListTo(e.target.value)} className="h-8 w-36" />
+                </FilterField>
+              </>
             }
           />
 

@@ -35,7 +35,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { ListToolbar } from "@/components/list";
+import { FilterField, ListToolbar } from "@/components/list";
 import {
   Dialog,
   DialogContent,
@@ -395,34 +395,44 @@ function ListTab({
         }}
         filters={
           <>
-            <AppSelect value={f.status} onValueChange={(v) => setF({ status: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر الحالة">
-              <option value="">كل الحالات</option>
-              {Object.entries(STATUS_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
-            </AppSelect>
-            <AppSelect value={f.kind} onValueChange={(v) => setF({ kind: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر النوع">
-              <option value="">كل الأنواع</option>
-              {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-            </AppSelect>
-            <AppSelect value={f.priority} onValueChange={(v) => setF({ priority: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر الأولوية">
-              <option value="">كل الأولويات</option>
-              {Object.entries(PRIORITY_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
-            </AppSelect>
-            <AppSelect value={f.assignedTo} onValueChange={(v) => setF({ assignedTo: v })} className="h-9 w-auto min-w-[11rem]" aria-label="فلتر المسنَد إليه">
-              <option value="">كل المسنَد إليهم</option>
-              {(staff.data ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
-            </AppSelect>
-            {isElevated && (
-              <AppSelect value={f.branchId} onValueChange={(v) => setF({ branchId: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر الفرع">
-                <option value="">كل الفروع</option>
-                {branches.map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+            {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
+            <FilterField label="الحالة">
+              <AppSelect value={f.status} onValueChange={(v) => setF({ status: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر الحالة">
+                <option value="">كل الحالات</option>
+                {Object.entries(STATUS_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
               </AppSelect>
+            </FilterField>
+            <FilterField label="النوع">
+              <AppSelect value={f.kind} onValueChange={(v) => setF({ kind: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر النوع">
+                <option value="">كل الأنواع</option>
+                {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </AppSelect>
+            </FilterField>
+            <FilterField label="الأولوية">
+              <AppSelect value={f.priority} onValueChange={(v) => setF({ priority: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر الأولوية">
+                <option value="">كل الأولويات</option>
+                {Object.entries(PRIORITY_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
+              </AppSelect>
+            </FilterField>
+            <FilterField label="المسنَد إليه">
+              <AppSelect value={f.assignedTo} onValueChange={(v) => setF({ assignedTo: v })} className="h-9 w-auto min-w-[11rem]" aria-label="فلتر المسنَد إليه">
+                <option value="">كل المسنَد إليهم</option>
+                {(staff.data ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
+              </AppSelect>
+            </FilterField>
+            {isElevated && (
+              <FilterField label="الفرع">
+                <AppSelect value={f.branchId} onValueChange={(v) => setF({ branchId: v })} className="h-9 w-auto min-w-[9rem]" aria-label="فلتر الفرع">
+                  <option value="">كل الفروع</option>
+                  {branches.map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+                </AppSelect>
+              </FilterField>
             )}
-            <label className="inline-flex h-9 items-center gap-1.5 text-xs text-muted-foreground">
+            <label className="inline-flex h-9 items-center gap-1.5 text-xs text-muted-foreground self-end">
               <input type="checkbox" checked={f.overdue === "1"} onChange={(e) => setF({ overdue: e.target.checked ? "1" : "" })} />
               متأخرة فقط
             </label>
-            <div className="flex items-center gap-1">
-              <span className="text-xs text-muted-foreground">من</span>
+            <FilterField label="من تاريخ الإنشاء">
               <Input
                 type="date"
                 value={f.from}
@@ -431,7 +441,8 @@ function ListTab({
                 aria-label="من تاريخ الإنشاء"
                 max={f.to || undefined}
               />
-              <span className="text-xs text-muted-foreground">إلى</span>
+            </FilterField>
+            <FilterField label="إلى تاريخ الإنشاء">
               <Input
                 type="date"
                 value={f.to}
@@ -440,7 +451,7 @@ function ListTab({
                 aria-label="إلى تاريخ الإنشاء"
                 min={f.from || undefined}
               />
-            </div>
+            </FilterField>
           </>
         }
       />
