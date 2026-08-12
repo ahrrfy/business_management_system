@@ -5,6 +5,7 @@ import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, Megaphone, Me
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { RowActions } from "@/components/list/RowActions";
+import { FilterField } from "@/components/list";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -391,35 +392,46 @@ export default function GiftsHub() {
               ],
             }}
             filters={
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex gap-1">
-                  {([
-                    ["ALL", "الكل"],
-                    ["IN", "واردة"],
-                    ["OUT", "صادرة"],
-                  ] as [DirFilter, string][]).map(([k, lbl]) => (
-                    <Button key={k} size="sm" variant={dirFilter === k ? "default" : "outline"} onClick={() => setDirFilter(k)}>
-                      {lbl}
-                    </Button>
-                  ))}
-                </div>
-                <AppSelect value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)} className="h-8 w-40" size="sm" aria-label="فلتر الحالة">
-                  <option value="ALL">كل الحالات</option>
-                  {Object.entries(STATUS_AR).map(([k, lbl]) => (
-                    <option key={k} value={k}>{lbl}</option>
-                  ))}
-                </AppSelect>
-                {elevated && (
-                  <AppSelect value={listBranchId === "" ? "" : String(listBranchId)} onValueChange={(v) => setListBranchId(v === "" ? "" : Number(v))} className="h-8 w-36" size="sm" aria-label="فلتر الفرع">
-                    <option value="">كل الفروع</option>
-                    {(branches.data ?? []).map((b) => (
-                      <option key={b.id} value={b.id}>{b.name}</option>
+              <>
+                {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
+                <FilterField label="الاتجاه">
+                  <div className="flex gap-1">
+                    {([
+                      ["ALL", "الكل"],
+                      ["IN", "واردة"],
+                      ["OUT", "صادرة"],
+                    ] as [DirFilter, string][]).map(([k, lbl]) => (
+                      <Button key={k} size="sm" variant={dirFilter === k ? "default" : "outline"} onClick={() => setDirFilter(k)}>
+                        {lbl}
+                      </Button>
+                    ))}
+                  </div>
+                </FilterField>
+                <FilterField label="الحالة">
+                  <AppSelect value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)} className="h-8 w-40" size="sm" aria-label="فلتر الحالة">
+                    <option value="ALL">كل الحالات</option>
+                    {Object.entries(STATUS_AR).map(([k, lbl]) => (
+                      <option key={k} value={k}>{lbl}</option>
                     ))}
                   </AppSelect>
+                </FilterField>
+                {elevated && (
+                  <FilterField label="الفرع">
+                    <AppSelect value={listBranchId === "" ? "" : String(listBranchId)} onValueChange={(v) => setListBranchId(v === "" ? "" : Number(v))} className="h-8 w-36" size="sm" aria-label="فلتر الفرع">
+                      <option value="">كل الفروع</option>
+                      {(branches.data ?? []).map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </AppSelect>
+                  </FilterField>
                 )}
-                <Input type="date" value={listFrom} onChange={(e) => setListFrom(e.target.value)} className="h-8 w-36" aria-label="من تاريخ" />
-                <Input type="date" value={listTo} onChange={(e) => setListTo(e.target.value)} className="h-8 w-36" aria-label="إلى تاريخ" />
-              </div>
+                <FilterField label="من تاريخ">
+                  <Input type="date" value={listFrom} onChange={(e) => setListFrom(e.target.value)} className="h-8 w-36" />
+                </FilterField>
+                <FilterField label="إلى تاريخ">
+                  <Input type="date" value={listTo} onChange={(e) => setListTo(e.target.value)} className="h-8 w-36" />
+                </FilterField>
+              </>
             }
           />
 
