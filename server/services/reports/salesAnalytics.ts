@@ -37,7 +37,9 @@ export async function getTopProducts(
 ): Promise<TopProductRow[]> {
   const db = getDb();
   if (!db) return [];
-  const limit = Math.max(1, Math.min(100, opts.limit ?? 20));
+  // سقف رُفع من ١٠٠ (تدقيق التقارير — الكتالوج قد يتجاوز ١٤٥٣ منتجاً): كان يقتطع صامتاً بلا مؤشّر
+  // اقتطاع؛ الواجهة تكشف الاقتطاع الآن (rows.length === limit المطلوب) بدل سقفٍ صلبٍ خفيّ.
+  const limit = Math.max(1, Math.min(2000, opts.limit ?? 20));
   // ملاحظة: نرتّب على التعبير الرقمي مباشرة لا على الاسم المستعار — لأن
   // العمود في SELECT مُحوَّل CAST AS CHAR ⇒ الترتيب عليه يصبح أبجدياً («50»>«240»).
   const orderCol = opts.by === "qty"

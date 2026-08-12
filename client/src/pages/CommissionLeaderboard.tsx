@@ -5,6 +5,8 @@
 // البوّابة: تقرير قراءة (مدير/محاسب/مدقّق + منح صريح) — الخادم هو الحاكم.
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
@@ -12,8 +14,9 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
 import { iqd } from "@/lib/hr/ui";
 import { trpc } from "@/lib/trpc";
-import { Crown, FileDown, Target, TrendingDown, Wallet } from "lucide-react";
-import { useState } from "react";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
+import { Crown, FileDown, Search, Target, TrendingDown, Wallet, X } from "lucide-react";
+import { useMemo, useState } from "react";
 
 function StatCard({ label, value, sub, accent, icon }: { label: string; value: string; sub?: string; accent?: string; icon: React.ReactNode }) {
   return (
@@ -50,13 +53,30 @@ export default function CommissionLeaderboard() {
   const rows = q.data?.rows ?? [];
   const totals = q.data?.totals;
 
+  // فلتر فرع + بحث موظف — عميليان بحتان (اللوحة تُرجَع كاملةً للشهر دفعةً واحدة، بلا endpoint
+  // مُفلتِر خادمياً). لا يمسّان بطاقات الملخّص (targetRatio/totals) — تبقى إجمالي الشهر كاملاً.
+  const [f, setF] = useUrlFilters({ q: "", branch: "" });
+  const filteredRows = useMemo(() => {
+    const needle = f.q.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (f.branch && r.branchName !== f.branch) return false;
+      if (needle && !r.employeeName.toLowerCase().includes(needle)) return false;
+      return true;
+    });
+  }, [rows, f.q, f.branch]);
+  const branchOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const r of rows) if (r.branchName) names.add(r.branchName);
+    return Array.from(names).sort((a, b) => a.localeCompare(b, "ar"));
+  }, [rows]);
+
   const targetRatio =
     totals && Number(totals.target) > 0
       ? `${((Number(totals.effectiveBase) / Number(totals.target)) * 100).toFixed(0)}%`
       : "—";
 
   function exportExcel() {
-    exportRows(rows, {
+    exportRows(filteredRows, {
       filename: `لوحة-الإنجاز-${period}`,
       title: `لوحة إنجاز المبيعات ${period} (أرقام حيّة — العمولة تقديرية)`,
       columns: [
@@ -82,7 +102,7 @@ export default function CommissionLeaderboard() {
         actions={
           <div className="flex items-center gap-2 flex-wrap">
             <MonthPicker value={period} onChange={setPeriod} ariaLabel="شهر اللوحة" />
-            <Button size="sm" variant="outline" onClick={exportExcel} disabled={rows.length === 0}>
+            <Button size="sm" variant="outline" onClick={exportExcel} disabled={filteredRows.length === 0}>
               <FileDown className="size-4" /> Excel
             </Button>
           </div>
@@ -120,8 +140,23 @@ export default function CommissionLeaderboard() {
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle>ترتيب شهر {period} — {rows.length} بائعاً</CardTitle>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
+          <CardTitle>ترتيب شهر {period} — {filteredRows.length} بائعاً</CardTitle>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-40">
+              <Search aria-hidden className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث بالموظف…" aria-label="بحث بالموظف" className="h-8 w-full pr-8 sm:w-44" />
+            </div>
+            <AppSelect value={f.branch} onValueChange={(v) => setF({ branch: v })} className="h-8 w-36" size="sm" placeholder="كل الفروع">
+              <option value="">كل الفروع</option>
+              {branchOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+            </AppSelect>
+            {(f.q.trim() !== "" || f.branch !== "") && (
+              <Button variant="ghost" size="sm" onClick={() => setF({ q: "", branch: "" })} className="text-muted-foreground">
+                <X aria-hidden className="size-4" /> مسح
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
@@ -140,7 +175,7 @@ export default function CommissionLeaderboard() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
+                {filteredRows.map((r) => (
                   <tr key={r.employeeId} className={`border-t ${r.rank <= 3 ? "bg-accent/30" : ""}`}>
                     <td className="p-2.5 text-center">
                       <span className={`inline-flex size-6 items-center justify-center rounded-full text-xs font-bold ${r.rank === 1 ? "bg-[var(--money-positive,#059669)] text-white" : r.rank <= 3 ? "bg-primary/15 text-primary" : "text-muted-foreground"}`}>
@@ -169,6 +204,9 @@ export default function CommissionLeaderboard() {
                 )}
                 {!q.isLoading && rows.length === 0 && (
                   <TableEmptyRow colSpan={9} message="لا بائعين مرتبطين بخطة فعّالة لهذا الشهر — اربطهم بالخطط من: الموارد البشرية ← خطط العمولات." />
+                )}
+                {!q.isLoading && rows.length > 0 && filteredRows.length === 0 && (
+                  <TableEmptyRow colSpan={9} message="لا بائعين مطابقين للفلاتر." />
                 )}
               </tbody>
             </table>

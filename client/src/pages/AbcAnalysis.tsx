@@ -1,10 +1,13 @@
 // تحليل ABC — تصنيف المنتجات حسب مساهمتها في الإيراد (باريتو) إلى فئات A/B/C.
-// فلتر فترة + فرع + مؤشّرات (عدد A/B/C + إجمالي الإيراد) + جدول (المنتج/الإيراد/النسبة التراكمية/شارة الفئة).
+// فلتر فترة + فرع + بحث/فئة محلّيان + مؤشّرات (عدد A/B/C + إجمالي الإيراد) + جدول مُرقَّم محلياً
+// (المنتج/الإيراد/النسبة التراكمية/شارة الفئة).
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/data-table/DataTable";
 import { ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
@@ -12,6 +15,7 @@ import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type Row = RouterOutputs["reports"]["abcAnalysis"]["rows"][number];
+type ClassFilter = "" | "A" | "B" | "C";
 
 const CLASS_CLS: Record<string, string> = {
   A: "badge-status-active",
@@ -34,6 +38,8 @@ export default function AbcAnalysis() {
 
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
+  const [search, setSearch] = useState("");
+  const [cls, setCls] = useState<ClassFilter>("");
 
   const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
   const q = trpc.reports.abcAnalysis.useQuery({
@@ -42,8 +48,14 @@ export default function AbcAnalysis() {
     branchId: branchId ? Number(branchId) : undefined,
   });
 
-  const rows: Row[] = q.data?.rows ?? [];
+  const allRows: Row[] = q.data?.rows ?? [];
   const totals = q.data?.totals;
+
+  // بحث/فئة محلّيان فوق النتيجة المُحمَّلة أصلاً (التصنيف كلّه يُبنى دفعةً واحدة على الخادم).
+  const rows: Row[] = useMemo(() => {
+    const s = search.trim();
+    return allRows.filter((r) => (!s || r.productName.includes(s)) && (!cls || r.class === cls));
+  }, [allRows, search, cls]);
 
   const kpis: KpiItem[] = totals
     ? [
@@ -172,6 +184,25 @@ export default function AbcAnalysis() {
               </select>
             </div>
           )}
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">بحث منتج</label>
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="اسم المنتج…"
+              aria-label="بحث منتج"
+              className="h-9 w-44"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">الفئة</label>
+            <AppSelect value={cls} onValueChange={(v) => setCls(v as ClassFilter)} className="w-28">
+              <option value="">الكل</option>
+              <option value="A">أ</option>
+              <option value="B">ب</option>
+              <option value="C">ج</option>
+            </AppSelect>
+          </div>
         </div>
       }
     >
@@ -182,8 +213,8 @@ export default function AbcAnalysis() {
           columns={cols}
           data={rows}
           loading={q.isLoading}
-          emptyText="لا مبيعات في هذا النطاق."
-          pageSize={Infinity}
+          searchable={false}
+          emptyText={allRows.length ? "لا منتج مطابق للفلاتر." : "لا مبيعات في هذا النطاق."}
         />
       )}
     </ReportShell>

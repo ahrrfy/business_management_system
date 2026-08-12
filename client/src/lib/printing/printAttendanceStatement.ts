@@ -32,7 +32,7 @@ export interface StatementDay {
   overtimeHours: string;
   rate: string;
   amount: string;
-  state: "present" | "absent" | "paidLeave" | "unpaidLeave" | "beforeStart";
+  state: "present" | "absent" | "paidLeave" | "unpaidLeave" | "beforeStart" | "restWorked";
   checkIn?: string | null;
   checkOut?: string | null;
   needsReview?: boolean;
@@ -59,6 +59,9 @@ export interface AttendanceStatementData {
     shortHours: string;
     reviewDays: number;
   };
+  /** المستحقّ الفعليّ عن الشهر وأساسُه (من الخادم) — غيابهما ⇒ حساب الحضور كما كان. */
+  amountDue?: string;
+  dueBasis?: "hourly" | "exempt" | "attendance" | "fixedSalary";
   settings?: CompanySettings;
 }
 
@@ -68,6 +71,7 @@ const STATE_LABEL: Record<StatementDay["state"], string> = {
   paidLeave: "إجازة مدفوعة",
   unpaidLeave: "إجازة بلا راتب",
   beforeStart: "قبل السريان",
+  restWorked: "عمل يوم راحة",
 };
 
 export function printAttendanceStatement(d: AttendanceStatementData, days: StatementDay[]): boolean {
@@ -147,6 +151,14 @@ export function printAttendanceStatement(d: AttendanceStatementData, days: State
         </div>`
       : "";
 
+  const exemptNote =
+    d.dueBasis === "exempt"
+      ? `<div style="margin-top:8px;padding:6px 14px;border:1px dashed #B7791F;border-radius:4px;background:#FFFBEB">
+          <span style="font-size:10.75px;font-weight:800;color:#B7791F">راتب ثابت — لا يخضع للحضور: </span>
+          <span style="font-size:10.25px;color:#000">يُصرف راتبه ومخصّصاته كاملةً بلا احتساب ساعات. الجدول أعلاه للاطّلاع لا للاحتساب.</span>
+        </div>`
+      : "";
+
   const reviewNote =
     d.totals.reviewDays > 0
       ? `<div style="margin-top:8px;padding:6px 14px;border:1px dashed #B7791F;border-radius:4px;background:#FFFBEB">
@@ -155,8 +167,21 @@ export function printAttendanceStatement(d: AttendanceStatementData, days: State
         </div>`
       : "";
 
-  const grand = grandTotalBar("الأجر المستحقّ عن الشهر (أساس + أوفر تايم)", fmt(String(Number(d.totals.basePay) + Number(d.totals.overtimePay))), { big: true });
-  const tafqit = tafqitLine(formatArabicMoneyWords(String(Number(d.totals.basePay) + Number(d.totals.overtimePay))));
+  /*
+   * المستحقّ من الخادم بأساسه — لا مجموعَ حساب الحضور دائماً: المُعفى (راتبٌ ثابت) يُطبَع
+   * له راتبُه لا صفرُ بصماته، ومن كان الأجر بالحضور معطَّلاً عنه يُطبَع له ما سيُصرف فعلاً.
+   */
+  const dueAmount = d.amountDue ?? String(Number(d.totals.basePay) + Number(d.totals.overtimePay));
+  const dueLabel =
+    d.dueBasis === "exempt"
+      ? "الراتب الثابت المستحقّ عن الشهر (لا يخضع للحضور)"
+      : d.dueBasis === "fixedSalary"
+        ? "الراتب الثابت المستحقّ عن الشهر (الأجر بالحضور غير مفعَّل)"
+        : d.dueBasis === "hourly"
+          ? "الأجر المستحقّ عن الشهر (بالساعة من سجلّ الحضور)"
+          : "الأجر المستحقّ عن الشهر (أساس + أوفر تايم)";
+  const grand = grandTotalBar(dueLabel, fmt(dueAmount), { big: true });
+  const tafqit = tafqitLine(formatArabicMoneyWords(dueAmount));
 
   const signatures = `<div style="margin-top:26px;display:flex;justify-content:space-between;gap:24px">
     ${["الموظف", "مسؤول الموارد البشرية", "المدير المفوَّض"]

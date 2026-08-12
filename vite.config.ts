@@ -9,14 +9,10 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      // حوكمة التحديث: 'autoUpdate' (كان 'prompt'). السبب (٢٩/٦): استراتيجية 'prompt' كانت
-      // تُبقي المتصفّح على SW قديم بعد كل نشر حتى يضغط المستخدم «تحديث» يدوياً — لكنّ الـSW
-      // القديم يقدّم index.html قديماً يشير إلى حُزَم (chunks) بمعرّفات لم تعد على الخادم ⇒
-      // حُزَم الصفحات تفشل ⇒ «جار التحميل» للأبد (تعطّل إنتاجي بعد كل نشر، والمستخدم عالقٌ
-      // قبل أن يرى زرّ التحديث أصلاً). 'autoUpdate' (مع skipWaiting/clientsClaim/تنظيف الكاش
-      // القديم) يجعل الـSW الجديد يَنشط فوراً ويُنظّف الحُزَم الميّتة ⇒ لا تعليق بعد النشر.
-      // (المقايضة: قد تُعاد تحميل صفحة مفتوحة مرّة عند اكتشاف نشر جديد ⇒ انشُر خارج ساعات الذروة.)
-      registerType: "autoUpdate",
+      // الإصدار الجديد يثبت في الخلفية ويبقى waiting. هذا السلوك يمنع خلط حزم
+      // إصدارين ويصون الإدخال الجاري؛ PwaUpdateManager يطلب قرار الموظف ثم
+      // يرسل SKIP_WAITING بعد حفظ لقطة استرداد محلية.
+      registerType: "prompt",
       includeAssets: ["favicon.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png"],
       // لا تُعطّل API: التنقّل يرجع لـindex.html، و/api لا يُخبّأ إطلاقاً (شبكة فقط).
       workbox: {
@@ -33,11 +29,11 @@ export default defineConfig({
         // حقن معالج Web Push المخصَّص في SW المولَّد (دون التخلّي عن generateSW — يُبقي
         // آليّة autoUpdate وworkbox precache/runtimeCaching كما هي). الملف في public/ ⇒ يُنسَخ
         // إلى /push-handler.js حرفياً، فيصير مُتاحاً لـimportScripts داخل SW.
-        importScripts: ["/push-handler.js"],
-        // فعّل الـSW الجديد فوراً وتولَّ التحكّم بكل الألسنة المفتوحة، وامسح precache القديم
-        // ⇒ لا تبقى حُزَم/index قديمة تشير لملفّات حُذِفت بالنشر الجديد (جذر علّة «جار التحميل»).
-        skipWaiting: true,
-        clientsClaim: true,
+        importScripts: ["/pwa-update-worker.js", "/push-handler.js"],
+        // تفعيل الإصدار الجديد لا يتم إلا برسالة SKIP_WAITING من الموظف. الإعداد
+        // الافتراضي false يضيف مستقبل الرسالة الآمن في Workbox.
+        skipWaiting: false,
+        clientsClaim: false,
         cleanupOutdatedCaches: true,
         navigateFallback: "/index.html",
         // الشاشات الحسّاسة لا تَرجع لـindex.html المُخبّأ + /api شبكة فقط.

@@ -21,6 +21,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { categories, products } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { escLike } from "../lib/sqlLike";
 import { extractInsertId } from "../lib/insertId";
 import { withTx, type Actor } from "./tx";
 
@@ -118,7 +119,11 @@ export async function listProductsForAssign(input: { q?: string; categoryId?: nu
   if (input.categoryId === 0 || input.categoryId === null) conds.push(isNull(products.categoryId));
   else if (input.categoryId != null) conds.push(eq(products.categoryId, input.categoryId));
   const q = input.q?.trim();
-  if (q) conds.push(sql`(${products.name} LIKE ${"%" + q + "%"} OR ${products.searchNorm} LIKE ${"%" + q + "%"})`);
+  // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') — اتساقٌ مع مسارات البحث (القيمة مربوطة، لا حقن).
+  if (q) {
+    const p = `%${escLike(q)}%`;
+    conds.push(sql`(${products.name} LIKE ${p} ESCAPE '!' OR ${products.searchNorm} LIKE ${p} ESCAPE '!')`);
+  }
   const rows = await db
     .select({ id: products.id, name: products.name, categoryId: products.categoryId, categoryName: categories.name })
     .from(products)

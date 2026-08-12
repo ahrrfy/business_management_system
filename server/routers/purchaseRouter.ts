@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
@@ -9,6 +9,7 @@ import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyStrin
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase, settlePurchaseUsdDirect } from "../services/purchaseService";
+import { withTx } from "../services/tx";
 import { canSeeCostForUser, purchasesManagerProcedure, purchasesReadProcedure, purchasesWarehouseProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
@@ -55,6 +56,46 @@ export function buildPurchasesListConds(input: PurchasesListFilters, scopedBranc
 }
 
 export const purchaseRouter = router({
+  priceInsights: purchasesManagerProcedure
+    .input(z.object({
+      branchId: z.number().int().positive(),
+      supplierId: z.number().int().positive().optional(),
+      items: z.array(z.object({ variantId: z.number().int().positive(), productUnitId: z.number().int().positive() })).min(1).max(200),
+    }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return {};
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!elevated && ctx.user.branchId == null) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      const items = Array.from(new Map(input.items.map((item) => [`${item.variantId}:${item.productUnitId}`, item])).values());
+      const pairs = items.map((item) => and(eq(purchaseOrderItems.variantId, item.variantId), eq(purchaseOrderItems.productUnitId, item.productUnitId)));
+      const rows = await db.select({
+        variantId: purchaseOrderItems.variantId, productUnitId: purchaseOrderItems.productUnitId,
+        unitPrice: purchaseOrderItems.unitPrice, purchaseOrderId: purchaseOrders.id,
+        orderDate: purchaseOrders.orderDate, supplierId: purchaseOrders.supplierId, supplierName: suppliers.name,
+      }).from(purchaseOrderItems)
+        .innerJoin(purchaseOrders, eq(purchaseOrderItems.purchaseOrderId, purchaseOrders.id))
+        .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
+        .where(and(eq(purchaseOrders.branchId, branchId), inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]), or(...pairs)))
+        .orderBy(desc(purchaseOrders.orderDate), desc(purchaseOrders.id), desc(purchaseOrderItems.id));
+      type Ref = { price: string; supplierId: number; supplierName: string; purchaseOrderId: number; orderDate: Date };
+      const result: Record<string, { lastPurchase: Ref; lowestPurchase: Ref; selectedSupplierLastPurchase?: Ref }> = {};
+      for (const row of rows) {
+        const key = `${Number(row.variantId)}:${Number(row.productUnitId)}`;
+        const reference: Ref = { price: String(row.unitPrice), supplierId: Number(row.supplierId), supplierName: row.supplierName || "مورد غير مسمّى", purchaseOrderId: Number(row.purchaseOrderId), orderDate: row.orderDate };
+        const current = result[key];
+        if (!current) {
+          result[key] = { lastPurchase: reference, lowestPurchase: reference };
+          if (input.supplierId === reference.supplierId) result[key].selectedSupplierLastPurchase = reference;
+        } else {
+          if (Number(reference.price) < Number(current.lowestPurchase.price)) current.lowestPurchase = reference;
+          if (input.supplierId === reference.supplierId && !current.selectedSupplierLastPurchase) current.selectedSupplierLastPurchase = reference;
+        }
+      }
+      return result;
+    }),
+
   createOrder: purchasesManagerProcedure
     .input(
       z.object({
@@ -103,6 +144,39 @@ export const purchaseRouter = router({
       return res;
     }),
 
+  // اعتماد مسوّدة (DRAFT → CONFIRMED): يُتمّم دورة «حفظ مسوّدة» — مسوّدةٌ تُحفَظ بلا التزام فوري
+  // (لا تُستلَم منها بضاعة، لا أثر مخزني/مالي أصلاً — createOrder لا يكتب شيئاً غير سطور الأمر
+  // نفسها) ثم تُعتمَد لاحقاً فتصبح قابلة للاستلام عبر receive (الذي يشترط status=CONFIRMED حرفياً).
+  confirmOrder: purchasesManagerProcedure
+    .input(z.object({ purchaseOrderId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن اعتماد أمر شراء" });
+      }
+      // withTx يستدعي requireDb() داخلياً (يرمي نفس الخطأ إن غابت قاعدة البيانات) — لا فحص مكرَّر هنا.
+      const res = await withTx(async (tx) => {
+        const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, input.purchaseOrderId)).for("update").limit(1);
+        if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+        // عزل الفرع: مطابق لـassertPurchaseBranch في purchaseService (غير المرتفع محصور بفرعه).
+        const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+        if (!elevated && Number(po.branchId) !== Number(ctx.user.branchId)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع اعتماد أمر شراء فرع آخر" });
+        }
+        if (po.status !== "DRAFT") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُعتمَد إلا أمر شراء بحالة مسوّدة" });
+        }
+        await tx.update(purchaseOrders).set({ status: "CONFIRMED" }).where(eq(purchaseOrders.id, input.purchaseOrderId));
+        return { purchaseOrderId: input.purchaseOrderId, status: "CONFIRMED" as const };
+      });
+      await logAudit(ctx, {
+        action: "purchase.confirmOrder",
+        entityType: "purchaseOrder",
+        entityId: input.purchaseOrderId,
+        newValue: { status: "CONFIRMED" },
+      });
+      return res;
+    }),
+
   receive: purchasesWarehouseProcedure
     .input(
       z.object({
@@ -123,6 +197,8 @@ export const purchaseRouter = router({
             });
           }),
         payment: z.object({ amount: positiveMoneyString, method }).optional(),
+        // طريقة دفع مصروف الشحن/الكمرك (لشركة النقل، لا للمورّد). الافتراضي نقديّ.
+        shippingPaymentMethod: method.optional(),
         // idempotency: نفس المفتاح ⇒ استلام واحد (لا مخزون/AP/قيد/دفعة مزدوجة عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
       })
@@ -214,8 +290,8 @@ export const purchaseRouter = router({
     .input(
       z
         .object({
-          limit: z.number().default(50),
-          offset: z.number().default(0),
+          limit: z.number().int().positive().max(500).default(50), // تدقيق ٣/٨: سقف صريح ضدّ DoS الذاكرة.
+          offset: z.number().int().min(0).max(1_000_000).default(0),
           // S3 (٣٠/٦): cursor اختياري لـkeyset — `WHERE id < cursor` بدل OFFSET للعمق العميق.
           cursor: z.number().int().positive().optional(),
           // فلترة خادمية بالفترة (orderDate) والمورد والحالة.
@@ -248,6 +324,8 @@ export const purchaseRouter = router({
             orderDate: purchaseOrders.orderDate,
             // supplierId مطلوب لإجراءات الصف (كشف حساب المورد) في شاشة المشتريات.
             supplierId: purchaseOrders.supplierId,
+            // branchId لعمود «الفرع» عند فلتر «كل الفروع» للمرتفعين (نمط sales.list).
+            branchId: purchaseOrders.branchId,
             total: purchaseOrders.total,
             paidAmount: purchaseOrders.paidAmount,
             shippingCost: purchaseOrders.shippingCost,

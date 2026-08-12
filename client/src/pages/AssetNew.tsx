@@ -3,10 +3,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { iqd } from "@/lib/assets/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { ASSET_CATEGORIES, DEPRECIATION_METHODS, categoryDefaultLife } from "@shared/assets";
 import { AlertCircle } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -14,6 +14,17 @@ import { Link, useLocation } from "wouter";
 
 const selectCls = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const today = () => new Date().toISOString().slice(0, 10);
+
+/** الحالة الابتدائية للنموذج — تُستعمل مرّةً للقيمة الأولى ومرّةً كمرجع مقارنة لحارس فقد البيانات. */
+function emptyForm() {
+  return {
+    name: "", category: "computers", brand: "", serial: "",
+    branchId: "", location: "", condition: "ممتاز",
+    supplierId: "", purchaseDate: today(), purchaseValue: "", warrantyEnd: "",
+    method: "sl" as "sl" | "db", usefulLifeYears: String(categoryDefaultLife("computers")), salvageValue: "0",
+    custodianId: "",
+  };
+}
 
 /** معاينة القسط السنوي (سنة أولى) — للعرض فقط؛ الخادم يحسب نهائياً. */
 function previewAnnual(cost: number, salvage: number, life: number, method: "sl" | "db"): number {
@@ -27,14 +38,13 @@ export default function AssetNew() {
   const opts = trpc.assets.formOptions.useQuery();
   const [error, setError] = useState("");
 
-  const [form, setForm] = useState({
-    name: "", category: "computers", brand: "", serial: "",
-    branchId: "", location: "", condition: "ممتاز",
-    supplierId: "", purchaseDate: today(), purchaseValue: "", warrantyEnd: "",
-    method: "sl" as "sl" | "db", usefulLifeYears: String(categoryDefaultLife("computers")), salvageValue: "0",
-    custodianId: "",
-  });
+  const [form, setForm] = useState(emptyForm);
+  const [initialForm] = useState(emptyForm);
   const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
+
+  // حارس فقد بيانات: أيّ حقل يبتعد عن قيمته الابتدائية يستحقّ تحذيراً قبل مغادرة الصفحة/التحديث.
+  const isDirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(initialForm), [form, initialForm]);
+  useUnsavedGuard(isDirty);
 
   const annual = useMemo(
     () => previewAnnual(Number(form.purchaseValue || 0), Number(form.salvageValue || 0), Number(form.usefulLifeYears || 0), form.method),
@@ -50,6 +60,7 @@ export default function AssetNew() {
     setError("");
     if (!form.name.trim()) { setError("اسم الأصل مطلوب."); return; }
     if (!form.purchaseValue.trim()) { setError("قيمة الشراء مطلوبة."); return; }
+    if (!(Number(form.purchaseValue) > 0)) { setError("قيمة الشراء يجب أن تكون أكبر من صفر."); return; }
     if (!(Number(form.usefulLifeYears) > 0)) { setError("العمر الإنتاجي يجب أن يكون أكبر من صفر."); return; }
     create.mutate({
       name: form.name.trim(),

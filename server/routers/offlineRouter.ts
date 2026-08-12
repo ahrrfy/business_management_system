@@ -19,15 +19,95 @@ import {
   buildStockSnapshot,
 } from "../services/offline/catalogSnapshot";
 import { replayOfflineSale } from "../services/offline/replaySale";
+import { replayOfflinePrintSale } from "../services/offline/replayPrintSale";
+import { replayOfflineReception } from "../services/offline/replayReception";
 import { buildOfflineSalesReport } from "../services/offline/salesReport";
 import { verifyManagerApproval } from "./saleRouter";
-import { customersReadProcedure, productsReadProcedure, reportViewerProcedure, router, salesCashierProcedure } from "../trpc";
+import {
+  customersReadProcedure,
+  posCashierProcedure,
+  productsReadProcedure,
+  reportViewerProcedure,
+  router,
+  salesCashierProcedure,
+  workordersCashierProcedure,
+} from "../trpc";
 
 /** نفس حارس IDOR في catalogRouter: غير المرتفعين محصورون بفرعهم المُسنَد. */
 function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, requested: number): number {
   const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
   if (elevated) return requested;
   return ctx.user.branchId != null ? Number(ctx.user.branchId) : requested;
+}
+
+/** عزل الفرع + بناء الفاعل — مرآة `saleRouter.create` حرفياً (منع IDOR): غير المرتفع يُجبَر
+ *  على فرعه المُسنَد ولا يُصدَّق `branchId` القادم من العميل. مشتركٌ بين مسارات الترحيل الثلاثة
+ *  كي لا ينجرف حارسُ أحدها عن الآخرين. */
+function scopeActor(
+  ctx: { user: { id: number; role: string; branchId?: number | null } },
+  requestedBranchId: number,
+) {
+  const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+  let effectiveBranchId = requestedBranchId;
+  if (!elevated) {
+    if (ctx.user.branchId == null) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+    }
+    effectiveBranchId = Number(ctx.user.branchId);
+  }
+  return {
+    elevated,
+    effectiveBranchId,
+    actor: { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role },
+  };
+}
+
+/** غلاف تنفيذ الترحيل: إعادة محاولة تصادم ترقيم الفاتورة + أثر تدقيقيّ + تحويل الأخطاء غير
+ *  المتوقّعة إلى رسالةٍ عربية بلا تسريب SQL. مشتركٌ بين الأنواع الثلاثة (كان محصوراً بـreplaySale). */
+async function runReplay<T extends { invoiceId?: number; idempotentReplay?: boolean }>(
+  run: () => Promise<T>,
+  meta: {
+    ctx: Parameters<typeof logAudit>[0];
+    action: string;
+    offlineReceiptNumber: string;
+    capturedAt: string;
+    deviceId: string | null;
+    lines: number;
+  },
+): Promise<T> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await run();
+      if (!res.idempotentReplay) {
+        await logAudit(meta.ctx, {
+          action: meta.action,
+          entityType: "invoice",
+          entityId: res.invoiceId ?? 0,
+          newValue: {
+            offlineReceiptNumber: meta.offlineReceiptNumber,
+            capturedAt: meta.capturedAt,
+            deviceId: meta.deviceId,
+            lines: meta.lines,
+          },
+        });
+      }
+      return res;
+    } catch (e: unknown) {
+      if (isDupEntry(e) && attempt < 2) continue;
+      if (e instanceof TRPCError) throw e;
+      const err = e as { message?: string; code?: string; sqlMessage?: string; sql?: string };
+      logger.error(
+        {
+          err: { message: err?.message, code: err?.code, sqlMessage: err?.sqlMessage, sql: err?.sql },
+          offlineReceiptNumber: meta.offlineReceiptNumber,
+          action: meta.action,
+        },
+        "ترحيل أوفلايني فشل بخطأ غير متوقّع",
+      );
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر ترحيل العملية الأوفلاينية" });
+    }
+  }
+  throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
 }
 
 export const offlineRouter = router({
@@ -155,5 +235,141 @@ export const offlineRouter = router({
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
+    }),
+  /**
+   * ترحيل بيع خدمات طباعةٍ التُقط دون اتصال (كاشير الطباعة).
+   * البوّابة `posCashierProcedure` مرآةُ `printPos.createSale` بالضبط — لا أوسع: مَن يبيع
+   * أونلاين هو مَن يُرحّل ما التقطه أوفلاين، لا أحدَ سواه.
+   */
+  replayPrintSale: posCashierProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        shiftId: z.number().int().positive().optional(),
+        customerId: z.number().int().positive().optional(),
+        contactName: z.string().trim().max(255).optional(),
+        contactPhone: z.string().trim().max(32).optional(),
+        priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).optional(),
+        lines: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              productUnitId: z.number().int().positive(),
+              quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة"),
+              unitPriceOverride: nonNegMoneyString,
+            }),
+          )
+          .min(1),
+        payment: z.object({ amount: positiveMoneyString, method: z.literal("CASH") }),
+        clientRequestId: z.string().min(8).max(50),
+        notes: z.string().max(1000).optional(),
+        cashRoundIQD: z.boolean().optional(),
+        capturedAt: z.string().min(10).max(40),
+        offlineReceiptNumber: z.string().min(4).max(40),
+        deviceId: z.string().max(40).optional(),
+        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { effectiveBranchId, actor, elevated } = scopeActor(ctx, input.branchId);
+      const { managerApproval, ...replayInput } = input;
+      let approvedBy: number | null = null;
+      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
+      const priceOverrideApproved = (approvedBy ?? (elevated ? ctx.user.id : null)) != null;
+      return runReplay(
+        () =>
+          replayOfflinePrintSale(
+            { ...replayInput, branchId: effectiveBranchId, priceOverrideApproved },
+            actor,
+          ),
+        {
+          ctx,
+          action: "printSale.offlineReplay",
+          offlineReceiptNumber: input.offlineReceiptNumber,
+          capturedAt: input.capturedAt,
+          deviceId: input.deviceId ?? null,
+          lines: input.lines.length,
+        },
+      );
+    }),
+
+  /**
+   * ترحيل سلّة استقبالٍ التُقطت دون اتصال (كاشير خدمات الزبائن).
+   * البوّابة `workordersCashierProcedure` مرآةُ `workOrders.receptionCheckout` — و**ليست**
+   * `salesCashierProcedure`: دور «موظف استقبال» المبذور يملك `sales: READ` فقط، فلو وُضع هذا
+   * المسار خلف بوّابة المبيعات لَرُفض كلُّ ترحيلٍ منه بـFORBIDDEN وبقي طابوره عالقاً للأبد.
+   * أوامر الشغل مرفوضةٌ بنيوياً — العقد لا يحملها أصلاً (راجع replayReception.ts).
+   */
+  replayReception: workordersCashierProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        shiftId: z.number().int().positive(),
+        customerId: z.number().int().positive().optional(),
+        contactName: z.string().trim().max(255).optional(),
+        contactPhone: z.string().trim().max(32).optional(),
+        priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).optional(),
+        paymentMethod: z.literal("CASH"),
+        paidAmount: positiveMoneyString,
+        regularSale: z
+          .object({
+            lines: z
+              .array(
+                z.object({
+                  variantId: z.number().int().positive(),
+                  productUnitId: z.number().int().positive(),
+                  quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة"),
+                  unitPriceOverride: nonNegMoneyString,
+                  discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
+                  discountAmount: nonNegMoneyString.optional(),
+                }),
+              )
+              .min(1),
+            amount: positiveMoneyString,
+          })
+          .nullish(),
+        printSale: z
+          .object({
+            lines: z
+              .array(
+                z.object({
+                  variantId: z.number().int().positive(),
+                  productUnitId: z.number().int().positive(),
+                  quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة"),
+                  unitPriceOverride: nonNegMoneyString,
+                }),
+              )
+              .min(1),
+            amount: positiveMoneyString,
+          })
+          .nullish(),
+        clientRequestId: z.string().min(8).max(50),
+        capturedAt: z.string().min(10).max(40),
+        offlineReceiptNumber: z.string().min(4).max(40),
+        deviceId: z.string().max(40).optional(),
+        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { effectiveBranchId, actor, elevated } = scopeActor(ctx, input.branchId);
+      const { managerApproval, ...replayInput } = input;
+      let approvedBy: number | null = null;
+      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
+      const priceOverrideApproved = (approvedBy ?? (elevated ? ctx.user.id : null)) != null;
+      return runReplay(
+        () =>
+          replayOfflineReception(
+            { ...replayInput, branchId: effectiveBranchId, priceOverrideApproved },
+            actor,
+          ),
+        {
+          ctx,
+          action: "reception.offlineReplay",
+          offlineReceiptNumber: input.offlineReceiptNumber,
+          capturedAt: input.capturedAt,
+          deviceId: input.deviceId ?? null,
+          lines: (input.regularSale?.lines.length ?? 0) + (input.printSale?.lines.length ?? 0),
+        },
+      );
     }),
 });

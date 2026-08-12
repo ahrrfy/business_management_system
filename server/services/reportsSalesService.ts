@@ -51,6 +51,8 @@ export async function getSalesRegister(opts: {
   from: string;
   to: string;
   branchId?: number;
+  /** بحث نصّي حرّ — رقم الفاتورة/اسم العميل/اسم المنتج. */
+  q?: string;
   limit?: number;
   offset?: number;
 }): Promise<SalesRegisterResult> {
@@ -61,13 +63,27 @@ export async function getSalesRegister(opts: {
   const offset = Math.max(opts.offset ?? 0, 0);
 
   const branchCond = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
-  // الفلتر المشترك: نطاق التاريخ + استبعاد الملغاة + الفرع (اختياري).
+  const q = opts.q?.trim();
+  // EXISTS بدل الاعتماد على JOIN عملاء/منتجات — استعلام الإجماليات أدناه لا ينضمّ لهما، والبحث
+  // يجب أن يعمل من customerId/variantId الخام على invoiceItems/invoices مباشرةً في كلا الاستعلامين.
+  const qCond = q
+    ? sql`AND (
+        i.invoiceNumber LIKE ${`%${q}%`}
+        OR EXISTS (SELECT 1 FROM customers c2 WHERE c2.id = i.customerId AND c2.name LIKE ${`%${q}%`})
+        OR EXISTS (
+          SELECT 1 FROM productVariants pv2 JOIN products p2 ON p2.id = pv2.productId
+          WHERE pv2.id = ii.variantId AND p2.name LIKE ${`%${q}%`}
+        )
+      )`
+    : sql``;
+  // الفلتر المشترك: نطاق التاريخ + استبعاد الملغاة + الفرع (اختياري) + البحث النصّي (اختياري).
   // S2 (٢٩/٦/٢٦): نطاق قابل للفهرسة [from، nextDay(to)) بدل DATE(i.invoiceDate) (غير قابل للفهرسة كان
   // يفرض مسح كل الفواتير). يحتاج فهرساً مُغطّياً بترتيب (التاريخ ثم الحالة) — هجرة 0032. نفس نتيجة الحدّين الشاملين.
   const where = sql`
     i.invoiceDate >= ${`${opts.from} 00:00:00`} AND i.invoiceDate < ${`${nextDayStr(opts.to)} 00:00:00`}
     AND i.invoiceStatus NOT IN ('CANCELLED')
     ${branchCond}
+    ${qCond}
   `;
 
   // الربح للسطر: ii.total − (ii.baseQuantity − ii.returnedRestockedBaseQuantity) × ii.unitCost

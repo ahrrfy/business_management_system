@@ -2,7 +2,7 @@
 //
 // READY → DELIVERED + إرسالية: فاتورة (customerId=NULL) + SALE + عهدة COD على الجهة (D3).
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, notLike, or, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
@@ -10,6 +10,7 @@ import {
   invoices,
   productUnits,
   receipts,
+  shifts as shiftsTable,
   workOrders,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
@@ -17,8 +18,10 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
+import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
+import { assertFloatLimit } from "./parties";
 import type { DeliveryTxActor } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 
@@ -69,6 +72,14 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إرسال أمر فرعٍ آخر" });
     }
     if (wo.status !== "READY") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس جاهزاً للإرسال" });
+    // حارس خادمي مقابل طابور الواجهة: لا يتحول الاستلام المباشر إلى شحنة بسبب
+    // رابط قديم أو طلب API يدوي. يحدد موظف خدمة العملاء طريقة التسليم أولاً.
+    if (!wo.hasDelivery) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الطلب مضبوط للاستلام المباشر — غيّر طريقة التسليم إلى توصيل أولاً",
+      });
+    }
 
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party || !party.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل غير متاحة" });
@@ -81,23 +92,81 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     const costTotal = round2(money(wo.materialsCost).plus(money(wo.laborCost)));
     const depositPaid = round2(money(wo.deposit ?? "0"));
     if (depositPaid.gt(salePrice)) throw new TRPCError({ code: "BAD_REQUEST", message: "العربون يتجاوز إجمالي الأمر" });
+    // ٥/٨ — أجرة التوصيل تمريرٌ لا إيراد (قرار المالك): salePrice بضاعةٌ وخدمةٌ فقط، وcodAmount
+    // = **مالُنا** الذي يحصّله المندوب ويورّده. الأجرة رقمٌ موازٍ لا يدخل الفاتورة ولا الإيراد.
+    // كان الحارس القديم يرفض fee > codAmount لأن الأجرة كانت مضمومةً داخل codAmount؛ وبعد فصلها
+    // صار الرفض خاطئاً بنيوياً — بل هو الحالة العادية في الطلب المدفوع كاملاً (codAmount=0).
     const codAmount = round2(salePrice.minus(depositPaid)); // >= 0
     const fee = round2(money(input.deliveryFee ?? party.defaultFee ?? "0"));
-    if (fee.gt(codAmount)) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "أجرة التوصيل لا يمكن أن تتجاوز مبلغ التحصيل عند خصمها منه",
-      });
+    if (fee.lt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "أجرة التوصيل لا تصحّ أن تكون سالبة" });
     }
+    // مَن قبض الأجرة: يتبع ما ثُبِّت على أمر الشغل في الاستقبال (COURIER افتراضياً).
+    const feeCollection = (wo.deliveryFeeCollection ?? "COURIER") as "COURIER" | "COUNTER" | "SHOP";
+    if (feeCollection === "COUNTER") {
+      // مراجعة عدائية ٩/٨ — حارسان بدل فحص wo.deliveryCost الاسمي:
+      // (١) الأمانة تُقاس بصافي **إيصالات القبض الفعلية** (DLV-FEE-WO) لا بحقل الطلب — أمرٌ
+      //     قديم/قناة لا تلتقط الأمانة كان يصرف OUT نقداً بلا IN يقابله ⇒ المكتبة تدفع من
+      //     مالها أجرةً لم يدفعها الزبون قط وΣ(FEE_HELD) سالبة صامتة (مرآة حارس dispatchInvoice).
+      // (٢) **مساواة** لا سقف: COUNTER معناها «الزبون دفع أجرة المندوب سلفاً» — أجرةٌ أقل من
+      //     الأمانة كانت تُبرّئ جزءاً وتترك الفرق دنانير زبونٍ عالقة في الدرج بلا مسار ولا
+      //     تبويب للأبد (التوريد لا يخصمها بعد ختم feeSettledAt والإرجاع لا يردّها).
+      const heldRow = (
+        await tx
+          .select({ v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)` })
+          .from(receipts)
+          .where(and(
+            eq(receipts.workOrderId, Number(wo.id)),
+            eq(receipts.referenceNumber, `DLV-FEE-WO-${wo.id}`),
+            eq(receipts.status, "COMPLETED"),
+          ))
+      )[0];
+      const heldD = round2(money(heldRow?.v ?? "0"));
+      if (heldD.lte(0)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "«مقبوضة في الاستقبال» بلا إيصال قبض أمانة لهذا الطلب — اقبض الأجرة أولاً أو غيّر طريقة قبضها إلى «المندوب يقبضها» / «على المكتبة»",
+        });
+      }
+      if (!fee.eq(heldD)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `الأمانة المقبوضة من الزبون (${heldD.toFixed(2)}) يجب أن تساوي أجرة المندوب — اجعل الأجرة ${heldD.toFixed(2)} أو صحّح المقبوض قبل الإرسال`,
+        });
+      }
+    }
+
+    // مراجعة PR #495 — سقف عهدة المندوب: كان يُقرأ في مسار إسناد الفاتورة وحده، فبقي هذا المسار
+    // (أوامر الشغل الجاهزة) يرفع `currentBalance` بلا حدّ. الفحص هنا **قبل** أيّ كتابة (فاتورة/
+    // مخزون/عهدة) وتحت قفل صفّ الجهة أعلاه ⇒ الرفض لا يترك فاتورةً يتيمة.
+    if (codAmount.gt(0)) assertFloatLimit(party, codAmount);
 
     // فاتورة COD: customerId=NULL (الطرف المقابل = جهة التوصيل، عهدة لا AR ⇒ مطابقة AR/الائتمان سليمة).
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
     const invStatus = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(depositPaid));
     const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
+    // ش١ (٥/٨): فاتورة الإرسال تنتمي لوردية مُرسِلها (مرآة deliver.ts) — تظهر في طابور فواتير
+    // المحطة بحالتها التسليمية بدل أن تختفي بلا shiftId.
+    // مراجعة عدائية (٥/٨): الختم بوردية RECEPTION **حصراً أو null** — الحلّ المرن كان يلتقط
+    // وردية RETAIL الوحيدة فتتضخّم Z ورديةٍ ليست لها والفاتورة تسقط من طابور المحطة معاً.
+    const dispatchShiftRow = (
+      await tx
+        .select({ id: shiftsTable.id })
+        .from(shiftsTable)
+        .where(and(
+          eq(shiftsTable.userId, actor.userId),
+          eq(shiftsTable.branchId, Number(wo.branchId)),
+          eq(shiftsTable.status, "OPEN"),
+          eq(shiftsTable.shiftType, "RECEPTION"),
+        ))
+        .limit(1)
+    )[0];
+    const dispatchShiftId = dispatchShiftRow ? Number(dispatchShiftRow.id) : null;
     const invRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "WORKORDER",
       sourceId: `WO-${wo.id}`,
+      shiftId: dispatchShiftId,
       branchId: Number(wo.branchId),
       customerId: null,
       priceTier: "RETAIL",
@@ -146,14 +215,29 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     });
 
     // ربط إيصال العربون بالفاتورة (كان workOrderId-only) — append-only على القيد كـdeliverWorkOrder.
+    // ش٠ (V3): بهويّته الصريحة (depositReceiptId) — الالتقاط الظنّي كان يتصادم مع إيصال أجرة COUNTER.
     if (depositPaid.gt(0)) {
-      const depRcpt = (await tx.select({ id: receipts.id }).from(receipts)
-        .where(and(eq(receipts.workOrderId, Number(wo.id)), isNull(receipts.invoiceId))).limit(1))[0];
-      if (depRcpt) await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcpt.id)));
+      const depRcptId = wo.depositReceiptId != null
+        ? Number(wo.depositReceiptId)
+        : (await tx.select({ id: receipts.id }).from(receipts)
+            .where(and(
+              eq(receipts.workOrderId, Number(wo.id)),
+              eq(receipts.direction, "IN"),
+              isNull(receipts.invoiceId),
+              or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
+            )).limit(1))[0]?.id;
+      if (depRcptId != null) await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcptId)));
     }
 
     const consignmentNumber = await nextConsignmentNumber(tx, Number(wo.branchId));
     const codPositive = codAmount.gt(0);
+    // الأجرة تُسوَّى لحظة الإرسال متى كان النقد بأيدينا أو لا توريدَ يُنتظَر:
+    //   COUNTER ⇒ قبضناها أمانةً في الاستقبال والمندوب واقفٌ الآن ⇒ تُدفَع له نقداً من الدرج.
+    //   codAmount=0 ⇒ لا توريد قادم أصلاً ⇒ لا مجال لخصمها لاحقاً (هذه هي الحالة التي كانت
+    //   تبتلع الأجرة صامتةً: إرسالية تُنشَأ DELIVERED فوراً فلا يراها مسار التوريد أبداً).
+    // ما عدا ذلك (COURIER بـCOD موجب) لا يمرّ بدفترنا إطلاقاً؛ وSHOP بـCOD موجب يُخصَم مصروفاً
+    // عند التوريد كما كان.
+    const settleFeeNow = fee.gt(0) && feeCollection !== "COURIER" && (feeCollection === "COUNTER" || !codPositive);
     const cnRes = await tx.insert(deliveryConsignments).values({
       consignmentNumber,
       branchId: Number(wo.branchId),
@@ -165,14 +249,60 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       collectedAmount: "0",
       deliveryFee: toDbMoney(fee),
       recipientName: input.recipientName ?? null,
-      recipientPhone: input.recipientPhone ?? null,
+      // اِستقبال (٤/٨): هاتف المستلم المُلتقَط عند إنشاء/تصنيف أمر الشغل — نفس نمط fallback العنوان
+      // أدناه؛ يمنع مندوباً يُرسَل بلا وسيلة اتصال بالزبون حين لا يُدخِل الموظّف رقماً صريحاً هنا.
+      recipientPhone: input.recipientPhone ?? wo.deliveryPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? wo.deliveryAddress ?? null,
+      feeCollection,
+      feeSettledAt: settleFeeNow ? new Date() : null,
       // codAmount=0 (مدفوع كامل بالعربون) ⇒ إرسالية تسليم فقط بلا عهدة.
       status: codPositive ? "DISPATCHED" : "DELIVERED",
       settledAt: codPositive ? null : new Date(),
       dispatchedBy: actor.userId,
     });
     const consignmentId = extractInsertId(cnRes);
+
+    // صرف الأجرة للمندوب نقداً من الدرج (إيصال OUT) ⇒ الدرج يُطابِق فعلاً عند الإغلاق.
+    // COUNTER: تبرئة أمانةٍ مقبوضة (بلا مصروف — تمرير). SHOP: مصروفٌ حقيقيّ تتحمّله المكتبة.
+    if (settleFeeNow) {
+      const { shiftId, cashBucket } = await shiftIdForCashTx(
+        tx,
+        { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role },
+        Number(wo.branchId),
+        "صرف أجرة توصيل",
+        "RECEPTION",
+      );
+      const feeOut = await tx.insert(receipts).values({
+        branchId: Number(wo.branchId),
+        shiftId,
+        invoiceId,
+        direction: "OUT",
+        amount: toDbMoney(fee),
+        paymentMethod: "CASH",
+        cashBucket,
+        status: "COMPLETED",
+        partyType: "OTHER",
+        referenceNumber: consignmentNumber,
+        description: `أجرة توصيل إرسالية ${consignmentNumber}`,
+        createdBy: actor.userId,
+      });
+      const feeReceiptId = extractInsertId(feeOut);
+      await postEntry(tx, {
+        entryType: feeCollection === "COUNTER" ? "DELIVERY_FEE_HELD" : "DELIVERY_FEE",
+        dedupeKey: `DELIVERY_FEE_DISPATCH:${consignmentId}`,
+        branchId: Number(wo.branchId),
+        invoiceId,
+        deliveryPartyId: input.partyId,
+        receiptId: feeReceiptId,
+        // تدقيق ٦/٨ (ث٨): إشارةُ التبرئة **سالبة** — الوارد (workOrder/create) موجبٌ، فبقاؤها
+        // موجبةً هنا يجعل Σ(DELIVERY_FEE_HELD) لكل مستندٍ = ضعفَ الأجرة بدل صفر، فيستحيل
+        // على أيّ تقريرٍ أن يجيب «كم أمانةً قُبضت ولم تُبرَّأ؟». الثابت: Σ = 0 ⇔ مُبرَّأة.
+        amount: feeCollection === "COUNTER" ? fee.neg() : fee,
+        // COUNTER تمرير: قبضناها ودفعناها ⇒ صفر أثرٍ على الأرباح. SHOP تحمُّلٌ فعليّ ⇒ مصروف.
+        ...(feeCollection === "SHOP" ? { cost: fee, profit: fee.neg() } : {}),
+        notes: `أجرة توصيل ${consignmentNumber}`,
+      });
+    }
 
     if (codPositive) {
       await adjustDeliveryBalance(tx, input.partyId, codAmount);

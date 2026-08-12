@@ -74,7 +74,7 @@ export function printConsignmentNote(note: ConsignmentNoteForPrint): boolean {
     <div class="box"><b>رقم السند:</b> <span class="mono">${esc(note.noteNumber)}</span> · <b>التاريخ:</b> ${dateStr}</div>
   </div>
   <table>
-    <thead><tr><th class="c">#</th>${showDir ? '<th class="c">الاتجاه</th>' : ""}<th>الصنف</th><th>الرمز</th><th class="c">الكمية</th></tr></thead>
+    <thead><tr><th class="c">#</th>${showDir ? '<th class="c">الاتجاه</th>' : ""}<th>المنتج</th><th>الرمز</th><th class="c">الكمية</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
   <div class="tot">إجمالي القطع (بالوحدة الأساس): ${showDir ? `صافي ${totalBase}` : Math.abs(totalBase)}</div>

@@ -18,7 +18,10 @@ async function reset() {
 async function seed(creditLimit: string | null, balance = "0") {
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" });
-  await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "t", name: "cashier", role: "cashier", branchId: 1, loginMethod: "local" },
+    { id: 2, openId: "manager", name: "manager", role: "manager", branchId: 1, loginMethod: "local" },
+  ]);
   await d.insert(s.products).values({ id: 1, name: "دفتر" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "NB-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
@@ -51,7 +54,7 @@ describe("حدّ الائتمان + موافقة المدير (سياسة H4: nu
 
   it("تجاوز السقف مع موافقة مُسجَّلة (approvalId) ⇒ ينجح وتُستَهلَك", async () => {
     await seed("100.00");
-    const app = await withTx(async (tx) => createApproval(tx, { customerId: 1, maxAmount: "300.00", approvedBy: 1 }));
+    const app = await withTx(async (tx) => createApproval(tx, { customerId: 1, branchId: 1, maxAmount: "300.00", approvedBy: 2 }));
     const r = await creditSale({ creditApproved: true, creditApprovalId: app.id });
     expect(r.invoiceId).toBeGreaterThan(0);
     // إعادة استعمال نفس الموافقة ⇒ FORBIDDEN (single-use)
@@ -77,7 +80,7 @@ describe("حدّ الائتمان + موافقة المدير (سياسة H4: nu
 
   it("creditLimit='0' + موافقة مُسجَّلة ⇒ ينجح", async () => {
     await seed("0");
-    const app = await withTx(async (tx) => createApproval(tx, { customerId: 1, maxAmount: "300.00", approvedBy: 1 }));
+    const app = await withTx(async (tx) => createApproval(tx, { customerId: 1, branchId: 1, maxAmount: "300.00", approvedBy: 2 }));
     const r = await creditSale({ creditApproved: true, creditApprovalId: app.id });
     expect(r.invoiceId).toBeGreaterThan(0);
   });

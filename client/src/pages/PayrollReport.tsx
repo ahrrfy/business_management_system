@@ -13,7 +13,7 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 type Row = RouterOutputs["payroll"]["summaryReport"]["rows"][number];
 
 const STATUS_LABEL: Record<string, string> = {
-  draft: "مسودّة",
+  draft: "مسوّدة",
   approved: "معتمد",
   paid: "مدفوع",
 };

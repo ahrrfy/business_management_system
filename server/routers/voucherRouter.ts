@@ -17,7 +17,9 @@ import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
-const creatableMethod = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+// قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء، ويبقى في reportableMethod
+// وفي المخطط للسجلات التاريخية فقط (فلترة/عرض السندات القديمة).
+const creatableMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
 const reportableMethod = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "EXCHANGE"]);
 const voucherType = z.enum(["RECEIPT", "PAYMENT"]);
 const approvalStatus = z.enum(["APPROVED", "PENDING_APPROVAL", "REJECTED"]);
@@ -25,6 +27,22 @@ const moneyStr = z
   .string()
   .regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (موجب، منزلتان عشريتان كحدّ أقصى)");
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
+
+// فلاتر القائمة والمجاميع — schema واحد يضمن تطابق شروط list وaggregate للأبد.
+const voucherListFilters = z.object({
+  branchId: z.number().int().positive().optional(),
+  voucherType: voucherType.optional(),
+  partyType: partyType.optional(),
+  partyId: z.number().int().positive().optional(),
+  status: z.enum(["COMPLETED", "REVERSED"]).optional(),
+  approvalStatus: approvalStatus.optional(),
+  voucherCategoryId: z.number().int().positive().optional(),
+  paymentMethod: reportableMethod.optional(),
+  q: z.string().trim().max(100).optional(),
+  from: ymd.optional(),
+  to: ymd.optional(),
+});
+type VoucherListFilters = z.infer<typeof voucherListFilters>;
 
 export const voucherRouter = router({
   /** عَتبة النظام (للتعرّض في الواجهة: تَلميح «هذا المبلغ يَحتاج اعتماد مدير ثانٍ»).
@@ -160,18 +178,8 @@ export const voucherRouter = router({
 
   list: treasuryManagerReadProcedure
     .input(
-      z
-        .object({
-          branchId: z.number().int().positive().optional(),
-          voucherType: voucherType.optional(),
-          partyType: partyType.optional(),
-          partyId: z.number().int().positive().optional(),
-          status: z.enum(["COMPLETED", "REVERSED"]).optional(),
-          approvalStatus: approvalStatus.optional(),
-          voucherCategoryId: z.number().int().positive().optional(),
-          paymentMethod: reportableMethod.optional(), q: z.string().trim().max(100).optional(),
-          from: ymd.optional(),
-          to: ymd.optional(),
+      voucherListFilters
+        .extend({
           limit: z.number().int().positive().max(500).default(100),
           offset: z.number().int().min(0).default(0),
         })
@@ -184,6 +192,16 @@ export const voucherRouter = router({
       const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
       const scoped = restrict ? { ...(input ?? {}), branchId: Number(ctx.user.branchId) } : (input ?? {});
       return listVouchers(scoped);
+    }),
+
+  /** مجاميع كامل النطاق المفلتر + count للترقيم — بطاقات الإجماليات كانت تجمع صفوف الصفحة
+   *  الحالية فقط (مضلّلة فوق ١٠٠ سند). نفس عزل الفرع المطبَّق في list حرفياً. */
+  aggregate: treasuryManagerReadProcedure
+    .input(voucherListFilters.optional())
+    .query(async ({ input, ctx }) => {
+      const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
+      const scoped = restrict ? { ...(input ?? {}), branchId: Number(ctx.user.branchId) } : (input ?? {});
+      return aggregateVouchers(scoped);
     }),
 
   get: treasuryManagerReadProcedure
@@ -224,9 +242,68 @@ export const voucherRouter = router({
 });
 
 /* ============================ فئات السندات (admin CRUD) ============================ */
-import { and, asc, eq, ne } from "drizzle-orm";
-import { receipts, voucherCategories } from "../../drizzle/schema";
+import { and, asc, eq, gte, isNotNull, lt, ne, or, sql } from "drizzle-orm";
+import { invoices, receipts, voucherCategories } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { escLike } from "../lib/sqlLike";
+import { localDayStart, localNextDayStart } from "../services/dateRange";
+
+/** مجاميع السندات بSQL (SUM/COUNT على كامل النطاق المفلتر — لا جمع صفوف صفحة).
+ *  ⚠️ شروط الفلترة مرآةُ listVouchers (services/voucher/queries.ts) حرفياً — أي فلتر جديد هناك
+ *  يُضاف هنا وإلا انحرفت البطاقات عن الجدول. القبض/الصرف من المُعتمَد غير الملغى فقط
+ *  (المعلّق والمرفوض بلا أثر مالي — لم يُسجَّل قيد أصلاً، والملغى عُكس أثره). */
+async function aggregateVouchers(input: VoucherListFilters) {
+  const empty = { count: 0, totalIn: "0.00", totalOut: "0.00", pendingTotal: "0.00", pendingCount: 0, reversedCount: 0 };
+  const db = getDb();
+  if (!db) return empty;
+  const wheres: any[] = [isNotNull(receipts.voucherNumber)];
+  if (input.status) wheres.push(eq(receipts.status, input.status));
+  if (input.branchId) wheres.push(eq(receipts.branchId, input.branchId));
+  if (input.voucherType) wheres.push(eq(receipts.direction, input.voucherType === "RECEIPT" ? "IN" : "OUT"));
+  if (input.partyType) wheres.push(eq(receipts.partyType, input.partyType));
+  if (input.partyId) wheres.push(eq(receipts.partyId, input.partyId));
+  if (input.approvalStatus) wheres.push(eq(receipts.approvalStatus, input.approvalStatus));
+  if (input.voucherCategoryId) wheres.push(eq(receipts.voucherCategoryId, input.voucherCategoryId));
+  if (input.paymentMethod) wheres.push(eq(receipts.paymentMethod, input.paymentMethod));
+  if (input.q?.trim()) {
+    const like = `%${escLike(input.q.trim())}%`;
+    wheres.push(or(
+      sql`coalesce(${receipts.voucherNumber}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${receipts.description}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${receipts.counterpartyName}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${receipts.referenceNumber}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${receipts.checkNumber}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${invoices.invoiceNumber}, '') LIKE ${like} ESCAPE '!'`,
+    ));
+  }
+  if (input.from) wheres.push(gte(receipts.createdAt, localDayStart(input.from)));
+  if (input.to) wheres.push(lt(receipts.createdAt, localNextDayStart(input.to)));
+
+  // leftJoin الفواتير لا يُضاعف الصفوف (invoiceId → فاتورة واحدة)، وهو لازم لبحث q برقم الفاتورة.
+  const row = (
+    await db
+      .select({
+        count: sql<number>`COUNT(*)`,
+        totalIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.status} <> 'REVERSED' AND ${receipts.approvalStatus} = 'APPROVED' AND ${receipts.direction} = 'IN' THEN CAST(${receipts.amount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
+        totalOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.status} <> 'REVERSED' AND ${receipts.approvalStatus} = 'APPROVED' AND ${receipts.direction} = 'OUT' THEN CAST(${receipts.amount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
+        pendingTotal: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.status} <> 'REVERSED' AND ${receipts.approvalStatus} = 'PENDING_APPROVAL' THEN CAST(${receipts.amount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
+        pendingCount: sql<number>`COALESCE(SUM(CASE WHEN ${receipts.status} <> 'REVERSED' AND ${receipts.approvalStatus} = 'PENDING_APPROVAL' THEN 1 ELSE 0 END), 0)`,
+        reversedCount: sql<number>`COALESCE(SUM(CASE WHEN ${receipts.status} = 'REVERSED' THEN 1 ELSE 0 END), 0)`,
+      })
+      .from(receipts)
+      .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
+      .where(and(...wheres))
+  )[0];
+  if (!row) return empty;
+  return {
+    count: Number(row.count ?? 0),
+    totalIn: String(row.totalIn ?? "0.00"),
+    totalOut: String(row.totalOut ?? "0.00"),
+    pendingTotal: String(row.pendingTotal ?? "0.00"),
+    pendingCount: Number(row.pendingCount ?? 0),
+    reversedCount: Number(row.reversedCount ?? 0),
+  };
+}
 
 export const voucherCategoryRouter = router({
   list: treasuryManagerReadProcedure

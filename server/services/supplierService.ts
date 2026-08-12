@@ -491,6 +491,7 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
       id: suppliers.id,
       name: suppliers.name,
       phone: suppliers.phone,
+      whatsapp: suppliers.whatsapp,
       city: suppliers.city,
       paymentTerms: suppliers.paymentTerms,
       currentBalance: suppliers.currentBalance,

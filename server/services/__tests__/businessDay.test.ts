@@ -1,6 +1,14 @@
 // businessDay — مصدر الحقيقة الواحد لحدود اليوم التجاريّ (UTC حتميّ). تدقيق ١٧/٧، مخاطرة جهازية #٧.
 import { describe, expect, it } from "vitest";
-import { utcDayStart, utcNextDayStart, utcDayRange, todayUtcDate, baghdadToday, parseBusinessYmd } from "../businessDay";
+import {
+  baghdadToday,
+  baghdadTodayUtcRange,
+  parseBusinessYmd,
+  todayUtcDate,
+  utcDayRange,
+  utcDayStart,
+  utcNextDayStart,
+} from "../businessDay";
 import { localDayStart, localNextDayStart } from "../dateRange";
 
 describe("businessDay — حدود UTC حتمية", () => {
@@ -41,5 +49,15 @@ describe("businessDay — حدود UTC حتمية", () => {
     expect(baghdadToday()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     // بغداد (+03:00) ≥ يوم UTC دائماً (لا يسبقه أبداً).
     expect(baghdadToday() >= todayUtcDate()).toBe(true);
+  });
+
+  it("Baghdad today uses half-open UTC bounds and rolls at 21:00Z", () => {
+    const beforeMidnight = baghdadTodayUtcRange(new Date("2026-08-09T20:59:59.999Z"));
+    expect(beforeMidnight.start.toISOString()).toBe("2026-08-08T21:00:00.000Z");
+    expect(beforeMidnight.endExclusive.toISOString()).toBe("2026-08-09T21:00:00.000Z");
+
+    const atMidnight = baghdadTodayUtcRange(new Date("2026-08-09T21:00:00.000Z"));
+    expect(atMidnight.start.toISOString()).toBe("2026-08-09T21:00:00.000Z");
+    expect(atMidnight.endExclusive.toISOString()).toBe("2026-08-10T21:00:00.000Z");
   });
 });

@@ -8,10 +8,10 @@
     "delivery.getParty",
     "delivery.setPartyActive",
     "delivery.updateParty",
+    "inventory.createManualMovement",
     "inventory.stockByBranch",
     "inventory.transfer",
     "priceWaves.unitHistory",
-    "sales.listPage",
     "salesPromotions.activeToday",
     "salesPromotions.getById",
     "system.health"

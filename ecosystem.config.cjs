@@ -19,7 +19,41 @@
 // (يُلغي كامل الفصل الأمني الذي بُني من أجله). يتطلّب DB_CONTAINER/DB_ROOT_PW/
 // INTEGRATIONS_ENCRYPTION_KEY في `.env` (أو env هذا القسم مباشرة) — غير مضبوطة افتراضياً.
 
-require("dotenv").config();
+const path = require("node:path");
+const dotenv = require("dotenv");
+const artifactSmoke =
+  process.env.HR_BRIDGE_ECOSYSTEM_ARTIFACT_SMOKE === "1";
+dotenv.config({ quiet: true });
+// The mutable root ecosystem never launches the production bridge. A source
+// definition exists only while the build gate inspects its PM2 contract.
+let artifactSmokeBridgeApp = null;
+if (artifactSmoke) {
+  const policy = require("./scripts/hr-bridge-runtime-policy.cjs");
+  const createHrBridgePm2App = require("./scripts/hr-bridge-pm2-app.cjs");
+  const bridgeFileEnvironment = {};
+  const bridgeEnvironmentResult = dotenv.config({
+    path: path.join(__dirname, ".env.example"),
+    processEnv: bridgeFileEnvironment,
+    quiet: true,
+  });
+  if (bridgeEnvironmentResult.error) {
+    throw new Error("HR_BRIDGE_ENV_FILE_NOT_READABLE");
+  }
+  const artifactEnvironment = Object.fromEntries(
+    policy.allowedEnvironmentKeys
+      .filter((key) => typeof bridgeFileEnvironment[key] === "string")
+      .map((key) => [key, bridgeFileEnvironment[key]]),
+  );
+  artifactEnvironment.NODE_ENV = "production";
+  artifactEnvironment.TZ = "UTC";
+  artifactEnvironment.HR_BRIDGE_LOAD_DOTENV = "0";
+  artifactSmokeBridgeApp = createHrBridgePm2App({
+    projectRoot: __dirname,
+    script: "scripts/hr-bridge-release-worker.mjs",
+    policy,
+    deploymentEnvironment: artifactEnvironment,
+  });
+}
 
 module.exports = {
   apps: [
@@ -27,10 +61,29 @@ module.exports = {
       name: "erp-server",
       script: "dist/index.js",
       cwd: __dirname,
-      instances: 1,
-      exec_mode: "fork",
+      // ── توزيع الأحمال داخل الخادم (cluster) ────────────────────────────────────────────
+      // عدّة عمّال يتقاسمون الطلبات على نوى المعالج ⇒ طاقةٌ أعلى تحت الذروة (٧ كاشيرات + كل
+      // الموظفين والحسابات) + مقاومةُ انهيار (سقوطُ عاملٍ لا يُسقط الخدمة — الباقون يخدمون) +
+      // إعادةُ تحميلٍ متدحرجة بلا انقطاع (pm2 reload). الكنّاسات والكرون تعمل في العامل 0 فقط
+      // (server/lib/clusterRole.ts) فلا تتكرّر. جسر أجهزة الحضور مفصول في erp-hr-bridge
+      // (عملية fork واحدة) ولا يملك erp-server منفذ الأجهزة أو وصلاتها الحيّة.
+      // ⚠️ الخادم مشترك (سراج/أودو خطّ أحمر) — الافتراضي عاملَان (لا "max") كي لا نستنزف نوى
+      // الجيران؛ ارفعه بحذر عبر WEB_INSTANCES=3 بعد مراقبة الحِمل. **ميزانية اتصالات القاعدة:**
+      // كل عامل يفتح حتى DB_POOL_LIMIT اتصالاً **لكل شركة**؛ في الوضع الأحادي = (عدد العمّال ×
+      // DB_POOL_LIMIT)، وفي وضع تعدّد الشركات (CONTROL_DATABASE_URL) = (عدد العمّال × عدد الشركات
+      // × DB_POOL_LIMIT). احرص أن يبقى دون max_connections في MySQL (الافتراضي 151): ٢×٢٠=٤٠ آمن
+      // أحاديّاً، لكن ٢ عامل × ٤ شركات × ٢٠ = ١٦٠ يتجاوزه ⇒ اخفض DB_POOL_LIMIT أو ارفع max_connections.
+      instances: process.env.WEB_INSTANCES || 2,
+      exec_mode: "cluster",
       watch: false,
-      max_memory_restart: "512M",
+      // ⚠️ مؤقّت (٤/٨/٢٦): رُفع من 512M إلى 1024M. السقف القديم كان يُعاد ضربه **كل ٦٠ ثانية**
+      // في الإنتاج (‏`[PM2][WORKER] … exceeds --max-memory-restart` عند ~٦٠٠م)، فيُعاد تشغيل
+      // الخادم ١٥–٢٣ مرّة/ساعة وتُسقَط الطلبات الجارية — بلا أيّ انهيارٍ حقيقيّ (صفر خروجٍ بكودٍ
+      // غير صفر). العملية تبدأ ~٣٠٠م وتبلغ ٦٠٠م خلال دقيقة، وهو نموٌّ أسرع من أن يكون تسرّباً
+      // بطيئاً؛ الفرضية أنّ ٥١٢م أدنى من سلوك V8 الطبيعيّ (يؤجّل الكنس الكبير حتى ضغطٍ أعلى)
+      // فيقاتل PM2 جامعَ المهملات لا تسرّباً. الخادم ١٦ﺟ ومتاحٌ منه ~١٣ﺟ ⇒ 1024M آمنٌ بفارق واسع.
+      // يبقى **محدوداً عمداً** كي يظلّ تسرّبٌ حقيقيّ مكشوفاً (إن عاد الضرب فالنموّ حقيقيّ لا كسل GC).
+      max_memory_restart: "1024M",
       // أعِد التشغيل تلقائياً عند الانهيار (مع تأخير متزايد).
       restart_delay: 3000,
       max_restarts: 10,
@@ -46,6 +99,8 @@ module.exports = {
         // طلب أصل عند فتح صفحة كانت تُشبع الخيوط الأربعة وتُعلّق الطلبات على «جار التحميل».
         UV_THREADPOOL_SIZE: "16",
         PORT: process.env.PORT || 3000,
+        // يطابق عدد عمّال الويب المقصود في `instances` أعلاه.
+        WEB_INSTANCES: String(process.env.WEB_INSTANCES || 2),
         DATABASE_URL: process.env.DATABASE_URL,
         JWT_SECRET: process.env.JWT_SECRET,
         // عمداً بلا CONTROL_DATABASE_URL/DB_ROOT_PW/docker — خادم الويب لا يوفّر شركات أبداً.
@@ -56,6 +111,7 @@ module.exports = {
       out_file: "logs/erp-out.log",
       merge_logs: true,
     },
+    ...(artifactSmokeBridgeApp ? [artifactSmokeBridgeApp] : []),
     {
       name: "erp-provision-worker",
       script: "scripts/company-provision-worker.mjs",

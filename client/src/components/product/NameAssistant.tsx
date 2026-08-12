@@ -65,7 +65,7 @@ export function NameAssistant({ name, onApply, excludeProductId, warnColors = fa
         <div className="flex items-start gap-1.5 rounded-md border bg-muted/40 px-2 py-1.5 text-muted-foreground">
           <SearchCheck aria-hidden className="size-3.5 shrink-0 mt-0.5" />
           <div className="min-w-0">
-            <span className="font-medium text-foreground">منتجات مشابهة موجودة</span> — تأكّد أنك لا تُكرّر صنفاً قائماً:
+            <span className="font-medium text-foreground">منتجات مشابهة موجودة</span> — تأكّد أنك لا تُكرّر منتجاً قائماً:
             <ul className="mt-0.5 space-y-0.5">
               {nearMatches.map((s) => (
                 <li key={s.id} className="truncate">

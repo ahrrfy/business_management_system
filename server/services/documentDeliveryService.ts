@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import {
   conversations,
   conversationMessages,
@@ -76,7 +76,7 @@ export async function loadOfficialDocumentSnapshot(
           number: invoices.invoiceNumber,
           date: invoices.invoiceDate,
           customerName: customers.name,
-          customerPhone: customers.phone,
+          customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
           customerConsent: customers.waConsent,
           subtotal: invoices.subtotal,
           discountAmount: invoices.discountAmount,
@@ -147,7 +147,7 @@ export async function loadOfficialDocumentSnapshot(
         date: quotations.quoteDate,
         validUntil: quotations.validUntil,
         customerName: customers.name,
-        customerPhone: customers.phone,
+        customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
         customerConsent: customers.waConsent,
         subtotal: quotations.subtotal,
         discountAmount: quotations.discountAmount,

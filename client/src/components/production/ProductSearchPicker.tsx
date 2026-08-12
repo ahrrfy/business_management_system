@@ -2,6 +2,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { cn } from "@/lib/utils";
 
 export type PurchaseRow = RouterOutputs["catalog"]["forPurchase"][number];
 
@@ -21,6 +24,7 @@ export function ProductSearchPicker({
   onPick: (variant: PurchaseRow, units: PurchaseRow[]) => void;
 }) {
   const [q, setQ] = useState("");
+  const barcodeInput = useBarcodeInput((code) => setQ(code));
   const res = trpc.catalog.forPurchase.useQuery(
     { branchId, query: q, limit: 16 },
     { enabled: q.trim().length > 0 }
@@ -45,7 +49,14 @@ export function ProductSearchPicker({
     <div className="space-y-1">
       {label && <Label>{label}</Label>}
       <div className="relative">
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={placeholder ?? "ابحث بالاسم/SKU/الباركود…"} />
+        <Input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => barcodeInput.handleKeyDown(e, setQ)}
+          placeholder={placeholder ?? "ابحث بالاسم/SKU/الباركود…"}
+          className={barcodeSearchInputClass}
+        />
+        <BarcodeSearchCue />
         {q.trim() && (variants.length > 0 || res.isFetching) && (
           <div className="absolute z-20 mt-1 w-full bg-popover border rounded-md shadow max-h-60 overflow-auto">
             {res.isFetching && <div className="p-2 text-xs text-muted-foreground text-center">جارٍ البحث…</div>}

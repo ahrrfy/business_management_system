@@ -68,22 +68,32 @@ export const treasuryRouter = router({
       });
     }),
 
-  /** آخر N حركة موحَّدة (receipts + expenses) لجدول الداشبورد. */
+  /** آخر N حركة موحَّدة (receipts + expenses) لجدول الداشبورد — مدى تاريخ + ترقيم اختياريّان
+   *  (كانت مثبَّتة على آخر ٢٠ صامتاً بلا تصفّح لما قبلها). نجلب صفّاً إضافياً (limit+1) لتحديد
+   *  hasMore دون تغيير عقد الخدمة (يبقى مصفوفة بسيطة — تطابق اختبارات treasuryMovements/P0Integrity). */
   getRecentMovements: treasuryRead
     .input(
       z
         .object({
           branchId: z.number().int().positive().optional(),
           limit: z.number().int().min(1).max(100).default(20),
+          offset: z.number().int().min(0).max(100_000).optional(),
+          from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
+          to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
         })
         .optional(),
     )
     .query(async ({ input, ctx }) => {
-      return getRecentMovements(input ?? {}, {
-        scopedBranchId: (ctx as { scopedBranchId: number | null }).scopedBranchId,
-        role: ctx.user.role,
-        userId: ctx.user.id,
-      });
+      const limit = input?.limit ?? 20;
+      const rows = await getRecentMovements(
+        { ...(input ?? {}), limit: limit + 1 },
+        {
+          scopedBranchId: (ctx as { scopedBranchId: number | null }).scopedBranchId,
+          role: ctx.user.role,
+          userId: ctx.user.id,
+        },
+      );
+      return { rows: rows.slice(0, limit), hasMore: rows.length > limit };
     }),
 
   /** سلسلة تدفّق نقدي يومية — تَملأ الأيام الفارغة بأصفار للـchart. */

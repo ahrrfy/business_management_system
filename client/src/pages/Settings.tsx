@@ -47,6 +47,19 @@ type DangerAction =
   | { kind: "restore-upload"; fileName: string; fileB64: string }
   | { kind: "reset" };
 
+/** فهرس مراسٍ الصفحة — بترتيب ظهور الأقسام فعلياً. */
+const SETTINGS_SECTIONS = [
+  { id: "sec-info", label: "معلومات النظام" },
+  { id: "sec-backup", label: "النسخ الاحتياطي" },
+  { id: "sec-restore", label: "الاستعادة والطباعة" },
+  { id: "sec-tax", label: "الضريبة" },
+  { id: "sec-opening", label: "وضع الافتتاح" },
+  { id: "sec-danger", label: "منطقة الخطر" },
+] as const;
+
+/** حدّ افتراضي لعدد النسخ الاحتياطية المعروضة — السجلّ الكامل قد يكبر كثيراً مع النسخ اليومي التلقائي. */
+const BACKUPS_VISIBLE_STEP = 15;
+
 export default function Settings() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
@@ -58,6 +71,8 @@ export default function Settings() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [danger, setDanger] = useState<DangerAction | null>(null);
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
+  // حدّ عرض جدول النسخ الاحتياطية — السجلّ يكبر تلقائياً مع النسخ اليومي (٠٢:٠٠)؛ "عرض المزيد" يوسّعه تدريجياً.
+  const [backupsVisible, setBackupsVisible] = useState(BACKUPS_VISIBLE_STEP);
 
   useEffect(() => { getServerBridgeStatus().then(setBridge).catch(() => {}); }, []);
 
@@ -207,6 +222,19 @@ export default function Settings() {
     <div className="space-y-4">
       <PageHeader title="الإعدادات والنسخ الاحتياطي" description="معلومات النظام والنسخ الاحتياطي والاستعادة وإعدادات الطباعة." />
 
+      {/* فهرس مراسٍ سريع — الصفحة طويلة بعدّة أقسام مستقلّة. */}
+      <nav aria-label="أقسام الإعدادات" className="flex flex-wrap gap-1.5 rounded-lg border bg-muted/30 p-2 text-xs">
+        {SETTINGS_SECTIONS.map((s) => (
+          <a
+            key={s.id}
+            href={`#${s.id}`}
+            className="rounded-md px-2.5 py-1 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {s.label}
+          </a>
+        ))}
+      </nav>
+
       {(info.isError || backups.isError) && (
         <ErrorState
           message="تعذّر تحميل بيانات النظام/النسخ. تحقّق من الاتصال بالخادم."
@@ -215,7 +243,7 @@ export default function Settings() {
       )}
 
       {/* معلومات النظام */}
-      <Card>
+      <Card id="sec-info" className="scroll-mt-4">
         <CardHeader><CardTitle className="text-base">معلومات النظام</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3 text-sm">
           <Stat label="القاعدة" value={info.data?.db.name ?? "…"} mono />
@@ -233,7 +261,7 @@ export default function Settings() {
       </Card>
 
       {/* النسخ الاحتياطي */}
-      <Card>
+      <Card id="sec-backup" className="scroll-mt-4">
         <CardHeader className="flex flex-row items-center justify-between gap-2 flex-wrap">
           <CardTitle className="text-base">النسخ الاحتياطي</CardTitle>
           <div className="flex gap-2">
@@ -265,7 +293,7 @@ export default function Settings() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {list.map((b) => (
+                  {list.slice(0, backupsVisible).map((b) => (
                     <TableRow key={b.name}>
                       <TableCell className="font-mono text-xs" dir="ltr">{b.name}</TableCell>
                       <TableCell className="text-left tabular-nums">{fmtKb(b.sizeKb)}</TableCell>
@@ -299,11 +327,18 @@ export default function Settings() {
               </Table>
             </ScrollTableShell>
           )}
+          {list.length > backupsVisible && (
+            <div className="flex justify-center">
+              <Button variant="ghost" size="sm" onClick={() => setBackupsVisible((n) => n + BACKUPS_VISIBLE_STEP)}>
+                عرض المزيد ({list.length - backupsVisible} متبقّية)
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* الاستعادة من ملف + الطباعة */}
-      <div className="grid gap-4 lg:grid-cols-2 items-start">
+      <div id="sec-restore" className="scroll-mt-4 grid gap-4 lg:grid-cols-2 items-start">
         {/* الاستعادة من ملف */}
         <Card>
           <CardHeader><CardTitle className="text-base">الاستعادة من ملف</CardTitle></CardHeader>
@@ -340,7 +375,7 @@ export default function Settings() {
       </div>
 
       {/* إعدادات الضريبة */}
-      <Card>
+      <Card id="sec-tax" className="scroll-mt-4">
         <CardHeader>
           <CardTitle className="text-base">إعدادات الضريبة</CardTitle>
         </CardHeader>
@@ -405,13 +440,13 @@ export default function Settings() {
       </Card>
 
       {/* وضع الافتتاح — الافتتاح التدريجي (١٨/٧) */}
-      <Card>
+      <Card id="sec-opening" className="scroll-mt-4">
         <CardHeader>
           <CardTitle className="text-base">وضع الافتتاح (الافتتاح التدريجي)</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-muted-foreground">
-            نافذة مؤقّتة لإطلاق النظام: يُسمح خلالها ببيع الصنف <b>غير المجرود افتتاحياً</b> نقداً بالكامل حتى لو
+            نافذة مؤقّتة لإطلاق النظام: يُسمح خلالها ببيع المنتج <b>غير المجرود افتتاحياً</b> نقداً بالكامل حتى لو
             كان رصيده صفراً (ينزل بالسالب)، إلى أن يُجرد جرداً افتتاحياً يثبّت رصيده الحقيقي فيُقفل عليه السالب
             تلقائياً. البيع الآجل يبقى صارماً دائماً، والتفعيل يتطلّب تاريخ انتهاء (بحدّ أقصى 60 يوماً).
           </p>
@@ -429,7 +464,7 @@ export default function Settings() {
                 }`}
               >
                 {openingMode.data?.active
-                  ? `الوضع فعّال الآن — البيع بالسالب مسموح للأصناف غير المجرودة حتى نهاية يوم ${openingMode.data.endsAtYmd}`
+                  ? `الوضع فعّال الآن — البيع بالسالب مسموح للمنتجات غير المجرودة حتى نهاية يوم ${openingMode.data.endsAtYmd}`
                   : openingMode.data?.enabled
                     ? "الوضع مفعَّل لكن نافذته منقضية — البيع بالسالب متوقّف"
                     : "الوضع مطفأ — كل البيع يخضع لفحص المخزون الصارم"}
@@ -515,7 +550,7 @@ export default function Settings() {
       </Card>
 
       {/* منطقة الخطر — التصفير + الصيانة CLI */}
-      <div className="grid gap-4 lg:grid-cols-2 items-start">
+      <div id="sec-danger" className="scroll-mt-4 grid gap-4 lg:grid-cols-2 items-start">
         {/* منطقة الخطر — التصفير */}
         <Card className="border-destructive/40">
           <CardHeader><CardTitle className="text-base text-destructive">منطقة الخطر — تصفير النظام</CardTitle></CardHeader>

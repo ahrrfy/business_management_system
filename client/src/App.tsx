@@ -53,6 +53,7 @@ const MyDeliveries = lazy(() => import("@/pages/MyDeliveries"));
 const ClosingHub = lazy(() => import("@/pages/ClosingHub"));
 const AdminHub = lazy(() => import("@/pages/AdminHub"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
+const MobileDesignPreview = lazy(() => import("@/pages/MobileDesignPreview"));
 const ExpenseNew = lazy(() => import("@/pages/ExpenseNew"));
 const VoucherPaymentNew = lazy(() => import("@/pages/VoucherPaymentNew"));
 const VoucherReceiptNew = lazy(() => import("@/pages/VoucherReceiptNew"));
@@ -74,10 +75,8 @@ const Returns = lazy(() => import("@/pages/Returns"));
 const SalesReturnNew = lazy(() => import("@/pages/SalesReturnNew"));
 const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
-const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
 // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
 const TasksHub = lazy(() => import("@/pages/TasksHub"));
-const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
 const TaskDetail = lazy(() => import("@/pages/TaskDetail"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
@@ -128,6 +127,7 @@ const WorkOrdersReport = lazy(() => import("@/pages/WorkOrdersReport"));
 const WhatsappHubReport = lazy(() => import("@/pages/WhatsappHubReport"));
 const PayrollReport = lazy(() => import("@/pages/PayrollReport"));
 const AttendanceReport = lazy(() => import("@/pages/AttendanceReport"));
+const MonthlyAttendanceReport = lazy(() => import("@/pages/MonthlyAttendanceReport"));
 const LeaveReport = lazy(() => import("@/pages/LeaveReport"));
 const HrChangesReport = lazy(() => import("@/pages/HrChangesReport"));
 const StocktakeNew = lazy(() => import("@/pages/StocktakeNew"));
@@ -135,7 +135,10 @@ const StocktakeMonitor = lazy(() => import("@/pages/StocktakeMonitor"));
 const StocktakeReview = lazy(() => import("@/pages/StocktakeReview"));
 const StocktakeReport = lazy(() => import("@/pages/StocktakeReport"));
 const StocktakeCountSheets = lazy(() => import("@/pages/StocktakeCountSheets"));
+const StocktakeRemaining = lazy(() => import("@/pages/StocktakeRemaining"));
 const CountPortal = lazy(() => import("@/pages/CountPortal"));
+const MyStocktakes = lazy(() => import("@/pages/MyStocktakes"));
+const MyStocktakeWorkspace = lazy(() => import("@/pages/MyStocktakeWorkspace"));
 
 function Protected({ children }: { children: React.ReactNode }) {
   const me = trpc.auth.me.useQuery();
@@ -238,6 +241,8 @@ export default function App() {
     <Suspense fallback={<RouteFallback />}>
     <Switch>
       <Route path="/login" component={Login} />
+      {/* معاينة تصميم الهاتف/اللوحي: واجهة تجريبية ثابتة بلا بيانات تشغيلية. */}
+      <Route path="/mobile-design-preview" component={MobileDesignPreview} />
       {/* نقطة البيع الموحَّدة — Shell واحد لـ٣ أوضاع (تجزئة/خدمات طباعة/استقبال أوامر شغل) */}
       <Route path="/pos">
         <Protected>
@@ -258,6 +263,8 @@ export default function App() {
       <Route path="/store" component={Storefront} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
+      <Route path="/my-stocktake/:code"><Shell><MyStocktakeWorkspace /></Shell></Route>
+      <Route path="/my-stocktake"><Shell><MyStocktakes /></Shell></Route>
       {/* استمارة التقديم على الوظائف — صفحة عامة بلا جلسة دخول وبلا AppLayout (رابط خارجي للمتقدّمين) */}
       <Route path="/apply" component={JobApply} />
       <Route path="/platform-admin" component={PlatformAdmin} />
@@ -276,6 +283,8 @@ export default function App() {
       <Route path="/barcode-labels"><Redirect to="/inventory?tab=barcodes" /></Route>
       <Route path="/invoices"><Shell><SalesHub /></Shell></Route>
       <Route path="/sales/new"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
+      {/* تصحيح الفاتورة (0168): نفس شاشة البيع في وضع التصحيح (عكس + إعادة إصدار) — مديريّ فقط. */}
+      <Route path="/invoices/:id/correct"><Shell><RequireRole roles={["admin","manager"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
       <Route path="/invoices/:id"><Shell><InvoiceDetail /></Shell></Route>
       <Route path="/quotations"><Redirect to="/crm?tab=quotations" /></Route>
       {/* إنشاء عرض السعر salesManagerProcedure(["manager"],"sales","FULL") — مرآة بوّابة الخادم (الكاشير كان يصل لمحرّر يفشل حفظه بـ403) */}
@@ -297,6 +306,7 @@ export default function App() {
       <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>
       <Route path="/stocktakes"><Redirect to="/inventory?tab=stocktakes" /></Route>
       <Route path="/stocktakes/new"><Shell><StocktakeNew /></Shell></Route>
+      <Route path="/stocktakes/:id/remaining"><Shell><StocktakeRemaining /></Shell></Route>
       <Route path="/stocktakes/:id/review"><Shell><StocktakeReview /></Shell></Route>
       <Route path="/stocktakes/:id/report"><Shell><StocktakeReport /></Shell></Route>
       <Route path="/stocktakes/:id/sheets"><Shell><StocktakeCountSheets /></Shell></Route>
@@ -304,7 +314,8 @@ export default function App() {
       <Route path="/inventory-movements"><RedirectKeepQuery to="/inventory?tab=movements" /></Route>
       <Route path="/transfers"><Redirect to="/inventory?tab=transfers" /></Route>
       <Route path="/work-orders"><Shell><PrintHub /></Shell></Route>
-      <Route path="/work-orders/new"><Shell><WorkOrderNew /></Shell></Route>
+      {/* إنشاء الخدمة دُمج في شاشة الاستقبال؛ الرابط القديم لا يفتح بوابة ثانية. */}
+      <Route path="/work-orders/new"><Redirect to="/pos?mode=RECEPTION" /></Route>
       {/* إعادة توجيه قَديمة: /work-orders/reception ⇒ /pos?mode=RECEPTION */}
       <Route path="/work-orders/reception"><Redirect to="/pos?mode=RECEPTION" /></Route>
       <Route path="/work-orders/station"><Redirect to="/work-orders?tab=station" /></Route>
@@ -327,14 +338,8 @@ export default function App() {
           </RequireRole>
         </Shell>
       </Route>
-      {/* الحجوزات (R-م٣): الأدوار = قوالب reservations≥READ (admin/manager/accountant/cashier/warehouse/sales_rep/auditor). */}
-      <Route path="/reservations">
-        <Shell>
-          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","sales_rep","auditor"]} module="reservations" level="READ">
-            <ReservationsHub />
-          </RequireRole>
-        </Shell>
-      </Route>
+      {/* الحجوزات نُقلت إلى مساحة خدمة العملاء داخل غلاف الاستقبال؛ لا صفحة تشغيل مستقلة بعد الآن. */}
+      <Route path="/reservations"><Redirect to="/pos?mode=RECEPTION&workspace=reservations" /></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
       <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>
@@ -419,6 +424,7 @@ export default function App() {
           قائمة الأدوار = حاملو hr قالبياً (accountant/auditor قالباهما hr=READ) — مرآة بوّابة
           الخادم التي بلا قائمة أدوار. */}
       <Route path="/reports/payroll"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><PayrollReport /></RequireRole></Shell></Route>
+      <Route path="/reports/attendance-monthly"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><MonthlyAttendanceReport /></RequireRole></Shell></Route>
       <Route path="/reports/attendance"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><AttendanceReport /></RequireRole></Shell></Route>
       <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><LeaveReport /></RequireRole></Shell></Route>
       <Route path="/reports/hr-changes"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><HrChangesReport /></RequireRole></Shell></Route>

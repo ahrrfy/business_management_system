@@ -1,7 +1,7 @@
 // تنبيهات إعادة الطلب — إنذار نفاد مبكّر للقرطاسية (بند 7 من خارطة المالك).
 // جدول (متغيّر × فرع) رصيده ≤ حدّ إعادة الطلب، مرتّب بالأشدّ نقصاً، مع:
 // - تحرير مباشر للعتبتين (الحد الأدنى/حدّ الطلب) لكل صف — المدير/المخزن.
-// - تحديد صفوف ثم «إنشاء مسودة أمر شراء» بحوار اختيار المورّد وكميات مقترحة قابلة للتعديل.
+// - تحديد صفوف ثم «إنشاء مسوّدة أمر شراء» بحوار اختيار المورّد وكميات مقترحة قابلة للتعديل.
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -50,11 +50,27 @@ export default function ReorderAlerts() {
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
   const branchId = isAdmin ? pickedBranch : canPickBranch ? pickedBranch ?? myBranch : myBranch;
 
+  // بحث محلي (اسم/متغيّر/SKU) داخل الصفحة المحمَّلة — ترقيمٌ خادميّ (limit/offset) يمنع اقتطاع
+  // ٢٠٠ الصامت السابق: طابور أكبر أصبح ظاهراً بلافتة «تحميل المزيد» بدل جدولٍ يبدو مكتملاً.
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 200;
   const alerts = trpc.inventory.reorderAlerts.useQuery(
-    { branchId: branchId ?? undefined },
+    { branchId: branchId ?? undefined, limit: PAGE_SIZE, offset: page * PAGE_SIZE },
     { enabled: me.data != null },
   );
-  const rows = alerts.data ?? [];
+  const loadedRows = alerts.data?.rows ?? [];
+  const total = alerts.data?.total ?? 0;
+  const rows = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    if (!s) return loadedRows;
+    return loadedRows.filter(
+      (r) =>
+        r.productName.toLowerCase().includes(s) ||
+        variantLabel(r).toLowerCase().includes(s) ||
+        r.sku.toLowerCase().includes(s),
+    );
+  }, [loadedRows, search]);
 
   // ── تحرير العتبتين المباشر (لكل صف) ─────────────────────────────────────
   const [editing, setEditing] = useState<string | null>(null);
@@ -88,7 +104,7 @@ export default function ReorderAlerts() {
     setThresholds.mutate({ variantId, minStock, reorderPoint });
   }
 
-  // ── تحديد الصفوف + حوار المسودة ─────────────────────────────────────────
+  // ── تحديد الصفوف + حوار المسوّدة ─────────────────────────────────────────
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const selectedRows = useMemo(() => rows.filter((r) => selected.has(rowKey(r))), [rows, selected]);
   const selectedBranchIds = useMemo(() => new Set(selectedRows.map((r) => r.branchId)), [selectedRows]);
@@ -113,11 +129,11 @@ export default function ReorderAlerts() {
 
   function openDraftDialog() {
     if (selectedRows.length === 0) {
-      notify.err("اختر صنفاً واحداً على الأقل من الجدول");
+      notify.err("اختر منتجاً واحداً على الأقل من الجدول");
       return;
     }
     if (selectedBranchIds.size > 1) {
-      notify.err("أمر الشراء لفرع واحد — اختر أصنافاً من نفس الفرع");
+      notify.err("أمر الشراء لفرع واحد — اختر منتجات من نفس الفرع");
       return;
     }
     setQtys(Object.fromEntries(selectedRows.map((r) => [rowKey(r), String(r.suggestedQty)])));
@@ -131,8 +147,8 @@ export default function ReorderAlerts() {
       setSelected(new Set());
       setCreatedPo(res);
       notify.ok(
-        res.poNumber ? `أُنشئت مسودة أمر الشراء ${res.poNumber}` : "أُنشئت مسودة أمر الشراء",
-        "تجدها في شاشة المشتريات بحالة «مسودة»",
+        res.poNumber ? `أُنشئت مسوّدة أمر الشراء ${res.poNumber}` : "أُنشئت مسوّدة أمر الشراء",
+        "تجدها في شاشة المشتريات بحالة «مسوّدة»",
       );
       await utils.inventory.reorderAlerts.invalidate();
     },
@@ -150,7 +166,7 @@ export default function ReorderAlerts() {
     for (const r of selectedRows) {
       const q = Number(qtys[rowKey(r)]);
       if (!Number.isInteger(q) || q <= 0) {
-        notify.err(`كمية غير صالحة للصنف «${r.productName}» — عدد صحيح موجب`);
+        notify.err(`كمية غير صالحة للمنتج «${r.productName}» — عدد صحيح موجب`);
         return;
       }
       lines.push({ variantId: r.variantId, quantity: q });
@@ -166,14 +182,14 @@ export default function ReorderAlerts() {
     }
     exportRows(rows, {
       filename: "إعادة-الطلب",
-      title: "الأصناف الواجب إعادة طلبها",
+      title: "المنتجات الواجب إعادة طلبها",
       columns: [
         { key: "productName", header: "المنتج" },
         { key: "variant", header: "المتغيّر / SKU", map: (r) => `${variantLabel(r)} (${r.sku})` },
         { key: "branchName", header: "الفرع" },
         { key: "quantity", header: "الرصيد", map: (r) => r.quantity },
         { key: "minStock", header: "الحد الأدنى", map: (r) => r.minStock },
-        { key: "reorderPoint", header: "حدّ الطلب", map: (r) => r.reorderPoint },
+        { key: "reorderPoint", header: "حدّ إعادة الطلب", map: (r) => r.reorderPoint },
         { key: "suggestedQty", header: "الكمية المقترحة", map: (r) => r.suggestedQty },
       ],
     });
@@ -183,12 +199,12 @@ export default function ReorderAlerts() {
     <div className="space-y-4">
       <PageHeader
         title="تنبيهات إعادة الطلب"
-        description="الأصناف التي بلغ رصيدها حدّ إعادة الطلب — الأشدّ نقصاً أولاً. حدّد الأصناف وأنشئ مسودة أمر شراء بنقرة."
+        description="المنتجات التي بلغ رصيدها حدّ إعادة الطلب — الأشدّ نقصاً أولاً. حدّد المنتجات وأنشئ مسوّدة أمر شراء بنقرة."
         actions={
           canWrite ? (
             <Button onClick={openDraftDialog} disabled={selectedRows.length === 0}>
               <ShoppingCart aria-hidden className="size-4" />
-              إنشاء مسودة أمر شراء{selectedRows.length > 0 ? ` (${fmtInt(selectedRows.length)})` : ""}
+              إنشاء مسوّدة أمر شراء{selectedRows.length > 0 ? ` (${fmtInt(selectedRows.length)})` : ""}
             </Button>
           ) : undefined
         }
@@ -197,7 +213,7 @@ export default function ReorderAlerts() {
       {createdPo && (
         <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-sm flex items-center justify-between gap-3">
           <span>
-            أُنشئت مسودة أمر الشراء{createdPo.poNumber ? <b className="font-mono mx-1" dir="ltr">{createdPo.poNumber}</b> : null} بنجاح.
+            أُنشئت مسوّدة أمر الشراء{createdPo.poNumber ? <b className="font-mono mx-1" dir="ltr">{createdPo.poNumber}</b> : null} بنجاح.
           </span>
           <Link href="/purchases" className="text-primary underline underline-offset-4 whitespace-nowrap">
             فتح شاشة المشتريات
@@ -205,16 +221,16 @@ export default function ReorderAlerts() {
         </div>
       )}
 
-      {canPickBranch && (
-        <Card>
-          <CardHeader><CardTitle className="text-base">الفلاتر</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+      <Card>
+        <CardHeader><CardTitle className="text-base">الفلاتر</CardTitle></CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+          {canPickBranch && (
             <div className="space-y-1">
               <Label>الفرع</Label>
               <select
                 className={selectCls}
                 value={branchId ?? ""}
-                onChange={(e) => setPickedBranch(e.target.value === "" ? null : Number(e.target.value))}
+                onChange={(e) => { setPickedBranch(e.target.value === "" ? null : Number(e.target.value)); setPage(0); }}
               >
                 {isAdmin && <option value="">كل الفروع</option>}
                 {(branches.data ?? []).map((b) => (
@@ -222,17 +238,28 @@ export default function ReorderAlerts() {
                 ))}
               </select>
             </div>
-          </CardContent>
-        </Card>
-      )}
+          )}
+          <div className="space-y-1">
+            <Label>بحث (اسم/متغيّر/SKU) — في الصفحة المحمَّلة</Label>
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="مثال: ورق A4" />
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="flex-row items-center justify-between gap-3">
-          <CardTitle className="text-base">الأصناف الواجب إعادة طلبها</CardTitle>
+          <CardTitle className="text-base">المنتجات الواجب إعادة طلبها</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {alerts.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} صنف`}
+              {alerts.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} من ${fmtInt(total)} صنف`}
             </span>
+            {total > PAGE_SIZE && (
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="sm" disabled={page === 0 || alerts.isFetching} onClick={() => setPage((p) => Math.max(0, p - 1))}>السابق →</Button>
+                <span className="text-xs text-muted-foreground">صفحة {fmtInt(page + 1)} من {fmtInt(Math.max(1, Math.ceil(total / PAGE_SIZE)))}</span>
+                <Button variant="outline" size="sm" disabled={(page + 1) * PAGE_SIZE >= total || alerts.isFetching} onClick={() => setPage((p) => p + 1)}>← التالي</Button>
+              </div>
+            )}
             <Button variant="outline" size="sm" disabled={rows.length === 0} onClick={doExport}>
               تصدير Excel
             </Button>
@@ -259,7 +286,7 @@ export default function ReorderAlerts() {
                   <th className="p-2 text-start">الفرع</th>
                   <th className="p-2 text-left">الرصيد</th>
                   <th className="p-2 text-left">الحد الأدنى</th>
-                  <th className="p-2 text-left">حدّ الطلب</th>
+                  <th className="p-2 text-left">حدّ إعادة الطلب</th>
                   <th className="p-2 text-left">الكمية المقترحة</th>
                   {canWrite && <th className="p-2 text-center">العتبتان</th>}
                 </tr>
@@ -343,7 +370,7 @@ export default function ReorderAlerts() {
                 {!alerts.isLoading && rows.length === 0 && (
                   <TableEmptyRow
                     colSpan={canWrite ? 9 : 7}
-                    message="لا أصناف بلغت حدّ إعادة الطلب. اضبط «حدّ الطلب» من شاشة المنتج (أو من هنا) لتفعيل الإنذار المبكّر."
+                    message="لا منتجات بلغت حدّ إعادة الطلب. اضبط «حدّ إعادة الطلب» من شاشة المنتج (أو من هنا) لتفعيل الإنذار المبكّر."
                   />
                 )}
               </tbody>
@@ -355,9 +382,9 @@ export default function ReorderAlerts() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>مسودة أمر شراء — {fmtInt(selectedRows.length)} صنف</DialogTitle>
+            <DialogTitle>مسوّدة أمر شراء — {fmtInt(selectedRows.length)} صنف</DialogTitle>
             <DialogDescription>
-              اختر المورّد وعدّل الكميات المقترحة عند الحاجة. تُنشأ بحالة «مسودة» وتُستكمل من شاشة المشتريات.
+              اختر المورّد وعدّل الكميات المقترحة عند الحاجة. تُنشأ بحالة «مسوّدة» وتُستكمل من شاشة المشتريات.
             </DialogDescription>
           </DialogHeader>
 
@@ -380,7 +407,7 @@ export default function ReorderAlerts() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
-                    <th className="p-2 text-start">الصنف</th>
+                    <th className="p-2 text-start">المنتج</th>
                     <th className="p-2 text-left">الرصيد</th>
                     <th className="p-2 text-left">الكمية المطلوبة (أساس)</th>
                   </tr>
@@ -417,7 +444,7 @@ export default function ReorderAlerts() {
               إلغاء
             </Button>
             <Button onClick={submitDraft} disabled={createDraft.isPending || supplierId == null}>
-              {createDraft.isPending ? "جارٍ الإنشاء…" : "إنشاء المسودة"}
+              {createDraft.isPending ? "جارٍ الإنشاء…" : "إنشاء المسوّدة"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -8,6 +8,7 @@ describe("invoiceToReceipt", () => {
       invoiceDate: "2026-07-28T11:35:00.000Z",
       customerName: "أحمد",
       salespersonName: "سارة",
+      shiftId: 17,
       subtotal: "12000.00",
       discountAmount: "1000.00",
       taxAmount: "500.00",
@@ -27,6 +28,7 @@ describe("invoiceToReceipt", () => {
 
     expect(receipt.receiptNumber).toBe("INV-42");
     expect(receipt.cashierName).toBe("سارة");
+    expect(receipt.shiftId).toBe(17);
     expect(receipt.discount).toBe("1000.00");
     expect(receipt.credit).toBe("5000");
     expect(receipt.paymentMethod).toBe("نقدي");

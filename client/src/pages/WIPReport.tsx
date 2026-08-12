@@ -2,14 +2,17 @@
  * تقرير WIP (Work-in-Progress) — قيمة المواد المُستهلَكة في طلبات خدمة قيد التنفيذ.
  * managerBranchScopedProcedure.
  */
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { trpc } from "@/lib/trpc";
-import { useState } from "react";
 import { fmtDate } from "@/lib/date";
-import { formatIqd } from "@/lib/money";
-import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { fmtAr, formatIqd } from "@/lib/money";
+import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { FilterField } from "@/components/list";
+import { ErrorState, TableEmptyRow } from "@/components/PageState";
+import { exportRows } from "@/lib/export";
+import { printReportDoc } from "@/lib/printing/reportDoc";
+import { useState } from "react";
 
 const STATUS_LABEL: Record<string, string> = {
   IN_PROGRESS: "قيد التنفيذ",
@@ -21,74 +24,114 @@ export default function WIPReportPage() {
   const [branchId, setBranchId] = useState<number | null>(null);
   const wip = trpc.reports.wipReport.useQuery({ branchId: branchId ?? undefined });
 
+  const rows = wip.data?.rows ?? [];
+  const branchLabel = branchId
+    ? (branches.data?.find((b) => Number(b.id) === branchId)?.name ?? String(branchId))
+    : "الكل";
+
+  const kpis: KpiItem[] = wip.data
+    ? [
+        { label: "إجمالي الأوامر", value: wip.data.totalCount },
+        { label: "قيمة WIP الإجمالية", value: formatIqd(wip.data.totalMaterialsCost), tone: "warning" },
+      ]
+    : [];
+
+  function onExport() {
+    exportRows(rows, {
+      filename: "الإنتاج-تحت-التنفيذ-WIP",
+      title: "الإنتاج تحت التنفيذ (WIP)",
+      meta: [{ label: "الفرع", value: branchLabel }],
+      columns: [
+        { key: "orderNumber", header: "رقم الأمر" },
+        { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "—" },
+        { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
+        { key: "materialsCost", header: "قيمة المواد", money: true, map: (r) => Number(r.materialsCost) },
+        { key: "createdAt", header: "تاريخ الإنشاء", map: (r) => fmtDate(r.createdAt) },
+      ],
+    });
+  }
+
+  function onPrint() {
+    printReportDoc({
+      title: "الإنتاج تحت التنفيذ (WIP)",
+      headerExtra: [{ label: "الفرع", value: branchLabel }],
+      columns: [
+        { key: "orderNumber", label: "رقم الأمر" },
+        { key: "customerName", label: "العميل" },
+        { key: "status", label: "الحالة" },
+        { key: "materialsCost", label: "قيمة المواد", align: "left" },
+        { key: "createdAt", label: "تاريخ الإنشاء" },
+      ],
+      rows: rows.map((r) => ({
+        orderNumber: r.orderNumber,
+        customerName: r.customerName ?? "—",
+        status: STATUS_LABEL[r.status] ?? r.status,
+        materialsCost: fmtAr(r.materialsCost),
+        createdAt: fmtDate(r.createdAt),
+      })),
+      summary: wip.data
+        ? [{ label: "قيمة WIP الإجمالية", value: formatIqd(wip.data.totalMaterialsCost), large: true, bold: true }]
+        : undefined,
+    });
+  }
+
   return (
-    <div className="container mx-auto p-4 space-y-4 max-w-6xl">
-      <PageHeader
-        title="تقرير WIP — قيمة الإنتاج تحت التنفيذ"
-        description="المواد المُستهلَكة في طلبات خدمة لم تُسلَّم بعد — قيمة معلَّقة بين «المخزون» و«تكلفة المبيع» (تظهر فعلياً في SALE.cost عند التسليم)."
-      />
-
-      <Card>
-        <CardContent className="pt-6 space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-2">
-              <label className="text-sm font-medium">الفرع</label>
-              <select
-                value={branchId ?? ""}
-                onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : null)}
-                className="h-9 px-3 rounded-md border bg-transparent text-sm"
-              >
-                <option value="">كل الفروع</option>
-                {branches.data?.map((b: any) => (
-                  <option key={b.id} value={b.id}>{b.name} ({b.code})</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {wip.isLoading ? (
-            <LoadingState />
-          ) : wip.isError ? (
-            <ErrorState message={wip.error.message} onRetry={() => wip.refetch()} />
-          ) : (
-            <>
-              <div className="badge-status-pending rounded p-3 grid grid-cols-2 gap-2 text-sm">
-                <div><span className="text-muted-foreground">إجمالي الأوامر:</span> <span className="font-semibold">{wip.data?.totalCount ?? 0}</span></div>
-                <div><span className="text-muted-foreground">قيمة WIP الإجمالية:</span> <span className="font-bold">{formatIqd(wip.data?.totalMaterialsCost)}</span></div>
-              </div>
-
-              <ScrollTableShell bordered={false}>
-                <table className="w-full text-sm border-collapse">
-                  <thead className="bg-muted">
-                    <tr>
-                      <th className="text-right p-2 border">رقم الأمر</th>
-                      <th className="text-right p-2 border">العميل</th>
-                      <th className="text-right p-2 border">الحالة</th>
-                      <th className="text-right p-2 border">قيمة المواد</th>
-                      <th className="text-right p-2 border">تاريخ الإنشاء</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(wip.data?.rows.length ?? 0) === 0 ? (
-                      <TableEmptyRow colSpan={5} message="لا طلبات خدمة قيد التنفيذ" />
-                    ) : (
-                      wip.data!.rows.map((r) => (
-                        <tr key={r.workOrderId} className="hover:bg-accent/40">
-                          <td className="p-2 border font-mono">{r.orderNumber}</td>
-                          <td className="p-2 border">{r.customerName ?? "—"}</td>
-                          <td className="p-2 border">{STATUS_LABEL[r.status] ?? r.status}</td>
-                          <td className="p-2 border font-semibold">{formatIqd(r.materialsCost)}</td>
-                          <td className="p-2 border text-muted-foreground">{fmtDate(r.createdAt)}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </ScrollTableShell>
-            </>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+    <ReportShell
+      title="الإنتاج تحت التنفيذ (WIP)"
+      description="المواد المُستهلَكة في طلبات خدمة لم تُسلَّم بعد — قيمة معلَّقة بين «المخزون» و«تكلفة المبيع» (تدخل ضمن تكلفة المبيعات عند التسليم)."
+      kpis={kpis}
+      onExport={onExport}
+      onPrint={onPrint}
+      exportDisabled={!rows.length}
+      printDisabled={!rows.length}
+      filters={
+        <FilterField label="الفرع" className="w-48">
+          <AppSelect
+            value={branchId != null ? String(branchId) : ""}
+            onValueChange={(v) => setBranchId(v ? Number(v) : null)}
+          >
+            <option value="">كل الفروع</option>
+            {branches.data?.map((b: any) => (
+              <option key={b.id} value={b.id}>{b.name} ({b.code})</option>
+            ))}
+          </AppSelect>
+        </FilterField>
+      }
+    >
+      {wip.isError ? (
+        <ErrorState message={wip.error.message} onRetry={() => wip.refetch()} />
+      ) : (
+        <ScrollTableShell bordered={false}>
+          <table className="w-full text-sm border-collapse">
+            <thead className="bg-muted">
+              <tr>
+                <th className="text-right p-2 border">رقم الأمر</th>
+                <th className="text-right p-2 border">العميل</th>
+                <th className="text-right p-2 border">الحالة</th>
+                <th className="text-right p-2 border">قيمة المواد</th>
+                <th className="text-right p-2 border">تاريخ الإنشاء</th>
+              </tr>
+            </thead>
+            <tbody>
+              {wip.isLoading ? (
+                <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td></tr>
+              ) : rows.length === 0 ? (
+                <TableEmptyRow colSpan={5} message="لا طلبات خدمة قيد التنفيذ" />
+              ) : (
+                rows.map((r) => (
+                  <tr key={r.workOrderId} className="hover:bg-accent/40">
+                    <td className="p-2 border font-mono">{r.orderNumber}</td>
+                    <td className="p-2 border">{r.customerName ?? "—"}</td>
+                    <td className="p-2 border">{STATUS_LABEL[r.status] ?? r.status}</td>
+                    <td className="p-2 border font-semibold">{formatIqd(r.materialsCost)}</td>
+                    <td className="p-2 border text-muted-foreground">{fmtDate(r.createdAt)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </ScrollTableShell>
+      )}
+    </ReportShell>
   );
 }

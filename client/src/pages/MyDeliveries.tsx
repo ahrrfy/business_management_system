@@ -1,12 +1,12 @@
 /**
  * MyDeliveries — شاشة المندوب الذاتية «توصيلاتي» (دور courier، جوّال أولاً).
  *
- * المندوب يرى طلباته المُسنَدة (قيد التوصيل)، يتّصل/يراسل الزبون، وعند التسليم يضغط «تم التسليم
+ * المندوب يرى طلباته المُسنَدة (قيد التوصيل)، يتّصل/يراسل العميل، وعند التسليم يضغط «تم التسليم
  * والتحصيل» فتُسدَّد الفاتورة (ذمّة العميل↓) ويرتفع النقد بذمّته (عهدة) حتى يُورّده للمتجر.
  * عزل ذاتي خادمي: كل نقطة تحلّ المندوب من الجلسة (courier.myDeliveries/confirmDelivery).
  */
 import { useEffect, useState } from "react";
-import { Banknote, CheckCircle2, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck, XCircle } from "lucide-react";
+import { Banknote, CheckCircle2, Info, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck, XCircle } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -24,12 +24,19 @@ function money(v: string | number | null | undefined): string {
   return v == null || v === "" ? "0" : fmtInt(v);
 }
 
+// مفتاح فريد يجمع المصدر مع المعرّف — معرّفات onlineOrders وdeliveryConsignments مستقلّة فقد
+// تتصادم (طلبٌ id=5 وإرساليةٌ id=5)، فالمفتاح المركّب يمنع تصادم مفاتيح React واختلاط الحالة.
+function rowKey(row: DeliveryRow): string {
+  return `${row.kind}-${row.id}`;
+}
+
 export default function MyDeliveries() {
   const q = trpc.courier.myDeliveries.useQuery(undefined, { refetchInterval: 60_000 });
   const utils = trpc.useUtils();
-  const [confirmingId, setConfirmingId] = useState<number | null>(null);
+  const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
   const [failTarget, setFailTarget] = useState<DeliveryRow | null>(null);
 
+  // طلب متجر: يُحصّل COD ويرفع العهدة (confirmDelivery).
   const confirmM = trpc.courier.confirmDelivery.useMutation({
     onSuccess: (res) => {
       notify.ok(
@@ -40,7 +47,17 @@ export default function MyDeliveries() {
       void utils.courier.myDeliveries.invalidate();
     },
     onError: (e) => notify.err(e),
-    onSettled: () => setConfirmingId(null),
+    onSettled: () => setConfirmingKey(null),
+  });
+
+  // إرسالية استقبال: ختمٌ تشغيليّ بحت (لا مال) — التسوية عند توريدك للمتجر.
+  const confirmCnM = trpc.courier.confirmConsignmentDelivery.useMutation({
+    onSuccess: (res) => {
+      notify.ok(`تم تسجيل تسليم ${res.consignmentNumber}`);
+      void utils.courier.myDeliveries.invalidate();
+    },
+    onError: (e) => notify.err(e),
+    onSettled: () => setConfirmingKey(null),
   });
 
   const failM = trpc.courier.failDelivery.useMutation({
@@ -53,18 +70,33 @@ export default function MyDeliveries() {
   });
 
   async function doConfirm(row: DeliveryRow) {
+    // إرسالية استقبال: ختمٌ تشغيليّ فقط — النقد يُسوَّى عند توريدك للمتجر، لا هنا.
+    if (row.kind === "consignment") {
+      const ok = await confirm({
+        variant: "info",
+        title: "تأكيد التسليم",
+        description: `أكّد تسليم الإرسالية ${row.orderNumber} للزبون. سيُسجَّل أنك سلّمتها؛ تسوية المبلغ تبقى عند توريدك للمتجر.`,
+        confirmText: "تم التسليم",
+      });
+      if (!ok) return;
+      setConfirmingKey(rowKey(row));
+      confirmCnM.mutate({ consignmentId: row.id });
+      return;
+    }
+    // طلب متجر: تأكيد + تحصيل COD يرفع عهدتك.
     const due = Number(row.codDue);
+    const fee = Number(row.courierFee ?? 0);
     const ok = await confirm({
       variant: due > 0 ? "warning" : "info",
       title: "تأكيد التسليم والتحصيل",
       description:
         due > 0
-          ? `أكّد استلام الزبون للطلب ${row.orderNumber} وتحصيلك ${money(row.codDue)} د.ع نقداً. سيُضاف المبلغ إلى ما بذمّتك حتى تُورّده للمتجر.`
-          : `أكّد استلام الزبون للطلب ${row.orderNumber} (مدفوع مسبقاً — لا تحصيل).`,
+          ? `أكّد استلام العميل للطلب ${row.orderNumber} وتحصيلك ${money(row.codDue)} د.ع نقداً${fee > 0 ? ` (+ أجرتك ${money(row.courierFee)} د.ع تقبضها من الزبون وتبقى لك)` : ""}. سيُضاف مبلغ التوريد إلى ما بذمّتك حتى تُورّده للمتجر.`
+          : `أكّد استلام العميل للطلب ${row.orderNumber} (مدفوع مسبقاً — لا تحصيل).`,
       confirmText: "تم التسليم",
     });
     if (!ok) return;
-    setConfirmingId(row.id);
+    setConfirmingKey(rowKey(row));
     confirmM.mutate({ onlineOrderId: row.id });
   }
 
@@ -111,9 +143,9 @@ export default function MyDeliveries() {
             ) : (
               data!.toDeliver.map((row) => (
                 <DeliveryCard
-                  key={row.id}
+                  key={rowKey(row)}
                   row={row}
-                  busy={confirmingId === row.id || confirmM.isPending || failM.isPending}
+                  busy={confirmingKey === rowKey(row) || confirmM.isPending || confirmCnM.isPending || failM.isPending}
                   onConfirm={() => doConfirm(row)}
                   onFail={() => setFailTarget(row)}
                 />
@@ -124,15 +156,27 @@ export default function MyDeliveries() {
           {/* سُلّمت حديثاً */}
           {data!.delivered.length > 0 && (
             <section className="space-y-2">
-              <h2 className="text-sm font-bold text-muted-foreground">سُلّمت حديثاً ({data!.delivered.length})</h2>
+              <h2 className="flex items-center gap-1.5 text-sm font-bold text-muted-foreground">
+                سُلّمت حديثاً ({data!.delivered.length})
+                {/* lucide-react لا يقبل title كمُعامِل SVG مباشر — نلفّه بـ<span title> (نمط Inbox.tsx). */}
+                <span title="تُعرض آخر ٤٠ عملية تسليم مُسجَّلة لك ضمن أحدث ١٢٠ طلباً أُسنِد إليك — عدٌّ لا حدٌّ زمنيّ (قد تظهر تسليماتٌ أقدم من أيام لو قلّت طلباتك الحديثة).">
+                  <Info aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+                </span>
+              </h2>
               {data!.delivered.map((row) => (
-                <div key={row.id} className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
+                <div key={rowKey(row)} className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
                   <span className="flex items-center gap-2 font-medium">
                     <CheckCircle2 aria-hidden className="size-4 text-emerald-600" />
                     <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
+                    <SourceTag kind={row.kind} />
                     <span className="text-muted-foreground">{row.customerName ?? ""}</span>
                   </span>
-                  <span className="tabular-nums text-muted-foreground" dir="ltr">{money(row.orderTotal)} د.ع</span>
+                  {/* ١٠/٨: orderTotal = ما دفعه الزبون عند الباب (بضاعة + أجرتك) — نوسمه كي لا
+                      يُقرأ رقماً مغايراً لما ورّدته (البضاعة وحدها). */}
+                  <span className="flex flex-col items-end">
+                    <span className="tabular-nums text-muted-foreground" dir="ltr">{money(row.orderTotal)} د.ع</span>
+                    <span className="text-[10px] text-muted-foreground">قبضته من الزبون عند الباب</span>
+                  </span>
                 </div>
               ))}
             </section>
@@ -152,6 +196,22 @@ export default function MyDeliveries() {
   );
 }
 
+/** وسم المصدر: طلب متجر (onlineOrders) أو إرسالية استقبال (deliveryConsignments). */
+function SourceTag({ kind }: { kind: DeliveryRow["kind"] }) {
+  const isStore = kind === "online";
+  return (
+    <span
+      className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+        isStore
+          ? "bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300"
+          : "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300"
+      }`}
+    >
+      {isStore ? "طلب متجر" : "استلام"}
+    </span>
+  );
+}
+
 function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy: boolean; onConfirm: () => void; onFail: () => void }) {
   const phone = row.customerPhone;
   const waMsg = `مرحباً${row.customerName ? " " + row.customerName : ""}، أنا مندوب توصيل الرؤية العربية بخصوص طلبك ${row.orderNumber}. أنا في الطريق إليك.`;
@@ -159,12 +219,19 @@ function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy
     <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
       <div className="mb-2 flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="font-bold tracking-wider" dir="ltr">{row.orderNumber}</div>
-          <div className="truncate text-sm text-muted-foreground">{row.customerName ?? "زبون"}</div>
+          <div className="flex items-center gap-2">
+            <span className="font-bold tracking-wider" dir="ltr">{row.orderNumber}</span>
+            <SourceTag kind={row.kind} />
+          </div>
+          <div className="truncate text-sm text-muted-foreground">{row.customerName ?? "عميل"}</div>
         </div>
         <div className="shrink-0 text-left">
           <div className="text-[11px] text-muted-foreground">المطلوب تحصيله</div>
           <div className="text-lg font-extrabold tabular-nums text-teal-700 dark:text-teal-400" dir="ltr">{money(row.codDue)} د.ع</div>
+          {/* ١٠/٨ (تمرير كامل): أجرة المندوب تُقبض من الزبون فوق المبلغ وتبقى له — لا تُورَّد. */}
+          {Number(row.courierFee) > 0 && (
+            <div className="text-[11px] font-bold text-muted-foreground" dir="rtl">+ أجرتك: <span dir="ltr" className="tabular-nums">{money(row.courierFee)}</span> (تبقى لك)</div>
+          )}
         </div>
       </div>
 
@@ -192,20 +259,24 @@ function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy
             </button>
           </>
         )}
-        <button
-          onClick={onFail}
-          disabled={busy}
-          className="ms-auto flex items-center gap-1 rounded-lg border border-rose-300 px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10"
-        >
-          <XCircle aria-hidden className="size-3.5" /> تعذّر التسليم
-        </button>
+        {/* «تعذّر التسليم» يعكس بيع الطلب ⇒ لطلبات المتجر فقط (لها مسار عكسٍ خاصّ). إرساليات
+            الاستقبال تُعالَج تعذُّراتها بيد الموظّف عبر إرجاع الإرسالية، فلا زرّ عكسٍ للمندوب هنا. */}
+        {row.kind === "online" && (
+          <button
+            onClick={onFail}
+            disabled={busy}
+            className="ms-auto flex items-center gap-1 rounded-lg border border-rose-300 px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10"
+          >
+            <XCircle aria-hidden className="size-3.5" /> تعذّر التسليم
+          </button>
+        )}
         <button
           onClick={onConfirm}
           disabled={busy}
-          className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
+          className={`${row.kind === "consignment" ? "ms-auto " : ""}flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50`}
         >
           {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <CheckCircle2 aria-hidden className="size-4" />}
-          تم التسليم والتحصيل
+          {row.kind === "consignment" ? "تم التسليم" : "تم التسليم والتحصيل"}
         </button>
       </div>
     </div>
@@ -220,7 +291,7 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [pending, onCancel]);
-  const REASONS = ["رفض الزبون الاستلام", "الزبون غير متوفّر", "عنوان خاطئ", "تعذّر التواصل"];
+  const REASONS = ["رفض العميل الاستلام", "العميل غير متوفّر", "عنوان خاطئ", "تعذّر التواصل"];
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="تعذّر التسليم" onClick={onCancel} dir="rtl">
       <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -229,7 +300,7 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
           تعذّر تسليم <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
         </div>
         <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          سيُلغى الطلب وتُعاد بضاعته للمخزون وتُصفّى ذمّة الزبون (لم يُحصَّل أيّ مبلغ). لا يمكن التراجع.
+          سيُلغى الطلب وتُعاد بضاعته للمخزون وتُصفّى ذمّة العميل (لم يُحصَّل أيّ مبلغ). لا يمكن التراجع.
         </p>
         <div className="mb-2 flex flex-wrap gap-1.5">
           {REASONS.map((r) => (

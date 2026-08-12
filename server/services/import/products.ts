@@ -6,6 +6,7 @@
 // في Excel ← إعادة استيراد» دورة كاملة، وإعادة استيراد الملف نفسه لا-عملية (idempotent).
 import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
+import { checkVariantSanity } from "../../../shared/priceSanity";
 import {
   categories,
   productPrices,
@@ -21,7 +22,14 @@ import { money, toDbMoney } from "../money";
 import { type Actor, requireDb, withTx } from "../tx";
 import { priceTier, type ProductImportRow } from "./schemas";
 import type { ImportOptions, ImportRowResult, ImportSummary } from "./types";
-import { finalize, insertId, markWriteError, norm, uniq, writeErrorMessage } from "./helpers";
+import {
+  finalize,
+  insertId,
+  markWriteError,
+  norm,
+  uniq,
+  writeErrorMessage,
+} from "./helpers";
 
 type UnitAgg = {
   unitName: string;
@@ -61,10 +69,16 @@ const EXPLICIT_PRICE_FIELDS = [
 /** يفكّ عمود «بدائل الباركود»: مفصولة بفاصلة عربية «،» أو لاتينية «,» أو «;» — مع إسقاط الفراغ والتكرار. */
 function parseAliases(raw?: string): string[] {
   if (!raw) return [];
-  return uniq(raw.split(/[،,;]/).map((s) => s.trim()).filter(Boolean));
+  return uniq(
+    raw
+      .split(/[،,;]/)
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
 }
 
-const productSkuKey = (productName: string, sku: string) => `${productName.trim().toLowerCase()}\u0000${sku.trim()}`;
+const productSkuKey = (productName: string, sku: string) =>
+  `${productName.trim().toLowerCase()}\u0000${sku.trim()}`;
 
 export async function importProducts(
   rows: ProductImportRow[],
@@ -86,17 +100,34 @@ export async function importProducts(
   const batchBarcodes = validateProductGroups(groups, failures);
 
   // ٤) كشف الموجود في القاعدة: (اسم المنتج + SKU) + الباركود مع مالك وحدته.
-  const { existingProductSkus, existingBarcodeOwner } = await detectExistingProducts(db, groups, batchBarcodes);
+  const { existingProductSkus, existingBarcodeOwner } =
+    await detectExistingProducts(db, groups, batchBarcodes);
 
   // ٥) تصنيف كل مجموعة منتج: إنشاء / تخطّي / فشل.
-  const { results, toCreate } = classifyProductGroups(groups, existingProductSkus, existingBarcodeOwner, failures, onExisting);
+  const { results, toCreate } = classifyProductGroups(
+    groups,
+    existingProductSkus,
+    existingBarcodeOwner,
+    failures,
+    onExisting,
+  );
 
   // ٥ب) دمج البدائل على الموجود (ذهاب-إياب): بدائل جديدة في الملف لمنتجات متخطّاة تُخطَّط
   // إدراجاتها هنا — يرقّي صفوف المتغيّر إلى updated أو يُفشلها عند تصادم، قبل بوابة «الكل أو لا شيء».
-  const aliasInserts = await planAliasMergeForExisting(db, groups, existingProductSkus, results, onExisting);
+  const aliasInserts = await planAliasMergeForExisting(
+    db,
+    groups,
+    existingProductSkus,
+    results,
+    onExisting,
+  );
 
   const anyFailed = results.some((r) => r.status === "failed");
-  if (options.dryRun || (anyFailed && !skipFailed) || (!toCreate.length && !aliasInserts.length)) {
+  if (
+    options.dryRun ||
+    (anyFailed && !skipFailed) ||
+    (!toCreate.length && !aliasInserts.length)
+  ) {
     return finalize("PRODUCTS", rows.length, results, false, options, actor);
   }
 
@@ -108,13 +139,26 @@ export async function importProducts(
       if (aliasInserts.length) {
         await tx
           .insert(productUnitBarcodes)
-          .values(aliasInserts.map((a) => ({ productUnitId: a.productUnitId, barcode: a.barcode, createdBy: actor.userId })));
+          .values(
+            aliasInserts.map((a) => ({
+              productUnitId: a.productUnitId,
+              barcode: a.barcode,
+              createdBy: actor.userId,
+            })),
+          );
       }
     });
   } catch (e) {
     // الرسالة الخام تُسجَّل كاملة للتشخيص وتُعرَّب للواجهة (لا نصّ SQL/قيود/بيانات صفوف للمستخدم).
     logger.error({ err: e }, "فشل كتابة دفعة استيراد المنتجات");
-    return finalize("PRODUCTS", rows.length, markWriteError(results, writeErrorMessage(e)), false, options, actor);
+    return finalize(
+      "PRODUCTS",
+      rows.length,
+      markWriteError(results, writeErrorMessage(e)),
+      false,
+      options,
+      actor,
+    );
   }
   return finalize("PRODUCTS", rows.length, results, true, options, actor);
 }
@@ -129,7 +173,13 @@ function aggregateImportRows(
     const pName = r.productName.trim();
     let p = groups.get(pName);
     if (!p) {
-      p = { productName: pName, categoryName: norm(r.categoryName) ?? undefined, isCustomizable: !!r.isCustomizable, rowNumbers: [], variants: new Map() };
+      p = {
+        productName: pName,
+        categoryName: norm(r.categoryName) ?? undefined,
+        isCustomizable: !!r.isCustomizable,
+        rowNumbers: [],
+        variants: new Map(),
+      };
       groups.set(pName, p);
     }
     p.rowNumbers.push(r.rowNumber);
@@ -146,18 +196,37 @@ function aggregateImportRows(
     const vSize = norm(r.size) ?? undefined;
     let v = p.variants.get(sku);
     if (!v) {
-      v = { sku, variantName: vName, color: vColor, size: vSize, costPrice: r.costPrice, rowNumbers: [], units: new Map() };
+      v = {
+        sku,
+        variantName: vName,
+        color: vColor,
+        size: vSize,
+        costPrice: r.costPrice,
+        rowNumbers: [],
+        units: new Map(),
+      };
       p.variants.set(sku, v);
-    } else if (v.variantName !== vName || v.color !== vColor || v.size !== vSize || v.costPrice !== r.costPrice) {
+    } else if (
+      v.variantName !== vName ||
+      v.color !== vColor ||
+      v.size !== vSize ||
+      v.costPrice !== r.costPrice
+    ) {
       // صفّ آخر لنفس الـ SKU بقيم متغيّر متعارضة ⇒ لا تَدمج بصمت (قد يكون خطأ إدخال في التكلفة).
-      failures.set(r.rowNumber, `قيم متعارضة لنفس الـ SKU «${sku}» (التكلفة/الاسم/اللون/المقاس)`);
+      failures.set(
+        r.rowNumber,
+        `قيم متعارضة لنفس الـ SKU «${sku}» (التكلفة/الاسم/اللون/المقاس)`,
+      );
     }
     v.rowNumbers.push(r.rowNumber);
 
     // المخزون الافتتاحي على مستوى المتغيّر: قيمتان مختلفتان لنفس الـ SKU ⇒ تعارض لا دمج صامت.
     if (r.openingStock !== undefined) {
       if (v.openingStock !== undefined && v.openingStock !== r.openingStock) {
-        failures.set(r.rowNumber, `قيم متعارضة للمخزون الافتتاحي لنفس الـ SKU «${sku}»`);
+        failures.set(
+          r.rowNumber,
+          `قيم متعارضة للمخزون الافتتاحي لنفس الـ SKU «${sku}»`,
+        );
       } else {
         v.openingStock = r.openingStock;
       }
@@ -167,7 +236,14 @@ function aggregateImportRows(
     const rowAliases = parseAliases(r.barcodeAliases);
     let u = v.units.get(r.unitName);
     if (!u) {
-      u = { unitName: r.unitName, conversionFactor: r.conversionFactor, barcode: uBarcode, isBaseUnit: r.isBaseUnit, prices: new Map(), aliases: rowAliases };
+      u = {
+        unitName: r.unitName,
+        conversionFactor: r.conversionFactor,
+        barcode: uBarcode,
+        isBaseUnit: r.isBaseUnit,
+        prices: new Map(),
+        aliases: rowAliases,
+      };
       v.units.set(r.unitName, u);
     } else if (
       u.conversionFactor !== r.conversionFactor ||
@@ -175,7 +251,10 @@ function aggregateImportRows(
       u.barcode !== uBarcode
     ) {
       // وحدة مكرّرة بقيم متعارضة (معامل/أساس/باركود) ⇒ أفشِل بدل الدمج الصامت (المعامل يحكم حساب المخزون).
-      failures.set(r.rowNumber, `قيم متعارضة للوحدة «${r.unitName}» داخل الـ SKU «${sku}»`);
+      failures.set(
+        r.rowNumber,
+        `قيم متعارضة للوحدة «${r.unitName}» داخل الـ SKU «${sku}»`,
+      );
     } else {
       // البدائل إضافية بطبيعتها ⇒ دمج union عبر صفوف نفس الوحدة (لا تعارض).
       for (const a of rowAliases) if (!u.aliases.includes(a)) u.aliases.push(a);
@@ -186,7 +265,8 @@ function aggregateImportRows(
       if (money(raw).isZero()) return; // 0 = لا سعر لهذه الفئة في النظام القديم
       const val = toDbMoney(raw); // تطبيع نصّي ⇒ مقارنة تعارض حتمية («2.0» ≡ «2.00»)
       const prev = u.prices.get(tier);
-      if (prev != null && prev !== val) failures.set(rn, `سعر متعارض للفئة ${tier} في الوحدة «${u.unitName}»`);
+      if (prev != null && prev !== val)
+        failures.set(rn, `سعر متعارض للفئة ${tier} في الوحدة «${u.unitName}»`);
       else u.prices.set(tier, val);
     };
     for (const [field, tier] of EXPLICIT_PRICE_FIELDS) {
@@ -225,23 +305,51 @@ function validateProductGroups(
   const batchBarcodes = new Map<string, number[]>(); // barcode → صفوف المتغيّر المالك
   for (const p of Array.from(groups.values())) {
     for (const v of Array.from(p.variants.values())) {
-      const baseUnits = Array.from(v.units.values()).filter((u) => !!u.isBaseUnit);
+      const baseUnits = Array.from(v.units.values()).filter(
+        (u) => !!u.isBaseUnit,
+      );
       if (baseUnits.length !== 1) {
-        for (const rn of v.rowNumbers) failures.set(rn, `المتغيّر «${v.sku}» يحتاج وحدة أساس واحدة بالضبط`);
+        for (const rn of v.rowNumbers)
+          failures.set(rn, `المتغيّر «${v.sku}» يحتاج وحدة أساس واحدة بالضبط`);
+      }
+      const sanityBlockers = checkVariantSanity(
+        v.costPrice,
+        Array.from(v.units.values()).map((u) => ({
+          unitName: u.unitName,
+          conversionFactor: Number(u.conversionFactor),
+          retail: u.prices.get("RETAIL") ?? null,
+          wholesale: u.prices.get("WHOLESALE") ?? null,
+          government: u.prices.get("GOVERNMENT") ?? null,
+        })),
+      ).filter((issue) => issue.level === "blocker");
+      if (sanityBlockers.length) {
+        const message = `شذوذ مالي حاجب في «${v.sku}»: ${sanityBlockers[0].message}`;
+        for (const rn of v.rowNumbers)
+          if (!failures.has(rn)) failures.set(rn, message);
       }
       for (const u of Array.from(v.units.values())) {
         const f = Number(u.conversionFactor);
         if (u.isBaseUnit && f !== 1) {
-          for (const rn of v.rowNumbers) failures.set(rn, `وحدة الأساس «${u.unitName}» يجب أن يكون معامل تحويلها ١`);
+          for (const rn of v.rowNumbers)
+            failures.set(
+              rn,
+              `وحدة الأساس «${u.unitName}» يجب أن يكون معامل تحويلها ١`,
+            );
         }
         if (!u.isBaseUnit && (!Number.isInteger(f) || f < 1)) {
-          for (const rn of v.rowNumbers) failures.set(rn, `معامل تحويل «${u.unitName}» يجب أن يكون عدداً صحيحاً ≥ ١`);
+          for (const rn of v.rowNumbers)
+            failures.set(
+              rn,
+              `معامل تحويل «${u.unitName}» يجب أن يكون عدداً صحيحاً ≥ ١`,
+            );
         }
         if (u.barcode) {
           const prevRows = batchBarcodes.get(u.barcode);
           if (prevRows) {
-            for (const rn of v.rowNumbers) failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
-            for (const rn of prevRows) failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
+            for (const rn of v.rowNumbers)
+              failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
+            for (const rn of prevRows)
+              failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
           } else {
             batchBarcodes.set(u.barcode, v.rowNumbers);
           }
@@ -250,17 +358,24 @@ function validateProductGroups(
         // بديل مكرّر مع أي باركود آخر في الملف (أساسياً كان أو بديلاً) = فشل الصفوف المالكة.
         for (const alias of u.aliases) {
           if (alias.length > 64) {
-            for (const rn of v.rowNumbers) failures.set(rn, `البديل «${alias}» أطول من ٦٤ خانة`);
+            for (const rn of v.rowNumbers)
+              failures.set(rn, `البديل «${alias}» أطول من ٦٤ خانة`);
             continue;
           }
           if (u.barcode && alias === u.barcode) {
-            for (const rn of v.rowNumbers) failures.set(rn, `البديل «${alias}» يطابق الباركود الأساسي لنفس الوحدة — احذفه من عمود البدائل`);
+            for (const rn of v.rowNumbers)
+              failures.set(
+                rn,
+                `البديل «${alias}» يطابق الباركود الأساسي لنفس الوحدة — احذفه من عمود البدائل`,
+              );
             continue;
           }
           const prevRows = batchBarcodes.get(alias);
           if (prevRows) {
-            for (const rn of v.rowNumbers) failures.set(rn, `الباركود «${alias}» مكرّر داخل الملف`);
-            for (const rn of prevRows) failures.set(rn, `الباركود «${alias}» مكرّر داخل الملف`);
+            for (const rn of v.rowNumbers)
+              failures.set(rn, `الباركود «${alias}» مكرّر داخل الملف`);
+            for (const rn of prevRows)
+              failures.set(rn, `الباركود «${alias}» مكرّر داخل الملف`);
           } else {
             batchBarcodes.set(alias, v.rowNumbers);
           }
@@ -281,8 +396,13 @@ async function detectExistingProducts(
   db: ReturnType<typeof requireDb>,
   groups: Map<string, ProductAgg>,
   batchBarcodes: Map<string, number[]>,
-): Promise<{ existingProductSkus: Set<string>; existingBarcodeOwner: Map<string, string> }> {
-  const allSkus = uniq(Array.from(groups.values()).flatMap((p) => Array.from(p.variants.keys())));
+): Promise<{
+  existingProductSkus: Set<string>;
+  existingBarcodeOwner: Map<string, string>;
+}> {
+  const allSkus = uniq(
+    Array.from(groups.values()).flatMap((p) => Array.from(p.variants.keys())),
+  );
   const allBarcodes = Array.from(batchBarcodes.keys());
   const productNames = Array.from(groups.keys());
   const existingProductSkus = new Set<string>();
@@ -293,7 +413,9 @@ async function detectExistingProducts(
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productVariants.sku, allSkus));
-    const wantedProducts = new Set(productNames.map((name) => name.trim().toLowerCase()));
+    const wantedProducts = new Set(
+      productNames.map((name) => name.trim().toLowerCase()),
+    );
     for (const e of rows) {
       if (wantedProducts.has(e.productName.trim().toLowerCase())) {
         existingProductSkus.add(productSkuKey(e.productName, e.sku));
@@ -302,22 +424,47 @@ async function detectExistingProducts(
   }
   if (allBarcodes.length) {
     for (const e of await db
-      .select({ barcode: productUnits.barcode, productName: products.name, sku: productVariants.sku })
+      .select({
+        barcode: productUnits.barcode,
+        productName: products.name,
+        sku: productVariants.sku,
+      })
       .from(productUnits)
-      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+      .innerJoin(
+        productVariants,
+        eq(productUnits.variantId, productVariants.id),
+      )
       .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productUnits.barcode, allBarcodes)))
-      if (e.barcode) existingBarcodeOwner.set(e.barcode, productSkuKey(e.productName, e.sku));
+      if (e.barcode)
+        existingBarcodeOwner.set(
+          e.barcode,
+          productSkuKey(e.productName, e.sku),
+        );
     // نفس الفضاء يشمل جدول البدائل: باركود الملف (أساسياً أو بديلاً) الموجود بديلاً في القاعدة
     // يملكه صاحب وحدته — الأساسيّ يسبق البديل عند التصادم النظري (ثابت التفرّد يمنعه أصلاً).
     for (const e of await db
-      .select({ barcode: productUnitBarcodes.barcode, productName: products.name, sku: productVariants.sku })
+      .select({
+        barcode: productUnitBarcodes.barcode,
+        productName: products.name,
+        sku: productVariants.sku,
+      })
       .from(productUnitBarcodes)
-      .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
-      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+      .innerJoin(
+        productUnits,
+        eq(productUnitBarcodes.productUnitId, productUnits.id),
+      )
+      .innerJoin(
+        productVariants,
+        eq(productUnits.variantId, productVariants.id),
+      )
       .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productUnitBarcodes.barcode, allBarcodes)))
-      if (!existingBarcodeOwner.has(e.barcode)) existingBarcodeOwner.set(e.barcode, productSkuKey(e.productName, e.sku));
+      if (!existingBarcodeOwner.has(e.barcode))
+        existingBarcodeOwner.set(
+          e.barcode,
+          productSkuKey(e.productName, e.sku),
+        );
   }
   return { existingProductSkus, existingBarcodeOwner };
 }
@@ -335,34 +482,65 @@ function classifyProductGroups(
   for (const p of Array.from(groups.values())) {
     const groupFailed = p.rowNumbers.some((rn) => failures.has(rn));
     if (groupFailed) {
-      for (const rn of p.rowNumbers) results.push({ rowNumber: rn, status: "failed", message: failures.get(rn) ?? "خطأ في صفّ مرتبط بنفس المنتج" });
+      for (const rn of p.rowNumbers)
+        results.push({
+          rowNumber: rn,
+          status: "failed",
+          message: failures.get(rn) ?? "خطأ في صفّ مرتبط بنفس المنتج",
+        });
       continue;
     }
     const skus = Array.from(p.variants.keys());
-    const hasExistingSku = skus.some((sku) => existingProductSkus.has(productSkuKey(p.productName, sku)));
+    const hasExistingSku = skus.some((sku) =>
+      existingProductSkus.has(productSkuKey(p.productName, sku)),
+    );
     // التعارض الحقيقي: باركود موجود في القاعدة لمتغيّرٍ من «خارج هذا المنتج» (sku المالك ليس من
     // skus المنتج) — أمّا المملوك لأحد متغيّراته نفسها (إعادة استيراد) فيُحسم «موجود مسبقاً» أدناه.
     const barcodeClash = Array.from(p.variants.values()).some((v) =>
       Array.from(v.units.values()).some((u) => {
         if (!u.barcode) return false;
         const ownerKey = existingBarcodeOwner.get(u.barcode);
-        return ownerKey != null && !skus.some((sku) => ownerKey === productSkuKey(p.productName, sku));
+        return (
+          ownerKey != null &&
+          !skus.some((sku) => ownerKey === productSkuKey(p.productName, sku))
+        );
       }),
     );
 
     // «موجود مسبقاً» يسبق فحص التعارض (§٤.٣.٤-د): إعادة استيراد منتجٍ سبق إنشاؤه تتخطّاه لا
     // تُفشله — وإلا استحال استئناف ملفٍ توقّف في منتصفه عبر الواجهة (الدفعة ١ كلها «فاشلة»).
     if (hasExistingSku) {
-      if (onExisting === "error") for (const rn of p.rowNumbers) results.push({ rowNumber: rn, status: "failed", message: "الـ SKU موجود مسبقاً" });
-      else for (const rn of p.rowNumbers) results.push({ rowNumber: rn, status: "skipped", message: onExisting === "update" ? "موجود — التحديث عبر شاشة المنتج" : "موجود مسبقاً" });
+      if (onExisting === "error")
+        for (const rn of p.rowNumbers)
+          results.push({
+            rowNumber: rn,
+            status: "failed",
+            message: "الـ SKU موجود مسبقاً",
+          });
+      else
+        for (const rn of p.rowNumbers)
+          results.push({
+            rowNumber: rn,
+            status: "skipped",
+            message:
+              onExisting === "update"
+                ? "موجود — التحديث عبر شاشة المنتج"
+                : "موجود مسبقاً",
+          });
       continue;
     }
     if (barcodeClash) {
-      for (const rn of p.rowNumbers) results.push({ rowNumber: rn, status: "failed", message: "باركود مُستخدَم مسبقاً (يجب أن يكون فريداً)" });
+      for (const rn of p.rowNumbers)
+        results.push({
+          rowNumber: rn,
+          status: "failed",
+          message: "باركود مُستخدَم مسبقاً (يجب أن يكون فريداً)",
+        });
       continue;
     }
     toCreate.push(p);
-    for (const rn of p.rowNumbers) results.push({ rowNumber: rn, status: "created" });
+    for (const rn of p.rowNumbers)
+      results.push({ rowNumber: rn, status: "created" });
   }
   return { results, toCreate };
 }
@@ -385,7 +563,11 @@ async function planAliasMergeForExisting(
 ): Promise<Array<{ productUnitId: number; barcode: string }>> {
   if (onExisting === "error") return []; // الموجود صُنّف فشلاً أصلاً — لا دمج عليه.
   const byRow = new Map(results.map((r) => [r.rowNumber, r]));
-  const setRows = (rns: number[], status: ImportRowResult["status"], message: string) => {
+  const setRows = (
+    rns: number[],
+    status: ImportRowResult["status"],
+    message: string,
+  ) => {
     for (const rn of rns) {
       const r = byRow.get(rn);
       if (r) {
@@ -400,11 +582,19 @@ async function planAliasMergeForExisting(
   const wants: Want[] = [];
   for (const p of Array.from(groups.values())) {
     const skus = Array.from(p.variants.keys());
-    if (!skus.some((sku) => existingProductSkus.has(productSkuKey(p.productName, sku)))) continue;
+    if (
+      !skus.some((sku) =>
+        existingProductSkus.has(productSkuKey(p.productName, sku)),
+      )
+    )
+      continue;
     for (const v of Array.from(p.variants.values())) {
-      const units = Array.from(v.units.values()).filter((u) => u.aliases.length);
+      const units = Array.from(v.units.values()).filter(
+        (u) => u.aliases.length,
+      );
       if (!units.length) continue;
-      if (!v.rowNumbers.every((rn) => byRow.get(rn)?.status === "skipped")) continue;
+      if (!v.rowNumbers.every((rn) => byRow.get(rn)?.status === "skipped"))
+        continue;
       wants.push({ p, v, units });
     }
   }
@@ -412,33 +602,58 @@ async function planAliasMergeForExisting(
 
   // حلّ الوحدات الهدف + ملكية الأكواد المرشّحة في القاعدة (أساسيّ وبديل) على مستوى الوحدة.
   // فاصل «|» بين المفتاح واسم الوحدة (يمنع التباس «AB»+«C» مع «A»+«BC» — الباركود/SKU لا يحملانه عملياً).
-  const unitKey = (productName: string, sku: string, unitName: string) => `${productSkuKey(productName, sku)}|${unitName}`;
+  const unitKey = (productName: string, sku: string, unitName: string) =>
+    `${productSkuKey(productName, sku)}|${unitName}`;
   const allSkus = uniq(wants.map((w) => w.v.sku));
-  const unitByKey = new Map<string, { unitId: number; primary: string | null }>();
+  const unitByKey = new Map<
+    string,
+    { unitId: number; primary: string | null }
+  >();
   for (const r of await db
-    .select({ unitId: productUnits.id, unitName: productUnits.unitName, primary: productUnits.barcode, sku: productVariants.sku, productName: products.name })
+    .select({
+      unitId: productUnits.id,
+      unitName: productUnits.unitName,
+      primary: productUnits.barcode,
+      sku: productVariants.sku,
+      productName: products.name,
+    })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(inArray(productVariants.sku, allSkus))) {
     const k = unitKey(r.productName, r.sku, r.unitName);
-    if (!unitByKey.has(k)) unitByKey.set(k, { unitId: Number(r.unitId), primary: r.primary });
+    if (!unitByKey.has(k))
+      unitByKey.set(k, { unitId: Number(r.unitId), primary: r.primary });
   }
-  const candidateCodes = uniq(wants.flatMap((w) => w.units.flatMap((u) => u.aliases)));
+  const candidateCodes = uniq(
+    wants.flatMap((w) => w.units.flatMap((u) => u.aliases)),
+  );
   const primaryOwner = new Map<string, number>();
-  for (const r of await db.select({ id: productUnits.id, barcode: productUnits.barcode }).from(productUnits).where(inArray(productUnits.barcode, candidateCodes)))
+  for (const r of await db
+    .select({ id: productUnits.id, barcode: productUnits.barcode })
+    .from(productUnits)
+    .where(inArray(productUnits.barcode, candidateCodes)))
     if (r.barcode) primaryOwner.set(r.barcode, Number(r.id));
   const aliasOwner = new Map<string, number>();
-  for (const r of await db.select({ unitId: productUnitBarcodes.productUnitId, barcode: productUnitBarcodes.barcode }).from(productUnitBarcodes).where(inArray(productUnitBarcodes.barcode, candidateCodes)))
+  for (const r of await db
+    .select({
+      unitId: productUnitBarcodes.productUnitId,
+      barcode: productUnitBarcodes.barcode,
+    })
+    .from(productUnitBarcodes)
+    .where(inArray(productUnitBarcodes.barcode, candidateCodes)))
     aliasOwner.set(r.barcode, Number(r.unitId));
 
   const inserts: Array<{ productUnitId: number; barcode: string }> = [];
   for (const w of wants) {
     // «الكل أو لا شيء» على مستوى المتغيّر: أي تصادم يُسقط كل بدائله المخطّطة ويُفشل صفوفه.
-    const variantInserts: Array<{ productUnitId: number; barcode: string }> = [];
+    const variantInserts: Array<{ productUnitId: number; barcode: string }> =
+      [];
     let failMsg: string | null = null;
     for (const u of w.units) {
-      const target = unitByKey.get(unitKey(w.p.productName, w.v.sku, u.unitName));
+      const target = unitByKey.get(
+        unitKey(w.p.productName, w.v.sku, u.unitName),
+      );
       if (!target) {
         failMsg = `تعذّر إيجاد الوحدة «${u.unitName}» للصنف الموجود «${w.v.sku}» — أضف البدائل من شاشة تعديل المنتج`;
         break;
@@ -460,17 +675,28 @@ async function planAliasMergeForExisting(
     }
     if (!variantInserts.length) continue; // كل البدائل موجودة أصلاً ⇒ تبقى «موجود مسبقاً».
     inserts.push(...variantInserts);
-    setRows(w.v.rowNumbers, "updated", `موجود — أُضيفت بدائل باركود جديدة (${variantInserts.length})`);
+    setRows(
+      w.v.rowNumbers,
+      "updated",
+      `موجود — أُضيفت بدائل باركود جديدة (${variantInserts.length})`,
+    );
   }
   return inserts;
 }
 
 /** ⑥ التنفيذ: إنشاء التصنيفات الناقصة ثم شجرة كل منتج (+ مخزونه الافتتاحي) داخل معاملة واحدة. */
-async function persistProductsInTx(tx: Tx, toCreate: ProductAgg[], actor: Actor): Promise<void> {
+async function persistProductsInTx(
+  tx: Tx,
+  toCreate: ProductAgg[],
+  actor: Actor,
+): Promise<void> {
   const catNames = uniq(toCreate.map((p) => p.categoryName));
   const catMap = new Map<string, number>(); // المفتاح: الاسم بحالة موحّدة (تفادي تصادم «X»/«x» على القيد الفريد)
   if (catNames.length) {
-    for (const c of await tx.select({ id: categories.id, name: categories.name }).from(categories).where(inArray(categories.name, catNames)))
+    for (const c of await tx
+      .select({ id: categories.id, name: categories.name })
+      .from(categories)
+      .where(inArray(categories.name, catNames)))
       catMap.set(c.name.trim().toLowerCase(), Number(c.id));
     for (const name of catNames) {
       const key = name.trim().toLowerCase();
@@ -484,7 +710,9 @@ async function persistProductsInTx(tx: Tx, toCreate: ProductAgg[], actor: Actor)
   for (const p of toCreate) {
     const pRes = await tx.insert(products).values({
       name: p.productName,
-      categoryId: p.categoryName ? catMap.get(p.categoryName.trim().toLowerCase()) ?? null : null,
+      categoryId: p.categoryName
+        ? (catMap.get(p.categoryName.trim().toLowerCase()) ?? null)
+        : null,
       isCustomizable: p.isCustomizable,
     });
     const productId = insertId(pRes);
@@ -520,7 +748,13 @@ async function persistProductsInTx(tx: Tx, toCreate: ProductAgg[], actor: Actor)
         if (u.aliases.length) {
           await tx
             .insert(productUnitBarcodes)
-            .values(u.aliases.map((code) => ({ productUnitId, barcode: code, createdBy: actor.userId })));
+            .values(
+              u.aliases.map((code) => ({
+                productUnitId,
+                barcode: code,
+                createdBy: actor.userId,
+              })),
+            );
         }
       }
 

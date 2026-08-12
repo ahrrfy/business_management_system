@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState } from "@/components/PageState";
+import { ErrorState, LoadingState } from "@/components/PageState";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { Input } from "@/components/ui/input";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
@@ -24,6 +24,8 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { EmpAvatar } from "@/lib/hr/ui";
+import { exportRows } from "@/lib/export";
+import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { careersUrl } from "@/lib/siteHosts";
 import { trpc } from "@/lib/trpc";
@@ -41,10 +43,14 @@ import {
   Briefcase,
   ChevronLeft,
   Copy,
+  Eye,
   ExternalLink,
+  FileSpreadsheet,
   FileText,
+  GraduationCap,
   Image as ImageIcon,
   Link as LinkIcon,
+  Mail,
   MapPin,
   Pencil,
   Phone,
@@ -111,19 +117,38 @@ export default function Recruitment() {
   const [tab, setTab] = useState("vacancies");
   const [stage, setStage] = useState("");
   const [source, setSource] = useState("");
+  const [vacancyFilter, setVacancyFilter] = useState("");
   const [q, setQ] = useState("");
   const [paperOpen, setPaperOpen] = useState(false);
+  const [detailId, setDetailId] = useState<number | null>(null);
+
+  const vacancyOptsQ = trpc.recruitment.vacancyList.useQuery();
 
   const input = useMemo(
     () => ({
       stage: (stage || undefined) as never,
       source: (source || undefined) as never,
       q: q.trim() || undefined,
+      vacancyId: vacancyFilter ? Number(vacancyFilter) : undefined,
     }),
-    [stage, source, q],
+    [stage, source, q, vacancyFilter],
   );
   const list = trpc.recruitment.list.useQuery(input);
   const rows = (list.data ?? []) as Applicant[];
+
+  function exportApplicants() {
+    exportRows(rows, {
+      filename: "المتقدّمون",
+      columns: [
+        { key: "name", header: "الاسم" },
+        { key: "jobTitle", header: "الوظيفة", map: (r) => r.jobTitle ?? "" },
+        { key: "source", header: "المصدر", map: (r) => applicantSourceLabel(r.source) },
+        { key: "stage", header: "المرحلة", map: (r) => applicantStageLabel(r.stage) },
+        { key: "phone", header: "الهاتف", map: (r) => r.phone ?? "" },
+        { key: "rating", header: "التقييم", map: (r) => r.rating ?? 0 },
+      ],
+    });
+  }
 
   const publicUrl = careersUrl();
 
@@ -252,6 +277,13 @@ export default function Recruitment() {
             <option value="">كل المصادر</option>
             {APPLICANT_SOURCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
+          <select className={selectCls} value={vacancyFilter} onChange={(e) => setVacancyFilter(e.target.value)} aria-label="الوظيفة">
+            <option value="">كل الوظائف</option>
+            {(vacancyOptsQ.data ?? []).map((v) => <option key={v.id} value={String(v.id)}>{v.title}</option>)}
+          </select>
+          <Button size="sm" variant="outline" className="ms-auto" disabled={!rows.length} onClick={exportApplicants}>
+            <FileSpreadsheet className="size-3.5" /> تصدير Excel
+          </Button>
         </CardContent>
       </Card>
 
@@ -284,6 +316,15 @@ export default function Recruitment() {
                           <div className="text-[12px] font-medium truncate">{a.name}</div>
                           <div className="text-[10px] text-muted-foreground truncate">{a.jobTitle || "—"}</div>
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => setDetailId(a.id)}
+                          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          aria-label={`تفاصيل ${a.name}`}
+                          title="عرض التفاصيل"
+                        >
+                          <Eye className="size-3.5" />
+                        </button>
                       </div>
                       <div className="flex items-center justify-between mt-2 text-[10px] text-muted-foreground">
                         <span className="inline-flex items-center gap-1">
@@ -366,9 +407,109 @@ export default function Recruitment() {
       </div>
 
           <PaperDialog open={paperOpen} onClose={() => setPaperOpen(false)} onSaved={() => void utils.recruitment.list.invalidate()} />
+          <ApplicantDetailDialog id={detailId} onClose={() => setDetailId(null)} vacancies={vacancyOptsQ.data ?? []} />
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+/* ====================== حوار تفاصيل المتقدّم ====================== */
+function ApplicantDetailDialog({
+  id,
+  onClose,
+  vacancies,
+}: {
+  id: number | null;
+  onClose: () => void;
+  vacancies: { id: number; title: string }[];
+}) {
+  const q = trpc.recruitment.get.useQuery({ id: id ?? 0 }, { enabled: id != null });
+  const a = q.data;
+  const vacancyTitle = a?.vacancyId != null ? vacancies.find((v) => v.id === a.vacancyId)?.title ?? null : null;
+
+  return (
+    <Dialog open={id != null} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent dir="rtl">
+        <DialogHeader>
+          <DialogTitle>تفاصيل المتقدّم</DialogTitle>
+        </DialogHeader>
+        {q.isLoading ? (
+          <LoadingState />
+        ) : !a ? (
+          <p className="text-sm text-muted-foreground py-4 text-center">تعذّر تحميل بيانات المتقدّم.</p>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <EmpAvatar name={a.name} sizePx={40} />
+              <div>
+                <div className="font-semibold">{a.name}</div>
+                <div className="text-xs text-muted-foreground">{a.jobTitle || vacancyTitle || "—"}</div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5 text-xs">
+              <div>
+                <div className="text-muted-foreground mb-0.5">المصدر</div>
+                <div className="font-medium">{applicantSourceLabel(a.source)}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground mb-0.5">المرحلة</div>
+                <div className="font-medium">{applicantStageLabel(a.stage)}</div>
+              </div>
+              {a.phone && (
+                <div>
+                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1"><Phone className="size-3" /> الهاتف</div>
+                  <div className="font-medium tabular-nums" dir="ltr">{a.phone}</div>
+                </div>
+              )}
+              {a.email && (
+                <div>
+                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1"><Mail className="size-3" /> البريد</div>
+                  <div className="font-medium" dir="ltr">{a.email}</div>
+                </div>
+              )}
+              {a.experience && (
+                <div>
+                  <div className="text-muted-foreground mb-0.5">الخبرة</div>
+                  <div className="font-medium">{a.experience}</div>
+                </div>
+              )}
+              {a.education && (
+                <div>
+                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1"><GraduationCap className="size-3" /> المؤهل</div>
+                  <div className="font-medium">{a.education}</div>
+                </div>
+              )}
+              {vacancyTitle && (
+                <div>
+                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1"><Briefcase className="size-3" /> الوظيفة المتقدَّم لها</div>
+                  <div className="font-medium">{vacancyTitle}</div>
+                </div>
+              )}
+              {a.appliedDate && (
+                <div>
+                  <div className="text-muted-foreground mb-0.5">تاريخ التقديم</div>
+                  <div className="font-medium tabular-nums" dir="ltr">{fmtDate(a.appliedDate)}</div>
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground mb-0.5">التقييم</div>
+              <Stars rating={a.rating} />
+            </div>
+            {a.notes && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-0.5">ملاحظات</div>
+                <p className="text-sm leading-relaxed whitespace-pre-wrap">{a.notes}</p>
+              </div>
+            )}
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>إغلاق</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -8,7 +8,7 @@
  * CHECK محذوف عمداً من واجهات البيع بقرار المالك «لا تعامل بالصكوك».
  */
 
-export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
 
 export const METHOD_LABEL: Record<PaymentMethod, string> = {
   CASH: "نقدي",
@@ -16,6 +16,8 @@ export const METHOD_LABEL: Record<PaymentMethod, string> = {
   CHECK: "صك",
   TRANSFER: "تحويل",
   WALLET: "محفظة",
+  // ش٥ — رصيد اتصال زين (أكواد كروت شحن): «زين حصراً» بنيوياً — لا مزوّد آخر يُمثَّل.
+  TELECOM: "رصيد زين",
 };
 
 /**
@@ -28,6 +30,7 @@ export const METHOD_CLS: Record<PaymentMethod, string> = {
   CHECK:    "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200",
   TRANSFER: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
   WALLET:   "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-200",
+  TELECOM:  "bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-200",
 };
 
 /**
@@ -35,7 +38,9 @@ export const METHOD_CLS: Record<PaymentMethod, string> = {
  * CHECK غير معروض في هذه القائمة (قرار المالك). التغيير هنا يغيّر ترتيب أزرار POS
  * تلقائياً لأن الأزرار تُبنى من هذه القائمة عبر map().
  */
-export const POS_METHODS: readonly { v: PaymentMethod; label: string }[] = [
+/** ش٥: النوع مضيَّق على القيم الفعلية — CHECK محذوف بقرار المالك، وTELECOM (رصيد زين) مقصور
+ *  على محطة الاستقبال خلف ضوابطها (لا يظهر في POS التجزئة/التسديد العام/تصحيح الطريقة). */
+export const POS_METHODS: readonly { v: Exclude<PaymentMethod, "CHECK" | "TELECOM">; label: string }[] = [
   { v: "CASH",     label: "نقدي" },
   { v: "CARD",     label: "بطاقة" },
   { v: "TRANSFER", label: "تحويل" },

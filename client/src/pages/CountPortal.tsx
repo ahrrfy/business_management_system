@@ -11,16 +11,21 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { useParams } from "wouter";
-import { TRPCClientError } from "@trpc/client";
+import { useLocation, useParams } from "wouter";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { trpc } from "@/lib/trpc";
 import type { RouterOutputs } from "@/lib/trpc";
 import { notify, errMsg } from "@/lib/notify";
+import { isNetworkError } from "@/lib/netError";
 import { fmtInt } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { usePulsedCountState } from "@/hooks/usePulsedCountState";
+import type { PortalState } from "@shared/countPortalMerge";
+import { CameraScanner } from "@/components/scan/CameraScanner";
 import { cn } from "@/lib/utils";
 import {
   WifiOff,
@@ -29,7 +34,6 @@ import {
   Lock,
   Ban,
   Send,
-  ScanLine,
   Camera,
   RefreshCw,
   PartyPopper,
@@ -48,18 +52,13 @@ import {
   type QueuedCount,
 } from "@/lib/countQueue";
 
-type CountState = RouterOutputs["count"]["state"];
+// النوع من الوحدة المشتركة مباشرةً: `count.state` صار غلافاً (كتالوج + متغيّر) تُركّبه
+// `usePulsedCountState`، فاشتقاق النوع من شكل الردّ لم يعد يمثّل الحالة المعروضة.
+type CountState = PortalState;
 type CountItem = CountState["items"][number];
 type CountMode = "FIRST" | "RECOUNT" | "VERIFY";
 
 /* ─────────────────────────── مساعدات ─────────────────────────── */
-
-/** فشل شبكي (لم يصل للخادم) ⇄ رفض خادمي (وصل ورُفض برسالة). */
-function isNetworkError(e: unknown): boolean {
-  if (typeof navigator !== "undefined" && !navigator.onLine) return true;
-  if (e instanceof TRPCClientError) return e.data == null;
-  return e instanceof TypeError;
-}
 
 /** اسم الوحدة الأساس (factor=1) لعرض الكميات. */
 function baseUnitName(item: CountItem): string {
@@ -99,9 +98,15 @@ function BrandMark() {
 export default function CountPortal() {
   const params = useParams<{ code?: string }>();
   const code = decodeURIComponent(params.code ?? "").trim();
+  const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  // رابط /count مخصص للعامل الخارجي فقط. إذا كان المتصفح يحمل حساب نظام،
+  // ننقله إلى مساحة الحاسوب كي لا يظهر له PIN أو واجهة الهاتف.
+  const account = trpc.auth.me.useQuery(undefined, { retry: false });
 
-  const [phase, setPhase] = useState<"boot" | "pin" | "counting">("boot");
+  const [phase, setPhase] = useState<"boot" | "pin" | "counting" | "paused">("boot");
+  // يزيد عند كل تبدّل هوية (دخول/خروج) ⇒ يُصفّر كاش الحالة كي لا يرى العادّ الجديد بيانات سابقه.
+  const [identityEpoch, setIdentityEpoch] = useState(0);
   const [bootOffline, setBootOffline] = useState(false);
   const [pin, setPin] = useState("");
   const [authErr, setAuthErr] = useState<string | null>(null);
@@ -111,6 +116,7 @@ export default function CountPortal() {
 
   const [q, setQ] = useState("");
   const [openVariantId, setOpenVariantId] = useState<number | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [flashId, setFlashId] = useState<number | null>(null);
   const [showOthers, setShowOthers] = useState(false);
   const [finished, setFinished] = useState<{ sessionMovedToReview: boolean } | null>(null);
@@ -124,6 +130,12 @@ export default function CountPortal() {
       document.title = prev;
     };
   }, []);
+
+  useEffect(() => {
+    if (account.data && code) navigate(`/my-stocktake/${encodeURIComponent(code)}`, { replace: true });
+  }, [account.data, code, navigate]);
+
+  if (account.data) return null;
 
   /* ── الدخول الصامت: كوكي سارٍ ⇒ مباشرة، وإلا auth بلا PIN (مستخدم نظام بتكليف USER)، وإلا شاشة PIN ── */
   const boot = useCallback(async () => {
@@ -171,7 +183,10 @@ export default function CountPortal() {
       authMut.mutate(
         { sessionCode: code, pin: pinValue },
         {
-          onSuccess: () => setPhase("counting"),
+          onSuccess: () => {
+            setIdentityEpoch((n) => n + 1);
+            setPhase("counting");
+          },
           onError: (e) => {
             setPin("");
             setAuthErr(isNetworkError(e) ? "لا اتصال بالشبكة — تحقّق من الإنترنت وحاول مجدداً." : errMsg(e));
@@ -182,11 +197,8 @@ export default function CountPortal() {
     [authMut, code],
   );
 
-  /* ── حالة الجلسة (متابعة حيّة كل ٥ ثوانٍ) ── */
-  const stateQ = trpc.count.state.useQuery(
-    { sessionCode: code },
-    { enabled: phase === "counting" && code !== "", refetchInterval: 5000, retry: false },
-  );
+  /* ── حالة الجلسة (متابعة حيّة كل ٥ ثوانٍ عبر نبضةٍ رخيصة — usePulsedCountState) ── */
+  const stateQ = usePulsedCountState(code, phase === "counting" && code !== "", identityEpoch);
   const st = stateQ.data;
 
   // نجاح ⇒ متصل؛ فشل شبكي ⇒ مقطوع؛ انتهاء صلاحية الدخول ⇒ عودة لشاشة PIN.
@@ -234,7 +246,16 @@ export default function CountPortal() {
           }
           // رفض خادمي نهائي (مثلاً أُقفل العدّ) — لا معنى لإبقائها بالطابور.
           removeQueued(code, it.clientRequestId);
-          notify.warn("تعذّرت مزامنة عدّة محفوظة", errMsg(e));
+          const serverCode = (e as { data?: { code?: string } | null }).data?.code;
+          if (serverCode === "PRECONDITION_FAILED") {
+            notify.warn(
+              "استُبعدت عدّة محفوظة لأنها لم تعد صالحة",
+              `${errMsg(e)} — لم تُعَد المحاولة، وجرى تحديث حالة المنتج من الخادم.`,
+            );
+            void utils.count.state.invalidate();
+          } else {
+            notify.warn("تعذّرت مزامنة عدّة محفوظة", errMsg(e));
+          }
         }
       }
     } finally {
@@ -301,9 +322,10 @@ export default function CountPortal() {
     [needle],
   );
 
-  const myAll = useMemo(() => items.filter((i) => i.isMine), [items]);
+  // Every worker receives the same blind product list; allocation happens in the field.
+  const myAll = items;
   const myFiltered = useMemo(() => myAll.filter(matches), [myAll, matches]);
-  const otherAll = useMemo(() => items.filter((i) => !i.isMine), [items]);
+  const otherAll: CountItem[] = [];
   const otherFiltered = useMemo(() => otherAll.filter(matches), [otherAll, matches]);
 
   /** «معدود» محلياً = عدّي المُزامَن أو عدّة معلّقة بالطابور. */
@@ -311,10 +333,11 @@ export default function CountPortal() {
     (i: CountItem) => i.myCount != null || queuedByVariant.has(i.variantId),
     [queuedByVariant],
   );
-  const effCounted = useMemo(() => myAll.filter(hasMyCount).length, [myAll, hasMyCount]);
+  const effCounted = st?.progress.session.counted ?? 0;
   const pendingRecounts = st?.recountTasks.length ?? 0;
-  const allDone = myAll.length > 0 ? effCounted >= myAll.length && pendingRecounts === 0 : pendingRecounts === 0;
-  const remaining = Math.max(0, myAll.length - effCounted) + pendingRecounts;
+  const sessionTotal = st?.progress.session.total ?? myAll.length;
+  const allDone = sessionTotal > 0 ? effCounted >= sessionTotal && pendingRecounts === 0 : pendingRecounts === 0;
+  const remaining = Math.max(0, sessionTotal - effCounted) + pendingRecounts;
 
   const sessionStatus = st?.session.status ?? "COUNTING";
   const submittedAssignment = finished != null || st?.assignment.status === "SUBMITTED";
@@ -325,7 +348,7 @@ export default function CountPortal() {
   const openCard = useCallback(
     (i: CountItem) => {
       if (!canCount) return;
-      if (!i.isMine && dupBlocked) {
+      if (dupBlocked && i.colleagueCounted && !i.myCount) {
         notify.info(
           i.colleagueCounted
             ? "المنتج معدود من زميلك — سياسة الجلسة تمنع العدّ المكرر"
@@ -353,6 +376,10 @@ export default function CountPortal() {
     },
     [items, openCard],
   );
+  const barcodeInput = useBarcodeInput((code) => {
+    setQ("");
+    handleBarcode(code);
+  });
 
   useBarcodeScanner((raw) => handleBarcode(raw), {
     enabled: phase === "counting" && openVariantId == null && canCount,
@@ -401,12 +428,12 @@ export default function CountPortal() {
             if (stale) removeQueued(code, stale.clientRequestId);
             setQueueCount(queueSize(code));
             setOpenVariantId(null);
-            // الخادم هو الحَكَم في نوع العدّ والتعارض — نقرأ حقوله إن وُجدت بتساهل.
-            const r = res as unknown as { isConflict?: boolean; kind?: string } | undefined;
-            const kind = r?.kind ?? mode;
+            // الخادم هو الحَكَم في نوع العدّ ونتيجة المطابقة. ⚠️ كان يُقرأ `isConflict` وهو حقل
+            // لا يُعيده `count.submit` أصلاً (يُعيد `verifyMatch`) ⇒ لم تظهر رسالة التعارض قط.
+            const kind = res.kind ?? mode;
             if (kind === "VERIFY") {
-              if (r?.isConflict === true) notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
-              else if (r?.isConflict === false) notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
+              if (res.verifyMatch === false) notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
+              else if (res.verifyMatch === true) notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
               else notify.ok("سُجّل العدّ التحقّقي");
             } else if (kind === "RECOUNT") {
               notify.ok("سُجّلت إعادة العدّ");
@@ -445,6 +472,18 @@ export default function CountPortal() {
 
   /* ── التسليم النهائي ── */
   const finishMut = trpc.count.finish.useMutation();
+  const logoutMut = trpc.count.logout.useMutation();
+  const doPause = useCallback(() => {
+    if (!online || queueCount > 0 || logoutMut.isPending) return;
+    logoutMut.mutate(undefined, {
+      onSuccess: () => {
+        setIdentityEpoch((n) => n + 1);
+        setPhase("paused");
+        notify.ok("حُفظت العدّات وأنهيت الوردية", "يمكنك العودة لاحقاً وإكمال الجرد من نفس التقدم.");
+      },
+      onError: (e) => notify.err(e),
+    });
+  }, [logoutMut, online, queueCount]);
   const doFinish = useCallback(async () => {
     if (!st) return;
     const zone = st.assignment.zone;
@@ -562,6 +601,21 @@ export default function CountPortal() {
     );
   }
 
+  if (phase === "paused") {
+    return frame(
+      <CenterScreen>
+        <div className="badge-status-active grid size-16 place-items-center rounded-full">
+          <Check aria-hidden className="size-8" />
+        </div>
+        <p className="text-lg font-bold">حُفظت الوردية</p>
+        <p className="text-sm leading-relaxed text-muted-foreground">الجلسة ما زالت قيد العدّ. يمكنك العودة في أي يوم والمتابعة من حيث توقفت.</p>
+        <Button size="lg" className="h-12 text-base font-bold" onClick={() => void boot()}>
+          متابعة الجرد
+        </Button>
+      </CenterScreen>,
+    );
+  }
+
   /* ── قيد العدّ: تحميل/خطأ ── */
   if (!st) {
     return frame(
@@ -675,7 +729,7 @@ export default function CountPortal() {
 
   /* ── الشاشة الرئيسية: ترويسة + مهام إعادة العدّ + بحث + قائمة + تسليم ── */
   const firstName = st.assignment.name.split(" ")[0];
-  const pct = myAll.length > 0 ? Math.min(100, Math.round((effCounted / myAll.length) * 100)) : 0;
+  const pct = sessionTotal > 0 ? Math.min(100, Math.round((effCounted / sessionTotal) * 100)) : 0;
   const othersOpen = showOthers || (needle !== "" && otherFiltered.length > 0);
 
   return frame(
@@ -722,7 +776,7 @@ export default function CountPortal() {
             />
           </div>
           <span className="text-xs font-bold tabular-nums" dir="ltr">
-            {fmtInt(effCounted)}/{fmtInt(myAll.length)}
+            {fmtInt(effCounted)}/{fmtInt(sessionTotal)}
           </span>
         </div>
       </header>
@@ -769,29 +823,35 @@ export default function CountPortal() {
       )}
 
       {/* بحث + مسح */}
-      <div className="flex gap-2 px-4 py-3">
-        <input
-          ref={searchRef}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              tryOpenByQuery();
-            }
-          }}
-          placeholder="بحث بالاسم أو SKU أو رقم الباركود…"
-          className="h-11 min-w-0 flex-1 rounded-xl border border-border bg-card px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
-        />
+      <div className="flex flex-col gap-2 px-4 py-3 sm:flex-row">
+        <div className="relative w-full min-w-0 flex-1 sm:min-w-72">
+          <input
+            ref={searchRef}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              barcodeInput.handleKeyDown(e, setQ);
+              if (e.defaultPrevented) return;
+              if (e.key === "Enter") {
+                e.preventDefault();
+                tryOpenByQuery();
+              }
+            }}
+            placeholder="بحث بالاسم أو SKU أو رقم الباركود…"
+            className={cn("h-11 w-full min-w-0 rounded-xl px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30", barcodeSearchInputClass)}
+          />
+          <BarcodeSearchCue />
+        </div>
         <button
           type="button"
           onClick={() => {
-            searchRef.current?.focus();
-            notify.info("جاهز للمسح", "استخدم ماسح الباركود، أو اكتب الرقم في حقل البحث ثم اضغط إدخال");
+            if (!canCount) return;
+            setCameraOpen(true);
           }}
-          className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground active:scale-95"
+          disabled={!canCount}
+          className="flex h-11 w-full shrink-0 items-center justify-center gap-1.5 rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground active:scale-95 sm:w-auto"
         >
-          <ScanLine aria-hidden className="size-4" /> مسح
+          <Camera aria-hidden className="size-4" /> مسح
         </button>
       </div>
 
@@ -805,7 +865,7 @@ export default function CountPortal() {
         {myFiltered.map((i) => {
           const queued = queuedByVariant.get(i.variantId);
           const isRecPending = pendingRecountSet.has(i.variantId);
-          const countedHere = hasMyCount(i);
+          const countedHere = i.counted || hasMyCount(i);
           const shownQty = queued?.qty ?? i.myCount?.qty ?? null;
           const bc = displayBarcode(i);
           return (
@@ -964,6 +1024,21 @@ export default function CountPortal() {
 
       {/* شريط التسليم السفلي */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-background via-background/95 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-8">
+        {!submittedAssignment && (
+          <button
+            type="button"
+            disabled={!online || queueCount > 0 || logoutMut.isPending}
+            onClick={doPause}
+            className={cn(
+              "pointer-events-auto mb-2 h-10 w-full rounded-xl border text-sm font-bold transition-colors",
+              online && queueCount === 0 && !logoutMut.isPending
+                ? "border-border bg-background text-foreground active:bg-muted"
+                : "cursor-not-allowed border-border bg-muted text-muted-foreground",
+            )}
+          >
+            {logoutMut.isPending ? "جارٍ حفظ الوردية…" : "حفظ وإنهاء الوردية — أكمل لاحقاً"}
+          </button>
+        )}
         {submittedAssignment ? (
           <div className="pointer-events-auto inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-100 px-4 py-3 text-center text-sm font-bold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
             <Check aria-hidden className="size-4" /> سلّمت العدّ — بانتظار مراجعة المسؤول
@@ -1012,6 +1087,14 @@ export default function CountPortal() {
           </div>
         </div>
       )}
+      <CameraScanner
+        open={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onDetect={(raw) => {
+          setCameraOpen(false);
+          handleBarcode(raw);
+        }}
+      />
     </>,
   );
 }

@@ -6,7 +6,7 @@
  * الخصم التلقائي يظهر في مسيّر الرواتب (عمود الاستقطاع: «منه سلفة») عند التوليد.
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,6 +15,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { FilterField, ListToolbar } from "@/components/list";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
@@ -45,10 +46,23 @@ function StatusBadge({ status }: { status: string }) {
 export default function EmployeeAdvances() {
   const utils = trpc.useUtils();
   const [status, setStatus] = useState<"" | "ACTIVE" | "SETTLED" | "CANCELLED">("ACTIVE");
+  const [empFilter, setEmpFilter] = useState("");
+  const [branchFilter, setBranchFilter] = useState("");
   const [q, setQ] = useState("");
   const [grantOpen, setGrantOpen] = useState(false);
 
-  const listQ = trpc.payroll.advancesList.useQuery(status ? { status } : undefined);
+  const empOpts = trpc.employees.formOptions.useQuery();
+  const branchesQ = trpc.branches.list.useQuery();
+
+  const listInput = useMemo(
+    () => ({
+      status: (status || undefined) as "ACTIVE" | "SETTLED" | "CANCELLED" | undefined,
+      employeeId: empFilter ? Number(empFilter) : undefined,
+      branchId: branchFilter ? Number(branchFilter) : undefined,
+    }),
+    [status, empFilter, branchFilter],
+  );
+  const listQ = trpc.payroll.advancesList.useQuery(listInput);
   const rows = listQ.data ?? [];
 
   const filtered = useMemo(() => {
@@ -83,27 +97,68 @@ export default function EmployeeAdvances() {
         title="سلف الموظفين"
         description="تُمنح السلفة بسند صرف حقيقي من الخزينة وتُخصم تلقائياً من مسيّرات الرواتب حتى التسوية."
         actions={
-          <div className="flex items-center gap-2 flex-wrap">
-            <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value as typeof status)} aria-label="حالة السلفة">
-              <option value="">كل الحالات</option>
-              <option value="ACTIVE">نشطة</option>
-              <option value="SETTLED">مسوّاة</option>
-              <option value="CANCELLED">ملغاة</option>
-            </select>
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="بحث باسم الموظف أو رقم السند…" className="h-8 w-56" aria-label="بحث" />
-            <Button onClick={() => setGrantOpen(true)}>
-              <Plus className="size-4" aria-hidden /> منح سلفة
-            </Button>
-          </div>
+          <Button onClick={() => setGrantOpen(true)}>
+            <Plus className="size-4" aria-hidden /> منح سلفة
+          </Button>
         }
       />
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <HandCoins className="size-4 text-primary" aria-hidden />
-            {listQ.isLoading ? "سلف الموظفين" : `${filtered.length} سلفة — إجمالي ${iqd(totals.amount)} د.ع، المتبقّي النشط ${iqd(totals.remaining)} د.ع`}
-          </CardTitle>
+          <ListToolbar
+            title={
+              <span className="flex items-center gap-2 text-base font-semibold">
+                <HandCoins className="size-4 text-primary" aria-hidden />
+                سلف الموظفين
+              </span>
+            }
+            count={filtered.length}
+            loading={listQ.isLoading}
+            search={{ value: q, onChange: setQ, placeholder: "بحث باسم الموظف أو رقم السند…" }}
+            activeFilterCount={(status ? 1 : 0) + (empFilter ? 1 : 0) + (branchFilter ? 1 : 0)}
+            onResetFilters={() => { setQ(""); setStatus(""); setEmpFilter(""); setBranchFilter(""); }}
+            onRefresh={() => void refresh()}
+            refreshing={listQ.isFetching}
+            exportSpec={{
+              filename: "سلف-الموظفين",
+              rows: filtered,
+              formats: ["xlsx", "csv"],
+              columns: [
+                { key: "employeeName", header: "الموظف" }, { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
+                { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
+                { key: "remaining", header: "المتبقّي", map: (r) => Number(r.remaining) },
+                { key: "monthlyDeduction", header: "الخصم الشهري", map: (r) => (r.monthlyDeduction != null ? Number(r.monthlyDeduction) : "") },
+                { key: "voucherNumber", header: "سند الصرف", map: (r) => r.voucherNumber ?? "" },
+                { key: "grantedAt", header: "التاريخ", map: (r) => fmtDate(r.grantedAt) },
+                { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
+              ],
+            }}
+            filters={<div className="flex items-end gap-2 flex-wrap">
+              <FilterField label="الحالة">
+                <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value as typeof status)} aria-label="حالة السلفة">
+                  <option value="">كل الحالات</option>
+                  <option value="ACTIVE">نشطة</option>
+                  <option value="SETTLED">مسوّاة</option>
+                  <option value="CANCELLED">ملغاة</option>
+                </select>
+              </FilterField>
+              <FilterField label="الموظف">
+                <select className={selectCls} value={empFilter} onChange={(e) => setEmpFilter(e.target.value)} aria-label="الموظف">
+                  <option value="">كل الموظفين</option>
+                  {(empOpts.data?.managers ?? []).map((m) => <option key={m.id} value={String(m.id)}>{m.name}</option>)}
+                </select>
+              </FilterField>
+              <FilterField label="الفرع">
+                <select className={selectCls} value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)} aria-label="الفرع">
+                  <option value="">كل الفروع</option>
+                  {(branchesQ.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+                </select>
+              </FilterField>
+            </div>}
+          />
+          <div className="text-xs text-muted-foreground mt-1">
+            {listQ.isLoading ? "" : `إجمالي ${iqd(totals.amount)} د.ع، المتبقّي النشط ${iqd(totals.remaining)} د.ع`}
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>

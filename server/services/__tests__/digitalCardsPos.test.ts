@@ -5,7 +5,7 @@ import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { createSupplier } from "../supplierService";
 import { withTx } from "../tx";
-import { offeringService, posCardsService, pricingService, providerService } from "../digitalCards";
+import { offeringService, posCardsService, pricingService, providerService, walletService } from "../digitalCards";
 
 /**
  * البطاقات الرقمية — ش٥: شبكة بطاقات نقطة البيع.
@@ -43,22 +43,42 @@ async function mkProvider(name = "آسياسيل") {
   return providerId;
 }
 
+const walletIds = new Map<string, number>();
+
+async function walletFor(providerId: number, branchId: number) {
+  const key = `${providerId}:${branchId}`;
+  const cached = walletIds.get(key);
+  if (cached != null) return cached;
+  const { walletId } = await withTx((tx) => walletService.createWallet(tx, {
+    providerId, branchId, code: `POS-${providerId}-${branchId}`, name: `POS wallet ${providerId}/${branchId}`,
+  }, actor));
+  walletIds.set(key, walletId);
+  return walletId;
+}
+
 async function mkOffering(providerId: number, over: {
   name?: string; offeringType?: string; requiresStudentData?: boolean;
   fixedMargin?: string; priceValidityHours?: number | null; branchIds?: number[]; favoriteAt?: number;
+  subscriptionDurationDays?: number | null;
 } = {}) {
+  const branches = [];
+  for (const branchId of over.branchIds ?? [1]) {
+    branches.push({ branchId, walletId: await walletFor(providerId, branchId), isFavorite: over.favoriteAt === branchId });
+  }
   const r = await withTx((tx) => offeringService.createOffering(tx, {
     providerId,
     offeringType: over.offeringType ?? "TELECOM_CARD",
     name: over.name ?? "كارت ١٠ آلاف",
     requiresStudentData: over.requiresStudentData ?? false,
+    subscriptionDurationDays:
+      over.offeringType === "EDUCATIONAL_SUBSCRIPTION"
+        ? over.subscriptionDurationDays ?? 30
+        : null,
     pricingMode: "FIXED_MARGIN",
     fixedMargin: over.fixedMargin ?? "500",
     roundingStep: "250",
     priceValidityHours: over.priceValidityHours ?? null,
-    branches: (over.branchIds ?? [1]).map((branchId) => ({
-      branchId, isFavorite: over.favoriteAt === branchId,
-    })),
+    branches,
   }, actor));
   return r.offeringId;
 }
@@ -72,6 +92,7 @@ async function publish(branchId: number, providerId: number, lines: { offeringId
 
 beforeEach(async () => {
   await truncateTables(TABLES);
+  walletIds.clear();
   await seedBase();
 });
 

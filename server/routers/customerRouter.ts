@@ -12,6 +12,7 @@ import {
 } from "../services/customerService";
 import {
   listContractPricesForCustomer,
+  listContractPricesForCustomerPage,
   removeContractPrice,
   setContractPriceActive,
   upsertContractPrice,
@@ -72,6 +73,8 @@ export const customerRouter = router({
           q: z.string().optional(),
           customerType: customerType.optional(),
           priceTier: priceTier.optional(),
+          // فلتر مدينة (نصّ حرّ — الحقل مُدخَل يدوياً في بطاقة العميل، بلا قاموس ثابت).
+          city: z.string().max(100).optional(),
           includeInactive: z.boolean().default(false),
           // الفجوة ١٦: الحد الأعلى ٢٠٠٠ مطابقاً للخدمة (افتراضي ١٠٠).
           limit: z.number().int().positive().max(2000).default(100),
@@ -80,8 +83,23 @@ export const customerRouter = router({
         .optional()
     )
     .query(async ({ input, ctx }) => {
-      const res = await listCustomers(input ?? {});
-      return { ...res, rows: res.rows.map((r) => maskCustomerSensitive(r, ctx.user.role)) };
+      const city = input?.city?.trim();
+      if (!city) {
+        const res = await listCustomers(input ?? {});
+        return { ...res, rows: res.rows.map((r) => maskCustomerSensitive(r, ctx.user.role)) };
+      }
+      // فلترة المدينة غير مدعومة في listCustomers (خدمة عملاء لا تخصّ هذه الشريحة) — نجلب حتى سقف
+      // الخدمة الأقصى (٢٠٠٠، محدود أصلاً) ونُصفّي/نُرقّم يدوياً هنا كي لا نمسّ customerService.ts.
+      // city مستبعَدة صراحةً (destructure) لا `city: undefined` — الأخيرة إبقاءٌ للمفتاح يفشل فحص
+      // TypeScript الزائد (listCustomers لا تعرف city) رغم أن القيمة undefined غير مؤذية وقت التشغيل.
+      const cityNeedle = city.toLowerCase();
+      const { city: _cityIgnored, ...listInput } = input ?? {};
+      const superset = await listCustomers({ ...listInput, limit: 2000, offset: 0 });
+      const filtered = superset.rows.filter((r) => (r.city ?? "").toLowerCase().includes(cityNeedle));
+      const limit = input?.limit ?? 100;
+      const offset = input?.offset ?? 0;
+      const page = filtered.slice(offset, offset + limit);
+      return { rows: page.map((r) => maskCustomerSensitive(r, ctx.user.role)), total: filtered.length };
     }),
 
   /** بحث ذكي بإحصاءات — لإدخال أمر شغل سريع. */
@@ -247,6 +265,17 @@ export const customerRouter = router({
   contractPricesList: customersManagerProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
     .query(({ input }) => listContractPricesForCustomer(input.customerId)),
+
+  /** Cursor-paginated contract prices; the legacy array endpoint remains compatible. */
+  contractPricesPage: customersManagerProcedure
+    .input(
+      z.object({
+        customerId: z.number().int().positive(),
+        limit: z.number().int().positive().max(100).default(50),
+        cursor: z.string().max(1000).nullish(),
+      }),
+    )
+    .query(({ input }) => listContractPricesForCustomerPage(input)),
 
   /** إضافة/تحديث سعر تعاقدي (UNIQUE عميل×وحدة يحسم السباق — التحديث لا يُنشئ صفاً ثانياً). */
   contractPriceUpsert: customersManagerProcedure

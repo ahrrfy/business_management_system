@@ -8,6 +8,7 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq } from "drizzle-orm";
 import {
   branchStock,
+  openingModeSettings,
   products,
   productVariants,
   stockAdjustmentRequests,
@@ -15,6 +16,7 @@ import {
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { setStock, isBundleVariant, isServiceVariant } from "../inventoryService";
+import { loadOpeningPurchaseLinkedVariantIds } from "../stocktake/openingEligibility";
 import { postEntry } from "../ledgerService";
 import { money } from "../money";
 import { requireDb } from "../tx";
@@ -111,7 +113,7 @@ export async function approveStockAdjustment(
     // C1 (مراجعة عدائية): تفاؤليّ — الهدف مطلق، فلو تغيّر الرصيد بين الطلب والاعتماد (بيع/شراء/تحويل)
     // لكان الاعتماد يمحو تلك الحركات ويُرحّل ربحاً/خسارةً وهميّة. نرفض إن انحرف الرصيد الحيّ عن لقطة الطلب.
     const cur = (
-      await tx.select({ q: branchStock.quantity }).from(branchStock)
+      await tx.select({ q: branchStock.quantity, openedAt: branchStock.openedAt }).from(branchStock)
         .where(and(eq(branchStock.variantId, Number(r.variantId)), eq(branchStock.branchId, branchId))).for("update").limit(1)
     )[0];
     const liveQty = Number(cur?.q ?? 0);
@@ -121,15 +123,36 @@ export async function approveStockAdjustment(
         message: `تغيّر المخزون منذ الطلب (كان ${r.expectedQuantity}، الآن ${liveQty}) — أعد الطلب بالرصيد الحاليّ`,
       });
     }
+    // تدقيق ١١/٨ (H3): أثناء نافذة الافتتاح، تسوية صنفٍ **غير مُفتتَح** = تثبيت رصيدٍ افتتاحيّ ⇒ مسار
+    // OPENING (يختم openedAt مركزياً) **بصفر أثر P&L** بدل ترحيل ADJUST بقيمة الفرق × التكلفة (كان يُنتج
+    // ربحاً/خسارةً وهميّاً). لكن openedAt IS NULL وحده لا يكفي (مراجعة Codex): الصنف المرتبط بأمر شراءٍ غير
+    // ملغى (له مصدرٌ شرائيّ سيُستلَم) أو صنف الأمانة (يُؤسَّس بسند إيداع) — تأسيسه OPENING يزدوج مع مصدره
+    // لاحقاً، فنستثنيهما (نفس أهلية الجرد الافتتاحي في create/liveScope) ويبقيان على مسار ADJUST العاديّ.
+    const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
+    const windowActive = !!om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now();
+    let openingEstablish = windowActive && cur?.openedAt == null;
+    if (openingEstablish) {
+      const purchaseLinked = await loadOpeningPurchaseLinkedVariantIds(tx, branchId, [Number(r.variantId)]);
+      const [prod] = await tx
+        .select({ isConsign: products.isConsignment })
+        .from(productVariants)
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(eq(productVariants.id, Number(r.variantId)))
+        .limit(1);
+      if (purchaseLinked.has(Number(r.variantId)) || prod?.isConsign) openingEstablish = false;
+    }
     // يطبّق المخزون الآن (لحظة الاعتماد) — setStock يفرض حراس الخدمة/البكج. قد يرمي ⇒ يُلغى الاعتماد كلّه.
+    // مرجع OPENING عند التثبيت الافتتاحيّ ⇒ ختم openedAt (بلا referenceId: تدفّق حقيقي في netAfter لاحقاً).
     const stockRes = await setStock(tx, {
       variantId: Number(r.variantId),
       branchId,
       targetQuantity: r.targetQuantity,
+      referenceType: openingEstablish ? "OPENING" : undefined,
+      notes: openingEstablish ? "تسوية رصيد افتتاحيّ معتمَدة" : undefined,
       createdBy: actor.userId,
     });
-    // قيد ADJUST بقيمة الفرق × التكلفة (نقص ⇒ cost موجب/profit سالب؛ زيادة ⇒ العكس). نفس منطق المسار السابق.
-    if (stockRes.delta && stockRes.delta !== 0) {
+    // قيد ADJUST بقيمة الفرق × التكلفة — يُتجاوَز كلياً في التثبيت الافتتاحيّ (صفر أثر P&L، كالجرد الافتتاحي).
+    if (!openingEstablish && stockRes.delta && stockRes.delta !== 0) {
       const v = (
         await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, Number(r.variantId))).limit(1)
       )[0];

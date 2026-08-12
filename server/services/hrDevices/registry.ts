@@ -1,6 +1,6 @@
 /* ============================================================================
  * سجل الأجهزة + وصلات الاتصال الحية (server/services/hrDevices/registry.ts)
- * التوثيق بالرقم التسلسلي (SN) حصراً: جهاز معروف ومفعَّل يمرّ؛ مجهول يُسجَّل تلقائياً
+ * الاكتشاف بالرقم التسلسلي (SN)، والقبول بربطه بعنوان فريد أو مفتاح جهاز خاص: مجهول يُسجَّل تلقائياً
  * صفاً معطَّلاً (يظهر للمدير ليعتمده) ولا يُقبل منه شيء حتى الاعتماد — بوابة قبول
  * صريحة بلا احتكاك تركيب: وجّه الجهاز لخادمنا فيظهر بنفسه في الشاشة.
  * ========================================================================== */
@@ -8,6 +8,12 @@ import { eq, sql } from "drizzle-orm";
 import { hrFingerprintDevices } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
 import { logger } from "../../logger";
+import { isIP } from "node:net";
+import {
+  enabledDeviceIdentityFailure,
+  normalizeRemoteAddress,
+  type BridgeSecurityConfig,
+} from "./bridgeSecurity";
 import type { DeviceLink, DeviceRow } from "./types";
 
 /** سقف الأجهزة غير المعتمدة المسجَّلة تلقائياً — حارس ضدّ إغراق الجدول/قائمة الاعتماد بأرقام عشوائية. */
@@ -41,17 +47,50 @@ export function onlineDeviceIds(): number[] {
   return Array.from(links.keys());
 }
 
+/** تدقيق حيّ يمنع تجاوز preflight بتعديل/سباق DB بعد بدء العامل. */
+export async function enabledDeviceIdentityRuntimeFailure(
+  securityConfig: BridgeSecurityConfig,
+): Promise<string | null> {
+  const db = requireDb();
+  const devices = await db
+    .select({
+      id: hrFingerprintDevices.id,
+      serialNumber: hrFingerprintDevices.serialNumber,
+      ip: hrFingerprintDevices.ip,
+    })
+    .from(hrFingerprintDevices)
+    .where(eq(hrFingerprintDevices.enabled, true));
+  return enabledDeviceIdentityFailure(devices, securityConfig);
+}
+
 /** حلّ جهاز بالرقم التسلسلي؛ المجهول يُنشأ معطَّلاً (enabled=false) باسم واضح للمدير. */
-export async function resolveDeviceBySn(serialNumber: string, protocol: string): Promise<DeviceRow | null> {
+export async function resolveDeviceBySn(
+  serialNumber: string,
+  protocol: string,
+  observedRemoteAddress?: string,
+): Promise<DeviceRow | null> {
   const sn = serialNumber.trim();
   if (!sn || sn.length > 64) return null;
+  const observedIp = normalizeRemoteAddress(observedRemoteAddress);
+  const safeObservedIp = isIP(observedIp) !== 0 ? observedIp : null;
   const db = requireDb();
   const [found] = await db
     .select()
     .from(hrFingerprintDevices)
     .where(eq(hrFingerprintDevices.serialNumber, sn))
     .limit(1);
-  if (found) return found;
+  if (found) {
+    // الالتقاط التلقائي مسموح للصف المعطّل فقط: يسهّل هجرة جهاز جديد دون أن يسمح
+    // لاتصال يدّعي SN لجهاز مفعّل بإعادة كتابة عنوان الثقة الخاص به.
+    if (!found.enabled && !found.ip && safeObservedIp) {
+      await db
+        .update(hrFingerprintDevices)
+        .set({ ip: safeObservedIp })
+        .where(eq(hrFingerprintDevices.id, found.id));
+      return { ...found, ip: safeObservedIp };
+    }
+    return found;
+  }
   // حارس إغراق: لا نُنشئ صفاً جديداً إن تجاوز المعلَّق السقف (مضيف مارق يجرّب أرقاماً عشوائية).
   const [pend] = await db
     .select({ n: sql<number>`count(*)` })
@@ -65,6 +104,7 @@ export async function resolveDeviceBySn(serialNumber: string, protocol: string):
     await db.insert(hrFingerprintDevices).values({
       name: `جهاز غير معتمد ${sn}`,
       serialNumber: sn,
+      ip: safeObservedIp,
       protocol,
       enabled: false,
       migrated: true, // وصل إلى خادمنا فعلاً ⇒ لا معنى لعدّه «غير مُهاجَر»

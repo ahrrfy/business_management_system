@@ -28,12 +28,57 @@ import { closeDb } from "../../db";
 // BARCODE_SECRET أعلاه في vitest.config.ts) كي لا يعلّمها GitGuardian كسرٍّ حقيقيّ.
 process.env.INTEGRATIONS_ENCRYPTION_KEY ??= "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+// M9 (تدقيق ٣/٨): إلزام 2FA الخادميّ للمدير/المشرف يُحجب أي إجراءٍ عبر البوّابات لدورٍ مُلزَمٍ لم
+// يُفعّل 2FA. بذور الاختبار تُنشئ admin/manager بلا 2FA (والتشفير مضبوط أعلاه ⇒ isCryptoReady=true)
+// فتُحجب مئات الاختبارات عبر createCaller. نُعطّل الإنفاذ افتراضياً هنا (مفتاح الإيقاف نفسه)؛
+// الاختبار المخصّص twoFactorEnforcement.test.ts يُفعّله لكلّ حالةٍ للتحقّق. `??=` يحترم قيمة CI الصريحة.
+process.env.TWO_FACTOR_ENFORCEMENT ??= "off";
+
 const SKIP = new Set(["__drizzle_migrations"]);
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * Fail closed before the cleanup hook can open a connection. The hook deletes
+ * every row from every application table, so a test-looking environment name
+ * alone is not enough: the target must also be local and must not use MySQL's
+ * production-default port unless the caller opted in explicitly.
+ */
+function assertSafeCleanupTarget(rawUrl: string | undefined): string | undefined {
+  if (!rawUrl) return undefined;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("__setup__: refusing cleanup because DATABASE_URL is not a valid URL");
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+  const port = parsed.port ? Number(parsed.port) : 3306;
+
+  if (!LOOPBACK_HOSTS.has(host)) {
+    throw new Error(`__setup__: refusing cleanup on non-loopback database host ${host || "<empty>"}`);
+  }
+  if (!databaseName || !/test/i.test(databaseName)) {
+    throw new Error(
+      `__setup__: refusing cleanup because database name ${databaseName || "<empty>"} does not contain "test"`,
+    );
+  }
+  if (port === 3306 && process.env.ALLOW_TEST_DB_PORT_3306 !== "1") {
+    throw new Error(
+      "__setup__: refusing cleanup on MySQL port 3306; set ALLOW_TEST_DB_PORT_3306=1 only for an explicitly isolated local test database",
+    );
+  }
+
+  return rawUrl;
+}
 
 // نلتقط رابط قاعدة الاختبار **مرّةً عند التحميل** قبل أيّ اختبار: بعض الاختبارات
 // (maintenanceService.currentDbName) تُبدّل process.env.DATABASE_URL مؤقّتاً لفحص التحليل؛
 // لو قرأ التنظيف الرابط الحيّ لاتّصل بقاعدة وهمية (Access denied/SSL). الرابط الملتقَط ثابت وصحيح.
-const TEST_DB_URL = process.env.DATABASE_URL;
+const TEST_DB_URL = assertSafeCleanupTarget(process.env.DATABASE_URL);
 
 let cachedTables: string[] | null = null;
 

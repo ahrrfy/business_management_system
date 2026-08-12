@@ -12,6 +12,7 @@ import {
   ALL_ROLES,
   PERMISSION_MODULES,
   ROLE_TEMPLATES,
+  applyPermissionOverrides,
   deriveEffectiveAccess,
   diffFromTemplate,
   resolvePermissions,
@@ -22,6 +23,7 @@ import {
 } from "@shared/permissions";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gt, gte, isNull, like, ne, or, sql } from "drizzle-orm";
+import { randomInt } from "node:crypto";
 import { nanoid } from "nanoid";
 import { roles, userSessions, users, type UserSession } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
@@ -40,7 +42,7 @@ export interface CreateUserInput {
   password: string;
   name: string;
   role?: Role;
-  /** دور مخصّص (من جدول roles) — إن وُجد يَجبّ `role` ويُحلّ إلى baseRole + يصفّر الـoverride. */
+  /** دور مخصّص (من جدول roles) — إن وُجد يَجبّ `role` ويصبح الـoverride فرقاً فردياً فوقه. */
   customRoleId?: number | null;
   branchId?: number | null;
   phone?: string | null;
@@ -70,6 +72,7 @@ export interface UpdateUserInput {
 export interface ListUsersInput {
   q?: string;
   role?: string;
+  branchId?: number;
   /** فلترة بدور مخصّص بعينه (شاشة الأدوار ← «مَن على هذا الدور؟»). */
   customRoleId?: number;
   includeInactive?: boolean;
@@ -116,6 +119,34 @@ function assertPasswordPolicy(pw: string) {
   }
 }
 
+/**
+ * لا نقبل في استثناء المستخدم إلا مفاتيح وحدات النظام المعروفة. هذا يمنع تخزين مفاتيح
+ * صامتة لا يقرأها الإنفاذ، ويحافظ على توافق `customers` القديم الذي يُرحّل إلى CRM.
+ */
+function normalizePermissionOverride(
+  override: Record<string, "FULL" | "READ" | "NONE"> | null | undefined,
+): PermissionMap | null {
+  if (!override) return null;
+  const allowed = new Set([...PERMISSION_MODULES.map((m) => m.key), "customers"]);
+  const normalized: PermissionMap = {};
+  for (const [key, level] of Object.entries(override)) {
+    if (!allowed.has(key)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `وحدة صلاحيات غير معروفة: ${key}` });
+    }
+    normalized[key] = level;
+  }
+  return Object.keys(normalized).length ? normalized : null;
+}
+
+function samePermissionOverride(a: PermissionMap | null | undefined, b: PermissionMap | null | undefined): boolean {
+  const aEntries = Object.entries(a ?? {}).sort(([x], [y]) => x.localeCompare(y));
+  const bEntries = Object.entries(b ?? {}).sort(([x], [y]) => x.localeCompare(y));
+  return aEntries.length === bEntries.length && aEntries.every(([key, level], index) => {
+    const other = bEntries[index];
+    return other?.[0] === key && other[1] === level;
+  });
+}
+
 export async function assertNotLastActiveAdmin(tx: any, excludeUserId: number) {
   const other = (
     await tx
@@ -155,8 +186,11 @@ export function generateStrongPassword(): string {
   const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
   const lower = "abcdefghjkmnpqrstuvwxyz";
   const digits = "23456789";
-  const pick = (s: string) => s[Math.floor(Math.random() * s.length)];
-  const digitCount = Math.random() < 0.5 ? 4 : 5;
+  // أمان (تدقيق ٣/٨): `crypto.randomInt` (CSPRNG) بدل `Math.random` (xorshift128+ قابل للتنبؤ
+  // باستعادة الحالة) — القيمة كلمةُ مرورٍ لبيانات اعتماد (كلمة المدير المقترحة + مدير الشركة
+  // الأول عند التوفير)، فلا يجوز مولّدٌ غير مشفَّر. البنية كما هي (قرار المالك ٢٨/٧، mustChange ٧٢س).
+  const pick = (s: string) => s[randomInt(s.length)];
+  const digitCount = randomInt(2) === 0 ? 4 : 5;
   const letters = pick(upper) + Array.from({ length: 3 }, () => pick(lower)).join("");
   const numbers = Array.from({ length: digitCount }, () => pick(digits)).join("");
   return letters + numbers;
@@ -186,17 +220,16 @@ export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Actor
     assertPasswordPolicy(input.password);
     const mustChange = input.mustChangePassword ?? false;
     const expiresAt = mustChange ? new Date(Date.now() + 72 * 60 * 60 * 1000) : null;
-    // إسناد الدور: دور مخصّص (يَجبّ `role` ويُحلّ إلى baseRole + يصفّر الـoverride) أو دور مبني.
+    // إسناد الدور: الدور المخصّص أساس الصلاحيات، وoverride اختياريّ لفروق هذا الشخص فقط.
     let roleValue: Role = input.role ?? "cashier";
     let customRoleId: number | null = null;
-    let permsOverride = input.permissionsOverride ?? null;
+    let permsOverride = normalizePermissionOverride(input.permissionsOverride);
     if (input.customRoleId != null) {
       const r = (await tx.select({ id: roles.id, baseRole: roles.baseRole }).from(roles)
         .where(and(eq(roles.id, input.customRoleId), eq(roles.isActive, true))).limit(1))[0];
       if (!r) throw new TRPCError({ code: "BAD_REQUEST", message: "الدور المخصّص غير موجود أو معطّل." });
       roleValue = r.baseRole as Role;
       customRoleId = Number(r.id);
-      permsOverride = null;
     }
     try {
       const res = await tx.insert(users).values({
@@ -264,7 +297,6 @@ export async function updateUser(input: UpdateUserInput, actor: Actor) {
     if (input.phone !== undefined) patch.phone = input.phone?.trim() || null;
     if (input.jobTitle !== undefined) patch.jobTitle = input.jobTitle?.trim() || null;
     if (input.hiredAt !== undefined) patch.hiredAt = input.hiredAt ? new Date(input.hiredAt) : null;
-    if (input.permissionsOverride !== undefined) patch.permissionsOverride = input.permissionsOverride ?? null;
 
     // مالك النظام (isOwner): حارسان أمنيان لمنع تصعيد الصلاحيات وقفل الحساب:
     //  1) فقط مالك حالي يمنح/يسحب الصفة (وإلا لأمكن لأدمن عادي أن يرفع نفسه لمالك).
@@ -305,19 +337,25 @@ export async function updateUser(input: UpdateUserInput, actor: Actor) {
         if (existing.role === "admin" && nextRole !== "admin") await assertNotLastActiveAdmin(tx, input.userId);
         patch.role = nextRole;
         patch.customRoleId = nextCustomRoleId ?? null;
-        // الدور المخصّص يقود الصلاحيات ⇒ صفّر الـoverride الفردي عند إسناده.
-        if (nextCustomRoleId != null) patch.permissionsOverride = null;
         // تغيير الدور يُبطل الجلسات (يُعاد تحميل السياق/الصلاحيات).
         patch.sessionsValidFrom = new Date();
       }
     }
-    // الدور المخصّص يقود الصلاحيات **دائماً** لا لحظة الإسناد فقط (مراجعة عدائية ٢٤/٧): ما دام
-    // الحساب سيبقى على دور مخصّص لا يُخزَّن override فردي أبداً — وإلا بقي «ميتاً» في الصف (السياق
-    // يتجاهله) ثم استيقظ صامتاً عند مسح الدور لاحقاً بقيم قديمة لا يذكرها أحد. وأي تعديل يمرّ
-    // على الحساب يكنس بقايا ميتة مخزَّنة سابقاً (شفاء ذاتي).
+    const requestedOverride = input.permissionsOverride === undefined
+      ? undefined
+      : normalizePermissionOverride(input.permissionsOverride);
+    // الاستثناء الفردي يُطبّق فوق الدور المخصّص. إذا تبدّل الدور المخصّص من دون خريطة صريحة
+    // نمسح فروق الدور السابق كي لا تنتقل بصمت إلى دور جديد مختلف.
     {
       const effectiveCustomRoleId = nextCustomRoleId !== undefined ? nextCustomRoleId : (existing.customRoleId ?? null);
-      if (effectiveCustomRoleId != null && (input.permissionsOverride !== undefined || existing.permissionsOverride != null)) {
+      const customChanged = nextCustomRoleId !== undefined && (nextCustomRoleId ?? null) !== (existing.customRoleId ?? null);
+      if (requestedOverride !== undefined) {
+        if (!samePermissionOverride(existing.permissionsOverride as PermissionMap | null, requestedOverride)) {
+          patch.permissionsOverride = requestedOverride;
+          // مثل تغيير الدور: لا نُبقي جلسةً/واجهةً قديمة بعد منح أو سحب صلاحية.
+          patch.sessionsValidFrom = new Date();
+        }
+      } else if (effectiveCustomRoleId != null && customChanged) {
         patch.permissionsOverride = null;
       } else if (
         effectiveCustomRoleId == null &&
@@ -672,7 +710,7 @@ export interface EffectivePermissionsResult {
 /** يحلّ (role، override) الفعّالين لحساب — يعكس resolveCustomRole دون تعديل السياق (قراءة). */
 async function resolveEffective(
   row: { role: string; customRoleId: number | null; permissionsOverride: unknown },
-): Promise<{ role: string; override: PermissionMap | null; label: string | null; inactive: boolean }> {
+): Promise<{ role: string; override: PermissionMap | null; label: string | null; inactive: boolean; customPermissions: PermissionMap | null; individualOverride: PermissionMap | null }> {
   if (row.customRoleId != null) {
     const db = getDb();
     const r = db
@@ -681,12 +719,28 @@ async function resolveEffective(
       : undefined;
     if (r) {
       const base = r.baseRole as RoleKey;
-      return { role: base, override: diffFromTemplate(base, r.permissions as PermissionMap), label: r.label, inactive: false };
+      const customPermissions = resolvePermissions(base, diffFromTemplate(base, r.permissions as PermissionMap));
+      const effectivePermissions = applyPermissionOverrides(customPermissions, row.permissionsOverride as PermissionMap | null);
+      return {
+        role: base,
+        override: diffFromTemplate(base, effectivePermissions),
+        label: r.label,
+        inactive: false,
+        customPermissions,
+        individualOverride: (row.permissionsOverride as PermissionMap) ?? null,
+      };
     }
     // الدور المخصّص معطَّل/محذوف ⇒ السياق يهبط فشلاً مغلقاً إلى «user» (ش٢) — العرض يطابق الإنفاذ.
-    return { role: "user", override: null, label: null, inactive: true };
+    return { role: "user", override: null, label: null, inactive: true, customPermissions: null, individualOverride: null };
   }
-  return { role: row.role, override: (row.permissionsOverride as PermissionMap) ?? null, label: null, inactive: false };
+  return {
+    role: row.role,
+    override: (row.permissionsOverride as PermissionMap) ?? null,
+    label: null,
+    inactive: false,
+    customPermissions: null,
+    individualOverride: (row.permissionsOverride as PermissionMap) ?? null,
+  };
 }
 
 export async function getEffectivePermissions(userId: number): Promise<EffectivePermissionsResult | null> {
@@ -704,7 +758,13 @@ export async function getEffectivePermissions(userId: number): Promise<Effective
     const level = (access.resolved[m.key] ?? "NONE") as AccessLevel;
     let source: EffectiveModuleRow["source"];
     if (isAdmin) source = "admin";
-    else if (level !== (base[m.key] ?? "NONE")) source = eff.label ? "customRole" : "individual";
+    else if (eff.label) {
+      const individual = eff.individualOverride?.[m.key];
+      const customLevel = eff.customPermissions?.[m.key] ?? "NONE";
+      source = individual && individual !== customLevel
+        ? "individual"
+        : customLevel !== (base[m.key] ?? "NONE") ? "customRole" : "template";
+    } else if (level !== (base[m.key] ?? "NONE")) source = "individual";
     else source = "template";
     return { key: m.key, label: m.label, level, source };
   });
@@ -723,8 +783,10 @@ function effectiveStationForRow(row: {
   let override: PermissionMap | null = (row.permissionsOverride as PermissionMap) ?? null;
   // الدور المخصّص النشط (roleBaseRole غير فارغ = الـLEFT JOIN وجد صفّاً نشطاً) يقود بخريطته.
   if (row.customRoleId != null && row.roleBaseRole) {
-    role = row.roleBaseRole;
-    override = diffFromTemplate(row.roleBaseRole as RoleKey, (row.rolePermissions as PermissionMap) ?? {});
+    const baseRole = row.roleBaseRole as RoleKey;
+    role = baseRole;
+    const customPermissions = resolvePermissions(baseRole, diffFromTemplate(baseRole, (row.rolePermissions as PermissionMap) ?? {}));
+    override = diffFromTemplate(baseRole, applyPermissionOverrides(customPermissions, row.permissionsOverride as PermissionMap | null));
   }
   return deriveEffectiveAccess(role, override).station;
 }
@@ -737,6 +799,7 @@ export async function listUsers(input: ListUsersInput = {}) {
   const conds: any[] = [];
   if (!input.includeInactive) conds.push(eq(users.isActive, true));
   if (input.role) conds.push(eq(users.role, input.role as any));
+  if (input.branchId != null) conds.push(eq(users.branchId, input.branchId));
   if (input.customRoleId) conds.push(eq(users.customRoleId, input.customRoleId));
   if (input.q?.trim()) {
     const q = `%${escapeLike(input.q.trim())}%`;

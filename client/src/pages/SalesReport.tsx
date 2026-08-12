@@ -2,13 +2,20 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { FilterField } from "@/components/list";
+import { DEFAULT_PERIOD, PeriodFilter, type PeriodValue, type PresetKey } from "@/components/reports/PeriodFilter";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { exportRows } from "@/lib/export";
 import { fmtDate } from "@/lib/date";
+import { sourceTypeLabel } from "@/lib/labels";
+import { METHOD_LABEL, paymentMethodLabel, type PaymentMethod } from "@/lib/paymentMethod";
 import { printSalesReportV2 } from "@/lib/printing/printTemplatesV2";
 import { D, fmtAr } from "@/lib/money";
 import { canSeeCost } from "@shared/permissions";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
+import { X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 
@@ -32,19 +39,10 @@ const STATUS_CLS: Record<string, string> = {
   RETURNED: "badge-stock-out",
   CANCELLED: "badge-stock-out",
 };
-const SOURCE: Record<string, string> = {
-  POS: "نقطة بيع",
-  ONLINE: "أونلاين",
-  ORDER: "طلب",
-  WORKORDER: "طلب خدمة",
-};
-const PAYMENT_METHOD: Record<string, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  CHECK: "صك",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-};
+// المصادر/طرق الدفع من القواميس المركزية (@/lib/labels + @/lib/paymentMethod) —
+// WORKORDER = «أمر شغل» (كان «طلب خدمة» محلياً هنا فخالف بقية الشاشات).
+// فاتورة بلا طريقة دفع مسجَّلة تُعرض «آجل» (لا «—») — سياق تقرير مبيعات.
+const payMethodOf = (m: string | null | undefined) => (m ? paymentMethodLabel(m) : "آجل");
 
 const fmt = fmtAr;
 const invoiceRemaining = (r: Pick<ReportRow, "total" | "paidAmount" | "returnedTotal">) => {
@@ -86,7 +84,7 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
   {
     accessorKey: "sourceType",
     header: "المصدر",
-    cell: (c) => SOURCE[c.getValue() as string] ?? (c.getValue() as string),
+    cell: (c) => sourceTypeLabel(c.getValue() as string),
   },
   { accessorKey: "branchName", header: "الفرع", cell: (c) => (c.getValue() as string) ?? "—" },
   { accessorKey: "salespersonName", header: "الكاشير / البائع", cell: (c) => (c.getValue() as string) ?? "—" },
@@ -95,7 +93,7 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
   {
     accessorKey: "paymentMethod",
     header: "طريقة الدفع",
-    cell: (c) => PAYMENT_METHOD[c.getValue() as string] ?? (c.getValue() as string) ?? "آجل",
+    cell: (c) => payMethodOf(c.getValue() as string | null),
   },
   {
     accessorKey: "subtotal",
@@ -173,44 +171,53 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
 
 const INVOICE_COST_COLUMNS = new Set(["costTotal"]);
 
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-function firstOfMonth() {
-  const d = new Date();
-  d.setDate(1);
-  return d.toISOString().slice(0, 10);
-}
+/** حالات الفاتورة المتاحة في فلتر التقرير (نفس enum الخادم). */
+const STATUS_OPTIONS = ["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"] as const;
+/** مصادر الفاتورة — تشمل ONLINE (كانت مفقودة من الفلتر رغم دعم الخادم لها). */
+const SOURCE_OPTIONS = ["POS", "ONLINE", "ORDER", "WORKORDER"] as const;
 
 type Tab = "invoices" | "top" | "slow" | "category";
 
 export default function SalesReport() {
   const [tab, setTab] = useState<Tab>("invoices");
-  const [from, setFrom] = useState(firstOfMonth());
-  const [to, setTo] = useState(today());
-  const [branchId, setBranchId] = useState<number | "">("");
-  const [sourceType, setSourceType] = useState("");
+  // فلاتر محفوظة في querystring (useUrlFilters) — تعيش مع فتح التفاصيل والرجوع وتُشارَك رابطاً.
+  // التواريخ عبر PeriodFilter الموحّد بصيغة ymd **محلية** (كان toISOString يُرجع يوم أمس UTC
+  // قبل ٣ فجراً بتوقيت العراق فينزاح النطاق الافتراضي يوماً كاملاً).
+  const [f, setF, resetF] = useUrlFilters({
+    from: DEFAULT_PERIOD.from,
+    to: DEFAULT_PERIOD.to,
+    preset: DEFAULT_PERIOD.preset as string,
+    branch: "",
+    source: "",
+    status: "",
+    method: "",
+    seller: "",
+  });
+  const period: PeriodValue = { from: f.from, to: f.to, preset: (f.preset || "custom") as PresetKey };
   const [topBy, setTopBy] = useState<"revenue" | "qty">("revenue");
   const [sinceDays, setSinceDays] = useState(90);
 
   const me = trpc.auth.me.useQuery();
   const showCost = me.data ? canSeeCost(me.data.role) : true;
   const branches = trpc.branches.list.useQuery();
+  // موظفو المبيعات الذين لديهم فواتير (نفس مصدر فلتر شاشة الفواتير) — بلا كشف دليل المستخدمين.
+  const salespeople = trpc.sales.salespeople.useQuery(undefined, { retry: false });
   // فلتر الفواتير — مُستخرَج ليُعاد استعماله في التصدير الكامل (جمع كل الصفحات عبر cursor).
   const invoiceFilters = {
-    from: from || undefined,
-    to: to || undefined,
-    branchId: branchId ? Number(branchId) : undefined,
-    sourceTypes: sourceType
-      ? ([sourceType as "POS" | "ONLINE" | "ORDER" | "WORKORDER"])
-      : undefined,
+    from: f.from || undefined,
+    to: f.to || undefined,
+    branchId: f.branch ? Number(f.branch) : undefined,
+    sourceTypes: f.source ? [f.source as (typeof SOURCE_OPTIONS)[number]] : undefined,
+    statuses: f.status ? [f.status as (typeof STATUS_OPTIONS)[number]] : undefined,
+    paymentMethods: f.method ? [f.method as PaymentMethod | "NONE"] : undefined,
+    salespersonId: f.seller ? Number(f.seller) : undefined,
   };
   const invoiceQ = trpc.reports.salesReport.useQuery(invoiceFilters, { enabled: tab === "invoices" });
   const topQ = trpc.reports.topProducts.useQuery(
     {
-      from: from || undefined,
-      to: to || undefined,
-      branchId: branchId ? Number(branchId) : undefined,
+      from: f.from || undefined,
+      to: f.to || undefined,
+      branchId: f.branch ? Number(f.branch) : undefined,
       limit: 20,
       by: topBy,
     },
@@ -219,19 +226,22 @@ export default function SalesReport() {
   const slowQ = trpc.reports.slowMovers.useQuery(
     {
       sinceDays,
-      branchId: branchId ? Number(branchId) : undefined,
+      branchId: f.branch ? Number(f.branch) : undefined,
       limit: 50,
     },
     { enabled: tab === "slow" }
   );
   const catQ = trpc.reports.profitByCategory.useQuery(
     {
-      from: from || undefined,
-      to: to || undefined,
-      branchId: branchId ? Number(branchId) : undefined,
+      from: f.from || undefined,
+      to: f.to || undefined,
+      branchId: f.branch ? Number(f.branch) : undefined,
     },
     { enabled: tab === "category" }
   );
+
+  // عدّاد الفلاتر النشطة (عدا الفترة) — يُظهر زرّ المسح عند الحاجة فقط.
+  const activeCount = [f.branch, f.source, f.status, f.method, f.seller].filter(Boolean).length;
 
   const invRows = invoiceQ.data?.rows ?? [];
   const totals = invoiceQ.data?.totals;
@@ -269,70 +279,68 @@ export default function SalesReport() {
 
       {/* فلاتر مشتركة */}
       <Card>
-        <CardContent className="pt-4 pb-3">
+        <CardContent className="pt-4 pb-3 space-y-3">
+          {tab !== "slow" && (
+            <PeriodFilter
+              value={period}
+              onChange={(v) => setF({ from: v.from, to: v.to, preset: v.preset })}
+            />
+          )}
           <div className="flex flex-wrap gap-3 items-end">
-            {tab !== "slow" && (
-              <>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">من تاريخ</label>
-                  <input
-                    type="date"
-                    value={from}
-                    onChange={(e) => setFrom(e.target.value)}
-                    className={selectCls}
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">إلى تاريخ</label>
-                  <input
-                    type="date"
-                    value={to}
-                    onChange={(e) => setTo(e.target.value)}
-                    className={selectCls}
-                  />
-                </div>
-              </>
-            )}
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-muted-foreground">الفرع</label>
-              <select
-                className={selectCls}
-                value={branchId}
-                onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
-              >
+            <FilterField label="الفرع" className="w-40">
+              <AppSelect value={f.branch} onValueChange={(v) => setF({ branch: v })}>
                 <option value="">الكل</option>
                 {branches.data?.map((b) => (
-                  <option key={b.id} value={b.id}>{b.name}</option>
+                  <option key={b.id} value={String(b.id)}>{b.name}</option>
                 ))}
-              </select>
-            </div>
+              </AppSelect>
+            </FilterField>
             {tab === "invoices" && (
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-muted-foreground">نوع الفاتورة</label>
-                <select
-                  className={selectCls}
-                  value={sourceType}
-                  onChange={(e) => setSourceType(e.target.value)}
-                >
-                  <option value="">الكل</option>
-                  <option value="POS">نقطة بيع</option>
-                  <option value="WORKORDER">طلب خدمة</option>
-                  <option value="ORDER">طلب</option>
-                </select>
-              </div>
+              <>
+                <FilterField label="نوع الفاتورة" className="w-36">
+                  <AppSelect value={f.source} onValueChange={(v) => setF({ source: v })}>
+                    <option value="">الكل</option>
+                    {SOURCE_OPTIONS.map((s) => (
+                      <option key={s} value={s}>{sourceTypeLabel(s)}</option>
+                    ))}
+                  </AppSelect>
+                </FilterField>
+                <FilterField label="الحالة" className="w-36">
+                  <AppSelect value={f.status} onValueChange={(v) => setF({ status: v })}>
+                    <option value="">الكل</option>
+                    {STATUS_OPTIONS.map((s) => (
+                      <option key={s} value={s}>{STATUS[s] ?? s}</option>
+                    ))}
+                  </AppSelect>
+                </FilterField>
+                <FilterField label="طريقة الدفع" className="w-40">
+                  <AppSelect value={f.method} onValueChange={(v) => setF({ method: v })}>
+                    <option value="">الكل</option>
+                    {(Object.keys(METHOD_LABEL) as PaymentMethod[]).map((m) => (
+                      <option key={m} value={m}>{METHOD_LABEL[m]}</option>
+                    ))}
+                    <option value="NONE">آجل (بلا طريقة مسجَّلة)</option>
+                  </AppSelect>
+                </FilterField>
+                <FilterField label="الكاشير / البائع" className="w-44">
+                  <AppSelect value={f.seller} onValueChange={(v) => setF({ seller: v })}>
+                    <option value="">— كل الموظفين —</option>
+                    {(salespeople.data ?? []).map((u) =>
+                      u.id != null ? (
+                        <option key={u.id} value={String(u.id)}>{u.name}</option>
+                      ) : null,
+                    )}
+                  </AppSelect>
+                </FilterField>
+              </>
             )}
             {tab === "top" && (
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-muted-foreground">الترتيب</label>
-                <select
-                  className={selectCls}
-                  value={topBy}
-                  onChange={(e) => setTopBy(e.target.value as "revenue" | "qty")}
-                >
+              <FilterField label="الترتيب" className="w-32">
+                <AppSelect value={topBy} onValueChange={(v) => setTopBy(v as "revenue" | "qty")}>
                   <option value="revenue">بالإيراد</option>
                   <option value="qty">بالكمية</option>
-                </select>
-              </div>
+                </AppSelect>
+              </FilterField>
             )}
             {tab === "slow" && (
               <div className="flex flex-col gap-1">
@@ -348,6 +356,12 @@ export default function SalesReport() {
                 />
               </div>
             )}
+            {activeCount > 0 && (
+              <Button variant="ghost" size="sm" onClick={resetF} className="text-muted-foreground">
+                <X aria-hidden className="size-4" />
+                مسح الفلاتر
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -357,9 +371,9 @@ export default function SalesReport() {
           rows={invRows}
           totals={totals}
           isLoading={invoiceQ.isLoading}
-          from={from}
-          to={to}
-          branchLabel={branchId === "" ? "الكل" : branches.data?.find((b) => b.id === Number(branchId))?.name ?? "—"}
+          from={f.from}
+          to={f.to}
+          branchLabel={f.branch === "" ? "الكل" : branches.data?.find((b) => b.id === Number(f.branch))?.name ?? "—"}
           filters={invoiceFilters}
           truncated={invoiceQ.data?.nextCursor != null}
           showCost={showCost}
@@ -370,8 +384,8 @@ export default function SalesReport() {
           rows={topQ.data ?? []}
           isLoading={topQ.isLoading}
           by={topBy}
-          from={from}
-          to={to}
+          from={f.from}
+          to={f.to}
           showCost={showCost}
         />
       )}
@@ -386,8 +400,8 @@ export default function SalesReport() {
         <CategoryProfitTab
           rows={catQ.data ?? []}
           isLoading={catQ.isLoading}
-          from={from}
-          to={to}
+          from={f.from}
+          to={f.to}
           showCost={showCost}
         />
       )}
@@ -419,6 +433,9 @@ function InvoicesTab({
     to?: string;
     branchId?: number;
     sourceTypes?: ("POS" | "ONLINE" | "ORDER" | "WORKORDER")[];
+    statuses?: ("PENDING" | "CONFIRMED" | "PAID" | "PARTIALLY_PAID" | "CANCELLED" | "RETURNED")[];
+    paymentMethods?: (PaymentMethod | "NONE")[];
+    salespersonId?: number;
   };
   truncated: boolean;
   showCost: boolean;
@@ -516,7 +533,7 @@ function InvoicesTab({
                     branchName: r.branchName ?? "—",
                     salespersonName: r.salespersonName ?? "—",
                     shiftId: r.shiftId,
-                    paymentMethod: PAYMENT_METHOD[r.paymentMethod ?? ""] ?? (r.paymentMethod ? r.paymentMethod : "آجل"),
+                    paymentMethod: payMethodOf(r.paymentMethod),
                     subtotal: r.subtotal,
                     discount: r.discountAmount,
                     tax: r.taxAmount,
@@ -553,12 +570,12 @@ function InvoicesTab({
                         map: (r) => fmtDate(r.invoiceDate),
                       },
                       { key: "customerName", header: "العميل" },
-                      { key: "sourceType", header: "النوع", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
+                      { key: "sourceType", header: "النوع", map: (r) => sourceTypeLabel(r.sourceType) },
                       { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
                       { key: "salespersonName", header: "الكاشير / البائع", map: (r) => r.salespersonName ?? "" },
                       { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
                       { key: "posDeviceId", header: "محطة البيع", map: (r) => r.posDeviceId ?? "" },
-                      { key: "paymentMethod", header: "طريقة الدفع", map: (r) => PAYMENT_METHOD[r.paymentMethod ?? ""] ?? (r.paymentMethod ?? "آجل") },
+                      { key: "paymentMethod", header: "طريقة الدفع", map: (r) => payMethodOf(r.paymentMethod) },
                       { key: "subtotal", header: "قبل الخصم", map: (r) => Number(r.subtotal) },
                       { key: "discountAmount", header: "الخصم", map: (r) => Number(r.discountAmount) },
                       { key: "taxAmount", header: "الضريبة", map: (r) => Number(r.taxAmount) },

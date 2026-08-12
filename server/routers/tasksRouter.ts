@@ -4,6 +4,7 @@ import { TRPCError } from "@trpc/server";
 import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { serviceTypes } from "../../drizzle/schema";
+import { createAppNotification } from "../services/appNotificationService";
 import { logAudit } from "../services/auditService";
 import {
   addComment,
@@ -43,9 +44,13 @@ export const tasksRouter = router({
         .object({
           status: taskStatus.optional(),
           kind: taskKind.optional(),
+          priority: taskPriority.optional(),
           assignedTo: z.number().int().positive().optional(),
           branchId: z.number().int().positive().optional(),
           overdue: z.boolean().optional(),
+          // مدى تاريخ الإنشاء (YYYY-MM-DD) — نمط buildWoFilterConds في workOrderRouter.ts.
+          from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح").optional(),
+          to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح").optional(),
           q: z.string().max(200).optional(),
           cursor: z.number().int().positive().optional(),
           limit: z.number().int().positive().max(200).optional(),
@@ -102,6 +107,19 @@ export const tasksRouter = router({
         entityId: res.taskId,
         newValue: { title: input.title, kind: input.kind ?? null, taskNumber: res.taskNumber },
       });
+      if (input.assignedTo != null) {
+        await createAppNotification({
+          userId: input.assignedTo,
+          kind: "TASK_ASSIGNED",
+          title: "أُسندت إليك مهمة",
+          body: input.title,
+          route: "/mobile#tasks",
+          eventKey: `task:${res.taskId}:assigned:${input.assignedTo}`,
+          entityType: "task",
+          entityId: res.taskId,
+          requiresAction: true,
+        }).catch(() => undefined);
+      }
       return res;
     }),
 
@@ -151,6 +169,19 @@ export const tasksRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await assignTask(input.taskId, input.assignedTo, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
       await logAudit(ctx, { action: "task.assign", entityType: "task", entityId: input.taskId, newValue: { assignedTo: input.assignedTo } });
+      if (input.assignedTo != null) {
+        await createAppNotification({
+          userId: input.assignedTo,
+          kind: "TASK_ASSIGNED",
+          title: "أُسندت إليك مهمة",
+          body: `مهمة #${input.taskId} تحتاج متابعتك`,
+          route: "/mobile#tasks",
+          eventKey: `task:${input.taskId}:assigned:${input.assignedTo}`,
+          entityType: "task",
+          entityId: input.taskId,
+          requiresAction: true,
+        }).catch(() => undefined);
+      }
       return res;
     }),
 

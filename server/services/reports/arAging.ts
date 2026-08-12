@@ -2,9 +2,11 @@
 //  - getARAging: شيخوخة الذمم المدينة لكل العملاء، بدلاء 0-30/31-60/61-90/90+.
 //  - getCustomerStatement: كشف حساب عميل (فواتير + دفعات + ملخّص).
 import { and, asc, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
-import { accountingEntries, customers, invoices, receipts } from "../../../drizzle/schema";
+import { alias } from "drizzle-orm/mysql-core";
+import { accountingEntries, customers, invoices, orderPayments, receipts } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
+import { isPreInvoiceHoldReceiptCond } from "../reception/holdReceipts";
 import { nextDayStr, type StatementPeriod } from "./shared";
 
 export interface ARAgingRow {
@@ -145,6 +147,8 @@ export interface CustomerStatementResult {
     currentBalance: string;
     /** الرصيد المُرحَّل: قيد OPENING المستورد + (مع from) كل النشاط السابق للفترة. */
     openingBalance: string;
+    /** ش٤ (I11): صافي عرابين المسوّدات المحتجزة (غير المطبَّقة على فاتورة) — سطر إفصاح. */
+    heldDepositsTotal: string;
   };
 }
 
@@ -153,8 +157,24 @@ export interface CustomerStatementResult {
  *  فيظهر الرصيد الجاري «منحرفاً» بلا تفسير في الحركة المعروضة. */
 function customerPaymentLink(customerId: number) {
   return or(
-    eq(invoices.customerId, customerId),
-    and(isNull(receipts.invoiceId), eq(receipts.partyType, "CUSTOMER"), eq(receipts.partyId, customerId))
+    and(
+      eq(invoices.customerId, customerId),
+      // تدقيق ٦/٨ (ث٢/ث٦/ث١٤): إيصالُ أمانة أجرة التوصيل مختومٌ بالفاتورة لأسبابٍ تشغيلية
+      // (ربطُ الأمانة بمستندها) لا لأنّه دفعةٌ من العميل — مالُ طرفٍ ثالث لم يمسّ paidAmount
+      // ولا currentBalance. عرضُه دفعةً كان يُظهر العميل دائناً بقيمة الأجرة ويُنقص رصيده
+      // المُرحَّل بلا سند. البصمة البنيوية: إيصالات التمرير وحدها تحمل partyType='OTHER'،
+      // ودفعاتُ العميل الحقيقية تتركه NULL أو 'CUSTOMER'.
+      sql`(${receipts.partyType} IS NULL OR ${receipts.partyType} <> 'OTHER')`,
+    ),
+    and(
+      isNull(receipts.invoiceId),
+      eq(receipts.partyType, "CUSTOMER"),
+      eq(receipts.partyId, customerId),
+      // ش٤ (V5 دفاعيّ): إيصال احتجازٍ سابق للفاتورة (عربون WO/مسوّدة) ليس «سنداً مستقلاً» —
+      // لم يمسّ currentBalance، وعرضه دفعةً على الحساب يجعل الكشف يكذب (I11). إيصالات
+      // الاحتجاز لا تكتب partyType أصلاً (نمط WO القائم) — الشرط صمّام أمانٍ بنيويّ.
+      sql`NOT (${isPreInvoiceHoldReceiptCond()})`,
+    )
   );
 }
 
@@ -220,20 +240,24 @@ async function customerOpeningBalance(customerId: number, from?: string) {
         sql`${accountingEntries.entryDate} < ${from}`
       )
     );
-  // COD-COURIER (مراجعة عدائية ١٢/٧): تحصيل المندوب لطلب متجر يرفع invoices.paidAmount ويكتب قيد
-  // PAYMENT_IN بلا إيصال درج (النقد بعهدة المندوب) — فلا يلتقطه payRow (receipts) رغم أنه سدّد الذمّة.
-  // بدونه يُرحَّل كامل total الفاتورة فيظهر العميل مديناً بما سدّده. نطرح هذه الدفعات صراحةً.
-  // الفلتر (customerId + invoiceId NOT NULL + receiptId NULL) يخصّ مسار تحصيل المندوب حصراً (دفعات
-  // البيع العادية لها receiptId، والسندات المستقلّة invoiceId=NULL) ⇒ لا ازدواج مع payRow.
+  // COD-COURIER (مراجعة عدائية ١٢/٧ + ٩/٨): تحصيلات المندوب تسدّد الذمّة دون أن يلتقطها payRow:
+  //   (أ) تحصيل طلب متجر — قيد PAYMENT_IN **بلا إيصال** إطلاقاً (النقد بعهدة المندوب).
+  //   (ب) توريد إرسالية استقبال (recordDeliveryRemittance) — قيد PAYMENT_IN مربوطٌ بإيصال درجٍ
+  //       **مجمَّع** (invoiceId=NULL، partyType=OTHER) لا يطابقه customerPaymentLink أبداً.
+  // بدونهما يُرحَّل كامل total الفاتورة فيظهر العميل مديناً بما سدّده للمندوب. البصمة المشتركة:
+  // قيد PAYMENT_IN بفاتورةٍ لكن **بلا إيصالٍ مربوطٍ بفاتورة** (دفعات البيع العادية إيصالها يحمل
+  // invoiceId فيلتقطها payRow) ⇒ لا ازدواج مع payRow بالبناء.
+  const codReceipts = alias(receipts, "codReceipts");
   const codPayRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
     .from(accountingEntries)
+    .leftJoin(codReceipts, eq(accountingEntries.receiptId, codReceipts.id))
     .where(
       and(
         eq(accountingEntries.entryType, "PAYMENT_IN"),
         eq(accountingEntries.customerId, customerId),
         sql`${accountingEntries.invoiceId} IS NOT NULL`,
-        sql`${accountingEntries.receiptId} IS NULL`,
+        sql`${codReceipts.invoiceId} IS NULL`,
         sql`${accountingEntries.entryDate} < ${fromTs}`
       )
     );
@@ -303,20 +327,23 @@ export async function getCustomerStatement(
     .where(and(...payConds))
     .orderBy(asc(receipts.createdAt), asc(receipts.id));
 
-  // COD-COURIER (مراجعة عدائية ١٢/٧): تحصيلات المندوب (PAYMENT_IN بلا إيصال) كدفعات مرئية في الكشف
-  // كي يظهر السداد كمستندٍ متتبَّع (لا فاتورة PAID بلا دفعة). نفس فلتر الفترة على entryDate. المعرّف
-  // سالبٌ لتمييزه عن معرّفات الإيصالات (لا تصادم مفتاح React).
+  // COD-COURIER (مراجعة عدائية ١٢/٧ + ٩/٨): تحصيلات المندوب كدفعات مرئية في الكشف كي يظهر
+  // السداد كمستندٍ متتبَّع (لا فاتورة PAID بلا دفعة) — تشمل تحصيل المتجر (بلا إيصال) **وتوريد
+  // إرسالية الاستقبال** (إيصاله مجمَّع بلا فاتورة فلا يظهر في payments؛ نفس بصمة codPayRow
+  // أعلاه حرفياً وإلا انحرف الكشف عن الرصيد المُرحَّل). المعرّف سالبٌ لتمييزه عن الإيصالات.
+  const codStmtReceipts = alias(receipts, "codStmtReceipts");
   const codPayConds = [
     eq(accountingEntries.entryType, "PAYMENT_IN"),
     eq(accountingEntries.customerId, customerId),
     sql`${accountingEntries.invoiceId} IS NOT NULL`,
-    sql`${accountingEntries.receiptId} IS NULL`,
+    sql`${codStmtReceipts.invoiceId} IS NULL`,
   ];
   if (from) codPayConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
   if (to) codPayConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   const codPayments = await db
     .select({ id: accountingEntries.id, invoiceId: accountingEntries.invoiceId, amount: accountingEntries.amount, createdAt: accountingEntries.entryDate, notes: accountingEntries.notes })
     .from(accountingEntries)
+    .leftJoin(codStmtReceipts, eq(accountingEntries.receiptId, codStmtReceipts.id))
     .where(and(...codPayConds));
 
   // مرتجع البيع الائتماني يخفض ذمة العميل بلا receipt. نعرض قيد RETURN نفسه
@@ -341,6 +368,33 @@ export async function getCustomerStatement(
     .where(and(...returnConds));
 
   const openingBalance = await customerOpeningBalance(customerId, from);
+
+  // ش٤ (I11): عرابين المسوّدات المحتجزة للعميل — **سطر إفصاحٍ منفصل** لا حركة كشف: المال
+  // مقبوضٌ فعلاً (إيصال + قيد) لكنه لم يُطبَّق على فاتورةٍ ولم يمسّ الرصيد الجاري. بدونه
+  // يسأل العميل «أين عربوني؟» والكشف صامت. الصافي = Σ COLLECTION(HELD) − ردودها الجزئية.
+  const heldRows = await db
+    .select({
+      id: orderPayments.id,
+      amount: orderPayments.amount,
+      kind: orderPayments.kind,
+      parentPaymentId: orderPayments.parentPaymentId,
+      status: orderPayments.status,
+    })
+    .from(orderPayments)
+    .where(and(eq(orderPayments.customerId, customerId), sql`${orderPayments.kind} IN ('COLLECTION','REFUND')`));
+  let heldDeposits = money(0);
+  const heldCollectionIds = new Set<number>();
+  for (const r of heldRows) {
+    if (r.kind === "COLLECTION" && r.status === "HELD") {
+      heldDeposits = heldDeposits.plus(money(r.amount));
+      heldCollectionIds.add(Number(r.id));
+    }
+  }
+  for (const r of heldRows) {
+    if (r.kind === "REFUND" && r.parentPaymentId != null && heldCollectionIds.has(Number(r.parentPaymentId))) {
+      heldDeposits = heldDeposits.minus(money(r.amount));
+    }
+  }
 
   // أموال بدقّة decimal.js (§٥) — لا Number/toFixed على الأموال.
   // REP-01: الإجماليات المالية تُحسَب على غير الملغاة فقط، اتّساقاً مع customerOpeningBalance الذي
@@ -417,6 +471,7 @@ export async function getCustomerStatement(
       unpaid: toDbMoney(unpaid),
       currentBalance: String(c.currentBalance ?? "0"),
       openingBalance: toDbMoney(openingBalance),
+      heldDepositsTotal: toDbMoney(heldDeposits),
     },
   };
 }

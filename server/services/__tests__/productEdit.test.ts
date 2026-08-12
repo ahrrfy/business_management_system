@@ -8,10 +8,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { getProductForVariantEdit, updateProductWithVariants } from "../productEditService";
+import { updateProduct } from "../catalog/productUpdate";
 
 const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
+  "inventoryMovements",
+  "accountingEntries",
   "branchStock",
   "productPrices",
   "productUnits",
@@ -116,6 +119,253 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(rows[0].costPrice).toBe("550.00");
     const prod = (await db().select().from(s.products).where(eq(s.products.id, 1)))[0];
     expect(prod.name).toBe("دفتر ١٠٠ ورقة (مُحدَّث)");
+  });
+
+  const swapToBase = (unitName: string) => ({
+    productId: 1,
+    unitTemplate: [{ unitName, conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] }],
+    variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { [unitName]: "BC-U-1" } }],
+  });
+
+  // #2 (تدقيق ١١/٨، بعد ٣ جولات مراجعة Codex): وحدة الأساس **ثابتةٌ** لمتغيّرٍ قائم — يُرفَض تبديلها أو
+  // إعادة تسميتها في مسار القالب (يُدرِج صفّاً جديداً ويُعطّل القديم ⇒ تفسيرٌ مقلوبٌ للكمّيات أو مراجعُ
+  // وحدةٍ متدلّية). قاعدةٌ ساكنةٌ بلا حصرِ ارتباطاتٍ ولا قفل — تُغلق سباقات/فجوات الجولات الثلاث دفعةً واحدة.
+
+  it("#2: ترقية وحدةٍ قائمةٍ (درزن) إلى الأساس لمتغيّرٍ قائم ⇒ يُرفض", async () => {
+    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/تبديل وحدة الأساس/);
+    const [bs] = await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1));
+    expect(bs.quantity).toBe(40); // ذرّية — لا مساس بالرصيد
+  });
+
+  it("#2 (Codex P1#5): إعادة تسمية الأساس إلى اسمٍ جديد (حبة) في مسار القالب ⇒ يُرفض (يُعطّل الصفّ القديم فتتدلّى مراجعه)", async () => {
+    // مسار القالب لا يُعيد التسمية في مكانها: يُدرِج «حبة» ويُعطّل «قطعة» ⇒ عروض/طلبات معلّقة تُشير للقديم تتعطّل.
+    await expect(updateProductWithVariants(swapToBase("حبة"), actor)).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
+  it("#2: إبقاء الأساس نفسه (قطعة) ⇒ مسموح (لا تغيير هويّة)", async () => {
+    const r = await updateProductWithVariants(
+      { productId: 1, name: "دفتر", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    );
+    expect(r.added).toBe(0); // الأساس ما زال «قطعة» فلا يُفعَّل الحارس
+  });
+
+  it("#2 (Codex جولة٤ P1): أساسٌ **معطَّل** مع رصيدٍ + ترقية أخرى ⇒ يُرفض (الرصيد ما زال مُقوَّماً بالأساس القديم)", async () => {
+    // تعطيل صفّ الأساس «قطعة» لا يجعل المتغيّر «جديداً» — رصيده 40 ما زال مُقوَّماً بالأساس القديم.
+    await db().update(s.productUnits).set({ isActive: false }).where(eq(s.productUnits.id, 1));
+    await expect(updateProductWithVariants(swapToBase("درزن"), actor)).rejects.toThrow(/تبديل وحدة الأساس/);
+    const [bs] = await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1));
+    expect(bs.quantity).toBe(40);
+  });
+
+  it("#2: متغيّرٌ بلا أيّ صفّ أساسٍ إطلاقاً (جديدٌ تماماً) ⇒ يُسمح بتثبيت أساسه أوّل مرّة", async () => {
+    await db().insert(s.products).values({ id: 5, name: "منتج بلا وحدات" });
+    await db().insert(s.productVariants).values({ id: 5, productId: 5, sku: "V5", costPrice: "100" }); // بلا productUnits
+    const r = await updateProductWithVariants(
+      { productId: 5, unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "500.00" }] }], variants: [{ id: 5, sku: "V5", costPrice: "100", unitBarcodes: {} }] },
+      actor,
+    );
+    expect(r).toBeTruthy();
+    const base = (await db().select().from(s.productUnits).where(and(eq(s.productUnits.variantId, 5), eq(s.productUnits.isBaseUnit, true))))[0];
+    expect(base?.unitName).toBe("قطعة");
+  });
+
+  it("#2 (Codex جولة٤ P2): اسم الأساس المخزَّن بمسافةٍ زائدة + قالبٌ مقصوص ⇒ يُرفض (upsertVariantUnits يستبدل الصفّ فتتدلّى مراجعه)", async () => {
+    // اسمٌ مخزَّنٌ خامٌ بمسافةٍ زائدة (يكتبه المسار الحامل للمعرّف بلا قصّ). القالب المقصوص «قطعة» لا يطابقه
+    // في upsertVariantUnits (يقارن الخام) فيُدرِج صفّاً جديداً ويُعطّل القديم ⇒ يجب أن يرفض الحارس مسبقاً.
+    await db().update(s.productUnits).set({ unitName: "قطعة " }).where(eq(s.productUnits.id, 1));
+    await expect(
+      updateProductWithVariants(
+        { productId: 1, name: "دفتر", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+        actor,
+      ),
+    ).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
+  it("#2 (المسار الحامل للمعرّف): إعادة تسمية الأساس **في مكانه** (نفس المعرّف) ⇒ مسموحة (الصفّ يبقى، مراجعه سليمة)", async () => {
+    await updateProduct(
+      {
+        productId: 1,
+        name: "دفتر",
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "550",
+            units: [
+              { id: 1, unitName: "علبة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+              { id: 2, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+            ],
+          },
+        ],
+      },
+      actor,
+    );
+    const base = (await db().select().from(s.productUnits).where(and(eq(s.productUnits.id, 1), eq(s.productUnits.isBaseUnit, true))))[0];
+    expect(base?.unitName).toBe("علبة"); // نفس الصفّ id=1 أُعيدت تسميته وما زال الأساس
+  });
+
+  it("#2 (المسار الحامل للمعرّف): ترقية صفٍّ آخر (id=2) إلى الأساس ⇒ يُرفض", async () => {
+    await expect(
+      updateProduct(
+        {
+          productId: 1,
+          name: "دفتر",
+          variants: [
+            {
+              id: 1,
+              sku: "NB-100",
+              costPrice: "550",
+              units: [
+                { id: 1, unitName: "قطعة", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+                { id: 2, unitName: "درزن", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+              ],
+            },
+          ],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
+  it("#2 (Codex جولة٥ P1): المسار الحامل للمعرّف — صفّ أساسٍ جديدٌ (بلا id) بنفس اسم الأساس ⇒ يُرفض (استبدالٌ يُدلّي مراجعه)", async () => {
+    // يحذف صفّ الأساس القديم (id=1) ويُدرِج «قطعة» جديدةً بلا id ⇒ productUpdate يُعطّل id=1 ويُدرِج بديلاً؛
+    // فلا يُخدَع الحارس بتطابق الاسم — غيابُ المعرّف في هذا المسار = استبدالٌ يُرفَض (لا مقارنةَ اسمٍ احتياطية).
+    await expect(
+      updateProduct(
+        {
+          productId: 1,
+          name: "دفتر",
+          variants: [
+            {
+              id: 1,
+              sku: "NB-100",
+              costPrice: "550",
+              units: [
+                { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+                { id: 2, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+              ],
+            },
+          ],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
+  it("#2 (Codex جولة٦ P1): أساسٌ قديمٌ مستورَد (وحدةٌ معاملها ١ بلا عَلَم isBaseUnit) + رصيد ⇒ تبديله يُرفض", async () => {
+    // نمط بيانات الاستيراد القديم (reorder.ts:213): لا عَلَم أساسٍ، لكن الوحدة معاملها ١ هي الأساس الفعليّ.
+    await db().insert(s.products).values({ id: 6, name: "مستورد قديم" });
+    await db().insert(s.productVariants).values({ id: 6, productId: 6, sku: "LEG-6", costPrice: "100" });
+    await db().insert(s.productUnits).values([
+      { id: 60, variantId: 6, unitName: "قطعة", conversionFactor: "1", isBaseUnit: false, barcode: "BC-LEG-P" },
+      { id: 61, variantId: 6, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "BC-LEG-D" },
+    ]);
+    await db().insert(s.branchStock).values({ variantId: 6, branchId: 1, quantity: 24 });
+    await expect(
+      updateProductWithVariants(
+        { productId: 6, unitTemplate: [{ unitName: "درزن", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] }], variants: [{ id: 6, sku: "LEG-6", costPrice: "100", unitBarcodes: { درزن: "BC-LEG-D" } }] },
+        actor,
+      ),
+    ).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
+  it("#2 (Codex جولة٦ P2): اسمُ أساسٍ مكرّرٌ (نشطٌ + معطَّلٌ بنفس الاسم) ⇒ إبقاؤه يُرفض (المُحدِّث غير المرتَّب قد يُعطّل الحاليّ)", async () => {
+    // صفٌّ معطَّلٌ تاريخيٌّ اسمه «قطعة» بجانب الأساس النشط «قطعة» (id=1). find غير المرتَّب في upsertVariantUnits
+    // قد يختار المعطَّل فيُعيد تفعيله ويُعطّل id=1 ⇒ تتدلّى مراجعه. الحارس يرفض الالتباس.
+    await db().insert(s.productUnits).values({ id: 90, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isActive: false });
+    await expect(
+      updateProductWithVariants(
+        { productId: 1, name: "دفتر", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+        actor,
+      ),
+    ).rejects.toThrow(/تبديل وحدة الأساس/);
+  });
+
+  it("#2 (Codex جولة٧ P1): المسار الحامل للمعرّف — معرّف وحدةٍ مكرّرٌ في الطلب ⇒ يُرفض (يمنع كتابةً مزدوجةً تُفقِد الأساس)", async () => {
+    await expect(
+      updateProduct(
+        {
+          productId: 1,
+          name: "دفتر",
+          variants: [
+            {
+              id: 1,
+              sku: "NB-100",
+              costPrice: "550",
+              units: [
+                { id: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+                { id: 1, unitName: "قطعة-مكرّر", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+              ],
+            },
+          ],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/معرّف وحدةٍ مكرّر/);
+  });
+
+  it("#2 (Codex جولة٧ P1): مسار القالب — اسم وحدةٍ مكرّرٌ في القالب ⇒ يُرفض", async () => {
+    await expect(
+      updateProductWithVariants(
+        {
+          productId: 1,
+          name: "دفتر",
+          unitTemplate: [
+            { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+            { unitName: "قطعة", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+          ],
+          variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: {} }],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/اسم وحدةٍ مكرّر/);
+  });
+
+  it("#2 (Codex جولة٨ P1): المسار الحامل للمعرّف — وحدةٌ بمعرّفٍ يخصّ متغيّراً آخر ⇒ يُرفض (لا تعطيل أساسٍ أجنبيّ)", async () => {
+    // id=3 يخصّ المتغيّر 2 (قلم حبر). تمريره ضمن وحدات المتغيّر 1 كان يُحدِّثه بالمعرّف فيُعطّل أساسه.
+    await expect(
+      updateProduct(
+        {
+          productId: 1,
+          name: "دفتر",
+          variants: [
+            {
+              id: 1,
+              sku: "NB-100",
+              costPrice: "550",
+              units: [
+                { id: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+                { id: 3, unitName: "دخيل", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+              ],
+            },
+          ],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/لا تخصّه/);
+  });
+
+  it("#2 (Codex جولة٨ P2): متغيّرٌ بأكثر من وحدة أساسٍ نشطةٍ متساويةِ الأولويّة (شاذّ) ⇒ أيّ تعديلٍ يُرفض", async () => {
+    await db().update(s.productUnits).set({ isBaseUnit: true }).where(eq(s.productUnits.id, 2)); // درزن أيضاً أساسٌ نشط
+    await expect(
+      updateProductWithVariants(
+        { productId: 1, name: "دفتر", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+        actor,
+      ),
+    ).rejects.toThrow(/أكثر من وحدة أساس/);
+  });
+
+  it("#2 (Codex جولة٨ P1): متغيّرٌ برصيدٍ بلا أيّ وحدة (يتيمٌ/استيرادٌ ناقص) ⇒ تعيين أساسٍ أوّل مرّة يُرفض", async () => {
+    await db().insert(s.products).values({ id: 7, name: "يتيم" });
+    await db().insert(s.productVariants).values({ id: 7, productId: 7, sku: "ORPH-7", costPrice: "100" });
+    await db().insert(s.branchStock).values({ variantId: 7, branchId: 1, quantity: 10 }); // رصيدٌ بلا وحدات
+    await expect(
+      updateProductWithVariants(
+        { productId: 7, unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "500.00" }] }], variants: [{ id: 7, sku: "ORPH-7", costPrice: "100", unitBarcodes: {} }] },
+        actor,
+      ),
+    ).rejects.toThrow(/تعيين الأساس/);
   });
 
   it("إضافة متغيّر جديد (بلا id) ⇒ صفّ جديد + added=1، والقديم يبقى كما هو", async () => {

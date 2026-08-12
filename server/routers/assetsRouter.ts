@@ -11,7 +11,10 @@ import {
 } from "@shared/assets";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/assetsService";
+import { companyBranchScope } from "../services/companyBranchScope";
 import { money } from "../services/money";
+import type { Actor } from "../services/tx";
+import type { AuthUser } from "../context";
 import { protectedProcedure, requireModule, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
@@ -25,6 +28,16 @@ const methodEnum = z.enum(DEPRECIATION_METHOD_KEYS);
 const moneyStr = z.string().trim().regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة (رقم موجب بمنزلتين كحدّ أقصى)");
 const moneyStrOpt = moneyStr.optional();
 
+function actorOf(user: AuthUser): Actor {
+  const scope = companyBranchScope(user);
+  return {
+    userId: user.id,
+    branchId: scope.branchId ?? 0,
+    role: user.role,
+    isOwner: user.isOwner === true,
+  };
+}
+
 export const assetsRouter = router({
   list: assetRead
     .input(
@@ -37,14 +50,18 @@ export const assetsRouter = router({
         })
         .optional(),
     )
-    .query(({ input }) => svc.listAssets(input)),
+    .query(({ input, ctx }) => svc.listAssets(input, companyBranchScope(ctx.user))),
 
-  get: assetRead.input(z.object({ id: z.number().int().positive() })).query(({ input }) => svc.getAsset(input.id)),
+  get: assetRead.input(z.object({ id: z.number().int().positive() })).query(async ({ input, ctx }) => {
+    const asset = await svc.getAsset(input.id, companyBranchScope(ctx.user));
+    if (!asset) throw new TRPCError({ code: "NOT_FOUND", message: "الأصل غير موجود" });
+    return asset;
+  }),
 
-  dashboard: assetRead.query(() => svc.dashboard()),
-  custodyReport: assetRead.query(() => svc.custodyReport()),
-  disposalLog: assetRead.query(() => svc.disposalLog()),
-  formOptions: assetRead.query(() => svc.formOptions()),
+  dashboard: assetRead.query(({ ctx }) => svc.dashboard(companyBranchScope(ctx.user))),
+  custodyReport: assetRead.query(({ ctx }) => svc.custodyReport(companyBranchScope(ctx.user))),
+  disposalLog: assetRead.query(({ ctx }) => svc.disposalLog(companyBranchScope(ctx.user))),
+  formOptions: assetRead.query(({ ctx }) => svc.formOptions(companyBranchScope(ctx.user))),
 
   create: assetWrite
     .input(
@@ -72,13 +89,20 @@ export const assetsRouter = router({
           return money(d.salvageValue ?? "0").lte(money(d.purchaseValue));
         },
         { message: "القيمة التخريدية يجب ألا تتجاوز قيمة الشراء", path: ["salvageValue"] },
+      ).refine(
+        (d) => {
+          const re = /^\d+(\.\d{1,2})?$/;
+          if (!re.test(d.purchaseValue)) return true; // الصيغة تتكفّل بخطأ الشكل
+          return money(d.purchaseValue).gt(0);
+        },
+        { message: "قيمة الشراء يجب أن تكون أكبر من صفر", path: ["purchaseValue"] },
       ),
     )
     .mutation(async ({ input, ctx }) => {
       // قيد UNIQUE على code هو الحارس النهائي لترقيم AST تحت FOR UPDATE ⇒ أعد المحاولة على التضارب.
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const a = await svc.createAsset(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role });
+          const a = await svc.createAsset(input, actorOf(ctx.user));
           await logAudit(ctx, {
             action: "asset.create",
             entityType: "fixedAsset",
@@ -98,11 +122,7 @@ export const assetsRouter = router({
   postDepreciation: assetWrite
     .input(z.object({ year: z.number().int().min(2000).max(2200), month: z.number().int().min(1).max(12) }))
     .mutation(async ({ input, ctx }) => {
-      const res = await svc.postMonthlyDepreciation(input.year, input.month, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 0,
-        role: ctx.user.role,
-      });
+      const res = await svc.postMonthlyDepreciation(input.year, input.month, actorOf(ctx.user));
       await logAudit(ctx, {
         action: "asset.depreciation.post",
         entityType: "fixedAsset",
@@ -140,7 +160,7 @@ export const assetsRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { id, ...patch } = input;
-      const a = await svc.updateAsset(id, patch, { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role });
+      const a = await svc.updateAsset(id, patch, actorOf(ctx.user));
       await logAudit(ctx, {
         action: "asset.update",
         entityType: "fixedAsset",
@@ -159,9 +179,21 @@ export const assetsRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const a = await svc.handoverCustody(input.assetId, input.employeeId, input.note);
+      const a = await svc.handoverCustody(input.assetId, input.employeeId, input.note, actorOf(ctx.user));
       await logAudit(ctx, { action: "asset.handover", entityType: "fixedAsset", entityId: input.assetId, newValue: { employeeId: input.employeeId } });
       return a;
+    }),
+
+  returnCustody: assetWrite
+    .input(z.object({ assetId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const asset = await svc.returnCustody(input.assetId, actorOf(ctx.user));
+      await logAudit(ctx, {
+        action: "asset.custody.return",
+        entityType: "fixedAsset",
+        entityId: input.assetId,
+      });
+      return asset;
     }),
 
   addMaintenance: assetWrite
@@ -176,7 +208,7 @@ export const assetsRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const a = await svc.addMaintenance(input.assetId, input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const a = await svc.addMaintenance(input.assetId, input, actorOf(ctx.user));
       await logAudit(ctx, { action: "asset.maintenance", entityType: "fixedAsset", entityId: input.assetId, newValue: { type: input.type, cost: input.cost ?? "0" } });
       return a;
     }),
@@ -184,7 +216,7 @@ export const assetsRouter = router({
   returnFromMaintenance: assetWrite
     .input(z.object({ assetId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const a = await svc.returnFromMaintenance(input.assetId);
+      const a = await svc.returnFromMaintenance(input.assetId, actorOf(ctx.user));
       await logAudit(ctx, { action: "asset.return", entityType: "fixedAsset", entityId: input.assetId });
       return a;
     }),
@@ -203,7 +235,7 @@ export const assetsRouter = router({
       if (input.kind === "disposed" && !input.value) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "أدخل قيمة العائد عند الاستبعاد ببيع/خردة (صفر إن بلا عائد)." });
       }
-      const a = await svc.disposeAsset(input.assetId, input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role });
+      const a = await svc.disposeAsset(input.assetId, input, actorOf(ctx.user));
       await logAudit(ctx, { action: "asset.dispose", entityType: "fixedAsset", entityId: input.assetId, newValue: { kind: input.kind, value: input.value ?? null } });
       return a;
     }),
@@ -219,7 +251,7 @@ export const assetsRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const doc = await svc.addAssetDocument(input.assetId, { title: input.title, dataUrl: input.dataUrl });
+      const doc = await svc.addAssetDocument(input.assetId, { title: input.title, dataUrl: input.dataUrl }, actorOf(ctx.user));
       await logAudit(ctx, { action: "asset.document.add", entityType: "fixedAsset", entityId: input.assetId, newValue: { title: input.title } });
       return doc;
     }),
@@ -227,7 +259,7 @@ export const assetsRouter = router({
   deleteDocument: assetWrite
     .input(z.object({ docId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await svc.deleteAssetDocument(input.docId);
+      const res = await svc.deleteAssetDocument(input.docId, actorOf(ctx.user));
       await logAudit(ctx, { action: "asset.document.delete", entityType: "fixedAsset", entityId: res.assetId, oldValue: { docId: input.docId } });
       return res;
     }),

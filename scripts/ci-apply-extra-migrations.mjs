@@ -91,6 +91,25 @@ const EXTRA_MIGRATIONS = [
   // ٣٠/٧/٢٦: priceSanity L3 — جدول أثر التغيّرات على التكلفة/السعر + Trigger BEFORE UPDATE.
   // drizzle-kit لا يُمثّل Triggers ⇒ يجب أن يُطبَّق يدوياً هنا. idempotent (DROP TRIGGER IF EXISTS).
   "drizzle/migrations/0135_price_anomaly_log.sql",
+  // Keep CI's schema-pushed database on the same physical work-order payment
+  // column as migration-built/production databases. The migration also repairs
+  // a database carrying the accidental generic `paymentMethod` column name.
+  "drizzle/migrations/0142_work_order_transfer_deposits.sql",
+  // 06/08/2026: a raw SQL execution-lease table protects a digital card item
+  // from being issued in two cashier windows. It intentionally stays outside
+  // schema.ts while that shared file is owned by another coordinated slice.
+  "drizzle/migrations/0154_digital_sale_execution_claims.sql",
+  // 5/8 (0150): DELIVERY_FEE_HELD — drizzle-kit push la yuwassi' enum qa'iman.
+  // ⚠ YAJIB an tabqa ba'd 0129: 0129_digital_intent_writeoff yu'id kitabat nafs
+  //   al-'amud (MODIFY COLUMN entryType ENUM) bi-qa'ima aqdam, fa-ayy tartib qablahu
+  //   yamhu al-qima SAMITAN (al-script yaqul tubbiqat wa-l-enum yarji' kama kan).
+  "drizzle/migrations/extras/0150_delivery_fee_held_enum.sql",
+  // 6/8 (0157): TELECOM 'ala receipts.paymentMethod — nafs qissat 0150 (push la
+  // yuwassi' enum). 'amud mukhtalif 'an 0150/0129 lakin al-qa'ida wahida: al-akhir.
+  "drizzle/migrations/extras/0157_receipt_payment_method_telecom.sql",
+  // 10/8 (0169): SUPERSEDED 'ala invoices.invoiceStatus (tashih al-fatura) — nafs
+  // qissat 0150/0157 (push la yuwassi' enum). yabqa akhir al-qa'ima.
+  "drizzle/migrations/extras/0169_invoice_status_superseded.sql",
 ];
 
 const url = process.env.DATABASE_URL;

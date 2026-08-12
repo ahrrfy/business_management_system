@@ -2,7 +2,7 @@
  * التثبيت المالي للبيع الرقميّ (ش٨) — **معاملة واحدة، لا حالة وسطية**.
  *
  * الثابت الحاكم (معيار خروج ش٨): بين الفاتورة والتسوية والتفاصيل لا توجد حالة وسطية. أي فشلٍ في
- * أيّ خطوة يُرجِع كل شيء: الفاتورة والقبض وحركة المحفظة وذمّة المزوّد وسجلّ التفاصيل وملفّ الطالب.
+ * أيّ خطوة يُرجِع كل شيء: الفاتورة والقبض وحركة المحفظة وذمّة المزوّد وسجلّ التفاصيل ولقطة بيانات الطالب.
  *
  * المعالجة المحاسبية (§٦):
  *   • قيد `SALE` الاعتيادي بـ revenue = سعر البيع، cost = حصة المزوّد، profit = الهامش —
@@ -25,19 +25,18 @@ import {
   digitalWalletReservations,
   digitalWalletTransactions,
   digitalWallets,
-  invoiceItems,
   invoices,
   products,
 } from "../../../drizzle/schema";
+import { digitalSaleReferenceLabel } from "../../../shared/digitalSale";
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, sumMoney, toDbMoney } from "../money";
-import { createSaleInTx } from "../sale/create";
+import { createSaleInTx, DIGITAL_SALE_CAPABILITY } from "../sale/create";
 import type { PaymentMethod } from "../sale/types";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
-import { commitStudent, type StudentSnapshot } from "./studentService";
 
 export interface FinalizeInput {
   intentId: number;
@@ -52,6 +51,7 @@ export interface FinalizeInput {
 /** لقطة كرتٍ للطباعة (§١٢.١) — **بلا حصة مزوّد ولا ربح ولا رصيد**؛ الحقول ببساطة غير موجودة. */
 export interface DigitalPrintDetail {
   lineName: string;
+  referenceLabel: string;
   providerReference: string | null;
   studentName: string | null;
   studentPhone: string | null;
@@ -93,6 +93,21 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
     .for("update");
   if (!intent) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
 
+  // العزل والملكية يسبقان replay: لا تكشف فاتورة/طباعة نيّةٍ لمستخدم أو فرع آخر.
+  const elevated = actor.role === "admin" || actor.role === "manager";
+  if (!elevated && Number(intent.createdBy) !== actor.userId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة لمستخدم آخر" });
+  }
+  if (!elevated && Number(intent.branchId) !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة تخصّ فرعاً آخر" });
+  }
+  if (input.paymentMethod !== intent.paymentMethod) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "طريقة الدفع تغيّرت بعد إعداد الكروت — ألغِ النيّة قبل الإصدار وابدأ من جديد",
+    });
+  }
+
   /* ٢. إعادة الفاتورة القائمة إن كانت مُثبَّتة (idempotency). */
   if (intent.status === "FINALIZED") {
     if (intent.invoiceId == null) {
@@ -114,17 +129,10 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
   }
 
   /* ٣. رفض نيّة من فرع/وردية/مستخدم غير صحيح، أو حالةٍ لا تقبل التثبيت. */
-  const elevated = actor.role === "admin" || actor.role === "manager";
-  if (!elevated && Number(intent.createdBy) !== actor.userId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة لمستخدم آخر" });
-  }
-  if (intent.status !== "EXECUTED") {
+  if (intent.status !== "EXECUTED" && intent.status !== "NEEDS_REVIEW") {
     throw new TRPCError({
       code: "CONFLICT",
-      message:
-        intent.status === "NEEDS_REVIEW"
-          ? "النيّة في طابور المراجعة — لا تُثبَّت إلا بقرار إداريّ"
-          : `لا تُثبَّت نيّة حالتها ${intent.status} — يجب أن تنجح كل الكروت أوّلاً`,
+      message: `لا تُثبَّت نيّة حالتها ${intent.status} — يجب أن تنجح كل الكروت أوّلاً`,
     });
   }
 
@@ -153,28 +161,34 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
   /* معلومات العروض والمزوّدين والمحافظ (من القاعدة، لا من العميل). */
   const meta = new Map<
     number,
-    { providerId: number; settlementMode: string; walletId: number | null; variantId: number; productUnitId: number }
+    {
+      providerId: number;
+      settlementMode: string;
+      walletId: number | null;
+      variantId: number;
+      productUnitId: number;
+      offeringType: string;
+    }
   >();
   for (const it of items) {
     if (meta.has(Number(it.offeringId))) continue;
     const [row] = await tx
       .select({
-        providerId: digitalOfferings.providerId,
-        settlementMode: digitalProviders.settlementMode,
         variantId: digitalOfferings.variantId,
         productUnitId: digitalOfferings.productUnitId,
+        offeringType: digitalOfferings.offeringType,
       })
       .from(digitalOfferings)
-      .innerJoin(digitalProviders, eq(digitalOfferings.providerId, digitalProviders.id))
       .where(eq(digitalOfferings.id, Number(it.offeringId)))
       .limit(1);
     if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "بطاقة غير موجودة" });
     meta.set(Number(it.offeringId), {
-      providerId: Number(row.providerId),
-      settlementMode: row.settlementMode,
+      providerId: Number(it.providerId),
+      settlementMode: "UNKNOWN",
       walletId: null,
       variantId: Number(row.variantId),
       productUnitId: Number(row.productUnitId),
+      offeringType: row.offeringType,
     });
   }
 
@@ -182,11 +196,21 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
   const reservations = await tx
     .select()
     .from(digitalWalletReservations)
-    .where(and(eq(digitalWalletReservations.intentId, input.intentId), eq(digitalWalletReservations.status, "ACTIVE")))
+    .where(eq(digitalWalletReservations.intentId, input.intentId))
     .orderBy(asc(digitalWalletReservations.walletId))
     .for("update");
+  if (reservations.some((r) => r.status !== "ACTIVE")) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "حجز المحفظة لهذه النيّة عولج مسبقاً — لا تُنشأ فاتورة ثانية",
+    });
+  }
+  if (intent.status === "NEEDS_REVIEW" && !elevated) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "إكمال نيّة المراجعة قرارٌ مديريّ" });
+  }
 
   const lockedWallets = new Map<number, { currentBalance: string; reservedBalance: string; providerId: number }>();
+  const walletsByProvider = new Map<number, number[]>();
   for (const r of reservations) {
     const walletId = Number(r.walletId);
     const [w] = await tx
@@ -194,6 +218,7 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
         id: digitalWallets.id,
         name: digitalWallets.name,
         providerId: digitalWallets.providerId,
+        branchId: digitalWallets.branchId,
         isActive: digitalWallets.isActive,
         currentBalance: digitalWallets.currentBalance,
         reservedBalance: digitalWallets.reservedBalance,
@@ -202,6 +227,9 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       .where(eq(digitalWallets.id, walletId))
       .for("update");
     if (!w) throw new TRPCError({ code: "NOT_FOUND", message: "المحفظة غير موجودة" });
+    if (Number(w.branchId) !== Number(intent.branchId)) {
+      throw new TRPCError({ code: "CONFLICT", message: "حجز محفظة من فرع آخر — أوقف التثبيت وراجِع الربط" });
+    }
     if (money(w.currentBalance).lt(money(r.amount))) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -213,33 +241,29 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       reservedBalance: w.reservedBalance,
       providerId: Number(w.providerId),
     });
+    const providerWallets = walletsByProvider.get(Number(w.providerId)) ?? [];
+    providerWallets.push(walletId);
+    walletsByProvider.set(Number(w.providerId), providerWallets);
   }
-  // ربط كل عرض PREPAID بمحفظته عبر مزوّده (الحجز أُنشئ بنفس المنطق في prepare).
-  for (const [offeringId, m] of Array.from(meta)) {
-    if (m.settlementMode !== "PREPAID") continue;
-    for (const [walletId, w] of Array.from(lockedWallets)) {
-      if (w.providerId === m.providerId) { meta.set(offeringId, { ...m, walletId }); break; }
+  for (const [providerId, walletIds] of Array.from(walletsByProvider.entries())) {
+    if (walletIds.length > 1) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `النيّة تربط المزوّد ${providerId} بأكثر من محفظة — يلزم توزيع محفوظ لكل كرت`,
+      });
     }
   }
-
-  /* ٦. إنشاء/تحديث ملفّات الطلاب وفق الوضع المحفوظ في اللقطة. */
-  const studentByItem = new Map<number, number>();
-  for (const it of items) {
-    if (!it.studentNameSnapshot) continue;
-    const snap: StudentSnapshot = {
-      customerId: it.studentCustomerId != null ? Number(it.studentCustomerId) : null,
-      studentName: it.studentNameSnapshot,
-      studentPhone: it.studentPhoneSnapshot ?? "",
-      guardianPhone: it.guardianPhoneSnapshot ?? "",
-      address: it.studentAddressSnapshot ?? "",
-      // اللقطة أُخذت وقت الإضافة للسلة؛ وضعها محفوظٌ ضمناً: ملفٌّ مرتبط ⇒ تحديث، وإلا إنشاء.
-      mode: "UPDATE_PROFILE",
-    };
-    const res = await commitStudent(tx, snap, actor);
-    studentByItem.set(Number(it.id), res.customerId);
+  // وجود reservation هو لقطة PREPAID ثابتة؛ لا نعيد تفسير النيّة بعد تغيير إعداد المزوّد.
+  for (const [offeringId, m] of Array.from(meta)) {
+    const walletId = walletsByProvider.get(m.providerId)?.[0] ?? null;
+    meta.set(offeringId, {
+      ...m,
+      settlementMode: walletId == null ? "POSTPAID" : "PREPAID",
+      walletId,
+    });
   }
 
-  /* ٧. نواة البيع داخل المعاملة نفسها — تكلفة كل سطر مفروضة من النيّة لا من costPrice. */
+  /* ٦. نواة البيع داخل المعاملة نفسها — بيانات الطالب لقطة بيع فقط، بلا عقد أو ملف تشغيلي. */
   const sale = await createSaleInTx(
     tx,
     {
@@ -247,7 +271,8 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       shiftId: Number(intent.shiftId),
       customerId: input.customerId ?? null,
       sourceType: "POS",
-      clientRequestId: input.clientRequestId,
+      // namespace خادمي مشتق من النيّة؛ لا collision مع بيع POS عادي ولا اعتماد على مفتاح العميل.
+      clientRequestId: `DIGITAL_INTENT:${input.intentId}`,
       payment: { amount: toDbMoney(expectedTotal), method: input.paymentMethod },
       lines: items.map((it) => {
         const m = meta.get(Number(it.offeringId))!;
@@ -257,19 +282,19 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
           quantity: "1",
           unitPriceOverride: it.sellPriceSnapshot,
           unitCostOverride: it.providerShareSnapshot,
+          internalLineToken: String(it.id),
         };
       }),
     },
     actor,
+    DIGITAL_SALE_CAPABILITY,
   );
 
-  /* ٨. سجلّ التفاصيل: لقطة كاملة لكل كرت مربوطةً ببند الفاتورة. */
-  const createdItems = await tx
-    .select({ id: invoiceItems.id, productUnitId: invoiceItems.productUnitId })
-    .from(invoiceItems)
-    .where(eq(invoiceItems.invoiceId, sale.invoiceId))
-    .orderBy(asc(invoiceItems.id));
-  if (createdItems.length !== items.length) {
+  /* ٨. سجلّ التفاصيل: الربط برمز السطر الداخلي، لا بموضعٍ يتغيّر عند ترتيب أقفال variantId. */
+  const invoiceItemByIntentItem = new Map(
+    (sale.createdLineItems ?? []).map((line) => [line.lineToken, line.invoiceItemId]),
+  );
+  if (invoiceItemByIntentItem.size !== items.length) {
     throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "عدد بنود الفاتورة لا يطابق بنود النيّة" });
   }
 
@@ -368,7 +393,10 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const m = meta.get(Number(it.offeringId))!;
-    const invItem = createdItems[i];
+    const invoiceItemId = invoiceItemByIntentItem.get(String(it.id));
+    if (invoiceItemId == null) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر ربط كرت ببند فاتورته" });
+    }
     const walletTxId = m.settlementMode === "PREPAID" && m.walletId != null
       ? walletTxByWallet.get(m.walletId) ?? null
       : null;
@@ -378,7 +406,7 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
 
     await tx.insert(digitalSaleDetails).values({
       invoiceId: sale.invoiceId,
-      invoiceItemId: Number(invItem.id),
+      invoiceItemId,
       intentItemId: Number(it.id),
       offeringId: Number(it.offeringId),
       providerId: m.providerId,
@@ -389,13 +417,14 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       profitSnapshot: it.marginSnapshot,
       providerReference: it.providerReference,
       fulfillmentStatus: "ISSUED",
-      studentCustomerId: studentByItem.get(Number(it.id)) ?? null,
+      studentCustomerId: null,
       studentNameSnapshot: it.studentNameSnapshot,
       studentPhoneSnapshot: it.studentPhoneSnapshot,
       guardianPhoneSnapshot: it.guardianPhoneSnapshot,
       studentAddressSnapshot: it.studentAddressSnapshot,
       walletTransactionId: walletTxId,
     });
+
   }
 
   /* ١٠. ربط النيّة بالفاتورة وجعلها FINALIZED. */
@@ -422,13 +451,45 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
 }
 
 /**
+ * إكمال نيّة كل كروتها SUCCESS لكنها انتقلت للمراجعة بسبب انقطاع/إغلاق الواجهة.
+ * القيم المالية وطريقة الدفع تُقرأ من النيّة؛ لا يختار المدير أرقاماً جديدة أثناء الإنقاذ.
+ */
+export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor): Promise<FinalizeResult> {
+  const [intent] = await tx
+    .select({
+      clientRequestId: digitalSaleIntents.clientRequestId,
+      expectedTotal: digitalSaleIntents.expectedTotal,
+      paymentMethod: digitalSaleIntents.paymentMethod,
+    })
+    .from(digitalSaleIntents)
+    .where(eq(digitalSaleIntents.id, intentId))
+    .limit(1);
+  if (!intent) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
+  if (intent.paymentMethod !== "CASH" && intent.paymentMethod !== "CARD") {
+    throw new TRPCError({ code: "CONFLICT", message: "طريقة دفع النيّة غير قابلة للاسترداد" });
+  }
+  return finalize(
+    tx,
+    {
+      intentId,
+      clientRequestId: intent.clientRequestId,
+      paymentAmount: intent.expectedTotal,
+      paymentMethod: intent.paymentMethod,
+    },
+    actor,
+  );
+}
+
+/**
  * لقطات الطباعة لفاتورة — تُقرأ من `digitalSaleDetails` المثبَّتة، لا من مدخلات العميل.
  * الإسقاط يستبعد عمداً `providerShareSnapshot`/`profitSnapshot` (§١٢.٢).
  */
-async function buildPrintDetails(runner: DB | Tx, invoiceId: number): Promise<DigitalPrintDetail[]> {
+async function buildPrintDetails(runner: DB | Tx, invoiceId: number, branchId?: number | null): Promise<DigitalPrintDetail[]> {
+  await assertInvoiceBranch(runner, invoiceId, branchId);
   const rows = await runner
     .select({
       lineName: products.name,
+      offeringType: digitalOfferings.offeringType,
       providerReference: digitalSaleDetails.providerReference,
       studentName: digitalSaleDetails.studentNameSnapshot,
       studentPhone: digitalSaleDetails.studentPhoneSnapshot,
@@ -436,12 +497,17 @@ async function buildPrintDetails(runner: DB | Tx, invoiceId: number): Promise<Di
       studentAddress: digitalSaleDetails.studentAddressSnapshot,
     })
     .from(digitalSaleDetails)
+    .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
     .innerJoin(digitalOfferings, eq(digitalSaleDetails.offeringId, digitalOfferings.id))
     .innerJoin(products, eq(digitalOfferings.productId, products.id))
-    .where(eq(digitalSaleDetails.invoiceId, invoiceId))
+    .where(and(
+      eq(digitalSaleDetails.invoiceId, invoiceId),
+      ...(branchId == null ? [] : [eq(invoices.branchId, branchId)]),
+    ))
     .orderBy(asc(digitalSaleDetails.id));
   return rows.map((r) => ({
     lineName: r.lineName,
+    referenceLabel: digitalSaleReferenceLabel(r.offeringType),
     providerReference: r.providerReference,
     studentName: r.studentName,
     studentPhone: r.studentPhone,
@@ -451,17 +517,20 @@ async function buildPrintDetails(runner: DB | Tx, invoiceId: number): Promise<Di
 }
 
 /** إعادة الطباعة من الخادم (§١٢.١-٤): نفس اللقطات لأي فاتورة مثبَّتة. */
-export async function reprintDetails(db: DB, invoiceId: number): Promise<DigitalPrintDetail[]> {
-  return buildPrintDetails(db, invoiceId);
+export async function reprintDetails(db: DB, invoiceId: number, branchId?: number | null): Promise<DigitalPrintDetail[]> {
+  return buildPrintDetails(db, invoiceId, branchId);
 }
 
 /** تفاصيل البيع الرقميّ لفاتورة — للطباعة والتقارير. */
-export async function getSaleDetails(db: DB, invoiceId: number) {
+export async function getSaleDetails(db: DB, invoiceId: number, branchId?: number | null) {
+  await assertInvoiceBranch(db, invoiceId, branchId);
   return db
     .select({
       id: digitalSaleDetails.id,
       invoiceItemId: digitalSaleDetails.invoiceItemId,
       offeringId: digitalSaleDetails.offeringId,
+      offeringName: products.name,
+      offeringType: digitalOfferings.offeringType,
       settlementMode: digitalSaleDetails.settlementModeSnapshot,
       sellPrice: digitalSaleDetails.sellPriceSnapshot,
       providerShare: digitalSaleDetails.providerShareSnapshot,
@@ -469,11 +538,31 @@ export async function getSaleDetails(db: DB, invoiceId: number) {
       providerReference: digitalSaleDetails.providerReference,
       fulfillmentStatus: digitalSaleDetails.fulfillmentStatus,
       studentName: digitalSaleDetails.studentNameSnapshot,
+      studentPhone: digitalSaleDetails.studentPhoneSnapshot,
       walletTransactionId: digitalSaleDetails.walletTransactionId,
     })
     .from(digitalSaleDetails)
-    .where(eq(digitalSaleDetails.invoiceId, invoiceId))
+    .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
+    .innerJoin(digitalOfferings, eq(digitalSaleDetails.offeringId, digitalOfferings.id))
+    .innerJoin(products, eq(digitalOfferings.productId, products.id))
+    .where(and(
+      eq(digitalSaleDetails.invoiceId, invoiceId),
+      ...(branchId == null ? [] : [eq(invoices.branchId, branchId)]),
+    ))
     .orderBy(asc(digitalSaleDetails.id));
+}
+
+async function assertInvoiceBranch(runner: DB | Tx, invoiceId: number, branchId?: number | null): Promise<void> {
+  if (branchId == null) return;
+  const [invoice] = await runner
+    .select({ branchId: invoices.branchId })
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  if (!invoice) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+  if (Number(invoice.branchId) !== branchId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة تخص فرعاً آخر" });
+  }
 }
 
 /** ثابت التحقّق: Σ(حصة المزوّد + الربح) = Σ(سعر البيع) لفاتورة. */

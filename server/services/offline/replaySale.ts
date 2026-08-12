@@ -15,13 +15,14 @@
 //  - نقدي فقط (قرار مالك): طريقة الدفع CASH إلزاماً — الآجل يتطلب اتصالاً (رصيد العميل
 //    وسقفه لا يُقيَّمان بأمانة من نسخة محلية قديمة).
 
-import { TRPCError } from "@trpc/server";
 import type { Actor } from "../tx";
 import { createSale } from "../sale/create";
 import type { CreateSaleInput, CreateSaleResult, SaleLineInput } from "../sale/types";
+import { assertCaptureWindow, assertCashOnly } from "./captureWindow";
 
-export const OFFLINE_CAPTURE_MAX_AGE_MS = 72 * 60 * 60 * 1000;
-export const OFFLINE_CAPTURE_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+// أُعيد تصدير العتبتين للتوافق مع المستوردين القائمين (الاختبارات/الوثائق) — مصدرهما الآن
+// captureWindow.ts المشترك بين كلّ أنواع الكاشير، فلا تنجرف نسختان.
+export { OFFLINE_CAPTURE_MAX_AGE_MS, OFFLINE_CAPTURE_FUTURE_TOLERANCE_MS } from "./captureWindow";
 
 export interface ReplayOfflineSaleInput {
   branchId: number;
@@ -49,27 +50,9 @@ export async function replayOfflineSale(
   input: ReplayOfflineSaleInput,
   actor: Actor,
 ): Promise<CreateSaleResult> {
-  // نافذة الالتقاط — فسادها قرار مراجعة بشرية لا ترحيل صامت.
-  const capturedAt = new Date(input.capturedAt);
-  if (Number.isNaN(capturedAt.getTime())) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "لحظة التقاط غير صالحة" });
-  }
-  const ageMs = Date.now() - capturedAt.getTime();
-  if (ageMs < -OFFLINE_CAPTURE_FUTURE_TOLERANCE_MS) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: "لحظة الالتقاط في المستقبل — تحقّق من ساعة جهاز الكاشير",
-    });
-  }
-  if (ageMs > OFFLINE_CAPTURE_MAX_AGE_MS) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: "بيع أوفلايني أقدم من ٧٢ ساعة — يتطلب مراجعة المدير قبل الترحيل",
-    });
-  }
-  if (input.payment.method !== "CASH") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الأوفلاين نقدي فقط — الآجل يتطلب اتصالاً" });
-  }
+  // نافذة الالتقاط ونقديّة الدفع — حرّاسٌ مشتركة (captureWindow.ts) لا نسخةٌ محليّة.
+  const capturedAt = assertCaptureWindow(input.capturedAt);
+  assertCashOnly(input.payment.method);
 
   return createSale(
     {

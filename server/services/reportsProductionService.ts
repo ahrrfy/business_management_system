@@ -46,6 +46,31 @@ export interface ProductionReportResult {
   };
 }
 
+/**
+ * Native/mobile page contract. The legacy desktop report above intentionally keeps its
+ * historical all-rows shape; native clients must use this bounded contract so a busy
+ * production period can never become an unbounded response.
+ */
+export interface ProductionReportPageResult extends ProductionReportResult {
+  total: number;
+  /** Stable keyset cursor for callers that do not want offset pagination. */
+  nextCursor: number | null;
+}
+
+function mapProductionRows(rawRows: any[]): ProductionReportRow[] {
+  return rawRows.map((r) => ({
+    id: Number(r.id),
+    docNumber: r.docNumber ?? null,
+    date: String(r.date ?? ""),
+    branchName: r.branchName ?? null,
+    inputsCost: toDbMoney(money(r.inputsCost ?? 0)),
+    laborCost: toDbMoney(money(r.laborCost ?? 0)),
+    wasteCost: toDbMoney(money(r.wasteCost ?? 0)),
+    outputsCost: toDbMoney(money(r.outputsCost ?? 0)),
+    totalCost: toDbMoney(money(r.totalCost ?? 0)),
+  }));
+}
+
 export async function getProductionReport(opts: {
   from: string;
   to: string;
@@ -83,17 +108,7 @@ export async function getProductionReport(opts: {
     `),
   );
 
-  const rows: ProductionReportRow[] = rawRows.map((r) => ({
-    id: Number(r.id),
-    docNumber: r.docNumber ?? null,
-    date: String(r.date ?? ""),
-    branchName: r.branchName ?? null,
-    inputsCost: toDbMoney(money(r.inputsCost ?? 0)),
-    laborCost: toDbMoney(money(r.laborCost ?? 0)),
-    wasteCost: toDbMoney(money(r.wasteCost ?? 0)),
-    outputsCost: toDbMoney(money(r.outputsCost ?? 0)),
-    totalCost: toDbMoney(money(r.totalCost ?? 0)),
-  }));
+  const rows = mapProductionRows(rawRows);
 
   // الإجماليات بـdecimal (لا parseFloat) — تفادي انجراف 0.01 على آلاف المستندات.
   const totals = rows.reduce(
@@ -125,6 +140,92 @@ export async function getProductionReport(opts: {
       wasteCost: toDbMoney(totals.wasteCost),
       outputsCost: toDbMoney(totals.outputsCost),
       totalCost: toDbMoney(totals.totalCost),
+    },
+  };
+}
+
+/**
+ * Bounded production report for native clients.
+ *
+ * Totals are calculated over the complete scoped filter, while only one stable page is
+ * returned. `branchId` is already resolved by the router's fail-closed scope helper.
+ */
+export async function getProductionReportPage(opts: {
+  from: string;
+  to: string;
+  branchId?: number;
+  limit?: number;
+  offset?: number;
+  cursor?: number;
+}): Promise<ProductionReportPageResult> {
+  const db = getDb();
+  const empty: ProductionReportPageResult = {
+    rows: [],
+    total: 0,
+    nextCursor: null,
+    totals: { count: 0, inputsCost: "0", laborCost: "0", wasteCost: "0", outputsCost: "0", totalCost: "0" },
+  };
+  if (!db) return empty;
+
+  // Defence in depth for direct service callers; the router applies the same ceiling.
+  const limit = Math.min(Math.max(opts.limit ?? 25, 1), 100);
+  const offset = opts.cursor ? 0 : Math.max(opts.offset ?? 0, 0);
+  const branchPo = opts.branchId ? sql`AND po.branchId = ${opts.branchId}` : sql``;
+  const cursorPo = opts.cursor ? sql`AND po.id < ${opts.cursor}` : sql``;
+
+  const rawRows = rowsOf(
+    await db.execute(sql`
+      SELECT
+        po.id AS id,
+        po.docNumber AS docNumber,
+        DATE_FORMAT(po.createdAt, '%Y-%m-%d') AS date,
+        b.name AS branchName,
+        CAST(COALESCE(po.materialsCost, 0) AS CHAR) AS inputsCost,
+        CAST(COALESCE(po.laborCost, 0) AS CHAR) AS laborCost,
+        CAST(COALESCE(po.abnormalLoss, 0) AS CHAR) AS wasteCost,
+        CAST(COALESCE(po.totalCost, 0) AS CHAR) AS outputsCost,
+        CAST(COALESCE(po.totalCost, 0) AS CHAR) AS totalCost
+      FROM productionOrders po
+      LEFT JOIN branches b ON b.id = po.branchId
+      WHERE po.productionStatus = 'CONFIRMED'
+        AND DATE(po.createdAt) >= ${opts.from} AND DATE(po.createdAt) <= ${opts.to}
+        ${branchPo}
+        ${cursorPo}
+      ORDER BY po.id DESC
+      LIMIT ${limit + 1} OFFSET ${offset}
+    `),
+  );
+
+  // Aggregate independently from the page so KPIs remain authoritative across pagination.
+  const aggregate = rowsOf(
+    await db.execute(sql`
+      SELECT
+        COUNT(*) AS cnt,
+        CAST(COALESCE(SUM(po.materialsCost), 0) AS CHAR) AS inputsCost,
+        CAST(COALESCE(SUM(po.laborCost), 0) AS CHAR) AS laborCost,
+        CAST(COALESCE(SUM(po.abnormalLoss), 0) AS CHAR) AS wasteCost,
+        CAST(COALESCE(SUM(po.totalCost), 0) AS CHAR) AS outputsCost,
+        CAST(COALESCE(SUM(po.totalCost), 0) AS CHAR) AS totalCost
+      FROM productionOrders po
+      WHERE po.productionStatus = 'CONFIRMED'
+        AND DATE(po.createdAt) >= ${opts.from} AND DATE(po.createdAt) <= ${opts.to}
+        ${branchPo}
+    `),
+  )[0] ?? {};
+  const total = Math.max(Number(aggregate.cnt ?? 0), 0);
+  const rows = mapProductionRows(rawRows.slice(0, limit));
+
+  return {
+    rows,
+    total,
+    nextCursor: rawRows.length > limit ? rows[rows.length - 1]?.id ?? null : null,
+    totals: {
+      count: total,
+      inputsCost: toDbMoney(money(aggregate.inputsCost ?? 0)),
+      laborCost: toDbMoney(money(aggregate.laborCost ?? 0)),
+      wasteCost: toDbMoney(money(aggregate.wasteCost ?? 0)),
+      outputsCost: toDbMoney(money(aggregate.outputsCost ?? 0)),
+      totalCost: toDbMoney(money(aggregate.totalCost ?? 0)),
     },
   };
 }

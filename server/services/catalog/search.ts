@@ -8,27 +8,40 @@ import { PRINT_SERVICE_TYPE } from "../printSaleService";
 
 // خدمات الطباعة (productType=PRINT_SERVICE) مُستثناة من كاشير الباركود/الشراء: لا مخزون لها،
 // وتُباع عبر شاشة «نقطة بيع الطباعة» فقط. (NULL = منتج عادي ⇒ يبقى ظاهراً.)
-const notPrintService = sql`(${products.productType} IS NULL OR ${products.productType} <> ${PRINT_SERVICE_TYPE})`;
+const DIGITAL_CARD_TYPE = "DIGITAL_CARD";
+const ordinaryCatalogProduct = sql`(
+  ${products.productType} IS NULL OR
+  (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE})
+)`;
 const activeOnly = and(
   eq(products.isActive, true),
   eq(productVariants.isActive, true),
   eq(productUnits.isActive, true),
-  notPrintService
+  ordinaryCatalogProduct
 );
 
 // رؤية كاشير الاستقبال: كالعادي + خدمات الطباعة المفعَّل عليها showInReception (تُباع عبر createPrintSale).
-const receptionVisible = sql`(${products.productType} IS NULL OR ${products.productType} <> ${PRINT_SERVICE_TYPE} OR ${products.showInReception} = TRUE)`;
-// رؤية فاتورة البيع المتقدّمة (١٢/٨/٢٦): كل الأصناف بما فيها خدمات الطباعة **بلا شرط showInReception**
-// — لأنّ الفاتورة الرسمية قد تجمع سلعاً وخدماتٍ مقدَّمة للجهة (شركات/حكومي). createSale يتعامل مع
-// الخدمة عبر توسيع وصفتها (خصم المواد + COGS المحسوب). isActive على المنتج/المتغيّر/الوحدة يبقى نافذاً.
+const receptionVisible = sql`(
+  ${products.productType} IS NULL OR
+  (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
+  (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInReception} = TRUE)
+)`;
+// رؤية فاتورة البيع المتقدّمة (١٢/٨/٢٦): كل خدمات الطباعة **بلا شرط showInReception** — الفاتورة الرسمية
+// قد تجمع سلعاً وخدماتٍ (شركات/حكومي). createSale يخصم موادها ذرّياً + يحتسب COGS من الوصفة. البطاقات
+// الرقميّة تُستثنى دائماً (منظومتها المستقلّة). isActive على المنتج/المتغيّر/الوحدة يبقى نافذاً.
+const advancedSaleVisible = sql`(
+  ${products.productType} IS NULL OR ${products.productType} <> ${DIGITAL_CARD_TYPE}
+)`;
 function posVisibility(mode: "default" | "reception" | "advancedSale") {
   const baseConds = [
     eq(products.isActive, true),
     eq(productVariants.isActive, true),
     eq(productUnits.isActive, true),
   ];
-  if (mode === "advancedSale") return and(...baseConds); // كل شيء نشط، شاملاً كل خدمات الطباعة.
-  return and(...baseConds, mode === "reception" ? receptionVisible : notPrintService);
+  return and(
+    ...baseConds,
+    mode === "advancedSale" ? advancedSaleVisible : mode === "reception" ? receptionVisible : ordinaryCatalogProduct,
+  );
 }
 
 /**
@@ -97,4 +110,4 @@ function buildCatalogSearchOrder(query: string | undefined): SQL[] {
 
 // تصدير داخلي للحزمة فقط (يستهلكه pos/purchase/adminList/productExtras) — لا يُعاد تصديره من
 // البرميل catalogService.ts.
-export { notPrintService, activeOnly, posVisibility, buildCatalogSearchWhere, buildCatalogSearchOrder };
+export { ordinaryCatalogProduct as notPrintService, activeOnly, posVisibility, buildCatalogSearchWhere, buildCatalogSearchOrder };

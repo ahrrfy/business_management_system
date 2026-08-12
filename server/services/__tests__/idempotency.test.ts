@@ -145,6 +145,30 @@ describe("Idempotency — النقر المزدوج لا يُنشئ عمليات
     expect(ents).toHaveLength(1);
   });
 
+  it("receivePurchase: نفس clientRequestId بحمولة جزئية مختلفة ⇒ CONFLICT لا replay وهمي", async () => {
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+    const po = await createPurchaseOrder(
+      { supplierId: 1, branchId: 1, items: [{ variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "2.00" }] },
+      actor,
+    );
+    const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
+    const clientRequestId = "rcv-req-payload-conflict";
+    await receivePurchase(
+      { purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 2 }], clientRequestId },
+      actor,
+    );
+
+    await expect(
+      receivePurchase(
+        { purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 3 }], clientRequestId },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity).toBe(2);
+    expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PURCHASE"))).toHaveLength(1);
+  });
+
   it("مفاتيح مختلفة على نفس العملية تُنشئ كتابات منفصلة (تأكيد عدم الإفراط في التطبيق)", async () => {
     await setStock(1, 1, 10);
     await db().insert(s.customers).values({ id: 1, name: "ت", defaultPriceTier: "RETAIL", currentBalance: "0" });

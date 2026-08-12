@@ -207,6 +207,7 @@ describe("WAVG — متوسّط مرجّح صحيح لسطرين لنفس الم
     expect(v.costPrice).toBe("3.00"); // (10×2 + 10×4)/20 — وليس 4.00 (طمس السطر الأول)
     const row = (await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0];
     expect(row.quantity).toBe(20);
+    expect(row.openedAt).not.toBeNull();
   });
 });
 

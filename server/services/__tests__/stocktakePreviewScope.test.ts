@@ -12,18 +12,23 @@ import { getDb } from "../../db";
 import { previewScope } from "../stocktake/queries";
 
 const TABLES = [
+  "stocktakeItemReviewEvents",
   "stocktakeDecisions",
+  "stocktakeCountOperations",
   "stocktakeCounts",
   "stocktakeItems",
   "stocktakeAssignments",
   "stocktakeSessions",
   "openingModeSettings",
+  "purchaseOrderItems",
+  "purchaseOrders",
   "inventoryMovements",
   "branchStock",
   "productUnits",
   "productVariants",
   "products",
   "categories",
+  "suppliers",
   "branches",
   "users",
 ];
@@ -50,6 +55,7 @@ async function seedBase() {
   await d.insert(s.users).values([
     { id: 1, openId: "u_admin", name: "المدير", role: "admin", loginMethod: "local" },
   ]);
+  await d.insert(s.suppliers).values({ id: 1, name: "مورد الاختبار" });
   await d.insert(s.categories).values([
     { id: 10, name: "قرطاسية" },
     { id: 20, name: "ورق" },
@@ -64,6 +70,8 @@ async function seedBase() {
     { id: 5, name: "بكج مدرسي", categoryId: 10, isActive: true, isBundle: true, isConsignment: false },
     // أمانة ⇒ يُستبعَد في OPENING فقط
     { id: 6, name: "كتاب المعلّم (أمانة)", categoryId: 20, isActive: true, isBundle: false, isConsignment: true },
+    // خدمة/كارت رقمي ⇒ يُستبعَد دائماً لأنه بلا رصيد مخزني
+    { id: 7, name: "كارت زين 5000", categoryId: 10, isActive: true, isService: true, isBundle: false, isConsignment: false },
   ]);
   await d.insert(s.productVariants).values([
     // ٣ متغيّرات (لون/قياس) للقلم — حبيبة الجرد
@@ -76,6 +84,7 @@ async function seedBase() {
     { id: 40, productId: 4, sku: "OLD-1", costPrice: "100.00", isActive: true }, // منتج معطَّل
     { id: 50, productId: 5, sku: "PKG-1", costPrice: "0.00", isActive: true }, // بكج
     { id: 60, productId: 6, sku: "CONS-1", costPrice: "3000.00", isActive: true }, // أمانة
+    { id: 80, productId: 7, sku: "DIGITAL-ZAIN-5000", costPrice: "0.00", isActive: true }, // خدمة
     // متغيّر معطَّل ⇒ يُستبعَد
     { id: 70, productId: 2, sku: "NB-100-OLD", costPrice: "1500.00", isActive: false },
   ]);
@@ -89,6 +98,7 @@ async function seedBase() {
     { id: 7, variantId: 50, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
     { id: 8, variantId: 60, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
     { id: 9, variantId: 70, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    { id: 10, variantId: 80, unitName: "بطاقة", conversionFactor: "1", isBaseUnit: true },
   ]);
 }
 
@@ -100,10 +110,10 @@ beforeEach(async () => {
 /* ─────────── FULL ─────────── */
 
 describe("previewScope — FULL", () => {
-  it("NORMAL: يشمل كل المتغيّرات النشطة لمنتجات نشطة، يستبعد البكج فقط (الأمانة تُشمَل)", async () => {
+  it("NORMAL: يشمل المتغيّرات المخزنية النشطة، ويستبعد الخدمات والبكج (الأمانة تُشمَل)", async () => {
     const r = await previewScope({ branchId: 1, sessionType: "NORMAL", scopeType: "FULL" });
     // 10,11,12 (قلم × ٣) + 20 (دفتر) + 30 (مسطرة) + 60 (أمانة) = ٦
-    // مستبعَد: 40 (منتج غير نشط) + 50 (بكج) + 70 (متغيّر غير نشط)
+    // مستبعَد: 40 (منتج غير نشط) + 50 (بكج) + 70 (متغيّر غير نشط) + 80 (خدمة)
     expect(r.variantCount).toBe(6);
     // ٤ منتجات أمّ (قلم/دفتر/مسطرة/أمانة)
     expect(r.productCount).toBe(4);
@@ -169,6 +179,69 @@ describe("previewScope — FULL", () => {
     const r = await previewScope({ branchId: 1, sessionType: "OPENING", scopeType: "FULL" });
     expect(r.variantCount).toBe(5); // بلا استبعاد للفرع ١
     expect(r.excludedOpened).toBe(0);
+  });
+
+  it("المشتريات: OPENING يستبعد المرتبط بأمر غير ملغى في الفرع نفسه ويعرض عدّاده؛ NORMAL لا يتأثر", async () => {
+    await db().insert(s.purchaseOrders).values([
+      {
+        id: 101,
+        poNumber: "PO-PREVIEW-OTHER-BRANCH",
+        supplierId: 1,
+        branchId: 2,
+        subtotal: "100.00",
+        total: "100.00",
+        status: "DRAFT",
+        createdBy: 1,
+      },
+      {
+        id: 102,
+        poNumber: "PO-PREVIEW-CANCELLED",
+        supplierId: 1,
+        branchId: 1,
+        subtotal: "100.00",
+        total: "100.00",
+        status: "CANCELLED",
+        createdBy: 1,
+      },
+    ]);
+    await db().insert(s.purchaseOrderItems).values([
+      { purchaseOrderId: 101, variantId: 20, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
+      { purchaseOrderId: 102, variantId: 30, quantity: "1", baseQuantity: 1, unitPrice: "100.00", total: "100.00" },
+    ]);
+
+    // أمر الفرع الآخر والأمر الملغى لا يستبعدان شيئاً من افتتاح الفرع ١.
+    const beforeSameBranchPurchase = await previewScope({ branchId: 1, sessionType: "OPENING", scopeType: "FULL" });
+    expect(beforeSameBranchPurchase.variantCount).toBe(5);
+    expect(beforeSameBranchPurchase.excludedPurchased).toBe(0);
+
+    await db().insert(s.purchaseOrders).values({
+      id: 103,
+      poNumber: "PO-PREVIEW-SAME-BRANCH",
+      supplierId: 1,
+      branchId: 1,
+      subtotal: "100.00",
+      total: "100.00",
+      status: "DRAFT",
+      createdBy: 1,
+    });
+    await db().insert(s.purchaseOrderItems).values({
+      purchaseOrderId: 103,
+      variantId: 10,
+      quantity: "1",
+      baseQuantity: 1,
+      unitPrice: "100.00",
+      total: "100.00",
+    });
+
+    const opening = await previewScope({ branchId: 1, sessionType: "OPENING", scopeType: "FULL" });
+    expect(opening.variantCount).toBe(4);
+    expect(opening.productCount).toBe(3); // يبقى للقلم المتغيّران 11 و12.
+    expect(opening.excludedPurchased).toBe(1);
+
+    const normal = await previewScope({ branchId: 1, sessionType: "NORMAL", scopeType: "FULL" });
+    expect(normal.variantCount).toBe(6);
+    expect(normal.productCount).toBe(4);
+    expect(normal.excludedPurchased).toBe(0);
   });
 });
 
@@ -260,7 +333,7 @@ describe("previewScope — CATEGORY", () => {
 /* ─────────── حارس مطابقة resolveScope ─────────── */
 
 describe("previewScope — حارس مطابقة (regression)", () => {
-  it("FULL NORMAL: previewScope.variantCount == عدد المتغيّرات النشطة لمنتجات نشطة غير بكج", async () => {
+  it("FULL NORMAL: previewScope.variantCount == عدد المتغيّرات النشطة لمنتجات مخزنية غير بكج", async () => {
     // نحسب مباشرةً من DB نفس الشرط في resolveScope
     const rows = await db()
       .select({ id: s.productVariants.id })
@@ -270,6 +343,7 @@ describe("previewScope — حارس مطابقة (regression)", () => {
         and(
           eq(s.productVariants.isActive, true),
           eq(s.products.isActive, true),
+          eq(s.products.isService, false),
           eq(s.products.isBundle, false),
         ),
       );
@@ -292,6 +366,7 @@ describe("previewScope — حارس مطابقة (regression)", () => {
         and(
           eq(s.productVariants.isActive, true),
           eq(s.products.isActive, true),
+          eq(s.products.isService, false),
           eq(s.products.isBundle, false),
           eq(s.products.isConsignment, false),
         ),

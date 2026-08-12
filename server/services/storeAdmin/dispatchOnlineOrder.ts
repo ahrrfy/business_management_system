@@ -14,6 +14,8 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { assertFloatLimit } from "../delivery/parties";
+import { money, round2 } from "../money";
 import { createSale } from "../saleService";
 import { returnSale } from "../returnService";
 import { withTx, type Actor } from "../tx";
@@ -97,6 +99,13 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
   if (!elevated && party.branchId != null && Number(party.branchId) !== actor.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "جهة توصيل تخصّ فرعاً آخر" });
   }
+  // سقف العهدة (مراجعة عدائية ٩/٨): كان مفروضاً على مساري إرسال الاستقبال وحدهما بينما مسار
+  // المتجر يراكم عهدةً بلا حدّ (ترتفع عند تأكيد المندوب). البوّابة الوقائية الصحيحة هنا —
+  // **قبل** خروج البضاعة: نتوقّع قيمة البضاعة نقداً بيد المندوب. (عند التأكيد لا حارس:
+  // النقد قُبض فعلاً ورفضُ تسجيله يجعل الدفاتر تكذب.) فحص استرشاديّ بلا قفل — سقفٌ إداريّ
+  // لا ثابت محاسبي، ومساره الحرج (التأكيد) يشتقّ مبلغه من الفاتورة لا من هذا الفحص.
+  // ١٠/٨ (تمرير كامل): الإسقاط بالبضاعة وحدها (subtotal) — الأجرة للمندوب لا تدخل عهدته.
+  assertFloatLimit(party, round2(money(order.subtotal ?? order.total ?? "0")));
 
   // ① الفاتورة + المخزون + القيد عبر createSale (تُعاد لو سبق ربطها — استرداد).
   let invoiceId: number;
@@ -126,16 +135,19 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
           quantity: String(it.quantity),
           unitPriceOverride: String(it.unitPrice), // تثبيت سعر لقطة الطلب
         })),
-        // أجرة الشحن على رأس الفاتورة كإيراد ⇒ invoice.total = subtotal + الشحن = order.total (ما وافق
-        // عليه الزبون) فيُحصّل المندوب المبلغ كاملاً وتُصفّى الذمّة بلا نقصٍ (مراجعة عدائية ١٢/٧).
-        deliveryFee: order.shippingCost ?? "0",
+        // ١٠/٨ — قرار المالك (المندوب خارجيّ والأجرة له ⇒ **تمرير كامل** كالاستقبال حرفياً):
+        // أجرة الشحن **لا تدخل الفاتورة ولا الإيراد ولا وعاء العمولة** — الفاتورة بضاعةٌ فقط.
+        // الزبون يدفع للمندوب (بضاعة + أجرة) من واقع الطلب، المندوب يحتفظ بأجرته ويورّد
+        // البضاعة وحدها (التأكيد يشتقّ المُحصَّل من متبقّي الفاتورة ⇒ عهدة = بضاعة تلقائياً).
+        // كان الشحن إيراداً بهامش ١٠٠٪ يدخل عمولة الموظف المُرسِل بينما يُدفع للمندوب خارج
+        // النظام — هامش المتجر منفوخ وعمولة على مال تمرير. (الفواتير القديمة تبقى بدلالتها:
+        // invoices.deliveryFee>0 = شحنٌ داخل total — العرض يميّزها.)
         notes: `طلب متجر ${order.orderNumber}`,
         clientRequestId: `online-dispatch:${order.id}`,
         priceOverrideApproved: true, // الموظف المُرسِل يُقرّ السعر المتّفق عليه مسبقاً
-        // COD: العميل نقديٌّ (سقف ائتمان 0)؛ المدير المُرسِل يُقرّ الائتمان المؤقّت حتى تحصيل الدفع
-        // عند الاستلام (تُصفّى الذمّة بتسجيل السداد). الإسناد لمدير فقط ⇒ التوثيق الذاتي صالح.
-        creditApproved: true,
-        managerOverrideByUserId: actor.userId,
+        // لا تُنشئ موافقةً ذاتية باسم المُرسِل؛ حدّ ائتمان العميل يبقى نافذاً، والعميل بلا حدّ
+        // (creditLimit=null) يمرّ طبيعياً. تجاوز الحد يحتاج قراراً مستقلاً من مُصدر آخر.
+        creditApproved: false,
       },
       actor
     );

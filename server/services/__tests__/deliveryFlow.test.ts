@@ -95,9 +95,26 @@ async function allReconcileClean() {
 }
 
 /** ينشئ طلباً بعربون نقدي ويجعله READY. يُرجِع معرّفه. */
-async function readyWorkOrder(shiftOpen: boolean): Promise<number> {
+async function readyWorkOrder(
+  shiftOpen: boolean,
+  feeCollection: "COURIER" | "COUNTER" | "SHOP" = "SHOP",
+): Promise<number> {
   const wo = await createWorkOrder(
-    { branchId: 1, customerId: 1, baseVariantId: 1, title: "طباعة", salePrice: "10000", quantity: 1, deposit: shiftOpen ? "2000" : "0", paymentMethod: "CASH" },
+    {
+      branchId: 1,
+      customerId: 1,
+      baseVariantId: 1,
+      title: "طباعة",
+      salePrice: "10000",
+      quantity: 1,
+      deposit: shiftOpen ? "2000" : "0",
+      paymentMethod: "CASH",
+      hasDelivery: true,
+      deliveryAddress: "بغداد",
+      // 5/8: al-ujra tunqas min al-tawrid faqat 'inda SHOP/COUNTER. COURIER = yaqbiduha
+      // al-mandub min al-zabun mubasharatan ⇒ kharij daftarina tamaman.
+      deliveryFeeCollection: feeCollection,
+    },
     { userId: 2, branchId: 1 },
   );
   const woId = (wo as { workOrderId: number }).workOrderId;
@@ -131,7 +148,7 @@ describe("delivery COD — money path", () => {
 
     // الترحيل: تحصيل 8000 كاملاً، الأجرة 1500.
     const consignmentId = disp.consignmentId;
-    const rem = await recordDeliveryRemittance({ branchId: 1, partyId, lines: [{ consignmentId, collectedAmount: "8000" }] }, CASHIER);
+    const rem = await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "6500", lines: [{ consignmentId, collectedAmount: "8000" }] }, CASHIER);
     expect(rem.collectedTotal).toBe("8000.00");
     expect(rem.feesTotal).toBe("1500.00");
     expect(rem.netRemitted).toBe("6500.00");
@@ -154,7 +171,7 @@ describe("delivery COD — money path", () => {
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
     // تحصيل جزئي 5000 من 8000 ⇒ عجز 3000 يبقى عهدة، بلا أجرة (لم يُسلَّم بالكامل).
-    const rem = await recordDeliveryRemittance({ branchId: 1, partyId, lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
+    const rem = await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "5000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
     expect(rem.status).toBe("SHORT");
     expect(rem.shortfallTotal).toBe("3000.00");
     expect(rem.feesTotal).toBe("0.00");
@@ -164,20 +181,67 @@ describe("delivery COD — money path", () => {
     expect(inv.paidAmount).toBe("7000.00"); // 2000 عربون + 5000
     await allReconcileClean();
 
-    // شطب المدير للعجز 3000 ⇒ عهدة=0 + خسارة.
-    await writeOffDeliveryShortfall({ branchId: 1, partyId, amount: "3000", reason: "نزاع غير قابل للتحصيل" }, MANAGER);
+    // شطب المدير للعجز 3000 — **موجَّهاً بالإرسالية** (حوكمة ٩/٨: عجز إرساليةٍ حيّة لا يُشطَب
+    // مجمّعاً كي لا تبقى زومبي تقبل توريداً لاحقاً يقلب الرصيد سالباً): يقفلها WRITTEN_OFF
+    // ويقيّد فاتورتها مسدَّدةً ويُصفّر العهدة كخسارة.
+    await expect(
+      writeOffDeliveryShortfall({ branchId: 1, partyId, amount: "3000", reason: "نزاع غير قابل للتحصيل" }, MANAGER),
+    ).rejects.toThrow(/السائبة/); // المجمّع محجوز للعهدة غير المرتبطة بإرساليات
+    await writeOffDeliveryShortfall({ branchId: 1, partyId, amount: "3000", reason: "نزاع غير قابل للتحصيل", consignmentId: disp.consignmentId }, MANAGER);
     expect(await partyBalance(partyId)).toBe("0.00");
     expect(await entryCount("DELIVERY_WRITEOFF", partyId)).toBe(1);
+    const cnAfter = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, disp.consignmentId)))[0];
+    expect(cnAfter.status).toBe("WRITTEN_OFF");
+    const invAfter = await invoice(disp.invoiceId);
+    expect(invAfter.status).toBe("PAID"); // الزبون دفع للمندوب — ذمّة الفاتورة تُقفل والخسارة على المكتبة
     await allReconcileClean();
   });
 
-  it("تسوية الجهة نقداً تخفض العهدة", async () => {
+  it("فرق النقد المعدود يوقف التسوية ذرّياً ولا يغيّر الفاتورة أو عهدة المندوب", async () => {
+    const { partyId } = await seed();
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+    const woId = await readyWorkOrder(true);
+    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const beforeInvoice = await invoice(disp.invoiceId);
+    const beforeReceipts = await db().select().from(s.receipts);
+
+    await expect(recordDeliveryRemittance({
+      branchId: 1,
+      partyId,
+      countedCash: "6000",
+      lines: [{ consignmentId: disp.consignmentId, collectedAmount: "8000" }],
+    }, CASHIER)).rejects.toThrow(/لا يطابق صافي التوريد/);
+
+    expect(await partyBalance(partyId)).toBe("8000.00");
+    const afterInvoice = await invoice(disp.invoiceId);
+    expect(afterInvoice.paidAmount).toBe(beforeInvoice.paidAmount);
+    expect(afterInvoice.status).toBe(beforeInvoice.status);
+    expect(await db().select().from(s.receipts)).toHaveLength(beforeReceipts.length);
+    expect(await db().select().from(s.deliveryRemittances)).toHaveLength(0);
+    await allReconcileClean();
+  });
+
+  it("تسوية الجهة نقداً تخفض العهدة السائبة — والمدعومة بإرسالية مفتوحة تُرفض", async () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(true);
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
-    await recordDeliveryRemittance({ branchId: 1, partyId, lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
+    // حوكمة ٩/٨: عهدةُ إرساليةٍ مفتوحة لا تُسوَّى بمبلغٍ حرّ (تُورَّد بالإرسالية كي تُقيَّد فاتورتها).
+    await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "5000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
     expect(await partyBalance(partyId)).toBe("3000.00");
+    await expect(settleDeliveryBalance({ branchId: 1, partyId, amount: "3000" }, CASHIER)).rejects.toThrow(/السائبة/);
+    // إكمال التوريد ⇒ عهدة صفر، ثم عهدة **سائبة** (نمط تحصيلات المتجر: قيد DISPATCH بلا إرسالية)
+    // هي نطاق التسوية الحرّة المشروع.
+    await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "3000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "3000" }] }, CASHIER);
+    expect(await partyBalance(partyId)).toBe("0.00");
+    await db().insert(s.accountingEntries).values({
+      entryType: "DELIVERY_DISPATCH", branchId: 1, deliveryPartyId: partyId,
+      amount: "3000.00", entryDate: sql`CURDATE()` as unknown as string,
+      notes: "عهدة تحصيلات متجر (تجهيزة اختبار)",
+    });
+    await db().update(s.deliveryParties)
+      .set({ currentBalance: sql`${s.deliveryParties.currentBalance} + 3000` })
+      .where(eq(s.deliveryParties.id, partyId));
     const set = await settleDeliveryBalance({ branchId: 1, partyId, amount: "3000" }, CASHIER);
     expect(set.partyBalanceAfter).toBe("0.00");
     expect(await partyBalance(partyId)).toBe("0.00");
@@ -211,5 +275,70 @@ describe("delivery COD — money path", () => {
     expect(await entryCount("SALE")).toBe(1);
     expect(await entryCount("DELIVERY_DISPATCH", partyId)).toBe(1);
     expect(await partyBalance(partyId)).toBe("8000.00");
+  });
+
+  // ─── ردّ عربون الإرجاع — إسناد الدرج الفعليّ (بلاغ مالك ٢/٨/٢٦، مرآة إصلاح returnService.ts) ───
+  describe("إرجاع إرسالية بعربون نقديّ — إسناد الدرج الفعليّ لا وردية المدير", () => {
+    it("المديرة بلا وردية + وردية الكاشير هي الوحيدة المفتوحة ⇒ ردّ العربون يُنسَب لها تلقائياً", async () => {
+      const { partyId } = await seed();
+      const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+      const woId = await readyWorkOrder(true); // عربون ٢٠٠٠ نقداً
+      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+
+      // قبل الإصلاح: shiftIdForCashTx(actor=المديرة بلا وردية) ⇒ TREASURY (لا يظهر في Z-report الكاشير).
+      await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-1" });
+
+      const outRows = await db()
+        .select({ shiftId: s.receipts.shiftId, cashBucket: s.receipts.cashBucket, amount: s.receipts.amount })
+        .from(s.receipts)
+        .where(and(eq(s.receipts.invoiceId, disp.invoiceId), eq(s.receipts.direction, "OUT"), eq(s.receipts.paymentMethod, "CASH")));
+      const refundRow = outRows.find((r) => Number(r.amount) === 2000);
+      expect(refundRow?.shiftId).toBe(shift.shiftId); // انتسب لدرج الكاشير الحقيقيّ — لا TREASURY، لا وردية شبحيّة.
+      expect(refundRow?.cashBucket).toBe("DRAWER");
+      await allReconcileClean();
+    });
+
+    it("تعدّد الدرج (وردية المديرة الخاصّة + وردية الكاشير) بلا تحديد صريح ⇒ يُرفَض", async () => {
+      const { partyId } = await seed();
+      const cashierShift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+      await openShift({ branchId: 1, openingBalance: "0", shiftType: "RETAIL" }, { userId: 1, branchId: 1 });
+      const woId = await readyWorkOrder(true);
+      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+
+      await expect(
+        returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-2" }),
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+      void cashierShift;
+    });
+
+    it("تعدّد الدرج + refundShiftId صريح لوردية الكاشير ⇒ ينجح وينتسب لها لا لوردية المديرة", async () => {
+      const { partyId } = await seed();
+      const cashierShift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+      const mgrShift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RETAIL" }, { userId: 1, branchId: 1 });
+      const woId = await readyWorkOrder(true);
+      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+
+      await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-3", refundShiftId: cashierShift.shiftId });
+
+      expect(await drawerNet(cashierShift.shiftId)).toBe(0); // ٢٠٠٠ عربون IN − ٢٠٠٠ ردّ OUT = صفر
+      expect(await drawerNet(mgrShift.shiftId)).toBe(0); // لم يُلمَس درج المديرة إطلاقاً
+    });
+
+    it("الدرج استُنزف بمصروفٍ سابق في نفس الوردية ⇒ ردّ عربونٍ يتجاوز المتاح حالياً يُرفَض", async () => {
+      const { partyId } = await seed();
+      const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+      const woId = await readyWorkOrder(true); // عربون ٢٠٠٠
+      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+      // مصروفٌ نقديّ يستنزف الدرج (المتاح بعد العربون = ٢٠٠٠) إلى ٥٠٠ فقط.
+      await db().insert(s.receipts).values({
+        branchId: 1, shiftId: shift.shiftId, direction: "OUT", amount: "1500.00",
+        paymentMethod: "CASH", cashBucket: "DRAWER", status: "COMPLETED", createdBy: 2,
+      });
+
+      await expect(
+        returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-4" }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    });
   });
 });

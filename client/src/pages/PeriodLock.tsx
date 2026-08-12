@@ -2,13 +2,14 @@
  * إقفال الفترات المالية — adminProcedure.
  * يعرض الـlock النشِط ويوفّر آلية إنشاء/فتح (admin فقط).
  */
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Lock, LockOpen } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState } from "@/components/PageState";
+import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
-import { fmtDate } from "@/lib/date";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
@@ -16,6 +17,7 @@ import { useState } from "react";
 export default function PeriodLockPage() {
   const utils = trpc.useUtils();
   const status = trpc.periodLock.status.useQuery();
+  const history = trpc.periodLock.history.useQuery();
   const [cutoffDate, setCutoffDate] = useState<string>("");
   const [notes, setNotes] = useState<string>("");
   const [unlockReason, setUnlockReason] = useState("");
@@ -25,6 +27,7 @@ export default function PeriodLockPage() {
     onSuccess: () => {
       notify.ok("تم قفل الفترة بنجاح");
       utils.periodLock.status.invalidate();
+      utils.periodLock.history.invalidate();
       setCutoffDate("");
       setNotes("");
     },
@@ -35,6 +38,7 @@ export default function PeriodLockPage() {
     onSuccess: () => {
       notify.ok("تم فتح أحدث قفل");
       utils.periodLock.status.invalidate();
+      utils.periodLock.history.invalidate();
       setUnlockReason("");
       setUnlockPassword("");
     },
@@ -112,7 +116,7 @@ export default function PeriodLockPage() {
         <CardContent className="space-y-3">
           <div className="grid gap-3 md:grid-cols-2">
           <div className="grid gap-2">
-            <label className="text-sm font-medium">تاريخ الإقفال (cutoff)</label>
+            <label className="text-sm font-medium">تاريخ الإقفال</label>
             <input
               type="date"
               value={cutoffDate}
@@ -157,6 +161,56 @@ export default function PeriodLockPage() {
         </CardContent>
       </Card>
       </div>
+
+      <Card>
+        <CardHeader className="font-semibold">سجل الإقفال والفتح</CardHeader>
+        <CardContent className="p-0">
+          {history.isLoading ? (
+            <div className="p-4"><LoadingState /></div>
+          ) : (
+            <ScrollTableShell bordered={false}>
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="p-2 text-right">الحدث</th>
+                    <th className="p-2 text-right">تاريخ الإقفال</th>
+                    <th className="p-2 text-right">بواسطة</th>
+                    <th className="p-2 text-right">الوقت</th>
+                    <th className="p-2 text-right">ملاحظات / سبب</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(history.data?.rows.length ?? 0) === 0 ? (
+                    <TableEmptyRow colSpan={5} message="لا عمليات قفل أو فتح مسجّلة بعد." />
+                  ) : (
+                    history.data!.rows.map((r) => (
+                      <tr key={r.id} className="border-t">
+                        <td className="p-2">
+                          {r.action === "period.lock" ? (
+                            <span className="inline-flex items-center gap-1.5 font-medium">
+                              <Lock aria-hidden className="size-3.5 text-destructive" />
+                              قفل
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 font-medium">
+                              <LockOpen aria-hidden className="size-3.5 text-[var(--status-active)]" />
+                              فتح
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-2">{r.cutoffDate ? fmtDate(r.cutoffDate) : "—"}</td>
+                        <td className="p-2">{r.userName}</td>
+                        <td className="p-2 text-muted-foreground" dir="ltr">{fmtDateTime(r.createdAt)}</td>
+                        <td className="p-2 text-muted-foreground">{r.action === "period.lock" ? (r.notes ?? "—") : (r.reason ?? "—")}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </ScrollTableShell>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

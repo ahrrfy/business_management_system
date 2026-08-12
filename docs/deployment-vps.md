@@ -35,7 +35,8 @@ sudo usermod -aG docker deploy        # ExecStartPre يستدعي docker inspect
 # 2) ثبّت الناقص فقط (تخطَّ كل ما هو موجود):
 command -v node    || (curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt -y install nodejs)
 command -v pnpm    || sudo npm i -g pnpm
-command -v pm2     || sudo npm i -g pm2
+sudo npm install -g pm2@7.0.3                         # ثبّت النسخة المعتمدة حتى لو وُجد إصدار آخر؛ prod:deploy يرفض غيرها
+sudo -iu deploy pm2 update                            # يحدّث daemon الموجود في الذاكرة؛ تثبيت npm وحده لا يفعل ذلك
 command -v nginx   || sudo apt -y install nginx
 command -v certbot || sudo apt -y install certbot python3-certbot-nginx
 command -v docker  || (curl -fsSL https://get.docker.com | sh)   # فقط إن لم يوجد إطلاقاً
@@ -45,12 +46,16 @@ command -v gpg     || sudo apt -y install gnupg
 ## ٣. النشر — خطوة بخطوة
 
 ```bash
-# 1) المستودع
-git clone <REPO_URL> erp && cd erp
-pnpm install
+# 1) المستودع — كل أوامر repo/pnpm/pm2 بهوية deploy حصراً
+sudo -iu deploy bash
+cd /home/deploy
+git clone <REPO_URL> erp
+cd /home/deploy/erp
+pnpm install --frozen-lockfile
 
 # 2) البيئة (إنتاج)
-cp .env.production.example .env    # قالب الإنتاج الجاهز، ثم: chmod 600 .env
+cp /home/deploy/erp/.env.production.example /home/deploy/erp/.env
+chmod 600 /home/deploy/erp/.env    # إلزامي: لا تترك أسرار الإنتاج مقروءة لغير deploy
 ```
 
 حرّر `.env` بقيم الإنتاج (الحدّ الأدنى الإلزامي):
@@ -72,28 +77,38 @@ cp .env.production.example .env    # قالب الإنتاج الجاهز، ثم
 docker compose up -d
 docker compose ps                 # انتظر "healthy"
 
-# 4) المخطط + بذرة الإنتاج (مدير + فرعان + فئات أساس — بلا عيّنات)
-ALLOW_BARE_PUSH=1 pnpm db:push   # أوّل مرة فقط (قاعدة فارغة) — التحديثات اللاحقة عبر بوّابة الهجرة (§٧)
+# 4) قاعدة فارغة فقط: إنشاء المخطط ثم تسجيل baseline؛ لا تستعمل هذا المسار على قاعدة قائمة
+ALLOW_BARE_PUSH=1 pnpm db:push
+pnpm db:migrate:extra
+node scripts/baseline-migrations.mjs
+pnpm db:verify
 pnpm seed:prod                   # يرفض ADMIN_PASSWORD ضعيفة/افتراضية/قيمة القالب
 
 # 5) البناء + تشغيل تلقائي عند الإقلاع (PM2 تحت deploy + systemd) — كل أوامر pm2 كمستخدم deploy
 pnpm check && pnpm build
-pm2 start ecosystem.config.cjs
+pm2 start ecosystem.config.cjs --only erp-server      # الملف الجذري لا يشغّل جسر الحضور إنتاجياً
 pm2 install pm2-logrotate                          # تدوير سجلات التطبيق (logs/erp-*.log) — لا نموّ بلا حدّ
 pm2 set pm2-logrotate:max_size 10M && pm2 set pm2-logrotate:retain 14
 pm2 save
-pm2 startup systemd -u deploy --hp /home/deploy    # نفّذ سطر sudo الذي يطبعه ⇒ وحدة pm2-deploy.service
+pnpm prod:deploy                                      # ينشئ أول إصدار immutable للجسر ويفعّله عبر البوابات
+pm2 startup systemd -u deploy --hp /home/deploy    # يطبع أمر sudo؛ انسخه كاملاً ولا تنفّذه داخل جلسة deploy
+exit                                                # العودة إلى جلسة root
 
-# 6) درع ترتيب الإقلاع (G10): لا يقلع التطبيق قبل صحّة قاعدة MySQL — وإلا سباق إقلاع بعد كل انقطاع
+# كـroot: الصق الآن أمر sudo الذي طبعه PM2 أعلاه ونفّذه حرفياً؛ هو الذي ينشئ pm2-deploy.service
+# مثال شكلي فقط (لا تنسخه بدل الأمر الفعلي المطبوع): sudo env PATH=... pm2 startup systemd -u deploy --hp /home/deploy
+
+# 6) كـroot: درع ترتيب الإقلاع (G10): لا يقلع التطبيق قبل صحّة قاعدة MySQL — وإلا سباق إقلاع بعد كل انقطاع
 sudo mkdir -p /etc/systemd/system/pm2-deploy.service.d
-sudo cp deploy/systemd/pm2-deploy.service.d/wait-mysql.conf /etc/systemd/system/pm2-deploy.service.d/
-chmod +x deploy/wait-mysql-healthy.sh              # دفاع ثانٍ (الـdrop-in يستدعيه عبر /bin/bash أصلاً)
+sudo cp /home/deploy/erp/deploy/systemd/pm2-deploy.service.d/wait-mysql.conf /etc/systemd/system/pm2-deploy.service.d/
+sudo chmod +x /home/deploy/erp/deploy/wait-mysql-healthy.sh   # دفاع ثانٍ (الـdrop-in يستدعيه عبر /bin/bash أصلاً)
 sudo systemctl daemon-reload
 systemctl cat pm2-deploy.service | grep -A2 wait-mysql   # تحقّق: الدرع ظاهر في الوحدة
 ```
 
-> ⚠️ لا تنفّذ `pm2 startup`/`pm2 save` كـroot على خادم مشترك: إن وُجد دايمون PM2 جذري لنظام آخر
-> فإن `pm2 save` يكتب فوق قائمة إحيائه ويُسقط تطبيق غيرك من الإقلاع. دايموننا معزول تحت deploy.
+> ⚠️ لا تنفّذ `pm2 save` كـroot، ولا تُنشئ startup لمستخدم root. الاستثناء المقصود الوحيد هو تنفيذ
+> أمر `sudo ... pm2 startup systemd -u deploy --hp /home/deploy` الذي طبعه PM2؛ فهو يثبّت وحدة systemd
+> المستهدفة للمستخدم `deploy`. إن وُجد دايمون PM2 جذري لنظام آخر فإن `pm2 save` كـroot يكتب فوق قائمة
+> إحيائه ويُسقط تطبيق غيرك من الإقلاع. دايموننا معزول تحت deploy.
 
 ## ٤. nginx + HTTPS (إلزامي)
 
@@ -113,7 +128,7 @@ systemctl cat pm2-deploy.service | grep -A2 wait-mysql   # تحقّق: الدر�
 grep -rn "srv1548487.hstgr.cloud" /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ || echo "الاسم حرّ ✓"
 
 # 1) ثبّت القالب الملتزَم (عدّل server_name فيه إن استعملت نطاقاً خاصاً):
-sudo cp deploy/nginx-erp.conf /etc/nginx/sites-available/alroya-erp
+sudo cp /home/deploy/erp/deploy/nginx-erp.conf /etc/nginx/sites-available/alroya-erp
 sudo ln -s /etc/nginx/sites-available/alroya-erp /etc/nginx/sites-enabled/alroya-erp
 sudo nginx -t && sudo systemctl reload nginx     # reload لا restart — لا نقطع مواقع الخادم الأخرى
 
@@ -202,27 +217,39 @@ docker exec -i erp-mysql mysql -uroot -p<pw> < backups/<ملف-النسخة>.sql
 
 ## ٧. التحديثات اللاحقة (نشر إصدار جديد) — `pnpm prod:deploy`
 
-**الطريقة المعتمدة: أمرٌ ذرّيّ واحد** (`scripts/deploy.mjs`). بعد دمج التغييرات على `main` وخُضرة CI، ادخل الخادم بمستخدم `deploy` ونفّذه من مجلّد المشروع:
+**الطريقة المعتمدة: أمر نشر مُدار واحد** (`scripts/deploy.mjs`). بعد دمج التغييرات على `main` وخُضرة CI، شغّله بهوية `deploy` نفسها التي تملك `pm2-deploy.service`:
 
 ```bash
-ssh deploy@<الخادم>
-cd ~/erp
-pnpm prod:deploy
+ssh root@<الخادم>
+sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
 ```
 
-السكربت يشغّل **٧ خطوات بالترتيب الآمن، ويتوقّف فوراً عند أوّل فشل** (لا يُكمل ما بعده) — والخادم القديم يبقى يعمل حتى لحظة الخطوة ٧:
+> **PM2 خاص بكل مستخدم.** السكربت يرفض `root` أو `HOME/PM2_HOME` غير المطابق لـ`deploy`، كي لا يُنشئ daemon ثانياً يبدو فارغاً أو ينازع الخدمة الحقيقية على المنفذ.
+
+قبل أي خطوة متحوّلة، يرفض السكربت الفرع غير `main` أو الشجرة غير النظيفة، يجلب `origin/main` بـfast-forward، ثم **يعيد تشغيل نفسه من الكود المسحوب** إن تغيّر SHA. كما يثبت أن CLI وحزمة وdaemon ‏PM2 كلها `7.0.3`؛ تثبيت npm وحده لا يكفي من دون `pm2 update`.
+
+بعد ذلك ينفّذ **١٠ مراحل** تحت قفل نشر حصري. إذا وجد journal من نشر انقطع، يعيد أولاً آخر إصدار ملتزم ويتحقق منه ويحفظه قبل بدء نشر جديد:
 
 | # | الخطوة | الأمر الفعليّ | الغاية |
 |---|--------|--------------|--------|
-| ١ | جلب آخر `main` | `git pull --ff-only origin main` | fast-forward فقط — يرفض إن انحرف المحلّي (لا دمج صامت) |
-| ٢ | تركيب الاعتماديات | `pnpm install --frozen-lockfile` | يطابق `pnpm-lock.yaml` بالضبط (يفشل إن اختلف) |
-| ٣ | نسخة احتياطية طازجة | `pnpm db:backup` | قبل أيّ تغيير مخطّط — شبكة أمان الاستعادة |
-| ٤ | الهجرات الجديدة فقط | `pnpm db:migrate:safe` | بوّابة: ترفض التطبيق بلا نسخة طازجة (<١٠د)؛ تطبّق SQL المولَّد عبر drizzle migrator (لا `db:push` عارياً) |
-| ٥ | تحقّق مطابقة المخطّط | `pnpm db:verify` | يفحص الفهارس/الأعمدة الحرجة — يمسك انحراف المخطّط قبل التشغيل |
-| ٦ | بناء الإنتاج | `pnpm build` | يبني الواجهة (vite) والخادم (esbuild) |
-| ٧ | إعادة تشغيل الخادم | `pm2 reload erp-server` | إعادة تحميل بلا انقطاع تقريباً (لا إسقاط اتصالات) |
+| ١ | تركيب الاعتماديات | `pnpm install --frozen-lockfile` | يطابق `pnpm-lock.yaml` بالضبط |
+| ٢ | بناء المرشح | `pnpm build` | يبني العامل CJS بلا TypeScript وقت التشغيل، ويفحص dependency closure وmanifest وrollback state machine |
+| ٣ | preflight قبل DB | bootstrap الإصدار immutable | يفشل مبكراً قبل النسخ والهجرات؛ ويقبل `disabled` كحالة مقصودة |
+| ٤ | نسخة احتياطية | `pnpm db:backup` | قبل أي تغيير مخطّط |
+| ٥ | الهجرات | `pnpm db:migrate:safe` | هجرات مولّدة وآمنة فقط؛ لا `db:push` عارياً |
+| ٦ | مطابقة المخطط | `pnpm db:verify` | يثبت الأعمدة والفهارس الحرجة |
+| ٧ | preflight بعد DB | المرشح نفسه | يثبت توافق المرشح مع المخطط النهائي وعدم تغيّر وضع enabled/disabled أثناء النشر |
+| ٨ | فحص الرجوع | الإصدار الملتزم السابق | يثبت أن rollback ما زال متوافقاً مع المخطط الجديد قبل لمس PM2 |
+| ٩ | إعادة تحميل الويب | `pm2 reload ... --only erp-server --update-env` | reload للويب من الملف، بلا تشغيل الجسر من المسار المتغيّر |
+| ١٠ | معاملة تفعيل الجسر | release-local PM2 config → runtime gate → `pm2 save` → commit | يثبت المسار وcwd وPID والمنفذ والبيئة و`min_uptime`، ثم يثبت dump قبل اعتماد الحالة |
 
-**عند الفشل** يطبع «⛔ فشل: «الخطوة» — توقّفت الخطوات اللاحقة» ويخرج بكود 1؛ الخطوات ٤+ لم تُنفَّذ بعد فشلٍ سابق، والخادم القديم لم يُمسّ. للاستعادة إن لزم بعد فشل هجرة: `pnpm db:restore <أحدث-نسخة>`.
+**عامل الجسر إصدار immutable فعلي:** يحوي bootstrap والحزمة والسياسة ومصنع PM2 وتعريف PM2 المحلي ولقطة canonical محمية (`0600`) لمفاتيح بيئة الجسر المسموحة، وكلها داخلة في SHA-256 واحد. الـpreflight والتشغيل والrollback تقرأ اللقطة من الإصدار نفسه ولا تعيد قراءة `.env`. لا تُنسخ الأسرار إلى `app.env` أو `dump.pm2`؛ PM2 يحمل مفاتيح التحكم الآمنة فقط، ثم يستبدل bootstrap بيئته باللقطة قبل استيراد العامل. لا يظهر الجسر في `ecosystem.config.cjs` الجذري إلا أثناء artifact-smoke.
+
+**عند فشل التفعيل أو البوابة أو `pm2 save`:** يعيد السكربت الإصدار السابق بالمسار الدقيق، يعيد بوابة الاستقرار، ثم يحفظه. نجاح الرجوع يخرج بكود 1 ويبلّغ `ROLLBACK_OK`؛ فشل الرجوع يخرج بكود 2 ويُبقي journal مانعاً لأي نشر جديد حتى التعافي. لا توجد استعادة DB تلقائية؛ يجب أن تبقى الهجرات expand/contract متوافقة مع نافذة rollback.
+
+> **أول انتقال لا يحذف العامل القديم بلا baseline.** إذا وجد `prod:deploy` عملية legacy ولم يجد `state.current` فإنه يفشل قبل `git pull` بالرمز `HR_BRIDGE_LEGACY_ADOPTION_REQUIRED`. نفّذ adopter أدناه من worktree مؤقت: يبني ويفحص الإصدار الجديد من دون تغيير checkout الفعّال، ثم يبدّل الجسر ويحفظ PM2 و`state.current`. عند فشل المرشح يعيد legacy من checkout القديم قبل السماح بأي pull. بعد نجاح الاعتماد تصبح تغييرات enabled↔disabled وكل الإصدارات اللاحقة قابلة للرجوع الآلي.
+
+> عامل الجسر يبدأ دائماً fresh لأن `startOrReload --update-env` يدمج المفاتيح القديمة. تعريف الإصدار يصفّر البيئة الموروثة ثم يعيد allowlist فقط، والـbootstrap يحذف أي مفتاح زائد **قبل** تحميل كود العامل. البوابة تدقق `pm2_env.env` الفعلية من دون طباعة الأسماء أو القيم.
 
 **بعد النجاح — تحقّق حيّ فوريّ** (يطبعه السكربت نفسه):
 ```bash
@@ -231,14 +258,39 @@ curl -sf https://srv1548487.hstgr.cloud/api/print/status || pm2 logs erp-server 
 
 > ⚠️ **خادمٌ مشترك (سراج/أودو خطّ أحمر):** `prod:deploy` لا يمسّ إلّا حزمة ERP وقاعدتها؛ لا `reboot` ولا `ufw` ولا تغيير توقيتٍ بلا موافقة المالك (§٦ + ذاكرة قيود VPS).
 
-**المسار اليدويّ** (مرجعٌ للتشخيص — إن أردت تنفيذ خطوةً-خطوة، بنفس ترتيب السكربت):
+**مرة واحدة فقط لترحيل VPS عليه عامل legacy يعمل** — يجب أن يبقى `/home/deploy/erp` على checkout القديم حتى ينجح adopter:
 ```bash
-cd ~/erp && git pull --ff-only origin main
+sudo npm install -g pm2@7.0.3
+sudo -iu deploy pm2 update
+sudo -iu deploy bash <<'BASH'
+set -euo pipefail
+active=/home/deploy/erp
+cd "$active"
+git status --porcelain=v1 --untracked-files=all | grep -q . && {
+  echo "الـcheckout الفعّال غير نظيف؛ أوقف الاعتماد من دون تغيير أي ملف"
+  exit 1
+}
+git fetch origin main
+adopter=$(mktemp -d /home/deploy/hr-bridge-adopter.XXXXXX)
+cleanup() {
+  cd "$active"
+  git worktree remove --force "$adopter" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+git worktree add --detach "$adopter" origin/main
+cd "$adopter"
 pnpm install --frozen-lockfile
-pnpm db:backup && pnpm db:migrate:safe && pnpm db:verify
 pnpm build
-pm2 reload erp-server
+node scripts/adopt-hr-bridge-legacy.mjs --project-root "$active"
+
+# adopter نفسه لا يسحب checkout الفعّال إلا بعد runtime gate + pm2 save + state.current،
+# ويحمل sync.lock طوال الاعتماد والسحب. عند عودته يكون active على origin/main.
+cd "$active"
+pnpm prod:deploy
+BASH
 ```
+
+إذا انقطع adopter، أعد الأمر نفسه؛ يقرأ `legacy-adoption.json` ويعيد legacy أولاً ما دام checkout القديم لم يُسحب، أو يثبت الـbaseline الملتزم ويكمل السحب إن وقع الانقطاع بعد الاعتماد. لا تنفذ `git pull` يدوياً بين فشل adopter واستعادة legacy. يكتشف adopter حالة العامل القديمة ديناميكياً: إن كانت سليمة لا يقبل رجوعاً متدهوراً، وإن كانت `online` بلا مستمع (حالة الخادم الحالية) يسجلها `unhealthy` ويسمح للمرشح المترجم بإصلاحها؛ وإذا فشل المرشح يعيد تعريف legacy نفسه إلى `online` ويبلغ بوضوح أنه أعاد baseline غير سليم، لا `ROLLBACK_OK`. كما يقبل snapshot معطلة عمداً ويعتمد غياب الجسر بعد التحقق والحفظ. لا تشغّل الجسر يدوياً من `ecosystem.config.cjs` أو `dist`.
 
 ## ٨. قائمة تحقّق ما بعد النشر
 

@@ -1,11 +1,17 @@
 import { COOKIE_NAME, SESSION_DEFAULT_MS } from "@shared/const";
 import { parse as parseCookie } from "cookie";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Request } from "express";
 import { SignJWT, jwtVerify } from "jose";
 import { createHash } from "node:crypto";
 import { userSessions, users, type User, type UserSession } from "../../drizzle/schema";
+import {
+  isCurrentNativeClient,
+  isNativeClientRequest,
+  verifyNativeRequestProof,
+} from "./deviceProof";
 import { getDb } from "../db";
+import { extractAffectedRows } from "../lib/insertId";
 import { logger } from "../logger";
 
 /** لا كتابة على كل طلب — نحدّث `lastSeenAt` فقط إن كانت أقدم من هذه المهلة. */
@@ -33,6 +39,22 @@ function getSecret(): Uint8Array {
  * فقد مكوّن IP هو **إلزام المقارنة لكل طلب HTTP حقيقي** في verifySession أدناه
  * (لا يستطيع مهاجم «تجريد» UA للإفلات من المقارنة — غيابه يعطي بصمة مختلفة فيُرفض).
  */
+/**
+ * عنوان العميل الحقيقي بصيغة مجرّدة (بلا بادئة IPv4 المُغلَّفة ولا نطاق الواجهة). يعتمد
+ * `req.ip` فيحترم `trust proxy` المشروط في server/index.ts ⇒ عنوان الزبون خلف nginx/Cloudflare
+ * لا عنوان الوسيط. مُطابقٌ لدلالة `getClientIp` في authRouter كي لا تختلف صيغة العمود بين
+ * الإنشاء والتحديث (اختلافها يكسر مطابقة قرينة الثقة في جسر أجهزة الحضور).
+ */
+function currentRequestIp(
+  req: Request | { ip?: string; socket?: { remoteAddress?: string } } | null | undefined,
+): string | null {
+  const raw = (req as { ip?: string; socket?: { remoteAddress?: string } } | null | undefined);
+  const value = raw?.ip ?? raw?.socket?.remoteAddress ?? "";
+  const withoutZone = value.split("%")[0];
+  const clean = withoutZone.startsWith("::ffff:") ? withoutZone.slice(7) : withoutZone;
+  return clean ? clean.slice(0, 45) : null;
+}
+
 function getRequestUserAgent(req: Request | { headers?: Record<string, unknown> } | null | undefined): string {
   if (!req) return "";
   const anyReq = req as { headers?: Record<string, unknown> };
@@ -61,7 +83,15 @@ export function computeSessionFingerprint(req: Request | { ip?: string; headers?
 // `sid` (اختياري): معرّف سطر userSessions — يتيح إبطال جهاز واحد بعينه (راجع تعليق
 // userSessions في drizzle/schema.ts). توكنات ما قبل هذه الميزة لا تحمله ⇒ تستمرّ
 // بالعمل عبر sessionsValidFrom الجماعي فقط (بلا تحقّق فردي، بلا انحدار).
-export type SessionPayload = { uid: number; iat: number; fp?: string; companyId?: number; sid?: number };
+export type SessionPayload = {
+  uid: number;
+  iat: number;
+  fp?: string;
+  companyId?: number;
+  sid?: number;
+  /** SHA-256 thumbprint of the native app's non-exportable EC public key. */
+  dpk?: string;
+};
 
 /**
  * Sign a session JWT for a local user.
@@ -79,7 +109,8 @@ export async function signSession(
   req?: Request | { ip?: string; headers?: Record<string, unknown>; socket?: { remoteAddress?: string } } | null,
   iatSec?: number,
   companyId?: number,
-  sid?: number
+  sid?: number,
+  deviceKeyThumbprint?: string,
 ): Promise<string> {
   const issuedAtSeconds =
     typeof iatSec === "number" && Number.isInteger(iatSec) && iatSec > 0
@@ -89,8 +120,14 @@ export async function signSession(
   const claims: Record<string, unknown> = { uid };
   // البصمة تُحسب فقط عند توفّر الطلب. الاستدعاءات بلا req (اختبارات وحدة) تُصدر
   // توكناً بلا fp — ويعامله verifySession كـlegacy (لا مقارنة) لكي لا تنكسر.
-  if (req) {
+  if (req && !deviceKeyThumbprint) {
     claims.fp = computeSessionFingerprint(req);
+  }
+  if (deviceKeyThumbprint) {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(deviceKeyThumbprint)) {
+      throw new Error("Invalid native device key thumbprint");
+    }
+    claims.dpk = deviceKeyThumbprint;
   }
   // اختياري (وضع تعدّد الشركات فقط) — راجع تعليق SessionPayload.
   if (typeof companyId === "number" && Number.isInteger(companyId) && companyId > 0) {
@@ -154,6 +191,9 @@ export async function verifySession(
       typeof payload.sid === "number" && Number.isInteger(payload.sid) && payload.sid > 0
         ? payload.sid
         : undefined;
+    const dpk = typeof payload.dpk === "string" && /^[A-Za-z0-9_-]{43}$/.test(payload.dpk)
+      ? payload.dpk
+      : undefined;
 
     // إن مُرّر طلب: ألزم تطابق fp دائماً ⇒ يحبط إعادة استعمال التوكن من جهاز آخر.
     // المقارنة إلزامية حتى بلا ترويسة UA (بصمة الفراغ لن تطابق بصمة جهاز حقيقي) —
@@ -161,13 +201,19 @@ export async function verifySession(
     // التخطّي ثغرةً (تجريد UA = تجاوز الربط بالجهاز). الاستدعاء بلا req (اختبارات/
     // استعمال داخلي) يبقى بلا مقارنة كما كان.
     if (req) {
-      const current = computeSessionFingerprint(req);
-      // legacy token بلا fp ⇒ ارفض (force re-login مرّة واحدة بعد الترقية الأمنية).
-      if (!fp) return null;
-      if (current !== fp) return null;
+      if (dpk) {
+        // Proof-bound cookies stay protected even if an attacker strips or spoofs headers.
+        if (!sid || !isCurrentNativeClient(req)) return null;
+      } else {
+        // A declared native client must upgrade through authenticated key registration.
+        // Browser sessions retain their existing fingerprint behavior unchanged.
+        if (isNativeClientRequest(req)) return null;
+        const current = computeSessionFingerprint(req);
+        if (!fp || current !== fp) return null;
+      }
     }
 
-    return { uid, iat, fp, companyId, sid };
+    return { uid, iat, fp, companyId, sid, dpk };
   } catch {
     return null;
   }
@@ -222,10 +268,50 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
       return { user: null, sessionId: null };
     }
     sessionId = srow.id;
+    if (session.dpk) {
+      const currentMarker = srow.userAgent;
+      if (!currentMarker) return { user: null, sessionId: null };
+      let proof: { counter: number; nextMarker: string };
+      try {
+        proof = verifyNativeRequestProof({
+          req,
+          sessionToken: cookies[COOKIE_NAME]!,
+          expectedKeyThumbprint: session.dpk,
+          currentMarker,
+        });
+      } catch {
+        return { user: null, sessionId: null };
+      }
+      // Queries are integrity-bound but do not consume counters. Mutations atomically advance
+      // the session marker so a duplicate side-effect loses the compare-and-swap and is rejected.
+      if (req.method.toUpperCase() !== "GET" && req.method.toUpperCase() !== "HEAD") {
+        const updateResult = await db
+          .update(userSessions)
+          .set({ userAgent: proof.nextMarker })
+          .where(and(
+            eq(userSessions.id, srow.id),
+            eq(userSessions.userId, user.id),
+            eq(userSessions.userAgent, currentMarker),
+            isNull(userSessions.revokedAt),
+          ));
+        if (extractAffectedRows(updateResult) !== 1) {
+          return { user: null, sessionId: null };
+        }
+      }
+    }
     // لمسة last-seen مُلطَّفة (best-effort، لا تُعطِّل الطلب إن فشلت) — لا كتابة على كل طلب.
+    //
+    // نُحدِّث معها `ipAddress` إن تغيّر: (١) شاشة «الجلسات النشطة» كانت تعرض عنوان لحظة الدخول
+    // فتُضلّل بعد أسابيع من بقاء الجلسة مفتوحة؛ (٢) والأهمّ — جسر أجهزة الحضور يستنتج «عنوان
+    // المتجر الحاليّ» من هذه الأعمدة ليعتمد تلقائياً عنوان الجهاز بعد أن يغيّره المزوّد
+    // (server/services/hrDevices/originTrust.ts). عنوانٌ متجمّد هنا = تعافٍ لا يعمل هناك.
     if (Date.now() - srow.lastSeenAt.getTime() > LAST_SEEN_TOUCH_MS) {
+      const observedIp = currentRequestIp(req);
       db.update(userSessions)
-        .set({ lastSeenAt: new Date() })
+        .set({
+          lastSeenAt: new Date(),
+          ...(observedIp && observedIp !== srow.ipAddress ? { ipAddress: observedIp } : {}),
+        })
         .where(eq(userSessions.id, srow.id))
         .catch((e: unknown) => logger.warn({ err: e, sessionId: srow.id }, "session.touch_last_seen_failed"));
     }

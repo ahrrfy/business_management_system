@@ -9,14 +9,15 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
 import { EmpAvatar } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { LEAVE_STATUSES, LEAVE_TYPES, leaveStatusLabel } from "@shared/hr";
-import { Plus } from "lucide-react";
-import { useMemo, useState } from "react";
-import { ListToolbar, RowActions } from "@/components/list";
+import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -45,7 +46,8 @@ function daysBetween(from: string, to: string): number {
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
-const thisMonthPrefix = () => new Date().toISOString().slice(0, 7); // YYYY-MM
+
+const PAGE_SIZE = 25;
 
 export default function Leaves() {
   const utils = trpc.useUtils();
@@ -53,6 +55,12 @@ export default function Leaves() {
   const [type, setType] = useState("");
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+
+  // فلاتر القائمة (منفصلة عن نموذج الطلب الجديد أدناه — تتشارك الاسم لولا هذا الفصل).
+  const [empFilter, setEmpFilter] = useState("");
+  const [filterFrom, setFilterFrom] = useState("");
+  const [filterTo, setFilterTo] = useState("");
+  const [offset, setOffset] = useState(0);
 
   // نموذج الطلب الجديد
   const [employeeId, setEmployeeId] = useState("");
@@ -67,26 +75,32 @@ export default function Leaves() {
     () => ({
       status: (status || undefined) as never,
       type: (type || undefined) as never,
+      employeeId: empFilter ? Number(empFilter) : undefined,
+      from: filterFrom || undefined,
+      to: filterTo || undefined,
+      limit: PAGE_SIZE,
+      offset,
     }),
-    [status, type],
+    [status, type, empFilter, filterFrom, filterTo, offset],
   );
   const list = trpc.leaves.list.useQuery(input);
   const balances = trpc.leaves.balances.useQuery();
   const empOpts = trpc.employees.formOptions.useQuery();
 
-  const rows = list.data ?? [];
+  // أي تغيير فلترٍ يعيد الترقيم إلى الصفحة الأولى — وإلا قد يفتح على صفحة خارج نطاق النتائج الجديدة.
+  useEffect(() => setOffset(0), [status, type, empFilter, filterFrom, filterTo]);
+
+  const rows = list.data?.rows ?? [];
   const visibleRows = useMemo(() => {
     const q = query.trim().toLocaleLowerCase("ar");
     return q ? rows.filter((l) => [l.employeeName, l.leaveType, l.reason, leaveStatusLabel(l.status)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
   }, [rows, query]);
 
-  // مؤشّرات: قيد الموافقة، موافق عليها، أيام إجازة هذا الشهر (تتقاطع مع الشهر الحالي).
-  const monthPrefix = thisMonthPrefix();
-  const kpiPending = rows.filter((l) => l.status === "pending").length;
-  const kpiApproved = rows.filter((l) => l.status === "approved").length;
-  const kpiMonthDays = rows
-    .filter((l) => l.status === "approved" && (l.fromDate.startsWith(monthPrefix) || l.toDate.startsWith(monthPrefix)))
-    .reduce((s, l) => s + (l.days ?? 0), 0);
+  // مؤشّرات: قيد الموافقة، موافق عليها، أيام إجازة هذا الشهر — تُحسب خادمياً على كامل المجموعة
+  // المفلترة (لا على الصفحة المعروضة وحدها) كي تبقى صحيحة عبر كل الصفحات.
+  const kpiPending = list.data?.counts.pending ?? 0;
+  const kpiApproved = list.data?.counts.approved ?? 0;
+  const kpiMonthDays = list.data?.counts.monthDays ?? 0;
 
   const refresh = async () => {
     await Promise.all([utils.leaves.list.invalidate(), utils.leaves.balances.invalidate()]);
@@ -162,11 +176,11 @@ export default function Leaves() {
             <CardHeader>
               <ListToolbar
                 title="طلبات الإجازة"
-                count={visibleRows.length}
+                count={list.data?.total ?? visibleRows.length}
                 loading={list.isLoading}
-                search={{ value: query, onChange: setQuery, placeholder: "الموظف، النوع، السبب أو الحالة…" }}
-                activeFilterCount={(status ? 1 : 0) + (type ? 1 : 0)}
-                onResetFilters={() => { setQuery(""); setStatus(""); setType(""); }}
+                search={{ value: query, onChange: setQuery, placeholder: "الموظف، النوع، السبب أو الحالة… (ضمن الصفحة الحالية)" }}
+                activeFilterCount={(status ? 1 : 0) + (type ? 1 : 0) + (empFilter ? 1 : 0) + (filterFrom ? 1 : 0) + (filterTo ? 1 : 0)}
+                onResetFilters={() => { setQuery(""); setStatus(""); setType(""); setEmpFilter(""); setFilterFrom(""); setFilterTo(""); }}
                 onRefresh={() => void refresh()}
                 refreshing={list.isFetching || balances.isFetching}
                 onPrint={() => window.print()}
@@ -180,16 +194,45 @@ export default function Leaves() {
                     { key: "days", header: "الأيام" }, { key: "reason", header: "السبب" },
                     { key: "status", header: "الحالة", map: (l) => leaveStatusLabel(l.status) },
                   ],
+                  // البحث النصّي محلّيٌّ (ضمن الصفحة المحمَّلة فقط) — تعذّر تعميمه خادمياً على كل
+                  // الصفحات بلا مسّ leaveService.ts (خارج ملكية هذه الشريحة)؛ فحين يكون فارغاً
+                  // نُصدِّر كل الصفحات المطابقة لبقية الفلاتر عبر fetchAllPaged.
+                  fetchAll: query.trim()
+                    ? undefined
+                    : () =>
+                        fetchAllPaged(
+                          (off, lim) =>
+                            utils.leaves.list
+                              .fetch({ ...input, offset: off, limit: lim })
+                              .then((r) => ({ rows: r.rows, total: r.total })),
+                          { pageSize: 200 },
+                        ),
                 }}
-                filters={<div className="flex items-center gap-2 flex-wrap">
-                  <select className={selectCls} value={type} onChange={(e) => setType(e.target.value)} aria-label="النوع">
-                    <option value="">كل الأنواع</option>
-                    {LEAVE_TYPES.map((t) => <option key={t.key} value={t.key}>{t.key}</option>)}
-                  </select>
-                  <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
-                    <option value="">كل الحالات</option>
-                    {LEAVE_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-                  </select>
+                filters={<div className="flex items-end gap-2 flex-wrap">
+                  <FilterField label="النوع">
+                    <select className={selectCls} value={type} onChange={(e) => setType(e.target.value)} aria-label="النوع">
+                      <option value="">كل الأنواع</option>
+                      {LEAVE_TYPES.map((t) => <option key={t.key} value={t.key}>{t.key}</option>)}
+                    </select>
+                  </FilterField>
+                  <FilterField label="الحالة">
+                    <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
+                      <option value="">كل الحالات</option>
+                      {LEAVE_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                    </select>
+                  </FilterField>
+                  <FilterField label="الموظف">
+                    <select className={selectCls} value={empFilter} onChange={(e) => setEmpFilter(e.target.value)} aria-label="الموظف">
+                      <option value="">كل الموظفين</option>
+                      {(empOpts.data?.managers ?? []).map((m) => <option key={m.id} value={String(m.id)}>{m.name}</option>)}
+                    </select>
+                  </FilterField>
+                  <FilterField label="من تاريخ">
+                    <Input type="date" dir="ltr" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} className="h-8 w-36" aria-label="من تاريخ" />
+                  </FilterField>
+                  <FilterField label="إلى تاريخ">
+                    <Input type="date" dir="ltr" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} className="h-8 w-36" aria-label="إلى تاريخ" />
+                  </FilterField>
                 </div>}
               />
             </CardHeader>
@@ -282,6 +325,20 @@ export default function Leaves() {
                   </tbody>
                 </table>
               </ScrollTableShell>
+              {/* ترقيم حقيقي — خادميّ (offset/limit)، لا تحميل كامل الجدول دفعةً واحدة. */}
+              <div className="flex items-center justify-between gap-2 p-2 border-t text-xs text-muted-foreground">
+                <span>
+                  {list.data ? `${Math.min(offset + 1, list.data.total)}–${Math.min(offset + PAGE_SIZE, list.data.total)} من ${list.data.total.toLocaleString("ar-IQ-u-nu-latn")}` : ""}
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}>
+                    <ChevronRight className="size-4" aria-hidden /> السابق
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={!list.data?.hasMore} onClick={() => setOffset((o) => o + PAGE_SIZE)}>
+                    التالي <ChevronLeft className="size-4" aria-hidden />
+                  </Button>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

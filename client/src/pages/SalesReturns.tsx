@@ -1,6 +1,7 @@
 import { EntityPicker } from "@/components/invoice/EntityPicker";
 import { ListToolbar, RowActions } from "@/components/list";
 import { ErrorState } from "@/components/PageState";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -8,7 +9,9 @@ import { Input } from "@/components/ui/input";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 
@@ -28,19 +31,27 @@ const selectCls =
 export default function SalesReturns() {
   const [customerId, setCustomerId] = useState<number | "">("");
   const [branchId, setBranchId] = useState<number | "">("");
+  const [createdBy, setCreatedBy] = useState<number | "">("");
   // فلتر الفترة خادمي (entryDate) — أسماء dateFrom/dateTo لتفادي تصادم from/to الترقيم أدناه.
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  // بحث خادمي برقم الفاتورة (ممهَّل — لا طلب لكل حرف).
+  const [q, setQ] = useState("");
+  const dq = useDebouncedValue(q, 250);
   const [page, setPage] = useState(0);
 
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
+  // منفّذو المرتجعات ضمن الفرع المُختار حالياً — يغذّي فلتر «منفّذ المرتجع» (لا دليل مستخدمين كامل).
+  const performers = trpc.returns.performers.useQuery({ branchId: branchId ? Number(branchId) : undefined });
   // مدخلات الفلترة بلا limit/offset — مشتركة بين الاستعلام الصفحي وتصدير الكل.
   const filterInput = {
     customerId: customerId ? Number(customerId) : undefined,
     branchId: branchId ? Number(branchId) : undefined,
     from: dateFrom || undefined,
     to: dateTo || undefined,
+    q: dq.trim() || undefined,
+    createdBy: createdBy ? Number(createdBy) : undefined,
   };
   const list = trpc.returns.list.useQuery({
     ...filterInput,
@@ -86,6 +97,12 @@ export default function SalesReturns() {
             title="المرتجعات"
             count={total}
             loading={list.isLoading}
+            search={{
+              value: q,
+              onChange: (v) => { setQ(v); setPage(0); },
+              placeholder: "بحث برقم الفاتورة",
+              barcode: true,
+            }}
             filters={
               <>
                 {/* بحث خادميّ بدل قائمة مقصوصة عند ٥٠٠ (العميل ٥٠١ كان غير قابل للاختيار). */}
@@ -108,6 +125,18 @@ export default function SalesReturns() {
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
                 </select>
+                <AppSelect
+                  size="sm"
+                  className="h-8 w-44"
+                  value={createdBy === "" ? "ALL" : String(createdBy)}
+                  onValueChange={(v) => setFilter(setCreatedBy, v === "ALL" ? "" : Number(v))}
+                  placeholder="— منفّذ المرتجع —"
+                >
+                  <option value="ALL">— كل المنفّذين —</option>
+                  {(performers.data ?? []).map((p) => (
+                    <option key={p.id} value={String(p.id)}>{p.name}</option>
+                  ))}
+                </AppSelect>
                 <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(0); }} title="من تاريخ" />
                 <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(0); }} title="إلى تاريخ" />
               </>
@@ -170,6 +199,19 @@ export default function SalesReturns() {
                   <td className="p-2 text-center">
                     <RowActions
                       mode="auto"
+                      contact={r.customerName ? {
+                        phone: r.customerPhone,
+                        label: `واتساب ${r.customerName}`,
+                        message: buildOperationalContactMessage({
+                          entityLabel: "مرتجع بيع",
+                          reference: String(r.id),
+                          partyName: r.customerName,
+                          title: `قيمة المرتجع: ${fmt(returned(r.amount))} د.ع`,
+                          dueAt: r.entryDate,
+                          nextAction: "نؤكد لكم تسجيل المرتجع وتسوية الفاتورة المرتبطة.",
+                        }),
+                        gate: { module: "sales", level: "READ" },
+                      } : undefined}
                       actions={[
                         {
                           key: "invoice",
@@ -195,7 +237,7 @@ export default function SalesReturns() {
               {!list.isLoading && !list.isError && rows.length === 0 && (
                 <tr>
                   <td colSpan={9} className="p-6 text-center text-muted-foreground">
-                    {total === 0 && !customerId && !branchId && !dateFrom && !dateTo
+                    {total === 0 && !customerId && !branchId && !createdBy && !dateFrom && !dateTo && !q.trim()
                       ? "لا مرتجعات بيع بعد."
                       : "لا مرتجعات مطابقة. غيّر الفلتر."}
                   </td>

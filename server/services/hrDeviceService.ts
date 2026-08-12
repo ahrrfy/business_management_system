@@ -20,6 +20,11 @@ import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { onlineDeviceIds } from "./hrDevices/registry";
 import { resolveBridgeConfig } from "./hrDevices/types";
+import {
+  enabledDeviceIdentityFailure,
+  isExactHostNetwork,
+  resolveBridgeSecurityConfig,
+} from "./hrDevices/bridgeSecurity";
 
 /**
  * قائمة الأجهزة مع اسم الفرع. الأحدث أولاً.
@@ -128,6 +133,42 @@ export interface DeviceInput {
   protocol?: string | null;
 }
 
+function hasSecureIdentityBinding(serialNumber: string | null | undefined, ip: string | null | undefined): boolean {
+  const sn = serialNumber?.trim();
+  const security = resolveBridgeSecurityConfig();
+  const binding = sn ? security.deviceIdentityBindings[sn] : undefined;
+  if (binding) {
+    return Boolean(binding.sharedSecret) || (
+      binding.allowlist.length > 0 && binding.allowlist.every(isExactHostNetwork)
+    );
+  }
+  if (ip?.trim()) return isExactHostNetwork(ip.trim());
+  return security.legacyIdentityMigration;
+}
+
+async function assertCandidateIdentityReady(candidate: {
+  id?: number;
+  serialNumber: string | null | undefined;
+  ip: string | null | undefined;
+}): Promise<void> {
+  const db = requireDb();
+  const rows = await db
+    .select({
+      id: hrFingerprintDevices.id,
+      serialNumber: hrFingerprintDevices.serialNumber,
+      ip: hrFingerprintDevices.ip,
+    })
+    .from(hrFingerprintDevices)
+    .where(eq(hrFingerprintDevices.enabled, true));
+  const devices = rows
+    .filter((row) => row.id !== candidate.id)
+    .concat([{ id: candidate.id ?? -1, serialNumber: candidate.serialNumber ?? null, ip: candidate.ip ?? null }]);
+  const failure = enabledDeviceIdentityFailure(devices, resolveBridgeSecurityConfig());
+  if (failure) throw new TRPCError({ code: "BAD_REQUEST", message: failure });
+}
+
+export { assertEnabledDeviceIdentityReadiness } from "./hrDevices/readiness";
+
 function toValues(input: DeviceInput) {
   return {
     name: input.name.trim(),
@@ -148,9 +189,39 @@ function toValues(input: DeviceInput) {
   };
 }
 
+/**
+ * تعديلٌ جزئيّ: يُبقي كل حقلٍ لم يُرسَل كما هو في القاعدة. مقصودٌ أن يختلف عن `toValues`
+ * (المستعمل في الإنشاء حيث الغياب = «بلا قيمة» فعلاً) — الشاشة تُرسل حقول التعريف فقط،
+ * وبقيّة الأعمدة يكتبها الجهاز نفسه عند المصافحة فلا يجوز لتعديلٍ بشريّ أن يدهسها.
+ */
+function toPatch(input: DeviceInput) {
+  const all = toValues(input) as Record<string, unknown>;
+  const provided = input as unknown as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const key of Object.keys(all)) {
+    // `name` إلزاميّ في العقد ويُرسَل دائماً؛ البقيّة تُكتب فقط إن حملها الطلب صراحةً.
+    if (key === "name" || provided[key] !== undefined) patch[key] = all[key];
+  }
+  return patch;
+}
+
 export async function createDevice(input: DeviceInput) {
+  if (input.serialNumber?.trim() && !hasSecureIdentityBinding(input.serialNumber, input.ip)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "أدخل IP الجهاز أو اضبط ربط SN بمفتاح خاص قبل تفعيله. وضع الهوية القديمة مغلق.",
+    });
+  }
+  const enableOnCreate = Boolean(input.serialNumber?.trim());
+  if (enableOnCreate) {
+    await assertCandidateIdentityReady({ serialNumber: input.serialNumber, ip: input.ip });
+  }
   const db = requireDb();
-  const [res] = await db.insert(hrFingerprintDevices).values({ ...toValues(input), migrated: false });
+  const [res] = await db.insert(hrFingerprintDevices).values({
+    ...toValues(input),
+    migrated: false,
+    enabled: enableOnCreate,
+  });
   return getDevice(extractInsertId(res));
 }
 
@@ -158,7 +229,24 @@ export async function updateDevice(id: number, input: DeviceInput) {
   const db = requireDb();
   const [d] = await db.select().from(hrFingerprintDevices).where(eq(hrFingerprintDevices.id, id)).limit(1);
   if (!d) throw new Error("الجهاز غير موجود");
-  await db.update(hrFingerprintDevices).set(toValues(input)).where(eq(hrFingerprintDevices.id, id));
+  const nextSerialNumber = input.serialNumber === undefined ? d.serialNumber : input.serialNumber;
+  const nextIp = input.ip === undefined ? d.ip : input.ip;
+  if (d.enabled && !hasSecureIdentityBinding(nextSerialNumber, nextIp)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا يمكن إزالة ربط الهوية من جهاز مفعّل. ثبّت IP أو مفتاح SN قبل الحفظ.",
+    });
+  }
+  if (d.enabled) {
+    await assertCandidateIdentityReady({ id, serialNumber: nextSerialNumber, ip: nextIp });
+  }
+  // ⚠️ دمجٌ لا استبدال (مراجعة عادية): `toValues` يحوّل الحقول الغائبة إلى null/0/"offline"،
+  // فتعديلُ الاسم وحده كان يمسح `serverHost`/`serverPort` (بيانات الهجرة) ويصفّر العدّادات
+  // الحيّة (`usersCount`/`recordsCount`/`firmware`) ويعيد الحالة «منقطع». نكتب المُرسَل فقط.
+  await db
+    .update(hrFingerprintDevices)
+    .set(toPatch(input))
+    .where(eq(hrFingerprintDevices.id, id));
   return getDevice(id);
 }
 
@@ -195,6 +283,13 @@ export async function approveDevice(id: number, patch: { name?: string; branchId
   const db = requireDb();
   const [d] = await db.select().from(hrFingerprintDevices).where(eq(hrFingerprintDevices.id, id)).limit(1);
   if (!d) throw new Error("الجهاز غير موجود");
+  if (!hasSecureIdentityBinding(d.serialNumber, d.ip)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا يمكن اعتماد جهاز بلا IP مرصود أو مفتاح خاص مرتبط برقمه التسلسلي.",
+    });
+  }
+  await assertCandidateIdentityReady({ id, serialNumber: d.serialNumber, ip: d.ip });
   await db
     .update(hrFingerprintDevices)
     .set({

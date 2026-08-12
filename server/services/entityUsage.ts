@@ -54,6 +54,7 @@ import {
   stocktakeDecisions,
   stocktakeItems,
   stocktakeSessions,
+  receptionDraftLines,
   workOrderItems,
   workOrderMaterials,
   workOrders,
@@ -205,6 +206,20 @@ export async function getProductUsage(productId: number, conn?: any): Promise<Us
     ],
     ["invoiceItems", "بنود فواتير بيع", countRows(db, invoiceItems, vCond(invoiceItems.variantId))],
     ["quotationItems", "بنود عروض أسعار", countRows(db, quotationItems, vCond(quotationItems.variantId))],
+    // ش٢ (V17): FKs المسوّدات RESTRICT ⇒ الحذف يحتاج تسمية المصدر. **محصورٌ بـOPEN** عمداً —
+    // مسوّدةٌ ملغاة/منقضية لا تمنع حذف منتجٍ للأبد (§٥.٢).
+    [
+      "receptionDraftLines",
+      "أسطر مسوّدات استقبال مفتوحة",
+      countRows(
+        db,
+        receptionDraftLines,
+        and(
+          sql`(${vCond(receptionDraftLines.variantId)} OR ${uCond(receptionDraftLines.productUnitId)})`,
+          sql`EXISTS (SELECT 1 FROM receptionDrafts d WHERE d.id = ${receptionDraftLines.draftId} AND d.draftStatus = 'OPEN')`,
+        ),
+      ),
+    ],
     ["workOrdersBase", "أوامر شغل (منتج أساس)", countRows(db, workOrders, vCond(workOrders.baseVariantId))],
     [
       "workOrderLines",

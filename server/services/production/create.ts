@@ -2,7 +2,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { asc, eq, inArray, sql } from "drizzle-orm";
-import { branchStock, productVariants, productionLines, productionOrders } from "../../../drizzle/schema";
+import { branchStock, productVariants, products, productionLines, productionOrders } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { applyMovement } from "../inventoryService";
@@ -178,10 +178,15 @@ async function resolveAndValidateLines(
 
   // وجود كل الأصناف.
   const allVarIds = Array.from(new Set(inLines.concat(outLines).map((l) => l.variantId)));
-  const existing = await tx.select({ id: productVariants.id }).from(productVariants).where(inArray(productVariants.id, allVarIds));
+  const existing = await tx.select({ id: productVariants.id, isService: products.isService, isBundle: products.isBundle })
+    .from(productVariants).innerJoin(products, eq(products.id, productVariants.productId)).where(inArray(productVariants.id, allVarIds));
   const existSet = new Set(existing.map((v: any) => Number(v.id)));
   for (const id of allVarIds) {
     if (!existSet.has(id)) throw new TRPCError({ code: "NOT_FOUND", message: `صنف #${id} غير موجود` });
+  }
+  for (const variant of existing) {
+    if (variant.isService) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُرحّل المنتج الخدمي ضمن إنتاج مخزني؛ تُستهلك وصفته عند بيع الخدمة" });
+    if (variant.isBundle) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُرحّل المنتج البكج ضمن إنتاج مخزني؛ حرّك مكوّناته بدلًا منه" });
   }
 
   return { inLines, outLines, laborCost, spoilage, linkedRecipeId };

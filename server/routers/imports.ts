@@ -13,6 +13,7 @@ import {
   type ImportSummary,
 } from "../services/importService";
 import { managerProcedure, router } from "../trpc";
+import { syncActiveFullStocktakeScopes } from "../services/stocktakeService";
 
 const optionsSchema = z
   .object({
@@ -72,6 +73,7 @@ export const importRouter = router({
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 };
       const summary = await importProducts(input.rows, input.options ?? {}, actor);
+      if (summary.committed) await syncActiveFullStocktakeScopes();
       if (summary.committed)
         await logAudit(ctx, { action: "import.products", entityType: "import", newValue: auditCounts(summary) });
       return summary;

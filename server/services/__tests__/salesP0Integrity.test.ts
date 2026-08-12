@@ -104,6 +104,7 @@ async function seedBase() {
 async function insertShift(opts: {
   id?: number;
   userId?: number;
+  branchId?: number;
   status?: "OPEN" | "CLOSED";
   shiftType?: "RETAIL" | "PRINT_SERVICES";
   opening?: string;
@@ -111,6 +112,7 @@ async function insertShift(opts: {
 }) {
   const id = opts.id ?? 1;
   const userId = opts.userId ?? 1;
+  const branchId = opts.branchId ?? 1;
   const status = opts.status ?? "OPEN";
   const shiftType = opts.shiftType ?? "RETAIL";
   await db()
@@ -118,11 +120,11 @@ async function insertShift(opts: {
     .values({
       id,
       userId,
-      branchId: 1,
+      branchId,
       status,
       shiftType,
       openingBalance: opts.opening ?? "0",
-      openGuard: status === "OPEN" ? `${userId}:1:${shiftType}` : null,
+      openGuard: status === "OPEN" ? `${userId}:${branchId}:${shiftType}` : null,
       closedAt: status === "CLOSED" ? new Date() : null,
       closingDrawerCash: opts.closing ?? null,
     });
@@ -225,6 +227,31 @@ describe("P0 cash-source integrity", () => {
       .from(s.receipts)
       .where(eq(s.receipts.invoiceId, sale.invoiceId));
     expect(receipts).toHaveLength(1);
+  });
+
+  it("rejects assigning an invoice payment to a shift in another branch", async () => {
+    await db().insert(s.branches).values({ id: 2, name: "SECOND", code: "SECOND", type: "SALES" });
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      cashier,
+    );
+    await insertShift({ id: 2, branchId: 2, userId: 1 });
+
+    await expect(
+      processPayment(
+        { invoiceId: sale.invoiceId, amount: "10", method: "CASH", shiftId: 2, enforceBranchId: 1 },
+        cashier,
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
+    expect(invoice.paidAmount).toBe("0.00");
   });
 
   it("never replays an offline sale into a CLOSED shift", async () => {

@@ -8,6 +8,7 @@ import { confirm, confirmDelete } from "@/lib/confirm";
 import { D, fmt, pct, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { normalizeSearchText } from "@shared/searchNormalize";
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -41,7 +42,10 @@ export default function ProductionRecipes() {
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId ?? 1;
   const utils = trpc.useUtils();
-  const list = trpc.production.recipes.list.useQuery({});
+  // فلتر «فقط النشطة» — جاهز خادمياً (production.recipes.list يقبل activeOnly) لكنه لم يكن
+  // مكشوفاً بالواجهة فتُجلَب كل الوصفات دائماً (بما فيها المعطَّلة) وتُفلتَر بحثاً محلياً فقط.
+  const [activeOnly, setActiveOnly] = useState(false);
+  const list = trpc.production.recipes.list.useQuery({ activeOnly: activeOnly || undefined });
 
   const [editId, setEditId] = useState<number | null>(null);
   const [name, setName] = useState("");
@@ -158,7 +162,9 @@ export default function ProductionRecipes() {
 
   const busy = saveMut.isPending || updateMut.isPending;
   const rows: any[] = list.data ?? [];
-  const filtered = rows.filter((r) => !q.trim() || String(r.name).includes(q.trim()));
+  // تطبيع عربي (طيّ الهمزات/الأرقام الهندية) — بحث «ملازم» يجد «ملازِم» ولا يفوّت رقماً هندياً.
+  const normQ = normalizeSearchText(q.trim());
+  const filtered = rows.filter((r) => !normQ || normalizeSearchText(String(r.name)).includes(normQ));
 
   return (
     <div className="space-y-4" dir="rtl">
@@ -309,11 +315,15 @@ export default function ProductionRecipes() {
       {/* قائمة البطاقات */}
       {!showForm && (
         <>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <div className="relative max-w-xs w-full">
               <Search aria-hidden className="size-4 absolute top-1/2 -translate-y-1/2 start-3 text-muted-foreground pointer-events-none" />
-              <Input className="ps-9" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ابحث في الوصفات…" />
+              <Input className="ps-9" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ابحث في الوصفات…" dir="auto" />
             </div>
+            <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground cursor-pointer select-none">
+              <input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} className="size-3.5" />
+              فقط النشطة
+            </label>
             <span className="inline-block rounded-full px-2 py-0.5 text-xs bg-muted text-muted-foreground">{filtered.length} وصفة</span>
           </div>
 

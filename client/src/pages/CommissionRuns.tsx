@@ -1,8 +1,8 @@
 /* ============================================================================
  * شاشة «تشغيلات العمولة» — وحدة الأهداف والعمولات (S3). مرآة UX شاشة الرواتب.
  *
- * دورة الحياة: احتساب (مسودة) → اعتماد (SOD: المعتمِد ≠ المحتسِب) → يلتقطها مسيّر
- * الرواتب لنفس الشهر (S4). إعادة الاحتساب والحذف على المسودة فقط؛ إلغاء الاعتماد
+ * دورة الحياة: احتساب (مسوّدة) → اعتماد (SOD: المعتمِد ≠ المحتسِب) → يلتقطها مسيّر
+ * الرواتب لنفس الشهر (S4). إعادة الاحتساب والحذف على المسوّدة فقط؛ إلغاء الاعتماد
  * ممنوع بعد الالتقاط أو وجود شهر أحدث (سلسلة الترحيل). كل الأرقام من الخادم (لقطات).
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,7 @@ import { confirm, confirmDelete } from "@/lib/confirm";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { exportRows } from "@/lib/export";
 import { fmtDate } from "@/lib/date";
-import { D, round2 } from "@/lib/money";
+import { D, fmtAr, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -29,7 +29,7 @@ import { useMemo, useState } from "react";
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const STATUS_LABEL: Record<string, string> = { draft: "مسودة", approved: "معتمدة" };
+const STATUS_LABEL: Record<string, string> = { draft: "مسوّدة", approved: "معتمدة" };
 const STATUS_CLS: Record<string, string> = { draft: "badge-stock-low", approved: "badge-status-active" };
 
 function StatusBadge({ status }: { status: string }) {
@@ -101,7 +101,7 @@ export default function CommissionRuns() {
 
   const compute = trpc.commissions.runs.compute.useMutation({
     onSuccess: async (r) => {
-      notify.ok(r.recomputed ? "أُعيد احتساب كشف الشهر" : "احتُسب كشف عمولات الشهر (مسودة)");
+      notify.ok(r.recomputed ? "أُعيد احتساب كشف الشهر" : "احتُسب كشف عمولات الشهر (مسوّدة)");
       setComputeOpen(false);
       setSelectedId(r.runId);
       await refresh();
@@ -113,8 +113,8 @@ export default function CommissionRuns() {
       notify.ok("اعتُمد كشف العمولات");
       if (r.requiresPayrollRegeneration) {
         notify.errBig(
-          "مسيّر رواتب هذا الشهر ما يزال مسودة",
-          "أعد توليد المسيّر من تبويب «الرواتب» كي يظهر فيه بند العمولة (احذف المسودة ثم ولّدها مجدداً).",
+          "مسيّر رواتب هذا الشهر ما يزال مسوّدة",
+          "أعد توليد المسيّر من تبويب «الرواتب» كي يظهر فيه بند العمولة (احذف المسوّدة ثم ولّدها مجدداً).",
         );
       }
       await refresh();
@@ -122,11 +122,11 @@ export default function CommissionRuns() {
     onError: (e) => notify.err(e),
   });
   const unapprove = trpc.commissions.runs.unapprove.useMutation({
-    onSuccess: async () => { notify.ok("أُلغي الاعتماد — عاد الكشف مسودةً"); await refresh(); },
+    onSuccess: async () => { notify.ok("أُلغي الاعتماد — عاد الكشف مسوّدةً"); await refresh(); },
     onError: (e) => notify.err(e),
   });
   const remove = trpc.commissions.runs.remove.useMutation({
-    onSuccess: async () => { notify.ok("حُذفت المسودة"); setSelectedId(null); await refresh(); },
+    onSuccess: async () => { notify.ok("حُذفت المسوّدة"); setSelectedId(null); await refresh(); },
     onError: (e) => notify.err(e),
   });
 
@@ -213,7 +213,7 @@ export default function CommissionRuns() {
     <div className="space-y-4">
       <PageHeader
         title="احتساب العمولات الشهري"
-        description="في نهاية كل شهر يجمع النظام مبيعات كل بائع من الفواتير، يطرح مرتجعاته، ثم يطبّق خطته ويخرج عمولته. يبدأ الكشف «مسودة» قابلة للتعديل، ويعتمده شخص غير الذي احتسبه، ثم يُصرَف بنداً في مسيّر رواتب الشهر نفسه."
+        description="في نهاية كل شهر يجمع النظام مبيعات كل بائع من الفواتير، يطرح مرتجعاته، ثم يطبّق خطته ويخرج عمولته. يبدأ الكشف «مسوّدة» قابلة للتعديل، ويعتمده شخص غير الذي احتسبه، ثم يُصرَف بنداً في مسيّر رواتب الشهر نفسه."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
             <select
@@ -289,11 +289,11 @@ export default function CommissionRuns() {
                 className="text-destructive"
                 disabled={busy}
                 onClick={async () => {
-                  if (!(await confirmDelete({ description: `حذف مسودة عمولات ${run.period} وكل أسطرها (${run.employeeCount} موظف)؟` }))) return;
+                  if (!(await confirmDelete({ description: `حذف مسوّدة عمولات ${run.period} وكل أسطرها (${run.employeeCount} موظف)؟` }))) return;
                   remove.mutate({ id: Number(run.id) });
                 }}
               >
-                <Trash2 className="size-4" /> حذف المسودة
+                <Trash2 className="size-4" /> حذف المسوّدة
               </Button>
             </>
           )}
@@ -304,7 +304,7 @@ export default function CommissionRuns() {
               className="text-destructive"
               disabled={busy}
               onClick={async () => {
-                if (!(await confirm({ variant: "danger", title: `إلغاء اعتماد عمولات ${run.period}`, description: "يعود الكشف مسودةً قابلة لإعادة الاحتساب. ممنوع إن أُدرج في مسيّر رواتب أو وُجد كشف لشهر أحدث.", confirmText: "إلغاء الاعتماد" }))) return;
+                if (!(await confirm({ variant: "danger", title: `إلغاء اعتماد عمولات ${run.period}`, description: "يعود الكشف مسوّدةً قابلة لإعادة الاحتساب. ممنوع إن أُدرج في مسيّر رواتب أو وُجد كشف لشهر أحدث.", confirmText: "إلغاء الاعتماد" }))) return;
                 unapprove.mutate({ id: Number(run.id) });
               }}
             >
@@ -379,7 +379,7 @@ export default function CommissionRuns() {
                         )}
                       </td>
                       <td className="p-2.5 text-center tabular-nums text-xs" dir="ltr">
-                        {l.tierIndex != null ? `${Number(l.ratePct)}%${D(l.fixedBonus).gt(0) ? ` +${iqd(l.fixedBonus)}` : ""}` : "—"}
+                        {l.tierIndex != null ? `${fmtAr(l.ratePct)}%${D(l.fixedBonus).gt(0) ? ` +${iqd(l.fixedBonus)}` : ""}` : "—"}
                       </td>
                       <td className="p-2.5 text-right tabular-nums font-bold" dir="ltr">{iqd(l.commissionAmount)}</td>
                       <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">
@@ -468,13 +468,13 @@ export default function CommissionRuns() {
                 {row("مرحَّل من الشهر السابق", iqd(detailLine.carryIn))}
                 <div className="border-t pt-2">{row("المبلغ المحتسَب عليه", iqd(detailLine.effectiveBase), "font-bold")}</div>
                 {detailLine.targetAmount != null && row("هدفه الشهري", iqd(detailLine.targetAmount))}
-                {detailLine.achievementPct != null && row("نسبة تحقيق الهدف", `${Number(detailLine.achievementPct)}%`)}
+                {detailLine.achievementPct != null && row("نسبة تحقيق الهدف", `${fmtAr(detailLine.achievementPct)}%`)}
                 {d.noTarget && (
                   <p className="text-xs text-destructive">لا هدف محدَّداً لهذا الشهر — وخطة «حسب نسبة تحقيق الهدف» بلا هدف تعطي صفراً. حدّد هدفه من تبويب «الأهداف الشهرية» ثم أعد الاحتساب.</p>
                 )}
                 {row(
                   "المستوى المطبَّق",
-                  detailLine.tierIndex != null ? `من ${d.tierThreshold ?? "?"} ← ${Number(detailLine.ratePct)}%` : "لم يبلغ أي مستوى",
+                  detailLine.tierIndex != null ? `من ${d.tierThreshold ?? "?"} ← ${fmtAr(detailLine.ratePct)}%` : "لم يبلغ أي مستوى",
                 )}
                 {D(detailLine.fixedBonus).gt(0) && row("مكافأة ثابتة", `+${iqd(detailLine.fixedBonus)}`, "text-money-positive")}
                 <div className="border-t pt-2">{row("العمولة المستحقّة", iqd(detailLine.commissionAmount), "font-bold text-money-positive")}</div>

@@ -1,6 +1,8 @@
 import { RowActions } from "@/components/list";
+import { FinancialTraceDetails } from "@/components/financial/FinancialTraceDetails";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -10,16 +12,37 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
-import { fmtDate } from "@/lib/date";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
 import { printDoc } from "@/lib/printing/print";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { Loader2, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import {
+  moduleAccessAllowed,
+  type PermissionMap,
+  type RoleKey,
+} from "@shared/permissions";
+import {
+  AlertTriangle,
+  Building2,
+  ChevronDown,
+  ChevronUp,
+  CircleDollarSign,
+  Landmark,
+  Layers3,
+  Loader2,
+  Printer,
+  Search,
+  ShieldAlert,
+  SlidersHorizontal,
+  UserRound,
+  WalletCards,
+  X,
+} from "lucide-react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 
 const selectCls =
@@ -49,8 +72,13 @@ const STOCK_REASON_LABEL: Record<string, string> = {
   INTERNAL_USE: "نثرية (مخزون)",
   WASTAGE: "تلف (مخزون)",
 };
-function sourceLabel(r: { source?: string | null; stockReason?: string | null; paymentMethod: string }) {
-  if (r.source === "STOCK") return STOCK_REASON_LABEL[r.stockReason ?? ""] ?? "مخزون";
+function sourceLabel(r: {
+  source?: string | null;
+  stockReason?: string | null;
+  paymentMethod: string;
+}) {
+  if (r.source === "STOCK")
+    return STOCK_REASON_LABEL[r.stockReason ?? ""] ?? "مخزون";
   return METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod;
 }
 
@@ -58,15 +86,376 @@ const STATUS_CLS: Record<string, string> = {
   ACTIVE: "badge-status-active",
   CANCELLED: "badge-status-cancelled",
 };
-const STATUS_LABEL: Record<string, string> = { ACTIVE: "نافذ", CANCELLED: "مُلغى" };
+const STATUS_LABEL: Record<string, string> = {
+  ACTIVE: "نافذ",
+  CANCELLED: "مُلغى",
+};
 
 /** حجم صفحة القائمة — الخادم يُرقّم (سقفه ١٠٠٠). */
 const PAGE_SIZE = 50;
 
-type ExpenseRow = RouterOutputs["expenses"]["list"]["rows"][number];
+type ExpenseRowBase = RouterOutputs["expenses"]["list"]["rows"][number];
+
+/**
+ * عقد العرض الموسّع. جميع الحقول اختيارية عمداً حتى يبقى نشر الواجهة آمناً أثناء
+ * ترقية خدمة المصروفات، وتظهر «—» بدلاً من كسر الشاشة عند سجل تاريخي ناقص.
+ */
+type ExpenseRow = ExpenseRowBase &
+  Partial<{
+    cashBucket: "DRAWER" | "TREASURY" | null;
+    payee: string | null;
+    costCenter: string | null;
+    receiptId: number | null;
+    createdBy: number | null;
+    createdByName: string | null;
+    shiftOwnerName: string | null;
+    shiftType: string | null;
+    shiftStatus: string | null;
+    receiptVoucherNumber: string | null;
+    receiptStatus: string | null;
+    approvalStatus: string | null;
+    approvedByName: string | null;
+    updatedAt: string | Date | null;
+    fundingKind: string | null;
+    integrityWarnings: string[] | null;
+  }>;
+
+type ExpenseTotals = {
+  active?: string | number | null;
+  count?: number | null;
+  drawer?: string | number | null;
+  treasury?: string | number | null;
+  nonCash?: string | number | null;
+  stock?: string | number | null;
+  cancelled?: string | number | null;
+  needsAudit?: string | number | null;
+  missingDescription?: string | number | null;
+  missingPayee?: string | number | null;
+  sourceMismatch?: string | number | null;
+  drawerMismatch?: string | number | null;
+};
+
+type FundingKind =
+  | "DRAWER"
+  | "TREASURY"
+  | "NON_CASH"
+  | "STOCK"
+  | "UNATTRIBUTED";
+
+type AuditFocus = "DESCRIPTION" | "PAYEE" | "SOURCE" | "DRAWER";
+
+const FUNDING_ORDER: FundingKind[] = [
+  "DRAWER",
+  "TREASURY",
+  "NON_CASH",
+  "STOCK",
+  "UNATTRIBUTED",
+];
+const FUNDING_META: Record<
+  FundingKind,
+  { label: string; short: string; badge: string }
+> = {
+  DRAWER: {
+    label: "مصروفات الأدراج والورديات",
+    short: "درج وردية",
+    badge: "badge-status-active",
+  },
+  TREASURY: {
+    label: "مصروفات الخزينة الإدارية",
+    short: "خزينة إدارية",
+    badge: "badge-status-pending",
+  },
+  NON_CASH: {
+    label: "مصروفات غير نقدية",
+    short: "غير نقدي",
+    badge: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
+  },
+  STOCK: {
+    label: "مصروفات من المخزون بالكلفة",
+    short: "مخزون",
+    badge: "badge-stock-low",
+  },
+  UNATTRIBUTED: {
+    label: "مصروفات تحتاج تحديد مصدر التمويل",
+    short: "مصدر غير محسوم",
+    badge: "badge-status-cancelled",
+  },
+};
+
+const SHIFT_TYPE_LABEL: Record<string, string> = {
+  RETAIL: "تجزئة",
+  RECEPTION: "استقبال",
+  PRINT_SERVICES: "خدمات الطباعة",
+};
+const SHIFT_STATUS_LABEL: Record<string, string> = {
+  OPEN: "مفتوحة",
+  CLOSED: "مغلقة",
+};
+const APPROVAL_LABEL: Record<string, string> = {
+  APPROVED: "معتمد",
+  PENDING_APPROVAL: "بانتظار الاعتماد",
+  REJECTED: "مرفوض",
+};
+
+function fundingKindOf(r: ExpenseRow): FundingKind {
+  if (r.fundingKind && FUNDING_ORDER.includes(r.fundingKind as FundingKind))
+    return r.fundingKind as FundingKind;
+  if (r.source === "STOCK") return "STOCK";
+  if (r.paymentMethod !== "CASH") return "NON_CASH";
+  if (r.cashBucket === "TREASURY") return "TREASURY";
+  if (r.cashBucket === "DRAWER" || r.shiftId != null) return "DRAWER";
+  return "UNATTRIBUTED";
+}
+
+/** رسائل تدقيق مفهومة للمستخدم بدلاً من رموز السلامة الداخلية. */
+const AUDIT_WARNING_LABEL: Record<string, string> = {
+  DESCRIPTION_MISSING: "لا يوجد شرح للعملية",
+  PAYEE_MISSING: "المستفيد غير محدد",
+  RECEIPT_MISSING: "إيصال الصرف غير مرتبط",
+  RECEIPT_DIRECTION_MISMATCH: "اتجاه الإيصال لا يطابق عملية الصرف",
+  RECEIPT_AMOUNT_MISMATCH: "مبلغ الإيصال لا يطابق المصروف",
+  RECEIPT_BRANCH_MISMATCH: "فرع الإيصال لا يطابق فرع المصروف",
+  RECEIPT_SHIFT_MISMATCH: "وردية الإيصال لا تطابق وردية المصروف",
+  RECEIPT_PAYMENT_METHOD_MISMATCH: "طريقة دفع الإيصال غير مطابقة",
+  RECEIPT_CASH_BUCKET_MISMATCH: "مصدر النقد في الإيصال غير مطابق",
+  RECEIPT_CREATOR_MISMATCH: "منشئ الإيصال لا يطابق منشئ المصروف",
+  RECEIPT_STATUS_MISMATCH: "حالة الإيصال لا تطابق حالة المصروف",
+  RECEIPT_NOT_APPROVED: "إيصال الصرف غير معتمد",
+  CASH_FUNDING_UNKNOWN: "مصدر النقد غير محسوم",
+  DRAWER_WITHOUT_SHIFT: "صرف درج بلا وردية",
+  TREASURY_WITH_SHIFT: "صرف خزينة مرتبط خطأً بورديّة",
+  NON_CASH_HAS_CASH_BUCKET: "عملية غير نقدية مرتبطة بدرج أو خزينة",
+  STOCK_HAS_RECEIPT: "صرف مخزون مرتبط خطأً بإيصال نقدي",
+  STOCK_HAS_CASH_LOCATION: "صرف مخزون مرتبط خطأً بدرج أو خزينة",
+};
+
+function warningsOf(r: ExpenseRow): string[] {
+  const warnings = new Set(
+    (r.integrityWarnings ?? [])
+      .filter(Boolean)
+      .map((warning) => AUDIT_WARNING_LABEL[warning] ?? warning),
+  );
+  if (!r.description?.trim()) warnings.add("لا يوجد شرح للعملية");
+  if (Object.prototype.hasOwnProperty.call(r, "payee") && !r.payee?.trim())
+    warnings.add("المستفيد غير محدد");
+  const funding = fundingKindOf(r);
+  if (funding === "UNATTRIBUTED") warnings.add("مصدر النقد غير محسوم");
+  if (funding === "DRAWER" && r.shiftId == null)
+    warnings.add("صرف درج بلا وردية");
+  return Array.from(warnings);
+}
+
+function fundingDetail(r: ExpenseRow): string {
+  const kind = fundingKindOf(r);
+  if (kind === "DRAWER") {
+    return (
+      [r.shiftOwnerName, r.shiftId != null ? `وردية #${r.shiftId}` : null]
+        .filter(Boolean)
+        .join(" · ") || "درج وردية"
+    );
+  }
+  if (kind === "TREASURY") return "الخزينة الإدارية";
+  if (kind === "STOCK")
+    return STOCK_REASON_LABEL[r.stockReason ?? ""] ?? "صرف مخزون";
+  if (kind === "NON_CASH")
+    return METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod;
+  return "يحتاج مطابقة مع الإيصال والوردية";
+}
+
+function metric(value: string | number | null | undefined): string {
+  return value == null ? "—" : fmt(value);
+}
+
+function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
+  const trace = trpc.expenses.trace.useQuery({ expenseId });
+
+  if (trace.isLoading) {
+    return (
+      <div className="flex min-h-28 items-center justify-center gap-2 rounded-lg border bg-muted/20 text-sm text-muted-foreground">
+        <Loader2 aria-hidden className="size-4 animate-spin" />
+        جارٍ تحميل مسار المستند والقيد…
+      </div>
+    );
+  }
+  if (trace.isError || !trace.data) {
+    return (
+      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+        تعذّر تحميل مسار التتبّع لهذا المصروف.
+      </div>
+    );
+  }
+
+  const expense = trace.data.expense as ExpenseRow;
+  const receiptId =
+    expense.receiptId == null ? null : Number(expense.receiptId);
+  const warnings = warningsOf(expense);
+  const reversal = trace.data.reversalReceipts[0];
+
+  return (
+    <FinancialTraceDetails
+      compact
+      title={`مسار المصروف EXP#${expenseId}`}
+      description="سلسلة المستند من الإدخال إلى إيصال الصرف والقيد المحاسبي وأي إلغاء أو عكس لاحق."
+      document={{
+        id: expenseId,
+        number: `EXP#${expenseId}`,
+        type: "مصروف",
+        status: STATUS_LABEL[expense.status] ?? expense.status,
+        statusTone: expense.status === "CANCELLED" ? "warning" : "ok",
+        direction: "OUT",
+        amount: `${fmt(expense.amount)} د.ع`,
+        branch: expense.branchName,
+        reference: expense.referenceNumber,
+        description: expense.description?.trim() || "لا يوجد شرح للعملية",
+        extra: [
+          {
+            label: "الفئة / مركز التكلفة",
+            value: `${CATEGORY_LABEL[expense.category] ?? expense.category}${expense.costCenter ? ` · ${expense.costCenter}` : ""}`,
+          },
+          { label: "حالة الاعتماد", value: expense.approvalStatus },
+        ],
+      }}
+      parties={{
+        recordedBy: {
+          name: expense.createdByName,
+          id: expense.createdBy,
+          at: fmtDateTime(expense.createdAt as unknown as string),
+        },
+        executedBy: {
+          name: expense.createdByName,
+          id: expense.createdBy,
+          note: receiptId
+            ? `منفذ إيصال الصرف R#${receiptId}`
+            : "لا يوجد إيصال صرف مرتبط",
+        },
+        beneficiary: { name: expense.payee || "غير محدد" },
+        approvedBy: expense.approvedByName
+          ? { name: expense.approvedByName, note: expense.approvalStatus }
+          : {
+              name: "غير موثق",
+              note: expense.approvalStatus ?? "لا توجد موافقة ظاهرة",
+            },
+        reversedBy: reversal
+          ? {
+              name:
+                reversal.createdByName ??
+                (reversal.createdBy ? `#${reversal.createdBy}` : "غير موثق"),
+              id: reversal.createdBy,
+              at: fmtDateTime(reversal.createdAt),
+              note: `إيصال عكس R#${reversal.id}`,
+            }
+          : null,
+      }}
+      moneyPath={{
+        paymentMethod: expense.paymentMethod,
+        source: fundingKindOf(expense),
+        cashBucket: expense.cashBucket,
+        branch: expense.branchName,
+        shiftId: expense.shiftId,
+        shiftLabel: expense.shiftType
+          ? `${SHIFT_TYPE_LABEL[expense.shiftType] ?? expense.shiftType} · ${SHIFT_STATUS_LABEL[expense.shiftStatus ?? ""] ?? expense.shiftStatus ?? "—"}`
+          : null,
+        shiftOwner: expense.shiftOwnerName,
+        from: fundingDetail(expense),
+        to: expense.payee || "المستفيد غير محدد",
+        externalReference: expense.referenceNumber,
+        extra: [
+          {
+            label: "المبلغ المصروف",
+            value: fmt(expense.amount),
+            dir: "ltr",
+            emphasis: true,
+          },
+          { label: "حالة الإيصال", value: expense.receiptStatus },
+        ],
+      }}
+      linkChain={[
+        {
+          kind: "DOCUMENT",
+          label: "المصروف",
+          value: `EXP#${expenseId}`,
+          status: STATUS_LABEL[expense.status] ?? expense.status,
+        },
+        {
+          kind: "RECEIPT",
+          label: "إيصال الصرف",
+          value: receiptId ? `R#${receiptId}` : null,
+          status: expense.receiptStatus,
+          missing: !receiptId,
+        },
+        ...trace.data.ledgerEntries.map((entry) => ({
+          id: entry.id,
+          kind: "LEDGER" as const,
+          label: "القيد المحاسبي",
+          value: `JE#${entry.id}`,
+          status: entry.entryType,
+          subtitle: `${fmt(entry.amount ?? 0)} د.ع${entry.notes ? ` · ${entry.notes}` : ""}`,
+        })),
+        ...trace.data.reversalReceipts.map((entry) => ({
+          id: `reversal-${entry.id}`,
+          kind: "RECEIPT" as const,
+          label: "إيصال الإلغاء / العكس",
+          value: `R#${entry.id}`,
+          status: entry.status,
+          subtitle: `${fmt(entry.amount)} د.ع · ${entry.createdByName ?? "منفذ غير موثق"}`,
+        })),
+      ]}
+      timestamps={[
+        {
+          id: "expense-date",
+          label: "تاريخ المصروف",
+          value: fmtDate(expense.expenseDate as unknown as string),
+        },
+        {
+          id: "created-at",
+          label: "وقت الإدخال",
+          value: fmtDateTime(expense.createdAt as unknown as string),
+          actor: expense.createdByName,
+        },
+        {
+          id: "updated-at",
+          label: "آخر تحديث",
+          value: fmtDateTime(expense.updatedAt),
+        },
+      ]}
+      integrityWarnings={warnings.map((warning, index) => ({
+        id: `${expenseId}-${index}`,
+        severity: "warning" as const,
+        title: warning,
+        code: (expense.integrityWarnings ?? [])[index] ?? null,
+      }))}
+      auditTimeline={[
+        ...trace.data.auditTrail.map((event) => ({
+          id: `audit-${event.id}`,
+          action: event.action,
+          actor:
+            event.userName ?? (event.userId ? `#${event.userId}` : "غير موثق"),
+          at: fmtDateTime(event.createdAt),
+          detail:
+            event.oldValue != null || event.newValue != null
+              ? "تغيير موثق في سجل التدقيق"
+              : undefined,
+          tone: "info" as const,
+        })),
+        ...trace.data.reversalReceipts.map((event) => ({
+          id: `reverse-event-${event.id}`,
+          action: "إلغاء / عكس المصروف",
+          actor:
+            event.createdByName ??
+            (event.createdBy ? `#${event.createdBy}` : "غير موثق"),
+          at: fmtDateTime(event.createdAt),
+          status: event.status,
+          detail: `${fmt(event.amount)} د.ع`,
+          tone: "warning" as const,
+        })),
+      ]}
+    />
+  );
+}
 
 /** إيصال صرف عبر printDoc العام — نفس نواقل الطباعة الثلاثة (جسر الخادم/WebUSB/متصفح). */
 async function printExpenseReceipt(r: ExpenseRow) {
+  const warnings = warningsOf(r);
   await printDoc({
     kind: "receipt",
     title: "الرؤية العربية",
@@ -77,9 +466,26 @@ async function printExpenseReceipt(r: ExpenseRow) {
       `الفرع: ${r.branchName ?? "—"}`,
       `الفئة: ${CATEGORY_LABEL[r.category] ?? r.category}`,
       `طريقة الدفع: ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}`,
+      `مصدر التمويل: ${FUNDING_META[fundingKindOf(r)].short} — ${fundingDetail(r)}`,
       ...(r.description ? [`البيان: ${r.description}`] : []),
+      ...(r.payee ? [`المستفيد: ${r.payee}`] : []),
+      ...(r.costCenter ? [`مركز التكلفة: ${r.costCenter}`] : []),
+      ...(r.referenceNumber ? [`المرجع: ${r.referenceNumber}`] : []),
+      ...(r.receiptVoucherNumber
+        ? [`رقم السند: ${r.receiptVoucherNumber}`]
+        : r.receiptId
+          ? [`إيصال #${r.receiptId}`]
+          : []),
+      ...(r.createdByName ? [`أنشأ العملية: ${r.createdByName}`] : []),
+      ...(r.approvedByName ? [`اعتمد العملية: ${r.approvedByName}`] : []),
+      ...(r.createdAt
+        ? [`سُجّلت: ${fmtDateTime(r.createdAt as unknown as string)}`]
+        : []),
+      ...(warnings.length ? [`ملاحظات التدقيق: ${warnings.join("؛ ")}`] : []),
       // إيصال مصروف مُلغى يحمل حالته صراحةً — لا يُقرأ كصرف نافذ بالخطأ.
-      ...(r.status !== "ACTIVE" ? [`الحالة: ${STATUS_LABEL[r.status] ?? r.status}`] : []),
+      ...(r.status !== "ACTIVE"
+        ? [`الحالة: ${STATUS_LABEL[r.status] ?? r.status}`]
+        : []),
     ],
     totals: [{ label: "المبلغ", value: fmt(r.amount) }],
     footer: "إيصال صرف داخلي",
@@ -91,11 +497,23 @@ export default function Expenses() {
   const branches = trpc.branches.list.useQuery();
   const [branchId, setBranchId] = useState<number | "">("");
   const [category, setCategory] = useState<string>("");
-  const [status, setStatus] = useState<string>("ACTIVE");
+  const [status, setStatus] = useState<string>("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<string>("");
+  const [source, setSource] = useState<string>("");
   const [query, setQuery] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(true);
+  const [auditOnly, setAuditOnly] = useState(false);
+  const [auditFocus, setAuditFocus] = useState<AuditFocus | null>(null);
+  const [expandedDescriptions, setExpandedDescriptions] = useState<Set<number>>(
+    () => new Set(),
+  );
+  const [expandedTraces, setExpandedTraces] = useState<Set<number>>(
+    () => new Set(),
+  );
   // الترقيم خادميّ: كانت تُحمَّل أحدث ٣٠٠ دفعةً والباقي غير قابل للوصول (بينما التصدير يرى الكل
   // ⇒ تناقض صامت بين ملف Excel والشاشة). الآن صفحة صفحة، والتصدير يبقى شاملاً صراحةً.
   const [page, setPage] = useState(0);
@@ -110,25 +528,303 @@ export default function Expenses() {
     status: (status || undefined) as any,
     from: from || undefined,
     to: to || undefined,
+    paymentMethod: (paymentMethod || undefined) as any,
+    source: (source || undefined) as any,
     q: dq.trim() || undefined,
   };
-  const list = trpc.expenses.list.useQuery({ ...listInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
-  const rows = list.data?.rows ?? [];
-  const total = list.data?.totals.count ?? 0;
+  function resetFilters() {
+    setBranchId("");
+    setCategory("");
+    setStatus("");
+    setFrom("");
+    setTo("");
+    setPaymentMethod("");
+    setSource("");
+    setQuery("");
+    setAuditOnly(false);
+    setAuditFocus(null);
+  }
+  const list = trpc.expenses.list.useQuery({
+    ...listInput,
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+  });
+  const rows = (list.data?.rows ?? []) as ExpenseRow[];
+  const totals = (list.data?.totals ?? {}) as ExpenseTotals;
+  const total = Number(totals.count ?? 0);
+
+  const rowsWithWarnings = useMemo(
+    () =>
+      rows.map((row) => ({
+        row,
+        warnings: warningsOf(row),
+        funding: fundingKindOf(row),
+      })),
+    [rows],
+  );
+  const pageNeedsAudit = rowsWithWarnings.filter(
+    (entry) => entry.warnings.length > 0,
+  ).length;
+  const auditBreakdown = useMemo(
+    () => ({
+      DESCRIPTION: rowsWithWarnings.filter(
+        ({ row }) => !row.description?.trim(),
+      ).length,
+      PAYEE: rowsWithWarnings.filter(({ row }) => !row.payee?.trim()).length,
+      SOURCE: rowsWithWarnings.filter(({ row }) =>
+        (row.integrityWarnings ?? []).some(
+          (warning) =>
+            warning !== "DESCRIPTION_MISSING" && warning !== "PAYEE_MISSING",
+        ),
+      ).length,
+      DRAWER: rowsWithWarnings.filter(
+        ({ row, funding }) =>
+          funding === "DRAWER" &&
+          (row.shiftId == null || row.receiptId == null),
+      ).length,
+    }),
+    [rowsWithWarnings],
+  );
+  const visibleEntries = auditFocus
+    ? rowsWithWarnings.filter(({ row, funding }) => {
+        if (auditFocus === "DESCRIPTION") return !row.description?.trim();
+        if (auditFocus === "PAYEE") return !row.payee?.trim();
+        if (auditFocus === "DRAWER")
+          return (
+            funding === "DRAWER" &&
+            (row.shiftId == null || row.receiptId == null)
+          );
+        return (row.integrityWarnings ?? []).some(
+          (warning) =>
+            warning !== "DESCRIPTION_MISSING" && warning !== "PAYEE_MISSING",
+        );
+      })
+    : auditOnly
+      ? rowsWithWarnings.filter((entry) => entry.warnings.length > 0)
+      : rowsWithWarnings;
+  const groupedRows = useMemo(
+    () =>
+      FUNDING_ORDER.map((kind) => ({
+        kind,
+        entries: visibleEntries.filter((entry) => entry.funding === kind),
+      })).filter((group) => group.entries.length > 0),
+    [visibleEntries],
+  );
+
+  function toggleDescription(id: number) {
+    setExpandedDescriptions((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleTrace(id: number) {
+    setExpandedTraces((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const activeChips = [
+    query.trim()
+      ? { key: "q", label: `بحث: ${query.trim()}`, clear: () => setQuery("") }
+      : null,
+    branchId
+      ? {
+          key: "branch",
+          label: `الفرع: ${branches.data?.find((branch) => Number(branch.id) === Number(branchId))?.name ?? branchId}`,
+          clear: () => setBranchId(""),
+        }
+      : null,
+    category
+      ? {
+          key: "category",
+          label: `الفئة: ${CATEGORY_LABEL[category] ?? category}`,
+          clear: () => setCategory(""),
+        }
+      : null,
+    status
+      ? {
+          key: "status",
+          label: `الحالة: ${STATUS_LABEL[status] ?? status}`,
+          clear: () => setStatus(""),
+        }
+      : null,
+    from
+      ? { key: "from", label: `من: ${fmtDate(from)}`, clear: () => setFrom("") }
+      : null,
+    to
+      ? { key: "to", label: `إلى: ${fmtDate(to)}`, clear: () => setTo("") }
+      : null,
+    paymentMethod
+      ? {
+          key: "method",
+          label: `الدفع: ${METHOD_LABEL[paymentMethod] ?? paymentMethod}`,
+          clear: () => setPaymentMethod(""),
+        }
+      : null,
+    source
+      ? {
+          key: "source",
+          label: `المصدر: ${source === "STOCK" ? "مخزون" : "مالي"}`,
+          clear: () => setSource(""),
+        }
+      : null,
+    auditOnly
+      ? {
+          key: "audit",
+          label: "يحتاج تدقيقاً — الصفحة الحالية",
+          clear: () => setAuditOnly(false),
+        }
+      : null,
+    auditFocus
+      ? {
+          key: "audit-focus",
+          label: `استثناء: ${
+            auditFocus === "DESCRIPTION"
+              ? "بلا شرح"
+              : auditFocus === "PAYEE"
+                ? "بلا مستفيد"
+                : auditFocus === "SOURCE"
+                  ? "مصدر أو إيصال غير متطابق"
+                  : "درج أو وردية ناقصة"
+          }`,
+          clear: () => setAuditFocus(null),
+        }
+      : null,
+  ].filter(
+    (chip): chip is { key: string; label: string; clear: () => void } =>
+      chip != null,
+  );
 
   // أي تغيير في الفلاتر/البحث يعيدنا للصفحة الأولى (وإلا offset قديم على مجموعة أصغر = صفحة فارغة).
   const filterKey = JSON.stringify(listInput);
-  useEffect(() => { setPage(0); }, [filterKey]);
+  useEffect(() => {
+    setPage(0);
+  }, [filterKey]);
 
   // أعمدة التصدير (مشتركة بين زرّ التصدير وجلب-الكل).
   const exportColumns: ExportColumn<ExpenseRow>[] = [
-    { key: "expenseDate", header: "التاريخ", map: (r) => fmtDate(r.expenseDate as unknown as string) },
+    { key: "id", header: "رقم المصروف", map: (r) => Number(r.id) },
+    {
+      key: "receiptVoucherNumber",
+      header: "رقم السند",
+      map: (r) => r.receiptVoucherNumber ?? "",
+    },
+    { key: "receiptId", header: "رقم الإيصال", map: (r) => r.receiptId ?? "" },
+    {
+      key: "expenseDate",
+      header: "التاريخ",
+      map: (r) => fmtDate(r.expenseDate as unknown as string),
+    },
+    {
+      key: "createdAt",
+      header: "وقت التسجيل",
+      map: (r) => fmtDateTime(r.createdAt as unknown as string),
+    },
+    {
+      key: "updatedAt",
+      header: "آخر تحديث",
+      map: (r) => fmtDateTime(r.updatedAt as unknown as string),
+    },
     { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
-    { key: "category", header: "الفئة", map: (r) => CATEGORY_LABEL[r.category] ?? r.category },
+    {
+      key: "category",
+      header: "الفئة",
+      map: (r) => CATEGORY_LABEL[r.category] ?? r.category,
+    },
+    {
+      key: "costCenter",
+      header: "مركز التكلفة",
+      map: (r) => r.costCenter ?? "",
+    },
     { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
-    { key: "paymentMethod", header: "طريقة الدفع", map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
+    { key: "payee", header: "المستفيد", map: (r) => r.payee ?? "" },
+    {
+      key: "referenceNumber",
+      header: "المرجع",
+      map: (r) => r.referenceNumber ?? "",
+    },
+    {
+      key: "paymentMethod",
+      header: "طريقة الدفع",
+      map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod,
+    },
+    {
+      key: "fundingKind",
+      header: "مصدر التمويل",
+      map: (r) => FUNDING_META[fundingKindOf(r)].short,
+    },
+    {
+      key: "source",
+      header: "نوع المصدر الخام",
+      map: (r) => r.source ?? "",
+    },
+    {
+      key: "cashBucket",
+      header: "وعاء النقد الخام",
+      map: (r) => r.cashBucket ?? "",
+    },
+    { key: "fundingDetail", header: "تفصيل مصدر التمويل", map: fundingDetail },
+    { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
+    {
+      key: "shiftOwnerName",
+      header: "صاحب الدرج",
+      map: (r) => r.shiftOwnerName ?? "",
+    },
+    {
+      key: "shiftType",
+      header: "نوع الوردية",
+      map: (r) =>
+        r.shiftType ? (SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType) : "",
+    },
+    {
+      key: "shiftStatus",
+      header: "حالة الوردية",
+      map: (r) =>
+        r.shiftStatus
+          ? (SHIFT_STATUS_LABEL[r.shiftStatus] ?? r.shiftStatus)
+          : "",
+    },
+    {
+      key: "createdByName",
+      header: "أنشأ العملية",
+      map: (r) =>
+        r.createdByName ?? (r.createdBy != null ? `#${r.createdBy}` : ""),
+    },
+    {
+      key: "approvedByName",
+      header: "اعتمد العملية",
+      map: (r) => r.approvedByName ?? "",
+    },
+    {
+      key: "approvalStatus",
+      header: "حالة الاعتماد",
+      map: (r) =>
+        r.approvalStatus
+          ? (APPROVAL_LABEL[r.approvalStatus] ?? r.approvalStatus)
+          : "",
+    },
+    {
+      key: "receiptStatus",
+      header: "حالة الإيصال",
+      map: (r) => r.receiptStatus ?? "",
+    },
+    {
+      key: "integrityWarnings",
+      header: "ملاحظات التدقيق",
+      map: (r) => warningsOf(r).join("؛ "),
+    },
     { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
-    { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
+    {
+      key: "status",
+      header: "الحالة",
+      map: (r) => STATUS_LABEL[r.status] ?? r.status,
+    },
   ];
 
   // تصدير كل النتائج المطابقة (لا الصفحة المحمَّلة): يكرّر عبر offset حتى تنضب (بلا اقتطاع).
@@ -137,10 +833,15 @@ export default function Expenses() {
     try {
       const all = await fetchAllPaged<ExpenseRow>(
         (offset, limit) =>
-          utils.expenses.list.fetch({ ...listInput, limit, offset }).then((res) => ({ rows: res.rows ?? [], total: res.totals.count })),
+          utils.expenses.list
+            .fetch({ ...listInput, limit, offset })
+            .then((res) => ({ rows: res.rows ?? [], total: res.totals.count })),
         { pageSize: 1000 },
       );
-      if (!all.length) { notify.err("لا بيانات للتصدير"); return; }
+      if (!all.length) {
+        notify.err("لا بيانات للتصدير");
+        return;
+      }
       exportRows(all, { filename: "المصروفات", columns: exportColumns });
     } catch (e) {
       notify.err(e);
@@ -149,11 +850,100 @@ export default function Expenses() {
     }
   }
 
+  // طباعة قائمة المصروفات — كل النتائج المطابقة للفلتر (fetchAllPaged) لا الصفحة المعروضة فقط.
+  async function printAll() {
+    setPrinting(true);
+    try {
+      const all = await fetchAllPaged<ExpenseRow>(
+        (offset, limit) =>
+          utils.expenses.list
+            .fetch({ ...listInput, limit, offset })
+            .then((res) => ({ rows: res.rows ?? [], total: res.totals.count })),
+        { pageSize: 1000 },
+      );
+      if (!all.length) {
+        notify.err("لا بيانات للطباعة");
+        return;
+      }
+      const filterLabels = [
+        branchId
+          ? `الفرع: ${branches.data?.find((b) => b.id === branchId)?.name ?? branchId}`
+          : null,
+        category ? `الفئة: ${CATEGORY_LABEL[category] ?? category}` : null,
+        status ? `الحالة: ${STATUS_LABEL[status] ?? status}` : null,
+        paymentMethod
+          ? `طريقة الدفع: ${METHOD_LABEL[paymentMethod] ?? paymentMethod}`
+          : null,
+        source ? `المصدر: ${source === "STOCK" ? "مخزون" : "نقدي"}` : null,
+        from || to ? `الفترة: ${from || "البداية"} — ${to || "اليوم"}` : null,
+        query.trim() ? `بحث: ${query.trim()}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const printTotal = all.reduce((s, r) => s + Number(r.amount), 0);
+      const opened = printReportDoc({
+        title: "المصروفات اليومية",
+        headerExtra: filterLabels
+          ? [{ label: "الفلاتر", value: filterLabels }]
+          : [],
+        columns: [
+          { key: "identity", label: "المصروف / السند" },
+          { key: "date", label: "التاريخ / التسجيل" },
+          { key: "branch", label: "الفرع" },
+          { key: "category", label: "الفئة / المركز" },
+          { key: "description", label: "البيان / المستفيد" },
+          { key: "funding", label: "التمويل / الدفع" },
+          { key: "shift", label: "الدرج / الوردية" },
+          { key: "actors", label: "المنشئ / المعتمد" },
+          { key: "amount", label: "المبلغ", align: "left" },
+          { key: "status", label: "الحالة" },
+          { key: "audit", label: "ملاحظات التدقيق" },
+        ],
+        rows: all.map((r) => ({
+          identity: `#${Number(r.id)}${r.receiptVoucherNumber ? ` / ${r.receiptVoucherNumber}` : r.receiptId ? ` / R#${r.receiptId}` : ""}`,
+          date: `${fmtDate(r.expenseDate as unknown as string)} / ${fmtDateTime(r.createdAt as unknown as string)}`,
+          branch: r.branchName ?? "—",
+          category: `${CATEGORY_LABEL[r.category] ?? r.category}${r.costCenter ? ` / ${r.costCenter}` : ""}`,
+          description: `${r.description ?? "لا يوجد شرح"}${r.payee ? ` / المستفيد: ${r.payee}` : ""}${r.referenceNumber ? ` / مرجع: ${r.referenceNumber}` : ""}`,
+          funding: `${FUNDING_META[fundingKindOf(r)].short} / ${sourceLabel(r)}`,
+          shift: fundingDetail(r),
+          actors: `${r.createdByName ?? (r.createdBy != null ? `#${r.createdBy}` : "—")}${r.approvedByName ? ` / اعتماد: ${r.approvedByName}` : ""}`,
+          amount: fmt(r.amount),
+          status: STATUS_LABEL[r.status] ?? r.status,
+          audit: warningsOf(r).join("؛ ") || "سليم",
+        })),
+        summary: [
+          {
+            label: "الإجمالي",
+            value: `${fmt(printTotal)} د.ع`,
+            large: true,
+            bold: true,
+          },
+        ],
+      });
+      if (!opened)
+        notify.err(
+          "حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.",
+        );
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setPrinting(false);
+    }
+  }
+
   // الإلغاء = expensesManagerProcedure(["manager"], "expenses", "FULL") — نُخفي الزرّ عمّن يرفضه
   // الخادم (كاشير/محاسب: إدخالٌ بلا إلغاء) بنفس دالة الخادم moduleAccessAllowed ⇒ لا تباعُد.
   const me = trpc.auth.me.useQuery();
-  const canCancel = !!me.data?.role &&
-    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "expenses", "FULL", ["manager"]);
+  const canCancel =
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "expenses",
+      "FULL",
+      ["manager"],
+    );
 
   const cancel = trpc.expenses.cancel.useMutation({
     onSuccess: async () => {
@@ -161,14 +951,69 @@ export default function Expenses() {
     },
   });
 
+  function actionsFor(r: ExpenseRow) {
+    return [
+      {
+        key: "print",
+        kind: "print" as const,
+        label: "طباعة إيصال صرف",
+        onSelect: () => void printExpenseReceipt(r),
+        gate: { module: "expenses" as const, level: "READ" as const },
+      },
+      {
+        key: "cancel",
+        kind: "reverse" as const,
+        label: "إلغاء",
+        variant: "destructive" as const,
+        hidden: r.status !== "ACTIVE" || !canCancel,
+        disabled: cancel.isPending,
+        disabledReason: "توجد عملية إلغاء قيد التنفيذ",
+        onSelect: () =>
+          void (async () => {
+            if (
+              !(await confirm({
+                variant: "warning",
+                title: "إلغاء المصروف",
+                description:
+                  r.source === "STOCK"
+                    ? `ستُعاد المنتجات (${fmt(r.amount)} د.ع كلفةً) إلى المخزون ويُعكس القيد. هل تتابع؟`
+                    : `سيُعكس مبلغ ${fmt(r.amount)} د.ع إلى الصندوق ويُسجَّل قيد ADJUST سالب. هل تتابع؟`,
+                confirmText: "إلغاء المصروف",
+                cancelText: "تراجع",
+              }))
+            )
+              return;
+            cancel.mutate({ expenseId: Number(r.id) });
+          })(),
+        gate: {
+          roles: ["manager"] as RoleKey[],
+          module: "expenses" as const,
+          level: "FULL" as const,
+        },
+      },
+    ];
+  }
+
   // أموال العرض عبر fmt من @/lib/money (فواصل آلاف + منزلتان) — بديل الدالة المحلية السابقة.
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <PageHeader
         title="المصروفات اليومية"
-        description="كل مصروف يولّد قبضاً صادراً (يُخصم من صندوق الوردية إن كانت مفتوحة) وقيداً في الدفتر."
+        description="كل مصروف يولّد حركة صرف من الصندوق (تُخصم من صندوق الوردية إن كانت مفتوحة) وقيداً في الدفتر."
         actions={
           <div className="flex gap-2">
+            <Button
+              variant="outline"
+              disabled={printing || (list.data?.totals.count ?? 0) === 0}
+              onClick={() => void printAll()}
+            >
+              {printing ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Printer className="size-4" />
+              )}
+              {printing ? "جارٍ التحضير…" : "طباعة قائمة"}
+            </Button>
             <Button
               variant="outline"
               disabled={exporting || (list.data?.totals.count ?? 0) === 0}
@@ -177,153 +1022,869 @@ export default function Expenses() {
               {exporting ? <Loader2 className="size-4 animate-spin" /> : null}
               {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
             </Button>
-            <Link href="/expenses/new"><Button>+ مصروف جديد</Button></Link>
+            <Link href="/expenses/new">
+              <Button>+ مصروف جديد</Button>
+            </Link>
           </div>
         }
       />
 
-      <div className="grid gap-4 lg:grid-cols-3 items-start">
-        <Card className="lg:col-span-2">
-          <CardContent className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 pt-6">
-            <div className="space-y-1 sm:col-span-2 xl:col-span-5">
-              <Label className="text-xs">بحث</Label>
+      <section
+        aria-label="ملخص المصروفات"
+        className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4"
+      >
+        <Card className="gap-0 overflow-hidden py-0">
+          <CardContent className="flex items-start justify-between gap-3 p-3">
+            <div>
+              <p className="text-xs text-muted-foreground">إجمالي النافذ</p>
+              <p className="mt-0.5 text-xl font-bold tabular-nums" dir="ltr">
+                {metric(totals.active ?? 0)}
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                {Number(totals.count ?? 0).toLocaleString("ar-IQ-u-nu-latn")}{" "}
+                عملية ضمن الفلتر
+              </p>
+            </div>
+            <span className="rounded-lg bg-primary/10 p-1.5 text-primary">
+              <CircleDollarSign aria-hidden className="size-4" />
+            </span>
+          </CardContent>
+        </Card>
+        <Card className="gap-0 overflow-hidden py-0">
+          <CardContent className="flex items-start justify-between gap-3 p-3">
+            <div>
+              <p className="text-xs text-muted-foreground">من الأدراج</p>
+              <p className="mt-0.5 text-xl font-bold tabular-nums" dir="ltr">
+                {metric(totals.drawer)}
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                غير نقدي: <span dir="ltr">{metric(totals.nonCash)}</span>
+              </p>
+            </div>
+            <span className="rounded-lg bg-[var(--sem-pos-bg)] p-1.5 text-[var(--sem-pos)]">
+              <WalletCards aria-hidden className="size-4" />
+            </span>
+          </CardContent>
+        </Card>
+        <Card className="gap-0 overflow-hidden py-0">
+          <CardContent className="flex items-start justify-between gap-3 p-3">
+            <div>
+              <p className="text-xs text-muted-foreground">من الخزينة</p>
+              <p className="mt-0.5 text-xl font-bold tabular-nums" dir="ltr">
+                {metric(totals.treasury)}
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                من المخزون: <span dir="ltr">{metric(totals.stock)}</span>
+              </p>
+            </div>
+            <span className="rounded-lg bg-[var(--sem-info-bg)] p-1.5 text-[var(--sem-info)]">
+              <Landmark aria-hidden className="size-4" />
+            </span>
+          </CardContent>
+        </Card>
+        <Card className="gap-0 overflow-hidden py-0">
+          <CardContent className="flex items-start justify-between gap-3 p-3">
+            <div>
+              <p className="text-xs text-muted-foreground">يحتاج تدقيقاً</p>
+              <p className="mt-0.5 text-xl font-bold tabular-nums" dir="ltr">
+                {Number(totals.needsAudit ?? pageNeedsAudit).toLocaleString(
+                  "ar-IQ-u-nu-latn",
+                )}
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                ملغى: <span dir="ltr">{metric(totals.cancelled)}</span>
+                {totals.needsAudit == null ? " · المحسوب من الصفحة" : ""}
+              </p>
+            </div>
+            <span className="rounded-lg bg-[var(--sem-warn-bg)] p-1.5 text-[var(--sem-warn)]">
+              <ShieldAlert aria-hidden className="size-4" />
+            </span>
+          </CardContent>
+        </Card>
+      </section>
+
+      <Card className="gap-0 py-0">
+        <CardContent className="space-y-2 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <SlidersHorizontal
+                aria-hidden
+                className="size-4 text-muted-foreground"
+              />
+              <h2 className="text-sm font-semibold">بحث وفلاتر المصروفات</h2>
+              {activeChips.length > 0 && (
+                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                  {activeChips.length}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setAdvancedOpen((open) => !open)}
+              >
+                فلاتر متقدمة
+                {advancedOpen ? (
+                  <ChevronUp aria-hidden className="size-4" />
+                ) : (
+                  <ChevronDown aria-hidden className="size-4" />
+                )}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                disabled={activeChips.length === 0}
+                onClick={resetFilters}
+              >
+                <X aria-hidden className="size-3.5" /> إعادة ضبط
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
+            <div className="space-y-1 md:col-span-2 xl:col-span-3">
+              <Label htmlFor="expense-search" className="text-xs">
+                بحث شامل
+              </Label>
               <div className="relative">
-                <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Search
+                  aria-hidden
+                  className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                />
                 <Input
+                  id="expense-search"
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="ابحث في البيان أو المستفيد أو المرجع أو المبلغ…"
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="البيان، المستفيد، المرجع، رقم المصروف أو السند…"
                   className="pr-8"
                 />
               </div>
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">الفرع</Label>
-              <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
-                <option value="">— كل الفروع —</option>
-                {(branches.data ?? []).map((b) => (
-                  <option key={b.id} value={b.id}>{b.name}</option>
+              <Label htmlFor="expense-branch" className="text-xs">
+                الفرع
+              </Label>
+              <select
+                id="expense-branch"
+                className={selectCls}
+                value={branchId}
+                onChange={(event) =>
+                  setBranchId(
+                    event.target.value ? Number(event.target.value) : "",
+                  )
+                }
+              >
+                <option value="">كل الفروع</option>
+                {(branches.data ?? []).map((branch) => (
+                  <option key={branch.id} value={branch.id}>
+                    {branch.name}
+                  </option>
                 ))}
               </select>
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">الفئة</Label>
-              <select className={selectCls} value={category} onChange={(e) => setCategory(e.target.value)}>
-                <option value="">— كل الفئات —</option>
-                {Object.entries(CATEGORY_LABEL).map(([k, v]) => (
-                  <option key={k} value={k}>{v}</option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">الحالة</Label>
-              <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)}>
-                <option value="">— الكل —</option>
+              <Label htmlFor="expense-status" className="text-xs">
+                الحالة
+              </Label>
+              <select
+                id="expense-status"
+                className={selectCls}
+                value={status}
+                onChange={(event) => setStatus(event.target.value)}
+              >
+                <option value="">النافذ والملغى</option>
                 <option value="ACTIVE">نافذ</option>
-                <option value="CANCELLED">مُلغى</option>
+                <option value="CANCELLED">ملغى</option>
               </select>
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">من تاريخ</Label>
-              <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
+              <Label htmlFor="expense-from" className="text-xs">
+                من تاريخ
+              </Label>
+              <Input
+                id="expense-from"
+                type="date"
+                dir="ltr"
+                value={from}
+                onChange={(event) => setFrom(event.target.value)}
+              />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">إلى تاريخ</Label>
-              <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} />
+              <Label htmlFor="expense-to" className="text-xs">
+                إلى تاريخ
+              </Label>
+              <Input
+                id="expense-to"
+                type="date"
+                dir="ltr"
+                value={to}
+                onChange={(event) => setTo(event.target.value)}
+              />
             </div>
-          </CardContent>
-        </Card>
+          </div>
 
-        <Card>
-          <CardContent className="pt-6 grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <div className="text-muted-foreground">عدد السطور</div>
-              <div className="text-lg font-semibold">{list.data?.totals.count ?? 0}</div>
+          {advancedOpen && (
+            <div className="grid gap-2 border-t pt-2 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="space-y-1">
+                <Label htmlFor="expense-category" className="text-xs">
+                  الفئة المحاسبية
+                </Label>
+                <select
+                  id="expense-category"
+                  className={selectCls}
+                  value={category}
+                  onChange={(event) => setCategory(event.target.value)}
+                >
+                  <option value="">كل الفئات</option>
+                  {Object.entries(CATEGORY_LABEL).map(([key, label]) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="exp-f-method" className="text-xs">
+                  طريقة الدفع
+                </Label>
+                <AppSelect
+                  id="exp-f-method"
+                  value={paymentMethod}
+                  onValueChange={setPaymentMethod}
+                  placeholder="كل طرق الدفع"
+                >
+                  <option value="">كل طرق الدفع</option>
+                  {Object.entries(METHOD_LABEL).map(([key, label]) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </AppSelect>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="exp-f-source" className="text-xs">
+                  نوع المصروف
+                </Label>
+                <AppSelect
+                  id="exp-f-source"
+                  value={source}
+                  onValueChange={setSource}
+                  placeholder="كل الأنواع"
+                >
+                  <option value="">كل الأنواع</option>
+                  <option value="CASH">مالي</option>
+                  <option value="STOCK">مخزون (نثرية/تلف)</option>
+                </AppSelect>
+              </div>
             </div>
-            <div>
-              <div className="text-muted-foreground">إجمالي النافذ</div>
-              <div className="text-lg font-semibold tabular-nums" dir="ltr">{fmt(list.data?.totals.active ?? "0")}</div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+          )}
 
-      <Card>
-        <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2">التاريخ</th>
-                <th className="p-2">الفرع</th>
-                <th className="p-2">الفئة</th>
-                <th className="p-2">الوصف</th>
-                <th className="p-2">الدفع / المصدر</th>
-                <th className="p-2 text-right">المبلغ</th>
-                <th className="p-2">الحالة</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const fr = rowProps(r.id);
-                return (
-                <tr key={r.id} ref={fr.ref} className={`border-t ${fr.className}`}>
-                  <td className="p-2 text-xs" dir="ltr">{r.expenseDate ? new Date(r.expenseDate as any).toISOString().slice(0, 10) : "—"}</td>
-                  <td className="p-2">{r.branchName ?? "—"}</td>
-                  <td className="p-2">{CATEGORY_LABEL[r.category] ?? r.category}</td>
-                  <td className="p-2 max-w-xs truncate" title={r.description ?? ""}>{r.description ?? "—"}</td>
-                  <td className="p-2">{sourceLabel(r)}</td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.amount)}</td>
-                  <td className="p-2">
-                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}>
-                      {STATUS_LABEL[r.status] ?? r.status}
-                    </span>
-                  </td>
-                  <td className="p-2 text-center">
-                    <RowActions
-                      actions={[
-                        {
-                          key: "print",
-                          kind: "print",
-                          label: "طباعة إيصال صرف",
-                          onSelect: () => void printExpenseReceipt(r),
-                          gate: { module: "expenses", level: "READ" },
-                        },
-                        {
-                          key: "cancel",
-                          kind: "reverse",
-                          label: "إلغاء",
-                          variant: "destructive",
-                          hidden: r.status !== "ACTIVE" || !canCancel, // لا حذف صلب — الإلغاء يعكس الصندوق؛ الزرّ للمدير (مرآة الخادم)
-                          disabled: cancel.isPending,
-                          disabledReason: "توجد عملية إلغاء قيد التنفيذ",
-                          onSelect: () => void (async () => {
-                            if (!(await confirm({
-                              variant: "warning",
-                              title: "إلغاء المصروف",
-                              description: r.source === "STOCK"
-                                ? `ستُعاد المنتجات (${fmt(r.amount)} د.ع كلفةً) إلى المخزون ويُعكس القيد. هل تتابع؟`
-                                : `سيُعكس مبلغ ${fmt(r.amount)} د.ع إلى الصندوق ويُسجَّل قيد ADJUST سالب. هل تتابع؟`,
-                              confirmText: "إلغاء المصروف",
-                              cancelText: "تراجع",
-                            }))) return;
-                            cancel.mutate({ expenseId: Number(r.id) });
-                          })(),
-                          gate: { roles: ["manager"], module: "expenses", level: "FULL" },
-                        },
-                      ]}
-                    />
-                  </td>
-                </tr>
+          {activeChips.length > 0 && (
+            <div
+              className="flex flex-wrap gap-1.5 border-t pt-2"
+              aria-label="الفلاتر الفعالة"
+            >
+              {activeChips.map((chip) => (
+                <button
+                  key={chip.key}
+                  type="button"
+                  onClick={chip.clear}
+                  className="inline-flex min-h-8 items-center gap-1 rounded-full border bg-muted/40 px-3 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {chip.label}
+                  <X aria-hidden className="size-3" />
+                </button>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {(Number(totals.needsAudit ?? pageNeedsAudit) > 0 || auditOnly) && (
+        <div
+          className="flex flex-col gap-3 rounded-lg border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] px-4 py-3 text-[var(--sem-warn)] sm:flex-row sm:items-center sm:justify-between"
+          role="status"
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+            <div>
+              <p className="text-sm font-semibold">
+                توجد عمليات تحتاج مراجعة بيانات المصدر أو الشرح
+              </p>
+              <p className="text-xs opacity-90">
+                {pageNeedsAudit} في الصفحة الحالية؛ يشمل غياب الشرح أو المستفيد
+                أو ربط الدرج والوردية.
+              </p>
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setAuditFocus(null);
+              setAuditOnly((value) => !value);
+            }}
+          >
+            {auditOnly ? "عرض كل الصفحة" : "عرض حالات الصفحة فقط"}
+          </Button>
+        </div>
+      )}
+
+      {Number(totals.needsAudit ?? pageNeedsAudit) > 0 && (
+        <section
+          aria-label="تفصيل استثناءات تدقيق المصروفات"
+          className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4"
+        >
+          {(
+            [
+              {
+                key: "DESCRIPTION",
+                label: "مصروفات بلا شرح",
+                count: Number(
+                  totals.missingDescription ?? auditBreakdown.DESCRIPTION,
+                ),
+              },
+              {
+                key: "PAYEE",
+                label: "مصروفات بلا مستفيد",
+                count: Number(totals.missingPayee ?? auditBreakdown.PAYEE),
+              },
+              {
+                key: "SOURCE",
+                label: "اختلاف المصدر أو الإيصال",
+                count: Number(totals.sourceMismatch ?? auditBreakdown.SOURCE),
+              },
+              {
+                key: "DRAWER",
+                label: "درج أو وردية غير مكتملة",
+                count: Number(totals.drawerMismatch ?? auditBreakdown.DRAWER),
+              },
+            ] as const
+          ).map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              aria-pressed={auditFocus === item.key}
+              onClick={() => {
+                setAuditOnly(false);
+                setAuditFocus((current) =>
+                  current === item.key ? null : item.key,
                 );
-              })}
-              {list.data && rows.length === 0 && (
-                <TableEmptyRow colSpan={8} message={query ? "لا مصروفات مطابقة للبحث." : "لا مصروفات لهذا الفلتر."} />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+              }}
+              className={`flex min-h-14 items-center justify-between rounded-lg border px-3 py-2 text-start transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                auditFocus === item.key
+                  ? "border-primary bg-primary/5"
+                  : "bg-card"
+              }`}
+            >
+              <span>
+                <span className="block text-xs font-semibold">
+                  {item.label}
+                </span>
+                <span className="text-[11px] text-primary">عرض السجلات</span>
+              </span>
+              <span className="text-xl font-bold tabular-nums" dir="ltr">
+                {item.count.toLocaleString("ar-IQ-u-nu-latn")}
+              </span>
+            </button>
+          ))}
+        </section>
+      )}
+
+      <Card className="gap-0 py-0">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-2">
+          <div>
+            <h2 className="text-sm font-semibold">السجل المحاسبي التفصيلي</h2>
+            <p className="text-xs text-muted-foreground">
+              مجمّع حسب مصدر التمويل ·{" "}
+              {visibleEntries.length.toLocaleString("ar-IQ-u-nu-latn")} من{" "}
+              {rows.length.toLocaleString("ar-IQ-u-nu-latn")} في الصفحة
+            </p>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Layers3 aria-hidden className="size-4" />
+            افتح «مسار التتبّع» لأي صف لعرض المستند والإيصال والقيد والتدقيق
+          </div>
+        </div>
+        <CardContent className="p-0">
+          <div className="space-y-3 p-3 md:hidden">
+            {groupedRows.map((group) => (
+              <section
+                key={group.kind}
+                aria-label={FUNDING_META[group.kind].label}
+                className="space-y-2"
+              >
+                <div className="flex items-center justify-between rounded-md bg-muted/60 px-3 py-2 text-xs font-semibold">
+                  <span>{FUNDING_META[group.kind].label}</span>
+                  <span>
+                    {group.entries.length} ·{" "}
+                    <span dir="ltr">
+                      {fmt(
+                        group.entries.reduce(
+                          (sum, entry) => sum + Number(entry.row.amount),
+                          0,
+                        ),
+                      )}
+                    </span>
+                  </span>
+                </div>
+                {group.entries.map(({ row: r, warnings }) => {
+                  const expanded = expandedDescriptions.has(Number(r.id));
+                  const traceExpanded = expandedTraces.has(Number(r.id));
+                  return (
+                    <article
+                      key={Number(r.id)}
+                      className="space-y-3 rounded-lg border p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-xs" dir="ltr">
+                              EXP#{Number(r.id)}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}
+                            >
+                              {STATUS_LABEL[r.status] ?? r.status}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {fmtDate(r.expenseDate as unknown as string)} ·{" "}
+                            {r.branchName ?? "—"}
+                          </p>
+                        </div>
+                        <p className="text-lg font-bold tabular-nums" dir="ltr">
+                          {fmt(r.amount)}
+                        </p>
+                      </div>
+                      <div>
+                        <p
+                          className={`text-sm leading-6 ${expanded ? "whitespace-pre-wrap" : "line-clamp-2"}`}
+                        >
+                          {r.description?.trim() || "لا يوجد شرح للعملية"}
+                        </p>
+                        {(r.description?.length ?? 0) > 80 && (
+                          <button
+                            type="button"
+                            className="mt-1 text-xs text-primary underline-offset-4 hover:underline"
+                            onClick={() => toggleDescription(Number(r.id))}
+                          >
+                            {expanded ? "طي الشرح" : "عرض الشرح كاملاً"}
+                          </button>
+                        )}
+                      </div>
+                      <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                        <div>
+                          <dt className="text-muted-foreground">المستفيد</dt>
+                          <dd className="font-medium">{r.payee ?? "—"}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-muted-foreground">
+                            الفئة / المركز
+                          </dt>
+                          <dd>
+                            {CATEGORY_LABEL[r.category] ?? r.category}
+                            {r.costCenter ? ` · ${r.costCenter}` : ""}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-muted-foreground">
+                            مصدر التمويل
+                          </dt>
+                          <dd>{fundingDetail(r)}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-muted-foreground">
+                            أنشأ العملية
+                          </dt>
+                          <dd>
+                            {r.createdByName ??
+                              (r.createdBy != null ? `#${r.createdBy}` : "—")}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-muted-foreground">السند</dt>
+                          <dd dir="ltr">
+                            {r.receiptVoucherNumber ??
+                              (r.receiptId ? `R#${r.receiptId}` : "—")}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-muted-foreground">وقت التسجيل</dt>
+                          <dd dir="ltr">
+                            {fmtDateTime(r.createdAt as unknown as string)}
+                          </dd>
+                        </div>
+                      </dl>
+                      {warnings.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {warnings.map((warning) => (
+                            <span
+                              key={warning}
+                              className="rounded-full badge-status-cancelled px-2 py-0.5 text-[11px]"
+                            >
+                              {warning}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          aria-expanded={traceExpanded}
+                          onClick={() => toggleTrace(Number(r.id))}
+                        >
+                          {traceExpanded ? (
+                            <ChevronUp aria-hidden className="size-4" />
+                          ) : (
+                            <ChevronDown aria-hidden className="size-4" />
+                          )}
+                          مسار التتبّع
+                        </Button>
+                        <RowActions actions={actionsFor(r)} />
+                      </div>
+                      {traceExpanded && (
+                        <ExpenseTracePanel expenseId={Number(r.id)} />
+                      )}
+                    </article>
+                  );
+                })}
+              </section>
+            ))}
+            {list.data && visibleEntries.length === 0 && (
+              <p className="py-8 text-center text-sm text-muted-foreground">
+                لا مصروفات مطابقة.
+              </p>
+            )}
+          </div>
+
+          <div className="hidden md:block">
+            <ScrollTableShell
+              bordered={false}
+              maxHeightClass="max-h-[calc(100dvh-13rem)]"
+            >
+              <table className="w-full min-w-[1500px] text-sm">
+                <caption className="sr-only">
+                  سجل المصروفات التفصيلي مجمّع حسب مصدر التمويل
+                </caption>
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th scope="col" className="p-2 text-start">
+                      المصروف / السند
+                    </th>
+                    <th scope="col" className="p-2 text-start">
+                      التاريخ والتوقيت
+                    </th>
+                    <th scope="col" className="p-2 text-start">
+                      البيان / المستفيد
+                    </th>
+                    <th scope="col" className="p-2 text-start">
+                      الفرع / التصنيف
+                    </th>
+                    <th scope="col" className="p-2 text-start">
+                      مصدر التمويل
+                    </th>
+                    <th scope="col" className="p-2 text-start">
+                      الدرج / الوردية
+                    </th>
+                    <th scope="col" className="p-2 text-start">
+                      المسؤولية والاعتماد
+                    </th>
+                    <th scope="col" className="p-2 text-start">
+                      المبلغ
+                    </th>
+                    <th scope="col" className="p-2 text-start">
+                      الحالة
+                    </th>
+                    <th scope="col" className="p-2 text-start">
+                      التدقيق
+                    </th>
+                    <th scope="col" className="p-2 text-center">
+                      إجراء
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groupedRows.map((group) => (
+                    <Fragment key={group.kind}>
+                      <tr className="border-y bg-muted/70">
+                        <td colSpan={11} className="px-3 py-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-semibold">
+                              {FUNDING_META[group.kind].label}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {group.entries.length} عملية · إجمالي الصفحة{" "}
+                              <span
+                                className="font-semibold text-foreground tabular-nums"
+                                dir="ltr"
+                              >
+                                {fmt(
+                                  group.entries.reduce(
+                                    (sum, entry) =>
+                                      sum + Number(entry.row.amount),
+                                    0,
+                                  ),
+                                )}
+                              </span>
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                      {group.entries.map(({ row: r, warnings, funding }) => {
+                        const fr = rowProps(r.id);
+                        const expanded = expandedDescriptions.has(Number(r.id));
+                        const traceExpanded = expandedTraces.has(Number(r.id));
+                        return (
+                          <Fragment key={Number(r.id)}>
+                            <tr
+                              ref={fr.ref}
+                              className={`border-t align-top ${fr.className} ${r.status === "CANCELLED" ? "opacity-70" : ""}`}
+                            >
+                              <td className="p-2">
+                                <div className="font-mono text-xs" dir="ltr">
+                                  EXP#{Number(r.id)}
+                                </div>
+                                <div
+                                  className="mt-1 font-mono text-[11px] text-muted-foreground"
+                                  dir="ltr"
+                                >
+                                  {r.receiptVoucherNumber ??
+                                    (r.receiptId
+                                      ? `R#${r.receiptId}`
+                                      : "بلا سند")}
+                                </div>
+                                {r.referenceNumber && (
+                                  <div
+                                    className="mt-1 max-w-36 truncate text-[11px] text-muted-foreground"
+                                    title={r.referenceNumber}
+                                  >
+                                    مرجع: {r.referenceNumber}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="p-2 text-xs">
+                                <div dir="ltr">
+                                  {fmtDate(r.expenseDate as unknown as string)}
+                                </div>
+                                <div
+                                  className="mt-1 text-[11px] text-muted-foreground"
+                                  dir="ltr"
+                                >
+                                  أُدخل:{" "}
+                                  {fmtDateTime(
+                                    r.createdAt as unknown as string,
+                                  )}
+                                </div>
+                                {r.updatedAt && (
+                                  <div
+                                    className="text-[11px] text-muted-foreground"
+                                    dir="ltr"
+                                  >
+                                    حُدّث: {fmtDateTime(r.updatedAt)}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="max-w-[25rem] p-2">
+                                <p
+                                  className={`leading-6 ${expanded ? "whitespace-pre-wrap" : "line-clamp-2"}`}
+                                >
+                                  {r.description?.trim() || (
+                                    <span className="font-medium text-destructive">
+                                      لا يوجد شرح للعملية
+                                    </span>
+                                  )}
+                                </p>
+                                {(r.description?.length ?? 0) > 80 && (
+                                  <button
+                                    type="button"
+                                    className="mt-1 text-xs text-primary underline-offset-4 hover:underline"
+                                    onClick={() =>
+                                      toggleDescription(Number(r.id))
+                                    }
+                                  >
+                                    {expanded ? "طي" : "عرض كامل"}
+                                  </button>
+                                )}
+                                <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                                  <UserRound aria-hidden className="size-3.5" />{" "}
+                                  المستفيد:{" "}
+                                  <span className="text-foreground">
+                                    {r.payee ?? "—"}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="p-2 text-xs">
+                                <div>{r.branchName ?? "—"}</div>
+                                <div className="mt-1 text-muted-foreground">
+                                  {CATEGORY_LABEL[r.category] ?? r.category}
+                                </div>
+                                {r.costCenter && (
+                                  <div className="text-[11px] text-muted-foreground">
+                                    مركز: {r.costCenter}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="p-2 text-xs">
+                                <span
+                                  className={`inline-flex rounded-full px-2 py-0.5 text-xs ${FUNDING_META[funding].badge}`}
+                                >
+                                  {FUNDING_META[funding].short}
+                                </span>
+                                <div className="mt-1 text-muted-foreground">
+                                  {sourceLabel(r)}
+                                </div>
+                              </td>
+                              <td className="p-2 text-xs">
+                                {funding === "DRAWER" ? (
+                                  <>
+                                    <div className="font-medium">
+                                      {r.shiftOwnerName ??
+                                        "صاحب الدرج غير ظاهر"}
+                                    </div>
+                                    <div
+                                      className="mt-1 text-muted-foreground"
+                                      dir="ltr"
+                                    >
+                                      وردية #{r.shiftId ?? "—"}
+                                    </div>
+                                    <div className="text-[11px] text-muted-foreground">
+                                      {r.shiftType
+                                        ? (SHIFT_TYPE_LABEL[r.shiftType] ??
+                                          r.shiftType)
+                                        : "—"}{" "}
+                                      ·{" "}
+                                      {r.shiftStatus
+                                        ? (SHIFT_STATUS_LABEL[r.shiftStatus] ??
+                                          r.shiftStatus)
+                                        : "—"}
+                                    </div>
+                                  </>
+                                ) : funding === "TREASURY" ? (
+                                  <div className="inline-flex items-center gap-1">
+                                    <Building2 aria-hidden className="size-4" />{" "}
+                                    الخزينة الإدارية
+                                  </div>
+                                ) : (
+                                  <div>{fundingDetail(r)}</div>
+                                )}
+                              </td>
+                              <td className="p-2 text-xs">
+                                <div>
+                                  أنشأ:{" "}
+                                  <span className="font-medium">
+                                    {r.createdByName ??
+                                      (r.createdBy != null
+                                        ? `#${r.createdBy}`
+                                        : "—")}
+                                  </span>
+                                </div>
+                                <div className="mt-1 text-muted-foreground">
+                                  اعتمد: {r.approvedByName ?? "—"}
+                                </div>
+                                <div className="text-[11px] text-muted-foreground">
+                                  {r.approvalStatus
+                                    ? (APPROVAL_LABEL[r.approvalStatus] ??
+                                      r.approvalStatus)
+                                    : "—"}
+                                  {r.receiptStatus
+                                    ? ` · إيصال ${r.receiptStatus}`
+                                    : ""}
+                                </div>
+                              </td>
+                              <td
+                                className="p-2 text-start text-base font-bold tabular-nums"
+                                dir="ltr"
+                              >
+                                {fmt(r.amount)}
+                              </td>
+                              <td className="p-2">
+                                <span
+                                  className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}
+                                >
+                                  {STATUS_LABEL[r.status] ?? r.status}
+                                </span>
+                              </td>
+                              <td className="max-w-52 p-2">
+                                {warnings.length ? (
+                                  <div className="flex flex-wrap gap-1">
+                                    {warnings.map((warning) => (
+                                      <span
+                                        key={warning}
+                                        className="rounded-full badge-status-cancelled px-2 py-0.5 text-[11px]"
+                                      >
+                                        {warning}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">
+                                    لا ملاحظات
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-2 text-center">
+                                <div className="flex items-center justify-center gap-1">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    aria-label={`مسار تتبع المصروف ${Number(r.id)}`}
+                                    aria-expanded={traceExpanded}
+                                    onClick={() => toggleTrace(Number(r.id))}
+                                  >
+                                    {traceExpanded ? (
+                                      <ChevronUp
+                                        aria-hidden
+                                        className="size-4"
+                                      />
+                                    ) : (
+                                      <ChevronDown
+                                        aria-hidden
+                                        className="size-4"
+                                      />
+                                    )}
+                                    تفاصيل
+                                  </Button>
+                                  <RowActions actions={actionsFor(r)} />
+                                </div>
+                              </td>
+                            </tr>
+                            {traceExpanded && (
+                              <tr className="border-t bg-muted/20">
+                                <td colSpan={11} className="p-3">
+                                  <ExpenseTracePanel expenseId={Number(r.id)} />
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                    </Fragment>
+                  ))}
+                  {list.data && visibleEntries.length === 0 && (
+                    <TableEmptyRow
+                      colSpan={11}
+                      message={
+                        auditOnly
+                          ? "لا توجد حالات تدقيق في هذه الصفحة."
+                          : query
+                            ? "لا مصروفات مطابقة للبحث."
+                            : "لا مصروفات لهذا الفلتر."
+                      }
+                    />
+                  )}
+                </tbody>
+              </table>
+            </ScrollTableShell>
+          </div>
         </CardContent>
         <TablePager
           page={page}
@@ -334,7 +1895,9 @@ export default function Expenses() {
           isLoading={list.isFetching}
         />
       </Card>
-      {cancel.error && <p className="text-sm text-destructive">{cancel.error.message}</p>}
+      {cancel.error && (
+        <p className="text-sm text-destructive">{cancel.error.message}</p>
+      )}
     </div>
   );
 }

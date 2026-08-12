@@ -15,6 +15,8 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
 import type { InvoiceLine, InvoiceType, PriceTier } from "./types";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { barcodeSearchVisualClass } from "@/components/scan/BarcodeSearchCue";
 
 export interface ProductSearchBarProps {
   invoiceType: InvoiceType;
@@ -166,7 +168,45 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
     inputRef.current?.focus();
   };
 
+  async function resolveExactBarcode(code: string) {
+    // جانب الشراء لا يملك byBarcode؛ نملأ النص المصحّح ليعمل البحث الخادميّ المعتاد.
+    if (isPurchase) {
+      setQuery(code);
+      setShowDrop(true);
+      return;
+    }
+    try {
+      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
+      if (row) {
+        addRow({
+          productId: row.productId,
+          variantId: row.variantId,
+          productUnitId: row.productUnitId,
+          name: row.productName + (row.variantName ? ` — ${row.variantName}` : ""),
+          sku: row.sku,
+          barcode: row.barcode ?? null,
+          unitName: row.unitName,
+          conversionFactor: row.conversionFactor,
+          stockBase: row.stockBase ?? 0,
+          reservedBase: row.reservedBase ?? 0,
+          availableBase: row.availableBase ?? (row.stockBase ?? 0),
+          isService: row.isService || row.isPrintService,
+          price: row.price ?? "0",
+          costBase: "0",
+        });
+        return;
+      }
+      onNotify?.(`الباركود غير معروف: ${code}`, "error");
+    } catch {
+      onNotify?.("تعذّر الاتصال بالخادم", "error");
+    }
+  }
+
+  const barcodeInput = useBarcodeInput((code) => { void resolveExactBarcode(code); });
+
   const handleKey = async (e: KeyboardEvent<HTMLInputElement>) => {
+    barcodeInput.handleKeyDown(e, setQuery);
+    if (e.defaultPrevented) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setSelectedIdx((i) => Math.min(i + 1, results.length - 1));
@@ -190,31 +230,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       const code = query.trim();
       const looksLikeBarcode = /^[0-9A-Za-z_-]{4,}$/.test(code);
       if (code && !isPurchase && looksLikeBarcode) {
-        try {
-          const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
-          if (row) {
-            addRow({
-              productId: row.productId,
-              variantId: row.variantId,
-              productUnitId: row.productUnitId,
-              name: row.productName + (row.variantName ? ` — ${row.variantName}` : ""),
-              sku: row.sku,
-              barcode: row.barcode ?? null,
-              unitName: row.unitName,
-              conversionFactor: row.conversionFactor,
-              stockBase: row.stockBase ?? 0,
-              reservedBase: row.reservedBase ?? 0,
-              availableBase: row.availableBase ?? (row.stockBase ?? 0),
-              isService: row.isService || row.isPrintService,
-              price: row.price ?? "0",
-              costBase: "0",
-            });
-            return;
-          }
-          onNotify?.(`الباركود غير معروف: ${code}`, "error");
-        } catch {
-          onNotify?.("تعذّر الاتصال بالخادم", "error");
-        }
+        await resolveExactBarcode(code);
       }
     } else if (e.key === "Escape") {
       setShowDrop(false);
@@ -226,8 +242,8 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
 
   return (
     <div ref={wrapRef} className="relative">
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative w-full min-w-0 flex-1 sm:min-w-72">
           <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
             <Search aria-hidden className="size-4" />
           </span>
@@ -240,7 +256,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
               if (results.length > 0) setShowDrop(true);
             }}
             placeholder="ابحث بالاسم أو SKU أو امسح الباركود..."
-            className="h-11 pe-10 ps-4 text-sm"
+            className={`h-11 pe-10 ps-4 text-sm ${barcodeSearchVisualClass}`}
             aria-label="بحث المنتجات"
           />
           {query && (
@@ -257,10 +273,12 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
             </button>
           )}
         </div>
-        <div className="flex h-11 shrink-0 items-center gap-1.5 rounded-lg border bg-muted px-3 text-xs font-semibold text-muted-foreground">
-          <Camera aria-hidden className="size-4" /> باركود
+        <div className="flex w-full shrink-0 gap-2 sm:w-auto">
+          <div className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-primary/50 bg-primary/10 px-3 text-xs font-bold text-primary sm:flex-none">
+            <Camera aria-hidden className="size-4" /> قارئ باركود
+          </div>
+          <div className="flex shrink-0 items-center rounded-md bg-muted px-2 py-1 text-[11px] font-semibold text-muted-foreground">F2 للبحث</div>
         </div>
-        <div className="shrink-0 rounded-md bg-muted px-2 py-1 text-[11px] font-semibold text-muted-foreground">F2 للبحث</div>
       </div>
 
       {showDrop && (

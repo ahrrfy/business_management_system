@@ -11,7 +11,16 @@
 //     (حدّ حصري عبر Date.UTC) — لا تفسير YMD بالمنطقة المحلية (علّة انزياح بغداد الموثَّقة).
 import { TRPCError } from "@trpc/server";
 import { and, count, eq, isNotNull, sql } from "drizzle-orm";
-import { branchStock, branches, openingModeSettings, products, productVariants } from "../../drizzle/schema";
+import {
+  branchStock,
+  branches,
+  openingModeSettings,
+  products,
+  productVariants,
+  purchaseOrderItems,
+  purchaseOrders,
+} from "../../drizzle/schema";
+import type { Tx } from "../db";
 import { requireDb, withTx } from "./tx";
 
 const DAY_MS = 86_400_000;
@@ -73,6 +82,22 @@ export async function isOpeningWindowActive(
   const rows = await runner.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1);
   const view = toView(rows[0]);
   return { active: view.active, settings: view };
+}
+
+/**
+ * قراءة حالة النافذة داخل معاملة بيعٍ/تنفيذٍ جارية (استعلام صفٍّ واحد، بلا كتابة) — حارسٌ
+ * مالي/مخزني موحّد لمسارات: البيع (`sale/create.ts`)، بدء أمر الشغل (`workOrder/lifecycle.ts`)،
+ * تسليمه (`workOrder/deliver.ts`). يعيد الفعالية + سقف كمية السطر السالب معاً.
+ *
+ * توسعة قرار المالك (١٠/٨): أثناء النافذة الفعّالة، قنوات الاستقبال/التنفيذ تعمل بالسالب
+ * وبلا حاجز عربون/سقف ائتمان للأصناف **غير المُفتتَحة** — مؤقّتٌ ينتهي بانتهاء النافذة، والدَّين
+ * يُسجَّل ذمّةً كاملة (يُرخَّى الحاجز لا التسجيل). الحُرّاس الصنفية تبقى: تكلفة>0 + سقف السطر +
+ * غير مُفتتَح (يُفحص `openedAt IS NULL` داخل `applyMovement` تحت القفل) + استثناء بضاعة الأمانة.
+ */
+export async function readOpeningWindowState(tx: Tx): Promise<{ active: boolean; maxQty: number }> {
+  const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
+  const active = !!(om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now());
+  return { active, maxQty: om?.maxNegativeQtyPerLine ?? DEFAULTS.maxNegativeQtyPerLine };
 }
 
 export interface UpdateOpeningModeInput {
@@ -169,12 +194,15 @@ export interface OpeningProgressBranch {
 export async function getOpeningProgress(): Promise<OpeningProgressBranch[]> {
   const db = requireDb();
 
-  const eligible = await db
-    .select({ total: count() })
-    .from(productVariants)
+  // الاستبعاد فرعي: ارتباط المتغيّر بشراء في فرع لا يمنع افتتاحه في فرع آخر.
+  const totalRows = await db
+    .select({ branchId: branches.id, total: count() })
+    .from(branches)
+    .innerJoin(productVariants, sql`TRUE`)
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(
       and(
+        sql`${branches.isActive} IS NOT FALSE`,
         eq(products.isService, false),
         eq(products.isBundle, false),
         // بضاعة الأمانة (ش٤): تُفتتَح بسند إيداع لا بجرد افتتاحيّ ⇒ خارج مؤشر «افتتاح الكتالوج المملوك»
@@ -182,9 +210,18 @@ export async function getOpeningProgress(): Promise<OpeningProgressBranch[]> {
         eq(products.isConsignment, false),
         eq(products.isActive, true),
         sql`${productVariants.isActive} IS NOT FALSE`,
+        sql`NOT EXISTS (
+          SELECT 1
+          FROM ${purchaseOrderItems}
+          INNER JOIN ${purchaseOrders}
+            ON ${purchaseOrders.id} = ${purchaseOrderItems.purchaseOrderId}
+          WHERE ${purchaseOrderItems.variantId} = ${productVariants.id}
+            AND ${purchaseOrders.branchId} = ${branches.id}
+            AND ${purchaseOrders.status} <> 'CANCELLED'
+        )`,
       ),
-    );
-  const totalVariants = Number(eligible[0]?.total ?? 0);
+    )
+    .groupBy(branches.id);
 
   const branchRows = await db
     .select({ id: branches.id, name: branches.name })
@@ -204,15 +241,29 @@ export async function getOpeningProgress(): Promise<OpeningProgressBranch[]> {
         eq(products.isConsignment, false), // مطابقة المقام: الأمانة خارج المؤشر بسطاً ومقاماً (§٥-د).
         eq(products.isActive, true),
         sql`${productVariants.isActive} IS NOT FALSE`,
+        sql`NOT EXISTS (
+          SELECT 1
+          FROM ${purchaseOrderItems}
+          INNER JOIN ${purchaseOrders}
+            ON ${purchaseOrders.id} = ${purchaseOrderItems.purchaseOrderId}
+          WHERE ${purchaseOrderItems.variantId} = ${productVariants.id}
+            AND ${purchaseOrders.branchId} = ${branchStock.branchId}
+            AND ${purchaseOrders.status} <> 'CANCELLED'
+        )`,
       ),
     )
     .groupBy(branchStock.branchId);
 
-  const openedBy = new Map(openedRows.map((r) => [Number(r.branchId), Number(r.opened)]));
+  const totalBy = new Map(
+    totalRows.map((r) => [Number(r.branchId), Number(r.total)]),
+  );
+  const openedBy = new Map(
+    openedRows.map((r) => [Number(r.branchId), Number(r.opened)]),
+  );
   return branchRows.map((b) => ({
     branchId: Number(b.id),
     branchName: b.name,
-    totalVariants,
+    totalVariants: totalBy.get(Number(b.id)) ?? 0,
     openedVariants: openedBy.get(Number(b.id)) ?? 0,
   }));
 }

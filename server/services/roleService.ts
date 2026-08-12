@@ -5,8 +5,9 @@
  * هذا الجدول للأدوار **الإضافية** التي يصنعها المالك. كل دور مخصّص يحمل:
  *  - baseRole: الفئة الأساسية للبوّابات الخشنة (requireRole: cashier/warehouse/manager…).
  *  - permissions: خريطة الوحدات الكاملة للبوّابات الدقيقة (requireModule).
- * عند الإسناد لمستخدم: users.role=baseRole + users.customRoleId=id، ويُحلّ في context إلى
- * permissionsOverride مشتقّ من الخريطة ⇒ لا تغيير في requireModule والبوّابات (إضافيّ بالكامل).
+ * عند الإسناد لمستخدم: users.role=baseRole + users.customRoleId=id. خريطة الدور هي الأساس،
+ * وpermissionsOverride (إن وُجد) هو فرق فردي فوقها؛ يحلّهما context إلى الآلية القائمة،
+ * لذلك لا تغيير في requireModule والبوّابات (إضافيّ بالكامل).
  */
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, isNotNull, sql } from "drizzle-orm";

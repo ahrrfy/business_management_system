@@ -21,6 +21,8 @@ import { customerNoteRouter } from "./routers/customerNoteRouter";
 import { arRemindersRouter } from "./routers/arRemindersRouter";
 import { apRemindersRouter } from "./routers/apRemindersRouter";
 import { pushRouter } from "./routers/pushRouter";
+import { nativePushRouter } from "./routers/nativePushRouter";
+import { superAppRouter } from "./routers/superAppRouter";
 import { expenseRouter } from "./routers/expenseRouter";
 import { reportsRouter } from "./routers/reportsRouter";
 import { quotationRouter } from "./routers/quotationRouter";
@@ -72,6 +74,8 @@ import { contactsRouter } from "./routers/contactsRouter";
 import { broadcastsRouter } from "./routers/broadcastsRouter";
 import { reservationsRouter } from "./routers/reservationsRouter";
 import { documentDeliveryRouter } from "./routers/documentDeliveryRouter";
+import { receptionRouter } from "./routers/receptionRouter";
+import { executiveRouter } from "./routers/executiveRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -79,6 +83,8 @@ import { documentDeliveryRouter } from "./routers/documentDeliveryRouter";
 export const appRouter = router({
   system: systemRouter,
   auth: authRouter,
+  superApp: superAppRouter,
+  executive: executiveRouter,
   // العمل دون اتصال (لقطات النموذج المحلي) — الشريحة ٢ من خطة الأوفلاين.
   offline: offlineRouter,
   users: userRouter,
@@ -103,6 +109,7 @@ export const appRouter = router({
   arReminders: arRemindersRouter,
   apReminders: apRemindersRouter,
   push: pushRouter,
+  nativePush: nativePushRouter,
   expenses: expenseRouter,
   reports: reportsRouter,
   quotations: quotationRouter,
@@ -174,6 +181,7 @@ export const appRouter = router({
   broadcasts: broadcastsRouter,
   // الحجوزات (R-م٣، ٢٧/٧/٢٦): حجز ناعم للعملاء (ATP = رصيد فعليّ − محجوز) — لا يمسّ المخزون الفعلي.
   reservations: reservationsRouter,
+  reception: receptionRouter,
   documentDelivery: documentDeliveryRouter,
 });
 

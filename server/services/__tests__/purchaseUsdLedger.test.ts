@@ -51,7 +51,7 @@ beforeEach(async () => {
 });
 
 describe("فاتورة المورد الدولارية — التكلفة والذمة والتسديد", () => {
-  it("يثبت أسعار البنود بالدولار، يرسمِل الشحن بالدينار، ويطفئ الدفعة بسعرها الفعلي", async () => {
+  it("يثبت أسعار البنود بالدولار، يُبقي الشحن خارج الذمّة والتكلفة، ويطفئ الدفعة بسعرها الفعلي", async () => {
     const created = await createPurchaseOrder({
       supplierId: 1,
       branchId: 1,
@@ -69,7 +69,9 @@ describe("فاتورة المورد الدولارية — التكلفة وال
     expect(po.usdTotal).toBe("200.00");
     expect(po.agreedRate).toBe("1450.0000");
     expect(po.subtotal).toBe("290000.00");
-    expect(po.total).toBe("390000.00");
+    // قرار المالك (٥/٨/٢٦): الإجمالي = البضاعة فقط (٢٩٠٬٠٠٠) — الشحن (١٠٠٬٠٠٠) خرج منه
+    // ومن ذمّة المورّد، ويُسجَّل مصروف نقلٍ لحظة الاستلام. كان ٣٩٠٬٠٠٠ في السياسة الملغاة.
+    expect(po.total).toBe("290000.00");
     expect(item.usdUnitPrice).toBe("20.0000");
     expect(item.usdTotal).toBe("200.00");
     expect(item.unitPrice).toBe("29000.00");
@@ -85,7 +87,8 @@ describe("فاتورة المورد الدولارية — التكلفة وال
       .where(eq(s.productVariants.id, 1)))[0];
     expect(supplierAfterReceipt.currentBalance).toBe("290000.00");
     expect(supplierAfterReceipt.currentBalanceUsd).toBe("200.00");
-    expect(variant.costPrice).toBe("39000.00");
+    // تكلفة الصنف = سعر المورّد بالدينار وحده (٢٩٬٠٠٠) — بلا حصّة الشحن (كانت ٣٩٬٠٠٠ برسملتها).
+    expect(variant.costPrice).toBe("29000.00");
 
     const settled = await settleSupplierViaExchange({
       exchangeHouseId: 1,

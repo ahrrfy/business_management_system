@@ -1,9 +1,11 @@
 import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BalanceCell } from "@/components/BalanceBadge";
 import { ImportDialog } from "@/components/import/ImportDialog";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
@@ -22,9 +24,11 @@ import { notify } from "@/lib/notify";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 // صفّ نتيجة البحث — صريح لأنّ الإجراء يُعيد اتحاداً (تقنيع التكلفة) يُفشل استدلال T في fetchAllPaged.
 type CustomerRow = RouterOutputs["customers"]["search"]["rows"][number];
@@ -78,20 +82,63 @@ export default function Customers() {
     "FULL",
     ["cashier", "manager", "sales_rep", "print_operator"],
   );
-  const [q, setQ] = useState("");
-  const [customerType, setCustomerType] = useState<"" | (typeof TYPE_OPTIONS)[number]>("");
-  const [priceTier, setPriceTier] = useState<"" | "RETAIL" | "WHOLESALE" | "GOVERNMENT">("");
-  const [includeInactive, setIncludeInactive] = useState(false);
-  const [balanceFilter, setBalanceFilter] = useState<"" | "RECEIVABLE" | "CREDIT" | "ZERO">("");
-  const [collectionFilter, setCollectionFilter] = useState<"" | "OVERDUE" | "PROMISE_DUE" | "PROMISE_FUTURE" | "NO_FOLLOWUP">("");
-  const [creditFilter, setCreditFilter] = useState<"" | "CASH_ONLY" | "NEAR_LIMIT" | "OVER_LIMIT" | "UNLIMITED">("");
-  const [inactivityDays, setInactivityDays] = useState<"" | 30 | 60 | 90>("");
-  const [sort, setSort] = useState<"NAME" | "BALANCE_DESC" | "OLDEST_DUE" | "LAST_PURCHASE">("NAME");
-  const [page, setPage] = useState(0);
+  // فلاتر الشاشة محفوظة في الرابط (useUrlFilters) — تعيش مع فتح التفاصيل والرجوع، وقابلة للمشاركة.
+  // كل القيم نصوص (اتفاقية useUrlFilters)؛ نشتقّ الأنواع الفعلية أدناه ونُعرّف مُغلِّفات setters
+  // بتوقيع مطابق لِـuseState القديم كي تبقى كل مواقع الاستدعاء أدناه بلا تغيير.
+  const [f, setF, resetAllFilters] = useUrlFilters({
+    q: "",
+    type: "",
+    tier: "",
+    city: "",
+    inactive: "",
+    balance: "",
+    collection: "",
+    credit: "",
+    inactivity: "",
+    sort: "NAME",
+    page: "0",
+  });
+  const q = f.q;
+  const customerType = f.type as "" | (typeof TYPE_OPTIONS)[number];
+  const priceTier = f.tier as "" | "RETAIL" | "WHOLESALE" | "GOVERNMENT";
+  const city = f.city;
+  const includeInactive = f.inactive === "1";
+  const balanceFilter = f.balance as "" | "RECEIVABLE" | "CREDIT" | "ZERO";
+  const collectionFilter = f.collection as "" | "OVERDUE" | "PROMISE_DUE" | "PROMISE_FUTURE" | "NO_FOLLOWUP";
+  const creditFilter = f.credit as "" | "CASH_ONLY" | "NEAR_LIMIT" | "OVER_LIMIT" | "UNLIMITED";
+  const inactivityDays = (f.inactivity ? Number(f.inactivity) : "") as "" | 30 | 60 | 90;
+  const sort = f.sort as "NAME" | "BALANCE_DESC" | "OLDEST_DUE" | "LAST_PURCHASE";
+  const page = Number(f.page) || 0;
+  function setQ(v: string) { setF({ q: v }); }
+  function setCustomerType(v: string) { setF({ type: v }); }
+  function setPriceTier(v: string) { setF({ tier: v }); }
+  function setCity(v: string) { setF({ city: v }); }
+  function setIncludeInactive(v: boolean) { setF({ inactive: v ? "1" : "" }); }
+  function setBalanceFilter(v: string) { setF({ balance: v }); }
+  function setCollectionFilter(v: string) { setF({ collection: v }); }
+  function setCreditFilter(v: string) { setF({ credit: v }); }
+  function setInactivityDays(v: number | "") { setF({ inactivity: v ? String(v) : "" }); }
+  function setSort(v: string) { setF({ sort: v }); }
+  function setPage(updater: number | ((p: number) => number)) {
+    const next = typeof updater === "function" ? updater(page) : updater;
+    setF({ page: String(Math.max(0, next)) });
+  }
+  const hasAnyFilter = !!(
+    q || customerType || priceTier || city || includeInactive ||
+    balanceFilter || collectionFilter || creditFilter || inactivityDays || sort !== "NAME"
+  );
+
   const [importOpen, setImportOpen] = useState(false);
   const [followTarget, setFollowTarget] = useState<DisplayRow | null>(null);
   const importMut = trpc.imports.customers.useMutation();
   const limit = 50;
+
+  // فرع مهام المتابعة (follow-up): الأدمن/المدير بلا فرع مُسنَد يختار الفرع صراحةً بدل التثبيت
+  // الصامت على الفرع ١ (نمط PR #288 محظور — §٤ ق١١). لا يمسّ مستخدماً له فرع (يبقى فرعه).
+  const [pickedBranch, setPickedBranch] = useState<number | null>(null);
+  const needsBranchChoice = isElevated && me.data != null && me.data.branchId == null;
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: needsBranchChoice });
+  const effectiveFollowUpBranchId = me.data?.branchId != null ? Number(me.data.branchId) : pickedBranch;
 
   // الميل الأخير للبحث الشامل: عند الوصول بـ?q=&focus= نبذر البحث (يُحمِّل العميل) ثمّ نُبرز صفّه.
   const { seedQuery, rowProps } = useFocusHighlight();
@@ -104,11 +151,14 @@ export default function Customers() {
       q: q.trim() || undefined,
       customerType: customerType || undefined,
       priceTier: priceTier || undefined,
+      // city مدعومة في customers.search فقط — للمستخدم غير المرتفع (basicList أدناه). تُتجاهَل
+      // خادمياً في customers.operations (لا تكسر شيئاً)، فنُخفي عنصر الواجهة المقابل للمرتفعين.
+      city: city.trim() || undefined,
       includeInactive,
       limit,
       offset: page * limit,
     }),
-    [q, customerType, priceTier, includeInactive, page],
+    [q, customerType, priceTier, city, includeInactive, page],
   );
 
   const operationsInput = useMemo(
@@ -250,16 +300,21 @@ export default function Customers() {
 
   async function saveFollowUp(value: FollowUpValue) {
     if (!followTarget) return;
+    if (effectiveFollowUpBranchId == null) {
+      notify.err("اختر الفرع أولاً قبل تسجيل المتابعة");
+      return;
+    }
     try {
       await createNote.mutateAsync({
         customerId: Number(followTarget.id),
         note: value.note,
         followUpDate: value.followUpDate,
+        branchId: effectiveFollowUpBranchId,
       });
       if (value.createTask) {
         if (!canCreateTasks) throw new Error("ليست لديك صلاحية إنشاء المهام");
         await createTask.mutateAsync({
-          branchId: Number(me.data?.branchId ?? 1),
+          branchId: effectiveFollowUpBranchId,
           kind: "FOLLOW_UP",
           title: `متابعة تحصيل — ${followTarget.name}`,
           description: value.note,
@@ -284,6 +339,10 @@ export default function Customers() {
 
   async function createBulkFollowUpTasks() {
     if (!canCreateTasks || selectedRows.length === 0) return;
+    if (effectiveFollowUpBranchId == null) {
+      notify.err("اختر الفرع أولاً قبل إنشاء مهام المتابعة");
+      return;
+    }
     const ok = await confirm({
       title: "إنشاء مهام متابعة",
       description: `سيتم إنشاء مهمة متابعة مرتبطة لكل عميل من العملاء المحددين (${selectedRows.length}).`,
@@ -294,7 +353,7 @@ export default function Customers() {
       await Promise.all(
         selectedRows.map((row) =>
           createTask.mutateAsync({
-            branchId: Number(me.data?.branchId ?? 1),
+            branchId: effectiveFollowUpBranchId,
             kind: "FOLLOW_UP",
             title: `متابعة تحصيل — ${row.name}`,
             description: `متابعة جماعية من شاشة العملاء. الرصيد الحالي: ${fmt(row.currentBalance)} د.ع`,
@@ -352,6 +411,22 @@ export default function Customers() {
         description="إدارة العملاء (أفراد/تجّار/شركات/حكومي): إضافة، تعديل، تعطيل، بحث، ومتابعة الرصيد المفتوح."
       />
 
+      {/* الأدمن/المدير بلا فرع مُسنَد يختار الفرع صراحةً قبل تسجيل متابعة/إنشاء مهمة (نمط PR #288). */}
+      {needsBranchChoice && effectiveFollowUpBranchId == null && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] p-2 text-sm text-[var(--sem-warn)]">
+          <span>اختر الفرع لإسناد ملاحظات/مهام المتابعة إليه:</span>
+          <AppSelect
+            className="h-8 w-48"
+            value=""
+            onValueChange={(v) => setPickedBranch(v ? Number(v) : null)}
+            aria-label="فرع مهام المتابعة"
+            placeholder="— اختر الفرع —"
+          >
+            {(branchesQ.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </AppSelect>
+        </div>
+      )}
+
       <ImportDialog<CustomerImportRow>
         open={importOpen}
         onOpenChange={setImportOpen}
@@ -394,74 +469,105 @@ export default function Customers() {
             }}
             filters={
               <>
-                <select
-                  className={selectCls}
-                  value={customerType}
-                  onChange={(e) => { setCustomerType(e.target.value as any); setPage(0); }}
-                  aria-label="النوع"
-                >
-                  <option value="">كل الأنواع</option>
-                  {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
-                <select
-                  className={selectCls}
-                  value={priceTier}
-                  onChange={(e) => { setPriceTier(e.target.value as any); setPage(0); }}
-                  aria-label="فئة السعر"
-                >
-                  <option value="">كل الفئات</option>
-                  <option value="RETAIL">مفرد</option>
-                  <option value="WHOLESALE">جملة</option>
-                  <option value="GOVERNMENT">حكومي</option>
-                </select>
+                {/* E (١٢/٨): تسميات صريحة بدل placeholder — يختفي عند الاختيار فيضيع معنى الحقل.
+                    شكوى المالك الأصلية «الفلاتر مبعثرة» تسبب رئيسيّ لها هو غياب التسميات. */}
+                <FilterField label="النوع">
+                  <select
+                    className={selectCls}
+                    value={customerType}
+                    onChange={(e) => { setCustomerType(e.target.value as any); setPage(0); }}
+                  >
+                    <option value="">كل الأنواع</option>
+                    {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </FilterField>
+                <FilterField label="فئة السعر">
+                  <select
+                    className={selectCls}
+                    value={priceTier}
+                    onChange={(e) => { setPriceTier(e.target.value as any); setPage(0); }}
+                  >
+                    <option value="">كل الفئات</option>
+                    <option value="RETAIL">مفرد</option>
+                    <option value="WHOLESALE">جملة</option>
+                    <option value="GOVERNMENT">حكومي</option>
+                  </select>
+                </FilterField>
+                {/* فلتر مدينة — مدعوم خادمياً في customers.search فقط (المستخدم غير المرتفع)؛
+                    لوحة العمليات (operations) للمرتفعين لا تدعمه فنُخفيه عنهم بدل عرض فلتر معطَّل. */}
+                {!isElevated && (
+                  <FilterField label="المدينة">
+                    <Input
+                      value={city}
+                      onChange={(e) => { setCity(e.target.value); setPage(0); }}
+                      placeholder="اكتب اسم المدينة…"
+                      className="h-8 w-32"
+                    />
+                  </FilterField>
+                )}
                 {isElevated && (
                   <>
-                    <select className={selectCls} value={balanceFilter} onChange={(e) => { setBalanceFilter(e.target.value as typeof balanceFilter); setPage(0); }} aria-label="حالة الرصيد">
-                      <option value="">كل الأرصدة</option>
-                      <option value="RECEIVABLE">لنا عليهم</option>
-                      <option value="CREDIT">لهم علينا</option>
-                      <option value="ZERO">رصيد صفر</option>
-                    </select>
-                    <select className={selectCls} value={collectionFilter} onChange={(e) => { setCollectionFilter(e.target.value as typeof collectionFilter); setPage(0); }} aria-label="حالة التحصيل">
-                      <option value="">كل حالات التحصيل</option>
-                      <option value="OVERDUE">فواتير متأخرة</option>
-                      <option value="PROMISE_DUE">وعد مستحق/متأخر</option>
-                      <option value="PROMISE_FUTURE">وعد قادم</option>
-                      <option value="NO_FOLLOWUP">بلا متابعة</option>
-                    </select>
-                    <select className={selectCls} value={creditFilter} onChange={(e) => { setCreditFilter(e.target.value as typeof creditFilter); setPage(0); }} aria-label="الحالة الائتمانية">
-                      <option value="">كل الحالات الائتمانية</option>
-                      <option value="CASH_ONLY">نقدي فقط</option>
-                      <option value="NEAR_LIMIT">بلغ 80% من الحد</option>
-                      <option value="OVER_LIMIT">تجاوز الحد</option>
-                      <option value="UNLIMITED">بلا حد</option>
-                    </select>
-                    <select className={selectCls} value={inactivityDays} onChange={(e) => { setInactivityDays(e.target.value ? Number(e.target.value) as 30 | 60 | 90 : ""); setPage(0); }} aria-label="عدم الشراء">
-                      <option value="">كل نشاطات الشراء</option>
-                      <option value="30">لم يشترِ منذ 30 يوماً</option>
-                      <option value="60">لم يشترِ منذ 60 يوماً</option>
-                      <option value="90">لم يشترِ منذ 90 يوماً</option>
-                    </select>
-                    <select className={selectCls} value={sort} onChange={(e) => { setSort(e.target.value as typeof sort); setPage(0); }} aria-label="الترتيب">
-                      <option value="NAME">ترتيب بالاسم</option>
-                      <option value="BALANCE_DESC">أعلى مديونية</option>
-                      <option value="OLDEST_DUE">أقدم استحقاق</option>
-                      <option value="LAST_PURCHASE">الأطول بلا شراء</option>
-                    </select>
+                    <FilterField label="حالة الرصيد">
+                      <select className={selectCls} value={balanceFilter} onChange={(e) => { setBalanceFilter(e.target.value as typeof balanceFilter); setPage(0); }}>
+                        <option value="">كل الأرصدة</option>
+                        <option value="RECEIVABLE">لنا عليهم</option>
+                        <option value="CREDIT">لهم علينا</option>
+                        <option value="ZERO">رصيد صفر</option>
+                      </select>
+                    </FilterField>
+                    <FilterField label="حالة التحصيل">
+                      <select className={selectCls} value={collectionFilter} onChange={(e) => { setCollectionFilter(e.target.value as typeof collectionFilter); setPage(0); }}>
+                        <option value="">كل حالات التحصيل</option>
+                        <option value="OVERDUE">فواتير متأخرة</option>
+                        <option value="PROMISE_DUE">وعد مستحق/متأخر</option>
+                        <option value="PROMISE_FUTURE">وعد قادم</option>
+                        <option value="NO_FOLLOWUP">بلا متابعة</option>
+                      </select>
+                    </FilterField>
+                    <FilterField label="الحالة الائتمانية">
+                      <select className={selectCls} value={creditFilter} onChange={(e) => { setCreditFilter(e.target.value as typeof creditFilter); setPage(0); }}>
+                        <option value="">كل الحالات الائتمانية</option>
+                        <option value="CASH_ONLY">نقدي فقط</option>
+                        <option value="NEAR_LIMIT">بلغ 80% من الحد</option>
+                        <option value="OVER_LIMIT">تجاوز الحد</option>
+                        <option value="UNLIMITED">بلا حد</option>
+                      </select>
+                    </FilterField>
+                    <FilterField label="نشاط الشراء">
+                      <select className={selectCls} value={inactivityDays} onChange={(e) => { setInactivityDays(e.target.value ? Number(e.target.value) as 30 | 60 | 90 : ""); setPage(0); }}>
+                        <option value="">كل نشاطات الشراء</option>
+                        <option value="30">لم يشترِ منذ 30 يوماً</option>
+                        <option value="60">لم يشترِ منذ 60 يوماً</option>
+                        <option value="90">لم يشترِ منذ 90 يوماً</option>
+                      </select>
+                    </FilterField>
+                    <FilterField label="الترتيب">
+                      <select className={selectCls} value={sort} onChange={(e) => { setSort(e.target.value as typeof sort); setPage(0); }}>
+                        <option value="NAME">ترتيب بالاسم</option>
+                        <option value="BALANCE_DESC">أعلى مديونية</option>
+                        <option value="OLDEST_DUE">أقدم استحقاق</option>
+                        <option value="LAST_PURCHASE">الأطول بلا شراء</option>
+                      </select>
+                    </FilterField>
                     {(balanceFilter || collectionFilter || creditFilter || inactivityDays || sort !== "NAME") && (
                       <Button type="button" variant="ghost" size="sm" onClick={resetOperationalFilters}>مسح فلاتر التشغيل</Button>
                     )}
                   </>
                 )}
-                <label className="flex items-center gap-2 h-8 text-sm">
-                  <input
-                    type="checkbox"
-                    className="size-4"
-                    checked={includeInactive}
-                    onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
-                  />
-                  <span className="text-muted-foreground">عرض المعطّلين</span>
-                </label>
+                <FilterField label="خيارات">
+                  <label className="flex items-center gap-2 h-8 text-sm">
+                    <input
+                      type="checkbox"
+                      className="size-4"
+                      checked={includeInactive}
+                      onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
+                    />
+                    <span className="text-muted-foreground">عرض المعطّلين</span>
+                  </label>
+                </FilterField>
+                {hasAnyFilter && (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => resetAllFilters()}>مسح كل الفلاتر</Button>
+                )}
               </>
             }
             exportSpec={{
@@ -481,6 +587,7 @@ export default function Customers() {
                             q: q.trim() || undefined,
                             customerType: customerType || undefined,
                             priceTier: priceTier || undefined,
+                            city: city.trim() || undefined,
                             includeInactive,
                             limit,
                             offset,
@@ -587,6 +694,21 @@ export default function Customers() {
                     <td className="p-2 text-center">
                       {/* ٣ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
                       <RowActions
+                        contact={{
+                          phone: c.phone,
+                          whatsapp: (c as { whatsapp?: string | null }).whatsapp,
+                          alternativePhones: [
+                            (c as { phone2?: string | null }).phone2,
+                            (c as { phone3?: string | null }).phone3,
+                          ],
+                          label: `واتساب ${c.name}`,
+                          message: buildOperationalContactMessage({
+                            partyName: c.name,
+                            entityLabel: "حساب العميل",
+                            nextAction: "نتواصل معكم لمتابعة طلبكم أو حسابكم. يرجى الرد عند الملاءمة.",
+                          }),
+                          gate: { module: "crm", level: "READ" },
+                        }}
                         actions={[
                           {
                             key: "edit",

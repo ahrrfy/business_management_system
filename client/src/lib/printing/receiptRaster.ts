@@ -130,8 +130,19 @@ export async function receiptToCanvas(
 
   // تقدير سخي للارتفاع ثم قصّ للمستعمل فعلياً بعد الرسم.
   // ش١٠: تفاصيل الكروت تُضاف للتقدير وإلا قُصَّ الإيصال قبلها (عنوانٌ ٣٠px + ٥ أسطر × ٢٥px + هامش).
+  // Codex P2 (١١/٨): G3 أضاف حقولاً اختياريّة قد تدفع القدم عبر السقف على إيصالٍ قصير مع توصيل
+  // ومتبقٍّ آجل — الرسم خارج الكانفاس يُطرح والارتفاع المُعاد مقصورٌ على estH فتضيع كتلة سياسة
+  // الإرجاع مع كل عناصر ما تحتها. نُضيف نافذة سخيّة لكل حقل جديد يظهر (الوردية ٣٠px + عربون
+  // محتجز ٣٠px + كتلة «متبقٍّ آجل» ٦٤px) — القصّ النهائي يُبقي الفعليّ فقط فلا هدر ورق.
   const digitalRows = (d.digitalDetails ?? []).length;
-  const estH = 1400 + d.items.length * 96 + digitalRows * 190;
+  const shiftRowH = d.shiftId != null ? 30 : 0;
+  const heldRowH = Number(d.heldDeposits ?? 0) > 0 ? 30 : 0;
+  const creditBlockH = Number(d.credit ?? 0) > 0 ? 64 : 0; // كتلة «متبقٍّ (آجل)» مع الفاصل المتقطّع
+  // هامش رسم إضافي يحمي التذييل من بلوغ سقف اللوحة عند اجتماع الشعار والباركود والتوصيل
+  // والحقول الجديدة. لا يهدر ورقاً: الارتفاع المعاد أدناه يُقصّ إلى y الفعلي بعد اكتمال الرسم.
+  const drawingHeadroom = 256;
+  const estH = 1400 + d.items.length * 96 + digitalRows * 190
+    + shiftRowH + heldRowH + creditBlockH + drawingHeadroom;
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = estH;
@@ -183,10 +194,10 @@ export async function receiptToCanvas(
     /* رقم غير قابل للترميز ⇒ إيصال بلا باركود */
   }
 
-  // ───── ٣) صفوف المعلومات ─────
+  // ───── ٣) صفوف المعلومات — G3 (١١/٨) رُفع الوزن الأساس 600→700 + سطرا الوردية والعميل بارزَين ─────
   y += 32;
-  const metaRow = (right: string, left: string) => {
-    ctx.font = "600 21px Cairo, sans-serif";
+  const metaRow = (right: string, left: string, strong = false) => {
+    ctx.font = `${strong ? "800" : "700"} 21px Cairo, sans-serif`;
     if (right) {
       ctx.textAlign = "right";
       ctx.fillText(right, W - PAD, y);
@@ -199,7 +210,8 @@ export async function receiptToCanvas(
   };
   metaRow(`رقم: ${d.receiptNumber}`, d.date);
   if (d.cashierName || d.time) metaRow(d.cashierName ? `الكاشير: ${d.cashierName}` : "", d.time ? `الوقت: ${d.time}` : "");
-  if (d.customerName) metaRow(`العميل: ${d.customerName}`, "");
+  if (d.shiftId != null) metaRow(`الوردية: #${d.shiftId}`, "");
+  if (d.customerName) metaRow(`العميل: ${d.customerName}`, "", true);
 
   y += 2;
   dashedLine(ctx, y);
@@ -247,14 +259,15 @@ export async function receiptToCanvas(
     dashedLine(ctx, y);
     y += 30;
     for (const block of digitalBlocks) {
-      ctx.font = "700 20px Cairo, sans-serif";
+      ctx.font = "900 21px Cairo, sans-serif";
       ctx.textAlign = "right";
       ctx.fillText(block.lineName, W - PAD, y);
       y += 26;
       for (const row of block.rows) {
-        ctx.font = "600 19px Cairo, sans-serif";
+        ctx.font = "700 19px Cairo, sans-serif";
         ctx.textAlign = "right";
         ctx.fillText(`${row.label}:`, W - PAD, y);
+        ctx.font = "900 19px Cairo, sans-serif";
         ctx.textAlign = "left";
         ctx.fillText(row.value, PAD, y);
         y += 25;
@@ -294,9 +307,38 @@ export async function receiptToCanvas(
   y += 34;
 
   if (d.paymentMethod) totRow("طريقة الدفع:", d.paymentMethod, true);
-  if (d.paid != null) totRow("المدفوع:", fmt(d.paid));
-  if (d.change != null) totRow("الباقي:", fmt(d.change));
-  if (Number(d.credit ?? 0) > 0) totRow("آجل/ذمة:", fmt(d.credit), true);
+  if (d.paid != null) totRow("المدفوع:", fmt(d.paid), true);
+  if (d.change != null) totRow("الباقي:", fmt(d.change), true);
+  if (Number(d.heldDeposits ?? 0) > 0) totRow("عربون محتجز:", fmt(d.heldDeposits), true);
+  // G3: «متبقٍّ (آجل)» — سطرٌ خاصّ بارز مع خطٍّ متقطّع أعلاه، أكبر خطاً من بقيّة الإجماليات.
+  if (Number(d.credit ?? 0) > 0) {
+    y += 4; dashedLine(ctx, y); y += 30;
+    ctx.font = "900 26px Cairo, sans-serif";
+    ctx.textAlign = "right"; ctx.fillText("متبقٍّ (آجل):", W - PAD, y);
+    ctx.textAlign = "left"; ctx.fillText(`${fmt(d.credit)} د.ع`, PAD, y);
+    y += 30;
+  }
+
+  // ٨/٨ — كتلة التوصيل: إفصاحٌ للزبون (الجهة/الأجرة/مَن يقبض/يدفع الزبون). الأجرة خارج `total`
+  // دائماً (تمريرٌ لا إيراد) — «يدفع الزبون» = الإجمالي + الأجرة (إلا SHOP فمجّاني).
+  if (d.delivery) {
+    const dl = d.delivery;
+    const fee = Number(dl.fee || 0);
+    const shop = dl.feeCollection === "SHOP";
+    y += 4; dashedLine(ctx, y); y += 32;
+    ctx.font = "800 24px Cairo, sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("التوصيل", W / 2, y); y += 30;
+    totRow("جهة التوصيل:", dl.partyName, true);
+    if (dl.address) totRow("العنوان:", dl.address);
+    const who = dl.feeCollection === "COUNTER" ? "مقبوضة الآن" : shop ? "على المكتبة" : "يقبضها المندوب";
+    totRow("أجرة التوصيل:", shop ? "مجاناً" : `${fmt(fee)} (${who})`, true);
+    if (!shop) {
+      ctx.font = "900 25px Cairo, sans-serif"; ctx.textAlign = "right";
+      ctx.fillText("يدفع الزبون:", W - PAD, y);
+      ctx.textAlign = "left"; ctx.fillText(`${fmt(Number(d.total || 0) + fee)} د.ع`, PAD, y);
+      y += 32;
+    }
+  }
 
   y += 2;
   dashedLine(ctx, y);

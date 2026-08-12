@@ -201,11 +201,19 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     digital_cards: "NONE",
     reservations: "NONE",
     gifts: "NONE",
-    crm: "READ", campaigns: "READ", collections: "NONE",
+    // crm=FULL (٨/٨، مراجعة Codex P1): فنّي المطبعة يشغّل محطة الاستقبال فعلياً، وطلبات القنوات
+    // (واتساب/انستغرام/تيك توك/اتصال) تُنشئ العميل تلقائياً وتربط سجلّه — وهو طلب المالك الصريح.
+    // كان crm=READ يجعل customersCashierProcedure (moduleProcedure يشترط crm=FULL) يرفض الإنشاء
+    // فيُجهَض الطلب كلّه رغم إدراج الدور في allowlist. FULL هنا = إنشاء عميل/ملاحظات فقط (التعديل/
+    // الحذف manager؛ سقف الائتمان يُثبَّت "0" لغير المرتفع خادمياً) — مطابقٌ لكاشير/مندوب.
+    crm: "FULL", campaigns: "READ", collections: "NONE",
     assets: "NONE",
     hr: "NONE",
     commissions: "NONE",
     consignments: "NONE",
+    // sales يبقى NONE: طباعة فواتير الاستقبال لا تحتاج فتح وحدة المبيعات كاملةً (كان يكشف عروض
+    // الأسعار — مراجعة Codex). الطباعة/الجلب تمرّ ببوّابة invoiceViewProcedure التي تقبل صلاحية
+    // الاستقبال (workorders:FULL) نفسها، محميّةً بالفرع.
     pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "FULL", channels: "READ", treasury: "NONE",
     // FULL: طلبات خدمة الطباعة/الاستقبال هي عمله الأساسي (نمط workorders).
     tasks: "FULL",
@@ -322,7 +330,9 @@ export const SECTION_CASHIER_ROLES: SectionRoleSpec[] = [
     label: "موظف استقبال",
     description: "موظف استقبال أوامر الشغل (عربون/تصميم) فقط — لا يرى «التجزئة» ولا «خدمات الطباعة».",
     baseRole: "cashier",
-    permissions: { ...ROLE_TEMPLATES.cashier, sales: "NONE", pos: "NONE" },
+    // قراءة الفواتير فقط: يرى فاتورة طلبه بعد التسليم/الإرسال من دون أن يفتح
+    // كاشير التجزئة أو يستطيع إصدار مبيعات مستقلة.
+    permissions: { ...ROLE_TEMPLATES.cashier, sales: "READ", pos: "NONE" },
     station: "RECEPTION",
   },
 ];
@@ -331,7 +341,14 @@ export function resolvePermissions(
   role: RoleKey,
   override: PermissionMap | null | undefined
 ): PermissionMap {
-  const base = ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
+  return applyPermissionOverrides(ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user, override);
+}
+
+/** يطبّق استثناءات على أي خريطة أساس، بما فيها خريطة دور مخصّص. */
+export function applyPermissionOverrides(
+  base: PermissionMap,
+  override: PermissionMap | null | undefined,
+): PermissionMap {
   if (!override) return { ...base };
   const out: PermissionMap = { ...base };
   // ترحيل ناعم: أي تخصيص قديم لوحدة customers يظلّ حاكماً لـCRM إلى أن يُحفظ تخصيص CRM صريح.
@@ -356,7 +373,14 @@ export function diffFromTemplate(
   role: RoleKey,
   permissions: PermissionMap
 ): PermissionMap | null {
-  const base = ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
+  return diffFromPermissions(ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user, permissions);
+}
+
+/** فرق الصلاحيات عن خريطة أساس محددة (مثلاً الدور المخصّص المسنَد للمستخدم). */
+export function diffFromPermissions(
+  base: PermissionMap,
+  permissions: PermissionMap,
+): PermissionMap | null {
   const diff: PermissionMap = {};
   let changed = 0;
   const legacyCustomers = permissions.customers;

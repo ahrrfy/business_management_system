@@ -4,13 +4,17 @@
 import { useMemo, useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
-import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
+import { PeriodFilter, DEFAULT_PERIOD, ymd, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { fmtAr, formatIqd, D } from "@/lib/money";
-import { exportRows } from "@/lib/export";
-import { printReportDoc } from "@/lib/printing/reportDoc";
+import { Button } from "@/components/ui/button";
+import { fmtAr, D } from "@/lib/money";
+import { exportSheets, type SheetSpec } from "@/lib/export";
+import { printTreasuryReportA4 } from "@/lib/printing/printTreasuryReportA4";
 import { CopyButton, CopyInline } from "@/components/CopyButton";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { fmtDateTime } from "@/lib/date";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
 type TS = RouterOutputs["reports"]["treasurySummary"];
 
@@ -18,6 +22,16 @@ const NOTE =
   "أساس نقدي مباشر: من المقبوضات/المدفوعات المكتملة (لا أساس الاستحقاق). الفروقات حسب الورديات المفتوحة في الفترة (تاريخ الفتح). النقد حسب الفرع المحدّد.";
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+const SHIFT_TYPE_LABEL: Record<string, string> = {
+  RETAIL: "تجزئة",
+  RECEPTION: "استقبال",
+  PRINT_SERVICES: "خدمات طباعة",
+};
+const RECONCILIATION_LABEL: Record<string, string> = {
+  MATCHED: "مطابقة",
+  EXPLAINED: "فرق مفسّر",
+  MANAGER_APPROVED: "معتمدة إدارياً",
+};
 
 export default function TreasuryReport() {
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
@@ -46,7 +60,7 @@ export default function TreasuryReport() {
 
   // صفوف جدول طرق الدفع لإعادة الاستعمال (عرض/تصدير/طباعة).
   const rows = useMemo(
-    () => (ts ? ts.methods.map((m) => ({ label: m.label, in: m.in, out: m.out })) : []),
+    () => (ts ? ts.methods.map((m) => ({ ...m, settlementLabel: m.settlement === "DRAWER" ? "درج الكاشير" : "إلكتروني / خارج الدرج" })) : []),
     [ts],
   );
 
@@ -73,45 +87,73 @@ export default function TreasuryReport() {
 
   function onExport() {
     if (!ts) return;
-    const data = [
-      ...ts.methods.map((m) => ({ label: m.label, in: m.in, out: m.out })),
-      { label: "الإجمالي", in: ts.totalIn, out: ts.totalOut },
-    ];
-    exportRows(data, {
-      filename: `الخزينة-${period.from}-${period.to}`,
-      columns: [
-        { key: "label", header: "طريقة الدفع" },
-        { key: "in", header: "مقبوضات", map: (r) => Number(r.in) },
-        { key: "out", header: "مدفوعات", map: (r) => Number(r.out) },
-      ],
-    });
+    exportSheets(`الخزينة-${period.from}-${period.to}`, [
+      {
+        sheetName: "طرق الدفع",
+        title: "تقرير الخزينة — طرق الدفع",
+        meta: [{ label: "الفترة", value: `${period.from} — ${period.to}` }, { label: "الفرع", value: branchLabel }],
+        rows,
+        columns: [
+          { key: "label", header: "طريقة الدفع" },
+          { key: "settlementLabel", header: "مكان التسوية" },
+          { key: "in", header: "مقبوضات", money: true, map: (r) => Number(r.in) },
+          { key: "out", header: "مدفوعات", money: true, map: (r) => Number(r.out) },
+          { key: "net", header: "الصافي", money: true, map: (r) => Number(r.net) },
+        ],
+        totalsRow: { label: "الإجمالي", in: Number(ts.totalIn), out: Number(ts.totalOut), net: Number(ts.net) },
+      } as SheetSpec<any>,
+      {
+        sheetName: "تسوية الورديات",
+        title: "تقرير الخزينة — تسوية الورديات النقدية",
+        meta: [{ label: "الفترة", value: `${period.from} — ${period.to}` }, { label: "الفرع", value: branchLabel }],
+        rows: ts.shifts.rows,
+        columns: [
+          { key: "id", header: "رقم الوردية" },
+          { key: "branchName", header: "الفرع" },
+          { key: "cashierName", header: "الكاشير" },
+          { key: "shiftType", header: "النوع", map: (r) => SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType },
+          { key: "status", header: "الحالة", map: (r) => r.status === "CLOSED" ? "مغلقة" : "مفتوحة" },
+          { key: "openedAt", header: "فُتحت", map: (r) => fmtDateTime(r.openedAt) },
+          { key: "closedAt", header: "أُغلقت", map: (r) => r.closedAt ? fmtDateTime(r.closedAt) : "—" },
+          { key: "openingBalance", header: "افتتاحي", money: true, map: (r) => Number(r.openingBalance) },
+          { key: "expectedCash", header: "نقد متوقّع", money: true, map: (r) => r.expectedCash == null ? "" : Number(r.expectedCash) },
+          { key: "countedCash", header: "نقد معدود", money: true, map: (r) => r.countedCash == null ? "" : Number(r.countedCash) },
+          { key: "variance", header: "الفرق", money: true, map: (r) => r.variance == null ? "" : Number(r.variance) },
+          { key: "reconciliationStatus", header: "التسوية", map: (r) => r.reconciliationStatus ? (RECONCILIATION_LABEL[r.reconciliationStatus] ?? r.reconciliationStatus) : "بانتظار الإغلاق" },
+        ],
+        totalsRow: { id: "الإجمالي", countedCash: Number(ts.shifts.totalCounted), variance: Number(ts.shifts.totalVariance) },
+      } as SheetSpec<any>,
+    ]);
   }
 
+  // طباعة A4 — وثيقة توقيع واعتماد (أمين الصندوق/المحاسب/المدير)، لا جدول تقرير مجرّد
+  // (استُبدل printReportDoc العام بقالبٍ مخصّص يحمل خانات التوقيع — التفصيل الكامل في تصدير Excel).
   function onPrint() {
     if (!ts) return;
-    printReportDoc({
-      title: "تقرير الخزينة",
-      headerExtra: [
-        { label: "الفترة", value: `${period.from} — ${period.to}` },
-        { label: "الفرع", value: branchLabel },
-      ],
-      note: NOTE,
-      columns: [
-        { key: "label", label: "طريقة الدفع" },
-        { key: "in", label: "مقبوضات", align: "left" },
-        { key: "out", label: "مدفوعات", align: "left" },
-      ],
-      rows: [
-        ...ts.methods.map((m) => ({ label: m.label, in: fmtAr(m.in), out: fmtAr(m.out) })),
-        { label: "الإجمالي", in: fmtAr(ts.totalIn), out: fmtAr(ts.totalOut) },
-      ],
-      showIndex: false,
-      summary: [
-        { label: "صافي الصندوق", value: formatIqd(ts.net), large: true, bold: true },
-        { label: "النقد المعدود (الورديات)", value: formatIqd(ts.shifts.totalCounted) },
-        { label: "فروقات الورديات", value: formatIqd(ts.shifts.totalVariance) },
-      ],
+    const opened = printTreasuryReportA4({
+      from: period.from,
+      to: period.to,
+      branchLabel,
+      methods: ts.methods.map((m) => ({ label: m.label, in: m.in, out: m.out, net: m.net, settlement: m.settlement })),
+      totalIn: ts.totalIn,
+      totalOut: ts.totalOut,
+      net: ts.net,
+      shiftsCount: ts.shifts.count,
+      totalCounted: ts.shifts.totalCounted,
+      totalVariance: ts.shifts.totalVariance,
     });
+    if (!opened) alert("حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
+  }
+
+  // تنقّل سريع بين الفترات المتجاورة (يوم سابق/تالي) — يزيح كامل نافذة [from,to] بنفس طولها،
+  // مفيدٌ خاصةً حين الفترة يوم واحد (إغلاق يومي متتابع) لكنه يعمل لأي طول فترة.
+  function shiftPeriod(deltaDays: number) {
+    const f = new Date(`${period.from}T00:00:00`);
+    const t = new Date(`${period.to}T00:00:00`);
+    if (isNaN(f.getTime()) || isNaN(t.getTime())) return;
+    f.setDate(f.getDate() + deltaDays);
+    t.setDate(t.getDate() + deltaDays);
+    setPeriod({ from: ymd(f), to: ymd(t), preset: "custom" });
   }
 
   return (
@@ -132,6 +174,15 @@ export default function TreasuryReport() {
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <PeriodFilter value={period} onChange={setPeriod} />
+          {/* تنقّل سريع ليوم سابق/تالٍ — يزيح الفترة كاملةً محافظاً على طولها. */}
+          <div className="flex items-center gap-1">
+            <Button variant="outline" size="sm" title="الفترة السابقة" aria-label="الفترة السابقة" onClick={() => shiftPeriod(-1)}>
+              <ChevronRight aria-hidden className="size-3.5" />
+            </Button>
+            <Button variant="outline" size="sm" title="الفترة التالية" aria-label="الفترة التالية" onClick={() => shiftPeriod(1)}>
+              <ChevronLeft aria-hidden className="size-3.5" />
+            </Button>
+          </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
             <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
@@ -151,26 +202,37 @@ export default function TreasuryReport() {
           ) : !ts ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
           ) : (
+            <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-xs text-muted-foreground">
                   <th className="p-3 text-right font-medium">طريقة الدفع</th>
+                  <th className="p-3 text-right font-medium">مكان التسوية</th>
                   <th className="p-3 text-right font-medium">مقبوضات</th>
                   <th className="p-3 text-right font-medium">مدفوعات</th>
+                  <th className="p-3 text-right font-medium">الصافي</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.length === 0 ? (
-                  <TableEmptyRow colSpan={3} message="لا حركات في الفترة." />
+                  <TableEmptyRow colSpan={5} message="لا حركات في الفترة." />
                 ) : (
                   rows.map((r, i) => (
                     <tr key={i} className="border-b last:border-0">
-                      <td className="p-3 text-right">{r.label}</td>
+                      <td className="p-3 text-right font-medium">{r.label}</td>
+                      <td className="p-3 text-right text-xs text-muted-foreground">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 ${r.settlement === "DRAWER" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-info-bg)] text-[var(--sem-info)]"}`}>
+                          {r.settlementLabel}
+                        </span>
+                      </td>
                       <td className="p-3 text-right tabular-nums text-money-positive" dir="ltr">
                         <CopyInline value={String(r.in)} display={fmtAr(r.in)} mono={false} />
                       </td>
                       <td className="p-3 text-right tabular-nums text-money-negative" dir="ltr">
                         <CopyInline value={String(r.out)} display={fmtAr(r.out)} mono={false} />
+                      </td>
+                      <td className={`p-3 text-right tabular-nums font-semibold ${D(r.net).lt(0) ? "text-money-negative" : "text-money-positive"}`} dir="ltr">
+                        <CopyInline value={String(r.net)} display={fmtAr(r.net)} mono={false} />
                       </td>
                     </tr>
                   ))
@@ -179,15 +241,20 @@ export default function TreasuryReport() {
               <tfoot>
                 <tr className="border-t font-bold bg-muted/30">
                   <td className="p-3 text-right">الإجمالي</td>
+                  <td className="p-3 text-right text-muted-foreground">—</td>
                   <td className="p-3 text-right tabular-nums" dir="ltr">
                     <CopyInline value={String(ts.totalIn)} display={fmtAr(ts.totalIn)} mono={false} />
                   </td>
                   <td className="p-3 text-right tabular-nums" dir="ltr">
                     <CopyInline value={String(ts.totalOut)} display={fmtAr(ts.totalOut)} mono={false} />
                   </td>
+                  <td className="p-3 text-right tabular-nums" dir="ltr">
+                    <CopyInline value={String(ts.net)} display={fmtAr(ts.net)} mono={false} />
+                  </td>
                 </tr>
               </tfoot>
             </table>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>
@@ -228,6 +295,38 @@ export default function TreasuryReport() {
                 </p>
               </div>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {ts && (
+        <Card>
+          <CardContent className="p-0">
+            <div className="border-b px-4 py-3">
+              <h2 className="text-sm font-bold">تفاصيل تسوية الورديات النقدية</h2>
+              <p className="mt-1 text-xs text-muted-foreground">المتوقّع والمعدود هنا للنقد الموجود في الدرج فقط؛ لا تدخل البطاقة أو التحويل في مبلغ إغلاق الكاشير.</p>
+            </div>
+            <ScrollTableShell bordered={false} maxHeightClass="max-h-[calc(100dvh-19rem)]">
+              <table className="w-full text-sm">
+                <thead><tr className="border-b text-xs text-muted-foreground">
+                  <th className="p-3 text-right font-medium">#</th><th className="p-3 text-right font-medium">الفرع</th><th className="p-3 text-right font-medium">الكاشير</th><th className="p-3 text-right font-medium">النوع</th><th className="p-3 text-right font-medium">الفترة</th><th className="p-3 text-right font-medium">الحالة</th><th className="p-3 text-right font-medium">المتوقّع النقدي</th><th className="p-3 text-right font-medium">المعدود</th><th className="p-3 text-right font-medium">الفرق</th><th className="p-3 text-right font-medium">التسوية</th>
+                </tr></thead>
+                <tbody>
+                  {ts.shifts.rows.length === 0 ? <TableEmptyRow colSpan={10} message="لا ورديات فُتحت في الفترة." /> : ts.shifts.rows.map((s) => (
+                    <tr key={s.id} className="border-b last:border-0">
+                      <td className="p-3 tabular-nums" dir="ltr">{s.id}</td><td className="p-3">{s.branchName ?? "—"}</td><td className="p-3">{s.cashierName ?? "—"}</td><td className="p-3 text-xs">{SHIFT_TYPE_LABEL[s.shiftType] ?? s.shiftType}</td>
+                      <td className="p-3 text-xs whitespace-nowrap" dir="ltr">{fmtDateTime(s.openedAt)}<br />{s.closedAt ? fmtDateTime(s.closedAt) : "مفتوحة"}</td>
+                      <td className="p-3"><span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${s.status === "CLOSED" ? "bg-muted text-muted-foreground" : "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"}`}>{s.status === "CLOSED" ? "مغلقة" : "مفتوحة"}</span></td>
+                      <td className="p-3 tabular-nums" dir="ltr">{s.expectedCash == null ? "—" : <CopyInline value={s.expectedCash} display={fmtAr(s.expectedCash)} mono={false} />}</td>
+                      <td className="p-3 tabular-nums" dir="ltr">{s.countedCash == null ? "—" : <CopyInline value={s.countedCash} display={fmtAr(s.countedCash)} mono={false} />}</td>
+                      <td className={`p-3 tabular-nums font-semibold ${s.variance != null && D(s.variance).lt(0) ? "text-money-negative" : "text-money-positive"}`} dir="ltr">{s.variance == null ? "—" : <CopyInline value={s.variance} display={fmtAr(s.variance)} mono={false} />}</td>
+                      <td className="p-3 text-xs">{s.reconciliationStatus ? (RECONCILIATION_LABEL[s.reconciliationStatus] ?? s.reconciliationStatus) : "بانتظار الإغلاق"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </ScrollTableShell>
+            {ts.shifts.count > ts.shifts.shownCount && <p className="border-t px-4 py-2 text-xs text-muted-foreground">تُعرض أحدث {ts.shifts.shownCount} وردية من أصل {ts.shifts.count}. صدّر Excel للحصول على الصفوف المعروضة.</p>}
           </CardContent>
         </Card>
       )}

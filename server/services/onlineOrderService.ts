@@ -33,6 +33,7 @@ import { resolvePromotionForLine } from "./salesPromotionService";
 import { resolveStorefrontBranchId } from "./storefrontService";
 import { getStoreSettings } from "./storeAdmin/storeSettingsService";
 import { withTx } from "./tx";
+import { verifyOnlineOrderLabelToken } from "./barcodeService";
 
 const RETAIL = "RETAIL" as const;
 
@@ -122,7 +123,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
             id: onlineOrders.id,
             orderNumber: onlineOrders.orderNumber,
             branchId: onlineOrders.branchId,
-            customerPhone: customers.phone,
+            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
             subtotal: onlineOrders.subtotal,
             shippingCost: onlineOrders.shippingCost,
             total: onlineOrders.total,
@@ -382,7 +383,7 @@ export async function trackOnlineOrder(orderNumber: string, phone: string): Prom
         total: onlineOrders.total,
         governorate: onlineOrders.governorate,
         createdAt: onlineOrders.createdAt,
-        customerPhone: customers.phone,
+        customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       })
       .from(onlineOrders)
       .innerJoin(customers, eq(onlineOrders.customerId, customers.id))
@@ -422,5 +423,39 @@ export async function trackOnlineOrder(orderNumber: string, phone: string): Prom
       unitPrice: String(r.unitPrice),
       total: String(r.total),
     })),
+  };
+}
+
+/**
+ * ملخص QR المطبوع على الطرد. لا يكفي رقم الطلب المتسلسل للوصول إليه: يجب أن يطابق
+ * التوقيع HMAC الذي أنشأه الخادم للملصق، فتظل قراءة الملصق مفيدة للمندوب وآمنة من التخمين.
+ */
+export async function readOnlineOrderLabel(orderNumber: string, token: string): Promise<OnlineOrderTracking & {
+  customerName: string | null; customerPhone: string | null; addressText: string | null;
+}> {
+  if (!verifyOnlineOrderLabelToken(orderNumber, token)) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "رمز الملصق غير صالح" });
+  }
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+  const order = (await db.select({
+    id: onlineOrders.id, orderNumber: onlineOrders.orderNumber, status: onlineOrders.status,
+    subtotal: onlineOrders.subtotal, shippingCost: onlineOrders.shippingCost, total: onlineOrders.total,
+    governorate: onlineOrders.governorate, createdAt: onlineOrders.createdAt,
+    customerName: customers.name,
+    customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+    addressText: onlineOrders.shippingAddress,
+  }).from(onlineOrders).innerJoin(customers, eq(onlineOrders.customerId, customers.id))
+    .where(eq(onlineOrders.orderNumber, orderNumber.trim())).limit(1))[0];
+  if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+  const items = await db.select({ productName: products.name, unitName: productUnits.unitName, quantity: onlineOrderItems.quantity, unitPrice: onlineOrderItems.unitPrice, total: onlineOrderItems.total })
+    .from(onlineOrderItems).innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id)).leftJoin(productUnits, eq(onlineOrderItems.productUnitId, productUnits.id))
+    .where(eq(onlineOrderItems.onlineOrderId, Number(order.id)));
+  return {
+    orderNumber: order.orderNumber, status: order.status, subtotal: String(order.subtotal), deliveryFee: String(order.shippingCost), total: String(order.total),
+    governorate: order.governorate ?? null, createdAt: order.createdAt, customerName: order.customerName ?? null,
+    customerPhone: order.customerPhone ?? null, addressText: order.addressText ?? null,
+    items: items.map((i) => ({ productName: i.productName, unitName: i.unitName ?? "", quantity: String(i.quantity), unitPrice: String(i.unitPrice), total: String(i.total) })),
   };
 }

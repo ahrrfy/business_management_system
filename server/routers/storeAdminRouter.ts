@@ -62,11 +62,18 @@ function actorScopedBranch(user: { role: string; branchId: number | null }): num
 }
 
 const ordersRouter = router({
-  /** قائمة طلبات المتجر (اختياري: فلترة حالة). */
+  /** قائمة طلبات المتجر (اختياري: فلترة حالة/مدى تاريخ + مؤشّر لصفحات إضافية — اليوم كان اقتطاعاً
+   *  صامتاً عند limit؛ الشاشة تكشف ذلك بلافتة حقيقية وزرّ «تحميل المزيد» بدل صمت الاقتطاع). */
   list: storeReadProcedure
-    .input(z.object({ status: statusEnum.nullish(), limit: z.number().int().min(1).max(300).default(100) }))
+    .input(z.object({
+      status: statusEnum.nullish(),
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح").optional(),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح").optional(),
+      cursor: z.number().int().positive().optional(),
+      limit: z.number().int().min(1).max(300).default(100),
+    }))
     .query(({ input, ctx }) =>
-      listOnlineOrders({ scopedBranchId: ctx.scopedBranchId, status: input.status ?? null, limit: input.limit })
+      listOnlineOrders({ scopedBranchId: ctx.scopedBranchId, status: input.status ?? null, from: input.from, to: input.to, cursor: input.cursor, limit: input.limit })
     ),
 
   /** عدّاد لكل حالة (بطاقات الإحصاء). */
@@ -96,8 +103,8 @@ const ordersRouter = router({
   /** جهات التوصيل النشطة (لمنتقي الإسناد عند الإرسال). */
   parties: storeReadProcedure.query(({ ctx }) => listDeliveryParties({ branchId: ctx.scopedBranchId, activeOnly: true })),
 
-  /** إرسال طلب مؤكَّد ⇒ فاتورة (خصم مخزون + قيد) + إسناد لجهة توصيل. مدير فقط: يُقرّ ائتمان COD
-   *  المؤقّت للعميل النقدي (managerOverrideByUserId يجب أن يكون مديراً مُتحقَّقاً — الكاشير محجوب). */
+  /** إرسال طلب مؤكَّد ⇒ فاتورة (خصم مخزون + قيد) + إسناد لجهة توصيل، مع إبقاء حدّ
+   *  ائتمان العميل نافذاً ومنع الموافقة الذاتية من مُنفّذ الإرسال. */
   dispatch: storeManagerProcedure
     .input(z.object({ id: z.number().int().positive(), partyId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
@@ -281,7 +288,9 @@ const catalogRouter = router({
       offset: z.number().int().min(0).default(0),
     }))
     .query(async ({ input, ctx }) => {
-      const branchId = await resolveStorefrontBranchId(input.branchId ?? ctx.scopedBranchId ?? undefined);
+      // تدقيق ٣/٨: عزل الفرع أولاً — scopedBranchId (فرع المستخدم لغير المرتفع، null لـadmin/manager)
+      // يسبق input.branchId، وإلا تجاوز غير المرتفع عزله فقرأ مخزون فرع آخر. المرتفع يسقط لـinput.branchId.
+      const branchId = await resolveStorefrontBranchId(ctx.scopedBranchId ?? input.branchId ?? undefined);
       return listStoreCatalog({ ...input, branchId });
     }),
   setFeatured: storeManagerProcedure

@@ -16,6 +16,8 @@ import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState"
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
 import { fmtAr, formatIqd } from "@/lib/money";
+import { printReportDoc } from "@/lib/printing/reportDoc";
+import { notify } from "@/lib/notify";
 import { KIND_LABEL, type TaskKind } from "@/pages/TasksHub";
 import { Star } from "lucide-react";
 
@@ -36,7 +38,7 @@ const dateCls = selectCls;
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline" | "success" | "warning" | "danger" | "info" | "neutral";
 
 const CAMPAIGN_STATUS_META: Record<string, { label: string; variant: BadgeVariant }> = {
-  DRAFT: { label: "مسودة", variant: "neutral" },
+  DRAFT: { label: "مسوّدة", variant: "neutral" },
   PENDING_APPROVAL: { label: "بانتظار الاعتماد", variant: "warning" },
   APPROVED: { label: "معتمدة", variant: "success" },
   RUNNING: { label: "قيد التشغيل", variant: "success" },
@@ -273,13 +275,138 @@ export default function WhatsappHubReport() {
     (tab === "csat" && !(csatQ.data?.requested)) ||
     (tab === "campaigns" && !(campaignQ.data?.rows.length));
 
+  /** طباعة A4 موحّدة (printReportDoc) — قسم التبويب النشط فقط، بنفس أعمدة/بيانات onExport أعلاه
+   *  لكن بقيم مُنسَّقة جاهزة للعرض. */
+  function onPrint() {
+    const headerExtra = [
+      { label: "الفترة", value: `${from} — ${to}` },
+      { label: "الفرع", value: branchLabel },
+    ];
+    let ok: boolean;
+    if (tab === "response") {
+      const rows = taskResponseQ.data?.byKind ?? [];
+      ok = printReportDoc({
+        title: "تقارير مركز واتساب — الاستجابة والحل",
+        note: TASK_RESPONSE_NOTE,
+        headerExtra,
+        columns: [
+          { key: "kind", label: "النوع" },
+          { key: "totalTasks", label: "المهام", align: "left" },
+          { key: "firstResponseAvg", label: "أول ردّ (متوسط)", align: "left" },
+          { key: "resolutionAvg", label: "زمن الحلّ (متوسط)", align: "left" },
+          { key: "sla", label: "التزام SLA", align: "left" },
+          { key: "fcr", label: "الحلّ من أوّل تواصل", align: "left" },
+          { key: "reopened", label: "إعادة الفتح", align: "left" },
+        ],
+        rows: rows.map((r) => ({
+          kind: KIND_LABEL[r.kind as TaskKind] ?? r.kind,
+          totalTasks: fmtAr(r.totalTasks),
+          firstResponseAvg: fmtMinutes(r.firstResponseAvgMinutes),
+          resolutionAvg: fmtMinutes(r.resolutionAvgMinutes),
+          sla: fmtPctStr(r.slaCompliancePct),
+          fcr: fmtPctStr(r.firstContactResolutionPct),
+          reopened: fmtPctStr(r.reopenedPct),
+        })),
+        emptyText: "لا مهام في هذا النطاق.",
+      });
+    } else if (tab === "agents") {
+      const rows = agentVolumeQ.data?.rows ?? [];
+      ok = printReportDoc({
+        title: "تقارير مركز واتساب — أحجام الموظفين",
+        note: AGENT_VOLUME_NOTE,
+        headerExtra,
+        columns: [
+          { key: "userName", label: "الموظف" },
+          { key: "assigned", label: "المسنَدة", align: "left" },
+          { key: "resolved", label: "المحلولة", align: "left" },
+          { key: "open", label: "المفتوحة", align: "left" },
+          { key: "avgResolution", label: "متوسط زمن الحلّ", align: "left" },
+          { key: "avgCsat", label: "متوسط CSAT", align: "left" },
+        ],
+        rows: rows.map((r) => ({
+          userName: r.userName,
+          assigned: fmtAr(r.assigned),
+          resolved: fmtAr(r.resolved),
+          open: fmtAr(r.open),
+          avgResolution: fmtMinutes(r.avgResolutionMinutes),
+          avgCsat: r.avgCsat != null ? `${r.avgCsat} / ٥ (${fmtAr(r.csatCount)})` : "—",
+        })),
+        emptyText: "لا مهام مُسنَدة في هذا النطاق.",
+      });
+    } else if (tab === "csat") {
+      const d = csatQ.data;
+      const rows = d?.distribution ?? [];
+      ok = printReportDoc({
+        title: "تقارير مركز واتساب — رضا العملاء (CSAT)",
+        headerExtra,
+        columns: [
+          { key: "score", label: "الدرجة", align: "left" },
+          { key: "count", label: "عدد التقييمات", align: "left" },
+        ],
+        rows: rows.map((r) => ({ score: `${r.score} / ٥`, count: fmtAr(r.count) })),
+        summary: d
+          ? [
+              { label: "طُلب تقييمها", value: fmtAr(d.requested) },
+              { label: "أُجيبت", value: fmtAr(d.answered) },
+              { label: "معدّل الاستجابة", value: fmtPctStr(d.responseRatePct) },
+              { label: "متوسط الدرجة", value: d.average ? `${d.average} / ٥` : "—", large: true, bold: true },
+            ]
+          : undefined,
+        emptyText: "لا استطلاعات رضا مطلوبة في هذا النطاق.",
+      });
+    } else {
+      const rows = campaignQ.data?.rows ?? [];
+      const s = campaignQ.data?.summary;
+      ok = printReportDoc({
+        title: "تقارير مركز واتساب — أداء الحملات",
+        headerExtra,
+        orientation: "landscape",
+        columns: [
+          { key: "name", label: "الحملة" },
+          { key: "branchName", label: "الفرع" },
+          { key: "status", label: "الحالة" },
+          { key: "audienceCount", label: "الجمهور", align: "left" },
+          { key: "sent", label: "أُرسل", align: "left" },
+          { key: "delivered", label: "سُلّم", align: "left" },
+          { key: "read", label: "قُرئ", align: "left" },
+          { key: "failed", label: "فشل", align: "left" },
+          { key: "deliveryRate", label: "معدّل التسليم", align: "left" },
+          { key: "actualCost", label: "الكلفة الفعلية", align: "left" },
+        ],
+        rows: rows.map((r) => ({
+          name: r.name,
+          branchName: branchName(r.branchId),
+          status: CAMPAIGN_STATUS_META[r.broadcastStatus]?.label ?? r.broadcastStatus,
+          audienceCount: fmtAr(r.audienceCount),
+          sent: fmtAr(r.sent),
+          delivered: fmtAr(r.delivered),
+          read: fmtAr(r.read),
+          failed: fmtAr(r.failed),
+          deliveryRate: fmtPctStr(r.deliveryRatePct),
+          actualCost: formatIqd(r.actualCost),
+        })),
+        summary: s
+          ? [
+              { label: "مستلمون", value: fmtAr(s.totalRecipients) },
+              { label: "معدّل التسليم", value: fmtPctStr(s.deliveryRatePct) },
+              { label: "الكلفة الفعلية", value: formatIqd(s.actualCost), large: true, bold: true },
+            ]
+          : undefined,
+        emptyText: "لا حملات في هذا النطاق.",
+      });
+    }
+    if (!ok) notify.err("اسمح بالنوافذ المنبثقة للطباعة");
+  }
+
   return (
     <ReportShell
       title="تقارير مركز واتساب"
       description="أداء نظام المهام والتذاكر عبر واتساب — استجابة/حلّ، حِمل الموظفين، رضا العملاء، وأداء الحملات التسويقية."
       kpis={kpis}
       onExport={onExport}
+      onPrint={onPrint}
       exportDisabled={exportDisabled}
+      printDisabled={exportDisabled}
       filters={
         <div className="flex flex-wrap items-end gap-4">
           <div className="flex flex-col gap-1">

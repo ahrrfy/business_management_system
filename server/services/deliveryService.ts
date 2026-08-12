@@ -34,14 +34,19 @@ export { dispatchToDelivery } from "./delivery/dispatch";
 export type { RemittanceLineInput, RemittanceInput } from "./delivery/remittance";
 export { recordDeliveryRemittance } from "./delivery/remittance";
 export { returnConsignment } from "./delivery/returns";
-export type { SettleInput, WriteOffInput } from "./delivery/settle";
-export { settleDeliveryBalance, writeOffDeliveryShortfall } from "./delivery/settle";
+export type { SettleInput, WriteOffInput, RecoverWriteOffInput } from "./delivery/settle";
+export { settleDeliveryBalance, writeOffDeliveryShortfall, recoverDeliveryWriteOff } from "./delivery/settle";
 export {
   listReadyForDispatch,
   listOpenConsignments,
   listConsignmentsForParty,
+  listPartyRemittances,
   getDeliveryPartyStatement,
+  getPartyStoreInTransit,
 } from "./delivery/queries";
+// ٥/٨: إسناد فاتورةٍ قائمة (بيع مباشر بلا أمر شغل) للتوصيل — كان مستحيلاً بنيوياً.
+export type { DispatchInvoiceInput } from "./delivery/dispatchInvoice";
+export { dispatchInvoiceToDelivery } from "./delivery/dispatchInvoice";
 // courier (١٢/٧): شاشة المندوب الذاتية «توصيلاتي» — عزل ذاتي عبر deliveryParties.userId.
-export type { MyDeliveryRow, MyDeliveriesResult, ConfirmDeliveryResult, FailDeliveryResult } from "./delivery/courier";
-export { resolveCourierPartyId, listMyDeliveries, confirmCourierDelivery, failCourierDelivery } from "./delivery/courier";
+export type { MyDeliveryRow, MyDeliveriesResult, ConfirmDeliveryResult, ConfirmConsignmentResult, FailDeliveryResult } from "./delivery/courier";
+export { resolveCourierPartyId, listMyDeliveries, confirmCourierDelivery, confirmConsignmentDelivery, failCourierDelivery } from "./delivery/courier";

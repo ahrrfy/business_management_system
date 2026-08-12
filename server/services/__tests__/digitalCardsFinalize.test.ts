@@ -6,7 +6,7 @@ import { truncateTables } from "./__testUtils__";
 import { createSupplier } from "../supplierService";
 import { withTx } from "../tx";
 import {
-  finalizeService, intentService, offeringService, pricingService, providerService, walletService,
+  finalizeService, intentService, offeringService, pricingService, providerService, subscriptionService, walletService,
 } from "../digitalCards";
 
 /**
@@ -18,7 +18,8 @@ const actor = { userId: 1, branchId: 1, role: "cashier" };
 const DATE = "2026-07-29";
 
 const TABLES = [
-  "digitalSaleDetails", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
+  "digitalSubscriptionContracts",
+  "digitalSaleDetails", "digitalSaleExecutionClaims", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
   "digitalWalletTransactions", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWallets", "digitalProviders",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "idempotencyKeys",
@@ -53,7 +54,8 @@ async function mkWallet(providerId: number, balance: string, code = "W1") {
 async function mkOffering(providerId: number, name: string, walletId: number | null, edu = false) {
   const r = await withTx((tx) => offeringService.createOffering(tx, {
     providerId, offeringType: edu ? "EDUCATIONAL_SUBSCRIPTION" : "TELECOM_CARD", name,
-    requiresStudentData: edu, pricingMode: "FIXED_MARGIN", fixedMargin: "850", roundingStep: "0",
+    requiresStudentData: edu, subscriptionDurationDays: edu ? 30 : null,
+    pricingMode: "FIXED_MARGIN", fixedMargin: "850", roundingStep: "0",
     branches: [{ branchId: 1, walletId }],
   }, { userId: 1, branchId: 1 }));
   return r.offeringId;
@@ -82,15 +84,19 @@ async function prepareAndExecute(
     branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: `fp${id}`,
     lines: lines.map((l, i) => ({
       lineKey: `lk-${id}-${i}`, offeringId: l.offeringId, priceVersionId: l.priced.pv,
-      expectedSellPrice: l.priced.price, student: l.student ?? null,
+      expectedSellPrice: l.priced.price, providerReference: `REF-FIN-${id}-${i}`, student: l.student ?? null,
     })),
   }, actor));
   const items = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
   for (const it of items) {
-    await withTx((tx) => intentService.markExecution(tx, {
-      intentId: r.intentId, intentItemId: Number(it.id), status: "SUCCESS",
-      providerReference: `REF-${id}-${it.id}`,
-    }, actor));
+    await withTx(async (tx) => {
+      const claimToken = `finalize-claim-${id}-${it.id}`;
+      await intentService.claimExecution(tx, { intentId: r.intentId, intentItemId: Number(it.id), claimToken }, actor);
+      return intentService.markExecution(tx, {
+        intentId: r.intentId, intentItemId: Number(it.id), claimToken, status: "SUCCESS",
+        providerReference: it.providerReference,
+      }, actor);
+    });
   }
   return r.intentId;
 }
@@ -190,8 +196,17 @@ describe("ش٨ — البيع من مزوّد آجل (§٦.٣)", () => {
 
     // لا حركة محفظة للآجل.
     expect((await db().select().from(s.digitalWalletTransactions)).length).toBe(0);
-    // والطالب أُنشئ ضمن نفس المعاملة.
-    expect((await db().select().from(s.studentProfiles)).length).toBe(1);
+    // النظام يبيع الاشتراك ويحفظ لقطة الطالب فقط؛ لا ينشئ ملفاً أو عقد انتهاء/تجديد.
+    expect((await db().select().from(s.studentProfiles)).length).toBe(0);
+    expect((await db().select().from(s.digitalSubscriptionContracts)).length).toBe(0);
+    const [detail] = await db().select().from(s.digitalSaleDetails).where(eq(s.digitalSaleDetails.invoiceId, res.invoiceId));
+    expect(detail.studentNameSnapshot).toBe("مريم");
+    expect(detail.studentPhoneSnapshot).toBe("+9647701234567");
+    const [saleRow] = await subscriptionService.listSubscriptionSales(db(), { branchId: 1 });
+    expect(saleRow.invoiceId).toBe(res.invoiceId);
+    expect(saleRow.providerReference).toMatch(/^REF-FIN-/);
+    expect(saleRow.studentName).toBe("مريم");
+    expect(saleRow.studentPhone).toBe("+9647701234567");
   });
 
   it("كرتان لنفس المزوّد الآجل في فاتورة واحدة ⇒ استحقاق **واحد مجمَّع**", async () => {
@@ -276,7 +291,7 @@ describe("ش٨ — الحراسة والذرّية والidempotency", () => {
     const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
     const r = await withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "prep-notdone-1", branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: "fpX",
-      lines: [{ lineKey: "lk1", offeringId, priceVersionId: priced.get(offeringId)!.pv, expectedSellPrice: priced.get(offeringId)!.price }],
+      lines: [{ lineKey: "lk1", offeringId, priceVersionId: priced.get(offeringId)!.pv, expectedSellPrice: priced.get(offeringId)!.price, providerReference: "REF-NOT-DONE" }],
     }, actor));
 
     await expect(withTx((tx) => finalizeService.finalize(tx, {

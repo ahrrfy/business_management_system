@@ -12,6 +12,7 @@ const PAY_METHOD_AR: Record<string, string> = {
   CHECK: "صك",
   TRANSFER: "تحويل",
   WALLET: "محفظة",
+  TELECOM: "رصيد زين", // ش٥ — «زين حصراً» بنيوياً: لا حقل مزوّد، التسمية هي العقد (I24)
 };
 
 const isCashier = (role: string | null | undefined) => role === "cashier" || role === "warehouse" || role === "print_operator";
