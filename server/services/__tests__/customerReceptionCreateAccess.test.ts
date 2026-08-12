@@ -32,14 +32,21 @@ describe("customerReceptionCreateAllowed — بوّابة إنشاء العمي�
     })).toBe(true);
   });
 
-  // (مراجعة Codex P1): crm=NONE + workorders=FULL يُرفَض عمداً — البحث الذكيّ (smartSearch) يشترط
-  // crm=READ، فبلا قراءةٍ يفشل التعرّف على العميل السابق ⇒ عميل مكرَّر ⇒ CONFLICT على الهاتف يمنع
-  // الطلب. الحلّ: نُبقي fallback المرجعيّ الأصليّ (اسم/هاتف على الطلب فقط بلا سجلّ دائم).
-  it("print_operator بدور مخصّص crm=NONE + workorders=FULL يُرفَض (لحماية إكمال الطلب من CONFLICT الهاتف)", () => {
+  // (قرار المالك العاجل ١٢/٨ — يُلغي حاجز Codex P1-٢): crm=NONE + workorders=FULL يمرّ. المالك
+  // صريحٌ: كاشير الاستقبال يحفظ العميل ويبيع بلا عربون ولو كان دوره المخصّص بلا CRM أصلاً.
+  // CONFLICT الهاتف نظريّ (يحدث عند تكرار حرفيّ) ورسالة الخادم توضّح فيصعّد الموظّف.
+  it("print_operator بدور مخصّص crm=NONE + workorders=FULL يمرّ (قرار مالك عاجل ١٢/٨)", () => {
     expect(customerReceptionCreateAllowed({
       role: "print_operator",
       permissionsOverride: { crm: "NONE" },
-    })).toBe(false);
+    })).toBe(true);
+  });
+
+  it("cashier بدور مخصّص crm=NONE + workorders=FULL يمرّ (النمط الرئيسي المُشتَكى منه — «كاشير استقبال أوامر شغل»)", () => {
+    expect(customerReceptionCreateAllowed({
+      role: "cashier",
+      permissionsOverride: { crm: "NONE" },
+    })).toBe(true);
   });
 
   it("cashier بدور مخصّص crm=READ + workorders=READ يُرفَض (لا الاثنان يفتح بوّابة)", () => {
