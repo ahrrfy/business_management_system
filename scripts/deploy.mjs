@@ -1035,9 +1035,13 @@ async function deploy(expectedHead) {
     );
 
     step("4/10 إنشاء نسخة احتياطية", () => run("pnpm", ["db:backup"]));
-    step("5/10 تطبيق الهجرات الآمنة", () =>
-      run("pnpm", ["db:migrate:safe"]),
-    );
+    step("5/10 تطبيق الهجرات الآمنة وإصلاح مخطط الاستقبال", () => {
+      run("pnpm", ["db:migrate:safe"]);
+      run("node", [
+        "scripts/ci-apply-extra-migrations.mjs",
+        "--only=drizzle/migrations/0177_repair_reception_schema_drift.sql",
+      ]);
+    });
     step("6/10 التحقق من مخطط قاعدة البيانات", () =>
       run("pnpm", ["db:verify"], { timeoutMs: 5 * 60_000 }),
     );

@@ -85,6 +85,14 @@ try {
     ["couponRedemptions", "uq_coupon_redemption_invoice"],
     ["invoices", "idx_invoice_shift"], // ش٠ استقبال (0153): طابور المحطة keyset — غيابه مسح كامل
     ["orderPayments", "uq_orderpay_receipt"], // ش٤ (0155): الإصلاح البنيوي لالتقاط الإيصال الظنّي
+    ["receptionDrafts", "uq_draft_commit_request"],
+    ["receptionDrafts", "idx_draft_branch_status_id"],
+    ["receptionDraftLines", "idx_dline_draft"],
+    ["orderPayments", "uq_orderpay_request"],
+    ["workOrders", "idx_wo_deposit_receipt"],
+    ["invoices", "idx_invoice_correction_of"],
+    ["invoices", "idx_invoice_corrected_by"],
+    ["deliveryConsignments", "idx_consignment_workorder"],
   ];
   const [idxRows] = await conn.query(
     "SELECT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? GROUP BY TABLE_NAME, INDEX_NAME",
@@ -107,6 +115,7 @@ try {
   //    صامت (كائن غائب رغم تسجيل الهجرة) لم يكن db:verify يمسكه ⇒ ثقة كاذبة. نفحصها صراحةً هنا.
   //    (هجرة 0041 المصالحة تُعيد إنشاء أي مفقود idempotently.)
   const CRITICAL_TABLES = [
+    "receptionDrafts", "receptionDraftLines", "orderPayments",
     "voucherCategories", "exchangeHouses", "exchangeTransactions", "crmCampaigns", "couponPrograms", "coupons", "couponRedemptions",
     // D4 digital cards.  The latest Drizzle snapshot is intentionally frozen
     // before these migrations, so the generic snapshot check above cannot see
@@ -127,6 +136,14 @@ try {
     ["purchaseOrders", "poCurrency"], ["purchaseOrders", "usdTotal"], ["purchaseOrders", "agreedRate"], // 0038
     ["promotions", "campaignId"], ["promotions", "promotionApplicationMode"], // 0076 CRM
     ["invoices", "taxRatePercent"], ["quotations", "taxRatePercent"], ["purchaseOrders", "taxRatePercent"], // 0123
+    ["invoices", "contactName"], ["invoices", "contactPhone"], // 0150 reception identity snapshot
+    ["invoices", "deliveryFree"], ["invoices", "deliveryWaivedAmount"], // 0152 reception/free-delivery disclosure
+    ["invoices", "correctionOfInvoiceId"], ["invoices", "correctedByInvoiceId"], // 0169 correction lineage
+    ["invoiceItems", "isGift"], // 0149 gift line disclosure
+    ["workOrders", "deliveryFeeCollection"], ["workOrders", "contactName"], ["workOrders", "contactPhone"],
+    ["workOrders", "depositReceiptId"], ["workOrders", "deliveryPhone"], // 0147/0150/0153 reception work-order trail
+    ["deliveryConsignments", "consignmentFeeCollection"], ["deliveryConsignments", "feeSettledAt"], // 0150 courier fee custody
+    ["deliveryConsignments", "courierDeliveredAt"], // 0166 courier delivery evidence timestamp
     // D4: the POS catalogue requires an offering-to-branch mapping and a
     // materialized current price.  Check the key fields as well as the tables
     // so a stale/baselined production database cannot make enabled cards

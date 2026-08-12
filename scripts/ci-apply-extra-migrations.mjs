@@ -110,7 +110,26 @@ const EXTRA_MIGRATIONS = [
   // 10/8 (0169): SUPERSEDED 'ala invoices.invoiceStatus (tashih al-fatura) — nafs
   // qissat 0150/0157 (push la yuwassi' enum). yabqa akhir al-qa'ima.
   "drizzle/migrations/extras/0169_invoice_status_superseded.sql",
+  // 12/8/2026: repair schema-push/baselined databases that missed the
+  // reception delivery-disclosure columns and critical queue/payment indexes.
+  "drizzle/migrations/0177_repair_reception_schema_drift.sql",
 ];
+
+// Production deploys may need one narrowly-scoped, idempotent repair without
+// replaying the complete CI reconciliation bundle. The requested path must be
+// a member of the audited allow-list above; arbitrary filesystem input is
+// rejected.
+const onlyArg = process.argv.find((arg) => arg.startsWith("--only="));
+const requestedOnly = onlyArg?.slice("--only=".length);
+if (process.argv.filter((arg) => arg.startsWith("--only=")).length > 1) {
+  console.error("⛔ يُسمح بخيار --only واحد فقط.");
+  process.exit(1);
+}
+if (requestedOnly && !EXTRA_MIGRATIONS.includes(requestedOnly)) {
+  console.error(`⛔ الهجرة المطلوبة غير موجودة في القائمة المسموحة: ${requestedOnly}`);
+  process.exit(1);
+}
+const migrationsToApply = requestedOnly ? [requestedOnly] : EXTRA_MIGRATIONS;
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -125,7 +144,7 @@ if (!url) {
 const conn = await createConnection({ uri: url, multipleStatements: true });
 
 try {
-  for (const path of EXTRA_MIGRATIONS) {
+  for (const path of migrationsToApply) {
     const abs = resolve(path);
     const sql = await readFile(abs, "utf-8");
     // تَقسيم على الـbreakpoint الذي يَستعمله drizzle-kit (نفس النَمط للهَجرات اليَدوية).

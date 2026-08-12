@@ -9,11 +9,12 @@ import {
   deactivateCustomer,
   getCustomer,
   listCustomers,
+  resolveReceptionCustomerByPhone,
   smartSearchCustomers,
   updateCustomer,
 } from "../customerService";
 
-const actor = { userId: 1, branchId: 1 };
+const actor = { userId: 1, branchId: 1, role: "cashier" };
 
 const TABLES = [
   "accountingEntries",
@@ -174,6 +175,40 @@ describe("customerService.createCustomer", () => {
     await updateCustomer({ customerId, creditLimit: null }, actor);
     const c = await getCustomer(customerId);
     expect(c?.creditLimit).toBeNull();
+  });
+});
+
+describe("resolveReceptionCustomerByPhone — هوية عميل الاستقبال", () => {
+  it("لا ينشئ صفاً قبل الاسم، ثم ينشئه ويربط الصيغ المحلية والدولية بالسجل نفسه", async () => {
+    const first = await resolveReceptionCustomerByPhone({ phone: "٠٧٧٠١٢٣٤٥٦٧" }, actor as any);
+    expect(first.status).toBe("NEEDS_NAME");
+    expect(first.customerId).toBeNull();
+    expect((await db().select().from(s.customers))).toHaveLength(0);
+
+    const created = await resolveReceptionCustomerByPhone({ phone: "07701234567", name: "أحمد كريم" }, actor as any);
+    expect(created.status).toBe("RESOLVED");
+    expect(created.created).toBe(true);
+    expect(created.deferredEligible).toBe(true);
+
+    const existing = await resolveReceptionCustomerByPhone({ phone: "+9647701234567" }, actor as any);
+    expect(existing.customerId).toBe(created.customerId);
+    expect(existing.created).toBe(false);
+    expect((await db().select().from(s.customers))).toHaveLength(1);
+  });
+
+  it("طلبان متزامنان لنفس الرقم ينتهيان بصف واحد", async () => {
+    const [a, b] = await Promise.all([
+      resolveReceptionCustomerByPhone({ phone: "07801234567", name: "سارة علي" }, actor as any),
+      resolveReceptionCustomerByPhone({ phone: "+9647801234567", name: "سارة علي" }, actor as any),
+    ]);
+    expect(a.customerId).toBe(b.customerId);
+    expect((await db().select().from(s.customers))).toHaveLength(1);
+  });
+
+  it("يرفض رقماً ناقصاً ولا ينشئ عميلاً", async () => {
+    await expect(resolveReceptionCustomerByPhone({ phone: "0770123456", name: "ناقص" }, actor as any))
+      .rejects.toThrow(/07/);
+    expect((await db().select().from(s.customers))).toHaveLength(0);
   });
 });
 

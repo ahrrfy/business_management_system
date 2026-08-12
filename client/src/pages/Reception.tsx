@@ -4,26 +4,33 @@ import { keepPreviousData } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import {
   ArrowRight,
+  BadgeCheck,
   CalendarClock,
   Check,
   ClipboardList,
   Copy,
   Globe,
   HandCoins,
+  Instagram,
+  LoaderCircle,
   MessageCircle,
+  Music2,
   Package,
   Palette,
+  Phone,
   Printer,
   Receipt as ReceiptIcon,
   Search,
   ShoppingCart,
+  Store,
   Truck,
+  UserRound,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
-import { PhoneDigitsInput } from "@/components/form/PhoneDigitsInput";
+import type { SmartCustomerValue } from "@/components/form/SmartCustomerInput";
+import { isValidIqMobile, PhoneDigitsInput, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
@@ -327,16 +334,19 @@ export default function Reception() {
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
+  const [receptionPhone, setReceptionPhone] = useState("");
+  const [phoneResolution, setPhoneResolution] = useState<"EMPTY" | "INCOMPLETE" | "CHECKING" | "NEEDS_NAME" | "RESOLVED" | "ERROR">("EMPTY");
+  const [phoneResolutionError, setPhoneResolutionError] = useState<string | null>(null);
+  const [resolvedCustomerTier, setResolvedCustomerTier] = useState<Tier | null>(null);
   // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
   const [tierOverride, setTierOverride] = useState<Tier | null>(null);
   const [couponInput, setCouponInput] = useState("");
   // الكوبون مطويّ افتراضياً في الدرجات الضيّقة؛ هذه الراية تفتحه بطلب الموظّف.
   const [couponOpen, setCouponOpen] = useState(false);
-  // ٥/٨ — «احفظه كعميل»: اختياريّ صراحةً. بلا تفعيله يبقى الاسم/الهاتف مرجعاً على الفاتورة فقط.
-  const [saveAsCustomer, setSaveAsCustomer] = useState(false);
   const [couponCode, setCouponCode] = useState<string | null>(null);
   const [couponLabel, setCouponLabel] = useState<string | null>(null);
   const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
+  // معرّف القناة مستقل عن الهاتف: رقم الهاتف هو هوية العميل الإلزامية في جميع القنوات.
   const [channelHandle, setChannelHandle] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [printerReady, setPrinterReady] = useState(isPaired());
@@ -351,13 +361,14 @@ export default function Reception() {
   const customerSectionRef = useRef<HTMLDivElement>(null);
   const cartSectionRef = useRef<HTMLDivElement>(null);
 
-  // فئة العميل الافتراضية (لحلّ الفئة التلقائية — نمط POS.tsx fetchedCustomer/effectiveTier).
+  // فئة العميل الافتراضية: دور الاستقبال قد لا يملك CRM READ، لذلك تأتي الفئة من endpoint الهوية
+  // الضيّق. الاستعلام العام يبقى فقط لمن يملك صلاحية قراءة سياق العميل.
   const fetchedCustomer = trpc.customers.get.useQuery(
     { customerId: customer.customerId ?? 0 },
-    { enabled: !!customer.customerId, staleTime: 60_000 },
+    { enabled: !!customer.customerId && canReadCustomerContext, staleTime: 60_000 },
   );
   const effectiveTier: Tier =
-    tierOverride ?? ((fetchedCustomer.data?.defaultPriceTier as Tier | undefined) ?? "RETAIL");
+    tierOverride ?? resolvedCustomerTier ?? ((fetchedCustomer.data?.defaultPriceTier as Tier | undefined) ?? "RETAIL");
   // تبديل العميل يُسقط أيّ تجاوز فئة يدوي سابق (تعلّق بعميلٍ آخر) وأيّ كوبون مُطبَّق (أسعاره
   // قد تختلف بفئة العميل الجديد — يلزم إعادة تطبيق).
   const prevCustomerIdRef = useRef<number | null>(customer.customerId);
@@ -374,42 +385,69 @@ export default function Reception() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customer.customerId]);
 
-  // إصلاح (٧/٨، طلب مالك): البحث يشمل الآن أسماء/معرّفات القنوات (لا الهاتف وحده — واتساب
-  // ممكنٌ برقم، لكن انستغرام/تيك توك غالباً معرّفٌ نصّي بلا أرقام) — حدّ ٣ أحرف يكفي أيّ نصّ.
-  const channelCustomerQ = trpc.customers.smartSearch.useQuery(
-    { q: channelHandle.trim(), limit: 6 },
-    { enabled: channel !== "WALK_IN" && channelHandle.trim().length >= 3, staleTime: 30_000 },
-  );
+  const resolveReceptionCustomerM = trpc.customers.receptionResolveByPhone.useMutation();
+  const resolveReceptionCustomerByPhone = resolveReceptionCustomerM.mutateAsync;
+  const phoneLookupSequence = useRef(0);
 
+  const resolveReceptionCustomer = useCallback(async (name?: string, announce = false) => {
+    if (!isValidIqMobile(receptionPhone)) return null;
+    const sequence = ++phoneLookupSequence.current;
+    setPhoneResolution("CHECKING");
+    setPhoneResolutionError(null);
+    try {
+      const result = await resolveReceptionCustomerByPhone({
+        phone: receptionPhone,
+        ...(name?.trim() ? { name: name.trim() } : {}),
+      });
+      if (sequence !== phoneLookupSequence.current) return null;
+      if (result.status === "NEEDS_NAME") {
+        setCustomer((previous) => ({ customerId: null, name: previous.name, phone: receptionPhone, isNew: true }));
+        setResolvedCustomerTier(null);
+        setPhoneResolution("NEEDS_NAME");
+        return result;
+      }
+      setCustomer({
+        customerId: Number(result.customerId),
+        name: result.name ?? name?.trim() ?? "",
+        phone: receptionPhone,
+        isNew: false,
+      });
+      setResolvedCustomerTier(result.defaultPriceTier as Tier);
+      setPhoneResolution("RESOLVED");
+      if (announce) notify.ok(result.created ? "تم إنشاء العميل وربطه بالطلب" : "تم ربط العميل الموجود بالطلب");
+      return result;
+    } catch (error: any) {
+      if (sequence !== phoneLookupSequence.current) return null;
+      const message = error?.message || "تعذّر التحقق من رقم العميل";
+      setPhoneResolutionError(message);
+      setPhoneResolution("ERROR");
+      if (announce) notify.err(message);
+      return null;
+    }
+  }, [receptionPhone, resolveReceptionCustomerByPhone]);
+
+  // لا نبحث قبل اكتمال الخانات الإحدى عشرة. بعد الاكتمال يتحول الهاتف إلى مفتاح هوية واحد:
+  // عميل موجود يُربط فوراً، ورقم جديد يفتح الاسم فقط.
   useEffect(() => {
-    if (customer.customerId || channel === "WALK_IN") return;
-    const handle = channelHandle.trim();
-    const digits = handle.replace(/\D/g, "");
-    // إصلاح مراجعة Codex P2 (٨/٨): القنوات نوعان — هاتفٌ رقميّ (واتساب/اتصال) ومعرّفٌ نصّيّ
-    // (انستغرام/تيك توك مثل customer_name). الحارس القديم (digits<6) كان يُخرج المعرّفات النصّية
-    // كلياً فلا ربطَ ولا تهيئةَ عميلٍ جديد لها — يُبطل الميزة لغير الأرقام. الآن: عتبةٌ رقمية
-    // للهاتف (≥٦) أو نصّيةٌ للمعرّف (≥٣، مطابقة enable البحث).
-    const isPhone = digits.length >= 6;
-    if (!isPhone && handle.length < 3) return;
-    if (channelCustomerQ.isFetching) return; // لا تحسم قبل استقرار النتائج (يمنع «لا تطابق» عابرة).
-    // مطابقة العميل القائم: بالهاتف حين رقميّ، وإلا بالاسم/المعرّف النصّيّ (نتائج smartSearch).
-    const match = isPhone
-      ? channelCustomerQ.data?.find((candidate) => (candidate.phone ?? "").replace(/\D/g, "") === digits)
-      : channelCustomerQ.data?.find((candidate) => candidate.name.trim().toLowerCase() === handle.toLowerCase());
-    if (match) {
-      setCustomer({ customerId: Number(match.id), name: match.name, phone: match.phone ?? null, isNew: false });
+    phoneLookupSequence.current += 1;
+    setDeferred(false);
+    setResolvedCustomerTier(null);
+    if (!receptionPhone) {
+      setPhoneResolution("EMPTY");
+      setPhoneResolutionError(null);
+      setCustomer({ customerId: null, name: "", phone: null, isNew: false });
       return;
     }
-    // لا تطابق دقيق ⇒ هيّئ «عميل جديد». الهاتف الرقميّ: name=phone مبدئياً (SmartCustomerInput
-    // يُظهر حقل الاسم). المعرّف النصّيّ: هو الاسم مبدئياً بلا هاتف. لا يُكرِّر فوق تسميةٍ يدوية سابقة.
-    setCustomer((prev) => {
-      if (prev.customerId) return prev;
-      if (prev.isNew && (prev.phone === handle || prev.name === handle)) return prev;
-      return isPhone
-        ? { customerId: null, name: handle, phone: handle, isNew: true }
-        : { customerId: null, name: handle, phone: null, isNew: true };
-    });
-  }, [channelCustomerQ.data, channelCustomerQ.isFetching, channelHandle, channel, customer.customerId]);
+    if (!isValidIqMobile(receptionPhone)) {
+      setPhoneResolution("INCOMPLETE");
+      setPhoneResolutionError(null);
+      setCustomer({ customerId: null, name: "", phone: receptionPhone, isNew: false });
+      return;
+    }
+    setCustomer({ customerId: null, name: "", phone: receptionPhone, isNew: true });
+    const timer = window.setTimeout(() => { void resolveReceptionCustomer(); }, 180);
+    return () => window.clearTimeout(timer);
+  }, [receptionPhone, resolveReceptionCustomer]);
 
   const connectPrinter = async () => {
     try {
@@ -533,6 +571,14 @@ export default function Reception() {
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
 
   const hasCustom = cart.some(isCustomKind);
+  const deferredAvailable = customer.customerId != null
+    && phoneResolution === "RESOLVED"
+    && !activeDraft
+    && !orderDelivery
+    && sumDirect > 0;
+  useEffect(() => {
+    if (deferred && !deferredAvailable) setDeferred(false);
+  }, [deferred, deferredAvailable]);
   // مراجعة عدائية ٦/٨: الحقل يظهر فور اختيار طريقةٍ غير نقدية وسلّةٍ غير فارغة — كان مشروطاً
   // بمبلغٍ مُدخَل، فالمسار السريع (تحصيل المطلوب الآن) يطلب المرجع/الكود وحقله مخفيّ.
   const needPaymentRef = method !== "CASH" && (paidD.gt(0) || expectedNowD.gt(0));
@@ -744,10 +790,7 @@ export default function Reception() {
     setHeaderActionsNode(document.getElementById("pos-header-actions"));
   }, []);
 
-  // ───── لوحة المبلغ (م٤ — مبلغٌ فقط، لا أوضاع؛ حقل نصّي حقيقي + رقائق سريعة، بلا حاسبة) ──
-  function setQuickAmt(v: number) {
-    setPayInput(String(v));
-  }
+  // ───── لوحة المبلغ (م٤ — مبلغٌ فقط، لا أوضاع ولا أزرار فئات نقدية ثابتة) ────────────
   function payAll() {
     // ش٠: «= الكل» يملأ الإجمالي **الفعليّ** (المقرَّب لفئة ٢٥٠ في البيع المباشر النقديّ الخالص).
     setPayInput(String(expectedNow));
@@ -833,42 +876,18 @@ export default function Reception() {
       : []),
   ];
 
-  // ───── إنشاء العميل عند الحاجة (ensureCustomerId) ────────────────────────
-  // إصلاح P2 (٢٣/٦/٢٦): قبل الإصلاح كان customer.customerId=null يُسقط الاسم/الهاتف ⇒ فاتورة وأمر
-  // شغل بلا عميل (تَسليم آجل لاحقاً يَفشل بـ«طلب الخدمة الآجل يتطلب عميلاً محدداً»).
-  const createCustomerM = trpc.customers.create.useMutation();
+  // ───── حسم هوية العميل قبل الالتزام ─────────────────────────────────────
+  // كل قنوات الاستقبال تمر بالهاتف العراقي نفسه. endpoint واحد يبحث أو ينشئ ويحسم سباق التكرار.
   async function ensureCustomerId(): Promise<number | null> {
     if (customer.customerId) return customer.customerId;
-    const channelPhone = channel !== "WALK_IN" && channelHandle.replace(/\D/g, "").length >= 6
-      ? channelHandle.trim()
-      : null;
-    const phone = customer.phone?.trim() || channelPhone;
-    const rawName = customer.name?.trim() || "";
-    const name = rawName && rawName.replace(/\D/g, "") !== phone?.replace(/\D/g, "")
-      ? rawName
-      : phone ? `عميل ${phone}` : "";
-    if (!name) return null;
-    if (!(await confirm({
-      variant: "warning",
-      title: "إنشاء عميل جديد",
-      description: `سيُحفظ «${name}»${phone ? ` برقم ${phone}` : ""} كعميل ويرتبط بهذا الطلب. متابعة؟`,
-      confirmText: "إنشاء العميل",
-    }))) {
-      throw new Error("ألغى المستخدم إنشاء العميل");
-    }
-    const created = await createCustomerM.mutateAsync({
-      name,
-      phone: phone || null,
-      customerType: "فرد",
-      defaultPriceTier: "RETAIL",
-    });
-    // عَقد الراوتر يُرجع {id, customerId} كلاهما (للتوافق). نَحرس ضدّ NaN لو تَغيّر العقد.
-    const id = Number((created as any).id ?? (created as any).customerId);
+    if (!isValidIqMobile(receptionPhone)) throw new Error("أكمل رقم الهاتف العراقي المكوّن من ١١ رقماً");
+    const name = customer.name.trim();
+    if (name.length < 2) throw new Error("اكتب اسم العميل بحرفين على الأقل");
+    const resolved = await resolveReceptionCustomer(name, false);
+    const id = Number(resolved?.customerId);
     if (!Number.isFinite(id) || id <= 0) {
-      throw new Error("تعذّر قراءة مُعرّف العميل الجديد من الخادم");
+      throw new Error(phoneResolutionError || "تعذّر حفظ العميل وربطه بالطلب");
     }
-    // عكس الاختيار في الواجهة بعد الإنشاء.
-    setCustomer({ customerId: id, name, phone: phone ?? null, isNew: false });
     return id;
   }
 
@@ -1094,6 +1113,7 @@ export default function Reception() {
       clearCouponIfApplied();
       setCart(newCart);
       setCustomer({ customerId: d.customerId != null ? Number(d.customerId) : null, name: d.contactName ?? "", phone: d.contactPhone ?? null, isNew: false });
+      setReceptionPhone(toLocalIqMobileDigits(d.contactPhone ?? ""));
       setTierOverride((d.priceTier as Tier) ?? null);
       setActiveDraft({ id: draftId, version: Number(d.version) });
       // ش٤: صافي المقبوض سلفاً يرافق الاستئناف — «المتوقّع الآن» يهبط به فوراً.
@@ -1233,7 +1253,15 @@ export default function Reception() {
     if (deferred) {
       if (activeDraft) { notify.err("البيع الآجل غير متاح للطلب المحفوظ — ثبّته مباشرةً بلا حفظ مسوّدة"); return; }
       if (orderDelivery) { notify.err("طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"); return; }
-      if (!customer.customerId) { notify.err("البيع الآجل يتطلّب عميلاً مسجَّلاً — اختره أو احفظه كعميل أولاً"); return; }
+    }
+    if (!isValidIqMobile(receptionPhone)) {
+      notify.err("رقم هاتف العميل إلزامي — أكمل ١١ رقماً عراقياً تبدأ بـ07");
+      customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+    if (!canCreateCustomer) {
+      notify.err("دورك لا يملك بوابة ربط عميل الاستقبال — راجع إعداد صلاحية أوامر الشغل");
+      return;
     }
     if (!orderDelivery && !deferred && appliedPaidD.plus(heldD).lt(directFloorD)) {
       notify.err(`المبلغ المقبوض (مع العربون السابق) يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(directFloorD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
@@ -1258,22 +1286,19 @@ export default function Reception() {
     // انقطاعٌ معلوم: لا نُرسل ثم ننتظر مهلة — نلتقط فوراً. (الالتقاط نفسه يفرض شروطه:
     // بلا أوامر شغل، نقديّ كامل، بلا كوبون/توصيل، والجهاز مُفعَّل للالتقاط.)
     if (isDisconnected(connState)) {
+      if (!customer.customerId) {
+        notify.err("إضافة عميل جديد وربطه تحتاج اتصالاً بالخادم — أعد الاتصال ثم أكمل الطلب");
+        setSubmitting(false);
+        return;
+      }
       await captureOfflineReception();
       setSubmitting(false);
       return;
     }
 
-    // ٥/٨ — إنشاء العميل لم يعُد شرطاً لإتمام الطلب لبيعٍ مباشر عابر: الاسم والهاتف يُحفظان
-    // مرجعاً نصّياً على الفاتورة وأمر الشغل (contactName/contactPhone) ولا يُنشَأ سجلّ عميلٍ إلا
-    // بطلبٍ صريح («احفظه كعميل») — سابقاً كان كلّ بيعٍ يمرّ بـcustomers.create فيفشل الطلب كلّه
-    // بـFORBIDDEN لأدوارٍ تفتح محطة الاستقبال بلا crm=FULL.
-    // إصلاح (٧/٨، طلب مالك): طلبٌ عبر قناة (واتساب/انستغرام/تيك توك/اتصال) استثناءٌ متعمَّد —
-    // هذه القنوات بطبيعتها متابعةٌ مستقبلية (تذكيرٌ، تسليمٌ لاحق، تكرار شراء) فسجلّ العميل
-    // ليس رفاهية بل الغرض الأساس من التقاطها؛ تُحفَظ تلقائياً بلا انتظار تفعيل خانة، وتبقى
-    // محكومة بنفس الصلاحية (canCreateCustomer) — لا تجاوز أمنيّ، فقط لا حاجة لخطوة إضافية.
-    const isChannelNewCustomer = channel !== "WALK_IN" && customer.isNew && customer.name.trim().length > 0;
+    // هوية العميل جزء من عملية الاستقبال وليست خياراً جانبياً: حسم الهاتف/الاسم يسبق أي فاتورة.
     let customerId: number | null = customer.customerId ?? null;
-    if (customerId == null && (saveAsCustomer || isChannelNewCustomer) && canCreateCustomer) {
+    if (customerId == null) {
       try {
         customerId = await ensureCustomerId();
       } catch (e: any) {
@@ -1288,8 +1313,7 @@ export default function Reception() {
       const receiptsToPrint: ReceiptBrowserData[] = [];
       const workOrdersToPrint: WorkOrderReceiptData[] = [];
       const printedAt = new Date();
-      const receiptPhone = customer.phone?.trim()
-        || (channel !== "WALK_IN" && channelHandle.replace(/\D/g, "").length >= 6 ? channelHandle.trim() : null);
+      const receiptPhone = receptionPhone;
       const rawCustomerName = customer.name.trim();
       const customerName = rawCustomerName && rawCustomerName.replace(/\D/g, "") !== receiptPhone?.replace(/\D/g, "")
         ? rawCustomerName
@@ -1341,7 +1365,7 @@ export default function Reception() {
           paymentReference: D(x.depositStr).gt(0) && method !== "CASH" ? paymentReference.trim() : null,
           paymentReceiptUrl: custom.paymentReceiptImages[0]?.dataUrl || null,
           receptionChannel: channel,
-          channelHandle: channelHandle || null,
+          channelHandle: (channel === "INSTAGRAM" || channel === "TIKTOK" ? channelHandle : receptionPhone) || null,
           // ٨/٨ — التوصيل الفعّال (من «توصيل هذا الطلب» المُوجَّه للأمر، أو من كتلة التخصيص).
           hasDelivery: eff.has,
           deliveryAddress: eff.address,
@@ -1693,6 +1717,7 @@ export default function Reception() {
       setPaymentReference("");
       setDeferred(false);
       setCustomer({ customerId: null, name: "", phone: null, isNew: false });
+      setReceptionPhone("");
       setChannel("WALK_IN");
       setChannelHandle("");
       reqIdRef.current = crypto.randomUUID();
@@ -1887,6 +1912,7 @@ export default function Reception() {
     setPayInput("");
     setPaymentReference("");
     setCustomer({ customerId: null, name: "", phone: null, isNew: false });
+    setReceptionPhone("");
     setChannel("WALK_IN");
     setChannelHandle("");
     reqIdRef.current = crypto.randomUUID();
@@ -2210,112 +2236,157 @@ export default function Reception() {
             ترقيم «١. العميل…» و«٢. أضف…» أدناه بتسميةٍ ثانية، بلا وظيفةٍ فريدة (الانتقال يبقى
             متاحاً بالنقر على المناطق نفسها وبـF2/F4). إزالته توفّر مساحة رأسية دائماً، لا عند
             ضيق الارتفاع فقط. */}
-        <div ref={customerSectionRef} className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/25 p-2">
-          <span className="shrink-0 text-xs font-extrabold">١. العميل وطريقة وصول الطلب</span>
-          {/* إصلاح (٧/٨، طلب مالك): ٥ أزرار قناة طُويت لقائمةٍ منسدلة واحدة — «مباشر» هو الغالب
-              الساحق (زبون حاضر فعلياً)، وتفاصيل القناة (حقل الهاتف/المعرّف) لا تظهر إلا عند
-              اختيار قناة غير مباشرة، فتُستعاد المساحة لبقية الصفّ دائماً لا عند الحاجة فقط. */}
-          <AppSelect
-            value={channel}
-            onValueChange={(v) => {
-              // تبديل القناة يمسح المعرّف/الرقم السابق (نصّ↔أرقام) والعميل المطابَق — وإلا بقي
-              // معرّفٌ قديمٌ خفيّ يُرسَل كرقم واتساب، أو عميلٌ مربوطٌ بقناةٍ أخرى (مراجعة Codex).
-              setChannel(v as typeof channel);
-              setChannelHandle("");
-              setCustomer({ customerId: null, name: "", phone: null, isNew: false });
-            }}
-            aria-label="طريقة وصول الطلب"
-            className="h-8 w-32 text-[11px] font-bold"
-          >
-            <option value="WALK_IN">مباشر</option>
-            <option value="WHATSAPP">واتساب</option>
-            <option value="INSTAGRAM">انستغرام</option>
-            <option value="TIKTOK">تيك توك</option>
-            <option value="PHONE">اتصال</option>
-          </AppSelect>
-          {channel !== "WALK_IN" && (
-            channel === "WHATSAPP" || channel === "PHONE" ? (
-              // رقم الهاتف: ١١ خانة ذكيّة (طلب المالك) — رقمٌ لكل خانة، انتقال تلقائيّ، خضراء عند الصحّة.
-              <PhoneDigitsInput value={channelHandle} onChange={setChannelHandle} ariaLabel="رقم هاتف العميل" />
-            ) : (
-              // انستغرام/تيك توك: معرّف حسابٍ نصّيّ لا رقم.
+        <div
+          ref={customerSectionRef}
+          className="grid gap-2 rounded-xl border border-border/80 bg-muted/20 p-2 xl:grid-cols-[minmax(280px,0.9fr)_minmax(390px,1.15fr)_minmax(300px,0.95fr)]"
+        >
+          {/* ١ — قناة الوصول: قرار سريع واضح، مع إبقاء هوية العميل عند تبديل القناة. */}
+          <section className="rounded-lg border bg-card p-2" aria-labelledby="reception-channel-title">
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] font-black text-primary-foreground">١</span>
+              <h2 id="reception-channel-title" className="text-xs font-black">قناة وصول الطلب</h2>
+            </div>
+            <div className="grid grid-cols-5 gap-1">
+              {([
+                { value: "WALK_IN", label: "مباشر", Icon: Store },
+                { value: "WHATSAPP", label: "واتساب", Icon: MessageCircle },
+                { value: "INSTAGRAM", label: "إنستغرام", Icon: Instagram },
+                { value: "TIKTOK", label: "تيك توك", Icon: Music2 },
+                { value: "PHONE", label: "اتصال", Icon: Phone },
+              ] as const).map(({ value, label, Icon }) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={channel === value}
+                  onClick={() => {
+                    setChannel(value);
+                    if (value !== "INSTAGRAM" && value !== "TIKTOK") setChannelHandle("");
+                  }}
+                  className={cn(
+                    "flex h-12 min-w-0 flex-col items-center justify-center gap-0.5 rounded-md border text-[9px] font-extrabold transition-colors",
+                    channel === value
+                      ? "border-primary bg-primary/10 text-primary shadow-sm"
+                      : "bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground",
+                  )}
+                >
+                  <Icon aria-hidden className="size-3.5" />
+                  <span className="truncate">{label}</span>
+                </button>
+              ))}
+            </div>
+            {(channel === "INSTAGRAM" || channel === "TIKTOK") && (
               <Input
                 value={channelHandle}
-                onChange={(e) => setChannelHandle(e.target.value)}
-                placeholder="معرّف الحساب"
-                className="h-8 w-40 text-xs"
+                onChange={(event) => setChannelHandle(event.target.value)}
+                placeholder="معرّف الحساب (اختياري)"
+                aria-label="معرّف حساب القناة"
+                className="mt-1.5 h-7 text-[11px]"
                 dir="ltr"
               />
-            )
-          )}
-          {/* اسم فقط للقنوات (طلب المالك): الهاتف في الـ١١ خانة أعلاه، فحقلٌ واحدٌ للاسم (بمسافات)
-              بلا تكرار. للمباشر: حقل بحثٍ ذكيّ كامل (يجد العملاء السابقين). */}
-          <SmartCustomerInput
-            value={customer}
-            onChange={setCustomer}
-            nameOnly={channel !== "WALK_IN"}
-            className="w-56"
-            placeholder={channel === "WALK_IN" ? "عميل نقدي أو ابحث عن عميل" : "اسم العميل (اختياري)"}
-          />
-          {customer.customerId && canReadCustomerContext && (
-            <Button size="sm" variant="outline" className="h-8" onClick={() => setCustomerContextId(customer.customerId)}>
-              معلومات العميل
-            </Button>
-          )}
-          {/* ٥/٨ — بيعٌ مباشر: اسم الزبون وهاتفه يُحفظان مرجعاً على الفاتورة افتراضياً (بلا سجلّ
-              عميل) إلا بطلبٍ صريح («احفظه كعميل»). إصلاح (٧/٨، طلب مالك) — طلبُ قناةٍ مختلف:
-              التقاطه هو الغرض من القناة أصلاً، فيُحفظ تلقائياً بلا خانة (SmartCustomerInput نفسه
-              يُظهر «سيُحفظ… تلقائياً» فلا داعي لتكرارها) مع سجلّه الكامل (فواتير/عرابين/محادثات
-              القنوات) مربوطاً من لحظة الإنشاء — إلا أن ينقص المستخدمَ الصلاحية، فيُحذَّر صراحةً. */}
-          {!customer.customerId && (customer.name.trim() || customer.phone?.trim()) && (
-            channel !== "WALK_IN" ? (
-              !canCreateCustomer && (
-                <span className="text-[11px] font-semibold text-[var(--sem-warn)]">
-                  لا يمكن حفظ سجلّ عميلٍ دائم بصلاحيتك الحالية — سيُحفظ الاسم/الرقم مرجعاً على الطلب فقط. أبلغ المدير.
-                </span>
-              )
-            ) : canCreateCustomer ? (
-              <label className="inline-flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
-                <input
-                  type="checkbox"
-                  className="size-3.5"
-                  checked={saveAsCustomer}
-                  onChange={(e) => setSaveAsCustomer(e.target.checked)}
-                />
-                احفظه كعميل دائم
-              </label>
-            ) : (
-              <span className="text-[11px] font-semibold text-muted-foreground">
-                يُحفظ الاسم والهاتف مرجعاً على الفاتورة (حفظه كعميل دائم يحتاج صلاحية إدارة العملاء)
-              </span>
-            )
-          )}
-          {customer.customerId && (
-            <span className="text-[11px] font-semibold text-money-positive">تم ربط الطلب بالعميل: {customer.name}</span>
-          )}
-          <div className="flex items-center gap-1.5 border-s ps-2">
-            <label className="text-[11px] font-semibold text-muted-foreground">فئة السعر:</label>
-            <AppSelect
-              value={effectiveTier}
-              onValueChange={(v) => { setTierOverride(v as Tier); clearCouponIfApplied(); }}
-              aria-label="فئة السعر"
-              className="h-7 w-24 text-[11px] font-bold"
-            >
-              <option value="RETAIL">مفرد</option>
-              <option value="WHOLESALE">جملة</option>
-              <option value="GOVERNMENT">حكومي</option>
-            </AppSelect>
-            {tierOverride && (
-              <button
-                type="button"
-                onClick={() => setTierOverride(null)}
-                title="عودة لفئة العميل الافتراضية"
-                className="text-[11px] text-muted-foreground hover:text-foreground"
-              >
-                ↩
-              </button>
             )}
-          </div>
+          </section>
+
+          {/* ٢ — الهاتف هو مفتاح الهوية في كل القنوات، لا حقل تابع لواتساب وحده. */}
+          <section className="rounded-lg border bg-card p-2" aria-labelledby="reception-phone-title">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] font-black text-primary-foreground">٢</span>
+                <h2 id="reception-phone-title" className="text-xs font-black">رقم هاتف العميل</h2>
+                <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[9px] font-black text-destructive">إلزامي</span>
+              </div>
+              {phoneResolution === "CHECKING" && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground">
+                  <LoaderCircle aria-hidden className="size-3 animate-spin" /> جارٍ التحقق
+                </span>
+              )}
+            </div>
+            <PhoneDigitsInput
+              value={receptionPhone}
+              onChange={setReceptionPhone}
+              ariaLabel="رقم هاتف العميل العراقي"
+              className="max-w-full"
+            />
+            <div className="mt-1.5 min-h-4 text-[10px] font-semibold">
+              {phoneResolution === "EMPTY" && <span className="text-muted-foreground">اكتب ١١ رقماً؛ سنبحث عن العميل تلقائياً.</span>}
+              {phoneResolution === "INCOMPLETE" && <span className="text-[var(--sem-warn)]">أكمل الرقم العراقي الذي يبدأ بـ07.</span>}
+              {phoneResolution === "NEEDS_NAME" && <span className="text-[var(--sem-info)]">الرقم جديد — بقي اسم العميل فقط.</span>}
+              {phoneResolution === "RESOLVED" && <span className="text-money-positive">تم العثور على العميل وربطه بالطلب.</span>}
+              {phoneResolution === "ERROR" && <span className="text-destructive">{phoneResolutionError}</span>}
+            </div>
+          </section>
+
+          {/* ٣ — نتيجة واحدة: بطاقة عميل مرتبطة أو حقل الاسم للرقم الجديد. لا قوائم عائمة فوق البحث. */}
+          <section className="rounded-lg border bg-card p-2" aria-labelledby="reception-customer-title">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] font-black text-primary-foreground">٣</span>
+                <h2 id="reception-customer-title" className="text-xs font-black">هوية العميل</h2>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-[9px] font-semibold text-muted-foreground">فئة السعر</span>
+                <AppSelect
+                  value={effectiveTier}
+                  onValueChange={(value) => { setTierOverride(value as Tier); clearCouponIfApplied(); }}
+                  aria-label="فئة السعر"
+                  className="h-7 w-20 text-[10px] font-bold"
+                >
+                  <option value="RETAIL">مفرد</option>
+                  <option value="WHOLESALE">جملة</option>
+                  <option value="GOVERNMENT">حكومي</option>
+                </AppSelect>
+              </div>
+            </div>
+
+            {customer.customerId ? (
+              <div className="flex min-h-12 items-center gap-2 rounded-md border border-money-positive/40 bg-money-positive/10 px-2.5 py-1.5">
+                <span className="grid size-8 shrink-0 place-items-center rounded-full bg-money-positive/15 text-money-positive">
+                  <UserRound aria-hidden className="size-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-xs font-black">{customer.name}</span>
+                    <BadgeCheck aria-label="عميل موثوق" className="size-3.5 shrink-0 text-money-positive" />
+                  </div>
+                  <div className="text-[10px] font-semibold text-muted-foreground" dir="ltr">{receptionPhone}</div>
+                  <div className="text-[9px] font-bold text-money-positive">مرتبط · البيع بدون عربون متاح</div>
+                </div>
+                {canReadCustomerContext && (
+                  <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => setCustomerContextId(customer.customerId)}>
+                    الملف
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <div className="flex min-h-12 items-center gap-1.5">
+                <Input
+                  value={customer.name}
+                  onChange={(event) => setCustomer((previous) => ({ ...previous, name: event.target.value, phone: receptionPhone, isNew: true }))}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && customer.name.trim().length >= 2 && phoneResolution === "NEEDS_NAME") {
+                      event.preventDefault();
+                      void resolveReceptionCustomer(customer.name, true);
+                    }
+                  }}
+                  disabled={!isValidIqMobile(receptionPhone) || phoneResolution === "CHECKING"}
+                  placeholder={isValidIqMobile(receptionPhone) ? "اسم العميل الجديد" : "أكمل الهاتف أولاً"}
+                  aria-label="اسم العميل"
+                  className="h-9 min-w-0 flex-1 text-xs font-bold"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={phoneResolution !== "NEEDS_NAME" || customer.name.trim().length < 2 || resolveReceptionCustomerM.isPending || !canCreateCustomer}
+                  onClick={() => void resolveReceptionCustomer(customer.name, true)}
+                  className="h-9 shrink-0 px-3 text-[11px] font-black"
+                >
+                  حفظ وربط
+                </Button>
+              </div>
+            )}
+            {!canCreateCustomer && (
+              <p className="mt-1 text-[10px] font-bold text-destructive">صلاحية ربط عميل الاستقبال غير مفعّلة لهذا الدور.</p>
+            )}
+          </section>
         </div>
 
         <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
@@ -2648,25 +2719,13 @@ export default function Reception() {
       {/* ─ لوحة الدفع — شريطٌ ثابتٌ حافّة-لحافّة أسفل الصفحة (خارج حشوة عمود السلة) ─
           آخر عنصرٍ في عمود الصفحة الجذر (flex-col)؛ منطقة السلة أعلاه وحدها flex-1/تُمرَّر،
           فزرّا الدفع لا يُدفَعان خارج الشاشة أبداً مهما ضاق الارتفاع أو تغيّر تكبير المتصفّح. */}
-      {/* بيع مباشر آجل (قرار المالك ١٠/٨) — يظهر فقط حين يصلح: عميلٌ مسجَّل + بضاعة جاهزة +
-          لا مسوّدة (توزيعها يفترض دفعاً كاملاً) + لا توصيل (يُحصَّل عند الاستلام). حدّ الائتمان خادميّ. */}
-      {customer.customerId != null && !activeDraft && !orderDelivery && sumDirect > 0 && (
-        <div className="flex-shrink-0 border-t bg-[var(--sem-warn-bg)] px-3 py-1.5">
-          <label className="flex items-center gap-2 text-xs font-bold cursor-pointer text-[var(--sem-warn)]">
-            <input
-              type="checkbox"
-              checked={deferred}
-              onChange={(e) => setDeferred(e.target.checked)}
-              className="size-4"
-            />
-            بيع آجل — المتبقّي على البضاعة الجاهزة يُسجَّل ذمّةً على {customer.name?.trim() || "العميل"}
-          </label>
-        </div>
-      )}
-
       <PaymentPanel
         payInput={payInput}
         setPayInput={setPayInput}
+        deferred={deferred}
+        setDeferred={setDeferred}
+        deferredAvailable={deferredAvailable}
+        deferredCustomerName={customer.customerId != null ? customer.name : null}
         method={method}
         setMethod={setMethod}
         paymentReference={paymentReference}
@@ -2691,7 +2750,6 @@ export default function Reception() {
         setDepositMenuOpen={setDepositMenuOpen}
         depositOptions={depositOptions}
         payAll={payAll}
-        setQuickAmt={setQuickAmt}
         couponCode={couponCode}
         couponLabel={couponLabel}
         couponInput={couponInput}

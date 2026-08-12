@@ -82,6 +82,11 @@ export interface CreateSaleInput {
   /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق من هوية المدير).
    *  B5: إن كانت true يجب توفير إمّا creditApprovalId (تدفّق UI جديد) أو managerOverrideByUserId (تدفّق router قديم). */
   creditApproved?: boolean;
+  /**
+   * تفويض داخلي حصراً من checkoutReception بعد قفل عميل فعّال والتحقق من اسمه وهاتفه العراقي.
+   * لا يظهر في أي مخطط راوتر عام، ويعفي بيع الاستقبال «بدون عربون» من سقف الائتمان مع إبقاء AR.
+   */
+  receptionDeferredAuthorized?: boolean;
   /** B5: معرّف صفّ creditApprovals موجود (سقف صريح + انتهاء + single-use) — للتدفّق الجديد. */
   creditApprovalId?: number;
   /** B5: userId لمدير وُثِّقَت هويته خادمياً (الراوتر يمرّره بعد verifyManagerApproval) —

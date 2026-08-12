@@ -15,8 +15,22 @@ const LEN = 11;
 /** رقم موبايل عراقيّ: يبدأ بـ07 ويتكوّن من ١١ رقماً. (لا نُقيّد مُشغّلاً بعينه كي لا نرفض أرقاماً صحيحة.) */
 export const isValidIqMobile = (d: string) => /^07\d{9}$/.test(d);
 
+const asciiDigits = (value: string) => value
+  .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+  .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
+  .replace(/\D/g, "");
+
+/** يقبل اللصق محلياً أو دولياً ثم يعيد دائماً 07xxxxxxxxx للـ١١ خانة. */
+export const toLocalIqMobileDigits = (value: string): string => {
+  let digits = asciiDigits(value);
+  if (digits.startsWith("00964")) digits = digits.slice(2);
+  if (/^9647/.test(digits)) digits = `0${digits.slice(3)}`;
+  else if (/^7\d{0,9}$/.test(digits)) digits = `0${digits}`;
+  return digits.slice(0, LEN);
+};
+
 const toSlots = (v: string): string[] => {
-  const digits = (v || "").replace(/\D/g, "").slice(0, LEN).split("");
+  const digits = toLocalIqMobileDigits(v || "").split("");
   return Array.from({ length: LEN }, (_, i) => digits[i] ?? "");
 };
 
@@ -30,12 +44,12 @@ interface PhoneDigitsInputProps {
 
 export function PhoneDigitsInput({ value, onChange, className, ariaLabel }: PhoneDigitsInputProps) {
   const [slots, setSlots] = useState<string[]>(() => toSlots(value));
-  const emittedRef = useRef<string>((value || "").replace(/\D/g, "").slice(0, LEN));
+  const emittedRef = useRef<string>(toLocalIqMobileDigits(value || ""));
   const refs = useRef<(HTMLInputElement | null)[]>([]);
 
   // مزامنة من قيمةٍ خارجيّة فقط (ضبطٌ من الأب) — لا من انبعاثنا، فلا يُطوى فراغُ خانةٍ وسطيّة أثناء التصحيح.
   useEffect(() => {
-    const compact = (value || "").replace(/\D/g, "").slice(0, LEN);
+    const compact = toLocalIqMobileDigits(value || "");
     if (compact !== emittedRef.current) {
       emittedRef.current = compact;
       setSlots(toSlots(compact));
@@ -52,7 +66,7 @@ export function PhoneDigitsInput({ value, onChange, className, ariaLabel }: Phon
   const valid = isValidIqMobile(slots.join(""));
 
   const handleInput = (i: number, e: ChangeEvent<HTMLInputElement>) => {
-    const ch = e.target.value.replace(/\D/g, "").slice(-1); // آخر رقمٍ كُتب (الخانة مُحدَّدة عند التركيز فيُستبدَل في مكانه)
+    const ch = asciiDigits(e.target.value).slice(-1); // آخر رقمٍ كُتب (الخانة مُحدَّدة عند التركيز فيُستبدَل في مكانه)
     const next = slots.slice();
     next[i] = ch;
     commit(next);
@@ -72,7 +86,7 @@ export function PhoneDigitsInput({ value, onChange, className, ariaLabel }: Phon
 
   const handlePaste = (e: ClipboardEvent<HTMLInputElement>) => {
     e.preventDefault();
-    const pasted = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, LEN);
+    const pasted = toLocalIqMobileDigits(e.clipboardData.getData("text"));
     if (!pasted) return;
     commit(toSlots(pasted));
     refs.current[Math.min(pasted.length, LEN - 1)]?.focus();
@@ -85,6 +99,17 @@ export function PhoneDigitsInput({ value, onChange, className, ariaLabel }: Phon
       aria-label={ariaLabel ?? "رقم الهاتف — ١١ خانة"}
       className={cn("inline-flex items-center gap-1", className)}
     >
+      <span
+        aria-hidden
+        className={cn(
+          "inline-flex h-8 shrink-0 items-center rounded-md border px-2 font-mono text-xs font-black tabular-nums",
+          valid
+            ? "border-[var(--sem-pos)] bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+            : "border-input bg-muted/50 text-muted-foreground",
+        )}
+      >
+        +964
+      </span>
       {slots.map((d, i) => (
         <input
           key={i}

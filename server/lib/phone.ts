@@ -7,6 +7,34 @@
  */
 import { phoneMatchSuffix } from "./similarMatch";
 
+/** يحوّل الأرقام العربية/الفارسية إلى ASCII قبل أي تحقق أو تطبيع. */
+export function toAsciiPhoneDigits(raw: string): string {
+  return raw
+    .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+    .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
+    .replace(/\D/g, "");
+}
+
+/**
+ * رقم موبايل عراقي صارم لمسار الاستقبال.
+ * يقبل 07xxxxxxxxx أو +9647xxxxxxxxx أو 009647xxxxxxxxx ويعيد E.164 واحدة.
+ * لا يُستعمل هذا الحارس في الاستيرادات القديمة المتسامحة؛ هو عقد هوية العميل في الكاشير فقط.
+ */
+export function canonicalIraqiMobile(raw: string | null | undefined): string | null {
+  if (!raw?.trim()) return null;
+  let digits = toAsciiPhoneDigits(raw);
+  if (digits.startsWith("00964")) digits = digits.slice(2);
+  if (/^07\d{9}$/.test(digits)) return `+964${digits.slice(1)}`;
+  if (/^9647\d{9}$/.test(digits)) return `+${digits}`;
+  return null;
+}
+
+/** الصيغة المحلية ذات ١١ رقماً للعرض داخل خانات الاستقبال. */
+export function iraqiMobileLocal(raw: string | null | undefined): string | null {
+  const canonical = canonicalIraqiMobile(raw);
+  return canonical ? `0${canonical.slice(4)}` : null;
+}
+
 /**
  * تطبيع رقم عراقي إلى صيغة E.164 قانونية واحدة (+964…). منطق مُطابق حرفياً لِما كان في
  * onlineOrderService.ts (مراجعة عدائية ١٢/٧) — بلا أي تعديل سلوكي عند الاستخراج. مدخل بلا أرقام
