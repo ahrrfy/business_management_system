@@ -38,6 +38,8 @@ export interface MyDeliveryRow {
   customerPhone: string | null;
   governorate: string | null;
   address: string | null;
+  latitude: string | null;
+  longitude: string | null;
   orderTotal: string;
   /** المبلغ المتبقّي تحصيله (صافي الفاتورة − مسدَّد للمتجر، أو codAmount − collectedAmount للإرسالية). */
   codDue: string;
@@ -72,7 +74,9 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
   const partyId = membership.partyId;
   const financialSummary = await getDeliveryFinancialSummary(
     partyId,
-    membership.memberRole === "DRIVER" ? membership.userId : undefined,
+    membership.memberRole === "DRIVER" && membership.partyType === "COMPANY"
+      ? membership.userId
+      : undefined,
   );
 
   const onlineSelection = {
@@ -81,6 +85,8 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
       status: onlineOrders.status,
       governorate: onlineOrders.governorate,
       address: onlineOrders.shippingAddress,
+      latitude: onlineOrders.latitude,
+      longitude: onlineOrders.longitude,
       orderTotal: onlineOrders.total,
       createdAt: onlineOrders.orderDate,
       customerName: customers.name,
@@ -129,6 +135,8 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
       customerPhone: r.customerPhone ?? null,
       governorate: r.governorate ?? null,
       address: r.address ?? null,
+      latitude: r.latitude ?? null,
+      longitude: r.longitude ?? null,
       orderTotal: String(r.orderTotal),
       codDue: toDbMoney(due),
       courierFee: toDbMoney(money(r.shippingCost ?? "0")),
@@ -159,6 +167,9 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
       recipientName: deliveryConsignments.recipientName,
       recipientPhone: deliveryConsignments.recipientPhone,
       deliveryAddress: deliveryConsignments.deliveryAddress,
+      governorate: deliveryConsignments.governorate,
+      latitude: deliveryConsignments.latitude,
+      longitude: deliveryConsignments.longitude,
       deliveryFee: deliveryConsignments.deliveryFee,
       feeCollection: deliveryConsignments.feeCollection,
       invTotal: invoices.total,
@@ -197,8 +208,10 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
       status: r.parcelStatus,
       customerName: r.recipientName ?? r.custName ?? null,
       customerPhone: r.recipientPhone ?? r.custPhone ?? null,
-      governorate: null,
+      governorate: r.governorate ?? null,
       address: r.deliveryAddress ?? null,
+      latitude: r.latitude ?? null,
+      longitude: r.longitude ?? null,
       orderTotal: String(r.invTotal ?? toDbMoney(due)),
       codDue: toDbMoney(due),
       // COURIER = يقبض أجرته من الزبون بنفسه فوق COD؛ COUNTER/SHOP لا يقبض من الزبون شيئاً فوقه.

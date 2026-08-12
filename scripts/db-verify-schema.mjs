@@ -147,6 +147,8 @@ try {
     ["invoices", "taxRatePercent"], ["quotations", "taxRatePercent"], ["purchaseOrders", "taxRatePercent"], // 0123
     ["deliveryConsignments", "sourceType"], ["deliveryConsignments", "sourceId"],
     ["deliveryConsignments", "assignedUserId"], ["deliveryConsignments", "parcelStatus"],
+    ["deliveryConsignments", "governorate"], ["deliveryConsignments", "latitude"],
+    ["deliveryConsignments", "longitude"],
     ["deliveryConsignments", "moneyStatus"], ["deliveryConsignments", "acceptedAt"],
     ["deliveryConsignments", "pickedUpAt"], ["deliveryConsignments", "outForDeliveryAt"],
     ["deliveryConsignments", "failedAt"], ["deliveryConsignments", "failureReason"],

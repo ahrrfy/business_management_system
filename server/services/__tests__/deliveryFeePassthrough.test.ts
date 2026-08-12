@@ -25,6 +25,7 @@ import {
   confirmConsignmentDelivery,
   createDeliveryParty,
   dispatchToDelivery,
+  listOpenConsignments,
   payDeliveryFee,
   recordDeliveryRemittance,
   transitionConsignmentParcel,
@@ -204,10 +205,13 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     expect(await drawerNet(shift.shiftId)).toBe(11500);
     expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, disp.consignmentId)).limit(1))[0].feeSettledAt).toBeNull();
     await deliver(disp.consignmentId);
+    const feeQueue = await listOpenConsignments(partyId, 1);
+    expect(feeQueue.find((c) => Number(c.id) === disp.consignmentId)?.feeDue).toBe("1500.00");
     await payDeliveryFee(
       { consignmentId: disp.consignmentId, shiftId: shift.shiftId, clientRequestId: "prepaid-counter-fee" },
       CASHIER,
     );
+    expect((await listOpenConsignments(partyId, 1)).some((c) => Number(c.id) === disp.consignmentId)).toBe(false);
     expect(await drawerNet(shift.shiftId)).toBe(10000);
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, disp.consignmentId)).limit(1))[0];
     expect(cn.feeSettledAt).not.toBeNull();

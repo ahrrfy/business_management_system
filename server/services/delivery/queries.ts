@@ -3,7 +3,7 @@
 // عزل الفرع: الجهة المشتركة مرئية للفروع، لكن سند التوريد ونقد الدرج يخصان فرعاً واحداً حتماً؛
 // لذلك قائمة «المفتوح للتوريد» تقبل branchId وتعرض فقط طرود ذلك الفرع. أما السجل الإداري العام
 // للجهة فيبقى عابراً للفروع لمن يملك صلاحية رؤيتها، وتبقى كل حركة موسومة بفرعها.
-import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, lte, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { getDeliveryFinancialSummary } from "./lifecycle";
@@ -43,12 +43,34 @@ export async function listReadyForDispatch(branchId: number | null) {
     .orderBy(desc(workOrders.id));
 }
 
-/** الإرساليات المفتوحة (DISPATCHED/PARTIAL) لجهة — لشاشة التسوية.
- *  ٩/٨: + feeCollection/feeSettledAt (الشاشة كانت تخصم كل الأجور فتحسب صافياً يخالف الخادم
- *  فتستحيل تسوية إرساليات COURIER/المصروفة سلفاً — طريق مسدود) + ختم تأكيد المندوب. */
+/** التزامات الجهة القابلة لإجراء موظف: COD مُسلّم للتوريد، طرد غير محصّل للإرجاع، أو أجرة مستحقة للدفع.
+ * أهلية كل إجراء مستقلة؛ ظهور الطرد هنا لا يجعله قابلاً للتوريد قبل DELIVERED. */
 export async function listOpenConsignments(partyId: number, branchId?: number | null) {
   const db = getDb();
   if (!db) return [];
+  const feeDue = sql<string>`GREATEST(COALESCE((
+    SELECT SUM(CASE
+      WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount}
+      WHEN ${deliveryLedgerEntries.entryType} = 'FEE_REFUNDED' THEN -${deliveryLedgerEntries.amount}
+      WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET') THEN -${deliveryLedgerEntries.amount}
+      ELSE 0 END)
+    FROM ${deliveryLedgerEntries}
+    WHERE ${deliveryLedgerEntries.consignmentId} = ${deliveryConsignments.id}
+  ),0),0)`;
+  const remittable = and(
+    eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+    sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`,
+  );
+  const returnable = and(
+    eq(deliveryConsignments.status, "DISPATCHED"),
+    sql`${deliveryConsignments.parcelStatus} IN ('ASSIGNED','FAILED')`,
+    sql`${deliveryConsignments.moneyStatus} IN ('NOT_APPLICABLE','UNSETTLED')`,
+    sql`CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)) = 0`,
+  );
+  const unpaidFee = and(
+    eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+    sql`${feeDue} > 0`,
+  );
   return db
     .select({
       id: deliveryConsignments.id,
@@ -58,6 +80,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
       deliveryFee: deliveryConsignments.deliveryFee,
+      feeDue,
       feeCollection: deliveryConsignments.feeCollection,
       feeSettledAt: deliveryConsignments.feeSettledAt,
       courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
@@ -74,8 +97,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
     .where(and(
       eq(deliveryConsignments.partyId, partyId),
-      eq(deliveryConsignments.parcelStatus, "DELIVERED"),
-      sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`,
+      or(remittable, returnable, unpaidFee),
       branchId == null ? undefined : eq(deliveryConsignments.branchId, branchId),
     ))
     .orderBy(deliveryConsignments.dispatchedAt);

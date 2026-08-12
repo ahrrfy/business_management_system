@@ -99,6 +99,7 @@ async function confirmedOrder(qty: number, orderNumber: string, fee = "0"): Prom
     orderNumber, customerId: 1, branchId: 1,
     subtotal: subtotal.toFixed(2), shippingCost: Number(fee).toFixed(2), taxAmount: "0", total,
     status: "CONFIRMED", shippingAddress: "بغداد - الكرادة", governorate: "baghdad",
+    latitude: "33.3152000", longitude: "44.3661000",
   });
   const orderId = Number((await d.select({ id: s.onlineOrders.id }).from(s.onlineOrders).where(eq(s.onlineOrders.orderNumber, orderNumber)).limit(1))[0].id);
   await d.insert(s.onlineOrderItems).values({
@@ -153,6 +154,8 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect(inv.status).toBe("PAID");
     expect(await customerBalance(1)).toBe("0.00"); // AR صُفّي
     expect(await partyBalance(partyA)).toBe("20.00"); // عهدة المندوب = المُحصَّل
+    const portal = await listMyDeliveries(3);
+    expect(portal.financialSummary?.cashInCustody).toBe("20.00"); // قيد المتجر القديم party-level لا يسقط من حساب الفرد
     await reconcileClean();
   });
 
@@ -363,6 +366,12 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
       eq(s.deliveryConsignments.sourceType, "ONLINE_ORDER"),
       eq(s.deliveryConsignments.sourceId, o.orderId),
     )))[0];
+    expect(cn.governorate).toBe("baghdad");
+    expect(cn.latitude).toBe("33.3152000");
+    expect(cn.longitude).toBe("44.3661000");
+    const courierQueue = await listMyDeliveries(3);
+    const routed = courierQueue.toDeliver.find((r) => r.id === Number(cn.id) && r.kind === "consignment");
+    expect(routed).toMatchObject({ governorate: "baghdad", latitude: "33.3152000", longitude: "44.3661000" });
     for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
       await transitionConsignmentParcel(
         { consignmentId: Number(cn.id), toStatus, clientRequestId: `online-${cn.id}-${toStatus}` },

@@ -281,10 +281,20 @@ function DeliveryCard({ row, busy, onConfirm, onFail, onTransition, readOnly }: 
         </div>
       </div>
 
-      {(row.governorate || row.address) && (
+      {(row.governorate || row.address || (row.latitude && row.longitude)) && (
         <div className="mb-3 flex items-start gap-1.5 text-xs text-muted-foreground">
           <MapPin aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-          <span className="leading-relaxed">{[row.governorate, row.address].filter(Boolean).join(" — ")}</span>
+          <div className="leading-relaxed">
+            {(row.governorate || row.address) && <div>{[row.governorate, row.address].filter(Boolean).join(" — ")}</div>}
+            {row.latitude && row.longitude && (
+              <a
+                href={`https://www.google.com/maps?q=${encodeURIComponent(`${row.latitude},${row.longitude}`)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="font-bold text-primary hover:underline"
+              >فتح الموقع على الخريطة</a>
+            )}
+          </div>
         </div>
       )}
 

@@ -28,6 +28,30 @@ PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 
 SET @ddl := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deliveryConsignments' AND COLUMN_NAME = 'governorate') = 0,
+  'ALTER TABLE `deliveryConsignments` ADD COLUMN `governorate` VARCHAR(40) NULL AFTER `deliveryAddress`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+--> statement-breakpoint
+
+SET @ddl := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deliveryConsignments' AND COLUMN_NAME = 'latitude') = 0,
+  'ALTER TABLE `deliveryConsignments` ADD COLUMN `latitude` DECIMAL(10,7) NULL AFTER `governorate`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+--> statement-breakpoint
+
+SET @ddl := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deliveryConsignments' AND COLUMN_NAME = 'longitude') = 0,
+  'ALTER TABLE `deliveryConsignments` ADD COLUMN `longitude` DECIMAL(10,7) NULL AFTER `latitude`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+--> statement-breakpoint
+
+SET @ddl := IF(
   (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deliveryConsignments' AND COLUMN_NAME = 'parcelStatus') = 0,
   "ALTER TABLE `deliveryConsignments` ADD COLUMN `parcelStatus` ENUM('ASSIGNED','ACCEPTED','PICKED_UP','OUT_FOR_DELIVERY','DELIVERED','FAILED','RETURNED') NOT NULL DEFAULT 'ASSIGNED' AFTER `deliveryAddress`",
   'SELECT 1'

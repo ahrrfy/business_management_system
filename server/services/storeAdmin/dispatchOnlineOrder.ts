@@ -145,6 +145,9 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       deliveryFee: String(cur.shippingCost ?? "0"),
       feeCollection: "COURIER",
       deliveryAddress: cur.shippingAddress ?? null,
+      governorate: cur.governorate ?? null,
+      latitude: cur.latitude ?? null,
+      longitude: cur.longitude ?? null,
       onlineOrderId: Number(cur.id),
       clientRequestId: `online-parcel:${cur.id}`,
     }, actor);

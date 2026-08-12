@@ -32,6 +32,9 @@ export interface DispatchInvoiceInput {
   recipientName?: string | null;
   recipientPhone?: string | null;
   deliveryAddress?: string | null;
+  governorate?: string | null;
+  latitude?: string | null;
+  longitude?: string | null;
   clientRequestId?: string | null;
   /** Internal bridge used by store fulfillment while onlineOrders is retired. */
   onlineOrderId?: number | null;
@@ -93,6 +96,9 @@ export async function dispatchInvoiceInTx(
       recipientName: input.recipientName ?? null,
       recipientPhone: input.recipientPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? null,
+      governorate: input.governorate ?? null,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
       onlineOrderId: input.onlineOrderId ?? null,
       assignedUserId: input.assignedUserId ?? null,
     });
@@ -202,6 +208,9 @@ export async function dispatchInvoiceInTx(
       recipientName: input.recipientName ?? inv.contactName ?? null,
       recipientPhone: input.recipientPhone ?? inv.contactPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? null,
+      governorate: input.governorate ?? null,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
       parcelStatus: "ASSIGNED",
       moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
       // اكتمال الدفع لا يثبت وصول الطرد؛ أبقه تشغيلياً مع المندوب حتى ختم التسليم.

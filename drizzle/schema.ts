@@ -6267,6 +6267,9 @@ export const deliveryConsignments = mysqlTable(
     recipientName: varchar("recipientName", { length: 255 }),
     recipientPhone: varchar("recipientPhone", { length: 20 }),
     deliveryAddress: text("deliveryAddress"),
+    governorate: varchar("governorate", { length: 40 }),
+    latitude: decimal("latitude", { precision: 10, scale: 7 }),
+    longitude: decimal("longitude", { precision: 10, scale: 7 }),
     parcelStatus: mysqlEnum("parcelStatus", [
       "ASSIGNED",
       "ACCEPTED",

@@ -465,7 +465,7 @@ export default function WorkOrderDetail() {
             {markReady.isPending ? "جارٍ…" : "وضع علامة جاهز"}
           </Button>
         )}
-        {data.status === "READY" && data.hasDelivery && (
+        {data.status === "READY" && data.hasDelivery && !data.consignmentId && (
           <Button asChild>
             <Link href="/delivery"><Truck aria-hidden className="me-1 size-4" /> إسناد للتوصيل</Link>
           </Button>
