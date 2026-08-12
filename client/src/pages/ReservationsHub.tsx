@@ -298,8 +298,9 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
       }
       convert.mutate({
         reservationId: targetId,
-        // في الاستقبال null صريح يمنع الخادم من التقاط وردية RETAIL موازية بالخطأ.
-        shiftId: embedded ? currentShiftId ?? null : currentShiftId ?? undefined,
+        // المضيف الذي يعرف ورديته يمرّر رقماً أو null صريحاً؛ غياب الخاصية يبقي التدفق المستقل
+        // (ومن ضمنه PointOfSale المضمّن) على محلّل وردية RETAIL الخادمي.
+        shiftId: currentShiftId,
         payment,
       });
     } catch {
@@ -681,6 +682,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
                 id="reservation-payment-amount"
                 value={convertAmount}
                 onChange={setConvertAmount}
+                disabled={isConversionBusy || convert.isPending}
                 decimals={0}
                 placeholder="اتركه فارغاً للبيع الآجل"
                 ariaLabel="المبلغ المدفوع عند تحويل الحجز"
@@ -700,9 +702,10 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
                     <button
                       key={value}
                       type="button"
+                      disabled={isConversionBusy || convert.isPending}
                       onClick={() => { setConvertMethod(value); if (value === "CASH") setConvertReference(""); }}
                       className={cn(
-                        "flex h-14 flex-col items-center justify-center gap-1 rounded-lg border-2 text-xs font-extrabold transition-colors",
+                        "flex h-14 flex-col items-center justify-center gap-1 rounded-lg border-2 text-xs font-extrabold transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                         convertMethod === value ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-muted",
                       )}
                     >
@@ -722,6 +725,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
                   id="reservation-payment-reference"
                   value={convertReference}
                   onChange={(e) => setConvertReference(e.target.value)}
+                  disabled={isConversionBusy || convert.isPending}
                   maxLength={100}
                   autoComplete="off"
                   placeholder="أدخل الرقم الظاهر في الإيصال أو تطبيق البنك"
