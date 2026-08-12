@@ -21,8 +21,8 @@ import { users } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
 import { logAudit } from "../services/auditService";
-import { createSale, processPayment } from "../services/saleService";
-import { canSeeCostForUser, router, salesCashierProcedure, salesReadProcedure } from "../trpc";
+import { cancelSale, createSale, processPayment } from "../services/saleService";
+import { canSeeCostForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -594,4 +594,58 @@ export const saleRouter = router({
     }
     return { ...inv, items, payments, returns, qrPayload };
   }),
+
+  // إلغاء فاتورة بيع كاملاً (قرار مالك ١٢/٨) — عكسٌ كامل + إرجاع مخزون + استرداد بجهة صرفٍ مُصرَّحة.
+  // salesManagerProcedure ⇒ مديريّ حصراً (SOD مع بائع الفاتورة الأصليّ). الحراس البقية (الفترة/الحالة/
+  // ملكية الفرع/الكروت الرقمية/أمر الشغل) داخل cancelSale، بمعاملة ذرّية واحدة.
+  cancel: salesManagerProcedure
+    .input(
+      z.object({
+        invoiceId: z.number().int().positive(),
+        // «لا دينار بلا مسار/سند/قيد» — طريقة الاسترداد إلزاميّة، لا افتراضية.
+        refundPaymentMethod: method,
+        reason: z.string().trim().min(1).max(500).optional(),
+        // idempotency: نفس المفتاح ⇒ إلغاءٌ واحد (لا استرداد/عكس مزدوج عند النقر المزدوج/إعادة الشبكة).
+        clientRequestId: z.string().min(1).max(80).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      // ملكية الفرع تُفحص داخل الخدمة (admin يعبُر) — لكن نُلزم أدوار غير-admin بفرعٍ مُسنَد.
+      if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إلغاء فاتورة" });
+      }
+      const actorBranchId = ctx.user.branchId != null ? Number(ctx.user.branchId) : 0;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await cancelSale(input, {
+            userId: ctx.user.id,
+            branchId: actorBranchId,
+            role: ctx.user.role,
+          });
+          if (!res.idempotentReplay) {
+            await logAudit(ctx, {
+              action: "sale.cancel",
+              entityType: "invoice",
+              entityId: input.invoiceId,
+              newValue: {
+                refundPaymentMethod: input.refundPaymentMethod,
+                refundAmount: res.refundAmount,
+                refundVoucherNumber: res.refundVoucherNumber,
+                reason: input.reason,
+              },
+            });
+          }
+          return res;
+        } catch (e: any) {
+          if (isDupEntry(e) && attempt < 2) continue; // سباق مفتاح idempotency ⇒ إعادة المحاولة تُعيد النتيجة الأولى.
+          if (e instanceof TRPCError) throw e;
+          logger.error(
+            { err: { message: e?.message, code: e?.code, sqlMessage: e?.sqlMessage, sql: e?.sql }, invoiceId: input.invoiceId },
+            "sale.cancel فشل بخطأ غير متوقّع",
+          );
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إلغاء الفاتورة" });
+        }
+      }
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إلغاء الفاتورة (تكرار)" });
+    }),
 });

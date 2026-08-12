@@ -8,7 +8,10 @@
 //   types    — عقد البيع (SaleLineInput/CreateSaleInput/CreateSaleResult/ProcessPaymentInput).
 //   create   — createSale: إنشاء فاتورة بيع ذرّياً بكامل خطواتها.
 //   payment  — processPayment: تسجيل دفعة لاحقة على فاتورة آجلة.
+//   cancel   — cancelSale: إلغاء فاتورة بيع كاملاً (عكس+إرجاع مخزون+استرداد بجهة صرف — قرار مالك ١٢/٨).
 export type { SaleLineInput, CreateSaleInput, CreateSaleResult } from "./sale/types";
 export { createSale } from "./sale/create";
 export type { ProcessPaymentInput } from "./sale/payment";
 export { processPayment } from "./sale/payment";
+export type { CancelSaleInput, CancelSaleResult, CancelRefundMethod } from "./sale/cancel";
+export { cancelSale } from "./sale/cancel";
