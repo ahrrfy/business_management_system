@@ -25,6 +25,9 @@ export async function getDoubleEntryMode(tx: Tx): Promise<DoubleEntryMode> {
       .select({ mode: doubleEntrySettings.mode })
       .from(doubleEntrySettings)
       .where(eq(doubleEntrySettings.id, 1))
+      // قفلٌ مشترك طوال معاملة الحدث المالي: كل الكتّاب يتوازون معاً، لكن انتقال الوضع (FOR UPDATE)
+      // ينتظرهم قبل فحص بوابة ACTIVE. بدونه يستطيع حدثٌ جارٍ تسجيل فجوة بعد أن ترى البوابة صفراً.
+      .for("share")
       .limit(1)
   )[0];
   return (row?.mode as DoubleEntryMode | undefined) ?? "OFF";
