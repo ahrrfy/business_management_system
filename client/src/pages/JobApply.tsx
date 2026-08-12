@@ -16,6 +16,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { trpc } from "@/lib/trpc";
 import { errMsg } from "@/lib/notify";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { employmentTypeLabel } from "@shared/hr";
 import { Check } from "lucide-react";
 
@@ -55,6 +62,21 @@ type Vacancy = {
   imageUrl: string | null;
 };
 
+type PublicBranch = { id: number; name: string };
+
+const MAX_CV_BYTES = 2 * 1024 * 1024;
+const PDF_MIME = "application/pdf";
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+async function fileToBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(offset, offset + 0x8000)));
+  }
+  return btoa(binary);
+}
+
 /* ============================ الأنماط (مُحقَّنة مرّة) ============================ */
 const CSS = `
 /* وزن Cairo الثقيل (900) للعناوين — مستضاف ذاتياً في /fonts (CSP: font-src 'self').
@@ -66,19 +88,20 @@ const CSS = `
 @font-face{font-family:"Cairo Display";font-weight:900;font-style:normal;font-display:swap;
   src:url("/fonts/cairo-latin-900-normal.woff2") format("woff2");unicode-range:U+0000-00FF,U+2000-206F}
 
-.cj-root{
+.cj-root,.cj-modal{
   /* هوية الشركة الفعلية: أخضر الشعار + طوبيّه، على ورق دافئ بحبر شبه أسود (brand.ts) */
   --paper:#FAF7F1;--surface:#ffffff;--ink:#14201C;--ink2:#33443E;--muted:#5B6A64;
   --green:#0D6B52;--green-d:#0A5340;--green-deep:#0D3B2E;--green-bright:#0F8A6D;
   --green-soft:#E7F3EE;--green-mist:#F2F9F6;
   --clay:#C4611C;--clay-d:#A8500F;--clay-soft:#FBEDE2;
   --line:#E6E2D9;--ok:#0F8A6D;
+  font-family:"Cairo",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.cj-root{
   /* لا overflow-x:hidden هنا: يجعل الجذر حاوية تمرير فيبطل الشريط العلوي اللاصق (sticky يتّكئ على
      أقرب scrollport) — والأقسام التي قد تفيض (البطل/الشريط المتحرّك) تقصّ نفسها بنفسها. */
-  min-height:100vh;background:var(--paper);color:var(--ink);direction:rtl;
-  font-family:"Cairo",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-.cj-root *{box-sizing:border-box}
-.cj-root h1,.cj-root h2,.cj-root .cj-stat b,.cj-root .cj-ctitle{font-family:"Cairo Display","Cairo",system-ui,sans-serif}
+  min-height:100vh;background:var(--paper);color:var(--ink);direction:rtl}
+.cj-root *,.cj-modal *{box-sizing:border-box}
+.cj-root h1,.cj-root h2,.cj-root .cj-stat b,.cj-root .cj-ctitle,.cj-modal h2{font-family:"Cairo Display","Cairo",system-ui,sans-serif}
 .cj-wrap{max-width:1160px;margin:0 auto;padding:0 clamp(16px,4vw,40px)}
 
 /* الشريط العلوي */
@@ -271,11 +294,9 @@ const CSS = `
 .cj-foot-note a{color:#F0A55E;text-decoration:none;font-weight:700}
 .cj-foot-note a:hover{text-decoration:underline}
 
-/* نافذة التقديم */
-.cj-overlay{position:fixed;inset:0;z-index:80;background:rgba(13,32,26,.58);backdrop-filter:blur(4px);
-  display:flex;align-items:flex-start;justify-content:center;padding:24px 14px;overflow-y:auto;animation:cj-fade .2s ease}
-.cj-modal{width:min(660px,100%);background:var(--surface);color:var(--ink);border-radius:20px;overflow:hidden;
-  box-shadow:0 40px 90px -30px rgba(13,32,26,.6);animation:cj-pop .26s cubic-bezier(.16,1,.3,1)}
+/* نافذة التقديم — التموضع/طبقة الحجب/حبس التركيز يديرها Dialog الموحّد. */
+.cj-modal{width:min(660px,100%);background:var(--surface);color:var(--ink);border-radius:20px;overflow-x:hidden;overflow-y:auto;
+  box-shadow:0 40px 90px -30px rgba(13,32,26,.6)}
 .cj-mhead{padding:22px 24px;background:var(--green-deep);color:#fff;position:relative;
   border-bottom:3px solid var(--clay)}
 .cj-mclose{position:absolute;top:16px;left:16px;width:40px;height:40px;border-radius:11px;border:none;cursor:pointer;
@@ -354,9 +375,8 @@ textarea.cj-input{height:auto;min-height:98px;padding:11px 13px;resize:vertical;
   .cj-eyebrow i,.cj-skel::after,.cj-art-card,.cj-orb,.cj-track{animation:none}
   .cj-track{width:auto;flex-wrap:wrap;justify-content:center}
   .cj-marquee{overflow:visible}
-  /* بلا حركة يُعرض المسار كاملاً — والنصف الثاني نسخةٌ مكرّرة للدوران ⇒ يُخفى بصرياً أيضاً
-     (aria-hidden كان يُخفيه عن قارئ الشاشة فقط، فيرى مستخدمُ تقليل الحركة كل تخصّص مرّتين). */
-  .cj-track > [aria-hidden="true"]{display:none}
+  /* بلا حركة نعرض مجموعة بصرية واحدة فقط؛ المسار كله زخرفي وقائمته الدلالية منفصلة. */
+  .cj-track > [data-marquee-duplicate="true"]{display:none}
   .cj-btn:hover,.cj-vcard:hover,.cj-card:hover,.cj-submit:hover:not(:disabled){transform:none}
   .cj-card:hover .cj-card-img img{transform:none}
 }
@@ -491,66 +511,120 @@ function VacancyCard({ v, onApply, i }: { v: Vacancy; onApply: () => void; i: nu
 /* ============================ نافذة التقديم ============================ */
 function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose: () => void }) {
   const vacancy = target === "general" ? null : target;
+  const branches = trpc.kiosk.publicBranches.useQuery(undefined, { staleTime: 60_000 });
   const [name, setName] = useState("");
   const [jobTitle, setJobTitle] = useState("");
+  const [branchId, setBranchId] = useState("");
   const [phone, setPhone] = useState("+964");
   const [email, setEmail] = useState("");
   const [experience, setExperience] = useState("");
   const [education, setEducation] = useState("");
   const [notes, setNotes] = useState("");
+  const [cvFile, setCvFile] = useState<File | null>(null);
+  const [encodingCv, setEncodingCv] = useState(false);
   const [done, setDone] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
+  const doneCloseRef = useRef<HTMLButtonElement>(null);
 
-  // إغلاق بـEsc + منع تمرير الخلفية + تركيز أوّل حقل (إتاحة).
+  // بعد تبديل النموذج برسالة النجاح، انقل التركيز إلى الإجراء المتاح داخل الحوار.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    nameRef.current?.focus();
-    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
-  }, [onClose]);
+    if (done) doneCloseRef.current?.focus();
+  }, [done]);
 
   const apply = trpc.recruitment.submit.useMutation({
     onSuccess: () => setDone(true),
     onError: (e) => setErr(errMsg(e)),
   });
 
-  function submit(e: React.FormEvent) {
+  function selectCv(file: File | undefined, input: HTMLInputElement) {
+    setErr(null);
+    if (!file) { setCvFile(null); return; }
+    const lower = file.name.toLowerCase();
+    if (!lower.endsWith(".pdf") && !lower.endsWith(".docx")) {
+      setCvFile(null);
+      input.value = "";
+      setErr("يسمح بإرفاق PDF أو DOCX فقط");
+      return;
+    }
+    if (file.size < 1 || file.size > MAX_CV_BYTES) {
+      setCvFile(null);
+      input.value = "";
+      setErr("يجب ألا يتجاوز حجم السيرة الذاتية 2MB");
+      return;
+    }
+    setCvFile(file);
+  }
+
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
     if (!name.trim()) { setErr("الاسم مطلوب"); nameRef.current?.focus(); return; }
+    if (!vacancy && !branchId) { setErr("حدّد الفرع المطلوب للتقديم العام"); return; }
+    let cv: { fileName: string; mimeType: typeof PDF_MIME | typeof DOCX_MIME; base64: string } | undefined;
+    if (cvFile) {
+      setEncodingCv(true);
+      try {
+        const isDocx = cvFile.name.toLowerCase().endsWith(".docx");
+        cv = {
+          fileName: cvFile.name,
+          mimeType: isDocx ? DOCX_MIME : PDF_MIME,
+          base64: await fileToBase64(cvFile),
+        };
+      } catch {
+        setErr("تعذّرت قراءة ملف السيرة الذاتية");
+        return;
+      } finally {
+        setEncodingCv(false);
+      }
+    }
     apply.mutate({
       name: name.trim(),
       vacancyId: vacancy?.id,
+      branchId: vacancy ? undefined : Number(branchId),
       jobTitle: vacancy ? undefined : jobTitle.trim() || undefined,
       phone: phone.trim() || undefined,
       email: email.trim() || undefined,
       experience: experience.trim() || undefined,
       education: education.trim() || undefined,
       notes: notes.trim() || undefined,
+      cv,
     });
   }
 
   return (
-    <div className="cj-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label="استمارة التقديم">
-      <div className="cj-modal" onClick={(e) => e.stopPropagation()} dir="rtl">
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent
+        className="cj-modal z-[81] gap-0 border-0 p-0 sm:max-w-[660px]"
+        dir="rtl"
+        showCloseButton={false}
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          nameRef.current?.focus();
+        }}
+      >
         <div className="cj-mhead">
-          <button className="cj-mclose" onClick={onClose} aria-label="إغلاق">×</button>
+          <DialogClose asChild>
+            <button className="cj-mclose" aria-label="إغلاق">×</button>
+          </DialogClose>
           <div className="k">التقديم على وظيفة</div>
-          <div className="t">{vacancy ? vacancy.title : "تقديم عام"}</div>
+          <DialogTitle className="t">{vacancy ? vacancy.title : "تقديم عام"}</DialogTitle>
+          <DialogDescription className="sr-only">
+            أدخل بياناتك لإرسال طلب التقديم إلى فريق الموارد البشرية.
+          </DialogDescription>
         </div>
 
         {done ? (
-          <div className="cj-done">
+          <div className="cj-done" role="status" aria-live="polite" aria-atomic="true">
             <div className="ring"><Check aria-hidden size={40} /></div>
             <h2>شكراً لتقديمك</h2>
             <p>
               وصلنا طلبك بنجاح{vacancy ? ` على وظيفة «${vacancy.title}»` : ""}. سيراجعه فريق الموارد البشرية
               في {COMPANY}، وسنتواصل معك إن كنت مناسباً.
             </p>
-            <button className="cj-btn cj-btn-out" style={{ marginTop: 22 }} onClick={onClose}>إغلاق</button>
+            <DialogClose asChild>
+              <button ref={doneCloseRef} className="cj-btn cj-btn-out" style={{ marginTop: 22 }}>إغلاق</button>
+            </DialogClose>
           </div>
         ) : (
           <form className="cj-mbody" onSubmit={submit}>
@@ -571,10 +645,28 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
                 <input ref={nameRef} id="cj-name" className="cj-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم الكامل" autoComplete="name" />
               </div>
               {!vacancy && (
-                <div className="cj-field full">
-                  <label htmlFor="cj-job">الوظيفة المطلوبة</label>
-                  <input id="cj-job" className="cj-input" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="مثال: مصمم جرافيك" />
-                </div>
+                <>
+                  <div className="cj-field">
+                    <label htmlFor="cj-branch">الفرع المطلوب <i>*</i></label>
+                    <select
+                      id="cj-branch"
+                      className="cj-input"
+                      value={branchId}
+                      onChange={(e) => setBranchId(e.target.value)}
+                      disabled={branches.isLoading}
+                      required
+                    >
+                      <option value="">{branches.isLoading ? "جارٍ تحميل الفروع…" : "اختر الفرع"}</option>
+                      {((branches.data ?? []) as PublicBranch[]).map((branch) => (
+                        <option key={branch.id} value={branch.id}>{branch.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="cj-field">
+                    <label htmlFor="cj-job">الوظيفة المطلوبة</label>
+                    <input id="cj-job" className="cj-input" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="مثال: مصمم جرافيك" />
+                  </div>
+                </>
               )}
               <div className="cj-field">
                 <label htmlFor="cj-phone">رقم الهاتف</label>
@@ -596,16 +688,30 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
                 <label htmlFor="cj-notes">نبذة / ملاحظات</label>
                 <textarea id="cj-notes" className="cj-input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="خبرات سابقة، مهارات، أيّ معلومة تودّ إضافتها…" />
               </div>
+              <div className="cj-field full">
+                <label htmlFor="cj-cv">السيرة الذاتية (اختياري)</label>
+                <input
+                  id="cj-cv"
+                  className="cj-input"
+                  style={{ paddingTop: 11 }}
+                  type="file"
+                  accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  onChange={(event) => selectCv(event.currentTarget.files?.[0], event.currentTarget)}
+                />
+                <small style={{ color: "var(--muted)", lineHeight: 1.7 }}>
+                  PDF أو DOCX فقط، بحد أقصى 2MB. لن يُعرض الملف داخل المتصفح.
+                </small>
+              </div>
             </div>
 
-            <button type="submit" className="cj-submit" disabled={apply.isPending}>
-              {apply.isPending ? "جارٍ الإرسال…" : "إرسال الطلب"}
+            <button type="submit" className="cj-submit" disabled={apply.isPending || encodingCv}>
+              {apply.isPending || encodingCv ? "جارٍ الإرسال…" : "إرسال الطلب"}
             </button>
             <p className="cj-note">تُستخدم بياناتك لغرض التوظيف فقط. الحقول التي عليها <i style={{ color: "#A02F23", fontStyle: "normal" }}>*</i> إلزامية.</p>
           </form>
         )}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -655,8 +761,6 @@ export default function JobApply() {
     const half = [...SPECIALTIES, ...SPECIALTIES];
     return [...half, ...half];
   }, []);
-  const HALF = SPECIALTIES.length * 2; // حدّ النصف الأصلي (ما بعده نسخةٌ مكرّرة تُخفى عن قارئ الشاشة)
-
   function scrollToJobs() {
     // احترام تقليل الحركة: التمرير الناعم حركةٌ أيضاً (behavior:"smooth" يتجاوز CSS).
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -721,10 +825,14 @@ export default function JobApply() {
       </header>
 
       {/* شريط التخصّصات المتحرّك */}
-      <section className="cj-marquee" aria-label="تخصّصاتنا">
-        <div className="cj-track">
+      <section className="cj-marquee" aria-labelledby="cj-specialties-title">
+        <h2 id="cj-specialties-title" className="sr-only">تخصّصاتنا</h2>
+        <ul className="sr-only">
+          {SPECIALTIES.map((specialty) => <li key={specialty}>{specialty}</li>)}
+        </ul>
+        <div className="cj-track" aria-hidden="true">
           {marquee.map((s, i) => (
-            <span className="cj-chip" key={`${s}-${i}`} aria-hidden={i >= HALF}><i />{s}</span>
+            <span className="cj-chip" key={`${s}-${i}`} data-marquee-duplicate={i >= SPECIALTIES.length ? "true" : undefined}><i />{s}</span>
           ))}
         </div>
       </section>

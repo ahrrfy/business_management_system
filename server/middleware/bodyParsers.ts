@@ -48,23 +48,21 @@ export function applyBodyParsers(app: Express): void {
     if (req.path.includes("imageStudio.proCutout") || req.path.includes("imageStudio.aiStudioTransform")) {
       return express.json({ limit: "4mb" })(req, res, next);
     }
-    // #9 (تدقيق التثبيت): system.restoreUpload يستقبل ملف نسخة احتياطية base64. الخدمة تقبل حتى
-    // ٢٠٠MB مفكوكاً (maintenanceService.MAX_UPLOAD_BYTES) لكن هذا الوسيط كان يحبس عند ١MB ⇒ النسخ
-    // الحقيقية لا تُستعاد أبداً. adminProcedure + كلمة مرور + رمز تأكيد ⇒ سطح DoS محدود بحساب مدير
-    // متحقَّق. الحدّ = 300mb (يسع ٢٠٠MB مفكوكاً بحاشية base64 ~٣٣٪) وقابل للتجاوز عبر ENV للنموّ.
-    if (req.path.includes("system.restoreUpload")) {
-      return express.json({ limit: process.env.RESTORE_UPLOAD_LIMIT ?? "300mb" })(req, res, next);
+    // CV upload: at most 2MB decoded (~2.8MB base64) plus a small applicant
+    // payload. Validation still happens server-side before any DB write.
+    if (req.path.includes("recruitment.submit") || req.path.includes("recruitment.create")) {
+      return express.json({ limit: "3mb" })(req, res, next);
     }
     next();
   });
   // json/urlencoded العامّان: يتخطّيان /api/webhooks/* — تلك المسارات تحتاج Buffer خاماً كاملاً
   // (express.raw() الخاص بها في channelWebhooks.ts) لتوقيع HMAC، لا كائناً محلولاً مسبقاً هنا.
   app.use((req, res, next) => {
-    if (req.path.startsWith("/api/webhooks")) return next();
+    if (req.path.startsWith("/api/webhooks") || req.path === "/api/backups/restore-upload") return next();
     return express.json({ limit: "1mb" })(req, res, next);
   });
   app.use((req, res, next) => {
-    if (req.path.startsWith("/api/webhooks")) return next();
+    if (req.path.startsWith("/api/webhooks") || req.path === "/api/backups/restore-upload") return next();
     return express.urlencoded({ limit: "1mb", extended: true })(req, res, next);
   });
 }

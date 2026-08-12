@@ -91,6 +91,8 @@ jobs:
       # آلياً ليس حارساً. بهذا صار كل أعضاء check:guards مشمولين (authz له وظيفته المستقلّة).
       - name: حارِس حقول المال والهاتف (IntlPhoneInput / MoneyInput)
         run: pnpm check:form-inputs
+      - name: حارِس حدود nginx المشتركة خلف PM2 وCloudflare
+        run: pnpm check:nginx-abuse
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: الاختبارات

@@ -15,6 +15,7 @@ import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productIm
 import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
+import { UnitPriceHistory } from "@/components/product/UnitPriceHistory";
 import { trpc } from "@/lib/trpc";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { NameAssistant } from "@/components/product/NameAssistant";
@@ -517,6 +518,11 @@ export default function SimpleProductEditForm({
                       </Badge>
                     )}
                     <UnitBarcodeAliases variantId={variantId.current} unitName={u.name} />
+                    <UnitPriceHistory
+                      variantId={variantId.current}
+                      unitName={u.name}
+                      variantLabel={finalName || sku}
+                    />
                   </div>
                   <MoneyInput ariaLabel="سعر المفرد" className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" />
                   <MoneyInput ariaLabel="سعر الجملة" className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.wholesale} onChange={(v) => patchUnit(u.id, { wholesale: v })} placeholder="جملة" />

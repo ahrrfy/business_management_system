@@ -10,6 +10,7 @@
 import { readdirSync, statSync, unlinkSync, mkdirSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
+import assert from "node:assert/strict";
 
 const backupDir = process.env.BACKUP_DIR ?? "backups";
 const db = process.env.DB_NAME ?? "erp";
@@ -23,12 +24,31 @@ function int(v, d) {
   return Number.isFinite(n) && n >= 0 ? n : d;
 }
 
-// اسم الملف: <db>-YYYY-MM-DDTHH-MM-SS.sql — نشتقّ التاريخ منه (لا من mtime الذي قد يتغيّر بالنسخ).
+// الأسماء القديمة: <db>-YYYY-MM-DDTHH-MM-SS.sql
+// الأسماء الذرية الحالية: <db>-YYYY-MM-DDTHH-MM-SS-mmmZ-<uuid8>.sql
+// نشتقّ التاريخ من الاسم، لا من mtime الذي قد يتغيّر بالنسخ الخارجي.
 function parseStamp(name) {
-  const m = name.match(/-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})\.sql$/);
+  const m = name.match(
+    /-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-(\d{3})Z-[0-9a-f]{8})?\.sql$/i,
+  );
   if (!m) return null;
-  const [, Y, Mo, D, H, Mi, S] = m;
-  return new Date(`${Y}-${Mo}-${D}T${H}:${Mi}:${S}`);
+  const [, Y, Mo, D, H, Mi, S, milliseconds = "000"] = m;
+  const stamp = new Date(`${Y}-${Mo}-${D}T${H}:${Mi}:${S}.${milliseconds}Z`);
+  return Number.isNaN(stamp.getTime()) ? null : stamp;
+}
+
+if (process.argv.includes("--selftest")) {
+  assert.equal(
+    parseStamp("erp-2026-08-12T10-36-22-123Z-acde1234.sql")?.toISOString(),
+    "2026-08-12T10:36:22.123Z",
+  );
+  assert.equal(
+    parseStamp("erp-2026-08-12T10-36-22.sql")?.toISOString(),
+    "2026-08-12T10:36:22.000Z",
+  );
+  assert.equal(parseStamp("erp-invalid.sql"), null);
+  console.log("backup filename parser selftest: OK");
+  process.exit(0);
 }
 
 // مفتاح الأسبوع ISO (سنة-أسبوع) لتجميع نسخ الأسبوع الواحد.

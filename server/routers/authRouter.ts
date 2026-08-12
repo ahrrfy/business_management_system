@@ -32,7 +32,7 @@ import {
   regenerateRecoveryCodes,
   startTwoFactorSetup,
 } from "../services/twoFactorService";
-import { ensureTenantDb, getDb, isMultiTenantModeActive } from "../db";
+import { getDb, isMultiTenantModeActive, withTenantDb } from "../db";
 import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
 import { ALL_ROLES, type RoleKey } from "@shared/permissions";
@@ -47,10 +47,15 @@ import { withTx } from "../services/tx";
 import { getCurrentCompanyId, runWithCompany } from "../tenancy/context";
 import { resolveCompanyByCode } from "../tenancy/registry";
 import {
+  consumePasswordResetToken,
+  PASSWORD_RESET_GENERIC_ERROR,
+} from "../services/passwordResetService";
+import {
   adminProcedure,
   nativeBootstrapProcedure,
   protectedProcedure,
   publicProcedure,
+  passwordResetTokenProcedure,
   router,
   twoFactorEnrollmentRequired,
 } from "../trpc";
@@ -62,7 +67,11 @@ const ROLE = z.enum(ALL_ROLES as [RoleKey, ...RoleKey[]]);
 const LOCK_THRESHOLD = 5;
 const LOCK_MS = 15 * 60 * 1000;
 
-/** عدّاد محاولات الدخول الفاشلة لكل (شركة×IP) — يطال المهاجم الذي يدوّر إيميلات غير موجودة.
+/** عدّاد محاولات الدخول الفاشلة لكل (شركة×IP) — دفاع ثانوي سريع داخل عامل PM2،
+ *  وليس سقفاً عنقودياً: nginx `alroya_auth` هو عدّاد IP المشترك أمام كل العمال، وقفل
+ *  الحساب أدناه محفوظ في قاعدة البيانات ومشترك للحسابات الموجودة. نبقي هذه الخريطة
+ *  لرسالة/أثر تدقيق أدق ولحماية النشر المحلي المباشر دون إضافة Redis أو خدمة مدفوعة.
+ *  يطال المهاجم الذي يدوّر إيميلات غير موجودة.
  *  المفتاح `${companyCode}:${ip}` (companyCode="" في وضع أحادي الشركة، أي المفتاح=":"+ip
  *  فعلياً — سلوك مطابق تماماً لما قبل تعدد الشركات، حيّز مفاتيح منفصل تلقائياً). يمنع أيضاً
  *  شركة من حجب أخرى تشترك بنفس IP (شبكة مكتبية واحدة مثلاً) في وضع تعدد الشركات. */
@@ -178,6 +187,50 @@ export const authRouter = router({
    *  — بلا هذا الاستعلام لا مؤشّر للعميل، ونشر أحادي الشركة يبقى بشاشة دخول كما هي تماماً. */
   tenancyMode: publicProcedure.query(() => ({ multiTenant: isMultiTenantModeActive() })),
 
+  /**
+   * استعادة عامة بالرمز فقط: لا بريد/اسم مستخدم في الطلب، لذلك لا توجد قناة لتعداد
+   * المستخدمين. الرمز مربوط داخلياً بـuserId ويُستهلك مرة واحدة خلال ١٥ دقيقة.
+   */
+  resetPasswordWithToken: passwordResetTokenProcedure
+    .input(
+      z.object({
+        token: z.string().min(1).max(128),
+        newPassword: z
+          .string()
+          .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
+          .max(128)
+          .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
+        companyCode: z.string().min(1).max(40).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const companyCode = input.companyCode?.trim();
+      let companyId: number | undefined;
+      if (isMultiTenantModeActive()) {
+        if (!companyCode) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "رمز الشركة مطلوب." });
+        }
+        const company = await resolveCompanyByCode(companyCode);
+        if (!company) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: PASSWORD_RESET_GENERIC_ERROR });
+        }
+        companyId = company.id;
+      }
+
+      const reset = async () => {
+        await consumePasswordResetToken(input.token, input.newPassword, { user: null, req: ctx.req });
+        // أي كوكي حالية صارت غير صالحة بعد sessionsValidFrom؛ امسحها كي لا تبقى الواجهة
+        // في حالة ملتبسة، ثم يدخل المستخدم بكلمته الجديدة عبر المسار الطبيعي و2FA إن كان مفعلاً.
+        ctx.res.clearCookie(COOKIE_NAME, getSessionCookieOptions(ctx.req));
+        return { success: true as const };
+      };
+
+      if (companyId != null) {
+        return withTenantDb(companyId, (db) => runWithCompany(companyId!, db, reset));
+      }
+      return reset();
+    }),
+
   login: publicProcedure
     .input(
       z
@@ -265,7 +318,7 @@ export const authRouter = router({
         // scrypt ⇒ أسرع زمناً + رسالة مميِّزة ⇒ عرّافا تعداد (وجود البريد) وقفلٍ موجَّه. الآن: القفل
         // يُعامَل كفشل اعتماد عام (نفس الرسالة + نفس التوقيت)، ويُسجَّل خادمياً للأثر فقط.
         const stored = user?.passwordHash ?? DUMMY_STORED;
-        const ok = verifyPassword(input.password, stored);
+        const ok = await verifyPassword(input.password, stored);
         const locked = !!(user?.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now());
 
         // رسالة + كود موحّدان لكل فشل: بريد غير موجود / كلمة خاطئة / معطّل / مقفل (لا تمييز جانبي).
@@ -377,8 +430,7 @@ export const authRouter = router({
       };
 
       if (companyId != null) {
-        const db = await ensureTenantDb(companyId);
-        return runWithCompany(companyId, db, doLogin);
+        return withTenantDb(companyId, (db) => runWithCompany(companyId!, db, doLogin));
       }
       return doLogin();
     }),
@@ -523,8 +575,9 @@ export const authRouter = router({
       };
 
       if (ticket.companyId != null) {
-        const db = await ensureTenantDb(ticket.companyId);
-        return runWithCompany(ticket.companyId, db, doVerify);
+        return withTenantDb(ticket.companyId, (db) =>
+          runWithCompany(ticket.companyId!, db, doVerify),
+        );
       }
       return doVerify();
     }),
@@ -536,7 +589,7 @@ export const authRouter = router({
   twoFactorSetupStart: protectedProcedure
     .input(z.object({ password: z.string().min(1).max(128) }))
     .mutation(async ({ input, ctx }) => {
-      if (!verifyPassword(input.password, ctx.user.passwordHash)) {
+      if (!(await verifyPassword(input.password, ctx.user.passwordHash))) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "كلمة المرور غير صحيحة" });
       }
       const r = await startTwoFactorSetup(ctx.user);
@@ -577,7 +630,7 @@ export const authRouter = router({
       if (!fresh || locked) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "تعذّر التحقق — أعد المحاولة لاحقاً." });
       }
-      const passOk = verifyPassword(input.password, fresh.passwordHash);
+      const passOk = await verifyPassword(input.password, fresh.passwordHash);
       let codeOk = false;
       if (passOk) {
         if (input.code) codeOk = await consumeTotpCode(fresh.id, input.code.trim());
@@ -608,7 +661,7 @@ export const authRouter = router({
       if (!fresh || locked) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "تعذّر التحقق — أعد المحاولة لاحقاً." });
       }
-      const passOk = verifyPassword(input.password, fresh.passwordHash);
+      const passOk = await verifyPassword(input.password, fresh.passwordHash);
       const codeOk = passOk ? await consumeTotpCode(fresh.id, input.code.trim()) : false;
       if (!passOk || !codeOk) {
         await registerFailedLogin(db, fresh);

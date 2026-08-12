@@ -41,6 +41,13 @@ const PROCEDURES = {
     roles: [],
     branch: false,
   },
+  passwordResetTokenProcedure: {
+    authority: "token",
+    module: "users",
+    level: "RESET_TOKEN",
+    roles: ["password-reset-token"],
+    branch: false,
+  },
   protectedProcedure: {
     authority: "none",
     module: null,
@@ -88,6 +95,13 @@ const PROCEDURES = {
     authority: "admin",
     module: null,
     level: null,
+    roles: ["admin"],
+    branch: false,
+  },
+  usersAdminProcedure: {
+    authority: "module-gate",
+    module: "users",
+    level: "FULL",
     roles: ["admin"],
     branch: false,
   },

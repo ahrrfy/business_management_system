@@ -83,9 +83,11 @@ export async function startTwoFactorSetup(user: User): Promise<{ secretB32: stri
 async function issueRecoveryCodes(tx: Tx, userId: number): Promise<string[]> {
   await tx.delete(userRecoveryCodes).where(eq(userRecoveryCodes.userId, userId));
   const codes = Array.from({ length: RECOVERY_CODES_COUNT }, () => generateRecoveryCode());
-  await tx
-    .insert(userRecoveryCodes)
-    .values(codes.map((c) => ({ userId, codeHash: hashPassword(normalizeRecoveryCode(c)) })));
+  const rows: Array<{ userId: number; codeHash: string }> = [];
+  for (const code of codes) {
+    rows.push({ userId, codeHash: await hashPassword(normalizeRecoveryCode(code)) });
+  }
+  await tx.insert(userRecoveryCodes).values(rows);
   return codes;
 }
 
@@ -162,7 +164,13 @@ export async function consumeRecoveryCode(
       .from(userRecoveryCodes)
       .where(and(eq(userRecoveryCodes.userId, userId), isNull(userRecoveryCodes.usedAt)))
       .for("update");
-    const hit = rows.find((r) => verifyPassword(normalized, r.codeHash));
+    let hit: (typeof rows)[number] | null = null;
+    for (const row of rows) {
+      if (await verifyPassword(normalized, row.codeHash)) {
+        hit = row;
+        break;
+      }
+    }
     if (!hit) return { ok: false, remaining: rows.length };
     await tx.update(userRecoveryCodes).set({ usedAt: new Date() }).where(eq(userRecoveryCodes.id, hit.id));
     return { ok: true, remaining: rows.length - 1 };

@@ -19,9 +19,10 @@
 // الافتراضية ويفشل النسخ كل ليلة بصمت (مُثبت في المراجعة العدائية ٢٠٢٦/٠٦/١٠).
 import "dotenv/config";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { createWriteStream, mkdirSync, statSync, readdirSync, unlinkSync, existsSync } from "node:fs";
+import { createWriteStream, mkdirSync, statSync, readdirSync, unlinkSync, existsSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 // ─── وضع تعدّد الشركات: نسخة منفصلة لكل شركة فعّالة، ثم خروج (لا يُكمل لمنطق قاعدة واحدة) ───
 if (process.argv.includes("--all-companies")) {
@@ -74,7 +75,10 @@ const noRotate = process.argv.includes("--no-rotate");
 // فقط. مستخدمو الشركات المخصّصون (تعدد الشركات — أقلّ امتياز عمداً: هذه القاعدة فقط) لا
 // يملكونه، فنُسقطه حين المستخدم ليس root بدل فشل النسخة كلّها (تبقى النسخة صحيحة ومستعادة
 // بالكامل، فقط بلا نقطة بداية binlog دقيقة كتعليق).
-const COMMON_DUMP = ["--single-transaction", "--routines", "--events"];
+// `--no-tablespaces` avoids requiring the global PROCESS privilege. This is
+// mandatory for the database-scoped application/company users used by
+// BACKUP_TARGET_URL, and is harmless for root-operated scheduled backups.
+const COMMON_DUMP = ["--single-transaction", "--routines", "--events", "--no-tablespaces"];
 const SOURCE_DATA_FLAG = "--source-data=2";
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0.0.0.0"]);
 
@@ -102,13 +106,13 @@ if (targetUrl) {
   if (hasLocalMysqldump()) {
     // mysqldump محلي ⇒ نضرب القاعدة الهدف مباشرةً (يعمل لأي مضيف: Docker مربوط، خدمة أصلية، أو بعيد).
     dumpCmd = "mysqldump";
-    dumpArgs = ["-h", t.host, "-P", t.port, `-u${t.user}`, "--databases", t.db, ...dumpFlags];
+    dumpArgs = ["-h", t.host, "-P", t.port, `-u${t.user}`, ...dumpFlags, t.db];
     dumpPw = t.pass || undefined;
   } else if (LOCAL_HOSTS.has(t.host)) {
     // لا mysqldump محلي لكن المضيف محلي = نفس نسخة Docker المربوطة على المنفذ ⇒ docker exec يصيب الخادم نفسه.
     // -u${t.user} (لا "root" ثابتاً) — تعدد الشركات يستعمل مستخدماً مخصّصاً لكل شركة.
     dumpCmd = "docker";
-    dumpArgs = ["exec", "-e", "MYSQL_PWD", container, "mysqldump", `-u${t.user}`, "--databases", t.db, ...dumpFlags];
+    dumpArgs = ["exec", "-e", "MYSQL_PWD", container, "mysqldump", `-u${t.user}`, ...dumpFlags, t.db];
     dumpPw = t.pass || pw;
   } else {
     console.error(`✗ تعذّر ضمان نسخة آمنة للقاعدة «${t.db}» على المضيف «${t.host}»: لا mysqldump محلي والمضيف ليس Docker محلياً.`);
@@ -120,20 +124,22 @@ if (targetUrl) {
   // دائماً هنا (لا BACKUP_TARGET_URL) ⇒ --source-data=2 متاح كسلوك المشروع الأصلي بلا تغيير.
   db = process.env.DB_NAME ?? "erp";
   dumpCmd = "docker";
-  dumpArgs = ["exec", "-e", "MYSQL_PWD", container, "mysqldump", "-uroot", "--databases", db, ...COMMON_DUMP, SOURCE_DATA_FLAG];
+  dumpArgs = ["exec", "-e", "MYSQL_PWD", container, "mysqldump", "-uroot", ...COMMON_DUMP, SOURCE_DATA_FLAG, db];
   dumpPw = pw;
 }
 
-const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+const ts = new Date().toISOString().replace(/[:.]/g, "-");
 mkdirSync(backupDir, { recursive: true });
-const out = join(backupDir, `${db}-${ts}.sql`);
+const out = join(backupDir, `${db}-${ts}-${randomUUID().slice(0, 8)}.sql`);
+const partial = `${out}.partial`;
 
 // --single-transaction: لقطة متّسقة بلا قفل الجداول (آمن أثناء التشغيل).
 // بثّ stdout مباشرة إلى الملف ⇒ يصمد لقواعد بأي حجم (لا سقف 512MB في الذاكرة).
 // كل مسارات الفشل (فشل التشغيل، خطأ كتابة، رمز ≠0) تُرفض هنا — والملف الجزئي يُمحى لدى المستدعي.
 function dumpToFile() {
   return new Promise((resolve, reject) => {
-    const sink = createWriteStream(out, { mode: 0o600 });
+    const sink = createWriteStream(partial, { mode: 0o600, flags: "wx" });
+    sink.write(`-- ALROYA_DB_NEUTRAL_BACKUP:${encodeURIComponent(db)}\n`);
     const child = spawn(dumpCmd, dumpArgs, {
       stdio: ["ignore", "pipe", "pipe"],
       env: dumpPw ? { ...process.env, MYSQL_PWD: dumpPw } : process.env,
@@ -171,14 +177,16 @@ function dumpToFile() {
 
 try {
   await dumpToFile();
-  const size = statSync(out).size;
+  const size = statSync(partial).size;
   if (size < 512) {
     throw new Error(`الناتج صغير بشكل مريب (${size} bytes) — قد يكون فشلاً صامتاً`);
   }
+  renameSync(partial, out);
   console.log(`✓ نسخة احتياطية: ${out} (${(size / 1024).toFixed(1)} KB)`);
-  console.log(`  للاستعادة: pnpm db:restore ${out}  (أو docker exec -i ${container} mysql -uroot -p < ${out} — كلمة المرور تُطلب تفاعلياً)`);
+  console.log(`  للاستعادة الآمنة: أوقف عمال الويب ثم نفّذ pnpm db:restore ${out}`);
 } catch (e) {
   // لا نُبقي ملفاً جزئياً/فارغاً — يُحسب «أحدث نسخة» لدى بوّابة الهجرة وشاشة الاستعادة.
+  try { unlinkSync(partial); } catch { /* غير موجود أصلاً */ }
   try { unlinkSync(out); } catch { /* غير موجود أصلاً */ }
   console.error("✗ فشل النسخ الاحتياطي:", e?.message ?? e);
   process.exit(1);

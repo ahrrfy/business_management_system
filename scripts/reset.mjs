@@ -12,9 +12,13 @@ import "dotenv/config";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import mysql from "mysql2/promise";
+import { acquireMaintenanceLock } from "./lib/maintenance-lock.mjs";
 
 // جداول يُحافَظ عليها (هيكل الدخول + الفروع + سجلّ هجرات drizzle). مطابقة غير حسّاسة للحالة.
-const KEEP = new Set(["users", "branches", "__drizzle_migrations"]);
+// Preserve the whole authentication/authorization control plane. In particular,
+// truncating roles while retaining users.customRoleId can silently rebind users when
+// AUTO_INCREMENT later reuses an id. Audit history is evidence, not sample data.
+const KEEP = new Set(["users", "branches", "roles", "userrecoverycodes", "auditlogs", "__drizzle_migrations"]);
 
 const argv = process.argv.slice(2);
 const flag = (f) => argv.includes(f);
@@ -43,6 +47,14 @@ if (valueOf("--confirm") !== "RESET") {
   console.error("   مثال:  node scripts/reset.mjs --confirm RESET");
   process.exit(1);
 }
+
+let releaseMaintenanceLock;
+try {
+  releaseMaintenanceLock = acquireMaintenanceLock();
+} catch (error) {
+  fail(error?.message ?? String(error));
+}
+process.once("exit", () => releaseMaintenanceLock?.());
 
 // ── النسخة الاحتياطية التلقائية (شبكة أمان) ──
 if (!flag("--no-backup")) {
@@ -97,10 +109,18 @@ if (flag("--seed")) {
       : "• إعادة البذرة (admin + فروع + منتجات عيّنة)…"
   );
   try {
-    execFileSync("pnpm", [seedScript], { stdio: "inherit", shell: process.platform === "win32" });
+    execFileSync("pnpm", [seedScript], {
+      stdio: "inherit",
+      shell: process.platform === "win32",
+      // `--seed` نفسه تأكيد صريح داخل عملية RESET؛ مرّره لحارس بذرة العينة كي لا
+      // يتعطّل مسار التطوير، مع بقاء ADMIN_PASSWORD القوية إلزامية.
+      env: prodSeed ? process.env : { ...process.env, CONFIRM_SAMPLE_DATA_SEED: "1" },
+    });
   } catch {
     console.warn(`⚠ تعذّرت إعادة البذرة — نفّذ pnpm ${seedScript} يدوياً.`);
   }
 }
 
+releaseMaintenanceLock?.();
+releaseMaintenanceLock = undefined;
 console.log("\n✅ اكتمل التصفير. النظام جاهز للبدء من جديد.");

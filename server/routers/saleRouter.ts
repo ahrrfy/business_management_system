@@ -111,7 +111,7 @@ export async function verifyManagerApproval(
   }
 
   const u = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
-  const ok = u && u.isActive !== false && verifyPassword(approval.password, u.passwordHash) && (u.role === "manager" || u.role === "admin");
+  const ok = u && u.isActive !== false && (await verifyPassword(approval.password, u.passwordHash)) && (u.role === "manager" || u.role === "admin");
 
   // ثبّت الحدّ الأدنى للوقت قبل الإرجاع (يَمنع timing attack).
   const elapsed = Date.now() - start;

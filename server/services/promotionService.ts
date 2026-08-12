@@ -1,9 +1,8 @@
 /* ============================================================================
  * خدمة الترقيات وإنهاء الخدمات — وحدة الموارد البشرية (server/services/promotionService.ts)
  * - الترقيات: تُنشأ بحالة pending؛ اعتمادها (داخل withTx) يحدّث مسمّى/راتب الموظف.
- * - إنهاء الخدمات: يُنشأ بحالة pending؛ إكماله (داخل withTx) يضع الموظف «منتهي الخدمة»
- *   (يعكس setEmploymentStatus من employeeService: employmentStatus=terminated + isActive=false
- *    + terminationDate=lastDay + terminationReason=reason).
+ * - إنهاء الخدمات: يُنشأ بحالة pending؛ إكماله (داخل withTx) يضع الموظف «منتهي الخدمة»،
+ *   يعطّل حسابه ويبطل جلساته، يحرّر ربط جهاز الحضور، ويُنشئ سند التسوية المعلّق ذرّياً.
  * المبالغ كلها عبر money.ts (toDbMoney). الكتابات متعددة الأطراف داخل withTx.
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
@@ -11,19 +10,41 @@ import { and, desc, eq, isNull, lte } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import type { Tx } from "../db";
 import { todayUtcDate } from "./businessDay";
-import { employeePromotions, employees, employeeTerminations, receipts } from "../../drizzle/schema";
+import {
+  employeePromotions,
+  employees,
+  employeeTerminations,
+  hrDeviceUsers,
+  receipts,
+  users,
+} from "../../drizzle/schema";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
 import { nextVoucherNumber } from "./voucher/helpers";
-import { wageProfileColumns, wageProfileOf, type WageProfile } from "./hr/wageProfile";
+import {
+  wageProfileColumns,
+  wageProfileOf,
+  type WageProfile,
+} from "./hr/wageProfile";
+import { companyBranchScope } from "./companyBranchScope";
+import { assertNotLastActiveAdmin } from "./userService";
+import { assertCanDisablePrivilegedUser } from "./userAdminPolicy";
+
+/** يحتفظ بـnull الحقيقي للفرع حتى يفشل غير الأدمن بلا فرع مغلقاً، ولا يسقط صامتاً إلى الفرع 1. */
+export type PromotionActor = Omit<Actor, "branchId"> & {
+  branchId: number | null;
+};
 
 /* ===== الترقيات ===== */
 
 /** استعلام الترقيات (مع اسم الموظف) — بمعرّف لصفّ واحد أو بلا معرّف للقائمة كاملةً.
  *  يلغي نمط «اجلب الكل ثم find» (N+1) في getPromotion. */
-async function promotionRows(id?: number) {
+async function promotionRows(actor: PromotionActor, id?: number) {
   const db = requireDb();
+  const scope = companyBranchScope(actor);
+  const branchPredicate =
+    scope.branchId == null ? undefined : eq(employees.branchId, scope.branchId);
   const base = db
     .select({
       id: employeePromotions.id,
@@ -50,12 +71,19 @@ async function promotionRows(id?: number) {
     })
     .from(employeePromotions)
     .leftJoin(employees, eq(employeePromotions.employeeId, employees.id));
-  const rows = id != null ? await base.where(eq(employeePromotions.id, id)).limit(1) : await base.orderBy(desc(employeePromotions.id));
+  const rows =
+    id != null
+      ? await base
+          .where(and(eq(employeePromotions.id, id), branchPredicate))
+          .limit(1)
+      : branchPredicate
+        ? await base.where(branchPredicate).orderBy(desc(employeePromotions.id))
+        : await base.orderBy(desc(employeePromotions.id));
   return rows.map((r) => ({ ...r, employeeName: fullEmployeeName(r) }));
 }
 
-export async function listPromotions() {
-  return promotionRows();
+export async function listPromotions(actor: PromotionActor) {
+  return promotionRows(actor);
 }
 
 /**
@@ -87,19 +115,38 @@ export interface PromotionInput {
 
 /** يحذف المفاتيح غير المُمرَّرة حتى لا يطمس الانتشارُ (`spread`) قيمةَ الموظف بـundefined. */
 function definedOnly<T extends object>(o: T): Partial<T> {
-  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
+  return Object.fromEntries(
+    Object.entries(o).filter(([, v]) => v !== undefined),
+  ) as Partial<T>;
 }
 
-export async function createPromotion(input: PromotionInput, actor: Actor) {
+export async function createPromotion(
+  input: PromotionInput,
+  actor: PromotionActor,
+) {
+  const scope = companyBranchScope(actor);
   const newId = await withTx(async (tx) => {
-    const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).for("update").limit(1);
-    if (!emp) throw new Error("الموظف غير موجود");
+    const [emp] = await tx
+      .select()
+      .from(employees)
+      .where(
+        and(
+          eq(employees.id, input.employeeId),
+          scope.branchId == null
+            ? undefined
+            : eq(employees.branchId, scope.branchId),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!emp)
+      throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
     // لقطة الحالة الحالية افتراضياً إن لم يمررها المستخدم.
     const fromTitle = input.fromTitle?.trim() || emp.position || null;
     const fromSalary =
       input.fromSalary != null && input.fromSalary !== ""
         ? toDbMoney(input.fromSalary)
-        : emp.salary ?? null;
+        : (emp.salary ?? null);
 
     /*
      * حزمة الأجر (0143): الرقعة تُدمَج فوق بصمة الموظف الحالية ثمّ تُطبَّع، فيُخزَّن الهدف
@@ -107,7 +154,9 @@ export async function createPromotion(input: PromotionInput, actor: Actor) {
      * من الحزمة عند وجودها ⇒ مصدرُ تطبيقٍ واحدٌ لا اثنان متعارضان.
      */
     const fromWage = wageProfileOf(emp);
-    const toWage = input.wage ? wageProfileOf({ ...emp, ...definedOnly(input.wage) }) : null;
+    const toWage = input.wage
+      ? wageProfileOf({ ...emp, ...definedOnly(input.wage) })
+      : null;
 
     /*
      * حارس سعر الساعيّ المؤجَّل (مراجعة Codex P1 على PR #449): أجرُ الموظف الساعيّ
@@ -118,8 +167,13 @@ export async function createPromotion(input: PromotionInput, actor: Actor) {
      * والجديد يبدأ عملياً من الشهر التالي — خطأٌ صامتٌ في اتجاه بخس الأجر.
      * (الراتب/البدلات/الجدول/الإعفاء تُحتسب وقت التوليد ⇒ التأجيل يعمل لها بصحّة.)
      */
-    if (toWage && toWage.payType === "hourly" && input.effectiveDate > todayUtcDate()) {
-      const ratesChanged = JSON.stringify(fromWage.dayRates) !== JSON.stringify(toWage.dayRates);
+    if (
+      toWage &&
+      toWage.payType === "hourly" &&
+      input.effectiveDate > todayUtcDate()
+    ) {
+      const ratesChanged =
+        JSON.stringify(fromWage.dayRates) !== JSON.stringify(toWage.dayRates);
       if (ratesChanged || fromWage.payType !== toWage.payType) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -154,41 +208,70 @@ export async function createPromotion(input: PromotionInput, actor: Actor) {
     });
     return extractInsertId(res);
   });
-  return getPromotion(newId);
+  return getPromotion(newId, actor);
 }
 
-async function getPromotion(id: number) {
-  return (await promotionRows(id))[0] ?? null;
+async function getPromotion(id: number, actor: PromotionActor) {
+  return (await promotionRows(actor, id))[0] ?? null;
 }
 
 /**
  * اعتماد الترقية (ذرّي): تُضبط الحالة approved (+ approvedAt/approvedBy)
  * ويُحدَّث الموظف: position = toTitle، salary = toSalary (إن وُجد).
  */
-export async function approvePromotion(id: number, actor: Actor) {
+export async function approvePromotion(id: number, actor: PromotionActor) {
+  const scope = companyBranchScope(actor);
   return withTx(async (tx) => {
-    const [p] = await tx.select().from(employeePromotions).where(eq(employeePromotions.id, id)).for("update").limit(1);
-    if (!p) throw new Error("سجل الترقية غير موجود");
+    const [p] = await tx
+      .select()
+      .from(employeePromotions)
+      .where(eq(employeePromotions.id, id))
+      .for("update")
+      .limit(1);
+    if (!p)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "سجل الترقية غير موجود",
+      });
+
+    // فحص الفرع يسبق أيّ كشفٍ لحالة السجل حتى لا يتحول المعرّف إلى مسبار IDOR.
+    const [emp] = await tx
+      .select({ employmentStatus: employees.employmentStatus })
+      .from(employees)
+      .where(
+        and(
+          eq(employees.id, p.employeeId),
+          scope.branchId == null
+            ? undefined
+            : eq(employees.branchId, scope.branchId),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!emp)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "سجل الترقية غير موجود",
+      });
     if (p.status === "approved") throw new Error("الترقية معتمدة مسبقاً");
 
     // فصل المهام (تدقيق ١٧/٧): مرآةُ اعتماد الرواتب/السندات — المعتمِد ≠ المُنشئ (admin مُستثنى
     // للتصحيح الإداري). كان اعتماد ترقيةٍ (زيادة راتب) بفاعلٍ واحد ممكناً ⇒ إثراءٌ ذاتيّ.
-    if (actor.role !== "admin" && p.createdBy != null && Number(p.createdBy) === actor.userId) {
+    if (
+      actor.role !== "admin" &&
+      p.createdBy != null &&
+      Number(p.createdBy) === actor.userId
+    ) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "لا يجوز اعتماد ترقية أنشأتها بنفسك — يلزم مديرٌ آخر (فصل المهام).",
+        message:
+          "لا يجوز اعتماد ترقية أنشأتها بنفسك — يلزم مديرٌ آخر (فصل المهام).",
       });
     }
 
     // حارس حالة الموظف: لا تُعتمد ترقية موظف منتهي الخدمة.
-    const [emp] = await tx
-      .select({ employmentStatus: employees.employmentStatus })
-      .from(employees)
-      .where(eq(employees.id, p.employeeId))
-      .for("update")
-      .limit(1);
-    if (!emp) throw new Error("الموظف غير موجود");
-    if (emp.employmentStatus === "terminated") throw new Error("لا يمكن ترقية موظف منتهي الخدمة");
+    if (emp.employmentStatus === "terminated")
+      throw new Error("لا يمكن ترقية موظف منتهي الخدمة");
 
     // effectiveDate (تدقيق ١٧/٧): كان يطبّق الراتب فوراً متجاهلاً تاريخاً مستقبلياً. الآن نطبّقه على
     // الموظف فقط إن حان التاريخ (≤ اليوم UTC)؛ وإلا نعتمد الترقية ونؤجّل التطبيق (appliedAt=null)
@@ -196,7 +279,12 @@ export async function approvePromotion(id: number, actor: Actor) {
     const due = p.effectiveDate <= todayUtcDate();
     await tx
       .update(employeePromotions)
-      .set({ status: "approved", approvedAt: new Date(), approvedBy: actor.userId, appliedAt: due ? new Date() : null })
+      .set({
+        status: "approved",
+        approvedAt: new Date(),
+        approvedBy: actor.userId,
+        appliedAt: due ? new Date() : null,
+      })
       .where(eq(employeePromotions.id, id));
 
     if (due) await applyPromotionToEmployee(tx, p);
@@ -221,17 +309,30 @@ export async function approvePromotion(id: number, actor: Actor) {
  */
 async function applyPromotionToEmployee(
   tx: Tx,
-  p: { employeeId: number; fromTitle: string | null; toTitle: string; fromSalary: string | null; toSalary: string | null; fromWage: unknown; toWage: unknown },
+  p: {
+    employeeId: number;
+    fromTitle: string | null;
+    toTitle: string;
+    fromSalary: string | null;
+    toSalary: string | null;
+    fromWage: unknown;
+    toWage: unknown;
+  },
 ): Promise<void> {
   const empPatch: Record<string, unknown> = {};
   // مسمّى فارغ ⇒ لا يُمسّ `position` (طلبُ أجرٍ بحت لموظفٍ بلا مسمّى مُسجَّل).
-  if (p.toTitle && p.toTitle !== (p.fromTitle ?? "")) empPatch.position = p.toTitle;
+  if (p.toTitle && p.toTitle !== (p.fromTitle ?? ""))
+    empPatch.position = p.toTitle;
   if (p.toWage && typeof p.toWage === "object") {
     const to = wageProfileColumns(p.toWage as WageProfile);
     // `fromWage` مكتوبٌ دائماً مع `toWage` (منذ 0143)؛ وغيابُه احتياطاً ⇒ تطبيقُ الكلّ.
-    const from = p.fromWage && typeof p.fromWage === "object" ? wageProfileColumns(p.fromWage as WageProfile) : null;
+    const from =
+      p.fromWage && typeof p.fromWage === "object"
+        ? wageProfileColumns(p.fromWage as WageProfile)
+        : null;
     for (const key of Object.keys(to) as (keyof typeof to)[]) {
-      if (!from || JSON.stringify(to[key]) !== JSON.stringify(from[key])) empPatch[key] = to[key];
+      if (!from || JSON.stringify(to[key]) !== JSON.stringify(from[key]))
+        empPatch[key] = to[key];
     }
   } else if (p.toSalary != null) {
     empPatch.salary = toDbMoney(p.toSalary);
@@ -239,7 +340,10 @@ async function applyPromotionToEmployee(
   // رقعةٌ فارغة تجعل drizzle يرمي «No values to set» — والحالة ممكنة (طلبٌ اعتُمد ولم
   // يعُد يغيّر شيئاً). لا شيء ليُطبَّق ⇒ تُختَم الترقية مطبَّقةً بلا كتابةٍ على الموظف.
   if (Object.keys(empPatch).length === 0) return;
-  await tx.update(employees).set(empPatch).where(eq(employees.id, p.employeeId));
+  await tx
+    .update(employees)
+    .set(empPatch)
+    .where(eq(employees.id, p.employeeId));
 }
 
 /**
@@ -247,7 +351,10 @@ async function applyPromotionToEmployee(
  * تاريخُها (effectiveDate ≤ asOf) على راتب/مسمّى الموظف، وتَختم appliedAt. تُستدعى داخل معاملة توليد
  * الرواتب (asOf = آخر يوم في فترة المسيّر) قبل قراءة الرواتب ⇒ الترقية تسري في شهرها بلا تدخّل يدويّ.
  */
-export async function applyDuePromotions(tx: Tx, asOf: string): Promise<number> {
+export async function applyDuePromotions(
+  tx: Tx,
+  asOf: string,
+): Promise<number> {
   const due = await tx
     .select()
     .from(employeePromotions)
@@ -263,7 +370,10 @@ export async function applyDuePromotions(tx: Tx, asOf: string): Promise<number> 
     .orderBy(employeePromotions.effectiveDate, employeePromotions.id);
   for (const p of due) {
     await applyPromotionToEmployee(tx, p);
-    await tx.update(employeePromotions).set({ appliedAt: new Date() }).where(eq(employeePromotions.id, p.id));
+    await tx
+      .update(employeePromotions)
+      .set({ appliedAt: new Date() })
+      .where(eq(employeePromotions.id, p.id));
   }
   return due.length;
 }
@@ -271,8 +381,11 @@ export async function applyDuePromotions(tx: Tx, asOf: string): Promise<number> 
 /* ===== إنهاء الخدمات ===== */
 
 /** استعلام إنهاءات الخدمة (مع اسم الموظف) — بمعرّف لصفّ واحد أو بلا معرّف للقائمة كاملةً. */
-async function terminationRows(id?: number) {
+async function terminationRows(actor: PromotionActor, id?: number) {
   const db = requireDb();
+  const scope = companyBranchScope(actor);
+  const branchPredicate =
+    scope.branchId == null ? undefined : eq(employees.branchId, scope.branchId);
   const base = db
     .select({
       id: employeeTerminations.id,
@@ -292,12 +405,21 @@ async function terminationRows(id?: number) {
     })
     .from(employeeTerminations)
     .leftJoin(employees, eq(employeeTerminations.employeeId, employees.id));
-  const rows = id != null ? await base.where(eq(employeeTerminations.id, id)).limit(1) : await base.orderBy(desc(employeeTerminations.id));
+  const rows =
+    id != null
+      ? await base
+          .where(and(eq(employeeTerminations.id, id), branchPredicate))
+          .limit(1)
+      : branchPredicate
+        ? await base
+            .where(branchPredicate)
+            .orderBy(desc(employeeTerminations.id))
+        : await base.orderBy(desc(employeeTerminations.id));
   return rows.map((r) => ({ ...r, employeeName: fullEmployeeName(r) }));
 }
 
-export async function listTerminations() {
-  return terminationRows();
+export async function listTerminations(actor: PromotionActor) {
+  return terminationRows(actor);
 }
 
 export interface TerminationInput {
@@ -308,10 +430,27 @@ export interface TerminationInput {
   reason?: string | null;
 }
 
-export async function createTermination(input: TerminationInput) {
+export async function createTermination(
+  input: TerminationInput,
+  actor: PromotionActor,
+) {
+  const scope = companyBranchScope(actor);
   const newId = await withTx(async (tx) => {
-    const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).for("update").limit(1);
-    if (!emp) throw new Error("الموظف غير موجود");
+    const [emp] = await tx
+      .select()
+      .from(employees)
+      .where(
+        and(
+          eq(employees.id, input.employeeId),
+          scope.branchId == null
+            ? undefined
+            : eq(employees.branchId, scope.branchId),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!emp)
+      throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
     const [res] = await tx.insert(employeeTerminations).values({
       employeeId: input.employeeId,
       terminationType: input.terminationType.trim(),
@@ -322,39 +461,101 @@ export async function createTermination(input: TerminationInput) {
     });
     return extractInsertId(res);
   });
-  return getTermination(newId);
+  return getTermination(newId, actor);
 }
 
-async function getTermination(id: number) {
-  return (await terminationRows(id))[0] ?? null;
+async function getTermination(id: number, actor: PromotionActor) {
+  return (await terminationRows(actor, id))[0] ?? null;
 }
 
 /**
- * إكمال إنهاء الخدمة (ذرّي): تُضبط الحالة completed، ويوضع الموظف «منتهي الخدمة»
- * (employmentStatus=terminated، isActive=false، terminationDate=lastDay، terminationReason=reason).
- * يعكس employeeService.setEmploymentStatus.
+ * إكمال إنهاء الخدمة (ذرّي): حالة الطلب والموظف، حساب النظام والجلسات، ربط جهاز الحضور،
+ * وسند التسوية المعلّق وحدة عمل واحدة؛ أي فشل يعيدها جميعاً بلا حالة نصفية.
  */
-export async function completeTermination(id: number, actor: Actor) {
+export async function completeTermination(id: number, actor: PromotionActor) {
+  const scope = companyBranchScope(actor);
   return withTx(async (tx) => {
-    const [t] = await tx.select().from(employeeTerminations).where(eq(employeeTerminations.id, id)).for("update").limit(1);
-    if (!t) throw new Error("سجل إنهاء الخدمة غير موجود");
-    if (t.status === "completed") throw new Error("إنهاء الخدمة مكتمل مسبقاً");
+    const [t] = await tx
+      .select()
+      .from(employeeTerminations)
+      .where(eq(employeeTerminations.id, id))
+      .for("update")
+      .limit(1);
+    if (!t)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "سجل إنهاء الخدمة غير موجود",
+      });
 
     const [emp] = await tx
       .select({
         branchId: employees.branchId,
+        userId: employees.userId,
         employmentStatus: employees.employmentStatus,
         firstName: employees.firstName,
         lastName: employees.lastName,
       })
       .from(employees)
-      .where(eq(employees.id, t.employeeId))
+      .where(
+        and(
+          eq(employees.id, t.employeeId),
+          scope.branchId == null
+            ? undefined
+            : eq(employees.branchId, scope.branchId),
+        ),
+      )
       .for("update")
       .limit(1);
-    if (!emp) throw new Error("الموظف غير موجود");
-    if (emp.employmentStatus === "terminated") throw new Error("الموظف منتهي الخدمة مسبقاً");
+    // لا نكشف للفاعل أن معرّف الإنهاء موجود لكنه تابع لفرع آخر.
+    if (!emp)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "سجل إنهاء الخدمة غير موجود",
+      });
+    if (t.status === "completed") throw new Error("إنهاء الخدمة مكتمل مسبقاً");
+    if (emp.employmentStatus === "terminated")
+      throw new Error("الموظف منتهي الخدمة مسبقاً");
 
-    await tx.update(employeeTerminations).set({ status: "completed" }).where(eq(employeeTerminations.id, id));
+    let userDisabled = false;
+    if (emp.userId != null) {
+      const [linkedUser] = await tx
+        .select({ id: users.id, role: users.role, isOwner: users.isOwner, isActive: users.isActive })
+        .from(users)
+        .where(eq(users.id, emp.userId))
+        .for("update")
+        .limit(1);
+      if (linkedUser) assertCanDisablePrivilegedUser(actor, linkedUser);
+      if (linkedUser?.isActive) {
+        if (Number(linkedUser.id) === Number(actor.userId)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "لا تُنهِ خدمة سجلّك الشخصيّ — سيُعطَّل حسابك وتخرج فوراً. اطلب من مديرٍ آخر تنفيذها.",
+          });
+        }
+        if (linkedUser.role === "admin")
+          await assertNotLastActiveAdmin(tx, linkedUser.id);
+        await tx
+          .update(users)
+          .set({ isActive: false, sessionsValidFrom: new Date() })
+          .where(eq(users.id, linkedUser.id));
+        userDisabled = true;
+      }
+    }
+
+    const deviceRelease = await tx
+      .update(hrDeviceUsers)
+      .set({ employeeId: null, effectiveFrom: null })
+      .where(eq(hrDeviceUsers.employeeId, t.employeeId));
+    const deviceLinksReleased = Number(
+      (deviceRelease as unknown as [{ affectedRows?: number }])[0]
+        ?.affectedRows ?? 0,
+    );
+
+    await tx
+      .update(employeeTerminations)
+      .set({ status: "completed" })
+      .where(eq(employeeTerminations.id, id));
 
     await tx
       .update(employees)
@@ -372,9 +573,16 @@ export async function completeTermination(id: number, actor: Actor) {
     // فيُرحَّل حينها PAYMENT_OUT للخزينة. يظهر في طابور اعتماد السندات القائم (voucherNumber != null) بلا واجهةٍ جديدة.
     // كان يُصرَف COMPLETED بفاعلٍ واحد بلا سقف (البند ٩ في «أخطر ١٢»، تدقيق ١٧/٧).
     const settlement = money(t.settlement ?? 0);
-    let settlementVoucher: { receiptId: number; voucherNumber: string } | null = null;
+    let settlementVoucher: { receiptId: number; voucherNumber: string } | null =
+      null;
     if (settlement.gt(0)) {
-      const branchId = Number(emp.branchId ?? 1);
+      const branchId = Number(emp.branchId);
+      if (!Number.isInteger(branchId) || branchId <= 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "لا يمكن إنشاء سند تسوية لموظف بلا فرع مُسنَد",
+        });
+      }
       const voucherNumber = await nextVoucherNumber(tx, "PAYMENT", branchId);
       const rRes = await tx.insert(receipts).values({
         invoiceId: null,
@@ -397,6 +605,11 @@ export async function completeTermination(id: number, actor: Actor) {
       settlementVoucher = { receiptId: extractInsertId(rRes), voucherNumber };
     }
 
-    return { terminationId: id, settlementVoucher };
+    return {
+      terminationId: id,
+      settlementVoucher,
+      userDisabled,
+      deviceLinksReleased,
+    };
   });
 }

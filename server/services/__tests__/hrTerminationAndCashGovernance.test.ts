@@ -105,9 +105,38 @@ describe("حوكمة إنهاء الخدمة", () => {
     await db().update(s.employees).set({ userId: 1 }).where(eq(s.employees.id, 2));
     await db().update(s.employees).set({ userId: null }).where(eq(s.employees.id, 1));
 
-    await expect(setEmploymentStatus(2, "terminated", { actorUserId: 9 })).rejects.toThrow(/آخر مدير/);
+    await expect(
+      setEmploymentStatus(2, "terminated", { actorUserId: 9, actorRole: "admin" }),
+    ).rejects.toThrow(/آخر مدير/);
     const [e] = await db().select().from(s.employees).where(eq(s.employees.id, 2));
     expect(e.employmentStatus).toBe("active");
+  });
+
+  it("ط٣) غير المدير لا يعطّل مديراً عبر تغيير حالة الموظف", async () => {
+    await db().update(s.employees).set({ userId: 1 }).where(eq(s.employees.id, 2));
+
+    await expect(
+      setEmploymentStatus(2, "terminated", { actorUserId: 2, actorRole: "manager" }),
+    ).rejects.toThrow(/غير المدير أو المالك/);
+
+    const [employee] = await db().select().from(s.employees).where(eq(s.employees.id, 2));
+    const [admin] = await db().select().from(s.users).where(eq(s.users.id, 1));
+    expect(employee.employmentStatus).toBe("active");
+    expect(admin.isActive).toBe(true);
+  });
+
+  it("ط٣) غير المالك لا يعطّل مالكاً عبر تغيير حالة الموظف", async () => {
+    await db().update(s.users).set({ isOwner: true }).where(eq(s.users.id, 1));
+    await db().update(s.employees).set({ userId: 1 }).where(eq(s.employees.id, 2));
+
+    await expect(
+      setEmploymentStatus(2, "terminated", { actorUserId: 9, actorRole: "admin" }),
+    ).rejects.toThrow(/غير المالك/);
+
+    const [employee] = await db().select().from(s.employees).where(eq(s.employees.id, 2));
+    const [owner] = await db().select().from(s.users).where(eq(s.users.id, 1));
+    expect(employee.employmentStatus).toBe("active");
+    expect(owner.isActive).toBe(true);
   });
 
   it("الحالات غير النهائية لا تمسّ الحساب ولا الربط", async () => {

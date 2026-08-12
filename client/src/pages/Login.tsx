@@ -30,11 +30,15 @@ export default function Login() {
 
   // مرحلة المصادقة الثنائية: بعد نجاح كلمة المرور لمستخدم مفعِّل 2FA يعيد الخادم تذكرة
   // قصيرة العمر (٥ دقائق) بدل الجلسة — تُحفظ في الذاكرة فقط (لا كوكي/localStorage).
-  const [step, setStep] = useState<"credentials" | "otp">("credentials");
+  const [step, setStep] = useState<"credentials" | "otp" | "reset">("credentials");
   const [ticket, setTicket] = useState<string | null>(null);
   const [otp, setOtp] = useState("");
   const [useRecovery, setUseRecovery] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState("");
+  const [resetToken, setResetToken] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [resetDone, setResetDone] = useState(false);
 
   // نظام أحادي الشركة (لا CONTROL_DATABASE_URL على الخادم) ⇒ الحقل مخفيّ تماماً وشاشة
   // الدخول كما كانت قبل تعدد الشركات بلا أي فرق. لا يظهر إلا إذا فعّل المالك تعدد الشركات.
@@ -114,6 +118,18 @@ export default function Login() {
     },
   });
 
+  const resetPassword = trpc.auth.resetPasswordWithToken.useMutation({
+    onSuccess: () => {
+      setResetDone(true);
+      setResetToken("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setError("");
+    },
+    // الخادم يعيد رسالة عامة موحّدة للرمز الخاطئ/المنتهي/المستخدم/الحساب غير الفعّال.
+    onError: (e) => setError(e.message),
+  });
+
   function submitOtp(code?: string) {
     if (!ticket) return;
     setError("");
@@ -133,6 +149,7 @@ export default function Login() {
     setOtp("");
     setRecoveryCode("");
     setUseRecovery(false);
+    setResetDone(false);
     setError("");
   }
 
@@ -195,6 +212,103 @@ export default function Login() {
             <Button type="submit" className="w-full" disabled={login.isPending}>
               {login.isPending ? "جارٍ الدخول…" : "دخول"}
             </Button>
+            <button
+              type="button"
+              className="w-full text-sm text-primary hover:underline"
+              onClick={() => { setStep("reset"); setResetDone(false); setError(""); }}
+            >
+              لديّ رمز استعادة كلمة المرور
+            </button>
+          </form>
+          ) : step === "reset" ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              setError("");
+              if (newPassword !== confirmPassword) {
+                setError("كلمتا المرور غير متطابقتين.");
+                return;
+              }
+              resetPassword.mutate({
+                token: resetToken.trim(),
+                newPassword,
+                ...(multiTenant ? { companyCode: companyCode.trim() } : {}),
+              });
+            }}
+            className="space-y-4"
+          >
+            {resetDone ? (
+              <div className="space-y-4 text-center">
+                <p role="status" className="text-sm text-money-positive">
+                  تم تغيير كلمة المرور وإبطال كل الجلسات. يمكنك الدخول الآن بالكلمة الجديدة.
+                </p>
+                <Button type="button" className="w-full" onClick={backToCredentials}>
+                  العودة إلى تسجيل الدخول
+                </Button>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-muted-foreground text-center">
+                  أدخل الرمز الذي سلّمه لك المدير، ثم اختر كلمة مرور لا يعرفها غيرك. الرمز صالح ١٥ دقيقة ولمرة واحدة.
+                </p>
+                {multiTenant && (
+                  <div className="space-y-2">
+                    <Label htmlFor="resetCompanyCode">رمز الشركة</Label>
+                    <Input
+                      id="resetCompanyCode"
+                      type="text"
+                      dir="ltr"
+                      autoComplete="organization"
+                      value={companyCode}
+                      onChange={(e) => setCompanyCode(e.target.value)}
+                      required
+                    />
+                  </div>
+                )}
+                <div className="space-y-2">
+                  <Label htmlFor="resetToken">رمز الاستعادة</Label>
+                  <Input
+                    id="resetToken"
+                    type="text"
+                    dir="ltr"
+                    autoComplete="one-time-code"
+                    value={resetToken}
+                    onChange={(e) => setResetToken(e.target.value)}
+                    required
+                    autoFocus
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="newPassword">كلمة المرور الجديدة</Label>
+                  <PasswordInput
+                    id="newPassword"
+                    name="new-password"
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={setNewPassword}
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="confirmPassword">تأكيد كلمة المرور</Label>
+                  <PasswordInput
+                    id="confirmPassword"
+                    name="confirm-password"
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={setConfirmPassword}
+                    required
+                  />
+                </div>
+                {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+                <Button type="submit" className="w-full" disabled={resetPassword.isPending}>
+                  {resetPassword.isPending ? "جارٍ التغيير…" : "تغيير كلمة المرور"}
+                </Button>
+                <button type="button" className="w-full text-sm text-muted-foreground hover:underline" onClick={backToCredentials}>
+                  رجوع إلى تسجيل الدخول
+                </button>
+              </>
+            )}
           </form>
           ) : (
           <form

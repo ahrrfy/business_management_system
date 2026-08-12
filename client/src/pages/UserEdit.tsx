@@ -4,19 +4,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { PermissionMatrix } from "@/components/form/PermissionMatrix";
-import { CredentialsShare } from "@/components/form/CredentialsShare";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { UsagePanel } from "@/components/UsagePanel";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
-import { isStrongPassword, PASSWORD_POLICY_MSG, USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
+import { USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { fmtDateTime } from "@/lib/date";
 import { describeUserAgent } from "@/lib/userAgent";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { AlertTriangle, Check, Monitor, Zap } from "lucide-react";
+import { AlertTriangle, Check, Copy, Monitor } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { ROLE_LABEL, ROLE_OPTIONS } from "@/lib/roles";
@@ -100,10 +99,10 @@ export default function UserEdit() {
   const [done, setDone] = useState("");
   const [loaded, setLoaded] = useState(false);
 
-  const [newPassword, setNewPassword] = useState("");
-  const [pwMsg, setPwMsg] = useState("");
-  const [mustChangeOnReset, setMustChangeOnReset] = useState(true);
-  const [resetShare, setResetShare] = useState<{ password: string; email: string; username?: string; name: string; phone?: string } | null>(null);
+  const [resetToken, setResetToken] = useState("");
+  const [resetExpiresAt, setResetExpiresAt] = useState<Date | string | null>(null);
+  const [resetMsg, setResetMsg] = useState("");
+  const [resetCopied, setResetCopied] = useState(false);
   const [revokeMsg, setRevokeMsg] = useState("");
 
   // لقطة القيم عند التحميل (وبعد كل حفظ ناجح) — أساس مقارنة حارس فقد البيانات (useUnsavedGuard).
@@ -164,19 +163,14 @@ export default function UserEdit() {
     onSuccess: async () => { await utils.users.list.invalidate(); navigate("/users"); },
     onError: (e) => setError(e.message),
   });
-  const resetPassword = trpc.users.resetPassword.useMutation({
-    onSuccess: (_, vars) => {
-      setPwMsg("تمّت إعادة تعيين كلمة المرور؛ أُبطِلت جلسات المستخدم.");
-      setResetShare({
-        password: vars.newPassword,
-        email: detail.data?.email ?? "",
-        username: (detail.data as { username?: string | null })?.username ?? undefined,
-        name: detail.data?.name ?? "",
-        phone: (detail.data as any)?.phone ?? undefined,
-      });
-      setNewPassword("");
+  const issueResetToken = trpc.users.issuePasswordResetToken.useMutation({
+    onSuccess: (data) => {
+      setResetToken(data.token);
+      setResetExpiresAt(data.expiresAt);
+      setResetCopied(false);
+      setResetMsg("صدر الرمز. انسخه الآن؛ لن يعرضه النظام مرة أخرى.");
     },
-    onError: (e) => setPwMsg(e.message),
+    onError: (e) => setResetMsg(e.message),
   });
   const revokeSessions = trpc.users.revokeSessions.useMutation({
     onSuccess: () => setRevokeMsg("أُبطِلت كل جلسات المستخدم — سيُطلَب منه الدخول من جديد."),
@@ -220,24 +214,6 @@ export default function UserEdit() {
   function handlePermChange(moduleKey: string, level: AccessLevel) {
     const newResolved = { ...resolvedPerms, [moduleKey]: level };
     setPermsOverride(diffFromTemplate(role, newResolved) ?? {});
-  }
-
-  async function handleGeneratePassword() {
-    try {
-      const res = await utils.users.generatePassword.fetch();
-      setNewPassword(res.password);
-    } catch {
-      // fallback محلي يضمن اجتياز السياسة حتماً (حرف كبير + رمز مضمونان).
-      const upper = "ABCDEFGHJKMNPQRSTUVWXYZ";
-      const symbols = "@#$%!";
-      const chars = upper + "abcdefghjkmnpqrstuvwxyz23456789" + symbols;
-      const body = Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]);
-      setNewPassword([
-        upper[Math.floor(Math.random() * upper.length)],
-        symbols[Math.floor(Math.random() * symbols.length)],
-        ...body,
-      ].join(""));
-    }
   }
 
   async function checkUsernameFn() {
@@ -284,16 +260,17 @@ export default function UserEdit() {
     });
   }
 
-  async function doReset() {
-    setPwMsg(""); setResetShare(null);
-    if (!isStrongPassword(newPassword)) return setPwMsg(PASSWORD_POLICY_MSG);
+  async function doIssueResetToken() {
+    setResetMsg("");
     if (!(await confirm({
       variant: "warning",
-      title: "إعادة تعيين كلمة المرور",
-      description: `سيتم تعيين كلمة مرور جديدة لـ«${name || u?.email || `#${userId}`}» وإبطال كل جلساته الحالية فوراً. هل تتابع؟`,
-      confirmText: "إعادة التعيين",
+      title: "إصدار رمز استعادة",
+      description: `سيُلغى أي رمز استعادة سابق لـ«${name || u?.email || `#${userId}`}». الرمز الجديد صالح ١٥ دقيقة ويُعرض مرة واحدة. هل تتابع؟`,
+      confirmText: "إصدار الرمز",
     }))) return;
-    resetPassword.mutate({ userId, newPassword, mustChangePassword: mustChangeOnReset });
+    setResetToken("");
+    setResetExpiresAt(null);
+    issueResetToken.mutate({ userId });
   }
 
   async function doRevokeSessions() {
@@ -549,41 +526,48 @@ export default function UserEdit() {
       </form>
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
-      {/* إعادة تعيين كلمة المرور */}
+      {/* إصدار رمز استعادة — المدير لا يرى كلمة المرور التي يختارها المستخدم. */}
       <Card>
-        <CardHeader><CardTitle className="text-base">إعادة تعيين كلمة المرور</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">استعادة كلمة المرور</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            يضبط كلمة مرور جديدة ويُبطل كل جلسات المستخدم الحالية.
+            أصدر رمزاً أحادي الاستخدام وأرسله للمستخدم عبر قناة موثوقة. يختار المستخدم كلمته
+            الجديدة بنفسه من شاشة الدخول؛ لا يعرفها المدير. صلاحية الرمز ١٥ دقيقة.
           </p>
-          <div className="flex flex-wrap gap-2 items-end">
-            <div className="space-y-1 flex-1 min-w-[200px]">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="newpw">كلمة المرور الجديدة</Label>
-                <Button type="button" variant="ghost" size="sm" className="h-6 text-xs px-2 inline-flex items-center gap-1" onClick={handleGeneratePassword}>
-                  <Zap aria-hidden className="size-3.5" />توليد
+          <Button type="button" variant="outline" onClick={() => void doIssueResetToken()} disabled={issueResetToken.isPending}>
+            {issueResetToken.isPending ? "جارٍ الإصدار…" : resetToken ? "إصدار رمز بديل" : "إصدار رمز استعادة"}
+          </Button>
+          {resetMsg && (
+            <p role="status" className={`text-sm ${issueResetToken.isError ? "text-destructive" : "text-money-positive"}`}>
+              {resetMsg}
+            </p>
+          )}
+          {resetToken && (
+            <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+              <Label htmlFor="passwordResetToken">الرمز — يظهر في هذه الجلسة فقط</Label>
+              <div className="flex gap-2">
+                <Input id="passwordResetToken" readOnly dir="ltr" value={resetToken} className="font-mono text-xs" />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(resetToken);
+                      setResetCopied(true);
+                    } catch {
+                      setResetMsg("تعذّر النسخ التلقائي؛ حدّد الرمز وانسخه يدوياً.");
+                    }
+                  }}
+                >
+                  <Copy aria-hidden className="size-4" />
+                  {resetCopied ? "نُسخ" : "نسخ"}
                 </Button>
               </div>
-              <Input id="newpw" type="text" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="٨ خانات + حرف كبير أو رمز" className="font-mono" />
+              <p className="text-xs text-muted-foreground">
+                ينتهي {resetExpiresAt ? fmtDateTime(resetExpiresAt) : "خلال ١٥ دقيقة"}. إصدار رمز آخر يُبطل هذا الرمز فوراً.
+              </p>
             </div>
-            <Button variant="outline" onClick={doReset} disabled={resetPassword.isPending}>
-              {resetPassword.isPending ? "…" : "إعادة التعيين"}
-            </Button>
-          </div>
-          <div className="flex items-center gap-2">
-            <input type="checkbox" id="mustChangeReset" className="size-4" checked={mustChangeOnReset} onChange={(e) => setMustChangeOnReset(e.target.checked)} />
-            <Label htmlFor="mustChangeReset" className="font-normal cursor-pointer text-sm">إلزام تغيير الكلمة عند أول دخول (72 ساعة)</Label>
-          </div>
-          {pwMsg && <p className={`text-sm ${resetPassword.isSuccess ? "text-money-positive" : "text-destructive"}`}>{pwMsg}</p>}
-          {resetShare && (
-            <CredentialsShare
-              name={resetShare.name}
-              email={resetShare.email}
-              username={resetShare.username}
-              password={resetShare.password}
-              phone={resetShare.phone}
-              onClose={() => setResetShare(null)}
-            />
           )}
         </CardContent>
       </Card>

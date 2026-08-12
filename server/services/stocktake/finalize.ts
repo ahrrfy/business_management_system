@@ -649,7 +649,7 @@ export async function regenerateStocktakePin(
         if (
           Number(sib.id) !== assignmentId &&
           sib.pinHash &&
-          verifyPassword(pin, sib.pinHash)
+          (await verifyPassword(pin, sib.pinHash))
         )
           continue outer;
       }
@@ -664,7 +664,7 @@ export async function regenerateStocktakePin(
     await tx
       .update(stocktakeAssignments)
       .set({
-        pinHash: hashPassword(pin),
+        pinHash: await hashPassword(pin),
         failedPinAttempts: 0,
         lockedUntil: null,
       })

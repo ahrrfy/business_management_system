@@ -16,8 +16,8 @@ import { getTaxSettings, updateTaxSettings } from "../services/taxSettingsServic
 import { getOpeningMode, getOpeningProgress, updateOpeningMode } from "../services/openingModeService";
 
 /** يتحقّق من كلمة مرور المدير الحالية (دفاع ضد النقر الخاطئ/جلسة مسروقة). */
-function assertPassword(ctx: TrpcContext, password: string) {
-  if (!ctx.user || !verifyPassword(password, ctx.user.passwordHash)) {
+async function assertPassword(ctx: TrpcContext, password: string) {
+  if (!ctx.user || !(await verifyPassword(password, ctx.user.passwordHash))) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "كلمة المرور غير صحيحة." });
   }
 }
@@ -44,6 +44,14 @@ function assertSingleTenantOnly(action: string) {
         "حفاظاً على عزل بيانات الشركات (لا يمكن لأدوات النسخ الحالية ضمان بقاء العملية داخل حدود " +
         "قاعدة شركتك وحدها). النسخ الاحتياطي والتنزيل والحذف لملفاتك تبقى متاحة كما هي. للاستعادة " +
         "الفعلية تواصل مع فريق تشغيل المنصّة.",
+    });
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        `${action} عبر الويب معطّل في الإنتاج لأن SQL الخام يعمل بصلاحية تشغيلية عالية. ` +
+        "نفّذ الاستعادة أثناء نافذة صيانة من سطر الأوامر بعد إيقاف عمال الويب. لا يوجد تجاوز بيئي لهذا الحارس.",
     });
   }
 }
@@ -77,6 +85,8 @@ export const systemRouter = router({
         offsiteConfigured: !!(process.env.BACKUP_OFFSITE_DIR && process.env.BACKUP_OFFSITE_DIR.trim()),
       },
       confirmToken: dbName,
+      onlineMaintenanceEnabled:
+        !isMultiTenantModeActive() && process.env.NODE_ENV !== "production",
     };
   }),
 
@@ -106,32 +116,48 @@ export const systemRouter = router({
     .input(z.object({ name: z.string(), confirm: z.string(), password: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
       assertSingleTenantOnly("استعادة نسخة");
-      assertPassword(ctx, input.password);
+      await assertPassword(ctx, input.password);
       await assertConfirm(input.confirm);
       const abs = await maint.resolveBackupFile(input.name);
       if (!abs) throw new TRPCError({ code: "NOT_FOUND", message: "النسخة غير موجودة." });
-      await logAudit(ctx, { action: "system.restore.begin", entityType: "system", entityId: input.name });
-      await maint.runRestore(abs);
-      await logAudit(ctx, { action: "system.restore", entityType: "system", entityId: input.name });
+      const releaseLock = await maint.acquireRestoreLock();
+      try {
+        await logAudit(ctx, { action: "system.restore.begin", entityType: "system", entityId: input.name });
+        await maint.runRestore(abs);
+        await logAudit(ctx, { action: "system.restore", entityType: "system", entityId: input.name });
+      } finally {
+        await releaseLock();
+      }
       return { ok: true as const, source: input.name };
     }),
 
-  /** استعادة من ملف مرفوع (مدمّر): كلمة مرور + رمز تأكيد + تحقّق توقيع + حجر مؤقّت + نسخة أمان. */
+  /**
+   * يصرّح برفع استعادة لفترة قصيرة بعد إعادة التحقق. الملف نفسه لا يدخل JSON/tRPC؛
+   * يُرسل كدفق خام إلى /api/backups/restore-upload كي لا يُحلَّل قبل المصادقة.
+   */
   restoreUpload: adminProcedure
-    .input(z.object({ fileName: z.string(), fileB64: z.string(), confirm: z.string(), password: z.string().min(1) }))
+    .input(z.object({
+      fileName: z.string(),
+      fileSize: z.number().int().positive(),
+      confirm: z.string(),
+      password: z.string().min(1),
+    }))
     .mutation(async ({ ctx, input }) => {
       assertSingleTenantOnly("استعادة ملف مرفوع");
-      assertPassword(ctx, input.password);
-      await assertConfirm(input.confirm);
-      const tmp = await maint.quarantineUpload(input.fileB64);
-      try {
-        await logAudit(ctx, { action: "system.restore.upload.begin", entityType: "system", entityId: input.fileName });
-        await maint.runRestore(tmp);
-      } finally {
-        await maint.cleanupTmp(tmp);
+      if (ctx.sessionId == null) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "أعد تسجيل الدخول قبل إصدار تصريح الاستعادة." });
       }
-      await logAudit(ctx, { action: "system.restore.upload", entityType: "system", entityId: input.fileName });
-      return { ok: true as const, source: input.fileName };
+      await assertPassword(ctx, input.password);
+      await assertConfirm(input.confirm);
+      const fileName = maint.normalizeRestoreFileName(input.fileName);
+      const ticket = await maint.issueRestoreUploadTicket({
+        userId: ctx.user.id,
+        sessionId: ctx.sessionId,
+        dbName: await maint.currentDbName(),
+        fileName,
+        fileSize: input.fileSize,
+      });
+      return { ok: true as const, ticket, uploadUrl: "/api/backups/restore-upload" };
     }),
 
   /** تصفير «نظام فارغ» (مدمّر جداً): كلمة مرور + رمز تأكيد + نسخة أمان تلقائية. */
@@ -139,11 +165,16 @@ export const systemRouter = router({
     .input(z.object({ confirm: z.string(), password: z.string().min(1), seed: z.boolean().optional() }))
     .mutation(async ({ ctx, input }) => {
       assertSingleTenantOnly("تصفير النظام");
-      assertPassword(ctx, input.password);
+      await assertPassword(ctx, input.password);
       await assertConfirm(input.confirm);
-      await logAudit(ctx, { action: "system.reset.begin", entityType: "system", entityId: null });
-      await maint.runReset(!!input.seed);
-      await logAudit(ctx, { action: "system.reset", entityType: "system", entityId: input.seed ? "seeded" : "empty" });
+      const releaseLock = await maint.acquireRestoreLock();
+      try {
+        await logAudit(ctx, { action: "system.reset.begin", entityType: "system", entityId: null });
+        await maint.runReset(!!input.seed);
+        await logAudit(ctx, { action: "system.reset", entityType: "system", entityId: input.seed ? "seeded" : "empty" });
+      } finally {
+        await releaseLock();
+      }
       return { ok: true as const };
     }),
 

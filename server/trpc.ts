@@ -44,6 +44,26 @@ export const router = t.router;
 export const middleware = t.middleware;
 export const publicProcedure = t.procedure;
 
+// بوابة رمز استعادة كلمة المرور: تظل عامة لأن صاحب الحساب خارج الجلسة، لكنها لا تمرر
+// أي طلب إلى قاعدة البيانات ما لم يحمل الشكل المشفّر الكامل للرمز أحادي الاستخدام.
+// التحقق الحاسم (hash/expiry/replay/attempts) يبقى ذرياً داخل passwordResetService.
+const requirePasswordResetTokenShape = t.middleware(async ({ getRawInput, next }) => {
+  const input = (await getRawInput()) as { token?: unknown } | null;
+  if (
+    !input ||
+    typeof input.token !== "string" ||
+    !/^PR1-[A-Za-z0-9_-]{16}-[A-Za-z0-9_-]{43}$/.test(input.token.trim())
+  ) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: "تعذّرت إعادة تعيين كلمة المرور. تحقّق من الرمز أو اطلب رمزاً جديداً من المدير.",
+    });
+  }
+  return next();
+});
+
+export const passwordResetTokenProcedure = t.procedure.use(requirePasswordResetTokenShape);
+
 /**
  * Credential-free bootstrap boundary for the native Android client. This does not authenticate
  * a user or grant a session; it only prevents browsers and obsolete clients from minting device
@@ -193,6 +213,11 @@ function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, m
     return next({ ctx: { ...ctx, user: ctx.user } });
   });
 }
+
+/** إدارة هويات المستخدمين: admin فعلي + بوابة users/FULL صريحة لأدوات الجرد الساكن. */
+export const usersAdminProcedure = t.procedure
+  .use(requireAdmin)
+  .use(requireModuleGate(["admin"], "users", "FULL"));
 
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
 export const managerProcedure = t.procedure.use(requireRole("manager"));

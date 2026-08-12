@@ -53,7 +53,7 @@ async function seedBase() {
     openId: "local_admin",
     name: "المدير",
     email: "admin@t.test",
-    passwordHash: hashPassword("Admin@12345"),
+    passwordHash: await hashPassword("Admin@12345"),
     role: "admin",
     loginMethod: "local",
     branchId: 1,

@@ -17,7 +17,7 @@ function createControlDb(url: string) {
   _pool = mysql.createPool({
     uri: url,
     timezone: "Z",
-    connectionLimit: 5,
+    connectionLimit: Number(process.env.CONTROL_DB_POOL_LIMIT ?? 5),
     enableKeepAlive: true,
     keepAliveInitialDelay: 10_000,
     connectTimeout: 10_000,

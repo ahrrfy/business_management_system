@@ -137,6 +137,19 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  // ── استعادة كلمات المرور والسير الذاتية للمتقدمين (0174–0175) ──
+  passwordResetTokens_lookupId_unique: {
+    msg: "رمز استعادة كلمة المرور مسجّل مسبقاً — اطلب إصدار رمز جديد.",
+  },
+  passwordResetTokens_tokenHash_unique: {
+    msg: "رمز استعادة كلمة المرور مكرّر داخلياً — اطلب إصدار رمز جديد.",
+  },
+  uq_jobApplicantCv_applicant: {
+    msg: "يوجد ملف سيرة ذاتية محفوظ لهذا المتقدّم — استبدل الملف الحالي بدلاً من إضافة ملف ثانٍ.",
+  },
+  uq_jobApplicantCv_publicKey: {
+    msg: "حدث تعارض نادر في معرّف ملف السيرة الذاتية — أعد رفع الملف.",
+  },
   // ── عمليات العدّ غير المتصلة في الجرد (0162) ──
   uq_stkcountop_request: {
     msg: "طلب العدّ هذا مسجّل مسبقًا في جلسة الجرد — حدّث الشاشة لعرض النتيجة المحفوظة بدل إعادة إرساله.",

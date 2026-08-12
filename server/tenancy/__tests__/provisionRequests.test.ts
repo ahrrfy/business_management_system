@@ -63,7 +63,7 @@ async function reset() {
 async function seedPlatformAdmin(): Promise<number> {
   const result = await db().insert(platformAdmins).values({
     email: "pa@test.local",
-    passwordHash: hashPassword("Pass1234!Aaa"),
+    passwordHash: await hashPassword("Pass1234!Aaa"),
     name: "مدير المنصّة",
   });
   return extractInsertId(result);

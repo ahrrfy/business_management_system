@@ -63,19 +63,25 @@ chmod 600 /home/deploy/erp/.env    # إلزامي: لا تترك أسرار ال
 | المتغيّر | قيمة الإنتاج | ملاحظة |
 |---|---|---|
 | `NODE_ENV` | `production` | يُفعّل CSP المُحكَم ويُخفّف ضوضاء السجلّ |
-| `HOST` | `127.0.0.1` | خلف nginx: لا يُكشف منفذ التطبيق للإنترنت إطلاقاً (للمتجر المحلي/LAN اتركه فارغاً) |
+| `HOST` | `127.0.0.1` | إلزامي في الإنتاج؛ خلف nginx لا يُكشف منفذ التطبيق للإنترنت إطلاقاً |
+| `ALLOW_PUBLIC_BIND` | `0` | ارفعه إلى `1` فقط إذا كان `HOST` العام/LAN مقصوداً ومعه جدار ناري؛ وإلا يفشل الإقلاع مغلقاً |
 | `PORT` | `3000` | يستمع داخلياً؛ nginx يُمرّر إليه |
-| `DATABASE_URL` | `mysql://root:<قوية>@127.0.0.1:3307/erp` | **القاعدة المركزية** على نفس الخادم — منفذ مميّز `DB_PORT=3307` (خادم مشترك: لا تصادم) |
-| `DB_ROOT_PW` / `DB_NAME` / `DB_CONTAINER` | `<قوية>` / `erp` / `erp-mysql` | تُستعمل في النسخ الاحتياطي + compose |
+| `INTERNAL_PROXY_SECRET` | `openssl rand -hex 32` | يطابق `$alroya_proxy_secret` في nginx ويمنع تجاوز البروكسي من عملية محلية |
+| `DATABASE_URL` | `mysql://erp_app:<قوية>@127.0.0.1:3307/erp` | حساب التطبيق محصور بقاعدة `erp`؛ لا تشغّل الويب بـroot |
+| `DB_APP_USER` / `DB_APP_PW` | `erp_app` / `openssl rand -hex 24` | حساب الويب الأقل امتيازاً؛ كلمة مختلفة عن root |
+| `DB_ROOT_PW` / `DB_NAME` / `DB_CONTAINER` | `<قوية>` / `erp` / `erp-mysql` | root للصيانة/التعافي وcompose فقط، ولا يبقى في بيئة عامل الويب |
 | `JWT_SECRET` | `openssl rand -hex 32` | **بدّله؛ لا تترك القيمة الافتراضية أبداً** |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | بريدك / كلمة قويّة | يُنشئ أوّل مدير عند البذرة |
 | `ALLOWED_ORIGINS` | **اتركه فارغاً** | التطبيق أحادي الأصل (نفس النطاق) فلا يحتاج CORS. املأه فقط لو فصلت الواجهة على نطاق آخر |
 | `BACKUP_KEEP_DAILY/WEEKLY/MONTHLY` | `7` / `4` / `3` | سياسة تدوير النسخ الليلية (احتفاظ متدرّج) |
 
+الاستعادة والتصفير عبر الويب معطّلان نهائياً في الإنتاج بلا مفتاح تجاوز. نفّذهما من CLI بعد إيقاف عمال الويب. إذا انقطعت العملية وبقي قفل الصيانة: خذ المسار الدقيق من سجل الخادم (اسم `erp-restore-*.lock` داخل مجلد النظام المؤقت)، واقرأ السطر الأول `PID:owner`. لا تحذفه حتى تتأكد أن PID غير موجود ولا توجد عملية `restore.mjs`/`reset.mjs`/`mysql` تابعة. احذف ذلك الملف المحدد فقط ثم أعد الأمر؛ لا تمسح مجلد temp ولا تستخدم wildcard.
+
 ```bash
 # 3) القاعدة المركزية (تخزين دائم عبر docker-compose)
 docker compose up -d
 docker compose ps                 # انتظر "healthy"
+pnpm db:ensure-app-user            # لازم أيضاً عند ترقية volume قديم؛ ينشئ/يدوّر حساب التطبيق المحصور
 
 # 4) قاعدة فارغة فقط: إنشاء المخطط ثم تسجيل baseline؛ لا تستعمل هذا المسار على قاعدة قائمة
 ALLOW_BARE_PUSH=1 pnpm db:push
@@ -129,6 +135,9 @@ grep -rn "srv1548487.hstgr.cloud" /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ |
 
 # 1) ثبّت القالب الملتزَم (عدّل server_name فيه إن استعملت نطاقاً خاصاً):
 sudo cp /home/deploy/erp/deploy/nginx-erp.conf /etc/nginx/sites-available/alroya-erp
+# حرّر القيمة CHANGE_ME_INTERNAL_PROXY_SECRET لتطابق .env، ثم احجب الملف عن مستخدمي الخادم المشترك:
+sudo chown root:root /etc/nginx/sites-available/alroya-erp
+sudo chmod 600 /etc/nginx/sites-available/alroya-erp
 sudo ln -s /etc/nginx/sites-available/alroya-erp /etc/nginx/sites-enabled/alroya-erp
 sudo nginx -t && sudo systemctl reload nginx     # reload لا restart — لا نقطع مواقع الخادم الأخرى
 
@@ -211,7 +220,10 @@ pnpm health:check
 
 **الاستعادة** (راجع `docs/disaster-recovery.md` §٢؛ على Linux نفس الأوامر):
 ```bash
-docker exec -i erp-mysql mysql -uroot -p<pw> < backups/<ملف-النسخة>.sql
+pm2 stop erp-server
+pnpm db:restore backups/<ملف-النسخة>.sql --confirm RESTORE
+pm2 start erp-server
+pnpm db:verify
 ```
 نفّذ **اختبار استعادة ربع سنوي** (DR §٣) — نسخة لا تُختبَر = نسخة وهمية.
 
@@ -319,9 +331,13 @@ BASH
 
 ```bash
 # في .env الإنتاج: اضبط القيمتين التاليتين (راجع .env.production.example للتفصيل)
-CONTROL_DATABASE_URL=mysql://root:<كلمة-مرور-القاعدة>@127.0.0.1:3307/erp_control
+DB_CONTROL_NAME=erp_control
+DB_CONTROL_USER=erp_control_app
+DB_CONTROL_PW=$(openssl rand -hex 24)
+CONTROL_DATABASE_URL=mysql://erp_control_app:<قيمة-DB_CONTROL_PW>@127.0.0.1:3307/erp_control
 INTEGRATIONS_ENCRYPTION_KEY=$(openssl rand -hex 32)
 
+pnpm db:ensure-app-user                  # ينشئ قاعدة/حساب التحكّم بصلاحية محصورة، لا root للويب
 pnpm control:bootstrap                     # مرّة واحدة: يُنشئ مخطّط erp_control
 pnpm company:new <رمز> "<اسم الشركة>" \
   --admin-email admin@company.example --admin-password '<قوية>'   # لكل شركة: قاعدة+مستخدم DB مخصّص+seed

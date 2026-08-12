@@ -19,6 +19,7 @@ import type { CreateUserInput } from "../services/userService";
 import { getEmployeeUsage } from "../services/entityUsage";
 import { adminProcedure, protectedProcedure, requireModule, router } from "../trpc";
 import { isDupEntry, toArabicMessage } from "@shared/errorMap.ar";
+import { companyBranchScope, resolveTargetBranch } from "../services/companyBranchScope";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -118,15 +119,25 @@ export const employeeRouter = router({
         })
         .optional(),
     )
-    .query(({ input }) => svc.listEmployees(input)),
+    .query(({ input, ctx }) => {
+      const scope = companyBranchScope(ctx.user);
+      const branchId = resolveTargetBranch(scope, input?.branchId, { required: false });
+      return svc.listEmployees(branchId == null ? input : { ...input, branchId }, scope);
+    }),
 
-  get: hrRead.input(z.object({ id: z.number().int().positive() })).query(({ input }) => svc.getEmployee(input.id)),
+  get: hrRead.input(z.object({ id: z.number().int().positive() })).query(async ({ input, ctx }) => {
+    const e = await svc.getEmployee(input.id, companyBranchScope(ctx.user));
+    if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+    return e;
+  }),
 
-  formOptions: hrRead.query(() => svc.formOptions()),
+  formOptions: hrRead.query(({ ctx }) => svc.formOptions(companyBranchScope(ctx.user))),
 
   create: hrWrite.input(employeeInput).mutation(async ({ input, ctx }) => {
     try {
-      const e = await svc.createEmployee(input as svc.EmployeeInput);
+      const scope = companyBranchScope(ctx.user);
+      const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
+      const e = await svc.createEmployee({ ...input, branchId } as svc.EmployeeInput, scope);
       await logAudit(ctx, { action: "employee.create", entityType: "employee", entityId: e?.id, newValue: { name: e?.fullName, department: input.department ?? null } });
       return e;
     } catch (err: any) {
@@ -149,6 +160,9 @@ export const employeeRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
       }
       try {
+        const scope = companyBranchScope(ctx.user);
+        const branchId = resolveTargetBranch(scope, emp.branchId, { required: false });
+        if (emp.managerId != null) await svc.assertEmployeeInScope(emp.managerId, scope);
         let spec: svc.AccountSpec;
         if (account.mode === "new") {
           const { mode, ...u } = account;
@@ -156,8 +170,8 @@ export const employeeRouter = router({
         } else {
           spec = account;
         }
-        const { employeeId, userId } = await svc.createEmployeeWithAccount(emp as svc.EmployeeInput, spec, toActor(ctx));
-        const e = await svc.getEmployee(employeeId);
+        const { employeeId, userId } = await svc.createEmployeeWithAccount({ ...emp, branchId } as svc.EmployeeInput, spec, toActor(ctx));
+        const e = await svc.getEmployee(employeeId, scope);
         if (account.mode === "new") {
           await logAudit(ctx, { action: "user.create", entityType: "user", entityId: userId, newValue: { email: account.email ?? null, username: account.username ?? null, role: account.role } });
         }
@@ -222,7 +236,15 @@ export const employeeRouter = router({
     .mutation(async ({ input, ctx }) => {
       const { id, ...rest } = input;
       try {
-        const e = await svc.updateEmployee(id, rest as svc.EmployeeInput, { userId: ctx.user.id, role: ctx.user.role });
+        const scope = companyBranchScope(ctx.user);
+        await svc.assertEmployeeInScope(id, scope);
+        const branchId = resolveTargetBranch(scope, rest.branchId, { required: false });
+        const e = await svc.updateEmployee(
+          id,
+          { ...rest, branchId } as svc.EmployeeInput,
+          { userId: ctx.user.id, role: ctx.user.role },
+          scope,
+        );
         // تغيير الأجر يُسجَّل ببصمته كاملةً (قبل/بعد) لا بالاسم وحده — وإلا صار تغييرُ أجرٍ
         // بلا أثر. والبصمة تشمل الجدول والأسعار لا الراتب وحده (وهي مسارات أجرٍ حقيقية).
         await logAudit(ctx, {
@@ -252,11 +274,20 @@ export const employeeRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      if (input.status === "terminated") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "استخدم مسار إنهاء الخدمة الرسمي لإنهاء خدمة الموظف.",
+        });
+      }
+      const scope = companyBranchScope(ctx.user);
       const e = await svc.setEmploymentStatus(input.id, input.status, {
         terminationDate: input.terminationDate,
         terminationReason: input.terminationReason,
         actorUserId: ctx.user.id,
-      });
+        actorRole: ctx.user.role,
+        actorIsOwner: ctx.user.isOwner === true,
+      }, scope);
       await logAudit(ctx, {
         action: "employee.setStatus",
         entityType: "employee",
@@ -269,13 +300,16 @@ export const employeeRouter = router({
     }),
 
   /** ملخّص ارتباطات الموظف (نشاط + سبب منع الحذف + بيانات الكود عند المسح). */
-  usage: hrRead.input(z.object({ id: z.number().int().positive() })).query(({ input }) => getEmployeeUsage(input.id)),
+  usage: hrRead.input(z.object({ id: z.number().int().positive() })).query(async ({ input, ctx }) => {
+    await svc.assertEmployeeInScope(input.id, companyBranchScope(ctx.user));
+    return getEmployeeUsage(input.id);
+  }),
 
   /** حذف نهائي — للنظيف فقط (يُمنع مع رسالة عربية إن وُجد ارتباط). */
   delete: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await svc.deleteEmployee(input.id);
+      const res = await svc.deleteEmployee(input.id, companyBranchScope(ctx.user));
       await logAudit(ctx, { action: "employee.delete", entityType: "employee", entityId: input.id });
       return res;
     }),

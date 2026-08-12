@@ -72,7 +72,14 @@ async function generateUniqueActivePin(
   const activeHashes = siblings.filter((a) => a.status === "ACTIVE" && a.pinHash).map((a) => a.pinHash!);
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const pin = String(randomInt(0, 10_000)).padStart(4, "0");
-    if (!activeHashes.some((stored) => verifyPassword(pin, stored))) return pin;
+    let duplicate = false;
+    for (const stored of activeHashes) {
+      if (await verifyPassword(pin, stored)) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (!duplicate) return pin;
   }
   throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر توليد رمز PIN فريد" });
 }
@@ -133,7 +140,7 @@ export async function addStocktakeWorker(input: AddStocktakeWorkerInput, actor: 
       name: effectiveName,
       method: input.method,
       userId: effectiveUserId,
-      pinHash: pin ? hashPassword(pin) : null,
+      pinHash: pin ? await hashPassword(pin) : null,
       zone: requestedZone,
       status: "ACTIVE",
       addedBy: actor.userId,

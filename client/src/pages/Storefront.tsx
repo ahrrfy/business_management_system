@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "wouter";
 import {
+  AlertTriangle,
   ArrowRight,
   Banknote,
   BadgePercent,
@@ -566,6 +567,9 @@ export default function Storefront() {
     });
   }, [availability, brand, items, priceFilter, sort]);
   const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED";
+  // catalog يُرشّح البحث والفئة خادمياً، بينما السعر/الماركة عميلان. غياب العناصر من الطلب الأساسي
+  // يعني كتالوجاً فارغاً حقاً؛ وأي غياب مع بحث/فئة/تنقيح يعني صفراً بسبب التصفية.
+  const isEmptyCatalog = items.length === 0 && !search && categoryId == null;
 
   function scrollToResults() {
     window.setTimeout(() => document.getElementById("store-results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
@@ -579,6 +583,12 @@ export default function Storefront() {
     setPriceFilter("ALL");
     setBrand("");
     setSort("RECOMMENDED");
+  }
+  function clearCatalogFilters() {
+    setRawSearch("");
+    setSearch("");
+    setCategoryId(null);
+    clearRefinements();
   }
   // فواصل السيل التسويقية: بنرات INLINE المُدارة أولاً، وعند غيابها تُشتقّ من عروض اليوم الفعّالة
   // (فلسفة in-feed العالمية: لا يمرّ الزبون بأكثر من ~عشرة منتجات دون محفّز شراء).
@@ -798,12 +808,7 @@ export default function Storefront() {
             {(hasRefinements || categoryId != null || search) && (
               <button
                 type="button"
-                onClick={() => {
-                  setRawSearch("");
-                  setSearch("");
-                  setCategoryId(null);
-                  clearRefinements();
-                }}
+                onClick={clearCatalogFilters}
                 className="text-xs font-bold text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-400"
               >
                 مسح الكل
@@ -967,21 +972,37 @@ export default function Storefront() {
             <Loader2 aria-hidden className="size-8 animate-spin text-emerald-500" />
             <p className="mt-3 text-sm">جارٍ تحميل المنتجات…</p>
           </div>
+        ) : catalogQ.isError ? (
+          <div className="flex flex-col items-center justify-center py-24 text-center" role="alert">
+            <AlertTriangle aria-hidden className="size-10 text-[var(--sem-warn)]" />
+            <p className="mt-3 text-sm font-bold text-slate-700 dark:text-slate-200">تعذّر تحميل المنتجات</p>
+            <p className="mt-1 max-w-sm text-xs text-slate-500">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة ككتالوج فارغ.</p>
+            <button
+              type="button"
+              onClick={() => void catalogQ.refetch()}
+              className="store-primary-action mt-3 rounded-xl px-4 py-2 text-xs font-bold text-white transition motion-safe:active:scale-95"
+            >
+              إعادة المحاولة
+            </button>
+          </div>
         ) : filteredItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 text-center text-slate-400">
             <Package aria-hidden className="size-10 opacity-50" />
-            <p className="mt-3 text-sm">لا توجد منتجات مطابقة للتصفية الحالية</p>
-            {(search || categoryId != null || hasRefinements) && (
+            <p className="mt-3 text-sm font-bold text-slate-600">
+              {isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}
+            </p>
+            <p className="mt-1 max-w-sm text-xs text-slate-400">
+              {isEmptyCatalog
+                ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر وتوفرها للبيع."
+                : "جرّب مسح البحث والفلاتر لعرض جميع المنتجات المتاحة."}
+            </p>
+            {!isEmptyCatalog && (
               <button
-                onClick={() => {
-                  setRawSearch("");
-                  setSearch("");
-                  setCategoryId(null);
-                  clearRefinements();
-                }}
+                type="button"
+                onClick={clearCatalogFilters}
                 className="mt-3 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition motion-safe:active:scale-95"
               >
-                عرض المنتجات المتاحة
+                مسح البحث والفلاتر
               </button>
             )}
           </div>

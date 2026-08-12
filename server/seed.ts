@@ -1,10 +1,10 @@
 import "dotenv/config";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { assetCustodyLog, assetMaintenance, branches, categories, deliveryParties, employees, fixedAssets, productVariants, products, roles, serviceTypes, suppliers, users, waHubSettings } from "../drizzle/schema";
-import { isStrongPassword } from "../shared/const";
+import { assetCustodyLog, assetMaintenance, branches, categories, deliveryParties, employees, fixedAssets, passwordResetTokens, productVariants, products, roles, serviceTypes, suppliers, userSessions, users, waHubSettings } from "../drizzle/schema";
 import { SECTION_CASHIER_ROLES } from "../shared/permissions";
 import { hashPassword } from "./auth/password";
+import { assertSeedPolicy } from "./config/seedPolicy";
 import { getDb } from "./db";
 import { createProduct } from "./services/catalogService";
 import { setStock } from "./services/inventoryService";
@@ -17,18 +17,7 @@ async function seed() {
 
   // SEED_MODE=prod (عبر pnpm seed:prod): بذرة إنتاج نظيفة — مدير + فرعان + فئات أساس فقط،
   // بلا منتجات/مورد عيّنة. سلوك مستقلّ عن NODE_ENV (G17) كي لا تتسرّب عيّنات لقاعدة حقيقية.
-  const isProd = process.env.SEED_MODE === "prod";
-  if (isProd) {
-    const pw = process.env.ADMIN_PASSWORD ?? "";
-    // نرفض القيم المنشورة في المستودع (الافتراضية + قيمة القالب) — من ينسخ القالب بلا تحرير
-    // سيُنشئ admin بكلمة معروفة علناً على نظام مكشوف للإنترنت.
-    const published = new Set(["Admin@12345", "ضع-كلمة-قوية-هنا"]);
-    if (pw.length < 10 || published.has(pw) || !isStrongPassword(pw)) {
-      throw new Error(
-        "بذرة الإنتاج تتطلّب ADMIN_PASSWORD قوية في .env: ≥١٠ أحرف تحوي حرفاً ورقماً، وليست القيمة الافتراضية ولا قيمة القالب."
-      );
-    }
-  }
+  const { isProd, password } = assertSeedPolicy(process.env);
 
   // Branches — idempotent per-code so older DBs that only have MAIN backfill SALES.
   const targetBranches = [
@@ -57,7 +46,6 @@ async function seed() {
 
   // Admin user
   const email = process.env.ADMIN_EMAIL ?? "admin@alroya.local";
-  const password = process.env.ADMIN_PASSWORD ?? "Admin@12345";
   let admin = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
   if (!admin) {
     // تدقيق ٣/٨: البذرة العادية (بلا SEED_MODE=prod) كانت تقبل الافتراضي المنشور «Admin@12345» بلا
@@ -75,7 +63,7 @@ async function seed() {
       // اسم مستخدم افتراضي للمدير ⇒ يمكنه الدخول بـ«admin» أو بالبريد (طلب المالك: «اما بريد او اسم»).
       username: process.env.ADMIN_USERNAME ?? "admin",
       name: "المدير العام",
-      passwordHash: hashPassword(password),
+      passwordHash: await hashPassword(password),
       role: "admin",
       isOwner: true,
       loginMethod: "local",
@@ -98,7 +86,27 @@ async function seed() {
     // تطابق ما عُرض. نُزامن كلمة المرور دائماً في هذا المسار (توفير الويب فقط، لا
     // `pnpm seed`/`company:new` اليدوي العادي — العلَم اختياري افتراضه معطَّل) كي تبقى
     // الكلمة المعروضة صحيحة دائماً.
-    await db.update(users).set({ passwordHash: hashPassword(password), mustChangePassword: true }).where(eq(users.id, admin.id));
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      await tx
+        .update(users)
+        .set({ passwordHash: await hashPassword(password), mustChangePassword: true, sessionsValidFrom: now })
+        .where(eq(users.id, admin.id));
+      await tx
+        .update(userSessions)
+        .set({ revokedAt: now })
+        .where(and(eq(userSessions.userId, admin.id), isNull(userSessions.revokedAt)));
+      await tx
+        .update(passwordResetTokens)
+        .set({ invalidatedAt: now })
+        .where(
+          and(
+            eq(passwordResetTokens.userId, admin.id),
+            isNull(passwordResetTokens.consumedAt),
+            isNull(passwordResetTokens.invalidatedAt),
+          ),
+        );
+    });
     console.log(`• admin ${email} already exists — synced password (إعادة محاولة توفير)`);
   } else {
     console.log(`• admin ${email} already exists, skipping`);
@@ -190,7 +198,7 @@ async function seed() {
       email: courierEmail,
       username: "courier",
       name: "مندوب التوصيل التجريبي",
-      passwordHash: hashPassword(process.env.ADMIN_PASSWORD ?? "Admin@12345"),
+      passwordHash: await hashPassword(password),
       role: "courier",
       loginMethod: "local",
       branchId: mainBranch ? Number(mainBranch.id) : null,

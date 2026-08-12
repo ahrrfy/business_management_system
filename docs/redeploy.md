@@ -28,7 +28,7 @@
    ```powershell
    copy .env.example .env
    ```
-   ثمّ حرّر `.env` واملأ: `DATABASE_URL`, `DB_ROOT_PW`, `JWT_SECRET` (ولّده بالأمر في القالب), `ADMIN_PASSWORD`.
+   ثمّ حرّر `.env` واملأ: `DB_ROOT_PW`, `DB_APP_PW`, `DATABASE_URL` بحساب `erp_app`, و`JWT_SECRET` (ولّدها بالأوامر في القالب), و`ADMIN_PASSWORD`.
 
 4. **رفع قاعدة البيانات (مع تخزين دائم)**
    ```powershell
@@ -37,7 +37,9 @@
    انتظر حتى تصبح الحاوية `healthy`:
    ```powershell
    docker compose ps
+   pnpm db:ensure-app-user
    ```
+   الأمر الأخير لازم أيضاً عند ترقية volume قديم؛ يدوّر حساب التطبيق المحصور بقاعدة النظام من دون وضع كلمات المرور في سطر الأوامر.
 
 5. **هجرة المخطط**
    ```powershell
@@ -46,8 +48,10 @@
 
 6. **البذرة الأولى (admin + الفروع + عيّنات)**
    ```powershell
+   $env:CONFIRM_SAMPLE_DATA_SEED="1"
    pnpm seed
    ```
+   هذا المسار تجريبي ويضيف بيانات عيّنة. في الإنتاج استخدم `pnpm seed:prod` فقط.
 
 7. **فحص الأنواع**
    ```powershell
