@@ -526,8 +526,11 @@ option:disabled {
     padding: 0 !important;
   }
 
-  /* تبقى تسمية القائمة وعدد السجلات، وتُخفى أدوات التشغيل فقط. */
-  .list-toolbar-actions {
+  /* تبقى تسمية القائمة وعدد السجلات، وتُخفى أدوات التشغيل فقط.
+     صندوق الفلاتر (١٢/٨) أُخِذ خارج `.list-toolbar-actions` ضمن تنسيق الصفَّين — نُخفيه صراحةً
+     كي لا تُطبَع حقول البحث والفلاتر فوق الجدول (ملاحظة Codex P2 على PR #557). */
+  .list-toolbar-actions,
+  .list-toolbar-filter-panel {
     display: none !important;
   }
 

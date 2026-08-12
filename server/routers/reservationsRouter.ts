@@ -10,13 +10,33 @@ import { logAudit } from "../services/auditService";
 import { utcDayStart, utcNextDayStart } from "../services/businessDay";
 import { money, round2, toDbMoney } from "../services/money";
 import {
-  cancelReservation, convertReservationToSale, createReservation, extendReservation,
+  cancelReservation, convertReservationToSale, createReservation, expireDueReservations, extendReservation,
 } from "../services/reservations";
 import { requireDb } from "../services/tx";
+import { logger } from "../logger";
 import { branchScopedProcedure, requireModule, router } from "../trpc";
 
 const reservationsRead = branchScopedProcedure.use(requireModule("reservations", "READ"));
 const reservationsWrite = branchScopedProcedure.use(requireModule("reservations", "FULL"));
+
+/**
+ * فحصٌ كسول لانتهاء **حجزٍ بعينه** — يُشغَّل قبل `get` بفلتر id فيعالَج المطلوب حتماً وحده.
+ * ملاحظات Codex على PR #557:
+ * - **P1**: الكنسُ العامّ بحدّ ٥٠ قد يُعالج ٥٠ صفّاً من فرعٍ آخر بينما الحجز المطلوب يبقى ACTIVE.
+ *   بفلتر id نضمن معالجة المطلوب حصراً.
+ * - **P2 (deadlock)**: الكنس العام يقفل `reservations` قبل `reservationStock`، بينما `createReservation`
+ *   يقفل `reservationStock` قبل `reservations` (numbering) — تعارض ممكن تحت الحمل. كنسُ id واحدٍ
+ *   لا يمرّ بذلك المسار على تعدّد الصفوف. الكرون الخلفيّ يتولّى الدفعات العامّة (لا في مسار الطلب).
+ * - `list` لا يستدعي هذه الدالة إطلاقاً (نعتمد الكرون كلّ ٥د) — فرق العرض الأقصى ٥ دقائق مقبول.
+ */
+async function sweepExpiredById(reservationId: number): Promise<void> {
+  try {
+    const res = await expireDueReservations({ reservationId, limit: 1 });
+    if (res.expired > 0) logger.info({ reservationId }, "reservations.lazy-sweep(id) expired one");
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err), reservationId }, "reservations.lazy-sweep(id) failed (non-fatal)");
+  }
+}
 
 const reservationStatus = z.enum(["ACTIVE", "PARTIALLY_FULFILLED", "FULFILLED", "EXPIRED", "CANCELLED", "RELEASED"]);
 const reservationChannel = z.enum(["PHONE", "WALK_IN", "WHATSAPP", "STORE"]);
@@ -49,6 +69,8 @@ export const reservationsRouter = router({
         .optional(),
     )
     .query(async ({ ctx, input }) => {
+      // `list` لا يستدعي كنسَ الانتهاء بعد الآن — الكرون الخلفيّ (`reservationsSweeper` كلّ ٥د)
+      // يتكفّل بالدفعات العامّة، فلا يُدخل مسارُ القراءة عالي التردّد سباقَ أقفال مع `createReservation`.
       const db = requireDb();
       const conds: (SQL | undefined)[] = [];
       // عزل الفرع: غير المرتفع (scopedBranchId مضبوط) يرى فرعه فقط؛ المرتفع يفلتر بـbranchId اختيارياً.
@@ -88,6 +110,9 @@ export const reservationsRouter = router({
   get: reservationsRead
     .input(z.object({ id: z.number().int().positive() }))
     .query(async ({ ctx, input }) => {
+      // فحصٌ كسول محدَّد بالـid: أيّ حجزٍ فُتحت تفاصيله بعد انقضاء مدّته يُصبح EXPIRED قبل عرضه —
+      // لا يبقى ACTIVE. الفلتر بـid يمنع كنسَ صفوف عشوائيّة ويُلغي تعارض الأقفال مع createReservation.
+      await sweepExpiredById(input.id);
       const db = requireDb();
       const head = (
         await db.select().from(reservations).where(eq(reservations.id, input.id)).limit(1)

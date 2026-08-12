@@ -4,6 +4,7 @@ export type { CreateReservationInput, CreateReservationResult, ReservationLineIn
 export { convertReservationToSale } from "./convert";
 export type { ConvertReservationInput, ConvertReservationResult } from "./convert";
 export { cancelReservation, extendReservation, expireDueReservations, releaseReservation } from "./lifecycle";
+export { startReservationsSweeper, stopReservationsSweeper, sweepExpiredReservationsOnce } from "./sweeper";
 export { listReservations } from "./list";
 export type { ListFilter, ListScope } from "./list";
 export { adjustReservedStock, readAvailability } from "./stock";
