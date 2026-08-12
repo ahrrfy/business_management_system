@@ -24,6 +24,24 @@ const dotenv = require("dotenv");
 const artifactSmoke =
   process.env.HR_BRIDGE_ECOSYSTEM_ARTIFACT_SMOKE === "1";
 dotenv.config({ quiet: true });
+
+// PM2 merges the ecosystem loader's process.env into every app. Merely omitting
+// privileged keys from erp-server.env is therefore insufficient: dotenv has
+// already populated them before PM2 reads this file. Snapshot the two values
+// needed by the isolated provision worker, then remove all bootstrap/root-only
+// values from the loader environment before exporting the web definition.
+const provisionPrivilegedEnvironment = Object.freeze({
+  DB_CONTAINER: process.env.DB_CONTAINER,
+  DB_ROOT_PW: process.env.DB_ROOT_PW,
+});
+const webForbiddenEnvironmentKeys = Object.freeze([
+  "DB_ROOT_PW",
+  "DB_CONTAINER",
+  "DB_APP_PW",
+  "DB_CONTROL_PW",
+  "ADMIN_PASSWORD",
+]);
+for (const key of webForbiddenEnvironmentKeys) delete process.env[key];
 // The mutable root ecosystem never launches the production bridge. A source
 // definition exists only while the build gate inspects its PM2 contract.
 let artifactSmokeBridgeApp = null;
@@ -87,6 +105,10 @@ module.exports = {
       restart_delay: 3000,
       max_restarts: 10,
       min_uptime: "10s",
+      // Defense in depth for PM2 daemon environments retained across reloads.
+      // The one-time production migration recreates erp-server so stale keys
+      // are removed; subsequent reloads cannot re-introduce these prefixes.
+      filter_env: webForbiddenEnvironmentKeys,
       // إيقاف رشيق: امنح الخادم 10ث لإغلاق الاتصالات بعد SIGINT قبل القتل القسري (SIGKILL).
       kill_timeout: 11000,
       env: {
@@ -131,8 +153,8 @@ module.exports = {
         TZ: "UTC",
         CONTROL_DATABASE_URL: process.env.CONTROL_DATABASE_URL,
         INTEGRATIONS_ENCRYPTION_KEY: process.env.INTEGRATIONS_ENCRYPTION_KEY,
-        DB_CONTAINER: process.env.DB_CONTAINER || "erp-mysql",
-        DB_ROOT_PW: process.env.DB_ROOT_PW,
+        DB_CONTAINER: provisionPrivilegedEnvironment.DB_CONTAINER || "erp-mysql",
+        DB_ROOT_PW: provisionPrivilegedEnvironment.DB_ROOT_PW,
         DATABASE_URL: process.env.DATABASE_URL, // يُستعمَل فقط لاستنتاج host/port الافتراضيَّين لقواعد الشركات الجديدة.
       },
       log_date_format: "YYYY-MM-DD HH:mm:ss",

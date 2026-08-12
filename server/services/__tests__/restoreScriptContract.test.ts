@@ -64,16 +64,56 @@ describe("restore script streaming contract", () => {
   });
 
   it("يشغّل الويب بحساب قاعدة محصور ويمسح سر root الموروث", async () => {
-    const [index, compose, productionEnv] = await Promise.all([
+    const [index, ecosystem, compose, productionEnv] = await Promise.all([
       readFile(path.resolve(process.cwd(), "server/index.ts"), "utf8"),
+      readFile(path.resolve(process.cwd(), "ecosystem.config.cjs"), "utf8"),
       readFile(path.resolve(process.cwd(), "docker-compose.yml"), "utf8"),
       readFile(path.resolve(process.cwd(), ".env.production.example"), "utf8"),
     ]);
     expect(index).toContain("delete process.env.DB_ROOT_PW");
+    expect(ecosystem).toContain("provisionPrivilegedEnvironment");
+    expect(ecosystem).toContain("filter_env: webForbiddenEnvironmentKeys");
+    expect(ecosystem).toContain("for (const key of webForbiddenEnvironmentKeys) delete process.env[key]");
     expect(compose).toContain("MYSQL_USER: ${DB_APP_USER:-erp_app}");
     expect(compose).toContain("MYSQL_PASSWORD: ${DB_APP_PW:");
     expect(productionEnv).toContain("DATABASE_URL=mysql://erp_app:");
     expect(productionEnv).not.toContain("DATABASE_URL=mysql://root:");
+  });
+
+  it("يفصل سر root فعلياً عن محمّل PM2 ويمرّره لعامل التوفير فقط", () => {
+    const probe = `
+      const config = require("./ecosystem.config.cjs");
+      const web = config.apps.find((app) => app.name === "erp-server");
+      const provision = config.apps.find((app) => app.name === "erp-provision-worker");
+      const forbidden = ["DB_ROOT_PW", "DB_CONTAINER", "DB_APP_PW", "DB_CONTROL_PW", "ADMIN_PASSWORD"];
+      const result = {
+        loaderClean: forbidden.every((key) => !process.env[key]),
+        filterComplete: forbidden.every((key) => web.filter_env.includes(key)),
+        webExplicitClean: forbidden.every((key) => !web.env[key]),
+        provisionRoot: provision.env.DB_ROOT_PW === "root-marker",
+        provisionContainer: provision.env.DB_CONTAINER === "container-marker",
+      };
+      process.stdout.write(JSON.stringify(result));
+    `;
+    const result = JSON.parse(execFileSync(process.execPath, ["-e", probe], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DB_ROOT_PW: "root-marker",
+        DB_CONTAINER: "container-marker",
+        DB_APP_PW: "app-marker",
+        DB_CONTROL_PW: "control-marker",
+        ADMIN_PASSWORD: "admin-marker",
+      },
+    }));
+    expect(result).toEqual({
+      loaderClean: true,
+      filterComplete: true,
+      webExplicitClean: true,
+      provisionRoot: true,
+      provisionContainer: true,
+    });
   });
 
   it("تبقى عينة تعدد الشركات ضمن ميزانية الاتصالات الآمنة", async () => {
