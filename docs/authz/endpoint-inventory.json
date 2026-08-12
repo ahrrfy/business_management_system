@@ -7,8 +7,8 @@
       "query": 418
     },
     "byAuthority": {
-      "module-gate": 375,
-      "module-map": 261,
+      "module-gate": 374,
+      "module-map": 262,
       "admin": 76,
       "raw-role": 57,
       "none": 53,
@@ -31,7 +31,7 @@
       "products": 48,
       "inventory": 43,
       "store": 40,
-      "crm": 30,
+      "crm": 29,
       "workorders": 29,
       "campaigns": 28,
       "sales": 24,
@@ -49,6 +49,7 @@
       "courier": 4,
       "expenses": 4,
       "pos": 3,
+      "crm|workorders": 1,
       "sales|workorders": 1
     },
     "flagCounts": {
@@ -3560,7 +3561,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:238"
+      "loc": "server/routers/customerRouter.ts:252"
     },
     {
       "surface": "trpc",
@@ -3577,7 +3578,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: remove",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/customerRouter.ts:316"
+      "loc": "server/routers/customerRouter.ts:330"
     },
     {
       "surface": "trpc",
@@ -3594,7 +3595,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:302"
+      "loc": "server/routers/customerRouter.ts:316"
     },
     {
       "surface": "trpc",
@@ -3611,7 +3612,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:265"
+      "loc": "server/routers/customerRouter.ts:279"
     },
     {
       "surface": "trpc",
@@ -3628,7 +3629,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:270"
+      "loc": "server/routers/customerRouter.ts:284"
     },
     {
       "surface": "trpc",
@@ -3645,7 +3646,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:281"
+      "loc": "server/routers/customerRouter.ts:295"
     },
     {
       "surface": "trpc",
@@ -3653,16 +3654,16 @@
       "proposedPermission": "crm.customer.create",
       "name": "create",
       "kind": "mutation",
-      "procedure": "customersCashierProcedure",
-      "authority": "module-gate",
-      "module": "crm",
-      "level": "FULL",
-      "roles": "cashier|manager|sales_rep",
-      "branch": "required",
+      "procedure": "customersReceptionCreateProcedure",
+      "authority": "module-map",
+      "module": "crm|workorders",
+      "level": "FULL|FULL",
+      "roles": "",
+      "branch": "scoped",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:142"
+      "loc": "server/routers/customerRouter.ts:146"
     },
     {
       "surface": "trpc",
@@ -3679,7 +3680,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:230"
+      "loc": "server/routers/customerRouter.ts:244"
     },
     {
       "surface": "trpc",
@@ -3696,7 +3697,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: delete",
       "flags": "RAW_ROLE_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/customerRouter.ts:248"
+      "loc": "server/routers/customerRouter.ts:262"
     },
     {
       "surface": "trpc",
@@ -3815,7 +3816,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:181"
+      "loc": "server/routers/customerRouter.ts:195"
     },
     {
       "surface": "trpc",

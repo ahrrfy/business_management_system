@@ -236,6 +236,16 @@ const PROCEDURES = {
     roles: ["cashier", "manager", "sales_rep"],
     branch: "required",
   },
+  // (١٢/٨) بوّابة إنشاء العميل من محطة الاستقبال: crm=FULL **أو** workorders=FULL — نمط
+  // invoiceViewProcedure نفسه أعلاه. توثَّق كسلطةٍ مركّبة صريحة (crm|workorders — FULL|FULL)
+  // كي يعكس الجرد كلا فرعي الإذن، فلا يُقنَع المراجع أن العميل يُنشَأ عبر بوّابة crm وحدها.
+  customersReceptionCreateProcedure: {
+    authority: "module-map",
+    module: "crm|workorders",
+    level: "FULL|FULL",
+    roles: [],
+    branch: "scoped",
+  },
   customersManagerProcedure: {
     authority: "module-gate",
     module: "crm",
