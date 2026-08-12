@@ -78,6 +78,18 @@ export default function SalesReturns() {
     setPage(0);
   };
 
+  // اتساق مع بقية ListToolbar: عدّ الفلاتر النشطة (باستثناء q — يظهر في مربع البحث) + إعادة الضبط.
+  const activeFilterCount = [customerId, branchId, createdBy, dateFrom, dateTo].filter(Boolean).length;
+  const resetFilters = () => {
+    setCustomerId("");
+    setBranchId("");
+    setCreatedBy("");
+    setDateFrom("");
+    setDateTo("");
+    setQ("");
+    setPage(0);
+  };
+
   const from = total === 0 ? 0 : page * PAGE + 1;
   const to = Math.min((page + 1) * PAGE, total);
 
@@ -103,6 +115,8 @@ export default function SalesReturns() {
               placeholder: "بحث برقم الفاتورة",
               barcode: true,
             }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetFilters}
             filters={
               <>
                 {/* FilterField يُظهر التسمية دائماً — placeholder/title وحدهما يختفيان عند الاختيار

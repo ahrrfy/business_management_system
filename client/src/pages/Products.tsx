@@ -64,6 +64,11 @@ export default function Products() {
   const setPage = (updater: number | ((p: number) => number)) =>
     setF({ page: String(typeof updater === "function" ? updater(page) : updater) });
 
+  // اتساق ListToolbar: شارة الفلاتر النشطة + زرّ المسح.
+  // الفرع مُستثنى (منتقي منفصل هو مصدر بيانات الشاشة، ليس فلتراً ثانوياً — إعادة ضبطه تكسر الاستعلام).
+  const activeFilterCount = [categoryFilter, includeInactive ? "1" : ""].filter(Boolean).length;
+  const resetFilters = () => setF({ q: "", category: "", inactive: "", page: "0" });
+
   // منتقي فرع صريح (نمط PR #288): افتراضي فرع المستخدم إن مُسنَد؛ وإلا يلزم اختياراً صريحاً
   // (لا `?? 1` صامت) — أثره هنا على عمود «المخزون» المعروض فقط (المنتجات/الأسعار عابرة للفروع).
   const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
@@ -251,6 +256,8 @@ export default function Products() {
               placeholder: "بحث (اسم/SKU/باركود)",
               barcode: true,
             }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetFilters}
             filters={
               <>
                 {/* FilterField يُظهر التسمية دائماً أعلى الحقل — تسميات مُوحَّدة على النمط

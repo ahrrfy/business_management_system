@@ -324,6 +324,8 @@ export default function Returns() {
               placeholder: "بحث (رقم الفاتورة/اسم العميل)",
               barcode: true,
             }}
+            activeFilterCount={statusFilter ? 1 : 0}
+            onResetFilters={() => { setQ(""); setStatusFilter(""); }}
             filters={
               // FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566).
               // قيمة «ALL» الحارسة: Radix يرفض بند القيمة الفارغة فلا يمكن الرجوع لـ«كل الحالات» بدونها.

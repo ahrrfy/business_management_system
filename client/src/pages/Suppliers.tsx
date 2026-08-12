@@ -155,6 +155,8 @@ export default function Suppliers() {
               onChange: (v) => { setQ(v); setPage(0); },
               placeholder: "بحث (اسم/هاتف/مدينة/رقم قديم)",
             }}
+            activeFilterCount={[kind, includeInactive ? "1" : ""].filter(Boolean).length}
+            onResetFilters={() => { setQ(""); setKind(""); setIncludeInactive(false); setPage(0); }}
             filters={
               <>
                 {/* FilterField يُظهر التسمية بصرياً — aria-label على radiogroup لا يُرى (نمط PR #559/#566). */}
