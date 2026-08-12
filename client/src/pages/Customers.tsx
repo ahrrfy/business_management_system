@@ -5,7 +5,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BalanceCell } from "@/components/BalanceBadge";
 import { ImportDialog } from "@/components/import/ImportDialog";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
@@ -469,85 +469,102 @@ export default function Customers() {
             }}
             filters={
               <>
-                <select
-                  className={selectCls}
-                  value={customerType}
-                  onChange={(e) => { setCustomerType(e.target.value as any); setPage(0); }}
-                  aria-label="النوع"
-                >
-                  <option value="">كل الأنواع</option>
-                  {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
-                <select
-                  className={selectCls}
-                  value={priceTier}
-                  onChange={(e) => { setPriceTier(e.target.value as any); setPage(0); }}
-                  aria-label="فئة السعر"
-                >
-                  <option value="">كل الفئات</option>
-                  <option value="RETAIL">مفرد</option>
-                  <option value="WHOLESALE">جملة</option>
-                  <option value="GOVERNMENT">حكومي</option>
-                </select>
+                {/* E (١٢/٨): تسميات صريحة بدل placeholder — يختفي عند الاختيار فيضيع معنى الحقل.
+                    شكوى المالك الأصلية «الفلاتر مبعثرة» تسبب رئيسيّ لها هو غياب التسميات. */}
+                <FilterField label="النوع">
+                  <select
+                    className={selectCls}
+                    value={customerType}
+                    onChange={(e) => { setCustomerType(e.target.value as any); setPage(0); }}
+                  >
+                    <option value="">كل الأنواع</option>
+                    {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </FilterField>
+                <FilterField label="فئة السعر">
+                  <select
+                    className={selectCls}
+                    value={priceTier}
+                    onChange={(e) => { setPriceTier(e.target.value as any); setPage(0); }}
+                  >
+                    <option value="">كل الفئات</option>
+                    <option value="RETAIL">مفرد</option>
+                    <option value="WHOLESALE">جملة</option>
+                    <option value="GOVERNMENT">حكومي</option>
+                  </select>
+                </FilterField>
                 {/* فلتر مدينة — مدعوم خادمياً في customers.search فقط (المستخدم غير المرتفع)؛
                     لوحة العمليات (operations) للمرتفعين لا تدعمه فنُخفيه عنهم بدل عرض فلتر معطَّل. */}
                 {!isElevated && (
-                  <Input
-                    value={city}
-                    onChange={(e) => { setCity(e.target.value); setPage(0); }}
-                    placeholder="المدينة…"
-                    aria-label="فلتر المدينة"
-                    className="h-8 w-32"
-                  />
+                  <FilterField label="المدينة">
+                    <Input
+                      value={city}
+                      onChange={(e) => { setCity(e.target.value); setPage(0); }}
+                      placeholder="اكتب اسم المدينة…"
+                      className="h-8 w-32"
+                    />
+                  </FilterField>
                 )}
                 {isElevated && (
                   <>
-                    <select className={selectCls} value={balanceFilter} onChange={(e) => { setBalanceFilter(e.target.value as typeof balanceFilter); setPage(0); }} aria-label="حالة الرصيد">
-                      <option value="">كل الأرصدة</option>
-                      <option value="RECEIVABLE">لنا عليهم</option>
-                      <option value="CREDIT">لهم علينا</option>
-                      <option value="ZERO">رصيد صفر</option>
-                    </select>
-                    <select className={selectCls} value={collectionFilter} onChange={(e) => { setCollectionFilter(e.target.value as typeof collectionFilter); setPage(0); }} aria-label="حالة التحصيل">
-                      <option value="">كل حالات التحصيل</option>
-                      <option value="OVERDUE">فواتير متأخرة</option>
-                      <option value="PROMISE_DUE">وعد مستحق/متأخر</option>
-                      <option value="PROMISE_FUTURE">وعد قادم</option>
-                      <option value="NO_FOLLOWUP">بلا متابعة</option>
-                    </select>
-                    <select className={selectCls} value={creditFilter} onChange={(e) => { setCreditFilter(e.target.value as typeof creditFilter); setPage(0); }} aria-label="الحالة الائتمانية">
-                      <option value="">كل الحالات الائتمانية</option>
-                      <option value="CASH_ONLY">نقدي فقط</option>
-                      <option value="NEAR_LIMIT">بلغ 80% من الحد</option>
-                      <option value="OVER_LIMIT">تجاوز الحد</option>
-                      <option value="UNLIMITED">بلا حد</option>
-                    </select>
-                    <select className={selectCls} value={inactivityDays} onChange={(e) => { setInactivityDays(e.target.value ? Number(e.target.value) as 30 | 60 | 90 : ""); setPage(0); }} aria-label="عدم الشراء">
-                      <option value="">كل نشاطات الشراء</option>
-                      <option value="30">لم يشترِ منذ 30 يوماً</option>
-                      <option value="60">لم يشترِ منذ 60 يوماً</option>
-                      <option value="90">لم يشترِ منذ 90 يوماً</option>
-                    </select>
-                    <select className={selectCls} value={sort} onChange={(e) => { setSort(e.target.value as typeof sort); setPage(0); }} aria-label="الترتيب">
-                      <option value="NAME">ترتيب بالاسم</option>
-                      <option value="BALANCE_DESC">أعلى مديونية</option>
-                      <option value="OLDEST_DUE">أقدم استحقاق</option>
-                      <option value="LAST_PURCHASE">الأطول بلا شراء</option>
-                    </select>
+                    <FilterField label="حالة الرصيد">
+                      <select className={selectCls} value={balanceFilter} onChange={(e) => { setBalanceFilter(e.target.value as typeof balanceFilter); setPage(0); }}>
+                        <option value="">كل الأرصدة</option>
+                        <option value="RECEIVABLE">لنا عليهم</option>
+                        <option value="CREDIT">لهم علينا</option>
+                        <option value="ZERO">رصيد صفر</option>
+                      </select>
+                    </FilterField>
+                    <FilterField label="حالة التحصيل">
+                      <select className={selectCls} value={collectionFilter} onChange={(e) => { setCollectionFilter(e.target.value as typeof collectionFilter); setPage(0); }}>
+                        <option value="">كل حالات التحصيل</option>
+                        <option value="OVERDUE">فواتير متأخرة</option>
+                        <option value="PROMISE_DUE">وعد مستحق/متأخر</option>
+                        <option value="PROMISE_FUTURE">وعد قادم</option>
+                        <option value="NO_FOLLOWUP">بلا متابعة</option>
+                      </select>
+                    </FilterField>
+                    <FilterField label="الحالة الائتمانية">
+                      <select className={selectCls} value={creditFilter} onChange={(e) => { setCreditFilter(e.target.value as typeof creditFilter); setPage(0); }}>
+                        <option value="">كل الحالات الائتمانية</option>
+                        <option value="CASH_ONLY">نقدي فقط</option>
+                        <option value="NEAR_LIMIT">بلغ 80% من الحد</option>
+                        <option value="OVER_LIMIT">تجاوز الحد</option>
+                        <option value="UNLIMITED">بلا حد</option>
+                      </select>
+                    </FilterField>
+                    <FilterField label="نشاط الشراء">
+                      <select className={selectCls} value={inactivityDays} onChange={(e) => { setInactivityDays(e.target.value ? Number(e.target.value) as 30 | 60 | 90 : ""); setPage(0); }}>
+                        <option value="">كل نشاطات الشراء</option>
+                        <option value="30">لم يشترِ منذ 30 يوماً</option>
+                        <option value="60">لم يشترِ منذ 60 يوماً</option>
+                        <option value="90">لم يشترِ منذ 90 يوماً</option>
+                      </select>
+                    </FilterField>
+                    <FilterField label="الترتيب">
+                      <select className={selectCls} value={sort} onChange={(e) => { setSort(e.target.value as typeof sort); setPage(0); }}>
+                        <option value="NAME">ترتيب بالاسم</option>
+                        <option value="BALANCE_DESC">أعلى مديونية</option>
+                        <option value="OLDEST_DUE">أقدم استحقاق</option>
+                        <option value="LAST_PURCHASE">الأطول بلا شراء</option>
+                      </select>
+                    </FilterField>
                     {(balanceFilter || collectionFilter || creditFilter || inactivityDays || sort !== "NAME") && (
                       <Button type="button" variant="ghost" size="sm" onClick={resetOperationalFilters}>مسح فلاتر التشغيل</Button>
                     )}
                   </>
                 )}
-                <label className="flex items-center gap-2 h-8 text-sm">
-                  <input
-                    type="checkbox"
-                    className="size-4"
-                    checked={includeInactive}
-                    onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
-                  />
-                  <span className="text-muted-foreground">عرض المعطّلين</span>
-                </label>
+                <FilterField label="خيارات">
+                  <label className="flex items-center gap-2 h-8 text-sm">
+                    <input
+                      type="checkbox"
+                      className="size-4"
+                      checked={includeInactive}
+                      onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
+                    />
+                    <span className="text-muted-foreground">عرض المعطّلين</span>
+                  </label>
+                </FilterField>
                 {hasAnyFilter && (
                   <Button type="button" variant="ghost" size="sm" onClick={() => resetAllFilters()}>مسح كل الفلاتر</Button>
                 )}

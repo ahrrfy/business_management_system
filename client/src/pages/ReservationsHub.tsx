@@ -356,14 +356,38 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                 rows.map((r) => {
                   const st = r.status as ReservationStatus;
                   const closeable = CLOSEABLE.includes(st);
+                  // D (١٢/٨): إبراز بصريّ للحجوزات قرب الانتهاء + المنتهية — «أكثر وضوحاً وتطوّراً».
+                  // - active + <٤س: تظليل كهرمانيّ + شارة «ينتهي قريباً» + رقم/تاريخ بلون التحذير.
+                  // - EXPIRED: تظليل رماديّ باهت (اكتمل السحب من الكرون، لكن السطر مرئيّ للفهم).
+                  // العتبة ٤س = ربع مدّة الحجز الافتراضيّة (١٦س) — «آخر ربع» يعطي الكاشير فرصة الاتّصال أو التمديد.
+                  const msLeft = r.expiresAt && closeable ? new Date(r.expiresAt).getTime() - Date.now() : null;
+                  const expiringSoon = msLeft != null && msLeft > 0 && msLeft < 4 * 3600 * 1000;
+                  const isExpired = st === "EXPIRED";
                   return (
-                    <TableRow key={r.id}>
+                    <TableRow
+                      key={r.id}
+                      className={cn(
+                        expiringSoon && "bg-[var(--sem-warning)]/10 hover:bg-[var(--sem-warning)]/20",
+                        isExpired && "bg-muted/50 text-muted-foreground",
+                      )}
+                    >
                       <TableCell className="font-mono" dir="ltr">{r.reservationNumber}</TableCell>
                       <TableCell>{r.contactName || <span className="text-muted-foreground">—</span>}</TableCell>
                       <TableCell dir="ltr">{r.contactPhone}</TableCell>
                       <TableCell>{CHANNEL_LABEL[r.channel as Channel] ?? r.channel}</TableCell>
-                      <TableCell><Badge variant={STATUS_VARIANT[st]}>{STATUS_LABEL[st] ?? st}</Badge></TableCell>
-                      <TableCell className="text-xs" dir="ltr">{r.expiresAt ? fmtDateTime(r.expiresAt) : "—"}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1.5">
+                          <Badge variant={STATUS_VARIANT[st]}>{STATUS_LABEL[st] ?? st}</Badge>
+                          {expiringSoon && (
+                            <Badge variant="outline" className="border-[var(--sem-warning)] text-[var(--sem-warning)] font-bold text-[10px]">
+                              ينتهي قريباً
+                            </Badge>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className={cn("text-xs", expiringSoon && "font-bold text-[var(--sem-warning)]")} dir="ltr">
+                        {r.expiresAt ? fmtDateTime(r.expiresAt) : "—"}
+                      </TableCell>
                       <TableCell>
                         <RowActions
                           mode="auto"
