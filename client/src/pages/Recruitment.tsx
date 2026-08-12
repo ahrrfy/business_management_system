@@ -43,6 +43,7 @@ import {
   Briefcase,
   ChevronLeft,
   Copy,
+  Download,
   Eye,
   ExternalLink,
   FileSpreadsheet,
@@ -91,6 +92,7 @@ type Applicant = {
   stage: string;
   phone: string | null;
   rating: number | null;
+  cvFileKey: string | null;
 };
 
 function Stars({ rating }: { rating: number | null }) {
@@ -502,6 +504,13 @@ function ApplicantDetailDialog({
                 <div className="text-xs text-muted-foreground mb-0.5">ملاحظات</div>
                 <p className="text-sm leading-relaxed whitespace-pre-wrap">{a.notes}</p>
               </div>
+            )}
+            {a.cvFileKey && (
+              <Button variant="outline" size="sm" asChild>
+                <a href={`/api/hr/applicant-cv/${encodeURIComponent(a.cvFileKey)}`} download>
+                  <Download className="size-3.5" /> تنزيل السيرة الذاتية
+                </a>
+              </Button>
             )}
           </div>
         )}

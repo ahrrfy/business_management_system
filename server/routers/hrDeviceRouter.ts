@@ -16,7 +16,7 @@ import {
   processPendingFolds,
 } from "../services/hrDevices";
 import { protectedProcedure, requireModule, router } from "../trpc";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { employees } from "../../drizzle/schema";
 import { requireDb } from "../services/tx";
 import { isDupEntry, toArabicMessage } from "@shared/errorMap.ar";
@@ -27,6 +27,11 @@ import {
   listPendingOriginAttempts,
   resolveOriginAttempt,
 } from "../services/hrDevices/originTrust";
+import {
+  companyBranchScope,
+  resolveTargetBranch,
+  type CompanyBranchScope,
+} from "../services/companyBranchScope";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -37,16 +42,31 @@ const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صا�
  * الحدّ الافتراضيّ هو الحارس الفعليّ — الجهاز يحمل عشرات آلاف السجلات التاريخية، وربطٌ
  * بلا حدٍّ ينسب حضور من حمل الرقم قبله. غياب تاريخ المباشرة ⇒ null (بلا حدّ) والواجهة تُنبّه.
  */
-async function resolveEffectiveFrom(employeeId: number, explicit?: string | null): Promise<string | null> {
-  if (explicit) return explicit;
+async function scopedEmployee(
+  employeeId: number,
+  scope: CompanyBranchScope,
+): Promise<{ hireDate: string | null; branchId: number | null }> {
   const db = requireDb();
   const [e] = await db
-    .select({ hireDate: employees.hireDate })
+    .select({ hireDate: employees.hireDate, branchId: employees.branchId })
     .from(employees)
-    .where(eq(employees.id, employeeId))
+    .where(
+      scope.branchId == null
+        ? eq(employees.id, employeeId)
+        : and(eq(employees.id, employeeId), eq(employees.branchId, scope.branchId)),
+    )
     .limit(1);
   if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
-  return e.hireDate ?? null;
+  return { hireDate: e.hireDate ?? null, branchId: e.branchId == null ? null : Number(e.branchId) };
+}
+
+async function resolveEffectiveFrom(
+  employeeId: number,
+  explicit: string | null | undefined,
+  scope: CompanyBranchScope,
+): Promise<{ effectiveFrom: string | null; branchId: number | null }> {
+  const employee = await scopedEmployee(employeeId, scope);
+  return { effectiveFrom: explicit || employee.hireDate, branchId: employee.branchId };
 }
 
 const deviceInput = z.object({
@@ -73,14 +93,20 @@ const deviceInput = z.object({
 });
 
 export const hrDeviceRouter = router({
-  list: hrRead.query(() => svc.listDevices()),
+  list: hrRead.query(({ ctx }) => svc.listDevices(companyBranchScope(ctx.user))),
 
-  get: hrRead.input(z.object({ id: z.number().int().positive() })).query(({ input }) => svc.getDevice(input.id)),
+  get: hrRead.input(z.object({ id: z.number().int().positive() })).query(async ({ input, ctx }) => {
+    const device = await svc.getDevice(input.id, companyBranchScope(ctx.user));
+    if (!device) throw new TRPCError({ code: "NOT_FOUND", message: "الجهاز غير موجود" });
+    return device;
+  }),
 
-  migrationStatus: hrRead.query(() => svc.migrationStatus()),
+  migrationStatus: hrRead.query(({ ctx }) => svc.migrationStatus(companyBranchScope(ctx.user))),
 
   create: hrWrite.input(deviceInput).mutation(async ({ input, ctx }) => {
-    const d = await svc.createDevice(input as svc.DeviceInput);
+    const scope = companyBranchScope(ctx.user);
+    const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
+    const d = await svc.createDevice({ ...input, branchId } as svc.DeviceInput, scope);
     await logAudit(ctx, { action: "hrDevice.create", entityType: "hrFingerprintDevice", entityId: d?.id, newValue: { name: d?.name, location: input.location ?? null } });
     return d;
   }),
@@ -89,20 +115,26 @@ export const hrDeviceRouter = router({
     .input(deviceInput.extend({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const { id, ...rest } = input;
-      const d = await svc.updateDevice(id, rest as svc.DeviceInput);
+      const scope = companyBranchScope(ctx.user);
+      const existing = await svc.getDevice(id, scope);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "الجهاز غير موجود" });
+      const branchId = scope.branchId == null
+        ? rest.branchId
+        : resolveTargetBranch(scope, rest.branchId, { required: false });
+      const d = await svc.updateDevice(id, { ...rest, branchId } as svc.DeviceInput, scope);
       await logAudit(ctx, { action: "hrDevice.update", entityType: "hrFingerprintDevice", entityId: id, newValue: { name: d?.name } });
       return d;
     }),
 
   migrate: hrWrite.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
-    const d = await svc.migrateDevice(input.id);
+    const d = await svc.migrateDevice(input.id, companyBranchScope(ctx.user));
     await logAudit(ctx, { action: "hrDevice.migrate", entityType: "hrFingerprintDevice", entityId: input.id, newValue: { migrated: true, serverHost: d?.serverHost } });
     return d;
   }),
 
   /* —— المزامنة الحقيقية (0089) —— */
 
-  bridgeStatus: hrRead.query(() => svc.bridgeStatus()),
+  bridgeStatus: hrRead.query(({ ctx }) => svc.bridgeStatus(companyBranchScope(ctx.user))),
 
   /**
    * فلترا موظف/مدى تاريخ فوق `hrDeviceService.listPunches` — الخدمة (خارج ملكية هذه الشريحة)
@@ -122,11 +154,17 @@ export const hrDeviceRouter = router({
         offset: z.number().int().min(0).optional(),
       })
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
+      const scope = companyBranchScope(ctx.user);
+      if (input.deviceId != null) {
+        const device = await svc.getDevice(input.deviceId, scope);
+        if (!device) throw new TRPCError({ code: "NOT_FOUND", message: "الجهاز غير موجود" });
+      }
+      if (input.employeeId != null) await scopedEmployee(input.employeeId, scope);
       const limit = input.limit ?? 25;
       const targetOffset = input.offset ?? 0;
       if (input.employeeId == null && !input.dateFrom && !input.dateTo) {
-        return svc.listPunches({ deviceId: input.deviceId, unmatchedOnly: input.unmatchedOnly, limit, offset: targetOffset });
+        return svc.listPunches({ deviceId: input.deviceId, unmatchedOnly: input.unmatchedOnly, limit, offset: targetOffset }, scope);
       }
 
       const SCAN_PAGE = 200;
@@ -136,7 +174,10 @@ export const hrDeviceRouter = router({
       let scanOffset = 0;
       let serviceHasMore = true;
       while (matched.length < targetOffset + limit + 1 && serviceHasMore && scanOffset < SCAN_CAP) {
-        const page = await svc.listPunches({ deviceId: input.deviceId, unmatchedOnly: input.unmatchedOnly, limit: SCAN_PAGE, offset: scanOffset });
+        const page = await svc.listPunches(
+          { deviceId: input.deviceId, unmatchedOnly: input.unmatchedOnly, limit: SCAN_PAGE, offset: scanOffset },
+          scope,
+        );
         for (const r of page.rows) {
           if (input.employeeId != null && r.employeeId !== input.employeeId) continue;
           const day = r.punchAt ? new Date(r.punchAt as unknown as string).toISOString().slice(0, 10) : null;
@@ -155,7 +196,7 @@ export const hrDeviceRouter = router({
 
   deviceUsers: hrRead
     .input(z.object({ deviceId: z.number().int().positive() }))
-    .query(({ input }) => svc.listDeviceUsers(input.deviceId)),
+    .query(({ input, ctx }) => svc.listDeviceUsers(input.deviceId, companyBranchScope(ctx.user))),
 
   /**
    * ربط مستخدم جهاز بموظف — يلحق الربط بالبصمات الخام السابقة ويطويها فوراً.
@@ -173,10 +214,28 @@ export const hrDeviceRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const from = input.employeeId == null ? null : await resolveEffectiveFrom(input.employeeId, input.effectiveFrom);
+      const scope = companyBranchScope(ctx.user);
+      const device = await svc.getDevice(input.deviceId, scope);
+      if (!device) throw new TRPCError({ code: "NOT_FOUND", message: "الجهاز غير موجود" });
+      const employee = input.employeeId == null
+        ? null
+        : await resolveEffectiveFrom(input.employeeId, input.effectiveFrom, scope);
+      if (
+        employee &&
+        (device.branchId == null || employee.branchId == null || Number(device.branchId) !== employee.branchId)
+      ) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "يجب أن يكون الموظف والجهاز في الفرع نفسه" });
+      }
+      const from = employee?.effectiveFrom ?? null;
       let backfilled: number;
       try {
-        backfilled = await mapDeviceUserToEmployee(input.deviceId, input.enrollId, input.employeeId, from);
+        backfilled = await mapDeviceUserToEmployee(
+          input.deviceId,
+          input.enrollId,
+          input.employeeId,
+          from,
+          scope,
+        );
       } catch (err) {
         if (isDupEntry(err)) throw new TRPCError({ code: "CONFLICT", message: toArabicMessage({ cause: err }), cause: err });
         throw err;
@@ -194,12 +253,12 @@ export const hrDeviceRouter = router({
   /** ربوط جهاز الحضور لموظف واحد — تُعرَض في بطاقة الموظف (الربط يُدار من حيث يُوظَّف). */
   employeeLinks: hrRead
     .input(z.object({ employeeId: z.number().int().positive() }))
-    .query(({ input }) => svc.listEmployeeDeviceLinks(input.employeeId)),
+    .query(({ input, ctx }) => svc.listEmployeeDeviceLinks(input.employeeId, companyBranchScope(ctx.user))),
 
   /** أرقام الجهاز غير المربوطة — قائمة الاختيار في حوار الربط ببطاقة الموظف. */
   unlinkedDeviceUsers: hrRead
     .input(z.object({ deviceId: z.number().int().positive() }))
-    .query(({ input }) => svc.listUnlinkedDeviceUsers(input.deviceId)),
+    .query(({ input, ctx }) => svc.listUnlinkedDeviceUsers(input.deviceId, companyBranchScope(ctx.user))),
 
   /** إرسال أمر للجهاز (قائمة بيضاء لكل بروتوكول) — يُدفع فوراً إن كان متصلاً وإلا عند نبضته. */
   enqueueCommand: hrWrite
@@ -211,7 +270,7 @@ export const hrDeviceRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const device = await svc.getDevice(input.deviceId);
+      const device = await svc.getDevice(input.deviceId, companyBranchScope(ctx.user));
       if (!device) throw new TRPCError({ code: "NOT_FOUND", message: "الجهاز غير موجود" });
       const allowed = PROTOCOL_COMMANDS[device.protocol] ?? [];
       if (!allowed.includes(input.cmd)) {
@@ -232,7 +291,7 @@ export const hrDeviceRouter = router({
 
   commandsList: hrRead
     .input(z.object({ deviceId: z.number().int().positive(), limit: z.number().int().min(1).max(100).optional() }))
-    .query(({ input }) => svc.listCommands(input.deviceId, input.limit ?? 30)),
+    .query(({ input, ctx }) => svc.listCommands(input.deviceId, input.limit ?? 30, companyBranchScope(ctx.user))),
 
   /** اعتماد جهاز سجّل نفسه تلقائياً (بوابة القبول — لا بصمات تُقبل قبله). */
   approveDevice: hrWrite
@@ -244,7 +303,11 @@ export const hrDeviceRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const d = await svc.approveDevice(input.id, { name: input.name, branchId: input.branchId ?? null });
+      const scope = companyBranchScope(ctx.user);
+      const existing = await svc.getDevice(input.id, scope);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "الجهاز غير موجود" });
+      const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
+      const d = await svc.approveDevice(input.id, { name: input.name, branchId }, scope);
       await logAudit(ctx, {
         action: "hrDevice.approve",
         entityType: "hrFingerprintDevice",
@@ -258,7 +321,7 @@ export const hrDeviceRouter = router({
   deleteDevice: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await svc.deleteDevice(input.id);
+      const res = await svc.deleteDevice(input.id, companyBranchScope(ctx.user));
       await logAudit(ctx, {
         action: "hrDevice.delete",
         entityType: "hrFingerprintDevice",
@@ -274,7 +337,13 @@ export const hrDeviceRouter = router({
    * الاحتياطيّ المرئيّ حين تغيب القرينة — بدل SSH وتعديلٍ يدويّ على الإنتاج. */
 
   /** محاولات الاتصال المعلّقة من عناوين غير موثوقة — للعرض في شاشة الأجهزة. */
-  pendingOrigins: hrRead.query(() => listPendingOriginAttempts(20)),
+  pendingOrigins: hrRead.query(async ({ ctx }) => {
+    const scope = companyBranchScope(ctx.user);
+    const attempts = await listPendingOriginAttempts(20);
+    if (scope.branchId == null) return attempts;
+    const visibleIds = new Set(await svc.listScopedDeviceIds(scope));
+    return attempts.filter((attempt) => attempt.deviceId != null && visibleIds.has(Number(attempt.deviceId)));
+  }),
 
   /** اعتماد عنوانٍ جديد لجهاز بنقرة (مدير) — يسري فوراً بلا إعادة تشغيل الجسر. */
   trustOrigin: hrWrite
@@ -286,8 +355,12 @@ export const hrDeviceRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      const scope = companyBranchScope(ctx.user);
       const attempt = await getOriginAttempt(input.id);
       if (!attempt) throw new TRPCError({ code: "NOT_FOUND", message: "المحاولة غير موجودة" });
+      if (scope.branchId != null && attempt.deviceId == null) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "المحاولة غير موجودة" });
+      }
       if (attempt.resolvedAt) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "المحاولة محسومة مسبقاً" });
       }
@@ -298,7 +371,7 @@ export const hrDeviceRouter = router({
           message: "اختر الجهاز الذي يخصّه هذا العنوان قبل الاعتماد.",
         });
       }
-      const device = await svc.getDevice(deviceId);
+      const device = await svc.getDevice(deviceId, scope);
       if (!device) throw new TRPCError({ code: "NOT_FOUND", message: "الجهاز غير موجود" });
       if (!device.enabled) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "اعتمد الجهاز أولاً من قائمة الأجهزة." });
@@ -348,8 +421,14 @@ export const hrDeviceRouter = router({
   dismissOrigin: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
+      const scope = companyBranchScope(ctx.user);
       const attempt = await getOriginAttempt(input.id);
       if (!attempt) throw new TRPCError({ code: "NOT_FOUND", message: "المحاولة غير موجودة" });
+      if (scope.branchId != null) {
+        if (attempt.deviceId == null || !(await svc.getDevice(attempt.deviceId, scope))) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "المحاولة غير موجودة" });
+        }
+      }
       await resolveOriginAttempt({
         serialNumber: attempt.serialNumber,
         ip: attempt.ip,
@@ -367,6 +446,10 @@ export const hrDeviceRouter = router({
 
   /** تشغيل الطيّ يدوياً (زر «معالجة الآن» — مفيد بعد ربط دفعة مستخدمين). */
   processFolds: hrWrite.mutation(async ({ ctx }) => {
+    const scope = companyBranchScope(ctx.user);
+    if (scope.branchId != null) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "المعالجة الشاملة متاحة لإدارة الشركة فقط" });
+    }
     const res = await processPendingFolds();
     await logAudit(ctx, { action: "hrDevice.processFolds", entityType: "hrFingerprintDevice", entityId: 0, newValue: res });
     return res;

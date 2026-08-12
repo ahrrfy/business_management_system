@@ -166,6 +166,13 @@ export default function InvoiceDetail() {
     crypto.randomUUID(),
   );
 
+  // حوار الإلغاء (قرار مالك ١٢/٨): جهة الصرف إلزاميّة + سبب اختياريّ + تأكيد بكتابة رقم الفاتورة.
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelMethod, setCancelMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelConfirmText, setCancelConfirmText] = useState("");
+  const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID());
+
   // Default the payment amount to remaining balance once data loads.
   useEffect(() => {
     if (!inv.data) return;
@@ -193,6 +200,26 @@ export default function InvoiceDetail() {
       setError(e.message);
       setDone("");
     },
+  });
+
+  const cancel = trpc.sales.cancel.useMutation({
+    onSuccess: async (r) => {
+      const refunded = D(r.refundAmount ?? "0");
+      const refundMsg = refunded.gt(0)
+        ? ` — استُرِدّ ${fmt(refunded.toFixed(2))}${r.refundVoucherNumber ? ` بسند ${r.refundVoucherNumber}` : ""}`
+        : "";
+      setDone(`أُلغيت الفاتورة ${r.invoiceNumber}${refundMsg}.`);
+      setError("");
+      setCancelOpen(false);
+      setCancelReason("");
+      setCancelConfirmText("");
+      await Promise.all([
+        utils.sales.get.invalidate({ invoiceId }),
+        utils.sales.list.invalidate(),
+      ]);
+      setCancelRequestId(crypto.randomUUID());
+    },
+    onError: (e) => { setError(e.message); setDone(""); },
   });
 
   // #28 (تدقيق التثبيت): تسجيل الدفعة = salesCashierProcedure(["cashier","manager"],"sales","FULL").
@@ -281,6 +308,22 @@ export default function InvoiceDetail() {
       "FULL",
       ["cashier", "manager"],
     );
+  // بوّابة الإلغاء (مطابقةٌ لـsalesManagerProcedure على الخادم): مدير قالبياً أو مَن مُنح sales=FULL صراحةً (أو admin).
+  // الكاشير مستَبعَد صراحةً — الإلغاء مديريٌّ حصراً (SOD مع البائع الأصلي).
+  const canCancelInvoice =
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "sales",
+      "FULL",
+      ["manager"],
+    );
+  const isCancellable =
+    data.status !== "CANCELLED" &&
+    data.status !== "RETURNED" &&
+    data.sourceType !== "WORKORDER";
+  const paidAmountForRefund = round2(D(data.paidAmount ?? "0"));
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
   // «تصحيح كامل» (عكس وإعادة إصدار، 0168) — أضيق من «تعديل البيانات»: يُقصَر على فاتورة بيعٍ
@@ -539,6 +582,25 @@ export default function InvoiceDetail() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          {canCancelInvoice && isCancellable && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                setCancelMethod(
+                  (data.paymentMethod as (typeof METHODS)[number]["v"] | null) ??
+                    "CASH",
+                );
+                setCancelReason("");
+                setCancelConfirmText("");
+                setError("");
+                setCancelOpen(true);
+              }}
+            >
+              <FileWarning aria-hidden className="size-4" />
+              إلغاء الفاتورة
+            </Button>
+          )}
           <Link
             href="/invoices"
             className="text-sm text-muted-foreground hover:text-foreground"
@@ -1252,6 +1314,91 @@ export default function InvoiceDetail() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       {done && <p className="text-sm text-emerald-600">{done}</p>}
+
+      {/* حوار الإلغاء (قرار مالك ١٢/٨): جهة صرفٍ إلزاميّة + سبب اختياريّ + تأكيد كتابيٌّ لرقم الفاتورة. */}
+      <Dialog open={cancelOpen} onOpenChange={setCancelOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <FileWarning aria-hidden className="size-5" />
+              إلغاء الفاتورة {data.invoiceNumber}
+            </DialogTitle>
+            <DialogDescription className="space-y-2 pt-2 text-start">
+              <div>
+                إلغاءٌ كامل يعكس القيد المحاسبيّ ويعيد كامل البضاعة إلى المخزون
+                {paidAmountForRefund.gt(0) && (
+                  <> ويُصدر <strong>سند صرفٍ</strong> باستردادِ {fmt(paidAmountForRefund.toFixed(2))}</>
+                )}.
+              </div>
+              {data.status !== "PENDING" && (
+                <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs text-[var(--sem-warn)]">
+                  حالة الفاتورة حالياً: <strong>{STATUS[data.status] ?? data.status}</strong> — يُلغى ما تبقّى غير مُرتجَع.
+                </div>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            {paidAmountForRefund.gt(0) && (
+              <div className="space-y-1">
+                <Label htmlFor="cancel-method">جهة الاسترداد (إلزاميّة)</Label>
+                <select
+                  id="cancel-method"
+                  className={selectCls}
+                  value={cancelMethod}
+                  onChange={(e) => setCancelMethod(e.target.value as typeof cancelMethod)}
+                >
+                  {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  النقد يخرج من درج الوردية المفتوحة (أو من الخزينة الإدارية إن كنت مديراً بلا وردية).
+                </p>
+              </div>
+            )}
+            <div className="space-y-1">
+              <Label htmlFor="cancel-reason">سبب الإلغاء (اختياريّ)</Label>
+              <Input
+                id="cancel-reason"
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                maxLength={500}
+                placeholder="خطأ إدخال / طلب زبون / …"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="cancel-confirm">
+                للتأكيد اكتب رقم الفاتورة: <span dir="ltr" className="font-mono font-semibold">{data.invoiceNumber}</span>
+              </Label>
+              <Input
+                id="cancel-confirm"
+                value={cancelConfirmText}
+                onChange={(e) => setCancelConfirmText(e.target.value)}
+                autoComplete="off"
+                placeholder={data.invoiceNumber}
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2 sm:justify-between">
+            <Button variant="outline" onClick={() => setCancelOpen(false)}>رجوع</Button>
+            <Button
+              variant="destructive"
+              disabled={cancel.isPending || cancelConfirmText.trim() !== data.invoiceNumber}
+              onClick={() => {
+                if (cancelConfirmText.trim() !== data.invoiceNumber) return;
+                cancel.mutate({
+                  invoiceId,
+                  refundPaymentMethod: cancelMethod,
+                  reason: cancelReason.trim() || undefined,
+                  clientRequestId: cancelRequestId,
+                });
+              }}
+            >
+              {cancel.isPending ? "جارٍ الإلغاء…" : "إلغاء الفاتورة نهائياً"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

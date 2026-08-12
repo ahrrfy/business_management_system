@@ -96,7 +96,7 @@ export const periodLockRouter = router({
       password: z.string().min(1),
     }))
     .mutation(async ({ input, ctx }) => {
-      if (!verifyPassword(input.password, ctx.user.passwordHash)) {
+      if (!(await verifyPassword(input.password, ctx.user.passwordHash))) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "كلمة مرور المدير غير صحيحة" });
       }
 

@@ -1,7 +1,7 @@
 // تحديث منتج قائم: ترويسة + متغيّر(ات) + وحدات + أسعار في معاملة واحدة.
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
+import { priceChangeLog, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { assertBaseUnitStable } from "./baseUnitGuard";
 import { extractInsertId } from "../../lib/insertId";
 import { assertValidUnitFactors } from "./unitFactors";
@@ -137,6 +137,11 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
         let productUnitId: number;
         if (u.id) {
           productUnitId = u.id;
+          const previousPrices = await tx
+            .select({ priceTier: productPrices.priceTier, price: productPrices.price })
+            .from(productPrices)
+            .where(eq(productPrices.productUnitId, u.id));
+          const previousByTier = new Map(previousPrices.map((row) => [row.priceTier, row.price] as const));
           await tx
             .update(productUnits)
             .set({
@@ -150,6 +155,21 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
             .where(eq(productUnits.id, u.id));
           // Replace prices for this unit.
           await tx.delete(productPrices).where(eq(productPrices.productUnitId, u.id));
+          for (const pr of u.prices ?? []) {
+            const oldPrice = previousByTier.get(pr.priceTier) ?? null;
+            const newPrice = toDbMoney(pr.price);
+            if (oldPrice == null || oldPrice !== newPrice) {
+              await tx.insert(priceChangeLog).values({
+                productUnitId,
+                priceTier: pr.priceTier,
+                oldPrice,
+                newPrice,
+                reason: "تعديل يدوي من شاشة المنتج",
+                waveId: null,
+                actorUserId: actor.userId,
+              });
+            }
+          }
         } else {
           const uRes = await tx.insert(productUnits).values({
             variantId: v.id,

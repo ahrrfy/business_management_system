@@ -35,8 +35,8 @@ async function seed() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
-    { id: 1, openId: "local_admin", name: "المدير العام", email: "admin@t22.test", passwordHash: hashPassword("Admin@12345"), role: "admin", loginMethod: "local", branchId: 1 },
-    { id: 2, openId: "local_mgr", name: "مدير الفرع", email: "mgr@t22.test", passwordHash: hashPassword("Admin@12345"), role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 1, openId: "local_admin", name: "المدير العام", email: "admin@t22.test", passwordHash: await hashPassword("Admin@12345"), role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "local_mgr", name: "مدير الفرع", email: "mgr@t22.test", passwordHash: await hashPassword("Admin@12345"), role: "manager", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "local_cash_a", name: "كاشير أ", email: "ca@t22.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 4, openId: "local_cash_b", name: "كاشير ب", email: "cb@t22.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 5, openId: "local_print", name: "فني مطبعة", email: "po@t22.test", role: "print_operator", loginMethod: "local", branchId: 1 },

@@ -25,13 +25,22 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gt, gte, isNull, like, ne, or, sql } from "drizzle-orm";
 import { randomInt } from "node:crypto";
 import { nanoid } from "nanoid";
-import { roles, userSessions, users, type UserSession } from "../../drizzle/schema";
+import {
+  passwordResetTokens,
+  roles,
+  userRecoveryCodes,
+  userSessions,
+  users,
+  type UserSession,
+} from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
 import { hashPassword, verifyPassword } from "../auth/password";
 import { escapeLike } from "../lib/sqlLike";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { getUserUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
+import { logAuditTx } from "./auditService";
+import { assertCanAdministerUser } from "./userAdminPolicy";
 
 export type Role = typeof ALL_ROLES[number];
 
@@ -153,6 +162,9 @@ export async function assertNotLastActiveAdmin(tx: any, excludeUserId: number) {
       .select({ id: users.id })
       .from(users)
       .where(and(eq(users.role, "admin"), eq(users.isActive, true), ne(users.id, excludeUserId)))
+      // قفلُ المدير البديل يمنع سباق معاملتين ترى كلٌّ منهما الأخرى ثم تعطّلان المديرين معاً.
+      // إن تعارضتا، تتراجع إحداهما/تنتظر ثم تعيد الفحص على الحالة الملتزمة، فيبقى مدير نشط.
+      .for("update")
       .limit(1)
   )[0];
   if (!other) {
@@ -237,7 +249,7 @@ export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Actor
         email: email || null,
         username,
         name,
-        passwordHash: hashPassword(input.password),
+        passwordHash: await hashPassword(input.password),
         role: roleValue,
         customRoleId,
         loginMethod: "local",
@@ -388,6 +400,7 @@ export async function deleteUser(userId: number, actor: Actor) {
     const u = (await tx.select().from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
     if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
     if (u.role === "admin") await assertNotLastActiveAdmin(tx, userId);
+    assertCanAdministerUser(actor, u);
     const usage = await getUserUsage(userId, tx);
     if (!usage.clean) {
       throw new TRPCError({ code: "BAD_REQUEST", message: usageBlockMessage("هذا المستخدم", usage) });
@@ -418,9 +431,22 @@ export async function setUserActive(userId: number, isActive: boolean, actor: Ac
     if (!isActive) {
       if (userId === actor.userId) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكنك تعطيل حسابك بنفسك." });
       if (u.role === "admin") await assertNotLastActiveAdmin(tx, userId);
-      await tx.update(users).set({ isActive: false, sessionsValidFrom: new Date() }).where(eq(users.id, userId));
+      assertCanAdministerUser(actor, u);
+      const now = new Date();
+      await tx.update(users).set({ isActive: false, sessionsValidFrom: now }).where(eq(users.id, userId));
+      await tx
+        .update(passwordResetTokens)
+        .set({ invalidatedAt: now })
+        .where(
+          and(
+            eq(passwordResetTokens.userId, userId),
+            isNull(passwordResetTokens.consumedAt),
+            isNull(passwordResetTokens.invalidatedAt),
+          ),
+        );
       return { userId, isActive: false };
     }
+    assertCanAdministerUser(actor, u);
     // حارس التوسيع الصامت (مراجعة عدائية ٢٤/٧): مستخدم دوره المخصّص مُعطَّل يسقط تشغيلياً لقالب
     // فئته الأساس **الكامل** (resolveCustomRole يتجاهل الدور المعطَّل وoverride الفردي مُصفَّر) —
     // إعادة تفعيله بلا حسم = «كاشير طباعة» يستيقظ كاشيراً كامل الأقسام بلا قرار واعٍ من أحد.
@@ -445,18 +471,20 @@ export async function setUserActive(userId: number, isActive: boolean, actor: Ac
 export async function resetUserPassword(
   userId: number,
   newPassword: string,
-  _actor: Actor,
+  actor: Actor,
   options?: { mustChange?: boolean }
 ) {
   return withTx(async (tx) => {
     assertPasswordPolicy(newPassword);
-    const u = (await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
+    const u = (await tx.select({ id: users.id, role: users.role, isOwner: users.isOwner }).from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
     if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
+    assertCanAdministerUser(actor, u);
     const mustChange = options?.mustChange ?? true;
     const expiresAt = mustChange ? new Date(Date.now() + 72 * 60 * 60 * 1000) : null;
+    const now = new Date();
     await tx.update(users).set({
-      passwordHash: hashPassword(newPassword),
-      sessionsValidFrom: new Date(),
+      passwordHash: await hashPassword(newPassword),
+      sessionsValidFrom: now,
       mustChangePassword: mustChange,
       tempPasswordExpiresAt: expiresAt,
       // فكّ قفل الحساب عند إعادة التعيين اليدوية من المدير (تدقيق ١٧/٧): إعادة التعيين تحقّق هوية أقوى
@@ -465,6 +493,16 @@ export async function resetUserPassword(
       lockedUntil: null,
       lastFailedLoginAt: null,
     }).where(eq(users.id, userId));
+    await tx
+      .update(passwordResetTokens)
+      .set({ invalidatedAt: now })
+      .where(
+        and(
+          eq(passwordResetTokens.userId, userId),
+          isNull(passwordResetTokens.consumedAt),
+          isNull(passwordResetTokens.invalidatedAt),
+        ),
+      );
     return { userId, success: true };
   });
 }
@@ -478,7 +516,7 @@ export async function changePassword(userId: number, oldPassword: string, newPas
   return withTx(async (tx) => {
     const u = (await tx.select().from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
     if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
-    if (!verifyPassword(oldPassword, u.passwordHash)) {
+    if (!(await verifyPassword(oldPassword, u.passwordHash))) {
       throw new TRPCError({ code: "UNAUTHORIZED", message: "كلمة المرور الحالية غير صحيحة." });
     }
     assertPasswordPolicy(newPassword);
@@ -487,11 +525,21 @@ export async function changePassword(userId: number, oldPassword: string, newPas
     }
     const validFrom = new Date();
     await tx.update(users).set({
-      passwordHash: hashPassword(newPassword),
+      passwordHash: await hashPassword(newPassword),
       sessionsValidFrom: validFrom,
       mustChangePassword: false,
       tempPasswordExpiresAt: null,
     }).where(eq(users.id, userId));
+    await tx
+      .update(passwordResetTokens)
+      .set({ invalidatedAt: validFrom })
+      .where(
+        and(
+          eq(passwordResetTokens.userId, userId),
+          isNull(passwordResetTokens.consumedAt),
+          isNull(passwordResetTokens.invalidatedAt),
+        ),
+      );
     return { userId, success: true, validFrom };
   });
 }
@@ -503,11 +551,47 @@ export async function changePassword(userId: number, oldPassword: string, newPas
  */
 export async function revokeUserSessions(userId: number, _actor: Actor) {
   return withTx(async (tx) => {
-    const u = (await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
+    const u = (await tx.select({ id: users.id, role: users.role, isOwner: users.isOwner }).from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
     if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
+    assertCanAdministerUser(_actor, u);
     const revokedAt = new Date();
     await tx.update(users).set({ sessionsValidFrom: revokedAt }).where(eq(users.id, userId));
+    await tx.update(userSessions).set({ revokedAt }).where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
     return { userId, revokedAt };
+  });
+}
+
+/** Owner-safe, atomic 2FA break-glass reset with session revocation and audit. */
+export async function resetUserTwoFactor(
+  userId: number,
+  actor: Actor,
+  auditCtx: Parameters<typeof logAuditTx>[1],
+) {
+  return withTx(async (tx) => {
+    const target = (await tx
+      .select({ id: users.id, role: users.role, isOwner: users.isOwner })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for("update")
+      .limit(1))[0];
+    if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
+    assertCanAdministerUser(actor, target);
+    const now = new Date();
+    await tx.update(users).set({
+      totpSecretEncrypted: null,
+      totpEnabledAt: null,
+      totpLastUsedStep: null,
+      sessionsValidFrom: now,
+    }).where(eq(users.id, userId));
+    await tx.delete(userRecoveryCodes).where(eq(userRecoveryCodes.userId, userId));
+    await tx.update(userSessions).set({ revokedAt: now }).where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
+    await logAuditTx(tx, auditCtx, {
+      action: "user.resetTwoFactor",
+      entityType: "user",
+      entityId: userId,
+      newValue: { sessionsRevoked: true },
+    });
+    return { success: true as const, revokedAt: now };
   });
 }
 

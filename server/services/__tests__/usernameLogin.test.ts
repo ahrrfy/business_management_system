@@ -37,7 +37,7 @@ async function seedAdmin() {
     name: "المدير",
     email: "admin@test.local",
     username: "admin",
-    passwordHash: hashPassword("Admin@12345"),
+    passwordHash: await hashPassword("Admin@12345"),
     role: "admin",
     loginMethod: "local",
     branchId: 1,

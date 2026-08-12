@@ -77,7 +77,7 @@ describe("createEmployeeWithAccount — الأوضاع الثلاثة", () => {
     expect(e!.userId).toBe(userId);
     expect(e!.linkedUser?.username).toBe("ali.acct");
     const [u] = await db().select().from(s.users).where(eq(s.users.id, userId!));
-    expect(verifyPassword(STRONG, u.passwordHash)).toBe(true);
+    expect(await verifyPassword(STRONG, u.passwordHash)).toBe(true);
     expect(u.mustChangePassword).toBe(true);
     // تعبئة من الموظف (تجنّب الإدخال المزدوج)
     expect(u.phone).toBe("07701234567");

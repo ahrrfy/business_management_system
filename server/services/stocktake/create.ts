@@ -481,7 +481,7 @@ async function insertAssignments(
     let pinHash: string | null = null;
     if (a.method === "PIN") {
       pin = generateUniquePin(usedPins);
-      pinHash = hashPassword(pin);
+      pinHash = await hashPassword(pin);
     }
     const aRes = await tx.insert(stocktakeAssignments).values({
       sessionId,

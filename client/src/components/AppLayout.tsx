@@ -10,12 +10,24 @@ import {
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, Gift, DollarSign, CreditCard,
   UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark, Check, WalletCards, ClipboardCheck,
+  History, Star,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useRef, useState } from "react";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { ROLE_LABEL } from "@/lib/roles";
+import {
+  NAV_FAVORITES_LIMIT,
+  loadNavWorkspace,
+  navWorkspaceStorageKey,
+  readLastCompanyCode,
+  recordRecent,
+  resolveNavRoot,
+  saveNavWorkspace,
+  toggleFavorite,
+  type NavWorkspace,
+} from "@/lib/navWorkspace";
 
 /**
  * ربط الطابعة الحرارية — متاحٌ من الشريط العلوي في كل شاشة (لا الكاشير فقط)، كي تُربط مرّةً
@@ -128,6 +140,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   // درج التنقّل للأجهزة اللوحية/الأصغر (<lg) — يُغلق تلقائياً عند تغيّر المسار.
   const [navOpen, setNavOpen] = useState(false);
+  const [navWorkspace, setNavWorkspace] = useState<NavWorkspace>({ favorites: [], recent: [] });
   const mainRef = useRef<HTMLElement>(null);
   useEffect(() => {
     setNavOpen(false);
@@ -162,6 +175,46 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       ? NAV_LINKS.filter((m) => CASHIER_NAV.includes(m.href) && canSeeGate(m, role, permsOverride))
       : NAV_LINKS.filter((m) => canSeeGate(m, role, permsOverride));
   const hasMyStocktake = (myStocktakes.data?.length ?? 0) > 0;
+  const allowedNavPaths = visibleNav.map((item) => item.href);
+  const allowedNavPathsKey = allowedNavPaths.join("|");
+  const navStorageKey = me.data?.id && typeof window !== "undefined"
+    ? navWorkspaceStorageKey(me.data.id, readLastCompanyCode(window.localStorage))
+    : null;
+
+  // أعد القراءة والترشيح عند تبدّل المستخدم/الشركة/الصلاحيات، وسجّل جذر الوحدة فقط؛
+  // صفحات التفاصيل (وأرقامها) لا تدخل localStorage إطلاقاً.
+  useEffect(() => {
+    if (!navStorageKey || typeof window === "undefined") {
+      setNavWorkspace({ favorites: [], recent: [] });
+      return;
+    }
+    const loaded = loadNavWorkspace(window.localStorage, navStorageKey, allowedNavPaths);
+    const currentRoot = resolveNavRoot(loc, allowedNavPaths);
+    const next = currentRoot ? recordRecent(loaded, currentRoot) : loaded;
+    setNavWorkspace(saveNavWorkspace(window.localStorage, navStorageKey, next, allowedNavPaths));
+    // allowedNavPathsKey هو تمثيل ثابت للقائمة المسموحة؛ المصفوفة نفسها تُنشأ مع كل render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loc, navStorageKey, allowedNavPathsKey]);
+
+  function handleFavorite(path: string) {
+    setNavWorkspace((current) => {
+      const next = toggleFavorite(current, path);
+      if (next === current || !navStorageKey || typeof window === "undefined") return next;
+      return saveNavWorkspace(window.localStorage, navStorageKey, next, allowedNavPaths);
+    });
+  }
+
+  const navByPath = new Map(visibleNav.map((item) => [item.href, item] as const));
+  const favoriteLinks = navWorkspace.favorites.flatMap((path) => {
+    const item = navByPath.get(path);
+    return item ? [item] : [];
+  });
+  const favoritePaths = new Set(navWorkspace.favorites);
+  const recentLinks = navWorkspace.recent.flatMap((path) => {
+    const item = navByPath.get(path);
+    return item && !favoritePaths.has(path) ? [item] : [];
+  }).slice(0, 3);
+  const favoritesFull = navWorkspace.favorites.length >= NAV_FAVORITES_LIMIT;
 
   const sidebarInner = (
     <>
@@ -178,7 +231,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </button>
         </div>
 
-        <nav className="sb-scroll flex-1 overflow-y-auto py-2">
+        <nav className="sb-scroll flex-1 overflow-y-auto py-2" aria-label="التنقّل الرئيسي">
           {/* لوحة التحكم — رابط مستقلّ (يُخفى عن المندوب والكاشير: مساحتاهما مركّزتان) */}
           {!isCourier && !isCashier && (
             <>
@@ -214,24 +267,92 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             </>
           )}
 
+          {(favoriteLinks.length > 0 || recentLinks.length > 0) && (
+            <section aria-label="اختصارات التنقّل" className="mb-1">
+              <div className="px-3 pb-1 pt-0.5 text-[11px] font-medium sb-sub">اختصاراتي</div>
+              {favoriteLinks.map((item) => {
+                const active = isModuleActive(loc, item.href);
+                return (
+                  <Link
+                    key={`favorite:${item.href}`}
+                    href={item.href}
+                    title={`مفضلة: ${item.label}`}
+                    aria-current={active ? "page" : undefined}
+                    className={cn(
+                      "flex min-h-[36px] items-center gap-2 px-3 py-1.5 text-sm transition",
+                      active ? "sb-active font-semibold" : "sb-item mx-2 rounded-md",
+                    )}
+                  >
+                    <Star className="size-3.5 shrink-0 fill-current" aria-hidden />
+                    <span className="truncate">{item.label}</span>
+                  </Link>
+                );
+              })}
+              {recentLinks.map((item) => {
+                const active = isModuleActive(loc, item.href);
+                return (
+                  <Link
+                    key={`recent:${item.href}`}
+                    href={item.href}
+                    title={`حديثاً: ${item.label}`}
+                    aria-current={active ? "page" : undefined}
+                    className={cn(
+                      "flex min-h-[36px] items-center gap-2 px-3 py-1.5 text-sm transition",
+                      active ? "sb-active font-semibold" : "sb-item mx-2 rounded-md",
+                    )}
+                  >
+                    <History className="size-3.5 shrink-0" aria-hidden />
+                    <span className="truncate">{item.label}</span>
+                  </Link>
+                );
+              })}
+              <div className="my-1 mx-2 sb-divider" />
+            </section>
+          )}
+
           {/* الوَحدات — قائمة مُسطّحة، مَدخل واحد لكل وحدة */}
           {visibleNav.map((m) => {
             const active = isModuleActive(loc, m.href);
+            const favorite = favoritePaths.has(m.href);
             const Icon = m.icon;
             return (
-              <Link
-                key={m.href}
-                href={m.href}
-                title={m.label}
-                aria-current={active ? "page" : undefined}
-                className={cn(
-                  "flex items-center gap-2 mb-0.5 px-3 py-2 min-h-[40px] text-sm transition",
-                  active ? "sb-active font-semibold" : "sb-item rounded-md mx-2",
-                )}
-              >
-                <Icon className="size-4 shrink-0" aria-hidden />
-                <span className="truncate">{m.label}</span>
-              </Link>
+              <div key={m.href} className="group relative">
+                <Link
+                  href={m.href}
+                  title={m.label}
+                  aria-current={active ? "page" : undefined}
+                  className={cn(
+                    "flex items-center gap-2 mb-0.5 px-3 pe-11 py-2 min-h-[40px] text-sm transition",
+                    active ? "sb-active font-semibold" : "sb-item rounded-md mx-2",
+                  )}
+                >
+                  <Icon className="size-4 shrink-0" aria-hidden />
+                  <span className="truncate">{m.label}</span>
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => handleFavorite(m.href)}
+                  aria-disabled={!favorite && favoritesFull ? true : undefined}
+                  aria-pressed={favorite}
+                  aria-label={favorite
+                    ? `إزالة ${m.label} من المفضلة`
+                    : favoritesFull
+                      ? `لا يمكن إضافة ${m.label} إلى المفضلة؛ بلغت الحد الأقصى`
+                      : `إضافة ${m.label} إلى المفضلة`}
+                  title={favorite
+                    ? "إزالة من المفضلة"
+                    : favoritesFull
+                      ? `بلغت الحد (${NAV_FAVORITES_LIMIT})`
+                      : "إضافة إلى المفضلة"}
+                  className={cn(
+                    "absolute left-1.5 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    favorite ? "text-primary" : "opacity-55 hover:bg-accent hover:opacity-100",
+                    !favorite && favoritesFull && "cursor-not-allowed opacity-30 hover:bg-transparent hover:opacity-30",
+                  )}
+                >
+                  <Star className={cn("size-3.5", favorite && "fill-current")} aria-hidden />
+                </button>
+              </div>
             );
           })}
         </nav>

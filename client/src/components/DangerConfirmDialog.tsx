@@ -25,10 +25,16 @@ export function DangerConfirmDialog(props: {
   warnings?: string[];
   actionLabel: string;
   pending?: boolean;
+  /** يسمح بإيقاف عملية جارية قابلة للإلغاء، مع إبقاء بقية العمليات المدمّرة مقفلة. */
+  onCancelPending?: () => void;
+  pendingCancelLabel?: string;
   showSeedToggle?: boolean;
   onConfirm: (args: { password: string; seed: boolean; confirm: string }) => void;
 }) {
-  const { open, onOpenChange, title, description, confirmToken, warnings, actionLabel, pending, showSeedToggle, onConfirm } = props;
+  const {
+    open, onOpenChange, title, description, confirmToken, warnings, actionLabel, pending,
+    onCancelPending, pendingCancelLabel = "إلغاء العملية", showSeedToggle, onConfirm,
+  } = props;
   const [typed, setTyped] = useState("");
   const [password, setPassword] = useState("");
   const [seed, setSeed] = useState(false);
@@ -77,7 +83,13 @@ export function DangerConfirmDialog(props: {
         </div>
 
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>إلغاء</Button>
+          <Button
+            variant="outline"
+            onClick={() => pending ? onCancelPending?.() : onOpenChange(false)}
+            disabled={!!pending && !onCancelPending}
+          >
+            {pending && onCancelPending ? pendingCancelLabel : "إلغاء"}
+          </Button>
           <Button variant="destructive" onClick={() => onConfirm({ password, seed, confirm: typed.trim() })} disabled={!canConfirm}>
             {pending ? "جارٍ التنفيذ…" : actionLabel}
           </Button>

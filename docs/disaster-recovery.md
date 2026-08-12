@@ -10,7 +10,8 @@
 ```powershell
 # 1) نسخة احتياطية كاملة أوّلاً (الأمان قبل كل شيء)
 pnpm db:backup
-docker exec erp-mysql mysqldump -uroot -perp_root_pw --all-databases --single-transaction --routines --events > full-dump.sql
+$env:MYSQL_PWD=$env:DB_ROOT_PW
+docker exec -e MYSQL_PWD erp-mysql mysqldump -uroot --all-databases --single-transaction --routines --events > full-dump.sql
 
 # 2) أوقف الحاوية القديمة وأعد تسميتها (لا تحذفها بعد — شبكة أمان)
 docker stop erp-mysql
@@ -21,7 +22,8 @@ docker compose up -d
 docker compose ps          # انتظر "healthy"
 
 # 4) استورد البيانات إلى الحاوية الجديدة
-docker exec -i erp-mysql mysql -uroot -perp_root_pw < full-dump.sql
+docker exec -i -e MYSQL_PWD erp-mysql mysql -uroot --binary-mode=1 < full-dump.sql
+pnpm db:ensure-app-user
 
 # 5) تحقّق التكامل
 pnpm test                  # يجب أن تمرّ اختبارات التكامل
@@ -37,8 +39,12 @@ docker rm erp-mysql-old
 # اعرض النسخ المتاحة (الأحدث أسفل)
 dir backups\
 
-# استعد نسخة محدّدة (⚠ يستبدل البيانات الحالية)
-docker exec -i erp-mysql mysql -uroot -perp_root_pw < backups\erp-2026-06-07T02-00-00.sql
+# نافذة صيانة إلزامية: أوقف عمال الويب ثم استعمل المسار المحصّن الوحيد.
+pm2 stop erp-server
+pnpm db:restore backups\erp-2026-06-07T02-00-00.sql --confirm RESTORE
+# السكربت يأخذ نسخة أمان، يتحقق من هوية القاعدة، يطبّق الهجرات ويفحص المخطط.
+pm2 start erp-server
+pnpm db:verify
 ```
 
 ### استعادة نسخة خارجية مشفّرة (VPS)
@@ -47,7 +53,9 @@ docker exec -i erp-mysql mysql -uroot -perp_root_pw < backups\erp-2026-06-07T02-
 
 ```bash
 gpg -d -o restore.sql erp-2026-06-10T23-00-00.sql.gpg   # يطلب BACKUP_GPG_PASSPHRASE
-docker exec -i erp-mysql mysql -uroot -p"$DB_ROOT_PW" < restore.sql
+pm2 stop erp-server
+pnpm db:restore restore.sql --confirm RESTORE
+pm2 start erp-server
 ```
 
 > **استعادة نقطة-زمنية (binlog):** قاعدة الـVPS تحتفظ بـbinlog لثلاثة أيام، فبعد استعادة آخر نسخة

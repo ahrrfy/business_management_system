@@ -18,8 +18,15 @@ import {
   unique,
   primaryKey,
   foreignKey,
+  customType,
   type AnyMySqlColumn,
 } from "drizzle-orm/mysql-core";
+
+/** Raw binary storage for small, validated documents that must travel with DB backups. */
+const mediumblob = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "mediumblob",
+  fromDriver: (value) => (Buffer.isBuffer(value) ? value : Buffer.from(value)),
+});
 
 /**
  * ============================================================
@@ -212,6 +219,39 @@ export const userSessions = mysqlTable(
 
 export type UserSession = typeof userSessions.$inferSelect;
 export type InsertUserSession = typeof userSessions.$inferInsert;
+
+/**
+ * رموز إعادة تعيين كلمة المرور التي يصدرها الأدمن للمستخدم. لا يُخزَّن الرمز الخام مطلقاً:
+ * `lookupId` معرّف بحث عشوائي غير سري، و`tokenHash` هو SHA-256 للرمز الكامل. يتيح معرّف
+ * البحث العثور على الصف وعدّ المحاولات الخاطئة دون البحث بالبريد أو تخزين أي جزء سري.
+ */
+export const passwordResetTokens = mysqlTable(
+  "passwordResetTokens",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    lookupId: char("lookupId", { length: 16 }).notNull().unique(),
+    tokenHash: char("tokenHash", { length: 64 }).notNull().unique(),
+    failedAttempts: int("failedAttempts").default(0).notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    consumedAt: timestamp("consumedAt"),
+    invalidatedAt: timestamp("invalidatedAt"),
+    createdByUserId: int("createdByUserId").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    userActiveIdx: index("idx_password_reset_user_active").on(
+      table.userId,
+      table.consumedAt,
+      table.invalidatedAt,
+      table.expiresAt,
+    ),
+  }),
+);
+
+export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
 
 /**
  * رموز استرداد المصادقة الثنائية — ١٠ رموز أحادية الاستخدام تُعرَض للمستخدم مرّة واحدة
@@ -4795,6 +4835,12 @@ export const jobApplicants = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     name: varchar("name", { length: 200 }).notNull(),
     jobTitle: varchar("jobTitle", { length: 150 }),
+    // ملكية مستقرة للمتقدّم حتى عند التقديم العام أو حذف الوظيفة لاحقاً؛
+    // لا تُشتق الصلاحية من vacancyId الاختياري لأنه قد يصبح NULL.
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+      { onDelete: "set null" },
+    ),
     // ربط اختياري بالوظيفة الشاغرة التي قدّم المتقدّم عليها (إن قدّم عبر بطاقة في المعرض).
     vacancyId: bigint("vacancyId", { mode: "number" }).references(
       () => jobVacancies.id,
@@ -4821,10 +4867,40 @@ export const jobApplicants = mysqlTable(
     cvFileKey: varchar("cvFileKey", { length: 512 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  (t) => ({ stageIdx: index("idx_applicant_stage").on(t.stage) }),
+  (t) => ({
+    stageIdx: index("idx_applicant_stage").on(t.stage),
+    branchIdx: index("idx_applicant_branch").on(t.branchId, t.createdAt),
+  }),
 );
 export type JobApplicant = typeof jobApplicants.$inferSelect;
 export type InsertJobApplicant = typeof jobApplicants.$inferInsert;
+
+/**
+ * CV bytes are isolated from applicant list queries so normal HR screens never
+ * pull multi-megabyte blobs. `publicKey` is random and non-sequential; download
+ * still requires an authenticated HR reader and vacancy-branch authorization.
+ */
+export const jobApplicantCvFiles = mysqlTable(
+  "jobApplicantCvFiles",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    applicantId: bigint("applicantId", { mode: "number" })
+      .notNull()
+      .references(() => jobApplicants.id, { onDelete: "cascade" }),
+    publicKey: char("publicKey", { length: 43 }).notNull(),
+    fileName: varchar("fileName", { length: 180 }).notNull(),
+    mimeType: varchar("mimeType", { length: 100 }).notNull(),
+    sizeBytes: int("sizeBytes").notNull(),
+    bytes: mediumblob("bytes").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    applicantUnique: unique("uq_jobApplicantCv_applicant").on(t.applicantId),
+    publicKeyUnique: unique("uq_jobApplicantCv_publicKey").on(t.publicKey),
+  }),
+);
+export type JobApplicantCvFile = typeof jobApplicantCvFiles.$inferSelect;
+export type InsertJobApplicantCvFile = typeof jobApplicantCvFiles.$inferInsert;
 
 /* أجهزة البصمة (الموارد البشرية) + شاشة الهجرة من المزوّد المدفوع إلى خادم الرؤية. */
 /**

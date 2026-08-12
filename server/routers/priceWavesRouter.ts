@@ -6,6 +6,7 @@ import { priceChangeLog } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import {
   applyPriceWave,
+  enrichPriceHistoryMetadata,
   enrichLogRows,
   getPriceUnitHistory,
   listPriceWaves,
@@ -89,12 +90,19 @@ export const priceWavesRouter = router({
       }));
     }),
 
-  /** تاريخ تغييرات سعر وحدة معيّنة (لعرض على شاشة تعديل المنتج مستقبلاً). */
+  /** تاريخ تغييرات سعر وحدة معيّنة (لعرضه في شاشة تعديل المنتج للمدير). */
   unitHistory: productsManagerProcedure
     .input(z.object({ productUnitId: z.number().int().positive(), limit: z.number().int().positive().max(200).default(50) }))
     .query(async ({ input }) => {
       const rows = await withTx((tx) => getPriceUnitHistory(tx, input.productUnitId, input.limit));
-      const enrichment = await withTx((tx) => enrichLogRows(tx, rows.map((r) => ({ productUnitId: Number(r.productUnitId) }))));
+      const [enrichment, metadata] = await withTx(async (tx) => {
+        const unitMetadata = await enrichLogRows(tx, rows.map((r) => ({ productUnitId: Number(r.productUnitId) })));
+        const historyMetadata = await enrichPriceHistoryMetadata(tx, rows.map((r) => ({
+          actorUserId: Number(r.actorUserId),
+          waveId: r.waveId == null ? null : Number(r.waveId),
+        })));
+        return [unitMetadata, historyMetadata] as const;
+      });
       return rows.map((r) => ({
         ...r,
         id: Number(r.id),
@@ -103,6 +111,8 @@ export const priceWavesRouter = router({
         actorUserId: Number(r.actorUserId),
         productName: enrichment.get(Number(r.productUnitId))?.productName ?? null,
         unitName: enrichment.get(Number(r.productUnitId))?.unitName ?? null,
+        actorName: metadata.actors.get(Number(r.actorUserId)) ?? null,
+        waveName: r.waveId == null ? null : (metadata.waves.get(Number(r.waveId)) ?? null),
       }));
     }),
 

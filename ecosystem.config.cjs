@@ -69,10 +69,9 @@ module.exports = {
       // (عملية fork واحدة) ولا يملك erp-server منفذ الأجهزة أو وصلاتها الحيّة.
       // ⚠️ الخادم مشترك (سراج/أودو خطّ أحمر) — الافتراضي عاملَان (لا "max") كي لا نستنزف نوى
       // الجيران؛ ارفعه بحذر عبر WEB_INSTANCES=3 بعد مراقبة الحِمل. **ميزانية اتصالات القاعدة:**
-      // كل عامل يفتح حتى DB_POOL_LIMIT اتصالاً **لكل شركة**؛ في الوضع الأحادي = (عدد العمّال ×
-      // DB_POOL_LIMIT)، وفي وضع تعدّد الشركات (CONTROL_DATABASE_URL) = (عدد العمّال × عدد الشركات
-      // × DB_POOL_LIMIT). احرص أن يبقى دون max_connections في MySQL (الافتراضي 151): ٢×٢٠=٤٠ آمن
-      // أحاديّاً، لكن ٢ عامل × ٤ شركات × ٢٠ = ١٦٠ يتجاوزه ⇒ اخفض DB_POOL_LIMIT أو ارفع max_connections.
+      // كل عامل يفتح حتى DB_POOL_LIMIT اتصالاً لكل شركة نشطة، لكن db.ts يحدّ عدد التجمعات
+      // الساخنة ويُخلي الخامل منها. الافتراض: ٢×١٠×٥=١٠٠ اتصال، مع احتياطي ٢٠ من أصل ١٥١؛
+      // ويَرفض الخادم ميزانية إعداد تتجاوز MYSQL_MAX_CONNECTIONS بدلاً من السقوط تحت الحمل.
       instances: process.env.WEB_INSTANCES || 2,
       exec_mode: "cluster",
       watch: false,
@@ -99,6 +98,10 @@ module.exports = {
         // طلب أصل عند فتح صفحة كانت تُشبع الخيوط الأربعة وتُعلّق الطلبات على «جار التحميل».
         UV_THREADPOOL_SIZE: "16",
         PORT: process.env.PORT || 3000,
+        HOST: process.env.HOST || "127.0.0.1",
+        ALLOW_PUBLIC_BIND: process.env.ALLOW_PUBLIC_BIND || "0",
+        REQUIRE_INTERNAL_PROXY_SECRET: process.env.REQUIRE_INTERNAL_PROXY_SECRET || "0",
+        INTERNAL_PROXY_SECRET: process.env.INTERNAL_PROXY_SECRET,
         // يطابق عدد عمّال الويب المقصود في `instances` أعلاه.
         WEB_INSTANCES: String(process.env.WEB_INSTANCES || 2),
         DATABASE_URL: process.env.DATABASE_URL,

@@ -44,6 +44,26 @@ export const router = t.router;
 export const middleware = t.middleware;
 export const publicProcedure = t.procedure;
 
+// بوابة رمز استعادة كلمة المرور: تظل عامة لأن صاحب الحساب خارج الجلسة، لكنها لا تمرر
+// أي طلب إلى قاعدة البيانات ما لم يحمل الشكل المشفّر الكامل للرمز أحادي الاستخدام.
+// التحقق الحاسم (hash/expiry/replay/attempts) يبقى ذرياً داخل passwordResetService.
+const requirePasswordResetTokenShape = t.middleware(async ({ getRawInput, next }) => {
+  const input = (await getRawInput()) as { token?: unknown } | null;
+  if (
+    !input ||
+    typeof input.token !== "string" ||
+    !/^PR1-[A-Za-z0-9_-]{16}-[A-Za-z0-9_-]{43}$/.test(input.token.trim())
+  ) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: "تعذّرت إعادة تعيين كلمة المرور. تحقّق من الرمز أو اطلب رمزاً جديداً من المدير.",
+    });
+  }
+  return next();
+});
+
+export const passwordResetTokenProcedure = t.procedure.use(requirePasswordResetTokenShape);
+
 /**
  * Credential-free bootstrap boundary for the native Android client. This does not authenticate
  * a user or grant a session; it only prevents browsers and obsolete clients from minting device
@@ -193,6 +213,11 @@ function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, m
     return next({ ctx: { ...ctx, user: ctx.user } });
   });
 }
+
+/** إدارة هويات المستخدمين: admin فعلي + بوابة users/FULL صريحة لأدوات الجرد الساكن. */
+export const usersAdminProcedure = t.procedure
+  .use(requireAdmin)
+  .use(requireModuleGate(["admin"], "users", "FULL"));
 
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
 export const managerProcedure = t.procedure.use(requireRole("manager"));
@@ -365,6 +390,48 @@ export const customersReadProcedure = protectedProcedure.use(requireModule("crm"
 // وبوّابة محطة الاستقبال، فيرى الموظّف القناة ولا يقدر يحفظ عميلها.
 export const customersCashierProcedure = moduleProcedure(["cashier", "manager", "sales_rep", "print_operator"], "crm", "FULL");
 export const customersManagerProcedure = moduleProcedure(["manager"], "crm", "FULL");
+
+// (١٢/٨، اصلاح عاجل بطلب المالك): بوّابةُ إنشاء العميل من محطة الاستقبال — تقبل مَن يملك
+// crm=FULL (البوّابة القياسية) أو workorders=FULL (بوّابة محطة الاستقبال). السبب: كاشير
+// الاستقبال يستقبل طلبات الزبائن ويحتاج حتماً إلى ربطها بسجلٍّ دائم لإكمال الطلب/الحجز/التسليم؛
+// وأدوار الاستقبال المخصّصة (حين تُعدَّل crm يدوياً إلى READ) كانت تنكسر رغم إبقاء workorders=FULL.
+// هذا هو نفس تعايُش (sales‖workorders) في invoiceViewProcedure أعلاه — قرارٌ متعمَّد بأنّ الوصول
+// لمحطة الاستقبال يستتبع القدرة على حفظ عميلها.
+export function userHasCrmWriteAccess(user: {
+  role: string;
+  permissionsOverride?: unknown;
+}): boolean {
+  if (user.role === "admin") return true;
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  return moduleAccessAllowed(user.role, override, "crm", "FULL", ["cashier", "manager", "sales_rep", "print_operator"]);
+}
+
+export function customerReceptionCreateAllowed(user: {
+  role: string;
+  permissionsOverride?: unknown;
+}): boolean {
+  if (user.role === "admin") return true;
+  if (userHasCrmWriteAccess(user)) return true;
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  // (١٢/٨، مراجعة Codex P1): المسار البديل يشترط أيضاً crm≥READ. سبب: البحث الذكيّ عن العملاء
+  // (smartSearch) داخل SmartCustomerInput يستعمل crmReadProcedure، فعميلٌ بلا crm ولا يقدر يُطابق
+  // «كاشية العميل السابق» فيُنشَأ مكرَّراً ⇒ CONFLICT على الهاتف يمنع إكمال الطلب. الحلّ هنا: نُبقي
+  // fallback المرجعيّ (يُحفَظ الاسم/الرقم على الطلب فقط بلا سجلّ دائم) حين crm=NONE — فلا كسر.
+  const resolved = resolvePermissions(user.role as RoleKey, override);
+  if (resolved.crm === "NONE") return false;
+  // POS_STATION_GATES.RECEPTION.allowedRoles = ["cashier", "manager", "print_operator"]
+  return moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
+}
+
+export const customersReceptionCreateProcedure = branchScopedProcedure.use(
+  t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    if (!customerReceptionCreateAllowed(ctx.user)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    }
+    return next({ ctx: { ...ctx, user: ctx.user } });
+  }),
+);
 
 // CRM هو مالك رحلة العميل؛ تبقى وحدات المبيعات/القنوات/الخزينة مزوّدات أحداث عبر حدود واضحة.
 export const crmReadProcedure = branchScopedProcedure.use(requireModule("crm", "READ"));

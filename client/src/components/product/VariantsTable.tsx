@@ -21,6 +21,7 @@ import {
 } from "@/lib/variants";
 import { ColorPickerDot, Field, ImageSlot, MarginBadge, MiniBarcode, ScanButton } from "./variantBits";
 import { UnitBarcodeAliases } from "./UnitBarcodeAliases";
+import { UnitPriceHistory } from "./UnitPriceHistory";
 import { ChevronLeft, X } from "lucide-react";
 
 interface Branch {
@@ -61,6 +62,7 @@ export function VariantsTable({
   onColorCommit,
   stockEditable = true,
   localAliases = false,
+  priceHistory = false,
   emptyHint = "لا متغيّرات بعد — استخدم المولّد أعلاه (اكتب لوناً ثم «ولّد المتغيّرات»).",
 }: {
   variants: ClientVariant[];
@@ -86,6 +88,8 @@ export function VariantsTable({
    * يستعمل مساراً خادميّاً منفصلاً فلا يُفعَّل هنا كي لا تُفقَد البدائل بمسار تحديثٍ لا يحملها).
    */
   localAliases?: boolean;
+  /** في شاشة التعديل فقط: يعرض سجل السعر للوحدات المحفوظة داخل تفاصيل المتغيّر. */
+  priceHistory?: boolean;
   emptyHint?: string;
 }) {
   // عدّادات التكرار داخل النموذج (باركود + SKU) — مرّة لكل تغيّر بدل كل رسم.
@@ -155,6 +159,7 @@ export function VariantsTable({
               onColorCommit={onColorCommit}
               stockEditable={stockEditable}
               localAliases={localAliases}
+              priceHistory={priceHistory}
             />
           ))}
         </tbody>
@@ -179,6 +184,7 @@ function VariantRow({
   onColorCommit,
   stockEditable,
   localAliases,
+  priceHistory,
 }: {
   v: ClientVariant;
   idx: number;
@@ -195,6 +201,7 @@ function VariantRow({
   onColorCommit?: (oldColor: string, newColor: string) => void;
   stockEditable: boolean;
   localAliases: boolean;
+  priceHistory: boolean;
 }) {
   const [open, setOpen] = useState(false);
   // لون الصفّ عند بدء التحرير (focus) — لمقارنته عند الإتمام (blur) فنزامن رقائق المصفوفة عند إعادة التسمية.
@@ -373,6 +380,13 @@ function VariantRow({
                             onLocalChange={(next) =>
                               patch({ unitBarcodeAliases: { ...(v.unitBarcodeAliases ?? {}), [u.id]: next } })
                             }
+                          />
+                        )}
+                        {priceHistory && (
+                          <UnitPriceHistory
+                            variantId={v.id.startsWith("db:") ? Number(v.id.slice(3)) : null}
+                            unitName={u.name || "وحدة"}
+                            variantLabel={fullName || v.sku}
                           />
                         )}
                       </div>

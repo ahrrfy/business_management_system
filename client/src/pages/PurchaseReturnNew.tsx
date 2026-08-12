@@ -39,11 +39,15 @@ import {
 } from "@/components/invoice";
 
 const TYPE = "PURCHASE_RETURN" as const;
+// مرتجع الشراء لا يملك دورة مسودة. إبقاء القائمة صريحة يمنع ظهور إجراء وهمي إذا تغيّرت
+// افتراضات ActionButtons المشتركة مستقبلاً.
+const PURCHASE_RETURN_ACTIONS = ["save", "print", "duplicate", "paste"] as const satisfies readonly InvoiceActionKind[];
 
 export default function PurchaseReturnNew() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const [pasteAvailable, setPasteAvailable] = useState(hasInvoiceTransfer);
+  const printAfterSaveRef = useRef(false);
 
   // 1) ───── حالة عامة + هوية المستخدم ─────────────────────────────────────────
   const me = trpc.auth.me.useQuery();
@@ -100,9 +104,14 @@ export default function PurchaseReturnNew() {
     onSuccess: async () => {
       toast.success("تم إنشاء مرتجع الشراء بنجاح");
       await utils.purchases.list.invalidate();
+      if (printAfterSaveRef.current) {
+        printAfterSaveRef.current = false;
+        window.print();
+      }
       navigate("/purchases");
     },
     onError: (e) => {
+      printAfterSaveRef.current = false;
       toast.error(e.message || "فشل إنشاء مرتجع الشراء");
       regenerateRequestId(); // اسمح بإعادة محاولة جديدة بدون اصطدام idempotency.
     },
@@ -274,7 +283,7 @@ export default function PurchaseReturnNew() {
     return { ok: true, payload };
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(options: { printAfterSave?: boolean } = {}) {
     const v = validateAndBuildPayload();
     if (!v.ok) {
       toast.error(v.error);
@@ -289,15 +298,8 @@ export default function PurchaseReturnNew() {
       }))
     )
       return;
+    printAfterSaveRef.current = options.printAfterSave === true;
     mutation.mutate(v.payload);
-  }
-
-  function handleSaveDraft() {
-    toast.info("حفظ المسوّدة غير مفعّل لمرتجعات الشراء بعد — احفظ مباشرة عند الجاهزية.");
-  }
-
-  function handlePrint() {
-    window.print();
   }
 
   function handleAction(kind: InvoiceActionKind) {
@@ -305,11 +307,8 @@ export default function PurchaseReturnNew() {
       case "save":
         handleSubmit();
         return;
-      case "draft":
-        handleSaveDraft();
-        return;
       case "print":
-        handlePrint();
+        void handleSubmit({ printAfterSave: true });
         return;
       case "duplicate":
         if (!state.items.length) return toast.warning("لا توجد محتويات لنسخها.");
@@ -368,7 +367,7 @@ export default function PurchaseReturnNew() {
         handleSubmit();
       } else if (e.key === "F9") {
         e.preventDefault();
-        handlePrint();
+        void handleSubmit({ printAfterSave: true });
       } else if (e.key === "F12") {
         e.preventDefault();
         if (
@@ -530,6 +529,7 @@ export default function PurchaseReturnNew() {
             items={state.items}
             saving={mutation.isPending}
             pasteAvailable={pasteAvailable}
+            availableActions={PURCHASE_RETURN_ACTIONS}
             onAction={handleAction}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />

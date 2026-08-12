@@ -13,9 +13,22 @@ import { toDbMoney } from "./money";
 import { extractInsertId } from "../lib/insertId";
 import { escapeLike } from "../lib/sqlLike";
 import { assertNotLastActiveAdmin, createUserTx, type CreateUserInput } from "./userService";
+import { assertCanDisablePrivilegedUser } from "./userAdminPolicy";
 import { getEmployeeUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
 import { listEmployeeDeviceLinks } from "./hrDeviceService";
 import { WAGE_FIELD_LABELS, wageProfileDiff, wageProfileOf } from "./hr/wageProfile";
+import { resolveTargetBranch, type CompanyBranchScope } from "./companyBranchScope";
+
+const COMPANY_SCOPE: CompanyBranchScope = { branchId: null };
+
+function employeeScopeCondition(scope: CompanyBranchScope) {
+  return scope.branchId == null ? undefined : eq(employees.branchId, scope.branchId);
+}
+
+function employeeByIdCondition(id: number, scope: CompanyBranchScope) {
+  const branch = employeeScopeCondition(scope);
+  return branch ? and(eq(employees.id, id), branch) : eq(employees.id, id);
+}
 
 export interface EmployeeFilters {
   q?: string;
@@ -29,9 +42,11 @@ export interface EmployeeFilters {
   offset?: number;
 }
 
-export async function listEmployees(filters?: EmployeeFilters) {
+export async function listEmployees(filters?: EmployeeFilters, scope: CompanyBranchScope = COMPANY_SCOPE) {
   const db = requireDb();
   const conds = [];
+  const scopedBranch = employeeScopeCondition(scope);
+  if (scopedBranch) conds.push(scopedBranch);
   if (!filters?.includeInactive) conds.push(eq(employees.isActive, true));
   if (filters?.department) conds.push(eq(employees.department, filters.department));
   if (filters?.branchId) conds.push(eq(employees.branchId, filters.branchId));
@@ -76,18 +91,18 @@ export async function listEmployees(filters?: EmployeeFilters) {
   };
 }
 
-export async function getEmployee(id: number) {
+export async function getEmployee(id: number, scope: CompanyBranchScope = COMPANY_SCOPE) {
   const db = requireDb();
   const [e] = await db
     .select({ ...getTableColumns(employees), branchName: branches.name })
     .from(employees)
     .leftJoin(branches, eq(employees.branchId, branches.id))
-    .where(eq(employees.id, id))
+    .where(employeeByIdCondition(id, scope))
     .limit(1);
   if (!e) return null;
   let managerName: string | null = null;
   if (e.managerId) {
-    const [m] = await db.select().from(employees).where(eq(employees.id, e.managerId)).limit(1);
+    const [m] = await db.select().from(employees).where(employeeByIdCondition(e.managerId, scope)).limit(1);
     if (m) managerName = fullEmployeeName(m);
   }
   // الحساب المرتبط (إن وُجد) — لتعبئة قسم «حساب النظام» في شاشة التعديل (نمط managerName).
@@ -104,19 +119,37 @@ export async function getEmployee(id: number) {
   }
   // ربوط جهاز الحضور — تُعرَض وتُدار من بطاقة الموظف، ومصدر حقيقتها يبقى hrDeviceUsers
   // (علاقة تحتمل جهازين للفرعين واستبدال جهازٍ تالف، لا حقلاً مكرَّراً على employees).
-  const deviceLinks = await listEmployeeDeviceLinks(id);
+  const deviceLinks = await listEmployeeDeviceLinks(id, scope);
   return { ...e, fullName: fullEmployeeName(e), managerName, linkedUser, deviceLinks };
 }
 
-/** خيارات النماذج: الفروع + المدراء المحتملون (موظفون على رأس العمل). */
-export async function formOptions() {
+/** Mask employee identifiers outside the authenticated branch as NOT_FOUND. */
+export async function assertEmployeeInScope(id: number, scope: CompanyBranchScope): Promise<void> {
   const db = requireDb();
+  const [row] = await db
+    .select({ id: employees.id })
+    .from(employees)
+    .where(employeeByIdCondition(id, scope))
+    .limit(1);
+  if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+}
+
+/** خيارات النماذج: الفروع + المدراء المحتملون (موظفون على رأس العمل). */
+export async function formOptions(scope: CompanyBranchScope = COMPANY_SCOPE) {
+  const db = requireDb();
+  const branchScope = employeeScopeCondition(scope);
+  const managerConditions = [eq(employees.isActive, true), eq(employees.employmentStatus, "active")];
+  if (branchScope) managerConditions.push(branchScope);
   const [brs, mgrs] = await Promise.all([
-    db.select({ id: branches.id, name: branches.name }).from(branches).orderBy(branches.name),
+    db
+      .select({ id: branches.id, name: branches.name })
+      .from(branches)
+      .where(scope.branchId == null ? undefined : eq(branches.id, scope.branchId))
+      .orderBy(branches.name),
     db
       .select({ id: employees.id, firstName: employees.firstName, fatherName: employees.fatherName, grandfatherName: employees.grandfatherName, lastName: employees.lastName, position: employees.position })
       .from(employees)
-      .where(and(eq(employees.isActive, true), eq(employees.employmentStatus, "active")))
+      .where(and(...managerConditions))
       .orderBy(employees.firstName),
   ]);
   return {
@@ -205,9 +238,11 @@ export async function createEmployeeTx(tx: Tx, input: EmployeeInput): Promise<nu
   return extractInsertId(res);
 }
 
-export async function createEmployee(input: EmployeeInput) {
-  const id = await withTx((tx) => createEmployeeTx(tx, input));
-  return getEmployee(id);
+export async function createEmployee(input: EmployeeInput, scope: CompanyBranchScope = COMPANY_SCOPE) {
+  if (input.managerId != null) await assertEmployeeInScope(input.managerId, scope);
+  const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
+  const id = await withTx((tx) => createEmployeeTx(tx, { ...input, branchId }));
+  return getEmployee(id, scope);
 }
 
 /**
@@ -227,12 +262,19 @@ export async function createEmployee(input: EmployeeInput) {
  * لا يرسل `dayRates` للموظف الشهريّ، وكان `?? null` يمحو أسعار أيامه صامتاً عند أيّ
  * تعديلٍ عابر — خسارةُ بيانات وتغييرُ بصمةٍ زائفٌ في آن.
  */
-export async function updateEmployee(id: number, input: EmployeeInput, actor?: { userId: number; role: string }) {
+export async function updateEmployee(
+  id: number,
+  input: EmployeeInput,
+  actor?: { userId: number; role: string },
+  scope: CompanyBranchScope = COMPANY_SCOPE,
+) {
   const db = requireDb();
-  const [e] = await db.select().from(employees).where(eq(employees.id, id)).limit(1);
+  const [e] = await db.select().from(employees).where(employeeByIdCondition(id, scope)).limit(1);
   if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
 
-  const base = toValues(input);
+  if (input.managerId != null) await assertEmployeeInScope(input.managerId, scope);
+  const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
+  const base = toValues({ ...input, branchId });
   const keptExempt = input.attendanceExempt === undefined ? !!e.attendanceExempt : !!input.attendanceExempt;
   const next = {
     ...base,
@@ -253,8 +295,8 @@ export async function updateEmployee(id: number, input: EmployeeInput, actor?: {
     });
   }
 
-  await db.update(employees).set(next).where(eq(employees.id, id));
-  const updated = await getEmployee(id);
+  await db.update(employees).set(next).where(employeeByIdCondition(id, scope));
+  const updated = await getEmployee(id, scope);
   return {
     ...updated!,
     wageChange: changedWage.length ? { fields: changedWage, from: fromWage, to: toWage } : null,
@@ -265,9 +307,9 @@ export async function updateEmployee(id: number, input: EmployeeInput, actor?: {
  * حذف موظف نهائياً — مسموح فقط للموظف «النظيف» (لا حضور/عُهد/رواتب/إجازات/ترقيات/إنهاءات).
  * غير النظيف يُمنع حذفه ويُعرض «إنهاء الخدمة» بديلاً. قيد FK حارس نهائي ضدّ التيتيم.
  */
-export async function deleteEmployee(id: number) {
+export async function deleteEmployee(id: number, scope: CompanyBranchScope = COMPANY_SCOPE) {
   return withTx(async (tx) => {
-    const [e] = await tx.select().from(employees).where(eq(employees.id, id)).for("update").limit(1);
+    const [e] = await tx.select().from(employees).where(employeeByIdCondition(id, scope)).for("update").limit(1);
     if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
     const usage = await getEmployeeUsage(id, tx);
     if (!usage.clean) {
@@ -292,11 +334,18 @@ export async function deleteEmployee(id: number) {
 export async function setEmploymentStatus(
   id: number,
   status: "active" | "leave" | "terminated",
-  opts?: { terminationDate?: string; terminationReason?: string; actorUserId?: number },
+  opts?: {
+    terminationDate?: string;
+    terminationReason?: string;
+    actorUserId?: number;
+    actorRole?: string;
+    actorIsOwner?: boolean;
+  },
+  scope: CompanyBranchScope = COMPANY_SCOPE,
 ) {
   const actorUserId = opts?.actorUserId ?? null;
   const effects = await withTx(async (tx) => {
-    const [e] = await tx.select().from(employees).where(eq(employees.id, id)).for("update").limit(1);
+    const [e] = await tx.select().from(employees).where(employeeByIdCondition(id, scope)).for("update").limit(1);
     if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
     await tx
       .update(employees)
@@ -306,7 +355,7 @@ export async function setEmploymentStatus(
         terminationDate: status === "terminated" ? opts?.terminationDate ?? null : null,
         terminationReason: status === "terminated" ? opts?.terminationReason ?? null : null,
       })
-      .where(eq(employees.id, id));
+      .where(employeeByIdCondition(id, scope));
 
     if (status !== "terminated") return { userDisabled: false, deviceLinksReleased: 0 };
 
@@ -325,7 +374,18 @@ export async function setEmploymentStatus(
      */
     let userDisabled = false;
     if (e.userId) {
-      const [u] = await tx.select({ id: users.id, role: users.role, isActive: users.isActive }).from(users).where(eq(users.id, e.userId)).for("update").limit(1);
+      const [u] = await tx
+        .select({ id: users.id, role: users.role, isOwner: users.isOwner, isActive: users.isActive })
+        .from(users)
+        .where(eq(users.id, e.userId))
+        .for("update")
+        .limit(1);
+      if (u) {
+        assertCanDisablePrivilegedUser(
+          { role: opts?.actorRole, isOwner: opts?.actorIsOwner },
+          u,
+        );
+      }
       if (u?.isActive) {
         // لا يُقفَل النظام على نفسه: آخر مدير نشط لا يُعطَّل (نفس حارس setUserActive)،
         // ومَن ينهي خدمة سجلّه الشخصيّ لا يُطرَد من جلسته في منتصف العملية.
@@ -347,7 +407,7 @@ export async function setEmploymentStatus(
     const deviceLinksReleased = Number((res as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
     return { userDisabled, deviceLinksReleased };
   });
-  const e = await getEmployee(id);
+  const e = await getEmployee(id, scope);
   return { ...e!, ...effects };
 }
 

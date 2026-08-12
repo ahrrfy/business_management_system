@@ -41,6 +41,13 @@ const PROCEDURES = {
     roles: [],
     branch: false,
   },
+  passwordResetTokenProcedure: {
+    authority: "token",
+    module: "users",
+    level: "RESET_TOKEN",
+    roles: ["password-reset-token"],
+    branch: false,
+  },
   protectedProcedure: {
     authority: "none",
     module: null,
@@ -88,6 +95,13 @@ const PROCEDURES = {
     authority: "admin",
     module: null,
     level: null,
+    roles: ["admin"],
+    branch: false,
+  },
+  usersAdminProcedure: {
+    authority: "module-gate",
+    module: "users",
+    level: "FULL",
     roles: ["admin"],
     branch: false,
   },
@@ -235,6 +249,16 @@ const PROCEDURES = {
     level: "FULL",
     roles: ["cashier", "manager", "sales_rep"],
     branch: "required",
+  },
+  // (١٢/٨) بوّابة إنشاء العميل من محطة الاستقبال: crm=FULL **أو** workorders=FULL — نمط
+  // invoiceViewProcedure نفسه أعلاه. توثَّق كسلطةٍ مركّبة صريحة (crm|workorders — FULL|FULL)
+  // كي يعكس الجرد كلا فرعي الإذن، فلا يُقنَع المراجع أن العميل يُنشَأ عبر بوّابة crm وحدها.
+  customersReceptionCreateProcedure: {
+    authority: "module-map",
+    module: "crm|workorders",
+    level: "FULL|FULL",
+    roles: [],
+    branch: "scoped",
   },
   customersManagerProcedure: {
     authority: "module-gate",

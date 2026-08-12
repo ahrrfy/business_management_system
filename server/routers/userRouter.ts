@@ -13,6 +13,7 @@ import {
   listUserSessions,
   listUsers,
   resetUserPassword,
+  resetUserTwoFactor,
   revokeUserSessionRow,
   revokeUserSessions,
   setUserActive,
@@ -20,8 +21,8 @@ import {
   updateUser,
 } from "../services/userService";
 import { getUserUsage } from "../services/entityUsage";
-import { disableTwoFactor } from "../services/twoFactorService";
-import { adminProcedure, protectedProcedure, router } from "../trpc";
+import { issuePasswordResetToken } from "../services/passwordResetService";
+import { adminProcedure, protectedProcedure, router, usersAdminProcedure } from "../trpc";
 
 // تحفظ tuple الـenum أنواع RoleKey الحرفية ⇒ z.infer ينتج RoleKey لا string ⇒ يُغني عن as any.
 const ROLE = z.enum(ALL_ROLES as [RoleKey, ...RoleKey[]]);
@@ -183,7 +184,7 @@ export const userRouter = router({
   delete: adminProcedure
     .input(z.object({ userId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await deleteUser(input.userId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await deleteUser(input.userId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, isOwner: ctx.user.isOwner === true });
       await logAudit(ctx, { action: "user.delete", entityType: "user", entityId: input.userId });
       return res;
     }),
@@ -192,7 +193,7 @@ export const userRouter = router({
     .input(z.object({ userId: z.number().int().positive(), isActive: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
       const res = await setUserActive(input.userId, input.isActive, {
-        userId: ctx.user.id, branchId: ctx.user.branchId ?? 1,
+        userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, isOwner: ctx.user.isOwner === true,
       });
       await logAudit(ctx, {
         action: input.isActive ? "user.activate" : "user.deactivate",
@@ -201,6 +202,25 @@ export const userRouter = router({
         newValue: { isActive: input.isActive },
       });
       return res;
+    }),
+
+  /** يصدر رمزاً أحادي الاستخدام يُعرض للأدمن مرّة واحدة؛ الأدمن لا يختار كلمة المستخدم. */
+  issuePasswordResetToken: usersAdminProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const result = await issuePasswordResetToken(input.userId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      });
+      await logAudit(ctx, {
+        action: "user.issuePasswordResetToken",
+        entityType: "user",
+        entityId: input.userId,
+        newValue: { expiresAt: result.expiresAt },
+      });
+      return result;
     }),
 
   resetPassword: adminProcedure
@@ -219,7 +239,7 @@ export const userRouter = router({
       const res = await resetUserPassword(
         input.userId,
         input.newPassword,
-        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 },
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, isOwner: ctx.user.isOwner === true },
         { mustChange: input.mustChangePassword }
       );
       await logAudit(ctx, {
@@ -236,21 +256,18 @@ export const userRouter = router({
   resetTwoFactor: adminProcedure
     .input(z.object({ userId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      await disableTwoFactor(input.userId);
-      await revokeUserSessions(input.userId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, {
-        action: "user.resetTwoFactor",
-        entityType: "user",
-        entityId: input.userId,
-      });
-      return { success: true } as const;
+      return resetUserTwoFactor(
+        input.userId,
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, isOwner: ctx.user.isOwner === true },
+        ctx,
+      );
     }),
 
   /** إبطال كل جلسات مستخدم فوراً بلا تغيير كلمة مروره (جهاز مفقود/موظف مطرود). */
   revokeSessions: adminProcedure
     .input(z.object({ userId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await revokeUserSessions(input.userId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await revokeUserSessions(input.userId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, isOwner: ctx.user.isOwner === true });
       await logAudit(ctx, {
         action: "user.revokeSessions",
         entityType: "user",

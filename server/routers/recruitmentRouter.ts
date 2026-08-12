@@ -6,15 +6,30 @@
  * يُصدَّر بالاسم؛ القائد يركّبه تحت trpc.recruitment.
  * ========================================================================== */
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { APPLICANT_SOURCES, APPLICANT_STAGE_KEYS, EMPLOYMENT_TYPE_KEYS } from "@shared/hr";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/recruitmentService";
 import { protectedProcedure, publicProcedure, requireModule, router } from "../trpc";
+import { companyBranchScope, resolveTargetBranch } from "../services/companyBranchScope";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
 
 const SOURCE_KEYS = APPLICANT_SOURCES.map((s) => s.key) as [string, ...string[]];
+
+const applicantCv = z
+  .object({
+    fileName: z.string().trim().min(1).max(255),
+    mimeType: z.enum([
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]),
+    // 2MB decoded becomes at most 2,796,204 canonical base64 characters.
+    base64: z.string().max(2_796_204),
+  })
+  .strict()
+  .optional();
 
 /** صورة الوظيفة كـ data URL مضغوط — حدّ ~٢ مليون محرف يتّسع لناتج الضغط (≤٧٠٠KB) ويردّ الإساءة. */
 const vacancyImage = z.string().trim().max(2_200_000).optional();
@@ -39,6 +54,7 @@ const vacancyFields = {
 const applicantFields = {
   name: z.string().trim().min(1, "اسم المتقدّم مطلوب").max(200),
   jobTitle: z.string().trim().max(150).optional(),
+  branchId: z.number().int().positive().optional(),
   vacancyId: z.number().int().positive().optional(),
   phone: z.string().trim().max(20).optional(),
   // البريد اختياري: الفراغ يُحوَّل إلى undefined، وإن وُجد يجب أن يكون صيغة بريد صالحة.
@@ -50,6 +66,7 @@ const applicantFields = {
   education: z.string().trim().max(200).optional(),
   // حدّ أقصى للملاحظات: يمنع تسرّب خطأ «Data too long» (عمود TEXT) وإساءة الحجم عبر الإجراء العام.
   notes: z.string().trim().max(2000).optional(),
+  cv: applicantCv,
 };
 
 export const recruitmentRouter = router({
@@ -68,12 +85,13 @@ export const recruitmentRouter = router({
         })
         .optional(),
     )
-    .query(async ({ input }) => {
-      const rows = await svc.listApplicants(input);
-      return input?.vacancyId != null ? rows.filter((a) => a.vacancyId === input.vacancyId) : rows;
-    }),
+    .query(({ input, ctx }) => svc.listApplicants(input, companyBranchScope(ctx.user))),
 
-  get: hrRead.input(z.object({ id: z.number().int().positive() })).query(({ input }) => svc.getApplicant(input.id)),
+  get: hrRead.input(z.object({ id: z.number().int().positive() })).query(async ({ input, ctx }) => {
+    const a = await svc.getApplicant(input.id, companyBranchScope(ctx.user));
+    if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "المتقدّم غير موجود" });
+    return a;
+  }),
 
   /** إدخال متقدّم من الموظف (استمارة ورقية/أرشيف، أو يدوياً برابط خارجي). */
   create: hrWrite
@@ -87,7 +105,7 @@ export const recruitmentRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const a = await svc.createApplicant(input as svc.ApplicantInput);
+      const a = await svc.createApplicant(input as svc.ApplicantInput, companyBranchScope(ctx.user));
       await logAudit(ctx, {
         action: "recruitment.create",
         entityType: "jobApplicant",
@@ -101,7 +119,7 @@ export const recruitmentRouter = router({
   updateStage: hrWrite
     .input(z.object({ id: z.number().int().positive(), stage: z.enum(APPLICANT_STAGE_KEYS) }))
     .mutation(async ({ input, ctx }) => {
-      const a = await svc.updateStage(input.id, input.stage);
+      const a = await svc.updateStage(input.id, input.stage, companyBranchScope(ctx.user));
       await logAudit(ctx, {
         action: "recruitment.updateStage",
         entityType: "jobApplicant",
@@ -115,7 +133,7 @@ export const recruitmentRouter = router({
   setRating: hrWrite
     .input(z.object({ id: z.number().int().positive(), rating: z.number().int().min(0).max(5) }))
     .mutation(async ({ input, ctx }) => {
-      const res = await svc.setRating(input.id, input.rating);
+      const res = await svc.setRating(input.id, input.rating, companyBranchScope(ctx.user));
       await logAudit(ctx, { action: "recruitment.setRating", entityType: "applicant", entityId: input.id, newValue: { rating: input.rating } });
       return res;
     }),
@@ -139,19 +157,25 @@ export const recruitmentRouter = router({
   /** إدارة HR: كل الوظائف (منشورة وغير منشورة) + خيار تقييد على المنشورة. */
   vacancyList: hrRead
     .input(z.object({ onlyPublished: z.boolean().optional() }).optional())
-    .query(({ input }) => svc.listVacancies(input?.onlyPublished)),
+    .query(({ input, ctx }) => svc.listVacancies(input?.onlyPublished, companyBranchScope(ctx.user))),
 
   vacancyGet: hrRead
     .input(z.object({ id: z.number().int().positive() }))
-    .query(({ input }) => svc.getVacancy(input.id)),
+    .query(async ({ input, ctx }) => {
+      const v = await svc.getVacancy(input.id, companyBranchScope(ctx.user));
+      if (!v) throw new TRPCError({ code: "NOT_FOUND", message: "الوظيفة غير موجودة" });
+      return v;
+    }),
 
   /** عدّاد المتقدّمين لكل وظيفة (للوحة الإدارة). */
-  vacancyCounts: hrRead.query(() => svc.vacancyApplicantCounts()),
+  vacancyCounts: hrRead.query(({ ctx }) => svc.vacancyApplicantCounts(companyBranchScope(ctx.user))),
 
   vacancyCreate: hrWrite
     .input(z.object(vacancyFields))
     .mutation(async ({ input, ctx }) => {
-      const v = await svc.createVacancy(input as svc.VacancyInput);
+      const scope = companyBranchScope(ctx.user);
+      const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
+      const v = await svc.createVacancy({ ...input, branchId } as svc.VacancyInput, scope);
       await logAudit(ctx, {
         action: "recruitment.vacancyCreate",
         entityType: "jobVacancy",
@@ -165,7 +189,11 @@ export const recruitmentRouter = router({
     .input(z.object({ id: z.number().int().positive(), ...vacancyFields }))
     .mutation(async ({ input, ctx }) => {
       const { id, ...rest } = input;
-      const v = await svc.updateVacancy(id, rest as svc.VacancyInput);
+      const scope = companyBranchScope(ctx.user);
+      const existing = await svc.getVacancy(id, scope);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "الوظيفة غير موجودة" });
+      const branchId = resolveTargetBranch(scope, rest.branchId, { required: false });
+      const v = await svc.updateVacancy(id, { ...rest, branchId } as svc.VacancyInput, scope);
       await logAudit(ctx, {
         action: "recruitment.vacancyUpdate",
         entityType: "jobVacancy",
@@ -178,7 +206,7 @@ export const recruitmentRouter = router({
   vacancyPublish: hrWrite
     .input(z.object({ id: z.number().int().positive(), isPublished: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
-      const v = await svc.setVacancyPublished(input.id, input.isPublished);
+      const v = await svc.setVacancyPublished(input.id, input.isPublished, companyBranchScope(ctx.user));
       await logAudit(ctx, {
         action: "recruitment.vacancyPublish",
         entityType: "jobVacancy",
@@ -191,7 +219,7 @@ export const recruitmentRouter = router({
   vacancyDelete: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const r = await svc.deleteVacancy(input.id);
+      const r = await svc.deleteVacancy(input.id, companyBranchScope(ctx.user));
       await logAudit(ctx, {
         action: "recruitment.vacancyDelete",
         entityType: "jobVacancy",

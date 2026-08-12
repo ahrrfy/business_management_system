@@ -3,6 +3,12 @@ import { initSentry, Sentry } from "./sentry";
 // تهيئة Sentry قبل أي شيء (لا أثر إن لم يُضبط DSN).
 const sentryEnabled = initSentry();
 
+// خادم الويب لا يحتاج سرّ root مطلقاً: النسخ الاحتياطي يستعمل مستخدم DATABASE_URL
+// الأقل امتيازاً، والاستعادة/التصفير عبر الويب محظوران في الإنتاج. قد يرث PM2 كامل
+// بيئة عملية الإطلاق حتى لو لم نضع المفتاح في env الخاص بالتطبيق، لذا نمسحه داخل
+// العامل نفسه. تبقى أدوات CLI/عامل provisioning عمليات مستقلة تقرأ .env مباشرةً.
+if (process.env.NODE_ENV === "production") delete process.env.DB_ROOT_PW;
+
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { sql } from "drizzle-orm";
 import express, {
@@ -16,10 +22,11 @@ import compression from "compression";
 import rateLimit from "express-rate-limit";
 import { pinoHttp } from "pino-http";
 import { nanoid } from "nanoid";
+import { timingSafeEqual } from "node:crypto";
 import { createServer } from "http";
 import net from "net";
 import { createContext } from "./context";
-import { getDb, closeDb } from "./db";
+import { getDb, closeDb, isMultiTenantModeActive, validateTenantConnectionBudget } from "./db";
 import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
@@ -42,13 +49,17 @@ import {
 import { printRouter } from "./printRoute";
 import { imageRouter } from "./imageRoute";
 import { backupRouter } from "./backupRoutes";
+import { isLoopbackHost, resolveListenHost } from "./config/listenHost";
 import {
   channelWebhooksRouter,
   companyChannelWebhooksRouter,
 } from "./routes/channelWebhooks";
 import { waMediaRouter } from "./routes/waMedia";
+import { jobApplicantCvRouter } from "./routes/jobApplicantCv";
 import { tenancyMiddleware } from "./tenancy/expressMiddleware";
+import { closeControlDb, getControlDb } from "./tenancy/controlDb";
 import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
+import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -81,11 +92,29 @@ async function startServer() {
     process.exit(1);
   }
 
+  const isDev = process.env.NODE_ENV === "development";
+  // إنتاج آمن افتراضياً: غياب HOST أو الربط العام العرضي يوقف الإقلاع قبل فتح المنفذ.
+  // النشر المقصود على LAN/واجهة عامة يتطلب ALLOW_PUBLIC_BIND=1 صراحةً مع جدار ناري.
+  const host = resolveListenHost({
+    nodeEnv: process.env.NODE_ENV,
+    host: process.env.HOST,
+    allowPublicBind: process.env.ALLOW_PUBLIC_BIND,
+  });
+
+  // Validate the complete tenant/control connection budget before opening the HTTP port.
+  if (isMultiTenantModeActive()) validateTenantConnectionBudget();
+  void sweepStaleRestoreArtifacts()
+    .then((removed) => removed > 0 && logger.warn({ removed }, "restore.stale_artifacts.removed"))
+    .catch((err) => logger.warn({ err }, "restore.stale_artifacts.sweep_failed"));
+
   // نشر التطبيق الأصلي يعلن اعتماده على FCM و2FA وجسر جهاز الحضور. عند تفعيل العلم
   // الصريح في الإنتاج نفشل قبل فتح المنفذ إذا كانت أي حلقة ناقصة، لا بعد دخول الموظفين.
   assertMobileProductionReadiness();
 
   const app = express();
+  // توحيد حساسية المسار مع Nginx: Express غير حساس للحالة افتراضياً، ما يسمح لمسار
+  // /API/TRPC بتجاوز locations الدقيقة/حدودها ثم الوصول للراوتر نفسه.
+  app.set("case sensitive routing", true);
   const server = createServer(app);
   // trust proxy مشروط: لا نثق برؤوس X-Forwarded-* إلا عند صحّة الإطار:
   //   - HOST=127.0.0.1 ⇒ خلف nginx/reverse-proxy موثوق (وضع الإنتاج على VPS).
@@ -99,10 +128,32 @@ async function startServer() {
   // express-rate-limit يفهرس بـreq.ip. مع `1` يُطابق nginx واحداً ⇒ req.ip = IP العميل الحقيقي
   // كما يسجّله البروكسي ويُتجاهَل أي XFF محقون. (كانت 1 ثم صارت true بالخطأ في b757623.)
   const trustProxy =
-    process.env.TRUST_PROXY === "1" || process.env.HOST === "127.0.0.1"
+    process.env.TRUST_PROXY === "1" || isLoopbackHost(host)
       ? 1
       : false;
   app.set("trust proxy", trustProxy);
+
+  // على VPS مشترك لا يكفي loopback وحده: أي عملية محلية تستطيع الاتصال بـ:3000 وتزوير
+  // XFF متجاوزةً عدادات nginx. سرّ hop داخلي يثبت أن الطلب مرّ فعلاً عبر nginx.
+  // حتى healthz يمرّ بالسر؛ nginx هو عميل الإنتاج الوحيد، وفحوص PM2 تستعمل النطاق العام.
+  if (process.env.NODE_ENV === "production" && process.env.REQUIRE_INTERNAL_PROXY_SECRET === "1") {
+    if (!isLoopbackHost(host)) {
+      throw new Error("REQUIRE_INTERNAL_PROXY_SECRET=1 يتطلب HOST=127.0.0.1 خلف reverse proxy.");
+    }
+    const proxySecret = process.env.INTERNAL_PROXY_SECRET?.trim();
+    if (!proxySecret || !/^[a-f0-9]{64}$/i.test(proxySecret)) {
+      throw new Error("INTERNAL_PROXY_SECRET يجب أن يكون 64 خانة hex عشوائية (openssl rand -hex 32) خلف nginx في الإنتاج.");
+    }
+    app.use((req, res, next) => {
+      const supplied = req.get("x-internal-proxy-secret") ?? "";
+      const expected = Buffer.from(proxySecret);
+      const actual = Buffer.from(supplied);
+      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+        return res.status(403).send("forbidden");
+      }
+      next();
+    });
+  }
 
   // تسجيل بنيوي + معرّف لكل طلب (req.id) يُستعمل للربط في الأخطاء.
   app.use(
@@ -121,7 +172,6 @@ async function startServer() {
   // حماية رؤوس HTTP. CSP مُفعَّل مع استثناء style-src unsafe-inline لـTailwind/SPA.
   // في وضع التطوير: 'unsafe-inline' + 'unsafe-eval' مطلوبان لـVite HMR و source maps.
   // في الإنتاج: نبقى على 'self' فقط (البنية المجمَّعة بلا inline scripts).
-  const isDev = process.env.NODE_ENV === "development";
   app.use(
     helmet({
       crossOriginEmbedderPolicy: false,
@@ -158,6 +208,12 @@ async function startServer() {
   // المستخدم — علّة دخول اللوحي ٤/٧)، وعلى بقية الأسطح `{error}` كما كانت.
   const rateLimitHandler = trpcAwareRateLimitHandler;
 
+  // حدود express-rate-limit الافتراضية تستعمل MemoryStore داخل **هذا العامل فقط**.
+  // في الإنتاج العنقودي لا نعاملها كسقف عالمي: nginx أمام المنفذ المحلي هو المرجع
+  // المشترك لكل عمال PM2 (أنطقة auth/recovery/restore/webhooks في deploy/nginx-*).
+  // نبقي هذه الحدود دفاعاً ثانوياً إذا وصل طلب داخلي أو أخطأ إعداد الحافة؛ أمّا قفل
+  // الحساب الموجود في قاعدة البيانات فهو المشترك لكل العمال لمحاولات حساب معروف.
+
   // ── الحدّ العام لكل IP (جذر إصلاح توقّف الذروة، ٨/٨/٢٠٢٦) ──────────────────────────────────
   // كل أجهزة المتجر (٧ كاشيرات + بوابة العدّ + كل الموظفين والحسابات) خلف **IP عام واحد**؛ الحدّ
   // القديم (١٠٠٠/١٥د) كان يخنق هذا الـIP المشترك فتُستنزَف حصّته عند الذروة ⇒ كلّ طلبٍ لاحق (مسح
@@ -166,7 +222,8 @@ async function startServer() {
   // الإصلاح: **حدٌّ سخيٌّ لكل IP** (env-tunable) يتّسع لذروة المتجر كلّها بهامش واسع. نُبقيه على
   // req.ip (المفتاح = عناوين IP، **محدود العدد** ⇒ آمنٌ للذاكرة، ويصمد كمصدٍّ حتى لو دُوِّرت
   // الكوكيّات — لا نُفهرِس بكوكي جلسةٍ غير مُتحقَّق منها فيُفتَح باب إغراقٍ عالي التعدّد بلا سقف).
-  // خطّ دفاع الذروة الحقيقيّ **أماميّ** (nginx ٥٠ط/ث/IP + Cloudflare)؛ وهذا حاجزٌ احتياطيّ ضدّ
+  // خطّ دفاع الذروة الحقيقيّ **أماميّ** (nginx ٥٠ط/ث/IP + Cloudflare)؛ وهذا MemoryStore
+  // لكل عامل حاجزٌ احتياطيّ ضدّ
   // حلقة عميلٍ جامحة. النموّ: أجهزة المتجر تتقاسم IP واحداً ⇒ ارفع RATE_LIMIT_MAX عند التوسّع؛
   // وعملاء المتجر الإلكترونيّ كلٌّ بـIP مستقلّ ⇒ يتوزّعون طبيعياً.
   app.use(
@@ -242,7 +299,10 @@ async function startServer() {
   // فحص صحّة للمراقبة/الحارس: يتأكّد أنّ القاعدة تستجيب.
   app.get("/healthz", async (_req, res) => {
     try {
-      const db = getDb();
+      // لا توجد شركة في طلب health العام. في وضع تعدد الشركات نفحص قاعدة التحكّم
+      // الثابتة؛ فحص قواعد الشركات يجري ضمن طلباتها/وظائفها ذات السياق ولا يجوز اختيار
+      // شركة افتراضية قد تخفي تعطل غيرها.
+      const db = isMultiTenantModeActive() ? getControlDb() : getDb();
       if (!db) return res.status(503).json({ ok: false, db: "unconfigured" });
       await db.execute(sql`SELECT 1`);
       res.json({ ok: true, time: new Date().toISOString() });
@@ -257,7 +317,8 @@ async function startServer() {
   // راوتر واحد = IP عام واحد يتشارك الميزانية، فصباح عمل عادي (عدة أجهزة + جلسات ١٢ ساعة
   // تنتهي معاً) كان يُطلق 429 يُقرأ «قفل حساب». الآن: الفشل وحده يُحسب (skipSuccessfulRequests)
   // والافتراضي ٣٠ فشلاً/١٥د لكل IP — عدّاد التطبيق (شركة×IP، ٢٠/١٥د في authRouter) يبقى
-  // خطّ الدفاع الأدقّ ويُطلق قبله برسالة أوضح + أثر تدقيق.
+  // خطّ الدفاع الأدقّ ويُطلق قبله برسالة أوضح + أثر تدقيق. سقف nginx `alroya_auth`
+  // هو عدّاد IP المشترك بين عمال PM2؛ هذا المحدّد الذاكري دفاع ثانوي لكل عامل.
   app.use(
     "/api/trpc",
     rateLimit({
@@ -412,6 +473,8 @@ async function startServer() {
   app.use("/api/trpc", (req, res, next) => {
     const PUBLIC_SENSITIVE = [
       "auth.login",
+      "auth.twoFactorVerify",
+      "auth.resetPasswordWithToken",
       "count.auth",
       "kiosk.deviceLogin",
       "recruitment.submit",
@@ -450,6 +513,16 @@ async function startServer() {
   const tenancy = tenancyMiddleware();
 
   app.use("/api/trpc", tenancy);
+  // The adapter otherwise resolves the final segment, so `/x/auth.login` and
+  // `//auth.login` could reach auth while bypassing Nginx's exact abuse-control zone.
+  app.use("/api/trpc", (req, res, next) => {
+    // Inspect the original mounted path before normalization: exactly one leading
+    // slash followed by a single procedure/batch segment is canonical.
+    if (!/^\/[^/]+$/.test(req.path)) {
+      return res.status(404).json({ error: "non-canonical tRPC path" });
+    }
+    next();
+  });
   // maxBatchSize: يحدّ حجم دفعة tRPC الواحدة ⇒ سطح هجوم batch محدّد. خفّضناه من 50 إلى 20
   // لأن الواجهة الفعلية لا تتجاوز ~10 نداءات متوازية، والـ20 احتياطٌ مريح.
   app.use(
@@ -475,11 +548,25 @@ async function startServer() {
   // تنزيل النسخ الاحتياطية لجهاز المدير (GET stream، محمي بالمدير + مسار آمن). في وضع تعدد
   // الشركات: backupRoutes.ts/systemRouter.ts يُقيَّدان لملفات الشركة الحالية فقط (بادئة اسم
   // قاعدتها) — راجع server/services/maintenanceService.ts.
+  app.use(
+    "/api/backups/restore-upload",
+    rateLimit({
+      windowMs: 60 * 60 * 1000,
+      limit: Number(process.env.RESTORE_UPLOAD_RATE_LIMIT_MAX ?? 3),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      handler: rateLimitHandler("محاولات استعادة كثيرة؛ انتظر قبل المحاولة التالية."),
+    }),
+  );
   app.use("/api/backups", tenancy, csrfGuard, backupRouter());
 
   // وسائط واتساب الواردة (GET stream، خارج tRPC — نفس فلسفة /api/backups أعلاه): محمي بنفس
   // آلية المصادقة (كوكي الجلسة عبر getUserFromRequest داخل waMediaRouter نفسها، وإلا 401).
   app.use("/api/wa/media", tenancy, waMediaRouter());
+
+  // CVs are private binary documents: authenticated HR permission + vacancy
+  // branch scope are rechecked on every GET, and the response is attachment-only.
+  app.use("/api/hr/applicant-cv", tenancy, jobApplicantCvRouter());
 
   // Webhooks خارِجية لِلقَنوات (شَريحة #5): WhatsApp/Instagram/Store.
   // ⚠️ لا csrfGuard هُنا — webhooks تَأتي مِن مُزوّدين خارِجيين بَلا كوكي/Origin، ولا
@@ -490,7 +577,8 @@ async function startServer() {
   // بديل ⇒ كل طلب POST مجهول (بترويسة توقيع بأي قيمة) يُشغّل جولة DB + فكّ AES + HMAC، و
   // `GET ?hub.verify_token=` يُشغّل SELECT + SHA-256 لكل صفّ قناة — بلا أي سقف. سطح استنزاف
   // CPU/DB مجهول الهوية. الحدّ سخيٌّ جداً (لا يحجب Meta الشرعية بحجمها المعتاد لعملٍ صغير) لكنه
-  // يقفل الإغراق. الأمان الأساسي يبقى HMAC (ثابت الزمن، fail-closed) — هذا حماية بنية فقط.
+  // يقفل الإغراق. nginx `alroya_webhooks` هو السقف المشترك قبل كل العمال؛ MemoryStore هنا
+  // دفاع ثانوي. الأمان الأساسي يبقى HMAC (ثابت الزمن، fail-closed) — هذا حماية بنية فقط.
   app.use(
     "/api/webhooks",
     rateLimit({
@@ -506,9 +594,7 @@ async function startServer() {
   app.use("/api/webhooks/company/:companyCode", companyChannelWebhooksRouter());
 
   const preferredPort = parseInt(process.env.PORT || "3000", 10);
-  // HOST يضيّق واجهة الاستماع: على VPS خلف nginx اضبط HOST=127.0.0.1 فلا يُكشف المنفذ للإنترنت
-  // ولا يُلتفّ على ترويسات nginx الأمنية (G6). غير مضبوط ⇒ كل الواجهات (سلوك المتجر/التطوير كما كان).
-  const host = process.env.HOST || undefined;
+  // HOST حُسم وفُحص قبل إنشاء التطبيق؛ في الإنتاج لا يمرّ غيابه أو ربط غير loopback بلا opt-in.
   // في العنقود (cluster) يتشارك كل العمّال منفذاً واحداً عبر مقبض يوزّعه المعالج الرئيسيّ لـNode؛
   // فحص توفّر المنفذ المنفصل (findAvailablePort) يلتبس بمشاركة المقبض بين العمّال ⇒ نربط مباشرةً
   // على PORT. في fork (تطوير/عملية وحيدة) نُبقي الفحص: راحةُ التطوير + فشلٌ صريح في الإنتاج عند
@@ -527,12 +613,6 @@ async function startServer() {
     }
     logger.warn(`Port ${preferredPort} busy, using ${port} instead`);
   }
-  if (!isDev && !host) {
-    logger.warn(
-      "إنتاج بلا HOST — الاستماع على كل الواجهات؛ خلف nginx اضبط HOST=127.0.0.1.",
-    );
-  }
-
   // Listen BEFORE attaching Vite: the API binds immediately and a slow Vite
   // startup never blocks the server from accepting requests.
   await new Promise<void>((resolve) =>
@@ -615,6 +695,7 @@ async function startServer() {
       stopNativePushOutboxWorker?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
+      await closeControlDb();
       clearTimeout(force);
       logger.info("أُغلق الخادم والقاعدة بسلام.");
       process.exit(0);
