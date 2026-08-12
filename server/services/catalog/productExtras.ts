@@ -18,7 +18,17 @@ export interface MaterialRow {
 export async function listMaterialsForRecipe(query?: string, limit = 100): Promise<MaterialRow[]> {
   const db = getDb();
   if (!db) return [];
+  // مواد خامٍ حقيقيّة: سلع مخزنيّة نشطة فقط. نستثني:
+  //  - الخدمات (isService=true) — بلا مخزون ذاتيّ، لا معنى لاستهلاكها كمادة.
+  //  - خدمات الطباعة (productType=PRINT_SERVICE) — سبيل خاص عبر وصفتها هي.
+  //  - البكج (isBundle=true) — منتج مركّب بلا رصيد ذاتيّ، مكوّناته هي المواد.
+  //  - بضاعة الأمانة (isConsignment=true) — ليست ملك المكتبة، لا تُستهلَك في خدمةٍ داخلية.
+  //  - المنتجات المعطَّلة (products.isActive=false) — كانت مفقودةً ⇒ مواد قديمة تظهر في الوصفة.
   const conds: SQL[] = [
+    eq(products.isActive, true),
+    eq(products.isService, false),
+    eq(products.isBundle, false),
+    eq(products.isConsignment, false),
     eq(productVariants.isActive, true),
     eq(productUnits.isBaseUnit, true),
     notPrintService,

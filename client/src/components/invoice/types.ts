@@ -31,6 +31,8 @@ export interface InvoiceLine {
   conversionFactor: string;
   /** Stock at the active branch in base units. */
   stockBase: number;
+  /** خدمة (١٢/٨/٢٦): الخدمة بلا مخزون ذاتيّ ⇒ لا نُظهر تحذير «خارج المخزون»؛ createSale يخصم موادها من الوصفة. */
+  isService?: boolean;
   /** Unit price (decimal string). */
   price: string;
   /** Cost per base unit (decimal string) — hidden from cashier; required by purchases. */

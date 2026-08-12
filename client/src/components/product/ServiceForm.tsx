@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertCircle, Plus, Printer, ShoppingCart, Users, X } from "lucide-react";
+import { AlertCircle, Plus, Printer, ShoppingCart, Users, X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,7 +9,7 @@ import { NumberInput } from "@/components/form/NumberInput";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Field, MarginBadge } from "@/components/product/variantBits";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { toArabicDigits } from "@/lib/variants";
 import { CategoryOptionList } from "@/lib/categoryTree";
 
@@ -25,15 +25,112 @@ import { CategoryOptionList } from "@/lib/categoryTree";
  * يُرسِل إلى `catalog.createProduct` بمتغيّر واحد + الراية printService + recipe[].
  */
 
-type RecipeLine = { key: number; variantId: number | ""; qty: string };
+type MaterialRow = RouterOutputs["catalog"]["materialsForRecipe"][number];
+type RecipeLine = {
+  key: number;
+  variantId: number | "";
+  qty: string;
+  /** لقطة اسم المادة المختارة — لعرضها في الحقل بعد الاختيار (typeahead يُفرَّغ). */
+  picked: MaterialRow | null;
+};
 
 const tierLabel = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" } as const;
+
+/**
+ * منتقي مادة خام (typeahead) — بحث ديناميكيّ بدل قائمة أبجدية ثابتة محدودة بـ100.
+ * كل نقر يفتح البحث، والمستخدم يكتب «ورق» / «حبر» فيصل للمادة مهما كان الكتالوج كبيراً.
+ */
+function MaterialPicker({
+  value,
+  onPick,
+}: {
+  value: MaterialRow | null;
+  onPick: (m: MaterialRow) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // إغلاق عند النقر خارج المنتقي.
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+
+  const res = trpc.catalog.materialsForRecipe.useQuery(
+    { query: q.trim(), limit: 50 },
+    { enabled: open }
+  );
+
+  const items = res.data ?? [];
+  const label = value
+    ? `${value.productName}${value.variantName ? ` — ${value.variantName}` : ""} (${value.unitName})`
+    : "";
+
+  return (
+    <div ref={ref} className="relative md:col-span-7">
+      <div className="relative">
+        <span aria-hidden className="pointer-events-none absolute end-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+          <Search aria-hidden className="size-3.5" />
+        </span>
+        <Input
+          value={open ? q : label}
+          onFocus={() => setOpen(true)}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setOpen(true);
+          }}
+          placeholder={value ? "" : "ابحث عن مادة خام (ورق/حبر/…)"}
+          className="h-8 pe-8 text-sm"
+          dir="auto"
+          aria-label="بحث عن مادة خام"
+        />
+      </div>
+      {open && (
+        <div className="absolute z-20 mt-1 w-full min-w-[260px] max-h-64 overflow-auto rounded-md border bg-popover shadow-md">
+          {res.isFetching && (
+            <div className="p-2 text-center text-[11px] text-muted-foreground">جارٍ البحث…</div>
+          )}
+          {!res.isFetching && items.length === 0 && (
+            <div className="p-3 text-center text-[11px] text-muted-foreground">
+              {q.trim() ? "لا نتائج — جرّب كلمة أخرى." : "اكتب للبحث عن مادةٍ خامّة (سلعة مخزنيّة)."}
+            </div>
+          )}
+          {items.map((m) => (
+            <button
+              key={m.variantId}
+              type="button"
+              onClick={() => {
+                onPick(m);
+                setQ("");
+                setOpen(false);
+              }}
+              className="block w-full px-3 py-2 text-right text-sm hover:bg-accent"
+            >
+              <div className="font-medium">
+                {m.productName}
+                {m.variantName ? <span className="text-muted-foreground"> — {m.variantName}</span> : null}
+              </div>
+              <div className="mt-0.5 flex justify-between text-[11px] text-muted-foreground" dir="ltr">
+                <span>{m.sku}</span>
+                <span>{m.unitName}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function ServiceForm() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const categoriesQ = trpc.catalog.categories.useQuery();
-  const materialsQ = trpc.catalog.materialsForRecipe.useQuery({});
 
   const [name, setName] = useState("");
   const [categoryId, setCategoryId] = useState<number | "">("");
@@ -47,22 +144,19 @@ export default function ServiceForm() {
   const [showInReception, setShowInReception] = useState(false);
   const [consumesMaterials, setConsumesMaterials] = useState(false);
   const [lineSeq, setLineSeq] = useState(2);
-  const [lines, setLines] = useState<RecipeLine[]>([{ key: 1, variantId: "", qty: "1" }]);
+  const [lines, setLines] = useState<RecipeLine[]>([{ key: 1, variantId: "", qty: "1", picked: null }]);
   const [error, setError] = useState("");
 
-  const materials = materialsQ.data ?? [];
-  const matById = useMemo(() => new Map(materials.map((m) => [m.variantId, m])), [materials]);
-
   // كلفة المواد المُقدَّرة لكل وحدة خدمة (مجموع كلفة كل مادة × كميتها).
+  // مصدرها اللقطة الملتقَطة (`picked`) لأن كل سطرٍ يبحث بمعزل ⇒ لا قائمة موحّدة.
   const materialsCost = useMemo(() => {
     if (!consumesMaterials) return 0;
     return lines.reduce((sum, l) => {
-      if (l.variantId === "") return sum;
-      const m = matById.get(l.variantId);
+      if (l.variantId === "" || !l.picked) return sum;
       const q = parseFloat(l.qty) || 0;
-      return sum + (m ? (parseFloat(m.costPrice) || 0) * q : 0);
+      return sum + (parseFloat(l.picked.costPrice) || 0) * q;
     }, 0);
-  }, [consumesMaterials, lines, matById]);
+  }, [consumesMaterials, lines]);
   const totalCost = (parseFloat(directCost) || 0) + materialsCost;
 
   const create = trpc.catalog.createProduct.useMutation({
@@ -78,7 +172,7 @@ export default function ServiceForm() {
   });
 
   const addLine = () => {
-    setLines((ls) => [...ls, { key: lineSeq, variantId: "", qty: "1" }]);
+    setLines((ls) => [...ls, { key: lineSeq, variantId: "", qty: "1", picked: null }]);
     setLineSeq((s) => s + 1);
   };
   const patchLine = (key: number, patch: Partial<RecipeLine>) =>
@@ -123,6 +217,14 @@ export default function ServiceForm() {
           .filter((l) => l.variantId !== "" && parseFloat(l.qty) > 0)
           .map((l) => ({ inputVariantId: l.variantId as number, qtyPerOutputBase: l.qty.trim() }))
       : undefined;
+    // التكلفة على المتغيّر: التكلفة المباشرة يدوياً إن أُدخلت؛ وإلا نُثبّت لقطة كلفة المواد المُقدَّرة
+    // كي تظهر للمدير في قوائم المنتجات/الوصفة قبل أول بيع. عند البيع الفعلي COGS الحقيقيّ يُحسب
+    // من الوصفة بأسعار المواد الحيّة (printSaleService) — هذه القيمة عرضٌ إداريّ لا فرضٌ ماليّ.
+    const variantCost = directCost.trim()
+      ? directCost.trim()
+      : materialsCost > 0
+        ? materialsCost.toFixed(2)
+        : "0";
     create.mutate({
       name: name.trim(),
       categoryId: categoryId === "" ? undefined : Number(categoryId),
@@ -133,13 +235,15 @@ export default function ServiceForm() {
       variants: [
         {
           sku: autoSku(),
-          costPrice: directCost.trim() || "0",
+          costPrice: variantCost,
           isActive: true,
           units: [{ unitName: unitName.trim(), conversionFactor: "1", isBaseUnit: true, prices }],
         },
       ],
     });
   }
+
+  const anyMaterialPicked = lines.some((l) => l.variantId !== "");
 
   return (
     <div className="space-y-4">
@@ -206,6 +310,10 @@ export default function ServiceForm() {
               </span>
             </span>
           </label>
+          <div className="rounded-md border border-emerald-300/40 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200">
+            الخِدمة تظهر أيضاً في «فاتورة بيع متقدّمة» (١٢/٨/٢٦) — يمكن جمعها مع سلع في نفس الفاتورة الرسمية،
+            وخصم موادها الخام يجري ذرّياً مع حساب COGS من الوصفة (مثل مسار كاشير الطباعة تماماً).
+          </div>
         </CardContent>
       </Card>
 
@@ -226,7 +334,14 @@ export default function ServiceForm() {
           <Field label="سعر الحكومي (اختياري)">
             <MoneyInput value={government} onChange={setGovernment} placeholder="—" ariaLabel="سعر الحكومي" />
           </Field>
-          <Field label="تكلفة مباشرة (اختياري)" hint="كلفة لا تأتي من مادة مخزنية (عمالة/تشغيل).">
+          <Field
+            label="تكلفة مباشرة (اختياري)"
+            hint={
+              consumesMaterials && materialsCost > 0 && !directCost.trim()
+                ? `متروك فارغاً ⇒ ستُحفَظ كلفة المواد تلقائياً (${toArabicDigits(Math.round(materialsCost))} د.ع).`
+                : "كلفة لا تأتي من مادة مخزنية (عمالة/تشغيل)."
+            }
+          >
             <MoneyInput value={directCost} onChange={setDirectCost} placeholder="0" ariaLabel="تكلفة مباشرة" />
           </Field>
           <div className="col-span-2 md:col-span-4 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground border-t pt-3">
@@ -253,57 +368,45 @@ export default function ServiceForm() {
         </CardHeader>
         {consumesMaterials && (
           <CardContent className="space-y-2">
-            {materials.length === 0 && (
-              <div className="rounded-md border border-amber-300/40 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                لا توجد مواد مخزنية بعد. أضِف المواد (ورق/حبر) كـ«سلعة» أولاً ثم ارجِع لتعريف الوصفة.
-              </div>
-            )}
+            <div className="rounded-md border border-sky-300/40 bg-sky-50 px-3 py-2 text-[11px] text-sky-900 dark:bg-sky-950/30 dark:text-sky-200">
+              اكتب اسم المادة في كل سطر (ورق، حبر، توسيط…). البحث يشمل كل الكتالوج المخزنيّ (بلا الخدمات
+              والبكجات وبضاعة الأمانة). لا تَظهر مادة في القائمة؟ أضِفها من «سلعة» أوّلاً ثم ارجع للوصفة.
+            </div>
             <div className="hidden md:grid grid-cols-12 gap-2 px-1 text-[11px] font-semibold text-muted-foreground">
               <span className="col-span-7">المادة</span>
               <span className="col-span-3">الكمية لكل وحدة خدمة</span>
               <span className="col-span-2 text-center">حذف</span>
             </div>
-            {lines.map((l) => {
-              const m = l.variantId === "" ? null : matById.get(l.variantId);
-              return (
-                <div key={l.key} className="grid grid-cols-2 md:grid-cols-12 gap-2 items-center border-t pt-2 md:border-0 md:pt-0">
-                  <select
-                    value={l.variantId}
-                    onChange={(e) => patchLine(l.key, { variantId: e.target.value === "" ? "" : Number(e.target.value) })}
-                    className="md:col-span-7 h-8 rounded-md border border-input bg-transparent px-2 text-sm"
-                  >
-                    <option value="">— اختر مادة —</option>
-                    {materials.map((mat) => (
-                      <option key={mat.variantId} value={mat.variantId}>
-                        {mat.productName}{mat.variantName ? ` — ${mat.variantName}` : ""} ({mat.unitName})
-                      </option>
-                    ))}
-                  </select>
-                  <div className="md:col-span-3 flex items-center gap-1.5">
-                    <NumberInput
-                      className="h-8 text-sm"
-                      decimals={4}
-                      value={l.qty}
-                      onChange={(val) => patchLine(l.key, { qty: val })}
-                      placeholder="1"
-                      ariaLabel="كمية المادة الخام"
-                    />
-                    {m && <span className="text-[11px] text-muted-foreground whitespace-nowrap">{m.unitName}</span>}
-                  </div>
-                  <div className="md:col-span-2 flex items-center justify-center">
-                    <button
-                      type="button"
-                      onClick={() => removeLine(l.key)}
-                      disabled={lines.length <= 1}
-                      className="text-muted-foreground hover:text-destructive disabled:opacity-30"
-                      aria-label="حذف المادة"
-                    >
-                      <X aria-hidden className="size-4" />
-                    </button>
-                  </div>
+            {lines.map((l) => (
+              <div key={l.key} className="grid grid-cols-2 md:grid-cols-12 gap-2 items-center border-t pt-2 md:border-0 md:pt-0">
+                <MaterialPicker
+                  value={l.picked}
+                  onPick={(m) => patchLine(l.key, { variantId: m.variantId, picked: m })}
+                />
+                <div className="md:col-span-3 flex items-center gap-1.5">
+                  <NumberInput
+                    className="h-8 text-sm"
+                    decimals={4}
+                    value={l.qty}
+                    onChange={(val) => patchLine(l.key, { qty: val })}
+                    placeholder="1"
+                    ariaLabel="كمية المادة الخام"
+                  />
+                  {l.picked && <span className="text-[11px] text-muted-foreground whitespace-nowrap">{l.picked.unitName}</span>}
                 </div>
-              );
-            })}
+                <div className="md:col-span-2 flex items-center justify-center">
+                  <button
+                    type="button"
+                    onClick={() => removeLine(l.key)}
+                    disabled={lines.length <= 1}
+                    className="text-muted-foreground hover:text-destructive disabled:opacity-30"
+                    aria-label="حذف المادة"
+                  >
+                    <X aria-hidden className="size-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
             <Button type="button" variant="outline" size="sm" onClick={addLine} className="mt-1">
               <Plus aria-hidden className="size-4 me-1" /> مادة أخرى
             </Button>
@@ -323,7 +426,11 @@ export default function ServiceForm() {
         <div className="text-xs text-muted-foreground hidden sm:flex items-center gap-2">
           ستُحفظ خِدمة واحدة
           {showInPrintPos && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">نقطة الطباعة</Badge>}
-          {consumesMaterials && <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700">{toArabicDigits(lines.filter((l) => l.variantId !== "").length)} مادة</Badge>}
+          {consumesMaterials && anyMaterialPicked && (
+            <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700">
+              {toArabicDigits(lines.filter((l) => l.variantId !== "").length)} مادة
+            </Badge>
+          )}
         </div>
         <Button type="button" size="sm" onClick={save} disabled={create.isPending}>
           {create.isPending ? "جارٍ الحفظ…" : "حفظ الخدمة"}

@@ -1,8 +1,8 @@
 // إنشاء فاتورة بيع ذرّياً: idempotency + تسعير/تحويل الأسطر + بوّابة أقل-من-التكلفة +
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
-import { eq, inArray } from "drizzle-orm";
-import { couponRedemptions, coupons, customers, invoiceItemBundleComponents, invoiceItems, invoices, openingModeSettings, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import { couponRedemptions, coupons, customers, invoiceItemBundleComponents, invoiceItems, invoices, openingModeSettings, productionRecipeLines, productionRecipes, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
 import {
   computeInvoiceCost,
   computeInvoiceTotals,
@@ -236,6 +236,57 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
     const bundleVariantIds = uniqueVariantIds.filter((vid) => kindByVariant.get(vid) === "BUNDLE");
     const bundleDefs = await getBundleDefinitions(tx, bundleVariantIds);
     const bundleUnitCosts = await computeBundleUnitCosts(tx, bundleVariantIds, bundleDefs);
+
+    // الخدمات في مسار البيع المتقدّم (١٢/٨/٢٦): الخدمة لا تملك مخزوناً ذاتياً — تكلفتها = مجموع
+    // كلفة موادها المُستهلَكة، ومخزون كل مادة يُخصم بحركة OUT مستقلّة (allowNegative=true،
+    // مطابقةً لـprintSaleService). نُحمّل الوصفات وتكاليف المواد دفعةً واحدة قبل الحلقة
+    // كي تُحسب unitCost لحظياً بلا N+1. لا وصفة ⇒ unitCost=0 (خدمة بلا مواد مطلوبة).
+    const serviceVariantIds = uniqueVariantIds.filter((vid) => kindByVariant.get(vid) === "SERVICE");
+    const serviceRecipe = new Map<number, Array<{ inputVariantId: number; qtyPerOutputBase: string }>>();
+    const materialCostByVariant = new Map<number, string>();
+    if (serviceVariantIds.length) {
+      const recipeHeads = await tx
+        .select({ id: productionRecipes.id, outputVariantId: productionRecipes.outputVariantId })
+        .from(productionRecipes)
+        .where(and(inArray(productionRecipes.outputVariantId, serviceVariantIds), eq(productionRecipes.isActive, true)))
+        .orderBy(desc(productionRecipes.id)); // الأحدث يفوز — قرار حتميّ (مطابق printSaleService).
+      const recipeByOutput = new Map<number, number>();
+      for (const r of recipeHeads) {
+        const svid = Number(r.outputVariantId);
+        if (!recipeByOutput.has(svid)) recipeByOutput.set(svid, Number(r.id));
+      }
+      const recipeIds = Array.from(new Set(recipeByOutput.values()));
+      const recLines = recipeIds.length
+        ? await tx
+            .select({
+              recipeId: productionRecipeLines.recipeId,
+              inputVariantId: productionRecipeLines.inputVariantId,
+              qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+            })
+            .from(productionRecipeLines)
+            .where(inArray(productionRecipeLines.recipeId, recipeIds))
+        : [];
+      const linesByRecipe = new Map<number, Array<{ inputVariantId: number; qtyPerOutputBase: string }>>();
+      for (const rl of recLines) {
+        const rid = Number(rl.recipeId);
+        if (!linesByRecipe.has(rid)) linesByRecipe.set(rid, []);
+        linesByRecipe.get(rid)!.push({ inputVariantId: Number(rl.inputVariantId), qtyPerOutputBase: String(rl.qtyPerOutputBase) });
+      }
+      for (const svid of serviceVariantIds) {
+        const rid = recipeByOutput.get(svid);
+        if (rid != null) serviceRecipe.set(svid, linesByRecipe.get(rid) ?? []);
+      }
+      // كلفة كل مادة (snapshot لحظة البيع من productVariants.costPrice، نمط printSaleService).
+      const materialIds = new Set<number>();
+      for (const lines of Array.from(serviceRecipe.values())) for (const rl of lines) materialIds.add(rl.inputVariantId);
+      if (materialIds.size) {
+        const matRows = await tx
+          .select({ id: productVariants.id, cost: productVariants.costPrice })
+          .from(productVariants)
+          .where(inArray(productVariants.id, Array.from(materialIds)));
+        for (const r of matRows) materialCostByVariant.set(Number(r.id), String(r.cost ?? "0"));
+      }
+    }
     // حارس صحّة: كل بكجٍ ورد كسطر بيع يجب أن يملك وصفة (على الأقل مكوّناً واحداً) — منتج بلا وصفة
     // مسجَّل isBundle=true بحادثة سيّئة (ملفَّق يدوياً أو حالة سباق). نرفض البيع صراحةً بدل حساب صفر.
     for (const bid of bundleVariantIds) {
@@ -319,11 +370,30 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
       const kind = kindByVariant.get(l.variantId) ?? "STOCKED";
       // §١٠.٣ (البطاقات الرقمية): تكلفة مفروضة خادمياً تتقدّم على `costPrice` — تُملأ حصراً من
       // نيّةٍ مقفولة في القاعدة (حصة المزوّد)، ولا يقبلها راوتر. راجع `SaleLineInput.unitCostOverride`.
+      // الخدمة: unitCost يُحسب من الوصفة (لقطة كلفة المواد لحظة البيع) — لا من `variants.costPrice`
+      // (الذي هو لقطة إدارية عرضية عند إنشاء الخدمة، يُحدَّث فقط بتعديل يدوي). المطابقة لمنطق
+      // printSaleService.ts: لكل مادةٍ في الوصفة نحسب الاستهلاك المُدوَّر لكامل السطر (baseQuantity
+      // × qtyPerOutputBase → ⌈…⌋)، نضربه بكلفتها، ثم unitCost = round2(Σ / baseQuantity). خدمةٌ
+      // بلا وصفة ⇒ unitCost=0 (متسّق مع سياسة النقطة النقدية القائمة).
+      const computeServiceUnitCost = (): string => {
+        const rlines = serviceRecipe.get(l.variantId);
+        if (!rlines || !rlines.length || baseQuantity <= 0) return "0.00";
+        let lineCost = money(0);
+        for (const rl of rlines) {
+          const consumed = Math.max(0, Math.round(money(rl.qtyPerOutputBase).times(baseQuantity).toNumber()));
+          if (consumed <= 0) continue;
+          const matCost = round2(money(materialCostByVariant.get(rl.inputVariantId) ?? "0"));
+          lineCost = lineCost.plus(round2(matCost.times(consumed)));
+        }
+        return round2(lineCost.div(baseQuantity)).toFixed(2);
+      };
       const unitCost = l.unitCostOverride != null
         ? snapshotUnitCost(l.unitCostOverride)
         : kind === "BUNDLE"
           ? snapshotUnitCost(bundleUnitCosts.get(l.variantId) ?? "0")
-          : snapshotUnitCost(v.costPrice);
+          : kind === "SERVICE"
+            ? snapshotUnitCost(computeServiceUnitCost())
+            : snapshotUnitCost(v.costPrice);
       const lineRes = computeLineTotal({
         unitPrice,
         quantity: money(l.quantity),
@@ -576,6 +646,10 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
     //     ⚠️ نفس الترتيب مهم للسلامة تحت التزامن: تجميع قبل التطبيق يمنع سباق قفل على نفس الصفّ.
     interface StockOp { variantId: number; baseQuantity: number; }
     const stockOps: StockOp[] = [];
+    // ١٢/٨/٢٦: مواد الخدمة تُخصم بمسار منفصلٍ بعد الأصناف العادية بـallowNegative=true (مطابقةً
+    // لـprintSaleService: لا تُرفَض خدمةٌ لأن النظام يُظهر نفاد المادة، والاستهلاك يبقى مُتعقَّباً
+    // بحركة OUT). العزل عن `stockOps` يمنع تلوّث سياسة السالب للأصناف العادية.
+    const serviceMaterialOps: StockOp[] = [];
     for (const c of computed) {
       if (c.kind === "BUNDLE") {
         const def = bundleDefs.get(c.variantId) ?? [];
@@ -586,8 +660,14 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
             baseQuantity: comp.componentBaseQuantity * c.baseQuantity,
           });
         }
+      } else if (c.kind === "SERVICE") {
+        // الخدمة نفسها لا branchStock لها — applyMovement يتخطّاها. توسِّع الوصفة إلى مواد.
+        const rlines = serviceRecipe.get(c.variantId) ?? [];
+        for (const rl of rlines) {
+          const consumed = Math.max(0, Math.round(money(rl.qtyPerOutputBase).times(c.baseQuantity).toNumber()));
+          if (consumed > 0) serviceMaterialOps.push({ variantId: rl.inputVariantId, baseQuantity: consumed });
+        }
       } else {
-        // STOCKED / SERVICE — applyMovement تعرف كيف تتعامل مع الخدمة (لا branchStock).
         stockOps.push({ variantId: c.variantId, baseQuantity: c.baseQuantity });
       }
     }
@@ -675,6 +755,33 @@ export async function createSaleInTx(tx: Tx, input: CreateSaleInput, actor: Acto
           }
         }
         throw e;
+      }
+    }
+
+    // 10.b مواد الخدمات (١٢/٨/٢٦): خصم منفصلٌ بـallowNegative=true — لا تُرفَض خدمةٌ لأن النظام
+    //      يُظهر نفاد المادة (بُنيويّ في printSaleService). يُطبَّق بعد stockOps للأصناف بترتيب
+    //      variantId تصاعدياً (ثبات الأقفال). التجميع per-variant يمنع حركتين لنفس المادة من
+    //      خدمتين مختلفتين. المرجع INVOICE مطابق للأصناف — كشف الأعمار/الأعمار الحمراء يجدها.
+    if (serviceMaterialOps.length) {
+      const matAgg = new Map<number, number>();
+      for (const op of serviceMaterialOps) {
+        matAgg.set(op.variantId, (matAgg.get(op.variantId) ?? 0) + op.baseQuantity);
+      }
+      const matVids = Array.from(matAgg.keys()).sort((a, b) => a - b);
+      for (const vid of matVids) {
+        const qty = matAgg.get(vid)!;
+        if (qty <= 0) continue;
+        await applyMovement(tx, {
+          variantId: vid,
+          branchId: input.branchId,
+          baseQuantity: qty,
+          movementType: "OUT",
+          referenceType: "INVOICE",
+          referenceId: invoiceId,
+          createdBy: actor.userId,
+          allowNegative: true,
+          notes: "استهلاك مادة خدمة",
+        });
       }
     }
 

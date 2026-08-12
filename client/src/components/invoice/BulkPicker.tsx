@@ -34,6 +34,9 @@ export interface BulkPickerProps {
 
 export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, tier }: BulkPickerProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
+  // فاتورة بيع متقدّمة (١٢/٨/٢٦): كل خدمات الطباعة تُعرض هنا بلا شرط showInReception (المتقدّمة قد
+  // تجمع سلعاً وخدماتٍ). createSale يخصم مواد الخدمة ويحتسب COGS ذرّياً.
+  const isAdvancedSale = invoiceType === "SALE";
   const [searchQ, setSearchQ] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   // الشمولية: لا سقف ثابت. نبدأ بصفحة ونزيد الحدّ كلّما مرّر المستخدم للأسفل (تحميل كسول
@@ -42,7 +45,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
   const [limit, setLimit] = useState(PAGE);
 
   const posQ = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: searchQ.trim(), limit },
+    { branchId, tier, query: searchQ.trim(), limit, includeAllServices: isAdvancedSale },
     { enabled: open && !isPurchase, placeholderData: keepPreviousData }
   );
   const purQ = trpc.catalog.forPurchase.useQuery(
@@ -60,6 +63,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     unitName: string;
     conversionFactor: string;
     stockBase: number;
+    isService?: boolean;
     price: string;
     costBase: string;
   };
@@ -90,6 +94,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
       unitName: r.unitName,
       conversionFactor: r.conversionFactor,
       stockBase: r.stockBase ?? 0,
+      isService: r.isService || r.isPrintService,
       price: r.price ?? "0",
       // التكلفة من الخادم للمخوَّل برؤيتها (مدير/أدمن)، وnull لغيره (كاشير) — الحجب في الراوتر.
       costBase: r.costPriceBase ?? "0",
@@ -122,6 +127,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         qty: 1,
         conversionFactor: r.conversionFactor,
         stockBase: r.stockBase,
+        isService: r.isService,
         price: r.price || "0",
         costBase: r.costBase || "0",
         discount: "0",
@@ -220,13 +226,22 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                     className="shrink-0"
                   />
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold">{p.name}</div>
+                    <div className="truncate text-sm font-semibold">
+                      {p.name}
+                      {p.isService && (
+                        <span className="me-2 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">خدمة</span>
+                      )}
+                    </div>
                     <div className="mt-0.5 flex gap-2 text-[11px] text-muted-foreground">
                       <span>{p.sku}</span>
                       <span>•</span>
                       <span>{p.unitName}</span>
                       <span>•</span>
-                      <span className={p.stockBase < 5 ? "text-rose-600" : ""}>مخزون: {fmtNum(p.stockBase)}</span>
+                      {p.isService ? (
+                        <span>بلا مخزون ذاتيّ (تُخصَم موادها)</span>
+                      ) : (
+                        <span className={p.stockBase < 5 ? "text-rose-600" : ""}>مخزون: {fmtNum(p.stockBase)}</span>
+                      )}
                     </div>
                   </div>
                   <div className="shrink-0 text-left">

@@ -18,13 +18,17 @@ const activeOnly = and(
 
 // رؤية كاشير الاستقبال: كالعادي + خدمات الطباعة المفعَّل عليها showInReception (تُباع عبر createPrintSale).
 const receptionVisible = sql`(${products.productType} IS NULL OR ${products.productType} <> ${PRINT_SERVICE_TYPE} OR ${products.showInReception} = TRUE)`;
-function posVisibility(includeReceptionServices: boolean) {
-  return and(
+// رؤية فاتورة البيع المتقدّمة (١٢/٨/٢٦): كل الأصناف بما فيها خدمات الطباعة **بلا شرط showInReception**
+// — لأنّ الفاتورة الرسمية قد تجمع سلعاً وخدماتٍ مقدَّمة للجهة (شركات/حكومي). createSale يتعامل مع
+// الخدمة عبر توسيع وصفتها (خصم المواد + COGS المحسوب). isActive على المنتج/المتغيّر/الوحدة يبقى نافذاً.
+function posVisibility(mode: "default" | "reception" | "advancedSale") {
+  const baseConds = [
     eq(products.isActive, true),
     eq(productVariants.isActive, true),
     eq(productUnits.isActive, true),
-    includeReceptionServices ? receptionVisible : notPrintService,
-  );
+  ];
+  if (mode === "advancedSale") return and(...baseConds); // كل شيء نشط، شاملاً كل خدمات الطباعة.
+  return and(...baseConds, mode === "reception" ? receptionVisible : notPrintService);
 }
 
 /**

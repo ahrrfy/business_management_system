@@ -173,9 +173,11 @@ function assertCostChangeReasonOrThrow(variantLabel: string, oldCost: string | n
 export const catalogRouter = router({
   posList: productsReadProcedure
     // بند 12ب (٧/٧): customerId اختياري — عميل بسعر تعاقدي نشط يرى سعره بدل سعر الفئة (isContractPrice).
-    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
+    // includeAllServices (١٢/٨/٢٦): شاشة فاتورة البيع المتقدّمة تحتاج كل خدمات الطباعة (بلا شرط
+    // showInReception). createSale يتعامل مع الخدمة بتوسيع وصفتها لخصم المواد وحساب COGS.
+    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional(), includeAllServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
     .query(async ({ input, ctx }) => {
-      const rows = await listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, customerId: input.customerId ?? undefined });
+      const rows = await listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, includeAllServices: input.includeAllServices, customerId: input.customerId ?? undefined });
       return redactPosCost(rows, ctx.user);
     }),
 
