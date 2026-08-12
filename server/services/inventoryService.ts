@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
-import { branchStock, inventoryMovements, productUnits, productVariants, products } from "../../drizzle/schema";
+import { branchStock, inventoryMovements, openingModeSettings, productUnits, productVariants, products } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import type { DecimalInput } from "./money";
 import { extractInsertId } from "../lib/insertId";
@@ -97,6 +97,22 @@ export interface ApplyMovementResult {
   newQuantity: number;
   /** فرق التسوية (target − current) — يملؤه setStock فقط ليُمكّن المستدعي من ترحيل قيدٍ محاسبيّ بقيمة الفرق. */
   delta?: number;
+  /** رُفع حين سمحت قناة allowNegative (أوفلاين/مواد خدمات) بنزول الرصيد تحت أرضية السالب (‑cap) —
+   *  للكشف/التنبيه دون رفض (لا يُسقَط بيعٌ حصل فعلاً). المسار الحيّ يُرفض بدل رفع العلَم. */
+  floorBreached?: boolean;
+}
+
+/** أرضية السالب = openingModeSettings.maxNegativeQtyPerLine (صفّ singleton id=1)، والافتراض ١٠٠
+ *  يطابق DEFAULTS في openingModeService. تُقرأ فقط عند نزول رصيدٍ مسموحٍ بالسالب تحت الصفر (نادر)
+ *  ⇒ لا عبء على المسار الشائع (البيع المعتاد بلا سالب لا يستدعيها). */
+async function readNegativeFloorCap(tx: Tx): Promise<number> {
+  const rows = await tx
+    .select({ cap: openingModeSettings.maxNegativeQtyPerLine })
+    .from(openingModeSettings)
+    .where(eq(openingModeSettings.id, 1))
+    .limit(1);
+  const cap = rows[0]?.cap;
+  return typeof cap === "number" && cap > 0 ? cap : 100;
 }
 
 /** Read current stock under a row lock, then write a movement + the new branchStock. */
@@ -151,6 +167,32 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   const signedDelta = sign * a.baseQuantity;
   const newQuantity = currentQty + signedDelta;
 
+  // ── أرضية السالب التراكمية (تحقيق سوالب ١٢/٨) ───────────────────────────────────────────────
+  // السقف (openingModeSettings.maxNegativeQtyPerLine) كان يُفحَص في sale/create على **كمية السطر**
+  // وحدها ⇒ يحدّ الفاتورة الواحدة لا الرصيد الناتج، فبيوعٌ متتابعة كلٌّ ضمن السقف تحفر الرصيد بلا قاع
+  // (‑172/‑177 حقيقية). هنا — نقطة الاختناق الوحيدة لكل القنوات — نفرض القاع على **الرصيد الناتج**:
+  //   • المسار الحيّ (allowNegativeUnopened: كاشير/طلب/آجل): يُرفض تجاوز ‑cap ويُرفض بيعٌ إضافيّ لصنفٍ
+  //     بلغ القاع سلفاً ⇒ يتوقف التراكم، والكاشير يُوجَّه لجردٍ افتتاحي يثبّت الرصيد الحقيقي.
+  //   • مسار allowNegative (إعادة تشغيل الأوفلاين + مواد الطباعة/الخدمات): **لا يُرفض أبداً** — رفضُ
+  //     إعادة تشغيلٍ أوفلاينيّ = فقدُ بيعٍ حصل فعلاً؛ نكتفي بوسم الحركة ورفع floorBreached للكشف.
+  let notes = a.notes;
+  let floorBreached = false;
+  if (DEDUCTING.has(a.movementType) && negativeAllowed && newQuantity < 0) {
+    const cap = await readNegativeFloorCap(tx);
+    if (newQuantity < -cap) {
+      if (!a.allowNegative) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            `بلغ الصنف حدّ البيع بالسالب في وضع الافتتاح (الحدّ ${cap} وحدة أساس، والرصيد سيصبح ${newQuantity}) — ` +
+            `يلزم جردٌ افتتاحي يثبّت رصيده الحقيقي قبل متابعة بيعه`,
+        });
+      }
+      floorBreached = true;
+      notes = `${a.notes ? `${a.notes} — ` : ""}[تجاوز حدّ السالب: الرصيد ${newQuantity} دون ‑${cap}]`;
+    }
+  }
+
   const res = await tx.insert(inventoryMovements).values({
     variantId: a.variantId,
     branchId: a.branchId,
@@ -159,7 +201,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     referenceType: a.referenceType,
     referenceId: a.referenceId,
     relatedBranchId: a.relatedBranchId,
-    notes: a.notes,
+    notes,
     createdBy: a.createdBy,
   });
   const movementId = extractInsertId(res);
@@ -175,7 +217,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     )
     .where(and(eq(branchStock.variantId, a.variantId), eq(branchStock.branchId, a.branchId)));
 
-  return { movementId, newQuantity };
+  return { movementId, newQuantity, floorBreached };
 }
 
 export interface ConvertResult {
@@ -292,7 +334,10 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
   // «الافتتاح التدريجي» (١٨/٧): تسوية بمرجع OPENING = تثبيت رصيدٍ افتتاحي ⇒ يُختَم openedAt مركزياً
   // هنا (مصدر حقيقة واحد يغطي إنشاء المنتج/الاستيراد/البذرة/الجرد الافتتاحي). COALESCE يصون تاريخ
   // الافتتاح الأول عند إعادة تشغيلٍ idempotent (البذرة) — الافتتاح مرّة واحدة لكل (صنف×فرع).
-  if (a.referenceType === "OPENING") {
+  // توسعة (تحقيق سوالب ١٢/٨): الجرد **الدوري** (مرجع STOCKTAKE) يختم openedAt أيضاً — «العدّ يفتتح
+  // الصنف». قبلها كان الجرد الدوري يصحّح الكمية دون ختم openedAt، فيبقى الصنف «غير مُفتتَح» ويُباع
+  // بالسالب رغم اعتماد جرده (السبب المباشر للحادثة). التصنيف المحاسبيّ (عجز/زيادة) يبقى مستقلّاً.
+  if (a.referenceType === "OPENING" || a.referenceType === "STOCKTAKE") {
     await tx
       .update(branchStock)
       .set({ openedAt: sql`COALESCE(${branchStock.openedAt}, NOW())` })
